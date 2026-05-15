@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { ClipboardList, ChevronDown, ChevronRight, ExternalLink, Plus, RefreshCw, X, Trash2, Sparkles } from 'lucide-react';
+import { ClipboardList, ChevronDown, ChevronRight, ArrowRight, Plus, RefreshCw, X, Trash2, Sparkles, Check, RotateCcw, Pencil } from 'lucide-react';
 
 import { getTasksForPlanItem, parseDepartmentPlan } from '../../lib/api';
 import type {
@@ -15,6 +15,13 @@ interface Props {
   value: OrgModelSettings;
   currentUser: SessionUser | null;
   onSavePlan?: (plan: OrgDepartmentPlanSettings) => Promise<void> | void;
+  /** 点击挂接任务卡片 / 卡片右上的快捷打开图标时调用 — 由 App.tsx 把 task 注入 openTaskEditor */
+  onOpenTask?: (task: Task) => void;
+  /** 详情面板里"生成任务"按钮：根据当前计划项预填新建任务表单（标题/说明/挂接关系） */
+  onGenerateTaskFromPlanItem?: (
+    planItem: OrgDepartmentPlanItemSettings,
+    scopeName: string,
+  ) => void;
 }
 
 interface DepartmentRow {
@@ -116,7 +123,7 @@ function weekLabelToSortKey(label: string | null | undefined): string {
   return raw;
 }
 
-export function PlanWorkshopView({ value, currentUser, onSavePlan }: Props) {
+export function PlanWorkshopView({ value, currentUser, onSavePlan, onOpenTask, onGenerateTaskFromPlanItem }: Props) {
   const isAdmin = currentUser?.primaryRole === 'admin';
   const userDeptId = currentUser?.departmentId ?? null;
   const organizationName = value.organization?.name?.trim() || '组织';
@@ -741,37 +748,55 @@ export function PlanWorkshopView({ value, currentUser, onSavePlan }: Props) {
                                     type="button"
                                     onClick={() => void handleToggleItemDone()}
                                     disabled={isMutatingItem}
-                                    className="rounded-lg border border-gray-200 bg-white px-2.5 py-1 text-[11px] font-bold text-gray-600 hover:bg-gray-50 disabled:opacity-50"
+                                    className="inline-flex items-center justify-center rounded-md p-1.5 text-gray-400 hover:text-amber-600 hover:bg-amber-50 disabled:opacity-40 transition"
                                     title="取消已完成状态，恢复为进行中"
+                                    aria-label="取消完成"
                                   >
-                                    {isMutatingItem ? '处理中…' : '取消完成'}
+                                    <RotateCcw size={14} />
                                   </button>
                                 ) : (
                                   <button
                                     type="button"
                                     onClick={() => void handleToggleItemDone()}
                                     disabled={isMutatingItem}
-                                    className="rounded-lg border border-emerald-200 bg-emerald-50 px-2.5 py-1 text-[11px] font-bold text-emerald-600 hover:bg-emerald-100 disabled:opacity-50"
+                                    className="inline-flex items-center justify-center rounded-md p-1.5 text-gray-400 hover:text-emerald-600 hover:bg-emerald-50 disabled:opacity-40 transition"
                                     title="标记本条计划项为已完成"
+                                    aria-label="完成"
                                   >
-                                    {isMutatingItem ? '处理中…' : '完成'}
+                                    <Check size={14} />
+                                  </button>
+                                )}
+                                {onGenerateTaskFromPlanItem && (
+                                  <button
+                                    type="button"
+                                    onClick={() => onGenerateTaskFromPlanItem(selectedItem, selectedItemScopeName || '')}
+                                    disabled={isMutatingItem}
+                                    className="inline-flex items-center justify-center rounded-md p-1.5 text-gray-400 hover:text-violet-600 hover:bg-violet-50 disabled:opacity-40 transition"
+                                    title="生成任务：把这条计划项作为内容新建一条任务并自动挂接"
+                                    aria-label="生成任务"
+                                  >
+                                    <Sparkles size={14} />
                                   </button>
                                 )}
                                 <button
                                   type="button"
                                   onClick={handleEnterEdit}
                                   disabled={isMutatingItem}
-                                  className="rounded-lg border border-[#D7E0FF] bg-[#F8FAFF] px-2.5 py-1 text-[11px] font-bold text-[#5B7BFE] hover:bg-[#EEF2FF] disabled:opacity-50"
+                                  className="inline-flex items-center justify-center rounded-md p-1.5 text-gray-400 hover:text-[#5B7BFE] hover:bg-[#EEF2FF] disabled:opacity-40 transition"
+                                  title="编辑计划项"
+                                  aria-label="编辑"
                                 >
-                                  编辑
+                                  <Pencil size={14} />
                                 </button>
                                 <button
                                   type="button"
                                   onClick={() => void handleStartDelete()}
                                   disabled={isMutatingItem}
-                                  className="rounded-lg border border-rose-200 bg-rose-50 px-2.5 py-1 text-[11px] font-bold text-rose-600 hover:bg-rose-100 disabled:opacity-50"
+                                  className="inline-flex items-center justify-center rounded-md p-1.5 text-gray-400 hover:text-rose-600 hover:bg-rose-50 disabled:opacity-40 transition"
+                                  title="删除计划项"
+                                  aria-label="删除"
                                 >
-                                  删除
+                                  <Trash2 size={14} />
                                 </button>
                               </>
                             )}
@@ -891,7 +916,11 @@ export function PlanWorkshopView({ value, currentUser, onSavePlan }: Props) {
                       ) : (
                         <div className="space-y-2">
                           {itemTasks[selectedItemId!].map((task) => (
-                            <PlanItemTaskCard key={task.id} task={task} />
+                            <PlanItemTaskCard
+                              key={task.id}
+                              task={task}
+                              onOpen={onOpenTask ? () => onOpenTask(task) : undefined}
+                            />
                           ))}
                         </div>
                       )}
@@ -1229,7 +1258,7 @@ function DepartmentRowBlock({
   );
 }
 
-function PlanItemTaskCard({ task }: { task: Task }) {
+function PlanItemTaskCard({ task, onOpen }: { task: Task; onOpen?: () => void }) {
   const statusMap: Record<string, { label: string; cls: string }> = {
     doing: { label: '进行中', cls: 'bg-blue-50 text-blue-700' },
     done: { label: '已完成', cls: 'bg-emerald-50 text-emerald-700' },
@@ -1238,8 +1267,24 @@ function PlanItemTaskCard({ task }: { task: Task }) {
   };
   const status = statusMap[task.status] || { label: task.status, cls: 'bg-gray-100 text-gray-500' };
 
+  const clickable = Boolean(onOpen);
   return (
-    <div className="rounded-xl border border-gray-100 bg-white px-3 py-2.5">
+    <div
+      role={clickable ? 'button' : undefined}
+      tabIndex={clickable ? 0 : undefined}
+      onClick={onOpen}
+      onKeyDown={(e) => {
+        if (!clickable) return;
+        if (e.key === 'Enter' || e.key === ' ') {
+          e.preventDefault();
+          onOpen?.();
+        }
+      }}
+      className={`group rounded-xl border border-gray-100 bg-white px-3 py-2.5 transition ${
+        clickable ? 'cursor-pointer hover:border-[#5B7BFE]/40 hover:bg-[#F8FAFF]' : ''
+      }`}
+      title={clickable ? '打开任务详情' : undefined}
+    >
       <div className="flex items-start justify-between gap-2">
         <div className="min-w-0 flex-1">
           <p className="text-[13px] font-bold text-gray-800 truncate">{task.title}</p>
@@ -1249,7 +1294,22 @@ function PlanItemTaskCard({ task }: { task: Task }) {
             {task.dueDate && <span>📅 {task.dueDate.slice(0, 10)}</span>}
           </div>
         </div>
-        <ExternalLink size={12} className="text-gray-300 mt-1 shrink-0" />
+        {clickable ? (
+          <button
+            type="button"
+            onClick={(e) => {
+              e.stopPropagation();
+              onOpen?.();
+            }}
+            className="shrink-0 mt-0.5 inline-flex items-center justify-center rounded-md p-1 text-gray-400 hover:text-[#5B7BFE] hover:bg-[#EEF2FF]"
+            title="打开任务详情"
+            aria-label="打开任务详情"
+          >
+            <ArrowRight size={14} />
+          </button>
+        ) : (
+          <ArrowRight size={14} className="text-gray-300 mt-1 shrink-0" />
+        )}
       </div>
     </div>
   );

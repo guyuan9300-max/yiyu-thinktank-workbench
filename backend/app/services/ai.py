@@ -996,7 +996,19 @@ class AiService:
         timeout_seconds: float = 300.0,
         max_tokens: int = 3000,
         enable_thinking: bool = True,
+        strategic_pack: str = "",
+        depth_mode: bool = False,
+        writing_skill_md: str = "",
+        creativity_mode: str = "strict",
+        task_mode: bool = False,
     ) -> AiStructuredResponse:
+        """Generate a structured answer from a raw evidence pack via single LLM call.
+
+        ``strategic_pack``: 可选的"战略素材包"（组织 DNA / 已采纳判断 / 项目演进 / 历史 chat 沉淀），
+        非空时拼到 raw_evidence_pack 前面作为前置高亮，让单次调用也能扎进战略层判断。
+        ``depth_mode``: 普通问答（False）控制在 600-1200 字；深度问答（True）展开到 1500-2500 字，
+        并强制要求挖具体项目名、数字、时间节点。
+        """
         health = self._health_for_task("deep_analysis")
         if health.provider != "mock" and health.ready:
             if on_partial is not None:
@@ -1015,9 +1027,107 @@ class AiService:
                         },
                     }
                 )
+            length_rule = (
+                "7. 全文控制在 1500-2500 字之间。普通回答也要有内容深度，不要为了短而短；"
+                "写不出来的部分直接说「资料中未见」，不要套通用模板。"
+                if depth_mode
+                else "7. 全文控制在 600～1200 字之间，宁缺毋滥；"
+                "写不出来的部分直接说「资料中未见」，不要套通用模板。"
+            )
+            detail_rule = (
+                "10. 必须落到具体的项目名（如「心灵魔法学院」「心盛计划」「繁星计划」）、"
+                "合作方、活动名、关键数字、时间节点、人物角色——这些细节都在战略素材或原始资料里，"
+                "必须主动挖出来，不要满足于在画像层面做抽象总结。\n"
+                if depth_mode
+                else ""
+            )
+            style_prefix = ""
+            if (writing_skill_md or "").strip():
+                style_prefix = (
+                    "【写作风格约束 —— 必须遵守，优先级最高】\n"
+                    f"{writing_skill_md.strip()}\n"
+                    "【写作风格约束结束】\n\n"
+                    "下面是常规的角色和段落写作规范，与上面的风格约束冲突时以风格约束为准（除事实准确性外）。\n\n"
+                )
+            # R8：任务型 prompt 强制结构化输出（R8.13 缩短至 ~700 字降低 prompt 长度）
+            task_prefix = ""
+            if task_mode:
+                task_prefix = (
+                    "【任务执行模式】\n"
+                    "用户在要一个**具体产物**（表/列表/草稿）。**直接产出这个产物**，禁止写「数据源说明 / 字段提取规则 / 待补全场景说明 / 优化建议 / 更新机制」之类的方法论文档。\n"
+                    "\n"
+                    "## 客户资源索引的使用（R9 关键）\n"
+                    "如果资料中出现「客户资源索引 · 全集元数据视图」段，里面覆盖 5 个域：\n"
+                    "- **文档（documents）**：客户全部已上传文件的目录\n"
+                    "- **项目模块（projectModules）**：客户的项目列表\n"
+                    "- **已采纳判断（latestJudgments）**：客户已被确认的判断\n"
+                    "- **会议（meetings）**：客户的会议历史\n"
+                    "- **目标（goals）**：客户的目标清单\n"
+                    "\n"
+                    "**核心规则**：当用户要求「列出所有 X」「做一张包含全部 Y 的表」「客户有几个 Z」时：\n"
+                    "1. 先看资源索引对应域有多少条目，**索引覆盖客户全集**（不是检索 top-K 命中）\n"
+                    "2. **必须列出索引里所有相关条目**，不要只挑检索命中的前几条\n"
+                    "3. 文档域的文件名通常含结构化信息（如「姓名-岗位-日期.pdf」），可以从文件名直接解析字段，**不需要等检索命中文件内容**\n"
+                    "4. 索引里的条目都是真实存在的资源，可以放心引用\n"
+                    "5. 索引提供全集元数据；需要内容细节时再依赖下面的检索命中片段\n"
+                    "\n"
+                    "## 表格格式硬约束（违反 = 前端不渲染）\n"
+                    "1. 每行 `| ... |` **独立一行**（行尾换行符），禁止全塞一行\n"
+                    "2. **表格行之间不允许空行**，header / 分隔行 / 数据行必须紧邻\n"
+                    "3. **禁止用 ``` 包裹表格**（不要写 ```markdown ... ``` 这种），裸 markdown 直接输出\n"
+                    "4. 所有列填充，缺失填「待补全」\n"
+                    "\n"
+                    "正确格式（裸 markdown）：\n"
+                    "| 序号 | 姓名 | 岗位 |\n"
+                    "| --- | --- | --- |\n"
+                    "| 1 | 张三 | 顾问 |\n"
+                    "| 2 | 待补全 | 待补全 |\n"
+                    "\n"
+                    "## 说明长度\n"
+                    "产物前后说明**≤80 字**。禁止写章节式元文档。\n"
+                    "\n"
+                    "## 列表/草稿/信件\n"
+                    "用 `- ` 或 `1. ` 编号清单，每条独立一行；草稿直接出正文不要加「以下是草稿」开头。\n"
+                    "【任务执行模式结束】\n\n"
+                )
+            # R7：创意度三档 prompt 头部
+            creativity_block = ""
+            if creativity_mode == "creative":
+                creativity_block = (
+                    "【创意优先 · 自由创作模式】\n"
+                    "等同于通用 LLM 对话窗口（如豆包通用窗口）：仅基于用户的问题和当前对话框中的内容回答。\n"
+                    "**不需要**引用任何「客户资料」「文档库」「数据库」之类的素材——后面也不会提供这些。\n"
+                    "完全释放想象力和语言能力，按用户的诉求和选定的写作风格自由创作。\n\n"
+                )
+            elif creativity_mode == "balanced":
+                creativity_block = (
+                    "【兼顾资料 · 默认创作模式】\n"
+                    "下面提供的客户资料是**事实底色和背景**，不是直接复述对象。\n"
+                    "硬事实必须真：数字、人名、产品名、机构名、时间节点 **绝对不能编造**——资料里没有的就别提。\n"
+                    "**但**：叙事结构、句式、修辞、表达质感、措辞、隐喻、整体气质——**完全自由发挥**。\n"
+                    "目标是写出一篇**有作者意识**的文章：事实是骨头，语言是血肉。\n"
+                    "**不要**写「[资料1]」「[来源:XX]」这种来源标记，不要被资料的逐条罗列引诱去复述，要做创造性组织。\n"
+                    "如果选了写作风格 skill，**风格完全生效**，按 skill 引导发挥。\n\n"
+                )
+            else:  # strict
+                creativity_block = (
+                    "【完全客观 · 严格模式】\n"
+                    "所有数据、人名、产品名、机构名、时间节点 **必须能在下面提供的资料中找到出处**，零编造容忍。\n"
+                    "关键判断后面必须带溯源标记（如「[资料 1]」「(见 XX.pdf)」），让用户能核对。\n"
+                    "**不允许**文学修辞、隐喻、戏谑、夸张句式——句式严谨保守，宁可拙朴不要花哨。\n"
+                    "如果选了写作风格 skill，**风格让位于事实约束**：句式可参考 skill 的偏好，但内容必须严格基于资料、不发挥不延伸。\n"
+                    "资料中未见的部分，明确写「资料中未见」，禁止补全猜测。\n\n"
+                )
             base_instruction = (
+                task_prefix +
+                creativity_block +
+                style_prefix +
                 f"{system_instruction}\n"
                 "你现在直接基于后面的原始文档资料包回答用户问题。\n"
+                # R8 全局：禁止元描述 —— 用户要分析就给分析，要任务就给产物
+                "**直接给出用户要求的结果或回答**。\n"
+                "不要描述「你打算如何完成这个任务」、不要写「以下是我的方法论」「按以下步骤执行」「数据源覆盖范围说明」「字段提取规则」式的元文档。\n"
+                "用户要分析就直接给分析；用户要表格/列表/草稿就直接给产物；数据不足时直接说缺什么，不要写「应该建立 X 提取规则」这种规划。\n"
                 "不要把回答写成摘要器、系统说明或文件目录。\n"
                 "不要暴露系统过程、路由、检索、命中规则或技术细节。\n"
                 "只基于提供资料判断，不要编造资料里没有的硬事实、数字、会议结论、人物身份或项目状态。\n"
@@ -1031,23 +1141,62 @@ class AiService:
                 "6. 不要用「首先/其次/第三/第四/最后」这种口语过渡词来组织主结构；要分点时直接用列表。\n"
                 "\n"
                 "【内容规则】\n"
-                "7. 全文控制在 600～1200 字之间，宁缺毋滥；写不出来的部分直接说「资料中未见」，不要套通用模板。\n"
+                f"{length_rule}\n"
                 "8. 关键判断后面尽量带上来源标记（如「[资料 1]」「（见 XX.pdf）」），让用户能核对。\n"
-                "9. 多用「不是 X，而是 Y」「核心在于」「区别于…在于」等判断句式，避免空话和正确的废话。"
+                "9. 多用「不是 X，而是 Y」「核心在于」「区别于…在于」等判断句式，避免空话和正确的废话。\n"
+                f"{detail_rule}"
             )
+
+            # 战略素材拼到原始资料包前面作为前置高亮 —— 让单次 LLM 调用能扎进战略层判断，
+            # 而不是只看命中的几条文档片段。
+            # R7：creative 档完全不喂客户资料（strategic_pack 和 raw_evidence_pack 都忽略）
+            # R8.13/R8.15：task_mode 时，调用方应该传精简的「客户文件目录」作为 strategic_pack
+            # （不再是 13k 字的战略全景），让 LLM 知道客户都有哪些文件 → 能从文件名解析结构化信息
+            if creativity_mode == "creative":
+                effective_pack = ""
+                user_prompt_text = f"用户问题：{prompt}"
+            elif task_mode:
+                # 任务型：调用方传的 strategic_pack 应是精简的文件目录（build_client_file_catalog 输出）
+                effective_pack = str(raw_evidence_pack or "").strip()
+                if (strategic_pack or "").strip():
+                    effective_pack = (
+                        f"{strategic_pack.strip()}\n\n"
+                        "【检索命中的文档原文片段（评估字段值时优先用这里的实际内容）】\n"
+                        f"{effective_pack}"
+                    )
+                user_prompt_text = f"用户问题：{prompt}\n\n{effective_pack}"
+            else:
+                effective_pack = str(raw_evidence_pack or "").strip()
+                if (strategic_pack or "").strip():
+                    effective_pack = (
+                        "【战略素材包 —— 组织级定位/判断/演进/历史观点，这是回答深度的主要来源】\n"
+                        f"{strategic_pack.strip()}\n\n"
+                        "【原始文档资料包】\n"
+                        f"{effective_pack}"
+                    )
+                user_prompt_text = f"用户问题：{prompt}\n\n{effective_pack}"
+
+            # R8.13：task_mode 关闭 thinking，加快首字延迟和整体生成速度
+            effective_enable_thinking = enable_thinking and not task_mode
+
             try:
                 text = self._qwen_generate(
-                    prompt=f"用户问题：{prompt}\n\n原始文档资料包：\n{str(raw_evidence_pack or '').strip()}",
+                    prompt=user_prompt_text,
                     system_instruction=base_instruction,
                     response_schema=None,
                     timeout_seconds=timeout_seconds,
                     max_tokens=max_tokens,
                     temperature=0.5,
                     top_p=0.97,
-                    enable_thinking=enable_thinking,
+                    enable_thinking=effective_enable_thinking,
                     task_kind="deep_analysis",
                 )
-                return self._structured_from_plain_answer(str(text))
+                # R8.8：任务模式下兜底修复"单行表格"退化输出
+                final_text = str(text)
+                if task_mode:
+                    from app.services.chat_intent import normalize_markdown_table
+                    final_text = normalize_markdown_table(final_text)
+                return self._structured_from_plain_answer(final_text)
             except Exception as error:
                 raise AiInvocationError(health.provider, self._format_provider_error(error)) from error
         return self._mock_generate(prompt, raw_evidence_pack)
@@ -3513,10 +3662,16 @@ class AiService:
         if len(text) > head_limit + tail_limit + 200:
             prepared = f"{text[:head_limit]}\n\n[…中间省略 {len(text) - head_limit - tail_limit} 字…]\n\n{text[-tail_limit:]}"
 
+        # 关键：说话人编号（说话人A/B/C）依赖硬件 diarization 结果，硬件不好时分得很乱。
+        # 这种"软件层面无法兜底"的错乱写到产出里会被误以为是软件问题，所以**输出中绝对不
+        # 出现说话人编号**——它只能作为 LLM 内部理解上下文的辅助信号。
         diarization_hint = (
-            "下面这段是按说话人分段的对话稿，每行 \"说话人X：内容\"。"
-            "纪要里要尽量在「行动项」「决议事项」「关键议题」点名具体说话人。"
-            f"已识别说话人数量：{num_speakers}。"
+            "下面是按说话人分段的对话稿，每行格式为 \"说话人X：内容\"。"
+            "说话人编号只是给你做语义分段的内部辅助，可能因为录音质量被分错。"
+            "**绝对不要**在你的输出里出现「说话人A」「说话人B」「说话人1/2/3」「Speaker X」"
+            "或任何类似的编号标记。"
+            "如果对话稿里有真实姓名（如「张总」「小李」），可以使用；"
+            "否则用「与会者」「有人提出」「另一方回应」等泛指表达。"
             if has_dialogue
             else "下面是录音转写原文（无说话人分段，请基于内容自行总结）。"
         )
@@ -3525,8 +3680,9 @@ class AiService:
             "严格输出一个 JSON 对象，字段固定为 \"title\" 和 \"minutes_md\"，禁止任何其他内容、解释或 markdown 代码块包裹。"
             "title：3-20 字，能概括这段录音核心议题，不要写日期、不要写'会议纪要'四个字。"
             "minutes_md：标准 Markdown，按以下结构组织："
-            "## 概要、## 参与人（如有说话人分段，列出每位说话人 + 推测角色）、"
-            "## 关键议题、## 决议事项、## 行动项（含责任人/截止时间，若未提及则写'未指派'）、## 未决问题。"
+            "## 概要、## 关键议题、## 决议事项、"
+            "## 行动项（含责任人/截止时间；若转写里没有真实姓名，责任人写「未指派」，"
+            "**严禁**写「说话人A」「说话人1」等编号）、## 未决问题。"
             "找不到某个 section 就略过该 section，不要凭空捏造内容。"
         )
         hint_lines: list[str] = []
@@ -4444,6 +4600,105 @@ class AiService:
                 # 不要在超时后等待工作线程自然结束，否则外层调用会被 shutdown(wait=True)
                 # 卡死，自动填表 run 会永久停在 running。
                 pool.shutdown(wait=False, cancel_futures=True)
+        raise RuntimeError("；".join(errors) or "没有可用的大模型配置。")
+
+    def _qwen_generate_streaming(
+        self,
+        prompt: str,
+        system_instruction: str,
+        *,
+        on_token: Callable[[str], None] | None = None,
+        timeout_seconds: float = 180.0,
+        max_tokens: int = 4500,
+        temperature: float = 0.45,
+        top_p: float = 0.9,
+        enable_thinking: bool = False,
+        provider_override: str | None = None,
+        model_override: str | None = None,
+        task_kind: str = "default",
+    ) -> str:
+        """流式版本的 ``_qwen_generate``：用 OpenAI 兼容 SSE 接口逐 token 拉回内容。
+
+        每收到一个 delta 调用 ``on_token(delta)``；返回累计完整文本。
+        不支持 response_schema —— 仅用于自由文本生成（multipass Pass 2 写每段）。
+
+        与同步版本的区别：
+        - ``stream=True`` 让接口逐 token 推送 SSE
+        - ``on_token`` 让调用方在 token 流入时实时拿到（可用于 partial 推送 db / 前端打字机）
+        - 失败不做 candidate fallback（中途断流难以无缝切换）；让调用方在外层 retry。
+        """
+        candidates = self._resolve_llm_candidates(
+            task_kind=task_kind,
+            provider_override=provider_override,
+            model_override=model_override,
+        )
+        errors: list[str] = []
+        for profile in candidates:
+            display_label = llm_display_label(profile.provider, profile.model, profile.provider_label)
+            if not self._profile_is_usable(profile):
+                errors.append(f"{display_label} 配置不可用：{self._profile_to_health(profile).detail}")
+                continue
+            payload: dict[str, Any] = {
+                "model": profile.model,
+                "messages": [
+                    {"role": "system", "content": system_instruction or "你是系统助手。"},
+                    {"role": "user", "content": prompt},
+                ],
+                "temperature": temperature,
+                "top_p": top_p,
+                "max_tokens": max_tokens,
+                "stream": True,
+            }
+            if enable_thinking:
+                payload["enable_thinking"] = True
+
+            accumulated: list[str] = []
+            try:
+                with httpx.stream(
+                    "POST",
+                    f"{profile.base_url}/chat/completions",
+                    headers=self._build_openai_compatible_headers(profile.api_key),
+                    json=payload,
+                    timeout=self._build_http_timeout(timeout_seconds),
+                ) as response:
+                    response.raise_for_status()
+                    for raw_line in response.iter_lines():
+                        if not raw_line:
+                            continue
+                        # httpx 的 iter_lines 已自动去掉行尾换行
+                        line = raw_line if isinstance(raw_line, str) else raw_line.decode("utf-8", errors="ignore")
+                        if not line.startswith("data:"):
+                            continue
+                        chunk = line[len("data:"):].strip()
+                        if not chunk:
+                            continue
+                        if chunk == "[DONE]":
+                            break
+                        try:
+                            data = json.loads(chunk)
+                        except json.JSONDecodeError:
+                            continue
+                        choices = data.get("choices") or []
+                        if not choices:
+                            continue
+                        delta = choices[0].get("delta") or {}
+                        token = delta.get("content") or ""
+                        if not token:
+                            continue
+                        accumulated.append(token)
+                        if on_token is not None:
+                            try:
+                                on_token(token)
+                            except Exception:
+                                # 回调失败不应阻断 LLM 流式接收
+                                pass
+                self._record_resolved_profile(profile)
+                return "".join(accumulated)
+            except Exception as error:
+                detail = self._format_provider_error(error) if hasattr(self, "_format_provider_error") else str(error)
+                errors.append(f"{display_label} 流式调用失败：{detail}")
+                # 流式失败不 fallback 到下一个 candidate（已经发了一半 token 切换会乱）
+                break
         raise RuntimeError("；".join(errors) or "没有可用的大模型配置。")
 
     def _qwen_generate_structured_with_retry(

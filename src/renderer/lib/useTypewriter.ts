@@ -27,34 +27,47 @@ export function useTypewriter(
   options: UseTypewriterOptions = {},
 ): string {
   const { enabled = true, charsPerTick = 2, tickMs = 30 } = options;
-  const [displayed, setDisplayed] = useState<string>(enabled ? '' : actualText);
+  const [displayed, setDisplayed] = useState<string>('');
   const lastActualRef = useRef<string>('');
 
   useEffect(() => {
+    lastActualRef.current = actualText;
+
+    // 关键：未启用打字机（历史消息 / 已完成态）→ 立刻渲染完整内容，不启动 timer。
+    // 这避免了重新进入对话时历史消息再次播一遍打字机动画。
     if (!enabled) {
-      lastActualRef.current = actualText;
-      setDisplayed(actualText);
+      if (displayed !== actualText) {
+        setDisplayed(actualText);
+      }
       return;
     }
 
-    // 如果 actualText 不是上次的延续（换了消息 / 内容被替换），重置 displayed
+    // 内容被替换（不是延续）→ 重置 displayed 重新开始打字
     if (lastActualRef.current && !actualText.startsWith(lastActualRef.current)) {
       setDisplayed('');
     }
-    lastActualRef.current = actualText;
 
+    if (displayed.length >= actualText.length) {
+      if (displayed !== actualText) {
+        setDisplayed(actualText);
+      }
+      return;
+    }
+
+    const interval = Math.max(8, tickMs);
+    const step = Math.max(1, charsPerTick);
     const timer = window.setInterval(() => {
       setDisplayed((prev) => {
         if (prev.length >= actualText.length) {
           window.clearInterval(timer);
           return prev;
         }
-        return actualText.slice(0, prev.length + Math.max(1, charsPerTick));
+        return actualText.slice(0, prev.length + step);
       });
-    }, Math.max(8, tickMs));
+    }, interval);
 
     return () => window.clearInterval(timer);
-  }, [actualText, enabled, charsPerTick, tickMs]);
+  }, [actualText, enabled, charsPerTick, tickMs, displayed]);
 
   return enabled ? displayed : actualText;
 }

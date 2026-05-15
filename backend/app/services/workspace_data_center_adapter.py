@@ -797,6 +797,763 @@ def build_workspace_background_pack(
     return content
 
 
+def build_client_resource_index(
+    workspace_snapshot: ClientWorkspaceResponse | None,
+    *,
+    prompt: str = "",
+    max_chars: int = 8000,
+    documents_budget: int = 4000,
+    projects_budget: int = 1200,
+    judgments_budget: int = 1500,
+    meetings_budget: int = 600,
+    goals_budget: int = 600,
+    documents_max_files: int = 80,
+    projects_max_count: int = 30,
+    judgments_max_count: int = 30,
+    meetings_max_count: int = 20,
+    goals_max_count: int = 20,
+) -> str:
+    """R9：客户全域资源索引（5 个域元数据视图）。
+
+    给「任务型 + 穷举型」请求用的元数据全集视图：让 LLM 看到客户全部资源
+    （documents / projectModules / latestJudgments / meetings / goals），
+    不需要依赖检索 top-K 命中。
+
+    每个域内部只列最重要字段（1 行/条），空域自动跳过。
+    总预算 ~8000 字，足以覆盖大型客户的全部元数据。
+    """
+    if workspace_snapshot is None:
+        return ""
+
+    sections: list[str] = []
+
+    # 域 1: documents
+    docs_block = _resource_documents_block(
+        workspace_snapshot, budget=documents_budget, max_files=documents_max_files
+    )
+    if docs_block:
+        sections.append(docs_block)
+
+    # 域 2: projectModules
+    projects_block = _resource_projects_block(
+        workspace_snapshot, budget=projects_budget, max_count=projects_max_count
+    )
+    if projects_block:
+        sections.append(projects_block)
+
+    # 域 3: latestJudgments
+    judgments_block = _resource_judgments_block(
+        workspace_snapshot, budget=judgments_budget, max_count=judgments_max_count
+    )
+    if judgments_block:
+        sections.append(judgments_block)
+
+    # 域 4: meetings
+    meetings_block = _resource_meetings_block(
+        workspace_snapshot, budget=meetings_budget, max_count=meetings_max_count
+    )
+    if meetings_block:
+        sections.append(meetings_block)
+
+    # 域 5: goals
+    goals_block = _resource_goals_block(
+        workspace_snapshot, budget=goals_budget, max_count=goals_max_count
+    )
+    if goals_block:
+        sections.append(goals_block)
+
+    if not sections:
+        return ""
+
+    header = (
+        "【客户资源索引 · 全集元数据视图】\n"
+        "下面是该客户在系统里**全部资源的索引**（不只是检索命中的部分）。\n"
+        "用于回答「列出所有 X」「做一张包含全部 Y 的表」「客户有几个 Z」等穷举/枚举类任务。\n"
+        "**索引里的每一条都是真实存在的资源，可以直接引用**。\n"
+        "—— 文档：可从文件名解析姓名/岗位/日期等结构化字段\n"
+        "—— 项目/判断/会议/目标：标题级元数据，需要内容时仍依赖检索命中片段\n"
+    )
+    pack = header + "\n" + "\n\n".join(sections)
+    if len(pack) > max_chars:
+        pack = pack[: max(1, max_chars - 1)].rstrip() + "…"
+    return pack
+
+
+def _resource_documents_block(
+    workspace_snapshot: ClientWorkspaceResponse,
+    *,
+    budget: int,
+    max_files: int,
+) -> str:
+    documents = list(getattr(workspace_snapshot, "documents", []) or [])
+    if not documents:
+        return ""
+    ordered = sorted(
+        documents,
+        key=lambda d: str(getattr(d, "importedAt", "") or ""),
+        reverse=True,
+    )
+    total = len(ordered)
+    lines: list[str] = [f"── 文档（documents · 共 {total} 份，最多列 {max_files} 条）──"]
+    used = sum(len(line) for line in lines)
+    listed = 0
+    for doc in ordered:
+        if listed >= max_files:
+            break
+        title = _clean_text(getattr(doc, "title", ""), limit=180) or "未命名"
+        kind = _clean_text(getattr(doc, "kind", ""), limit=24)
+        line = f"- {title}"
+        if kind:
+            line += f"（{kind}）"
+        if used + len(line) + 1 > budget:
+            break
+        lines.append(line)
+        used += len(line) + 1
+        listed += 1
+    omitted = total - listed
+    if omitted > 0:
+        lines.append(f"（另有 {omitted} 个文件未列出）")
+    return "\n".join(lines) if listed > 0 else ""
+
+
+def _resource_projects_block(
+    workspace_snapshot: ClientWorkspaceResponse,
+    *,
+    budget: int,
+    max_count: int,
+) -> str:
+    modules = list(getattr(workspace_snapshot, "projectModules", []) or [])
+    if not modules:
+        return ""
+    # 按 createdAt 升序，呈现演进时间线
+    ordered = sorted(modules, key=lambda m: str(getattr(m, "createdAt", "") or ""))
+    total = len(ordered)
+    lines: list[str] = [f"── 项目模块（projectModules · 共 {total} 个，按创建时间）──"]
+    used = sum(len(line) for line in lines)
+    listed = 0
+    for module in ordered:
+        if listed >= max_count:
+            break
+        name = _clean_text(getattr(module, "name", ""), limit=80) or "未命名项目"
+        created_at = str(getattr(module, "createdAt", "") or "")[:7]
+        goal = _short_label(getattr(module, "goal", ""), limit=80)
+        parts = [f"- [{created_at or '?'}] {name}"]
+        if goal:
+            parts.append(f"goal: {goal}")
+        line = "；".join(parts)
+        if used + len(line) + 1 > budget:
+            break
+        lines.append(line)
+        used += len(line) + 1
+        listed += 1
+    omitted = total - listed
+    if omitted > 0:
+        lines.append(f"（另有 {omitted} 个项目模块未列出）")
+    return "\n".join(lines) if listed > 0 else ""
+
+
+def _resource_judgments_block(
+    workspace_snapshot: ClientWorkspaceResponse,
+    *,
+    budget: int,
+    max_count: int,
+) -> str:
+    judgments = list(getattr(workspace_snapshot, "latestJudgments", []) or [])
+    if not judgments:
+        return ""
+    total = len(judgments)
+    lines: list[str] = [f"── 已采纳判断（latestJudgments · 共 {total} 条）──"]
+    used = sum(len(line) for line in lines)
+    listed = 0
+    for judgment in judgments:
+        if listed >= max_count:
+            break
+        topic = _clean_text(getattr(judgment, "topic", ""), limit=80) or "判断"
+        status = str(getattr(judgment, "status", "") or "draft").lower()
+        confidence = str(getattr(judgment, "confidence", "") or "").strip()
+        meta_parts: list[str] = [status]
+        if confidence:
+            meta_parts.append(f"信心={confidence}")
+        line = f"- [{'/'.join(meta_parts)}] {topic}"
+        if used + len(line) + 1 > budget:
+            break
+        lines.append(line)
+        used += len(line) + 1
+        listed += 1
+    omitted = total - listed
+    if omitted > 0:
+        lines.append(f"（另有 {omitted} 条判断未列出）")
+    return "\n".join(lines) if listed > 0 else ""
+
+
+def _resource_meetings_block(
+    workspace_snapshot: ClientWorkspaceResponse,
+    *,
+    budget: int,
+    max_count: int,
+) -> str:
+    meetings = list(getattr(workspace_snapshot, "meetings", []) or [])
+    if not meetings:
+        return ""
+    # 按 scheduledAt 倒序
+    ordered = sorted(
+        meetings,
+        key=lambda m: str(getattr(m, "scheduledAt", "") or ""),
+        reverse=True,
+    )
+    total = len(ordered)
+    lines: list[str] = [f"── 会议（meetings · 共 {total} 场，按时间倒序）──"]
+    used = sum(len(line) for line in lines)
+    listed = 0
+    for meeting in ordered:
+        if listed >= max_count:
+            break
+        title = _clean_text(getattr(meeting, "title", ""), limit=80) or "未命名会议"
+        scheduled_at = str(getattr(meeting, "scheduledAt", "") or "")[:10]
+        stage = _clean_text(getattr(meeting, "stage", ""), limit=20)
+        parts = [f"- [{scheduled_at or '?'}] {title}"]
+        if stage:
+            parts.append(f"阶段: {stage}")
+        line = "；".join(parts)
+        if used + len(line) + 1 > budget:
+            break
+        lines.append(line)
+        used += len(line) + 1
+        listed += 1
+    omitted = total - listed
+    if omitted > 0:
+        lines.append(f"（另有 {omitted} 场会议未列出）")
+    return "\n".join(lines) if listed > 0 else ""
+
+
+def _resource_goals_block(
+    workspace_snapshot: ClientWorkspaceResponse,
+    *,
+    budget: int,
+    max_count: int,
+) -> str:
+    goals = list(getattr(workspace_snapshot, "goals", []) or [])
+    if not goals:
+        return ""
+    total = len(goals)
+    lines: list[str] = [f"── 目标（goals · 共 {total} 个）──"]
+    used = sum(len(line) for line in lines)
+    listed = 0
+    for goal in goals:
+        if listed >= max_count:
+            break
+        title = _clean_text(getattr(goal, "title", ""), limit=80) or "未命名目标"
+        quarter = _clean_text(getattr(goal, "quarter", ""), limit=20)
+        progress = getattr(goal, "progress", None)
+        parts = [f"- {title}"]
+        if quarter:
+            parts.append(quarter)
+        if progress is not None:
+            try:
+                parts.append(f"进度 {int(progress)}%")
+            except (TypeError, ValueError):
+                pass
+        line = "；".join(parts)
+        if used + len(line) + 1 > budget:
+            break
+        lines.append(line)
+        used += len(line) + 1
+        listed += 1
+    omitted = total - listed
+    if omitted > 0:
+        lines.append(f"（另有 {omitted} 个目标未列出）")
+    return "\n".join(lines) if listed > 0 else ""
+
+
+def build_client_file_catalog(
+    workspace_snapshot: ClientWorkspaceResponse | None,
+    *,
+    prompt: str = "",
+    max_files: int = 100,
+    max_chars: int = 4500,
+) -> str:
+    """R8.15：任务型请求专用的「客户全文件目录」。
+
+    与 build_strategic_pack 互补：不喂 DNA / judgments / chat history 等长内容（避免 prompt 超时），
+    只列 documents 表里所有文件的 title + kind + tags。
+
+    用途：用户要做表/提取/列出全部 X 时，LLM 至少能从**文件名**直接解析结构化信息
+    （如「姓名-岗位-日期.pdf」可以直接读出姓名/岗位/入职日期，不需要等检索命中文件内容）。
+    """
+    if workspace_snapshot is None:
+        return ""
+    documents = list(getattr(workspace_snapshot, "documents", []) or [])
+    if not documents:
+        return ""
+
+    # 按 importedAt 倒序，最近上传的先
+    ordered = sorted(
+        documents,
+        key=lambda d: str(getattr(d, "importedAt", "") or ""),
+        reverse=True,
+    )
+
+    lines: list[str] = [
+        "【客户已上传的全部资料目录（仅文件名 + 类型，无文件正文）】",
+        "下面列出的是该客户**已上传到系统**的所有文件。这些文件名都是**真实存在的**，",
+        "**可以直接引用**——比如「姓名-岗位-起始日期-终止日期.pdf」格式的文件名，",
+        "你可以直接从文件名解析出姓名、岗位、入职日期，**不需要等检索命中文件内容**。",
+        "",
+    ]
+    used = sum(len(line) for line in lines)
+    listed = 0
+    for doc in ordered:
+        if listed >= max_files:
+            break
+        title = _clean_text(getattr(doc, "title", ""), limit=180) or "未命名"
+        kind = _clean_text(getattr(doc, "kind", ""), limit=24)
+        line = f"- {title}"
+        if kind:
+            line += f"（{kind}）"
+        if used + len(line) + 1 > max_chars:
+            break
+        lines.append(line)
+        used += len(line) + 1
+        listed += 1
+
+    omitted = len(ordered) - listed
+    if omitted > 0:
+        lines.append(f"\n（另有 {omitted} 个文件因预算或排序未列出）")
+
+    if listed == 0:
+        return ""
+    return "\n".join(lines)
+
+
+def build_strategic_pack(
+    workspace_snapshot: ClientWorkspaceResponse | None,
+    *,
+    prompt: str = "",
+    max_chars: int = 13000,
+    dna_budget: int = 4500,
+    judgment_budget: int = 2400,
+    project_timeline_budget: int = 1400,
+    chat_insight_budget: int = 2400,
+    documents_budget: int = 1500,
+    notebook_budget: int = 900,
+) -> str:
+    """构造"战略素材包"：组织 DNA + 已采纳判断推导 + 项目演进时间线 + 历史 chat 沉淀 + 文档目录 + 组织记忆。
+
+    与 :func:`build_workspace_background_pack` 互补：
+    - background_pack 是"客户当前状态"（项目清单 + 任务 + 会议 + 矛盾），扁平且时效性强
+    - strategic_pack 是"组织级战略素材"，承载差异化定位、赛道边界、判断推导链、项目演进、历史观点
+
+    Pass 1（出大纲）需要后者才能跳出"项目进展"层面、形成战略层判断角度。
+    每个段独立有预算，缺失的段自动跳过（不留空标题）。返回空字符串表示客户没有任何战略素材。
+
+    禁用硬编码框架 —— 本函数只拼资料，不写"按 SWOT/三飞轮 组织"之类的指引。
+    """
+    if workspace_snapshot is None:
+        return ""
+
+    sections: list[str] = []
+
+    # 段 1：组织 DNA（差异化定位 / 赛道边界 / 核心论点）
+    dna_block = _strategic_dna_block(workspace_snapshot, prompt=prompt, budget=dna_budget)
+    if dna_block:
+        sections.append(dna_block)
+
+    # 段 2：组织记忆笔记（业务模块、关键产品、挑战、目标、近期事实）
+    notebook_block = _strategic_notebook_block(workspace_snapshot, budget=notebook_budget)
+    if notebook_block:
+        sections.append(notebook_block)
+
+    # 段 3：已采纳判断的推导链
+    judgment_block = _strategic_judgment_block(workspace_snapshot, budget=judgment_budget)
+    if judgment_block:
+        sections.append(judgment_block)
+
+    # 段 4：项目演进时间线
+    timeline_block = _strategic_project_timeline_block(workspace_snapshot, budget=project_timeline_budget)
+    if timeline_block:
+        sections.append(timeline_block)
+
+    # 段 5：客户文档目录（让 LLM 知道客户上传过哪些资料 —— 项目名/方案/会议常常藏在文件名里）
+    documents_block = _strategic_documents_block(workspace_snapshot, budget=documents_budget)
+    if documents_block:
+        sections.append(documents_block)
+
+    # 段 6：历史 chat 中沉淀的关键观点
+    chat_block = _strategic_chat_insight_block(workspace_snapshot, budget=chat_insight_budget)
+    if chat_block:
+        sections.append(chat_block)
+
+    if not sections:
+        return ""
+
+    pack = "【战略素材包 · 组织级定位/判断/演进/历史观点】\n\n" + "\n\n".join(sections)
+    if len(pack) > max_chars:
+        pack = pack[: max(1, max_chars - 1)].rstrip() + "…"
+    return pack
+
+
+def _strategic_dna_block(
+    workspace_snapshot: ClientWorkspaceResponse,
+    *,
+    prompt: str,
+    budget: int,
+) -> str:
+    """从 dnaModules 里挑最相关的，扁平拼出 DNA 摘要段。"""
+    modules = [
+        module
+        for module in list(getattr(workspace_snapshot, "dnaModules", []) or [])
+        if bool(_field_value(module, "hasDocument"))
+        and _full_text_field(module, ("markdownContent", "normalizedText", "summary", "text", "content"))
+    ]
+    if not modules:
+        return ""
+
+    prompt_tokens = [
+        token for token in re.findall(r"[一-鿿]{2,}|[A-Za-z0-9_]+", str(prompt or "").lower())
+        if len(token) >= 2
+    ]
+
+    def relevance_score(module: object) -> tuple[int, int, str]:
+        title = _clean_text(_field_value(module, "title"), limit=120)
+        text = _full_text_field(module, ("markdownContent", "summary", "normalizedText", "text", "content"))
+        haystack = f"{title} {text[:4000]}".lower()
+        token_score = sum(2 for token in prompt_tokens if token and token in haystack)
+        source_score = 5 if str(_field_value(module, "sourceKind") or "manual") == "manual" else 1
+        return (token_score + source_score, len(text), str(_field_value(module, "updatedAt") or ""))
+
+    ordered = sorted(modules, key=relevance_score, reverse=True)
+    lines: list[str] = ["─── 组织 DNA（差异化定位 / 赛道边界 / 核心论点）"]
+    used = 0
+    # 加权分配：最相关的 module 拿更多 budget（含深度市场调研、赛道判断这种长篇资料）。
+    # 排名 1: budget * 0.45（最相关，通常含深度长篇）
+    # 排名 2: budget * 0.27
+    # 排名 3+: 共享剩余 budget * 0.28
+    take_modules = ordered[:5]
+    if len(take_modules) >= 1:
+        weights = [0.45, 0.27, 0.14, 0.09, 0.05][: len(take_modules)]
+        # 归一化（防止 modules<5 时浪费 budget）
+        total_w = sum(weights) or 1.0
+        weights = [w / total_w for w in weights]
+    else:
+        weights = []
+    for index, module in enumerate(take_modules):
+        title = _clean_text(_field_value(module, "title"), limit=120) or "DNA 模块"
+        module_key = _clean_text(_field_value(module, "moduleKey"), limit=80)
+        updated_at = _clean_text(_field_value(module, "updatedAt"), limit=80)
+        raw_text = _full_text_field(module, ("markdownContent", "summary", "normalizedText", "text", "content"))
+        text = re.sub(r"\s+", " ", raw_text).strip()
+        remaining = budget - used
+        if remaining <= 400:
+            break
+        # 给当前 module 分配权重 * 总预算，但至少 500 字（短 module 不浪费），且不超过 remaining
+        module_budget = max(500, int(budget * weights[index]))
+        take = min(module_budget, remaining)
+        snippet = text[:take].rstrip()
+        if len(text) > take:
+            snippet += "…"
+        header = f"[DNA · {title}]"
+        if module_key:
+            header += f"（{module_key}）"
+        if updated_at:
+            header += f" · 更新于 {updated_at[:10]}"
+        lines.append(header)
+        lines.append(snippet)
+        used += len(snippet) + len(header)
+    if len(lines) <= 1:
+        return ""
+    return "\n".join(lines)
+
+
+def _strategic_notebook_block(
+    workspace_snapshot: ClientWorkspaceResponse,
+    *,
+    budget: int,
+) -> str:
+    """组织笔记快照：业务模块 / 关键产品 / 挑战 / 协作目标 / 近期事实 / 信息缺口。
+
+    这是 organization_notebook 持续积累的组织级摘要，常含项目命名、阶段、挑战等
+    战略性表达。喂入能直接给 Pass 1"组织全景图"。
+    """
+    notebook = getattr(workspace_snapshot, "notebookSummary", None)
+    if notebook is None:
+        return ""
+
+    lines: list[str] = ["─── 组织记忆笔记（业务模块 / 关键产品 / 挑战 / 协作目标 / 近期事实）"]
+    used = 0
+
+    def _append(label: str, value: str | list[str] | None) -> None:
+        nonlocal used
+        if not value:
+            return
+        remaining = budget - used
+        if remaining <= 80:
+            return
+        if isinstance(value, list):
+            cleaned_items = [re.sub(r"\s+", " ", str(item or "")).strip() for item in value if str(item or "").strip()]
+            if not cleaned_items:
+                return
+            content = "；".join(cleaned_items)
+        else:
+            content = re.sub(r"\s+", " ", str(value or "")).strip()
+            if not content:
+                return
+        take = min(len(content), remaining - len(label) - 4)
+        if take <= 30:
+            return
+        snippet = content[:take]
+        if len(content) > take:
+            snippet += "…"
+        line = f"- {label}：{snippet}"
+        lines.append(line)
+        used += len(line)
+
+    _append("组织简介", getattr(notebook, "organizationIntro", ""))
+    _append("当前阶段", getattr(notebook, "currentStage", ""))
+    _append("协作关系", getattr(notebook, "collaborationRelationship", ""))
+    _append("业务模块", getattr(notebook, "businessModules", []))
+    _append("关键产品", getattr(notebook, "keyProducts", []))
+    _append("关键人物", getattr(notebook, "keyPeople", []))
+    _append("当前挑战", getattr(notebook, "currentChallenges", []))
+    _append("协作目标", getattr(notebook, "collaborationGoals", []))
+    _append("近期事实", getattr(notebook, "recentFacts", []))
+    _append("信息缺口", getattr(notebook, "informationGaps", []))
+
+    if len(lines) <= 1:
+        return ""
+    return "\n".join(lines)
+
+
+def _strategic_documents_block(
+    workspace_snapshot: ClientWorkspaceResponse,
+    *,
+    budget: int,
+) -> str:
+    """客户文档目录：按 importedAt 倒序列出文件标题。
+
+    很多客户的项目名、方案、会议纪要藏在文件名里（如「心灵魔法学院 2024 项目报告.pdf」、
+    「教师赋能体系建设方案.docx」），但 projectModules 表可能是空的。
+    单独列文档目录能让 Pass 1 识别"客户都在做哪些事"，弥补 projectModules 缺失。
+    不读文件内容，只列标题 + tags + kind。
+    """
+    documents = list(getattr(workspace_snapshot, "documents", []) or [])
+    if not documents:
+        return ""
+
+    def sort_key(doc: object) -> str:
+        return str(getattr(doc, "importedAt", "") or "")
+
+    ordered = sorted(documents, key=sort_key, reverse=True)
+    lines: list[str] = ["─── 客户已上传的资料目录（标题 + 类型 + 标签，最新 → 较早）"]
+    used = 0
+    max_lines = 30  # 最多列 30 条，避免单纯标题刷屏
+    for doc in ordered[:max_lines]:
+        title = _clean_text(getattr(doc, "title", ""), limit=120) or "未命名文档"
+        kind = _clean_text(getattr(doc, "kind", ""), limit=30)
+        imported_at = str(getattr(doc, "importedAt", "") or "")[:10]
+        tags = list(getattr(doc, "tags", []) or [])
+        meta_parts: list[str] = []
+        if imported_at:
+            meta_parts.append(imported_at)
+        if kind:
+            meta_parts.append(kind)
+        if tags:
+            meta_parts.append("#" + " #".join(tag for tag in tags[:3] if tag))
+        meta_str = f"（{'，'.join(meta_parts)}）" if meta_parts else ""
+        line = f"- {title}{meta_str}"
+        remaining = budget - used
+        if remaining <= 60:
+            break
+        if len(line) > remaining:
+            line = line[: remaining - 1] + "…"
+        lines.append(line)
+        used += len(line)
+    if len(lines) <= 1:
+        return ""
+    return "\n".join(lines)
+
+
+def _strategic_judgment_block(
+    workspace_snapshot: ClientWorkspaceResponse,
+    *,
+    budget: int,
+) -> str:
+    """已采纳/批准过的核心判断，带 summary 完整推导。"""
+    judgments = list(getattr(workspace_snapshot, "latestJudgments", []) or [])
+    approved = [
+        j for j in judgments
+        if str(getattr(j, "status", "") or "").lower() in {"confirmed", "approved"}
+        or str(getattr(j, "authorityLevel", "") or "").lower() == "approved"
+    ]
+    pool = approved if approved else judgments
+    if not pool:
+        return ""
+
+    lines: list[str] = ["─── 已采纳的核心判断（推导链 / 信心 / 风险）"]
+    used = 0
+    for judgment in pool[:8]:
+        topic = _clean_text(getattr(judgment, "topic", ""), limit=80) or "判断"
+        summary = re.sub(r"\s+", " ", str(getattr(judgment, "summary", "") or "")).strip()
+        if not summary:
+            continue
+        meta_parts: list[str] = []
+        confidence = str(getattr(judgment, "confidence", "") or "").strip()
+        if confidence:
+            meta_parts.append(f"信心={confidence}")
+        risk = str(getattr(judgment, "riskLevel", "") or "").strip()
+        if risk:
+            meta_parts.append(f"风险={risk}")
+        authority = str(getattr(judgment, "authorityLevel", "") or "").strip()
+        if authority:
+            meta_parts.append(f"authority={authority}")
+        quality = str(getattr(judgment, "qualityTier", "") or "").strip()
+        if quality and quality != "legacy":
+            meta_parts.append(f"quality={quality}")
+        evidence_ids = list(getattr(judgment, "evidenceIds", []) or [])
+        if evidence_ids:
+            meta_parts.append(f"证据={len(evidence_ids)} 条")
+        meta_str = f"（{'，'.join(meta_parts)}）" if meta_parts else ""
+        header = f"【{topic}】{meta_str}"
+        remaining = budget - used
+        if remaining <= 250:
+            break
+        # judgment summary 是推导链精华，尽量不截
+        per_summary = min(640, remaining - len(header) - 10)
+        if per_summary <= 80:
+            break
+        body = summary[:per_summary]
+        if len(summary) > per_summary:
+            body += "…"
+        lines.append(header)
+        lines.append(body)
+        used += len(header) + len(body)
+    if len(lines) <= 1:
+        return ""
+    return "\n".join(lines)
+
+
+def _strategic_project_timeline_block(
+    workspace_snapshot: ClientWorkspaceResponse,
+    *,
+    budget: int,
+) -> str:
+    """项目演进时间线：按 createdAt 排序，让 LLM 看到"第二曲线 / 多线布局"信号。"""
+    modules = list(getattr(workspace_snapshot, "projectModules", []) or [])
+    if not modules:
+        return ""
+
+    def sort_key(module: object) -> str:
+        return str(getattr(module, "createdAt", "") or "")
+
+    ordered = sorted(modules, key=sort_key)
+    lines: list[str] = ["─── 项目演进时间线（最早 → 最新，看演进/分阶段/第二曲线）"]
+    used = 0
+    for module in ordered:
+        name = _clean_text(getattr(module, "name", ""), limit=80) or "项目"
+        created_at = str(getattr(module, "createdAt", "") or "")
+        year_label = created_at[:7] if created_at else "?"
+        goal = _short_label(getattr(module, "goal", ""), limit=140)
+        description = _short_label(getattr(module, "description", ""), limit=200)
+        owner = _clean_text(getattr(module, "ownerName", ""), limit=40)
+        deliverables = list(getattr(module, "deliverables", []) or [])
+        keywords = list(getattr(module, "keywords", []) or [])
+        parts: list[str] = [f"- [{year_label}] {name}"]
+        if owner:
+            parts.append(f"负责人={owner}")
+        if goal:
+            parts.append(f"目标：{goal}")
+        elif description:
+            parts.append(f"描述：{description}")
+        if deliverables:
+            parts.append(f"交付物={'、'.join(deliverables[:4])}")
+        if keywords:
+            parts.append(f"关键词={'、'.join(keywords[:4])}")
+        line = "；".join(parts)
+        remaining = budget - used
+        if remaining <= 80:
+            break
+        if len(line) > remaining:
+            line = line[: remaining - 1] + "…"
+        lines.append(line)
+        used += len(line)
+    if len(lines) <= 1:
+        return ""
+    return "\n".join(lines)
+
+
+def _strategic_chat_insight_block(
+    workspace_snapshot: ClientWorkspaceResponse,
+    *,
+    budget: int,
+) -> str:
+    """历史 chat 中沉淀的关键观点：从 assistant 消息的 structuredData.judgment/analysis 里挑。
+
+    优先取 grounded_answer + sufficient/partial 证据 + 含 judgment 的消息，按时间倒序。
+    这是用户和系统已经一起验证过的视角性观点，对新一轮答题非常有用。
+    """
+    messages = list(getattr(workspace_snapshot, "recentMessages", []) or [])
+    assistant_messages = [
+        m for m in messages
+        if str(getattr(m, "role", "") or "").lower() == "assistant"
+        and getattr(m, "structuredData", None) is not None
+    ]
+    if not assistant_messages:
+        return ""
+
+    def score(message: object) -> tuple[int, str]:
+        structured = getattr(message, "structuredData", None)
+        judgment_text = str(getattr(structured, "judgment", "") or "").strip() if structured else ""
+        answer_mode = str(getattr(message, "answerMode", "") or "").lower()
+        evidence_status = str(getattr(message, "evidenceStatus", "") or "").lower()
+        rank = 0
+        if judgment_text:
+            rank += 4
+        if answer_mode == "grounded_answer":
+            rank += 3
+        elif answer_mode == "grounded_fallback":
+            rank += 1
+        if evidence_status == "sufficient":
+            rank += 2
+        elif evidence_status == "partial":
+            rank += 1
+        return (rank, str(getattr(message, "createdAt", "") or ""))
+
+    ranked = sorted(assistant_messages, key=score, reverse=True)
+    lines: list[str] = ["─── 历史对话中已沉淀的关键观点（用户和系统已一起验证过的视角）"]
+    used = 0
+    for message in ranked[:10]:
+        structured = getattr(message, "structuredData", None)
+        if not structured:
+            continue
+        judgment_text = re.sub(r"\s+", " ", str(getattr(structured, "judgment", "") or "")).strip()
+        analysis_text = re.sub(r"\s+", " ", str(getattr(structured, "analysis", "") or "")).strip()
+        if not (judgment_text or analysis_text):
+            continue
+        created_at = str(getattr(message, "createdAt", "") or "")[:10]
+        prefix = f"[{created_at}]" if created_at else "[chat]"
+        remaining = budget - used
+        if remaining <= 200:
+            break
+        body_parts: list[str] = []
+        if judgment_text:
+            body_parts.append(f"判断：{judgment_text[:240]}")
+        if analysis_text:
+            available = remaining - sum(len(p) for p in body_parts) - len(prefix) - 30
+            take = min(360, max(80, available))
+            if take >= 80:
+                analysis_snippet = analysis_text[:take]
+                if len(analysis_text) > take:
+                    analysis_snippet += "…"
+                body_parts.append(f"分析：{analysis_snippet}")
+        if not body_parts:
+            continue
+        line = f"{prefix} " + " / ".join(body_parts)
+        lines.append(line)
+        used += len(line)
+    if len(lines) <= 1:
+        return ""
+    return "\n".join(lines)
+
+
 def build_dna_tool_context_from_workspace(
     workspace_snapshot: ClientWorkspaceResponse | None,
     *,

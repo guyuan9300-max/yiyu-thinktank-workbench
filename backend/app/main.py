@@ -13,7 +13,7 @@ import traceback
 from concurrent.futures import ThreadPoolExecutor
 from app.services.system_logger import SystemLogger as _SystemLogger
 from dataclasses import asdict, dataclass, field
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from threading import Event, Lock, Thread
 from time import perf_counter
@@ -23,7 +23,7 @@ from uuid import uuid4
 
 import httpx
 from fastapi import BackgroundTasks, Body, FastAPI, File, Form, HTTPException, Query, Request, UploadFile
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class TaskAttachmentFromMarkdownPayload(BaseModel):
@@ -34,6 +34,123 @@ class TaskAttachmentFromMarkdownPayload(BaseModel):
     clientId: str | None = None
     eventLineId: str | None = None
     taskTitle: str | None = None
+
+
+class WorkspaceAnswerPromoteJudgmentPayload(BaseModel):
+    """工作台答案直接采纳为判断时携带用户备注。"""
+
+    note: str = ""
+
+
+class KnowledgeStatusWeeklyDeltaRecord(BaseModel):
+    """过去 7 天的"AI 又懂了什么"增量 —— 对应 Karpathy LLM Wiki 的「看孩子成长」隐喻。"""
+
+    confirmedFacts: int = 0
+    activeContradictions: int = 0
+    newThoughts: int = 0
+    confirmedJudgments: int = 0
+
+
+class DuplicateDocumentItemRecord(BaseModel):
+    """一组重复文件中的一份具体文档摘要。"""
+
+    id: str
+    documentId: str
+    fileName: str
+    kind: str = ""
+    managedPath: str = ""
+    originalPath: str = ""
+    contentHash: str = ""
+    parseStatus: str = ""
+    sectionCount: int = 0
+    chunkCount: int = 0
+    importedAt: str = ""
+    fileSizeBytes: int = 0
+    # 引用统计 —— 让用户在对比 Modal 里看到这份被哪些下游引用了，
+    # 引用多 = 更值得保留（避免删除后下游断链）
+    refTaskAttachmentCount: int = 0
+    refEvidenceCardCount: int = 0
+    refAtomicFactCount: int = 0
+
+
+class DuplicateDocumentGroupRecord(BaseModel):
+    """一组「重复」的文档。
+    groupType:
+      - 'same_content_hash'：内容字节完全相同（严重重复，强烈建议合并）
+      - 'same_filename'：文件名相同但内容不同（可能是新版本，需要人确认）
+    """
+
+    groupKey: str
+    groupType: str  # 'same_content_hash' | 'same_filename'
+    fileName: str = ""
+    contentHash: str = ""
+    count: int = 0
+    documents: list[DuplicateDocumentItemRecord] = Field(default_factory=list)
+
+
+class DuplicateDocumentResolvePayload(BaseModel):
+    """用户在「处理重复文件」Modal 里的决定。
+    action:
+      - 'delete_others'：保留 keepV2DocumentIds，删除 deleteV2DocumentIds（进回收站）
+      - 'keep_all'：全部保留，把 groupKey 写入 duplicate_group_reviews 下次不再扫描
+    """
+
+    groupKey: str
+    action: str  # 'delete_others' | 'keep_all'
+    keepV2DocumentIds: list[str] = Field(default_factory=list)
+    deleteV2DocumentIds: list[str] = Field(default_factory=list)
+    migrateReferences: bool = True
+    note: str = ""
+
+
+class DuplicateDocumentResolveResultRecord(BaseModel):
+    """处理重复文件操作的执行结果。"""
+
+    action: str
+    groupKey: str
+    deletedCount: int = 0
+    recycledTo: str = ""
+    migratedTaskAttachments: int = 0
+    migratedEvidenceRefs: int = 0
+    migratedAtomicFacts: int = 0
+    keptDocumentIds: list[str] = Field(default_factory=list)
+
+
+class PendingFanoutActionRecord(BaseModel):
+    """单条「AI 待办」项 —— 来自 Stage B 知识扇出的产出，等用户在前端拍板。"""
+
+    actionType: str  # 'judgment_needs_reevaluation' | 'profile_needs_review' | 'thought_refresh_pending'
+    entityId: str
+    entityLabel: str = ""
+    reason: str = ""
+    triggeredAt: str = ""
+
+
+class ClientKnowledgeStatusRecord(BaseModel):
+    """客户级「知识库状态」数字 —— 取代之前用百分比成熟度展示的「学习有尽头」错隐喻。
+    展示 4 个绝对数字（已确认事实 / 待确认思考 / 矛盾点 / 信息缺口）+ 本周增量
+    + Stage B 扇出产生的「AI 待办」面板数据。
+    """
+
+    clientId: str
+    confirmedFacts: int = 0
+    pendingThoughts: int = 0
+    activeContradictions: int = 0
+    knowledgeGaps: int = 0
+    weeklyDelta: KnowledgeStatusWeeklyDeltaRecord = Field(default_factory=KnowledgeStatusWeeklyDeltaRecord)
+    # Stage B 扇出待办统计 —— 让用户在「资料健康」tab 立刻看到 AI 因新资料触发的待办
+    pendingJudgmentReevaluation: int = 0
+    pendingProfileReview: int = 0
+    pendingThoughtRefresh: int = 0
+    recentFanoutCount: int = 0  # 过去 7 天 activity_logs 里 Stage B fanout 触发次数
+    pendingActions: list[PendingFanoutActionRecord] = Field(default_factory=list)
+    generatedAt: str = ""
+
+
+    # 备注：FactContradictionRecord / FactContradictionReviewPayload / FactContradictionListResponseRecord
+    # 已经在 backend/app/models.py 定义并通过顶部 import 引入，main.py:34273-34370 也已经
+    # 提供完整 endpoint：GET /api/v1/clients/{id}/contradictions、POST /api/v1/contradictions/{id}/review。
+    # 战略陪伴「矛盾 & 待确认」tab 直接消费这两个 endpoint，不必新加。
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, JSONResponse, Response
 from docx import Document as WordDocument
@@ -94,6 +211,11 @@ from app.models import (
     ChatStartResponse,
     ChatThreadDetailResponse,
     ChatThread,
+    WritingSkillRecord,
+    WritingSkillCreatePayload,
+    WritingSkillUpdatePayload,
+    WritingSkillDistillPayload,
+    WritingSkillDistillResult,
     ClarificationAnswerPayload,
     ClarificationCreatePayload,
     ClarificationRecord,
@@ -621,9 +743,12 @@ from app.services.data_center_kernel import (
 )
 from app.services.data_center_quality import validate_answer_quality
 from app.services.workspace_data_center_adapter import (
+    build_client_file_catalog,
+    build_client_resource_index,
     build_consultant_synthesis_material_pack,
     build_dna_tool_context_from_workspace,
     build_open_workspace_answer_context,
+    build_strategic_pack,
     build_workspace_background_pack,
     build_workspace_context_quality_summary,
     build_workspace_data_center_request,
@@ -1147,6 +1272,10 @@ def new_id(prefix: str) -> str:
 
 def today_label() -> str:
     return datetime.now().strftime("%m-%d")
+
+
+# R8：任务型探测从 services/chat_intent 导入（独立模块方便单测，避开 main.py 顶层副作用）
+from app.services.chat_intent import is_task_request, TASK_REQUEST_TOKENS  # noqa: E402, F401
 
 
 def normalize_markdown_text(markdown_content: str) -> str:
@@ -3029,6 +3158,61 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         recover_stale_loading_chat_messages()
         recover_stale_analysis_jobs(state.db)
         recover_stale_workspace_context_refresh_events(state.db)
+        # Recover orphan sync states left by previous-process crash or uvicorn --reload.
+        # Any row stuck in 'syncing' cannot still be syncing — the worker that owned it is gone.
+        # The cloud-push path is fire-and-forget (`_try_cloud_sync_task` in a daemon Thread) and
+        # there is no periodic retry loop, so an interrupted push leaves the row stuck forever and
+        # the task is silently never pushed to cloud. Surfaced when a task created right before a
+        # code-change reload never appeared in collaborators' inboxes.
+        try:
+            state.db.execute(
+                "UPDATE tasks "
+                "SET sync_status='pending', "
+                "    pending_sync_action=COALESCE(NULLIF(pending_sync_action,''),'create') "
+                "WHERE sync_status='syncing'"
+            )
+            state.db.execute(
+                "UPDATE event_lines SET sync_status='pending' WHERE sync_status='syncing'"
+            )
+        except Exception as exc:
+            import sys as _startup_sys
+            print(
+                f"[startup] failed to recover stale 'syncing' rows: {exc}",
+                file=_startup_sys.stderr,
+                flush=True,
+            )
+
+        # Re-drive any pending task with a stored cloud_payload — without this, the recovered rows
+        # above (and any older 'pending' rows from previous failed pushes) would never retry on
+        # their own. Runs in a daemon thread so startup isn't blocked.
+        def _retry_pending_task_pushes() -> None:
+            if not get_cloud_token():
+                return
+            try:
+                rows = state.db.fetchall(
+                    "SELECT id, cloud_payload_json FROM tasks "
+                    "WHERE sync_status='pending' "
+                    "  AND cloud_id IS NULL "
+                    "  AND cloud_payload_json IS NOT NULL AND cloud_payload_json != '' "
+                    "ORDER BY created_at"
+                )
+            except Exception:
+                return
+            for row in rows:
+                try:
+                    payload = json.loads(row["cloud_payload_json"])
+                except Exception:
+                    continue
+                # 旧 stored payload 可能缺 id —— startup retry create 时必须把本地 task_id 注入，
+                # 否则云端 new_id() 会让 push 响应丢失时下次 pull 又插一条重复 task。
+                if isinstance(payload, dict) and not payload.get("id"):
+                    payload["id"] = str(row["id"])
+                try:
+                    _try_cloud_sync_task(str(row["id"]), payload)
+                except Exception:
+                    pass  # _try_cloud_sync_task already records last_sync_error
+        Thread(target=_retry_pending_task_pushes, name="startup-retry-pending-tasks", daemon=True).start()
+
         state.job_stop.clear()
         state.job_thread = Thread(target=knowledge_worker_loop, name="knowledge-worker", daemon=True)
         state.job_thread.start()
@@ -9033,6 +9217,21 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             )
         return collaborators, summary, viewer_status
 
+    def _lookup_task_creator_name(task_id: str, creator_id, owner_id, owner_name) -> str | None:
+        creator_id_str = (str(creator_id).strip() if creator_id else "")
+        if not creator_id_str:
+            return None
+        owner_id_str = (str(owner_id).strip() if owner_id else "")
+        if creator_id_str == owner_id_str and owner_name:
+            return str(owner_name)
+        collab_row = state.db.fetchone(
+            "SELECT full_name FROM task_collaborators WHERE task_id = ? AND user_id = ? LIMIT 1",
+            (task_id, creator_id_str),
+        )
+        if collab_row and collab_row["full_name"]:
+            return str(collab_row["full_name"])
+        return None
+
     def build_task(row) -> TaskRecord:
         note_row = state.db.fetchone("SELECT note FROM task_notes WHERE task_id = ?", (str(row["id"]),))
         client_id = str(row["client_id"]) if row["client_id"] else None
@@ -9117,6 +9316,8 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             projectFlowName=project_flow.name if project_flow else None,
             ownerId=str(row["owner_id"]) if row["owner_id"] else None,
             ownerName=str(row["owner_name"]),
+            creatorId=str(row["creator_id"]) if row["creator_id"] else None,
+            creatorName=_lookup_task_creator_name(str(row["id"]), row["creator_id"], row["owner_id"], row["owner_name"]),
             sourceType=str(row["source_type"]),
             sourceId=str(row["source_id"]) if row["source_id"] else None,
             businessCategory=business_category,
@@ -12683,6 +12884,8 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
 
     ONLINE_TRANSCRIPT_FOLDER_LABEL = "线上转写"
     ONLINE_TRANSCRIPT_MATERIAL_LAYER = "external_media_transcript"
+    # 统一文件夹标签：所有用户可见资料的目标目录（取代旧的"战略陪伴/项目与业务"等多目录分类）。
+    UNIFIED_FOLDER_LABEL = "资料库"
 
     def _online_transcript_target_path(client_id: str, file_name: str, folders: dict[str, Path] | None = None) -> Path:
         workspace_folders = folders or ensure_client_workspace(state.data_dir, client_id)
@@ -14171,38 +14374,42 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         )
 
     def export_answer_to_docx(client_id: str, message: ChatMessageRecord) -> Path:
+        from app.services.link_material_import import render_polished_markdown_to_docx
+
         folders = ensure_client_workspace(state.data_dir, client_id)
-        target_dir = folders["战略陪伴"]
+        target_dir = (
+            folders.get(UNIFIED_FOLDER_LABEL)
+            or folders.get("战略陪伴")
+            or (state.data_dir / "client_workspace" / client_id / UNIFIED_FOLDER_LABEL)
+        )
+        target_dir.mkdir(parents=True, exist_ok=True)
+
+        # 用户提问 = 同 thread 里这条 assistant 紧邻前面的一条 user message
+        user_question_row = state.db.fetchone(
+            """
+            SELECT content FROM chat_messages
+            WHERE thread_id = ? AND role = 'user' AND created_at <= ?
+            ORDER BY created_at DESC LIMIT 1
+            """,
+            (message.threadId, message.createdAt),
+        )
+        user_question = str(user_question_row["content"]).strip() if user_question_row else ""
+
+        # 标题：优先用用户问题；fallback 用回答开头 18 字
+        doc_title = user_question or (message.content or "").strip()[:80] or "AI 回答"
+        # 文件名：取标题前 24 个字符做 safe filename
+        stem = safe_filename(doc_title[:24] or "ai_answer")
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        target_path = target_dir / f"{timestamp}_{safe_filename(message.content[:18] or '战略陪伴沉淀')}.docx"
-        document = WordDocument()
-        document.add_heading("战略陪伴沉淀", level=1)
-        document.add_paragraph(_sanitize_docx_text(f"客户：{build_client_summary(client_id).name}"))
-        document.add_paragraph(_sanitize_docx_text(f"生成时间：{now_iso()}"))
-        document.add_paragraph("")
-        document.add_heading("回答摘要", level=2)
-        document.add_paragraph(_sanitize_docx_text(message.content))
-        if message.structuredData:
-            document.add_heading("核心判断", level=2)
-            document.add_paragraph(_sanitize_docx_text(message.structuredData.judgment))
-            document.add_heading("结构化分析", level=2)
-            document.add_paragraph(_sanitize_docx_text(message.structuredData.analysis))
-            document.add_heading("建议动作", level=2)
-            document.add_paragraph(_sanitize_docx_text(message.structuredData.actions))
-            document.add_heading("关键时间线", level=2)
-            document.add_paragraph(_sanitize_docx_text(message.structuredData.timeline))
-        if message.evidence:
-            document.add_heading("证据来源", level=2)
-            for item in message.evidence:
-                safe_title = _sanitize_docx_text(item.title) or "未命名证据"
-                safe_label = _sanitize_docx_text(item.sectionLabel or item.sourceType or "证据")
-                safe_excerpt = _sanitize_docx_text(item.excerpt)
-                paragraph = document.add_paragraph(style="List Bullet")
-                paragraph.add_run(safe_title).bold = True
-                paragraph.add_run(f" | {safe_label}")
-                if safe_excerpt:
-                    document.add_paragraph(safe_excerpt)
-        document.save(target_path)
+        target_path = target_dir / f"{timestamp}_{stem}.docx"
+
+        # 正文：直接复用 link_material 那条统一的 markdown→docx 渲染（保留标题/段落/加粗格式）。
+        # 不再追加客户名、生成时间、结构化分析、证据来源——分享给别人看的应该是纯净的"问题 + 答案"。
+        render_polished_markdown_to_docx(
+            title=doc_title,
+            source_url="",
+            markdown_body=(message.content or "").strip() or "（暂无内容）",
+            output_path=target_path,
+        )
         return target_path
 
     def create_answer_export_document(client_id: str, message: ChatMessageRecord) -> ClientTextDocumentResponse:
@@ -14577,6 +14784,140 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             path=str(target_path),
         )
 
+    def create_client_link_docx_document(
+        client_id: str,
+        *,
+        run_id: str,
+        title: str,
+        markdown_content: str,
+        polished_body: str,
+        source_platform: str,
+        source_url: str,
+    ) -> ClientTextDocumentResponse:
+        """链接转写产物：用户可见的是 .docx；同名 .md 保留在 _v2_meta/markdown 给数据中心。"""
+        from app.services.link_material_import import render_polished_markdown_to_docx
+        client = build_client_summary(client_id)
+        ensure_standard_client_folders(client_id)
+        folders = ensure_client_workspace(state.data_dir, client_id)
+        target_dir = folders.get(ONLINE_TRANSCRIPT_FOLDER_LABEL) or (state.data_dir / "client_workspace" / client_id / ONLINE_TRANSCRIPT_FOLDER_LABEL)
+        target_dir.mkdir(parents=True, exist_ok=True)
+
+        normalized_content = str(markdown_content or "").replace("\r\n", "\n").strip()
+        if not normalized_content:
+            raise HTTPException(status_code=400, detail="链接转资料没有生成可入库正文。")
+        resolved_title = str(title or "").strip() or infer_text_document_title(normalized_content)
+        safe_stem = safe_filename(resolved_title or "链接转资料")
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        target_docx = target_dir / f"{timestamp}_{safe_stem}.docx"
+        if target_docx.exists():
+            target_docx = target_dir / f"{timestamp}_{safe_stem}_{uuid4().hex[:6]}.docx"
+        try:
+            render_polished_markdown_to_docx(
+                title=resolved_title,
+                source_url=source_url,
+                markdown_body=polished_body or normalized_content,
+                output_path=target_docx,
+            )
+        except Exception as exc:
+            raise HTTPException(status_code=500, detail=f"生成 Word 文档失败：{exc}") from exc
+
+        # 同时把 markdown 保留到 _v2_meta/markdown 供数据中心检索（不让用户看到 .md）
+        meta_md_dir = state.data_dir / "client_workspace" / client_id / "_v2_meta" / "markdown"
+        meta_md_dir.mkdir(parents=True, exist_ok=True)
+        meta_md_path = meta_md_dir / f"{target_docx.stem}.md"
+        try:
+            meta_md_path.write_text(normalized_content + "\n", encoding="utf-8")
+        except Exception:
+            pass  # markdown 留存失败不影响主流程
+
+        timestamp_iso = now_iso()
+        folder_row = state.db.fetchone(
+            "SELECT id FROM client_folders WHERE client_id = ? AND label = ?",
+            (client_id, ONLINE_TRANSCRIPT_FOLDER_LABEL),
+        )
+        document_id = new_id("doc")
+        excerpt = normalize_markdown_text(normalized_content)[:180] or f"{resolved_title} 已进入当前项目文档库。"
+        tags = [
+            "video_transcript",
+            ONLINE_TRANSCRIPT_MATERIAL_LAYER,
+            ONLINE_TRANSCRIPT_FOLDER_LABEL,
+            source_platform,
+            "docx",
+        ]
+        state.db.execute(
+            """
+            INSERT INTO documents(id, client_id, folder_id, title, path, original_source_path, kind, source, excerpt, tags_json, created_at)
+            VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                document_id,
+                client_id,
+                str(folder_row["id"]) if folder_row else None,
+                target_docx.name,
+                str(target_docx),
+                str(target_docx),
+                "docx",
+                "video_transcript",
+                excerpt,
+                to_json(tags),
+                timestamp_iso,
+            ),
+        )
+        ingest_document_knowledge(
+            state.db,
+            data_dir=state.data_dir,
+            client_id=client_id,
+            import_id=None,
+            document_id=document_id,
+            source_path=target_docx,
+            original_source_path=target_docx,
+            title=target_docx.name,
+            kind="docx",
+            source="video_transcript",
+            fallback_excerpt=excerpt,
+            created_at=timestamp_iso,
+            ai_service=None,
+        )
+        _force_online_transcript_document_classification(
+            client_id=client_id,
+            document_id=document_id,
+            target_path=target_docx,
+            run_id=run_id,
+            tags=tags,
+            folder_id=str(folder_row["id"]) if folder_row else None,
+        )
+        refresh_event, _deduped = enqueue_workspace_context_refresh(
+            state.db,
+            client_id=client_id,
+            source_type="link_material_import",
+            source_id=run_id,
+            reason="link_material_import_completed",
+            priority="normal",
+        )
+        log_activity(
+            "client.document.create_from_link_material_docx",
+            "document",
+            document_id,
+            {
+                "clientId": client_id,
+                "clientName": client.name,
+                "title": resolved_title,
+                "path": str(target_docx),
+                "metaMarkdownPath": str(meta_md_path),
+                "sourcePlatform": source_platform,
+                "sourceUrl": source_url,
+                "runId": run_id,
+                "refreshEventId": str(refresh_event.id or ""),
+            },
+        )
+        return ClientTextDocumentResponse(
+            clientId=client_id,
+            documentId=document_id,
+            title=resolved_title,
+            fileName=target_docx.name,
+            path=str(target_docx),
+        )
+
     def build_link_material_import_run(row) -> LinkMaterialImportRunRecord:
         metadata = from_json(str(row["metadata_json"] or "{}"), {})
         return LinkMaterialImportRunRecord(
@@ -14771,19 +15112,40 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                     **source.metadata,
                 },
             )
-            cleaned_body = cleanup_transcript_text(
-                ai_service=state.ai,
-                title=source.title,
-                source_url=source.source_url,
-                transcript_text=source.transcript_text,
-            )
-            markdown = build_clean_video_markdown(title=source.title, source_url=source.source_url, body=cleaned_body)
-            update_link_material_import_run(run_id, status="running", stage="正在写入客户资料库", progress=82.0)
-            generated = create_client_link_markdown_document(
+            # 公众号文章本身已经是排版好的 markdown：跳过 cleanup（去口头禅）和 polish（分段+加粗），
+            # 否则会被 AI 二次改写。只有 B 站/小红书这种语音转写出来的脏文本才需要润色。
+            source_kind = str(source.metadata.get("sourceKind") or "")
+            if source_kind == "article":
+                cleaned_body = source.transcript_text
+                polished_body = source.transcript_text
+            else:
+                cleaned_body = cleanup_transcript_text(
+                    ai_service=state.ai,
+                    title=source.title,
+                    source_url=source.source_url,
+                    transcript_text=source.transcript_text,
+                )
+                update_link_material_import_run(
+                    run_id,
+                    status="running",
+                    stage="AI 整理排版中",
+                    progress=68.0,
+                )
+                from app.services.link_material_import import polish_transcript_for_reading
+                polished_body = polish_transcript_for_reading(
+                    ai_service=state.ai,
+                    title=source.title,
+                    source_url=source.source_url,
+                    cleaned_text=cleaned_body,
+                )
+            markdown = build_clean_video_markdown(title=source.title, source_url=source.source_url, body=polished_body)
+            update_link_material_import_run(run_id, status="running", stage="生成 Word 文档", progress=86.0)
+            generated = create_client_link_docx_document(
                 client_id,
                 run_id=run_id,
                 title=source.title,
                 markdown_content=markdown,
+                polished_body=polished_body,
                 source_platform=source.platform,
                 source_url=source.source_url,
             )
@@ -18387,6 +18749,57 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         persisted_judgment_id = (
             judgment_id if judgment_id is not None else (str(existing["judgment_id"]) if existing and existing["judgment_id"] else None)
         )
+        # 用户采纳战略思考为判断时，真实写入 judgment_versions 表（不只是改 status）。
+        # 之前的实现只更新 strategic_thought_reviews.status='confirmed'，把 judgment_id 留空，
+        # 用户以为「采纳了」，但客户知识库实际上没收到这条判断。
+        # 这里在首次 confirm 且无外部传入 judgment_id 时，自动创建一条 confirmed 的
+        # judgment_version 行，让采纳真的沉淀进数据中心。
+        if status == "confirmed" and persisted_judgment_id is None and thought.clientId:
+            judgment_new_id = new_id("jver")
+            topic = (thought.line or thought.observation or "战略判断").strip()[:120] or "战略判断"
+            summary_parts: list[str] = []
+            if thought.observation:
+                summary_parts.append(f"观察：{thought.observation}")
+            if thought.suggestion:
+                summary_parts.append(f"建议：{thought.suggestion}")
+            if note.strip():
+                summary_parts.append(f"用户补充：{note.strip()}")
+            summary_text = "\n\n".join(summary_parts) or topic
+            evidence_ids = [s.sourceId for s in thought.sources if s.sourceId]
+            confidence_map = {"high": "high", "medium": "medium", "low": "low", "none": "medium"}
+            confidence_value = confidence_map.get(thought.confidenceLevel or "none", "medium")
+            state.db.execute(
+                """
+                INSERT INTO judgment_versions(
+                    id, client_id, target_type, target_id, topic, version, status,
+                    summary, evidence_ids_json, context_pack_id, risk_level, confidence,
+                    created_at, updated_at
+                ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    judgment_new_id,
+                    thought.clientId,
+                    "strategic_thought",
+                    thought.id,
+                    topic,
+                    1,
+                    "confirmed",
+                    summary_text,
+                    to_json(evidence_ids),
+                    None,
+                    "medium",
+                    confidence_value,
+                    now,
+                    now,
+                ),
+            )
+            persisted_judgment_id = judgment_new_id
+            log_activity(
+                "judgment.create_from_strategic_thought",
+                "client",
+                thought.clientId,
+                {"thoughtId": thought.id, "judgmentId": judgment_new_id, "topic": topic},
+            )
         if existing:
             review_id = str(existing["id"])
             created_at = str(existing["created_at"] or now)
@@ -19539,6 +19952,28 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 state_source_summary = StateSourceSummaryRecord(**retrieval_summary["stateSourceSummary"])
             except Exception:
                 state_source_summary = None
+        deep_thinking_requested = False
+        active_skill_id_value: str | None = None
+        try:
+            if "deep_thinking_requested" in row.keys():
+                deep_thinking_requested = bool(int(row["deep_thinking_requested"] or 0))
+        except Exception:
+            deep_thinking_requested = False
+        try:
+            if "active_skill_id" in row.keys():
+                raw_skill_id = row["active_skill_id"]
+                if raw_skill_id:
+                    active_skill_id_value = str(raw_skill_id)
+        except Exception:
+            active_skill_id_value = None
+        creativity_mode_value: str | None = None
+        try:
+            if "creativity_mode" in row.keys():
+                raw_creativity = row["creativity_mode"]
+                if raw_creativity and str(raw_creativity) in {"creative", "balanced", "strict"}:
+                    creativity_mode_value = str(raw_creativity)
+        except Exception:
+            creativity_mode_value = None
         return ChatMessageRecord(
             id=str(row["id"]),
             threadId=str(row["thread_id"]),
@@ -19567,6 +20002,9 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             evidenceSupportMode=evidence_support_mode,
             stateAnswerSections=state_answer_sections,
             stateSourceSummary=state_source_summary,
+            deepThinkingRequested=deep_thinking_requested,
+            activeSkillId=active_skill_id_value,
+            creativityMode=creativity_mode_value,  # type: ignore[arg-type]
         )
 
     def build_meeting_summary(row) -> MeetingSummary:
@@ -21714,6 +22152,10 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                     if not isinstance(loaded_payload, dict):
                         raise ValueError("cloud_payload_json must be an object")
                     cloud_payload = loaded_payload
+                    # 旧 payload 可能没存 id（修复前的本地 task）—— retry create 时必须带本地 id，
+                    # 否则云端 new_id() 会让 push 响应丢失时下次 pull 又插一条重复 task。
+                    if pending_action == "create" and not cloud_payload.get("id"):
+                        cloud_payload["id"] = task_id
                 except Exception as error:
                     state.db.execute(
                         "UPDATE tasks SET sync_status = 'error', last_sync_error = ? WHERE id = ?",
@@ -21962,6 +22404,10 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             collaborator_ids = payload.collaboratorIds or ([session_user.id] if session_user else [])
             owner_id = payload.ownerId or (collaborator_ids[0] if collaborator_ids else None)
             cloud_payload = {
+                # 关键：把本地 task_id 作为云端 task id（cloud_backend TaskCreatePayload.id 已支持）。
+                # 不传 id 时云端会 new_id() 生成新 id —— 一旦 POST 响应丢失 / 超时，下次 pull 时
+                # 云端那条会被当新 task 插入本地，造成重复（参 bug history 2026-04~05 11 对重复）。
+                "id": task_id,
                 "title": payload.title,
                 "description": payload.desc,
                 "priority": payload.priority,
@@ -25469,6 +25915,558 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         trigger_source = str((payload or {}).get("triggerSource") or "manual").strip() or "manual"
         run_id = _create_organization_dna_refresh_run(trigger_source)
         return _execute_organization_dna_refresh_run(run_id, trigger_source)
+
+    @app.get(
+        "/api/v1/clients/{client_id}/knowledge-status",
+        response_model=ClientKnowledgeStatusRecord,
+    )
+    def get_client_knowledge_status(client_id: str) -> ClientKnowledgeStatusRecord:
+        # Stage 2 替代「百分比成熟度」隐喻：返回 4 个 Karpathy 语义的绝对数字
+        # + 本周增量。前端用这个数据替代「资料厚度 65% / 成熟度 47%」展示。
+        # 学习是没有尽头的 —— 用「已确认 124 · 待确认 18 · 矛盾 3 · 缺口 7」
+        # 配合本周「+12 条事实」「+3 条判断」，让用户看到 AI 在持续长大。
+        build_client_summary(client_id)
+        cutoff_iso = (datetime.now(timezone.utc) - timedelta(days=7)).isoformat()
+
+        confirmed_facts = state.db.fetchone(
+            "SELECT COUNT(1) AS n FROM atomic_facts WHERE client_id = ? AND status = 'active'",
+            (client_id,),
+        )
+        new_facts = state.db.fetchone(
+            "SELECT COUNT(1) AS n FROM atomic_facts WHERE client_id = ? AND status = 'active' AND created_at >= ?",
+            (client_id, cutoff_iso),
+        )
+        # 待确认思考：strategic_thought_insights 中没在 reviews 里被 confirmed/dismissed/task_created 的
+        pending_thoughts = state.db.fetchone(
+            """
+            SELECT COUNT(1) AS n FROM strategic_thought_insights i
+            WHERE i.client_id = ? AND i.is_deleted = 0
+              AND NOT EXISTS (
+                  SELECT 1 FROM strategic_thought_reviews r
+                  WHERE r.thought_id = i.id AND r.status IN ('confirmed', 'dismissed', 'task_created')
+              )
+            """,
+            (client_id,),
+        )
+        new_thoughts = state.db.fetchone(
+            "SELECT COUNT(1) AS n FROM strategic_thought_insights WHERE client_id = ? AND is_deleted = 0 AND generated_at >= ?",
+            (client_id, cutoff_iso),
+        )
+        active_contradictions = state.db.fetchone(
+            "SELECT COUNT(1) AS n FROM fact_contradictions WHERE client_id = ? AND review_status = 'pending'",
+            (client_id,),
+        )
+        new_contradictions = state.db.fetchone(
+            "SELECT COUNT(1) AS n FROM fact_contradictions WHERE client_id = ? AND review_status = 'pending' AND detected_at >= ?",
+            (client_id, cutoff_iso),
+        )
+        confirmed_judgments_week = state.db.fetchone(
+            "SELECT COUNT(1) AS n FROM judgment_versions WHERE client_id = ? AND status = 'confirmed' AND updated_at >= ?",
+            (client_id, cutoff_iso),
+        )
+        # 信息缺口：用便宜查询替代 build_client_digital_assets（后者要 30s+）。
+        # 这里把「缺口」定义为「待解析/解析失败的 v2_documents 数」+「无评估证据的事件线数」，
+        # 都是数据库直接 COUNT 一下能拿到的，对应「AI 还没消化的资料 + 还没找到证据的线索」。
+        unparsed_docs = state.db.fetchone(
+            "SELECT COUNT(1) AS n FROM v2_documents WHERE client_id = ? AND parse_status NOT IN ('ready', 'partial_ready')",
+            (client_id,),
+        )
+        event_lines_no_evidence = state.db.fetchone(
+            """
+            SELECT COUNT(1) AS n FROM event_lines el
+            WHERE el.primary_client_id = ?
+              AND NOT EXISTS (
+                  SELECT 1 FROM evidence_cards ec
+                  WHERE ec.scope_type = 'event_line' AND ec.scope_id = el.id
+              )
+            """,
+            (client_id,),
+        )
+        knowledge_gaps_count = (int(unparsed_docs["n"]) if unparsed_docs else 0) + (
+            int(event_lines_no_evidence["n"]) if event_lines_no_evidence else 0
+        )
+
+        # Stage B 扇出待办：让用户在「资料健康」tab 立刻看到 AI 因新资料触发了什么
+        # 1) judgment 需要重新评估（扇出 #4 标记）
+        judgment_reeval_rows = state.db.fetchall(
+            """
+            SELECT id, topic, reevaluation_reason, reevaluation_triggered_at
+            FROM judgment_versions
+            WHERE client_id = ? AND COALESCE(needs_reevaluation, 0) = 1
+            ORDER BY reevaluation_triggered_at DESC LIMIT 10
+            """,
+            (client_id,),
+        )
+        pending_judgment_reeval = len(judgment_reeval_rows)
+        # 2) 客户画像需复审（扇出 #7 标记）
+        profile_review_row = state.db.fetchone(
+            """
+            SELECT client_id, review_reason, review_triggered_at
+            FROM client_strategic_profiles
+            WHERE client_id = ? AND COALESCE(needs_review, 0) = 1
+            """,
+            (client_id,),
+        )
+        pending_profile_review = 1 if profile_review_row else 0
+        # 3) strategic_thought 待刷新（扇出 #3 留下的 activity_logs 标记，去重计数）
+        thought_pending_row = state.db.fetchone(
+            """
+            SELECT COUNT(DISTINCT json_extract(detail_json, '$.v2DocumentId')) AS n
+            FROM activity_logs
+            WHERE action = 'strategic_thought.refresh_pending'
+              AND entity_id = ?
+              AND created_at >= datetime('now', '-30 days')
+            """,
+            (client_id,),
+        )
+        pending_thought_refresh = int(thought_pending_row["n"]) if thought_pending_row else 0
+        # 4) 近 7 天 Stage B 扇出总活跃度
+        recent_fanout_row = state.db.fetchone(
+            """
+            SELECT COUNT(*) AS n FROM activity_logs
+            WHERE entity_id = ?
+              AND action IN (
+                  'judgment.needs_reevaluation',
+                  'client_profile.needs_review',
+                  'strategic_thought.refresh_pending'
+              )
+              AND created_at >= datetime('now', '-7 days')
+            """,
+            (client_id,),
+        )
+        recent_fanout_count = int(recent_fanout_row["n"]) if recent_fanout_row else 0
+
+        pending_actions: list[PendingFanoutActionRecord] = []
+        for r in judgment_reeval_rows[:5]:
+            pending_actions.append(
+                PendingFanoutActionRecord(
+                    actionType="judgment_needs_reevaluation",
+                    entityId=str(r["id"]),
+                    entityLabel=str(r["topic"] or "")[:80],
+                    reason=str(r["reevaluation_reason"] or ""),
+                    triggeredAt=str(r["reevaluation_triggered_at"] or ""),
+                )
+            )
+        if profile_review_row:
+            pending_actions.append(
+                PendingFanoutActionRecord(
+                    actionType="profile_needs_review",
+                    entityId=client_id,
+                    entityLabel="客户画像",
+                    reason=str(profile_review_row["review_reason"] or ""),
+                    triggeredAt=str(profile_review_row["review_triggered_at"] or ""),
+                )
+            )
+
+        return ClientKnowledgeStatusRecord(
+            clientId=client_id,
+            confirmedFacts=int(confirmed_facts["n"]) if confirmed_facts else 0,
+            pendingThoughts=int(pending_thoughts["n"]) if pending_thoughts else 0,
+            activeContradictions=int(active_contradictions["n"]) if active_contradictions else 0,
+            knowledgeGaps=knowledge_gaps_count,
+            weeklyDelta=KnowledgeStatusWeeklyDeltaRecord(
+                confirmedFacts=int(new_facts["n"]) if new_facts else 0,
+                activeContradictions=int(new_contradictions["n"]) if new_contradictions else 0,
+                newThoughts=int(new_thoughts["n"]) if new_thoughts else 0,
+                confirmedJudgments=int(confirmed_judgments_week["n"]) if confirmed_judgments_week else 0,
+            ),
+            pendingJudgmentReevaluation=pending_judgment_reeval,
+            pendingProfileReview=pending_profile_review,
+            pendingThoughtRefresh=pending_thought_refresh,
+            recentFanoutCount=recent_fanout_count,
+            pendingActions=pending_actions,
+            generatedAt=now_iso(),
+        )
+
+    # 注意：之前曾在这里加 GET /api/v1/clients/{id}/fact-contradictions 和
+    # POST /api/v1/fact-contradictions/{id}/review，但发现 main.py:34273-34370 已经存在
+    # GET /api/v1/clients/{id}/contradictions 和 POST /api/v1/contradictions/{id}/review，
+    # 前端直接消费现有 endpoint，不再重复定义避免和 models.py 的 schema 冲突。
+
+    @app.get(
+        "/api/v1/clients/{client_id}/duplicate-documents",
+        response_model=list[DuplicateDocumentGroupRecord],
+    )
+    def get_client_duplicate_documents(client_id: str) -> list[DuplicateDocumentGroupRecord]:
+        # 用户反馈最直观的「矛盾」就是同一份文件被上传了多次（如日慈基金会某份会议纪要 × 4）。
+        # 之前 fact_contradictions 只检测事实级矛盾（同个 subject 同个 attribute 不同 value），
+        # 文件级别的重复完全没被识别。这里补上：
+        # - same_content_hash：内容字节完全一致（100% 真重复，强烈建议合并）
+        # - same_filename：文件名相同但 content_hash 不同（可能是新版本，需人确认）
+        # 用户在「处理重复」Modal 里选「全部保留」后，对应的 group_key 进 duplicate_group_reviews，
+        # 下次扫描跳过，避免反复打扰。
+        build_client_summary(client_id)
+
+        # 过滤掉用户已审查决定「全部保留」的 group_keys
+        reviewed_rows = state.db.fetchall(
+            "SELECT group_key FROM duplicate_group_reviews WHERE client_id = ?",
+            (client_id,),
+        )
+        reviewed_keys = {str(r["group_key"]) for r in reviewed_rows}
+
+        # 给每份文档算引用数 —— 计算 task_attachments / evidence_refs / atomic_facts 三处
+        # 引用了这份的次数。让用户在对比时知道删掉它会牵连多少下游。
+        def _ref_counts(v2_doc_id: str, doc_id: str) -> tuple[int, int, int]:
+            tatt_row = state.db.fetchone(
+                "SELECT (SELECT COUNT(1) FROM task_attachments WHERE document_id = ?)"
+                " + (SELECT COUNT(1) FROM task_attachments_cloud WHERE document_id = ?) AS n",
+                (doc_id, doc_id),
+            )
+            ev_row = state.db.fetchone(
+                "SELECT COUNT(1) AS n FROM evidence_refs WHERE document_id = ?",
+                (doc_id,),
+            )
+            af_row = state.db.fetchone(
+                "SELECT COUNT(1) AS n FROM atomic_facts WHERE source_v2_document_id = ?",
+                (v2_doc_id,),
+            )
+            return (
+                int(tatt_row["n"]) if tatt_row else 0,
+                int(ev_row["n"]) if ev_row else 0,
+                int(af_row["n"]) if af_row else 0,
+            )
+
+        def _doc_summary(row) -> DuplicateDocumentItemRecord:
+            v2_doc_id = str(row["id"])
+            doc_id = str(row["document_id"] or "")
+            t_cnt, ev_cnt, af_cnt = _ref_counts(v2_doc_id, doc_id)
+            file_size = 0
+            try:
+                from pathlib import Path
+                # 优先看 original_path，否则 managed_path
+                for p_str in (row["original_path"], row["managed_path"]):
+                    if not p_str:
+                        continue
+                    p = Path(str(p_str))
+                    if p.is_file():
+                        file_size = p.stat().st_size
+                        break
+            except Exception:
+                file_size = 0
+            return DuplicateDocumentItemRecord(
+                id=v2_doc_id,
+                documentId=doc_id,
+                fileName=str(row["file_name"] or ""),
+                kind=str(row["kind"] or ""),
+                managedPath=str(row["managed_path"] or ""),
+                originalPath=str(row["original_path"] or ""),
+                contentHash=str(row["content_hash"] or ""),
+                parseStatus=str(row["parse_status"] or ""),
+                sectionCount=int(row["section_count"] or 0),
+                chunkCount=int(row["chunk_count"] or 0),
+                importedAt=str(row["imported_at"] or "") if "imported_at" in row.keys() else "",
+                fileSizeBytes=file_size,
+                refTaskAttachmentCount=t_cnt,
+                refEvidenceCardCount=ev_cnt,
+                refAtomicFactCount=af_cnt,
+            )
+
+        groups: list[DuplicateDocumentGroupRecord] = []
+
+        # 1) 同 content_hash 组（最严重 — 100% 同内容）。空 hash 不算重复。
+        hash_rows = state.db.fetchall(
+            """
+            SELECT v.id, v.document_id, v.file_name, v.kind, v.managed_path,
+                   v.original_path, v.content_hash, v.parse_status,
+                   v.section_count, v.chunk_count,
+                   d.created_at AS imported_at
+            FROM v2_documents v
+            LEFT JOIN documents d ON d.id = v.document_id
+            WHERE v.client_id = ?
+              AND COALESCE(v.content_hash, '') != ''
+              AND v.content_hash IN (
+                  SELECT content_hash FROM v2_documents
+                  WHERE client_id = ? AND COALESCE(content_hash, '') != ''
+                  GROUP BY content_hash HAVING COUNT(*) > 1
+              )
+            ORDER BY v.content_hash, d.created_at ASC NULLS LAST
+            """,
+            (client_id, client_id),
+        )
+        seen_hash_groups: dict[str, list] = {}
+        seen_doc_ids: set[str] = set()
+        for row in hash_rows:
+            h = str(row["content_hash"])
+            seen_hash_groups.setdefault(h, []).append(row)
+        for h, rows in seen_hash_groups.items():
+            # 先把这批 doc id 标"已被 hash 组覆盖"，避免它们又出现在 same_filename 组里。
+            # 即使本 group 被「全部保留」过滤掉了，这些 doc 也不该被 same_filename 重新捡起来。
+            for r in rows:
+                seen_doc_ids.add(str(r["id"]))
+            group_key = f"hash:{h[:16]}"
+            if group_key in reviewed_keys:
+                continue  # 用户已经审查过这组（选了"全部保留"），下次不打扰
+            docs = [_doc_summary(r) for r in rows]
+            groups.append(
+                DuplicateDocumentGroupRecord(
+                    groupKey=group_key,
+                    groupType="same_content_hash",
+                    fileName=rows[0]["file_name"] or "",
+                    contentHash=h,
+                    count=len(docs),
+                    documents=docs,
+                )
+            )
+
+        # 2) 同 file_name 组（同名但不同 hash —— 可能是新版本，避免和 1) 重复算）
+        name_rows = state.db.fetchall(
+            """
+            SELECT v.id, v.document_id, v.file_name, v.kind, v.managed_path,
+                   v.original_path, v.content_hash, v.parse_status,
+                   v.section_count, v.chunk_count,
+                   d.created_at AS imported_at
+            FROM v2_documents v
+            LEFT JOIN documents d ON d.id = v.document_id
+            WHERE v.client_id = ?
+              AND COALESCE(v.file_name, '') != ''
+              AND v.file_name IN (
+                  SELECT file_name FROM v2_documents
+                  WHERE client_id = ? AND COALESCE(file_name, '') != ''
+                  GROUP BY file_name HAVING COUNT(*) > 1
+              )
+            ORDER BY v.file_name, d.created_at ASC NULLS LAST
+            """,
+            (client_id, client_id),
+        )
+        name_groups: dict[str, list] = {}
+        for row in name_rows:
+            if str(row["id"]) in seen_doc_ids:
+                continue  # 已经被 hash 组覆盖，不重复算
+            name_groups.setdefault(str(row["file_name"]), []).append(row)
+        for fname, rows in name_groups.items():
+            if len(rows) < 2:
+                continue
+            group_key = f"name:{fname}"
+            if group_key in reviewed_keys:
+                continue  # 用户已经审查过这组
+            docs = [_doc_summary(r) for r in rows]
+            groups.append(
+                DuplicateDocumentGroupRecord(
+                    groupKey=group_key,
+                    groupType="same_filename",
+                    fileName=fname,
+                    contentHash="",
+                    count=len(docs),
+                    documents=docs,
+                )
+            )
+
+        # 排序：same_content_hash 严重重复优先 + 同类按 count 倒序
+        groups.sort(key=lambda g: (0 if g.groupType == "same_content_hash" else 1, -g.count))
+        return groups
+
+    @app.post(
+        "/api/v1/clients/{client_id}/duplicate-documents/resolve",
+        response_model=DuplicateDocumentResolveResultRecord,
+    )
+    def resolve_client_duplicate_documents(
+        client_id: str,
+        payload: DuplicateDocumentResolvePayload = Body(...),
+    ) -> DuplicateDocumentResolveResultRecord:
+        # 用户在「处理重复文件」Modal 里的决定落地到 DB：
+        # action='keep_all'：标记 group_key 已审查，下次扫描跳过
+        # action='delete_others'：迁移引用 → 物理文件移到回收站 → 删 v2_documents/documents 行
+        build_client_summary(client_id)
+        now = now_iso()
+        session_user = get_cached_session_user()
+        reviewer = session_user.fullName if session_user else current_operator_name()
+
+        if payload.action == "keep_all":
+            # 写 duplicate_group_reviews，下次跳过
+            review_id = new_id("dgr")
+            state.db.execute(
+                """
+                INSERT INTO duplicate_group_reviews(
+                    id, client_id, group_key, review_status, reviewed_at, reviewed_by, note
+                ) VALUES(?, ?, ?, 'kept_all', ?, ?, ?)
+                ON CONFLICT(client_id, group_key) DO UPDATE SET
+                    review_status='kept_all', reviewed_at=excluded.reviewed_at,
+                    reviewed_by=excluded.reviewed_by, note=excluded.note
+                """,
+                (review_id, client_id, payload.groupKey, now, reviewer, payload.note),
+            )
+            log_activity(
+                "duplicate_group.keep_all",
+                "client",
+                client_id,
+                {"groupKey": payload.groupKey},
+            )
+            return DuplicateDocumentResolveResultRecord(
+                action="keep_all",
+                groupKey=payload.groupKey,
+                deletedCount=0,
+                keptDocumentIds=payload.keepV2DocumentIds,
+            )
+
+        if payload.action != "delete_others":
+            raise HTTPException(status_code=400, detail="action must be 'delete_others' or 'keep_all'")
+        if not payload.deleteV2DocumentIds:
+            raise HTTPException(status_code=400, detail="deleteV2DocumentIds is empty")
+        # 允许 keepV2DocumentIds 为空 —— 这是「全部删除」语义。
+        # 此时无法做引用迁移（没有迁移目标），FK ON DELETE SET NULL 会自动把
+        # 下游的 task_attachments / evidence_refs / atomic_facts 引用置空。
+        if payload.migrateReferences and not payload.keepV2DocumentIds:
+            raise HTTPException(
+                status_code=400,
+                detail="cannot migrate references when keepV2DocumentIds is empty (no target)",
+            )
+
+        # 取要删的 v2_documents 行（含其 document_id 用于迁移和清理）
+        del_rows = state.db.fetchall(
+            f"""
+            SELECT v.id AS v2_id, v.document_id, v.file_name, v.kind,
+                   v.original_path, v.managed_path, v.content_hash,
+                   v.section_count, v.chunk_count, v.parse_status,
+                   d.created_at AS imported_at
+            FROM v2_documents v
+            LEFT JOIN documents d ON d.id = v.document_id
+            WHERE v.client_id = ? AND v.id IN ({_sql_placeholders(payload.deleteV2DocumentIds)})
+            """,
+            (client_id, *payload.deleteV2DocumentIds),
+        )
+        if not del_rows:
+            raise HTTPException(status_code=404, detail="no matching documents to delete")
+
+        # 取保留的 v2_documents（用作引用迁移的目标 —— 同 group 删的引用归到第一个 keep）
+        keep_rows: list = []
+        if payload.keepV2DocumentIds:
+            keep_rows = state.db.fetchall(
+                f"""
+                SELECT v.id AS v2_id, v.document_id
+                FROM v2_documents v
+                WHERE v.client_id = ? AND v.id IN ({_sql_placeholders(payload.keepV2DocumentIds)})
+                """,
+                (client_id, *payload.keepV2DocumentIds),
+            )
+            if not keep_rows:
+                raise HTTPException(status_code=404, detail="no matching kept documents")
+        # keep_rows 为空时（全部删除场景），没有迁移目标，target 留空字符串。
+        # 下面的引用迁移段已经通过 `if payload.migrateReferences and target_doc_id` 防御。
+        target_v2_id = str(keep_rows[0]["v2_id"]) if keep_rows else ""
+        target_doc_id = str(keep_rows[0]["document_id"] or "") if keep_rows else ""
+
+        migrated_tatt = 0
+        migrated_ev = 0
+        migrated_af = 0
+        if payload.migrateReferences and target_doc_id:
+            delete_doc_ids = [str(r["document_id"]) for r in del_rows if r["document_id"]]
+            delete_v2_ids = [str(r["v2_id"]) for r in del_rows]
+            if delete_doc_ids:
+                ph = _sql_placeholders(delete_doc_ids)
+                t1 = state.db.execute(
+                    f"UPDATE task_attachments SET document_id = ? WHERE document_id IN ({ph})",
+                    (target_doc_id, *delete_doc_ids),
+                )
+                t2 = state.db.execute(
+                    f"UPDATE task_attachments_cloud SET document_id = ? WHERE document_id IN ({ph})",
+                    (target_doc_id, *delete_doc_ids),
+                )
+                migrated_tatt = int(getattr(t1, "rowcount", 0) or 0) + int(getattr(t2, "rowcount", 0) or 0)
+                ev = state.db.execute(
+                    f"UPDATE evidence_refs SET document_id = ? WHERE document_id IN ({ph})",
+                    (target_doc_id, *delete_doc_ids),
+                )
+                migrated_ev = int(getattr(ev, "rowcount", 0) or 0)
+            if delete_v2_ids:
+                ph = _sql_placeholders(delete_v2_ids)
+                af = state.db.execute(
+                    f"UPDATE atomic_facts SET source_v2_document_id = ? WHERE source_v2_document_id IN ({ph})",
+                    (target_v2_id, *delete_v2_ids),
+                )
+                migrated_af = int(getattr(af, "rowcount", 0) or 0)
+
+        # 准备回收站根目录
+        from pathlib import Path
+        import shutil
+        recycle_root = state.data_dir / "recycle_bin" / client_id
+        recycle_root.mkdir(parents=True, exist_ok=True)
+        purge_at_iso = (datetime.now(timezone.utc) + timedelta(days=30)).isoformat()
+
+        for r in del_rows:
+            v2_id = str(r["v2_id"])
+            doc_id = str(r["document_id"] or "")
+            file_name = str(r["file_name"] or "unnamed")
+            original_path = str(r["original_path"] or "")
+            managed_path = str(r["managed_path"] or "")
+            recycled_path = ""
+            for src in (managed_path, original_path):
+                if not src:
+                    continue
+                src_p = Path(src)
+                if src_p.is_file():
+                    safe_name = f"{v2_id[:12]}_{src_p.name}"
+                    dst = recycle_root / safe_name
+                    try:
+                        shutil.move(str(src_p), str(dst))
+                        recycled_path = str(dst)
+                        break
+                    except Exception:
+                        logger.exception("移动到回收站失败 %s -> %s", src_p, dst)
+            file_size = 0
+            try:
+                if recycled_path and Path(recycled_path).is_file():
+                    file_size = Path(recycled_path).stat().st_size
+            except Exception:
+                file_size = 0
+            state.db.execute(
+                """
+                INSERT INTO document_recycle_bin(
+                    id, client_id, original_v2_document_id, original_document_id,
+                    file_name, kind, original_path, managed_path_before, recycled_managed_path,
+                    content_hash, file_size_bytes, section_count, chunk_count, parse_status,
+                    delete_reason, deleted_at, deleted_by, auto_purge_at
+                ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'duplicate_dedup', ?, ?, ?)
+                """,
+                (
+                    new_id("rcb"),
+                    client_id,
+                    v2_id,
+                    doc_id,
+                    file_name,
+                    str(r["kind"] or ""),
+                    original_path,
+                    managed_path,
+                    recycled_path,
+                    str(r["content_hash"] or ""),
+                    file_size,
+                    int(r["section_count"] or 0),
+                    int(r["chunk_count"] or 0),
+                    str(r["parse_status"] or ""),
+                    now,
+                    reviewer,
+                    purge_at_iso,
+                ),
+            )
+            # 删 v2_documents（cascade 删 v2_sections/v2_chunks/entity_mentions 等）
+            state.db.execute("DELETE FROM v2_documents WHERE id = ?", (v2_id,))
+            if doc_id:
+                state.db.execute("DELETE FROM documents WHERE id = ?", (doc_id,))
+
+        log_activity(
+            "duplicate_group.delete_others",
+            "client",
+            client_id,
+            {
+                "groupKey": payload.groupKey,
+                "deletedCount": len(del_rows),
+                "keptCount": len(keep_rows),
+                "migrated": {
+                    "taskAttachments": migrated_tatt,
+                    "evidenceRefs": migrated_ev,
+                    "atomicFacts": migrated_af,
+                },
+            },
+        )
+        return DuplicateDocumentResolveResultRecord(
+            action="delete_others",
+            groupKey=payload.groupKey,
+            deletedCount=len(del_rows),
+            recycledTo=str(recycle_root),
+            migratedTaskAttachments=migrated_tatt,
+            migratedEvidenceRefs=migrated_ev,
+            migratedAtomicFacts=migrated_af,
+            keptDocumentIds=[str(r["v2_id"]) for r in keep_rows],
+        )
 
     @app.get("/api/v1/clients/{client_id}/digital-assets", response_model=DigitalAssetClientDetailRecord)
     def get_client_digital_assets(client_id: str) -> DigitalAssetClientDetailRecord:
@@ -30473,12 +31471,17 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             raise HTTPException(status_code=502, detail="Invalid task plan link payload")
         return TaskPlanLinkRecord(**response)
 
-    @app.get("/api/v1/org-model/plan-items/{item_id}/tasks", response_model=list[TaskRecord])
-    def list_tasks_for_plan_item(item_id: str) -> list[TaskRecord]:
+    @app.get("/api/v1/org-model/plan-items/{item_id}/tasks")
+    def list_tasks_for_plan_item(item_id: str) -> list:
+        """透传 cloud 返回的任务列表，不做 response_model 校验。
+
+        之前用了 response_model=list[TaskRecord]，但 local TaskRecord 期望
+        desc/status/ddl 字段，cloud TaskRecord 用 description/progressStatus ——
+        每次组织计划页面查挂接任务都 500 ValidationError。前端 Task 类型与
+        cloud 字段一致，本地直接透传即可。
+        """
         response = cloud_request("GET", f"/api/v1/org-model/plan-items/{item_id}/tasks")
-        if not isinstance(response, list):
-            return []
-        return [TaskRecord(**item) for item in response if isinstance(item, dict)]
+        return response if isinstance(response, list) else []
 
     @app.post("/api/v1/org-model/plans/parse")
     def parse_plan_text(payload: dict = Body(...)) -> dict:
@@ -36522,6 +37525,103 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             taskId=task.id,
         )
 
+    @app.post(
+        "/api/v1/workspace-answer/{message_id}/promote-to-judgment",
+        response_model=WorkspaceAnswerActionCardResultRecord,
+    )
+    def promote_workspace_answer_to_judgment_api(
+        message_id: str,
+        payload: WorkspaceAnswerPromoteJudgmentPayload = Body(default=None),
+    ) -> WorkspaceAnswerActionCardResultRecord:
+        # Karpathy 启示 #4 落地：用户在客户工作台问答现场觉得「这个回答说得对」时，
+        # 一键把答案沉淀为 judgment_versions 行 —— 不必绕道战略陪伴 tab 再操作。
+        # 沉淀后这条判断会和其他来源的 confirmed judgment 一样进入知识库底座。
+        summary, client_id = _workspace_answer_message_context(message_id)
+        if not client_id:
+            raise HTTPException(status_code=400, detail="workspace answer message has no client")
+        msg_row = state.db.fetchone(
+            "SELECT content, structured_data_json FROM chat_messages WHERE id = ?",
+            (message_id,),
+        )
+        if not msg_row:
+            raise HTTPException(status_code=404, detail="Workspace answer message not found")
+        answer_content = str(msg_row["content"] or "").strip()
+        if not answer_content:
+            raise HTTPException(status_code=400, detail="answer content is empty")
+        note = (payload.note if payload else "").strip()
+        # topic：取答案前 80 字作为主题（如果有 structured_data.judgment 优先用）
+        topic_seed = ""
+        try:
+            structured = from_json(str(msg_row["structured_data_json"] or "{}"), {})
+            if isinstance(structured, dict):
+                topic_seed = str(structured.get("judgment") or "").strip()
+        except Exception:
+            pass
+        if not topic_seed:
+            first_line = answer_content.splitlines()[0] if answer_content else ""
+            topic_seed = first_line.strip()[:120] or answer_content[:120]
+        topic = topic_seed[:120] or "客户工作台判断"
+        # 从 retrieval_summary 的 evidenceHighlights 里挖证据 source ids
+        evidence_ids: list[str] = []
+        try:
+            experience = summary.get("workspaceAnswerExperience")
+            if isinstance(experience, dict):
+                material = experience.get("answerMaterial")
+                if isinstance(material, dict):
+                    highlights = material.get("evidenceHighlights")
+                    if isinstance(highlights, list):
+                        for item in highlights[:8]:
+                            if not isinstance(item, dict):
+                                continue
+                            source_id = str(item.get("sourceId") or item.get("documentId") or "").strip()
+                            if source_id:
+                                evidence_ids.append(source_id)
+        except Exception:
+            evidence_ids = []
+        judgment_id = new_id("jver")
+        summary_text = answer_content
+        if note:
+            summary_text = f"{answer_content}\n\n用户补充：{note}"
+        now = now_iso()
+        state.db.execute(
+            """
+            INSERT INTO judgment_versions(
+                id, client_id, target_type, target_id, topic, version, status,
+                summary, evidence_ids_json, context_pack_id, risk_level, confidence,
+                created_at, updated_at
+            ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                judgment_id,
+                client_id,
+                "workspace_answer",
+                message_id,
+                topic,
+                1,
+                "confirmed",
+                summary_text,
+                to_json(evidence_ids),
+                None,
+                "medium",
+                "medium",
+                now,
+                now,
+            ),
+        )
+        log_activity(
+            "judgment.create_from_workspace_answer",
+            "client",
+            client_id,
+            {"messageId": message_id, "judgmentId": judgment_id, "topic": topic, "evidenceCount": len(evidence_ids)},
+        )
+        return WorkspaceAnswerActionCardResultRecord(
+            messageId=message_id,
+            actionType="promote_to_judgment",
+            status="created",
+            summary=f"已沉淀为判断：{topic}",
+            taskId=None,
+        )
+
     @app.get("/api/v1/data-center/execution-retry-metrics", response_model=ExecutionRetryMetricsRecord)
     def get_data_center_execution_retry_metrics_api(
         clientId: str | None = Query(default=None),
@@ -37993,17 +39093,30 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         )
         return next_thread_id
 
-    def insert_user_chat_message(thread_id: str, prompt: str, timestamp: str) -> str:
+    def insert_user_chat_message(
+        thread_id: str,
+        prompt: str,
+        timestamp: str,
+        deep_thinking_requested: bool = False,
+        active_skill_id: str | None = None,
+        creativity_mode: str | None = None,
+    ) -> str:
         message_id = new_id("msg")
         state.db.execute(
             """
             INSERT INTO chat_messages(
                 id, thread_id, role, content, structured_data_json, model_route, llm_invoked, provider_used,
-                answer_mode, evidence_status, failure_reason, timing_json, retrieval_summary_json, evidence_json, status, created_at
+                answer_mode, evidence_status, failure_reason, timing_json, retrieval_summary_json, evidence_json, status, created_at,
+                deep_thinking_requested, active_skill_id, creativity_mode
             )
-            VALUES(?, ?, 'user', ?, NULL, NULL, 0, NULL, NULL, NULL, NULL, '{}', '{}', '[]', 'success', ?)
+            VALUES(?, ?, 'user', ?, NULL, NULL, 0, NULL, NULL, NULL, NULL, '{}', '{}', '[]', 'success', ?, ?, ?, ?)
             """,
-            (message_id, thread_id, prompt, timestamp),
+            (
+                message_id, thread_id, prompt, timestamp,
+                1 if deep_thinking_requested else 0,
+                active_skill_id,
+                creativity_mode,
+            ),
         )
         return message_id
 
@@ -38016,7 +39129,14 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             return 55.0, 92.0
         return 100.0, 100.0
 
-    def insert_loading_assistant_message(thread_id: str, retrieval_summary: dict[str, object], timestamp: str) -> str:
+    def insert_loading_assistant_message(
+        thread_id: str,
+        retrieval_summary: dict[str, object],
+        timestamp: str,
+        deep_thinking_requested: bool = False,
+        active_skill_id: str | None = None,
+        creativity_mode: str | None = None,
+    ) -> str:
         assistant_id = new_id("msg")
         provider_used = state.ai.current_provider()
         model_used = state.ai.current_model()
@@ -38045,9 +39165,10 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             """
             INSERT INTO chat_messages(
                 id, thread_id, role, content, structured_data_json, model_route, llm_invoked, provider_used,
-                answer_mode, evidence_status, failure_reason, timing_json, retrieval_summary_json, evidence_json, status, created_at
+                answer_mode, evidence_status, failure_reason, timing_json, retrieval_summary_json, evidence_json, status, created_at,
+                deep_thinking_requested, active_skill_id, creativity_mode
             )
-            VALUES(?, ?, 'assistant', ?, NULL, ?, 0, ?, NULL, NULL, NULL, '{}', ?, '[]', 'loading', ?)
+            VALUES(?, ?, 'assistant', ?, NULL, ?, 0, ?, NULL, NULL, NULL, '{}', ?, '[]', 'loading', ?, ?, ?, ?)
             """,
             (
                 assistant_id,
@@ -38057,6 +39178,9 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 provider_used,
                 to_json(merged_summary),
                 timestamp,
+                1 if deep_thinking_requested else 0,
+                active_skill_id,
+                creativity_mode,
             ),
         )
         return assistant_id
@@ -38868,23 +39992,67 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             evidence_status = "sufficient" if kernel_result.searchResult and kernel_result.searchResult.hits else "none"
         else:
             # P0+: Outline-First 多段生成（Pass 1 出大纲 → Pass 2-N 分段写）
-            # 通过 env YIYU_WORKSPACE_MULTIPASS_ENABLED=0 关闭以走回原单次调用。
-            multipass_enabled = os.environ.get("YIYU_WORKSPACE_MULTIPASS_ENABLED", "1") == "1"
+            # 触发条件：用户在前端勾选「深度思考」开关（chat_messages.deep_thinking_requested=1）。
+            # env YIYU_WORKSPACE_MULTIPASS_ENABLED=0 为系统级 kill switch，运维兜底用，无论用户怎么点都不走 multipass。
+            env_multipass_kill_switch = os.environ.get("YIYU_WORKSPACE_MULTIPASS_ENABLED", "1") != "0"
+            deep_thinking_row = state.db.fetchone(
+                "SELECT deep_thinking_requested FROM chat_messages WHERE id = ?",
+                (assistant_id,),
+            )
+            deep_thinking_requested = bool(
+                deep_thinking_row and int(deep_thinking_row["deep_thinking_requested"] or 0)
+            )
+            # R8：任务型请求探测 —— 任务型（做表/提取/列出/...）强制走单次 LLM，
+            # 不让 multipass 把"做产物"扩成"做产物的方法论文档"
+            is_task_request_now = is_task_request(prompt_for_context)
+            multipass_enabled = (
+                env_multipass_kill_switch
+                and deep_thinking_requested
+                and not is_task_request_now
+            )
             multipass_used = False
             multipass_fallback_reason: str | None = None
             multipass_outcome: MultipassAnswer | None = None
+            # R6：读 active_skill_id 对应的 distilled_md，作为风格引导喂给 multipass + 单次调用
+            writing_skill_md = ""
+            # R7：读 creativity_mode（NULL/不识别值 → 'strict' 老消息兼容）
+            chat_creativity_mode = "strict"
+            try:
+                active_skill_row = state.db.fetchone(
+                    "SELECT active_skill_id, creativity_mode FROM chat_messages WHERE id = ?",
+                    (assistant_id,),
+                )
+                if active_skill_row:
+                    raw_creativity = active_skill_row["creativity_mode"]
+                    if raw_creativity and str(raw_creativity) in {"creative", "balanced", "strict"}:
+                        chat_creativity_mode = str(raw_creativity)
+                    if active_skill_row["active_skill_id"]:
+                        skill_row = state.db.fetchone(
+                            "SELECT distilled_md FROM writing_skills WHERE id = ?",
+                            (str(active_skill_row["active_skill_id"]),),
+                        )
+                        if skill_row and skill_row["distilled_md"]:
+                            writing_skill_md = str(skill_row["distilled_md"])
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("[chat] read active_skill / creativity_mode failed: %s", exc)
+            print(f"[MULTIPASS-DEBUG] enter else branch: workflow={workspace_workflow} generation_mode={workspace_generation_mode} multipass_enabled={multipass_enabled} deep_thinking_requested={deep_thinking_requested} writing_skill_chars={len(writing_skill_md)}", flush=True)
 
             if multipass_enabled:
+                print(f"[MULTIPASS-DEBUG] entering multipass block", flush=True)
                 multipass_state: dict[str, Any] = {
                     "headline": "",
                     "judgment_line": "",
                     "sections": [],  # list[tuple[title, text]]
+                    "planned_titles": [],  # list[str]：Pass 1 给出的所有段标题（含未生成）
+                    "current_section_index": -1,
                 }
                 multipass_background_pack = build_workspace_background_pack(workspace_snapshot) or ""
 
                 def _compose_partial_markdown() -> str:
                     headline = str(multipass_state.get("headline") or "").strip()
                     sections = multipass_state.get("sections") or []
+                    streaming_text = str(multipass_state.get("current_streaming_text") or "").strip()
+                    streaming_title = str(multipass_state.get("current_streaming_title") or "").strip()
                     lines: list[str] = []
                     if headline:
                         lines.append(f"# {headline}")
@@ -38895,14 +40063,56 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                             lines.append(f"## {str(title).strip()}")
                             lines.append("")
                         lines.append(str(body).strip())
+                    if streaming_text:
+                        # 流式段追加在已完成段后；第 0 段不加 ## 标题（与下方 completed 段对齐）
+                        if sections:
+                            lines.append("")
+                            if streaming_title:
+                                lines.append(f"## {streaming_title}")
+                                lines.append("")
+                        lines.append(streaming_text)
                     rendered = "\n".join(lines).strip()
                     if not rendered and headline:
                         rendered = f"# {headline}\n\n（正在生成详细内容…）"
                     return rendered
 
+                def _build_multipass_summary_block() -> dict[str, object]:
+                    """组装可被前端"思考过程"组件读取的真实 multipass 状态。"""
+                    planned = list(multipass_state.get("planned_titles") or [])
+                    completed_titles = [t for (t, _) in (multipass_state.get("sections") or [])]
+                    current_idx = int(multipass_state.get("current_section_index") or -1)
+                    sections_state: list[dict[str, object]] = []
+                    for idx, title in enumerate(planned):
+                        if title in completed_titles:
+                            status = "completed"
+                        elif idx == current_idx:
+                            status = "generating"
+                        else:
+                            status = "pending"
+                        sections_state.append({
+                            "index": idx,
+                            "title": title,
+                            "status": status,
+                        })
+                    return {
+                        "multipass": {
+                            "used": True,
+                            "headline": str(multipass_state.get("headline") or ""),
+                            "judgmentLine": str(multipass_state.get("judgment_line") or ""),
+                            "sections": sections_state,
+                            "plannedCount": len(planned),
+                            "completedCount": len(completed_titles),
+                            "currentSectionIndex": current_idx,
+                            "currentSectionTitle": (
+                                planned[current_idx] if 0 <= current_idx < len(planned) else ""
+                            ),
+                        }
+                    }
+
                 def _on_outline_ready(outline: AnswerOutline) -> None:
                     multipass_state["headline"] = outline.headline
                     multipass_state["judgment_line"] = outline.judgment_line
+                    multipass_state["planned_titles"] = [s.title for s in outline.sections]
                     push_partial_analysis({
                         "content": _compose_partial_markdown(),
                         "stageLabel": f"已规划 {len(outline.sections)} 段大纲：{outline.headline[:32]}",
@@ -38915,12 +40125,41 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                             "timeline": "",
                         },
                     })
+                    _merge_assistant_retrieval_summary(assistant_id, _build_multipass_summary_block())
 
                 def _on_section_started(index: int, plan) -> None:  # noqa: ANN001
+                    multipass_state["current_section_index"] = index
+                    multipass_state["current_streaming_text"] = ""
+                    multipass_state["current_streaming_title"] = str(getattr(plan, "title", "") or "")
                     push_partial_analysis({
                         "content": _compose_partial_markdown(),
                         "stageLabel": f"正在生成第 {index + 1} 段：{plan.title}",
                         "progress": 66.0 + index * 7.0,
+                        "structured": None,
+                    })
+                    _merge_assistant_retrieval_summary(assistant_id, _build_multipass_summary_block())
+
+                def _on_section_partial(index: int, partial: dict[str, Any]) -> None:
+                    # R4：流式 partial 推送 —— 每收到一批 token 就把累计文本写到 db.content，
+                    # 让前端 typewriter 跟着 actualText 增长追字。
+                    if not partial:
+                        return
+                    streaming_content = str(partial.get("content") or "")
+                    multipass_state["current_streaming_text"] = streaming_content
+                    multipass_state["current_section_index"] = index
+                    planned_titles = list(multipass_state.get("planned_titles") or [])
+                    if 0 <= index < len(planned_titles):
+                        multipass_state["current_streaming_title"] = planned_titles[index]
+                    stage_label = str(partial.get("stageLabel") or "")
+                    progress_value = partial.get("progress")
+                    try:
+                        progress_number = float(progress_value) if progress_value is not None else 70.0
+                    except (TypeError, ValueError):
+                        progress_number = 70.0
+                    push_partial_analysis({
+                        "content": _compose_partial_markdown(),
+                        "stageLabel": stage_label or f"正在生成第 {index + 1} 段",
+                        "progress": progress_number,
                         "structured": None,
                     })
 
@@ -38928,26 +40167,42 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                     sections = list(multipass_state.get("sections") or [])
                     sections.append((title, section_text))
                     multipass_state["sections"] = sections
+                    multipass_state["current_section_index"] = -1
+                    # 清空流式缓冲：当前段已经在 sections 里了，不再需要 streaming 段追加
+                    multipass_state["current_streaming_text"] = ""
+                    multipass_state["current_streaming_title"] = ""
                     push_partial_analysis({
                         "content": _compose_partial_markdown(),
                         "stageLabel": f"已完成第 {index + 1} 段：{title}",
                         "progress": min(95.0, 70.0 + (index + 1) * 7.0),
                         "structured": None,
                     })
+                    _merge_assistant_retrieval_summary(assistant_id, _build_multipass_summary_block())
 
                 try:
+                    # R1：构造"战略素材包"喂给 Pass 1（出大纲），避免大纲只能围绕"项目进展"组织。
+                    multipass_strategic_pack = build_strategic_pack(
+                        workspace_snapshot,
+                        prompt=prompt_for_context,
+                    ) or ""
+                    print(f"[MULTIPASS-DEBUG] calling generate_multipass_answer, bg_pack_chars={len(multipass_background_pack)}, strategic_pack_chars={len(multipass_strategic_pack)}, full_context_chars={len(open_context)}", flush=True)
                     multipass_outcome = generate_multipass_answer(
                         question=prompt_for_context,
                         background_pack=multipass_background_pack,
                         evidence_summary=evidence_summary.summaryText or "",
                         full_context=open_context,
                         ai_service=state.ai,
+                        strategic_pack=multipass_strategic_pack,
+                        writing_skill_md=writing_skill_md,
+                        creativity_mode=chat_creativity_mode,
                         on_outline_ready=_on_outline_ready,
                         on_section_started=_on_section_started,
+                        on_section_partial=_on_section_partial,
                         on_section_completed=_on_section_completed,
                         max_sections=4,
                         section_max_tokens=4500,
                     )
+                    print(f"[MULTIPASS-DEBUG] outcome sections_generated={multipass_outcome.sections_generated} failure_stage={multipass_outcome.failure_stage} llm_attempts={multipass_outcome.llm_attempt_count}", flush=True)
                     if multipass_outcome.sections_generated > 0 and multipass_outcome.markdown.strip():
                         structured = state.ai._structured_from_plain_answer(multipass_outcome.markdown)  # noqa: SLF001
                         if not structured.judgment:
@@ -38971,11 +40226,57 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                     multipass_fallback_reason = f"multipass_exception: {exc.__class__.__name__}: {exc}"
                     logger.warning("[multipass] unexpected error, fallback to single-pass", exc_info=True)
 
+            # 把 multipass 最终状态写到 retrieval_summary，让前端"思考过程"组件能判断走的哪条路径
+            _merge_assistant_retrieval_summary(
+                assistant_id,
+                {
+                    "multipassUsed": bool(multipass_used),
+                    "multipassFallbackReason": multipass_fallback_reason,
+                    "multipassSectionsGenerated": (
+                        int(multipass_outcome.sections_generated)
+                        if multipass_outcome is not None else 0
+                    ),
+                    "multipassSectionsPlanned": (
+                        len(multipass_outcome.outline.sections)
+                        if multipass_outcome is not None else 0
+                    ),
+                    "multipassFailureStage": (
+                        multipass_outcome.failure_stage
+                        if multipass_outcome is not None else None
+                    ),
+                },
+            )
+
             if multipass_used:
                 pass  # 已经成功，跳过单次调用
             else:
                 try:
                     llm_attempt_count += 1
+                    # R5：让普通回答（单次 LLM）也读 strategic_pack，并开启 depth_mode
+                    # 让答案长度从 600-1200 字扩展到 1500-2500 字，同时强制挖项目名/数字/时间节点。
+                    # multipass 已经构造过 strategic_pack 时复用；否则重新构造。
+                    # R8.15：任务型请求改喂「客户全文件目录」（替代 strategic_pack），让 LLM 看到
+                    # 全部已上传文件名（而不仅 DNA 里零散提到的几个），适合做表/提取/列出全部 X 的场景。
+                    single_pass_strategic_pack = ""
+                    try:
+                        if is_task_request_now:
+                            # R9：任务型喂「客户全域资源索引」（5 个域元数据：文档/项目/判断/会议/目标）
+                            # 让 LLM 看到客户全集元数据，不依赖检索 top-K 命中
+                            single_pass_strategic_pack = build_client_resource_index(
+                                workspace_snapshot,
+                                prompt=prompt_for_context,
+                            ) or ""
+                        else:
+                            existing_strategic = locals().get("multipass_strategic_pack")
+                            if isinstance(existing_strategic, str) and existing_strategic.strip():
+                                single_pass_strategic_pack = existing_strategic
+                            else:
+                                single_pass_strategic_pack = build_strategic_pack(
+                                    workspace_snapshot,
+                                    prompt=prompt_for_context,
+                                ) or ""
+                    except Exception as exc:  # noqa: BLE001 — strategic_pack 失败不阻断单次回答
+                        logger.warning("[single-pass] build_strategic_pack failed: %s", exc)
                     structured = state.ai.generate_raw_evidence_response(
                         prompt_for_context,
                         open_model_system_instruction,
@@ -38984,6 +40285,11 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                         timeout_seconds=generation_timeout_seconds,
                         max_tokens=5600 if workspace_generation_mode == "consultant_synthesis" else 5200,
                         enable_thinking=True,
+                        strategic_pack=single_pass_strategic_pack,
+                        depth_mode=True,
+                        writing_skill_md=writing_skill_md,
+                        creativity_mode=chat_creativity_mode,
+                        task_mode=is_task_request_now,
                     )
                 except AiInvocationError as error:
                     provider_used = error.provider
@@ -40028,7 +41334,26 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
 
             timestamp = now_iso()
             thread_id = ensure_chat_thread(client_id, payload.threadId, payload.prompt, timestamp)
-            user_message_id = insert_user_chat_message(thread_id, payload.prompt, timestamp)
+            # 校验 activeSkillId 存在（防止前端传 stale id）
+            active_skill_id: str | None = None
+            if payload.activeSkillId:
+                skill_row = state.db.fetchone(
+                    "SELECT id FROM writing_skills WHERE id = ?", (payload.activeSkillId,)
+                )
+                if skill_row:
+                    active_skill_id = str(skill_row["id"])
+            # R7：normalize creativity mode（防止前端传非法值）
+            requested_creativity_mode = str(payload.creativityMode or "balanced").lower()
+            if requested_creativity_mode not in {"creative", "balanced", "strict"}:
+                requested_creativity_mode = "balanced"
+            user_message_id = insert_user_chat_message(
+                thread_id,
+                payload.prompt,
+                timestamp,
+                payload.deepThinking,
+                active_skill_id=active_skill_id,
+                creativity_mode=requested_creativity_mode,
+            )
             retrieval_summary: dict[str, object] = {}
             if payload.searchId:
                 bundle, _ = load_cached_retrieval_bundle(client_id, payload.searchId, payload.prompt)
@@ -40037,7 +41362,19 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                         **bundle.retrieval_summary,
                         "searchId": payload.searchId,
                     }
-            assistant_id = insert_loading_assistant_message(thread_id, retrieval_summary, timestamp)
+            if payload.deepThinking:
+                retrieval_summary["deepThinkingRequested"] = True
+            if active_skill_id:
+                retrieval_summary["activeSkillId"] = active_skill_id
+            retrieval_summary["creativityMode"] = requested_creativity_mode
+            assistant_id = insert_loading_assistant_message(
+                thread_id,
+                retrieval_summary,
+                timestamp,
+                payload.deepThinking,
+                active_skill_id=active_skill_id,
+                creativity_mode=requested_creativity_mode,
+            )
             analysis_run = create_client_analysis_run(client_id, thread_id, user_message_id, assistant_id, payload.prompt, timestamp)
             state.db.execute("UPDATE chat_threads SET updated_at = ? WHERE id = ?", (timestamp, thread_id))
             user_row = state.db.fetchone("SELECT * FROM chat_messages WHERE id = ?", (user_message_id,))
@@ -40185,6 +41522,185 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             "deletedIds": deleted_ids,
             "threadDeleted": thread_deleted,
         }
+
+    # ============================================================
+    # R6: 写作风格 skill —— 用户可创建、调用、复制别人的写作风格。
+    # ============================================================
+    def _writing_skill_row_to_record(row) -> WritingSkillRecord:
+        return WritingSkillRecord(
+            id=str(row["id"]),
+            name=str(row["name"]),
+            description=str(row["description"] or ""),
+            distilledMd=str(row["distilled_md"] or ""),
+            isBuiltin=bool(int(row["is_builtin"] or 0)),
+            sortOrder=int(row["sort_order"] or 100),
+            createdAt=str(row["created_at"]),
+            updatedAt=str(row["updated_at"]),
+        )
+
+    @app.get("/api/v1/writing-skills", response_model=list[WritingSkillRecord])
+    def list_writing_skills() -> list[WritingSkillRecord]:
+        rows = state.db.fetchall(
+            "SELECT * FROM writing_skills ORDER BY sort_order ASC, created_at ASC"
+        )
+        return [_writing_skill_row_to_record(row) for row in rows]
+
+    @app.post("/api/v1/writing-skills", response_model=WritingSkillRecord)
+    def create_writing_skill(payload: WritingSkillCreatePayload) -> WritingSkillRecord:
+        name = (payload.name or "").strip()
+        distilled = (payload.distilledMd or "").strip()
+        if not name:
+            raise HTTPException(status_code=400, detail="skill name is required")
+        if not distilled:
+            raise HTTPException(status_code=400, detail="distilledMd is required (run /distill first)")
+        if len(distilled) > 6000:
+            raise HTTPException(status_code=400, detail="distilledMd too long (max 6000 chars)")
+        skill_id = new_id("skill")
+        timestamp = now_iso()
+        state.db.execute(
+            """
+            INSERT INTO writing_skills(
+                id, name, description, distilled_md, is_builtin, sort_order, created_at, updated_at
+            )
+            VALUES(?, ?, ?, ?, 0, ?, ?, ?)
+            """,
+            (
+                skill_id,
+                name,
+                (payload.description or "").strip(),
+                distilled,
+                int(payload.sortOrder or 100),
+                timestamp,
+                timestamp,
+            ),
+        )
+        row = state.db.fetchone("SELECT * FROM writing_skills WHERE id = ?", (skill_id,))
+        assert row is not None
+        return _writing_skill_row_to_record(row)
+
+    @app.put("/api/v1/writing-skills/{skill_id}", response_model=WritingSkillRecord)
+    def update_writing_skill(skill_id: str, payload: WritingSkillUpdatePayload) -> WritingSkillRecord:
+        row = state.db.fetchone("SELECT * FROM writing_skills WHERE id = ?", (skill_id,))
+        if row is None:
+            raise HTTPException(status_code=404, detail="skill not found")
+        is_builtin = bool(int(row["is_builtin"] or 0))
+        sets: list[str] = []
+        params: list[object] = []
+        if payload.name is not None and payload.name.strip():
+            sets.append("name = ?")
+            params.append(payload.name.strip())
+        if payload.description is not None:
+            sets.append("description = ?")
+            params.append(payload.description.strip())
+        if payload.distilledMd is not None:
+            if is_builtin:
+                raise HTTPException(status_code=400, detail="cannot modify distilledMd of builtin skill")
+            cleaned = payload.distilledMd.strip()
+            if not cleaned:
+                raise HTTPException(status_code=400, detail="distilledMd cannot be empty")
+            if len(cleaned) > 6000:
+                raise HTTPException(status_code=400, detail="distilledMd too long (max 6000 chars)")
+            sets.append("distilled_md = ?")
+            params.append(cleaned)
+        if payload.sortOrder is not None:
+            sets.append("sort_order = ?")
+            params.append(int(payload.sortOrder))
+        if not sets:
+            return _writing_skill_row_to_record(row)
+        timestamp = now_iso()
+        sets.append("updated_at = ?")
+        params.append(timestamp)
+        params.append(skill_id)
+        state.db.execute(
+            f"UPDATE writing_skills SET {', '.join(sets)} WHERE id = ?",
+            tuple(params),
+        )
+        updated = state.db.fetchone("SELECT * FROM writing_skills WHERE id = ?", (skill_id,))
+        assert updated is not None
+        return _writing_skill_row_to_record(updated)
+
+    @app.delete("/api/v1/writing-skills/{skill_id}")
+    def delete_writing_skill(skill_id: str) -> dict[str, object]:
+        row = state.db.fetchone("SELECT * FROM writing_skills WHERE id = ?", (skill_id,))
+        if row is None:
+            raise HTTPException(status_code=404, detail="skill not found")
+        if bool(int(row["is_builtin"] or 0)):
+            raise HTTPException(status_code=400, detail="cannot delete builtin skill")
+        state.db.execute("DELETE FROM writing_skills WHERE id = ?", (skill_id,))
+        return {"deleted": True, "id": skill_id}
+
+    @app.post("/api/v1/writing-skills/distill", response_model=WritingSkillDistillResult)
+    def distill_writing_skill(payload: WritingSkillDistillPayload) -> WritingSkillDistillResult:
+        samples = [str(s or "").strip() for s in (payload.samples or []) if str(s or "").strip()]
+        if len(samples) < 3:
+            raise HTTPException(status_code=400, detail="at least 3 samples required")
+        if len(samples) > 5:
+            raise HTTPException(status_code=400, detail="at most 5 samples")
+        for idx, sample in enumerate(samples):
+            if len(sample) < 200:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"sample {idx + 1} too short (need >= 200 chars, got {len(sample)})",
+                )
+            if len(sample) > 3000:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"sample {idx + 1} too long (max 3000 chars, got {len(sample)})",
+                )
+        total = sum(len(s) for s in samples)
+        if total > 10000:
+            raise HTTPException(status_code=400, detail=f"total samples too long ({total} > 10000)")
+
+        ai_unavailable_detail = _packaged_workspace_chat_ai_unavailable_detail()
+        if ai_unavailable_detail:
+            raise HTTPException(status_code=409, detail=ai_unavailable_detail)
+
+        joined_samples = "\n\n---\n\n".join(
+            f"【样本 {idx + 1}】\n{sample}" for idx, sample in enumerate(samples)
+        )
+        distill_system = (
+            "你是文风分析专家。下面是用户挑选出的代表性文章样本，请提炼它们的共同写作风格。\n"
+            "分析时关注 5 个维度（只写真实显著的特征，不要套通用模板）：\n"
+            "1. 句式偏好：长短句配比、常用连词、对仗/排比/反问的使用\n"
+            "2. 段落组织：每段如何起、如何收、过渡方式\n"
+            "3. 论点呈现：先给结论 vs 先铺事实、对比型 vs 列举型、抽象 vs 具象\n"
+            "4. 用词偏好：书面 vs 口语、专业术语 vs 日常比喻、特定词汇模式\n"
+            "5. 节奏与气质：信息密度、留白、转折/停顿、整体气质（严肃/松弛/犀利/温和）\n"
+            "\n"
+            "输出格式：直接写一段 markdown，按维度列出「这种风格的特征是 X，例如：[原文中的句子]」。\n"
+            "总字数控制在 600-1200 字。\n"
+            "不要写「我观察到...」这种元评论；不要总结文章主题（你只分析「怎么写」，不分析「写什么」）；\n"
+            "不要套八股，只写真实存在的风格特征。\n"
+            "回答开头直接写「## 风格特征」，不要加任何前言。"
+        )
+        distill_user = (
+            "用户给这个风格起的初步名字（仅供参考，可在结尾给出 suggestedName 改进建议）："
+            f"{payload.skillName or '（用户未命名）'}\n\n"
+            "样本：\n"
+            f"{joined_samples}"
+        )
+        try:
+            distilled = state.ai._qwen_generate(  # noqa: SLF001
+                prompt=distill_user,
+                system_instruction=distill_system,
+                response_schema=None,
+                timeout_seconds=60.0,
+                max_tokens=2200,
+                temperature=0.45,
+                top_p=0.92,
+                enable_thinking=False,
+                task_kind="fast_structured",
+            )
+        except Exception as exc:
+            raise HTTPException(status_code=502, detail=f"LLM distill failed: {exc}") from exc
+        distilled_text = str(distilled or "").strip()
+        if not distilled_text:
+            raise HTTPException(status_code=502, detail="LLM returned empty distilled markdown")
+        return WritingSkillDistillResult(
+            distilledMd=distilled_text[:6000],
+            samplesProcessed=len(samples),
+            suggestedName=(payload.skillName or "").strip(),
+        )
 
     @app.post("/api/v1/clients/{client_id}/workspace/chat", response_model=ChatMessageRecord)
     def send_chat_message(client_id: str, payload: ChatRequest) -> ChatMessageRecord:
@@ -42464,7 +43980,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 timestamp,
             ),
         )
-        ingest_document_knowledge(
+        ingest_result = ingest_document_knowledge(
             state.db,
             data_dir=state.data_dir,
             client_id=resolved_client_id,
@@ -42479,6 +43995,12 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             created_at=timestamp,
             ai_service=None,
         )
+        # 同 family_id 已存在时 ingest 会把当前文件扔垃圾桶并 DELETE 本轮 documents 行，
+        # 返回 dedup_kept_document_id 指向已有那一份。切换到现存 doc，避免接下来 fetchone None。
+        if isinstance(ingest_result, dict) and ingest_result.get("dedup_skipped") and ingest_result.get("dedup_kept_document_id"):
+            kept_id = str(ingest_result["dedup_kept_document_id"])
+            if kept_id:
+                document_id = kept_id
         document_row = state.db.fetchone("SELECT * FROM documents WHERE id = ?", (document_id,))
         if not document_row:
             raise HTTPException(status_code=500, detail="附件归档失败。")

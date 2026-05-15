@@ -5,6 +5,7 @@ import {
   Settings,
   Plus,
   AlertCircle,
+  Check,
   CheckCircle2,
   Bot,
   Circle,
@@ -61,6 +62,10 @@ import {
   ClipboardList,
   Mic,
   StopCircle,
+  Palette,
+  Wand2,
+  Scale,
+  ShieldCheck,
 } from 'lucide-react';
 
 import type {
@@ -262,6 +267,7 @@ import {
   createWorkspaceAnswerActionEvidenceRequest,
   createWorkspaceAnswerActionProposal,
   createWorkspaceAnswerActionTask,
+  promoteWorkspaceAnswerToJudgment,
   createWeeklyReview,
   createWeeklyReviewDraft,
   deleteTask,
@@ -380,6 +386,11 @@ import {
   getClientChatThread,
   deleteClientChatMessagePair,
   startClientMessage,
+  listWritingSkills,
+  createWritingSkill,
+  updateWritingSkill,
+  deleteWritingSkill,
+  distillWritingSkill,
   getClientMessage,
   updateEmployeeRole,
   updateEmployeeDepartment,
@@ -409,7 +420,6 @@ import {
   updateTaskTag,
   updateTask,
   uploadTaskAttachment,
-  uploadTaskAttachmentFromMarkdown,
   deleteTaskAttachment,
   summarizeRecordingMeetingMinutes,
   updateTopicsSettings,
@@ -568,6 +578,13 @@ type RecentUsedDocument = {
 
 const RECENT_USED_DOCUMENTS_STORAGE_KEY = 'yiyu.workspace.recentUsedDocuments.v1';
 const RECENT_USED_DOCUMENTS_LIMIT = 30;
+
+// 录音 → 会议纪要的跨 scope 桥接：录音 onComplete 在 App level，会议纪要
+// textarea 的 state 在 TasksView 内部。用一个 module-level Map 暂存最近一次
+// 录音完成时生成的纪要 markdown，TasksView 打开对应任务时取出并填进 textarea。
+// 同时配合 window CustomEvent，让 task modal 当前已打开的情况下立刻填充。
+const RECORDING_MINUTES_EVENT = 'yiyu:recording-minutes-ready';
+const recentRecordingMinutesByTaskId = new Map<string, string>();
 
 function readStoredRecentUsedDocuments(clientId: string): RecentUsedDocument[] {
   if (!clientId || typeof window === 'undefined') return [];
@@ -731,7 +748,7 @@ type ClientTextDocumentDraft = {
 
 type ClientLinkMaterialDraft = {
   url: string;
-  detectedPlatform: 'bilibili' | 'xiaohongshu' | 'unsupported' | '';
+  detectedPlatform: 'bilibili' | 'xiaohongshu' | 'wechat_article' | 'unsupported' | '';
   detectedLabel: string;
 };
 
@@ -1753,7 +1770,30 @@ type AnswerBlock =
   | { type: 'heading'; text: string }
   | { type: 'subheading'; text: string }
   | { type: 'paragraph'; text: string }
-  | { type: 'list'; items: string[]; ordered: boolean };
+  | { type: 'list'; items: string[]; ordered: boolean }
+  | { type: 'table'; header: string[]; rows: string[][] };
+
+// R8.14: 探测是否是 markdown 表格行：以 | 开头、以 | 结尾、中间至少有一个 |
+function isTableRow(line: string): boolean {
+  const trimmed = line.trim();
+  if (!trimmed.startsWith('|') || !trimmed.endsWith('|')) return false;
+  // 至少要有 2 个 | 把内容分成至少 1 列
+  return (trimmed.match(/\|/g) || []).length >= 2;
+}
+
+// 切分一行 markdown 表格行为单元格数组
+function splitTableRow(line: string): string[] {
+  const trimmed = line.trim();
+  // 去掉首尾的 |，按 | 切分
+  const inner = trimmed.slice(1, -1);
+  return inner.split('|').map((cell) => cell.trim());
+}
+
+// 探测是否是分隔行（`| --- | --- |` 或 `| :---: | :---- |`）
+function isTableSeparatorRow(line: string): boolean {
+  if (!isTableRow(line)) return false;
+  return splitTableRow(line).every((cell) => /^:?-{3,}:?$/.test(cell));
+}
 
 function parseAnswerBlocks(text: string): AnswerBlock[] {
   let cleaned = normalizeAnswerTextForDisplay(text);
@@ -1794,6 +1834,45 @@ function parseAnswerBlocks(text: string): AnswerBlock[] {
       flushParagraph();
       flushList();
       continue;
+    }
+    // R8.14: markdown 表格识别（连续 | ... | 行聚合为 table block）
+    if (isTableRow(line)) {
+      flushParagraph();
+      flushList();
+      // 向前 lookahead 看连续 table rows
+      const tableRows: string[] = [line];
+      let cursor = index + 1;
+      while (cursor < lines.length) {
+        const candidate = lines[cursor].trim();
+        if (isTableRow(candidate)) {
+          tableRows.push(candidate);
+          cursor += 1;
+        } else if (!candidate) {
+          // 表格行间偶有空行也容忍（前端再次防御 GFM 严格性）
+          const next = lines.slice(cursor + 1).find((l) => l.trim());
+          if (next && isTableRow(next.trim())) {
+            cursor += 1; // 跳过空行
+            continue;
+          }
+          break;
+        } else {
+          break;
+        }
+      }
+      index = cursor - 1; // 把循环游标推进到最后一个 table row
+      // 至少要有 2 行（含 header）才算表格；否则当 paragraph 处理
+      if (tableRows.length >= 2) {
+        // 第一行作为 header；第二行如果是分隔行就跳过；其余作为 data rows
+        const header = splitTableRow(tableRows[0]);
+        const dataStart = isTableSeparatorRow(tableRows[1]) ? 2 : 1;
+        const rows = tableRows.slice(dataStart).map((row) => splitTableRow(row));
+        blocks.push({ type: 'table', header, rows });
+        continue;
+      } else {
+        // 退化为 paragraph
+        paragraphBuffer.push(tableRows[0]);
+        continue;
+      }
     }
     if (index === firstNonEmptyIndex && treatFirstAsTitle) {
       blocks.push({ type: 'title', text: line.replace(/^#{1,6}\s*/, '') });
@@ -1895,6 +1974,44 @@ function AnswerDocument({ text }: { text: string }) {
                 <li key={`list-item-${index}-${itemIndex}`} className="pl-1">{renderInlineEmphasis(item)}</li>
               ))}
             </ListTag>
+          );
+        }
+        if (block.type === 'table') {
+          // R8.14: markdown 表格渲染
+          return (
+            <div key={`table-${index}`} className="overflow-x-auto rounded-xl border border-[#d8defb] bg-white">
+              <table className="w-full text-[13px] xl:text-[14px]">
+                <thead>
+                  <tr className="bg-[#f3f5fc]">
+                    {block.header.map((cell, cellIndex) => (
+                      <th
+                        key={`th-${index}-${cellIndex}`}
+                        className="px-3 py-2 text-left font-semibold text-[#1f275b] border-b border-[#d8defb] whitespace-nowrap"
+                      >
+                        {renderInlineEmphasis(cell)}
+                      </th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {block.rows.map((row, rowIndex) => (
+                    <tr
+                      key={`tr-${index}-${rowIndex}`}
+                      className={rowIndex % 2 === 0 ? 'bg-white' : 'bg-[#fafbff]'}
+                    >
+                      {row.map((cell, cellIndex) => (
+                        <td
+                          key={`td-${index}-${rowIndex}-${cellIndex}`}
+                          className="px-3 py-2 text-[#30376b] border-b border-[#eef0f9] align-top leading-6"
+                        >
+                          {renderInlineEmphasis(cell)}
+                        </td>
+                      ))}
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
           );
         }
         const isLead = index === leadParagraphIndex;
@@ -2590,35 +2707,6 @@ const GlobalBannerHost = React.memo(function GlobalBannerHost() {
   );
 });
 
-function deriveLiveFocusQuestions(question: string, analysisFocus: string[]) {
-  const trimmed = question.trim();
-  const cues: string[] = [];
-  if (/财务|筹款|资金|收入|成本|预算/.test(trimmed)) {
-    cues.push('哪些原始财务信息真正支撑当前判断？');
-    cues.push('财务问题背后更像是结构问题、效率问题还是筹资问题？');
-  }
-  if (/战略|定位|方向|诊断|核心/.test(trimmed)) {
-    cues.push('当前最值得先回答的战略矛盾到底是什么？');
-    cues.push('哪些原始证据能够支撑阶段判断，而不是只支撑现象描述？');
-  }
-  if (/组织|团队|协作|管理|机制/.test(trimmed)) {
-    cues.push('问题的根因更偏组织机制，还是偏执行节奏与角色分工？');
-  }
-  if (/项目|业务|产品|服务/.test(trimmed)) {
-    cues.push('哪些业务线索能说明当前真正的增长抓手？');
-  }
-  if (cues.length === 0) {
-    cues.push('这个问题更像在问战略、业务、组织还是财务？');
-    cues.push('哪些原始材料最值得优先用于形成判断？');
-  }
-  for (const item of analysisFocus) {
-    const normalized = item.trim();
-    if (!normalized) continue;
-    cues.push(`当前需要先看清"${normalized}"在整体判断中的位置。`);
-  }
-  return Array.from(new Set(cues)).slice(0, 5);
-}
-
 const LiveThinkingTrace = React.memo(function LiveThinkingTrace({
   question,
   run,
@@ -2633,9 +2721,6 @@ const LiveThinkingTrace = React.memo(function LiveThinkingTrace({
   const trace = useMemo(() => {
     const payload = retrievalSummary?.workTrace;
     const normalized = payload && typeof payload === 'object' ? (payload as Record<string, unknown>) : {};
-    const analysisFocus = Array.isArray(normalized.analysisFocus)
-      ? normalized.analysisFocus.map((item) => String(item)).filter(Boolean)
-      : [];
     const backgroundTrail = Array.isArray(normalized.backgroundTrail)
       ? normalized.backgroundTrail.filter((item): item is Record<string, unknown> => Boolean(item && typeof item === 'object'))
       : [];
@@ -2645,8 +2730,37 @@ const LiveThinkingTrace = React.memo(function LiveThinkingTrace({
     const clientDnaTrail = Array.isArray(normalized.clientDnaTrail)
       ? normalized.clientDnaTrail.map((item) => String(item)).filter(Boolean)
       : [];
-    const analysisPlan = typeof normalized.analysisPlan === 'string' ? normalized.analysisPlan.trim() : '';
-    return { analysisFocus, backgroundTrail, webTrail, clientDnaTrail, analysisPlan };
+    return { backgroundTrail, webTrail, clientDnaTrail };
+  }, [retrievalSummary]);
+
+  // 真实 multipass 状态（如果走了 multipass，后端 _on_outline_ready/_on_section_* 会把这个写进来）
+  const multipass = useMemo(() => {
+    const raw = retrievalSummary?.multipass;
+    if (!raw || typeof raw !== 'object') return null;
+    const obj = raw as Record<string, unknown>;
+    const sectionsRaw = Array.isArray(obj.sections) ? obj.sections : [];
+    type MultipassSectionState = { index: number; title: string; status: 'pending' | 'generating' | 'completed' };
+    const sections: MultipassSectionState[] = sectionsRaw
+      .filter((item): item is Record<string, unknown> => Boolean(item && typeof item === 'object'))
+      .map((item, idx) => {
+        const statusValue = String(item.status || 'pending');
+        const status: MultipassSectionState['status'] =
+          statusValue === 'completed' || statusValue === 'generating' ? statusValue : 'pending';
+        return {
+          index: typeof item.index === 'number' ? item.index : idx,
+          title: String(item.title || '').trim(),
+          status,
+        };
+      });
+    return {
+      headline: String(obj.headline || ''),
+      judgmentLine: String(obj.judgmentLine || ''),
+      sections,
+      currentSectionIndex: typeof obj.currentSectionIndex === 'number' ? obj.currentSectionIndex : -1,
+      currentSectionTitle: String(obj.currentSectionTitle || ''),
+      plannedCount: typeof obj.plannedCount === 'number' ? obj.plannedCount : sections.length,
+      completedCount: typeof obj.completedCount === 'number' ? obj.completedCount : 0,
+    };
   }, [retrievalSummary]);
 
   const rawEvidenceCount = Math.max(run.evidenceSummary.rawChunkHitCount || 0, run.evidenceSummary.evidenceList.length || 0);
@@ -2657,37 +2771,43 @@ const LiveThinkingTrace = React.memo(function LiveThinkingTrace({
   );
   const webCount = trace.webTrail.length;
   const dnaCount = trace.clientDnaTrail.length;
-  const liveQuestions = useMemo(() => deriveLiveFocusQuestions(question, trace.analysisFocus), [question, trace.analysisFocus]);
 
+  // entries = 真实事件流（不再有"当前正在追问 X"硬编码模板）
   const entries = useMemo(() => {
-    const nextEntries = [
-      `阶段更新：${run.stageLabel || '正在处理当前问题'}`,
-      `已定位原始证据 ${rawEvidenceCount} 条，背景线索 ${backgroundCount} 条。`,
-      `联网补充 ${webCount} 条${dnaCount ? `，客户 DNA 背景 ${dnaCount} 项` : ''}。`,
-      ...liveQuestions.map((item) => `当前正在追问：${item}`),
-    ];
-    if (trace.analysisPlan) {
-      nextEntries.push(`组织答案时优先沿着这条主线展开：${trace.analysisPlan}`);
+    const lines: string[] = [];
+    // 检索阶段（真实命中数）
+    lines.push(`已命中原始证据 ${rawEvidenceCount} 条${backgroundCount ? `、背景线索 ${backgroundCount} 条` : ''}${dnaCount ? `、客户 DNA ${dnaCount} 项` : ''}${webCount ? `、互联网补充 ${webCount} 条` : ''}。`);
+
+    // multipass 模式：展示真实大纲 + 段落进度
+    if (multipass) {
+      if (multipass.headline) {
+        lines.push(`核心判断：${multipass.headline}`);
+      }
+      if (multipass.judgmentLine && multipass.judgmentLine !== multipass.headline) {
+        lines.push(`判断锚点：${multipass.judgmentLine}`);
+      }
+      if (multipass.sections.length > 0) {
+        lines.push(`已规划 ${multipass.sections.length} 段大纲：`);
+        for (const sec of multipass.sections) {
+          const icon = sec.status === 'completed' ? '✓' : sec.status === 'generating' ? '✎' : '·';
+          const stateLabel = sec.status === 'completed' ? '已完成' : sec.status === 'generating' ? '正在写' : '待写';
+          lines.push(`  ${icon} 第 ${sec.index + 1} 段：${sec.title}（${stateLabel}）`);
+        }
+      }
+      if (multipass.currentSectionIndex >= 0 && multipass.currentSectionTitle) {
+        lines.push(`正在写第 ${multipass.currentSectionIndex + 1} 段："${multipass.currentSectionTitle}"`);
+      }
+    } else if (run.stageLabel) {
+      // 没走 multipass（兜底 / 老链路）：只显示真实 stageLabel
+      lines.push(run.stageLabel);
     }
-    nextEntries.push('正在把已命中的线索压缩成能直接回答你的判断，而不是继续堆材料。');
-    return nextEntries.filter(Boolean);
-  }, [backgroundCount, dnaCount, liveQuestions, rawEvidenceCount, run.stageLabel, trace.analysisPlan, webCount]);
 
-  const [visibleEntries, setVisibleEntries] = useState<string[]>(() => entries.slice(0, 2));
+    return lines.filter(Boolean);
+  }, [rawEvidenceCount, backgroundCount, webCount, dnaCount, multipass, run.stageLabel]);
 
-  useEffect(() => {
-    setVisibleEntries(entries.slice(0, 2));
-    if (entries.length <= 2) return undefined;
-    let cursor = 2;
-    const timer = window.setInterval(() => {
-      setVisibleEntries((prev) => {
-        const next = [...prev, entries[cursor % entries.length]];
-        cursor += 1;
-        return next.slice(-6);
-      });
-    }, 1350);
-    return () => window.clearInterval(timer);
-  }, [entries]);
+  // entries 现在是"实时真实状态快照"（多段进度 + 命中数），不再是"动作时间线"。
+  // 直接全量展示，让用户能完整看到当前模型在做什么；如果太长再截最近 10 条。
+  const visibleEntries = useMemo(() => entries.slice(-10), [entries]);
 
   useEffect(() => {
     const container = scrollRef.current;
@@ -2704,7 +2824,7 @@ const LiveThinkingTrace = React.memo(function LiveThinkingTrace({
           </span>
           <div>
             <p className="text-[12px] font-bold text-[#314bbd]">思考过程</p>
-            <p className="text-[11px] text-slate-500">这里展示的是系统正在推进的工作轨迹，不是原始隐藏推理全文。</p>
+            <p className="text-[11px] text-slate-500">展示模型正在推进的真实步骤（规划大纲 → 分段生成），不是隐藏推理全文。</p>
           </div>
         </div>
         <div className="flex items-center gap-2 flex-wrap justify-end">
@@ -2735,6 +2855,68 @@ const THINKING_HELPER_LINES = [
   '如果等待较长，通常是长回答仍在生成，而不是进程停住。',
 ] as const;
 
+/**
+ * GPT 风格思考态：一行 shimmer 灰字 + 1-2 行轻量 stage。
+ * 无卡片、无边框、无背景。直接坐落在工作台背景上。
+ *
+ * 注意：不要在这里显示 multipass.headline（核心判断）—— headline 会作为最终答案的开头出现，
+ * 在思考态里再显示一次会导致同一句话出现两次。
+ */
+const ChatThinkingHint = React.memo(function ChatThinkingHint({
+  stageLabel,
+  currentSectionTitle,
+  currentSectionIndex,
+  compact = false,
+}: {
+  stageLabel?: string | null;
+  currentSectionTitle?: string | null;
+  currentSectionIndex?: number;
+  /** compact=true：只显示 shimmer 文字一行，不显示 stage / rolling line。
+   *  用于"答案已经开始流出，但 backend 仍在生成下一段"的场景。 */
+  compact?: boolean;
+}) {
+  const [helperIndex, setHelperIndex] = useState(0);
+  useEffect(() => {
+    if (compact) return undefined;
+    const timer = window.setInterval(() => setHelperIndex((prev) => prev + 1), 2200);
+    return () => window.clearInterval(timer);
+  }, [compact]);
+  const rollingLine = (() => {
+    if (currentSectionTitle && typeof currentSectionIndex === 'number' && currentSectionIndex >= 0) {
+      return `正在写第 ${currentSectionIndex + 1} 段："${currentSectionTitle}"`;
+    }
+    return THINKING_HELPER_LINES[helperIndex % THINKING_HELPER_LINES.length];
+  })();
+  const shimmerLine = (
+    <p
+      className={`${compact ? 'text-[11px]' : 'text-[13px]'} font-medium leading-relaxed`}
+      style={{
+        background: 'linear-gradient(90deg, #94a3b8 0%, #cbd5e1 25%, #f1f5f9 50%, #cbd5e1 75%, #94a3b8 100%)',
+        backgroundSize: '200% 100%',
+        WebkitBackgroundClip: 'text',
+        WebkitTextFillColor: 'transparent',
+        animation: 'yiyu-thinking-shimmer 2.4s linear infinite',
+      }}
+    >
+      {compact ? '还在继续生成…' : '正在思考...'}
+    </p>
+  );
+  if (compact) {
+    return <div className="mt-2">{shimmerLine}</div>;
+  }
+  return (
+    <div className="py-2 space-y-1">
+      {shimmerLine}
+      {stageLabel && (
+        <p className="text-[11px] leading-snug text-slate-400 truncate">{stageLabel}</p>
+      )}
+      <p key={rollingLine} className="text-[11px] leading-snug text-slate-400 truncate animate-[yiyu-thinking-fade_2.4s_ease-in-out]">
+        {rollingLine}
+      </p>
+    </div>
+  );
+});
+
 const ThinkingWorkbenchPanel = React.memo(function ThinkingWorkbenchPanel({
   question,
   startedAt,
@@ -2761,9 +2943,6 @@ const ThinkingWorkbenchPanel = React.memo(function ThinkingWorkbenchPanel({
   const trace = useMemo(() => {
     const payload = retrievalSummary?.workTrace;
     const normalized = payload && typeof payload === 'object' ? (payload as Record<string, unknown>) : {};
-    const analysisFocus = Array.isArray(normalized.analysisFocus)
-      ? normalized.analysisFocus.map((item) => String(item)).filter(Boolean)
-      : [];
     const backgroundTrail = Array.isArray(normalized.backgroundTrail)
       ? normalized.backgroundTrail.filter((item): item is Record<string, unknown> => Boolean(item && typeof item === 'object'))
       : [];
@@ -2773,7 +2952,35 @@ const ThinkingWorkbenchPanel = React.memo(function ThinkingWorkbenchPanel({
     const clientDnaTrail = Array.isArray(normalized.clientDnaTrail)
       ? normalized.clientDnaTrail.map((item) => String(item)).filter(Boolean)
       : [];
-    return { analysisFocus, backgroundTrail, webTrail, clientDnaTrail };
+    return { backgroundTrail, webTrail, clientDnaTrail };
+  }, [retrievalSummary]);
+
+  // 真实 multipass 状态（后端 _on_outline_ready / _on_section_* 写入 retrieval_summary.multipass）
+  const multipass = useMemo(() => {
+    const raw = retrievalSummary?.multipass;
+    if (!raw || typeof raw !== 'object') return null;
+    const obj = raw as Record<string, unknown>;
+    const sectionsRaw = Array.isArray(obj.sections) ? obj.sections : [];
+    type SectionState = { index: number; title: string; status: 'pending' | 'generating' | 'completed' };
+    const sections: SectionState[] = sectionsRaw
+      .filter((item): item is Record<string, unknown> => Boolean(item && typeof item === 'object'))
+      .map((item, idx) => {
+        const statusValue = String(item.status || 'pending');
+        const status: SectionState['status'] =
+          statusValue === 'completed' || statusValue === 'generating' ? statusValue : 'pending';
+        return {
+          index: typeof item.index === 'number' ? item.index : idx,
+          title: String(item.title || '').trim(),
+          status,
+        };
+      });
+    return {
+      headline: String(obj.headline || ''),
+      judgmentLine: String(obj.judgmentLine || ''),
+      sections,
+      currentSectionIndex: typeof obj.currentSectionIndex === 'number' ? obj.currentSectionIndex : -1,
+      currentSectionTitle: String(obj.currentSectionTitle || ''),
+    };
   }, [retrievalSummary]);
 
   const targetRaw = Math.max(run?.evidenceSummary.rawChunkHitCount || 0, run?.evidenceSummary.evidenceList.length || 0, mode === 'starting' ? 1 : 0);
@@ -2785,19 +2992,30 @@ const ThinkingWorkbenchPanel = React.memo(function ThinkingWorkbenchPanel({
     mode === 'starting' ? 2 : 0,
   );
   const targetWeb = Math.max(trace.webTrail.length, 0);
-  const liveQuestions = useMemo(() => deriveLiveFocusQuestions(question, trace.analysisFocus), [question, trace.analysisFocus]);
 
+  // entries 改造：丢弃硬编码"当前正在追问"，全部用真实事件
   const rollingEntries = useMemo(() => {
-    const stage = stageLabel || (mode === 'starting' ? '问题已发送，正在建立分析任务' : 'AI 正在持续组织长回答');
-    const lines = [
-      `阶段更新：${stage}`,
-      `引用原始证据 ${displayCounts.raw} 条，背景线索 ${displayCounts.background} 条。`,
-      `联网补充 ${displayCounts.web} 条。`,
-      ...liveQuestions.map((item) => `当前正在追问：${item}`),
-      THINKING_HELPER_LINES[helperIndex % THINKING_HELPER_LINES.length],
-    ];
+    const stage = stageLabel || (mode === 'starting' ? '问题已发送，正在建立分析任务' : '正在组织回答');
+    const lines: string[] = [stage];
+
+    if (multipass) {
+      if (multipass.headline) {
+        lines.push(`核心判断：${multipass.headline}`);
+      }
+      if (multipass.judgmentLine && multipass.judgmentLine !== multipass.headline) {
+        lines.push(`判断锚点：${multipass.judgmentLine}`);
+      }
+      if (multipass.sections.length > 0) {
+        lines.push(`已规划 ${multipass.sections.length} 段大纲：`);
+        for (const sec of multipass.sections) {
+          const icon = sec.status === 'completed' ? '✓' : sec.status === 'generating' ? '✎' : '·';
+          const stateLabel = sec.status === 'completed' ? '已完成' : sec.status === 'generating' ? '正在写' : '待写';
+          lines.push(`  ${icon} 第 ${sec.index + 1} 段：${sec.title}（${stateLabel}）`);
+        }
+      }
+    }
     return lines.filter(Boolean);
-  }, [displayCounts.background, displayCounts.raw, displayCounts.web, helperIndex, liveQuestions, mode, stageLabel]);
+  }, [stageLabel, mode, multipass]);
 
   useEffect(() => {
     const anchor = Date.parse(startedAt);
@@ -2845,9 +3063,19 @@ const ThinkingWorkbenchPanel = React.memo(function ThinkingWorkbenchPanel({
   }, [expanded, helperIndex]);
 
   const currentStageLabel = stageLabel || (mode === 'starting' ? '问题已发送，正在建立分析任务' : 'AI 正在计算，请稍候');
-  const rotatingLine = rollingEntries[helperIndex % Math.max(rollingEntries.length, 1)] || THINKING_HELPER_LINES[0];
+  // 折叠态展示一行 rotating：multipass 跑了的话，重点显示当前正在写的段；否则就 rotate helper
+  const rotatingLine = useMemo(() => {
+    if (multipass && multipass.currentSectionIndex >= 0 && multipass.currentSectionTitle) {
+      return `正在写第 ${multipass.currentSectionIndex + 1} 段："${multipass.currentSectionTitle}"`;
+    }
+    if (multipass?.headline) {
+      return `核心判断：${multipass.headline}`;
+    }
+    return THINKING_HELPER_LINES[helperIndex % THINKING_HELPER_LINES.length];
+  }, [helperIndex, multipass]);
   const collapsedSummaryLine = `原始证据 ${displayCounts.raw} 条，背景线索 ${displayCounts.background} 条，联网补充 ${displayCounts.web} 条。`;
-  const expandedLines = [collapsedSummaryLine, ...rollingEntries].slice(-6);
+  // 展开态：完整展示真实事件流（含全部段落进度）；行数封顶 12 防止溢出
+  const expandedLines = useMemo(() => [collapsedSummaryLine, ...rollingEntries].slice(0, 12), [collapsedSummaryLine, rollingEntries]);
   const partialAnswer = (run?.longAnswer || '').trim();
 
   return (
@@ -2863,8 +3091,7 @@ const ThinkingWorkbenchPanel = React.memo(function ThinkingWorkbenchPanel({
           </span>
           <div className="min-w-0">
             <div className="flex items-center gap-2 flex-wrap">
-              {/* P2.12 FREEZE(work-trace-ui): 工作轨迹标签与统计口径先冻结，验证期不要继续漂移。 */}
-              <p className="text-[15px] font-bold text-slate-800">工作轨迹</p>
+              <p className="text-[15px] font-bold text-slate-800">思考过程</p>
               <span className="rounded-full border border-slate-200 bg-white px-2 py-0.5 text-[10px] font-semibold text-slate-600">原始证据 {displayCounts.raw} 条</span>
               <span className="rounded-full border border-amber-200 bg-amber-50 px-2 py-0.5 text-[10px] font-semibold text-amber-700">背景线索 {displayCounts.background} 条</span>
               <span className="rounded-full border border-slate-200 bg-white px-2 py-0.5 text-[10px] font-semibold text-slate-500">联网补充 {displayCounts.web} 条</span>
@@ -2907,20 +3134,8 @@ const ThinkingWorkbenchPanel = React.memo(function ThinkingWorkbenchPanel({
             </div>
           )}
         </div>
-        {partialAnswer && (
-          <div className="mt-3 rounded-[22px] border border-emerald-100 bg-emerald-50/40 px-3 py-3">
-            <div className="flex items-center justify-between gap-3">
-              <div className="flex items-center gap-2">
-                <span className="inline-flex h-2 w-2 rounded-full bg-emerald-500 animate-pulse" />
-                <p className="text-[11px] font-bold uppercase tracking-[0.18em] text-emerald-700">正在成文</p>
-              </div>
-              <span className="text-[10px] text-emerald-600">已生成部分正文</span>
-            </div>
-            <div className="mt-3 max-h-[280px] overflow-y-auto rounded-[18px] bg-white/90 px-3 py-3 border border-emerald-100">
-              <AnswerDocument text={partialAnswer} />
-            </div>
-          </div>
-        )}
+        {/* 移除"正在成文"框：答案现在直接在主答案区由 StreamingAnswerDocument 打字机蹦字，
+            不需要在思考过程组件里再多一个临时答案预览框。 */}
       </div>
     </div>
   );
@@ -5117,6 +5332,9 @@ function detectClientLinkMaterialPlatform(value: string): ClientLinkMaterialDraf
   if (!raw) {
     return { url: raw, detectedPlatform: '', detectedLabel: '等待粘贴链接' };
   }
+  if (/mp\.weixin\.qq\.com\/s/i.test(raw)) {
+    return { url: raw, detectedPlatform: 'wechat_article', detectedLabel: '公众号' };
+  }
   if (/^BV[0-9A-Za-z]{8,}$/i.test(raw) || /(bilibili\.com|b23\.tv)/i.test(raw)) {
     return { url: raw, detectedPlatform: 'bilibili', detectedLabel: 'B站' };
   }
@@ -5539,6 +5757,232 @@ function TaskPropertyRow({ icon, label, children }: TaskPropertyRowProps) {
   );
 }
 
+// R6: 写作风格创建/编辑弹窗
+interface WritingSkillEditorModalProps {
+  mode: 'create' | 'edit';
+  targetSkill: import('../shared/types').WritingSkill | null;
+  onClose: () => void;
+  onSaved: (skill: import('../shared/types').WritingSkill) => void | Promise<void>;
+  flashError: (message: string) => void;
+}
+
+function WritingSkillEditorModal({
+  mode,
+  targetSkill,
+  onClose,
+  onSaved,
+  flashError,
+}: WritingSkillEditorModalProps) {
+  const [name, setName] = useState<string>(targetSkill?.name || '');
+  const [description, setDescription] = useState<string>(targetSkill?.description || '');
+  const [samples, setSamples] = useState<string>('');
+  const [distilledMd, setDistilledMd] = useState<string>(targetSkill?.distilledMd || '');
+  const [distilling, setDistilling] = useState<boolean>(false);
+  const [saving, setSaving] = useState<boolean>(false);
+
+  const isBuiltin = mode === 'edit' && targetSkill?.isBuiltin === true;
+  const samplePieces = samples
+    .split(/\n*---+\n*/)
+    .map((piece) => piece.trim())
+    .filter((piece) => piece.length > 0);
+  const totalChars = samplePieces.reduce((sum, piece) => sum + piece.length, 0);
+  const canDistill =
+    !isBuiltin &&
+    samplePieces.length >= 3 &&
+    samplePieces.length <= 5 &&
+    samplePieces.every((p) => p.length >= 200 && p.length <= 3000) &&
+    totalChars <= 10000;
+
+  const handleDistill = async () => {
+    if (!canDistill) return;
+    setDistilling(true);
+    try {
+      const result = await distillWritingSkill({ samples: samplePieces, skillName: name });
+      setDistilledMd(result.distilledMd);
+      if (!name && result.suggestedName) {
+        setName(result.suggestedName);
+      }
+    } catch (error) {
+      flashError(error instanceof Error ? error.message : '提炼失败');
+    } finally {
+      setDistilling(false);
+    }
+  };
+
+  const handleSave = async () => {
+    const trimmedName = name.trim();
+    const trimmedDistilled = distilledMd.trim();
+    if (!trimmedName) {
+      flashError('请填写风格名字');
+      return;
+    }
+    if (!trimmedDistilled) {
+      flashError('请先粘贴样本并点击「分析风格」生成提炼描述');
+      return;
+    }
+    setSaving(true);
+    try {
+      let saved: import('../shared/types').WritingSkill;
+      if (mode === 'edit' && targetSkill) {
+        saved = await updateWritingSkill(targetSkill.id, {
+          name: trimmedName,
+          description: description.trim(),
+          ...(isBuiltin ? {} : { distilledMd: trimmedDistilled }),
+        });
+      } else {
+        saved = await createWritingSkill({
+          name: trimmedName,
+          description: description.trim(),
+          distilledMd: trimmedDistilled,
+        });
+      }
+      await onSaved(saved);
+    } catch (error) {
+      flashError(error instanceof Error ? error.message : '保存失败');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-black/30 px-4 py-6 backdrop-blur-md md:py-10">
+      <div
+        className="my-auto flex max-h-[calc(100vh-48px)] w-full max-w-[820px] flex-col overflow-hidden rounded-[28px] border border-violet-200 bg-white shadow-[0_24px_80px_rgba(15,23,42,0.18)]"
+        onClick={(event) => event.stopPropagation()}
+      >
+        <div className="flex items-center justify-between border-b border-violet-100 px-7 py-5">
+          <div>
+            <div className="flex items-center gap-2 text-[15px] font-bold text-violet-900">
+              <Palette size={16} strokeWidth={2.6} />
+              {mode === 'create' ? '创建新写作风格' : `编辑写作风格「${targetSkill?.name || ''}」`}
+            </div>
+            <div className="mt-0.5 text-[11.5px] text-slate-500">
+              {isBuiltin
+                ? '系统内置风格：只能改名字和描述，不能改风格定义'
+                : '粘贴 3-5 篇代表性文章 → AI 提炼风格特征 → 你可再编辑 → 保存'}
+            </div>
+          </div>
+          <button
+            type="button"
+            onClick={onClose}
+            className="rounded-full p-1.5 text-slate-400 hover:bg-slate-100 hover:text-slate-700"
+          >
+            <X size={18} />
+          </button>
+        </div>
+
+        <div className="flex flex-col gap-4 overflow-y-auto px-7 py-5">
+          <div>
+            <label className="mb-1 block text-[11px] font-bold uppercase tracking-[0.16em] text-slate-500">
+              风格名字
+            </label>
+            <input
+              type="text"
+              value={name}
+              onChange={(event) => setName(event.target.value)}
+              placeholder="如：罗永浩风格、咨询顾问简报、刘润老师"
+              className="w-full rounded-xl border border-slate-200 bg-slate-50 px-3.5 py-2 text-[13px] outline-none focus:border-violet-400 focus:bg-white"
+            />
+          </div>
+
+          <div>
+            <label className="mb-1 block text-[11px] font-bold uppercase tracking-[0.16em] text-slate-500">
+              描述（可选）
+            </label>
+            <input
+              type="text"
+              value={description}
+              onChange={(event) => setDescription(event.target.value)}
+              placeholder="一句话描述这个风格的典型特征，方便以后认识"
+              className="w-full rounded-xl border border-slate-200 bg-slate-50 px-3.5 py-2 text-[13px] outline-none focus:border-violet-400 focus:bg-white"
+            />
+          </div>
+
+          {!isBuiltin && (
+            <div>
+              <div className="mb-1 flex items-center justify-between">
+                <label className="block text-[11px] font-bold uppercase tracking-[0.16em] text-slate-500">
+                  代表性样本（用 --- 分隔 3-5 篇）
+                </label>
+                <span className={`text-[10.5px] font-medium ${
+                  samplePieces.length >= 3 && samplePieces.length <= 5 && samplePieces.every((p) => p.length >= 200 && p.length <= 3000)
+                    ? 'text-emerald-600'
+                    : 'text-slate-400'
+                }`}>
+                  {samplePieces.length}/3-5 篇 · 总 {totalChars} 字
+                </span>
+              </div>
+              <textarea
+                value={samples}
+                onChange={(event) => setSamples(event.target.value)}
+                rows={10}
+                placeholder={'粘贴第一篇文章（200-3000 字）...\n\n---\n\n粘贴第二篇\n\n---\n\n粘贴第三篇'}
+                className="w-full rounded-xl border border-slate-200 bg-slate-50 px-3.5 py-2.5 text-[12px] leading-relaxed outline-none focus:border-violet-400 focus:bg-white"
+              />
+              <button
+                type="button"
+                onClick={() => void handleDistill()}
+                disabled={!canDistill || distilling}
+                className="mt-2 inline-flex items-center gap-2 rounded-xl bg-violet-600 px-4 py-2 text-[12.5px] font-bold text-white shadow-[0_4px_12px_rgba(139,92,246,0.3)] transition-all hover:bg-violet-700 disabled:opacity-50 disabled:shadow-none"
+              >
+                <Wand2 size={14} strokeWidth={2.6} />
+                {distilling ? '分析中…' : '分析风格 → 提炼共性'}
+              </button>
+              {!canDistill && samplePieces.length > 0 && (
+                <p className="mt-1.5 text-[11px] text-amber-600">
+                  {samplePieces.length < 3 && '至少需要 3 篇'}
+                  {samplePieces.length > 5 && '最多 5 篇'}
+                  {samplePieces.length >= 3 && samplePieces.length <= 5 && samplePieces.some((p) => p.length < 200) && '某篇少于 200 字'}
+                  {samplePieces.length >= 3 && samplePieces.length <= 5 && samplePieces.some((p) => p.length > 3000) && '某篇超过 3000 字'}
+                </p>
+              )}
+            </div>
+          )}
+
+          <div>
+            <label className="mb-1 block text-[11px] font-bold uppercase tracking-[0.16em] text-slate-500">
+              风格定义（{isBuiltin ? '内置不可改' : '可手动编辑'}）
+            </label>
+            <textarea
+              value={distilledMd}
+              onChange={(event) => !isBuiltin && setDistilledMd(event.target.value)}
+              readOnly={isBuiltin}
+              rows={isBuiltin ? 8 : 12}
+              placeholder={'分析后会自动填充，或你可以手写一段风格描述\n例如：\n## 句式偏好\n- 长短句猛烈交错...'}
+              className={`w-full rounded-xl border px-3.5 py-2.5 text-[12px] leading-relaxed outline-none ${
+                isBuiltin
+                  ? 'border-slate-200 bg-slate-100 text-slate-600 cursor-not-allowed'
+                  : 'border-slate-200 bg-slate-50 focus:border-violet-400 focus:bg-white'
+              }`}
+            />
+            <p className="mt-1 text-[10.5px] text-slate-400">
+              {distilledMd.length}/6000 字符
+            </p>
+          </div>
+        </div>
+
+        <div className="flex items-center justify-end gap-3 border-t border-slate-100 bg-slate-50/50 px-7 py-4">
+          <button
+            type="button"
+            onClick={onClose}
+            className="rounded-xl px-4 py-2 text-[12.5px] font-semibold text-slate-600 hover:bg-white"
+          >
+            取消
+          </button>
+          <button
+            type="button"
+            onClick={() => void handleSave()}
+            disabled={saving || !name.trim() || !distilledMd.trim()}
+            className="rounded-xl bg-violet-600 px-5 py-2 text-[12.5px] font-bold text-white shadow-[0_4px_12px_rgba(139,92,246,0.3)] transition-all hover:bg-violet-700 disabled:opacity-50 disabled:shadow-none"
+          >
+            {saving ? '保存中…' : mode === 'create' ? '创建' : '保存'}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export default function App() {
   const initialTodayState = getTodayCalendarState();
   const initialNavigationStateRef = useRef<InitialNavigationState | null>(null);
@@ -5574,6 +6018,14 @@ export default function App() {
   const [isMaintenanceModeLoading, setIsMaintenanceModeLoading] = useState(false);
   const [maintenanceModeBusyAction, setMaintenanceModeBusyAction] = useState<'enter' | 'exit' | null>(null);
   const [taskViewMode, setTaskViewMode] = useState<TaskViewMode>('calendar');
+  // 「组织计划」面板（侧栏 viewMap.plan_workshop）跟任务编辑器在不同 React 子树里：
+  // 任务模态框只在 TasksView 内挂载。这里用一次性脉冲把"打开任务详情 / 生成任务"请求
+  // 跨越 viewMap 边界传给 TasksView，让它切到 tasks 路由后再触发 openTaskEditor。
+  const [pendingPlanItemAction, setPendingPlanItemAction] = useState<
+    | { kind: 'open-task'; task: Task }
+    | { kind: 'generate-from-plan-item'; planItem: { id: string; title?: string; statement?: string }; scopeName: string }
+    | null
+  >(null);
   const taskViewportRef = useRef<HTMLDivElement | null>(null);
   const reviewViewportRef = useRef<HTMLDivElement | null>(null);
     const [taskSelectedDay, setTaskSelectedDay] = useState(initialTodayState.selectedDay);
@@ -6105,19 +6557,17 @@ export default function App() {
 
       const finalTitle = summaryTitle || fallbackTaskTitle;
 
-      // 3. 会议纪要落第二附件 —— 后端把 markdown 渲染成 .docx，
-      //    用户在任务详情双击附件可以直接用 Word/Pages 打开编辑。
+      // 3. 会议纪要直接贴进任务详情的「往里面贴文字」textarea，不再做成 .docx 附件。
+      //    跨 scope 通信：先写入 module-level Map（防止 task modal 还没打开时丢失），
+      //    再 dispatch CustomEvent（让已经打开的 task modal 立即填充）。
       if (summaryMinutesMd) {
+        recentRecordingMinutesByTaskId.set(binding.taskId, summaryMinutesMd);
         try {
-          await uploadTaskAttachmentFromMarkdown(binding.taskId, {
-            title: `${finalTitle}-会议纪要-${stamp}`,
-            markdown: summaryMinutesMd,
-            clientId: binding.clientId || undefined,
-            eventLineId: binding.eventLineId || undefined,
-            taskTitle: finalTitle,
-          });
-        } catch (err) {
-          console.warn('[recording] minutes attachment failed', err);
+          window.dispatchEvent(new CustomEvent(RECORDING_MINUTES_EVENT, {
+            detail: { taskId: binding.taskId, minutesMd: summaryMinutesMd },
+          }));
+        } catch {
+          // 极端情况：window event 失败也没关系，下次打开任务时会从 Map 读出。
         }
       }
 
@@ -8525,6 +8975,8 @@ export default function App() {
     tasks,
     workspace,
     workspaceSelectedMeetingId,
+    pendingPlanItemAction,
+    setPendingPlanItemAction,
 		  };
 
   type TasksViewBridgeState = {
@@ -8591,6 +9043,8 @@ export default function App() {
     tasks: typeof tasks;
     workspace: typeof workspace;
     workspaceSelectedMeetingId: typeof workspaceSelectedMeetingId;
+    pendingPlanItemAction: typeof pendingPlanItemAction;
+    setPendingPlanItemAction: typeof setPendingPlanItemAction;
   };
 
 	  const TasksView = useMemo(() => function TasksView() {
@@ -8658,6 +9112,8 @@ export default function App() {
       tasks,
       workspace,
       workspaceSelectedMeetingId,
+      pendingPlanItemAction,
+      setPendingPlanItemAction,
     } = tasksViewBridgeRef.current as TasksViewBridgeState;
     const buildDefaultCollaborators = (): MentionCandidate[] => {
       if (!effectiveTaskSettings.autoAssignSelf || !currentSessionUser) return [];
@@ -9794,6 +10250,8 @@ export default function App() {
         id: `pending-${file.name}-${file.size}-${file.lastModified}-${index}`,
         title: file.name,
         pending: true,
+        path: '',
+        pendingIndex: index,
       })),
       [pendingTaskAttachments],
     );
@@ -9803,11 +10261,44 @@ export default function App() {
           id: attachment.id,
           title: attachment.title,
           pending: false,
+          path: attachment.path || '',
+          pendingIndex: -1,
         }))),
         ...pendingTaskAttachmentChips,
       ],
       [editingTaskRecord?.attachments, pendingTaskAttachmentChips],
     );
+
+    const handleDeleteAttachmentChip = async (chip: { id: string; title: string; pending: boolean; pendingIndex: number }) => {
+      const confirmed = window.confirm(`确认删除附件「${chip.title}」？`);
+      if (!confirmed) return;
+      if (chip.pending) {
+        setPendingTaskAttachments((prev) => prev.filter((_, idx) => idx !== chip.pendingIndex));
+        return;
+      }
+      if (!editingTask.id) return;
+      try {
+        await deleteTaskAttachment(editingTask.id, chip.id, true);
+        await loadTaskBlock();
+        flash('success', `已删除附件「${chip.title}」`);
+      } catch (error) {
+        flash('error', error instanceof Error ? error.message : '删除附件失败');
+      }
+    };
+
+    const handleOpenAttachmentChip = (chip: { title: string; pending: boolean; path: string }) => {
+      if (chip.pending) {
+        flash('info', '附件保存后才能打开');
+        return;
+      }
+      if (!chip.path) {
+        flash('error', '附件没有本地路径，无法打开');
+        return;
+      }
+      void openPathBridge(chip.path).then((opened) => {
+        if (!opened) flash('error', '附件不存在或当前无法打开');
+      });
+    };
     const selectedEventLineSummary = sortedEventLines.find((item) => item.id === editingTask.eventLineId) || null;
     const taskClientPreview = useMemo(
       () =>
@@ -9886,6 +10377,27 @@ export default function App() {
       setTaskEventLineClarificationDraft(buildEventLineClarificationDraft(selectedEventLineSummary));
       setIsTaskEventLineClarifyMode(false);
     }, [isTaskModalOpen, selectedEventLineSummary]);
+
+    // 录音 → 会议纪要 接收器：
+    //   1) 打开任务模态框时检查 module-level Map（录音可能在模态框关闭期间完成）；
+    //   2) 监听 CustomEvent（模态框已经打开、录音刚完成的场景，实时填充）。
+    useEffect(() => {
+      if (!isTaskModalOpen || !editingTask.id) return undefined;
+      const pending = recentRecordingMinutesByTaskId.get(editingTask.id);
+      if (pending) {
+        setPendingTaskArchiveText((prev) => (prev ? `${prev}\n\n${pending}` : pending));
+        recentRecordingMinutesByTaskId.delete(editingTask.id);
+      }
+      const handleMinutesReady = (event: Event) => {
+        const detail = (event as CustomEvent).detail as { taskId?: string; minutesMd?: string } | undefined;
+        if (!detail?.taskId || !detail.minutesMd) return;
+        if (detail.taskId !== editingTask.id) return;
+        setPendingTaskArchiveText((prev) => (prev ? `${prev}\n\n${detail.minutesMd}` : (detail.minutesMd || '')));
+        recentRecordingMinutesByTaskId.delete(detail.taskId);
+      };
+      window.addEventListener(RECORDING_MINUTES_EVENT, handleMinutesReady);
+      return () => window.removeEventListener(RECORDING_MINUTES_EVENT, handleMinutesReady);
+    }, [isTaskModalOpen, editingTask.id]);
     useEffect(() => {
       if (!isTaskModalOpen || !editingTask.id || editingTask.scopeMode === 'PERSONAL_ONLY') {
         setTaskContextPreview(null);
@@ -11524,6 +12036,48 @@ export default function App() {
 	        shadow: true,
 	      }).catch(() => undefined);
 	    };
+
+    // 「组织计划」面板里点"生成任务"会调到这里：拿计划项当模板预填新建任务表单，
+    // planLinkSource='manager' + planLinkTouched=true 让保存逻辑走 patchTaskPlanLink。
+    // 注意：这个 const 必须在下面那个 useEffect 之前定义，否则 useEffect 闭包引用一个
+    // 尚未初始化的 binding，会触发 const TDZ 的 ReferenceError。
+    const handleGenerateTaskFromPlanItem = (
+      planItem: { id: string; title?: string; statement?: string },
+      scopeName: string,
+    ) => {
+      const candidates = [orgModelState, orgModelDraft];
+      let owningPlan: OrgDepartmentPlanSettings | undefined;
+      for (const source of candidates) {
+        owningPlan = source.departmentPlans.find(
+          (p) => (p.items || []).some((it) => it.id === planItem.id),
+        );
+        if (owningPlan) break;
+      }
+      openTaskEditor();
+      setEditingTask((prev) => ({
+        ...prev,
+        title: planItem.title || prev.title,
+        desc: planItem.statement || '',
+        planLinkDepartmentId: owningPlan?.departmentId || prev.planLinkDepartmentId,
+        planLinkPlanItemId: planItem.id,
+        planLinkSource: 'manager',
+        planLinkTouched: true,
+        planLinkReason: `已自动挂接到「${scopeName}${planItem.title ? ' · ' + planItem.title : ''}」，提交后会写入计划项的"挂接任务"。可在下方调整或换人指派。`,
+      }));
+    };
+
+    // 消费侧栏 viewMap.plan_workshop 透过 pendingPlanItemAction 投递过来的脉冲。
+    useEffect(() => {
+      if (!pendingPlanItemAction) return;
+      const pulse = pendingPlanItemAction;
+      setPendingPlanItemAction(null);
+      if (pulse.kind === 'open-task') {
+        openTaskEditor(pulse.task);
+      } else if (pulse.kind === 'generate-from-plan-item') {
+        handleGenerateTaskFromPlanItem(pulse.planItem, pulse.scopeName);
+      }
+      // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [pendingPlanItemAction]);
 
 	    useEffect(() => {
 	      const openDraftFromStrategic = (payload: StrategicTaskDraftRequest) => {
@@ -13751,6 +14305,8 @@ export default function App() {
               value={orgModelState}
               currentUser={currentSessionUser}
               onSavePlan={handleSavePlanFromWorkshop}
+              onOpenTask={(t) => openTaskEditor(t)}
+              onGenerateTaskFromPlanItem={handleGenerateTaskFromPlanItem}
             />
           )}
 
@@ -15435,13 +15991,29 @@ export default function App() {
                           {visibleTaskAttachmentChips.map((attachment) => (
                             <span
                               key={attachment.id}
-                              className="inline-flex items-center gap-1 rounded-lg border border-gray-200 bg-gray-50 px-2 py-1 text-[11px] text-gray-600"
+                              onDoubleClick={() => handleOpenAttachmentChip(attachment)}
+                              title={attachment.pending ? `${attachment.title}（保存后才能打开）` : `双击用系统应用打开：${attachment.title}`}
+                              className={`group/attachment inline-flex items-center gap-1 rounded-lg border border-gray-200 bg-gray-50 px-2 py-1 text-[11px] text-gray-600 ${
+                                attachment.pending ? '' : 'cursor-pointer hover:border-blue-200 hover:bg-blue-50'
+                              }`}
                             >
-                              <Paperclip size={10} className="text-gray-400" />
+                              <Paperclip size={10} className="text-gray-400 shrink-0" />
                               <span className="truncate max-w-[180px]">{attachment.title}</span>
                               {attachment.pending && (
                                 <span className="rounded bg-amber-100 px-1.5 py-0.5 text-[10px] text-amber-700">待保存</span>
                               )}
+                              <button
+                                type="button"
+                                onClick={(event) => {
+                                  event.stopPropagation();
+                                  void handleDeleteAttachmentChip(attachment);
+                                }}
+                                className="shrink-0 ml-0.5 rounded-full p-0.5 text-gray-300 opacity-0 transition-opacity hover:bg-rose-50 hover:text-rose-500 group-hover/attachment:opacity-100"
+                                aria-label={`删除附件 ${attachment.title}`}
+                                title="删除附件"
+                              >
+                                <X size={11} />
+                              </button>
                             </span>
                           ))}
                         </div>
@@ -16702,6 +17274,8 @@ export default function App() {
     };
     const [isEvidencePanelExpanded, setIsEvidencePanelExpanded] = useState(false);
     const [expandedEvidenceIds, setExpandedEvidenceIds] = useState<Set<string>>(() => new Set());
+    // 复制成功的内联反馈：哪条消息刚被复制，按钮原地显示对勾 1.5 秒
+    const [recentlyCopiedMessageId, setRecentlyCopiedMessageId] = useState<string | null>(null);
     const [recentUsedDocuments, setRecentUsedDocuments] = useState<RecentUsedDocument[]>(() =>
       readStoredRecentUsedDocuments(currentClientId || ''),
     );
@@ -16729,6 +17303,8 @@ export default function App() {
     const [filesTabSearchInput, setFilesTabSearchInput] = useState('');
     const [filesTabSearchResult, setFilesTabSearchResult] = useState<KnowledgeSearchResult | null>(null);
     const [isFilesTabSearching, setIsFilesTabSearching] = useState(false);
+    const [isLinkMaterialInlineExpanded, setIsLinkMaterialInlineExpanded] = useState(false);
+    const lastMarkedLinkMaterialRunRef = useRef<string | null>(null);
     const runFilesTabSearch = async () => {
       const query = filesTabSearchInput.trim();
       if (!currentClientId) {
@@ -16891,6 +17467,20 @@ export default function App() {
     const clientLinkMaterialState = getWorkspaceLinkMaterialState(workspaceClientUiState, workspaceClientUiKey);
     const clientLinkMaterialRun = clientLinkMaterialState.run;
     const latestClientLinkMaterialRun = clientLinkMaterialState.latestRun;
+    // 转写完成后自动把生成的文档加入"文件 tab"的最近列表，并收起 inline 输入栏。
+    useEffect(() => {
+      const run = latestClientLinkMaterialRun;
+      if (!run || run.status !== 'completed' || !run.documentId) return;
+      const markerKey = `${run.runId}:${run.documentId}`;
+      if (lastMarkedLinkMaterialRunRef.current === markerKey) return;
+      lastMarkedLinkMaterialRunRef.current = markerKey;
+      markDocumentAsUsed({
+        documentId: run.documentId,
+        title: run.title || (run.documentPath ? run.documentPath.split(/[/\\]/).pop() || '' : '') || '链接转写资料',
+        path: run.documentPath || '',
+      });
+      setIsLinkMaterialInlineExpanded(false);
+    }, [latestClientLinkMaterialRun]);
     const clientLinkMaterialUseBrowserCookies = clientLinkMaterialState.useBrowserCookies;
     const clientLinkMaterialCookieBrowser = clientLinkMaterialState.cookieBrowser;
     const isStartingClientLinkMaterial = clientLinkMaterialState.isStarting;
@@ -17034,6 +17624,113 @@ export default function App() {
   const lastThinkingPanelVisibleRef = useRef(false);
   const setupModeClientIdRef = useRef<string | null>(null);
   const clientImportDropDepthRef = useRef<{ buffer: number; composer: number }>({ buffer: 0, composer: 0 });
+
+  // 豆包式「深度思考」开关：开启后下一条消息走 multipass（4 段大纲生成），耗时但更深度；关闭走单次 LLM
+  const [deepThinking, setDeepThinking] = useState<boolean>(() => {
+    if (typeof window === 'undefined') return false;
+    try {
+      return window.localStorage.getItem('yiyu.chat.deepThinking') === '1';
+    } catch {
+      return false;
+    }
+  });
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    try {
+      window.localStorage.setItem('yiyu.chat.deepThinking', deepThinking ? '1' : '0');
+    } catch {
+      // ignore localStorage errors (private mode, etc.)
+    }
+  }, [deepThinking]);
+
+  // R7：创意度三档（creative / balanced / strict）默认 balanced
+  const [creativityMode, setCreativityMode] = useState<import('../shared/types').CreativityMode>(() => {
+    if (typeof window === 'undefined') return 'balanced';
+    try {
+      const saved = window.localStorage.getItem('yiyu.chat.creativityMode');
+      if (saved === 'creative' || saved === 'balanced' || saved === 'strict') return saved;
+      return 'balanced';
+    } catch {
+      return 'balanced';
+    }
+  });
+  const [creativityPickerOpen, setCreativityPickerOpen] = useState<boolean>(false);
+  const creativityMeta = {
+    creative: {
+      label: '创意优先',
+      icon: Sparkles,
+      tone: 'border-purple-300/50 bg-purple-50 text-purple-700',
+      iconTone: 'text-purple-600',
+      description: '完全自由创作，不引用任何客户资料。等同于通用 LLM 窗口',
+    },
+    balanced: {
+      label: '兼顾资料',
+      icon: Scale,
+      tone: 'border-blue-300/50 bg-blue-50 text-blue-700',
+      iconTone: 'text-blue-600',
+      description: '基于客户资料的事实底色，但叙事和措辞自由发挥。默认推荐',
+    },
+    strict: {
+      label: '完全客观',
+      icon: ShieldCheck,
+      tone: 'border-slate-300/50 bg-slate-50 text-slate-700',
+      iconTone: 'text-slate-600',
+      description: '严格基于资料，所有判断带溯源；不允许文学修辞',
+    },
+  } as const;
+  const currentCreativityMeta = creativityMeta[creativityMode];
+  const CurrentCreativityIcon = currentCreativityMeta.icon;
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    try {
+      window.localStorage.setItem('yiyu.chat.creativityMode', creativityMode);
+    } catch {
+      // ignore
+    }
+  }, [creativityMode]);
+
+  // R6：写作风格 skill —— 用户选择某个 skill 后，下一条消息按这个风格回答
+  const [writingSkills, setWritingSkills] = useState<import('../shared/types').WritingSkill[]>([]);
+  const [activeSkillId, setActiveSkillId] = useState<string | null>(() => {
+    if (typeof window === 'undefined') return null;
+    try {
+      return window.localStorage.getItem('yiyu.chat.activeSkillId') || null;
+    } catch {
+      return null;
+    }
+  });
+  const [skillPickerOpen, setSkillPickerOpen] = useState<boolean>(false);
+  const [skillEditorOpen, setSkillEditorOpen] = useState<boolean>(false);
+  const [skillEditorMode, setSkillEditorMode] = useState<'create' | 'edit'>('create');
+  const [skillEditorTargetId, setSkillEditorTargetId] = useState<string | null>(null);
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    try {
+      if (activeSkillId) {
+        window.localStorage.setItem('yiyu.chat.activeSkillId', activeSkillId);
+      } else {
+        window.localStorage.removeItem('yiyu.chat.activeSkillId');
+      }
+    } catch {
+      // ignore
+    }
+  }, [activeSkillId]);
+  const refreshWritingSkills = useCallback(async () => {
+    try {
+      const skills = await listWritingSkills();
+      setWritingSkills(skills);
+      // 如果当前选中的 skill 已被删除，清空 activeSkillId
+      if (activeSkillId && !skills.some((s) => s.id === activeSkillId)) {
+        setActiveSkillId(null);
+      }
+    } catch (error) {
+      // 加载失败不影响主流程（可能后端未启动）
+    }
+  }, [activeSkillId]);
+  useEffect(() => {
+    void refreshWritingSkills();
+  }, [refreshWritingSkills]);
+  const activeSkill = writingSkills.find((s) => s.id === activeSkillId) || null;
 
     useEffect(() => {
       if (activeTab !== 'client_workspace' || !growthContextJump) return;
@@ -17198,7 +17895,7 @@ export default function App() {
 	          .then((run) => {
 	            flushSync(() => {
 	              upsertAnalysisRun(run, { persistToWorkspace: run.status !== 'queued' && run.status !== 'running' });
-	              if (run.assistantMessage && run.assistantMessage.status !== 'loading') {
+	              if (run.assistantMessage) {
 	                upsertWorkspaceMessages([run.assistantMessage], run.threadId);
 	              }
 	            });
@@ -17734,10 +18431,12 @@ export default function App() {
     const currentThreadMessages = currentThreadId ? threadMessagesById[currentThreadId] || [] : [];
 
     const currentChat = useMemo(() => {
+      // 不再过滤 activeAssistantMessageId：助手消息无论 loading/success 都在同一 DOM 位置渲染，
+      // 由消息渲染分支根据 status + content 决定显示 shimmer 思考态还是答案正文。
+      // 这同时修了"完成后正文不出现，要切页面再切回来"的 bug。
       return mergeDisplayMessages(currentThreadMessages, activeOptimisticMessages)
-        .filter((item) => item.status !== 'loading' && item.id !== activeAssistantMessageId)
         .sort((left, right) => left.createdAt.localeCompare(right.createdAt));
-    }, [currentThreadMessages, activeOptimisticMessages, activeAssistantMessageId]);
+    }, [currentThreadMessages, activeOptimisticMessages]);
 
     const handleRepeatChatMessage = (message: DisplayChatMessage) => {
       if (message.role !== 'user') return;
@@ -18750,11 +19449,11 @@ export default function App() {
       }
       const url = clientLinkMaterialDraft.url.trim();
       if (!url) {
-        flash('error', '请先粘贴 B 站或小红书链接');
+        flash('error', '请先粘贴 B 站 / 小红书 / 公众号链接');
         return;
       }
       if (clientLinkMaterialDraft.detectedPlatform === 'unsupported') {
-        flash('error', '暂不支持这个链接。当前仅支持 B 站链接、BV 号和小红书链接。');
+        flash('error', '暂不支持这个链接。当前仅支持 B 站链接、BV 号、小红书链接、微信公众号文章。');
         return;
       }
       try {
@@ -19090,6 +19789,9 @@ export default function App() {
           undefined,
           workingDocumentIds,
           { signal: controller.signal },
+          deepThinking,
+          activeSkillId,
+          creativityMode,
         );
         upsertAnalysisRun(started.analysisRun);
         flushSync(() => {
@@ -19696,11 +20398,16 @@ export default function App() {
                           msg.providerUsed === 'mock'
                           || /\bmock\b/i.test(String(msg.modelRoute || ''))
                         );
+                        // 同框打字机：生成中 (status='loading') + 完成态都用 StreamingAnswerDocument，
+                        // 让字一直在同一容器里蹦出，避免"先在'正在成文'框看到部分内容、完成后跳到正式答案框"的体感跳变。
                         const shouldRenderPlainWorkspaceAnswer = (
                           workspaceWorkflow !== 'file_search'
-                          && ['ready', 'usable_with_boundary', 'degraded'].includes(userVisibleQualityStatus)
                           && typeof msg.content === 'string'
                           && msg.content.trim().length > 0
+                          && (
+                            msg.status === 'loading'
+                            || ['ready', 'usable_with_boundary', 'degraded'].includes(userVisibleQualityStatus)
+                          )
                         );
                         const messageActionSuggestions = Array.isArray(retrievalSummaryRaw.actionSuggestions)
                           ? retrievalSummaryRaw.actionSuggestions
@@ -19752,32 +20459,66 @@ export default function App() {
                         )}
 
                         {msg.role === 'assistant' && (
-                          <div className={`bg-white border rounded-[24px] rounded-tl-sm max-w-[98%] xl:max-w-[95%] overflow-hidden transition-all duration-300 shadow-sm ${activeMessageId === msg.id ? 'border-[#5B7BFE] ring-4 ring-blue-500/10 shadow-[0_8px_24px_rgba(91,123,254,0.12)]' : 'border-gray-200 hover:border-blue-200'}`}>
+                          <div className="max-w-[95%] py-2">
                               <div>
-                                <div className="bg-gray-50/80 border-b border-gray-100 px-4 xl:px-5 py-3 flex items-center justify-between gap-3">
-                                  <span className="flex items-center gap-1.5 text-[10px] xl:text-[11px] font-bold text-gray-500 uppercase tracking-widest">
-                                    <Zap size={14} className="text-amber-500" /> {isHistoricalMockAnswer ? '配置前本地测试回答' : (msg.llmInvoked ? msg.modelRoute || aiRouteLabel(msg.providerUsed || health?.ai.provider, health?.ai.model, health?.ai.providerLabel) : '背景整理')}
-                                  </span>
-                                  <div className="flex items-center gap-2">
-                                    <span className="text-[10px] xl:text-[11px] text-gray-400 font-medium">
-                                      {msg.timing?.totalMs ? `耗时 ${formatElapsedLabel(msg.timing.totalMs)}` : '点击激活右侧证据线索'}
+                                <div className="mb-1.5 flex items-center justify-between gap-2 text-[10px] text-gray-400 font-medium">
+                                  <span className="flex min-w-0 items-center gap-1.5">
+                                    <span className="truncate">
+                                      {isHistoricalMockAnswer ? '配置前本地测试' : (msg.llmInvoked ? msg.modelRoute || aiRouteLabel(msg.providerUsed || health?.ai.provider, health?.ai.model, health?.ai.providerLabel) : '背景整理')}
+                                      {msg.timing?.totalMs ? ` · 耗时 ${formatElapsedLabel(msg.timing.totalMs)}` : ''}
                                     </span>
-                                    <button
-                                      type="button"
-                                      onClick={(event) => {
-                                        event.stopPropagation();
-                                        void handleDeleteChatMessagePair(msg);
-                                      }}
-                                      className="hidden group-hover/message:flex items-center justify-center w-6 h-6 rounded-full text-gray-400 hover:text-red-500 hover:bg-red-50 transition-colors"
-                                      aria-label="删除该问答"
-                                      title="删除该问答"
-                                    >
-                                      <Trash2 size={13} />
-                                    </button>
-                                  </div>
+                                    {(msg.retrievalSummary as { multipassUsed?: boolean } | undefined)?.multipassUsed === true && (
+                                      <span
+                                        className="inline-flex shrink-0 items-center gap-1 rounded-full border border-[#5B7BFE]/30 bg-[#5B7BFE]/10 px-1.5 py-0.5 text-[9px] font-bold text-[#3652c9]"
+                                        title="本条回答由「深度思考」生成：先出大纲再分段写"
+                                      >
+                                        <BrainCircuit size={9} strokeWidth={2.6} />
+                                        深度思考
+                                      </span>
+                                    )}
+                                    {msg.activeSkillId && (
+                                      <span
+                                        className="inline-flex shrink-0 items-center gap-1 rounded-full border border-violet-300/50 bg-violet-50 px-1.5 py-0.5 text-[9px] font-bold text-violet-700"
+                                        title={`使用了写作风格：${writingSkills.find((s) => s.id === msg.activeSkillId)?.name || msg.activeSkillId}`}
+                                      >
+                                        <Palette size={9} strokeWidth={2.6} />
+                                        {writingSkills.find((s) => s.id === msg.activeSkillId)?.name || '风格'}
+                                      </span>
+                                    )}
+                                    {msg.creativityMode === 'creative' && (
+                                      <span
+                                        className="inline-flex shrink-0 items-center gap-1 rounded-full border border-purple-300/50 bg-purple-50 px-1.5 py-0.5 text-[9px] font-bold text-purple-700"
+                                        title="本条回答用「创意优先」模式生成（不引用客户资料）"
+                                      >
+                                        <Sparkles size={9} strokeWidth={2.6} />
+                                        创意优先
+                                      </span>
+                                    )}
+                                    {msg.creativityMode === 'balanced' && (
+                                      <span
+                                        className="inline-flex shrink-0 items-center gap-1 rounded-full border border-blue-300/50 bg-blue-50 px-1.5 py-0.5 text-[9px] font-bold text-blue-700"
+                                        title="本条回答用「兼顾资料」模式生成（事实是骨头，语言是血肉）"
+                                      >
+                                        <Scale size={9} strokeWidth={2.6} />
+                                        兼顾资料
+                                      </span>
+                                    )}
+                                  </span>
+                                  <button
+                                    type="button"
+                                    onClick={(event) => {
+                                      event.stopPropagation();
+                                      void handleDeleteChatMessagePair(msg);
+                                    }}
+                                    className="hidden group-hover/message:flex items-center justify-center w-6 h-6 rounded-full text-gray-300 hover:text-red-500 hover:bg-red-50 transition-colors shrink-0"
+                                    aria-label="删除该问答"
+                                    title="删除该问答"
+                                  >
+                                    <Trash2 size={13} />
+                                  </button>
                                 </div>
 
-                                <div className="p-4 xl:p-6 space-y-5 xl:space-y-6">
+                                <div className="space-y-4 xl:space-y-5">
                                   {msg.answerMode === 'general_answer' &&
                                     msg.failureReason === 'no_relevant_materials' &&
                                     ((knowledgeStatus?.totalDocuments || workspace?.documents.length || currentClient?.documentCount || 0) > 0) && (
@@ -19788,21 +20529,6 @@ export default function App() {
                                   {isHistoricalMockAnswer && (
                                     <div className="rounded-2xl border border-amber-100 bg-amber-50/80 px-4 py-3 text-[12px] font-bold text-amber-700">
                                       这是一条清空模型配置前生成的本地测试结果，不代表真实大模型回答。配置模型后请重新提问。
-                                    </div>
-                                  )}
-                                  {!shouldRenderPlainWorkspaceAnswer && msg.answerMode === 'grounded_answer' && userVisibleQualityStatus === 'ready' && (
-                                    <div className="rounded-2xl border border-emerald-100 bg-emerald-50/70 px-4 py-3 text-[12px] font-bold text-emerald-700">
-                                      已基于当前资料与背景线索生成正式分析回答。
-                                    </div>
-                                  )}
-                                  {!shouldRenderPlainWorkspaceAnswer && userVisibleQualityStatus === 'usable_with_boundary' && (
-                                    <div className="rounded-2xl border border-sky-100 bg-sky-50/80 px-4 py-3 text-[12px] font-bold text-sky-700">
-                                      已基于客户资料生成可用回答；部分判断仍保留资料边界或待确认事项。
-                                    </div>
-                                  )}
-                                  {!shouldRenderPlainWorkspaceAnswer && userVisibleQualityStatus === 'degraded' && (
-                                    <div className="rounded-2xl border border-amber-100 bg-amber-50/80 px-4 py-3 text-[12px] font-bold text-amber-700">
-                                      当前回答可作为线索参考，但证据或上下文仍不足，建议补资料后复核。
                                     </div>
                                   )}
                                   {shouldShowRetryBanner && workspaceAnswerFinalization && (
@@ -19823,9 +20549,9 @@ export default function App() {
                                     </div>
                                   )}
                                   {msg.answerMode === 'general_answer' && (
-                                    <div className="rounded-2xl border border-sky-100 bg-sky-50/80 px-4 py-3 text-[12px] font-bold text-sky-700">
-                                      当前没有命中足够的原始材料，以下回答来自通用背景判断，不代表客户资料中的正式结论。
-                                    </div>
+                                    <p className="text-[11px] text-sky-600 leading-snug">
+                                      ⓘ 当前没有命中足够的原始材料，以下来自通用背景判断，非客户资料的正式结论。
+                                    </p>
                                   )}
                                   {msg.answerMode === 'system_failure' && shouldRenderStateSections && (
                                     <div className="rounded-2xl border border-blue-100 bg-blue-50/80 px-4 py-3 text-[12px] font-bold text-blue-700">
@@ -19902,14 +20628,47 @@ export default function App() {
                                     />
                                   )}
 
-                                  {shouldRenderPlainWorkspaceAnswer && (
-                                    <div className="rounded-[24px] bg-[linear-gradient(180deg,rgba(255,255,255,1),rgba(248,250,252,0.92))] border border-slate-100 px-5 py-5 xl:px-6 xl:py-6 shadow-[0_8px_28px_rgba(15,23,42,0.05)]">
-                                      <StreamingAnswerDocument
-                                        text={msg.content}
-                                        streaming={msg.status === 'loading'}
-                                      />
-                                    </div>
-                                  )}
+                                  {(() => {
+                                    const isLoading = msg.status === 'loading';
+                                    const hasContent = Boolean((msg.content || '').trim());
+                                    const multipass = (visibleThreadAnalysisRun?.assistantMessage?.retrievalSummary as Record<string, unknown> | undefined)?.multipass;
+                                    const multipassObj = multipass && typeof multipass === 'object' ? (multipass as Record<string, unknown>) : null;
+                                    const sectionTitle = multipassObj && typeof multipassObj.currentSectionTitle === 'string' ? multipassObj.currentSectionTitle : null;
+                                    const sectionIndex = multipassObj && typeof multipassObj.currentSectionIndex === 'number' ? multipassObj.currentSectionIndex : undefined;
+                                    const sectionsRaw = multipassObj && Array.isArray(multipassObj.sections) ? multipassObj.sections : null;
+                                    const hasAnyCompletedSection = sectionsRaw
+                                      ? sectionsRaw.some((s) => s && typeof s === 'object' && (s as Record<string, unknown>).status === 'completed')
+                                      : false;
+                                    // 关键：multipass 流程下，即使 content 已经有了 headline（核心判断单句），
+                                    // 但只要没有任何一段 section 完成，就继续显示思考态。
+                                    // 否则用户会看到"一句话孤零零摆在那里"觉得卡住。
+                                    const inMultipassPreroll = Boolean(
+                                      isLoading
+                                      && sectionsRaw && sectionsRaw.length > 0
+                                      && !hasAnyCompletedSection
+                                    );
+                                    if (isLoading && (!hasContent || inMultipassPreroll)) {
+                                      return (
+                                        <ChatThinkingHint
+                                          stageLabel={visibleThreadAnalysisRun?.stageLabel || null}
+                                          currentSectionTitle={sectionTitle}
+                                          currentSectionIndex={sectionIndex}
+                                        />
+                                      );
+                                    }
+                                    if (shouldRenderPlainWorkspaceAnswer) {
+                                      return (
+                                        <>
+                                          <StreamingAnswerDocument
+                                            text={msg.content}
+                                            streaming={msg.status === 'loading'}
+                                          />
+                                          {isLoading && <ChatThinkingHint compact />}
+                                        </>
+                                      );
+                                    }
+                                    return null;
+                                  })()}
 
                                   {/* P2.12 FREEZE(answer-card-ui): 成功回答默认只保留正文，旧回答卡与诊断壳先冻结为关闭态。
                                       失败态、文件检索态和特殊状态面板仍保留，后续整体拆旧链时再统一移除。 */}
@@ -20187,14 +20946,29 @@ export default function App() {
                                 <div className="bg-gray-50/80 border-t border-gray-100 px-3 xl:px-4 py-3 flex items-center justify-between">
                                   <div className="flex gap-1 xl:gap-2">
                                     <button
-                                      className="text-[11px] xl:text-[12px] text-gray-500 hover:text-gray-900 hover:bg-white hover:shadow-sm font-semibold flex items-center gap-1.5 transition-all px-2.5 py-1.5 rounded-lg"
+                                      className={`text-[11px] xl:text-[12px] hover:bg-white hover:shadow-sm font-semibold flex items-center gap-1.5 transition-all px-2.5 py-1.5 rounded-lg ${
+                                        recentlyCopiedMessageId === msg.id
+                                          ? 'text-emerald-600'
+                                          : 'text-gray-500 hover:text-gray-900'
+                                      }`}
                                       onClick={(event) => {
                                         event.stopPropagation();
                                         void navigator.clipboard.writeText(`${msg.content}`.trim());
-                                        flash('success', '已复制当前回答');
+                                        setRecentlyCopiedMessageId(msg.id);
+                                        window.setTimeout(() => {
+                                          setRecentlyCopiedMessageId((prev) => (prev === msg.id ? null : prev));
+                                        }, 1500);
                                       }}
                                     >
-                                      <Copy size={14} /> 复制
+                                      {recentlyCopiedMessageId === msg.id ? (
+                                        <>
+                                          <Check size={14} /> 已复制
+                                        </>
+                                      ) : (
+                                        <>
+                                          <Copy size={14} /> 复制
+                                        </>
+                                      )}
                                     </button>
                                     <button
                                       className="text-[11px] xl:text-[12px] text-gray-500 hover:text-gray-900 hover:bg-white hover:shadow-sm font-semibold flex items-center gap-1.5 transition-all px-2.5 py-1.5 rounded-lg disabled:opacity-50"
@@ -20215,6 +20989,29 @@ export default function App() {
                                       }}
                                     >
                                       <Download size={14} /> {answerActionState[msg.id] === 'export' ? '导出中…' : '导出文件'}
+                                    </button>
+                                    <button
+                                      className="text-[11px] xl:text-[12px] text-emerald-600 hover:text-emerald-700 hover:bg-white hover:shadow-sm font-semibold flex items-center gap-1.5 transition-all px-2.5 py-1.5 rounded-lg disabled:opacity-50"
+                                      disabled={isHardSystemFailure || isHistoricalMockAnswer || Boolean(answerActionState[msg.id])}
+                                      title="把这个答案沉淀为客户判断，进入数据中心"
+                                      onClick={(event) => {
+                                        event.stopPropagation();
+                                        const run = async () => {
+                                          try {
+                                            setAnswerActionState((prev) => ({ ...prev, [msg.id]: 'promote-judgment' }));
+                                            const result = await promoteWorkspaceAnswerToJudgment(msg.id);
+                                            window.dispatchEvent(new CustomEvent('workspace-answer-value-refresh'));
+                                            flash('success', result.summary || '已沉淀为判断');
+                                          } catch (error) {
+                                            flash('error', error instanceof Error ? error.message : '沉淀失败');
+                                          } finally {
+                                            setAnswerActionState((prev) => ({ ...prev, [msg.id]: '' }));
+                                          }
+                                        };
+                                        void run();
+                                      }}
+                                    >
+                                      <CheckCircle2 size={14} /> {answerActionState[msg.id] === 'promote-judgment' ? '沉淀中…' : '采纳为判断'}
                                     </button>
                                     {isHardSystemFailure && msg.requestPrompt && (
                                       <button
@@ -20276,30 +21073,9 @@ export default function App() {
                       </div>
                     );
                       })}
-                      {transientThinkingPanel && (
-                        <ThinkingWorkbenchPanel
-                          question={transientThinkingPanel.question}
-                          startedAt={transientThinkingPanel.startedAt}
-                          stageLabel={transientThinkingPanel.stageLabel}
-                          providerLabel={composerProviderLabel}
-                          run={transientThinkingPanel.run}
-                          mode={transientThinkingPanel.mode}
-                        />
-                      )}
-                      {activeAnalysisRun && !visibleThreadAnalysisRun && (
-                        <AnalysisRunCard
-                          run={activeAnalysisRun}
-                          onRetry={(question) => {
-                            void sendMessage(question);
-                          }}
-                          onVectorize={(messageId) => {
-                            void handleVectorizeAnswer(messageId);
-                          }}
-                          onExport={(messageId) => {
-                            void handleExportAnswer(messageId);
-                          }}
-                        />
-                      )}
+                      {/* 旧版 ThinkingWorkbenchPanel / AnalysisRunCard 已删除：
+                          助手消息现在直接在 chat 列表里渲染，loading 态显示 ChatThinkingHint，
+                          完成后变成答案文本，没有"卡片消失，正文不出现"的 race。 */}
                     </>
                   )}
                 </>
@@ -20453,6 +21229,257 @@ export default function App() {
 	                    onKeyDown={handleComposerKeyDown}
 	                    disabled={hasPendingAnalysisRun || isBackendBlocked || isComposerStartingMessage}
 	                  />
+	                  <div className="flex items-center gap-2 px-2 pb-1 pt-0.5">
+	                    <button
+	                      type="button"
+	                      onClick={() => setDeepThinking((previous) => !previous)}
+	                      title={deepThinking
+	                        ? '已开启「深度思考」：下一条问题会先出大纲再分段生成（约 1–3 分钟，内容更深）。点击关闭。'
+	                        : '开启「深度思考」：下一条问题会先出大纲再分段生成（约 1–3 分钟，内容更深）。'}
+	                      aria-pressed={deepThinking}
+	                      className={`group inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-[11px] font-semibold transition-all ${
+	                        deepThinking
+	                          ? 'border-[#5B7BFE]/45 bg-[#5B7BFE]/10 text-[#3652c9] shadow-[0_1px_4px_rgba(91,123,254,0.12)] hover:bg-[#5B7BFE]/15'
+	                          : 'border-slate-200 bg-white text-slate-500 hover:border-[#5B7BFE]/35 hover:text-[#5B7BFE]'
+	                      }`}
+	                    >
+	                      <BrainCircuit
+	                        size={12}
+	                        strokeWidth={2.4}
+	                        className={deepThinking ? 'text-[#5B7BFE]' : 'text-slate-400 group-hover:text-[#5B7BFE]'}
+	                      />
+	                      <span>深度思考</span>
+	                      <span
+	                        className={`ml-0.5 inline-flex h-3 w-6 items-center rounded-full p-0.5 transition-colors ${
+	                          deepThinking ? 'bg-[#5B7BFE]' : 'bg-slate-200 group-hover:bg-slate-300'
+	                        }`}
+	                        aria-hidden
+	                      >
+	                        <span
+	                          className={`block h-2 w-2 rounded-full bg-white shadow-sm transition-transform ${
+	                            deepThinking ? 'translate-x-2.5' : 'translate-x-0'
+	                          }`}
+	                        />
+	                      </span>
+	                    </button>
+	                    {deepThinking && (
+	                      <span className="text-[10px] font-medium text-slate-400">先出大纲再分段写，约 1–3 分钟</span>
+	                    )}
+	                    {/* R7: 创意度三档上拉菜单（跟写作风格按钮同形态） */}
+	                    <div className="relative">
+	                      <button
+	                        type="button"
+	                        onClick={() => setCreativityPickerOpen((prev) => !prev)}
+	                        title={`当前创作模式：${currentCreativityMeta.label}。${currentCreativityMeta.description}`}
+	                        aria-haspopup="listbox"
+	                        aria-expanded={creativityPickerOpen}
+	                        className={`group inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-[11px] font-semibold transition-all ${currentCreativityMeta.tone} hover:brightness-105`}
+	                      >
+	                        <CurrentCreativityIcon
+	                          size={12}
+	                          strokeWidth={2.4}
+	                          className={currentCreativityMeta.iconTone}
+	                        />
+	                        <span>{currentCreativityMeta.label}</span>
+	                        <ChevronDown
+	                          size={11}
+	                          strokeWidth={2.6}
+	                          className={`transition-transform ${creativityPickerOpen ? 'rotate-180' : ''} ${currentCreativityMeta.iconTone}`}
+	                        />
+	                      </button>
+	                      {creativityPickerOpen && (
+	                        <>
+	                          <div
+	                            className="fixed inset-0 z-30"
+	                            onClick={() => setCreativityPickerOpen(false)}
+	                          />
+	                          <div
+	                            role="listbox"
+	                            className="absolute bottom-full left-0 z-40 mb-2 w-72 rounded-2xl border border-slate-200 bg-white p-2 shadow-[0_8px_24px_rgba(15,23,42,0.12)]"
+	                          >
+	                            <div className="px-2 py-1.5 text-[10px] font-bold uppercase tracking-[0.18em] text-slate-400">
+	                              创作模式 · 单选
+	                            </div>
+	                            {(['creative', 'balanced', 'strict'] as const).map((mode) => {
+	                              const meta = creativityMeta[mode];
+	                              const IconComp = meta.icon;
+	                              const isActive = mode === creativityMode;
+	                              return (
+	                                <button
+	                                  key={mode}
+	                                  type="button"
+	                                  role="option"
+	                                  aria-selected={isActive}
+	                                  onClick={() => {
+	                                    setCreativityMode(mode);
+	                                    setCreativityPickerOpen(false);
+	                                  }}
+	                                  className={`flex w-full items-start gap-2.5 rounded-xl px-2.5 py-2 text-left transition-colors ${
+	                                    isActive ? meta.tone.replace('border-', 'border ') : 'hover:bg-slate-50'
+	                                  }`}
+	                                >
+	                                  <IconComp
+	                                    size={15}
+	                                    strokeWidth={2.4}
+	                                    className={`mt-0.5 shrink-0 ${isActive ? meta.iconTone : 'text-slate-400'}`}
+	                                  />
+	                                  <div className="min-w-0 flex-1">
+	                                    <div className={`text-[12.5px] font-semibold ${isActive ? meta.iconTone.replace('text-', 'text-').replace('600', '700') : 'text-slate-700'}`}>
+	                                      {meta.label}
+	                                      {mode === 'balanced' && !isActive && (
+	                                        <span className="ml-1.5 text-[9.5px] font-medium text-slate-400">默认</span>
+	                                      )}
+	                                    </div>
+	                                    <div className="mt-0.5 text-[10.5px] leading-snug text-slate-500">
+	                                      {meta.description}
+	                                    </div>
+	                                  </div>
+	                                </button>
+	                              );
+	                            })}
+	                          </div>
+	                        </>
+	                      )}
+	                    </div>
+	                    {/* R6: 写作风格 skill 选择按钮 */}
+	                    <div className="relative">
+	                      <button
+	                        type="button"
+	                        onClick={() => setSkillPickerOpen((prev) => !prev)}
+	                        title={activeSkill
+	                          ? `当前写作风格：${activeSkill.name}。点击切换/取消。`
+	                          : '选择一个写作风格让 AI 模仿（如罗永浩风格）。也可以基于你提供的样本创建新风格。'}
+	                        aria-pressed={Boolean(activeSkill)}
+	                        className={`group inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-[11px] font-semibold transition-all ${
+	                          activeSkill
+	                            ? 'border-violet-400/45 bg-violet-50 text-violet-700 shadow-[0_1px_4px_rgba(139,92,246,0.12)] hover:bg-violet-100'
+	                            : 'border-slate-200 bg-white text-slate-500 hover:border-violet-300 hover:text-violet-600'
+	                        }`}
+	                      >
+	                        <Palette
+	                          size={12}
+	                          strokeWidth={2.4}
+	                          className={activeSkill ? 'text-violet-600' : 'text-slate-400 group-hover:text-violet-500'}
+	                        />
+	                        <span>
+	                          {activeSkill ? `📝 ${activeSkill.name}` : '写作风格'}
+	                        </span>
+	                      </button>
+	                      {skillPickerOpen && (
+	                        <>
+	                          <div
+	                            className="fixed inset-0 z-30"
+	                            onClick={() => setSkillPickerOpen(false)}
+	                          />
+	                          <div className="absolute bottom-full left-0 z-40 mb-2 w-72 rounded-2xl border border-slate-200 bg-white p-2 shadow-[0_8px_24px_rgba(15,23,42,0.12)]">
+	                            <div className="px-2 py-1.5 text-[10px] font-bold uppercase tracking-[0.18em] text-slate-400">
+	                              写作风格 · 单选
+	                            </div>
+	                            {activeSkill && (
+	                              <button
+	                                type="button"
+	                                onClick={() => {
+	                                  setActiveSkillId(null);
+	                                  setSkillPickerOpen(false);
+	                                }}
+	                                className="flex w-full items-center gap-2 rounded-xl px-2.5 py-2 text-left text-[12px] font-medium text-slate-500 hover:bg-slate-50"
+	                              >
+	                                <X size={13} />
+	                                取消当前选择（{activeSkill.name}）
+	                              </button>
+	                            )}
+	                            <div className="max-h-[320px] overflow-y-auto">
+	                              {writingSkills.length === 0 && (
+	                                <div className="px-2.5 py-3 text-[11px] text-slate-400">
+	                                  还没有可用的写作风格，点下方「创建新风格」开始。
+	                                </div>
+	                              )}
+	                              {writingSkills.map((skill) => (
+	                                <div
+	                                  key={skill.id}
+	                                  className={`group/skill flex items-center gap-2 rounded-xl px-2.5 py-2 transition-colors ${
+	                                    skill.id === activeSkillId
+	                                      ? 'bg-violet-50'
+	                                      : 'hover:bg-slate-50'
+	                                  }`}
+	                                >
+	                                  <button
+	                                    type="button"
+	                                    onClick={() => {
+	                                      setActiveSkillId(skill.id);
+	                                      setSkillPickerOpen(false);
+	                                    }}
+	                                    className="flex flex-1 flex-col items-start text-left"
+	                                  >
+	                                    <span className={`text-[12.5px] font-semibold ${
+	                                      skill.id === activeSkillId ? 'text-violet-700' : 'text-slate-700'
+	                                    }`}>
+	                                      {skill.isBuiltin && '🌟 '}
+	                                      {skill.name}
+	                                    </span>
+	                                    {skill.description && (
+	                                      <span className="mt-0.5 line-clamp-2 text-[10.5px] text-slate-500">
+	                                        {skill.description}
+	                                      </span>
+	                                    )}
+	                                  </button>
+	                                  {!skill.isBuiltin && (
+	                                    <div className="hidden flex-shrink-0 gap-1 group-hover/skill:flex">
+	                                      <button
+	                                        type="button"
+	                                        onClick={(event) => {
+	                                          event.stopPropagation();
+	                                          setSkillEditorMode('edit');
+	                                          setSkillEditorTargetId(skill.id);
+	                                          setSkillEditorOpen(true);
+	                                          setSkillPickerOpen(false);
+	                                        }}
+	                                        className="rounded-md p-1 text-slate-400 hover:bg-white hover:text-slate-700"
+	                                        title="编辑"
+	                                      >
+	                                        <Pencil size={11} />
+	                                      </button>
+	                                      <button
+	                                        type="button"
+	                                        onClick={async (event) => {
+	                                          event.stopPropagation();
+	                                          if (!window.confirm(`删除写作风格「${skill.name}」？`)) return;
+	                                          try {
+	                                            await deleteWritingSkill(skill.id);
+	                                            if (activeSkillId === skill.id) setActiveSkillId(null);
+	                                            await refreshWritingSkills();
+	                                          } catch (error) {
+	                                            flash('error', error instanceof Error ? error.message : '删除失败');
+	                                          }
+	                                        }}
+	                                        className="rounded-md p-1 text-slate-400 hover:bg-rose-50 hover:text-rose-600"
+	                                        title="删除"
+	                                      >
+	                                        <Trash2 size={11} />
+	                                      </button>
+	                                    </div>
+	                                  )}
+	                                </div>
+	                              ))}
+	                            </div>
+	                            <button
+	                              type="button"
+	                              onClick={() => {
+	                                setSkillEditorMode('create');
+	                                setSkillEditorTargetId(null);
+	                                setSkillEditorOpen(true);
+	                                setSkillPickerOpen(false);
+	                              }}
+	                              className="mt-1 flex w-full items-center gap-2 rounded-xl border border-dashed border-violet-300 px-2.5 py-2 text-[12px] font-semibold text-violet-600 hover:bg-violet-50"
+	                            >
+	                              <Plus size={13} />
+	                              创建新风格（基于样本提炼）
+	                            </button>
+	                          </div>
+	                        </>
+	                      )}
+	                    </div>
+	                  </div>
 	                </div>
                 <button
                   onClick={() => {
@@ -20549,11 +21576,21 @@ export default function App() {
                       </button>
                       <button
                         type="button"
-                        className={quickToolButtonClass}
+                        className={`${quickToolButtonClass} ${
+                          isLinkMaterialInlineExpanded
+                            ? 'bg-blue-50 border-[#C7D5FF] text-[#5B7BFE]'
+                            : ''
+                        }`}
                         disabled={isBackendBlocked}
-                        onClick={openClientLinkMaterialOverlay}
-                        title="链接转资料"
-                        aria-label="链接转资料"
+                        onClick={() => {
+                          if (!currentClientId) {
+                            flash('error', '请先选择项目');
+                            return;
+                          }
+                          setIsLinkMaterialInlineExpanded((value) => !value);
+                        }}
+                        title="链接转文字"
+                        aria-label="链接转文字"
                       >
                         <span className="flex h-full w-full items-center justify-center">
                           <Link2 size={18} />
@@ -20561,16 +21598,59 @@ export default function App() {
                       </button>
                     </div>
 
+                    {isLinkMaterialInlineExpanded && (
+                      <div className="mt-2.5 space-y-2">
+                        <div className="flex items-center gap-2">
+                          <input
+                            type="text"
+                            value={clientLinkMaterialDraft.url}
+                            onChange={(e) => handleClientLinkMaterialUrlChange(e.target.value)}
+                            placeholder="粘贴 B 站 / 小红书 / 公众号链接"
+                            className="flex-1 rounded-2xl border border-gray-200 bg-white px-3 py-2 text-[12px] outline-none transition-all focus:border-[#5B7BFE] focus:ring-4 focus:ring-blue-500/10 disabled:opacity-50"
+                            disabled={isStartingClientLinkMaterial}
+                          />
+                          <Button
+                            className="h-9 shrink-0 rounded-2xl px-3 border border-[#E5E5EA] bg-white text-[#5B7BFE] shadow-none hover:bg-blue-50"
+                            onClick={() => void handleStartClientLinkMaterialImport()}
+                            disabled={
+                              isStartingClientLinkMaterial
+                              || !clientLinkMaterialDraft.url.trim()
+                              || clientLinkMaterialDraft.detectedPlatform === 'unsupported'
+                            }
+                          >
+                            {isStartingClientLinkMaterial ? '启动中' : '转文字'}
+                          </Button>
+                        </div>
+                        {latestClientLinkMaterialRun && ['queued', 'running'].includes(latestClientLinkMaterialRun.status) && (
+                          <div className="rounded-2xl border border-blue-100 bg-blue-50/60 px-3 py-2">
+                            <div className="mb-1.5 flex items-center justify-between gap-2">
+                              <span className="min-w-0 truncate text-[10px] font-bold text-[#3652c9]">
+                                {latestClientLinkMaterialRun.stage || '处理中'}
+                              </span>
+                              <span className="shrink-0 text-[10px] font-bold tabular-nums text-[#5B7BFE]">
+                                {Math.round(latestClientLinkMaterialRun.progress || 0)}%
+                              </span>
+                            </div>
+                            <div className="h-1.5 overflow-hidden rounded-full bg-white/70">
+                              <div
+                                className="h-full rounded-full bg-[#5B7BFE] transition-all duration-500"
+                                style={{ width: `${Math.min(Math.max(latestClientLinkMaterialRun.progress || 0, 6), 100)}%` }}
+                              />
+                            </div>
+                          </div>
+                        )}
+                        {latestClientLinkMaterialRun?.status === 'completed' && (
+                          <p className="text-[10px] text-emerald-600 truncate">
+                            已转写完成{latestClientLinkMaterialRun.title ? `：${latestClientLinkMaterialRun.title}` : ''}，可在「文件」中使用
+                          </p>
+                        )}
+                      </div>
+                    )}
+
                     <div className="mt-2 flex items-center justify-between gap-3 text-[10px] leading-4 text-gray-400">
                       <span>{knowledgeStatus?.totalChunks || 0} 个向量块</span>
                       <span>{(workspace?.recentMessages || []).length} 条最近问答</span>
                     </div>
-
-                    {latestClientLinkMaterialRun && (
-                      <div className="mt-2">
-                        {renderLatestLinkMaterialRunStatus('compact')}
-                      </div>
-                    )}
 
                     <div className={`mt-2 min-h-[46px] transition-opacity duration-200 ${knowledgeJobProgressView.hasActivity ? 'opacity-100' : 'pointer-events-none opacity-0'}`}>
                       <div className="rounded-2xl border border-blue-100 bg-blue-50/60 px-3 py-2">
@@ -20876,23 +21956,45 @@ export default function App() {
                     </Button>
                   </div>
                   <p className="mb-3 text-[10px] text-slate-400 leading-relaxed">
-                    最近你用过的文件。搜索结果会出现在「引证」面板。
+                    最近你用过的文件置顶。搜索结果会出现在「引证」面板。
                   </p>
                   <div className="space-y-2.5">
-                    {recentUsedDocuments.map((doc) =>
-                      renderFileCard({
-                        key: `recent-${doc.documentId}`,
-                        documentId: doc.documentId,
-                        title: doc.title,
-                        path: doc.path,
-                      }),
-                    )}
-                    {recentUsedDocuments.length === 0 && (
-                      <div className="rounded-2xl border border-dashed border-gray-200 bg-gray-50/70 px-4 py-6 text-center text-[12px] text-gray-500">
-                        还没有用过任何文件。<br />
-                        在「引证」里点击 📄 或 📁，文件就会出现在这里。
-                      </div>
-                    )}
+                    {(() => {
+                      const allDocs = workspace?.documents || [];
+                      const usedIds = new Set(recentUsedDocuments.map((d) => d.documentId));
+                      const docById = new Map(allDocs.map((d) => [d.id, d] as const));
+                      // 1) 最近用过的（按 usedAt 倒序）
+                      const recentCards = recentUsedDocuments
+                        .map((used) => {
+                          const doc = docById.get(used.documentId);
+                          return {
+                            key: `recent-${used.documentId}`,
+                            documentId: used.documentId,
+                            title: doc?.title || used.title,
+                            path: doc?.path || used.path,
+                          };
+                        })
+                        .filter((card) => Boolean(card.documentId));
+                      // 2) 其余文件，按 importedAt 倒序
+                      const otherCards = [...allDocs]
+                        .filter((doc) => !usedIds.has(doc.id))
+                        .sort((a, b) => (b.importedAt || '').localeCompare(a.importedAt || ''))
+                        .map((doc) => ({
+                          key: `doc-${doc.id}`,
+                          documentId: doc.id,
+                          title: doc.title,
+                          path: doc.path,
+                        }));
+                      const combined = [...recentCards, ...otherCards];
+                      if (combined.length === 0) {
+                        return (
+                          <div className="rounded-2xl border border-dashed border-gray-200 bg-gray-50/70 px-4 py-6 text-center text-[12px] text-gray-500">
+                            这个客户还没有上传任何文件。
+                          </div>
+                        );
+                      }
+                      return combined.map((card) => renderFileCard(card));
+                    })()}
                   </div>
                 </div>
               );
@@ -22475,6 +23577,24 @@ export default function App() {
               </div>
             </div>
           </div>
+        )}
+
+        {/* R6: 写作风格 skill 创建/编辑弹窗 */}
+        {skillEditorOpen && (
+          <WritingSkillEditorModal
+            mode={skillEditorMode}
+            targetSkill={skillEditorMode === 'edit' && skillEditorTargetId
+              ? writingSkills.find((s) => s.id === skillEditorTargetId) || null
+              : null}
+            onClose={() => setSkillEditorOpen(false)}
+            onSaved={async (savedSkill) => {
+              await refreshWritingSkills();
+              setActiveSkillId(savedSkill.id);
+              setSkillEditorOpen(false);
+              flash('success', `已保存写作风格「${savedSkill.name}」`);
+            }}
+            flashError={(message) => flash('error', message)}
+          />
         )}
 
       </div>
@@ -24264,6 +25384,16 @@ export default function App() {
         value={orgModelDraft}
         currentUser={currentSessionUser}
         onSavePlan={handleSavePlanFromWorkshop}
+        onOpenTask={(t) => {
+          setActiveTab('tasks');
+          setTaskViewMode('list');
+          setPendingPlanItemAction({ kind: 'open-task', task: t });
+        }}
+        onGenerateTaskFromPlanItem={(planItem, scopeName) => {
+          setActiveTab('tasks');
+          setTaskViewMode('list');
+          setPendingPlanItemAction({ kind: 'generate-from-plan-item', planItem, scopeName });
+        }}
       />
     ),
     settings: renderSettingsView(),

@@ -3123,6 +3123,43 @@ def _can_review_task(state: AppState, actor: SessionUser, task_row, task_link_ro
     return False
 
 
+def _can_edit_task_plan_link(state: AppState, actor: SessionUser, task_row, task_link_row) -> bool:
+    """
+    "挂接到部门计划项"的权限，比 _can_review_task 宽松——owner 自己也可以挂。
+
+    背景：之前 plan-link 端点共用 _can_review_task 函数，但 _can_review_task 设计用于
+    "任务复核"（自己不能审自己），导致管理员/部门 lead 也不能把**自己创建的任务**挂
+    到自己的计划项上。挂接到 plan-item 不是审核，是分类归属，owner 本来就该能做。
+    """
+    organization_id = str(task_row["organization_id"])
+    owner_id = str(task_row["owner_id"]) if task_row["owner_id"] else None
+    if actor.primaryRole == "admin":
+        return True
+    # Owner 自己挂自己的任务到 plan-item 是最常见的工作流
+    if owner_id and owner_id == actor.id:
+        return True
+    if _is_organization_lead(state, organization_id, actor.id, actor.primaryRole):
+        return True
+    if owner_id and _manager_has_capability(state, organization_id, actor.id, owner_id, "content"):
+        return True
+    if task_link_row and task_link_row["department_id"]:
+        actor_binding = _org_binding_row_for_user(state, organization_id, actor.id)
+        actor_role = _org_role_row(
+            state,
+            organization_id,
+            str(actor_binding["primary_role_id"]) if actor_binding and actor_binding["primary_role_id"] else None,
+        )
+        if (
+            actor_binding
+            and actor_role
+            and actor_binding["department_id"]
+            and str(actor_binding["department_id"]) == str(task_link_row["department_id"])
+            and str(actor_role["level"]) in {"department_lead", "organization_lead"}
+        ):
+            return True
+    return False
+
+
 def _ensure_org_model_seed(state: AppState) -> None:
     db = state.db
     timestamp = now_iso()
@@ -11222,7 +11259,9 @@ def create_app() -> FastAPI:
         task_link_row = _task_org_link_row(state, task_id)
         if str(task_row["organization_id"]) != current_user.organizationId:
             raise HTTPException(status_code=404, detail="Task not found")
-        if not _can_review_task(state, current_user, task_row, task_link_row):
+        # 用专用的 _can_edit_task_plan_link，不复用 _can_review_task —— 后者禁止 owner
+        # 自己挂，是给"任务复核"场景设计的；plan-link 挂接是分类归属，owner 应当自己能做。
+        if not _can_edit_task_plan_link(state, current_user, task_row, task_link_row):
             raise HTTPException(status_code=403, detail="你当前没有调整任务计划挂接的权限")
         if payload.departmentPlanItemId is None and payload.focusItemId is None:
             state.db.execute("DELETE FROM task_plan_links WHERE task_id = ?", (task_id,))
@@ -13290,6 +13329,25 @@ def create_app() -> FastAPI:
             requested_client_id = event_line_client_id
         timestamp = now_iso()
         task_id = (payload.id or "").strip() or new_id("task")
+
+        # Idempotent retry: client (local backend) supplies its local task_id as payload.id so
+        # cloud and client share the same task id end-to-end. If a previous POST succeeded but
+        # the response was lost (network drop / timeout), the client retries with the same id.
+        # Without this guard the INSERT below would PRIMARY-KEY-collide and return 500, leaving
+        # the client's task stuck in sync_status='pending' forever.
+        if payload.id:
+            existing_row = state.db.fetchone(
+                "SELECT * FROM tasks WHERE id = ? AND organization_id = ?",
+                (task_id, current_user.organizationId),
+            )
+            if existing_row:
+                if str(existing_row["creator_id"] or "") != current_user.id:
+                    raise HTTPException(
+                        status_code=409,
+                        detail=f"Task id {task_id} already exists with a different creator",
+                    )
+                return _task_record(state, existing_row, current_user.id)
+
         resolved_tags: list[TaskTagRecord] = []
         temporal_fields = derive_task_temporal_fields(
             start_date=payload.startDate,

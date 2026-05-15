@@ -990,15 +990,44 @@ def _build_dna_delta_record(row: Any) -> DnaDeltaRecord:
     )
 
 
+_LEGACY_TARGET_TYPE_MAP = {
+    "workspace_answer": "client",
+}
+_VALID_TARGET_TYPES = {"client", "event_line", "meeting", "task", "module", "flow"}
+
+_LEGACY_REVIEW_STATE_MAP = {
+    "confirmed": "approved",
+    "pending": "draft",
+    "discarded": "rejected",
+}
+_VALID_REVIEW_STATES = {"draft", "awaiting_review", "awaiting_revision", "approved", "rejected", "superseded"}
+
+
+def _normalize_judgment_target_type(value: Any) -> str:
+    text = str(value or "").strip()
+    if text in _VALID_TARGET_TYPES:
+        return text
+    mapped = _LEGACY_TARGET_TYPE_MAP.get(text)
+    return mapped or "client"
+
+
+def _normalize_judgment_review_state(value: Any) -> str:
+    text = str(value or "").strip()
+    if text in _VALID_REVIEW_STATES:
+        return text
+    mapped = _LEGACY_REVIEW_STATE_MAP.get(text)
+    return mapped or "draft"
+
+
 def _build_judgment_version_record(row: Any) -> JudgmentVersionRecord:
     return JudgmentVersionRecord(
         id=str(row["id"]),
         clientId=str(row["client_id"]),
-        targetType=str(row["target_type"]),
+        targetType=_normalize_judgment_target_type(row["target_type"]),
         targetId=str(row["target_id"]),
         topic=str(row["topic"]),
         version=int(row["version"] or 1),
-        status=str(row["status"]),
+        status=_normalize_judgment_review_state(row["status"]),
         originType=str(row["origin_type"] or "projection"),
         authorityLevel=str(row["authority_level"] or "fallback"),
         qualityTier=str(row["quality_tier"] or "legacy"),

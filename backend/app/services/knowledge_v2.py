@@ -2230,6 +2230,68 @@ def ingest_document_knowledge(
     except Exception:
         pass  # master_index 写入失败不应阻塞文档入库
 
+    # ─────────────────────────────────────────────────────────────────────
+    # Stage B：知识扇出（Karpathy LLM Wiki #3「一资料更新影响 10-15 页面」落地）
+    # 每个扇出都包在 try/except 里，失败只 log 不阻塞主 ingest 流程。
+    # ─────────────────────────────────────────────────────────────────────
+    try:
+        n_event_lines = fanout_document_to_event_lines(
+            db,
+            client_id=client_id,
+            v2_document_id=v2_document_id,
+            document_id=document_id,
+            file_name=safe_filename(title),
+            created_at=created_at,
+        )
+        if n_event_lines > 0:
+            logger.info(
+                "[fanout] document=%s 关联到 %d 条 event_line",
+                v2_document_id,
+                n_event_lines,
+            )
+    except Exception:
+        logger.exception("fanout_document_to_event_lines 失败 (doc=%s)", v2_document_id)
+
+    # Stage B 扇出 #3：strategic_thought 刷新标记（含信号门槛检测）
+    try:
+        flagged = fanout_document_to_strategic_thoughts(
+            db,
+            client_id=client_id,
+            v2_document_id=v2_document_id,
+            file_name=safe_filename(title),
+        )
+        if flagged:
+            logger.info("[fanout] document=%s flagged strategic_thoughts.refresh_pending", v2_document_id)
+    except Exception:
+        logger.exception("fanout_document_to_strategic_thoughts 失败 (doc=%s)", v2_document_id)
+
+    # Stage B 扇出 #4：矛盾 → judgment 影响标记（纯 SQL）
+    try:
+        n_judgments = fanout_contradictions_to_judgment_impact(
+            db,
+            client_id=client_id,
+            v2_document_id=v2_document_id,
+        )
+        if n_judgments > 0:
+            logger.info("[fanout] document=%s 触发 %d 个 judgment 需要重新评估", v2_document_id, n_judgments)
+    except Exception:
+        logger.exception("fanout_contradictions_to_judgment_impact 失败 (doc=%s)", v2_document_id)
+
+    # Stage B 扇出 #7：深度资料 → 客户画像复审标记（纯 SQL）
+    try:
+        flagged_profile = fanout_document_to_client_profile(
+            db,
+            client_id=client_id,
+            v2_document_id=v2_document_id,
+            file_name=safe_filename(title),
+            chunk_count=chunk_count,
+            visible_category=primary_category or "",
+        )
+        if flagged_profile:
+            logger.info("[fanout] document=%s 标记 client=%s 画像需要复审", v2_document_id, client_id)
+    except Exception:
+        logger.exception("fanout_document_to_client_profile 失败 (doc=%s)", v2_document_id)
+
     return {
         "knowledge_document_id": v2_document_id,
         "legacy_knowledge_document_id": legacy_knowledge_document_id,
@@ -2263,6 +2325,366 @@ def ingest_document_knowledge(
 def _stable_canonical_document_id(client_id: str, origin_type: str, origin_id: str) -> str:
     digest = hashlib.sha256(f"{client_id}:{origin_type}:{origin_id}".encode("utf-8")).hexdigest()[:20]
     return f"sysdoc_{digest}"
+
+
+def fanout_contradictions_to_judgment_impact(
+    db: Database,
+    client_id: str,
+    v2_document_id: str,
+) -> int:
+    """Stage B 扇出 #4：本次 ingest 新产生的事实矛盾，反向影响已有 confirmed judgment。
+
+    Karpathy 启示 #10「矛盾是资产」的真实落地 —— 当一份新资料让事实打架时，
+    已采纳的 confirmed judgment 标 needs_reevaluation=1，提示用户「知识结构变了，
+    建议复查」。
+
+    简化策略：因为 judgment_versions.evidence_ids_json 引用的是 evidence_cards.id
+    （不是 atomic_facts.id），跨表精确匹配复杂；改为：只要本次 ingest 产生了任何
+    与该客户相关的新矛盾，**所有** confirmed judgment 都标记复查。误报率可控，
+    且产品语义清晰（任何矛盾都是"该 client 知识基础有变化"的信号）。
+    """
+    if not v2_document_id or not client_id:
+        return 0
+
+    # 找本次 ingest 产生的新 facts
+    new_fact_rows = db.fetchall(
+        "SELECT id FROM atomic_facts WHERE source_v2_document_id = ? AND status='active'",
+        (v2_document_id,),
+    )
+    new_fact_ids = {str(r["id"]) for r in new_fact_rows}
+    if not new_fact_ids:
+        return 0
+
+    # 看本次 ingest 的 facts 是否引发了矛盾
+    placeholders = ",".join("?" for _ in new_fact_ids)
+    contra_rows = db.fetchall(
+        f"""
+        SELECT COUNT(*) AS n
+        FROM fact_contradictions
+        WHERE client_id = ? AND review_status = 'pending'
+          AND (fact_a_id IN ({placeholders}) OR fact_b_id IN ({placeholders}))
+        """,
+        (client_id, *new_fact_ids, *new_fact_ids),
+    )
+    contradiction_count = int(contra_rows[0]["n"] if contra_rows else 0)
+    if contradiction_count == 0:
+        return 0
+
+    # 该客户所有 confirmed judgments 都标 needs_reevaluation
+    judgment_rows = db.fetchall(
+        """
+        SELECT id, topic FROM judgment_versions
+        WHERE client_id = ? AND status = 'confirmed'
+          AND COALESCE(needs_reevaluation, 0) = 0
+        """,
+        (client_id,),
+    )
+    if not judgment_rows:
+        return 0
+    now_str = datetime.utcnow().isoformat()
+    reason = f"新资料引入 {contradiction_count} 条事实矛盾，建议复查这条判断的证据链"
+    impacted = 0
+    for r in judgment_rows:
+        jid = str(r["id"])
+        db.execute(
+            """
+            UPDATE judgment_versions
+            SET needs_reevaluation = 1,
+                reevaluation_reason = ?,
+                reevaluation_triggered_at = ?
+            WHERE id = ?
+            """,
+            (reason, now_str, jid),
+        )
+        db.execute(
+            """
+            INSERT INTO activity_logs(id, actor_name, action, entity_type, entity_id, detail_json, created_at)
+            VALUES(?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                new_id("evt"),
+                "AI",
+                "judgment.needs_reevaluation",
+                "judgment_version",
+                jid,
+                to_json({
+                    "v2DocumentId": v2_document_id,
+                    "contradictionCount": contradiction_count,
+                    "fanoutSource": "stage_b_4_contradiction_to_judgment",
+                }),
+                now_str,
+            ),
+        )
+        impacted += 1
+    return impacted
+
+
+def fanout_document_to_client_profile(
+    db: Database,
+    client_id: str,
+    v2_document_id: str,
+    file_name: str,
+    chunk_count: int,
+    visible_category: str,
+) -> bool:
+    """Stage B 扇出 #7：深度资料 ingest 时标记客户画像需要复审。
+
+    保守门槛：
+      - chunk_count >= 30（深度资料，资料结构对画像有影响）
+      - 或 visible_category 属于核心分类（战略陪伴 / 项目方案 / 组织 DNA 等）
+    满足任一即标记 client_strategic_profiles.needs_review=1，让用户在客户档案页看到提示。
+    纯 SQL，零 LLM 调用。
+    """
+    if not v2_document_id or not client_id:
+        return False
+    is_deep = (chunk_count or 0) >= 30
+    is_core_category = (visible_category or "").strip() in {
+        "战略陪伴", "项目方案", "项目与业务", "组织 DNA", "组织DNA", "核心资料", "战略资料",
+    }
+    if not (is_deep or is_core_category):
+        return False
+    # 确保 client_strategic_profiles 有一行可标
+    existing = db.fetchone("SELECT client_id FROM client_strategic_profiles WHERE client_id = ?", (client_id,))
+    now_str = datetime.utcnow().isoformat()
+    trigger = "深度资料" if is_deep else f"核心分类「{visible_category}」"
+    reason = f"AI 检测到「{file_name[:40]}」属于{trigger}（{chunk_count or 0} 段），建议复审客户画像是否需要更新"
+    if existing:
+        db.execute(
+            """
+            UPDATE client_strategic_profiles
+            SET needs_review = 1,
+                review_reason = ?,
+                review_triggered_at = ?
+            WHERE client_id = ?
+            """,
+            (reason, now_str, client_id),
+        )
+    else:
+        db.execute(
+            """
+            INSERT INTO client_strategic_profiles (
+                client_id, industry, scale, influence, current_needs, pain_points,
+                strategic_value_to_yiyu, decision_chain, updated_at,
+                needs_review, review_reason, review_triggered_at
+            ) VALUES (?, '', '', '', '', '', '', '', ?, 1, ?, ?)
+            """,
+            (client_id, now_str, reason, now_str),
+        )
+    db.execute(
+        """
+        INSERT INTO activity_logs(id, actor_name, action, entity_type, entity_id, detail_json, created_at)
+        VALUES(?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            new_id("evt"),
+            "AI",
+            "client_profile.needs_review",
+            "client",
+            client_id,
+            to_json({
+                "v2DocumentId": v2_document_id,
+                "fileName": file_name,
+                "chunkCount": chunk_count,
+                "visibleCategory": visible_category,
+                "triggerReason": "deep_document" if is_deep else "core_category",
+                "fanoutSource": "stage_b_7_document_to_client_profile",
+            }),
+            now_str,
+        ),
+    )
+    return True
+
+
+def fanout_document_to_strategic_thoughts(
+    db: Database,
+    client_id: str,
+    v2_document_id: str,
+    file_name: str,
+) -> bool:
+    """Stage B 扇出 #3：满足门槛时，标记 strategic_thoughts 需要刷新。
+
+    保守策略：要求文档已经被抽出 ≥3 atomic_facts 或 ≥3 entities 才标记，避免空文档触发。
+    实际刷新由用户在战略陪伴 tab 打开时（或后续异步任务）真实调用 LLM 完成。
+    这一步的价值是「让 AI 留下"这份资料应该被进一步思考"的待办」—— 对应 Karpathy 启示 #3
+    的扇出追溯能力。
+    """
+    if not v2_document_id or not client_id:
+        return False
+    fact_row = db.fetchone(
+        "SELECT COUNT(*) AS n FROM atomic_facts WHERE source_v2_document_id = ? AND status='active'",
+        (v2_document_id,),
+    )
+    facts = int(fact_row["n"] if fact_row else 0)
+    entity_row = db.fetchone(
+        """
+        SELECT COUNT(DISTINCT em.entity_id) AS n
+        FROM entity_mentions em
+        JOIN v2_chunks c ON c.id = em.v2_chunk_id
+        WHERE c.v2_document_id = ?
+        """,
+        (v2_document_id,),
+    )
+    entities = int(entity_row["n"] if entity_row else 0)
+    if facts < 3 and entities < 3:
+        return False
+    timestamp = datetime.utcnow().isoformat()
+    detail = to_json({
+        "triggerSource": "document_ingest",
+        "v2DocumentId": v2_document_id,
+        "fileName": file_name,
+        "factsCount": facts,
+        "entitiesCount": entities,
+        "fanoutSource": "stage_b_3_document_to_strategic_thought",
+    })
+    db.execute(
+        """
+        INSERT INTO activity_logs(id, actor_name, action, entity_type, entity_id, detail_json, created_at)
+        VALUES(?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            new_id("evt"),
+            "AI",
+            "strategic_thought.refresh_pending",
+            "client",
+            client_id,
+            detail,
+            timestamp,
+        ),
+    )
+    return True
+
+
+def fanout_document_to_event_lines(
+    db: Database,
+    client_id: str,
+    v2_document_id: str,
+    document_id: str,
+    file_name: str,
+    created_at: str,
+) -> int:
+    """Stage B 扇出 #2：新资料 ingest 后，通过 entity 关联自动建立和 event_lines 的活动联系。
+
+    保守策略：至少 2 个 entity 命中同一 event_line 才触发，避免单点匹配的弱关联。
+    产出的 event_line_activities is_key=0、source_type='document_ingest'，等用户在战略陪伴看到后确认。
+    """
+    if not v2_document_id or not client_id:
+        return 0
+
+    entity_rows = db.fetchall(
+        """
+        SELECT DISTINCT e.id, e.normalized_name, e.display_name
+        FROM entity_mentions em
+        JOIN entities e ON e.id = em.entity_id
+        JOIN v2_chunks c ON c.id = em.v2_chunk_id
+        WHERE c.v2_document_id = ? AND e.client_id = ? AND e.status = 'active'
+        """,
+        (v2_document_id, client_id),
+    )
+    if not entity_rows or len(entity_rows) < 2:
+        return 0
+    entity_names: list[str] = []
+    entity_display: dict[str, str] = {}
+    for r in entity_rows:
+        name = str(r["normalized_name"] or "").strip().lower()
+        if name:
+            entity_names.append(name)
+            entity_display[name] = str(r["display_name"] or name)
+    if len(entity_names) < 2:
+        return 0
+
+    event_line_rows = db.fetchall(
+        """
+        SELECT id, name, summary, intent, primary_client_name
+        FROM event_lines
+        WHERE primary_client_id = ?
+          AND COALESCE(status, 'active') NOT IN ('archived', 'completed')
+        """,
+        (client_id,),
+    )
+
+    file_name_lower = (file_name or "").lower()
+    inserted = 0
+    for el in event_line_rows:
+        el_name = str(el["name"] or "")
+        searchable = " ".join([
+            el_name,
+            str(el["summary"] or ""),
+            str(el["intent"] or ""),
+            str(el["primary_client_name"] or ""),
+        ]).lower()
+        matched_entities: list[str] = []
+        for name in entity_names:
+            if name and name in searchable:
+                matched_entities.append(entity_display.get(name, name))
+
+        # Fallback 触发逻辑：entity_extractor 抽取质量差时（常见痛点），
+        # 至少让"文件名含 event_line 名 4+ 字符 substring"也能建立关联。
+        # 这样像「日慈战略合作.docx」能匹配「日慈战略陪伴」事件线。
+        filename_substring_match = False
+        if el_name and len(el_name) >= 4 and file_name_lower:
+            el_name_lower = el_name.lower()
+            # 取 event_line.name 的 4 字符滑动 substring 检查
+            for i in range(len(el_name_lower) - 3):
+                sub = el_name_lower[i:i + 4]
+                if sub in file_name_lower:
+                    filename_substring_match = True
+                    break
+
+        # 触发条件：≥2 个 entity 匹配  OR  文件名 substring 命中
+        should_trigger = len(matched_entities) >= 2 or filename_substring_match
+        if not should_trigger:
+            continue
+        # 去重：同一份资料对同一条 event_line 只写一条 activity
+        existing = db.fetchone(
+            """
+            SELECT id FROM event_line_activities
+            WHERE event_line_id = ? AND source_type = 'document_ingest' AND source_id = ?
+            LIMIT 1
+            """,
+            (str(el["id"]), v2_document_id),
+        )
+        if existing:
+            continue
+        activity_id = new_id("ela")
+        metadata = to_json({
+            "v2DocumentId": v2_document_id,
+            "documentId": document_id,
+            "fileName": file_name,
+            "matchedEntities": matched_entities[:10],
+            "matchedByFilename": filename_substring_match,
+            "fanoutSource": "stage_b_2_document_to_event_line",
+        })
+        if len(matched_entities) >= 2:
+            summary_text = (
+                f"AI 在「{file_name[:40]}」里识别到 {len(matched_entities)} 个与本事件线相关的实体"
+                f"（{'、'.join(matched_entities[:3])}{' 等' if len(matched_entities) > 3 else ''}），"
+                "等你确认是否纳入正式活动。"
+            )
+        else:
+            summary_text = (
+                f"AI 根据文件名「{file_name[:40]}」推测这份资料与本事件线相关，"
+                "等你确认是否纳入正式活动。"
+            )
+        db.execute(
+            """
+            INSERT INTO event_line_activities(
+                id, event_line_id, source_type, source_id, happened_at,
+                actor_id, actor_name, title, summary, metadata_json, is_key, created_at
+            ) VALUES(?, ?, 'document_ingest', ?, ?, NULL, 'AI', ?, ?, ?, 0, ?)
+            """,
+            (
+                activity_id,
+                str(el["id"]),
+                v2_document_id,
+                created_at,
+                f"新资料关联：{file_name[:60]}",
+                summary_text,
+                metadata,
+                created_at,
+            ),
+        )
+        inserted += 1
+    return inserted
 
 
 def _canonical_sections(text: str) -> list[dict[str, str]]:

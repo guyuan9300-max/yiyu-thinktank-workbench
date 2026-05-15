@@ -245,7 +245,6 @@ import type {
   GlossaryEntry,
   GlossaryListResponse,
   FactContradiction,
-  FactContradictionListResponse,
   OpenQuestion,
   OrgWritingNorm,
   OrgFeishuIntegration,
@@ -863,6 +862,71 @@ export async function refreshOrganizationDnaV2(triggerSource = 'manual') {
 export async function getClientDigitalAssets(clientId: string) {
   return request<DigitalAssetClientDetail>(`/api/v1/clients/${encodeURIComponent(clientId)}/digital-assets`);
 }
+
+// Stage 2：客户知识库状态 —— 替代百分比成熟度展示的 Karpathy 语义数字。
+// 返回 4 个绝对数（已确认事实/待确认思考/矛盾/缺口）+ 本周增量 = "AI 又懂了什么"
+export type ClientKnowledgeStatusWeeklyDelta = {
+  confirmedFacts: number;
+  activeContradictions: number;
+  newThoughts: number;
+  confirmedJudgments: number;
+};
+
+export type PendingFanoutAction = {
+  actionType: 'judgment_needs_reevaluation' | 'profile_needs_review' | 'thought_refresh_pending' | string;
+  entityId: string;
+  entityLabel: string;
+  reason: string;
+  triggeredAt: string;
+};
+
+export type ClientKnowledgeStatus = {
+  clientId: string;
+  confirmedFacts: number;
+  pendingThoughts: number;
+  activeContradictions: number;
+  knowledgeGaps: number;
+  weeklyDelta: ClientKnowledgeStatusWeeklyDelta;
+  // Stage B 扇出待办（新资料触发的 AI 标记待用户拍板）
+  pendingJudgmentReevaluation: number;
+  pendingProfileReview: number;
+  pendingThoughtRefresh: number;
+  recentFanoutCount: number;
+  pendingActions: PendingFanoutAction[];
+  generatedAt: string;
+};
+
+// Stage 3「矛盾 & 待确认」tab 数据源
+export type FactContradictionRow = {
+  id: string;
+  clientId: string;
+  subjectText: string;
+  attribute: string;
+  valueA: string;
+  valueB: string;
+  evidenceA: string;
+  evidenceB: string;
+  factAId: string;
+  factBId: string;
+  factAAt: string;
+  factBAt: string;
+  docAFileName?: string | null;
+  docAImportedAt?: string | null;
+  docAOriginalPath?: string | null;
+  docBFileName?: string | null;
+  docBImportedAt?: string | null;
+  docBOriginalPath?: string | null;
+  contradictionType: 'value_diff' | 'temporal' | 'scope';
+  severity: 'low' | 'medium' | 'high';
+  reviewStatus: 'pending' | 'dismissed' | 'resolved';
+  resolutionNote?: string | null;
+  detectedAt: string;
+};
+
+export type FactContradictionListResponse = {
+  contradictions: FactContradictionRow[];
+  total: number;
+};
 
 export async function refreshClientDigitalAssetNarrative(clientId: string) {
   return request<DigitalAssetNarrative>(`/api/v1/clients/${encodeURIComponent(clientId)}/digital-assets/narrative/refresh`, {
@@ -1774,6 +1838,73 @@ export async function reviewContradiction(
   });
 }
 
+// 客户级文件重复检测 —— 「矛盾 & 待确认」tab 顶部 section 消费。
+// 解决用户直观痛点：同一份文件被上传多次没被发现。
+// 用 content_hash 精确匹配（避免被 file(1).docx 这种变体名干扰）+ 同 filename fallback。
+export type DuplicateDocumentItem = {
+  id: string;
+  documentId: string;
+  fileName: string;
+  kind: string;
+  managedPath: string;
+  originalPath: string;
+  contentHash: string;
+  parseStatus: string;
+  sectionCount: number;
+  chunkCount: number;
+  importedAt: string;
+  fileSizeBytes: number;
+  refTaskAttachmentCount: number;
+  refEvidenceCardCount: number;
+  refAtomicFactCount: number;
+};
+
+export type DuplicateDocumentGroup = {
+  groupKey: string;
+  groupType: 'same_content_hash' | 'same_filename';
+  fileName: string;
+  contentHash: string;
+  count: number;
+  documents: DuplicateDocumentItem[];
+};
+
+export async function getClientDuplicateDocuments(clientId: string) {
+  return request<DuplicateDocumentGroup[]>(
+    `/api/v1/clients/${encodeURIComponent(clientId)}/duplicate-documents`,
+  );
+}
+
+export type DuplicateDocumentResolveResult = {
+  action: string;
+  groupKey: string;
+  deletedCount: number;
+  recycledTo: string;
+  migratedTaskAttachments: number;
+  migratedEvidenceRefs: number;
+  migratedAtomicFacts: number;
+  keptDocumentIds: string[];
+};
+
+// 用户在「处理重复文件」Modal 里的决定 —— 真正落地到后端：
+// action='delete_others'：迁移引用 + 物理文件进回收站（30 天可恢复）
+// action='keep_all'：标记 group 已审查，下次扫描跳过
+export async function resolveDuplicateDocuments(
+  clientId: string,
+  payload: {
+    groupKey: string;
+    action: 'delete_others' | 'keep_all';
+    keepV2DocumentIds: string[];
+    deleteV2DocumentIds: string[];
+    migrateReferences: boolean;
+    note?: string;
+  },
+) {
+  return request<DuplicateDocumentResolveResult>(
+    `/api/v1/clients/${encodeURIComponent(clientId)}/duplicate-documents/resolve`,
+    { method: 'POST', body: JSON.stringify({ ...payload, note: payload.note || '' }) },
+  );
+}
+
 export async function getAnalysisMigrationMetrics() {
   return request<AnalysisMigrationMetrics>('/api/v1/runtime/analysis-migration-metrics');
 }
@@ -2111,6 +2242,18 @@ export async function createWorkspaceAnswerActionEvidenceRequest(messageId: stri
     `/api/v1/workspace-answer-action-cards/${encodeURIComponent(messageId)}/request-evidence`,
     {
       method: 'POST',
+    },
+  );
+}
+
+// Stage 1：用户在客户工作台问答现场把答案沉淀为客户判断（写 judgment_versions）。
+// 不必绕到战略陪伴 tab 再操作 —— 直接在答案下方点「采纳为判断」即可。
+export async function promoteWorkspaceAnswerToJudgment(messageId: string, note?: string) {
+  return request<WorkspaceAnswerActionCardResult>(
+    `/api/v1/workspace-answer/${encodeURIComponent(messageId)}/promote-to-judgment`,
+    {
+      method: 'POST',
+      body: JSON.stringify({ note: note || '' }),
     },
   );
 }
@@ -2488,14 +2631,74 @@ export async function startClientMessage(
   searchId?: string,
   workingDocumentIdsOrOptions?: string[] | RequestInit,
   options?: RequestInit,
+  deepThinking?: boolean,
+  activeSkillId?: string | null,
+  creativityMode?: import('../../shared/types').CreativityMode,
 ) {
   const workingDocumentIds = Array.isArray(workingDocumentIdsOrOptions) ? workingDocumentIdsOrOptions : [];
   const requestOptions = Array.isArray(workingDocumentIdsOrOptions) ? options : workingDocumentIdsOrOptions;
   return request<ChatStartResponse>(`/api/v1/clients/${clientId}/workspace/chat/start`, {
     method: 'POST',
-    body: JSON.stringify({ prompt, threadId, searchId, workingDocumentIds: workingDocumentIds || [] }),
+    body: JSON.stringify({
+      prompt,
+      threadId,
+      searchId,
+      workingDocumentIds: workingDocumentIds || [],
+      deepThinking: deepThinking === true,
+      activeSkillId: activeSkillId || null,
+      creativityMode: creativityMode || 'balanced',
+    }),
     ...requestOptions,
   });
+}
+
+// ---------- R6: writing skills (写作风格 skill) ----------------------
+
+export async function listWritingSkills() {
+  return request<import('../../shared/types').WritingSkill[]>('/api/v1/writing-skills');
+}
+
+export async function createWritingSkill(payload: {
+  name: string;
+  description?: string;
+  distilledMd: string;
+  sortOrder?: number;
+}) {
+  return request<import('../../shared/types').WritingSkill>('/api/v1/writing-skills', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function updateWritingSkill(
+  skillId: string,
+  payload: {
+    name?: string;
+    description?: string;
+    distilledMd?: string;
+    sortOrder?: number;
+  },
+) {
+  return request<import('../../shared/types').WritingSkill>(`/api/v1/writing-skills/${skillId}`, {
+    method: 'PUT',
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function deleteWritingSkill(skillId: string) {
+  return request<{ deleted: boolean; id: string }>(`/api/v1/writing-skills/${skillId}`, {
+    method: 'DELETE',
+  });
+}
+
+export async function distillWritingSkill(payload: { samples: string[]; skillName?: string }) {
+  return request<import('../../shared/types').WritingSkillDistillResult>(
+    '/api/v1/writing-skills/distill',
+    {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    },
+  );
 }
 
 export async function getClientMessage(clientId: string, messageId: string) {
