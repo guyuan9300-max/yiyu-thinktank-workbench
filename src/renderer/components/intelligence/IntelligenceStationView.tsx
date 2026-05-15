@@ -4,7 +4,6 @@
 // 避免 npx tsc --noEmit 在我们这条线被同事的代码挡掉。
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
-  AlertCircle,
   BellPlus,
   ChevronLeft,
   ChevronRight,
@@ -322,6 +321,11 @@ function looksLikeDomainLabel(label: string) {
   return /^[a-z0-9.-]+\.[a-z]{2,}$/i.test(trimmed);
 }
 
+function looksLikeUrlOrDomainLabel(label: string) {
+  const trimmed = label.trim();
+  return /^https?:\/\//i.test(trimmed) || looksLikeDomainLabel(trimmed);
+}
+
 function profileSourceLabel(label: string, url: string) {
   const trimmed = label.trim();
   if (trimmed && !/^https?:\/\//i.test(trimmed)) {
@@ -330,11 +334,20 @@ function profileSourceLabel(label: string, url: string) {
   return compactSourceLabel(label, url);
 }
 
+function readableSourceLabel(label: string, url: string) {
+  const trimmed = label.trim();
+  if (trimmed && !looksLikeUrlOrDomainLabel(trimmed)) {
+    return trimmed.length > 48 ? `${trimmed.slice(0, 46)}...` : trimmed;
+  }
+  return compactSourceLabel(label, url);
+}
+
 function sourceLinks(item: IntelligenceItem) {
   const items: Array<{ label: string; url: string }> = [];
   if (item.sourceUrl) {
-    const sourceLabel = isProfileCompletion(item) && looksLikeDomainLabel(item.source || '') ? item.title : item.source || item.title;
-    items.push({ label: isProfileCompletion(item) ? profileSourceLabel(sourceLabel, item.sourceUrl) : compactSourceLabel(sourceLabel, item.sourceUrl), url: item.sourceUrl });
+    const rawSource = item.source || '';
+    const sourceLabel = looksLikeUrlOrDomainLabel(rawSource) ? item.title : rawSource || item.title;
+    items.push({ label: isProfileCompletion(item) ? profileSourceLabel(sourceLabel, item.sourceUrl) : readableSourceLabel(sourceLabel, item.sourceUrl), url: item.sourceUrl });
   }
   const sourceText = item.source || '';
   for (const line of sourceText.split(/\n+/)) {
@@ -362,29 +375,32 @@ function refreshRunCount(run: IntelligenceRefreshRun, key: string) {
   return Number.isFinite(number) ? number : 0;
 }
 
-function refreshRunStringList(runs: IntelligenceRefreshRun[], key: string) {
-  const values: string[] = [];
-  runs.forEach((run) => {
-    const raw = run.result?.[key];
-    if (!Array.isArray(raw)) return;
-    raw.forEach((item) => {
-      const text = String(item || '').trim();
-      if (text && !values.includes(text)) values.push(text);
-    });
-  });
-  return values;
+function refreshRunStringList(run: IntelligenceRefreshRun, key: string) {
+  const value = run.result?.[key];
+  if (!Array.isArray(value)) return [] as string[];
+  return value.map((item) => String(item || '').trim()).filter(Boolean);
 }
 
-function refreshRunRejections(runs: IntelligenceRefreshRun[]) {
-  const merged: Record<string, number> = {};
-  runs.forEach((run) => {
-    Object.entries(run.rejectionSummary || {}).forEach(([reason, count]) => {
-      merged[reason] = (merged[reason] || 0) + Number(count || 0);
-    });
-  });
-  return Object.entries(merged)
-    .sort((a, b) => b[1] - a[1])
-    .slice(0, 4);
+function refreshRunDimensionSummary(runs: IntelligenceRefreshRun[]) {
+  const covered = Array.from(new Set(runs.flatMap((run) => refreshRunStringList(run, 'profileCoverage'))));
+  const missing = Array.from(new Set(runs.flatMap((run) => refreshRunStringList(run, 'profileMissingDimensions'))));
+  const coveredText = covered.length ? `覆盖 ${covered.slice(0, 3).join('、')}${covered.length > 3 ? `等 ${covered.length} 项` : ''}` : '覆盖待确认';
+  const missingText = missing.length ? `仍缺 ${missing.slice(0, 3).join('、')}${missing.length > 3 ? `等 ${missing.length} 项` : ''}` : '基础缺口较少';
+  return `${coveredText}；${missingText}`;
+}
+
+function profileDeepDiveSummary(runs: IntelligenceRefreshRun[]) {
+  const queued = runs.reduce((sum, run) => sum + refreshRunCount(run, 'deepDiveQueuedCount'), 0);
+  const processed = runs.reduce((sum, run) => sum + refreshRunCount(run, 'deepDiveProcessedCount'), 0);
+  const skipped = runs.reduce((sum, run) => sum + refreshRunCount(run, 'deepDiveSkippedCount'), 0);
+  const remaining = runs.reduce((sum, run) => sum + refreshRunCount(run, 'deepDiveRemainingCount'), 0);
+  if (!queued && !processed && !skipped && !remaining) return '';
+  const parts: string[] = [];
+  if (queued) parts.push(`新增待深挖 ${queued}`);
+  if (processed) parts.push(`已处理深挖 ${processed}`);
+  if (skipped) parts.push(`跳过复杂来源 ${skipped}`);
+  if (remaining) parts.push(`剩余深挖 ${remaining}`);
+  return parts.join(' · ');
 }
 
 function runTimestamp(run: IntelligenceRefreshRun) {
@@ -450,18 +466,18 @@ function RefreshProgressPanel({
   if (!visibleKind) return null;
   const showingActive = activeRuns.length > 0;
   const finishedRuns = showingActive ? [] : latestFinishedRuns;
-  const finishedRejections = refreshRunRejections(finishedRuns);
   const promotedCount = finishedRuns.reduce((sum, run) => sum + refreshRunCount(run, 'promotedCount'), 0);
   const candidateCount = finishedRuns.reduce((sum, run) => sum + refreshRunCount(run, 'candidateCount'), 0);
-  const bodyFetchedCount = finishedRuns.reduce((sum, run) => sum + refreshRunCount(run, 'bodyFetchedCount'), 0);
-  const verifiedCount = finishedRuns.reduce((sum, run) => sum + refreshRunCount(run, 'verifiedCount'), 0);
-  const searchDirectionCount = finishedRuns.reduce((sum, run) => sum + refreshRunCount(run, 'searchDirectionCount'), 0);
-  const queryCount = finishedRuns.reduce((sum, run) => sum + refreshRunCount(run, 'queryCount'), 0);
-  const successQueryCount = finishedRuns.reduce((sum, run) => sum + refreshRunCount(run, 'successQueryCount'), 0);
-  const noResultQueryCount = finishedRuns.reduce((sum, run) => sum + refreshRunCount(run, 'noResultQueryCount'), 0);
-  const effectiveLeadCount = finishedRuns.reduce((sum, run) => sum + refreshRunCount(run, 'effectiveLeadCount'), 0);
-  const uncoveredGaps = refreshRunStringList(finishedRuns, 'uncoveredGaps');
-  const isProfileFinished = !showingActive && latestFinishedRun?.contentKind === 'profile_completion';
+  const pagesFetchedCount = finishedRuns.reduce((sum, run) => sum + refreshRunCount(run, 'pagesFetchedCount'), 0);
+  const profileFactCandidateCount = finishedRuns.reduce((sum, run) => sum + refreshRunCount(run, 'profileFactCandidateCount'), 0);
+  const processedPageCount = finishedRuns.reduce((sum, run) => sum + refreshRunCount(run, 'processedPageCount'), 0) || pagesFetchedCount;
+  const usableFactCount = finishedRuns.reduce((sum, run) => sum + refreshRunCount(run, 'usableFactCount'), 0) || profileFactCandidateCount;
+  const profileFactCardCount = finishedRuns.reduce((sum, run) => sum + refreshRunCount(run, 'profileFactCardCount'), 0);
+  const scoutCandidateCount = finishedRuns.reduce((sum, run) => sum + refreshRunCount(run, 'scoutCandidateCount'), 0);
+  const reviewCandidateCount = finishedRuns.reduce((sum, run) => sum + refreshRunCount(run, 'reviewCandidateCount'), 0);
+  const timelyScoutCount = scoutCandidateCount || candidateCount;
+  const profileLeadText = processedPageCount ? `${candidateCount} / ${processedPageCount}` : String(candidateCount);
+  const profileCardCount = profileFactCardCount || promotedCount;
   return (
     <div className={`mb-4 border-l-4 bg-white px-4 py-3 text-[12px] font-semibold leading-5 shadow-sm ${showingActive ? 'border-gray-950 text-gray-700' : latestFinishedRun?.status === 'failed' ? 'border-rose-400 text-rose-950' : 'border-blue-300 text-blue-950'}`}>
       <div className="flex flex-wrap items-center justify-between gap-2">
@@ -500,68 +516,67 @@ function RefreshProgressPanel({
                   <span className="text-gray-500">{run.status === 'queued' ? '排队中' : '运行中'} · {formatTime(run.updatedAt)}</span>
                 </div>
                 <p className="mt-1 text-gray-600">{run.message || run.stage || '后台研究正在推进'}</p>
+                {visibleKind === 'profile_completion' && (
+                  <>
+                    <p className="mt-1 text-gray-500">
+                      已处理页面 {refreshRunCount(run, 'processedPageCount') || refreshRunCount(run, 'pagesFetchedCount')} · 可用事实 {refreshRunCount(run, 'usableFactCount') || refreshRunCount(run, 'profileFactCandidateCount')} · 已成卡 {refreshRunCount(run, 'profileFactCardCount') || refreshRunCount(run, 'promotedCount')}
+                    </p>
+                    {profileDeepDiveSummary([run]) && (
+                      <p className="mt-1 text-gray-500">{profileDeepDiveSummary([run])}</p>
+                    )}
+                  </>
+                )}
               </div>
             ))}
           </div>
         </>
       ) : latestFinishedRun ? (
         <>
-          {isProfileFinished ? (
-            <div className="mt-3 grid gap-2 md:grid-cols-4">
-              <div className="rounded-md bg-white/70 px-3 py-2">
-                <span className="block text-blue-900/60">客户/项目</span>
-                <b>{refreshRunObjectSummary(finishedRuns, workObjects)}</b>
-              </div>
-              <div className="rounded-md bg-white/70 px-3 py-2">
-                <span className="block text-blue-900/60">运行时间</span>
-                <b>{refreshRunTimeRange(finishedRuns)}</b>
-              </div>
-              <div className="rounded-md bg-white/70 px-3 py-2">
-                <span className="block text-blue-900/60">线索总数</span>
-                <b>{candidateCount}</b>
-              </div>
-              <div className="rounded-md bg-white/70 px-3 py-2">
-                <span className="block text-blue-900/60">最终成卡</span>
-                <b>{promotedCount}</b>
-              </div>
+          <div className={`mt-3 grid gap-2 ${visibleKind === 'timely_intelligence' ? 'md:grid-cols-6' : 'md:grid-cols-7'}`}>
+            <div className="rounded-md bg-white/70 px-3 py-2">
+              <span className="block text-blue-900/60">客户/项目</span>
+              <b>{refreshRunObjectSummary(finishedRuns, workObjects)}</b>
             </div>
-          ) : (
-            <div className="mt-3 grid gap-2 md:grid-cols-4">
-              <div className="rounded-md bg-white/70 px-3 py-2">
-                <span className="block text-blue-900/60">对象</span>
-                <b>{finishedRuns.length || 1}</b>
-              </div>
-              <div className="rounded-md bg-white/70 px-3 py-2">
-                <span className="block text-blue-900/60">线索</span>
-                <b>{candidateCount}</b>
-              </div>
-              <div className="rounded-md bg-white/70 px-3 py-2">
-                <span className="block text-blue-900/60">正文/核验</span>
-                <b>{bodyFetchedCount}/{verifiedCount}</b>
-              </div>
-              <div className="rounded-md bg-white/70 px-3 py-2">
-                <span className="block text-blue-900/60">成卡</span>
-                <b>{promotedCount}</b>
-              </div>
+            <div className="rounded-md bg-white/70 px-3 py-2">
+              <span className="block text-blue-900/60">运行时间</span>
+              <b>{refreshRunTimeRange(finishedRuns)}</b>
             </div>
-          )}
+            <div className="rounded-md bg-white/70 px-3 py-2">
+              <span className="block text-blue-900/60">{visibleKind === 'timely_intelligence' ? '初筛候选' : '线索/页面'}</span>
+              <b>{visibleKind === 'timely_intelligence' ? timelyScoutCount : profileLeadText}</b>
+            </div>
+            <div className="rounded-md bg-white/70 px-3 py-2">
+              <span className="block text-blue-900/60">{visibleKind === 'timely_intelligence' ? '入围复核' : '提炼事实'}</span>
+              <b>{visibleKind === 'timely_intelligence' ? reviewCandidateCount : usableFactCount}</b>
+            </div>
+            <div className="rounded-md bg-white/70 px-3 py-2">
+              <span className="block text-blue-900/60">最终成卡</span>
+              <b>{visibleKind === 'timely_intelligence' ? promotedCount : profileCardCount}</b>
+            </div>
+            {visibleKind === 'profile_completion' && (
+              <div className="rounded-md bg-white/70 px-3 py-2">
+                <span className="block text-blue-900/60">覆盖/仍缺</span>
+                <b>{refreshRunDimensionSummary(finishedRuns)}</b>
+              </div>
+            )}
+            {visibleKind === 'profile_completion' && (
+              <div className="rounded-md bg-white/70 px-3 py-2">
+                <span className="block text-blue-900/60">最新更新时间</span>
+                <b>{formatTime(latestFinishedRun.updatedAt)}</b>
+              </div>
+            )}
+            {visibleKind === 'timely_intelligence' && (
+              <div className="rounded-md bg-white/70 px-3 py-2">
+                <span className="block text-blue-900/60">最新更新时间</span>
+                <b>{formatTime(latestFinishedRun.updatedAt)}</b>
+              </div>
+            )}
+          </div>
           <p className="mt-2 text-blue-900/70">
-            最近更新时间：{formatTime(latestFinishedRun.updatedAt)}。{latestFinishedRun.message || '后台研究已结束。'}
+            {latestFinishedRun.message || '后台研究已结束。'}
           </p>
-          {(searchDirectionCount > 0 || queryCount > 0 || effectiveLeadCount > 0 || uncoveredGaps.length > 0) && (
-            <p className="mt-1 text-blue-900/70">
-              本轮搜索 {searchDirectionCount || '若干'} 个方向，执行 {queryCount} 次查询，成功命中 {successQueryCount} 次，空结果 {noResultQueryCount} 次，形成有效线索 {effectiveLeadCount} 条
-              {uncoveredGaps.length ? `；仍缺：${uncoveredGaps.slice(0, 5).join('、')}` : ''}。
-            </p>
-          )}
-          {!isProfileFinished && finishedRejections.length > 0 && (
-            <div className="mt-2 flex flex-wrap gap-2 text-blue-900/80">
-              {finishedRejections.map(([reason, count]) => (
-                <span key={reason} className="rounded bg-blue-100/70 px-2 py-1">
-                  {reason}：{count}
-                </span>
-              ))}
-            </div>
+          {visibleKind === 'profile_completion' && profileDeepDiveSummary(finishedRuns) && (
+            <p className="mt-1 text-blue-900/70">{profileDeepDiveSummary(finishedRuns)}</p>
           )}
         </>
       ) : (
@@ -660,8 +675,8 @@ function ProfileCompletionCard({
           disabled={pending}
           className="inline-flex items-center gap-1 rounded-md border border-amber-100 bg-amber-50 px-3 py-2 text-[12px] font-bold text-amber-800 hover:bg-amber-100 disabled:opacity-40"
         >
-          {pending ? <Loader2 size={14} className="animate-spin" /> : <AlertCircle size={14} />}
-          这条不对
+          {pending ? <Loader2 size={14} className="animate-spin" /> : <Trash2 size={14} />}
+          我不采纳
         </button>
       </div>
     </article>
@@ -769,15 +784,19 @@ function TimelyIntelligenceCard({
   const links = sourceLinks(item);
   const objectLabel = itemObjectLabel(item, workObjects);
   const timeliness = item.timelinessLabel || (item.publishedAt ? `发布 ${formatTime(item.publishedAt)}` : `抓取 ${formatTime(item.capturedAt)}`);
+  const publishedLabel = item.publishedAt ? formatDateOnly(item.publishedAt) : '未识别';
   return (
     <article className="rounded-lg border border-gray-200 bg-white px-5 py-5 shadow-sm">
       <div className="flex flex-wrap items-start justify-between gap-3">
-        <div className="grid min-w-0 flex-1 gap-3 md:grid-cols-[160px_1fr_180px]">
+        <div className="grid min-w-0 flex-1 gap-3 md:grid-cols-[150px_1fr_130px_180px]">
           <IntelligenceField label="情报类型">
             <span className="font-black text-gray-950">{item.intelligenceType || '时效信号'}</span>
           </IntelligenceField>
           <IntelligenceField label="关联对象">
             <span className="font-bold text-gray-900">{objectLabel}</span>
+          </IntelligenceField>
+          <IntelligenceField label="发布时间">
+            <span className="font-bold text-gray-900">{publishedLabel}</span>
           </IntelligenceField>
           <IntelligenceField label="时效性">
             <span className="font-bold text-gray-900">{timeliness}</span>
@@ -920,6 +939,7 @@ export function IntelligenceStationView({
   const [taskDraft, setTaskDraft] = useState<IntelligenceTaskDraftPayload | null>(null);
   const flashRef = useRef(flash);
   const refreshPollTimersRef = useRef<number[]>([]);
+  const scrollContainerRef = useRef<HTMLDivElement | null>(null);
   const [refreshingKind, setRefreshingKind] = useState<IntelligenceContentKind | null>(null);
   const [refreshRuns, setRefreshRuns] = useState<IntelligenceRefreshRun[]>([]);
   const [refreshRunsLoading, setRefreshRunsLoading] = useState(false);
@@ -973,8 +993,9 @@ export function IntelligenceStationView({
     }
   }, []);
 
-  const loadItems = useCallback(async () => {
-    setLoading(true);
+  const loadItems = useCallback(async (options?: { silent?: boolean }) => {
+    const silent = Boolean(options?.silent);
+    if (!silent) setLoading(true);
     try {
       const response = await getIntelligenceItems({
         contentKind: activeTab,
@@ -990,9 +1011,23 @@ export function IntelligenceStationView({
     } catch (error) {
       flashRef.current('error', error instanceof Error ? error.message : '情报列表加载失败');
     } finally {
-      setLoading(false);
+      if (!silent) setLoading(false);
     }
   }, [activeTab, currentPage, currentPageSize, selectedWorkObject?.id, selectedWorkObject?.type, sort]);
+
+  const refreshWithoutMovingReader = useCallback(async (refresh: () => Promise<unknown>) => {
+    const container = scrollContainerRef.current;
+    const previousTop = container?.scrollTop ?? 0;
+    const shouldRestore = Boolean(container && previousTop > 0);
+    await refresh();
+    if (!shouldRestore) return;
+    window.requestAnimationFrame(() => {
+      const current = scrollContainerRef.current;
+      if (!current) return;
+      if (current.scrollTop > 8 && Math.abs(current.scrollTop - previousTop) > 24) return;
+      current.scrollTop = previousTop;
+    });
+  }, []);
 
   const loadRefreshRuns = useCallback(async () => {
     setRefreshRunsLoading(true);
@@ -1036,10 +1071,10 @@ export function IntelligenceStationView({
   useEffect(() => {
     if (activeRefreshRuns.length === 0) return undefined;
     const timer = window.setInterval(() => {
-      void Promise.all([loadRefreshRuns(), loadShell(), loadItems()]).catch(() => undefined);
+      void refreshWithoutMovingReader(() => Promise.all([loadRefreshRuns(), loadShell(), loadItems({ silent: true })])).catch(() => undefined);
     }, 5000);
     return () => window.clearInterval(timer);
-  }, [activeRefreshRuns.length, loadItems, loadRefreshRuns, loadShell]);
+  }, [activeRefreshRuns.length, loadItems, loadRefreshRuns, loadShell, refreshWithoutMovingReader]);
 
   function changeScope(next: WorkObjectSelection) {
     setSelectedScopeKey(next);
@@ -1064,7 +1099,7 @@ export function IntelligenceStationView({
   }
 
   async function reloadRefreshStatus() {
-    await Promise.all([loadRefreshRuns(), loadShell(), loadItems()]);
+    await refreshWithoutMovingReader(() => Promise.all([loadRefreshRuns(), loadShell(), loadItems({ silent: true })]));
   }
 
   function cycleHoursFor(kind: IntelligenceContentKind) {
@@ -1102,7 +1137,7 @@ export function IntelligenceStationView({
   function scheduleBackgroundRefreshChecks(contentKind: IntelligenceContentKind) {
     refreshPollTimersRef.current.forEach((timer) => window.clearTimeout(timer));
     refreshPollTimersRef.current = [2500, 8000, 15000].map((delay) => window.setTimeout(() => {
-      void Promise.all([loadRefreshRuns(), loadShell(), loadItems()])
+      void refreshWithoutMovingReader(() => Promise.all([loadRefreshRuns(), loadShell(), loadItems({ silent: true })]))
         .catch(() => undefined)
         .finally(() => undefined);
     }, delay));
@@ -1117,7 +1152,7 @@ export function IntelligenceStationView({
       if (queued) {
         scheduleBackgroundRefreshChecks(contentKind);
       }
-      await Promise.all([loadRefreshRuns(), loadShell(), loadItems()]);
+      await refreshWithoutMovingReader(() => Promise.all([loadRefreshRuns(), loadShell(), loadItems({ silent: true })]));
       flashRef.current(result.status === 'failed' ? 'error' : result.status === 'no_results' || queued ? 'info' : 'success', summarizeRefreshResult(result));
     } catch (error) {
       flashRef.current('error', error instanceof Error ? error.message : `${TAB_LABEL[contentKind]}刷新失败`);
@@ -1333,7 +1368,7 @@ export function IntelligenceStationView({
   }
 
   return (
-    <div className="h-full overflow-y-auto bg-[#F6F7F9] font-sans text-gray-950">
+    <div ref={scrollContainerRef} className="h-full overflow-y-auto bg-[#F6F7F9] font-sans text-gray-950">
       <div className="mx-auto max-w-[1320px] px-6 py-6">
         <header className="border-b border-gray-200 pb-5">
           <div className="flex flex-wrap items-end justify-between gap-4">

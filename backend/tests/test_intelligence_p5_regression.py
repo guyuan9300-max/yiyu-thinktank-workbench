@@ -318,6 +318,7 @@ def test_p5_user_visible_items_api_does_not_leak_internal_scores_or_candidates(t
     with TestClient(app) as client:
         db = client.app.state.app_state.db
         _seed_client(db, client_id="client_rici", name="广东省日慈公益基金会")
+        _seed_client(db, client_id="client_yiyu", name="益语智库")
         db.execute(
             """
             INSERT INTO intelligence_items(
@@ -333,6 +334,22 @@ def test_p5_user_visible_items_api_does_not_leak_internal_scores_or_candidates(t
                 'verified', '内部核验理由', 'active', '2026-05-14T10:00:00', '2026-05-14T10:00:00')
             """,
             (to_json(["要点"]), to_json(["外部情报", "资助机会"])),
+        )
+        db.execute(
+            """
+            INSERT INTO intelligence_items(
+                id, content_kind, scope_type, scope_id, client_id, title, summary,
+                key_points_json, analysis, impact, tags_json, source, source_url,
+                captured_at, verified_at, verification_status, verification_reason,
+                user_status, created_at, updated_at
+            )
+            VALUES('item_other_client', 'timely_intelligence', 'client', 'client_yiyu', 'client_yiyu',
+                '其他客户情报', '不应出现在日慈筛选结果中', ?, '其他分析', '其他影响', ?,
+                '其他来源', 'https://example.org/other',
+                '2026-05-14T10:00:00', '2026-05-14T10:00:00',
+                'verified', '其他核验', 'active', '2026-05-14T10:00:00', '2026-05-14T10:00:00')
+            """,
+            (to_json(["其他要点"]), to_json(["外部情报"])),
         )
         db.execute(
             """
@@ -361,6 +378,45 @@ def test_p5_user_visible_items_api_does_not_leak_internal_scores_or_candidates(t
         assert leaked_keys.isdisjoint(item.keys())
         assert item["title"] == "真实资助机会"
         assert item["source"] == "资助方官网公告"
+        assert [entry["title"] for entry in payload["items"]] == ["真实资助机会"]
+
+        legacy_param_response = client.get(
+            "/api/v1/intelligence/items",
+            params={"contentKind": "timely_intelligence", "workObjectType": "client", "workObjectId": "client_rici"},
+        )
+        assert legacy_param_response.status_code == 200, legacy_param_response.text
+        assert [entry["title"] for entry in legacy_param_response.json()["items"]] == ["真实资助机会"]
+
+
+def test_p5_refresh_runs_api_recovers_stale_running_status(tmp_path: Path) -> None:
+    app = create_app(tmp_path / "data")
+    with TestClient(app) as client:
+        db = client.app.state.app_state.db
+        old_ts = "2026-05-15T01:00:00Z"
+        db.execute(
+            """
+            INSERT INTO intelligence_refresh_runs(
+                id, scope_type, scope_id, client_id, content_kind, trigger_source,
+                status, stage, message, result_json, rejection_summary_json,
+                started_at, created_at, updated_at
+            )
+            VALUES(
+                'irun_stale', 'client', 'client_stale', 'client_stale',
+                'profile_completion', 'manual', 'running', 'quick',
+                '正在快速查找资料', '{}', '{}',
+                ?, ?, ?
+            )
+            """,
+            (old_ts, old_ts, old_ts),
+        )
+
+        response = client.get("/api/v1/intelligence/refresh-runs", params={"limit": 5})
+
+        assert response.status_code == 200, response.text
+        stale = next(item for item in response.json() if item["id"] == "irun_stale")
+        assert stale["status"] == "failed"
+        assert stale["stage"] == "interrupted"
+        assert "长时间没有进度更新" in stale["message"]
 
 
 def test_p5_fetch_budget_limits_jobs_and_duplicates_merge(tmp_path: Path) -> None:

@@ -22,6 +22,11 @@ from app.services.intelligence_feedback import (
     source_feedback_adjustment,
 )
 from app.services.intelligence_search_intents import GeneratedSearchIntent, IntelligenceSearchScope
+from app.services.intelligence_timely_strategy import (
+    build_timely_research_strategy,
+    evaluate_timely_strategy_match,
+    timely_effective_window_reason,
+)
 from app.services.knowledge_v2 import upsert_canonical_text_document
 from app.services.public_search import search_public_web
 
@@ -32,7 +37,7 @@ PROFILE_TTL_HOURS = 72
 TIMELY_TTL_HOURS = 24
 STRONG_SOURCE_TYPES = {"gov_policy", "procurement", "grant", "social_org_registry", "official_site", "official_site_section"}
 PROFILE_SOURCE_TYPES = {"web_search", "official_site", "official_site_section", "social_org_registry", "profile_report", "charity_media"}
-TIMELY_SOURCE_TYPES = {"web_search", "official_site", "official_site_section", "gov_policy", "procurement", "grant", "regulatory_risk", "partner_peer", "charity_media"}
+TIMELY_SOURCE_TYPES = {"web_search", "gov_policy", "procurement", "grant", "regulatory_risk", "partner_peer", "charity_media"}
 CONTENT_KIND_SOURCE_TYPES = {
     "profile_completion": PROFILE_SOURCE_TYPES,
     "timely_intelligence": TIMELY_SOURCE_TYPES,
@@ -52,15 +57,18 @@ def refresh_cycle_hours(db: Database, content_kind: str) -> int:
         value = default
     return max(1, min(value, 8760))
 PROFILE_COMPLETION_DIMENSIONS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("官网与栏目", ("官网", "官方网站", "栏目", "关于我们", "导航", "信息公开")),
     ("机构简介", ("机构简介", "关于我们", "机构介绍", "业务范围", "宗旨", "使命", "愿景", "定位")),
     ("登记信息", ("登记", "统一社会信用代码", "登记机关", "法定代表人", "住所", "社会组织")),
     ("年报/信息公开", ("年报", "年度报告", "信息公开", "审计报告", "公开报告")),
     ("项目介绍", ("项目介绍", "项目概况", "项目背景", "服务内容", "服务对象", "项目目标")),
+    ("服务对象/地域", ("服务对象", "服务范围", "区域", "地域", "地区", "困境儿童", "儿童青少年")),
     ("项目成效", ("成效", "成果", "案例", "受益", "人数", "覆盖", "评估")),
     ("合作方", ("合作", "伙伴", "资助方", "支持方", "联合", "共建")),
     ("执行方法", ("方法", "模式", "路径", "课程", "培训", "活动", "服务流程")),
     ("负责人/团队", ("秘书长", "理事长", "负责人", "团队", "顾源源", "张真", "采访", "观点")),
 )
+PROFILE_BASELINE_DIMENSIONS = ["机构简介", "登记信息", "年报/信息公开", "项目介绍", "项目成效", "合作方", "执行方法"]
 CLOSED_OR_LOW_VALUE_DOMAINS = {
     "capitalone.com",
     "booking.com",
@@ -106,20 +114,28 @@ AGGREGATOR_DOMAINS = {
     "qixin.com",
     "qichacha.com",
     "jobui.com",
+    "gaoxiaojob.com",
+    "yingjiesheng.com",
+    "51job.com",
+    "zhaopin.com",
+    "lagou.com",
+    "chinahr.com",
     "kanzhun.com",
     "zhipin.com",
     "liepin.com",
     "企查查",
     "天眼查",
 }
+TIMELY_DETAIL_REVIEW_LIMIT = 24
+TIMELY_AI_REVIEW_LIMIT = 12
 
 OFFICIAL_SITE_SECTION_SPECS: tuple[tuple[str, str, tuple[str, ...], int], ...] = (
     ("官网栏目：关于/简介", "关于 我们 简介 机构介绍", ("profile_completion",), 96),
-    ("官网栏目：项目/案例", "项目 案例 服务 成效", ("profile_completion", "timely_intelligence"), 95),
-    ("官网栏目：文章/观点", "观点 文章 访谈 专访 案例", ("profile_completion", "timely_intelligence"), 95),
-    ("官网栏目：公告/新闻", "公告 新闻 动态 通知", ("timely_intelligence",), 94),
+    ("官网栏目：项目/案例", "项目 案例 服务 成效", ("profile_completion",), 95),
+    ("官网栏目：文章/观点", "观点 文章 访谈 专访 案例", ("profile_completion",), 95),
+    ("官网栏目：公告/新闻", "公告 新闻 动态 通知", ("profile_completion",), 94),
     ("官网栏目：信息公开/年报/报告", "信息公开 年报 年度报告 报告", ("profile_completion",), 97),
-    ("官网栏目：合作/资助", "合作 伙伴 资助 申报", ("timely_intelligence",), 93),
+    ("官网栏目：合作/资助", "合作 伙伴 资助 申报", ("profile_completion",), 93),
 )
 NOTICE_TITLE_TERMS = (
     "通知",
@@ -168,6 +184,60 @@ TIMELY_MATERIAL_TERMS = (
     "公开募捐",
     "处罚",
     "风险提示",
+)
+EXTERNAL_SIGNAL_TERMS = (
+    "通知",
+    "公告",
+    "需求",
+    "需求表",
+    "申报",
+    "征集",
+    "招标",
+    "采购",
+    "中标",
+    "成交",
+    "政府购买",
+    "资助",
+    "扶持",
+    "公益创投",
+    "政策",
+    "办法",
+    "指南",
+    "监管",
+    "合规",
+    "风险提示",
+    "处罚",
+    "整改",
+    "案例",
+    "活动",
+    "发布",
+    "启动",
+    "合作",
+    "签约",
+    "入选",
+    "试点",
+)
+STATIC_TIMELY_PROFILE_TERMS = (
+    "机构简介",
+    "关于我们",
+    "官网",
+    "官方网站",
+    "业务范围",
+    "组织架构",
+    "团队介绍",
+    "年报",
+    "年度报告",
+    "研究报告",
+    "白皮书",
+    "信息公开",
+)
+GENERIC_MACRO_TIMELY_TERMS = (
+    "高质量发展论坛",
+    "宏观讨论",
+    "泛泛讨论",
+    "理论研讨",
+    "行业观察",
+    "发展综述",
 )
 GENERIC_FOCUS_TERMS = {
     "官网",
@@ -219,6 +289,9 @@ TEMPLATE_SUMMARY_MARKERS = (
     "通用背景下",
     "不是基于当前客户原始资料",
     "本地背景没有直接覆盖",
+    "需要进一步判断这条变化是否会影响",
+    "建议转为阅读/研判任务",
+    "命中关注点",
 )
 TRACKING_QUERY_PREFIXES = ("utm_",)
 TRACKING_QUERY_NAMES = {"spm", "from", "source", "src", "share", "shareid", "scene", "fbclid", "gclid"}
@@ -302,13 +375,55 @@ class CandidateRefreshResult:
     candidate_counts: dict[str, int] = field(default_factory=dict)
     profile_coverage: list[str] = field(default_factory=list)
     profile_missing_dimensions: list[str] = field(default_factory=list)
+    profile_partial_dimensions: list[str] = field(default_factory=list)
+    profile_gap_map: dict[str, object] = field(default_factory=dict)
     profile_completion_ready: bool = False
     search_direction_count: int = 0
     query_count: int = 0
     success_query_count: int = 0
     no_result_query_count: int = 0
     effective_lead_count: int = 0
+    direct_source_count: int = 0
+    pages_fetched_count: int = 0
+    profile_fact_candidate_count: int = 0
+    profile_fact_card_count: int = 0
+    no_new_fact_rounds: int = 0
+    scout_candidate_count: int = 0
+    review_candidate_count: int = 0
+    detail_fetched_count: int = 0
+    ai_reviewed_count: int = 0
+    fresh_window_count: int = 0
+    extended_window_count: int = 0
+    effective_window_exception_count: int = 0
     uncovered_gaps: list[str] = field(default_factory=list)
+    timely_profile_ready: bool = False
+    timely_profile_score: int = 0
+    timely_profile_gaps: list[str] = field(default_factory=list)
+    timely_strategy_route_count: int = 0
+    timely_candidate_review_count: int = 0
+    timely_effective_window_exception_count: int = 0
+    research_stage: str = ""
+    processed_page_count: int = 0
+    usable_fact_count: int = 0
+    quick_win_card_count: int = 0
+    deep_queue_count: int = 0
+    covered_sub_gaps: list[str] = field(default_factory=list)
+    remaining_sub_gaps: list[str] = field(default_factory=list)
+    deferred_hard_sources: list[str] = field(default_factory=list)
+    profile_run_mode: str = "standard"
+    deep_dive_queued_count: int = 0
+    deep_dive_processed_count: int = 0
+    deep_dive_skipped_count: int = 0
+    deep_dive_remaining_count: int = 0
+    deep_dive_source_titles: list[str] = field(default_factory=list)
+    deep_dive_skip_summary: list[str] = field(default_factory=list)
+    external_signal_candidate_count: int = 0
+    external_signal_review_count: int = 0
+    ai_judged_count: int = 0
+    inspiration_card_count: int = 0
+    own_official_filtered_count: int = 0
+    static_profile_filtered_count: int = 0
+    generic_macro_filtered_count: int = 0
 
     def as_payload(self) -> dict[str, object]:
         return {
@@ -328,13 +443,55 @@ class CandidateRefreshResult:
             "candidateCounts": self.candidate_counts,
             "profileCoverage": self.profile_coverage,
             "profileMissingDimensions": self.profile_missing_dimensions,
+            "profilePartialDimensions": self.profile_partial_dimensions,
+            "profileGapMap": self.profile_gap_map,
             "profileCompletionReady": self.profile_completion_ready,
             "searchDirectionCount": self.search_direction_count,
             "queryCount": self.query_count,
             "successQueryCount": self.success_query_count,
             "noResultQueryCount": self.no_result_query_count,
             "effectiveLeadCount": self.effective_lead_count,
+            "directSourceCount": self.direct_source_count,
+            "pagesFetchedCount": self.pages_fetched_count,
+            "profileFactCandidateCount": self.profile_fact_candidate_count,
+            "profileFactCardCount": self.profile_fact_card_count,
+            "noNewFactRounds": self.no_new_fact_rounds,
+            "scoutCandidateCount": self.scout_candidate_count,
+            "reviewCandidateCount": self.review_candidate_count,
+            "detailFetchedCount": self.detail_fetched_count,
+            "aiReviewedCount": self.ai_reviewed_count,
+            "freshWindowCount": self.fresh_window_count,
+            "extendedWindowCount": self.extended_window_count,
+            "effectiveWindowExceptionCount": self.effective_window_exception_count,
             "uncoveredGaps": self.uncovered_gaps,
+            "timelyProfileReady": self.timely_profile_ready,
+            "timelyProfileScore": self.timely_profile_score,
+            "timelyProfileGaps": self.timely_profile_gaps,
+            "timelyStrategyRouteCount": self.timely_strategy_route_count,
+            "timelyCandidateReviewCount": self.timely_candidate_review_count,
+            "timelyEffectiveWindowExceptionCount": self.timely_effective_window_exception_count,
+            "researchStage": self.research_stage,
+            "processedPageCount": self.processed_page_count,
+            "usableFactCount": self.usable_fact_count,
+            "quickWinCardCount": self.quick_win_card_count,
+            "deepQueueCount": self.deep_queue_count,
+            "coveredSubGaps": self.covered_sub_gaps,
+            "remainingSubGaps": self.remaining_sub_gaps,
+            "deferredHardSources": self.deferred_hard_sources,
+            "profileRunMode": self.profile_run_mode,
+            "deepDiveQueuedCount": self.deep_dive_queued_count,
+            "deepDiveProcessedCount": self.deep_dive_processed_count,
+            "deepDiveSkippedCount": self.deep_dive_skipped_count,
+            "deepDiveRemainingCount": self.deep_dive_remaining_count,
+            "deepDiveSourceTitles": self.deep_dive_source_titles,
+            "deepDiveSkipSummary": self.deep_dive_skip_summary,
+            "externalSignalCandidateCount": self.external_signal_candidate_count,
+            "externalSignalReviewCount": self.external_signal_review_count,
+            "aiJudgedCount": self.ai_judged_count,
+            "inspirationCardCount": self.inspiration_card_count,
+            "ownOfficialFilteredCount": self.own_official_filtered_count,
+            "staticProfileFilteredCount": self.static_profile_filtered_count,
+            "genericMacroFilteredCount": self.generic_macro_filtered_count,
         }
 
 
@@ -350,6 +507,17 @@ class ProfileVerificationResult:
     key_points: list[str] = field(default_factory=list)
     analysis: str = ""
     body_excerpt: str = ""
+    fact_cards: list["ProfileFactCard"] = field(default_factory=list)
+
+
+@dataclass
+class ProfileFactCard:
+    dimension: str
+    title: str
+    summary: str
+    key_points: list[str]
+    analysis: str
+    fact_signature: str
 
 
 @dataclass
@@ -373,6 +541,7 @@ class ResearchBrief:
     priority_urls: list[str] = field(default_factory=list)
     profile_focus_terms: list[str] = field(default_factory=list)
     timely_focus_terms: list[str] = field(default_factory=list)
+    timely_strategy: dict[str, object] = field(default_factory=dict)
 
 
 @dataclass
@@ -554,6 +723,14 @@ def _load_research_brief(db: Database, scope: IntelligenceSearchScope) -> Resear
     timely_focus = _unique_items(timely_focus, limit=16)
     exclude_terms = _unique_items(exclude_terms, limit=20)
     priority_urls = _extract_focus_urls(profile_focus, timely_focus)
+    timely_strategy = build_timely_research_strategy(
+        db,
+        scope_type=scope.scope_type,
+        scope_id=scope.scope_id,
+        client_id=scope.client_id,
+        project_module_id=scope.project_module_id,
+        display_name=scope.display_name,
+    ).as_payload()
     return ResearchBrief(
         scope=scope,
         object_terms=object_terms,
@@ -563,6 +740,7 @@ def _load_research_brief(db: Database, scope: IntelligenceSearchScope) -> Resear
         priority_urls=priority_urls,
         profile_focus_terms=_focus_terms_from_lines(profile_focus, object_terms),
         timely_focus_terms=_focus_terms_from_lines(timely_focus, object_terms),
+        timely_strategy=timely_strategy,
     )
 
 
@@ -704,8 +882,8 @@ def _default_source_specs(region: str, client_name: str) -> list[dict[str, objec
             "template": f"{client_prefix}" + "{query} 官网 项目 报告",
             "tier": "standard",
             "priority": 88,
-            "content_kinds": ["profile_completion", "timely_intelligence"],
-            "reason": "官网尚未确认时，先通过公开搜索寻找官网线索。",
+            "content_kinds": ["profile_completion"],
+            "reason": "官网尚未确认时，先通过公开搜索寻找官网线索；时效情报只使用官网外部信号。",
         },
     ]
 
@@ -841,6 +1019,15 @@ def _domain_from_source_template(template: str) -> str:
     return ""
 
 
+def _site_domain_from_text(text: str) -> str:
+    match = re.search(r"site:([A-Za-z0-9.-]+\.[A-Za-z]{2,})", text or "", flags=re.I)
+    return match.group(1).lower().removeprefix("www.") if match else ""
+
+
+def _strip_site_prefix(text: str) -> str:
+    return _clean_text(re.sub(r"\bsite:[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b", " ", text or "", flags=re.I), max_len=220)
+
+
 def _disable_invalid_discovered_sources(db: Database, scope: IntelligenceSearchScope) -> None:
     rows = db.fetchall(
         """
@@ -921,8 +1108,8 @@ def ensure_user_supplied_official_sources(db: Database, scope: IntelligenceSearc
                 scope.project_module_id,
                 f"用户给定官网：{domain}",
                 template,
-                to_json(["profile_completion", "timely_intelligence"]),
-                "用户在重点关注中提供官网或重点网址，优先进入研究路线",
+                to_json(["profile_completion"]),
+                "用户在重点关注中提供官网或重点网址，优先进入资料补全和对象画像；时效情报不抓取对象官网",
                 to_json(samples),
                 created_at,
                 timestamp,
@@ -1016,11 +1203,138 @@ def _looks_like_timely_material(text: str) -> bool:
     return any(term in text for term in TIMELY_MATERIAL_TERMS) and not any(term in text for term in PROFILE_MATERIAL_TERMS)
 
 
+def _hit_domain(url: str) -> str:
+    return urlparse(url or "").netloc.lower().removeprefix("www.")
+
+
+def _official_domains_for_scope(db: Database, scope: IntelligenceSearchScope, brief: ResearchBrief | None = None) -> set[str]:
+    domains: set[str] = set()
+    rows = db.fetchall(
+        """
+        SELECT source_url_template
+        FROM intelligence_source_configs
+        WHERE scope_type = ? AND scope_id = ? AND enabled = 1
+          AND source_type IN ('official_site', 'official_site_section')
+        """,
+        (scope.scope_type, scope.scope_id),
+    )
+    for row in rows:
+        domain = _site_domain_from_text(str(row["source_url_template"] or ""))
+        if domain:
+            domains.add(domain.lower().removeprefix("www."))
+    if brief:
+        for url in brief.priority_urls:
+            domain = _hit_domain(url)
+            if domain:
+                domains.add(domain)
+    return domains
+
+
+def _is_own_official_hit(hit: CandidateHit, official_domains: set[str]) -> bool:
+    domain = _hit_domain(hit.url)
+    return bool(domain and any(domain == item or domain.endswith(f".{item}") for item in official_domains))
+
+
+def _timely_strategy_terms(brief: ResearchBrief | None) -> list[str]:
+    if not brief:
+        return []
+    # User directives are intentionally separated: profile-completion focus can
+    # teach the object profile through verified materials, but it must not steer
+    # timely intelligence search or review directly.
+    terms: list[str] = [*brief.timely_focus_terms]
+    strategy = brief.timely_strategy or {}
+    for key in ("searchAtoms", "serviceTargets", "projectTerms", "methodTerms", "resourceNeeds", "complianceConstraints"):
+        terms.extend(_as_text_list(strategy.get(key), limit=16))
+    for route in strategy.get("routes") or []:
+        if isinstance(route, dict):
+            terms.append(_clean_text(route.get("label"), max_len=40))
+            terms.extend(_as_text_list(route.get("terms"), limit=8))
+    return _unique_items([term for term in terms if term not in GENERIC_FOCUS_TERMS], limit=48)
+
+
+def _direct_identity_hits(text: str, brief: ResearchBrief | None) -> list[str]:
+    if not brief:
+        return []
+    display_name = _clean_text(brief.scope.display_name, max_len=80)
+    identity_terms = [display_name]
+    if display_name:
+        identity_terms.extend([term for term in brief.object_terms if term and (term in display_name or display_name in term)])
+    return _matched_terms(text, _unique_items(identity_terms, limit=8))
+
+
+def _has_external_signal(text: str, source_type: str = "") -> bool:
+    return bool(
+        any(term in text for term in EXTERNAL_SIGNAL_TERMS)
+        or source_type in {"gov_policy", "procurement", "grant", "regulatory_risk", "partner_peer"}
+    )
+
+
+def _looks_like_static_timely_hit(text: str, *, has_external_signal: bool) -> bool:
+    if has_external_signal:
+        return False
+    return any(term in text for term in STATIC_TIMELY_PROFILE_TERMS)
+
+
+def _looks_like_generic_macro_signal(text: str) -> bool:
+    if any(term in text for term in ("申报", "征集", "截止", "采购", "招标", "中标", "监管", "处罚", "风险提示", "资助", "公益创投")):
+        return False
+    return any(term in text for term in GENERIC_MACRO_TIMELY_TERMS)
+
+
+def _external_signal_fast_screen(
+    *,
+    hit: CandidateHit,
+    intent: GeneratedSearchIntent,
+    config: SourceConfig,
+    brief: ResearchBrief,
+) -> tuple[bool, float, list[str], str]:
+    text = f"{hit.title} {hit.snippet} {hit.source} {intent.query} {intent.reason}"
+    has_signal = _has_external_signal(text, config.source_type)
+    if _looks_like_static_timely_hit(text, has_external_signal=has_signal):
+        return False, -40.0, ["static_profile_filtered"], "static_profile"
+    if _looks_like_generic_macro_signal(text):
+        return False, -40.0, ["generic_macro_filtered"], "generic_macro"
+    signal_terms = _matched_terms(text, list(EXTERNAL_SIGNAL_TERMS))
+    tag_terms = _matched_terms(text, _timely_strategy_terms(brief))
+    route_terms = [item for item in intent.source_inputs if item.startswith("timely_route:")]
+    score = 0.0
+    flags: list[str] = []
+    if has_signal or signal_terms:
+        score += 28
+        flags.append("external_signal")
+    if tag_terms:
+        score += min(len(tag_terms), 5) * 6
+        flags.append("tag_relevant_signal")
+    if route_terms:
+        score += 8
+    if config.source_type in {"gov_policy", "procurement", "grant", "regulatory_risk"}:
+        score += 12
+    if hit.published_at:
+        score += 8
+    object_hits = _matched_terms(text, brief.object_terms)
+    if not object_hits and (tag_terms or signal_terms) and has_signal:
+        flags.append("inspiration_signal")
+    if not has_signal and not tag_terms:
+        score -= 16
+    return True, min(score, 50.0), _unique_items(flags, limit=8), ""
+
+
 def _effective_query(intent: GeneratedSearchIntent, config: SourceConfig) -> str:
     region_prefix = "" if config.region == "全国" else f"{config.region} "
     template = config.source_url_template or "{query}"
     if intent.query.strip().lower().startswith("site:") and template.strip().lower().startswith("site:"):
-        return _clean_text(intent.query, max_len=220)
+        if config.source_type == "official_site":
+            return _clean_text(intent.query, max_len=220)
+        query_without_site = _strip_site_prefix(intent.query)
+        return _clean_text(
+            template.format(
+                query=query_without_site,
+                region=config.region,
+                region_prefix=region_prefix,
+                client="",
+            ),
+            max_len=220,
+        )
     return _clean_text(
         template.format(
             query=intent.query,
@@ -1039,6 +1353,50 @@ def _parse_iso(value: str | None) -> datetime | None:
         return datetime.fromisoformat(value)
     except Exception:
         return None
+
+
+def _parse_publication_date(value: str | None) -> datetime | None:
+    text = _clean_text(value, max_len=120)
+    if not text:
+        return None
+    parsed = _parse_iso(text[:19]) or _parse_iso(text[:10])
+    if parsed:
+        return parsed
+    match = re.search(r"(20\d{2})[-年/.](\d{1,2})[-月/.](\d{1,2})", text)
+    if not match:
+        return None
+    try:
+        return datetime(int(match.group(1)), int(match.group(2)), int(match.group(3)))
+    except ValueError:
+        return None
+
+
+def _timely_publication_freshness(
+    published_at: str | None,
+    *,
+    timestamp: str,
+    max_age_days: int = 30,
+    body_text: str = "",
+) -> tuple[bool, str, str]:
+    effective_window = timely_effective_window_reason(body_text, timestamp=timestamp)
+    published_dt = _parse_publication_date(published_at)
+    if published_dt is None:
+        if effective_window:
+            return True, f"未识别到发布时间，但{effective_window}", "effective_window_exception"
+        return False, "未识别到来源页面近 90 天内发布时间或有效窗口，暂不作为时效情报成卡", "missing_date"
+    now_dt = _parse_iso(timestamp) or datetime.now()
+    if published_dt > now_dt + timedelta(days=1):
+        return False, "来源发布时间晚于当前时间，暂不成卡", "future_date"
+    age = now_dt - published_dt
+    if age <= timedelta(days=30):
+        return True, "来源发布时间处于近 30 天优先时效窗口内", "fresh_window"
+    if age <= timedelta(days=90):
+        return True, "来源发布时间处于 31-90 天扩展时效窗口内，需通过更强相关和影响链条复核", "extended_window"
+    if age > timedelta(days=max(max_age_days, 90)):
+        if effective_window:
+            return True, f"来源发布时间较早，但{effective_window}", "effective_window_exception"
+        return False, f"来源发布时间为 {published_dt.date().isoformat()}，已超过近 90 天时效窗口且未识别到有效窗口", "stale_over_90"
+    return False, "来源发布时间未通过时效窗口判断，暂不成卡", "unknown_window"
 
 
 def _source_priority_score(config: SourceConfig, *, timestamp: str) -> float:
@@ -1127,13 +1485,113 @@ def _looks_like_domain_label(value: str) -> bool:
 
 def _source_display_name(draft: CandidateDraft) -> str:
     source = _clean_text(draft.hit.source, max_len=160)
-    if draft.content_kind == "profile_completion" and (not source or _looks_like_domain_label(source)):
+    if not source or _looks_like_domain_label(source) or source.startswith("http://") or source.startswith("https://"):
         return _clean_text(draft.hit.title, max_len=160) or source or _domain_label(draft.hit.url)
     return source or draft.source_config.source_name or _domain_label(draft.hit.url)
 
 
+def _html_text_snippet(html: str, *, max_len: int = 260) -> str:
+    for pattern in (
+        r"<meta[^>]+name=[\"']description[\"'][^>]+content=[\"']([^\"']+)[\"']",
+        r"<meta[^>]+content=[\"']([^\"']+)[\"'][^>]+name=[\"']description[\"']",
+    ):
+        match = re.search(pattern, html or "", flags=re.I | re.S)
+        if match:
+            return _clean_text(unescape(match.group(1)), max_len=max_len)
+    text = re.sub(r"<(script|style)\b.*?</\1>", " ", html or "", flags=re.I | re.S)
+    text = re.sub(r"<[^>]+>", " ", text)
+    return _clean_text(unescape(text), max_len=max_len)
+
+
+def _html_title(html: str, fallback: str) -> str:
+    match = re.search(r"<title[^>]*>(.*?)</title>", html or "", flags=re.I | re.S)
+    if match:
+        title = _clean_text(unescape(re.sub(r"<[^>]+>", " ", match.group(1))), max_len=120)
+        if title:
+            return title
+    return fallback
+
+
+def _query_terms_for_direct_site(query: str) -> list[str]:
+    stripped = _strip_site_prefix(query)
+    stopwords = {"官网", "官方网站", "关于", "我们", "简介", "机构介绍", "项目", "案例", "服务", "成效", "信息公开", "年报", "年度报告", "报告"}
+    terms: list[str] = []
+    for token in re.split(r"[\s,，。;；、/|()（）]+", stripped):
+        text = _clean_text(token, max_len=40)
+        if len(text) < 2 or text in stopwords:
+            continue
+        if text not in terms:
+            terms.append(text)
+    return terms[:12]
+
+
+def _fetch_direct_official_site_hits(query: str, config: SourceConfig, *, timeout_seconds: float = 6.0) -> list[CandidateHit]:
+    if config.source_type not in {"official_site", "official_site_section"}:
+        return []
+    domain = _site_domain_from_text(query) or _site_domain_from_text(config.source_url_template)
+    if not domain or _domain_matches(domain, CLOSED_OR_LOW_VALUE_DOMAINS) or _domain_matches(domain, AGGREGATOR_DOMAINS):
+        return []
+    urls = [f"https://{domain}/", f"http://{domain}/"]
+    response_text = ""
+    final_url = ""
+    for url in urls:
+        try:
+            response = httpx.get(
+                url,
+                timeout=timeout_seconds,
+                follow_redirects=True,
+                headers={
+                    "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/135.0 Safari/537.36",
+                    "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
+                },
+            )
+            response.raise_for_status()
+            response_text = response.text or ""
+            final_url = str(response.url)
+            break
+        except Exception:
+            continue
+    if not response_text or not final_url:
+        return []
+    homepage_title = _html_title(response_text, f"{domain} 官网")
+    homepage = CandidateHit(
+        title=homepage_title,
+        url=final_url,
+        snippet=_html_text_snippet(response_text),
+        source=homepage_title or domain,
+        provider="direct_official_site",
+    )
+    terms = _query_terms_for_direct_site(query)
+    hits: list[CandidateHit] = [homepage]
+    base_domain = urlparse(final_url).netloc.lower().removeprefix("www.") or domain
+    pattern = re.compile(r"<a\b[^>]*href=[\"']([^\"']+)[\"'][^>]*>(.*?)</a>", flags=re.I | re.S)
+    for href, label_html in pattern.findall(response_text):
+        label = _clean_text(unescape(re.sub(r"<[^>]+>", " ", label_html)), max_len=120)
+        if not label:
+            continue
+        absolute = urljoin(final_url, href)
+        parsed = urlparse(absolute)
+        if parsed.scheme not in {"http", "https"} or parsed.netloc.lower().removeprefix("www.") != base_domain:
+            continue
+        link_text = f"{label} {absolute}"
+        if terms and not _matched_terms(link_text, terms) and not any(term in link_text for term in DETAIL_LINK_TERMS):
+            continue
+        hits.append(
+            CandidateHit(
+                title=label,
+                url=absolute,
+                snippet=f"官网栏目链接：{homepage_title}",
+                source=homepage_title or domain,
+                provider="direct_official_site",
+            )
+        )
+        if len(hits) >= 8:
+            break
+    return hits
+
+
 def _fetch_public_search_hits(query: str, config: SourceConfig, *, timeout_seconds: float = 8.0) -> list[CandidateHit]:
-    hits: list[CandidateHit] = []
+    hits: list[CandidateHit] = _fetch_direct_official_site_hits(query, config, timeout_seconds=min(timeout_seconds, 6.0))
     for item in search_public_web(query, max_results=8, timeout_seconds=timeout_seconds):
         hits.append(
             CandidateHit(
@@ -1144,7 +1602,15 @@ def _fetch_public_search_hits(query: str, config: SourceConfig, *, timeout_secon
                 provider=item.provider,
             )
         )
-    return hits
+    deduped: list[CandidateHit] = []
+    seen: set[str] = set()
+    for hit in hits:
+        key = _normalize_url(hit.url)
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        deduped.append(hit)
+    return deduped
 
 
 def _normalize_hit(raw: CandidateHit | dict[str, object], config: SourceConfig) -> CandidateHit | None:
@@ -1215,7 +1681,9 @@ def _drilldown_detail_hits_from_list(hit: CandidateHit, terms: list[str], *, lim
             provider="list_drilldown",
         )
         child_quality = _classify_hit_page(child)
-        if child_quality.page_type in {"search_page", "media_or_map", "recruitment_directory", "aggregator", "invalid_url", "list_page"}:
+        if child_quality.page_type in {"search_page", "media_or_map", "recruitment_directory", "aggregator", "invalid_url"}:
+            continue
+        if child_quality.page_type == "list_page" and not _url_looks_like_detail_page(child.url):
             continue
         if all(existing.url != child.url for existing in candidates):
             candidates.append(child)
@@ -1273,6 +1741,40 @@ def _classify_hit_page(hit: CandidateHit) -> PageQuality:
     if "possible_list_page" in flags:
         return PageQuality("list_page", flags, "列表页只能用于有限下钻，不能直接成卡")
     return PageQuality("detail_page", flags, "")
+
+
+def _url_looks_like_detail_page(url: str) -> bool:
+    parsed = urlparse(url or "")
+    path = parsed.path.lower()
+    query = parsed.query.lower()
+    if path.endswith(".pdf"):
+        return True
+    list_tokens = ("/list", "/lists", "/index", "/category", "/search")
+    list_query_terms = ("page=", "p=", "cp=", "sort=", "category=", "keyword=")
+    has_id_signal = bool(re.search(r"/(?:id|project_id|cate_id)/\d+", path)) or bool(
+        re.search(r"(?:^|[?&])(?:id|articleid|project_id|cate_id)=", query)
+    )
+    if not has_id_signal and (any(token in path for token in list_tokens) or any(token in query for token in list_query_terms)):
+        return False
+    detail_tokens = (
+        "/detail",
+        "detail/",
+        "reportdetail",
+        "/article",
+        "/news/",
+        "/project/detail",
+        "/info/",
+        "/home/project/detail",
+        "/home/info/",
+        "/pub/",
+        "/view/",
+        "/content/",
+    )
+    if any(token in path for token in detail_tokens):
+        return True
+    if has_id_signal:
+        return True
+    return False
 
 
 def _hit_is_closed_or_low_value(hit: CandidateHit) -> bool:
@@ -1421,7 +1923,9 @@ def _classify_fetched_page(hit: CandidateHit, body_status: str, body_text: str, 
     text = f"{hit.title} {hit.snippet} {body_text[:1600]}"
     flags = list(hit_quality.flags)
     list_markers = sum(1 for marker in ("上一页", "下一页", "共", "条记录", "当前位置", "列表", "搜索结果", "更多") if marker in text)
-    if hit_quality.page_type == "list_page" or list_markers >= 3:
+    if hit_quality.page_type == "list_page" and not _url_looks_like_detail_page(hit.url):
+        return PageQuality("list_page", _unique_items([*flags, "list_page"], limit=8), "列表页只能用于有限下钻，不能直接成卡")
+    if list_markers >= 5 and not _url_looks_like_detail_page(hit.url):
         return PageQuality("list_page", _unique_items([*flags, "list_page"], limit=8), "列表页只能用于有限下钻，不能直接成卡")
     if any(marker in text for marker in ("用户登录", "验证码", "账号登录", "立即登录")):
         return PageQuality("login_page", _unique_items([*flags, "login_page"], limit=8), "页面为登录或验证码页面，无法可靠核验")
@@ -1447,6 +1951,15 @@ def _split_sentences(text: str, *, limit: int = 80) -> list[str]:
 
 def _evidence_terms_for_kind(brief: ResearchBrief, content_kind: str) -> list[str]:
     terms = brief.profile_focus_terms if content_kind == "profile_completion" else brief.timely_focus_terms
+    if content_kind == "timely_intelligence" and brief.timely_strategy:
+        terms = [
+            *terms,
+            *_as_text_list(brief.timely_strategy.get("searchAtoms"), limit=18),
+            *_as_text_list(brief.timely_strategy.get("serviceTargets"), limit=12),
+            *_as_text_list(brief.timely_strategy.get("projectTerms"), limit=12),
+            *_as_text_list(brief.timely_strategy.get("methodTerms"), limit=12),
+            *_as_text_list(brief.timely_strategy.get("profileTags"), limit=24),
+        ]
     return _unique_items([*terms, *brief.object_terms], limit=24)
 
 
@@ -1457,6 +1970,18 @@ def _profile_dimension_hits(*values: str) -> list[str]:
         if any(keyword and keyword in corpus for keyword in keywords):
             hits.append(label)
     return _unique_items(hits, limit=8)
+
+
+def _profile_dimension_order(label: str) -> int:
+    for index, (dimension, _keywords) in enumerate(PROFILE_COMPLETION_DIMENSIONS):
+        if dimension == label:
+            return index
+    return 999
+
+
+def _profile_fact_signature(value: str) -> str:
+    compact = _compact_compare_text(value)
+    return compact[:120]
 
 
 def _profile_fact_from_quote(quote: str, *, brief: ResearchBrief, draft: CandidateDraft) -> str:
@@ -1488,8 +2013,7 @@ def _profile_fact_from_quote(quote: str, *, brief: ResearchBrief, draft: Candida
 
 
 def _profile_missing_text(covered_dimensions: list[str]) -> str:
-    baseline = ["机构简介", "登记信息", "年报/信息公开", "项目介绍", "项目成效", "合作方", "执行方法"]
-    missing = [item for item in baseline if item not in covered_dimensions]
+    missing = [item for item in PROFILE_BASELINE_DIMENSIONS if item not in covered_dimensions]
     if missing:
         return f"仍需继续补齐：{'、'.join(missing[:5])}。"
     return "已覆盖基础资料维度，仍可继续核对来源更新时间和更完整原文。"
@@ -1508,13 +2032,23 @@ def _extract_research_evidence(
         return None
     focus_only_terms = brief.profile_focus_terms if content_kind == "profile_completion" else brief.timely_focus_terms
     focus_only_terms = [term for term in focus_only_terms if term not in brief.object_terms]
-    focus_hits = _matched_terms(f"{draft.hit.title} {draft.hit.snippet} {body_text}", focus_only_terms)
-    object_hits = _matched_terms(f"{draft.hit.title} {draft.hit.snippet} {body_text}", brief.object_terms)
+    full_text = f"{draft.hit.title} {draft.hit.snippet} {body_text}"
+    strategy_match = evaluate_timely_strategy_match(full_text, brief.timely_strategy) if content_kind == "timely_intelligence" else {}
+    strategy_focus_hits = _as_text_list(strategy_match.get("focusHits"), limit=8) if isinstance(strategy_match, dict) else []
+    timely_tag_hits = _matched_terms(full_text, _timely_strategy_terms(brief)) if content_kind == "timely_intelligence" else []
+    focus_hits = _unique_items([*_matched_terms(full_text, focus_only_terms), *strategy_focus_hits, *timely_tag_hits], limit=10)
+    object_hits = _matched_terms(full_text, brief.object_terms)
     if content_kind == "profile_completion" and not object_hits:
         return None
     if content_kind == "timely_intelligence" and not object_hits and not focus_hits:
         return None
-    if content_kind == "timely_intelligence" and focus_only_terms and not focus_hits:
+    external_signal = _has_external_signal(full_text, draft.source_config.source_type) if content_kind == "timely_intelligence" else False
+    if (
+        content_kind == "timely_intelligence"
+        and isinstance(strategy_match, dict)
+        and not strategy_match.get("ok")
+        and not (external_signal and focus_hits)
+    ):
         return None
     scored: list[tuple[int, str]] = []
     for sentence in sentences:
@@ -1522,9 +2056,13 @@ def _extract_research_evidence(
         if _matched_terms(sentence, brief.object_terms):
             score += 4
         score += min(len(_matched_terms(sentence, terms)), 4) * 2
+        if content_kind == "timely_intelligence" and _matched_terms(sentence, strategy_focus_hits):
+            score += 3
+        if content_kind == "timely_intelligence" and _matched_terms(sentence, timely_tag_hits):
+            score += 3
         if any(token in sentence for token in ("数据", "人数", "年度", "发起", "开展", "发布", "介绍", "服务", "合作", "资助", "培训", "心理", "困境", "儿童", "顾源源", "张真")):
             score += 2
-        if content_kind == "timely_intelligence" and any(token in sentence for token in TIMELY_MATERIAL_TERMS):
+        if content_kind == "timely_intelligence" and any(token in sentence for token in (*TIMELY_MATERIAL_TERMS, *EXTERNAL_SIGNAL_TERMS)):
             score += 4
         if score >= 4:
             scored.append((score, sentence))
@@ -1540,10 +2078,21 @@ def _extract_research_evidence(
         missing = _profile_missing_text(dimension_hits)
         return EvidenceExtraction(summary=summary, facts=facts, quotes=quotes, focus_hits=focus_hits[:6], missing=missing)
     intelligence_type = _timely_intelligence_type(draft) or "外部变化"
+    if not _direct_identity_hits(full_text, brief) and focus_hits and external_signal:
+        intelligence_type = "启发型情报"
     summary = quotes[0]
-    relation = f"命中关注点：{'、'.join(focus_hits[:4] or object_hits[:4])}。"
-    impact = "需要进一步判断这条变化是否会影响当前客户/项目的资源获取、合规边界、服务对象或方案设计。"
-    action = "建议转为阅读/研判任务，先核验原公告、适用对象、时间窗口和参与条件。"
+    route_hits = _as_text_list(strategy_match.get("routeHits"), limit=4) if isinstance(strategy_match, dict) else []
+    decision_signals = _as_text_list(strategy_match.get("decisionSignals"), limit=4) if isinstance(strategy_match, dict) else []
+    relation_parts = []
+    if route_hits:
+        relation_parts.append(f"监测路线：{'、'.join(route_hits[:3])}")
+    if focus_hits or object_hits:
+        relation_parts.append(f"命中对象/关注点：{'、'.join((focus_hits or object_hits)[:4])}")
+    if decision_signals:
+        relation_parts.append(f"决策信号：{'、'.join(decision_signals[:4])}")
+    relation = "；".join(relation_parts) + "。"
+    impact = "需判断这条外部变化会通过适用对象、申报资格、合规边界、资源窗口或方案设计要求传导到当前客户/项目。"
+    action = "建议先核验原公告、适用对象、时间窗口、资格条件和与当前对象的关系，再决定是否转为申报、合作或材料审核任务。"
     return EvidenceExtraction(
         summary=summary,
         facts=quotes[:4],
@@ -1561,6 +2110,44 @@ def _extract_research_evidence(
 def _looks_like_template_summary(*values: str) -> bool:
     text = " ".join(values)
     return any(marker in text for marker in TEMPLATE_SUMMARY_MARKERS)
+
+
+def _timely_ai_output_is_specific(
+    *,
+    summary: str,
+    relevance: str,
+    impact: str,
+    suggested_action: str,
+    draft: CandidateDraft,
+    evidence: EvidenceExtraction,
+    brief: ResearchBrief,
+) -> bool:
+    values = [summary, relevance, impact, suggested_action]
+    joined = " ".join(values)
+    if _looks_like_template_summary(*values):
+        return False
+    if "资料摘要" in joined or "可复用事实" in joined:
+        return False
+    if summary in {draft.hit.title, draft.hit.snippet}:
+        return False
+    normalized_summary = re.sub(r"\s+", "", summary)
+    if any(normalized_summary and normalized_summary == re.sub(r"\s+", "", quote) for quote in evidence.quotes[:4]):
+        return False
+    strategy_terms = []
+    if brief.timely_strategy:
+        strategy_terms.extend(_as_text_list(brief.timely_strategy.get("searchAtoms"), limit=12))
+        strategy_terms.extend(_as_text_list(brief.timely_strategy.get("serviceTargets"), limit=8))
+        strategy_terms.extend(_as_text_list(brief.timely_strategy.get("projectTerms"), limit=8))
+    object_or_focus_terms = _unique_items([*brief.object_terms, *brief.timely_focus_terms, *strategy_terms, *evidence.focus_hits], limit=28)
+    if object_or_focus_terms and not _matched_terms(joined, object_or_focus_terms):
+        return False
+    relation_terms = ("影响", "相关", "对应", "传导", "适用", "机会", "风险", "约束", "趋势", "申报", "合作", "合规", "资源", "服务对象")
+    if not any(term in f"{relevance} {impact}" for term in relation_terms):
+        return False
+    action_terms = ("核验", "检查", "评估", "研判", "关注", "比对", "转为", "整理", "联系", "纳入", "申报", "跟进")
+    if not any(term in suggested_action for term in action_terms):
+        return False
+    return True
 
 
 def _map_profile_tags(intent: GeneratedSearchIntent, hit: CandidateHit, body_text: str, positive_rules: list[str]) -> list[str]:
@@ -1587,10 +2174,18 @@ def _map_profile_tags(intent: GeneratedSearchIntent, hit: CandidateHit, body_tex
     return _unique_items(tags, limit=3)
 
 
-def _profile_coverage_snapshot(db: Database, scope: IntelligenceSearchScope) -> tuple[list[str], list[str], bool]:
+def _profile_gap_map_snapshot(db: Database, scope: IntelligenceSearchScope) -> dict[str, object]:
+    client, project = _scope_rows(db, scope)
+    project_rows = [project] if project else [
+        _row_dict(row)
+        for row in db.fetchall(
+            "SELECT name, goal, description, keywords_json FROM project_modules WHERE client_id = ? ORDER BY updated_at DESC LIMIT 8",
+            (scope.client_id,),
+        )
+    ]
     rows = db.fetchall(
         """
-        SELECT title, summary, key_points_json, tags_json
+        SELECT title, summary, key_points_json, tags_json, source_url
         FROM intelligence_items
         WHERE scope_type = ? AND scope_id = ? AND content_kind = 'profile_completion' AND user_status = 'active'
         ORDER BY created_at DESC
@@ -1598,16 +2193,108 @@ def _profile_coverage_snapshot(db: Database, scope: IntelligenceSearchScope) -> 
         """,
         (scope.scope_type, scope.scope_id),
     )
-    covered: list[str] = []
+    entries: dict[str, dict[str, object]] = {
+        label: {
+            "status": "missing",
+            "coveredTags": [],
+            "missingTags": list(keywords[:4]),
+            "sourceCount": 0,
+            "factCount": 0,
+        }
+        for label, keywords in PROFILE_COMPLETION_DIMENSIONS
+    }
+
+    def mark_partial(label: str, *tags: str) -> None:
+        entry = entries.get(label)
+        if not entry or entry["status"] == "covered":
+            return
+        entry["status"] = "partial"
+        covered_tags = list(entry.get("coveredTags") or [])
+        covered_tags.extend(tag for tag in tags if tag)
+        entry["coveredTags"] = _unique_items(covered_tags, limit=8)
+
+    def mark_covered(label: str, *, tags: list[str], source_url: str = "", fact_count: int = 0) -> None:
+        entry = entries.get(label)
+        if not entry:
+            return
+        entry["status"] = "covered"
+        entry["sourceCount"] = int(entry.get("sourceCount") or 0) + (1 if source_url else 0)
+        entry["factCount"] = int(entry.get("factCount") or 0) + max(1, fact_count)
+        entry["coveredTags"] = _unique_items([*_as_text_list(entry.get("coveredTags"), limit=8), *tags], limit=10)
+
+    client_text = " ".join(
+        _as_text_list(
+            [
+                client.get("name"),
+                client.get("alias"),
+                client.get("domain"),
+                client.get("type"),
+                client.get("intro"),
+                client.get("stage"),
+            ],
+            limit=12,
+        )
+    )
+    if client_text:
+        for label in _profile_dimension_hits(client_text):
+            mark_partial(label, "基础字段")
+    for item in project_rows:
+        project_text = " ".join(
+            _as_text_list(
+                [
+                    item.get("name"),
+                    item.get("goal"),
+                    item.get("description"),
+                    _safe_json(str(item.get("keywords_json") or "[]"), []),
+                ],
+                limit=12,
+            )
+        )
+        if project_text:
+            for label in _profile_dimension_hits(project_text):
+                mark_partial(label, "项目字段")
+
     for row in rows:
         tags = _safe_json(str(row["tags_json"] or "[]"), [])
         points = _safe_json(str(row["key_points_json"] or "[]"), [])
-        covered.extend(_profile_dimension_hits(str(row["title"] or ""), str(row["summary"] or ""), " ".join(_as_text_list(tags, limit=12)), " ".join(_as_text_list(points, limit=12))))
-    covered = _unique_items(covered, limit=12)
-    baseline = ["机构简介", "登记信息", "年报/信息公开", "项目介绍", "项目成效", "合作方", "执行方法"]
-    missing = [item for item in baseline if item not in covered]
-    ready = len(set(covered).intersection(baseline)) >= 5 and "机构简介" in covered and ("项目介绍" in covered or "项目成效" in covered)
-    return covered, missing, ready
+        dimension_hits = _profile_dimension_hits(
+            str(row["title"] or ""),
+            str(row["summary"] or ""),
+            " ".join(_as_text_list(tags, limit=12)),
+            " ".join(_as_text_list(points, limit=12)),
+        )
+        for label in dimension_hits:
+            mark_covered(
+                label,
+                tags=_as_text_list(tags, limit=8),
+                source_url=str(row["source_url"] or ""),
+                fact_count=len(_as_text_list(points, limit=8)),
+            )
+
+    covered = [label for label, entry in entries.items() if entry.get("status") == "covered"]
+    partial = [label for label, entry in entries.items() if entry.get("status") == "partial"]
+    missing = [item for item in PROFILE_BASELINE_DIMENSIONS if entries.get(item, {}).get("status") != "covered"]
+    ready = (
+        len(set(covered).intersection(PROFILE_BASELINE_DIMENSIONS)) >= 5
+        and "机构简介" in covered
+        and ("项目介绍" in covered or "项目成效" in covered)
+    )
+    return {
+        "dimensions": entries,
+        "covered": sorted(covered, key=_profile_dimension_order),
+        "partial": sorted(partial, key=_profile_dimension_order),
+        "missing": missing,
+        "ready": ready,
+    }
+
+
+def _profile_coverage_snapshot(db: Database, scope: IntelligenceSearchScope) -> tuple[list[str], list[str], bool]:
+    snapshot = _profile_gap_map_snapshot(db, scope)
+    return (
+        _as_text_list(snapshot.get("covered"), limit=16),
+        _as_text_list(snapshot.get("missing"), limit=16),
+        bool(snapshot.get("ready")),
+    )
 
 
 def _split_summary_points(*values: str, limit: int = 4) -> list[str]:
@@ -1717,14 +2404,6 @@ def _build_profile_enrichment(
     mapped_tags: list[str],
     evidence: EvidenceExtraction,
 ) -> tuple[str, list[str], str] | None:
-    fallback_summary = evidence.summary
-    fallback_points = evidence.facts[:4]
-    fallback_analysis = "\n".join(
-        [
-            f"证据句：{quote}" for quote in evidence.quotes[:3]
-        ]
-        + ([f"缺口：{evidence.missing}"] if evidence.missing else [])
-    )
     if not _ai_ready(ai_service) or not hasattr(ai_service, "generate_general_fallback"):
         return None
     prompt = "\n".join(
@@ -1754,12 +2433,104 @@ def _build_profile_enrichment(
     points = _extract_profile_facts_from_ai(response, evidence, mapped_tags, draft)
     if not summary or _looks_like_template_summary(summary, response.analysis, response.actions, response.judgment):
         return None
-    if not points:
+    if not summary or not points:
         return None
     analysis = _clean_text(response.analysis or response.judgment or "", max_len=900)
     if _looks_like_template_summary(analysis):
-        analysis = fallback_analysis
+        return None
     return summary, points[:4], analysis
+
+
+def _dimension_for_profile_fact(fact: str, mapped_tags: list[str], fallback_index: int) -> str:
+    hits = _profile_dimension_hits(fact)
+    for tag in mapped_tags:
+        if tag in hits:
+            return tag
+    if hits:
+        return hits[0]
+    if mapped_tags:
+        return mapped_tags[min(fallback_index, len(mapped_tags) - 1)]
+    return "机构简介"
+
+
+def _build_profile_fact_cards(
+    *,
+    draft: CandidateDraft,
+    verification: ProfileVerificationResult,
+) -> list[ProfileFactCard]:
+    grouped: dict[str, list[str]] = {}
+    for index, point in enumerate(verification.key_points):
+        fact = _clean_profile_fact_candidate(point)
+        if not fact:
+            continue
+        dimension = _dimension_for_profile_fact(fact, verification.mapped_tags, index)
+        grouped.setdefault(dimension, [])
+        if fact not in grouped[dimension]:
+            grouped[dimension].append(fact)
+
+    if not grouped and verification.summary:
+        dimension = verification.mapped_tags[0] if verification.mapped_tags else "机构简介"
+        grouped[dimension] = [_clean_text(verification.summary, max_len=180)]
+
+    cards: list[ProfileFactCard] = []
+    for dimension in sorted(grouped, key=_profile_dimension_order):
+        facts = grouped[dimension][:3]
+        if not facts:
+            continue
+        title_fact = re.sub(r"[。；;]$", "", facts[0])
+        title = f"{dimension}｜{_clean_text(title_fact, max_len=52)}"
+        summary = f"该来源可补充“{dimension}”资料：{_clean_text(title_fact, max_len=120)}。"
+        signature = _profile_fact_signature(f"{dimension} {' '.join(facts)}")
+        if not signature:
+            continue
+        cards.append(
+            ProfileFactCard(
+                dimension=dimension,
+                title=title,
+                summary=summary,
+                key_points=facts,
+                analysis=verification.analysis,
+                fact_signature=signature,
+            )
+        )
+    return cards[:6]
+
+
+def _profile_fact_already_active(
+    db: Database,
+    *,
+    scope: IntelligenceSearchScope,
+    source_url: str,
+    dimension: str,
+    fact_signature: str,
+) -> bool:
+    rows = db.fetchall(
+        """
+        SELECT tags_json, key_points_json
+        FROM intelligence_items
+        WHERE content_kind = 'profile_completion'
+          AND user_status = 'active'
+          AND scope_type = ?
+          AND scope_id = ?
+          AND COALESCE(source_url, '') = COALESCE(?, '')
+        ORDER BY created_at DESC
+        LIMIT 30
+        """,
+        (scope.scope_type, scope.scope_id, source_url),
+    )
+    for row in rows:
+        tags = _as_text_list(_safe_json(str(row["tags_json"] or "[]"), []), limit=12)
+        if dimension not in tags:
+            continue
+        points = _as_text_list(_safe_json(str(row["key_points_json"] or "[]"), []), limit=8)
+        existing_signature = _profile_fact_signature(f"{dimension} {' '.join(points)}")
+        if existing_signature and (
+            existing_signature == fact_signature
+            or existing_signature in fact_signature
+            or fact_signature in existing_signature
+        ):
+            return True
+    return False
 
 
 def _update_candidate_verification(
@@ -1969,6 +2740,35 @@ def _verify_profile_candidate(
         return ProfileVerificationResult(False, "verified", reason, "fetched", "failed", mapped_tags, body_excerpt=body_excerpt)
     summary, points, analysis = enrichment
     mapped_tags = _refine_profile_tags_from_facts(points, mapped_tags)
+    provisional = ProfileVerificationResult(
+        True,
+        "verified",
+        "",
+        "fetched",
+        "generated",
+        mapped_tags,
+        summary,
+        points,
+        analysis,
+        body_excerpt,
+    )
+    fact_cards = _build_profile_fact_cards(draft=draft, verification=provisional)
+    if not fact_cards:
+        reason = "AI 提炼结果未能拆成明确资料维度事实，暂不成卡"
+        _update_candidate_verification(
+            db,
+            candidate_id=draft.id,
+            verification_status="verified",
+            verification_reason=reason,
+            body_fetch_status="fetched",
+            summary_status="failed",
+            mapped_tags=mapped_tags,
+            body_excerpt=body_excerpt,
+            timestamp=timestamp,
+            page_type=page_quality.page_type,
+            quality_flags=[*page_quality.flags, "no_profile_fact_card"],
+        )
+        return ProfileVerificationResult(False, "verified", reason, "fetched", "failed", mapped_tags, body_excerpt=body_excerpt)
     reason = f"已核验：正文命中身份锚点（{', '.join(matched_identity[:3])}），并映射到 {', '.join(mapped_tags[:3])}"
     _update_candidate_verification(
         db,
@@ -1987,9 +2787,18 @@ def _verify_profile_candidate(
             "facts": evidence.facts,
             "focusHits": evidence.focus_hits,
             "missing": evidence.missing,
+            "factCards": [
+                {
+                    "dimension": card.dimension,
+                    "title": card.title,
+                    "facts": card.key_points,
+                    "factSignature": card.fact_signature,
+                }
+                for card in fact_cards
+            ],
         },
     )
-    return ProfileVerificationResult(True, "verified", reason, "fetched", "generated", mapped_tags, summary, points, analysis, body_excerpt)
+    return ProfileVerificationResult(True, "verified", reason, "fetched", "generated", mapped_tags, summary, points, analysis, body_excerpt, fact_cards)
 
 
 def _official_site_discovery_queries(db: Database, scope: IntelligenceSearchScope) -> list[str]:
@@ -2032,6 +2841,8 @@ def _score_official_site_candidate(hit: CandidateHit, object_terms: list[str]) -
     ):
         return 0, page_quality.reason or "封闭平台、聚合站、列表页或低价值域名，不作为官网来源。"
     text = f"{hit.title} {hit.snippet} {hit.source} {domain}"
+    if _has_external_signal(f"{text} {parsed.path}", "") and not any(token in text for token in ("官网", "官方网站", "关于我们", "首页", "机构介绍")):
+        return 0, "命中的是通知、风险、采购或资助等外部信号页，不作为官网来源。"
     object_matches = _matched_terms(text, object_terms)
     if not object_matches:
         return 0, "未命中客户/项目名称或关键词。"
@@ -2177,7 +2988,7 @@ def discover_official_site_source_configs(
         region="全国",
         reliability_tier="standard",
         priority=60,
-        content_kinds=["profile_completion", "timely_intelligence"],
+        content_kinds=["profile_completion"],
     )
     promoted_domains: set[str] = set()
     for query in queries:
@@ -2260,7 +3071,7 @@ def discover_official_site_source_configs(
                     scope.project_module_id,
                     f"官网发现：{domain}",
                     template,
-                    to_json(["profile_completion", "timely_intelligence"]),
+                    to_json(["profile_completion"]),
                     reason,
                     to_json(samples[:3]),
                     created_at,
@@ -2369,6 +3180,30 @@ def _apply_feedback_to_candidate_score(
     return max(1.0, min(98.0, base_score + adjustment * 4)), adjustment
 
 
+def _profile_allowed_source_types(intent: GeneratedSearchIntent) -> set[str]:
+    text = f"{intent.query} {intent.reason}"
+    if _site_domain_from_text(intent.query):
+        return {"official_site", "official_site_section"}
+    allowed = {"official_site", "official_site_section", "web_search"}
+    if any(term in text for term in ("登记", "统一社会信用代码", "社会组织", "法定代表人", "住所")):
+        allowed.update({"social_org_registry", "profile_report"})
+    if any(term in text for term in ("年报", "年度报告", "信息公开", "公开报告", "审计报告")):
+        allowed.update({"profile_report", "social_org_registry"})
+    if any(term in text for term in ("项目", "案例", "成效", "服务对象", "课程", "培训", "合作", "伙伴", "团队", "采访", "观点")):
+        allowed.update({"charity_media", "profile_report"})
+    return allowed
+
+
+def _profile_source_window(intent: GeneratedSearchIntent) -> int:
+    if _site_domain_from_text(intent.query):
+        return 3
+    if "官网限定" in intent.reason:
+        return 4
+    if any(marker in intent.reason for marker in ("重点关注", "数据中心资料缺口")):
+        return 4
+    return 3
+
+
 def _selected_fetch_tasks(
     db: Database,
     intents: list[GeneratedSearchIntent],
@@ -2382,9 +3217,10 @@ def _selected_fetch_tasks(
     per_kind_limit = max(1, (max_fetch_jobs + max(1, len(active_kinds)) - 1) // max(1, len(active_kinds)))
     for content_kind in active_kinds:
         source_types = CONTENT_KIND_SOURCE_TYPES[content_kind]
-        intent_limit = 40 if content_kind == "profile_completion" else 32
-        source_window = 7 if content_kind == "profile_completion" else 5
+        intent_limit = 56 if content_kind == "profile_completion" else 32
+        source_window = 5
         kind_limit = min(200 if content_kind == "profile_completion" else 140, per_kind_limit)
+        seen_effective_queries: set[str] = set()
         kind_intents = sorted(
             [item for item in intents if item.content_kind == content_kind],
             key=lambda item: (-item.priority, item.query),
@@ -2396,8 +3232,10 @@ def _selected_fetch_tasks(
         ]
         kind_task_count = 0
         for intent in kind_intents:
+            allowed_profile_types = _profile_allowed_source_types(intent) if content_kind == "profile_completion" else set()
+            current_source_window = _profile_source_window(intent) if content_kind == "profile_completion" else source_window
             routed_configs = sorted(
-                kind_configs,
+                [item for item in kind_configs if content_kind != "profile_completion" or item.source_type in allowed_profile_types],
                 key=lambda item: (
                     -(
                         _source_priority_score_for_kind(db, item, content_kind=content_kind, timestamp=timestamp)
@@ -2407,7 +3245,18 @@ def _selected_fetch_tasks(
                     item.source_name,
                 ),
             )
-            for config in routed_configs[:source_window]:
+            for config in routed_configs[:current_source_window]:
+                intent_site_domain = _site_domain_from_text(intent.query)
+                config_site_domain = _site_domain_from_text(config.source_url_template)
+                if intent_site_domain and not config_site_domain:
+                    continue
+                if intent_site_domain and config_site_domain and intent_site_domain != config_site_domain:
+                    continue
+                effective_query = _effective_query(intent, config)
+                query_key = re.sub(r"\s+", "", effective_query).lower()
+                if query_key in seen_effective_queries:
+                    continue
+                seen_effective_queries.add(query_key)
                 tasks.append((intent, config))
                 kind_task_count += 1
                 if len(tasks) >= max_fetch_jobs:
@@ -2694,7 +3543,7 @@ def _profile_published_at(draft: CandidateDraft, body_text: str) -> str | None:
         return None
     header = _clean_text(f"{draft.hit.title} {draft.hit.snippet} {body_text[:1200]}", max_len=1800)
     patterns = (
-        r"(?:发布时间|发布日期|发表时间|更新于|来源[:：][^0-9]{0,40}|作者[:：][^0-9]{0,40}|写在前面[:：]?)\s*(20\d{2})[-年/.](\d{1,2})[-月/.](\d{1,2})",
+        r"(?:发布时间|发布日期|发表时间|更新于|来源[:：][^0-9]{0,40}|作者[:：][^0-9]{0,40}|写在前面[:：]?)[:：]?\s*(20\d{2})[-年/.](\d{1,2})[-月/.](\d{1,2})",
         r"(20\d{2})[-年/.](\d{1,2})[-月/.](\d{1,2})\s*(?:来源|作者|写在前面|编者按)",
     )
     for pattern in patterns:
@@ -2722,17 +3571,31 @@ def _timely_followup_questions(draft: CandidateDraft, intelligence_type: str) ->
     return _unique_items(base, limit=5)
 
 
-def _timely_candidate_gate(draft: CandidateDraft, body_text: str = "") -> tuple[bool, str, str | None]:
+def _timely_candidate_gate(draft: CandidateDraft, body_text: str = "", brief: ResearchBrief | None = None) -> tuple[bool, str, str | None]:
     if _is_static_profile_material(draft, body_text):
         return False, "静态登记、官网介绍或年报资料应进入资料补全，不进入时效情报", None
     intelligence_type = _timely_intelligence_type(draft, body_text)
     if not intelligence_type:
         return False, "未识别出明确情报类型，暂不成卡", None
     text = f"{draft.hit.title} {draft.hit.snippet} {draft.intent.query} {draft.intent.reason} {body_text[:1600]}"
+    has_external_signal = _has_external_signal(text, draft.source_config.source_type)
+    strategy_tag_hits = _matched_terms(text, _timely_strategy_terms(brief))
+    if (
+        _looks_like_generic_macro_signal(text)
+        or any(marker in text for marker in ("泛泛讨论", "宏观讨论", "高质量发展论坛", "行业论坛"))
+        and re.search(r"没有[^。；;]{0,40}(申报|监管|合作|风险|政策|采购|招标|资助)", text)
+        and not any(marker in text for marker in ("征集通知", "申报通知", "截止时间", "报名截止", "中标公告", "采购公告"))
+    ):
+        return False, "泛行业新闻未呈现可传导到当前对象的决策相关机会、风险、约束或合作变化，暂不成卡", None
+    if brief and brief.timely_strategy:
+        strategy_match = evaluate_timely_strategy_match(text, brief.timely_strategy)
+        if not strategy_match.get("ok") and not (has_external_signal and strategy_tag_hits):
+            return False, _clean_text(strategy_match.get("reason") or "未通过情报策略复核，暂不成卡", max_len=180), None
     object_terms = [term for term in draft.matched_terms if term and term in text][:4]
+    direct_identity_hits = _direct_identity_hits(text, brief)
     sector_terms = ("公益", "慈善", "社会组织", "儿童", "困境", "心理", "社区", "志愿", "民政", "基金会", "项目")
     has_sector_signal = any(term in text for term in sector_terms)
-    if not object_terms and not has_sector_signal:
+    if not object_terms and not has_sector_signal and not strategy_tag_hits:
         return False, "只有泛政策或弱相关新闻，未建立与客户/项目的清晰关系", None
     if not object_terms:
         transfer_terms = (
@@ -2742,9 +3605,11 @@ def _timely_candidate_gate(draft: CandidateDraft, body_text: str = "") -> tuple[
         )
         if not any(term in text for term in transfer_terms):
             return False, "泛政策或泛通知缺少可传导到客户/项目的机会、风险或约束链条，暂不成卡", None
+    if has_external_signal and strategy_tag_hits and not direct_identity_hits:
+        intelligence_type = "启发型情报"
     if not body_text and len(draft.hit.snippet or draft.hit.title) < 12:
         return False, "公开信息过短，无法判断发生了什么", None
-    if body_text and not any(term in text for term in TIMELY_MATERIAL_TERMS):
+    if body_text and not any(term in text for term in (*TIMELY_MATERIAL_TERMS, *EXTERNAL_SIGNAL_TERMS)):
         return False, "正文未呈现近期变化、窗口、政策、风险或合作动态，暂不成卡", None
     return True, "已识别近期外部变化，并具备对象或行业相关信号", intelligence_type
 
@@ -2754,25 +3619,26 @@ def _build_timely_enrichment(
     draft: CandidateDraft,
     body_text: str,
     evidence: EvidenceExtraction,
+    brief: ResearchBrief,
 ) -> TimelyEnrichmentResult | None:
-    passed, reason, intelligence_type = _timely_candidate_gate(draft, body_text)
+    passed, reason, intelligence_type = _timely_candidate_gate(draft, body_text, brief=brief)
     if not passed or not intelligence_type:
         draft.hit.snippet = draft.hit.snippet or reason
         return None
-    fallback = TimelyEnrichmentResult(
-        intelligence_type=evidence.intelligence_type or intelligence_type,
-        timeliness_label=evidence.timeliness_label or _timeliness_label(draft, intelligence_type),
-        summary=evidence.summary,
-        relevance_reason=evidence.analysis or f"命中关注点：{'、'.join(evidence.focus_hits[:4])}。",
-        impact=evidence.impact,
-        suggested_action=evidence.suggested_action,
-        followup_questions=_timely_followup_questions(draft, intelligence_type),
-    )
     if not _ai_ready(ai_service) or not hasattr(ai_service, "generate_general_fallback"):
-        return fallback
+        return None
     followups = _timely_followup_questions(draft, intelligence_type)
+    strategy = brief.timely_strategy or {}
+    strategy_routes = []
+    for route in strategy.get("routes") or []:
+        if isinstance(route, dict) and route.get("label"):
+            strategy_routes.append(_clean_text(route.get("label"), max_len=24))
+    strategy_atoms = _as_text_list(strategy.get("searchAtoms"), limit=10)
     prompt = "\n".join(
         [
+            f"当前对象：{strategy.get('objectName') or brief.scope.display_name or '当前客户/项目'}",
+            f"对象画像主题：{'、'.join(strategy_atoms[:8]) if strategy_atoms else '未充分识别'}",
+            f"本轮监测路线：{'、'.join(_unique_items(strategy_routes, limit=8)) if strategy_routes else '政策、资助、采购、合作、风险、趋势'}",
             f"标题：{draft.hit.title}",
             f"来源：{draft.hit.source}",
             f"搜索短摘：{draft.hit.snippet}",
@@ -2788,9 +3654,9 @@ def _build_timely_enrichment(
     try:
         response = ai_service.generate_general_fallback(prompt, "情报候选自动分流", subject_name=draft.hit.title)
     except Exception:
-        return fallback
+        return None
     if not isinstance(response, AiStructuredResponse):
-        return fallback
+        return None
     summary = _clean_text(response.content or draft.hit.snippet or draft.hit.title, max_len=500)
     relevance = _clean_text(response.judgment or response.analysis or "", max_len=700)
     impact = _clean_text(response.analysis or response.timeline or "", max_len=700)
@@ -2800,9 +3666,17 @@ def _build_timely_enrichment(
         or not relevance
         or not impact
         or not suggested_action
-        or _looks_like_template_summary(summary, relevance, impact, suggested_action)
+        or not _timely_ai_output_is_specific(
+            summary=summary,
+            relevance=relevance,
+            impact=impact,
+            suggested_action=suggested_action,
+            draft=draft,
+            evidence=evidence,
+            brief=brief,
+        )
     ):
-        return fallback
+        return None
     return TimelyEnrichmentResult(
         intelligence_type=intelligence_type,
         timeliness_label=_timeliness_label(draft, intelligence_type),
@@ -2851,6 +3725,7 @@ def _promote_candidate(
     brief: ResearchBrief,
     draft: CandidateDraft,
     timestamp: str,
+    allow_ai_review: bool = True,
 ) -> bool:
     if _is_prototype_sample_hit(draft.hit):
         db.execute(
@@ -2871,29 +3746,30 @@ def _promote_candidate(
             (reason, timestamp, draft.id),
         )
         return False
-    existing = db.fetchone(
-        """
-        SELECT id
-        FROM intelligence_items
-        WHERE content_kind = ? AND source_url = ? AND COALESCE(client_id, '') = COALESCE(?, '') AND user_status = 'active'
-        LIMIT 1
-        """,
-        (draft.content_kind, draft.hit.url, scope.client_id),
-    )
-    if existing:
-        db.execute(
+    if draft.content_kind != "profile_completion":
+        existing = db.fetchone(
             """
-            UPDATE intelligence_candidate_items
-            SET classification_status = 'promoted',
-                promotion_reason = ?,
-                promoted_intelligence_item_id = ?,
-                is_user_visible_candidate = 0,
-                updated_at = ?
-            WHERE id = ?
+            SELECT id
+            FROM intelligence_items
+            WHERE content_kind = ? AND source_url = ? AND COALESCE(client_id, '') = COALESCE(?, '') AND user_status = 'active'
+            LIMIT 1
             """,
-            (reason, str(existing["id"]), timestamp, draft.id),
+            (draft.content_kind, draft.hit.url, scope.client_id),
         )
-        return True
+        if existing:
+            db.execute(
+                """
+                UPDATE intelligence_candidate_items
+                SET classification_status = 'promoted',
+                    promotion_reason = ?,
+                    promoted_intelligence_item_id = ?,
+                    is_user_visible_candidate = 0,
+                    updated_at = ?
+                WHERE id = ?
+                """,
+                (reason, str(existing["id"]), timestamp, draft.id),
+            )
+            return True
 
     data_center_document_id: str | None = None
     verified_at: str | None = None
@@ -2937,23 +3813,100 @@ def _promote_candidate(
         data_center_document_id = str(upserted.get("documentId")) if upserted else None
         verified_at = timestamp
         published_at = _profile_published_at(draft, verification.body_excerpt or "")
-        summary = verification.summary
-        analysis = verification.analysis
-        impact = ""
         reason = verification.verification_reason
         verification_status = verification.verification_status
-        tags = ["已核验资料", *verification.mapped_tags]
-        key_points = verification.key_points
-        intelligence_type = None
-        timeliness_label = None
-        relevance_reason = ""
-        suggested_action = ""
-        followup_questions: list[str] = []
+        created_item_ids: list[str] = []
+        for card in verification.fact_cards:
+            if _profile_fact_already_active(
+                db,
+                scope=scope,
+                source_url=draft.hit.url,
+                dimension=card.dimension,
+                fact_signature=card.fact_signature,
+            ):
+                continue
+            item_id = _new_id("iitem")
+            db.execute(
+                """
+                INSERT INTO intelligence_items(
+                    id, content_kind, scope_type, scope_id, client_id, project_module_id,
+                    title, summary, key_points_json, analysis, impact, tags_json,
+                    intelligence_type, timeliness_label, relevance_reason, suggested_action, followup_questions_json,
+                    source, source_url, published_at, captured_at, verified_at,
+                    credibility_score, confidence_score, data_center_ingest_event_id,
+                    verification_status, verification_reason,
+                    user_status, created_at, updated_at
+                )
+                VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '', ?, NULL, NULL, '', '', '[]', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?)
+                """,
+                (
+                    item_id,
+                    draft.content_kind,
+                    scope.scope_type,
+                    scope.scope_id,
+                    scope.client_id,
+                    scope.project_module_id,
+                    card.title,
+                    card.summary,
+                    to_json(card.key_points),
+                    card.analysis,
+                    to_json(["已核验资料", card.dimension, *[tag for tag in verification.mapped_tags if tag != card.dimension][:2]]),
+                    _source_display_name(draft),
+                    draft.hit.url,
+                    published_at,
+                    timestamp,
+                    verified_at,
+                    min(draft.confidence_score / 100, 0.98),
+                    min(draft.confidence_score / 100, 0.98),
+                    data_center_document_id,
+                    verification_status,
+                    f"{reason}；事实维度：{card.dimension}",
+                    timestamp,
+                    timestamp,
+                ),
+            )
+            created_item_ids.append(item_id)
+        if not created_item_ids:
+            db.execute(
+                """
+                UPDATE intelligence_candidate_items
+                SET classification_status = 'duplicate',
+                    promotion_reason = ?,
+                    is_user_visible_candidate = 0,
+                    updated_at = ?
+                WHERE id = ?
+                """,
+                ("同一来源下的同维度事实已成卡，避免重复展示", timestamp, draft.id),
+            )
+            return False
+        candidate_row = db.fetchone("SELECT evidence_json FROM intelligence_candidate_items WHERE id = ?", (draft.id,))
+        evidence_payload = _safe_json(str(candidate_row["evidence_json"] or "{}"), {}) if candidate_row else {}
+        if not isinstance(evidence_payload, dict):
+            evidence_payload = {}
+        evidence_payload["createdFactCardCount"] = len(created_item_ids)
+        db.execute(
+            "UPDATE intelligence_candidate_items SET evidence_json = ?, updated_at = ? WHERE id = ?",
+            (to_json(evidence_payload), timestamp, draft.id),
+        )
+        db.execute(
+            """
+            UPDATE intelligence_candidate_items
+            SET classification_status = 'promoted',
+                promotion_reason = ?,
+                promoted_intelligence_item_id = ?,
+                data_center_ingest_event_id = ?,
+                is_user_visible_candidate = 0,
+                updated_at = ?
+            WHERE id = ?
+            """,
+            (reason, created_item_ids[0], data_center_document_id, timestamp, draft.id),
+        )
+        return True
     else:
-        published_at = draft.hit.published_at
         body_status, body_text, body_reason = _fetch_page_text(draft.hit.url)
         body_excerpt = body_text[:1000]
         page_quality = _classify_fetched_page(draft.hit, body_status, body_text, body_reason)
+        base_quality_flags = _unique_items([*draft.quality_flags, *page_quality.flags], limit=18)
         if body_status != "fetched":
             reason = body_reason or "未抓到可用于核验的网页正文"
             _update_candidate_verification(
@@ -2967,7 +3920,7 @@ def _promote_candidate(
                 body_excerpt=body_excerpt,
                 timestamp=timestamp,
                 page_type=page_quality.page_type,
-                quality_flags=page_quality.flags,
+                quality_flags=base_quality_flags,
             )
             return False
         if page_quality.page_type != "detail_page":
@@ -2983,10 +3936,12 @@ def _promote_candidate(
                 body_excerpt=body_excerpt,
                 timestamp=timestamp,
                 page_type=page_quality.page_type,
-                quality_flags=page_quality.flags,
+                quality_flags=base_quality_flags,
             )
             return False
-        passed, gate_reason, _intelligence_type = _timely_candidate_gate(draft, body_text)
+        published_at = _profile_published_at(draft, body_text)
+        draft.hit.published_at = published_at
+        passed, gate_reason, _intelligence_type = _timely_candidate_gate(draft, body_text, brief=brief)
         if not passed:
             _update_candidate_verification(
                 db,
@@ -2999,7 +3954,24 @@ def _promote_candidate(
                 body_excerpt=body_excerpt,
                 timestamp=timestamp,
                 page_type=page_quality.page_type,
-                quality_flags=page_quality.flags,
+                quality_flags=base_quality_flags,
+            )
+            return False
+        fresh_enough, freshness_reason, freshness_bucket = _timely_publication_freshness(published_at, timestamp=timestamp, max_age_days=90, body_text=body_text)
+        freshness_flags = [freshness_bucket] if freshness_bucket else []
+        if not fresh_enough:
+            _update_candidate_verification(
+                db,
+                candidate_id=draft.id,
+                verification_status="rejected",
+                verification_reason=freshness_reason,
+                body_fetch_status=body_status,
+                summary_status="not_attempted",
+                mapped_tags=[],
+                body_excerpt=body_excerpt,
+                timestamp=timestamp,
+                page_type=page_quality.page_type,
+                quality_flags=[*base_quality_flags, "stale_timely_source"],
             )
             return False
         evidence = _extract_research_evidence(
@@ -3009,7 +3981,16 @@ def _promote_candidate(
             body_text=body_text,
         )
         if evidence is None:
-            reason = "正文未回应当前重点关注，或缺少外部变化与影响链条证据，暂不成卡"
+            strategy_match = evaluate_timely_strategy_match(
+                f"{draft.hit.title} {draft.hit.snippet} {draft.intent.query} {draft.intent.reason} {body_text[:2400]}",
+                brief.timely_strategy,
+            )
+            strategy_reason = _clean_text(strategy_match.get("reason") if isinstance(strategy_match, dict) else "", max_len=140)
+            reason = (
+                f"策略复核未通过：{strategy_reason}"
+                if strategy_reason
+                else "策略复核未通过：正文未回应当前重点关注，或缺少外部变化与影响链条证据，暂不成卡"
+            )
             _update_candidate_verification(
                 db,
                 candidate_id=draft.id,
@@ -3021,7 +4002,22 @@ def _promote_candidate(
                 body_excerpt=body_excerpt,
                 timestamp=timestamp,
                 page_type=page_quality.page_type,
-                quality_flags=[*page_quality.flags, "insufficient_impact_evidence"],
+                quality_flags=[*base_quality_flags, "insufficient_impact_evidence"],
+            )
+            return False
+        if not allow_ai_review:
+            _update_candidate_verification(
+                db,
+                candidate_id=draft.id,
+                verification_status="pending",
+                verification_reason="候选已通过详情复核前置条件，但本轮 AI 深度分析预算已满，暂不自动成卡",
+                body_fetch_status=body_status,
+                summary_status="not_attempted",
+                mapped_tags=[],
+                body_excerpt=body_excerpt,
+                timestamp=timestamp,
+                page_type=page_quality.page_type,
+                quality_flags=[*base_quality_flags, "ai_review_budget_deferred"],
             )
             return False
         if not _ai_ready(ai_service):
@@ -3036,10 +4032,10 @@ def _promote_candidate(
                 body_excerpt=body_excerpt,
                 timestamp=timestamp,
                 page_type=page_quality.page_type,
-                quality_flags=page_quality.flags,
+                quality_flags=base_quality_flags,
             )
             return False
-        enrichment = _build_timely_enrichment(ai_service, draft, body_text, evidence)
+        enrichment = _build_timely_enrichment(ai_service, draft, body_text, evidence, brief)
         if enrichment is None:
             _update_candidate_verification(
                 db,
@@ -3052,7 +4048,7 @@ def _promote_candidate(
                 body_excerpt=body_excerpt,
                 timestamp=timestamp,
                 page_type=page_quality.page_type,
-                quality_flags=page_quality.flags,
+                quality_flags=base_quality_flags,
             )
             return False
         _update_candidate_verification(
@@ -3066,12 +4062,14 @@ def _promote_candidate(
             body_excerpt=body_excerpt,
             timestamp=timestamp,
             page_type=page_quality.page_type,
-            quality_flags=page_quality.flags,
+            quality_flags=[*base_quality_flags, *freshness_flags],
             evidence={
                 "quotes": evidence.quotes,
                 "facts": evidence.facts,
                 "focusHits": evidence.focus_hits,
                 "missing": evidence.missing,
+                "timelyStrategy": brief.timely_strategy,
+                "freshnessReason": freshness_reason,
             },
         )
         summary = enrichment.summary
@@ -3146,6 +4144,995 @@ def _promote_candidate(
     return True
 
 
+ProfileResearchProgressCallback = Callable[[CandidateRefreshResult, str, str], None]
+
+
+def _profile_created_fact_count(db: Database, candidate_id: str) -> int:
+    row = db.fetchone("SELECT evidence_json, classification_status FROM intelligence_candidate_items WHERE id = ?", (candidate_id,))
+    if not row:
+        return 0
+    payload = _safe_json(str(row["evidence_json"] or "{}"), {})
+    if not isinstance(payload, dict):
+        return 0
+    created = int(payload.get("createdFactCardCount") or 0)
+    if created:
+        return created
+    if str(row["classification_status"] or "") == "promoted":
+        fact_cards = payload.get("factCards")
+        if isinstance(fact_cards, list):
+            return len(fact_cards)
+    return 0
+
+
+def _profile_research_snapshot(
+    db: Database,
+    *,
+    scope: IntelligenceSearchScope,
+    source_config_count: int,
+    candidate_ids: list[str],
+    fetch_job_count: int,
+    success_query_count: int,
+    no_result_query_count: int,
+    duplicate_count: int,
+    failed_count: int,
+    rejection_counts: dict[str, int],
+    search_direction_count: int,
+    direct_source_count: int,
+    quick_win_card_count: int,
+    deep_queue_count: int,
+    deferred_hard_sources: list[str],
+    research_stage: str,
+    profile_run_mode: str = "standard",
+    deep_dive_queued_count: int = 0,
+    deep_dive_processed_count: int = 0,
+    deep_dive_skipped_count: int = 0,
+    deep_dive_remaining_count: int | None = None,
+    deep_dive_source_titles: list[str] | None = None,
+    deep_dive_skip_summary: list[str] | None = None,
+) -> CandidateRefreshResult:
+    body_fetched_count = 0
+    verified_count = 0
+    summary_success_count = 0
+    profile_fact_candidate_count = 0
+    profile_fact_card_count = 0
+    processed_page_count = 0
+    promoted_count = 0
+    snapshot_rejections = dict(rejection_counts)
+    if candidate_ids:
+        placeholders = ",".join("?" for _ in candidate_ids)
+        rows = db.fetchall(
+            f"""
+            SELECT classification_status, body_fetch_status, verification_status, summary_status,
+                   promotion_reason, page_type, evidence_json
+            FROM intelligence_candidate_items
+            WHERE id IN ({placeholders})
+            """,
+            tuple(candidate_ids),
+        )
+        for row in rows:
+            body_status = str(row["body_fetch_status"] or "")
+            summary_status = str(row["summary_status"] or "")
+            verification_status = str(row["verification_status"] or "")
+            classification_status = str(row["classification_status"] or "")
+            page_type = str(row["page_type"] or "")
+            if body_status and body_status != "not_attempted":
+                processed_page_count += 1
+            elif page_type in {"list_page", "pdf", "unsupported_pdf"}:
+                processed_page_count += 1
+            if body_status == "fetched":
+                body_fetched_count += 1
+            if verification_status == "verified":
+                verified_count += 1
+            if summary_status == "generated":
+                summary_success_count += 1
+            if classification_status == "promoted":
+                promoted_count += 1
+            reason = _clean_text(str(row["promotion_reason"] or ""), max_len=80)
+            if reason and summary_status != "generated":
+                snapshot_rejections[reason] = snapshot_rejections.get(reason, 0) + 1
+            payload = _safe_json(str(row["evidence_json"] or "{}"), {})
+            if isinstance(payload, dict):
+                fact_cards = payload.get("factCards")
+                if isinstance(fact_cards, list):
+                    profile_fact_candidate_count += len(fact_cards)
+                profile_fact_card_count += int(payload.get("createdFactCardCount") or 0)
+    profile_gap_map = _profile_gap_map_snapshot(db, scope)
+    profile_coverage = _as_text_list(profile_gap_map.get("covered"), limit=16)
+    profile_missing_dimensions = _as_text_list(profile_gap_map.get("missing"), limit=16)
+    profile_partial_dimensions = _as_text_list(profile_gap_map.get("partial"), limit=16)
+    status_payload = get_candidate_supply_status_for_scope(db, scope_type=scope.scope_type, scope_id=scope.scope_id)
+    remaining = _unique_items([*profile_missing_dimensions, *profile_partial_dimensions], limit=16)
+    deep_counts, queued_titles, skipped_reasons = _profile_deep_dive_status_snapshot(db, scope)
+    remaining_deep_count = deep_dive_remaining_count if deep_dive_remaining_count is not None else deep_counts.get("queued", 0) + deep_counts.get("processing", 0)
+    return CandidateRefreshResult(
+        source_config_count=source_config_count,
+        fetch_job_count=fetch_job_count,
+        candidate_count=len(candidate_ids),
+        promoted_count=promoted_count,
+        duplicate_count=duplicate_count,
+        failed_count=failed_count,
+        body_fetched_count=body_fetched_count,
+        verified_count=verified_count,
+        summary_success_count=summary_success_count,
+        rejection_counts=snapshot_rejections,
+        source_coverage_status=str(status_payload.get("sourceCoverageStatus") or "ready"),
+        candidate_refresh_status=str(status_payload.get("candidateRefreshStatus") or "ready"),
+        last_candidate_fetch_at=str(status_payload.get("lastCandidateFetchAt") or now_iso()),
+        candidate_counts=dict(status_payload.get("candidateCounts") or {}),
+        profile_coverage=profile_coverage,
+        profile_missing_dimensions=profile_missing_dimensions,
+        profile_partial_dimensions=profile_partial_dimensions,
+        profile_gap_map=profile_gap_map,
+        profile_completion_ready=bool(profile_gap_map.get("ready")),
+        search_direction_count=search_direction_count,
+        query_count=fetch_job_count,
+        success_query_count=success_query_count,
+        no_result_query_count=no_result_query_count,
+        effective_lead_count=max(0, len(candidate_ids) - duplicate_count),
+        direct_source_count=direct_source_count,
+        pages_fetched_count=body_fetched_count,
+        profile_fact_candidate_count=profile_fact_candidate_count,
+        profile_fact_card_count=profile_fact_card_count,
+        uncovered_gaps=remaining,
+        research_stage=research_stage,
+        processed_page_count=processed_page_count,
+        usable_fact_count=profile_fact_candidate_count,
+        quick_win_card_count=quick_win_card_count,
+        deep_queue_count=deep_queue_count,
+        covered_sub_gaps=profile_coverage,
+        remaining_sub_gaps=remaining,
+        deferred_hard_sources=_unique_items(deferred_hard_sources, limit=8),
+        profile_run_mode=profile_run_mode,
+        deep_dive_queued_count=deep_dive_queued_count,
+        deep_dive_processed_count=deep_dive_processed_count,
+        deep_dive_skipped_count=deep_dive_skipped_count,
+        deep_dive_remaining_count=remaining_deep_count,
+        deep_dive_source_titles=_unique_items(deep_dive_source_titles or queued_titles, limit=8),
+        deep_dive_skip_summary=_unique_items(deep_dive_skip_summary or skipped_reasons, limit=5),
+    )
+
+
+def _profile_layered_fetch_tasks(
+    db: Database,
+    *,
+    intents: list[GeneratedSearchIntent],
+    configs: list[SourceConfig],
+    max_fetch_jobs: int,
+) -> list[tuple[str, GeneratedSearchIntent, SourceConfig]]:
+    timestamp = now_iso()
+    profile_intents = sorted(
+        [intent for intent in intents if intent.content_kind == "profile_completion"],
+        key=lambda item: (-item.priority, item.query),
+    )
+    profile_configs = [
+        config
+        for config in configs
+        if config.source_type in PROFILE_SOURCE_TYPES and (not config.content_kinds or "profile_completion" in config.content_kinds)
+    ]
+    layers: list[tuple[str, set[str], int, int]] = [
+        ("quick", {"official_site", "official_site_section", "web_search", "charity_media", "social_org_registry"}, 28, 2),
+        ("expand", {"official_site", "official_site_section", "web_search", "charity_media", "profile_report", "social_org_registry"}, 54, 3),
+        ("deep", {"profile_report", "social_org_registry", "official_site_section"}, max_fetch_jobs, 2),
+    ]
+    tasks: list[tuple[str, GeneratedSearchIntent, SourceConfig]] = []
+    seen_effective_queries: set[str] = set()
+    for layer, source_types, layer_cap, source_window in layers:
+        for intent in profile_intents:
+            if len(tasks) >= max_fetch_jobs or len([item for item in tasks if item[0] == layer]) >= layer_cap:
+                break
+            allowed_profile_types = _profile_allowed_source_types(intent).intersection(source_types)
+            routed_configs = sorted(
+                [config for config in profile_configs if config.source_type in allowed_profile_types],
+                key=lambda config: (
+                    -(
+                        _source_priority_score_for_kind(db, config, content_kind="profile_completion", timestamp=timestamp)
+                        + _source_route_bonus(intent, config)
+                    ),
+                    config.source_type,
+                    config.source_name,
+                ),
+            )
+            for config in routed_configs[:source_window]:
+                intent_site_domain = _site_domain_from_text(intent.query)
+                config_site_domain = _site_domain_from_text(config.source_url_template)
+                if intent_site_domain and not config_site_domain:
+                    continue
+                if intent_site_domain and config_site_domain and intent_site_domain != config_site_domain:
+                    continue
+                effective_query = _effective_query(intent, config)
+                query_key = re.sub(r"\s+", "", effective_query).lower()
+                if query_key in seen_effective_queries:
+                    continue
+                seen_effective_queries.add(query_key)
+                tasks.append((layer, intent, config))
+                if len(tasks) >= max_fetch_jobs or len([item for item in tasks if item[0] == layer]) >= layer_cap:
+                    break
+    return tasks[:max_fetch_jobs]
+
+
+PROFILE_DEEP_DIVE_VALUE_TERMS = (
+    "年报",
+    "年度报告",
+    "审计",
+    "信息公开",
+    "报告",
+    "项目",
+    "案例",
+    "成效",
+    "团队",
+    "负责人",
+    "服务对象",
+    "课程",
+    "方法",
+    "合作",
+    "资助",
+)
+
+
+def _deep_dive_payload(
+    *,
+    status: str,
+    reason: str,
+    cost_tier: str,
+    value_tier: str,
+    source_stage: str = "deep_pool",
+    extra: dict[str, object] | None = None,
+) -> dict[str, object]:
+    payload: dict[str, object] = {
+        "sourceStage": source_stage,
+        "deepDiveStatus": status,
+        "deepDiveReason": _clean_text(reason, max_len=240),
+        "costTier": cost_tier,
+        "valueTier": value_tier,
+    }
+    if extra:
+        payload.update(extra)
+    return payload
+
+
+def _merge_candidate_evidence(db: Database, candidate_id: str, patch: dict[str, object], *, timestamp: str) -> dict[str, object]:
+    row = db.fetchone("SELECT evidence_json FROM intelligence_candidate_items WHERE id = ?", (candidate_id,))
+    payload = _safe_json(str(row["evidence_json"] or "{}"), {}) if row else {}
+    if not isinstance(payload, dict):
+        payload = {}
+    payload.update(patch)
+    db.execute(
+        "UPDATE intelligence_candidate_items SET evidence_json = ?, updated_at = ? WHERE id = ?",
+        (to_json(payload), timestamp, candidate_id),
+    )
+    return payload
+
+
+def _profile_deep_dive_decision(
+    *,
+    hit: CandidateHit,
+    config: SourceConfig,
+    page_quality: PageQuality,
+    brief: ResearchBrief,
+    intent: GeneratedSearchIntent,
+) -> tuple[str, str, str, str]:
+    text = f"{hit.title} {hit.snippet} {hit.url} {config.source_type} {intent.query} {intent.reason}"
+    trusted = config.source_type in {"official_site", "official_site_section", "profile_report", "social_org_registry", "charity_media"} or config.reliability_tier == "strong"
+    focus_terms = _unique_items([*brief.profile_focus_terms, *_intent_terms(intent), *brief.object_terms], limit=28)
+    focus_hit = any(term and term in text for term in focus_terms)
+    value_hit = any(term in text for term in PROFILE_DEEP_DIVE_VALUE_TERMS)
+    if page_quality.page_type in {"pdf", "unsupported_pdf"}:
+        if trusted and (value_hit or focus_hit or config.source_type == "profile_report"):
+            return "queued", "可信来源 PDF/报告类资料，进入下一轮自动深挖", "high", "high"
+        return "skipped", "PDF 来源价值或对象关系不够明确，本轮不投入深挖预算", "high", "uncertain"
+    if page_quality.page_type == "list_page":
+        if trusted and (value_hit or focus_hit or config.source_type in {"official_site", "official_site_section", "social_org_registry"}):
+            return "queued", "可信列表/栏目页，进入下一轮自动下钻深挖", "medium", "high"
+        return "skipped", "列表页价值或对象关系不够明确，本轮不投入深挖预算", "medium", "uncertain"
+    return "skipped", "复杂来源价值不确定，本轮跳过", "medium", "uncertain"
+
+
+def _existing_profile_deep_candidate(db: Database, *, scope: IntelligenceSearchScope, dedupe_key: str) -> str | None:
+    row = db.fetchone(
+        """
+        SELECT id
+        FROM intelligence_candidate_items
+        WHERE scope_type = ? AND scope_id = ? AND content_kind = 'profile_completion' AND dedupe_key = ?
+          AND classification_status IN ('candidate', 'promoted')
+          AND evidence_json LIKE '%deepDiveStatus%'
+        ORDER BY captured_at DESC
+        LIMIT 1
+        """,
+        (scope.scope_type, scope.scope_id, dedupe_key),
+    )
+    return str(row["id"]) if row else None
+
+
+def _record_profile_deep_source(
+    db: Database,
+    *,
+    scope: IntelligenceSearchScope,
+    draft: CandidateDraft,
+    timestamp: str,
+    status: str,
+    reason: str,
+    cost_tier: str,
+    value_tier: str,
+) -> tuple[str | None, bool]:
+    existing_id = _existing_profile_deep_candidate(db, scope=scope, dedupe_key=draft.dedupe_key)
+    if existing_id:
+        return existing_id, False
+    _insert_candidate(db, scope=scope, draft=draft, classification_status="candidate", duplicate_of_id=None, timestamp=timestamp)
+    evidence = _deep_dive_payload(
+        status=status,
+        reason=reason,
+        cost_tier=cost_tier,
+        value_tier=value_tier,
+        extra={"sourceTitle": draft.hit.title, "sourceUrl": draft.hit.url},
+    )
+    verification_status = "pending" if status == "queued" else "rejected"
+    _update_candidate_verification(
+        db,
+        candidate_id=draft.id,
+        verification_status=verification_status,
+        verification_reason=reason,
+        body_fetch_status="not_attempted",
+        summary_status="not_attempted",
+        mapped_tags=[],
+        body_excerpt="",
+        timestamp=timestamp,
+        visible=False,
+        page_type=draft.page_type,
+        quality_flags=[*draft.quality_flags, f"deep_dive_{status}"],
+        evidence=evidence,
+    )
+    return draft.id, True
+
+
+def _profile_deep_dive_status_snapshot(db: Database, scope: IntelligenceSearchScope) -> tuple[dict[str, int], list[str], list[str]]:
+    rows = db.fetchall(
+        """
+        SELECT title, evidence_json
+        FROM intelligence_candidate_items
+        WHERE scope_type = ? AND scope_id = ? AND content_kind = 'profile_completion'
+          AND evidence_json LIKE '%deepDiveStatus%'
+        """,
+        (scope.scope_type, scope.scope_id),
+    )
+    counts = {"queued": 0, "processing": 0, "processed": 0, "skipped": 0}
+    queued_titles: list[str] = []
+    skipped_reasons: list[str] = []
+    for row in rows:
+        payload = _safe_json(str(row["evidence_json"] or "{}"), {})
+        if not isinstance(payload, dict):
+            continue
+        status = str(payload.get("deepDiveStatus") or "").strip()
+        if status not in counts:
+            continue
+        counts[status] += 1
+        if status in {"queued", "processing"}:
+            queued_titles.append(_clean_text(payload.get("sourceTitle") or row["title"], max_len=80))
+        if status == "skipped":
+            reason = _clean_text(payload.get("deepDiveReason"), max_len=80)
+            if reason:
+                skipped_reasons.append(reason)
+    return counts, _unique_items(queued_titles, limit=8), _unique_items(skipped_reasons, limit=5)
+
+
+def _profile_deep_dive_rows(db: Database, scope: IntelligenceSearchScope, *, limit: int) -> list[object]:
+    rows = db.fetchall(
+        """
+        SELECT
+            c.*,
+            i.query AS intent_query,
+            i.reason AS intent_reason,
+            i.priority AS intent_priority,
+            i.exclude_terms_json AS intent_exclude_terms_json,
+            i.source_inputs_json AS intent_source_inputs_json,
+            i.input_hash AS intent_input_hash,
+            i.expires_at AS intent_expires_at,
+            s.source_type AS cfg_source_type,
+            s.source_name AS cfg_source_name,
+            s.source_url_template AS cfg_source_url_template,
+            s.region AS cfg_region,
+            s.reliability_tier AS cfg_reliability_tier,
+            s.priority AS cfg_priority,
+            s.content_kinds_json AS cfg_content_kinds_json,
+            s.enabled AS cfg_enabled,
+            s.discovery_source AS cfg_discovery_source,
+            s.discovery_reason AS cfg_discovery_reason,
+            s.discovery_samples_json AS cfg_discovery_samples_json,
+            s.health_score AS cfg_health_score,
+            s.success_count AS cfg_success_count,
+            s.failure_count AS cfg_failure_count,
+            s.candidate_count AS cfg_candidate_count,
+            s.promoted_count AS cfg_promoted_count,
+            s.duplicate_count AS cfg_duplicate_count,
+            s.last_status AS cfg_last_status,
+            s.last_checked_at AS cfg_last_checked_at,
+            s.last_success_at AS cfg_last_success_at,
+            s.last_failure_at AS cfg_last_failure_at,
+            s.next_due_at AS cfg_next_due_at
+        FROM intelligence_candidate_items c
+        LEFT JOIN intelligence_search_intents i ON i.id = c.intent_id
+        LEFT JOIN intelligence_source_configs s ON s.id = c.source_config_id
+        WHERE c.scope_type = ? AND c.scope_id = ? AND c.content_kind = 'profile_completion'
+          AND c.classification_status = 'candidate'
+          AND c.evidence_json LIKE '%deepDiveStatus%'
+        ORDER BY c.captured_at ASC
+        LIMIT ?
+        """,
+        (scope.scope_type, scope.scope_id, max(1, limit * 4)),
+    )
+    queued: list[object] = []
+    for row in rows:
+        payload = _safe_json(str(row["evidence_json"] or "{}"), {})
+        if isinstance(payload, dict) and str(payload.get("deepDiveStatus") or "") == "queued":
+            queued.append(row)
+        if len(queued) >= limit:
+            break
+    return queued
+
+
+def _deep_dive_source_config_from_row(row: object, scope: IntelligenceSearchScope) -> SourceConfig:
+    return SourceConfig(
+        id=str(row["source_config_id"] or "deep_dive_source"),
+        scope_type=str(row["scope_type"] or scope.scope_type),
+        scope_id=str(row["scope_id"] or scope.scope_id),
+        client_id=str(row["client_id"] or scope.client_id or ""),
+        project_module_id=str(row["project_module_id"] or scope.project_module_id or "") or None,
+        source_type=str(row["cfg_source_type"] or "web_search"),
+        source_name=str(row["cfg_source_name"] or row["source"] or "深挖来源"),
+        source_url_template=str(row["cfg_source_url_template"] or ""),
+        region=str(row["cfg_region"] or ""),
+        reliability_tier=str(row["cfg_reliability_tier"] or row["source_tier"] or "standard"),
+        priority=int(row["cfg_priority"] or 70),
+        content_kinds=_as_text_list(_safe_json(str(row["cfg_content_kinds_json"] or "[]"), []), limit=8),
+        enabled=bool(row["cfg_enabled"] if row["cfg_enabled"] is not None else True),
+        discovery_source=str(row["cfg_discovery_source"] or "deep_pool"),
+        discovery_reason=str(row["cfg_discovery_reason"] or ""),
+        discovery_samples=[item for item in (_safe_json(str(row["cfg_discovery_samples_json"] or "[]"), []) or []) if isinstance(item, dict)][:5],
+        health_score=float(row["cfg_health_score"] or 70.0),
+        success_count=int(row["cfg_success_count"] or 0),
+        failure_count=int(row["cfg_failure_count"] or 0),
+        candidate_count=int(row["cfg_candidate_count"] or 0),
+        promoted_count=int(row["cfg_promoted_count"] or 0),
+        duplicate_count=int(row["cfg_duplicate_count"] or 0),
+        last_status=str(row["cfg_last_status"] or "unknown"),
+        last_checked_at=str(row["cfg_last_checked_at"] or "") or None,
+        last_success_at=str(row["cfg_last_success_at"] or "") or None,
+        last_failure_at=str(row["cfg_last_failure_at"] or "") or None,
+        next_due_at=str(row["cfg_next_due_at"] or "") or None,
+    )
+
+
+def _deep_dive_intent_from_row(row: object, scope: IntelligenceSearchScope) -> GeneratedSearchIntent:
+    return GeneratedSearchIntent(
+        id=str(row["intent_id"] or f"intent_deep_{row['id']}"),
+        scope_type=scope.scope_type,
+        scope_id=scope.scope_id,
+        client_id=scope.client_id,
+        project_module_id=scope.project_module_id,
+        content_kind="profile_completion",
+        query=str(row["intent_query"] or row["title"] or scope.display_name),
+        exclude_terms=_as_text_list(_safe_json(str(row["intent_exclude_terms_json"] or "[]"), []), limit=12),
+        source_inputs=_as_text_list(_safe_json(str(row["intent_source_inputs_json"] or "[]"), []), limit=12) or ["deep_pool"],
+        reason=str(row["intent_reason"] or "资料补全自动深挖池"),
+        priority=int(row["intent_priority"] or 80),
+        status="ready",
+        input_hash=str(row["intent_input_hash"] or f"deep_pool:{row['id']}"),
+        expires_at=str(row["intent_expires_at"] or now_iso()),
+    )
+
+
+def _deep_dive_draft_from_row(row: object, scope: IntelligenceSearchScope) -> CandidateDraft:
+    hit = CandidateHit(
+        title=str(row["title"] or ""),
+        url=str(row["url"] or ""),
+        snippet=str(row["snippet"] or ""),
+        source=str(row["source"] or ""),
+        published_at=str(row["published_at"] or "") or None,
+        provider=str(row["provider"] or "deep_pool"),
+    )
+    flags = _as_text_list(_safe_json(str(row["quality_flags_json"] or "[]"), []), limit=16)
+    return CandidateDraft(
+        id=str(row["id"]),
+        content_kind="profile_completion",
+        intent=_deep_dive_intent_from_row(row, scope),
+        source_config=_deep_dive_source_config_from_row(row, scope),
+        fetch_job_id=str(row["fetch_job_id"] or ""),
+        hit=hit,
+        normalized_url=str(row["normalized_url"] or _normalize_url(hit.url)),
+        dedupe_key=str(row["dedupe_key"] or _dedupe_key(hit.title, _normalize_url(hit.url))),
+        matched_terms=_as_text_list(_safe_json(str(row["matched_terms_json"] or "[]"), []), limit=18),
+        confidence_score=float(row["confidence_score"] or 76.0),
+        signal_count=max(2, len(_as_text_list(_safe_json(str(row["matched_terms_json"] or "[]"), []), limit=18))),
+        page_type=str(row["page_type"] or ""),
+        quality_flags=_unique_items([*flags, "deep_dive_processing"], limit=20),
+    )
+
+
+def run_profile_completion_research(
+    db: Database,
+    *,
+    data_dir: Path,
+    ai_service: object | None,
+    scope: IntelligenceSearchScope,
+    intents: list[GeneratedSearchIntent],
+    trigger_source: str = "manual",
+    max_fetch_jobs: int = 200,
+    hit_fetcher: Callable[[str, SourceConfig], list[CandidateHit | dict[str, object]]] | None = None,
+    official_site_hit_fetcher: Callable[[str, SourceConfig], list[CandidateHit | dict[str, object]]] | None = None,
+    progress_callback: ProfileResearchProgressCallback | None = None,
+    max_runtime_seconds: int = 30 * 60,
+) -> CandidateRefreshResult:
+    timestamp = now_iso()
+    deadline_monotonic = time.monotonic() + max(30, max_runtime_seconds)
+    brief = _load_research_brief(db, scope)
+    ensure_default_source_configs(db, scope)
+    ensure_user_supplied_official_sources(db, scope, brief)
+    discover_official_site_source_configs(
+        db,
+        scope=scope,
+        hit_fetcher=official_site_hit_fetcher or hit_fetcher,
+    )
+    _disable_invalid_discovered_sources(db, scope)
+    configs = ensure_default_source_configs(db, scope)
+    fetcher = hit_fetcher or _fetch_public_search_hits
+    queued_deep_rows = _profile_deep_dive_rows(db, scope, limit=min(max_fetch_jobs, 24))
+    tasks = [] if queued_deep_rows else _profile_layered_fetch_tasks(db, intents=intents, configs=configs, max_fetch_jobs=max_fetch_jobs)
+    candidate_ids: list[str] = []
+    seen_dedupe_keys: set[str] = set()
+    fetch_job_count = 0
+    success_query_count = 0
+    no_result_query_count = 0
+    failed_count = 0
+    duplicate_count = 0
+    promoted_count = 0
+    quick_win_card_count = 0
+    deep_queue_count = 0
+    deep_dive_queued_count = len(queued_deep_rows)
+    deep_dive_processed_count = 0
+    deep_dive_skipped_count = 0
+    deep_dive_source_titles: list[str] = []
+    deep_dive_skip_summary: list[str] = []
+    profile_run_mode = "deep_dive" if queued_deep_rows else "standard"
+    direct_source_count = sum(1 for layer, _intent, config in tasks if layer == "quick" and config.source_type in {"official_site", "official_site_section"})
+    deferred_hard_sources: list[str] = []
+    rejection_counts: dict[str, int] = {}
+    search_directions = {
+        _clean_text(intent.reason.split("。")[0], max_len=80) or intent.query
+        for _layer, intent, _config in tasks
+    }
+
+    def emit(stage: str, message: str) -> CandidateRefreshResult:
+        result = _profile_research_snapshot(
+            db,
+            scope=scope,
+            source_config_count=len(configs),
+            candidate_ids=candidate_ids,
+            fetch_job_count=fetch_job_count,
+            success_query_count=success_query_count,
+            no_result_query_count=no_result_query_count,
+            duplicate_count=duplicate_count,
+            failed_count=failed_count,
+            rejection_counts=rejection_counts,
+            search_direction_count=len(search_directions),
+            direct_source_count=direct_source_count,
+            quick_win_card_count=quick_win_card_count,
+            deep_queue_count=deep_queue_count,
+            deferred_hard_sources=deferred_hard_sources,
+            research_stage=stage,
+            profile_run_mode=profile_run_mode,
+            deep_dive_queued_count=deep_dive_queued_count,
+            deep_dive_processed_count=deep_dive_processed_count,
+            deep_dive_skipped_count=deep_dive_skipped_count,
+            deep_dive_source_titles=deep_dive_source_titles,
+            deep_dive_skip_summary=deep_dive_skip_summary,
+        )
+        if progress_callback:
+            progress_callback(result, stage, message)
+        return result
+
+    if queued_deep_rows:
+        last_result = emit("deep_dive_start", "正在处理上一轮发现的年报/PDF、列表页和复杂来源")
+        processed_since_emit = 0
+        for row in queued_deep_rows:
+            if time.monotonic() >= deadline_monotonic:
+                return emit("completed", "资料深挖已达到本轮时间预算，剩余复杂来源将留到下一轮继续处理")
+            parent_draft = _deep_dive_draft_from_row(row, scope)
+            candidate_ids.append(parent_draft.id)
+            deep_dive_source_titles.append(parent_draft.hit.title)
+            _merge_candidate_evidence(
+                db,
+                parent_draft.id,
+                _deep_dive_payload(
+                    status="processing",
+                    reason="本轮正在处理自动深挖池来源",
+                    cost_tier="medium" if parent_draft.page_type == "list_page" else "high",
+                    value_tier="high",
+                    extra={"sourceTitle": parent_draft.hit.title, "sourceUrl": parent_draft.hit.url},
+                ),
+                timestamp=timestamp,
+            )
+            db.execute(
+                """
+                UPDATE intelligence_candidate_items
+                SET verification_status = 'pending',
+                    promotion_reason = ?,
+                    is_user_visible_candidate = 0,
+                    updated_at = ?
+                WHERE id = ?
+                """,
+                ("正在处理自动深挖池来源", timestamp, parent_draft.id),
+            )
+            created_cards_before = sum(_profile_created_fact_count(db, cid) for cid in candidate_ids)
+            if parent_draft.page_type == "list_page":
+                drilldown_terms = _unique_items([*brief.object_terms, *_intent_terms(parent_draft.intent)], limit=24)
+                child_hits = [
+                    hit
+                    for hit in _drilldown_detail_hits_from_list(parent_draft.hit, drilldown_terms, limit=10)
+                    if _hit_matches_intelligence_context(hit, parent_draft.intent, brief.object_terms)
+                ]
+                if not child_hits:
+                    deep_dive_skipped_count += 1
+                    reason = "列表页下钻后没有发现可核验详情页"
+                    deep_dive_skip_summary.append(reason)
+                    _merge_candidate_evidence(
+                        db,
+                        parent_draft.id,
+                        _deep_dive_payload(
+                            status="processed",
+                            reason=reason,
+                            cost_tier="medium",
+                            value_tier="high",
+                            extra={"sourceTitle": parent_draft.hit.title, "sourceUrl": parent_draft.hit.url},
+                        ),
+                        timestamp=timestamp,
+                    )
+                for child_hit in child_hits:
+                    normalized_url = _normalize_url(child_hit.url)
+                    dedupe_key = _dedupe_key(child_hit.title, normalized_url)
+                    if dedupe_key in seen_dedupe_keys:
+                        duplicate_count += 1
+                        continue
+                    seen_dedupe_keys.add(dedupe_key)
+                    page_quality = _classify_hit_page(child_hit)
+                    if page_quality.page_type == "list_page" and _url_looks_like_detail_page(child_hit.url):
+                        page_quality = PageQuality("detail_page", [flag for flag in page_quality.flags if flag != "possible_list_page"], "")
+                    score, signals, matched = _score_candidate(
+                        content_kind="profile_completion",
+                        config=parent_draft.source_config,
+                        hit=child_hit,
+                        intent=parent_draft.intent,
+                        object_terms=brief.object_terms,
+                    )
+                    child_draft = CandidateDraft(
+                        id=_new_id("icand"),
+                        content_kind="profile_completion",
+                        intent=parent_draft.intent,
+                        source_config=parent_draft.source_config,
+                        fetch_job_id=parent_draft.fetch_job_id,
+                        hit=child_hit,
+                        normalized_url=normalized_url,
+                        dedupe_key=dedupe_key,
+                        matched_terms=matched,
+                        confidence_score=max(score, 78.0),
+                        signal_count=max(signals, 2),
+                        parent_url=parent_draft.hit.url,
+                        page_type=page_quality.page_type,
+                        quality_flags=_unique_items([*page_quality.flags, "deep_dive_child"], limit=16),
+                    )
+                    _insert_candidate(db, scope=scope, draft=child_draft, classification_status="candidate", duplicate_of_id=None, timestamp=timestamp)
+                    candidate_ids.append(child_draft.id)
+                    before_cards = _profile_created_fact_count(db, child_draft.id)
+                    if _promote_candidate(
+                        db,
+                        data_dir=data_dir,
+                        ai_service=ai_service,
+                        scope=scope,
+                        brief=brief,
+                        draft=child_draft,
+                        timestamp=timestamp,
+                    ):
+                        promoted_count += 1
+                        _apply_source_classification_delta(db, source_config_id=parent_draft.source_config.id, promoted_delta=1, timestamp=timestamp)
+                    if _profile_created_fact_count(db, child_draft.id) <= before_cards:
+                        reason = "详情页未通过证据核验或 AI 提炼"
+                        if reason not in deep_dive_skip_summary:
+                            deep_dive_skip_summary.append(reason)
+                _merge_candidate_evidence(
+                    db,
+                    parent_draft.id,
+                    _deep_dive_payload(
+                        status="processed",
+                        reason="列表页已完成本轮下钻处理",
+                        cost_tier="medium",
+                        value_tier="high",
+                        extra={"sourceTitle": parent_draft.hit.title, "sourceUrl": parent_draft.hit.url},
+                    ),
+                    timestamp=timestamp,
+                )
+            else:
+                before_cards = _profile_created_fact_count(db, parent_draft.id)
+                if _promote_candidate(
+                    db,
+                    data_dir=data_dir,
+                    ai_service=ai_service,
+                    scope=scope,
+                    brief=brief,
+                    draft=parent_draft,
+                    timestamp=timestamp,
+                ):
+                    promoted_count += 1
+                    _apply_source_classification_delta(db, source_config_id=parent_draft.source_config.id, promoted_delta=1, timestamp=timestamp)
+                after_cards = _profile_created_fact_count(db, parent_draft.id)
+                outcome_reason = "复杂来源已完成本轮深挖处理" if after_cards > before_cards else "复杂来源未通过正文解析、证据核验或 AI 提炼"
+                if after_cards <= before_cards:
+                    deep_dive_skipped_count += 1
+                    deep_dive_skip_summary.append(outcome_reason)
+                _merge_candidate_evidence(
+                    db,
+                    parent_draft.id,
+                    _deep_dive_payload(
+                        status="processed",
+                        reason=outcome_reason,
+                        cost_tier="high" if parent_draft.page_type in {"pdf", "unsupported_pdf"} else "medium",
+                        value_tier="high",
+                        extra={"sourceTitle": parent_draft.hit.title, "sourceUrl": parent_draft.hit.url},
+                    ),
+                    timestamp=timestamp,
+                )
+            created_cards_after = sum(_profile_created_fact_count(db, cid) for cid in candidate_ids)
+            quick_win_card_count += max(0, created_cards_after - created_cards_before)
+            deep_dive_processed_count += 1
+            processed_since_emit += 1
+            if processed_since_emit >= 3:
+                processed_since_emit = 0
+                last_result = emit("deep_dive", "正在处理上一轮发现的年报/PDF、列表页和复杂来源")
+        return emit("completed", "资料深挖已完成，本轮只展示通过证据核验和 AI 提炼的资料卡")
+
+    last_result = emit("quick_start", "正在快速查找官网、公开报道和可直接成卡的 HTML 页面")
+    processed_candidates_since_emit = 0
+    for layer in ("quick", "expand"):
+        if time.monotonic() >= deadline_monotonic:
+            return emit("completed", "资料补全研究已达到本轮时间预算，已保留本轮通过核验的资料卡")
+        layer_tasks = [item for item in tasks if item[0] == layer]
+        if not layer_tasks:
+            continue
+        layer_message = {
+            "quick": "正在快速查找官网、公开报道和可直接成卡的网页资料",
+            "expand": "正在下钻官网栏目，并围绕项目、人名和重点关注做二次搜索",
+            "deep": "正在处理年报/PDF、复杂页面和剩余难点来源",
+        }[layer]
+        last_result = emit(layer, layer_message)
+        for _layer, intent, config in layer_tasks:
+            if time.monotonic() >= deadline_monotonic:
+                return emit("completed", "资料补全研究已达到本轮时间预算，已保留本轮通过核验的资料卡")
+            query = _effective_query(intent, config)
+            started = time.perf_counter()
+            raw_hits: list[CandidateHit | dict[str, object]] = []
+            status = "success"
+            failure_reason = ""
+            try:
+                raw_hits = fetcher(query, config)
+            except Exception as exc:
+                status = "failed"
+                failure_reason = _clean_text(exc, max_len=240)
+                failed_count += 1
+            normalized_hits: list[CandidateHit] = []
+            list_hits: list[CandidateHit] = []
+            for raw_hit in raw_hits:
+                hit = _normalize_hit(raw_hit, config)
+                if hit is None:
+                    continue
+                if not _hit_matches_intelligence_context(hit, intent, brief.object_terms):
+                    continue
+                page_quality = _classify_hit_page(hit)
+                if page_quality.page_type in {"search_page", "media_or_map", "recruitment_directory", "aggregator", "invalid_url"}:
+                    continue
+                if page_quality.page_type == "list_page" and not _url_looks_like_detail_page(hit.url):
+                    list_hits.append(hit)
+                    continue
+                normalized_hits.append(hit)
+            if status == "success" and not normalized_hits and not list_hits:
+                status = "no_results"
+            if status == "success":
+                success_query_count += 1
+            elif status == "no_results":
+                no_result_query_count += 1
+            fetch_job_id = _insert_fetch_job(
+                db,
+                scope=scope,
+                content_kind="profile_completion",
+                trigger_source=trigger_source,
+                config=config,
+                query=query,
+                status=status,
+                raw_count=len(raw_hits),
+                deduped_count=len(normalized_hits) + len(list_hits),
+                candidate_count=len(normalized_hits) + len(list_hits),
+                sample_hits=[{"title": hit.title, "url": hit.url} for hit in [*normalized_hits, *list_hits][:3]],
+                failure_reason=failure_reason,
+                duration_ms=int((time.perf_counter() - started) * 1000),
+                timestamp=timestamp,
+            )
+            fetch_job_count += 1
+            for hit in list_hits:
+                normalized_url = _normalize_url(hit.url)
+                dedupe_key = _dedupe_key(hit.title, normalized_url)
+                if dedupe_key in seen_dedupe_keys:
+                    duplicate_count += 1
+                    continue
+                seen_dedupe_keys.add(dedupe_key)
+                score, signals, matched = _score_candidate(
+                    content_kind="profile_completion",
+                    config=config,
+                    hit=hit,
+                    intent=intent,
+                    object_terms=brief.object_terms,
+                )
+                draft = CandidateDraft(
+                    id=_new_id("icand"),
+                    content_kind="profile_completion",
+                    intent=intent,
+                    source_config=config,
+                    fetch_job_id=fetch_job_id,
+                    hit=hit,
+                    normalized_url=normalized_url,
+                    dedupe_key=dedupe_key,
+                    matched_terms=matched,
+                    confidence_score=max(score, 72.0),
+                    signal_count=max(signals, 2),
+                    page_type="list_page",
+                    quality_flags=["list_page", "queued_for_drilldown"],
+                )
+                deep_status, deep_reason, cost_tier, value_tier = _profile_deep_dive_decision(
+                    hit=hit,
+                    config=config,
+                    page_quality=PageQuality("list_page", ["list_page", "queued_for_drilldown"], ""),
+                    brief=brief,
+                    intent=intent,
+                )
+                recorded_id, inserted = _record_profile_deep_source(
+                    db,
+                    scope=scope,
+                    draft=draft,
+                    timestamp=timestamp,
+                    status=deep_status,
+                    reason=deep_reason,
+                    cost_tier=cost_tier,
+                    value_tier=value_tier,
+                )
+                if recorded_id:
+                    candidate_ids.append(recorded_id)
+                if inserted and deep_status == "queued":
+                    deep_queue_count += 1
+                    deep_dive_queued_count += 1
+                    deferred_hard_sources.append(hit.title)
+                    deep_dive_source_titles.append(hit.title)
+                elif inserted and deep_status == "skipped":
+                    deep_dive_skipped_count += 1
+                    deep_dive_skip_summary.append(deep_reason)
+            for hit in normalized_hits:
+                normalized_url = _normalize_url(hit.url)
+                dedupe_key = _dedupe_key(hit.title, normalized_url)
+                if dedupe_key in seen_dedupe_keys:
+                    duplicate_count += 1
+                    continue
+                seen_dedupe_keys.add(dedupe_key)
+                page_quality = _classify_hit_page(hit)
+                if page_quality.page_type == "list_page" and _url_looks_like_detail_page(hit.url):
+                    page_quality = PageQuality("detail_page", [flag for flag in page_quality.flags if flag != "possible_list_page"], "")
+                score, signals, matched = _score_candidate(
+                    content_kind="profile_completion",
+                    config=config,
+                    hit=hit,
+                    intent=intent,
+                    object_terms=brief.object_terms,
+                )
+                score, feedback_adjustment = _apply_feedback_to_candidate_score(
+                    db,
+                    scope=scope,
+                    content_kind="profile_completion",
+                    config=config,
+                    hit=hit,
+                    intent=intent,
+                    base_score=max(score, 74.0 if layer in {"quick", "expand"} else score),
+                )
+                if layer == "quick" and config.source_type in {"official_site", "official_site_section"}:
+                    score = max(score, 80.0)
+                    signals = max(signals, 2)
+                if hit.provider == "list_drilldown":
+                    score = max(score, 78.0)
+                    signals = max(signals, 2)
+                if page_quality.page_type in {"pdf", "unsupported_pdf"}:
+                    draft = CandidateDraft(
+                        id=_new_id("icand"),
+                        content_kind="profile_completion",
+                        intent=intent,
+                        source_config=config,
+                        fetch_job_id=fetch_job_id,
+                        hit=hit,
+                        normalized_url=normalized_url,
+                        dedupe_key=dedupe_key,
+                        matched_terms=matched,
+                        confidence_score=score,
+                        signal_count=signals,
+                        feedback_adjustment=feedback_adjustment,
+                        parent_url=None,
+                        page_type=page_quality.page_type,
+                        quality_flags=page_quality.flags,
+                    )
+                    deep_status, deep_reason, cost_tier, value_tier = _profile_deep_dive_decision(
+                        hit=hit,
+                        config=config,
+                        page_quality=page_quality,
+                        brief=brief,
+                        intent=intent,
+                    )
+                    recorded_id, inserted = _record_profile_deep_source(
+                        db,
+                        scope=scope,
+                        draft=draft,
+                        timestamp=timestamp,
+                        status=deep_status,
+                        reason=deep_reason,
+                        cost_tier=cost_tier,
+                        value_tier=value_tier,
+                    )
+                    if recorded_id:
+                        candidate_ids.append(recorded_id)
+                    if inserted and deep_status == "queued":
+                        deep_queue_count += 1
+                        deep_dive_queued_count += 1
+                        deferred_hard_sources.append(hit.title)
+                        deep_dive_source_titles.append(hit.title)
+                    elif inserted and deep_status == "skipped":
+                        deep_dive_skipped_count += 1
+                        deep_dive_skip_summary.append(deep_reason)
+                    continue
+                draft = CandidateDraft(
+                    id=_new_id("icand"),
+                    content_kind="profile_completion",
+                    intent=intent,
+                    source_config=config,
+                    fetch_job_id=fetch_job_id,
+                    hit=hit,
+                    normalized_url=normalized_url,
+                    dedupe_key=dedupe_key,
+                    matched_terms=matched,
+                    confidence_score=score,
+                    signal_count=signals,
+                    feedback_adjustment=feedback_adjustment,
+                    parent_url=None,
+                    page_type=page_quality.page_type,
+                    quality_flags=page_quality.flags,
+                )
+                _insert_candidate(db, scope=scope, draft=draft, classification_status="candidate", duplicate_of_id=None, timestamp=timestamp)
+                candidate_ids.append(draft.id)
+                before_cards = _profile_created_fact_count(db, draft.id)
+                if _promote_candidate(
+                    db,
+                    data_dir=data_dir,
+                    ai_service=ai_service,
+                    scope=scope,
+                    brief=brief,
+                    draft=draft,
+                    timestamp=timestamp,
+                ):
+                    promoted_count += 1
+                    created_cards = max(0, _profile_created_fact_count(db, draft.id) - before_cards)
+                    if layer == "quick":
+                        quick_win_card_count += created_cards
+                    _apply_source_classification_delta(db, source_config_id=config.id, promoted_delta=1, timestamp=timestamp)
+                processed_candidates_since_emit += 1
+                if processed_candidates_since_emit >= 5:
+                    processed_candidates_since_emit = 0
+                    last_result = emit(layer, layer_message)
+        last_result = emit(layer, layer_message)
+    if deep_dive_queued_count > 0:
+        return emit("completed", f"本轮已完成快速资料补全，并发现 {deep_dive_queued_count} 个高价值复杂来源；下一轮资料补全将优先深挖这些文件/页面。")
+    if deep_dive_skipped_count > 0:
+        return emit("completed", "资料补全研究已完成；部分复杂来源价值不确定，已跳过且不进入普通列表。")
+    return emit("completed", "资料补全研究已完成，本轮只展示通过证据核验和 AI 提炼的资料卡")
+
+
 def run_intelligence_candidate_refresh(
     db: Database,
     *,
@@ -3162,6 +5149,8 @@ def run_intelligence_candidate_refresh(
     brief = _load_research_brief(db, scope)
     configs = ensure_default_source_configs(db, scope)
     ensure_user_supplied_official_sources(db, scope, brief)
+    _disable_invalid_discovered_sources(db, scope)
+    official_domains = _official_domains_for_scope(db, scope, brief)
     discover_official_site_source_configs(
         db,
         scope=scope,
@@ -3174,7 +5163,12 @@ def run_intelligence_candidate_refresh(
     drafts: list[CandidateDraft] = []
     failed_count = 0
     fetch_job_count = 0
+    own_official_filtered_count = 0
+    static_profile_filtered_count = 0
+    generic_macro_filtered_count = 0
+    external_signal_candidate_count = 0
     tasks = _selected_fetch_tasks(db, intents, configs, max_fetch_jobs=max_fetch_jobs)
+    direct_source_count = sum(1 for intent, config in tasks if intent.content_kind == "profile_completion" and config.source_type in {"official_site", "official_site_section"})
     search_directions = {
         _clean_text(intent.reason.split("。")[0], max_len=80) or intent.query
         for intent, _config in tasks
@@ -3198,6 +5192,9 @@ def run_intelligence_candidate_refresh(
             hit = _normalize_hit(raw_hit, config)
             if hit is None:
                 continue
+            if intent.content_kind == "timely_intelligence" and _is_own_official_hit(hit, official_domains):
+                own_official_filtered_count += 1
+                continue
             if not _hit_matches_intelligence_context(hit, intent, object_terms):
                 continue
             page_quality = _classify_hit_page(hit)
@@ -3205,9 +5202,38 @@ def run_intelligence_candidate_refresh(
                 drilldown_terms = _unique_items([*object_terms, *_intent_terms(intent)], limit=24)
                 drilldown_limit = 5 if intent.content_kind == "profile_completion" else 2
                 for child_hit in _drilldown_detail_hits_from_list(hit, drilldown_terms, limit=drilldown_limit):
+                    if intent.content_kind == "timely_intelligence" and _is_own_official_hit(child_hit, official_domains):
+                        own_official_filtered_count += 1
+                        continue
                     if _hit_matches_intelligence_context(child_hit, intent, object_terms):
+                        if intent.content_kind == "timely_intelligence":
+                            keep_child, _bonus, _flags, reject_kind = _external_signal_fast_screen(
+                                hit=child_hit,
+                                intent=intent,
+                                config=config,
+                                brief=brief,
+                            )
+                            if not keep_child:
+                                if reject_kind == "static_profile":
+                                    static_profile_filtered_count += 1
+                                elif reject_kind == "generic_macro":
+                                    generic_macro_filtered_count += 1
+                                continue
                         normalized_hits.append(child_hit)
                 continue
+            if intent.content_kind == "timely_intelligence":
+                keep_hit, _bonus, _flags, reject_kind = _external_signal_fast_screen(
+                    hit=hit,
+                    intent=intent,
+                    config=config,
+                    brief=brief,
+                )
+                if not keep_hit:
+                    if reject_kind == "static_profile":
+                        static_profile_filtered_count += 1
+                    elif reject_kind == "generic_macro":
+                        generic_macro_filtered_count += 1
+                    continue
             normalized_hits.append(hit)
         if status == "success" and not normalized_hits:
             status = "no_results"
@@ -3242,6 +5268,24 @@ def run_intelligence_candidate_refresh(
                 intent=intent,
                 object_terms=object_terms,
             )
+            extra_flags: list[str] = []
+            if intent.content_kind == "timely_intelligence":
+                keep_hit, external_bonus, extra_flags, reject_kind = _external_signal_fast_screen(
+                    hit=hit,
+                    intent=intent,
+                    config=config,
+                    brief=brief,
+                )
+                if not keep_hit:
+                    if reject_kind == "static_profile":
+                        static_profile_filtered_count += 1
+                    elif reject_kind == "generic_macro":
+                        generic_macro_filtered_count += 1
+                    continue
+                score = min(score + external_bonus, 99.0)
+                if "external_signal" in extra_flags:
+                    external_signal_candidate_count += 1
+                matched = _unique_items([*matched, *_matched_terms(f"{hit.title} {hit.snippet}", _timely_strategy_terms(brief))], limit=16)
             score, feedback_adjustment = _apply_feedback_to_candidate_score(
                 db,
                 scope=scope,
@@ -3267,7 +5311,7 @@ def run_intelligence_candidate_refresh(
                     signal_count=signals,
                     feedback_adjustment=feedback_adjustment,
                     page_type=page_quality.page_type,
-                    quality_flags=page_quality.flags,
+                    quality_flags=_unique_items([*page_quality.flags, *extra_flags], limit=16),
                 )
             )
 
@@ -3276,8 +5320,17 @@ def run_intelligence_candidate_refresh(
         if draft.dedupe_key not in canonical_by_key:
             canonical_by_key[draft.dedupe_key] = draft
 
+    has_timely_intents = any(intent.content_kind == "timely_intelligence" for intent in intents)
+    timely_review_pool = [
+        draft
+        for draft in sorted(canonical_by_key.values(), key=lambda item: (-item.confidence_score, item.hit.title))
+        if draft.content_kind == "timely_intelligence"
+    ]
+    timely_review_ids = {draft.id for draft in timely_review_pool[:TIMELY_DETAIL_REVIEW_LIMIT]}
+    timely_ai_review_ids = {draft.id for draft in timely_review_pool[:TIMELY_AI_REVIEW_LIMIT]}
     promoted_count = 0
     duplicate_count = 0
+    review_candidate_count = 0
     ordered_drafts = sorted(
         drafts,
         key=lambda item: 0 if canonical_by_key.get(item.dedupe_key) and canonical_by_key[item.dedupe_key].id == item.id else 1,
@@ -3285,11 +5338,13 @@ def run_intelligence_candidate_refresh(
     for draft in ordered_drafts:
         existing = db.fetchone(
             """
-            SELECT id
-            FROM intelligence_candidate_items
-            WHERE scope_type = ? AND scope_id = ? AND content_kind = ? AND dedupe_key = ?
-              AND classification_status <> 'duplicate'
-            ORDER BY confidence_score DESC, captured_at ASC
+            SELECT c.id
+            FROM intelligence_candidate_items c
+            JOIN intelligence_items i ON i.id = c.promoted_intelligence_item_id
+            WHERE c.scope_type = ? AND c.scope_id = ? AND c.content_kind = ? AND c.dedupe_key = ?
+              AND c.classification_status = 'promoted'
+              AND i.user_status = 'active'
+            ORDER BY c.confidence_score DESC, c.captured_at ASC
             LIMIT 1
             """,
             (scope.scope_type, scope.scope_id, draft.content_kind, draft.dedupe_key),
@@ -3313,7 +5368,22 @@ def run_intelligence_candidate_refresh(
             duplicate_of_id=duplicate_of_id,
             timestamp=timestamp,
         )
-        if status == "candidate" and _promote_candidate(
+        should_deep_review = status == "candidate" and (
+            draft.content_kind != "timely_intelligence" or draft.id in timely_review_ids
+        )
+        if status == "candidate" and draft.content_kind == "timely_intelligence" and draft.id not in timely_review_ids:
+            db.execute(
+                """
+                UPDATE intelligence_candidate_items
+                SET promotion_reason = ?, updated_at = ?
+                WHERE id = ?
+                """,
+                ("候选已进入初筛池，但未进入本轮深复核预算，暂不抓取详情页", timestamp, draft.id),
+            )
+        if should_deep_review:
+            if draft.content_kind == "timely_intelligence":
+                review_candidate_count += 1
+        if should_deep_review and _promote_candidate(
             db,
             data_dir=data_dir,
             ai_service=ai_service,
@@ -3321,6 +5391,7 @@ def run_intelligence_candidate_refresh(
             brief=brief,
             draft=draft,
             timestamp=timestamp,
+            allow_ai_review=draft.content_kind != "timely_intelligence" or draft.id in timely_ai_review_ids,
         ):
             promoted_count += 1
             _apply_source_classification_delta(
@@ -3334,6 +5405,13 @@ def run_intelligence_candidate_refresh(
     body_fetched_count = 0
     verified_count = 0
     summary_success_count = 0
+    profile_fact_candidate_count = 0
+    profile_fact_card_count = 0
+    ai_reviewed_count = 0
+    fresh_window_count = 0
+    extended_window_count = 0
+    timely_effective_window_exception_count = 0
+    inspiration_card_count = 0
     rejection_counts: dict[str, int] = {}
     if candidate_ids:
         placeholders = ",".join("?" for _ in candidate_ids)
@@ -3354,15 +5432,104 @@ def run_intelligence_candidate_refresh(
                 verified_count += count
             if str(row["summary_status"] or "") == "generated":
                 summary_success_count += count
+            if has_timely_intents and str(row["summary_status"] or "") in {"generated", "failed"}:
+                ai_reviewed_count += count
             reason = _clean_text(str(row["promotion_reason"] or ""), max_len=80)
             if reason and str(row["summary_status"] or "") != "generated":
                 rejection_counts[reason] = rejection_counts.get(reason, 0) + count
+        if not has_timely_intents:
+            evidence_rows = db.fetchall(
+                f"""
+                SELECT classification_status, evidence_json
+                FROM intelligence_candidate_items
+                WHERE id IN ({placeholders})
+                  AND content_kind = 'profile_completion'
+                """,
+                tuple(candidate_ids),
+            )
+            for row in evidence_rows:
+                evidence_payload = _safe_json(str(row["evidence_json"] or "{}"), {})
+                if not isinstance(evidence_payload, dict):
+                    continue
+                fact_cards = evidence_payload.get("factCards")
+                if isinstance(fact_cards, list):
+                    profile_fact_candidate_count += len(fact_cards)
+                    if str(row["classification_status"] or "") == "promoted":
+                        profile_fact_card_count += int(evidence_payload.get("createdFactCardCount") or len(fact_cards))
+                    continue
+                facts = evidence_payload.get("facts")
+                if isinstance(facts, list):
+                    profile_fact_candidate_count += len(facts)
+        fresh_window_count = int(
+            db.fetchone(
+                f"""
+                SELECT COUNT(1) AS count
+                FROM intelligence_candidate_items
+                WHERE id IN ({placeholders})
+                  AND content_kind = 'timely_intelligence'
+                  AND quality_flags_json LIKE '%fresh_window%'
+                """,
+                tuple(candidate_ids),
+            )["count"]
+            or 0
+        )
+        extended_window_count = int(
+            db.fetchone(
+                f"""
+                SELECT COUNT(1) AS count
+                FROM intelligence_candidate_items
+                WHERE id IN ({placeholders})
+                  AND content_kind = 'timely_intelligence'
+                  AND quality_flags_json LIKE '%extended_window%'
+                """,
+                tuple(candidate_ids),
+            )["count"]
+            or 0
+        )
+        timely_effective_window_exception_count = int(
+            db.fetchone(
+                f"""
+                SELECT COUNT(1) AS count
+                FROM intelligence_candidate_items
+                WHERE id IN ({placeholders})
+                  AND content_kind = 'timely_intelligence'
+                  AND quality_flags_json LIKE '%effective_window_exception%'
+                """,
+                tuple(candidate_ids),
+            )["count"]
+            or 0
+        )
+        inspiration_card_count = int(
+            db.fetchone(
+                f"""
+                SELECT COUNT(1) AS count
+                FROM intelligence_candidate_items c
+                JOIN intelligence_items i ON i.id = c.promoted_intelligence_item_id
+                WHERE c.id IN ({placeholders})
+                  AND c.content_kind = 'timely_intelligence'
+                  AND i.intelligence_type = '启发型情报'
+                  AND i.user_status = 'active'
+                """,
+                tuple(candidate_ids),
+            )["count"]
+            or 0
+        )
 
     profile_coverage: list[str] = []
     profile_missing_dimensions: list[str] = []
+    profile_partial_dimensions: list[str] = []
+    profile_gap_map: dict[str, object] = {}
     profile_completion_ready = False
     if any(intent.content_kind == "profile_completion" for intent in intents):
-        profile_coverage, profile_missing_dimensions, profile_completion_ready = _profile_coverage_snapshot(db, scope)
+        profile_gap_map = _profile_gap_map_snapshot(db, scope)
+        profile_coverage = _as_text_list(profile_gap_map.get("covered"), limit=16)
+        profile_missing_dimensions = _as_text_list(profile_gap_map.get("missing"), limit=16)
+        profile_partial_dimensions = _as_text_list(profile_gap_map.get("partial"), limit=16)
+        profile_completion_ready = bool(profile_gap_map.get("ready"))
+    timely_strategy = brief.timely_strategy or {}
+    timely_profile_gaps = _as_text_list(timely_strategy.get("profileGaps"), limit=8)
+    timely_routes = [item for item in timely_strategy.get("routes", []) or [] if isinstance(item, dict)]
+    has_timely_intents = any(intent.content_kind == "timely_intelligence" for intent in intents)
 
     status_payload = get_candidate_supply_status_for_scope(db, scope_type=scope.scope_type, scope_id=scope.scope_id)
     return CandidateRefreshResult(
@@ -3382,13 +5549,39 @@ def run_intelligence_candidate_refresh(
         candidate_counts=dict(status_payload.get("candidateCounts") or {}),
         profile_coverage=profile_coverage,
         profile_missing_dimensions=profile_missing_dimensions,
+        profile_partial_dimensions=profile_partial_dimensions,
+        profile_gap_map=profile_gap_map,
         profile_completion_ready=profile_completion_ready,
         search_direction_count=len(search_directions),
         query_count=fetch_job_count,
         success_query_count=success_query_count,
         no_result_query_count=no_result_query_count,
         effective_lead_count=max(0, len(drafts) - duplicate_count),
-        uncovered_gaps=profile_missing_dimensions,
+        direct_source_count=direct_source_count,
+        pages_fetched_count=body_fetched_count,
+        profile_fact_candidate_count=profile_fact_candidate_count if not has_timely_intents else 0,
+        profile_fact_card_count=profile_fact_card_count if not has_timely_intents else 0,
+        scout_candidate_count=len(drafts) if has_timely_intents else 0,
+        review_candidate_count=review_candidate_count if has_timely_intents else 0,
+        detail_fetched_count=body_fetched_count if has_timely_intents else 0,
+        ai_reviewed_count=ai_reviewed_count if has_timely_intents else 0,
+        fresh_window_count=fresh_window_count if has_timely_intents else 0,
+        extended_window_count=extended_window_count if has_timely_intents else 0,
+        effective_window_exception_count=timely_effective_window_exception_count if has_timely_intents else 0,
+        uncovered_gaps=profile_missing_dimensions if not has_timely_intents else timely_profile_gaps,
+        timely_profile_ready=bool(timely_strategy.get("profileReady")),
+        timely_profile_score=int(timely_strategy.get("profileScore") or 0),
+        timely_profile_gaps=timely_profile_gaps,
+        timely_strategy_route_count=len(timely_routes),
+        timely_candidate_review_count=review_candidate_count if has_timely_intents else 0,
+        timely_effective_window_exception_count=timely_effective_window_exception_count,
+        external_signal_candidate_count=external_signal_candidate_count if has_timely_intents else 0,
+        external_signal_review_count=review_candidate_count if has_timely_intents else 0,
+        ai_judged_count=ai_reviewed_count if has_timely_intents else 0,
+        inspiration_card_count=inspiration_card_count if has_timely_intents else 0,
+        own_official_filtered_count=own_official_filtered_count if has_timely_intents else 0,
+        static_profile_filtered_count=static_profile_filtered_count if has_timely_intents else 0,
+        generic_macro_filtered_count=generic_macro_filtered_count if has_timely_intents else 0,
     )
 
 

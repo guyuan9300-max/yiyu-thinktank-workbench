@@ -112,6 +112,20 @@ class _ReadyAi:
         )
 
 
+class _ReadyTimelyAi:
+    def get_health(self):
+        return type("Health", (), {"ready": True, "provider": "doubao"})()
+
+    def generate_general_fallback(self, *_args, **_kwargs):
+        return AiStructuredResponse(
+            content="有资助方在近期开启儿童青少年心理健康服务申报窗口，方向覆盖教师心理素养培训和心理平台建设。",
+            judgment="该机会与日慈基金会关注的儿童心理健康服务方向相关，可能影响其项目合作、资源争取和材料准备节奏。",
+            analysis="如果日慈基金会具备对应服务基础，这类窗口可转化为合作或申报机会；若资格、地域或服务对象不匹配，则只应纳入机会观察清单。",
+            actions="先核验原公告的截止时间、申报资格、地域限制和服务对象，再判断是否转成申报准备或合作跟进任务。",
+            timeline="近 30 天内公开发布，需要在窗口期内完成研判。",
+        )
+
+
 def test_research_profile_card_requires_focus_evidence_and_reuses_body_quotes(tmp_path: Path, monkeypatch) -> None:
     db = Database(tmp_path / "research_profile.sqlite")
     _seed_client(db, client_id="client_rici", name="广东省日慈公益基金会")
@@ -288,6 +302,7 @@ def test_research_timely_card_requires_body_change_and_impact_evidence(tmp_path:
         "_fetch_page_text",
         lambda _url: (
             "fetched",
+            "发布时间：2026-05-01。"
             "某基金会发布儿童青少年心理健康服务资助申报通知，面向教师心理素养培训和心理平台建设项目征集合作。"
             "通知明确近期申报窗口和材料要求，相关公益组织需要核验服务对象、地域限制和申报资格。",
             "",
@@ -297,7 +312,7 @@ def test_research_timely_card_requires_body_change_and_impact_evidence(tmp_path:
     result = run_intelligence_candidate_refresh(
         db,
         data_dir=tmp_path,
-        ai_service=_ReadyAi(),
+        ai_service=_ReadyTimelyAi(),
         scope=_scope("client_rici", "广东省日慈公益基金会"),
         intents=[intent],
         max_fetch_jobs=1,
@@ -319,3 +334,44 @@ def test_research_timely_card_requires_body_change_and_impact_evidence(tmp_path:
     assert str(item["relevance_reason"])
     assert str(item["impact"])
     assert str(item["suggested_action"])
+
+
+def test_research_timely_card_rejects_sources_older_than_30_days(tmp_path: Path, monkeypatch) -> None:
+    db = Database(tmp_path / "research_timely_stale.sqlite")
+    _seed_client(db, client_id="client_rici", name="广东省日慈公益基金会")
+    _insert_focus(db, client_id="client_rici", timely=["儿童青少年心理健康服务资助计划。"])
+    intent = _intent("client_rici", "儿童青少年心理健康 资助 申报", content_kind="timely_intelligence", intent_id="intent_timely_stale")
+    _insert_intent(db, intent)
+    monkeypatch.setattr(
+        supply,
+        "_fetch_page_text",
+        lambda _url: (
+            "fetched",
+            "发布时间：2023-01-10。某基金会发布儿童青少年心理健康服务资助申报通知，面向心理平台建设项目征集合作。",
+            "",
+        ),
+    )
+
+    result = run_intelligence_candidate_refresh(
+        db,
+        data_dir=tmp_path,
+        ai_service=_ReadyTimelyAi(),
+        scope=_scope("client_rici", "广东省日慈公益基金会"),
+        intents=[intent],
+        max_fetch_jobs=1,
+        hit_fetcher=lambda _query, source_config: [
+            CandidateHit(
+                title="儿童青少年心理健康服务资助申报通知",
+                url="https://grant.example.cn/old-notice",
+                snippet="儿童青少年心理健康服务申报。",
+                source=source_config.source_name,
+            )
+        ],
+        official_site_hit_fetcher=lambda _query, _config: [],
+    )
+
+    assert result.promoted_count == 0
+    candidate = db.fetchone("SELECT verification_status, verification_reason FROM intelligence_candidate_items WHERE content_kind='timely_intelligence'")
+    assert candidate is not None
+    assert candidate["verification_status"] == "rejected"
+    assert "超过近 90 天" in str(candidate["verification_reason"])
