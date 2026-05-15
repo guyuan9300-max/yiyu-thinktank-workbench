@@ -1284,6 +1284,9 @@ class ChatMessageRecord(BaseModel):
     retrievalSummary: dict[str, object] = Field(default_factory=dict)
     structuredData: AiStructuredResponse | None = None
     evidence: list[EvidenceItem] = Field(default_factory=list)
+    deepThinkingRequested: bool = False
+    activeSkillId: str | None = None
+    creativityMode: CreativityMode | None = None
 
 
 class ChatThread(BaseModel):
@@ -1294,11 +1297,53 @@ class ChatThread(BaseModel):
     updatedAt: str
 
 
+CreativityMode = Literal["creative", "balanced", "strict"]
+
+
 class ChatRequest(BaseModel):
     threadId: str | None = None
     prompt: str
     searchId: str | None = None
     workingDocumentIds: list[str] = Field(default_factory=list)
+    deepThinking: bool = False
+    activeSkillId: str | None = None
+    creativityMode: CreativityMode = "balanced"
+
+
+class WritingSkillRecord(BaseModel):
+    id: str
+    name: str
+    description: str = ""
+    distilledMd: str = ""
+    isBuiltin: bool = False
+    sortOrder: int = 100
+    createdAt: str
+    updatedAt: str
+
+
+class WritingSkillCreatePayload(BaseModel):
+    name: str
+    description: str = ""
+    distilledMd: str
+    sortOrder: int = 100
+
+
+class WritingSkillUpdatePayload(BaseModel):
+    name: str | None = None
+    description: str | None = None
+    distilledMd: str | None = None
+    sortOrder: int | None = None
+
+
+class WritingSkillDistillPayload(BaseModel):
+    samples: list[str]
+    skillName: str = ""
+
+
+class WritingSkillDistillResult(BaseModel):
+    distilledMd: str
+    samplesProcessed: int
+    suggestedName: str = ""
 
 
 class ChatStartResponse(BaseModel):
@@ -7400,7 +7445,7 @@ class LinkMaterialImportStartPayload(BaseModel):
 class LinkMaterialImportRunRecord(BaseModel):
     runId: str
     clientId: str
-    sourcePlatform: Literal["bilibili", "xiaohongshu"]
+    sourcePlatform: Literal["bilibili", "xiaohongshu", "wechat_article"]
     sourceUrl: str
     title: str | None = None
     status: Literal["queued", "running", "completed", "failed"]

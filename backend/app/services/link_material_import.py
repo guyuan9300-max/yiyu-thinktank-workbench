@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import logging
 import os
 import re
 import shlex
@@ -11,8 +12,10 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Literal
 
+logger = logging.getLogger(__name__)
 
-LinkMaterialPlatform = Literal["bilibili", "xiaohongshu"]
+
+LinkMaterialPlatform = Literal["bilibili", "xiaohongshu", "wechat_article"]
 CookieBrowser = Literal["firefox", "chrome", "edge", "safari"]
 
 
@@ -58,7 +61,9 @@ class _DownloadAttemptProfile:
 
 @dataclass(frozen=True)
 class LocalTranscriptEngine:
-    name: Literal["local_sensevoice", "local_whisper"]
+    # builtin_sensevoice = 应用内置 sherpa-onnx + ONNX 模型（和录音转写共享）
+    # local_sensevoice / local_whisper = PATH 中的命令行可执行文件（subprocess）
+    name: Literal["builtin_sensevoice", "local_sensevoice", "local_whisper"]
     command: list[str]
     command_template: str | None = None
 
@@ -74,6 +79,7 @@ class LinkMaterialPlatformAdapter:
 _BILIBILI_URL_RE = re.compile(r"(bilibili\.com|b23\.tv)", re.I)
 _BILIBILI_BV_RE = re.compile(r"^BV[0-9A-Za-z]{8,}$", re.I)
 _XHS_URL_RE = re.compile(r"(xiaohongshu\.com|xhslink\.com|xhs\.cn)", re.I)
+_WECHAT_ARTICLE_URL_RE = re.compile(r"mp\.weixin\.qq\.com/s", re.I)
 _AUDIO_EXTENSIONS = {".aac", ".aiff", ".alac", ".flac", ".m4a", ".mp3", ".oga", ".ogg", ".opus", ".wav", ".weba", ".wma"}
 _VIDEO_EXTENSIONS = {".avi", ".flv", ".m4v", ".mkv", ".mov", ".mp4", ".mpeg", ".mpg", ".webm", ".wmv"}
 _NON_MEDIA_EXTENSIONS = {".ass", ".description", ".info.json", ".json", ".part", ".srt", ".ssa", ".txt", ".vtt"}
@@ -96,7 +102,9 @@ _BILIBILI_HEADER_ARGS = [
 def detect_link_material(value: str) -> LinkMaterialDetection:
     raw = str(value or "").strip()
     if not raw:
-        raise LinkMaterialImportError("请先粘贴 B 站或小红书链接。")
+        raise LinkMaterialImportError("请先粘贴 B 站 / 小红书 / 公众号链接。")
+    if _WECHAT_ARTICLE_URL_RE.search(raw):
+        return LinkMaterialDetection(platform="wechat_article", normalized_url=raw, display_name="公众号")
     if _BILIBILI_BV_RE.match(raw):
         return LinkMaterialDetection(
             platform="bilibili",
@@ -107,7 +115,7 @@ def detect_link_material(value: str) -> LinkMaterialDetection:
         return LinkMaterialDetection(platform="bilibili", normalized_url=raw, display_name="B站")
     if _XHS_URL_RE.search(raw):
         return LinkMaterialDetection(platform="xiaohongshu", normalized_url=raw, display_name="小红书")
-    raise LinkMaterialImportError("暂不支持这个链接。当前仅支持 B 站链接、BV 号和小红书链接。")
+    raise LinkMaterialImportError("暂不支持这个链接。当前仅支持 B 站链接、BV 号、小红书链接、微信公众号文章。")
 
 
 def adapter_for_platform(platform: LinkMaterialPlatform) -> LinkMaterialPlatformAdapter:
@@ -115,6 +123,8 @@ def adapter_for_platform(platform: LinkMaterialPlatform) -> LinkMaterialPlatform
         return BilibiliLinkAdapter()
     if platform == "xiaohongshu":
         return XiaohongshuLinkAdapter()
+    if platform == "wechat_article":
+        return WechatArticleAdapter()
     raise LinkMaterialImportError("暂不支持这个链接平台。")
 
 
@@ -238,6 +248,329 @@ class XiaohongshuLinkAdapter(_YtDlpAdapter):
     display_name = "小红书"
 
 
+_WECHAT_ARTICLE_USER_AGENT = (
+    "Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X) "
+    "AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148 MicroMessenger/8.0.40"
+)
+
+
+class WechatArticleAdapter(LinkMaterialPlatformAdapter):
+    """微信公众号文章：HTTP 抓 HTML → BeautifulSoup 提取正文 → markdownify。
+
+    路径完全不走 yt-dlp / SenseVoice，因为公众号文章是文字而非视频/音频。
+    """
+
+    platform: LinkMaterialPlatform = "wechat_article"
+    display_name = "公众号"
+
+    def extract(self, source_url: str, temp_dir: Path, *, options: LinkMaterialImportOptions | None = None) -> LinkMaterialSource:
+        try:
+            import httpx
+            from bs4 import BeautifulSoup
+            import markdownify
+        except ImportError as exc:
+            raise LinkMaterialImportError(
+                f"微信公众号链接需要 beautifulsoup4 / markdownify 依赖：{exc}"
+            ) from exc
+
+        _notify_stage(options or LinkMaterialImportOptions(), "抓取公众号文章中", 30.0, None)
+        try:
+            with httpx.Client(
+                headers={
+                    "User-Agent": _WECHAT_ARTICLE_USER_AGENT,
+                    "Referer": "https://mp.weixin.qq.com/",
+                    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                    "Accept-Language": "zh-CN,zh;q=0.9",
+                },
+                follow_redirects=True,
+                timeout=30.0,
+            ) as client:
+                resp = client.get(source_url)
+                resp.raise_for_status()
+        except Exception as exc:
+            raise LinkMaterialImportError(
+                f"无法获取公众号文章：{exc}。可能是链接已失效、文章被删除或需要登录。"
+            ) from exc
+
+        html = resp.text
+        soup = BeautifulSoup(html, "html.parser")
+
+        title_tag = soup.find("h1", class_="rich_media_title") or soup.find("h2", class_="rich_media_title")
+        title = title_tag.get_text(strip=True) if title_tag else ""
+        if not title:
+            og_title = soup.find("meta", property="og:title")
+            if og_title:
+                title = (og_title.get("content") or "").strip()
+        if not title:
+            title = "公众号文章"
+
+        # 作者 / 公众号名
+        author = ""
+        author_tag = soup.find("a", id="js_name") or soup.find("strong", class_="profile_nickname")
+        if author_tag:
+            author = author_tag.get_text(strip=True)
+
+        body_div = soup.find("div", id="js_content") or soup.find("div", class_="rich_media_content")
+        if body_div is None:
+            raise LinkMaterialImportError(
+                "解析公众号文章失败：找不到正文节点。可能是模板变更或链接指向非文章页。"
+            )
+
+        # 懒加载图片：data-src → src
+        for img in body_div.find_all("img"):
+            data_src = img.get("data-src")
+            if data_src:
+                img["src"] = data_src
+
+        # 删掉不需要的元素：广告 / 互动 / 二维码 / 脚注按钮
+        for selector in [
+            'mp-common-mpaudio',
+            'mpvoice',
+            'iframe',
+            'script',
+            'style',
+            'mp-style-type',
+            '.qr_code_pc_outer',
+            '.reward_area',
+            '.weui-poi-msg',
+            'mp-common-cps-card',
+        ]:
+            for node in body_div.select(selector):
+                node.decompose()
+
+        markdown_body = markdownify.markdownify(
+            str(body_div),
+            heading_style="ATX",
+            bullets="-",
+            strip=['span', 'section'],
+        ).strip()
+
+        # markdownify 容易产生过多连续空行，挤压一下
+        markdown_body = re.sub(r"\n{3,}", "\n\n", markdown_body)
+        if not markdown_body or len(markdown_body) < 20:
+            raise LinkMaterialImportError("公众号文章正文为空或过短，无法生成资料。")
+
+        source_metadata = {
+            "sourcePlatform": "wechat_article",
+            "sourceKind": "article",  # 给下游 ingest 流水线信号：跳过 polish，文章本身已经排版好
+            "subtitleAvailable": True,
+            "transcriptSource": "wechat_article_html",
+            "transcriptEngine": "wechat_article_parser",
+            "videoTitle": title,
+            "wechatAuthor": author or None,
+            "keepMedia": False,
+            "tempMediaKind": "article",
+        }
+
+        return LinkMaterialSource(
+            platform=self.platform,
+            source_url=source_url,
+            title=title,
+            transcript_text=markdown_body,
+            metadata={k: v for k, v in source_metadata.items() if v is not None},
+            downloaded_paths=[],
+        )
+
+
+def polish_transcript_for_reading(
+    *,
+    ai_service: Any | None,
+    title: str,
+    source_url: str,
+    cleaned_text: str,
+) -> str:
+    """二次润色：分段 + 关键句加粗。
+
+    输入 cleaned_text（已去掉口头禅）→ 输出 markdown（带段落分隔 + **加粗** 标记）。
+    LLM 失败时 fallback：原文按句号/感叹号粗分段，无加粗。
+    """
+    text = (cleaned_text or "").strip()
+    if not text:
+        return ""
+
+    fallback = _simple_paragraph_split(text)
+
+    if ai_service is None or not hasattr(ai_service, "generate_raw_evidence_response"):
+        return fallback
+
+    system_instruction = (
+        "你是中文语音转写文本的排版助手。我会给你一段连续的转写文字（缺少段落分隔，可能有同音字错别字）。\n"
+        "\n"
+        "你只能做两件事：\n"
+        "  (1) 按语义把它分成段落（每 3-6 句话一段，段落之间用空行），让人能读；\n"
+        "  (2) 修正明显的同音字/听写错别字（如「形业」→「行业」、「沉淀」→「沉甸」反向），\n"
+        "      但只能在错别字上动手——其余字、词、句子顺序必须原样保留。\n"
+        "\n"
+        "禁止：\n"
+        "  - 禁止总结、概括、压缩内容；\n"
+        "  - 禁止改写语序、换说法、合并句子；\n"
+        "  - 禁止删除任何观点、例子、数据、口语连接词、过渡语；\n"
+        "  - 禁止新增任何标题、章节号、列表符号、加粗标记、引用；\n"
+        "  - 输出字数必须与输入字数大致相等（允许 ±8% 的微小波动，只够你修错别字 / 调标点 / 增加段落空行用）。\n"
+        "\n"
+        "如果你觉得 \"这里应该归纳一下\" \"这段可以删掉\"，请忍住——用户要的是完整原文，只是排版好看一点而已。\n"
+        "只输出整理后的正文，不要任何解释、前缀、后缀。"
+    )
+    prompt = (
+        f"视频题目：{title}\n\n"
+        "请把下面的转写文字按段落排版（不要总结、不要压缩，逐字保留）："
+    )
+    try:
+        structured = ai_service.generate_raw_evidence_response(
+            prompt,
+            system_instruction,
+            text[:60000],
+            timeout_seconds=180.0,
+            max_tokens=8000,
+            enable_thinking=False,
+        )
+        polished = str(getattr(structured, "content", "") or "").strip()
+        # 严格字数守门：LLM 输出字数必须 ≥ 原文 92%（最多删 8% 的同音字/标点波动）。
+        # 一旦低于此阈值，就当 LLM 偷偷做了总结 → 直接 fallback 到机械分段（零损失）。
+        plain_len = len(re.sub(r"[*_`#>\s]", "", polished))
+        origin_len = len(re.sub(r"\s", "", text))
+        if origin_len > 0 and plain_len >= origin_len * 0.92:
+            return polished
+        logger.warning(
+            "[link-material] LLM polished output rejected: %d chars vs origin %d (%.1f%%)",
+            plain_len, origin_len, (plain_len / origin_len * 100) if origin_len else 0.0,
+        )
+    except Exception:
+        pass
+    return fallback
+
+
+def _simple_paragraph_split(text: str) -> str:
+    """fallback 分段：按句号/感叹号粗略分段，不加粗。"""
+    sentences = [s.strip() for s in re.split(r"(?<=[。！？!?])", text) if s.strip()]
+    if not sentences:
+        return text
+    paragraphs: list[str] = []
+    buffer: list[str] = []
+    for sentence in sentences:
+        buffer.append(sentence)
+        # 每 4 句一段
+        if len(buffer) >= 4:
+            paragraphs.append("".join(buffer))
+            buffer = []
+    if buffer:
+        paragraphs.append("".join(buffer))
+    return "\n\n".join(paragraphs)
+
+
+_DOCX_BODY_FONT = "黑体"
+_DOCX_BODY_FONT_SIZE_PT = 11
+_DOCX_HEADING_FONT_SIZE_PT = {0: 22, 1: 18, 2: 14, 3: 12, 4: 11}
+
+
+def _apply_unified_docx_styles(doc: Any) -> None:
+    """统一锁定中文字体到 Normal + Heading 1-4 + Title style。
+
+    python-docx 给中文字段设字体必须同时设 rFonts 的 eastAsia 属性（OOXML 怪招），
+    否则 Word 仍然回退到默认。
+    """
+    from docx.oxml.ns import qn
+    from docx.shared import Pt
+
+    def _set_style_font(style_name: str, size_pt: int) -> None:
+        if style_name not in doc.styles:
+            return
+        style = doc.styles[style_name]
+        style.font.name = _DOCX_BODY_FONT
+        style.font.size = Pt(size_pt)
+        rpr = style.element.get_or_add_rPr()
+        rfonts = rpr.find(qn('w:rFonts'))
+        if rfonts is None:
+            from docx.oxml import OxmlElement
+            rfonts = OxmlElement('w:rFonts')
+            rpr.append(rfonts)
+        rfonts.set(qn('w:eastAsia'), _DOCX_BODY_FONT)
+        rfonts.set(qn('w:ascii'), _DOCX_BODY_FONT)
+        rfonts.set(qn('w:hAnsi'), _DOCX_BODY_FONT)
+        rfonts.set(qn('w:cs'), _DOCX_BODY_FONT)
+
+    _set_style_font('Normal', _DOCX_BODY_FONT_SIZE_PT)
+    _set_style_font('Title', _DOCX_HEADING_FONT_SIZE_PT[0])
+    for level in range(1, 5):
+        _set_style_font(f'Heading {level}', _DOCX_HEADING_FONT_SIZE_PT.get(level, 12))
+
+
+def _force_run_font(run: Any) -> None:
+    """单 run 上再保险一次设字体，避免某些 style 继承没生效的边缘情况。"""
+    from docx.oxml.ns import qn
+    from docx.shared import Pt
+
+    run.font.name = _DOCX_BODY_FONT
+    run.font.size = Pt(_DOCX_BODY_FONT_SIZE_PT)
+    rpr = run._element.get_or_add_rPr()
+    rfonts = rpr.find(qn('w:rFonts'))
+    if rfonts is None:
+        from docx.oxml import OxmlElement
+        rfonts = OxmlElement('w:rFonts')
+        rpr.append(rfonts)
+    rfonts.set(qn('w:eastAsia'), _DOCX_BODY_FONT)
+    rfonts.set(qn('w:ascii'), _DOCX_BODY_FONT)
+    rfonts.set(qn('w:hAnsi'), _DOCX_BODY_FONT)
+
+
+def render_polished_markdown_to_docx(
+    *,
+    title: str,
+    source_url: str,
+    markdown_body: str,
+    output_path: Path,
+) -> Path:
+    """把 polished markdown 渲染成 docx，保留段落 + 加粗 + 标题，字体统一锁定黑体。"""
+    from docx import Document
+
+    doc = Document()
+    _apply_unified_docx_styles(doc)
+
+    if title:
+        heading = doc.add_heading(title, level=0)
+        for run in heading.runs:
+            _force_run_font(run)
+    if source_url:
+        p = doc.add_paragraph()
+        run = p.add_run("原链接：")
+        run.italic = True
+        _force_run_font(run)
+        run2 = p.add_run(source_url)
+        _force_run_font(run2)
+    doc.add_paragraph("")
+
+    bold_pattern = re.compile(r"\*\*(.+?)\*\*")
+    for raw_line in markdown_body.replace("\r\n", "\n").split("\n\n"):
+        line = raw_line.strip()
+        if not line:
+            continue
+        # Heading：# / ## / ###
+        heading_match = re.match(r"^(#{1,3})\s+(.+)$", line)
+        if heading_match:
+            level = len(heading_match.group(1))
+            heading = doc.add_heading(heading_match.group(2).strip(), level=min(level, 4))
+            for run in heading.runs:
+                _force_run_font(run)
+            continue
+        # 段落：用 ** ** 标记加粗
+        paragraph = doc.add_paragraph()
+        cursor = 0
+        for match in bold_pattern.finditer(line):
+            if match.start() > cursor:
+                run = paragraph.add_run(line[cursor:match.start()])
+                _force_run_font(run)
+            bold_run = paragraph.add_run(match.group(1))
+            bold_run.bold = True
+            _force_run_font(bold_run)
+            cursor = match.end()
+        if cursor < len(line):
+            run = paragraph.add_run(line[cursor:])
+            _force_run_font(run)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    doc.save(str(output_path))
+    return output_path
+
+
 def cleanup_transcript_text(*, ai_service: Any | None, title: str, source_url: str, transcript_text: str) -> str:
     cleaned = _strip_low_value_transcript_text(transcript_text)
     if len(cleaned) < 20:
@@ -313,6 +646,15 @@ def find_local_transcript_engine() -> LocalTranscriptEngine | None:
             command=shlex.split(sensevoice_template),
             command_template=sensevoice_template,
         )
+    # 优先用应用内置的 sherpa-onnx + ONNX 模型（用户在系统设置 → 语音识别模型 里下载的那个）
+    # 这是和录音转写共用的引擎，避免架构断层导致用户"装了模型但链接转写说没装"。
+    try:
+        from app.services.local_asr.model_paths import is_model_ready as _is_local_asr_model_ready
+        if _is_local_asr_model_ready():
+            return LocalTranscriptEngine(name="builtin_sensevoice", command=[])
+    except Exception:
+        # 本地 ASR 模块加载失败不应阻塞 fallback 到命令行引擎
+        pass
     sensevoice = shutil.which("sensevoice")
     if sensevoice and _command_available([sensevoice, "--help"]):
         return LocalTranscriptEngine(name="local_sensevoice", command=[sensevoice])
@@ -786,6 +1128,23 @@ def extract_audio_from_media(media_path: Path, temp_dir: Path, *, ffmpeg: str) -
 
 
 def _transcribe_temp_audio(engine: LocalTranscriptEngine, audio_path: Path, temp_dir: Path) -> str:
+    # 内置 sherpa-onnx 引擎：直接 in-process 调用，跳过 subprocess。
+    if engine.name == "builtin_sensevoice":
+        try:
+            from app.services.local_asr.sense_voice_provider import transcribe_local_audio
+            result = transcribe_local_audio(str(audio_path))
+        except Exception as exc:
+            raise LinkMaterialImportError(
+                f"本地转写失败：{exc}",
+                metadata={"transcriptSource": engine.name, "transcriptEngine": engine.name, "tempMediaKind": "audio"},
+            ) from exc
+        text = (result.text or "").strip()
+        if not text:
+            raise LinkMaterialImportError(
+                "本地转写返回了空文本，请检查音频质量或重试。",
+                metadata={"transcriptSource": engine.name, "transcriptEngine": engine.name, "tempMediaKind": "audio"},
+            )
+        return text
     output_path = temp_dir / "transcript.txt"
     if engine.command_template:
         command = [

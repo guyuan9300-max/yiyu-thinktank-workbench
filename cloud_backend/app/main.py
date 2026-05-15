@@ -13329,6 +13329,25 @@ def create_app() -> FastAPI:
             requested_client_id = event_line_client_id
         timestamp = now_iso()
         task_id = (payload.id or "").strip() or new_id("task")
+
+        # Idempotent retry: client (local backend) supplies its local task_id as payload.id so
+        # cloud and client share the same task id end-to-end. If a previous POST succeeded but
+        # the response was lost (network drop / timeout), the client retries with the same id.
+        # Without this guard the INSERT below would PRIMARY-KEY-collide and return 500, leaving
+        # the client's task stuck in sync_status='pending' forever.
+        if payload.id:
+            existing_row = state.db.fetchone(
+                "SELECT * FROM tasks WHERE id = ? AND organization_id = ?",
+                (task_id, current_user.organizationId),
+            )
+            if existing_row:
+                if str(existing_row["creator_id"] or "") != current_user.id:
+                    raise HTTPException(
+                        status_code=409,
+                        detail=f"Task id {task_id} already exists with a different creator",
+                    )
+                return _task_record(state, existing_row, current_user.id)
+
         resolved_tags: list[TaskTagRecord] = []
         temporal_fields = derive_task_temporal_fields(
             start_date=payload.startDate,

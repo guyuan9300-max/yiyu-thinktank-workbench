@@ -9,6 +9,38 @@ from pathlib import Path
 BACKEND_SCHEMA_VERSION = 20260420
 
 
+# R6：内置罗永浩写作风格的 distilled prompt（手工 distill，不依赖在线抓取，避免外部依赖）。
+# 这段会被注入到回答的 system_instruction 头部，引导 LLM 模仿这种文风。
+_LUOYONGHAO_STYLE_PROMPT = """你正在模仿罗永浩的写作风格。这种风格的核心特征是：
+
+## 句式与节奏
+- **长短句猛烈交错**：先用一个 80-100 字的复合长句铺设场景、堆叠细节，紧跟一句 5-12 字的短句作为"猛击"或"反转"（如「就这。」「可笑。」「我服了。」「呵呵。」）
+- **段子手节奏**：每隔 200-300 字必须有一个能让读者会心一笑的"段子点"——可以是突然的自嘲、可以是反讽、可以是大白话冷不丁插进来
+- 善用破折号停顿和省略号引导期待——然后冷不丁打破期待
+
+## 论点呈现
+- **直球大字报**：核心判断永远是第一句话，旗帜鲜明，毫不含糊，不绕弯子（如「这事我罗永浩负责到底」「那家公司就是垃圾」「我必须把话说清楚」）
+- **拆穿式叙述**：经常用「你以为...其实...」「看着像 X，本质是 Y」「很多人觉得...错了」的结构去反常识
+- **真情流露 vs 冷嘲热讽并存**：上一段刚发完狠话或讥讽，下一段突然柔软真诚（「说实话，每次想起这个我还是会难过」），强烈情感反差是这种风格的灵魂
+
+## 用词偏好
+- **自嘲和自我消耗**：经常使用「我罗永浩」「我老罗」「愿赌服输」「认了」「赖账」「丢人」等自指词，营造「我把自己也搭进去」的诚意感
+- **大量具体细节**：人名、产品名、日期、金额、地点必须精确（如「2018 年 4 月 17 日下午 3 点」「那笔 6 个亿的债」「西二旗那家公司」），不要含糊带过
+- **网络梗 + 老派书面词的混搭**：既敢用「破防」「绝绝子」「整活儿」，也会用「诚惶诚恐」「百思不得其解」「至少不至于」，混搭出独特的气质
+- **口语化插入**：随时插入「说白了」「讲真」「真不是我吹」「打个不太恰当的比方」等口语标记
+
+## 段落组织
+- **开头必有钩子**：第一句话要么是反常识结论，要么是具体场景，要么直接开骂，**绝不写「今天我要谈谈关于 X 的问题」这种废话**
+- **频繁分段**：每 80-150 字必换段，绝不写文字墙；一段超过 4 句话就是失败
+- **结尾自带余味**：要么留个悬念（「这事还没完」），要么一句金句砸下来（「做生意就是这样」「人活一辈子就这么回事」），不写「综上所述」「以上是我的看法」
+
+## 注意事项（必须遵守）
+- 内容必须基于工作台资料事实，**不要为了风格牺牲事实准确性**——可以模仿语气，但不能编数字、编人名、编结论
+- 风格不等于人身攻击：罗式的"骂"是针对事件和判断，不要骂具体当事人
+- 这是模仿不是 cosplay：不要张嘴就「我罗永浩」「我老罗」，自嘲点到为止
+"""
+
+
 class Database:
     def __init__(self, db_path: Path):
         self.db_path = Path(db_path)
@@ -2499,6 +2531,9 @@ class Database:
             # Phase 1（数据中心 OCR 调度）：本地推理任务需要带自由 payload，
             # 比如 visual_ocr 任务的 source_path / slide_no / region 等。
             self._ensure_column("local_model_tasks", "payload_json", "TEXT NOT NULL DEFAULT '{}'")
+            # 组织经验墙：算法 leader 加权（表面平等，后台不同档位用户互动权重不同）。
+            # 取值：'ceo' | 'leader' | 'member'。空字符串/未配置时按 member 处理。
+            self._ensure_column("operators", "role_tier", "TEXT NOT NULL DEFAULT 'member'")
             self._ensure_column("learning_recommendations", "linked_task_id", "TEXT")
             self._ensure_column("learning_recommendations", "client_id", "TEXT")
             self._ensure_column("learning_recommendations", "client_name", "TEXT")
@@ -2633,6 +2668,95 @@ class Database:
                     ON fact_contradictions(client_id, fact_a_id, fact_b_id);
                 CREATE INDEX IF NOT EXISTS idx_fact_contradictions_pending
                     ON fact_contradictions(client_id, review_status, detected_at DESC);
+
+                -- 重复文件处理：用户在战略陪伴「矛盾 & 待确认」tab 里处理过的
+                -- 组织经验墙：自动提取 + 润色的金句，可被点赞收藏，按加权热度排序。
+                -- 设计原则参考 [[project-yiyu-exp-wall-rules]] memory。
+                CREATE TABLE IF NOT EXISTS exp_wall_quotes (
+                    id TEXT PRIMARY KEY,
+                    author_user_id TEXT NOT NULL,                  -- 作者（operators.id）
+                    quote_text TEXT NOT NULL,                       -- 润色后金句
+                    source_excerpt TEXT NOT NULL DEFAULT '',        -- 原文片段（溯源）
+                    source_type TEXT NOT NULL,                      -- task/meeting/document/client_analysis/ai_chat
+                    source_object_id TEXT NOT NULL DEFAULT '',     -- 来源对象 id
+                    category TEXT NOT NULL DEFAULT '方法论',         -- 6 类：项目推进/客户沟通/风险识别/方法论/团队协作/判断决策
+                    status TEXT NOT NULL DEFAULT 'active',          -- active/deleted
+                    deleted_by_user_id TEXT,                        -- 谁删的（不公开，仅审计）
+                    deleted_at TEXT,
+                    like_count INTEGER NOT NULL DEFAULT 0,          -- 真实点赞人数（UI 显示）
+                    save_count INTEGER NOT NULL DEFAULT 0,          -- 真实收藏人数（UI 显示）
+                    contribution_score REAL NOT NULL DEFAULT 0,     -- 加权贡献分（决定排序）
+                    hot_score REAL NOT NULL DEFAULT 0,              -- 热度分（contribution + 时间衰减）
+                    extracted_at TEXT NOT NULL,                     -- AI 提取入库时间
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_exp_wall_quotes_status_created
+                    ON exp_wall_quotes(status, created_at DESC);
+                CREATE INDEX IF NOT EXISTS idx_exp_wall_quotes_hot
+                    ON exp_wall_quotes(status, hot_score DESC);
+                CREATE INDEX IF NOT EXISTS idx_exp_wall_quotes_author
+                    ON exp_wall_quotes(author_user_id, status, created_at DESC);
+                CREATE INDEX IF NOT EXISTS idx_exp_wall_quotes_category
+                    ON exp_wall_quotes(category, status, created_at DESC);
+
+                -- 点赞/收藏 合并表（reaction_type 区分）。
+                -- UNIQUE 保证同一用户对同一金句同一动作只能有 1 条记录。
+                CREATE TABLE IF NOT EXISTS exp_wall_reactions (
+                    id TEXT PRIMARY KEY,
+                    quote_id TEXT NOT NULL,
+                    user_id TEXT NOT NULL,
+                    reaction_type TEXT NOT NULL,                   -- like / save
+                    created_at TEXT NOT NULL,
+                    UNIQUE(quote_id, user_id, reaction_type)
+                );
+                CREATE INDEX IF NOT EXISTS idx_exp_wall_reactions_quote
+                    ON exp_wall_reactions(quote_id, reaction_type);
+                CREATE INDEX IF NOT EXISTS idx_exp_wall_reactions_user
+                    ON exp_wall_reactions(user_id, reaction_type, created_at DESC);
+
+                -- 重复文件组（含「全部保留」决定），下次扫描跳过这些 group_key。
+                CREATE TABLE IF NOT EXISTS duplicate_group_reviews (
+                    id TEXT PRIMARY KEY,
+                    client_id TEXT NOT NULL,
+                    group_key TEXT NOT NULL,
+                    review_status TEXT NOT NULL DEFAULT 'kept_all',
+                    reviewed_at TEXT NOT NULL,
+                    reviewed_by TEXT,
+                    note TEXT,
+                    UNIQUE(client_id, group_key),
+                    FOREIGN KEY(client_id) REFERENCES clients(id) ON DELETE CASCADE
+                );
+                CREATE INDEX IF NOT EXISTS idx_duplicate_group_reviews_client
+                    ON duplicate_group_reviews(client_id, reviewed_at DESC);
+
+                -- 文件回收站：用户在重复处理界面删的文件先进这里（不立即销毁），
+                -- 默认 30 天后可清理。recycled_managed_path 是文件被挪到的回收站路径，
+                -- 用户在 30 天内可以发起恢复操作。
+                CREATE TABLE IF NOT EXISTS document_recycle_bin (
+                    id TEXT PRIMARY KEY,
+                    client_id TEXT NOT NULL,
+                    original_v2_document_id TEXT NOT NULL,
+                    original_document_id TEXT NOT NULL,
+                    file_name TEXT NOT NULL,
+                    kind TEXT NOT NULL DEFAULT '',
+                    original_path TEXT NOT NULL DEFAULT '',
+                    managed_path_before TEXT NOT NULL DEFAULT '',
+                    recycled_managed_path TEXT NOT NULL DEFAULT '',
+                    content_hash TEXT NOT NULL DEFAULT '',
+                    file_size_bytes INTEGER NOT NULL DEFAULT 0,
+                    section_count INTEGER NOT NULL DEFAULT 0,
+                    chunk_count INTEGER NOT NULL DEFAULT 0,
+                    parse_status TEXT NOT NULL DEFAULT '',
+                    delete_reason TEXT NOT NULL DEFAULT 'duplicate_dedup',
+                    deleted_at TEXT NOT NULL,
+                    deleted_by TEXT,
+                    auto_purge_at TEXT NOT NULL,
+                    restored_at TEXT,
+                    FOREIGN KEY(client_id) REFERENCES clients(id) ON DELETE CASCADE
+                );
+                CREATE INDEX IF NOT EXISTS idx_document_recycle_bin_client_active
+                    ON document_recycle_bin(client_id, restored_at, auto_purge_at);
 
                 -- 迭代 3：实体合并日志（审计 + undo 用）
                 CREATE TABLE IF NOT EXISTS entity_merge_log (
@@ -2771,6 +2895,28 @@ class Database:
             self._ensure_column("chat_messages", "failure_reason", "TEXT")
             self._ensure_column("chat_messages", "timing_json", "TEXT NOT NULL DEFAULT '{}'")
             self._ensure_column("chat_messages", "retrieval_summary_json", "TEXT NOT NULL DEFAULT '{}'")
+            self._ensure_column("chat_messages", "deep_thinking_requested", "INTEGER NOT NULL DEFAULT 0")
+            self._ensure_column("chat_messages", "active_skill_id", "TEXT")
+            # R7：创意度三档（creative / balanced / strict）。NULL 视作 'strict' 兼容老消息。
+            self._ensure_column("chat_messages", "creativity_mode", "TEXT")
+            # R6 写作风格 skill 表
+            self.conn.executescript(
+                """
+                CREATE TABLE IF NOT EXISTS writing_skills (
+                    id TEXT PRIMARY KEY,
+                    name TEXT NOT NULL,
+                    description TEXT NOT NULL DEFAULT '',
+                    distilled_md TEXT NOT NULL DEFAULT '',
+                    is_builtin INTEGER NOT NULL DEFAULT 0,
+                    sort_order INTEGER NOT NULL DEFAULT 100,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_writing_skills_sort
+                    ON writing_skills(sort_order, created_at);
+                """
+            )
+            self._seed_builtin_writing_skills()
             self._ensure_column("execution_tickets", "idempotency_key", "TEXT")
             self._ensure_column("execution_tickets", "retry_count", "INTEGER NOT NULL DEFAULT 0")
             self._ensure_column("execution_tickets", "max_retries", "INTEGER NOT NULL DEFAULT 3")
@@ -3336,6 +3482,14 @@ class Database:
                 self._ensure_column(table_name, "source_snapshot_hash", "TEXT NOT NULL DEFAULT ''")
                 self._ensure_column(table_name, "stale_reason", "TEXT")
                 self._ensure_column(table_name, "invalidated_by", "TEXT")
+            # Stage B 扇出 #4：矛盾检测命中已有 confirmed judgment 时打标，提示用户重新评估
+            self._ensure_column("judgment_versions", "needs_reevaluation", "INTEGER NOT NULL DEFAULT 0")
+            self._ensure_column("judgment_versions", "reevaluation_reason", "TEXT")
+            self._ensure_column("judgment_versions", "reevaluation_triggered_at", "TEXT")
+            # Stage B 扇出 #7：深度资料 ingest 时标记客户画像需要复审
+            self._ensure_column("client_strategic_profiles", "needs_review", "INTEGER NOT NULL DEFAULT 0")
+            self._ensure_column("client_strategic_profiles", "review_reason", "TEXT")
+            self._ensure_column("client_strategic_profiles", "review_triggered_at", "TEXT")
             self._ensure_column("conflict_groups", "context_pack_id", "TEXT")
             self._ensure_column("runtime_run_logs", "analysis_job_id", "TEXT")
             self._ensure_column("runtime_run_logs", "stage_run_id", "TEXT")
@@ -3624,6 +3778,48 @@ class Database:
                 """
             )
             self.conn.commit()
+
+    def _seed_builtin_writing_skills(self) -> None:
+        """启动时 seed 内置写作风格 skill。
+
+        策略：每个内置 skill 用固定的 id（如 'skill_builtin_luoyonghao'），
+        如果该 id 不存在则插入；如果存在则不动（不覆盖用户可能改过的 sort_order）。
+        """
+        from datetime import datetime, timezone
+
+        builtins = [
+            {
+                "id": "skill_builtin_luoyonghao",
+                "name": "罗永浩风格",
+                "description": "段子手 + 大字报 + 自嘲。直球判断，长短句猛烈交错，每隔几段必有金句。",
+                "distilled_md": _LUOYONGHAO_STYLE_PROMPT,
+                "sort_order": 10,
+            },
+        ]
+        now = datetime.now(tz=timezone.utc).isoformat(timespec="seconds")
+        for entry in builtins:
+            existing = self.conn.execute(
+                "SELECT id FROM writing_skills WHERE id = ?", (entry["id"],)
+            ).fetchone()
+            if existing:
+                continue
+            self.conn.execute(
+                """
+                INSERT INTO writing_skills(
+                    id, name, description, distilled_md, is_builtin, sort_order, created_at, updated_at
+                )
+                VALUES(?, ?, ?, ?, 1, ?, ?, ?)
+                """,
+                (
+                    entry["id"],
+                    entry["name"],
+                    entry["description"],
+                    entry["distilled_md"],
+                    entry["sort_order"],
+                    now,
+                    now,
+                ),
+            )
 
     def _ensure_column(self, table_name: str, column_name: str, definition: str) -> None:
         existing = {

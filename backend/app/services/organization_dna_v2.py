@@ -349,10 +349,100 @@ def _collect_org_model_items(org_model: Any, now: str) -> list[OrganizationDnaV2
                 now=now,
             )
         )
+
+    # 每个部门独立成一条 stable_dna：部门是组织最稳定的「特征单元」，
+    # 拆开后用户在战略陪伴面板能直接看到各部门的稳定定位，
+    # 而不是只有一条揉在一起的「稳定组织画像」。
+    if isinstance(departments, list):
+        for department in departments[:12]:
+            dept_name = _text(_get(department, "name"))
+            if not dept_name:
+                continue
+            mission = _text(_get(department, "mission"))
+            business = _text(_get(department, "businessContext"))
+            scope = _text(_get(department, "scopeStatement"))
+            dept_lines = [f"## 部门\n{dept_name}"]
+            if mission:
+                dept_lines.append(f"## 使命\n{mission}")
+            if business:
+                dept_lines.append(f"## 业务上下文\n{business}")
+            if scope:
+                dept_lines.append(f"## 职能范围\n{scope}")
+            if len("\n".join(dept_lines)) < 16:
+                continue
+            dept_id = _text(_get(department, "departmentId")) or _text(_get(department, "id")) or dept_name
+            items.append(
+                _item(
+                    module_kind="stable_dna",
+                    title=f"{dept_name} 部门画像",
+                    lines=dept_lines,
+                    summary=mission or business or scope or f"{dept_name} 部门定位",
+                    status="confirmed" if mission else "candidate",
+                    evidence_level="internal",
+                    source_type="org_department",
+                    source_id=f"dept:{dept_id}",
+                    source_label=f"部门：{dept_name}",
+                    observed_at=org_updated_at,
+                    source_created_at=org_updated_at,
+                    valid_days=180,
+                    confidence_score=80 if mission else 62,
+                    now=now,
+                )
+            )
+
+    # 季度重点合并一条：每个 quarterlyFocus 自身太短不值得独立成 item，
+    # 但作为一组「当前季度的稳定打法」整体是有意义的稳定特征。
+    if quarterly_focus:
+        items.append(
+            _item(
+                module_kind="stable_dna",
+                title=f"{org_name} 当前季度重点",
+                lines=["## 季度重点", *[f"- {item}" for item in quarterly_focus]],
+                summary="；".join(quarterly_focus[:3]),
+                status="confirmed",
+                evidence_level="internal",
+                source_type="org_quarterly_focus",
+                source_id="quarterly_focus",
+                source_label="组织季度重点",
+                observed_at=org_updated_at,
+                source_created_at=org_updated_at,
+                valid_days=90,
+                confidence_score=76,
+                now=now,
+            )
+        )
+
+    # 组织焦点合并一条：同上，单条 focus item 太短不拆。
+    if focus_items:
+        items.append(
+            _item(
+                module_kind="stable_dna",
+                title=f"{org_name} 组织焦点",
+                lines=["## 组织焦点", *[f"- {item}" for item in focus_items]],
+                summary="；".join(focus_items[:3]),
+                status="confirmed",
+                evidence_level="internal",
+                source_type="org_focus_items",
+                source_id="focus_items",
+                source_label="组织焦点",
+                observed_at=org_updated_at,
+                source_created_at=org_updated_at,
+                valid_days=120,
+                confidence_score=72,
+                now=now,
+            )
+        )
+
     return items
 
 
 def _collect_task_items(db: Database, now: str) -> list[OrganizationDnaV2ItemRecord]:
+    # 「近期变化」语义边界：只取 30 天内**新创建**的 task。
+    # 之前用 OR updated_at >= 7 天 的折中条件，但 task.updated_at 在数据库里
+    # 会被任何字段更新触发（包括事件线自动关联、ingest pipeline 等系统性 touch），
+    # 不代表用户视角下的「实质变化」。所以一个 3 月份创建的老任务即使今天
+    # 才被自动 touch，也不应该算「近期变化」。
+    # 严格按 created_at 过滤，符合「近期」字面意思。
     recent_rows = db.fetchall(
         """
         SELECT id, title, description, status, progress_status, priority, owner_name,
@@ -360,6 +450,7 @@ def _collect_task_items(db: Database, now: str) -> list[OrganizationDnaV2ItemRec
                event_line_id, created_at, updated_at,
                '' AS related_client_name
         FROM tasks
+        WHERE created_at >= datetime('now', '-30 days')
         ORDER BY updated_at DESC
         LIMIT 40
         """
@@ -387,16 +478,19 @@ def _collect_task_items(db: Database, now: str) -> list[OrganizationDnaV2ItemRec
         LEFT JOIN event_lines e ON e.id = t.event_line_id
         LEFT JOIN clients source_client ON source_client.id = t.source_id
         LEFT JOIN clients event_client ON event_client.id = e.primary_client_id
-        WHERE source_client.id IS NOT NULL
-           OR event_client.id IS NOT NULL
-           OR EXISTS (
-               SELECT 1
-               FROM clients c
-               WHERE t.title LIKE '%' || c.name || '%'
-                  OR t.description LIKE '%' || c.name || '%'
-                  OR (c.alias != '' AND t.title LIKE '%' || c.alias || '%')
-                  OR (c.alias != '' AND t.description LIKE '%' || c.alias || '%')
-           )
+        WHERE t.created_at >= datetime('now', '-30 days')
+          AND (
+               source_client.id IS NOT NULL
+            OR event_client.id IS NOT NULL
+            OR EXISTS (
+                SELECT 1
+                FROM clients c
+                WHERE t.title LIKE '%' || c.name || '%'
+                   OR t.description LIKE '%' || c.name || '%'
+                   OR (c.alias != '' AND t.title LIKE '%' || c.alias || '%')
+                   OR (c.alias != '' AND t.description LIKE '%' || c.alias || '%')
+            )
+          )
         ORDER BY t.updated_at DESC
         LIMIT 80
         """
@@ -452,12 +546,15 @@ def _collect_task_items(db: Database, now: str) -> list[OrganizationDnaV2ItemRec
 
 
 def _collect_review_items(db: Database, now: str) -> list[OrganizationDnaV2ItemRecord]:
+    # 同 _collect_task_items：「近期变化」只要 30 天内创建的复盘。
+    # 旧复盘哪怕在系统里被 touch 也不再算「近期」。
     rows = db.fetchall(
         """
         SELECT id, week_label, work_progress, work_blocker, work_direction,
                next_week_focus, support_needed, summary, work_free_note,
                submitted_at, created_at, updated_at
         FROM weekly_reviews
+        WHERE created_at >= datetime('now', '-30 days')
         ORDER BY COALESCE(NULLIF(submitted_at, ''), updated_at, created_at) DESC
         LIMIT 16
         """
@@ -508,12 +605,15 @@ def _collect_review_items(db: Database, now: str) -> list[OrganizationDnaV2ItemR
 
 
 def _collect_event_line_items(db: Database, now: str) -> list[OrganizationDnaV2ItemRecord]:
+    # 同 _collect_task_items：「近期变化」只要 30 天内创建的事件线。
+    # 老事件线被系统流程 touch 不再反复进入「近期变化」面板。
     rows = db.fetchall(
         """
         SELECT id, name, kind, status, business_category, stage, summary, intent,
                current_blocker, recent_decision, next_step, primary_client_name,
                created_at, updated_at
         FROM event_lines
+        WHERE created_at >= datetime('now', '-30 days')
         ORDER BY updated_at DESC
         LIMIT 80
         """
@@ -558,6 +658,80 @@ def _collect_event_line_items(db: Database, now: str) -> list[OrganizationDnaV2I
                 source_created_at=_text(row["created_at"]) or None,
                 valid_days=60,
                 confidence_score=66,
+                now=now,
+            )
+        )
+    return items
+
+
+def _collect_document_items(db: Database, now: str) -> list[OrganizationDnaV2ItemRecord]:
+    """Stage B 扇出 #1：最近 30 天新上传的资料 → evolving_dna 候选。
+
+    保守策略：
+      - parse_status='ready'（已解析的才有内容可消费）
+      - chunk_count >= 3（至少 3 段，过滤掉空文档 / 系统占位 / 纯链接）
+      - file_name 不含「事件线：」「client_overview」等系统标识开头
+    用户的「最近变化」mini list 从此能看到「上传了 X 资料」这一类组织演化信号，
+    呼应 Karpathy 启示 #3「一资料进来影响多页面」。
+    """
+    rows = db.fetchall(
+        """
+        SELECT v.id, v.document_id, v.client_id, v.file_name, v.kind,
+               v.preview_text, v.visible_category, v.material_layer,
+               v.section_count, v.chunk_count, v.parse_status,
+               d.created_at AS imported_at, c.name AS client_name
+        FROM v2_documents v
+        LEFT JOIN documents d ON d.id = v.document_id
+        LEFT JOIN clients c ON c.id = v.client_id
+        WHERE v.parse_status IN ('ready', 'partial_ready')
+          AND COALESCE(v.chunk_count, 0) >= 3
+          AND COALESCE(d.created_at, '') >= datetime('now', '-30 days')
+          -- 排除系统生成文档（答案沉淀、客户概览、事件线等系统标识，前缀 v2doc_sysdoc_）
+          AND v.id NOT LIKE 'v2doc_sysdoc_%'
+          AND v.file_name NOT LIKE '事件线：%'
+          AND v.file_name NOT LIKE 'client_overview%'
+          -- 只保留用户可编辑的业务文件扩展名（与前端 USER_EDITABLE_FILE_EXTENSIONS 一致）
+          AND (
+              LOWER(v.file_name) LIKE '%.doc' OR LOWER(v.file_name) LIKE '%.docx'
+              OR LOWER(v.file_name) LIKE '%.xls' OR LOWER(v.file_name) LIKE '%.xlsx'
+              OR LOWER(v.file_name) LIKE '%.csv'
+              OR LOWER(v.file_name) LIKE '%.ppt' OR LOWER(v.file_name) LIKE '%.pptx'
+              OR LOWER(v.file_name) LIKE '%.pdf'
+          )
+        ORDER BY COALESCE(d.created_at, '') DESC
+        LIMIT 30
+        """
+    )
+    items: list[OrganizationDnaV2ItemRecord] = []
+    for row in rows:
+        file_name = _text(row["file_name"])
+        if not file_name:
+            continue
+        client_name = _text(row["client_name"])
+        preview = _clip(_text(row["preview_text"]), 320)
+        category = _text(row["visible_category"]) or "其他资料"
+        lines = [f"## 新增资料\n{file_name}"]
+        if client_name:
+            lines.append(f"- 关联客户：{client_name}")
+        lines.append(f"- 资料分类：{category}")
+        lines.append(f"- 段落数：{int(row['chunk_count'] or 0)} 段")
+        if preview:
+            lines.append(f"## 内容摘要\n{preview}")
+        items.append(
+            _item(
+                module_kind="evolving_dna",
+                title=f"资料接入：{file_name[:48]}",
+                lines=lines,
+                summary=preview or f"已接入 {category} 分类下的新资料：{file_name}",
+                status="candidate",
+                evidence_level="internal",
+                source_type="v2_document",
+                source_id=str(row["id"]),
+                source_label=f"资料：{file_name}" + (f"（{client_name}）" if client_name else ""),
+                observed_at=_text(row["imported_at"]) or now,
+                source_created_at=_text(row["imported_at"]) or None,
+                valid_days=60,
+                confidence_score=72,
                 now=now,
             )
         )
@@ -744,6 +918,7 @@ def refresh_organization_dna_v2(
         ("tasks", lambda: _collect_task_items(db, now)),
         ("reviews", lambda: _collect_review_items(db, now)),
         ("event_lines", lambda: _collect_event_line_items(db, now)),
+        ("documents", lambda: _collect_document_items(db, now)),  # Stage B 扇出 #1
         ("gaps", lambda: _collect_gap_items(db, org_model, now)),
         ("risks", lambda: _default_risk_items(now)),
     ]

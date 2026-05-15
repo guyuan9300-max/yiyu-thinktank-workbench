@@ -116,9 +116,20 @@ class DuplicateDocumentResolveResultRecord(BaseModel):
     keptDocumentIds: list[str] = Field(default_factory=list)
 
 
+class PendingFanoutActionRecord(BaseModel):
+    """单条「AI 待办」项 —— 来自 Stage B 知识扇出的产出，等用户在前端拍板。"""
+
+    actionType: str  # 'judgment_needs_reevaluation' | 'profile_needs_review' | 'thought_refresh_pending'
+    entityId: str
+    entityLabel: str = ""
+    reason: str = ""
+    triggeredAt: str = ""
+
+
 class ClientKnowledgeStatusRecord(BaseModel):
     """客户级「知识库状态」数字 —— 取代之前用百分比成熟度展示的「学习有尽头」错隐喻。
-    展示 4 个绝对数字（已确认事实 / 待确认思考 / 矛盾点 / 信息缺口）+ 本周增量。
+    展示 4 个绝对数字（已确认事实 / 待确认思考 / 矛盾点 / 信息缺口）+ 本周增量
+    + Stage B 扇出产生的「AI 待办」面板数据。
     """
 
     clientId: str
@@ -127,6 +138,12 @@ class ClientKnowledgeStatusRecord(BaseModel):
     activeContradictions: int = 0
     knowledgeGaps: int = 0
     weeklyDelta: KnowledgeStatusWeeklyDeltaRecord = Field(default_factory=KnowledgeStatusWeeklyDeltaRecord)
+    # Stage B 扇出待办统计 —— 让用户在「资料健康」tab 立刻看到 AI 因新资料触发的待办
+    pendingJudgmentReevaluation: int = 0
+    pendingProfileReview: int = 0
+    pendingThoughtRefresh: int = 0
+    recentFanoutCount: int = 0  # 过去 7 天 activity_logs 里 Stage B fanout 触发次数
+    pendingActions: list[PendingFanoutActionRecord] = Field(default_factory=list)
     generatedAt: str = ""
 
 
@@ -194,6 +211,11 @@ from app.models import (
     ChatStartResponse,
     ChatThreadDetailResponse,
     ChatThread,
+    WritingSkillRecord,
+    WritingSkillCreatePayload,
+    WritingSkillUpdatePayload,
+    WritingSkillDistillPayload,
+    WritingSkillDistillResult,
     ClarificationAnswerPayload,
     ClarificationCreatePayload,
     ClarificationRecord,
@@ -721,6 +743,8 @@ from app.services.data_center_kernel import (
 )
 from app.services.data_center_quality import validate_answer_quality
 from app.services.workspace_data_center_adapter import (
+    build_client_file_catalog,
+    build_client_resource_index,
     build_consultant_synthesis_material_pack,
     build_dna_tool_context_from_workspace,
     build_open_workspace_answer_context,
@@ -1248,6 +1272,10 @@ def new_id(prefix: str) -> str:
 
 def today_label() -> str:
     return datetime.now().strftime("%m-%d")
+
+
+# R8：任务型探测从 services/chat_intent 导入（独立模块方便单测，避开 main.py 顶层副作用）
+from app.services.chat_intent import is_task_request, TASK_REQUEST_TOKENS  # noqa: E402, F401
 
 
 def normalize_markdown_text(markdown_content: str) -> str:
@@ -3175,6 +3203,10 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                     payload = json.loads(row["cloud_payload_json"])
                 except Exception:
                     continue
+                # 旧 stored payload 可能缺 id —— startup retry create 时必须把本地 task_id 注入，
+                # 否则云端 new_id() 会让 push 响应丢失时下次 pull 又插一条重复 task。
+                if isinstance(payload, dict) and not payload.get("id"):
+                    payload["id"] = str(row["id"])
                 try:
                     _try_cloud_sync_task(str(row["id"]), payload)
                 except Exception:
@@ -15080,25 +15112,32 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                     **source.metadata,
                 },
             )
-            cleaned_body = cleanup_transcript_text(
-                ai_service=state.ai,
-                title=source.title,
-                source_url=source.source_url,
-                transcript_text=source.transcript_text,
-            )
-            update_link_material_import_run(
-                run_id,
-                status="running",
-                stage="AI 整理排版中",
-                progress=68.0,
-            )
-            from app.services.link_material_import import polish_transcript_for_reading
-            polished_body = polish_transcript_for_reading(
-                ai_service=state.ai,
-                title=source.title,
-                source_url=source.source_url,
-                cleaned_text=cleaned_body,
-            )
+            # 公众号文章本身已经是排版好的 markdown：跳过 cleanup（去口头禅）和 polish（分段+加粗），
+            # 否则会被 AI 二次改写。只有 B 站/小红书这种语音转写出来的脏文本才需要润色。
+            source_kind = str(source.metadata.get("sourceKind") or "")
+            if source_kind == "article":
+                cleaned_body = source.transcript_text
+                polished_body = source.transcript_text
+            else:
+                cleaned_body = cleanup_transcript_text(
+                    ai_service=state.ai,
+                    title=source.title,
+                    source_url=source.source_url,
+                    transcript_text=source.transcript_text,
+                )
+                update_link_material_import_run(
+                    run_id,
+                    status="running",
+                    stage="AI 整理排版中",
+                    progress=68.0,
+                )
+                from app.services.link_material_import import polish_transcript_for_reading
+                polished_body = polish_transcript_for_reading(
+                    ai_service=state.ai,
+                    title=source.title,
+                    source_url=source.source_url,
+                    cleaned_text=cleaned_body,
+                )
             markdown = build_clean_video_markdown(title=source.title, source_url=source.source_url, body=polished_body)
             update_link_material_import_run(run_id, status="running", stage="生成 Word 文档", progress=86.0)
             generated = create_client_link_docx_document(
@@ -19914,11 +19953,27 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             except Exception:
                 state_source_summary = None
         deep_thinking_requested = False
+        active_skill_id_value: str | None = None
         try:
             if "deep_thinking_requested" in row.keys():
                 deep_thinking_requested = bool(int(row["deep_thinking_requested"] or 0))
         except Exception:
             deep_thinking_requested = False
+        try:
+            if "active_skill_id" in row.keys():
+                raw_skill_id = row["active_skill_id"]
+                if raw_skill_id:
+                    active_skill_id_value = str(raw_skill_id)
+        except Exception:
+            active_skill_id_value = None
+        creativity_mode_value: str | None = None
+        try:
+            if "creativity_mode" in row.keys():
+                raw_creativity = row["creativity_mode"]
+                if raw_creativity and str(raw_creativity) in {"creative", "balanced", "strict"}:
+                    creativity_mode_value = str(raw_creativity)
+        except Exception:
+            creativity_mode_value = None
         return ChatMessageRecord(
             id=str(row["id"]),
             threadId=str(row["thread_id"]),
@@ -19948,6 +20003,8 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             stateAnswerSections=state_answer_sections,
             stateSourceSummary=state_source_summary,
             deepThinkingRequested=deep_thinking_requested,
+            activeSkillId=active_skill_id_value,
+            creativityMode=creativity_mode_value,  # type: ignore[arg-type]
         )
 
     def build_meeting_summary(row) -> MeetingSummary:
@@ -22095,6 +22152,10 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                     if not isinstance(loaded_payload, dict):
                         raise ValueError("cloud_payload_json must be an object")
                     cloud_payload = loaded_payload
+                    # 旧 payload 可能没存 id（修复前的本地 task）—— retry create 时必须带本地 id，
+                    # 否则云端 new_id() 会让 push 响应丢失时下次 pull 又插一条重复 task。
+                    if pending_action == "create" and not cloud_payload.get("id"):
+                        cloud_payload["id"] = task_id
                 except Exception as error:
                     state.db.execute(
                         "UPDATE tasks SET sync_status = 'error', last_sync_error = ? WHERE id = ?",
@@ -22343,6 +22404,10 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             collaborator_ids = payload.collaboratorIds or ([session_user.id] if session_user else [])
             owner_id = payload.ownerId or (collaborator_ids[0] if collaborator_ids else None)
             cloud_payload = {
+                # 关键：把本地 task_id 作为云端 task id（cloud_backend TaskCreatePayload.id 已支持）。
+                # 不传 id 时云端会 new_id() 生成新 id —— 一旦 POST 响应丢失 / 超时，下次 pull 时
+                # 云端那条会被当新 task 插入本地，造成重复（参 bug history 2026-04~05 11 对重复）。
+                "id": task_id,
                 "title": payload.title,
                 "description": payload.desc,
                 "priority": payload.priority,
@@ -25921,6 +25986,78 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             int(event_lines_no_evidence["n"]) if event_lines_no_evidence else 0
         )
 
+        # Stage B 扇出待办：让用户在「资料健康」tab 立刻看到 AI 因新资料触发了什么
+        # 1) judgment 需要重新评估（扇出 #4 标记）
+        judgment_reeval_rows = state.db.fetchall(
+            """
+            SELECT id, topic, reevaluation_reason, reevaluation_triggered_at
+            FROM judgment_versions
+            WHERE client_id = ? AND COALESCE(needs_reevaluation, 0) = 1
+            ORDER BY reevaluation_triggered_at DESC LIMIT 10
+            """,
+            (client_id,),
+        )
+        pending_judgment_reeval = len(judgment_reeval_rows)
+        # 2) 客户画像需复审（扇出 #7 标记）
+        profile_review_row = state.db.fetchone(
+            """
+            SELECT client_id, review_reason, review_triggered_at
+            FROM client_strategic_profiles
+            WHERE client_id = ? AND COALESCE(needs_review, 0) = 1
+            """,
+            (client_id,),
+        )
+        pending_profile_review = 1 if profile_review_row else 0
+        # 3) strategic_thought 待刷新（扇出 #3 留下的 activity_logs 标记，去重计数）
+        thought_pending_row = state.db.fetchone(
+            """
+            SELECT COUNT(DISTINCT json_extract(detail_json, '$.v2DocumentId')) AS n
+            FROM activity_logs
+            WHERE action = 'strategic_thought.refresh_pending'
+              AND entity_id = ?
+              AND created_at >= datetime('now', '-30 days')
+            """,
+            (client_id,),
+        )
+        pending_thought_refresh = int(thought_pending_row["n"]) if thought_pending_row else 0
+        # 4) 近 7 天 Stage B 扇出总活跃度
+        recent_fanout_row = state.db.fetchone(
+            """
+            SELECT COUNT(*) AS n FROM activity_logs
+            WHERE entity_id = ?
+              AND action IN (
+                  'judgment.needs_reevaluation',
+                  'client_profile.needs_review',
+                  'strategic_thought.refresh_pending'
+              )
+              AND created_at >= datetime('now', '-7 days')
+            """,
+            (client_id,),
+        )
+        recent_fanout_count = int(recent_fanout_row["n"]) if recent_fanout_row else 0
+
+        pending_actions: list[PendingFanoutActionRecord] = []
+        for r in judgment_reeval_rows[:5]:
+            pending_actions.append(
+                PendingFanoutActionRecord(
+                    actionType="judgment_needs_reevaluation",
+                    entityId=str(r["id"]),
+                    entityLabel=str(r["topic"] or "")[:80],
+                    reason=str(r["reevaluation_reason"] or ""),
+                    triggeredAt=str(r["reevaluation_triggered_at"] or ""),
+                )
+            )
+        if profile_review_row:
+            pending_actions.append(
+                PendingFanoutActionRecord(
+                    actionType="profile_needs_review",
+                    entityId=client_id,
+                    entityLabel="客户画像",
+                    reason=str(profile_review_row["review_reason"] or ""),
+                    triggeredAt=str(profile_review_row["review_triggered_at"] or ""),
+                )
+            )
+
         return ClientKnowledgeStatusRecord(
             clientId=client_id,
             confirmedFacts=int(confirmed_facts["n"]) if confirmed_facts else 0,
@@ -25933,6 +26070,11 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 newThoughts=int(new_thoughts["n"]) if new_thoughts else 0,
                 confirmedJudgments=int(confirmed_judgments_week["n"]) if confirmed_judgments_week else 0,
             ),
+            pendingJudgmentReevaluation=pending_judgment_reeval,
+            pendingProfileReview=pending_profile_review,
+            pendingThoughtRefresh=pending_thought_refresh,
+            recentFanoutCount=recent_fanout_count,
+            pendingActions=pending_actions,
             generatedAt=now_iso(),
         )
 
@@ -38956,6 +39098,8 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         prompt: str,
         timestamp: str,
         deep_thinking_requested: bool = False,
+        active_skill_id: str | None = None,
+        creativity_mode: str | None = None,
     ) -> str:
         message_id = new_id("msg")
         state.db.execute(
@@ -38963,11 +39107,16 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             INSERT INTO chat_messages(
                 id, thread_id, role, content, structured_data_json, model_route, llm_invoked, provider_used,
                 answer_mode, evidence_status, failure_reason, timing_json, retrieval_summary_json, evidence_json, status, created_at,
-                deep_thinking_requested
+                deep_thinking_requested, active_skill_id, creativity_mode
             )
-            VALUES(?, ?, 'user', ?, NULL, NULL, 0, NULL, NULL, NULL, NULL, '{}', '{}', '[]', 'success', ?, ?)
+            VALUES(?, ?, 'user', ?, NULL, NULL, 0, NULL, NULL, NULL, NULL, '{}', '{}', '[]', 'success', ?, ?, ?, ?)
             """,
-            (message_id, thread_id, prompt, timestamp, 1 if deep_thinking_requested else 0),
+            (
+                message_id, thread_id, prompt, timestamp,
+                1 if deep_thinking_requested else 0,
+                active_skill_id,
+                creativity_mode,
+            ),
         )
         return message_id
 
@@ -38985,6 +39134,8 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         retrieval_summary: dict[str, object],
         timestamp: str,
         deep_thinking_requested: bool = False,
+        active_skill_id: str | None = None,
+        creativity_mode: str | None = None,
     ) -> str:
         assistant_id = new_id("msg")
         provider_used = state.ai.current_provider()
@@ -39015,9 +39166,9 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             INSERT INTO chat_messages(
                 id, thread_id, role, content, structured_data_json, model_route, llm_invoked, provider_used,
                 answer_mode, evidence_status, failure_reason, timing_json, retrieval_summary_json, evidence_json, status, created_at,
-                deep_thinking_requested
+                deep_thinking_requested, active_skill_id, creativity_mode
             )
-            VALUES(?, ?, 'assistant', ?, NULL, ?, 0, ?, NULL, NULL, NULL, '{}', ?, '[]', 'loading', ?, ?)
+            VALUES(?, ?, 'assistant', ?, NULL, ?, 0, ?, NULL, NULL, NULL, '{}', ?, '[]', 'loading', ?, ?, ?, ?)
             """,
             (
                 assistant_id,
@@ -39028,6 +39179,8 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 to_json(merged_summary),
                 timestamp,
                 1 if deep_thinking_requested else 0,
+                active_skill_id,
+                creativity_mode,
             ),
         )
         return assistant_id
@@ -39849,11 +40002,40 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             deep_thinking_requested = bool(
                 deep_thinking_row and int(deep_thinking_row["deep_thinking_requested"] or 0)
             )
-            multipass_enabled = env_multipass_kill_switch and deep_thinking_requested
+            # R8：任务型请求探测 —— 任务型（做表/提取/列出/...）强制走单次 LLM，
+            # 不让 multipass 把"做产物"扩成"做产物的方法论文档"
+            is_task_request_now = is_task_request(prompt_for_context)
+            multipass_enabled = (
+                env_multipass_kill_switch
+                and deep_thinking_requested
+                and not is_task_request_now
+            )
             multipass_used = False
             multipass_fallback_reason: str | None = None
             multipass_outcome: MultipassAnswer | None = None
-            print(f"[MULTIPASS-DEBUG] enter else branch: workflow={workspace_workflow} generation_mode={workspace_generation_mode} multipass_enabled={multipass_enabled} deep_thinking_requested={deep_thinking_requested}", flush=True)
+            # R6：读 active_skill_id 对应的 distilled_md，作为风格引导喂给 multipass + 单次调用
+            writing_skill_md = ""
+            # R7：读 creativity_mode（NULL/不识别值 → 'strict' 老消息兼容）
+            chat_creativity_mode = "strict"
+            try:
+                active_skill_row = state.db.fetchone(
+                    "SELECT active_skill_id, creativity_mode FROM chat_messages WHERE id = ?",
+                    (assistant_id,),
+                )
+                if active_skill_row:
+                    raw_creativity = active_skill_row["creativity_mode"]
+                    if raw_creativity and str(raw_creativity) in {"creative", "balanced", "strict"}:
+                        chat_creativity_mode = str(raw_creativity)
+                    if active_skill_row["active_skill_id"]:
+                        skill_row = state.db.fetchone(
+                            "SELECT distilled_md FROM writing_skills WHERE id = ?",
+                            (str(active_skill_row["active_skill_id"]),),
+                        )
+                        if skill_row and skill_row["distilled_md"]:
+                            writing_skill_md = str(skill_row["distilled_md"])
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("[chat] read active_skill / creativity_mode failed: %s", exc)
+            print(f"[MULTIPASS-DEBUG] enter else branch: workflow={workspace_workflow} generation_mode={workspace_generation_mode} multipass_enabled={multipass_enabled} deep_thinking_requested={deep_thinking_requested} writing_skill_chars={len(writing_skill_md)}", flush=True)
 
             if multipass_enabled:
                 print(f"[MULTIPASS-DEBUG] entering multipass block", flush=True)
@@ -40011,6 +40193,8 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                         full_context=open_context,
                         ai_service=state.ai,
                         strategic_pack=multipass_strategic_pack,
+                        writing_skill_md=writing_skill_md,
+                        creativity_mode=chat_creativity_mode,
                         on_outline_ready=_on_outline_ready,
                         on_section_started=_on_section_started,
                         on_section_partial=_on_section_partial,
@@ -40071,16 +40255,26 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                     # R5：让普通回答（单次 LLM）也读 strategic_pack，并开启 depth_mode
                     # 让答案长度从 600-1200 字扩展到 1500-2500 字，同时强制挖项目名/数字/时间节点。
                     # multipass 已经构造过 strategic_pack 时复用；否则重新构造。
+                    # R8.15：任务型请求改喂「客户全文件目录」（替代 strategic_pack），让 LLM 看到
+                    # 全部已上传文件名（而不仅 DNA 里零散提到的几个），适合做表/提取/列出全部 X 的场景。
                     single_pass_strategic_pack = ""
                     try:
-                        existing_strategic = locals().get("multipass_strategic_pack")
-                        if isinstance(existing_strategic, str) and existing_strategic.strip():
-                            single_pass_strategic_pack = existing_strategic
-                        else:
-                            single_pass_strategic_pack = build_strategic_pack(
+                        if is_task_request_now:
+                            # R9：任务型喂「客户全域资源索引」（5 个域元数据：文档/项目/判断/会议/目标）
+                            # 让 LLM 看到客户全集元数据，不依赖检索 top-K 命中
+                            single_pass_strategic_pack = build_client_resource_index(
                                 workspace_snapshot,
                                 prompt=prompt_for_context,
                             ) or ""
+                        else:
+                            existing_strategic = locals().get("multipass_strategic_pack")
+                            if isinstance(existing_strategic, str) and existing_strategic.strip():
+                                single_pass_strategic_pack = existing_strategic
+                            else:
+                                single_pass_strategic_pack = build_strategic_pack(
+                                    workspace_snapshot,
+                                    prompt=prompt_for_context,
+                                ) or ""
                     except Exception as exc:  # noqa: BLE001 — strategic_pack 失败不阻断单次回答
                         logger.warning("[single-pass] build_strategic_pack failed: %s", exc)
                     structured = state.ai.generate_raw_evidence_response(
@@ -40093,6 +40287,9 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                         enable_thinking=True,
                         strategic_pack=single_pass_strategic_pack,
                         depth_mode=True,
+                        writing_skill_md=writing_skill_md,
+                        creativity_mode=chat_creativity_mode,
+                        task_mode=is_task_request_now,
                     )
                 except AiInvocationError as error:
                     provider_used = error.provider
@@ -41137,8 +41334,25 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
 
             timestamp = now_iso()
             thread_id = ensure_chat_thread(client_id, payload.threadId, payload.prompt, timestamp)
+            # 校验 activeSkillId 存在（防止前端传 stale id）
+            active_skill_id: str | None = None
+            if payload.activeSkillId:
+                skill_row = state.db.fetchone(
+                    "SELECT id FROM writing_skills WHERE id = ?", (payload.activeSkillId,)
+                )
+                if skill_row:
+                    active_skill_id = str(skill_row["id"])
+            # R7：normalize creativity mode（防止前端传非法值）
+            requested_creativity_mode = str(payload.creativityMode or "balanced").lower()
+            if requested_creativity_mode not in {"creative", "balanced", "strict"}:
+                requested_creativity_mode = "balanced"
             user_message_id = insert_user_chat_message(
-                thread_id, payload.prompt, timestamp, payload.deepThinking
+                thread_id,
+                payload.prompt,
+                timestamp,
+                payload.deepThinking,
+                active_skill_id=active_skill_id,
+                creativity_mode=requested_creativity_mode,
             )
             retrieval_summary: dict[str, object] = {}
             if payload.searchId:
@@ -41150,8 +41364,16 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                     }
             if payload.deepThinking:
                 retrieval_summary["deepThinkingRequested"] = True
+            if active_skill_id:
+                retrieval_summary["activeSkillId"] = active_skill_id
+            retrieval_summary["creativityMode"] = requested_creativity_mode
             assistant_id = insert_loading_assistant_message(
-                thread_id, retrieval_summary, timestamp, payload.deepThinking
+                thread_id,
+                retrieval_summary,
+                timestamp,
+                payload.deepThinking,
+                active_skill_id=active_skill_id,
+                creativity_mode=requested_creativity_mode,
             )
             analysis_run = create_client_analysis_run(client_id, thread_id, user_message_id, assistant_id, payload.prompt, timestamp)
             state.db.execute("UPDATE chat_threads SET updated_at = ? WHERE id = ?", (timestamp, thread_id))
@@ -41300,6 +41522,185 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             "deletedIds": deleted_ids,
             "threadDeleted": thread_deleted,
         }
+
+    # ============================================================
+    # R6: 写作风格 skill —— 用户可创建、调用、复制别人的写作风格。
+    # ============================================================
+    def _writing_skill_row_to_record(row) -> WritingSkillRecord:
+        return WritingSkillRecord(
+            id=str(row["id"]),
+            name=str(row["name"]),
+            description=str(row["description"] or ""),
+            distilledMd=str(row["distilled_md"] or ""),
+            isBuiltin=bool(int(row["is_builtin"] or 0)),
+            sortOrder=int(row["sort_order"] or 100),
+            createdAt=str(row["created_at"]),
+            updatedAt=str(row["updated_at"]),
+        )
+
+    @app.get("/api/v1/writing-skills", response_model=list[WritingSkillRecord])
+    def list_writing_skills() -> list[WritingSkillRecord]:
+        rows = state.db.fetchall(
+            "SELECT * FROM writing_skills ORDER BY sort_order ASC, created_at ASC"
+        )
+        return [_writing_skill_row_to_record(row) for row in rows]
+
+    @app.post("/api/v1/writing-skills", response_model=WritingSkillRecord)
+    def create_writing_skill(payload: WritingSkillCreatePayload) -> WritingSkillRecord:
+        name = (payload.name or "").strip()
+        distilled = (payload.distilledMd or "").strip()
+        if not name:
+            raise HTTPException(status_code=400, detail="skill name is required")
+        if not distilled:
+            raise HTTPException(status_code=400, detail="distilledMd is required (run /distill first)")
+        if len(distilled) > 6000:
+            raise HTTPException(status_code=400, detail="distilledMd too long (max 6000 chars)")
+        skill_id = new_id("skill")
+        timestamp = now_iso()
+        state.db.execute(
+            """
+            INSERT INTO writing_skills(
+                id, name, description, distilled_md, is_builtin, sort_order, created_at, updated_at
+            )
+            VALUES(?, ?, ?, ?, 0, ?, ?, ?)
+            """,
+            (
+                skill_id,
+                name,
+                (payload.description or "").strip(),
+                distilled,
+                int(payload.sortOrder or 100),
+                timestamp,
+                timestamp,
+            ),
+        )
+        row = state.db.fetchone("SELECT * FROM writing_skills WHERE id = ?", (skill_id,))
+        assert row is not None
+        return _writing_skill_row_to_record(row)
+
+    @app.put("/api/v1/writing-skills/{skill_id}", response_model=WritingSkillRecord)
+    def update_writing_skill(skill_id: str, payload: WritingSkillUpdatePayload) -> WritingSkillRecord:
+        row = state.db.fetchone("SELECT * FROM writing_skills WHERE id = ?", (skill_id,))
+        if row is None:
+            raise HTTPException(status_code=404, detail="skill not found")
+        is_builtin = bool(int(row["is_builtin"] or 0))
+        sets: list[str] = []
+        params: list[object] = []
+        if payload.name is not None and payload.name.strip():
+            sets.append("name = ?")
+            params.append(payload.name.strip())
+        if payload.description is not None:
+            sets.append("description = ?")
+            params.append(payload.description.strip())
+        if payload.distilledMd is not None:
+            if is_builtin:
+                raise HTTPException(status_code=400, detail="cannot modify distilledMd of builtin skill")
+            cleaned = payload.distilledMd.strip()
+            if not cleaned:
+                raise HTTPException(status_code=400, detail="distilledMd cannot be empty")
+            if len(cleaned) > 6000:
+                raise HTTPException(status_code=400, detail="distilledMd too long (max 6000 chars)")
+            sets.append("distilled_md = ?")
+            params.append(cleaned)
+        if payload.sortOrder is not None:
+            sets.append("sort_order = ?")
+            params.append(int(payload.sortOrder))
+        if not sets:
+            return _writing_skill_row_to_record(row)
+        timestamp = now_iso()
+        sets.append("updated_at = ?")
+        params.append(timestamp)
+        params.append(skill_id)
+        state.db.execute(
+            f"UPDATE writing_skills SET {', '.join(sets)} WHERE id = ?",
+            tuple(params),
+        )
+        updated = state.db.fetchone("SELECT * FROM writing_skills WHERE id = ?", (skill_id,))
+        assert updated is not None
+        return _writing_skill_row_to_record(updated)
+
+    @app.delete("/api/v1/writing-skills/{skill_id}")
+    def delete_writing_skill(skill_id: str) -> dict[str, object]:
+        row = state.db.fetchone("SELECT * FROM writing_skills WHERE id = ?", (skill_id,))
+        if row is None:
+            raise HTTPException(status_code=404, detail="skill not found")
+        if bool(int(row["is_builtin"] or 0)):
+            raise HTTPException(status_code=400, detail="cannot delete builtin skill")
+        state.db.execute("DELETE FROM writing_skills WHERE id = ?", (skill_id,))
+        return {"deleted": True, "id": skill_id}
+
+    @app.post("/api/v1/writing-skills/distill", response_model=WritingSkillDistillResult)
+    def distill_writing_skill(payload: WritingSkillDistillPayload) -> WritingSkillDistillResult:
+        samples = [str(s or "").strip() for s in (payload.samples or []) if str(s or "").strip()]
+        if len(samples) < 3:
+            raise HTTPException(status_code=400, detail="at least 3 samples required")
+        if len(samples) > 5:
+            raise HTTPException(status_code=400, detail="at most 5 samples")
+        for idx, sample in enumerate(samples):
+            if len(sample) < 200:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"sample {idx + 1} too short (need >= 200 chars, got {len(sample)})",
+                )
+            if len(sample) > 3000:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"sample {idx + 1} too long (max 3000 chars, got {len(sample)})",
+                )
+        total = sum(len(s) for s in samples)
+        if total > 10000:
+            raise HTTPException(status_code=400, detail=f"total samples too long ({total} > 10000)")
+
+        ai_unavailable_detail = _packaged_workspace_chat_ai_unavailable_detail()
+        if ai_unavailable_detail:
+            raise HTTPException(status_code=409, detail=ai_unavailable_detail)
+
+        joined_samples = "\n\n---\n\n".join(
+            f"【样本 {idx + 1}】\n{sample}" for idx, sample in enumerate(samples)
+        )
+        distill_system = (
+            "你是文风分析专家。下面是用户挑选出的代表性文章样本，请提炼它们的共同写作风格。\n"
+            "分析时关注 5 个维度（只写真实显著的特征，不要套通用模板）：\n"
+            "1. 句式偏好：长短句配比、常用连词、对仗/排比/反问的使用\n"
+            "2. 段落组织：每段如何起、如何收、过渡方式\n"
+            "3. 论点呈现：先给结论 vs 先铺事实、对比型 vs 列举型、抽象 vs 具象\n"
+            "4. 用词偏好：书面 vs 口语、专业术语 vs 日常比喻、特定词汇模式\n"
+            "5. 节奏与气质：信息密度、留白、转折/停顿、整体气质（严肃/松弛/犀利/温和）\n"
+            "\n"
+            "输出格式：直接写一段 markdown，按维度列出「这种风格的特征是 X，例如：[原文中的句子]」。\n"
+            "总字数控制在 600-1200 字。\n"
+            "不要写「我观察到...」这种元评论；不要总结文章主题（你只分析「怎么写」，不分析「写什么」）；\n"
+            "不要套八股，只写真实存在的风格特征。\n"
+            "回答开头直接写「## 风格特征」，不要加任何前言。"
+        )
+        distill_user = (
+            "用户给这个风格起的初步名字（仅供参考，可在结尾给出 suggestedName 改进建议）："
+            f"{payload.skillName or '（用户未命名）'}\n\n"
+            "样本：\n"
+            f"{joined_samples}"
+        )
+        try:
+            distilled = state.ai._qwen_generate(  # noqa: SLF001
+                prompt=distill_user,
+                system_instruction=distill_system,
+                response_schema=None,
+                timeout_seconds=60.0,
+                max_tokens=2200,
+                temperature=0.45,
+                top_p=0.92,
+                enable_thinking=False,
+                task_kind="fast_structured",
+            )
+        except Exception as exc:
+            raise HTTPException(status_code=502, detail=f"LLM distill failed: {exc}") from exc
+        distilled_text = str(distilled or "").strip()
+        if not distilled_text:
+            raise HTTPException(status_code=502, detail="LLM returned empty distilled markdown")
+        return WritingSkillDistillResult(
+            distilledMd=distilled_text[:6000],
+            samplesProcessed=len(samples),
+            suggestedName=(payload.skillName or "").strip(),
+        )
 
     @app.post("/api/v1/clients/{client_id}/workspace/chat", response_model=ChatMessageRecord)
     def send_chat_message(client_id: str, payload: ChatRequest) -> ChatMessageRecord:
@@ -43579,7 +43980,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 timestamp,
             ),
         )
-        ingest_document_knowledge(
+        ingest_result = ingest_document_knowledge(
             state.db,
             data_dir=state.data_dir,
             client_id=resolved_client_id,
@@ -43594,6 +43995,12 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             created_at=timestamp,
             ai_service=None,
         )
+        # 同 family_id 已存在时 ingest 会把当前文件扔垃圾桶并 DELETE 本轮 documents 行，
+        # 返回 dedup_kept_document_id 指向已有那一份。切换到现存 doc，避免接下来 fetchone None。
+        if isinstance(ingest_result, dict) and ingest_result.get("dedup_skipped") and ingest_result.get("dedup_kept_document_id"):
+            kept_id = str(ingest_result["dedup_kept_document_id"])
+            if kept_id:
+                document_id = kept_id
         document_row = state.db.fetchone("SELECT * FROM documents WHERE id = ?", (document_id,))
         if not document_row:
             raise HTTPException(status_code=500, detail="附件归档失败。")

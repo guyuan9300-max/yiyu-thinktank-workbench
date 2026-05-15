@@ -945,7 +945,7 @@ export interface ClientTemplateFillRun {
   updatedAt: string;
 }
 
-export type LinkMaterialPlatform = 'bilibili' | 'xiaohongshu';
+export type LinkMaterialPlatform = 'bilibili' | 'xiaohongshu' | 'wechat_article';
 export type LinkMaterialImportStatus = 'queued' | 'running' | 'completed' | 'failed';
 export type LinkMaterialMediaCacheStatus = 'not_downloaded' | 'cleaned' | 'retained' | 'failed';
 export type LinkMaterialCookieBrowser = 'firefox' | 'chrome' | 'edge' | 'safari';
@@ -2379,6 +2379,28 @@ export interface ChatMessage {
   parentAssistantMessageId?: string | null;
   structuredData?: AiStructuredResponse | null;
   evidence: EvidenceItem[];
+  deepThinkingRequested?: boolean;
+  activeSkillId?: string | null;
+  creativityMode?: CreativityMode | null;
+}
+
+export type CreativityMode = 'creative' | 'balanced' | 'strict';
+
+export interface WritingSkill {
+  id: string;
+  name: string;
+  description: string;
+  distilledMd: string;
+  isBuiltin: boolean;
+  sortOrder: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface WritingSkillDistillResult {
+  distilledMd: string;
+  samplesProcessed: number;
+  suggestedName: string;
 }
 
 export interface ChatThread {
