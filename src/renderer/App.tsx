@@ -484,6 +484,7 @@ import { LocalAsrModelPanel } from './components/settings/LocalAsrModelPanel';
 import { OllamaQuickPullPanel } from './components/settings/OllamaQuickPullPanel';
 import type { OrgModelTab } from './components/settings/OrganizationModelSettingsPanel';
 import { PlanWorkshopView } from './components/plan_workshop/PlanWorkshopView';
+import { DepartmentSignalsView } from './components/weekly_review/DepartmentSignalsView';
 import { OrganizationSetupCenter } from './components/settings/OrganizationSetupCenter';
 import type { OrganizationSetupInputDraftState } from './components/settings/OrganizationSetupCenter';
 import { isLegacyOrganizationEmployee } from './lib/organizationEmployeeFilters';
@@ -15055,51 +15056,17 @@ export default function App() {
                 </div>
               )}
 
-              {/* ── 部门信号 ── */}
+              {/* ── 部门信号 · 协作驾驶舱 ── */}
               {activeReviewTab === 'signals' && (
-                <div className="space-y-4">
-                  {departmentReports.length > 0 ? (
-                    departmentReports.map((report: any, idx: number) => (
-                      <div key={idx} className="bg-white rounded-2xl border border-gray-100 shadow-sm p-6">
-                        <h2 className="text-[16px] font-bold text-gray-800 mb-4">{typeof report === 'object' && report !== null && 'departmentName' in report ? (report as { departmentName: string }).departmentName : `部门 ${idx + 1}`}</h2>
-                        <div className="bg-[#F8F9FB] p-4 rounded-2xl border border-gray-100 text-[14px] font-medium leading-relaxed text-gray-600 italic">
-                          "{typeof report === 'string' ? report : typeof report === 'object' && report !== null && 'summary' in report ? (report as { summary: string }).summary : '暂无信号摘要'}"
-                        </div>
-                        {typeof report === 'object' && report !== null && 'highlights' in report && Array.isArray((report as { highlights: string[] }).highlights) && (
-                          <div className="mt-5">
-                            <h3 className="text-[11px] font-bold text-gray-300 uppercase tracking-wider mb-3 flex items-center gap-2">
-                              <Activity size={14} /> 本周焦点信号
-                            </h3>
-                            <div className="space-y-2">
-                              {((report as { highlights: string[] }).highlights).map((h, i) => (
-                                <div key={i} className="bg-gray-50 p-4 rounded-2xl text-[13px] text-gray-600 font-medium border border-gray-100/50">{h}</div>
-                              ))}
-                            </div>
-                          </div>
-                        )}
-                      </div>
-                    ))
-                  ) : agentDepartmentDigests.length > 0 ? (
-                    agentDepartmentDigests.map((digest: any, idx: number) => (
-                      <div key={idx} className="bg-white rounded-2xl border border-gray-100 shadow-sm p-6">
-                        <h2 className="text-[16px] font-bold text-gray-800 mb-4">{typeof digest === 'object' && digest !== null && 'departmentName' in digest ? (digest as { departmentName: string }).departmentName : `部门 ${idx + 1}`}</h2>
-                        <div className="bg-[#F8F9FB] p-4 rounded-2xl border border-gray-100 text-[14px] font-medium leading-relaxed text-gray-600 italic">
-                          "{typeof digest === 'string' ? digest : typeof digest === 'object' && digest !== null && 'content' in digest ? (digest as { content: string }).content : JSON.stringify(digest)}"
-                        </div>
-                      </div>
-                    ))
-                  ) : (
-                    <div className="bg-white p-12 rounded-2xl border border-gray-100 shadow-sm text-center flex flex-col items-center gap-3">
-                      <div className="w-12 h-12 bg-gray-50 rounded-2xl flex items-center justify-center text-gray-300">
-                        <Radio size={24} />
-                      </div>
-                      <div>
-                        <h3 className="font-bold text-gray-600 text-[15px] mb-1">暂无部门信号</h3>
-                        <p className="text-gray-400 text-[13px] font-medium">点击「生成周复盘」后，系统将基于各部门任务数据自动生成信号摘要。</p>
-                      </div>
-                    </div>
-                  )}
-                </div>
+                <DepartmentSignalsView
+                  weekLabel={selectedReviewWeekLabel || null}
+                  perspective={
+                    reviewPerspective === 'mine'
+                      ? 'organization'
+                      : (reviewPerspective as 'organization' | 'department')
+                  }
+                  departmentId={reviewRequestDepartmentId}
+                />
               )}
 
               </div>{/* end overflow-y-auto */}

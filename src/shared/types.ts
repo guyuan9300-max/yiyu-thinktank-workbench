@@ -3890,6 +3890,66 @@ export interface ReviewPerspectiveOption {
   departmentName?: string | null;
 }
 
+export interface DepartmentSignalActionAlert {
+  id: string;
+  kind:
+    | 'plan_unclaimed'
+    | 'collaboration_pileup'
+    | 'low_throughput'
+    | 'dispatch_unconfirmed'
+    | 'client_commitment_at_risk'
+    | string;
+  severity: 'high' | 'medium' | 'low' | string;
+  title: string;
+  advice: string;
+  involvedDepartmentId?: string | null;
+  involvedDepartmentName?: string | null;
+  involvedUserIds?: string[];
+  involvedUserNames?: string[];
+  metricLabel?: string | null;
+  metricValueText?: string | null;
+  daysLeft?: number | null;
+  sourceQuote?: string | null;
+}
+
+export interface DepartmentSignalOneOnOneSuggestion {
+  userId: string;
+  userName: string;
+  departmentId?: string | null;
+  departmentName?: string | null;
+  reason: string;
+  questionPrompts: string[];
+  weekCreatedCount: number;
+  weekCompletedCount: number;
+  trendCompletedByWeek?: number[];
+  trendCreatedByWeek?: number[];
+}
+
+export interface DepartmentSnapshot {
+  departmentId: string;
+  departmentName: string;
+  leaderUserId?: string | null;
+  leaderName?: string | null;
+  status: 'tight' | 'stable' | 'abnormal' | string;
+  completionRate: number;
+  planTotalCount: number;
+  planDoneCount: number;
+  planAssignedCount: number;
+  planLinkedCount: number;
+  headlines: string[];
+  temperatureLevel: number;
+  burndownIdeal: number[];
+  burndownActual: number[];
+}
+
+export interface DepartmentSignalsResponse {
+  weekLabel: string;
+  viewerRole: 'admin' | 'department_lead' | 'employee' | string;
+  actionAlerts: DepartmentSignalActionAlert[];
+  oneOnOneSuggestions: DepartmentSignalOneOnOneSuggestion[];
+  departmentSnapshots: DepartmentSnapshot[];
+}
+
 export interface ReviewDashboard {
   weekLabel?: string;
   resolvedWeekLabel?: string | null;

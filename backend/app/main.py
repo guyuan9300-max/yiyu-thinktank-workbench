@@ -26615,6 +26615,81 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         except RuntimeError as exc:
             raise HTTPException(status_code=502, detail=str(exc)) from exc
 
+    @app.get("/api/v1/_debug/reviews-trace")
+    def debug_reviews_trace(weekLabel: str | None = Query(default=None), perspective: str | None = Query(default="organization")):
+        """临时调试 endpoint - 对比 cloud / local_base / final 三层 workItems 分布."""
+        from collections import Counter
+        target_week = weekLabel or current_review_week_label()
+        result: dict[str, object] = {"week": target_week, "perspective": perspective}
+
+        # 1. cloud raw
+        try:
+            cloud_path = f"/api/v1/reviews/dashboard?weekLabel={target_week}&perspective={perspective or 'organization'}"
+            cloud_payload = cloud_request("GET", cloud_path)
+            cloud_items = cloud_payload.get("workItems", []) if isinstance(cloud_payload, dict) else []
+            c = Counter()
+            for it in cloud_items:
+                snap = it.get("taskSnapshot") or {}
+                c[snap.get("ownerName") or "(空)"] += 1
+            result["cloud_raw"] = {"count": len(cloud_items), "by_owner": dict(c)}
+        except Exception as exc:
+            result["cloud_raw"] = {"error": str(exc)}
+
+        # 2. local_base (绕过 cloud, 用纯本地)
+        try:
+            local_base = local_review_dashboard_base(target_week, include_analysis=False)
+            c = Counter()
+            for it in local_base.workItems:
+                snap = it.taskSnapshot
+                if isinstance(snap, dict):
+                    owner = snap.get("ownerName") or "(空)"
+                else:
+                    owner = getattr(snap, "ownerName", "") or "(空)"
+                c[owner] += 1
+            result["local_base"] = {"count": len(local_base.workItems), "by_owner": dict(c)}
+        except Exception as exc:
+            result["local_base"] = {"error": str(exc)}
+
+        # 3. final after reconcile + augment
+        try:
+            if get_cloud_token():
+                cloud_path = f"/api/v1/reviews/dashboard?weekLabel={target_week}&perspective={perspective or 'organization'}"
+                cloud_payload = cloud_request("GET", cloud_path)
+                if isinstance(cloud_payload, dict):
+                    cloud_response = ReviewResponse(**cloud_payload)
+                    reconciled = reconcile_cloud_review_response_with_local_tasks(cloud_response, target_week)
+                    c = Counter()
+                    for it in reconciled.workItems:
+                        snap = it.taskSnapshot
+                        if isinstance(snap, dict):
+                            owner = snap.get("ownerName") or "(空)"
+                        else:
+                            owner = getattr(snap, "ownerName", "") or "(空)"
+                        c[owner] += 1
+                    result["after_reconcile"] = {"count": len(reconciled.workItems), "by_owner": dict(c)}
+
+                    # 4. after augment (full final)
+                    final = augment_review_response(
+                        reconciled,
+                        target_week,
+                        generate_weekly_overview=False,
+                        perspective=perspective,
+                        department_id=None,
+                    )
+                    c2 = Counter()
+                    for it in final.workItems:
+                        snap = it.taskSnapshot
+                        if isinstance(snap, dict):
+                            owner = snap.get("ownerName") or "(空)"
+                        else:
+                            owner = getattr(snap, "ownerName", "") or "(空)"
+                        c2[owner] += 1
+                    result["after_augment"] = {"count": len(final.workItems), "by_owner": dict(c2)}
+        except Exception as exc:
+            result["after_augment_error"] = str(exc)
+
+        return result
+
     @app.get("/api/v1/clients/{client_id}/strategic-pulse", response_model=StrategicPulseRecord)
     def get_client_strategic_pulse(client_id: str) -> StrategicPulseRecord:
         """战略陪伴克制版主页主数据.
@@ -31568,6 +31643,34 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         if not updated_row:
             raise HTTPException(status_code=500, detail="Task view update failed")
         return _task_view_record_from_row(updated_row)
+
+    @app.get("/api/v1/reviews/department-signals")
+    def get_department_signals(
+        weekLabel: str | None = Query(default=None),
+        perspective: str = Query(default="organization"),
+        departmentId: str | None = Query(default=None),
+    ) -> dict:
+        if not get_cloud_token():
+            return {
+                "weekLabel": weekLabel or current_review_week_label(),
+                "viewerRole": "employee",
+                "actionAlerts": [],
+                "oneOnOneSuggestions": [],
+                "departmentSnapshots": [],
+            }
+        params: list[str] = [f"perspective={perspective}"]
+        if weekLabel:
+            params.append(f"weekLabel={weekLabel}")
+        if departmentId:
+            params.append(f"departmentId={departmentId}")
+        path = "/api/v1/reviews/department-signals?" + "&".join(params)
+        try:
+            payload = cloud_request("GET", path, timeout=10.0)
+        except Exception as exc:
+            raise HTTPException(status_code=502, detail=f"cloud unreachable: {exc}") from exc
+        if not isinstance(payload, dict):
+            raise HTTPException(status_code=502, detail="invalid cloud response")
+        return payload
 
     @app.get("/api/v1/reviews/dashboard/drill-target", response_model=ReviewDashboardDrillTargetResponse)
     def get_review_dashboard_drill_target(
@@ -42003,7 +42106,11 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
     # R11.1: 文档结构化解构层 —— 把合同/会议/财报等文档预解析成结构化字段
     # ============================================================
     @app.post("/api/v1/clients/{client_id}/documents/decompose-batch")
-    def decompose_documents_batch(client_id: str, payload: dict[str, Any] | None = None) -> dict[str, object]:
+    def decompose_documents_batch(
+        client_id: str,
+        payload: dict[str, Any] | None = Body(default=None),
+        force: bool = Query(default=False),
+    ) -> dict[str, object]:
         """R11.1.F：异步触发该客户全部未解构 PDF/DOCX 的批量 classify + decompose。
 
         立刻返回 {queued, totalDocuments}，后台线程跑实际解构（8-30 分钟，视文档数）。
@@ -42020,7 +42127,8 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         if ai_unavailable_detail:
             raise HTTPException(status_code=409, detail=ai_unavailable_detail)
 
-        force = bool((payload or {}).get("force", False))
+        # force 可来自 query 或 body
+        force = bool(force or (payload or {}).get("force", False))
         # 取该客户所有 PDF/DOCX 文档（按 created_at 倒序，列名是 snake_case）
         doc_rows = state.db.fetchall(
             """
@@ -44957,14 +45065,46 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 try:
                     cloud_response = ReviewResponse(**payload)
                     reconciled_response = reconcile_cloud_review_response_with_local_tasks(cloud_response, weekLabel)
-                    return augment_review_response(
+                    result = augment_review_response(
                         reconciled_response,
                         weekLabel,
                         generate_weekly_overview=not skipAi,
                         perspective=perspective,
                         department_id=departmentId,
                     )
-                except Exception:
+                    try:
+                        from collections import Counter as _Counter
+                        c1 = _Counter()
+                        for it in cloud_response.workItems:
+                            snap = it.taskSnapshot if isinstance(it.taskSnapshot, dict) else (it.taskSnapshot.model_dump() if hasattr(it.taskSnapshot, 'model_dump') else {})
+                            c1[snap.get("ownerName") or "(空)"] += 1
+                        c2 = _Counter()
+                        for it in reconciled_response.workItems:
+                            snap = it.taskSnapshot if isinstance(it.taskSnapshot, dict) else (it.taskSnapshot.model_dump() if hasattr(it.taskSnapshot, 'model_dump') else {})
+                            c2[snap.get("ownerName") or "(空)"] += 1
+                        c3 = _Counter()
+                        for it in result.workItems:
+                            snap = it.taskSnapshot if isinstance(it.taskSnapshot, dict) else (it.taskSnapshot.model_dump() if hasattr(it.taskSnapshot, 'model_dump') else {})
+                            c3[snap.get("ownerName") or "(空)"] += 1
+                        with open("/tmp/yiyu_reviews_trace.log", "a") as fp:
+                            fp.write(f"\n=== {datetime.now().isoformat()} perspective={perspective} weekLabel_input={weekLabel} skipAi={skipAi} ===\n")
+                            fp.write(f"cloud_response.weekLabel={cloud_response.weekLabel!r} cloud.currentReview.weekLabel={cloud_response.currentReview.weekLabel if cloud_response.currentReview else None!r}\n")
+                            fp.write(f"reconciled_response.weekLabel={reconciled_response.weekLabel!r}\n")
+                            fp.write(f"cloud      ({len(cloud_response.workItems):>3}): {dict(c1)}\n")
+                            fp.write(f"reconciled ({len(reconciled_response.workItems):>3}): {dict(c2)}\n")
+                            fp.write(f"final      ({len(result.workItems):>3}): {dict(c3)}\n")
+                            # Sample taskIds + ownerName of first 3 items in each phase
+                            for label, src in [("cloud_first3", cloud_response.workItems), ("recon_first3", reconciled_response.workItems), ("final_first3", result.workItems)]:
+                                for i, it in enumerate(src[:3]):
+                                    snap = it.taskSnapshot if isinstance(it.taskSnapshot, dict) else (it.taskSnapshot.model_dump() if hasattr(it.taskSnapshot, 'model_dump') else {})
+                                    fp.write(f"  {label}[{i}]: tid={it.taskId} ownerName={snap.get('ownerName')!r} ownerId={snap.get('ownerId')!r}\n")
+                    except Exception as _log_exc:
+                        with open("/tmp/yiyu_reviews_trace.log", "a") as fp:
+                            fp.write(f"[log-error] {_log_exc}\n")
+                    return result
+                except Exception as exc:
+                    with open("/tmp/yiyu_reviews_trace.log", "a") as fp:
+                        fp.write(f"[EXCEPT in cloud-path] {type(exc).__name__}: {exc}\n")
                     pass
         target_week = weekLabel or current_review_week_label()
         base_response = local_review_dashboard_base(target_week, include_analysis=False)

@@ -940,6 +940,49 @@ def inspect_pdf_page_count(path: Path) -> int | None:
     return _pdf_page_count(path)
 
 
+# 视觉 API 单图大小上限（base64 编码后 ≈ 原图 * 1.37）。
+# 豆包视觉 API 推荐 ≤ 4MB 原图，留 buffer 设 3.5MB
+_OCR_MAX_PAGE_BYTES = 3_500_000
+
+
+def _compress_page_image(raw_png: bytes) -> tuple[bytes, str]:
+    """大图压缩：PNG 超 _OCR_MAX_PAGE_BYTES 时转 JPEG（q=85），仍超则按比例缩放。
+
+    返回 (压缩后 bytes, mime_type)。如压缩失败或 PIL 不可用，原样返回。
+    """
+    if len(raw_png) <= _OCR_MAX_PAGE_BYTES:
+        return raw_png, "image/png"
+    if not HAS_PILLOW or Image is None:
+        return raw_png, "image/png"
+    try:
+        img = Image.open(BytesIO(raw_png))
+        if img.mode in ("RGBA", "LA", "P"):
+            img = img.convert("RGB")
+        # 第一次尝试: JPEG q=85
+        buf = BytesIO()
+        img.save(buf, format="JPEG", quality=85, optimize=True)
+        data = buf.getvalue()
+        if len(data) <= _OCR_MAX_PAGE_BYTES:
+            return data, "image/jpeg"
+        # 仍超：按 sqrt 比例缩放
+        scale = (_OCR_MAX_PAGE_BYTES / len(data)) ** 0.5
+        new_w = max(800, int(img.width * scale))
+        new_h = max(800, int(img.height * scale))
+        img2 = img.resize((new_w, new_h), Image.LANCZOS)
+        buf2 = BytesIO()
+        img2.save(buf2, format="JPEG", quality=85, optimize=True)
+        data2 = buf2.getvalue()
+        if len(data2) <= _OCR_MAX_PAGE_BYTES:
+            return data2, "image/jpeg"
+        # 再缩一次（极端大图）
+        img3 = img2.resize((max(600, int(new_w * 0.75)), max(600, int(new_h * 0.75))), Image.LANCZOS)
+        buf3 = BytesIO()
+        img3.save(buf3, format="JPEG", quality=80, optimize=True)
+        return buf3.getvalue(), "image/jpeg"
+    except Exception:
+        return raw_png, "image/png"
+
+
 def _render_pdf_pages_for_ai_ocr(
     path: Path,
     *,
@@ -966,11 +1009,13 @@ def _render_pdf_pages_for_ai_ocr(
             continue
         if not image_bytes:
             continue
+        # 高分辨率扫描件单页可能 >4MB，超视觉 API 上限：压缩后再上传
+        compressed_bytes, mime_type = _compress_page_image(image_bytes)
         rendered.append(
             {
                 "pageNumber": page_index + 1,
-                "mimeType": "image/png",
-                "imageBase64": base64.b64encode(image_bytes).decode("ascii"),
+                "mimeType": mime_type,
+                "imageBase64": base64.b64encode(compressed_bytes).decode("ascii"),
             }
         )
     return rendered

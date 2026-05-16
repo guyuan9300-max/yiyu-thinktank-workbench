@@ -231,6 +231,7 @@ import type {
   TopicRadarPayload,
   ReviewDashboard,
   ReviewPerspectiveKey,
+  DepartmentSignalsResponse,
   WeeklyOverviewRefreshPayload,
   WeeklyOverviewRefreshStatus,
   ReviewHistoryResponse,
@@ -3664,6 +3665,22 @@ export async function getReviews(weekLabel?: string, options?: { skipAi?: boolea
   if (options?.departmentId) search.set('departmentId', options.departmentId);
   const suffix = search.toString() ? `?${search.toString()}` : '';
   return request<ReviewDashboard>(`/api/v1/reviews${suffix}`, { signal: options?.signal });
+}
+
+export async function getDepartmentSignals(params: {
+  weekLabel?: string | null;
+  perspective?: 'organization' | 'department' | 'mine';
+  departmentId?: string | null;
+  signal?: AbortSignal;
+}) {
+  const search = new URLSearchParams();
+  if (params.weekLabel) search.set('weekLabel', params.weekLabel);
+  if (params.perspective) search.set('perspective', params.perspective);
+  if (params.departmentId) search.set('departmentId', params.departmentId);
+  const suffix = search.toString() ? `?${search.toString()}` : '';
+  return request<DepartmentSignalsResponse>(`/api/v1/reviews/department-signals${suffix}`, {
+    signal: params.signal,
+  });
 }
 
 export async function refreshWeeklyOverview(payload: WeeklyOverviewRefreshPayload) {

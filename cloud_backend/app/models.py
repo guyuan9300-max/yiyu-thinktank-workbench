@@ -1682,6 +1682,60 @@ class ReviewDashboardResponse(BaseModel):
     plans: list[PlanNodeRecord]
 
 
+class DepartmentSignalActionAlert(BaseModel):
+    id: str
+    kind: str
+    severity: str
+    title: str
+    advice: str
+    involvedDepartmentId: str | None = None
+    involvedDepartmentName: str | None = None
+    involvedUserIds: list[str] = Field(default_factory=list)
+    involvedUserNames: list[str] = Field(default_factory=list)
+    metricLabel: str | None = None
+    metricValueText: str | None = None
+    daysLeft: int | None = None
+    sourceQuote: str | None = None
+
+
+class DepartmentSignalOneOnOneSuggestion(BaseModel):
+    userId: str
+    userName: str
+    departmentId: str | None = None
+    departmentName: str | None = None
+    reason: str
+    questionPrompts: list[str] = Field(default_factory=list)
+    weekCreatedCount: int = 0
+    weekCompletedCount: int = 0
+    trendCompletedByWeek: list[int] = Field(default_factory=list)
+    trendCreatedByWeek: list[int] = Field(default_factory=list)
+
+
+class DepartmentSnapshot(BaseModel):
+    departmentId: str
+    departmentName: str
+    leaderUserId: str | None = None
+    leaderName: str | None = None
+    status: str = "stable"
+    completionRate: float = 0.0
+    planTotalCount: int = 0
+    planDoneCount: int = 0
+    planAssignedCount: int = 0
+    planLinkedCount: int = 0
+    headlines: list[str] = Field(default_factory=list)
+    temperatureLevel: int = 0
+    burndownIdeal: list[float] = Field(default_factory=list)
+    burndownActual: list[float] = Field(default_factory=list)
+
+
+class DepartmentSignalsResponse(BaseModel):
+    weekLabel: str
+    viewerRole: str = "employee"
+    actionAlerts: list[DepartmentSignalActionAlert] = Field(default_factory=list)
+    oneOnOneSuggestions: list[DepartmentSignalOneOnOneSuggestion] = Field(default_factory=list)
+    departmentSnapshots: list[DepartmentSnapshot] = Field(default_factory=list)
+
+
 class ReviewDashboardDrillTargetResponse(BaseModel):
     target: ReviewDashboardCardTargetRecord
     eventLineDetail: EventLineDetailRecord | None = None

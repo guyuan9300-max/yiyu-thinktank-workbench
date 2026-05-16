@@ -5902,6 +5902,9 @@ class GrowthSourceCoverageRecord(BaseModel):
     strategicSignals: int = 0
     reviewSignals: int = 0
     handbookSignals: int = 0
+    expWallSignals: int = 0
+    memorySignals: int = 0
+    documentSignals: int = 0
     clientCount: int = 0
     eventLineCount: int = 0
 
