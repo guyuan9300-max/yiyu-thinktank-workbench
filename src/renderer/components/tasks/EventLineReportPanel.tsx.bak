@@ -12,7 +12,6 @@ import {
   Sparkles,
   RefreshCw,
   AlertTriangle,
-  ArrowRight,
 } from 'lucide-react';
 import type {
   EventLineReportSnapshot,
@@ -2081,7 +2080,7 @@ export default function EventLineReportPanel({ eventLineId, backendBaseUrl, onCl
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 p-4 backdrop-blur-sm animate-in fade-in">
       <div
-        className="relative flex h-[88vh] w-full max-w-[920px] flex-col rounded-xl border border-gray-200 bg-white shadow-[0_8px_32px_rgba(0,0,0,0.08)]"
+        className="relative flex max-h-[90vh] w-full max-w-[920px] flex-col rounded-xl border border-gray-200 bg-white shadow-[0_8px_32px_rgba(0,0,0,0.08)]"
         onClick={(e) => e.stopPropagation()}
       >
         {/* ── Header · 极简 typography ── */}
@@ -2276,8 +2275,8 @@ export default function EventLineReportPanel({ eventLineId, backendBaseUrl, onCl
           </div>
         )}
 
-        {/* ── Scrollable body · overflow-y-scroll 让 scrollbar 始终占位, 切 tab 时宽度不跳 ── */}
-        <div className="flex-1 overflow-y-scroll px-7 py-5" style={{ scrollbarGutter: 'stable' }}>
+        {/* ── Scrollable body ── */}
+        <div className="flex-1 overflow-y-auto px-7 py-5">
           {/* Tab 切换 · 周复盘同款极简下划线 */}
           <div className="mb-6 flex items-center justify-between gap-3 border-b border-gray-100">
             <div className="flex items-center gap-8">
@@ -2523,7 +2522,234 @@ export default function EventLineReportPanel({ eventLineId, backendBaseUrl, onCl
             )
           ) : viewMode === 'report' ? (
             <div className="py-16 text-center text-[13px] text-gray-400">报告预览加载中…</div>
-          ) : null}
+          ) : (false && reportPreview ? (
+            <div className="hidden">
+              <p>{reportPreview.organizationName}{reportPreview.brandCaption}</p>
+              <section className="overflow-hidden rounded-[32px] border border-[#DDE4F3] bg-[#F9FBFF] shadow-[0_24px_70px_rgba(56,86,174,0.10)]">
+                <div className="relative min-h-[1020px] px-10 py-10 text-[#3F3A36]">
+                  <div
+                    className="absolute inset-0"
+                    style={{
+                      background: 'radial-gradient(circle at 18% 14%, rgba(93, 125, 255, 0.14), transparent 26%), radial-gradient(circle at 85% 84%, rgba(123, 168, 255, 0.12), transparent 22%), linear-gradient(180deg, #F9FBFF 0%, #EEF3FD 100%)',
+                    }}
+                  />
+                  <div className="absolute right-[-90px] top-[-90px] h-[280px] w-[280px] rounded-full bg-[radial-gradient(circle_at_30%_30%,rgba(112,143,255,0.26),rgba(112,143,255,0.05)_62%,transparent_74%)]" />
+                  <div className="absolute bottom-[40px] right-[8px] h-[140px] w-[140px] rounded-full bg-[radial-gradient(circle_at_center,rgba(122,173,255,0.16),transparent_74%)]" />
+
+                  <div className="relative flex h-full flex-col">
+                    <div>
+                      <p className="text-[11px] font-bold tracking-[0.16em] text-[#67718B]">{reportPreview.organizationName}</p>
+                      <p className="mt-1 text-[11px] font-medium text-[#8A95AF]">{reportPreview.brandCaption}</p>
+                      <span className="mt-5 inline-flex rounded-full bg-[#5B7BFE] px-4 py-2 text-[11px] font-bold text-white">
+                        封面页
+                      </span>
+                    </div>
+
+                    <div className="mt-24 max-w-[620px]">
+                      <p className="text-[14px] font-semibold tracking-[0.08em] text-[#4B66D8]">{reportPreview.reportSubtitle}</p>
+                      <h3 className="mt-5 text-[52px] font-semibold leading-[1.08] tracking-[-0.04em] text-[#3F3A36]">
+                        {reportPreview.reportTitle}
+                      </h3>
+                      <div className="mt-7 h-[4px] w-12 rounded-full bg-[#5B7BFE]" />
+                      <p className="mt-7 max-w-[560px] text-[16px] leading-8 text-[#6F685F]">
+                        {reportPreview.coverSummary}
+                      </p>
+                    </div>
+
+                    <div className="mt-20 max-w-[560px]">
+                      <p className="text-[32px] font-semibold leading-[1.45] tracking-[-0.03em] text-[#5A524A]">
+                        {reportPreview.coreJudgment}
+                      </p>
+                      <p className="mt-6 max-w-[460px] text-[13px] leading-6 text-[#8A8177]">
+                        {reportPreview.coreJudgmentNote}
+                      </p>
+                    </div>
+
+                    <div className="mt-auto rounded-[28px] border border-[#DDE4F3] bg-[linear-gradient(180deg,rgba(250,252,255,0.98)_0%,rgba(239,245,255,0.95)_100%)] px-6 py-6">
+                      <div className="grid grid-cols-3 gap-4">
+                        {reportPreview.supportCards.map((card, index) => (
+                          <div
+                            key={card.label}
+                            className={`min-w-0 ${index < reportPreview.supportCards.length - 1 ? 'border-r border-[#D7E0F2] pr-4' : ''}`}
+                          >
+                            <p className="text-[11px] font-bold tracking-[0.12em] text-[#6C7897]">{card.label}</p>
+                            <p className="mt-3 text-[22px] font-semibold tracking-[-0.02em] text-[#4B443E]">{card.value}</p>
+                            <p className="mt-2 text-[12px] leading-5 text-[#6E778E]">{card.note}</p>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+
+                    <div className="mt-6 flex items-end justify-between text-[12px] text-[#9B9388]">
+                      <p>{reportPreview.pageOneNote}</p>
+                      <span className="font-medium tracking-[0.18em] text-[#4B66D8]">01 / 02</span>
+                    </div>
+                  </div>
+                </div>
+              </section>
+
+              <section className="overflow-hidden rounded-[32px] border border-[#DDE4F3] bg-[#F9FBFF] shadow-[0_24px_60px_rgba(56,86,174,0.08)]">
+                <div className="relative min-h-[1020px] px-10 py-10 text-[#3F3A36]">
+                  <div
+                    className="absolute inset-0"
+                    style={{
+                      background: 'radial-gradient(circle at 10% 12%, rgba(102, 132, 255, 0.10), transparent 24%), radial-gradient(circle at 88% 12%, rgba(132, 171, 255, 0.20), transparent 18%), linear-gradient(180deg, #F9FBFF 0%, #EEF3FD 100%)',
+                    }}
+                  />
+                  <div className="absolute right-[22px] top-[-26px] h-[170px] w-[170px] rounded-full bg-[radial-gradient(circle_at_center,rgba(103,134,255,0.22),transparent_70%)]" />
+
+                  <div className="relative">
+                    <div className="flex items-start justify-between gap-6">
+                      <div>
+                        <p className="text-[11px] font-bold tracking-[0.18em] text-[#6B7692]">目录页</p>
+                        <h3 className="mt-3 text-[34px] font-semibold tracking-[-0.03em] text-[#3F3A36]">目录与阅读指引</h3>
+                        <div className="mt-4 h-[4px] w-12 rounded-full bg-[#5B7BFE]" />
+                        <p className="mt-5 max-w-[520px] text-[13px] leading-6 text-[#756D65]">
+                          {reportPreview.readingIntro}
+                        </p>
+                      </div>
+                      <div className="rounded-[24px] border border-[#D7E0F2] bg-[linear-gradient(180deg,rgba(250,252,255,0.98)_0%,rgba(239,245,255,0.95)_100%)] px-5 py-4 shadow-[0_10px_24px_rgba(56,86,174,0.08)]">
+                        <p className="text-[10px] font-bold tracking-[0.18em] text-[#4B66D8]">Report Profile</p>
+                        <div className="mt-3 flex items-center gap-2 text-[13px] font-semibold text-[#4B443E]">
+                          <Clock size={14} />
+                          {reportPreview.reviewWindow}
+                        </div>
+                        <div className="mt-2 flex items-center gap-2 text-[13px] text-[#756D65]">
+                          <Users size={14} />
+                          {reportPreview.audienceLabel}
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="mt-8 grid grid-cols-12 gap-5">
+                      <div className="col-span-7">
+                        <div className="space-y-3">
+                          {reportPreview.tocSections.slice(0, 7).map((section) => (
+                            <div key={section.index} className="rounded-[22px] border border-[#DFE6F6] bg-white/82 px-5 py-4 shadow-[0_10px_24px_rgba(56,86,174,0.05)]">
+                              <div className="flex items-start gap-4">
+                                <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full border border-[#CFDBFB] bg-[#EEF3FF] text-[13px] font-bold text-[#4B66D8]">
+                                  {section.index}
+                                </div>
+                                <div className="min-w-0 flex-1">
+                                  <div className="flex items-start justify-between gap-4">
+                                    <p className="text-[16px] font-semibold tracking-[-0.02em] text-[#4B443E]">{section.title}</p>
+                                    <span className="rounded-full bg-[#EAF0FF] px-2.5 py-1 text-[10px] font-bold text-[#4B66D8]">
+                                      {section.pages}
+                                    </span>
+                                  </div>
+                                  <p className="mt-2 text-[12px] leading-6 text-[#7A7269]">{section.summary}</p>
+                                </div>
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+
+                      <div className="col-span-5 space-y-5">
+                        <div className="rounded-[28px] bg-[linear-gradient(180deg,#5B7BFE_0%,#3F5EF7_100%)] p-6 text-white shadow-[0_18px_40px_rgba(63,94,247,0.28)]">
+                          <p className="text-[11px] font-bold tracking-[0.18em] text-white/75">建议阅读顺序</p>
+                          <div className="mt-5 space-y-3">
+                            {reportPreview.readingSteps.map((item, index) => (
+                              <div key={`${item}-${index}`} className="flex items-start gap-3 rounded-[18px] bg-white/10 px-4 py-3">
+                                  <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-white text-[11px] font-bold text-[#3F5EF7]">
+                                    {index + 1}
+                                  </span>
+                                <p className="text-[12px] leading-6 text-white/92">{item}</p>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+
+                        <div className="rounded-[28px] border border-[#DFE6F6] bg-white/86 p-6 shadow-[0_12px_32px_rgba(56,86,174,0.05)]">
+                          <div className="flex items-center justify-between">
+                            <div>
+                              <p className="text-[11px] font-bold tracking-[0.18em] text-[#8F857A]">审阅问题</p>
+                              <p className="mt-2 text-[22px] font-semibold tracking-[-0.03em] text-[#4B443E]">本报告回答什么</p>
+                            </div>
+                            <FileBadge size={18} className="text-[#4B66D8]" />
+                          </div>
+                          <div className="mt-5 space-y-3">
+                            {reportPreview.reviewQuestions.map((item, index) => (
+                              <div key={`${item}-${index}`} className="rounded-[18px] bg-[#F2F6FF] px-4 py-4">
+                                <p className="text-[11px] font-bold tracking-[0.12em] text-[#4B66D8]">0{index + 1}</p>
+                                <p className="mt-1 text-[13px] leading-6 text-[#5A524A]">{item}</p>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+
+                        <div className="rounded-[28px] border border-[#D7E0F2] bg-[linear-gradient(180deg,rgba(250,252,255,0.96)_0%,rgba(239,245,255,0.92)_100%)] p-6 shadow-[0_12px_32px_rgba(56,86,174,0.06)]">
+                          <div className="flex items-center justify-between">
+                            <div>
+                              <p className="text-[11px] font-bold tracking-[0.18em] text-[#8F857A]">交付组成</p>
+                              <p className="mt-2 text-[22px] font-semibold tracking-[-0.03em] text-[#4B443E]">建议纳入的模块</p>
+                            </div>
+                            <Paperclip size={18} className="text-[#4B66D8]" />
+                          </div>
+                          <div className="mt-4 space-y-3">
+                            {reportPreview.deliverables.map((deliverable, index) => (
+                              <div key={`${deliverable}-${index}`} className="rounded-[18px] px-4 py-3">
+                                <div className="flex items-center gap-3">
+                                  <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-[#EAF0FF] text-[11px] font-bold text-[#4B66D8]">
+                                    {index + 1}
+                                  </span>
+                                  <p className="text-[13px] font-semibold leading-6 text-[#5A524A]">{deliverable}</p>
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="mt-6 flex items-end justify-between text-[12px] text-[#8F867B]">
+                      <p>{reportPreview.pageTwoNote}</p>
+                      <span className="font-medium tracking-[0.18em] text-[#4B66D8]">02 / 02</span>
+                    </div>
+                  </div>
+                </div>
+              </section>
+            </div>
+            ) : (
+              <div className="mx-auto max-w-[760px] pb-6">
+                <section className="overflow-hidden rounded-[32px] border border-[#DDE4F3] bg-[#F9FBFF] shadow-[0_24px_70px_rgba(56,86,174,0.10)]">
+                  <div className="relative min-h-[520px] px-10 py-10 text-[#3F3A36]">
+                    <div
+                      className="absolute inset-0"
+                      style={{
+                        background: 'radial-gradient(circle at 20% 16%, rgba(93, 125, 255, 0.14), transparent 26%), radial-gradient(circle at 85% 85%, rgba(123, 168, 255, 0.12), transparent 20%), linear-gradient(180deg, #F9FBFF 0%, #EEF3FD 100%)',
+                      }}
+                    />
+                    <div className="relative flex h-full flex-col items-start justify-center">
+                      <span className="inline-flex rounded-full bg-[#5B7BFE] px-4 py-2 text-[11px] font-bold text-white">
+                        模拟报告暂不可用
+                      </span>
+                      <h3 className="mt-6 text-[38px] font-semibold leading-[1.16] tracking-[-0.04em] text-[#3F3A36]">
+                        {reportPreview.emptyStateTitle}
+                      </h3>
+                      <p className="mt-5 max-w-[560px] text-[16px] leading-8 text-[#6F685F]">
+                        {reportPreview.emptyStateDescription}
+                      </p>
+                      <div className="mt-8 flex flex-wrap items-center gap-3 text-[13px] text-[#5D6781]">
+                        <span className="rounded-full bg-white/84 px-4 py-2 shadow-[0_8px_20px_rgba(56,86,174,0.08)]">
+                          当前事件线：{reportPreview.reportTitle}
+                        </span>
+                        <span className="rounded-full bg-white/84 px-4 py-2 shadow-[0_8px_20px_rgba(56,86,174,0.08)]">
+                          快照日期：{reportPreview.snapshotAtLabel}
+                        </span>
+                      </div>
+                      <button
+                        type="button"
+                        className="mt-10 rounded-full bg-[#5B7BFE] px-5 py-2.5 text-[13px] font-bold text-white transition hover:bg-[#3F5EF7]"
+                        onClick={() => setViewMode('tasks')}
+                      >
+                        去素材清单补资料
+                      </button>
+                    </div>
+                  </div>
+                </section>
+              </div>
+            ) : null)}
 
           {viewMode === 'tasks' && materialModel ? (
             <div className="space-y-6">
@@ -2909,197 +3135,3 @@ export default function EventLineReportPanel({ eventLineId, backendBaseUrl, onCl
 }
 
 export type { ReportDraft };
-
-/* ══════════════════════════════════════════════════════════════════════
-   ReportPreviewBody — 真报告预览
-   用 timelineNarrative + draft tasks/attachments + snapshot 实数据渲染,
-   跟 Word 导出的内容保持一致, 替代之前的封面/目录 mock。
-   ══════════════════════════════════════════════════════════════════ */
-function ReportPreviewBody({
-  narrative,
-  draft,
-  organizationName,
-  snapshot,
-}: {
-  narrative: EventLineTimelineNarrative | null;
-  draft: ReportDraft;
-  organizationName: string;
-  snapshot: EventLineReportSnapshot;
-}) {
-  const el = snapshot.eventLine;
-  const taskCount = draft.tasks.length;
-  const doneTasks = draft.tasks.filter((t) => t.status === 'done').length;
-  const attachmentCount = draft.attachments.length;
-
-  return (
-    <section className="border border-gray-200 rounded-xl bg-white">
-      {/* 报告头 · 像真报告封面但极简 */}
-      <header className="px-8 pt-8 pb-6 border-b border-gray-100">
-        <div className="flex items-baseline justify-between gap-4 mb-5">
-          <span className="text-[10px] font-bold uppercase tracking-[0.2em] text-gray-400">
-            事件线汇报
-          </span>
-          <span className="text-[10px] text-gray-400 tabular-nums">
-            {organizationName} · 快照 {draft.snapshotAt.slice(0, 10)}
-          </span>
-        </div>
-        <h1 className="text-[28px] font-light tracking-tight leading-tight text-gray-900">
-          {narrative?.headline || draft.eventLineName}
-        </h1>
-        {el.primaryClientName && (
-          <p className="mt-2 text-[12px] text-gray-500">
-            <span className="text-[10px] uppercase tracking-[0.14em] text-gray-400 mr-1.5">客户</span>
-            {el.primaryClientName}
-          </p>
-        )}
-      </header>
-
-      {/* 摘要数据 · 4 个极简指标 */}
-      <div className="grid grid-cols-4 gap-8 px-8 py-6 border-b border-gray-100">
-        <div>
-          <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-gray-400">主线转折</p>
-          <p className="mt-2 text-[28px] font-light text-gray-900 leading-none tabular-nums">
-            {narrative?.nodes.length || 0}
-          </p>
-        </div>
-        <div>
-          <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-gray-400">任务</p>
-          <p className="mt-2 text-[28px] font-light text-gray-900 leading-none tabular-nums">
-            {taskCount}
-            <span className="text-[14px] text-gray-400 ml-1">/ {doneTasks} 完成</span>
-          </p>
-        </div>
-        <div>
-          <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-gray-400">附件</p>
-          <p className="mt-2 text-[28px] font-light text-gray-900 leading-none tabular-nums">
-            {attachmentCount}
-          </p>
-        </div>
-        <div>
-          <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-gray-400">参与</p>
-          <p className="mt-2 text-[14px] text-gray-700 leading-tight line-clamp-2">
-            {draft.participantNames.join(' · ') || '—'}
-          </p>
-        </div>
-      </div>
-
-      {/* Opening */}
-      {narrative?.opening && (
-        <div className="px-8 py-6 border-b border-gray-100">
-          <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-gray-400 mb-3">起源</p>
-          <p className="text-[15px] font-light leading-[1.75] tracking-tight text-gray-800 border-l-[2px] border-gray-900 pl-5">
-            {narrative.opening}
-          </p>
-        </div>
-      )}
-
-      {/* Nodes */}
-      {narrative && narrative.nodes.length > 0 && (
-        <div className="px-8 py-6 border-b border-gray-100">
-          <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-gray-400 mb-5">关键转折</p>
-          <div className="space-y-7">
-            {narrative.nodes.map((node, index) => (
-              <article key={node.id} className="flex items-baseline gap-5">
-                <span className="text-[24px] leading-none font-extralight tracking-tighter text-gray-200 tabular-nums">
-                  {String(index + 1).padStart(2, '0')}
-                </span>
-                <div className="flex-1 min-w-0">
-                  <div className="flex items-baseline gap-3 mb-1.5">
-                    <h3 className="text-[14.5px] font-semibold leading-snug text-gray-900">
-                      {node.title}
-                    </h3>
-                    <span className="text-[10px] text-gray-400 tabular-nums">
-                      {node.time.slice(0, 10)}
-                    </span>
-                  </div>
-                  <p className="text-[13px] leading-relaxed text-gray-700">{node.narrative}</p>
-                </div>
-              </article>
-            ))}
-          </div>
-        </div>
-      )}
-
-      {/* 任务清单 */}
-      {taskCount > 0 && (
-        <div className="px-8 py-6 border-b border-gray-100">
-          <div className="flex items-baseline justify-between mb-4">
-            <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-gray-400">任务清单</p>
-            <span className="text-[10px] tabular-nums text-gray-400">{taskCount} 条 · {doneTasks} 完成</span>
-          </div>
-          <div>
-            {draft.tasks.slice(0, 20).map((task) => {
-              const statusDot =
-                task.status === 'done' ? 'bg-emerald-500'
-                  : task.status === 'doing' ? 'bg-blue-400'
-                    : task.status === 'rejected' ? 'bg-rose-400'
-                      : 'bg-amber-400';
-              return (
-                <div key={task.id} className="flex items-baseline gap-3 py-2 border-b border-gray-50 last:border-0">
-                  <span className={`h-1.5 w-1.5 rounded-full ${statusDot} shrink-0 mt-1.5`} />
-                  <p className={`flex-1 text-[12.5px] ${task.status === 'done' ? 'text-gray-400 line-through' : 'text-gray-800'}`}>
-                    {task.title}
-                  </p>
-                  {task.ownerName && (
-                    <span className="shrink-0 text-[10px] text-gray-400">{task.ownerName}</span>
-                  )}
-                  {task.ddl && (
-                    <span className="shrink-0 text-[10px] text-gray-400 tabular-nums">{task.ddl}</span>
-                  )}
-                </div>
-              );
-            })}
-            {taskCount > 20 && (
-              <p className="mt-2 text-[11px] text-gray-400">…还有 {taskCount - 20} 条</p>
-            )}
-          </div>
-        </div>
-      )}
-
-      {/* 附件清单 */}
-      {attachmentCount > 0 && (
-        <div className="px-8 py-6 border-b border-gray-100">
-          <div className="flex items-baseline justify-between mb-4">
-            <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-gray-400">附件清单</p>
-            <span className="text-[10px] tabular-nums text-gray-400">{attachmentCount} 个</span>
-          </div>
-          <div>
-            {draft.attachments.slice(0, 15).map((att) => (
-              <div key={att.id} className="flex items-baseline gap-3 py-2 border-b border-gray-50 last:border-0">
-                <span className="text-[10px] text-gray-400 tabular-nums shrink-0 uppercase">
-                  {(att.kind || 'file').slice(0, 4)}
-                </span>
-                <p className="flex-1 text-[12.5px] text-gray-700 truncate" title={att.title}>{att.title}</p>
-                <span className="shrink-0 text-[10px] text-gray-400 tabular-nums">
-                  {att.sizeBytes ? `${Math.round(att.sizeBytes / 1024)} KB` : '—'}
-                </span>
-              </div>
-            ))}
-            {attachmentCount > 15 && (
-              <p className="mt-2 text-[11px] text-gray-400">…还有 {attachmentCount - 15} 个</p>
-            )}
-          </div>
-        </div>
-      )}
-
-      {/* Closing · 今天在哪里 */}
-      {narrative?.closing && (
-        <div className="px-8 py-6">
-          <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-gray-400 mb-3">今天在哪里</p>
-          <p className="text-[14px] leading-[1.75] text-gray-700 border-l-[2px] border-gray-900 pl-5">
-            {narrative.closing}
-          </p>
-        </div>
-      )}
-
-      {/* 没 narrative 时的兜底 */}
-      {!narrative && (
-        <div className="px-8 py-12 text-center border-t border-gray-100">
-          <p className="text-[12.5px] text-gray-500">
-            还没有 AI 主线还原。<span className="text-gray-400">在「主线还原」tab 生成后，这里会自动出现完整的报告预览。</span>
-          </p>
-        </div>
-      )}
-    </section>
-  );
-}

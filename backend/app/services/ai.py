@@ -3546,25 +3546,54 @@ class AiService:
         mime_type: str = "image/png",
         page_number: int | None = None,
         source_kind: str = "视觉资料",
+        mode: str = "strict",
     ) -> str:
+        """视觉 OCR。mode='strict' 默认严格模式；mode='exhaustive' 穷尽模式
+        用于含印章/手写/图章的边缘页面，要求 LLM 尽力提取所有可见字符。
+        """
         health = self._health_for_task("vision_ocr")
         if not health.ready or not image_base64:
             return ""
-        system_instruction = (
-            "你是文档 OCR 和版面还原助手。"
-            "你的任务是把视觉资料截图转成 clean markdown 原文。"
-            "不要总结，不要改写，不要补充页面上没有的信息。"
-            "如果页面几乎没有可读正文，只返回空字符串。"
-        )
-        page_line = f"页码：{page_number}\n" if page_number is not None else ""
-        prompt = (
-            f"文件名：{title}\n"
-            f"资料类型：{source_kind}\n"
-            f"{page_line}\n"
-            "请按阅读顺序提取图像中的文字，尽量保留标题、项目符号、表格行列关系。"
-            "删除页码、装饰线、明显水印和重复页眉页脚。"
-            "只输出 markdown 正文。"
-        )
+        if mode == "exhaustive":
+            # R13.P3：穷尽模式 — 对印章/手写/混合图页强制输出所有可见字符
+            system_instruction = (
+                "你是文档 OCR 和版面还原助手（穷尽抓取模式）。\n"
+                "任务：把视觉资料截图转成 markdown 原文，**穷尽**提取每一个可见的字符。\n"
+                "**关键规则（严格遵守）**：\n"
+                "1. 即使页面含印章、公章、红色图章、手写签字、手写日期、图章遮挡，"
+                "仍必须尽力识别并输出所有可见文字（包括被印章部分遮挡的、模糊的、手写的）。\n"
+                "2. 公章/印章的文字内容也要提取，格式如「[印章：XX 公司 财务专用章]」。\n"
+                "3. 手写日期/签字识别为「[手写：2025年6月15日]」「[签字：张三]」等格式。\n"
+                "4. 即使页面主要是图章、签字、年月日，**也禁止返回空字符串**，"
+                "至少输出可见的少量正文 + 图章描述 + 手写描述。\n"
+                "5. 如果页面真完全空白（连印章都没有），输出「[空白页]」字串。\n"
+                "6. 不要总结、不要改写、不要补充页面没有的信息。\n"
+            )
+            page_line = f"页码：{page_number}\n" if page_number is not None else ""
+            prompt = (
+                f"文件名：{title}\n"
+                f"资料类型：{source_kind}（穷尽模式 — 含印章/手写/图）\n"
+                f"{page_line}\n"
+                "请穷尽提取页面上**每一个可见字符**：正文段落、印章文字、手写日期、签字、表格行列、"
+                "页眉页脚（保留含信息的）。即使被印章遮挡的文字也尽力还原。\n"
+                "输出格式：markdown 正文 + 必要的 [印章：...] / [手写：...] / [签字：...] 标记。"
+            )
+        else:
+            system_instruction = (
+                "你是文档 OCR 和版面还原助手。"
+                "你的任务是把视觉资料截图转成 clean markdown 原文。"
+                "不要总结，不要改写，不要补充页面上没有的信息。"
+                "如果页面几乎没有可读正文，只返回空字符串。"
+            )
+            page_line = f"页码：{page_number}\n" if page_number is not None else ""
+            prompt = (
+                f"文件名：{title}\n"
+                f"资料类型：{source_kind}\n"
+                f"{page_line}\n"
+                "请按阅读顺序提取图像中的文字，尽量保留标题、项目符号、表格行列关系。"
+                "删除页码、装饰线、明显水印和重复页眉页脚。"
+                "只输出 markdown 正文。"
+            )
         from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeout
 
         for profile in self._resolve_llm_candidates(task_kind="vision_ocr"):
@@ -4608,6 +4637,7 @@ class AiService:
         system_instruction: str,
         *,
         on_token: Callable[[str], None] | None = None,
+        on_reasoning_heartbeat: Callable[[], None] | None = None,
         timeout_seconds: float = 180.0,
         max_tokens: int = 4500,
         temperature: float = 0.45,
@@ -4683,7 +4713,19 @@ class AiService:
                             continue
                         delta = choices[0].get("delta") or {}
                         token = delta.get("content") or ""
+                        # 深度思考模型（豆包 Seed 2.0 Pro / DeepSeek-R1 / Qwen3-thinking 等）
+                        # 在思考阶段返回 reasoning_content，不返回 content。
+                        # 如果不识别这种 chunk，思考期间 on_token 永远不会被调，上层 watchdog
+                        # 会误判 LLM "卡住"——即使 SSE 实际在持续流动。
+                        # 这里把 reasoning chunk 当作心跳：不累积到答案，但调一次 heartbeat
+                        # 回调让上层刷新 analysis_run.updated_at。
                         if not token:
+                            reasoning_token = delta.get("reasoning_content") or ""
+                            if reasoning_token and on_reasoning_heartbeat is not None:
+                                try:
+                                    on_reasoning_heartbeat()
+                                except Exception:
+                                    pass
                             continue
                         accumulated.append(token)
                         if on_token is not None:

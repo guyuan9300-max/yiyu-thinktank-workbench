@@ -419,10 +419,13 @@ def generate_workspace_answer_section(
     # - 流式失败时让外层（generate_multipass_answer）的段级 retry 兜住
     PARTIAL_THROTTLE_MS = 200.0
     PARTIAL_THROTTLE_CHARS = 40
+    # 深度思考心跳节流：reasoning chunks 来得很密，10s 推一次心跳足以让 watchdog 不误判
+    REASONING_HEARTBEAT_MIN_INTERVAL_MS = 10000.0
 
     accumulated: list[str] = []
     last_push_at = time.perf_counter()
     last_push_len = 0
+    last_heartbeat_at = time.perf_counter()
 
     def _on_stream_token(token: str) -> None:
         nonlocal last_push_at, last_push_len
@@ -451,11 +454,37 @@ def generate_workspace_answer_section(
             # partial 回调失败不能阻塞流式接收
             pass
 
+    def _on_reasoning_heartbeat() -> None:
+        """豆包 / Qwen3-thinking 等深度思考模型在 reasoning 阶段返回 reasoning_content，
+        没有 content。直接忽略会让上层 watchdog（按 analysis_run.updated_at 老旧度判定）
+        在思考超过阈值时误判 LLM "卡住"。这里节流推一个 heartbeat partial，让 push_partial_analysis
+        刷新 analysis_run.updated_at，但不覆盖 db.content。"""
+        nonlocal last_heartbeat_at
+        if on_partial is None:
+            return
+        now = time.perf_counter()
+        if (now - last_heartbeat_at) * 1000.0 < REASONING_HEARTBEAT_MIN_INTERVAL_MS:
+            return
+        last_heartbeat_at = now
+        try:
+            on_partial({
+                "stageLabel": f"模型正在深度思考第 {section_index + 1}/{total_sections} 段：{section_plan.title}",
+                "progress": 60.0 + (section_index / max(1, total_sections)) * 30,
+                "content": "",  # heartbeat 不带新内容
+                "structured": None,
+                "sectionIndex": section_index,
+                "streaming": True,
+                "heartbeat": True,
+            })
+        except Exception:
+            pass
+
     try:
         text = ai_service._qwen_generate_streaming(  # noqa: SLF001
             prompt=user_prompt,
             system_instruction=section_instruction,
             on_token=_on_stream_token,
+            on_reasoning_heartbeat=_on_reasoning_heartbeat,
             timeout_seconds=timeout_seconds,
             max_tokens=max_tokens,
             temperature=0.55,

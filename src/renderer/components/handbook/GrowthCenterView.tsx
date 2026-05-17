@@ -46,6 +46,7 @@ import type {
   GrowthAbilityKey,
   GrowthAbilityScore,
   GrowthAbilityGap,
+  GrowthAbilityTrendPoint,
   GrowthOverview,
   XpLedgerEntry,
   HandbookEntry,
@@ -707,6 +708,32 @@ function BadgeModal({ badge, onClose }: { badge: BadgeProgress; onClose: () => v
 /* ══════════════════════════════════════════════════════════════════════
    Hexagonal Radar Chart — matches preview exactly
    ──────────────────────────────────────────────────────────────────── */
+function AbilitySparkline({ points, color }: { points: GrowthAbilityTrendPoint[]; color: string }) {
+  // L1：能力 mini 折线（48×16 SVG，纯展示，不可交互）
+  // 用最近 N 个周快照的 score 画一条折线，让用户一眼看出方向感。
+  if (points.length < 2) return null;
+  const W = 48;
+  const H = 16;
+  const scores = points.map(p => p.score);
+  const min = Math.min(...scores);
+  const max = Math.max(...scores);
+  const range = max - min || 1;
+  const step = W / (points.length - 1);
+  const path = points
+    .map((p, i) => {
+      const x = i * step;
+      const y = H - ((p.score - min) / range) * H;
+      return `${i === 0 ? 'M' : 'L'}${x.toFixed(1)},${y.toFixed(1)}`;
+    })
+    .join(' ');
+  return (
+    <svg width={W} height={H} style={{ overflow: 'visible' }}>
+      <path d={path} fill="none" stroke={color} strokeWidth={1.5} strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  );
+}
+
+
 function AbilityRadar({ abilities, gaps }: { abilities: GrowthAbilityScore[]; gaps?: GrowthAbilityGap[] }) {
   const size = 320;
   const cx = 160, cy = 160, R = 110;
@@ -896,15 +923,27 @@ function AbilityGrowthTab({ overview }: { overview: GrowthOverview | null }) {
 
   const recentEntries = useMemo(() => {
     if (!overview?.recentEntries?.length) return [];
-    const seen = new Map<string, XpLedgerEntry>();
+    // H3: 时间线只展示「真实工作事件」
+    // ① 过滤掉徽章解锁（归到徽章 tab）
+    // ② 同一 source（如同一手册条目同一天触发多个能力）合并为一条，能力维度聚合到 abilityKeys
+    type Merged = XpLedgerEntry & { mergedAbilities: string[] };
+    const seen = new Map<string, Merged>();
     for (const entry of overview.recentEntries) {
+      if (entry.sourceType === 'badge_unlock') continue;
       const dateKey = entry.createdAt?.slice(0, 10) || '';
-      const key = `${entry.sourceType}|${entry.sourceId}|${entry.abilityKey}|${dateKey}`;
+      // 以 sourceId+date 为键合并不同 ability 的同一事件
+      const key = `${entry.sourceType}|${entry.sourceId}|${dateKey}`;
       const existing = seen.get(key);
       if (existing) {
-        (existing as XpLedgerEntry & { totalXp: number }).totalXp += entry.totalXp || entry.delta;
+        existing.totalXp = (existing.totalXp || existing.delta) + (entry.totalXp || entry.delta);
+        if (entry.abilityLabel && !existing.mergedAbilities.includes(entry.abilityLabel)) {
+          existing.mergedAbilities.push(entry.abilityLabel);
+        }
       } else {
-        seen.set(key, { ...entry });
+        seen.set(key, {
+          ...entry,
+          mergedAbilities: entry.abilityLabel ? [entry.abilityLabel] : [],
+        });
       }
     }
     return [...seen.values()]
@@ -935,8 +974,57 @@ function AbilityGrowthTab({ overview }: { overview: GrowthOverview | null }) {
     );
   }
 
+  const social = overview?.socialFeedback;
+  const socialChips: { icon: LucideIcon; text: string }[] = [];
+  if (social) {
+    if (social.handbookReuseCount > 0) {
+      socialChips.push({
+        icon: Sparkles,
+        text: `${social.handbookEntriesReused} 条手册被同事复用 ${social.handbookReuseCount} 次`,
+      });
+    }
+    if (social.expWallLikeCount > 0 || social.expWallQuoteCount > 0) {
+      const parts: string[] = [];
+      if (social.expWallQuoteCount > 0) parts.push(`${social.expWallQuoteCount} 条金句入组织墙`);
+      if (social.expWallLikeCount > 0) parts.push(`收到 ${social.expWallLikeCount} 个赞`);
+      if (social.expWallSaveCount > 0) parts.push(`${social.expWallSaveCount} 次收藏`);
+      socialChips.push({ icon: Swords, text: parts.join(' · ') });
+    }
+  }
+
   return (
     <div className="gc-space-y">
+      {/* H4: 被看见反馈行 */}
+      {socialChips.length > 0 && (
+        <div
+          className="gc-card"
+          style={{
+            padding: '12px 16px',
+            display: 'flex',
+            alignItems: 'center',
+            gap: 16,
+            flexWrap: 'wrap',
+            background: 'linear-gradient(90deg, #fef3c7 0%, #fef9c3 100%)',
+            border: '1px solid #fde68a',
+          }}
+        >
+          <span style={{ fontSize: 12, fontWeight: 600, color: '#92400e', whiteSpace: 'nowrap' }}>
+            {social?.periodLabel || '近 30 天'} · 被看见
+          </span>
+          {socialChips.map((chip, idx) => {
+            const Icon = chip.icon;
+            return (
+              <span
+                key={idx}
+                style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 12, color: '#78350f' }}
+              >
+                <Icon size={14} color="#d97706" />
+                {chip.text}
+              </span>
+            );
+          })}
+        </div>
+      )}
       {/* Radar + Ability List */}
       <div className="gc-card gc-radar-card">
         <div className="gc-radar-visual">
@@ -951,6 +1039,7 @@ function AbilityGrowthTab({ overview }: { overview: GrowthOverview | null }) {
           {[...abilities].sort((a, b) => b.weeklyXp - a.weeklyXp).map((ab) => {
             const v = ABILITY_VISUALS[ab.abilityKey] || ABILITY_VISUALS.exec;
             const AbIcon = v.icon;
+            const trend = overview?.abilityTrends?.find(t => t.abilityKey === ab.abilityKey);
             return (
               <div key={ab.abilityKey}>
                 <div className="gc-ability-row-top">
@@ -961,7 +1050,24 @@ function AbilityGrowthTab({ overview }: { overview: GrowthOverview | null }) {
                     <span className="gc-ability-name">{ab.label}</span>
                     <span className="gc-ability-stage">{ab.stage}</span>
                   </div>
-                  <div style={{ textAlign: 'right' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8, textAlign: 'right' }}>
+                    {trend && trend.points.length >= 2 && (
+                      <AbilitySparkline points={trend.points} color={v.color} />
+                    )}
+                    {trend && trend.scoreDelta !== 0 && (
+                      <span
+                        style={{
+                          fontSize: 10,
+                          fontWeight: 600,
+                          color: trend.direction === 'up' ? '#059669' : '#dc2626',
+                          padding: '1px 5px',
+                          borderRadius: 4,
+                          background: trend.direction === 'up' ? 'rgba(5,150,105,0.08)' : 'rgba(220,38,38,0.08)',
+                        }}
+                      >
+                        {trend.direction === 'up' ? '↑' : '↓'}{Math.abs(trend.scoreDelta)}
+                      </span>
+                    )}
                     <span className="gc-ability-xp">{ab.totalXp} XP</span>
                     {ab.weeklyXp > 0 && <span className="gc-ability-delta">+{ab.weeklyXp}</span>}
                   </div>
@@ -985,6 +1091,8 @@ function AbilityGrowthTab({ overview }: { overview: GrowthOverview | null }) {
         {recentEntries.length > 0 ? (
           <div className="gc-card" style={{ padding: 20 }}>
             {recentEntries.map((entry, i) => {
+              const merged = (entry as XpLedgerEntry & { mergedAbilities?: string[] }).mergedAbilities || [];
+              const abilityLabels = merged.length > 0 ? merged : [entry.abilityLabel];
               const v = ABILITY_VISUALS[entry.abilityKey] || ABILITY_VISUALS.exec;
               const AbIcon = v.icon;
               const isSpecial = entry.premiumXp > 0 || entry.xpType !== 'reflection' || entry.totalXp >= 14;
@@ -1003,7 +1111,9 @@ function AbilityGrowthTab({ overview }: { overview: GrowthOverview | null }) {
                         <div className="gc-timeline-title">{entry.sourceTitle || entry.reason || entry.abilityLabel}</div>
                         <div className="gc-timeline-tags">
                           <span className={`gc-timeline-tag ${isSpecial ? 'special' : 'normal'}`}>+{entry.totalXp || entry.delta} XP</span>
-                          <span className="gc-timeline-tag normal">{entry.abilityLabel}</span>
+                          {abilityLabels.map((label) => (
+                            <span key={label} className="gc-timeline-tag normal">{label}</span>
+                          ))}
                           {entry.clientName && <span className="gc-timeline-tag normal">{entry.clientName}</span>}
                         </div>
                       </div>
@@ -1034,8 +1144,8 @@ function AbilityGrowthTab({ overview }: { overview: GrowthOverview | null }) {
       {topGaps.length > 0 && (
         <div>
           <div className="gc-section-header">
-            <div className="gc-section-title">能力缺口</div>
-            <span className="gc-section-hint">需要重点突破的方向</span>
+            <div className="gc-section-title">成长机会</div>
+            <span className="gc-section-hint">可以放大的下一步</span>
           </div>
           <div className="gc-gap-grid">
             {topGaps.map((gap) => {
@@ -1050,7 +1160,7 @@ function AbilityGrowthTab({ overview }: { overview: GrowthOverview | null }) {
                     </div>
                     <div>
                       <div style={{ fontSize: 13, fontWeight: 600, color: '#1e293b' }}>{gap.label}</div>
-                      <div style={{ fontSize: 11, color: '#94a3b8' }}>{gap.currentScore} → {gap.requiredScore} (差 {gap.gap})</div>
+                      <div style={{ fontSize: 11, color: '#94a3b8' }}>现在 {gap.currentScore} · 同岗位达标线 {gap.requiredScore}</div>
                     </div>
                   </div>
                   <div className="gc-ability-bar" style={{ marginBottom: 8 }}>
@@ -1068,10 +1178,10 @@ function AbilityGrowthTab({ overview }: { overview: GrowthOverview | null }) {
         <div className="gc-no-gap">
           <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12, fontWeight: 600, color: '#047857' }}>
             <ShieldCheck size={16} color="#047857" />
-            没有明显的能力缺口
+            当前所有方向都达到岗位标准
           </div>
           <div style={{ fontSize: 11, color: 'rgba(4,120,87,0.7)', marginTop: 4, marginLeft: 24 }}>
-            当前项目和事件线对你的能力要求都在覆盖范围内。
+            可以挑一条新方向尝试突破，或继续放大你的强项。
           </div>
         </div>
       )}

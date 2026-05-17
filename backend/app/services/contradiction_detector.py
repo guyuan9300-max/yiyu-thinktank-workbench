@@ -179,6 +179,26 @@ def detect_and_record_for_fact(
 
     返回新创建的 contradiction id 列表。
     """
+    from app.services.text_normalizer import is_noise_difference
+    from app.services.glossary_conflict_alert import check_fact_against_glossary
+
+    # Codex 方案 A · 强提示: 新事实 vs 字典 verified 立刻报警 (不等用户事后发现)
+    try:
+        check_fact_against_glossary(
+            conn,
+            client_id=client_id,
+            new_fact_id=new_fact_id,
+            subject_text=fact.subject_text,
+            attribute=fact.attribute,
+            value_text=fact.value_text,
+        )
+    except Exception as exc:  # noqa: BLE001
+        # 报警失败不阻塞主流程
+        import logging
+        logging.getLogger(__name__).warning(
+            "[glossary-drift] check failed for fact=%s: %s", new_fact_id, exc
+        )
+
     conflicting = find_contradictions_for_fact(
         conn,
         client_id=client_id,
@@ -187,6 +207,11 @@ def detect_and_record_for_fact(
     )
     created: list[str] = []
     for other in conflicting:
+        # Codex 实测发现的 OCR 噪声过滤: ^A / 繁简 / 标点差异不算真冲突
+        # 例: "明天的青年" vs "明天的青年\"" 只是引号差异 / "广州" vs "⼴州" 是 OCR 字宽差异
+        other_value = str(other.get("value_text") or other.get("value_normalized") or "")
+        if is_noise_difference(fact.value_text, other_value):
+            continue
         severity = _judge_severity(
             fact.value_normalized,
             str(other["value_normalized"]),
