@@ -895,6 +895,7 @@ export function IntelligenceStationView({
   const [followNote, setFollowNote] = useState('');
   const [taskDraftTarget, setTaskDraftTarget] = useState<IntelligenceItem | null>(null);
   const [taskDraft, setTaskDraft] = useState<IntelligenceTaskDraftPayload | null>(null);
+  const [taskDraftCacheByItemId, setTaskDraftCacheByItemId] = useState<Record<string, IntelligenceTaskDraftPayload>>({});
   const [peopleOptions, setPeopleOptions] = useState<MentionCandidate[]>([]);
   const flashRef = useRef(flash);
   const refreshPollTimersRef = useRef<number[]>([]);
@@ -1258,10 +1259,16 @@ export function IntelligenceStationView({
   }
 
   async function handlePromoteToTask(item: IntelligenceItem) {
+    if (!item.topicCandidateId && taskDraftCacheByItemId[item.id]) {
+      setTaskDraftTarget(item);
+      setTaskDraft(taskDraftCacheByItemId[item.id]);
+      return;
+    }
     setPendingItemId(item.id);
     try {
       if (!item.topicCandidateId) {
         const response = await getIntelligenceTaskDraft(item.id);
+        setTaskDraftCacheByItemId((current) => ({ ...current, [item.id]: response.draft }));
         setTaskDraftTarget(item);
         setTaskDraft(response.draft);
         return;

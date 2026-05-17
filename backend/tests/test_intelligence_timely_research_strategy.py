@@ -556,6 +556,113 @@ def test_tag_relevant_recent_opportunity_can_promote_without_object_name(tmp_pat
     assert "相关" in str(item["relevance_reason"]) or "影响" in str(item["relevance_reason"])
 
 
+def test_business_only_policy_without_public_service_anchor_does_not_promote(tmp_path: Path, monkeypatch) -> None:
+    db = Database(tmp_path / "timely_strategy_business_only.sqlite")
+    _seed_client(
+        db,
+        client_id="client_rici",
+        name="广东省日慈公益基金会",
+        domain="儿童心理健康",
+        intro="关注儿童青少年心理健康、公益创投、政府购买服务和社会组织合作。",
+    )
+    _insert_focus(db, client_id="client_rici", timely=["儿童青少年心理健康服务、公益创投、政府购买服务。"])
+    _insert_profile_card(
+        db,
+        client_id="client_rici",
+        title="儿童心理健康服务资料",
+        summary="机构关注儿童青少年心理健康、社会组织合作和公益创投机会。",
+        tags=["服务对象", "项目介绍"],
+    )
+    intent = _intent("client_rici", "儿童青少年心理健康 合作 资源", intent_id="intent_business_only")
+    _insert_intent(db, intent)
+    monkeypatch.setattr(
+        supply,
+        "_fetch_page_text",
+        lambda _url: (
+            "fetched",
+            "发布时间：2026-03-27。贵州省外事办印发《关于支持企业对外合作的措施》，"
+            "为企业提供政策解读、涉外业务培训、经贸资源对接和境外团组访黔对接支持。",
+            "",
+        ),
+    )
+
+    result = run_intelligence_candidate_refresh(
+        db,
+        data_dir=tmp_path,
+        ai_service=_ReadyTimelyAi(),
+        scope=_scope("client_rici", "广东省日慈公益基金会"),
+        intents=[intent],
+        max_fetch_jobs=1,
+        hit_fetcher=lambda _query, source_config: [
+            CandidateHit(
+                title="贵州省外事办公印发《关于支持企业对外合作的措施》",
+                url="https://example.gov.cn/business-policy",
+                snippet="为企业提供政策解读、涉外业务培训、经贸资源对接和境外团组访黔对接支持。",
+                source=source_config.source_name,
+                published_at="2026-03-27",
+            )
+        ],
+        official_site_hit_fetcher=lambda _query, _config: [],
+    )
+
+    assert result.promoted_count == 0
+    assert result.ai_reviewed_count == 0
+    assert db.scalar("SELECT COUNT(1) FROM intelligence_items WHERE content_kind='timely_intelligence'") == 0
+
+
+def test_generic_policy_query_terms_do_not_self_validate_timely_candidate(tmp_path: Path, monkeypatch) -> None:
+    db = Database(tmp_path / "timely_strategy_generic_policy.sqlite")
+    _seed_client(
+        db,
+        client_id="client_rici",
+        name="广东省日慈公益基金会",
+        domain="儿童心理健康",
+        intro="关注儿童青少年心理健康、公益创投、政府购买服务和社会组织合作。",
+    )
+    _insert_focus(db, client_id="client_rici", timely=["儿童青少年心理健康服务、公益创投、政府购买服务。"])
+    _insert_profile_card(
+        db,
+        client_id="client_rici",
+        title="儿童心理健康服务资料",
+        summary="机构关注儿童青少年心理健康、社会组织合作和公益创投机会。",
+        tags=["服务对象", "项目介绍"],
+    )
+    intent = _intent("client_rici", "儿童青少年心理健康 政策 通知", intent_id="intent_generic_policy")
+    _insert_intent(db, intent)
+    monkeypatch.setattr(
+        supply,
+        "_fetch_page_text",
+        lambda _url: (
+            "fetched",
+            "发布时间：2026-04-02。铜陵市住房公积金中心发布政策调整通知，调整个人住房贷款额度、缴存认定和还款规则。",
+            "",
+        ),
+    )
+
+    result = run_intelligence_candidate_refresh(
+        db,
+        data_dir=tmp_path,
+        ai_service=_ReadyTimelyAi(),
+        scope=_scope("client_rici", "广东省日慈公益基金会"),
+        intents=[intent],
+        max_fetch_jobs=1,
+        hit_fetcher=lambda _query, source_config: [
+            CandidateHit(
+                title="铜陵公积金发布政策调整通知",
+                url="https://paper.example.cn/housing-fund-policy",
+                snippet="调整个人住房贷款额度、缴存认定和还款规则。",
+                source=source_config.source_name,
+                published_at="2026-04-02",
+            )
+        ],
+        official_site_hit_fetcher=lambda _query, _config: [],
+    )
+
+    assert result.promoted_count == 0
+    assert result.ai_reviewed_count == 0
+    assert db.scalar("SELECT COUNT(1) FROM intelligence_items WHERE content_kind='timely_intelligence'") == 0
+
+
 def test_object_name_only_static_material_does_not_promote(tmp_path: Path, monkeypatch) -> None:
     db = Database(tmp_path / "timely_strategy_name_only.sqlite")
     _seed_client(db, client_id="client_name_only", name="春雨社区服务中心", domain="社区儿童服务")

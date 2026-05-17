@@ -318,6 +318,57 @@ CORE_PUBLIC_WELFARE_TIMELY_TERMS = (
     "公益创投",
     "政府购买",
 )
+BUSINESS_ONLY_TIMELY_TERMS = (
+    "企业",
+    "经贸",
+    "外贸",
+    "商务",
+    "招商",
+    "投资",
+    "对外合作",
+    "出海",
+    "进出口",
+    "外事",
+    "境外团组",
+    "贸易",
+    "产业链",
+    "营商环境",
+    "港澳投融资",
+)
+PUBLIC_SERVICE_ANCHOR_TERMS = (
+    *CORE_PUBLIC_WELFARE_TIMELY_TERMS,
+    "教育",
+    "心理",
+    "家庭支持",
+    "未成年人保护",
+    "社会服务",
+    "公益组织",
+    "非营利",
+)
+GENERIC_TIMELY_ROUTE_TERMS = (
+    "政策",
+    "通知",
+    "公告",
+    "合作",
+    "项目",
+    "服务",
+    "资源",
+    "机会",
+    "发布",
+    "启动",
+    "平台",
+    "案例",
+    "活动",
+    "申报",
+    "征集",
+    "采购",
+    "招标",
+    "支持",
+    "措施",
+    "办法",
+    "指南",
+    "动态",
+)
 TIMELY_REVIEW_BUCKET_TERMS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("grant", ("资助", "扶持", "公益创投", "申报", "征集", "截止", "基金会")),
     ("procurement", ("政府购买", "采购", "招标", "中标", "成交", "磋商", "比选")),
@@ -1385,6 +1436,15 @@ def _direct_identity_hits(text: str, brief: ResearchBrief | None) -> list[str]:
     return _matched_terms(text, _unique_items(identity_terms, limit=8))
 
 
+def _meaningful_timely_strategy_hits(text: str, brief: ResearchBrief | None) -> list[str]:
+    terms = [
+        term
+        for term in _timely_strategy_terms(brief)
+        if term and len(term) >= 2 and term not in GENERIC_TIMELY_ROUTE_TERMS
+    ]
+    return _matched_terms(text, _unique_items(terms, limit=36))
+
+
 def _has_external_signal(text: str, source_type: str = "") -> bool:
     return bool(
         any(term in text for term in EXTERNAL_SIGNAL_TERMS)
@@ -1410,6 +1470,14 @@ def _looks_like_off_topic_timely_signal(text: str) -> bool:
     return not any(term in text for term in CORE_PUBLIC_WELFARE_TIMELY_TERMS)
 
 
+def _looks_like_business_only_policy(text: str) -> bool:
+    if not any(term in text for term in BUSINESS_ONLY_TIMELY_TERMS):
+        return False
+    if any(term in text for term in PUBLIC_SERVICE_ANCHOR_TERMS):
+        return False
+    return any(term in text for term in ("政策", "措施", "通知", "支持", "合作", "办法", "指南"))
+
+
 def _external_signal_fast_screen(
     *,
     hit: CandidateHit,
@@ -1418,11 +1486,14 @@ def _external_signal_fast_screen(
     brief: ResearchBrief,
 ) -> tuple[bool, float, list[str], str]:
     text = f"{hit.title} {hit.snippet} {hit.source} {intent.query} {intent.reason}"
+    hit_text = f"{hit.title} {hit.snippet} {hit.source}"
     has_signal = _has_external_signal(text, config.source_type)
     if _looks_like_static_timely_hit(text, has_external_signal=has_signal):
         return False, -40.0, ["static_profile_filtered"], "static_profile"
     if _looks_like_off_topic_timely_signal(text):
         return False, -40.0, ["off_topic_filtered"], "generic_macro"
+    if _looks_like_business_only_policy(hit_text):
+        return False, -40.0, ["business_only_filtered"], "generic_macro"
     if _looks_like_generic_macro_signal(text):
         return False, -40.0, ["generic_macro_filtered"], "generic_macro"
     signal_terms = _matched_terms(text, list(EXTERNAL_SIGNAL_TERMS))
@@ -4099,16 +4170,18 @@ def _intelligence_ai_text(
     task_kind: str = "default",
 ) -> str:
     """Shared AI text path for intelligence analysis with long timeout and retries."""
+    normalized_task_kind = "deep_analysis" if task_kind == "default" else task_kind
+    fast_mode = normalized_task_kind == "fast_structured"
     result = generate_intelligence_text(
         ai_service,
         prompt=prompt,
         system_instruction=system_instruction,
-        timeout_seconds=max(120.0, timeout_seconds),
+        timeout_seconds=max(45.0 if fast_mode else 120.0, timeout_seconds),
         max_tokens=max_tokens,
         temperature=temperature,
         top_p=top_p,
-        task_kind="deep_analysis" if task_kind == "default" else task_kind,
-        enable_thinking=True,
+        task_kind=normalized_task_kind,
+        enable_thinking=not fast_mode,
         min_chars=20,
     )
     if not result.ok:
@@ -4251,10 +4324,10 @@ def _timely_ai_followup_questions(
         prompt=prompt,
         system_instruction="你是资讯情报站的追问设计助手。只生成具体、深入、可继续分析的问题。",
         timeout_seconds=45.0,
-        max_tokens=320,
+        max_tokens=360,
         temperature=0.28,
         top_p=0.88,
-        task_kind="deep_analysis",
+        task_kind="fast_structured",
     )
     questions = _parse_ai_followup_questions(str(raw or ""))
     return questions
@@ -4267,32 +4340,34 @@ def _timely_candidate_gate(draft: CandidateDraft, body_text: str = "", brief: Re
     if not intelligence_type:
         return False, "未识别出明确情报类型，暂不成卡", None
     text = f"{draft.hit.title} {draft.hit.snippet} {draft.intent.query} {draft.intent.reason} {body_text[:1600]}"
-    has_external_signal = _has_external_signal(text, draft.source_config.source_type)
-    strategy_tag_hits = _matched_terms(text, _timely_strategy_terms(brief))
+    source_text = f"{draft.hit.title} {draft.hit.snippet} {body_text[:1600]}"
+    if _looks_like_business_only_policy(source_text):
+        return False, "企业/经贸类外部政策未出现公益、社会服务或当前对象业务锚点，暂不成卡", None
+    has_external_signal = _has_external_signal(source_text, draft.source_config.source_type)
+    strategy_tag_hits = _meaningful_timely_strategy_hits(source_text, brief)
     if (
-        _looks_like_generic_macro_signal(text)
-        or any(marker in text for marker in ("泛泛讨论", "宏观讨论", "高质量发展论坛", "行业论坛"))
-        and re.search(r"没有[^。；;]{0,40}(申报|监管|合作|风险|政策|采购|招标|资助)", text)
-        and not any(marker in text for marker in ("征集通知", "申报通知", "截止时间", "报名截止", "中标公告", "采购公告"))
+        _looks_like_generic_macro_signal(source_text)
+        or any(marker in source_text for marker in ("泛泛讨论", "宏观讨论", "高质量发展论坛", "行业论坛"))
+        and re.search(r"没有[^。；;]{0,40}(申报|监管|合作|风险|政策|采购|招标|资助)", source_text)
+        and not any(marker in source_text for marker in ("征集通知", "申报通知", "截止时间", "报名截止", "中标公告", "采购公告"))
     ):
         return False, "泛行业新闻未呈现可传导到当前对象的决策相关机会、风险、约束或合作变化，暂不成卡", None
     if brief and brief.timely_strategy:
-        strategy_match = evaluate_timely_strategy_match(text, brief.timely_strategy)
+        strategy_match = evaluate_timely_strategy_match(source_text, brief.timely_strategy)
         if not strategy_match.get("ok") and not (has_external_signal and strategy_tag_hits):
             return False, _clean_text(strategy_match.get("reason") or "未通过情报策略复核，暂不成卡", max_len=180), None
-    object_terms = [term for term in draft.matched_terms if term and term in text][:4]
-    direct_identity_hits = _direct_identity_hits(text, brief)
-    sector_terms = ("公益", "慈善", "社会组织", "儿童", "困境", "心理", "社区", "志愿", "民政", "基金会", "项目")
-    has_sector_signal = any(term in text for term in sector_terms)
+    object_terms = [term for term in draft.matched_terms if term and term in source_text][:4]
+    direct_identity_hits = _direct_identity_hits(source_text, brief)
+    has_sector_signal = any(term in source_text for term in PUBLIC_SERVICE_ANCHOR_TERMS)
     if not object_terms and not has_sector_signal and not strategy_tag_hits:
-        return False, "只有泛政策或弱相关新闻，未建立与客户/项目的清晰关系", None
+        return False, "只有泛政策或弱相关新闻，未出现公益、社会服务或当前对象业务锚点，暂不成卡", None
     if not object_terms:
         transfer_terms = (
             "申报", "征集", "截止", "资助", "扶持", "招标", "采购", "中标",
             "监管", "合规", "公开募捐", "处罚", "风险", "整改", "规范",
             "儿童", "困境", "心理", "社区服务", "社会组织",
         )
-        if not any(term in text for term in transfer_terms):
+        if not any(term in source_text for term in transfer_terms):
             return False, "泛政策或泛通知缺少可传导到客户/项目的机会、风险或约束链条，暂不成卡", None
     if has_external_signal and strategy_tag_hits and not direct_identity_hits:
         intelligence_type = "启发型情报"

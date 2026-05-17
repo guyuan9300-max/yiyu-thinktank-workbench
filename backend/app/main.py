@@ -48698,12 +48698,12 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 "只输出 JSON，不要输出 Markdown。"
             ),
             response_schema=schema,
-            timeout_seconds=180.0,
-            max_tokens=1400,
+            timeout_seconds=70.0,
+            max_tokens=950,
             temperature=0.24,
             top_p=0.86,
-            task_kind="deep_analysis",
-            enable_thinking=True,
+            task_kind="fast_structured",
+            enable_thinking=False,
         )
         if not result.ok or not isinstance(result.payload, dict):
             detail = result.error or "AI 没有返回可用任务草稿"
@@ -48715,7 +48715,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         title = compact(payload.get("title") or item.title, 48)
         desc = str(payload.get("desc") or "").strip()
         desc = re.sub(r"\n{3,}", "\n\n", desc)
-        if len(title) < 4 or len(desc) < 80:
+        if len(title) < 4 or len(desc) < 60:
             raise HTTPException(status_code=503, detail="AI 生成的任务草稿不够完整，请稍后重试")
         raw_tags = payload.get("tags")
         tags = [compact(tag, 20) for tag in raw_tags if str(tag or "").strip()] if isinstance(raw_tags, list) else []
@@ -48853,16 +48853,21 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             "如果只能得到启发而不能立即行动，也要说清启发在哪里、还缺什么证据。"
         )
 
+        complex_question_terms = (
+            "资格", "合规", "申报", "传导链条", "证据缺口", "地域", "约束", "风险",
+            "判断分歧", "相关度", "怎么影响", "是否值得", "下一步决策", "策略",
+        )
+        is_complex_question = len(question) >= 80 or any(term in question for term in complex_question_terms)
         ai_result = generate_intelligence_text(
             state.ai,
             prompt=prompt,
             system_instruction=system_instruction,
-            timeout_seconds=210.0,
-            max_tokens=1800,
+            timeout_seconds=210.0 if is_complex_question else 80.0,
+            max_tokens=1800 if is_complex_question else 1100,
             temperature=0.32,
             top_p=0.86,
-            task_kind="deep_analysis",
-            enable_thinking=True,
+            task_kind="deep_analysis" if is_complex_question else "fast_structured",
+            enable_thinking=is_complex_question,
             min_chars=80,
         )
         if not ai_result.ok or not ai_result.text.strip():

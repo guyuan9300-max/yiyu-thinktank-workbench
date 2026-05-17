@@ -74,5 +74,26 @@ def test_intelligence_ai_json_returns_structured_payload() -> None:
     assert result.payload["summary"] == "外部信号已经进入有效窗口。"
 
 
+def test_fast_structured_runner_skips_thinking_retry() -> None:
+    ai = _ReadyAi()
+
+    result = generate_intelligence_json(
+        ai,
+        prompt="请快速生成任务草稿",
+        system_instruction="只返回 JSON",
+        response_schema={"type": "OBJECT", "properties": {"summary": {"type": "STRING"}}},
+        task_kind="fast_structured",
+        enable_thinking=False,
+        timeout_seconds=70.0,
+    )
+
+    assert result.ok
+    generate_calls = [call for call in ai.calls if "prompt" in call]
+    assert generate_calls
+    assert generate_calls[0]["task_kind"] == "fast_structured"
+    assert generate_calls[0]["enable_thinking"] is False
+    assert result.attempts == ["json"]
+
+
 def test_intelligence_ai_ready_rejects_mock_provider() -> None:
     assert intelligence_ai_ready(_MockAi()) is False

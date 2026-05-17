@@ -20,11 +20,11 @@ class IntelligenceAiCallResult:
     partial: bool = False
 
 
-def intelligence_ai_ready(ai_service: object | None) -> bool:
+def intelligence_ai_ready(ai_service: object | None, *, task_kind: str = "deep_analysis") -> bool:
     if ai_service is None or not hasattr(ai_service, "get_health"):
         return False
     try:
-        health = ai_service.get_health(task_kind="deep_analysis")
+        health = ai_service.get_health(task_kind=task_kind)
     except TypeError:
         try:
             health = ai_service.get_health()
@@ -80,7 +80,7 @@ def generate_intelligence_text(
     enable_thinking: bool = True,
     min_chars: int = 0,
 ) -> IntelligenceAiCallResult:
-    if not intelligence_ai_ready(ai_service):
+    if not intelligence_ai_ready(ai_service, task_kind=task_kind):
         return IntelligenceAiCallResult(ok=False, error="AI 未配置或不可用")
 
     attempts: list[str] = []
@@ -115,7 +115,8 @@ def generate_intelligence_text(
 
     generate = getattr(ai_service, "_qwen_generate", None)
     if callable(generate):
-        for attempt_name, thinking in (("generate_thinking", enable_thinking), ("generate", False)):
+        attempts_to_run = [("generate_thinking", True), ("generate", False)] if enable_thinking else [("generate", False)]
+        for attempt_name, thinking in attempts_to_run:
             try:
                 text = str(
                     generate(
@@ -177,12 +178,13 @@ def generate_intelligence_json(
     task_kind: str = "deep_analysis",
     enable_thinking: bool = True,
 ) -> IntelligenceAiCallResult:
-    if not intelligence_ai_ready(ai_service):
+    if not intelligence_ai_ready(ai_service, task_kind=task_kind):
         return IntelligenceAiCallResult(ok=False, error="AI 未配置或不可用")
     attempts: list[str] = []
     generate = getattr(ai_service, "_qwen_generate", None)
     if callable(generate):
-        for attempt_name, thinking in (("json_thinking", enable_thinking), ("json", False)):
+        attempts_to_run = [("json_thinking", True), ("json", False)] if enable_thinking else [("json", False)]
+        for attempt_name, thinking in attempts_to_run:
             try:
                 payload = generate(
                     prompt=prompt,
