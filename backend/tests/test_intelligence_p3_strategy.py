@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import sys
 import os
 import tempfile
@@ -324,3 +325,55 @@ def test_p3_verification_feedback_hides_item_and_updates_rules(tmp_path: Path) -
         assert diagnostics.status_code == 200
         assert any(event["reasonCode"] == "verification_rule" for event in diagnostics.json()["events"])
         assert any(summary["negativeCount"] > 0 for summary in diagnostics.json()["summaries"])
+
+
+def test_dismiss_accepts_multiple_reasons_and_records_feedback_events(tmp_path: Path) -> None:
+    app = create_app(tmp_path / "data")
+    with TestClient(app) as client:
+        db = client.app.state.app_state.db
+        _seed_client(db)
+        db.execute(
+            """
+            INSERT INTO intelligence_items(
+                id, content_kind, scope_type, scope_id, client_id, title, summary,
+                tags_json, source, source_url, captured_at, created_at, updated_at
+            )
+            VALUES('item_multi_dismiss', 'profile_completion', 'client', 'client_rici',
+                'client_rici', '低价值资料卡', '内容不相关且不准确。', ?,
+                '测试来源', 'https://low-value.example.org/page', '2026-05-14T09:00:00',
+                '2026-05-14T09:00:00', '2026-05-14T09:00:00')
+            """,
+            (to_json(["项目介绍"]),),
+        )
+
+        response = client.post(
+            "/api/v1/intelligence/items/item_multi_dismiss/dismiss",
+            json={
+                "reasonCodes": ["irrelevant", "low_value", "inaccurate"],
+                "note": "既不相关，也没有可复用事实",
+            },
+        )
+
+        assert response.status_code == 200, response.text
+        row = db.fetchone("SELECT user_status, user_feedback_json FROM intelligence_items WHERE id='item_multi_dismiss'")
+        assert row["user_status"] == "dismissed"
+        feedback = json.loads(row["user_feedback_json"])
+        assert feedback["reasonCode"] == "irrelevant"
+        assert feedback["reasonCodes"] == ["irrelevant", "low_value", "inaccurate"]
+        reasons = {
+            item["reason_code"]
+            for item in db.fetchall(
+                "SELECT reason_code FROM intelligence_feedback_events WHERE item_id='item_multi_dismiss'"
+            )
+        }
+        assert {"irrelevant", "low_value", "inaccurate"} <= reasons
+
+        response = client.post(
+            "/api/v1/intelligence/items/item_multi_dismiss/dismiss",
+            json={"reasonCode": "duplicate", "note": "旧客户端单原因"},
+        )
+        assert response.status_code == 200, response.text
+        row = db.fetchone("SELECT user_feedback_json FROM intelligence_items WHERE id='item_multi_dismiss'")
+        feedback = json.loads(row["user_feedback_json"])
+        assert feedback["reasonCode"] == "duplicate"
+        assert feedback["reasonCodes"] == ["duplicate"]
