@@ -1277,12 +1277,180 @@ class Database:
                 );
                 CREATE INDEX IF NOT EXISTS idx_consultation_knowledge_requests_org_status
                     ON consultation_knowledge_requests(organization_id, status, updated_at DESC);
+
+                -- Phase 1.5c · 战略陪伴叙事面板 (组织共享, A/B 账号同源)
+                -- 每个客户最新版的 6 维度故事网, 由 LLM 基于关系网生成, 多人共同编织
+                CREATE TABLE IF NOT EXISTS client_narrative_versions (
+                    id TEXT PRIMARY KEY,
+                    organization_id TEXT NOT NULL,
+                    client_id TEXT NOT NULL,
+                    rev INTEGER NOT NULL DEFAULT 1,
+                    generator TEXT NOT NULL DEFAULT 'ai',
+                    generated_at TEXT NOT NULL,
+                    model_name TEXT NOT NULL DEFAULT '',
+                    dim_essence_json TEXT NOT NULL DEFAULT '{}',
+                    dim_people_json TEXT NOT NULL DEFAULT '{}',
+                    dim_history_json TEXT NOT NULL DEFAULT '{}',
+                    dim_commitments_json TEXT NOT NULL DEFAULT '{}',
+                    dim_risks_json TEXT NOT NULL DEFAULT '{}',
+                    dim_next_json TEXT NOT NULL DEFAULT '{}',
+                    overall_confidence REAL NOT NULL DEFAULT 0.0,
+                    open_clarifications_count INTEGER NOT NULL DEFAULT 0,
+                    data_layer_gaps_json TEXT NOT NULL DEFAULT '[]',
+                    is_latest INTEGER NOT NULL DEFAULT 1,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    FOREIGN KEY(organization_id) REFERENCES organizations(id) ON DELETE CASCADE,
+                    FOREIGN KEY(client_id) REFERENCES clients(id) ON DELETE CASCADE,
+                    UNIQUE(client_id, rev)
+                );
+                CREATE INDEX IF NOT EXISTS idx_client_narrative_versions_org_client_latest
+                    ON client_narrative_versions(organization_id, client_id, is_latest, rev DESC);
+                CREATE INDEX IF NOT EXISTS idx_client_narrative_versions_client_rev
+                    ON client_narrative_versions(client_id, rev DESC);
+
+                -- 共同编织追溯: 谁问/谁答/哪段维度/原话内容
+                CREATE TABLE IF NOT EXISTS client_narrative_clarifications (
+                    id TEXT PRIMARY KEY,
+                    organization_id TEXT NOT NULL,
+                    client_id TEXT NOT NULL,
+                    based_on_rev INTEGER NOT NULL,
+                    dimension TEXT NOT NULL,
+                    question TEXT NOT NULL DEFAULT '',
+                    asked_by TEXT NOT NULL DEFAULT 'ai',
+                    answer TEXT NOT NULL,
+                    answered_by_user_id TEXT,
+                    answered_by_display_name TEXT NOT NULL DEFAULT '',
+                    answered_at TEXT NOT NULL,
+                    resulted_in_rev INTEGER,
+                    status TEXT NOT NULL DEFAULT 'pending',
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    FOREIGN KEY(organization_id) REFERENCES organizations(id) ON DELETE CASCADE,
+                    FOREIGN KEY(client_id) REFERENCES clients(id) ON DELETE CASCADE,
+                    FOREIGN KEY(answered_by_user_id) REFERENCES employee_accounts(id) ON DELETE SET NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_client_narrative_clarif_client_created
+                    ON client_narrative_clarifications(client_id, created_at DESC);
+                CREATE INDEX IF NOT EXISTS idx_client_narrative_clarif_org_status
+                    ON client_narrative_clarifications(organization_id, status, updated_at DESC);
+
+                -- 历史叙事版本快照 (审计可还原)
+                CREATE TABLE IF NOT EXISTS client_narrative_revisions (
+                    client_id TEXT NOT NULL,
+                    rev INTEGER NOT NULL,
+                    organization_id TEXT NOT NULL,
+                    snapshot_json TEXT NOT NULL,
+                    trigger TEXT NOT NULL DEFAULT 'initial',
+                    triggered_by_user_id TEXT,
+                    triggered_by_display_name TEXT NOT NULL DEFAULT '',
+                    created_at TEXT NOT NULL,
+                    PRIMARY KEY (client_id, rev),
+                    FOREIGN KEY(organization_id) REFERENCES organizations(id) ON DELETE CASCADE,
+                    FOREIGN KEY(client_id) REFERENCES clients(id) ON DELETE CASCADE,
+                    FOREIGN KEY(triggered_by_user_id) REFERENCES employee_accounts(id) ON DELETE SET NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_client_narrative_revisions_org_created
+                    ON client_narrative_revisions(organization_id, created_at DESC);
                 """
             )
+            # v1.0 事实澄清模块 6 层重构 — 新增 4 个 layer 字段 (essence + people 复用旧字段)
+            # 新 6 层映射:
+            #   Layer 1 essence       → dim_essence_json (复用)
+            #   Layer 2 cooperation   → dim_cooperation_json (新)
+            #   Layer 3 business_intro → dim_business_intro_json (新)
+            #   Layer 4 people        → dim_people_json (复用, 语义升级到 v1)
+            #   Layer 5 timeline      → dim_timeline_json (新)
+            #   Layer 6 next_steps    → dim_next_steps_json (新)
+            #   废弃: dim_history_json / dim_commitments_json / dim_risks_json / dim_next_json
+            #         (保留 schema 兼容旧 rev, 但新 rev 用新字段)
+            self._ensure_column("client_narrative_versions", "dim_cooperation_json", "TEXT NOT NULL DEFAULT '{}'")
+            self._ensure_column("client_narrative_versions", "dim_business_intro_json", "TEXT NOT NULL DEFAULT '{}'")
+            self._ensure_column("client_narrative_versions", "dim_timeline_json", "TEXT NOT NULL DEFAULT '{}'")
+            self._ensure_column("client_narrative_versions", "dim_next_steps_json", "TEXT NOT NULL DEFAULT '{}'")
+            self._ensure_column("client_narrative_versions", "schema_version", "TEXT NOT NULL DEFAULT 'v0'")
+
             self._ensure_column("org_ai_config", "ai_provider_label", "TEXT NOT NULL DEFAULT ''")
             self._ensure_column("org_ai_config", "ai_base_url", "TEXT NOT NULL DEFAULT ''")
             self._ensure_column("task_attachments", "document_id", "TEXT")
             self._ensure_column("event_line_attachments", "document_id", "TEXT")
+
+            # 主线还原 LLM 叙事 (P1) — AI 把碎片素材重组成 3-5 个关键转折点
+            self.conn.executescript(
+                """
+                CREATE TABLE IF NOT EXISTS cloud_event_line_timeline_narratives (
+                    id TEXT PRIMARY KEY,
+                    organization_id TEXT NOT NULL,
+                    event_line_id TEXT NOT NULL,
+                    rev INTEGER NOT NULL DEFAULT 1,
+                    headline TEXT NOT NULL DEFAULT '',
+                    opening TEXT NOT NULL DEFAULT '',
+                    closing TEXT NOT NULL DEFAULT '',
+                    nodes_json TEXT NOT NULL DEFAULT '[]',
+                    overall_confidence REAL NOT NULL DEFAULT 0,
+                    generator TEXT NOT NULL DEFAULT 'ai',
+                    model_name TEXT NOT NULL DEFAULT '',
+                    triggered_by_user_id TEXT,
+                    triggered_by_display_name TEXT NOT NULL DEFAULT '',
+                    trigger TEXT NOT NULL DEFAULT 'manual',
+                    is_latest INTEGER NOT NULL DEFAULT 1,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    FOREIGN KEY(organization_id) REFERENCES organizations(id) ON DELETE CASCADE,
+                    FOREIGN KEY(event_line_id) REFERENCES event_lines(id) ON DELETE CASCADE
+                );
+                CREATE INDEX IF NOT EXISTS idx_eline_narrative_latest
+                    ON cloud_event_line_timeline_narratives(event_line_id, is_latest);
+                """
+            )
+
+            # ── 数据中心加工层 Phase 1 第 1/4 项 ──
+            # 项目档案：「项目本质」维度的结构化骨架
+            self.conn.executescript(
+                """
+                CREATE TABLE IF NOT EXISTS cloud_client_strategic_profiles (
+                    client_id TEXT PRIMARY KEY,
+                    organization_id TEXT NOT NULL,
+                    project_type TEXT NOT NULL DEFAULT '',
+                    project_goal TEXT NOT NULL DEFAULT '',
+                    success_metric TEXT NOT NULL DEFAULT '',
+                    current_phase TEXT NOT NULL DEFAULT '',
+                    cooperation_start_date TEXT,
+                    cooperation_end_date TEXT,
+                    notes TEXT NOT NULL DEFAULT '',
+                    updated_by_user_id TEXT,
+                    updated_by_display_name TEXT NOT NULL DEFAULT '',
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    FOREIGN KEY(organization_id) REFERENCES organizations(id) ON DELETE CASCADE,
+                    FOREIGN KEY(client_id) REFERENCES clients(id) ON DELETE CASCADE
+                );
+                CREATE INDEX IF NOT EXISTS idx_strategic_profiles_org
+                    ON cloud_client_strategic_profiles(organization_id);
+
+                -- 人物花名册：「关键人物」维度的结构化骨架
+                CREATE TABLE IF NOT EXISTS cloud_external_persons (
+                    id TEXT PRIMARY KEY,
+                    organization_id TEXT NOT NULL,
+                    client_id TEXT NOT NULL,
+                    name TEXT NOT NULL,
+                    role_title TEXT NOT NULL DEFAULT '',
+                    affiliation TEXT NOT NULL DEFAULT '',
+                    relationship_type TEXT NOT NULL DEFAULT '',
+                    one_liner TEXT NOT NULL DEFAULT '',
+                    notes TEXT NOT NULL DEFAULT '',
+                    sort_order INTEGER NOT NULL DEFAULT 0,
+                    created_by_user_id TEXT,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    FOREIGN KEY(organization_id) REFERENCES organizations(id) ON DELETE CASCADE,
+                    FOREIGN KEY(client_id) REFERENCES clients(id) ON DELETE CASCADE
+                );
+                CREATE INDEX IF NOT EXISTS idx_external_persons_client
+                    ON cloud_external_persons(organization_id, client_id, sort_order);
+                """
+            )
+
             self.conn.commit()
 
     def _table_columns(self, table_name: str) -> set[str]:
@@ -1349,6 +1517,23 @@ class Database:
         with self._lock:
             self.conn.executescript(script)
             self.conn.commit()
+
+    def run_in_transaction(self, callback, mode: str = "IMMEDIATE"):
+        """单事务跑多步 SQL（用 raw conn，绕开每条 SQL 自动 commit）。
+
+        execute() 每次都自动 commit，多步操作要原子性必须用这条路。
+        callback 签名：(conn) -> Any，可以直接 conn.execute(...)。
+        失败时回滚整批，异常向上抛。
+        """
+        with self._lock:
+            try:
+                self.conn.execute(f"BEGIN {mode}")
+                result = callback(self.conn)
+                self.conn.commit()
+                return result
+            except Exception:
+                self.conn.rollback()
+                raise
 
     def scalar(self, query: str, params: tuple = ()) -> int:
         row = self.fetchone(query, params)

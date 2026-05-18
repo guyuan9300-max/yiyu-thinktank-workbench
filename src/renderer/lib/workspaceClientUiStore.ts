@@ -26,7 +26,7 @@ export type WorkspaceRightPanelEvidenceSnapshot = {
   evidenceKey: string;
 };
 
-export type WorkspaceRightTabKey = 'overview' | 'files' | 'evidence' | 'memory' | 'proposals' | 'tools';
+export type WorkspaceRightTabKey = 'overview' | 'files' | 'memory' | 'proposals' | 'tools';
 export type WorkspaceSurfaceMode = 'setup' | 'workspace';
 export type WorkspaceImportDropZone = 'buffer' | 'composer' | null;
 export type WorkspaceAnswerActionName =
@@ -251,7 +251,10 @@ export function getWorkspaceLinkMaterialState(state: WorkspaceClientUiState, cli
 }
 
 export function getWorkspaceRightTab(state: WorkspaceClientUiState, clientId: string): WorkspaceRightTabKey {
-  return state.rightTabByClient[clientId] || 'files';
+  const raw = state.rightTabByClient[clientId];
+  // 兼容老的持久化值 'evidence'（现在已并入 files）
+  if (!raw || (raw as string) === 'evidence') return 'files';
+  return raw;
 }
 
 export function workspaceClientUiReducer(
@@ -519,12 +522,16 @@ export function workspaceClientUiReducer(
           : removeKey(state.rightPanelEvidenceSnapshotByClient, action.clientId),
       };
 
-    case 'setRightTab':
-      // 不再针对默认值做压缩：所有切换都显式存进 map。避免和 getWorkspaceRightTab 的默认值耦合。
+    case 'setRightTab': {
+      // 兼容老 state：以前持久化过 'evidence' 的客户在升级后自动迁移到 'files'，
+      // 后者承担了原引证视图（作为过滤模式）。
+      const nextTab: WorkspaceRightTabKey =
+        (action.tab as string) === 'evidence' ? 'files' : action.tab;
       return {
         ...state,
-        rightTabByClient: { ...state.rightTabByClient, [action.clientId]: action.tab },
+        rightTabByClient: { ...state.rightTabByClient, [action.clientId]: nextTab },
       };
+    }
 
     case 'setAnswerActionState':
       if (areValuesEqual(state.answerActionStateByClient[action.clientId] || {}, action.value)) return state;

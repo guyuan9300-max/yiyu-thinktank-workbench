@@ -378,11 +378,20 @@ def build_task_context_brief_material_pack(db: Database, task_id: str) -> dict[s
     }
     keywords = _derive_keywords(seed)
     chunks = _select_data_center_chunks(db, client_id, keywords)
+    # P-D.4: 注入字典权威包作为 brief 的事实底座
+    glossary_pack_text = ""
+    if client_id:
+        try:
+            from app.services.glossary_attributes_pack import build_verified_attributes_pack
+            glossary_pack_text = build_verified_attributes_pack(db, client_id) or ""
+        except Exception:
+            glossary_pack_text = ""
     pack = {
         **seed,
         "taskNotes": _fetch_task_notes(db, task_id),
         "taskAttachments": _fetch_task_attachments(db, task_id),
         "dataCenterDocumentChunks": chunks,
+        "glossaryAuthorityPack": glossary_pack_text,
         "keywords": keywords[:24],
         "coverage": {
             "eventLineTaskCount": len(event_tasks),
@@ -390,6 +399,7 @@ def build_task_context_brief_material_pack(db: Database, task_id: str) -> dict[s
             "activityCount": len(event_line_activities),
             "reviewEntryCount": len(review_entries),
             "documentChunkCount": len(chunks),
+            "glossaryPackChars": len(glossary_pack_text),
         },
         "promptVersion": TASK_CONTEXT_BRIEF_PROMPT_VERSION,
     }

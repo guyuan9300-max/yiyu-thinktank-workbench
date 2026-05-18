@@ -231,6 +231,7 @@ import type {
   TopicRadarPayload,
   ReviewDashboard,
   ReviewPerspectiveKey,
+  DepartmentSignalsResponse,
   WeeklyOverviewRefreshPayload,
   WeeklyOverviewRefreshStatus,
   ReviewHistoryResponse,
@@ -1652,6 +1653,17 @@ export async function deleteClientFolder(clientId: string, folderId: string) {
   });
 }
 
+export async function deleteClientDocument(clientId: string, documentId: string) {
+  return request<{
+    deleted: boolean;
+    documentId: string;
+    fileName: string;
+    recycledPath: string;
+  }>(`/api/v1/clients/${clientId}/documents/${documentId}`, {
+    method: 'DELETE',
+  });
+}
+
 export async function getClientWorkspace(id: string) {
   return request<ClientWorkspace>(`/api/v1/clients/${id}/workspace`);
 }
@@ -1981,7 +1993,75 @@ export async function deleteProjectFlow(clientId: string, flowId: string) {
 }
 
 export async function getClientKnowledgeStatus(clientId: string) {
-  return request<ClientKnowledgeStatus>(`/api/v1/clients/${clientId}/knowledge/status`);
+  // /knowledge-status 端点返回带 confirmedFacts/weeklyDelta 等业务字段的 ClientKnowledgeStatus,
+  // 是战略陪伴 hero 区与待办标记需要的视图; 不要回退到 /knowledge/status (totalDocuments 那个).
+  return request<ClientKnowledgeStatus>(`/api/v1/clients/${encodeURIComponent(clientId)}/knowledge-status`);
+}
+
+// ─── 战略陪伴 · 客户脉搏 (Phase 1 克制版主页) ───────────────────
+
+export type StrategicPulseEvent = {
+  title: string;
+  occurredAt: string;
+  impact: 'advance' | 'neutral' | 'block';
+  sourceType: string;
+  sourceId: string;
+  sourceLabel: string;
+};
+
+export type StrategicPulseTodo = {
+  title: string;
+  dueDate: string | null;
+  daysUntilDue: number | null;
+  urgency: 'overdue' | 'today' | 'this_week' | 'later';
+  sourceTaskId: string | null;
+  eventLineId: string | null;
+  eventLineName: string;
+};
+
+export type StrategicPulseBlocker = {
+  title: string;
+  reason: string;
+  stuckDays: number;
+  eventLineId: string;
+  suggestedAction: string;
+};
+
+export type StrategicPulse = {
+  clientId: string;
+  weekStart: string;
+  weekEnd: string;
+  weeklyEvents: StrategicPulseEvent[];
+  upcomingTodos: StrategicPulseTodo[];
+  currentBlockers: StrategicPulseBlocker[];
+  generatedAt: string;
+};
+
+export async function getClientStrategicPulse(clientId: string) {
+  return request<StrategicPulse>(`/api/v1/clients/${encodeURIComponent(clientId)}/strategic-pulse`);
+}
+
+// 本周概览顶部「客户脉搏」区块 - 所有客户的摘要 (用于横向一览谁本周有动态)
+export type ClientPulseSummary = {
+  clientId: string;
+  clientName: string;
+  clientStage: string;
+  weeklyNewDocumentCount: number;
+  weeklyNewTaskCount: number;
+  weeklyNewEvidenceCount: number;
+  currentBlockerCount: number;
+  overdueTodoCount: number;
+  hasActivity: boolean;
+  topSignal: string;
+};
+
+export type ClientsPulseSummary = {
+  summaries: ClientPulseSummary[];
+  generatedAt: string;
+};
+
+export async function getClientsPulseSummary() {
+  return request<ClientsPulseSummary>(`/api/v1/reviews/clients-pulse`);
 }
 
 export async function getClientKnowledgeProgress(clientId: string) {
@@ -3587,6 +3667,22 @@ export async function getReviews(weekLabel?: string, options?: { skipAi?: boolea
   return request<ReviewDashboard>(`/api/v1/reviews${suffix}`, { signal: options?.signal });
 }
 
+export async function getDepartmentSignals(params: {
+  weekLabel?: string | null;
+  perspective?: 'organization' | 'department' | 'mine';
+  departmentId?: string | null;
+  signal?: AbortSignal;
+}) {
+  const search = new URLSearchParams();
+  if (params.weekLabel) search.set('weekLabel', params.weekLabel);
+  if (params.perspective) search.set('perspective', params.perspective);
+  if (params.departmentId) search.set('departmentId', params.departmentId);
+  const suffix = search.toString() ? `?${search.toString()}` : '';
+  return request<DepartmentSignalsResponse>(`/api/v1/reviews/department-signals${suffix}`, {
+    signal: params.signal,
+  });
+}
+
 export async function refreshWeeklyOverview(payload: WeeklyOverviewRefreshPayload) {
   return request<WeeklyOverviewRefreshStatus>('/api/v1/reviews/weekly-overview/refresh', {
     method: 'POST',
@@ -3713,7 +3809,7 @@ export async function getCandidateInsights(id: string) {
 
 export async function askCandidateQuestion(id: string, payload: TopicCandidateChatPayload) {
   const controller = new AbortController();
-  const timeoutId = window.setTimeout(() => controller.abort(), 130000);
+  const timeoutId = window.setTimeout(() => controller.abort(), 25000);
   try {
     return await request<TopicCandidateChatResponse>(`/api/v1/topics/candidates/${id}/chat`, {
       method: 'POST',
@@ -3723,7 +3819,7 @@ export async function askCandidateQuestion(id: string, payload: TopicCandidateCh
   } catch (error) {
     const detail = error instanceof Error ? error.message : String(error);
     if (/abort|aborted|signal is aborted/i.test(detail)) {
-      throw new Error('大周这次追问超过 2 分钟仍未返回。可以稍后再问一次，或把问题收窄到一个判断点。');
+      throw new Error('大周这次追问超时了。可以直接再问一次，或者把问题问得更具体一点。');
     }
     throw error;
   } finally {
@@ -4210,7 +4306,7 @@ export async function createIntelligenceTask(id: string, payload: IntelligenceTa
 
 export async function askIntelligenceItemQuestion(id: string, payload: TopicCandidateChatPayload) {
   const controller = new AbortController();
-  const timeoutId = window.setTimeout(() => controller.abort(), 260000);
+  const timeoutId = window.setTimeout(() => controller.abort(), 25000);
   try {
     return await request<IntelligenceItemChatResponse>(`/api/v1/intelligence/items/${id}/chat`, {
       method: 'POST',
@@ -4220,7 +4316,7 @@ export async function askIntelligenceItemQuestion(id: string, payload: TopicCand
   } catch (error) {
     const detail = error instanceof Error ? error.message : String(error);
     if (/abort|aborted|signal is aborted/i.test(detail)) {
-      throw new Error('大周这次追问超过 4 分钟仍未返回。可以稍后再问一次，或把问题收窄到一个判断点。');
+      throw new Error('大周这次追问超时了。可以直接再问一次，或者把问题问得更具体一点。');
     }
     throw error;
   } finally {

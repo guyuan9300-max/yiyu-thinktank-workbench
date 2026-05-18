@@ -2899,6 +2899,49 @@ class Database:
             self._ensure_column("chat_messages", "active_skill_id", "TEXT")
             # R7：创意度三档（creative / balanced / strict）。NULL 视作 'strict' 兼容老消息。
             self._ensure_column("chat_messages", "creativity_mode", "TEXT")
+            # R11.1：文档结构化解构层 —— document_kinds（分类）+ document_fields（提取的字段）
+            # R12：document_fields 加 schema_name 支持多 schema 并存（universal + employee_contract + ...）
+            self.conn.executescript(
+                """
+                CREATE TABLE IF NOT EXISTS document_kinds (
+                    document_id TEXT PRIMARY KEY,
+                    kind TEXT NOT NULL,
+                    schema_version TEXT NOT NULL DEFAULT 'v1',
+                    classification_confidence REAL NOT NULL DEFAULT 0.0,
+                    classified_at TEXT NOT NULL,
+                    decomposed_at TEXT,
+                    decomposition_status TEXT NOT NULL DEFAULT 'pending',
+                    last_error TEXT,
+                    FOREIGN KEY(document_id) REFERENCES documents(id) ON DELETE CASCADE
+                );
+                CREATE INDEX IF NOT EXISTS idx_document_kinds_kind
+                    ON document_kinds(kind, decomposition_status);
+
+                CREATE TABLE IF NOT EXISTS document_fields (
+                    id TEXT PRIMARY KEY,
+                    document_id TEXT NOT NULL,
+                    schema_name TEXT NOT NULL DEFAULT 'employee_contract',
+                    field_name TEXT NOT NULL,
+                    field_value TEXT NOT NULL,
+                    field_confidence REAL NOT NULL DEFAULT 0.0,
+                    extraction_method TEXT NOT NULL DEFAULT 'llm',
+                    raw_evidence TEXT,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    FOREIGN KEY(document_id) REFERENCES documents(id) ON DELETE CASCADE
+                );
+                CREATE INDEX IF NOT EXISTS idx_document_fields_doc
+                    ON document_fields(document_id, schema_name, field_name);
+                """
+            )
+            # 老数据兼容：document_fields 加 schema_name 列（已有数据归 employee_contract）
+            self._ensure_column("document_fields", "schema_name", "TEXT NOT NULL DEFAULT 'employee_contract'")
+            # 旧的唯一索引（document_id, field_name）要换成（document_id, schema_name, field_name）
+            self.conn.execute("DROP INDEX IF EXISTS uq_document_fields_doc_field")
+            self.conn.execute(
+                "CREATE UNIQUE INDEX IF NOT EXISTS uq_document_fields_doc_schema_field "
+                "ON document_fields(document_id, schema_name, field_name)"
+            )
             # R6 写作风格 skill 表
             self.conn.executescript(
                 """

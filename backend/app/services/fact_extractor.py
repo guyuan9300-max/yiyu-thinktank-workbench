@@ -18,6 +18,8 @@ import re
 from dataclasses import dataclass
 from typing import Final
 
+from app.services.text_normalizer import normalize_text
+
 logger = logging.getLogger(__name__)
 
 
@@ -44,8 +46,8 @@ _VALUE = r"[^，。；\n]{1,40}?"
 # 这种把后面句子的虚词吃进 attribute 的错误。
 # 这些字 = 副词/否定/连接词/动词后缀，不应作为名词属性的末字。
 _ATTRIBUTE_TRAIL_STOPCHARS: Final[frozenset[str]] = frozenset(
-    "才也不认正将没否已又都就会能可必应必须就要在还连而且但或乃从对被让使"
-    "去出到起开来下上"  # 动词补语
+    "才也不认正将没否已又都就能可必应必须就要在还连而且但或乃从对被让使"
+    "去到起开来下"  # 动词补语 (去除"会/出/上" — 这些常在名词中: 基金会/支出/线上)
 )
 
 # attribute 首字不能是这些（副词/限定词，attribute 应当是名词起头）
@@ -94,7 +96,7 @@ def _is_valid_attribute(attribute: str) -> bool:
 
 
 def _is_valid_value(value: str) -> bool:
-    """post-filter：拒绝空白 / 全标点 / 长度异常的值。"""
+    """post-filter：拒绝空白 / 全标点 / 长度异常 / 残尾虚词的值。"""
     if not value:
         return False
     cleaned = value.strip()
@@ -102,6 +104,68 @@ def _is_valid_value(value: str) -> bool:
         return False
     # 全是标点/空白
     if not any(c.isalnum() or "一" <= c <= "鿿" for c in cleaned):
+        return False
+    # Codex 实测发现的尾巴噪声: 值是从原句尾巴切出来的虚词
+    # 例: "明天的青年""" / "哪⼀条？为什么？" / "学⽣？" / "以前cffc不" — 这些不能作为权威值
+    last_char = cleaned[-1]
+    if last_char in "的吗了呢吧啊呀哇么哪？?不没未未必应该可能或也都还又":
+        return False
+    # 末字是连接词/虚词起头 — 说明 regex 切在了句子中间
+    if last_char in "和与在为对于由":
+        return False
+    # value 含有"是/为/这是/那是" 起头说明 regex 把动词吃进 value 了
+    if cleaned.startswith(("是", "为", "这是", "那是", "在", "为了", "由于")):
+        return False
+    return True
+
+
+# Subject 不能是太抽象/代词/限定词的 (这类是被切断的句子残片)
+_SUBJECT_TOO_ABSTRACT: Final[frozenset[str]] = frozenset({
+    "待确认", "未知", "无", "这", "那", "此", "其", "之",
+    "我们", "他们", "你们", "她们",
+    "其他", "这些", "那些", "这个", "那个",
+    "项目", "活动", "情况", "事情", "问题", "内容", "东西",  # 太宽泛的名词
+})
+
+
+# Codex 实测发现的 subject 残尾噪声: 抽断在词语中间
+# 例: "团队已经把行动营理解为一个" / "值增值结果确认依据审计机构出具"
+# 注: 移除 "会" — 因为 "基金会/委员会/协会" 都是合法 subject 末字
+_SUBJECT_BAD_END: Final[frozenset[str]] = frozenset(
+    "的了着把被让使将能可应一个为说要去到对在与和"
+)
+
+# subject 不能以这些副词/助词起头 (说明抽断在句子中间)
+_SUBJECT_BAD_START: Final[frozenset[str]] = frozenset(
+    "已正将又才也都就把被让使的了么哪那这若如或而但所"
+)
+
+# subject 包含这些助动词说明吃进了完整句子片段
+_SUBJECT_FORBIDDEN_SUBSTR: Final[tuple[str, ...]] = (
+    "已经", "正在", "把", "将要", "能够", "可以", "应该",
+    "理解为", "认为", "确认依据", "期待说",
+)
+
+
+def _is_valid_subject(subject: str) -> bool:
+    """Codex 实测加强: 拒绝抽断在句子中间的 subject."""
+    if not subject:
+        return False
+    cleaned = subject.strip()
+    if len(cleaned) < 2 or len(cleaned) > 25:
+        return False
+    # 末字不能是助词/动词残尾
+    if cleaned[-1] in _SUBJECT_BAD_END:
+        return False
+    # 首字不能是副词/助词
+    if cleaned[0] in _SUBJECT_BAD_START:
+        return False
+    # 不能含助动词 (说明是句子片段)
+    for bad in _SUBJECT_FORBIDDEN_SUBSTR:
+        if bad in cleaned:
+            return False
+    # 不能是太抽象/代词性 subject (例: "待确认" / "我们" / "项目")
+    if cleaned in _SUBJECT_TOO_ABSTRACT:
         return False
     return True
 
@@ -135,6 +199,10 @@ def extract_facts_from_chunk(chunk_text: str) -> list[AtomicFact]:
     """抽取一个 chunk 里的原子事实。"""
     if not chunk_text or not chunk_text.strip():
         return []
+    # Codex 实测发现的 OCR 噪声前置清理 (^A 控制字符 / 全角空格 / 多余空白)
+    chunk_text = normalize_text(chunk_text)
+    if not chunk_text:
+        return []
     seen: set[tuple[str, str, str]] = set()
     out: list[AtomicFact] = []
 
@@ -146,9 +214,9 @@ def extract_facts_from_chunk(chunk_text: str) -> list[AtomicFact]:
         if len(subject) < 2 or len(attribute) < 2 or len(value_raw) < 1:
             continue
         # 严格 post-validation 拒绝噪音：
-        # - attribute 末尾是虚词/否定/连接词（"才/认/不/正/将/又/也/都/就..."）
-        # - value 全标点/空白/过长
-        # - attribute 在黑名单里（"建立起良好"这种 subject 残尾）
+        # Codex 加强: subject 必须是完整名词, 不能是抽断的句子片段
+        if not _is_valid_subject(subject):
+            continue
         if not _is_valid_attribute(attribute):
             continue
         if not _is_valid_value(value_raw):
@@ -176,6 +244,8 @@ def extract_facts_from_chunk(chunk_text: str) -> list[AtomicFact]:
         value_raw = match.group("value").strip()
         if len(subject) < 2 or len(value_raw) < 1:
             continue
+        if not _is_valid_subject(subject) or not _is_valid_value(value_raw):
+            continue
         key = (subject, "位置", value_raw)
         if key in seen:
             continue
@@ -197,6 +267,8 @@ def extract_facts_from_chunk(chunk_text: str) -> list[AtomicFact]:
         subject = match.group("subject").strip()
         value_raw = match.group("value").strip()
         if len(subject) < 2 or len(value_raw) < 1:
+            continue
+        if not _is_valid_subject(subject) or not _is_valid_value(value_raw):
             continue
         key = (subject, "计划时间", value_raw)
         if key in seen:

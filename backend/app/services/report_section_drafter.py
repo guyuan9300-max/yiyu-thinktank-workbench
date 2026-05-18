@@ -122,6 +122,7 @@ def draft_section(
     max_retries: int = 3,
     timeout_seconds: float = 90.0,
     max_tokens: int = 3500,
+    glossary_pack: str = "",
 ) -> SectionContent:
     """调豆包写一节 markdown + materialize 每个 chart_hint。
 
@@ -134,6 +135,7 @@ def draft_section(
         blueprint_title=blueprint_title,
         blueprint_audience=blueprint_audience,
         blueprint_tone=blueprint_tone,
+        glossary_pack=glossary_pack,
     )
 
     errors: list[str] = []
@@ -196,6 +198,7 @@ def _build_user_prompt(
     blueprint_title: str,
     blueprint_audience: str,
     blueprint_tone: str,
+    glossary_pack: str = "",
 ) -> str:
     chart_block = ""
     if plan.chart_hints:
@@ -207,13 +210,18 @@ def _build_user_prompt(
                 f"caption={caption} data_source_hint={ch.data_source_hint}\n"
             )
 
+    glossary_block = ""
+    if glossary_pack:
+        glossary_block = f"{glossary_pack}\n\n---\n\n"
+
     return (
+        f"{glossary_block}"
         "# 报告全局\n"
         f"- 报告标题：{blueprint_title}\n"
         f"- 目标读者：{blueprint_audience}\n"
         f"- 整体基调：{blueprint_tone}\n\n"
         "# 本节 plan\n"
-        f"- 章节标题：{plan.title}\n"
+        f"- 章节标题:{plan.title}\n"
         f"- 章节目标：{plan.goal}\n"
         f"- 字数预算：{plan.estimated_words} 字（±30%）\n"
         f"- 引用预算：{plan.citation_budget} 条以内\n"

@@ -513,6 +513,110 @@ def _force_run_font(run: Any) -> None:
     rfonts.set(qn('w:hAnsi'), _DOCX_BODY_FONT)
 
 
+_MD_IMAGE_PATTERN = re.compile(r"!\[[^\]]*\]\([^)]*\)")
+_MD_LINK_PATTERN = re.compile(r"\[([^\]]+?)\]\(([^)]+?)\)")
+_MD_BOLD_PATTERN = re.compile(r"\*\*(.+?)\*\*")
+_MD_INLINE_CODE_PATTERN = re.compile(r"`([^`]+?)`")
+_HTML_IMG_PATTERN = re.compile(r"<img[^>]*>", re.IGNORECASE)
+_HTML_TAG_PATTERN = re.compile(r"<[^>]+>")
+_BLANK_LINE_RE = re.compile(r"\n{3,}")
+_LIST_ITEM_RE = re.compile(r"^(?:[-*+•]|\d+[.、])\s+(.+)$")
+
+
+def _clean_markdown_artifacts_for_docx(text: str) -> str:
+    """Strip markdown artifacts that don't render to clean docx text.
+
+    - 图片占位符 `![alt](url)` / HTML `<img>`：去掉，避免在 docx 里看到一串 url
+    - 多余连续空行压成一个段落分隔
+    """
+    cleaned = _MD_IMAGE_PATTERN.sub("", text)
+    cleaned = _HTML_IMG_PATTERN.sub("", cleaned)
+    # 内嵌的 #imgIndex= / wxfrom= 等参数残留（图片被去掉后图片标记里的尾部杂字）
+    cleaned = re.sub(r"#imgIndex=\d+", "", cleaned)
+    cleaned = _BLANK_LINE_RE.sub("\n\n", cleaned)
+    return cleaned
+
+
+def _add_docx_hyperlink(paragraph, url: str, text: str) -> None:
+    """给段落加一个真正的可点击 hyperlink（蓝色下划线），不在文本里露 url。"""
+    from docx.oxml.ns import qn
+    from docx.oxml import OxmlElement
+
+    if not text:
+        text = url
+    part = paragraph.part
+    r_id = part.relate_to(
+        url,
+        "http://schemas.openxmlformats.org/officeDocument/2006/relationships/hyperlink",
+        is_external=True,
+    )
+    hyperlink = OxmlElement("w:hyperlink")
+    hyperlink.set(qn("r:id"), r_id)
+    new_run = OxmlElement("w:r")
+    r_pr = OxmlElement("w:rPr")
+    # 颜色蓝色 + 下划线 + 黑体
+    color = OxmlElement("w:color")
+    color.set(qn("w:val"), "2563EB")
+    r_pr.append(color)
+    underline = OxmlElement("w:u")
+    underline.set(qn("w:val"), "single")
+    r_pr.append(underline)
+    r_fonts = OxmlElement("w:rFonts")
+    for attr in ("w:ascii", "w:eastAsia", "w:hAnsi", "w:cs"):
+        r_fonts.set(qn(attr), "黑体")
+    r_pr.append(r_fonts)
+    new_run.append(r_pr)
+    t = OxmlElement("w:t")
+    t.text = text
+    t.set(qn("xml:space"), "preserve")
+    new_run.append(t)
+    hyperlink.append(new_run)
+    paragraph._p.append(hyperlink)
+
+
+def _render_inline_markdown_to_runs(paragraph, line: str) -> None:
+    """渲染一行的 inline markdown：**bold**、`code`、[text](url) hyperlink。
+
+    顺序：先扫所有 [text](url) 链接位置 → 中间按 bold/inline code 处理 → 链接段插 hyperlink。
+    """
+    cursor = 0
+    for link_match in _MD_LINK_PATTERN.finditer(line):
+        # 处理 link 之前的普通文本
+        if link_match.start() > cursor:
+            chunk = line[cursor:link_match.start()]
+            _render_chunk_with_bold_code(paragraph, chunk)
+        link_text = link_match.group(1).strip()
+        link_url = link_match.group(2).strip()
+        # 链接 url 必须看起来像 url，否则当普通文本处理
+        if not link_url or not re.match(r"^(https?://|mailto:|/)", link_url):
+            run = paragraph.add_run(link_text)
+            _force_run_font(run)
+        else:
+            _add_docx_hyperlink(paragraph, link_url, link_text)
+        cursor = link_match.end()
+    if cursor < len(line):
+        _render_chunk_with_bold_code(paragraph, line[cursor:])
+
+
+def _render_chunk_with_bold_code(paragraph, chunk: str) -> None:
+    """渲染一段文本里的 **bold** / `code`（不含链接，链接已在上层切片）。"""
+    if not chunk:
+        return
+    # 先处理 bold；inline code 极简：当成 monospace 加底色（这里简化为普通字体）
+    cursor = 0
+    for match in _MD_BOLD_PATTERN.finditer(chunk):
+        if match.start() > cursor:
+            run = paragraph.add_run(chunk[cursor:match.start()])
+            _force_run_font(run)
+        bold_run = paragraph.add_run(match.group(1))
+        bold_run.bold = True
+        _force_run_font(bold_run)
+        cursor = match.end()
+    if cursor < len(chunk):
+        run = paragraph.add_run(chunk[cursor:])
+        _force_run_font(run)
+
+
 def render_polished_markdown_to_docx(
     *,
     title: str,
@@ -520,7 +624,11 @@ def render_polished_markdown_to_docx(
     markdown_body: str,
     output_path: Path,
 ) -> Path:
-    """把 polished markdown 渲染成 docx，保留段落 + 加粗 + 标题，字体统一锁定黑体。"""
+    """把 polished markdown 渲染成 docx：
+    - 标题 / 段落 / 列表 / 加粗 / 真 hyperlink
+    - 图片占位符（![](url) 和 <img>）被剥掉，不在 docx 里露 url 乱码
+    - 字体统一锁定黑体
+    """
     from docx import Document
 
     doc = Document()
@@ -535,37 +643,53 @@ def render_polished_markdown_to_docx(
         run = p.add_run("原链接：")
         run.italic = True
         _force_run_font(run)
-        run2 = p.add_run(source_url)
-        _force_run_font(run2)
+        _add_docx_hyperlink(p, source_url, source_url)
     doc.add_paragraph("")
 
-    bold_pattern = re.compile(r"\*\*(.+?)\*\*")
-    for raw_line in markdown_body.replace("\r\n", "\n").split("\n\n"):
-        line = raw_line.strip()
-        if not line:
+    sanitized = _clean_markdown_artifacts_for_docx(markdown_body.replace("\r\n", "\n"))
+    # 按段落分割：一个或多个空行 = 段落分界
+    blocks = re.split(r"\n\s*\n", sanitized)
+    for raw_block in blocks:
+        block = raw_block.strip()
+        if not block:
             continue
-        # Heading：# / ## / ###
-        heading_match = re.match(r"^(#{1,3})\s+(.+)$", line)
-        if heading_match:
-            level = len(heading_match.group(1))
-            heading = doc.add_heading(heading_match.group(2).strip(), level=min(level, 4))
-            for run in heading.runs:
-                _force_run_font(run)
+        # 一个 block 内的多行可能是：连续段落文本 / 列表 / 一个标题
+        block_lines = [line for line in (ln.rstrip() for ln in block.split("\n")) if line.strip()]
+        if not block_lines:
             continue
-        # 段落：用 ** ** 标记加粗
-        paragraph = doc.add_paragraph()
-        cursor = 0
-        for match in bold_pattern.finditer(line):
-            if match.start() > cursor:
-                run = paragraph.add_run(line[cursor:match.start()])
-                _force_run_font(run)
-            bold_run = paragraph.add_run(match.group(1))
-            bold_run.bold = True
-            _force_run_font(bold_run)
-            cursor = match.end()
-        if cursor < len(line):
-            run = paragraph.add_run(line[cursor:])
-            _force_run_font(run)
+        # 判断整个 block 是不是列表（每行都以 - / * / 数字. 开头）
+        is_list_block = all(_LIST_ITEM_RE.match(ln.strip()) for ln in block_lines)
+        if is_list_block:
+            for ln in block_lines:
+                item_match = _LIST_ITEM_RE.match(ln.strip())
+                if not item_match:
+                    continue
+                item_text = item_match.group(1).strip()
+                # 用 List Bullet 样式（python-docx 内置）
+                try:
+                    paragraph = doc.add_paragraph(style="List Bullet")
+                except Exception:
+                    paragraph = doc.add_paragraph()
+                    paragraph.add_run("• ")
+                _render_inline_markdown_to_runs(paragraph, item_text)
+                for run in paragraph.runs:
+                    _force_run_font(run)
+            continue
+        # 否则按行处理：标题 / 普通段落
+        for ln in block_lines:
+            line = ln.strip()
+            if not line:
+                continue
+            heading_match = re.match(r"^(#{1,3})\s+(.+)$", line)
+            if heading_match:
+                level = len(heading_match.group(1))
+                heading = doc.add_heading(heading_match.group(2).strip(), level=min(level, 4))
+                for run in heading.runs:
+                    _force_run_font(run)
+                continue
+            paragraph = doc.add_paragraph()
+            _render_inline_markdown_to_runs(paragraph, line)
+
     output_path.parent.mkdir(parents=True, exist_ok=True)
     doc.save(str(output_path))
     return output_path

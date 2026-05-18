@@ -308,16 +308,14 @@ def _build_weekly_overview(
     infra_items = [item for item, text in zip(items, texts) if _contains_any(text, OVERVIEW_INFRA_KEYWORDS)]
     intel_items = [item for item, text in zip(items, texts) if _contains_any(text, OVERVIEW_INTEL_KEYWORDS)]
     collab_items = [item for item, text in zip(items, texts) if _contains_any(text, OVERVIEW_COLLAB_KEYWORDS)]
-    cffc_items = [item for item, text in zip(items, texts) if "cffc" in text or "鸿鹄" in text or "洪峰" in text]
 
+    # 机制化: 本周出现的所有客户都是"陪伴对象", 不再用客户名白名单硬编码
     client_names = _dedupe_texts([item.taskSnapshot.clientName or "" for item in items if item.taskSnapshot.clientName], limit=6)
-    companion_clients = [name for name in client_names if any(key in name for key in ("日慈", "为爱", "向光"))]
+    companion_clients = [name for name in client_names if name]
 
     focus_lines: list[str] = []
     if infra_items:
         focus_lines.append("软件底层链路修稳")
-    if cffc_items:
-        focus_lines.append("CFFC 合作推进")
     if companion_clients:
         focus_lines.append("客户陪伴收束")
     if intel_items:
@@ -325,19 +323,12 @@ def _build_weekly_overview(
     if not focus_lines and collab_items:
         focus_lines.append("合作与协作线推进")
 
-    overview_parts: list[str] = ["这周对益语来说，更像是一周在打底、铺线、蓄力。"]
+    overview_parts: list[str] = ["这周对我方咨询团队来说，更像是一周在打底、铺线、蓄力。"]
 
     if infra_items:
         overview_parts.append(
             "本周花了不少精力在把软件底层链路修稳，围绕附件保存、上传写入、新建任务可见性等做了多轮排查，本质是在补地基。"
         )
-
-    if cffc_items:
-        background_hint = _client_background_hint(dna_modules, "CFFC")
-        extra = ""
-        if any(keyword in background_hint for keyword in ("枢纽", "基金会", "行业")):
-            extra = "它的意义不只是一次合作，而是通过行业关键枢纽进入更大网络的机会。"
-        overview_parts.append(f"围绕 CFFC 的合作讨论和说明迭代在推进。{extra}".rstrip("。"))
 
     if companion_clients:
         names = "、".join(companion_clients[:2])
@@ -357,8 +348,6 @@ def _build_weekly_overview(
     overview_parts.append("整体来看，这是偏打底和铺线的一周。")
 
     next_focus: list[str] = []
-    if cffc_items:
-        next_focus.append("把 CFFC 这条线继续往更明确的合作边界和方式上收。")
     if companion_clients:
         next_focus.append("把客户陪伴线推进到更清楚的诊断或项目梳理结果。")
     if review_ratio < 0.3:

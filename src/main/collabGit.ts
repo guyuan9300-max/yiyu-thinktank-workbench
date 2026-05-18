@@ -1539,8 +1539,13 @@ export async function commitAndPushToMain(
   const unselectedPaths = preview.files
     .map((file) => file.path)
     .filter((targetPath) => !selectedPathSet.has(targetPath) && !droppedConflictPaths.includes(targetPath));
+  // 按需 stash: 只在需要 merge (远程有新提交) 时才 stash 未选中改动。
+  // 非 merge 场景下 `git add <selected> + git commit + git push` 不会影响未选中文件,
+  // 多余的 stash + pop 会改未选中 .py 文件的 mtime, 触发 dev 模式下 uvicorn --reload
+  // 导致 backend 每次推送都被重启。
+  const willMergeUnselected = preview.status.behindCount > 0;
   let hasStashedUnselected = false;
-  if (unselectedPaths.length > 0) {
+  if (willMergeUnselected && unselectedPaths.length > 0) {
     hasStashedUnselected = await pushPartialStash(context, unselectedPaths, 'codex-collab-unselected-before-push');
   }
   let executionPhase: 'prepare' | 'stage' | 'commit' | 'merge' | 'import' | 'push' = 'prepare';

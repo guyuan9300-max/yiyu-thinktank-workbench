@@ -229,14 +229,8 @@ export function ContradictionAlertPanel({ clientId, refreshKey = 0 }: Contradict
               key={group.key}
               className={`rounded-2xl border px-3 py-2.5 ${SEVERITY_TONE[group.severity] || SEVERITY_TONE.medium}`}
             >
-              {/* 两份文档的标识 */}
-              <div className="grid grid-cols-2 gap-2">
-                <DocBadge side={group.docA} label="资料 A" />
-                <DocBadge side={group.docB} label="资料 B" />
-              </div>
-
               {/* 摘要：多少个口径冲突 */}
-              <div className="mt-2 flex items-center justify-between">
+              <div className="flex items-center justify-between mb-2">
                 <p className="text-[11px] font-bold text-slate-700">
                   这两份资料在 <span className="text-rose-700">{group.items.length}</span> 个口径上有差异
                   <span className="ml-1 text-[10px] font-bold text-slate-500">
@@ -245,21 +239,58 @@ export function ContradictionAlertPanel({ clientId, refreshKey = 0 }: Contradict
                 </p>
               </div>
 
-              {/* 口径列表预览 */}
-              <ul className="mt-2 space-y-1">
+              {/* 口径列表：每个口径一行，左侧[文件名 → 数据] / 右侧[数据 ← 文件名] */}
+              <ul className="space-y-2">
                 {group.items.slice(0, expanded ? group.items.length : 3).map((it) => (
                   <li
                     key={it.id}
-                    className="flex items-center justify-between gap-2 rounded-lg bg-white/70 px-2 py-1.5 text-[11px]"
+                    className="rounded-lg bg-white/80 px-3 py-2 text-[11px]"
                   >
-                    <span className="min-w-0 truncate font-bold text-slate-700">
+                    {/* 口径标题 */}
+                    <div className="font-bold text-slate-800 mb-1.5 text-[12px]">
                       {it.subjectText} · {it.attribute}
-                    </span>
-                    <span className="shrink-0 font-semibold text-slate-500">
-                      <span className="text-emerald-700">{it.valueA}</span>
-                      <span className="mx-1 text-slate-400">↔</span>
-                      <span className="text-sky-700">{it.valueB}</span>
-                    </span>
+                    </div>
+                    {/* 左右对照：文件名紧贴对应数据 */}
+                    <div className="grid grid-cols-2 gap-2 items-center">
+                      {/* 左侧：文件名(左) + 数据(右靠中) */}
+                      <div className="flex items-center justify-between gap-2 rounded-md border border-emerald-200 bg-emerald-50/60 px-2.5 py-1.5 min-w-0">
+                        <button
+                          type="button"
+                          disabled={!group.docA.path}
+                          onClick={() => {
+                            if (group.docA.path) {
+                              void window.yiyuWorkbench.openPath(group.docA.path).catch(() => undefined);
+                            }
+                          }}
+                          className="text-[10px] text-slate-500 truncate text-left hover:text-emerald-700 hover:underline disabled:no-underline disabled:cursor-not-allowed cursor-pointer"
+                          title={group.docA.path ? `点击打开：${group.docA.fileName || ''}` : (group.docA.fileName || '')}
+                        >
+                          📄 {group.docA.fileName || '资料 A'}
+                        </button>
+                        <span className="shrink-0 font-bold text-emerald-700">
+                          {it.valueA}
+                        </span>
+                      </div>
+                      {/* 右侧：数据(左靠中) + 文件名(右) */}
+                      <div className="flex items-center justify-between gap-2 rounded-md border border-sky-200 bg-sky-50/60 px-2.5 py-1.5 min-w-0">
+                        <span className="shrink-0 font-bold text-sky-700">
+                          {it.valueB}
+                        </span>
+                        <button
+                          type="button"
+                          disabled={!group.docB.path}
+                          onClick={() => {
+                            if (group.docB.path) {
+                              void window.yiyuWorkbench.openPath(group.docB.path).catch(() => undefined);
+                            }
+                          }}
+                          className="text-[10px] text-slate-500 truncate text-right hover:text-sky-700 hover:underline disabled:no-underline disabled:cursor-not-allowed cursor-pointer"
+                          title={group.docB.path ? `点击打开：${group.docB.fileName || ''}` : (group.docB.fileName || '')}
+                        >
+                          {group.docB.fileName || '资料 B'} 📄
+                        </button>
+                      </div>
+                    </div>
                   </li>
                 ))}
               </ul>

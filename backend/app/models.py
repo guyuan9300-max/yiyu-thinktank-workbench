@@ -5145,6 +5145,69 @@ class DigitalAssetPulseRecord(BaseModel):
     assetAlerts: list[DigitalAssetPulseSignalRecord] = Field(default_factory=list)
 
 
+# --- 战略陪伴 · 客户脉搏 (Phase 1 克制版主页) ---
+
+class StrategicPulseEventRecord(BaseModel):
+    """本周新动态 - 一条 evidence-driven 事件."""
+    title: str
+    occurredAt: str = ""
+    impact: Literal["advance", "neutral", "block"] = "neutral"
+    sourceType: str = ""
+    sourceId: str = ""
+    sourceLabel: str = ""
+
+
+class StrategicPulseTodoRecord(BaseModel):
+    """你接下来要做 - 待办任务."""
+    title: str
+    dueDate: str | None = None
+    daysUntilDue: int | None = None
+    urgency: Literal["overdue", "today", "this_week", "later"] = "later"
+    sourceTaskId: str | None = None
+    eventLineId: str | None = None
+    eventLineName: str = ""
+
+
+class StrategicPulseBlockerRecord(BaseModel):
+    """当前卡点 - 主线层面的阻塞或长期无活动."""
+    title: str
+    reason: str = ""
+    stuckDays: int = 0
+    eventLineId: str
+    suggestedAction: str = ""
+
+
+class StrategicPulseRecord(BaseModel):
+    """客户战略脉搏 - 战略陪伴克制版主页主数据."""
+    clientId: str
+    weekStart: str = ""
+    weekEnd: str = ""
+    weeklyEvents: list[StrategicPulseEventRecord] = Field(default_factory=list)
+    upcomingTodos: list[StrategicPulseTodoRecord] = Field(default_factory=list)
+    currentBlockers: list[StrategicPulseBlockerRecord] = Field(default_factory=list)
+    generatedAt: str = ""
+
+
+class ClientPulseSummaryRecord(BaseModel):
+    """单客户本周脉搏摘要 - 用于本周概览顶部客户脉搏区块."""
+    clientId: str
+    clientName: str
+    clientStage: str = ""
+    weeklyNewDocumentCount: int = 0
+    weeklyNewTaskCount: int = 0
+    weeklyNewEvidenceCount: int = 0
+    currentBlockerCount: int = 0
+    overdueTodoCount: int = 0
+    hasActivity: bool = False
+    topSignal: str = ""
+
+
+class ClientsPulseSummaryResponse(BaseModel):
+    """所有客户的本周脉搏摘要列表."""
+    summaries: list[ClientPulseSummaryRecord] = Field(default_factory=list)
+    generatedAt: str = ""
+
+
 class DigitalAssetUnitRecord(BaseModel):
     key: str
     label: str
@@ -5839,6 +5902,9 @@ class GrowthSourceCoverageRecord(BaseModel):
     strategicSignals: int = 0
     reviewSignals: int = 0
     handbookSignals: int = 0
+    expWallSignals: int = 0
+    memorySignals: int = 0
+    documentSignals: int = 0
     clientCount: int = 0
     eventLineCount: int = 0
 

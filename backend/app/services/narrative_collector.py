@@ -1,0 +1,923 @@
+"""本地 narrative collector · 消费数据中心的"预制菜".
+
+定位: 不重新扫描原始资料, 而是从已经预制好的加工层 (atomic_facts /
+entities / memory_facts / evidence_cards) 按维度聚合出 fact bundle.
+
+设计原则 (顾源源 2026/5/16 原话):
+  "数据中心 = 预制菜中心 / 中央事实库. 扫一遍原始资料, 加工一次, 上层模块按需取用."
+
+→ collector 只 SELECT 已经预制好的事实, 不调 LLM, 不重新扫文档.
+→ 拿到的 facts 喂给 generator, generator 调一次 LLM 出 6 段叙事.
+
+诊断报告 (2026-05-16) 暴露的 v0.1 浅显根因:
+  - cloud collector 只查了 event_lines (1 条) + activities (5 条流水账) + tasks (0)
+  - 完全没消费本地 314 atomic_facts + 645 entities + 152 v2_documents
+  - 结果: LLM 看不到张真/高老师 (53 个 person entities), 看不到关键日期/金额, 叙事必然浅显
+"""
+from __future__ import annotations
+
+import json
+from dataclasses import dataclass, field
+from typing import Any
+
+from app.db import Database
+
+
+# ============================================================
+# Dataclasses · 类型化的预制菜
+# ============================================================
+
+
+@dataclass(frozen=True)
+class PersonFact:
+    """关键人物 — 来自 entities (entity_type='person'), 已 LLM 抽好."""
+    name: str
+    mention_count: int
+    entity_id: str
+    aliases: list[str] = field(default_factory=list)
+    attributes: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class TimeAnchorFact:
+    """关键时间锚 — 来自 entities (entity_type='date'), 高提及次数 = 真实承诺/履约日."""
+    text: str
+    mention_count: int
+    entity_id: str
+
+
+@dataclass(frozen=True)
+class MoneyFact:
+    """关键金额锚 — 来自 entities (entity_type='amount'), 真实商业承诺金额."""
+    text: str
+    mention_count: int
+    entity_id: str
+
+
+@dataclass(frozen=True)
+class AtomicFactRow:
+    """LLM 抽好的高置信度业务事实."""
+    id: str
+    subject: str
+    attribute: str
+    value: str
+    confidence: float
+    source_doc_id: str | None
+
+
+@dataclass(frozen=True)
+class EventLineFact:
+    id: str
+    name: str
+    kind: str
+    status: str
+    stage: str
+    summary: str
+    intent: str
+    current_blocker: str
+    recent_decision: str
+    next_step: str
+    evidence_count: int
+    owner_id: str | None
+    updated_at: str
+
+
+@dataclass(frozen=True)
+class ActivityFact:
+    id: str
+    event_line_id: str
+    event_line_name: str
+    source_type: str
+    source_id: str
+    happened_at: str
+    actor_name: str
+    title: str
+    summary: str
+
+
+@dataclass(frozen=True)
+class TaskFact:
+    id: str
+    title: str
+    description: str
+    priority: str
+    progress_status: str
+    deadline_at: str | None
+    owner_name: str
+    next_action: str
+    current_blocker: str
+    recent_decision: str
+    updated_at: str
+
+
+@dataclass(frozen=True)
+class DocumentSummaryFact:
+    """v2_documents 顶层摘要 — 不塞全文, 但暴露每份文档的标题 + summary."""
+    id: str
+    title: str
+    summary: str
+    ingested_at: str
+    doc_kind: str
+
+
+@dataclass(frozen=True)
+class ProfileFact:
+    """client_strategic_profiles (本地手填字段, 可空)."""
+    industry: str
+    scale: str
+    influence: str
+    current_needs: str
+    pain_points: str
+    strategic_value_to_yiyu: str
+    decision_chain: str
+
+
+@dataclass(frozen=True)
+class ClarificationFact:
+    """从云端拉取的澄清记录 (本地 collector 不直接读云端, 由 caller 传入)."""
+    dimension: str
+    answer: str
+    answered_by: str
+    answered_at: str
+
+
+@dataclass(frozen=True)
+class GlossaryRelation:
+    """字典 term 之间的关联关系 (P0 项目画像核心 — 节点之间的边)."""
+    subject_term: str
+    predicate: str
+    object_term: str
+    confidence: float
+    note: str
+
+
+@dataclass(frozen=True)
+class RiskSignalFact:
+    """风险信号 (业务环境/关系/交付)."""
+    title: str
+    signal_kind: str   # business_env | relationship | delivery | other
+    severity: str      # low | medium | high | critical
+    description: str
+    related_terms: list[str]
+    status: str
+
+
+@dataclass(frozen=True)
+class CommitmentFact:
+    """结构化承诺 (谁向谁承诺什么 + 时间 + 履约状态)."""
+    committer: str
+    recipient: str
+    commitment_type: str
+    content: str
+    deadline: str
+    status: str           # pending | fulfilled | overdue | cancelled
+    related_terms: list[str]
+
+
+@dataclass(frozen=True)
+class GlossaryAttribute:
+    """字典属性 (P0.5 防幻觉锚点) — term.attribute = value 这种事实型属性.
+
+    经 verification_status='verified' 人审过的属性才进入这个列表, 是 narrative
+    生成时引用具体数字/姓名/日期的最高优先级锚点。
+    """
+    term: str
+    attribute_name: str
+    value_text: str
+    value_unit: str
+    scope: str
+    as_of_date: str
+    source_evidence: str
+
+
+@dataclass(frozen=True)
+class GlossaryTerm:
+    """客户字典条目 (v1.2 新增): canonical_name + aliases + category + definition.
+
+    业界 (Glean/GraphRAG/LightRAG) 共识: 字典是消除 LLM 幻觉的核心锚点。
+    narrative_generator 优先用字典 canonical_name, 不再让 LLM 从碎片化 facts 自己拼。
+    """
+    canonical_name: str
+    aliases: list[str]
+    category: str
+    definition: str
+
+
+@dataclass(frozen=True)
+class BusinessContextSnippet:
+    """从 module_definitions DNA 里抽出来的业务上下文, 给 LLM 当『默认常识』."""
+    source: str          # module DNA id (e.g. 'module:strategic_accompaniment')
+    category: str        # purpose/scope/decision/architecture/...
+    body: str            # 内容
+
+
+@dataclass(frozen=True)
+class ClientFactBundle:
+    """本地数据中心给上层模块供应的统一 fact bundle.
+
+    Caller (narrative_generator / 其他业务模块) 只读这个 bundle, 不再查原始表。
+    """
+
+    client_id: str
+    client_name: str
+    client_alias: str
+
+    # 加工层 · LLM 已抽好的事实
+    persons: list[PersonFact] = field(default_factory=list)
+    time_anchors: list[TimeAnchorFact] = field(default_factory=list)
+    money_anchors: list[MoneyFact] = field(default_factory=list)
+    atomic_facts_by_attribute: dict[str, list[AtomicFactRow]] = field(default_factory=dict)
+
+    # 业务事件层
+    event_lines: list[EventLineFact] = field(default_factory=list)
+    activities: list[ActivityFact] = field(default_factory=list)
+    tasks: list[TaskFact] = field(default_factory=list)
+
+    # 原始资料层 (顶层摘要, 不塞全文)
+    documents: list[DocumentSummaryFact] = field(default_factory=list)
+    document_count_total: int = 0
+
+    # 用户手填层 (可空)
+    profile: ProfileFact | None = None
+
+    # 数据中心健康度 (诚实暴露缺口)
+    health: dict[str, Any] = field(default_factory=dict)
+
+    # 从云端注入的澄清记录 (本次生成时要吸纳)
+    pending_clarifications: list[ClarificationFact] = field(default_factory=list)
+    applied_clarifications: list[ClarificationFact] = field(default_factory=list)
+
+    # 业务上下文 (益语方法论/顾源源身份/战略陪伴定义), 从 module_definitions DNA 抽
+    business_context: list[BusinessContextSnippet] = field(default_factory=list)
+
+    # 客户字典 (v1.2 新增): 从 client_glossary 表读, 是 LLM 的锚点
+    glossary: list[GlossaryTerm] = field(default_factory=list)
+
+    # P0 项目画像 3 张新表 (v1.5)
+    glossary_relations: list[GlossaryRelation] = field(default_factory=list)
+    risk_signals: list[RiskSignalFact] = field(default_factory=list)
+    commitments: list[CommitmentFact] = field(default_factory=list)
+
+    # P0.5 字典属性 (v1.6) — 防幻觉锚点
+    glossary_attributes: list[GlossaryAttribute] = field(default_factory=list)
+
+    def is_thin(self) -> bool:
+        return (
+            not self.persons
+            and not self.atomic_facts_by_attribute
+            and not self.event_lines
+            and not self.documents
+        )
+
+
+# ============================================================
+# 噪音过滤 — DNA 已记: memory_facts 90% 是 task_signal / attachment_signal 流水账
+# ============================================================
+
+_DIRTY_FACT_KEY_PREFIXES = (
+    "task_signal:",
+    "attachment_signal:",
+    "data_center_ingest:",
+    "reference_match:",
+)
+
+_DIRTY_CLAIM_SUFFIXES = (
+    "已作为任务附件进入项目资料库",
+    "已进入项目资料层",
+    ".jpeg",
+    ".jpg",
+    ".png",
+    ".pdf",
+)
+
+
+def _is_dirty_evidence_card(claim: str) -> bool:
+    text = (claim or "").strip()
+    if not text:
+        return True
+    return any(text.endswith(suffix) or suffix in text for suffix in _DIRTY_CLAIM_SUFFIXES)
+
+
+def _is_dirty_memory_fact_key(key: str) -> bool:
+    return any(key.startswith(p) for p in _DIRTY_FACT_KEY_PREFIXES)
+
+
+# ============================================================
+# 主入口 · 一次性把所有加工层聚合成 ClientFactBundle
+# ============================================================
+
+
+def collect_client_fact_bundle(
+    db: Database,
+    client_id: str,
+    *,
+    person_limit: int = 30,
+    time_anchor_limit: int = 15,
+    money_anchor_limit: int = 10,
+    atomic_fact_limit: int = 60,
+    event_line_limit: int = 12,
+    activity_limit: int = 40,
+    task_limit: int = 30,
+    document_limit: int = 25,
+) -> ClientFactBundle:
+    """从本地数据中心一次性收齐所有预制菜."""
+    client_row = db.fetchone(
+        "SELECT id, name, alias FROM clients WHERE id = ?",
+        (client_id,),
+    )
+    if not client_row:
+        raise ValueError(f"client not found: {client_id}")
+
+    business_context = _collect_business_context(db)
+    glossary = _collect_glossary(db, client_id)
+    glossary_relations = _collect_glossary_relations(db, client_id)
+    risk_signals = _collect_risk_signals(db, client_id)
+    commitments = _collect_commitments(db, client_id)
+    glossary_attributes = _collect_glossary_attributes(db, client_id)
+    persons = _collect_persons(db, client_id, person_limit)
+    time_anchors = _collect_time_anchors(db, client_id, time_anchor_limit)
+    money_anchors = _collect_money_anchors(db, client_id, money_anchor_limit)
+    atomic_by_attr = _collect_atomic_facts(db, client_id, atomic_fact_limit)
+    event_lines = _collect_event_lines(db, client_id, event_line_limit)
+    activities = _collect_activities(db, client_id, activity_limit)
+    tasks = _collect_tasks(db, client_id, task_limit)
+    documents, total_docs = _collect_documents(db, client_id, document_limit)
+    profile = _collect_profile(db, client_id)
+    health = _compute_health(
+        atomic_count=sum(len(rows) for rows in atomic_by_attr.values()),
+        entity_count=len(persons) + len(time_anchors) + len(money_anchors),
+        event_lines=event_lines,
+        document_count=total_docs,
+        evidence_quality=_assess_evidence_quality(db, client_id),
+    )
+
+    return ClientFactBundle(
+        client_id=str(client_row["id"]),
+        client_name=str(client_row["name"] or ""),
+        client_alias=str(client_row["alias"] or ""),
+        persons=persons,
+        time_anchors=time_anchors,
+        money_anchors=money_anchors,
+        atomic_facts_by_attribute=atomic_by_attr,
+        event_lines=event_lines,
+        activities=activities,
+        tasks=tasks,
+        documents=documents,
+        document_count_total=total_docs,
+        profile=profile,
+        health=health,
+        business_context=business_context,
+        glossary=glossary,
+        glossary_relations=glossary_relations,
+        risk_signals=risk_signals,
+        commitments=commitments,
+        glossary_attributes=glossary_attributes,
+    )
+
+
+def _collect_glossary_relations(db: Database, client_id: str) -> list[GlossaryRelation]:
+    """字典 term 间关联关系 — P0 项目画像的『边』."""
+    try:
+        rows = db.fetchall(
+            """
+            SELECT g1.term AS subject_term, gr.predicate, g2.term AS object_term,
+                   gr.confidence, gr.note, gr.status
+            FROM glossary_relations gr
+            LEFT JOIN client_glossary g1 ON gr.subject_term_id = g1.id
+            LEFT JOIN client_glossary g2 ON gr.object_term_id = g2.id
+            WHERE gr.client_id = ? AND gr.status != 'rejected'
+            """,
+            (client_id,),
+        )
+    except Exception:
+        return []
+    return [
+        GlossaryRelation(
+            subject_term=str(r["subject_term"] or ""),
+            predicate=str(r["predicate"] or ""),
+            object_term=str(r["object_term"] or ""),
+            confidence=float(r["confidence"] or 0.0),
+            note=str(r["note"] or ""),
+        )
+        for r in rows
+        if str(r["subject_term"] or "").strip()
+    ]
+
+
+def _collect_risk_signals(db: Database, client_id: str) -> list[RiskSignalFact]:
+    """风险信号 (业务环境/关系/交付)."""
+    try:
+        rows = db.fetchall(
+            """
+            SELECT title, signal_kind, severity, description, related_term_ids_json, status
+            FROM risk_signals WHERE client_id = ? AND status = 'active'
+            ORDER BY CASE severity WHEN 'critical' THEN 0 WHEN 'high' THEN 1 WHEN 'medium' THEN 2 ELSE 3 END,
+                     captured_at DESC
+            """,
+            (client_id,),
+        )
+    except Exception:
+        return []
+    out: list[RiskSignalFact] = []
+    for r in rows:
+        term_ids_raw = _safe_json(r["related_term_ids_json"], [])
+        related_terms = []
+        if isinstance(term_ids_raw, list):
+            for tid in term_ids_raw:
+                if not isinstance(tid, str):
+                    continue
+                term_row = db.fetchone("SELECT term FROM client_glossary WHERE id = ?", (tid,))
+                if term_row:
+                    related_terms.append(str(term_row["term"]))
+        out.append(RiskSignalFact(
+            title=str(r["title"] or ""),
+            signal_kind=str(r["signal_kind"] or "other"),
+            severity=str(r["severity"] or "medium"),
+            description=str(r["description"] or ""),
+            related_terms=related_terms,
+            status=str(r["status"] or "active"),
+        ))
+    return out
+
+
+def _collect_commitments(db: Database, client_id: str) -> list[CommitmentFact]:
+    """承诺 (双向结构化, 含履约状态)."""
+    try:
+        rows = db.fetchall(
+            """
+            SELECT committer, recipient, commitment_type, content, deadline, status, related_term_ids_json
+            FROM commitments WHERE client_id = ? AND status != 'cancelled'
+            ORDER BY CASE status WHEN 'overdue' THEN 0 WHEN 'pending' THEN 1 ELSE 2 END, deadline
+            """,
+            (client_id,),
+        )
+    except Exception:
+        return []
+    out: list[CommitmentFact] = []
+    for r in rows:
+        term_ids_raw = _safe_json(r["related_term_ids_json"], [])
+        related_terms = []
+        if isinstance(term_ids_raw, list):
+            for tid in term_ids_raw:
+                if not isinstance(tid, str):
+                    continue
+                term_row = db.fetchone("SELECT term FROM client_glossary WHERE id = ?", (tid,))
+                if term_row:
+                    related_terms.append(str(term_row["term"]))
+        out.append(CommitmentFact(
+            committer=str(r["committer"] or ""),
+            recipient=str(r["recipient"] or ""),
+            commitment_type=str(r["commitment_type"] or "delivery"),
+            content=str(r["content"] or ""),
+            deadline=str(r["deadline"] or "")[:10] if r["deadline"] else "",
+            status=str(r["status"] or "pending"),
+            related_terms=related_terms,
+        ))
+    return out
+
+
+def _collect_glossary(db: Database, client_id: str) -> list[GlossaryTerm]:
+    """从 client_glossary 表读客户字典 (v1.2 加, 是 LLM narrative 的核心锚点)."""
+    try:
+        rows = db.fetchall(
+            """
+            SELECT term, normalized_term, definition, aliases_json, category
+            FROM client_glossary WHERE client_id = ?
+            ORDER BY category, term
+            """,
+            (client_id,),
+        )
+    except Exception:
+        return []
+    out: list[GlossaryTerm] = []
+    for r in rows:
+        aliases_raw = _safe_json(r["aliases_json"], [])
+        aliases = [str(x) for x in aliases_raw if isinstance(aliases_raw, list) and isinstance(x, str)]
+        out.append(GlossaryTerm(
+            canonical_name=str(r["term"] or "").strip(),
+            aliases=aliases,
+            category=str(r["category"] or "").strip(),
+            definition=str(r["definition"] or "").strip(),
+        ))
+    return out
+
+
+def _collect_glossary_attributes(db: Database, client_id: str) -> list[GlossaryAttribute]:
+    """字典属性 (P0.5) — 人审 verified 过的 term.attribute = value, 防幻觉锚点."""
+    try:
+        rows = db.fetchall(
+            """
+            SELECT cg.term, ga.attribute_name, ga.value_text, ga.value_unit,
+                   ga.scope, ga.as_of_date, ga.source_evidence
+            FROM glossary_attributes ga
+            JOIN client_glossary cg ON cg.id = ga.term_id
+            WHERE ga.client_id = ?
+              AND ga.verification_status = 'verified'
+            ORDER BY cg.term ASC, ga.attribute_name ASC
+            """,
+            (client_id,),
+        )
+    except Exception:
+        return []
+    return [
+        GlossaryAttribute(
+            term=str(r["term"] or "").strip(),
+            attribute_name=str(r["attribute_name"] or "").strip(),
+            value_text=str(r["value_text"] or "").strip(),
+            value_unit=str(r["value_unit"] or "").strip(),
+            scope=str(r["scope"] or "").strip(),
+            as_of_date=str(r["as_of_date"] or "").strip(),
+            source_evidence=str(r["source_evidence"] or "").strip(),
+        )
+        for r in rows
+    ]
+
+
+def _collect_business_context(db: Database) -> list[BusinessContextSnippet]:
+    """从 module_definitions DNA 抽『顾问默认常识』, 顺序优先抽核心益语方法论 + 顾源源身份."""
+    # 这些 module 是 LLM 必须有的『脑子里默认常识』
+    target_modules = (
+        ("user:profile", ("identity", "purpose", "decision")),
+        ("software:root", ("purpose", "architecture", "scope")),
+        ("module:strategic_accompaniment", ("purpose", "scope", "decision", "architecture")),
+        ("submodule:client_strategic_home", ("purpose", "scope", "decision")),
+        ("principle:user_perspective_anchor", ("principle",)),
+    )
+    out: list[BusinessContextSnippet] = []
+    try:
+        for module_id, categories in target_modules:
+            placeholders = ",".join("?" * len(categories))
+            rows = db.fetchall(
+                f"""
+                SELECT category, content
+                FROM module_definition_entries
+                WHERE module_id = ?
+                  AND category IN ({placeholders})
+                  AND superseded_by IS NULL
+                ORDER BY created_at DESC
+                LIMIT 3
+                """,
+                (module_id, *categories),
+            )
+            for r in rows:
+                body = str(r["content"] or "").strip()
+                if not body:
+                    continue
+                # 截长 — 单条最多 400 字符, 避免吃光 prompt token
+                if len(body) > 400:
+                    body = body[:400] + "..."
+                out.append(
+                    BusinessContextSnippet(
+                        source=module_id,
+                        category=str(r["category"] or ""),
+                        body=body,
+                    )
+                )
+    except Exception:
+        # module_definitions 表可能不存在(测试环境), fallback 给空
+        return []
+    return out
+
+
+# ============================================================
+# 各加工层的私有 collector — 单独可测
+# ============================================================
+
+
+def _safe_json(raw: Any, default: Any) -> Any:
+    if not raw:
+        return default
+    if isinstance(raw, (dict, list)):
+        return raw
+    try:
+        return json.loads(raw)
+    except (TypeError, ValueError):
+        return default
+
+
+def _collect_persons(db: Database, client_id: str, limit: int) -> list[PersonFact]:
+    rows = db.fetchall(
+        """
+        SELECT id, display_name, mention_count, aliases_json, attributes_json
+        FROM entities
+        WHERE client_id = ? AND entity_type = 'person'
+          AND mention_count >= 2
+        ORDER BY mention_count DESC, confidence DESC
+        LIMIT ?
+        """,
+        (client_id, limit),
+    )
+    out: list[PersonFact] = []
+    for r in rows:
+        name = str(r["display_name"] or "").strip()
+        if not name or len(name) < 2 or name.endswith("?"):
+            continue
+        out.append(
+            PersonFact(
+                name=name,
+                mention_count=int(r["mention_count"] or 0),
+                entity_id=str(r["id"]),
+                aliases=[a for a in _safe_json(r["aliases_json"], []) if isinstance(a, str)],
+                attributes=_safe_json(r["attributes_json"], {}) if isinstance(_safe_json(r["attributes_json"], {}), dict) else {},
+            )
+        )
+    return out
+
+
+def _collect_time_anchors(db: Database, client_id: str, limit: int) -> list[TimeAnchorFact]:
+    rows = db.fetchall(
+        """
+        SELECT id, display_name, mention_count
+        FROM entities
+        WHERE client_id = ? AND entity_type = 'date' AND mention_count >= 2
+        ORDER BY mention_count DESC LIMIT ?
+        """,
+        (client_id, limit),
+    )
+    return [
+        TimeAnchorFact(
+            text=str(r["display_name"] or ""),
+            mention_count=int(r["mention_count"] or 0),
+            entity_id=str(r["id"]),
+        )
+        for r in rows
+        if str(r["display_name"] or "").strip()
+    ]
+
+
+def _collect_money_anchors(db: Database, client_id: str, limit: int) -> list[MoneyFact]:
+    rows = db.fetchall(
+        """
+        SELECT id, display_name, mention_count
+        FROM entities
+        WHERE client_id = ? AND entity_type = 'amount' AND mention_count >= 1
+        ORDER BY mention_count DESC LIMIT ?
+        """,
+        (client_id, limit),
+    )
+    return [
+        MoneyFact(
+            text=str(r["display_name"] or ""),
+            mention_count=int(r["mention_count"] or 0),
+            entity_id=str(r["id"]),
+        )
+        for r in rows
+        if str(r["display_name"] or "").strip()
+    ]
+
+
+def _collect_atomic_facts(db: Database, client_id: str, limit: int) -> dict[str, list[AtomicFactRow]]:
+    rows = db.fetchall(
+        """
+        SELECT id, subject_text, attribute, value_text, confidence, source_v2_document_id
+        FROM atomic_facts
+        WHERE client_id = ? AND status = 'active' AND confidence >= 0.6
+        ORDER BY confidence DESC, created_at DESC
+        LIMIT ?
+        """,
+        (client_id, limit),
+    )
+    grouped: dict[str, list[AtomicFactRow]] = {}
+    for r in rows:
+        attr = str(r["attribute"] or "").strip() or "其他"
+        fact = AtomicFactRow(
+            id=str(r["id"]),
+            subject=str(r["subject_text"] or "").strip(),
+            attribute=attr,
+            value=str(r["value_text"] or "").strip(),
+            confidence=float(r["confidence"] or 0.0),
+            source_doc_id=str(r["source_v2_document_id"]) if r["source_v2_document_id"] else None,
+        )
+        if not fact.subject and not fact.value:
+            continue
+        grouped.setdefault(attr, []).append(fact)
+    return grouped
+
+
+def _collect_event_lines(db: Database, client_id: str, limit: int) -> list[EventLineFact]:
+    rows = db.fetchall(
+        """
+        SELECT id, name, kind, status, stage, summary, intent, current_blocker,
+               recent_decision, next_step, evidence_count, owner_id, updated_at
+        FROM event_lines
+        WHERE primary_client_id = ?
+        ORDER BY updated_at DESC LIMIT ?
+        """,
+        (client_id, limit),
+    )
+    return [
+        EventLineFact(
+            id=str(r["id"]),
+            name=str(r["name"] or ""),
+            kind=str(r["kind"] or ""),
+            status=str(r["status"] or ""),
+            stage=str(r["stage"] or ""),
+            summary=str(r["summary"] or ""),
+            intent=str(r["intent"] or ""),
+            current_blocker=str(r["current_blocker"] or ""),
+            recent_decision=str(r["recent_decision"] or ""),
+            next_step=str(r["next_step"] or ""),
+            evidence_count=int(r["evidence_count"] or 0),
+            owner_id=str(r["owner_id"]) if r["owner_id"] else None,
+            updated_at=str(r["updated_at"] or ""),
+        )
+        for r in rows
+    ]
+
+
+def _collect_activities(db: Database, client_id: str, limit: int) -> list[ActivityFact]:
+    rows = db.fetchall(
+        """
+        SELECT a.id, a.event_line_id, e.name AS event_line_name,
+               a.source_type, a.source_id, a.happened_at,
+               COALESCE(a.actor_name, '') AS actor_name,
+               a.title, a.summary
+        FROM event_line_activities a
+        JOIN event_lines e ON e.id = a.event_line_id
+        WHERE e.primary_client_id = ?
+        ORDER BY a.happened_at DESC LIMIT ?
+        """,
+        (client_id, limit),
+    )
+    out: list[ActivityFact] = []
+    for r in rows:
+        title = str(r["title"] or "")
+        summary = str(r["summary"] or "")
+        # 过滤纯"新增任务"流水, 这些没有业务价值
+        if title.startswith("新增任务：") and not summary.strip().lstrip("创建任务："):
+            continue
+        out.append(
+            ActivityFact(
+                id=str(r["id"]),
+                event_line_id=str(r["event_line_id"]),
+                event_line_name=str(r["event_line_name"] or ""),
+                source_type=str(r["source_type"] or ""),
+                source_id=str(r["source_id"] or ""),
+                happened_at=str(r["happened_at"] or ""),
+                actor_name=str(r["actor_name"] or ""),
+                title=title,
+                summary=summary,
+            )
+        )
+    return out
+
+
+def _collect_tasks(db: Database, client_id: str, limit: int) -> list[TaskFact]:
+    client_row = db.fetchone("SELECT name FROM clients WHERE id = ?", (client_id,))
+    client_name = str(client_row["name"]) if client_row else ""
+    name_like = f"%{client_name}%" if client_name else "%"
+    rows = db.fetchall(
+        """
+        SELECT t.id, t.title, t.description, t.priority, t.progress_status,
+               t.deadline_at,
+               COALESCE(t.owner_name, '') AS owner_name,
+               t.next_action, t.current_blocker, t.recent_decision,
+               t.updated_at
+        FROM tasks t
+        WHERE t.client_id = ?
+           OR EXISTS (SELECT 1 FROM event_lines e
+                    WHERE e.primary_client_id = ? AND t.event_line_id = e.id)
+           OR t.title LIKE ?
+        ORDER BY t.updated_at DESC LIMIT ?
+        """,
+        (client_id, client_id, name_like, limit),
+    )
+    return [
+        TaskFact(
+            id=str(r["id"]),
+            title=str(r["title"] or ""),
+            description=str(r["description"] or ""),
+            priority=str(r["priority"] or ""),
+            progress_status=str(r["progress_status"] or ""),
+            deadline_at=(str(r["deadline_at"]) if r["deadline_at"] else None),
+            owner_name=str(r["owner_name"] or ""),
+            next_action=str(r["next_action"] or ""),
+            current_blocker=str(r["current_blocker"] or ""),
+            recent_decision=str(r["recent_decision"] or ""),
+            updated_at=str(r["updated_at"] or ""),
+        )
+        for r in rows
+    ]
+
+
+def _collect_documents(db: Database, client_id: str, limit: int) -> tuple[list[DocumentSummaryFact], int]:
+    total_row = db.fetchone(
+        "SELECT COUNT(*) AS c FROM v2_documents WHERE client_id = ?",
+        (client_id,),
+    )
+    total = int(total_row["c"]) if total_row else 0
+
+    rows = db.fetchall(
+        """
+        SELECT id, file_name, preview_text, imported_at, kind
+        FROM v2_documents
+        WHERE client_id = ?
+        ORDER BY imported_at DESC LIMIT ?
+        """,
+        (client_id, limit),
+    )
+    docs = [
+        DocumentSummaryFact(
+            id=str(r["id"]),
+            title=str(r["file_name"] or "").strip(),
+            summary=str(r["preview_text"] or "").strip()[:240],
+            ingested_at=str(r["imported_at"] or ""),
+            doc_kind=str(r["kind"] or ""),
+        )
+        for r in rows
+        if str(r["file_name"] or "").strip()
+    ]
+    return docs, total
+
+
+def _collect_profile(db: Database, client_id: str) -> ProfileFact | None:
+    row = db.fetchone(
+        """
+        SELECT industry, scale, influence, current_needs, pain_points,
+               strategic_value_to_yiyu, decision_chain
+        FROM client_strategic_profiles WHERE client_id = ?
+        """,
+        (client_id,),
+    )
+    if not row:
+        return None
+    profile = ProfileFact(
+        industry=str(row["industry"] or "").strip(),
+        scale=str(row["scale"] or "").strip(),
+        influence=str(row["influence"] or "").strip(),
+        current_needs=str(row["current_needs"] or "").strip(),
+        pain_points=str(row["pain_points"] or "").strip(),
+        strategic_value_to_yiyu=str(row["strategic_value_to_yiyu"] or "").strip(),
+        decision_chain=str(row["decision_chain"] or "").strip(),
+    )
+    if not any(
+        getattr(profile, f)
+        for f in ("industry", "scale", "current_needs", "pain_points", "strategic_value_to_yiyu", "decision_chain")
+    ):
+        return None
+    return profile
+
+
+def _assess_evidence_quality(db: Database, client_id: str) -> dict[str, int]:
+    """诚实评估 evidence_cards 的业务可用度 — 多少是 doc_summary 流水, 多少是真证据."""
+    rows = db.fetchall(
+        """
+        SELECT evidence_type, polarity, normalized_claim
+        FROM evidence_cards WHERE client_id = ?
+        """,
+        (client_id,),
+    )
+    total = 0
+    dirty = 0
+    actionable = 0
+    polarity_neutral = 0
+    for r in rows:
+        total += 1
+        claim = str(r["normalized_claim"] or "")
+        if _is_dirty_evidence_card(claim):
+            dirty += 1
+        if str(r["polarity"] or "neutral") == "neutral":
+            polarity_neutral += 1
+        if str(r["evidence_type"]) in ("commitment", "decision", "risk", "blocker"):
+            actionable += 1
+    return {
+        "total": total,
+        "dirty_doc_summary": dirty,
+        "polarity_neutral": polarity_neutral,
+        "business_actionable": actionable,
+    }
+
+
+def _compute_health(
+    *,
+    atomic_count: int,
+    entity_count: int,
+    event_lines: list[EventLineFact],
+    document_count: int,
+    evidence_quality: dict[str, int],
+) -> dict[str, Any]:
+    """诚实暴露数据中心加工层质量, 给前端做缺口诊断."""
+    gaps: list[str] = []
+    if not event_lines:
+        gaps.append("event_lines 业务主线表 — 当前 0 条, 颗粒度未升级")
+    elif len(event_lines) < 3:
+        gaps.append(f"event_lines 颗粒度过粗 — 仅 {len(event_lines)} 条主线, 缺 thread_level / parent_thread_id")
+    if evidence_quality.get("total", 0) > 0:
+        dirty_ratio = evidence_quality["dirty_doc_summary"] / evidence_quality["total"]
+        if dirty_ratio > 0.5:
+            gaps.append(
+                f"evidence_cards 质量低 — {evidence_quality['dirty_doc_summary']}/{evidence_quality['total']} "
+                f"是文件入库流水, 不是业务证据; polarity {evidence_quality['polarity_neutral']}/{evidence_quality['total']} 全 neutral"
+            )
+    if document_count > 30 and atomic_count < 50:
+        gaps.append(
+            f"atomic_facts 抽取覆盖率低 — {document_count} 份文档只抽出 {atomic_count} 条事实, 平均 < 2 条/文档"
+        )
+    return {
+        "atomic_facts_count": atomic_count,
+        "entity_count": entity_count,
+        "event_line_count": len(event_lines),
+        "document_count": document_count,
+        "evidence_quality": evidence_quality,
+        "gaps": gaps,
+    }

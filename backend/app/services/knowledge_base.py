@@ -2517,7 +2517,20 @@ def _fts_query_for_tokens(tokens: list[str]) -> str | None:
 
 
 def search_master_index_fts(db: Database, client_id: str, prompt: str, limit: int = 8) -> dict[str, float]:
-    query_tokens = tokenize(prompt)
+    # P1 · 字典反哺 — 把查询里的 term 用字典 expand 到所有 alias, 提高召回
+    # 例: 用户搜"兴盛计划" 自动包含"心盛计划" 也搜
+    try:
+        from app.services.glossary_helpers import expand_aliases
+        expanded_terms = expand_aliases(db, client_id, prompt)
+        # 把 expand 出的 term 当作扩展 query (空格分隔, tokenize 会拆 + FTS OR)
+        if len(expanded_terms) > 1:
+            extended_prompt = " ".join(expanded_terms)
+        else:
+            extended_prompt = prompt
+    except Exception:
+        extended_prompt = prompt
+
+    query_tokens = tokenize(extended_prompt)
     match_query = _fts_query_for_tokens(query_tokens)
     if not match_query:
         return {}

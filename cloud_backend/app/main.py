@@ -113,6 +113,10 @@ from app.models import (
     PrimaryRole,
     RefreshPayload,
     ReviewDashboardResponse,
+    DepartmentSignalActionAlert,
+    DepartmentSignalOneOnOneSuggestion,
+    DepartmentSnapshot,
+    DepartmentSignalsResponse,
     ReviewHistoryEntryRecord,
     ReviewHistoryResponse,
     RegisterPayload,
@@ -8915,6 +8919,467 @@ def _dashboard_for_user(
     )
 
 
+# ───────── Department Signals ─────────
+# Collaboration cockpit for weekly review / department-signal tab.
+# Surfaces action-oriented alerts ("call a 15-min meeting", "have a 1:1") rather
+# than raw counts. Every signal cites the data that produced it so the user can
+# trace back to the meeting / plan-item / task. Empty inputs degrade gracefully.
+
+def _month_label_for(date: datetime.date) -> str:
+    return f"{date.year:04d}-{date.month:02d}"
+
+
+def _employees_by_department(state: AppState, organization_id: str) -> dict[str, list]:
+    rows = state.db.fetchall(
+        "SELECT id, full_name, department_id FROM employee_accounts "
+        "WHERE organization_id=? AND account_status='approved'",
+        (organization_id,),
+    )
+    out: dict[str, list] = {}
+    for r in rows:
+        dept_id = str(r["department_id"] or "")
+        if not dept_id:
+            continue
+        out.setdefault(dept_id, []).append(r)
+    return out
+
+
+def _user_display_map(state: AppState, organization_id: str) -> dict[str, str]:
+    rows = state.db.fetchall(
+        "SELECT id, full_name FROM employee_accounts WHERE organization_id=?",
+        (organization_id,),
+    )
+    return {str(r["id"]): str(r["full_name"] or "") for r in rows}
+
+
+def _build_department_snapshot(
+    state: AppState,
+    department_row,
+    month_label: str,
+    today: datetime.date,
+) -> DepartmentSnapshot:
+    dept_id = str(department_row["id"])
+    leader_id = str(department_row["leader_user_id"] or "") or None
+    leader_name = str(department_row["leader_name"] or "") or None
+    if leader_id and not leader_name:
+        leader_row = state.db.fetchone(
+            "SELECT full_name FROM employee_accounts WHERE id=?", (leader_id,)
+        )
+        if leader_row:
+            leader_name = str(leader_row["full_name"] or "")
+
+    plan_rows = state.db.fetchall(
+        "SELECT id FROM org_department_plans "
+        "WHERE department_id=? AND week_label=? AND status='active'",
+        (dept_id, month_label),
+    )
+    plan_ids = [str(r["id"]) for r in plan_rows]
+
+    items: list = []
+    if plan_ids:
+        placeholders = ",".join(["?"] * len(plan_ids))
+        items = state.db.fetchall(
+            f"SELECT id, owner_user_id, status FROM org_department_plan_items "
+            f"WHERE plan_id IN ({placeholders})",
+            tuple(plan_ids),
+        )
+
+    total = len(items)
+    done_count = sum(1 for it in items if str(it["status"] or "") == "done")
+    assigned_count = sum(
+        1 for it in items if str(it["owner_user_id"] or "").strip()
+    )
+
+    linked_count = 0
+    if items:
+        item_ids = [str(it["id"]) for it in items]
+        placeholders = ",".join(["?"] * len(item_ids))
+        linked_count = int(
+            state.db.scalar(
+                f"SELECT COUNT(DISTINCT department_plan_item_id) "
+                f"FROM task_plan_links WHERE department_plan_item_id IN ({placeholders})",
+                tuple(item_ids),
+            )
+            or 0
+        )
+
+    completion_rate = (done_count / total) if total else 0.0
+
+    headlines: list[str] = []
+    temperature = 0
+    if total == 0:
+        headlines.append("尚未建立本月计划")
+        temperature = 4  # 缺承诺锚点
+    else:
+        if assigned_count == 0:
+            headlines.append(f"{total} 项月计划无人认领")
+            temperature += 2
+        elif assigned_count < total * 0.5:
+            headlines.append(f"{assigned_count}/{total} 项已认领")
+            temperature += 1
+        if linked_count == 0:
+            headlines.append("0 项已挂任务")
+            temperature += 1
+        if done_count == 0 and today.day >= 15:
+            headlines.append("月已过半 0 完成")
+            temperature += 1
+
+    # 状态徽章
+    if temperature >= 4:
+        status = "abnormal"
+    elif temperature >= 2:
+        status = "tight"
+    else:
+        status = "stable"
+
+    # 燃尽数据：横轴为本月日历，纵轴为剩余项数
+    month_start = today.replace(day=1)
+    next_month = (month_start.replace(day=28) + timedelta(days=4)).replace(day=1)
+    days_in_month = (next_month - month_start).days
+    ideal: list[float] = []
+    actual: list[float] = []
+    for i in range(days_in_month):
+        ideal.append(round(total * (1 - i / max(days_in_month - 1, 1)), 2))
+        if i <= today.day - 1:
+            # 简化：假设本月内完成是均匀的（缺真实"何时完成"数据时）
+            elapsed = (i + 1) / max(today.day, 1)
+            actual.append(max(total - done_count * elapsed, 0))
+        # 未来日期不填值（前端只画到 today）
+
+    return DepartmentSnapshot(
+        departmentId=dept_id,
+        departmentName=str(department_row["name"] or ""),
+        leaderUserId=leader_id,
+        leaderName=leader_name,
+        status=status,
+        completionRate=completion_rate,
+        planTotalCount=total,
+        planDoneCount=done_count,
+        planAssignedCount=assigned_count,
+        planLinkedCount=linked_count,
+        headlines=headlines,
+        temperatureLevel=min(temperature, 5),
+        burndownIdeal=ideal,
+        burndownActual=actual,
+    )
+
+
+def _signal_plan_unclaimed(
+    snapshots: list[DepartmentSnapshot],
+    today: datetime.date,
+) -> list[DepartmentSignalActionAlert]:
+    """部门月计划无人认领 / 进度严重落后。"""
+    alerts: list[DepartmentSignalActionAlert] = []
+    days_left = max(0, 30 - today.day)
+    for snap in snapshots:
+        if snap.planTotalCount == 0:
+            continue
+        unclaimed = snap.planTotalCount - snap.planAssignedCount
+        if unclaimed == 0:
+            continue
+        ratio = unclaimed / snap.planTotalCount
+        if ratio < 0.5 and today.day < 15:
+            continue
+        severity = "high" if ratio >= 0.7 and today.day >= 15 else "medium"
+        alerts.append(
+            DepartmentSignalActionAlert(
+                id=f"plan-unclaimed-{snap.departmentId}",
+                kind="plan_unclaimed",
+                severity=severity,
+                title=f"{snap.departmentName}本月计划 {unclaimed}/{snap.planTotalCount} 项无人认领",
+                advice="召 15 分钟分配会，把未认领项当场指派到人",
+                involvedDepartmentId=snap.departmentId,
+                involvedDepartmentName=snap.departmentName,
+                involvedUserIds=[snap.leaderUserId] if snap.leaderUserId else [],
+                involvedUserNames=[snap.leaderName] if snap.leaderName else [],
+                metricLabel="认领率",
+                metricValueText=f"{snap.planAssignedCount}/{snap.planTotalCount}",
+                daysLeft=days_left,
+            )
+        )
+    return alerts
+
+
+def _signal_collaboration_pileup(
+    state: AppState,
+    organization_id: str,
+    employees_by_dept: dict[str, list],
+    user_display: dict[str, str],
+    today: datetime.date,
+) -> tuple[list[DepartmentSignalActionAlert], list[DepartmentSignalOneOnOneSuggestion]]:
+    """某员工本周 pending 协作 >= 3 且持续两周 -> 协作堆积。"""
+    cutoff_iso = (today - timedelta(days=14)).isoformat()
+    rows = state.db.fetchall(
+        """
+        SELECT tc.user_id, COUNT(*) AS pending_count
+        FROM task_collaborators tc
+        JOIN tasks t ON t.id = tc.task_id
+        WHERE t.organization_id = ?
+          AND tc.inbox_status = 'pending'
+          AND tc.created_at >= ?
+        GROUP BY tc.user_id
+        HAVING pending_count >= 3
+        """,
+        (organization_id, cutoff_iso),
+    )
+    alerts: list[DepartmentSignalActionAlert] = []
+    suggestions: list[DepartmentSignalOneOnOneSuggestion] = []
+    dept_by_user: dict[str, str] = {}
+    for dept_id, members in employees_by_dept.items():
+        for m in members:
+            dept_by_user[str(m["id"])] = dept_id
+    dept_name_lookup = {
+        str(r["id"]): str(r["name"] or "")
+        for r in state.db.fetchall(
+            "SELECT id, name FROM org_departments WHERE organization_id=?",
+            (organization_id,),
+        )
+    }
+    for r in rows:
+        user_id = str(r["user_id"])
+        full_name = user_display.get(user_id, "")
+        if not full_name:
+            continue
+        pending = int(r["pending_count"])
+        dept_id = dept_by_user.get(user_id)
+        dept_name = dept_name_lookup.get(dept_id or "")
+        alerts.append(
+            DepartmentSignalActionAlert(
+                id=f"pileup-{user_id}",
+                kind="collaboration_pileup",
+                severity="medium",
+                title=f"{full_name}近两周累计 {pending} 项协作未处理",
+                advice="本周内拉一次 1:1，问他卡在哪",
+                involvedDepartmentId=dept_id,
+                involvedDepartmentName=dept_name,
+                involvedUserIds=[user_id],
+                involvedUserNames=[full_name],
+                metricLabel="待处理协作",
+                metricValueText=f"{pending} 项",
+            )
+        )
+        suggestions.append(
+            DepartmentSignalOneOnOneSuggestion(
+                userId=user_id,
+                userName=full_name,
+                departmentId=dept_id,
+                departmentName=dept_name,
+                reason=f"近两周累计 {pending} 项协作未处理",
+                questionPrompts=[
+                    "是否对任务范围有疑问",
+                    "是否需要资源 / 权限支持",
+                    "是否情绪上有阻力",
+                ],
+                weekCreatedCount=0,
+                weekCompletedCount=0,
+            )
+        )
+    return alerts, suggestions
+
+
+def _signal_low_throughput(
+    state: AppState,
+    organization_id: str,
+    employees_by_dept: dict[str, list],
+    user_display: dict[str, str],
+    today: datetime.date,
+) -> list[DepartmentSignalOneOnOneSuggestion]:
+    """最近 3 周新建任务 > 0 但完成任务 = 0 -> 持续低产出。"""
+    three_weeks_ago = (today - timedelta(days=21)).isoformat()
+    rows = state.db.fetchall(
+        """
+        SELECT owner_id,
+               SUM(CASE WHEN progress_status='done' THEN 1 ELSE 0 END) AS done_cnt,
+               SUM(CASE WHEN progress_status!='done' THEN 1 ELSE 0 END) AS open_cnt,
+               COUNT(*) AS total_cnt
+        FROM tasks
+        WHERE organization_id = ?
+          AND created_at >= ?
+          AND owner_id IS NOT NULL AND owner_id != ''
+        GROUP BY owner_id
+        HAVING done_cnt = 0 AND total_cnt >= 3
+        """,
+        (organization_id, three_weeks_ago),
+    )
+    suggestions: list[DepartmentSignalOneOnOneSuggestion] = []
+    dept_by_user: dict[str, str] = {}
+    for dept_id, members in employees_by_dept.items():
+        for m in members:
+            dept_by_user[str(m["id"])] = dept_id
+    dept_name_lookup = {
+        str(r["id"]): str(r["name"] or "")
+        for r in state.db.fetchall(
+            "SELECT id, name FROM org_departments WHERE organization_id=?",
+            (organization_id,),
+        )
+    }
+    for r in rows:
+        user_id = str(r["owner_id"])
+        full_name = user_display.get(user_id, "")
+        if not full_name:
+            continue
+        total_cnt = int(r["total_cnt"])
+        suggestions.append(
+            DepartmentSignalOneOnOneSuggestion(
+                userId=user_id,
+                userName=full_name,
+                departmentId=dept_by_user.get(user_id),
+                departmentName=dept_name_lookup.get(dept_by_user.get(user_id) or ""),
+                reason=f"近 3 周新建 {total_cnt} 项任务但 0 项完成",
+                questionPrompts=[
+                    "是否任务方向不清",
+                    "是否被打断打散",
+                    "是否承接的事太重无法收口",
+                ],
+                weekCreatedCount=total_cnt,
+                weekCompletedCount=0,
+            )
+        )
+    return suggestions
+
+
+def _signal_dispatch_unconfirmed(
+    state: AppState,
+    organization_id: str,
+    today: datetime.date,
+) -> list[DepartmentSignalActionAlert]:
+    """24h 未确认 + 接收人本周已接 >= 5 项 -> 派发可能掉地上。"""
+    cutoff = (datetime.combine(today, datetime.min.time()) - timedelta(hours=24)).isoformat()
+    rows = state.db.fetchall(
+        """
+        SELECT tc.task_id, tc.user_id AS receiver_id,
+               t.title, t.creator_id
+        FROM task_collaborators tc
+        JOIN tasks t ON t.id = tc.task_id
+        WHERE t.organization_id = ?
+          AND tc.inbox_status = 'pending'
+          AND tc.created_at < ?
+        ORDER BY tc.created_at ASC
+        LIMIT 50
+        """,
+        (organization_id, cutoff),
+    )
+    user_display = _user_display_map(state, organization_id)
+    week_start_iso = (today - timedelta(days=today.weekday())).isoformat()
+    alerts: list[DepartmentSignalActionAlert] = []
+    seen_receivers: set[str] = set()
+    for r in rows:
+        receiver_id = str(r["receiver_id"])
+        if receiver_id in seen_receivers:
+            continue
+        load_count = int(
+            state.db.scalar(
+                "SELECT COUNT(*) FROM task_collaborators tc "
+                "JOIN tasks t ON t.id = tc.task_id "
+                "WHERE tc.user_id=? AND t.organization_id=? AND tc.created_at>=?",
+                (receiver_id, organization_id, week_start_iso),
+            )
+            or 0
+        )
+        if load_count < 5:
+            continue
+        seen_receivers.add(receiver_id)
+        receiver_name = user_display.get(receiver_id, "")
+        if not receiver_name:
+            continue
+        alerts.append(
+            DepartmentSignalActionAlert(
+                id=f"dispatch-{receiver_id}",
+                kind="dispatch_unconfirmed",
+                severity="medium",
+                title=f"派给 {receiver_name} 的协作 24h 未确认（本周已接 {load_count} 项）",
+                advice="检查是否需要重新分配，或当面催一次",
+                involvedUserIds=[receiver_id],
+                involvedUserNames=[receiver_name],
+                metricLabel="本周已接",
+                metricValueText=f"{load_count} 项",
+            )
+        )
+    return alerts
+
+
+def _compute_department_signals(
+    state: AppState,
+    current_user: SessionUser,
+    week_label: str,
+    perspective: str,
+    department_id: str | None,
+) -> DepartmentSignalsResponse:
+    org_id = current_user.organizationId
+    today = datetime.now().date()
+    month_label = _month_label_for(today)
+
+    if perspective == "department" and department_id:
+        dept_rows = state.db.fetchall(
+            "SELECT id, name, leader_user_id, leader_name FROM org_departments "
+            "WHERE organization_id=? AND id=? AND active=1",
+            (org_id, department_id),
+        )
+    else:
+        dept_rows = state.db.fetchall(
+            "SELECT id, name, leader_user_id, leader_name FROM org_departments "
+            "WHERE organization_id=? AND active=1 ORDER BY name",
+            (org_id,),
+        )
+
+    snapshots = [
+        _build_department_snapshot(state, row, month_label, today)
+        for row in dept_rows
+    ]
+    employees_by_dept = _employees_by_department(state, org_id)
+    user_display = _user_display_map(state, org_id)
+
+    action_alerts: list[DepartmentSignalActionAlert] = []
+    one_on_ones: list[DepartmentSignalOneOnOneSuggestion] = []
+
+    action_alerts.extend(_signal_plan_unclaimed(snapshots, today))
+
+    pileup_alerts, pileup_suggestions = _signal_collaboration_pileup(
+        state, org_id, employees_by_dept, user_display, today
+    )
+    action_alerts.extend(pileup_alerts)
+    one_on_ones.extend(pileup_suggestions)
+
+    one_on_ones.extend(
+        _signal_low_throughput(state, org_id, employees_by_dept, user_display, today)
+    )
+
+    action_alerts.extend(_signal_dispatch_unconfirmed(state, org_id, today))
+
+    # Sort: high severity first, then medium, then low
+    severity_order = {"high": 0, "medium": 1, "low": 2}
+    action_alerts.sort(key=lambda a: severity_order.get(a.severity, 3))
+
+    # Dedup one-on-ones by userId, keep first occurrence (priority: pileup > low_throughput)
+    seen: set[str] = set()
+    dedup_one_on_ones: list[DepartmentSignalOneOnOneSuggestion] = []
+    for s in one_on_ones:
+        if s.userId in seen:
+            continue
+        seen.add(s.userId)
+        dedup_one_on_ones.append(s)
+
+    viewer_role = (
+        "admin"
+        if current_user.primaryRole == "admin"
+        else (
+            "department_lead"
+            if any(
+                str(d["leader_user_id"] or "") == current_user.id for d in dept_rows
+            )
+            else "employee"
+        )
+    )
+
+    return DepartmentSignalsResponse(
+        weekLabel=week_label,
+        viewerRole=viewer_role,
+        actionAlerts=action_alerts,
+        oneOnOneSuggestions=dedup_one_on_ones,
+        departmentSnapshots=snapshots,
+    )
+
+
 def _backfill_task_tag_ids(state: AppState) -> None:
     timestamp = now_iso()
     state.db.execute(
@@ -14162,6 +14627,35 @@ def create_app() -> FastAPI:
     @app.get("/api/v1/reviews/history", response_model=ReviewHistoryResponse)
     def review_history(current_user: SessionUser = Depends(lambda authorization=Header(default=None): _require_auth(app, authorization))) -> ReviewHistoryResponse:
         return _review_history_for_user(state, current_user.id)
+
+    @app.get("/api/v1/reviews/department-signals", response_model=DepartmentSignalsResponse)
+    def department_signals(
+        weekLabel: str | None = Query(default=None),
+        perspective: Literal["mine", "department", "organization"] = Query(default="organization"),
+        departmentId: str | None = Query(default=None),
+        current_user: SessionUser = Depends(lambda authorization=Header(default=None): _require_auth(app, authorization)),
+    ) -> DepartmentSignalsResponse:
+        is_admin = current_user.primaryRole == "admin"
+        if perspective == "organization" and not is_admin:
+            raise HTTPException(status_code=403, detail="只有管理员可以查看组织视角")
+        resolved_dept_id: str | None = None
+        if perspective == "department":
+            target = (departmentId or "").strip()
+            if not target:
+                raise HTTPException(status_code=400, detail="departmentId 不能为空")
+            if not is_admin:
+                dept_row = state.db.fetchone(
+                    "SELECT leader_user_id FROM org_departments WHERE id = ? AND organization_id = ?",
+                    (target, current_user.organizationId),
+                )
+                if not dept_row or str(dept_row["leader_user_id"] or "") != current_user.id:
+                    raise HTTPException(status_code=403, detail="只能查看你所负责的部门")
+            resolved_dept_id = target
+        resolved_week = weekLabel or _current_week_label()
+        return _compute_department_signals(
+            state, current_user, resolved_week,
+            perspective=perspective, department_id=resolved_dept_id,
+        )
 
     @app.post("/api/v1/reviews/weekly", response_model=ReviewDashboardResponse)
     def submit_weekly_review(

@@ -249,9 +249,14 @@ def _assemble_basic_prompt(
     snapshot: WeeklyReviewTaskSnapshotRecord,
     note: str,
     structured_note_reflection: str,
+    glossary_pack: str = "",
 ) -> str:
     """组装 basic 模式的 prompt — 只用最小输入。"""
     sections: list[str] = []
+
+    # P-D.5: 字典权威包放最前（事实底座）
+    if glossary_pack:
+        sections.append(glossary_pack)
 
     # 益语背景卡
     if org_dna:
@@ -377,6 +382,7 @@ def build_understanding_basic(
     ai: "AiService | None",
     task_entry: WeeklyReviewTaskEntryRecord,
     org_dna_modules: list[OrganizationDnaModuleRecord],
+    glossary_pack: str = "",
 ) -> UnderstandingSnapshotV1Record:
     """
     basic 模式构建器 — 只靠最小输入产出第一层理解。
@@ -402,6 +408,7 @@ def build_understanding_basic(
             snapshot=snapshot,
             note=note,
             structured_note_reflection=reflection,
+            glossary_pack=glossary_pack,
         )
         try:
             raw = ai._qwen_generate(
@@ -585,6 +592,7 @@ def build_understanding_enhanced(
     meetings: list[dict] | None = None,
     support_requests: list[dict] | None = None,
     knowledge_summaries: list[dict] | None = None,
+    glossary_pack: str = "",
 ) -> UnderstandingSnapshotV1Record:
     """
     enhanced 模式构建器。
@@ -621,17 +629,20 @@ def build_understanding_enhanced(
 
     # 如果没有任何增强项，降级回 basic
     if not has_el and not has_meeting and not has_sr and not has_kb:
-        basic = build_understanding_basic(ai=ai, task_entry=task_entry, org_dna_modules=org_dna_modules)
+        basic = build_understanding_basic(
+            ai=ai, task_entry=task_entry, org_dna_modules=org_dna_modules, glossary_pack=glossary_pack,
+        )
         basic.sourceBreakdown = sources
         basic.coverage = coverage
         return basic
 
-    # 组装 enhanced prompt
+    # 组装 enhanced prompt（含字典权威包）
     basic_prompt = _assemble_basic_prompt(
         org_dna=org_dna_modules,
         snapshot=snapshot,
         note=note,
         structured_note_reflection=reflection,
+        glossary_pack=glossary_pack,
     )
     prompt = _assemble_enhanced_prompt(
         basic_prompt,

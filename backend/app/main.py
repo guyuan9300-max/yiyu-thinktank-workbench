@@ -568,6 +568,9 @@ from app.models import (
     StrategicJudgmentRecord,
     StrategicMeetingPackDraftRecord,
     StrategicPermissionRecord,
+    StrategicPulseRecord,
+    ClientPulseSummaryRecord,
+    ClientsPulseSummaryResponse,
     StrategicReadinessRecord,
     StrategicThoughtRefreshPayload,
     StrategicThoughtRecord,
@@ -744,6 +747,10 @@ from app.services.data_center_kernel import (
     resolve_data_center_kernel,
     set_semantic_info_lookup,
     set_version_info_lookup,
+)
+from app.services.client_strategic_pulse import (
+    compute_strategic_pulse,
+    compute_pulse_summary_for_clients,
 )
 from app.services.data_center_quality import validate_answer_quality
 from app.services.workspace_data_center_adapter import (
@@ -1284,6 +1291,116 @@ def today_label() -> str:
 
 # R8：任务型探测从 services/chat_intent 导入（独立模块方便单测，避开 main.py 顶层副作用）
 from app.services.chat_intent import is_task_request, TASK_REQUEST_TOKENS  # noqa: E402, F401
+
+
+# R11.1：结构化字段查询 —— 任务型且涉及合同/员工类时，从 document_fields 表拿预解构数据
+_EMPLOYEE_CONTRACT_KEYWORDS = (
+    "员工", "合同", "薪资", "薪水", "工资", "岗位", "职位", "入职", "试用期",
+    "劳动合同", "聘任", "在职",
+)
+
+EMPLOYEE_CONTRACT_FIELD_LABELS = {
+    "employee_name": "姓名",
+    "position": "岗位",
+    "department": "所属部门",
+    "effective_date": "合同生效日期",
+    "expiration_date": "合同终止日期",
+    "probation_period": "试用期",
+    "probation_salary": "试用期月薪",
+    "regular_salary": "转正后月薪",
+    "work_location": "工作地点",
+    "contract_type": "合同类型",
+}
+
+
+def _is_employee_contract_task(prompt: str) -> bool:
+    compact = re.sub(r"\s+", "", str(prompt or "")).lower()
+    return any(token in compact for token in _EMPLOYEE_CONTRACT_KEYWORDS)
+
+
+def _build_structured_fields_pack(db, client_id: str, prompt: str) -> str:
+    """R12：任务型查询时优先读 document_fields 表的已解构字段。
+
+    分两层：
+    1. universal 层（所有文档都跑过）：所有任务型查询都喂
+    2. employee_contract 层（仅合同类型）：当 prompt 含合同/员工关键词时额外喂
+
+    R12.1 修复：之前 `state.db` 是 closure 变量，模块级函数访问不到
+    导致每次都 silent 失败回退到检索 evidence。改成显式传 db 参数。
+    """
+    sections: list[str] = []
+
+    # R12: universal 层 —— 任何任务型查询都受益
+    try:
+        from app.services.document_decomposition import (
+            fetch_universal_fields_for_client,
+            UNIVERSAL_FIELDS,
+        )
+        universal_records = fetch_universal_fields_for_client(db, client_id)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("[structured-fields] fetch universal failed: %s", exc)
+        universal_records = []
+
+    if universal_records:
+        # universal 字段标签映射
+        universal_labels = {f["name"]: f["label"] for f in UNIVERSAL_FIELDS}
+        lines = [
+            "【已结构化的文档字段（R12 普惠解构层 · 所有文档已浅解构）】",
+            "下面是该客户所有已上传文档的关键字段。**每个字段都是从原文档结构化提取的，可直接引用**。",
+            "做表/列出/统计类任务时**优先用这里的数据**，比检索命中片段更准确、更全面。",
+            "",
+        ]
+        for record in universal_records:
+            file_name = record.get("file_name", "")
+            kind = record.get("kind", "")
+            fields = record.get("fields", {})
+            if not fields:
+                continue
+            line_parts = [f"📄 {file_name}（kind={kind}）"]
+            for field_name, field_meta in fields.items():
+                label = universal_labels.get(field_name, field_name)
+                value = field_meta.get("value", "")
+                if value and value != "-":
+                    line_parts.append(f"  {label}: {value}")
+            if len(line_parts) > 1:
+                lines.append("\n".join(line_parts))
+        if len(lines) > 4:
+            sections.append("\n\n".join(lines))
+
+    # R11.1: employee_contract 特化层 —— 含合同关键词时叠加
+    if _is_employee_contract_task(prompt):
+        try:
+            from app.services.document_decomposition import fetch_employee_contracts_for_client
+            contract_records = fetch_employee_contracts_for_client(db, client_id)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("[structured-fields] fetch contracts failed: %s", exc)
+            contract_records = []
+
+        if contract_records:
+            lines = [
+                "【员工合同精解构字段（R11.1 · 在 universal 字段基础上的细化）】",
+                "下面是员工合同特有的详细字段（薪资/试用期/合同类型等），如与 universal 字段冲突以这里为准。",
+                "",
+            ]
+            for record in contract_records:
+                file_name = record.get("file_name", "")
+                fields = record.get("fields", {})
+                if not fields:
+                    continue
+                line_parts = [f"📄 {file_name}"]
+                for field_name, field_meta in fields.items():
+                    label = EMPLOYEE_CONTRACT_FIELD_LABELS.get(field_name, field_name)
+                    value = field_meta.get("value", "")
+                    if value and value != "待补全":
+                        line_parts.append(f"  {label}: {value}")
+                if len(line_parts) > 1:
+                    lines.append("\n".join(line_parts))
+            if len(lines) > 3:
+                sections.append("\n\n".join(lines))
+
+    if not sections:
+        return ""
+    return "\n\n".join(sections)
 
 
 def normalize_markdown_text(markdown_content: str) -> str:
@@ -26498,6 +26615,115 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         except RuntimeError as exc:
             raise HTTPException(status_code=502, detail=str(exc)) from exc
 
+    @app.get("/api/v1/_debug/reviews-trace")
+    def debug_reviews_trace(weekLabel: str | None = Query(default=None), perspective: str | None = Query(default="organization")):
+        """临时调试 endpoint - 对比 cloud / local_base / final 三层 workItems 分布."""
+        from collections import Counter
+        target_week = weekLabel or current_review_week_label()
+        result: dict[str, object] = {"week": target_week, "perspective": perspective}
+
+        # 1. cloud raw
+        try:
+            cloud_path = f"/api/v1/reviews/dashboard?weekLabel={target_week}&perspective={perspective or 'organization'}"
+            cloud_payload = cloud_request("GET", cloud_path)
+            cloud_items = cloud_payload.get("workItems", []) if isinstance(cloud_payload, dict) else []
+            c = Counter()
+            for it in cloud_items:
+                snap = it.get("taskSnapshot") or {}
+                c[snap.get("ownerName") or "(空)"] += 1
+            result["cloud_raw"] = {"count": len(cloud_items), "by_owner": dict(c)}
+        except Exception as exc:
+            result["cloud_raw"] = {"error": str(exc)}
+
+        # 2. local_base (绕过 cloud, 用纯本地)
+        try:
+            local_base = local_review_dashboard_base(target_week, include_analysis=False)
+            c = Counter()
+            for it in local_base.workItems:
+                snap = it.taskSnapshot
+                if isinstance(snap, dict):
+                    owner = snap.get("ownerName") or "(空)"
+                else:
+                    owner = getattr(snap, "ownerName", "") or "(空)"
+                c[owner] += 1
+            result["local_base"] = {"count": len(local_base.workItems), "by_owner": dict(c)}
+        except Exception as exc:
+            result["local_base"] = {"error": str(exc)}
+
+        # 3. final after reconcile + augment
+        try:
+            if get_cloud_token():
+                cloud_path = f"/api/v1/reviews/dashboard?weekLabel={target_week}&perspective={perspective or 'organization'}"
+                cloud_payload = cloud_request("GET", cloud_path)
+                if isinstance(cloud_payload, dict):
+                    cloud_response = ReviewResponse(**cloud_payload)
+                    reconciled = reconcile_cloud_review_response_with_local_tasks(cloud_response, target_week)
+                    c = Counter()
+                    for it in reconciled.workItems:
+                        snap = it.taskSnapshot
+                        if isinstance(snap, dict):
+                            owner = snap.get("ownerName") or "(空)"
+                        else:
+                            owner = getattr(snap, "ownerName", "") or "(空)"
+                        c[owner] += 1
+                    result["after_reconcile"] = {"count": len(reconciled.workItems), "by_owner": dict(c)}
+
+                    # 4. after augment (full final)
+                    final = augment_review_response(
+                        reconciled,
+                        target_week,
+                        generate_weekly_overview=False,
+                        perspective=perspective,
+                        department_id=None,
+                    )
+                    c2 = Counter()
+                    for it in final.workItems:
+                        snap = it.taskSnapshot
+                        if isinstance(snap, dict):
+                            owner = snap.get("ownerName") or "(空)"
+                        else:
+                            owner = getattr(snap, "ownerName", "") or "(空)"
+                        c2[owner] += 1
+                    result["after_augment"] = {"count": len(final.workItems), "by_owner": dict(c2)}
+        except Exception as exc:
+            result["after_augment_error"] = str(exc)
+
+        return result
+
+    @app.get("/api/v1/clients/{client_id}/strategic-pulse", response_model=StrategicPulseRecord)
+    def get_client_strategic_pulse(client_id: str) -> StrategicPulseRecord:
+        """战略陪伴克制版主页主数据.
+
+        返回 3 个区块:
+        - weeklyEvents: 近 7 天的关键事实卡 (已过滤测试垃圾)
+        - upcomingTodos: 未完成任务 (按到期紧迫度排)
+        - currentBlockers: 当前卡点 (主线 30+ 天无活动, 或有真实 blocker)
+
+        现阶段不调 LLM, 全部读现有 evidence_cards / tasks / event_lines.
+        """
+        client_row = state.db.fetchone(
+            "SELECT 1 FROM clients WHERE id = ?",
+            (client_id,),
+        )
+        if client_row is None:
+            raise HTTPException(status_code=404, detail="Client not found")
+        payload = compute_strategic_pulse(state.db.conn, client_id)
+        return StrategicPulseRecord(**payload)
+
+    @app.get("/api/v1/reviews/clients-pulse", response_model=ClientsPulseSummaryResponse)
+    def get_clients_pulse_summary() -> ClientsPulseSummaryResponse:
+        """本周概览顶部「客户脉搏」区块用 - 所有客户的本周变化摘要.
+
+        每个客户返回简化数据 (文档/任务/事实/卡点/逾期 5 个计数 + topSignal 一句话),
+        让用户一眼看出哪些客户本周有动态; 详细内容点开客户后由 strategic-pulse 提供.
+        """
+        from datetime import datetime, timezone
+        summaries = compute_pulse_summary_for_clients(state.db.conn)
+        return ClientsPulseSummaryResponse(
+            summaries=[ClientPulseSummaryRecord(**s) for s in summaries],
+            generatedAt=datetime.now(timezone.utc).isoformat(),
+        )
+
     @app.get("/api/v1/system/health", response_model=HealthResponse)
     def get_health() -> HealthResponse:
         # Opportunistically sync pending tasks on health check (non-blocking)
@@ -31418,6 +31644,34 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             raise HTTPException(status_code=500, detail="Task view update failed")
         return _task_view_record_from_row(updated_row)
 
+    @app.get("/api/v1/reviews/department-signals")
+    def get_department_signals(
+        weekLabel: str | None = Query(default=None),
+        perspective: str = Query(default="organization"),
+        departmentId: str | None = Query(default=None),
+    ) -> dict:
+        if not get_cloud_token():
+            return {
+                "weekLabel": weekLabel or current_review_week_label(),
+                "viewerRole": "employee",
+                "actionAlerts": [],
+                "oneOnOneSuggestions": [],
+                "departmentSnapshots": [],
+            }
+        params: list[str] = [f"perspective={perspective}"]
+        if weekLabel:
+            params.append(f"weekLabel={weekLabel}")
+        if departmentId:
+            params.append(f"departmentId={departmentId}")
+        path = "/api/v1/reviews/department-signals?" + "&".join(params)
+        try:
+            payload = cloud_request("GET", path, timeout=10.0)
+        except Exception as exc:
+            raise HTTPException(status_code=502, detail=f"cloud unreachable: {exc}") from exc
+        if not isinstance(payload, dict):
+            raise HTTPException(status_code=502, detail="invalid cloud response")
+        return payload
+
     @app.get("/api/v1/reviews/dashboard/drill-target", response_model=ReviewDashboardDrillTargetResponse)
     def get_review_dashboard_drill_target(
         targetType: str,
@@ -34306,6 +34560,138 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         hide_client_folder_label(client_id, label)
         log_activity("client.folder.hide", "client_folder", folder_id, {"clientId": client_id, "label": label})
         return {"deleted": True}
+
+    @app.delete("/api/v1/clients/{client_id}/documents/{document_id}")
+    def delete_client_document(client_id: str, document_id: str) -> dict:
+        """单点删除某客户的某文档：物理文件进回收站，DB 记录走 cascade。
+
+        用户场景：在客户工作台导错一个文件，要从右侧文件列表 + 数据中心同时清掉。
+        之前缺这个 endpoint，只能借"重复文档去重"或"删任务附件"两个迂回入口，
+        单个误导入的文档没合适的清理路径（参 bug 排查 2026-05-15）。
+
+        删除流程：
+          1) 校验 document 属于该 client
+          2) 物理文件 move 到 data_dir/recycle_bin/{client_id}/，30 天可恢复
+          3) 写 document_recycle_bin 记录
+          4) DELETE FROM documents → FK CASCADE 自动清 v2_documents/v2_sections/v2_chunks
+             atomic_facts.source_v2_chunk_id 由 ON DELETE SET NULL 处理，事实记录保留
+        """
+        from pathlib import Path
+        import shutil
+
+        doc_row = state.db.fetchone(
+            "SELECT * FROM documents WHERE id = ? AND client_id = ?",
+            (document_id, client_id),
+        )
+        if not doc_row:
+            raise HTTPException(status_code=404, detail="文档不存在或不属于该客户")
+
+        v2_row = state.db.fetchone(
+            "SELECT * FROM v2_documents WHERE document_id = ?",
+            (document_id,),
+        )
+
+        file_name = ""
+        if v2_row and v2_row["file_name"]:
+            file_name = str(v2_row["file_name"])
+        if not file_name:
+            file_name = str(doc_row["title"] or "unnamed")
+
+        src_paths: list[str] = []
+        if v2_row:
+            if v2_row["managed_path"]:
+                src_paths.append(str(v2_row["managed_path"]))
+            if v2_row["original_path"]:
+                src_paths.append(str(v2_row["original_path"]))
+        if doc_row["path"]:
+            src_paths.append(str(doc_row["path"]))
+
+        recycle_root = state.data_dir / "recycle_bin" / client_id
+        recycle_root.mkdir(parents=True, exist_ok=True)
+        recycled_path = ""
+        for src in src_paths:
+            if not src:
+                continue
+            src_p = Path(src)
+            if src_p.is_file():
+                safe_name = f"{document_id[:12]}_{src_p.name}"
+                dst = recycle_root / safe_name
+                try:
+                    shutil.move(str(src_p), str(dst))
+                    recycled_path = str(dst)
+                    break
+                except Exception:
+                    logger.exception("移动到回收站失败 %s -> %s", src_p, dst)
+
+        deleted_by = ""
+        cached_user = get_cached_session_user()
+        if cached_user:
+            deleted_by = cached_user.fullName or cached_user.id
+
+        now = now_iso()
+        purge_at_iso = (datetime.now(timezone.utc) + timedelta(days=30)).isoformat()
+
+        if v2_row:
+            file_size = 0
+            try:
+                if recycled_path and Path(recycled_path).is_file():
+                    file_size = int(Path(recycled_path).stat().st_size)
+            except Exception:
+                file_size = 0
+            state.db.execute(
+                """
+                INSERT INTO document_recycle_bin(
+                    id, client_id, original_v2_document_id, original_document_id,
+                    file_name, kind, original_path, managed_path_before, recycled_managed_path,
+                    content_hash, file_size_bytes, section_count, chunk_count, parse_status,
+                    delete_reason, deleted_at, deleted_by, auto_purge_at
+                ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'manual_delete', ?, ?, ?)
+                """,
+                (
+                    new_id("rcb"),
+                    client_id,
+                    str(v2_row["id"]),
+                    document_id,
+                    file_name,
+                    str(v2_row["kind"] or ""),
+                    str(v2_row["original_path"] or ""),
+                    str(v2_row["managed_path"] or ""),
+                    recycled_path,
+                    str(v2_row["content_hash"] or ""),
+                    file_size,
+                    int(v2_row["section_count"] or 0),
+                    int(v2_row["chunk_count"] or 0),
+                    str(v2_row["parse_status"] or ""),
+                    now,
+                    deleted_by,
+                    purge_at_iso,
+                ),
+            )
+
+        # documents → v2_documents (CASCADE) → v2_sections/v2_chunks (CASCADE)。
+        # 显式删 v2 兜底，怕外键被某个 PRAGMA 关掉（参 task 清理脏数据时 FK CASCADE 没生效的经验）。
+        if v2_row:
+            state.db.execute("DELETE FROM v2_documents WHERE id = ?", (str(v2_row["id"]),))
+        state.db.execute("DELETE FROM documents WHERE id = ?", (document_id,))
+
+        log_activity(
+            "client.document.delete",
+            "client_document",
+            document_id,
+            {
+                "clientId": client_id,
+                "fileName": file_name,
+                "recycledPath": recycled_path,
+                "deleteReason": "manual_delete",
+            },
+        )
+
+        return {
+            "deleted": True,
+            "documentId": document_id,
+            "fileName": file_name,
+            "recycledPath": recycled_path,
+        }
 
     @app.delete("/api/v1/clients/{client_id}")
     def delete_client(client_id: str) -> dict[str, bool]:
@@ -40270,10 +40656,16 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                         if is_task_request_now:
                             # R9：任务型喂「客户全域资源索引」（5 个域元数据：文档/项目/判断/会议/目标）
                             # 让 LLM 看到客户全集元数据，不依赖检索 top-K 命中
-                            single_pass_strategic_pack = build_client_resource_index(
+                            index_pack = build_client_resource_index(
                                 workspace_snapshot,
                                 prompt=prompt_for_context,
                             ) or ""
+                            # R11.1：如果探测到合同/员工类任务，附加 document_fields 已解构记录
+                            fields_pack = _build_structured_fields_pack(state.db, client_id, prompt_for_context)
+                            if fields_pack:
+                                single_pass_strategic_pack = fields_pack + "\n\n" + index_pack
+                            else:
+                                single_pass_strategic_pack = index_pack
                         else:
                             existing_strategic = locals().get("multipass_strategic_pack")
                             if isinstance(existing_strategic, str) and existing_strategic.strip():
@@ -41709,6 +42101,134 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             samplesProcessed=len(samples),
             suggestedName=(payload.skillName or "").strip(),
         )
+
+    # ============================================================
+    # R11.1: 文档结构化解构层 —— 把合同/会议/财报等文档预解析成结构化字段
+    # ============================================================
+    @app.post("/api/v1/clients/{client_id}/documents/decompose-batch")
+    def decompose_documents_batch(
+        client_id: str,
+        payload: dict[str, Any] | None = Body(default=None),
+        force: bool = Query(default=False),
+    ) -> dict[str, object]:
+        """R11.1.F：异步触发该客户全部未解构 PDF/DOCX 的批量 classify + decompose。
+
+        立刻返回 {queued, totalDocuments}，后台线程跑实际解构（8-30 分钟，视文档数）。
+        用 GET /decomposition-status 查进度。
+
+        payload:
+        - force=true 重新解构已 success 的文档
+        """
+        from app.services.document_decomposition import classify_and_decompose
+        from concurrent.futures import ThreadPoolExecutor
+        import threading
+
+        ai_unavailable_detail = _packaged_workspace_chat_ai_unavailable_detail()
+        if ai_unavailable_detail:
+            raise HTTPException(status_code=409, detail=ai_unavailable_detail)
+
+        # force 可来自 query 或 body
+        force = bool(force or (payload or {}).get("force", False))
+        # 取该客户所有 PDF/DOCX 文档（按 created_at 倒序，列名是 snake_case）
+        doc_rows = state.db.fetchall(
+            """
+            SELECT d.id FROM documents d
+            WHERE d.client_id = ? AND lower(coalesce(d.kind, '')) IN ('pdf', 'docx')
+            ORDER BY d.created_at DESC
+            """,
+            (client_id,),
+        )
+        if not doc_rows:
+            return {"clientId": client_id, "queued": 0, "skipped": 0, "message": "no pdf/docx docs"}
+        document_ids: list[str] = []
+        skipped = 0
+        retry_count = 0
+        for row in doc_rows:
+            doc_id = str(row["id"])
+            if not force:
+                existing = state.db.fetchone(
+                    "SELECT decomposition_status FROM document_kinds WHERE document_id = ?",
+                    (doc_id,),
+                )
+                # 只跳过 success 和 skipped；failed/pending 会被重试
+                if existing and str(existing["decomposition_status"]) in {"success", "skipped"}:
+                    skipped += 1
+                    continue
+                if existing and str(existing["decomposition_status"]) in {"failed", "pending"}:
+                    retry_count += 1
+            document_ids.append(doc_id)
+
+        if not document_ids:
+            return {
+                "clientId": client_id,
+                "queued": 0,
+                "skipped": skipped,
+                "message": "all documents already decomposed (use force=true to re-run)",
+            }
+
+        # R11.1.F：异步后台执行，立即返回
+        def _background_worker(ids: list[str]) -> None:
+            logger.info("[decompose-batch] background worker started for %d docs (client=%s)", len(ids), client_id)
+            done = 0
+            for doc_id in ids:
+                try:
+                    outcome = classify_and_decompose(state.db, state.ai, doc_id)
+                    if outcome is None:
+                        logger.warning("[decompose-batch] doc %s: outcome is None (likely no content)", doc_id)
+                    elif outcome.success:
+                        done += 1
+                    else:
+                        logger.warning("[decompose-batch] doc %s failed: %s", doc_id, outcome.error)
+                except Exception as exc:  # noqa: BLE001
+                    logger.exception("[decompose-batch] doc %s exception: %s", doc_id, exc)
+                if (done % 5) == 0 and done > 0:
+                    logger.info("[decompose-batch] progress %d/%d (client=%s)", done, len(ids), client_id)
+            logger.info("[decompose-batch] worker done. success=%d / total=%d (client=%s)", done, len(ids), client_id)
+
+        # 用一次性线程跑（不复用线程池避免长任务阻塞其他工作）
+        threading.Thread(
+            target=_background_worker,
+            args=(document_ids,),
+            daemon=True,
+            name=f"decompose-batch-{client_id}",
+        ).start()
+
+        return {
+            "clientId": client_id,
+            "queued": len(document_ids),
+            "skippedAlreadyDone": skipped,
+            "retriedFailed": retry_count,
+            "estimatedMinutes": max(3, len(document_ids) // 4),
+            "message": "started in background; poll GET /decomposition-status for progress",
+        }
+
+    @app.get("/api/v1/clients/{client_id}/documents/decomposition-status")
+    def get_decomposition_status(client_id: str) -> dict[str, object]:
+        """统计该客户文档解构进度。"""
+        rows = state.db.fetchall(
+            """
+            SELECT dk.kind, dk.decomposition_status, COUNT(*) AS cnt
+            FROM document_kinds dk
+            JOIN documents d ON d.id = dk.document_id
+            WHERE d.client_id = ?
+            GROUP BY dk.kind, dk.decomposition_status
+            """,
+            (client_id,),
+        )
+        total_docs = int(state.db.scalar(
+            "SELECT COUNT(*) FROM documents WHERE client_id = ? AND lower(coalesce(kind, '')) IN ('pdf', 'docx')",
+            (client_id,),
+        ) or 0)
+        by_kind: dict[str, dict[str, int]] = {}
+        for row in rows:
+            kind = str(row["kind"])
+            status = str(row["decomposition_status"])
+            by_kind.setdefault(kind, {})[status] = int(row["cnt"] or 0)
+        return {
+            "clientId": client_id,
+            "totalPdfDocx": total_docs,
+            "byKind": by_kind,
+        }
 
     @app.post("/api/v1/clients/{client_id}/workspace/chat", response_model=ChatMessageRecord)
     def send_chat_message(client_id: str, payload: ChatRequest) -> ChatMessageRecord:
@@ -44545,14 +45065,46 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 try:
                     cloud_response = ReviewResponse(**payload)
                     reconciled_response = reconcile_cloud_review_response_with_local_tasks(cloud_response, weekLabel)
-                    return augment_review_response(
+                    result = augment_review_response(
                         reconciled_response,
                         weekLabel,
                         generate_weekly_overview=not skipAi,
                         perspective=perspective,
                         department_id=departmentId,
                     )
-                except Exception:
+                    try:
+                        from collections import Counter as _Counter
+                        c1 = _Counter()
+                        for it in cloud_response.workItems:
+                            snap = it.taskSnapshot if isinstance(it.taskSnapshot, dict) else (it.taskSnapshot.model_dump() if hasattr(it.taskSnapshot, 'model_dump') else {})
+                            c1[snap.get("ownerName") or "(空)"] += 1
+                        c2 = _Counter()
+                        for it in reconciled_response.workItems:
+                            snap = it.taskSnapshot if isinstance(it.taskSnapshot, dict) else (it.taskSnapshot.model_dump() if hasattr(it.taskSnapshot, 'model_dump') else {})
+                            c2[snap.get("ownerName") or "(空)"] += 1
+                        c3 = _Counter()
+                        for it in result.workItems:
+                            snap = it.taskSnapshot if isinstance(it.taskSnapshot, dict) else (it.taskSnapshot.model_dump() if hasattr(it.taskSnapshot, 'model_dump') else {})
+                            c3[snap.get("ownerName") or "(空)"] += 1
+                        with open("/tmp/yiyu_reviews_trace.log", "a") as fp:
+                            fp.write(f"\n=== {datetime.now().isoformat()} perspective={perspective} weekLabel_input={weekLabel} skipAi={skipAi} ===\n")
+                            fp.write(f"cloud_response.weekLabel={cloud_response.weekLabel!r} cloud.currentReview.weekLabel={cloud_response.currentReview.weekLabel if cloud_response.currentReview else None!r}\n")
+                            fp.write(f"reconciled_response.weekLabel={reconciled_response.weekLabel!r}\n")
+                            fp.write(f"cloud      ({len(cloud_response.workItems):>3}): {dict(c1)}\n")
+                            fp.write(f"reconciled ({len(reconciled_response.workItems):>3}): {dict(c2)}\n")
+                            fp.write(f"final      ({len(result.workItems):>3}): {dict(c3)}\n")
+                            # Sample taskIds + ownerName of first 3 items in each phase
+                            for label, src in [("cloud_first3", cloud_response.workItems), ("recon_first3", reconciled_response.workItems), ("final_first3", result.workItems)]:
+                                for i, it in enumerate(src[:3]):
+                                    snap = it.taskSnapshot if isinstance(it.taskSnapshot, dict) else (it.taskSnapshot.model_dump() if hasattr(it.taskSnapshot, 'model_dump') else {})
+                                    fp.write(f"  {label}[{i}]: tid={it.taskId} ownerName={snap.get('ownerName')!r} ownerId={snap.get('ownerId')!r}\n")
+                    except Exception as _log_exc:
+                        with open("/tmp/yiyu_reviews_trace.log", "a") as fp:
+                            fp.write(f"[log-error] {_log_exc}\n")
+                    return result
+                except Exception as exc:
+                    with open("/tmp/yiyu_reviews_trace.log", "a") as fp:
+                        fp.write(f"[EXCEPT in cloud-path] {type(exc).__name__}: {exc}\n")
                     pass
         target_week = weekLabel or current_review_week_label()
         base_response = local_review_dashboard_base(target_week, include_analysis=False)

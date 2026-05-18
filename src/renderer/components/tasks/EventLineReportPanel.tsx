@@ -9,6 +9,10 @@ import {
   FileText,
   Image,
   ExternalLink,
+  Sparkles,
+  RefreshCw,
+  AlertTriangle,
+  ArrowRight,
 } from 'lucide-react';
 import type {
   EventLineReportSnapshot,
@@ -18,7 +22,8 @@ import type {
   EventLineTimelineNodeKind as BackendEventLineTimelineNodeKind,
   Task,
 } from '../../../shared/types.js';
-import { getEventLineReportSnapshot, getOrgModelProfile, updateEventLine } from '../../lib/api.js';
+import { getEventLineReportSnapshot, getOrgModelProfile, updateEventLine, getEventLineTimelineNarrative, regenerateEventLineTimelineNarrative } from '../../lib/api.js';
+import type { EventLineTimelineNarrative, EventLineNarrativeNode } from '../../../shared/types';
 
 /* ------------------------------------------------------------------ */
 /*  Types                                                              */
@@ -376,6 +381,15 @@ function normalizeAttachmentName(title: string) {
   return normalizeText(title).toLowerCase();
 }
 
+function formatAttachmentBytes(bytes: number | null | undefined): string {
+  const n = Number(bytes || 0);
+  if (!n) return '';
+  if (n < 1024) return `${n} B`;
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
+  if (n < 1024 * 1024 * 1024) return `${(n / (1024 * 1024)).toFixed(1)} MB`;
+  return `${(n / (1024 * 1024 * 1024)).toFixed(1)} GB`;
+}
+
 function resolveAttachmentUrl(att: EventLineReportAttachment, backendBaseUrl: string) {
   const url = normalizeText(att.downloadUrl);
   if (!url) return '';
@@ -638,8 +652,10 @@ function deriveEventLineMaterialModel(snapshot: EventLineReportSnapshot, draft: 
       normalizeText(task.recentDecision),
       taskAttachments.map((attachment) => attachment.title).join(' '),
     ].join(' ');
+    // 「按任务查看」必须列出完整任务列表 —— 不再用关键词过滤"是否有汇报价值"。
+    // 没标题的任务才跳过(数据异常); 即使没附件、没关键词也保留一个骨架卡片。
+    if (!title) continue;
     const hasMaterialContext = taskAttachments.length > 0 || MATERIAL_CORE_KEYWORDS.test(contextText);
-    if (!title || !hasMaterialContext) continue;
 
     duplicateAttachmentCount += analysis.duplicateAttachmentCount;
     testAttachmentCount += analysis.testAttachmentCount;
@@ -1058,9 +1074,14 @@ function buildEventLineTimelineModel(snapshot: EventLineReportSnapshot, draft: R
     return deriveEventLineTimelineModel(snapshot, draft);
   }
   const byTime = (left: EventLineTimelineNode, right: EventLineTimelineNode) => (left.time || '').localeCompare(right.time || '');
+  // P0 · 主线还原只留有叙事价值的节点 kind:
+  //   project_start / material_intake / project_review / project_milestone / key_turning_point
+  // 砍掉 continuing_task / admin_archive: 这些是任务流水, 属于"按任务查看"管辖,
+  // 留在主线只会让用户在 N 张卡片里找不到真正的转折点。
+  const MAIN_KIND_BLACKLIST = new Set(['needs_review', 'system_trace', 'continuing_task', 'admin_archive']);
   return {
     mainNodes: backendNodes
-      .filter((node) => !['needs_review', 'system_trace'].includes(node.kind))
+      .filter((node) => !MAIN_KIND_BLACKLIST.has(node.kind))
       .sort(byTime),
     reviewNodes: backendNodes
       .filter((node) => node.kind === 'needs_review')
@@ -1407,59 +1428,62 @@ function DocContentViewer({ att, backendBaseUrl }: { att: EventLineReportAttachm
   }, [att.id, att.parsedPreview, backendBaseUrl]);
 
   return (
-    <div className="rounded-xl border border-gray-200 bg-white overflow-hidden">
-      {/* File header — icon badge + filename, looks like a file preview */}
-      <div className="flex items-center gap-2.5 px-3 py-2.5 bg-gray-50/80 border-b border-gray-100">
+    <div className="rounded-lg border border-gray-200 bg-white overflow-hidden">
+      {/* File header · 极简 */}
+      <div className="flex items-center gap-3 px-3.5 py-2.5 border-b border-gray-100">
         <div
-          className="flex-shrink-0 flex items-center justify-center rounded-lg w-9 h-9 text-[10px] font-bold"
+          className="flex-shrink-0 flex items-center justify-center rounded w-8 h-8 text-[9px] font-bold"
           style={{ backgroundColor: badge.bg, color: badge.color }}
         >
           {badge.label}
         </div>
         <div className="min-w-0 flex-1">
-          <p className="text-[12px] font-medium text-gray-800 truncate">{att.title}</p>
-          <div className="mt-1 flex flex-wrap gap-1">
+          <p className="text-[12.5px] font-medium text-gray-900 truncate">{att.title}</p>
+          <div className="mt-0.5 flex items-baseline gap-2 text-[10px] text-gray-400">
             {tags.map((tag) => (
-              <span key={tag} className={`rounded-full px-1.5 py-0.5 text-[9px] font-bold ${tag === '已解析' ? 'bg-emerald-50 text-emerald-700' : tag === '待确认' ? 'bg-amber-50 text-amber-700' : 'bg-blue-50 text-[#4B66D8]'}`}>
+              <span
+                key={tag}
+                className={tag === '已解析' ? 'text-emerald-600' : tag === '待确认' ? 'text-amber-600' : 'text-gray-500'}
+              >
                 {tag}
               </span>
             ))}
-            <span className="text-[10px] text-gray-400">{fileSizeLabel(att.sizeBytes)}</span>
+            <span className="tabular-nums">{fileSizeLabel(att.sizeBytes)}</span>
           </div>
         </div>
-        {openUrl ? (
+        {openUrl && (
           <a
             href={openUrl}
             target="_blank"
             rel="noreferrer"
-            className="flex-shrink-0 rounded-lg px-2 py-1 text-[11px] font-bold text-[#4B66D8] hover:bg-blue-50 transition"
-            title="打开原文"
+            title="在浏览器中打开"
+            className="flex-shrink-0 inline-flex h-7 w-7 items-center justify-center rounded-md border border-gray-200 bg-white text-gray-500 transition-all hover:border-gray-300 hover:text-gray-900 hover:bg-gray-50"
           >
-            打开原文
+            <ExternalLink size={11} strokeWidth={2} />
           </a>
-        ) : null}
-        {downloadUrl ? (
+        )}
+        {downloadUrl && (
           <a
             href={downloadUrl}
             download={att.title}
-            className="flex-shrink-0 rounded p-1 text-gray-400 hover:text-[#5B7BFE] hover:bg-gray-100 transition"
             title="下载文件"
+            className="flex-shrink-0 inline-flex h-7 w-7 items-center justify-center rounded-md border border-gray-200 bg-white text-gray-500 transition-all hover:border-gray-300 hover:text-gray-900 hover:bg-gray-50"
           >
-            <Download size={14} />
+            <Download size={11} strokeWidth={2} />
           </a>
-        ) : null}
+        )}
       </div>
       {/* AI summary */}
-      <div className="px-3 py-2">
+      <div className="px-3.5 py-3 bg-gray-50/40">
         {loading ? (
-          <div className="flex items-center gap-1.5">
-            <div className="h-2.5 w-2.5 animate-spin rounded-full border-2 border-gray-300 border-t-[#5B7BFE]" />
-            <span className="text-[10px] text-gray-400">正在提取文档摘要…</span>
+          <div className="flex items-center gap-2 text-[10.5px] text-gray-400">
+            <RefreshCw size={10} strokeWidth={1.8} className="animate-spin" />
+            <span>正在提取文档摘要…</span>
           </div>
         ) : summary ? (
-          <pre className="max-h-[600px] overflow-y-auto whitespace-pre-wrap text-[11px] leading-5 text-gray-500">{summary}</pre>
+          <pre className="max-h-[600px] overflow-y-auto whitespace-pre-wrap text-[11.5px] leading-5 text-gray-600 font-sans">{summary}</pre>
         ) : (
-          <p className="text-[10px] text-gray-300">暂无文档摘要</p>
+          <p className="text-[10.5px] text-gray-300">暂无文档摘要</p>
         )}
       </div>
     </div>
@@ -1568,6 +1592,77 @@ export default function EventLineReportPanel({ eventLineId, backendBaseUrl, onCl
 
   /* Track which attachments are expanded (legacy, kept for export) */
   const [expandedAttachments, setExpandedAttachments] = useState<Set<string>>(new Set());
+
+  /* P1 主线还原 LLM 叙事 */
+  const [timelineNarrative, setTimelineNarrative] = useState<EventLineTimelineNarrative | null>(null);
+  const [narrativeRegenerating, setNarrativeRegenerating] = useState(false);
+  const [narrativeError, setNarrativeError] = useState<string | null>(null);
+
+  /* 加载已有叙事 */
+  useEffect(() => {
+    if (!eventLineId) {
+      setTimelineNarrative(null);
+      return;
+    }
+    let cancelled = false;
+    void getEventLineTimelineNarrative(eventLineId)
+      .then((data) => { if (!cancelled) setTimelineNarrative(data); })
+      .catch(() => { if (!cancelled) setTimelineNarrative(null); });
+    return () => { cancelled = true; };
+  }, [eventLineId]);
+
+  const handleRegenerateNarrative = async () => {
+    if (!eventLineId || narrativeRegenerating) return;
+    setNarrativeRegenerating(true);
+    setNarrativeError(null);
+    try {
+      const next = await regenerateEventLineTimelineNarrative(eventLineId, 'manual');
+      setTimelineNarrative(next);
+    } catch (err) {
+      setNarrativeError(err instanceof Error ? err.message : '生成失败');
+    } finally {
+      setNarrativeRegenerating(false);
+    }
+  };
+
+  const renderNarrativeNode = (node: EventLineNarrativeNode, index: number) => {
+    const rankText = String(index + 1).padStart(2, '0');
+    const confColor =
+      node.confidence === 'high'
+        ? 'text-emerald-700 bg-emerald-50 ring-emerald-200'
+        : node.confidence === 'low'
+          ? 'text-rose-700 bg-rose-50 ring-rose-200'
+          : 'text-amber-700 bg-amber-50 ring-amber-200';
+    const timeLabel = node.time ? (node.time.slice(0, 10) || node.time) : '时间待补';
+    return (
+      <article key={node.id} className="group relative pl-8">
+        <div className="absolute left-0 top-2 bottom-2 w-[2px] rounded-full bg-gray-900" />
+        <div className="flex items-baseline gap-4 mb-2">
+          <span className="text-[28px] leading-none font-extralight tracking-tighter text-gray-200">
+            {rankText}
+          </span>
+          <div className="flex-1 min-w-0">
+            <div className="flex items-baseline gap-3 flex-wrap">
+              <h4 className="text-[16px] font-semibold leading-snug text-gray-900">{node.title}</h4>
+              <span className={`inline-flex items-center gap-1 rounded-md px-1.5 py-0.5 text-[10px] font-medium tracking-wide uppercase ring-1 ${confColor}`}>
+                <span className={`h-1 w-1 rounded-full ${node.confidence === 'high' ? 'bg-emerald-500' : node.confidence === 'low' ? 'bg-rose-500' : 'bg-amber-500'}`} />
+                {node.confidence}
+              </span>
+              <span className="text-[11px] text-gray-400 tabular-nums">{timeLabel}</span>
+            </div>
+            <p className="mt-2 text-[14px] leading-relaxed text-gray-700">{node.narrative}</p>
+            {(node.linkedTaskIds.length > 0 || node.linkedAttachmentIds.length > 0) && (
+              <p className="mt-2 text-[10px] tracking-wide uppercase text-gray-400">
+                关联 ·
+                {node.linkedTaskIds.length > 0 && ` ${node.linkedTaskIds.length} 任务`}
+                {node.linkedAttachmentIds.length > 0 && ` ${node.linkedAttachmentIds.length} 附件`}
+              </p>
+            )}
+          </div>
+        </div>
+      </article>
+    );
+  };
 
   /* Fetch immutable snapshot from cloud */
   useEffect(() => {
@@ -1760,22 +1855,64 @@ export default function EventLineReportPanel({ eventLineId, backendBaseUrl, onCl
             >
               <Image size={12} />
             </button>
-            <button
-              type="button"
-              title={downloadableAtts.length ? `下载节点附件（${downloadableAtts.length}个）` : '暂无可下载附件'}
-              disabled={downloadableAtts.length === 0}
-              className={`rounded p-1 transition ${downloadableAtts.length ? 'text-gray-400 hover:bg-gray-100 hover:text-[#5B7BFE]' : 'cursor-default text-gray-200'}`}
-              onClick={() => {
-                for (const att of downloadableAtts) {
-                  const link = document.createElement('a');
-                  link.href = resolveAttachmentUrl(att, backendBaseUrl);
-                  link.download = att.title;
-                  link.click();
-                }
-              }}
-            >
-              <Download size={12} />
-            </button>
+            <div className="relative group/dl">
+              <button
+                type="button"
+                title={downloadableAtts.length ? `下载节点附件（${downloadableAtts.length}个）` : '暂无可下载附件'}
+                disabled={downloadableAtts.length === 0}
+                className={`rounded p-1 transition ${downloadableAtts.length ? 'text-gray-400 hover:bg-gray-100 hover:text-[#5B7BFE]' : 'cursor-default text-gray-200'}`}
+                onClick={() => {
+                  for (const att of downloadableAtts) {
+                    const link = document.createElement('a');
+                    link.href = resolveAttachmentUrl(att, backendBaseUrl);
+                    link.download = att.title;
+                    link.click();
+                  }
+                }}
+              >
+                <Download size={12} />
+              </button>
+              {downloadableAtts.length > 0 && (
+                <div className="invisible group-hover/dl:visible absolute right-0 top-full z-30 mt-1 w-72 max-h-80 overflow-y-auto rounded-lg border border-gray-200 bg-white shadow-lg">
+                  <div className="border-b border-gray-100 px-3 py-2 text-[10px] font-bold uppercase tracking-[0.16em] text-gray-400">
+                    附件列表 · {downloadableAtts.length} 个
+                  </div>
+                  {downloadableAtts.map((att) => {
+                    const dlUrl = resolveAttachmentUrl(att, backendBaseUrl);
+                    const openUrl = resolveAttachmentOpenUrl(att, backendBaseUrl);
+                    return (
+                      <div key={att.id} className="flex items-center justify-between gap-2 px-3 py-2 hover:bg-gray-50">
+                        <div className="min-w-0 flex-1">
+                          <p className="truncate text-[12px] font-medium text-gray-800" title={att.title}>{att.title}</p>
+                          <p className="text-[10px] text-gray-400">{formatAttachmentBytes(att.sizeBytes)}</p>
+                        </div>
+                        <div className="flex shrink-0 items-center gap-1">
+                          {openUrl && (
+                            <a
+                              href={openUrl}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              title="在浏览器中打开"
+                              className="rounded p-1 text-gray-400 transition hover:bg-blue-50 hover:text-[#5B7BFE]"
+                            >
+                              <ExternalLink size={11} />
+                            </a>
+                          )}
+                          <a
+                            href={dlUrl}
+                            download={att.title}
+                            title="下载"
+                            className="rounded p-1 text-gray-400 transition hover:bg-gray-100 hover:text-[#5B7BFE]"
+                          >
+                            <Download size={11} />
+                          </a>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
           </div>
         </div>
 
@@ -1896,77 +2033,72 @@ export default function EventLineReportPanel({ eventLineId, backendBaseUrl, onCl
 
   const renderTimelineNode = (node: EventLineTimelineNode, index: number, tone: 'main' | 'review' | 'system' = 'main') => {
     const timeLabel = node.time ? formatTs(node.time) : '时间待补';
+    const accentLine =
+      tone === 'review' ? 'bg-amber-500'
+        : tone === 'system' ? 'bg-gray-300'
+          : 'bg-gray-900';
     return (
-      <div
-        key={node.id}
-        className={`rounded-2xl border px-4 py-4 transition ${
-          tone === 'review'
-            ? 'border-amber-100 bg-amber-50/60'
-            : tone === 'system'
-              ? 'border-gray-100 bg-gray-50/70'
-              : 'border-gray-100 bg-white hover:border-gray-200'
-        }`}
-      >
-        <div className="flex items-start gap-3">
-          <div className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-[11px] font-bold ${
-            tone === 'review' ? 'bg-white text-amber-700' : tone === 'system' ? 'bg-white text-gray-400' : 'bg-[#EEF3FF] text-[#4B66D8]'
-          }`}>
+      <article key={node.id} className="group relative pl-7 py-3">
+        <div className={`absolute left-0 top-3 bottom-3 w-[2px] rounded-full ${accentLine}`} />
+        <div className="flex items-baseline gap-4 mb-1.5">
+          <span className="text-[24px] leading-none font-extralight tracking-tighter text-gray-200">
             {String(index + 1).padStart(2, '0')}
-          </div>
-          <div className="min-w-0 flex-1">
-            <div className="flex flex-wrap items-center gap-2 text-[10px]">
-              <span className="rounded bg-slate-100 px-1.5 py-0.5 font-bold text-slate-500">
+          </span>
+          <div className="flex-1 min-w-0">
+            <div className="flex items-baseline gap-3 flex-wrap mb-0.5">
+              <h3 className="text-[14.5px] font-semibold leading-snug text-gray-900">{node.title}</h3>
+              <span className="text-[10px] font-medium uppercase tracking-[0.14em] text-gray-400">
                 {TIMELINE_KIND_LABELS[node.kind]}
               </span>
-              <span className="text-gray-400">{timeLabel}</span>
-              {node.ownerName && <span className="text-gray-400">负责人：{node.ownerName}</span>}
-              {!node.ownerName && node.actorName && <span className="text-gray-400">记录人：{node.actorName}</span>}
+              <span className="text-[10px] text-gray-400 tabular-nums">{timeLabel}</span>
+              {node.ownerName && <span className="text-[10px] text-gray-400">{node.ownerName}</span>}
+              {!node.ownerName && node.actorName && <span className="text-[10px] text-gray-400">{node.actorName}</span>}
             </div>
-            <h3 className="mt-2 text-[15px] font-bold text-gray-900">{node.title}</h3>
-            <p className="mt-1 whitespace-pre-wrap text-[12px] leading-6 text-gray-600">{node.summary}</p>
+            <p className="whitespace-pre-wrap text-[12.5px] leading-6 text-gray-600">{node.summary}</p>
             {node.evidenceSummary && (
-              <div className="mt-3 rounded-xl border border-blue-100 bg-blue-50/60 px-3 py-2">
-                <p className="text-[10px] font-bold text-[#4B66D8]">解析依据</p>
-                <p className="mt-1 text-[11px] leading-5 text-gray-600">{node.evidenceSummary}</p>
+              <div className="mt-2 border-l-[2px] border-gray-200 pl-3 py-1">
+                <p className="text-[10px] font-bold uppercase tracking-[0.14em] text-gray-400 mb-0.5">解析依据</p>
+                <p className="text-[11.5px] leading-5 text-gray-600">{node.evidenceSummary}</p>
               </div>
             )}
-            <div className="mt-2 flex flex-wrap gap-1.5">
-              {node.tags.map((tag) => (
-                <span key={tag} className="rounded-full bg-[#F1F4FF] px-2 py-0.5 text-[10px] font-bold text-[#4B66D8]">
-                  {tag}
-                </span>
-              ))}
-            </div>
+            {node.tags.length > 0 && (
+              <div className="mt-1.5 flex flex-wrap items-baseline gap-x-2.5 gap-y-0.5 text-[10.5px] text-gray-500">
+                {node.tags.map((tag, i) => (
+                  <span key={tag}>{i > 0 && <span className="text-gray-300 mr-2">·</span>}{tag}</span>
+                ))}
+              </div>
+            )}
             {node.warnings.length > 0 && (
-              <p className="mt-2 text-[11px] leading-5 text-amber-700">{node.warnings.join(' · ')}</p>
+              <p className="mt-1.5 text-[11px] leading-5 text-amber-700">⚠ {node.warnings.join(' · ')}</p>
             )}
             {renderTimelineAttachments(node.attachments, node.id)}
           </div>
         </div>
-      </div>
+      </article>
     );
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 p-4 backdrop-blur-md animate-in fade-in">
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 p-4 backdrop-blur-sm animate-in fade-in">
       <div
-        className="relative flex max-h-[90vh] w-full max-w-[860px] flex-col rounded-[28px] border border-gray-100 bg-white shadow-[0_20px_60px_rgba(0,0,0,0.15)]"
+        className="relative flex h-[88vh] w-full max-w-[920px] flex-col rounded-xl border border-gray-200 bg-white shadow-[0_8px_32px_rgba(0,0,0,0.08)]"
         onClick={(e) => e.stopPropagation()}
       >
-        {/* ── Header ── */}
-        <div className="flex items-start gap-4 border-b border-gray-100 p-6 pb-4">
+        {/* ── Header · 极简 typography ── */}
+        <div className="flex items-start gap-4 border-b border-gray-100 px-7 pt-6 pb-5">
           <button
             type="button"
-            className="mt-1 rounded-2xl border border-gray-200 bg-white p-2 text-gray-400 transition hover:text-gray-700"
+            className="mt-1 inline-flex h-8 w-8 items-center justify-center rounded-md border border-gray-200 bg-white text-gray-400 transition-all hover:border-gray-300 hover:text-gray-900 hover:bg-gray-50"
             onClick={onClose}
+            aria-label="关闭"
           >
-            <X size={16} />
+            <X size={14} strokeWidth={2} />
           </button>
           <div className="flex-1 min-w-0">
-            <p className="text-[12px] font-bold tracking-[0.12em] text-[#5B7BFE]">事件线汇报</p>
-            <h2 className="mt-1 text-[20px] font-bold text-gray-900">{draft.eventLineName}</h2>
+            <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-gray-400">事件线汇报</p>
+            <h2 className="mt-1.5 text-[24px] font-light tracking-tight text-gray-900 leading-tight">{draft.eventLineName}</h2>
             <textarea
-              className="mt-2 w-full resize-none rounded-lg border border-transparent bg-transparent px-0 text-[13px] leading-6 text-gray-500 transition hover:border-gray-200 focus:border-[#5B7BFE] focus:bg-white focus:px-2 focus:py-1 focus:outline-none"
+              className="mt-3 w-full resize-none border-0 border-b border-transparent bg-transparent px-0 py-1 text-[13px] leading-6 text-gray-500 transition-colors placeholder:text-gray-300 placeholder:font-light hover:border-gray-200 focus:border-gray-400 focus:outline-none"
               rows={Math.max(2, (draft.summary || '').split('\n').length)}
               placeholder="点击编辑事件线说明…"
               value={draft.summary}
@@ -1980,7 +2112,11 @@ export default function EventLineReportPanel({ eventLineId, backendBaseUrl, onCl
           <button
             type="button"
             disabled={!!exportProgress}
-            className={`shrink-0 flex items-center gap-2 rounded-2xl px-5 py-2.5 text-[12px] font-bold text-white transition ${exportProgress ? 'bg-blue-400' : 'bg-[#5B7BFE] hover:bg-[#4a6ae8]'}`}
+            className={`shrink-0 inline-flex items-center gap-1.5 rounded-md px-4 py-2 text-[12px] font-medium transition-all ${
+              exportProgress
+                ? 'bg-gray-200 text-gray-500 cursor-not-allowed'
+                : 'bg-gray-900 text-white shadow-sm hover:bg-gray-700'
+            }`}
             onClick={() => {
               const exportDraft = {
                 ...draft,
@@ -2023,71 +2159,107 @@ export default function EventLineReportPanel({ eventLineId, backendBaseUrl, onCl
               })();
             }}
           >
-            <Download size={14} />
-            {exportProgress ? '导出中...' : '导出 Word'}
+            {exportProgress ? (
+              <>
+                <RefreshCw size={12} strokeWidth={2.2} className="animate-spin" />
+                <span>导出中</span>
+              </>
+            ) : (
+              <>
+                <Download size={12} strokeWidth={2.2} />
+                <span>导出 Word</span>
+              </>
+            )}
           </button>
         </div>
 
-        {/* ── Meta badges ── */}
-        <div className="flex flex-wrap items-center gap-2 border-b border-gray-50 px-6 py-3 text-[11px]">
-          <span className="flex items-center gap-1 rounded-full bg-emerald-50 px-2.5 py-1 font-bold text-emerald-700">
-            {snapshot.eventLine.status}
-          </span>
+        {/* ── Meta · 极简 inline (status dot + 客户 + 阶段 + 参与) ── */}
+        <div className="flex flex-wrap items-baseline gap-x-5 gap-y-1 border-b border-gray-100 px-7 py-3 text-[11px]">
+          {(() => {
+            const statusMeta: Record<string, { dot: string; label: string; text: string }> = {
+              active: { dot: 'bg-emerald-500', label: '进行中', text: 'text-emerald-700' },
+              blocked: { dot: 'bg-rose-500', label: '受阻', text: 'text-rose-700' },
+              paused: { dot: 'bg-amber-500', label: '暂停', text: 'text-amber-700' },
+              done: { dot: 'bg-gray-400', label: '已完成', text: 'text-gray-600' },
+              archived: { dot: 'bg-gray-300', label: '已归档', text: 'text-gray-500' },
+            };
+            const s = statusMeta[snapshot.eventLine.status] || statusMeta.active;
+            return (
+              <span className={`inline-flex items-center gap-1.5 font-medium ${s.text}`}>
+                <span className={`h-1.5 w-1.5 rounded-full ${s.dot}`} />
+                {s.label}
+              </span>
+            );
+          })()}
           {snapshot.eventLine.stage && (
-            <span className="rounded-full bg-amber-50 px-2.5 py-1 font-bold text-amber-700">{snapshot.eventLine.stage}</span>
+            <span className="text-gray-400">
+              <span className="text-[10px] uppercase tracking-[0.14em] mr-1">阶段</span>
+              <span className="text-gray-700 font-medium">{snapshot.eventLine.stage}</span>
+            </span>
           )}
           {snapshot.eventLine.primaryClientName && (
-            <span className="rounded-full bg-violet-50 px-2.5 py-1 font-bold text-violet-700">{snapshot.eventLine.primaryClientName}</span>
+            <span className="text-gray-400">
+              <span className="text-[10px] uppercase tracking-[0.14em] mr-1">客户</span>
+              <span className="text-gray-700 font-medium">{snapshot.eventLine.primaryClientName}</span>
+            </span>
           )}
           {draft.participantNames.length > 0 && (
-            <span className="flex items-center gap-1 rounded-full bg-blue-50 px-2.5 py-1 font-bold text-blue-700">
-              <Users size={11} /> {draft.participantNames.join('、')}
+            <span className="text-gray-400 inline-flex items-baseline gap-1">
+              <span className="text-[10px] uppercase tracking-[0.14em]">参与</span>
+              <span className="text-gray-700 font-medium">{draft.participantNames.join(' · ')}</span>
             </span>
           )}
           {(() => {
             const status = snapshot.eventLine.syncStatus;
             if (!status || status === 'synced') return null;
-            const cfg: Record<string, { label: string; cls: string }> = {
-              local: { label: '仅本地', cls: 'bg-gray-100 text-gray-500' },
-              syncing: { label: '同步中', cls: 'bg-sky-50 text-sky-600' },
-              pending: { label: '待同步', cls: 'bg-amber-50 text-amber-600' },
-              error: { label: '同步失败', cls: 'bg-rose-50 text-rose-600' },
+            const cfg: Record<string, { label: string; dot: string; text: string; bg: string; ring: string }> = {
+              local: { label: '仅本地', dot: 'bg-gray-400', text: 'text-gray-600', bg: 'bg-gray-50', ring: 'ring-gray-200' },
+              syncing: { label: '同步中', dot: 'bg-sky-500', text: 'text-sky-700', bg: 'bg-sky-50', ring: 'ring-sky-200' },
+              pending: { label: '待同步', dot: 'bg-amber-500', text: 'text-amber-700', bg: 'bg-amber-50', ring: 'ring-amber-200' },
+              error: { label: '同步失败', dot: 'bg-rose-500', text: 'text-rose-700', bg: 'bg-rose-50', ring: 'ring-rose-200' },
             };
             const item = cfg[status];
             if (!item) return null;
             return (
-              <span className={`rounded-full px-2.5 py-1 font-bold ${item.cls}`} title={snapshot.eventLine.lastSyncError || undefined}>
+              <span
+                className={`inline-flex items-center gap-1 rounded-md ${item.bg} px-1.5 py-0.5 text-[10px] font-medium tracking-wide uppercase ${item.text} ring-1 ${item.ring}/60`}
+                title={snapshot.eventLine.lastSyncError || undefined}
+              >
+                <span className={`h-1 w-1 rounded-full ${item.dot}`} />
                 {item.label}
               </span>
             );
           })()}
         </div>
-        {/* ── Completeness panel ── */}
+        {/* ── Completeness · 极简一行 + 细 bar ── */}
         {typeof snapshot.eventLine.completenessScore === 'number' && (() => {
           const score = snapshot.eventLine.completenessScore;
           const status = snapshot.eventLine.completenessStatus || 'insufficient';
           const missing = snapshot.eventLine.completenessMissingSlots || [];
-          const palette: Record<string, { bar: string; chip: string; label: string }> = {
-            high_confidence: { bar: 'bg-emerald-500', chip: 'bg-emerald-50 text-emerald-700', label: '可对外汇报' },
-            forecast_ready: { bar: 'bg-sky-500', chip: 'bg-sky-50 text-sky-700', label: '可形成预测' },
-            summary_ready: { bar: 'bg-amber-500', chip: 'bg-amber-50 text-amber-700', label: '可初步总结' },
-            insufficient: { bar: 'bg-rose-500', chip: 'bg-rose-50 text-rose-700', label: '证据不足' },
+          const palette: Record<string, { bar: string; text: string; label: string }> = {
+            high_confidence: { bar: 'bg-emerald-500', text: 'text-emerald-700', label: '可对外汇报' },
+            forecast_ready: { bar: 'bg-sky-500', text: 'text-sky-700', label: '可形成预测' },
+            summary_ready: { bar: 'bg-amber-500', text: 'text-amber-700', label: '可初步总结' },
+            insufficient: { bar: 'bg-rose-500', text: 'text-rose-700', label: '证据不足' },
           };
           const p = palette[status] || palette.insufficient;
           return (
-            <div className="border-b border-gray-50 px-6 py-3">
+            <div className="border-b border-gray-100 px-7 py-3">
               <div className="flex items-center justify-between gap-3">
-                <div className="flex items-center gap-2 text-[12px]">
-                  <span className="font-bold text-gray-700">证据完整度</span>
-                  <span className="font-bold text-gray-900">{score} / 100</span>
-                  <span className={`rounded-full px-2 py-0.5 text-[10px] font-bold ${p.chip}`}>{p.label}</span>
+                <div className="flex items-baseline gap-3 text-[11px]">
+                  <span className="text-[10px] font-bold uppercase tracking-[0.16em] text-gray-400">证据完整度</span>
+                  <span className="text-[15px] font-light tabular-nums text-gray-900">{score}</span>
+                  <span className="text-gray-300 text-[10px]">/ 100</span>
+                  <span className={`font-medium ${p.text}`}>{p.label}</span>
                 </div>
                 {missing.length > 0 && (
-                  <span className="text-[11px] text-gray-500">缺：{missing.slice(0, 4).join('、')}{missing.length > 4 ? '…' : ''}</span>
+                  <span className="text-[11px] text-gray-400">
+                    缺：<span className="text-gray-600">{missing.slice(0, 4).join('、')}{missing.length > 4 ? '…' : ''}</span>
+                  </span>
                 )}
               </div>
-              <div className="mt-2 h-1.5 w-full rounded-full bg-gray-100">
-                <div className={`h-1.5 rounded-full transition-all ${p.bar}`} style={{ width: `${Math.max(2, Math.min(100, score))}%` }} />
+              <div className="mt-2 h-[2px] w-full rounded-full bg-gray-100">
+                <div className={`h-[2px] rounded-full transition-all ${p.bar}`} style={{ width: `${Math.max(2, Math.min(100, score))}%` }} />
               </div>
             </div>
           );
@@ -2095,74 +2267,144 @@ export default function EventLineReportPanel({ eventLineId, backendBaseUrl, onCl
 
         {/* ── Export progress overlay ── */}
         {exportProgress && (
-          <div className="absolute inset-0 z-20 flex items-center justify-center bg-white/80 backdrop-blur-sm rounded-[28px]">
+          <div className="absolute inset-0 z-20 flex items-center justify-center bg-white/80 backdrop-blur-sm rounded-xl">
             <div className="text-center px-8 py-6">
-              <div className="mx-auto mb-3 h-8 w-8 animate-spin rounded-full border-3 border-gray-200 border-t-[#5B7BFE]" />
-              <p className="text-[14px] font-bold text-gray-800">{exportProgress.stage}</p>
-              <p className="mt-1 text-[12px] text-gray-500">{exportProgress.detail}</p>
+              <RefreshCw size={20} strokeWidth={1.5} className="mx-auto mb-3 animate-spin text-gray-700" />
+              <p className="text-[13px] font-semibold text-gray-900">{exportProgress.stage}</p>
+              <p className="mt-1 text-[11px] text-gray-500">{exportProgress.detail}</p>
             </div>
           </div>
         )}
 
-        {/* ── Scrollable body ── */}
-        <div className="flex-1 overflow-y-auto px-6 py-4">
-          <div className="mb-5 flex items-center justify-between gap-3">
-            <div className="inline-flex rounded-full bg-[#F4F6FB] p-1">
-              <button
-                type="button"
-                className={`rounded-full px-4 py-2 text-[12px] font-bold transition ${viewMode === 'timeline' ? 'bg-white text-[#1D3361] shadow-[0_6px_18px_rgba(31,56,110,0.12)]' : 'text-gray-500 hover:text-gray-700'}`}
-                onClick={() => setViewMode('timeline')}
-              >
-                主线还原
-              </button>
-              <button
-                type="button"
-                className={`rounded-full px-4 py-2 text-[12px] font-bold transition ${viewMode === 'tasks' ? 'bg-white text-[#1D3361] shadow-[0_6px_18px_rgba(31,56,110,0.12)]' : 'text-gray-500 hover:text-gray-700'}`}
-                onClick={() => setViewMode('tasks')}
-              >
-                按任务查看
-              </button>
-              <button
-                type="button"
-                className={`rounded-full px-4 py-2 text-[12px] font-bold transition ${viewMode === 'report' ? 'bg-white text-[#1D3361] shadow-[0_6px_18px_rgba(31,56,110,0.12)]' : 'text-gray-500 hover:text-gray-700'}`}
-                onClick={() => setViewMode('report')}
-              >
-                报告导出
-              </button>
+        {/* ── Scrollable body · overflow-y-scroll 让 scrollbar 始终占位, 切 tab 时宽度不跳 ── */}
+        <div className="flex-1 overflow-y-scroll px-7 py-5" style={{ scrollbarGutter: 'stable' }}>
+          {/* Tab 切换 · 周复盘同款极简下划线 */}
+          <div className="mb-6 flex items-center justify-between gap-3 border-b border-gray-100">
+            <div className="flex items-center gap-8">
+              {([
+                { id: 'timeline' as const, label: '主线还原' },
+                { id: 'tasks' as const, label: '按任务查看' },
+                { id: 'report' as const, label: '报告导出' },
+              ]).map((tab) => (
+                <button
+                  key={tab.id}
+                  type="button"
+                  onClick={() => setViewMode(tab.id)}
+                  className={`relative pb-3 text-[13px] tracking-wide transition-colors whitespace-nowrap ${
+                    viewMode === tab.id
+                      ? 'text-gray-900 font-semibold'
+                      : 'text-gray-400 font-medium hover:text-gray-700'
+                  }`}
+                >
+                  {tab.label}
+                  {viewMode === tab.id && (
+                    <span className="absolute bottom-[-1px] left-0 w-full h-[1.5px] bg-gray-900" />
+                  )}
+                </button>
+              ))}
             </div>
-            <p className="text-right text-[11px] text-gray-400">
+            <p className="pb-3 text-[10px] uppercase tracking-[0.14em] text-gray-400">
               {viewMode === 'timeline'
-                ? `当前主线 ${timelineModel?.mainNodes.length ?? 0} 个节点，待确认 ${timelineModel?.reviewNodes.length ?? 0} 个`
+                ? `${timelineModel?.mainNodes.length ?? 0} 节点 · ${timelineModel?.reviewNodes.length ?? 0} 待确认`
                 : viewMode === 'tasks'
-                  ? '按任务聚合附件、会议纪要和补充材料'
-                  : (reportPreview?.hasRenderableContent ? '当前为动态模拟汇报：封面页 + 目录页' : '当前资料不足，建议回到按任务查看补资料')}
+                  ? '按任务聚合附件 · 会议 · 补充材料'
+                  : (reportPreview?.hasRenderableContent ? '封面 + 目录 模拟汇报' : '资料不足 · 建议补素材')}
             </p>
           </div>
 
           {viewMode === 'timeline' && timelineModel ? (
             <div className="space-y-5 pb-6">
-              <div className="grid grid-cols-4 gap-2">
-                <div className="rounded-2xl border border-[#BFD0FF] bg-[#F3F6FF] px-4 py-3">
-                  <p className="text-[11px] font-bold text-[#3857D9]">主线节点</p>
-                  <p className="mt-1 text-[24px] font-semibold tracking-[-0.03em] text-[#1D3361]">{timelineModel.mainNodes.length}</p>
-                </div>
-                <div className="rounded-2xl border border-gray-100 bg-white px-4 py-3">
-                  <p className="text-[11px] font-bold text-gray-500">待确认</p>
-                  <p className="mt-1 text-[24px] font-semibold tracking-[-0.03em] text-gray-900">{timelineModel.reviewNodes.length}</p>
-                </div>
-                <div className="rounded-2xl border border-gray-100 bg-white px-4 py-3">
-                  <p className="text-[11px] font-bold text-gray-500">已解析附件</p>
-                  <p className="mt-1 text-[24px] font-semibold tracking-[-0.03em] text-gray-900">
-                    {draft.attachments.filter((att) => att.documentId && att.parseStatus === 'ready').length}
+              {/* P1 · AI 主线还原 banner */}
+              {timelineNarrative && timelineNarrative.nodes.length > 0 ? (
+                <section className="rounded-2xl border border-gray-900 bg-gray-900 px-5 py-5 text-white">
+                  <div className="flex items-baseline justify-between gap-4 mb-3">
+                    <div className="flex items-center gap-2">
+                      <Sparkles size={14} className="text-amber-300" />
+                      <h3 className="text-[15px] font-semibold tracking-tight">{timelineNarrative.headline || 'AI 主线还原'}</h3>
+                    </div>
+                    <div className="flex items-center gap-3 text-[10px] text-gray-400">
+                      <span>rev {timelineNarrative.rev}</span>
+                      <span>·</span>
+                      <span>{timelineNarrative.updatedAt.slice(0, 16).replace('T', ' ')}</span>
+                      <button
+                        type="button"
+                        onClick={handleRegenerateNarrative}
+                        disabled={narrativeRegenerating}
+                        className="ml-2 inline-flex items-center gap-1 rounded-md border border-gray-700 bg-gray-800 px-2.5 py-1 text-[10px] font-medium text-gray-200 transition hover:bg-gray-700 disabled:opacity-60"
+                      >
+                        {narrativeRegenerating ? (
+                          <>
+                            <RefreshCw size={10} className="animate-spin" />
+                            重新生成中
+                          </>
+                        ) : (
+                          <>
+                            <RefreshCw size={10} />
+                            重新生成
+                          </>
+                        )}
+                      </button>
+                    </div>
+                  </div>
+                  {timelineNarrative.opening && (
+                    <p className="text-[13px] leading-relaxed text-gray-200">{timelineNarrative.opening}</p>
+                  )}
+                  {narrativeError && (
+                    <p className="mt-2 text-[11px] text-rose-300">{narrativeError}</p>
+                  )}
+                </section>
+              ) : (
+                <section className="rounded-2xl border border-dashed border-gray-300 bg-gray-50/60 px-5 py-6 text-center">
+                  <Sparkles size={16} className="mx-auto mb-2 text-gray-400" />
+                  <p className="text-[13px] font-semibold text-gray-700">主线还原尚未生成</p>
+                  <p className="mt-1 text-[11.5px] text-gray-500">
+                    AI 会读完所有任务/活动/附件，写一篇 3-5 个关键转折的"传记"
                   </p>
-                </div>
-                <div className="rounded-2xl border border-gray-100 bg-white px-4 py-3">
-                  <p className="text-[11px] font-bold text-gray-500">系统痕迹</p>
-                  <p className="mt-1 text-[24px] font-semibold tracking-[-0.03em] text-gray-900">{timelineModel.systemNodes.length}</p>
-                </div>
-              </div>
+                  <button
+                    type="button"
+                    onClick={handleRegenerateNarrative}
+                    disabled={narrativeRegenerating}
+                    className="mt-3 inline-flex items-center gap-1.5 rounded-md bg-gray-900 px-4 py-2 text-[12px] font-medium text-white transition hover:bg-gray-700 disabled:opacity-60"
+                  >
+                    {narrativeRegenerating ? (
+                      <>
+                        <RefreshCw size={12} className="animate-spin" />
+                        AI 生成中 · 约 1-2 分钟
+                      </>
+                    ) : (
+                      <>
+                        <Sparkles size={12} />
+                        生成主线还原
+                      </>
+                    )}
+                  </button>
+                  {narrativeError && (
+                    <p className="mt-3 text-[11px] text-rose-600">{narrativeError}</p>
+                  )}
+                </section>
+              )}
 
-              {timelineModel.mainNodes.length > 0 ? (
+              {timelineNarrative && timelineNarrative.nodes.length > 0 ? (
+                <div className="space-y-5">
+                  {timelineNarrative.nodes.map((node, index) => renderNarrativeNode(node, index))}
+                  {timelineNarrative.closing && (
+                    <section className="rounded-2xl border-l-[2px] border-gray-900 bg-gray-50 pl-4 py-3">
+                      <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-gray-400 mb-2">今天在哪里</p>
+                      <p className="text-[13px] leading-relaxed text-gray-700">{timelineNarrative.closing}</p>
+                    </section>
+                  )}
+                  {timelineModel.mainNodes.length > 0 && (
+                    <details className="mt-6 rounded-xl border border-gray-100 bg-gray-50/40 px-4 py-3">
+                      <summary className="cursor-pointer text-[11px] font-medium text-gray-500 hover:text-gray-700">
+                        查看原始时间线节点 ({timelineModel.mainNodes.length} 个) — 由规则切分, 仅供参考
+                      </summary>
+                      <div className="mt-3 space-y-3">
+                        {timelineModel.mainNodes.map((node, index) => renderTimelineNode(node, index))}
+                      </div>
+                    </details>
+                  )}
+                </div>
+              ) : timelineModel.mainNodes.length > 0 ? (
                 <div className="space-y-3">
                   {timelineModel.mainNodes.map((node, index) => renderTimelineNode(node, index))}
                 </div>
@@ -2173,300 +2415,120 @@ export default function EventLineReportPanel({ eventLineId, backendBaseUrl, onCl
               )}
 
               {timelineModel.reviewNodes.length > 0 && (
-                <div className="space-y-3">
-                  <div className="rounded-2xl border border-amber-100 bg-amber-50 px-4 py-3">
-                    <p className="text-[12px] font-bold text-amber-800">待确认节点</p>
-                    <p className="mt-1 text-[11px] leading-5 text-amber-700">这些材料缺少归属、含测试文件或解析状态不完整，暂不进入主线叙事。</p>
+                <section className="pt-5 border-t border-gray-100">
+                  <div className="mb-3 flex items-baseline gap-3">
+                    <h3 className="text-[10px] font-bold uppercase tracking-[0.18em] text-amber-600">待确认节点</h3>
+                    <span className="text-[11px] text-gray-400 tabular-nums">{timelineModel.reviewNodes.length} 项</span>
                   </div>
-                  {timelineModel.reviewNodes.map((node, index) => renderTimelineNode(node, index, 'review'))}
-                </div>
+                  <p className="mb-4 text-[11.5px] leading-relaxed text-gray-500">
+                    缺少归属、含测试文件或解析状态不完整 · 暂不进入主线叙事
+                  </p>
+                  <div className="space-y-2">
+                    {timelineModel.reviewNodes.map((node, index) => renderTimelineNode(node, index, 'review'))}
+                  </div>
+                </section>
               )}
 
               {timelineModel.systemNodes.length > 0 && (
-                <div className="rounded-2xl border border-gray-100 bg-gray-50/70 px-4 py-3">
+                <section className="pt-5 border-t border-gray-100">
                   <button
                     type="button"
-                    className="flex w-full items-center justify-between gap-3 text-left"
                     onClick={() => setShowSystemTraces((prev) => !prev)}
+                    className="flex w-full items-baseline justify-between gap-3 text-left group/sys"
                   >
-                    <span>
-                      <span className="block text-[12px] font-bold text-gray-700">系统痕迹</span>
-                      <span className="mt-1 block text-[11px] text-gray-400">创建、上传、更新等审计流水保留在这里</span>
-                    </span>
-                    <span className="rounded-full bg-white px-3 py-1 text-[11px] font-bold text-gray-500 shadow-sm">
-                      {showSystemTraces ? '收起' : `展开 ${timelineModel.systemNodes.length}`}
+                    <div className="flex items-baseline gap-3">
+                      <h3 className="text-[10px] font-bold uppercase tracking-[0.18em] text-gray-400 group-hover/sys:text-gray-700">系统痕迹</h3>
+                      <span className="text-[11px] text-gray-400 tabular-nums">{timelineModel.systemNodes.length} 项</span>
+                    </div>
+                    <span className="text-[11px] font-medium text-gray-400 group-hover/sys:text-gray-900 transition-colors">
+                      {showSystemTraces ? '收起 ↑' : '展开 ↓'}
                     </span>
                   </button>
+                  <p className="mt-1 text-[11.5px] leading-relaxed text-gray-400">
+                    创建 · 上传 · 更新等审计流水
+                  </p>
                   {showSystemTraces && (
-                    <div className="mt-3 space-y-2">
+                    <div className="mt-4 space-y-2">
                       {timelineModel.systemNodes.map((node, index) => renderTimelineNode(node, index, 'system'))}
                     </div>
                   )}
-                </div>
+                </section>
               )}
             </div>
           ) : viewMode === 'report' && reportPreview ? (
             reportPreview.hasRenderableContent ? (
-            <div className="mx-auto max-w-[760px] space-y-6 pb-6">
+            <div className="space-y-10 pb-6">
+              {/* AI 主理人入口 · 改极简深色 CTA */}
               {onOpenAIReport && (
-                <button
-                  type="button"
-                  onClick={() =>
-                    onOpenAIReport({
-                      eventLineName: draft.eventLineName || '',
-                      clientName: organizationName || '',
-                    })
-                  }
-                  className="group flex w-full items-center gap-4 rounded-2xl border border-blue-200 bg-gradient-to-br from-blue-50 via-white to-indigo-50 px-5 py-4 text-left transition hover:border-blue-400 hover:shadow-lg"
-                >
-                  <div className="flex h-12 w-12 flex-shrink-0 items-center justify-center rounded-xl bg-gradient-to-br from-blue-600 to-indigo-600 text-white shadow-md transition group-hover:scale-105">
-                    <span className="text-[20px]">✨</span>
-                  </div>
-                  <div className="min-w-0 flex-1">
-                    <p className="text-[14px] font-bold text-gray-900">
-                      用 AI 主理人生成完整报告
-                    </p>
-                    <p className="mt-1 text-[12px] text-gray-600">
-                      豆包推骨架 → 章节并行起草 + 信息图 → 一键导出 docx / Markdown ·
-                      约 2-4 分钟
-                    </p>
-                  </div>
-                  <div className="flex-shrink-0 text-[12px] font-medium text-blue-600 transition group-hover:translate-x-1">
-                    开始 →
-                  </div>
-                </button>
-              )}
-              <p className="-mt-1 text-center text-[11px] text-gray-400">
-                ↓ 下方为上一代静态预览（封面页 + 目录页 mock）
-              </p>
-              <section className="overflow-hidden rounded-[32px] border border-[#DDE4F3] bg-[#F9FBFF] shadow-[0_24px_70px_rgba(56,86,174,0.10)]">
-                <div className="relative min-h-[1020px] px-10 py-10 text-[#3F3A36]">
-                  <div
-                    className="absolute inset-0"
-                    style={{
-                      background: 'radial-gradient(circle at 18% 14%, rgba(93, 125, 255, 0.14), transparent 26%), radial-gradient(circle at 85% 84%, rgba(123, 168, 255, 0.12), transparent 22%), linear-gradient(180deg, #F9FBFF 0%, #EEF3FD 100%)',
-                    }}
-                  />
-                  <div className="absolute right-[-90px] top-[-90px] h-[280px] w-[280px] rounded-full bg-[radial-gradient(circle_at_30%_30%,rgba(112,143,255,0.26),rgba(112,143,255,0.05)_62%,transparent_74%)]" />
-                  <div className="absolute bottom-[40px] right-[8px] h-[140px] w-[140px] rounded-full bg-[radial-gradient(circle_at_center,rgba(122,173,255,0.16),transparent_74%)]" />
-
-                  <div className="relative flex h-full flex-col">
-                    <div>
-                      <p className="text-[11px] font-bold tracking-[0.16em] text-[#67718B]">{reportPreview.organizationName}</p>
-                      <p className="mt-1 text-[11px] font-medium text-[#8A95AF]">{reportPreview.brandCaption}</p>
-                      <span className="mt-5 inline-flex rounded-full bg-[#5B7BFE] px-4 py-2 text-[11px] font-bold text-white">
-                        封面页
-                      </span>
-                    </div>
-
-                    <div className="mt-24 max-w-[620px]">
-                      <p className="text-[14px] font-semibold tracking-[0.08em] text-[#4B66D8]">{reportPreview.reportSubtitle}</p>
-                      <h3 className="mt-5 text-[52px] font-semibold leading-[1.08] tracking-[-0.04em] text-[#3F3A36]">
-                        {reportPreview.reportTitle}
-                      </h3>
-                      <div className="mt-7 h-[4px] w-12 rounded-full bg-[#5B7BFE]" />
-                      <p className="mt-7 max-w-[560px] text-[16px] leading-8 text-[#6F685F]">
-                        {reportPreview.coverSummary}
-                      </p>
-                    </div>
-
-                    <div className="mt-20 max-w-[560px]">
-                      <p className="text-[32px] font-semibold leading-[1.45] tracking-[-0.03em] text-[#5A524A]">
-                        {reportPreview.coreJudgment}
-                      </p>
-                      <p className="mt-6 max-w-[460px] text-[13px] leading-6 text-[#8A8177]">
-                        {reportPreview.coreJudgmentNote}
-                      </p>
-                    </div>
-
-                    <div className="mt-auto rounded-[28px] border border-[#DDE4F3] bg-[linear-gradient(180deg,rgba(250,252,255,0.98)_0%,rgba(239,245,255,0.95)_100%)] px-6 py-6">
-                      <div className="grid grid-cols-3 gap-4">
-                        {reportPreview.supportCards.map((card, index) => (
-                          <div
-                            key={card.label}
-                            className={`min-w-0 ${index < reportPreview.supportCards.length - 1 ? 'border-r border-[#D7E0F2] pr-4' : ''}`}
-                          >
-                            <p className="text-[11px] font-bold tracking-[0.12em] text-[#6C7897]">{card.label}</p>
-                            <p className="mt-3 text-[22px] font-semibold tracking-[-0.02em] text-[#4B443E]">{card.value}</p>
-                            <p className="mt-2 text-[12px] leading-5 text-[#6E778E]">{card.note}</p>
-                          </div>
-                        ))}
-                      </div>
-                    </div>
-
-                    <div className="mt-6 flex items-end justify-between text-[12px] text-[#9B9388]">
-                      <p>{reportPreview.pageOneNote}</p>
-                      <span className="font-medium tracking-[0.18em] text-[#4B66D8]">01 / 02</span>
-                    </div>
-                  </div>
-                </div>
-              </section>
-
-              <section className="overflow-hidden rounded-[32px] border border-[#DDE4F3] bg-[#F9FBFF] shadow-[0_24px_60px_rgba(56,86,174,0.08)]">
-                <div className="relative min-h-[1020px] px-10 py-10 text-[#3F3A36]">
-                  <div
-                    className="absolute inset-0"
-                    style={{
-                      background: 'radial-gradient(circle at 10% 12%, rgba(102, 132, 255, 0.10), transparent 24%), radial-gradient(circle at 88% 12%, rgba(132, 171, 255, 0.20), transparent 18%), linear-gradient(180deg, #F9FBFF 0%, #EEF3FD 100%)',
-                    }}
-                  />
-                  <div className="absolute right-[22px] top-[-26px] h-[170px] w-[170px] rounded-full bg-[radial-gradient(circle_at_center,rgba(103,134,255,0.22),transparent_70%)]" />
-
-                  <div className="relative">
-                    <div className="flex items-start justify-between gap-6">
-                      <div>
-                        <p className="text-[11px] font-bold tracking-[0.18em] text-[#6B7692]">目录页</p>
-                        <h3 className="mt-3 text-[34px] font-semibold tracking-[-0.03em] text-[#3F3A36]">目录与阅读指引</h3>
-                        <div className="mt-4 h-[4px] w-12 rounded-full bg-[#5B7BFE]" />
-                        <p className="mt-5 max-w-[520px] text-[13px] leading-6 text-[#756D65]">
-                          {reportPreview.readingIntro}
+                <section className="rounded-xl border border-gray-900 bg-gray-900 px-5 py-4 text-white">
+                  <div className="flex items-start justify-between gap-4">
+                    <div className="flex items-start gap-3 min-w-0 flex-1">
+                      <Sparkles size={16} className="mt-0.5 text-amber-300 shrink-0" />
+                      <div className="min-w-0">
+                        <p className="text-[13.5px] font-semibold tracking-tight">用 AI 主理人生成完整报告</p>
+                        <p className="mt-0.5 text-[11.5px] leading-relaxed text-gray-300">
+                          豆包推骨架 → 章节并行起草 + 信息图 → 一键导出 docx / Markdown · 约 2-4 分钟
                         </p>
                       </div>
-                      <div className="rounded-[24px] border border-[#D7E0F2] bg-[linear-gradient(180deg,rgba(250,252,255,0.98)_0%,rgba(239,245,255,0.95)_100%)] px-5 py-4 shadow-[0_10px_24px_rgba(56,86,174,0.08)]">
-                        <p className="text-[10px] font-bold tracking-[0.18em] text-[#4B66D8]">Report Profile</p>
-                        <div className="mt-3 flex items-center gap-2 text-[13px] font-semibold text-[#4B443E]">
-                          <Clock size={14} />
-                          {reportPreview.reviewWindow}
-                        </div>
-                        <div className="mt-2 flex items-center gap-2 text-[13px] text-[#756D65]">
-                          <Users size={14} />
-                          {reportPreview.audienceLabel}
-                        </div>
-                      </div>
                     </div>
-
-                    <div className="mt-8 grid grid-cols-12 gap-5">
-                      <div className="col-span-7">
-                        <div className="space-y-3">
-                          {reportPreview.tocSections.slice(0, 7).map((section) => (
-                            <div key={section.index} className="rounded-[22px] border border-[#DFE6F6] bg-white/82 px-5 py-4 shadow-[0_10px_24px_rgba(56,86,174,0.05)]">
-                              <div className="flex items-start gap-4">
-                                <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full border border-[#CFDBFB] bg-[#EEF3FF] text-[13px] font-bold text-[#4B66D8]">
-                                  {section.index}
-                                </div>
-                                <div className="min-w-0 flex-1">
-                                  <div className="flex items-start justify-between gap-4">
-                                    <p className="text-[16px] font-semibold tracking-[-0.02em] text-[#4B443E]">{section.title}</p>
-                                    <span className="rounded-full bg-[#EAF0FF] px-2.5 py-1 text-[10px] font-bold text-[#4B66D8]">
-                                      {section.pages}
-                                    </span>
-                                  </div>
-                                  <p className="mt-2 text-[12px] leading-6 text-[#7A7269]">{section.summary}</p>
-                                </div>
-                              </div>
-                            </div>
-                          ))}
-                        </div>
-                      </div>
-
-                      <div className="col-span-5 space-y-5">
-                        <div className="rounded-[28px] bg-[linear-gradient(180deg,#5B7BFE_0%,#3F5EF7_100%)] p-6 text-white shadow-[0_18px_40px_rgba(63,94,247,0.28)]">
-                          <p className="text-[11px] font-bold tracking-[0.18em] text-white/75">建议阅读顺序</p>
-                          <div className="mt-5 space-y-3">
-                            {reportPreview.readingSteps.map((item, index) => (
-                              <div key={`${item}-${index}`} className="flex items-start gap-3 rounded-[18px] bg-white/10 px-4 py-3">
-                                  <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-white text-[11px] font-bold text-[#3F5EF7]">
-                                    {index + 1}
-                                  </span>
-                                <p className="text-[12px] leading-6 text-white/92">{item}</p>
-                              </div>
-                            ))}
-                          </div>
-                        </div>
-
-                        <div className="rounded-[28px] border border-[#DFE6F6] bg-white/86 p-6 shadow-[0_12px_32px_rgba(56,86,174,0.05)]">
-                          <div className="flex items-center justify-between">
-                            <div>
-                              <p className="text-[11px] font-bold tracking-[0.18em] text-[#8F857A]">审阅问题</p>
-                              <p className="mt-2 text-[22px] font-semibold tracking-[-0.03em] text-[#4B443E]">本报告回答什么</p>
-                            </div>
-                            <FileBadge size={18} className="text-[#4B66D8]" />
-                          </div>
-                          <div className="mt-5 space-y-3">
-                            {reportPreview.reviewQuestions.map((item, index) => (
-                              <div key={`${item}-${index}`} className="rounded-[18px] bg-[#F2F6FF] px-4 py-4">
-                                <p className="text-[11px] font-bold tracking-[0.12em] text-[#4B66D8]">0{index + 1}</p>
-                                <p className="mt-1 text-[13px] leading-6 text-[#5A524A]">{item}</p>
-                              </div>
-                            ))}
-                          </div>
-                        </div>
-
-                        <div className="rounded-[28px] border border-[#D7E0F2] bg-[linear-gradient(180deg,rgba(250,252,255,0.96)_0%,rgba(239,245,255,0.92)_100%)] p-6 shadow-[0_12px_32px_rgba(56,86,174,0.06)]">
-                          <div className="flex items-center justify-between">
-                            <div>
-                              <p className="text-[11px] font-bold tracking-[0.18em] text-[#8F857A]">交付组成</p>
-                              <p className="mt-2 text-[22px] font-semibold tracking-[-0.03em] text-[#4B443E]">建议纳入的模块</p>
-                            </div>
-                            <Paperclip size={18} className="text-[#4B66D8]" />
-                          </div>
-                          <div className="mt-4 space-y-3">
-                            {reportPreview.deliverables.map((deliverable, index) => (
-                              <div key={`${deliverable}-${index}`} className="rounded-[18px] px-4 py-3">
-                                <div className="flex items-center gap-3">
-                                  <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-[#EAF0FF] text-[11px] font-bold text-[#4B66D8]">
-                                    {index + 1}
-                                  </span>
-                                  <p className="text-[13px] font-semibold leading-6 text-[#5A524A]">{deliverable}</p>
-                                </div>
-                              </div>
-                            ))}
-                          </div>
-                        </div>
-                      </div>
-                    </div>
-
-                    <div className="mt-6 flex items-end justify-between text-[12px] text-[#8F867B]">
-                      <p>{reportPreview.pageTwoNote}</p>
-                      <span className="font-medium tracking-[0.18em] text-[#4B66D8]">02 / 02</span>
-                    </div>
-                  </div>
-                </div>
-              </section>
-            </div>
-            ) : (
-              <div className="mx-auto max-w-[760px] pb-6">
-                <section className="overflow-hidden rounded-[32px] border border-[#DDE4F3] bg-[#F9FBFF] shadow-[0_24px_70px_rgba(56,86,174,0.10)]">
-                  <div className="relative min-h-[520px] px-10 py-10 text-[#3F3A36]">
-                    <div
-                      className="absolute inset-0"
-                      style={{
-                        background: 'radial-gradient(circle at 20% 16%, rgba(93, 125, 255, 0.14), transparent 26%), radial-gradient(circle at 85% 85%, rgba(123, 168, 255, 0.12), transparent 20%), linear-gradient(180deg, #F9FBFF 0%, #EEF3FD 100%)',
-                      }}
-                    />
-                    <div className="relative flex h-full flex-col items-start justify-center">
-                      <span className="inline-flex rounded-full bg-[#5B7BFE] px-4 py-2 text-[11px] font-bold text-white">
-                        模拟报告暂不可用
-                      </span>
-                      <h3 className="mt-6 text-[38px] font-semibold leading-[1.16] tracking-[-0.04em] text-[#3F3A36]">
-                        {reportPreview.emptyStateTitle}
-                      </h3>
-                      <p className="mt-5 max-w-[560px] text-[16px] leading-8 text-[#6F685F]">
-                        {reportPreview.emptyStateDescription}
-                      </p>
-                      <div className="mt-8 flex flex-wrap items-center gap-3 text-[13px] text-[#5D6781]">
-                        <span className="rounded-full bg-white/84 px-4 py-2 shadow-[0_8px_20px_rgba(56,86,174,0.08)]">
-                          当前事件线：{reportPreview.reportTitle}
-                        </span>
-                        <span className="rounded-full bg-white/84 px-4 py-2 shadow-[0_8px_20px_rgba(56,86,174,0.08)]">
-                          快照日期：{reportPreview.snapshotAtLabel}
-                        </span>
-                      </div>
-                      <button
-                        type="button"
-                        className="mt-10 rounded-full bg-[#5B7BFE] px-5 py-2.5 text-[13px] font-bold text-white transition hover:bg-[#3F5EF7]"
-                        onClick={() => setViewMode('tasks')}
-                      >
-                        去素材清单补资料
-                      </button>
-                    </div>
+                    <button
+                      type="button"
+                      onClick={() =>
+                        onOpenAIReport({
+                          eventLineName: draft.eventLineName || '',
+                          clientName: organizationName || '',
+                        })
+                      }
+                      className="shrink-0 inline-flex items-center gap-1.5 rounded-md bg-white px-3.5 py-1.5 text-[12px] font-medium text-gray-900 transition hover:bg-gray-100"
+                    >
+                      开始
+                      <ArrowRight size={11} strokeWidth={2.2} />
+                    </button>
                   </div>
                 </section>
+              )}
+
+              {/* 真报告预览 · 用 narrative + tasks + attachments 实数据 */}
+              <ReportPreviewBody
+                narrative={timelineNarrative}
+                draft={draft}
+                organizationName={organizationName}
+                snapshot={snapshot}
+              />
+            </div>
+            ) : (
+              <div className="py-16 text-center">
+                <p className="text-[14px] font-semibold text-gray-700">报告尚不可用</p>
+                <p className="mt-3 max-w-md mx-auto text-[12px] leading-relaxed text-gray-400">
+                  当前事件线的素材不足以形成报告。建议先在「按任务查看」补充关键附件，
+                  在「主线还原」点击 AI 生成关键转折点，再回来导出。
+                </p>
+                <div className="mt-6 flex items-center justify-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setViewMode('tasks')}
+                    className="inline-flex items-center rounded-md border border-gray-200 bg-white px-3.5 py-1.5 text-[12px] font-medium text-gray-700 transition hover:border-gray-300 hover:bg-gray-50"
+                  >
+                    去补充素材
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setViewMode('timeline')}
+                    className="inline-flex items-center rounded-md bg-gray-900 px-3.5 py-1.5 text-[12px] font-medium text-white transition hover:bg-gray-700"
+                  >
+                    去生成主线还原
+                  </button>
+                </div>
               </div>
             )
-          ) : viewMode === 'tasks' && materialModel ? (
-            <div className="space-y-5">
-              <div className="grid grid-cols-5 gap-2">
+          ) : viewMode === 'report' ? (
+            <div className="py-16 text-center text-[13px] text-gray-400">报告预览加载中…</div>
+          ) : null}
+
+          {viewMode === 'tasks' && materialModel ? (
+            <div className="space-y-6">
+              {/* 5 个分类 · 极简下划线 tab + 旁边显示当前数 */}
+              <div className="flex items-center gap-7 border-b border-gray-100">
                 {(['core', 'review', 'supplement', 'system', 'gaps'] as EventLineMaterialTabKey[]).map((tab) => {
                   const count = tab === 'gaps' ? materialModel.gaps.length : materialModel.groups[tab].length;
                   const active = activeMaterialTab === tab;
@@ -2474,62 +2536,58 @@ export default function EventLineReportPanel({ eventLineId, backendBaseUrl, onCl
                     <button
                       key={tab}
                       type="button"
-                      className={`min-w-0 rounded-2xl border px-3 py-3 text-left transition ${
-                        active
-                          ? 'border-[#BFD0FF] bg-[#F3F6FF] shadow-[0_8px_20px_rgba(91,123,254,0.10)]'
-                          : 'border-gray-100 bg-white hover:border-gray-200'
-                      }`}
                       onClick={() => {
                         setActiveMaterialTab(tab);
                         setShowSystemTraces(tab === 'system');
                       }}
+                      className={`relative inline-flex items-baseline gap-2 pb-3 text-[13px] tracking-wide transition-colors whitespace-nowrap ${
+                        active
+                          ? 'text-gray-900 font-semibold'
+                          : 'text-gray-400 font-medium hover:text-gray-700'
+                      }`}
                     >
-                      <p className={`text-[11px] font-bold ${active ? 'text-[#3857D9]' : 'text-gray-500'}`}>
-                        {MATERIAL_GROUP_META[tab].label}
-                      </p>
-                      <p className={`mt-1 text-[22px] font-semibold tracking-[-0.03em] ${active ? 'text-[#1D3361]' : 'text-gray-900'}`}>
-                        {count}
-                      </p>
+                      <span>{MATERIAL_GROUP_META[tab].label}</span>
+                      <span className={`text-[11px] tabular-nums ${active ? 'text-gray-700' : 'text-gray-300'}`}>{count}</span>
+                      {active && (
+                        <span className="absolute bottom-[-1px] left-0 w-full h-[1.5px] bg-gray-900" />
+                      )}
                     </button>
                   );
                 })}
               </div>
 
-              <div className="rounded-2xl border border-gray-100 bg-[#FAFBFF] px-4 py-3">
-                <div className="flex items-start justify-between gap-4">
-                  <div>
-                    <p className="text-[12px] font-bold text-gray-800">{MATERIAL_GROUP_META[activeMaterialTab].label}</p>
-                    <p className="mt-1 text-[11px] leading-5 text-gray-500">{MATERIAL_GROUP_META[activeMaterialTab].description}</p>
-                  </div>
-                  <div className="shrink-0 rounded-full bg-white px-3 py-1 text-[11px] font-bold text-gray-500 shadow-sm">
-                    附件 {draft.attachments.length} · 任务 {draft.tasks.length}
-                  </div>
-                </div>
-                {activeMaterialTab !== 'gaps' && materialModel.gaps.length > 0 && (
-                  <div className="mt-3 rounded-xl border border-amber-100 bg-amber-50/70 px-3 py-2">
-                    <p className="text-[11px] font-bold text-amber-700">待补材料提示</p>
-                    <p className="mt-1 text-[11px] leading-5 text-amber-700">
-                      {materialModel.gaps.slice(0, 2).join(' ')}
-                      {materialModel.gaps.length > 2 ? ` 另有 ${materialModel.gaps.length - 2} 项。` : ''}
-                    </p>
-                  </div>
-                )}
+              {/* 当前分类描述行 · 极简 */}
+              <div className="flex items-baseline justify-between gap-4">
+                <p className="text-[12px] leading-relaxed text-gray-500 max-w-2xl">
+                  {MATERIAL_GROUP_META[activeMaterialTab].description}
+                </p>
+                <p className="shrink-0 text-[10px] uppercase tracking-[0.14em] text-gray-400 tabular-nums">
+                  共 <span className="text-gray-900 font-medium">{draft.attachments.length}</span> 附件 · <span className="text-gray-900 font-medium">{draft.tasks.length}</span> 任务
+                </p>
               </div>
+
+              {activeMaterialTab !== 'gaps' && materialModel.gaps.length > 0 && (
+                <div className="flex items-start gap-2.5 rounded-md bg-amber-50/60 border-l-[2px] border-amber-400 px-3.5 py-2.5">
+                  <AlertTriangle size={13} strokeWidth={2} className="text-amber-600 mt-0.5 shrink-0" />
+                  <p className="text-[12px] leading-relaxed text-amber-700">
+                    {materialModel.gaps.slice(0, 2).join(' ')}
+                    {materialModel.gaps.length > 2 ? ` 另有 ${materialModel.gaps.length - 2} 项。` : ''}
+                  </p>
+                </div>
+              )}
 
               {activeMaterialTab === 'gaps' ? (
                 <div className="space-y-2">
                   {materialModel.gaps.length > 0 ? materialModel.gaps.map((gap, index) => (
-                    <div key={`${gap}-${index}`} className="rounded-2xl border border-amber-100 bg-amber-50 px-4 py-3">
-                      <div className="flex items-start gap-3">
-                        <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-white text-[11px] font-bold text-amber-700">
-                          {index + 1}
-                        </span>
-                        <p className="text-[12px] leading-6 text-amber-800">{gap}</p>
-                      </div>
+                    <div key={`${gap}-${index}`} className="flex items-start gap-3 py-3 border-b border-gray-100 last:border-0">
+                      <span className="text-[24px] leading-none font-extralight tracking-tighter text-gray-200 pt-0.5">
+                        {String(index + 1).padStart(2, '0')}
+                      </span>
+                      <p className="flex-1 text-[13px] leading-relaxed text-gray-700">{gap}</p>
                     </div>
                   )) : (
-                    <div className="rounded-2xl border border-gray-100 bg-white px-4 py-8 text-center text-[12px] text-gray-400">
-                      {MATERIAL_GROUP_META.gaps.emptyText}
+                    <div className="py-16 text-center">
+                      <p className="text-[13px] text-gray-400">{MATERIAL_GROUP_META.gaps.emptyText}</p>
                     </div>
                   )}
                 </div>
@@ -2545,63 +2603,61 @@ export default function EventLineReportPanel({ eventLineId, backendBaseUrl, onCl
                     const totalGroupCount = material.attachmentGroups.length;
 
                     return (
-                      <div
+                      <article
                         key={material.id}
-                        className="group rounded-2xl border border-gray-100 bg-white px-4 py-3 transition hover:border-gray-200"
+                        className="group relative py-4 border-b border-gray-100 last:border-0"
                       >
                         <div className="flex items-start justify-between gap-4">
                           <div className="min-w-0 flex-1">
-                            <div className="flex flex-wrap items-center gap-2 text-[10px]">
-                              <span className="rounded bg-slate-100 px-1.5 py-0.5 font-bold text-slate-500">
+                            <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1 text-[10px]">
+                              <span className="font-bold uppercase tracking-[0.16em] text-gray-400">
                                 {material.sourceLabel}
                               </span>
                               {material.statusLabel && (
-                                <span className="rounded bg-blue-50 px-1.5 py-0.5 font-bold text-[#4B66D8]">
-                                  {material.statusLabel}
-                                </span>
+                                <span className="text-gray-500 font-medium">{material.statusLabel}</span>
                               )}
-                              {material.happenedAt && <span className="text-gray-400">{formatTs(material.happenedAt)}</span>}
-                              {material.actorName && <span className="text-gray-400">— {material.actorName}</span>}
+                              {material.happenedAt && <span className="text-gray-400 tabular-nums">{formatTs(material.happenedAt)}</span>}
+                              {material.actorName && <span className="text-gray-400">{material.actorName}</span>}
                             </div>
-                            <p className="mt-2 text-[14px] font-bold text-gray-900">{material.title}</p>
+                            <h4 className="mt-1.5 text-[14.5px] font-semibold leading-snug text-gray-900">{material.title}</h4>
                             {material.summary && (
-                              <p className="mt-1 text-[12px] leading-5 text-gray-500 whitespace-pre-wrap">{material.summary}</p>
+                              <p className="mt-1 text-[12.5px] leading-6 text-gray-500 whitespace-pre-wrap">{material.summary}</p>
                             )}
-                            <div className="mt-2 flex flex-wrap gap-1.5">
+                            <div className="mt-2 flex flex-wrap items-baseline gap-x-3 gap-y-1 text-[10.5px]">
                               {material.tags.map((tag) => (
-                                <span key={tag} className="rounded-full bg-[#F1F4FF] px-2 py-0.5 text-[10px] font-bold text-[#4B66D8]">
+                                <span key={tag} className="text-gray-500">
                                   {tag}
                                 </span>
                               ))}
                               {material.duplicateCount && (
-                                <span className="rounded-full bg-amber-50 px-2 py-0.5 text-[10px] font-bold text-amber-700">
-                                  重复 {material.duplicateCount} 条
+                                <span className="text-amber-700 font-medium">
+                                  · 重复 {material.duplicateCount}
                                 </span>
                               )}
                               {material.versionCount && (
-                                <span className="rounded-full bg-rose-50 px-2 py-0.5 text-[10px] font-bold text-rose-700">
-                                  {material.versionCount} 组多版本
+                                <span className="text-rose-700 font-medium">
+                                  · {material.versionCount} 版本
                                 </span>
                               )}
                               {material.testAttachmentCount && (
-                                <span className="rounded-full bg-orange-50 px-2 py-0.5 text-[10px] font-bold text-orange-700">
-                                  测试素材 {material.testAttachmentCount}
+                                <span className="text-orange-700 font-medium">
+                                  · 测试 {material.testAttachmentCount}
                                 </span>
                               )}
                             </div>
                             {material.warnings.length > 0 && (
                               <p className="mt-2 text-[11px] leading-5 text-amber-700">
-                                {material.warnings.join(' · ')}
+                                ⚠ {material.warnings.join(' · ')}
                               </p>
                             )}
                           </div>
 
-                          <div className="flex shrink-0 items-center gap-1">
+                          <div className="flex shrink-0 items-center gap-1.5">
                             <button
                               type="button"
                               title={isDocsExpanded ? '折叠文档' : '展开文档'}
                               disabled={docGroups.length === 0}
-                              className={`rounded p-1 transition ${docGroups.length === 0 ? 'text-gray-200 cursor-default' : isDocsExpanded ? 'bg-blue-100 text-[#5B7BFE]' : 'text-gray-400 hover:text-gray-600 hover:bg-gray-100'}`}
+                              className={`inline-flex h-7 w-7 items-center justify-center rounded-md border border-gray-200 bg-white text-gray-500 transition-all ${docGroups.length === 0 ? 'cursor-not-allowed opacity-40' : isDocsExpanded ? 'bg-gray-100 text-gray-900 border-gray-300' : 'hover:border-gray-300 hover:text-gray-900 hover:bg-gray-50'}`}
                               onClick={() => {
                                 if (docGroups.length === 0) return;
                                 setDocsExpandedActivities((prev) => {
@@ -2618,7 +2674,7 @@ export default function EventLineReportPanel({ eventLineId, backendBaseUrl, onCl
                               type="button"
                               title={isImagesExpanded ? '折叠图片' : '展开图片'}
                               disabled={imageGroups.length === 0}
-                              className={`rounded p-1 transition ${imageGroups.length === 0 ? 'text-gray-200 cursor-default' : isImagesExpanded ? 'bg-blue-100 text-[#5B7BFE]' : 'text-gray-400 hover:text-gray-600 hover:bg-gray-100'}`}
+                              className={`inline-flex h-7 w-7 items-center justify-center rounded-md border border-gray-200 bg-white text-gray-500 transition-all ${imageGroups.length === 0 ? 'cursor-not-allowed opacity-40' : isImagesExpanded ? 'bg-gray-100 text-gray-900 border-gray-300' : 'hover:border-gray-300 hover:text-gray-900 hover:bg-gray-50'}`}
                               onClick={() => {
                                 if (imageGroups.length === 0) return;
                                 setImagesExpandedActivities((prev) => {
@@ -2631,22 +2687,64 @@ export default function EventLineReportPanel({ eventLineId, backendBaseUrl, onCl
                             >
                               <Image size={12} />
                             </button>
-                            <button
-                              type="button"
-                              title={downloadableAtts.length ? `下载素材附件（${downloadableAtts.length}个）` : '暂无可下载附件'}
-                              disabled={downloadableAtts.length === 0}
-                              className={`rounded p-1 transition ${downloadableAtts.length ? 'text-gray-400 hover:text-[#5B7BFE] hover:bg-gray-100' : 'text-gray-200 cursor-default'}`}
-                              onClick={() => {
-                                for (const att of downloadableAtts) {
-                                  const link = document.createElement('a');
-                                  link.href = resolveAttachmentUrl(att, backendBaseUrl);
-                                  link.download = att.title;
-                                  link.click();
-                                }
-                              }}
-                            >
-                              <Download size={12} />
-                            </button>
+                            <div className="relative group/dl">
+                              <button
+                                type="button"
+                                title={downloadableAtts.length ? `下载素材附件（${downloadableAtts.length}个）` : '暂无可下载附件'}
+                                disabled={downloadableAtts.length === 0}
+                                className={`inline-flex h-7 w-7 items-center justify-center rounded-md border border-gray-200 bg-white text-gray-500 transition-all ${downloadableAtts.length === 0 ? 'cursor-not-allowed opacity-40' : 'hover:border-gray-300 hover:text-gray-900 hover:bg-gray-50'}`}
+                                onClick={() => {
+                                  for (const att of downloadableAtts) {
+                                    const link = document.createElement('a');
+                                    link.href = resolveAttachmentUrl(att, backendBaseUrl);
+                                    link.download = att.title;
+                                    link.click();
+                                  }
+                                }}
+                              >
+                                <Download size={12} />
+                              </button>
+                              {downloadableAtts.length > 0 && (
+                                <div className="invisible group-hover/dl:visible absolute right-0 top-full z-30 mt-1 w-72 max-h-80 overflow-y-auto rounded-lg border border-gray-200 bg-white shadow-lg">
+                                  <div className="border-b border-gray-100 px-3 py-2 text-[10px] font-bold uppercase tracking-[0.16em] text-gray-400">
+                                    附件列表 · {downloadableAtts.length} 个
+                                  </div>
+                                  {downloadableAtts.map((att) => {
+                                    const dlUrl = resolveAttachmentUrl(att, backendBaseUrl);
+                                    const openUrl = resolveAttachmentOpenUrl(att, backendBaseUrl);
+                                    return (
+                                      <div key={att.id} className="flex items-center justify-between gap-2 px-3 py-2 hover:bg-gray-50">
+                                        <div className="min-w-0 flex-1">
+                                          <p className="truncate text-[12px] font-medium text-gray-800" title={att.title}>{att.title}</p>
+                                          <p className="text-[10px] text-gray-400">{formatAttachmentBytes(att.sizeBytes)}</p>
+                                        </div>
+                                        <div className="flex shrink-0 items-center gap-1">
+                                          {openUrl && (
+                                            <a
+                                              href={openUrl}
+                                              target="_blank"
+                                              rel="noopener noreferrer"
+                                              title="在浏览器中打开"
+                                              className="rounded p-1 text-gray-400 transition hover:bg-blue-50 hover:text-[#5B7BFE]"
+                                            >
+                                              <ExternalLink size={11} />
+                                            </a>
+                                          )}
+                                          <a
+                                            href={dlUrl}
+                                            download={att.title}
+                                            title="下载"
+                                            className="rounded p-1 text-gray-400 transition hover:bg-gray-100 hover:text-[#5B7BFE]"
+                                          >
+                                            <Download size={11} />
+                                          </a>
+                                        </div>
+                                      </div>
+                                    );
+                                  })}
+                                </div>
+                              )}
+                            </div>
                           </div>
                         </div>
 
@@ -2793,10 +2891,10 @@ export default function EventLineReportPanel({ eventLineId, backendBaseUrl, onCl
                             ))}
                           </div>
                         )}
-                      </div>
+                      </article>
                     );
                   }) : (
-                    <div className="rounded-2xl border border-gray-100 bg-white px-4 py-8 text-center text-[12px] text-gray-400">
+                    <div className="py-16 text-center text-[12px] text-gray-400">
                       {MATERIAL_GROUP_META[activeMaterialTab].emptyText}
                     </div>
                   )}
@@ -2811,3 +2909,197 @@ export default function EventLineReportPanel({ eventLineId, backendBaseUrl, onCl
 }
 
 export type { ReportDraft };
+
+/* ══════════════════════════════════════════════════════════════════════
+   ReportPreviewBody — 真报告预览
+   用 timelineNarrative + draft tasks/attachments + snapshot 实数据渲染,
+   跟 Word 导出的内容保持一致, 替代之前的封面/目录 mock。
+   ══════════════════════════════════════════════════════════════════ */
+function ReportPreviewBody({
+  narrative,
+  draft,
+  organizationName,
+  snapshot,
+}: {
+  narrative: EventLineTimelineNarrative | null;
+  draft: ReportDraft;
+  organizationName: string;
+  snapshot: EventLineReportSnapshot;
+}) {
+  const el = snapshot.eventLine;
+  const taskCount = draft.tasks.length;
+  const doneTasks = draft.tasks.filter((t) => t.status === 'done').length;
+  const attachmentCount = draft.attachments.length;
+
+  return (
+    <section className="border border-gray-200 rounded-xl bg-white">
+      {/* 报告头 · 像真报告封面但极简 */}
+      <header className="px-8 pt-8 pb-6 border-b border-gray-100">
+        <div className="flex items-baseline justify-between gap-4 mb-5">
+          <span className="text-[10px] font-bold uppercase tracking-[0.2em] text-gray-400">
+            事件线汇报
+          </span>
+          <span className="text-[10px] text-gray-400 tabular-nums">
+            {organizationName} · 快照 {draft.snapshotAt.slice(0, 10)}
+          </span>
+        </div>
+        <h1 className="text-[28px] font-light tracking-tight leading-tight text-gray-900">
+          {narrative?.headline || draft.eventLineName}
+        </h1>
+        {el.primaryClientName && (
+          <p className="mt-2 text-[12px] text-gray-500">
+            <span className="text-[10px] uppercase tracking-[0.14em] text-gray-400 mr-1.5">客户</span>
+            {el.primaryClientName}
+          </p>
+        )}
+      </header>
+
+      {/* 摘要数据 · 4 个极简指标 */}
+      <div className="grid grid-cols-4 gap-8 px-8 py-6 border-b border-gray-100">
+        <div>
+          <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-gray-400">主线转折</p>
+          <p className="mt-2 text-[28px] font-light text-gray-900 leading-none tabular-nums">
+            {narrative?.nodes.length || 0}
+          </p>
+        </div>
+        <div>
+          <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-gray-400">任务</p>
+          <p className="mt-2 text-[28px] font-light text-gray-900 leading-none tabular-nums">
+            {taskCount}
+            <span className="text-[14px] text-gray-400 ml-1">/ {doneTasks} 完成</span>
+          </p>
+        </div>
+        <div>
+          <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-gray-400">附件</p>
+          <p className="mt-2 text-[28px] font-light text-gray-900 leading-none tabular-nums">
+            {attachmentCount}
+          </p>
+        </div>
+        <div>
+          <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-gray-400">参与</p>
+          <p className="mt-2 text-[14px] text-gray-700 leading-tight line-clamp-2">
+            {draft.participantNames.join(' · ') || '—'}
+          </p>
+        </div>
+      </div>
+
+      {/* Opening */}
+      {narrative?.opening && (
+        <div className="px-8 py-6 border-b border-gray-100">
+          <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-gray-400 mb-3">起源</p>
+          <p className="text-[15px] font-light leading-[1.75] tracking-tight text-gray-800 border-l-[2px] border-gray-900 pl-5">
+            {narrative.opening}
+          </p>
+        </div>
+      )}
+
+      {/* Nodes */}
+      {narrative && narrative.nodes.length > 0 && (
+        <div className="px-8 py-6 border-b border-gray-100">
+          <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-gray-400 mb-5">关键转折</p>
+          <div className="space-y-7">
+            {narrative.nodes.map((node, index) => (
+              <article key={node.id} className="flex items-baseline gap-5">
+                <span className="text-[24px] leading-none font-extralight tracking-tighter text-gray-200 tabular-nums">
+                  {String(index + 1).padStart(2, '0')}
+                </span>
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-baseline gap-3 mb-1.5">
+                    <h3 className="text-[14.5px] font-semibold leading-snug text-gray-900">
+                      {node.title}
+                    </h3>
+                    <span className="text-[10px] text-gray-400 tabular-nums">
+                      {node.time.slice(0, 10)}
+                    </span>
+                  </div>
+                  <p className="text-[13px] leading-relaxed text-gray-700">{node.narrative}</p>
+                </div>
+              </article>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* 任务清单 */}
+      {taskCount > 0 && (
+        <div className="px-8 py-6 border-b border-gray-100">
+          <div className="flex items-baseline justify-between mb-4">
+            <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-gray-400">任务清单</p>
+            <span className="text-[10px] tabular-nums text-gray-400">{taskCount} 条 · {doneTasks} 完成</span>
+          </div>
+          <div>
+            {draft.tasks.slice(0, 20).map((task) => {
+              const statusDot =
+                task.status === 'done' ? 'bg-emerald-500'
+                  : task.status === 'doing' ? 'bg-blue-400'
+                    : task.status === 'rejected' ? 'bg-rose-400'
+                      : 'bg-amber-400';
+              return (
+                <div key={task.id} className="flex items-baseline gap-3 py-2 border-b border-gray-50 last:border-0">
+                  <span className={`h-1.5 w-1.5 rounded-full ${statusDot} shrink-0 mt-1.5`} />
+                  <p className={`flex-1 text-[12.5px] ${task.status === 'done' ? 'text-gray-400 line-through' : 'text-gray-800'}`}>
+                    {task.title}
+                  </p>
+                  {task.ownerName && (
+                    <span className="shrink-0 text-[10px] text-gray-400">{task.ownerName}</span>
+                  )}
+                  {task.ddl && (
+                    <span className="shrink-0 text-[10px] text-gray-400 tabular-nums">{task.ddl}</span>
+                  )}
+                </div>
+              );
+            })}
+            {taskCount > 20 && (
+              <p className="mt-2 text-[11px] text-gray-400">…还有 {taskCount - 20} 条</p>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* 附件清单 */}
+      {attachmentCount > 0 && (
+        <div className="px-8 py-6 border-b border-gray-100">
+          <div className="flex items-baseline justify-between mb-4">
+            <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-gray-400">附件清单</p>
+            <span className="text-[10px] tabular-nums text-gray-400">{attachmentCount} 个</span>
+          </div>
+          <div>
+            {draft.attachments.slice(0, 15).map((att) => (
+              <div key={att.id} className="flex items-baseline gap-3 py-2 border-b border-gray-50 last:border-0">
+                <span className="text-[10px] text-gray-400 tabular-nums shrink-0 uppercase">
+                  {(att.kind || 'file').slice(0, 4)}
+                </span>
+                <p className="flex-1 text-[12.5px] text-gray-700 truncate" title={att.title}>{att.title}</p>
+                <span className="shrink-0 text-[10px] text-gray-400 tabular-nums">
+                  {att.sizeBytes ? `${Math.round(att.sizeBytes / 1024)} KB` : '—'}
+                </span>
+              </div>
+            ))}
+            {attachmentCount > 15 && (
+              <p className="mt-2 text-[11px] text-gray-400">…还有 {attachmentCount - 15} 个</p>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* Closing · 今天在哪里 */}
+      {narrative?.closing && (
+        <div className="px-8 py-6">
+          <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-gray-400 mb-3">今天在哪里</p>
+          <p className="text-[14px] leading-[1.75] text-gray-700 border-l-[2px] border-gray-900 pl-5">
+            {narrative.closing}
+          </p>
+        </div>
+      )}
+
+      {/* 没 narrative 时的兜底 */}
+      {!narrative && (
+        <div className="px-8 py-12 text-center border-t border-gray-100">
+          <p className="text-[12.5px] text-gray-500">
+            还没有 AI 主线还原。<span className="text-gray-400">在「主线还原」tab 生成后，这里会自动出现完整的报告预览。</span>
+          </p>
+        </div>
+      )}
+    </section>
+  );
+}

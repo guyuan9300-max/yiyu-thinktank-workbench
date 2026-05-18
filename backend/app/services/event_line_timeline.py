@@ -455,8 +455,8 @@ def build_event_line_timeline_nodes(
         if not task_title:
             continue
         activity_ids = activity_ids_by_task.get(task_id, [])
-        if not activity_ids and not task_attachments:
-            continue
+        # 不再过滤"无活动且无附件"的任务 —— "按任务查看" 要列出完整任务列表,
+        # 即使任务还没有任何附件/活动也保留一个骨架, 让用户能看到全貌。
         summary_seed = _task_desc(task) or " ".join(
             _dedupe([
                 _activity_summary(activity)

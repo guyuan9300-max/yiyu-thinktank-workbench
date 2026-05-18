@@ -208,6 +208,7 @@ import type {
   WorkspacePendingQuestionState,
   WorkspaceRightPanelEvidenceSnapshot,
   WorkspaceRightTabKey,
+  WorkspaceAnswerActionName,
 } from './lib/workspaceClientUiStore';
 import {
   getTodayCalendarState,
@@ -258,6 +259,7 @@ import {
   createProjectFlow,
   createProjectModule,
   deleteClient,
+  deleteClientDocument,
   createGoal,
   launchFeishuMeeting,
   createHandbook,
@@ -482,6 +484,7 @@ import { LocalAsrModelPanel } from './components/settings/LocalAsrModelPanel';
 import { OllamaQuickPullPanel } from './components/settings/OllamaQuickPullPanel';
 import type { OrgModelTab } from './components/settings/OrganizationModelSettingsPanel';
 import { PlanWorkshopView } from './components/plan_workshop/PlanWorkshopView';
+import { DepartmentSignalsView } from './components/weekly_review/DepartmentSignalsView';
 import { OrganizationSetupCenter } from './components/settings/OrganizationSetupCenter';
 import type { OrganizationSetupInputDraftState } from './components/settings/OrganizationSetupCenter';
 import { isLegacyOrganizationEmployee } from './lib/organizationEmployeeFilters';
@@ -15053,51 +15056,17 @@ export default function App() {
                 </div>
               )}
 
-              {/* ── 部门信号 ── */}
+              {/* ── 部门信号 · 协作驾驶舱 ── */}
               {activeReviewTab === 'signals' && (
-                <div className="space-y-4">
-                  {departmentReports.length > 0 ? (
-                    departmentReports.map((report: any, idx: number) => (
-                      <div key={idx} className="bg-white rounded-2xl border border-gray-100 shadow-sm p-6">
-                        <h2 className="text-[16px] font-bold text-gray-800 mb-4">{typeof report === 'object' && report !== null && 'departmentName' in report ? (report as { departmentName: string }).departmentName : `部门 ${idx + 1}`}</h2>
-                        <div className="bg-[#F8F9FB] p-4 rounded-2xl border border-gray-100 text-[14px] font-medium leading-relaxed text-gray-600 italic">
-                          "{typeof report === 'string' ? report : typeof report === 'object' && report !== null && 'summary' in report ? (report as { summary: string }).summary : '暂无信号摘要'}"
-                        </div>
-                        {typeof report === 'object' && report !== null && 'highlights' in report && Array.isArray((report as { highlights: string[] }).highlights) && (
-                          <div className="mt-5">
-                            <h3 className="text-[11px] font-bold text-gray-300 uppercase tracking-wider mb-3 flex items-center gap-2">
-                              <Activity size={14} /> 本周焦点信号
-                            </h3>
-                            <div className="space-y-2">
-                              {((report as { highlights: string[] }).highlights).map((h, i) => (
-                                <div key={i} className="bg-gray-50 p-4 rounded-2xl text-[13px] text-gray-600 font-medium border border-gray-100/50">{h}</div>
-                              ))}
-                            </div>
-                          </div>
-                        )}
-                      </div>
-                    ))
-                  ) : agentDepartmentDigests.length > 0 ? (
-                    agentDepartmentDigests.map((digest: any, idx: number) => (
-                      <div key={idx} className="bg-white rounded-2xl border border-gray-100 shadow-sm p-6">
-                        <h2 className="text-[16px] font-bold text-gray-800 mb-4">{typeof digest === 'object' && digest !== null && 'departmentName' in digest ? (digest as { departmentName: string }).departmentName : `部门 ${idx + 1}`}</h2>
-                        <div className="bg-[#F8F9FB] p-4 rounded-2xl border border-gray-100 text-[14px] font-medium leading-relaxed text-gray-600 italic">
-                          "{typeof digest === 'string' ? digest : typeof digest === 'object' && digest !== null && 'content' in digest ? (digest as { content: string }).content : JSON.stringify(digest)}"
-                        </div>
-                      </div>
-                    ))
-                  ) : (
-                    <div className="bg-white p-12 rounded-2xl border border-gray-100 shadow-sm text-center flex flex-col items-center gap-3">
-                      <div className="w-12 h-12 bg-gray-50 rounded-2xl flex items-center justify-center text-gray-300">
-                        <Radio size={24} />
-                      </div>
-                      <div>
-                        <h3 className="font-bold text-gray-600 text-[15px] mb-1">暂无部门信号</h3>
-                        <p className="text-gray-400 text-[13px] font-medium">点击「生成周复盘」后，系统将基于各部门任务数据自动生成信号摘要。</p>
-                      </div>
-                    </div>
-                  )}
-                </div>
+                <DepartmentSignalsView
+                  weekLabel={selectedReviewWeekLabel || null}
+                  perspective={
+                    reviewPerspective === 'mine'
+                      ? 'organization'
+                      : (reviewPerspective as 'organization' | 'department')
+                  }
+                  departmentId={reviewRequestDepartmentId}
+                />
               )}
 
               </div>{/* end overflow-y-auto */}
@@ -17287,6 +17256,31 @@ export default function App() {
       if (!currentClientId) return;
       writeStoredRecentUsedDocuments(currentClientId, recentUsedDocuments);
     }, [currentClientId, recentUsedDocuments]);
+
+    // 客户工作台「文件」tab 上每张文件卡片可以单点删除：进回收站 30 天可恢复，
+    // 同时清掉数据中心 v2_documents/sections/chunks 的派生数据（CASCADE）。
+    // 之前没这个入口，导错文件只能借「删任务附件」或「重复文档去重」迂回。
+    const [pendingDeleteDocument, setPendingDeleteDocument] = useState<{
+      documentId: string;
+      fileName: string;
+    } | null>(null);
+    const [isDeletingDocument, setIsDeletingDocument] = useState(false);
+    const handleConfirmDeleteDocument = async () => {
+      if (!pendingDeleteDocument || !currentClientId) return;
+      setIsDeletingDocument(true);
+      try {
+        const result = await deleteClientDocument(currentClientId, pendingDeleteDocument.documentId);
+        setRecentUsedDocuments((prev) => prev.filter((d) => d.documentId !== pendingDeleteDocument.documentId));
+        await refreshWorkspace(currentClientId);
+        flash('success', `已删除「${result.fileName || pendingDeleteDocument.fileName}」，30 天内可在回收站恢复`);
+        setPendingDeleteDocument(null);
+      } catch (error) {
+        const msg = error instanceof Error ? error.message : '删除失败';
+        flash('error', `删除失败：${msg}`);
+      } finally {
+        setIsDeletingDocument(false);
+      }
+    };
     const markDocumentAsUsed = (params: { documentId: string; title: string; path: string }) => {
       const { documentId, title, path } = params;
       if (!documentId) return;
@@ -21915,6 +21909,20 @@ export default function App() {
                       >
                         <FolderOpen size={16} />
                       </button>
+                      <button
+                        type="button"
+                        disabled={!documentId}
+                        onClick={() => setPendingDeleteDocument({ documentId, fileName: fileLabel })}
+                        className={`rounded-lg p-1.5 transition-colors ${
+                          documentId
+                            ? 'text-slate-400 hover:text-rose-600 hover:bg-rose-50'
+                            : 'text-slate-300 cursor-not-allowed'
+                        }`}
+                        title="删除文件并清空数据中心数据"
+                        aria-label="删除文件"
+                      >
+                        <Trash2 size={16} />
+                      </button>
                     </div>
                   </div>
                 );
@@ -21997,6 +22005,47 @@ export default function App() {
                       return combined.map((card) => renderFileCard(card));
                     })()}
                   </div>
+                  {pendingDeleteDocument && (
+                    <div
+                      className="fixed inset-0 z-[1000] flex items-center justify-center bg-black/40 px-6"
+                      onClick={(e) => { if (e.target === e.currentTarget && !isDeletingDocument) setPendingDeleteDocument(null); }}
+                    >
+                      <div className="w-full max-w-md rounded-2xl bg-white shadow-2xl">
+                        <div className="px-5 py-4 border-b border-gray-100 flex items-center gap-2">
+                          <div className="shrink-0 inline-flex items-center justify-center w-8 h-8 rounded-full bg-rose-50">
+                            <Trash2 size={16} className="text-rose-600" />
+                          </div>
+                          <h3 className="text-[14px] font-bold text-gray-900">删除文件并清空数据中心</h3>
+                        </div>
+                        <div className="px-5 py-4 space-y-2">
+                          <p className="text-[12px] text-gray-700 leading-5">
+                            确认将文件「<span className="font-bold text-gray-900">{pendingDeleteDocument.fileName}</span>」放入回收站？
+                          </p>
+                          <p className="text-[11px] text-gray-500 leading-5">
+                            将一并删除该文件在数据中心的解析数据（章节 / 切片 / 索引）。文件本身保留在回收站 30 天内可恢复。
+                          </p>
+                        </div>
+                        <div className="px-5 py-3 border-t border-gray-100 flex items-center justify-end gap-2">
+                          <button
+                            type="button"
+                            onClick={() => setPendingDeleteDocument(null)}
+                            disabled={isDeletingDocument}
+                            className="rounded-lg border border-gray-200 bg-white px-3 py-1.5 text-[12px] font-bold text-gray-600 hover:bg-gray-50 disabled:opacity-50"
+                          >
+                            取消
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => void handleConfirmDeleteDocument()}
+                            disabled={isDeletingDocument}
+                            className="rounded-lg bg-rose-500 text-white px-3 py-1.5 text-[12px] font-bold hover:bg-rose-600 disabled:opacity-60"
+                          >
+                            {isDeletingDocument ? '删除中…' : '确认删除'}
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                  )}
                 </div>
               );
             })()}

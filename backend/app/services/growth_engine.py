@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 from collections import defaultdict
+from dataclasses import dataclass
 from datetime import datetime, timedelta
 from uuid import uuid4
 
@@ -960,6 +961,232 @@ def _keyword_hits(text: str) -> dict[str, int]:
             if keyword and keyword in normalized:
                 scores[ability_key] += 1
     return scores
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# 数据中心客观证据增强（G1+G2 P0 改造）
+# ════════════════════════════════════════════════════════════════════════════
+# 现有 ledger 完全基于 ABILITY_KEYWORDS 关键词匹配累计 XP。本模块直接读
+# 数据中心已有的真实标注：exp_wall_quote.category、memory_facts.owner_user_id、
+# v2_documents.owner_user_id。这些是"被组织真实认可 / 真实留下的产出"，
+# 比关键词扫描可靠得多。
+#
+# 等数据中心后续提供 work_evidence_annotations / role_profile_snapshot 等
+# 更精准的标注表后，这里替换数据源即可，外层 build_growth_overview 不动。
+
+# 经验墙 6 类目 → 6 能力维度
+EXP_WALL_CATEGORY_TO_ABILITY: dict[str, str] = {
+    "项目推进": "exec",
+    "团队协作": "collab",
+    "判断决策": "analyze",
+    "客户沟通": "insight",
+    "风险识别": "risk",
+    "方法论": "write",
+}
+
+# 经验墙金句 contribution_score → XP 折算系数
+EXP_WALL_SCORE_TO_XP_RATIO = 0.5
+
+# memory_facts.scope_type → ability（贡献了客户/项目/部门记忆 = 对应能力的实证）
+MEMORY_SCOPE_TO_ABILITY: dict[str, str] = {
+    "client": "insight",
+    "project": "analyze",
+    "department": "collab",
+}
+
+# 临时锚点：组内样本不足时的 fallback baseline（待数据中心提供 role_anchor 后删除）
+_BASELINE_FALLBACK_SCORE = 50
+_BASELINE_MIN_SAMPLE = 3
+
+
+@dataclass
+class _ObjectiveEvidence:
+    """单条客观证据（来源于数据中心已有的真实标注）。"""
+
+    ability_key: str
+    source_type: str  # exp_wall_quote / memory_fact / document
+    title: str
+    detail: str
+    weight: float  # 折算的 XP 加权值
+    occurred_at: str
+
+
+def _fetch_exp_wall_evidence(db: Database, user_id: str) -> list[_ObjectiveEvidence]:
+    try:
+        rows = db.fetchall(
+            """
+            SELECT id, quote_text, category, contribution_score, like_count, save_count, created_at
+            FROM exp_wall_quotes
+            WHERE author_user_id = ? AND status = 'active'
+            ORDER BY created_at DESC
+            """,
+            (user_id,),
+        )
+    except Exception:
+        return []
+    items: list[_ObjectiveEvidence] = []
+    for row in rows:
+        category = str(row["category"] or "").strip()
+        ability_key = EXP_WALL_CATEGORY_TO_ABILITY.get(category)
+        if not ability_key:
+            continue
+        contribution = float(row["contribution_score"] or 0)
+        like_count = int(row["like_count"] or 0)
+        save_count = int(row["save_count"] or 0)
+        items.append(
+            _ObjectiveEvidence(
+                ability_key=ability_key,
+                source_type="exp_wall_quote",
+                title=str(row["quote_text"] or "")[:60],
+                detail=f"被组织墙收录 · ♥{like_count} ⭐{save_count}",
+                weight=contribution * EXP_WALL_SCORE_TO_XP_RATIO,
+                occurred_at=str(row["created_at"] or ""),
+            )
+        )
+    return items
+
+
+def _fetch_memory_evidence(db: Database, user_id: str, *, limit: int = 30) -> list[_ObjectiveEvidence]:
+    try:
+        rows = db.fetchall(
+            """
+            SELECT id, scope_type, scope_id, fact_key, fact_value, source_type, confidence, updated_at
+            FROM memory_facts
+            WHERE owner_user_id = ?
+            ORDER BY updated_at DESC
+            LIMIT ?
+            """,
+            (user_id, limit),
+        )
+    except Exception:
+        return []
+    items: list[_ObjectiveEvidence] = []
+    for row in rows:
+        scope_type = str(row["scope_type"] or "")
+        ability_key = MEMORY_SCOPE_TO_ABILITY.get(scope_type)
+        if not ability_key:
+            continue
+        confidence = float(row["confidence"] or 0)
+        if confidence < 0.4:
+            continue
+        items.append(
+            _ObjectiveEvidence(
+                ability_key=ability_key,
+                source_type="memory_fact",
+                title=str(row["fact_key"] or "")[:60],
+                detail=str(row["fact_value"] or "")[:80],
+                weight=4.0 * confidence,
+                occurred_at=str(row["updated_at"] or ""),
+            )
+        )
+    return items
+
+
+def _fetch_document_evidence(db: Database, user_id: str, *, limit: int = 20) -> list[_ObjectiveEvidence]:
+    try:
+        rows = db.fetchall(
+            """
+            SELECT id, file_name, kind, visible_category, updated_at
+            FROM v2_documents
+            WHERE owner_user_id = ?
+            ORDER BY updated_at DESC
+            LIMIT ?
+            """,
+            (user_id, limit),
+        )
+    except Exception:
+        return []
+    items: list[_ObjectiveEvidence] = []
+    for row in rows:
+        category = str(row["visible_category"] or "")
+        file_name = str(row["file_name"] or "")
+        merged = f"{category} {file_name}"
+        if "客户" in merged or "客户分析" in merged:
+            ability_key = "insight"
+        elif "风险" in merged:
+            ability_key = "risk"
+        elif "方法" in merged or "模板" in merged or "手册" in merged:
+            ability_key = "write"
+        elif "复盘" in merged or "总结" in merged or "分析" in merged:
+            ability_key = "analyze"
+        elif "会议" in merged or "纪要" in merged:
+            ability_key = "collab"
+        else:
+            ability_key = "write"
+        items.append(
+            _ObjectiveEvidence(
+                ability_key=ability_key,
+                source_type="document",
+                title=file_name[:60],
+                detail=category,
+                weight=2.0,
+                occurred_at=str(row["updated_at"] or ""),
+            )
+        )
+    return items
+
+
+def _collect_objective_evidence(db: Database, user_id: str) -> list[_ObjectiveEvidence]:
+    """汇总该用户在数据中心留下的全部客观证据，按时间倒序。"""
+    bucket: list[_ObjectiveEvidence] = []
+    bucket.extend(_fetch_exp_wall_evidence(db, user_id))
+    bucket.extend(_fetch_memory_evidence(db, user_id))
+    bucket.extend(_fetch_document_evidence(db, user_id))
+    bucket.sort(key=lambda x: x.occurred_at, reverse=True)
+    return bucket
+
+
+def _objective_xp_by_ability(evidence: list[_ObjectiveEvidence]) -> dict[str, int]:
+    bucket: dict[str, float] = defaultdict(float)
+    for item in evidence:
+        bucket[item.ability_key] += item.weight
+    return {k: int(round(v)) for k, v in bucket.items()}
+
+
+def _objective_count_by_ability(evidence: list[_ObjectiveEvidence]) -> dict[str, int]:
+    bucket: dict[str, int] = defaultdict(int)
+    for item in evidence:
+        bucket[item.ability_key] += 1
+    return dict(bucket)
+
+
+def _pick_objective_evidence_text(
+    evidence: list[_ObjectiveEvidence],
+    ability_key: str,
+    *,
+    fallback: str,
+) -> str:
+    matches = [e for e in evidence if e.ability_key == ability_key]
+    if not matches:
+        return fallback
+    latest = matches[0]
+    if latest.source_type == "exp_wall_quote":
+        return f"近期金句：「{latest.title}」 {latest.detail}"
+    if latest.source_type == "memory_fact":
+        return f"近期记忆：{latest.title} — {latest.detail}"
+    if latest.source_type == "document":
+        return f"近期产出：{latest.title}"
+    return fallback
+
+
+def _organization_baseline_score(db: Database, ability_key: str) -> int:
+    """全组织该 ability 的中位数（临时锚点）。
+
+    后续数据中心提供 role_profile_snapshot 后，这里改成读 role_anchor.p50_score。
+    """
+    rows = db.fetchall(
+        """
+        SELECT user_id, SUM(COALESCE(NULLIF(total_xp, 0), delta)) AS xp
+        FROM xp_ledger
+        WHERE ability_key = ? AND reversed_at IS NULL
+        GROUP BY user_id
+        """,
+        (ability_key,),
+    )
+    scores = sorted(_current_score(int(row["xp"] or 0)) for row in rows)
+    if len(scores) < _BASELINE_MIN_SAMPLE:
+        return _BASELINE_FALLBACK_SCORE
+    return scores[len(scores) // 2]
 
 
 def _infer_general_hits(
@@ -2489,7 +2716,12 @@ def _build_ledger_entry(profile_map: dict[str, GrowthAbilityProfileRecord], row)
     )
 
 
-def _build_source_coverage(db: Database, user_id: str) -> GrowthSourceCoverageRecord:
+def _build_source_coverage(
+    db: Database,
+    user_id: str,
+    *,
+    objective_evidence: list[_ObjectiveEvidence] | None = None,
+) -> GrowthSourceCoverageRecord:
     rows = db.fetchall(
         """
         SELECT source_type, context_json
@@ -2523,6 +2755,16 @@ def _build_source_coverage(db: Database, user_id: str) -> GrowthSourceCoverageRe
                 event_line_ids.add(event_line_id)
     coverage.clientCount = len(client_ids)
     coverage.eventLineCount = len(event_line_ids)
+
+    # G3：把数据中心客观证据来源数也算进 coverage
+    for item in objective_evidence or []:
+        if item.source_type == "exp_wall_quote":
+            coverage.expWallSignals += 1
+        elif item.source_type == "memory_fact":
+            coverage.memorySignals += 1
+        elif item.source_type == "document":
+            coverage.documentSignals += 1
+
     return coverage
 
 
@@ -2769,9 +3011,34 @@ def _build_ability_gaps(
     project_highlights: list[GrowthProjectHighlightRecord],
     event_line_highlights: list[GrowthProjectHighlightRecord],
     strategic_highlights: list[GrowthProjectHighlightRecord],
+    *,
+    db: Database | None = None,
+    objective_evidence: list[_ObjectiveEvidence] | None = None,
 ) -> list[GrowthAbilityGapRecord]:
+    """识别成长机会。
+
+    G2 改造：
+    - requiredScore 不再硬编码（72/62/70/64/66/74），改为读组织 baseline
+      （`_organization_baseline_score`）。等数据中心提供 role_anchor 后，
+      可以把 baseline 函数换成读 `role_profile_snapshot`。
+    - 优先输出"该 ability 完全没有客观证据"的成长机会；这部分判断基于
+      `objective_evidence`（exp_wall + memory + documents），比单看 ledger
+      关键词扫描更可靠。
+    """
     score_map = {item.abilityKey: item for item in ability_scores}
     candidates: dict[str, GrowthAbilityGapRecord] = {}
+    objective_evidence = objective_evidence or []
+    objective_count = _objective_count_by_ability(objective_evidence)
+
+    # baseline 计算缓存（避免对每个 push_candidate 重复查 SQL）
+    baseline_cache: dict[str, int] = {}
+
+    def baseline_for(ability_key: str) -> int:
+        if ability_key not in baseline_cache:
+            baseline_cache[ability_key] = (
+                _organization_baseline_score(db, ability_key) if db is not None else _BASELINE_FALLBACK_SCORE
+            )
+        return baseline_cache[ability_key]
 
     def push_candidate(
         ability_key: str,
@@ -2803,10 +3070,28 @@ def _build_ability_gaps(
         if existing is None or candidate.gap > existing.gap or (candidate.gap == existing.gap and candidate.requiredScore > existing.requiredScore):
             candidates[ability_key] = candidate
 
+    # ── 主通路：基于客观证据缺失反推成长机会 ───────────────────
+    # 一个 ability 如果在 exp_wall / memory / documents 里近期没有任何
+    # 真实产出对象，就是最值得提示的成长机会，比"差几分"更有说服力。
+    for ability_key in ABILITY_ORDER:
+        current = score_map.get(ability_key)
+        if not current:
+            continue
+        if objective_count.get(ability_key, 0) == 0:
+            push_candidate(
+                ability_key,
+                required_score=baseline_for(ability_key),
+                reason="近期没有这方面的真实产出对象（金句/记忆/文档），可以挑一次相关任务做深一点。",
+                source_label="数据中心客观证据",
+                source_type="objective_evidence_missing",
+                source_id=f"missing:{ability_key}",
+            )
+
+    # ── 辅助通路：基于 recommendations / captures / highlights 补 reason ──
     for recommendation in recommendations:
         push_candidate(
             recommendation.abilityKey,
-            required_score=72 if recommendation.priority == "high" else 62,
+            required_score=baseline_for(recommendation.abilityKey),
             reason=recommendation.whyNow or recommendation.reason,
             source_label=recommendation.eventLineName or recommendation.clientName or recommendation.triggerNode or recommendation.title or "",
             source_type="event_line" if recommendation.eventLineId else "client" if recommendation.clientId else "recommendation",
@@ -2828,7 +3113,7 @@ def _build_ability_gaps(
         for ability_key in capture.abilityKeys[:3]:
             push_candidate(
                 ability_key,
-                required_score=70 if capture.eventLineId or capture.projectStage else 64,
+                required_score=baseline_for(ability_key),
                 reason=reason,
                 source_label=source_label or "",
                 source_type=source_type,
@@ -2839,7 +3124,6 @@ def _build_ability_gaps(
         highlights: list[GrowthProjectHighlightRecord],
         *,
         default_type: str,
-        required_score: int,
         reason_prefix: str,
     ) -> None:
         for item in highlights:
@@ -2858,16 +3142,16 @@ def _build_ability_gaps(
             for ability_key in item.abilityKeys[:3]:
                 push_candidate(
                     ability_key,
-                    required_score=required_score,
+                    required_score=baseline_for(ability_key),
                     reason=reason,
                     source_label=source_label,
                     source_type=source_type,
                     source_id=source_id,
                 )
 
-    push_highlights(project_highlights, default_type="client", required_score=66, reason_prefix="当前项目正在持续消耗这项能力：")
-    push_highlights(event_line_highlights, default_type="event_line", required_score=70, reason_prefix="当前事件线正在持续要求这项能力：")
-    push_highlights(strategic_highlights, default_type="strategic_focus", required_score=74, reason_prefix="当前战略线明确要求继续补强这项能力：")
+    push_highlights(project_highlights, default_type="client", reason_prefix="当前项目正在持续消耗这项能力：")
+    push_highlights(event_line_highlights, default_type="event_line", reason_prefix="当前事件线正在持续要求这项能力：")
+    push_highlights(strategic_highlights, default_type="strategic_focus", reason_prefix="当前战略线明确要求继续补强这项能力：")
 
     return sorted(candidates.values(), key=lambda item: (-item.gap, ABILITY_ORDER.index(item.abilityKey)))[:3]
 
@@ -2955,6 +3239,15 @@ def build_growth_overview(db: Database, user_id: str, user_name: str, *, week_la
     recommendations = list_learning_recommendations(db, user_id)
     pending_captures = _list_pending_captures(db, user_id)
 
+    # ── 数据中心客观证据增强（G1 P0）────────────────────────
+    # 把 exp_wall_quote / memory_facts / v2_documents 这类真实标注折算成
+    # 额外 XP 加到 totals，并保留原始证据列表用于填 evidence 字段。
+    objective_evidence = _collect_objective_evidence(db, user_id)
+    objective_xp = _objective_xp_by_ability(objective_evidence)
+    for ability_key, extra_xp in objective_xp.items():
+        if extra_xp > 0:
+            totals[ability_key] = totals.get(ability_key, 0) + extra_xp
+
     ability_scores: list[GrowthAbilityScoreRecord] = []
     total_xp = 0
     weekly_xp = 0
@@ -2964,7 +3257,13 @@ def build_growth_overview(db: Database, user_id: str, user_name: str, *, week_la
         week_delta = weekly.get(ability_key, 0)
         weekly_xp += week_delta
         stage, next_stage = _ability_stage(total)
-        recent_evidence = next((item.reason for item in recent_entries if item.abilityKey == ability_key and item.reason.strip()), "")
+        ledger_fallback = next(
+            (item.reason for item in recent_entries if item.abilityKey == ability_key and item.reason.strip()),
+            "",
+        )
+        recent_evidence = _pick_objective_evidence_text(
+            objective_evidence, ability_key, fallback=ledger_fallback,
+        )
         ability_scores.append(
             GrowthAbilityScoreRecord(
                 abilityKey=ability_key,  # type: ignore[arg-type]
@@ -3004,12 +3303,21 @@ def build_growth_overview(db: Database, user_id: str, user_name: str, *, week_la
         abilities=ability_scores,
         recentEntries=recent_entries,
         recommendations=recommendations,
-        sourceCoverage=_build_source_coverage(db, user_id),
+        sourceCoverage=_build_source_coverage(db, user_id, objective_evidence=objective_evidence),
         projectGrowthHighlights=project_highlights,
         eventLineGrowthHighlights=event_line_highlights,
         strategicAlignmentHighlights=strategic_highlights,
         pendingCaptures=pending_captures,
         currentFocusActions=_build_focus_actions(recommendations),
-        abilityGaps=_build_ability_gaps(ability_scores, recommendations, pending_captures, project_highlights, event_line_highlights, strategic_highlights),
+        abilityGaps=_build_ability_gaps(
+            ability_scores,
+            recommendations,
+            pending_captures,
+            project_highlights,
+            event_line_highlights,
+            strategic_highlights,
+            db=db,
+            objective_evidence=objective_evidence,
+        ),
         updatedAt=_now_iso(),
     )
