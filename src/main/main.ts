@@ -177,14 +177,27 @@ function appendElectronLaunchLog(level: 'INFO' | 'ERROR', message: string) {
   }
 }
 
+const _stdioErrorHandled = new WeakSet<NodeJS.WriteStream>();
 function writeProcessStreamSafely(stream: NodeJS.WriteStream | undefined, text: string) {
   if (!stream) return;
   if ('destroyed' in stream && stream.destroyed) return;
   if (typeof stream.writable === 'boolean' && !stream.writable) return;
+  // EPIPE 在写 stdio 时是异步从底层 socket 抛上来的（afterWriteDispatched），
+  // 同步 try/catch 抓不到 —— 必须在 stream 上挂 'error' 监听器先吞掉。
+  // 一次进程生命周期内每个 stream 只挂一次。
+  if (!_stdioErrorHandled.has(stream)) {
+    _stdioErrorHandled.add(stream);
+    stream.on('error', () => {
+      // stdout/stderr pipe 被父进程关闭后写入会触发，日志失败不影响 app 运行。
+    });
+  }
   try {
-    stream.write(text);
+    stream.write(text, (err) => {
+      // write callback 形式：异步 EPIPE 在这里也会被吞掉，不再冒泡到 uncaught。
+      void err;
+    });
   } catch {
-    // Packaged macOS launches may not have a live stdio sink. Logging must stay non-fatal.
+    // 极端情况下 sync 抛错的兜底
   }
 }
 

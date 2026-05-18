@@ -80,6 +80,10 @@ class TemplateFieldOccurrence:
     row_index: int | None = None
     cell_index: int | None = None
     placeholder: str | None = None
+    # field_inventory 类专用：示例/说明列文本，作为 hint 给 LLM
+    hint: str | None = None
+    # field_inventory 类专用：表格小节名（如"机构基本信息" / "项目明细子表"）
+    section: str | None = None
 
 
 @dataclass(frozen=True)
@@ -384,6 +388,61 @@ def _is_table_target_header(text: str) -> bool:
 def _is_table_label_header(text: str) -> bool:
     normalized = normalize_template_label(text)
     return any(keyword in normalized for keyword in TABLE_LABEL_HEADER_KEYWORDS)
+
+
+FIELD_INVENTORY_NAME_KEYWORDS = ("字段名", "字段名称", "项名", "项目名称")
+FIELD_INVENTORY_HINT_KEYWORDS = ("示例/说明", "示例", "说明", "备注", "示例 / 说明")
+
+
+def _iter_field_inventory_entries(
+    table,
+    *,
+    section_hint: str | None = None,
+) -> list[TemplateFieldOccurrence]:
+    """识别"规范字段清单表"——每行一个字段定义。
+
+    典型 header 形如：编号 | 字段名 | 字段类型 | 是否必填 | 示例/说明 | 最大字符或范围。
+    特征：表头里某一列叫"字段名"，列数 ≥ 3。
+    每一行的"字段名"列 = 字段标签；"示例/说明"列 = 给 LLM 的 hint。
+    """
+    if len(table.rows) < 2:
+        return []
+    header_cells = table.rows[0].cells
+    if len(header_cells) < 3:
+        return []
+    name_col: int | None = None
+    hint_col: int | None = None
+    for col, cell in enumerate(header_cells):
+        text = normalize_template_label(cell.text)
+        if name_col is None and any(kw in text for kw in FIELD_INVENTORY_NAME_KEYWORDS):
+            name_col = col
+        if hint_col is None and any(kw in text for kw in FIELD_INVENTORY_HINT_KEYWORDS):
+            hint_col = col
+    if name_col is None:
+        return []
+    entries: list[TemplateFieldOccurrence] = []
+    for row in table.rows[1:]:
+        cells = row.cells
+        if name_col >= len(cells):
+            continue
+        label_text = normalize_template_label(cells[name_col].text)
+        if not label_text or len(label_text) < 2:
+            continue
+        # 跳过被合并单元格重复出现的同名 label
+        hint_text: str | None = None
+        if hint_col is not None and hint_col < len(cells):
+            raw_hint = str(cells[hint_col].text or "").strip()
+            if raw_hint:
+                hint_text = re.sub(r"\s+", " ", raw_hint)[:200]
+        entries.append(
+            TemplateFieldOccurrence(
+                label=label_text,
+                kind="field_inventory",
+                hint=hint_text,
+                section=section_hint,
+            )
+        )
+    return entries
 
 
 def _iter_header_driven_table_targets(table) -> list[TemplateTableTarget]:
@@ -749,7 +808,40 @@ def extract_docx_template_fields(path: Path) -> list[TemplateFieldOccurrence]:
                 )
             )
 
+    # 段落里找 section 锚点供 field_inventory 表使用（取上一个标题段落作为 section）
+    paragraph_section_anchor: str | None = None
+    section_by_table_index: dict[int, str] = {}
+    table_counter = 0
+    for elem in document.element.body.iter():
+        tag = elem.tag.split('}')[-1] if '}' in elem.tag else elem.tag
+        if tag == 'p':
+            txt = ''.join(t.text or '' for t in elem.iter() if (t.tag.split('}')[-1] == 't' if '}' in t.tag else t.tag == 't')).strip()
+            if txt and len(txt) <= 60 and not txt.startswith('|'):
+                paragraph_section_anchor = txt
+        elif tag == 'tbl':
+            if paragraph_section_anchor:
+                section_by_table_index[table_counter] = paragraph_section_anchor
+            table_counter += 1
+
     for table_index, table in enumerate(document.tables):
+        # 优先识别"规范字段清单表"（6 列：编号/字段名/字段类型/...）
+        inventory_entries = _iter_field_inventory_entries(
+            table,
+            section_hint=section_by_table_index.get(table_index),
+        )
+        if inventory_entries:
+            for entry in inventory_entries:
+                # 标记 table_index 让后面 apply 知道这一格不该被改
+                fields.append(
+                    TemplateFieldOccurrence(
+                        label=entry.label,
+                        kind="field_inventory",
+                        table_index=table_index,
+                        hint=entry.hint,
+                        section=entry.section,
+                    )
+                )
+            continue
         header_targets = _iter_header_driven_table_targets(table)
         if header_targets:
             for item in header_targets:
@@ -836,6 +928,17 @@ def apply_docx_template_values(
     applied = 0
     missing = 0
 
+    # 先扫描，记下哪些表是 field_inventory 表，apply 时跳过、最后在 docx 末尾统一追加答案表
+    inventory_table_indexes: set[int] = set()
+    inventory_entries_in_order: list[TemplateFieldOccurrence] = []
+    for ti, t in enumerate(document.tables):
+        entries = _iter_field_inventory_entries(t)
+        if entries:
+            inventory_table_indexes.add(ti)
+            for e in entries:
+                e.table_index = ti
+                inventory_entries_in_order.append(e)
+
     for paragraph in document.paragraphs:
         original = str(paragraph.text or "")
         updated = original
@@ -850,7 +953,10 @@ def apply_docx_template_values(
             paragraph.text = updated
             applied += 1
 
-    for table in document.tables:
+    for table_idx_apply, table in enumerate(document.tables):
+        # field_inventory 表不在原位修改——末尾追加专门答案表
+        if table_idx_apply in inventory_table_indexes:
+            continue
         header_targets = _iter_header_driven_table_targets(table)
         if header_targets:
             for item in header_targets:
@@ -912,6 +1018,55 @@ def apply_docx_template_values(
                 continue
             cells[1].text = replacement
             applied += 1
+
+    # 在 docx 末尾追加"AI 自动填写答案"表
+    if inventory_entries_in_order:
+        document.add_paragraph()
+        heading = document.add_paragraph()
+        heading_run = heading.add_run("AI 自动填写答案")
+        heading_run.bold = True
+        # 设置黑体字号 14
+        from docx.shared import Pt
+        heading_run.font.size = Pt(14)
+        intro = document.add_paragraph(
+            "以下为 AI 基于客户数据库自动生成的字段答案。原文档"
+            "中"
+            "的字段清单结构保持不变；本表仅追加于末尾以提供答案参考。"
+        )
+        intro.runs[0].font.size = Pt(9)
+        # 按 section 分组
+        groups: dict[str, list[TemplateFieldOccurrence]] = {}
+        order: list[str] = []
+        for entry in inventory_entries_in_order:
+            sec = entry.section or "（未命名分组）"
+            if sec not in groups:
+                groups[sec] = []
+                order.append(sec)
+            groups[sec].append(entry)
+        for section_name in order:
+            entries = groups[section_name]
+            sec_heading = document.add_paragraph()
+            sec_heading_run = sec_heading.add_run(f"▎{section_name}（{len(entries)} 项）")
+            sec_heading_run.bold = True
+            sec_heading_run.font.size = Pt(11)
+            answer_table = document.add_table(rows=1 + len(entries), cols=2)
+            answer_table.style = "Light Grid"
+            hdr = answer_table.rows[0].cells
+            hdr[0].text = "字段名"
+            hdr[1].text = "AI 答案"
+            for hi in (0, 1):
+                for run in hdr[hi].paragraphs[0].runs:
+                    run.bold = True
+            for ri, entry in enumerate(entries, start=1):
+                row = answer_table.rows[ri].cells
+                row[0].text = entry.label
+                replacement = str(values.get(entry.label) or "").strip()
+                if replacement:
+                    row[1].text = replacement
+                    applied += 1
+                else:
+                    row[1].text = "【待确认】"
+                    missing += 1
 
     target_path.parent.mkdir(parents=True, exist_ok=True)
     document.save(target_path)
