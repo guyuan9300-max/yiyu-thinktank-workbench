@@ -284,6 +284,7 @@ import type {
   PullSelectedFromMainPayload,
   PushPreview,
   EventLineReportSnapshot,
+  EventLineTimelineNarrative,
   // 客户项目情报流类型（2026-05-13 整合同事新版资讯情报站时补回）
   IntelligenceWorkObject,
   IntelligenceItem,
@@ -2041,6 +2042,353 @@ export async function getClientStrategicPulse(clientId: string) {
   return request<StrategicPulse>(`/api/v1/clients/${encodeURIComponent(clientId)}/strategic-pulse`);
 }
 
+// ─── 战略陪伴 · 事实澄清面板 (Phase 1.5b) ───────────────────
+export type ClarificationProfile = {
+  name: string; alias: string; domain: string; type: string; intro: string;
+  stage: string; color: string; industry: string; scale: string; influence: string;
+  currentNeeds: string; painPoints: string; strategicValueToYiyu: string;
+  decisionChain: string; cooperationType: string; relationshipHealth: string;
+  milestones: string; cooperationStartedAt: string;
+};
+
+export type ClarificationEventLine = {
+  id: string; name: string; kind: string; status: string; stage: string;
+  summary: string; intent: string; nextStep: string; currentBlocker: string;
+  recentDecision: string; businessCategory: string; ownerId: string; ownerName: string;
+  evidenceCount: number; createdAt: string; updatedAt: string; closedAt: string;
+  isDirtyName: boolean;
+};
+
+export type ClarificationTimelineItem = {
+  id: string; eventLineId: string; eventLineName: string;
+  happenedAt: string; sourceType: string; actorName: string;
+  title: string; summary: string; isKey: boolean;
+};
+
+export type ClarificationPerson = {
+  name: string; mentionCount: number; sources: string[];
+};
+
+export type ClarificationCommitment = {
+  id: string; title: string; ownerName: string; dueDate: string;
+  confidence: number; publishStatus: string;
+  meetingId: string; meetingTitle: string; meetingScheduledAt: string;
+  createdAt: string;
+};
+
+export type ClarificationNeed = {
+  eventLineId: string; eventLineName: string; missingFields: string[];
+  predictionReadiness: number; confidence: number; updatedAt: string;
+};
+
+export type ClarificationContext = {
+  clientId: string;
+  profile: ClarificationProfile;
+  eventLines: ClarificationEventLine[];
+  timeline: ClarificationTimelineItem[];
+  peopleCandidates: ClarificationPerson[];
+  commitments: ClarificationCommitment[];
+  clarificationNeeds: ClarificationNeed[];
+  generatedAt: string;
+};
+
+export async function getClientClarificationContext(clientId: string) {
+  return request<ClarificationContext>(`/api/v1/clients/${encodeURIComponent(clientId)}/clarification-context`);
+}
+
+// ─── Phase 1.5c · 战略陪伴 6 维度故事网 (云端共享, 共同编织) ─────────
+export type NarrativeDimensionKey =
+  // v1.0 新 6 层
+  | 'essence' | 'cooperation' | 'business_intro' | 'people' | 'timeline' | 'next_steps'
+  // 兼容旧 rev (已废弃)
+  | 'history' | 'commitments' | 'risks' | 'next';
+
+export type NarrativeConfidence = 'high' | 'medium' | 'low';
+
+export type NarrativeReference = {
+  sourceType: string;
+  sourceId: string;
+  label: string;
+  confidence: NarrativeConfidence;
+};
+
+export type NarrativeDimensionRecord = {
+  dimension: NarrativeDimensionKey;
+  narrative: string;
+  confidence: NarrativeConfidence;
+  confidenceReason: string;
+  references: NarrativeReference[];
+  dataLayerGap: string;
+  openClarifications: string[];
+};
+
+export type NarrativeContributor = {
+  userId: string | null;
+  displayName: string;
+  dimension: NarrativeDimensionKey;
+  answeredAt: string;
+};
+
+export type ClientNarrative = {
+  id: string;
+  clientId: string;
+  clientName: string;
+  rev: number;
+  generator: string;
+  generatedAt: string;
+  modelName: string;
+  dimensions: NarrativeDimensionRecord[];
+  overallConfidence: number;
+  openClarificationsCount: number;
+  dataLayerGaps: string[];
+  contributors: NarrativeContributor[];
+  updatedAt: string;
+};
+
+export type NarrativeClarificationStatus = 'pending' | 'applied' | 'discarded';
+
+export type NarrativeClarification = {
+  id: string;
+  clientId: string;
+  basedOnRev: number;
+  dimension: NarrativeDimensionKey;
+  question: string;
+  askedBy: string;
+  answer: string;
+  answeredByUserId: string | null;
+  answeredByDisplayName: string;
+  answeredAt: string;
+  resultedInRev: number | null;
+  status: NarrativeClarificationStatus;
+};
+
+export type NarrativeClarificationsResponse = {
+  clarifications: NarrativeClarification[];
+};
+
+export type NarrativeClarificationPayload = {
+  dimension: NarrativeDimensionKey;
+  question?: string;
+  answer: string;
+  basedOnRev?: number;
+};
+
+export type NarrativeRegeneratePayload = {
+  trigger?: string;
+  force?: boolean;
+};
+
+export async function getClientNarrative(clientId: string): Promise<ClientNarrative> {
+  return request<ClientNarrative>(`/api/v1/clients/${encodeURIComponent(clientId)}/narrative`);
+}
+
+export async function listClientNarrativeClarifications(clientId: string): Promise<NarrativeClarificationsResponse> {
+  return request<NarrativeClarificationsResponse>(
+    `/api/v1/clients/${encodeURIComponent(clientId)}/narrative/clarifications`,
+  );
+}
+
+export async function submitClientNarrativeClarification(
+  clientId: string,
+  payload: NarrativeClarificationPayload,
+): Promise<NarrativeClarification> {
+  return request<NarrativeClarification>(
+    `/api/v1/clients/${encodeURIComponent(clientId)}/narrative/clarifications`,
+    {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    },
+  );
+}
+
+export async function regenerateClientNarrative(
+  clientId: string,
+  payload: NarrativeRegeneratePayload = {},
+): Promise<ClientNarrative> {
+  return request<ClientNarrative>(
+    `/api/v1/clients/${encodeURIComponent(clientId)}/narrative/regenerate`,
+    {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    },
+  );
+}
+
+// ──────────────────────────────────────────────────────────────────
+// M1 · 字典属性 (glossary_attributes) 审核 API
+// ──────────────────────────────────────────────────────────────────
+export type GlossaryAttributeRecord = {
+  id: string;
+  term_id: string;
+  term: string;
+  attribute_name: string;
+  value_category: string;
+  value_text: string;
+  value_normalized: number | null;
+  value_unit: string;
+  scope: string;
+  as_of_date: string | null;
+  source_type: string;
+  source_evidence: string;
+  source_doc_id: string | null;
+  source_doc_title: string | null;
+  source_doc_path: string | null;
+  confidence: number;
+  verification_status: 'pending' | 'verified' | 'rejected';
+  verified_by: string | null;
+  verified_at: string | null;
+  rejection_note: string;
+  created_at: string;
+  updated_at: string;
+};
+
+export async function listGlossaryAttributes(
+  clientId: string,
+  status?: 'pending' | 'verified' | 'rejected',
+): Promise<{ attributes: GlossaryAttributeRecord[] }> {
+  const qs = status ? `?status=${encodeURIComponent(status)}` : '';
+  return request<{ attributes: GlossaryAttributeRecord[] }>(
+    `/api/v1/clients/${encodeURIComponent(clientId)}/glossary-attributes${qs}`,
+  );
+}
+
+export interface GlossaryAttributeClarifyPayload {
+  verifiedBy?: string;
+  termId?: string;          // 改归属 term
+  attributeName?: string;
+  valueText?: string;
+  valueUnit?: string;
+  scope?: string;
+  asOfDate?: string | null;
+}
+
+export async function verifyGlossaryAttribute(
+  clientId: string,
+  attrId: string,
+  payload: GlossaryAttributeClarifyPayload = {},
+): Promise<{ ok: boolean; id: string; status: string }> {
+  const body: Record<string, unknown> = { verifiedBy: payload.verifiedBy ?? 'user' };
+  for (const key of ['termId', 'attributeName', 'valueText', 'valueUnit', 'scope', 'asOfDate'] as const) {
+    if (payload[key] !== undefined) body[key] = payload[key];
+  }
+  return request(
+    `/api/v1/clients/${encodeURIComponent(clientId)}/glossary-attributes/${encodeURIComponent(attrId)}/verify`,
+    {
+      method: 'POST',
+      body: JSON.stringify(body),
+    },
+  );
+}
+
+// 统一待办 — 跨 tasks/action_items/commitments union
+export interface UnifiedTodo {
+  id: string;
+  source: 'task' | 'meeting_action' | 'commitment';
+  title: string;
+  owner: string;
+  due_date: string;
+  status: string;
+  direction: string;
+  related_to: string;
+  raw_id: string;
+  severity: 'high' | 'medium' | 'low';
+}
+
+export interface UnifiedTodosResponse {
+  todos: UnifiedTodo[];
+  total: number;
+  by_source: { task: number; meeting_action: number; commitment: number };
+  by_severity: { high: number; medium: number; low: number };
+}
+
+// ──────────────────────────────────────────────────────────────────
+// 字典漂移告警 — 字典 verified 值 vs 新文件抽出事实冲突
+// ──────────────────────────────────────────────────────────────────
+export type GlossaryDriftAlertRecord = {
+  id: string;
+  client_id: string;
+  glossary_attribute_id: string;
+  new_fact_id: string;
+  verified_value_text: string;
+  new_value_text: string;
+  severity: 'low' | 'medium' | 'high';
+  review_status: 'pending' | 'resolved' | 'dismissed';
+  review_note: string;
+  detected_at: string;
+  reviewed_at: string | null;
+  reviewed_by: string | null;
+  // JOIN fields
+  term: string;
+  attribute_name: string;
+  scope: string | null;
+  as_of_date: string | null;
+};
+
+export async function listGlossaryDriftAlerts(
+  clientId: string,
+  status: 'pending' | 'resolved' | 'dismissed' = 'pending',
+): Promise<{ alerts: GlossaryDriftAlertRecord[] }> {
+  return request<{ alerts: GlossaryDriftAlertRecord[] }>(
+    `/api/v1/clients/${encodeURIComponent(clientId)}/glossary-drift-alerts?status=${encodeURIComponent(status)}`,
+  );
+}
+
+export async function resolveGlossaryDriftAlert(
+  clientId: string,
+  alertId: string,
+  action: 'update_glossary' | 'dismiss',
+  note?: string,
+): Promise<{ ok: boolean; id: string; action: string }> {
+  return request<{ ok: boolean; id: string; action: string }>(
+    `/api/v1/clients/${encodeURIComponent(clientId)}/glossary-drift-alerts/${encodeURIComponent(alertId)}/resolve`,
+    {
+      method: 'POST',
+      body: JSON.stringify({ action, note: note || '' }),
+    },
+  );
+}
+
+export async function getUnifiedTodos(clientId: string): Promise<UnifiedTodosResponse> {
+  return request<UnifiedTodosResponse>(
+    `/api/v1/clients/${encodeURIComponent(clientId)}/todos/unified`,
+  );
+}
+
+export async function promoteTodoToTask(
+  clientId: string,
+  todoId: string,
+): Promise<{ ok: boolean; newTaskId: string; source: string }> {
+  return request(
+    `/api/v1/clients/${encodeURIComponent(clientId)}/todos/${encodeURIComponent(todoId)}/promote-to-task`,
+    { method: 'POST', body: JSON.stringify({}) },
+  );
+}
+
+export async function dismissUnifiedTodo(
+  clientId: string,
+  todoId: string,
+  action: 'complete' | 'cancel' = 'cancel',
+): Promise<{ ok: boolean; id: string; source: string; action: string }> {
+  return request(
+    `/api/v1/clients/${encodeURIComponent(clientId)}/todos/${encodeURIComponent(todoId)}/dismiss`,
+    { method: 'POST', body: JSON.stringify({ action }) },
+  );
+}
+
+export async function rejectGlossaryAttribute(
+  clientId: string,
+  attrId: string,
+  note = '',
+): Promise<{ ok: boolean; id: string; status: string }> {
+  return request(
+    `/api/v1/clients/${encodeURIComponent(clientId)}/glossary-attributes/${encodeURIComponent(attrId)}/reject`,
+    {
+      method: 'POST',
+      body: JSON.stringify({ note }),
+    },
+  );
+}
+
 // 本周概览顶部「客户脉搏」区块 - 所有客户的摘要 (用于横向一览谁本周有动态)
 export type ClientPulseSummary = {
   clientId: string;
@@ -2790,7 +3138,13 @@ export async function getClientChatThread(clientId: string, threadId: string) {
 }
 
 export async function deleteClientChatMessagePair(clientId: string, messageId: string) {
-  return request<{ clientId: string; threadId: string; deletedIds: string[]; threadDeleted: boolean }>(
+  return request<{
+    clientId: string;
+    threadId: string;
+    deletedIds: string[];
+    threadDeleted: boolean;
+    alreadyDeleted?: boolean;
+  }>(
     `/api/v1/clients/${clientId}/workspace/chat/messages/${messageId}`,
     { method: 'DELETE' },
   );
@@ -2813,11 +3167,20 @@ export async function vectorizeAnswer(clientId: string, messageId: string) {
   });
 }
 
-export async function exportAnswer(clientId: string, messageId: string) {
-  return request<{ clientId: string; documentId: string; title: string; fileName: string; path: string }>(`/api/v1/clients/${clientId}/knowledge/export-answer`, {
-    method: 'POST',
-    body: JSON.stringify({ messageId }),
-  });
+export async function exportAnswer(
+  clientId: string,
+  messageIdOrIds: string | string[],
+) {
+  const body = Array.isArray(messageIdOrIds)
+    ? { messageIds: messageIdOrIds }
+    : { messageId: messageIdOrIds };
+  return request<{ clientId: string; documentId: string; title: string; fileName: string; path: string }>(
+    `/api/v1/clients/${clientId}/knowledge/export-answer`,
+    {
+      method: 'POST',
+      body: JSON.stringify(body),
+    },
+  );
 }
 
 export async function createClientTextDocument(clientId: string, payload: { title?: string | null; content: string }) {
@@ -3514,6 +3877,17 @@ export async function getEventLineReportSnapshot(id: string) {
   return request<EventLineReportSnapshot>(`/api/v1/event-lines/${id}/report-snapshot`);
 }
 
+export async function getEventLineTimelineNarrative(id: string) {
+  return request<EventLineTimelineNarrative | null>(`/api/v1/event-lines/${id}/timeline-narrative`);
+}
+
+export async function regenerateEventLineTimelineNarrative(id: string, trigger: string = 'manual') {
+  return request<EventLineTimelineNarrative>(`/api/v1/event-lines/${id}/timeline-narrative/regenerate`, {
+    method: 'POST',
+    body: JSON.stringify({ trigger }),
+  });
+}
+
 export async function updateEventLine(id: string, payload: Partial<EventLineMutationPayload>) {
   return request<EventLine>(`/api/v1/event-lines/${id}`, {
     method: 'PATCH',
@@ -3544,6 +3918,23 @@ export async function retryEventLineSync(id: string) {
     `/api/v1/event-lines/${id}/retry-sync`,
     { method: 'POST' },
   );
+}
+
+export async function previewEventLineMerge(targetId: string, sourceIds: string[]) {
+  return request<import('../../shared/types').EventLineMergePreview>(
+    `/api/v1/event-lines/${targetId}/merge-preview`,
+    {
+      method: 'POST',
+      body: JSON.stringify({ sourceIds }),
+    },
+  );
+}
+
+export async function mergeEventLines(targetId: string, sourceIds: string[]) {
+  return request<EventLine>(`/api/v1/event-lines/${targetId}/merge`, {
+    method: 'POST',
+    body: JSON.stringify({ sourceIds }),
+  });
 }
 
 export async function getTaskPlanLink(taskId: string) {
@@ -4325,6 +4716,108 @@ export async function askIntelligenceItemQuestion(id: string, payload: TopicCand
 }
 
 // captureTopicRadars 已在 line 3426 定义，从同事 backup append 段里的重复已删除
+
+// ──────────────────────────────────────────────────────────
+// 舆情监控 API（P2-a · 2026-05-17）
+// ──────────────────────────────────────────────────────────
+
+export type SentimentItem = {
+  id: string;
+  title: string;
+  summary: string;
+  source: string;
+  sourceUrl: string;
+  capturedAt: string;
+  sentimentLabel: 'negative' | 'neutral' | 'positive';
+  sentimentReason: string;
+  tags: string[];
+  userStatus: string;
+};
+
+export type SentimentProfile = {
+  withinDays: number;
+  totalMentions: number;
+  sentimentScore: number;
+  negativeCount: number;
+  neutralCount: number;
+  positiveCount: number;
+  topNegativeSources: { source: string; count: number }[];
+  topSources: { source: string; count: number }[];
+};
+
+export type SentimentRefreshResult = {
+  targetName: string;
+  fetchedCount: number;
+  insertedCount: number;
+  negativeCount: number;
+  neutralCount: number;
+  positiveCount: number;
+};
+
+export async function refreshSentiment(payload: {
+  clientId?: string;
+  projectModuleId?: string;
+  targetName?: string;
+  businessLine?: string;
+  maxPerQuery?: number;
+}) {
+  return request<SentimentRefreshResult>('/api/v1/intelligence/sentiment/refresh', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function listSentimentItems(params: {
+  clientId?: string;
+  projectModuleId?: string;
+  withinDays?: number;
+  limit?: number;
+}) {
+  const query = new URLSearchParams();
+  if (params.clientId) query.set('clientId', params.clientId);
+  if (params.projectModuleId) query.set('projectModuleId', params.projectModuleId);
+  if (params.withinDays) query.set('withinDays', String(params.withinDays));
+  if (params.limit) query.set('limit', String(params.limit));
+  const suffix = query.toString() ? `?${query.toString()}` : '';
+  return request<{ items: SentimentItem[]; total: number }>(`/api/v1/intelligence/sentiment/items${suffix}`);
+}
+
+export async function getSentimentProfile(params: {
+  clientId?: string;
+  projectModuleId?: string;
+  withinDays?: number;
+}) {
+  const query = new URLSearchParams();
+  if (params.clientId) query.set('clientId', params.clientId);
+  if (params.projectModuleId) query.set('projectModuleId', params.projectModuleId);
+  if (params.withinDays) query.set('withinDays', String(params.withinDays));
+  const suffix = query.toString() ? `?${query.toString()}` : '';
+  return request<SentimentProfile>(`/api/v1/intelligence/sentiment/profile${suffix}`);
+}
+
+export type SentimentFeedbackAction =
+  | 'confirm_negative'
+  | 'mark_misclassified'
+  | 'mark_resolved'
+  | 'restore';
+
+export type SentimentFeedbackResult = {
+  itemId: string;
+  action: SentimentFeedbackAction;
+  userStatus: string;
+  updatedAt: string;
+};
+
+export async function sendSentimentFeedback(payload: {
+  itemId: string;
+  action: SentimentFeedbackAction;
+  notes?: string;
+}) {
+  return request<SentimentFeedbackResult>('/api/v1/intelligence/sentiment/feedback', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+}
 
 // ──────────────────────────────────────────────────────────
 // Phase 3：本地 AI 推理调度 health / queue

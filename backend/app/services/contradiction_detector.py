@@ -110,8 +110,13 @@ def find_contradictions_for_fact(
     client_id: str,
     fact: AtomicFact,
     exclude_fact_id: str | None = None,
+    exclude_v2_document_id: str | None = None,
 ) -> list[dict[str, object]]:
-    """找与给定事实（同 subject+attribute、value 不同）冲突的既有事实。"""
+    """找与给定事实（同 subject+attribute、value 不同）冲突的既有事实。
+
+    P1: exclude_v2_document_id — 同文档内的"冲突"通常是 regex 在同句子不同
+    截断版本，不是真矛盾，自动排除。
+    """
     rows = conn.execute(
         """
         SELECT id, value_text, value_normalized, confidence, source_v2_chunk_id,
@@ -123,6 +128,7 @@ def find_contradictions_for_fact(
           AND attribute = ?
           AND value_normalized != ?
           AND id != ?
+          AND (? = '' OR COALESCE(source_v2_document_id, '') != ?)
         """,
         (
             client_id,
@@ -130,6 +136,8 @@ def find_contradictions_for_fact(
             fact.attribute,
             fact.value_normalized,
             exclude_fact_id or "",
+            exclude_v2_document_id or "",
+            exclude_v2_document_id or "",
         ),
     ).fetchall()
     return [dict(r) for r in rows]
@@ -174,6 +182,7 @@ def detect_and_record_for_fact(
     new_fact_id: str,
     fact: AtomicFact,
     now: str | None = None,
+    source_v2_document_id: str | None = None,
 ) -> list[str]:
     """对一条新插入的事实，检测矛盾并写入 fact_contradictions。
 
@@ -204,6 +213,7 @@ def detect_and_record_for_fact(
         client_id=client_id,
         fact=fact,
         exclude_fact_id=new_fact_id,
+        exclude_v2_document_id=source_v2_document_id,
     )
     created: list[str] = []
     for other in conflicting:
@@ -265,6 +275,7 @@ def persist_chunk_facts(
                 new_fact_id=fact_id,
                 fact=fact,
                 now=timestamp,
+                source_v2_document_id=v2_document_id,  # P1: 同文档自冲突自动排除
             )
             contradictions += len(new_contras)
         except Exception as exc:  # noqa: BLE001

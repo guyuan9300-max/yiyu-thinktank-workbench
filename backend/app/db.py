@@ -1821,15 +1821,7 @@ class Database:
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL
                 );
-                CREATE UNIQUE INDEX IF NOT EXISTS idx_intelligence_items_topic_candidate
-                    ON intelligence_items(topic_candidate_id)
-                    WHERE topic_candidate_id IS NOT NULL;
-                CREATE INDEX IF NOT EXISTS idx_intelligence_items_kind_status
-                    ON intelligence_items(content_kind, user_status, captured_at DESC);
-                CREATE INDEX IF NOT EXISTS idx_intelligence_items_client
-                    ON intelligence_items(client_id, content_kind, captured_at DESC);
-                CREATE INDEX IF NOT EXISTS idx_intelligence_items_project
-                    ON intelligence_items(project_module_id, content_kind, captured_at DESC);
+                -- intelligence_items 索引下移到 _ensure_column 之后, 防止老 db 缺列时崩。
 
                 CREATE TABLE IF NOT EXISTS intelligence_feedback_events (
                     id TEXT PRIMARY KEY,
@@ -2500,11 +2492,41 @@ class Database:
             self._ensure_column("knowledge_documents", "human_folder_category", "TEXT")
             self._ensure_column("knowledge_documents", "reclassified_at", "TEXT")
             self._ensure_column("knowledge_documents", "reclass_reason", "TEXT")
+            # intelligence_items 字段补漏 (老 db 升级路径) — 顺序与 CREATE TABLE 声明一致, 索引引用的列都必须在前。
+            self._ensure_column("intelligence_items", "scope_type", "TEXT")
+            self._ensure_column("intelligence_items", "scope_id", "TEXT")
+            self._ensure_column("intelligence_items", "client_id", "TEXT")
+            self._ensure_column("intelligence_items", "project_module_id", "TEXT")
             self._ensure_column("intelligence_items", "intelligence_type", "TEXT")
             self._ensure_column("intelligence_items", "timeliness_label", "TEXT")
             self._ensure_column("intelligence_items", "relevance_reason", "TEXT NOT NULL DEFAULT ''")
             self._ensure_column("intelligence_items", "suggested_action", "TEXT NOT NULL DEFAULT ''")
             self._ensure_column("intelligence_items", "followup_questions_json", "TEXT NOT NULL DEFAULT '[]'")
+            self._ensure_column("intelligence_items", "source_url", "TEXT")
+            self._ensure_column("intelligence_items", "published_at", "TEXT")
+            self._ensure_column("intelligence_items", "verified_at", "TEXT")
+            self._ensure_column("intelligence_items", "credibility_score", "REAL")
+            self._ensure_column("intelligence_items", "confidence_score", "REAL")
+            self._ensure_column("intelligence_items", "data_center_ingest_event_id", "TEXT")
+            self._ensure_column("intelligence_items", "external_evidence_card_id", "TEXT")
+            self._ensure_column("intelligence_items", "topic_candidate_id", "TEXT")
+            self._ensure_column("intelligence_items", "converted_task_id", "TEXT")
+            self._ensure_column("intelligence_items", "verification_status", "TEXT NOT NULL DEFAULT 'verified'")
+            self._ensure_column("intelligence_items", "verification_reason", "TEXT NOT NULL DEFAULT ''")
+            # 列补齐后再建索引, 老 db 升级才不会崩。
+            self.conn.executescript(
+                """
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_intelligence_items_topic_candidate
+                    ON intelligence_items(topic_candidate_id)
+                    WHERE topic_candidate_id IS NOT NULL;
+                CREATE INDEX IF NOT EXISTS idx_intelligence_items_kind_status
+                    ON intelligence_items(content_kind, user_status, captured_at DESC);
+                CREATE INDEX IF NOT EXISTS idx_intelligence_items_client
+                    ON intelligence_items(client_id, content_kind, captured_at DESC);
+                CREATE INDEX IF NOT EXISTS idx_intelligence_items_project
+                    ON intelligence_items(project_module_id, content_kind, captured_at DESC);
+                """
+            )
             self._ensure_column("intelligence_candidate_items", "page_type", "TEXT NOT NULL DEFAULT ''")
             self._ensure_column("intelligence_candidate_items", "quality_flags_json", "TEXT NOT NULL DEFAULT '[]'")
             self._ensure_column("intelligence_candidate_items", "evidence_json", "TEXT NOT NULL DEFAULT '{}'")
@@ -3547,6 +3569,182 @@ class Database:
             self._ensure_column("approval_records", "decided_by", "TEXT NOT NULL DEFAULT ''")
             self._ensure_column("approval_records", "decided_at", "TEXT")
             self._ensure_column("approval_records", "metadata_json", "TEXT NOT NULL DEFAULT '{}'")
+
+            # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+            # P0 · 项目画像三大缺口表 (关联/风险/承诺) + tasks 挂字典字段
+            # 用户视角: 字典就是项目画像 = 项目档案 = 事实澄清页面
+            # 现在补的是: 节点之间的"边"(关联), 落散的风险信号, 结构化承诺
+            # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+            self.conn.executescript(
+                """
+                CREATE TABLE IF NOT EXISTS glossary_relations (
+                    id TEXT PRIMARY KEY,
+                    client_id TEXT NOT NULL,
+                    subject_term_id TEXT NOT NULL,
+                    predicate TEXT NOT NULL,
+                    object_term_id TEXT,
+                    object_external_type TEXT,
+                    object_external_id TEXT,
+                    source TEXT NOT NULL DEFAULT 'ai_inferred',
+                    confidence REAL NOT NULL DEFAULT 0.0,
+                    status TEXT NOT NULL DEFAULT 'pending',
+                    note TEXT NOT NULL DEFAULT '',
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    FOREIGN KEY(client_id) REFERENCES clients(id) ON DELETE CASCADE
+                );
+                CREATE INDEX IF NOT EXISTS idx_glossary_relations_client_subject
+                    ON glossary_relations(client_id, subject_term_id);
+                CREATE INDEX IF NOT EXISTS idx_glossary_relations_client_predicate
+                    ON glossary_relations(client_id, predicate);
+                CREATE INDEX IF NOT EXISTS idx_glossary_relations_object_external
+                    ON glossary_relations(object_external_type, object_external_id);
+
+                CREATE TABLE IF NOT EXISTS risk_signals (
+                    id TEXT PRIMARY KEY,
+                    client_id TEXT NOT NULL,
+                    signal_kind TEXT NOT NULL,
+                    title TEXT NOT NULL,
+                    description TEXT NOT NULL DEFAULT '',
+                    severity TEXT NOT NULL DEFAULT 'medium',
+                    related_term_ids_json TEXT NOT NULL DEFAULT '[]',
+                    source_type TEXT NOT NULL DEFAULT '',
+                    source_id TEXT NOT NULL DEFAULT '',
+                    captured_at TEXT NOT NULL,
+                    status TEXT NOT NULL DEFAULT 'active',
+                    resolution_note TEXT NOT NULL DEFAULT '',
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    FOREIGN KEY(client_id) REFERENCES clients(id) ON DELETE CASCADE
+                );
+                CREATE INDEX IF NOT EXISTS idx_risk_signals_client_status
+                    ON risk_signals(client_id, status, captured_at DESC);
+                CREATE INDEX IF NOT EXISTS idx_risk_signals_severity
+                    ON risk_signals(severity, status);
+
+                CREATE TABLE IF NOT EXISTS commitments (
+                    id TEXT PRIMARY KEY,
+                    client_id TEXT NOT NULL,
+                    committer TEXT NOT NULL,
+                    recipient TEXT NOT NULL,
+                    commitment_type TEXT NOT NULL DEFAULT 'delivery',
+                    content TEXT NOT NULL,
+                    deadline TEXT,
+                    status TEXT NOT NULL DEFAULT 'pending',
+                    related_term_ids_json TEXT NOT NULL DEFAULT '[]',
+                    source_type TEXT NOT NULL DEFAULT '',
+                    source_id TEXT NOT NULL DEFAULT '',
+                    fulfilled_at TEXT,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    FOREIGN KEY(client_id) REFERENCES clients(id) ON DELETE CASCADE
+                );
+                CREATE INDEX IF NOT EXISTS idx_commitments_client_status
+                    ON commitments(client_id, status, deadline);
+                CREATE INDEX IF NOT EXISTS idx_commitments_committer
+                    ON commitments(client_id, committer, status);
+
+                -- L1: 能力周快照（让"方向感"成为成长中心一等公民）
+                -- 每周日（或懒触发）写入一行，记录当周末该用户每个能力的 currentScore / totalXp。
+                -- 前端拉最近 8 周即可画 mini 折线图，看出每个能力是涨/跌/横盘。
+                CREATE TABLE IF NOT EXISTS growth_ability_weekly_snapshot (
+                    id TEXT PRIMARY KEY,
+                    user_id TEXT NOT NULL,
+                    week_label TEXT NOT NULL,
+                    ability_key TEXT NOT NULL,
+                    current_score INTEGER NOT NULL DEFAULT 0,
+                    total_xp INTEGER NOT NULL DEFAULT 0,
+                    snapshot_at TEXT NOT NULL,
+                    UNIQUE(user_id, week_label, ability_key)
+                );
+                CREATE INDEX IF NOT EXISTS idx_growth_weekly_user_week
+                    ON growth_ability_weekly_snapshot(user_id, week_label DESC, ability_key);
+
+                -- L6: 学习推荐反馈闭环（用户对推荐内容的行为信号）
+                CREATE TABLE IF NOT EXISTS growth_recommendation_feedback (
+                    id TEXT PRIMARY KEY,
+                    user_id TEXT NOT NULL,
+                    source TEXT NOT NULL,                -- handbook / exp_wall / github / exa
+                    source_id TEXT NOT NULL,
+                    action TEXT NOT NULL,                -- clicked / saved / dismissed / completed
+                    matched_ability TEXT NOT NULL DEFAULT '',
+                    note TEXT NOT NULL DEFAULT '',
+                    created_at TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_growth_rec_feedback_user
+                    ON growth_recommendation_feedback(user_id, created_at DESC);
+                CREATE INDEX IF NOT EXISTS idx_growth_rec_feedback_source
+                    ON growth_recommendation_feedback(source, source_id);
+                """
+            )
+            self._ensure_column("tasks", "glossary_term_ids", "TEXT NOT NULL DEFAULT '[]'")
+
+            # event_line_delete_tombstones 表早就有了，但缺一列 merged_to_id —
+            # 合并事件线时记录"源被合并到了哪条目标 event_line"。
+            # 之后云端 pull 拉回 tasks 时，如果发现 task.eventLineId 命中了
+            # 这个 tombstone，会把它重定向到 merged_to_id（而不是写回已删的源 id），
+            # 否则本地 task 的 event_line_id 会被云端反向覆盖、任务数对不上。
+            self._ensure_column("event_line_delete_tombstones", "merged_to_id", "TEXT NOT NULL DEFAULT ''")
+
+            # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+            # P0.5 · 字典属性表 (数值/事实型属性 → cite 锚点, 防幻觉核心)
+            # 跟 glossary_relations 并列, 专装 "term.attribute = value" 这类事实
+            # 经过 verification_status='verified' 的属性才能被 chat cite
+            # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+            self.conn.executescript(
+                """
+                CREATE TABLE IF NOT EXISTS glossary_attributes (
+                    id TEXT PRIMARY KEY,
+                    client_id TEXT NOT NULL,
+                    term_id TEXT NOT NULL,
+                    attribute_name TEXT NOT NULL,
+                    value_category TEXT NOT NULL DEFAULT 'text',
+                    value_text TEXT NOT NULL,
+                    value_normalized REAL,
+                    value_unit TEXT NOT NULL DEFAULT '',
+                    scope TEXT NOT NULL DEFAULT '',
+                    as_of_date TEXT,
+                    source_type TEXT NOT NULL DEFAULT 'ai_inferred',
+                    source_doc_id TEXT,
+                    source_evidence TEXT NOT NULL DEFAULT '',
+                    confidence REAL NOT NULL DEFAULT 0.0,
+                    verification_status TEXT NOT NULL DEFAULT 'pending',
+                    verified_by TEXT,
+                    verified_at TEXT,
+                    rejection_note TEXT NOT NULL DEFAULT '',
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    FOREIGN KEY(client_id) REFERENCES clients(id) ON DELETE CASCADE
+                );
+                CREATE INDEX IF NOT EXISTS idx_glossary_attr_client_term
+                    ON glossary_attributes(client_id, term_id, verification_status);
+                CREATE INDEX IF NOT EXISTS idx_glossary_attr_name
+                    ON glossary_attributes(client_id, attribute_name, verification_status);
+                CREATE INDEX IF NOT EXISTS idx_glossary_attr_verified
+                    ON glossary_attributes(client_id, verification_status, as_of_date DESC);
+
+                CREATE TABLE IF NOT EXISTS glossary_drift_alerts (
+                    id TEXT PRIMARY KEY,
+                    client_id TEXT NOT NULL,
+                    glossary_attribute_id TEXT NOT NULL,
+                    new_fact_id TEXT NOT NULL,
+                    verified_value_text TEXT NOT NULL,
+                    new_value_text TEXT NOT NULL,
+                    severity TEXT NOT NULL DEFAULT 'medium',
+                    review_status TEXT NOT NULL DEFAULT 'pending',
+                    review_note TEXT NOT NULL DEFAULT '',
+                    detected_at TEXT NOT NULL,
+                    reviewed_at TEXT,
+                    reviewed_by TEXT,
+                    FOREIGN KEY(client_id) REFERENCES clients(id) ON DELETE CASCADE,
+                    FOREIGN KEY(glossary_attribute_id) REFERENCES glossary_attributes(id) ON DELETE CASCADE,
+                    FOREIGN KEY(new_fact_id) REFERENCES atomic_facts(id) ON DELETE CASCADE
+                );
+                CREATE INDEX IF NOT EXISTS idx_glossary_drift_client_pending
+                    ON glossary_drift_alerts(client_id, review_status, detected_at DESC);
+                """
+            )
+
             self.conn.execute(
                 """
                 CREATE INDEX IF NOT EXISTS idx_analysis_jobs_status_priority

@@ -1029,18 +1029,33 @@ def _call_visual_markdown_ocr(
     mime_type: str,
     page_number: int | None = None,
     source_kind: str = "视觉资料",
+    mode: str = "strict",
 ) -> str:
     if hasattr(ai_service, "generate_visual_markdown"):
-        return str(
-            ai_service.generate_visual_markdown(
-                title=title,
-                page_number=page_number,
-                image_base64=image_base64,
-                mime_type=mime_type,
-                source_kind=source_kind,
+        # 兼容旧版本（不支持 mode 参数）
+        try:
+            return str(
+                ai_service.generate_visual_markdown(
+                    title=title,
+                    page_number=page_number,
+                    image_base64=image_base64,
+                    mime_type=mime_type,
+                    source_kind=source_kind,
+                    mode=mode,
+                )
+                or ""
             )
-            or ""
-        )
+        except TypeError:
+            return str(
+                ai_service.generate_visual_markdown(
+                    title=title,
+                    page_number=page_number,
+                    image_base64=image_base64,
+                    mime_type=mime_type,
+                    source_kind=source_kind,
+                )
+                or ""
+            )
     if hasattr(ai_service, "generate_pdf_page_markdown"):
         return str(
             ai_service.generate_pdf_page_markdown(
@@ -1062,6 +1077,7 @@ def _read_visual_markdown_with_ai_ocr_result(
     section_prefix: str,
     source_kind: str,
     min_chars: int = 24,
+    ocr_mode: str = "strict",
 ) -> VisualOcrResult:
     if ai_service is None or not (
         hasattr(ai_service, "generate_visual_markdown") or hasattr(ai_service, "generate_pdf_page_markdown")
@@ -1082,6 +1098,7 @@ def _read_visual_markdown_with_ai_ocr_result(
                 image_base64=str(item.get("imageBase64") or ""),
                 mime_type=str(item.get("mimeType") or "image/png"),
                 source_kind=source_kind,
+                mode=ocr_mode,
             )
         except Exception:
             markdown = ""
@@ -1124,6 +1141,154 @@ def _read_visual_markdown_with_ai_ocr(
     return result.text, result.sections
 
 
+# R13.P2/P3 定向补救：对质量评估器标记 needs_retry 的页单独重 OCR
+# 每轮配置：(zoom, ocr_mode)
+# 轮 1: 2.0 strict（常规高 DPI 重试）
+# 轮 2: 2.4 exhaustive（穷尽印章/手写）
+# 轮 3: 3.0 exhaustive（极限高 DPI，最后挽救）
+_OCR_RETRY_ROUNDS = [
+    (2.0, "strict"),
+    (2.4, "exhaustive"),
+    (3.0, "exhaustive"),
+]
+
+
+def _retry_low_quality_pages(
+    path: Path,
+    sections: list[dict[str, str]],
+    *,
+    title: str,
+    ai_service: Any | None,
+    document_kind: str = "employee_contract",
+    max_rounds: int = 3,
+    progress_callback: Callable[[dict[str, object]], None] | None = None,
+) -> tuple[list[dict[str, str]], dict[str, object]]:
+    """对质量评估器标记 needs_retry 的页单独重渲染重 OCR，原地替换 sections。
+
+    返回 (更新后的 sections, 重试统计 dict)。最多跑 max_rounds 轮，每轮 zoom 递增。
+    """
+    from app.services.ocr_quality import assess_document_quality
+
+    total_pages = _pdf_page_count(path) or 0
+    retry_stats: dict[str, object] = {
+        "rounds": 0,
+        "pages_retried": [],
+        "final_score": 0.0,
+        "remaining_suspicious": [],
+    }
+
+    if not ai_service or total_pages == 0:
+        return sections, retry_stats
+
+    def _build_combined(secs: list[dict[str, str]]) -> str:
+        return normalize_text(
+            "\n\n".join(f"## {s['title']}\n\n{s['text']}" for s in secs if s.get("text"))
+        )
+
+    def _page_num_of(s: dict[str, str]) -> int:
+        m = re.match(r"第\s*(\d+)\s*页", str(s.get("title") or ""))
+        return int(m.group(1)) if m else 999
+
+    pages_retried_total: set[int] = set()
+
+    for round_idx in range(max_rounds):
+        combined = _build_combined(sections)
+        report = assess_document_quality(
+            document_id="_inflight",
+            markdown_content=combined,
+            total_pdf_pages=total_pages,
+            document_kind=document_kind,
+        )
+        retry_targets = [p.page_number for p in report.pages if p.needs_retry]
+
+        # 「PDF 有但 markdown 完全没解析到」的页 — 必须先合并再判断
+        parsed_nums = {_page_num_of(s) for s in sections}
+        for n in range(1, total_pages + 1):
+            if n not in parsed_nums and n not in retry_targets:
+                retry_targets.append(n)
+        retry_targets = sorted(set(retry_targets))
+
+        if not retry_targets:
+            retry_stats["final_score"] = float(report.document_score)
+            break
+
+        # R13.P2/P3: 按轮次选 zoom 和 ocr_mode
+        if round_idx < len(_OCR_RETRY_ROUNDS):
+            higher_zoom, ocr_mode = _OCR_RETRY_ROUNDS[round_idx]
+        else:
+            higher_zoom, ocr_mode = _OCR_RETRY_ROUNDS[-1]
+
+        for page_num in retry_targets:
+            try:
+                page_images = _render_pdf_pages_for_ai_ocr(
+                    path, start_page=page_num, max_pages=1, zoom=higher_zoom
+                )
+            except Exception as exc:
+                logger.warning("[ocr-retry] render page %d failed: %s", page_num, exc)
+                continue
+            if not page_images:
+                logger.warning("[ocr-retry] render page %d returned no images", page_num)
+                continue
+            try:
+                result = _read_visual_markdown_with_ai_ocr_result(
+                    page_images,
+                    title=title,
+                    ai_service=ai_service,
+                    section_prefix="第",
+                    source_kind=f"PDF 页面 · 第{round_idx+1}轮 zoom={higher_zoom} mode={ocr_mode}",
+                    min_chars=24,
+                    ocr_mode=ocr_mode,
+                )
+            except Exception as exc:
+                logger.warning("[ocr-retry] llm page %d failed: %s", page_num, exc)
+                continue
+            pages_retried_total.add(page_num)
+            text_len = len(result.text) if result.text else 0
+            logger.warning(
+                "[ocr-retry] round=%d page=%d zoom=%.1f mode=%s text_len=%d sections=%d",
+                round_idx + 1, page_num, higher_zoom, ocr_mode, text_len, len(result.sections),
+            )
+            if not result.sections:
+                continue
+            new_section = result.sections[0]
+            # 替换或插入
+            replaced = False
+            for i, s in enumerate(sections):
+                if _page_num_of(s) == page_num:
+                    sections[i] = new_section
+                    replaced = True
+                    break
+            if not replaced:
+                sections.append(new_section)
+            if progress_callback is not None:
+                try:
+                    progress_callback({
+                        "stage": "quality_retry",
+                        "round": round_idx + 1,
+                        "page": page_num,
+                        "zoom": higher_zoom,
+                    })
+                except Exception:
+                    pass
+
+        # 排序保持页号
+        sections.sort(key=_page_num_of)
+        retry_stats["rounds"] = round_idx + 1
+
+    # 最终评估
+    final_combined = _build_combined(sections)
+    final_report = assess_document_quality(
+        document_id="_final",
+        markdown_content=final_combined,
+        total_pdf_pages=total_pages,
+        document_kind=document_kind,
+    )
+    retry_stats["pages_retried"] = sorted(pages_retried_total)
+    retry_stats["final_score"] = float(final_report.document_score)
+    retry_stats["remaining_suspicious"] = list(final_report.suspicious_page_numbers)
+    return sections, retry_stats
+
+
 def _read_pdf_markdown_with_ai_ocr(
     path: Path,
     *,
@@ -1134,6 +1299,8 @@ def _read_pdf_markdown_with_ai_ocr(
     batch_size: int = OCR_DEFAULT_BATCH_SIZE,
     continue_to_end: bool = False,
     ocr_progress_callback: Callable[[dict[str, object]], None] | None = None,
+    enable_quality_retry: bool = True,  # R13.P2 新增：质量评估触发的定向补救
+    quality_retry_kind: str = "unknown",
 ) -> tuple[str, list[dict[str, str]], ExtractionMetadata]:
     total_pages = _pdf_page_count(path)
     normalized_max_pages = max(1, int(max_pages or OCR_DEFAULT_MAX_PAGES))
@@ -1215,14 +1382,81 @@ def _read_pdf_markdown_with_ai_ocr(
         metadata.failure_type = "empty_pdf"
         return "", [], metadata
 
+    # R13.P2 定向补救：先用质量评估器判断是否需要单页重 OCR
+    quality_retry_info: dict[str, object] = {}
+    if enable_quality_retry and ai_service is not None and total_pages and total_pages > 0:
+        try:
+            from app.services.ocr_quality import assess_document_quality
+            initial_report = assess_document_quality(
+                document_id="_initial",
+                markdown_content=combined,
+                total_pdf_pages=total_pages,
+                document_kind=quality_retry_kind,
+            )
+            logger.warning(
+                "[ocr-retry] initial assessment: score=%.2f suspicious=%s parsed=%d/%d chars=%d",
+                initial_report.document_score,
+                list(initial_report.suspicious_page_numbers),
+                initial_report.parsed_pages,
+                initial_report.total_pdf_pages,
+                initial_report.total_chars,
+            )
+            if initial_report.document_score < 0.85 or initial_report.suspicious_page_numbers:
+                logger.warning(
+                    "[ocr-retry] doc score %.2f, suspicious=%s, starting targeted retry",
+                    initial_report.document_score,
+                    list(initial_report.suspicious_page_numbers),
+                )
+                sections, quality_retry_info = _retry_low_quality_pages(
+                    path,
+                    sections,
+                    title=title or path.name,
+                    ai_service=ai_service,
+                    document_kind=quality_retry_kind,
+                    max_rounds=3,  # R13.P3: 增加到 3 轮（zoom 2.0/2.4/3.0）
+                    progress_callback=ocr_progress_callback,
+                )
+                # 重新拼接 combined（sections 已被 retry 改过）
+                combined = normalize_text(
+                    "\n\n".join(f"## {s['title']}\n\n{s['text']}" for s in sections if s.get("text"))
+                )
+                # 重新统计页数
+                page_nums_after = set()
+                for s in sections:
+                    m = re.match(r"第\s*(\d+)\s*页", str(s.get("title") or ""))
+                    if m:
+                        page_nums_after.add(int(m.group(1)))
+                succeeded_pages = len(page_nums_after)
+                metadata.succeeded_pages = succeeded_pages
+                metadata.failed_pages = max(0, total_pages - succeeded_pages)
+                logger.warning(
+                    "[ocr-retry] final score=%.2f, pages_retried=%s, remaining_suspicious=%s",
+                    quality_retry_info.get("final_score", 0.0),
+                    quality_retry_info.get("pages_retried"),
+                    quality_retry_info.get("remaining_suspicious"),
+                )
+        except Exception as exc:  # noqa: BLE001 — 补救失败不阻断原流程
+            logger.warning("[ocr-retry] failed: %s", exc)
+
     truncated_by_limit = bool(total_pages and processed_end_page < total_pages)
-    has_failed_pages = failed_pages > 0
-    metadata.partial = truncated_by_limit or has_failed_pages
+    has_failed_pages = metadata.failed_pages and metadata.failed_pages > 0
+    metadata.partial = bool(truncated_by_limit or has_failed_pages)
     metadata.parse_status = "partial_ready" if metadata.partial else "ready"
     metadata.failure_type = None if metadata.parse_status == "ready" else "ocr_required"
+
+    # R13.P2 把 retry 后仍可疑的页明确标到 parse_error 中
+    remaining_suspicious = quality_retry_info.get("remaining_suspicious") or []
     if metadata.partial:
         tail = f"，PDF 共 {total_pages} 页" if total_pages else ""
-        metadata.parse_error = f"OCR 部分完成：成功 {succeeded_pages}/{attempted_pages} 页{tail}，当前已处理到第 {processed_end_page} 页。"
+        base_msg = f"OCR 部分完成：成功 {metadata.succeeded_pages}/{total_pages or attempted_pages} 页{tail}"
+        if remaining_suspicious:
+            base_msg += f"，可疑页：第{','.join(str(n) for n in remaining_suspicious)}页"
+        metadata.parse_error = base_msg
+    elif remaining_suspicious:
+        metadata.parse_error = (
+            f"已完成全部 {total_pages} 页 OCR，但第 "
+            f"{','.join(str(n) for n in remaining_suspicious)} 页字符密度异常，建议人工核对"
+        )
     else:
         metadata.parse_error = None
     return combined, sections, metadata
@@ -2336,6 +2570,115 @@ def ingest_document_knowledge(
             logger.info("[fanout] document=%s 标记 client=%s 画像需要复审", v2_document_id, client_id)
     except Exception:
         logger.exception("fanout_document_to_client_profile 失败 (doc=%s)", v2_document_id)
+
+    # Stage B 扇出 #9 (P0.5)：新资料 → glossary_attributes 候选 (status=pending, 等人审)
+    # 字典里没 term 就跳过 (extractor 会返回 ok=False reason='字典为空')
+    # 链路：(若字典稀疏) Stage 1 自动抽 terms 落库 → Stage 3 抽 attributes 落库 pending
+    # AI 调用走主线（不长，但若失败 try/except 吞掉不阻塞）
+    if ai_service is not None and client_id:
+        # P-A.1: 字典稀疏 + atomic_facts 已积累 → 后台自动跑 Stage 1 抽 terms 入库
+        # 避免每次 ingest 都重跑：客户已有 ≥10 term 或 atomic_facts < 阈值时跳过
+        try:
+            glossary_count = int(db.scalar(
+                "SELECT COUNT(*) AS n FROM client_glossary WHERE client_id = ?",
+                (client_id,),
+            ) or 0)
+            atomic_count = int(db.scalar(
+                "SELECT COUNT(*) AS n FROM atomic_facts WHERE client_id = ? AND status = 'active'",
+                (client_id,),
+            ) or 0)
+            if glossary_count < 10 and atomic_count >= 10:
+                # 异步线程跑，不阻塞 ingest 返回
+                import threading
+                def _bg_glossary_generation() -> None:
+                    try:
+                        from app.services.glossary_candidate_generator import generate_glossary_candidates
+                        gen_result = generate_glossary_candidates(
+                            db, ai_service, client_id, persist=True,
+                        )
+                        logger.info(
+                            "[fanout] auto Stage1 client=%s status=%s persisted=%d/%d",
+                            client_id,
+                            gen_result.get("status"),
+                            gen_result.get("persisted", 0),
+                            gen_result.get("termCount", 0),
+                        )
+                        # Stage 1 完成后立刻触发 Stage 3 抽属性
+                        try:
+                            from app.services.glossary_attribute_extractor import extract_candidates as _attr_extract
+                            _attr_extract(db, ai_service, client_id)
+                        except Exception:
+                            logger.exception("[fanout] auto Stage3 after Stage1 failed")
+                    except Exception:
+                        logger.exception("[fanout] auto glossary Stage1 failed (client=%s)", client_id)
+                threading.Thread(
+                    target=_bg_glossary_generation,
+                    daemon=True,
+                    name=f"glossary-stage1-{client_id}",
+                ).start()
+        except Exception:
+            logger.exception("[fanout] auto glossary stage1 check failed (doc=%s)", v2_document_id)
+
+        # Stage 3: 字典属性抽取（字典已有 term 时立刻跑；空时 extractor 会 skip）
+        try:
+            from app.services.glossary_attribute_extractor import extract_candidates
+            attr_result = extract_candidates(db, ai_service, client_id)
+            if attr_result.get("ok"):
+                logger.info(
+                    "[fanout] document=%s 扫出 %d 条 glossary_attribute 候选 (跳过 %d 条)",
+                    v2_document_id, attr_result.get("inserted", 0), attr_result.get("skipped", 0),
+                )
+            else:
+                logger.debug(
+                    "[fanout] glossary_attribute 抽取跳过: %s", attr_result.get("reason", "")
+                )
+        except Exception:
+            logger.exception("fanout glossary_attribute_extractor 失败 (doc=%s)", v2_document_id)
+
+        # Stage B 扇出 #9.5: portrait build 自动接通 (relations / risk_signals / commitments)
+        # 触发条件: atomic_facts ≥ 50 + commitments 表为空 (避免重复跑)
+        # 异步线程跑, 不阻塞 ingest 主流程
+        try:
+            atomic_count_p = int(db.scalar(
+                "SELECT COUNT(*) AS n FROM atomic_facts WHERE client_id = ? AND status = 'active'",
+                (client_id,),
+            ) or 0)
+            commit_count = int(db.scalar(
+                "SELECT COUNT(*) AS n FROM commitments WHERE client_id = ?",
+                (client_id,),
+            ) or 0)
+            if atomic_count_p >= 50 and commit_count == 0:
+                import threading
+
+                def _bg_portrait_build() -> None:
+                    try:
+                        from app.services.project_portrait_builder import (
+                            backfill_task_glossary_links, build_portrait,
+                        )
+                        backfill_task_glossary_links(db, client_id)
+                        portrait_result = build_portrait(db, ai_service, client_id)
+                        logger.info(
+                            "[fanout#9.5] auto portrait build client=%s status=%s relations=%d risks=%d commits=%d",
+                            client_id,
+                            portrait_result.get("status"),
+                            portrait_result.get("relations", 0),
+                            portrait_result.get("risk_signals", 0),
+                            portrait_result.get("commitments", 0),
+                        )
+                    except Exception:
+                        logger.exception("[fanout#9.5] auto portrait build failed (client=%s)", client_id)
+
+                threading.Thread(
+                    target=_bg_portrait_build,
+                    daemon=True,
+                    name=f"portrait-build-{client_id}",
+                ).start()
+                logger.info(
+                    "[fanout#9.5] triggered async portrait build (client=%s, atomic=%d, commits=%d)",
+                    client_id, atomic_count_p, commit_count,
+                )
+        except Exception:
+            logger.exception("[fanout#9.5] portrait build trigger check failed")
 
     return {
         "knowledge_document_id": v2_document_id,
@@ -3501,6 +3844,13 @@ def compute_knowledge_status(db: Database, client_id: str, data_dir: Path | None
     chunk_count = int(db.scalar("SELECT COUNT(1) AS count FROM v2_chunks WHERE v2_document_id IN (SELECT id FROM v2_documents WHERE client_id = ? AND material_layer IN ('evidence', 'external_media_transcript'))", (client_id,)) or 0)
     failed_count = int(db.scalar("SELECT COUNT(1) AS count FROM v2_documents WHERE client_id = ? AND parse_status NOT IN ('ready', 'partial_ready')", (client_id,)) or 0)
     review_count = int(db.scalar("SELECT COUNT(1) AS count FROM v2_documents WHERE client_id = ? AND classification_confidence < 0.62", (client_id,)) or 0)
+    # R13: OCR 完整识别率（基于 parse_status 加权：ready=1.0 / partial=0.7 / failed=0.0）
+    ready_count = int(db.scalar("SELECT COUNT(1) AS count FROM v2_documents WHERE client_id = ? AND parse_status = 'ready'", (client_id,)) or 0)
+    partial_ready_count = int(db.scalar("SELECT COUNT(1) AS count FROM v2_documents WHERE client_id = ? AND parse_status = 'partial_ready'", (client_id,)) or 0)
+    _ocr_total = ready_count + partial_ready_count + failed_count
+    ocr_ready_rate = round(
+        (ready_count * 1.0 + partial_ready_count * 0.7 + failed_count * 0.0) / _ocr_total * 100, 1
+    ) if _ocr_total > 0 else 100.0
     dna_background_docs = int(db.scalar("SELECT COUNT(1) AS count FROM client_dna_documents WHERE client_id = ?", (client_id,)) or 0)
     memory_docs = int(db.scalar("SELECT COUNT(1) AS count FROM knowledge_surrogates WHERE client_id = ? AND source_type = 'memory_answer'", (client_id,)) or 0)
     pending_jobs = int(
@@ -3553,6 +3903,7 @@ def compute_knowledge_status(db: Database, client_id: str, data_dir: Path | None
         "totalSections": section_count,
         "totalChunks": chunk_count,
         "parseFailedDocuments": failed_count,
+        "ocrReadyRate": ocr_ready_rate,
         "vectorizedDocuments": 0,
         "dedupedDocuments": 0,
         "reviewPendingDocuments": review_count,

@@ -36,7 +36,7 @@ TopicTaskOwnerMode = Literal["self", "empty"]
 TopicCandidateStatus = Literal["candidate", "tracking", "promoted", "archived"]
 TopicCandidateInsightStatus = Literal["pending", "ready", "failed"]
 # 客户项目情报流（同事新版资讯情报站 Literal 别名）— 2026-05-13 补回
-IntelligenceContentKind = Literal["profile_completion", "timely_intelligence"]
+IntelligenceContentKind = Literal["profile_completion", "timely_intelligence", "public_opinion"]
 IntelligenceWorkObjectType = Literal["client", "project_module"]
 IntelligenceFocusScopeType = Literal["global", "client", "project_module"]
 IntelligenceItemUserStatus = Literal["active", "dismissed", "following"]
@@ -979,6 +979,7 @@ class DocumentRecord(BaseModel):
 class KnowledgeStatusRecord(BaseModel):
     totalDocuments: int
     totalChunks: int
+    ocrReadyRate: float | None = None  # R13: OCR 完整识别率（加权 % · ready=100/partial=70/failed=0）
     vectorizedDocuments: int
     dedupedDocuments: int
     reviewPendingDocuments: int
@@ -2611,7 +2612,7 @@ class EventLineRecord(BaseModel):
 class EventLineActivityRecord(BaseModel):
     id: str
     eventLineId: str
-    sourceType: Literal["task_activity", "meeting", "support_request", "review", "attachment", "manual_note"]
+    sourceType: Literal["task_activity", "meeting", "support_request", "review", "attachment", "manual_note", "merge"]
     sourceId: str
     happenedAt: str
     actorId: str | None = None
@@ -2693,6 +2694,23 @@ class EventLineUpdatePayload(BaseModel):
     primaryDepartmentId: str | None = None
     participantIds: list[str] | None = None
     syncLinkedTaskClientIds: bool | None = None
+
+
+class EventLineMergePayload(BaseModel):
+    sourceIds: list[str] = Field(min_length=1)
+
+
+class EventLineMergePreviewItemRecord(BaseModel):
+    table: str
+    rows: int
+
+
+class EventLineMergePreviewRecord(BaseModel):
+    targetId: str
+    targetName: str
+    sources: list[dict]  # [{id, name, status}] for UI listing
+    impact: list[EventLineMergePreviewItemRecord]
+    totalRows: int
 
 
 class EventLineClarificationDraftPayload(BaseModel):
@@ -5208,6 +5226,158 @@ class ClientsPulseSummaryResponse(BaseModel):
     generatedAt: str = ""
 
 
+# --- 软件模块 DNA (Phase 1.5 跨 session 长期记忆) ---
+
+class ModuleDnaEntryRecord(BaseModel):
+    """单条 DNA entry. 多条共存不覆盖. isUserQuote=True 表示用户原话引用."""
+    id: str
+    moduleId: str
+    category: str
+    content: str
+    isUserQuote: bool = False
+    sourceThread: str = ""
+    sourceSession: str = ""
+    confidence: float = 0.7
+    tags: list[str] = Field(default_factory=list)
+    supersededBy: str | None = None
+    createdAt: str
+
+
+class ModuleDnaRecord(BaseModel):
+    """模块定义 (壳) + 该模块下的所有 entries."""
+    id: str
+    level: int
+    parentId: str | None = None
+    displayName: str
+    summary: str = ""
+    entries: list[ModuleDnaEntryRecord] = Field(default_factory=list)
+    createdAt: str
+    updatedAt: str
+
+
+class ModuleDnaListResponse(BaseModel):
+    modules: list[ModuleDnaRecord] = Field(default_factory=list)
+    generatedAt: str = ""
+
+
+class ModuleDnaCreateModulePayload(BaseModel):
+    id: str
+    level: int
+    displayName: str
+    summary: str = ""
+    parentId: str | None = None
+
+
+class ModuleDnaUpdateModulePayload(BaseModel):
+    displayName: str | None = None
+    summary: str | None = None
+
+
+class ModuleDnaAppendEntryPayload(BaseModel):
+    category: str
+    content: str
+    isUserQuote: bool = False
+    sourceThread: str = ""
+    sourceSession: str = ""
+    confidence: float = 0.7
+    tags: list[str] = Field(default_factory=list)
+
+
+# --- 战略陪伴 · 事实澄清面板 (Phase 1.5 升级 ContradictionsTab) ---
+
+class ClarificationProfileRecord(BaseModel):
+    name: str = ""
+    alias: str = ""
+    domain: str = ""
+    type: str = ""
+    intro: str = ""
+    stage: str = ""
+    color: str = "#5B7BFE"
+    industry: str = ""
+    scale: str = ""
+    influence: str = ""
+    currentNeeds: str = ""
+    painPoints: str = ""
+    strategicValueToYiyu: str = ""
+    decisionChain: str = ""
+    cooperationType: str = ""
+    relationshipHealth: str = ""
+    milestones: str = ""
+    cooperationStartedAt: str = ""
+
+
+class ClarificationEventLineRecord(BaseModel):
+    id: str
+    name: str
+    kind: str = ""
+    status: str = ""
+    stage: str = ""
+    summary: str = ""
+    intent: str = ""
+    nextStep: str = ""
+    currentBlocker: str = ""
+    recentDecision: str = ""
+    businessCategory: str = ""
+    ownerId: str = ""
+    ownerName: str = ""
+    evidenceCount: int = 0
+    createdAt: str = ""
+    updatedAt: str = ""
+    closedAt: str = ""
+    isDirtyName: bool = False
+
+
+class ClarificationTimelineRecord(BaseModel):
+    id: str
+    eventLineId: str = ""
+    eventLineName: str = ""
+    happenedAt: str = ""
+    sourceType: str = ""
+    actorName: str = ""
+    title: str = ""
+    summary: str = ""
+    isKey: bool = False
+
+
+class ClarificationPersonRecord(BaseModel):
+    name: str
+    mentionCount: int = 0
+    sources: list[str] = Field(default_factory=list)
+
+
+class ClarificationCommitmentRecord(BaseModel):
+    id: str
+    title: str = ""
+    ownerName: str = ""
+    dueDate: str = ""
+    confidence: float = 0.0
+    publishStatus: str = ""
+    meetingId: str = ""
+    meetingTitle: str = ""
+    meetingScheduledAt: str = ""
+    createdAt: str = ""
+
+
+class ClarificationNeedRecord(BaseModel):
+    eventLineId: str
+    eventLineName: str = ""
+    missingFields: list[str] = Field(default_factory=list)
+    predictionReadiness: float = 0.0
+    confidence: float = 0.0
+    updatedAt: str = ""
+
+
+class ClarificationContextResponse(BaseModel):
+    clientId: str
+    profile: ClarificationProfileRecord
+    eventLines: list[ClarificationEventLineRecord] = Field(default_factory=list)
+    timeline: list[ClarificationTimelineRecord] = Field(default_factory=list)
+    peopleCandidates: list[ClarificationPersonRecord] = Field(default_factory=list)
+    commitments: list[ClarificationCommitmentRecord] = Field(default_factory=list)
+    clarificationNeeds: list[ClarificationNeedRecord] = Field(default_factory=list)
+    generatedAt: str = ""
+
+
 class DigitalAssetUnitRecord(BaseModel):
     key: str
     label: str
@@ -6186,6 +6356,200 @@ class GrowthWorkbenchSnapshotRecord(BaseModel):
     updatedAt: str
 
 
+class GrowthSocialFeedbackRecord(BaseModel):
+    """H4：让用户看见"努力被看见"的聚合反馈。"""
+
+    handbookReuseCount: int = 0
+    handbookEntriesReused: int = 0
+    expWallLikeCount: int = 0
+    expWallSaveCount: int = 0
+    expWallQuoteCount: int = 0
+    periodLabel: str = "近 30 天"
+
+
+class GrowthAbilityTrendPointRecord(BaseModel):
+    """L1：能力周快照单点（用于画 mini 折线）。"""
+
+    weekLabel: str
+    score: int
+    totalXp: int
+
+
+class GrowthAbilityTrendRecord(BaseModel):
+    """L1：单个能力的多周趋势。"""
+
+    abilityKey: str
+    label: str
+    points: list[GrowthAbilityTrendPointRecord] = Field(default_factory=list)
+    scoreDelta: int = 0
+    direction: str = "flat"  # up / down / flat
+
+
+class GrowthDailyActivityRecord(BaseModel):
+    """L2：单日工作产出强度。"""
+
+    date: str  # YYYY-MM-DD
+    count: int
+    level: int = 0  # 0-4 染色等级（react-activity-calendar 期望）
+
+
+class GrowthDailyActivityResponse(BaseModel):
+    """L2：最近 N 天的日历活动 + 总览统计。"""
+
+    days: list[GrowthDailyActivityRecord] = Field(default_factory=list)
+    totalDays: int = 0
+    activeDays: int = 0
+    maxStreak: int = 0
+
+
+class GrowthCommitmentTrendPointRecord(BaseModel):
+    """M2 履约率单周点。"""
+
+    weekLabel: str
+    totalCount: int = 0
+    fulfilledCount: int = 0
+    rate: float = 0.0  # 0-1
+
+
+class GrowthCommitmentItemRecord(BaseModel):
+    """M2 一条待办承诺。"""
+
+    id: str
+    content: str
+    recipient: str
+    deadline: str | None = None
+    status: str
+    daysOverdue: int = 0  # 负数=离截止还有几天，正数=已超期
+
+
+class GrowthCommitmentCumulativePointRecord(BaseModel):
+    """M2 环比双线单点（本月 vs 上月相同位置的累计件数）。"""
+
+    weekIndex: int  # 0=月初, 3=月末
+    weekLabel: str  # 给 x 轴显示
+    currentCumulative: int = 0
+    previousCumulative: int = 0
+
+
+class GrowthCommitmentSummaryRecord(BaseModel):
+    """M2 承诺履约总览（正向 streak + 环比对比）。"""
+
+    # 旧字段保留 API 兼容（前端不再渲染负向）
+    totalCount: int = 0
+    fulfilledCount: int = 0
+    pendingCount: int = 0
+    overdueCount: int = 0
+    rate: float = 0.0
+    trend: list[GrowthCommitmentTrendPointRecord] = Field(default_factory=list)
+    upcomingPending: list[GrowthCommitmentItemRecord] = Field(default_factory=list)
+
+    # 正向指标
+    currentStreakDays: int = 0
+    longestStreakDays: int = 0
+    monthlyFulfilledCount: int = 0
+    lastMonthFulfilledCount: int = 0
+    growthPercent: int = 0
+    cumulativeCurve: list[GrowthCommitmentCumulativePointRecord] = Field(default_factory=list)
+
+
+class GrowthBusinessCoverageItemRecord(BaseModel):
+    """M1 单个客户/项目维度的覆盖。"""
+
+    label: str
+    taskCount: int = 0
+    documentCount: int = 0
+    glossaryTermCount: int = 0
+    score: int = 0  # 综合积累分
+
+
+class GrowthBusinessCoverageRecord(BaseModel):
+    """M1 业务覆盖热力图数据。"""
+
+    items: list[GrowthBusinessCoverageItemRecord] = Field(default_factory=list)
+    coveredClients: int = 0
+    coveredProjects: int = 0  # 字典项目类计数
+
+
+class GrowthReviewStreakRecord(BaseModel):
+    """M3 复盘 streaks。"""
+
+    currentStreakWeeks: int = 0
+    maxStreakWeeks: int = 0
+    totalReviewWeeks: int = 0
+    lastReviewedWeekLabel: str = ""
+
+
+class GrowthWorkTypeSliceRecord(BaseModel):
+    """M4 工作类型饼图一片。"""
+
+    label: str
+    count: int = 0
+
+
+class GrowthWorkTypeRecord(BaseModel):
+    """M4 工作类型分布。"""
+
+    slices: list[GrowthWorkTypeSliceRecord] = Field(default_factory=list)
+    totalTasks: int = 0
+    unlabeledTasks: int = 0  # business_category 为空的
+
+
+class GrowthImpactCurvePointRecord(BaseModel):
+    """M6 累计影响力曲线单点。"""
+
+    monthLabel: str
+    cumulativeReuses: int = 0
+    cumulativeLikes: int = 0
+    cumulativeSaves: int = 0
+
+
+class GrowthImpactRecord(BaseModel):
+    """M6 累计影响力曲线。"""
+
+    points: list[GrowthImpactCurvePointRecord] = Field(default_factory=list)
+    totalReuses: int = 0
+    totalLikes: int = 0
+    totalSaves: int = 0
+
+
+class GrowthLearningPickRecord(BaseModel):
+    """L3 推荐的一条学习内容。"""
+
+    source: str  # handbook / exp_wall
+    sourceId: str
+    title: str
+    detail: str = ""
+    authorName: str = ""
+    matchedAbility: str = ""
+    matchedAbilityLabel: str = ""
+    reusedCount: int = 0
+    likedCount: int = 0
+    savedCount: int = 0
+
+
+class GrowthLearningRecord(BaseModel):
+    """L3 学习推荐 = 内部 + 外部前瞻（外部部分由 L4/L5 填）。"""
+
+    internalPicks: list[GrowthLearningPickRecord] = Field(default_factory=list)
+    githubPicks: list[GrowthLearningPickRecord] = Field(default_factory=list)
+    frontierPicks: list[GrowthLearningPickRecord] = Field(default_factory=list)
+    weakestAbilities: list[str] = Field(default_factory=list)
+    externalEnabled: bool = False  # GitHub/Exa 是否就绪
+    externalConfigHint: str = ""  # 未就绪时的提示
+
+
+class GrowthPeerComparisonRecord(BaseModel):
+    """H5 同岗位匿名对标。"""
+
+    roleLabel: str = ""  # 你的岗位名
+    peerCount: int = 0  # 该岗位人数（含自己）
+    rank: int = 0  # 你的排名（1=最高）
+    yourTotalXp: int = 0
+    peerMedianXp: int = 0
+    peerTopXp: int = 0
+    perAbilityRank: dict[str, int] = Field(default_factory=dict)  # ability_key -> rank
+
+
 class GrowthOverviewRecord(BaseModel):
     userId: str
     userName: str = ""
@@ -6201,6 +6565,16 @@ class GrowthOverviewRecord(BaseModel):
     recentEntries: list[XpLedgerEntryRecord] = Field(default_factory=list)
     recommendations: list[LearningRecommendationRecord] = Field(default_factory=list)
     sourceCoverage: GrowthSourceCoverageRecord = Field(default_factory=GrowthSourceCoverageRecord)
+    socialFeedback: GrowthSocialFeedbackRecord = Field(default_factory=GrowthSocialFeedbackRecord)
+    abilityTrends: list[GrowthAbilityTrendRecord] = Field(default_factory=list)
+    dailyActivity: GrowthDailyActivityResponse = Field(default_factory=GrowthDailyActivityResponse)
+    commitmentSummary: GrowthCommitmentSummaryRecord = Field(default_factory=GrowthCommitmentSummaryRecord)
+    businessCoverage: GrowthBusinessCoverageRecord = Field(default_factory=GrowthBusinessCoverageRecord)
+    reviewStreak: GrowthReviewStreakRecord = Field(default_factory=GrowthReviewStreakRecord)
+    workTypeDistribution: GrowthWorkTypeRecord = Field(default_factory=GrowthWorkTypeRecord)
+    impactCurve: GrowthImpactRecord = Field(default_factory=GrowthImpactRecord)
+    learning: GrowthLearningRecord = Field(default_factory=GrowthLearningRecord)
+    peerComparison: GrowthPeerComparisonRecord = Field(default_factory=GrowthPeerComparisonRecord)
     projectGrowthHighlights: list[GrowthProjectHighlightRecord] = Field(default_factory=list)
     eventLineGrowthHighlights: list[GrowthProjectHighlightRecord] = Field(default_factory=list)
     strategicAlignmentHighlights: list[GrowthProjectHighlightRecord] = Field(default_factory=list)
@@ -7482,7 +7856,8 @@ class VectorizeAnswerPayload(BaseModel):
 
 
 class ExportAnswerPayload(BaseModel):
-    messageId: str
+    messageId: str | None = None
+    messageIds: list[str] | None = None
 
 
 class ClientTemplateFillPayload(BaseModel):

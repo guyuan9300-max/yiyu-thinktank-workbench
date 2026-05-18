@@ -11,7 +11,7 @@ import os
 import re
 import time
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from threading import Event, Thread
 from typing import Literal, cast
@@ -48,6 +48,9 @@ from app.models import (
     EventLineImportBatchPayload,
     EventLineImportItemResult,
     EventLineImportResultRecord,
+    EventLineMergePayload,
+    EventLineMergePreviewItemRecord,
+    EventLineMergePreviewRecord,
     EventLineRecord,
     EventLineReportAttachmentRecord,
     EventLineReportSnapshotRecord,
@@ -117,6 +120,17 @@ from app.models import (
     DepartmentSignalOneOnOneSuggestion,
     DepartmentSnapshot,
     DepartmentSignalsResponse,
+    ClientStrategicProfileRecord,
+    ClientStrategicProfileUpdatePayload,
+    ExternalPersonRecord,
+    ExternalPersonUpsertPayload,
+    ExternalPersonsListResponse,
+    EventLineNarrativeNodeRecord,
+    EventLineTimelineNarrativeRecord,
+    EventLineTimelineNarrativeRegeneratePayload,
+    ExecutiveHealthIndicator,
+    ExecutiveDecision,
+    DepartmentScoreRow,
     ReviewHistoryEntryRecord,
     ReviewHistoryResponse,
     RegisterPayload,
@@ -162,11 +176,20 @@ from app.models import (
     WeeklyReviewTaskEntryRecord,
     WeeklyReviewTaskSnapshotRecord,
     WeeklyReviewTaskStructuredNoteRecord,
+    ClientNarrativeRecord,
+    NarrativeClarificationCreatePayload,
+    NarrativeClarificationRecord,
+    NarrativeClarificationsResponse,
+    NarrativeIngestPayload,
+    NarrativeRegeneratePayload,
 )
 from app.smart_input import build_smart_task_draft, transcribe_audio_with_doubao
 from app.bootstrap_security import DEFAULT_BOOTSTRAP_ADMIN_EMAIL, ensure_cloud_secret, resolve_seed_users
 from app.security import create_access_token, decode_access_token, hash_password, verify_password
 from app.services.event_line_timeline import build_event_line_timeline_nodes
+from app.services import client_narrative as narrative_service
+from app.services import narrative_generator
+from app.services import event_line_narrative
 
 
 APP_NAME = "益语智库中心任务后端"
@@ -1688,9 +1711,22 @@ def _mobile_task_item(item: dict[str, object] | None) -> MobileWorkspaceCompatTa
 
 
 def _build_mobile_capabilities(state: AppState, current_user: SessionUser) -> MobileCapabilityRecord:
+    """P0-6: capabilities 字段全部基于真实数据返回，不再硬编码 stub。
+
+    旧行为：contextBundle 硬编码 True、其余基于"表中有任何记录"——手机端"系统健康"
+    看到的全是绿灯，但实际可能 understanding 是空的、context bundle 是过期 stub。
+    新行为：每个能力字段独立查对应表的实际记录数。
+    """
     understanding_present = bool(
         state.db.scalar(
             "SELECT COUNT(1) AS count FROM cloud_client_understanding_snapshots WHERE organization_id = ?",
+            (current_user.organizationId,),
+        )
+    )
+    # contextBundle: 检查 cloud_context_bundle_cache 实际是否有记录
+    context_bundle_present = bool(
+        state.db.scalar(
+            "SELECT COUNT(1) AS count FROM cloud_context_bundle_cache WHERE organization_id = ?",
             (current_user.organizationId,),
         )
     )
@@ -1699,7 +1735,7 @@ def _build_mobile_capabilities(state: AppState, current_user: SessionUser) -> Mo
         clientWorkspace=True,
         strategicCockpit=True,
         knowledgeMirror=_mirror_has_any_records(state, current_user.organizationId),
-        contextBundle=True,
+        contextBundle=context_bundle_present,
         understandingMirror=understanding_present,
         consultationPayloadVersion="v2",
         updatedAt=now_iso(),
@@ -9298,6 +9334,507 @@ def _signal_dispatch_unconfirmed(
     return alerts
 
 
+def _trend_pct_delta(this_value: float, last_value: float) -> tuple[str, str, str]:
+    """Return (deltaText, trendDirection, accent) — concise human-readable delta."""
+    if last_value <= 0 and this_value <= 0:
+        return ("持平", "flat", "neutral")
+    if last_value <= 0:
+        return (f"新增", "up", "success")
+    if this_value <= 0:
+        return (f"清零", "down", "danger")
+    pct = (this_value - last_value) / last_value * 100
+    if abs(pct) < 5:
+        return ("持平", "flat", "neutral")
+    direction = "up" if pct > 0 else "down"
+    accent = "success" if pct > 0 else "danger"
+    return (f"{'+' if pct > 0 else ''}{round(pct)}%", direction, accent)
+
+
+def _executive_health_indicators(
+    state: AppState,
+    organization_id: str,
+    today: datetime.date,
+    snapshots: list[DepartmentSnapshot],
+) -> list[ExecutiveHealthIndicator]:
+    """Compute the 4 top-bar headline numbers that summarize org weekly health."""
+    week_start = today - timedelta(days=today.weekday())
+    week_end = week_start + timedelta(days=6)
+    last_week_start = week_start - timedelta(days=7)
+    last_week_end = week_start - timedelta(days=1)
+
+    # 1. 履约率 — 本周到期 (due_date 优先，fallback deadline_at) 且按时完成的任务占比
+    # 按时定义：completed_at <= due_date（严格按时口径）
+    # 排除：rejected / cancelled 状态（已取消的任务不进入分母）
+    # 注：用 date(...) 截断时间到日级，避免同一天但具体时分秒导致误判
+    due_this_week = state.db.fetchone(
+        """
+        SELECT
+          COUNT(*) AS total,
+          SUM(CASE
+                WHEN progress_status='done'
+                 AND COALESCE(completed_at, updated_at) IS NOT NULL
+                 AND date(COALESCE(completed_at, updated_at)) <= date(COALESCE(NULLIF(due_date,''), deadline_at))
+                THEN 1 ELSE 0 END
+          ) AS on_time_cnt
+        FROM tasks
+        WHERE organization_id=?
+          AND COALESCE(scope_mode,'COLLAB_SHARED')!='PERSONAL_ONLY'
+          AND COALESCE(progress_status,'') NOT IN ('rejected','cancelled')
+          AND date(COALESCE(NULLIF(due_date,''), deadline_at)) BETWEEN ? AND ?
+        """,
+        (organization_id, week_start.isoformat(), week_end.isoformat()),
+    )
+    due_total = int(due_this_week["total"] or 0) if due_this_week else 0
+    due_done = int(due_this_week["on_time_cnt"] or 0) if due_this_week else 0
+    fulfillment_pct = round(due_done / due_total * 100) if due_total else 0
+
+    due_last_week = state.db.fetchone(
+        """
+        SELECT
+          COUNT(*) AS total,
+          SUM(CASE
+                WHEN progress_status='done'
+                 AND COALESCE(completed_at, updated_at) IS NOT NULL
+                 AND date(COALESCE(completed_at, updated_at)) <= date(COALESCE(NULLIF(due_date,''), deadline_at))
+                THEN 1 ELSE 0 END
+          ) AS on_time_cnt
+        FROM tasks
+        WHERE organization_id=?
+          AND COALESCE(scope_mode,'COLLAB_SHARED')!='PERSONAL_ONLY'
+          AND COALESCE(progress_status,'') NOT IN ('rejected','cancelled')
+          AND date(COALESCE(NULLIF(due_date,''), deadline_at)) BETWEEN ? AND ?
+        """,
+        (organization_id, last_week_start.isoformat(), last_week_end.isoformat()),
+    )
+    last_due_total = int(due_last_week["total"] or 0) if due_last_week else 0
+    last_due_done = int(due_last_week["on_time_cnt"] or 0) if due_last_week else 0
+    last_pct = round(last_due_done / last_due_total * 100) if last_due_total else 0
+    f_delta, f_trend, f_accent = _trend_pct_delta(fulfillment_pct, last_pct)
+    if not due_total:
+        f_delta, f_trend, f_accent = ("—", "flat", "neutral")
+
+    # 2. 团队产出 — 本周 completed_at 落在本周的任务数
+    this_throughput = int(
+        state.db.scalar(
+            """
+            SELECT COUNT(*) FROM tasks
+            WHERE organization_id=?
+              AND progress_status='done'
+              AND date(COALESCE(completed_at, updated_at)) BETWEEN ? AND ?
+            """,
+            (organization_id, week_start.isoformat(), week_end.isoformat()),
+        )
+        or 0
+    )
+    last_throughput = int(
+        state.db.scalar(
+            """
+            SELECT COUNT(*) FROM tasks
+            WHERE organization_id=?
+              AND progress_status='done'
+              AND date(COALESCE(completed_at, updated_at)) BETWEEN ? AND ?
+            """,
+            (organization_id, last_week_start.isoformat(), last_week_end.isoformat()),
+        )
+        or 0
+    )
+    t_delta, t_trend, t_accent = _trend_pct_delta(this_throughput, last_throughput)
+
+    # 3. 月目标进度 — 全部门 plan_items 中"有任务做 done 的"占比
+    month_label = _month_label_for(today)
+    plan_items_total = int(
+        state.db.scalar(
+            """
+            SELECT COUNT(*) FROM org_department_plan_items pi
+            JOIN org_department_plans p ON p.id=pi.plan_id
+            WHERE p.organization_id=? AND p.week_label=? AND p.status='active'
+            """,
+            (organization_id, month_label),
+        )
+        or 0
+    )
+    plan_items_done = int(
+        state.db.scalar(
+            """
+            SELECT COUNT(DISTINCT pi.id)
+            FROM org_department_plan_items pi
+            JOIN org_department_plans p ON p.id=pi.plan_id
+            JOIN task_plan_links tpl ON tpl.department_plan_item_id=pi.id
+            JOIN tasks t ON t.id=tpl.task_id
+            WHERE p.organization_id=? AND p.week_label=? AND p.status='active'
+              AND t.progress_status='done'
+            """,
+            (organization_id, month_label),
+        )
+        or 0
+    )
+    monthly_pct = round(plan_items_done / plan_items_total * 100) if plan_items_total else 0
+    # 时间过半的对照点
+    expected_pct = round((today.day / 30) * 100)
+    gap = monthly_pct - expected_pct
+    m_helper = f"应至 {expected_pct}%" if plan_items_total else "本月无计划"
+    m_accent = "success" if gap >= -10 else ("danger" if gap < -25 else "warning")
+    m_delta = f"{'+' if gap > 0 else ''}{gap}pt" if plan_items_total else "—"
+    m_trend = "up" if gap > 0 else ("down" if gap < 0 else "flat")
+    if not plan_items_total:
+        m_accent = "neutral"
+
+    # 4. 业务活跃 — 本周有任务推进的 client 数 / 总 active client
+    # Only count clients that are currently in the clients table to avoid stale client_id refs
+    active_clients = int(
+        state.db.scalar(
+            """
+            SELECT COUNT(DISTINCT t.client_id)
+            FROM tasks t
+            JOIN clients c ON c.id = t.client_id AND c.organization_id = t.organization_id
+            WHERE t.organization_id=?
+              AND t.client_id IS NOT NULL AND t.client_id != ''
+              AND date(t.updated_at) BETWEEN ? AND ?
+            """,
+            (organization_id, week_start.isoformat(), week_end.isoformat()),
+        )
+        or 0
+    )
+    total_clients = int(
+        state.db.scalar(
+            "SELECT COUNT(*) FROM clients WHERE organization_id=?",
+            (organization_id,),
+        )
+        or 0
+    )
+    c_value = f"{active_clients}/{total_clients}" if total_clients else f"{active_clients}"
+    if total_clients:
+        ratio = active_clients / total_clients
+        c_accent = "success" if ratio >= 0.5 else ("warning" if ratio >= 0.2 else "danger")
+    else:
+        c_accent = "neutral"
+
+    return [
+        ExecutiveHealthIndicator(
+            key="fulfillment_rate",
+            label="本周履约率",
+            valueText=str(fulfillment_pct) if due_total else "—",
+            unitText="%" if due_total else None,
+            deltaText=f"vs 上周 {f_delta}",
+            trendDirection=f_trend,
+            accent=f_accent,
+            helperText=f"{due_done}/{due_total} 项按时完成" if due_total else "本周无到期任务",
+        ),
+        ExecutiveHealthIndicator(
+            key="team_throughput",
+            label="团队产出",
+            valueText=str(this_throughput),
+            unitText="项",
+            deltaText=f"vs 上周 {t_delta}",
+            trendDirection=t_trend,
+            accent=t_accent,
+            helperText="本周已完成任务",
+        ),
+        ExecutiveHealthIndicator(
+            key="monthly_progress",
+            label="月目标进度",
+            valueText=str(monthly_pct) if plan_items_total else "—",
+            unitText="%" if plan_items_total else None,
+            deltaText=m_delta,
+            trendDirection=m_trend,
+            accent=m_accent,
+            helperText=m_helper,
+        ),
+        ExecutiveHealthIndicator(
+            key="active_clients",
+            label="业务活跃",
+            valueText=c_value,
+            unitText=None,
+            deltaText=None,
+            trendDirection="flat",
+            accent=c_accent,
+            helperText="本周有推进的客户 / 全部活跃客户" if total_clients else "尚无活跃客户",
+        ),
+    ]
+
+
+def _build_executive_decisions(
+    state: AppState,
+    organization_id: str,
+    today: datetime.date,
+    snapshots: list[DepartmentSnapshot],
+    user_display: dict[str, str],
+) -> list[ExecutiveDecision]:
+    """Translate raw signals into management-grade three-part decisions:
+    现状（situation） · 决策（decision） · 代价（cost of inaction）.
+    """
+    decisions: list[ExecutiveDecision] = []
+    days_left = max(0, 30 - today.day)
+
+    # --- D1: plan unclaimed (per dept) ---
+    for snap in snapshots:
+        if snap.planTotalCount == 0:
+            continue
+        unclaimed = snap.planTotalCount - snap.planAssignedCount
+        if unclaimed == 0:
+            continue
+        ratio = unclaimed / snap.planTotalCount
+        if today.day < 15 and ratio < 0.6:
+            continue
+        # Project monthly completion assuming linear conversion from now on
+        projected_pct = round((snap.planDoneCount / snap.planTotalCount) * 100) if snap.planTotalCount else 0
+        if projected_pct >= 80:
+            continue
+        decisions.append(
+            ExecutiveDecision(
+                id=f"d-plan-{snap.departmentId}",
+                rank=0,  # set later
+                severity="critical" if ratio >= 0.7 and today.day >= 15 else "important",
+                title=f"{snap.departmentName} 月目标即将塌方",
+                situation=(
+                    f"本月承诺 {snap.planTotalCount} 件事，"
+                    f"{unclaimed} 件尚无负责人；按当前节奏本月达成预测 {projected_pct}%。"
+                ),
+                decision=(
+                    f"本周开 1 次 30 分钟分配会，把 {unclaimed} 件未认领的事当场指派到人。"
+                ),
+                cost=(
+                    f"若本月继续无人推进，将影响 Q2 战略主线交付节奏，并使部门绩效复盘缺乏抓手。"
+                ),
+                actionLabel="去计划工坊批量分配",
+                actionTarget={"target": "plan_workshop", "departmentId": snap.departmentId},
+            )
+        )
+
+    # --- D2: collaboration pileup (per receiver) ---
+    cutoff_iso = (today - timedelta(days=14)).isoformat()
+    rows = state.db.fetchall(
+        """
+        SELECT tc.user_id, COUNT(*) AS pending_count
+        FROM task_collaborators tc
+        JOIN tasks t ON t.id = tc.task_id
+        WHERE t.organization_id=?
+          AND tc.inbox_status='pending'
+          AND tc.created_at >= ?
+        GROUP BY tc.user_id
+        HAVING pending_count >= 3
+        """,
+        (organization_id, cutoff_iso),
+    )
+    for r in rows:
+        user_id = str(r["user_id"])
+        name = user_display.get(user_id, "")
+        if not name:
+            continue
+        pending = int(r["pending_count"])
+        decisions.append(
+            ExecutiveDecision(
+                id=f"d-pileup-{user_id}",
+                rank=0,
+                severity="important",
+                title=f"{name} 负载超载，下游交付节奏将被拖累",
+                situation=(
+                    f"近两周累计 {pending} 项协作待确认仍未启动；"
+                    f"派给他的事正以队列形式积压。"
+                ),
+                decision=(
+                    f"本周内安排 30 分钟 1:1，确认是否需要重新分配，或解开他工作上的关键卡点。"
+                ),
+                cost=(
+                    f"若继续积压，关联任务的下游交付节点会出现连锁延期，"
+                    f"且 {name} 的精力会持续被低优先级事件挤占。"
+                ),
+                actionLabel="打开协作收件箱",
+                actionTarget={"target": "collab_inbox", "userId": user_id},
+            )
+        )
+
+    # --- D3: low throughput (per user) ---
+    three_weeks_ago = (today - timedelta(days=21)).isoformat()
+    low_rows = state.db.fetchall(
+        """
+        SELECT owner_id,
+               COUNT(*) AS total_cnt,
+               SUM(CASE WHEN progress_status='done' THEN 1 ELSE 0 END) AS done_cnt
+        FROM tasks
+        WHERE organization_id=?
+          AND created_at >= ?
+          AND owner_id IS NOT NULL AND owner_id != ''
+        GROUP BY owner_id
+        HAVING done_cnt=0 AND total_cnt >= 3
+        """,
+        (organization_id, three_weeks_ago),
+    )
+    for r in low_rows:
+        user_id = str(r["owner_id"])
+        name = user_display.get(user_id, "")
+        if not name:
+            continue
+        total_cnt = int(r["total_cnt"])
+        decisions.append(
+            ExecutiveDecision(
+                id=f"d-throughput-{user_id}",
+                rank=0,
+                severity="important",
+                title=f"{name} 本月产出归零，人力投入处于空转状态",
+                situation=(
+                    f"近 3 周新建 {total_cnt} 项任务但 0 项完成；"
+                    f"该成员的工时未能转化为可交付成果。"
+                ),
+                decision=(
+                    f"本周内安排 1 次方向校准谈话：确认任务范围是否过宽、是否被打断、是否需要资源支持。"
+                ),
+                cost=(
+                    f"持续 1 个月以上，该成员的市场感和团队信任度都会被侵蚀，"
+                    f"也会让组织的人均产出指标长期偏低。"
+                ),
+                actionLabel="发起 1:1 谈话",
+                actionTarget={"target": "schedule_1on1", "userId": user_id},
+            )
+        )
+
+    # rank + cap (top 3 critical/important, plus a 4th if room)
+    severity_order = {"critical": 0, "important": 1, "normal": 2}
+    decisions.sort(key=lambda d: severity_order.get(d.severity, 3))
+    decisions = decisions[:3]
+    for idx, d in enumerate(decisions, start=1):
+        d.rank = idx
+    return decisions
+
+
+def _build_department_scoreboard(
+    state: AppState,
+    organization_id: str,
+    today: datetime.date,
+    snapshots: list[DepartmentSnapshot],
+    employees_by_dept: dict[str, list],
+) -> list[DepartmentScoreRow]:
+    """Compose horizontal comparison rows — one row per department.
+
+    Scoring formula (0-100):
+        valueProductionScore = throughput_per_capita * 50 + fulfillment * 50
+        humanEfficiencyScore = 100 - blocked_ratio * 100
+    """
+    week_start = today - timedelta(days=today.weekday())
+    week_end = week_start + timedelta(days=6)
+
+    rows: list[DepartmentScoreRow] = []
+    for snap in snapshots:
+        members = employees_by_dept.get(snap.departmentId, [])
+        member_ids = [str(m["id"]) for m in members]
+        if snap.leaderUserId:
+            member_ids.append(snap.leaderUserId)
+        member_ids = list(set(member_ids))
+
+        # throughput (本周该部门成员完成的任务数)
+        throughput = 0
+        fulfillment_pct = 0
+        blocked_pct = 0
+        if member_ids:
+            ph = ",".join(["?"] * len(member_ids))
+            throughput = int(
+                state.db.scalar(
+                    f"""
+                    SELECT COUNT(*) FROM tasks
+                    WHERE organization_id=?
+                      AND owner_id IN ({ph})
+                      AND progress_status='done'
+                      AND date(COALESCE(completed_at, updated_at)) BETWEEN ? AND ?
+                    """,
+                    (organization_id, *member_ids, week_start.isoformat(), week_end.isoformat()),
+                )
+                or 0
+            )
+            # 部门履约率：同口径——due_date 优先 fallback deadline_at；按时=completed_at<=due；排除取消
+            due_row = state.db.fetchone(
+                f"""
+                SELECT COUNT(*) AS total,
+                       SUM(CASE
+                             WHEN progress_status='done'
+                              AND COALESCE(completed_at, updated_at) IS NOT NULL
+                              AND date(COALESCE(completed_at, updated_at)) <= date(COALESCE(NULLIF(due_date,''), deadline_at))
+                             THEN 1 ELSE 0 END
+                       ) AS on_time_cnt
+                FROM tasks
+                WHERE organization_id=?
+                  AND owner_id IN ({ph})
+                  AND COALESCE(progress_status,'') NOT IN ('rejected','cancelled')
+                  AND date(COALESCE(NULLIF(due_date,''), deadline_at)) BETWEEN ? AND ?
+                """,
+                (organization_id, *member_ids, week_start.isoformat(), week_end.isoformat()),
+            )
+            due_total = int(due_row["total"] or 0) if due_row else 0
+            due_done = int(due_row["on_time_cnt"] or 0) if due_row else 0
+            fulfillment_pct = round(due_done / due_total * 100) if due_total else 0
+
+            blocked_row = state.db.fetchone(
+                f"""
+                SELECT
+                  COUNT(*) AS total,
+                  SUM(CASE WHEN COALESCE(current_blocker,'')!='' THEN 1 ELSE 0 END) AS blocked_cnt
+                FROM tasks
+                WHERE organization_id=?
+                  AND owner_id IN ({ph})
+                  AND progress_status!='done'
+                """,
+                (organization_id, *member_ids),
+            )
+            total_open = int(blocked_row["total"] or 0) if blocked_row else 0
+            blocked = int(blocked_row["blocked_cnt"] or 0) if blocked_row else 0
+            blocked_pct = round(blocked / total_open * 100) if total_open else 0
+
+        # per-capita throughput score (cap at 10 tasks/person/week => 100 score)
+        per_capita = throughput / max(len(member_ids), 1)
+        throughput_score = min(round(per_capita * 10), 100)
+        value_score = round(throughput_score * 0.5 + fulfillment_pct * 0.5)
+        human_efficiency = max(0, 100 - blocked_pct)
+
+        # 月目标进度（按部门）
+        monthly_pct = 0
+        if snap.planTotalCount > 0:
+            # 改用 task 完成口径
+            done_via_tasks = int(
+                state.db.scalar(
+                    """
+                    SELECT COUNT(DISTINCT pi.id)
+                    FROM org_department_plan_items pi
+                    JOIN org_department_plans p ON p.id=pi.plan_id
+                    JOIN task_plan_links tpl ON tpl.department_plan_item_id=pi.id
+                    JOIN tasks t ON t.id=tpl.task_id
+                    WHERE p.department_id=? AND p.organization_id=? AND p.week_label=?
+                      AND t.progress_status='done'
+                    """,
+                    (snap.departmentId, organization_id, _month_label_for(today)),
+                )
+                or 0
+            )
+            monthly_pct = round(done_via_tasks / snap.planTotalCount * 100)
+
+        # headline insight — one short sentence per department
+        if snap.planTotalCount == 0:
+            insight = "本月尚未建立部门计划"
+        elif snap.planAssignedCount == 0:
+            insight = f"{snap.planTotalCount} 项月目标全无认领"
+        elif value_score >= 60 and fulfillment_pct >= 60:
+            insight = "节奏稳定，无重大风险"
+        elif blocked_pct >= 40:
+            insight = f"{blocked_pct}% 的进行中任务存在阻塞"
+        elif throughput == 0:
+            insight = "本周尚无完成产出"
+        else:
+            insight = f"本周完成 {throughput} 项 · 履约 {fulfillment_pct}%"
+
+        rows.append(
+            DepartmentScoreRow(
+                departmentId=snap.departmentId,
+                departmentName=snap.departmentName,
+                leaderName=snap.leaderName,
+                valueProductionScore=value_score,
+                fulfillmentRatePct=fulfillment_pct,
+                monthlyProgressPct=monthly_pct,
+                humanEfficiencyScore=human_efficiency,
+                headlineInsight=insight,
+                status=snap.status,
+            )
+        )
+    return rows
+
+
 def _compute_department_signals(
     state: AppState,
     current_user: SessionUser,
@@ -9371,9 +9908,21 @@ def _compute_department_signals(
         )
     )
 
+    # ── Executive layer (P1 + P2) ──
+    health_indicators = _executive_health_indicators(state, org_id, today, snapshots)
+    executive_decisions = _build_executive_decisions(
+        state, org_id, today, snapshots, user_display
+    )
+    department_scoreboard = _build_department_scoreboard(
+        state, org_id, today, snapshots, employees_by_dept
+    )
+
     return DepartmentSignalsResponse(
         weekLabel=week_label,
         viewerRole=viewer_role,
+        healthIndicators=health_indicators,
+        executiveDecisions=executive_decisions,
+        departmentScoreboard=department_scoreboard,
         actionAlerts=action_alerts,
         oneOnOneSuggestions=dedup_one_on_ones,
         departmentSnapshots=snapshots,
@@ -10948,6 +11497,430 @@ def create_app() -> FastAPI:
         client_row = _client_row_or_404(state, client_id, current_user.organizationId)
         return _build_client_understanding_response(state, client_row, current_user.organizationId)
 
+    # ============================================================
+    # Phase 1.5c · 战略陪伴叙事面板 (云端共享 + 共同编织)
+    # ============================================================
+
+    @app.get(
+        "/api/v1/clients/{client_id}/narrative",
+        response_model=ClientNarrativeRecord,
+    )
+    def get_client_narrative(
+        client_id: str,
+        current_user: SessionUser = Depends(lambda authorization=Header(default=None): _require_auth(app, authorization)),
+    ) -> ClientNarrativeRecord:
+        """战略陪伴 / 事实澄清 Tab 的整页 6 维度故事网 (云端共享版本).
+
+        同组织所有有权限的账号读到的是同一份最新 rev — A/B 账号同源。
+        如果还没生成过, 返回 "诚实空版本" (6 段都标 ⏳ AI 还没讲)."""
+        client_row = _client_row_or_404(state, client_id, current_user.organizationId)
+        existing = narrative_service.get_latest_narrative(
+            state.db, current_user.organizationId, client_id
+        )
+        if existing is not None:
+            return existing
+        return narrative_service.make_empty_narrative(
+            state.db,
+            current_user.organizationId,
+            client_id,
+            str(client_row["name"]),
+        )
+
+    @app.get(
+        "/api/v1/clients/{client_id}/narrative/clarifications",
+        response_model=NarrativeClarificationsResponse,
+    )
+    def list_client_narrative_clarifications(
+        client_id: str,
+        current_user: SessionUser = Depends(lambda authorization=Header(default=None): _require_auth(app, authorization)),
+    ) -> NarrativeClarificationsResponse:
+        """共同编织追溯 — 这家客户的所有澄清记录, 谁问/谁答/原话内容。"""
+        _client_row_or_404(state, client_id, current_user.organizationId)
+        items = narrative_service.list_clarifications(
+            state.db, current_user.organizationId, client_id
+        )
+        return NarrativeClarificationsResponse(clarifications=items)
+
+    @app.post(
+        "/api/v1/clients/{client_id}/narrative/clarifications",
+        response_model=NarrativeClarificationRecord,
+    )
+    def add_client_narrative_clarification(
+        client_id: str,
+        payload: NarrativeClarificationCreatePayload,
+        current_user: SessionUser = Depends(lambda authorization=Header(default=None): _require_auth(app, authorization)),
+    ) -> NarrativeClarificationRecord:
+        """用户对 6 维度某一段提交语音/打字澄清, status=pending 等下次 regenerate。
+
+        当前实现追加记录 + 把这个 client 的 pending count 累加。下游
+        regenerate endpoint 会把 status 翻到 applied 并写入新 rev。"""
+        _client_row_or_404(state, client_id, current_user.organizationId)
+        if not payload.answer.strip():
+            raise HTTPException(status_code=400, detail="answer is required")
+        try:
+            record = narrative_service.add_clarification(
+                state.db,
+                current_user.organizationId,
+                client_id,
+                payload,
+                answered_by_user_id=current_user.id,
+                answered_by_display_name=current_user.fullName,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return record
+
+    @app.post(
+        "/api/v1/clients/{client_id}/narrative/regenerate",
+        response_model=ClientNarrativeRecord,
+    )
+    def regenerate_client_narrative(
+        client_id: str,
+        payload: NarrativeRegeneratePayload,
+        current_user: SessionUser = Depends(lambda authorization=Header(default=None): _require_auth(app, authorization)),
+    ) -> ClientNarrativeRecord:
+        """触发 LLM 重生 6 段叙事 (吸纳 pending 澄清 + 关系网最新事实)。
+
+        Day 3: 接 narrative_generator (云端豆包) 真生成。LLM 失败时
+        自动降级到澄清拼接 stub (服从 user_judgment_pace, 不阻塞用户)."""
+        _client_row_or_404(state, client_id, current_user.organizationId)
+        pending_count = narrative_service.count_pending_clarifications(state.db, client_id)
+        if pending_count == 0 and not payload.force:
+            existing = narrative_service.get_latest_narrative(
+                state.db, current_user.organizationId, client_id
+            )
+            if existing is not None:
+                return existing
+        narrative_generator.regenerate_narrative(
+            state.db,
+            current_user.organizationId,
+            client_id,
+            triggered_by_user_id=current_user.id,
+            triggered_by_display_name=current_user.fullName,
+            trigger=payload.trigger or "manual",
+            force=payload.force,
+            use_llm=True,
+        )
+        result = narrative_service.get_latest_narrative(
+            state.db, current_user.organizationId, client_id
+        )
+        if result is None:
+            raise HTTPException(status_code=500, detail="failed to write narrative")
+        return result
+
+    @app.post(
+        "/api/v1/clients/{client_id}/narrative/ingest",
+        response_model=ClientNarrativeRecord,
+    )
+    def ingest_client_narrative(
+        client_id: str,
+        payload: NarrativeIngestPayload,
+        current_user: SessionUser = Depends(lambda authorization=Header(default=None): _require_auth(app, authorization)),
+    ) -> ClientNarrativeRecord:
+        """Plan A · 接受本地 backend 生成完的叙事, 直接落库 + 多端共享。
+
+        本地 backend 直查丰富加工层 (atomic_facts + entities + ...) 调本地 LLM 出
+        6 维度叙事, 再 POST 给这个 endpoint。云端不再调 LLM, 只做"持久化 +
+        多端共享"。这是 v0.2 修复浅显问题的核心链路改造。
+
+        v1.0 升级: 如果 client_id 在云端 db 不存在 (本地客户未同步), 自动创建一个
+        minimal client row, 让叙事能落库. 这是为爱黔行/善加这种本地有但云端没的客户
+        准备的兜底 — narrative 是本地驱动的, 云端只是共享层, 不该卡在 client 不存在.
+        """
+        existing_client = state.db.fetchone(
+            "SELECT id, name FROM clients WHERE id = ? AND organization_id = ?",
+            (client_id, current_user.organizationId),
+        )
+        if not existing_client:
+            now = datetime.now(timezone.utc).isoformat()
+            fallback_name = (payload.clientName or "").strip() or client_id
+            fallback_alias = (payload.clientAlias or "").strip()
+            state.db.execute(
+                """INSERT INTO clients (id, organization_id, name, alias, type, created_at, updated_at)
+                   VALUES (?, ?, ?, ?, 'client', ?, ?)""",
+                (client_id, current_user.organizationId, fallback_name,
+                 fallback_alias or None, now, now),
+            )
+        # 把 payload.dimensions 强制成 generator 期望的格式 (dim → dict)
+        dims_payload: dict[str, dict] = {}
+        for d in narrative_service.DIMENSIONS:
+            v = payload.dimensions.get(d)
+            dims_payload[d] = v if isinstance(v, dict) else {}
+        new_rev = narrative_service.write_new_version(
+            state.db,
+            current_user.organizationId,
+            client_id,
+            dims_payload,
+            overall_confidence=float(payload.overallConfidence or 0.0),
+            data_layer_gaps=list(payload.dataLayerGaps or []),
+            generator=str(payload.generator or "backend_local_ai"),
+            model_name=str(payload.modelName or ""),
+            triggered_by_user_id=current_user.id,
+            triggered_by_display_name=current_user.fullName,
+            trigger=str(payload.trigger or "manual"),
+        )
+        result = narrative_service.get_latest_narrative(
+            state.db, current_user.organizationId, client_id
+        )
+        if result is None:
+            raise HTTPException(status_code=500, detail="failed to write narrative")
+        return result
+
+    # ============================================================
+    # 数据中心加工层 · Phase 1 (项目档案 + 关键人物花名册)
+    # 这两张表是「项目本质」「关键人物」维度的结构化骨架，
+    # 用户在事实澄清面板里填完后, narrative_collector 会读到，
+    # AI 重新生成时这两个维度从 ⏳ 变成 medium/high confidence。
+    # ============================================================
+
+    @app.get(
+        "/api/v1/clients/{client_id}/strategic-profile",
+        response_model=ClientStrategicProfileRecord,
+    )
+    def get_client_strategic_profile(
+        client_id: str,
+        current_user: SessionUser = Depends(lambda authorization=Header(default=None): _require_auth(app, authorization)),
+    ) -> ClientStrategicProfileRecord:
+        _client_row_or_404(state, client_id, current_user.organizationId)
+        row = state.db.fetchone(
+            "SELECT * FROM cloud_client_strategic_profiles WHERE organization_id=? AND client_id=?",
+            (current_user.organizationId, client_id),
+        )
+        if not row:
+            return ClientStrategicProfileRecord(clientId=client_id)
+        return ClientStrategicProfileRecord(
+            clientId=str(row["client_id"]),
+            projectType=str(row["project_type"] or ""),
+            projectGoal=str(row["project_goal"] or ""),
+            successMetric=str(row["success_metric"] or ""),
+            currentPhase=str(row["current_phase"] or ""),
+            cooperationStartDate=str(row["cooperation_start_date"]) if row["cooperation_start_date"] else None,
+            cooperationEndDate=str(row["cooperation_end_date"]) if row["cooperation_end_date"] else None,
+            notes=str(row["notes"] or ""),
+            updatedByDisplayName=str(row["updated_by_display_name"] or ""),
+            updatedAt=str(row["updated_at"] or ""),
+        )
+
+    @app.put(
+        "/api/v1/clients/{client_id}/strategic-profile",
+        response_model=ClientStrategicProfileRecord,
+    )
+    def update_client_strategic_profile(
+        client_id: str,
+        payload: ClientStrategicProfileUpdatePayload,
+        current_user: SessionUser = Depends(lambda authorization=Header(default=None): _require_auth(app, authorization)),
+    ) -> ClientStrategicProfileRecord:
+        _client_row_or_404(state, client_id, current_user.organizationId)
+        ts = now_iso()
+        existing = state.db.fetchone(
+            "SELECT 1 FROM cloud_client_strategic_profiles WHERE organization_id=? AND client_id=?",
+            (current_user.organizationId, client_id),
+        )
+        if existing:
+            state.db.execute(
+                """
+                UPDATE cloud_client_strategic_profiles
+                SET project_type=?, project_goal=?, success_metric=?, current_phase=?,
+                    cooperation_start_date=?, cooperation_end_date=?, notes=?,
+                    updated_by_user_id=?, updated_by_display_name=?, updated_at=?
+                WHERE organization_id=? AND client_id=?
+                """,
+                (
+                    payload.projectType.strip(),
+                    payload.projectGoal.strip(),
+                    payload.successMetric.strip(),
+                    payload.currentPhase.strip(),
+                    payload.cooperationStartDate or None,
+                    payload.cooperationEndDate or None,
+                    payload.notes.strip(),
+                    current_user.id,
+                    current_user.fullName or "",
+                    ts,
+                    current_user.organizationId,
+                    client_id,
+                ),
+            )
+        else:
+            state.db.execute(
+                """
+                INSERT INTO cloud_client_strategic_profiles
+                (client_id, organization_id, project_type, project_goal, success_metric,
+                 current_phase, cooperation_start_date, cooperation_end_date, notes,
+                 updated_by_user_id, updated_by_display_name, created_at, updated_at)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
+                """,
+                (
+                    client_id,
+                    current_user.organizationId,
+                    payload.projectType.strip(),
+                    payload.projectGoal.strip(),
+                    payload.successMetric.strip(),
+                    payload.currentPhase.strip(),
+                    payload.cooperationStartDate or None,
+                    payload.cooperationEndDate or None,
+                    payload.notes.strip(),
+                    current_user.id,
+                    current_user.fullName or "",
+                    ts,
+                    ts,
+                ),
+            )
+        return get_client_strategic_profile(client_id, current_user)
+
+    @app.get(
+        "/api/v1/clients/{client_id}/external-persons",
+        response_model=ExternalPersonsListResponse,
+    )
+    def list_client_external_persons(
+        client_id: str,
+        current_user: SessionUser = Depends(lambda authorization=Header(default=None): _require_auth(app, authorization)),
+    ) -> ExternalPersonsListResponse:
+        _client_row_or_404(state, client_id, current_user.organizationId)
+        rows = state.db.fetchall(
+            """
+            SELECT * FROM cloud_external_persons
+            WHERE organization_id=? AND client_id=?
+            ORDER BY sort_order ASC, created_at ASC
+            """,
+            (current_user.organizationId, client_id),
+        )
+        persons = [
+            ExternalPersonRecord(
+                id=str(r["id"]),
+                clientId=str(r["client_id"]),
+                name=str(r["name"] or ""),
+                roleTitle=str(r["role_title"] or ""),
+                affiliation=str(r["affiliation"] or ""),
+                relationshipType=str(r["relationship_type"] or ""),
+                oneLiner=str(r["one_liner"] or ""),
+                notes=str(r["notes"] or ""),
+                sortOrder=int(r["sort_order"] or 0),
+                createdAt=str(r["created_at"] or ""),
+                updatedAt=str(r["updated_at"] or ""),
+            )
+            for r in rows
+        ]
+        return ExternalPersonsListResponse(clientId=client_id, persons=persons)
+
+    @app.post(
+        "/api/v1/clients/{client_id}/external-persons",
+        response_model=ExternalPersonRecord,
+    )
+    def create_external_person(
+        client_id: str,
+        payload: ExternalPersonUpsertPayload,
+        current_user: SessionUser = Depends(lambda authorization=Header(default=None): _require_auth(app, authorization)),
+    ) -> ExternalPersonRecord:
+        _client_row_or_404(state, client_id, current_user.organizationId)
+        if not payload.name.strip():
+            raise HTTPException(status_code=400, detail="人名不能为空")
+        new_pid = new_id("person")
+        ts = now_iso()
+        state.db.execute(
+            """
+            INSERT INTO cloud_external_persons
+            (id, organization_id, client_id, name, role_title, affiliation,
+             relationship_type, one_liner, notes, sort_order,
+             created_by_user_id, created_at, updated_at)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
+            """,
+            (
+                new_pid,
+                current_user.organizationId,
+                client_id,
+                payload.name.strip(),
+                payload.roleTitle.strip(),
+                payload.affiliation.strip(),
+                payload.relationshipType.strip(),
+                payload.oneLiner.strip(),
+                payload.notes.strip(),
+                int(payload.sortOrder or 0),
+                current_user.id,
+                ts,
+                ts,
+            ),
+        )
+        return ExternalPersonRecord(
+            id=new_pid,
+            clientId=client_id,
+            name=payload.name.strip(),
+            roleTitle=payload.roleTitle.strip(),
+            affiliation=payload.affiliation.strip(),
+            relationshipType=payload.relationshipType.strip(),
+            oneLiner=payload.oneLiner.strip(),
+            notes=payload.notes.strip(),
+            sortOrder=int(payload.sortOrder or 0),
+            createdAt=ts,
+            updatedAt=ts,
+        )
+
+    @app.patch(
+        "/api/v1/external-persons/{person_id}",
+        response_model=ExternalPersonRecord,
+    )
+    def update_external_person(
+        person_id: str,
+        payload: ExternalPersonUpsertPayload,
+        current_user: SessionUser = Depends(lambda authorization=Header(default=None): _require_auth(app, authorization)),
+    ) -> ExternalPersonRecord:
+        existing = state.db.fetchone(
+            "SELECT * FROM cloud_external_persons WHERE id=? AND organization_id=?",
+            (person_id, current_user.organizationId),
+        )
+        if not existing:
+            raise HTTPException(status_code=404, detail="Person not found")
+        ts = now_iso()
+        state.db.execute(
+            """
+            UPDATE cloud_external_persons
+            SET name=?, role_title=?, affiliation=?, relationship_type=?,
+                one_liner=?, notes=?, sort_order=?, updated_at=?
+            WHERE id=? AND organization_id=?
+            """,
+            (
+                payload.name.strip(),
+                payload.roleTitle.strip(),
+                payload.affiliation.strip(),
+                payload.relationshipType.strip(),
+                payload.oneLiner.strip(),
+                payload.notes.strip(),
+                int(payload.sortOrder or 0),
+                ts,
+                person_id,
+                current_user.organizationId,
+            ),
+        )
+        return ExternalPersonRecord(
+            id=person_id,
+            clientId=str(existing["client_id"]),
+            name=payload.name.strip(),
+            roleTitle=payload.roleTitle.strip(),
+            affiliation=payload.affiliation.strip(),
+            relationshipType=payload.relationshipType.strip(),
+            oneLiner=payload.oneLiner.strip(),
+            notes=payload.notes.strip(),
+            sortOrder=int(payload.sortOrder or 0),
+            createdAt=str(existing["created_at"] or ""),
+            updatedAt=ts,
+        )
+
+    @app.delete("/api/v1/external-persons/{person_id}")
+    def delete_external_person(
+        person_id: str,
+        current_user: SessionUser = Depends(lambda authorization=Header(default=None): _require_auth(app, authorization)),
+    ) -> dict[str, bool]:
+        existing = state.db.fetchone(
+            "SELECT 1 FROM cloud_external_persons WHERE id=? AND organization_id=?",
+            (person_id, current_user.organizationId),
+        )
+        if not existing:
+            raise HTTPException(status_code=404, detail="Person not found")
+        state.db.execute(
+            "DELETE FROM cloud_external_persons WHERE id=? AND organization_id=?",
+            (person_id, current_user.organizationId),
+        )
+        return {"ok": True}
+
     @app.post("/api/v1/mobile/knowledge-mirror/publish", response_model=CloudKnowledgeMirrorPublishResultRecord)
     def publish_mobile_knowledge_mirror(
         payload: CloudKnowledgeMirrorPublishPayload,
@@ -11418,6 +12391,56 @@ def create_app() -> FastAPI:
             snapshotAt=snapshot_at,
         )
 
+    # ─── 主线还原 LLM 叙事 (P1) ───
+    def _narrative_to_record(out) -> EventLineTimelineNarrativeRecord:
+        return EventLineTimelineNarrativeRecord(
+            eventLineId=out.eventLineId,
+            rev=out.rev,
+            headline=out.headline,
+            opening=out.opening,
+            closing=out.closing,
+            nodes=[EventLineNarrativeNodeRecord(**vars(n)) for n in out.nodes],
+            overallConfidence=out.overallConfidence,
+            generator=out.generator,
+            modelName=out.modelName,
+            updatedAt=out.updatedAt,
+            triggeredByDisplayName=out.triggeredByDisplayName,
+        )
+
+    @app.get(
+        "/api/v1/event-lines/{event_line_id}/timeline-narrative",
+        response_model=EventLineTimelineNarrativeRecord | None,
+    )
+    def get_event_line_timeline_narrative(
+        event_line_id: str,
+        current_user: SessionUser = Depends(lambda authorization=Header(default=None): _require_auth(app, authorization)),
+    ) -> EventLineTimelineNarrativeRecord | None:
+        out = event_line_narrative.get_latest_narrative(
+            state.db, current_user.organizationId, event_line_id
+        )
+        if out is None:
+            return None
+        return _narrative_to_record(out)
+
+    @app.post(
+        "/api/v1/event-lines/{event_line_id}/timeline-narrative/regenerate",
+        response_model=EventLineTimelineNarrativeRecord,
+    )
+    def regenerate_event_line_timeline_narrative(
+        event_line_id: str,
+        payload: EventLineTimelineNarrativeRegeneratePayload,
+        current_user: SessionUser = Depends(lambda authorization=Header(default=None): _require_auth(app, authorization)),
+    ) -> EventLineTimelineNarrativeRecord:
+        out = event_line_narrative.regenerate_timeline_narrative(
+            state.db,
+            current_user.organizationId,
+            event_line_id,
+            triggered_by_user_id=current_user.id,
+            triggered_by_display_name=current_user.fullName or "",
+            trigger=(payload.trigger or "manual").strip() or "manual",
+        )
+        return _narrative_to_record(out)
+
     @app.post("/api/v1/event-lines/{event_line_id}/attachments")
     async def upload_event_line_attachment(
         event_line_id: str,
@@ -11645,6 +12668,170 @@ def create_app() -> FastAPI:
         )
         _record_event_line_activity(state, event_line_id, "manual_note", event_line_id, current_user.id, "重新打开事件线", "事件线已恢复为活跃")
         return {"status": "active"}
+
+    # 云端 merge endpoint：cloud-first 合并事件线。
+    # 多端协作场景下，本地 merge 之后云端那条 source 还在，B 端 pull 时会反向覆盖回 A 端，
+    # 同时 B 端永远看不到合并结果。本端做合并的真实事务，所有端 pull 后就能看到一致状态。
+    # 权限走 _can_manage_event_line（事件线创建者 / 上级 / 管理员），不卡 admin-only。
+    _CLOUD_EVENT_LINE_CHILD_TABLES = (
+        "event_line_activities",
+        "event_line_attachments",
+        "task_attachments",
+        "tasks",
+        "consultation_answers",
+    )
+    _CLOUD_EVENT_LINE_CACHE_TABLES = (
+        "cloud_event_line_timeline_narratives",
+        "cloud_context_bundle_cache",
+    )
+
+    @app.post("/api/v1/event-lines/{event_line_id}/merge-preview", response_model=EventLineMergePreviewRecord)
+    def merge_event_line_preview(
+        event_line_id: str,
+        payload: EventLineMergePayload,
+        current_user: SessionUser = Depends(lambda authorization=Header(default=None): _require_auth(app, authorization)),
+    ) -> EventLineMergePreviewRecord:
+        target_row = _event_line_row_or_404(state, event_line_id, current_user.organizationId)
+        target_id = str(target_row["id"])
+        target_client_id = str(target_row["primary_client_id"] or "").strip()
+        source_ids: list[str] = []
+        seen: set[str] = set()
+        for raw in (payload.sourceIds or []):
+            sid = str(raw).strip()
+            if not sid or sid == target_id or sid in seen:
+                continue
+            seen.add(sid)
+            source_ids.append(sid)
+        if not source_ids:
+            raise HTTPException(status_code=400, detail="至少需要 1 条与目标不同的源事件线")
+        placeholders = ",".join(["?"] * len(source_ids))
+        source_rows = state.db.fetchall(
+            f"SELECT id, name, status, primary_client_id FROM event_lines WHERE id IN ({placeholders}) AND organization_id = ?",
+            (*source_ids, current_user.organizationId),
+        )
+        found_ids = {str(r["id"]) for r in source_rows}
+        missing = [sid for sid in source_ids if sid not in found_ids]
+        if missing:
+            raise HTTPException(status_code=404, detail=f"以下事件线不存在或不在你组织：{','.join(missing)}")
+        for row in source_rows:
+            if str(row["primary_client_id"] or "").strip() != target_client_id:
+                raise HTTPException(status_code=400, detail=f"事件线「{row['name']}」与目标客户不同")
+        # 统计每张子表的影响行数
+        impact: list[EventLineMergePreviewItemRecord] = []
+        total = 0
+        for table in _CLOUD_EVENT_LINE_CHILD_TABLES:
+            n = int(state.db.scalar(
+                f"SELECT COUNT(1) FROM {table} WHERE event_line_id IN ({placeholders})",
+                tuple(source_ids),
+            ) or 0)
+            if n > 0:
+                impact.append(EventLineMergePreviewItemRecord(table=table, rows=n))
+                total += n
+        return EventLineMergePreviewRecord(
+            targetId=target_id,
+            targetName=str(target_row["name"] or ""),
+            sources=[{"id": str(r["id"]), "name": str(r["name"] or ""), "status": str(r["status"] or "")} for r in source_rows],
+            impact=impact,
+            totalRows=total,
+        )
+
+    @app.post("/api/v1/event-lines/{event_line_id}/merge", response_model=EventLineRecord)
+    def merge_event_lines(
+        event_line_id: str,
+        payload: EventLineMergePayload,
+        current_user: SessionUser = Depends(lambda authorization=Header(default=None): _require_auth(app, authorization)),
+    ) -> EventLineRecord:
+        target_row = _event_line_row_or_404(state, event_line_id, current_user.organizationId)
+        if not _can_manage_event_line(current_user, target_row):
+            raise HTTPException(status_code=403, detail="只有事件线创建者、其上级或管理员可以合并事件线。")
+        target_id = str(target_row["id"])
+        target_client_id = str(target_row["primary_client_id"] or "").strip()
+        source_ids: list[str] = []
+        seen: set[str] = set()
+        for raw in (payload.sourceIds or []):
+            sid = str(raw).strip()
+            if not sid or sid == target_id or sid in seen:
+                continue
+            seen.add(sid)
+            source_ids.append(sid)
+        if not source_ids:
+            raise HTTPException(status_code=400, detail="至少需要 1 条与目标不同的源事件线")
+        placeholders = ",".join(["?"] * len(source_ids))
+        source_rows = state.db.fetchall(
+            f"SELECT id, name, status, primary_client_id, owner_id FROM event_lines WHERE id IN ({placeholders}) AND organization_id = ?",
+            (*source_ids, current_user.organizationId),
+        )
+        found_ids = {str(r["id"]) for r in source_rows}
+        missing = [sid for sid in source_ids if sid not in found_ids]
+        if missing:
+            raise HTTPException(status_code=404, detail=f"以下事件线不存在或不在你组织：{','.join(missing)}")
+        for row in source_rows:
+            if str(row["primary_client_id"] or "").strip() != target_client_id:
+                raise HTTPException(status_code=400, detail=f"事件线「{row['name']}」与目标客户不同")
+            if not _can_manage_event_line(current_user, row):
+                raise HTTPException(status_code=403, detail=f"你无权合并事件线「{row['name']}」")
+
+        merged_names = [str(r["name"] or "未命名") for r in source_rows]
+        timestamp = now_iso()
+        org_id = current_user.organizationId
+
+        def _do_merge(conn) -> None:
+            # 1) 迁业务子表（task / activity / attachment / consultation）
+            for table in _CLOUD_EVENT_LINE_CHILD_TABLES:
+                conn.execute(
+                    f"UPDATE {table} SET event_line_id = ? WHERE event_line_id IN ({placeholders})",
+                    (target_id, *source_ids),
+                )
+            # 2) 清掉 target 的旧 narrative / context-bundle 缓存，让它下次重新生成
+            for table in _CLOUD_EVENT_LINE_CACHE_TABLES:
+                conn.execute(
+                    f"DELETE FROM {table} WHERE event_line_id = ? OR event_line_id IN ({placeholders})",
+                    (target_id, *source_ids),
+                )
+            # 3) 重算 target.evidence_count = activity 数
+            count_row = conn.execute(
+                "SELECT COUNT(*) FROM event_line_activities WHERE event_line_id = ?",
+                (target_id,),
+            ).fetchone()
+            new_evidence_count = int((count_row[0] if count_row else 0) or 0)
+            conn.execute(
+                "UPDATE event_lines SET evidence_count = ?, updated_at = ? WHERE id = ? AND organization_id = ?",
+                (new_evidence_count, timestamp, target_id, org_id),
+            )
+            # 4) 删源 event_lines 主行
+            conn.execute(
+                f"DELETE FROM event_lines WHERE id IN ({placeholders}) AND organization_id = ?",
+                (*source_ids, org_id),
+            )
+            # 5) 审计 activity（用 'merge' source_type）
+            conn.execute(
+                """
+                INSERT INTO event_line_activities(
+                    id, event_line_id, source_type, source_id, happened_at, actor_id, title, summary, metadata_json
+                ) VALUES(?, ?, 'merge', ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    new_id("ela"),
+                    target_id,
+                    target_id,
+                    timestamp,
+                    current_user.id,
+                    "事件线合并",
+                    f"已合并 {len(source_ids)} 条事件线：{'、'.join(merged_names)}",
+                    json.dumps({"mergedFromIds": source_ids, "mergedFromNames": merged_names}, ensure_ascii=False),
+                ),
+            )
+
+        try:
+            state.db.run_in_transaction(_do_merge)
+        except HTTPException:
+            raise
+        except Exception as exc:
+            raise HTTPException(status_code=500, detail=f"合并失败：{exc}") from exc
+
+        # 返回 target 最新状态
+        refreshed = _event_line_row_or_404(state, target_id, org_id)
+        return _event_line_record(state, refreshed)
 
     @app.delete("/api/v1/event-lines/{event_line_id}")
     def delete_event_line(

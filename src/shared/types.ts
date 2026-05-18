@@ -709,6 +709,7 @@ export interface DocumentRecord {
 export interface KnowledgeStatus {
   totalDocuments: number;
   totalChunks: number;
+  ocrReadyRate?: number;  // R13: OCR 完整识别率（加权 % · ready=100/partial=70/failed=0）
   vectorizedDocuments: number;
   dedupedDocuments: number;
   reviewPendingDocuments: number;
@@ -2688,10 +2689,23 @@ export interface EventLine {
   updatedAt: string;
 }
 
+export interface EventLineMergePreviewItem {
+  table: string;
+  rows: number;
+}
+
+export interface EventLineMergePreview {
+  targetId: string;
+  targetName: string;
+  sources: Array<{ id: string; name: string; status: string }>;
+  impact: EventLineMergePreviewItem[];
+  totalRows: number;
+}
+
 export interface EventLineActivity {
   id: string;
   eventLineId: string;
-  sourceType: 'task_activity' | 'meeting' | 'support_request' | 'review' | 'attachment' | 'manual_note';
+  sourceType: 'task_activity' | 'meeting' | 'support_request' | 'review' | 'attachment' | 'manual_note' | 'merge';
   sourceId: string;
   happenedAt: string;
   actorId?: string | null;
@@ -3027,6 +3041,31 @@ export interface EvidenceQualityAnnotation {
   humanNote: string;
   createdAt: string;
   updatedAt: string;
+}
+
+export interface EventLineNarrativeNode {
+  id: string;
+  time: string;
+  title: string;
+  narrative: string;
+  confidence: 'high' | 'medium' | 'low' | string;
+  linkedTaskIds: string[];
+  linkedActivityIds: string[];
+  linkedAttachmentIds: string[];
+}
+
+export interface EventLineTimelineNarrative {
+  eventLineId: string;
+  rev: number;
+  headline: string;
+  opening: string;
+  closing: string;
+  nodes: EventLineNarrativeNode[];
+  overallConfidence: number;
+  generator: string;
+  modelName: string;
+  updatedAt: string;
+  triggeredByDisplayName?: string;
 }
 
 export interface EventLineReportAttachment {
@@ -3942,9 +3981,48 @@ export interface DepartmentSnapshot {
   burndownActual: number[];
 }
 
+export interface ExecutiveHealthIndicator {
+  key: string;
+  label: string;
+  valueText: string;
+  unitText?: string | null;
+  deltaText?: string | null;
+  trendDirection: 'up' | 'down' | 'flat' | string;
+  accent: 'success' | 'warning' | 'danger' | 'neutral' | string;
+  helperText?: string | null;
+}
+
+export interface ExecutiveDecision {
+  id: string;
+  rank: number;
+  severity: 'critical' | 'important' | 'normal' | string;
+  title: string;
+  situation: string;
+  decision: string;
+  cost: string;
+  actionLabel?: string | null;
+  actionTarget?: Record<string, unknown> | null;
+  sourceRefs?: Array<Record<string, unknown>>;
+}
+
+export interface DepartmentScoreRow {
+  departmentId: string;
+  departmentName: string;
+  leaderName?: string | null;
+  valueProductionScore: number;
+  fulfillmentRatePct: number;
+  monthlyProgressPct: number;
+  humanEfficiencyScore: number;
+  headlineInsight?: string | null;
+  status: string;
+}
+
 export interface DepartmentSignalsResponse {
   weekLabel: string;
   viewerRole: 'admin' | 'department_lead' | 'employee' | string;
+  healthIndicators: ExecutiveHealthIndicator[];
+  executiveDecisions: ExecutiveDecision[];
+  departmentScoreboard: DepartmentScoreRow[];
   actionAlerts: DepartmentSignalActionAlert[];
   oneOnOneSuggestions: DepartmentSignalOneOnOneSuggestion[];
   departmentSnapshots: DepartmentSnapshot[];
@@ -5133,6 +5211,16 @@ export interface GrowthOverview {
   recentEntries: XpLedgerEntry[];
   recommendations: LearningRecommendation[];
   sourceCoverage: GrowthSourceCoverage;
+  socialFeedback?: GrowthSocialFeedback;
+  abilityTrends?: GrowthAbilityTrend[];
+  dailyActivity?: GrowthDailyActivityResponse;
+  commitmentSummary?: GrowthCommitmentSummary;
+  businessCoverage?: GrowthBusinessCoverage;
+  reviewStreak?: GrowthReviewStreak;
+  workTypeDistribution?: GrowthWorkType;
+  impactCurve?: GrowthImpact;
+  learning?: GrowthLearning;
+  peerComparison?: GrowthPeerComparison;
   projectGrowthHighlights: GrowthProjectHighlight[];
   eventLineGrowthHighlights: GrowthProjectHighlight[];
   strategicAlignmentHighlights: GrowthProjectHighlight[];
@@ -5148,8 +5236,158 @@ export interface GrowthSourceCoverage {
   strategicSignals: number;
   reviewSignals: number;
   handbookSignals: number;
+  expWallSignals?: number;
+  memorySignals?: number;
+  documentSignals?: number;
   clientCount: number;
   eventLineCount: number;
+}
+
+export interface GrowthSocialFeedback {
+  handbookReuseCount: number;
+  handbookEntriesReused: number;
+  expWallLikeCount: number;
+  expWallSaveCount: number;
+  expWallQuoteCount: number;
+  periodLabel: string;
+}
+
+export interface GrowthAbilityTrendPoint {
+  weekLabel: string;
+  score: number;
+  totalXp: number;
+}
+
+export interface GrowthAbilityTrend {
+  abilityKey: string;
+  label: string;
+  points: GrowthAbilityTrendPoint[];
+  scoreDelta: number;
+  direction: 'up' | 'down' | 'flat';
+}
+
+export interface GrowthDailyActivity {
+  date: string;
+  count: number;
+  level: number;
+}
+
+export interface GrowthDailyActivityResponse {
+  days: GrowthDailyActivity[];
+  totalDays: number;
+  activeDays: number;
+  maxStreak: number;
+}
+
+export interface GrowthCommitmentTrendPoint {
+  weekLabel: string;
+  totalCount: number;
+  fulfilledCount: number;
+  rate: number;
+}
+export interface GrowthCommitmentItem {
+  id: string;
+  content: string;
+  recipient: string;
+  deadline: string | null;
+  status: string;
+  daysOverdue: number;
+}
+export interface GrowthCommitmentCumulativePoint {
+  weekIndex: number;
+  weekLabel: string;
+  currentCumulative: number;
+  previousCumulative: number;
+}
+
+export interface GrowthCommitmentSummary {
+  totalCount: number;
+  fulfilledCount: number;
+  pendingCount: number;
+  overdueCount: number;
+  rate: number;
+  trend: GrowthCommitmentTrendPoint[];
+  upcomingPending: GrowthCommitmentItem[];
+  currentStreakDays?: number;
+  longestStreakDays?: number;
+  monthlyFulfilledCount?: number;
+  lastMonthFulfilledCount?: number;
+  growthPercent?: number;
+  cumulativeCurve?: GrowthCommitmentCumulativePoint[];
+}
+
+export interface GrowthBusinessCoverageItem {
+  label: string;
+  taskCount: number;
+  documentCount: number;
+  glossaryTermCount: number;
+  score: number;
+}
+export interface GrowthBusinessCoverage {
+  items: GrowthBusinessCoverageItem[];
+  coveredClients: number;
+  coveredProjects: number;
+}
+
+export interface GrowthReviewStreak {
+  currentStreakWeeks: number;
+  maxStreakWeeks: number;
+  totalReviewWeeks: number;
+  lastReviewedWeekLabel: string;
+}
+
+export interface GrowthWorkTypeSlice {
+  label: string;
+  count: number;
+}
+export interface GrowthWorkType {
+  slices: GrowthWorkTypeSlice[];
+  totalTasks: number;
+  unlabeledTasks: number;
+}
+
+export interface GrowthImpactCurvePoint {
+  monthLabel: string;
+  cumulativeReuses: number;
+  cumulativeLikes: number;
+  cumulativeSaves: number;
+}
+export interface GrowthImpact {
+  points: GrowthImpactCurvePoint[];
+  totalReuses: number;
+  totalLikes: number;
+  totalSaves: number;
+}
+
+export interface GrowthLearningPick {
+  source: string;
+  sourceId: string;
+  title: string;
+  detail: string;
+  authorName: string;
+  matchedAbility: string;
+  matchedAbilityLabel: string;
+  reusedCount: number;
+  likedCount: number;
+  savedCount: number;
+}
+export interface GrowthLearning {
+  internalPicks: GrowthLearningPick[];
+  githubPicks: GrowthLearningPick[];
+  frontierPicks: GrowthLearningPick[];
+  weakestAbilities: string[];
+  externalEnabled: boolean;
+  externalConfigHint: string;
+}
+
+export interface GrowthPeerComparison {
+  roleLabel: string;
+  peerCount: number;
+  rank: number;
+  yourTotalXp: number;
+  peerMedianXp: number;
+  peerTopXp: number;
+  perAbilityRank: Record<string, number>;
 }
 
 export interface GrowthProjectHighlight {
@@ -7041,7 +7279,7 @@ export interface ReportRunSummary {
 // IntelligenceStationView.tsx 依赖这些类型；force push 时漏带，现在补回
 // ──────────────────────────────────────────────────────────────────────
 
-export type IntelligenceContentKind = 'profile_completion' | 'timely_intelligence';
+export type IntelligenceContentKind = 'profile_completion' | 'timely_intelligence' | 'public_opinion';
 export type IntelligenceWorkObjectType = 'client' | 'project_module';
 export type IntelligenceFocusScopeType = 'global' | 'client' | 'project_module';
 export type IntelligenceItemUserStatus = 'active' | 'dismissed' | 'following';

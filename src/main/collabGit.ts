@@ -1110,7 +1110,30 @@ async function collectRepoSnapshot(options: RepoOptions): Promise<RepoSnapshot> 
     .map((entry) => mapStatusEntryToScope(entry, gitContext.scopeRelativePath))
     .filter((entry): entry is ParsedStatusEntry => Boolean(entry));
   const collabVisibleLocalEntries = scopedLocalEntries.filter((entry) => !isIgnorableLocalStatusPath(entry.path));
-  const { branch, aheadCount, behindCount } = parseBranchHeader(branchHeader);
+  const parsedHeader = parseBranchHeader(branchHeader);
+  const { branch } = parsedHeader;
+  let { aheadCount, behindCount } = parsedHeader;
+  // Fallback: when local main has no upstream tracking (e.g. branch recreated, git config wiped),
+  // `git status --branch` won't report ahead/behind. Re-derive via rev-list against origin/main so
+  // we never silently treat "behind" as 0 and skip the merge before pushing.
+  if (branch === 'main' && aheadCount === 0 && behindCount === 0) {
+    try {
+      const counts = await runGit(
+        gitContext.gitRepoPath,
+        ['rev-list', '--left-right', '--count', 'origin/main...HEAD'],
+        { allowNonZero: true },
+      );
+      const [behindStr, aheadStr] = counts.stdout.trim().split(/\s+/);
+      const behindFallback = Number(behindStr) || 0;
+      const aheadFallback = Number(aheadStr) || 0;
+      if (behindFallback > 0 || aheadFallback > 0) {
+        behindCount = behindFallback;
+        aheadCount = aheadFallback;
+      }
+    } catch {
+      // origin/main may not exist yet (no remote); keep zeros.
+    }
+  }
   const remoteDiffResult = await runGit(gitContext.gitRepoPath, ['diff', '--name-status', '--find-renames=50%', `HEAD..${remoteTargetRevision}`, ...scopedGitArgs], {
     allowNonZero: true,
   });

@@ -28,6 +28,7 @@ from app.services.narrative_collector import (
     CommitmentFact,
     DocumentSummaryFact,
     EventLineFact,
+    DimensionChunk,
     GlossaryAttribute,
     GlossaryRelation,
     GlossaryTerm,
@@ -68,9 +69,10 @@ DIMENSION_BRIEF = {
         "\n  数据来源: atomic_facts (位置/使命/愿景/赛道等) + entities (organization) + v2_documents 标题"
         "\n  **严格禁止**:"
         "\n    1. 不要在 narrative 文本里出现 uuid/hash/sourceId/『atomic_fact #xxx』这种机器标识 (放 references 数组)"
-        "\n    2. **不要写『我作为顾问看』『我推荐』『我判断』** — essence 是介绍机构事实, 不是顾问判断"
-        "\n    3. 不要讲『益语跟客户的合作』 (那是 Layer 2) — 严格分离视角"
-        "\n    4. 不要写 fact 的因果/目的归因 (那是 e 类隐含归因)"
+        "\n    2. **不要做顾问主观判断** — essence 是介绍机构事实, 不是顾问视角"
+        "\n    3. **任何层都禁用『我作为顾问看/我推荐/我判断/我觉得』第一人称套话** (这是 prompt 模板泄漏, 客户看着不专业)"
+        "\n    4. 不要讲『益语跟客户的合作』 (那是 Layer 2) — 严格分离视角"
+        "\n    5. 不要写 fact 的因果/目的归因 (那是 e 类隐含归因)"
     ),
     "cooperation": (
         "**Layer 2 · 合作关系 — 益语跟客户的服务关系** (基于 Layer 1 机构定位)"
@@ -82,13 +84,47 @@ DIMENSION_BRIEF = {
         "\n  **关键**: 这层定下『益语在做什么』的事实基线, 后面 Layer 6 的承诺才能挂得上"
     ),
     "business_intro": (
-        "**Layer 3 · 业务介绍 — 客户机构内含项目详介** (基于 Layer 1 机构定位)"
-        "\n  把客户机构内部的核心项目逐个介绍, 每个项目独立成段:"
-        "\n    项目名 + 项目定位 + 服务对象 + 跟客户机构整体战略的关系 + 当前阶段"
-        "\n  例: 日慈 — 心盛计划 / 心灵魔法学院 / 教师赋能 / 行动营 / 朋辈关怀员培训 (逐个)"
-        "\n  例: 善加 — 妈妈岗社区托育 / 天蓝彼岸项目 / ... (逐个)"
-        "\n  数据来源: atomic_facts (attribute=项目/业务/产品/服务) + entities (org/product) + 项目协议文档"
-        "\n  **关键**: facts 里有的项目必须穷举; 不能把『益语战略陪伴』算成客户内含项目"
+        "**Layer 3 · 业务介绍 — 客户机构对外服务的核心业务项目** (基于 Layer 1 机构定位)"
+        "\n  把客户机构**对外提供的核心业务项目**逐个详细介绍."
+        "\n  "
+        "\n  ## 格式要求 (每个项目独立段, 输出 markdown 数字编号格式)"
+        "\n  `N. 项目名: <100-150 字详介>` + 末尾附 `[来自: 文档名/事实卡片]`"
+        "\n  "
+        "\n  ## 每段必含 6 要素 (按顺序)"
+        "\n  1. **项目名** — 客户字典里 category=项目 的 canonical_name"
+        "\n  2. **服务对象** — 谁受益 (具体人群: 例'在校 8-18 岁青少年' / '困境家庭妈妈')"
+        "\n  3. **核心方法** — 怎么做 (具体动作: 例'68 课时线上+22 课时线下托育员培训')"
+        "\n  4. **覆盖规模** — 关键数字 (例'2024 年服务 35 位妈妈, 85% 毕业'; 没具体数字标'规模待补充')"
+        "\n  5. **当前阶段** — 进展/卡点 (例'Q1 复盘发现项目设计不完善, 待优化')"
+        "\n  6. **来源 cite** — 在段末加 `[来自: <文档名>]` 例 `[来自: 项目档案-尽调资料.xlsx]`"
+        "\n  "
+        "\n  ## 严禁列出 (以下不属于核心业务项目)"
+        "\n  ❌ **内部 IT / 系统优化项目** (例: 飞书会议联调 / 系统升级 / 数据中心建设)"
+        "\n  ❌ **项目类型分类** (例: '社区类项目' '学校类项目' — 这是类型不是具体项目)"
+        "\n  ❌ **产品定位 / 流量入口** (例: '用户入口类' '最上层' — 这是产品策略不是独立项目)"
+        "\n  ❌ **战略意向 / 未来规划** (例: '订阅制合作模式' '新叙事方向' — 这是判断不是事实)"
+        "\n  ❌ **临时事项 / 行政任务** (例: '年度复盘会议' '资料归档')"
+        "\n  ❌ **益语自己的服务** (战略陪伴是合作, 不是客户内含项目)"
+        "\n  "
+        "\n  ## 可信度门槛"
+        "\n  - 每个项目至少 **3+ 文档/事件** 支撑才能列出; 弱信源 (< 2 文档) 项目跳过."
+        "\n  - 如果某项目数据稀少, 整段也不列, 不要为了凑数列模糊项目."
+        "\n  - 数据稀少时, 整层可能只输出 3-4 个项目, 这是正常的, 比列 6 个有 3 个错好."
+        "\n  "
+        "\n  ## ⭐ 主动呈现矛盾 (核心规则)"
+        "\n  生成 narrative 的过程**同时是发现矛盾的过程**. 多源比对时:"
+        "\n  - 多源对同一字段**一致** → 写一句话, 多源 cite 增强可信度"
+        "\n  - 多源对同一字段**不一致** (例: 文档 A 说 11 省, 文档 B 说 25 省) →"
+        "\n    必须 **显式呈现矛盾**: '覆盖范围: 25 省 (《2024 年度总结》) / 11 省 (《2025 简介》), **两版本不一致, 待澄清**'"
+        "\n  - **严禁默默选一个** — 这是对客户决策的隐瞒, 也违背机制设计"
+        "\n  - 矛盾源可能跨表: 文档 vs 文档 / 文档 vs 任务 / 任务 vs 复盘 / 任意源 vs 字典 verified"
+        "\n  "
+        "\n  数据来源 (机制化全数据源 union):"
+        "\n  - v2_chunks 文档原文 (多文档对照)"
+        "\n  - tasks 任务标题/描述 (日常对项目的澄清)"
+        "\n  - 周复盘 note (反馈和复盘记录)"
+        "\n  - 会议 transcript (口头讨论沉淀)"
+        "\n  - atomic_facts / entities / 字典 verified attribute (锚点)"
     ),
     "people": (
         "**Layer 4 · 关键人物 — 益语方 + 客户方 + 各项目对应** (基于 Layer 2 合作 + Layer 3 项目)"
@@ -115,6 +151,17 @@ DIMENSION_BRIEF = {
         "\n  每条都要 (时间点 + 谁负责)"
         "\n  数据来源: event_line.intent + tasks.deadline + 合同协议 + 顾问判断"
         "\n  **关键**: 区分商业承诺 (合同/event_line.intent) vs 内部 task (顾源源自己的 todo)"
+        "\n  "
+        "\n  🆕 **机制化要求**: 输出 narrative 文本的**同时**, 必须输出 `structuredTodos` 数组"
+        "\n  (每条一个 JSON, 系统会自动写入 commitments 表, 不需要用户手动结构化)"
+        "\n  示例: structuredTodos: ["
+        "\n    {'title': '完成教师赋能方案优化指导', 'committer': '顾源源', 'recipient': '日慈基金会',"
+        "\n     'deadline': '2026-05-24', 'commitmentType': 'delivery', 'status': 'pending'},"
+        "\n    {'title': '提交教师赋能项目设计方案', 'committer': '笑雨老师', 'recipient': '日慈基金会',"
+        "\n     'deadline': '', 'commitmentType': 'delivery', 'status': 'pending'}"
+        "\n  ]"
+        "\n  规则: 每条承诺/下一步都对应一条 structuredTodo; 已完成的标 status='fulfilled';"
+        "\n        无明确 deadline 的留空字符串; committer 是动作执行人 (人名); recipient 是受益方 (机构/客户名)"
     ),
 }
 
@@ -142,6 +189,23 @@ NARRATIVE_OUTPUT_SCHEMA = {
                 },
                 "dataLayerGap": {"type": "STRING"},
                 "openClarifications": {"type": "ARRAY", "items": {"type": "STRING"}},
+                # 机制化 P0: next_steps / cooperation 等承诺类层, 同时输出结构化 todos
+                # 用于自动 upsert 到 commitments 表, 让待办在 UI / chat / 日历都能拿到
+                "structuredTodos": {
+                    "type": "ARRAY",
+                    "items": {
+                        "type": "OBJECT",
+                        "properties": {
+                            "title": {"type": "STRING"},
+                            "committer": {"type": "STRING"},    # 谁承诺/谁要做
+                            "recipient": {"type": "STRING"},    # 向谁承诺
+                            "deadline": {"type": "STRING"},     # YYYY-MM-DD, 没就空
+                            "commitmentType": {"type": "STRING"},  # delivery/feedback/decision/meeting
+                            "status": {"type": "STRING", "enum": ["pending", "fulfilled"]},
+                        },
+                        "required": ["title", "committer", "recipient", "status"],
+                    },
+                },
             },
             "required": ["narrative", "confidence", "buildsOn"],
         }
@@ -232,11 +296,13 @@ SYSTEM_PROMPT = """你是已经跟这个项目走了**半年**的高级战略顾
     要点: narrative 是给客户读的干净中文, **禁止在文本里出现 uuid/hash/sourceId/fact_id 这种机器标识**。
          所有引用关系都放在 references 数组里, 前端会自己折叠显示。
 
-(b) **顾问判断** — 你作为顾问对 fact 的解读, 必须**第一人称限定**
+(b) **顾问判断** — 你作为顾问对 fact 的解读, 用客观书面语表达, **不要用第一人称套话**
     **仅在需要判断/推论的层使用** (cooperation/next_steps), 不要在事实介绍层 (essence/business_intro) 滥用
-    ❌ 错 (essence 层): "日慈是青少年心理健康机构; 我作为顾问看, 这通常..."
-    ✅ 对 (cooperation/next_steps 层): "我作为顾问看, 益语跟日慈这种合作通常..."
-    要点: essence 是介绍客户机构事实, 不需要顾问视角
+    ❌ 错 (用第一人称套话): "我作为顾问看, 这通常意味着..."  ← 套话, 像 prompt 模板泄漏
+    ❌ 错 (essence 层做主观判断): "日慈这家机构应该重点关注..." ← essence 层不该做判断
+    ✅ 对 (cooperation/next_steps 层做客观判断): "从合作 N 个月的进展看, 益语属于日慈长期标杆服务型, 优先级较高"
+    ✅ 对 (cooperation 层标推断性质): "基于现有事实推断, 后续可能涉及内部管理体系搭建; 但 facts 里目前没明示, 建议跟客户澄清"
+    要点: 判断要有客观书面语气, 不要"我作为顾问看/我推荐/我判断/我觉得"这种第一人称口头禅
 
 (c) **澄清问题** — fact 不够判断时, 不要替客户回答, 把问题放在 openClarifications
     例: openClarifications: ["18-24 岁是不是日慈核心服务对象? 还是只是行业研究背景?"]
@@ -259,8 +325,9 @@ SYSTEM_PROMPT = """你是已经跟这个项目走了**半年**的高级战略顾
   · 客户跑日慈/黔行/华润/任何行业, 这套元规则都成立。
 
 **展开规则 (合格 vs 不合格)**:
-  · ✅ 合格展开: 用 (b) 顾问判断模板把 fact 的业务含义说透 — "我作为顾问看 [fact #X] 意味着 ..."
+  · ✅ 合格展开: 用 (b) 顾问判断模板把 fact 的业务含义说透 — "基于 [fact #X] 的客观情况, 在 cooperation/next_steps 层可推断..."
   · ❌ 不合格展开: 用『因此/希望/这就是为什么客户...』把 fact 链到客户决策 — 这是 (e) 隐含归因
+  · ❌ 禁用第一人称套话: "我作为顾问看" / "我推荐" / "我判断" / "我觉得" — 这是 prompt 工程的内部标记, 不该泄漏到客户输出
 
 ============================================================
 == 【元规则升级 · 下钻到名词短语级别】==
@@ -280,7 +347,7 @@ v0.8 元规则按**整句**判 (a/b/c/d/e), 但 LLM 钻空子: 在**单个无限
       LLM 利用整句的 (a) 事实陈述形式, 把无据短语夹带进去。
 
   ✅ 合格改写:
-  "atomic_fact / event_line 显示, 益语战略陪伴当前核心包括: 项目梳理 + 战略落地; **我作为顾问看**, 后续可能还会涉及内部管理体系搭建层面, 但 facts 里目前没明示, 建议跟客户澄清"
+  "atomic_fact / event_line 显示, 益语战略陪伴当前核心包括: 项目梳理 + 战略落地; 基于行业惯例推断, 后续可能还会涉及内部管理体系搭建层面, 但 facts 里目前没明示, 建议跟客户澄清"
 
 **判定方法**: 写每个句子时, 在脑子里把每个并列项单独拎出来问『这个名词短语对应哪条 fact?』 — 答不上来的就拆出去用 (b) 限定。
 
@@ -503,6 +570,43 @@ def build_user_prompt(bundle: ClientFactBundle) -> str:
                 asof_part = f" @{a.as_of_date}" if a.as_of_date else ""
                 lines.append(f"      - {a.attribute_name} = {a.value_text}{scope_part}{asof_part}")
 
+    # Phase A · 6 维 chunks 原文摘要 — 每个 dimension 配套的原始资料段
+    # 优先级: 这里的 chunks 原文 > 字典 verified > atomic_facts > 推断
+    if bundle.dimension_chunks:
+        lines.append("\n# ⭐⭐⭐⭐ 6 维原文资料 (Phase A — 每个 dimension 配套的具体原文)")
+        lines.append("**数据使用优先级**:")
+        lines.append("  1. 本节的 chunks 原文 (从原始文档抽的具体段落) — **优先用具体描述**")
+        lines.append("  2. 字典 verified attribute (上面 ⭐⭐⭐ 节) — 数字/姓名/日期 cite")
+        lines.append("  3. atomic_facts (regex 抽, 可能残破) — 仅作辅助参考")
+        lines.append("  4. 推断 — 标'基于...推断', 不直接断言")
+        lines.append("")
+        lines.append("**写 narrative 时必须**: 优先用 chunks 原文里的具体描述")
+        lines.append("(产品架构/服务流程/具体活动名/具体方法) 替代 atomic_facts 残片.")
+        lines.append("如果同一信息在多源出现, 用最详细的版本.")
+        lines.append("")
+
+        dim_label = {
+            "essence": "Layer 1 essence (项目本质)",
+            "business_intro": "Layer 3 business_intro (业务介绍) — **重点**",
+            "cooperation": "Layer 2 cooperation (合作关系)",
+            "people": "Layer 4 people (关键人物)",
+            "timeline": "Layer 5 timeline (时间线)",
+            "next_steps": "Layer 6 next_steps (承诺与下一步)",
+        }
+        for dim_key, label in dim_label.items():
+            chunks = bundle.dimension_chunks.get(dim_key, [])
+            if not chunks:
+                continue
+            lines.append(f"\n## {label}")
+            for c in chunks[:6]:  # 每个 dimension 最多 6 个 chunks
+                src = f"《{c.doc_title}》" if c.doc_title else "(无源)"
+                tag = f"[匹配:{c.matched_term}]" if c.matched_term else ""
+                lines.append(f"  · {tag} 来自 {src}:")
+                # 缩进引用原文, 限制行数
+                excerpt = c.excerpt.replace("\n", " ").strip()[:480]
+                lines.append(f"    \"{excerpt}\"")
+        lines.append("")
+
     # v1.5 · 项目画像 — 字典 term 间关联关系 (P0 核心)
     if bundle.glossary_relations:
         lines.append("\n# ⭐⭐ 字典关联图 (P0 项目画像 — term 之间的『边』, narrative 必须体现这些关系)")
@@ -597,7 +701,7 @@ def build_user_prompt(bundle: ClientFactBundle) -> str:
     lines.append("")
     lines.append("**Q2: 这句话是哪种引用?**")
     lines.append("    (a) 复述 fact (直接复述, 不加因果)")
-    lines.append("    (b) 顾问第一人称判断 (『我作为顾问看...』)")
+    lines.append("    (b) 顾问客观判断 (基于事实推断, 不要用'我作为顾问看/我推荐/我判断'等第一人称套话)")
     lines.append("    (c) 澄清问题 (放进 openClarifications)")
     lines.append("    (d) 范围声明 (『facts 里没有提到 X』)")
     lines.append("    (a)(b)(c)(d) — OK 写")
@@ -610,22 +714,23 @@ def build_user_prompt(bundle: ClientFactBundle) -> str:
     lines.append("  · 任何把 fact 跟 *客户动机/选择/诉求* 连起来的因果连接")
     lines.append("  · 把 mention_count 高 (机器统计) 直接说成 *决策者/创始人/拍板者* (身份归因)")
     lines.append("")
-    lines.append("**(e) 的正确改写**: 用 (b) 顾问判断 + 第一人称限定, 或 (c) 放进 openClarifications。")
+    lines.append("**(e) 的正确改写**: 用 (b) 顾问客观判断, 或 (c) 放进 openClarifications。")
     lines.append("  例 1: ❌ 『18-24 岁抑郁峰值, **因此**日慈选这个赛道』")
-    lines.append("        ✅ 『fact #X 显示 18-24 岁抑郁峰值是行业事实。**我作为顾问看**, 这通常会是公益机构选服务对象的依据 — 但日慈是不是真把 18-24 岁锁定, 需要澄清』")
+    lines.append("        ✅ 『fact #X 显示 18-24 岁抑郁峰值是行业事实, 通常会是公益机构选服务对象的依据 — 但日慈是不是真把 18-24 岁锁定, 需要澄清』")
     lines.append("        ✅ openClarifications: [『日慈核心服务对象是 18-24 岁? 还是包括其他年龄段?』]")
     lines.append("  例 2: ❌ 『高老师提及 93 次, 是核心决策人』")
-    lines.append("        ✅ 『entity #X 显示高老师在客户资料中被提及 93 次, 远超其他人。**我作为顾问看**, 这通常意味着位置核心 — 但 facts 里没有他职务/权限的明确说明, 需澄清』")
+    lines.append("        ✅ 『entity #X 显示高老师在客户资料中被提及 93 次, 远超其他人, 通常意味着位置核心 — 但 facts 里没有他职务/权限的明确说明, 需澄清』")
     lines.append("")
     lines.append("**项目列表 (Part B)**: 必须穷举 facts 里出现的所有项目名, 不要选择性省略。")
     lines.append("")
     lines.append("**(Q4 v1.0 新增) 这层是事实陈述层还是判断层?**")
     lines.append("    事实陈述层 = essence (项目本质) / business_intro (业务介绍) / timeline (时间线)")
-    lines.append("        → narrative **不要写**『我作为顾问看』『我推荐』『我判断』这种顾问视角")
-    lines.append("        → 只列已知事实, 让客户看完一目了然『这家机构是什么』『有哪些项目』『发生过什么』")
+    lines.append("        → narrative **不要做顾问主观判断**, 只列已知事实")
+    lines.append("        → 让客户看完一目了然『这家机构是什么』『有哪些项目』『发生过什么』")
     lines.append("    判断层 = cooperation (合作关系) / next_steps (承诺与下一步)")
-    lines.append("        → 可以用『我作为顾问看』限定推断")
-    lines.append("    people 层: 描述事实 (谁做了什么) 为主, 推断角色时才用『我作为顾问看』限定")
+    lines.append("        → 可以做客观判断, 但**不要用『我作为顾问看/我推荐/我判断/我觉得』这种第一人称套话**")
+    lines.append("        → 用客观书面语表达, 例『从合作 N 月看, 优先级较高』而不是『我作为顾问看这个优先级较高』")
+    lines.append("    people 层: 描述事实 (谁做了什么) 为主, 推断角色时也用客观语气, 不用第一人称套话")
     lines.append("")
     lines.append("**(Q5 v1.0 新增) narrative 文本里有没有 uuid/hash?**")
     lines.append("    ❌ 错: 『atomic_fact #eafa2c6f-c597-4d9d-b205-a5fa4f7f970b 显示...』")
@@ -637,7 +742,7 @@ def build_user_prompt(bundle: ClientFactBundle) -> str:
     lines.append("    不允许『A、C 有据』给 B 当通行证夹带。")
     lines.append("    如果 B 无据 → 把 B 单独拆出来用 (b) 顾问判断限定, 或放进 openClarifications。")
     lines.append("    例: ❌ 『益语核心是: 项目梳理 + 内部管理体系搭建 + 战略落地』 (B 无据)")
-    lines.append("        ✅ 『event_line 显示益语核心是: 项目梳理 + 战略落地; 我作为顾问看, 可能还涉及内部管理体系层面, 需澄清』")
+    lines.append("        ✅ 『event_line 显示益语核心是: 项目梳理 + 战略落地; 基于行业惯例推断, 可能还涉及内部管理体系层面, 但 facts 里目前没明示, 需澄清』")
     lines.append("")
     lines.append("**写每个并列句之前, 单独拎出每个并列项问『这个名词短语对应哪条 fact?』**")
     lines.append("**这套元规则适用于任何客户 (日慈/黔行/为爱前行/华润...). 它防的是结构, 不防具体词。**")
@@ -710,11 +815,28 @@ def _validate_dim(payload: Any, dim: str) -> dict[str, Any]:
         for x in (payload.get("openClarifications") or [])
         if str(x).strip()
     ]
-    builds_on = str(payload.get("buildsOn") or "").strip()
-    # 把 buildsOn 拼到 narrative 末尾作为可见的递进证据 (cloud schema 没这字段, 走 narrative)
+    # buildsOn (递进逻辑) 是后端调试用的元数据, 不再拼进 narrative 给用户看
     narrative_with_chain = narrative
-    if builds_on and dim != "essence":  # Layer 1 essence 没有上层
-        narrative_with_chain = f"{narrative}\n\n[递进逻辑] {builds_on}"
+    # 机制化 P0: 结构化 todos (LLM 在 next_steps/cooperation 等承诺类层输出)
+    structured_todos: list[dict[str, str]] = []
+    todos_raw = payload.get("structuredTodos") or []
+    if isinstance(todos_raw, list):
+        for t in todos_raw:
+            if not isinstance(t, dict):
+                continue
+            title = str(t.get("title") or "").strip()
+            committer = str(t.get("committer") or "").strip()
+            recipient = str(t.get("recipient") or "").strip()
+            if not (title and committer and recipient):
+                continue
+            structured_todos.append({
+                "title": title,
+                "committer": committer,
+                "recipient": recipient,
+                "deadline": str(t.get("deadline") or "").strip(),
+                "commitmentType": str(t.get("commitmentType") or "delivery").strip(),
+                "status": str(t.get("status") or "pending").strip().lower(),
+            })
     return {
         "narrative": narrative_with_chain,
         "confidence": confidence,
@@ -722,6 +844,7 @@ def _validate_dim(payload: Any, dim: str) -> dict[str, Any]:
         "references": refs,
         "dataLayerGap": str(payload.get("dataLayerGap") or ""),
         "openClarifications": open_clar,
+        "structuredTodos": structured_todos,
     }
 
 
@@ -755,8 +878,8 @@ def generate_narrative_dimensions(
             prompt,
             system_prompt,
             NARRATIVE_OUTPUT_SCHEMA,
-            timeout_seconds=360.0,   # v1.3 字典段大 + 6 层叙事, 给 6 分钟
-            max_tokens=10000,        # 防 LLM 输出 JSON 截断
+            timeout_seconds=420.0,   # 字典段大 + 6 层叙事 + chunks 原文, 给 7 分钟
+            max_tokens=14000,        # 防 LLM 输出 JSON 截断 (多 chunks 后输出更长)
             temperature=0.3,
         )
     except AiInvocationError as exc:
@@ -777,6 +900,79 @@ def generate_narrative_dimensions(
 
 def _all_stub(reason: str) -> dict[str, dict[str, Any]]:
     return {d: _stub_dim(d, reason) for d in DIMENSIONS}
+
+
+def upsert_commitments_from_narrative(
+    db: Any, client_id: str, dims: dict[str, dict[str, Any]],
+) -> dict[str, int]:
+    """机制化 P0: 把 narrative 输出的 structuredTodos 写入 commitments 表.
+
+    保证: 任何客户每次 narrative 重生, 待办自动结构化 (不依赖手动操作).
+    幂等: 同 (client_id, committer, content, deadline) 已存在则跳过, 不覆盖人审过的状态.
+    """
+    import uuid
+    from datetime import datetime, timezone
+
+    inserted = 0
+    skipped = 0
+    now = datetime.now(timezone.utc).isoformat()
+
+    for dim_name, dim_data in dims.items():
+        todos = dim_data.get("structuredTodos") or []
+        if not isinstance(todos, list):
+            continue
+        for t in todos:
+            title = str(t.get("title") or "").strip()
+            committer = str(t.get("committer") or "").strip()
+            recipient = str(t.get("recipient") or "").strip()
+            if not (title and committer and recipient):
+                skipped += 1
+                continue
+            deadline = str(t.get("deadline") or "").strip() or None
+            commit_type = str(t.get("commitmentType") or "delivery").strip() or "delivery"
+            status = str(t.get("status") or "pending").strip().lower()
+            if status not in ("pending", "fulfilled", "overdue", "cancelled"):
+                status = "pending"
+
+            # 幂等: 同 (client+committer+content) 已存在则跳过
+            existing = db.fetchone(
+                """SELECT id, status FROM commitments
+                   WHERE client_id=? AND committer=? AND content=?""",
+                (client_id, committer, title),
+            )
+            if existing:
+                # 已有, 但如果 LLM 标 fulfilled 且数据库还是 pending → 同步更新 status
+                if status == "fulfilled" and str(existing["status"]) == "pending":
+                    db.execute(
+                        """UPDATE commitments SET status='fulfilled',
+                           fulfilled_at=?, updated_at=? WHERE id=?""",
+                        (now, now, str(existing["id"])),
+                    )
+                    inserted += 1  # 状态升级也算 1 次有效操作
+                else:
+                    skipped += 1
+                continue
+
+            cid = f"commit_{uuid.uuid4().hex[:10]}"
+            try:
+                db.execute(
+                    """INSERT INTO commitments (
+                        id, client_id, committer, recipient, commitment_type,
+                        content, deadline, status, related_term_ids_json,
+                        source_type, source_id, fulfilled_at, created_at, updated_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, '[]',
+                              ?, '', ?, ?, ?)""",
+                    (cid, client_id, committer, recipient, commit_type,
+                     title, deadline, status,
+                     "narrative_generator",
+                     now if status == "fulfilled" else None,
+                     now, now),
+                )
+                inserted += 1
+            except Exception:
+                skipped += 1
+
+    return {"inserted": inserted, "skipped": skipped}
 
 
 def compute_data_layer_gaps(bundle: ClientFactBundle) -> list[str]:

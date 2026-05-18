@@ -202,7 +202,17 @@ export function ContradictionAlertPanel({ clientId, refreshKey = 0 }: Contradict
   };
 
   if (!clientId) return null;
-  if (!loading && groups.length === 0 && !error) return null;
+  // 只有真的有 pending 矛盾时才显示 banner
+  // 之前的 bug: loading=true 时也渲染, 加载中会看到 "0 组 / 0 个口径"
+  // 现在 items 为空就不显示, error 单独用一个极简提示展示
+  if (items.length === 0) {
+    if (error) {
+      return (
+        <p className="text-[11px] text-rose-600">矛盾告警加载失败：{error}</p>
+      );
+    }
+    return null;
+  }
 
   return (
     <div className="space-y-3 rounded-3xl border border-rose-100 bg-white p-4">

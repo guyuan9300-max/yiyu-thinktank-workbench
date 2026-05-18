@@ -42,26 +42,33 @@ DIMENSIONS = narrative_svc.DIMENSIONS  # ("essence", "people", ...)
 DIMENSION_BRIEF = {
     "essence": (
         "项目本质 — 用 2-4 句话讲: 这家客户是谁 / 体量 / 来找益语做什么类型的项目 "
-        "(培训/咨询/落地/续约/方案) / 客户对成功的定义 / 当前阶段 / 边界."
+        "(培训/咨询/落地/续约/方案) / 客户对成功的定义 / 当前阶段 / 边界. "
+        "structured_profile 缺失时 confidence=low + dataLayerGap='client_strategic_profile 未填'."
+    ),
+    "cooperation": (
+        "合作关系 — 益语与客户的合作形态: 合作起止时间 / 合作类型 (培训/咨询/落地/方案/续约) / "
+        "合作深度与节奏 / 续约或扩展信号 / 客户侧决策链. cooperation_relationships 表为空时, "
+        "尝试从 event_line.intent + structured_profile 推断, 标 confidence=low + "
+        "dataLayerGap='cooperation_relationships 未建'."
+    ),
+    "business_intro": (
+        "业务介绍 — 客户机构主营业务 / 行业定位 / 旗下含项目列表 / 与本项目的关系. "
+        "external_persons 的 affiliation 字段 + understanding_payload 的 entities (org/product) "
+        "是主要素材. 没素材时 confidence=low + dataLayerGap='机构画像未抽取'."
     ),
     "people": (
         "关键人物网 — 列出客户方关键人物 (姓名+职务+在项目里的角色: 决策者/sponsor/经办/反对者/中立) "
         "+ 益语方分工 + 人物间关系 (信任/影响/矛盾). 没有花名册时只能列名字, 标 confidence=low."
     ),
-    "history": (
-        "来龙去脉 — 用 3-6 句话讲: 项目怎么起来的 / 关键节点 (合同/启动会/关键交付/转折事件) / 现在哪一步. "
-        "强调 '关键' 转折, 不是流水账."
+    "timeline": (
+        "时间线 — 用 5-8 个节点呈现: 项目怎么起来的 / 关键节点 (合同/启动会/关键交付/转折事件) / "
+        "现在到了哪一步 / 下一步关键时刻. 强调 '关键' 转折, 不是流水账. "
+        "event_line_activities + tasks(deadline) + v2_documents.imported_at 是主要素材."
     ),
-    "commitments": (
-        "承诺网 — 列出益语对客户的承诺 + 客户对益语的承诺, 含 deadline + 履约状态. "
-        "标出履约风险高的."
-    ),
-    "risks": (
-        "卡点与风险 — 当前阻塞 + 已知风险 + AI 觉得需要警惕的信号 (人物变动/客户冷却/竞品介入). "
-        "数据中心没建 risk_signals 表时, confidence=low + dataLayerGap='risk_signals 表未建'."
-    ),
-    "next": (
-        "下一步 — 1-2 周关键事 + 由谁负责 + 衡量进展的标志 + AI 推荐的下一步动作."
+    "next_steps": (
+        "承诺与下一步 — 益语对客户的承诺 + 客户对益语的承诺 (含 deadline + 履约状态), "
+        "再列出 1-2 周关键事 + 由谁负责 + 衡量进展的标志 + AI 推荐的下一步动作. "
+        "标出履约风险高的承诺."
     ),
 }
 
@@ -69,14 +76,22 @@ NARRATIVE_OUTPUT_SCHEMA = {
     "type": "object",
     "properties": {
         "essence": {"$ref": "#/$defs/dim"},
+        "cooperation": {"$ref": "#/$defs/dim"},
+        "business_intro": {"$ref": "#/$defs/dim"},
         "people": {"$ref": "#/$defs/dim"},
-        "history": {"$ref": "#/$defs/dim"},
-        "commitments": {"$ref": "#/$defs/dim"},
-        "risks": {"$ref": "#/$defs/dim"},
-        "next": {"$ref": "#/$defs/dim"},
+        "timeline": {"$ref": "#/$defs/dim"},
+        "next_steps": {"$ref": "#/$defs/dim"},
         "overallConfidence": {"type": "number"},
     },
-    "required": ["essence", "people", "history", "commitments", "risks", "next", "overallConfidence"],
+    "required": [
+        "essence",
+        "cooperation",
+        "business_intro",
+        "people",
+        "timeline",
+        "next_steps",
+        "overallConfidence",
+    ],
     "$defs": {
         "dim": {
             "type": "object",

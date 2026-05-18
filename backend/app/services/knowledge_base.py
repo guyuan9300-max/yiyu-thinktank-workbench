@@ -792,10 +792,13 @@ def is_placeholder_knowledge_text(text: str) -> bool:
 
 
 def clean_title_for_search(title: str) -> str:
+    """机制化文件名清洗: 通用前缀/后缀清理, 不绑定特定客户缩写."""
     stem = Path(title).stem
-    stem = re.sub(r"[_\s]+CFF[C]?(?:[_-]?\d{8})$", "", stem, flags=re.IGNORECASE)
+    # 通用机构前缀: "<2-8 字客户/项目名>文件_..." (中英文 + 数字)
+    stem = re.sub(r"^[一-龥A-Za-z0-9]{2,8}文件[+_\s-]*", "", stem)
+    # 通用编号后缀: "_<英文缩写>?<6-8 位数字>" (项目号/工单号/日期)
+    stem = re.sub(r"[_\s]+[A-Za-z]{0,8}[_-]?\d{6,8}$", "", stem)
     stem = re.sub(r"[_\s]+\d+$", "", stem)
-    stem = re.sub(r"^(?:CFFC文件|CFF文件)[+_ ]*", "", stem, flags=re.IGNORECASE)
     stem = re.sub(r"[_+]+", " ", stem)
     stem = re.sub(r"\s+", " ", stem).strip(" -_")
     return stem or Path(title).stem or title
@@ -827,7 +830,8 @@ def clean_index_terms(items: list[str], *, limit: int = 8) -> list[str]:
             continue
         if any(fragment in normalized for fragment in INDEX_NOISE_FRAGMENTS):
             continue
-        if re.fullmatch(r"(?:cffc[_\s-]*)?\d{6,8}", normalized):
+        # 机制化噪声过滤: 通用 "缩写+长数字" 工单号/文件号 pattern, 不绑定客户缩写
+        if re.fullmatch(r"[a-z]{0,8}[_\s-]*\d{6,8}", normalized):
             continue
         if len(cleaned) <= 1:
             continue

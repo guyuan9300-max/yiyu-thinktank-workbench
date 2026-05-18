@@ -1276,6 +1276,23 @@ class EventLineUpdatePayload(BaseModel):
     syncLinkedTaskClientIds: bool | None = None
 
 
+class EventLineMergePayload(BaseModel):
+    sourceIds: list[str] = Field(min_length=1)
+
+
+class EventLineMergePreviewItemRecord(BaseModel):
+    table: str
+    rows: int
+
+
+class EventLineMergePreviewRecord(BaseModel):
+    targetId: str
+    targetName: str
+    sources: list[dict]  # [{id, name, status}] for UI listing
+    impact: list[EventLineMergePreviewItemRecord]
+    totalRows: int
+
+
 class EventLineImportActivityPayload(BaseModel):
     id: str = Field(min_length=1)
     sourceType: Literal["task_activity", "meeting", "support_request", "review", "attachment", "manual_note"]
@@ -1682,6 +1699,91 @@ class ReviewDashboardResponse(BaseModel):
     plans: list[PlanNodeRecord]
 
 
+class EventLineNarrativeNodeRecord(BaseModel):
+    id: str
+    time: str = ""
+    title: str = ""
+    narrative: str = ""
+    confidence: str = "medium"
+    linkedTaskIds: list[str] = Field(default_factory=list)
+    linkedActivityIds: list[str] = Field(default_factory=list)
+    linkedAttachmentIds: list[str] = Field(default_factory=list)
+
+
+class EventLineTimelineNarrativeRecord(BaseModel):
+    eventLineId: str
+    rev: int = 0
+    headline: str = ""
+    opening: str = ""
+    closing: str = ""
+    nodes: list[EventLineNarrativeNodeRecord] = Field(default_factory=list)
+    overallConfidence: float = 0.0
+    generator: str = ""
+    modelName: str = ""
+    updatedAt: str = ""
+    triggeredByDisplayName: str = ""
+
+
+class EventLineTimelineNarrativeRegeneratePayload(BaseModel):
+    trigger: str = "manual"
+
+
+class ClientStrategicProfileRecord(BaseModel):
+    """「项目本质」维度的结构化骨架。"""
+
+    clientId: str
+    projectType: str = ""
+    projectGoal: str = ""
+    successMetric: str = ""
+    currentPhase: str = ""
+    cooperationStartDate: str | None = None
+    cooperationEndDate: str | None = None
+    notes: str = ""
+    updatedByDisplayName: str = ""
+    updatedAt: str = ""
+
+
+class ClientStrategicProfileUpdatePayload(BaseModel):
+    projectType: str = ""
+    projectGoal: str = ""
+    successMetric: str = ""
+    currentPhase: str = ""
+    cooperationStartDate: str | None = None
+    cooperationEndDate: str | None = None
+    notes: str = ""
+
+
+class ExternalPersonRecord(BaseModel):
+    """「关键人物」维度的花名册条目。"""
+
+    id: str
+    clientId: str
+    name: str
+    roleTitle: str = ""
+    affiliation: str = ""
+    relationshipType: str = ""
+    oneLiner: str = ""
+    notes: str = ""
+    sortOrder: int = 0
+    createdAt: str = ""
+    updatedAt: str = ""
+
+
+class ExternalPersonUpsertPayload(BaseModel):
+    name: str
+    roleTitle: str = ""
+    affiliation: str = ""
+    relationshipType: str = ""
+    oneLiner: str = ""
+    notes: str = ""
+    sortOrder: int = 0
+
+
+class ExternalPersonsListResponse(BaseModel):
+    clientId: str
+    persons: list[ExternalPersonRecord] = Field(default_factory=list)
+
+
 class DepartmentSignalActionAlert(BaseModel):
     id: str
     kind: str
@@ -1728,9 +1830,57 @@ class DepartmentSnapshot(BaseModel):
     burndownActual: list[float] = Field(default_factory=list)
 
 
+class ExecutiveHealthIndicator(BaseModel):
+    """One headline number for the org's weekly health bar."""
+
+    key: str
+    label: str
+    valueText: str
+    unitText: str | None = None
+    deltaText: str | None = None
+    trendDirection: str = "flat"
+    accent: str = "neutral"
+    helperText: str | None = None
+
+
+class ExecutiveDecision(BaseModel):
+    """A management-level decision recommendation in three parts:
+    现状 / 决策 / 代价 (situation / decision / cost-of-inaction).
+    """
+
+    id: str
+    rank: int
+    severity: str
+    title: str
+    situation: str
+    decision: str
+    cost: str
+    actionLabel: str | None = None
+    actionTarget: dict[str, object] | None = None
+    sourceRefs: list[dict[str, object]] = Field(default_factory=list)
+
+
+class DepartmentScoreRow(BaseModel):
+    """Horizontal comparison row — one department per cell."""
+
+    departmentId: str
+    departmentName: str
+    leaderName: str | None = None
+    valueProductionScore: int = 0
+    fulfillmentRatePct: int = 0
+    monthlyProgressPct: int = 0
+    humanEfficiencyScore: int = 0
+    headlineInsight: str | None = None
+    status: str = "stable"
+
+
 class DepartmentSignalsResponse(BaseModel):
     weekLabel: str
     viewerRole: str = "employee"
+    healthIndicators: list[ExecutiveHealthIndicator] = Field(default_factory=list)
+    executiveDecisions: list[ExecutiveDecision] = Field(default_factory=list)
+    departmentScoreboard: list[DepartmentScoreRow] = Field(default_factory=list)
+    # legacy fields kept for transition (frontend stops reading them after P1)
     actionAlerts: list[DepartmentSignalActionAlert] = Field(default_factory=list)
     oneOnOneSuggestions: list[DepartmentSignalOneOnOneSuggestion] = Field(default_factory=list)
     departmentSnapshots: list[DepartmentSnapshot] = Field(default_factory=list)
@@ -1770,3 +1920,118 @@ class WeeklyReviewCreatePayload(BaseModel):
     workFreeNote: str = ""
     personalGrowthNote: str = ""
     personalPrivateNote: str = ""
+
+
+# ============================================================
+# Phase 1.5c · 战略陪伴叙事面板 (云端共享, 组织内 A/B 账号同源)
+# 6 维度故事网 + 共同编织澄清 + 历史可溯
+# ============================================================
+
+NarrativeDimension = Literal[
+    "essence",         # Layer 1 · 项目本质 (机构是谁/赛道/定位)
+    "cooperation",     # Layer 2 · 合作关系 (益语跟客户的服务周期+内容)
+    "business_intro",  # Layer 3 · 业务介绍 (机构内每个项目详细介绍)
+    "people",          # Layer 4 · 关键人物 (益语方+客户方+各项目对应)
+    "timeline",        # Layer 5 · 时间线 (合作里程碑)
+    "next_steps",      # Layer 6 · 承诺与下一步
+    # 已废弃 (兼容旧 rev): "history" / "commitments" / "risks" / "next"
+    "history", "commitments", "risks", "next",
+]
+
+NarrativeConfidence = Literal["high", "medium", "low"]
+
+NarrativeClarificationStatus = Literal["pending", "applied", "discarded"]
+
+
+class NarrativeReference(BaseModel):
+    """AI 叙事段落引用的原始 db row 钻取链路."""
+    sourceType: str          # 'document' / 'event_line' / 'event_line_activity' / 'action_item' / 'memory_fact' / 'chat_message'
+    sourceId: str
+    label: str = ""           # 显示给用户看的引用标签
+    confidence: NarrativeConfidence = "medium"
+
+
+class NarrativeDimensionRecord(BaseModel):
+    """6 个维度中的一个: AI 叙事 + 引用源 + 把握度 + 澄清入口."""
+    dimension: NarrativeDimension
+    narrative: str = ""                  # AI 写的自然语言叙事
+    confidence: NarrativeConfidence = "low"
+    confidenceReason: str = ""           # 为什么是这个把握度 (尤其低的)
+    references: list[NarrativeReference] = Field(default_factory=list)
+    dataLayerGap: str = ""               # 这一维度因为数据中心缺什么导致讲不好
+    openClarifications: list[str] = Field(default_factory=list)   # AI 想跟用户澄清的问题
+
+
+class NarrativeContributor(BaseModel):
+    """谁澄清过这一段 (共同编织追溯)."""
+    userId: str | None = None
+    displayName: str
+    dimension: NarrativeDimension
+    answeredAt: str
+
+
+class ClientNarrativeRecord(BaseModel):
+    """战略陪伴 / 事实澄清面板的整页数据."""
+    id: str
+    clientId: str
+    clientName: str = ""
+    rev: int
+    generator: str = "ai"
+    generatedAt: str
+    modelName: str = ""
+    dimensions: list[NarrativeDimensionRecord]
+    overallConfidence: float = 0.0
+    openClarificationsCount: int = 0
+    dataLayerGaps: list[str] = Field(default_factory=list)
+    contributors: list[NarrativeContributor] = Field(default_factory=list)
+    updatedAt: str
+
+
+class NarrativeClarificationRecord(BaseModel):
+    id: str
+    clientId: str
+    basedOnRev: int
+    dimension: NarrativeDimension
+    question: str = ""
+    askedBy: str = "ai"
+    answer: str
+    answeredByUserId: str | None = None
+    answeredByDisplayName: str = ""
+    answeredAt: str
+    resultedInRev: int | None = None
+    status: NarrativeClarificationStatus = "pending"
+
+
+class NarrativeClarificationCreatePayload(BaseModel):
+    dimension: NarrativeDimension
+    question: str = ""
+    answer: str
+    basedOnRev: int | None = None             # 默认基于最新
+
+
+class NarrativeClarificationsResponse(BaseModel):
+    clarifications: list[NarrativeClarificationRecord] = Field(default_factory=list)
+
+
+class NarrativeRegeneratePayload(BaseModel):
+    """触发 LLM 重新生成 6 段叙事 (吸纳新的澄清)."""
+    trigger: str = "manual"                   # 'manual' / 'clarification' / 'scheduled'
+    force: bool = False                       # true=即使没新澄清也重生
+
+
+class NarrativeIngestPayload(BaseModel):
+    """本地 backend 生成完叙事后, POST 给云端落库 (Plan A 链路核心).
+
+    本地直查 atomic_facts/entities/... 调本地 LLM, 完成生成后把整页 6 维度
+    + 元数据塞给云端, 云端只做"持久化 + 多端共享". 不在云端重新调 LLM.
+    """
+    dimensions: dict[str, dict[str, object]]    # essence/people/.../next → 各 dim 的 payload
+    overallConfidence: float = 0.0
+    generator: str = "backend_local_ai"
+    modelName: str = ""
+    dataLayerGaps: list[str] = Field(default_factory=list)
+    trigger: str = "manual"
+    factBundleSummary: dict[str, object] = Field(default_factory=dict)  # collector 拿了什么的诊断信息
+    # v1.0 新增: 客户基本信息, 让 cloud /ingest 在 client_id 不存在时自动创建
+    clientName: str = ""
+    clientAlias: str = ""

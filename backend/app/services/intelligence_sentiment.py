@@ -20,7 +20,7 @@ from datetime import datetime, timezone
 from typing import Any
 from urllib.parse import urlparse
 
-from app.db import Database, to_json
+from app.db import Database, from_json, to_json
 from app.services.public_search import search_public_web
 
 # ──────────────────────────────────────────────────────────────────────────
@@ -245,26 +245,139 @@ def analyze_sentiment(text: str, *, target_name: str | None = None) -> Sentiment
 # ──────────────────────────────────────────────────────────────────────────
 
 
-def build_search_queries(target_name: str, business_line: str | None = None) -> list[str]:
-    """生成舆情专用搜索 query。
+# ──────────────────────────────────────────────────────────────────────────
+# 从数据中心拉客户的扩展上下文（别名 / 业务域 / 项目模块）
+# ──────────────────────────────────────────────────────────────────────────
 
-    覆盖 4 类信号：
-      1. 直接评价（"X 评价" / "X 怎么样"）
-      2. 负面预警（"X 投诉 / 质疑 / 曝光"）
-      3. 媒体报道（"X 报道 / 新闻"）
-      4. 业务线相关（如果传入 business_line）
+
+def _collect_target_aliases(
+    db: Database,
+    *,
+    client_id: str | None = None,
+    project_module_id: str | None = None,
+) -> dict[str, Any]:
+    """从 clients / project_modules 拉客户的扩展信息，用于扩 query。
+
+    返回示例：
+      {
+        "primary_name": "日慈基金会",
+        "aliases": ["日慈"],          # clients.alias，不同于 name 才计入
+        "domain": "儿童心理",          # clients.domain
+        "project_modules": ["心灵魔法学院", "..."],  # 客户名下激活的模块名
+      }
+
+    NOTE：刻意没拉 entities 表的 person，因为 entity 抽取目前质量太差
+    （"施工"被识别成 person，"高老师"是内部员工而非创始人）。
+    关键人物等高敏感扩展词应该让用户在 focus_directives UI 手动配。
+    """
+    result: dict[str, Any] = {
+        "primary_name": "",
+        "aliases": [],
+        "domain": "",
+        "project_modules": [],
+    }
+    if not client_id and not project_module_id:
+        return result
+
+    # 1) clients
+    if client_id:
+        client_row = db.fetchone(
+            "SELECT name, alias, domain FROM clients WHERE id = ?",
+            (client_id,),
+        )
+        if client_row:
+            name = str(client_row["name"] or "").strip()
+            alias = str(client_row["alias"] or "").strip()
+            domain = str(client_row["domain"] or "").strip()
+            result["primary_name"] = name
+            if alias and alias != name and len(alias) >= 2:
+                result["aliases"].append(alias)
+            if domain and len(domain) >= 2:
+                result["domain"] = domain
+
+    # 2) project_modules（只取该客户的激活模块名）
+    if client_id:
+        try:
+            pm_rows = db.fetchall(
+                """
+                SELECT name FROM project_modules
+                WHERE client_id = ?
+                ORDER BY updated_at DESC
+                LIMIT 5
+                """,
+                (client_id,),
+            )
+            result["project_modules"] = [
+                str(r["name"]) for r in pm_rows if r["name"] and len(str(r["name"]).strip()) >= 2
+            ]
+        except Exception:  # noqa: BLE001
+            pass  # 表不存在 / 字段不存在时不阻塞
+
+    return result
+
+
+def build_search_queries(
+    target_name: str,
+    *,
+    business_line: str | None = None,
+    aliases: list[str] | None = None,
+    domain: str | None = None,
+    project_modules: list[str] | None = None,
+    include_social_sites: bool = True,
+) -> list[str]:
+    """生成舆情专用搜索 query 矩阵。
+
+    扩展维度：
+      1. 主名 + 评价 / 怎么样 / 报道 / 投诉
+      2. 别名 + 评价 / 怎么样     （客户 alias 跑一遍）
+      3. 业务域辅助           （如 "日慈基金会 儿童心理"）
+      4. site: 限定 UGC 平台   （微博/知乎/豆瓣/小红书 各一组）
+      5. 业务线 / 项目模块共现 （如 "日慈基金会 心灵魔法学院 评价"）
     """
     if not target_name or not target_name.strip():
         return []
     target = target_name.strip()
-    queries = [
-        f"{target} 评价",
-        f"{target} 怎么样",
-        f"{target} 报道",
-        f"{target} 投诉 OR 质疑 OR 曝光",
-    ]
+    queries: list[str] = []
+    seen: set[str] = set()
+
+    def _add(q: str) -> None:
+        q = q.strip()
+        if q and q not in seen:
+            seen.add(q)
+            queries.append(q)
+
+    # 1) 主名基础 query
+    _add(f"{target} 评价")
+    _add(f"{target} 怎么样")
+    _add(f"{target} 报道")
+    _add(f"{target} 投诉 OR 质疑 OR 曝光")
+
+    # 2) 别名（不同于主名的）跑一遍 — 但只跑高价值的"评价/怎么样"
+    for alias in (aliases or []):
+        alias = (alias or "").strip()
+        if not alias or alias == target:
+            continue
+        _add(f"{alias} 评价")
+        _add(f"{alias} 怎么样")
+
+    # 3) 业务域辅助（让搜索引擎理解客户所在领域）
+    if domain and domain.strip():
+        _add(f"{target} {domain.strip()}")
+
+    # 4) UGC 平台 site 限定 — 通过搜索引擎曲线召回小红书/微博/知乎/豆瓣公开内容
+    #    （直接抓 UGC 平台要破反爬，先用搜索引擎已索引的公开页面做兜底）
+    if include_social_sites:
+        for site in ("xiaohongshu.com", "weibo.com", "zhihu.com", "douban.com"):
+            _add(f"{target} site:{site}")
+
+    # 5) 业务线 / 项目模块共现
     if business_line and business_line.strip():
-        queries.append(f"{target} {business_line.strip()}")
+        _add(f"{target} {business_line.strip()}")
+    for module_name in (project_modules or [])[:3]:  # 防止 query 矩阵爆炸，最多 3 个模块
+        module_name = (module_name or "").strip()
+        if module_name and module_name != target:
+            _add(f"{target} {module_name}")
+
     return queries
 
 
@@ -282,15 +395,34 @@ def fetch_sentiment_candidates(
     target_name: str,
     *,
     business_line: str | None = None,
+    aliases: list[str] | None = None,
+    domain: str | None = None,
+    project_modules: list[str] | None = None,
     max_per_query: int = 5,
     timeout_seconds: float = 8.0,
+    include_social_sites: bool = True,
+    ai_service: object | None = None,
+    deep_judge_budget: int = 8,
 ) -> list[SentimentItemDraft]:
-    """对一个监控对象（客户名 / 项目名）跑舆情抓取，返回带情感打标的 drafts。
+    """对一个监控对象跑舆情抓取，返回带情感打标的 drafts。
+
+    扩展参数：
+      - aliases: 别名（来自数据中心 clients.alias）
+      - domain: 业务域（如 "儿童心理"）
+      - project_modules: 客户名下激活的业务线
+      - include_social_sites: 是否加 site:微博/知乎/豆瓣/小红书 限定查询
 
     通过 public_search.search_public_web 调三大引擎冗余抓取，
     每条 hit 走词表情感分析，保留 source_url 必填。
     """
-    queries = build_search_queries(target_name, business_line)
+    queries = build_search_queries(
+        target_name,
+        business_line=business_line,
+        aliases=aliases,
+        domain=domain,
+        project_modules=project_modules,
+        include_social_sites=include_social_sites,
+    )
     if not queries:
         return []
 
@@ -298,6 +430,27 @@ def fetch_sentiment_candidates(
     seen_urls: set[str] = set()
     captured_at = datetime.now(timezone.utc).isoformat()
 
+    def _ingest_hit(hit: Any) -> None:
+        url = (getattr(hit, "url", "") or "").strip()
+        if not url or url in seen_urls:
+            return
+        title = (getattr(hit, "title", "") or "").strip()
+        snippet = (getattr(hit, "snippet", "") or "").strip()
+        if _is_low_value_hit(title, snippet, url):
+            return
+        seen_urls.add(url)
+        text = f"{title}\n{snippet}"
+        sentiment = analyze_sentiment(text, target_name=target_name)
+        drafts.append(SentimentItemDraft(
+            title=title or "(无标题)",
+            summary=snippet[:300] or title,
+            source=_domain_label(url),
+            source_url=url,
+            sentiment=sentiment,
+            captured_at=captured_at,
+        ))
+
+    # 1) 三大搜索引擎冗余抓取
     for query in queries:
         try:
             results = search_public_web(
@@ -308,24 +461,50 @@ def fetch_sentiment_candidates(
         except Exception:  # noqa: BLE001  网络故障不阻塞流程
             continue
         for hit in results:
-            url = (getattr(hit, "url", "") or "").strip()
-            if not url or url in seen_urls:
+            _ingest_hit(hit)
+
+    # 2) 社交平台直抓兜底（微博/小红书/抖音）— 仅跑主名 base query，不跑 site: 或 alias 派生
+    #    实现细节见 social_search.py：当前微博/小红书/抖音被反爬挡，stub 返回 []；
+    #    保留接口是为了后续切 Playwright/visitor cookie 时只换实现，不动调用点。
+    if include_social_sites:
+        try:
+            from app.services.social_search import (
+                search_weibo,
+                search_xiaohongshu,
+                search_douyin,
+            )
+        except Exception:  # noqa: BLE001
+            search_weibo = search_xiaohongshu = search_douyin = None  # type: ignore[assignment]
+
+        base_social_query = target_name.strip()
+        for fn in (search_weibo, search_xiaohongshu, search_douyin):
+            if fn is None:
                 continue
-            title = (getattr(hit, "title", "") or "").strip()
-            snippet = (getattr(hit, "snippet", "") or "").strip()
-            if _is_low_value_hit(title, snippet, url):
+            try:
+                social_hits = fn(
+                    base_social_query,
+                    max_results=max_per_query,
+                    timeout_seconds=timeout_seconds,
+                )
+            except Exception:  # noqa: BLE001
                 continue
-            seen_urls.add(url)
-            text = f"{title}\n{snippet}"
-            sentiment = analyze_sentiment(text, target_name=target_name)
-            drafts.append(SentimentItemDraft(
-                title=title or "(无标题)",
-                summary=snippet[:300] or title,
-                source=_domain_label(url),
-                source_url=url,
-                sentiment=sentiment,
-                captured_at=captured_at,
-            ))
+            for hit in social_hits:
+                _ingest_hit(hit)
+
+    # 3) Insight Agent — 对边界情况跑 Qwen 二次判定（默认最多 8 次/refresh）
+    if ai_service is not None and drafts:
+        try:
+            from app.services.intelligence_insight_agent import deep_judge_drafts
+            drafts, _stats = deep_judge_drafts(
+                ai_service,
+                drafts,
+                target_name=target_name,
+                max_invocations=deep_judge_budget,
+                timeout_seconds=25.0,
+            )
+        except Exception:  # noqa: BLE001
+            pass  # LLM 故障不阻塞抓取主流程
+
     return drafts
 
 
@@ -457,7 +636,12 @@ def compute_sentiment_profile(
     cutoff = datetime.now(timezone.utc).timestamp() - within_days * 86400
     cutoff_iso = datetime.fromtimestamp(cutoff, timezone.utc).isoformat()
 
-    where = ["content_kind = 'public_opinion'", "captured_at >= ?"]
+    where = [
+        "content_kind = 'public_opinion'",
+        "captured_at >= ?",
+        # 排除用户已确认误判 / 已处理的条目，避免画像被脏数据拖垮
+        "COALESCE(user_status, 'active') NOT IN ('dismissed', 'misclassified')",
+    ]
     params: list[Any] = [cutoff_iso]
     if project_module_id:
         where.append("project_module_id = ?")
@@ -534,7 +718,12 @@ def list_sentiment_items(
         timezone.utc,
     ).isoformat()
 
-    where = ["content_kind = 'public_opinion'", "captured_at >= ?"]
+    where = [
+        "content_kind = 'public_opinion'",
+        "captured_at >= ?",
+        # 同 compute_sentiment_profile：用户处置过的不再回显
+        "COALESCE(user_status, 'active') NOT IN ('dismissed', 'misclassified')",
+    ]
     params: list[Any] = [cutoff_iso]
     if project_module_id:
         where.append("project_module_id = ?")

@@ -174,8 +174,8 @@ def test_generator_falls_back_to_stub_when_no_api_key(db: Database, monkeypatch)
     people = next(d for d in latest.dimensions if d.dimension == "people")
     assert "张真" in people.narrative
     # 没澄清过的 dim 应该是 stub_dim 内容
-    risks = next(d for d in latest.dimensions if d.dimension == "risks")
-    assert risks.confidence == "low"
+    cooperation = next(d for d in latest.dimensions if d.dimension == "cooperation")
+    assert cooperation.confidence == "low"
 
 
 def test_generator_uses_llm_response_when_ok(db: Database, monkeypatch) -> None:
@@ -202,7 +202,22 @@ def test_generator_uses_llm_response_when_ok(db: Database, monkeypatch) -> None:
             "dataLayerGap": "external_persons 花名册未建",
             "openClarifications": ["徐总监全名是?"],
         },
-        "history": {
+        "cooperation": {
+            "narrative": "⏳ AI 暂时讲不出合作关系维度, 数据中心 cooperation_relationships 表未建",
+            "confidence": "low",
+            "confidenceReason": "数据中心加工层缺失",
+            "references": [],
+            "dataLayerGap": "cooperation_relationships 表未建",
+            "openClarifications": [],
+        },
+        "business_intro": {
+            "narrative": "日慈基金会是公益组织, 主营儿童社会情感学习",
+            "confidence": "medium",
+            "references": [{"sourceType": "event_line", "sourceId": "el_brand"}],
+            "dataLayerGap": "",
+            "openClarifications": [],
+        },
+        "timeline": {
             "narrative": "4/12 高老师与张真见面后确认方向...",
             "confidence": "medium",
             "references": [
@@ -211,23 +226,8 @@ def test_generator_uses_llm_response_when_ok(db: Database, monkeypatch) -> None:
             "dataLayerGap": "",
             "openClarifications": [],
         },
-        "commitments": {
-            "narrative": "益语 → 5/15 前出 visual story 提纲",
-            "confidence": "medium",
-            "references": [{"sourceType": "task", "sourceId": "tsk_1"}],
-            "dataLayerGap": "",
-            "openClarifications": [],
-        },
-        "risks": {
-            "narrative": "⏳ AI 暂时讲不出风险维度, 数据中心 risk_signals 表未建",
-            "confidence": "low",
-            "confidenceReason": "数据中心加工层缺失",
-            "references": [],
-            "dataLayerGap": "risk_signals 表未建",
-            "openClarifications": [],
-        },
-        "next": {
-            "narrative": "5/15 前提交 visual story 提纲, 张真确认方向",
+        "next_steps": {
+            "narrative": "益语 → 5/15 前出 visual story 提纲; 张真确认方向",
             "confidence": "medium",
             "references": [{"sourceType": "task", "sourceId": "tsk_1"}],
             "dataLayerGap": "",
@@ -253,9 +253,9 @@ def test_generator_uses_llm_response_when_ok(db: Database, monkeypatch) -> None:
     assert essence.confidence == "high"
     assert len(essence.references) == 2
     assert any(r.sourceId == "el_brand" for r in essence.references)
-    risks = next(d for d in latest.dimensions if d.dimension == "risks")
-    assert risks.confidence == "low"
-    assert "risk_signals" in risks.dataLayerGap
+    cooperation = next(d for d in latest.dimensions if d.dimension == "cooperation")
+    assert cooperation.confidence == "low"
+    assert "cooperation_relationships" in cooperation.dataLayerGap
 
 
 def test_generator_llm_failure_falls_back_gracefully(db: Database, monkeypatch) -> None:

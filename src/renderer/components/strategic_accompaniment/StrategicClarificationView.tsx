@@ -25,6 +25,7 @@ import {
   Mic, Type, ExternalLink, ChevronDown, FileSearch, Briefcase,
   Sparkles, MessageCircle, Building2, RefreshCw, Database, GitBranch,
   Compass, Network, History, Handshake, AlertTriangle, ArrowRight,
+  UploadCloud,
 } from 'lucide-react';
 import {
   getClientClarificationContext,
@@ -48,6 +49,7 @@ import {
   type NarrativeClarification,
 } from '../../lib/api';
 import { GlossaryAttributeReviewSection } from './GlossaryAttributeReviewSection';
+import { UnifiedTodoSection } from './UnifiedTodoSection';
 
 interface StrategicClarificationViewProps {
   clientOptions: Array<{ id: string; name: string }>;
@@ -59,7 +61,7 @@ interface StrategicClarificationViewProps {
 type Confidence = 'high' | 'medium' | 'low';
 
 const CONFIDENCE_META: Record<Confidence, { label: string; bg: string; text: string; icon: typeof CheckCircle }> = {
-  high: { label: '已确认', bg: 'bg-emerald-50', text: 'text-emerald-700', icon: CheckCircle },
+  high: { label: '已更新', bg: 'bg-emerald-50', text: 'text-emerald-700', icon: CheckCircle },
   medium: { label: '部分确认', bg: 'bg-amber-50', text: 'text-amber-700', icon: AlertCircle },
   low: { label: '待补充', bg: 'bg-slate-100', text: 'text-slate-500', icon: HelpCircle },
 };
@@ -76,6 +78,7 @@ export function StrategicClarificationView({
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [regenerating, setRegenerating] = useState(false);
+  const [refreshTodoKey, setRefreshTodoKey] = useState(0);
 
   const loadAll = useCallback(async (clientId: string) => {
     setLoading(true);
@@ -201,6 +204,7 @@ export function StrategicClarificationView({
           onRegenerate={handleRegenerate}
           regenerating={regenerating}
           clientName={clientOptions.find((c) => c.id === selectedClientId)?.name ?? ''}
+          refreshTodoKey={refreshTodoKey}
         />
       )}
 
@@ -209,6 +213,10 @@ export function StrategicClarificationView({
         <GlossaryAttributeReviewSection
           clientId={selectedClientId}
           flash={flash}
+          onChanged={() => {
+            // 字典 date 类点 [已完成] 后, 后端启发式联动 task done; 这里触发 UnifiedTodoSection 重新拉
+            setRefreshTodoKey((k) => k + 1);
+          }}
         />
       )}
 
@@ -239,7 +247,7 @@ const DIMENSION_META: Record<NarrativeDimensionKey, {
   hint: string;
 }> = {
   // v1.0 新 6 层
-  essence:        { label: '项目本质',     icon: Compass,       hint: '客户机构是谁 / 赛道 / 行业定位 / 影响力' },
+  essence:        { label: '项目介绍',     icon: Compass,       hint: '客户机构是谁 / 赛道 / 行业定位 / 影响力' },
   cooperation:    { label: '合作关系',     icon: Handshake,     hint: '益语跟客户的服务关系 / 合作周期 / 核心交付' },
   business_intro: { label: '业务介绍',     icon: Briefcase,     hint: '客户机构内含项目逐个详介' },
   people:         { label: '关键人物',     icon: Network,       hint: '益语方 + 客户方 + 每个项目对应角色' },
@@ -253,10 +261,117 @@ const DIMENSION_META: Record<NarrativeDimensionKey, {
 };
 
 const DIMENSION_ORDER: NarrativeDimensionKey[] = [
-  'essence', 'cooperation', 'business_intro', 'people', 'timeline', 'next_steps',
+  // 业务介绍 在 合作关系 之上 (用户要求: 先了解业务, 再看合作)
+  'essence', 'business_intro', 'cooperation', 'people', 'timeline', 'next_steps',
   // 旧 dim 兼容显示在最后, 实际新 rev 不会有
   'history', 'commitments', 'risks', 'next',
 ];
+
+// ────────────────────────────────────────────────────────────
+// 业务介绍 — 启发式分段渲染
+// 策略 (按优先级尝试): markdown headings → 数字列表 → bullet → 大段中按"项目名:" 切
+// ────────────────────────────────────────────────────────────
+interface Segment {
+  title: string;
+  body: string;
+  source?: string;  // 从 body 末尾 [来自: X] 抽出
+}
+
+function parseBusinessIntro(text: string): Segment[] | null {
+  const t = (text || '').trim();
+  if (!t) return null;
+
+  // 1. Markdown headings (## XX / ### XX)
+  const headingRe = /^#{1,6}\s+(.+)$/gm;
+  const headingMatches = Array.from(t.matchAll(headingRe));
+  if (headingMatches.length >= 2) {
+    const segs: Segment[] = [];
+    for (let i = 0; i < headingMatches.length; i++) {
+      const m = headingMatches[i];
+      const start = (m.index ?? 0) + m[0].length;
+      const end = i + 1 < headingMatches.length ? headingMatches[i + 1].index ?? t.length : t.length;
+      segs.push({ title: m[1].trim(), body: t.slice(start, end).trim() });
+    }
+    return segs;
+  }
+
+  // 2. 数字编号列表 — 行内或跨行都能切
+  //    "1. 心灵魔法学院：xxx 2. 心盛计划：xxx 3. ..." (一段) 或 "1. xxx\n2. yyy" (多行)
+  //    不再用 ^ 行首锚定, 用 lookbehind (开头/句号/换行/空格 后) + 数字
+  const numberRe = /(?:^|[。\n]|\s)(\d+|[①②③④⑤⑥⑦⑧⑨⑩])[\.、)]\s*([^：:0-9]{2,30})[：:]([^]+?)(?=(?:[。\n\s]\d+[\.、)]|[①②③④⑤⑥⑦⑧⑨⑩][\.、)]?)|$)/g;
+  const numberMatches = Array.from(t.matchAll(numberRe));
+  if (numberMatches.length >= 2) {
+    const segs: Segment[] = [];
+    const sourceRe = /\s*\[来自[::]\s*([^\]]+)\]\s*$/;
+    for (const m of numberMatches) {
+      const title = m[2].trim();
+      let body = m[3].trim().replace(/^[。,，;；]\s*/, '').replace(/[。,,;；]\s*\d+[\.、)].*$/, '');
+      let source: string | undefined;
+      const srcMatch = body.match(sourceRe);
+      if (srcMatch) {
+        source = srcMatch[1].trim();
+        body = body.replace(sourceRe, '').trim();
+      }
+      if (title && (title.length <= 30)) {
+        segs.push({ title, body, source });
+      }
+    }
+    if (segs.length >= 2) return segs;
+  }
+
+  // 3. Bullet points (· - * • 开头)
+  const bulletRe = /^[\s]*[·\-\*•]\s+([^\n]+)/gm;
+  const bulletMatches = Array.from(t.matchAll(bulletRe));
+  if (bulletMatches.length >= 3) {
+    const segs: Segment[] = [];
+    for (const m of bulletMatches) {
+      const line = m[1].trim();
+      const colonIdx = line.search(/[:：]/);
+      if (colonIdx > 0 && colonIdx < 30) {
+        segs.push({ title: line.slice(0, colonIdx).trim(), body: line.slice(colonIdx + 1).trim() });
+      } else {
+        segs.push({ title: line.slice(0, 30), body: '' });
+      }
+    }
+    return segs;
+  }
+
+  // 4. 段落级 "项目名: 描述" — 中文流水文里常见的格式
+  // 例: "心盛计划是日慈核心项目, 服务 18-24 青年. 教师赋能项目..."
+  // 用句号+疑似项目名启发, 但太脆弱, 留作未来 LLM 二次抽取
+  return null;
+}
+
+function BusinessIntroSegmented({ text }: { text: string }) {
+  const segs = parseBusinessIntro(text);
+  if (!segs || segs.length === 0) {
+    return <span className="whitespace-pre-wrap">{text}</span>;
+  }
+  return (
+    <div className="space-y-3">
+      {segs.map((s, idx) => (
+        <div
+          key={idx}
+          className="rounded-lg bg-slate-50/70 border border-slate-100 px-3 py-2"
+        >
+          <div className="text-[13px] font-bold text-slate-800 mb-1">
+            {s.title}
+          </div>
+          {s.body && (
+            <div className="text-[12px] text-slate-600 leading-[1.7] whitespace-pre-wrap">
+              {s.body}
+            </div>
+          )}
+          {s.source && (
+            <div className="mt-1.5 text-[10px] text-slate-400 italic">
+              来自: {s.source}
+            </div>
+          )}
+        </div>
+      ))}
+    </div>
+  );
+}
 
 function NarrativePanel({
   narrative,
@@ -265,6 +380,7 @@ function NarrativePanel({
   onRegenerate,
   regenerating,
   clientName,
+  refreshTodoKey,
 }: {
   narrative: ClientNarrative;
   clarifications: NarrativeClarification[];
@@ -272,6 +388,7 @@ function NarrativePanel({
   onRegenerate: () => void;
   regenerating: boolean;
   clientName: string;
+  refreshTodoKey: number;
 }) {
   const dimsByKey = new Map<NarrativeDimensionKey, NarrativeDimensionRecord>(
     narrative.dimensions.map((d) => [d.dimension, d]),
@@ -333,6 +450,7 @@ function NarrativePanel({
             </button>
           </div>
         </section>
+        <UnifiedTodoSection key={refreshTodoKey} clientId={narrative.clientId} />
         <PendingClarificationsCard pending={pending} />
         <AppliedClarificationsCard applied={applied} />
       </div>
@@ -367,6 +485,16 @@ function NarrativeDimensionCard({
     setClarifyOpen(false);
   };
 
+  const handleUploadClick = () => {
+    // TODO(post-M1): 接 backend POST /clients/{id}/documents/upload-binary?dimension=${dim.dimension}
+    alert(
+      `📤 上传 ${meta.label} 相关资料\n\n` +
+      `请先把文件 (例: 合作合同/项目说明书/财报) 拖入"工作台 → 客户文件夹".\n` +
+      `系统会自动 OCR + ingest + 抽取字典 candidate, 替代你逐条澄清.\n\n` +
+      `下一版会直接在这里上传, 一键到这个客户的"${meta.label}"专属目录.`
+    );
+  };
+
   return (
     <article className="rounded-2xl border border-slate-100 bg-white px-5 py-4 shadow-[0_2px_8px_rgba(15,23,42,0.03)]">
       <div className="flex items-center justify-between mb-2 gap-3">
@@ -375,21 +503,31 @@ function NarrativeDimensionCard({
           <h3 className="text-[14px] font-bold text-slate-900">{meta.label}</h3>
           <span className="text-[10px] text-slate-400 hidden md:inline">{meta.hint}</span>
         </div>
-        <div className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 ${confidenceMeta.bg} ${confidenceMeta.text}`}>
-          <CIcon size={11} />
-          <span className="text-[10px] font-bold">{confidenceMeta.label}</span>
+        <div className="flex items-center gap-2">
+          <div className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 ${confidenceMeta.bg} ${confidenceMeta.text}`}>
+            <CIcon size={11} />
+            <span className="text-[10px] font-bold">{confidenceMeta.label}</span>
+          </div>
+          <button
+            type="button"
+            onClick={handleUploadClick}
+            className="inline-flex items-center justify-center w-6 h-6 rounded-full text-slate-400 hover:text-blue-600 hover:bg-blue-50 transition"
+            title={`上传 ${meta.label} 相关资料 (例: 合同/项目说明书), 自动替代逐条澄清`}
+          >
+            <UploadCloud size={14} />
+          </button>
         </div>
       </div>
 
-      <div className="text-[13px] text-slate-700 leading-[1.8] whitespace-pre-wrap mb-2">
-        {dim.narrative || <span className="text-slate-400">⏳ AI 暂未生成此段</span>}
+      <div className="text-[13px] text-slate-700 leading-[1.8] mb-2">
+        {dim.narrative
+          ? (dim.dimension === 'business_intro'
+              ? <BusinessIntroSegmented text={dim.narrative} />
+              : <span className="whitespace-pre-wrap">{dim.narrative}</span>)
+          : <span className="text-slate-400">⏳ AI 暂未生成此段</span>}
       </div>
 
-      {dim.confidenceReason && dim.confidence !== 'high' && (
-        <div className="text-[11px] text-slate-500 italic mb-2">
-          为什么把握度是 {confidenceMeta.label}: {dim.confidenceReason}
-        </div>
-      )}
+      {/* "为什么把握度是 X" 已按需求隐藏 — confidenceReason 仅作后台调试用 */}
 
       {dim.dataLayerGap && (
         <div className="text-[11px] text-amber-700 bg-amber-50/60 rounded px-2 py-1 mb-2 inline-flex items-center gap-1">

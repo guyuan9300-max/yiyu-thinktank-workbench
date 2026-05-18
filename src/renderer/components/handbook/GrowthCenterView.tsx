@@ -42,11 +42,36 @@ import {
   markHandbookEntryReused,
 } from '../../lib/api';
 import { useGrowthOverviewState } from '../growth/GrowthContext';
+import { ActivityCalendar } from 'react-activity-calendar';
+import {
+  LineChart,
+  Line,
+  ResponsiveContainer,
+  Tooltip as RTooltip,
+  AreaChart,
+  Area,
+  XAxis,
+  YAxis,
+  PieChart,
+  Pie,
+  Cell,
+  BarChart,
+  Bar,
+} from 'recharts';
 import type {
   GrowthAbilityKey,
   GrowthAbilityScore,
   GrowthAbilityGap,
   GrowthAbilityTrendPoint,
+  GrowthDailyActivity,
+  GrowthCommitmentSummary,
+  GrowthBusinessCoverage,
+  GrowthReviewStreak,
+  GrowthWorkType,
+  GrowthImpact,
+  GrowthLearning,
+  GrowthLearningPick,
+  GrowthPeerComparison,
   GrowthOverview,
   XpLedgerEntry,
   HandbookEntry,
@@ -709,27 +734,363 @@ function BadgeModal({ badge, onClose }: { badge: BadgeProgress; onClose: () => v
    Hexagonal Radar Chart — matches preview exactly
    ──────────────────────────────────────────────────────────────────── */
 function AbilitySparkline({ points, color }: { points: GrowthAbilityTrendPoint[]; color: string }) {
-  // L1：能力 mini 折线（48×16 SVG，纯展示，不可交互）
-  // 用最近 N 个周快照的 score 画一条折线，让用户一眼看出方向感。
+  // L1 升级：用 recharts mini line，比手写 SVG 美观且自带 hover tooltip
   if (points.length < 2) return null;
-  const W = 48;
-  const H = 16;
-  const scores = points.map(p => p.score);
-  const min = Math.min(...scores);
-  const max = Math.max(...scores);
-  const range = max - min || 1;
-  const step = W / (points.length - 1);
-  const path = points
-    .map((p, i) => {
-      const x = i * step;
-      const y = H - ((p.score - min) / range) * H;
-      return `${i === 0 ? 'M' : 'L'}${x.toFixed(1)},${y.toFixed(1)}`;
-    })
-    .join(' ');
+  const data = points.map(p => ({ week: p.weekLabel, score: p.score }));
   return (
-    <svg width={W} height={H} style={{ overflow: 'visible' }}>
-      <path d={path} fill="none" stroke={color} strokeWidth={1.5} strokeLinecap="round" strokeLinejoin="round" />
-    </svg>
+    <div style={{ width: 56, height: 18 }}>
+      <ResponsiveContainer width="100%" height="100%">
+        <LineChart data={data} margin={{ top: 2, right: 1, left: 1, bottom: 2 }}>
+          <Line
+            type="monotone"
+            dataKey="score"
+            stroke={color}
+            strokeWidth={1.5}
+            dot={false}
+            isAnimationActive={false}
+          />
+          <RTooltip
+            cursor={false}
+            contentStyle={{ fontSize: 10, padding: '2px 6px', borderRadius: 4 }}
+            labelFormatter={(label) => `${label}`}
+            formatter={(value) => [`${value} 分`, ''] as [string, string]}
+            separator=""
+          />
+        </LineChart>
+      </ResponsiveContainer>
+    </div>
+  );
+}
+
+// ────────── M2: 承诺履约 · 正向 streak + 环比双线 ──────────
+function CommitmentCard({ summary }: { summary: GrowthCommitmentSummary }) {
+  const currentStreak = summary.currentStreakDays ?? 0;
+  const longestStreak = summary.longestStreakDays ?? 0;
+  const monthly = summary.monthlyFulfilledCount ?? 0;
+  const lastMonthly = summary.lastMonthFulfilledCount ?? 0;
+  const growth = summary.growthPercent ?? 0;
+  const curve = summary.cumulativeCurve ?? [];
+
+  // 没任何数据时不显示
+  if (monthly === 0 && longestStreak === 0 && curve.length === 0) return null;
+
+  // 距离破纪录还差多少
+  const breakRecordIn = longestStreak > currentStreak ? longestStreak - currentStreak + 1 : 0;
+  const isBeatingRecord = currentStreak >= longestStreak && currentStreak > 0;
+
+  return (
+    <div className="gc-card" style={{ padding: 20 }}>
+      <div className="gc-section-header" style={{ marginBottom: 16 }}>
+        <div className="gc-section-title">准时兑现</div>
+        <span className="gc-section-hint">
+          {isBeatingRecord ? '正在创造新纪录' : `最长 ${longestStreak} 天`}
+        </span>
+      </div>
+
+      {/* 顶部 2 个大数字 */}
+      <div style={{ display: 'flex', gap: 32, alignItems: 'flex-end', marginBottom: 16, flexWrap: 'wrap' }}>
+        <div>
+          <div style={{ fontSize: 11, color: '#94a3b8', marginBottom: 4 }}>连续准时</div>
+          <div style={{ display: 'flex', alignItems: 'baseline', gap: 6 }}>
+            <span style={{ fontSize: 36, fontWeight: 700, color: '#5B7BFE', lineHeight: 1 }}>{currentStreak}</span>
+            <span style={{ fontSize: 14, color: '#94a3b8' }}>天</span>
+            {isBeatingRecord && <span style={{ fontSize: 11, color: '#f59e0b', fontWeight: 600, marginLeft: 4 }}>🔥 破纪录</span>}
+          </div>
+          {breakRecordIn > 0 && (
+            <div style={{ fontSize: 11, color: '#94a3b8', marginTop: 4 }}>
+              再坚持 {breakRecordIn} 天可破纪录
+            </div>
+          )}
+        </div>
+        <div>
+          <div style={{ fontSize: 11, color: '#94a3b8', marginBottom: 4 }}>本月已兑现</div>
+          <div style={{ display: 'flex', alignItems: 'baseline', gap: 6 }}>
+            <span style={{ fontSize: 28, fontWeight: 600, color: '#1e293b', lineHeight: 1 }}>{monthly}</span>
+            <span style={{ fontSize: 14, color: '#94a3b8' }}>件</span>
+            {growth !== 0 && (
+              <span style={{
+                fontSize: 11,
+                fontWeight: 600,
+                marginLeft: 4,
+                padding: '2px 6px',
+                borderRadius: 4,
+                background: growth > 0 ? 'rgba(5,150,105,0.1)' : 'rgba(220,38,38,0.08)',
+                color: growth > 0 ? '#059669' : '#dc2626',
+              }}>
+                {growth > 0 ? '↗' : '↘'} {Math.abs(growth)}%
+              </span>
+            )}
+          </div>
+          <div style={{ fontSize: 11, color: '#94a3b8', marginTop: 4 }}>
+            上月 {lastMonthly} 件
+          </div>
+        </div>
+      </div>
+
+      {/* 双线累计图：本月 vs 上月 */}
+      {curve.length > 0 && (curve.some(c => c.currentCumulative > 0) || curve.some(c => c.previousCumulative > 0)) && (
+        <div>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 12, fontSize: 11, color: '#64748b', marginBottom: 6 }}>
+            <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+              <span style={{ width: 16, height: 2, background: '#5B7BFE', borderRadius: 1 }} /> 本月累计
+            </span>
+            <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+              <span style={{ width: 16, height: 0, borderTop: '2px dashed #94a3b8' }} /> 上月同位置
+            </span>
+          </div>
+          <div style={{ width: '100%', height: 80 }}>
+            <ResponsiveContainer>
+              <LineChart data={curve} margin={{ top: 4, right: 8, left: 0, bottom: 0 }}>
+                <XAxis dataKey="weekLabel" axisLine={false} tickLine={false} tick={{ fontSize: 10, fill: '#94a3b8' }} />
+                <YAxis hide />
+                <Line type="monotone" dataKey="currentCumulative" stroke="#5B7BFE" strokeWidth={2} dot={{ r: 3 }} />
+                <Line type="monotone" dataKey="previousCumulative" stroke="#94a3b8" strokeWidth={1.5} strokeDasharray="4 3" dot={false} />
+                <RTooltip
+                  contentStyle={{ fontSize: 11 }}
+                  formatter={(v, n) => [`${v} 件`, n === 'currentCumulative' ? '本月' : '上月'] as [string, string]}
+                />
+              </LineChart>
+            </ResponsiveContainer>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ────────── M1: 业务覆盖热力 (用 BarChart 横向) ──────────
+function BusinessCoverageCard({ coverage }: { coverage: GrowthBusinessCoverage }) {
+  if (coverage.items.length === 0) return null;
+  const data = coverage.items.slice(0, 8);
+  return (
+    <div className="gc-card" style={{ padding: 20 }}>
+      <div className="gc-section-header" style={{ marginBottom: 12 }}>
+        <div className="gc-section-title">业务覆盖</div>
+        <span className="gc-section-hint">{coverage.coveredClients} 个客户 · {coverage.coveredProjects} 个关联项目</span>
+      </div>
+      <div style={{ width: '100%', height: data.length * 32 + 20 }}>
+        <ResponsiveContainer>
+          <BarChart data={data} layout="vertical" margin={{ left: 0, right: 20 }}>
+            <XAxis type="number" hide />
+            <YAxis type="category" dataKey="label" width={110} tick={{ fontSize: 11 }} />
+            <RTooltip
+              contentStyle={{ fontSize: 11 }}
+              formatter={(_v, _n, item: { payload?: { taskCount: number; documentCount: number; glossaryTermCount: number } }) => {
+                const it = item?.payload;
+                if (!it) return ['', ''] as [string, string];
+                return [`任务${it.taskCount} 文档${it.documentCount} 字典${it.glossaryTermCount}`, ''] as [string, string];
+              }}
+              separator=""
+            />
+            <Bar dataKey="score" fill="#5B7BFE" radius={[0, 4, 4, 0]} />
+          </BarChart>
+        </ResponsiveContainer>
+      </div>
+    </div>
+  );
+}
+
+// ────────── M3 + M4 + M6 合并到一行（3 小卡片）──────────
+function MetricStripCard({
+  streak,
+  workType,
+  impact,
+}: {
+  streak?: GrowthReviewStreak;
+  workType?: GrowthWorkType;
+  impact?: GrowthImpact;
+}) {
+  return (
+    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 12 }}>
+      {streak && (
+        <div className="gc-card" style={{ padding: 16 }}>
+          <div style={{ fontSize: 12, fontWeight: 600, color: '#475569', marginBottom: 8 }}>复盘连续</div>
+          <div style={{ display: 'flex', alignItems: 'baseline', gap: 8 }}>
+            <span style={{ fontSize: 28, fontWeight: 700, color: '#5B7BFE' }}>{streak.currentStreakWeeks}</span>
+            <span style={{ fontSize: 12, color: '#94a3b8' }}>周连续</span>
+          </div>
+          <div style={{ fontSize: 11, color: '#94a3b8', marginTop: 4 }}>
+            最长 {streak.maxStreakWeeks} 周 · 共写过 {streak.totalReviewWeeks} 周
+          </div>
+        </div>
+      )}
+      {workType && workType.totalTasks > 0 && (
+        <div className="gc-card" style={{ padding: 16 }}>
+          <div style={{ fontSize: 12, fontWeight: 600, color: '#475569', marginBottom: 8 }}>工作类型分布</div>
+          <div style={{ width: '100%', height: 90 }}>
+            <ResponsiveContainer>
+              <PieChart>
+                <Pie
+                  data={workType.slices.slice(0, 6)}
+                  dataKey="count"
+                  innerRadius={20}
+                  outerRadius={40}
+                  paddingAngle={2}
+                >
+                  {workType.slices.slice(0, 6).map((_, i) => (
+                    <Cell key={i} fill={['#5B7BFE','#7494ec','#92aef0','#a4b8f5','#c9d8fb','#f1f5f9'][i % 6]} />
+                  ))}
+                </Pie>
+                <RTooltip
+                  contentStyle={{ fontSize: 11 }}
+                  formatter={(v, n) => [`${v} 件`, String(n)] as [string, string]}
+                />
+              </PieChart>
+            </ResponsiveContainer>
+          </div>
+          <div style={{ fontSize: 10, color: '#94a3b8', marginTop: 4 }}>
+            {workType.totalTasks} 件 · {workType.slices.length} 类
+          </div>
+        </div>
+      )}
+      {impact && (impact.totalReuses > 0 || impact.totalLikes > 0 || impact.totalSaves > 0) && (
+        <div className="gc-card" style={{ padding: 16 }}>
+          <div style={{ fontSize: 12, fontWeight: 600, color: '#475569', marginBottom: 8 }}>累计影响力</div>
+          <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap', fontSize: 11, color: '#475569' }}>
+            <span>📚 {impact.totalReuses} 次复用</span>
+            <span>👍 {impact.totalLikes} 个赞</span>
+            <span>⭐ {impact.totalSaves} 次收藏</span>
+          </div>
+          {impact.points.length > 0 && (
+            <div style={{ width: '100%', height: 50, marginTop: 8 }}>
+              <ResponsiveContainer>
+                <AreaChart data={impact.points}>
+                  <Area type="monotone" dataKey="cumulativeReuses" stroke="#5B7BFE" fill="rgba(91,123,254,0.15)" />
+                </AreaChart>
+              </ResponsiveContainer>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ────────── L3/L4/L5: 学习推荐 ──────────
+function LearningCard({ learning }: { learning: GrowthLearning }) {
+  const total = learning.internalPicks.length + learning.githubPicks.length + learning.frontierPicks.length;
+  if (total === 0 && !learning.externalConfigHint) return null;
+
+  function renderPick(p: GrowthLearningPick, idx: number) {
+    const sourceLabel = p.source === 'handbook' ? '📘 同事手册' :
+                       p.source === 'exp_wall' ? '💬 组织墙' :
+                       p.source === 'github' ? '⚙ GitHub' :
+                       p.source === 'exa' ? '🌐 前沿' : p.source;
+    return (
+      <div key={`${p.source}-${idx}`} style={{ padding: '10px 12px', borderRadius: 6, background: 'rgba(241,245,249,0.5)', display: 'flex', flexDirection: 'column', gap: 4 }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8, fontSize: 11 }}>
+          <span style={{ fontWeight: 600, color: '#5B7BFE' }}>{sourceLabel}</span>
+          {p.matchedAbilityLabel && <span style={{ color: '#94a3b8' }}>对应「{p.matchedAbilityLabel}」</span>}
+        </div>
+        <div style={{ fontSize: 13, fontWeight: 500, color: '#1e293b' }}>{p.title}</div>
+        {p.detail && <div style={{ fontSize: 11, color: '#64748b', lineHeight: 1.5 }}>{p.detail}</div>}
+        <div style={{ fontSize: 10, color: '#94a3b8', display: 'flex', gap: 12 }}>
+          {p.authorName && <span>作者 {p.authorName}</span>}
+          {p.reusedCount > 0 && <span>被复用 {p.reusedCount} 次</span>}
+          {p.likedCount > 0 && <span>★ {p.likedCount}</span>}
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="gc-card" style={{ padding: 20 }}>
+      <div className="gc-section-header" style={{ marginBottom: 12 }}>
+        <div className="gc-section-title">本周推荐学</div>
+        <span className="gc-section-hint">基于你最弱的方向自动匹配</span>
+      </div>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+        {learning.internalPicks.map(renderPick)}
+        {learning.githubPicks.map((p, i) => renderPick(p, i + 1000))}
+        {learning.frontierPicks.map((p, i) => renderPick(p, i + 2000))}
+      </div>
+      {total === 0 && (
+        <div style={{ fontSize: 12, color: '#94a3b8', padding: 12, textAlign: 'center' }}>
+          暂无内部同事手册可推荐
+          {learning.externalConfigHint && <div style={{ fontSize: 11, marginTop: 4 }}>{learning.externalConfigHint}</div>}
+        </div>
+      )}
+      {total > 0 && !learning.externalEnabled && learning.externalConfigHint && (
+        <div style={{ fontSize: 11, color: '#94a3b8', marginTop: 8, padding: '6px 10px', borderRadius: 4, background: 'rgba(241,245,249,0.5)' }}>
+          外部前瞻：{learning.externalConfigHint}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ────────── H5: 同岗位匿名对标 ──────────
+function PeerComparisonCard({ peer }: { peer: GrowthPeerComparison }) {
+  if (peer.peerCount === 0) return null;
+  const aloneInRole = peer.peerCount === 1;
+  return (
+    <div className="gc-card" style={{ padding: 20 }}>
+      <div className="gc-section-header" style={{ marginBottom: 12 }}>
+        <div className="gc-section-title">同岗位对标</div>
+        <span className="gc-section-hint">岗位「{peer.roleLabel}」 · 共 {peer.peerCount} 人</span>
+      </div>
+      {aloneInRole ? (
+        <div style={{ fontSize: 12, color: '#64748b', padding: 12, background: 'rgba(241,245,249,0.4)', borderRadius: 4 }}>
+          目前组织中你是「{peer.roleLabel}」岗位的唯一一人，等同岗位有 ≥ 2 人之后会出现对标信号。
+        </div>
+      ) : (
+        <div style={{ display: 'flex', alignItems: 'center', gap: 24, flexWrap: 'wrap' }}>
+          <div>
+            <div style={{ fontSize: 12, color: '#94a3b8' }}>你的排名</div>
+            <div style={{ fontSize: 28, fontWeight: 700, color: '#5B7BFE' }}>第 {peer.rank}</div>
+            <div style={{ fontSize: 11, color: '#94a3b8' }}>共 {peer.peerCount} 人</div>
+          </div>
+          <div style={{ flex: 1, minWidth: 200 }}>
+            <div style={{ fontSize: 11, color: '#94a3b8', marginBottom: 6 }}>总 XP 对比（匿名）</div>
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 8 }}>
+              <div><span style={{ fontSize: 11, color: '#94a3b8' }}>你</span><div style={{ fontSize: 14, fontWeight: 600 }}>{peer.yourTotalXp}</div></div>
+              <div><span style={{ fontSize: 11, color: '#94a3b8' }}>中位</span><div style={{ fontSize: 14, fontWeight: 600 }}>{peer.peerMedianXp}</div></div>
+              <div><span style={{ fontSize: 11, color: '#94a3b8' }}>第一</span><div style={{ fontSize: 14, fontWeight: 600 }}>{peer.peerTopXp}</div></div>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function ActivityRhythm({ days, activeDays, maxStreak }: { days: GrowthDailyActivity[]; activeDays: number; maxStreak: number }) {
+  // L2 节奏日历 — react-activity-calendar
+  // 数据已经是 react-activity-calendar 期望的 {date, count, level} 格式
+  const totalDays = days.length;
+  const activeRate = totalDays > 0 ? Math.round((activeDays / totalDays) * 100) : 0;
+  // 颜色规则：清闲（level 0）= 浅 / 工作多（level 4）= 深
+  // light + dark 两套配色都保持「浅 → 深」一致方向，避免系统色模式翻转
+  const theme = {
+    light: ['#f1f5f9', '#c9d8fb', '#92aef0', '#5B7BFE', '#3a5ce0'],
+    dark:  ['#1e293b', '#2d3a5e', '#3f5288', '#5B7BFE', '#3a5ce0'],
+  };
+  return (
+    <div className="gc-card" style={{ padding: 20 }}>
+      <div className="gc-section-header" style={{ marginBottom: 12 }}>
+        <div className="gc-section-title">工作节奏</div>
+        <span className="gc-section-hint">
+          近 {totalDays} 天 · 活跃 {activeDays} 天 ({activeRate}%) · 最长连续 {maxStreak} 天
+        </span>
+      </div>
+      <div style={{ overflowX: 'auto', paddingBottom: 4 }}>
+        <ActivityCalendar
+          data={days}
+          theme={theme}
+          colorScheme="light"
+          blockSize={11}
+          blockMargin={3}
+          fontSize={11}
+          weekStart={1}
+          labels={{
+            months: ['1月','2月','3月','4月','5月','6月','7月','8月','9月','10月','11月','12月'],
+            weekdays: ['周日','周一','周二','周三','周四','周五','周六'],
+            legend: { less: '清闲', more: '工作多' },
+            totalCount: '{{count}} 分产出 / {{year}} 年',
+          }}
+        />
+      </div>
+    </div>
   );
 }
 
@@ -1082,109 +1443,35 @@ function AbilityGrowthTab({ overview }: { overview: GrowthOverview | null }) {
         </div>
       </div>
 
-      {/* Timeline */}
-      <div>
-        <div className="gc-section-header">
-          <div className="gc-section-title">成长时间线</div>
-          <span className="gc-section-hint">近期能力变化</span>
-        </div>
-        {recentEntries.length > 0 ? (
-          <div className="gc-card" style={{ padding: 20 }}>
-            {recentEntries.map((entry, i) => {
-              const merged = (entry as XpLedgerEntry & { mergedAbilities?: string[] }).mergedAbilities || [];
-              const abilityLabels = merged.length > 0 ? merged : [entry.abilityLabel];
-              const v = ABILITY_VISUALS[entry.abilityKey] || ABILITY_VISUALS.exec;
-              const AbIcon = v.icon;
-              const isSpecial = entry.premiumXp > 0 || entry.xpType !== 'reflection' || entry.totalXp >= 14;
-              const isLast = i === recentEntries.length - 1;
-              return (
-                <div key={`${entry.id}-${i}`} className="gc-timeline-entry">
-                  <div className="gc-timeline-line">
-                    <div className="gc-timeline-dot" style={{ background: v.bg }}>
-                      <AbIcon size={14} color={v.color} />
-                    </div>
-                    {!isLast && <div className="gc-timeline-tail" />}
-                  </div>
-                  <div className="gc-timeline-content">
-                    <div className="gc-timeline-top">
-                      <div>
-                        <div className="gc-timeline-title">{entry.sourceTitle || entry.reason || entry.abilityLabel}</div>
-                        <div className="gc-timeline-tags">
-                          <span className={`gc-timeline-tag ${isSpecial ? 'special' : 'normal'}`}>+{entry.totalXp || entry.delta} XP</span>
-                          {abilityLabels.map((label) => (
-                            <span key={label} className="gc-timeline-tag normal">{label}</span>
-                          ))}
-                          {entry.clientName && <span className="gc-timeline-tag normal">{entry.clientName}</span>}
-                        </div>
-                      </div>
-                      <span style={{ fontSize: 11, color: '#94a3b8', whiteSpace: 'nowrap', flexShrink: 0 }}>
-                        {formatRelativeMoment(entry.createdAt)}
-                      </span>
-                    </div>
-                    {entry.contextSummary && (
-                      <div style={{ fontSize: 12, color: '#64748b', marginTop: 6, lineHeight: 1.6 }}>{entry.contextSummary}</div>
-                    )}
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-        ) : (
-          <div className="gc-empty">
-            <div className="gc-loading-icon" style={{ margin: '0 auto 12px', animation: 'none' }}>
-              <Sparkles size={20} color="#335CFE" />
-            </div>
-            <div className="gc-empty-title">本周成长记录待生成</div>
-            <div className="gc-empty-desc">完成任务并写下复盘后，成长动态会在这里实时出现。</div>
-          </div>
-        )}
-      </div>
+      {/* M2 承诺履约 */}
+      {overview?.commitmentSummary && <CommitmentCard summary={overview.commitmentSummary} />}
 
-      {/* Gap Cards */}
-      {topGaps.length > 0 && (
-        <div>
-          <div className="gc-section-header">
-            <div className="gc-section-title">成长机会</div>
-            <span className="gc-section-hint">可以放大的下一步</span>
-          </div>
-          <div className="gc-gap-grid">
-            {topGaps.map((gap) => {
-              const v = ABILITY_VISUALS[gap.abilityKey] || ABILITY_VISUALS.exec;
-              const GapIcon = v.icon;
-              const pct = Math.round(gap.currentScore / gap.requiredScore * 100);
-              return (
-                <div key={`${gap.sourceType}-${gap.abilityKey}`} className="gc-card" style={{ padding: 20 }}>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 12 }}>
-                    <div className="gc-ability-icon-box" style={{ background: v.bg }}>
-                      <GapIcon size={16} color={v.color} />
-                    </div>
-                    <div>
-                      <div style={{ fontSize: 13, fontWeight: 600, color: '#1e293b' }}>{gap.label}</div>
-                      <div style={{ fontSize: 11, color: '#94a3b8' }}>现在 {gap.currentScore} · 同岗位达标线 {gap.requiredScore}</div>
-                    </div>
-                  </div>
-                  <div className="gc-ability-bar" style={{ marginBottom: 8 }}>
-                    <div className="gc-ability-bar-fill" style={{ width: `${pct}%`, background: '#f97316' }} />
-                  </div>
-                  <div style={{ fontSize: 11, color: '#64748b', lineHeight: 1.6, marginBottom: 8 }}>{gap.reason}</div>
-                  <div style={{ fontSize: 10, color: '#94a3b8' }}>来源: {gap.sourceLabel}</div>
-                </div>
-              );
-            })}
-          </div>
-        </div>
+      {/* M3 + M4 + M6 三件套指标条 */}
+      <MetricStripCard
+        streak={overview?.reviewStreak}
+        workType={overview?.workTypeDistribution}
+        impact={overview?.impactCurve}
+      />
+
+      {/* M1 业务覆盖 */}
+      {overview?.businessCoverage && <BusinessCoverageCard coverage={overview.businessCoverage} />}
+
+      {/* H5 同岗位对标 */}
+      {overview?.peerComparison && <PeerComparisonCard peer={overview.peerComparison} />}
+
+      {/* L3+L4+L5 学习推荐 */}
+      {overview?.learning && <LearningCard learning={overview.learning} />}
+
+      {/* L2: Activity Rhythm Calendar */}
+      {overview?.dailyActivity && overview.dailyActivity.days.length > 0 && (
+        <ActivityRhythm
+          days={overview.dailyActivity.days}
+          activeDays={overview.dailyActivity.activeDays}
+          maxStreak={overview.dailyActivity.maxStreak}
+        />
       )}
-      {topGaps.length === 0 && (
-        <div className="gc-no-gap">
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12, fontWeight: 600, color: '#047857' }}>
-            <ShieldCheck size={16} color="#047857" />
-            当前所有方向都达到岗位标准
-          </div>
-          <div style={{ fontSize: 11, color: 'rgba(4,120,87,0.7)', marginTop: 4, marginLeft: 24 }}>
-            可以挑一条新方向尝试突破，或继续放大你的强项。
-          </div>
-        </div>
-      )}
+
+      {/* 成长时间线 + 成长机会 已移除（用户判断：信息价值不足，不能给出有意义的指导） */}
     </div>
   );
 }

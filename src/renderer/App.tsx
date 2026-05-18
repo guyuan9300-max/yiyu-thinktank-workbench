@@ -51,11 +51,15 @@ import {
   LayoutDashboard,
   GitMerge,
   Radio,
+  ListChecks,
+  AlertTriangle,
+  ArrowRight,
   Paperclip,
   Info,
   UserPlus,
   Trash2,
   Pencil,
+  RotateCcw,
   Square,
   Link2,
   X,
@@ -107,6 +111,7 @@ import type {
   EventLine,
   EventLineClarificationDraftResult,
   EventLineDetail,
+  EventLineMergePreview,
   FeishuDeliveryProfile,
   FeishuDeliveryProfilePayload,
   FeishuMemberAuthorization,
@@ -208,7 +213,6 @@ import type {
   WorkspacePendingQuestionState,
   WorkspaceRightPanelEvidenceSnapshot,
   WorkspaceRightTabKey,
-  WorkspaceAnswerActionName,
 } from './lib/workspaceClientUiStore';
 import {
   getTodayCalendarState,
@@ -281,6 +285,8 @@ import {
   patchTaskPlanLink,
   closeEventLine,
   reopenEventLine,
+  previewEventLineMerge,
+  mergeEventLines,
   disableEmployee,
   extractMeeting,
   getAgentWorklogs,
@@ -447,6 +453,8 @@ import {
   rejectDataCenterProposalDraft,
   promoteDataCenterProposalDraft,
   labelDataCenterEvidenceQuality,
+  getWorkspaceDataCenterReadiness,
+  retryKnowledgeParseFailures,
 } from './lib/api';
 import { getClientDnaPromptTemplate } from './lib/clientDnaPromptTemplates';
 import { useRecordingSession, formatRecordingClock, type TranscribedPayload } from './lib/useRecordingSession';
@@ -459,7 +467,7 @@ import AIReportGeneratorModal from './components/reports/AIReportGeneratorModal'
 import { TaskTemplateEditorModal } from './components/tasks/TaskTemplateEditorModal';
 import type { TemplateData } from './components/tasks/TaskTemplateEditorModal';
 import { SystemLogPanel } from './components/settings/SystemLogPanel';
-import { StrategicBrainView, type ThoughtTaskPayload } from './components/strategic_accompaniment/StrategicBrainView';
+import { StrategicBrainView, type ThoughtTaskPayload, DuplicateDocumentsSection } from './components/strategic_accompaniment/StrategicBrainView';
 import { TopicsManagementView } from './components/topics/TopicsManagementView';
 import { IntelligenceStationView } from './components/intelligence/IntelligenceStationView';
 import { TaskCalendarView } from './components/tasks/TaskCalendarView';
@@ -475,7 +483,9 @@ import { DataCenterOpsPanel } from './components/data_center/DataCenterOpsPanel'
 import { FileSearchResultPanel } from './components/data_center/FileSearchResultPanel';
 import { EntityListPanel } from './components/client_workspace/EntityListPanel';
 import { ContradictionAlertPanel } from './components/client_workspace/ContradictionAlertPanel';
+import { GlossaryDriftAlertPanel } from './components/client_workspace/GlossaryDriftAlertPanel';
 import { GlossaryPanel } from './components/client_workspace/GlossaryPanel';
+import { GlossaryPendingBadge } from './components/client_workspace/GlossaryPendingBadge';
 import { WorkStatusPanel } from './components/data_center/WorkStatusPanel';
 import { FeishuOrgIntegrationPanel } from './components/settings/FeishuOrgIntegrationPanel';
 import { SpeechModelSettingsCard } from './components/settings/SpeechModelSettingsCard';
@@ -589,6 +599,39 @@ const RECENT_USED_DOCUMENTS_LIMIT = 30;
 // 同时配合 window CustomEvent，让 task modal 当前已打开的情况下立刻填充。
 const RECORDING_MINUTES_EVENT = 'yiyu:recording-minutes-ready';
 const recentRecordingMinutesByTaskId = new Map<string, string>();
+
+// 客户工作台「问题排队」和「合集导出」的跨挂载持久存储。
+// ClientWorkspaceView 在切顶栏 tab 时会 unmount/remount，所有内部 useState 都会重置；
+// 用 module-level Map 持有以保住"用户排过的题目/挑过的段落"在切走再回来后不丢。
+type WorkspaceQueueListener = () => void;
+const QUESTION_QUEUE_MAX_GLOBAL = 10;
+const workspaceQuestionQueueByClient = new Map<string, string[]>();
+const workspaceQuestionQueueListeners = new Set<WorkspaceQueueListener>();
+function notifyWorkspaceQuestionQueueListeners(): void {
+  for (const listener of workspaceQuestionQueueListeners) listener();
+}
+function getWorkspaceQuestionQueue(clientId: string): string[] {
+  return workspaceQuestionQueueByClient.get(clientId) || [];
+}
+function setWorkspaceQuestionQueue(clientId: string, next: string[]): void {
+  if (next.length === 0) workspaceQuestionQueueByClient.delete(clientId);
+  else workspaceQuestionQueueByClient.set(clientId, next);
+  notifyWorkspaceQuestionQueueListeners();
+}
+
+const workspaceExportBagByClient = new Map<string, string[]>();
+const workspaceExportBagListeners = new Set<WorkspaceQueueListener>();
+function notifyWorkspaceExportBagListeners(): void {
+  for (const listener of workspaceExportBagListeners) listener();
+}
+function getWorkspaceExportBag(clientId: string): string[] {
+  return workspaceExportBagByClient.get(clientId) || [];
+}
+function setWorkspaceExportBag(clientId: string, next: string[]): void {
+  if (next.length === 0) workspaceExportBagByClient.delete(clientId);
+  else workspaceExportBagByClient.set(clientId, next);
+  notifyWorkspaceExportBagListeners();
+}
 
 function readStoredRecentUsedDocuments(clientId: string): RecentUsedDocument[] {
   if (!clientId || typeof window === 'undefined') return [];
@@ -7982,6 +8025,30 @@ export default function App() {
     }).then(setWorkspaceSourceIntegrity).catch(() => undefined);
   }, [desktopAppInfo?.frontendBuildVersion, desktopAppInfo?.frontendGitCommit]);
 
+  // P0-1: task board 自动刷新 ——
+  // 旧行为：startup 拉一次 task board，之后只在用户主动触发（建任务/录音完成等）时刷。
+  //         手机端建的任务推到 cloud → desktop backend 后，desktop UI 永远不知道，得 Cmd+R 才能看到。
+  // 新行为：30s polling + 窗口聚焦/可见时立刻刷一次。loadTaskBlock 内部已有 optimistic 去重，重复拉安全。
+  // 用 ref 锁定最新版 loadTaskBlock（避免每次 render 重建 effect）。
+  const loadTaskBlockRef = useRef(loadTaskBlock);
+  loadTaskBlockRef.current = loadTaskBlock;
+  useEffect(() => {
+    const refresh = () => {
+      if (document.visibilityState !== 'visible') return;
+      void loadTaskBlockRef.current().catch(() => undefined);
+    };
+    const intervalId = window.setInterval(refresh, 30000);
+    const handleFocus = () => refresh();
+    const handleVisibilityChange = () => refresh();
+    window.addEventListener('focus', handleFocus);
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    return () => {
+      window.clearInterval(intervalId);
+      window.removeEventListener('focus', handleFocus);
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+    };
+  }, []);
+
   async function refreshWorkspace(clientId?: string) {
     const targetClientId = clientId ?? currentClientId;
     if (!targetClientId) return;
@@ -9259,6 +9326,23 @@ export default function App() {
       | { mode: 'bulk'; targets: EventLine[] }
       | null
     >(null);
+    // 合并事件线弹窗：step=select 选源；step=confirm 看影响摘要并最终确认
+    const [eventLineMergeDialog, setEventLineMergeDialog] = useState<
+      | {
+          step: 'select';
+          target: EventLine;
+          selectedSourceIds: Set<string>;
+        }
+      | {
+          step: 'confirm';
+          target: EventLine;
+          selectedSourceIds: Set<string>;
+          preview: EventLineMergePreview;
+        }
+      | null
+    >(null);
+    const [isPreviewingMerge, setIsPreviewingMerge] = useState(false);
+    const [isMergingEventLine, setIsMergingEventLine] = useState(false);
     const [bulkDeleteProgress, setBulkDeleteProgress] = useState<{ done: number; total: number; failed: number } | null>(null);
     const [isCreatingTaskProjectModule, setIsCreatingTaskProjectModule] = useState(false);
     const [isCreatingTaskProjectFlow, setIsCreatingTaskProjectFlow] = useState(false);
@@ -10768,6 +10852,57 @@ export default function App() {
       setEventLineConfirm({ mode: 'single', target: targetEventLine });
     };
 
+    const handleOpenMergeEventLine = (target: EventLine) => {
+      if (isMergingEventLine) return;
+      setEventLineMergeDialog({
+        step: 'select',
+        target,
+        selectedSourceIds: new Set<string>(),
+      });
+    };
+
+    const handleProceedMergePreview = async () => {
+      if (!eventLineMergeDialog || eventLineMergeDialog.step !== 'select') return;
+      const { target, selectedSourceIds } = eventLineMergeDialog;
+      const sourceIds = Array.from(selectedSourceIds);
+      if (sourceIds.length === 0) {
+        flash('error', '请至少选择 1 条要合并进来的事件线');
+        return;
+      }
+      setIsPreviewingMerge(true);
+      try {
+        const preview = await previewEventLineMerge(target.id, sourceIds);
+        setEventLineMergeDialog({
+          step: 'confirm',
+          target,
+          selectedSourceIds,
+          preview,
+        });
+      } catch (error) {
+        flash('error', error instanceof Error ? error.message : '获取合并预览失败');
+      } finally {
+        setIsPreviewingMerge(false);
+      }
+    };
+
+    const handleConfirmMergeEventLine = async () => {
+      if (!eventLineMergeDialog || eventLineMergeDialog.step !== 'confirm') return;
+      if (isMergingEventLine) return;
+      const { target, selectedSourceIds } = eventLineMergeDialog;
+      const sourceIds = Array.from(selectedSourceIds);
+      setIsMergingEventLine(true);
+      try {
+        await mergeEventLines(target.id, sourceIds);
+        try { await loadEventLines(); } catch {}
+        flash('success', `已合并 ${sourceIds.length} 条事件线到「${target.name || '未命名'}」`);
+        setEventLineMergeDialog(null);
+      } catch (error) {
+        flash('error', error instanceof Error ? error.message : '合并失败');
+      } finally {
+        setIsMergingEventLine(false);
+      }
+    };
+
     const executeDeleteEventLine = async (targetEventLine: EventLine) => {
       const lineName = targetEventLine.name || '未命名事件线';
       try {
@@ -10882,16 +11017,20 @@ export default function App() {
     const renderEventLineSyncBadge = (el: EventLine) => {
       const status = el.syncStatus;
       if (!status || status === 'synced') return null;
-      const cfg: Record<string, { label: string; cls: string; title?: string }> = {
-        local: { label: '仅本地', cls: 'bg-gray-100 text-gray-500', title: '尚未连接云端，暂存在本地' },
-        syncing: { label: '同步中', cls: 'bg-sky-50 text-sky-600' },
-        pending: { label: '待同步', cls: 'bg-amber-50 text-amber-600', title: '已暂存本地，等待重新连接云端' },
-        error: { label: '同步失败', cls: 'bg-rose-50 text-rose-600', title: el.lastSyncError || '云端拒绝了上次同步' },
+      const cfg: Record<string, { label: string; dot: string; ring: string; text: string; bg: string; title?: string }> = {
+        local: { label: '仅本地', dot: 'bg-gray-400', ring: 'ring-gray-200', text: 'text-gray-600', bg: 'bg-gray-50', title: '尚未连接云端，暂存在本地' },
+        syncing: { label: '同步中', dot: 'bg-sky-500', ring: 'ring-sky-200', text: 'text-sky-700', bg: 'bg-sky-50' },
+        pending: { label: '待同步', dot: 'bg-amber-500', ring: 'ring-amber-200', text: 'text-amber-700', bg: 'bg-amber-50', title: '已暂存本地，等待重新连接云端' },
+        error: { label: '同步失败', dot: 'bg-rose-500', ring: 'ring-rose-200', text: 'text-rose-700', bg: 'bg-rose-50', title: el.lastSyncError || '云端拒绝了上次同步' },
       };
       const item = cfg[status];
       if (!item) return null;
       return (
-        <span className={`rounded-full px-2.5 py-1 font-bold ${item.cls}`} title={item.title}>
+        <span
+          className={`inline-flex items-center gap-1 rounded-md ${item.bg} px-1.5 py-0.5 text-[10px] font-medium tracking-wide uppercase ${item.text} ring-1 ${item.ring}/60`}
+          title={item.title}
+        >
+          <span className={`h-1 w-1 rounded-full ${item.dot}`} />
           {item.label}
         </span>
       );
@@ -10901,16 +11040,21 @@ export default function App() {
       const score = typeof el.completenessScore === 'number' ? el.completenessScore : null;
       if (score == null) return null;
       const status = el.completenessStatus || 'insufficient';
-      const palette: Record<string, string> = {
-        high_confidence: 'bg-emerald-50 text-emerald-700',
-        forecast_ready: 'bg-sky-50 text-sky-700',
-        summary_ready: 'bg-amber-50 text-amber-700',
-        insufficient: 'bg-rose-50 text-rose-700',
+      const cfg: Record<string, { dot: string; ring: string; text: string; bg: string }> = {
+        high_confidence: { dot: 'bg-emerald-500', ring: 'ring-emerald-200', text: 'text-emerald-700', bg: 'bg-emerald-50' },
+        forecast_ready: { dot: 'bg-sky-500', ring: 'ring-sky-200', text: 'text-sky-700', bg: 'bg-sky-50' },
+        summary_ready: { dot: 'bg-amber-500', ring: 'ring-amber-200', text: 'text-amber-700', bg: 'bg-amber-50' },
+        insufficient: { dot: 'bg-rose-500', ring: 'ring-rose-200', text: 'text-rose-700', bg: 'bg-rose-50' },
       };
+      const item = cfg[status] || cfg.insufficient;
       const missingHint = (el.completenessMissingSlots || []).slice(0, 3).join('、');
       const title = missingHint ? `证据完整度 ${score} / 100，缺：${missingHint}` : `证据完整度 ${score} / 100`;
       return (
-        <span className={`rounded-full px-2.5 py-1 font-bold ${palette[status] || palette.insufficient}`} title={title}>
+        <span
+          className={`inline-flex items-center gap-1 rounded-md ${item.bg} px-1.5 py-0.5 text-[10px] font-medium tracking-wide uppercase ${item.text} ring-1 ${item.ring}/60`}
+          title={title}
+        >
+          <span className={`h-1 w-1 rounded-full ${item.dot}`} />
           完整度 {score}
         </span>
       );
@@ -14314,52 +14458,49 @@ export default function App() {
             />
           )}
 
-          {taskViewMode === 'event_lines' && (
-            <div className="max-w-4xl mx-auto pb-10">
-              <div className="mb-6 flex flex-col gap-4 md:flex-row md:items-end md:justify-between">
-                <div className="flex-1 min-w-0">
-                  <h2 className="text-[18px] font-bold text-gray-900">事件线</h2>
-                  <p className="text-[12px] text-gray-500 mt-1">按项目查看事件线；卡片主体进汇报预览，右侧可直接编辑或删除。</p>
-                  {(() => {
-                    const emptyCount = filteredEventLines.filter((el) => tasks.filter((t) => t.eventLineId === el.id).length === 0).length;
-                    if (emptyCount === 0) return null;
-                    return (
-                      <div className="mt-3 inline-flex items-center gap-2">
-                        <button
-                          type="button"
-                          onClick={openBulkDeleteEmptyEventLines}
-                          disabled={isDeletingEventLine}
-                          className="rounded-xl border border-rose-200 bg-rose-50 px-3 py-2 text-[12px] font-bold text-rose-600 transition hover:bg-rose-100 disabled:opacity-60"
-                          style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
-                        >
-                          一键清理空事件线（{emptyCount}）
-                        </button>
-                        <span className="text-[11px] text-gray-400">仅删除当前筛选范围内、未挂任何任务的事件线</span>
-                      </div>
-                    );
-                  })()}
+          {taskViewMode === 'event_lines' && (() => {
+            const emptyCount = filteredEventLines.filter((el) => tasks.filter((t) => t.eventLineId === el.id).length === 0).length;
+            const statusMeta: Record<string, { label: string; line: string; dot: string; ring: string; text: string; bg: string }> = {
+              active: { label: '进行中', line: 'bg-emerald-500', dot: 'bg-emerald-500', ring: 'ring-emerald-200', text: 'text-emerald-700', bg: 'bg-emerald-50' },
+              blocked: { label: '受阻', line: 'bg-rose-500', dot: 'bg-rose-500', ring: 'ring-rose-200', text: 'text-rose-700', bg: 'bg-rose-50' },
+              paused: { label: '暂停', line: 'bg-amber-500', dot: 'bg-amber-500', ring: 'ring-amber-200', text: 'text-amber-700', bg: 'bg-amber-50' },
+              done: { label: '已完成', line: 'bg-gray-400', dot: 'bg-gray-400', ring: 'ring-gray-200', text: 'text-gray-600', bg: 'bg-gray-50' },
+              archived: { label: '已归档', line: 'bg-gray-300', dot: 'bg-gray-300', ring: 'ring-gray-200', text: 'text-gray-500', bg: 'bg-gray-50' },
+            };
+            const currentProjectLabel =
+              eventLineProjectFilterId === '__all__'
+                ? `全部项目（${eventLineProjectOptions.length}）`
+                : (eventLineProjectOptions.find((o) => o.id === eventLineProjectFilterId)?.label ?? '未知项目');
+            return (
+            <div className="max-w-6xl mx-auto pb-20">
+              {/* 顶部标题区 */}
+              <header className="flex items-end justify-between gap-6 py-5 border-b border-gray-100">
+                <div>
+                  <h1 className="text-[26px] font-light tracking-tight text-gray-900">事件线</h1>
+                  <p className="mt-1 text-[12px] text-gray-400">
+                    按项目聚合的事件线列表 · 共 <span className="text-gray-900 font-medium tabular-nums">{filteredEventLines.length}</span> 条
+                  </p>
                 </div>
-                <div className="window-no-drag w-full md:max-w-[320px]" style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}>
-                  <label className="mb-2 block text-[11px] font-bold text-gray-400">项目筛选</label>
-                  <div className="relative" ref={elProjectDropdownRef}>
-                    {/* 自定义下拉按钮 — 替代原生 select，绕过 Electron hiddenInset 事件丢失 */}
+
+                <div className="flex items-center gap-3">
+                  {/* 项目筛选 · button-like dropdown */}
+                  <div className="relative" ref={elProjectDropdownRef} style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}>
                     <button
                       type="button"
                       onClick={() => setElProjectDropdownOpen((v) => !v)}
-                      className="w-full appearance-none rounded-2xl border border-gray-200 bg-white/90 py-3 pl-4 pr-10 text-left text-[13px] font-semibold text-gray-700 shadow-sm outline-none transition hover:border-[#5B7BFE]/40 focus:border-[#5B7BFE] focus:ring-2 focus:ring-[#5B7BFE]/10"
-                      style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
+                      className="inline-flex h-9 items-center gap-2 rounded-lg border border-gray-200 bg-white px-3.5 text-[12.5px] font-medium text-gray-700 transition-all hover:border-gray-300 hover:bg-gray-50"
                     >
-                      {eventLineProjectFilterId === '__all__'
-                        ? `全部项目（${eventLineProjectOptions.length}）`
-                        : (eventLineProjectOptions.find((o) => o.id === eventLineProjectFilterId)?.label ?? '未知项目')}
+                      <span className="text-[10px] uppercase tracking-[0.16em] text-gray-400">项目</span>
+                      <span className="max-w-[200px] truncate">{currentProjectLabel}</span>
+                      <ChevronDown
+                        size={14}
+                        strokeWidth={1.8}
+                        className={`text-gray-400 transition-transform ${elProjectDropdownOpen ? 'rotate-180' : ''}`}
+                      />
                     </button>
-                    <ChevronDown
-                      className={`pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 h-4 w-4 text-gray-400 transition-transform ${elProjectDropdownOpen ? 'rotate-180' : ''}`}
-                    />
-                    {/* 自定义下拉列表 */}
                     {elProjectDropdownOpen && (
                       <div
-                        className="absolute left-0 right-0 top-full z-50 mt-1 max-h-[260px] overflow-y-auto rounded-xl border border-gray-200 bg-white shadow-lg"
+                        className="absolute right-0 top-full z-50 mt-1.5 min-w-[260px] max-h-[300px] overflow-y-auto rounded-lg border border-gray-200 bg-white shadow-lg"
                         style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
                       >
                         <button
@@ -14368,9 +14509,12 @@ export default function App() {
                             setEventLineProjectFilterId('__all__');
                             setElProjectDropdownOpen(false);
                           }}
-                          className={`w-full px-4 py-2.5 text-left text-[13px] transition hover:bg-[#5B7BFE]/5 ${eventLineProjectFilterId === '__all__' ? 'font-bold text-[#5B7BFE] bg-[#5B7BFE]/10' : 'text-gray-700'}`}
+                          className={`flex w-full items-center justify-between px-3.5 py-2.5 text-left text-[12.5px] transition-colors hover:bg-gray-50 ${
+                            eventLineProjectFilterId === '__all__' ? 'font-semibold text-gray-900 bg-gray-50' : 'text-gray-600'
+                          }`}
                         >
-                          全部项目（{eventLineProjectOptions.length}）
+                          <span>全部项目</span>
+                          <span className="text-[11px] tabular-nums text-gray-400">{eventLineProjectOptions.length}</span>
                         </button>
                         {eventLineProjectOptions.map((option) => (
                           <button
@@ -14380,7 +14524,9 @@ export default function App() {
                               setEventLineProjectFilterId(option.id);
                               setElProjectDropdownOpen(false);
                             }}
-                            className={`w-full px-4 py-2.5 text-left text-[13px] transition hover:bg-[#5B7BFE]/5 ${eventLineProjectFilterId === option.id ? 'font-bold text-[#5B7BFE] bg-[#5B7BFE]/10' : 'text-gray-700'}`}
+                            className={`flex w-full items-center px-3.5 py-2.5 text-left text-[12.5px] transition-colors hover:bg-gray-50 ${
+                              eventLineProjectFilterId === option.id ? 'font-semibold text-gray-900 bg-gray-50' : 'text-gray-600'
+                            }`}
                           >
                             {option.label}
                           </button>
@@ -14388,146 +14534,256 @@ export default function App() {
                       </div>
                     )}
                   </div>
-                  <p className="mt-2 text-[11px] text-gray-500">选择项目后，只显示该项目下的事件线。</p>
+
+                  {/* 一键清理 · 仅在有空线时显示 */}
+                  {emptyCount > 0 && (
+                    <button
+                      type="button"
+                      onClick={openBulkDeleteEmptyEventLines}
+                      disabled={isDeletingEventLine}
+                      title="清理当前筛选范围内、未挂任何任务的事件线"
+                      className="inline-flex h-9 items-center gap-1.5 rounded-lg border border-rose-200 bg-rose-50 px-3 text-[12px] font-medium text-rose-700 transition-all hover:bg-rose-100 hover:border-rose-300 disabled:opacity-60 disabled:cursor-not-allowed"
+                      style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
+                    >
+                      <Trash2 size={12} strokeWidth={2} />
+                      <span>清理空事件线</span>
+                      <span className="rounded-md bg-white/80 px-1 text-[10px] font-semibold tabular-nums">{emptyCount}</span>
+                    </button>
+                  )}
                 </div>
-              </div>
+              </header>
+
+              {/* 空状态 */}
               {filteredEventLines.length === 0 && (
-                <div className="rounded-2xl border border-dashed border-gray-200 bg-white/80 px-5 py-12 text-center">
-                  <p className="text-[13px] text-gray-400">
+                <div className="py-24 text-center">
+                  <div className="mx-auto mb-4 inline-flex h-10 w-10 items-center justify-center rounded-full border border-gray-200 text-gray-300">
+                    <GitMerge size={18} strokeWidth={1.5} />
+                  </div>
+                  <p className="text-[14px] font-semibold text-gray-700">
+                    {eventLinesLoadError ? '加载失败' : '尚无事件线'}
+                  </p>
+                  <p className="mt-3 max-w-md mx-auto text-[12px] leading-relaxed text-gray-400">
                     {eventLinesLoadError || (eventLineProjectFilterId === '__all__'
-                      ? '还没有事件线。在创建任务时关联事件线，或在任务编辑器中新建事件线。'
+                      ? '在创建任务时关联事件线，或在任务编辑器中新建事件线，事件线会自动出现在这里。'
                       : '当前项目下还没有事件线。可先在任务编辑器里从任务新建事件线。')}
                   </p>
                 </div>
               )}
-              <div className="space-y-3">
-                {filteredEventLines.map((el) => {
+
+              {/* 事件线列表 */}
+              <div className="mt-2">
+                {filteredEventLines.map((el, idx) => {
                   const taskCount = tasks.filter((t) => t.eventLineId === el.id).length;
+                  const meta = statusMeta[el.status] || statusMeta.active;
+                  const isRetrying = retryingSyncIds.has(el.id);
+                  const isFirst = idx === 0;
+
                   return (
-                    <div
+                    <article
                       key={el.id}
-                      className="w-full rounded-2xl border border-gray-100 bg-white p-5 text-left shadow-sm transition hover:border-blue-100 hover:shadow-md"
+                      role="button"
+                      tabIndex={0}
+                      onClick={() => setReportEventLineId(el.id)}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter' || e.key === ' ') {
+                          e.preventDefault();
+                          setReportEventLineId(el.id);
+                        }
+                      }}
+                      className={`group relative pl-9 pr-14 py-5 -mx-3 rounded-xl cursor-pointer transition-all hover:bg-blue-50/30 hover:shadow-[inset_0_0_0_1px_rgba(91,123,254,0.18)] ${isFirst ? '' : 'border-t border-gray-100'}`}
                     >
-                      <div className="flex items-start justify-between gap-4">
-                        <button
-                          type="button"
-                          className="min-w-0 flex-1 text-left"
-                          onClick={() => setReportEventLineId(el.id)}
-                        >
-                          <p className="text-[15px] font-bold text-gray-900 truncate">{el.name}</p>
+                      {/* 左侧 accent line — 加粗到 3px，颜色饱和 → 状态最强信号 */}
+                      <div className={`absolute left-3 top-5 bottom-5 w-[3px] rounded-full ${meta.line}`} />
+
+                      <div className="flex items-start gap-5">
+                        {/* 左侧主区：状态徽章 + 标题 + 摘要 + 元信息 */}
+                        <div className="min-w-0 flex-1">
+                          {/* 第 1 行：状态 + 阶段（小+ 弱视觉权重） */}
+                          <div className="flex items-center gap-2 mb-1.5 text-[11px]">
+                            <span className={`inline-flex items-center gap-1.5 ${meta.text} font-medium`}>
+                              <span className={`h-1.5 w-1.5 rounded-full ${meta.dot}`} />
+                              {meta.label}
+                            </span>
+                            {el.stage && (
+                              <>
+                                <span className="text-gray-300">·</span>
+                                <span className="text-gray-500">{el.stage}</span>
+                              </>
+                            )}
+                          </div>
+
+                          {/* 第 2 行：标题（主视觉） */}
+                          <h3 className="text-[16px] font-semibold leading-snug text-gray-900 group-hover:text-[#3652c9] transition-colors">
+                            {el.name}
+                          </h3>
+
+                          {/* 第 3 行：摘要 */}
                           {el.summary && (
-                            <p className="mt-1 text-[12px] leading-5 text-gray-500 line-clamp-2">{el.summary}</p>
+                            <p className="mt-1.5 text-[12.5px] leading-6 text-gray-500 line-clamp-2">
+                              {el.summary}
+                            </p>
                           )}
-                          <div className="mt-3 flex flex-wrap gap-2 text-[11px]">
-                            <span className="rounded-full bg-emerald-50 px-2.5 py-1 font-bold text-emerald-700">{{ active: '进行中', blocked: '受阻', paused: '暂停', done: '已完成', archived: '已归档' }[el.status] || el.status}</span>
-                            {el.stage && <span className="rounded-full bg-amber-50 px-2.5 py-1 font-bold text-amber-700">{el.stage}</span>}
-                            {el.primaryClientName && <span className="rounded-full bg-violet-50 px-2.5 py-1 font-bold text-violet-700">{el.primaryClientName}</span>}
-                            <span className="rounded-full bg-gray-100 px-2.5 py-1 font-semibold text-gray-500">{taskCount} 条关联任务</span>
-                            {el.ownerName && <span className="rounded-full bg-blue-50 px-2.5 py-1 font-semibold text-blue-600">{el.ownerName}</span>}
+
+                          {/* 第 4 行：客户 / 负责 / 更新时间（最弱视觉权重） */}
+                          <div className="mt-2.5 flex flex-wrap items-center gap-x-2 gap-y-1 text-[11px] text-gray-400">
+                            {el.primaryClientName && <span>{el.primaryClientName}</span>}
+                            {el.primaryClientName && el.ownerName && <span className="text-gray-200">·</span>}
+                            {el.ownerName && <span>{el.ownerName}</span>}
+                            {(el.primaryClientName || el.ownerName) && <span className="text-gray-200">·</span>}
+                            <span>{el.updatedAt.slice(0, 10)} 更新</span>
+                          </div>
+                        </div>
+
+                        {/* 右侧 KPI 区：大数字 + 完整度 / 同步徽章 */}
+                        <div className="shrink-0 flex flex-col items-end gap-2 pt-0.5">
+                          <div className="text-right">
+                            <div className={`text-[26px] font-bold leading-none tabular-nums tracking-tight ${taskCount === 0 ? 'text-gray-300' : 'text-gray-900'}`}>
+                              {taskCount}
+                            </div>
+                            <div className="mt-1 text-[10px] uppercase tracking-[0.18em] text-gray-400 font-medium">
+                              任务
+                            </div>
+                          </div>
+                          {/* 完整度 / 同步徽章移到 KPI 下方 — 不再挤主信息行 */}
+                          <div className="flex flex-col items-end gap-1">
                             {renderEventLineCompletenessBadge(el)}
                             {renderEventLineSyncBadge(el)}
                           </div>
-                        </button>
-                        <div className="shrink-0 flex items-start gap-2">
-                          <div className="pt-1 text-[11px] text-gray-400">
-                            {el.updatedAt.slice(0, 10)}
-                          </div>
-                          {(el.syncStatus === 'error' || el.syncStatus === 'pending') && (
-                            <button
-                              type="button"
-                              className="rounded-xl border border-orange-200 bg-orange-50 px-3 py-2 text-[12px] font-bold text-orange-600 transition hover:bg-orange-100 disabled:opacity-60"
-                              onClick={() => void handleRetryEventLineSync(el)}
-                              disabled={retryingSyncIds.has(el.id)}
-                              title={el.lastSyncError || '点击重试云端同步'}
-                            >
-                              {retryingSyncIds.has(el.id) ? '同步中…' : '重试同步'}
-                            </button>
-                          )}
-                          <button
-                            type="button"
-                            className="rounded-xl border border-[#D7E0FF] bg-[#F8FAFF] px-3 py-2 text-[12px] font-bold text-[#5B7BFE] transition hover:bg-[#EEF2FF]"
-                            onClick={() => void openEventLineDetail(el.id)}
-                          >
-                            编辑
-                          </button>
-                          {taskCount === 0 ? (
-                            <button
-                              type="button"
-                              className="rounded-xl border border-rose-200 bg-rose-50 px-3 py-2 text-[12px] font-bold text-rose-600 transition hover:bg-rose-100 disabled:opacity-60"
-                              onClick={() => void handleDeleteEventLine(el)}
-                              disabled={isDeletingEventLine}
-                            >
-                              删除
-                            </button>
-                          ) : el.status === 'archived' || el.status === 'done' ? (
-                            <button
-                              type="button"
-                              className="rounded-xl border border-emerald-200 bg-emerald-50 px-3 py-2 text-[12px] font-bold text-emerald-600 transition hover:bg-emerald-100 disabled:opacity-60"
-                              onClick={() => void handleReopenEventLine(el)}
-                              disabled={isDeletingEventLine}
-                            >
-                              重新打开
-                            </button>
-                          ) : (
-                            <button
-                              type="button"
-                              className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-[12px] font-bold text-amber-600 transition hover:bg-amber-100 disabled:opacity-60"
-                              onClick={() => void handleCloseEventLine(el)}
-                              disabled={isDeletingEventLine}
-                            >
-                              结束事件线
-                            </button>
-                          )}
                         </div>
                       </div>
-                    </div>
+
+                      {/* hover 时浮现的按钮组（绝对定位右上角，stopPropagation 防冒泡） */}
+                      <div className="absolute right-3 top-3 flex items-center gap-1 opacity-0 group-hover:opacity-100 focus-within:opacity-100 transition-opacity">
+                        {(el.syncStatus === 'error' || el.syncStatus === 'pending') && (
+                          <button
+                            type="button"
+                            onClick={(e) => { e.stopPropagation(); void handleRetryEventLineSync(el); }}
+                            disabled={isRetrying}
+                            title={el.lastSyncError || '重试云端同步'}
+                            aria-label="重试同步"
+                            className="inline-flex items-center justify-center h-7 w-7 rounded-md bg-amber-50 border border-amber-200 text-amber-700 hover:bg-amber-100 hover:border-amber-300 disabled:opacity-60 transition"
+                          >
+                            <RefreshCw size={12} strokeWidth={2.4} className={isRetrying ? 'animate-spin' : ''} />
+                          </button>
+                        )}
+                        <button
+                          type="button"
+                          onClick={(e) => { e.stopPropagation(); void openEventLineDetail(el.id); }}
+                          title="编辑事件线"
+                          aria-label="编辑"
+                          className="inline-flex items-center justify-center h-7 w-7 rounded-md bg-white border border-gray-200 text-gray-500 hover:bg-[#EEF2FF] hover:text-[#5B7BFE] hover:border-[#C7D5FF] transition"
+                        >
+                          <Pencil size={12} strokeWidth={2.4} />
+                        </button>
+                        {taskCount === 0 ? (
+                          <button
+                            type="button"
+                            onClick={(e) => { e.stopPropagation(); void handleDeleteEventLine(el); }}
+                            disabled={isDeletingEventLine}
+                            title="删除事件线"
+                            aria-label="删除"
+                            className="inline-flex items-center justify-center h-7 w-7 rounded-md bg-white border border-gray-200 text-gray-500 hover:bg-rose-50 hover:text-rose-600 hover:border-rose-200 disabled:opacity-60 transition"
+                          >
+                            <Trash2 size={12} strokeWidth={2.4} />
+                          </button>
+                        ) : el.status === 'archived' || el.status === 'done' ? (
+                          <button
+                            type="button"
+                            onClick={(e) => { e.stopPropagation(); void handleReopenEventLine(el); }}
+                            disabled={isDeletingEventLine}
+                            title="重新打开"
+                            aria-label="重新打开"
+                            className="inline-flex items-center justify-center h-7 w-7 rounded-md bg-white border border-gray-200 text-gray-500 hover:bg-emerald-50 hover:text-emerald-600 hover:border-emerald-200 disabled:opacity-60 transition"
+                          >
+                            <RotateCcw size={12} strokeWidth={2.4} />
+                          </button>
+                        ) : (
+                          <button
+                            type="button"
+                            onClick={(e) => { e.stopPropagation(); void handleCloseEventLine(el); }}
+                            disabled={isDeletingEventLine}
+                            title="结束事件线"
+                            aria-label="结束"
+                            className="inline-flex items-center justify-center h-7 w-7 rounded-md bg-white border border-gray-200 text-gray-500 hover:bg-gray-50 hover:text-gray-700 disabled:opacity-60 transition"
+                          >
+                            <CheckCircle2 size={12} strokeWidth={2.4} />
+                          </button>
+                        )}
+                      </div>
+
+                      {/* hover 时右下浮 → 提示"进入汇报预览" */}
+                      <div className="absolute right-4 bottom-4 text-[#5B7BFE]/60 opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none">
+                        <ArrowRight size={14} strokeWidth={2.4} />
+                      </div>
+                    </article>
                   );
                 })}
               </div>
+              {/* 删除确认 Modal · 同款极简风 */}
               {eventLineConfirm && (
                 <div
-                  className="fixed inset-0 z-[1000] flex items-center justify-center bg-black/40 px-6"
+                  className="fixed inset-0 z-[1000] flex items-center justify-center bg-black/30 backdrop-blur-sm px-6"
                   style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
                   onClick={(e) => {
                     if (e.target === e.currentTarget && !isDeletingEventLine) setEventLineConfirm(null);
                   }}
                 >
-                  <div className="w-full max-w-md rounded-2xl bg-white p-6 shadow-2xl">
-                    {eventLineConfirm.mode === 'single' ? (
-                      <>
-                        <h3 className="text-[16px] font-bold text-gray-900">确认删除事件线</h3>
-                        <p className="mt-3 text-[13px] leading-6 text-gray-600">
-                          将删除事件线「{eventLineConfirm.target.name || '未命名事件线'}」。删除后不可恢复，相关的活动记录、附件会一并清理。
-                        </p>
-                      </>
-                    ) : (
-                      <>
-                        <h3 className="text-[16px] font-bold text-gray-900">一键清理空事件线</h3>
-                        <p className="mt-3 text-[13px] leading-6 text-gray-600">
-                          将删除当前筛选范围内 <span className="font-bold text-rose-600">{eventLineConfirm.targets.length}</span> 条未挂任何任务的事件线。删除后不可恢复。
-                        </p>
-                        <div className="mt-3 max-h-[180px] overflow-y-auto rounded-xl border border-gray-100 bg-gray-50 px-3 py-2 text-[12px] text-gray-600">
-                          {eventLineConfirm.targets.slice(0, 50).map((el) => (
-                            <div key={el.id} className="truncate py-0.5">· {el.name || '未命名事件线'}</div>
-                          ))}
-                          {eventLineConfirm.targets.length > 50 && (
-                            <div className="py-0.5 text-gray-400">…等共 {eventLineConfirm.targets.length} 条</div>
-                          )}
-                        </div>
-                        {bulkDeleteProgress && (
-                          <p className="mt-3 text-[12px] text-gray-500">
-                            进度：{bulkDeleteProgress.done}/{bulkDeleteProgress.total}
-                            {bulkDeleteProgress.failed > 0 && `（失败 ${bulkDeleteProgress.failed}）`}
+                  <div className="w-full max-w-md rounded-xl border border-gray-200 bg-white p-6 shadow-2xl">
+                    <div className="flex items-start gap-3 mb-4">
+                      <div className="mt-0.5 inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-rose-50 ring-1 ring-rose-200">
+                        <AlertTriangle size={16} strokeWidth={2} className="text-rose-600" />
+                      </div>
+                      <div className="min-w-0 flex-1">
+                        <h3 className="text-[15px] font-semibold text-gray-900">
+                          {eventLineConfirm.mode === 'single' ? '确认删除事件线' : '一键清理空事件线'}
+                        </h3>
+                        {eventLineConfirm.mode === 'single' ? (
+                          <p className="mt-2 text-[12.5px] leading-relaxed text-gray-600">
+                            将删除事件线
+                            <span className="font-medium text-gray-900">「{eventLineConfirm.target.name || '未命名事件线'}」</span>
+                            。删除后不可恢复，相关的活动记录、附件会一并清理。
+                          </p>
+                        ) : (
+                          <p className="mt-2 text-[12.5px] leading-relaxed text-gray-600">
+                            将删除当前筛选范围内
+                            <span className="mx-1 font-semibold text-rose-700 tabular-nums">{eventLineConfirm.targets.length}</span>
+                            条未挂任何任务的事件线。删除后不可恢复。
                           </p>
                         )}
-                      </>
+                      </div>
+                    </div>
+
+                    {eventLineConfirm.mode === 'bulk' && (
+                      <div className="mt-1 max-h-[180px] overflow-y-auto rounded-lg border border-gray-100 bg-gray-50/60 px-3 py-2 text-[12px] text-gray-600">
+                        {eventLineConfirm.targets.slice(0, 50).map((el) => (
+                          <div key={el.id} className="flex items-center gap-2 truncate py-0.5">
+                            <span className="h-1 w-1 shrink-0 rounded-full bg-gray-300" />
+                            <span className="truncate">{el.name || '未命名事件线'}</span>
+                          </div>
+                        ))}
+                        {eventLineConfirm.targets.length > 50 && (
+                          <div className="py-0.5 pl-3 text-gray-400">…等共 {eventLineConfirm.targets.length} 条</div>
+                        )}
+                      </div>
                     )}
-                    <div className="mt-5 flex items-center justify-end gap-2">
+
+                    {bulkDeleteProgress && (
+                      <p className="mt-3 text-[11.5px] text-gray-500 tabular-nums">
+                        进度：<span className="text-gray-900 font-medium">{bulkDeleteProgress.done}</span>
+                        <span className="text-gray-300"> / </span>
+                        <span>{bulkDeleteProgress.total}</span>
+                        {bulkDeleteProgress.failed > 0 && (
+                          <span className="ml-2 text-rose-600">（失败 {bulkDeleteProgress.failed}）</span>
+                        )}
+                      </p>
+                    )}
+
+                    <div className="mt-6 flex items-center justify-end gap-2">
                       <button
                         type="button"
                         onClick={() => { if (!isDeletingEventLine) setEventLineConfirm(null); }}
                         disabled={isDeletingEventLine}
-                        className="rounded-xl border border-gray-200 bg-white px-4 py-2 text-[13px] font-bold text-gray-600 transition hover:bg-gray-50 disabled:opacity-60"
+                        className="inline-flex h-9 items-center rounded-md border border-gray-200 bg-white px-4 text-[12.5px] font-medium text-gray-700 transition-all hover:border-gray-300 hover:bg-gray-50 disabled:opacity-60 disabled:cursor-not-allowed"
                       >
                         取消
                       </button>
@@ -14538,28 +14794,240 @@ export default function App() {
                           else void handleConfirmBulkDeleteEmptyEventLines();
                         }}
                         disabled={isDeletingEventLine}
-                        className="rounded-xl border border-rose-200 bg-rose-500 px-4 py-2 text-[13px] font-bold text-white transition hover:bg-rose-600 disabled:opacity-60"
+                        className="inline-flex h-9 items-center gap-1.5 rounded-md bg-rose-600 px-4 text-[12.5px] font-medium text-white shadow-sm transition-all hover:bg-rose-700 disabled:opacity-60 disabled:cursor-not-allowed"
                       >
-                        {isDeletingEventLine ? '处理中…' : (eventLineConfirm.mode === 'single' ? '确认删除' : `确认清理 ${eventLineConfirm.targets.length} 条`)}
+                        {isDeletingEventLine ? (
+                          <>
+                            <RefreshCw size={12} strokeWidth={2.2} className="animate-spin" />
+                            <span>处理中</span>
+                          </>
+                        ) : (
+                          <>
+                            <Trash2 size={12} strokeWidth={2.2} />
+                            <span>{eventLineConfirm.mode === 'single' ? '确认删除' : `确认清理 ${eventLineConfirm.targets.length} 条`}</span>
+                          </>
+                        )}
                       </button>
                     </div>
                   </div>
                 </div>
               )}
+
+              {/* 合并事件线 Modal：第一步选源，第二步确认 */}
+              {eventLineMergeDialog && (() => {
+                const dialog = eventLineMergeDialog;
+                const target = dialog.target;
+                const targetClientId = target.primaryClientId || '';
+                const candidateList = eventLines.filter(
+                  (line) =>
+                    line.id !== target.id
+                    && (line.primaryClientId || '') === targetClientId,
+                );
+                const busy = isPreviewingMerge || isMergingEventLine;
+                return (
+                  <div
+                    className="fixed inset-0 z-[1000] flex items-center justify-center bg-black/30 backdrop-blur-sm px-6"
+                    style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
+                    onClick={(e) => {
+                      if (e.target === e.currentTarget && !busy) setEventLineMergeDialog(null);
+                    }}
+                  >
+                    <div className="w-full max-w-lg rounded-xl border border-gray-200 bg-white p-6 shadow-2xl">
+                      <div className="mb-4 flex items-start gap-3">
+                        <div className="mt-0.5 inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-[#5B7BFE]/10 ring-1 ring-[#5B7BFE]/30">
+                          <GitMerge size={16} strokeWidth={2} className="text-[#3652c9]" />
+                        </div>
+                        <div className="min-w-0 flex-1">
+                          <h3 className="text-[15px] font-semibold text-gray-900">
+                            {dialog.step === 'select' ? '选择要合并进来的事件线' : '确认合并'}
+                          </h3>
+                          <p className="mt-2 text-[12.5px] leading-relaxed text-gray-600">
+                            目标事件线：
+                            <span className="font-medium text-gray-900">「{target.name || '未命名'}」</span>
+                            {target.primaryClientName ? <span className="text-gray-500">（{target.primaryClientName}）</span> : null}
+                          </p>
+                          {dialog.step === 'select' && (
+                            <p className="mt-1 text-[12px] leading-relaxed text-gray-500">
+                              所有被选中的事件线，其活动、任务、附件、引证卡都会迁移到目标事件线，源事件线随后被删除。<span className="text-rose-600">此操作不可撤销</span>。
+                            </p>
+                          )}
+                        </div>
+                      </div>
+
+                      {dialog.step === 'select' ? (
+                        candidateList.length === 0 ? (
+                          <div className="rounded-lg border border-dashed border-gray-200 bg-gray-50/60 px-3 py-6 text-center text-[12.5px] text-gray-500">
+                            当前客户下没有其他可合并的事件线
+                          </div>
+                        ) : (
+                          <div className="max-h-[300px] overflow-y-auto rounded-lg border border-gray-100 bg-gray-50/40">
+                            {candidateList.map((line) => {
+                              const checked = dialog.selectedSourceIds.has(line.id);
+                              return (
+                                <label
+                                  key={line.id}
+                                  className={`flex cursor-pointer items-start gap-2.5 border-b border-gray-100 px-3 py-2 last:border-b-0 transition-colors ${
+                                    checked ? 'bg-[#5B7BFE]/8' : 'hover:bg-white'
+                                  }`}
+                                >
+                                  <input
+                                    type="checkbox"
+                                    className="mt-0.5 h-3.5 w-3.5 shrink-0 cursor-pointer rounded border-gray-300 text-[#5B7BFE] focus:ring-[#5B7BFE]"
+                                    checked={checked}
+                                    onChange={() => {
+                                      setEventLineMergeDialog((prev) => {
+                                        if (!prev || prev.step !== 'select') return prev;
+                                        const next = new Set(prev.selectedSourceIds);
+                                        if (next.has(line.id)) next.delete(line.id);
+                                        else next.add(line.id);
+                                        return { ...prev, selectedSourceIds: next };
+                                      });
+                                    }}
+                                  />
+                                  <div className="min-w-0 flex-1">
+                                    <div className="truncate text-[12.5px] font-medium text-gray-900">
+                                      {line.name || '未命名事件线'}
+                                    </div>
+                                    <div className="mt-0.5 flex items-center gap-2 text-[10.5px] text-gray-500">
+                                      <span className="rounded bg-gray-100 px-1.5 py-0.5">{line.status}</span>
+                                      <span className="tabular-nums">活动 {line.evidenceCount}</span>
+                                    </div>
+                                  </div>
+                                </label>
+                              );
+                            })}
+                          </div>
+                        )
+                      ) : (
+                        <div className="space-y-3">
+                          <div className="rounded-lg border border-gray-100 bg-gray-50/60 px-3 py-2 text-[12px] text-gray-700">
+                            <div className="font-medium text-gray-900">即将合并的事件线（{dialog.preview.sources.length} 条）</div>
+                            <div className="mt-1.5 space-y-1">
+                              {dialog.preview.sources.map((src) => (
+                                <div key={src.id} className="flex items-center gap-2 truncate">
+                                  <span className="h-1 w-1 shrink-0 rounded-full bg-gray-400" />
+                                  <span className="truncate">{src.name || '未命名'}</span>
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+
+                          {dialog.preview.impact.length > 0 ? (
+                            <div className="rounded-lg border border-amber-200 bg-amber-50/60 px-3 py-2">
+                              <div className="text-[12px] font-medium text-amber-900">
+                                影响范围：共 <span className="tabular-nums">{dialog.preview.totalRows}</span> 条数据将被迁移到目标
+                              </div>
+                              <div className="mt-1.5 grid grid-cols-2 gap-x-3 gap-y-0.5 text-[11px] text-amber-900/85 tabular-nums">
+                                {dialog.preview.impact.map((item) => (
+                                  <div key={item.table} className="flex items-center justify-between gap-2">
+                                    <span className="truncate text-amber-800">{item.table}</span>
+                                    <span className="font-semibold">{item.rows}</span>
+                                  </div>
+                                ))}
+                              </div>
+                            </div>
+                          ) : (
+                            <div className="rounded-lg border border-gray-200 bg-white px-3 py-2 text-[12px] text-gray-600">
+                              源事件线没有任何子记录，合并后只会删除空壳。
+                            </div>
+                          )}
+
+                          <div className="rounded-lg border border-rose-100 bg-rose-50/60 px-3 py-2 text-[11.5px] leading-relaxed text-rose-700">
+                            合并完成后无法撤销。如需保留原事件线，请取消并改用「编辑」修改名称。
+                          </div>
+                        </div>
+                      )}
+
+                      <div className="mt-6 flex items-center justify-end gap-2">
+                        {dialog.step === 'confirm' ? (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              if (busy) return;
+                              setEventLineMergeDialog({
+                                step: 'select',
+                                target: dialog.target,
+                                selectedSourceIds: dialog.selectedSourceIds,
+                              });
+                            }}
+                            disabled={busy}
+                            className="inline-flex h-9 items-center rounded-md border border-gray-200 bg-white px-4 text-[12.5px] font-medium text-gray-700 transition-all hover:border-gray-300 hover:bg-gray-50 disabled:opacity-60 disabled:cursor-not-allowed"
+                          >
+                            返回修改
+                          </button>
+                        ) : null}
+                        <button
+                          type="button"
+                          onClick={() => { if (!busy) setEventLineMergeDialog(null); }}
+                          disabled={busy}
+                          className="inline-flex h-9 items-center rounded-md border border-gray-200 bg-white px-4 text-[12.5px] font-medium text-gray-700 transition-all hover:border-gray-300 hover:bg-gray-50 disabled:opacity-60 disabled:cursor-not-allowed"
+                        >
+                          取消
+                        </button>
+                        {dialog.step === 'select' ? (
+                          <button
+                            type="button"
+                            onClick={() => void handleProceedMergePreview()}
+                            disabled={busy || dialog.selectedSourceIds.size === 0 || candidateList.length === 0}
+                            className="inline-flex h-9 items-center gap-1.5 rounded-md bg-[#5B7BFE] px-4 text-[12.5px] font-medium text-white shadow-sm transition-all hover:bg-[#4a6be6] disabled:opacity-60 disabled:cursor-not-allowed"
+                          >
+                            {isPreviewingMerge ? (
+                              <>
+                                <RefreshCw size={12} strokeWidth={2.2} className="animate-spin" />
+                                <span>统计中…</span>
+                              </>
+                            ) : (
+                              <>
+                                <span>下一步</span>
+                                <span className="tabular-nums">({dialog.selectedSourceIds.size})</span>
+                              </>
+                            )}
+                          </button>
+                        ) : (
+                          <button
+                            type="button"
+                            onClick={() => void handleConfirmMergeEventLine()}
+                            disabled={busy}
+                            className="inline-flex h-9 items-center gap-1.5 rounded-md bg-[#5B7BFE] px-4 text-[12.5px] font-medium text-white shadow-sm transition-all hover:bg-[#4a6be6] disabled:opacity-60 disabled:cursor-not-allowed"
+                          >
+                            {isMergingEventLine ? (
+                              <>
+                                <RefreshCw size={12} strokeWidth={2.2} className="animate-spin" />
+                                <span>合并中…</span>
+                              </>
+                            ) : (
+                              <>
+                                <GitMerge size={12} strokeWidth={2.2} />
+                                <span>确认合并 {dialog.preview.sources.length} 条</span>
+                              </>
+                            )}
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                );
+              })()}
             </div>
-          )}
+            );
+          })()}
 
           {taskViewMode === 'review' && (
-            <div className="max-w-5xl mx-auto flex flex-col" style={{ height: 'calc(100vh - 80px)' }}>
+            <div className="max-w-6xl mx-auto flex flex-col" style={{ height: 'calc(100vh - 80px)' }}>
 
-              {/* ── 上下文控制栏 ── */}
-              <div className="flex items-center justify-between gap-4 py-2 shrink-0">
-                <div className="flex items-center gap-3">
-                  <div className="flex items-center bg-gray-100/60 p-0.5 rounded-[12px]">
+              {/* ── 顶部控制栏 · 极简 typography ── */}
+              <div className="flex items-end justify-between gap-6 py-5 shrink-0">
+                <div className="flex items-baseline gap-6">
+                  <h1 className="text-[26px] font-light tracking-tight text-gray-900">周复盘</h1>
+                  <div className="flex items-center gap-5 pb-1">
                     <button
                       type="button"
-                      onClick={() => { setReviewScope('work'); }}
-                      className={`px-3 py-1 rounded-[10px] text-[12px] font-bold transition ${reviewScope === 'work' ? 'bg-white text-[#5B7BFE] shadow-sm border border-gray-200/40' : 'text-gray-500 hover:text-gray-700'}`}
+                      onClick={() => setReviewScope('work')}
+                      className={`text-[12px] font-medium tracking-wide transition-colors ${
+                        reviewScope === 'work'
+                          ? 'text-gray-900 border-b-[1.5px] border-gray-900 pb-0.5'
+                          : 'text-gray-400 hover:text-gray-700'
+                      }`}
                     >
                       组织复盘
                     </button>
@@ -14567,73 +15035,97 @@ export default function App() {
                       type="button"
                       onClick={() => { if (!reviewPerspectiveRequiresWorkScope) setReviewScope('personal'); }}
                       disabled={reviewPerspectiveRequiresWorkScope}
-                      className={`px-3 py-1 rounded-[10px] text-[12px] font-bold transition ${reviewScope === 'personal' && !reviewPerspectiveRequiresWorkScope ? 'bg-white text-[#5B7BFE] shadow-sm border border-gray-200/40' : reviewPerspectiveRequiresWorkScope ? 'cursor-not-allowed text-gray-300' : 'text-gray-500 hover:text-gray-700'}`}
                       title={reviewPerspectiveRequiresWorkScope ? '组织视角和部门视角只展示工作复盘' : undefined}
+                      className={`text-[12px] font-medium tracking-wide transition-colors ${
+                        reviewScope === 'personal' && !reviewPerspectiveRequiresWorkScope
+                          ? 'text-gray-900 border-b-[1.5px] border-gray-900 pb-0.5'
+                          : reviewPerspectiveRequiresWorkScope
+                            ? 'cursor-not-allowed text-gray-200'
+                            : 'text-gray-400 hover:text-gray-700'
+                      }`}
                     >
                       成长复盘
                     </button>
                   </div>
-                  <div className="flex items-center gap-3 text-[12px] font-bold text-gray-400">
-                    <span><span className="text-gray-700">{activeReviewRows.length}</span> 纳入</span>
-                    <span><span className="text-emerald-500">{activeReviewRows.filter(r => r.task.status === 'done').length}</span> 完成</span>
-                    <span><span className="text-amber-500">{activeReviewRows.filter(r => r.task.status !== 'done').length}</span> 未完成</span>
-                  </div>
                 </div>
-                <div className="flex items-center rounded-xl border border-gray-200 bg-white p-0.5 shadow-sm">
-                  <button
-                    type="button"
-                    aria-label="切换到上一周复盘"
-                    title="上一周"
-                    onClick={() => handleShiftReviewWeek(-1)}
-                    disabled={isReviewWeekSwitching}
-                    className="flex h-7 w-7 items-center justify-center rounded-[10px] text-gray-400 transition hover:bg-gray-50 hover:text-[#5B7BFE] disabled:cursor-not-allowed disabled:opacity-50"
-                  >
-                    <ChevronLeft size={15} />
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => void handleNavigateReviewWeek(activeReviewWeekLabel)}
-                    disabled={isReviewWeekSwitching}
-                    className="flex h-7 items-center gap-1.5 rounded-[10px] px-3 text-[12px] font-bold text-gray-600 transition hover:bg-gray-50 hover:text-[#5B7BFE] disabled:cursor-not-allowed disabled:opacity-60"
-                    title={`${weekLabelCN(activeReviewWeekLabel)} · 周一 ${activeReviewWeekMondayLabel}`}
-                  >
-                    <CalendarIcon size={13} className="text-gray-400" />
-                    <span>{activeReviewWeekMondayLabel}</span>
-                  </button>
-                  <button
-                    type="button"
-                    aria-label="切换到下一周复盘"
-                    title="下一周"
-                    onClick={() => handleShiftReviewWeek(1)}
-                    disabled={isReviewWeekSwitching}
-                    className="flex h-7 w-7 items-center justify-center rounded-[10px] text-gray-400 transition hover:bg-gray-50 hover:text-[#5B7BFE] disabled:cursor-not-allowed disabled:opacity-50"
-                  >
-                    <ChevronRight size={15} />
-                  </button>
+
+                <div className="flex items-center gap-8">
+                  <div className="flex items-baseline gap-5 tabular-nums">
+                    <span className="inline-flex items-baseline gap-1.5 text-[11px] text-gray-400">
+                      <span className="text-[15px] font-semibold text-gray-900">{activeReviewRows.length}</span>
+                      纳入
+                    </span>
+                    <span className="text-gray-200">·</span>
+                    <span className="inline-flex items-baseline gap-1.5 text-[11px] text-gray-400">
+                      <span className="text-[15px] font-semibold text-emerald-600">{activeReviewRows.filter(r => r.task.status === 'done').length}</span>
+                      完成
+                    </span>
+                    <span className="text-gray-200">·</span>
+                    <span className="inline-flex items-baseline gap-1.5 text-[11px] text-gray-400">
+                      <span className="text-[15px] font-semibold text-amber-600">{activeReviewRows.filter(r => r.task.status !== 'done').length}</span>
+                      未完成
+                    </span>
+                  </div>
+
+                  <div className="inline-flex items-center gap-0.5 rounded-lg border border-gray-200 bg-white p-0.5">
+                    <button
+                      type="button"
+                      aria-label="上一周"
+                      onClick={() => handleShiftReviewWeek(-1)}
+                      disabled={isReviewWeekSwitching}
+                      className="inline-flex h-7 w-7 items-center justify-center rounded-md text-gray-500 transition-all hover:bg-gray-50 hover:text-gray-900 disabled:cursor-not-allowed disabled:opacity-40"
+                    >
+                      <ChevronLeft size={15} strokeWidth={2} />
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => void handleNavigateReviewWeek(activeReviewWeekLabel)}
+                      disabled={isReviewWeekSwitching}
+                      title={`${weekLabelCN(activeReviewWeekLabel)} · 周一 ${activeReviewWeekMondayLabel}`}
+                      className="inline-flex h-7 items-center gap-1.5 rounded-md px-2.5 text-[12px] font-medium tabular-nums text-gray-700 transition-all hover:bg-gray-50 hover:text-[#5B7BFE] disabled:cursor-not-allowed disabled:opacity-60"
+                    >
+                      <CalendarIcon size={12} strokeWidth={1.8} className="text-gray-400" />
+                      <span>{activeReviewWeekMondayLabel}</span>
+                    </button>
+                    <button
+                      type="button"
+                      aria-label="下一周"
+                      onClick={() => handleShiftReviewWeek(1)}
+                      disabled={isReviewWeekSwitching}
+                      className="inline-flex h-7 w-7 items-center justify-center rounded-md text-gray-500 transition-all hover:bg-gray-50 hover:text-gray-900 disabled:cursor-not-allowed disabled:opacity-40"
+                    >
+                      <ChevronRight size={15} strokeWidth={2} />
+                    </button>
+                  </div>
                 </div>
               </div>
 
-              {/* ── 模块 tab + 视角胶囊（同一行，带下划线） ── */}
-              <div className="flex items-center justify-between border-b border-gray-200 mb-0 shrink-0 overflow-x-auto">
-                <div className="flex items-center gap-8">
+              {/* ── 模块 tab + 视角胶囊 · 极简下划线 ── */}
+              <div className="flex items-center justify-between border-b border-gray-100 shrink-0 overflow-x-auto">
+                <div className="flex items-center gap-10">
                   {([
-                    { id: 'overview' as const, label: '本周概览', Icon: LayoutDashboard },
-                    { id: 'events' as const, label: '事件复盘', Icon: GitMerge },
-                    { id: 'signals' as const, label: '部门信号', Icon: Radio },
+                    { id: 'overview' as const, label: '本周概览' },
+                    { id: 'events' as const, label: '事件复盘' },
+                    { id: 'signals' as const, label: '部门信号' },
                   ]).map((tab) => (
                     <button
                       key={tab.id}
                       type="button"
                       onClick={() => setActiveReviewTab(tab.id)}
-                      className={`relative pb-3 flex items-center gap-2 text-[14px] font-bold transition whitespace-nowrap ${activeReviewTab === tab.id ? 'text-[#5B7BFE]' : 'text-gray-400 hover:text-gray-600'}`}
+                      className={`relative pb-3 text-[13px] tracking-wide transition-colors whitespace-nowrap ${
+                        activeReviewTab === tab.id
+                          ? 'text-gray-900 font-semibold'
+                          : 'text-gray-400 font-medium hover:text-gray-700'
+                      }`}
                     >
-                      <tab.Icon size={15} className={activeReviewTab === tab.id ? 'text-[#5B7BFE]' : 'text-gray-300'} />
                       {tab.label}
-                      {activeReviewTab === tab.id && <span className="absolute bottom-[-1px] left-0 w-full h-[2.5px] bg-[#5B7BFE] rounded-t-full" />}
+                      {activeReviewTab === tab.id && (
+                        <span className="absolute bottom-[-1px] left-0 w-full h-[1.5px] bg-gray-900" />
+                      )}
                     </button>
                   ))}
                 </div>
-                <div className="mb-3 ml-4 flex shrink-0 items-center gap-2">
+                <div className="flex shrink-0 items-center gap-5 pb-3">
                   {shouldShowReviewPerspectiveSwitch && (() => {
                     const hasMine = availableReviewPerspectives.some((o) => o.key === 'mine');
                     const hasDepartment = availableReviewPerspectives.some((o) => o.key === 'department');
@@ -14642,12 +15134,11 @@ export default function App() {
                       ? (reviewDepartmentOptions.find((d) => d.id === reviewDepartmentId)?.name || '部门视角')
                       : (reviewDepartmentOptions[0]?.name || '部门视角');
                     const isDeptActive = reviewPerspective === 'department';
-                    const baseBtn = 'px-4 py-1.5 rounded-full text-[12px] font-bold transition whitespace-nowrap';
-                    const activeBtn = 'bg-white text-[#5B7BFE] shadow-sm';
-                    const idleBtn = 'text-gray-500 hover:text-gray-700';
+                    const baseBtn = 'text-[12px] font-medium tracking-wide transition-colors whitespace-nowrap';
+                    const activeBtn = 'text-gray-900 underline underline-offset-[6px] decoration-[1.5px]';
+                    const idleBtn = 'text-gray-400 hover:text-gray-700';
                     return (
-                      <div className="flex items-center bg-gray-100/50 p-1 rounded-full">
-                        {/* 我的视角 — 第一位 */}
+                      <div className="flex items-center gap-5">
                         {hasMine && (
                           <button
                             type="button"
@@ -14660,14 +15151,12 @@ export default function App() {
                             我的视角
                           </button>
                         )}
-                        {/* 部门视角 — 中间，直接下拉显示部门名 */}
                         {hasDepartment && (
                           <div className="relative" ref={reviewDeptDropdownRef}>
                             <button
                               type="button"
                               data-dept-trigger="1"
                               onClick={(e) => {
-                                // For dept lead with only one department, toggle perspective directly without dropdown.
                                 if (reviewDepartmentOptions.length <= 1) {
                                   const onlyId = reviewDepartmentOptions[0]?.id || '';
                                   setReviewPerspective('department');
@@ -14675,9 +15164,8 @@ export default function App() {
                                   setReviewScope('work');
                                   return;
                                 }
-                                // Anchor the (fixed-position) dropdown right under the button.
                                 const rect = e.currentTarget.getBoundingClientRect();
-                                setReviewDeptDropdownAnchor({ top: rect.bottom + 4, left: rect.left });
+                                setReviewDeptDropdownAnchor({ top: rect.bottom + 6, left: rect.left });
                                 setReviewDeptDropdownOpen((v) => !v);
                               }}
                               className={`${baseBtn} inline-flex items-center gap-1 ${isDeptActive ? activeBtn : idleBtn}`}
@@ -14686,12 +15174,16 @@ export default function App() {
                                 ? currentDeptName
                                 : (reviewDepartmentOptions.length <= 1 ? (currentDeptName || '部门视角') : '部门视角')}
                               {reviewDepartmentOptions.length > 1 && (
-                                <ChevronDown size={12} className={`${isDeptActive ? 'text-[#5B7BFE]' : 'text-gray-400'} transition-transform ${reviewDeptDropdownOpen ? 'rotate-180' : ''}`} />
+                                <ChevronDown
+                                  size={11}
+                                  strokeWidth={1.8}
+                                  className={`${isDeptActive ? 'text-gray-900' : 'text-gray-300'} transition-transform ${reviewDeptDropdownOpen ? 'rotate-180' : ''}`}
+                                />
                               )}
                             </button>
                             {reviewDeptDropdownOpen && reviewDepartmentOptions.length > 1 && reviewDeptDropdownAnchor && (
                               <div
-                                className="fixed z-[9999] min-w-[160px] rounded-xl border border-gray-200 bg-white shadow-2xl overflow-hidden"
+                                className="fixed z-[9999] min-w-[160px] border border-gray-100 bg-white shadow-[0_8px_30px_rgba(0,0,0,0.08)]"
                                 style={{ top: reviewDeptDropdownAnchor.top, left: reviewDeptDropdownAnchor.left }}
                               >
                                 {reviewDepartmentOptions.map((department) => (
@@ -14704,10 +15196,10 @@ export default function App() {
                                       setReviewScope('work');
                                       setReviewDeptDropdownOpen(false);
                                     }}
-                                    className={`w-full px-3.5 py-2 text-left text-[12px] transition hover:bg-[#5B7BFE]/5 ${
+                                    className={`w-full px-4 py-2.5 text-left text-[12px] transition-colors hover:bg-gray-50 ${
                                       isDeptActive && reviewDepartmentId === department.id
-                                        ? 'font-bold text-[#5B7BFE] bg-[#5B7BFE]/10'
-                                        : 'text-gray-700'
+                                        ? 'font-semibold text-gray-900'
+                                        : 'text-gray-600'
                                     }`}
                                   >
                                     {department.name}
@@ -14717,7 +15209,6 @@ export default function App() {
                             )}
                           </div>
                         )}
-                        {/* 组织视角 — 最后一位 */}
                         {hasOrganization && (
                           <button
                             type="button"
@@ -14740,319 +15231,454 @@ export default function App() {
               {/* ── 内容区域（独立滚动，填满剩余高度） ── */}
               <div ref={reviewViewportRef} className="flex-1 overflow-y-auto py-4 min-h-0">
 
-              {/* ── 本周概览 ── */}
+              {/* ── 本周概览 · 极简 typography ── */}
               {activeReviewTab === 'overview' && (
-                <div className="space-y-4">
-                  <section className="bg-white p-6 rounded-2xl border border-gray-100 shadow-sm">
-                    <div className="mb-3 flex items-center justify-between gap-3">
-                      <h3 className="text-[11px] font-bold text-gray-300 uppercase tracking-[0.15em]">本周总览</h3>
+                <div className="max-w-5xl space-y-16 pt-10 pb-20">
+                  {/* 本周总览 · quote 风格 */}
+                  <section>
+                    <div className="flex items-center justify-between mb-6">
+                      <h2 className="text-[10px] font-bold uppercase tracking-[0.18em] text-gray-400">
+                        本周总览
+                      </h2>
                       {reviewScope === 'work' && (
-                        <span className={`text-[11px] font-bold ${weeklyOverviewIsRefreshing ? 'text-[#5B7BFE]' : weeklyOverviewIsAi ? 'text-emerald-500' : 'text-gray-300'}`}>
-                          {weeklyOverviewIsRefreshing ? '正在更新智能概览' : weeklyOverviewIsAi ? '已生成智能概览' : weeklyOverviewMaterialPackEmpty ? '基础概览' : '规则概览'}
+                        <span className={`inline-flex items-center gap-1.5 rounded-md border px-2 py-0.5 text-[10px] font-medium tracking-wide ${
+                          weeklyOverviewIsRefreshing
+                            ? 'border-blue-200 bg-blue-50 text-[#5B7BFE]'
+                            : weeklyOverviewIsAi
+                              ? 'border-emerald-200 bg-emerald-50 text-emerald-700'
+                              : 'border-gray-200 bg-white text-gray-500'
+                        }`}>
+                          <span className={`h-1.5 w-1.5 rounded-full ${
+                            weeklyOverviewIsRefreshing
+                              ? 'bg-[#5B7BFE] animate-pulse'
+                              : weeklyOverviewIsAi
+                                ? 'bg-emerald-500'
+                                : 'bg-gray-300'
+                          }`} />
+                          {weeklyOverviewIsRefreshing
+                            ? '正在更新智能概览'
+                            : weeklyOverviewIsAi
+                              ? '智能概览'
+                              : weeklyOverviewMaterialPackEmpty
+                                ? '基础概览'
+                                : '规则概览'}
                         </span>
                       )}
                     </div>
-                    {activeWeeklyOverview.totalCount > 0 ? (
-                      <p className="text-gray-700 leading-[1.85] text-[14px] font-medium">{activeWeeklyOverview.summaryText}</p>
-                    ) : (
-                      <p className="text-gray-400 leading-[1.7] text-[14px] font-medium italic">本周还没有纳入复盘的事项。</p>
-                    )}
+                    <div className="border-l-[2px] border-gray-200 pl-6">
+                      {activeWeeklyOverview.totalCount > 0 ? (
+                        <p className="text-[18px] font-light leading-[1.75] tracking-tight text-gray-800">
+                          {activeWeeklyOverview.summaryText}
+                        </p>
+                      ) : (
+                        <p className="text-[16px] font-light leading-[1.7] text-gray-300">
+                          本周尚未纳入任何复盘事项
+                        </p>
+                      )}
+                    </div>
                   </section>
 
+                  {/* 重点主线 */}
                   {activeWeeklyOverview.mainlines.length > 0 && (
-                    <section className="space-y-3">
-                      <div className="flex items-center justify-between px-1">
-                        <h3 className="text-[13px] font-bold text-gray-800">重点主线</h3>
-                        <span className="text-[11px] font-bold text-gray-400">
-                          {activeWeeklyOverview.mainlines.length} 条主线 · {activeWeeklyOverview.totalCount} 项任务
-                        </span>
+                    <section>
+                      <div className="mb-8 flex items-baseline justify-between">
+                        <div>
+                          <h2 className="text-[20px] font-light tracking-tight text-gray-900">重点主线</h2>
+                          <p className="mt-1 text-[12px] text-gray-400">
+                            {activeWeeklyOverview.mainlines.length} 条主线 · 共 {activeWeeklyOverview.totalCount} 项任务
+                          </p>
+                        </div>
                       </div>
-                      {activeWeeklyOverview.mainlines.map((line, index) => (
-                        <article key={line.id} className="bg-white p-5 rounded-2xl border border-gray-100 shadow-sm">
-                          <div className="flex items-start justify-between gap-4">
-                            <div className="flex items-center gap-3 min-w-0">
-                              <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-[#5B7BFE]/10 text-[12px] font-bold text-[#5B7BFE]">
-                                {index + 1}
-                              </span>
-                              <div className="min-w-0">
-                                <h4 className="truncate text-[15px] font-bold text-gray-900">{line.title}</h4>
-                                <div className="mt-1 flex flex-wrap items-center gap-2 text-[11px] font-bold">
-                                  <span className="rounded-full bg-gray-100 px-2 py-0.5 text-gray-500">{line.taskCount} 项纳入</span>
-                                  <span className="rounded-full bg-emerald-50 px-2 py-0.5 text-emerald-600">{line.completedCount} 完成</span>
-                                  {line.pendingCount > 0 && (
-                                    <span className="rounded-full bg-amber-50 px-2 py-0.5 text-amber-600">{line.pendingCount} 未完成</span>
-                                  )}
+                      <div className="space-y-3">
+                        {activeWeeklyOverview.mainlines.map((line, index) => {
+                          const rankText = String(index + 1).padStart(2, '0');
+                          // 斑马纹：奇偶行交替极浅底，让 1234 排列时不糊在一起
+                          const zebraBg = index % 2 === 0 ? 'bg-white' : 'bg-gray-50/50';
+                          return (
+                            <article
+                              key={line.id}
+                              className={`group rounded-xl border border-gray-100/80 px-5 py-4 transition-all ${zebraBg} hover:bg-blue-50/30 hover:border-blue-200/60 hover:shadow-[0_2px_8px_rgba(91,123,254,0.06)]`}
+                            >
+                              <div className="flex items-start gap-5">
+                                <span className="text-[36px] leading-none font-extralight tracking-tighter text-gray-200 pt-1 group-hover:text-[#5B7BFE]/50 transition-colors">
+                                  {rankText}
+                                </span>
+                                <div className="flex-1 min-w-0">
+                                  <h3 className="text-[17px] font-semibold leading-snug text-gray-900">
+                                    {line.title}
+                                  </h3>
+                                  <div className="mt-2 flex flex-wrap items-baseline gap-x-4 gap-y-1 tabular-nums">
+                                    <span className="inline-flex items-baseline gap-1 text-[11px] text-gray-400">
+                                      <span className="text-[13px] font-semibold text-gray-900">{line.taskCount}</span>
+                                      项纳入
+                                    </span>
+                                    <span className="text-gray-200 text-[11px]">·</span>
+                                    <span className="inline-flex items-baseline gap-1 text-[11px] text-gray-400">
+                                      <span className="text-[13px] font-semibold text-emerald-600">{line.completedCount}</span>
+                                      完成
+                                    </span>
+                                    {line.pendingCount > 0 && (
+                                      <>
+                                        <span className="text-gray-200 text-[11px]">·</span>
+                                        <span className="inline-flex items-baseline gap-1 text-[11px] text-gray-400">
+                                          <span className="text-[13px] font-semibold text-amber-700">{line.pendingCount}</span>
+                                          未完成
+                                        </span>
+                                      </>
+                                    )}
+                                  </div>
+                                  <dl className="mt-5 space-y-3">
+                                    <div className="grid grid-cols-[80px_1fr] gap-x-6 items-baseline">
+                                      <dt className="text-[10px] font-bold uppercase tracking-[0.18em] text-gray-400">
+                                        本周推进
+                                      </dt>
+                                      <dd className="text-[14px] leading-relaxed text-gray-700">
+                                        {line.progressText}
+                                      </dd>
+                                    </div>
+                                    <div className="grid grid-cols-[80px_1fr] gap-x-6 items-baseline">
+                                      <dt className="text-[10px] font-bold uppercase tracking-[0.18em] text-gray-400">
+                                        下一步目标
+                                      </dt>
+                                      <dd className="text-[14px] leading-relaxed text-gray-700">
+                                        {line.nextGoalText}
+                                      </dd>
+                                    </div>
+                                  </dl>
                                 </div>
                               </div>
-                            </div>
-                          </div>
-                          <div className="mt-4 space-y-3 text-[13px] leading-6">
-                            <div className="grid grid-cols-[64px_1fr] gap-3">
-                              <span className="font-bold text-gray-400">本周推进</span>
-                              <p className="font-medium text-gray-700">{line.progressText}</p>
-                            </div>
-                            <div className="grid grid-cols-[64px_1fr] gap-3">
-                              <span className="font-bold text-gray-400">下一步目标</span>
-                              <p className="font-medium text-gray-700">{line.nextGoalText}</p>
-                            </div>
-                          </div>
-                        </article>
-                      ))}
+                            </article>
+                          );
+                        })}
+                      </div>
                     </section>
                   )}
                 </div>
               )}
 
-              {/* ── 事件复盘 ── */}
+              {/* ── 事件复盘 · 极简 typography ── */}
               {activeReviewTab === 'events' && (
-                <div className="bg-white border border-gray-100 rounded-2xl shadow-sm p-5 space-y-3">
-                  <div className="flex items-center justify-between">
+                <div className="max-w-5xl pt-10 pb-20">
+                  <div className="flex items-baseline justify-between mb-10">
                     <div>
-                      <h3 className="text-[16px] font-bold text-gray-900">{reviewScope === 'work' ? '事件复盘' : '成长复盘事件线'}</h3>
-                      <p className="text-[12px] text-gray-500 mt-1">
+                      <h2 className="text-[20px] font-light tracking-tight text-gray-900">
+                        {reviewScope === 'work' ? '事件复盘' : '成长复盘'}
+                      </h2>
+                      <p className="mt-1 text-[12px] text-gray-400 max-w-xl leading-relaxed">
                         {reviewScope === 'work'
-                          ? '系统只负责把相近任务归并成复盘事项，并在输入框里给一点灰色提示；真正的复盘由你来写。'
-                          : '成长事项也会优先按事件线归并，避免围绕同一件事重复写多次。'}
+                          ? '系统按事件线归并相近任务，真正的复盘判断由你写'
+                          : '成长事项按事件线归并，避免重复围绕同一件事'}
                       </p>
                     </div>
-                    <span className="text-[11px] font-bold px-3 py-1.5 rounded-full bg-gray-100 text-gray-500">
-                      {(shouldUseEventReviewCards ? activeEventReviewCards.length : activeReviewGroups.length)} 个模块 · {activeReviewRows.length} 条任务
+                    <span className="text-[11px] tabular-nums text-gray-400">
+                      <span className="text-gray-900 font-medium">{shouldUseEventReviewCards ? activeEventReviewCards.length : activeReviewGroups.length}</span> 个模块
+                      <span className="mx-2 text-gray-200">·</span>
+                      <span className="text-gray-900 font-medium">{activeReviewRows.length}</span> 条任务
                     </span>
                   </div>
 
                   {activeReviewGroups.length === 0 && (
-                    <div className="rounded-2xl border border-dashed border-gray-200 bg-gray-50/70 px-5 py-10 text-center">
-                      <div className="mx-auto mb-3 w-10 h-10 rounded-full bg-blue-50 flex items-center justify-center">
-                        <Activity className="w-5 h-5 text-[#5B7BFE]" />
-                      </div>
-                      {reviewScope === 'work' ? (
-                        <>
-                          <p className="text-[14px] font-bold text-gray-600 mb-1">{'本周还没有可复盘的公共任务'}</p>
-                          <p className="text-[13px] text-gray-400">{'先在任务列表中推进本周的工作，完成的任务会自动出现在这里供你复盘。'}</p>
-                        </>
-                      ) : (
-                        <>
-                          <p className="text-[14px] font-bold text-gray-600 mb-1">{'本周还没有带私人标签的任务'}</p>
-                          <p className="text-[13px] text-gray-400">{'给任务添加私人标签后，它就会出现在成长复盘中。'}</p>
-                        </>
-                      )}
+                    <div className="py-24 text-center">
+                      <p className="text-[14px] font-semibold text-gray-700">
+                        {reviewScope === 'work' ? '本周尚无可复盘的任务' : '本周尚无带私人标签的任务'}
+                      </p>
+                      <p className="mt-3 text-[12px] leading-relaxed text-gray-400 max-w-md mx-auto">
+                        {reviewScope === 'work'
+                          ? '先在任务列表推进本周的工作，完成的任务会自动出现在这里。'
+                          : '给任务添加私人标签后，它会自动进入成长复盘。'}
+                      </p>
                     </div>
                   )}
 
-                  {shouldUseEventReviewCards && activeEventReviewCards.map((card) => {
-                    const isExpanded = expandedReviewGroupId === card.id;
-                    const reviewed = card.reviewedCount > 0;
-                    const cardHasDirtyEntries = card.rows.some(({ task }) => reviewDirtyTaskIds.includes(task.id));
-                    const cardDraftStructuredNote = pickUnifiedReviewStructuredNote(card.rows, card.taskStatus);
-                    const cardHasSavableContent = hasMeaningfulReviewStructuredNote(cardDraftStructuredNote);
-                    return (
-                      <div key={card.id} className={`border rounded-2xl overflow-hidden bg-white transition-all ${isExpanded ? 'border-[#5B7BFE] shadow-[0_8px_30px_rgba(91,123,254,0.12)]' : 'border-gray-200'}`}>
-                        <button
-                          type="button"
-                          className="w-full px-5 py-5 bg-white text-left flex items-start justify-between gap-4"
-                          aria-expanded={isExpanded}
-                          onClick={() => setExpandedReviewGroupId(isExpanded ? null : card.id)}
-                        >
-                          <div className="min-w-0 flex-1">
-                            <div className="flex flex-wrap items-center gap-2">
-                              <p className="text-[15px] font-bold text-gray-900">{card.title}</p>
-                              <span className="text-[10px] font-bold px-2 py-1 rounded-full bg-gray-100 text-gray-500">
-                                {reviewEventCardKindLabel(card.cardKind)}
-                              </span>
-                              {reviewed ? (
-                                <span className="text-[10px] font-bold px-2 py-1 rounded-full bg-emerald-50 text-emerald-600">已复盘</span>
-                              ) : (
-                                <span className="text-[10px] font-bold px-2 py-1 rounded-full bg-gray-50 text-gray-400">未复盘</span>
-                              )}
-                            </div>
-                            <p className="mt-3 text-[12px] font-semibold text-gray-500">
-                              {reviewFoldedTaskCountLabel(card.taskCount, card.completedCount, card.pendingCount)}
-                            </p>
-                          </div>
-                          <div className={`w-8 h-8 rounded-full flex items-center justify-center shrink-0 ${isExpanded ? 'bg-blue-50 text-[#5B7BFE]' : 'bg-gray-50 text-gray-400'}`}>
-                            {isExpanded ? <ChevronUp size={18} /> : <ChevronDown size={18} />}
-                          </div>
-                        </button>
-                        {isExpanded && (
-                          <div className="border-t border-gray-100 bg-gray-50/50 px-5 py-5">
-                            <div className="grid gap-3 text-[13px] leading-6 md:grid-cols-[88px_1fr]">
-                              <span className="font-bold text-gray-400">已归并任务</span>
-                              <div className="flex flex-wrap items-center gap-2">
-                                {card.rows.map(({ task }) => (
-                                  <span key={task.id} className="rounded-full bg-white px-2.5 py-1 text-[12px] font-semibold text-gray-500">
-                                    {task.title}
+                  <div className="space-y-3">
+                    {shouldUseEventReviewCards && activeEventReviewCards.map((card, idx) => {
+                      const isExpanded = expandedReviewGroupId === card.id;
+                      const reviewed = card.reviewedCount > 0;
+                      const cardHasDirtyEntries = card.rows.some(({ task }) => reviewDirtyTaskIds.includes(task.id));
+                      const cardDraftStructuredNote = pickUnifiedReviewStructuredNote(card.rows, card.taskStatus);
+                      const cardHasSavableContent = hasMeaningfulReviewStructuredNote(cardDraftStructuredNote);
+                      const accentLine = reviewed ? 'bg-emerald-500' : 'bg-gray-300';
+                      const rankText = String(idx + 1).padStart(2, '0');
+                      // 斑马纹 + 展开态：让奇偶行有极浅深浅、展开行明确高亮
+                      const zebraBg = idx % 2 === 0 ? 'bg-white' : 'bg-gray-50/50';
+                      const expandedRing = isExpanded
+                        ? 'bg-blue-50/40 border-blue-200/60 shadow-[0_2px_10px_rgba(91,123,254,0.08)]'
+                        : `${zebraBg} border-gray-100/80 hover:bg-blue-50/30 hover:border-blue-200/60 hover:shadow-[0_2px_8px_rgba(91,123,254,0.06)]`;
+                      return (
+                        <article key={card.id} className={`group relative rounded-xl border px-4 py-3 transition-all ${expandedRing}`}>
+                          <div className="pl-2">
+                            <button
+                              type="button"
+                              aria-expanded={isExpanded}
+                              onClick={() => setExpandedReviewGroupId(isExpanded ? null : card.id)}
+                              className="w-full text-left"
+                            >
+                              <div className="flex items-start justify-between gap-6">
+                                <div className="flex items-start gap-5 min-w-0 flex-1">
+                                  <span className="text-[36px] leading-none font-extralight tracking-tighter text-gray-200 pt-1 group-hover:text-[#5B7BFE]/50 transition-colors">
+                                    {rankText}
                                   </span>
-                                ))}
-                                {card.confidence === 'low' && (
-                                  <span className="px-2 py-1 rounded-md bg-amber-50 text-amber-600">建议确认归属</span>
-                                )}
-                              </div>
-                              <span className="font-bold text-gray-400">复盘输入</span>
-                              <WeeklyReviewStructuredFields
-                                scope={reviewScope}
-                                value={cardDraftStructuredNote}
-                                taskStatus={card.taskStatus}
-                                textareaLabel="我的复盘"
-                                reflectionPlaceholder={card.reflectionPromptText}
-                                onSave={() => void persistReviewCollectionDraft(card.id, card.rows)}
-                                isSaving={savingReviewGroupId === card.id}
-                                saveDisabled={!cardHasSavableContent}
-                                saveSucceeded={savedReviewGroupId === card.id && !cardHasDirtyEntries}
-                                onStatusChange={(nextStatus) => void handleUpdateReviewGroupStatus({
-                                  id: card.id,
-                                  eventLineId: null,
-                                  eventLineName: null,
-                                  title: card.title,
-                                  rows: card.rows,
-                                  taskCount: card.taskCount,
-                                  completedCount: card.completedCount,
-                                  pendingCount: card.pendingCount,
-                                  reviewedCount: card.reviewedCount,
-                                  sharedStructuredNote: cardDraftStructuredNote,
-                                  hasDivergentNotes: false,
-                                  taskStatus: card.taskStatus,
-                                }, nextStatus)}
-                                isStatusChanging={reviewStatusChangingGroupId === card.id}
-                                statusScopeLabel={card.taskCount > 1 ? '本卡任务状态' : '本条任务状态'}
-                                onChange={(nextValue) => {
-                                  setSavedReviewGroupId((current) => (current === card.id ? null : current));
-                                  markReviewTasksDirty(card.rows.map(({ task }) => task.id));
-                                  setReviewForm((prev) => ({
-                                    ...prev,
-                                    entriesByTaskId: {
-                                      ...prev.entriesByTaskId,
-                                      ...Object.fromEntries(
-                                        card.rows.map(({ task }) => [task.id, { ...nextValue }]),
-                                      ),
-                                    },
-                                  }));
-                                }}
-                              />
-                            </div>
-                          </div>
-                        )}
-                      </div>
-                    );
-                  })}
-
-                  {!shouldUseEventReviewCards && activeReviewGroups.map((group) => {
-                    const isExpanded = expandedReviewGroupId === group.id;
-                    const reviewed = group.reviewedCount > 0;
-                    const groupDraftStructuredNote = pickSharedReviewStructuredNote(group.rows);
-                    const groupHasDirtyEntries = group.rows.some(({ task }) => reviewDirtyTaskIds.includes(task.id));
-                    const groupHasSavableContent = group.rows.some(
-                      ({ structuredNote, note }) =>
-                        hasMeaningfulReviewStructuredNote(structuredNote) || Boolean(note.trim()),
-                    );
-                    return (
-                      <div key={group.id} className={`border rounded-2xl overflow-hidden transition-all ${isExpanded ? 'border-[#5B7BFE] shadow-[0_8px_30px_rgba(91,123,254,0.12)]' : 'border-gray-200'}`}>
-                        <button
-                          type="button"
-                          className="w-full text-left px-5 py-5 bg-white flex items-start justify-between gap-4"
-                          onClick={() => setExpandedReviewGroupId(isExpanded ? null : group.id)}
-                        >
-                          <div className="min-w-0">
-                            <div className="flex flex-wrap items-center gap-2">
-                              <p className="text-[15px] font-bold text-gray-900">{group.title}</p>
-                              <span className="text-[10px] font-bold px-2 py-1 rounded-full bg-gray-100 text-gray-500">
-                                {group.eventLineId ? '事件线复盘' : '单项复盘'}
-                              </span>
-                              {reviewed ? (
-                                <span className="text-[10px] font-bold px-2 py-1 rounded-full bg-emerald-50 text-emerald-600">已复盘</span>
-                              ) : (
-                                <span className="text-[10px] font-bold px-2 py-1 rounded-full bg-gray-50 text-gray-400">未复盘</span>
-                              )}
-                            </div>
-                            <p className="mt-3 text-[12px] font-semibold text-gray-500">
-                              {reviewFoldedTaskCountLabel(group.taskCount, group.completedCount, group.pendingCount)}
-                            </p>
-                          </div>
-                          <div className="flex items-center gap-2 shrink-0">
-                            <div className={`w-8 h-8 rounded-full flex items-center justify-center ${isExpanded ? 'bg-blue-50 text-[#5B7BFE]' : 'bg-gray-50 text-gray-400'}`}>
-                              {isExpanded ? <ChevronUp size={18} /> : <ChevronDown size={18} />}
-                            </div>
-                          </div>
-                        </button>
-                        {isExpanded && (
-                          <div className="border-t border-gray-100 bg-gray-50/50 p-5">
-                            <div className="space-y-3 mb-5">
-                              {group.hasDivergentNotes ? (
-                                <div className="rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-[12px] leading-6 text-amber-700">
-                                  这条事件线下已有不同任务复盘内容。当前按事件线统一编辑后，会把同一条判断同步到这条线下的相关任务。
-                                </div>
-                              ) : null}
-                              <div className="rounded-2xl border border-gray-200 bg-white px-4 py-4">
-                                <div className="flex items-center justify-between gap-3">
-                                  <p className="text-[12px] font-bold uppercase tracking-[0.16em] text-gray-400">
-                                    {group.eventLineId ? '本周事件线任务' : '本周相关任务'}
-                                  </p>
-                                  <span className="text-[11px] text-gray-400">
-                                    {group.taskCount} 条任务
-                                  </span>
-                                </div>
-                                <div className="mt-3 space-y-2">
-                                  {group.rows.map(({ task, note: rowNote }) => (
-                                    <div key={task.id} className="flex items-center justify-between gap-3 rounded-2xl border border-gray-100 bg-gray-50 px-3 py-2.5">
-                                      <div className="min-w-0">
-                                        <div className="flex flex-wrap items-center gap-2">
-                                          <p className={`text-[13px] font-semibold ${task.status === 'done' ? 'text-gray-400 line-through' : 'text-gray-700'}`}>{task.title}</p>
-                                          <span className="rounded-full bg-white px-2 py-0.5 text-[10px] font-bold text-gray-400">{reviewStatusLabel(task)}</span>
-                                        </div>
-                                        <div className="mt-1 flex flex-wrap gap-2 text-[11px] text-gray-400">
-                                          <span>{reviewTaskDateLabel(task)}</span>
-                                          <span>·</span>
-                                          <span>{task.listName}</span>
-                                          {rowNote.trim() ? (
-                                            <>
-                                              <span>·</span>
-                                              <span className="text-emerald-600">已有复盘</span>
-                                            </>
-                                          ) : null}
-                                        </div>
-                                      </div>
-                                      <button
-                                        type="button"
-                                        className="shrink-0 text-[11px] font-bold text-gray-400 hover:text-[#5B7BFE]"
-                                        onClick={() => openTaskEditor(task)}
-                                      >
-                                        编辑任务
-                                      </button>
+                                  <div className="flex-1 min-w-0">
+                                    <div className="flex items-baseline gap-3 flex-wrap">
+                                      <h3 className="text-[17px] font-semibold leading-snug text-gray-900 group-hover:text-[#3652c9] transition-colors">{card.title}</h3>
+                                      <span className="inline-flex items-center rounded-md bg-gray-100 px-1.5 py-0.5 text-[10px] font-medium tracking-wide uppercase text-gray-500">
+                                        {reviewEventCardKindLabel(card.cardKind)}
+                                      </span>
+                                      <span className={`inline-flex items-center gap-1 rounded-md px-1.5 py-0.5 text-[10px] font-medium tracking-wide uppercase ${
+                                        reviewed
+                                          ? 'bg-emerald-50 text-emerald-700 ring-1 ring-emerald-200/60'
+                                          : 'bg-gray-50 text-gray-500 ring-1 ring-gray-200/60'
+                                      }`}>
+                                        <span className={`h-1 w-1 rounded-full ${reviewed ? 'bg-emerald-500' : 'bg-gray-300'}`} />
+                                        {reviewed ? '已复盘' : '未复盘'}
+                                      </span>
                                     </div>
-                                  ))}
+                                    <p className="mt-2 text-[11px] tabular-nums text-gray-400">
+                                      {reviewFoldedTaskCountLabel(card.taskCount, card.completedCount, card.pendingCount)}
+                                    </p>
+                                  </div>
+                                </div>
+                                <div className="shrink-0 inline-flex h-7 w-7 items-center justify-center rounded-md border border-gray-200 bg-white text-gray-500 group-hover:border-gray-300 group-hover:text-gray-900 group-hover:bg-gray-50 transition-all">
+                                  {isExpanded ? <ChevronUp size={16} strokeWidth={1.5} /> : <ChevronDown size={16} strokeWidth={1.5} />}
                                 </div>
                               </div>
-                            </div>
-                            <WeeklyReviewStructuredFields
-                              scope={reviewScope}
-                              value={groupDraftStructuredNote}
-                              taskStatus={group.taskStatus}
-                              onSave={() => void persistReviewCollectionDraft(group.id)}
-                              isSaving={savingReviewGroupId === group.id}
-                              saveDisabled={!groupHasSavableContent}
-                              saveSucceeded={savedReviewGroupId === group.id && !groupHasDirtyEntries}
-                              onStatusChange={(nextStatus) => void handleUpdateReviewGroupStatus(group, nextStatus)}
-                              isStatusChanging={reviewStatusChangingGroupId === group.id}
-                              statusScopeLabel={group.taskCount > 1 ? '本组任务状态' : '本条任务状态'}
-                              onChange={(nextValue) => {
-                                setSavedReviewGroupId((current) => (current === group.id ? null : current));
-                                markReviewTasksDirty(group.rows.map(({ task }) => task.id));
-                                setReviewForm((prev) => ({
-                                  ...prev,
-                                  entriesByTaskId: {
-                                    ...prev.entriesByTaskId,
-                                    ...Object.fromEntries(
-                                      group.rows.map(({ task }) => [task.id, { ...nextValue }]),
-                                    ),
-                                  },
-                                }));
-                              }}
-                            />
+                            </button>
+                            {isExpanded && (
+                              <div className="ml-14 mt-4 pt-4 border-t border-gray-100 space-y-4">
+                                <div className="grid grid-cols-[80px_1fr] gap-x-6 items-start">
+                                  <div className="flex items-center gap-1.5 pt-0.5">
+                                    <ListChecks size={11} strokeWidth={2} className="text-gray-400" />
+                                    <dt className="text-[10px] font-bold uppercase tracking-[0.18em] text-gray-400">
+                                      已归并
+                                    </dt>
+                                  </div>
+                                  <dd className="flex flex-wrap items-center gap-x-3 gap-y-1.5">
+                                    {card.rows.map(({ task }) => (
+                                      <span
+                                        key={task.id}
+                                        className="inline-flex items-center gap-1.5 text-[12px] text-gray-700"
+                                      >
+                                        <span className="h-1 w-1 rounded-full bg-gray-300" />
+                                        {task.title}
+                                      </span>
+                                    ))}
+                                    {card.confidence === 'low' && (
+                                      <span className="inline-flex items-center gap-1 rounded-md bg-amber-50 px-1.5 py-0.5 text-[10px] font-medium text-amber-700">
+                                        <AlertTriangle size={10} strokeWidth={2} />
+                                        建议确认归属
+                                      </span>
+                                    )}
+                                  </dd>
+                                </div>
+                                <WeeklyReviewStructuredFields
+                                    scope={reviewScope}
+                                    value={cardDraftStructuredNote}
+                                    taskStatus={card.taskStatus}
+                                    textareaLabel="复盘说明"
+                                    reflectionPlaceholder={card.reflectionPromptText}
+                                    onSave={() => void persistReviewCollectionDraft(card.id, card.rows)}
+                                    isSaving={savingReviewGroupId === card.id}
+                                    saveDisabled={!cardHasSavableContent}
+                                    saveSucceeded={savedReviewGroupId === card.id && !cardHasDirtyEntries}
+                                    onStatusChange={(nextStatus) => void handleUpdateReviewGroupStatus({
+                                      id: card.id,
+                                      eventLineId: null,
+                                      eventLineName: null,
+                                      title: card.title,
+                                      rows: card.rows,
+                                      taskCount: card.taskCount,
+                                      completedCount: card.completedCount,
+                                      pendingCount: card.pendingCount,
+                                      reviewedCount: card.reviewedCount,
+                                      sharedStructuredNote: cardDraftStructuredNote,
+                                      hasDivergentNotes: false,
+                                      taskStatus: card.taskStatus,
+                                    }, nextStatus)}
+                                    isStatusChanging={reviewStatusChangingGroupId === card.id}
+                                    statusScopeLabel={card.taskCount > 1 ? '本卡任务状态' : '本条任务状态'}
+                                    onChange={(nextValue) => {
+                                      setSavedReviewGroupId((current) => (current === card.id ? null : current));
+                                      markReviewTasksDirty(card.rows.map(({ task }) => task.id));
+                                      setReviewForm((prev) => ({
+                                        ...prev,
+                                        entriesByTaskId: {
+                                          ...prev.entriesByTaskId,
+                                          ...Object.fromEntries(
+                                            card.rows.map(({ task }) => [task.id, { ...nextValue }]),
+                                          ),
+                                        },
+                                      }));
+                                    }}
+                                  />
+                              </div>
+                            )}
                           </div>
-                        )}
-                      </div>
-                    );
-                  })}
+                        </article>
+                      );
+                    })}
 
+                    {!shouldUseEventReviewCards && activeReviewGroups.map((group, idx) => {
+                      const isExpanded = expandedReviewGroupId === group.id;
+                      const reviewed = group.reviewedCount > 0;
+                      const groupDraftStructuredNote = pickSharedReviewStructuredNote(group.rows);
+                      const groupHasDirtyEntries = group.rows.some(({ task }) => reviewDirtyTaskIds.includes(task.id));
+                      const groupHasSavableContent = group.rows.some(
+                        ({ structuredNote, note }) =>
+                          hasMeaningfulReviewStructuredNote(structuredNote) || Boolean(note.trim()),
+                      );
+                      const accentLine = reviewed ? 'bg-emerald-500' : 'bg-gray-300';
+                      const rankText = String(idx + 1).padStart(2, '0');
+                      // 斑马纹 + 展开高亮 + hover 蓝描边，跟事件复盘卡片样式对齐
+                      const zebraBg = idx % 2 === 0 ? 'bg-white' : 'bg-gray-50/50';
+                      const expandedRing = isExpanded
+                        ? 'bg-blue-50/40 border-blue-200/60 shadow-[0_2px_10px_rgba(91,123,254,0.08)]'
+                        : `${zebraBg} border-gray-100/80 hover:bg-blue-50/30 hover:border-blue-200/60 hover:shadow-[0_2px_8px_rgba(91,123,254,0.06)]`;
+                      return (
+                        <article key={group.id} className={`group relative rounded-xl border px-4 py-3 transition-all ${expandedRing}`}>
+                          <div className="pl-2">
+                            <button
+                              type="button"
+                              onClick={() => setExpandedReviewGroupId(isExpanded ? null : group.id)}
+                              className="w-full text-left"
+                            >
+                              <div className="flex items-start justify-between gap-6">
+                                <div className="flex items-start gap-5 min-w-0 flex-1">
+                                  <span className="text-[36px] leading-none font-extralight tracking-tighter text-gray-200 pt-1 group-hover:text-[#5B7BFE]/50 transition-colors">
+                                    {rankText}
+                                  </span>
+                                  <div className="flex-1 min-w-0">
+                                    <div className="flex items-baseline gap-3 flex-wrap">
+                                      <h3 className="text-[17px] font-semibold leading-snug text-gray-900 group-hover:text-[#3652c9] transition-colors">{group.title}</h3>
+                                      <span className="inline-flex items-center rounded-md bg-gray-100 px-1.5 py-0.5 text-[10px] font-medium tracking-wide uppercase text-gray-500">
+                                        {group.eventLineId ? '事件线' : '单项'}
+                                      </span>
+                                      <span className={`inline-flex items-center gap-1 rounded-md px-1.5 py-0.5 text-[10px] font-medium tracking-wide uppercase ${
+                                        reviewed
+                                          ? 'bg-emerald-50 text-emerald-700 ring-1 ring-emerald-200/60'
+                                          : 'bg-gray-50 text-gray-500 ring-1 ring-gray-200/60'
+                                      }`}>
+                                        <span className={`h-1 w-1 rounded-full ${reviewed ? 'bg-emerald-500' : 'bg-gray-300'}`} />
+                                        {reviewed ? '已复盘' : '未复盘'}
+                                      </span>
+                                    </div>
+                                    <p className="mt-2 text-[11px] tabular-nums text-gray-400">
+                                      {reviewFoldedTaskCountLabel(group.taskCount, group.completedCount, group.pendingCount)}
+                                    </p>
+                                  </div>
+                                </div>
+                                <div className="shrink-0 inline-flex h-7 w-7 items-center justify-center rounded-md border border-gray-200 bg-white text-gray-500 group-hover:border-gray-300 group-hover:text-gray-900 group-hover:bg-gray-50 transition-all">
+                                  {isExpanded ? <ChevronUp size={16} strokeWidth={1.5} /> : <ChevronDown size={16} strokeWidth={1.5} />}
+                                </div>
+                              </div>
+                            </button>
+                            {isExpanded && (
+                              <div className="ml-14 mt-4 pt-4 border-t border-gray-100 space-y-4">
+                                {group.hasDivergentNotes && (
+                                  <div className="flex items-start gap-2.5 rounded-md bg-amber-50/60 border-l-[2px] border-amber-400 px-3.5 py-2.5">
+                                    <AlertTriangle size={13} strokeWidth={2} className="text-amber-600 mt-0.5 shrink-0" />
+                                    <p className="text-[12px] leading-relaxed text-amber-700">
+                                      这条事件线下已有不同任务复盘内容。按事件线统一编辑后，会把同一条判断同步到相关任务。
+                                    </p>
+                                  </div>
+                                )}
+                                <div>
+                                  <div className="flex items-center justify-between mb-2.5">
+                                    <div className="flex items-center gap-1.5">
+                                      <ListChecks size={11} strokeWidth={2} className="text-gray-400" />
+                                      <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-gray-400">
+                                        {group.eventLineId ? '事件线任务' : '相关任务'}
+                                      </p>
+                                    </div>
+                                    <span className="text-[10px] tabular-nums text-gray-400">{group.taskCount} 条</span>
+                                  </div>
+                                  <div>
+                                    {group.rows.map(({ task, note: rowNote }) => {
+                                      const statusDot =
+                                        task.status === 'done'
+                                          ? 'bg-emerald-500'
+                                          : task.status === 'doing'
+                                            ? 'bg-blue-400'
+                                            : task.status === 'rejected'
+                                              ? 'bg-rose-400'
+                                              : 'bg-amber-400';
+                                      return (
+                                        <div key={task.id} className="flex items-center justify-between gap-4 py-2 border-b border-gray-50 last:border-0 group/row hover:bg-gray-50/50 -mx-2 px-2 rounded-md transition-colors">
+                                          <div className="flex items-start gap-2.5 min-w-0">
+                                            <span className={`h-1.5 w-1.5 rounded-full ${statusDot} mt-2 shrink-0`} />
+                                            <div className="min-w-0">
+                                              <div className="flex items-baseline gap-2.5">
+                                                <p className={`text-[13px] font-medium ${task.status === 'done' ? 'text-gray-300 line-through' : 'text-gray-800'}`}>
+                                                  {task.title}
+                                                </p>
+                                                <span className={`text-[10px] tracking-wide uppercase ${
+                                                  task.status === 'done' ? 'text-emerald-600' :
+                                                  task.status === 'rejected' ? 'text-rose-500' :
+                                                  task.status === 'doing' ? 'text-blue-500' :
+                                                  'text-amber-600'
+                                                }`}>{reviewStatusLabel(task)}</span>
+                                              </div>
+                                              <div className="mt-0.5 flex items-baseline gap-2 text-[10px] text-gray-400">
+                                                <span>{reviewTaskDateLabel(task)}</span>
+                                                <span>·</span>
+                                                <span>{task.listName}</span>
+                                                {rowNote.trim() && (
+                                                  <>
+                                                    <span>·</span>
+                                                    <span className="inline-flex items-center gap-1 text-emerald-600">
+                                                      <CheckCircle2 size={9} strokeWidth={2.2} />
+                                                      已有复盘
+                                                    </span>
+                                                  </>
+                                                )}
+                                              </div>
+                                            </div>
+                                          </div>
+                                          <button
+                                            type="button"
+                                            className="shrink-0 inline-flex items-center gap-1 rounded-md border border-gray-200 bg-white px-2 py-1 text-[11px] font-medium text-gray-600 transition-all hover:border-[#5B7BFE]/40 hover:text-[#5B7BFE] hover:bg-blue-50/40"
+                                            onClick={() => openTaskEditor(task)}
+                                          >
+                                            <span>编辑</span>
+                                            <ArrowRight size={10} strokeWidth={2.2} />
+                                          </button>
+                                        </div>
+                                      );
+                                    })}
+                                  </div>
+                                </div>
+                                <WeeklyReviewStructuredFields
+                                    scope={reviewScope}
+                                    value={groupDraftStructuredNote}
+                                    taskStatus={group.taskStatus}
+                                    textareaLabel="复盘说明"
+                                    onSave={() => void persistReviewCollectionDraft(group.id)}
+                                    isSaving={savingReviewGroupId === group.id}
+                                    saveDisabled={!groupHasSavableContent}
+                                    saveSucceeded={savedReviewGroupId === group.id && !groupHasDirtyEntries}
+                                    onStatusChange={(nextStatus) => void handleUpdateReviewGroupStatus(group, nextStatus)}
+                                    isStatusChanging={reviewStatusChangingGroupId === group.id}
+                                    statusScopeLabel={group.taskCount > 1 ? '本组任务状态' : '本条任务状态'}
+                                    onChange={(nextValue) => {
+                                      setSavedReviewGroupId((current) => (current === group.id ? null : current));
+                                      markReviewTasksDirty(group.rows.map(({ task }) => task.id));
+                                      setReviewForm((prev) => ({
+                                        ...prev,
+                                        entriesByTaskId: {
+                                          ...prev.entriesByTaskId,
+                                          ...Object.fromEntries(
+                                            group.rows.map(({ task }) => [task.id, { ...nextValue }]),
+                                          ),
+                                        },
+                                      }));
+                                    }}
+                                  />
+                              </div>
+                            )}
+                          </div>
+                        </article>
+                      );
+                    })}
+                  </div>
                 </div>
               )}
 
@@ -15071,21 +15697,26 @@ export default function App() {
 
               </div>{/* end overflow-y-auto */}
 
-              {/* ── 右下角固定生成按钮 ── */}
-              <div className="fixed bottom-8 right-8 z-40">
-                <Button primary className="py-3 px-6 text-[13px] shadow-[0_8px_30px_rgba(91,123,254,0.35)] rounded-full" onClick={() => void generateGlobalSummary()} disabled={isGeneratingGlobal}>
+              {/* ── 右下角生成按钮 · 极简 ── */}
+              <div className="fixed bottom-10 right-10 z-40">
+                <button
+                  type="button"
+                  onClick={() => void generateGlobalSummary()}
+                  disabled={isGeneratingGlobal}
+                  className="inline-flex items-center gap-2 bg-gray-900 px-5 py-2.5 text-[12px] font-medium tracking-wide text-white transition-all hover:bg-gray-700 disabled:opacity-60 disabled:cursor-not-allowed shadow-[0_4px_20px_rgba(0,0,0,0.12)]"
+                >
                   {isGeneratingGlobal ? (
                     <>
-                      <RefreshCw size={16} className="animate-spin" />
-                      生成中...
+                      <RefreshCw size={13} strokeWidth={2} className="animate-spin" />
+                      <span>生成中</span>
                     </>
                   ) : (
                     <>
-                      <Sparkles size={16} />
-                      {reviewScope === 'work' ? '生成周复盘' : '生成成长复盘'}
+                      <Sparkles size={13} strokeWidth={2} />
+                      <span>{reviewScope === 'work' ? '生成周复盘' : '生成成长复盘'}</span>
                     </>
                   )}
-                </Button>
+                </button>
               </div>
             </div>
           )}
@@ -15527,6 +16158,20 @@ export default function App() {
                     <X size={20} />
                   </button>
                   <div className="flex items-center gap-2">
+                    <button
+                      type="button"
+                      disabled={isMergingEventLine}
+                      title="把同一客户下的其他事件线合并到这条"
+                      className="border border-gray-200 bg-white hover:bg-gray-50 hover:border-gray-300 transition-colors text-gray-700 text-[12px] px-3 py-1.5 rounded-lg flex items-center gap-1.5 disabled:opacity-60 disabled:cursor-not-allowed"
+                      onClick={() => {
+                        const target = eventLines.find((item) => item.id === el.id) || { id: el.id, name: el.name, primaryClientId: el.primaryClientId } as EventLine;
+                        handleOpenMergeEventLine(target);
+                        setActiveEventLine(null);
+                      }}
+                    >
+                      <GitMerge size={14} />
+                      合并
+                    </button>
                     <button
                       type="button"
                       className="bg-gradient-to-r from-blue-600 to-blue-700 hover:from-blue-700 hover:to-blue-800 transition-colors text-white text-[12px] px-3 py-1.5 rounded-lg flex items-center gap-1.5"
@@ -17246,6 +17891,8 @@ export default function App() {
     const [expandedEvidenceIds, setExpandedEvidenceIds] = useState<Set<string>>(() => new Set());
     // 复制成功的内联反馈：哪条消息刚被复制，按钮原地显示对勾 1.5 秒
     const [recentlyCopiedMessageId, setRecentlyCopiedMessageId] = useState<string | null>(null);
+    // 删除对话锁：成对删除一次请求会删两条，期间锁住按钮避免用户对另一条再点一次触发 404
+    const [isDeletingChatPair, setIsDeletingChatPair] = useState(false);
     const [recentUsedDocuments, setRecentUsedDocuments] = useState<RecentUsedDocument[]>(() =>
       readStoredRecentUsedDocuments(currentClientId || ''),
     );
@@ -17312,8 +17959,8 @@ export default function App() {
       }
       try {
         setIsFilesTabSearching(true);
-        // 立即跳到引证 tab，让用户看到"加载中"的反馈
-        setWorkspaceRightTab('evidence');
+        // 确保停留在 files tab；搜索结果出现后，文件列表会自动换成命中卡片
+        setWorkspaceRightTab('files');
         const result = await searchClientKnowledge(currentClientId, query, currentThreadId || undefined);
         setFilesTabSearchResult(result);
         if (result.hits.length === 0) {
@@ -17908,7 +18555,19 @@ export default function App() {
 	              void refreshWorkspace(clientId).catch(() => undefined);
 	            }
 	          })
-          .catch(() => undefined);
+          .catch((error: unknown) => {
+            // 之前是 silent 吞错——后端 404（run id 已被清 / 从未存在）时定时器永不停，
+            // 导致 hasPendingAnalysisRun 卡 true、发送按钮一直处于"停止"态、新问题发不出去。
+            // 识别 404 / "not found" → 立即清掉 polling 和 active run state。
+            const message = error instanceof Error ? error.message : String(error);
+            const isNotFound = /\b404\b|not.?found|找不到/i.test(message);
+            if (isNotFound) {
+              clearAnalysisRunPollTimer();
+              setClientActiveRun(clientId, null);
+              setClientPendingQuestion(clientId, null);
+              setThreadOptimisticMessages(CLIENT_CHAT_DRAFT_THREAD_ID, []);
+            }
+          });
       };
       pollRun();
       analysisRunPollTimerRef.current = window.setInterval(pollRun, 1200);
@@ -17940,6 +18599,39 @@ export default function App() {
 
     const knowledgeStatus = workspace?.knowledgeStatus || null;
     const sourceDocumentCount = knowledgeStatus?.totalDocuments || workspace?.documents.length || 0;
+    const [ocrFixing, setOcrFixing] = useState(false);
+    const handleOcrFix = useCallback(async () => {
+      if (!currentClientId || ocrFixing) return;
+      setOcrFixing(true);
+      try {
+        const readiness = await getWorkspaceDataCenterReadiness(currentClientId);
+        const targets = readiness.documents
+          .filter((d) => d.parseStatus !== 'ready')
+          .map((d) => d.documentId);
+        if (targets.length === 0) {
+          flash('info', 'OCR 已达 100%，无需修复');
+          return;
+        }
+        const estMinutes = Math.max(1, Math.round(targets.length * 2));
+        const ok = window.confirm(
+          `找到 ${targets.length} 份 OCR 不完整的文件。\n\n点击「确定」开始重新识别（高 DPI + 双 prompt 模式）。\n预计需要 ~${estMinutes} 分钟，期间可继续使用软件，但请勿关闭。\n\n完成后识别率会自动刷新。`,
+        );
+        if (!ok) return;
+        flash('info', `开始优化 ${targets.length} 份文件的 OCR...`);
+        await retryKnowledgeParseFailures(currentClientId, {
+          documentIds: targets,
+          force: true,
+          forceOcr: true,
+          ocrContinueToEnd: true,
+        });
+        await refreshWorkspace(currentClientId);
+        flash('success', `OCR 优化完成。已重新识别 ${targets.length} 份文件，识别率已刷新。`);
+      } catch (err) {
+        flash('error', err instanceof Error ? err.message : 'OCR 优化失败');
+      } finally {
+        setOcrFixing(false);
+      }
+    }, [currentClientId, ocrFixing, flash, refreshWorkspace]);
     const clientNeedsProjectSetup = sourceDocumentCount === 0;
     const dnaDocumentCount = (workspace?.dnaModules || []).filter((module) => module.hasDocument).length;
     const workspaceBaselineJudgment = workspace?.judgmentBundle?.baselineJudgment || null;
@@ -18446,10 +19138,24 @@ export default function App() {
 
     const handleDeleteChatMessagePair = async (message: DisplayChatMessage) => {
       if (!currentClientId) return;
+      if (isDeletingChatPair) return;
       const promptLabel = message.role === 'user' ? '这条提问及其对应的回答' : '这条回答及其对应的提问';
       if (!window.confirm(`确认删除${promptLabel}？删除后不可恢复。`)) return;
+      setIsDeletingChatPair(true);
       try {
         const result = await deleteClientChatMessagePair(currentClientId, message.id);
+        // 后端幂等：同一对里的另一条已经在上一次请求中被删除时，alreadyDeleted=true。
+        // 此时 result.threadId/result.deletedIds 都是空，需要用本地 message 自身的 threadId 补齐 UI 移除。
+        if (result.alreadyDeleted) {
+          dispatchWorkspaceClientUi({
+            type: 'removeThreadMessages',
+            threadId: message.threadId,
+            messageIds: [message.id],
+          });
+          if (activeMessageId === message.id) setActiveMessageId(null);
+          flash('info', '对话已删除');
+          return;
+        }
         dispatchWorkspaceClientUi({
           type: 'removeThreadMessages',
           threadId: result.threadId,
@@ -18469,6 +19175,8 @@ export default function App() {
         flash('success', '已删除对话。');
       } catch (error) {
         flash('error', error instanceof Error ? error.message : '删除对话失败');
+      } finally {
+        setIsDeletingChatPair(false);
       }
     };
     const workspaceKnowledgeUiActive =
@@ -18640,38 +19348,6 @@ export default function App() {
           targetRefs: Array.isArray(item.targetRefs) ? (item.targetRefs as ActionSuggestion['targetRefs']) : [],
         }));
     }, [selectedRetrievalSummary.actionSuggestions]);
-    const workspaceFollowUpPrompts = useMemo(() => {
-      const prompts: string[] = [];
-      const seen = new Set<string>();
-      const addPrompt = (value: unknown) => {
-        if (typeof value !== 'string') return;
-        const normalized = value.replace(/\s+/g, ' ').trim();
-        if (!normalized) return;
-        const key = normalized.toLowerCase();
-        if (seen.has(key)) return;
-        seen.add(key);
-        prompts.push(normalized);
-      };
-
-      const searchResultPayload = (
-        selectedRetrievalSummary.searchResult
-        && typeof selectedRetrievalSummary.searchResult === 'object'
-      )
-        ? selectedRetrievalSummary.searchResult as Partial<DataCenterSearchResult>
-        : null;
-      if (Array.isArray(searchResultPayload?.suggestedFollowups)) {
-        searchResultPayload.suggestedFollowups.forEach(addPrompt);
-      }
-
-      const directFollowups = selectedRetrievalSummary.suggestedFollowups;
-      if (Array.isArray(directFollowups)) {
-        directFollowups.forEach(addPrompt);
-      }
-      return prompts.slice(0, 3);
-    }, [
-      selectedRetrievalSummary.searchResult,
-      selectedRetrievalSummary.suggestedFollowups,
-    ]);
     const workspacePersistedDrafts = useMemo(
       () =>
         workspacePersistedProposalDrafts.filter((draft) => !currentClientId || !draft.clientId || draft.clientId === currentClientId),
@@ -19715,11 +20391,20 @@ export default function App() {
       }
     };
 
-    const sendMessage = async (overridePrompt?: string) => {
+    const sendMessage = async (overridePrompt?: string, options?: { fromQueue?: boolean }) => {
       const resolvedPrompt = (overridePrompt ?? inputValue).trim();
-      if (!resolvedPrompt || !currentClientId || hasPendingAnalysisRun || isComposerStartingMessage) return;
+      if (!resolvedPrompt || !currentClientId) return;
       if (backendCompatibilityError) {
         flash('error', backendCompatibilityError);
+        return;
+      }
+      // AI 还在跑：进入排队，不当场发送。fromQueue 表示自动派发，避免无限入队。
+      if (!options?.fromQueue && (hasPendingAnalysisRun || isComposerStartingMessage)) {
+        if (enqueueQuestion(resolvedPrompt)) {
+          const queued = getWorkspaceQuestionQueue(currentClientId).length || 1;
+          setInputValue('', { commit: true });
+          flash('info', `已加入队列（${queued}/${QUESTION_QUEUE_MAX}），当前问题答完后会自动提问`);
+        }
         return;
       }
       let latestHealth = health;
@@ -19905,6 +20590,23 @@ export default function App() {
       }
     };
 
+    // 队列自动派发：保持最新 sendMessage 在 ref，避免 useEffect 依赖 sendMessage 引起的 stale-closure。
+    const sendMessageRef = useRef(sendMessage);
+    sendMessageRef.current = sendMessage;
+    useEffect(() => {
+      if (!currentClientId) return;
+      if (hasPendingAnalysisRun || isComposerStartingMessage) return;
+      const queue = getWorkspaceQuestionQueue(currentClientId);
+      if (queue.length === 0) return;
+      const [head, ...rest] = queue;
+      setWorkspaceQuestionQueue(currentClientId, rest);
+      // 等当前一帧 state 提交、避免和 idle 转换同步竞态
+      const timer = window.setTimeout(() => {
+        void sendMessageRef.current?.(head, { fromQueue: true });
+      }, 80);
+      return () => window.clearTimeout(timer);
+    }, [currentClientId, hasPendingAnalysisRun, isComposerStartingMessage]);
+
     const syncMeetingFromPipeline = async (
       pipelineAction: () => Promise<{ meeting: { id: string; stage: string; transcriptText: string; notes: string }; message: string }>,
       options?: { refreshTasks?: boolean; verifyPublished?: boolean },
@@ -19964,6 +20666,83 @@ export default function App() {
           return next;
         });
       }
+    };
+
+    // 合集导出：把多段对话累积到一个篮子，最后合并成一个 docx。
+    // 用 messageId 而不是消息体，避免把回答内容存在 state 里（消息可能还在 streaming 或被改写）。
+    // 存在 module-level Map 里，避免切 tab 卸载丢失。
+    const [, forceExportBagRerender] = useState(0);
+    useEffect(() => {
+      const listener = () => forceExportBagRerender((n) => n + 1);
+      workspaceExportBagListeners.add(listener);
+      return () => {
+        workspaceExportBagListeners.delete(listener);
+      };
+    }, []);
+    const [isExportingBag, setIsExportingBag] = useState(false);
+    const currentExportBag = currentClientId ? getWorkspaceExportBag(currentClientId) : [];
+    const isInExportBag = (messageId: string) => currentExportBag.includes(messageId);
+    const toggleExportBag = (messageId: string) => {
+      if (!currentClientId) return;
+      const existing = getWorkspaceExportBag(currentClientId);
+      const next = existing.includes(messageId)
+        ? existing.filter((id) => id !== messageId)
+        : [...existing, messageId];
+      setWorkspaceExportBag(currentClientId, next);
+    };
+    const clearExportBag = () => {
+      if (!currentClientId) return;
+      setWorkspaceExportBag(currentClientId, []);
+    };
+    const handleExportBag = async () => {
+      if (!currentClientId || currentExportBag.length === 0 || isExportingBag) return;
+      try {
+        setIsExportingBag(true);
+        const result = await exportAnswer(currentClientId, currentExportBag);
+        await refreshWorkspace(currentClientId);
+        const opened = await openPathBridge(result.path).catch(() => false);
+        const count = currentExportBag.length;
+        flash(
+          'success',
+          opened
+            ? `已合并 ${count} 段对话为文档：${result.fileName}`
+            : `已合并 ${count} 段对话并归档：${result.fileName}`,
+        );
+        clearExportBag();
+      } catch (error) {
+        flash('error', error instanceof Error ? error.message : '合并导出失败');
+      } finally {
+        setIsExportingBag(false);
+      }
+    };
+
+    // 问题排队：AI 思考时允许继续提问，问题排队，前一个答完后自动发下一个。上限 10 个，per client 独立。
+    // 队列持有在 module-level Map（见文件顶部 workspaceQuestionQueueByClient），避免切顶栏 tab 时
+    // ClientWorkspaceView 卸载导致队列被清空。
+    const QUESTION_QUEUE_MAX = QUESTION_QUEUE_MAX_GLOBAL;
+    const [, forceQueueRerender] = useState(0);
+    useEffect(() => {
+      const listener = () => forceQueueRerender((n) => n + 1);
+      workspaceQuestionQueueListeners.add(listener);
+      return () => {
+        workspaceQuestionQueueListeners.delete(listener);
+      };
+    }, []);
+    const currentQueue = currentClientId ? getWorkspaceQuestionQueue(currentClientId) : [];
+    const enqueueQuestion = (prompt: string): boolean => {
+      if (!currentClientId) return false;
+      const existing = getWorkspaceQuestionQueue(currentClientId);
+      if (existing.length >= QUESTION_QUEUE_MAX) {
+        flash('error', `排队已满（${QUESTION_QUEUE_MAX}/${QUESTION_QUEUE_MAX}），等当前问题答完再继续`);
+        return false;
+      }
+      setWorkspaceQuestionQueue(currentClientId, [...existing, prompt]);
+      return true;
+    };
+    const removeQueueItem = (index: number) => {
+      if (!currentClientId) return;
+      const existing = getWorkspaceQuestionQueue(currentClientId);
+      setWorkspaceQuestionQueue(currentClientId, existing.filter((_, i) => i !== index));
     };
 
     return (
@@ -20044,7 +20823,7 @@ export default function App() {
             </div>
           </div>
 
-          <div className="flex-1 flex flex-col min-w-[320px] relative">
+          <div className="flex-1 flex flex-col min-w-[320px] min-h-0 relative">
             <div className="h-[68px] bg-white/80 backdrop-blur-md border-b border-gray-100 px-6 xl:px-8 flex items-center justify-between shrink-0 z-10 sticky top-0">
               <div className="flex items-center gap-3">
                 <div className="w-8 h-8 bg-gradient-to-tr from-gray-800 to-gray-600 rounded-xl flex items-center justify-center text-white shadow-sm shrink-0">
@@ -20077,14 +20856,8 @@ export default function App() {
               </div>
             </div>
 
-            {currentClientId && (
-              <div className="px-6 xl:px-8 pt-3">
-                <ContradictionAlertPanel clientId={currentClientId} />
-              </div>
-            )}
-
             <div
-              className="flex-1 overflow-y-auto p-6 xl:p-8 space-y-8"
+              className="flex-1 min-h-0 overflow-y-auto p-6 xl:p-8 space-y-8"
               ref={chatContainerRef}
               onPointerDownCapture={(event) => {
                 if (
@@ -20100,6 +20873,14 @@ export default function App() {
                 };
               }}
             >
+              {/* P-A: 告警卡片放在 scroll 容器内部最上方，跟着滚不固定占顶部空间 */}
+              {currentClientId && (
+                <div className="space-y-3">
+                  <GlossaryDriftAlertPanel clientId={currentClientId} />
+                  <ContradictionAlertPanel clientId={currentClientId} />
+                  <DuplicateDocumentsSection clientId={currentClientId} hideWhenEmpty />
+                </div>
+              )}
               {!currentClient ? (
                 <div className="h-full flex flex-col items-center justify-center text-gray-400">
                   <div className="w-16 h-16 xl:w-20 xl:h-20 bg-blue-50 rounded-full flex items-center justify-center mb-5">
@@ -20176,70 +20957,6 @@ export default function App() {
                       onContinueWorkspace={() => setClientWorkspaceSurfaceMode('workspace')}
                     />
                   )}
-                  <div className={`space-y-4 ${clientWorkspaceSurfaceMode === 'setup' ? 'hidden' : ''}`}>
-                    <div className="flex items-center justify-between">
-                      <div>
-                        <h3 className="text-[13px] xl:text-[14px] font-bold text-gray-900 flex items-center gap-2">
-                          <Database size={16} className="text-[#5B7BFE]" />
-                          扫描目录与文件卡
-                        </h3>
-                        <p className="text-[11px] text-gray-400 mt-1">先理解资料，再进入深读问答与行动沉淀。</p>
-                      </div>
-                      <span className="text-[11px] font-bold text-gray-500 bg-gray-100 px-2.5 py-1 rounded-full">
-                        {knowledgeStatus?.totalDocuments || 0} 份资料
-                      </span>
-                    </div>
-                    {topDocumentCards.length > 0 ? (
-                      <div className="grid grid-cols-1 xl:grid-cols-2 gap-3">
-                        {topDocumentCards.map((card) => (
-                          <div key={card.id} className="bg-white border border-gray-200 rounded-2xl p-4 shadow-sm">
-                            <div className="flex items-start justify-between gap-3 mb-2">
-                              <div>
-                                <p className="text-[13px] font-bold text-gray-900 leading-snug">{card.title}</p>
-                                <p className="text-[11px] text-gray-400 mt-1">{card.primaryCategory} · {card.secondaryCategory}</p>
-                              </div>
-                              <span className={`text-[10px] font-bold px-2 py-1 rounded-full ${card.needsReview ? 'bg-amber-50 text-amber-700' : 'bg-emerald-50 text-emerald-700'}`}>
-                                {card.needsReview ? '待复核' : '已归档'}
-                              </span>
-                            </div>
-                            <p className="text-[12px] text-gray-600 leading-relaxed">{card.shortSummary}</p>
-                            <div className="mt-2 space-y-1 text-[10px] text-gray-400">
-                              <p>原始路径：{card.sourcePath}</p>
-                              <p>逻辑分类：{card.logicalCategory || card.primaryCategory}{card.logicalSubcategory ? ` / ${card.logicalSubcategory}` : ''}</p>
-                              {card.classificationReason && <p>分类依据：{card.classificationReason}</p>}
-                              <p>AI 代理：{card.surrogateMdPath ? '已生成' : '待生成'} · {card.documentRole}</p>
-                            </div>
-                            <div className="mt-3 flex flex-wrap gap-2">
-                              {card.tags.slice(0, 3).map((tag) => (
-                                <span key={`${card.id}-${tag}`} className="text-[10px] font-bold text-[#5B7BFE] bg-blue-50 px-2 py-1 rounded-full">
-                                  {tag}
-                                </span>
-                              ))}
-                            </div>
-                            <div className="mt-3 flex items-center justify-between text-[10px] text-gray-400">
-                              <span>向量状态：{card.vectorStatus}</span>
-                              <span>块数：{card.chunkCount}</span>
-                            </div>
-                          </div>
-                        ))}
-                      </div>
-                    ) : (
-                      <div className="bg-white border border-dashed border-gray-200 rounded-2xl px-4 py-8 text-[12px] text-gray-400 text-center">
-                        <p>还没有生成文件卡。先导入客户资料，系统会自动扫描目录、生成文件卡和知识状态。</p>
-                        {currentClientId && (
-                          <div className="mt-4">
-                            <button
-                              onClick={() => void handleBackfillWorkspaceImports()}
-                              className="inline-flex items-center gap-2 rounded-xl border border-blue-200 bg-blue-50 px-3 py-2 text-[12px] font-bold text-[#3652c9] transition-colors hover:bg-blue-100"
-                            >
-                              <RefreshCw size={14} />
-                              回填现有目录
-                            </button>
-                          </div>
-                        )}
-                      </div>
-                    )}
-                  </div>
 
                   {clientWorkspaceSurfaceMode === 'setup' ? null : currentChat.length === 0 && !activeAnalysisRun && !transientThinkingPanel ? (
                     <div className="pt-2 h-full flex flex-col items-center justify-center text-gray-400">
@@ -20439,11 +21156,12 @@ export default function App() {
                               </button>
                               <button
                                 type="button"
+                                disabled={isDeletingChatPair}
                                 onClick={(event) => {
                                   event.stopPropagation();
                                   void handleDeleteChatMessagePair(msg);
                                 }}
-                                className="flex items-center justify-center w-7 h-7 rounded-full bg-white border border-gray-200 text-gray-400 hover:text-red-500 hover:border-red-200 hover:bg-red-50 transition-colors shadow-sm"
+                                className="flex items-center justify-center w-7 h-7 rounded-full bg-white border border-gray-200 text-gray-400 hover:text-red-500 hover:border-red-200 hover:bg-red-50 transition-colors shadow-sm disabled:opacity-40 disabled:cursor-not-allowed"
                                 aria-label="删除该问答"
                                 title="删除该问答"
                               >
@@ -20501,11 +21219,12 @@ export default function App() {
                                   </span>
                                   <button
                                     type="button"
+                                    disabled={isDeletingChatPair}
                                     onClick={(event) => {
                                       event.stopPropagation();
                                       void handleDeleteChatMessagePair(msg);
                                     }}
-                                    className="hidden group-hover/message:flex items-center justify-center w-6 h-6 rounded-full text-gray-300 hover:text-red-500 hover:bg-red-50 transition-colors shrink-0"
+                                    className="hidden group-hover/message:flex items-center justify-center w-6 h-6 rounded-full text-gray-300 hover:text-red-500 hover:bg-red-50 transition-colors shrink-0 disabled:opacity-40 disabled:cursor-not-allowed"
                                     aria-label="删除该问答"
                                     title="删除该问答"
                                   >
@@ -20986,7 +21705,23 @@ export default function App() {
                                       <Download size={14} /> {answerActionState[msg.id] === 'export' ? '导出中…' : '导出文件'}
                                     </button>
                                     <button
-                                      className="text-[11px] xl:text-[12px] text-emerald-600 hover:text-emerald-700 hover:bg-white hover:shadow-sm font-semibold flex items-center gap-1.5 transition-all px-2.5 py-1.5 rounded-lg disabled:opacity-50"
+                                      className={`text-[11px] xl:text-[12px] font-semibold flex items-center gap-1.5 transition-all px-2.5 py-1.5 rounded-lg disabled:opacity-50 ${
+                                        isInExportBag(msg.id)
+                                          ? 'text-[#5B7BFE] bg-[#5B7BFE]/10 hover:bg-[#5B7BFE]/15'
+                                          : 'text-gray-500 hover:text-gray-900 hover:bg-white hover:shadow-sm'
+                                      }`}
+                                      disabled={isHardSystemFailure || isHistoricalMockAnswer}
+                                      title="把这段加入合集，最后合并成一个文档导出"
+                                      onClick={(event) => {
+                                        event.stopPropagation();
+                                        toggleExportBag(msg.id);
+                                      }}
+                                    >
+                                      {isInExportBag(msg.id) ? <CheckSquare size={14} /> : <Square size={14} />}
+                                      {isInExportBag(msg.id) ? '已加入合集' : '加入合集'}
+                                    </button>
+                                    <button
+                                      className="text-[11px] xl:text-[12px] text-gray-500 hover:text-gray-900 hover:bg-white hover:shadow-sm font-semibold flex items-center gap-1.5 transition-all px-2.5 py-1.5 rounded-lg disabled:opacity-50"
                                       disabled={isHardSystemFailure || isHistoricalMockAnswer || Boolean(answerActionState[msg.id])}
                                       title="把这个答案沉淀为客户判断，进入数据中心"
                                       onClick={(event) => {
@@ -21008,6 +21743,48 @@ export default function App() {
                                     >
                                       <CheckCircle2 size={14} /> {answerActionState[msg.id] === 'promote-judgment' ? '沉淀中…' : '采纳为判断'}
                                     </button>
+                                    <button
+                                      className="text-[11px] xl:text-[12px] text-gray-500 hover:text-gray-900 hover:bg-white hover:shadow-sm font-semibold flex items-center gap-1.5 transition-all px-2.5 py-1.5 rounded-lg disabled:opacity-50"
+                                      disabled={isHardSystemFailure || isHistoricalMockAnswer}
+                                      title="把这个答案转成任务，进入任务板"
+                                      onClick={(event) => {
+                                        event.stopPropagation();
+                                        const taskCard = answerExperienceActionCards.find((item) => item.actionType === 'create_task');
+                                        if (taskCard) {
+                                          void createWorkspaceAnswerActionTask(msg.id)
+                                            .then(async () => {
+                                              await loadTaskBlock();
+                                              window.dispatchEvent(new CustomEvent('workspace-answer-value-refresh'));
+                                              flash('success', '已从答案卡创建任务');
+                                            })
+                                            .catch((error) => {
+                                              flash('error', error instanceof Error ? error.message : '创建任务失败');
+                                            });
+                                          return;
+                                        }
+                                        void createTask({
+                                          title: `${currentClient?.name || '客户'} · ${msg.structuredData?.actions?.slice(0, 18) || '跟进事项'}`,
+                                          desc: msg.structuredData?.analysis || msg.content,
+                                          priority: 'normal',
+                                          listId: effectiveTaskSettings.defaultListId || activeTaskLists[0]?.id || 'list-0',
+                                          dueDate: defaultDueDateFromPreset(effectiveTaskSettings.defaultDueDatePreset) || null,
+                                          ddl: '本周',
+                                          ownerId: currentSessionUser?.id,
+                                          ownerName: currentOperatorName,
+                                          collaboratorIds: currentSessionUser ? [currentSessionUser.id] : [],
+                                          tagIds: [],
+                                          tags: ['AI 转任务', currentClient?.name || '客户'],
+                                          sourceType: 'chat',
+                                          sourceId: currentClientId || undefined,
+                                        }).then(async () => {
+                                          await loadTaskBlock();
+                                          window.dispatchEvent(new CustomEvent('workspace-answer-value-refresh'));
+                                          flash('success', '已转为任务');
+                                        });
+                                      }}
+                                    >
+                                      <Plus size={14} /> 转为任务
+                                    </button>
                                     {isHardSystemFailure && msg.requestPrompt && (
                                       <button
                                         className="text-[11px] xl:text-[12px] text-rose-600 hover:text-rose-700 hover:bg-white hover:shadow-sm font-semibold flex items-center gap-1.5 transition-all px-2.5 py-1.5 rounded-lg"
@@ -21020,47 +21797,6 @@ export default function App() {
                                       </button>
                                     )}
                                   </div>
-                                  <button
-                                    className="text-[11px] xl:text-[12px] text-white bg-[#5B7BFE] hover:bg-[#4a6be6] shadow-[0_2px_8px_rgba(91,123,254,0.3)] font-bold flex items-center gap-1.5 transition-all px-3 xl:px-4 py-1.5 rounded-xl shrink-0 disabled:opacity-50"
-                                      disabled={isHardSystemFailure || isHistoricalMockAnswer}
-                                    onClick={(event) => {
-                                      event.stopPropagation();
-                                      const taskCard = answerExperienceActionCards.find((item) => item.actionType === 'create_task');
-                                      if (taskCard) {
-                                        void createWorkspaceAnswerActionTask(msg.id)
-                                          .then(async () => {
-                                            await loadTaskBlock();
-                                            window.dispatchEvent(new CustomEvent('workspace-answer-value-refresh'));
-                                            flash('success', '已从答案卡创建任务');
-                                          })
-                                          .catch((error) => {
-                                            flash('error', error instanceof Error ? error.message : '创建任务失败');
-                                          });
-                                        return;
-                                      }
-                                      void createTask({
-                                        title: `${currentClient?.name || '客户'} · ${msg.structuredData?.actions?.slice(0, 18) || '跟进事项'}`,
-                                        desc: msg.structuredData?.analysis || msg.content,
-                                        priority: 'normal',
-                                        listId: effectiveTaskSettings.defaultListId || activeTaskLists[0]?.id || 'list-0',
-                                        dueDate: defaultDueDateFromPreset(effectiveTaskSettings.defaultDueDatePreset) || null,
-                                        ddl: '本周',
-                                        ownerId: currentSessionUser?.id,
-                                        ownerName: currentOperatorName,
-                                        collaboratorIds: currentSessionUser ? [currentSessionUser.id] : [],
-                                        tagIds: [],
-                                        tags: ['AI 转任务', currentClient?.name || '客户'],
-                                        sourceType: 'chat',
-                                        sourceId: currentClientId || undefined,
-                                      }).then(async () => {
-                                        await loadTaskBlock();
-                                        window.dispatchEvent(new CustomEvent('workspace-answer-value-refresh'));
-                                        flash('success', '已转为任务');
-                                      });
-                                    }}
-                                  >
-                                    <Plus size={14} strokeWidth={2.5} /> 转为任务
-                                  </button>
                                 </div>
                               </div>
                           </div>
@@ -21093,28 +21829,59 @@ export default function App() {
                   </button>
                 </div>
               )}
-              {workspaceFollowUpPrompts.length > 0 && (
-                <div className="mb-3 rounded-[22px] border border-slate-100 bg-white/82 px-3.5 py-3 shadow-[0_8px_24px_rgba(15,23,42,0.04)] backdrop-blur">
-                  <div className="flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-[0.18em] text-slate-400">
-                    <Sparkles size={12} className="text-[#5B7BFE]" />
-                    追问
+              {currentQueue.length > 0 && (
+                <div className="mb-3 rounded-2xl border border-amber-200 bg-amber-50/80 px-4 py-2.5">
+                  <div className="flex items-center gap-2 text-[12px] font-bold text-amber-900">
+                    <Sparkles size={14} className="text-amber-600" />
+                    排队中 {currentQueue.length}/{QUESTION_QUEUE_MAX} 题，前一题答完会自动提问
                   </div>
-                  <div className="mt-2.5 grid gap-2">
-                    {workspaceFollowUpPrompts.map((prompt, index) => (
-                      <button
-                        key={`${prompt}_${index}`}
-                        type="button"
-                        onClick={() => setInputValue(prompt, { commit: true })}
-                        className="group flex w-full items-center justify-between gap-3 rounded-2xl border border-slate-100 bg-[linear-gradient(180deg,rgba(255,255,255,0.98),rgba(248,250,252,0.92))] px-3.5 py-2.5 text-left text-[12px] xl:text-[13px] font-semibold leading-5 text-slate-700 shadow-sm transition-all hover:-translate-y-0.5 hover:border-[#5B7BFE]/45 hover:text-[#3652c9] hover:shadow-[0_8px_20px_rgba(91,123,254,0.12)] active:translate-y-0"
+                  <div className="mt-2 flex flex-col gap-1.5">
+                    {currentQueue.map((question, index) => (
+                      <div
+                        key={`${index}_${question.slice(0, 24)}`}
+                        className="flex items-start gap-2 rounded-xl bg-white/70 px-2.5 py-1.5 text-[11.5px] leading-relaxed text-amber-900 shadow-[inset_0_0_0_1px_rgba(217,119,6,0.15)]"
                       >
-                        <span className="line-clamp-2">{prompt}</span>
-                        <ArrowUp size={14} className="shrink-0 rotate-45 text-slate-300 transition-colors group-hover:text-[#5B7BFE]" />
-                      </button>
+                        <span className="shrink-0 rounded-md bg-amber-200/70 px-1.5 py-0.5 text-[10px] font-bold text-amber-800">#{index + 1}</span>
+                        <span className="line-clamp-2 flex-1">{question}</span>
+                        <button
+                          type="button"
+                          onClick={() => removeQueueItem(index)}
+                          className="shrink-0 rounded-md p-0.5 text-amber-500 transition hover:bg-amber-200/40 hover:text-amber-800"
+                          title="从队列移除"
+                          aria-label="从队列移除"
+                        >
+                          <X size={12} />
+                        </button>
+                      </div>
                     ))}
                   </div>
                 </div>
               )}
-
+              {currentExportBag.length > 0 && (
+                <div className="mb-3 flex items-center gap-3 rounded-2xl border border-[#5B7BFE]/30 bg-[#5B7BFE]/5 px-4 py-2.5">
+                  <div className="flex items-center gap-2 text-[12px] font-bold text-[#3652c9]">
+                    <Layers size={14} />
+                    已加入合集 {currentExportBag.length} 段
+                  </div>
+                  <div className="flex-1" />
+                  <button
+                    type="button"
+                    onClick={clearExportBag}
+                    className="rounded-lg px-2 py-1 text-[11px] font-semibold text-slate-500 transition hover:bg-white hover:text-slate-800"
+                  >
+                    清空
+                  </button>
+                  <button
+                    type="button"
+                    disabled={isExportingBag}
+                    onClick={() => void handleExportBag()}
+                    className="flex items-center gap-1.5 rounded-xl bg-[#5B7BFE] px-3 py-1.5 text-[12px] font-bold text-white shadow-[0_2px_8px_rgba(91,123,254,0.3)] transition hover:bg-[#4a6be6] disabled:opacity-50"
+                  >
+                    <Download size={13} />
+                    {isExportingBag ? '导出中…' : '合并导出'}
+                  </button>
+                </div>
+              )}
               <div
                 data-workspace-composer="true"
                 className={`relative flex items-end gap-3 rounded-[24px] shadow-[0_4px_20px_rgba(0,0,0,0.04)] transition-all p-2 ${
@@ -21222,7 +21989,7 @@ export default function App() {
 	                      setInputValue(event.target.value);
 	                    }}
 	                    onKeyDown={handleComposerKeyDown}
-	                    disabled={hasPendingAnalysisRun || isBackendBlocked || isComposerStartingMessage}
+	                    disabled={isBackendBlocked}
 	                  />
 	                  <div className="flex items-center gap-2 px-2 pb-1 pt-0.5">
 	                    <button
@@ -21476,29 +22243,43 @@ export default function App() {
 	                    </div>
 	                  </div>
 	                </div>
-                <button
-                  onClick={() => {
-                    if (composerBusyMode) {
-                      void handleStopMessage();
-                      return;
-                    }
-                    void sendMessage();
-                  }}
-                  disabled={composerBusyMode ? false : !inputValue.trim() || !currentClientId || isBackendBlocked}
-                  title={composerBusyMode ? '停止当前回答' : '发送问题'}
-                  aria-label={composerBusyMode ? '停止当前回答' : '发送问题'}
-                  className={`mb-1 mr-1 shrink-0 rounded-2xl p-2.5 xl:p-3 text-white shadow-[0_4px_12px_rgba(91,123,254,0.3)] transition-all ${
-                    composerBusyMode
-                      ? 'bg-[#4F67D7] hover:bg-[#4258bc] animate-pulse'
-                      : 'bg-[#5B7BFE] hover:bg-[#4a6be6]'
-                  } disabled:opacity-50 disabled:shadow-none`}
-                >
-                  {composerBusyMode ? (
-                    <span className="block h-[13px] w-[13px] rounded-[3px] bg-white" />
-                  ) : (
-                    <ArrowUp size={18} strokeWidth={2.6} />
-                  )}
-                </button>
+                {(() => {
+                  const hasComposerDraft = inputValue.trim().length > 0;
+                  // 有草稿时永远是"发送/排队"（sendMessage 内部会自动决定立刻发还是入队）；
+                  // 无草稿且 AI 正在跑时变"停止"；其余情况禁用。
+                  const isStopMode = composerBusyMode && !hasComposerDraft;
+                  const isQueueMode = composerBusyMode && hasComposerDraft;
+                  const buttonTitle = isStopMode
+                    ? '停止当前回答'
+                    : isQueueMode
+                      ? `加入队列（${currentQueue.length}/${QUESTION_QUEUE_MAX}）`
+                      : '发送问题';
+                  return (
+                    <button
+                      onClick={() => {
+                        if (isStopMode) {
+                          void handleStopMessage();
+                          return;
+                        }
+                        void sendMessage();
+                      }}
+                      disabled={!currentClientId || isBackendBlocked || (!hasComposerDraft && !composerBusyMode)}
+                      title={buttonTitle}
+                      aria-label={buttonTitle}
+                      className={`mb-1 mr-1 shrink-0 rounded-2xl p-2.5 xl:p-3 text-white shadow-[0_4px_12px_rgba(91,123,254,0.3)] transition-all ${
+                        isStopMode
+                          ? 'bg-[#4F67D7] hover:bg-[#4258bc] animate-pulse'
+                          : 'bg-[#5B7BFE] hover:bg-[#4a6be6]'
+                      } disabled:opacity-50 disabled:shadow-none`}
+                    >
+                      {isStopMode ? (
+                        <span className="block h-[13px] w-[13px] rounded-[3px] bg-white" />
+                      ) : (
+                        <ArrowUp size={18} strokeWidth={2.6} />
+                      )}
+                    </button>
+                  );
+                })()}
               </div>
             </div>
           </div>
@@ -21547,7 +22328,11 @@ export default function App() {
                       </button>
                       <button
                         type="button"
-                        className={quickToolButtonClass}
+                        className={`${quickToolButtonClass} ${
+                          templateFillDialog?.open
+                            ? 'bg-blue-50 border-[#C7D5FF] text-[#5B7BFE]'
+                            : ''
+                        }`}
                         disabled={isBackendBlocked || isTemplateFilling}
                         onClick={() => void handleFillTemplate()}
                         title="填写模板"
@@ -21642,9 +22427,161 @@ export default function App() {
                       </div>
                     )}
 
+                    {templateFillDialog?.open && (() => {
+                      const stages: Array<{ key: TemplateFillStage; label: string }> = [
+                        { key: 'parsing', label: '模板识别' },
+                        { key: 'retrieving', label: '资料检索' },
+                        { key: 'writing', label: 'AI 填写' },
+                        { key: 'completed', label: '生成文档' },
+                      ];
+                      const phaseToStageKey = (phase: string | null, stage: TemplateFillStage): TemplateFillStage => {
+                        const p = (phase || '').toLowerCase();
+                        if (p === 'ai') return 'writing';
+                        if (p === 'completed') return 'completed';
+                        if (p === 'failed') return stage;
+                        if (p === 'parsing' || p === 'retrieving' || p === 'writing') return p as TemplateFillStage;
+                        return stage;
+                      };
+                      const activeKey = phaseToStageKey(templateFillDialog.backendPhase, templateFillDialog.stage);
+                      const activeIndex = stages.findIndex((s) => s.key === activeKey);
+                      const isFailed = templateFillDialog.stage === 'failed';
+                      const percent = Math.min(100, Math.max(0, templateFillDialog.percent || 0));
+                      return (
+                        <div className="mt-2.5 space-y-2 rounded-2xl border border-[#DCE6FF] bg-[#F8FAFF] px-3 py-2.5">
+                          <div className="flex items-center justify-between gap-2">
+                            <div className="min-w-0 flex-1">
+                              <p className="truncate text-[11px] font-bold text-[#3652c9]" title={templateFillDialog.templateName}>
+                                {templateFillDialog.templateName || '模板填写'}
+                              </p>
+                            </div>
+                            <span className={`shrink-0 text-[12px] font-bold tabular-nums ${isFailed ? 'text-rose-600' : 'text-[#5B7BFE]'}`}>
+                              {percent}%
+                            </span>
+                          </div>
+                          {/* 4 阶段 step */}
+                          <div className="flex items-center gap-1 text-[9.5px] font-bold text-slate-400">
+                            {stages.map((s, i) => {
+                              const isActive = i === activeIndex && !isFailed;
+                              const isDone = i < activeIndex || (i === activeIndex && activeKey === 'completed');
+                              const dotCls = isFailed
+                                ? (i <= activeIndex ? 'bg-rose-500 text-white' : 'bg-slate-200 text-slate-400')
+                                : isDone
+                                  ? 'bg-[#5B7BFE] text-white'
+                                  : isActive
+                                    ? 'bg-[#5B7BFE]/20 text-[#3652c9] ring-2 ring-[#5B7BFE]/40'
+                                    : 'bg-slate-200 text-slate-400';
+                              return (
+                                <div key={s.key} className="flex flex-1 items-center gap-1 min-w-0">
+                                  <span className={`shrink-0 inline-flex h-4 w-4 items-center justify-center rounded-full text-[9px] ${dotCls}`}>
+                                    {isDone && !isFailed ? '✓' : i + 1}
+                                  </span>
+                                  <span
+                                    className={`truncate ${
+                                      isFailed && i <= activeIndex
+                                        ? 'text-rose-600'
+                                        : isActive || isDone
+                                          ? 'text-[#3652c9]'
+                                          : ''
+                                    }`}
+                                  >
+                                    {s.label}
+                                  </span>
+                                </div>
+                              );
+                            })}
+                          </div>
+                          {/* 进度条 */}
+                          <div className="h-1.5 overflow-hidden rounded-full bg-white/70">
+                            <div
+                              className={`h-full rounded-full transition-all duration-500 ${
+                                isFailed ? 'bg-rose-500' : 'bg-[#5B7BFE]'
+                              }`}
+                              style={{ width: `${Math.max(percent, 4)}%` }}
+                            />
+                          </div>
+                          {/* 字段总数 / 已填写 / 待确认 */}
+                          {templateFillDialog.fieldCount > 0 && (
+                            <div className="flex items-center justify-around gap-1 rounded-xl bg-white/70 px-2 py-1.5 text-[10px]">
+                              <div className="flex flex-col items-center">
+                                <span className="font-bold text-slate-700 tabular-nums">{templateFillDialog.fieldCount}</span>
+                                <span className="text-slate-400">字段</span>
+                              </div>
+                              <div className="flex flex-col items-center">
+                                <span className="font-bold text-emerald-600 tabular-nums">{templateFillDialog.filledCount}</span>
+                                <span className="text-slate-400">已填写</span>
+                              </div>
+                              <div className="flex flex-col items-center">
+                                <span className="font-bold text-amber-600 tabular-nums">{templateFillDialog.missingCount}</span>
+                                <span className="text-slate-400">待确认</span>
+                              </div>
+                            </div>
+                          )}
+                          {/* 灰色滚动小字 */}
+                          <p
+                            className="truncate text-[10px] leading-4 text-slate-400"
+                            title={templateFillDialog.currentFieldLabel || templateFillDialog.statusLabel || ''}
+                          >
+                            {templateFillDialog.currentFieldLabel
+                              ? `正在填：${templateFillDialog.currentFieldLabel}`
+                              : templateFillDialog.statusLabel || templateFillDialog.hint || '准备中…'}
+                          </p>
+                          {/* 完成 / 失败时显示关闭按钮 */}
+                          {(templateFillDialog.stage === 'completed' || templateFillDialog.stage === 'failed') && (
+                            <div className="flex items-center justify-between gap-2 pt-0.5">
+                              {templateFillDialog.stage === 'completed' ? (
+                                <p className="text-[10px] text-emerald-600 truncate">
+                                  已生成，已自动打开 Word
+                                </p>
+                              ) : (
+                                <p className="text-[10px] text-rose-600 truncate" title={templateFillDialog.errorMessage || ''}>
+                                  {templateFillDialog.errorMessage || '模板填写失败'}
+                                </p>
+                              )}
+                              <button
+                                type="button"
+                                onClick={() => setTemplateFillDialog(null)}
+                                className="shrink-0 rounded-md px-2 py-0.5 text-[10px] font-bold text-slate-500 hover:bg-white hover:text-slate-800 transition"
+                              >
+                                收起
+                              </button>
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })()}
+
                     <div className="mt-2 flex items-center justify-between gap-3 text-[10px] leading-4 text-gray-400">
-                      <span>{knowledgeStatus?.totalChunks || 0} 个向量块</span>
-                      <span>{(workspace?.recentMessages || []).length} 条最近问答</span>
+                      <span>{knowledgeStatus?.totalDocuments || 0} 份文件</span>
+                      {(() => {
+                        const rate = typeof knowledgeStatus?.ocrReadyRate === 'number' ? knowledgeStatus.ocrReadyRate : null;
+                        const needsFix = rate !== null && rate < 100;
+                        return (
+                          <span
+                            className="inline-flex items-center gap-1"
+                            title="OCR 识别率 = ready × 100% + partial × 70%（按 R13 完整扫描度加权）"
+                          >
+                            OCR 识别率 {rate !== null ? `${rate.toFixed(1)}%` : '—'}
+                            {needsFix && (
+                              <button
+                                type="button"
+                                disabled={ocrFixing}
+                                onClick={() => void handleOcrFix()}
+                                className="ml-1 inline-flex items-center justify-center rounded-full border border-amber-300 bg-amber-50 p-1 text-amber-700 hover:bg-amber-100 disabled:opacity-60 disabled:cursor-wait"
+                                title={ocrFixing ? '正在重新识别 OCR…' : '一键修复 · 重新识别所有 OCR 不完整的文件（高 DPI + 双 prompt 模式）'}
+                                aria-label="一键修复 OCR"
+                              >
+                                <RotateCcw size={12} strokeWidth={2.4} className={ocrFixing ? 'animate-spin' : ''} />
+                              </button>
+                            )}
+                          </span>
+                        );
+                      })()}
+                      {currentClientId && (
+                        <GlossaryPendingBadge
+                          clientId={currentClientId}
+                          onNavigateToReview={() => setActiveTab('strategic_accompaniment')}
+                        />
+                      )}
                     </div>
 
                     <div className={`mt-2 min-h-[46px] transition-opacity duration-200 ${knowledgeJobProgressView.hasActivity ? 'opacity-100' : 'pointer-events-none opacity-0'}`}>
@@ -21677,7 +22614,6 @@ export default function App() {
             <div className="flex border-b border-gray-100 bg-gray-50/60 px-2 pt-2 gap-0.5 shrink-0">
               {([
                 { key: 'files', label: '文件', icon: FolderOpen },
-                { key: 'evidence', label: '引证', icon: FileBadge },
                 { key: 'memory', label: '收藏', icon: BrainCircuit },
                 { key: 'tools', label: '工具', icon: UploadCloud },
               ] as const).map((tab) => (
@@ -21827,7 +22763,9 @@ export default function App() {
                           void refreshWorkspace(currentClientId);
                         }}
                       />
+                      {currentClientId && <GlossaryDriftAlertPanel clientId={currentClientId} />}
                       {currentClientId && <ContradictionAlertPanel clientId={currentClientId} />}
+                      {currentClientId && <DuplicateDocumentsSection clientId={currentClientId} hideWhenEmpty />}
                       {currentClientId && <EntityListPanel clientId={currentClientId} />}
                       {currentClientId && <GlossaryPanel clientId={currentClientId} />}
                     </>
@@ -21927,6 +22865,9 @@ export default function App() {
                   </div>
                 );
               };
+              // 搜索激活时（filesTabSearchResult 非空）显示命中文件；否则按"最近使用"排序的完整列表。
+              // 任何"使用"动作（打开 / 打开文件夹 / 引用进对话）都会 markDocumentAsUsed → 清搜索回到列表时排在最前。
+              const searchActive = Boolean(filesTabSearchResult);
               return (
                 <div className="flex-1 overflow-y-auto p-5 xl:p-6 bg-white">
                   <div className="mb-3 flex items-center gap-2">
@@ -21964,37 +22905,46 @@ export default function App() {
                       {isFilesTabSearching ? '搜索中' : 'AI 搜'}
                     </Button>
                   </div>
-                  <p className="mb-3 text-[10px] text-slate-400 leading-relaxed">
-                    最近你用过的文件置顶。搜索结果会出现在「引证」面板。
-                  </p>
+                  {searchActive && (
+                    <div className="mb-3 flex items-center justify-between gap-2 text-[11px] font-bold text-slate-500">
+                      <span className="truncate flex items-center gap-1.5">
+                        <FileBadge size={13} className="text-amber-500 shrink-0" />
+                        {`搜索：「${filesTabSearchResult?.query || ''}」共 ${filesTabSearchResult?.hits.length || 0} 条`}
+                      </span>
+                      <button
+                        type="button"
+                        onClick={clearFilesTabSearch}
+                        className="shrink-0 rounded-full px-2.5 py-0.5 text-[10px] tracking-wider border border-gray-200 bg-gray-100 text-gray-500 hover:border-[#5B7BFE] hover:text-[#5B7BFE] transition-colors"
+                      >
+                        返回文件列表
+                      </button>
+                    </div>
+                  )}
                   <div className="space-y-2.5">
-                    {(() => {
+                    {!searchActive && (() => {
                       const allDocs = workspace?.documents || [];
-                      const usedIds = new Set(recentUsedDocuments.map((d) => d.documentId));
-                      const docById = new Map(allDocs.map((d) => [d.id, d] as const));
-                      // 1) 最近用过的（按 usedAt 倒序）
-                      const recentCards = recentUsedDocuments
-                        .map((used) => {
-                          const doc = docById.get(used.documentId);
-                          return {
-                            key: `recent-${used.documentId}`,
-                            documentId: used.documentId,
-                            title: doc?.title || used.title,
-                            path: doc?.path || used.path,
-                          };
-                        })
-                        .filter((card) => Boolean(card.documentId));
-                      // 2) 其余文件，按 importedAt 倒序
-                      const otherCards = [...allDocs]
-                        .filter((doc) => !usedIds.has(doc.id))
-                        .sort((a, b) => (b.importedAt || '').localeCompare(a.importedAt || ''))
+                      // 按"最近一次活动时间"统一倒序：max(被使用的时间戳, 新增导入的时间戳)。
+                      // 这样刚导入的新文件会和刚被使用的文件混排在最前面，不再固定分两段。
+                      const usedAtMap = new Map<string, number>(
+                        recentUsedDocuments.map((d) => [d.documentId, d.usedAt || 0]),
+                      );
+                      const parseImportedMs = (raw: string | undefined): number => {
+                        if (!raw) return 0;
+                        const t = new Date(raw).getTime();
+                        return Number.isFinite(t) ? t : 0;
+                      };
+                      const combined = [...allDocs]
                         .map((doc) => ({
                           key: `doc-${doc.id}`,
                           documentId: doc.id,
                           title: doc.title,
                           path: doc.path,
-                        }));
-                      const combined = [...recentCards, ...otherCards];
+                          lastTouchedAt: Math.max(
+                            usedAtMap.get(doc.id) || 0,
+                            parseImportedMs(doc.importedAt),
+                          ),
+                        }))
+                        .sort((a, b) => b.lastTouchedAt - a.lastTouchedAt);
                       if (combined.length === 0) {
                         return (
                           <div className="rounded-2xl border border-dashed border-gray-200 bg-gray-50/70 px-4 py-6 text-center text-[12px] text-gray-500">
@@ -22003,6 +22953,125 @@ export default function App() {
                         );
                       }
                       return combined.map((card) => renderFileCard(card));
+                    })()}
+                    {searchActive && (() => {
+                      if (visibleEvidenceCitationCards.length === 0) {
+                        return (
+                          <div className="rounded-2xl border border-dashed border-gray-200 bg-gray-50/70 px-4 py-6 text-center text-[12px] text-gray-500">
+                            本次搜索没有命中文件。
+                          </div>
+                        );
+                      }
+                      return (
+                        <>
+                          {visibleEvidenceCitationCards.map((card: EvidenceCitationCard) => {
+                            const openPath = card.openPath || card.primarySnippet.path || card.sourcePath || '';
+                            const canOpen = Boolean(openPath) && hasOpenableFile(openPath);
+                            const basename = openPath ? openPath.split(/[/\\]/).pop() || '' : '';
+                            const fileLabel = basename || card.sourceTitle || card.claimTitle || '未命名资料';
+                            const snippetPreview = card.primarySnippet.excerpt || '';
+                            const matchedTerms = card.primarySnippet.matchedTerms || [];
+                            const isExpanded = expandedEvidenceIds.has(card.id);
+                            const referencedDocId = card.primarySnippet.documentId || '';
+                            const isReferenced = Boolean(
+                              referencedDocId
+                              && activeWorkingDocuments.some((doc) => doc.documentId === referencedDocId),
+                            );
+                            return (
+                              <div key={card.id} className="bg-white border border-gray-200 rounded-xl overflow-hidden hover:shadow-sm transition-shadow">
+                                <div className="flex items-start gap-3 px-3 pt-2.5 pb-1.5">
+                                  <FileTypeIcon path={openPath || null} size={34} className="mt-0.5" />
+                                  <p
+                                    className="flex-1 text-[13px] font-semibold text-slate-900 break-words leading-snug pt-1"
+                                    title={fileLabel}
+                                  >
+                                    {fileLabel}
+                                  </p>
+                                  <button
+                                    type="button"
+                                    onClick={() => toggleEvidenceCardExpanded(card.id)}
+                                    className="shrink-0 mt-0.5 rounded-lg p-1.5 text-slate-400 hover:text-slate-700 hover:bg-slate-50 transition-colors"
+                                    title={isExpanded ? '收起命中段落' : '查看原文片段'}
+                                  >
+                                    {isExpanded ? <ChevronUp size={16} /> : <ChevronDown size={16} />}
+                                  </button>
+                                </div>
+                                <div className="flex items-center gap-1 px-3 pb-2.5">
+                                  <button
+                                    type="button"
+                                    onClick={() => handleAttachCitationToComposer(card)}
+                                    className={`rounded-lg p-1.5 transition-colors ${
+                                      isReferenced
+                                        ? 'text-[#5B7BFE] bg-blue-50'
+                                        : 'text-slate-500 hover:text-[#5B7BFE] hover:bg-blue-50'
+                                    }`}
+                                    title={isReferenced ? '已加入对话引用' : '把这份文件加入对话引用'}
+                                  >
+                                    <ArrowLeft size={16} />
+                                  </button>
+                                  <button
+                                    type="button"
+                                    disabled={!canOpen}
+                                    onClick={() => {
+                                      markDocumentAsUsed({ documentId: card.primarySnippet.documentId || '', title: fileLabel, path: openPath });
+                                      void openPathBridge(openPath).then((opened) => {
+                                        if (!opened) flash('error', '原文路径不存在或当前无法打开');
+                                      });
+                                    }}
+                                    className={`rounded-lg p-1.5 transition-colors ${
+                                      canOpen
+                                        ? 'text-slate-500 hover:text-[#5B7BFE] hover:bg-blue-50'
+                                        : 'text-slate-300 cursor-not-allowed'
+                                    }`}
+                                    title={canOpen ? '用默认应用打开原文件' : 'AI 生成内容，无可打开的原文件'}
+                                  >
+                                    <ExternalLink size={16} />
+                                  </button>
+                                  <button
+                                    type="button"
+                                    disabled={!canOpen}
+                                    onClick={() => {
+                                      markDocumentAsUsed({ documentId: card.primarySnippet.documentId || '', title: fileLabel, path: openPath });
+                                      void revealInFinderBridge(openPath).then((opened) => {
+                                        if (!opened) flash('error', '无法在 Finder 中显示该文件');
+                                      });
+                                    }}
+                                    className={`rounded-lg p-1.5 transition-colors ${
+                                      canOpen
+                                        ? 'text-slate-500 hover:text-[#5B7BFE] hover:bg-blue-50'
+                                        : 'text-slate-300 cursor-not-allowed'
+                                    }`}
+                                    title={canOpen ? '在 Finder 中显示所在文件夹' : 'AI 生成内容，无文件夹位置'}
+                                  >
+                                    <FolderOpen size={16} />
+                                  </button>
+                                </div>
+                                {isExpanded && snippetPreview && (
+                                  <div className="px-3 pb-3 pt-1 border-t border-slate-100 bg-slate-50/30">
+                                    <p className="text-[12px] leading-[0.8] text-slate-600 line-clamp-5">
+                                      {highlightCitationTerms(snippetPreview, matchedTerms)}
+                                    </p>
+                                    {card.snippets.length > 1 && (
+                                      <p className="mt-2 text-[10px] text-slate-400">
+                                        还有 {card.snippets.length - 1} 个相关片段
+                                      </p>
+                                    )}
+                                  </div>
+                                )}
+                              </div>
+                            );
+                          })}
+                          {hiddenEvidenceCitationCount > 0 && (
+                            <button
+                              type="button"
+                              className="w-full rounded-2xl border border-dashed border-slate-200 bg-slate-50/70 px-3 py-2.5 text-[11px] font-bold text-slate-500 transition hover:border-[#C7D5FF] hover:bg-blue-50 hover:text-[#4A63CF]"
+                              onClick={() => setIsEvidencePanelExpanded((value) => !value)}
+                            >
+                              {isEvidencePanelExpanded ? '收起证据' : `展开其余 ${hiddenEvidenceCitationCount} 条证据`}
+                            </button>
+                          )}
+                        </>
+                      );
                     })()}
                   </div>
                   {pendingDeleteDocument && (
@@ -22049,143 +23118,6 @@ export default function App() {
                 </div>
               );
             })()}
-
-            {/* Tab: 引证 */}
-            {workspaceRightTab === 'evidence' && <div className="flex-1 overflow-y-auto p-5 xl:p-6 bg-white">
-              <div className="flex items-center justify-between mb-4 xl:mb-5 gap-2">
-                <h3 className="text-[13px] xl:text-[14px] font-bold text-gray-900 flex items-center gap-2 min-w-0">
-                  <FileBadge size={18} className="text-amber-500 shrink-0" />
-                  <span className="truncate">
-                    {filesTabSearchResult
-                      ? `搜索：「${filesTabSearchResult.query}」共 ${filesTabSearchResult.hits.length} 条`
-                      : activeMessageId ? '当前回答引证' : '默认背景线索'}
-                  </span>
-                </h3>
-                {filesTabSearchResult && (
-                  <button
-                    type="button"
-                    onClick={clearFilesTabSearch}
-                    className="shrink-0 rounded-full px-2.5 py-1 text-[10px] font-bold tracking-wider border border-gray-200 bg-gray-100 text-gray-500 hover:border-[#5B7BFE] hover:text-[#5B7BFE] transition-colors"
-                  >
-                    清空搜索
-                  </button>
-                )}
-              </div>
-
-              <div className="space-y-2.5">
-                {visibleEvidenceCitationCards.map((card: EvidenceCitationCard) => {
-                  const openPath = card.openPath || card.primarySnippet.path || card.sourcePath || '';
-                  const canOpen = Boolean(openPath) && hasOpenableFile(openPath);
-                  const basename = openPath ? openPath.split(/[/\\]/).pop() || '' : '';
-                  const fileLabel = basename || card.sourceTitle || card.claimTitle || '未命名资料';
-                  const snippetPreview = card.primarySnippet.excerpt || '';
-                  const matchedTerms = card.primarySnippet.matchedTerms || [];
-                  const isExpanded = expandedEvidenceIds.has(card.id);
-                  const referencedDocId = card.primarySnippet.documentId || '';
-                  const isReferenced = Boolean(
-                    referencedDocId
-                    && activeWorkingDocuments.some((doc) => doc.documentId === referencedDocId),
-                  );
-                  return (
-                    <div key={card.id} className="bg-white border border-gray-200 rounded-xl overflow-hidden hover:shadow-sm transition-shadow">
-                      {/* Row 1: 文件图标 + 完整文件名（不截断）+ 展开箭头 */}
-                      <div className="flex items-start gap-3 px-3 pt-2.5 pb-1.5">
-                        <FileTypeIcon path={openPath || null} size={34} className="mt-0.5" />
-                        <p
-                          className="flex-1 text-[13px] font-semibold text-slate-900 break-words leading-snug pt-1"
-                          title={fileLabel}
-                        >
-                          {fileLabel}
-                        </p>
-                        <button
-                          type="button"
-                          onClick={() => toggleEvidenceCardExpanded(card.id)}
-                          className="shrink-0 mt-0.5 rounded-lg p-1.5 text-slate-400 hover:text-slate-700 hover:bg-slate-50 transition-colors"
-                          title={isExpanded ? '收起命中段落' : '查看原文片段'}
-                        >
-                          {isExpanded ? <ChevronUp size={16} /> : <ChevronDown size={16} />}
-                        </button>
-                      </div>
-
-                      {/* Row 2: 三个图标按钮 —— 引用回答 / 打开原文件 / 打开文件夹 */}
-                      <div className="flex items-center gap-1 px-3 pb-2.5">
-                        <button
-                          type="button"
-                          onClick={() => handleAttachCitationToComposer(card)}
-                          className={`rounded-lg p-1.5 transition-colors ${
-                            isReferenced
-                              ? 'text-[#5B7BFE] bg-blue-50'
-                              : 'text-slate-500 hover:text-[#5B7BFE] hover:bg-blue-50'
-                          }`}
-                          title={isReferenced ? '已加入对话引用' : '把这份文件加入对话引用'}
-                        >
-                          <ArrowLeft size={16} />
-                        </button>
-                        <button
-                          type="button"
-                          disabled={!canOpen}
-                          onClick={() => {
-                            markDocumentAsUsed({ documentId: card.primarySnippet.documentId || '', title: fileLabel, path: openPath });
-                            void openPathBridge(openPath).then((opened) => {
-                              if (!opened) flash('error', '原文路径不存在或当前无法打开');
-                            });
-                          }}
-                          className={`rounded-lg p-1.5 transition-colors ${
-                            canOpen
-                              ? 'text-slate-500 hover:text-[#5B7BFE] hover:bg-blue-50'
-                              : 'text-slate-300 cursor-not-allowed'
-                          }`}
-                          title={canOpen ? '用默认应用打开原文件' : 'AI 生成内容，无可打开的原文件'}
-                        >
-                          <ExternalLink size={16} />
-                        </button>
-                        <button
-                          type="button"
-                          disabled={!canOpen}
-                          onClick={() => {
-                            markDocumentAsUsed({ documentId: card.primarySnippet.documentId || '', title: fileLabel, path: openPath });
-                            void revealInFinderBridge(openPath).then((opened) => {
-                              if (!opened) flash('error', '无法在 Finder 中显示该文件');
-                            });
-                          }}
-                          className={`rounded-lg p-1.5 transition-colors ${
-                            canOpen
-                              ? 'text-slate-500 hover:text-[#5B7BFE] hover:bg-blue-50'
-                              : 'text-slate-300 cursor-not-allowed'
-                          }`}
-                          title={canOpen ? '在 Finder 中显示所在文件夹' : 'AI 生成内容，无文件夹位置'}
-                        >
-                          <FolderOpen size={16} />
-                        </button>
-                      </div>
-
-                      {isExpanded && snippetPreview && (
-                        <div className="px-3 pb-3 pt-1 border-t border-slate-100 bg-slate-50/30">
-                          <p className="text-[12px] leading-[0.8] text-slate-600 line-clamp-5">
-                            {highlightCitationTerms(snippetPreview, matchedTerms)}
-                          </p>
-                          {card.snippets.length > 1 && (
-                            <p className="mt-2 text-[10px] text-slate-400">
-                              还有 {card.snippets.length - 1} 个相关片段
-                            </p>
-                          )}
-                        </div>
-                      )}
-                    </div>
-                  );
-                })}
-                {hiddenEvidenceCitationCount > 0 && (
-                  <button
-                    type="button"
-                    className="w-full rounded-2xl border border-dashed border-slate-200 bg-slate-50/70 px-3 py-2.5 text-[11px] font-bold text-slate-500 transition hover:border-[#C7D5FF] hover:bg-blue-50 hover:text-[#4A63CF]"
-                    onClick={() => setIsEvidencePanelExpanded((value) => !value)}
-                  >
-                    {isEvidencePanelExpanded ? '收起证据' : `展开其余 ${hiddenEvidenceCitationCount} 条证据`}
-                  </button>
-                )}
-              </div>
-
-            </div>}
 
             {/* Tab: 速览 */}
             {workspaceRightTab === 'overview' && <div className="flex-1 overflow-y-auto p-5 xl:p-6 bg-white">
@@ -23260,374 +24192,6 @@ export default function App() {
           </div>
         )}
 
-        {templateFillDialog?.open && (
-          <div
-            className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-black/25 px-4 py-6 backdrop-blur-md md:py-10"
-          >
-            <div
-              className="my-auto flex max-h-[calc(100vh-48px)] w-full max-w-[1120px] flex-col overflow-hidden rounded-[30px] border border-[#DDE7FF] bg-white shadow-[0_24px_80px_rgba(15,23,42,0.18)] md:max-h-[calc(100vh-80px)]"
-              onClick={(event) => event.stopPropagation()}
-            >
-              <div className="flex items-center justify-between border-b border-gray-100 px-8 py-6">
-                <div className="flex items-center gap-4">
-                  <button
-                    type="button"
-                    onClick={() => {
-                      if (!isTemplateFilling) setTemplateFillDialog(null);
-                    }}
-                    disabled={isTemplateFilling}
-                    className="rounded-2xl border border-gray-200 bg-white p-2 text-gray-400 transition hover:text-gray-700 disabled:cursor-not-allowed disabled:opacity-50"
-                    aria-label="关闭模板填写进度"
-                  >
-                    <X size={16} />
-                  </button>
-                  <div className="flex h-10 w-10 items-center justify-center rounded-2xl bg-[#EEF3FF] text-[#5B7BFE]">
-                    <LayoutTemplate size={20} />
-                  </div>
-                  <div>
-                    <p className="text-[18px] font-bold text-gray-900">AI 正在填写模板</p>
-                    <p className="mt-1 text-[12px] text-gray-500">{templateFillDialog.templateName}</p>
-                  </div>
-                </div>
-                <div className="text-right">
-                  <p className="text-[11px] font-bold uppercase tracking-[0.18em] text-gray-400">当前进度</p>
-                  <p className="mt-1 text-[22px] font-bold text-[#5B7BFE]">{templateFillDialog.percent}%</p>
-                </div>
-              </div>
-
-              <div className="min-h-0 overflow-y-auto px-8 py-6">
-                <div className="rounded-[22px] border border-[#DCE6FF] bg-[#F8FAFF] px-5 py-4">
-                  <div className="flex items-center justify-between gap-4">
-                    <div>
-                    <p className="text-[15px] font-bold text-gray-900">{templateFillDialog.statusLabel}</p>
-                      <p className="mt-1 text-[12px] leading-6 text-gray-500">{templateFillDialog.hint}</p>
-                      {templateFillDialog.fieldCount > 0 && (
-                        <div className="mt-2 flex flex-wrap items-center gap-2 text-[11px] text-gray-400">
-                          <span>已处理 {Math.min(templateFillDialog.processedCount, templateFillDialog.fieldCount)}/{templateFillDialog.fieldCount} 个字段</span>
-                          {templateFillDialog.currentFieldLabel && (
-                            <span className="rounded-full bg-white px-2 py-1 text-gray-500">
-                              当前字段：{templateFillDialog.currentFieldLabel}
-                            </span>
-                          )}
-                        </div>
-                      )}
-                    </div>
-                    <p className="shrink-0 text-[12px] font-semibold text-gray-400">
-                      {Math.max(1, Math.round((Date.now() - templateFillDialog.startedAt) / 1000))} 秒
-                    </p>
-                  </div>
-                  <div className="mt-4 h-2 overflow-hidden rounded-full bg-[#E8EEFF]">
-                    <div
-                      className={`h-full rounded-full transition-all duration-500 ${
-                        templateFillDialog.stage === 'failed' ? 'bg-rose-500' : 'bg-[#5B7BFE]'
-                      }`}
-                      style={{ width: `${Math.min(templateFillDialog.percent, 100)}%` }}
-                    />
-                  </div>
-                </div>
-
-                <div className="mt-5 rounded-[22px] border border-gray-200 bg-white px-5 py-4">
-                  <div className="flex flex-wrap gap-2">
-                    {buildTemplateFillStepStatuses(templateFillDialog).map(([label, status]) => (
-                      <span
-                        key={label}
-                        className={`inline-flex items-center gap-1 rounded-full px-3 py-1 text-[11px] font-bold ${
-                          status === 'done'
-                            ? 'bg-emerald-50 text-emerald-700'
-                            : status === 'failed'
-                              ? 'bg-rose-50 text-rose-700'
-                            : status === 'active'
-                              ? 'bg-blue-50 text-[#4A63CF]'
-                              : 'bg-gray-100 text-gray-400'
-                        }`}
-                      >
-                        {status === 'done'
-                          ? <CheckCircle2 size={12} />
-                          : status === 'failed'
-                            ? <AlertCircle size={12} />
-                            : status === 'active'
-                              ? <Activity size={12} />
-                              : <Circle size={10} />}
-                        {label}
-                      </span>
-                    ))}
-                    {templateFillDialog.backendStatus === 'failed' && (
-                      <span className="inline-flex items-center gap-1 rounded-full bg-rose-50 px-3 py-1 text-[11px] font-bold text-rose-700">
-                        <AlertCircle size={12} />
-                        已失败
-                      </span>
-                    )}
-                  </div>
-                  <p className="mt-3 text-[11px] leading-6 text-gray-400">
-                    系统会依次识别模板字段、检索客户资料、生成字段答案，并写回一份新的文档版本。
-                  </p>
-                </div>
-
-                <div className="mt-5 grid gap-4 lg:grid-cols-[1.2fr_0.8fr]">
-                  <div className="rounded-[22px] border border-gray-200 bg-white px-5 py-4">
-                    <div className="flex items-center justify-between gap-3">
-                      <h4 className="text-[14px] font-bold text-gray-900">本次动用资料</h4>
-                      <span className="text-[11px] text-gray-400">最多展示 8 条</span>
-                    </div>
-                    {templateFillDialog.evidenceTitles.length > 0 ? (
-                      <div className="mt-3 space-y-2">
-                        {templateFillDialog.evidenceTitles.map((title, index) => (
-                          <div key={`${title}-${index}`} className="rounded-2xl border border-gray-100 bg-gray-50/80 px-3 py-2 text-[12px] leading-6 text-gray-600">
-                            {index + 1}. {title}
-                          </div>
-                        ))}
-                      </div>
-                    ) : (
-                      <p className="mt-3 text-[12px] leading-6 text-gray-400">
-                        {templateFillDialog.stage === 'completed'
-                          ? '这次没有返回明确的资料标题。'
-                          : '完成字段检索后，这里会列出本次填写实际参考的资料。'}
-                      </p>
-                    )}
-                  </div>
-
-                  <div className="rounded-[22px] border border-gray-200 bg-white px-5 py-4">
-                    <h4 className="text-[14px] font-bold text-gray-900">填写结果</h4>
-                    <div className="mt-3 grid grid-cols-3 gap-2">
-                      <div className="rounded-2xl bg-[#F8FAFF] px-3 py-3 text-center">
-                        <p className="text-[22px] font-bold text-gray-900">{templateFillDialog.fieldCount}</p>
-                        <p className="mt-1 text-[11px] text-gray-400">字段总数</p>
-                      </div>
-                      <div className="rounded-2xl bg-emerald-50 px-3 py-3 text-center">
-                        <p className="text-[22px] font-bold text-emerald-700">{templateFillDialog.filledCount}</p>
-                        <p className="mt-1 text-[11px] text-emerald-500">已填写</p>
-                      </div>
-                      <div className="rounded-2xl bg-amber-50 px-3 py-3 text-center">
-                        <p className="text-[22px] font-bold text-amber-700">{templateFillDialog.missingCount}</p>
-                        <p className="mt-1 text-[11px] text-amber-500">待确认</p>
-                      </div>
-                    </div>
-                    {templateFillDialog.errorMessage && (
-                      <div className="mt-3 rounded-2xl border border-rose-100 bg-rose-50/80 px-3 py-3 text-[12px] leading-6 text-rose-700">
-                        {templateFillDialog.errorMessage}
-                      </div>
-                    )}
-                    {templateFillDialog.outputPath && (
-                      <p className="mt-3 text-[11px] leading-5 text-gray-400">
-                        已生成新文档：{templateFillDialog.outputPath.split('/').slice(-2).join('/')}
-                      </p>
-                    )}
-                    {!!templateFillDialog.attachmentChecklist.length && (
-                      <p className="mt-2 text-[11px] leading-5 text-gray-400">
-                        已同步识别 {templateFillDialog.attachmentChecklist.length} 项附件/材料要求，可继续用于补件整理。
-                      </p>
-                    )}
-                  </div>
-                </div>
-
-                {(templateFillDialog.fields.length > 0 || templateFillDialog.stage === 'completed') && (
-                  <div className="mt-4 grid gap-4 lg:grid-cols-[1.08fr_0.92fr]">
-                    <div className="rounded-[22px] border border-amber-200 bg-amber-50/50 px-5 py-4">
-                      <div className="flex items-center justify-between gap-3">
-                        <h4 className="text-[14px] font-bold text-amber-900">待确认字段</h4>
-                        <span className="text-[11px] text-amber-600">最多展示 8 项</span>
-                      </div>
-                      {templateFillDialog.fields.filter((field) => field.status === 'missing').length > 0 ? (
-                        <div className="mt-3 space-y-3">
-                          {templateFillDialog.fields
-                            .filter((field) => field.status === 'missing')
-                            .slice(0, 8)
-                            .map((field) => (
-                              <div key={`pending-${field.label}`} className="rounded-2xl border border-amber-100 bg-white/90 px-4 py-3">
-                                <p className="text-[13px] font-bold text-amber-900">{field.label}</p>
-                                <p className="mt-1 text-[12px] leading-6 text-amber-700">{field.value}</p>
-                                {field.basisSummary && (
-                                  <p className="mt-2 text-[11px] leading-5 text-amber-900/80">{field.basisSummary}</p>
-                                )}
-                                {field.followUpQuestion && (
-                                  <div className="mt-2 rounded-xl bg-amber-50 px-3 py-2 text-[11px] leading-5 text-amber-800">
-                                    {field.followUpQuestion}
-                                  </div>
-                                )}
-                                {field.evidenceTitles.length > 0 && (
-                                  <div className="mt-2 flex flex-wrap gap-1.5">
-                                    {field.evidenceTitles.slice(0, 3).map((title, index) => (
-                                      <span key={`${field.label}-${index}`} className="rounded-full bg-amber-100 px-2 py-1 text-[10px] font-semibold text-amber-700">
-                                        {title}
-                                      </span>
-                                    ))}
-                                  </div>
-                                )}
-                                {!!field.webSourceTitles?.length && (
-                                  <div className="mt-2 flex flex-wrap gap-1.5">
-                                    {field.webSourceTitles.slice(0, 2).map((title, index) => (
-                                      <span key={`${field.label}-web-${index}`} className="rounded-full border border-sky-100 bg-white px-2 py-1 text-[10px] font-semibold text-sky-700">
-                                        网页：{title}
-                                      </span>
-                                    ))}
-                                  </div>
-                                )}
-                                {!!field.suggestedSources?.length && (
-                                  <p className="mt-2 text-[10px] leading-5 text-amber-700/90">
-                                    建议补充：{field.suggestedSources.slice(0, 4).join('、')}
-                                  </p>
-                                )}
-                              </div>
-                            ))}
-                        </div>
-                      ) : (
-                        <p className="mt-3 text-[12px] leading-6 text-amber-700">
-                          {templateFillDialog.stage === 'completed'
-                            ? '这次所有字段都已自动填写完成，没有待确认项。'
-                            : '如果资料不足，这里会列出需要人工补充确认的字段。'}
-                        </p>
-                      )}
-                    </div>
-
-                    <div className="rounded-[22px] border border-emerald-200 bg-emerald-50/40 px-5 py-4">
-                      <div className="flex items-center justify-between gap-3">
-                        <h4 className="text-[14px] font-bold text-emerald-900">已填写字段示例</h4>
-                        <span className="text-[11px] text-emerald-600">最多展示 6 项</span>
-                      </div>
-                      {templateFillDialog.fields.filter((field) => field.status === 'filled').length > 0 ? (
-                        <div className="mt-3 space-y-3">
-                          {templateFillDialog.fields
-                            .filter((field) => field.status === 'filled')
-                            .slice(0, 6)
-                            .map((field) => (
-                              <div key={`filled-${field.label}`} className="rounded-2xl border border-emerald-100 bg-white/90 px-4 py-3">
-                                <p className="text-[13px] font-bold text-emerald-900">{field.label}</p>
-                                <p className="mt-1 text-[12px] leading-6 text-gray-700 line-clamp-3">{field.value}</p>
-                                {field.basisSummary && (
-                                  <p className="mt-2 text-[11px] leading-5 text-gray-500">{field.basisSummary}</p>
-                                )}
-                                {field.evidenceTitles.length > 0 && (
-                                  <div className="mt-2 flex flex-wrap gap-1.5">
-                                    {field.evidenceTitles.slice(0, 3).map((title, index) => (
-                                      <span key={`${field.label}-filled-${index}`} className="rounded-full bg-emerald-100 px-2 py-1 text-[10px] font-semibold text-emerald-700">
-                                        {title}
-                                      </span>
-                                    ))}
-                                  </div>
-                                )}
-                                {!!field.webSourceTitles?.length && (
-                                  <div className="mt-2 flex flex-wrap gap-1.5">
-                                    {field.webSourceTitles.slice(0, 2).map((title, index) => (
-                                      <span key={`${field.label}-filled-web-${index}`} className="rounded-full bg-sky-50 px-2 py-1 text-[10px] font-semibold text-sky-700">
-                                        网页：{title}
-                                      </span>
-                                    ))}
-                                  </div>
-                                )}
-                              </div>
-                            ))}
-                        </div>
-                      ) : (
-                        <p className="mt-3 text-[12px] leading-6 text-emerald-700">
-                          {templateFillDialog.stage === 'completed'
-                            ? '这次没有生成可展示的已填写字段示例。'
-                            : '完成填写后，这里会展示本次自动写入的字段示例。'}
-                        </p>
-                      )}
-                    </div>
-                  </div>
-                )}
-
-                {((templateFillDialog.fields.some((field) => field.status === 'missing' || field.reviewRequired))
-                  || templateFillDialog.attachmentChecklist.length > 0) && (
-                  <div className="mt-4 grid gap-4 lg:grid-cols-2">
-                    <div className="rounded-[22px] border border-rose-200 bg-rose-50/40 px-5 py-4">
-                      <div className="flex items-center justify-between gap-3">
-                        <h4 className="text-[14px] font-bold text-rose-900">缺资料清单</h4>
-                        <span className="text-[11px] text-rose-600">按待核验字段收口</span>
-                      </div>
-                      {buildTemplateMissingMaterialItems(templateFillDialog.fields).length > 0 ? (
-                        <div className="mt-3 space-y-3">
-                          {buildTemplateMissingMaterialItems(templateFillDialog.fields).slice(0, 8).map((item) => (
-                            <div key={`missing-${item.label}`} className="rounded-2xl border border-rose-100 bg-white/90 px-4 py-3">
-                              <p className="text-[13px] font-bold text-rose-900">{item.label}</p>
-                              <p className="mt-1 text-[12px] leading-6 text-rose-700">{item.reason}</p>
-                              {!!item.suggestedSources.length && (
-                                <p className="mt-2 text-[10px] leading-5 text-rose-700/90">
-                                  可补来源：{item.suggestedSources.join('、')}
-                                </p>
-                              )}
-                            </div>
-                          ))}
-                        </div>
-                      ) : (
-                        <p className="mt-3 text-[12px] leading-6 text-rose-700">
-                          当前没有新增缺资料项。
-                        </p>
-                      )}
-                    </div>
-
-                    <div className="rounded-[22px] border border-slate-200 bg-slate-50/70 px-5 py-4">
-                      <div className="flex items-center justify-between gap-3">
-                        <h4 className="text-[14px] font-bold text-slate-900">附件清单</h4>
-                        <span className="text-[11px] text-slate-500">模板识别结果</span>
-                      </div>
-                      {templateFillDialog.attachmentChecklist.length > 0 ? (
-                        <div className="mt-3 space-y-2">
-                          {templateFillDialog.attachmentChecklist.slice(0, 10).map((item, index) => (
-                            <div key={`attachment-${index}-${item}`} className="rounded-2xl border border-slate-200 bg-white/90 px-4 py-3 text-[12px] leading-6 text-slate-700">
-                              {index + 1}. {item}
-                            </div>
-                          ))}
-                        </div>
-                      ) : (
-                        <p className="mt-3 text-[12px] leading-6 text-slate-500">
-                          当前模板中没有识别出明确的附件/材料清单。
-                        </p>
-                      )}
-                    </div>
-                  </div>
-                )}
-              </div>
-
-              <div className="flex items-center justify-end gap-3 border-t border-gray-100 bg-gray-50/60 px-8 py-5">
-                {templateFillDialog.outputPath && (
-                  <>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        void revealInFinderBridge(templateFillDialog.outputPath!);
-                      }}
-                      className="rounded-2xl border border-gray-200 bg-white px-4 py-2 text-[13px] font-bold text-gray-600 transition-colors hover:border-gray-300 hover:text-gray-900"
-                    >
-                      在 Finder 中显示
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        const sourcePath = templateFillDialog.outputPath!;
-                        const suggestedName = sourcePath.split('/').pop() || undefined;
-                        void saveFileAsBridge(sourcePath, suggestedName).then((savedPath) => {
-                          if (savedPath) {
-                            flash('success', '已导出填写结果');
-                          }
-                        });
-                      }}
-                      className="rounded-2xl border border-gray-200 bg-white px-4 py-2 text-[13px] font-bold text-gray-600 transition-colors hover:border-gray-300 hover:text-gray-900"
-                    >
-                      另存为
-                    </button>
-                    <Button
-                      primary
-                      onClick={() => void openPathBridge(templateFillDialog.outputPath!)}
-                      className="px-5 shadow-md"
-                    >
-                      打开结果文档
-                    </Button>
-                  </>
-                )}
-                <button
-                  type="button"
-                  onClick={() => setTemplateFillDialog(null)}
-                  className="rounded-2xl px-5 py-2 text-[13px] font-bold text-gray-500 transition-colors hover:text-gray-800"
-                  disabled={isTemplateFilling}
-                >
-                  {templateFillDialog.stage === 'completed' || templateFillDialog.stage === 'failed' ? '关闭' : '处理中…'}
-                </button>
-              </div>
-            </div>
-          </div>
-        )}
 
         {/* R6: 写作风格 skill 创建/编辑弹窗 */}
         {skillEditorOpen && (
@@ -25226,6 +25790,7 @@ export default function App() {
                 onExitMaintenanceMode={() => {
                   void handleExitMaintenanceMode();
                 }}
+                isAdmin={currentSessionUser?.primaryRole === 'admin'}
               />
             </div>
           );

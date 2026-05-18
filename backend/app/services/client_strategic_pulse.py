@@ -90,6 +90,16 @@ def compute_strategic_pulse(
     upcoming_todos = _fetch_upcoming_todos(db, client_id, today)
     current_blockers = _fetch_current_blockers(db, client_id, now)
 
+    # P3 · 字典反哺 — 把 task title / event summary 用 canonical name 替换别名
+    # 例: "兴盛计划方案" → "心盛计划方案"
+    try:
+        from app.services.glossary_helpers import canonicalize
+        weekly_events = [_canonicalize_event(db, client_id, e, canonicalize) for e in weekly_events]
+        upcoming_todos = [_canonicalize_todo(db, client_id, t, canonicalize) for t in upcoming_todos]
+        current_blockers = [_canonicalize_blocker(db, client_id, b, canonicalize) for b in current_blockers]
+    except Exception:
+        pass  # 字典查询失败不阻塞主路径
+
     return {
         "clientId": client_id,
         "weekStart": week_start.isoformat(),
@@ -99,6 +109,26 @@ def compute_strategic_pulse(
         "currentBlockers": [_blocker_to_dict(b) for b in current_blockers],
         "generatedAt": now.isoformat(),
     }
+
+
+def _canonicalize_event(db, client_id: str, event, canon_fn):
+    """对 event 的 title/summary 做字典 canonical 化."""
+    if hasattr(event, "_replace"):  # NamedTuple
+        kwargs = {}
+        for f in event._fields:
+            v = getattr(event, f)
+            if isinstance(v, str) and v:
+                kwargs[f] = canon_fn(db, client_id, v)
+        return event._replace(**kwargs) if kwargs else event
+    return event
+
+
+def _canonicalize_todo(db, client_id: str, todo, canon_fn):
+    return _canonicalize_event(db, client_id, todo, canon_fn)
+
+
+def _canonicalize_blocker(db, client_id: str, blocker, canon_fn):
+    return _canonicalize_event(db, client_id, blocker, canon_fn)
 
 
 # --- 数据源 1: 本周新动态 ---

@@ -175,6 +175,19 @@ class CommitmentFact:
 
 
 @dataclass(frozen=True)
+class DimensionChunk:
+    """某个 dimension 关联的原文 chunk 摘要 (Phase A · 数据丰富).
+
+    每个 narrative 维度按主题词从 v2_chunks 搜 top 1-3 个最相关的 chunks,
+    摘要 ≤500 字, 给 LLM 当具体描述的原料.
+    """
+    dimension: str          # essence/business_intro/cooperation/...
+    matched_term: str       # 匹配的主题词 (例: '心盛计划' 或 '战略陪伴')
+    doc_title: str          # 来源文档标题
+    excerpt: str            # 摘要 (≤500 字)
+
+
+@dataclass(frozen=True)
 class GlossaryAttribute:
     """字典属性 (P0.5 防幻觉锚点) — term.attribute = value 这种事实型属性.
 
@@ -261,6 +274,9 @@ class ClientFactBundle:
     # P0.5 字典属性 (v1.6) — 防幻觉锚点
     glossary_attributes: list[GlossaryAttribute] = field(default_factory=list)
 
+    # Phase A · 6 维 chunks 原文摘要 (key=dimension, value=list of DimensionChunk)
+    dimension_chunks: dict[str, list[DimensionChunk]] = field(default_factory=dict)
+
     def is_thin(self) -> bool:
         return (
             not self.persons
@@ -334,6 +350,7 @@ def collect_client_fact_bundle(
     risk_signals = _collect_risk_signals(db, client_id)
     commitments = _collect_commitments(db, client_id)
     glossary_attributes = _collect_glossary_attributes(db, client_id)
+    dim_chunks = _collect_dimension_chunks(db, client_id, glossary)
     persons = _collect_persons(db, client_id, person_limit)
     time_anchors = _collect_time_anchors(db, client_id, time_anchor_limit)
     money_anchors = _collect_money_anchors(db, client_id, money_anchor_limit)
@@ -372,6 +389,7 @@ def collect_client_fact_bundle(
         risk_signals=risk_signals,
         commitments=commitments,
         glossary_attributes=glossary_attributes,
+        dimension_chunks=dim_chunks,
     )
 
 
@@ -531,6 +549,185 @@ def _collect_glossary_attributes(db: Database, client_id: str) -> list[GlossaryA
         )
         for r in rows
     ]
+
+
+# Phase A · 6 维 narrative 都按主题词抓 chunks 原文
+_DIMENSION_BASE_KEYWORDS: dict[str, tuple[str, ...]] = {
+    "essence": ("机构", "使命", "愿景", "成立", "定位", "影响力"),
+    "cooperation": ("战略陪伴", "战略咨询", "合作", "服务协议", "陪伴", "对接"),
+    "people": ("理事会", "团队", "负责人", "创始人", "秘书长", "成员"),
+    "timeline": ("年度", "里程碑", "总结", "启动", "复盘"),
+    "next_steps": ("待办", "deadline", "计划", "下一步", "后续"),
+}
+
+
+def _retrieve_top_chunks(
+    db: Database,
+    client_id: str,
+    keywords: tuple[str, ...] | list[str],
+    limit: int = 2,
+    excerpt_len: int = 500,
+    max_per_doc: int = 1,
+) -> list[tuple[str, str, str]]:
+    """按关键词在 v2_chunks 里搜 top N, 强制文档多样性 (避免某个文档霸屏).
+
+    打分: 标题含关键词 → +50 / chunk 长度 (max 800 字内权重高).
+    每个文档最多取 max_per_doc 个 chunk.
+
+    返回 [(matched_term, doc_title, excerpt), ...]
+    """
+    if not keywords:
+        return []
+    out: list[tuple[str, str, str]] = []
+    seen_doc_chunks: set[str] = set()
+    docs_count: dict[str, int] = {}  # doc_title → 已取的 chunk 数
+
+    for kw in keywords:
+        if not kw.strip():
+            continue
+        try:
+            # 拉候选池: 标题含 kw 的文档优先 + chunk 含 kw + 长度排序
+            # 候选池放大到 limit*5, 然后在 Python 里做文档多样性筛选
+            rows = db.fetchall(
+                """SELECT vc.content, d.title AS doc_title,
+                          CASE WHEN d.title LIKE ? THEN 1 ELSE 0 END AS title_match
+                   FROM v2_chunks vc
+                   JOIN v2_documents vd ON vd.id = vc.v2_document_id
+                   JOIN documents d ON d.id = vd.document_id
+                   WHERE vd.client_id = ?
+                     AND vc.content LIKE ?
+                   ORDER BY title_match DESC, LENGTH(vc.content) DESC
+                   LIMIT ?""",
+                (f"%{kw}%", client_id, f"%{kw}%", limit * 5),
+            )
+        except Exception:
+            continue
+        for r in rows:
+            content = str(r["content"] or "")[:excerpt_len]
+            doc_title = str(r["doc_title"] or "")
+            dedup_key = f"{doc_title[:30]}::{content[:80]}"
+            if dedup_key in seen_doc_chunks:
+                continue
+            # 文档多样性: 同一文档最多取 max_per_doc 个
+            if docs_count.get(doc_title, 0) >= max_per_doc:
+                continue
+            seen_doc_chunks.add(dedup_key)
+            docs_count[doc_title] = docs_count.get(doc_title, 0) + 1
+            out.append((kw, doc_title, content))
+            if len(out) >= limit:
+                break
+        if len(out) >= limit:
+            break
+    return out
+
+
+def _collect_dimension_chunks(
+    db: Database, client_id: str, glossary: list[GlossaryTerm],
+) -> dict[str, list[DimensionChunk]]:
+    """对每个 dimension 按主题词搜 chunks, 返回 dimension → list[DimensionChunk].
+
+    business_intro 特殊处理: 主题词 = 字典里 category='项目' 的 term, 每个项目搜 1 chunk.
+    其他 dimension 用固定的关键词集合.
+    """
+    result: dict[str, list[DimensionChunk]] = {}
+
+    # business_intro: 全数据源 union (文档 + tasks + 复盘 + 会议 transcript)
+    # 每个项目从 4 个源拉信息, 让 LLM 看全貌, 在生成同时发现矛盾
+    project_terms = [g.canonical_name for g in glossary if g.category in ("项目", "项目名")]
+    bi_list: list[DimensionChunk] = []
+    for term in project_terms[:6]:
+        # 源 1: v2_chunks 文档 (top 2, 多文档)
+        chunks = _retrieve_top_chunks(
+            db, client_id, (term,),
+            limit=2, excerpt_len=300, max_per_doc=1,
+        )
+        for matched_term, doc_title, excerpt in chunks:
+            bi_list.append(DimensionChunk(
+                dimension="business_intro",
+                matched_term=matched_term,
+                doc_title=doc_title,
+                excerpt=excerpt,
+            ))
+        # 源 2: tasks (title + description 含项目名, 体现"日常任务里的项目澄清")
+        try:
+            task_rows = db.fetchall(
+                """SELECT title, description, owner_name, progress_status FROM tasks
+                   WHERE client_id=? AND (title LIKE ? OR description LIKE ?)
+                   ORDER BY updated_at DESC LIMIT 2""",
+                (client_id, f"%{term}%", f"%{term}%"),
+            )
+            for tr in task_rows:
+                snippet = f"任务: {tr['title']}"
+                if tr["description"]:
+                    snippet += f" — {str(tr['description'])[:200]}"
+                snippet += f" (负责人:{tr['owner_name']}, 状态:{tr['progress_status']})"
+                bi_list.append(DimensionChunk(
+                    dimension="business_intro",
+                    matched_term=term,
+                    doc_title=f"任务记录 · {tr['title'][:40]}",
+                    excerpt=snippet[:300],
+                ))
+        except Exception:
+            pass
+        # 源 3: 周复盘 (note + structured_note_json 含项目名)
+        try:
+            review_rows = db.fetchall(
+                """SELECT wrt.note, wrt.week_label, t.title AS task_title
+                   FROM weekly_review_task_entries wrt
+                   JOIN tasks t ON t.id=wrt.task_id
+                   WHERE t.client_id=? AND wrt.note LIKE ?
+                   ORDER BY wrt.reviewed_at DESC LIMIT 2""",
+                (client_id, f"%{term}%"),
+            )
+            for rr in review_rows:
+                snippet = f"复盘 ({rr['week_label']}): 任务'{rr['task_title']}' — {str(rr['note'] or '')[:250]}"
+                bi_list.append(DimensionChunk(
+                    dimension="business_intro",
+                    matched_term=term,
+                    doc_title=f"周复盘 · {rr['week_label']}",
+                    excerpt=snippet[:300],
+                ))
+        except Exception:
+            pass
+        # 源 4: 会议 transcript (含项目名的会议)
+        try:
+            meeting_rows = db.fetchall(
+                """SELECT title, transcript_text FROM meetings
+                   WHERE client_id=?
+                     AND transcript_text IS NOT NULL
+                     AND transcript_text LIKE ?
+                   ORDER BY meeting_date DESC LIMIT 1""",
+                (client_id, f"%{term}%"),
+            )
+            for mr in meeting_rows:
+                text = str(mr["transcript_text"] or "")
+                idx = text.find(term)
+                if idx >= 0:
+                    snippet_start = max(0, idx - 100)
+                    snippet = f"会议《{mr['title']}》提到 {term}: {text[snippet_start:idx+200]}"
+                    bi_list.append(DimensionChunk(
+                        dimension="business_intro",
+                        matched_term=term,
+                        doc_title=f"会议 · {mr['title'][:30]}",
+                        excerpt=snippet[:300],
+                    ))
+        except Exception:
+            pass
+    result["business_intro"] = bi_list
+
+    # 其他 5 维度: 用固定关键词
+    for dim, kws in _DIMENSION_BASE_KEYWORDS.items():
+        chunks = _retrieve_top_chunks(db, client_id, kws, limit=2, excerpt_len=400)
+        result[dim] = [
+            DimensionChunk(
+                dimension=dim,
+                matched_term=mt,
+                doc_title=dt,
+                excerpt=ex,
+            )
+            for mt, dt, ex in chunks
+        ]
+    return result
 
 
 def _collect_business_context(db: Database) -> list[BusinessContextSnippet]:

@@ -1400,8 +1400,18 @@ class AiService:
             "每个字段都带有它自己的参考材料。"
             "请严格返回一个 JSON 对象，键必须和字段名完全一致。"
             "每个值都必须是可直接粘贴进 Word 文档的最终内容，不要加解释或前缀。"
-            "如果资料不足，该字段值只输出“【待确认】”开头的一句简短提示。"
-            "不要输出 Markdown 代码块，不要输出 JSON 以外的任何内容。"
+            "\n"
+            "【填写要求】\n"
+            "1. 这是民政/年报/合规类规范模板，绝大多数字段都能从客户资料的检索片段、"
+            "已采纳判断、客户 DNA、组织基本面里直接抽出来——不要懒。\n"
+            "2. 字段说明（hint）告诉你期望的形态（如『18 位代码』、『姓名+电话+邮箱』），"
+            "请按这个形态输出。\n"
+            "3. 只有当所有参考材料里都明确不包含这个字段的事实时，才输出『【待确认】xxx』"
+            "（其中 xxx 要写清楚需要哪类资料补齐）。\n"
+            "4. 字段类型『单行文本』/『姓名』/『日期』/『货币』之类的，**只要资料里有相关线索，"
+            "就给出最贴合的具体值**，不要因为'拿不到 100% 确定数据'就回退到待确认。\n"
+            "5. 字段类型『多选』/『下拉』要从 hint 给的候选里挑，不要写成长段说明。\n"
+            "6. 不要输出 Markdown 代码块，不要输出 JSON 以外的任何内容。"
         )
         prompt_blocks: list[str] = []
         for index, (label, context_summary) in enumerate(field_contexts, start=1):
@@ -1425,15 +1435,18 @@ class AiService:
         )
         if health.provider != "mock" and health.ready:
             try:
+                # 民政年报/规范字段表这类批量填写：每个字段都需要从客户资料中检索 + 推理，
+                # 旧默认 18s timeout / max_tokens=360×N 在豆包深度推理下会大量回退到「【待确认】」。
+                # 放大到合理范围（45s + 600 tokens/字段 + 启用 thinking），让 LLM 有空间真正给出答案。
                 payload = self._qwen_generate(
                     prompt=prompt,
                     system_instruction=system_instruction,
                     response_schema=schema,
-                    timeout_seconds=min(18.0, max(10.0, 6.0 + 1.8 * len(field_contexts))),
-                    max_tokens=min(3200, max(1200, 360 * len(field_contexts))),
+                    timeout_seconds=min(120.0, max(45.0, 18.0 + 8.0 * len(field_contexts))),
+                    max_tokens=min(6000, max(2400, 600 * len(field_contexts))),
                     temperature=0.28,
                     top_p=0.9,
-                    enable_thinking=False,
+                    enable_thinking=True,
                 )
             except Exception as error:
                 raise AiInvocationError(health.provider, self._format_provider_error(error)) from error
@@ -2113,11 +2126,11 @@ class AiService:
     ) -> str:
         overview = str(localized.get("overview") or candidate_summary or candidate_title).strip()
         context_text = f"{organization_context}\n{candidate_title}\n{candidate_summary}\n{source_content}"
-        target_name = "相关客户/项目"
-        if "日慈" in context_text:
-            target_name = "日慈"
-        elif "基金会" in context_text:
+        # 机制化: target_name 不再用客户名硬编码匹配, 仅按机构类型 fallback
+        if "基金会" in context_text:
             target_name = "目标基金会"
+        else:
+            target_name = "目标客户"
         funding_like = bool(re.search(r"公益创投|申报|资助|征集|项目申报|资金|扶持|补助", context_text))
         youth_mental = bool(re.search(r"青少年|未成年人|儿童|心理", context_text))
         if funding_like:
@@ -2269,10 +2282,15 @@ class AiService:
                 "qualityFlags": {"type": "ARRAY", "items": {"type": "STRING"}},
             },
         }
-        raw_material = json.dumps(material_pack, ensure_ascii=False, sort_keys=True, default=str)
-        if len(raw_material) > 18000:
-            raw_material = raw_material[:18000]
+        # P-D.4: 字典权威包从 material_pack 抽出来，作为 prompt 头部（事实底座）
+        glossary_pack = str(material_pack.get("glossaryAuthorityPack") or "").strip()
+        material_for_dump = {k: v for k, v in material_pack.items() if k != "glossaryAuthorityPack"}
+        raw_material = json.dumps(material_for_dump, ensure_ascii=False, sort_keys=True, default=str)
+        if len(raw_material) > 16000:
+            raw_material = raw_material[:16000]
+        glossary_block = f"{glossary_pack}\n\n---\n\n" if glossary_pack else ""
         prompt = (
+            f"{glossary_block}"
             "请基于项目级三层材料包生成一条「任务前情提要」。\n\n"
             "产品目标：用户点开一个执行了一段时间的任务时，系统像一位可靠助理，帮助他恢复判断现场："
             "这件事从哪里来，前面哪些项目材料会影响现在，接下来最容易漏掉什么判断、边界或动作。\n\n"
@@ -2286,8 +2304,9 @@ class AiService:
             "3. 必须吸收项目级材料，而不只是当前任务碎片；要体现为什么这件事现在这样做。\n"
             "4. 必须点出下一步最容易遗漏的判断、边界或动作。\n"
             "5. 不虚构材料里没有的人名、数字、承诺、结果和因果。\n"
-            "6. 材料不足时 shouldDisplay=false，brief 留空，并在 qualityFlags 说明原因。\n"
-            "7. usedProjectSignals 列出真正用到的 3-5 条项目信号；materialBoundary 简述材料边界。\n\n"
+            "6. 涉及具体数字/日期/金额时，**优先引用上方字典权威值**（如有），并用 [📚 term.attribute] 标记。\n"
+            "7. 材料不足时 shouldDisplay=false，brief 留空，并在 qualityFlags 说明原因。\n"
+            "8. usedProjectSignals 列出真正用到的 3-5 条项目信号；materialBoundary 简述材料边界。\n\n"
             f"材料包：\n{raw_material}"
         )
         try:

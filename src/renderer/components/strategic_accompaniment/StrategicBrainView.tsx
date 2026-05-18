@@ -6,9 +6,10 @@ import {
   Activity, Bot, PenLine, Calendar,
   ArrowLeft, AlertTriangle, ChevronRight, X, XCircle,
   Users, Flag, AlertOctagon, HelpCircle, CornerDownRight,
-  RefreshCw, Star, Trash2, ChevronDown, ExternalLink, X
+  RefreshCw, Star, Trash2, ChevronDown, ExternalLink
 } from 'lucide-react';
 import { FileTypeIcon } from '../FileTypeIcon';
+import { StrategicClarificationView } from './StrategicClarificationView';
 import {
   getClientContradictions,
   getClientDigitalAssets,
@@ -16,11 +17,8 @@ import {
   getClientKnowledgeStatus,
   getClientStrategicPulse,
   resolveDuplicateDocuments,
-  getDigitalAssetDashboard,
-  getOrganizationDnaV2Snapshot,
   getStrategicThoughts,
   refreshClientDigitalAssetNarrative,
-  refreshOrganizationDnaV2,
   refreshStrategicThoughts,
   reviewContradiction,
   reviewStrategicThought,
@@ -31,13 +29,11 @@ import {
   type DuplicateDocumentItem,
   type FactContradictionRow,
   type DigitalAssetClientSummary,
-  type DigitalAssetDashboard,
   type DigitalAssetMaterialMaturityRow,
   type DigitalAssetMapNode,
   type DigitalAssetMetric,
   type DigitalAssetNarrative,
   type DigitalAssetPulse,
-  type DuplicateDocumentItem,
   type OrganizationDnaV2Item,
   type OrganizationDnaV2Kind,
   type OrganizationDnaV2Snapshot,
@@ -53,11 +49,10 @@ import {
 // mini list 已经显示了最近变化；独立 tab 反而分散用户注意力。改回 5 tab，
 // 客户档案 mini list 内部用滚动条让用户能看更多 evolving 条目即可。
 const TABS = [
-  { id: 'clients', label: '客户档案' },         // 客户卡 + 知识画像（含 evolving mini list 可滚动）
-  { id: 'thoughts', label: '判断 & 思考' },      // 研判 + 已采纳判断
-  { id: 'contradictions', label: '矛盾 & 待确认' }, // fact_contradictions UI
-  { id: 'health', label: '资料健康' },           // 4 数字总览 + lint 结果 (Stage 5 补全)
-  { id: 'outputs', label: '输出沉淀' },          // proposals + 已采纳判断
+  // '客户档案' 是新的入口（底层 id 仍是 contradictions，复用 StrategicClarificationView 的整页 5 区块）
+  // 原"客户档案/DigitalAssetsTab" 已下线；这里只是 label 改名 + reorder。
+  { id: 'contradictions', label: '客户档案' },
+  { id: 'thoughts', label: '判断 & 思考' },
 ];
 
 export type ThoughtTaskPayload = {
@@ -694,219 +689,6 @@ function ClientStrategicPulseSection({ clientId }: { clientId: string }) {
   );
 }
 
-function DigitalAssetDetailView({ clientId, onBack }: { clientId: string; onBack: () => void }) {
-  const [detail, setDetail] = useState<DigitalAssetClientDetail | null>(null);
-  const [knowledgeStatus, setKnowledgeStatus] = useState<ClientKnowledgeStatus | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-  const [narrativeLoading, setNarrativeLoading] = useState(false);
-  const [narrativeError, setNarrativeError] = useState<string | null>(null);
-
-  useEffect(() => {
-    let mounted = true;
-    setLoading(true);
-    setError(null);
-    setNarrativeError(null);
-    // 并行 fetch：digital asset detail（重型，含 narrative / breakdown 等）
-    // + knowledge status（轻量，Karpathy 4 数字）—— 后者快，让 hero 区先有数字可见。
-    void Promise.all([
-      getClientDigitalAssets(clientId).then((result) => {
-        if (!mounted) return;
-        setDetail(result);
-      }).catch((err) => {
-        if (!mounted) return;
-        setError(err instanceof Error ? err.message : '加载失败');
-        setDetail(null);
-      }),
-      getClientKnowledgeStatus(clientId).then((result) => {
-        if (!mounted) return;
-        setKnowledgeStatus(result);
-      }).catch((err) => {
-        // 知识状态拉不到不阻塞主面板渲染
-        console.warn('[strategic] knowledge-status failed', err);
-      }),
-    ]).finally(() => {
-      if (!mounted) return;
-      setLoading(false);
-    });
-    return () => {
-      mounted = false;
-    };
-  }, [clientId]);
-
-  const handleRefreshNarrative = useCallback(async () => {
-    setNarrativeLoading(true);
-    setNarrativeError(null);
-    try {
-      const narrative = await refreshClientDigitalAssetNarrative(clientId);
-      setDetail((current) => current ? { ...current, aiNarrative: narrative } : current);
-    } catch (err) {
-      setNarrativeError(err instanceof Error ? err.message : '生成失败，已保留旧内容。');
-    } finally {
-      setNarrativeLoading(false);
-    }
-  }, [clientId]);
-
-  if (loading) {
-    return (
-      <div className="animate-in fade-in duration-300">
-        <DetailHeader clientName="数字资产中心" stageLabel="加载中" readinessScore={null} onBack={onBack} />
-        <div className="max-w-full mx-auto px-6 py-8 pb-24 text-[13px] text-slate-500">正在计算组织数字资产...</div>
-      </div>
-    );
-  }
-
-  if (error || !detail) {
-    return (
-      <div className="animate-in fade-in duration-300">
-        <DetailHeader clientName="数字资产中心" stageLabel="资料不足" readinessScore={null} onBack={onBack} />
-        <div className="max-w-full mx-auto px-6 py-8 pb-24">
-          <div className="rounded-2xl border border-amber-100 bg-amber-50 px-5 py-4">
-            <p className="text-[14px] font-bold text-amber-700">暂时无法生成数字资产中心</p>
-            <p className="text-[13px] mt-2 text-amber-700/80">建议先补充资料或稍后重试。{error ? `（${error}）` : ''}</p>
-          </div>
-        </div>
-      </div>
-    );
-  }
-
-  const documentCount = metricValue(detail.sourceMetrics, 'documents');
-  const evidenceCount = metricValue(detail.sourceMetrics, 'evidenceCards');
-  const maturityScore = detail.maturityScore ?? detail.stageProgress ?? 0;
-  const depositThickness = detail.depositThickness ?? 0;
-  const profileType = detail.assetProfileType || detail.assetTrackTitle || '组织战略陪伴型';
-
-  return (
-    <div className="animate-in fade-in duration-300">
-      <DetailHeader
-        clientName={detail.name}
-        stageLabel={detail.stage || '待判断'}
-        readinessScore={maturityScore}
-        assetStage={detail.assetStage}
-        assetTrackTitle={profileType}
-        onBack={onBack}
-      />
-      <div className="max-w-full mx-auto px-6 py-8 pb-24 space-y-6">
-        {/* Phase 1 克制版主页：3 个区块 (本周动态/待办/卡点) */}
-        <ClientStrategicPulseSection clientId={clientId} />
-
-        <section
-          className="rounded-[28px] border border-blue-100 p-6 sm:p-8 relative overflow-hidden"
-          style={{
-            backgroundImage: 'linear-gradient(135deg, rgba(37,99,235,0.08), rgba(20,184,166,0.06) 42%, rgba(255,255,255,0) 78%), linear-gradient(180deg, #ffffff 0%, #f8fafc 100%)',
-            boxShadow: '0 10px 40px -10px rgba(15,23,42,0.08)'
-          }}
-        >
-          <div className="flex flex-col xl:flex-row xl:items-start xl:justify-between gap-8">
-            <div className="max-w-3xl">
-              <div className="inline-flex items-center gap-1.5 bg-blue-50/80 border border-blue-100/80 rounded-full px-3.5 py-1.5 mb-5 shadow-sm">
-                <BrainCircuit size={14} className="text-blue-600" />
-                <span className="text-[12px] font-bold text-blue-600 tracking-wide">组织资产阶段</span>
-              </div>
-              <h2 className="text-[24px] font-bold text-slate-900 tracking-tight mb-3">
-                {assetStageWithLevel(detail.assetStage)} · {profileType}
-              </h2>
-              <p className="text-[14px] leading-[1.9] text-slate-700 font-medium">
-                {detail.understandingStatement}
-              </p>
-              {depositThickness >= 65 && maturityScore < 55 && (
-                <div className="mt-4 inline-flex rounded-full border border-amber-100 bg-amber-50 px-3 py-1.5 text-[11px] font-bold text-amber-700">
-                  资料很多，但还缺可计算、可验证的连续资料
-                </div>
-              )}
-            </div>
-            <div className="grid grid-cols-3 gap-2.5 min-w-[320px]">
-              {[
-                // 4 个 Karpathy 语义数字代替百分比成熟度。学习没有尽头，所以这里是绝对数 + 颜色，没有 100%。
-                {
-                  label: '已确认事实',
-                  value: knowledgeStatus ? knowledgeStatus.confirmedFacts.toLocaleString() : '—',
-                  icon: CheckCircle,
-                  tone: 'text-emerald-700',
-                  bg: 'bg-emerald-50/70',
-                  hint: knowledgeStatus && knowledgeStatus.weeklyDelta.confirmedFacts > 0
-                    ? `本周 +${knowledgeStatus.weeklyDelta.confirmedFacts}`
-                    : '',
-                },
-                {
-                  label: '待确认思考',
-                  value: knowledgeStatus ? knowledgeStatus.pendingThoughts.toLocaleString() : '—',
-                  icon: HelpCircle,
-                  tone: knowledgeStatus && knowledgeStatus.pendingThoughts > 0 ? 'text-amber-700' : 'text-slate-500',
-                  bg: knowledgeStatus && knowledgeStatus.pendingThoughts > 0 ? 'bg-amber-50/70' : 'bg-white/80',
-                  hint: knowledgeStatus && knowledgeStatus.weeklyDelta.newThoughts > 0
-                    ? `本周 +${knowledgeStatus.weeklyDelta.newThoughts}`
-                    : '',
-                },
-                {
-                  label: '矛盾点',
-                  value: knowledgeStatus ? knowledgeStatus.activeContradictions.toLocaleString() : '—',
-                  icon: AlertOctagon,
-                  tone: knowledgeStatus && knowledgeStatus.activeContradictions > 0 ? 'text-rose-700' : 'text-slate-500',
-                  bg: knowledgeStatus && knowledgeStatus.activeContradictions > 0 ? 'bg-rose-50/70' : 'bg-white/80',
-                  hint: knowledgeStatus && knowledgeStatus.activeContradictions > 0 ? '待你确认' : '暂无打架',
-                },
-                {
-                  label: '信息缺口',
-                  value: knowledgeStatus ? knowledgeStatus.knowledgeGaps.toLocaleString() : '—',
-                  icon: Layers,
-                  tone: knowledgeStatus && knowledgeStatus.knowledgeGaps > 0 ? 'text-amber-700' : 'text-slate-500',
-                  bg: 'bg-white/80',
-                  hint: knowledgeStatus && knowledgeStatus.weeklyDelta.confirmedJudgments > 0
-                    ? `本周 +${knowledgeStatus.weeklyDelta.confirmedJudgments} 判断`
-                    : '',
-                },
-                // 保留 2 个原有指标作为辅助
-                {
-                  label: '下一阶段',
-                  value: detail.nextStage || '继续沉淀',
-                  icon: Target,
-                  tone: 'text-slate-700',
-                  bg: 'bg-white/80',
-                  hint: '',
-                },
-                {
-                  label: '已学资料',
-                  value: documentCount.toLocaleString(),
-                  icon: FileText,
-                  tone: 'text-slate-700',
-                  bg: 'bg-white/80',
-                  hint: `${evidenceCount} 张证据卡`,
-                },
-              ].map((item) => (
-                <div key={item.label} className={`rounded-[18px] border border-slate-100 px-4 py-3 shadow-sm ${item.bg}`}>
-                  <div className="flex items-center gap-1.5 text-[10px] font-bold text-slate-400">
-                    <item.icon size={12} />
-                    {item.label}
-                  </div>
-                  <div className={`mt-1 text-[20px] font-bold tabular-nums ${item.tone}`}>{item.value}</div>
-                  {item.hint && <div className="mt-0.5 text-[10px] font-semibold text-slate-500">{item.hint}</div>}
-                </div>
-              ))}
-            </div>
-          </div>
-        </section>
-
-        <section className="mt-6">
-          <DigitalAssetNarrativePanel
-            narrative={detail.aiNarrative}
-            loading={narrativeLoading}
-            error={narrativeError}
-            onRefresh={handleRefreshNarrative}
-          />
-        </section>
-
-        <section className="mt-6">
-          <DigitalAssetMetricStrip metrics={detail.sourceMetrics} />
-        </section>
-
-        <AssetScoreBreakdownPanel detail={detail} />
-        <AssetMaturityRows rows={detail.materialMaturityRows || []} />
-        <NextBestDepositPanel suggestions={detail.nextBestDeposits || []} />
-      </div>
-    </div>
-  );
-}
 
 
 // ================= TAB CONTENT =================
@@ -1610,157 +1392,6 @@ function ThoughtScopeSelect({
   );
 }
 
-function DigitalAssetsTab({
-  onOpenDetail,
-  clients,
-  pulse,
-  organizationDnaSnapshot,
-  organizationDnaLoading,
-  organizationDnaRefreshing,
-  organizationDnaError,
-  onRefreshOrganizationDna,
-}: {
-  onOpenDetail: (clientId: string) => void;
-  clients: DigitalAssetClientSummary[];
-  pulse?: DigitalAssetPulse | null;
-  organizationDnaSnapshot: OrganizationDnaV2Snapshot | null;
-  organizationDnaLoading: boolean;
-  organizationDnaRefreshing: boolean;
-  organizationDnaError: string | null;
-  onRefreshOrganizationDna: () => void;
-}) {
-  const sorted = [...clients].sort((a, b) => {
-    const stageDiff = stageRank(b.assetStage) - stageRank(a.assetStage);
-    if (stageDiff !== 0) return stageDiff;
-    return (b.depositXp || 0) - (a.depositXp || 0);
-  });
-  if (!clients.length) {
-    return (
-      <div>
-        <OrganizationDnaPanel
-          snapshot={organizationDnaSnapshot}
-          loading={organizationDnaLoading}
-          refreshing={organizationDnaRefreshing}
-          error={organizationDnaError}
-          onRefresh={onRefreshOrganizationDna}
-        />
-        <DigitalAssetPulsePanel pulse={pulse} onOpenDetail={onOpenDetail} />
-        <div className="bg-white border border-slate-100 rounded-[24px] px-6 py-8">
-          <p className="text-[14px] font-bold text-slate-700">还没有可形成数字资产的组织资料</p>
-          <p className="text-[13px] leading-7 text-slate-500 mt-2">建议先建立客户/组织空间，并上传项目介绍、流程资料、反馈表和评估材料。</p>
-        </div>
-      </div>
-    );
-  }
-  return (
-    <div>
-      <OrganizationDnaPanel
-        snapshot={organizationDnaSnapshot}
-        loading={organizationDnaLoading}
-        refreshing={organizationDnaRefreshing}
-        error={organizationDnaError}
-        onRefresh={onRefreshOrganizationDna}
-      />
-      <DigitalAssetPulsePanel pulse={pulse} onOpenDetail={onOpenDetail} />
-      <div className="grid grid-cols-1 xl:grid-cols-2 gap-5">
-        {sorted.map((client) => {
-          const documentCount = metricValue(client.metrics, 'documents');
-          const memoryCount = metricValue(client.metrics, 'memoryFacts');
-          const evidenceCount = metricValue(client.metrics, 'evidenceCards');
-          const overviewRows = (client.materialMaturityRows || []).slice(0, 3);
-          const weakestRow = [...overviewRows]
-            .filter((row) => row.missingSummary)
-            .sort((a, b) => materialRowPercent(a) - materialRowPercent(b))[0] || overviewRows[0];
-          const missingText = weakestRow?.missingSummary || client.stageBlockers?.[0] || client.criticalGaps?.[0] || '继续沉淀能说明组织、项目、对象、过程和反馈的资料。';
-          const maturityScore = client.maturityScore ?? client.stageProgress ?? 0;
-          const profileType = client.assetProfileType || client.assetTrackTitle || '组织战略陪伴型';
-          return (
-          <div
-            key={client.id}
-            onClick={() => onOpenDetail(client.id)}
-            className="bg-white rounded-[24px] border border-slate-100 p-6 shadow-[0_2px_10px_rgba(0,0,0,0.02)] hover:shadow-[0_8px_30px_rgba(0,0,0,0.05)] hover:border-blue-200 transition-all duration-300 cursor-pointer group"
-          >
-            <div className="flex flex-col mb-5">
-              <div className="flex items-center justify-between mb-3">
-                <h3 className="text-[16px] font-bold text-slate-800 group-hover:text-blue-600 transition-colors">{client.name}</h3>
-                <span className="bg-blue-50 border border-blue-100 text-blue-600 text-[11px] font-bold px-2.5 py-1 rounded-lg">
-                  {assetStageWithLevel(client.assetStage)}
-                </span>
-              </div>
-            </div>
-            <div className="mb-4 flex flex-wrap gap-2">
-              <span className="rounded-full bg-slate-50 border border-slate-100 px-2.5 py-1 text-[11px] font-bold text-slate-600">
-                {profileType}
-              </span>
-              <span className="rounded-full bg-blue-50 border border-blue-100 px-2.5 py-1 text-[11px] font-bold text-blue-600">
-                资料厚度 {client.depositThickness ?? 0}%
-              </span>
-              <span className="rounded-full bg-indigo-50 border border-indigo-100 px-2.5 py-1 text-[11px] font-bold text-indigo-600">
-                成熟度 {maturityScore}%
-              </span>
-              <span className="rounded-full bg-emerald-50 border border-emerald-100 px-2.5 py-1 text-[11px] font-bold text-emerald-600">
-                {client.growthMode || '均衡成长'}
-              </span>
-            </div>
-            <p className="text-[13px] leading-[1.75] text-slate-600 font-medium mb-4 line-clamp-2">
-              {client.understandingStatement || client.intro || 'AI 对这个组织还处在初步理解阶段。'}
-            </p>
-            <div className="mb-4 rounded-[18px] border border-slate-100 bg-slate-50/50 px-4 py-3">
-              <div className="flex items-center justify-between mb-2">
-                <span className="text-[11px] font-bold text-slate-500">核心资料成熟度</span>
-                <span className="text-[11px] font-bold text-slate-300">资料质量</span>
-              </div>
-              {overviewRows.length ? (
-                <div className="space-y-2.5">
-                  {overviewRows.map((row) => {
-                    const maturity = materialRowPercent(row);
-                    return (
-                      <div key={row.key} className="grid grid-cols-[92px_1fr_38px] items-center gap-2">
-                        <span className="truncate text-[11px] font-bold text-slate-600">{row.label}</span>
-                        <div className="h-1.5 overflow-hidden rounded-full bg-slate-200/80">
-                          <div
-                            className={`h-full rounded-full ${maturityBarClass(maturity)}`}
-                            style={{ width: `${clampPercent(maturity)}%` }}
-                          />
-                        </div>
-                        <span className="text-right text-[11px] font-bold tabular-nums text-slate-500">{maturity}%</span>
-                      </div>
-                    );
-                  })}
-                </div>
-              ) : (
-                <p className="text-[12px] leading-6 text-slate-400">资料类型待识别。先补充组织介绍、项目资料、流程记录和反馈材料。</p>
-              )}
-            </div>
-            {(client.depositThickness ?? 0) >= 65 && maturityScore < 55 && (
-              <div className="mb-3 rounded-[14px] bg-amber-50 px-3 py-2 text-[11px] leading-[1.6] font-semibold text-amber-700">
-                资料沉淀不少，但还缺可计算、可验证的连续资料。
-              </div>
-            )}
-            <div className="mb-5 rounded-[16px] bg-amber-50/70 px-3 py-2.5">
-              <div className="text-[10px] font-bold text-amber-600 mb-1">还缺</div>
-              <p className="text-[11px] leading-[1.65] text-slate-600 line-clamp-2">{missingText}</p>
-            </div>
-            <div className="flex flex-wrap gap-x-4 gap-y-2 pt-4 border-t border-slate-50">
-              {[
-                { icon: Folder, label: `${documentCount} 资料` },
-                { icon: BrainCircuit, label: `${memoryCount} 记忆` },
-                { icon: CheckCircle, label: `${evidenceCount} 证据卡` },
-                { icon: ChevronRight, label: '查看详情' },
-              ].map((metric, idx) => (
-                <span key={idx} className="text-[11px] font-bold text-slate-400 flex items-center gap-1.5">
-                  <metric.icon size={12} className="text-slate-300" />
-                  {metric.label}
-                </span>
-              ))}
-            </div>
-          </div>
-          );
-        })}
-      </div>
-    </div>
-  );
-}
 
 // ================= MAIN EXPORT =================
 
@@ -1773,10 +1404,8 @@ export type StrategicBrainViewProps = {
 };
 
 // ───────────────────────────────────────────────────────────────────────────
-// Stage 3 新增的 4 个 tab 组件
-// 信息架构改造：从「数字资产中心 + 思考研判」2 tab 重构为 Karpathy 知识页式 6 tab。
-// 这 4 个新组件消费已存在的后端数据，让「矛盾 / 资料健康 / 输出沉淀 / 最近变化」
-// 这些 Karpathy 启示提到的知识页类型变成独立的可访问 tab。
+// Tab 组件区（事实澄清 / 矛盾 / 最近变化等）
+// 历史：原本还有「资料健康」「输出沉淀」两个 tab，业务上不再需要 → 2026-05-17 移除。
 // ───────────────────────────────────────────────────────────────────────────
 
 // 备注：原 RecentChangesTab 已删除。最近变化信息保留在客户档案 tab 内
@@ -2079,7 +1708,15 @@ function filterUserEditableGroups(groups: DuplicateDocumentGroup[]): DuplicateDo
     .filter((g) => g.documents.length >= 2);
 }
 
-function DuplicateDocumentsSection({ clientId, flash }: { clientId: string; flash?: (level: 'success' | 'error' | 'info', message: string) => void }) {
+export function DuplicateDocumentsSection({
+  clientId,
+  flash,
+  hideWhenEmpty = false,
+}: {
+  clientId: string;
+  flash?: (level: 'success' | 'error' | 'info', message: string) => void;
+  hideWhenEmpty?: boolean;
+}) {
   const [groups, setGroups] = useState<DuplicateDocumentGroup[]>([]);
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState<string | null>(null);
@@ -2219,6 +1856,7 @@ function DuplicateDocumentsSection({ clientId, flash }: { clientId: string; flas
 
   if (!clientId) return null;
   if (loading) {
+    if (hideWhenEmpty) return null;
     return (
       <div className="mb-6 rounded-2xl border border-dashed border-slate-200 bg-slate-50/60 px-4 py-3 text-[12px] text-slate-400">
         正在扫描重复文件…
@@ -2226,9 +1864,11 @@ function DuplicateDocumentsSection({ clientId, flash }: { clientId: string; flas
     );
   }
   if (err) {
+    if (hideWhenEmpty) return null;
     return <div className="mb-6 rounded-xl border border-rose-100 bg-rose-50 px-3 py-2 text-[12px] text-rose-700">{err}</div>;
   }
   if (groups.length === 0) {
+    if (hideWhenEmpty) return null;
     return (
       <div className="mb-6 rounded-2xl border border-emerald-100 bg-emerald-50/60 px-4 py-3 text-[12px] text-emerald-700">
         ✓ 未发现重复文件 —— 资料库里没有同内容或同文件名被上传多次的情况。
@@ -2527,167 +2167,6 @@ function ContradictionsTab({
   );
 }
 
-function KnowledgeHealthTab({
-  clientOptions,
-  selectedClientId,
-  onClientChange,
-}: {
-  clientOptions: Array<{ id: string; name: string }>;
-  selectedClientId: string;
-  onClientChange: (id: string) => void;
-}) {
-  const [status, setStatus] = useState<ClientKnowledgeStatus | null>(null);
-  const [loading, setLoading] = useState(false);
-
-  useEffect(() => {
-    if (!selectedClientId) { setStatus(null); return; }
-    setLoading(true);
-    getClientKnowledgeStatus(selectedClientId)
-      .then(setStatus)
-      .catch((e) => console.warn('[strategic] knowledge status failed', e))
-      .finally(() => setLoading(false));
-  }, [selectedClientId]);
-
-  return (
-    <section className="rounded-[28px] border border-slate-100 bg-white p-6 shadow-[0_8px_28px_rgba(15,23,42,0.05)]">
-      <div className="flex items-center justify-between mb-5">
-        <div>
-          <div className="inline-flex items-center gap-2 rounded-full border border-amber-100 bg-amber-50 px-3 py-1 text-[11px] font-bold text-amber-700 mb-2">
-            <BrainCircuit size={13} />
-            资料健康
-          </div>
-          <p className="text-[12px] text-slate-500">这位客户的知识库目前状态。学习没有尽头 —— 看的是绝对数和颜色，不是百分比。</p>
-        </div>
-        <TabClientPicker clientOptions={clientOptions} selectedClientId={selectedClientId} onClientChange={onClientChange} />
-      </div>
-      {!selectedClientId && (
-        <div className="rounded-2xl border border-dashed border-slate-200 bg-slate-50/60 px-4 py-8 text-center text-[12px] text-slate-400">
-          先选一个客户。
-        </div>
-      )}
-      {selectedClientId && !loading && status && (
-        <>
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-5">
-            <div className="rounded-[18px] border border-emerald-100 bg-emerald-50/60 px-4 py-3">
-              <div className="text-[10px] font-bold text-emerald-700">已确认事实</div>
-              <div className="text-[24px] font-bold text-emerald-800 mt-1">{status.confirmedFacts}</div>
-              {status.weeklyDelta.confirmedFacts > 0 && <div className="text-[10px] text-emerald-600 mt-0.5">本周 +{status.weeklyDelta.confirmedFacts}</div>}
-            </div>
-            <div className={`rounded-[18px] border px-4 py-3 ${status.pendingThoughts > 0 ? 'border-amber-100 bg-amber-50/60' : 'border-slate-100 bg-white'}`}>
-              <div className="text-[10px] font-bold text-slate-500">待确认思考</div>
-              <div className={`text-[24px] font-bold mt-1 ${status.pendingThoughts > 0 ? 'text-amber-700' : 'text-slate-700'}`}>{status.pendingThoughts}</div>
-              {status.weeklyDelta.newThoughts > 0 && <div className="text-[10px] text-amber-600 mt-0.5">本周 +{status.weeklyDelta.newThoughts}</div>}
-            </div>
-            <div className={`rounded-[18px] border px-4 py-3 ${status.activeContradictions > 0 ? 'border-rose-100 bg-rose-50/60' : 'border-slate-100 bg-white'}`}>
-              <div className="text-[10px] font-bold text-slate-500">矛盾点</div>
-              <div className={`text-[24px] font-bold mt-1 ${status.activeContradictions > 0 ? 'text-rose-700' : 'text-slate-700'}`}>{status.activeContradictions}</div>
-              <div className="text-[10px] text-slate-500 mt-0.5">{status.activeContradictions > 0 ? '待你拍板' : '暂无打架'}</div>
-            </div>
-            <div className={`rounded-[18px] border px-4 py-3 ${status.knowledgeGaps > 0 ? 'border-amber-100 bg-amber-50/40' : 'border-slate-100 bg-white'}`}>
-              <div className="text-[10px] font-bold text-slate-500">信息缺口</div>
-              <div className={`text-[24px] font-bold mt-1 ${status.knowledgeGaps > 0 ? 'text-amber-700' : 'text-slate-700'}`}>{status.knowledgeGaps}</div>
-              {status.weeklyDelta.confirmedJudgments > 0 && <div className="text-[10px] text-emerald-600 mt-0.5">本周采纳 +{status.weeklyDelta.confirmedJudgments}</div>}
-            </div>
-          </div>
-
-          {/* AI 待办 —— Stage B 扇出真正暴露给用户看 */}
-          {(status.pendingActions && status.pendingActions.length > 0) ? (
-            <div className="mb-5 rounded-[20px] border border-blue-100 bg-blue-50/40 p-4">
-              <div className="flex items-baseline justify-between mb-3">
-                <div className="flex items-center gap-2">
-                  <div className="inline-flex items-center gap-1.5 rounded-full bg-blue-100 px-2.5 py-1 text-[11px] font-bold text-blue-800">
-                    🤖 AI 待办 {status.pendingActions.length}
-                  </div>
-                  <span className="text-[11px] text-blue-700">
-                    {status.recentFanoutCount > 0 ? `近 7 天因新资料触发了 ${status.recentFanoutCount} 次扇出` : '等你拍板的事项'}
-                  </span>
-                </div>
-              </div>
-              <p className="mb-3 text-[11px] leading-[1.7] text-blue-700/80">
-                新资料 ingest 时 AI 自动识别到「这些事可能需要你看一下」，标记后等你在原位置拍板。
-              </p>
-              <div className="space-y-2">
-                {status.pendingActions.map((act, idx) => (
-                  <div key={`${act.actionType}-${act.entityId}-${idx}`} className="rounded-[14px] border border-blue-100 bg-white px-3 py-2.5">
-                    <div className="flex items-baseline justify-between gap-2 mb-1">
-                      <div className="flex items-center gap-2">
-                        {act.actionType === 'judgment_needs_reevaluation' && (
-                          <span className="rounded-full border border-rose-100 bg-rose-50 px-2 py-0.5 text-[10px] font-bold text-rose-700">⚠️ 判断需重审</span>
-                        )}
-                        {act.actionType === 'profile_needs_review' && (
-                          <span className="rounded-full border border-amber-100 bg-amber-50 px-2 py-0.5 text-[10px] font-bold text-amber-700">📝 客户画像需复审</span>
-                        )}
-                        {act.actionType === 'thought_refresh_pending' && (
-                          <span className="rounded-full border border-violet-100 bg-violet-50 px-2 py-0.5 text-[10px] font-bold text-violet-700">💭 思考待刷新</span>
-                        )}
-                      </div>
-                      {act.triggeredAt && (
-                        <span className="text-[10px] text-slate-400 tabular-nums shrink-0">{act.triggeredAt.slice(0, 10)}</span>
-                      )}
-                    </div>
-                    <div className="text-[12px] font-bold text-slate-800 line-clamp-1 mb-1" title={act.entityLabel}>{act.entityLabel}</div>
-                    <p className="text-[11px] leading-[1.6] text-slate-600 line-clamp-2" title={act.reason}>{act.reason}</p>
-                  </div>
-                ))}
-              </div>
-              <p className="mt-3 text-[10px] text-blue-700/60">
-                💡 处理方式：判断需重审 → 在「判断 & 思考」tab 编辑；客户画像 → 客户档案页修订；思考 → 战略陪伴主动「刷新研判」。
-              </p>
-            </div>
-          ) : (
-            <div className="mb-5 rounded-2xl border border-emerald-100 bg-emerald-50/40 px-4 py-3 text-[12px] text-emerald-700">
-              ✓ 暂无 AI 待办 —— 新资料 ingest 时如有触发，会出现在这一区。
-            </div>
-          )}
-
-          <div className="rounded-2xl border border-dashed border-slate-200 bg-slate-50/60 px-4 py-4 text-[12px] leading-[1.7] text-slate-500">
-            <div className="font-bold text-slate-700 mb-1">Stage 5 即将补全</div>
-            陈旧事实检测 · 孤立实体扫描 · 知识健康度趋势 — 这些 lint 报告会出现在这一区。
-          </div>
-        </>
-      )}
-    </section>
-  );
-}
-
-function OutputsTab({
-  clientOptions,
-  selectedClientId,
-  onClientChange,
-}: {
-  clientOptions: Array<{ id: string; name: string }>;
-  selectedClientId: string;
-  onClientChange: (id: string) => void;
-}) {
-  return (
-    <section className="rounded-[28px] border border-slate-100 bg-white p-6 shadow-[0_8px_28px_rgba(15,23,42,0.05)]">
-      <div className="flex items-center justify-between mb-5">
-        <div>
-          <div className="inline-flex items-center gap-2 rounded-full border border-violet-100 bg-violet-50 px-3 py-1 text-[11px] font-bold text-violet-700 mb-2">
-            <FileText size={13} />
-            输出沉淀
-          </div>
-          <p className="text-[12px] text-slate-500">从问答和思考流转出来的产出：已采纳判断 / proposal 草稿 / 任务 — 闭环的"果实"区。</p>
-        </div>
-        <TabClientPicker clientOptions={clientOptions} selectedClientId={selectedClientId} onClientChange={onClientChange} />
-      </div>
-      {!selectedClientId && (
-        <div className="rounded-2xl border border-dashed border-slate-200 bg-slate-50/60 px-4 py-8 text-center text-[12px] text-slate-400">
-          先选一个客户。
-        </div>
-      )}
-      {selectedClientId && (
-        <div className="rounded-2xl border border-dashed border-slate-200 bg-slate-50/60 px-4 py-4 text-[12px] leading-[1.7] text-slate-500">
-          <div className="font-bold text-slate-700 mb-1">即将上线</div>
-          这里会聚合：已采纳的 judgment_versions（来自工作台「采纳为判断」+ 战略陪伴 thoughts 采纳）<br />
-          + proposal_records 草稿 / 待审 / 已批准全周期<br />
-          + 从答案生成的任务 + 转事件线
-        </div>
-      )}
-    </section>
-  );
-}
-
 export function StrategicBrainView({
   clients = [],
   currentClientId,
@@ -2695,13 +2174,9 @@ export function StrategicBrainView({
   onCreateTaskFromThought,
   flash,
 }: StrategicBrainViewProps) {
-  const [activeTab, setActiveTab] = useState('clients');
-  const [viewState, setViewState] = useState<{ type: 'tabs'; detailId: null } | { type: 'detail'; detailId: string }>({ type: 'tabs', detailId: null });
-  const [assetDashboard, setAssetDashboard] = useState<DigitalAssetDashboard | null>(null);
-  const [organizationDnaSnapshot, setOrganizationDnaSnapshot] = useState<OrganizationDnaV2Snapshot | null>(null);
-  const [organizationDnaLoading, setOrganizationDnaLoading] = useState(false);
-  const [organizationDnaRefreshing, setOrganizationDnaRefreshing] = useState(false);
-  const [organizationDnaError, setOrganizationDnaError] = useState<string | null>(null);
+  // 战略陪伴当前只剩 2 个 tab：客户档案（即 contradictions/事实澄清模块）/ 判断 & 思考
+  // 原"客户档案/DigitalAssetsTab" 已下线；资料健康 / 输出沉淀 也已删除。
+  const [activeTab, setActiveTab] = useState('contradictions');
   const [thoughts, setThoughts] = useState<StrategicThought[]>([]);
   const [thoughtsLoading, setThoughtsLoading] = useState(false);
   const [thoughtsError, setThoughtsError] = useState<string | null>(null);
@@ -2710,45 +2185,19 @@ export function StrategicBrainView({
 
   const thoughtClientOptions = useMemo(() => {
     const map = new Map<string, { id: string; name: string }>();
-    for (const client of assetDashboard?.clients ?? []) {
-      if (client.id && client.name && !isInternalSmokeClient(client)) map.set(client.id, { id: client.id, name: client.name });
-    }
     for (const client of clients) {
-      if (client.id && client.name && !isInternalSmokeClient(client) && !map.has(client.id)) map.set(client.id, { id: client.id, name: client.name });
+      if (client.id && client.name && !isInternalSmokeClient(client) && !map.has(client.id)) {
+        map.set(client.id, { id: client.id, name: client.name });
+      }
     }
     return Array.from(map.values());
-  }, [clients, assetDashboard?.clients]);
+  }, [clients]);
 
   const selectedThoughtClient = useMemo(
     () => thoughtClientOptions.find((client) => client.id === thoughtClientId) || null,
     [thoughtClientId, thoughtClientOptions],
   );
 
-  const loadOrganizationDnaSnapshot = useCallback(async () => {
-    setOrganizationDnaLoading(true);
-    setOrganizationDnaError(null);
-    try {
-      const snapshot = await getOrganizationDnaV2Snapshot();
-      setOrganizationDnaSnapshot(snapshot);
-    } catch (error) {
-      setOrganizationDnaError(error instanceof Error ? error.message : '组织 DNA 读取失败');
-      setOrganizationDnaSnapshot(null);
-    } finally {
-      setOrganizationDnaLoading(false);
-    }
-  }, []);
-
-  useEffect(() => {
-    getDigitalAssetDashboard()
-      .then(setAssetDashboard)
-      .catch((error) => {
-        // 数字资产 dashboard 拉不到时 UI 会回退到空态，不弹错误打扰用户；
-        // 但 console.warn 保留 debug 信号，比裸 () => null 强
-        console.warn('[strategic] getDigitalAssetDashboard failed', error);
-        setAssetDashboard(null);
-      });
-    void loadOrganizationDnaSnapshot();
-  }, [loadOrganizationDnaSnapshot]);
 
   useEffect(() => {
     setThoughtClientId(currentClientId || '');
@@ -2806,25 +2255,6 @@ export function StrategicBrainView({
     }
   }, [flash, thoughtClientId]);
 
-  const handleRefreshOrganizationDna = useCallback(async () => {
-    setOrganizationDnaRefreshing(true);
-    setOrganizationDnaError(null);
-    try {
-      const run = await refreshOrganizationDnaV2('digital_asset_center');
-      if (run.status === 'failed') {
-        throw new Error(run.error || '组织 DNA 刷新失败');
-      }
-      await loadOrganizationDnaSnapshot();
-      flash?.('success', '组织 DNA 已刷新');
-    } catch (error) {
-      const message = error instanceof Error ? error.message : '组织 DNA 刷新失败';
-      setOrganizationDnaError(message);
-      flash?.('error', message);
-    } finally {
-      setOrganizationDnaRefreshing(false);
-    }
-  }, [flash, loadOrganizationDnaSnapshot]);
-
   const handleToggleFavoriteThought = useCallback(
     async (thought: StrategicThought) => {
       try {
@@ -2850,14 +2280,6 @@ export function StrategicBrainView({
     },
     [flash, loadThoughts],
   );
-
-  if (viewState.type === 'detail') {
-    return (
-      <div className="h-full flex flex-col bg-white/50 overflow-y-auto">
-        <DigitalAssetDetailView clientId={viewState.detailId} onBack={() => setViewState({ type: 'tabs', detailId: null })} />
-      </div>
-    );
-  }
 
   return (
     <div className="h-full flex flex-col bg-[#F9FAFB] overflow-hidden font-sans">
@@ -2921,20 +2343,8 @@ export function StrategicBrainView({
               refreshing={thoughtsRefreshing}
             />
           )}
-          {activeTab === 'clients' && (
-            <DigitalAssetsTab
-              clients={assetDashboard?.clients ?? []}
-              pulse={assetDashboard?.pulse ?? null}
-              organizationDnaSnapshot={organizationDnaSnapshot}
-              organizationDnaLoading={organizationDnaLoading}
-              organizationDnaRefreshing={organizationDnaRefreshing}
-              organizationDnaError={organizationDnaError}
-              onRefreshOrganizationDna={handleRefreshOrganizationDna}
-              onOpenDetail={(clientId) => setViewState({ type: 'detail', detailId: clientId })}
-            />
-          )}
           {activeTab === 'contradictions' && (
-            <ContradictionsTab
+            <StrategicClarificationView
               clientOptions={thoughtClientOptions}
               selectedClientId={thoughtClientId}
               onClientChange={(id) => {
@@ -2942,26 +2352,6 @@ export function StrategicBrainView({
                 if (id) onClientChange?.(id);
               }}
               flash={flash}
-            />
-          )}
-          {activeTab === 'health' && (
-            <KnowledgeHealthTab
-              clientOptions={thoughtClientOptions}
-              selectedClientId={thoughtClientId}
-              onClientChange={(id) => {
-                setThoughtClientId(id);
-                if (id) onClientChange?.(id);
-              }}
-            />
-          )}
-          {activeTab === 'outputs' && (
-            <OutputsTab
-              clientOptions={thoughtClientOptions}
-              selectedClientId={thoughtClientId}
-              onClientChange={(id) => {
-                setThoughtClientId(id);
-                if (id) onClientChange?.(id);
-              }}
             />
           )}
         </div>

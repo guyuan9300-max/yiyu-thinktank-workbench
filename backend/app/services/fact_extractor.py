@@ -100,13 +100,21 @@ def _is_valid_value(value: str) -> bool:
     if not value:
         return False
     cleaned = value.strip()
-    if len(cleaned) < 1 or len(cleaned) > 60:
+    # P1: value 长度收紧 60 → 25。真权威值（金额/日期/人名/地点）通常短，
+    # >25 字基本是 regex 把整段口语吃进 value。
+    if len(cleaned) < 1 or len(cleaned) > 25:
         return False
     # 全是标点/空白
     if not any(c.isalnum() or "一" <= c <= "鿿" for c in cleaned):
         return False
+    # P1: value 含问号/感叹号 → 录音转写口语句残片，拒收。
+    # 例：日慈"什么？对吧？他们在讨论什么话题" — 经典噪声
+    if any(ch in cleaned for ch in "?？!！"):
+        return False
+    # P1: value 含中文逗号/分号/句号 → 切到了下一句，拒收（数字千分位 "," 已被 _normalize_value 处理过）
+    if any(ch in cleaned for ch in "，；。"):
+        return False
     # Codex 实测发现的尾巴噪声: 值是从原句尾巴切出来的虚词
-    # 例: "明天的青年""" / "哪⼀条？为什么？" / "学⽣？" / "以前cffc不" — 这些不能作为权威值
     last_char = cleaned[-1]
     if last_char in "的吗了呢吧啊呀哇么哪？?不没未未必应该可能或也都还又":
         return False
@@ -144,6 +152,11 @@ _SUBJECT_BAD_START: Final[frozenset[str]] = frozenset(
 _SUBJECT_FORBIDDEN_SUBSTR: Final[tuple[str, ...]] = (
     "已经", "正在", "把", "将要", "能够", "可以", "应该",
     "理解为", "认为", "确认依据", "期待说",
+    # P1: 录音转写常见的口语化代词/动词组合
+    "我们", "你们", "他们", "她们", "咱们",
+    "看到", "听到", "讨论", "谈论", "分享", "说到",
+    "证明你", "证明我", "证明他",
+    "怎么", "为什么", "如何",
 )
 
 
@@ -195,6 +208,30 @@ def _normalize_value(raw_value: str, attribute: str) -> str:
     return cleaned
 
 
+def _looks_like_transcript(text: str) -> bool:
+    """P1: 启发式判断这段文本是不是录音转写。
+
+    录音转写特征：问号密度高、说话人标记、长口语句。
+    符合任一即跳过事实抽取（这种文本抽出的全是句子碎片，不是事实）。
+    """
+    if not text or len(text) < 50:
+        return False
+    n = len(text)
+    # 问号密度（中英文）
+    q_count = text.count("?") + text.count("？")
+    if q_count >= 3 and q_count / n > 0.01:  # 每 100 字 ≥1 个问号
+        return True
+    # 说话人标记
+    if "说话人" in text or text.count("：") + text.count(":") > n // 30:
+        return True
+    # 口语化高频词密度
+    oral_markers = ["对吧", "嗯", "然后", "其实", "我觉得", "我们就", "大家", "我想说"]
+    oral_hits = sum(text.count(m) for m in oral_markers)
+    if oral_hits >= 3:
+        return True
+    return False
+
+
 def extract_facts_from_chunk(chunk_text: str) -> list[AtomicFact]:
     """抽取一个 chunk 里的原子事实。"""
     if not chunk_text or not chunk_text.strip():
@@ -202,6 +239,9 @@ def extract_facts_from_chunk(chunk_text: str) -> list[AtomicFact]:
     # Codex 实测发现的 OCR 噪声前置清理 (^A 控制字符 / 全角空格 / 多余空白)
     chunk_text = normalize_text(chunk_text)
     if not chunk_text:
+        return []
+    # P1: 录音转写跳过 — 这种文档抽出的全是句子碎片，无意义。
+    if _looks_like_transcript(chunk_text):
         return []
     seen: set[tuple[str, str, str]] = set()
     out: list[AtomicFact] = []

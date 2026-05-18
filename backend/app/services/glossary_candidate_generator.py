@@ -462,8 +462,15 @@ def generate_glossary_candidates(
     db: Database,
     ai: AiService,
     client_id: str,
+    *,
+    persist: bool = False,
 ) -> dict[str, Any]:
-    """主入口: 收集 + 调 LLM + 返回字典候选 (不落库)."""
+    """主入口: 收集 + 调 LLM + 返回字典候选.
+
+    persist=False（默认）：仅返回 candidates JSON，不写 db（供 endpoint 让用户看质量）
+    persist=True：抽出的 high-confidence terms 直接落库 client_glossary（合并已有 aliases）
+                  让 ingest 后台自动建字典，新用户开箱即用
+    """
     client_row = db.fetchone(
         "SELECT id, name FROM clients WHERE id = ?",
         (client_id,),
@@ -534,6 +541,43 @@ def generate_glossary_candidates(
         if t.get("needs_clarification"):
             needs_clar += 1
 
+    persisted = 0
+    persist_skipped = 0
+    if persist and terms:
+        # 仅落库 high/medium 信心 + 非 needs_clarification 的，避免噪声 term 污染字典
+        import sqlite3 as _sqlite3
+        from app.services.glossary_store import create_glossary_entry
+        for t in terms:
+            if not isinstance(t, dict):
+                persist_skipped += 1
+                continue
+            name = str(t.get("canonical_name") or "").strip()
+            if not name or len(name) < 2:
+                persist_skipped += 1
+                continue
+            conf = str(t.get("confidence") or "low").lower()
+            if conf not in ("high", "medium"):
+                persist_skipped += 1
+                continue
+            if t.get("needs_clarification"):
+                persist_skipped += 1
+                continue
+            try:
+                create_glossary_entry(
+                    db.conn,
+                    client_id=client_id,
+                    term=name,
+                    definition=str(t.get("definition") or "")[:1000],
+                    aliases=[str(a) for a in (t.get("aliases") or []) if isinstance(a, str)],
+                    category=str(t.get("category") or "其他"),
+                )
+                persisted += 1
+            except _sqlite3.IntegrityError:
+                # UNIQUE 约束：同客户同名 term 已存在，不覆盖
+                persist_skipped += 1
+            except Exception:
+                persist_skipped += 1
+
     return {
         "status": "ok",
         "clientId": client_id,
@@ -548,5 +592,7 @@ def generate_glossary_candidates(
         "byCategory": by_cat,
         "byConfidence": by_conf,
         "needsClarification": needs_clar,
+        "persisted": persisted,
+        "persistSkipped": persist_skipped,
         "terms": terms,
     }

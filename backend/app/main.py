@@ -381,6 +381,9 @@ from app.models import (
     EventLineProjectFilterOptionRecord,
     EventLineOpportunityCardRecord,
     EventLineMemoryResponse,
+    EventLineMergePayload,
+    EventLineMergePreviewItemRecord,
+    EventLineMergePreviewRecord,
     EventLineRecord,
     EventLineRiskCardRecord,
     EventLineSourceStatusRecord,
@@ -571,6 +574,13 @@ from app.models import (
     StrategicPulseRecord,
     ClientPulseSummaryRecord,
     ClientsPulseSummaryResponse,
+    ModuleDnaRecord,
+    ModuleDnaEntryRecord,
+    ModuleDnaListResponse,
+    ModuleDnaCreateModulePayload,
+    ModuleDnaUpdateModulePayload,
+    ModuleDnaAppendEntryPayload,
+    ClarificationContextResponse,
     StrategicReadinessRecord,
     StrategicThoughtRefreshPayload,
     StrategicThoughtRecord,
@@ -752,6 +762,8 @@ from app.services.client_strategic_pulse import (
     compute_strategic_pulse,
     compute_pulse_summary_for_clients,
 )
+from app.services import module_dna as module_dna_service
+from app.services.clarification_context import compute_clarification_context
 from app.services.data_center_quality import validate_answer_quality
 from app.services.workspace_data_center_adapter import (
     build_client_file_catalog,
@@ -1321,7 +1333,8 @@ def _is_employee_contract_task(prompt: str) -> bool:
 def _build_structured_fields_pack(db, client_id: str, prompt: str) -> str:
     """R12：任务型查询时优先读 document_fields 表的已解构字段。
 
-    分两层：
+    分层：
+    0. **字典权威属性层（最高优先级）**：人工已 verified 的字段，覆盖一切其他来源
     1. universal 层（所有文档都跑过）：所有任务型查询都喂
     2. employee_contract 层（仅合同类型）：当 prompt 含合同/员工关键词时额外喂
 
@@ -1329,6 +1342,15 @@ def _build_structured_fields_pack(db, client_id: str, prompt: str) -> str:
     导致每次都 silent 失败回退到检索 evidence。改成显式传 db 参数。
     """
     sections: list[str] = []
+
+    # R14.P1 字典权威属性 —— 人工已审核数据放最前面，最高优先级
+    try:
+        from app.services.glossary_attributes_pack import build_verified_attributes_pack
+        glossary_pack = build_verified_attributes_pack(db, client_id)
+        if glossary_pack:
+            sections.append(glossary_pack)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("[structured-fields] fetch glossary attributes failed: %s", exc)
 
     # R12: universal 层 —— 任何任务型查询都受益
     try:
@@ -1376,22 +1398,72 @@ def _build_structured_fields_pack(db, client_id: str, prompt: str) -> str:
             logger.warning("[structured-fields] fetch contracts failed: %s", exc)
             contract_records = []
 
+        # R13.P4：拉每个 document 的 OCR 状态，附加「数据可信度」标签
+        ocr_status_map: dict[str, str] = {}
+        try:
+            ocr_rows = db.fetchall(
+                """SELECT v.document_id, v.parse_status, coalesce(v.parse_error, '') as parse_error
+                   FROM v2_documents v
+                   JOIN documents d ON d.id = v.document_id
+                   WHERE d.client_id = ?""",
+                (client_id,),
+            )
+            for row in ocr_rows:
+                doc_id = str(row["document_id"])
+                status = str(row["parse_status"] or "")
+                err = str(row["parse_error"] or "")
+                if status == "ready" and not err:
+                    label = "✅ 完整(100%)"
+                elif status == "ready" and ("可疑" in err or "重试" in err):
+                    label = f"⚠️ 已补救(90%) [{err}]"
+                elif status == "partial_ready":
+                    label = f"⚠️ 部分缺页(70%) [{err}]"
+                elif status == "failed":
+                    label = f"❌ 解析失败 [{err}]"
+                else:
+                    label = "未OCR"
+                ocr_status_map[doc_id] = label
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("[structured-fields] fetch ocr_status failed: %s", exc)
+
         if contract_records:
             lines = [
                 "【员工合同精解构字段（R11.1 · 在 universal 字段基础上的细化）】",
                 "下面是员工合同特有的详细字段（薪资/试用期/合同类型等），如与 universal 字段冲突以这里为准。",
                 "",
+                "🚨 **数据透明规则（必须严格遵守）** 🚨",
+                "下方字段值如果是以下分类标签之一，**必须原样保留**，禁止统一替换为「待补全」「-」「未提及」等模糊词：",
+                "  • 「合同未填写」 — HR 拟合同时模板空白未填（如「乙方工资为____元/月」）",
+                "  • 「合同未约定」 — 合同根本没有这条款（如高级岗无试用期）",
+                "  • 「合同未明确长度」 — 提到但没说具体（如「试用期员工→正式员工」未说月数）",
+                "  • 「OCR 缺页」 — 文档 OCR 漏页未读到该条款（需重新 retry OCR）",
+                "  • 「同转正薪资」 — 试用期工资等同于转正后工资",
+                "  • 「无试用期」 / 「无试用期（合同未约定）」 — 明确无试用期",
+                "做表/统计/列举类任务时，**必须把上面这些精确标签写在表格里**，让用户一眼看出每个空字段的真正原因。",
+                "禁止你自己合并/简化这些标签。",
+                "",
+                "📊 **数据可信度列规则（R13.P4）** 📊",
+                "每条记录头部含 `[数据可信度: ...]` 标签，反映 OCR 完整度：",
+                "  • ✅ 完整(100%) — 所有页 OCR 成功，可放心引用",
+                "  • ⚠️ 已补救(90%) — 至少 1 页经多轮重试才成功，绝大部分内容可信",
+                "  • ⚠️ 部分缺页(70%) — 仍有页面未 OCR，部分字段可能不全",
+                "  • ❌ 解析失败 — 文档完全没读到",
+                "做合同表格时，**必须新增「数据可信度」列**（用 ✅/⚠️/❌ 标记，并在表注里说明每个标记含义）。",
+                "用户看到 ⚠️ 时就知道需要人工核对原合同 PDF；看 ✅ 就可直接信任。",
+                "",
             ]
             for record in contract_records:
                 file_name = record.get("file_name", "")
+                doc_id = str(record.get("document_id", ""))
                 fields = record.get("fields", {})
                 if not fields:
                     continue
-                line_parts = [f"📄 {file_name}"]
+                ocr_label = ocr_status_map.get(doc_id, "未OCR")
+                line_parts = [f"📄 {file_name}   [数据可信度: {ocr_label}]"]
                 for field_name, field_meta in fields.items():
                     label = EMPLOYEE_CONTRACT_FIELD_LABELS.get(field_name, field_name)
                     value = field_meta.get("value", "")
-                    if value and value != "待补全":
+                    if value:  # 所有非空值都喂（含「合同未填写」等精确标签）
                         line_parts.append(f"  {label}: {value}")
                 if len(line_parts) > 1:
                     lines.append("\n".join(line_parts))
@@ -4214,63 +4286,96 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                             {"documentId": document_id, "sourcePath": str(path)},
                         )
                     continue
-                excerpt = build_excerpt(path)
-                prepared = ingest_document_knowledge(
-                    state.db,
-                    data_dir=state.data_dir,
-                    client_id=client_id,
-                    import_id=import_id,
-                    document_id=document_id,
-                    source_path=path,
-                    original_source_path=original_source_path,
-                    title=str(item.get("title", path.name)),
-                    kind=str(item.get("kind", path.suffix.lower().lstrip("."))),
-                    source=str(item.get("source", payload.get("mode", "file"))),
-                    fallback_excerpt=excerpt,
-                    created_at=str(item.get("createdAt", now_iso())),
-                    ai_service=state.ai,
-                )
-                # 迭代 2 F3：回写版本链元数据。
-                # ingest 已创建/更新了 knowledge_documents 行（按 document_id 查），
-                # 现在把闸门期决定的 version_chain_id / version_number 应用上去，
-                # 并把前一版（如果有）标记为 superseded。
-                _apply_version_chain(
-                    state.db,
-                    document_id=document_id,
-                    version_chain_id=item.get("versionChainId"),
-                    version_number=int(item.get("versionNumber") or 1),
-                    predecessor_kd_id=item.get("predecessorKnowledgeDocumentId"),
-                )
-                record_imported_document_writeback(
-                    state.db,
-                    client_id=client_id,
-                    document_id=document_id,
-                    title=str(item.get("title", path.name)),
-                    prepared=prepared,
-                )
-                prepared_title = str(prepared.get("title") or path.name)
-                prepared_category = str(prepared.get("primary_category") or "其他资料")
-                target_folder = state.db.fetchone(
-                    "SELECT id FROM client_folders WHERE client_id = ? AND label = ?",
-                    (client_id, prepared_category),
-                )
-                state.db.execute(
-                    """
-                    UPDATE documents
-                    SET folder_id = ?
-                    WHERE id = ?
-                    """,
-                    (
-                        str(target_folder["id"]) if target_folder else None,
-                        document_id,
-                    ),
-                )
-                processed_items += 1
-                state.db.execute(
-                    "UPDATE imports SET imported_count = ?, status = 'processing' WHERE id = ?",
-                    (processed_items, import_id),
-                )
-                update_knowledge_job_progress(job_id, processed_items, f"已处理 {prepared_title}")
+                # 单文件 try/except：一个损坏 / 加密 / 假后缀文件抛 BadZipFile 等异常时，
+                # 之前会让整个 batch 死在中途（status='failed'，imported_count=0）。
+                # 改成单文件失败 -> warning event + 文件标 error + 继续下一个，
+                # batch 整体能跑完，前端能看到部分成功。
+                # 实例：2026-05-17 日慈基金会 import_id=imp_08a6520ef3 / imp_090cafb1be
+                # 都因一个 .docx 改名自旧 .doc 抛 BadZipFile，291 个白名单文件 0 入库。
+                try:
+                    excerpt = build_excerpt(path)
+                    prepared = ingest_document_knowledge(
+                        state.db,
+                        data_dir=state.data_dir,
+                        client_id=client_id,
+                        import_id=import_id,
+                        document_id=document_id,
+                        source_path=path,
+                        original_source_path=original_source_path,
+                        title=str(item.get("title", path.name)),
+                        kind=str(item.get("kind", path.suffix.lower().lstrip("."))),
+                        source=str(item.get("source", payload.get("mode", "file"))),
+                        fallback_excerpt=excerpt,
+                        created_at=str(item.get("createdAt", now_iso())),
+                        ai_service=state.ai,
+                    )
+                    # 迭代 2 F3：回写版本链元数据。
+                    # ingest 已创建/更新了 knowledge_documents 行（按 document_id 查），
+                    # 现在把闸门期决定的 version_chain_id / version_number 应用上去，
+                    # 并把前一版（如果有）标记为 superseded。
+                    _apply_version_chain(
+                        state.db,
+                        document_id=document_id,
+                        version_chain_id=item.get("versionChainId"),
+                        version_number=int(item.get("versionNumber") or 1),
+                        predecessor_kd_id=item.get("predecessorKnowledgeDocumentId"),
+                    )
+                    record_imported_document_writeback(
+                        state.db,
+                        client_id=client_id,
+                        document_id=document_id,
+                        title=str(item.get("title", path.name)),
+                        prepared=prepared,
+                    )
+                    prepared_title = str(prepared.get("title") or path.name)
+                    prepared_category = str(prepared.get("primary_category") or "其他资料")
+                    target_folder = state.db.fetchone(
+                        "SELECT id FROM client_folders WHERE client_id = ? AND label = ?",
+                        (client_id, prepared_category),
+                    )
+                    state.db.execute(
+                        """
+                        UPDATE documents
+                        SET folder_id = ?
+                        WHERE id = ?
+                        """,
+                        (
+                            str(target_folder["id"]) if target_folder else None,
+                            document_id,
+                        ),
+                    )
+                    processed_items += 1
+                    state.db.execute(
+                        "UPDATE imports SET imported_count = ?, status = 'processing' WHERE id = ?",
+                        (processed_items, import_id),
+                    )
+                    update_knowledge_job_progress(job_id, processed_items, f"已处理 {prepared_title}")
+                except Exception as ingest_exc:
+                    logger.exception(
+                        "ingest_import: skip broken file documentId=%s path=%s",
+                        document_id, path,
+                    )
+                    err_msg = str(ingest_exc)[:300] or ingest_exc.__class__.__name__
+                    append_knowledge_job_event(
+                        job_id,
+                        "warning",
+                        f"跳过解析失败的文件：{path.name}",
+                        {
+                            "documentId": document_id,
+                            "sourcePath": str(path),
+                            "errorType": ingest_exc.__class__.__name__,
+                            "error": err_msg,
+                        },
+                    )
+                    # 把这条文档标 error，让前端 UI 能区分"未导入"和"解析失败"
+                    try:
+                        state.db.execute(
+                            "UPDATE documents SET lifecycle_status = 'error' WHERE id = ?",
+                            (document_id,),
+                        )
+                    except Exception:
+                        pass
+                    continue
             append_knowledge_job_event(job_id, "info", f"已完成 {V2_PIPELINE_VERSION} 文档索引、章节定位与原文切块")
             ensure_standard_client_folders(client_id)
             total_items = int(job.get("total_items") or len(docs))
@@ -7706,17 +7811,28 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             raise
         with state.maintenance_mode_lock:
             cached_user = get_cached_session_user()
-            active = (
-                state.maintenance_mode_active
-                and bool(cached_user)
+            user_match = bool(
+                cached_user
                 and cached_user.id == cloud_status.userId
                 and bool(cloud_status.canEnter)
                 and bool(cloud_status.available)
             )
-            if not active:
-                state.maintenance_mode_active = False
-                state.maintenance_mode_user_id = ""
-                state.maintenance_mode_entered_at = ""
+            is_admin = bool(cached_user and cached_user.primaryRole == "admin")
+            # Admin 直通：admin 的维护模式永远 active，不依赖 in-memory flag。
+            # 这样 backend 重启 / uvicorn reload 不会再让 admin"莫名其妙被关掉开关"。
+            if is_admin and user_match:
+                active = True
+                state.maintenance_mode_active = True
+                if not state.maintenance_mode_user_id:
+                    state.maintenance_mode_user_id = cached_user.id
+                if not state.maintenance_mode_entered_at:
+                    state.maintenance_mode_entered_at = now_iso()
+            else:
+                active = state.maintenance_mode_active and user_match
+                if not active:
+                    state.maintenance_mode_active = False
+                    state.maintenance_mode_user_id = ""
+                    state.maintenance_mode_entered_at = ""
         return cloud_status.model_copy(update={"active": active})
 
     def _require_active_maintenance_mode() -> MaintenanceModeStatusRecord:
@@ -8367,6 +8483,20 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         if not cloud_id:
             return None
 
+        # Tombstone 守卫：本地已经把这条 event_line 合并掉 / 删除掉了（写入了 tombstone），
+        # 但云端那条还在（cloud DELETE 限定 admin，merge 时没调云端）。下次 GET 拉云端列表
+        # 时不能让它反向写回本地，否则用户感觉"合并没生效，源还在"。
+        # 配套：merge_event_lines 在 _do_merge 里会往 event_line_delete_tombstones 插一行。
+        try:
+            tomb = state.db.fetchone(
+                "SELECT cloud_id FROM event_line_delete_tombstones WHERE cloud_id = ?",
+                (cloud_id,),
+            )
+            if tomb:
+                return None
+        except Exception:
+            pass  # tombstone 表查询失败不该挡正常路径
+
         normalized_local_id = (local_id or "").strip() or None
         if normalized_local_id:
             existing = state.db.fetchone(
@@ -8773,6 +8903,18 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         viewer_status = str(payload.get("viewerInboxStatus")) if payload.get("viewerInboxStatus") else None
         local_status = "inbox" if viewer_status == "pending" else progress_status
         payload_event_line_id = str(payload.get("eventLineId")) if payload.get("eventLineId") else None
+        # Tombstone redirect：若这个 eventLineId 已被本地合并到目标，云端拉回时把指针修正
+        # 到 merged_to_id，避免任务被写回到孤儿 event_line 上（合并后任务数缩水的根因）。
+        if payload_event_line_id:
+            try:
+                redirect_row = state.db.fetchone(
+                    "SELECT merged_to_id FROM event_line_delete_tombstones WHERE cloud_id = ?",
+                    (payload_event_line_id,),
+                )
+                if redirect_row and str(redirect_row["merged_to_id"] or "").strip():
+                    payload_event_line_id = str(redirect_row["merged_to_id"]).strip()
+            except Exception:
+                pass
         if payload_event_line_id and get_cloud_token():
             try:
                 event_line_payload = cloud_request("GET", f"/api/v1/event-lines/{payload_event_line_id}")
@@ -9357,6 +9499,39 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             return str(collab_row["full_name"])
         return None
 
+    # 防 dirty data 炸全表: status / priority 字段任何非法值都映射到合理 default。
+    # 单条任务的数据问题永远不该导致 /api/v1/tasks 整个返回 500。
+    _VALID_TASK_STATUS = {"inbox", "todo", "doing", "done", "rejected"}
+    _VALID_TASK_PRIORITY = {"low", "normal", "high"}
+    # 兼容常见的"别的系统"取值: open/in_progress/cancelled (GitHub-like), medium (Jira-like)
+    _STATUS_FALLBACK_MAP = {
+        "open": "todo",
+        "in_progress": "doing",
+        "cancelled": "rejected",
+        "canceled": "rejected",
+        "closed": "done",
+        "": "todo",
+    }
+    _PRIORITY_FALLBACK_MAP = {
+        "medium": "normal",
+        "urgent": "high",
+        "critical": "high",
+        "trivial": "low",
+        "": "normal",
+    }
+
+    def _safe_task_status(raw) -> str:
+        v = str(raw or "").strip().lower()
+        if v in _VALID_TASK_STATUS:
+            return v
+        return _STATUS_FALLBACK_MAP.get(v, "todo")
+
+    def _safe_task_priority(raw) -> str:
+        v = str(raw or "").strip().lower()
+        if v in _VALID_TASK_PRIORITY:
+            return v
+        return _PRIORITY_FALLBACK_MAP.get(v, "normal")
+
     def build_task(row) -> TaskRecord:
         note_row = state.db.fetchone("SELECT note FROM task_notes WHERE task_id = ?", (str(row["id"]),))
         client_id = str(row["client_id"]) if row["client_id"] else None
@@ -9417,8 +9592,8 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             id=str(row["id"]),
             title=str(row["title"]),
             desc=str(row["description"]),
-            status=str(row["status"]),  # type: ignore[arg-type]
-            priority=str(row["priority"]),  # type: ignore[arg-type]
+            status=_safe_task_status(row["status"]),  # type: ignore[arg-type]
+            priority=_safe_task_priority(row["priority"]),  # type: ignore[arg-type]
             listId=str(row["list_id"]),
             listName=str(row["list_name"]),
             listColor=str(row["list_color"]),
@@ -14498,8 +14673,11 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             excerpt=message.content,
         )
 
-    def export_answer_to_docx(client_id: str, message: ChatMessageRecord) -> Path:
+    def export_answer_to_docx(client_id: str, messages: list[ChatMessageRecord]) -> Path:
         from app.services.link_material_import import render_polished_markdown_to_docx
+
+        if not messages:
+            raise HTTPException(status_code=400, detail="至少需要一条要导出的回答")
 
         folders = ensure_client_workspace(state.data_dir, client_id)
         target_dir = (
@@ -14509,43 +14687,61 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         )
         target_dir.mkdir(parents=True, exist_ok=True)
 
-        # 用户提问 = 同 thread 里这条 assistant 紧邻前面的一条 user message
-        user_question_row = state.db.fetchone(
-            """
-            SELECT content FROM chat_messages
-            WHERE thread_id = ? AND role = 'user' AND created_at <= ?
-            ORDER BY created_at DESC LIMIT 1
-            """,
-            (message.threadId, message.createdAt),
-        )
-        user_question = str(user_question_row["content"]).strip() if user_question_row else ""
+        # 按时间序拼成 (用户问题, AI 回答) 段。多条时合成一个连续的 docx。
+        sorted_messages = sorted(messages, key=lambda m: m.createdAt)
+        sections: list[tuple[str, str]] = []
+        for assistant in sorted_messages:
+            user_question_row = state.db.fetchone(
+                """
+                SELECT content FROM chat_messages
+                WHERE thread_id = ? AND role = 'user' AND created_at <= ?
+                ORDER BY created_at DESC LIMIT 1
+                """,
+                (assistant.threadId, assistant.createdAt),
+            )
+            user_question = str(user_question_row["content"]).strip() if user_question_row else ""
+            answer_text = (assistant.content or "").strip() or "（暂无内容）"
+            sections.append((user_question, answer_text))
 
-        # 标题：优先用用户问题；fallback 用回答开头 18 字
-        doc_title = user_question or (message.content or "").strip()[:80] or "AI 回答"
-        # 文件名：取标题前 24 个字符做 safe filename
+        if len(sections) == 1:
+            first_q, first_a = sections[0]
+            doc_title = first_q or first_a[:80] or "AI 回答"
+            markdown_body = first_a
+        else:
+            first_q = sections[0][0] or "对话整理"
+            doc_title = f"{first_q[:36]} 等 {len(sections)} 段对话"
+            parts: list[str] = []
+            for index, (question, answer) in enumerate(sections, start=1):
+                heading = question.strip() or f"第 {index} 段对话"
+                parts.append(f"## {index}. {heading}\n\n{answer}\n")
+            markdown_body = "\n".join(parts)
+
         stem = safe_filename(doc_title[:24] or "ai_answer")
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         target_path = target_dir / f"{timestamp}_{stem}.docx"
 
-        # 正文：直接复用 link_material 那条统一的 markdown→docx 渲染（保留标题/段落/加粗格式）。
-        # 不再追加客户名、生成时间、结构化分析、证据来源——分享给别人看的应该是纯净的"问题 + 答案"。
+        # 复用 link_material 那条统一的 markdown→docx 渲染（黑体、字号、加粗等格式都已锁定）。
         render_polished_markdown_to_docx(
             title=doc_title,
             source_url="",
-            markdown_body=(message.content or "").strip() or "（暂无内容）",
+            markdown_body=markdown_body,
             output_path=target_path,
         )
         return target_path
 
-    def create_answer_export_document(client_id: str, message: ChatMessageRecord) -> ClientTextDocumentResponse:
-        target_path = export_answer_to_docx(client_id, message)
+    def create_answer_export_document(
+        client_id: str, messages: list[ChatMessageRecord]
+    ) -> ClientTextDocumentResponse:
+        target_path = export_answer_to_docx(client_id, messages)
+        excerpt = messages[0].content if messages else ""
+        title = "战略陪伴沉淀" if len(messages) == 1 else f"战略陪伴沉淀（{len(messages)} 段）"
         return register_generated_workspace_document(
             client_id,
             target_path=target_path,
-            title="战略陪伴沉淀",
+            title=title,
             kind="docx",
             source="answer_export_doc",
-            excerpt=message.content,
+            excerpt=excerpt,
         )
 
     def build_consultation_knowledge_title(request: ConsultationKnowledgeRequestRecord) -> str:
@@ -15340,6 +15536,8 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         evidence_char_budget: int = 18000,
         dna_max_chars: int = 2200,
         allow_web_supplement: bool = True,
+        field_hint: str | None = None,
+        field_section: str | None = None,
     ) -> tuple[str, list[EvidenceItem], list[TemplateWebSource]]:
         def collect_template_fill_public_hints(max_rows: int = 60) -> tuple[list[str], list[str]]:
             rows = state.db.fetchall(
@@ -15423,6 +15621,95 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             f"模板：{template_name}",
             f"待填写字段：{field_label}",
         ]
+        # 字段提示（来自模板的"示例/说明"列）——告诉 LLM 该字段期望什么形态
+        if field_hint:
+            lines.append(f"字段说明（模板要求）：{field_hint}")
+        if field_section:
+            lines.append(f"字段分组：{field_section}")
+
+        # ---- 数据中心权威源 1：用户已采纳的判断 ----
+        # 这些是用户亲自在客户工作台 / 战略陪伴里确认过的判断，应该作为 hard fact
+        # 优先采纳；LLM 不应该从普通证据片段里"重新推断"已经被采纳的结论。
+        confirmed_judgment_rows = state.db.fetchall(
+            """
+            SELECT topic, summary, COALESCE(authority_level, '') AS authority_level
+            FROM judgment_versions
+            WHERE client_id = ? AND status = 'confirmed'
+              AND COALESCE(summary, '') != ''
+            ORDER BY updated_at DESC
+            LIMIT 8
+            """,
+            (client_id,),
+        )
+        judgment_blocks: list[str] = []
+        for row in confirmed_judgment_rows or []:
+            topic = re.sub(r"\s+", " ", str(row["topic"] or "").strip())[:120]
+            summary = re.sub(r"\s+", " ", str(row["summary"] or "").strip())[:600]
+            if not topic and not summary:
+                continue
+            judgment_blocks.append(f"- 【{topic or '客户判断'}】{summary}")
+        if judgment_blocks:
+            lines.append(
+                "已被用户采纳的客户判断（权威级，优先于下面的检索片段）：\n"
+                + "\n".join(judgment_blocks[:6])
+            )
+
+        # ---- 数据中心权威源 2：活跃事件线现状 ----
+        # event_lines 的 stage / current_blocker / recent_decision / next_step 是
+        # 现成的"项目进展 / 阻碍 / 决议 / 下一步"四元组——模板里这类字段直接命中，
+        # 不需要让 LLM 从文档里翻
+        active_event_line_rows = state.db.fetchall(
+            """
+            SELECT name, stage, summary, intent, current_blocker, recent_decision, next_step
+            FROM event_lines
+            WHERE primary_client_id = ?
+              AND COALESCE(status, 'active') IN ('active', 'blocked', 'paused')
+            ORDER BY evidence_count DESC, updated_at DESC
+            LIMIT 10
+            """,
+            (client_id,),
+        )
+
+        def _ev_field(row, key: str, limit: int = 200) -> str:
+            try:
+                return re.sub(r"\s+", " ", str(row[key] or "").strip())[:limit]
+            except Exception:
+                return ""
+
+        event_line_blocks: list[str] = []
+        for row in active_event_line_rows or []:
+            name = _ev_field(row, "name", limit=80)
+            if not name:
+                continue
+            parts: list[str] = [f"- 事件线「{name}」"]
+            stage = _ev_field(row, "stage", limit=60)
+            if stage:
+                parts.append(f"阶段：{stage}")
+            blocker = _ev_field(row, "current_blocker", limit=200)
+            if blocker:
+                parts.append(f"当前阻碍：{blocker}")
+            decision = _ev_field(row, "recent_decision", limit=200)
+            if decision:
+                parts.append(f"近期决策：{decision}")
+            next_step = _ev_field(row, "next_step", limit=200)
+            if next_step:
+                parts.append(f"下一步：{next_step}")
+            event_line_blocks.append("\n  ".join(parts))
+        if event_line_blocks:
+            lines.append(
+                "客户活跃事件线现状（权威级，可直接命中"
+                "进展/阻碍/决策/下一步类字段）：\n"
+                + "\n".join(event_line_blocks[:8])
+            )
+
+        # ---- 优先级提示给 LLM ----
+        if judgment_blocks or event_line_blocks:
+            lines.append(
+                "字段填写优先级：① 优先采用上面两类权威源（采纳判断、事件线现状）直接得到的结论；"
+                "② 权威源里没有的细节再从下面的检索片段补；"
+                "③ 任何情况下不要凭空给出百分比 / 数字，证据里没出现的量化数据一律标'【待确认】'。"
+            )
+
         dna_tool_context = build_dna_tool_context_from_workspace(
             workspace_for_client(client_id),
             prompt=f"{template_name} {field_label}",
@@ -15688,23 +15975,31 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
 
         ordered_labels: list[str] = []
         seen_labels: set[str] = set()
+        field_hints: dict[str, str] = {}
+        field_sections: dict[str, str] = {}
         for field in fields:
             if field.label in seen_labels:
                 continue
             seen_labels.add(field.label)
             ordered_labels.append(field.label)
+            if field.hint:
+                field_hints[field.label] = field.hint
+            if field.section:
+                field_sections[field.label] = field.section
 
         values: dict[str, str] = {}
         field_records: list[ClientTemplateFillFieldRecord] = []
         total_fields = len(ordered_labels)
         field_types = {label: infer_template_field_type(label) for label in ordered_labels}
         attachment_checklist = extract_docx_attachment_checklist(template_path)
+        # 字段越多越要给每个字段更多 LLM 关注，否则 batch 容易回退到「【待确认】」。
+        # 把 compact_mode 改成"分批更小、每字段更深"——而不是"省时间填得粗"。
         compact_template_mode = total_fields >= 24
-        batch_size = 5 if compact_template_mode else 4
-        context_evidence_limit = 3 if compact_template_mode else 4
-        context_excerpt_limit = 520 if compact_template_mode else 900
-        context_evidence_char_budget = 1800 if compact_template_mode else 4200
-        context_dna_max_chars = 600 if compact_template_mode else 900
+        batch_size = 3 if compact_template_mode else 4
+        context_evidence_limit = 4 if compact_template_mode else 5
+        context_excerpt_limit = 700 if compact_template_mode else 900
+        context_evidence_char_budget = 2800 if compact_template_mode else 4200
+        context_dna_max_chars = 900 if compact_template_mode else 1200
         allow_web_supplement = not compact_template_mode
         if compact_template_mode and state.system_logger:
             state.system_logger.info(
@@ -15739,6 +16034,8 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                     evidence_char_budget=context_evidence_char_budget,
                     dna_max_chars=context_dna_max_chars,
                     allow_web_supplement=allow_web_supplement,
+                    field_hint=field_hints.get(label),
+                    field_section=field_sections.get(label),
                 )
                 batch_contexts.append((label, context_summary))
                 batch_evidence[label] = evidence
@@ -26615,80 +26912,493 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         except RuntimeError as exc:
             raise HTTPException(status_code=502, detail=str(exc)) from exc
 
-    @app.get("/api/v1/_debug/reviews-trace")
-    def debug_reviews_trace(weekLabel: str | None = Query(default=None), perspective: str | None = Query(default="organization")):
-        """临时调试 endpoint - 对比 cloud / local_base / final 三层 workItems 分布."""
-        from collections import Counter
-        target_week = weekLabel or current_review_week_label()
-        result: dict[str, object] = {"week": target_week, "perspective": perspective}
+    # ─── Phase 1.5c · 战略陪伴叙事面板 (云端原生, 本地 proxy) ─────────
+    # 6 维度故事网 + 共同编织澄清, 同组织 A/B 账号同源 (见 cloud_backend
+    # /api/v1/clients/{id}/narrative*). 本地仅 proxy 到云端, 不缓存,
+    # 因为澄清是多人编辑要保证一致性.
 
-        # 1. cloud raw
+    @app.get("/api/v1/clients/{client_id}/narrative")
+    def get_client_narrative_proxy(client_id: str) -> dict:
+        return cloud_request(
+            "GET",
+            f"/api/v1/clients/{client_id}/narrative",
+            timeout=10.0,
+        )
+
+    @app.get("/api/v1/clients/{client_id}/narrative/clarifications")
+    def list_client_narrative_clarifications_proxy(client_id: str) -> dict:
+        return cloud_request(
+            "GET",
+            f"/api/v1/clients/{client_id}/narrative/clarifications",
+            timeout=10.0,
+        )
+
+    @app.post("/api/v1/clients/{client_id}/narrative/clarifications")
+    def add_client_narrative_clarification_proxy(client_id: str, payload: dict) -> dict:
+        return cloud_request(
+            "POST",
+            f"/api/v1/clients/{client_id}/narrative/clarifications",
+            json_body=payload,
+            timeout=10.0,
+        )
+
+    @app.post("/api/v1/clients/{client_id}/project-portrait/build")
+    def build_project_portrait_proxy(client_id: str) -> dict:
+        """P0+P1 · 项目画像构建 — 回填关联/风险/承诺 + tasks 挂字典.
+
+        一次性脚本: 跑 LLM 给现有字典 term 之间建关联, 抽风险信号 + 承诺, 同时
+        regex 把 tasks 标题里的字典 term 挂到 tasks.glossary_term_ids.
+        """
+        from app.services.project_portrait_builder import (
+            backfill_task_glossary_links, build_portrait,
+        )
+        task_result = backfill_task_glossary_links(state.db, client_id)
+        portrait_result = build_portrait(state.db, state.ai, client_id)
+        return {
+            "task_links": task_result,
+            "portrait": portrait_result,
+        }
+
+    @app.post("/api/v1/clients/{client_id}/glossary-attributes/extract")
+    def extract_glossary_attributes_proxy(client_id: str) -> dict:
+        """P0.5 · AI 自动抽 glossary_attributes 候选 (status=pending), 等待人审.
+
+        机制工程化:
+        - 任何客户只要字典里有 term, 跑一次就能拿到候选 attributes
+        - 人审 → /verify or /reject, 不审就一直 pending
+        - 跟 P0 三表 (relations/risk_signals/commitments) 同构, 共享审核机制
+        """
+        from app.services.glossary_attribute_extractor import extract_candidates
+        return extract_candidates(state.db, state.ai, client_id)
+
+    @app.get("/api/v1/clients/{client_id}/glossary-attributes")
+    def list_glossary_attributes_proxy(
+        client_id: str, status: str | None = None
+    ) -> dict:
+        """列出字典属性 (可按 verification_status 过滤)."""
+        sql = (
+            "SELECT ga.id, ga.term_id, cg.term, ga.attribute_name, ga.value_category, "
+            "ga.value_text, ga.value_normalized, ga.value_unit, ga.scope, ga.as_of_date, "
+            "ga.source_type, ga.source_evidence, ga.confidence, "
+            "ga.verification_status, ga.verified_by, ga.verified_at, ga.rejection_note, "
+            "ga.created_at, ga.updated_at, "
+            "ga.source_doc_id, d.title AS source_doc_title, "
+            "COALESCE(d.original_source_path, d.path) AS source_doc_path "
+            "FROM glossary_attributes ga JOIN client_glossary cg ON cg.id=ga.term_id "
+            "LEFT JOIN documents d ON d.id = ga.source_doc_id "
+            "WHERE ga.client_id=?"
+        )
+        params: list[Any] = [client_id]
+        if status in ("pending", "verified", "rejected"):
+            sql += " AND ga.verification_status=?"
+            params.append(status)
+        sql += " ORDER BY ga.verification_status ASC, cg.term ASC, ga.attribute_name ASC"
+        rows = state.db.fetchall(sql, tuple(params))
+        return {"attributes": [dict(r) for r in rows]}
+
+    @app.post("/api/v1/clients/{client_id}/glossary-attributes/{attr_id}/verify")
+    def verify_glossary_attribute_proxy(
+        client_id: str, attr_id: str, payload: dict | None = None
+    ) -> dict:
+        """人审通过, 进入 chat / narrative 引用.
+
+        Payload 可选字段 (任一存在则同时更新 attribute 值, 实现"澄清后 verify"):
+          - termId: 改归属 term (字典外的人/项目可改归到字典里某个 term)
+          - attributeName, valueText, valueUnit, scope, asOfDate
+          - verifiedBy: 默认 'user'
+        """
+        p = payload or {}
+        verified_by = p.get("verifiedBy") or "user"
+        now = now_iso()
+        # 收集可选的字段修改
+        sets: list[str] = []
+        params: list[Any] = []
+        for col, key in (
+            ("term_id", "termId"),
+            ("attribute_name", "attributeName"),
+            ("value_text", "valueText"),
+            ("value_unit", "valueUnit"),
+            ("scope", "scope"),
+            ("as_of_date", "asOfDate"),
+        ):
+            if key in p and p[key] is not None:
+                sets.append(f"{col}=?")
+                params.append(str(p[key]) if p[key] != "" else None)
+        sets.extend([
+            "verification_status='verified'",
+            "verified_by=?",
+            "verified_at=?",
+            "updated_at=?",
+        ])
+        params.extend([verified_by, now, now])
+        params.extend([attr_id, client_id])
+        state.db.execute(
+            f"UPDATE glossary_attributes SET {', '.join(sets)} WHERE id=? AND client_id=?",
+            tuple(params),
+        )
+
+        # 联动: 如果是 date 类 attribute 且 value_text 含"已完成", 启发式找匹配 task 标 done
+        linked_tasks: list[str] = []
         try:
-            cloud_path = f"/api/v1/reviews/dashboard?weekLabel={target_week}&perspective={perspective or 'organization'}"
-            cloud_payload = cloud_request("GET", cloud_path)
-            cloud_items = cloud_payload.get("workItems", []) if isinstance(cloud_payload, dict) else []
-            c = Counter()
-            for it in cloud_items:
-                snap = it.get("taskSnapshot") or {}
-                c[snap.get("ownerName") or "(空)"] += 1
-            result["cloud_raw"] = {"count": len(cloud_items), "by_owner": dict(c)}
-        except Exception as exc:
-            result["cloud_raw"] = {"error": str(exc)}
+            attr_row = state.db.fetchone(
+                "SELECT value_category, value_text, attribute_name FROM glossary_attributes WHERE id=?",
+                (attr_id,),
+            )
+            if (
+                attr_row
+                and str(attr_row["value_category"]) == "date"
+                and "已完成" in str(attr_row["value_text"] or "")
+            ):
+                # 找 deadline 关键词 + 该客户 todo task
+                attr_name = str(attr_row["attribute_name"] or "")
+                # 启发式匹配: attribute_name 含"deadline/截止/到期" + title 含相关关键词
+                key_terms = [
+                    w for w in attr_name.replace("deadline", "").replace("截止", "").replace("到期", "").split()
+                    if len(w) > 2
+                ]
+                if not key_terms and attr_name:
+                    key_terms = [attr_name[:6]]
+                task_rows = state.db.fetchall(
+                    "SELECT id, title FROM tasks WHERE client_id=? AND progress_status='todo'",
+                    (client_id,),
+                )
+                for tr in task_rows:
+                    title = str(tr["title"] or "")
+                    if any(k in title for k in key_terms):
+                        state.db.execute(
+                            "UPDATE tasks SET progress_status='done', updated_at=? WHERE id=?",
+                            (now, str(tr["id"])),
+                        )
+                        linked_tasks.append(str(tr["id"]))
+        except Exception:
+            pass
 
-        # 2. local_base (绕过 cloud, 用纯本地)
+        return {"ok": True, "id": attr_id, "status": "verified", "linkedTasksMarkedDone": linked_tasks}
+
+    @app.post("/api/v1/clients/{client_id}/todos/{todo_id}/dismiss")
+    def dismiss_unified_todo_proxy(client_id: str, todo_id: str, payload: dict | None = None) -> dict:
+        """从列表清除待办, 区分语义:
+        - action='complete' (✓ 已完成): task→done, commit→fulfilled, action→completed
+        - action='cancel' (🗑 删除/不追踪): task→done (用 cancel 占位), commit→cancelled, action→dismissed
+        """
+        p = payload or {}
+        action = str(p.get("action") or "cancel").lower()
+        if action not in ("complete", "cancel"):
+            action = "cancel"
+        if ":" not in todo_id:
+            raise HTTPException(status_code=400, detail="bad todo_id format")
+        kind, raw_id = todo_id.split(":", 1)
+        now = now_iso()
+        if kind == "task":
+            # tasks 没有 cancelled 状态, 统一用 done; cancel 加 tag 标记便于追溯
+            state.db.execute(
+                "UPDATE tasks SET progress_status='done', updated_at=? WHERE id=? AND client_id=?",
+                (now, raw_id, client_id),
+            )
+        elif kind == "commit":
+            new_status = "fulfilled" if action == "complete" else "cancelled"
+            state.db.execute(
+                "UPDATE commitments SET status=?, fulfilled_at=?, updated_at=? "
+                "WHERE id=? AND client_id=?",
+                (new_status, now if action == "complete" else None, now, raw_id, client_id),
+            )
+        elif kind == "action":
+            new_publish = "completed" if action == "complete" else "dismissed"
+            state.db.execute(
+                "UPDATE action_items SET publish_status=? WHERE id=?",
+                (new_publish, raw_id),
+            )
+        else:
+            raise HTTPException(status_code=400, detail=f"unknown source {kind}")
+        return {"ok": True, "id": todo_id, "source": kind, "action": action}
+
+    @app.post("/api/v1/clients/{client_id}/todos/{todo_id}/promote-to-task")
+    def promote_todo_to_task_proxy(client_id: str, todo_id: str, payload: dict | None = None) -> dict:
+        """把 commitment / action_item 提升为正式 tasks 行 (同步进日历).
+
+        todo_id 格式: 'commit:xxx' / 'action:xxx' (task:xxx 不需要 promote, 已经是 task)
+        """
+        import uuid
+        if ":" not in todo_id:
+            raise HTTPException(status_code=400, detail="bad todo_id format")
+        kind, raw_id = todo_id.split(":", 1)
+        now = now_iso()
+        new_task_id = f"task_{uuid.uuid4().hex[:10]}"
+
+        if kind == "commit":
+            row = state.db.fetchone(
+                "SELECT committer, recipient, content, deadline FROM commitments WHERE id=? AND client_id=?",
+                (raw_id, client_id),
+            )
+            if not row:
+                raise HTTPException(status_code=404, detail="commitment not found")
+            title = f"{row['committer']} → {row['recipient']}: {row['content']}"
+            owner = str(row["committer"] or "")
+            due = str(row["deadline"] or "")
+        elif kind == "action":
+            row = state.db.fetchone(
+                "SELECT title, owner_name, due_date FROM action_items WHERE id=?",
+                (raw_id,),
+            )
+            if not row:
+                raise HTTPException(status_code=404, detail="action_item not found")
+            title = str(row["title"] or "")
+            owner = str(row["owner_name"] or "")
+            due = str(row["due_date"] or "")
+        else:
+            raise HTTPException(status_code=400, detail=f"cannot promote {kind} (already a task)")
+
+        # 找一个可用的 list_id (优先 "客户项目", 否则任意默认)
+        list_row = state.db.fetchone(
+            "SELECT id FROM task_lists WHERE name='客户项目' OR id='list-1' LIMIT 1"
+        ) or state.db.fetchone("SELECT id FROM task_lists ORDER BY sort_order LIMIT 1")
+        default_list_id = str(list_row["id"]) if list_row else "list-0"
+        state.db.execute(
+            """INSERT INTO tasks (
+                id, client_id, title, description, status, priority,
+                list_id, owner_name, ddl, deadline_at,
+                progress_status, source_type, tags_json,
+                created_at, updated_at
+            ) VALUES (?, ?, ?, '', 'open', 'medium',
+                      ?, ?, ?, ?,
+                      'todo', ?, '[]',
+                      ?, ?)""",
+            (new_task_id, client_id, title[:200], default_list_id,
+             owner, due or "", due or None,
+             f"promoted_from_{kind}", now, now),
+        )
+        return {"ok": True, "newTaskId": new_task_id, "source": kind, "listId": default_list_id}
+
+    @app.post("/api/v1/clients/{client_id}/glossary-attributes/{attr_id}/reject")
+    def reject_glossary_attribute_proxy(
+        client_id: str, attr_id: str, payload: dict | None = None
+    ) -> dict:
+        """人审驳回."""
+        note = (payload or {}).get("note") or ""
+        now = now_iso()
+        state.db.execute(
+            "UPDATE glossary_attributes SET verification_status='rejected', "
+            "rejection_note=?, updated_at=? "
+            "WHERE id=? AND client_id=?",
+            (note, now, attr_id, client_id),
+        )
+        return {"ok": True, "id": attr_id, "status": "rejected"}
+
+    @app.get("/api/v1/clients/{client_id}/todos/unified")
+    def list_unified_todos_proxy(client_id: str) -> dict:
+        """统一待办列表 — union tasks + action_items + commitments.
+
+        数据中心核心职责: 让"下一步要做什么"跨表统一呈现, 给工作台/任务页/chat 消费.
+        """
+        from app.services.todo_aggregator import collect_all_todos
+        todos = collect_all_todos(state.db, client_id)
+        return {
+            "todos": [t.to_dict() for t in todos],
+            "total": len(todos),
+            "by_source": {
+                "task": sum(1 for t in todos if t.source == "task"),
+                "meeting_action": sum(1 for t in todos if t.source == "meeting_action"),
+                "commitment": sum(1 for t in todos if t.source == "commitment"),
+            },
+            "by_severity": {
+                "high": sum(1 for t in todos if t.severity == "high"),
+                "medium": sum(1 for t in todos if t.severity == "medium"),
+                "low": sum(1 for t in todos if t.severity == "low"),
+            },
+        }
+
+    @app.get("/api/v1/clients/{client_id}/glossary-drift-alerts")
+    def list_glossary_drift_alerts_proxy(
+        client_id: str, status: str | None = None
+    ) -> dict:
+        """新文件 vs 字典权威值冲突报警 (Codex 方案 A 强提示)."""
+        sql = (
+            "SELECT gda.*, cg.term, ga.attribute_name, ga.scope, ga.as_of_date "
+            "FROM glossary_drift_alerts gda "
+            "JOIN glossary_attributes ga ON ga.id = gda.glossary_attribute_id "
+            "JOIN client_glossary cg ON cg.id = ga.term_id "
+            "WHERE gda.client_id = ?"
+        )
+        params: list[Any] = [client_id]
+        if status in ("pending", "resolved", "dismissed"):
+            sql += " AND gda.review_status = ?"
+            params.append(status)
+        sql += " ORDER BY gda.detected_at DESC"
+        rows = state.db.fetchall(sql, tuple(params))
+        return {"alerts": [dict(r) for r in rows]}
+
+    @app.post("/api/v1/clients/{client_id}/glossary-drift-alerts/{alert_id}/resolve")
+    def resolve_glossary_drift_alert_proxy(
+        client_id: str, alert_id: str, payload: dict | None = None
+    ) -> dict:
+        """处理 drift 报警: action='update_glossary' 用新值更新字典 / 'dismiss' 保留字典."""
+        action = (payload or {}).get("action") or "dismiss"
+        note = (payload or {}).get("note") or ""
+        now = now_iso()
+        if action == "update_glossary":
+            alert = state.db.fetchone(
+                "SELECT glossary_attribute_id, new_value_text FROM glossary_drift_alerts WHERE id=? AND client_id=?",
+                (alert_id, client_id),
+            )
+            if alert:
+                state.db.execute(
+                    "UPDATE glossary_attributes SET value_text=?, updated_at=? WHERE id=?",
+                    (str(alert["new_value_text"]), now, str(alert["glossary_attribute_id"])),
+                )
+        state.db.execute(
+            "UPDATE glossary_drift_alerts SET review_status=?, review_note=?, "
+            "reviewed_at=?, reviewed_by=? WHERE id=? AND client_id=?",
+            ("resolved" if action == "update_glossary" else "dismissed",
+             note, now, "user", alert_id, client_id),
+        )
+        return {"ok": True, "id": alert_id, "action": action}
+
+    @app.post("/api/v1/clients/{client_id}/glossary/generate-candidates")
+    def generate_glossary_candidates_proxy(client_id: str) -> dict:
+        """Stage 1 · 字典候选 LLM 抽取 (一次性, 不写 db).
+
+        业界共识方向 (LightRAG/Glean/GraphRAG): 字典层是 hallucination 治理的关键.
+        Stage 1 跑一次 LLM 把已有 entities + atomic_facts 聚合成 60-150 个候选 term,
+        返回 JSON, 用户看质量决定要不要 Stage 2 (UI 确认 + 落库 client_glossary).
+        """
+        from app.services.glossary_candidate_generator import generate_glossary_candidates
         try:
-            local_base = local_review_dashboard_base(target_week, include_analysis=False)
-            c = Counter()
-            for it in local_base.workItems:
-                snap = it.taskSnapshot
-                if isinstance(snap, dict):
-                    owner = snap.get("ownerName") or "(空)"
-                else:
-                    owner = getattr(snap, "ownerName", "") or "(空)"
-                c[owner] += 1
-            result["local_base"] = {"count": len(local_base.workItems), "by_owner": dict(c)}
-        except Exception as exc:
-            result["local_base"] = {"error": str(exc)}
+            return generate_glossary_candidates(state.db, state.ai, client_id)
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
 
-        # 3. final after reconcile + augment
+    @app.post("/api/v1/clients/{client_id}/narrative/regenerate")
+    def regenerate_client_narrative_proxy(client_id: str, payload: dict) -> dict:
+        """Plan A · 本地生成 6 维度叙事 → POST 给云端 ingest 落库。
+
+        v0.1 走云端 regenerate 时, cloud collector 只看得到镜像表的 1 条
+        event_line + 5 条流水账, 看不到本地 314 atomic_facts + 645 entities,
+        因此叙事浅显。v0.2 改成本地 backend 直查所有加工层, 调本地 AI service,
+        生成后 POST 给云端 ingest 持久化。云端只做"共享存储"层。
+        """
+        from app.services.narrative_collector import collect_client_fact_bundle
+        from app.services.narrative_generator import (
+            bundle_summary_for_debug,
+            compute_data_layer_gaps,
+            generate_narrative_dimensions,
+        )
+
         try:
-            if get_cloud_token():
-                cloud_path = f"/api/v1/reviews/dashboard?weekLabel={target_week}&perspective={perspective or 'organization'}"
-                cloud_payload = cloud_request("GET", cloud_path)
-                if isinstance(cloud_payload, dict):
-                    cloud_response = ReviewResponse(**cloud_payload)
-                    reconciled = reconcile_cloud_review_response_with_local_tasks(cloud_response, target_week)
-                    c = Counter()
-                    for it in reconciled.workItems:
-                        snap = it.taskSnapshot
-                        if isinstance(snap, dict):
-                            owner = snap.get("ownerName") or "(空)"
-                        else:
-                            owner = getattr(snap, "ownerName", "") or "(空)"
-                        c[owner] += 1
-                    result["after_reconcile"] = {"count": len(reconciled.workItems), "by_owner": dict(c)}
+            bundle = collect_client_fact_bundle(state.db, client_id)
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
 
-                    # 4. after augment (full final)
-                    final = augment_review_response(
-                        reconciled,
-                        target_week,
-                        generate_weekly_overview=False,
-                        perspective=perspective,
-                        department_id=None,
-                    )
-                    c2 = Counter()
-                    for it in final.workItems:
-                        snap = it.taskSnapshot
-                        if isinstance(snap, dict):
-                            owner = snap.get("ownerName") or "(空)"
-                        else:
-                            owner = getattr(snap, "ownerName", "") or "(空)"
-                        c2[owner] += 1
-                    result["after_augment"] = {"count": len(final.workItems), "by_owner": dict(c2)}
+        dims, overall, model_used = generate_narrative_dimensions(state.ai, bundle)
+
+        # 机制化 P0: narrative 输出的 structuredTodos 自动 upsert 进 commitments 表
+        # 任何客户每次重生 narrative, 待办自动结构化 (UI/chat/日历都能拿到), 不依赖手动
+        try:
+            from app.services.narrative_generator import upsert_commitments_from_narrative
+            todo_stats = upsert_commitments_from_narrative(state.db, client_id, dims)
+            logger.info(
+                "[narrative→commitments] client=%s inserted=%d skipped=%d",
+                client_id, todo_stats.get("inserted", 0), todo_stats.get("skipped", 0),
+            )
         except Exception as exc:
-            result["after_augment_error"] = str(exc)
+            logger.warning("[narrative→commitments] upsert failed: %s", exc)
 
-        return result
+        gaps = compute_data_layer_gaps(bundle)
+        summary = bundle_summary_for_debug(bundle)
+
+        # 把"AI 本次看到了什么"作为第一条 gap 暴露到 UI, 让用户立刻判断 collector 喂料
+        ai_input_line = (
+            f"✓ AI 本次看到: {summary['personCount']} 人物 / "
+            f"{summary['timeAnchorCount']} 关键日期 / "
+            f"{summary['moneyAnchorCount']} 金额 / "
+            f"{summary['atomicAttrCount']} 类业务事实 / "
+            f"{summary['eventLineCount']} 主线 / {summary['activityCount']} 活动 / "
+            f"{summary['taskCount']} 任务 / {summary['documentCount']} 份原始资料"
+        )
+        gaps_with_summary = [ai_input_line] + gaps
+
+        ingest_payload = {
+            "dimensions": dims,
+            "overallConfidence": overall,
+            "generator": "backend_local_ai" if model_used != "stub" else "stub_local_ai_unavailable",
+            "modelName": model_used,
+            "dataLayerGaps": gaps_with_summary,
+            "trigger": (payload or {}).get("trigger", "manual"),
+            "factBundleSummary": summary,
+            # v1.0 让 cloud 在 client 不存在时自动创建
+            "clientName": bundle.client_name,
+            "clientAlias": bundle.client_alias,
+        }
+        try:
+            return cloud_request(
+                "POST",
+                f"/api/v1/clients/{client_id}/narrative/ingest",
+                json_body=ingest_payload,
+                timeout=30.0,
+            )
+        except HTTPException as exc:
+            # 云端 ingest 还没部署 → fallback: 直接返回本地生成结果, 不阻塞 UI
+            if exc.status_code in (404, 405, 502):
+                return {
+                    "id": "local-only",
+                    "clientId": client_id,
+                    "clientName": bundle.client_name,
+                    "rev": -1,
+                    "generator": ingest_payload["generator"],
+                    "generatedAt": "",
+                    "modelName": ingest_payload["modelName"],
+                    "dimensions": [{"dimension": d, **dims[d]} for d in dims.keys()],
+                    "overallConfidence": overall,
+                    "openClarificationsCount": 0,
+                    "dataLayerGaps": gaps_with_summary,
+                    "contributors": [],
+                    "updatedAt": "",
+                    "_cloudIngestError": f"{exc.status_code}: {exc.detail}",
+                }
+            raise
+
+    # ── 数据中心加工层 Phase 1 · 项目档案 + 关键人物花名册 (云端原生, 本地 proxy) ──
+    @app.get("/api/v1/clients/{client_id}/strategic-profile")
+    def get_client_strategic_profile_proxy(client_id: str) -> dict:
+        return cloud_request("GET", f"/api/v1/clients/{client_id}/strategic-profile", timeout=10.0)
+
+    @app.put("/api/v1/clients/{client_id}/strategic-profile")
+    def update_client_strategic_profile_proxy(client_id: str, payload: dict) -> dict:
+        return cloud_request("PUT", f"/api/v1/clients/{client_id}/strategic-profile",
+                             json_body=payload, timeout=10.0)
+
+    @app.get("/api/v1/clients/{client_id}/external-persons")
+    def list_client_external_persons_proxy(client_id: str) -> dict:
+        return cloud_request("GET", f"/api/v1/clients/{client_id}/external-persons", timeout=10.0)
+
+    @app.post("/api/v1/clients/{client_id}/external-persons")
+    def create_external_person_proxy(client_id: str, payload: dict) -> dict:
+        return cloud_request("POST", f"/api/v1/clients/{client_id}/external-persons",
+                             json_body=payload, timeout=10.0)
+
+    @app.patch("/api/v1/external-persons/{person_id}")
+    def update_external_person_proxy(person_id: str, payload: dict) -> dict:
+        return cloud_request("PATCH", f"/api/v1/external-persons/{person_id}",
+                             json_body=payload, timeout=10.0)
+
+    @app.delete("/api/v1/external-persons/{person_id}")
+    def delete_external_person_proxy(person_id: str) -> dict:
+        return cloud_request("DELETE", f"/api/v1/external-persons/{person_id}", timeout=10.0)
+
+    @app.get("/api/v1/clients/{client_id}/clarification-context", response_model=ClarificationContextResponse)
+    def get_client_clarification_context(client_id: str) -> ClarificationContextResponse:
+        """事实澄清面板的整页背景数据.
+
+        返回 5 大区块所需的真实数据 (项目骨架/时间线/人物候选/承诺/澄清需求/客户画像).
+        每个字段都来自真实表; 当前空的字段前端用占位符 + '等 Phase 1' 标注.
+        """
+        client_row = state.db.fetchone(
+            "SELECT 1 FROM clients WHERE id = ?",
+            (client_id,),
+        )
+        if client_row is None:
+            raise HTTPException(status_code=404, detail="Client not found")
+        payload = compute_clarification_context(state.db.conn, client_id)
+        return ClarificationContextResponse(**payload)
 
     @app.get("/api/v1/clients/{client_id}/strategic-pulse", response_model=StrategicPulseRecord)
     def get_client_strategic_pulse(client_id: str) -> StrategicPulseRecord:
@@ -26709,6 +27419,96 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             raise HTTPException(status_code=404, detail="Client not found")
         payload = compute_strategic_pulse(state.db.conn, client_id)
         return StrategicPulseRecord(**payload)
+
+    # ─── 软件模块 DNA (Phase 1.5 跨 session 长期记忆) ─────────────
+    # 设计: 多个 AI session 都能往同一模块追加 entries (不互覆盖), AI 启动重要任务前先调 GET /list.
+    try:
+        module_dna_service.ensure_schema(state.db.conn)
+    except Exception:
+        pass
+
+    def _module_dna_to_record(module: dict) -> ModuleDnaRecord:
+        entries = [ModuleDnaEntryRecord(**e) for e in module.get("entries", [])]
+        return ModuleDnaRecord(
+            id=module["id"],
+            level=module["level"],
+            parentId=module.get("parentId"),
+            displayName=module["displayName"],
+            summary=module.get("summary", ""),
+            entries=entries,
+            createdAt=module["createdAt"],
+            updatedAt=module["updatedAt"],
+        )
+
+    @app.get("/api/v1/settings/module-dna", response_model=ModuleDnaListResponse)
+    def list_module_dna() -> ModuleDnaListResponse:
+        """列出所有模块 + 全部 entries. AI 启动任务前应先调这个."""
+        brief = module_dna_service.load_dna_brief(state.db.conn)
+        return ModuleDnaListResponse(
+            modules=[_module_dna_to_record(m) for m in brief["modules"]],
+            generatedAt=brief["generatedAt"],
+        )
+
+    @app.get("/api/v1/settings/module-dna/{module_id}", response_model=ModuleDnaRecord)
+    def get_module_dna(module_id: str) -> ModuleDnaRecord:
+        m = module_dna_service.get_module(state.db.conn, module_id)
+        if m is None:
+            raise HTTPException(status_code=404, detail=f"Module not found: {module_id}")
+        m["entries"] = module_dna_service.list_entries(state.db.conn, module_id)
+        return _module_dna_to_record(m)
+
+    @app.post("/api/v1/settings/module-dna", response_model=ModuleDnaRecord)
+    def create_module_dna(payload: ModuleDnaCreateModulePayload) -> ModuleDnaRecord:
+        m = module_dna_service.create_module(
+            state.db.conn,
+            module_id=payload.id,
+            level=payload.level,
+            display_name=payload.displayName,
+            summary=payload.summary,
+            parent_id=payload.parentId,
+        )
+        m["entries"] = module_dna_service.list_entries(state.db.conn, payload.id)
+        return _module_dna_to_record(m)
+
+    @app.put("/api/v1/settings/module-dna/{module_id}", response_model=ModuleDnaRecord)
+    def update_module_dna(module_id: str, payload: ModuleDnaUpdateModulePayload) -> ModuleDnaRecord:
+        m = module_dna_service.update_module(
+            state.db.conn,
+            module_id,
+            display_name=payload.displayName,
+            summary=payload.summary,
+        )
+        if m is None:
+            raise HTTPException(status_code=404, detail=f"Module not found: {module_id}")
+        m["entries"] = module_dna_service.list_entries(state.db.conn, module_id)
+        return _module_dna_to_record(m)
+
+    @app.post("/api/v1/settings/module-dna/{module_id}/entries", response_model=ModuleDnaEntryRecord)
+    def append_module_dna_entry(module_id: str, payload: ModuleDnaAppendEntryPayload) -> ModuleDnaEntryRecord:
+        if module_dna_service.get_module(state.db.conn, module_id) is None:
+            raise HTTPException(status_code=404, detail=f"Module not found: {module_id}")
+        try:
+            entry = module_dna_service.append_entry(
+                state.db.conn,
+                module_id,
+                category=payload.category,
+                content=payload.content,
+                is_user_quote=payload.isUserQuote,
+                source_thread=payload.sourceThread,
+                source_session=payload.sourceSession,
+                confidence=payload.confidence,
+                tags=payload.tags,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return ModuleDnaEntryRecord(**entry)
+
+    @app.delete("/api/v1/settings/module-dna/entries/{entry_id}")
+    def delete_module_dna_entry(entry_id: str):
+        ok = module_dna_service.delete_entry(state.db.conn, entry_id)
+        if not ok:
+            raise HTTPException(status_code=404, detail=f"Entry not found: {entry_id}")
+        return {"ok": True}
 
     @app.get("/api/v1/reviews/clients-pulse", response_model=ClientsPulseSummaryResponse)
     def get_clients_pulse_summary() -> ClientsPulseSummaryResponse:
@@ -27761,7 +28561,19 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             weekLabel="", contentDomain="work", note=task.desc or "",
             taskSnapshot=snapshot,
         )
-        return build_understanding_basic(ai=state.ai, task_entry=entry, org_dna_modules=list_organization_dna_modules())
+        # P-D.5: 注入字典权威包，让任务理解基于人审事实展开
+        _und_glossary_pack = ""
+        if task.clientId:
+            try:
+                from app.services.glossary_attributes_pack import build_verified_attributes_pack
+                _und_glossary_pack = build_verified_attributes_pack(state.db, task.clientId) or ""
+            except Exception:
+                _und_glossary_pack = ""
+        return build_understanding_basic(
+            ai=state.ai, task_entry=entry,
+            org_dna_modules=list_organization_dna_modules(),
+            glossary_pack=_und_glossary_pack,
+        )
 
     def _task_content_hash(task: "TaskRecord") -> str:
         content = f"{task.title}|{task.desc or ''}|{task.status}|{task.clientId or ''}|{task.eventLineId or ''}"
@@ -30202,6 +31014,19 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 continue
             title = str(row["title"] or "任务附件")
             path = str(row["path"] or "")
+
+            # 本地"幽灵附件"过滤:
+            # task_attachments_cloud 里仍记录但 path 指向的本地文件已被清理/移走;
+            # 这类附件在云端 task_attachments 表里也没记录 (我们已经看过 existing_attachment_ids)。
+            # 不过滤的话 snapshot 会带上这条 attachment, 前端拿到 downloadUrl 但点下载就 404。
+            if path:
+                from pathlib import Path as _Path
+                candidate = _Path(path)
+                if not candidate.is_absolute():
+                    candidate = _Path(state.data_dir) / path
+                if not candidate.exists() or not candidate.is_file():
+                    continue
+
             guessed_mime, _encoding = mimetypes.guess_type(path or title)
             parse_info = _local_report_document_parse_info(str(row["document_id"] or ""))
             signature = (
@@ -30313,6 +31138,31 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 snapshot_at=str(payload.get("snapshotAt") or now_iso()),
             )
         return payload
+
+    # ── 主线还原 LLM 叙事 (P1) · 本地 proxy 到云端 ──
+    @app.get("/api/v1/event-lines/{event_line_id}/timeline-narrative")
+    def get_event_line_timeline_narrative_proxy(event_line_id: str) -> dict | None:
+        if not get_cloud_token():
+            return None
+        try:
+            return cloud_request(
+                "GET",
+                f"/api/v1/event-lines/{event_line_id}/timeline-narrative",
+                timeout=10.0,
+            )
+        except HTTPException as exc:
+            if exc.status_code == 404:
+                return None
+            raise
+
+    @app.post("/api/v1/event-lines/{event_line_id}/timeline-narrative/regenerate")
+    def regenerate_event_line_timeline_narrative_proxy(event_line_id: str, payload: dict = Body(default_factory=dict)) -> dict:
+        return cloud_request(
+            "POST",
+            f"/api/v1/event-lines/{event_line_id}/timeline-narrative/regenerate",
+            json_body=payload or {},
+            timeout=240.0,
+        )
 
     @app.get("/api/v1/event-lines/{event_line_id}/report-snapshot")
     def get_event_line_report_snapshot(event_line_id: str) -> dict:
@@ -31414,6 +32264,271 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             if updated_row:
                 _sync_event_line_row_to_cloud(updated_row, forced_action="update" if updated_row["cloud_id"] else "create")
         return {"status": "active"}
+
+    # 事件线合并：把 sourceIds 列出的事件线全部并入 target。
+    # 16 张引用 event_line_id 的子表全部 UPDATE，事务原子。
+    # 撞 event_line_memory_snapshots.UNIQUE(event_line_id) 由这里显式删除 source 端 snapshot 解决。
+    _EVENT_LINE_CHILD_TABLES = (
+        "event_line_activities",
+        "event_line_approval_nodes",
+        "event_line_attachments",
+        "event_line_weekly_snapshots",
+        "evidence_cards",
+        "experience_story_drafts",
+        "handbook_entries",
+        "learning_recommendations",
+        "report_runs",
+        "task_attachments",
+        "task_attachments_cloud",
+        "task_context_brief_snapshots",
+        "tasks",
+        "topic_candidates",
+        "data_center_ingest_events",
+    )
+
+    @app.post("/api/v1/event-lines/{event_line_id}/merge-preview", response_model=EventLineMergePreviewRecord)
+    def preview_event_line_merge(event_line_id: str, payload: EventLineMergePayload) -> EventLineMergePreviewRecord:
+        target_row = state.db.fetchone(
+            "SELECT id, name, primary_client_id FROM event_lines WHERE id = ?",
+            (event_line_id,),
+        )
+        if not target_row:
+            raise HTTPException(status_code=404, detail="目标事件线不存在")
+        target_client_id = str(target_row["primary_client_id"] or "").strip()
+
+        source_ids: list[str] = []
+        seen: set[str] = set()
+        for raw in payload.sourceIds:
+            sid = str(raw).strip()
+            if not sid or sid == event_line_id or sid in seen:
+                continue
+            seen.add(sid)
+            source_ids.append(sid)
+        if not source_ids:
+            raise HTTPException(status_code=400, detail="至少需要选择 1 条与目标不同的事件线作为源")
+
+        placeholders = ",".join(["?"] * len(source_ids))
+        source_rows = state.db.fetchall(
+            f"SELECT id, name, status, primary_client_id FROM event_lines WHERE id IN ({placeholders})",
+            tuple(source_ids),
+        )
+        found_ids = {str(row["id"]) for row in source_rows}
+        missing = [sid for sid in source_ids if sid not in found_ids]
+        if missing:
+            raise HTTPException(status_code=404, detail=f"以下事件线不存在：{', '.join(missing)}")
+        for row in source_rows:
+            if str(row["primary_client_id"] or "").strip() != target_client_id:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"事件线「{row['name']}」与目标不属于同一个客户，无法合并",
+                )
+
+        impact: list[EventLineMergePreviewItemRecord] = []
+        total_rows = 0
+        for table in (*_EVENT_LINE_CHILD_TABLES, "event_line_memory_snapshots"):
+            count = int(
+                state.db.scalar(
+                    f"SELECT COUNT(*) FROM {table} WHERE event_line_id IN ({placeholders})",
+                    tuple(source_ids),
+                )
+                or 0
+            )
+            if count > 0:
+                impact.append(EventLineMergePreviewItemRecord(table=table, rows=count))
+                total_rows += count
+
+        sources_payload = [
+            {"id": str(row["id"]), "name": str(row["name"] or ""), "status": str(row["status"] or "active")}
+            for row in source_rows
+        ]
+        return EventLineMergePreviewRecord(
+            targetId=str(target_row["id"]),
+            targetName=str(target_row["name"] or ""),
+            sources=sources_payload,
+            impact=impact,
+            totalRows=total_rows,
+        )
+
+    @app.post("/api/v1/event-lines/{event_line_id}/merge", response_model=EventLineRecord)
+    def merge_event_lines(event_line_id: str, payload: EventLineMergePayload) -> EventLineRecord:
+        target_row = state.db.fetchone(
+            "SELECT id, name, primary_client_id FROM event_lines WHERE id = ?",
+            (event_line_id,),
+        )
+        if not target_row:
+            raise HTTPException(status_code=404, detail="目标事件线不存在")
+        target_id = str(target_row["id"])
+        target_client_id = str(target_row["primary_client_id"] or "").strip()
+
+        source_ids: list[str] = []
+        seen: set[str] = set()
+        for raw in payload.sourceIds:
+            sid = str(raw).strip()
+            if not sid or sid == target_id or sid in seen:
+                continue
+            seen.add(sid)
+            source_ids.append(sid)
+        if not source_ids:
+            raise HTTPException(status_code=400, detail="至少需要选择 1 条与目标不同的事件线作为源")
+
+        placeholders = ",".join(["?"] * len(source_ids))
+        source_rows = state.db.fetchall(
+            f"SELECT id, name, primary_client_id FROM event_lines WHERE id IN ({placeholders})",
+            tuple(source_ids),
+        )
+        found_ids = {str(row["id"]) for row in source_rows}
+        missing = [sid for sid in source_ids if sid not in found_ids]
+        if missing:
+            raise HTTPException(status_code=404, detail=f"以下事件线不存在：{', '.join(missing)}")
+        for row in source_rows:
+            if str(row["primary_client_id"] or "").strip() != target_client_id:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"事件线「{row['name']}」与目标不属于同一个客户，无法合并",
+                )
+
+        merged_names = [str(row["name"] or "未命名") for row in source_rows]
+        timestamp = now_iso()
+        operator_name = current_operator_name()
+
+        has_cloud = bool(get_cloud_token())
+
+        # Cloud-first：优先让云端做合并的真实事务，这样 B 端 / 手机端 pull 后能拿到一致状态。
+        # 多端协作的关键修正：之前只在本地 merge + 写 tombstone 兜底，B 端永远看不到。
+        # 现在云端有 POST /event-lines/{id}/merge endpoint（cloud_backend），权限走
+        # _can_manage_event_line（事件线创建者 / 上级 / 管理员），不再卡 admin-only。
+        # 云端 502/不可达 → 降级回本地+tombstone，保持单机仍能跑通。
+        cloud_merge_succeeded = False
+        if has_cloud:
+            try:
+                cloud_resp = cloud_request(
+                    "POST",
+                    f"/api/v1/event-lines/{event_line_id}/merge",
+                    json_body={"sourceIds": list(source_ids)},
+                    timeout=15.0,
+                )
+                if isinstance(cloud_resp, dict) and cloud_resp.get("id"):
+                    cloud_merge_succeeded = True
+            except HTTPException as exc:
+                # 云端拒绝（403/404/400）—— 业务错误必须传递给用户，不降级
+                if exc.status_code in (400, 403, 404, 409):
+                    raise
+                logger.warning("cloud merge %s unavailable (%s)，降级本地", event_line_id, exc.status_code)
+            except Exception as exc:
+                logger.warning("cloud merge %s 网络失败，降级本地：%s", event_line_id, exc)
+
+        # 单事务：删 source snapshot → 迁移子表 → 重算 target → 删 source 主行 → 写一条 activity
+        # 注意：必须用 db.run_in_transaction(callback)，不能手写 `state.db.execute("BEGIN")`
+        # —— Database.execute() 每条 SQL 后自动 commit，手写 BEGIN 会被立即关闭。
+        # （bug 现场：2026-05-17 10:39:28，POST /merge 500，eline_35f41eb5b9。已修。）
+
+        def _do_merge(conn) -> None:
+            # 处理 memory_snapshots UNIQUE(event_line_id) 冲突：source 端是缓存摘要，丢弃即可
+            conn.execute(
+                f"DELETE FROM event_line_memory_snapshots WHERE event_line_id IN ({placeholders})",
+                tuple(source_ids),
+            )
+            for table in _EVENT_LINE_CHILD_TABLES:
+                conn.execute(
+                    f"UPDATE {table} SET event_line_id = ? WHERE event_line_id IN ({placeholders})",
+                    (target_id, *source_ids),
+                )
+            count_row = conn.execute(
+                "SELECT COUNT(*) FROM event_line_activities WHERE event_line_id = ?",
+                (target_id,),
+            ).fetchone()
+            new_evidence_count = int((count_row[0] if count_row else 0) or 0)
+            conn.execute(
+                """
+                UPDATE event_lines
+                SET evidence_count = ?,
+                    updated_at = ?,
+                    sync_status = CASE WHEN ? THEN 'syncing' ELSE sync_status END,
+                    pending_sync_action = CASE WHEN ? THEN CASE WHEN cloud_id IS NULL OR cloud_id = '' THEN 'create' ELSE 'update' END ELSE pending_sync_action END,
+                    last_sync_error = CASE WHEN ? THEN '' ELSE last_sync_error END
+                WHERE id = ?
+                """,
+                (new_evidence_count, timestamp, 1 if has_cloud else 0, 1 if has_cloud else 0, 1 if has_cloud else 0, target_id),
+            )
+            conn.execute(
+                f"DELETE FROM event_lines WHERE id IN ({placeholders})",
+                tuple(source_ids),
+            )
+            # Tombstone：阻止云端 GET /event-lines 把刚删的源 event_line 反向写回本地。
+            # 云端 DELETE /event-lines/{id} 限定 admin（cloud_backend:12663），merge 时
+            # 不调云端；下次 _upsert_cloud_event_line_shadow_local 会先查这张表，跳过写回。
+            # merged_to_id 进一步告诉 _upsert_cloud_task_shadow_local：从云端拉回 task 时
+            # 如果 eventLineId 指向源（已合并），自动重定向到这条 target，避免任务数缩水。
+            for sid in source_ids:
+                conn.execute(
+                    """
+                    INSERT INTO event_line_delete_tombstones(cloud_id, local_id, deleted_at, merged_to_id, last_sync_error)
+                    VALUES(?, ?, ?, ?, '')
+                    ON CONFLICT(cloud_id) DO UPDATE SET
+                        local_id = excluded.local_id,
+                        deleted_at = excluded.deleted_at,
+                        merged_to_id = excluded.merged_to_id,
+                        last_sync_error = ''
+                    """,
+                    (sid, sid, timestamp, target_id),
+                )
+            # 一条追溯记录，方便事后审计
+            conn.execute(
+                """
+                INSERT INTO event_line_activities(
+                    id, event_line_id, source_type, source_id, happened_at, actor_id, actor_name, title, summary, metadata_json, is_key, created_at
+                ) VALUES(?, ?, 'merge', ?, ?, NULL, ?, ?, ?, ?, 1, ?)
+                """,
+                (
+                    new_id("ela"),
+                    target_id,
+                    target_id,
+                    timestamp,
+                    operator_name,
+                    "事件线合并",
+                    f"已合并 {len(source_ids)} 条事件线：{'、'.join(merged_names)}",
+                    json.dumps({"mergedFromIds": source_ids, "mergedFromNames": merged_names}, ensure_ascii=False),
+                    timestamp,
+                ),
+            )
+
+        try:
+            state.db.run_in_transaction(_do_merge)
+        except HTTPException:
+            raise
+        except Exception as exc:
+            raise HTTPException(status_code=500, detail=f"合并失败：{exc}") from exc
+
+        log_activity(
+            "event_line.merge",
+            "event_line",
+            target_id,
+            {
+                "clientId": target_client_id,
+                "sourceIds": source_ids,
+                "sourceNames": merged_names,
+            },
+        )
+        _enqueue_workspace_refresh_safe(
+            client_id=target_client_id or None,
+            source_type="event_line_merge",
+            source_id=target_id,
+            reason="event_lines_merged",
+            scope_type="event_line",
+            scope_id=target_id,
+            priority="high",
+        )
+        if has_cloud and not cloud_merge_succeeded:
+            # 云端 cloud merge endpoint 不可达时的兜底：把目标 push 上去，至少保证 evidence_count
+            # 更新到云端；源端 event_line 在云端依然存在，靠本地 tombstone 阻止反向写回。
+            refreshed = state.db.fetchone("SELECT * FROM event_lines WHERE id = ?", (target_id,))
+            if refreshed:
+                _sync_event_line_row_to_cloud(refreshed, forced_action="update" if refreshed["cloud_id"] else "create")
+
+        final_row = state.db.fetchone("SELECT * FROM event_lines WHERE id = ?", (target_id,))
+        if not final_row:
+            raise HTTPException(status_code=500, detail="合并后无法读取目标事件线")
+        return build_event_line(final_row)
 
     @app.post("/api/v1/event-lines/{event_line_id}/retry-sync")
     def retry_event_line_sync(event_line_id: str) -> dict:
@@ -39913,6 +41028,13 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             primary_sources=primary_sources,
             missing_context=missing_context,
         )
+        # 前端追问 UI 已下线，跳过 LLM 生成以节省 token；保留 scenario 字段供日志兼容。
+        return WorkspaceFollowupResult(
+            questions=[],
+            scenario=scenario,
+            generation_mode="fallback",
+            rejected_count=0,
+        )
         if workspace_workflow == "file_search" and search_result is not None and getattr(search_result, "suggestedFollowups", None):
             return build_workspace_followup_result_from_candidates(
                 list(search_result.suggestedFollowups or []),
@@ -40270,6 +41392,39 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         if intro_like_prompt and workspace_generation_mode != "consultant_synthesis":
             open_model_system_instruction += "\n回答应尽量覆盖机构定位、核心问题、主要方法/项目和当前升级方向。"
 
+        # P0.5 · 防幻觉硬约束 (针对数据类回答, 跟字典 verified attributes 配套)
+        # 这些规则放在 system_instruction 末尾, 优先级高于 prompt 里的具体指令
+        open_model_system_instruction += (
+            "\n\n【数据可信约束 — 必须遵守, 违反就是错的】\n"
+            "1. 引用关键事实 (具体数字 / 人名 / 日期 / 金额 / 地点 / 评估等级 / 期数), 必须满足以下其一:\n"
+            "   a) 来自「字典权威数据档案」(背景包里标 ⭐⭐ 的段), 这是最高优先级;\n"
+            "   b) 来自「原始资料」, 必须能找到具体文档支撑;\n"
+            "   c) 如果以上两处都没有该字段的数据, 必须明确写「档案中暂未收录」或「资料中未提及」, 严禁编造或猜测。\n"
+            "2. 同一字段在不同 scope 下有多个值时 (例: 项目累计 vs 机构当前, 2022 底 vs 2025-6),\n"
+            "   必须**同时给出全部值并显式标明 scope/时间点**, 不要合并、不要互相替代、不要只选一个。\n"
+            "3. 隐私敏感字段 (个人手机号 / 个人身份证 / 个人银行卡号 / 家庭住址), 即使原始资料中包含,\n"
+            "   也禁止在回答中输出明文, 只能写「相关联系方式存档于资料 X, 如需可联系」。\n"
+            "4. 涉及推理或对比 (例: 'A 比 B 增长 X 倍'), 必须先确认两端数据 scope 是否可比, 不可比时明确指出。\n"
+            "5. 同一字段在原始资料里出现 ≥2 个互相冲突的值 (例: 鲁冰花舍 2023 支出有 20.05 万 和 200.49 万 两个版本),\n"
+            "   优先采用字典权威档案的 verified 值;若档案没收录, 必须**同时列出两个候选值并标明各自来源**,\n"
+            "   由用户来判断;严禁默默选一个不告知用户存在冲突。"
+        )
+
+        # 短期分段 · 客户主体强声明 (修跨文档/跨组织归属混淆)
+        try:
+            current_client_name = build_client_summary(client_id).name or client_id
+        except Exception:
+            current_client_name = client_id
+        open_model_system_instruction += (
+            f"\n\n【主体归属硬约束 — 必须遵守】\n"
+            f"6. 用户本轮在问的客户是「{current_client_name}」。**所有事实必须验证归属**:\n"
+            f"   a) 资料中出现具体数字/人员/事实时, 必须先确认资料里**明确说**这是「{current_client_name}」的数据,\n"
+            f"      而非合作方/咨询公司/外部机构/政府部门/项目甲方乙方对方的数据;\n"
+            f"   b) 协议/合同/合作文件里通常涉及两方甚至多方组织, 必须仔细判断该数据归属哪一方;\n"
+            f"   c) 如无法确认归属, 必须明示「资料中未明确说该数据是「{current_client_name}」的」, 不要默认归到「{current_client_name}」;\n"
+            f"   d) 严禁把外部组织 (合作方、咨询公司、上级单位、其他基金会) 的数据当作「{current_client_name}」的来回答。"
+        )
+
         latest_partial_content = ""
         latest_partial_structured: dict[str, object] | None = None
 
@@ -40311,9 +41466,14 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             if is_client_analysis_run_canceled(run_id):
                 return
             partial_content = str(partial.get("content") or "").strip()
-            if not partial_content:
+            # heartbeat 来自深度思考阶段：模型在 reasoning，没有可见 content token，
+            # 但 SSE 流仍在动。仍然要刷 chat_message / analysis_run 的 updated_at，
+            # 防止 stale watchdog（420s 阈值）误判 LLM 卡住。只跳过 content 覆盖。
+            is_heartbeat = bool(partial.get("heartbeat"))
+            if not partial_content and not is_heartbeat:
                 return
-            if has_meaningful_partial_content(partial_content):
+            content_is_meaningful = bool(partial_content) and has_meaningful_partial_content(partial_content)
+            if content_is_meaningful:
                 latest_partial_content = partial_content
                 latest_partial_structured = (
                     partial["structured"]
@@ -40332,7 +41492,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                     "modelUsed": generation_model,
                     "modelLabel": generation_model_label,
                 },
-                content=partial_content if has_meaningful_partial_content(partial_content) else None,
+                content=partial_content if content_is_meaningful else None,
             )
             if run_id:
                 update_kwargs: dict[str, object] = {
@@ -40342,7 +41502,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                     "progress_ceiling": 96.0,
                     "stage_label": str(partial.get("stageLabel") or "正在生成回答"),
                 }
-                if has_meaningful_partial_content(partial_content):
+                if content_is_meaningful:
                     update_kwargs["long_answer"] = partial_content
                 update_client_analysis_run(run_id, **update_kwargs)
 
@@ -40538,8 +41698,12 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                     # 让前端 typewriter 跟着 actualText 增长追字。
                     if not partial:
                         return
+                    is_heartbeat = bool(partial.get("heartbeat"))
                     streaming_content = str(partial.get("content") or "")
-                    multipass_state["current_streaming_text"] = streaming_content
+                    # heartbeat 不带新 content（深度思考阶段没有 content token），
+                    # 不能覆盖 streaming_text 缓冲，否则 _compose_partial_markdown 会少一段。
+                    if not is_heartbeat:
+                        multipass_state["current_streaming_text"] = streaming_content
                     multipass_state["current_section_index"] = index
                     planned_titles = list(multipass_state.get("planned_titles") or [])
                     if 0 <= index < len(planned_titles):
@@ -40555,6 +41719,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                         "stageLabel": stage_label or f"正在生成第 {index + 1} 段",
                         "progress": progress_number,
                         "structured": None,
+                        "heartbeat": is_heartbeat,
                     })
 
                 def _on_section_completed(index: int, title: str, section_text: str) -> None:
@@ -40579,6 +41744,14 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                         workspace_snapshot,
                         prompt=prompt_for_context,
                     ) or ""
+                    # P-D.1: multipass 也注入字典权威包 + universal/contract 解构字段，
+                    # 让深度思考模式的回答也基于字典 verified 事实展开，不绕过数据中心。
+                    try:
+                        fields_pack_mp = _build_structured_fields_pack(state.db, client_id, prompt_for_context)
+                        if fields_pack_mp:
+                            multipass_strategic_pack = fields_pack_mp + "\n\n" + multipass_strategic_pack
+                    except Exception as exc:  # noqa: BLE001
+                        logger.warning("[multipass] inject fields_pack failed: %s", exc)
                     print(f"[MULTIPASS-DEBUG] calling generate_multipass_answer, bg_pack_chars={len(multipass_background_pack)}, strategic_pack_chars={len(multipass_strategic_pack)}, full_context_chars={len(open_context)}", flush=True)
                     multipass_outcome = generate_multipass_answer(
                         question=prompt_for_context,
@@ -40604,6 +41777,18 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                                 "judgment": multipass_outcome.outline.headline,
                                 "analysis": multipass_outcome.outline.judgment_line,
                             })
+                        # P-D.1: 校验 multipass 输出里的字典 cite
+                        try:
+                            from app.services.citation_validator import validate_citations
+                            c_text, _checks, _stats = validate_citations(structured.content or "", state.db, client_id)
+                            a_text, _checks2, _stats2 = validate_citations(structured.analysis or "", state.db, client_id)
+                            structured = structured.model_copy(update={"content": c_text, "analysis": a_text})
+                            if _stats["total"] + _stats2["total"] > 0:
+                                logger.info("[multipass-cite] client=%s content=%d/%d analysis=%d/%d",
+                                            client_id, _stats.get("valid",0), _stats.get("total",0),
+                                            _stats2.get("valid",0), _stats2.get("total",0))
+                        except Exception as exc:  # noqa: BLE001
+                            logger.warning("[multipass-cite] validation failed: %s", exc)
                         multipass_used = True
                         llm_attempt_count = max(llm_attempt_count, multipass_outcome.llm_attempt_count)
                         if multipass_outcome.failure_stage:
@@ -40677,6 +41862,28 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                                 ) or ""
                     except Exception as exc:  # noqa: BLE001 — strategic_pack 失败不阻断单次回答
                         logger.warning("[single-pass] build_strategic_pack failed: %s", exc)
+
+                    # P0.5 · 注入字典 verified attributes 作为防幻觉锚点
+                    # 在 open_context (原始证据包) 前置, LLM 必须优先引用人审过的金标准
+                    try:
+                        from app.services.glossary_attributes_pack import (
+                            build_verified_attributes_pack,
+                        )
+                        verified_attrs_pack = build_verified_attributes_pack(
+                            state.db, client_id
+                        )
+                        if verified_attrs_pack:
+                            open_context = verified_attrs_pack + "\n\n" + open_context
+                            logger.info(
+                                "[chat] injected verified attributes pack (%d chars) for client=%s",
+                                len(verified_attrs_pack),
+                                client_id,
+                            )
+                    except Exception as exc:  # noqa: BLE001 — 注入失败不阻断回答
+                        logger.warning(
+                            "[chat] build_verified_attributes_pack failed: %s", exc
+                        )
+
                     structured = state.ai.generate_raw_evidence_response(
                         prompt_for_context,
                         open_model_system_instruction,
@@ -40691,6 +41898,29 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                         creativity_mode=chat_creativity_mode,
                         task_mode=is_task_request_now,
                     )
+                    # P-C.3: 校验 LLM 输出里的字典 cite。
+                    # 失败的 cite（编造的字典引用）会被替换为 ⚠️ 提示，物理性防编造。
+                    try:
+                        from app.services.citation_validator import validate_citations
+                        validated_content, _checks_c, stats_c = validate_citations(
+                            structured.content or "", state.db, client_id,
+                        )
+                        validated_analysis, _checks_a, stats_a = validate_citations(
+                            structured.analysis or "", state.db, client_id,
+                        )
+                        if stats_c["total"] + stats_a["total"] > 0:
+                            logger.info(
+                                "[cite-validator] client=%s content cite valid=%d invalid=%d / analysis valid=%d invalid=%d",
+                                client_id,
+                                stats_c.get("valid", 0), stats_c.get("invalid", 0),
+                                stats_a.get("valid", 0), stats_a.get("invalid", 0),
+                            )
+                        structured = structured.model_copy(update={
+                            "content": validated_content,
+                            "analysis": validated_analysis,
+                        })
+                    except Exception as exc:  # noqa: BLE001 — 校验失败不阻断答案返回
+                        logger.warning("[cite-validator] failed: %s", exc)
                 except AiInvocationError as error:
                     provider_used = error.provider
                     model_route = f"AI · {state.ai.model_label(error.provider, model_used)}"
@@ -41854,8 +43084,18 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             """,
             (message_id, client_id),
         )
+        # 幂等：这个端点会成对删除 user + assistant 两条消息。
+        # 若用户在 UI 上对同一对的另一条再点删除（race / 双击 / 重复点击），
+        # 第二次请求里目标消息已不存在——把它当作"已成功删除"返回 200，
+        # 而不是抛 404 让前端误报"删除失败"。
         if not target:
-            raise HTTPException(status_code=404, detail="Chat message not found")
+            return {
+                "clientId": client_id,
+                "threadId": "",
+                "deletedIds": [],
+                "threadDeleted": False,
+                "alreadyDeleted": True,
+            }
         thread_id = str(target["thread_id"])
         deleted_ids = [str(target["id"])]
         if str(target["role"]) == "user":
@@ -42357,13 +43597,26 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
     @app.post("/api/v1/clients/{client_id}/knowledge/export-answer", response_model=ClientTextDocumentResponse)
     def export_answer(client_id: str, payload: ExportAnswerPayload) -> ClientTextDocumentResponse:
         build_client_summary(client_id)
-        message = fetch_chat_message_for_client(client_id, payload.messageId)
-        exported = create_answer_export_document(client_id, message)
+        # 兼容老调用：messageId 单条，新调用：messageIds 多条
+        raw_ids = payload.messageIds or ([payload.messageId] if payload.messageId else [])
+        message_ids = [mid for mid in (str(item).strip() for item in raw_ids) if mid]
+        if not message_ids:
+            raise HTTPException(status_code=400, detail="messageId 或 messageIds 必填")
+        # 去重保序
+        seen: set[str] = set()
+        deduped_ids: list[str] = []
+        for mid in message_ids:
+            if mid in seen:
+                continue
+            seen.add(mid)
+            deduped_ids.append(mid)
+        messages = [fetch_chat_message_for_client(client_id, mid) for mid in deduped_ids]
+        exported = create_answer_export_document(client_id, messages)
         log_activity(
             "knowledge.export_answer",
             "document",
             exported.documentId,
-            {"clientId": client_id, "messageId": payload.messageId, "path": exported.path},
+            {"clientId": client_id, "messageIds": deduped_ids, "path": exported.path},
         )
         return exported
 
@@ -45065,46 +46318,14 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 try:
                     cloud_response = ReviewResponse(**payload)
                     reconciled_response = reconcile_cloud_review_response_with_local_tasks(cloud_response, weekLabel)
-                    result = augment_review_response(
+                    return augment_review_response(
                         reconciled_response,
                         weekLabel,
                         generate_weekly_overview=not skipAi,
                         perspective=perspective,
                         department_id=departmentId,
                     )
-                    try:
-                        from collections import Counter as _Counter
-                        c1 = _Counter()
-                        for it in cloud_response.workItems:
-                            snap = it.taskSnapshot if isinstance(it.taskSnapshot, dict) else (it.taskSnapshot.model_dump() if hasattr(it.taskSnapshot, 'model_dump') else {})
-                            c1[snap.get("ownerName") or "(空)"] += 1
-                        c2 = _Counter()
-                        for it in reconciled_response.workItems:
-                            snap = it.taskSnapshot if isinstance(it.taskSnapshot, dict) else (it.taskSnapshot.model_dump() if hasattr(it.taskSnapshot, 'model_dump') else {})
-                            c2[snap.get("ownerName") or "(空)"] += 1
-                        c3 = _Counter()
-                        for it in result.workItems:
-                            snap = it.taskSnapshot if isinstance(it.taskSnapshot, dict) else (it.taskSnapshot.model_dump() if hasattr(it.taskSnapshot, 'model_dump') else {})
-                            c3[snap.get("ownerName") or "(空)"] += 1
-                        with open("/tmp/yiyu_reviews_trace.log", "a") as fp:
-                            fp.write(f"\n=== {datetime.now().isoformat()} perspective={perspective} weekLabel_input={weekLabel} skipAi={skipAi} ===\n")
-                            fp.write(f"cloud_response.weekLabel={cloud_response.weekLabel!r} cloud.currentReview.weekLabel={cloud_response.currentReview.weekLabel if cloud_response.currentReview else None!r}\n")
-                            fp.write(f"reconciled_response.weekLabel={reconciled_response.weekLabel!r}\n")
-                            fp.write(f"cloud      ({len(cloud_response.workItems):>3}): {dict(c1)}\n")
-                            fp.write(f"reconciled ({len(reconciled_response.workItems):>3}): {dict(c2)}\n")
-                            fp.write(f"final      ({len(result.workItems):>3}): {dict(c3)}\n")
-                            # Sample taskIds + ownerName of first 3 items in each phase
-                            for label, src in [("cloud_first3", cloud_response.workItems), ("recon_first3", reconciled_response.workItems), ("final_first3", result.workItems)]:
-                                for i, it in enumerate(src[:3]):
-                                    snap = it.taskSnapshot if isinstance(it.taskSnapshot, dict) else (it.taskSnapshot.model_dump() if hasattr(it.taskSnapshot, 'model_dump') else {})
-                                    fp.write(f"  {label}[{i}]: tid={it.taskId} ownerName={snap.get('ownerName')!r} ownerId={snap.get('ownerId')!r}\n")
-                    except Exception as _log_exc:
-                        with open("/tmp/yiyu_reviews_trace.log", "a") as fp:
-                            fp.write(f"[log-error] {_log_exc}\n")
-                    return result
-                except Exception as exc:
-                    with open("/tmp/yiyu_reviews_trace.log", "a") as fp:
-                        fp.write(f"[EXCEPT in cloud-path] {type(exc).__name__}: {exc}\n")
+                except Exception:
                     pass
         target_week = weekLabel or current_review_week_label()
         base_response = local_review_dashboard_base(target_week, include_analysis=False)
@@ -47479,6 +48700,40 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             week_label=resolve_growth_week_label(user_id, weekLabel),
         )
 
+    # L6: 学习推荐反馈闭环
+    @app.post("/api/v1/growth/recommendations/feedback")
+    def post_recommendation_feedback(body: dict = Body(...)) -> dict:
+        user_id, _user_name = resolve_growth_actor()
+        source = str(body.get("source", ""))
+        source_id = str(body.get("sourceId", ""))
+        action = str(body.get("action", ""))
+        if source not in ("handbook", "exp_wall", "github", "exa"):
+            raise HTTPException(status_code=400, detail="invalid source")
+        if action not in ("clicked", "saved", "dismissed", "completed"):
+            raise HTTPException(status_code=400, detail="invalid action")
+        if not source_id:
+            raise HTTPException(status_code=400, detail="sourceId required")
+        from uuid import uuid4
+        from datetime import datetime as _dt
+        state.db.execute(
+            """
+            INSERT INTO growth_recommendation_feedback(
+                id, user_id, source, source_id, action, matched_ability, note, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                f"rec_fb_{uuid4().hex[:12]}",
+                user_id,
+                source,
+                source_id,
+                action,
+                str(body.get("matchedAbility", ""))[:32],
+                str(body.get("note", ""))[:200],
+                _dt.now().isoformat(timespec="seconds"),
+            ),
+        )
+        return {"ok": True}
+
     @app.get("/api/v1/growth/workbench", response_model=GrowthWorkbenchSnapshotRecord)
     def get_growth_workbench(
         weekLabel: str | None = Query(default=None),
@@ -47671,8 +48926,15 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             ),
         )
 
+        # P-D.2: 报告生成接字典权威包，让最终交付物基于审核过的事实
         try:
-            blueprint = _draft_blueprint_via_llm(state.ai, context=context)
+            from app.services.glossary_attributes_pack import build_verified_attributes_pack
+            _report_glossary_pack = build_verified_attributes_pack(state.db, context.client_id) or ""
+        except Exception:
+            _report_glossary_pack = ""
+
+        try:
+            blueprint = _draft_blueprint_via_llm(state.ai, context=context, glossary_pack=_report_glossary_pack)
         except BlueprintDraftError as exc:
             failed_at = datetime.utcnow().isoformat(timespec="seconds") + "Z"
             state.db.execute(
@@ -47817,6 +49079,13 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                         (str(err or "")[:500], ts, report_run_id, idx),
                     )
 
+            # P-D.2: 报告章节生成也接字典权威包
+            try:
+                from app.services.glossary_attributes_pack import build_verified_attributes_pack as _bvap
+                _section_glossary_pack = _bvap(state.db, context.client_id) or ""
+            except Exception:
+                _section_glossary_pack = ""
+
             try:
                 draft_sections_parallel(
                     state.ai,
@@ -47825,6 +49094,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                     section_indices=target_indices,
                     max_workers=payload.max_workers,
                     progress_cb=progress_cb,
+                    glossary_pack=_section_glossary_pack,
                 )
             except Exception as exc:
                 logger.exception(
@@ -49451,6 +50721,187 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 role="assistant", content=answer, createdAt=now_ts
             ),
         )
+
+    # ──────────────────────────────────────────────────────────────────────
+    # 舆情监控 endpoints（P2-a · 2026-05-17）
+    # ──────────────────────────────────────────────────────────────────────
+
+    @app.post("/api/v1/intelligence/sentiment/refresh")
+    def refresh_sentiment_endpoint(payload: dict) -> dict:
+        """触发舆情抓取：对指定客户 / 业务线跑一次 search_public_web → 词表情感分析 → 入库。
+
+        payload:
+          - clientId: 必填或 projectModuleId 必填（二选一定位监控对象）
+          - projectModuleId: 业务线级舆情聚合时用
+          - targetName: 抓取关键词（如 "日慈基金会"），未填则从 client/module 表查
+          - businessLine: 业务线名（可选，加进搜索 query）
+          - maxPerQuery: 每个 query 抓多少条，默认 5
+        """
+        from app.services.intelligence_sentiment import (
+            _collect_target_aliases,
+            fetch_sentiment_candidates,
+            persist_sentiment_drafts,
+        )
+
+        body = payload or {}
+        client_id = (body.get("clientId") or "").strip() or None
+        project_module_id = (body.get("projectModuleId") or "").strip() or None
+        target_name = (body.get("targetName") or "").strip()
+        business_line = (body.get("businessLine") or "").strip() or None
+        max_per_query = max(1, min(20, int(body.get("maxPerQuery") or 5)))
+
+        # 没传 targetName 时从 client / project_module 表自动拉
+        if not target_name:
+            if project_module_id:
+                row = state.db.fetchone(
+                    "SELECT name FROM project_modules WHERE id = ?",
+                    (project_module_id,),
+                )
+                target_name = str(row["name"]) if row else ""
+            elif client_id:
+                row = state.db.fetchone(
+                    "SELECT name FROM clients WHERE id = ?",
+                    (client_id,),
+                )
+                target_name = str(row["name"]) if row else ""
+        if not target_name:
+            raise HTTPException(status_code=400, detail="未指定监控对象（targetName / clientId / projectModuleId 至少传一个）")
+
+        # 数据中心深度复用：拉别名 / 业务域 / 业务线，让搜索 query 更精准
+        target_ctx = _collect_target_aliases(
+            state.db,
+            client_id=client_id,
+            project_module_id=project_module_id,
+        )
+
+        drafts = fetch_sentiment_candidates(
+            target_name,
+            business_line=business_line,
+            aliases=target_ctx.get("aliases") or [],
+            domain=(target_ctx.get("domain") or None),
+            project_modules=target_ctx.get("project_modules") or [],
+            max_per_query=max_per_query,
+            ai_service=state.ai,
+            deep_judge_budget=int(body.get("deepJudgeBudget") or 8),
+        )
+        inserted = persist_sentiment_drafts(
+            state.db,
+            drafts=drafts,
+            client_id=client_id,
+            project_module_id=project_module_id,
+        )
+        return {
+            "targetName": target_name,
+            "fetchedCount": len(drafts),
+            "insertedCount": inserted,
+            "negativeCount": sum(1 for d in drafts if d.sentiment.label == "negative"),
+            "neutralCount": sum(1 for d in drafts if d.sentiment.label == "neutral"),
+            "positiveCount": sum(1 for d in drafts if d.sentiment.label == "positive"),
+        }
+
+    @app.get("/api/v1/intelligence/sentiment/items")
+    def list_sentiment_items_endpoint(
+        clientId: str | None = None,
+        projectModuleId: str | None = None,
+        withinDays: int = 30,
+        limit: int = 50,
+    ) -> dict:
+        """读最近 N 天的舆情 items，按情感 label 排序（负面优先）。
+
+        前端 SentimentMonitorPlaceholder 接这个 endpoint 把骨架接上真实数据。
+        """
+        from app.services.intelligence_sentiment import list_sentiment_items
+
+        items = list_sentiment_items(
+            state.db,
+            client_id=clientId or None,
+            project_module_id=projectModuleId or None,
+            within_days=max(1, withinDays),
+            limit=max(1, min(200, limit)),
+        )
+        return {"items": items, "total": len(items)}
+
+    @app.get("/api/v1/intelligence/sentiment/profile")
+    def sentiment_profile_endpoint(
+        clientId: str | None = None,
+        projectModuleId: str | None = None,
+        withinDays: int = 30,
+    ) -> dict:
+        """公众画像聚合：返回情感分 / 提及量 / 三色分布 / 高频源 / 负面集中源。
+
+        前端 KPI 三色块 + 公众画像 + 负面预警三个区都吃这个 endpoint。
+        """
+        from app.services.intelligence_sentiment import compute_sentiment_profile
+
+        return compute_sentiment_profile(
+            state.db,
+            client_id=clientId or None,
+            project_module_id=projectModuleId or None,
+            within_days=max(1, withinDays),
+        )
+
+    @app.post("/api/v1/intelligence/sentiment/feedback")
+    def sentiment_feedback_endpoint(payload: dict) -> dict:
+        """记录用户对一条舆情 item 的处置反馈。
+
+        payload:
+          - itemId: 必填
+          - action: 'confirm_negative' | 'mark_misclassified' | 'mark_resolved' | 'restore'
+          - notes: 可选备注
+
+        action → user_status 映射：
+          - confirm_negative → 'confirmed_negative'（可见，但标记已确认）
+          - mark_misclassified → 'misclassified'（隐藏，画像不再算）
+          - mark_resolved → 'resolved'（可见，但置灰）
+          - restore → 'active'（撤回处置）
+        """
+        body = payload or {}
+        item_id = (body.get("itemId") or "").strip()
+        action = (body.get("action") or "").strip()
+        notes = str(body.get("notes") or "")[:500]
+
+        if not item_id:
+            raise HTTPException(status_code=400, detail="itemId 必填")
+        action_to_status = {
+            "confirm_negative": "confirmed_negative",
+            "mark_misclassified": "misclassified",
+            "mark_resolved": "resolved",
+            "restore": "active",
+        }
+        if action not in action_to_status:
+            raise HTTPException(status_code=400, detail=f"action 必须是 {list(action_to_status)} 之一")
+
+        row = state.db.fetchone(
+            "SELECT id, user_feedback_json FROM intelligence_items WHERE id = ? AND content_kind = 'public_opinion'",
+            (item_id,),
+        )
+        if not row:
+            raise HTTPException(status_code=404, detail="未找到该舆情条目")
+
+        new_status = action_to_status[action]
+        # 合并已有 feedback（保留 dismiss/follow 阶段的痕迹）
+        try:
+            prev_feedback = from_json(row["user_feedback_json"]) or {}
+        except Exception:  # noqa: BLE001
+            prev_feedback = {}
+        if not isinstance(prev_feedback, dict):
+            prev_feedback = {}
+        now_ts = datetime.now(timezone.utc).isoformat()
+        prev_feedback["sentimentAction"] = action
+        prev_feedback["sentimentActionAt"] = now_ts
+        if notes:
+            prev_feedback["sentimentNotes"] = notes
+
+        state.db.execute(
+            "UPDATE intelligence_items SET user_status = ?, user_feedback_json = ?, updated_at = ? WHERE id = ?",
+            (new_status, to_json(prev_feedback), now_ts, item_id),
+        )
+        return {
+            "itemId": item_id,
+            "action": action,
+            "userStatus": new_status,
+            "updatedAt": now_ts,
+        }
 
     return app
 

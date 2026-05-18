@@ -24,6 +24,25 @@ from app.models import (
     GrowthPendingCaptureState,
     GrowthProjectHighlightRecord,
     GrowthRankRecord,
+    GrowthAbilityTrendPointRecord,
+    GrowthAbilityTrendRecord,
+    GrowthBusinessCoverageItemRecord,
+    GrowthBusinessCoverageRecord,
+    GrowthCommitmentCumulativePointRecord,
+    GrowthCommitmentItemRecord,
+    GrowthCommitmentSummaryRecord,
+    GrowthCommitmentTrendPointRecord,
+    GrowthDailyActivityRecord,
+    GrowthDailyActivityResponse,
+    GrowthImpactCurvePointRecord,
+    GrowthImpactRecord,
+    GrowthLearningPickRecord,
+    GrowthLearningRecord,
+    GrowthPeerComparisonRecord,
+    GrowthReviewStreakRecord,
+    GrowthSocialFeedbackRecord,
+    GrowthWorkTypeRecord,
+    GrowthWorkTypeSliceRecord,
     GrowthSourceCoverageRecord,
     GrowthValidationActionResponse,
     GrowthValidationState,
@@ -40,6 +59,70 @@ from app.models import (
 )
 
 ABILITY_ORDER = ("exec", "collab", "analyze", "insight", "risk", "write")
+
+# N1: role_tier → 能力维度集合 + 标签覆盖
+# CEO 看到的 6 维不同：战略判断/对外影响/组织建设/危机决策/远见洞察/资源调配
+# 后端 ability_key 内部还是用通用 6 维 (exec/collab/analyze/insight/risk/write)，
+# 通过 ROLE_ABILITY_LABEL_OVERRIDE 在返回前对 label 重命名，前端无感切换
+ROLE_ABILITY_LABEL_OVERRIDE: dict[str, dict[str, str]] = {
+    "ceo": {
+        "exec": "资源调配",
+        "collab": "组织建设",
+        "analyze": "战略判断",
+        "insight": "远见洞察",
+        "risk": "危机决策",
+        "write": "对外影响",
+    },
+    "leader": {
+        "exec": "团队推进",
+        "collab": "跨组协调",
+        "analyze": "项目研判",
+        "insight": "需求洞察",
+        "risk": "风险把控",
+        "write": "总结输出",
+    },
+}
+
+
+def _resolve_operator_row(db: Database, user_id: str):
+    """系统里有多套 id 体系（operators.id 跟 xp_ledger.user_id 经常错位）。
+    先按 id 查，再按 USER_NAME_ALIASES 配置的名字反查。"""
+    try:
+        row = db.fetchone("SELECT id, name, role, role_tier FROM operators WHERE id = ?", (user_id,))
+        if row and (row["role"] or row["role_tier"]):
+            return row
+    except Exception:
+        pass
+    for alias in USER_NAME_ALIASES.get(user_id, ()):
+        try:
+            row = db.fetchone(
+                "SELECT id, name, role, role_tier FROM operators WHERE name = ?", (alias,)
+            )
+            if row:
+                return row
+        except Exception:
+            continue
+    return None
+
+
+def _resolve_user_role_tier(db: Database, user_id: str) -> str:
+    row = _resolve_operator_row(db, user_id)
+    if row and row["role_tier"]:
+        return str(row["role_tier"])
+    return "member"
+
+
+def _apply_role_label_override(
+    ability_scores: list[GrowthAbilityScoreRecord],
+    role_tier: str,
+) -> list[GrowthAbilityScoreRecord]:
+    overrides = ROLE_ABILITY_LABEL_OVERRIDE.get(role_tier)
+    if not overrides:
+        return ability_scores
+    return [
+        ab.model_copy(update={"label": overrides.get(ab.abilityKey, ab.label)})
+        for ab in ability_scores
+    ]
 
 ABILITY_DEFAULTS = {
     "exec": {
@@ -96,7 +179,7 @@ ABILITY_STAGE_SCORE_RULES = [
     {"label": "带动", "minScore": 80},
 ]
 
-ABILITY_SCORE_HALF_SATURATION_XP = 96
+ABILITY_SCORE_HALF_SATURATION_XP = 300  # K4 调参：96→300，让能力分拉开区分度（XP=300 时 50 分；XP=900 时 75 分）
 
 ABILITY_WEIGHTS = {
     "reflection": {"l1": 5, "l2": 10, "l3": 14},
@@ -964,6 +1047,376 @@ def _keyword_hits(text: str) -> dict[str, int]:
 
 
 # ════════════════════════════════════════════════════════════════════════════
+# K 系列改造 · 真实数据源驱动的能力分（替代 ledger 关键词扫描）
+# ════════════════════════════════════════════════════════════════════════════
+# 旧逻辑：xp_ledger 写入靠 _infer_general_hits 关键词扫描，且大量徽章解锁自动
+# 送 XP 装填了能力分（exec 100% 来自 badge_unlock 等失真现象）。
+#
+# 新逻辑：直接从原始表按"入口 → 能力"配置矩阵聚合。该矩阵由用户产品视角确认：
+# 「周复盘是分析主力 / 任务完成是执行主力 / 被复用是写作主力 / 承诺履约是执行 /
+#   风险信号是风险 / 徽章自送 XP 排除」。
+#
+# 数据源限制：
+#   - meetings 表无 owner_user_id ⇒ B4 暂时跳过（待数据中心补字段）
+#   - commitments.committer 是名字字符串 ⇒ 用别名映射反查 user_id
+
+# user_id → 该用户可能在系统里出现的别名（commitments.committer 这类字段用）
+# 后续应该读 operators 表 + 用户自定义别名表
+USER_NAME_ALIASES: dict[str, tuple[str, ...]] = {
+    "user_guyuan": ("顾源源", "顾老师", "本机用户"),
+}
+
+
+def _resolve_user_aliases(db: Database, user_id: str) -> tuple[str, ...]:
+    """获取该 user 的所有可能名字（用于按名字反查 commitments 等表）。"""
+    aliases = set(USER_NAME_ALIASES.get(user_id, ()))
+    try:
+        row = db.fetchone("SELECT name FROM operators WHERE id = ?", (user_id,))
+        if row and row["name"]:
+            aliases.add(str(row["name"]))
+    except Exception:
+        pass
+    return tuple(aliases) if aliases else (user_id,)
+
+
+# 每个事件类型的 base XP（事件本身的"重量"）
+# 用户写作 base 高（高质量原创），任务/操作 base 低（量大易刷分）
+# K4 调参：原值全部减半，让 21 条手册不会单一来源就把分数顶到 85
+SOURCE_BASE_XP: dict[str, float] = {
+    "weekly_review_summary": 4.0,
+    "weekly_review_task_note": 2.0,
+    "handbook_entry": 3.0,
+    "task_done": 0.5,
+    "task_created": 0.2,
+    "meeting_owned": 2.5,
+    "handbook_reused": 4.0,
+    "exp_wall_liked": 1.0,
+    "exp_wall_saved": 2.5,
+    "commitment_fulfilled": 3.0,
+    "risk_signal_owned": 2.5,
+    "document_owned": 1.0,
+    "memory_owned_client": 0.5,
+}
+
+
+# 入口 × 能力维度 权重矩阵（K1：来自用户产品视角确认的参考答案）
+# 缺省 = 0（不算）；3.0 = ✅✅ 主力；1.5 = ✅ 次要；0.5 = 🟡 弱信号
+ABILITY_WEIGHTS_BY_SOURCE: dict[str, dict[str, float]] = {
+    # ── A 类：用户原创写作 ──
+    "weekly_review_summary": {
+        "exec": 1.5, "collab": 1.5, "analyze": 3.0,
+        "insight": 1.5, "risk": 1.5, "write": 1.5,
+    },
+    "weekly_review_task_note": {
+        "exec": 3.0, "collab": 0.5, "analyze": 1.5,
+        "insight": 0.5, "risk": 1.5, "write": 1.5,
+    },
+    "handbook_entry": {
+        "exec": 0.5, "collab": 0.5, "analyze": 3.0,
+        "insight": 3.0, "risk": 1.5, "write": 3.0,
+    },
+    # ── B 类：真实做事 ──
+    "task_done": {
+        "exec": 3.0, "risk": 0.5,
+    },
+    "task_created": {
+        "exec": 1.5,
+    },
+    "meeting_owned": {
+        "collab": 3.0,
+    },
+    # ── D 类：被组织看见 ──
+    "handbook_reused": {
+        "write": 3.0,
+    },
+    "exp_wall_liked": {
+        "write": 3.0,
+    },
+    "exp_wall_saved": {
+        "write": 3.0,
+    },
+    # ── E 类：数据中心 P0/P1 信号 ──
+    "commitment_fulfilled": {
+        "exec": 3.0,
+    },
+    "risk_signal_owned": {
+        "risk": 3.0,
+    },
+    # ── F 类：用户上传/挂载（弱信号）──
+    "document_owned": {
+        "write": 0.5,
+    },
+    "memory_owned_client": {
+        "insight": 0.5,
+    },
+}
+
+
+@dataclass
+class _SourceContribution:
+    """一个"入口"对该用户能力分的贡献明细，用于 evidence 文本拼装。"""
+
+    source_kind: str  # 即 SOURCE_BASE_XP / ABILITY_WEIGHTS_BY_SOURCE 的 key
+    count: int  # 这一类事件的件数
+    base_xp_per_unit: float
+    total_base_xp: float  # = count × base_xp_per_unit
+    sample_title: str = ""  # 最新一条的标题（给 evidence 用）
+
+
+def _count_source_events(db: Database, user_id: str) -> dict[str, _SourceContribution]:
+    """从所有原始表统计该用户每类事件的件数 + 抽样标题。"""
+
+    contributions: dict[str, _SourceContribution] = {}
+    aliases = _resolve_user_aliases(db, user_id)
+
+    def _add(kind: str, count: int, sample_title: str = "") -> None:
+        if count <= 0:
+            return
+        base = SOURCE_BASE_XP.get(kind, 0.0)
+        contributions[kind] = _SourceContribution(
+            source_kind=kind,
+            count=count,
+            base_xp_per_unit=base,
+            total_base_xp=count * base,
+            sample_title=sample_title,
+        )
+
+    # A1 · 周复盘 summary（取非空且长度 ≥ 30 字的）
+    try:
+        rows = db.fetchall(
+            """
+            SELECT id, week_label, length(summary) AS slen
+            FROM weekly_reviews
+            WHERE user_id = ? AND length(summary) >= 30
+            ORDER BY created_at DESC
+            """,
+            (user_id,),
+        )
+        if rows:
+            _add("weekly_review_summary", len(rows), f"{rows[0]['week_label']} 周复盘")
+    except Exception:
+        pass
+
+    # A2 · 复盘任务项 note + structured_note
+    try:
+        rows = db.fetchall(
+            """
+            SELECT id, week_label, length(note) AS nlen
+            FROM weekly_review_task_entries
+            WHERE user_id = ?
+              AND (length(note) >= 20 OR length(structured_note_json) >= 50)
+            ORDER BY reviewed_at DESC
+            """,
+            (user_id,),
+        )
+        if rows:
+            _add("weekly_review_task_note", len(rows), f"{rows[0]['week_label']} 任务复盘")
+    except Exception:
+        pass
+
+    # A4 · 手册条目（作者 = user）
+    try:
+        rows = db.fetchall(
+            """
+            SELECT title, created_at
+            FROM handbook_entries
+            WHERE author_user_id = ?
+            ORDER BY created_at DESC
+            """,
+            (user_id,),
+        )
+        if rows:
+            _add("handbook_entry", len(rows), str(rows[0]["title"])[:50])
+    except Exception:
+        pass
+
+    # B1 · 任务完成（status=done）
+    try:
+        rows = db.fetchall(
+            """
+            SELECT title, updated_at
+            FROM tasks
+            WHERE owner_id = ? AND status = 'done'
+            ORDER BY updated_at DESC
+            """,
+            (user_id,),
+        )
+        if rows:
+            _add("task_done", len(rows), str(rows[0]["title"])[:50])
+    except Exception:
+        pass
+
+    # B2 · 任务创建（不过滤 status，只计数量）
+    try:
+        row = db.fetchone(
+            "SELECT COUNT(*) AS cnt FROM tasks WHERE creator_id = ?",
+            (user_id,),
+        )
+        if row:
+            _add("task_created", int(row["cnt"] or 0))
+    except Exception:
+        pass
+
+    # B4 · 会议主持 —— 跳过（meetings 表无 owner 字段）
+
+    # D1 · 手册被复用（按用户名下手册的累计 reuse_count）
+    try:
+        row = db.fetchone(
+            """
+            SELECT COALESCE(SUM(reuse_count), 0) AS total
+            FROM handbook_entries
+            WHERE author_user_id = ?
+            """,
+            (user_id,),
+        )
+        if row:
+            _add("handbook_reused", int(row["total"] or 0))
+    except Exception:
+        pass
+
+    # D2/D3 · 经验墙被点赞 / 收藏
+    try:
+        row = db.fetchone(
+            """
+            SELECT
+              COALESCE(SUM(like_count), 0) AS likes,
+              COALESCE(SUM(save_count), 0) AS saves
+            FROM exp_wall_quotes
+            WHERE author_user_id = ? AND status = 'active'
+            """,
+            (user_id,),
+        )
+        if row:
+            _add("exp_wall_liked", int(row["likes"] or 0))
+            _add("exp_wall_saved", int(row["saves"] or 0))
+    except Exception:
+        pass
+
+    # E1 · 承诺履约（按 committer 名字别名匹配）
+    if aliases:
+        try:
+            placeholders = ",".join("?" * len(aliases))
+            rows = db.fetchall(
+                f"""
+                SELECT id, content, fulfilled_at
+                FROM commitments
+                WHERE committer IN ({placeholders}) AND status = 'fulfilled'
+                ORDER BY fulfilled_at DESC
+                """,
+                aliases,
+            )
+            if rows:
+                _add("commitment_fulfilled", len(rows), str(rows[0]["content"])[:50])
+        except Exception:
+            pass
+
+    # E2 · 风险信号（用户接触过的客户的风险，去重）
+    try:
+        rows = db.fetchall(
+            """
+            SELECT DISTINCT r.id, r.title, r.severity
+            FROM risk_signals r
+            WHERE r.status = 'active'
+              AND r.client_id IN (
+                SELECT DISTINCT client_id FROM v2_documents WHERE owner_user_id = ?
+                UNION
+                SELECT DISTINCT client_id FROM tasks WHERE owner_id = ? AND client_id IS NOT NULL
+              )
+            ORDER BY r.captured_at DESC
+            """,
+            (user_id, user_id),
+        )
+        if rows:
+            _add("risk_signal_owned", len(rows), str(rows[0]["title"])[:50])
+    except Exception:
+        pass
+
+    # F1 · 用户原创文档（v2_documents 过滤掉任务壳）
+    try:
+        row = db.fetchone(
+            """
+            SELECT COUNT(*) AS cnt FROM v2_documents
+            WHERE owner_user_id = ?
+              AND kind NOT IN ('task_doc', 'event_line_update_doc', 'review_entry_doc')
+              AND visible_category NOT IN ('任务资料', '待处理', '归档')
+            """,
+            (user_id,),
+        )
+        if row:
+            _add("document_owned", int(row["cnt"] or 0))
+    except Exception:
+        pass
+
+    # F3 · 客户范围的记忆（弱信号，仅 client scope + 高置信度）
+    try:
+        row = db.fetchone(
+            """
+            SELECT COUNT(*) AS cnt FROM memory_facts
+            WHERE owner_user_id = ? AND scope_type = 'client' AND confidence >= 0.5
+            """,
+            (user_id,),
+        )
+        if row:
+            _add("memory_owned_client", int(row["cnt"] or 0))
+    except Exception:
+        pass
+
+    return contributions
+
+
+def _compute_ability_totals_from_sources(
+    contributions: dict[str, _SourceContribution],
+) -> dict[str, int]:
+    """按配置矩阵把"事件类型 × base_xp"折算到每个能力维度。"""
+    totals: dict[str, float] = defaultdict(float)
+    for kind, contrib in contributions.items():
+        weights = ABILITY_WEIGHTS_BY_SOURCE.get(kind, {})
+        for ability_key, weight in weights.items():
+            totals[ability_key] += contrib.total_base_xp * weight
+    return {k: int(round(v)) for k, v in totals.items()}
+
+
+def _pick_real_source_evidence_text(
+    contributions: dict[str, _SourceContribution],
+    ability_key: str,
+    *,
+    fallback: str,
+) -> str:
+    """根据该 ability 收到的最大几个来源拼一句话 evidence。"""
+    contribs_for_ability: list[tuple[str, _SourceContribution, float]] = []
+    for kind, contrib in contributions.items():
+        w = ABILITY_WEIGHTS_BY_SOURCE.get(kind, {}).get(ability_key, 0)
+        if w > 0 and contrib.count > 0:
+            contribs_for_ability.append((kind, contrib, w * contrib.total_base_xp))
+    if not contribs_for_ability:
+        return fallback
+    contribs_for_ability.sort(key=lambda x: -x[2])
+
+    label_map: dict[str, str] = {
+        "weekly_review_summary": "周复盘",
+        "weekly_review_task_note": "任务复盘",
+        "handbook_entry": "手册条目",
+        "task_done": "完成任务",
+        "task_created": "创建任务",
+        "handbook_reused": "手册被复用",
+        "exp_wall_liked": "金句被赞",
+        "exp_wall_saved": "金句被收藏",
+        "commitment_fulfilled": "承诺已履约",
+        "risk_signal_owned": "接触客户的风险信号",
+        "document_owned": "上传/产出文档",
+        "memory_owned_client": "客户相关记忆",
+    }
+    parts: list[str] = []
+    for kind, contrib, _ in contribs_for_ability[:3]:
+        label = label_map.get(kind, kind)
+        if contrib.sample_title:
+            parts.append(f"{label} {contrib.count} 条 · 最新「{contrib.sample_title}」")
+        else:
+            parts.append(f"{label} {contrib.count} 条")
+    return " · ".join(parts)
+
+
+# ════════════════════════════════════════════════════════════════════════════
 # 数据中心客观证据增强（G1+G2 P0 改造）
 # ════════════════════════════════════════════════════════════════════════════
 # 现有 ledger 完全基于 ABILITY_KEYWORDS 关键词匹配累计 XP。本模块直接读
@@ -1156,17 +1609,989 @@ def _pick_objective_evidence_text(
     *,
     fallback: str,
 ) -> str:
+    """把该 ability 的所有客观证据聚合成一句"人话"。
+
+    H2 改造：
+    - 不暴露技术 ID（旧逻辑直接打印 memory.fact_key 形如
+      "data_center_ingest:task:task_638f00d491"）
+    - 不暴露 memory.fact_value 内容（按 [[project-yiyu-exp-wall-rules]] 第 1 条，
+      客户/项目相关的敏感判断不展示）
+    - 按强弱排序：被组织看见的金句 > 真实文档产出 > 记忆沉淀计数
+    """
     matches = [e for e in evidence if e.ability_key == ability_key]
     if not matches:
         return fallback
-    latest = matches[0]
-    if latest.source_type == "exp_wall_quote":
-        return f"近期金句：「{latest.title}」 {latest.detail}"
-    if latest.source_type == "memory_fact":
-        return f"近期记忆：{latest.title} — {latest.detail}"
-    if latest.source_type == "document":
-        return f"近期产出：{latest.title}"
-    return fallback
+
+    quotes = [e for e in matches if e.source_type == "exp_wall_quote"]
+    docs = [e for e in matches if e.source_type == "document"]
+    memories = [e for e in matches if e.source_type == "memory_fact"]
+
+    parts: list[str] = []
+    if quotes:
+        head = quotes[0]
+        if len(quotes) > 1:
+            parts.append(f"组织墙金句 {len(quotes)} 条 · 最新「{head.title}」")
+        else:
+            parts.append(f"组织墙金句：「{head.title}」")
+    if docs:
+        head = docs[0]
+        if len(docs) > 1:
+            parts.append(f"近期产出 {len(docs)} 份 · 最新《{head.title}》")
+        else:
+            parts.append(f"近期产出：《{head.title}》")
+    if memories:
+        parts.append(f"沉淀相关记忆 {len(memories)} 条")
+
+    return " · ".join(parts) if parts else fallback
+
+
+def _current_week_label() -> str:
+    """ISO 周标签，如 '2026-W20'。每周一切换。"""
+    today = datetime.now()
+    iso_year, iso_week, _ = today.isocalendar()
+    return f"{iso_year}-W{iso_week:02d}"
+
+
+def _persist_weekly_snapshot(
+    db: Database,
+    user_id: str,
+    ability_scores: list[GrowthAbilityScoreRecord],
+) -> None:
+    """L1：把当周末的 6 能力分数快照写入 growth_ability_weekly_snapshot。
+
+    懒触发：build_growth_overview 调用时检测；UNIQUE(user_id, week_label, ability_key)
+    保证一周内重复 build 只覆盖不重复增长（用 INSERT OR REPLACE）。
+    """
+    if not ability_scores:
+        return
+    week_label = _current_week_label()
+    now = _now_iso()
+    try:
+        for ab in ability_scores:
+            db.execute(
+                """
+                INSERT OR REPLACE INTO growth_ability_weekly_snapshot(
+                    id, user_id, week_label, ability_key,
+                    current_score, total_xp, snapshot_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    f"snap_{user_id}_{week_label}_{ab.abilityKey}",
+                    user_id,
+                    week_label,
+                    ab.abilityKey,
+                    int(ab.currentScore),
+                    int(ab.totalXp),
+                    now,
+                ),
+            )
+    except Exception:
+        # 表可能未建（旧库），静默跳过
+        pass
+
+
+def _build_ability_trends(
+    db: Database,
+    user_id: str,
+    ability_scores: list[GrowthAbilityScoreRecord],
+    profile_map: dict[str, GrowthAbilityProfileRecord],
+    *,
+    weeks: int = 8,
+) -> list[GrowthAbilityTrendRecord]:
+    """L1：拉最近 N 周快照，组装 6 能力趋势。"""
+    try:
+        rows = db.fetchall(
+            """
+            SELECT ability_key, week_label, current_score, total_xp
+            FROM growth_ability_weekly_snapshot
+            WHERE user_id = ?
+            ORDER BY week_label ASC
+            """,
+            (user_id,),
+        )
+    except Exception:
+        rows = []
+
+    by_ability: dict[str, list[GrowthAbilityTrendPointRecord]] = defaultdict(list)
+    for row in rows:
+        key = str(row["ability_key"])
+        by_ability[key].append(
+            GrowthAbilityTrendPointRecord(
+                weekLabel=str(row["week_label"]),
+                score=int(row["current_score"] or 0),
+                totalXp=int(row["total_xp"] or 0),
+            )
+        )
+
+    trends: list[GrowthAbilityTrendRecord] = []
+    for ab in ability_scores:
+        points = by_ability.get(ab.abilityKey, [])[-weeks:]
+        score_delta = 0
+        direction = "flat"
+        if len(points) >= 2:
+            score_delta = points[-1].score - points[-2].score
+            if score_delta > 0:
+                direction = "up"
+            elif score_delta < 0:
+                direction = "down"
+        trends.append(
+            GrowthAbilityTrendRecord(
+                abilityKey=ab.abilityKey,
+                label=ab.label,
+                points=points,
+                scoreDelta=score_delta,
+                direction=direction,
+            )
+        )
+    return trends
+
+
+def _build_commitment_summary(db: Database, user_id: str) -> GrowthCommitmentSummaryRecord:
+    """M2：承诺履约率 + 4 周趋势 + 即将到期的承诺列表。"""
+    summary = GrowthCommitmentSummaryRecord()
+    aliases = _resolve_user_aliases(db, user_id)
+    if not aliases:
+        return summary
+
+    placeholders = ",".join("?" * len(aliases))
+    today = datetime.now()
+    cutoff_30 = (today - timedelta(days=30)).isoformat(timespec="seconds")
+
+    try:
+        rows = db.fetchall(
+            f"""
+            SELECT id, content, recipient, deadline, status, fulfilled_at
+            FROM commitments
+            WHERE committer IN ({placeholders}) AND created_at >= ?
+            """,
+            tuple(list(aliases) + [cutoff_30]),
+        )
+    except Exception:
+        rows = []
+
+    summary.totalCount = len(rows)
+    for row in rows:
+        st = str(row["status"] or "")
+        if st == "fulfilled":
+            summary.fulfilledCount += 1
+        elif st == "pending":
+            summary.pendingCount += 1
+        deadline = row["deadline"]
+        if deadline and st != "fulfilled":
+            try:
+                dd = datetime.fromisoformat(str(deadline)[:10])
+                if dd < today:
+                    summary.overdueCount += 1
+            except Exception:
+                pass
+    summary.rate = round(summary.fulfilledCount / max(1, summary.totalCount), 3)
+
+    # 4 周趋势
+    try:
+        trend_rows = db.fetchall(
+            f"""
+            SELECT id, status, created_at, fulfilled_at, deadline
+            FROM commitments
+            WHERE committer IN ({placeholders})
+            ORDER BY created_at DESC
+            LIMIT 200
+            """,
+            aliases,
+        )
+    except Exception:
+        trend_rows = []
+
+    for weeks_back in range(3, -1, -1):
+        week_end = today - timedelta(days=weeks_back * 7)
+        week_start = week_end - timedelta(days=7)
+        week_label = f"{week_end.isocalendar()[0]}-W{week_end.isocalendar()[1]:02d}"
+        total = 0
+        fulfilled = 0
+        for r in trend_rows:
+            ca = str(r["created_at"] or "")[:10]
+            if not ca:
+                continue
+            try:
+                created = datetime.fromisoformat(ca)
+            except Exception:
+                continue
+            if week_start <= created < week_end:
+                total += 1
+                if str(r["status"] or "") == "fulfilled":
+                    fulfilled += 1
+        rate = round(fulfilled / max(1, total), 3) if total else 0.0
+        summary.trend.append(
+            GrowthCommitmentTrendPointRecord(
+                weekLabel=week_label,
+                totalCount=total,
+                fulfilledCount=fulfilled,
+                rate=rate,
+            )
+        )
+
+    # 即将到期 / 已超期的 pending 承诺（保留写入，前端不再渲染——属于任务系统的事）
+    try:
+        upcoming_rows = db.fetchall(
+            f"""
+            SELECT id, content, recipient, deadline, status
+            FROM commitments
+            WHERE committer IN ({placeholders}) AND status='pending'
+            ORDER BY COALESCE(deadline, '9999-12-31') ASC
+            LIMIT 5
+            """,
+            aliases,
+        )
+        for r in upcoming_rows:
+            deadline = str(r["deadline"] or "")
+            days_overdue = 0
+            if deadline:
+                try:
+                    dd = datetime.fromisoformat(deadline[:10])
+                    days_overdue = (today.date() - dd.date()).days
+                except Exception:
+                    pass
+            summary.upcomingPending.append(
+                GrowthCommitmentItemRecord(
+                    id=str(r["id"]),
+                    content=str(r["content"] or ""),
+                    recipient=str(r["recipient"] or ""),
+                    deadline=deadline or None,
+                    status=str(r["status"] or ""),
+                    daysOverdue=days_overdue,
+                )
+            )
+    except Exception:
+        pass
+
+    # ── 正向指标计算 ────────────────────────────────────────
+    # 取本月 + 上月的全部承诺记录（按 deadline 排序），用于 streak + 累计曲线
+    try:
+        all_rows = db.fetchall(
+            f"""
+            SELECT id, status, deadline, fulfilled_at
+            FROM commitments
+            WHERE committer IN ({placeholders})
+              AND deadline IS NOT NULL AND deadline != ''
+            ORDER BY deadline ASC
+            """,
+            aliases,
+        )
+    except Exception:
+        all_rows = []
+
+    # streak: 沿 deadline 时间轴扫描，遇到 missed 就重置
+    def _is_missed(row) -> bool:
+        st = str(row["status"] or "")
+        deadline = str(row["deadline"] or "")[:10]
+        fulfilled = str(row["fulfilled_at"] or "")[:10] if row["fulfilled_at"] else ""
+        if not deadline:
+            return False
+        try:
+            dl = datetime.fromisoformat(deadline)
+        except Exception:
+            return False
+        # 已 fulfilled 但晚于 deadline → missed
+        if st == "fulfilled" and fulfilled:
+            try:
+                fa = datetime.fromisoformat(fulfilled)
+                if fa.date() > dl.date():
+                    return True
+            except Exception:
+                pass
+            return False
+        # 仍 pending 且 deadline 已过 → missed
+        if st != "fulfilled" and dl.date() < today.date():
+            return True
+        return False
+
+    # 最长 streak（天数）
+    longest = 0
+    cur = 0
+    prev_date: datetime | None = None
+    for r in all_rows:
+        if _is_missed(r):
+            cur = 0
+            prev_date = None
+            continue
+        try:
+            dl = datetime.fromisoformat(str(r["deadline"])[:10])
+        except Exception:
+            continue
+        if prev_date is None:
+            cur = 1
+        else:
+            cur += max(1, (dl.date() - prev_date.date()).days)
+        prev_date = dl
+        longest = max(longest, cur)
+    summary.longestStreakDays = longest
+
+    # 当前 streak：从今天往回数到最近一次 missed
+    last_missed_date: datetime | None = None
+    for r in all_rows:
+        if _is_missed(r):
+            try:
+                dl = datetime.fromisoformat(str(r["deadline"])[:10])
+                if last_missed_date is None or dl > last_missed_date:
+                    last_missed_date = dl
+            except Exception:
+                continue
+    if last_missed_date is None:
+        # 从来没 missed → streak = 第一个 commitment 到今天的天数
+        if all_rows:
+            try:
+                first_dl = datetime.fromisoformat(str(all_rows[0]["deadline"])[:10])
+                summary.currentStreakDays = max(0, (today.date() - first_dl.date()).days)
+            except Exception:
+                summary.currentStreakDays = 0
+    else:
+        summary.currentStreakDays = max(0, (today.date() - last_missed_date.date()).days)
+
+    # 月度兑现件数 + 环比
+    cutoff_60 = (today - timedelta(days=60)).isoformat(timespec="seconds")
+    try:
+        month_rows = db.fetchall(
+            f"""
+            SELECT fulfilled_at
+            FROM commitments
+            WHERE committer IN ({placeholders})
+              AND status='fulfilled' AND fulfilled_at >= ?
+            """,
+            tuple(list(aliases) + [cutoff_60]),
+        )
+    except Exception:
+        month_rows = []
+    monthly_n = 0
+    last_monthly_n = 0
+    cutoff_30_dt = today - timedelta(days=30)
+    for r in month_rows:
+        fa = str(r["fulfilled_at"] or "")[:10]
+        if not fa:
+            continue
+        try:
+            dt = datetime.fromisoformat(fa)
+        except Exception:
+            continue
+        if dt >= cutoff_30_dt:
+            monthly_n += 1
+        else:
+            last_monthly_n += 1
+    summary.monthlyFulfilledCount = monthly_n
+    summary.lastMonthFulfilledCount = last_monthly_n
+    if last_monthly_n > 0:
+        summary.growthPercent = int(round((monthly_n - last_monthly_n) / last_monthly_n * 100))
+    elif monthly_n > 0:
+        summary.growthPercent = 100  # 从 0 起步
+
+    # 双线累计曲线：4 个点，每个点 = 月初到该周末的「累计件数」
+    # weekIndex 0 = 月第 1 周末（前 7 天累计）；weekIndex 3 = 月第 4 周末（全月累计）
+    month_start_current = today - timedelta(days=28)
+    month_start_previous = today - timedelta(days=56)
+    curve_points: list[GrowthCommitmentCumulativePointRecord] = []
+    for week_idx in range(4):
+        days_into_month = (week_idx + 1) * 7
+        cur_end = month_start_current + timedelta(days=days_into_month)
+        prev_end = month_start_previous + timedelta(days=days_into_month)
+        cur_cumu = 0
+        prev_cumu = 0
+        for r in month_rows:
+            fa = str(r["fulfilled_at"] or "")[:10]
+            if not fa:
+                continue
+            try:
+                dt = datetime.fromisoformat(fa)
+            except Exception:
+                continue
+            if month_start_current <= dt <= cur_end:
+                cur_cumu += 1
+            if month_start_previous <= dt <= prev_end:
+                prev_cumu += 1
+        curve_points.append(GrowthCommitmentCumulativePointRecord(
+            weekIndex=week_idx,
+            weekLabel=f"W{week_idx + 1}",
+            currentCumulative=cur_cumu,
+            previousCumulative=prev_cumu,
+        ))
+    summary.cumulativeCurve = curve_points
+
+    return summary
+
+
+def _build_business_coverage(db: Database, user_id: str) -> GrowthBusinessCoverageRecord:
+    """M1：业务覆盖热力图 = 按客户聚合的任务/文档/字典积累。"""
+    record = GrowthBusinessCoverageRecord()
+    try:
+        rows = db.fetchall(
+            """
+            SELECT c.id AS client_id, c.name AS client_name,
+                (SELECT COUNT(*) FROM tasks WHERE owner_id=? AND client_id=c.id) AS task_cnt,
+                (SELECT COUNT(*) FROM v2_documents WHERE owner_user_id=? AND client_id=c.id
+                     AND kind NOT IN ('task_doc','event_line_update_doc','review_entry_doc')) AS doc_cnt,
+                (SELECT COUNT(*) FROM client_glossary WHERE client_id=c.id) AS term_cnt
+            FROM clients c
+            WHERE c.id IN (
+                SELECT DISTINCT client_id FROM tasks WHERE owner_id=? AND client_id IS NOT NULL
+                UNION
+                SELECT DISTINCT client_id FROM v2_documents WHERE owner_user_id=? AND client_id IS NOT NULL
+            )
+            """,
+            (user_id, user_id, user_id, user_id),
+        )
+    except Exception:
+        rows = []
+
+    for row in rows:
+        task_cnt = int(row["task_cnt"] or 0)
+        doc_cnt = int(row["doc_cnt"] or 0)
+        term_cnt = int(row["term_cnt"] or 0)
+        if task_cnt + doc_cnt + term_cnt == 0:
+            continue
+        score = task_cnt * 1 + doc_cnt * 3 + term_cnt * 0.2
+        record.items.append(
+            GrowthBusinessCoverageItemRecord(
+                label=str(row["client_name"] or "未命名客户"),
+                taskCount=task_cnt,
+                documentCount=doc_cnt,
+                glossaryTermCount=term_cnt,
+                score=int(round(score)),
+            )
+        )
+    record.items.sort(key=lambda x: -x.score)
+    record.coveredClients = len(record.items)
+    record.coveredProjects = sum(x.glossaryTermCount for x in record.items)
+    return record
+
+
+def _build_review_streak(db: Database, user_id: str) -> GrowthReviewStreakRecord:
+    """M3：复盘 streaks。"""
+    streak = GrowthReviewStreakRecord()
+    try:
+        rows = db.fetchall(
+            """
+            SELECT DISTINCT week_label FROM weekly_reviews
+            WHERE user_id = ? AND week_label LIKE '____-W%'
+            ORDER BY week_label DESC
+            """,
+            (user_id,),
+        )
+    except Exception:
+        return streak
+
+    week_labels = [str(r["week_label"]) for r in rows if r["week_label"]]
+    if not week_labels:
+        return streak
+
+    streak.totalReviewWeeks = len(week_labels)
+    streak.lastReviewedWeekLabel = week_labels[0]
+
+    def _parse_week(label: str) -> tuple[int, int] | None:
+        try:
+            y, w = label.split("-W")
+            return int(y), int(w)
+        except Exception:
+            return None
+
+    parsed = sorted(filter(None, (_parse_week(x) for x in week_labels)), reverse=True)
+    if not parsed:
+        return streak
+
+    # 计算 max streak
+    max_s = 1
+    cur = 1
+    for i in range(1, len(parsed)):
+        y0, w0 = parsed[i - 1]
+        y1, w1 = parsed[i]
+        is_prev = (y0 == y1 and w0 == w1 + 1) or (y0 == y1 + 1 and w0 == 1 and w1 >= 52)
+        if is_prev:
+            cur += 1
+            max_s = max(max_s, cur)
+        else:
+            cur = 1
+    streak.maxStreakWeeks = max_s
+
+    # 当前 streak：从最新一周往回数连续
+    today = datetime.now()
+    cur_year, cur_week, _ = today.isocalendar()
+    cur_streak = 0
+    py, pw = cur_year, cur_week
+    parsed_set = set(parsed)
+    while (py, pw) in parsed_set:
+        cur_streak += 1
+        pw -= 1
+        if pw < 1:
+            py -= 1
+            pw = 52
+    streak.currentStreakWeeks = cur_streak
+    return streak
+
+
+def _build_work_type_distribution(db: Database, user_id: str) -> GrowthWorkTypeRecord:
+    """M4：tasks.business_category 分布。"""
+    record = GrowthWorkTypeRecord()
+    try:
+        rows = db.fetchall(
+            """
+            SELECT COALESCE(NULLIF(business_category, ''), '待标注') AS cat, COUNT(*) AS cnt
+            FROM tasks WHERE owner_id = ?
+            GROUP BY COALESCE(NULLIF(business_category, ''), '待标注')
+            ORDER BY cnt DESC
+            """,
+            (user_id,),
+        )
+    except Exception:
+        rows = []
+    total = 0
+    unlabeled = 0
+    for row in rows:
+        cnt = int(row["cnt"] or 0)
+        label = str(row["cat"])
+        total += cnt
+        if label == "待标注":
+            unlabeled = cnt
+        record.slices.append(GrowthWorkTypeSliceRecord(label=label, count=cnt))
+    record.totalTasks = total
+    record.unlabeledTasks = unlabeled
+    return record
+
+
+def _build_impact_curve(db: Database, user_id: str) -> GrowthImpactRecord:
+    """M6：12 个月累计影响力曲线（reuses + likes + saves）。"""
+    record = GrowthImpactRecord()
+    today = datetime.now()
+    # 用 month_label like '2026-05' 累计该月之前所有 reuse/like/save
+    try:
+        handbook_events = db.fetchall(
+            """
+            SELECT COALESCE(last_reused_at, created_at) AS d, reuse_count, created_at
+            FROM handbook_entries
+            WHERE author_user_id = ? AND reuse_count > 0
+            """,
+            (user_id,),
+        )
+    except Exception:
+        handbook_events = []
+    try:
+        wall_events = db.fetchall(
+            """
+            SELECT created_at, like_count, save_count
+            FROM exp_wall_quotes
+            WHERE author_user_id = ? AND status = 'active'
+            """,
+            (user_id,),
+        )
+    except Exception:
+        wall_events = []
+
+    cumu_r = 0
+    cumu_l = 0
+    cumu_s = 0
+    points: list[GrowthImpactCurvePointRecord] = []
+    for months_back in range(11, -1, -1):
+        # 该月末
+        target = today - timedelta(days=months_back * 30)
+        month_label = target.strftime("%Y-%m")
+        # 该月累积
+        for e in handbook_events:
+            d = str(e["last_reused_at"] if "last_reused_at" in e.keys() and e["last_reused_at"] else e["created_at"] or "")[:7]
+            if d and d == month_label:
+                cumu_r += int(e["reuse_count"] or 0)
+        for e in wall_events:
+            d = str(e["created_at"] or "")[:7]
+            if d and d == month_label:
+                cumu_l += int(e["like_count"] or 0)
+                cumu_s += int(e["save_count"] or 0)
+        points.append(
+            GrowthImpactCurvePointRecord(
+                monthLabel=month_label,
+                cumulativeReuses=cumu_r,
+                cumulativeLikes=cumu_l,
+                cumulativeSaves=cumu_s,
+            )
+        )
+    record.points = points
+    record.totalReuses = cumu_r
+    record.totalLikes = cumu_l
+    record.totalSaves = cumu_s
+    return record
+
+
+def _build_internal_learning_picks(
+    db: Database,
+    user_id: str,
+    ability_scores: list[GrowthAbilityScoreRecord],
+    profile_map: dict[str, GrowthAbilityProfileRecord],
+) -> GrowthLearningRecord:
+    """L3：基于最弱 2 个能力维度推同事 handbook + 经验墙金句。"""
+    record = GrowthLearningRecord()
+    if not ability_scores:
+        return record
+
+    sorted_abilities = sorted(ability_scores, key=lambda x: x.currentScore)[:2]
+    weakest_keys = [a.abilityKey for a in sorted_abilities]
+    record.weakestAbilities = weakest_keys
+
+    # exp_wall category → ability 反查
+    inv_cat = {v: k for k, v in EXP_WALL_CATEGORY_TO_ABILITY.items()}
+
+    seen_handbook_ids: set[str] = set()
+    for weak in sorted_abilities:
+        # handbook：① 优先严格匹配 ability_keys ② fallback 按高复用通用推荐
+        candidate_rows: list = []
+        try:
+            strict = db.fetchall(
+                """
+                SELECT id, title, summary, author_user_name, reuse_count, ability_keys_json
+                FROM handbook_entries
+                WHERE COALESCE(author_user_id, '') != ?
+                  AND ability_keys_json LIKE ?
+                ORDER BY reuse_count DESC, created_at DESC
+                LIMIT 2
+                """,
+                (user_id, f'%"{weak.abilityKey}"%'),
+            )
+            candidate_rows.extend(strict)
+        except Exception:
+            pass
+        if not candidate_rows:
+            try:
+                broad = db.fetchall(
+                    """
+                    SELECT id, title, summary, author_user_name, reuse_count, ability_keys_json
+                    FROM handbook_entries
+                    WHERE COALESCE(author_user_id, '') != ?
+                    ORDER BY reuse_count DESC, created_at DESC
+                    LIMIT 2
+                    """,
+                    (user_id,),
+                )
+                candidate_rows.extend(broad)
+            except Exception:
+                pass
+
+        for row in candidate_rows:
+            hid = str(row["id"])
+            if hid in seen_handbook_ids:
+                continue
+            seen_handbook_ids.add(hid)
+            record.internalPicks.append(
+                GrowthLearningPickRecord(
+                    source="handbook",
+                    sourceId=hid,
+                    title=str(row["title"] or "")[:80],
+                    detail=str(row["summary"] or "")[:120],
+                    authorName=str(row["author_user_name"] or "同事"),
+                    matchedAbility=weak.abilityKey,
+                    matchedAbilityLabel=weak.label,
+                    reusedCount=int(row["reuse_count"] or 0),
+                )
+            )
+
+        # exp_wall：同 category，作者非自己
+        wall_cat = inv_cat.get(weak.abilityKey)
+        if wall_cat:
+            try:
+                ew_rows = db.fetchall(
+                    """
+                    SELECT id, quote_text, like_count, save_count, author_user_id
+                    FROM exp_wall_quotes
+                    WHERE author_user_id != ? AND status='active' AND category = ?
+                    ORDER BY hot_score DESC
+                    LIMIT 1
+                    """,
+                    (user_id, wall_cat),
+                )
+                for row in ew_rows:
+                    record.internalPicks.append(
+                        GrowthLearningPickRecord(
+                            source="exp_wall",
+                            sourceId=str(row["id"]),
+                            title=str(row["quote_text"] or "")[:80],
+                            authorName="",
+                            matchedAbility=weak.abilityKey,
+                            matchedAbilityLabel=weak.label,
+                            likedCount=int(row["like_count"] or 0),
+                            savedCount=int(row["save_count"] or 0),
+                        )
+                    )
+            except Exception:
+                pass
+
+    # L4 + L5：外部前瞻（GitHub + Exa）—— 降级实现，无 key 时空返回 + 提示
+    keywords: list[str] = []
+    if weakest_keys and profile_map:
+        for k in weakest_keys[:1]:
+            label = profile_map.get(k).label if profile_map.get(k) else k
+            keywords.append(label)
+    # 加 1 个用户高积累的业务方向（从 client_glossary 找最热的 term）
+    try:
+        top_terms = db.fetchall(
+            """
+            SELECT g.term
+            FROM client_glossary g
+            JOIN clients c ON c.id = g.client_id
+            WHERE g.client_id IN (
+                SELECT DISTINCT client_id FROM tasks WHERE owner_id=? AND client_id IS NOT NULL
+            ) AND g.category IN ('业务术语', '项目')
+            ORDER BY length(g.aliases_json) DESC
+            LIMIT 2
+            """,
+            (user_id,),
+        )
+        keywords.extend(str(r["term"]) for r in top_terms if r["term"])
+    except Exception:
+        pass
+
+    try:
+        from app.services.external_learning import fetch_github_picks, fetch_exa_picks
+        gh_picks, gh_enabled, gh_hint = fetch_github_picks(user_id, keywords, limit=3)
+        record.githubPicks = gh_picks
+        ex_picks, ex_enabled, ex_hint = fetch_exa_picks(user_id, keywords, limit=3)
+        record.frontierPicks = ex_picks
+        record.externalEnabled = bool(gh_enabled or ex_enabled)
+        if not gh_enabled and not ex_enabled:
+            record.externalConfigHint = f"GitHub: {gh_hint} · Exa: {ex_hint}"
+        elif not gh_enabled:
+            record.externalConfigHint = f"GitHub: {gh_hint}"
+        elif not ex_enabled:
+            record.externalConfigHint = f"Exa: {ex_hint}"
+    except Exception as exc:
+        record.externalEnabled = False
+        record.externalConfigHint = f"外部推荐初始化失败：{type(exc).__name__}"
+
+    return record
+
+
+def _build_peer_comparison(
+    db: Database,
+    user_id: str,
+    ability_scores: list[GrowthAbilityScoreRecord],
+) -> GrowthPeerComparisonRecord:
+    """H5：同岗位匿名对标——按 operators.role 聚合。"""
+    record = GrowthPeerComparisonRecord()
+    try:
+        me = _resolve_operator_row(db, user_id)
+        if not me or not me["role"]:
+            return record
+        my_role = str(me["role"])
+        record.roleLabel = my_role
+        # 实际的 operators.id（可能跟传入的 user_id 不同）
+        my_operator_id = str(me["id"])
+
+        peers = db.fetchall("SELECT id FROM operators WHERE role = ?", (my_role,))
+        peer_ids = [str(p["id"]) for p in peers]
+        # 把传入的 user_id（xp_ledger 里的口径）也加进对比池，避免错位漏自己
+        if user_id not in peer_ids:
+            peer_ids.append(user_id)
+        record.peerCount = len(peer_ids)
+        if record.peerCount < 2:
+            # 同岗位仅一人时也返回基础信息，避免前端误以为数据缺失
+            record.rank = 1
+            record.yourTotalXp = sum(int(a.totalXp) for a in ability_scores)
+            record.peerMedianXp = record.yourTotalXp
+            record.peerTopXp = record.yourTotalXp
+            for ab in ability_scores:
+                record.perAbilityRank[ab.abilityKey] = 1
+            return record
+
+        # 取所有 peer 的总 XP（基于新算法重算每个 peer 较慢，简化用 ledger 取近似值）
+        rows = db.fetchall(
+            f"""
+            SELECT user_id, SUM(COALESCE(NULLIF(total_xp, 0), delta)) AS xp
+            FROM xp_ledger
+            WHERE user_id IN ({",".join("?" * len(peer_ids))}) AND reversed_at IS NULL
+            GROUP BY user_id
+            """,
+            tuple(peer_ids),
+        )
+        peer_xp = {str(r["user_id"]): int(r["xp"] or 0) for r in rows}
+        for pid in peer_ids:
+            peer_xp.setdefault(pid, 0)
+
+        # 自己用新算法的总 XP（更准）
+        my_total = sum(int(a.totalXp) for a in ability_scores)
+        peer_xp[user_id] = max(my_total, peer_xp.get(user_id, 0))
+        sorted_xp = sorted(peer_xp.values(), reverse=True)
+        record.yourTotalXp = peer_xp[user_id]
+        record.peerTopXp = sorted_xp[0]
+        mid = len(sorted_xp) // 2
+        record.peerMedianXp = sorted_xp[mid]
+        record.rank = sorted_xp.index(peer_xp[user_id]) + 1
+
+        # 各能力维度排名
+        for ab in ability_scores:
+            try:
+                per_rows = db.fetchall(
+                    f"""
+                    SELECT user_id, SUM(COALESCE(NULLIF(total_xp, 0), delta)) AS xp
+                    FROM xp_ledger
+                    WHERE user_id IN ({",".join("?" * len(peer_ids))})
+                      AND ability_key = ? AND reversed_at IS NULL
+                    GROUP BY user_id
+                    """,
+                    tuple(peer_ids + [ab.abilityKey]),
+                )
+                per_xp = {str(r["user_id"]): int(r["xp"] or 0) for r in per_rows}
+                for pid in peer_ids:
+                    per_xp.setdefault(pid, 0)
+                per_xp[user_id] = max(int(ab.totalXp), per_xp.get(user_id, 0))
+                sorted_per = sorted(per_xp.values(), reverse=True)
+                record.perAbilityRank[ab.abilityKey] = sorted_per.index(per_xp[user_id]) + 1
+            except Exception:
+                pass
+    except Exception:
+        pass
+
+    return record
+
+
+def _build_daily_activity(
+    db: Database,
+    user_id: str,
+    *,
+    days: int = 84,
+) -> GrowthDailyActivityResponse:
+    """L2：聚合最近 N 天工作产出强度，输出 react-activity-calendar 格式。
+
+    强度公式：task_done×2 + handbook_entry×5 + weekly_review×8 + commitment_fulfilled×3
+    染色等级（level 0-4）：
+        0 = 没动
+        1 = 1-4 分（轻微）
+        2 = 5-9 分（一般）
+        3 = 10-14 分（活跃）
+        4 = 15+ 分（爆发）
+    """
+    cutoff = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")
+    aliases = _resolve_user_aliases(db, user_id)
+    daily: dict[str, int] = defaultdict(int)
+
+    def _collect(query: str, params: tuple, weight: int) -> None:
+        try:
+            rows = db.fetchall(query, params)
+            for row in rows:
+                d = str(row["d"] or "")[:10]
+                if d and d >= cutoff:
+                    daily[d] += weight
+        except Exception:
+            pass
+
+    _collect(
+        "SELECT updated_at AS d FROM tasks WHERE owner_id=? AND status='done' AND updated_at >= ?",
+        (user_id, cutoff),
+        2,
+    )
+    _collect(
+        "SELECT created_at AS d FROM handbook_entries WHERE author_user_id=? AND created_at >= ?",
+        (user_id, cutoff),
+        5,
+    )
+    _collect(
+        "SELECT created_at AS d FROM weekly_reviews WHERE user_id=? AND created_at >= ?",
+        (user_id, cutoff),
+        8,
+    )
+    if aliases:
+        placeholders = ",".join("?" * len(aliases))
+        _collect(
+            f"SELECT fulfilled_at AS d FROM commitments WHERE committer IN ({placeholders}) AND status='fulfilled' AND fulfilled_at >= ?",
+            tuple(list(aliases) + [cutoff]),
+            3,
+        )
+
+    def _level(count: int) -> int:
+        if count <= 0:
+            return 0
+        if count < 5:
+            return 1
+        if count < 10:
+            return 2
+        if count < 15:
+            return 3
+        return 4
+
+    today = datetime.now().date()
+    items: list[GrowthDailyActivityRecord] = []
+    max_streak = 0
+    cur_streak = 0
+    active_days = 0
+    for i in range(days, -1, -1):
+        d = (today - timedelta(days=i)).strftime("%Y-%m-%d")
+        c = daily.get(d, 0)
+        if c > 0:
+            active_days += 1
+            cur_streak += 1
+            max_streak = max(max_streak, cur_streak)
+        else:
+            cur_streak = 0
+        items.append(GrowthDailyActivityRecord(date=d, count=c, level=_level(c)))
+
+    return GrowthDailyActivityResponse(
+        days=items,
+        totalDays=len(items),
+        activeDays=active_days,
+        maxStreak=max_streak,
+    )
+
+
+def _get_or_build_ability_trends_lazy(
+    db: Database,
+    user_id: str,
+    ability_scores: list[GrowthAbilityScoreRecord],
+    profile_map: dict[str, GrowthAbilityProfileRecord],
+) -> list[GrowthAbilityTrendRecord]:
+    """L1：每次 build_overview 时懒触发当周快照 + 拉最近 8 周趋势。"""
+    _persist_weekly_snapshot(db, user_id, ability_scores)
+    return _build_ability_trends(db, user_id, ability_scores, profile_map, weeks=8)
+
+
+def _build_social_feedback(db: Database, user_id: str) -> GrowthSocialFeedbackRecord:
+    """H4：让用户看见"努力被看见"——聚合近 30 天的被复用 / 点赞 / 收藏。
+
+    数据源：
+    - handbook_entries（author_user_id）的 reuse_count / last_reused_at
+    - exp_wall_quotes（author_user_id）的 like_count / save_count
+
+    所有指标都不依赖数据中心新表，只读现有字段；任何一张表缺失都 silent 跳过。
+    """
+    cutoff = (datetime.now() - timedelta(days=30)).isoformat(timespec="seconds")
+    feedback = GrowthSocialFeedbackRecord()
+
+    try:
+        row = db.fetchone(
+            """
+            SELECT
+                COALESCE(SUM(reuse_count), 0) AS total_reuse,
+                COALESCE(SUM(CASE WHEN reuse_count > 0 THEN 1 ELSE 0 END), 0) AS reused_entries
+            FROM handbook_entries
+            WHERE author_user_id = ?
+              AND (last_reused_at IS NULL OR last_reused_at >= ?)
+            """,
+            (user_id, cutoff),
+        )
+        if row:
+            feedback.handbookReuseCount = int(row["total_reuse"] or 0)
+            feedback.handbookEntriesReused = int(row["reused_entries"] or 0)
+    except Exception:
+        pass
+
+    try:
+        row = db.fetchone(
+            """
+            SELECT
+                COUNT(*) AS quote_count,
+                COALESCE(SUM(like_count), 0) AS total_like,
+                COALESCE(SUM(save_count), 0) AS total_save
+            FROM exp_wall_quotes
+            WHERE author_user_id = ? AND status = 'active' AND created_at >= ?
+            """,
+            (user_id, cutoff),
+        )
+        if row:
+            feedback.expWallQuoteCount = int(row["quote_count"] or 0)
+            feedback.expWallLikeCount = int(row["total_like"] or 0)
+            feedback.expWallSaveCount = int(row["total_save"] or 0)
+    except Exception:
+        pass
+
+    return feedback
 
 
 def _organization_baseline_score(db: Database, ability_key: str) -> int:
@@ -3198,18 +4623,12 @@ def build_growth_ledger(db: Database, user_id: str, *, ability_key: str | None =
 def build_growth_overview(db: Database, user_id: str, user_name: str, *, week_label: str = "") -> GrowthOverviewRecord:
     ensure_growth_catalog(db)
     profile_map = _fetch_profile_map(db)
-    totals = {
-        str(row["ability_key"]): int(row["xp"] or 0)
-        for row in db.fetchall(
-            """
-            SELECT ability_key, SUM(COALESCE(NULLIF(total_xp, 0), delta)) AS xp
-            FROM xp_ledger
-            WHERE user_id = ? AND reversed_at IS NULL
-            GROUP BY ability_key
-            """,
-            (user_id,),
-        )
-    }
+    # K3：能力分主算法切换到真实数据源（ledger 仅做时间线展示用）
+    # 旧 ledger 严重失真：3/6 能力 100% 来自徽章解锁自动送 XP。新算法直接读
+    # weekly_reviews / handbook / tasks / commitments / risk_signals 等原始
+    # 表，按 ABILITY_WEIGHTS_BY_SOURCE 配置矩阵折算。
+    source_contributions = _count_source_events(db, user_id)
+    totals = _compute_ability_totals_from_sources(source_contributions)
     weekly = {
         str(row["ability_key"]): int(row["xp"] or 0)
         for row in db.fetchall(
@@ -3239,14 +4658,10 @@ def build_growth_overview(db: Database, user_id: str, user_name: str, *, week_la
     recommendations = list_learning_recommendations(db, user_id)
     pending_captures = _list_pending_captures(db, user_id)
 
-    # ── 数据中心客观证据增强（G1 P0）────────────────────────
-    # 把 exp_wall_quote / memory_facts / v2_documents 这类真实标注折算成
-    # 额外 XP 加到 totals，并保留原始证据列表用于填 evidence 字段。
+    # K3：旧 G1 客观证据加权保留为弱叠加（避免双计——新算法已经把
+    # document/memory 纳入 source_contributions），仅 exp_wall_quote
+    # 这种"被组织看见"的强信号继续用 G1 路径补强。
     objective_evidence = _collect_objective_evidence(db, user_id)
-    objective_xp = _objective_xp_by_ability(objective_evidence)
-    for ability_key, extra_xp in objective_xp.items():
-        if extra_xp > 0:
-            totals[ability_key] = totals.get(ability_key, 0) + extra_xp
 
     ability_scores: list[GrowthAbilityScoreRecord] = []
     total_xp = 0
@@ -3257,12 +4672,17 @@ def build_growth_overview(db: Database, user_id: str, user_name: str, *, week_la
         week_delta = weekly.get(ability_key, 0)
         weekly_xp += week_delta
         stage, next_stage = _ability_stage(total)
+        # evidence 优先用新算法（真实数据源拼一句话），其次回退到 G1 客观证据，
+        # 最后才回退到 ledger 关键词 reason。
         ledger_fallback = next(
             (item.reason for item in recent_entries if item.abilityKey == ability_key and item.reason.strip()),
             "",
         )
-        recent_evidence = _pick_objective_evidence_text(
+        objective_text = _pick_objective_evidence_text(
             objective_evidence, ability_key, fallback=ledger_fallback,
+        )
+        recent_evidence = _pick_real_source_evidence_text(
+            source_contributions, ability_key, fallback=objective_text,
         )
         ability_scores.append(
             GrowthAbilityScoreRecord(
@@ -3277,6 +4697,10 @@ def build_growth_overview(db: Database, user_id: str, user_name: str, *, week_la
                 evidence=recent_evidence,
             )
         )
+
+    # N1-N3: 按 role_tier 替换能力标签（label）；abilityKey 保持不变
+    role_tier = _resolve_user_role_tier(db, user_id)
+    ability_scores = _apply_role_label_override(ability_scores, role_tier)
 
     overall_stage, _ = _ability_stage(total_xp)
     level = max(1, total_xp // 100 + 1)
@@ -3304,6 +4728,16 @@ def build_growth_overview(db: Database, user_id: str, user_name: str, *, week_la
         recentEntries=recent_entries,
         recommendations=recommendations,
         sourceCoverage=_build_source_coverage(db, user_id, objective_evidence=objective_evidence),
+        socialFeedback=_build_social_feedback(db, user_id),
+        abilityTrends=_get_or_build_ability_trends_lazy(db, user_id, ability_scores, profile_map),
+        dailyActivity=_build_daily_activity(db, user_id, days=84),
+        commitmentSummary=_build_commitment_summary(db, user_id),
+        businessCoverage=_build_business_coverage(db, user_id),
+        reviewStreak=_build_review_streak(db, user_id),
+        workTypeDistribution=_build_work_type_distribution(db, user_id),
+        impactCurve=_build_impact_curve(db, user_id),
+        learning=_build_internal_learning_picks(db, user_id, ability_scores, profile_map),
+        peerComparison=_build_peer_comparison(db, user_id, ability_scores),
         projectGrowthHighlights=project_highlights,
         eventLineGrowthHighlights=event_line_highlights,
         strategicAlignmentHighlights=strategic_highlights,

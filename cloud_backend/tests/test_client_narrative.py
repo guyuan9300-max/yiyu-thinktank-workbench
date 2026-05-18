@@ -151,9 +151,9 @@ def test_regenerate_closes_pending_and_bumps_rev(db: Database) -> None:
     assert "日慈" in essence.narrative
     people = next(d for d in latest.dimensions if d.dimension == "people")
     assert "张真" in people.narrative
-    risks = next(d for d in latest.dimensions if d.dimension == "risks")
-    assert risks.confidence == "low"
-    assert "数据中心" in risks.confidenceReason or risks.dataLayerGap
+    cooperation = next(d for d in latest.dimensions if d.dimension == "cooperation")
+    assert cooperation.confidence == "low"
+    assert "数据中心" in cooperation.confidenceReason or cooperation.dataLayerGap
 
 
 @pytest.mark.unit
