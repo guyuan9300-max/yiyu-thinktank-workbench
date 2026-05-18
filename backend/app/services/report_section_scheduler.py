@@ -38,6 +38,7 @@ def draft_sections_parallel(
     max_workers: int = 4,
     timeout_per_section: float = 120.0,
     progress_cb: ProgressCallback | None = None,
+    glossary_pack: str = "",
 ) -> dict[int, SectionContent | str]:
     """并行起草多个章节。
 
@@ -88,6 +89,7 @@ def draft_sections_parallel(
                 blueprint_tone=blueprint.tone,
                 section_idx=idx,
                 timeout_seconds=timeout_per_section,
+                glossary_pack=glossary_pack,
             )
             future_to_idx[fut] = idx
 

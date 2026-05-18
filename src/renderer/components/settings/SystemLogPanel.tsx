@@ -56,6 +56,7 @@ type SystemLogPanelProps = {
   onRefreshMaintenanceMode: () => void;
   onEnterMaintenanceMode: () => void;
   onExitMaintenanceMode: () => void;
+  isAdmin?: boolean;
 };
 
 function maintenanceStatusLabel(status: MaintenanceModeStatus | null, error: string | null) {
@@ -75,6 +76,7 @@ export function SystemLogPanel({
   onRefreshMaintenanceMode,
   onEnterMaintenanceMode,
   onExitMaintenanceMode,
+  isAdmin = false,
 }: SystemLogPanelProps) {
   const [members, setMembers] = useState<MaintenanceMemberPermission[]>([]);
   const [isMembersLoading, setIsMembersLoading] = useState(false);
@@ -245,24 +247,33 @@ export function SystemLogPanel({
             <RefreshCw size={13} className={maintenanceModeLoading ? 'animate-spin' : ''} />
             刷新
           </button>
-          <button
-            type="button"
-            onClick={onEnterMaintenanceMode}
-            disabled={!canEnterMaintenanceMode || maintenanceModeLoading || maintenanceModeBusyAction !== null}
-            className="inline-flex items-center gap-1.5 rounded-xl bg-[#335CFE] px-3 py-2 text-[12px] font-bold text-white hover:bg-[#2C50E0] disabled:cursor-not-allowed disabled:opacity-50"
-          >
-            {maintenanceModeBusyAction === 'enter' ? <Loader2 size={13} className="animate-spin" /> : <Power size={13} />}
-            打开左下角推送同步
-          </button>
-          <button
-            type="button"
-            onClick={onExitMaintenanceMode}
-            disabled={!canExitMaintenanceMode || maintenanceModeLoading || maintenanceModeBusyAction !== null}
-            className="inline-flex items-center gap-1.5 rounded-xl border border-slate-200 bg-white px-3 py-2 text-[12px] font-bold text-slate-600 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50"
-          >
-            {maintenanceModeBusyAction === 'exit' ? <Loader2 size={13} className="animate-spin" /> : <Power size={13} />}
-            关闭左下角推送同步
-          </button>
+          {isAdmin ? (
+            <span className="inline-flex items-center gap-1.5 rounded-xl border border-emerald-200 bg-emerald-50 px-3 py-2 text-[12px] font-bold text-emerald-700">
+              <ShieldCheck size={13} />
+              Admin 直通 · 始终可用
+            </span>
+          ) : (
+            <>
+              <button
+                type="button"
+                onClick={onEnterMaintenanceMode}
+                disabled={!canEnterMaintenanceMode || maintenanceModeLoading || maintenanceModeBusyAction !== null}
+                className="inline-flex items-center gap-1.5 rounded-xl bg-[#335CFE] px-3 py-2 text-[12px] font-bold text-white hover:bg-[#2C50E0] disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                {maintenanceModeBusyAction === 'enter' ? <Loader2 size={13} className="animate-spin" /> : <Power size={13} />}
+                打开左下角推送同步
+              </button>
+              <button
+                type="button"
+                onClick={onExitMaintenanceMode}
+                disabled={!canExitMaintenanceMode || maintenanceModeLoading || maintenanceModeBusyAction !== null}
+                className="inline-flex items-center gap-1.5 rounded-xl border border-slate-200 bg-white px-3 py-2 text-[12px] font-bold text-slate-600 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                {maintenanceModeBusyAction === 'exit' ? <Loader2 size={13} className="animate-spin" /> : <Power size={13} />}
+                关闭左下角推送同步
+              </button>
+            </>
+          )}
         </div>
       </div>
 

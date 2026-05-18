@@ -951,20 +951,27 @@ def _weekly_event_normalize_title(title: str) -> str:
 
 
 def _weekly_event_topic_group(task: dict[str, Any]) -> tuple[str, str] | None:
+    """机制化 topic 分组: 用 task 已挂载的 event_line / project 字段做 key,
+    任意客户都能自动分组, 不依赖任何客户名/人名/项目名硬编码。
+    """
     text = _weekly_event_task_text(task)
-    lower = text.lower()
-    if any(token in text for token in ("模拟", "测试")):
+    if any(token in text for token in ("模拟", "测试", "demo", "dummy")):
         return ("needs_assignment:测试/模拟事项", "测试/模拟事项")
-    if "云南" in text or "士平" in text or ("工作坊说明" in text and "报告" in text):
-        return ("topic:云南儿童资助研究交付材料", "云南儿童资助研究交付材料")
-    if any(token in text for token in ("县域", "学校招募", "音乐课堂", "大山里的音乐课堂")):
-        return ("topic:大山里的音乐课堂落地筹备", "大山里的音乐课堂落地筹备")
-    if "为爱黔行" in text or "詹瑶" in text or "张瑶" in text:
-        return ("topic:为爱黔行下一步陪伴", "为爱黔行下一步陪伴")
-    if any(token in lower for token in ("codex", "code x", "codeX".lower())) or any(token in text for token in ("佳维", "发布版", "软件功能实施")):
-        return ("topic:益语发布版功能与工具支持", "益语发布版功能与工具支持")
-    if "教育双年会" in text:
-        return ("topic:教育双年会传播", "教育双年会传播")
+    event_line_ctx = task.get("eventLineContext") if isinstance(task.get("eventLineContext"), dict) else {}
+    event_line_id = str(event_line_ctx.get("id") or task.get("eventLineId") or "").strip()
+    event_line_name = (
+        str(event_line_ctx.get("name") or "").strip()
+        or str(task.get("eventLineName") or "").strip()
+    )
+    if event_line_name:
+        key = f"topic:event_line::{event_line_id or event_line_name}"
+        return (key, event_line_name)
+    project_ctx = task.get("projectContext") if isinstance(task.get("projectContext"), dict) else {}
+    project_id = str(project_ctx.get("id") or "").strip()
+    project_name = str(project_ctx.get("name") or "").strip()
+    if project_name:
+        key = f"topic:project::{project_id or project_name}"
+        return (key, project_name)
     return None
 
 
@@ -2234,16 +2241,9 @@ def _line_gap_from_items(items: list[WeeklyReviewTaskEntryRecord], narrative: Na
 
 
 def _line_score(items: list[WeeklyReviewTaskEntryRecord], line_name: str, why_it_matters: str) -> float:
-    text = _clean_text(" ".join([line_name, why_it_matters, *(_task_text(item) for item in items)])).lower()
-    strategic_leverage = 0.45
-    if "cffc" in text or "枢纽" in text or "基金会网络" in text:
-        strategic_leverage = 0.95
-    elif "软件" in line_name or "底层" in line_name or "codex" in text:
-        strategic_leverage = 0.86
-    elif "日慈" in text or "为爱黔行" in text:
-        strategic_leverage = 0.78
-    elif "情报" in line_name or "心理友好" in text or "开源社区" in text:
-        strategic_leverage = 0.74
+    """机制化评分: 完全基于本周事实强度 (items 数 / 证据 / 决策 / narrative 完整度),
+    不再用客户名/项目名做硬编码加权 — 任何客户上线都用同一套打分。
+    """
     progress_evidence = min(1.0, len(items) / 3.0)
     output_clarity = 0.45
     if any(_clean_text(getattr(item.taskSnapshot, "nextAction", "") or "") for item in items):
@@ -2252,9 +2252,7 @@ def _line_score(items: list[WeeklyReviewTaskEntryRecord], line_name: str, why_it
         output_clarity += 0.15
     if any(_clean_text(getattr(item.taskSnapshot, "recentDecision", "") or "") for item in items):
         output_clarity += 0.2
-    productization_potential = 0.35
-    if "软件" in line_name or "情报" in line_name or "开源" in text or "心理友好" in text:
-        productization_potential = 0.9
+    narrative_strength = 0.65 if _clean_text(why_it_matters) else 0.35
     evidence_strength = min(
         1.0,
         sum(
@@ -2264,11 +2262,10 @@ def _line_score(items: list[WeeklyReviewTaskEntryRecord], line_name: str, why_it
         / 8.0,
     )
     score = (
-        0.35 * strategic_leverage
-        + 0.25 * progress_evidence
-        + 0.20 * min(output_clarity, 1.0)
-        + 0.10 * productization_potential
-        + 0.10 * evidence_strength
+        0.30 * progress_evidence
+        + 0.25 * min(output_clarity, 1.0)
+        + 0.20 * narrative_strength
+        + 0.25 * evidence_strength
     )
     return round(score, 3)
 
@@ -2307,10 +2304,6 @@ def _build_weekly_line_cards(
 
         if narrative and _clean_text(narrative.whatThisIs):
             what_happened = _clean_text(narrative.whatThisIs)
-        elif line_name == "软件底层修复与验证线":
-            what_happened = f"这周围绕 {task_titles} 等事项，集中排查并修复了附件保存、上传写入和任务可见性等底层链路问题。"
-        elif line_name == "情报沉淀与产品化线":
-            what_happened = f"这周把 {task_titles} 这类外部信号收进系统，开始从资讯吸收转向咨询议题和产品切口沉淀。"
         else:
             what_happened = f"这周围绕 {task_titles} 等事项持续推进，已经不只是零散接触，而是在形成一条更清楚的业务推进线。"
 
@@ -2318,14 +2311,8 @@ def _build_weekly_line_cards(
             why_it_matters = _clean_text(narrative.whyImportant)
         elif client_bg:
             why_it_matters = client_bg
-        elif "cffc" in _clean_text(line_name).lower():
-            why_it_matters = "这条线的重要性不只是一次普通合作，而是通过公益行业关键枢纽去打开更大基金会网络的入口。"
-        elif line_name == "软件底层修复与验证线":
-            why_it_matters = "这条线表面上像在 debug，实际上是在给益语的数字化工作台补地基；地基不稳，后续判断、交付和客户体验都站不住。"
-        elif line_name == "情报沉淀与产品化线":
-            why_it_matters = "这条线的意义不在资讯本身，而在于把外部变化转成益语后续的咨询议题、产品方向和客户对话素材。"
         else:
-            why_it_matters = "这条线的重要性在于，它直接关系到益语能否把当前的关系推进成更清楚的合作、诊断或交付。"
+            why_it_matters = "这条线的重要性在于，它直接关系到我方咨询团队能否把当前的关系推进成更清楚的合作、诊断或交付。"
 
         progress_now = _line_progress_from_items(bucket_items, narrative)
         next_gap_or_need = _line_gap_from_items(bucket_items, narrative)

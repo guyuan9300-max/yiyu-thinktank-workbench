@@ -389,26 +389,21 @@ def relevance_terms_from_inputs(seed_queries: list[str], gaps: list[str]) -> lis
 
 
 def expand_seed_queries(seed_queries: list[str], gaps: list[str], seed_urls: list[str]) -> list[str]:
+    """机制化查询扩展: 用 seed_queries 第一项作为 site: 限定关键词,
+    任意客户/项目都能自动构造站内检索, 不依赖特定项目名硬编码。
+    """
     queries: list[str] = []
     for query in [*seed_queries, *gaps]:
         cleaned = re.sub(r"\s+", " ", str(query or "")).strip()
         if cleaned and cleaned not in queries:
             queries.append(cleaned)
-    joined = " ".join(queries)
-    if "大山里的音乐课堂" in joined or "为爱黔行" in joined:
-        for item in (
-            '"大山里的音乐课堂" 为爱黔行',
-            '"大山里的音乐课堂" filetype:pdf',
-            "中国乡村发展基金会 大山里的音乐课堂",
-            "南都公益基金会 大山里的音乐课堂",
-            "字节跳动公益 大山里的音乐课堂",
-        ):
-            if item not in queries:
-                queries.append(item)
-    for url in seed_urls:
-        domain = domain_label(url)
-        if domain:
-            site_query = f"site:{domain} 大山里的音乐课堂"
+    primary_seed = queries[0] if queries else ""
+    if primary_seed:
+        for url in seed_urls:
+            domain = domain_label(url)
+            if not domain:
+                continue
+            site_query = f"site:{domain} {primary_seed}"
             if site_query not in queries:
                 queries.append(site_query)
     return queries[:12]

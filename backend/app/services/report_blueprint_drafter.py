@@ -82,8 +82,9 @@ def draft_report_blueprint(
     max_retries: int = 3,
     timeout_seconds: float = 60.0,
     max_tokens: int = 3200,
+    glossary_pack: str = "",
 ) -> ReportBlueprint:
-    user_prompt = _build_user_prompt(context)
+    user_prompt = _build_user_prompt(context, glossary_pack=glossary_pack)
     errors: list[str] = []
     last_payload: Any = None
 
@@ -138,11 +139,16 @@ def draft_report_blueprint(
     )
 
 
-def _build_user_prompt(context: ReportPromptContext) -> str:
+def _build_user_prompt(context: ReportPromptContext, *, glossary_pack: str = "") -> str:
+    glossary_block = ""
+    if glossary_pack:
+        glossary_block = f"{glossary_pack}\n\n---\n\n"
     return (
+        f"{glossary_block}"
         "请根据下面的事件线与客户素材，推导一份合适的报告骨架。\n\n"
         + context.render_for_prompt()
         + "\n\n请记住：你输出的是骨架（结构），不要写正文。"
+        + "\n注意：上方字典权威档案（如有）是事实底座，骨架应包含围绕关键数据展开的章节。"
     )
 
 
