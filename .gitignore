@@ -21,6 +21,14 @@ data/*.db-wal
 .env
 .env.local
 .env.*.local
+.env.release
+.env.release.*
+!.env.release.example
+*.p8
+*.p12
+*.cer
+*.certSigningRequest
+release-secrets/
 *.sqlite
 *.sqlite3
 *.sqlite-shm

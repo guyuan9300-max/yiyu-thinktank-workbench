@@ -26,6 +26,14 @@
   - 检查 notarization 凭据
   - 检查 Xcode notarization 工具
   - 检查图标和 entitlements
+- `scripts/inspect-mac-release-readiness.mjs`
+  - 不构建、不签名，只做发布环境体检
+  - 可给同事机器上的 Codex 先跑，确认缺哪类证书、凭据或工具
+- `.env.release.example`
+  - notarization 环境变量模板
+  - 复制为 `.env.release` 后在本机私下填写
+- `docs/mac-developer-id-handoff-for-codex.md`
+  - 给同事机器上的 Codex 使用的逐步发布交接说明
 - `npm run dist:mac`
   - 正式官网分发包路径
 - `npm run dist:mac-local`
@@ -93,8 +101,8 @@ export APPLE_TEAM_ID="TEAMID"
 拿到证书并配置凭据后，在受控 Mac 构建机执行：
 
 ```bash
-node scripts/ensure-mac-release-prereqs.mjs
-npm run dist:mac
+npm run release:mac:doctor
+npm run release:mac
 ```
 
 构建后验证：

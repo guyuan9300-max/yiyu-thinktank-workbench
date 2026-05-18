@@ -663,6 +663,59 @@ def test_generic_policy_query_terms_do_not_self_validate_timely_candidate(tmp_pa
     assert db.scalar("SELECT COUNT(1) FROM intelligence_items WHERE content_kind='timely_intelligence'") == 0
 
 
+def test_tax_policy_query_terms_do_not_self_validate_timely_candidate(tmp_path: Path, monkeypatch) -> None:
+    db = Database(tmp_path / "timely_strategy_tax_policy.sqlite")
+    _seed_client(
+        db,
+        client_id="client_rici",
+        name="广东省日慈公益基金会",
+        domain="儿童心理健康",
+        intro="关注儿童青少年心理健康、公益创投、政府购买服务和社会组织合作。",
+    )
+    _insert_focus(db, client_id="client_rici", timely=["儿童青少年心理健康服务、公益创投、政府购买服务。"])
+    _insert_profile_card(
+        db,
+        client_id="client_rici",
+        title="儿童心理健康服务资料",
+        summary="机构关注儿童青少年心理健康、社会组织合作和公益创投机会。",
+        tags=["服务对象", "项目介绍"],
+    )
+    intent = _intent("client_rici", "儿童青少年心理健康 公益 政策 通知", intent_id="intent_tax_policy")
+    _insert_intent(db, intent)
+    monkeypatch.setattr(
+        supply,
+        "_fetch_page_text",
+        lambda _url: (
+            "fetched",
+            "发布时间：2026-04-18。税务部门发布个人所得税专项附加扣除政策提醒，说明住房贷款、继续教育和赡养老人扣除填报规则。",
+            "",
+        ),
+    )
+
+    result = run_intelligence_candidate_refresh(
+        db,
+        data_dir=tmp_path,
+        ai_service=_ReadyTimelyAi(),
+        scope=_scope("client_rici", "广东省日慈公益基金会"),
+        intents=[intent],
+        max_fetch_jobs=1,
+        hit_fetcher=lambda _query, source_config: [
+            CandidateHit(
+                title="个税专项附加扣除政策提醒",
+                url="https://tax.example.cn/personal-tax-policy",
+                snippet="说明住房贷款、继续教育和赡养老人扣除填报规则。",
+                source=source_config.source_name,
+                published_at="2026-04-18",
+            )
+        ],
+        official_site_hit_fetcher=lambda _query, _config: [],
+    )
+
+    assert result.promoted_count == 0
+    assert result.ai_reviewed_count == 0
+    assert db.scalar("SELECT COUNT(1) FROM intelligence_items WHERE content_kind='timely_intelligence'") == 0
+
+
 def test_object_name_only_static_material_does_not_promote(tmp_path: Path, monkeypatch) -> None:
     db = Database(tmp_path / "timely_strategy_name_only.sqlite")
     _seed_client(db, client_id="client_name_only", name="春雨社区服务中心", domain="社区儿童服务")

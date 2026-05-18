@@ -1485,19 +1485,23 @@ def _external_signal_fast_screen(
     config: SourceConfig,
     brief: ResearchBrief,
 ) -> tuple[bool, float, list[str], str]:
-    text = f"{hit.title} {hit.snippet} {hit.source} {intent.query} {intent.reason}"
+    # 相关性证据只能来自候选页面本身；query / intent reason 只影响召回，不能反向自证相关。
     hit_text = f"{hit.title} {hit.snippet} {hit.source}"
-    has_signal = _has_external_signal(text, config.source_type)
-    if _looks_like_static_timely_hit(text, has_external_signal=has_signal):
+    has_signal = _has_external_signal(hit_text, config.source_type)
+    if _looks_like_static_timely_hit(hit_text, has_external_signal=has_signal):
         return False, -40.0, ["static_profile_filtered"], "static_profile"
-    if _looks_like_off_topic_timely_signal(text):
+    if _looks_like_off_topic_timely_signal(hit_text):
         return False, -40.0, ["off_topic_filtered"], "generic_macro"
     if _looks_like_business_only_policy(hit_text):
         return False, -40.0, ["business_only_filtered"], "generic_macro"
-    if _looks_like_generic_macro_signal(text):
+    if _looks_like_generic_macro_signal(hit_text):
         return False, -40.0, ["generic_macro_filtered"], "generic_macro"
-    signal_terms = _matched_terms(text, list(EXTERNAL_SIGNAL_TERMS))
-    tag_terms = _matched_terms(text, _timely_strategy_terms(brief))
+    signal_terms = _matched_terms(hit_text, list(EXTERNAL_SIGNAL_TERMS))
+    anchor_terms = _matched_terms(hit_text, list(PUBLIC_SERVICE_ANCHOR_TERMS))
+    tag_terms = _meaningful_timely_strategy_hits(hit_text, brief)
+    object_hits = _matched_terms(hit_text, brief.object_terms)
+    if not object_hits and not anchor_terms and not tag_terms:
+        return False, -40.0, ["weak_anchor_filtered"], "generic_macro"
     route_terms = [item for item in intent.source_inputs if item.startswith("timely_route:")]
     score = 0.0
     flags: list[str] = []
@@ -1513,7 +1517,6 @@ def _external_signal_fast_screen(
         score += 12
     if hit.published_at:
         score += 8
-    object_hits = _matched_terms(text, brief.object_terms)
     if not object_hits and (tag_terms or signal_terms) and has_signal:
         flags.append("inspiration_signal")
     if not has_signal and not tag_terms:
@@ -3693,7 +3696,7 @@ def _timely_review_bucket(draft: CandidateDraft) -> str:
 
 
 def _timely_review_priority(draft: CandidateDraft, brief: ResearchBrief, *, timestamp: str | None = None) -> float:
-    text = f"{draft.intent.query} {draft.intent.reason} {draft.hit.title} {draft.hit.snippet} {draft.hit.source}"
+    text = f"{draft.hit.title} {draft.hit.snippet} {draft.hit.source}"
     keep, external_bonus, flags, _reject_kind = _external_signal_fast_screen(
         hit=draft.hit,
         intent=draft.intent,
@@ -3704,7 +3707,7 @@ def _timely_review_priority(draft: CandidateDraft, brief: ResearchBrief, *, time
         return -1000.0
     score = float(draft.confidence_score) + external_bonus
     signal_hits = _matched_terms(text, list(EXTERNAL_SIGNAL_TERMS))
-    tag_hits = _matched_terms(text, _timely_strategy_terms(brief))
+    tag_hits = _meaningful_timely_strategy_hits(text, brief)
     core_hits = _matched_terms(text, list(CORE_PUBLIC_WELFARE_TIMELY_TERMS))
     score += min(len(signal_hits), 5) * 5
     score += min(len(tag_hits), 6) * 4

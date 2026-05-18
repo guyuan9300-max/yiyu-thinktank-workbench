@@ -47,6 +47,7 @@
 签名、公证和申请材料详见：
 
 - `docs/developer-id-signing-notarization.md`
+- `docs/mac-developer-id-handoff-for-codex.md`
 
 ### 版本信息
 

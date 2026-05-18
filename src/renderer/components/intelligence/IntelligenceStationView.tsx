@@ -38,6 +38,7 @@ import type {
   TopicTaskPromotionDraft,
 } from '../../../shared/types';
 import {
+  autoRefreshIntelligenceDue,
   askIntelligenceItemQuestion,
   createIntelligenceTask,
   dismissIntelligenceItem,
@@ -888,7 +889,7 @@ export function IntelligenceStationView({
   const [questionPending, setQuestionPending] = useState(false);
   const [chatMessagesByItemId, setChatMessagesByItemId] = useState<Record<string, TopicCandidateChatMessage[]>>({});
   const [dismissTarget, setDismissTarget] = useState<IntelligenceItem | null>(null);
-  const [dismissReason, setDismissReason] = useState<IntelligenceDismissReasonCode>('irrelevant');
+  const [dismissReasons, setDismissReasons] = useState<IntelligenceDismissReasonCode[]>(['irrelevant']);
   const [dismissNote, setDismissNote] = useState('');
   const [followTarget, setFollowTarget] = useState<IntelligenceItem | null>(null);
   const [followMode, setFollowMode] = useState<IntelligenceFollowMode>('same_theme');
@@ -898,6 +899,7 @@ export function IntelligenceStationView({
   const [taskDraftCacheByItemId, setTaskDraftCacheByItemId] = useState<Record<string, IntelligenceTaskDraftPayload>>({});
   const [peopleOptions, setPeopleOptions] = useState<MentionCandidate[]>([]);
   const flashRef = useRef(flash);
+  const autoRefreshDueCheckedRef = useRef(false);
   const refreshPollTimersRef = useRef<number[]>([]);
   const scrollContainerRef = useRef<HTMLDivElement | null>(null);
   const [refreshingKind, setRefreshingKind] = useState<IntelligenceContentKind | null>(null);
@@ -1058,6 +1060,24 @@ export function IntelligenceStationView({
   }, [loadRefreshRuns]);
 
   useEffect(() => {
+    if (autoRefreshDueCheckedRef.current || workObjects.length === 0) return;
+    autoRefreshDueCheckedRef.current = true;
+    void autoRefreshIntelligenceDue({
+      contentKinds: ['profile_completion', 'timely_intelligence'],
+      scopeType: 'all',
+    })
+      .then((result) => {
+        if (result.queuedCount > 0) {
+          flashRef.current('info', result.message || '已到默认周期，后台已自动排队补跑');
+          void refreshWithoutMovingReader(() => Promise.all([loadRefreshRuns(), loadShell(), loadItems({ silent: true })])).catch(() => undefined);
+        }
+      })
+      .catch((error) => {
+        flashRef.current('error', error instanceof Error ? error.message : '自动补跑检查失败');
+      });
+  }, [loadItems, loadRefreshRuns, loadShell, refreshWithoutMovingReader, workObjects.length]);
+
+  useEffect(() => {
     if (activeRefreshRuns.length === 0) return undefined;
     const timer = window.setInterval(() => {
       void refreshWithoutMovingReader(() => Promise.all([loadRefreshRuns(), loadShell(), loadItems({ silent: true })])).catch(() => undefined);
@@ -1175,8 +1195,17 @@ export function IntelligenceStationView({
 
   function handleDismiss(item: IntelligenceItem) {
     setDismissTarget(item);
-    setDismissReason('irrelevant');
+    setDismissReasons(['irrelevant']);
     setDismissNote('');
+  }
+
+  function toggleDismissReason(reason: IntelligenceDismissReasonCode) {
+    setDismissReasons((current) => {
+      if (current.includes(reason)) {
+        return current.filter((item) => item !== reason);
+      }
+      return [...current, reason];
+    });
   }
 
   function openClarificationForItem(item: IntelligenceItem) {
@@ -1215,15 +1244,17 @@ export function IntelligenceStationView({
   }
 
   async function confirmDismiss() {
-    if (!dismissTarget) return;
+    if (!dismissTarget || dismissReasons.length === 0) return;
     const item = dismissTarget;
     setPendingItemId(item.id);
     try {
       await dismissIntelligenceItem(item.id, {
-        reasonCode: dismissReason,
+        reasonCode: dismissReasons[0],
+        reasonCodes: dismissReasons,
         note: dismissNote.trim(),
       });
       setDismissTarget(null);
+      setDismissReasons(['irrelevant']);
       await reloadItems();
       flash('success', '已不采纳');
     } catch (error) {
@@ -1781,9 +1812,10 @@ export function IntelligenceStationView({
                 <button
                   key={key}
                   type="button"
-                  onClick={() => setDismissReason(key)}
-                  className={`rounded-md border px-3 py-2 text-[13px] font-bold ${dismissReason === key ? 'border-rose-200 bg-rose-50 text-rose-700' : 'border-gray-200 text-gray-700 hover:bg-gray-50'}`}
+                  onClick={() => toggleDismissReason(key)}
+                  className={`inline-flex items-center gap-2 rounded-md border px-3 py-2 text-left text-[13px] font-bold ${dismissReasons.includes(key) ? 'border-rose-200 bg-rose-50 text-rose-700' : 'border-gray-200 text-gray-700 hover:bg-gray-50'}`}
                 >
+                  <span className={`flex h-4 w-4 items-center justify-center rounded border text-[10px] ${dismissReasons.includes(key) ? 'border-rose-500 bg-rose-500 text-white' : 'border-gray-300 bg-white text-transparent'}`}>✓</span>
                   {DISMISS_REASON_LABEL[key]}
                 </button>
               ))}
@@ -1798,7 +1830,10 @@ export function IntelligenceStationView({
             <div className="mt-4 flex justify-end gap-2">
               <button
                 type="button"
-                onClick={() => setDismissTarget(null)}
+                onClick={() => {
+                  setDismissTarget(null);
+                  setDismissReasons(['irrelevant']);
+                }}
                 className="rounded-md border border-gray-200 px-4 py-2 text-[13px] font-bold text-gray-600 hover:bg-gray-50"
               >
                 取消
@@ -1806,7 +1841,7 @@ export function IntelligenceStationView({
               <button
                 type="button"
                 onClick={() => void confirmDismiss()}
-                disabled={pendingItemId === dismissTarget.id}
+                disabled={pendingItemId === dismissTarget.id || dismissReasons.length === 0}
                 className="inline-flex items-center gap-2 rounded-md bg-rose-600 px-4 py-2 text-[13px] font-black text-white hover:bg-rose-700 disabled:bg-gray-300"
               >
                 {pendingItemId === dismissTarget.id && <Loader2 size={15} className="animate-spin" />}
