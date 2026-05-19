@@ -107,6 +107,30 @@ export function GlossaryAttributeReviewSection({
     }
   };
 
+  // F 任务: 一键批量采纳高置信度 (≥0.9) 的所有 pending. 这是最高 ROI 的批审入口.
+  // 实测 Stage 1+3 和 互联网 OCR 抽出的 attributes 大部分 conf=0.95-1.0, 用户可一键搞定.
+  const batchVerifyHighConfidence = async () => {
+    const targets = attrs.filter((a) => (a.confidence ?? 0) >= 0.9);
+    if (targets.length === 0) {
+      flash?.('error', '没有高置信度 (≥0.9) 的待审条目');
+      return;
+    }
+    if (!confirm(`将批量采纳 ${targets.length} 条高置信度 (≥0.9) 候选 (剩余 ${attrs.length - targets.length} 条低置信度需要单独审)?`)) return;
+    for (const a of targets) {
+      await mark(a.id, 'verify');
+    }
+    flash?.('success', `已采纳 ${targets.length} 条高置信度候选进字典 verified`);
+  };
+
+  // 按来源源类型分桶 (供 UI 显示标签)
+  const SOURCE_LABEL: Record<string, { label: string; color: string }> = {
+    ai_inferred: { label: 'Stage 3 抽', color: 'bg-blue-50 text-blue-700' },
+    auto_resolved_clarification: { label: '澄清自动答', color: 'bg-violet-50 text-violet-700' },
+    internet_ocr: { label: '互联网 OCR', color: 'bg-emerald-50 text-emerald-700' },
+    drift_alert: { label: '冲突告警', color: 'bg-orange-50 text-orange-700' },
+    user_input: { label: '用户填写', color: 'bg-slate-50 text-slate-600' },
+  };
+
   if (!showSection) {
     return (
       <button
@@ -127,19 +151,33 @@ export function GlossaryAttributeReviewSection({
     if (!byCategory.has(cat)) byCategory.set(cat, []);
     byCategory.get(cat)!.push(a);
   }
+  // F: 组内按 confidence 倒序 — 让用户先看到最该批的高 conf 条目
+  for (const [, group] of byCategory) {
+    group.sort((x, y) => (y.confidence ?? 0) - (x.confidence ?? 0));
+  }
   const categoryOrder = ['amount', 'date', 'person', 'location', 'count', 'rating', 'text'];
 
   return (
     <section className="mt-5 rounded-2xl border border-blue-100 bg-blue-50/30 px-4 py-3">
       <header className="flex items-center justify-between gap-3 mb-3">
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2 flex-wrap">
           <BookOpen size={14} className="text-blue-600" />
           <h3 className="text-[13px] font-bold text-blue-800">字典待审 · 学霸笔记本</h3>
           <span className="text-[11px] text-blue-600 bg-blue-100 rounded-full px-2 py-0.5 font-semibold">
             {attrs.length} 条
           </span>
+          {attrs.length > 0 && (
+            <button
+              type="button"
+              onClick={() => void batchVerifyHighConfidence()}
+              title="一键采纳所有 confidence ≥ 0.9 的候选 (高 ROI 路径)"
+              className="text-[11px] font-bold text-emerald-700 bg-emerald-100 hover:bg-emerald-200 rounded-full px-2.5 py-0.5"
+            >
+              ⚡ 一键采纳高置信度 ({attrs.filter(a => (a.confidence ?? 0) >= 0.9).length})
+            </button>
+          )}
           <span className="text-[11px] text-slate-500">
-            采纳进入字典权威值, chat/narrative 直接 cite, 不再翻原文
+            采纳进入字典权威值, chat/narrative 直接 cite
           </span>
         </div>
         <button
@@ -232,9 +270,27 @@ export function GlossaryAttributeReviewSection({
                         <li key={a.id} className="px-3 py-2.5 text-[12px]">
                           <div className="flex items-start justify-between gap-3">
                             <div className="min-w-0 flex-1">
-                              <div className="font-semibold text-slate-800">
-                                {a.term} <span className="text-slate-400 font-normal">·</span>{' '}
-                                {a.attribute_name}
+                              <div className="font-semibold text-slate-800 flex items-center gap-1.5 flex-wrap">
+                                <span>{a.term} <span className="text-slate-400 font-normal">·</span>{' '}
+                                {a.attribute_name}</span>
+                                {/* F: source 标签 让用户快速判断来源是否值得 verify */}
+                                {a.source_type && SOURCE_LABEL[a.source_type] && (
+                                  <span className={`text-[9px] font-bold rounded-full px-1.5 py-0.5 ${SOURCE_LABEL[a.source_type].color}`}>
+                                    {SOURCE_LABEL[a.source_type].label}
+                                  </span>
+                                )}
+                                {/* F: confidence 标签 高 conf 用绿色显眼 */}
+                                {typeof a.confidence === 'number' && (
+                                  <span className={`text-[9px] font-bold rounded-full px-1.5 py-0.5 ${
+                                    a.confidence >= 0.9
+                                      ? 'bg-emerald-50 text-emerald-700'
+                                      : a.confidence >= 0.7
+                                      ? 'bg-amber-50 text-amber-700'
+                                      : 'bg-slate-100 text-slate-500'
+                                  }`}>
+                                    conf {(a.confidence * 100).toFixed(0)}%
+                                  </span>
+                                )}
                               </div>
                               <div className="mt-1 text-slate-700">
                                 = {a.value_text}

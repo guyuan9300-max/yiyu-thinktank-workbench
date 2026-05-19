@@ -34,6 +34,21 @@ SUPPORTED_SOURCE_TYPES = {
     "weekly_review",
     "weekly_review_entry",
     "event_line_manual_update",
+    # P7（2026-05-18）— 外部抓取信源开闸：资讯情报站采集的所有信源都从这里入
+    "external_search_engine",   # 360/Sogou/Bing 等公开搜索引擎 hit
+    "external_sentiment",       # 舆情通用占位（不知道具体平台）
+    "external_timely",          # 时效情报通用占位
+    "wechat_article",           # 搜狗微信公众号文章
+    "weibo_post",               # 微博正文（含 site: 二级缓存）
+    "xiaohongshu_note",         # 小红书笔记（Playwright 桥接后启用）
+    "zhihu_answer",             # 知乎回答 / 文章
+    "bilibili_video",           # B 站视频/简介
+    "tianyancha_basic",         # 天眼查基础信息
+    "tianyancha_risk",          # 天眼查司法/行政处罚（真负面）
+    "foundation_registry",      # 基金会中心网 / 民政部公示
+    "baijiahao_article",        # 百家号自媒体长文
+    "douyin_video",             # 抖音（Playwright 桥接后启用）
+    "enterprise_credit",        # 企查查/启信宝（天眼查备用）
 }
 
 PRIVATE_VISIBILITY_SCOPES = {"self", "private", "personal"}
@@ -1203,6 +1218,111 @@ def _task_visibility(row: Any | None) -> tuple[str, str]:
 
 def _task_row_is_private(row: Any | None) -> bool:
     return _text(_row_get(row, "scope_mode")).upper() == "PERSONAL_ONLY"
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# P7（2026-05-18）外部抓取信源入库 helper
+# ──────────────────────────────────────────────────────────────────────────
+
+
+def ingest_external_observation(
+    db: Database,
+    *,
+    source_type: str,
+    source_url: str,
+    title: str,
+    body_text: str,
+    client_id: str | None = None,
+    project_module_id: str | None = None,
+    captured_at: str | None = None,
+    published_at: str | None = None,
+    sentiment_label: str | None = None,
+    intent_kind: str | None = None,
+    query_text: str | None = None,
+    metadata_extra: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """把资讯情报站抓回的一条 hit 写入 data_center_ingest_events。
+
+    复用现有 ingest 基础设施：
+      - hash 去重（content_hash UNIQUE）
+      - 客户绑定（client_id 字段）
+      - 多源对比 / 澄清流程在此基础上 build_proposal_drafts
+
+    Args:
+        source_type: SUPPORTED_SOURCE_TYPES 中的某个外部值（如 'external_sentiment'）。
+        source_url: 抓到的页面 URL，作为 sourceId 保证去重。
+        title, body_text: 标题和正文（snippet 或全文）。
+        client_id, project_module_id: 关联到哪个客户/业务线。
+        captured_at, published_at: 抓取时间 / 原始发布时间。
+        sentiment_label: 'negative' / 'neutral' / 'positive' / None。
+        intent_kind: 'evaluation' / 'policy' / 'funding' / ... 业务意图分类。
+        query_text: 触发这条 hit 的搜索 query（用于回溯）。
+        metadata_extra: 其他需要保留的元数据（直接 merge 进 metadata_json）。
+
+    Returns: 同 ingest_user_input 的 result，含 ingestEventId / status 等。
+    """
+    if source_type not in SUPPORTED_SOURCE_TYPES:
+        raise ValueError(f"external source_type not allowed: {source_type}")
+
+    url = (source_url or "").strip()
+    if not url:
+        raise ValueError("source_url required")
+
+    metadata: dict[str, Any] = {
+        "ingestKind": "external_observation",
+        "sourceUrl": url,
+        "capturedAt": captured_at or _now_iso(),
+    }
+    if published_at:
+        metadata["publishedAt"] = published_at
+    if sentiment_label:
+        metadata["sentimentLabel"] = sentiment_label
+    if intent_kind:
+        metadata["intentKind"] = intent_kind
+    if query_text:
+        metadata["queryText"] = query_text
+    if metadata_extra:
+        metadata.update(metadata_extra)
+
+    # P9 证据等级：根据 source_type 自动判定，保证下游消费者可隔离
+    # external_observation 严格禁止用作客户事实（fill_table_evaluator 必须过滤）
+    AUTHORITATIVE_SOURCES = {
+        "tianyancha_basic", "tianyancha_risk",
+        "foundation_registry", "enterprise_credit",
+    }
+    evidence_tier = (
+        "third_party_authoritative" if source_type in AUTHORITATIVE_SOURCES
+        else "external_observation"
+    )
+    metadata["evidenceTier"] = evidence_tier
+
+    payload = DataCenterIngestPayload(
+        sourceType=source_type,
+        sourceId=url,                              # URL 作为 sourceId，天然去重
+        title=(title or "").strip()[:300],
+        bodyText=(body_text or "").strip(),
+        clientId=client_id or None,
+        sourceEntityType="project_module" if project_module_id else ("client" if client_id else ""),
+        sourceEntityId=project_module_id or client_id or "",
+        # 外部抓取默认 work 域、project_public 可见——任何团队成员可见
+        contentDomain="work",
+        visibilityScope="project_public",
+        metadata=metadata,
+    )
+
+    result = ingest_user_input(db, "", payload)
+
+    # 落库后强制设 evidence_tier 字段（payload 走 metadata 不影响主字段）
+    ingest_event_id = result.get("ingestEventId") if isinstance(result, dict) else None
+    if ingest_event_id:
+        try:
+            db.execute(
+                "UPDATE data_center_ingest_events SET evidence_tier = ? WHERE id = ?",
+                (evidence_tier, ingest_event_id),
+            )
+        except Exception:  # noqa: BLE001
+            pass  # 字段不存在时静默忽略（旧 DB 兜底）
+    return result
 
 
 def purge_private_task_ingest_events(db: Database) -> int:

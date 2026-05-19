@@ -14,7 +14,7 @@ export type TopicTaskOwnerMode = 'self' | 'empty';
 export type TopicCandidateStatus = 'candidate' | 'tracking' | 'promoted' | 'archived';
 export type TopicCandidateInsightStatus = 'pending' | 'ready' | 'failed';
 export type MeetingStage = 'prepared' | 'ingested' | 'extracted' | 'resolved' | 'published';
-export type AiProvider = 'mock' | 'openai_compatible' | 'qwen' | 'doubao';
+export type AiProvider = 'mock' | 'openai_compatible' | 'qwen' | 'doubao' | 'openclaw';
 export type AiModelMode = 'auto' | 'online_first' | 'local_first' | 'local_only';
 export type AiModelProfileKey = 'online_primary' | 'local_text_deep' | 'local_vision_ocr' | 'local_fast';
 export type AiModelCapability = 'online_primary' | 'deep_analysis' | 'vision_ocr' | 'fast_structured';
@@ -579,6 +579,14 @@ export interface ClientSummary {
   documentCount: number;
   taskCount: number;
   lastActivityAt?: string | null;
+  // P7：项目编辑弹窗扩展字段
+  //   relatedUserIds：勾选的相关同事 user.id（批 3 接通 cloud sync 后驱动跨用户可见）
+  //   isDataCenterIncluded：是否进入数据中心计算（false = 仅工作台可见）
+  relatedUserIds?: string[];
+  isDataCenterIncluded?: boolean;
+  // 全局冷冻:true 表示该项目被冷冻,所有自动 job/列表/下拉都跳过
+  isFrozen?: boolean;
+  frozenAt?: string | null;
 }
 
 export interface ClientFolder {
@@ -5329,11 +5337,29 @@ export interface GrowthBusinessCoverage {
   coveredProjects: number;
 }
 
+export interface GrowthReviewWeekPoint {
+  weekLabel: string;
+  entryCount: number;
+  charCount: number;
+}
+export interface GrowthReviewDayPoint {
+  date: string;
+  entryCount: number;
+  charCount: number;
+}
 export interface GrowthReviewStreak {
   currentStreakWeeks: number;
   maxStreakWeeks: number;
   totalReviewWeeks: number;
   lastReviewedWeekLabel: string;
+  monthlyEntryCount?: number;
+  lastMonthEntryCount?: number;
+  entryGrowthPercent?: number;
+  monthlyCharCount?: number;
+  lastMonthCharCount?: number;
+  charGrowthPercent?: number;
+  weeklyTrend?: GrowthReviewWeekPoint[];
+  dailyTrend?: GrowthReviewDayPoint[];
 }
 
 export interface GrowthWorkTypeSlice {
@@ -6433,6 +6459,9 @@ export interface ClientMutationPayload {
   intro: string;
   stage: string;
   color?: string;
+  // P7：扩展字段（后端 default 兼容旧调用方）
+  relatedUserIds?: string[];
+  isDataCenterIncluded?: boolean;
 }
 
 export interface TaskMutationPayload {
@@ -7282,7 +7311,12 @@ export interface ReportRunSummary {
 // IntelligenceStationView.tsx 依赖这些类型；force push 时漏带，现在补回
 // ──────────────────────────────────────────────────────────────────────
 
-export type IntelligenceContentKind = 'profile_completion' | 'timely_intelligence' | 'public_opinion';
+// profile_completion 已下线（2026-05-18），由数据中心负责
+// P12（2026-05-19）：新增 brand_mirror 作为主秀
+//   brand_mirror     - 品牌镜子（主秀，基于官方/媒体/合作信源）
+//   timely_intelligence - 时效情报（保留）
+//   public_opinion   - 舆情监控（保留但降级，因为 UGC 反爬挡死）
+export type IntelligenceContentKind = 'brand_mirror' | 'timely_intelligence' | 'public_opinion';
 export type IntelligenceWorkObjectType = 'client' | 'project_module';
 export type IntelligenceFocusScopeType = 'global' | 'client' | 'project_module';
 export type IntelligenceItemUserStatus = 'active' | 'dismissed' | 'following';
@@ -7730,6 +7764,69 @@ declare global {
       }): Promise<{ absolutePath: string; sizeBytes: number; sessionId: string }>;
       readRecordingFile(absolutePath: string): Promise<{ buffer: Uint8Array; sizeBytes: number; name: string }>;
       setRecordingActive(payload: { active: boolean; taskTitle?: string }): Promise<{ active: boolean }>;
+      checkForUpdates?(): Promise<{ ok: boolean; version?: string | null; reason?: string }>;
+      quitAndInstallUpdate?(): Promise<{ ok: boolean; reason?: string }>;
+      onUpdateEvent?(callback: (payload: UpdateEventPayload) => void): () => void;
     };
   }
+}
+
+export interface UpdateEventPayload {
+  kind: 'checking' | 'available' | 'not-available' | 'download-progress' | 'downloaded' | 'error';
+  version?: string;
+  releaseNotes?: string | null;
+  percent?: number;
+  bytesPerSecond?: number;
+  transferred?: number;
+  total?: number;
+  message?: string;
+}
+
+// P13-D 品牌镜子 LLM 画像 snapshot (后端 /api/v1/intelligence/brand-mirror/analyze 返回结构)
+export type BrandMirrorTone = 'positive' | 'neutral' | 'negative';
+
+export interface BrandMirrorSelfPresentation {
+  label: string;
+  score: number; // 1-100
+  rationale: string;
+}
+
+export interface BrandMirrorBlindspot {
+  label: string;
+  rationale: string;
+}
+
+export interface BrandMirrorMediaCoverage {
+  source: string;
+  tone: BrandMirrorTone;
+  summary: string;
+}
+
+export interface BrandMirrorPartner {
+  name: string;
+  type: string; // foundation/corporate/government/media/academic
+  evidence: string;
+}
+
+export interface BrandMirrorWordCloudItem {
+  word: string;
+  weight: number; // 1-100
+  tone: BrandMirrorTone;
+  sourceDiversity: number; // 1-5
+}
+
+export interface BrandMirrorSnapshot {
+  id: string;
+  corpusDocCount: number;
+  corpusCharCount: number;
+  websiteAuditId: string | null;
+  selfPresentation: BrandMirrorSelfPresentation[];
+  blindspots: BrandMirrorBlindspot[];
+  consistency: string;
+  mediaCoverage: BrandMirrorMediaCoverage[];
+  partners: BrandMirrorPartner[];
+  wordCloud: BrandMirrorWordCloudItem[];
+  llmModel: string;
+  error: string | null;
+  createdAt: string;
 }

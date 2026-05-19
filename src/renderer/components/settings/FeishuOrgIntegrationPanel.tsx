@@ -140,20 +140,17 @@ export function FeishuOrgIntegrationPanel({
   };
 
   return (
-    <div className="space-y-6">
-      <div className="bg-white border border-gray-100 rounded-3xl p-6 shadow-sm space-y-5">
+    <div className="space-y-8">
+      <div className="space-y-5">
         <div className="flex items-start justify-between gap-4">
-          <div>
-            <h2 className="text-[16px] font-bold text-gray-900 flex items-center gap-2">
-              <Bot size={17} />
-              组织飞书接入
-            </h2>
-            <p className="text-[12px] text-gray-500 mt-1 leading-relaxed">
+          <div className="min-w-0 flex-1">
+            <p className="text-[11px] font-bold uppercase tracking-[0.12em] text-gray-500">组织飞书接入</p>
+            <p className="text-[12px] text-gray-500 mt-1.5 leading-relaxed">
               这一步配置的是整个组织共用的飞书应用。验证通过后，软件会按成员填写的飞书手机号自动发送任务提醒。
             </p>
           </div>
-          <div className={`text-[11px] font-bold px-3 py-1.5 rounded-full border ${statusTone(integration.lastValidationStatus)}`}>
-            {integration.enabled ? '组织已接通飞书' : '组织尚未接通飞书'}
+          <div className={`text-[10px] font-bold uppercase tracking-[0.12em] px-2.5 py-1 rounded-full border ${statusTone(integration.lastValidationStatus)}`}>
+            {integration.enabled ? '已接通' : '未接通'}
           </div>
         </div>
 
@@ -213,18 +210,15 @@ export function FeishuOrgIntegrationPanel({
         )}
       </div>
 
-      <div className="bg-white border border-gray-100 rounded-3xl p-6 shadow-sm space-y-5">
+      <div className="border-t border-gray-100 pt-6 space-y-5">
         <div className="flex items-start justify-between gap-4">
-          <div>
-            <h2 className="text-[16px] font-bold text-gray-900 flex items-center gap-2">
-              <Phone size={17} />
-              我的飞书接收手机号
-            </h2>
-            <p className="text-[12px] text-gray-500 mt-1 leading-relaxed">
+          <div className="min-w-0 flex-1">
+            <p className="text-[11px] font-bold uppercase tracking-[0.12em] text-gray-500">我的飞书接收手机号</p>
+            <p className="text-[12px] text-gray-500 mt-1.5 leading-relaxed">
               请填写你登录飞书时使用的手机号。软件会按这个手机号匹配你的飞书身份并发送任务提醒；如果第一次填错，后面也可以随时修改。
             </p>
           </div>
-          <div className={`text-[11px] font-bold px-3 py-1.5 rounded-full border ${deliveryTone(deliveryProfile.deliveryStatus)}`}>
+          <div className={`text-[10px] font-bold uppercase tracking-[0.12em] px-2.5 py-1 rounded-full border ${deliveryTone(deliveryProfile.deliveryStatus)}`}>
             {deliveryProfile.deliveryStatusLabel}
           </div>
         </div>

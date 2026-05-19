@@ -431,12 +431,35 @@ if (typeof window !== 'undefined' && !window.yiyuWorkbench) {
 
 const baseUrl = window.yiyuWorkbench.backendBaseUrl;
 
+/**
+ * 统一 retry 策略：
+ *   - 网络层错误（"Failed to fetch" / "Load failed"，覆盖 backend 进程死掉 / reload 切换）
+ *     → GET 最多 retry 8 次，POST/其他最多 retry 2 次（写操作避免重复）
+ *   - HTTP 5xx → 不论 method 都 retry 3 次（5xx 多数是 backend 临时态：reload / EPIPE / 上游超时）
+ *   - HTTP 503 + body.retriable === true → 即使 POST 也 retry（backend 明确告诉我们可以安全重试）
+ *   - HTTP 4xx → 直接抛（业务错误）
+ *   - 退避：第 1 次立即重试；之后 600ms / 1200ms / 2400ms ...，上限 5s
+ * 终极失败时抛用户能理解的文案；UI 层把它当 retriable 收纳到 panel 占位条，不再红字。
+ */
+const NETWORK_ERROR_PATTERN = /Failed to fetch|Load failed|NetworkError|Network request failed/i;
+const RETRIABLE_STATUS = new Set([500, 502, 503, 504]);
+
+function _retryDelayMs(attempt: number): number {
+  if (attempt <= 0) return 0;
+  return Math.min(5000, 600 * 2 ** (attempt - 1));
+}
+
 async function request<T>(path: string, options?: RequestInit): Promise<T> {
   const method = (options?.method ?? 'GET').toUpperCase();
-  const maxRetry = method === 'GET' ? 12 : 0;
-  let response: Response | null = null;
-  let lastError: unknown = null;
-  for (let attempt = 0; attempt <= maxRetry; attempt += 1) {
+  const isGet = method === 'GET';
+  const networkRetryBudget = isGet ? 8 : 2;
+  const statusRetryBudget = 3;
+  let networkAttempts = 0;
+  let statusAttempts = 0;
+
+  // eslint-disable-next-line no-constant-condition
+  while (true) {
+    let response: Response;
     try {
       response = await fetch(`${baseUrl}${path}`, {
         headers: {
@@ -445,34 +468,69 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
         },
         ...options,
       });
-      break;
     } catch (error) {
-      lastError = error;
       const detail = error instanceof Error ? error.message : String(error);
-      const isTransient = /Failed to fetch/i.test(detail) || /Load failed/i.test(detail);
-      if (!isTransient || attempt === maxRetry) {
-        if (isTransient) {
-          throw new Error('无法连接本地服务，请等待应用完成启动，或重启软件后重试。');
-        }
-        throw new Error(detail || '请求失败');
+      const isTransient = NETWORK_ERROR_PATTERN.test(detail);
+      if (isTransient && networkAttempts < networkRetryBudget) {
+        networkAttempts += 1;
+        await new Promise((resolve) => setTimeout(resolve, _retryDelayMs(networkAttempts)));
+        continue;
       }
-      await new Promise((resolve) => setTimeout(resolve, 500));
+      if (isTransient) {
+        throw new Error('内置服务暂时未响应，请稍候重试');
+      }
+      throw new Error(detail || '请求失败');
     }
-  }
-  if (!response) {
-    const detail = lastError instanceof Error ? lastError.message : String(lastError ?? '');
-    throw new Error(detail || '请求失败');
-  }
-  if (!response.ok) {
+
+    if (response.ok) {
+      return response.json() as Promise<T>;
+    }
+
     const text = await response.text();
     let detail = text;
+    let isRetriablePayload = false;
     try {
-      const payload = JSON.parse(text) as { detail?: string };
-      detail = payload.detail || text;
+      const payload = JSON.parse(text) as { detail?: unknown; retriable?: boolean };
+      // FastAPI validation error 时 detail 是数组对象（[{loc, msg, type}, ...]）
+      // 不能直接当字符串 throw，否则会变成 "[object Object]"
+      if (typeof payload.detail === 'string') {
+        detail = payload.detail;
+      } else if (Array.isArray(payload.detail)) {
+        detail = payload.detail
+          .map((entry) => {
+            if (entry && typeof entry === 'object' && 'msg' in entry) {
+              const loc = Array.isArray((entry as { loc?: unknown[] }).loc)
+                ? ((entry as { loc: unknown[] }).loc).join('.')
+                : '';
+              return loc ? `${loc}: ${(entry as { msg: string }).msg}` : (entry as { msg: string }).msg;
+            }
+            return JSON.stringify(entry);
+          })
+          .join('; ');
+      } else if (payload.detail && typeof payload.detail === 'object') {
+        detail = JSON.stringify(payload.detail);
+      } else {
+        detail = text;
+      }
+      isRetriablePayload = payload.retriable === true;
     } catch {}
-    throw new Error(detail || `HTTP ${response.status}`);
+
+    const status = response.status;
+    const isRetriableStatus = RETRIABLE_STATUS.has(status);
+    const canRetryWrite = !isGet && (isRetriablePayload || status === 503);
+    const shouldRetry =
+      (isRetriableStatus || isRetriablePayload) &&
+      statusAttempts < statusRetryBudget &&
+      (isGet || canRetryWrite);
+
+    if (shouldRetry) {
+      statusAttempts += 1;
+      await new Promise((resolve) => setTimeout(resolve, _retryDelayMs(statusAttempts)));
+      continue;
+    }
+
+    throw new Error(detail || `HTTP ${status}`);
   }
-  return response.json() as Promise<T>;
 }
 
 type FormRequestOptions = Omit<RequestInit, 'body'> & {
@@ -523,8 +581,23 @@ async function requestForm<T>(path: string, formData: FormData, options?: FormRe
     const text = await response.text();
     let detail = text;
     try {
-      const payload = JSON.parse(text) as { detail?: string };
-      detail = payload.detail || text;
+      const payload = JSON.parse(text) as { detail?: unknown };
+      if (typeof payload.detail === 'string') {
+        detail = payload.detail;
+      } else if (Array.isArray(payload.detail)) {
+        detail = payload.detail
+          .map((entry) => {
+            if (entry && typeof entry === 'object' && 'msg' in entry) {
+              return (entry as { msg: string }).msg;
+            }
+            return JSON.stringify(entry);
+          })
+          .join('; ');
+      } else if (payload.detail && typeof payload.detail === 'object') {
+        detail = JSON.stringify(payload.detail);
+      } else {
+        detail = text;
+      }
     } catch {}
     throw new Error(detail || `HTTP ${response.status}`);
   }
@@ -1048,6 +1121,34 @@ export async function adoptTaskSmartBriefAction(taskId: string, actionKey: strin
       body: JSON.stringify(payload),
     },
   );
+}
+
+// ──────────────────────────────────────────────────────────────────
+// 智能新建任务 — 把一段自然语言转结构化任务字段
+// ──────────────────────────────────────────────────────────────────
+export type TaskAiParseClientCandidate = {
+  id: string;
+  name: string;
+  score: number;
+};
+
+export type TaskAiParseResult = {
+  title: string;
+  desc: string;
+  dueDate: string | null;
+  dueTime: string | null;
+  priority: 'low' | 'normal' | 'high';
+  clientId: string | null;
+  clientName: string | null;
+  clientCandidates: TaskAiParseClientCandidate[];
+  rawLlmGuessClientName: string | null;
+};
+
+export async function aiParseTask(payload: { text: string; currentDate: string }) {
+  return request<TaskAiParseResult>('/api/v1/tasks/ai-parse', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
 }
 
 export async function getAuthState() {
@@ -1648,6 +1749,33 @@ export async function deleteClient(id: string) {
   });
 }
 
+export type ClientDeletePreview = {
+  clientId: string;
+  name: string;
+  threadCount: number;
+  messageCount: number;
+  documentCount: number;
+  dnaCount: number;
+  goalCount: number;
+  meetingCount: number;
+  eventLineCount: number;
+  taskCount: number;
+  isDemoClient: boolean;
+};
+
+export async function getClientDeletePreview(id: string) {
+  return request<ClientDeletePreview>(`/api/v1/clients/${id}/delete-preview`);
+}
+
+// 全局冷冻 / 解冻 — 把项目从所有自动计算/资讯/数据中心 job 里冻结
+export async function freezeClient(id: string) {
+  return request<ClientSummary>(`/api/v1/clients/${id}/freeze`, { method: 'POST' });
+}
+
+export async function unfreezeClient(id: string) {
+  return request<ClientSummary>(`/api/v1/clients/${id}/unfreeze`, { method: 'POST' });
+}
+
 export async function deleteClientFolder(clientId: string, folderId: string) {
   return request<{ deleted: boolean }>(`/api/v1/clients/${clientId}/folders/${folderId}`, {
     method: 'DELETE',
@@ -2214,6 +2342,140 @@ export async function regenerateClientNarrative(
   );
 }
 
+export type NarrativeStaleStatus = {
+  isStale: boolean;
+  markedAt: string;
+  narrativeGeneratedAt: string;
+  lastDocTitle: string;
+  reason: string;
+};
+
+export async function getNarrativeStaleStatus(clientId: string): Promise<NarrativeStaleStatus> {
+  return request<NarrativeStaleStatus>(
+    `/api/v1/clients/${encodeURIComponent(clientId)}/narrative/stale-status`,
+  );
+}
+
+export async function clearNarrativeStale(clientId: string): Promise<{ ok: boolean }> {
+  return request<{ ok: boolean }>(
+    `/api/v1/clients/${encodeURIComponent(clientId)}/narrative/stale-clear`,
+    { method: 'POST' },
+  );
+}
+
+export type MeetingActionItem = {
+  actor: string;
+  text: string;
+  confidence: 'high' | 'medium';
+  sourceDocTitle: string;
+  sourceDocId: string;
+  sourceChunkIndex: number;
+  importedAt: string;
+  fingerprint: string;
+};
+
+export type SuggestionAction = 'promoted' | 'completed' | 'dismissed';
+
+export type SuggestionLogEntry = {
+  fingerprint: string;
+  actor: string;
+  suggestionText: string;
+  sourceDocTitle: string;
+  sourceDocId: string;
+  createdAt: string;
+};
+
+export type SuggestionLogResponse = {
+  clientId: string;
+  promoted: SuggestionLogEntry[];
+  completed: SuggestionLogEntry[];
+  dismissed: SuggestionLogEntry[];
+};
+
+export async function logSuggestionAction(
+  clientId: string,
+  payload: {
+    fingerprint: string;
+    action: SuggestionAction;
+    actor: string;
+    suggestionText: string;
+    sourceDocTitle: string;
+    sourceDocId: string;
+  },
+): Promise<{ ok: boolean }> {
+  return request<{ ok: boolean }>(
+    `/api/v1/clients/${encodeURIComponent(clientId)}/suggestions/log`,
+    { method: 'POST', body: JSON.stringify(payload) },
+  );
+}
+
+export async function getSuggestionLog(clientId: string): Promise<SuggestionLogResponse> {
+  return request<SuggestionLogResponse>(
+    `/api/v1/clients/${encodeURIComponent(clientId)}/suggestions/log`,
+  );
+}
+
+export async function removeSuggestionLogEntry(clientId: string, fingerprint: string): Promise<{ ok: boolean }> {
+  return request<{ ok: boolean }>(
+    `/api/v1/clients/${encodeURIComponent(clientId)}/suggestions/log/${encodeURIComponent(fingerprint)}`,
+    { method: 'DELETE' },
+  );
+}
+
+export type MeetingActionItemsResponse = {
+  clientId: string;
+  high: MeetingActionItem[];
+  medium: MeetingActionItem[];
+  totalHigh: number;
+  totalMedium: number;
+};
+
+export async function getMeetingActionItems(clientId: string): Promise<MeetingActionItemsResponse> {
+  return request<MeetingActionItemsResponse>(
+    `/api/v1/clients/${encodeURIComponent(clientId)}/meeting-action-items`,
+  );
+}
+
+export type NextStepItem = {
+  fingerprint: string;
+  kind: 'meeting' | 'commitment' | 'task' | 'meeting_action';
+  actor: string;
+  text: string;
+  dueDate: string;
+  severity: 'high' | 'medium' | 'low';
+  rawId: string;
+};
+
+export type NextStepsResponse = {
+  clientId: string;
+  items: NextStepItem[];
+  total: number;
+  consumedCount: number;
+};
+
+export async function getNextSteps(clientId: string): Promise<NextStepsResponse> {
+  return request<NextStepsResponse>(
+    `/api/v1/clients/${encodeURIComponent(clientId)}/next-steps`,
+  );
+}
+
+export type NextStepBackgroundResponse = {
+  background: string;
+  sourceLabel: string;
+  hasSource: boolean;
+  fromCache: boolean;
+};
+
+export async function getNextStepBackground(
+  clientId: string,
+  payload: { fingerprint: string; kind: string; actor: string; text: string },
+): Promise<NextStepBackgroundResponse> {
+  return request<NextStepBackgroundResponse>(
+    `/api/v1/clients/${encodeURIComponent(clientId)}/next-steps-background`,
+    { method: 'POST', body: JSON.stringify(payload) },
+  );
+}
+
 // ──────────────────────────────────────────────────────────────────
 // M1 · 字典属性 (glossary_attributes) 审核 API
 // ──────────────────────────────────────────────────────────────────
@@ -2292,6 +2554,9 @@ export interface UnifiedTodo {
   related_to: string;
   raw_id: string;
   severity: 'high' | 'medium' | 'low';
+  /** "下一步要做什么" 区块转任务时, AI 从原文 chunk 总结的 80-100 字背景说明,
+   *  promoteHandler 会用此预填任务编辑器 desc 字段, 让接手同事看到上下文 */
+  description?: string;
 }
 
 export interface UnifiedTodosResponse {
@@ -2354,13 +2619,22 @@ export async function getUnifiedTodos(clientId: string): Promise<UnifiedTodosRes
   );
 }
 
+export interface PromoteTodoPayload {
+  title?: string;
+  owner?: string;
+  due_date?: string;
+  description?: string;
+  priority?: 'high' | 'medium' | 'low';
+}
+
 export async function promoteTodoToTask(
   clientId: string,
   todoId: string,
+  payload: PromoteTodoPayload = {},
 ): Promise<{ ok: boolean; newTaskId: string; source: string }> {
   return request(
     `/api/v1/clients/${encodeURIComponent(clientId)}/todos/${encodeURIComponent(todoId)}/promote-to-task`,
-    { method: 'POST', body: JSON.stringify({}) },
+    { method: 'POST', body: JSON.stringify(payload) },
   );
 }
 
@@ -3190,6 +3464,22 @@ export async function createClientTextDocument(clientId: string, payload: { titl
   });
 }
 
+// P9：客户工作台 inline 编辑器 AI 助手
+//   action: 扩写 / 改写专业 / 改写简洁 / 总结
+export type DocumentAiAction = 'expand' | 'rewrite_pro' | 'rewrite_short' | 'summarize';
+export async function documentAiAction(
+  clientId: string,
+  payload: { content: string; action: DocumentAiAction },
+) {
+  return request<{ content: string; action: string; durationMs: number }>(
+    `/api/v1/clients/${clientId}/documents/ai-action`,
+    {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    },
+  );
+}
+
 export async function startClientLinkMaterialImport(
   clientId: string,
   url: string,
@@ -3956,6 +4246,10 @@ export async function recomputeTaskPlanLink(taskId: string) {
 
 export async function getTasksForPlanItem(itemId: string) {
   return request<Task[]>(`/api/v1/org-model/plan-items/${itemId}/tasks`);
+}
+
+export async function getPlanItemTaskCounts(): Promise<Record<string, number>> {
+  return request<Record<string, number>>('/api/v1/org-model/plan-item-task-counts');
 }
 
 export interface ParsedPlanItem {
@@ -4817,6 +5111,206 @@ export async function sendSentimentFeedback(payload: {
     method: 'POST',
     body: JSON.stringify(payload),
   });
+}
+
+// ──────────────────────────────────────────────────────────
+// 印象主题（P5-A）+ 定位差异（P5-B）+ 主题溯源（P5-#4）
+// ──────────────────────────────────────────────────────────
+
+export type SentimentTheme = {
+  id: string;
+  themeLabel: string;
+  themeSummary: string;
+  sentimentTone: 'negative' | 'neutral' | 'positive';
+  itemCount: number;
+  representativeQuote: string;
+  representativeItemId: string | null;
+  itemIds: string[];
+  computedAt: string;
+  expiresAt: string;
+};
+
+export type SentimentThemesResponse = {
+  themes: SentimentTheme[];
+  total: number;
+  recomputeNote: string | null;
+};
+
+export type ThemeItemSource = {
+  id: string;
+  title: string;
+  summary: string;
+  source: string;
+  sourceUrl: string;
+  capturedAt: string;
+  sentimentLabel: 'negative' | 'neutral' | 'positive';
+  sentimentReason: string;
+};
+
+export type ThemeItemsResponse = {
+  ok: boolean;
+  theme: SentimentTheme;
+  items: ThemeItemSource[];
+};
+
+export type GapAlignmentStatus = 'affirmed' | 'gap' | 'silent';
+
+export type GapAlignment = {
+  proposition: string;
+  status: GapAlignmentStatus;
+  reason: string;
+  supportingThemes: { id: string; label: string }[];
+  conflictingThemes: { id: string; label: string }[];
+};
+
+export type PositioningGapResponse = {
+  ok: boolean;
+  reason?: string;
+  propositions: string[];
+  themes: SentimentTheme[];
+  alignments: GapAlignment[];
+  unexpectedThemes: { id: string; label: string }[];
+};
+
+export async function recomputeSentimentThemes(payload: {
+  clientId?: string;
+  projectModuleId?: string;
+  targetName?: string;
+  withinDays?: number;
+}) {
+  return request<{ ok: boolean; reason?: string; themes: SentimentTheme[] }>(
+    '/api/v1/intelligence/sentiment/themes/recompute',
+    { method: 'POST', body: JSON.stringify(payload) },
+  );
+}
+
+export async function listSentimentThemes(params: {
+  clientId?: string;
+  projectModuleId?: string;
+  autoRecompute?: boolean;
+}) {
+  const q = new URLSearchParams();
+  if (params.clientId) q.set('clientId', params.clientId);
+  if (params.projectModuleId) q.set('projectModuleId', params.projectModuleId);
+  if (params.autoRecompute === false) q.set('autoRecompute', 'false');
+  const suffix = q.toString() ? `?${q.toString()}` : '';
+  return request<SentimentThemesResponse>(`/api/v1/intelligence/sentiment/themes${suffix}`);
+}
+
+export async function getThemeItems(themeId: string, limit = 10) {
+  return request<ThemeItemsResponse>(
+    `/api/v1/intelligence/sentiment/themes/${encodeURIComponent(themeId)}/items?limit=${limit}`,
+  );
+}
+
+export async function getPositioningGap(params: {
+  clientId?: string;
+  projectModuleId?: string;
+}) {
+  const q = new URLSearchParams();
+  if (params.clientId) q.set('clientId', params.clientId);
+  if (params.projectModuleId) q.set('projectModuleId', params.projectModuleId);
+  const suffix = q.toString() ? `?${q.toString()}` : '';
+  return request<PositioningGapResponse>(`/api/v1/intelligence/sentiment/gap${suffix}`);
+}
+
+export async function getClientBrandProposition(clientId: string) {
+  return request<{ clientId: string; brandProposition: string }>(
+    `/api/v1/clients/${encodeURIComponent(clientId)}/brand-proposition`,
+  );
+}
+
+export async function updateClientBrandProposition(clientId: string, brandProposition: string) {
+  return request<{ clientId: string; brandProposition: string; updatedAt: string }>(
+    `/api/v1/clients/${encodeURIComponent(clientId)}/brand-proposition`,
+    { method: 'PATCH', body: JSON.stringify({ brandProposition }) },
+  );
+}
+
+// ──────────────────────────────────────────────────────────
+// 品牌印象速读（P6）
+// ──────────────────────────────────────────────────────────
+
+export type BrandAuditTension = {
+  statement: string;
+  selfAnchor: string;
+  publicAnchor: string;
+};
+
+export type BrandAuditRecommendation = {
+  action: string;
+  rationale: string;
+  priority: 'high' | 'medium' | 'low';
+};
+
+export type BrandAuditContentAngles = {
+  amplify: string[];
+  new: string[];
+  // P9 2026-05-19：reduce 已弃用——"让客户少说什么"是高风险判断
+  // 保留 optional 字段兼容旧 audit JSON，但新生成不再产出，UI 也不再渲染
+  reduce?: string[];
+};
+
+export type BrandAudit = {
+  id: string;
+  scopeType: string;
+  scopeId: string;
+  headline: string;
+  narrativeMd: string;
+  tensions: BrandAuditTension[];
+  recommendations: BrandAuditRecommendation[];
+  contentAngles: BrandAuditContentAngles;
+  evidenceThemeIds: string[];
+  computedAt: string;
+  expiresAt: string;
+};
+
+export type BrandAuditResponse = {
+  audit: BrandAudit | null;
+  recomputeNote: string | null;
+};
+
+export async function getBrandAudit(params: {
+  clientId?: string;
+  projectModuleId?: string;
+  autoRecompute?: boolean;
+}) {
+  const q = new URLSearchParams();
+  if (params.clientId) q.set('clientId', params.clientId);
+  if (params.projectModuleId) q.set('projectModuleId', params.projectModuleId);
+  if (params.autoRecompute === false) q.set('autoRecompute', 'false');
+  const suffix = q.toString() ? `?${q.toString()}` : '';
+  return request<BrandAuditResponse>(`/api/v1/intelligence/sentiment/audit${suffix}`);
+}
+
+export async function recomputeBrandAudit(payload: {
+  clientId?: string;
+  projectModuleId?: string;
+  targetName?: string;
+}) {
+  return request<{ ok: boolean; reason?: string; audit: BrandAudit | null }>(
+    '/api/v1/intelligence/sentiment/audit/recompute',
+    { method: 'POST', body: JSON.stringify(payload) },
+  );
+}
+
+// ──────────────────────────────────────────────────────────
+// P13-D 品牌镜子 (brand mirror) - 后端 LLM 画像快照
+// ──────────────────────────────────────────────────────────
+
+import type { BrandMirrorSnapshot } from '../../shared/types';
+
+export async function fetchBrandMirrorSnapshot(clientId: string) {
+  return request<{ snapshot: BrandMirrorSnapshot | null }>(
+    `/api/v1/intelligence/brand-mirror/analyze?clientId=${encodeURIComponent(clientId)}`,
+  );
+}
+
+export async function triggerBrandMirrorAnalysis(clientId: string) {
+  return request<BrandMirrorSnapshot & { snapshotId: string; clientId: string }>(
+    '/api/v1/intelligence/brand-mirror/analyze',
+    { method: 'POST', body: JSON.stringify({ clientId }) },
+  );
 }
 
 // ──────────────────────────────────────────────────────────

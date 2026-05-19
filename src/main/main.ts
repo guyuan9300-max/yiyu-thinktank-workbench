@@ -20,6 +20,7 @@ import {
   buildDesktopAppInfo,
   type BackendHealthPayload,
 } from './runtimeManifest.js';
+import { setupAutoUpdater } from './autoUpdater.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const DEFAULT_BACKEND_PORT = 47829;
@@ -1817,7 +1818,9 @@ function startBackend() {
   backendProcess.on('exit', (code) => {
     backendExitDetail = `后端服务已退出，退出码=${code ?? 'unknown'}`;
     backendProcess = null;
-    ownsBackendProcess = false;
+    // 不重置 ownsBackendProcess：保持 true 让 watchdog（每 15s）识别为"我们的 backend 死了"
+    // 并自动重启。之前这里清成 false，导致 watchdog 第一行 `if (!ownsBackendProcess) return`
+    // 直接放弃，backend 永远不被拉起来。
     logElectronError(`后端服务已退出，退出码=${code ?? 'unknown'}`);
   });
 }
@@ -2542,6 +2545,8 @@ async function createMainWindow(options: { startupGateInfo?: DesktopAppInfo | nu
     mainWindow = null;
   });
 
+  setupAutoUpdater(mainWindow);
+
   await mainWindow.loadURL(rendererBootstrapPageUrl());
   if (mainWindow && !mainWindow.isDestroyed() && !mainWindow.isVisible()) {
     logElectronInfo('[window] showing startup bootstrap page');
@@ -2713,20 +2718,71 @@ app.whenReady().then(async () => {
   }
   appendElectronLaunchLog('INFO', '[app] startup sequence complete, app should stay alive');
 
-  // Periodic backend health watchdog — restart if crashed silently
+  // 后端进程 watchdog —— 检测以下三种"挂了"情形并自动拉起：
+  //   (a) backendProcess 句柄已被 exit 回调清掉（进程 crash）
+  //   (b) ~~进程还在但 health probe 失败（僵尸进程 / 卡在死循环）~~
+  //       已禁用：health probe timeout 仅 800ms，backend 处理慢请求时会被误判，
+  //       结果反而把好好的 backend 杀掉重启，比"等真正僵尸"还危险。
+  //       只在进程 handle 已死时才重启。
+  //   (c) 启动失败时按指数退避重试，避免连续 crash 导致 spawn 风暴
+  // 失败 5 次以上认为是"持续不可用"，通过 IPC 通知 renderer 显示诊断面板。
+  let watchdogRestartAttempts = 0;
+  let watchdogLastRestartFailedAt = 0;
+  let watchdogInFlight = false;
+  const WATCHDOG_BASE_INTERVAL_MS = 8_000;
+  const WATCHDOG_MAX_BACKOFF_MS = 30_000;
+
+  const _watchdogBackoffMs = (attempts: number): number => {
+    if (attempts <= 0) return 0;
+    return Math.min(WATCHDOG_MAX_BACKOFF_MS, 2_000 * 2 ** (attempts - 1));
+  };
+
   setInterval(async () => {
     if (!ownsBackendProcess) return;
-    if (backendProcess) return; // still running
-    // Backend was ours but process handle is gone — it crashed
-    appendElectronLaunchLog('ERROR', '[backend:watchdog] backend process gone, attempting restart');
-    try {
-      startBackend();
-      await waitForBackend(20000);
-      appendElectronLaunchLog('INFO', '[backend:watchdog] backend restarted successfully');
-    } catch {
-      appendElectronLaunchLog('ERROR', '[backend:watchdog] backend restart failed');
+    if (watchdogInFlight) return;
+    // 进程还在 → 不动；进程 handle 为 null 才需要重启。
+    // health probe 不参与"是否要重启"的决策——仅在重启成功后才用 waitForBackend 确认。
+    if (backendProcess) {
+      // 进程活着就当好。即使 health 慢也不杀。
+      if (watchdogRestartAttempts > 0) {
+        appendElectronLaunchLog('INFO', `[backend:watchdog] backend process alive again, reset attempts (was ${watchdogRestartAttempts})`);
+        watchdogRestartAttempts = 0;
+        watchdogLastRestartFailedAt = 0;
+      }
+      return;
     }
-  }, 15000); // Check every 15 seconds
+    // 走到这里说明 backendProcess === null：crash 了。计算 backoff 时间。
+    const backoffMs = _watchdogBackoffMs(watchdogRestartAttempts);
+    if (backoffMs > 0 && Date.now() - watchdogLastRestartFailedAt < backoffMs) {
+      return; // 还在退避窗口内
+    }
+    watchdogInFlight = true;
+    watchdogRestartAttempts += 1;
+    try {
+      appendElectronLaunchLog('INFO', `[backend:watchdog] restart attempt #${watchdogRestartAttempts}`);
+      startBackend();
+      await waitForBackend(20_000);
+      appendElectronLaunchLog('INFO', `[backend:watchdog] backend restarted successfully on attempt #${watchdogRestartAttempts}`);
+      watchdogRestartAttempts = 0;
+      watchdogLastRestartFailedAt = 0;
+    } catch (error) {
+      watchdogLastRestartFailedAt = Date.now();
+      const detail = error instanceof Error ? error.message : String(error);
+      appendElectronLaunchLog('ERROR', `[backend:watchdog] restart attempt #${watchdogRestartAttempts} failed: ${detail}`);
+      if (watchdogRestartAttempts >= 5 && mainWindow && !mainWindow.isDestroyed()) {
+        // 持续失败 → 通过 webContents 通知 renderer 弹诊断面板
+        try {
+          mainWindow.webContents.send('backend-watchdog-exhausted', {
+            attempts: watchdogRestartAttempts,
+            lastError: detail,
+            logsDir: path.join(app.getPath('userData'), 'logs'),
+          });
+        } catch {}
+      }
+    } finally {
+      watchdogInFlight = false;
+    }
+  }, WATCHDOG_BASE_INTERVAL_MS);
 
   app.on('activate', async () => {
     // Re-activate: ensure backend is alive before showing window

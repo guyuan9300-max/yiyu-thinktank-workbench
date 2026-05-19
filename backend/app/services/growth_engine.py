@@ -39,7 +39,9 @@ from app.models import (
     GrowthLearningPickRecord,
     GrowthLearningRecord,
     GrowthPeerComparisonRecord,
+    GrowthReviewDayPointRecord,
     GrowthReviewStreakRecord,
+    GrowthReviewWeekPointRecord,
     GrowthSocialFeedbackRecord,
     GrowthWorkTypeRecord,
     GrowthWorkTypeSliceRecord,
@@ -2121,18 +2123,123 @@ def _build_review_streak(db: Database, user_id: str) -> GrowthReviewStreakRecord
             py -= 1
             pw = 52
     streak.currentStreakWeeks = cur_streak
+
+    # ── 件数 + 字数维度（聚合 weekly_review_task_entries）──
+    cutoff_60 = (today - timedelta(days=60)).isoformat(timespec="seconds")
+    try:
+        # weekly_review_task_entries.user_id 字段在生产 db 里大多为空，
+        # 必须通过 review_id join 到 weekly_reviews 拿 user_id
+        entry_rows = db.fetchall(
+            """
+            SELECT t.reviewed_at, t.week_label,
+                   length(COALESCE(t.note, '')) AS nlen,
+                   length(COALESCE(t.structured_note_json, '')) AS slen
+            FROM weekly_review_task_entries t
+            JOIN weekly_reviews r ON r.id = t.review_id
+            WHERE r.user_id = ? AND t.reviewed_at >= ?
+            """,
+            (user_id, cutoff_60),
+        )
+    except Exception:
+        entry_rows = []
+
+    cutoff_30_dt = today - timedelta(days=30)
+    monthly_entry = 0
+    last_monthly_entry = 0
+    monthly_chars = 0
+    last_monthly_chars = 0
+    week_buckets: dict[str, dict[str, int]] = {}
+    for r in entry_rows:
+        ra = str(r["reviewed_at"] or "")[:10]
+        if not ra:
+            continue
+        try:
+            dt = datetime.fromisoformat(ra)
+        except Exception:
+            continue
+        chars = int(r["nlen"] or 0) + int(r["slen"] or 0)
+        wl = str(r["week_label"] or "")
+        if dt >= cutoff_30_dt:
+            monthly_entry += 1
+            monthly_chars += chars
+            if wl:
+                bucket = week_buckets.setdefault(wl, {"entries": 0, "chars": 0})
+                bucket["entries"] += 1
+                bucket["chars"] += chars
+        else:
+            last_monthly_entry += 1
+            last_monthly_chars += chars
+
+    streak.monthlyEntryCount = monthly_entry
+    streak.lastMonthEntryCount = last_monthly_entry
+    streak.monthlyCharCount = monthly_chars
+    streak.lastMonthCharCount = last_monthly_chars
+    if last_monthly_entry > 0:
+        streak.entryGrowthPercent = int(round((monthly_entry - last_monthly_entry) / last_monthly_entry * 100))
+    elif monthly_entry > 0:
+        streak.entryGrowthPercent = 100
+    if last_monthly_chars > 0:
+        streak.charGrowthPercent = int(round((monthly_chars - last_monthly_chars) / last_monthly_chars * 100))
+    elif monthly_chars > 0:
+        streak.charGrowthPercent = 100
+
+    # 4 周趋势（保留兼容）
+    sorted_weeks = sorted(week_buckets.keys(), reverse=True)[:4]
+    sorted_weeks.reverse()
+    for wl in sorted_weeks:
+        b = week_buckets[wl]
+        streak.weeklyTrend.append(
+            GrowthReviewWeekPointRecord(
+                weekLabel=wl,
+                entryCount=int(b["entries"]),
+                charCount=int(b["chars"]),
+            )
+        )
+
+    # 30 天日聚合（新曲线图用）
+    day_buckets: dict[str, dict[str, int]] = {}
+    for r in entry_rows:
+        ra = str(r["reviewed_at"] or "")[:10]
+        if not ra:
+            continue
+        try:
+            dt = datetime.fromisoformat(ra)
+        except Exception:
+            continue
+        if dt < cutoff_30_dt:
+            continue
+        chars = int(r["nlen"] or 0) + int(r["slen"] or 0)
+        bucket = day_buckets.setdefault(ra, {"entries": 0, "chars": 0})
+        bucket["entries"] += 1
+        bucket["chars"] += chars
+    # 填充近 30 天（包括 0 值）
+    for i in range(29, -1, -1):
+        d = (today - timedelta(days=i)).strftime("%Y-%m-%d")
+        b = day_buckets.get(d, {"entries": 0, "chars": 0})
+        streak.dailyTrend.append(
+            GrowthReviewDayPointRecord(
+                date=d,
+                entryCount=int(b["entries"]),
+                charCount=int(b["chars"]),
+            )
+        )
+
     return streak
 
 
 def _build_work_type_distribution(db: Database, user_id: str) -> GrowthWorkTypeRecord:
-    """M4：tasks.business_category 分布。"""
+    """M4：tasks.business_category 分布。
+
+    没分到细分类目的任务统一显示「主要业务」（战略咨询公司的核心业务，
+    不是分类失败）。历史的 '专项推进' / '未分类' 都合并到这个桶。
+    """
     record = GrowthWorkTypeRecord()
     try:
         rows = db.fetchall(
             """
-            SELECT COALESCE(NULLIF(business_category, ''), '待标注') AS cat, COUNT(*) AS cnt
+            SELECT COALESCE(NULLIF(business_category, ''), '主要业务') AS cat, COUNT(*) AS cnt
             FROM tasks WHERE owner_id = ?
-            GROUP BY COALESCE(NULLIF(business_category, ''), '待标注')
+            GROUP BY COALESCE(NULLIF(business_category, ''), '主要业务')
             ORDER BY cnt DESC
             """,
             (user_id,),
@@ -2141,15 +2248,19 @@ def _build_work_type_distribution(db: Database, user_id: str) -> GrowthWorkTypeR
         rows = []
     total = 0
     unlabeled = 0
+    bucket: dict[str, int] = {}
     for row in rows:
         cnt = int(row["cnt"] or 0)
         label = str(row["cat"])
+        # 历史 fallback 值统一归到 '主要业务'
+        if label in ("专项推进", "未分类", "待标注"):
+            label = "主要业务"
         total += cnt
-        if label == "待标注":
-            unlabeled = cnt
+        bucket[label] = bucket.get(label, 0) + cnt
+    for label, cnt in sorted(bucket.items(), key=lambda x: -x[1]):
         record.slices.append(GrowthWorkTypeSliceRecord(label=label, count=cnt))
     record.totalTasks = total
-    record.unlabeledTasks = unlabeled
+    record.unlabeledTasks = unlabeled  # 保留字段但不再有"噪音"语义
     return record
 
 
@@ -2365,25 +2476,27 @@ def _build_peer_comparison(
     user_id: str,
     ability_scores: list[GrowthAbilityScoreRecord],
 ) -> GrowthPeerComparisonRecord:
-    """H5：同岗位匿名对标——按 operators.role 聚合。"""
-    record = GrowthPeerComparisonRecord()
-    try:
-        me = _resolve_operator_row(db, user_id)
-        if not me or not me["role"]:
-            return record
-        my_role = str(me["role"])
-        record.roleLabel = my_role
-        # 实际的 operators.id（可能跟传入的 user_id 不同）
-        my_operator_id = str(me["id"])
+    """成长速度：在整个机构内的 XP 排名（不按岗位过滤）。
 
-        peers = db.fetchall("SELECT id FROM operators WHERE role = ?", (my_role,))
-        peer_ids = [str(p["id"]) for p in peers]
-        # 把传入的 user_id（xp_ledger 里的口径）也加进对比池，避免错位漏自己
+    单人岗位（CEO、唯一负责人）按同岗位比毫无意义；
+    改成跟整个机构所有有 ledger 数据的成员比，反映"机构内成长速度"。
+    """
+    record = GrowthPeerComparisonRecord()
+    record.roleLabel = "机构成长榜"
+    try:
+        # 整个机构所有曾有 ledger 数据的 user_id（即"真实活跃成员"）
+        peers = db.fetchall(
+            """
+            SELECT DISTINCT user_id FROM xp_ledger
+            WHERE reversed_at IS NULL AND COALESCE(user_id, '') != ''
+            """
+        )
+        peer_ids = [str(p["user_id"]) for p in peers]
         if user_id not in peer_ids:
             peer_ids.append(user_id)
         record.peerCount = len(peer_ids)
         if record.peerCount < 2:
-            # 同岗位仅一人时也返回基础信息，避免前端误以为数据缺失
+            # 机构里只有自己一人有数据时
             record.rank = 1
             record.yourTotalXp = sum(int(a.totalXp) for a in ability_scores)
             record.peerMedianXp = record.yourTotalXp

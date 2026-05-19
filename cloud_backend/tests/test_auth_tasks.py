@@ -18,6 +18,7 @@ sys.path.append(str(Path(__file__).resolve().parents[1]))
 
 from app import main as cloud_main  # noqa: E402
 from app.main import DEFAULT_ORG_ID, _department_invite_code, create_app, now_iso  # noqa: E402
+from app.security import hash_password  # noqa: E402
 
 
 def setup_function():
@@ -42,6 +43,9 @@ def teardown_function():
 
 
 def auth_headers(client: TestClient, email: str = "admin@yiyu-system.com", password: str = "Admin123!"):
+    # 多数测试不显式调 seed_registration_departments, 这里幂等兜底, 保证 fixture 用户都存在。
+    if email != "admin@yiyu-system.com":
+        seed_registration_departments(client.app)
     response = client.post("/api/v1/auth/login", json={"email": email, "password": password})
     assert response.status_code == 200, response.text
     return {"Authorization": f"Bearer {response.json()['accessToken']}"}
@@ -51,33 +55,24 @@ def seed_registration_departments(app) -> None:
     db = app.state.app_state.db
     timestamp = now_iso()
     db.execute("UPDATE organizations SET name = ?, updated_at = ? WHERE id = ?", ("益语智库", timestamp, DEFAULT_ORG_ID))
-    db.execute(
-        """
-        INSERT OR IGNORE INTO employee_accounts(
-            id, organization_id, email, full_name, password_hash, primary_role, account_status,
-            membership_status, approved_at, approved_by, recent_mentions_json, created_at, updated_at
-        ) VALUES('user_guyuan', ?, 'guyuan@example.com', '顾源源', 'unused', 'admin', 'approved', 'approved', ?, 'user_admin', '[]', ?, ?)
-        """,
-        (DEFAULT_ORG_ID, timestamp, timestamp, timestamp),
-    )
-    db.execute(
-        """
-        INSERT OR IGNORE INTO employee_accounts(
-            id, organization_id, email, full_name, password_hash, primary_role, account_status,
-            membership_status, approved_at, approved_by, recent_mentions_json, created_at, updated_at
-        ) VALUES('user_qinghua', ?, 'qinghua@example.com', '庆华', 'unused', 'employee', 'approved', 'approved', ?, 'user_admin', '[]', ?, ?)
-        """,
-        (DEFAULT_ORG_ID, timestamp, timestamp, timestamp),
-    )
-    db.execute(
-        """
-        INSERT OR IGNORE INTO employee_accounts(
-            id, organization_id, email, full_name, password_hash, primary_role, account_status,
-            membership_status, approved_at, approved_by, recent_mentions_json, created_at, updated_at
-        ) VALUES('user_jianing', ?, 'jianing@example.com', '佳乐', 'unused', 'employee', 'approved', 'approved', ?, 'user_admin', '[]', ?, ?)
-        """,
-        (DEFAULT_ORG_ID, timestamp, timestamp, timestamp),
-    )
+    # bcrypt hash 比较贵, 共用一个 hash; fixture 用户密码都是 Simulate123! (admin 用 Admin123!)。
+    sim_hash = hash_password("Simulate123!")
+    admin_hash = hash_password("Admin123!")
+    for user_id, email, full_name, role, pwd_hash in [
+        ("user_guyuan", "guyuan@yiyu-system.com", "顾源源", "admin", admin_hash),
+        ("user_qinghua", "qinghua@yiyu-system.com", "庆华", "employee", sim_hash),
+        ("user_jianing", "jianing@yiyu-system.com", "佳乐", "employee", sim_hash),
+        ("user_yishuo", "yishuo@yiyu-system.com", "一朔", "employee", sim_hash),
+    ]:
+        db.execute(
+            """
+            INSERT OR IGNORE INTO employee_accounts(
+                id, organization_id, email, full_name, password_hash, primary_role, account_status,
+                membership_status, approved_at, approved_by, recent_mentions_json, created_at, updated_at
+            ) VALUES(?, ?, ?, ?, ?, ?, 'approved', 'approved', ?, 'user_admin', '[]', ?, ?)
+            """,
+            (user_id, DEFAULT_ORG_ID, email, full_name, pwd_hash, role, timestamp, timestamp, timestamp),
+        )
     for department_id, name, color in [
         ("dept_consult_strategy", "咨询策略部", "#5B7BFE"),
         ("dept_tech_development", "科技发展部", "#F59E0B"),

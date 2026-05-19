@@ -247,6 +247,26 @@ class Database:
                     FOREIGN KEY(user_id) REFERENCES employee_accounts(id) ON DELETE CASCADE
                 );
 
+                -- P7：client_related_users 关联表
+                --   模仿 task_collaborators 的 (主表, user_id, order_index) 结构。
+                --   ACL 入口：creator_id 或 user_id ∈ client_related_users 才能在 GET /clients 看到。
+                --   注意：clients 表本身已经存在（最小化定义），多出的扩展字段由后面的 _ensure_column 加。
+                --   idx_clients_creator 不能放在这个 executescript 块里——因为 creator_id 列要靠
+                --   _ensure_column 在 schema 跑完后才加上；放这里会因列不存在直接失败。
+                --   该 index 在下方 _ensure_column("creator_id") 调用之后单独创建。
+                CREATE TABLE IF NOT EXISTS client_related_users (
+                    client_id TEXT NOT NULL,
+                    user_id TEXT NOT NULL,
+                    order_index INTEGER NOT NULL DEFAULT 0,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    PRIMARY KEY (client_id, user_id),
+                    FOREIGN KEY(client_id) REFERENCES clients(id) ON DELETE CASCADE,
+                    FOREIGN KEY(user_id) REFERENCES employee_accounts(id) ON DELETE CASCADE
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_client_related_users_user ON client_related_users(user_id);
+
                 CREATE TABLE IF NOT EXISTS mention_history (
                     actor_id TEXT NOT NULL,
                     mentioned_user_id TEXT NOT NULL,
@@ -887,6 +907,18 @@ class Database:
             self._ensure_column("employee_accounts", "feishu_mobile", "TEXT NOT NULL DEFAULT ''")
             self._ensure_column("employee_accounts", "avatar_url", "TEXT")
             self._ensure_column("clients", "type", "TEXT NOT NULL DEFAULT 'client'")
+            # P7：clients 接通 local desktop 同步所需的扩展字段
+            #   creator_id：local 创建者；ACL 入口（creator 或 client_related_users.user_id 可见）
+            #   domain/intro/stage/color：local 端业务字段
+            #   is_data_center_included：仅工作台开关
+            self._ensure_column("clients", "creator_id", "TEXT NOT NULL DEFAULT ''")
+            self._ensure_column("clients", "domain", "TEXT NOT NULL DEFAULT '项目'")
+            self._ensure_column("clients", "intro", "TEXT NOT NULL DEFAULT ''")
+            self._ensure_column("clients", "stage", "TEXT NOT NULL DEFAULT '待导入资料'")
+            self._ensure_column("clients", "color", "TEXT NOT NULL DEFAULT '#5B7BFE'")
+            self._ensure_column("clients", "is_data_center_included", "INTEGER NOT NULL DEFAULT 1")
+            # P7：creator_id 列加完后再建索引
+            self.conn.execute("CREATE INDEX IF NOT EXISTS idx_clients_creator ON clients(creator_id, updated_at DESC)")
             self.conn.execute(
                 "CREATE UNIQUE INDEX IF NOT EXISTS idx_employee_accounts_phone_number ON employee_accounts(phone_number) WHERE phone_number IS NOT NULL AND phone_number != ''"
             )

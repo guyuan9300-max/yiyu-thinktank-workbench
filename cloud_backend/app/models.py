@@ -1103,6 +1103,52 @@ class TaskUpdatePayload(BaseModel):
     evidenceCount: int | None = None
 
 
+# P7：clients 云端镜像（multi-tenant）
+#   ClientRecord：cloud GET 返回
+#   ClientCreatePayload：local _try_cloud_sync_client 上传时用
+#   ClientUpdatePayload：local 更新时用
+class ClientRecord(BaseModel):
+    id: str
+    organizationId: str
+    creatorId: str
+    name: str
+    alias: str = ""
+    domain: str = "项目"
+    type: str = "项目"
+    intro: str = ""
+    stage: str = "待导入资料"
+    color: str = "#5B7BFE"
+    relatedUserIds: list[str] = Field(default_factory=list)
+    isDataCenterIncluded: bool = True
+    createdAt: str
+    updatedAt: str
+
+
+class ClientCreatePayload(BaseModel):
+    id: str | None = None  # local 端的 client.id，cloud 复用同一个 id 方便对账
+    name: str
+    alias: str = ""
+    domain: str = "项目"
+    type: str = "项目"
+    intro: str = ""
+    stage: str = "待导入资料"
+    color: str = "#5B7BFE"
+    relatedUserIds: list[str] = Field(default_factory=list)
+    isDataCenterIncluded: bool = True
+
+
+class ClientUpdatePayload(BaseModel):
+    name: str | None = None
+    alias: str | None = None
+    domain: str | None = None
+    type: str | None = None
+    intro: str | None = None
+    stage: str | None = None
+    color: str | None = None
+    relatedUserIds: list[str] | None = None
+    isDataCenterIncluded: bool | None = None
+
+
 class TaskPlanLinkUpsertPayload(BaseModel):
     departmentPlanItemId: str | None = None
     focusItemId: str | None = None

@@ -109,7 +109,7 @@ export function ObjectStorageSettingsCard({
   };
 
   return (
-    <div className="bg-white border border-gray-100 rounded-3xl p-6 shadow-sm space-y-5">
+    <div className="space-y-5">
       <div className="flex items-start justify-between gap-4">
         <div>
           <div className="flex items-center gap-2">
@@ -131,9 +131,9 @@ export function ObjectStorageSettingsCard({
             type="button"
             onClick={() => void handleSave()}
             disabled={isSaving || !draft.provider}
-            className="rounded-2xl bg-[#5B7BFE] px-4 py-2 text-[12px] font-bold text-white shadow-[0_10px_30px_rgba(91,123,254,0.24)] disabled:cursor-not-allowed disabled:opacity-50"
+            className="shrink-0 rounded-xl bg-[#5B7BFE] px-4 py-2 text-[12px] font-bold text-white disabled:cursor-not-allowed disabled:opacity-50"
           >
-            {isSaving ? '保存中…' : '保存对象存储配置'}
+            {isSaving ? '保存中…' : '保存'}
           </button>
         )}
       </div>

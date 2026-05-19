@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import html
 import json
@@ -8,6 +9,7 @@ import os
 import re
 import shutil
 import sqlite3
+import sys
 import time
 import traceback
 from concurrent.futures import ThreadPoolExecutor
@@ -247,6 +249,8 @@ from app.models import (
     ClientTemplateFillRunRecord,
     ClientTemplateFillResponse,
     ClientTextDocumentPayload,
+    DocumentAiActionPayload,
+    DocumentAiActionResponse,
     ClientTextDocumentResponse,
     ClientNotebookResponse,
     ClientWorkspaceResponse,
@@ -490,6 +494,10 @@ from app.models import (
     TaskPayload,
     TaskRecord,
     TaskRejectPayload,
+    TaskAiParsePayload,
+    TaskAiParseResult,
+    TaskAiParseClientCandidate,
+    ClientDeletePreview,
     LocalAsrDownloadCancelResponse,
     LocalAsrDownloadStartPayload,
     LocalAsrDownloadStartResponse,
@@ -2470,8 +2478,10 @@ def _infer_action_os_business_category(
         ]
         if part and part.strip()
     )
+    # B 改造：之前 fallback 默认值 "专项推进" 造成数据失真（58% 的任务都被
+    # 关键词扫描兜底到这里）。改成 "未分类"，让前端能识别 + 后续 LLM 重分类替换。
     if not normalized:
-        return "专项推进"
+        return "未分类"
     if _contains_any_keyword(normalized, ("模板", "标准", "手册", "知识库", "沉淀", "资料库", "归档", "官网设计", "系统设计")):
         return "产品化沉淀"
     if _contains_any_keyword(normalized, ("审批", "复核", "确认", "对齐", "同步", "协同", "会签", "回收")):
@@ -2484,7 +2494,7 @@ def _infer_action_os_business_category(
         return "项目推进"
     if _contains_any_keyword(normalized, ("伙伴", "联盟", "开源", "外部", "生态")):
         return "外部合作"
-    return "专项推进"
+    return "未分类"
 
 
 def _resolve_task_action_os_fields(
@@ -2782,9 +2792,11 @@ def clear_demo_dataset(state: AppState) -> DemoDataResponse:
 def load_demo_dataset(state: AppState) -> DemoDataResponse:
     clear_demo_dataset(state)
     timestamp = now_iso()
+    # 演示客户必须用 [演示] 前缀,避免跟用户真实可能用的客户名撞车
+    # 历史教训:之前 demo 用名 "为爱黔行" 跟用户真客户撞名,删除时数据丢失
     clients = [
-        ("client_cffc", "为爱黔行", "黔行公益", "公益教育", "非营利项目", "聚焦山区儿童教育与志愿者体系建设。", "战略陪伴中", "#5B7BFE"),
-        ("client_star", "星辰科技", "星辰", "SaaS", "商业化 KA", "营销 SaaS 服务商，正在梳理增长打法。", "方案梳理", "#10B981"),
+        ("client_cffc", "[演示] 为爱黔行", "黔行公益", "公益教育", "非营利项目", "聚焦山区儿童教育与志愿者体系建设(演示数据,可在系统设置→演示数据里一键清空)。", "战略陪伴中", "#5B7BFE"),
+        ("client_star", "[演示] 星辰科技", "星辰", "SaaS", "商业化 KA", "营销 SaaS 服务商,正在梳理增长打法(演示数据,可在系统设置→演示数据里一键清空)。", "方案梳理", "#10B981"),
     ]
     state.db.executemany(
         "INSERT INTO clients(id, name, alias, domain, type, intro, stage, color, created_at, updated_at) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
@@ -2933,6 +2945,36 @@ def rollback_database_from_backup(db_path: Path, backup_path: Path | None) -> No
             shutil.copy2(shadow_backup, db_path.with_name(f"{db_path.name}{suffix}"))
 
 
+def _heal_orphan_loading_chat_messages(db: Database) -> int:
+    """启动时自愈：把卡在 loading 状态但已有内容且超过 5 分钟的 assistant 消息修复成 success。
+
+    成因：backend 写完 chat_messages.content 后再 UPDATE status='success' 时，如果 db 临时损坏
+    （比如 wal/shm 异常被重命名为 .MALFORMED 那次事件），UPDATE 会失败但 content 已落盘。
+    结果消息永远卡在 loading，UI 一直显示"加载中"，用户以为问题没回答。
+
+    安全性：
+    - 只改 length(content) > 100 的消息（确保 AI 真的回答过，不是空 placeholder）
+    - 只改 5 分钟前的消息（避免影响正在进行中的 chat 请求）
+    """
+    try:
+        cursor = db.conn.execute(
+            """
+            UPDATE chat_messages
+            SET status='success'
+            WHERE status='loading'
+              AND length(content) > 100
+              AND datetime(created_at) < datetime('now', '-5 minutes')
+            """
+        )
+        count = cursor.rowcount or 0
+        if count > 0:
+            db.conn.commit()
+        return count
+    except Exception as exc:
+        print(f"[startup] heal orphan loading messages failed: {exc}", file=sys.stderr)
+        return 0
+
+
 def init_database_with_migration_guard(data_dir: Path) -> tuple[Database, Path | None]:
     db_path = data_dir / "app.db"
     backup_path = create_pre_migration_backup(data_dir, db_path)
@@ -2945,13 +2987,19 @@ def init_database_with_migration_guard(data_dir: Path) -> tuple[Database, Path |
 
 def create_app(data_dir: Path | None = None) -> FastAPI:
     resolved_data_dir = data_dir or Path(
-        os.getenv("YIYU_WORKBENCH_DATA_DIR") or (Path.home() / "Library" / "Application Support" / "YiyuThinkTankWorkbench")
+        os.getenv("YIYU_WORKBENCH_DATA_DIR") or (Path.home() / "Library" / "Application Support" / "YiyuThinkTankWorkbench2")
     )
     resolved_data_dir.mkdir(parents=True, exist_ok=True)
     try:
         db, migration_backup_path = init_database_with_migration_guard(resolved_data_dir)
     except Exception as error:
         raise RuntimeError(f"数据库迁移失败，已回滚并阻断启动：{error}") from error
+
+    # 启动时自愈：清理"卡在 loading 状态的孤儿 assistant 消息"
+    healed_chat_count = _heal_orphan_loading_chat_messages(db)
+    if healed_chat_count > 0:
+        print(f"[startup] healed {healed_chat_count} orphan loading chat messages", file=sys.stderr)
+
     def build_secret_store(service_name: str, account_name: str = "default"):
         try:
             store = MacOSKeychainSecretStore(service_name=service_name, account_name=account_name)
@@ -3160,6 +3208,21 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             response = await call_next(request)
             status_code = response.status_code
             return response
+        except (BrokenPipeError, ConnectionResetError) as exc:
+            # 父进程（Electron）stdout/stderr pipe 满 / 关 → 日志写不出去
+            # 抛 BrokenPipeError。这是日志层故障，绝不能让业务请求 500。
+            # 返回结构化 503 让前端走重试，不再污染对话流。
+            error_msg = f"pipe-error-suppressed: {exc.__class__.__name__}"
+            status_code = 503
+            return JSONResponse(
+                status_code=503,
+                content={"detail": "服务管道临时不可写，请稍后重试", "code": "PIPE_BROKEN", "retriable": True},
+            )
+        except asyncio.CancelledError:
+            # 客户端断开 / Electron 关窗 / uvicorn reload 切换。
+            # 这种情况按客户端关闭处理，不算异常，让 ASGI 自然结束。
+            status_code = 499
+            raise
         except Exception as exc:
             error_msg = str(exc)
             error_tb = traceback.format_exc()
@@ -3347,6 +3410,15 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
     def _startup_worker() -> None:
         if os.getenv("YIYU_DISABLE_STARTUP_WORKERS", "0") == "1":
             return
+        # 互联网 PDF OCR 后台 worker · 单独启动 (不依赖其他 worker 状态)
+        # 闲时扫 v2_documents.parse_status='pending_ocr' 一个个跑完整 OCR.
+        # 完整性优先, 不限页数不切 retry, 让用户主流程不阻塞.
+        try:
+            from app.services.internet_pdf_worker import start_worker_if_not_running
+            start_worker_if_not_running(state.db, state.ai, state.data_dir)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("[startup] internet pdf ocr worker init failed: %s", exc)
+
         if state.job_thread and state.job_thread.is_alive():
             if state.analysis_job_thread and state.analysis_job_thread.is_alive():
                 return
@@ -3356,6 +3428,25 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         recover_stale_loading_chat_messages()
         recover_stale_analysis_jobs(state.db)
         recover_stale_workspace_context_refresh_events(state.db)
+        # P8：把启动时遗留的 client_analysis_runs 中 running/queued 状态全部收口为 failed。
+        # backend 重启意味着内存里的 LLM 调用早已死掉，DB 里的 "running" 是僵尸态。
+        # 不在这里收口的话，前端 polling 永远拿到 running → hasPendingAnalysisRun=true
+        # → 排队中的下一个问题永远派发不出去（用户描述"不跳转就卡"的根因）。
+        try:
+            state.db.execute(
+                """
+                UPDATE client_analysis_runs
+                SET status='failed', phase='failed', progress=100.0,
+                    progress_floor=100.0, progress_ceiling=100.0,
+                    stage_label='上次进程退出时中断',
+                    failure_reason=COALESCE(NULLIF(failure_reason,''), 'run_aborted_on_backend_restart'),
+                    updated_at = ?
+                WHERE status IN ('running', 'queued')
+                """,
+                (now_iso(),),
+            )
+        except Exception as exc:
+            logger.warning("[startup] recover stale client_analysis_runs failed: %s", exc)
         # Recover orphan sync states left by previous-process crash or uvicorn --reload.
         # Any row stuck in 'syncing' cannot still be syncing — the worker that owned it is gone.
         # The cloud-push path is fire-and-forget (`_try_cloud_sync_task` in a daemon Thread) and
@@ -3373,12 +3464,31 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 "UPDATE event_lines SET sync_status='pending' WHERE sync_status='syncing'"
             )
         except Exception as exc:
-            import sys as _startup_sys
-            print(
-                f"[startup] failed to recover stale 'syncing' rows: {exc}",
-                file=_startup_sys.stderr,
-                flush=True,
-            )
+            logger.warning("[startup] failed to recover stale 'syncing' rows: %s", exc)
+
+        # 批 3：启动时拉一次 cloud clients（按 ACL 可见的），并把本地 pending 的 client 推送上去
+        def _bootstrap_client_sync() -> None:
+            try:
+                _pull_cloud_clients_to_local()
+            except Exception as exc:
+                logger.warning("[CLIENT-SYNC] startup pull failed: %s", exc)
+            # 推送本地 pending 的 client（上次启动期间没 token 或失败留下的）
+            try:
+                pending = state.db.fetchall(
+                    "SELECT id, pending_sync_action FROM clients WHERE sync_status = 'pending'"
+                )
+                for row in pending:
+                    cid = str(row["id"])
+                    action = str(row["pending_sync_action"] or "create")
+                    if action not in {"create", "update"}:
+                        action = "create"
+                    _try_cloud_sync_client(cid, action)
+            except Exception as exc:
+                logger.warning("[CLIENT-SYNC] startup retry-pending failed: %s", exc)
+        try:
+            Thread(target=_bootstrap_client_sync, daemon=True).start()
+        except Exception as exc:
+            logger.warning("[CLIENT-SYNC] bootstrap thread launch failed: %s", exc)
 
         # Re-drive any pending task with a stored cloud_payload — without this, the recovered rows
         # above (and any older 'pending' rows from previous failed pushes) would never retry on
@@ -3921,7 +4031,8 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         placeholders = {
             "庆华正在整理背景材料，并组织分析答案……",
             "数据中心主链已就绪，正在组织回答……",
-            "庆华暂时没能完成这次回答。",
+            "庆华暂时没能完成这次回答。",  # legacy 兼容（DB 里历史数据）
+            "本次回答未成功生成，可以重试一下。",
             "正在调用模型生成回答",
         }
         return content not in placeholders
@@ -4052,13 +4163,13 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             WHERE id = ? AND status = 'loading'
             """,
             (
-                "庆华暂时没能完成这次回答。",
+                "本次回答未成功生成，可以重试一下。",
                 to_json(
                     AiStructuredResponse(
-                        content="庆华暂时没能完成这次回答。",
-                        judgment="后台回答任务中断或超时，本次回答已自动收口为失败态。",
-                        analysis="该消息此前一直停留在生成中，没有成功写回最终结果。系统已自动把它标记为失败，避免前端一直卡在加载状态。",
-                        actions="请直接重试这个问题；如果反复出现，请检查本地后端与模型连接状态。",
+                        content="本次回答未成功生成，可以重试一下。",
+                        judgment="回答任务中断或超时，已自动收口为失败态。",
+                        analysis="生成过程未能成功写回最终结果，系统已自动标记为失败，避免前端卡在加载状态。",
+                        actions="可以直接重新提问；如果反复出现，请检查内置服务运行状态。",
                         timeline="修复后可立即重新生成。",
                     ).model_dump()
                 ),
@@ -6331,28 +6442,35 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         return "none", None, None, None
 
     def _populate_meeting_extraction(meeting_id: str, text: str) -> tuple[int, int, int, int]:
+        # Sprint 2 (S2.2): 5 删 + 5 类 INSERT 全部包事务. 中途崩了不留半解析的会议数据.
         agenda, decisions, actions, risks, ambiguities = extract_meeting_content(text)
-        state.db.execute("DELETE FROM agenda_items WHERE meeting_id = ?", (meeting_id,))
-        state.db.execute("DELETE FROM decisions WHERE meeting_id = ?", (meeting_id,))
-        state.db.execute("DELETE FROM action_items WHERE meeting_id = ?", (meeting_id,))
-        state.db.execute("DELETE FROM risks WHERE meeting_id = ?", (meeting_id,))
-        state.db.execute("DELETE FROM ambiguities WHERE meeting_id = ?", (meeting_id,))
-        for index, item in enumerate(agenda):
-            state.db.execute("INSERT INTO agenda_items(id, meeting_id, title, description, sort_order) VALUES(?, ?, ?, ?, ?)", (new_id("agenda"), meeting_id, item[:28], "抽取后的议程点", index))
-        for item in decisions:
-            state.db.execute("INSERT INTO decisions(id, meeting_id, summary, created_at) VALUES(?, ?, ?, ?)", (new_id("dec"), meeting_id, item[:120], now_iso()))
-        for item, owner, confidence in actions:
-            state.db.execute(
-                "INSERT INTO action_items(id, meeting_id, title, owner_name, due_date, confidence, publish_status, created_at) VALUES(?, ?, ?, ?, ?, ?, 'draft', ?)",
-                (new_id("act"), meeting_id, item[:120], owner, "本周", confidence, now_iso()),
-            )
-        for item, severity in risks:
-            state.db.execute("INSERT INTO risks(id, meeting_id, summary, severity, created_at) VALUES(?, ?, ?, ?, ?)", (new_id("risk"), meeting_id, item[:120], severity, now_iso()))
-        for item, candidates in ambiguities:
-            state.db.execute(
-                "INSERT INTO ambiguities(id, meeting_id, raw_text, candidates_json, status, created_at) VALUES(?, ?, ?, ?, 'pending', ?)",
-                (new_id("amb"), meeting_id, item[:120], to_json(candidates), now_iso()),
-            )
+        state.db.begin_transaction()
+        try:
+            state.db.execute("DELETE FROM agenda_items WHERE meeting_id = ?", (meeting_id,))
+            state.db.execute("DELETE FROM decisions WHERE meeting_id = ?", (meeting_id,))
+            state.db.execute("DELETE FROM action_items WHERE meeting_id = ?", (meeting_id,))
+            state.db.execute("DELETE FROM risks WHERE meeting_id = ?", (meeting_id,))
+            state.db.execute("DELETE FROM ambiguities WHERE meeting_id = ?", (meeting_id,))
+            for index, item in enumerate(agenda):
+                state.db.execute("INSERT INTO agenda_items(id, meeting_id, title, description, sort_order) VALUES(?, ?, ?, ?, ?)", (new_id("agenda"), meeting_id, item[:28], "抽取后的议程点", index))
+            for item in decisions:
+                state.db.execute("INSERT INTO decisions(id, meeting_id, summary, created_at) VALUES(?, ?, ?, ?)", (new_id("dec"), meeting_id, item[:120], now_iso()))
+            for item, owner, confidence in actions:
+                state.db.execute(
+                    "INSERT INTO action_items(id, meeting_id, title, owner_name, due_date, confidence, publish_status, created_at) VALUES(?, ?, ?, ?, ?, ?, 'draft', ?)",
+                    (new_id("act"), meeting_id, item[:120], owner, "本周", confidence, now_iso()),
+                )
+            for item, severity in risks:
+                state.db.execute("INSERT INTO risks(id, meeting_id, summary, severity, created_at) VALUES(?, ?, ?, ?, ?)", (new_id("risk"), meeting_id, item[:120], severity, now_iso()))
+            for item, candidates in ambiguities:
+                state.db.execute(
+                    "INSERT INTO ambiguities(id, meeting_id, raw_text, candidates_json, status, created_at) VALUES(?, ?, ?, ?, 'pending', ?)",
+                    (new_id("amb"), meeting_id, item[:120], to_json(candidates), now_iso()),
+                )
+            state.db.commit_transaction()
+        except Exception:
+            state.db.rollback_transaction()
+            raise
         return len(decisions), len(actions), len(risks), len(ambiguities)
 
     def _ingest_feishu_minutes_writeback(meeting_id: str, notes_text: str) -> MeetingDetail:
@@ -7818,22 +7936,15 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 and bool(cloud_status.canEnter)
                 and bool(cloud_status.available)
             )
-            is_admin = bool(cached_user and cached_user.primaryRole == "admin")
-            # Admin 直通：admin 的维护模式永远 active，不依赖 in-memory flag。
-            # 这样 backend 重启 / uvicorn reload 不会再让 admin"莫名其妙被关掉开关"。
-            if is_admin and user_match:
-                active = True
-                state.maintenance_mode_active = True
-                if not state.maintenance_mode_user_id:
-                    state.maintenance_mode_user_id = cached_user.id
-                if not state.maintenance_mode_entered_at:
-                    state.maintenance_mode_entered_at = now_iso()
-            else:
-                active = state.maintenance_mode_active and user_match
-                if not active:
-                    state.maintenance_mode_active = False
-                    state.maintenance_mode_user_id = ""
-                    state.maintenance_mode_entered_at = ""
+            # Fix: 删除原"admin 直通永远 active"的设计 — 副作用是 admin 主动点退出也关不掉.
+            # admin 和普通用户走同一套 in-memory flag: 用户调 enter 才 active, 调 exit 才 inactive.
+            # backend reload 后 active 重置回 False — 这是 dev 环境的代价, 但比"关不掉"好.
+            # 生产环境应该把 active 持久化到 db 来彻底解决 reload 重置问题.
+            active = state.maintenance_mode_active and user_match
+            if not active:
+                state.maintenance_mode_active = False
+                state.maintenance_mode_user_id = ""
+                state.maintenance_mode_entered_at = ""
         return cloud_status.model_copy(update={"active": active})
 
     def _require_active_maintenance_mode() -> MaintenanceModeStatusRecord:
@@ -8877,13 +8988,34 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 local_progress == "done" and cloud_progress != "done"
             ) or (local_completed and not str(payload.get("completedAt") or "").strip())
             if local_has_unsynced_edits or local_newer_than_cloud or local_done_cloud_not:
-                import sys as _skip_sys
-                print(
-                    f"[CLOUD-UPSERT-SKIP] task={local_task_id} sync={local_sync_status} "
-                    f"local_progress={local_progress} cloud_progress={cloud_progress} "
-                    f"local_updated={local_updated_at} cloud_updated={cloud_updated_at}",
-                    file=_skip_sys.stderr,
-                    flush=True,
+                # 机制化自愈 (P0 fix): 当 SKIP 时, 如果本地和云端内容已经达成一致
+                # (progress 一致 + completed_at 都为空或都非空), 自动把 sync_status
+                # 推回 'synced' — 否则任务会永远卡在 'pending', 用户 30+ 天看不到
+                # 同步状态恢复 (这就是 30+ 条 CLOUD-UPSERT-SKIP 的根因).
+                if local_has_unsynced_edits:
+                    cloud_completed = str(payload.get("completedAt") or "").strip()
+                    progress_match = (local_progress == cloud_progress)
+                    completed_match = (bool(local_completed) == bool(cloud_completed))
+                    if progress_match and completed_match:
+                        try:
+                            state.db.execute(
+                                "UPDATE tasks SET sync_status='synced', pending_sync_action='', "
+                                "last_sync_error='', last_synced_at=?, updated_at=? "
+                                "WHERE id = ?",
+                                (now_iso(), now_iso(), local_task_id),
+                            )
+                            logger.info(
+                                "[CLOUD-SYNC-AUTOHEAL] task=%s sync=pending→synced (content matches cloud)",
+                                local_task_id,
+                            )
+                        except Exception as exc:
+                            logger.warning(
+                                "[CLOUD-SYNC-AUTOHEAL-FAIL] task=%s: %s",
+                                local_task_id, exc,
+                            )
+                logger.info(
+                    "[CLOUD-UPSERT-SKIP] task=%s sync=%s local_progress=%s cloud_progress=%s local_updated=%s cloud_updated=%s",
+                    local_task_id, local_sync_status, local_progress, cloud_progress, local_updated_at, cloud_updated_at,
                 )
                 return local_task_id
         # ───────────────────────────────────────────────────────────────────────────
@@ -9070,12 +9202,23 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         collaborators = payload.get("collaborators")
         if isinstance(collaborators, list):
             state.db.execute("DELETE FROM task_collaborators WHERE task_id = ?", (local_task_id,))
+            # 防御性去重：云端 payload 里同 user_id 出现多次时，
+            # 走到第二条 INSERT 就会撞 PRIMARY KEY (task_id, user_id) → IntegrityError，
+            # 让整个 GET /api/v1/tasks 500，前端日历显示空白。
+            # 双保险：(1) Python 端按 user_id 去重 (2) SQL 用 INSERT OR IGNORE。
+            seen_user_ids: set[str] = set()
             for item in collaborators:
                 if not isinstance(item, dict):
                     continue
+                user_id = str(item.get("userId") or "")
+                if not user_id:
+                    continue  # 没 userId 的 collaborator 当无效跳过（写不进 NOT NULL）
+                if user_id in seen_user_ids:
+                    continue  # 同任务同 userId 的重复条目只保留第一条
+                seen_user_ids.add(user_id)
                 state.db.execute(
                     """
-                    INSERT INTO task_collaborators(
+                    INSERT OR IGNORE INTO task_collaborators(
                         task_id, organization_id, user_id, full_name, email, order_index, is_owner,
                         inbox_status, return_reason, handled_at, created_at, updated_at
                     ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -9083,7 +9226,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                     (
                         local_task_id,
                         str(payload.get("organizationId") or ""),
-                        str(item.get("userId") or ""),
+                        user_id,
                         str(item.get("fullName") or ""),
                         str(item.get("email") or ""),
                         int(item.get("orderIndex") or 0),
@@ -9312,16 +9455,234 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                                 local_id,
                             ),
                         )
-                    import sys as _r_sys
-                    print(
-                        f"[TASK-RECONCILE] queued {len(ghost_ids)} ghost-synced task(s) for re-create: "
-                        + ", ".join(f"{tid}({title[:20]!r})" for tid, _, title in ghost_ids[:5]),
-                        file=_r_sys.stderr,
-                        flush=True,
+                    logger.info(
+                        "[TASK-RECONCILE] queued %d ghost-synced task(s) for re-create: %s",
+                        len(ghost_ids),
+                        ", ".join(f"{tid}({title[:20]!r})" for tid, _, title in ghost_ids[:5]),
                     )
         except Exception as _reconcile_err:
-            import sys as _r_sys
-            print(f"[TASK-RECONCILE] failed (continuing anyway): {_reconcile_err}", file=_r_sys.stderr, flush=True)
+            logger.warning("[TASK-RECONCILE] failed (continuing anyway): %s", _reconcile_err)
+
+    # ─── 批 3：clients 云端同步 ──────────────────────────────────────────────────
+    # 镜像 tasks 的模式：local CREATE/UPDATE 写完立刻挂 daemon Thread 调 _try_cloud_sync_client；
+    # 启动时调 _pull_cloud_clients_to_local 把云端按 ACL 可见的 clients 同步下来。
+    _CLOUD_CLIENTS_PULL_TTL_SECONDS = 30.0
+    _cloud_clients_pull_state = {"last_pulled_at": 0.0, "in_flight": False}
+
+    def _client_row_to_cloud_payload(client_id: str, *, override_payload: dict | None = None) -> dict | None:
+        """Build the JSON body for POST/PUT /api/v1/clients from a local row.
+        If override_payload provided (e.g. from a recent mutation), use it preferentially.
+        """
+        row = state.db.fetchone("SELECT * FROM clients WHERE id = ?", (client_id,))
+        if not row:
+            return None
+        try:
+            related_ids = json.loads(str(row["related_user_ids_json"] or "[]"))
+            if not isinstance(related_ids, list):
+                related_ids = []
+            related_ids = [str(uid) for uid in related_ids if uid]
+        except Exception:
+            related_ids = []
+        body = {
+            "id": str(row["id"]),
+            "name": str(row["name"]),
+            "alias": str(row["alias"] or ""),
+            "domain": str(row["domain"] or "项目"),
+            "type": str(row["type"] or "项目"),
+            "intro": str(row["intro"] or ""),
+            "stage": str(row["stage"] or "待导入资料"),
+            "color": str(row["color"] or "#5B7BFE"),
+            "relatedUserIds": related_ids,
+            "isDataCenterIncluded": bool(int(row["is_data_center_included"] if row["is_data_center_included"] is not None else 1)),
+        }
+        if override_payload:
+            body.update({k: v for k, v in override_payload.items() if v is not None})
+        return body
+
+    def _try_cloud_sync_client(client_id: str, action: Literal["create", "update"] = "create") -> None:
+        """Push a locally-saved client to cloud. Non-blocking: caller starts a daemon Thread.
+        action='create' → POST /api/v1/clients
+        action='update' → PUT  /api/v1/clients/{cloud_id}
+        Updates sync_status / cloud_id / last_synced_at / last_sync_error per outcome.
+        """
+        if not get_cloud_token():
+            # 未登录云端，保留 pending 等下次有 token 再试
+            return
+        row = state.db.fetchone(
+            "SELECT cloud_id, sync_status FROM clients WHERE id = ?",
+            (client_id,),
+        )
+        if not row:
+            return
+        cloud_id = str(row["cloud_id"] or "").strip()
+        body = _client_row_to_cloud_payload(client_id)
+        if not body:
+            return
+        try:
+            if action == "update" and cloud_id:
+                response = cloud_request("PUT", f"/api/v1/clients/{cloud_id}", json_body=body, timeout=6.0)
+            else:
+                response = cloud_request("POST", "/api/v1/clients", json_body=body, timeout=6.0)
+            if isinstance(response, dict) and response.get("id"):
+                state.db.execute(
+                    """
+                    UPDATE clients
+                    SET sync_status = 'synced',
+                        cloud_id = ?,
+                        last_synced_at = ?,
+                        pending_sync_action = '',
+                        last_sync_error = ''
+                    WHERE id = ?
+                    """,
+                    (str(response["id"]), now_iso(), client_id),
+                )
+            else:
+                state.db.execute(
+                    "UPDATE clients SET sync_status = 'pending', pending_sync_action = ? WHERE id = ?",
+                    (action, client_id),
+                )
+        except Exception as error:
+            state.db.execute(
+                """
+                UPDATE clients
+                SET sync_status = 'pending',
+                    pending_sync_action = ?,
+                    last_sync_error = ?
+                WHERE id = ?
+                """,
+                (action, str(error)[:500], client_id),
+            )
+
+    def _upsert_cloud_client_shadow_local(payload: dict[str, object]) -> str | None:
+        """Mirror a cloud client into local SQLite. Returns the local client_id.
+        Used by _pull_cloud_clients_to_local. Local-newer-than-cloud guard mirrors task pattern.
+        """
+        if not isinstance(payload, dict):
+            return None
+        cloud_id = str(payload.get("id") or "").strip()
+        if not cloud_id:
+            return None
+        # local 用同 id 对账（POST 也传 id，云端同 id 不重复创建）
+        local_id = cloud_id
+        existing = state.db.fetchone("SELECT * FROM clients WHERE id = ? OR cloud_id = ?", (local_id, cloud_id))
+        # 机制化去重: 如果本地不存在这个 cloud_id, 但存在另一个同 name 的 client (用户已经
+        # 真实使用过, 有 tasks/docs/threads), 跳过 — 防止云端冗余 client (e.g. client_cffc
+        # 和 client_85d5c52575 都叫"为爱黔行") 反复推回本地形成重复. 这是用户"删了又来"的根因.
+        if not existing:
+            cloud_name = str(payload.get("name") or "").strip()
+            if cloud_name:
+                dupe = state.db.fetchone(
+                    """SELECT c.id, COALESCE((SELECT COUNT(*) FROM tasks WHERE client_id=c.id), 0)
+                                  + COALESCE((SELECT COUNT(*) FROM chat_threads WHERE client_id=c.id), 0)
+                                  + COALESCE((SELECT COUNT(*) FROM documents WHERE client_id=c.id), 0) AS usage
+                       FROM clients c WHERE c.name=? AND c.id != ? AND c.cloud_id != ?
+                       ORDER BY usage DESC LIMIT 1""",
+                    (cloud_name, local_id, cloud_id),
+                )
+                if dupe and int(dupe["usage"] or 0) > 0:
+                    logger.info(
+                        "[CLOUD-CLIENT-DEDUPE] skip cloud client %s (name='%s') — 本地已有同名 client %s 含 %d 条真实数据",
+                        cloud_id, cloud_name, str(dupe["id"]), int(dupe["usage"] or 0),
+                    )
+                    return str(dupe["id"])
+        timestamp = now_iso()
+        related_ids = payload.get("relatedUserIds") or []
+        if not isinstance(related_ids, list):
+            related_ids = []
+        related_user_ids_json = to_json([str(uid) for uid in related_ids if uid])
+        is_dc = 1 if bool(payload.get("isDataCenterIncluded", True)) else 0
+        cloud_updated_at = str(payload.get("updatedAt") or timestamp)
+        if existing:
+            # Local-newer guard：本地 sync_status 是 pending/local（用户本地刚改还没推上去），
+            # 不能用云端老数据覆盖。
+            local_sync = str(existing["sync_status"] or "")
+            local_updated = str(existing["updated_at"] or "")
+            if local_sync in {"pending", "local"} and local_updated and local_updated > cloud_updated_at:
+                return str(existing["id"])
+            state.db.execute(
+                """
+                UPDATE clients
+                SET name = ?, alias = ?, domain = ?, type = ?, intro = ?, stage = ?, color = ?,
+                    related_user_ids_json = ?, is_data_center_included = ?,
+                    sync_status = 'synced', cloud_id = ?, last_synced_at = ?,
+                    pending_sync_action = '', last_sync_error = '',
+                    updated_at = ?
+                WHERE id = ?
+                """,
+                (
+                    str(payload.get("name") or ""),
+                    str(payload.get("alias") or ""),
+                    str(payload.get("domain") or "项目"),
+                    str(payload.get("type") or "项目"),
+                    str(payload.get("intro") or ""),
+                    str(payload.get("stage") or "待导入资料"),
+                    str(payload.get("color") or "#5B7BFE"),
+                    related_user_ids_json,
+                    is_dc,
+                    cloud_id,
+                    timestamp,
+                    cloud_updated_at,
+                    str(existing["id"]),
+                ),
+            )
+            return str(existing["id"])
+        # Insert new shadow row
+        state.db.execute(
+            """
+            INSERT INTO clients(id, name, alias, domain, type, intro, stage, color,
+                                created_at, updated_at,
+                                related_user_ids_json, is_data_center_included,
+                                sync_status, cloud_id, last_synced_at)
+            VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'synced', ?, ?)
+            """,
+            (
+                local_id,
+                str(payload.get("name") or ""),
+                str(payload.get("alias") or ""),
+                str(payload.get("domain") or "项目"),
+                str(payload.get("type") or "项目"),
+                str(payload.get("intro") or ""),
+                str(payload.get("stage") or "待导入资料"),
+                str(payload.get("color") or "#5B7BFE"),
+                str(payload.get("createdAt") or timestamp),
+                cloud_updated_at,
+                related_user_ids_json,
+                is_dc,
+                cloud_id,
+                timestamp,
+            ),
+        )
+        return local_id
+
+    def _pull_cloud_clients_to_local() -> None:
+        """Pull clients visible to current user from cloud and upsert locally.
+        节流：30 秒 TTL，跟 tasks 节奏一致；启动时调一次，主界面再切到客户工作台时也会触发。
+        """
+        if _cloud_clients_pull_state["in_flight"]:
+            return
+        now = time.time()
+        if now - float(_cloud_clients_pull_state["last_pulled_at"] or 0) < _CLOUD_CLIENTS_PULL_TTL_SECONDS:
+            return
+        if not get_cloud_token():
+            return
+        _cloud_clients_pull_state["in_flight"] = True
+        try:
+            payload = cloud_request("GET", "/api/v1/clients", timeout=10.0)
+        except Exception as error:
+            logger.warning("[CLIENT-PULL] failed: %s", error)
+            _cloud_clients_pull_state["in_flight"] = False
+            return
+        finally:
+            _cloud_clients_pull_state["in_flight"] = False
+        if not isinstance(payload, list):
+            return
+        _cloud_clients_pull_state["last_pulled_at"] = time.time()
+        for item in payload:
+            if isinstance(item, dict):
+                try:
+                    _upsert_cloud_client_shadow_local(item)
+                except Exception as error:
+                    logger.warning("[CLIENT-PULL] shadow upsert failed for %s: %s", item.get("id"), error)
 
     def _merge_local_tasks_into(board: TaskBoardResponse) -> TaskBoardResponse:
         """Local-first merge: add recent local-only tasks + merge local attachments into cloud tasks."""
@@ -12831,6 +13192,26 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         row = state.db.fetchone("SELECT * FROM clients WHERE id = ?", (client_id,))
         if not row:
             raise HTTPException(status_code=404, detail="Client not found")
+        # P7：解析扩展字段，老 row 缺这两列时给安全默认
+        try:
+            related_ids = json.loads(str(row["related_user_ids_json"] or "[]"))
+            if not isinstance(related_ids, list):
+                related_ids = []
+            related_ids = [str(uid) for uid in related_ids if uid]
+        except Exception:
+            related_ids = []
+        try:
+            is_in_dc = bool(int(row["is_data_center_included"] if row["is_data_center_included"] is not None else 1))
+        except Exception:
+            is_in_dc = True
+        # 全局冷冻状态:frozen_at 为 NULL 即未冷冻,有值则被冷冻
+        frozen_at_value: str | None = None
+        try:
+            raw_frozen = row["frozen_at"] if "frozen_at" in row.keys() else None
+            if raw_frozen:
+                frozen_at_value = str(raw_frozen)
+        except Exception:
+            frozen_at_value = None
         return ClientSummary(
             id=str(row["id"]),
             name=str(row["name"]),
@@ -12853,6 +13234,10 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 (client_id, client_id),
             ),
             lastActivityAt=str(row["updated_at"]),
+            relatedUserIds=related_ids,
+            isDataCenterIncluded=is_in_dc,
+            isFrozen=frozen_at_value is not None,
+            frozenAt=frozen_at_value,
         )
 
     ORGANIZATION_WORKSPACE_CLIENT_TYPE = "organization_workspace"
@@ -14916,19 +15301,16 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         if target_path.exists():
             target_path = target_dir / f"{timestamp}_{safe_stem}_{uuid4().hex[:6]}.docx"
 
-        document = WordDocument()
-        document.add_heading(resolved_title, level=1)
-        for block in re.split(r"\n\s*\n+", normalized_content):
-            text = block.strip()
-            if not text:
-                continue
-            heading_match = re.match(r"^(#{1,4})\s+(.+)$", text)
-            if heading_match:
-                level = min(len(heading_match.group(1)) + 1, 4)
-                document.add_heading(heading_match.group(2).strip(), level=level)
-                continue
-            document.add_paragraph(text)
-        document.save(target_path)
+        # P9：用完整 markdown 渲染（粗体/斜体/列表/链接/表格/分割线/引用全保留），
+        # 复用 link_material_import.render_polished_markdown_to_docx——
+        # source_url="" 时它会跳过"原链接" 那行。
+        from app.services.link_material_import import render_polished_markdown_to_docx
+        render_polished_markdown_to_docx(
+            title=resolved_title,
+            source_url="",
+            markdown_body=normalized_content,
+            output_path=target_path,
+        )
 
         timestamp_iso = now_iso()
         folder_row = state.db.fetchone(
@@ -16094,6 +16476,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                     client_name=client.name,
                     field_contexts=batch_contexts,
                     field_types=field_types,
+                    client_id=client_id,  # P-E.1: 注入字典权威包
                 )
                 for label in batch_labels:
                     value = str(batch_values.get(label) or "【待确认】当前缺少可直接填写该字段的资料。").strip()
@@ -16320,7 +16703,9 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 error_message=None,
             )
         except HTTPException as error:
-            last_phase = str(state.db.scalar("SELECT phase FROM client_template_fill_runs WHERE id = ?", (run_id,)) or "parsing")
+            # db.scalar 会强制 int() 转换，phase 是字符串必须用 fetchone
+            _phase_row = state.db.fetchone("SELECT phase FROM client_template_fill_runs WHERE id = ?", (run_id,))
+            last_phase = str(_phase_row["phase"] if _phase_row and _phase_row["phase"] else "parsing")
             update_client_template_fill_run(
                 run_id,
                 status="failed",
@@ -16333,7 +16718,9 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 error_message=str(error.detail),
             )
         except Exception as error:
-            last_phase = str(state.db.scalar("SELECT phase FROM client_template_fill_runs WHERE id = ?", (run_id,)) or "parsing")
+            # db.scalar 会强制 int() 转换，phase 是字符串必须用 fetchone
+            _phase_row = state.db.fetchone("SELECT phase FROM client_template_fill_runs WHERE id = ?", (run_id,))
+            last_phase = str(_phase_row["phase"] if _phase_row and _phase_row["phase"] else "parsing")
             update_client_template_fill_run(
                 run_id,
                 status="failed",
@@ -16412,13 +16799,21 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             )
             for row in state.db.fetchall("SELECT * FROM documents WHERE client_id = ? ORDER BY created_at DESC LIMIT ?", (client_id, document_limit))
         ]
+        def _coerce_import_mode(raw: str) -> str:
+            # ImportRecord.mode 现在只接 'folder' / 'file'；老数据/异步流程可能塞过
+            # 'internet_pdf' / 'internet_pdf_worker' 等，落到任一非法值就降级成 'file'，避免启动加载崩。
+            return raw if raw in ("folder", "file") else "file"
+
+        def _coerce_import_status(raw: str) -> str:
+            return raw if raw in ("queued", "processing", "completed", "failed", "scanned") else "completed"
+
         imports = [
             ImportRecord(
                 id=str(row["id"]),
                 clientId=str(row["client_id"]),
                 sourcePath=str(row["source_path"]),
-                mode=str(row["mode"]),  # type: ignore[arg-type]
-                status=str(row["status"]),  # type: ignore[arg-type]
+                mode=_coerce_import_mode(str(row["mode"])),  # type: ignore[arg-type]
+                status=_coerce_import_status(str(row["status"])),  # type: ignore[arg-type]
                 importedCount=int(row["imported_count"]),
                 skippedCount=int(row["skipped_count"]),
                 createdAt=str(row["created_at"]),
@@ -16446,7 +16841,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                     JOIN chat_threads t ON t.id = m.thread_id
                     WHERE t.client_id = ?
                     ORDER BY m.created_at DESC
-                    LIMIT 50
+                    LIMIT 200
                 ) recent
                 ORDER BY recent.created_at ASC
                 """,
@@ -22612,11 +23007,9 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 if cloud_user_ids:
                     raw_owner = cloud_payload.get("ownerId")
                     if raw_owner and raw_owner not in cloud_user_ids:
-                        import sys as _ghost_sys
-                        print(
-                            f"[SYNC-PENDING] dropping ghost ownerId={raw_owner} for task {task_id}",
-                            file=_ghost_sys.stderr,
-                            flush=True,
+                        logger.info(
+                            "[SYNC-PENDING] dropping ghost ownerId=%s for task %s",
+                            raw_owner, task_id,
                         )
                         cloud_payload["ownerId"] = None
                     raw_collabs = cloud_payload.get("collaboratorIds") or []
@@ -25569,8 +25962,9 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                                     break
 
                         # If still no client, try keyword matching against client names
+                        # 冷冻项目不参与关键词匹配,避免新内容被分配到已冷冻的客户
                         if not cid:
-                            client_rows = state.db.fetchall("SELECT id, name FROM clients")
+                            client_rows = state.db.fetchall("SELECT id, name FROM clients WHERE frozen_at IS NULL")
                             for cr in client_rows:
                                 cn = str(cr["name"])
                                 if cn and len(cn) >= 2 and cn in title:
@@ -26125,13 +26519,17 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
 
     @app.get("/api/v1/brain/dashboard")
     def get_brain_dashboard() -> dict:
-        """Strategic brain dashboard — aggregate pulse metrics from all subsystems."""
+        """Strategic brain dashboard — aggregate pulse metrics from all subsystems.
+
+        冷冻项目不进入 dashboard 卡片列表 — 它们已退出战略陪伴的视野。
+        """
         client_rows = state.db.fetchall(
             """
             SELECT id, name, stage, intro
             FROM clients
             WHERE COALESCE(alias, '') != 'workspace-smoke'
               AND COALESCE(name, '') != '安装态冒烟客户'
+              AND frozen_at IS NULL
             ORDER BY updated_at DESC
             """
         )
@@ -26926,6 +27324,491 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             timeout=10.0,
         )
 
+    @app.get("/api/v1/clients/{client_id}/narrative/stale-status")
+    def get_narrative_stale_status(client_id: str) -> dict:
+        """检查 narrative 是否需要重生.
+
+        判定: 本地 narrative_stale_signals.marked_at > 云端 narrative.generatedAt
+        前端 useEffect 检测到 isStale 后自动后台触发 regenerate.
+        """
+        row = state.db.fetchone(
+            "SELECT marked_at, last_doc_title, reason FROM narrative_stale_signals WHERE client_id = ?",
+            (client_id,),
+        )
+        marked_at = (row["marked_at"] if row else "") or ""
+        last_doc_title = (row["last_doc_title"] if row else "") or ""
+        reason = (row["reason"] if row else "") or ""
+
+        narrative_generated_at = ""
+        try:
+            nar = cloud_request(
+                "GET",
+                f"/api/v1/clients/{client_id}/narrative",
+                timeout=10.0,
+            )
+            narrative_generated_at = str(nar.get("generatedAt") or "")
+        except Exception:
+            pass
+
+        is_stale = bool(marked_at and marked_at > narrative_generated_at)
+        return {
+            "isStale": is_stale,
+            "markedAt": marked_at,
+            "narrativeGeneratedAt": narrative_generated_at,
+            "lastDocTitle": last_doc_title,
+            "reason": reason,
+        }
+
+    @app.post("/api/v1/clients/{client_id}/narrative/stale-clear")
+    def clear_narrative_stale(client_id: str) -> dict:
+        """重生 narrative 成功后由前端调用, 清掉 stale 标记."""
+        state.db.execute(
+            "DELETE FROM narrative_stale_signals WHERE client_id = ?",
+            (client_id,),
+        )
+        return {"ok": True}
+
+    # ───────────────────────────────────────────────────────────────────
+    # "下一步要做什么" · LLM 背景说明生成
+    # 用户转任务时调 /next-steps-background?fp=xxx, 优先读 cache (瞬时返回);
+    # 列表加载时后台并发预生成, 提前写入 cache.
+    # ───────────────────────────────────────────────────────────────────
+
+    def _fetch_narrative_next_steps_text(client_id: str) -> str:
+        """拉云端 narrative 的 next_steps 维度整段文本, 给 commit 类 fallback 用."""
+        try:
+            nar = cloud_request(
+                "GET",
+                f"/api/v1/clients/{client_id}/narrative",
+                timeout=10.0,
+            )
+            for dim in (nar or {}).get("dimensions", []):
+                if dim.get("dimension") == "next_steps":
+                    text = str(dim.get("narrative") or "")
+                    logger.info("[next-step-bg] narrative next_steps fetched, len=%d", len(text))
+                    return text
+            logger.warning("[next-step-bg] narrative has no next_steps dim, dims=%s",
+                           [d.get("dimension") for d in (nar or {}).get("dimensions", [])])
+        except Exception as exc:
+            logger.exception("[next-step-bg] cloud_request narrative failed: %s", exc)
+        return ""
+
+    def _find_chunk_for_next_step(
+        client_id: str, kind: str, actor: str, text: str,
+        narrative_next_steps_cache: str | None = None,
+    ) -> tuple[str, str]:
+        """根据建议来源类型反查原文 chunk. 返回 (chunk_content, source_doc_title).
+
+        commit/task 类原文 fuzzy 搜失败时, fallback 到 narrative.next_steps 整段
+        (commit 本来就是 LLM 从这段 narrative 抽出来的, 用整段做背景输入合理).
+        """
+        import re as _re
+        # meeting 类: 用 text 前 15 字在最近会议纪要文档里 LIKE
+        if kind == "meeting":
+            row = state.db.fetchone(
+                """SELECT vc.content, d.title FROM v2_chunks vc
+                   JOIN v2_documents vd ON vd.id=vc.v2_document_id
+                   JOIN documents d ON d.id=vd.document_id
+                   WHERE vd.client_id=? AND vc.content LIKE ?
+                     AND (d.title LIKE '%纪要%' OR d.title LIKE '%对齐会%' OR d.title LIKE '%会议%')
+                   ORDER BY LENGTH(vc.content) DESC LIMIT 1""",
+                (client_id, f"%{text[:15]}%"),
+            )
+            if row:
+                return str(row["content"]), str(row["title"])
+
+        # commit / task / 兜底: 用关键词 (≥3 字 token) 在全客户 v2_chunks 搜
+        toks = _re.findall(r"[一-龥]{3,}", text)
+        bad = {"基金会", "公益", "项目", "完成", "出具", "并", "为", "的", "了", "对", "与",
+               "确认", "提供", "组织", "推进", "落地"}
+        toks = [t for t in toks if t not in bad][:3]
+        for tk in toks:
+            row = state.db.fetchone(
+                """SELECT vc.content, d.title FROM v2_chunks vc
+                   JOIN v2_documents vd ON vd.id=vc.v2_document_id
+                   JOIN documents d ON d.id=vd.document_id
+                   WHERE vd.client_id=? AND vc.content LIKE ?
+                   ORDER BY vd.imported_at DESC LIMIT 1""",
+                (client_id, f"%{tk}%"),
+            )
+            if row:
+                return str(row["content"]), str(row["title"])
+
+        # fallback: commit 类没找到原文 chunk → 用 narrative.next_steps 整段
+        if kind in ("commitment", "task", "meeting_action"):
+            narr = (
+                narrative_next_steps_cache
+                if narrative_next_steps_cache is not None
+                else _fetch_narrative_next_steps_text(client_id)
+            )
+            logger.info("[next-step-bg] commit fallback kind=%s text='%s...' narr_len=%d",
+                        kind, text[:20], len(narr or ""))
+            if narr:
+                return narr, "战略陪伴 · 下一步段落"
+        return "", ""
+
+    def _llm_generate_next_step_background(title: str, raw_chunk: str) -> str:
+        """调 LLM 生成 80-100 字背景说明. 抓不到原文时返回空串."""
+        if not raw_chunk:
+            return ""
+        prompt = (
+            f"任务标题: {title}\n"
+            f"原文片段:\n```\n{raw_chunk[:1500]}\n```\n\n"
+            "把上面原文压缩成 80-100 字的『任务背景说明』, 面向接到这个任务的同事:\n"
+            "  1) 这事为什么要做 (来自哪场会议/什么决定);\n"
+            "  2) 关键约束 (deadline/合作方/产出形式);\n"
+            "  3) 不重复任务标题本身, 不寒暄.\n"
+            "硬约束: 不要编造会议名称, 必须从原文已出现的字面抽取; 不知道就不提.\n"
+            "直接输出文本, 不要 '背景说明:' 之类前缀."
+        )
+        try:
+            result = state.ai._qwen_generate(
+                prompt=prompt,
+                system_instruction="你是项目助理,擅长把会议纪要里的某条任务压缩成 80-100 字背景说明给同事看。严格基于原文, 不编造。",
+                response_schema=None,
+                max_tokens=400,
+                temperature=0.3,
+                task_kind="default",
+            )
+            return (result if isinstance(result, str) else str(result)).strip()
+        except Exception:
+            return ""
+
+    def _prefetch_next_step_backgrounds(client_id: str, items: list[dict]) -> None:
+        """后台线程: 并发对未缓存的 next-step item 跑 LLM, 写入 cache 表.
+
+        机制: 至多 3 线程并发避免烧 LLM 配额; cache 有命中即跳过.
+        commit 类没有原文 chunk 时 fallback 到 narrative.next_steps 整段
+        (拉一次给所有 commit 共享, 减少云端 RT).
+        """
+        if not items:
+            return
+        try:
+            existing_rows = state.db.fetchall(
+                "SELECT fingerprint FROM next_step_background_cache WHERE client_id = ?",
+                (client_id,),
+            )
+            cached = {str(r["fingerprint"]) for r in existing_rows}
+        except Exception:
+            cached = set()
+        pending = [it for it in items if it["fingerprint"] not in cached]
+        if not pending:
+            return
+
+        # 一次性拉 narrative.next_steps 整段, 给 commit/task 类 fallback 用
+        need_narrative = any(it["kind"] in ("commitment", "task", "meeting_action") for it in pending)
+        narrative_text = _fetch_narrative_next_steps_text(client_id) if need_narrative else ""
+
+        from concurrent.futures import ThreadPoolExecutor
+        from datetime import datetime, timezone
+
+        def _one(it: dict) -> None:
+            try:
+                chunk, source_label = _find_chunk_for_next_step(
+                    client_id, it["kind"], it["actor"], it["text"],
+                    narrative_next_steps_cache=narrative_text,
+                )
+                if not chunk:
+                    state.db.execute(
+                        """INSERT OR REPLACE INTO next_step_background_cache
+                           (client_id, fingerprint, background, source_label, has_source, created_at)
+                           VALUES (?, ?, '', '', 0, ?)""",
+                        (client_id, it["fingerprint"], datetime.now(timezone.utc).isoformat()),
+                    )
+                    return
+                background = _llm_generate_next_step_background(it["text"], chunk)
+                if background:
+                    state.db.execute(
+                        """INSERT OR REPLACE INTO next_step_background_cache
+                           (client_id, fingerprint, background, source_label, has_source, created_at)
+                           VALUES (?, ?, ?, ?, 1, ?)""",
+                        (
+                            client_id, it["fingerprint"], background, source_label,
+                            datetime.now(timezone.utc).isoformat(),
+                        ),
+                    )
+            except Exception:
+                pass  # 单条失败不影响其他
+
+        # 限制并发 3, 避免 LLM 配额打满
+        with ThreadPoolExecutor(max_workers=3) as pool:
+            list(pool.map(_one, pending))
+
+    @app.post("/api/v1/clients/{client_id}/next-steps-background")
+    def get_next_step_background(client_id: str, payload: dict) -> dict:
+        """前端转任务时调: 根据 (fingerprint, kind, actor, text) 拿背景说明.
+
+        优先读 cache; cache miss 时现场跑 LLM (用户感觉慢, 但兜底可用).
+        """
+        p = payload or {}
+        fp = str(p.get("fingerprint") or "").strip()
+        if not fp:
+            raise HTTPException(status_code=400, detail="missing fingerprint")
+        # 1) 读 cache
+        row = state.db.fetchone(
+            """SELECT background, source_label, has_source FROM next_step_background_cache
+               WHERE client_id=? AND fingerprint=?""",
+            (client_id, fp),
+        )
+        if row:
+            return {
+                "background": str(row["background"] or ""),
+                "sourceLabel": str(row["source_label"] or ""),
+                "hasSource": bool(row["has_source"]),
+                "fromCache": True,
+            }
+        # 2) cache miss: 现场跑 LLM
+        kind = str(p.get("kind") or "")
+        actor = str(p.get("actor") or "")
+        text = str(p.get("text") or "")
+        chunk, source_label = _find_chunk_for_next_step(client_id, kind, actor, text)
+        if not chunk:
+            from datetime import datetime, timezone
+            state.db.execute(
+                """INSERT OR REPLACE INTO next_step_background_cache
+                   (client_id, fingerprint, background, source_label, has_source, created_at)
+                   VALUES (?, ?, '', '', 0, ?)""",
+                (client_id, fp, datetime.now(timezone.utc).isoformat()),
+            )
+            return {"background": "", "sourceLabel": "", "hasSource": False, "fromCache": False}
+        background = _llm_generate_next_step_background(text, chunk)
+        if background:
+            from datetime import datetime, timezone
+            state.db.execute(
+                """INSERT OR REPLACE INTO next_step_background_cache
+                   (client_id, fingerprint, background, source_label, has_source, created_at)
+                   VALUES (?, ?, ?, ?, 1, ?)""",
+                (client_id, fp, background, source_label, datetime.now(timezone.utc).isoformat()),
+            )
+        return {
+            "background": background,
+            "sourceLabel": source_label,
+            "hasSource": bool(background),
+            "fromCache": False,
+        }
+
+    @app.get("/api/v1/clients/{client_id}/next-steps")
+    def list_next_steps(client_id: str) -> dict:
+        """战略陪伴右侧主区块"下一步要做什么" 的统一数据源.
+
+        Union 三种来源 + actor 称谓归一化 + fingerprint dedup:
+          - 张真 / 张真老师 / 张老师 → fingerprint 用归一后 actor 算, 自动算同一条
+          - 删去"delivery" / 文档名 等冗余 sourceLabel
+        """
+        from app.services.meeting_action_extractor import (
+            extract_recent_client_actions, _load_consumed_fingerprints, make_fingerprint,
+        )
+        from app.services.todo_aggregator import collect_all_todos
+        import re as _re
+
+        # actor 称谓归一: 去 老师/总监/总/经理/主管/同学/工/博士/教授 等后缀
+        # 规则: 只在去后剩 ≥ 2 字时归一. 例: 张真老师 → 张真 ✓; 顾老师 不归一(剩"顾"1字).
+        _suffix_re = _re.compile(r"(老师|总监|总裁|经理|主管|同学|博士|教授|工|总)$")
+        def _norm_one(name: str) -> str:
+            n = (name or "").strip()
+            if not n:
+                return ""
+            m = _suffix_re.search(n)
+            if not m:
+                return n
+            stripped = n[:m.start()].strip()
+            return stripped if len(stripped) >= 2 else n
+        def _norm_actor(actor: str) -> str:
+            parts = [p.strip() for p in (actor or "").split(",") if p.strip()]
+            normed = [_norm_one(p) for p in parts]
+            # 去重保序
+            seen: set[str] = set()
+            out: list[str] = []
+            for n in normed:
+                if n and n not in seen:
+                    seen.add(n)
+                    out.append(n)
+            return ",".join(out)
+
+        consumed = _load_consumed_fingerprints(state.db.conn, client_id)
+        seen_fp: set[str] = set()
+        items: list[dict[str, Any]] = []
+
+        # 源 1: regex 会议纪要 high 置信
+        meeting_items = extract_recent_client_actions(
+            state.db.conn, client_id, days=30, max_items=30, exclude_consumed=True,
+        )
+        for it in meeting_items:
+            if it.confidence != "high":
+                continue
+            normed_actor = _norm_actor(it.actor)
+            fp = make_fingerprint(normed_actor, it.text)
+            if fp in consumed or fp in seen_fp:
+                continue
+            seen_fp.add(fp)
+            items.append({
+                "fingerprint": fp,
+                "kind": "meeting",
+                "actor": normed_actor or it.actor,
+                "text": it.text,
+                "dueDate": "",
+                "severity": "medium",
+                "rawId": "",
+            })
+
+        # 源 2/3: unified todos (commitments + tasks + action_items)
+        try:
+            unified = collect_all_todos(state.db, client_id)
+            arrow_re = _re.compile(r"^([^:：]+?)\s*[向→\->]+\s*[^:：]+[:：]\s*(.+)$")
+            for t in unified:
+                title = (t.title or "").strip()
+                owner = (t.owner or "").strip()
+                m = arrow_re.match(title)
+                if m:
+                    actor = m.group(1).strip()
+                    text = m.group(2).strip()
+                else:
+                    actor = owner
+                    text = title
+                if not text:
+                    continue
+                normed_actor = _norm_actor(actor)
+                fp = make_fingerprint(normed_actor, text)
+                if fp in consumed or fp in seen_fp:
+                    continue
+                seen_fp.add(fp)
+                items.append({
+                    "fingerprint": fp,
+                    "kind": t.source,
+                    "actor": normed_actor or actor,
+                    "text": text,
+                    "dueDate": t.due_date or "",
+                    "severity": t.severity,
+                    "rawId": t.id,
+                })
+        except Exception:
+            pass
+
+        sev_order = {"high": 0, "medium": 1, "low": 2}
+        kind_order = {"meeting": 0, "commitment": 1, "task": 2, "meeting_action": 3}
+        items.sort(key=lambda x: (
+            0 if x["dueDate"] else 1,
+            sev_order.get(x["severity"], 9),
+            kind_order.get(x["kind"], 9),
+        ))
+
+        # 后台异步预生成 LLM 背景说明, 写入 cache → 用户点 → 时瞬时返回
+        # 至多 3 线程并发, 失败 silent, 不阻塞当前请求
+        if items:
+            import threading
+            threading.Thread(
+                target=_prefetch_next_step_backgrounds,
+                args=(client_id, list(items)),
+                daemon=True,
+                name=f"prefetch-bg-{client_id[:12]}",
+            ).start()
+
+        return {
+            "clientId": client_id,
+            "items": items,
+            "total": len(items),
+            "consumedCount": len(consumed),
+        }
+
+    @app.get("/api/v1/clients/{client_id}/meeting-action-items")
+    def list_meeting_action_items(
+        client_id: str, days: int = 30, max_items: int = 30,
+    ) -> dict:
+        """战略陪伴 next_steps 补充: 最近 N 天会议纪要里 @标注 / X 将 Y 句式 的全量待办.
+
+        不调 LLM, 走 regex. 用于补足 narrative.next_steps 因 LLM 输出长度被舍取的待办.
+        """
+        from app.services.meeting_action_extractor import extract_recent_client_actions
+        items = extract_recent_client_actions(
+            state.db.conn, client_id, days=days, max_items=max_items,
+        )
+        high = [it.to_dict() for it in items if it.confidence == "high"]
+        medium = [it.to_dict() for it in items if it.confidence == "medium"]
+        return {
+            "clientId": client_id,
+            "high": high,
+            "medium": medium,
+            "totalHigh": len(high),
+            "totalMedium": len(medium),
+        }
+
+    @app.post("/api/v1/clients/{client_id}/suggestions/log")
+    def log_suggestion_action(client_id: str, payload: dict) -> dict:
+        """用户对 AI 建议下一步的操作落账.
+
+        action ∈ ('promoted', 'completed', 'dismissed')
+        payload: { fingerprint, action, actor, suggestionText, sourceDocTitle, sourceDocId }
+        写入 narrative_suggestion_log → 下次 extract 跳过该 fingerprint.
+        """
+        import uuid
+        p = payload or {}
+        fingerprint = str(p.get("fingerprint") or "").strip()
+        action = str(p.get("action") or "").strip().lower()
+        if not fingerprint or action not in ("promoted", "completed", "dismissed"):
+            raise HTTPException(status_code=400, detail="bad fingerprint or action")
+        actor = str(p.get("actor") or "")[:120]
+        text = str(p.get("suggestionText") or "")[:500]
+        doc_title = str(p.get("sourceDocTitle") or "")[:200]
+        doc_id = str(p.get("sourceDocId") or "")[:80]
+        state.db.execute(
+            """INSERT INTO narrative_suggestion_log
+               (id, client_id, fingerprint, action, actor, suggestion_text,
+                source_doc_title, source_doc_id, created_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                f"sl_{uuid.uuid4().hex[:12]}",
+                client_id,
+                fingerprint,
+                action,
+                actor,
+                text,
+                doc_title,
+                doc_id,
+                now_iso(),
+            ),
+        )
+        return {"ok": True, "fingerprint": fingerprint, "action": action}
+
+    @app.get("/api/v1/clients/{client_id}/suggestions/log")
+    def list_suggestion_log(client_id: str, limit: int = 50) -> dict:
+        """读 AI 建议下一步的历史操作 (按 action 分桶), 给历史日志卡片用."""
+        rows = state.db.fetchall(
+            """SELECT fingerprint, action, actor, suggestion_text, source_doc_title,
+                      source_doc_id, created_at
+               FROM narrative_suggestion_log
+               WHERE client_id = ?
+               ORDER BY created_at DESC LIMIT ?""",
+            (client_id, limit),
+        )
+        by_action: dict[str, list[dict]] = {"promoted": [], "completed": [], "dismissed": []}
+        for r in rows:
+            action = str(r["action"] or "")
+            if action not in by_action:
+                continue
+            by_action[action].append({
+                "fingerprint": r["fingerprint"],
+                "actor": r["actor"] or "",
+                "suggestionText": r["suggestion_text"] or "",
+                "sourceDocTitle": r["source_doc_title"] or "",
+                "sourceDocId": r["source_doc_id"] or "",
+                "createdAt": r["created_at"] or "",
+            })
+        return {
+            "clientId": client_id,
+            "promoted": by_action["promoted"],
+            "completed": by_action["completed"],
+            "dismissed": by_action["dismissed"],
+        }
+
+    @app.delete("/api/v1/clients/{client_id}/suggestions/log/{fingerprint}")
+    def remove_suggestion_log_entry(client_id: str, fingerprint: str) -> dict:
+        """从日志卡里"找回"一条 — 删除该 fingerprint 的所有记录, 下次 regen 会再次出现."""
+        state.db.execute(
+            "DELETE FROM narrative_suggestion_log WHERE client_id = ? AND fingerprint = ?",
+            (client_id, fingerprint),
+        )
+        return {"ok": True}
+
     @app.get("/api/v1/clients/{client_id}/narrative/clarifications")
     def list_client_narrative_clarifications_proxy(client_id: str) -> dict:
         return cloud_request(
@@ -26968,9 +27851,32 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         - 任何客户只要字典里有 term, 跑一次就能拿到候选 attributes
         - 人审 → /verify or /reject, 不审就一直 pending
         - 跟 P0 三表 (relations/risk_signals/commitments) 同构, 共享审核机制
+        - 抽完自动跑 auto_verify_rules, 确定性 pending 直接 verified
         """
         from app.services.glossary_attribute_extractor import extract_candidates
         return extract_candidates(state.db, state.ai, client_id)
+
+    @app.post("/api/v1/clients/{client_id}/glossary-attributes/auto-verify")
+    def auto_verify_glossary_attributes_proxy(
+        client_id: str, dry_run: bool = False
+    ) -> dict:
+        """Task L · 手动触发自动 verify 规则引擎.
+
+        规则:
+          档 A · 白名单字段(注册名/成立时间/机构性质等) + 权威源 OR conf≥0.98
+          档 B · 客观格式(URL/社交账号/是否字段)
+          档 D · 高 conf(≥0.95) + 权威源(百度百科/民政厅/官网/章程)
+          黑名单 · 主观字段(建议/优势/困难) 永不自动
+          防冲突 · 同字段有多个不同 value → 走 drift_alert 不自动
+        """
+        from app.services.auto_verify_rules import auto_verify_qualifying_attributes
+        stats = auto_verify_qualifying_attributes(state.db, client_id, dry_run=dry_run)
+        if not dry_run:
+            try:
+                state.db.conn.commit()
+            except Exception:
+                pass
+        return stats
 
     @app.get("/api/v1/clients/{client_id}/glossary-attributes")
     def list_glossary_attributes_proxy(
@@ -27117,7 +28023,9 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
     def promote_todo_to_task_proxy(client_id: str, todo_id: str, payload: dict | None = None) -> dict:
         """把 commitment / action_item 提升为正式 tasks 行 (同步进日历).
 
-        todo_id 格式: 'commit:xxx' / 'action:xxx' (task:xxx 不需要 promote, 已经是 task)
+        todo_id 格式: 'commit:xxx' / 'action:xxx' (task:xxx 已是 task, 无需 promote).
+        payload 可选字段 (前端弹窗编辑后传入, 优先覆盖源数据):
+          - title / owner / due_date / description / priority
         """
         import uuid
         if ":" not in todo_id:
@@ -27125,6 +28033,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         kind, raw_id = todo_id.split(":", 1)
         now = now_iso()
         new_task_id = f"task_{uuid.uuid4().hex[:10]}"
+        p = payload or {}
 
         if kind == "commit":
             row = state.db.fetchone(
@@ -27133,9 +28042,9 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             )
             if not row:
                 raise HTTPException(status_code=404, detail="commitment not found")
-            title = f"{row['committer']} → {row['recipient']}: {row['content']}"
-            owner = str(row["committer"] or "")
-            due = str(row["deadline"] or "")
+            default_title = f"{row['committer']} → {row['recipient']}: {row['content']}"
+            default_owner = str(row["committer"] or "")
+            default_due = str(row["deadline"] or "")
         elif kind == "action":
             row = state.db.fetchone(
                 "SELECT title, owner_name, due_date FROM action_items WHERE id=?",
@@ -27143,13 +28052,20 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             )
             if not row:
                 raise HTTPException(status_code=404, detail="action_item not found")
-            title = str(row["title"] or "")
-            owner = str(row["owner_name"] or "")
-            due = str(row["due_date"] or "")
+            default_title = str(row["title"] or "")
+            default_owner = str(row["owner_name"] or "")
+            default_due = str(row["due_date"] or "")
         else:
             raise HTTPException(status_code=400, detail=f"cannot promote {kind} (already a task)")
 
-        # 找一个可用的 list_id (优先 "客户项目", 否则任意默认)
+        title = (str(p.get("title") or default_title).strip() or default_title)[:200]
+        owner = str(p.get("owner") or default_owner).strip()
+        due = str(p.get("due_date") or default_due).strip()
+        description = str(p.get("description") or "").strip()
+        priority = str(p.get("priority") or "medium").strip().lower()
+        if priority not in ("high", "medium", "low"):
+            priority = "medium"
+
         list_row = state.db.fetchone(
             "SELECT id FROM task_lists WHERE name='客户项目' OR id='list-1' LIMIT 1"
         ) or state.db.fetchone("SELECT id FROM task_lists ORDER BY sort_order LIMIT 1")
@@ -27160,14 +28076,25 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 list_id, owner_name, ddl, deadline_at,
                 progress_status, source_type, tags_json,
                 created_at, updated_at
-            ) VALUES (?, ?, ?, '', 'open', 'medium',
+            ) VALUES (?, ?, ?, ?, 'open', ?,
                       ?, ?, ?, ?,
                       'todo', ?, '[]',
                       ?, ?)""",
-            (new_task_id, client_id, title[:200], default_list_id,
-             owner, due or "", due or None,
+            (new_task_id, client_id, title, description, priority,
+             default_list_id, owner, due or "", due or None,
              f"promoted_from_{kind}", now, now),
         )
+        # 源标记 fulfilled (commit) / completed (action), 防止下次 narrative 复活
+        if kind == "commit":
+            state.db.execute(
+                "UPDATE commitments SET status='fulfilled', fulfilled_at=?, updated_at=? WHERE id=? AND client_id=?",
+                (now, now, raw_id, client_id),
+            )
+        elif kind == "action":
+            state.db.execute(
+                "UPDATE action_items SET publish_status='completed' WHERE id=?",
+                (raw_id,),
+            )
         return {"ok": True, "newTaskId": new_task_id, "source": kind, "listId": default_list_id}
 
     @app.post("/api/v1/clients/{client_id}/glossary-attributes/{attr_id}/reject")
@@ -27284,12 +28211,16 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             generate_narrative_dimensions,
         )
 
+        # 机制化 per-user chunks 过滤: 当前 viewer 只看自己上传文档抽出的 chunks,
+        # 数据中心层 (字典/承诺/事件线/事实) 仍全员共享
+        session_user = get_cached_session_user()
+        viewer_user_id = session_user.id if session_user else ""
         try:
-            bundle = collect_client_fact_bundle(state.db, client_id)
+            bundle = collect_client_fact_bundle(state.db, client_id, viewer_user_id=viewer_user_id)
         except ValueError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
 
-        dims, overall, model_used = generate_narrative_dimensions(state.ai, bundle)
+        dims, overall, model_used = generate_narrative_dimensions(state.ai, bundle, db=state.db)
 
         # 机制化 P0: narrative 输出的 structuredTodos 自动 upsert 进 commitments 表
         # 任何客户每次重生 narrative, 待办自动结构化 (UI/chat/日历都能拿到), 不依赖手动
@@ -27599,6 +28530,28 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         response can surface why cloud sync did/didn't take effect. Never logs
         or stores the raw API key — only hasApiKey + fingerprint (from state.ai).
         """
+        local_provider = ""
+        try:
+            local_provider = (state.ai.current_provider() or "").strip()
+        except Exception:
+            local_provider = ""
+        if local_provider in ("openclaw", "mock"):
+            _cloud_ai_sync_status.clear()
+            _cloud_ai_sync_status.update({
+                "state": "skipped",
+                "at": now_iso(),
+                "reason": f"本机当前 provider={local_provider}（本机绑定模式），云端组织 AI 配置不覆盖。",
+                "provider": local_provider,
+                "providerLabel": None,
+                "model": None,
+                "baseUrl": None,
+                "hasApiKey": False,
+            })
+            logger.info(
+                "[cloud-ai-sync] skipped: local provider=%s (本机绑定模式，不被云端覆盖)",
+                local_provider,
+            )
+            return
         try:
             secret_payload = cloud_request("GET", "/api/v1/settings/org-ai-config/secret")
             if not isinstance(secret_payload, dict):
@@ -27880,32 +28833,25 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
 
     @app.get("/api/v1/auth/me", response_model=AuthStateResponse)
     def auth_me() -> AuthStateResponse:
-        def _local_session_user() -> SessionUserRecord:
-            return SessionUserRecord(
-                id="local-device-user",
-                organizationId="local-device",
-                email="local@device.yiyu",
-                fullName="本机用户",
-                primaryRole="employee",
-                accountStatus="approved",
-                membershipStatus="approved",
-            )
-
-        def _local_auth_state(message: str | None = None) -> AuthStateResponse:
+        # 取消"本机模式": 没有 cloud token 直接 authenticated=False, 前端跳登录页.
+        # 跟 per-user 数据隔离一致 — 不再有 'local-device-user' 共享身份让客户数据
+        # 对任何打开 app 的人可见. 离线降级 (网络中断 + 本地缓存) 由下方 502/503/504
+        # + cached_user 分支兜底, 仍 sessionMode='cloud', 不引入"本机模式"概念.
+        def _unauthenticated(message: str | None = None) -> AuthStateResponse:
             return AuthStateResponse(
-                authenticated=True,
-                user=_local_session_user(),
+                authenticated=False,
+                user=None,
                 message=message,
-                sessionMode="local",
+                sessionMode="cloud",
             )
 
         token = get_cloud_token()
         refresh_token = get_cloud_refresh_token()
         if not token and not refresh_token:
-            return _local_auth_state()
+            return _unauthenticated()
         if not state.cloud_api_url:
             clear_cloud_session()
-            return _local_auth_state("尚未配置云端服务地址，已切回本机模式。")
+            return _unauthenticated("尚未配置云端服务地址，请先在设置里配置后再登录。")
         cached_user = get_cached_session_user()
         try:
             user = require_session_user()
@@ -27913,12 +28859,12 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         except HTTPException as exc:
             if exc.status_code in {401, 403}:
                 clear_cloud_session()
-                return _local_auth_state(str(exc.detail))
+                return _unauthenticated(str(exc.detail))
             if exc.status_code in {502, 503, 504} and cached_user is not None:
                 return AuthStateResponse(
                     authenticated=True,
                     user=cached_user,
-                    message="云端暂时不可用，已保留当前设备上的登录状态。",
+                    message="网络中断，已保留当前设备上的登录状态，部分功能不可用。",
                     sessionMode="cloud",
                 )
             raise
@@ -27931,36 +28877,22 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
     def account_overview() -> AccountOverviewResponse:
         token = get_cloud_token()
         refresh_token = get_cloud_refresh_token()
+        # 取消本机模式: 未登录时返回 cloud + user=None + cloudConnected=False,
+        # 不再返回虚假的 'local-device-user'. 前端 settings 页拿到 user=None 应该跳登录.
         if not token and not refresh_token:
             return AccountOverviewResponse(
-                sessionMode="local",
+                sessionMode="cloud",
                 cloudConnected=False,
                 cloudConfig=CloudConfigResponse(mode="disabled"),
-                user=SessionUserRecord(
-                    id="local-device-user",
-                    organizationId="local-device",
-                    email="local@device.yiyu",
-                    fullName="本机用户",
-                    primaryRole="employee",
-                    accountStatus="approved",
-                    membershipStatus="approved",
-                ),
+                user=None,
             )
         if not state.cloud_api_url:
             clear_cloud_session()
             return AccountOverviewResponse(
-                sessionMode="local",
+                sessionMode="cloud",
                 cloudConnected=False,
                 cloudConfig=CloudConfigResponse(mode="disabled"),
-                user=SessionUserRecord(
-                    id="local-device-user",
-                    organizationId="local-device",
-                    email="local@device.yiyu",
-                    fullName="本机用户",
-                    primaryRole="employee",
-                    accountStatus="approved",
-                    membershipStatus="approved",
-                ),
+                user=None,
             )
         cached_user = get_cached_session_user()
         return AccountOverviewResponse(
@@ -28312,18 +29244,13 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 pass
         clear_cloud_session()
         log_activity("auth.logout", "session", "current", {})
+        # 取消"本机模式": 登出后直接返回未登录态, 不再返回伪 'local-device-user'.
+        # 这是 fix "退出登录后仍看见以前页面" 的关键 — 前端拿到 authenticated=False
+        # 后, renderBranch 自动跳到 'auth' 登录页.
         return AuthStateResponse(
-            authenticated=True,
-            user=SessionUserRecord(
-                id="local-device-user",
-                organizationId="local-device",
-                email="local@device.yiyu",
-                fullName="本机用户",
-                primaryRole="employee",
-                accountStatus="approved",
-                membershipStatus="approved",
-            ),
-            sessionMode="local",
+            authenticated=False,
+            user=None,
+            sessionMode="cloud",
         )
 
     def process_pending_consultation_knowledge_requests_impl() -> ConsultationKnowledgeProcessSummaryResponse:
@@ -29510,7 +30437,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                             actionItems=_finalize_task_brief_action_items(task_id, title, bundle, normalized_points[:3], ai_actions),
                         )
                 if last_error:
-                    print(f"[task-smart-brief] AI generation fallback for {task_id}: {last_error}")
+                    logger.warning("[task-smart-brief] AI generation fallback for %s: %s", task_id, last_error)
             except Exception:
                 pass  # AI 失败时 fallback 到规则拼接
 
@@ -32702,10 +33629,17 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 raise HTTPException(status_code=403, detail="事件线已有关联任务，不能删除，请使用「结束事件线」功能进行归档。")
         if row:
             row_client_id = str(row["primary_client_id"] or "").strip()
-            state.db.execute("UPDATE tasks SET event_line_id = NULL, updated_at = ? WHERE event_line_id = ?", (now_iso(), event_line_id))
-            state.db.execute("DELETE FROM event_line_activities WHERE event_line_id = ?", (event_line_id,))
-            state.db.execute("DELETE FROM event_line_attachments WHERE event_line_id = ?", (event_line_id,))
-            state.db.execute("DELETE FROM event_lines WHERE id = ?", (event_line_id,))
+            # Sprint 2 (S2.3): 1 UPDATE + 3 DELETE 包事务. 中途崩了不留 tasks 残留指向已删事件线.
+            state.db.begin_transaction()
+            try:
+                state.db.execute("UPDATE tasks SET event_line_id = NULL, updated_at = ? WHERE event_line_id = ?", (now_iso(), event_line_id))
+                state.db.execute("DELETE FROM event_line_activities WHERE event_line_id = ?", (event_line_id,))
+                state.db.execute("DELETE FROM event_line_attachments WHERE event_line_id = ?", (event_line_id,))
+                state.db.execute("DELETE FROM event_lines WHERE id = ?", (event_line_id,))
+                state.db.commit_transaction()
+            except Exception:
+                state.db.rollback_transaction()
+                raise
             _enqueue_workspace_refresh_safe(
                 client_id=row_client_id or None,
                 source_type="event_line_delete",
@@ -32960,6 +33894,11 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         """
         response = cloud_request("GET", f"/api/v1/org-model/plan-items/{item_id}/tasks")
         return response if isinstance(response, list) else []
+
+    @app.get("/api/v1/org-model/plan-item-task-counts")
+    def list_plan_item_task_counts() -> dict[str, int]:
+        response = cloud_request("GET", "/api/v1/org-model/plan-item-task-counts")
+        return response if isinstance(response, dict) else {}
 
     @app.post("/api/v1/org-model/plans/parse")
     def parse_plan_text(payload: dict = Body(...)) -> dict:
@@ -34369,15 +35308,66 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         _ensure_local_organization_workspace_from_cloud_membership()
         return [build_client_summary(str(row["id"])) for row in state.db.fetchall("SELECT id FROM clients ORDER BY updated_at DESC")]
 
+    @app.get("/api/v1/clients/search-similar")
+    def search_similar_clients(name: str = "") -> dict:
+        """机制化客户 canonical 预防: 建客户时实时模糊匹配现有客户.
+
+        让多人协作时不会因为命名差异 (日慈/日慈基金会/日慈公益基金会) 把同一篮子
+        拆成多条 — 这是数据中心共建的前提.
+        匹配方式: 与 clients.name / alias / aliases_json 任一条目相似度 ≥ 50%.
+        """
+        import json
+        from app.services.todo_aggregator import _title_similar
+
+        query = (name or "").strip()
+        if len(query) < 2:
+            return {"query": query, "matches": []}
+
+        rows = state.db.fetchall(
+            "SELECT id, name, alias, aliases_json, stage, color FROM clients ORDER BY updated_at DESC"
+        )
+        matches: list[dict] = []
+        for r in rows:
+            candidates: list[str] = []
+            for fld in (r["name"], r["alias"]):
+                v = str(fld or "").strip()
+                if v:
+                    candidates.append(v)
+            try:
+                extra = json.loads(str(r["aliases_json"] or "[]"))
+                if isinstance(extra, list):
+                    candidates.extend(str(x).strip() for x in extra if str(x or "").strip())
+            except Exception:
+                pass
+            matched_via: str | None = None
+            for c in candidates:
+                if _title_similar(query, c):
+                    matched_via = c
+                    break
+            if matched_via:
+                matches.append({
+                    "id": str(r["id"]),
+                    "name": str(r["name"] or ""),
+                    "alias": str(r["alias"] or ""),
+                    "matchedVia": matched_via,
+                    "stage": str(r["stage"] or ""),
+                    "color": str(r["color"] or "#5B7BFE"),
+                })
+        return {"query": query, "matches": matches[:5]}
+
     @app.post("/api/v1/clients", response_model=ClientSummary)
     def create_client(payload: ClientMutationPayload) -> ClientSummary:
         client_id = new_id("client")
         timestamp = now_iso()
         client_color = (payload.color or "").strip() or "#5B7BFE"
+        # P7：扩展字段（批 3 接通 cloud sync 后会复用同样字段）
+        related_user_ids_json = to_json([str(uid) for uid in (payload.relatedUserIds or []) if str(uid).strip()])
+        is_data_center_included_value = 1 if payload.isDataCenterIncluded else 0
         state.db.execute(
             """
-            INSERT INTO clients(id, name, alias, domain, type, intro, stage, color, created_at, updated_at)
-            VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO clients(id, name, alias, domain, type, intro, stage, color, created_at, updated_at,
+                                related_user_ids_json, is_data_center_included)
+            VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 client_id,
@@ -34390,6 +35380,8 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 client_color,
                 timestamp,
                 timestamp,
+                related_user_ids_json,
+                is_data_center_included_value,
             ),
         )
         thread_id = new_id("thread")
@@ -34399,6 +35391,15 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         )
         ensure_standard_client_folders(client_id)
         log_activity("client.create", "client", client_id, payload.model_dump())
+        # 批 3：标 pending，挂 daemon Thread 推送到云端（不阻塞 HTTP 返回）
+        state.db.execute(
+            "UPDATE clients SET sync_status = 'pending', pending_sync_action = 'create' WHERE id = ?",
+            (client_id,),
+        )
+        try:
+            Thread(target=_try_cloud_sync_client, args=(client_id, "create"), daemon=True).start()
+        except Exception as exc:
+            logger.warning("[CLIENT-SYNC] schedule create push failed: %s", exc)
         return build_client_summary(client_id)
 
     @app.put("/api/v1/clients/{client_id}", response_model=ClientSummary)
@@ -34409,10 +35410,14 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         previous_name = str(row["name"] or "").strip()
         client_color = (payload.color or "").strip() or str(row["color"] or "#5B7BFE")
         updated_at = now_iso()
+        # P7：扩展字段
+        related_user_ids_json = to_json([str(uid) for uid in (payload.relatedUserIds or []) if str(uid).strip()])
+        is_data_center_included_value = 1 if payload.isDataCenterIncluded else 0
         state.db.execute(
             """
             UPDATE clients
-            SET name = ?, alias = ?, domain = ?, type = ?, intro = ?, stage = ?, color = ?, updated_at = ?
+            SET name = ?, alias = ?, domain = ?, type = ?, intro = ?, stage = ?, color = ?, updated_at = ?,
+                related_user_ids_json = ?, is_data_center_included = ?
             WHERE id = ?
             """,
             (
@@ -34424,6 +35429,8 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 payload.stage,
                 client_color,
                 updated_at,
+                related_user_ids_json,
+                is_data_center_included_value,
                 client_id,
             ),
         )
@@ -34447,6 +35454,18 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             )
         ensure_standard_client_folders(client_id)
         log_activity("client.update", "client", client_id, payload.model_dump())
+        # 批 3：cloud sync 更新（注意 db.scalar 会强制 int() 转换，cloud_id 是字符串要用 fetchone）
+        cloud_id_row = state.db.fetchone("SELECT cloud_id FROM clients WHERE id = ?", (client_id,))
+        existing_cloud_id = str(cloud_id_row["cloud_id"]).strip() if cloud_id_row and cloud_id_row["cloud_id"] else ""
+        action: Literal["create", "update"] = "update" if existing_cloud_id else "create"
+        state.db.execute(
+            "UPDATE clients SET sync_status = 'pending', pending_sync_action = ? WHERE id = ?",
+            (action, client_id),
+        )
+        try:
+            Thread(target=_try_cloud_sync_client, args=(client_id, action), daemon=True).start()
+        except Exception as exc:
+            logger.warning("[CLIENT-SYNC] schedule update push failed: %s", exc)
         return build_client_summary(client_id)
 
     def _folder_record_from_row(row) -> ClientFolder:
@@ -35934,6 +36953,79 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             "recycledPath": recycled_path,
         }
 
+    @app.get("/api/v1/clients/{client_id}/delete-preview", response_model=ClientDeletePreview)
+    def get_client_delete_preview(client_id: str) -> ClientDeletePreview:
+        """删除前预览:返回会连带删除的内容数量,给前端做二次确认弹窗用.
+
+        因为 clients 表上 ON DELETE CASCADE 太凶,过去用户误删时数据全无 — 这个 preview
+        让用户在按下"永久删除"前清楚看到代价.
+        """
+        row = state.db.fetchone("SELECT name FROM clients WHERE id = ?", (client_id,))
+        if not row:
+            raise HTTPException(status_code=404, detail="Client not found")
+        name = str(row["name"] or client_id)
+
+        def _count(sql: str) -> int:
+            value = state.db.scalar(sql, (client_id,))
+            return int(value or 0)
+
+        thread_count = _count("SELECT COUNT(*) FROM chat_threads WHERE client_id = ?")
+        message_count = int(state.db.scalar(
+            "SELECT COUNT(*) FROM chat_messages m JOIN chat_threads t ON t.id = m.thread_id WHERE t.client_id = ?",
+            (client_id,),
+        ) or 0)
+        document_count = _count("SELECT COUNT(*) FROM documents WHERE client_id = ?")
+        dna_count = _count("SELECT COUNT(*) FROM dna_terms WHERE client_id = ?")
+        goal_count = _count("SELECT COUNT(*) FROM goal_records WHERE client_id = ?")
+        meeting_count = _count("SELECT COUNT(*) FROM meetings WHERE client_id = ?")
+        event_line_count = _count("SELECT COUNT(*) FROM event_lines WHERE primary_client_id = ?")
+        task_count = _count("SELECT COUNT(*) FROM tasks WHERE client_id = ?")
+        is_demo = client_id in DEMO_CLIENT_IDS
+
+        return ClientDeletePreview(
+            clientId=client_id,
+            name=name,
+            threadCount=thread_count,
+            messageCount=message_count,
+            documentCount=document_count,
+            dnaCount=dna_count,
+            goalCount=goal_count,
+            meetingCount=meeting_count,
+            eventLineCount=event_line_count,
+            taskCount=task_count,
+            isDemoClient=is_demo,
+        )
+
+    @app.post("/api/v1/clients/{client_id}/freeze", response_model=ClientSummary)
+    def freeze_client(client_id: str) -> ClientSummary:
+        """全局冷冻一个项目:把所有自动 job/计算/资讯/数据中心更新都跳过它。
+
+        与删除不同:数据完全保留,只是不再参与计算。解冻后立即恢复。
+        """
+        row = state.db.fetchone("SELECT id, name FROM clients WHERE id = ?", (client_id,))
+        if not row:
+            raise HTTPException(status_code=404, detail="Client not found")
+        now = now_iso()
+        state.db.execute(
+            "UPDATE clients SET frozen_at = ? WHERE id = ?",
+            (now, client_id),
+        )
+        log_activity("client.freeze", "client", client_id, {"name": str(row["name"])})
+        return build_client_summary(client_id)
+
+    @app.post("/api/v1/clients/{client_id}/unfreeze", response_model=ClientSummary)
+    def unfreeze_client(client_id: str) -> ClientSummary:
+        """解冻一个项目,让它重新参与所有自动 job/计算/数据中心。"""
+        row = state.db.fetchone("SELECT id, name FROM clients WHERE id = ?", (client_id,))
+        if not row:
+            raise HTTPException(status_code=404, detail="Client not found")
+        state.db.execute(
+            "UPDATE clients SET frozen_at = NULL WHERE id = ?",
+            (client_id,),
+        )
+        log_activity("client.unfreeze", "client", client_id, {"name": str(row["name"])})
+        return build_client_summary(client_id)
+
     @app.delete("/api/v1/clients/{client_id}")
     def delete_client(client_id: str) -> dict[str, bool]:
         row = state.db.fetchone("SELECT name FROM clients WHERE id = ?", (client_id,))
@@ -36839,8 +37931,8 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         """单独触发文档知识→记忆回流。"""
         from app.services.memory_foundation import backfill_document_knowledge_to_memory
         stats = backfill_document_knowledge_to_memory(state.db)
-        # 回流完后刷新所有客户的 notebook
-        clients = state.db.fetchall("SELECT id FROM clients")
+        # 回流完后刷新所有客户的 notebook(跳过冷冻项目,它们不再参与自动计算)
+        clients = state.db.fetchall("SELECT id FROM clients WHERE frozen_at IS NULL")
         refreshed = 0
         for client in clients:
             try:
@@ -38255,6 +39347,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 target_id = str(payload.targetId or client_id).strip() or client_id
                 job_payload: dict[str, object] = {
                     "clientId": client_id,
+                    "clientName": client_summary.name,
                     "targetType": target_type,
                     "targetId": target_id,
                     "seedUrls": seed_urls,
@@ -38726,7 +39819,8 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         previous = get_retrieval_model_settings(state.db)
         next_settings = save_retrieval_model_settings(state.db, payload)
         if retrieval_embedding_signature(previous) != retrieval_embedding_signature(next_settings):
-            client_rows = state.db.fetchall("SELECT id FROM clients", ())
+            # 冷冻项目不参与索引刷新,它们的 embedding signature 留旧值,等解冻后再统一刷
+            client_rows = state.db.fetchall("SELECT id FROM clients WHERE frozen_at IS NULL", ())
             for row in client_rows:
                 state.db.set_setting(f"knowledge.active_embedding_signature:{str(row['id'])}", "")
         return next_settings
@@ -41715,10 +42809,13 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                             writing_skill_md = str(skill_row["distilled_md"])
             except Exception as exc:  # noqa: BLE001
                 logger.warning("[chat] read active_skill / creativity_mode failed: %s", exc)
-            print(f"[MULTIPASS-DEBUG] enter else branch: workflow={workspace_workflow} generation_mode={workspace_generation_mode} multipass_enabled={multipass_enabled} deep_thinking_requested={deep_thinking_requested} writing_skill_chars={len(writing_skill_md)}", flush=True)
+            logger.debug(
+                "[MULTIPASS-DEBUG] enter else branch: workflow=%s generation_mode=%s multipass_enabled=%s deep_thinking_requested=%s writing_skill_chars=%d",
+                workspace_workflow, workspace_generation_mode, multipass_enabled, deep_thinking_requested, len(writing_skill_md),
+            )
 
             if multipass_enabled:
-                print(f"[MULTIPASS-DEBUG] entering multipass block", flush=True)
+                logger.debug("[MULTIPASS-DEBUG] entering multipass block")
                 multipass_state: dict[str, Any] = {
                     "headline": "",
                     "judgment_line": "",
@@ -41878,7 +42975,10 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                             multipass_strategic_pack = fields_pack_mp + "\n\n" + multipass_strategic_pack
                     except Exception as exc:  # noqa: BLE001
                         logger.warning("[multipass] inject fields_pack failed: %s", exc)
-                    print(f"[MULTIPASS-DEBUG] calling generate_multipass_answer, bg_pack_chars={len(multipass_background_pack)}, strategic_pack_chars={len(multipass_strategic_pack)}, full_context_chars={len(open_context)}", flush=True)
+                    logger.debug(
+                        "[MULTIPASS-DEBUG] calling generate_multipass_answer, bg_pack_chars=%d, strategic_pack_chars=%d, full_context_chars=%d",
+                        len(multipass_background_pack), len(multipass_strategic_pack), len(open_context),
+                    )
                     multipass_outcome = generate_multipass_answer(
                         question=prompt_for_context,
                         background_pack=multipass_background_pack,
@@ -41895,7 +42995,10 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                         max_sections=4,
                         section_max_tokens=4500,
                     )
-                    print(f"[MULTIPASS-DEBUG] outcome sections_generated={multipass_outcome.sections_generated} failure_stage={multipass_outcome.failure_stage} llm_attempts={multipass_outcome.llm_attempt_count}", flush=True)
+                    logger.debug(
+                        "[MULTIPASS-DEBUG] outcome sections_generated=%s failure_stage=%s llm_attempts=%s",
+                        multipass_outcome.sections_generated, multipass_outcome.failure_stage, multipass_outcome.llm_attempt_count,
+                    )
                     if multipass_outcome.sections_generated > 0 and multipass_outcome.markdown.strip():
                         structured = state.ai._structured_from_plain_answer(multipass_outcome.markdown)  # noqa: SLF001
                         if not structured.judgment:
@@ -42549,7 +43652,8 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         placeholder_texts = {
             "庆华正在整理背景材料，并组织分析答案……",
             "数据中心主链已就绪，正在组织回答……",
-            "庆华暂时没能完成这次回答。",
+            "庆华暂时没能完成这次回答。",  # legacy 兼容
+            "本次回答未成功生成，可以重试一下。",
         }
         if content in placeholder_texts:
             return False
@@ -42831,7 +43935,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 }
             )
             failure_finalization = finalize_workspace_answer(
-                content="庆华暂时没能完成这次回答。",
+                content="本次回答未成功生成，可以重试一下。",
                 answer_mode="system_failure",
                 failure_reason=user_safe_reason,
                 fallback_presentation_mode="compact_user_answer",
@@ -43179,6 +44283,42 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
     def get_client_analysis_run(client_id: str, run_id: str) -> ClientAnalysisRunRecord:
         build_client_summary(client_id)
         recover_stale_loading_chat_messages(run_id=run_id)
+        # P8：run 自身 stale 收口
+        # recover_stale_loading_chat_messages 只扫 chat_messages.status='loading'；当 chat_message
+        # 已被其它路径标 success/failed 但 analysis_run.status 还卡在 running/queued 时它救不了。
+        # 前端 polling 永远拿 running → hasPendingAnalysisRun=true → queue 里 Q2/Q3 派发不出去
+        # （用户描述的"不跳转就卡"）。这里独立按 updated_at 老化阈值 normalize 成 failed。
+        try:
+            stale_row = state.db.fetchone(
+                "SELECT status, phase, updated_at FROM client_analysis_runs WHERE id = ?",
+                (run_id,),
+            )
+            if stale_row:
+                status_now = str(stale_row["status"] or "")
+                if status_now in {"running", "queued"}:
+                    phase_now = str(stale_row["phase"] or "queued")
+                    threshold = (
+                        STALE_LOADING_CHAT_GENERATING_SECONDS
+                        if phase_now == "generating_long_answer"
+                        else STALE_LOADING_CHAT_QUEUED_SECONDS
+                    )
+                    basis_time = _parse_local_datetime(stale_row["updated_at"], fallback=datetime.now())
+                    age_seconds = max((datetime.now() - basis_time).total_seconds(), 0.0)
+                    if age_seconds >= threshold:
+                        state.db.execute(
+                            """
+                            UPDATE client_analysis_runs
+                            SET status = 'failed', phase = 'failed', progress = 100.0,
+                                progress_floor = 100.0, progress_ceiling = 100.0,
+                                stage_label = '生成中断已收口',
+                                failure_reason = 'run_stale_auto_recovered',
+                                updated_at = ?
+                            WHERE id = ? AND status IN ('running','queued')
+                            """,
+                            (now_iso(), run_id),
+                        )
+        except Exception as exc:
+            logger.warning("[run-stale-recover] failed for run=%s: %s", run_id, exc)
         return fetch_analysis_run_for_client(client_id, run_id)
 
     @app.post("/api/v1/clients/{client_id}/analysis-runs/{run_id}/cancel", response_model=ClientAnalysisRunRecord)
@@ -43749,6 +44889,77 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
     @app.post("/api/v1/clients/{client_id}/documents/from-text", response_model=ClientTextDocumentResponse)
     def create_client_document_from_text(client_id: str, payload: ClientTextDocumentPayload) -> ClientTextDocumentResponse:
         return create_client_text_document(client_id, payload)
+
+    @app.post("/api/v1/clients/{client_id}/documents/ai-action", response_model=DocumentAiActionResponse)
+    def document_ai_action(client_id: str, payload: DocumentAiActionPayload) -> DocumentAiActionResponse:
+        """P9：客户工作台 inline 编辑器 AI 助手 action。
+        接收当前 markdown，按 action 切换 prompt，返回新 markdown。
+        """
+        build_client_summary(client_id)
+        content = (payload.content or "").strip()
+        if not content:
+            raise HTTPException(status_code=400, detail="文档内容为空，无法处理")
+        action = payload.action
+        action_prompts: dict[str, tuple[str, str]] = {
+            "expand": (
+                "你是文档扩写助手。把用户给的 markdown 文档扩写得更详实：把简短的点扩展成完整段落、补充背景与细节、保留原意。"
+                "**严格保持 markdown 格式**——原有的标题层级、列表、引用、表格、加粗、链接都要保留并自然扩展。"
+                "不要添加任何「以下是扩写后的内容」之类的元话语，直接输出扩写后的 markdown 全文。",
+                "请把下面这份文档扩写得更详实，保留 markdown 格式：\n\n",
+            ),
+            "rewrite_pro": (
+                "你是公文改写助手。把用户给的 markdown 改写成更专业、更正式的书面语：保留原意、提升用词精度、统一句式。"
+                "保持原 markdown 格式与结构。不要添加元话语，直接输出改写后的 markdown 全文。",
+                "请把下面这份文档改写成更专业的书面表达：\n\n",
+            ),
+            "rewrite_short": (
+                "你是文档精简助手。把用户给的 markdown 改写得更简洁：删冗余、并短句、保留关键信息。"
+                "保持原 markdown 结构（标题层级、列表）。不要添加元话语，直接输出改写后的 markdown 全文。",
+                "请把下面这份文档精简改写：\n\n",
+            ),
+            "summarize": (
+                "你是文档总结助手。把用户给的 markdown 文档总结成一份精炼版："
+                "顶部一个 ## 标题「核心要点」，然后 3-6 条 bullet 列要点；"
+                "再来一个 ## 标题「关键事实」，列出文档中最重要的事实数据。"
+                "不要添加元话语，直接输出 markdown。",
+                "请总结下面这份文档：\n\n",
+            ),
+        }
+        if action not in action_prompts:
+            raise HTTPException(status_code=400, detail=f"未知 action：{action}")
+        system, prefix = action_prompts[action]
+
+        # 内容长度软上限：12000 字以上截尾，避免触发模型 token 上限
+        if len(content) > 12000:
+            content = content[:12000] + "\n\n（文档过长已截断，仅处理前 12000 字）"
+
+        prompt = prefix + content
+
+        from time import perf_counter as _pc
+        started = _pc()
+        try:
+            result = state.ai._qwen_generate(  # noqa: SLF001
+                prompt=prompt,
+                system_instruction=system,
+                response_schema=None,
+                timeout_seconds=90.0,
+                max_tokens=4500,
+                temperature=0.4 if action in ("expand", "summarize") else 0.3,
+                top_p=0.9,
+            )
+        except Exception as exc:
+            raise HTTPException(status_code=502, detail=f"AI 调用失败：{exc}") from exc
+        duration_ms = (_pc() - started) * 1000
+        new_content = str(result or "").strip()
+        if not new_content:
+            raise HTTPException(status_code=502, detail="AI 返回为空")
+        log_activity(
+            "client.document.ai_action",
+            "client",
+            client_id,
+            {"action": action, "inputChars": len(content), "outputChars": len(new_content), "durationMs": round(duration_ms, 1)},
+        )
+        return DocumentAiActionResponse(content=new_content, action=action, durationMs=round(duration_ms, 1))
 
     @app.post("/api/v1/clients/{client_id}/link-materials/import/start", response_model=LinkMaterialImportRunRecord)
     def start_client_link_material_import(client_id: str, payload: LinkMaterialImportStartPayload) -> LinkMaterialImportRunRecord:
@@ -45010,7 +46221,8 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         if get_cloud_token():
             _pull_cloud_tasks_to_local()
         task_records = fetch_tasks(shared_task_where())
-        clients = [build_client_summary(str(row["id"])) for row in state.db.fetchall("SELECT id FROM clients ORDER BY updated_at DESC")]
+        # 冷冻项目不重新计算 task context — 它们已不参与计算
+        clients = [build_client_summary(str(row["id"])) for row in state.db.fetchall("SELECT id FROM clients WHERE frozen_at IS NULL ORDER BY updated_at DESC")]
         event_lines = list_event_lines()
         project_structures: dict[str, ProjectStructureResponse] = {}
         updated_tasks = 0
@@ -45102,6 +46314,162 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
     @app.post("/api/v1/tasks", response_model=TaskRecord)
     def create_manual_task(payload: TaskPayload) -> TaskRecord:
         return create_task(payload)
+
+    @app.post("/api/v1/tasks/ai-parse", response_model=TaskAiParseResult)
+    def ai_parse_task(payload: TaskAiParsePayload) -> TaskAiParseResult:
+        """智能新建任务 — 把一段自然语言文本变成结构化任务字段。
+
+        失败策略:LLM 调不通 / 超时 / JSON 不合法时,降级返回标题=首句,desc=原文;
+                  让前端把这些塞进 TaskEditorModal 让用户接着改。
+        """
+        text = (payload.text or "").strip()
+        if not text:
+            raise HTTPException(status_code=400, detail="文本不能为空")
+
+        current_date = (payload.currentDate or "").strip() or datetime.now().date().isoformat()
+
+        # 1) 拉当前活跃客户简表(<= 80 条,只取 id + name,够 LLM 做匹配判断)
+        # 冷冻项目排除 — 不让 AI 智能新建任务时把任务推到已冷冻的客户上
+        client_rows = state.db.fetchall(
+            """
+            SELECT id, name FROM clients
+            WHERE frozen_at IS NULL
+            ORDER BY updated_at DESC
+            LIMIT 80
+            """
+        )
+        clients_brief = [
+            {"id": str(row["id"]), "name": str(row["name"] or "").strip()}
+            for row in client_rows
+            if row["id"] and row["name"]
+        ]
+        clients_summary = (
+            "\n".join(f"- {c['name']}" for c in clients_brief)
+            if clients_brief
+            else "(暂无可用客户)"
+        )
+
+        # 2) LLM 调用 — 严格 JSON schema,允许失败兜底
+        schema = {
+            "type": "OBJECT",
+            "properties": {
+                "title": {"type": "STRING"},
+                "desc": {"type": "STRING"},
+                "dueDate": {"type": "STRING"},
+                "dueTime": {"type": "STRING"},
+                "priority": {"type": "STRING"},
+                "clientNameGuess": {"type": "STRING"},
+            },
+        }
+        system_instruction = (
+            "你是任务整理助手。把用户粘贴的自然语言文本转换成一条可执行任务。只返回 JSON。"
+            "严格规则:"
+            "1) title 用 8-20 字精炼概括,必须是动作或事件,不要写成长句。"
+            "2) desc 用 1-3 句话写背景或目标,可以从原文提炼,不要超过 200 字。"
+            "3) dueDate 仅当文本明确给出具体日期或可换算日期(今天/明天/后天/下周X/X月X日)时填 YYYY-MM-DD;否则填空字符串。"
+            "4) dueTime 仅当文本明确给出具体时间(下午2点/10:30/晚上8点)时填 HH:MM (24 小时制);否则填空字符串。"
+            "5) 严禁按语气、紧迫感推断时间。没说就是没说。"
+            "6) priority 默认 normal;只有文本里出现'紧急/救火/今天必须/asap'等强表述才用 high;'有空再说/不急'等用 low。"
+            "7) clientNameGuess 从文本里识别出的客户/组织/机构名(原文出现的那一个),没有就填空字符串。"
+        )
+        prompt = (
+            f"今天日期:{current_date}\n"
+            f"当前组织里在册的客户列表:\n{clients_summary}\n\n"
+            f"用户文本:\n{text}\n\n"
+            "请输出 JSON。"
+        )
+
+        title_fallback = text.splitlines()[0][:40] if text else "新建任务"
+        title = title_fallback
+        desc = ""
+        due_date: str | None = None
+        due_time: str | None = None
+        priority: str = "normal"
+        client_name_guess: str | None = None
+
+        health = state.ai.get_health()
+        if health.provider != "mock" and health.ready:
+            try:
+                result = state.ai._qwen_generate(
+                    prompt=prompt,
+                    system_instruction=system_instruction,
+                    response_schema=schema,
+                    timeout_seconds=22.0,
+                    max_tokens=900,
+                    temperature=0.2,
+                    top_p=0.85,
+                    enable_thinking=False,
+                )
+                if isinstance(result, dict):
+                    raw_title = str(result.get("title") or "").strip()
+                    if raw_title:
+                        title = raw_title[:80]
+                    desc = str(result.get("desc") or "").strip()[:600]
+                    raw_due_date = str(result.get("dueDate") or "").strip()
+                    if re.fullmatch(r"\d{4}-\d{2}-\d{2}", raw_due_date):
+                        due_date = raw_due_date
+                    raw_due_time = str(result.get("dueTime") or "").strip()
+                    if re.fullmatch(r"\d{2}:\d{2}", raw_due_time):
+                        due_time = raw_due_time
+                    raw_priority = str(result.get("priority") or "").strip().lower()
+                    if raw_priority in ("low", "normal", "high"):
+                        priority = raw_priority
+                    raw_client_guess = str(result.get("clientNameGuess") or "").strip()
+                    if raw_client_guess:
+                        client_name_guess = raw_client_guess[:80]
+            except Exception as error:
+                # 兜底:保持 title=首句 / desc=原文;不抛 500,让前端继续走
+                desc = text[:600]
+                if state.system_logger:
+                    state.system_logger.warn(
+                        "task_ai_parse",
+                        f"LLM 解析失败,降级为原文 desc: {error!r}",
+                    )
+        else:
+            # 没有可用 LLM 时:把原文塞 desc,首行做 title,直接返回
+            desc = text[:600]
+
+        # 3) Fuzzy match client name → client_id (top 3)
+        from difflib import SequenceMatcher
+
+        candidates: list[TaskAiParseClientCandidate] = []
+        if client_name_guess and clients_brief:
+            scored: list[tuple[float, dict[str, str]]] = []
+            guess_norm = client_name_guess.strip()
+            for client in clients_brief:
+                name = client["name"]
+                if not name:
+                    continue
+                ratio = SequenceMatcher(None, guess_norm, name).ratio()
+                # 子串包含的奖励:某一方包含另一方,加 0.25
+                if guess_norm in name or name in guess_norm:
+                    ratio = min(1.0, ratio + 0.25)
+                scored.append((ratio, client))
+            scored.sort(key=lambda item: item[0], reverse=True)
+            top = scored[:3]
+            candidates = [
+                TaskAiParseClientCandidate(id=item[1]["id"], name=item[1]["name"], score=round(item[0], 3))
+                for item in top
+            ]
+
+        # 只有最佳匹配 >= 0.55 才认为可信,否则前端字段留空让用户手选
+        client_id: str | None = None
+        client_name: str | None = None
+        if candidates and candidates[0].score >= 0.55:
+            client_id = candidates[0].id
+            client_name = candidates[0].name
+
+        return TaskAiParseResult(
+            title=title,
+            desc=desc,
+            dueDate=due_date,
+            dueTime=due_time,
+            priority=cast(Literal["low", "normal", "high"], priority),
+            clientId=client_id,
+            clientName=client_name,
+            clientCandidates=candidates,
+            rawLlmGuessClientName=client_name_guess,
+        )
 
     @app.patch("/api/v1/tasks/{task_id}", response_model=TaskRecord)
     def update_task(task_id: str, payload: TaskUpdatePayload) -> TaskRecord:
@@ -45736,20 +47104,27 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                     lifecycle_status="deleted",
                 ),
             )
-            state.db.execute("DELETE FROM activity_logs WHERE entity_type = 'task' AND entity_id = ?", (task_id,))
-            state.db.execute("DELETE FROM event_line_activities WHERE source_type = 'task_activity' AND source_id = ?", (task_id,))
-            state.db.execute("DELETE FROM memory_facts WHERE scope_type = 'task' AND scope_id = ?", (task_id,))
-            state.db.execute(
-                """
-                DELETE FROM memory_facts
-                WHERE source_type = 'task'
-                  AND source_id = ?
-                """,
-                (task_id,),
-            )
-            state.db.execute("DELETE FROM growth_signal_events WHERE task_id = ?", (task_id,))
-            state.db.execute("DELETE FROM growth_evidence_records WHERE task_id = ?", (task_id,))
-            state.db.execute("DELETE FROM tasks WHERE id = ?", (task_id,))
+            # Sprint 2 (S2.4 local branch): 7 表 DELETE 包事务. 中途崩了不留 growth/activity 孤儿.
+            state.db.begin_transaction()
+            try:
+                state.db.execute("DELETE FROM activity_logs WHERE entity_type = 'task' AND entity_id = ?", (task_id,))
+                state.db.execute("DELETE FROM event_line_activities WHERE source_type = 'task_activity' AND source_id = ?", (task_id,))
+                state.db.execute("DELETE FROM memory_facts WHERE scope_type = 'task' AND scope_id = ?", (task_id,))
+                state.db.execute(
+                    """
+                    DELETE FROM memory_facts
+                    WHERE source_type = 'task'
+                      AND source_id = ?
+                    """,
+                    (task_id,),
+                )
+                state.db.execute("DELETE FROM growth_signal_events WHERE task_id = ?", (task_id,))
+                state.db.execute("DELETE FROM growth_evidence_records WHERE task_id = ?", (task_id,))
+                state.db.execute("DELETE FROM tasks WHERE id = ?", (task_id,))
+                state.db.commit_transaction()
+            except Exception:
+                state.db.rollback_transaction()
+                raise
             log_activity("task.delete", "task", task_id, {"title": task_title, "eventLineId": event_line_id, "clientId": client_id})
             if event_line_id:
                 refresh_event_line_memory_snapshot(state.db, event_line_id)
@@ -45793,15 +47168,22 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 lifecycle_status="deleted",
             ),
         )
-        state.db.execute("DELETE FROM task_attachments_cloud WHERE task_id IN (?, ?)", (local_task_id, cloud_task_id))
-        state.db.execute("DELETE FROM tasks WHERE id = ? OR cloud_id = ?", (local_task_id, cloud_task_id))
-        state.db.execute("DELETE FROM activity_logs WHERE entity_type = 'task' AND entity_id IN (?, ?)", (local_task_id, cloud_task_id))
-        state.db.execute(
-            "DELETE FROM event_line_activities WHERE source_type = 'task_activity' AND source_id IN (?, ?)",
-            (local_task_id, cloud_task_id),
-        )
-        state.db.execute("DELETE FROM growth_signal_events WHERE task_id IN (?, ?)", (local_task_id, cloud_task_id))
-        state.db.execute("DELETE FROM growth_evidence_records WHERE task_id IN (?, ?)", (local_task_id, cloud_task_id))
+        # Sprint 2 (S2.4 cloud branch): 6 表 DELETE 包事务, 同 local branch 一致.
+        state.db.begin_transaction()
+        try:
+            state.db.execute("DELETE FROM task_attachments_cloud WHERE task_id IN (?, ?)", (local_task_id, cloud_task_id))
+            state.db.execute("DELETE FROM tasks WHERE id = ? OR cloud_id = ?", (local_task_id, cloud_task_id))
+            state.db.execute("DELETE FROM activity_logs WHERE entity_type = 'task' AND entity_id IN (?, ?)", (local_task_id, cloud_task_id))
+            state.db.execute(
+                "DELETE FROM event_line_activities WHERE source_type = 'task_activity' AND source_id IN (?, ?)",
+                (local_task_id, cloud_task_id),
+            )
+            state.db.execute("DELETE FROM growth_signal_events WHERE task_id IN (?, ?)", (local_task_id, cloud_task_id))
+            state.db.execute("DELETE FROM growth_evidence_records WHERE task_id IN (?, ?)", (local_task_id, cloud_task_id))
+            state.db.commit_transaction()
+        except Exception:
+            state.db.rollback_transaction()
+            raise
         _cloud_task_board_cache["data"] = None  # Invalidate cache
         log_activity("task.delete", "task", local_task_id, {})
         _enqueue_workspace_refresh_safe(
@@ -49509,9 +50891,12 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
 
     @app.get("/api/v1/intelligence/work-objects", response_model=list[IntelligenceWorkObjectRecord])
     def list_intelligence_work_objects() -> list[IntelligenceWorkObjectRecord]:
-        """返回所有客户作为情报流的"客户/项目"工作对象。"""
+        """返回所有客户作为情报流的"客户/项目"工作对象。
+
+        全局冷冻的项目(frozen_at IS NOT NULL)不暴露 — 不参与情报抓取/资讯归集。
+        """
         client_rows = state.db.fetchall(
-            "SELECT id, name, intro, stage FROM clients ORDER BY name ASC"
+            "SELECT id, name, intro, stage FROM clients WHERE frozen_at IS NULL ORDER BY name ASC"
         )
         out: list[IntelligenceWorkObjectRecord] = []
         for row in client_rows:
@@ -49531,7 +50916,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
 
     @app.get("/api/v1/intelligence/items", response_model=IntelligenceItemsResponse)
     def list_intelligence_items(
-        contentKind: Literal["profile_completion", "timely_intelligence"] = Query(...),
+        contentKind: Literal["timely_intelligence", "public_opinion"] = Query(...),
         scopeType: str = Query(default="all"),
         scopeId: str | None = Query(default=None),
         workObjectType: str | None = Query(default=None),
@@ -50028,18 +51413,23 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         activeOnly: bool = Query(default=False),
         limit: int = Query(default=20, ge=1, le=100),
     ) -> list[IntelligenceRefreshRunRecord]:
-        stale_threshold = datetime.utcnow() - timedelta(minutes=45)
+        running_stale_threshold = datetime.utcnow() - timedelta(minutes=45)
+        # queued > 30 分钟也视为死队列（worker 没起 / 已被清掉）
+        queued_stale_threshold = datetime.utcnow() - timedelta(minutes=30)
+
         stale_rows = state.db.fetchall(
-            "SELECT id, updated_at FROM intelligence_refresh_runs WHERE status = 'running'"
+            "SELECT id, status, updated_at, created_at FROM intelligence_refresh_runs WHERE status IN ('running','queued')"
         )
         now_ts = _intel_now()
         for stale_row in stale_rows:
+            status = str(stale_row["status"] or "")
             updated_raw = str(stale_row["updated_at"] or "")
             try:
                 updated_at = datetime.fromisoformat(updated_raw.replace("Z", "+00:00")).replace(tzinfo=None)
             except Exception:
                 updated_at = datetime.min
-            if updated_at <= stale_threshold:
+
+            if status == "running" and updated_at <= running_stale_threshold:
                 state.db.execute(
                     """
                     UPDATE intelligence_refresh_runs
@@ -50052,6 +51442,28 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                     """,
                     (now_ts, now_ts, stale_row["id"]),
                 )
+            elif status == "queued":
+                # 看 created_at（queued 期间 updated_at 不变）
+                created_raw = str(stale_row["created_at"] or "")
+                try:
+                    created_at_dt = datetime.fromisoformat(created_raw.replace("Z", "+00:00")).replace(tzinfo=None)
+                except Exception:
+                    created_at_dt = datetime.min
+                if created_at_dt <= queued_stale_threshold:
+                    # 用 failed 状态收口（模型 Literal 只允许 queued/running/completed/failed）
+                    # 通过 stage='queue_stale' 区分这是死队列收口而非真失败
+                    state.db.execute(
+                        """
+                        UPDATE intelligence_refresh_runs
+                        SET status = 'failed',
+                            stage = 'queue_stale',
+                            message = '已排队超过 30 分钟未启动，认为后台 worker 未消费，已自动收口。请重新触发抓取。',
+                            finished_at = COALESCE(finished_at, ?),
+                            updated_at = ?
+                        WHERE id = ? AND status = 'queued'
+                        """,
+                        (now_ts, now_ts, stale_row["id"]),
+                    )
         clauses: list[str] = []
         params: list[object] = []
         if contentKind:
@@ -50108,7 +51520,8 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             row = state.db.fetchone("SELECT id, name FROM clients WHERE id=?", (payload.scopeId,))
             target_rows = [row] if row else []
         elif payload.scopeType == "all":
-            client_rows = state.db.fetchall("SELECT id, name FROM clients ORDER BY name")
+            # 冷冻项目不参与全局资讯供给 — 用户主动暂停的项目不爬取
+            client_rows = state.db.fetchall("SELECT id, name FROM clients WHERE frozen_at IS NULL ORDER BY name")
             target_rows = sorted(
                 client_rows,
                 key=lambda r: (
@@ -50602,7 +52015,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
     def get_source_diagnostics_endpoint(
         scopeType: str = Query(default="all"),
         scopeId: str | None = Query(default=None),
-        contentKind: Literal["profile_completion", "timely_intelligence"] | None = Query(default=None),
+        contentKind: Literal["timely_intelligence", "public_opinion"] | None = Query(default=None),
     ) -> IntelligenceSourceDiagnosticsResponse:
         return IntelligenceSourceDiagnosticsResponse(
             **get_source_diagnostics(
@@ -50617,7 +52030,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
     def get_feedback_diagnostics_endpoint(
         scopeType: str = Query(default="global"),
         scopeId: str | None = Query(default=None),
-        contentKind: Literal["profile_completion", "timely_intelligence"] | None = Query(default=None),
+        contentKind: Literal["timely_intelligence", "public_opinion"] | None = Query(default=None),
     ) -> IntelligenceFeedbackDiagnosticsResponse:
         return IntelligenceFeedbackDiagnosticsResponse(
             **feedback_diagnostics(
@@ -51035,12 +52448,39 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         if not target_name:
             raise HTTPException(status_code=400, detail="未指定监控对象（targetName / clientId / projectModuleId 至少传一个）")
 
-        # 数据中心深度复用：拉别名 / 业务域 / 业务线，让搜索 query 更精准
+        # 数据中心深度复用：拉别名 / 业务域 / 业务线（fallback 用）
         target_ctx = _collect_target_aliases(
             state.db,
             client_id=client_id,
             project_module_id=project_module_id,
         )
+
+        # P7-2 主路径：智能 Query Strategy Engine
+        # — 数据中心信号 → LLM → 30-80 条 query plan
+        # — LLM 失败时自动 fallback 到硬编码模板
+        query_strategy_result: dict[str, Any] = {}
+        query_plans: list[dict[str, Any]] = []
+        strategy_path = "none"
+        if client_id:  # project_module 也会顺着 client 走 strategy
+            try:
+                from app.services.intelligence_query_strategy import generate_query_plan
+                effective_client_id = client_id
+                if not effective_client_id and project_module_id:
+                    pm_row = state.db.fetchone(
+                        "SELECT client_id FROM project_modules WHERE id = ?",
+                        (project_module_id,),
+                    )
+                    effective_client_id = str(pm_row["client_id"]) if pm_row else ""
+                if effective_client_id:
+                    query_strategy_result = generate_query_plan(
+                        state.db, state.ai,
+                        client_id=effective_client_id,
+                        task_type="sentiment",
+                    )
+                    query_plans = query_strategy_result.get("queries") or []
+                    strategy_path = str(query_strategy_result.get("path") or "fallback")
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("[sentiment] query strategy failed: %s", exc)
 
         drafts = fetch_sentiment_candidates(
             target_name,
@@ -51051,6 +52491,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             max_per_query=max_per_query,
             ai_service=state.ai,
             deep_judge_budget=int(body.get("deepJudgeBudget") or 8),
+            query_plans=query_plans if query_plans else None,
         )
         inserted = persist_sentiment_drafts(
             state.db,
@@ -51058,6 +52499,61 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             client_id=client_id,
             project_module_id=project_module_id,
         )
+
+        # 清理 730 天前的旧 item — 避免 2020 年的瓜混进当前画像
+        try:
+            stale_cutoff = (
+                datetime.now(timezone.utc) - timedelta(days=730)
+            ).isoformat()
+            if client_id:
+                state.db.execute(
+                    "DELETE FROM intelligence_items WHERE content_kind='public_opinion' AND client_id = ? AND captured_at < ?",
+                    (client_id, stale_cutoff),
+                )
+            elif project_module_id:
+                state.db.execute(
+                    "DELETE FROM intelligence_items WHERE content_kind='public_opinion' AND project_module_id = ? AND captured_at < ?",
+                    (project_module_id, stale_cutoff),
+                )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("[sentiment] stale cleanup failed: %s", exc)
+
+        # 抓完顺手触发主题重算（失败不阻塞）
+        themes_note = None
+        audit_note = None
+        scope_type = "project_module" if project_module_id else "client"
+        scope_id = project_module_id or client_id or ""
+        try:
+            from app.services.intelligence_theme_cluster import recompute_themes
+            if scope_id:
+                tr = recompute_themes(
+                    state.db,
+                    state.ai,
+                    scope_type=scope_type,
+                    scope_id=scope_id,
+                    target_name=target_name,
+                )
+                if not tr.get("ok"):
+                    themes_note = str(tr.get("reason") or "")
+        except Exception as exc:  # noqa: BLE001
+            themes_note = f"theme_recompute_exception: {exc}"
+
+        # P6 链式：主题重算成功后跑 brand audit（失败不阻塞）
+        if scope_id and themes_note is None:
+            try:
+                from app.services.intelligence_brand_audit import recompute_brand_audit
+                ar = recompute_brand_audit(
+                    state.db,
+                    state.ai,
+                    client_id=client_id,
+                    project_module_id=project_module_id,
+                    target_name=target_name,
+                )
+                if not ar.get("ok"):
+                    audit_note = str(ar.get("reason") or "")
+            except Exception as exc:  # noqa: BLE001
+                audit_note = f"audit_exception: {exc}"
+
         return {
             "targetName": target_name,
             "fetchedCount": len(drafts),
@@ -51065,6 +52561,12 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             "negativeCount": sum(1 for d in drafts if d.sentiment.label == "negative"),
             "neutralCount": sum(1 for d in drafts if d.sentiment.label == "neutral"),
             "positiveCount": sum(1 for d in drafts if d.sentiment.label == "positive"),
+            "themesRecomputeNote": themes_note,
+            "auditRecomputeNote": audit_note,
+            # P7-2 数据中心信号 + query 策略路径回传
+            "queryStrategyPath": strategy_path,
+            "queryCount": len(query_plans),
+            "signalsHealth": query_strategy_result.get("health"),
         }
 
     @app.get("/api/v1/intelligence/sentiment/items")
@@ -51107,6 +52609,636 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             project_module_id=projectModuleId or None,
             within_days=max(1, withinDays),
         )
+
+    # ──────────────────────────────────────────────────────────────────────
+    # 印象主题（P5-A）— 聚类 + 溯源
+    # ──────────────────────────────────────────────────────────────────────
+
+    @app.post("/api/v1/intelligence/sentiment/themes/recompute")
+    def recompute_sentiment_themes_endpoint(payload: dict) -> dict:
+        """强制重算主题。
+
+        payload:
+          - clientId 或 projectModuleId：定位 scope（二选一）
+          - targetName：可选，没传则从 DB 查
+          - withinDays：默认 30
+        """
+        from app.services.intelligence_theme_cluster import recompute_themes
+
+        body = payload or {}
+        client_id = (body.get("clientId") or "").strip() or None
+        project_module_id = (body.get("projectModuleId") or "").strip() or None
+        target_name = (body.get("targetName") or "").strip()
+        within_days = max(1, min(180, int(body.get("withinDays") or 30)))
+
+        if not client_id and not project_module_id:
+            raise HTTPException(status_code=400, detail="clientId / projectModuleId 至少传一个")
+
+        scope_type = "project_module" if project_module_id else "client"
+        scope_id = project_module_id or client_id or ""
+
+        if not target_name:
+            if project_module_id:
+                row = state.db.fetchone(
+                    "SELECT name FROM project_modules WHERE id = ?", (project_module_id,),
+                )
+                target_name = str(row["name"]) if row else ""
+            elif client_id:
+                row = state.db.fetchone(
+                    "SELECT name FROM clients WHERE id = ?", (client_id,),
+                )
+                target_name = str(row["name"]) if row else ""
+
+        return recompute_themes(
+            state.db,
+            state.ai,
+            scope_type=scope_type,
+            scope_id=scope_id,
+            target_name=target_name,
+            within_days=within_days,
+        )
+
+    @app.get("/api/v1/intelligence/sentiment/themes")
+    def list_sentiment_themes_endpoint(
+        clientId: str | None = None,
+        projectModuleId: str | None = None,
+        autoRecompute: bool = True,
+    ) -> dict:
+        """读印象主题。autoRecompute=True 且缓存过期时自动触发重算。"""
+        from app.services.intelligence_theme_cluster import (
+            list_themes,
+            recompute_themes,
+            themes_cache_is_fresh,
+        )
+
+        if not clientId and not projectModuleId:
+            raise HTTPException(status_code=400, detail="clientId / projectModuleId 至少传一个")
+
+        scope_type = "project_module" if projectModuleId else "client"
+        scope_id = projectModuleId or clientId or ""
+
+        recompute_reason: str | None = None
+        if autoRecompute and not themes_cache_is_fresh(
+            state.db, scope_type=scope_type, scope_id=scope_id,
+        ):
+            target_name = ""
+            if projectModuleId:
+                row = state.db.fetchone(
+                    "SELECT name FROM project_modules WHERE id = ?", (projectModuleId,),
+                )
+                target_name = str(row["name"]) if row else ""
+            elif clientId:
+                row = state.db.fetchone(
+                    "SELECT name FROM clients WHERE id = ?", (clientId,),
+                )
+                target_name = str(row["name"]) if row else ""
+            if target_name:
+                result = recompute_themes(
+                    state.db,
+                    state.ai,
+                    scope_type=scope_type,
+                    scope_id=scope_id,
+                    target_name=target_name,
+                )
+                if not result.get("ok"):
+                    recompute_reason = str(result.get("reason") or "")
+
+        themes = list_themes(state.db, scope_type=scope_type, scope_id=scope_id)
+        return {
+            "themes": themes,
+            "total": len(themes),
+            "recomputeNote": recompute_reason,
+        }
+
+    @app.get("/api/v1/intelligence/sentiment/themes/{theme_id}/items")
+    def fetch_theme_items_endpoint(theme_id: str, limit: int = 10) -> dict:
+        """点主题看原话（#4 溯源）。"""
+        from app.services.intelligence_theme_cluster import fetch_theme_items
+
+        result = fetch_theme_items(state.db, theme_id=theme_id, limit=max(1, min(50, limit)))
+        if not result.get("ok"):
+            raise HTTPException(status_code=404, detail=str(result.get("reason") or "未找到主题"))
+        return result
+
+    # ──────────────────────────────────────────────────────────────────────
+    # 定位差异图（P5-B）+ 自我定位编辑
+    # ──────────────────────────────────────────────────────────────────────
+
+    @app.get("/api/v1/intelligence/sentiment/gap")
+    def sentiment_gap_endpoint(
+        clientId: str | None = None,
+        projectModuleId: str | None = None,
+    ) -> dict:
+        """定位差异图：自我定位 vs 公众主题。"""
+        from app.services.intelligence_positioning_gap import compute_gap
+
+        if not clientId and not projectModuleId:
+            raise HTTPException(status_code=400, detail="clientId / projectModuleId 至少传一个")
+
+        # 取 target_name
+        target_name = ""
+        if projectModuleId:
+            row = state.db.fetchone(
+                "SELECT name FROM project_modules WHERE id = ?", (projectModuleId,),
+            )
+            target_name = str(row["name"]) if row else ""
+        elif clientId:
+            row = state.db.fetchone(
+                "SELECT name FROM clients WHERE id = ?", (clientId,),
+            )
+            target_name = str(row["name"]) if row else ""
+
+        return compute_gap(
+            state.db,
+            state.ai,
+            client_id=clientId or None,
+            project_module_id=projectModuleId or None,
+            target_name=target_name,
+        )
+
+    @app.patch("/api/v1/clients/{client_id}/brand-proposition")
+    def update_client_brand_proposition(client_id: str, payload: dict) -> dict:
+        """更新客户自我品牌定位（3-5 个关键词，逗号/顿号分隔）。"""
+        new_value = str((payload or {}).get("brandProposition") or "")[:500]
+
+        row = state.db.fetchone("SELECT id FROM clients WHERE id = ?", (client_id,))
+        if not row:
+            raise HTTPException(status_code=404, detail="客户不存在")
+
+        now_iso = datetime.now(timezone.utc).isoformat()
+        state.db.execute(
+            "UPDATE clients SET brand_proposition = ?, updated_at = ? WHERE id = ?",
+            (new_value, now_iso, client_id),
+        )
+        return {"clientId": client_id, "brandProposition": new_value, "updatedAt": now_iso}
+
+    @app.get("/api/v1/clients/{client_id}/brand-proposition")
+    def get_client_brand_proposition(client_id: str) -> dict:
+        row = state.db.fetchone(
+            "SELECT brand_proposition FROM clients WHERE id = ?", (client_id,),
+        )
+        if not row:
+            raise HTTPException(status_code=404, detail="客户不存在")
+        return {"clientId": client_id, "brandProposition": str(row["brand_proposition"] or "")}
+
+    # ──────────────────────────────────────────────────────────────────────
+    # 品牌印象速读（P6）
+    # ──────────────────────────────────────────────────────────────────────
+
+    @app.get("/api/v1/intelligence/sentiment/strategy-preview")
+    def sentiment_strategy_preview_endpoint(
+        clientId: str | None = None,
+        projectModuleId: str | None = None,
+        taskType: str = "sentiment",
+        forceFallback: bool = False,
+    ) -> dict:
+        """抓取前的预览：数据中心健康度 + 预生成的 query 矩阵。
+
+        用户能看到「我们了解这个客户多少」「这次会搜什么」之后再决定抓不抓。
+        """
+        from app.services.intelligence_query_strategy import generate_query_plan
+
+        if not clientId and not projectModuleId:
+            raise HTTPException(status_code=400, detail="clientId / projectModuleId 至少传一个")
+
+        effective_client_id = clientId or ""
+        if not effective_client_id and projectModuleId:
+            pm_row = state.db.fetchone(
+                "SELECT client_id FROM project_modules WHERE id = ?", (projectModuleId,),
+            )
+            effective_client_id = str(pm_row["client_id"]) if pm_row else ""
+        if not effective_client_id:
+            raise HTTPException(status_code=400, detail="无法定位 client_id")
+
+        return generate_query_plan(
+            state.db, state.ai,
+            client_id=effective_client_id,
+            task_type=taskType if taskType in ("sentiment", "timely") else "sentiment",
+            force_fallback=forceFallback,
+        )
+
+    # ──────────────────────────────────────────────────────────────────────
+    # P13 · 品牌镜子官方语料抓取（复用 run_internet_enrichment）
+    # ──────────────────────────────────────────────────────────────────────
+
+    @app.post("/api/v1/intelligence/brand-mirror/crawl")
+    def trigger_brand_mirror_crawl(payload: dict) -> dict:
+        """触发客户官方渠道整站抓取（异步队列）。
+
+        - 拉客户的 clients.official_channels_json（用户在 UI 配置的官方渠道）
+        - 作为 seed_urls 喂给 run_internet_enrichment
+        - 异步入 knowledge_jobs 队列，job_type='internet_enrichment'
+        - 抓回内容入 documents（content_domain='brand_official_corpus'）
+
+        payload:
+          - clientId: 必填
+          - maxPages: 默认 50
+          - maxDepth: 默认 2
+          - seedUrls: 可选，直接传 URL 列表（不传则从 clients.official_channels_json 拉）
+        """
+        body = payload or {}
+        client_id = (body.get("clientId") or "").strip()
+        if not client_id:
+            raise HTTPException(status_code=400, detail="clientId 必填")
+        client_row = state.db.fetchone(
+            "SELECT name, alias, official_channels_json FROM clients WHERE id = ?",
+            (client_id,),
+        )
+        if not client_row:
+            raise HTTPException(status_code=404, detail="客户不存在")
+        client_name = str(client_row["name"] or "").strip()
+
+        # 优先用传入的 seedUrls；否则从 clients.official_channels_json 拉
+        seed_urls: list[str] = []
+        if isinstance(body.get("seedUrls"), list):
+            seed_urls = [str(u).strip() for u in body["seedUrls"] if str(u).strip()]
+        if not seed_urls:
+            try:
+                channels = from_json(str(client_row["official_channels_json"] or "[]"), [])
+                if isinstance(channels, list):
+                    for c in channels:
+                        if not isinstance(c, dict):
+                            continue
+                        # 仅采纳已确认的渠道，且只用有 URL 的（公众号/微博账号名暂没法当 seed）
+                        status = str(c.get("status") or "")
+                        url = str(c.get("url") or "").strip()
+                        if status in ("user_confirmed", "user_added") and url.startswith("http"):
+                            seed_urls.append(url)
+            except Exception:
+                pass
+
+        max_pages = max(10, min(200, int(body.get("maxPages") or 50)))
+        max_depth = max(1, min(4, int(body.get("maxDepth") or 2)))
+
+        job_payload = {
+            "seedUrls": seed_urls,
+            "seedQueries": [],
+            "gaps": [],
+            "maxPages": max_pages,
+            "maxDepth": max_depth,
+            "reason": "brand_mirror_official_crawl",
+            "targetType": "client",
+            "targetId": client_id,
+            "title": f"{client_name} · 品牌镜子官方语料",
+            "clientName": client_name,
+            # P13 关键：标识这是品牌镜子语料池，不污染数据中心 internet_enrichment
+            "contentDomainOverride": "brand_official_corpus",
+        }
+
+        job = enqueue_knowledge_job(
+            client_id=client_id,
+            job_type="internet_enrichment",
+            payload=job_payload,
+            total_items=max_pages,
+        )
+
+        return {
+            "jobId": job.id,
+            "clientId": client_id,
+            "seedUrls": seed_urls,
+            "seedCount": len(seed_urls),
+            "maxPages": max_pages,
+            "maxDepth": max_depth,
+            "status": "queued",
+        }
+
+    # ──────────────────────────────────────────────────────────────────────
+    # P13-E · 官方网站客观评测 (Lighthouse + 可下载文档扫描)
+    # ──────────────────────────────────────────────────────────────────────
+
+    @app.post("/api/v1/intelligence/brand-mirror/website-audit")
+    def trigger_website_audit(payload: dict) -> dict:
+        """同步跑一次 Lighthouse 评测 → 入库 → 返回快照.
+
+        payload:
+          - clientId: 必填
+          - targetUrl: 必填 (建议传客户官网主域, 例如 https://www.ricifoundation.com/)
+        """
+        body = payload or {}
+        client_id = (body.get("clientId") or "").strip()
+        target_url = (body.get("targetUrl") or "").strip()
+        if not client_id:
+            raise HTTPException(status_code=400, detail="clientId 必填")
+        if not target_url:
+            raise HTTPException(status_code=400, detail="targetUrl 必填")
+        client_row = state.db.fetchone(
+            "SELECT name FROM clients WHERE id = ?", (client_id,),
+        )
+        if not client_row:
+            raise HTTPException(status_code=404, detail="客户不存在")
+
+        from app.services.website_audit import run_website_audit
+
+        try:
+            result = run_website_audit(
+                state.db.conn,
+                client_id=client_id,
+                target_url=target_url,
+            )
+        except Exception as exc:  # noqa: BLE001
+            raise HTTPException(status_code=500, detail=f"网站评测失败: {str(exc)[:300]}")
+
+        return {
+            "snapshotId": result.snapshot_id,
+            "targetUrl": result.target_url,
+            "finalUrl": result.final_url,
+            "scores": result.scores,
+            "mobileFriendly": result.mobile_friendly,
+            "requests": result.requests,
+            "transferKb": result.transfer_kb,
+            "downloadableDocsCount": len(result.downloadable_docs),
+            "downloadableDocs": result.downloadable_docs[:50],
+            "error": result.error,
+            "fetchedAt": result.fetched_at,
+        }
+
+    @app.get("/api/v1/intelligence/brand-mirror/website-audit")
+    def get_latest_website_audit(clientId: str) -> dict:
+        """读最新一次评测快照. 没有则返回 {snapshot: null}."""
+        from app.services.website_audit import latest_website_audit
+
+        client_id = (clientId or "").strip()
+        if not client_id:
+            raise HTTPException(status_code=400, detail="clientId 必填")
+        snapshot = latest_website_audit(state.db.conn, client_id=client_id)
+        return {"snapshot": snapshot}
+
+    # ──────────────────────────────────────────────────────────────────────
+    # P13-E · 公众号 RSSHub 自动收录
+    # ──────────────────────────────────────────────────────────────────────
+
+    @app.post("/api/v1/intelligence/brand-mirror/wechat-ingest")
+    def trigger_wechat_rsshub_ingest(payload: dict) -> dict:
+        """从 RSSHub 拉取公众号文章 → 入官方语料池 (异步队列).
+
+        payload:
+          - clientId: 必填
+          - rssUrl: 必填, 用户自部署的 RSSHub 完整 feed URL,
+              形如 http://your-rsshub-host:1200/wechat/cn/ricifoundation
+          - maxArticles: 默认 50 (RSSHub 单次能返回的最大量, 通常 20-50)
+        """
+        body = payload or {}
+        client_id = (body.get("clientId") or "").strip()
+        rss_url = (body.get("rssUrl") or "").strip()
+        max_articles = int(body.get("maxArticles") or 50)
+        if not client_id:
+            raise HTTPException(status_code=400, detail="clientId 必填")
+        if not rss_url:
+            raise HTTPException(status_code=400, detail="rssUrl 必填")
+        client_row = state.db.fetchone(
+            "SELECT name FROM clients WHERE id = ?", (client_id,),
+        )
+        if not client_row:
+            raise HTTPException(status_code=404, detail="客户不存在")
+        client_name = str(client_row["name"] or "").strip()
+
+        from app.services.wechat_rsshub_ingest import (
+            build_ingest_payload,
+            fetch_rss_feed,
+        )
+
+        try:
+            feed = fetch_rss_feed(rss_url)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+
+        if not feed.items:
+            return {
+                "jobId": None,
+                "clientId": client_id,
+                "rssUrl": rss_url,
+                "rssFeedTitle": feed.feed_title,
+                "itemCount": 0,
+                "status": "no_items",
+                "message": "RSS feed 没有 mp.weixin.qq.com 文章",
+            }
+
+        job_payload = build_ingest_payload(
+            feed=feed,
+            client_id=client_id,
+            client_name=client_name,
+            max_articles=max_articles,
+        )
+        job = enqueue_knowledge_job(
+            client_id=client_id,
+            job_type="internet_enrichment",
+            payload=job_payload,
+            total_items=len(job_payload["seedUrls"]),
+        )
+        return {
+            "jobId": job.id,
+            "clientId": client_id,
+            "rssUrl": rss_url,
+            "rssFeedTitle": feed.feed_title,
+            "itemCount": len(job_payload["seedUrls"]),
+            "status": "queued",
+        }
+
+    @app.post("/api/v1/intelligence/brand-mirror/wechat-sogou-ingest")
+    def trigger_wechat_sogou_ingest(payload: dict) -> dict:
+        """同步跑搜狗微信翻页 → 入官方语料池 (标题+摘要, 不含全文).
+
+        payload:
+          - clientId: 必填
+          - maxPages: 默认 5, 上限 10 (5+ 后 antispider 概率上升)
+          - perPage: 默认 10
+          - extraQueryAliases: 可选, 客户别名列表 (会用 aliases_json 自动补)
+        """
+        body = payload or {}
+        client_id = (body.get("clientId") or "").strip()
+        max_pages = max(1, min(10, int(body.get("maxPages") or 5)))
+        per_page = max(5, min(20, int(body.get("perPage") or 10)))
+        extra_aliases = body.get("extraQueryAliases")
+        if not isinstance(extra_aliases, list):
+            extra_aliases = []
+        if not client_id:
+            raise HTTPException(status_code=400, detail="clientId 必填")
+        client_row = state.db.fetchone(
+            "SELECT name, aliases_json FROM clients WHERE id = ?", (client_id,),
+        )
+        if not client_row:
+            raise HTTPException(status_code=404, detail="客户不存在")
+        client_name = str(client_row["name"] or "").strip()
+        try:
+            stored_aliases = from_json(str(client_row["aliases_json"] or "[]"), [])
+            if isinstance(stored_aliases, list):
+                for alias in stored_aliases:
+                    alias_str = str(alias or "").strip()
+                    if alias_str and alias_str not in extra_aliases:
+                        extra_aliases.append(alias_str)
+        except Exception:
+            pass
+
+        from app.services.wechat_sogou_ingest import run_wechat_sogou_ingest
+
+        try:
+            result = run_wechat_sogou_ingest(
+                state.db,
+                client_id=client_id,
+                client_name=client_name,
+                max_pages=max_pages,
+                per_page=per_page,
+                extra_query_aliases=extra_aliases,
+            )
+        except Exception as exc:  # noqa: BLE001
+            raise HTTPException(status_code=500, detail=f"搜狗微信抓取失败: {str(exc)[:300]}")
+
+        return {
+            "clientId": client_id,
+            "query": result.query,
+            "pagesFetched": result.pages_fetched,
+            "rawResults": result.raw_results,
+            "newDocuments": result.new_documents,
+            "skippedExisting": result.skipped_existing,
+            "skippedOffTopic": result.skipped_off_topic,
+            "documentIds": result.document_ids[:50],
+        }
+
+    # ──────────────────────────────────────────────────────────────────────
+    # P13-D · 品牌镜子 LLM 画像 (corpus + Lighthouse → 五块 + 50 词云)
+    # ──────────────────────────────────────────────────────────────────────
+
+    @app.post("/api/v1/intelligence/brand-mirror/analyze")
+    def trigger_brand_mirror_analysis(payload: dict) -> dict:
+        """同步跑一次品牌画像 (30-90 秒, qwen3-vl:32b).
+
+        前置: 客户必须先跑 /brand-mirror/crawl (官网); 可选 /wechat-sogou-ingest
+        和 /website-audit. 没有 corpus 会 400.
+        """
+        body = payload or {}
+        client_id = (body.get("clientId") or "").strip()
+        if not client_id:
+            raise HTTPException(status_code=400, detail="clientId 必填")
+        client_row = state.db.fetchone(
+            "SELECT name FROM clients WHERE id = ?", (client_id,),
+        )
+        if not client_row:
+            raise HTTPException(status_code=404, detail="客户不存在")
+        client_name = str(client_row["name"] or "").strip()
+
+        from app.services.brand_mirror_analyzer import run_brand_mirror_analysis
+
+        try:
+            snapshot = run_brand_mirror_analysis(
+                state.db, state.ai,
+                client_id=client_id,
+                client_name=client_name,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+        except Exception as exc:  # noqa: BLE001
+            raise HTTPException(status_code=500, detail=f"画像生成失败: {str(exc)[:400]}")
+
+        return {
+            "snapshotId": snapshot.snapshot_id,
+            "clientId": snapshot.client_id,
+            "corpusDocCount": snapshot.corpus_doc_count,
+            "corpusCharCount": snapshot.corpus_char_count,
+            "websiteAuditId": snapshot.website_audit_id,
+            "selfPresentation": snapshot.self_presentation,
+            "blindspots": snapshot.blindspots,
+            "consistency": snapshot.consistency,
+            "mediaCoverage": snapshot.media_coverage,
+            "partners": snapshot.partners,
+            "wordCloud": snapshot.word_cloud,
+            "llmModel": snapshot.llm_model,
+            "error": snapshot.error,
+            "createdAt": snapshot.created_at,
+        }
+
+    @app.get("/api/v1/intelligence/brand-mirror/analyze")
+    def get_latest_brand_mirror_analysis(clientId: str) -> dict:
+        """读最新一次品牌画像 snapshot. 没有则 {snapshot: null}."""
+        from app.services.brand_mirror_analyzer import latest_brand_mirror_snapshot
+
+        client_id = (clientId or "").strip()
+        if not client_id:
+            raise HTTPException(status_code=400, detail="clientId 必填")
+        snapshot = latest_brand_mirror_snapshot(state.db, client_id=client_id)
+        return {"snapshot": snapshot}
+
+    @app.post("/api/v1/intelligence/sentiment/audit/recompute")
+    def recompute_brand_audit_endpoint(payload: dict) -> dict:
+        """强制重算品牌印象速读。"""
+        from app.services.intelligence_brand_audit import recompute_brand_audit
+
+        body = payload or {}
+        client_id = (body.get("clientId") or "").strip() or None
+        project_module_id = (body.get("projectModuleId") or "").strip() or None
+        target_name = (body.get("targetName") or "").strip()
+
+        if not client_id and not project_module_id:
+            raise HTTPException(status_code=400, detail="clientId / projectModuleId 至少传一个")
+        if not target_name:
+            if project_module_id:
+                row = state.db.fetchone(
+                    "SELECT name FROM project_modules WHERE id = ?", (project_module_id,),
+                )
+                target_name = str(row["name"]) if row else ""
+            elif client_id:
+                row = state.db.fetchone(
+                    "SELECT name FROM clients WHERE id = ?", (client_id,),
+                )
+                target_name = str(row["name"]) if row else ""
+        if not target_name:
+            raise HTTPException(status_code=400, detail="未指定监控对象")
+
+        return recompute_brand_audit(
+            state.db, state.ai,
+            client_id=client_id,
+            project_module_id=project_module_id,
+            target_name=target_name,
+        )
+
+    @app.get("/api/v1/intelligence/sentiment/audit")
+    def get_brand_audit_endpoint(
+        clientId: str | None = None,
+        projectModuleId: str | None = None,
+        autoRecompute: bool = True,
+    ) -> dict:
+        """读品牌印象速读。autoRecompute=True 且缓存过期时自动触发重算。"""
+        from app.services.intelligence_brand_audit import (
+            audit_is_fresh,
+            get_audit,
+            recompute_brand_audit,
+        )
+
+        if not clientId and not projectModuleId:
+            raise HTTPException(status_code=400, detail="clientId / projectModuleId 至少传一个")
+
+        scope_type = "project_module" if projectModuleId else "client"
+        scope_id = projectModuleId or clientId or ""
+
+        recompute_reason: str | None = None
+        if autoRecompute and not audit_is_fresh(
+            state.db, scope_type=scope_type, scope_id=scope_id,
+        ):
+            target_name = ""
+            if projectModuleId:
+                row = state.db.fetchone(
+                    "SELECT name FROM project_modules WHERE id = ?", (projectModuleId,),
+                )
+                target_name = str(row["name"]) if row else ""
+            elif clientId:
+                row = state.db.fetchone(
+                    "SELECT name FROM clients WHERE id = ?", (clientId,),
+                )
+                target_name = str(row["name"]) if row else ""
+            if target_name:
+                result = recompute_brand_audit(
+                    state.db, state.ai,
+                    client_id=clientId or None,
+                    project_module_id=projectModuleId or None,
+                    target_name=target_name,
+                )
+                if not result.get("ok"):
+                    recompute_reason = str(result.get("reason") or "")
+
+        audit = get_audit(state.db, scope_type=scope_type, scope_id=scope_id)
+        return {
+            "audit": audit,
+            "recomputeNote": recompute_reason,
+        }
 
     @app.post("/api/v1/intelligence/sentiment/feedback")
     def sentiment_feedback_endpoint(payload: dict) -> dict:

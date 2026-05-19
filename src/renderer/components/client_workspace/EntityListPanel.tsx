@@ -5,7 +5,6 @@ import { getClientEntities, getEntityMergeCandidates, mergeEntityInto } from '..
 
 type EntityListPanelProps = {
   clientId: string;
-  /** 可选：父级控制刷新——比如新文档导入完成后递增触发拉取 */
   refreshKey?: number;
 };
 
@@ -15,13 +14,13 @@ interface TypeMeta {
 }
 
 const TYPE_META: Record<EntityType, TypeMeta> = {
-  person: { label: '人物', tone: 'border-rose-100 bg-rose-50 text-rose-700' },
-  company: { label: '公司', tone: 'border-sky-100 bg-sky-50 text-sky-700' },
-  project: { label: '项目', tone: 'border-indigo-100 bg-indigo-50 text-indigo-700' },
-  product: { label: '产品', tone: 'border-emerald-100 bg-emerald-50 text-emerald-700' },
-  competitor: { label: '竞品', tone: 'border-amber-100 bg-amber-50 text-amber-700' },
-  amount: { label: '金额', tone: 'border-slate-100 bg-slate-50 text-slate-700' },
-  date: { label: '日期', tone: 'border-violet-100 bg-violet-50 text-violet-700' },
+  person: { label: '人物', tone: 'ring-rose-200/70 text-rose-700' },
+  company: { label: '公司', tone: 'ring-sky-200/70 text-sky-700' },
+  project: { label: '项目', tone: 'ring-indigo-200/70 text-indigo-700' },
+  product: { label: '产品', tone: 'ring-emerald-200/70 text-emerald-700' },
+  competitor: { label: '竞品', tone: 'ring-amber-200/70 text-amber-700' },
+  amount: { label: '金额', tone: 'ring-gray-200/70 text-gray-700' },
+  date: { label: '日期', tone: 'ring-violet-200/70 text-violet-700' },
 };
 
 const TYPE_ORDER: EntityType[] = [
@@ -124,66 +123,67 @@ export function EntityListPanel({ clientId, refreshKey = 0 }: EntityListPanelPro
   }
 
   return (
-    <div className="space-y-3 rounded-3xl border border-slate-100 bg-white p-4">
+    <div className="space-y-4 rounded-2xl border border-gray-100 bg-white p-5">
       <div className="flex items-center justify-between gap-2">
-        <p className="text-[12px] font-black text-slate-700">识别出的实体</p>
-        <div className="flex items-center gap-1.5">
-          <span className="rounded-full bg-slate-100 px-2 py-0.5 text-[10px] font-bold text-slate-500">
-            {entities.length} 个
-          </span>
-          {candidates.length > 0 && (
-            <button
-              type="button"
-              className="rounded-full bg-amber-100 px-2 py-0.5 text-[10px] font-bold text-amber-700 hover:bg-amber-200"
-              onClick={() => setCandidatesOpen((v) => !v)}
-              title="发现可能是同一实体的相似名（如「张总」和「张总监」）"
-            >
-              {candidatesOpen ? '收起' : `${candidates.length} 个疑似重复`}
-            </button>
-          )}
+        <div>
+          <div className="text-[9px] font-semibold uppercase tracking-[0.18em] text-gray-400">
+            Identified Entities
+          </div>
+          <div className="mt-0.5 text-[13px] font-medium tracking-tight text-gray-800">
+            识别出的实体 <span className="ml-1 text-gray-400">{entities.length}</span>
+          </div>
         </div>
+        {candidates.length > 0 && (
+          <button
+            type="button"
+            className="rounded-full px-2.5 py-1 text-[10px] font-medium text-amber-700 ring-1 ring-inset ring-amber-200 hover:bg-amber-50/70 transition-colors"
+            onClick={() => setCandidatesOpen((v) => !v)}
+            title="发现可能是同一实体的相似名（如「张总」和「张总监」）"
+          >
+            {candidatesOpen ? '收起' : `${candidates.length} 个疑似重复`}
+          </button>
+        )}
       </div>
 
       {candidatesOpen && candidates.length > 0 && (
-        <div className="space-y-1.5 rounded-2xl border border-amber-100 bg-amber-50/70 px-3 py-2">
-          <p className="text-[10px] font-bold text-amber-700">疑似重复实体（点击合并方向）</p>
+        <div className="space-y-2 rounded-xl bg-amber-50/40 px-3 py-2.5 ring-1 ring-inset ring-amber-100">
+          <p className="text-[9px] font-semibold uppercase tracking-[0.16em] text-amber-700">
+            疑似重复实体 · 选择保留方向
+          </p>
           {candidates.map((c) => {
-            // 默认推荐：mention_count 更高的一方作为 surviving
             const aIsBetter = c.mentionCountA >= c.mentionCountB;
             return (
               <div
                 key={`${c.entityAId}-${c.entityBId}`}
-                className="rounded-lg bg-white px-2.5 py-1.5"
+                className="rounded-lg bg-white px-3 py-2 ring-1 ring-inset ring-gray-100"
               >
-                <div className="flex items-center justify-between gap-2">
-                  <p className="text-[10px] font-bold text-slate-500">
-                    {c.entityType} · 相似度 {Math.round(c.similarity * 100)}% · {c.reason}
-                  </p>
-                </div>
-                <div className="mt-1 grid grid-cols-2 gap-1">
+                <p className="text-[10px] font-medium text-gray-500">
+                  {c.entityType} · 相似度 {Math.round(c.similarity * 100)}% · {c.reason}
+                </p>
+                <div className="mt-1.5 grid grid-cols-2 gap-1.5">
                   <button
                     type="button"
-                    className={`rounded-md px-2 py-1 text-[10px] font-bold ${
+                    className={`rounded-md px-2 py-1 text-[10.5px] font-medium transition-colors ${
                       aIsBetter
-                        ? 'bg-emerald-100 text-emerald-700 hover:bg-emerald-200'
-                        : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+                        ? 'bg-emerald-50 text-emerald-700 ring-1 ring-inset ring-emerald-200 hover:bg-emerald-100/60'
+                        : 'bg-white text-gray-600 ring-1 ring-inset ring-gray-200 hover:bg-gray-50'
                     }`}
                     onClick={() => void handleMerge(c.entityAId, c.entityBId, c.nameA, c.nameB)}
                     title={`保留"${c.nameA}"，把"${c.nameB}"的所有提及/关系合进来`}
                   >
-                    保留 {c.nameA} ({c.mentionCountA})
+                    保留 {c.nameA} <span className="opacity-60">({c.mentionCountA})</span>
                   </button>
                   <button
                     type="button"
-                    className={`rounded-md px-2 py-1 text-[10px] font-bold ${
+                    className={`rounded-md px-2 py-1 text-[10.5px] font-medium transition-colors ${
                       !aIsBetter
-                        ? 'bg-emerald-100 text-emerald-700 hover:bg-emerald-200'
-                        : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+                        ? 'bg-emerald-50 text-emerald-700 ring-1 ring-inset ring-emerald-200 hover:bg-emerald-100/60'
+                        : 'bg-white text-gray-600 ring-1 ring-inset ring-gray-200 hover:bg-gray-50'
                     }`}
                     onClick={() => void handleMerge(c.entityBId, c.entityAId, c.nameB, c.nameA)}
                     title={`保留"${c.nameB}"，把"${c.nameA}"的所有提及/关系合进来`}
                   >
-                    保留 {c.nameB} ({c.mentionCountB})
+                    保留 {c.nameB} <span className="opacity-60">({c.mentionCountB})</span>
                   </button>
                 </div>
               </div>
@@ -193,15 +193,15 @@ export function EntityListPanel({ clientId, refreshKey = 0 }: EntityListPanelPro
       )}
 
       {loading && entities.length === 0 && (
-        <p className="text-[11px] font-semibold text-slate-400">加载中…</p>
+        <p className="text-[11px] font-medium text-gray-400">加载中…</p>
       )}
 
       {error && (
-        <p className="text-[11px] font-semibold text-rose-600">{error}</p>
+        <p className="text-[11px] font-medium text-rose-600">{error}</p>
       )}
 
       {!loading && !error && entities.length === 0 && (
-        <p className="text-[11px] font-semibold leading-5 text-slate-400">
+        <p className="text-[11px] font-medium leading-5 text-gray-400">
           这位客户暂时没有识别出的实体。导入更多资料后会自动出现。
         </p>
       )}
@@ -213,22 +213,22 @@ export function EntityListPanel({ clientId, refreshKey = 0 }: EntityListPanelPro
         return (
           <div key={type} className="space-y-1.5">
             <div className="flex items-center gap-2">
-              <span className={`rounded-full border px-2 py-0.5 text-[10px] font-black ${meta.tone}`}>
+              <span className={`rounded-full px-2 py-[2px] text-[9.5px] font-semibold uppercase tracking-[0.12em] ring-1 ring-inset ${meta.tone}`}>
                 {meta.label}
               </span>
-              <span className="text-[10px] font-bold text-slate-400">{list.length}</span>
+              <span className="text-[10px] font-medium text-gray-400">{list.length}</span>
             </div>
-            <ul className="space-y-1">
-              {list.map((entity) => (
+            <ul className="divide-y divide-gray-100 overflow-hidden rounded-xl ring-1 ring-inset ring-gray-100">
+              {list.map((entity, idx) => (
                 <li
                   key={entity.id}
-                  className="flex items-center justify-between gap-2 rounded-xl bg-slate-50 px-3 py-1.5"
+                  className={`flex items-center justify-between gap-2 px-3 py-1.5 ${idx % 2 === 1 ? 'bg-[#FAFAFA]' : 'bg-white'}`}
                   title={`置信度 ${(entity.confidence * 100).toFixed(0)}% · 最近 ${formatRelative(entity.lastSeenAt)}`}
                 >
-                  <span className="truncate text-[12px] font-bold text-slate-800">
+                  <span className="truncate text-[12px] font-medium text-gray-800">
                     {entity.displayName}
                   </span>
-                  <span className="shrink-0 text-[10px] font-bold text-slate-400">
+                  <span className="shrink-0 text-[10px] font-medium text-gray-400">
                     {entity.mentionCount} 次 · {formatRelative(entity.lastSeenAt)}
                   </span>
                 </li>

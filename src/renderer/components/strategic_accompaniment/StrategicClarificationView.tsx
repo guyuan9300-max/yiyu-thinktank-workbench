@@ -25,7 +25,7 @@ import {
   Mic, Type, ExternalLink, ChevronDown, FileSearch, Briefcase,
   Sparkles, MessageCircle, Building2, RefreshCw, Database, GitBranch,
   Compass, Network, History, Handshake, AlertTriangle, ArrowRight,
-  UploadCloud,
+  UploadCloud, ClipboardCheck, X,
 } from 'lucide-react';
 import {
   getClientClarificationContext,
@@ -35,6 +35,19 @@ import {
   listClientNarrativeClarifications,
   submitClientNarrativeClarification,
   regenerateClientNarrative,
+  getNarrativeStaleStatus,
+  clearNarrativeStale,
+  getMeetingActionItems,
+  getNextSteps,
+  getNextStepBackground,
+  dismissUnifiedTodo,
+  logSuggestionAction,
+  getSuggestionLog,
+  removeSuggestionLogEntry,
+  type MeetingActionItem,
+  type NextStepItem,
+  type SuggestionLogEntry,
+  type SuggestionAction,
   type ClarificationContext,
   type ClarificationEventLine,
   type ClarificationTimelineItem,
@@ -56,6 +69,8 @@ interface StrategicClarificationViewProps {
   selectedClientId: string;
   onClientChange: (id: string) => void;
   flash?: (level: 'success' | 'error' | 'info', message: string) => void;
+  /** UnifiedTodoSection 里点 → 时触发, 由 App 接住打开原任务编辑器并预填. */
+  onPromoteTodo?: (todo: import('../../lib/api').UnifiedTodo) => void;
 }
 
 type Confidence = 'high' | 'medium' | 'low';
@@ -71,6 +86,7 @@ export function StrategicClarificationView({
   selectedClientId,
   onClientChange,
   flash,
+  onPromoteTodo,
 }: StrategicClarificationViewProps) {
   const [narrative, setNarrative] = useState<ClientNarrative | null>(null);
   const [clarifications, setClarifications] = useState<NarrativeClarification[]>([]);
@@ -80,7 +96,12 @@ export function StrategicClarificationView({
   const [regenerating, setRegenerating] = useState(false);
   const [refreshTodoKey, setRefreshTodoKey] = useState(0);
 
-  const loadAll = useCallback(async (clientId: string) => {
+  // S4.2 fix: 切客户竞态 — 之前 mounted flag 只在 .then() 里检查, 但 loadAll 内部的 setState
+  // 已经发生(setNarrative/setClarifications/setCtx 都在 try 里直接调用), flag 形同虚设.
+  // 改成: 把 mounted check 推到每个 setState 之前. 切客户 → cleanup mounted=false →
+  // 旧请求即使返回, 也不会再 setState 覆盖新客户的数据.
+  const loadAll = useCallback(async (clientId: string, isMounted: () => boolean) => {
+    if (!isMounted()) return;
     setLoading(true);
     setError(null);
     try {
@@ -89,16 +110,18 @@ export function StrategicClarificationView({
         listClientNarrativeClarifications(clientId),
         getClientClarificationContext(clientId).catch(() => null),
       ]);
+      if (!isMounted()) return;  // 旧请求返回时新客户已切, 丢弃
       setNarrative(n);
       setClarifications(c.clarifications);
       setCtx(x);
     } catch (err) {
+      if (!isMounted()) return;
       setError(err instanceof Error ? err.message : '加载失败');
       setNarrative(null);
       setClarifications([]);
       setCtx(null);
     } finally {
-      setLoading(false);
+      if (isMounted()) setLoading(false);
     }
   }, []);
 
@@ -110,9 +133,44 @@ export function StrategicClarificationView({
       return;
     }
     let mounted = true;
-    void loadAll(selectedClientId).then(() => { if (!mounted) return; });
+    const isMounted = () => mounted;
+    void loadAll(selectedClientId, isMounted);
     return () => { mounted = false; };
   }, [selectedClientId, loadAll]);
+
+  // ingest 后 narrative 自动重生:
+  //   1. load narrative 完成后, 调 stale-status
+  //   2. 若 isStale (有新文档进, 但 narrative 是旧的) → 后台触发 regenerate, 不阻塞 UI
+  //   3. regen 成功后清掉 stale 标记 + 替换前端 narrative
+  // 不在 loadAll 里做, 因为 loadAll 由切客户/手动 reload 触发, 这里要等 narrative 加载好.
+  useEffect(() => {
+    if (!selectedClientId || !narrative || regenerating) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const stale = await getNarrativeStaleStatus(selectedClientId);
+        if (cancelled || !stale.isStale) return;
+        flash?.('info', `检测到新材料 (${stale.lastDocTitle || '新文档'}), 正在后台更新洞察…`);
+        const fresh = await regenerateClientNarrative(selectedClientId, {
+          trigger: 'auto_after_ingest',
+          force: true,
+        });
+        if (cancelled) return;
+        setNarrative(fresh);
+        try {
+          const c = await listClientNarrativeClarifications(selectedClientId);
+          if (!cancelled) setClarifications(c.clarifications);
+        } catch { /* 澄清拉失败不影响 narrative 更新 */ }
+        await clearNarrativeStale(selectedClientId).catch(() => {});
+        if (!cancelled) flash?.('success', `已自动结合新材料生成 v${fresh.rev}`);
+      } catch (err) {
+        // 静默失败 — 自动逻辑不应打扰用户; 手动"重新生成"按钮仍然可用
+        // eslint-disable-next-line no-console
+        console.warn('[narrative auto-regen] skip', err);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [selectedClientId, narrative?.id, regenerating, flash]);
 
   const handleClarify = async (dimension: NarrativeDimensionKey, answer: string, question?: string) => {
     if (!selectedClientId || !answer.trim()) return;
@@ -205,6 +263,8 @@ export function StrategicClarificationView({
           regenerating={regenerating}
           clientName={clientOptions.find((c) => c.id === selectedClientId)?.name ?? ''}
           refreshTodoKey={refreshTodoKey}
+          onPromoteTodo={onPromoteTodo}
+          flash={flash}
         />
       )}
 
@@ -252,7 +312,7 @@ const DIMENSION_META: Record<NarrativeDimensionKey, {
   business_intro: { label: '业务介绍',     icon: Briefcase,     hint: '客户机构内含项目逐个详介' },
   people:         { label: '关键人物',     icon: Network,       hint: '益语方 + 客户方 + 每个项目对应角色' },
   timeline:       { label: '时间线',       icon: History,       hint: '合作里程碑 (起点→转折→现状)' },
-  next_steps:     { label: '承诺与下一步', icon: ArrowRight,    hint: '已有承诺 + 顾问推荐的下一步' },
+  next_steps:     { label: '本阶段战略思路', icon: ArrowRight,    hint: '战略层 / 关系层 / 风险对冲 — 给方向, 不列条目(看右侧"下一步要做什么")' },
   // 兼容旧 rev (废弃但仍可能从云端拿到)
   history:        { label: '来龙去脉 (旧)',     icon: History,       hint: '已废弃, 见时间线' },
   commitments:    { label: '承诺网 (旧)',       icon: Handshake,     hint: '已废弃, 见承诺与下一步' },
@@ -381,6 +441,8 @@ function NarrativePanel({
   regenerating,
   clientName,
   refreshTodoKey,
+  onPromoteTodo,
+  flash,
 }: {
   narrative: ClientNarrative;
   clarifications: NarrativeClarification[];
@@ -389,12 +451,16 @@ function NarrativePanel({
   regenerating: boolean;
   clientName: string;
   refreshTodoKey: number;
+  onPromoteTodo?: (todo: import('../../lib/api').UnifiedTodo) => void;
+  flash?: (level: 'success' | 'error' | 'info', message: string) => void;
 }) {
   const dimsByKey = new Map<NarrativeDimensionKey, NarrativeDimensionRecord>(
     narrative.dimensions.map((d) => [d.dimension, d]),
   );
   const pending = clarifications.filter((c) => c.status === 'pending');
   const applied = clarifications.filter((c) => c.status === 'applied');
+  // 本地刷新 key — 用户在主区块点 → / ✓ / ✗ 或在日志卡点"找回" 后, 主区块跟日志卡都重拉
+  const [localRefreshKey, setLocalRefreshKey] = useState(0);
   // 真生成: ai_doubao (云端) / backend_local_ai (本地, Plan A); 其它带 stub_ 前缀或空都视为降级
   const isStub = !narrative.generator
     || narrative.generator.startsWith('stub')
@@ -450,7 +516,17 @@ function NarrativePanel({
             </button>
           </div>
         </section>
-        <UnifiedTodoSection key={refreshTodoKey} clientId={narrative.clientId} />
+        <MeetingActionItemsCard
+          clientId={narrative.clientId}
+          onPromote={onPromoteTodo}
+          refreshKey={refreshTodoKey}
+          onLogChange={() => setLocalRefreshKey((k) => k + 1)}
+        />
+        <SuggestionLogCard
+          clientId={narrative.clientId}
+          refreshKey={localRefreshKey}
+          onChange={() => setLocalRefreshKey((k) => k + 1)}
+        />
         <PendingClarificationsCard pending={pending} />
         <AppliedClarificationsCard applied={applied} />
       </div>
@@ -523,7 +599,10 @@ function NarrativeDimensionCard({
         {dim.narrative
           ? (dim.dimension === 'business_intro'
               ? <BusinessIntroSegmented text={dim.narrative} />
-              : <span className="whitespace-pre-wrap">{dim.narrative}</span>)
+              : <span className="whitespace-pre-wrap">{
+                  // 兜底: 部分 narrative LLM 偶尔输出 <br>/<br/>, 转成真换行
+                  dim.narrative.replace(/<br\s*\/?>/gi, '\n')
+                }</span>)
           : <span className="text-slate-400">⏳ AI 暂未生成此段</span>}
       </div>
 
@@ -583,21 +662,8 @@ function NarrativeDimensionCard({
         </ul>
       )}
 
-      {/* 历史澄清贡献 */}
-      {appliedClarifications.length > 0 && (
-        <div className="mt-2 pt-2 border-t border-slate-100">
-          <div className="text-[10px] text-slate-400 uppercase tracking-wide mb-1">共同编织</div>
-          <ul className="space-y-1">
-            {appliedClarifications.slice(0, 3).map((c) => (
-              <li key={c.id} className="text-[11px] text-slate-600">
-                <span className="font-semibold text-slate-700">{c.answeredByDisplayName}</span>
-                <span className="text-slate-400"> {c.answeredAt.split('T')[0]}</span>
-                <span className="text-slate-500"> · {c.answer.slice(0, 80)}{c.answer.length > 80 ? '...' : ''}</span>
-              </li>
-            ))}
-          </ul>
-        </div>
-      )}
+      {/* 历史澄清贡献已迁移到右侧"共同编织"统一日志面板 (AppliedClarificationsCard),
+          避免每个维度卡片都重复一份, 修改多了左侧就臃肿. */}
 
       {/* 澄清输入 */}
       <div className="mt-3 pt-3 border-t border-slate-100">
@@ -652,6 +718,326 @@ function NarrativeDimensionCard({
   );
 }
 
+const KIND_META: Record<NextStepItem['kind'], { label: string; bg: string; text: string }> = {
+  meeting:         { label: '会议',   bg: 'bg-violet-100',  text: 'text-violet-700' },
+  commitment:      { label: '承诺',   bg: 'bg-blue-100',    text: 'text-blue-700' },
+  task:            { label: '任务',   bg: 'bg-amber-100',   text: 'text-amber-700' },
+  meeting_action:  { label: '会议待办', bg: 'bg-emerald-100', text: 'text-emerald-700' },
+};
+
+function MeetingActionItemsCard({
+  clientId,
+  onPromote,
+  refreshKey,
+  onLogChange,
+}: {
+  clientId: string;
+  onPromote?: (todo: import('../../lib/api').UnifiedTodo) => void;
+  refreshKey?: number;
+  onLogChange?: () => void;
+}) {
+  const [items, setItems] = useState<NextStepItem[]>([]);
+  const [loading, setLoading] = useState(false);
+
+  useEffect(() => {
+    let alive = true;
+    if (!clientId) return;
+    setLoading(true);
+    getNextSteps(clientId)
+      .then((d) => { if (alive) setItems(d.items || []); })
+      .catch(() => { if (alive) setItems([]); })
+      .finally(() => { if (alive) setLoading(false); });
+    return () => { alive = false; };
+  }, [clientId, refreshKey]);
+
+  const writeLog = async (it: NextStepItem, action: SuggestionAction) => {
+    try {
+      await logSuggestionAction(clientId, {
+        fingerprint: it.fingerprint,
+        action,
+        actor: it.actor,
+        suggestionText: it.text,
+        sourceDocTitle: '',
+        sourceDocId: '',
+      });
+      // 老 dismiss endpoint 兼容: commitment/task/action 类同时落 status=cancelled/done
+      // (这样 commitments 表里的旧建议不会通过 unified-todos 老路径再次回潮)
+      if (it.rawId && (it.kind === 'commitment' || it.kind === 'task' || it.kind === 'meeting_action')) {
+        try {
+          const legacyAction = action === 'completed' ? 'complete' : 'cancel';
+          await dismissUnifiedTodo(clientId, it.rawId, legacyAction);
+        } catch { /* legacy endpoint 失败不阻塞 */ }
+      }
+    } catch { /* suggestion_log 写失败也不阻塞 UI */ }
+    setItems((prev) => prev.filter((x) => x.fingerprint !== it.fingerprint));
+    onLogChange?.();
+  };
+
+  const handlePromote = async (it: NextStepItem) => {
+    if (!onPromote) return;
+    const firstActor = (it.actor || '').split(',')[0]?.trim() || '';
+    // 拿 LLM 背景说明 (列表加载时已后台预生成, 一般是 cache 命中, 体感瞬时)
+    // cache miss 时也最多 2-3s, 不阻塞 fallback (拿不到就空背景)
+    let description = '';
+    let sourceLabel = '';
+    try {
+      const bg = await getNextStepBackground(clientId, {
+        fingerprint: it.fingerprint,
+        kind: it.kind,
+        actor: it.actor,
+        text: it.text,
+      });
+      description = bg.background || '';
+      sourceLabel = bg.sourceLabel || '';
+    } catch { /* 失败也继续, 描述为空 */ }
+    if (description && sourceLabel) {
+      description = `${description}\n\n— 来源: 《${sourceLabel}》`;
+    }
+    const fakeTodo: import('../../lib/api').UnifiedTodo = {
+      id: it.rawId || `meeting:${it.fingerprint}`,
+      source: it.kind === 'meeting' ? 'meeting_action' : (it.kind as 'task' | 'commitment' | 'meeting_action'),
+      title: it.text,
+      owner: firstActor,
+      due_date: it.dueDate || '',
+      status: 'pending',
+      direction: '下一步',
+      related_to: '',
+      raw_id: it.rawId,
+      severity: it.severity,
+      description,
+    };
+    onPromote(fakeTodo);
+    await writeLog(it, 'promoted');
+  };
+
+  if (loading) {
+    return (
+      <section className="rounded-2xl border border-slate-100 bg-slate-50/40 px-4 py-3">
+        <div className="text-[11px] text-slate-400">加载下一步...</div>
+      </section>
+    );
+  }
+  if (items.length === 0) {
+    return (
+      <section className="rounded-2xl border border-violet-100 bg-violet-50/40 px-4 py-3">
+        <div className="flex items-center gap-2 mb-1">
+          <ClipboardCheck size={13} className="text-violet-600" />
+          <h3 className="text-[12px] font-bold text-violet-800">下一步要做什么</h3>
+        </div>
+        <div className="text-[11px] text-slate-500">
+          暂无新的建议 — 上传新会议纪要或点下方"推荐历史"找回。
+        </div>
+      </section>
+    );
+  }
+
+  return (
+    <section className="rounded-2xl border border-violet-100 bg-violet-50/40 px-4 py-3">
+      <div className="flex items-center gap-2 mb-2">
+        <ClipboardCheck size={13} className="text-violet-600" />
+        <h3 className="text-[12px] font-bold text-violet-800">下一步要做什么</h3>
+        <span className="text-[10px] text-violet-700 bg-violet-100 rounded-full px-2 py-0.5 font-bold">
+          {items.length}
+        </span>
+      </div>
+      <div className="space-y-1.5 max-h-[460px] overflow-y-auto pr-0.5">
+        {items.map((it) => (
+          <ActionRow
+            key={it.fingerprint}
+            item={it}
+            onPromote={onPromote ? () => handlePromote(it) : undefined}
+            onComplete={() => writeLog(it, 'completed')}
+            onDismiss={() => writeLog(it, 'dismissed')}
+          />
+        ))}
+      </div>
+    </section>
+  );
+}
+
+function ActionRow({
+  item,
+  onPromote,
+  onComplete,
+  onDismiss,
+}: {
+  item: NextStepItem;
+  onPromote?: () => void;
+  onComplete?: () => void;
+  onDismiss?: () => void;
+}) {
+  const meta = KIND_META[item.kind] ?? KIND_META.meeting;
+  return (
+    <div className="rounded-xl border border-slate-100 bg-white px-3 py-2.5 hover:border-violet-200 transition-colors">
+      {/* 第一行: 左 kind chip + 右 三按钮 */}
+      <div className="flex items-center justify-between gap-2 mb-1.5">
+        <span className={`text-[10px] font-bold ${meta.text} ${meta.bg} rounded px-1.5 py-0.5`}>
+          {meta.label}
+        </span>
+        <div className="flex items-center gap-1">
+          {onPromote && (
+            <button
+              type="button"
+              onClick={onPromote}
+              title="制定任务"
+              className="inline-flex items-center justify-center w-6 h-6 rounded-full text-violet-600 hover:bg-violet-100 hover:text-violet-800"
+            >
+              <ArrowRight size={13} />
+            </button>
+          )}
+          {onComplete && (
+            <button
+              type="button"
+              onClick={onComplete}
+              title="已完成"
+              className="inline-flex items-center justify-center w-6 h-6 rounded-full text-emerald-600 hover:bg-emerald-100"
+            >
+              <CheckCircle size={12} />
+            </button>
+          )}
+          {onDismiss && (
+            <button
+              type="button"
+              onClick={onDismiss}
+              title="删除"
+              className="inline-flex items-center justify-center w-6 h-6 rounded-full text-slate-400 hover:bg-rose-100 hover:text-rose-600"
+            >
+              <X size={13} />
+            </button>
+          )}
+        </div>
+      </div>
+
+      {/* 第二行: 内容 */}
+      <p className="text-[13px] text-slate-800 leading-snug mb-2">{item.text}</p>
+
+      {/* 第三行: @人 · 截止日期 (强调) */}
+      <div className="flex items-center gap-2 text-[11px]">
+        <span className="font-bold text-slate-700">
+          @{item.actor || '未指定'}
+        </span>
+        {item.dueDate && (
+          <>
+            <span className="text-slate-300">·</span>
+            <span className="font-bold text-rose-600">
+              截止 {item.dueDate}
+            </span>
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function SuggestionLogCard({
+  clientId,
+  refreshKey,
+  onChange,
+}: {
+  clientId: string;
+  refreshKey: number;
+  onChange: () => void;
+}) {
+  const [log, setLog] = useState<{ promoted: SuggestionLogEntry[]; completed: SuggestionLogEntry[]; dismissed: SuggestionLogEntry[] }>(
+    { promoted: [], completed: [], dismissed: [] },
+  );
+  const [tab, setTab] = useState<SuggestionAction>('dismissed');
+  const [open, setOpen] = useState(false);
+
+  useEffect(() => {
+    if (!clientId) return;
+    let alive = true;
+    getSuggestionLog(clientId).then((d) => {
+      if (!alive) return;
+      setLog({ promoted: d.promoted || [], completed: d.completed || [], dismissed: d.dismissed || [] });
+    }).catch(() => {});
+    return () => { alive = false; };
+  }, [clientId, refreshKey]);
+
+  const total = log.promoted.length + log.completed.length + log.dismissed.length;
+  if (total === 0) return null;
+
+  const restore = async (entry: SuggestionLogEntry) => {
+    try {
+      await removeSuggestionLogEntry(clientId, entry.fingerprint);
+      setLog((prev) => ({
+        promoted: prev.promoted.filter((e) => e.fingerprint !== entry.fingerprint),
+        completed: prev.completed.filter((e) => e.fingerprint !== entry.fingerprint),
+        dismissed: prev.dismissed.filter((e) => e.fingerprint !== entry.fingerprint),
+      }));
+      onChange();
+    } catch {}
+  };
+
+  const current = log[tab];
+
+  return (
+    <section className="rounded-2xl border border-slate-200 bg-white">
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        className="w-full px-4 py-2.5 flex items-center gap-2 text-left hover:bg-slate-50 rounded-2xl"
+      >
+        <History size={13} className="text-slate-500" />
+        <h3 className="text-[12px] font-bold text-slate-700">推荐历史</h3>
+        <span className="text-[10px] text-slate-500 ml-1">
+          已分配 {log.promoted.length} · 已完成 {log.completed.length} · 已删除 {log.dismissed.length}
+        </span>
+        <ChevronDown size={13} className={`ml-auto text-slate-400 transition-transform ${open ? 'rotate-180' : ''}`} />
+      </button>
+      {open && (
+        <div className="px-4 pb-3 border-t border-slate-100">
+          <div className="flex items-center gap-1 my-2">
+            {(['dismissed', 'promoted', 'completed'] as const).map((k) => {
+              const label = k === 'dismissed' ? '已删除' : k === 'promoted' ? '已分配' : '已完成';
+              const isActive = tab === k;
+              return (
+                <button
+                  key={k}
+                  type="button"
+                  onClick={() => setTab(k)}
+                  className={`text-[11px] px-2.5 py-1 rounded-full font-bold ${
+                    isActive ? 'bg-slate-800 text-white' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+                  }`}
+                >
+                  {label} {log[k].length}
+                </button>
+              );
+            })}
+          </div>
+          {current.length === 0 ? (
+            <div className="text-[11px] text-slate-400 py-2">这一类还没有记录</div>
+          ) : (
+            <div className="space-y-1 max-h-[260px] overflow-y-auto">
+              {current.map((e) => (
+                <div key={e.fingerprint} className="rounded-lg border border-slate-100 px-2.5 py-1.5 group">
+                  <div className="flex items-start gap-1.5">
+                    <span className="text-[9px] font-bold text-slate-600 bg-slate-100 rounded px-1 py-0.5 shrink-0">
+                      @{e.actor || '?'}
+                    </span>
+                    <p className="text-[11px] text-slate-700 leading-snug flex-1 min-w-0">{e.suggestionText}</p>
+                    <button
+                      type="button"
+                      onClick={() => restore(e)}
+                      title="找回 — 让这条重新出现在'下一步要做什么'"
+                      className="shrink-0 text-[10px] text-blue-600 hover:text-blue-800 opacity-0 group-hover:opacity-100"
+                    >
+                      找回
+                    </button>
+                  </div>
+                  <div className="text-[9px] text-slate-400 mt-0.5 truncate">
+                    {e.sourceDocTitle} · {(e.createdAt || '').slice(0, 16)}
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+    </section>
+  );
+}
+
 function PendingClarificationsCard({ pending }: { pending: NarrativeClarification[] }) {
   return (
     <section className="rounded-2xl border border-amber-100 bg-amber-50/40 px-4 py-3">
@@ -689,23 +1075,33 @@ function PendingClarificationsCard({ pending }: { pending: NarrativeClarificatio
 
 function AppliedClarificationsCard({ applied }: { applied: NarrativeClarification[] }) {
   if (applied.length === 0) return null;
+  // 5 行高度的可滚动日志, 看谁填了什么, 像活动 log 一样. 全部内容可滚出来,
+  // 不再硬截断到前 8 条 (避免遮蔽久远贡献).
   return (
     <section className="rounded-2xl border border-slate-100 bg-white px-4 py-3">
       <div className="flex items-center gap-2 mb-2">
         <Users size={13} className="text-slate-500" />
-        <h3 className="text-[12px] font-bold text-slate-700">共同编织 (已应用历史)</h3>
-        <span className="text-[10px] text-slate-500">{applied.length} 条</span>
+        <h3 className="text-[12px] font-bold text-slate-700">共同编织</h3>
+        <span className="text-[10px] text-slate-500 ml-auto">{applied.length} 条</span>
       </div>
-      <ul className="space-y-1.5">
-        {applied.slice(0, 8).map((c) => (
-          <li key={c.id} className="text-[11px] text-slate-600 leading-[1.6]">
-            <span className="font-semibold text-slate-700">{c.answeredByDisplayName}</span>
-            <span className="text-slate-400"> · {c.answeredAt.split('T')[0]}</span>
-            <span className="text-slate-500"> · {DIMENSION_META[c.dimension]?.label}</span>
-            <div className="text-slate-500 ml-2">{c.answer.slice(0, 100)}{c.answer.length > 100 ? '...' : ''}</div>
-          </li>
-        ))}
-      </ul>
+      {applied.length === 0 ? (
+        <div className="text-[11px] text-slate-400 py-2">还没有人补充澄清</div>
+      ) : (
+        <ul className="space-y-1.5 max-h-[200px] overflow-y-auto pr-1">
+          {applied.map((c) => (
+            <li key={c.id} className="text-[11px] text-slate-600 leading-[1.55] border-b border-slate-50 last:border-b-0 pb-1.5 last:pb-0">
+              <div className="flex items-center gap-1.5">
+                <span className="font-semibold text-slate-700">{c.answeredByDisplayName}</span>
+                <span className="text-slate-400">·</span>
+                <span className="text-slate-400 text-[10px]">{c.answeredAt.split('T')[0]}</span>
+                <span className="text-slate-400">·</span>
+                <span className="text-slate-500 text-[10px]">{DIMENSION_META[c.dimension]?.label}</span>
+              </div>
+              <div className="text-slate-500 mt-0.5">{c.answer.slice(0, 120)}{c.answer.length > 120 ? '...' : ''}</div>
+            </li>
+          ))}
+        </ul>
+      )}
     </section>
   );
 }
@@ -988,7 +1384,7 @@ function CommitmentChainBlock({ commitments }: { commitments: ClarificationCommi
       icon={Target}
       title={`承诺链 (${commitments.length} 条)`}
       confidence={confidence}
-      hint="从 action_items 提取。当前全库只有 4 条, 等 Phase 1 承诺级业务主线建好 + 录音转写 action_item 自动抽取流程跑起来。"
+      hint="承诺表 (LLM 从对话/资料抽取) + 会议待办 action_items 合并。pending=未履约 / fulfilled=已交付 / cancelled=作废。"
     >
       {commitments.length === 0 ? (
         <PlaceholderRow text="还没有从会议里抽出来的承诺 (action_items 数据为空)" />

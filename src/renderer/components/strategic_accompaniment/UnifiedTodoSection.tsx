@@ -1,13 +1,16 @@
 /**
  * 统一待办 — 跨 tasks/action_items/commitments union
  *
- * 设计: 参考周复盘风格 (rounded-3xl + 渐变 header + 单行布局), 无 emoji, 用 icon + chip
+ * 设计: 参考周复盘风格 (rounded-3xl + 渐变 header + 单行布局), 无 emoji, 用 icon + chip.
+ * → 点 ArrowRight icon 把 todo 字段 (title/owner/dueDate/priority) **映射给原任务编辑器**
+ *   (App.tsx 里的 editingTask + isTaskModalOpen + openTaskEditor), 不再有独立 PromoteModal —
+ *   保证用户看到的是已经熟悉的"新建任务"界面, 只是预填了字段.
+ * ✓/🗑 dismiss: 标记 commitment.status=fulfilled/cancelled, 下次 narrative 不复活.
  */
 import { useCallback, useEffect, useState } from 'react';
 import { Loader2, ArrowRight, Trash2, Check } from 'lucide-react';
 import {
   getUnifiedTodos,
-  promoteTodoToTask,
   dismissUnifiedTodo,
   type UnifiedTodo,
   type UnifiedTodosResponse,
@@ -16,6 +19,11 @@ import {
 interface UnifiedTodoSectionProps {
   clientId: string;
   flash?: (kind: 'success' | 'error', message: string) => void;
+  /**
+   * 点 → 按钮时调用. 由 App.tsx 接住, 切到 tasks tab + 用 todo 字段
+   * 预填原任务编辑器 (editingTask). 不传则按钮无效.
+   */
+  onPromote?: (todo: UnifiedTodo) => void;
 }
 
 const SOURCE_LABEL: Record<UnifiedTodo['source'], { label: string; cls: string }> = {
@@ -30,7 +38,7 @@ const SEVERITY_LABEL: Record<UnifiedTodo['severity'], { label: string; cls: stri
   low:    { label: '常规', cls: 'bg-gray-50 text-gray-600' },
 };
 
-export function UnifiedTodoSection({ clientId, flash }: UnifiedTodoSectionProps) {
+export function UnifiedTodoSection({ clientId, flash, onPromote }: UnifiedTodoSectionProps) {
   const [data, setData] = useState<UnifiedTodosResponse | null>(null);
   const [loading, setLoading] = useState(false);
   const [acting, setActing] = useState<Set<string>>(new Set());
@@ -58,28 +66,24 @@ export function UnifiedTodoSection({ clientId, flash }: UnifiedTodoSectionProps)
     });
   };
 
-  const handlePromote = async (todo: UnifiedTodo) => {
+  const handlePromote = (todo: UnifiedTodo) => {
     if (todo.source === 'task') {
       flash?.('success', '已经是任务, 可在任务页查看');
       return;
     }
-    setActingFor(todo.id, true);
-    try {
-      await promoteTodoToTask(clientId, todo.id);
-      flash?.('success', '已建为任务, 同步到日历');
-      load();
-    } catch (err) {
-      flash?.('error', `建立任务失败: ${err instanceof Error ? err.message : String(err)}`);
-    } finally {
-      setActingFor(todo.id, false);
+    if (!onPromote) {
+      flash?.('error', '当前界面不支持转任务, 请到任务页手动新建');
+      return;
     }
+    // 把 todo 字段交给 App 层的 onPromote, 由它打开原任务编辑器并预填.
+    onPromote(todo);
   };
 
   const handleDismiss = async (todo: UnifiedTodo, action: 'complete' | 'cancel') => {
     setActingFor(todo.id, true);
     try {
       await dismissUnifiedTodo(clientId, todo.id, action);
-      flash?.('success', action === 'complete' ? '已标记完成' : '已从列表移除');
+      flash?.('success', action === 'complete' ? '已标记完成' : '已从列表移除, 下次不再生成');
       load();
     } catch (err) {
       flash?.('error', `操作失败: ${err instanceof Error ? err.message : String(err)}`);
@@ -157,7 +161,7 @@ export function UnifiedTodoSection({ clientId, flash }: UnifiedTodoSectionProps)
                       onClick={() => handleDismiss(t, 'complete')}
                       disabled={inAction}
                       className="w-7 h-7 rounded-full text-gray-400 hover:text-emerald-600 hover:bg-emerald-50 inline-flex items-center justify-center transition disabled:opacity-50"
-                      title="标记已完成"
+                      title="标记已完成 (从列表移除, 下次不再生成)"
                     >
                       {inAction ? <Loader2 size={13} className="animate-spin" /> : <Check size={13} />}
                     </button>
@@ -166,7 +170,7 @@ export function UnifiedTodoSection({ clientId, flash }: UnifiedTodoSectionProps)
                       onClick={() => handleDismiss(t, 'cancel')}
                       disabled={inAction}
                       className="w-7 h-7 rounded-full text-gray-400 hover:text-rose-600 hover:bg-rose-50 inline-flex items-center justify-center transition disabled:opacity-50"
-                      title="删除 (不再追踪)"
+                      title="删除 (不再追踪, 下次也不会再生成)"
                     >
                       <Trash2 size={13} />
                     </button>
@@ -175,7 +179,7 @@ export function UnifiedTodoSection({ clientId, flash }: UnifiedTodoSectionProps)
                       onClick={() => handlePromote(t)}
                       disabled={inAction}
                       className="w-7 h-7 rounded-full text-gray-400 hover:text-blue-600 hover:bg-blue-50 inline-flex items-center justify-center transition disabled:opacity-50"
-                      title={t.source === 'task' ? '已是任务, 查看详情' : '转为任务, 同步日历'}
+                      title={t.source === 'task' ? '已是任务, 查看详情' : '打开任务编辑器 (已预填标题/负责人/截止日期)'}
                     >
                       <ArrowRight size={13} />
                     </button>

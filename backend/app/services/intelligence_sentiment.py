@@ -381,6 +381,46 @@ def build_search_queries(
     return queries
 
 
+def _build_target_tokens(target_name: str, aliases: list[str] | None) -> list[str]:
+    """生成目标判定 token：完整名 + 别名 + 主名的去常见后缀版本。
+
+    例：target_name = "日慈基金会"，aliases=["日慈"]
+        → ["日慈基金会", "日慈"]  （"日慈" 来自 alias，主名去掉"基金会"后等于 alias，去重）
+
+    例：target_name = "益语智库"，aliases=[]
+        → ["益语智库", "益语"]    （去掉"智库"得到的短名作为兜底）
+
+    最少要求：每个 token 长度 >= 2，避免单字误匹配。
+    """
+    out: list[str] = []
+    seen: set[str] = set()
+
+    def _add(s: str) -> None:
+        s = (s or "").strip()
+        if not s or len(s) < 2:
+            return
+        if s in seen:
+            return
+        seen.add(s)
+        out.append(s)
+
+    target = (target_name or "").strip()
+    _add(target)
+
+    for alias in aliases or []:
+        _add(alias)
+
+    # 主名截尾：日慈基金会 → 日慈；益语智库 → 益语
+    # 慎用：如果剪完只剩 1 字就放弃
+    SUFFIXES = ("基金会", "公益基金会", "公益", "智库", "实验室", "中心", "研究院", "集团", "公司")
+    for suffix in SUFFIXES:
+        if target.endswith(suffix) and len(target) > len(suffix) + 1:
+            _add(target[: -len(suffix)])
+            break
+
+    return out
+
+
 def _is_low_value_hit(title: str, snippet: str, url: str) -> bool:
     """跳过明显无用的搜索结果（SEO 垃圾、自家官网首页等）。"""
     text = f"{title} {snippet}"
@@ -403,32 +443,48 @@ def fetch_sentiment_candidates(
     include_social_sites: bool = True,
     ai_service: object | None = None,
     deep_judge_budget: int = 8,
+    # P7-2 新增：智能 query 策略（上层 endpoint 用 strategy engine 生成后传进来）
+    query_plans: list[dict[str, Any]] | None = None,
 ) -> list[SentimentItemDraft]:
     """对一个监控对象跑舆情抓取，返回带情感打标的 drafts。
 
-    扩展参数：
-      - aliases: 别名（来自数据中心 clients.alias）
-      - domain: 业务域（如 "儿童心理"）
-      - project_modules: 客户名下激活的业务线
-      - include_social_sites: 是否加 site:微博/知乎/豆瓣/小红书 限定查询
-
-    通过 public_search.search_public_web 调三大引擎冗余抓取，
-    每条 hit 走词表情感分析，保留 source_url 必填。
+    Args（关键）:
+      - query_plans: 智能 strategy 生成的 query 矩阵（含 intent/priority/source_priority）。
+        如果提供则**主路径**，硬编码模板只在 plan 缺失时兜底。
+      - aliases/domain/project_modules: 数据中心信号备份，传统硬编码 query 矩阵也会用。
     """
-    queries = build_search_queries(
-        target_name,
-        business_line=business_line,
-        aliases=aliases,
-        domain=domain,
-        project_modules=project_modules,
-        include_social_sites=include_social_sites,
-    )
+    # 主路径：智能 query plan 优先
+    if query_plans:
+        # query_plans 已按 priority 排好（strategy 出口排过），直接拿 query_text
+        queries = [str(q.get("queryText") or "").strip() for q in query_plans if q.get("queryText")]
+        queries = [q for q in queries if q]
+    else:
+        # 降级兜底：硬编码模板
+        queries = build_search_queries(
+            target_name,
+            business_line=business_line,
+            aliases=aliases,
+            domain=domain,
+            project_modules=project_modules,
+            include_social_sites=include_social_sites,
+        )
     if not queries:
         return []
 
     drafts: list[SentimentItemDraft] = []
     seen_urls: set[str] = set()
     captured_at = datetime.now(timezone.utc).isoformat()
+
+    # 目标出现校验：title+snippet 必须含 target_name 或某个 alias，否则丢弃。
+    # 出问题的场景：搜「日慈基金会 投诉 OR 质疑」时引擎把「韩红基金会被举报」也返回了，
+    # 那条 hit 全文一个「日慈」字都没有 — 必须挡掉，否则负面预警就是错的。
+    name_tokens = _build_target_tokens(target_name, aliases)
+
+    def _hit_mentions_target(title: str, snippet: str) -> bool:
+        if not name_tokens:
+            return True  # 没目标可比对就别拦
+        text = f"{title}\n{snippet}"
+        return any(tok in text for tok in name_tokens)
 
     def _ingest_hit(hit: Any) -> None:
         url = (getattr(hit, "url", "") or "").strip()
@@ -437,6 +493,9 @@ def fetch_sentiment_candidates(
         title = (getattr(hit, "title", "") or "").strip()
         snippet = (getattr(hit, "snippet", "") or "").strip()
         if _is_low_value_hit(title, snippet, url):
+            return
+        # P0 修复：跨主体污染拦截
+        if not _hit_mentions_target(title, snippet):
             return
         seen_urls.add(url)
         text = f"{title}\n{snippet}"
@@ -463,16 +522,34 @@ def fetch_sentiment_candidates(
         for hit in results:
             _ingest_hit(hit)
 
-    # 2) 社交平台直抓兜底（微博/小红书/抖音）— 仅跑主名 base query，不跑 site: 或 alias 派生
-    #    实现细节见 social_search.py：当前微博/小红书/抖音被反爬挡，stub 返回 []；
-    #    保留接口是为了后续切 Playwright/visitor cookie 时只换实现，不动调用点。
+    # 2) 多平台搜索 — 搜狗微信 + B 站 API（verified work）+ 其他 stub
     if include_social_sites:
+        # 2a) 搜狗微信：每条 query 顺手过一遍，拿公众号长文
         try:
-            from app.services.social_search import (
-                search_weibo,
-                search_xiaohongshu,
-                search_douyin,
-            )
+            from app.services.multi_platform_search import search_wechat, search_bilibili
+            top_queries_for_social = queries[:8]
+            for q in top_queries_for_social:
+                # 搜狗微信
+                try:
+                    wx_hits = search_wechat(q, max_results=max_per_query, timeout_seconds=10.0)
+                    for hit in wx_hits:
+                        _ingest_hit(hit)
+                except Exception:  # noqa: BLE001
+                    pass
+                # B 站 API（实测 verified work，每 query 命中 5-20 条）
+                try:
+                    bili_hits = search_bilibili(q, max_results=max_per_query, timeout_seconds=10.0)
+                    for hit in bili_hits:
+                        _ingest_hit(hit)
+                except Exception:  # noqa: BLE001
+                    pass
+        except Exception:  # noqa: BLE001
+            pass
+
+        # 2b) 社交平台直抓 stub（微博/小红书/抖音/知乎/B 站）
+        # — 当前都被反爬挡住返回 []，保留接口等后续接 Playwright
+        try:
+            from app.services.social_search import search_weibo, search_xiaohongshu, search_douyin
         except Exception:  # noqa: BLE001
             search_weibo = search_xiaohongshu = search_douyin = None  # type: ignore[assignment]
 
@@ -491,7 +568,25 @@ def fetch_sentiment_candidates(
             for hit in social_hits:
                 _ingest_hit(hit)
 
-    # 3) Insight Agent — 对边界情况跑 Qwen 二次判定（默认最多 8 次/refresh）
+    # 3) 全文增强 — B 站走 yt-dlp+SenseVoice / 公众号走 HTML 解析
+    # 复用系统已有的 link_material_import 通道，把 200 字 snippet 升级为千字级正文
+    # 注：耗时大，限 top 3 顺序跑，单条 timeout 180s
+    if drafts:
+        try:
+            from app.services.intelligence_transcript_enrich import enrich_drafts_with_transcripts
+            drafts, transcript_stats = enrich_drafts_with_transcripts(
+                drafts, max_transcripts=3, per_item_timeout_seconds=180.0,
+            )
+            if transcript_stats["succeeded"]:
+                import logging
+                logging.getLogger(__name__).info(
+                    "[transcript-enrich] %d 条 hit 全文化成功（B站/公众号）",
+                    transcript_stats["succeeded"],
+                )
+        except Exception:  # noqa: BLE001
+            pass  # 全文增强失败不阻塞情感分析
+
+    # 4) Insight Agent — 对边界情况跑 Qwen 二次判定（在全文之后跑，判断更准）
     if ai_service is not None and drafts:
         try:
             from app.services.intelligence_insight_agent import deep_judge_drafts
@@ -509,9 +604,41 @@ def fetch_sentiment_candidates(
 
 
 def _domain_label(url: str) -> str:
-    """从 URL 提取友好域名标签：news.cctv.com → cctv.com。"""
+    """从 URL 提取友好域名标签，对社交平台/公众号显式分类。
+
+    用户视角的「公众入口」必须显形，不能被搜索引擎中转 URL 隐藏。
+    """
     try:
-        host = urlparse(url).hostname or ""
+        host = (urlparse(url).hostname or "").lower()
+        # ── 社交平台 / 公众号显式分类（优先级最高）──
+        if "weixin.sogou.com" in host or "mp.weixin.qq.com" in host:
+            return "微信公众号"
+        if "weibo.com" in host or "weibo.cn" in host:
+            return "微博"
+        if "xiaohongshu.com" in host or "xhscdn" in host:
+            return "小红书"
+        if "douyin.com" in host or "iesdouyin.com" in host:
+            return "抖音"
+        if "kuaishou.com" in host:
+            return "快手"
+        if "zhihu.com" in host or "zhihu.cn" in host:
+            return "知乎"
+        if "bilibili.com" in host:
+            return "B站"
+        if "douban.com" in host:
+            return "豆瓣"
+        if "toutiao.com" in host:
+            return "今日头条"
+        if "baijiahao.baidu.com" in host:
+            return "百家号"
+        # ── 权威源 ──
+        if "gov.cn" in host:
+            return "政府.gov.cn"
+        if "tianyancha.com" in host:
+            return "天眼查"
+        if "qichacha.com" in host or "qcc.com" in host:
+            return "企查查"
+        # ── fallback：通用域名 ──
         parts = host.split(".")
         if len(parts) >= 2:
             return ".".join(parts[-2:])
@@ -600,6 +727,35 @@ def persist_sentiment_drafts(
             ),
         )
         inserted += 1
+
+        # P7-2 双写：同一条 hit 也送进数据中心 ingest，复用其多源对比/澄清流程
+        try:
+            from app.services.data_center_ingest import ingest_external_observation
+            ingest_external_observation(
+                db,
+                source_type="external_sentiment",
+                source_url=draft.source_url,
+                title=draft.title,
+                body_text=draft.summary,
+                client_id=client_id,
+                project_module_id=project_module_id,
+                captured_at=draft.captured_at,
+                sentiment_label=draft.sentiment.label,
+                intent_kind="evaluation",
+                metadata_extra={
+                    "intelligenceItemId": item_id,
+                    "sentimentScore": draft.sentiment.score,
+                    "sentimentConfidence": draft.sentiment.confidence,
+                    "sentimentReason": draft.sentiment.reason,
+                    "sourceLabel": draft.source,
+                },
+            )
+        except Exception:  # noqa: BLE001
+            # 数据中心写失败不阻塞主流程，由 logger 记录
+            import logging
+            logging.getLogger(__name__).warning(
+                "[sentiment] data center ingest failed for %s", draft.source_url, exc_info=True,
+            )
     return inserted
 
 

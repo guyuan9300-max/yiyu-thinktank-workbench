@@ -91,90 +91,93 @@ export function GlossaryPanel({ clientId, refreshKey = 0 }: GlossaryPanelProps) 
   if (!clientId) return null;
 
   return (
-    <div className="space-y-3 rounded-3xl border border-slate-100 bg-white p-4">
-      <div className="flex items-center justify-between gap-2">
-        <p className="text-[12px] font-black text-slate-700">客户专有术语库</p>
-        <span className="rounded-full bg-slate-100 px-2 py-0.5 text-[10px] font-bold text-slate-500">
-          {entries.length} 条
-        </span>
+    <div className="space-y-4 rounded-2xl border border-gray-100 bg-white p-5">
+      <div className="flex items-start justify-between gap-2">
+        <div>
+          <div className="text-[9px] font-semibold uppercase tracking-[0.18em] text-gray-400">
+            Client Glossary
+          </div>
+          <div className="mt-0.5 text-[13px] font-medium tracking-tight text-gray-800">
+            客户专有术语库 <span className="ml-1 text-gray-400">{entries.length}</span>
+          </div>
+        </div>
       </div>
 
-      <p className="text-[10px] font-semibold leading-4 text-slate-500">
-        💡 用来登记这位客户的「内部黑话/产品代号/专有名词」，让 AI 回答时使用正确含义。
-        例如 <span className="font-bold">「红队」</span>在这位客户里可能意指内部审计组。
+      <p className="text-[10.5px] leading-snug text-gray-500">
+        登记这位客户的内部黑话 / 产品代号 / 专有名词,让 AI 回答时使用正确含义。
+        例如 <span className="text-gray-700">「红队」</span>在这位客户里可能意指内部审计组。
       </p>
 
-      {error && <p className="text-[11px] font-semibold text-rose-600">{error}</p>}
+      {error && <p className="text-[11px] font-medium text-rose-600">{error}</p>}
 
-      {/* 添加新术语 */}
-      <div className="space-y-1.5 rounded-2xl border border-slate-100 bg-slate-50 px-3 py-2">
+      <div className="space-y-1.5 rounded-xl bg-[#FAFAFA] px-3 py-2.5 ring-1 ring-inset ring-gray-100">
         <input
           type="text"
-          placeholder="术语，例如 红队 / 曙光计划"
-          className="w-full rounded-lg border border-slate-200 bg-white px-2 py-1 text-[12px] text-slate-700 focus:border-[#5B7BFE] focus:outline-none"
+          placeholder="术语,例如 红队 / 曙光计划"
+          className="w-full rounded-md border border-gray-200 bg-white px-2.5 py-1.5 text-[12px] text-gray-800 placeholder-gray-400 focus:border-[#5B7BFE] focus:outline-none"
           value={newTerm}
           onChange={(e) => setNewTerm(e.target.value)}
         />
         <input
           type="text"
-          placeholder="含义（可选），例如：客户内部审计组的称呼"
-          className="w-full rounded-lg border border-slate-200 bg-white px-2 py-1 text-[12px] text-slate-700 focus:border-[#5B7BFE] focus:outline-none"
+          placeholder="含义(可选),例如:客户内部审计组的称呼"
+          className="w-full rounded-md border border-gray-200 bg-white px-2.5 py-1.5 text-[12px] text-gray-800 placeholder-gray-400 focus:border-[#5B7BFE] focus:outline-none"
           value={newDefinition}
           onChange={(e) => setNewDefinition(e.target.value)}
         />
         <button
           type="button"
-          className="w-full rounded-lg bg-[#5B7BFE] px-2 py-1.5 text-[11px] font-bold text-white hover:bg-[#4A63CF] disabled:opacity-50"
+          className="w-full rounded-md bg-[#5B7BFE] px-2 py-1.5 text-[11px] font-medium text-white hover:bg-[#4A63CF] transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
           onClick={() => void handleAdd()}
           disabled={!newTerm.trim()}
         >
-          + 添加术语
+          添加术语
         </button>
       </div>
 
       {loading && entries.length === 0 && (
-        <p className="text-[11px] font-semibold text-slate-400">加载中…</p>
+        <p className="text-[11px] font-medium text-gray-400">加载中…</p>
       )}
 
       {!loading && entries.length === 0 && (
-        <p className="text-[11px] font-semibold leading-5 text-slate-400">
+        <p className="text-[11px] font-medium leading-5 text-gray-400">
           这位客户暂时没有登记术语。上方添加第一条。
         </p>
       )}
 
-      <ul className="space-y-1.5">
-        {entries.map((entry) => {
+      <ul className="divide-y divide-gray-100 overflow-hidden rounded-xl ring-1 ring-inset ring-gray-100">
+        {entries.map((entry, idx) => {
           const isEditing = editingId === entry.id;
           return (
             <li
               key={entry.id}
-              className="rounded-xl bg-slate-50 px-2.5 py-1.5"
+              className={`px-3 py-2 ${idx % 2 === 1 ? 'bg-[#FAFAFA]' : 'bg-white'}`}
             >
               {isEditing ? (
                 <div className="space-y-1.5">
                   <input
                     type="text"
-                    className="w-full rounded-md border border-slate-200 bg-white px-2 py-1 text-[12px]"
+                    className="w-full rounded-md border border-gray-200 bg-white px-2 py-1 text-[12px] focus:border-[#5B7BFE] focus:outline-none"
                     value={editTerm}
                     onChange={(e) => setEditTerm(e.target.value)}
                   />
                   <input
                     type="text"
-                    className="w-full rounded-md border border-slate-200 bg-white px-2 py-1 text-[12px]"
+                    className="w-full rounded-md border border-gray-200 bg-white px-2 py-1 text-[12px] focus:border-[#5B7BFE] focus:outline-none"
                     value={editDefinition}
                     onChange={(e) => setEditDefinition(e.target.value)}
                   />
                   <div className="flex gap-1.5">
                     <button
                       type="button"
-                      className="flex-1 rounded-md bg-emerald-100 px-2 py-1 text-[10px] font-bold text-emerald-700 hover:bg-emerald-200"
+                      className="flex-1 rounded-md bg-emerald-50 px-2 py-1 text-[10px] font-medium text-emerald-700 ring-1 ring-inset ring-emerald-200 hover:bg-emerald-100/70 transition-colors"
                       onClick={() => void handleSaveEdit(entry.id)}
                     >
-                      ✓ 保存
+                      保存
                     </button>
                     <button
                       type="button"
-                      className="flex-1 rounded-md bg-slate-200 px-2 py-1 text-[10px] font-bold text-slate-700 hover:bg-slate-300"
+                      className="flex-1 rounded-md bg-white px-2 py-1 text-[10px] font-medium text-gray-600 ring-1 ring-inset ring-gray-200 hover:bg-gray-50 transition-colors"
                       onClick={() => setEditingId(null)}
                     >
                       取消
@@ -184,11 +187,11 @@ export function GlossaryPanel({ clientId, refreshKey = 0 }: GlossaryPanelProps) 
               ) : (
                 <div>
                   <div className="flex items-start justify-between gap-2">
-                    <p className="text-[12px] font-bold text-slate-800">{entry.term}</p>
-                    <div className="flex gap-1">
+                    <p className="text-[12px] font-medium text-gray-800">{entry.term}</p>
+                    <div className="flex gap-2">
                       <button
                         type="button"
-                        className="text-[10px] font-bold text-slate-500 hover:text-[#5B7BFE]"
+                        className="text-[10px] font-medium text-gray-500 hover:text-[#5B7BFE] transition-colors"
                         onClick={() => {
                           setEditingId(entry.id);
                           setEditTerm(entry.term);
@@ -199,7 +202,7 @@ export function GlossaryPanel({ clientId, refreshKey = 0 }: GlossaryPanelProps) 
                       </button>
                       <button
                         type="button"
-                        className="text-[10px] font-bold text-slate-500 hover:text-rose-600"
+                        className="text-[10px] font-medium text-gray-500 hover:text-rose-600 transition-colors"
                         onClick={() => void handleDelete(entry.id, entry.term)}
                       >
                         删除
@@ -207,7 +210,7 @@ export function GlossaryPanel({ clientId, refreshKey = 0 }: GlossaryPanelProps) 
                     </div>
                   </div>
                   {entry.definition && (
-                    <p className="mt-0.5 text-[11px] leading-5 text-slate-600">{entry.definition}</p>
+                    <p className="mt-0.5 text-[11px] leading-5 text-gray-600">{entry.definition}</p>
                   )}
                 </div>
               )}

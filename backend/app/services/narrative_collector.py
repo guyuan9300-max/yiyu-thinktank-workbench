@@ -327,6 +327,7 @@ def collect_client_fact_bundle(
     db: Database,
     client_id: str,
     *,
+    viewer_user_id: str = "",
     person_limit: int = 30,
     time_anchor_limit: int = 15,
     money_anchor_limit: int = 10,
@@ -336,7 +337,14 @@ def collect_client_fact_bundle(
     task_limit: int = 30,
     document_limit: int = 25,
 ) -> ClientFactBundle:
-    """从本地数据中心一次性收齐所有预制菜."""
+    """从本地数据中心一次性收齐所有预制菜.
+
+    隔离边界 (机制化):
+      - viewer_user_id 非空 → v2_chunks (文档原文层) 只取 viewer 自己上传的 + 空 owner 的历史数据;
+        避免 A 写战略时被 B 上传的细碎调研污染思路。
+      - 数据中心层 (字典 / 承诺 / 风险 / 事件线 / 事实卡片) 全员共享, 不按 user 过滤 —
+        这是众包共建的精髓层, 大家拼拼图。
+    """
     client_row = db.fetchone(
         "SELECT id, name, alias FROM clients WHERE id = ?",
         (client_id,),
@@ -350,7 +358,7 @@ def collect_client_fact_bundle(
     risk_signals = _collect_risk_signals(db, client_id)
     commitments = _collect_commitments(db, client_id)
     glossary_attributes = _collect_glossary_attributes(db, client_id)
-    dim_chunks = _collect_dimension_chunks(db, client_id, glossary)
+    dim_chunks = _collect_dimension_chunks(db, client_id, glossary, viewer_user_id=viewer_user_id)
     persons = _collect_persons(db, client_id, person_limit)
     time_anchors = _collect_time_anchors(db, client_id, time_anchor_limit)
     money_anchors = _collect_money_anchors(db, client_id, money_anchor_limit)
@@ -557,48 +565,90 @@ _DIMENSION_BASE_KEYWORDS: dict[str, tuple[str, ...]] = {
     "cooperation": ("战略陪伴", "战略咨询", "合作", "服务协议", "陪伴", "对接"),
     "people": ("理事会", "团队", "负责人", "创始人", "秘书长", "成员"),
     "timeline": ("年度", "里程碑", "总结", "启动", "复盘"),
-    "next_steps": ("待办", "deadline", "计划", "下一步", "后续"),
+    # next_steps 扩词: 会议纪要里"承诺/行动"的常见表达
+    "next_steps": (
+        "待办", "deadline", "计划", "下一步", "后续",
+        "牵头", "负责", "承诺", "接下来", "需在", "约定",
+        "落地", "启动", "推进",
+    ),
 }
+
+# 会议/对齐会/纪要类文档对 next_steps / cooperation / timeline 维度天然高价值,
+# 标题命中下面任意词就给 boost 让它跨过老文档霸屏。
+_MEETING_LIKE_TITLE_TOKENS = ("纪要", "对齐会", "会议", "战略对齐", "复盘会", "讨论会", "周会")
 
 
 def _retrieve_top_chunks(
     db: Database,
     client_id: str,
     keywords: tuple[str, ...] | list[str],
-    limit: int = 2,
+    limit: int = 4,
     excerpt_len: int = 500,
-    max_per_doc: int = 1,
+    max_per_doc: int = 2,
+    viewer_user_id: str = "",
 ) -> list[tuple[str, str, str]]:
     """按关键词在 v2_chunks 里搜 top N, 强制文档多样性 (避免某个文档霸屏).
 
-    打分: 标题含关键词 → +50 / chunk 长度 (max 800 字内权重高).
-    每个文档最多取 max_per_doc 个 chunk.
+    机制化 per-user 过滤: 当 viewer_user_id 非空时, chunks 只来自 (viewer 自己上传的文档
+    + 历史无 owner 的 legacy 文档). 这样 A 写战略时不会被 B 上传的细碎调研污染思路;
+    但数据中心层 (字典/承诺/事实/事件线 等其他表) 仍然全员共享.
 
+    排序策略 (从优到劣):
+      1) title_match=1 (标题含 keyword) — 强信号, 老逻辑保留
+      2) is_meeting_like=1 (标题含 "纪要/对齐会/会议" 等) — 会议纪要对所有维度都高价值
+      3) imported_at DESC — 今天上传的纪要要排在去年的资料前面 (recency)
+      4) LENGTH(vc.content) DESC — chunk 信息密度
+
+    每个文档最多取 max_per_doc 个 chunk (默认从 1 提到 2, 让一份纪要能贡献多段).
+    limit 默认从 2 提到 4 (让会议纪要有机会进 top, 不被老文档完全挤掉).
     返回 [(matched_term, doc_title, excerpt), ...]
     """
     if not keywords:
         return []
     out: list[tuple[str, str, str]] = []
     seen_doc_chunks: set[str] = set()
-    docs_count: dict[str, int] = {}  # doc_title → 已取的 chunk 数
+    docs_count: dict[str, int] = {}
+
+    # 用户视角过滤 SQL 片段 (空 owner 兼容历史导入数据)
+    if viewer_user_id:
+        owner_filter_sql = " AND (vd.owner_user_id = ? OR vd.owner_user_id = '')"
+        owner_filter_params: tuple = (viewer_user_id,)
+    else:
+        owner_filter_sql = ""
+        owner_filter_params = ()
+
+    # 会议类标题 CASE WHEN 片段 — 标题命中任意 token 就 is_meeting_like=1
+    meeting_like_clauses = " OR ".join(["d.title LIKE ?"] * len(_MEETING_LIKE_TITLE_TOKENS))
+    meeting_like_params = tuple(f"%{tok}%" for tok in _MEETING_LIKE_TITLE_TOKENS)
 
     for kw in keywords:
         if not kw.strip():
             continue
         try:
-            # 拉候选池: 标题含 kw 的文档优先 + chunk 含 kw + 长度排序
-            # 候选池放大到 limit*5, 然后在 Python 里做文档多样性筛选
             rows = db.fetchall(
-                """SELECT vc.content, d.title AS doc_title,
-                          CASE WHEN d.title LIKE ? THEN 1 ELSE 0 END AS title_match
+                f"""SELECT vc.content, d.title AS doc_title,
+                          CASE WHEN d.title LIKE ? THEN 1 ELSE 0 END AS title_match,
+                          CASE WHEN ({meeting_like_clauses}) THEN 1 ELSE 0 END AS is_meeting_like,
+                          COALESCE(vd.imported_at, vd.updated_at, '') AS sort_at
                    FROM v2_chunks vc
                    JOIN v2_documents vd ON vd.id = vc.v2_document_id
                    JOIN documents d ON d.id = vd.document_id
                    WHERE vd.client_id = ?
                      AND vc.content LIKE ?
-                   ORDER BY title_match DESC, LENGTH(vc.content) DESC
+                     {owner_filter_sql}
+                   ORDER BY title_match DESC,
+                            is_meeting_like DESC,
+                            sort_at DESC,
+                            LENGTH(vc.content) DESC
                    LIMIT ?""",
-                (f"%{kw}%", client_id, f"%{kw}%", limit * 5),
+                (
+                    f"%{kw}%",
+                    *meeting_like_params,
+                    client_id,
+                    f"%{kw}%",
+                    *owner_filter_params,
+                    limit * 5,
+                ),
             )
         except Exception:
             continue
@@ -623,6 +673,7 @@ def _retrieve_top_chunks(
 
 def _collect_dimension_chunks(
     db: Database, client_id: str, glossary: list[GlossaryTerm],
+    viewer_user_id: str = "",
 ) -> dict[str, list[DimensionChunk]]:
     """对每个 dimension 按主题词搜 chunks, 返回 dimension → list[DimensionChunk].
 
@@ -636,10 +687,11 @@ def _collect_dimension_chunks(
     project_terms = [g.canonical_name for g in glossary if g.category in ("项目", "项目名")]
     bi_list: list[DimensionChunk] = []
     for term in project_terms[:6]:
-        # 源 1: v2_chunks 文档 (top 2, 多文档)
+        # 源 1: v2_chunks 文档 (top 2, 多文档), 按 viewer 过滤防同事文件污染
         chunks = _retrieve_top_chunks(
             db, client_id, (term,),
             limit=2, excerpt_len=300, max_per_doc=1,
+            viewer_user_id=viewer_user_id,
         )
         for matched_term, doc_title, excerpt in chunks:
             bi_list.append(DimensionChunk(
@@ -715,9 +767,12 @@ def _collect_dimension_chunks(
             pass
     result["business_intro"] = bi_list
 
-    # 其他 5 维度: 用固定关键词
+    # 其他 5 维度: 用固定关键词, 同样按 viewer 过滤
     for dim, kws in _DIMENSION_BASE_KEYWORDS.items():
-        chunks = _retrieve_top_chunks(db, client_id, kws, limit=2, excerpt_len=400)
+        chunks = _retrieve_top_chunks(
+            db, client_id, kws, limit=2, excerpt_len=400,
+            viewer_user_id=viewer_user_id,
+        )
         result[dim] = [
             DimensionChunk(
                 dimension=dim,

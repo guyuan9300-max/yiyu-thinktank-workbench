@@ -6,7 +6,11 @@ import sqlite3
 import threading
 from pathlib import Path
 
-BACKEND_SCHEMA_VERSION = 20260420
+# SQLite PRAGMA user_version 是 32-bit signed int (上限 2,147,483,647),
+# 之前 20260518001 (200 亿) 远超上限, SQLite 静默 set 为 0, 每次启动都重做完整迁移
+# (这是 20260518 那次坏 db 的真正根因之一: 重做时遇上 reload race + backfill 无事务).
+# 改用 YYYYMMDD 格式 (8 位), 每次 schema 变化递增日期. 20260519 = 此次修复.
+BACKEND_SCHEMA_VERSION = 20260520
 
 
 # R6：内置罗永浩写作风格的 distilled prompt（手工 distill，不依赖在线抓取，避免外部依赖）。
@@ -45,7 +49,10 @@ class Database:
     def __init__(self, db_path: Path):
         self.db_path = Path(db_path)
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
-        self._lock = threading.Lock()
+        self._lock = threading.RLock()  # RLock 允许事务内嵌套调用 execute (本线程重入)
+        self._in_transaction = False    # Sprint 2 事务支持: True 时 execute 不 commit
+        self._tx_depth = 0              # 嵌套深度: 0=无事务, >0=有事务
+        self._tx_failed = False         # 标记本事务已被某层 rollback 标失败, 外层 commit 时改 rollback
         self.conn = sqlite3.connect(self.db_path, check_same_thread=False)
         self.conn.row_factory = sqlite3.Row
         self._init_schema()
@@ -3074,6 +3081,134 @@ class Database:
             self._ensure_column("task_lists", "pending_sync_action", "TEXT NOT NULL DEFAULT ''")
             self._ensure_column("task_lists", "last_sync_error", "TEXT NOT NULL DEFAULT ''")
             self._ensure_column("clients", "color", "TEXT NOT NULL DEFAULT '#5B7BFE'")
+            # P5：客户自我品牌定位（3-5 个关键词，逗号分隔），舆情 Gap Map 用
+            self._ensure_column("clients", "brand_proposition", "TEXT NOT NULL DEFAULT ''")
+            # P13 · 品牌镜子官方语料池（2026-05-19）
+            #   - 客户官方渠道列表（官网/公众号/微博/B站/招聘/合作方），JSON 数组
+            #   - documents 加时间维度字段，支持「持续追踪 + 看变化」
+            self._ensure_column("clients", "official_channels_json", "TEXT NOT NULL DEFAULT '[]'")
+            self._ensure_column("documents", "published_at", "TEXT")
+            self._ensure_column("documents", "source_fetched_at", "TEXT")
+            self._ensure_column("documents", "source_revision_no", "INTEGER NOT NULL DEFAULT 1")
+            # P13-E · 官方网站客观评测（Lighthouse + 可下载文档扫描，2026-05-19）
+            #   - 每次跑 lighthouse 落一个 snapshot, 历史可看变化
+            #   - downloadable_docs_count: 跨 brand_official_corpus 全站扫到的 PDF/DOC 数量
+            self.conn.executescript(
+                """
+                CREATE TABLE IF NOT EXISTS website_audit_snapshots (
+                    id TEXT PRIMARY KEY,
+                    client_id TEXT NOT NULL,
+                    target_url TEXT NOT NULL,
+                    final_url TEXT NOT NULL DEFAULT '',
+                    performance INTEGER,
+                    accessibility INTEGER,
+                    best_practices INTEGER,
+                    seo INTEGER,
+                    mobile_friendly INTEGER NOT NULL DEFAULT 0,
+                    requests INTEGER NOT NULL DEFAULT 0,
+                    transfer_kb INTEGER NOT NULL DEFAULT 0,
+                    downloadable_docs_count INTEGER NOT NULL DEFAULT 0,
+                    downloadable_docs_json TEXT NOT NULL DEFAULT '[]',
+                    raw_json TEXT NOT NULL DEFAULT '{}',
+                    error TEXT,
+                    fetched_at TEXT NOT NULL,
+                    created_at TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_website_audit_client
+                    ON website_audit_snapshots(client_id, created_at DESC);
+                """
+            )
+            # P13-D · 品牌镜子 LLM 画像快照（2026-05-20）
+            #   - 输入: brand_official_corpus + website_audit_snapshots
+            #   - 输出: selfPresentation/blindspots/consistency/mediaCoverage/partners 五块 + 50 词云
+            #   - 每次跑保留 snapshot, 历史可对比 (将来 brand_evolution_signals 的基础)
+            self.conn.executescript(
+                """
+                CREATE TABLE IF NOT EXISTS brand_mirror_snapshots (
+                    id TEXT PRIMARY KEY,
+                    client_id TEXT NOT NULL,
+                    corpus_doc_count INTEGER NOT NULL DEFAULT 0,
+                    corpus_char_count INTEGER NOT NULL DEFAULT 0,
+                    website_audit_id TEXT,
+                    self_presentation_json TEXT NOT NULL DEFAULT '[]',
+                    blindspots_json TEXT NOT NULL DEFAULT '[]',
+                    consistency_text TEXT NOT NULL DEFAULT '',
+                    media_coverage_json TEXT NOT NULL DEFAULT '[]',
+                    partners_json TEXT NOT NULL DEFAULT '[]',
+                    word_cloud_json TEXT NOT NULL DEFAULT '[]',
+                    llm_model TEXT NOT NULL DEFAULT '',
+                    llm_raw_json TEXT NOT NULL DEFAULT '{}',
+                    error TEXT,
+                    created_at TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_brand_mirror_snapshots_client
+                    ON brand_mirror_snapshots(client_id, created_at DESC);
+                """
+            )
+            # P9 证据等级（2026-05-19）：3 类源严格分层，防止爬虫观察污染客户事实库
+            #   - first_party: 客户自报 (task/meeting/weekly_review/event_line/user_upload)
+            #   - third_party_authoritative: 权威外部 (民政/工商/慈善中国/天眼查)
+            #   - external_observation: 爬虫观察 (媒体/UGC/搜狗微信/百家号等) → 仅作背景参考
+            self._ensure_column(
+                "data_center_ingest_events", "evidence_tier",
+                "TEXT NOT NULL DEFAULT 'first_party'",
+            )
+            self._ensure_column(
+                "glossary_attributes", "evidence_tier",
+                "TEXT NOT NULL DEFAULT 'first_party'",
+            )
+            self._ensure_column(
+                "client_glossary", "evidence_tier",
+                "TEXT NOT NULL DEFAULT 'first_party'",
+            )
+            # 回填：external_* / 社交平台 / 公众号等外部观察源
+            # 容错: data_center_ingest_events 表可能在某些精简 db 里不存在, 不阻塞启动
+            try:
+                self.conn.execute(
+                    """
+                    UPDATE data_center_ingest_events
+                    SET evidence_tier = 'external_observation'
+                    WHERE source_type IN (
+                        'external_search_engine', 'external_sentiment', 'external_timely',
+                        'wechat_article', 'weibo_post', 'xiaohongshu_note',
+                        'zhihu_answer', 'bilibili_video', 'baijiahao_article',
+                        'douyin_video'
+                    ) AND evidence_tier = 'first_party'
+                    """
+                )
+                # 回填：权威外部源
+                self.conn.execute(
+                    """
+                    UPDATE data_center_ingest_events
+                    SET evidence_tier = 'third_party_authoritative'
+                    WHERE source_type IN (
+                        'tianyancha_basic', 'tianyancha_risk',
+                        'foundation_registry', 'enterprise_credit'
+                    ) AND evidence_tier = 'first_party'
+                    """
+                )
+            except sqlite3.OperationalError:
+                pass  # 表不存在 → 跳过 backfill
+            # P6: 客户 canonical 化 - 多别名 (e.g. 日慈基金会 / 日慈公益基金会 / 日慈慈善基金会)
+            # 建客户时实时模糊匹配防止多人重复建客户, collaborator 加入既有客户的基础
+            self._ensure_column("clients", "aliases_json", "TEXT NOT NULL DEFAULT '[]'")
+            # P7: 项目编辑弹窗扩展字段
+            #   related_user_ids_json: 选中的相关同事 user.id 列表（多对多关联，方便初期用 JSON 列；
+            #     批 3 接通 cloud 时复用 cloud_backend 的 task_collaborators 模式建独立关联表）
+            #   is_data_center_included: 0 = 仅工作台可见（不进入战略陪伴/咨询/情报/任务计算），
+            #     1 = 参与全局数据中心（默认）。本地过滤靠这一列。
+            self._ensure_column("clients", "related_user_ids_json", "TEXT NOT NULL DEFAULT '[]'")
+            self._ensure_column("clients", "is_data_center_included", "INTEGER NOT NULL DEFAULT 1")
+            # 全局冷冻字段:用户主动把项目"冷冻"后,所有自动 job 跳过这个客户
+            # (爬取/数据中心计算/资讯抓取/知识库索引等),所有列客户的 endpoint 默认不返回它
+            # NULL = 未冷冻;有值 = 冷冻时间(ISO 字符串,审计用)
+            self._ensure_column("clients", "frozen_at", "TEXT")
+            # 批 3：clients 接通 cloud sync 所需字段（mimic event_lines / tasks 的 sync schema）
+            self._ensure_column("clients", "sync_status", "TEXT NOT NULL DEFAULT 'local'")
+            self._ensure_column("clients", "cloud_id", "TEXT")
+            self._ensure_column("clients", "pending_sync_action", "TEXT NOT NULL DEFAULT ''")
+            self._ensure_column("clients", "last_synced_at", "TEXT NOT NULL DEFAULT ''")
+            self._ensure_column("clients", "last_sync_error", "TEXT NOT NULL DEFAULT ''")
             self._ensure_column("tasks", "tag_ids_json", "TEXT NOT NULL DEFAULT '[]'")
             self._ensure_column("tasks", "organization_id", "TEXT NOT NULL DEFAULT ''")
             self._ensure_column("tasks", "creator_id", "TEXT NOT NULL DEFAULT ''")
@@ -3104,50 +3239,59 @@ class Database:
             self._ensure_column("tasks", "last_cloud_version", "TEXT NOT NULL DEFAULT ''")
             self._ensure_column("tasks", "pending_sync_action", "TEXT NOT NULL DEFAULT ''")
             self._ensure_column("tasks", "last_sync_error", "TEXT NOT NULL DEFAULT ''")
-            self.conn.execute(
-                """
-                UPDATE tasks
-                SET deadline_at = due_date
-                WHERE deadline_at IS NULL
-                  AND due_date IS NOT NULL
-                  AND due_date != ''
-                  AND (start_date IS NULL OR start_date = '')
-                  AND due_date GLOB '????-??-??'
-                """
-            )
-            self.conn.execute(
-                """
-                UPDATE tasks
-                SET scheduled_start_at = COALESCE(NULLIF(start_date, ''), due_date)
-                WHERE scheduled_start_at IS NULL
-                  AND (
-                    (start_date IS NOT NULL AND start_date != '')
-                    OR due_date LIKE '%T%'
-                    OR due_date GLOB '????-??-?? ??:??*'
-                  )
-                """
-            )
-            self.conn.execute(
-                """
-                UPDATE tasks
-                SET scheduled_end_at = due_date
-                WHERE scheduled_end_at IS NULL
-                  AND start_date IS NOT NULL
-                  AND start_date != ''
-                  AND due_date IS NOT NULL
-                  AND due_date != ''
-                  AND due_date != start_date
-                  AND (due_date LIKE '%T%' OR due_date GLOB '????-??-?? ??:??*')
-                """
-            )
-            self.conn.execute(
-                """
-                UPDATE tasks
-                SET completed_at = COALESCE(NULLIF(updated_at, ''), datetime('now'))
-                WHERE completed_at IS NULL
-                  AND (status = 'done' OR progress_status = 'done')
-                """
-            )
+            # 第一档 #2 fix: tasks 4 个 backfill UPDATE 包显式事务. 中途崩 → rollback 不留半成品.
+            # 这些 backfill 都是 idempotent (带 WHERE IS NULL), 重做安全.
+            self.conn.commit()  # 先 commit 之前累积的 _ensure_column, 让 backfill 独立成段
+            try:
+                self.conn.execute("BEGIN IMMEDIATE")
+                self.conn.execute(
+                    """
+                    UPDATE tasks
+                    SET deadline_at = due_date
+                    WHERE deadline_at IS NULL
+                      AND due_date IS NOT NULL
+                      AND due_date != ''
+                      AND (start_date IS NULL OR start_date = '')
+                      AND due_date GLOB '????-??-??'
+                    """
+                )
+                self.conn.execute(
+                    """
+                    UPDATE tasks
+                    SET scheduled_start_at = COALESCE(NULLIF(start_date, ''), due_date)
+                    WHERE scheduled_start_at IS NULL
+                      AND (
+                        (start_date IS NOT NULL AND start_date != '')
+                        OR due_date LIKE '%T%'
+                        OR due_date GLOB '????-??-?? ??:??*'
+                      )
+                    """
+                )
+                self.conn.execute(
+                    """
+                    UPDATE tasks
+                    SET scheduled_end_at = due_date
+                    WHERE scheduled_end_at IS NULL
+                      AND start_date IS NOT NULL
+                      AND start_date != ''
+                      AND due_date IS NOT NULL
+                      AND due_date != ''
+                      AND due_date != start_date
+                      AND (due_date LIKE '%T%' OR due_date GLOB '????-??-?? ??:??*')
+                    """
+                )
+                self.conn.execute(
+                    """
+                    UPDATE tasks
+                    SET completed_at = COALESCE(NULLIF(updated_at, ''), datetime('now'))
+                    WHERE completed_at IS NULL
+                      AND (status = 'done' OR progress_status = 'done')
+                    """
+                )
+                self.conn.commit()
+            except Exception:
+                self.conn.rollback()
+                raise
             self.conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS task_collaborators (
@@ -3253,20 +3397,30 @@ class Database:
             self._ensure_column("memory_facts", "content_domain", "TEXT NOT NULL DEFAULT 'work'")
             self._ensure_column("memory_facts", "lifecycle_status", "TEXT NOT NULL DEFAULT 'active'")
             self._ensure_column("memory_facts", "superseded_by_event_id", "TEXT NOT NULL DEFAULT ''")
-            for table_name in ("documents", "v2_documents", "memory_facts"):
-                rows = self.conn.execute(
-                    f"""
-                    SELECT id, department_id
-                    FROM {table_name}
-                    WHERE COALESCE(department_id, '') != ''
-                      AND COALESCE(department_ids_json, '[]') IN ('', '[]')
-                    """
-                ).fetchall()
-                for row in rows:
-                    self.conn.execute(
-                        f"UPDATE {table_name} SET department_ids_json = ? WHERE id = ?",
-                        (to_json([str(row["department_id"])]), str(row["id"])),
-                    )
+            # 第一档 #3 fix: 逐行 UPDATE 循环 三表 (documents/v2_documents/memory_facts) 包事务.
+            # 原 bug: 每行独立 commit, 循环跑到一半崩 → 留下部分 department_ids_json 已填部分未填
+            # 的半脏数据. 现在: 三表整体作为一个事务, 中途崩全部 rollback, 下次启动重做完整循环.
+            self.conn.commit()
+            try:
+                self.conn.execute("BEGIN IMMEDIATE")
+                for table_name in ("documents", "v2_documents", "memory_facts"):
+                    rows = self.conn.execute(
+                        f"""
+                        SELECT id, department_id
+                        FROM {table_name}
+                        WHERE COALESCE(department_id, '') != ''
+                          AND COALESCE(department_ids_json, '[]') IN ('', '[]')
+                        """
+                    ).fetchall()
+                    for row in rows:
+                        self.conn.execute(
+                            f"UPDATE {table_name} SET department_ids_json = ? WHERE id = ?",
+                            (to_json([str(row["department_id"])]), str(row["id"])),
+                        )
+                self.conn.commit()
+            except Exception:
+                self.conn.rollback()
+                raise
 
             self.conn.execute(
                 """
@@ -3644,6 +3798,54 @@ class Database:
                 CREATE INDEX IF NOT EXISTS idx_commitments_committer
                     ON commitments(client_id, committer, status);
 
+                -- narrative 建议消费日志 (用户对 AI 建议的操作历史)
+                -- 用户视角: 推荐 → 我点 → / 完成 / 删除 → 进日志卡, 不再被抽
+                -- fingerprint = hash(actor + suggestion_text 前 50 字), 跨 regen 永久去重
+                -- action ∈ ('promoted', 'completed', 'dismissed')
+                CREATE TABLE IF NOT EXISTS narrative_suggestion_log (
+                    id TEXT PRIMARY KEY,
+                    client_id TEXT NOT NULL,
+                    fingerprint TEXT NOT NULL,
+                    action TEXT NOT NULL,
+                    actor TEXT NOT NULL DEFAULT '',
+                    suggestion_text TEXT NOT NULL,
+                    source_doc_title TEXT NOT NULL DEFAULT '',
+                    source_doc_id TEXT NOT NULL DEFAULT '',
+                    created_at TEXT NOT NULL,
+                    FOREIGN KEY(client_id) REFERENCES clients(id) ON DELETE CASCADE
+                );
+                CREATE INDEX IF NOT EXISTS idx_suggestion_log_client_fingerprint
+                    ON narrative_suggestion_log(client_id, fingerprint);
+                CREATE INDEX IF NOT EXISTS idx_suggestion_log_client_action_at
+                    ON narrative_suggestion_log(client_id, action, created_at DESC);
+
+                -- "下一步要做什么" 背景说明缓存 (转任务时瞬时返回)
+                -- next-steps endpoint 返回列表时, 后台线程并发预生成 LLM 背景写入此表
+                -- 用户点 → 时直接读 cache, 体感瞬时
+                CREATE TABLE IF NOT EXISTS next_step_background_cache (
+                    client_id TEXT NOT NULL,
+                    fingerprint TEXT NOT NULL,
+                    background TEXT NOT NULL,
+                    source_label TEXT NOT NULL DEFAULT '',
+                    has_source INTEGER NOT NULL DEFAULT 0,
+                    created_at TEXT NOT NULL,
+                    PRIMARY KEY (client_id, fingerprint),
+                    FOREIGN KEY(client_id) REFERENCES clients(id) ON DELETE CASCADE
+                );
+                CREATE INDEX IF NOT EXISTS idx_nsb_cache_client_at
+                    ON next_step_background_cache(client_id, created_at DESC);
+
+                -- narrative 待重生标记 (战略陪伴页面打开时检测, 自动后台 regenerate)
+                -- ingest fanout 完成时 upsert 一行, 前端通过 /narrative/stale-status 查
+                -- 当 marked_at > narrative.generatedAt 即 stale
+                CREATE TABLE IF NOT EXISTS narrative_stale_signals (
+                    client_id TEXT PRIMARY KEY,
+                    marked_at TEXT NOT NULL,
+                    last_doc_title TEXT NOT NULL DEFAULT '',
+                    reason TEXT NOT NULL DEFAULT '',
+                    FOREIGN KEY(client_id) REFERENCES clients(id) ON DELETE CASCADE
+                );
+
                 -- L1: 能力周快照（让"方向感"成为成长中心一等公民）
                 -- 每周日（或懒触发）写入一行，记录当周末该用户每个能力的 currentScore / totalXp。
                 -- 前端拉最近 8 周即可画 mini 折线图，看出每个能力是涨/跌/横盘。
@@ -3806,9 +4008,12 @@ class Database:
                 ON approval_records(approval_target_type, approval_target_id, decided_at DESC)
                 """
             )
-            current_schema_version = int(self.conn.execute("PRAGMA user_version").fetchone()[0] or 0)
-            if current_schema_version < BACKEND_SCHEMA_VERSION:
-                self.conn.execute(f"PRAGMA user_version={BACKEND_SCHEMA_VERSION}")
+            # 第一档 #1 fix: schema_version 写入时机从这里 (3819) 移到 _init_schema 最末
+            # (4088 commit 之前). 原 bug: user_version 早写, 后续 _ensure_column/UPDATE backfill
+            # 跨多个 executescript auto-commit, 任意一段崩了 → user_version 已写=系统认为
+            # "迁移完成"=下次跳过重做 → B-tree 半改状态永久保留. 这就是 20260518 那次坏 db
+            # 的根因. 新规则: 整个 _init_schema 跑完才写 user_version, 中途崩 → 重做迁移
+            # (DDL/UPDATE backfill 全部 idempotent, 重做安全).
             analysis_truth_tables = (
                 "evidence_cards",
                 "theme_clusters",
@@ -3978,6 +4183,65 @@ class Database:
                     ON trashed_files(trashed_at)
                 """
             )
+            # ──────────────────────────────────────────────────────────
+            # 舆情印象主题簇（P5）：跨多条 items 聚出 3-7 个 brand impression
+            # ──────────────────────────────────────────────────────────
+            self.conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS intelligence_sentiment_themes (
+                    id TEXT PRIMARY KEY,
+                    scope_type TEXT NOT NULL,
+                    scope_id TEXT NOT NULL,
+                    theme_label TEXT NOT NULL,
+                    theme_summary TEXT NOT NULL DEFAULT '',
+                    sentiment_tone TEXT NOT NULL DEFAULT 'neutral',
+                    item_count INTEGER NOT NULL DEFAULT 0,
+                    representative_quote TEXT NOT NULL DEFAULT '',
+                    representative_item_id TEXT,
+                    item_ids_json TEXT NOT NULL DEFAULT '[]',
+                    computed_at TEXT NOT NULL,
+                    expires_at TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                )
+                """
+            )
+            self.conn.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_intelligence_sentiment_themes_scope
+                    ON intelligence_sentiment_themes(scope_type, scope_id, expires_at DESC)
+                """
+            )
+            # ──────────────────────────────────────────────────────────
+            # 品牌印象速读（P6）：LLM 把 themes/gap/items 合成公关风格简报
+            # 单 scope 单条记录，重算时整条覆盖
+            # ──────────────────────────────────────────────────────────
+            self.conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS intelligence_brand_audits (
+                    id TEXT PRIMARY KEY,
+                    scope_type TEXT NOT NULL,
+                    scope_id TEXT NOT NULL,
+                    headline TEXT NOT NULL DEFAULT '',
+                    narrative_md TEXT NOT NULL DEFAULT '',
+                    tensions_json TEXT NOT NULL DEFAULT '[]',
+                    recommendations_json TEXT NOT NULL DEFAULT '[]',
+                    content_angles_json TEXT NOT NULL DEFAULT '{}',
+                    evidence_theme_ids_json TEXT NOT NULL DEFAULT '[]',
+                    computed_at TEXT NOT NULL,
+                    expires_at TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    UNIQUE(scope_type, scope_id)
+                )
+                """
+            )
+            self.conn.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_intelligence_brand_audits_scope
+                    ON intelligence_brand_audits(scope_type, scope_id, expires_at DESC)
+                """
+            )
             self.conn.execute(
                 "UPDATE task_lists SET is_default = CASE WHEN id = 'list-0' THEN 1 ELSE COALESCE(is_default, 0) END WHERE is_default IS NULL OR is_default = ''"
             )
@@ -4018,6 +4282,11 @@ class Database:
                 )
                 """
             )
+            # 第一档 #1 fix: user_version 现在在所有迁移完 + 最后 commit 之前的一步写,
+            # 确保中途崩不会被错标"已迁移". 这是上次 (20260518) db 损坏的根因修复.
+            current_schema_version = int(self.conn.execute("PRAGMA user_version").fetchone()[0] or 0)
+            if current_schema_version < BACKEND_SCHEMA_VERSION:
+                self.conn.execute(f"PRAGMA user_version={BACKEND_SCHEMA_VERSION}")
             self.conn.commit()
 
     def _seed_builtin_writing_skills(self) -> None:
@@ -4109,7 +4378,8 @@ class Database:
         with self._lock:
             try:
                 self.conn.execute(query, params)
-                self.conn.commit()
+                if not self._in_transaction:
+                    self.conn.commit()
             except Exception:
                 self.conn.rollback()
                 raise
@@ -4118,7 +4388,8 @@ class Database:
         with self._lock:
             try:
                 self.conn.executemany(query, params)
-                self.conn.commit()
+                if not self._in_transaction:
+                    self.conn.commit()
             except Exception:
                 self.conn.rollback()
                 raise
@@ -4133,7 +4404,15 @@ class Database:
                 raise
 
     def run_in_transaction(self, callback, mode: str = "IMMEDIATE"):
+        """callback 签名: (conn) -> Any. 内部建议直接用 conn.execute,
+        但因为 _lock 是 RLock + _in_transaction 标志, callback 内调
+        state.db.execute(...) 也安全 (不会死锁, 不会提前 commit)."""
         with self._lock:
+            already_in_tx = self._in_transaction
+            if already_in_tx:
+                # 嵌套调用: 不开新事务, 直接走 callback (外层会 commit)
+                return callback(self.conn)
+            self._in_transaction = True
             try:
                 self.conn.execute(f"BEGIN {mode}")
                 result = callback(self.conn)
@@ -4142,6 +4421,60 @@ class Database:
             except Exception:
                 self.conn.rollback()
                 raise
+            finally:
+                self._in_transaction = False
+
+    def begin_transaction(self, mode: str = "IMMEDIATE") -> None:
+        """显式事务 API. 必须配对调用 commit_transaction() 或 rollback_transaction().
+
+        嵌套语义: 内层 begin/commit 只增减深度, 不真 BEGIN/COMMIT.
+        任意一层 rollback 标记整体失败, 最外层 commit 时改成 rollback (安全).
+        """
+        self._lock.acquire()
+        try:
+            if self._tx_depth == 0:
+                self.conn.execute(f"BEGIN {mode}")
+                self._tx_failed = False
+            self._tx_depth += 1
+            self._in_transaction = True
+        except Exception:
+            self._lock.release()
+            raise
+
+    def commit_transaction(self) -> None:
+        """提交本层. 仅最外层真的 COMMIT; 内层只减深度.
+        若任意层已标失败 (rollback_transaction 调过), 最外层改成 ROLLBACK."""
+        try:
+            if self._tx_depth == 0:
+                return  # 配对错误的容错, 不抛
+            self._tx_depth -= 1
+            if self._tx_depth == 0:
+                try:
+                    if self._tx_failed:
+                        self.conn.rollback()
+                    else:
+                        self.conn.commit()
+                finally:
+                    self._tx_failed = False
+                    self._in_transaction = False
+        finally:
+            self._lock.release()
+
+    def rollback_transaction(self) -> None:
+        """标记整体失败. 仅最外层真的 ROLLBACK; 内层只标 _tx_failed + 减深度."""
+        try:
+            if self._tx_depth == 0:
+                return
+            self._tx_failed = True
+            self._tx_depth -= 1
+            if self._tx_depth == 0:
+                try:
+                    self.conn.rollback()
+                finally:
+                    self._tx_failed = False
+                    self._in_transaction = False
+        finally:
+            self._lock.release()
 
     def scalar(self, query: str, params: tuple = ()) -> int:
         row = self.fetchone(query, params)

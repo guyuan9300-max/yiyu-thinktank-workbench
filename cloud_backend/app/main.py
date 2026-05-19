@@ -27,7 +27,10 @@ logger = logging.getLogger(__name__)
 from app.db import Database, from_json, to_json
 from app.models import (
     AuthTokenResponse,
+    ClientCreatePayload,
+    ClientRecord,
     ClientSummaryRecord,
+    ClientUpdatePayload,
     CloudKnowledgeMirrorPublishPayload,
     CloudKnowledgeMirrorPublishResultRecord,
     ConsultationChatPayload,
@@ -1515,6 +1518,54 @@ def _client_summary_record(row) -> ClientSummaryRecord:
         alias=str(row["alias"]) if row["alias"] else None,
         type=str(_row_get(row, "type") or "client"),
     )
+
+
+# P7：clients 同步 helpers
+#   _client_related_user_ids: fetch client_related_users 关联表的 user_id 列表
+#   _client_record_full: 把 clients 行 + 关联表合并成完整的 ClientRecord（含 relatedUserIds）
+def _client_related_user_ids(state: AppState, client_id: str) -> list[str]:
+    rows = state.db.fetchall(
+        "SELECT user_id FROM client_related_users WHERE client_id = ? ORDER BY order_index ASC, user_id ASC",
+        (client_id,),
+    )
+    return [str(row["user_id"]) for row in rows]
+
+
+def _client_record_full(state: AppState, row) -> ClientRecord:
+    client_id = str(row["id"])
+    return ClientRecord(
+        id=client_id,
+        organizationId=str(row["organization_id"]),
+        creatorId=str(_row_get(row, "creator_id") or ""),
+        name=str(row["name"]),
+        alias=str(row["alias"] or ""),
+        domain=str(_row_get(row, "domain") or "项目"),
+        type=str(_row_get(row, "type") or "项目"),
+        intro=str(_row_get(row, "intro") or ""),
+        stage=str(_row_get(row, "stage") or "待导入资料"),
+        color=str(_row_get(row, "color") or "#5B7BFE"),
+        relatedUserIds=_client_related_user_ids(state, client_id),
+        isDataCenterIncluded=bool(int(_row_get(row, "is_data_center_included") if _row_get(row, "is_data_center_included") is not None else 1)),
+        createdAt=str(row["created_at"]),
+        updatedAt=str(row["updated_at"]),
+    )
+
+
+def _replace_client_related_users(state: AppState, client_id: str, user_ids: list[str]) -> None:
+    """Replace the relation set atomically. Skips empty ids."""
+    clean = [str(uid).strip() for uid in (user_ids or []) if str(uid).strip()]
+    state.db.execute("DELETE FROM client_related_users WHERE client_id = ?", (client_id,))
+    if not clean:
+        return
+    now = now_iso()
+    for idx, uid in enumerate(clean):
+        state.db.execute(
+            """
+            INSERT OR IGNORE INTO client_related_users(client_id, user_id, order_index, created_at, updated_at)
+            VALUES(?, ?, ?, ?, ?)
+            """,
+            (client_id, uid, idx, now, now),
+        )
 
 
 ORGANIZATION_WORKSPACE_CLIENT_TYPE = "organization_workspace"
@@ -3407,18 +3458,6 @@ def _save_org_model_profile(state: AppState, current_user: SessionUser, payload:
     role_ids = {role.id for role in payload.roles if role.id}
     focus_item_ids = {item.id for item in payload.focusItems if item.id}
 
-    # ───── TEMP DEBUG: trace bindings + dept-leader payload to diagnose missing department assignments ─────
-    import sys as _dbg_sys
-    print(f"[ORG-SAVE-DEBUG] called by user={current_user.id} org={organization_id}", file=_dbg_sys.stderr, flush=True)
-    print(f"[ORG-SAVE-DEBUG] department_ids={sorted(department_ids)}", file=_dbg_sys.stderr, flush=True)
-    print(f"[ORG-SAVE-DEBUG] allowed_user_ids={sorted(allowed_user_ids)}", file=_dbg_sys.stderr, flush=True)
-    for _d in payload.departments:
-        print(f"[ORG-SAVE-DEBUG] dept name={_d.name!r} id={_d.id!r} leaderUserId={_d.leaderUserId!r} leaderName={_d.leaderName!r}", file=_dbg_sys.stderr, flush=True)
-    print(f"[ORG-SAVE-DEBUG] bindings count={len(payload.bindings)}", file=_dbg_sys.stderr, flush=True)
-    for _b in payload.bindings:
-        print(f"[ORG-SAVE-DEBUG] binding userId={_b.userId!r} departmentId={_b.departmentId!r} primaryRoleId={_b.primaryRoleId!r} isManager={_b.isManager}", file=_dbg_sys.stderr, flush=True)
-    # ───── /TEMP DEBUG ─────
-
     # Backfill leaderUserId by leaderName for departments where the frontend tree editor
     # left leaderUserId empty (it stores only the typed name into leaderName, never the user id).
     # Without this, leader_user_id stays NULL in DB and downstream features like
@@ -3440,7 +3479,6 @@ def _save_org_model_profile(state: AppState, current_user: SessionUser, payload:
         resolved_id = employee_name_to_id.get(leader_name_key)
         if resolved_id:
             dept.leaderUserId = resolved_id
-            print(f"[ORG-SAVE-DEBUG] backfilled leaderUserId for dept {dept.id!r}: name={dept.leaderName!r} -> id={resolved_id!r}", file=_dbg_sys.stderr, flush=True)
 
     def scoped_user_id(value: str | None) -> str | None:
         if not value:
@@ -7916,21 +7954,6 @@ def _normalize_task_tags(state: AppState, current_user: SessionUser, tag_ids: li
     return resolved
 
 
-def _sync_tasks_for_tag_change(state: AppState, tag_id: str) -> None:
-    tag_row = state.db.fetchone("SELECT * FROM task_tag_library WHERE id = ?", (tag_id,))
-    task_rows = state.db.fetchall("SELECT id, tag_ids_json FROM tasks")
-    for row in task_rows:
-        tag_ids = [str(item) for item in from_json(row["tag_ids_json"], [])] if isinstance(from_json(row["tag_ids_json"], []), list) else []
-        if tag_id not in tag_ids:
-            continue
-        next_tag_ids = tag_ids if tag_row else [item for item in tag_ids if item != tag_id]
-        resolved = [_task_tag_record(item) for item in _tag_rows_by_ids(state, next_tag_ids)]
-        state.db.execute(
-            "UPDATE tasks SET tag_ids_json = ?, tags_json = ?, updated_at = ? WHERE id = ?",
-            (to_json([item.id for item in resolved]), to_json([item.name for item in resolved]), now_iso(), str(row["id"])),
-        )
-
-
 def _record_activity(state: AppState, task_id: str, actor_id: str, event_type: str, payload: dict[str, object]) -> None:
     state.db.execute(
         "INSERT INTO task_activity_events(id, task_id, actor_id, event_type, payload_json, created_at) VALUES(?, ?, ?, ?, ?, ?)",
@@ -11593,24 +11616,130 @@ def create_app() -> FastAPI:
         )
         return [_event_line_record(state, row) for row in rows]
 
-    @app.get("/api/v1/clients", response_model=list[ClientSummaryRecord])
+    @app.get("/api/v1/clients", response_model=list[ClientRecord])
     def list_clients(
         current_user: SessionUser = Depends(lambda authorization=Header(default=None): _require_auth(app, authorization)),
-    ) -> list[ClientSummaryRecord]:
+    ) -> list[ClientRecord]:
+        # P7：ACL 过滤 —— 当前 user 只能看到：
+        #   (a) 自己 creator 的 clients
+        #   (b) 自己被 prior creator 勾选进 client_related_users 的 clients
+        #   (c) organization_workspace 类型（组织默认 workspace，全员可见）
+        # 这与 task 的 creator/collaborator 模型保持一致。
         if current_user.membershipStatus == "approved":
             organization_row = state.db.fetchone("SELECT id, name FROM organizations WHERE id = ?", (current_user.organizationId,))
             if organization_row:
                 _ensure_organization_workspace_client(state, str(organization_row["id"]), str(organization_row["name"]))
         rows = state.db.fetchall(
             """
-            SELECT *
-            FROM clients
-            WHERE organization_id = ?
-            ORDER BY updated_at DESC, name COLLATE NOCASE ASC
+            SELECT DISTINCT c.*
+            FROM clients c
+            LEFT JOIN client_related_users cru ON cru.client_id = c.id
+            WHERE c.organization_id = ?
+              AND (c.creator_id = ?
+                   OR cru.user_id = ?
+                   OR c.type = ?
+                   OR COALESCE(c.creator_id, '') = '')
+            ORDER BY c.updated_at DESC, c.name COLLATE NOCASE ASC
             """,
-            (current_user.organizationId,),
+            (
+                current_user.organizationId,
+                current_user.id,
+                current_user.id,
+                ORGANIZATION_WORKSPACE_CLIENT_TYPE,
+            ),
         )
-        return [_client_summary_record(row) for row in rows]
+        return [_client_record_full(state, row) for row in rows]
+
+    @app.post("/api/v1/clients", response_model=ClientRecord)
+    def create_client(
+        payload: ClientCreatePayload,
+        current_user: SessionUser = Depends(lambda authorization=Header(default=None): _require_auth(app, authorization)),
+    ) -> ClientRecord:
+        # P7：local desktop 通过 _try_cloud_sync_client 把本地 client 上传至此。
+        #   id：local 端的 client.id（id 同步，便于对账）。如果 id 已存在视为重复，返回现有记录。
+        timestamp = now_iso()
+        client_id = (payload.id or "").strip() or new_id("client")
+        existing = state.db.fetchone(
+            "SELECT * FROM clients WHERE id = ? AND organization_id = ?",
+            (client_id, current_user.organizationId),
+        )
+        if existing:
+            return _client_record_full(state, existing)
+        state.db.execute(
+            """
+            INSERT INTO clients(id, organization_id, creator_id, name, alias, type, domain, intro, stage, color,
+                                is_data_center_included, created_at, updated_at)
+            VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                client_id,
+                current_user.organizationId,
+                current_user.id,
+                payload.name,
+                payload.alias or "",
+                payload.type or "项目",
+                payload.domain or "项目",
+                payload.intro or "",
+                payload.stage or "待导入资料",
+                payload.color or "#5B7BFE",
+                1 if payload.isDataCenterIncluded else 0,
+                timestamp,
+                timestamp,
+            ),
+        )
+        _replace_client_related_users(state, client_id, payload.relatedUserIds or [])
+        row = state.db.fetchone("SELECT * FROM clients WHERE id = ?", (client_id,))
+        return _client_record_full(state, row)
+
+    @app.put("/api/v1/clients/{client_id}", response_model=ClientRecord)
+    def update_client(
+        client_id: str,
+        payload: ClientUpdatePayload,
+        current_user: SessionUser = Depends(lambda authorization=Header(default=None): _require_auth(app, authorization)),
+    ) -> ClientRecord:
+        row = state.db.fetchone(
+            "SELECT * FROM clients WHERE id = ? AND organization_id = ?",
+            (client_id, current_user.organizationId),
+        )
+        if not row:
+            raise HTTPException(status_code=404, detail="Client not found")
+        # 仅 creator 或当前已经在 related_user_ids 的人能改（防止 org 内其他人篡改）。
+        # organization_workspace 类型例外（全员可改其元信息——但本期不放开）。
+        creator_id = str(_row_get(row, "creator_id") or "")
+        if creator_id and creator_id != current_user.id:
+            existing_relation = state.db.fetchone(
+                "SELECT 1 FROM client_related_users WHERE client_id = ? AND user_id = ?",
+                (client_id, current_user.id),
+            )
+            if not existing_relation:
+                raise HTTPException(status_code=403, detail="无权修改该项目（仅创建者或被勾选的相关同事可改）")
+        timestamp = now_iso()
+        # 部分字段更新：None 跳过（保留旧值）
+        next_name = payload.name if payload.name is not None else str(row["name"])
+        next_alias = payload.alias if payload.alias is not None else str(row["alias"] or "")
+        next_domain = payload.domain if payload.domain is not None else str(_row_get(row, "domain") or "项目")
+        next_type = payload.type if payload.type is not None else str(_row_get(row, "type") or "项目")
+        next_intro = payload.intro if payload.intro is not None else str(_row_get(row, "intro") or "")
+        next_stage = payload.stage if payload.stage is not None else str(_row_get(row, "stage") or "待导入资料")
+        next_color = payload.color if payload.color is not None else str(_row_get(row, "color") or "#5B7BFE")
+        next_dc = (
+            (1 if payload.isDataCenterIncluded else 0)
+            if payload.isDataCenterIncluded is not None
+            else int(_row_get(row, "is_data_center_included") if _row_get(row, "is_data_center_included") is not None else 1)
+        )
+        state.db.execute(
+            """
+            UPDATE clients
+            SET name = ?, alias = ?, domain = ?, type = ?, intro = ?, stage = ?, color = ?,
+                is_data_center_included = ?, updated_at = ?
+            WHERE id = ?
+            """,
+            (next_name, next_alias, next_domain, next_type, next_intro, next_stage, next_color, next_dc, timestamp, client_id),
+        )
+        if payload.relatedUserIds is not None:
+            _replace_client_related_users(state, client_id, payload.relatedUserIds)
+        updated_row = state.db.fetchone("SELECT * FROM clients WHERE id = ?", (client_id,))
+        return _client_record_full(state, updated_row)
 
     @app.get("/api/v1/mobile/capabilities", response_model=MobileCapabilityRecord)
     def get_mobile_capabilities(
@@ -13021,6 +13150,22 @@ def create_app() -> FastAPI:
             raise HTTPException(status_code=404, detail="Task not found")
         row = _task_plan_link_row(state, task_id)
         return _task_plan_link_record(row) if row else None
+
+    @app.get("/api/v1/org-model/plan-item-task-counts", response_model=dict[str, int])
+    def list_plan_item_task_counts(
+        current_user: SessionUser = Depends(lambda authorization=Header(default=None): _require_auth(app, authorization)),
+    ) -> dict[str, int]:
+        rows = state.db.fetchall(
+            """
+            SELECT department_plan_item_id AS item_id, COUNT(*) AS cnt
+            FROM task_plan_links
+            WHERE organization_id = ?
+              AND department_plan_item_id IS NOT NULL
+            GROUP BY department_plan_item_id
+            """,
+            (current_user.organizationId,),
+        )
+        return {str(row["item_id"]): int(row["cnt"]) for row in rows}
 
     @app.get("/api/v1/org-model/plan-items/{item_id}/tasks", response_model=list[TaskRecord])
     def list_tasks_for_plan_item(

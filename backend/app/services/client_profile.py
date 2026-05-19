@@ -241,10 +241,13 @@ def backfill_all_clients(
     data_dir: Path,
     ai_service: Any,
 ) -> dict[str, Any]:
-    """One-time backfill: enrich surrogates + build profile blocks for ALL clients with existing surrogates."""
+    """One-time backfill: enrich surrogates + build profile blocks for ALL clients with existing surrogates.
+
+    冷冻项目跳过 — 它们已退出自动计算队列。
+    """
     from app.services.knowledge_base import batch_enrich_surrogates
 
-    client_rows = db.fetchall("SELECT id, name FROM clients ORDER BY name")
+    client_rows = db.fetchall("SELECT id, name FROM clients WHERE frozen_at IS NULL ORDER BY name")
     results: list[dict[str, Any]] = []
 
     for row in client_rows:

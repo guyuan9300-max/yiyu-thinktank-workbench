@@ -546,8 +546,8 @@ def backfill_document_knowledge_to_memory(db: Database) -> dict[str, int]:
 
     stats = {"clients_processed": 0, "category_summaries": 0, "doc_insights": 0, "total_facts": 0}
 
-    # 获取所有客户
-    clients = db.fetchall("SELECT id, name FROM clients")
+    # 获取所有客户(跳过冷冻项目 — 它们退出自动 category summary / fact 提取)
+    clients = db.fetchall("SELECT id, name FROM clients WHERE frozen_at IS NULL")
 
     for client in clients:
         client_id = str(client["id"])

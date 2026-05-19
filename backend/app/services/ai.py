@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 import re
+import shutil
+import subprocess
 from dataclasses import dataclass
 from datetime import datetime
 from time import perf_counter
@@ -17,15 +19,21 @@ from app.models import AiStructuredResponse
 DEFAULT_PROVIDER = "openai_compatible"
 OPENAI_COMPATIBLE_PROVIDER = "openai_compatible"
 MOCK_PROVIDER = "mock"
+OPENCLAW_PROVIDER = "openclaw"
 QWEN_BASE_URL = "https://coding.dashscope.aliyuncs.com/v1"
 DOUBAO_BASE_URL = "https://ark.cn-beijing.volces.com/api/v3"
 DEFAULT_OPENAI_COMPATIBLE_LABEL = "豆包 Seed 2.0 Pro"
 DEFAULT_OPENAI_COMPATIBLE_BASE_URL = DOUBAO_BASE_URL
+OPENCLAW_DEFAULT_MODEL = "openai-codex/gpt-5.4"
+OPENCLAW_DEFAULT_CLI = "openclaw"
+OPENCLAW_DEFAULT_AGENT = "main"
+OPENCLAW_STARTUP_OVERHEAD_SECONDS = 30.0
 DEFAULT_MODELS = {
     "mock": "mock-summarizer",
     "openai_compatible": "doubao-seed-2-0-pro-260215",
     "qwen": "qwen3.5-plus",
     "doubao": "doubao-seed-2-0-pro-260215",
+    "openclaw": OPENCLAW_DEFAULT_MODEL,
 }
 DEFAULT_MODEL = DEFAULT_MODELS[DEFAULT_PROVIDER]
 PROVIDER_LABELS = {
@@ -33,6 +41,7 @@ PROVIDER_LABELS = {
     "doubao": "豆包 Seed 2.0 Pro",
     "openai_compatible": DEFAULT_OPENAI_COMPATIBLE_LABEL,
     "mock": "Mock",
+    "openclaw": "GPT 5.4",
 }
 LEGACY_PROVIDER_PRESETS = {
     "qwen": {
@@ -622,6 +631,8 @@ class AiService:
         return candidates
 
     def get_health(self, *, task_kind: str = "default") -> AiHealth:
+        if self.current_provider() == OPENCLAW_PROVIDER:
+            return self._openclaw_health()
         candidates = self._resolve_llm_candidates(task_kind=task_kind)
         if not candidates:
             unified = self._unified_profile()
@@ -731,6 +742,55 @@ class AiService:
                 "error": None,
                 "errorKind": None,
             }
+        if target_provider == OPENCLAW_PROVIDER:
+            cli_path = self._openclaw_cli_path()
+            resolved = shutil.which(cli_path) if not cli_path.startswith("/") else cli_path
+            if not resolved:
+                return {
+                    "provider": target_provider,
+                    "model": target_model,
+                    "providerLabel": PROVIDER_LABELS["openclaw"],
+                    "baseUrl": "",
+                    "success": False,
+                    "latencyMs": 0,
+                    "error": f"未检测到本机 OpenClaw CLI（命令：{cli_path}）。",
+                    "errorKind": "auth_error",
+                }
+            try:
+                self._qwen_generate(
+                    prompt=(prompt or "请只回复：连接成功。"),
+                    system_instruction="你是系统健康检查助手。只返回纯文本。",
+                    response_schema=None,
+                    timeout_seconds=90.0,
+                    max_tokens=60,
+                    temperature=0.0,
+                    top_p=1.0,
+                    enable_thinking=False,
+                    provider_override=target_provider,
+                    model_override=target_model,
+                )
+                return {
+                    "provider": target_provider,
+                    "model": target_model,
+                    "providerLabel": PROVIDER_LABELS["openclaw"],
+                    "baseUrl": "",
+                    "success": True,
+                    "latencyMs": int(round((perf_counter() - start) * 1000)),
+                    "error": None,
+                    "errorKind": None,
+                }
+            except Exception as error:
+                detail = str(getattr(error, "detail", error) or "").strip() or str(error)
+                return {
+                    "provider": target_provider,
+                    "model": target_model,
+                    "providerLabel": PROVIDER_LABELS["openclaw"],
+                    "baseUrl": "",
+                    "success": False,
+                    "latencyMs": int(round((perf_counter() - start) * 1000)),
+                    "error": detail,
+                    "errorKind": classify_llm_error_kind(detail),
+                }
         target_base_url = self.current_base_url() if target_provider == self.current_provider() else (
             str(LEGACY_PROVIDER_PRESETS[requested_provider]["base_url"]) if requested_provider in LEGACY_PROVIDER_PRESETS else ""
         )
@@ -1308,17 +1368,30 @@ class AiService:
         client_name: str,
         context_summary: str,
         field_type: str | None = None,
+        client_id: str | None = None,
     ) -> str:
         health = self.get_health()
         field_rule = self._template_field_rule(field_type)
+        # P-E.1: 注入字典权威包 — 模板字段填写是用户最终交付物，必须基于人审事实
+        glossary_block = ""
+        if client_id:
+            try:
+                from app.services.glossary_attributes_pack import build_verified_attributes_pack
+                pack = build_verified_attributes_pack(self.db, client_id) or ""
+                if pack:
+                    glossary_block = f"{pack}\n\n---\n\n"
+            except Exception:
+                pass
         system_instruction = (
             "你正在为客户资料模板填写单个字段。"
             "请只输出可以直接粘贴进 Word 文档的最终内容，不要解释过程，不要写'根据资料'、'建议填写'、'可写为'这类前缀。"
             "如果资料不足，请只输出“【待确认】”开头的一句简短提示。"
             "不要输出“可从……进一步梳理”“建议补充”“可填写为”这类过程性提示。"
             "不要输出 Markdown 代码块，不要输出 JSON。"
+            "涉及具体数字/日期/金额/姓名时，必须优先用上方字典权威值（如有）。"
         )
         prompt = (
+            f"{glossary_block}"
             f"客户：{client_name}\n"
             f"模板：{template_name}\n"
             f"待填写字段：{field_label}\n\n"
@@ -1385,11 +1458,22 @@ class AiService:
         client_name: str,
         field_contexts: list[tuple[str, str]],
         field_types: dict[str, str] | None = None,
+        client_id: str | None = None,
     ) -> dict[str, str]:
         if not field_contexts:
             return {}
         health = self.get_health()
         labels = [label for label, _ in field_contexts]
+        # P-E.1: 注入字典权威包到批量填写 prompt
+        glossary_block = ""
+        if client_id:
+            try:
+                from app.services.glossary_attributes_pack import build_verified_attributes_pack
+                _pack = build_verified_attributes_pack(self.db, client_id) or ""
+                if _pack:
+                    glossary_block = f"{_pack}\n\n---\n\n"
+            except Exception:
+                pass
         schema = {
             "type": "OBJECT",
             "properties": {label: {"type": "STRING"} for label in labels},
@@ -1427,6 +1511,7 @@ class AiService:
                 ).strip()
             )
         prompt = (
+            f"{glossary_block}"
             f"客户：{client_name}\n"
             f"模板：{template_name}\n"
             f"字段总数：{len(field_contexts)}\n\n"
@@ -1465,6 +1550,7 @@ class AiService:
                 client_name=client_name,
                 context_summary=context_summary,
                 field_type=str((field_types or {}).get(label) or "general"),
+                client_id=client_id,
             )
             for label, context_summary in field_contexts
         }
@@ -3882,10 +3968,19 @@ class AiService:
         *,
         context_pack: dict[str, object],
         limit: int = 8,
+        client_id: str | None = None,
     ) -> dict[str, object]:
         health = self.get_health()
         if not health.ready:
             return {"insights": []}
+        # P-E.2: 字典权威包注入战略洞察
+        _glossary_pack_si = ""
+        if client_id:
+            try:
+                from app.services.glossary_attributes_pack import build_verified_attributes_pack
+                _glossary_pack_si = build_verified_attributes_pack(self.db, client_id) or ""
+            except Exception:
+                _glossary_pack_si = ""
         schema = {
             "type": "OBJECT",
             "properties": {
@@ -3937,7 +4032,9 @@ class AiService:
             "如果 stableBase 和 dynamicSignals 均非空，至少输出 1 条最有把握的洞察。"
             "不要把碎片任务直接当主轴；任务、会议、事件线和附件只能作为证据或动态信号。"
         )
+        _gloss_block = f"{_glossary_pack_si}\n\n---\n\n" if _glossary_pack_si else ""
         prompt = (
+            f"{_gloss_block}"
             f"请生成 1 到 {max(1, min(12, int(limit or 8)))} 条洞察。"
             "标题必须是客户/项目专属表达，不能使用固定通用标题。"
             "insightText 用 220-450 个中文字符写成完整顾问式分析；futureJudgment 写未来可能性或判断条件；"
@@ -3945,6 +4042,7 @@ class AiService:
             "生成方法：先同时阅读 stableBase 和 dynamicSignals；每条洞察都要把长期背景、近期变化、限制条件和未来动作放在同一段判断里。"
             "不要只摘关键词，也不要因为证据还不完美就放弃判断；可以用“如果……则……”说明未来条件。"
             "本次请求已经由系统做过最低证据检查，只要 stableBase 和 dynamicSignals 非空，就不要返回空数组。\n\n"
+            "涉及具体数字/姓名/日期/金额时，优先用上方字典权威值（如有），并用 [📚 term.attribute] 标记。\n\n"
             f"上下文资料包：\n{json.dumps(context_pack, ensure_ascii=False)}"
         )
         try:
@@ -4087,10 +4185,22 @@ class AiService:
         client_name: str,
         dimension: str,
         aggregated_summaries: str,
+        client_id: str | None = None,
     ) -> dict[str, object] | None:
         """Generate a single client profile block from aggregated surrogate summaries."""
         health = self.get_health()
+        # P-E.3: 字典权威包注入
+        _glossary_block = ""
+        if client_id:
+            try:
+                from app.services.glossary_attributes_pack import build_verified_attributes_pack
+                _pack = build_verified_attributes_pack(self.db, client_id) or ""
+                if _pack:
+                    _glossary_block = f"{_pack}\n\n---\n\n"
+            except Exception:
+                pass
         prompt = (
+            f"{_glossary_block}"
             f"请基于以下 {client_name} 的「{dimension}」相关资料摘要，"
             "生成一条可复用的客户画像记忆块。\n\n"
             "要求：\n"
@@ -4100,7 +4210,8 @@ class AiService:
             "- core_questions：3-5个这个维度最关键的问题\n"
             "- distinct_findings：从资料中提炼的关键结论（3-7条）\n"
             "- entities：涉及的关键实体（组织、人物、项目等）\n"
-            "- time_markers：涉及的时间节点\n\n"
+            "- time_markers：涉及的时间节点\n"
+            "- 涉及具体数字/日期/姓名时，优先用上方字典权威值（如有）\n\n"
             f"资料摘要：\n{aggregated_summaries[:4000]}\n"
         )
         schema = {
@@ -4143,6 +4254,7 @@ class AiService:
         current_next_step: str = "",
         current_recent_decision: str = "",
         recent_activity_lines: list[str] | None = None,
+        client_id: str | None = None,
     ) -> dict[str, object]:
         cleaned_conversation = str(conversation_text or "").strip()
         fallback = self._fallback_event_line_clarification_draft(
@@ -4160,7 +4272,18 @@ class AiService:
             return fallback
 
         activity_summary = "；".join(str(item).strip() for item in (recent_activity_lines or []) if str(item).strip())[:1200]
+        # P-E.5: 字典权威包注入事件线澄清
+        _glossary_block_elc = ""
+        if client_id:
+            try:
+                from app.services.glossary_attributes_pack import build_verified_attributes_pack
+                _pack_elc = build_verified_attributes_pack(self.db, client_id) or ""
+                if _pack_elc:
+                    _glossary_block_elc = f"{_pack_elc}\n\n---\n\n"
+            except Exception:
+                pass
         prompt = (
+            f"{_glossary_block_elc}"
             "请把下面这段和客户相关的聊天记录、会议纪要或沟通摘录，整理成事件线当前态草稿。"
             "目标不是逐句复述，而是提炼出这条线现在在推进什么、卡在哪、下一步是什么、最近哪次决定改变了走向。"
             "请返回 JSON，对象字段固定为：summary, stage, intent, currentBlocker, nextStep, recentDecision, missingInfo, confidence。\n"
@@ -4561,6 +4684,129 @@ class AiService:
             raise RuntimeError(f"{display_label} API Key 未配置。")
         return profile.base_url, profile.api_key, profile.model
 
+    def _openclaw_cli_path(self) -> str:
+        value = (self.db.get_setting("ai_openclaw_cli_path", "") or "").strip()
+        return value or OPENCLAW_DEFAULT_CLI
+
+    def _openclaw_agent_id(self) -> str:
+        value = (self.db.get_setting("ai_openclaw_agent_id", "") or "").strip()
+        return value or OPENCLAW_DEFAULT_AGENT
+
+    def _openclaw_health(self) -> AiHealth:
+        cli_path = self._openclaw_cli_path()
+        resolved = shutil.which(cli_path) if not cli_path.startswith("/") else cli_path
+        model = self.current_model() or OPENCLAW_DEFAULT_MODEL
+        label = PROVIDER_LABELS["openclaw"]
+        if not resolved:
+            return AiHealth(
+                provider=OPENCLAW_PROVIDER,
+                provider_label=label,
+                base_url="",
+                model=model,
+                ready=False,
+                detail=f"{label} 未检测到本机 OpenClaw CLI（命令：{cli_path}）。",
+                credential_source="local-binary",
+                fingerprint=None,
+                profile_key="openclaw",
+                mode=self.current_ai_model_mode() if hasattr(self, "current_ai_model_mode") else "auto",
+            )
+        return AiHealth(
+            provider=OPENCLAW_PROVIDER,
+            provider_label=label,
+            base_url="",
+            model=model,
+            ready=True,
+            detail=f"{label} 已检测到本机 OpenClaw CLI。",
+            credential_source="local-binary",
+            fingerprint=None,
+            profile_key="openclaw",
+            mode=self.current_ai_model_mode() if hasattr(self, "current_ai_model_mode") else "auto",
+        )
+
+    def _openclaw_generate(
+        self,
+        prompt: str,
+        system_instruction: str,
+        response_schema: dict | None,
+        timeout_seconds: float = 60.0,
+    ) -> object:
+        user_prompt = prompt
+        if response_schema:
+            user_prompt = (
+                "请严格返回一个 JSON 对象，不要使用 Markdown，不要添加解释。"
+                "请确保返回结构满足下面这个 JSON Schema。\n"
+                f"{json.dumps(response_schema, ensure_ascii=False)}\n\n"
+                f"{prompt}"
+            )
+        if system_instruction:
+            full_message = f"[System]\n{system_instruction}\n\n[User]\n{user_prompt}"
+        else:
+            full_message = user_prompt
+
+        cli_path = self._openclaw_cli_path()
+        agent_id = self._openclaw_agent_id()
+        cli_timeout = max(30, int(timeout_seconds))
+        wall_timeout = cli_timeout + OPENCLAW_STARTUP_OVERHEAD_SECONDS
+
+        cmd = [
+            cli_path,
+            "agent",
+            "--agent", agent_id,
+            "--message", full_message,
+            "--json",
+            "--timeout", str(cli_timeout),
+        ]
+        try:
+            proc = subprocess.run(
+                cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                timeout=wall_timeout,
+                check=False,
+            )
+        except FileNotFoundError as error:
+            raise AiInvocationError("openclaw", f"未找到 OpenClaw CLI（命令：{cli_path}）：{error}")
+        except subprocess.TimeoutExpired:
+            raise AiInvocationError("openclaw", f"OpenClaw 调用硬超时（{wall_timeout:.0f}秒）")
+
+        if proc.returncode != 0:
+            err_tail = (proc.stdout or "")[-500:]
+            raise AiInvocationError("openclaw", f"OpenClaw CLI 退出码 {proc.returncode}：{err_tail}")
+
+        raw = proc.stdout or ""
+        brace = raw.find("{")
+        if brace < 0:
+            raise AiInvocationError("openclaw", f"OpenClaw 未返回 JSON：{raw[:500]}")
+
+        try:
+            payload = json.loads(raw[brace:])
+        except json.JSONDecodeError as error:
+            raise AiInvocationError("openclaw", f"OpenClaw JSON 解析失败：{error}")
+
+        meta = payload.get("meta") if isinstance(payload, dict) else None
+        if isinstance(meta, dict):
+            stop_reason = str(meta.get("stopReason") or "").lower()
+            if stop_reason and stop_reason not in {"stop", "end_turn", "complete", "finished"}:
+                raise AiInvocationError("openclaw", f"OpenClaw 异常停止：stopReason={stop_reason}")
+
+        text = ""
+        payloads = payload.get("payloads") if isinstance(payload, dict) else None
+        if isinstance(payloads, list):
+            for item in payloads:
+                if isinstance(item, dict):
+                    candidate = item.get("text")
+                    if isinstance(candidate, str) and candidate.strip():
+                        text = candidate.strip()
+                        break
+
+        if not text:
+            raise AiInvocationError("openclaw", "OpenClaw 返回内容为空")
+
+        if response_schema:
+            return self._load_relaxed_json(text)
+        return text
+
     def _qwen_generate(
         self,
         prompt: str,
@@ -4576,6 +4822,14 @@ class AiService:
         model_override: str | None = None,
         task_kind: str = "default",
     ) -> object:
+        active_provider = provider_override or self.current_provider()
+        if active_provider == OPENCLAW_PROVIDER:
+            return self._openclaw_generate(
+                prompt=prompt,
+                system_instruction=system_instruction,
+                response_schema=response_schema,
+                timeout_seconds=timeout_seconds,
+            )
         effective_task_kind = task_kind
         if effective_task_kind == "default" and response_schema is not None and int(max_tokens or 0) <= 2200:
             effective_task_kind = "fast_structured"
@@ -4676,6 +4930,26 @@ class AiService:
         - ``on_token`` 让调用方在 token 流入时实时拿到（可用于 partial 推送 db / 前端打字机）
         - 失败不做 candidate fallback（中途断流难以无缝切换）；让调用方在外层 retry。
         """
+        active_provider = provider_override or self.current_provider()
+        if active_provider == OPENCLAW_PROVIDER:
+            text = self._openclaw_generate(
+                prompt=prompt,
+                system_instruction=system_instruction,
+                response_schema=None,
+                timeout_seconds=timeout_seconds,
+            )
+            result_text = text if isinstance(text, str) else str(text or "")
+            if on_reasoning_heartbeat:
+                try:
+                    on_reasoning_heartbeat()
+                except Exception:
+                    pass
+            if on_token and result_text:
+                try:
+                    on_token(result_text)
+                except Exception:
+                    pass
+            return result_text
         candidates = self._resolve_llm_candidates(
             task_kind=task_kind,
             provider_override=provider_override,

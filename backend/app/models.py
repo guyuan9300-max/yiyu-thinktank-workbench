@@ -35,15 +35,15 @@ AgentDepartmentKey = Literal["strategy_design", "tech_development", "info_data"]
 TopicTaskOwnerMode = Literal["self", "empty"]
 TopicCandidateStatus = Literal["candidate", "tracking", "promoted", "archived"]
 TopicCandidateInsightStatus = Literal["pending", "ready", "failed"]
-# 客户项目情报流（同事新版资讯情报站 Literal 别名）— 2026-05-13 补回
-IntelligenceContentKind = Literal["profile_completion", "timely_intelligence", "public_opinion"]
+# 客户项目情报流。profile_completion 已下线（2026-05-18）→ 由数据中心承接，资讯情报站不再处理。
+IntelligenceContentKind = Literal["timely_intelligence", "public_opinion"]
 IntelligenceWorkObjectType = Literal["client", "project_module"]
 IntelligenceFocusScopeType = Literal["global", "client", "project_module"]
 IntelligenceItemUserStatus = Literal["active", "dismissed", "following"]
 IntelligenceSearchIntentStatus = Literal["missing", "stale", "ready", "running", "failed"]
 IntelligenceSupplyStatus = Literal["missing", "stale", "ready", "running", "failed"]
 MeetingStage = Literal["prepared", "ingested", "extracted", "resolved", "published"]
-AiProvider = Literal["mock", "openai_compatible", "qwen", "doubao"]
+AiProvider = Literal["mock", "openai_compatible", "qwen", "doubao", "openclaw"]
 AiModelMode = Literal["auto", "online_first", "local_first", "local_only"]
 AiModelProfileKey = Literal["online_primary", "local_text_deep", "local_vision_ocr", "local_fast"]
 AiModelCapability = Literal["online_primary", "deep_analysis", "vision_ocr", "fast_structured"]
@@ -769,6 +769,12 @@ class ClientMutationPayload(BaseModel):
     intro: str
     stage: str
     color: str | None = None
+    # P7：项目编辑弹窗扩展字段
+    #   批 1：本地持久化（本期）
+    #   批 2：战略陪伴/咨询/情报/任务模块按 isDataCenterIncluded 过滤
+    #   批 3：cloud sync 让勾选的同事在他们的电脑上拉到这个项目
+    relatedUserIds: list[str] = Field(default_factory=list)
+    isDataCenterIncluded: bool = True
 
 
 class ClientSummary(BaseModel):
@@ -784,6 +790,13 @@ class ClientSummary(BaseModel):
     documentCount: int
     taskCount: int
     lastActivityAt: str | None = None
+    # P7：扩展字段同步暴露给前端（旧 client 行默认值：relatedUserIds=[]、isDataCenterIncluded=True）
+    relatedUserIds: list[str] = Field(default_factory=list)
+    isDataCenterIncluded: bool = True
+    # 全局冷冻:用户主动冷冻后,该项目不参与自动 job/计算/资讯/数据中心更新;
+    # 所有非工作台 view 的下拉默认不展示;工作台搜索时还能找回
+    isFrozen: bool = False
+    frozenAt: str | None = None
 
 
 class ClientFolder(BaseModel):
@@ -6470,13 +6483,44 @@ class GrowthBusinessCoverageRecord(BaseModel):
     coveredProjects: int = 0  # 字典项目类计数
 
 
+class GrowthReviewWeekPointRecord(BaseModel):
+    """M3 复盘单周聚合（保留兼容，新前端不再用）。"""
+
+    weekLabel: str
+    entryCount: int = 0
+    charCount: int = 0
+
+
+class GrowthReviewDayPointRecord(BaseModel):
+    """M3 复盘单日聚合（用于 30 天曲线图）。"""
+
+    date: str  # YYYY-MM-DD
+    entryCount: int = 0
+    charCount: int = 0
+
+
 class GrowthReviewStreakRecord(BaseModel):
-    """M3 复盘 streaks。"""
+    """M3 复盘沉淀（连续 + 件数 + 字数 + 环比 + 30 天曲线）。"""
 
     currentStreakWeeks: int = 0
     maxStreakWeeks: int = 0
     totalReviewWeeks: int = 0
     lastReviewedWeekLabel: str = ""
+
+    # 件数维度
+    monthlyEntryCount: int = 0
+    lastMonthEntryCount: int = 0
+    entryGrowthPercent: int = 0
+
+    # 字数维度（鼓励写得多）
+    monthlyCharCount: int = 0
+    lastMonthCharCount: int = 0
+    charGrowthPercent: int = 0
+
+    # 旧字段：按周聚合（保留 API 兼容，新前端用 dailyTrend）
+    weeklyTrend: list[GrowthReviewWeekPointRecord] = Field(default_factory=list)
+    # 新字段：按天聚合（30 天曲线）
+    dailyTrend: list[GrowthReviewDayPointRecord] = Field(default_factory=list)
 
 
 class GrowthWorkTypeSliceRecord(BaseModel):
@@ -7877,6 +7921,20 @@ class ClientTextDocumentResponse(BaseModel):
     path: str
 
 
+# P9：客户工作台 inline 编辑器 AI 助手 action
+#   action 字段决定 LLM 任务：扩写 / 改写专业 / 改写简洁 / 总结
+#   入参：当前文档 markdown（content），返回：新 markdown（content）
+class DocumentAiActionPayload(BaseModel):
+    content: str
+    action: Literal["expand", "rewrite_pro", "rewrite_short", "summarize"]
+
+
+class DocumentAiActionResponse(BaseModel):
+    content: str
+    action: str
+    durationMs: float = 0.0
+
+
 class LinkMaterialImportStartPayload(BaseModel):
     url: str
     useBrowserCookies: bool = False
@@ -7933,7 +7991,7 @@ class ClientTemplateFillRunRecord(BaseModel):
     templateName: str
     templatePath: str
     status: Literal["queued", "running", "completed", "failed"]
-    phase: Literal["queued", "parsing", "retrieving", "writing", "completed", "failed"]
+    phase: Literal["queued", "parsing", "retrieving", "ai", "writing", "completed", "failed"]
     progress: float = 0.0
     stageLabel: str | None = None
     elapsedMs: float = 0.0
@@ -8883,3 +8941,56 @@ class IntelligenceFeedbackDiagnosticsResponse(BaseModel):
 class TopicCandidateChatPayload(BaseModel):
     question: str
     history: list[TopicCandidateChatMessageRecord] = Field(default_factory=list)
+
+
+class TaskAiParsePayload(BaseModel):
+    """智能新建任务 — 用户粘贴自然语言文本,由 LLM 抽成结构化任务字段。
+
+    currentDate: 前端按本地时区算的今天 YYYY-MM-DD,用于让 LLM 解算"今天/明天/下周三"。
+    """
+
+    text: str
+    currentDate: str
+
+
+class TaskAiParseClientCandidate(BaseModel):
+    """模糊匹配到的客户候选(展示+审计用,前端目前只取首位填入)。"""
+
+    id: str
+    name: str
+    score: float = 0.0
+
+
+class TaskAiParseResult(BaseModel):
+    """智能新建任务返回的结构化字段。
+
+    严格约束:
+    - dueDate / dueTime 只有在文本明确给出时才填,否则为 None;不按语气推断
+    - clientId 仅当 fuzzy 匹配置信度足够时才填,否则保留 None 让用户手动选
+    """
+
+    title: str
+    desc: str = ""
+    dueDate: str | None = None
+    dueTime: str | None = None
+    priority: Literal["low", "normal", "high"] = "normal"
+    clientId: str | None = None
+    clientName: str | None = None
+    clientCandidates: list[TaskAiParseClientCandidate] = Field(default_factory=list)
+    rawLlmGuessClientName: str | None = None
+
+
+class ClientDeletePreview(BaseModel):
+    """删除客户前的影响预览,让前端显示二次确认弹窗."""
+
+    clientId: str
+    name: str
+    threadCount: int = 0
+    messageCount: int = 0
+    documentCount: int = 0
+    dnaCount: int = 0
+    goalCount: int = 0
+    meetingCount: int = 0
+    eventLineCount: int = 0
+    taskCount: int = 0
+    isDemoClient: bool = False

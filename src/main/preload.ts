@@ -12,6 +12,17 @@ import type {
 
 const backendBaseUrl = process.env.YIYU_BACKEND_URL ?? 'http://127.0.0.1:47829';
 
+interface UpdateEventPayload {
+  kind: 'checking' | 'available' | 'not-available' | 'download-progress' | 'downloaded' | 'error';
+  version?: string;
+  releaseNotes?: string | null;
+  percent?: number;
+  bytesPerSecond?: number;
+  transferred?: number;
+  total?: number;
+  message?: string;
+}
+
 contextBridge.exposeInMainWorld('yiyuWorkbench', {
   backendBaseUrl,
   getDesktopAppInfo: (): Promise<DesktopAppInfo> => ipcRenderer.invoke('yiyu-workbench:getDesktopAppInfo'),
@@ -67,5 +78,14 @@ contextBridge.exposeInMainWorld('yiyuWorkbench', {
     const handler = (_event: Electron.IpcRendererEvent, filePath: string) => callback(filePath);
     ipcRenderer.on('yiyu-workbench:fileChanged', handler);
     return () => { ipcRenderer.removeListener('yiyu-workbench:fileChanged', handler); };
+  },
+  checkForUpdates: (): Promise<{ ok: boolean; version?: string | null; reason?: string }> =>
+    ipcRenderer.invoke('yiyu-workbench:update.check'),
+  quitAndInstallUpdate: (): Promise<{ ok: boolean; reason?: string }> =>
+    ipcRenderer.invoke('yiyu-workbench:update.quitAndInstall'),
+  onUpdateEvent: (callback: (payload: UpdateEventPayload) => void) => {
+    const handler = (_event: Electron.IpcRendererEvent, payload: UpdateEventPayload) => callback(payload);
+    ipcRenderer.on('yiyu-workbench:update-event', handler);
+    return () => { ipcRenderer.removeListener('yiyu-workbench:update-event', handler); };
   },
 });
