@@ -976,7 +976,11 @@ function backendEnv(extraEnv: NodeJS.ProcessEnv = {}) {
   } else {
     delete env.YIYU_CLOUD_API_URL;
   }
-  env.YIYU_WORKBENCH_DATA_DIR = fixedUserDataPath;
+  // YIYU_WORKBENCH_DATA_DIR: 允许从 shell 显式覆盖,用于 v2.1 开发分支跑独立数据目录
+  // (避免新旧版 schema 冲突)。未显式设置时回退到 Electron 默认 userData 路径。
+  if (!env.YIYU_WORKBENCH_DATA_DIR) {
+    env.YIYU_WORKBENCH_DATA_DIR = fixedUserDataPath;
+  }
   env.PYTHONDONTWRITEBYTECODE = '1';
   env.PYTHONNOUSERSITE = '1';
   env.PYTHONPYCACHEPREFIX = path.join(fixedUserDataPath, 'runtime', 'pycache');
