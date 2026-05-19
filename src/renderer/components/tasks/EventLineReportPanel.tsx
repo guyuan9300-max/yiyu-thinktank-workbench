@@ -1680,21 +1680,29 @@ export default function EventLineReportPanel({ eventLineId, backendBaseUrl, onCl
     setActiveMaterialTab('core');
   }, [eventLineId]);
 
+  // S4.3 fix: 切事件线时, 旧 loadSnapshot 请求可能在新 eventLineId 已生效后才返回,
+  // 把旧数据 setState 到新页面 → 用户看到串台数据. 用 currentLoadIdRef 追踪本次 load 编号,
+  // 异步返回时若编号已变 (说明切了), 丢弃结果.
+  const currentLoadIdRef = useRef(0);
+
   const loadSnapshot = useCallback(async (options?: { silent?: boolean }) => {
+    const loadId = ++currentLoadIdRef.current;
+    const targetEventLineId = eventLineId;
     if (!options?.silent) {
       setLoading(true);
       setError(null);
     }
     try {
       const [data, orgProfile] = await Promise.all([
-        getEventLineReportSnapshot(eventLineId),
+        getEventLineReportSnapshot(targetEventLineId),
         getOrgModelProfile().catch(() => null),
       ]);
+      // S4.3 fix: 旧请求返回时新 eventLineId 已变 → 丢弃
+      if (loadId !== currentLoadIdRef.current) return;
       setSnapshot(data);
       const orgName = normalizeText(orgProfile?.organization?.name);
       setOrganizationName(orgName);
       setDraft((prev) => {
-        // Preserve user edits during silent refresh
         const prevEditMap = new Map<string, { editedTitle?: string; editedSummary?: string }>();
         if (options?.silent && prev) {
           for (const a of prev.activities) {
@@ -1718,11 +1726,12 @@ export default function EventLineReportPanel({ eventLineId, backendBaseUrl, onCl
         };
       });
     } catch (err) {
+      if (loadId !== currentLoadIdRef.current) return;
       if (!options?.silent) {
         setError(err instanceof Error ? err.message : '加载事件线快照失败');
       }
     } finally {
-      if (!options?.silent) {
+      if (loadId === currentLoadIdRef.current && !options?.silent) {
         setLoading(false);
       }
     }

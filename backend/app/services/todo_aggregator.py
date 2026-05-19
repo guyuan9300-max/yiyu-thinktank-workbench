@@ -92,7 +92,7 @@ def collect_all_todos(db: Any, client_id: str) -> list[UnifiedTodo]:
     except Exception:
         pass
 
-    # 源 2 · action_items (会议待办, draft + published 都拉; 排除明显占位符)
+    # 源 2 · action_items (会议待办, draft + published 都拉; 排除明显占位符 + 已 dismiss/completed)
     try:
         rows = db.fetchall(
             """SELECT ai.id, ai.title, ai.owner_name, ai.due_date,
@@ -101,7 +101,8 @@ def collect_all_todos(db: Any, client_id: str) -> list[UnifiedTodo]:
                JOIN meetings m ON m.id = ai.meeting_id
                WHERE m.client_id = ?
                  AND ai.title NOT LIKE '%补齐%'
-                 AND ai.title NOT LIKE '%占位%'""",
+                 AND ai.title NOT LIKE '%占位%'
+                 AND (ai.publish_status IS NULL OR ai.publish_status NOT IN ('completed', 'dismissed'))""",
             (client_id,),
         )
         for r in rows:
@@ -168,18 +169,38 @@ def collect_all_todos(db: Any, client_id: str) -> list[UnifiedTodo]:
 
 
 def _normalize_title_for_match(title: str) -> str:
-    """归一化标题用于去重: 去标点/空白/方向前缀."""
+    """归一化标题用于去重: 去标点/空白/方向前缀/常见客户名/冗余动作词."""
     import re
     s = (title or "").strip()
     # 去掉 "X 向 Y:" / "X → Y:" 等承诺类前缀
     s = re.sub(r"^[^:：]+[:：]\s*", "", s)
     # 去掉所有标点和空白
     s = re.sub(r"[\s，。、；：:,.;\-—!\?\(\)\[\]【】《》""''「」]+", "", s)
+    # 去掉 LLM 反复重复的客户名词缀 (例: '完成日慈一季度' / '完成日慈基金会一季度' / '完成一季度' 归一为 '完成一季度')
+    # 通用化: 任意 2-4 字"X+基金会|公益|协会|学院|项目" 都视为同一客户实体, 抹掉
+    s = re.sub(r"[一-龥]{2,4}(基金会|公益|协会|学院|项目|集团|公司)", "", s)
     return s.lower()
 
 
-def _title_similar(a: str, b: str) -> bool:
-    """简单标题相似度: 归一化后, 一方完全包含另一方 或 重叠 ≥70%."""
+def _normalize_owner_for_match(owner: str) -> str:
+    """归一化承诺人, 解决"顾老师 / 顾源源"同人问题.
+
+    规则:
+      - 去掉常见称谓后缀 (老师/总/总监/经理/同学)
+      - 仅保留中文名核心 2-3 字
+      - 用于 owner 等价判断时的 fallback (优先看 entities 别名表, 没匹配再用此规则)
+    """
+    import re
+    s = (owner or "").strip()
+    s = re.sub(r"(老师|总监|经理|主管|同学|总裁|总|博士|教授)$", "", s)
+    return s.lower()
+
+
+def _title_similar(a: str, b: str, *, threshold: float = 0.5) -> bool:
+    """标题相似度: 归一化后, 一方包含另一方 或 字符级重叠 ≥ threshold.
+
+    默认阈值 0.5 (放宽口径): 用户原则是"宁可多提醒, 错了也不漏提醒"。
+    """
     na = _normalize_title_for_match(a)
     nb = _normalize_title_for_match(b)
     if not na or not nb:
@@ -188,11 +209,10 @@ def _title_similar(a: str, b: str) -> bool:
         return True
     if na in nb or nb in na:
         return True
-    # 字符级重叠
     set_a, set_b = set(na), set(nb)
     overlap = len(set_a & set_b)
     smaller = min(len(set_a), len(set_b))
-    if smaller >= 5 and overlap / smaller >= 0.7:
+    if smaller >= 4 and overlap / smaller >= threshold:
         return True
     return False
 
@@ -201,32 +221,48 @@ _SOURCE_PRIORITY = {"task": 0, "commitment": 1, "meeting_action": 2}
 
 
 def _dedupe_todos(todos: list[UnifiedTodo]) -> list[UnifiedTodo]:
-    """跨 3 源去重: 同 owner + 同 due_date + 标题相似 → 保留优先级最高的.
+    """跨 3 源去重: 三档判定, 保留优先级最高的 (task > commitment > meeting_action).
+
+    判定档位 (从严到宽):
+      1. 强合并: 标题归一化后完全相等 → 合并 (不要求 owner/due 也等)
+         覆盖场景: '完成日慈一季度...' vs '完成一季度...' 客户名词缀归一抹掉后相同
+      2. 中合并: owner 归一化等价 (顾老师↔顾源源) + 标题相似 → 合并
+      3. 弱合并: owner 严格等 或 due_date 严格等, 再加标题相似 → 合并 (老逻辑)
 
     机制化保证: 任何客户调用 collect_all_todos 都自动去重, 不需要前端处理.
     """
     if not todos:
         return []
-    # 按 (owner, due_date) 分组, 组内做相似度匹配
     keep: list[UnifiedTodo] = []
     used: set[int] = set()
     for i, a in enumerate(todos):
         if i in used:
             continue
         cluster: list[tuple[int, UnifiedTodo]] = [(i, a)]
+        na = _normalize_title_for_match(a.title)
+        oa = _normalize_owner_for_match(a.owner or "")
         for j in range(i + 1, len(todos)):
             if j in used:
                 continue
             b = todos[j]
-            # 同 owner 或同 due_date (二选一即足够候选), 然后看标题
-            owner_match = a.owner and b.owner and a.owner == b.owner
-            due_match = a.due_date and b.due_date and a.due_date == b.due_date
-            if not (owner_match or due_match):
-                continue
-            if _title_similar(a.title, b.title):
+            nb = _normalize_title_for_match(b.title)
+            ob = _normalize_owner_for_match(b.owner or "")
+            merged = False
+            # 档 1: 归一标题完全相等 → 强合并
+            if na and nb and na == nb:
+                merged = True
+            # 档 2: owner 归一相等 + 标题相似
+            elif oa and ob and oa == ob and _title_similar(a.title, b.title):
+                merged = True
+            # 档 3: owner 严格相等 或 due 严格相等 + 标题相似 (老逻辑)
+            else:
+                owner_match = bool(a.owner) and bool(b.owner) and a.owner == b.owner
+                due_match = bool(a.due_date) and bool(b.due_date) and a.due_date == b.due_date
+                if (owner_match or due_match) and _title_similar(a.title, b.title):
+                    merged = True
+            if merged:
                 cluster.append((j, b))
                 used.add(j)
-        # 从 cluster 里选优先级最高的 (task > commitment > meeting_action)
         cluster.sort(key=lambda x: _SOURCE_PRIORITY.get(x[1].source, 9))
         keep.append(cluster[0][1])
         used.add(i)

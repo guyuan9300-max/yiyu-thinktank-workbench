@@ -1379,13 +1379,18 @@ export function OrganizationSetupCenter({
         </div>
       ) : null}
 
-      <div className="grid grid-cols-2 gap-4 xl:grid-cols-5">
-        {stats.map((stat) => (
-          <div key={stat.label} className="rounded-[28px] border border-gray-100 bg-white px-6 py-5 shadow-sm">
-            <p className="text-[13px] font-medium text-gray-400">{stat.label}</p>
-            <p className="mt-3 text-[42px] font-bold tracking-tight text-gray-900">{stat.value}</p>
-          </div>
-        ))}
+      <div className="grid grid-cols-2 gap-x-8 gap-y-6 xl:grid-cols-5">
+        {stats.map((stat) => {
+          const numericValue = typeof stat.value === 'number' ? stat.value : Number(stat.value);
+          const hasValue = !Number.isNaN(numericValue) && numericValue > 0;
+          return (
+            <div key={stat.label} className="flex flex-col">
+              <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-gray-400">{stat.label}</p>
+              <span className="mt-3 text-[36px] leading-none font-light tracking-tight text-gray-900">{stat.value}</span>
+              <div className={`mt-3 h-[2px] w-8 rounded-full ${hasValue ? 'bg-emerald-500' : 'bg-transparent'}`} />
+            </div>
+          );
+        })}
       </div>
 
       <div className="overflow-hidden rounded-[32px] border border-[#DCE4FF] bg-white shadow-sm">

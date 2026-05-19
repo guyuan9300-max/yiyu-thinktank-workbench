@@ -126,26 +126,20 @@ export function SpeechModelSettingsCard({
   };
 
   return (
-    <div className="bg-white border border-gray-100 rounded-3xl p-6 shadow-sm space-y-5">
+    <div className="space-y-5">
       <div className="flex items-start justify-between gap-4">
-        <div>
-          <div className="flex items-center gap-2">
-            <Headphones size={18} className="text-[#5B7BFE]" />
-            <h2 className="text-[16px] font-bold text-gray-900">语音识别模型 · 用于语音转文字</h2>
-          </div>
-          <p className="text-[12px] text-gray-500 mt-1">
-            配置后即可在客户工作台直接上传 .m4a / .mp3 / .wav 等录音文件，系统自动转写为文字资料入库。
-            不同客户可选用不同服务商，凭证只保存在本机。
-          </p>
-        </div>
+        <p className="text-[12px] text-gray-500 leading-relaxed flex-1 min-w-0">
+          配置后即可在客户工作台直接上传 .m4a / .mp3 / .wav 等录音文件，系统自动转写为文字资料入库。
+          不同客户可选用不同服务商，凭证只保存在本机。
+        </p>
         {canEdit && (
           <button
             type="button"
             onClick={() => void handleSave()}
             disabled={isSaving || !draft.provider}
-            className="rounded-2xl bg-[#5B7BFE] px-4 py-2 text-[12px] font-bold text-white shadow-[0_10px_30px_rgba(91,123,254,0.24)] disabled:cursor-not-allowed disabled:opacity-50"
+            className="shrink-0 rounded-xl bg-[#5B7BFE] px-4 py-2 text-[12px] font-bold text-white disabled:cursor-not-allowed disabled:opacity-50"
           >
-            {isSaving ? '保存中…' : '保存语音模型配置'}
+            {isSaving ? '保存中…' : '保存'}
           </button>
         )}
       </div>

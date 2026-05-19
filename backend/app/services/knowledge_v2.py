@@ -2680,6 +2680,32 @@ def ingest_document_knowledge(
         except Exception:
             logger.exception("[fanout#9.5] portrait build trigger check failed")
 
+    # ─────────────────────────────────────────────────────────────────────
+    # fanout#10 · narrative 待重生标记
+    # ingest 完一份资料 → 战略陪伴 6 维叙事会过期, 标 stale 让前端打开页面时自动重生.
+    # 仅写本地 db (narrative 本身在云端, 但 stale 标记本地维护避免每次都查云端).
+    # ─────────────────────────────────────────────────────────────────────
+    try:
+        from datetime import datetime, timezone
+        db.execute(
+            """
+            INSERT INTO narrative_stale_signals (client_id, marked_at, last_doc_title, reason)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(client_id) DO UPDATE SET
+                marked_at = excluded.marked_at,
+                last_doc_title = excluded.last_doc_title,
+                reason = excluded.reason
+            """,
+            (
+                client_id,
+                datetime.now(timezone.utc).isoformat(),
+                str(title)[:200],
+                "document_ingested",
+            ),
+        )
+    except Exception:
+        logger.exception("[fanout#10] narrative_stale_signals upsert failed (client=%s)", client_id)
+
     return {
         "knowledge_document_id": v2_document_id,
         "legacy_knowledge_document_id": legacy_knowledge_document_id,

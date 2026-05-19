@@ -176,8 +176,14 @@ def _build_portrait_prompt(
     tasks: list[dict[str, Any]],
     event_lines: list[dict[str, Any]],
     client_name: str,
+    *,
+    glossary_pack: str = "",
 ) -> str:
-    lines = [f"# 客户: {client_name}\n"]
+    lines: list[str] = []
+    if glossary_pack:
+        lines.append(glossary_pack)
+        lines.append("\n---\n")
+    lines.append(f"# 客户: {client_name}\n")
 
     lines.append(f"\n## 字典 ({len(glossary)} term):")
     for g in glossary:
@@ -273,10 +279,19 @@ def build_portrait(db: Database, ai: AiService, client_id: str) -> dict[str, Any
     if not health.ready:
         return {"status": "ai_not_ready", "error": health.detail}
 
+    # P-E.6: 注入字典权威包，让 portrait 的关键数字基于 verified 事实
+    glossary_pack = ""
+    try:
+        from app.services.glossary_attributes_pack import build_verified_attributes_pack
+        glossary_pack = build_verified_attributes_pack(db, client_id) or ""
+    except Exception:
+        glossary_pack = ""
+
     prompt = _build_portrait_prompt(
         inputs["glossary"], inputs["atomic_facts"],
         inputs["tasks"], inputs["event_lines"],
         inputs["client_name"],
+        glossary_pack=glossary_pack,
     )
 
     try:

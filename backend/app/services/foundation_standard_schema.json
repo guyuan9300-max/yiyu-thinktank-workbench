@@ -1,0 +1,1912 @@
+{
+  "version": "1.0",
+  "source": "广州市4A级及以上基金会摸底调查表",
+  "total_fields": 177,
+  "fields": [
+    {
+      "field_name": "基金会全称",
+      "section": "一、填报单位与联系人",
+      "value_type": "text",
+      "aliases": [
+        "基金会全称"
+      ],
+      "is_subjective": false,
+      "is_public_searchable": true
+    },
+    {
+      "field_name": "统一社会信用代码",
+      "section": "一、填报单位与联系人",
+      "value_type": "text",
+      "aliases": [
+        "统一社会信用代码",
+        "社会信用代码",
+        "信用代码",
+        "组织机构代码"
+      ],
+      "is_subjective": false,
+      "is_public_searchable": true
+    },
+    {
+      "field_name": "登记管理机关",
+      "section": "一、填报单位与联系人",
+      "value_type": "location_or_org",
+      "aliases": [
+        "登记管理机关",
+        "登记机关",
+        "注册登记机关",
+        "主管机关"
+      ],
+      "is_subjective": false,
+      "is_public_searchable": true
+    },
+    {
+      "field_name": "业务主管/指导单位",
+      "section": "一、填报单位与联系人",
+      "value_type": "location_or_org",
+      "aliases": [
+        "业务主管/指导单位",
+        "业务主管",
+        "指导单位"
+      ],
+      "is_subjective": false,
+      "is_public_searchable": true
+    },
+    {
+      "field_name": "评估等级",
+      "section": "一、填报单位与联系人",
+      "value_type": "rating",
+      "aliases": [
+        "评估等级",
+        "社会组织评估等级",
+        "等级评估",
+        "机构评估等级",
+        "AAA级",
+        "5A级"
+      ],
+      "is_subjective": false,
+      "is_public_searchable": true
+    },
+    {
+      "field_name": "评估有效期",
+      "section": "一、填报单位与联系人",
+      "value_type": "date",
+      "aliases": [
+        "评估有效期"
+      ],
+      "is_subjective": false,
+      "is_public_searchable": true
+    },
+    {
+      "field_name": "成立时间",
+      "section": "一、填报单位与联系人",
+      "value_type": "date",
+      "aliases": [
+        "成立时间",
+        "成立日期",
+        "注册时间",
+        "注册成立时间",
+        "注册成立日期",
+        "创立时间",
+        "创办时间"
+      ],
+      "is_subjective": false,
+      "is_public_searchable": true
+    },
+    {
+      "field_name": "原始基金数额",
+      "section": "一、填报单位与联系人",
+      "value_type": "amount_or_count",
+      "aliases": [
+        "原始基金数额",
+        "原始基金",
+        "注册资金",
+        "注册资本",
+        "开办资金"
+      ],
+      "is_subjective": false,
+      "is_public_searchable": true
+    },
+    {
+      "field_name": "法定代表人",
+      "section": "一、填报单位与联系人",
+      "value_type": "person",
+      "aliases": [
+        "法定代表人",
+        "法人",
+        "法定代表",
+        "法人代表",
+        "理事长"
+      ],
+      "is_subjective": false,
+      "is_public_searchable": true
+    },
+    {
+      "field_name": "秘书长/负责人",
+      "section": "一、填报单位与联系人",
+      "value_type": "person",
+      "aliases": [
+        "秘书长/负责人",
+        "秘书长",
+        "负责人"
+      ],
+      "is_subjective": false,
+      "is_public_searchable": true
+    },
+    {
+      "field_name": "填表联系人",
+      "section": "一、填报单位与联系人",
+      "value_type": "person",
+      "aliases": [
+        "填表联系人"
+      ],
+      "is_subjective": false,
+      "is_public_searchable": false
+    },
+    {
+      "field_name": "联系人职务",
+      "section": "一、填报单位与联系人",
+      "value_type": "person",
+      "aliases": [
+        "联系人职务"
+      ],
+      "is_subjective": false,
+      "is_public_searchable": false
+    },
+    {
+      "field_name": "手机号码",
+      "section": "一、填报单位与联系人",
+      "value_type": "text",
+      "aliases": [
+        "手机号码"
+      ],
+      "is_subjective": false,
+      "is_public_searchable": false
+    },
+    {
+      "field_name": "电子邮箱",
+      "section": "一、填报单位与联系人",
+      "value_type": "text",
+      "aliases": [
+        "电子邮箱"
+      ],
+      "is_subjective": false,
+      "is_public_searchable": false
+    },
+    {
+      "field_name": "办公电话",
+      "section": "一、填报单位与联系人",
+      "value_type": "text",
+      "aliases": [
+        "办公电话"
+      ],
+      "is_subjective": false,
+      "is_public_searchable": false
+    },
+    {
+      "field_name": "填报日期",
+      "section": "一、填报单位与联系人",
+      "value_type": "date",
+      "aliases": [
+        "填报日期"
+      ],
+      "is_subjective": false,
+      "is_public_searchable": false
+    },
+    {
+      "field_name": "登记住所",
+      "section": "一、填报单位与联系人",
+      "value_type": "location_or_org",
+      "aliases": [
+        "登记住所",
+        "注册地址",
+        "注册住所",
+        "住所地"
+      ],
+      "is_subjective": false,
+      "is_public_searchable": true
+    },
+    {
+      "field_name": "实际办公地址",
+      "section": "一、填报单位与联系人",
+      "value_type": "location_or_org",
+      "aliases": [
+        "实际办公地址",
+        "办公地址",
+        "总部位置",
+        "实际地址"
+      ],
+      "is_subjective": false,
+      "is_public_searchable": true
+    },
+    {
+      "field_name": "主要业务范围",
+      "section": "一、填报单位与联系人",
+      "value_type": "text",
+      "aliases": [
+        "主要业务范围",
+        "业务范围",
+        "核心业务",
+        "业务方向",
+        "业务领域"
+      ],
+      "is_subjective": false,
+      "is_public_searchable": true
+    },
+    {
+      "field_name": "基金会类型",
+      "section": "二、基础身份与登记评估情况",
+      "value_type": "text",
+      "aliases": [
+        "基金会类型",
+        "机构类型",
+        "机构性质",
+        "组织性质",
+        "公募/非公募"
+      ],
+      "is_subjective": false,
+      "is_public_searchable": true
+    },
+    {
+      "field_name": "公开募捐资格",
+      "section": "二、基础身份与登记评估情况",
+      "value_type": "text",
+      "aliases": [
+        "公开募捐资格",
+        "募捐资格",
+        "公募资格"
+      ],
+      "is_subjective": false,
+      "is_public_searchable": true
+    },
+    {
+      "field_name": "慈善组织认定",
+      "section": "二、基础身份与登记评估情况",
+      "value_type": "text",
+      "aliases": [
+        "慈善组织认定",
+        "慈善组织",
+        "慈善组织资质"
+      ],
+      "is_subjective": false,
+      "is_public_searchable": true
+    },
+    {
+      "field_name": "公益性捐赠税前扣除资格",
+      "section": "二、基础身份与登记评估情况",
+      "value_type": "text",
+      "aliases": [
+        "公益性捐赠税前扣除资格"
+      ],
+      "is_subjective": false,
+      "is_public_searchable": true
+    },
+    {
+      "field_name": "最近一次年检/年报情况",
+      "section": "二、基础身份与登记评估情况",
+      "value_type": "text",
+      "aliases": [
+        "最近一次年检/年报情况",
+        "最近一次年检",
+        "年报情况"
+      ],
+      "is_subjective": false,
+      "is_public_searchable": true
+    },
+    {
+      "field_name": "最近一次审计报告年度",
+      "section": "二、基础身份与登记评估情况",
+      "value_type": "text",
+      "aliases": [
+        "最近一次审计报告年度"
+      ],
+      "is_subjective": false,
+      "is_public_searchable": true
+    },
+    {
+      "field_name": "互联网募捐备案/合作平台",
+      "section": "二、基础身份与登记评估情况",
+      "value_type": "text",
+      "aliases": [
+        "互联网募捐备案/合作平台",
+        "互联网募捐备案",
+        "合作平台"
+      ],
+      "is_subjective": false,
+      "is_public_searchable": true
+    },
+    {
+      "field_name": "是否设立专项基金",
+      "section": "二、基础身份与登记评估情况",
+      "value_type": "yes_no",
+      "aliases": [
+        "是否设立专项基金"
+      ],
+      "is_subjective": false,
+      "is_public_searchable": true
+    },
+    {
+      "field_name": "是否设立分支/代表机构",
+      "section": "二、基础身份与登记评估情况",
+      "value_type": "yes_no",
+      "aliases": [
+        "是否设立分支/代表机构",
+        "是否设立分支",
+        "代表机构"
+      ],
+      "is_subjective": false,
+      "is_public_searchable": true
+    },
+    {
+      "field_name": "是否存在异地办公/项目点",
+      "section": "二、基础身份与登记评估情况",
+      "value_type": "yes_no",
+      "aliases": [
+        "是否存在异地办公/项目点",
+        "是否存在异地办公",
+        "项目点"
+      ],
+      "is_subjective": false,
+      "is_public_searchable": true
+    },
+    {
+      "field_name": "是否有境外合作",
+      "section": "二、基础身份与登记评估情况",
+      "value_type": "yes_no",
+      "aliases": [
+        "是否有境外合作"
+      ],
+      "is_subjective": false,
+      "is_public_searchable": true
+    },
+    {
+      "field_name": "是否接受境外资金",
+      "section": "二、基础身份与登记评估情况",
+      "value_type": "yes_no",
+      "aliases": [
+        "是否接受境外资金"
+      ],
+      "is_subjective": false,
+      "is_public_searchable": true
+    },
+    {
+      "field_name": "4A/5A等级取得及保持情况说明",
+      "section": "二、基础身份与登记评估情况",
+      "value_type": "rating",
+      "aliases": [
+        "4A/5A等级取得及保持情况说明",
+        "4A",
+        "5A等级取得及保持情况说明"
+      ],
+      "is_subjective": true,
+      "is_public_searchable": false
+    },
+    {
+      "field_name": "登记事项、章程、业务范围近三年变更情况",
+      "section": "二、基础身份与登记评估情况",
+      "value_type": "text",
+      "aliases": [
+        "登记事项、章程、业务范围近三年变更情况"
+      ],
+      "is_subjective": false,
+      "is_public_searchable": false
+    },
+    {
+      "field_name": "需民政部门重点了解的基础情况",
+      "section": "二、基础身份与登记评估情况",
+      "value_type": "text",
+      "aliases": [
+        "需民政部门重点了解的基础情况"
+      ],
+      "is_subjective": false,
+      "is_public_searchable": false
+    },
+    {
+      "field_name": "本届理事会届次",
+      "section": "三、法人治理与内部运行情况",
+      "value_type": "date",
+      "aliases": [
+        "本届理事会届次"
+      ],
+      "is_subjective": false,
+      "is_public_searchable": true
+    },
+    {
+      "field_name": "本届理事会任期",
+      "section": "三、法人治理与内部运行情况",
+      "value_type": "date",
+      "aliases": [
+        "本届理事会任期"
+      ],
+      "is_subjective": false,
+      "is_public_searchable": true
+    },
+    {
+      "field_name": "理事人数",
+      "section": "三、法人治理与内部运行情况",
+      "value_type": "amount_or_count",
+      "aliases": [
+        "理事人数",
+        "理事会人数",
+        "理事数量"
+      ],
+      "is_subjective": false,
+      "is_public_searchable": true
+    },
+    {
+      "field_name": "监事人数",
+      "section": "三、法人治理与内部运行情况",
+      "value_type": "amount_or_count",
+      "aliases": [
+        "监事人数"
+      ],
+      "is_subjective": false,
+      "is_public_searchable": true
+    },
+    {
+      "field_name": "专职秘书长情况",
+      "section": "三、法人治理与内部运行情况",
+      "value_type": "person",
+      "aliases": [
+        "专职秘书长情况"
+      ],
+      "is_subjective": false,
+      "is_public_searchable": true
+    },
+    {
+      "field_name": "专职工作人员人数",
+      "section": "三、法人治理与内部运行情况",
+      "value_type": "amount_or_count",
+      "aliases": [
+        "专职工作人员人数",
+        "专职人员",
+        "全职职工",
+        "员工人数",
+        "职工人数"
+      ],
+      "is_subjective": false,
+      "is_public_searchable": true
+    },
+    {
+      "field_name": "理事会年度召开次数",
+      "section": "三、法人治理与内部运行情况",
+      "value_type": "amount_or_count",
+      "aliases": [
+        "理事会年度召开次数"
+      ],
+      "is_subjective": false,
+      "is_public_searchable": true
+    },
+    {
+      "field_name": "监事会/监事履职情况",
+      "section": "三、法人治理与内部运行情况",
+      "value_type": "text",
+      "aliases": [
+        "监事会/监事履职情况",
+        "监事会",
+        "监事履职情况"
+      ],
+      "is_subjective": false,
+      "is_public_searchable": true
+    },
+    {
+      "field_name": "主要制度是否完备",
+      "section": "三、法人治理与内部运行情况",
+      "value_type": "text",
+      "aliases": [
+        "主要制度是否完备"
+      ],
+      "is_subjective": false,
+      "is_public_searchable": false
+    },
+    {
+      "field_name": "重大事项决策机制",
+      "section": "三、法人治理与内部运行情况",
+      "value_type": "text",
+      "aliases": [
+        "重大事项决策机制"
+      ],
+      "is_subjective": false,
+      "is_public_searchable": false
+    },
+    {
+      "field_name": "关联交易/利益冲突管理",
+      "section": "三、法人治理与内部运行情况",
+      "value_type": "text",
+      "aliases": [
+        "关联交易/利益冲突管理",
+        "关联交易",
+        "利益冲突管理"
+      ],
+      "is_subjective": false,
+      "is_public_searchable": false
+    },
+    {
+      "field_name": "档案管理情况",
+      "section": "三、法人治理与内部运行情况",
+      "value_type": "text",
+      "aliases": [
+        "档案管理情况"
+      ],
+      "is_subjective": false,
+      "is_public_searchable": false
+    },
+    {
+      "field_name": "1",
+      "section": "三、法人治理与内部运行情况",
+      "value_type": "text",
+      "aliases": [
+        "1"
+      ],
+      "is_subjective": false,
+      "is_public_searchable": false
+    },
+    {
+      "field_name": "2",
+      "section": "三、法人治理与内部运行情况",
+      "value_type": "text",
+      "aliases": [
+        "2"
+      ],
+      "is_subjective": false,
+      "is_public_searchable": false
+    },
+    {
+      "field_name": "3",
+      "section": "三、法人治理与内部运行情况",
+      "value_type": "text",
+      "aliases": [
+        "3"
+      ],
+      "is_subjective": false,
+      "is_public_searchable": false
+    },
+    {
+      "field_name": "4",
+      "section": "三、法人治理与内部运行情况",
+      "value_type": "text",
+      "aliases": [
+        "4"
+      ],
+      "is_subjective": false,
+      "is_public_searchable": false
+    },
+    {
+      "field_name": "5",
+      "section": "三、法人治理与内部运行情况",
+      "value_type": "text",
+      "aliases": [
+        "5"
+      ],
+      "is_subjective": false,
+      "is_public_searchable": false
+    },
+    {
+      "field_name": "6",
+      "section": "三、法人治理与内部运行情况",
+      "value_type": "text",
+      "aliases": [
+        "6"
+      ],
+      "is_subjective": false,
+      "is_public_searchable": false
+    },
+    {
+      "field_name": "7",
+      "section": "三、法人治理与内部运行情况",
+      "value_type": "text",
+      "aliases": [
+        "7"
+      ],
+      "is_subjective": false,
+      "is_public_searchable": false
+    },
+    {
+      "field_name": "8",
+      "section": "三、法人治理与内部运行情况",
+      "value_type": "text",
+      "aliases": [
+        "8"
+      ],
+      "is_subjective": false,
+      "is_public_searchable": false
+    },
+    {
+      "field_name": "法人治理中的突出优势",
+      "section": "三、法人治理与内部运行情况",
+      "value_type": "text",
+      "aliases": [
+        "法人治理中的突出优势"
+      ],
+      "is_subjective": true,
+      "is_public_searchable": false
+    },
+    {
+      "field_name": "内部运行中的主要困难",
+      "section": "三、法人治理与内部运行情况",
+      "value_type": "text",
+      "aliases": [
+        "内部运行中的主要困难"
+      ],
+      "is_subjective": true,
+      "is_public_searchable": false
+    },
+    {
+      "field_name": "党组织设置情况",
+      "section": "四、党建、人才与能力建设情况",
+      "value_type": "text",
+      "aliases": [
+        "党组织设置情况"
+      ],
+      "is_subjective": false,
+      "is_public_searchable": true
+    },
+    {
+      "field_name": "党员人数",
+      "section": "四、党建、人才与能力建设情况",
+      "value_type": "amount_or_count",
+      "aliases": [
+        "党员人数"
+      ],
+      "is_subjective": false,
+      "is_public_searchable": true
+    },
+    {
+      "field_name": "党建工作负责人",
+      "section": "四、党建、人才与能力建设情况",
+      "value_type": "person",
+      "aliases": [
+        "党建工作负责人"
+      ],
+      "is_subjective": false,
+      "is_public_searchable": true
+    },
+    {
+      "field_name": "党建活动频次",
+      "section": "四、党建、人才与能力建设情况",
+      "value_type": "text",
+      "aliases": [
+        "党建活动频次"
+      ],
+      "is_subjective": false,
+      "is_public_searchable": true
+    },
+    {
+      "field_name": "专职人员总数",
+      "section": "四、党建、人才与能力建设情况",
+      "value_type": "amount_or_count",
+      "aliases": [
+        "专职人员总数"
+      ],
+      "is_subjective": false,
+      "is_public_searchable": true
+    },
+    {
+      "field_name": "兼职/顾问人数",
+      "section": "四、党建、人才与能力建设情况",
+      "value_type": "amount_or_count",
+      "aliases": [
+        "兼职/顾问人数",
+        "兼职",
+        "顾问人数"
+      ],
+      "is_subjective": false,
+      "is_public_searchable": true
+    },
+    {
+      "field_name": "持证社工师人数",
+      "section": "四、党建、人才与能力建设情况",
+      "value_type": "amount_or_count",
+      "aliases": [
+        "持证社工师人数"
+      ],
+      "is_subjective": false,
+      "is_public_searchable": true
+    },
+    {
+      "field_name": "财务/法务/传播专岗",
+      "section": "四、党建、人才与能力建设情况",
+      "value_type": "text",
+      "aliases": [
+        "财务/法务/传播专岗",
+        "财务",
+        "法务",
+        "传播专岗"
+      ],
+      "is_subjective": false,
+      "is_public_searchable": false
+    },
+    {
+      "field_name": "近三年培训次数",
+      "section": "四、党建、人才与能力建设情况",
+      "value_type": "amount_or_count",
+      "aliases": [
+        "近三年培训次数"
+      ],
+      "is_subjective": false,
+      "is_public_searchable": false
+    },
+    {
+      "field_name": "志愿者注册人数",
+      "section": "四、党建、人才与能力建设情况",
+      "value_type": "amount_or_count",
+      "aliases": [
+        "志愿者注册人数"
+      ],
+      "is_subjective": false,
+      "is_public_searchable": true
+    },
+    {
+      "field_name": "核心志愿者人数",
+      "section": "四、党建、人才与能力建设情况",
+      "value_type": "amount_or_count",
+      "aliases": [
+        "核心志愿者人数"
+      ],
+      "is_subjective": false,
+      "is_public_searchable": true
+    },
+    {
+      "field_name": "志愿服务总时长",
+      "section": "四、党建、人才与能力建设情况",
+      "value_type": "amount_or_count",
+      "aliases": [
+        "志愿服务总时长"
+      ],
+      "is_subjective": false,
+      "is_public_searchable": true
+    },
+    {
+      "field_name": "人才队伍主要短板",
+      "section": "四、党建、人才与能力建设情况",
+      "value_type": "text",
+      "aliases": [
+        "人才队伍主要短板"
+      ],
+      "is_subjective": true,
+      "is_public_searchable": false
+    },
+    {
+      "field_name": "希望获得的能力建设支持",
+      "section": "四、党建、人才与能力建设情况",
+      "value_type": "text",
+      "aliases": [
+        "希望获得的能力建设支持"
+      ],
+      "is_subjective": true,
+      "is_public_searchable": false
+    },
+    {
+      "field_name": "主要资金来源结构",
+      "section": "五、财务资产与资金来源情况",
+      "value_type": "text",
+      "aliases": [
+        "主要资金来源结构"
+      ],
+      "is_subjective": false,
+      "is_public_searchable": true
+    },
+    {
+      "field_name": "前三大资金来源/捐赠方情况",
+      "section": "五、财务资产与资金来源情况",
+      "value_type": "text",
+      "aliases": [
+        "前三大资金来源/捐赠方情况",
+        "前三大资金来源",
+        "捐赠方情况"
+      ],
+      "is_subjective": false,
+      "is_public_searchable": true
+    },
+    {
+      "field_name": "资产保值增值、投资管理及风险控制情况",
+      "section": "五、财务资产与资金来源情况",
+      "value_type": "amount_or_count",
+      "aliases": [
+        "资产保值增值、投资管理及风险控制情况"
+      ],
+      "is_subjective": false,
+      "is_public_searchable": false
+    },
+    {
+      "field_name": "财务管理中需要说明的问题",
+      "section": "五、财务资产与资金来源情况",
+      "value_type": "text",
+      "aliases": [
+        "财务管理中需要说明的问题"
+      ],
+      "is_subjective": false,
+      "is_public_searchable": false
+    },
+    {
+      "field_name": "公开募捐项目数量",
+      "section": "六、募捐、资助与合作情况",
+      "value_type": "amount_or_count",
+      "aliases": [
+        "公开募捐项目数量"
+      ],
+      "is_subjective": false,
+      "is_public_searchable": true
+    },
+    {
+      "field_name": "定向募捐项目数量",
+      "section": "六、募捐、资助与合作情况",
+      "value_type": "amount_or_count",
+      "aliases": [
+        "定向募捐项目数量"
+      ],
+      "is_subjective": false,
+      "is_public_searchable": true
+    },
+    {
+      "field_name": "互联网募捐平台名称",
+      "section": "六、募捐、资助与合作情况",
+      "value_type": "text",
+      "aliases": [
+        "互联网募捐平台名称"
+      ],
+      "is_subjective": false,
+      "is_public_searchable": true
+    },
+    {
+      "field_name": "年度募捐总额",
+      "section": "六、募捐、资助与合作情况",
+      "value_type": "amount_or_count",
+      "aliases": [
+        "年度募捐总额",
+        "募捐总额",
+        "年度筹款",
+        "筹款总额"
+      ],
+      "is_subjective": false,
+      "is_public_searchable": true
+    },
+    {
+      "field_name": "主要资助对象类型",
+      "section": "六、募捐、资助与合作情况",
+      "value_type": "text",
+      "aliases": [
+        "主要资助对象类型"
+      ],
+      "is_subjective": false,
+      "is_public_searchable": true
+    },
+    {
+      "field_name": "年度资助项目数量",
+      "section": "六、募捐、资助与合作情况",
+      "value_type": "amount_or_count",
+      "aliases": [
+        "年度资助项目数量"
+      ],
+      "is_subjective": false,
+      "is_public_searchable": true
+    },
+    {
+      "field_name": "是否有长期捐赠人",
+      "section": "六、募捐、资助与合作情况",
+      "value_type": "yes_no",
+      "aliases": [
+        "是否有长期捐赠人"
+      ],
+      "is_subjective": false,
+      "is_public_searchable": false
+    },
+    {
+      "field_name": "捐赠人服务方式",
+      "section": "六、募捐、资助与合作情况",
+      "value_type": "text",
+      "aliases": [
+        "捐赠人服务方式"
+      ],
+      "is_subjective": false,
+      "is_public_searchable": false
+    },
+    {
+      "field_name": "企业合作数量",
+      "section": "六、募捐、资助与合作情况",
+      "value_type": "amount_or_count",
+      "aliases": [
+        "企业合作数量"
+      ],
+      "is_subjective": false,
+      "is_public_searchable": true
+    },
+    {
+      "field_name": "政府合作数量",
+      "section": "六、募捐、资助与合作情况",
+      "value_type": "amount_or_count",
+      "aliases": [
+        "政府合作数量"
+      ],
+      "is_subjective": false,
+      "is_public_searchable": true
+    },
+    {
+      "field_name": "高校/研究机构合作",
+      "section": "六、募捐、资助与合作情况",
+      "value_type": "text",
+      "aliases": [
+        "高校/研究机构合作",
+        "高校",
+        "研究机构合作"
+      ],
+      "is_subjective": false,
+      "is_public_searchable": true
+    },
+    {
+      "field_name": "社会组织合作数量",
+      "section": "六、募捐、资助与合作情况",
+      "value_type": "amount_or_count",
+      "aliases": [
+        "社会组织合作数量"
+      ],
+      "is_subjective": false,
+      "is_public_searchable": true
+    },
+    {
+      "field_name": "合作类型",
+      "section": "六、募捐、资助与合作情况",
+      "value_type": "text",
+      "aliases": [
+        "合作类型"
+      ],
+      "is_subjective": false,
+      "is_public_searchable": false
+    },
+    {
+      "field_name": "合作周期",
+      "section": "六、募捐、资助与合作情况",
+      "value_type": "text",
+      "aliases": [
+        "合作周期"
+      ],
+      "is_subjective": false,
+      "is_public_searchable": false
+    },
+    {
+      "field_name": "募捐与捐赠人服务的主要做法",
+      "section": "六、募捐、资助与合作情况",
+      "value_type": "text",
+      "aliases": [
+        "募捐与捐赠人服务的主要做法"
+      ],
+      "is_subjective": false,
+      "is_public_searchable": false
+    },
+    {
+      "field_name": "资助项目管理与拨付监督方式",
+      "section": "六、募捐、资助与合作情况",
+      "value_type": "text",
+      "aliases": [
+        "资助项目管理与拨付监督方式"
+      ],
+      "is_subjective": false,
+      "is_public_searchable": false
+    },
+    {
+      "field_name": "合作资源拓展中的主要困难",
+      "section": "六、募捐、资助与合作情况",
+      "value_type": "text",
+      "aliases": [
+        "合作资源拓展中的主要困难"
+      ],
+      "is_subjective": true,
+      "is_public_searchable": false
+    },
+    {
+      "field_name": "年度项目总数",
+      "section": "七、公益项目与服务成效情况",
+      "value_type": "amount_or_count",
+      "aliases": [
+        "年度项目总数"
+      ],
+      "is_subjective": false,
+      "is_public_searchable": true
+    },
+    {
+      "field_name": "覆盖区/县数量",
+      "section": "七、公益项目与服务成效情况",
+      "value_type": "amount_or_count",
+      "aliases": [
+        "覆盖区/县数量",
+        "覆盖区",
+        "县数量",
+        "覆盖区域",
+        "覆盖地区",
+        "覆盖范围"
+      ],
+      "is_subjective": false,
+      "is_public_searchable": true
+    },
+    {
+      "field_name": "覆盖街镇/社区数量",
+      "section": "七、公益项目与服务成效情况",
+      "value_type": "amount_or_count",
+      "aliases": [
+        "覆盖街镇/社区数量",
+        "覆盖街镇",
+        "社区数量"
+      ],
+      "is_subjective": false,
+      "is_public_searchable": true
+    },
+    {
+      "field_name": "服务对象总规模",
+      "section": "七、公益项目与服务成效情况",
+      "value_type": "text",
+      "aliases": [
+        "服务对象总规模"
+      ],
+      "is_subjective": false,
+      "is_public_searchable": true
+    },
+    {
+      "field_name": "核心服务领域1",
+      "section": "七、公益项目与服务成效情况",
+      "value_type": "text",
+      "aliases": [
+        "核心服务领域1",
+        "核心业务",
+        "核心服务",
+        "服务领域",
+        "业务方向",
+        "主要项目方向"
+      ],
+      "is_subjective": false,
+      "is_public_searchable": true
+    },
+    {
+      "field_name": "核心服务领域2",
+      "section": "七、公益项目与服务成效情况",
+      "value_type": "text",
+      "aliases": [
+        "核心服务领域2",
+        "核心业务",
+        "核心服务",
+        "服务领域"
+      ],
+      "is_subjective": false,
+      "is_public_searchable": true
+    },
+    {
+      "field_name": "核心服务领域3",
+      "section": "七、公益项目与服务成效情况",
+      "value_type": "text",
+      "aliases": [
+        "核心服务领域3",
+        "核心业务",
+        "核心服务",
+        "服务领域"
+      ],
+      "is_subjective": false,
+      "is_public_searchable": true
+    },
+    {
+      "field_name": "项目评估方式",
+      "section": "七、公益项目与服务成效情况",
+      "value_type": "rating",
+      "aliases": [
+        "项目评估方式"
+      ],
+      "is_subjective": false,
+      "is_public_searchable": true
+    },
+    {
+      "field_name": "是否有品牌项目",
+      "section": "七、公益项目与服务成效情况",
+      "value_type": "yes_no",
+      "aliases": [
+        "是否有品牌项目"
+      ],
+      "is_subjective": false,
+      "is_public_searchable": true
+    },
+    {
+      "field_name": "是否形成项目手册/工具包",
+      "section": "七、公益项目与服务成效情况",
+      "value_type": "yes_no",
+      "aliases": [
+        "是否形成项目手册/工具包",
+        "是否形成项目手册",
+        "工具包"
+      ],
+      "is_subjective": false,
+      "is_public_searchable": true
+    },
+    {
+      "field_name": "是否有第三方评估",
+      "section": "七、公益项目与服务成效情况",
+      "value_type": "yes_no",
+      "aliases": [
+        "是否有第三方评估"
+      ],
+      "is_subjective": false,
+      "is_public_searchable": true
+    },
+    {
+      "field_name": "是否形成案例/报告",
+      "section": "七、公益项目与服务成效情况",
+      "value_type": "yes_no",
+      "aliases": [
+        "是否形成案例/报告",
+        "是否形成案例",
+        "报告"
+      ],
+      "is_subjective": false,
+      "is_public_searchable": true
+    },
+    {
+      "field_name": "项目名称",
+      "section": "七、公益项目与服务成效情况",
+      "value_type": "text",
+      "aliases": [
+        "项目名称",
+        "项目",
+        "重点项目",
+        "品牌项目"
+      ],
+      "is_subjective": false,
+      "is_public_searchable": true
+    },
+    {
+      "field_name": "起止时间",
+      "section": "七、公益项目与服务成效情况",
+      "value_type": "date",
+      "aliases": [
+        "起止时间",
+        "项目起止",
+        "项目时间",
+        "发起时间",
+        "启动时间"
+      ],
+      "is_subjective": false,
+      "is_public_searchable": true
+    },
+    {
+      "field_name": "项目领域",
+      "section": "七、公益项目与服务成效情况",
+      "value_type": "text",
+      "aliases": [
+        "项目领域"
+      ],
+      "is_subjective": false,
+      "is_public_searchable": true
+    },
+    {
+      "field_name": "实施地区",
+      "section": "七、公益项目与服务成效情况",
+      "value_type": "location_or_org",
+      "aliases": [
+        "实施地区"
+      ],
+      "is_subjective": false,
+      "is_public_searchable": true
+    },
+    {
+      "field_name": "年度投入（万元）",
+      "section": "七、公益项目与服务成效情况",
+      "value_type": "text",
+      "aliases": [
+        "年度投入（万元）",
+        "项目预算",
+        "项目投入",
+        "项目支出",
+        "年度预算"
+      ],
+      "is_subjective": false,
+      "is_public_searchable": true
+    },
+    {
+      "field_name": "资金来源",
+      "section": "七、公益项目与服务成效情况",
+      "value_type": "text",
+      "aliases": [
+        "资金来源"
+      ],
+      "is_subjective": false,
+      "is_public_searchable": true
+    },
+    {
+      "field_name": "合作单位",
+      "section": "七、公益项目与服务成效情况",
+      "value_type": "location_or_org",
+      "aliases": [
+        "合作单位"
+      ],
+      "is_subjective": false,
+      "is_public_searchable": true
+    },
+    {
+      "field_name": "项目负责人",
+      "section": "七、公益项目与服务成效情况",
+      "value_type": "person",
+      "aliases": [
+        "项目负责人"
+      ],
+      "is_subjective": false,
+      "is_public_searchable": true
+    },
+    {
+      "field_name": "服务对象与规模",
+      "section": "七、公益项目与服务成效情况",
+      "value_type": "text",
+      "aliases": [
+        "服务对象与规模",
+        "服务对象",
+        "受益人数",
+        "覆盖人数",
+        "受益群体"
+      ],
+      "is_subjective": false,
+      "is_public_searchable": true
+    },
+    {
+      "field_name": "项目当前状态",
+      "section": "七、公益项目与服务成效情况",
+      "value_type": "text",
+      "aliases": [
+        "项目当前状态"
+      ],
+      "is_subjective": false,
+      "is_public_searchable": true
+    },
+    {
+      "field_name": "项目主要内容",
+      "section": "七、公益项目与服务成效情况",
+      "value_type": "text",
+      "aliases": [
+        "项目主要内容"
+      ],
+      "is_subjective": false,
+      "is_public_searchable": false
+    },
+    {
+      "field_name": "成效证据/评估方式",
+      "section": "七、公益项目与服务成效情况",
+      "value_type": "rating",
+      "aliases": [
+        "成效证据/评估方式",
+        "成效证据",
+        "评估方式"
+      ],
+      "is_subjective": false,
+      "is_public_searchable": false
+    },
+    {
+      "field_name": "困难问题/后续计划",
+      "section": "七、公益项目与服务成效情况",
+      "value_type": "text",
+      "aliases": [
+        "困难问题/后续计划",
+        "困难问题",
+        "后续计划"
+      ],
+      "is_subjective": true,
+      "is_public_searchable": false
+    },
+    {
+      "field_name": "年度报告公开情况",
+      "section": "八、信息公开、合规管理与社会监督情况",
+      "value_type": "text",
+      "aliases": [
+        "年度报告公开情况"
+      ],
+      "is_subjective": false,
+      "is_public_searchable": true
+    },
+    {
+      "field_name": "审计报告公开情况",
+      "section": "八、信息公开、合规管理与社会监督情况",
+      "value_type": "text",
+      "aliases": [
+        "审计报告公开情况"
+      ],
+      "is_subjective": false,
+      "is_public_searchable": true
+    },
+    {
+      "field_name": "重大事项公开情况",
+      "section": "八、信息公开、合规管理与社会监督情况",
+      "value_type": "text",
+      "aliases": [
+        "重大事项公开情况"
+      ],
+      "is_subjective": false,
+      "is_public_searchable": true
+    },
+    {
+      "field_name": "捐赠收支公开方式",
+      "section": "八、信息公开、合规管理与社会监督情况",
+      "value_type": "text",
+      "aliases": [
+        "捐赠收支公开方式"
+      ],
+      "is_subjective": false,
+      "is_public_searchable": true
+    },
+    {
+      "field_name": "官网/公众号/平台账号",
+      "section": "八、信息公开、合规管理与社会监督情况",
+      "value_type": "text",
+      "aliases": [
+        "官网/公众号/平台账号",
+        "官网",
+        "公众号",
+        "平台账号",
+        "官方网站",
+        "公众平台账号"
+      ],
+      "is_subjective": false,
+      "is_public_searchable": true
+    },
+    {
+      "field_name": "信息公开负责人",
+      "section": "八、信息公开、合规管理与社会监督情况",
+      "value_type": "person",
+      "aliases": [
+        "信息公开负责人"
+      ],
+      "is_subjective": false,
+      "is_public_searchable": false
+    },
+    {
+      "field_name": "舆情/投诉处理机制",
+      "section": "八、信息公开、合规管理与社会监督情况",
+      "value_type": "text",
+      "aliases": [
+        "舆情/投诉处理机制",
+        "舆情",
+        "投诉处理机制"
+      ],
+      "is_subjective": false,
+      "is_public_searchable": false
+    },
+    {
+      "field_name": "近三年投诉数量",
+      "section": "八、信息公开、合规管理与社会监督情况",
+      "value_type": "amount_or_count",
+      "aliases": [
+        "近三年投诉数量"
+      ],
+      "is_subjective": false,
+      "is_public_searchable": false
+    },
+    {
+      "field_name": "行政处罚/约谈情况",
+      "section": "八、信息公开、合规管理与社会监督情况",
+      "value_type": "text",
+      "aliases": [
+        "行政处罚/约谈情况",
+        "行政处罚",
+        "约谈情况"
+      ],
+      "is_subjective": false,
+      "is_public_searchable": false
+    },
+    {
+      "field_name": "整改事项完成情况",
+      "section": "八、信息公开、合规管理与社会监督情况",
+      "value_type": "text",
+      "aliases": [
+        "整改事项完成情况"
+      ],
+      "is_subjective": false,
+      "is_public_searchable": false
+    },
+    {
+      "field_name": "税务合规情况",
+      "section": "八、信息公开、合规管理与社会监督情况",
+      "value_type": "text",
+      "aliases": [
+        "税务合规情况"
+      ],
+      "is_subjective": false,
+      "is_public_searchable": true
+    },
+    {
+      "field_name": "票据管理情况",
+      "section": "八、信息公开、合规管理与社会监督情况",
+      "value_type": "text",
+      "aliases": [
+        "票据管理情况"
+      ],
+      "is_subjective": false,
+      "is_public_searchable": false
+    },
+    {
+      "field_name": "项目合同管理情况",
+      "section": "八、信息公开、合规管理与社会监督情况",
+      "value_type": "text",
+      "aliases": [
+        "项目合同管理情况"
+      ],
+      "is_subjective": false,
+      "is_public_searchable": false
+    },
+    {
+      "field_name": "个人信息保护情况",
+      "section": "八、信息公开、合规管理与社会监督情况",
+      "value_type": "text",
+      "aliases": [
+        "个人信息保护情况"
+      ],
+      "is_subjective": false,
+      "is_public_searchable": false
+    },
+    {
+      "field_name": "资金拨付审批机制",
+      "section": "八、信息公开、合规管理与社会监督情况",
+      "value_type": "text",
+      "aliases": [
+        "资金拨付审批机制"
+      ],
+      "is_subjective": false,
+      "is_public_searchable": false
+    },
+    {
+      "field_name": "印章证照管理情况",
+      "section": "八、信息公开、合规管理与社会监督情况",
+      "value_type": "text",
+      "aliases": [
+        "印章证照管理情况"
+      ],
+      "is_subjective": false,
+      "is_public_searchable": false
+    },
+    {
+      "field_name": "近三年接受监管检查、专项审计或整改情况",
+      "section": "八、信息公开、合规管理与社会监督情况",
+      "value_type": "text",
+      "aliases": [
+        "近三年接受监管检查、专项审计或整改情况"
+      ],
+      "is_subjective": false,
+      "is_public_searchable": false
+    },
+    {
+      "field_name": "信息公开中仍需改进的问题",
+      "section": "八、信息公开、合规管理与社会监督情况",
+      "value_type": "text",
+      "aliases": [
+        "信息公开中仍需改进的问题"
+      ],
+      "is_subjective": false,
+      "is_public_searchable": false
+    },
+    {
+      "field_name": "当前可能存在的合规风险或需说明事项",
+      "section": "八、信息公开、合规管理与社会监督情况",
+      "value_type": "text",
+      "aliases": [
+        "当前可能存在的合规风险或需说明事项"
+      ],
+      "is_subjective": false,
+      "is_public_searchable": false
+    },
+    {
+      "field_name": "财务系统名称",
+      "section": "九、数字化基础与数据安全情况",
+      "value_type": "text",
+      "aliases": [
+        "财务系统名称"
+      ],
+      "is_subjective": false,
+      "is_public_searchable": false
+    },
+    {
+      "field_name": "项目管理系统名称",
+      "section": "九、数字化基础与数据安全情况",
+      "value_type": "text",
+      "aliases": [
+        "项目管理系统名称"
+      ],
+      "is_subjective": false,
+      "is_public_searchable": false
+    },
+    {
+      "field_name": "捐赠人管理工具",
+      "section": "九、数字化基础与数据安全情况",
+      "value_type": "text",
+      "aliases": [
+        "捐赠人管理工具"
+      ],
+      "is_subjective": false,
+      "is_public_searchable": false
+    },
+    {
+      "field_name": "档案/云盘工具",
+      "section": "九、数字化基础与数据安全情况",
+      "value_type": "text",
+      "aliases": [
+        "档案/云盘工具",
+        "档案",
+        "云盘工具"
+      ],
+      "is_subjective": false,
+      "is_public_searchable": false
+    },
+    {
+      "field_name": "是否有数据专人",
+      "section": "九、数字化基础与数据安全情况",
+      "value_type": "yes_no",
+      "aliases": [
+        "是否有数据专人"
+      ],
+      "is_subjective": false,
+      "is_public_searchable": false
+    },
+    {
+      "field_name": "是否建立数据台账",
+      "section": "九、数字化基础与数据安全情况",
+      "value_type": "yes_no",
+      "aliases": [
+        "是否建立数据台账"
+      ],
+      "is_subjective": false,
+      "is_public_searchable": false
+    },
+    {
+      "field_name": "是否有数据安全制度",
+      "section": "九、数字化基础与数据安全情况",
+      "value_type": "yes_no",
+      "aliases": [
+        "是否有数据安全制度"
+      ],
+      "is_subjective": false,
+      "is_public_searchable": false
+    },
+    {
+      "field_name": "是否有备份机制",
+      "section": "九、数字化基础与数据安全情况",
+      "value_type": "yes_no",
+      "aliases": [
+        "是否有备份机制"
+      ],
+      "is_subjective": false,
+      "is_public_searchable": false
+    },
+    {
+      "field_name": "线上会议/协作工具",
+      "section": "九、数字化基础与数据安全情况",
+      "value_type": "text",
+      "aliases": [
+        "线上会议/协作工具",
+        "线上会议",
+        "协作工具"
+      ],
+      "is_subjective": false,
+      "is_public_searchable": false
+    },
+    {
+      "field_name": "内部审批工具",
+      "section": "九、数字化基础与数据安全情况",
+      "value_type": "text",
+      "aliases": [
+        "内部审批工具"
+      ],
+      "is_subjective": false,
+      "is_public_searchable": false
+    },
+    {
+      "field_name": "AI工具使用情况",
+      "section": "九、数字化基础与数据安全情况",
+      "value_type": "text",
+      "aliases": [
+        "AI工具使用情况"
+      ],
+      "is_subjective": false,
+      "is_public_searchable": false
+    },
+    {
+      "field_name": "数字化年度预算",
+      "section": "九、数字化基础与数据安全情况",
+      "value_type": "text",
+      "aliases": [
+        "数字化年度预算"
+      ],
+      "is_subjective": false,
+      "is_public_searchable": false
+    },
+    {
+      "field_name": "目前最常使用的数字化工具",
+      "section": "九、数字化基础与数据安全情况",
+      "value_type": "text",
+      "aliases": [
+        "目前最常使用的数字化工具"
+      ],
+      "is_subjective": false,
+      "is_public_searchable": false
+    },
+    {
+      "field_name": "数字化管理中的主要困难",
+      "section": "九、数字化基础与数据安全情况",
+      "value_type": "text",
+      "aliases": [
+        "数字化管理中的主要困难"
+      ],
+      "is_subjective": true,
+      "is_public_searchable": false
+    },
+    {
+      "field_name": "希望获得的数字化支持",
+      "section": "九、数字化基础与数据安全情况",
+      "value_type": "text",
+      "aliases": [
+        "希望获得的数字化支持"
+      ],
+      "is_subjective": true,
+      "is_public_searchable": false
+    },
+    {
+      "field_name": "基金会当前最重要的发展目标",
+      "section": "十、发展诉求与政策建议",
+      "value_type": "text",
+      "aliases": [
+        "基金会当前最重要的发展目标"
+      ],
+      "is_subjective": true,
+      "is_public_searchable": false
+    },
+    {
+      "field_name": "希望民政部门协调支持的事项",
+      "section": "十、发展诉求与政策建议",
+      "value_type": "text",
+      "aliases": [
+        "希望民政部门协调支持的事项"
+      ],
+      "is_subjective": true,
+      "is_public_searchable": false
+    },
+    {
+      "field_name": "对广州市基金会行业发展的建议",
+      "section": "十、发展诉求与政策建议",
+      "value_type": "text",
+      "aliases": [
+        "对广州市基金会行业发展的建议"
+      ],
+      "is_subjective": true,
+      "is_public_searchable": false
+    },
+    {
+      "field_name": "其他需要说明的情况",
+      "section": "十、发展诉求与政策建议",
+      "value_type": "text",
+      "aliases": [
+        "其他需要说明的情况"
+      ],
+      "is_subjective": false,
+      "is_public_searchable": false
+    },
+    {
+      "field_name": "法定代表人/负责人签字",
+      "section": "十二、填报承诺与签章",
+      "value_type": "person",
+      "aliases": [
+        "法定代表人/负责人签字",
+        "法定代表人",
+        "负责人签字"
+      ],
+      "is_subjective": false,
+      "is_public_searchable": false
+    },
+    {
+      "field_name": "填报联系人签字",
+      "section": "十二、填报承诺与签章",
+      "value_type": "person",
+      "aliases": [
+        "填报联系人签字"
+      ],
+      "is_subjective": false,
+      "is_public_searchable": false
+    },
+    {
+      "field_name": "基金会公章：",
+      "section": "十二、填报承诺与签章",
+      "value_type": "text",
+      "aliases": [
+        "基金会公章："
+      ],
+      "is_subjective": false,
+      "is_public_searchable": false
+    },
+    {
+      "field_name": "等级",
+      "section": "十二、填报承诺与签章",
+      "value_type": "rating",
+      "aliases": [
+        "等级"
+      ],
+      "is_subjective": false,
+      "is_public_searchable": false
+    },
+    {
+      "field_name": "联系人",
+      "section": "十二、填报承诺与签章",
+      "value_type": "person",
+      "aliases": [
+        "联系人"
+      ],
+      "is_subjective": false,
+      "is_public_searchable": false
+    },
+    {
+      "field_name": "初步分类",
+      "section": "十二、填报承诺与签章",
+      "value_type": "text",
+      "aliases": [
+        "初步分类"
+      ],
+      "is_subjective": false,
+      "is_public_searchable": false
+    },
+    {
+      "field_name": "9",
+      "section": "十二、填报承诺与签章",
+      "value_type": "text",
+      "aliases": [
+        "9"
+      ],
+      "is_subjective": false,
+      "is_public_searchable": false
+    },
+    {
+      "field_name": "10",
+      "section": "十二、填报承诺与签章",
+      "value_type": "text",
+      "aliases": [
+        "10"
+      ],
+      "is_subjective": false,
+      "is_public_searchable": false
+    },
+    {
+      "field_name": "总体情况摘记",
+      "section": "十二、填报承诺与签章",
+      "value_type": "text",
+      "aliases": [
+        "总体情况摘记"
+      ],
+      "is_subjective": false,
+      "is_public_searchable": false
+    },
+    {
+      "field_name": "建议优先跟进的基金会",
+      "section": "十二、填报承诺与签章",
+      "value_type": "text",
+      "aliases": [
+        "建议优先跟进的基金会"
+      ],
+      "is_subjective": true,
+      "is_public_searchable": false
+    },
+    {
+      "field_name": "需要进一步核验的风险点",
+      "section": "十二、填报承诺与签章",
+      "value_type": "text",
+      "aliases": [
+        "需要进一步核验的风险点"
+      ],
+      "is_subjective": false,
+      "is_public_searchable": false
+    },
+    {
+      "field_name": "访谈对象",
+      "section": "十二、填报承诺与签章",
+      "value_type": "text",
+      "aliases": [
+        "访谈对象"
+      ],
+      "is_subjective": false,
+      "is_public_searchable": false
+    },
+    {
+      "field_name": "职务",
+      "section": "十二、填报承诺与签章",
+      "value_type": "text",
+      "aliases": [
+        "职务"
+      ],
+      "is_subjective": false,
+      "is_public_searchable": false
+    },
+    {
+      "field_name": "访谈时间",
+      "section": "十二、填报承诺与签章",
+      "value_type": "date",
+      "aliases": [
+        "访谈时间"
+      ],
+      "is_subjective": false,
+      "is_public_searchable": false
+    },
+    {
+      "field_name": "访谈方式",
+      "section": "十二、填报承诺与签章",
+      "value_type": "text",
+      "aliases": [
+        "访谈方式"
+      ],
+      "is_subjective": false,
+      "is_public_searchable": false
+    },
+    {
+      "field_name": "记录人",
+      "section": "十二、填报承诺与签章",
+      "value_type": "text",
+      "aliases": [
+        "记录人"
+      ],
+      "is_subjective": false,
+      "is_public_searchable": false
+    },
+    {
+      "field_name": "参与人员",
+      "section": "十二、填报承诺与签章",
+      "value_type": "text",
+      "aliases": [
+        "参与人员"
+      ],
+      "is_subjective": false,
+      "is_public_searchable": false
+    },
+    {
+      "field_name": "基金会名称",
+      "section": "十二、填报承诺与签章",
+      "value_type": "text",
+      "aliases": [
+        "基金会名称"
+      ],
+      "is_subjective": false,
+      "is_public_searchable": false
+    },
+    {
+      "field_name": "后续联系人",
+      "section": "十二、填报承诺与签章",
+      "value_type": "person",
+      "aliases": [
+        "后续联系人"
+      ],
+      "is_subjective": false,
+      "is_public_searchable": false
+    },
+    {
+      "field_name": "访谈主要问题",
+      "section": "十二、填报承诺与签章",
+      "value_type": "text",
+      "aliases": [
+        "访谈主要问题"
+      ],
+      "is_subjective": false,
+      "is_public_searchable": false
+    },
+    {
+      "field_name": "基金会补充说明",
+      "section": "十二、填报承诺与签章",
+      "value_type": "text",
+      "aliases": [
+        "基金会补充说明"
+      ],
+      "is_subjective": false,
+      "is_public_searchable": false
+    },
+    {
+      "field_name": "需补充材料",
+      "section": "十二、填报承诺与签章",
+      "value_type": "text",
+      "aliases": [
+        "需补充材料"
+      ],
+      "is_subjective": false,
+      "is_public_searchable": false
+    },
+    {
+      "field_name": "内部研判与后续安排",
+      "section": "十二、填报承诺与签章",
+      "value_type": "text",
+      "aliases": [
+        "内部研判与后续安排"
+      ],
+      "is_subjective": false,
+      "is_public_searchable": false
+    }
+  ]
+}

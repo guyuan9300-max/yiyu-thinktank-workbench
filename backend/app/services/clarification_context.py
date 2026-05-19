@@ -4,7 +4,7 @@
   - eventLines: 项目骨架 + 每条主线的基本字段
   - timeline: 事件时间线 (从 event_line_activities 合并)
   - peopleCandidates: 关键人物候选 (从 actor_name + memory_facts 提取, 粗糙版)
-  - commitments: 承诺链 (从 action_items)
+  - commitments: 承诺链 (commitments 表 + 老 action_items, 两源合并)
   - clarificationNeeds: AI 主动列的待澄清项 (从 event_line_memory_snapshots.clarification_needs_json)
   - profile: 客户战略画像 (从 client_strategic_profiles + clients.domain)
 
@@ -209,17 +209,44 @@ def _load_people_candidates(
     client_id: str,
     event_line_ids: list[str],
 ) -> list[dict[str, Any]]:
-    """关键人物候选 (粗糙版 - 等 Phase 1 花名册建好后升级).
+    """关键人物候选 (优先级: entities 表 > owners 各源).
 
     来源:
+      0. entities 表 (entity_type=person) — 已结构化的人物 + mention_count
       1. event_lines.owner_name + event_line_activities.actor_name
-      2. memory_facts 里 scope_id=client_id 的人名提取 (启发式)
-      3. judgment_versions.summary 里的人名 (启发式)
+      2. tasks.owner_name + action_items.owner_name
+      3. (兜底) memory_facts / judgment_versions 里人名
 
-    返回每个 name 的出现次数 + 来源类型。
+    "AI" / "系统" / "本机用户" 等非人主体显式过滤。
+    返回每个 name 的出现次数 + 来源类型 (按 mentionCount 降序最多 30 条)。
     """
     counter: Counter[str] = Counter()
     sources: dict[str, set[str]] = {}
+    NON_HUMAN_NAMES = {"AI", "ai", "系统", "本机用户", "迁移占位", "AI助手", "助手"}
+
+    # 0. entities 表 (人物) — 主源
+    try:
+        rows = db.execute(
+            """
+            SELECT display_name, normalized_name, mention_count, aliases_json
+            FROM entities
+            WHERE client_id = ?
+              AND entity_type = 'person'
+              AND COALESCE(status, 'active') = 'active'
+              AND display_name IS NOT NULL
+              AND display_name != ''
+            ORDER BY mention_count DESC
+            """,
+            (client_id,),
+        ).fetchall()
+        for r in rows:
+            name = (r["display_name"] or "").strip()
+            if not name or name in NON_HUMAN_NAMES:
+                continue
+            counter[name] += int(r["mention_count"] or 1) * 2  # entities 权重高
+            sources.setdefault(name, set()).add("entity_person")
+    except sqlite3.Error:
+        pass  # entities 表不存在等情况, 走兜底
 
     # 1. event_lines owners
     rows = db.execute(
@@ -231,8 +258,8 @@ def _load_people_candidates(
     ).fetchall()
     for r in rows:
         name = (r["owner_name"] or "").strip()
-        if name and name != "本机用户":
-            counter[name] += 3  # 主线 owner 权重高
+        if name and name not in NON_HUMAN_NAMES:
+            counter[name] += 3
             sources.setdefault(name, set()).add("event_line_owner")
 
     # 2. event_line_activities actors
@@ -249,7 +276,7 @@ def _load_people_candidates(
         ).fetchall()
         for r in rows:
             name = (r["actor_name"] or "").strip()
-            if name and name != "本机用户":
+            if name and name not in NON_HUMAN_NAMES:
                 counter[name] += int(r["cnt"] or 0)
                 sources.setdefault(name, set()).add("activity_actor")
 
@@ -263,7 +290,7 @@ def _load_people_candidates(
     ).fetchall()
     for r in rows:
         name = (r["owner_name"] or "").strip()
-        if name and name not in ("本机用户", "迁移占位"):
+        if name and name not in NON_HUMAN_NAMES:
             counter[name] += 1
             sources.setdefault(name, set()).add("task_owner")
 
@@ -278,13 +305,13 @@ def _load_people_candidates(
     ).fetchall()
     for r in rows:
         name = (r["owner_name"] or "").strip()
-        if name:
+        if name and name not in NON_HUMAN_NAMES:
             counter[name] += 2
             sources.setdefault(name, set()).add("action_item_owner")
 
-    # 排序: 出现次数降序
+    # 排序: 出现次数降序 (最多 30 条)
     out: list[dict[str, Any]] = []
-    for name, count in counter.most_common(20):
+    for name, count in counter.most_common(30):
         out.append({
             "name": name,
             "mentionCount": count,
@@ -297,7 +324,55 @@ def _load_commitments(
     db: sqlite3.Connection,
     client_id: str,
 ) -> list[dict[str, Any]]:
-    """承诺链 - 当前只能从 action_items 拉 (数据稀少)."""
+    """承诺链 — union 两个来源:
+
+    1) commitments 表 (narrative_generator 写入的结构化承诺, 含承诺人/被承诺人/履约状态)
+    2) action_items 表 (会议抽取的待办, 兼容老流水)
+
+    返回 ClarificationCommitmentRecord 兼容的字段, 按截止/创建排序, 同 source_id 去重.
+    """
+    out: list[dict[str, Any]] = []
+    seen_keys: set[str] = set()
+
+    # 1) 新承诺表 (commitments) — 优先级高, 已结构化
+    rows = db.execute(
+        """
+        SELECT id, committer, recipient, commitment_type, content,
+               deadline, status, source_type, source_id, created_at
+        FROM commitments
+        WHERE client_id = ?
+        ORDER BY
+            CASE status WHEN 'pending' THEN 0 WHEN 'fulfilled' THEN 1 ELSE 2 END,
+            COALESCE(deadline, '9999') ASC,
+            updated_at DESC
+        """,
+        (client_id,),
+    ).fetchall()
+    for r in rows:
+        committer = (r["committer"] or "").strip()
+        recipient = (r["recipient"] or "").strip()
+        content = (r["content"] or "").strip()
+        title = content if not recipient else f"{committer}向{recipient}: {content}" if committer else f"→{recipient}: {content}"
+        status = (r["status"] or "pending").strip()
+        # 去重: 同一个 committer→recipient + 内容前 40 字 视为重复
+        dedup_key = f"{committer}|{recipient}|{content[:40]}"
+        if dedup_key in seen_keys:
+            continue
+        seen_keys.add(dedup_key)
+        out.append({
+            "id": r["id"],
+            "title": title,
+            "ownerName": committer,
+            "dueDate": r["deadline"] or "",
+            "confidence": 1.0 if status == "fulfilled" else 0.85,
+            "publishStatus": status,  # pending / fulfilled / cancelled
+            "meetingId": "",
+            "meetingTitle": "",
+            "meetingScheduledAt": "",
+            "createdAt": r["created_at"] or "",
+        })
+
+    # 2) 老 action_items (从会议抽出来的). 跟 commitments 表数据一般不重叠.
     rows = db.execute(
         """
         SELECT ai.id, ai.title, ai.owner_name, ai.due_date, ai.confidence,
@@ -310,13 +385,17 @@ def _load_commitments(
         """,
         (client_id,),
     ).fetchall()
-
-    out: list[dict[str, Any]] = []
     for r in rows:
+        title = (r["title"] or "").strip()
+        owner = (r["owner_name"] or "").strip()
+        dedup_key = f"{owner}||{title[:40]}"
+        if dedup_key in seen_keys:
+            continue
+        seen_keys.add(dedup_key)
         out.append({
             "id": r["id"],
-            "title": (r["title"] or "").strip(),
-            "ownerName": r["owner_name"] or "",
+            "title": title,
+            "ownerName": owner,
             "dueDate": r["due_date"] or "",
             "confidence": float(r["confidence"] or 0.0),
             "publishStatus": r["publish_status"] or "",

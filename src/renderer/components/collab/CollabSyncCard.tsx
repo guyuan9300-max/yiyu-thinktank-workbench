@@ -1,4 +1,3 @@
-import React from 'react';
 import { Download, FolderOpen, RefreshCw, UploadCloud } from 'lucide-react';
 import type { CollabRepoStatus } from '../../../shared/types';
 
@@ -12,10 +11,16 @@ type CollabSyncCardProps = {
   onPreviewPull: () => void;
 };
 
-function actionLabel(status: CollabRepoStatus | null) {
-  if (!status?.isConfigured) return '点击任一主按钮后，会先帮你绑定源码目录。';
-  if (!status.isValid) return '当前目录无效，点击主按钮时会提示你重新选择。';
-  return status.statusText;
+function shortStatusText(status: CollabRepoStatus | null) {
+  if (!status?.isConfigured) return '未绑定源码目录';
+  if (!status.isValid) return '目录无效';
+  const localChanges = status.localChangeCount || 0;
+  const behind = status.behindCount || 0;
+  if (localChanges === 0 && behind === 0) return '同步';
+  const parts: string[] = [];
+  if (localChanges > 0) parts.push(`本地 ${localChanges} 改动`);
+  if (behind > 0) parts.push(`远端领先 ${behind}`);
+  return parts.join(' · ');
 }
 
 export function CollabSyncCard({
@@ -28,28 +33,37 @@ export function CollabSyncCard({
   onPreviewPull,
 }: CollabSyncCardProps) {
   const actionDisabled = loading || busyAction !== null;
+  const localChanges = status?.localChangeCount || 0;
+  const behind = status?.behindCount || 0;
+  const isSynced = status?.isConfigured && status?.isValid && localChanges === 0 && behind === 0;
+  const dotCls = !status?.isConfigured || !status?.isValid
+    ? 'bg-gray-300'
+    : localChanges > 0 || behind > 0
+      ? 'bg-amber-500'
+      : 'bg-emerald-500';
 
   if (collapsed) {
     return (
-      <div className="px-3 pb-4 hidden md:block">
-        <div className="rounded-2xl border border-gray-200 bg-gray-50 p-2 flex flex-col items-center gap-2">
+      <div className="px-2 mt-4 hidden md:block">
+        <div className="border-t border-gray-100 pt-3 flex flex-col items-center gap-1">
+          <span className={`mb-1 inline-block h-[6px] w-[6px] rounded-full ${dotCls}`} title={shortStatusText(status)} />
           <button
             type="button"
-            className="w-10 h-10 rounded-2xl border border-gray-200 bg-white text-gray-600 hover:text-gray-900 hover:bg-gray-50 disabled:opacity-50"
+            className="w-9 h-9 inline-flex items-center justify-center rounded-md text-gray-500 hover:text-[#5B7BFE] hover:bg-gray-50 disabled:opacity-40 transition-colors"
             onClick={onPreviewPush}
             disabled={actionDisabled}
             title="提交并推送我的修改"
           >
-            {busyAction === 'push' ? <RefreshCw size={16} className="mx-auto animate-spin" /> : <UploadCloud size={16} className="mx-auto" />}
+            {busyAction === 'push' ? <RefreshCw size={14} className="animate-spin" /> : <UploadCloud size={14} />}
           </button>
           <button
             type="button"
-            className="w-10 h-10 rounded-2xl border border-gray-200 bg-white text-gray-600 hover:text-gray-900 hover:bg-gray-50 disabled:opacity-50"
+            className="w-9 h-9 inline-flex items-center justify-center rounded-md text-gray-500 hover:text-[#5B7BFE] hover:bg-gray-50 disabled:opacity-40 transition-colors"
             onClick={onPreviewPull}
             disabled={actionDisabled}
             title="按日期预览 main 修改"
           >
-            {busyAction === 'pull' ? <RefreshCw size={16} className="mx-auto animate-spin" /> : <Download size={16} className="mx-auto" />}
+            {busyAction === 'pull' ? <RefreshCw size={14} className="animate-spin" /> : <Download size={14} />}
           </button>
         </div>
       </div>
@@ -57,64 +71,66 @@ export function CollabSyncCard({
   }
 
   return (
-    <div className="px-4 pb-4 hidden md:block">
-      <div className="bg-white rounded-2xl border border-gray-100 p-4 shadow-sm space-y-3">
+    <div className="px-3 mt-5 hidden md:block">
+      <div className="border-t border-gray-100 pt-4 space-y-3">
+        {/* eyebrow + 仓库名 */}
         <div>
-          <p className="text-[10px] font-bold text-gray-400 uppercase tracking-widest">协作同步</p>
-          <p className="mt-1 text-[13px] font-bold text-gray-800">
-            {status?.repoName || '尚未绑定源码目录'}
+          <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-gray-400">COLLAB · 协作同步</p>
+          <p className="mt-1.5 text-[12px] font-medium text-gray-900 truncate">
+            {status?.repoName || '未绑定源码目录'}
           </p>
-          <p className="mt-1 text-[11px] text-gray-500 leading-5">{actionLabel(status)}</p>
         </div>
 
+        {/* 状态行:dot + branch + 短文字 */}
         {status?.isConfigured && status?.isValid && (
-          <div className="rounded-2xl border border-gray-100 bg-gray-50 px-3 py-3 text-[11px] text-gray-600">
-            <div className="flex flex-wrap items-center gap-2">
-              <span className="rounded-full bg-white px-2.5 py-1 font-bold text-gray-700 border border-gray-200">
-                {status.branch || '未知分支'}
-              </span>
-              <span>本地 {status.localChangeCount} 项改动</span>
-              <span>远端领先 {status.behindCount}</span>
-            </div>
-            {status.repoPath && (
-              <button
-                type="button"
-                className="mt-2 inline-flex items-center gap-1 text-[#5B7BFE] font-bold hover:text-[#4a6be6]"
-                onClick={onRevealRepo}
-              >
-                <FolderOpen size={12} />
-                在 Finder 中显示源码目录
-              </button>
-            )}
+          <div className="flex items-center gap-2 text-[11px] text-gray-500">
+            <span className={`inline-block h-[6px] w-[6px] rounded-full shrink-0 ${dotCls}`} />
+            <span className="truncate">
+              <span className="text-gray-700">{status.branch || 'main'}</span>
+              <span className="mx-1 text-gray-300">·</span>
+              <span>{isSynced ? '同步' : shortStatusText(status)}</span>
+            </span>
           </div>
         )}
 
+        {/* 推荐目录提示 */}
         {!status?.isConfigured && status?.suggestedRepoPath && (
-          <div className="rounded-2xl border border-blue-100 bg-blue-50/70 px-3 py-3 text-[11px] text-[#4256C5] leading-5">
-            <p className="font-bold">已检测到推荐源码目录</p>
-            <p className="mt-1 break-all">{status.suggestedRepoPath}</p>
-            <p className="mt-2 text-[11px] text-[#5B7BFE]">直接点下面任一主按钮，就会围绕这个仓库继续。</p>
-          </div>
+          <p className="text-[10.5px] text-gray-400 leading-4 break-all">
+            检测到 <span className="text-gray-600">{status.suggestedRepoPath.split('/').pop()}</span>,点下方按钮开始绑定。
+          </p>
         )}
 
-        <div className="grid grid-cols-1 gap-2">
+        {/* 在 Finder 中显示 */}
+        {status?.repoPath && (
           <button
             type="button"
-            className="inline-flex items-center justify-center gap-2 rounded-2xl bg-[#5B7BFE] px-4 py-3 text-[12px] font-bold text-white shadow-sm hover:bg-[#4a6be6] disabled:opacity-60 disabled:cursor-not-allowed"
+            className="inline-flex items-center gap-1 text-[10.5px] text-gray-400 hover:text-[#5B7BFE] transition-colors"
+            onClick={onRevealRepo}
+          >
+            <FolderOpen size={11} />
+            在 Finder 中显示
+          </button>
+        )}
+
+        {/* 两个 ghost 按钮 */}
+        <div className="flex items-center gap-1.5">
+          <button
+            type="button"
+            className="flex-1 inline-flex items-center justify-center gap-1 rounded-md border border-gray-200 bg-white px-2 py-1.5 text-[11px] font-medium text-gray-700 hover:bg-gray-50 hover:border-gray-300 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
             onClick={onPreviewPush}
             disabled={actionDisabled}
           >
-            {busyAction === 'push' ? <RefreshCw size={14} className="animate-spin" /> : <UploadCloud size={14} />}
-            提交并推送我的修改
+            {busyAction === 'push' ? <RefreshCw size={11} className="animate-spin" /> : <UploadCloud size={11} />}
+            推送
           </button>
           <button
             type="button"
-            className="inline-flex items-center justify-center gap-2 rounded-2xl border border-gray-200 bg-white px-4 py-3 text-[12px] font-bold text-gray-700 shadow-sm hover:bg-gray-50 disabled:opacity-60 disabled:cursor-not-allowed"
+            className="flex-1 inline-flex items-center justify-center gap-1 rounded-md border border-gray-200 bg-white px-2 py-1.5 text-[11px] font-medium text-gray-700 hover:bg-gray-50 hover:border-gray-300 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
             onClick={onPreviewPull}
             disabled={actionDisabled}
           >
-            {busyAction === 'pull' ? <RefreshCw size={14} className="animate-spin" /> : <Download size={14} />}
-            按日期预览 main 修改
+            {busyAction === 'pull' ? <RefreshCw size={11} className="animate-spin" /> : <Download size={11} />}
+            拉取
           </button>
         </div>
       </div>

@@ -59,7 +59,7 @@ DIMENSION_LABELS = {
     "business_intro": "业务介绍",
     "people": "关键人物",
     "timeline": "时间线",
-    "next_steps": "承诺与下一步",
+    "next_steps": "本阶段战略思路",
 }
 
 DIMENSION_BRIEF = {
@@ -144,24 +144,38 @@ DIMENSION_BRIEF = {
         "\n  **关键**: 客户没 event_lines 时用文档+任务时间反推, 不要写月度流水"
     ),
     "next_steps": (
-        "**Layer 6 · 承诺与下一步** (基于 Layer 2 合作 + Layer 5 现状)"
-        "\n  必含两部分:"
-        "\n    A · 已有承诺: 双向 (益语→客户 服务/交付承诺 + 客户→益语 付款/配合)"
-        "\n    B · 顾问推荐的下一步: 战略层 (4-8 周主攻) + 关系层 (下次见面议题) + 风险对冲"
-        "\n  每条都要 (时间点 + 谁负责)"
-        "\n  数据来源: event_line.intent + tasks.deadline + 合同协议 + 顾问判断"
-        "\n  **关键**: 区分商业承诺 (合同/event_line.intent) vs 内部 task (顾源源自己的 todo)"
+        "**Layer 6 · 本阶段战略思路** (基于 Layer 2 合作 + Layer 5 现状)"
+        "\n  ⚠️ 角色定位: 这是给项目负责人/CEO 看的『战略大方向』, 不是任务清单."
+        "\n      具体的待办条目(谁/什么/何时) 已经在右侧『下一步要做什么』区块单独显示, "
+        "\n      本段**不要再重复列条目**, 不要写『已有承诺如下:益语→客户...』"
+        "\n      只写顾问视角对接下来一段时间的方向判断."
         "\n  "
-        "\n  🆕 **机制化要求**: 输出 narrative 文本的**同时**, 必须输出 `structuredTodos` 数组"
-        "\n  (每条一个 JSON, 系统会自动写入 commitments 表, 不需要用户手动结构化)"
-        "\n  示例: structuredTodos: ["
-        "\n    {'title': '完成教师赋能方案优化指导', 'committer': '顾源源', 'recipient': '日慈基金会',"
-        "\n     'deadline': '2026-05-24', 'commitmentType': 'delivery', 'status': 'pending'},"
-        "\n    {'title': '提交教师赋能项目设计方案', 'committer': '笑雨老师', 'recipient': '日慈基金会',"
-        "\n     'deadline': '', 'commitmentType': 'delivery', 'status': 'pending'}"
-        "\n  ]"
-        "\n  规则: 每条承诺/下一步都对应一条 structuredTodo; 已完成的标 status='fulfilled';"
-        "\n        无明确 deadline 的留空字符串; committer 是动作执行人 (人名); recipient 是受益方 (机构/客户名)"
+        "\n  内容结构(3 段, 每段 80-130 字):"
+        "\n    战略层(本季度主攻): 客户当下最核心的战略命题是什么? 益语作为陪伴方该把"
+        "\n        注意力放哪里? 是稳基本盘 / 推新业务 / 还是补管理短板?"
+        "\n    关系层(下次见面议题): 跟客户负责人下次见面时, 哪 1-2 个议题最该先对齐?"
+        "\n        为什么是这个? 沟通这事的关键卡点是什么?"
+        "\n    风险对冲: 现在最大的风险是什么? 怎么提前防?"
+        "\n        哪些事情如果同时铺开会有冲突?"
+        "\n  "
+        "\n  🎯 **文风要求 — 这一段对所有用户都很重要, 必须做到**:"
+        "\n    ✓ 用清晰口语化的方式表达, 像顾问跟同事面对面讨论一样"
+        "\n    ✓ 不要用'本次 / 该 / 此项 / 鉴于 / 兹决定' 这种公文体"
+        "\n    ✓ 用'我们 / 现在 / 接下来 / 重点 / 先做 / 再推' 这种自然语言"
+        "\n    ✓ 一句话讲透一个意思, 不要用分号叠 5 个并列项"
+        "\n    ✗ 不要列 1./2./3. 编号"
+        "\n    ✗ 不要写具体 deadline / 具体人名作承诺人 (那是右侧区块的事)"
+        "\n    ✗ 不要用 HTML 标签 (例如 <br>) — 段落之间直接用换行符\\n\\n 分隔"
+        "\n  "
+        "\n  示例(口语化的写法, 仅参考语气):"
+        "\n    战略层: 日慈眼下最关键的不是再加新业务, 而是把团队重组后的管理真空补上."
+        "\n        益语接下来一段时间的角色要从'咨询服务'转向'管理代偿', 帮张真先把"
+        "\n        价值观和组织治理这条线稳住, 再谈数字化."
+        "\n  "
+        "\n  🆕 **机制化要求 (后台用, 不影响 narrative 文本)**: 同时输出 `structuredTodos` 数组"
+        "\n  让系统把这次会议/对齐里提到的具体承诺写入 commitments 表. 这是后台数据, 不会"
+        "\n  显示在 narrative 文本里."
+        "\n  ⚠️ 人名 / 机构名格式硬规则: 注释括号里**只写客户/机构名本身**, 不加'方'字."
     ),
 }
 
@@ -264,11 +278,13 @@ SYSTEM_PROMPT = """你是已经跟这个项目走了**半年**的高级战略顾
        每个节点要有具体抓手 (某次会议/某个决策/某份文档)
        *客户没 event_lines 时用 v2_documents.imported_at + tasks 时间反推; 不要写月度流水*
 
-  Layer 6 (next_steps) · **承诺与下一步** (基于 Layer 2 合作 + Layer 5 现状)
-       A · 已有承诺: 双向 (益语→客户 服务/交付承诺 + 客户→益语 付款/配合)
-       B · 顾问推荐的下一步: 战略层 + 关系层 + 风险对冲
-       每条要 (时间点 + 谁负责)
-       *task 列表 ≠ 商业承诺, 严格区分*
+  Layer 6 (next_steps) · **本阶段战略思路** (基于 Layer 2 合作 + Layer 5 现状)
+       面向 CEO/项目负责人, 给方向不给清单. 3 段口语化:
+         战略层(本季度主攻): 客户最核心战略命题 + 益语该把注意力放哪
+         关系层(下次见面): 下次跟客户对齐时, 哪 1-2 个议题最该先聊, 卡点是什么
+         风险对冲: 当下最大风险 + 提前怎么防 + 哪些事铺开会冲突
+       *不列条目, 不写 deadline 和具体人名承诺 — 那是右侧"下一步要做什么"区块的事*
+       *文风: 口语化, 像顾问跟同事面对面讨论, 不用公文体*
 
 每层 narrative 末尾或 buildsOn 字段必须明确写: "这一层基于上一层的 X 判断 + 本层的 Y 数据推出的"
 
@@ -307,6 +323,23 @@ SYSTEM_PROMPT = """你是已经跟这个项目走了**半年**的高级战略顾
 (c) **澄清问题** — fact 不够判断时, 不要替客户回答, 把问题放在 openClarifications
     例: openClarifications: ["18-24 岁是不是日慈核心服务对象? 还是只是行业研究背景?"]
     要点: 顾问不知道的, 直接问, 不替客户编
+
+    🚨 **openClarifications 必须满足"客户专属"门槛, 不准问公共概念**:
+      · ❌ 不问 "什么是 5A 评估?" — 这是民政部规则, 爬虫/百科查得到
+      · ❌ 不问 "积极心理学的核心理论是什么?" — 这是学术通识, 爬虫/百科查得到
+      · ❌ 不问 "互联网募捐平台备案要求是什么?" — 这是法规, 爬虫/政府网站查得到
+      · ❌ 不问 "慈善组织信息公开办法第 X 条?" — 这是法条, 爬虫查得到
+      · ❌ 不问 "基金会管理条例规定什么?" — 这是法规, 爬虫查得到
+      · ❌ 不问 "什么是公益事业捐赠法?" — 公共法规
+      · ❌ 不问 "慈善组织认定标准是?" — 公共标准
+
+    ✅ 应该问 "X 项目实际开展几年了?" — 客户专属事实
+    ✅ 应该问 "Y 老师目前在 Z 项目里的具体职务是?" — 客户内部细节
+    ✅ 应该问 "2024 年新增的 N 个项目点选 X 县的依据是?" — 客户决策动机
+    ✅ 应该问 "Q 项目的资金来源结构是?" — 客户私有数据
+
+    判断口诀: 这个问题 **能不能通过爬虫搜百科/官网/政府公示直接答?** 能答 → 不要问用户; 不能答 → 才放进 openClarifications。
+    底线: 公共概念走爬虫→字典 verified, 客户专属事实走 openClarifications, 用户审一次只该看到后者。
 
 (d) **限定/范围声明** — 描述 fact 的边界
     例: "现有资料没有提到 X, 这部分目前是空白"
@@ -591,7 +624,7 @@ def build_user_prompt(bundle: ClientFactBundle) -> str:
             "cooperation": "Layer 2 cooperation (合作关系)",
             "people": "Layer 4 people (关键人物)",
             "timeline": "Layer 5 timeline (时间线)",
-            "next_steps": "Layer 6 next_steps (承诺与下一步)",
+            "next_steps": "Layer 6 next_steps (本阶段战略思路)",
         }
         for dim_key, label in dim_label.items():
             chunks = bundle.dimension_chunks.get(dim_key, [])
@@ -727,7 +760,7 @@ def build_user_prompt(bundle: ClientFactBundle) -> str:
     lines.append("    事实陈述层 = essence (项目本质) / business_intro (业务介绍) / timeline (时间线)")
     lines.append("        → narrative **不要做顾问主观判断**, 只列已知事实")
     lines.append("        → 让客户看完一目了然『这家机构是什么』『有哪些项目』『发生过什么』")
-    lines.append("    判断层 = cooperation (合作关系) / next_steps (承诺与下一步)")
+    lines.append("    判断层 = cooperation (合作关系) / next_steps (本阶段战略思路)")
     lines.append("        → 可以做客观判断, 但**不要用『我作为顾问看/我推荐/我判断/我觉得』这种第一人称套话**")
     lines.append("        → 用客观书面语表达, 例『从合作 N 月看, 优先级较高』而不是『我作为顾问看这个优先级较高』")
     lines.append("    people 层: 描述事实 (谁做了什么) 为主, 推断角色时也用客观语气, 不用第一人称套话")
@@ -744,8 +777,16 @@ def build_user_prompt(bundle: ClientFactBundle) -> str:
     lines.append("    例: ❌ 『益语核心是: 项目梳理 + 内部管理体系搭建 + 战略落地』 (B 无据)")
     lines.append("        ✅ 『event_line 显示益语核心是: 项目梳理 + 战略落地; 基于行业惯例推断, 可能还涉及内部管理体系层面, 但 facts 里目前没明示, 需澄清』")
     lines.append("")
-    lines.append("**写每个并列句之前, 单独拎出每个并列项问『这个名词短语对应哪条 fact?』**")
+    lines.append("**写每个并列句之前, 单独拎出每个名词短语问『这个名词短语对应哪条 fact?』**")
     lines.append("**这套元规则适用于任何客户 (日慈/黔行/为爱前行/华润...). 它防的是结构, 不防具体词。**")
+    lines.append("")
+    lines.append("**(Q6 v1.1 新增) openClarifications 通过『能不能爬虫答』测试了吗?**")
+    lines.append("    每条 openClarifications 问题, 自问一次:『这个问题用爬虫搜百科/政府公示/官网能不能直接答?』")
+    lines.append("    能答的 → **删掉**, 不要让用户审 (由爬虫→字典 verified 回路完成, 不增加用户负担)")
+    lines.append("    不能答的 → 保留 (这才是真正需要客户内部说才能答的)")
+    lines.append("    ❌ 公共概念问题示例 (必删):『什么是 5A 评估』『积极心理学是什么』『慈善法 X 条规定什么』")
+    lines.append("    ✅ 客户专属问题示例 (保留):『X 项目实际开展几年』『Y 老师在 Z 项目的具体职务』『2024 选 X 县的依据』")
+    lines.append("    底线: 公共概念走爬虫, 客户专属走澄清。")
 
     return "\n".join(lines)
 
@@ -862,10 +903,17 @@ def _stub_dim(dim: str, reason: str) -> dict[str, Any]:
 def generate_narrative_dimensions(
     ai: AiService,
     bundle: ClientFactBundle,
+    *,
+    db: Any | None = None,
+    enable_clarification_pre_search: bool = True,
 ) -> tuple[dict[str, dict[str, Any]], float, str]:
     """跑一次 LLM, 返回 (dimensions_dict, overallConfidence, model_used).
 
     异常时返回 stub dimensions (不抛, 让上层有降级 fallback).
+
+    enable_clarification_pre_search (默认 True): 在 LLM 输出后对每条 openClarifications
+    跑预搜索 — 公共概念问题 (爬虫能答) 直接删除, 客户专属可搜问题答案进字典 pending,
+    只把真正"只有用户能答"的问题留在 openClarifications. 这一步需要 db (落库字典).
     """
     health = ai.get_health()
     if not health.ready:
@@ -895,6 +943,44 @@ def generate_narrative_dimensions(
         overall = float(result.get("overallConfidence") or 0.0)
     except (TypeError, ValueError):
         overall = 0.0
+
+    # 预搜索拦截层 — 把公共概念和可搜的客户专属问题从 openClarifications 删除/落字典.
+    # 仅当 db + ai 可用时启用. 用户原则: 不让用户答爬虫能答的问题.
+    if enable_clarification_pre_search and db is not None:
+        try:
+            from app.services.clarification_pre_search import pre_search_clarifications
+            client_name_for_search = ""
+            try:
+                client_name_for_search = str(getattr(bundle, "client_name", None) or
+                                             getattr(bundle, "clientName", None) or
+                                             "").strip()
+            except Exception:  # noqa: BLE001
+                pass
+            client_id_for_search = ""
+            try:
+                client_id_for_search = str(getattr(bundle, "client_id", None) or
+                                           getattr(bundle, "clientId", None) or
+                                           "").strip()
+            except Exception:  # noqa: BLE001
+                pass
+            if client_id_for_search:
+                ps_stats = pre_search_clarifications(
+                    ai, db, client_id_for_search, client_name_for_search, dims,
+                )
+                import logging as _logging
+                _logging.getLogger(__name__).info(
+                    "[clarification-pre-search] %d total: public_drop=%d auto_resolved=%d kept=%d",
+                    ps_stats.get("total", 0),
+                    ps_stats.get("public_dropped", 0) + ps_stats.get("public_dropped_heuristic", 0),
+                    ps_stats.get("auto_resolved", 0),
+                    ps_stats.get("kept", 0),
+                )
+        except Exception as exc:  # noqa: BLE001
+            import logging as _logging
+            _logging.getLogger(__name__).warning(
+                "[clarification-pre-search] failed (continuing without filter): %s", exc,
+            )
+
     return dims, overall, ai.current_provider() if hasattr(ai, "current_provider") else "doubao"
 
 
@@ -907,24 +993,57 @@ def upsert_commitments_from_narrative(
 ) -> dict[str, int]:
     """机制化 P0: 把 narrative 输出的 structuredTodos 写入 commitments 表.
 
-    保证: 任何客户每次 narrative 重生, 待办自动结构化 (不依赖手动操作).
-    幂等: 同 (client_id, committer, content, deadline) 已存在则跳过, 不覆盖人审过的状态.
+    保证:
+      1. 每次 narrative 重生, 待办自动结构化 (不依赖手动操作).
+      2. 严格幂等: 同 (client+committer+content) 完全一致 → 跳过.
+      3. 模糊查重 (机制化): 与现有 tasks (任意状态) / commitments (任意状态, 含已 dismiss)
+         做宽松相似度比对 (阈值 50%), 命中则 skip — 已分配/已完成/已删除的待办不会
+         因 narrative 重生而复活, 类似新待办也会被识别为重复.
+         原则: 宁可多提醒少漏提醒, dedup 失误率高一点也接受.
     """
     import uuid
     from datetime import datetime, timezone
+    from app.services.todo_aggregator import _title_similar
 
     inserted = 0
     skipped = 0
+    skipped_duplicate = 0
     now = datetime.now(timezone.utc).isoformat()
+
+    # 一次性拉客户的所有 task title 和 commitment content (用于宽松模糊查重)
+    try:
+        existing_task_titles = [
+            str(r["title"] or "")
+            for r in db.fetchall("SELECT title FROM tasks WHERE client_id=?", (client_id,))
+        ]
+    except Exception:
+        existing_task_titles = []
+    try:
+        existing_commit_contents = [
+            (str(r["committer"] or ""), str(r["content"] or ""), str(r["status"] or ""))
+            for r in db.fetchall(
+                "SELECT committer, content, status FROM commitments WHERE client_id=?",
+                (client_id,),
+            )
+        ]
+    except Exception:
+        existing_commit_contents = []
+
+    # 机制化兜底: 即使 LLM 不听 prompt 输出"高老师（善加方）", 写入前剥掉括号里的"方"字 —
+    # 用户原则: 客户名注释里不要"甲乙方"含义. 通用 regex: (X方) → (X), （X方） → （X）.
+    import re as _re
+    _PARTY_PATTERN = _re.compile(r'([（\(])([^）\)]*?)方([）\)])')
+    def _strip_party(s: str) -> str:
+        return _PARTY_PATTERN.sub(r'\1\2\3', s) if s else s
 
     for dim_name, dim_data in dims.items():
         todos = dim_data.get("structuredTodos") or []
         if not isinstance(todos, list):
             continue
         for t in todos:
-            title = str(t.get("title") or "").strip()
-            committer = str(t.get("committer") or "").strip()
-            recipient = str(t.get("recipient") or "").strip()
+            title = _strip_party(str(t.get("title") or "").strip())
+            committer = _strip_party(str(t.get("committer") or "").strip())
+            recipient = _strip_party(str(t.get("recipient") or "").strip())
             if not (title and committer and recipient):
                 skipped += 1
                 continue
@@ -934,23 +1053,35 @@ def upsert_commitments_from_narrative(
             if status not in ("pending", "fulfilled", "overdue", "cancelled"):
                 status = "pending"
 
-            # 幂等: 同 (client+committer+content) 已存在则跳过
             existing = db.fetchone(
                 """SELECT id, status FROM commitments
                    WHERE client_id=? AND committer=? AND content=?""",
                 (client_id, committer, title),
             )
             if existing:
-                # 已有, 但如果 LLM 标 fulfilled 且数据库还是 pending → 同步更新 status
                 if status == "fulfilled" and str(existing["status"]) == "pending":
                     db.execute(
                         """UPDATE commitments SET status='fulfilled',
                            fulfilled_at=?, updated_at=? WHERE id=?""",
                         (now, now, str(existing["id"])),
                     )
-                    inserted += 1  # 状态升级也算 1 次有效操作
+                    inserted += 1
                 else:
                     skipped += 1
+                continue
+
+            # 宽松模糊查重: 与现有 task title 比对
+            if any(_title_similar(title, t_title) for t_title in existing_task_titles):
+                skipped_duplicate += 1
+                continue
+            # 与现有 commitment content 比对 (含所有 status, 防止复活已 dismiss)
+            hit_commit = False
+            for (c_committer, c_content, _c_status) in existing_commit_contents:
+                if c_committer == committer and _title_similar(title, c_content):
+                    hit_commit = True
+                    break
+            if hit_commit:
+                skipped_duplicate += 1
                 continue
 
             cid = f"commit_{uuid.uuid4().hex[:10]}"
@@ -968,11 +1099,12 @@ def upsert_commitments_from_narrative(
                      now if status == "fulfilled" else None,
                      now, now),
                 )
+                existing_commit_contents.append((committer, title, status))
                 inserted += 1
             except Exception:
                 skipped += 1
 
-    return {"inserted": inserted, "skipped": skipped}
+    return {"inserted": inserted, "skipped": skipped, "skipped_duplicate": skipped_duplicate}
 
 
 def compute_data_layer_gaps(bundle: ClientFactBundle) -> list[str]:

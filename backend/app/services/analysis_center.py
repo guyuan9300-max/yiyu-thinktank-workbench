@@ -3167,7 +3167,8 @@ def queue_main_chain_backfill(
     payload: AnalysisBackfillMainChainPayload,
 ) -> AnalysisBackfillMainChainResultRecord:
     paused = set_analysis_backfill_paused(db, payload.pauseRequested) if payload.pauseRequested else is_analysis_backfill_paused(db)
-    client_ids = payload.clientIds or [str(row["id"]) for row in db.fetchall("SELECT id FROM clients ORDER BY updated_at DESC")]
+    # 没指定 clientIds 时遍历所有客户,但跳过冷冻项目 — 它们不参与自动 backfill 分析
+    client_ids = payload.clientIds or [str(row["id"]) for row in db.fetchall("SELECT id FROM clients WHERE frozen_at IS NULL ORDER BY updated_at DESC")]
     max_jobs = max(1, min(payload.maxJobs, 500))
     batch_size = max(1, min(payload.batchSize, max_jobs))
     candidates: list[AnalysisBackfillMainChainJobRecord] = []

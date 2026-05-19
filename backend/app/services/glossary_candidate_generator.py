@@ -384,35 +384,51 @@ def _collect_candidates(db: Database, client_id: str) -> dict:
     }
 
 
-def _build_prompt(candidates: dict, client_name: str) -> str:
-    """v2 · 加项目候选段, 强制 LLM 收录心盛/心灵魔法学院等核心项目."""
+def _build_prompt(candidates: dict, client_name: str, *, compact: bool = False) -> str:
+    """v2 · 加项目候选段, 强制 LLM 收录心盛/心灵魔法学院等核心项目.
+
+    compact=True (实测发现豆包 Seed 2.0 Pro 在 prompt 大 + 输出大 时易超时 7 分钟):
+      - 每数据源只取 top 5 (而不是 top 20)
+      - 输出目标降到 30-50 term (而不是 80-130)
+      - 总 prompt 约 1500-2500 字, 单次 LLM 调用 < 90s
+      为新客户/低数据量场景设计的"快速首轮", 后续可手动追加 batches.
+    """
+    top_entity = 5 if compact else 20
+    top_attr = 15 if compact else 30
+    top_facts = 1 if compact else 2
+    top_deadline = 10 if compact else 30
+    top_action = 8 if compact else 20
+    top_meeting = 5 if compact else 10
+    output_target = "30-50" if compact else "80-130"
+
     lines = [f"# 客户: {client_name}\n"]
 
     # ⭐ 项目候选段 (主动 grep 抽出来的, 必须全部收录到字典)
     project_candidates = candidates.get("project_candidates", [])
     if project_candidates:
-        lines.append(f"\n## ⭐ 项目候选 (必须全部收录到字典 category=项目, 已 grep {len(project_candidates)} 个):")
-        for p in project_candidates:
+        max_proj = 15 if compact else len(project_candidates)
+        lines.append(f"\n## ⭐ 项目候选 (必须收录, 已 grep {len(project_candidates)} 个, 显示 top {max_proj}):")
+        for p in project_candidates[:max_proj]:
             ids = ", ".join(p["support_ids"][:3])
             lines.append(f"  · 项目名: {p['name']} | 支撑 {p['support_count']} 条 | source_ids=[{ids}]")
-        lines.append("  ⚠️ 上述项目即使别处没出现, 也必须每个独立成一个 term (跨别名合并是 OK 的, 但不允许整个砍掉)")
+        if not compact:
+            lines.append("  ⚠️ 上述项目即使别处没出现, 也必须每个独立成一个 term (跨别名合并是 OK 的, 但不允许整个砍掉)")
 
     for etype, items in candidates["entities_by_type"].items():
-        lines.append(f"\n## entities · {etype} (top 20):")
-        for e in items[:20]:
+        lines.append(f"\n## entities · {etype} (top {top_entity}):")
+        for e in items[:top_entity]:
             lines.append(f"  {e['id'][:12]}|{e['name']}|{e['mention_count']}")
 
-    lines.append("\n## atomic_facts (top 30 attrs, 2 facts/attr):\n")
+    lines.append(f"\n## atomic_facts (top {top_attr} attrs, {top_facts} facts/attr):\n")
     sorted_attrs = sorted(candidates["atomic_by_attr"].items(), key=lambda x: -len(x[1]))
-    for attr, facts in sorted_attrs[:30]:
+    for attr, facts in sorted_attrs[:top_attr]:
         lines.append(f"  [{attr}]")
-        for f in facts[:2]:
+        for f in facts[:top_facts]:
             lines.append(f"    {f['id'][:12]}|{f['subject'][:25]}={f['value'][:55]}")
 
     # v4 新增段: 任务与日程候选
     task_owners = candidates.get("task_owners", [])
     if task_owners:
-        # 去重 — 同名不同 source 合并
         unique_names: dict[str, dict] = {}
         for o in task_owners:
             n = o["name"]
@@ -420,30 +436,31 @@ def _build_prompt(candidates: dict, client_name: str) -> str:
                 unique_names[n] = {"name": n, "sources": [], "count": 0}
             unique_names[n]["sources"].append(o["source"])
             unique_names[n]["count"] += o["count"]
-        lines.append(f"\n## ⭐ tasks 出现的人名 (category=人物, 必须收 — 含 task.owner_name + task.title 里 X老师/X工 模式):")
-        for n_info in unique_names.values():
-            lines.append(f"  · {n_info['name']} (sources={','.join(set(n_info['sources']))}, count={n_info['count']})")
+        max_owners = 10 if compact else len(unique_names)
+        lines.append(f"\n## ⭐ tasks 出现的人名 (category=人物, 显示 top {max_owners}):")
+        for n_info in list(unique_names.values())[:max_owners]:
+            lines.append(f"  · {n_info['name']} (count={n_info['count']})")
 
     task_deadlines = candidates.get("task_deadlines", [])
     if task_deadlines:
-        lines.append(f"\n## ⭐ tasks 真实 deadline ({len(task_deadlines)} 个, category=关键节点/数字, 全部收录):")
-        for d in task_deadlines[:30]:
-            lines.append(f"  · {d['deadline']} | task=「{d['task_title']}」| owner={d['owner']}")
+        lines.append(f"\n## ⭐ tasks 真实 deadline (top {top_deadline}, category=关键节点/数字):")
+        for d in task_deadlines[:top_deadline]:
+            lines.append(f"  · {d['deadline']} | 「{d['task_title']}」")
 
     task_actions = candidates.get("task_actions", [])
     if task_actions:
-        lines.append(f"\n## ⭐ tasks 标题里的动作类型 ({len(task_actions)} 个, category=规则/方法 或 业务术语, 收高频出现的):")
-        for a in task_actions[:20]:
+        lines.append(f"\n## ⭐ tasks 动作类型 (top {top_action}):")
+        for a in task_actions[:top_action]:
             lines.append(f"  · {a['action']} ({a['count']} 次)")
 
     meetings = candidates.get("meetings", [])
     if meetings:
-        lines.append(f"\n## ⭐ 会议标题 ({len(meetings)} 个, 可能是项目/活动/规则):")
-        for m in meetings[:10]:
-            lines.append(f"  · {m['title']} (stage={m['stage']})")
+        lines.append(f"\n## ⭐ 会议标题 (top {top_meeting}):")
+        for m in meetings[:top_meeting]:
+            lines.append(f"  · {m['title']}")
 
     event_line_intents = candidates.get("event_line_intents", [])
-    if event_line_intents:
+    if event_line_intents and not compact:
         lines.append(f"\n## ⭐ event_lines 业务承诺/动作 ({len(event_line_intents)} 条主线):")
         for el in event_line_intents:
             lines.append(f"  · 主线「{el['line_name']}」")
@@ -454,7 +471,7 @@ def _build_prompt(candidates: dict, client_name: str) -> str:
             if el["decision"]:
                 lines.append(f"      decision: {el['decision']}")
 
-    lines.append("\n生成 80-130 个 term, **必须收录上述所有 ⭐ 项目/人物/deadline/动作**, 跨别名合并, 标 source_ids")
+    lines.append(f"\n生成 {output_target} 个 term, 跨别名合并, 标 source_ids")
     return "\n".join(lines)
 
 
@@ -464,6 +481,9 @@ def generate_glossary_candidates(
     client_id: str,
     *,
     persist: bool = False,
+    compact: bool = False,
+    timeout_seconds: float = 420.0,
+    max_tokens: int = 10000,
 ) -> dict[str, Any]:
     """主入口: 收集 + 调 LLM + 返回字典候选.
 
@@ -499,15 +519,15 @@ def generate_glossary_candidates(
             "error": health.detail,
         }
 
-    prompt = _build_prompt(candidates, client_name)
+    prompt = _build_prompt(candidates, client_name, compact=compact)
 
     try:
         result = ai._qwen_generate(  # noqa: SLF001
             prompt,
             SYSTEM_PROMPT,
             GLOSSARY_OUTPUT_SCHEMA,
-            timeout_seconds=420.0,   # 7 min buffer (含 5 数据源, prompt 大)
-            max_tokens=10000,        # 80-130 term + aliases + definitions 需更大空间
+            timeout_seconds=timeout_seconds,
+            max_tokens=max_tokens,
             temperature=0.2,
         )
     except AiInvocationError as exc:
@@ -577,6 +597,12 @@ def generate_glossary_candidates(
                 persist_skipped += 1
             except Exception:
                 persist_skipped += 1
+        # 显式 commit — create_glossary_entry 直接用 conn.execute 不自动 commit,
+        # 之前 bug: Stage 1 跑完 48 个 term, 进程退出时全部丢失.
+        try:
+            db.conn.commit()
+        except Exception:  # noqa: BLE001
+            pass
 
     return {
         "status": "ok",

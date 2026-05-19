@@ -353,15 +353,23 @@ export function workspaceClientUiReducer(
     case 'removeThreadMessages': {
       const removalIds = new Set(action.messageIds);
       if (removalIds.size === 0) return state;
+      // 删除时必须同时扫 threadMessagesById（来自 DB 的消息）和 optimisticMessagesByThread
+      // （前端兜底/未确认消息）—— 之前只看 store 不看 optimistic 导致"失败提示删不掉"。
       const currentMessages = state.threadMessagesById[action.threadId] || [];
       const remaining = currentMessages.filter((message) => !removalIds.has(message.id));
-      if (remaining.length === currentMessages.length) return state;
-      const nextThreadMessagesById = remaining.length
-        ? { ...state.threadMessagesById, [action.threadId]: remaining }
-        : removeKey(state.threadMessagesById, action.threadId);
+      const storeChanged = remaining.length !== currentMessages.length;
+
       const currentOptimistic = state.optimisticMessagesByThread[action.threadId] || [];
       const remainingOptimistic = currentOptimistic.filter((message) => !removalIds.has(message.id));
       const optimisticChanged = remainingOptimistic.length !== currentOptimistic.length;
+
+      if (!storeChanged && !optimisticChanged) return state;
+
+      const nextThreadMessagesById = storeChanged
+        ? (remaining.length
+            ? { ...state.threadMessagesById, [action.threadId]: remaining }
+            : removeKey(state.threadMessagesById, action.threadId))
+        : state.threadMessagesById;
       const nextOptimistic = optimisticChanged
         ? (remainingOptimistic.length
             ? { ...state.optimisticMessagesByThread, [action.threadId]: remainingOptimistic }

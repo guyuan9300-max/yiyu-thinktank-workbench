@@ -35,9 +35,11 @@ def _needs_deep_judge(draft: SentimentItemDraft) -> bool:
 
     规则：
       1. label=negative 但 confidence < 0.7：可能误判（被噪声词触发），让 LLM 复核；
-      2. label=neutral 但 reason 含"soft_neg 无上下文"：可能漏判，让 LLM 看真上下文；
-      3. label=positive：跳过（误判风险低）；
-      4. label=negative 且 confidence >= 0.85：硬负词命中，跳过（省钱）。
+      2. label=neutral 但 reason 含"soft_neg / 无上下文 / 孤立的负面词 / 可能为模板"：可能漏判；
+      3. label=neutral 且 title+summary 含「品类语义词」（评价/怎么样/口碑/质疑/回应等）：
+         词表没扫到情感词不代表内容中性，可能是 LLM 才看得懂的情绪，送一次 LLM；
+      4. label=positive：跳过（误判风险低）；
+      5. label=negative 且 confidence >= 0.85：硬负词命中，跳过（省钱）。
     """
     s = draft.sentiment
     if s.label == "negative" and s.confidence < 0.7:
@@ -48,7 +50,23 @@ def _needs_deep_judge(draft: SentimentItemDraft) -> bool:
         kw in (s.reason or "") for kw in ("无上下文", "孤立的负面词", "可能为模板")
     ):
         return True
+    # 新增：neutral 但内容带评价/质疑/回应等语义词 → LLM 复核
+    if s.label == "neutral":
+        text = f"{draft.title} {draft.summary}".lower()
+        if any(kw in text for kw in NEUTRAL_RECHECK_KEYWORDS):
+            return True
     return False
+
+
+# 出现这些词的中性条目值得 LLM 二次判定 — 词表看不出情绪但人能看出来
+NEUTRAL_RECHECK_KEYWORDS = (
+    "评价", "怎么样", "口碑", "印象", "看法",
+    "质疑", "回应", "声明", "澄清",
+    "面试", "员工", "薪资", "待遇",
+    "服务", "体验", "感受", "态度",
+    "维权", "投诉", "举报", "曝光",
+    "调查", "整改", "处理结果",
+)
 
 
 # ──────────────────────────────────────────────────────────────────────────

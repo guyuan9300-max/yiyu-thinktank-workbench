@@ -8,10 +8,10 @@ type ContradictionAlertPanelProps = {
   refreshKey?: number;
 };
 
-const SEVERITY_TONE: Record<string, string> = {
-  high: 'border-rose-200 bg-rose-50',
-  medium: 'border-amber-200 bg-amber-50',
-  low: 'border-slate-200 bg-slate-50',
+const SEVERITY_ACCENT: Record<string, string> = {
+  high: 'before:bg-rose-400',
+  medium: 'before:bg-amber-400',
+  low: 'before:bg-gray-300',
 };
 
 const SEVERITY_LABEL: Record<string, string> = {
@@ -40,11 +40,9 @@ function formatBytes(bytes: number | null | undefined): string {
   return `${(bytes / 1024 / 1024 / 1024).toFixed(2)} GB`;
 }
 
-// 把 path 当作 group key——两份资料相同 path 视作同一对
 function pairKey(item: FactContradiction): string {
   const a = item.docAOriginalPath || item.docAFileName || item.factAId;
   const b = item.docBOriginalPath || item.docBFileName || item.factBId;
-  // 让 (A,B) 和 (B,A) 归为一组
   return [a, b].sort().join('|||');
 }
 
@@ -101,24 +99,6 @@ function groupByPair(items: FactContradiction[]): PairGroup[] {
   return groups;
 }
 
-function DocBadge({ side, label }: { side: DocSide; label: string }) {
-  const parts: string[] = [];
-  if (side.importedAt) parts.push(`导入于 ${formatRelative(side.importedAt)}`);
-  const sizeLabel = formatBytes(side.sizeBytes);
-  if (sizeLabel) parts.push(sizeLabel);
-  return (
-    <div className="rounded-xl bg-white/90 px-2.5 py-2 ring-1 ring-slate-200">
-      <p className="text-[9px] font-bold text-slate-400">{label}</p>
-      <p className="mt-0.5 truncate text-[11px] font-bold text-slate-700" title={side.fileName || ''}>
-        📄 {side.fileName || '未知文件'}
-      </p>
-      {parts.length > 0 && (
-        <p className="mt-0.5 text-[9px] font-semibold text-slate-400">{parts.join(' · ')}</p>
-      )}
-    </div>
-  );
-}
-
 export function ContradictionAlertPanel({ clientId, refreshKey = 0 }: ContradictionAlertPanelProps) {
   const [items, setItems] = useState<FactContradiction[]>([]);
   const [loading, setLoading] = useState(false);
@@ -156,7 +136,6 @@ export function ContradictionAlertPanel({ clientId, refreshKey = 0 }: Contradict
 
   const handleAcceptSide = async (group: PairGroup, side: 'a' | 'b') => {
     try {
-      // 对该 pair 里所有 contradictions 批量 resolve
       await Promise.all(
         group.items.map((item) =>
           reviewContradiction(item.id, {
@@ -202,9 +181,6 @@ export function ContradictionAlertPanel({ clientId, refreshKey = 0 }: Contradict
   };
 
   if (!clientId) return null;
-  // 只有真的有 pending 矛盾时才显示 banner
-  // 之前的 bug: loading=true 时也渲染, 加载中会看到 "0 组 / 0 个口径"
-  // 现在 items 为空就不显示, error 单独用一个极简提示展示
   if (items.length === 0) {
     if (error) {
       return (
@@ -215,55 +191,56 @@ export function ContradictionAlertPanel({ clientId, refreshKey = 0 }: Contradict
   }
 
   return (
-    <div className="space-y-3 rounded-3xl border border-rose-100 bg-white p-4">
+    <div className="space-y-4 rounded-2xl border border-gray-100 bg-white p-5">
       <div className="space-y-1">
-        <div className="flex items-center justify-between gap-2">
-          <p className="text-[12px] font-black text-rose-700">⚠ 矛盾告警 · 两份资料对同一口径给出了不同的数值</p>
-          <span className="rounded-full bg-rose-100 px-2 py-0.5 text-[10px] font-bold text-rose-700">
+        <div className="flex items-start justify-between gap-2">
+          <div>
+            <div className="text-[9px] font-semibold uppercase tracking-[0.18em] text-rose-500">
+              Fact Contradiction
+            </div>
+            <div className="mt-0.5 text-[13px] font-medium tracking-tight text-gray-800">
+              矛盾告警 · 两份资料对同一口径给出了不同的数值
+            </div>
+          </div>
+          <span className="shrink-0 rounded-full px-2.5 py-1 text-[10px] font-medium text-rose-700 ring-1 ring-inset ring-rose-200">
             {groups.length} 组 / {items.length} 个口径
           </span>
         </div>
-        <p className="text-[10px] font-semibold leading-4 text-slate-500">
-          💡 你选的是<strong className="text-slate-700">数据口径</strong>，不是删文档——文档本身始终保留。
-          你的选择只影响 AI 未来回答时**用哪一份数值**做判断。
+        <p className="text-[10.5px] leading-snug text-gray-500">
+          你选的是<span className="text-gray-700">数据口径</span>,不是删文档 — 文档本身始终保留。
+          你的选择只影响 AI 未来回答时<span className="text-gray-700">用哪一份数值</span>做判断。
         </p>
       </div>
 
-      {error && <p className="text-[11px] font-semibold text-rose-600">{error}</p>}
+      {error && <p className="text-[11px] font-medium text-rose-600">{error}</p>}
 
       <div className="space-y-3">
         {groups.map((group) => {
           const expanded = Boolean(expandedDetail[group.key]);
+          const accent = SEVERITY_ACCENT[group.severity] || SEVERITY_ACCENT.medium;
           return (
             <div
               key={group.key}
-              className={`rounded-2xl border px-3 py-2.5 ${SEVERITY_TONE[group.severity] || SEVERITY_TONE.medium}`}
+              className={`relative rounded-xl bg-white px-4 py-3 ring-1 ring-inset ring-gray-100 before:absolute before:left-0 before:top-3 before:bottom-3 before:w-[3px] before:rounded-r-full ${accent}`}
             >
-              {/* 摘要：多少个口径冲突 */}
-              <div className="flex items-center justify-between mb-2">
-                <p className="text-[11px] font-bold text-slate-700">
-                  这两份资料在 <span className="text-rose-700">{group.items.length}</span> 个口径上有差异
-                  <span className="ml-1 text-[10px] font-bold text-slate-500">
-                    （严重度 {SEVERITY_LABEL[group.severity]}）
-                  </span>
+              <div className="mb-2 flex items-center justify-between gap-2">
+                <p className="text-[11.5px] font-medium text-gray-700">
+                  这两份资料在 <span className="text-rose-700 font-semibold">{group.items.length}</span> 个口径上有差异
+                  <span className="ml-2 text-[10px] text-gray-400">严重度 {SEVERITY_LABEL[group.severity]}</span>
                 </p>
               </div>
 
-              {/* 口径列表：每个口径一行，左侧[文件名 → 数据] / 右侧[数据 ← 文件名] */}
               <ul className="space-y-2">
                 {group.items.slice(0, expanded ? group.items.length : 3).map((it) => (
                   <li
                     key={it.id}
-                    className="rounded-lg bg-white/80 px-3 py-2 text-[11px]"
+                    className="rounded-lg bg-[#FAFAFA] px-3 py-2 text-[11px] ring-1 ring-inset ring-gray-100"
                   >
-                    {/* 口径标题 */}
-                    <div className="font-bold text-slate-800 mb-1.5 text-[12px]">
+                    <div className="mb-1.5 text-[12px] font-medium text-gray-800">
                       {it.subjectText} · {it.attribute}
                     </div>
-                    {/* 左右对照：文件名紧贴对应数据 */}
-                    <div className="grid grid-cols-2 gap-2 items-center">
-                      {/* 左侧：文件名(左) + 数据(右靠中) */}
-                      <div className="flex items-center justify-between gap-2 rounded-md border border-emerald-200 bg-emerald-50/60 px-2.5 py-1.5 min-w-0">
+                    <div className="grid grid-cols-2 items-center gap-2">
+                      <div className="flex min-w-0 items-center justify-between gap-2 rounded-md bg-white px-2.5 py-1.5 ring-1 ring-inset ring-emerald-200/70">
                         <button
                           type="button"
                           disabled={!group.docA.path}
@@ -272,18 +249,17 @@ export function ContradictionAlertPanel({ clientId, refreshKey = 0 }: Contradict
                               void window.yiyuWorkbench.openPath(group.docA.path).catch(() => undefined);
                             }
                           }}
-                          className="text-[10px] text-slate-500 truncate text-left hover:text-emerald-700 hover:underline disabled:no-underline disabled:cursor-not-allowed cursor-pointer"
-                          title={group.docA.path ? `点击打开：${group.docA.fileName || ''}` : (group.docA.fileName || '')}
+                          className="cursor-pointer truncate text-left text-[10px] text-gray-500 hover:text-emerald-700 hover:underline disabled:cursor-not-allowed disabled:no-underline"
+                          title={group.docA.path ? `点击打开:${group.docA.fileName || ''}` : (group.docA.fileName || '')}
                         >
-                          📄 {group.docA.fileName || '资料 A'}
+                          {group.docA.fileName || '资料 A'}
                         </button>
-                        <span className="shrink-0 font-bold text-emerald-700">
+                        <span className="shrink-0 font-semibold text-emerald-700">
                           {it.valueA}
                         </span>
                       </div>
-                      {/* 右侧：数据(左靠中) + 文件名(右) */}
-                      <div className="flex items-center justify-between gap-2 rounded-md border border-sky-200 bg-sky-50/60 px-2.5 py-1.5 min-w-0">
-                        <span className="shrink-0 font-bold text-sky-700">
+                      <div className="flex min-w-0 items-center justify-between gap-2 rounded-md bg-white px-2.5 py-1.5 ring-1 ring-inset ring-sky-200/70">
+                        <span className="shrink-0 font-semibold text-sky-700">
                           {it.valueB}
                         </span>
                         <button
@@ -294,10 +270,10 @@ export function ContradictionAlertPanel({ clientId, refreshKey = 0 }: Contradict
                               void window.yiyuWorkbench.openPath(group.docB.path).catch(() => undefined);
                             }
                           }}
-                          className="text-[10px] text-slate-500 truncate text-right hover:text-sky-700 hover:underline disabled:no-underline disabled:cursor-not-allowed cursor-pointer"
-                          title={group.docB.path ? `点击打开：${group.docB.fileName || ''}` : (group.docB.fileName || '')}
+                          className="cursor-pointer truncate text-right text-[10px] text-gray-500 hover:text-sky-700 hover:underline disabled:cursor-not-allowed disabled:no-underline"
+                          title={group.docB.path ? `点击打开:${group.docB.fileName || ''}` : (group.docB.fileName || '')}
                         >
-                          {group.docB.fileName || '资料 B'} 📄
+                          {group.docB.fileName || '资料 B'}
                         </button>
                       </div>
                     </div>
@@ -308,7 +284,7 @@ export function ContradictionAlertPanel({ clientId, refreshKey = 0 }: Contradict
               {group.items.length > 3 && (
                 <button
                   type="button"
-                  className="mt-1 text-[10px] font-bold text-slate-500 hover:text-slate-700"
+                  className="mt-2 text-[10px] font-medium text-gray-500 hover:text-gray-700"
                   onClick={() =>
                     setExpandedDetail((m) => ({ ...m, [group.key]: !m[group.key] }))
                   }
@@ -317,60 +293,58 @@ export function ContradictionAlertPanel({ clientId, refreshKey = 0 }: Contradict
                 </button>
               )}
 
-              {/* 整份判定 · 主操作 */}
-              <div className="mt-3 grid grid-cols-3 gap-2">
+              <div className="mt-3 grid grid-cols-3 gap-1.5">
                 <button
                   type="button"
-                  className="rounded-lg bg-emerald-100 px-2 py-1.5 text-[11px] font-bold text-emerald-700 hover:bg-emerald-200"
+                  className="rounded-md bg-emerald-50 px-2 py-1.5 text-[11px] font-medium text-emerald-700 ring-1 ring-inset ring-emerald-200 hover:bg-emerald-100/70 transition-colors"
                   onClick={() => void handleAcceptSide(group, 'a')}
-                  title="把这份资料里全部 N 个数值都设为数据中心当前真值；另一份对应数值进入归档"
+                  title="把这份资料里全部 N 个数值都设为数据中心当前真值;另一份对应数值进入归档"
                 >
-                  以 A 为准 ({group.items.length})
+                  以 A 为准 <span className="opacity-60">({group.items.length})</span>
                 </button>
                 <button
                   type="button"
-                  className="rounded-lg bg-emerald-100 px-2 py-1.5 text-[11px] font-bold text-emerald-700 hover:bg-emerald-200"
+                  className="rounded-md bg-emerald-50 px-2 py-1.5 text-[11px] font-medium text-emerald-700 ring-1 ring-inset ring-emerald-200 hover:bg-emerald-100/70 transition-colors"
                   onClick={() => void handleAcceptSide(group, 'b')}
-                  title="把这份资料里全部 N 个数值都设为数据中心当前真值；另一份对应数值进入归档"
+                  title="把这份资料里全部 N 个数值都设为数据中心当前真值;另一份对应数值进入归档"
                 >
-                  以 B 为准 ({group.items.length})
+                  以 B 为准 <span className="opacity-60">({group.items.length})</span>
                 </button>
                 <button
                   type="button"
-                  className="rounded-lg bg-slate-100 px-2 py-1.5 text-[11px] font-bold text-slate-700 hover:bg-slate-200"
+                  className="rounded-md bg-white px-2 py-1.5 text-[11px] font-medium text-gray-700 ring-1 ring-inset ring-gray-200 hover:bg-gray-50 transition-colors"
                   onClick={() => void handleKeepBothGroup(group)}
-                  title="两份口径都保留（视为合理并存，AI 回答时会同时引用两份）"
+                  title="两份口径都保留(视为合理并存,AI 回答时会同时引用两份)"
                 >
                   两份都保留
                 </button>
               </div>
 
-              {/* 逐项判定 · 次要操作（折叠） */}
               {group.items.length > 1 && (
                 <details className="mt-2">
-                  <summary className="cursor-pointer text-[10px] font-bold text-slate-500 hover:text-slate-700">
+                  <summary className="cursor-pointer text-[10px] font-medium text-gray-500 hover:text-gray-700">
                     分别判定每个口径…
                   </summary>
                   <div className="mt-2 space-y-1.5">
                     {group.items.map((it) => (
                       <div
                         key={`detail-${it.id}`}
-                        className="rounded-lg bg-white/60 px-2 py-1.5"
+                        className="rounded-md bg-[#FAFAFA] px-2 py-1.5 ring-1 ring-inset ring-gray-100"
                       >
-                        <p className="text-[10px] font-bold text-slate-600">
+                        <p className="text-[10.5px] font-medium text-gray-600">
                           {it.subjectText} · {it.attribute}
                         </p>
                         <div className="mt-1 flex gap-2">
                           <button
                             type="button"
-                            className="flex-1 rounded-md bg-emerald-50 px-2 py-1 text-[10px] font-bold text-emerald-700 hover:bg-emerald-100"
+                            className="flex-1 rounded-md bg-emerald-50 px-2 py-1 text-[10px] font-medium text-emerald-700 ring-1 ring-inset ring-emerald-200 hover:bg-emerald-100/70"
                             onClick={() => void handleAcceptPerField(it, 'a')}
                           >
                             A: {it.valueA}
                           </button>
                           <button
                             type="button"
-                            className="flex-1 rounded-md bg-sky-50 px-2 py-1 text-[10px] font-bold text-sky-700 hover:bg-sky-100"
+                            className="flex-1 rounded-md bg-sky-50 px-2 py-1 text-[10px] font-medium text-sky-700 ring-1 ring-inset ring-sky-200 hover:bg-sky-100/70"
                             onClick={() => void handleAcceptPerField(it, 'b')}
                           >
                             B: {it.valueB}

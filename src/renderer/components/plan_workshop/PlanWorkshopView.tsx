@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { ClipboardList, ChevronDown, ChevronRight, ArrowRight, Plus, RefreshCw, X, Trash2, Sparkles, Check, RotateCcw, Pencil } from 'lucide-react';
+import { ChevronDown, ArrowRight, Plus, RefreshCw, X, Trash2, Sparkles, Check, RotateCcw, Pencil } from 'lucide-react';
 
-import { getTasksForPlanItem, parseDepartmentPlan } from '../../lib/api';
+import { getPlanItemTaskCounts, getTasksForPlanItem, parseDepartmentPlan } from '../../lib/api';
 import type {
   OrgDepartmentPlanItemSettings,
   OrgDepartmentPlanSettings,
@@ -238,6 +238,21 @@ export function PlanWorkshopView({ value, currentUser, onSavePlan, onOpenTask, o
   const [itemTasks, setItemTasks] = useState<Record<string, Task[]>>({});
   const [loadingItemId, setLoadingItemId] = useState<string | null>(null);
   const [itemTaskError, setItemTaskError] = useState<string | null>(null);
+  const [taskCountByItemId, setTaskCountByItemId] = useState<Record<string, number>>({});
+
+  useEffect(() => {
+    let cancelled = false;
+    getPlanItemTaskCounts()
+      .then((counts) => {
+        if (!cancelled) setTaskCountByItemId(counts);
+      })
+      .catch(() => {
+        // 静默失败:徽章是辅助信息,拉不到不影响主流程
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const fetchTasksForItem = async (itemId: string) => {
     setItemTaskError(null);
@@ -245,6 +260,7 @@ export function PlanWorkshopView({ value, currentUser, onSavePlan, onOpenTask, o
     try {
       const tasks = await getTasksForPlanItem(itemId);
       setItemTasks((prev) => ({ ...prev, [itemId]: tasks }));
+      setTaskCountByItemId((prev) => ({ ...prev, [itemId]: tasks.length }));
     } catch (error) {
       setItemTaskError(error instanceof Error ? error.message : '加载挂接任务失败');
     } finally {
@@ -633,65 +649,90 @@ export function PlanWorkshopView({ value, currentUser, onSavePlan, onOpenTask, o
     }
   };
 
+  const subtitleText = isAdmin
+    ? '管理员视图 · 看全部部门当前周期计划与挂接任务'
+    : currentUser?.departmentName
+      ? `${currentUser.departmentName} · 部门负责人视图`
+      : '部门视图';
+
   return (
     <div className="overflow-y-auto h-full">
-      <div className="mx-auto max-w-7xl px-6 pt-6 pb-20 space-y-6">
-        {/* Header */}
-        <div className="flex items-start justify-between gap-3">
-          <div className="flex items-center gap-3">
-            <ClipboardList className="text-[#5B7BFE]" size={24} />
-            <div>
-              <h1 className="text-[22px] font-bold text-gray-900 tracking-tight">组织计划</h1>
-              <p className="text-[12px] text-gray-500 mt-0.5">
-                {isAdmin
-                  ? '管理员视图 · 看全部部门当前周期计划与挂接任务'
-                  : currentUser?.departmentName
-                    ? `${currentUser.departmentName} · 部门负责人视图`
-                    : '部门视图'}
-              </p>
-            </div>
+      <div className="mx-auto max-w-7xl px-6 lg:px-8 pt-8 pb-20 space-y-10">
+        {/* Header ─────────────────────────────────────────── */}
+        <div className="flex items-start justify-between gap-4 flex-wrap">
+          <div className="min-w-0">
+            <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-gray-400">PLAN WORKSHOP</p>
+            <h1 className="mt-2 text-[22px] font-light tracking-tight text-gray-900">组织计划</h1>
+            <p className="mt-1 text-[12px] text-gray-500 leading-relaxed">{subtitleText}</p>
           </div>
           {canCreatePlan && (
             <button
               type="button"
               onClick={openCreateModal}
-              className="inline-flex items-center gap-2 rounded-2xl bg-[#5B7BFE] text-white px-4 py-2 text-[12px] font-bold shadow-sm hover:bg-[#4a6ae8] transition"
+              className="shrink-0 inline-flex items-center gap-1.5 rounded-xl bg-[#5B7BFE] text-white px-3.5 py-2 text-[12px] font-bold hover:bg-[#4a6ae8] transition-colors"
             >
               <Plus size={14} /> 新增计划
             </button>
           )}
         </div>
 
-        {/* Overview cards */}
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-          <StatCard label="部门覆盖" value={`${deptsWithPlan}/${totalDepts}`} />
-          <StatCard
-            label="待制定计划"
-            value={`${deptsWithoutPlan}`}
-            highlight={deptsWithoutPlan > 0}
-          />
-          <StatCard label="未完成项总数" value={`${totalUnfinished}`} />
-          <StatCard label="平均完成率" value={rows.length > 0 ? `${avgCompleteness}%` : '—'} />
-        </div>
-
-        {/* Department board with two-column expansion */}
-        <div className="overflow-hidden rounded-[24px] border border-gray-100 bg-white shadow-sm">
-          <div className="px-6 py-4 border-b border-gray-100 flex items-center justify-between">
-            <div>
-              <h2 className="text-[15px] font-bold text-gray-900">部门看板</h2>
-              <p className="text-[11px] text-gray-500 mt-1">
-                点击部门展开当前周期的计划项；点击计划项可在右栏查看挂接的任务。
-              </p>
+        {/* PLAN OVERVIEW · 4 个 KPI hero block ────────────── */}
+        <div>
+          <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-gray-400">PLAN OVERVIEW</p>
+          <div className="mt-5 grid grid-cols-2 md:grid-cols-4 gap-x-8 gap-y-6">
+            <div className="flex flex-col">
+              <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-gray-400">部门覆盖</p>
+              <div className="mt-3 flex items-baseline gap-1.5">
+                <span className="text-[32px] leading-none font-light tracking-tight text-gray-900">{deptsWithPlan}</span>
+                <span className="text-[14px] leading-none font-light text-gray-400">/ {totalDepts}</span>
+              </div>
+              <div className={`mt-2 h-[2px] w-8 rounded-full ${deptsWithPlan === totalDepts && totalDepts > 0 ? 'bg-emerald-500' : 'bg-transparent'}`} />
+              <p className="mt-2 text-[11px] text-gray-400">已制定计划的部门</p>
+            </div>
+            <div className="flex flex-col">
+              <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-gray-400">待制定</p>
+              <div className="mt-3 flex items-baseline gap-1.5">
+                <span className={`text-[32px] leading-none font-light tracking-tight ${deptsWithoutPlan > 0 ? 'text-amber-600' : 'text-gray-900'}`}>{deptsWithoutPlan}</span>
+                <span className="text-[14px] leading-none font-light text-gray-400">个部门</span>
+              </div>
+              <div className={`mt-2 h-[2px] w-8 rounded-full ${deptsWithoutPlan > 0 ? 'bg-amber-500' : 'bg-transparent'}`} />
+              <p className="mt-2 text-[11px] text-gray-400">{deptsWithoutPlan > 0 ? '需要尽快制定' : '全部已覆盖'}</p>
+            </div>
+            <div className="flex flex-col">
+              <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-gray-400">未完成项</p>
+              <div className="mt-3 flex items-baseline gap-1.5">
+                <span className="text-[32px] leading-none font-light tracking-tight text-gray-900">{totalUnfinished}</span>
+                <span className="text-[14px] leading-none font-light text-gray-400">项</span>
+              </div>
+              <div className="mt-2 h-[2px] w-8 rounded-full bg-transparent" />
+              <p className="mt-2 text-[11px] text-gray-400">所有进行中的计划项</p>
+            </div>
+            <div className="flex flex-col">
+              <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-gray-400">平均完成率</p>
+              <div className="mt-3 flex items-baseline gap-1.5">
+                <span className="text-[32px] leading-none font-light tracking-tight text-gray-900">{rows.length > 0 ? avgCompleteness : '—'}</span>
+                {rows.length > 0 && <span className="text-[14px] leading-none font-light text-gray-400">%</span>}
+              </div>
+              <div className={`mt-2 h-[2px] w-8 rounded-full ${avgCompleteness >= 80 ? 'bg-emerald-500' : avgCompleteness >= 40 ? 'bg-amber-500' : 'bg-transparent'}`} />
+              <p className="mt-2 text-[11px] text-gray-400">跨部门加权平均</p>
             </div>
           </div>
+        </div>
 
-          {rows.length === 0 ? (
-            <div className="p-8 text-center text-[12px] text-gray-400">
-              {isAdmin ? '当前组织尚未建立部门' : '你的部门信息未配置，请联系管理员'}
-            </div>
-          ) : (
-            <div className="grid grid-cols-1 lg:grid-cols-[1.2fr_1fr] divide-y lg:divide-y-0 lg:divide-x divide-gray-100">
-              <div className="max-h-[640px] overflow-y-auto">
+        {/* 主体双栏 ─ 部门列表 + 详情 ────────────────────── */}
+        {rows.length === 0 ? (
+          <div className="border-t border-gray-100 pt-10">
+            <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-gray-400">DEPARTMENTS</p>
+            <p className="mt-5 text-[13px] text-gray-400">
+              {isAdmin ? '当前组织尚未建立部门' : '你的部门信息未配置,请联系管理员'}
+            </p>
+          </div>
+        ) : (
+          <div className="grid grid-cols-1 lg:grid-cols-[1.1fr_1fr] gap-x-8 gap-y-8 border-t border-gray-100 pt-10">
+            {/* 左栏 · 部门列表 */}
+            <div>
+              <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-gray-400 mb-4">DEPARTMENTS · 部门 · 当前周期</p>
+              <div className="max-h-[640px] overflow-y-auto -mx-2">
                 {rows.map((row) => (
                   <DepartmentRowBlock
                     key={row.scopeId}
@@ -700,23 +741,28 @@ export function PlanWorkshopView({ value, currentUser, onSavePlan, onOpenTask, o
                     onToggle={() => setExpandedScopeId(expandedScopeId === row.scopeId ? null : row.scopeId)}
                     selectedItemId={selectedItemId}
                     onSelectItem={handleSelectItem}
+                    taskCountByItemId={taskCountByItemId}
                   />
                 ))}
               </div>
+            </div>
 
-              <div className="max-h-[640px] overflow-y-auto bg-gray-50/40">
+            {/* 右栏 · 选中详情 */}
+            <div>
+              <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-gray-400 mb-4">DETAIL · 计划项详情</p>
+              <div className="max-h-[640px] overflow-y-auto">
                 {!selectedItem ? (
-                  <div className="p-8 text-center text-[12px] text-gray-400">
-                    选择左侧某条计划项，这里会列出挂到它的所有任务。
+                  <div className="py-12 text-center">
+                    <p className="text-[12px] text-gray-400">选择左侧某条计划项</p>
+                    <p className="mt-1.5 text-[11px] text-gray-300">这里会显示标题、状态、期望产出和挂接的任务</p>
                   </div>
                 ) : (
-                  <div className="p-5 space-y-4">
+                  <div className="space-y-7">
+                    {/* 头部 ─ scope eyebrow + 标题 + 操作按钮 */}
                     <div>
                       <div className="flex items-start justify-between gap-3">
                         <div className="flex-1 min-w-0">
-                          <div className="text-[11px] text-gray-400 uppercase tracking-wider font-bold">
-                            {selectedItemScopeName || '未知主体'} · 计划项
-                          </div>
+                          <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-gray-400">{selectedItemScopeName || '未知主体'} · 计划项</p>
                           {isEditingItem ? (
                             <input
                               type="text"
@@ -724,21 +770,21 @@ export function PlanWorkshopView({ value, currentUser, onSavePlan, onOpenTask, o
                               onChange={(e) => setEditDraft((prev) => ({ ...prev, title: e.target.value }))}
                               placeholder="计划项标题"
                               autoFocus
-                              className="mt-1 w-full rounded-lg border border-gray-200 bg-white px-2.5 py-1.5 text-[15px] font-bold text-gray-900 outline-none focus:border-[#5B7BFE]"
+                              className="mt-2 w-full rounded-xl border border-gray-200 bg-white px-3 py-2.5 text-[18px] font-light tracking-tight text-gray-900 outline-none focus:border-[#5B7BFE]"
                             />
                           ) : (
-                            <h3 className="mt-1 text-[15px] font-bold text-gray-900">{selectedItem.title}</h3>
+                            <h3 className="mt-2 text-[20px] font-light tracking-tight text-gray-900 leading-tight">{selectedItem.title}</h3>
                           )}
                         </div>
                         {canMutateSelectedItem && (
-                          <div className="shrink-0 flex items-center gap-1.5">
+                          <div className="shrink-0 flex items-center gap-0.5">
                             {isEditingItem ? (
                               <>
                                 <button
                                   type="button"
                                   onClick={handleCancelEdit}
                                   disabled={isMutatingItem}
-                                  className="rounded-lg border border-gray-200 bg-white px-2.5 py-1 text-[11px] font-bold text-gray-600 hover:bg-gray-50 disabled:opacity-50"
+                                  className="rounded-md border border-gray-200 bg-white px-3 py-1.5 text-[11px] font-bold text-gray-600 hover:bg-gray-50 disabled:opacity-50 transition-colors"
                                 >
                                   取消
                                 </button>
@@ -746,7 +792,7 @@ export function PlanWorkshopView({ value, currentUser, onSavePlan, onOpenTask, o
                                   type="button"
                                   onClick={() => void handleSaveEdit()}
                                   disabled={isMutatingItem}
-                                  className="rounded-lg bg-[#5B7BFE] text-white px-2.5 py-1 text-[11px] font-bold hover:bg-[#4a6ae8] disabled:opacity-60"
+                                  className="ml-1.5 rounded-md bg-[#5B7BFE] text-white px-3 py-1.5 text-[11px] font-bold hover:bg-[#4a6ae8] disabled:opacity-60 transition-colors"
                                 >
                                   {isMutatingItem ? '保存中…' : '保存'}
                                 </button>
@@ -758,22 +804,22 @@ export function PlanWorkshopView({ value, currentUser, onSavePlan, onOpenTask, o
                                     type="button"
                                     onClick={() => void handleToggleItemDone()}
                                     disabled={isMutatingItem}
-                                    className="inline-flex items-center justify-center rounded-md p-1.5 text-gray-400 hover:text-amber-600 hover:bg-amber-50 disabled:opacity-40 transition"
-                                    title="取消已完成状态，恢复为进行中"
+                                    className="inline-flex items-center justify-center rounded-md p-1.5 text-gray-400 hover:text-amber-600 hover:bg-amber-50 disabled:opacity-40 transition-colors"
+                                    title="取消已完成状态,恢复为进行中"
                                     aria-label="取消完成"
                                   >
-                                    <RotateCcw size={14} />
+                                    <RotateCcw size={15} />
                                   </button>
                                 ) : (
                                   <button
                                     type="button"
                                     onClick={() => void handleToggleItemDone()}
                                     disabled={isMutatingItem}
-                                    className="inline-flex items-center justify-center rounded-md p-1.5 text-gray-400 hover:text-emerald-600 hover:bg-emerald-50 disabled:opacity-40 transition"
+                                    className="inline-flex items-center justify-center rounded-md p-1.5 text-gray-400 hover:text-emerald-600 hover:bg-emerald-50 disabled:opacity-40 transition-colors"
                                     title="标记本条计划项为已完成"
                                     aria-label="完成"
                                   >
-                                    <Check size={14} />
+                                    <Check size={15} />
                                   </button>
                                 )}
                                 {onGenerateTaskFromPlanItem && (
@@ -781,32 +827,32 @@ export function PlanWorkshopView({ value, currentUser, onSavePlan, onOpenTask, o
                                     type="button"
                                     onClick={() => onGenerateTaskFromPlanItem(selectedItem, selectedItemScopeName || '')}
                                     disabled={isMutatingItem}
-                                    className="inline-flex items-center justify-center rounded-md p-1.5 text-gray-400 hover:text-violet-600 hover:bg-violet-50 disabled:opacity-40 transition"
-                                    title="生成任务：把这条计划项作为内容新建一条任务并自动挂接"
+                                    className="inline-flex items-center justify-center rounded-md p-1.5 text-gray-400 hover:text-violet-600 hover:bg-violet-50 disabled:opacity-40 transition-colors"
+                                    title="生成任务:把这条计划项作为内容新建一条任务并自动挂接"
                                     aria-label="生成任务"
                                   >
-                                    <ArrowRight size={14} />
+                                    <ArrowRight size={15} />
                                   </button>
                                 )}
                                 <button
                                   type="button"
                                   onClick={handleEnterEdit}
                                   disabled={isMutatingItem}
-                                  className="inline-flex items-center justify-center rounded-md p-1.5 text-gray-400 hover:text-[#5B7BFE] hover:bg-[#EEF2FF] disabled:opacity-40 transition"
+                                  className="inline-flex items-center justify-center rounded-md p-1.5 text-gray-400 hover:text-[#5B7BFE] hover:bg-[#EEF2FF] disabled:opacity-40 transition-colors"
                                   title="编辑计划项"
                                   aria-label="编辑"
                                 >
-                                  <Pencil size={14} />
+                                  <Pencil size={15} />
                                 </button>
                                 <button
                                   type="button"
                                   onClick={() => void handleStartDelete()}
                                   disabled={isMutatingItem}
-                                  className="inline-flex items-center justify-center rounded-md p-1.5 text-gray-400 hover:text-rose-600 hover:bg-rose-50 disabled:opacity-40 transition"
+                                  className="inline-flex items-center justify-center rounded-md p-1.5 text-gray-400 hover:text-rose-600 hover:bg-rose-50 disabled:opacity-40 transition-colors"
                                   title="删除计划项"
                                   aria-label="删除"
                                 >
-                                  <Trash2 size={14} />
+                                  <Trash2 size={15} />
                                 </button>
                               </>
                             )}
@@ -815,68 +861,76 @@ export function PlanWorkshopView({ value, currentUser, onSavePlan, onOpenTask, o
                       </div>
 
                       {isEditingItem ? (
-                        <div className="mt-2 space-y-2">
-                          <textarea
-                            value={editDraft.statement}
-                            onChange={(e) => setEditDraft((prev) => ({ ...prev, statement: e.target.value }))}
-                            placeholder="说明（可选）"
-                            rows={2}
-                            className="w-full rounded-lg border border-gray-200 bg-white px-2.5 py-1.5 text-[12px] text-gray-700 outline-none focus:border-[#5B7BFE] resize-none"
-                          />
-                          <textarea
-                            value={editDraft.expectedOutput}
-                            onChange={(e) => setEditDraft((prev) => ({ ...prev, expectedOutput: e.target.value }))}
-                            placeholder="期望产出（可选，如：输出一份 20 页方案 + 3 个 case study）"
-                            rows={2}
-                            className="w-full rounded-lg border border-gray-200 bg-white px-2.5 py-1.5 text-[12px] text-gray-700 outline-none focus:border-[#5B7BFE] resize-none"
-                          />
-                          <select
-                            value={editDraft.status}
-                            onChange={(e) => setEditDraft((prev) => ({ ...prev, status: e.target.value as OrgDepartmentPlanItemStatus }))}
-                            className="w-full rounded-lg border border-gray-200 bg-white px-2.5 py-1.5 text-[12px] text-gray-700 outline-none focus:border-[#5B7BFE]"
-                          >
-                            <option value="active">进行中</option>
-                            <option value="paused">暂停</option>
-                            <option value="done">已完成</option>
-                            <option value="dropped">已废弃</option>
-                          </select>
+                        <div className="mt-3 space-y-2.5">
+                          <div>
+                            <p className="text-[10px] font-bold uppercase tracking-[0.12em] text-gray-500 mb-1.5">说明</p>
+                            <textarea
+                              value={editDraft.statement}
+                              onChange={(e) => setEditDraft((prev) => ({ ...prev, statement: e.target.value }))}
+                              placeholder="可选"
+                              rows={2}
+                              className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-[12.5px] text-gray-700 outline-none focus:border-[#5B7BFE] resize-none"
+                            />
+                          </div>
+                          <div>
+                            <p className="text-[10px] font-bold uppercase tracking-[0.12em] text-gray-500 mb-1.5">期望产出</p>
+                            <textarea
+                              value={editDraft.expectedOutput}
+                              onChange={(e) => setEditDraft((prev) => ({ ...prev, expectedOutput: e.target.value }))}
+                              placeholder="例如:输出一份 20 页方案 + 3 个 case study"
+                              rows={2}
+                              className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-[12.5px] text-gray-700 outline-none focus:border-[#5B7BFE] resize-none"
+                            />
+                          </div>
+                          <div>
+                            <p className="text-[10px] font-bold uppercase tracking-[0.12em] text-gray-500 mb-1.5">状态</p>
+                            <select
+                              value={editDraft.status}
+                              onChange={(e) => setEditDraft((prev) => ({ ...prev, status: e.target.value as OrgDepartmentPlanItemStatus }))}
+                              className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-[12.5px] text-gray-700 outline-none focus:border-[#5B7BFE]"
+                            >
+                              <option value="active">进行中</option>
+                              <option value="paused">暂停</option>
+                              <option value="done">已完成</option>
+                              <option value="dropped">已废弃</option>
+                            </select>
+                          </div>
                         </div>
                       ) : (
-                        <>
-                          {selectedItem.statement && (
-                            <p className="mt-1.5 text-[12px] leading-5 text-gray-500">{selectedItem.statement}</p>
-                          )}
-                          <div className="mt-2 flex items-center gap-2 text-[10px]">
+                        <div className="mt-3 space-y-2.5">
+                          <div className="flex items-center gap-2">
                             <PlanItemStatusBadge status={selectedItem.status} />
-                            {selectedItem.expectedOutput && (
-                              <span className="rounded-full bg-blue-50 px-2 py-0.5 font-bold text-blue-600">
-                                期望产出：{selectedItem.expectedOutput}
-                              </span>
-                            )}
                           </div>
-                        </>
+                          {selectedItem.statement && (
+                            <p className="text-[12.5px] leading-6 text-gray-600">{selectedItem.statement}</p>
+                          )}
+                          {selectedItem.expectedOutput && (
+                            <div className="border-t border-gray-100 pt-2.5">
+                              <p className="text-[10px] font-bold uppercase tracking-[0.12em] text-gray-400 mb-1">期望产出</p>
+                              <p className="text-[12.5px] text-gray-700 leading-6">{selectedItem.expectedOutput}</p>
+                            </div>
+                          )}
+                        </div>
                       )}
 
                       {mutateError && (
-                        <div className="mt-2 rounded-lg bg-rose-50 border border-rose-200 px-2.5 py-1.5 text-[11px] text-rose-600">
-                          {mutateError}
-                        </div>
+                        <p className="mt-3 rounded-xl border border-rose-200 bg-rose-50 px-3 py-2 text-[11px] text-rose-600">{mutateError}</p>
                       )}
 
                       {showDeleteConfirm && !isEditingItem && (
-                        <div className="mt-3 rounded-lg border border-rose-200 bg-rose-50 px-3 py-2.5">
-                          <p className="text-[12px] font-bold text-rose-700">确认删除这条计划项？</p>
+                        <div className="mt-3 rounded-xl border border-rose-200 bg-rose-50 px-3.5 py-3">
+                          <p className="text-[12px] font-bold text-rose-700">确认删除这条计划项?</p>
                           <p className="mt-1 text-[11px] text-rose-600 leading-5">
                             删除后不可恢复{itemTasks[selectedItem.id] && itemTasks[selectedItem.id].length > 0
-                              ? `；已挂接的 ${itemTasks[selectedItem.id].length} 条任务会失去与本计划项的关联（任务本身不会被删）`
+                              ? `;已挂接的 ${itemTasks[selectedItem.id].length} 条任务会失去与本计划项的关联(任务本身不会被删)`
                               : ''}。
                           </p>
-                          <div className="mt-2 flex items-center justify-end gap-2">
+                          <div className="mt-2.5 flex items-center justify-end gap-1.5">
                             <button
                               type="button"
                               onClick={() => setShowDeleteConfirm(false)}
                               disabled={isMutatingItem}
-                              className="rounded-lg border border-gray-200 bg-white px-2.5 py-1 text-[11px] font-bold text-gray-600 hover:bg-gray-50 disabled:opacity-50"
+                              className="rounded-md border border-gray-200 bg-white px-3 py-1.5 text-[11px] font-bold text-gray-600 hover:bg-gray-50 disabled:opacity-50 transition-colors"
                             >
                               取消
                             </button>
@@ -884,7 +938,7 @@ export function PlanWorkshopView({ value, currentUser, onSavePlan, onOpenTask, o
                               type="button"
                               onClick={() => void handleDeleteItem()}
                               disabled={isMutatingItem}
-                              className="rounded-lg bg-rose-500 text-white px-2.5 py-1 text-[11px] font-bold hover:bg-rose-600 disabled:opacity-60"
+                              className="rounded-md bg-rose-500 text-white px-3 py-1.5 text-[11px] font-bold hover:bg-rose-600 disabled:opacity-60 transition-colors"
                             >
                               {isMutatingItem ? '删除中…' : '确认删除'}
                             </button>
@@ -893,38 +947,33 @@ export function PlanWorkshopView({ value, currentUser, onSavePlan, onOpenTask, o
                       )}
                     </div>
 
-                    <div>
+                    {/* 挂接任务区 ─ uppercase eyebrow + hairline 简洁列表 */}
+                    <div className="border-t border-gray-100 pt-5">
                       <div className="flex items-center justify-between mb-2">
-                        <h4 className="text-[12px] font-bold text-gray-700">挂接的任务</h4>
-                        <div className="flex items-center gap-2">
-                          {selectedItemId && itemTasks[selectedItemId] && (
-                            <span className="text-[11px] text-gray-400">
-                              共 {itemTasks[selectedItemId].length} 条
-                            </span>
-                          )}
-                          <button
-                            type="button"
-                            onClick={() => void handleRefreshTasks()}
-                            disabled={loadingItemId === selectedItemId}
-                            title="重新拉取挂接的任务（用户在「任务与日程」新挂任务后点这里刷新）"
-                            className="inline-flex items-center justify-center rounded-md p-1 text-gray-400 hover:text-gray-700 hover:bg-gray-100 disabled:opacity-40 transition"
-                          >
-                            <RefreshCw size={12} className={loadingItemId === selectedItemId ? 'animate-spin' : ''} />
-                          </button>
-                        </div>
+                        <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-gray-400">
+                          TASKS · 挂接任务{selectedItemId && itemTasks[selectedItemId] ? ` · ${itemTasks[selectedItemId].length} 条` : ''}
+                        </p>
+                        <button
+                          type="button"
+                          onClick={() => void handleRefreshTasks()}
+                          disabled={loadingItemId === selectedItemId}
+                          title="重新拉取挂接的任务"
+                          className="inline-flex items-center justify-center rounded-md p-1 text-gray-400 hover:text-gray-700 hover:bg-gray-100 disabled:opacity-40 transition-colors"
+                        >
+                          <RefreshCw size={12} className={loadingItemId === selectedItemId ? 'animate-spin' : ''} />
+                        </button>
                       </div>
                       {loadingItemId === selectedItemId ? (
-                        <div className="text-[12px] text-gray-400">加载中…</div>
+                        <p className="text-[12px] text-gray-400 py-3">加载中…</p>
                       ) : itemTaskError ? (
-                        <div className="text-[12px] text-rose-500">{itemTaskError}</div>
+                        <p className="text-[12px] text-rose-500 py-3">{itemTaskError}</p>
                       ) : !itemTasks[selectedItemId!] || itemTasks[selectedItemId!].length === 0 ? (
-                        <div className="rounded-xl border border-dashed border-gray-200 bg-white p-4 text-center text-[11px] text-gray-400">
-                          这条计划项还没有任何任务挂接。
-                          <br />
-                          可在「任务与日程」新建任务，在表单的"计划关联"模块里挂到此项。
-                        </div>
+                        <p className="text-[11.5px] text-gray-400 py-4 leading-5">
+                          这条计划项还没有任何任务挂接。<br />
+                          可在「任务与日程」新建任务,在表单的"计划关联"模块里挂到此项。
+                        </p>
                       ) : (
-                        <div className="space-y-2">
+                        <div>
                           {itemTasks[selectedItemId!].map((task) => (
                             <PlanItemTaskCard
                               key={task.id}
@@ -939,42 +988,47 @@ export function PlanWorkshopView({ value, currentUser, onSavePlan, onOpenTask, o
                 )}
               </div>
             </div>
-          )}
-        </div>
+          </div>
+        )}
       </div>
 
       {/* ──────────────── Create-Plan Modal ──────────────── */}
       {isCreateOpen && (
         <div
-          className="fixed inset-0 z-[1000] flex items-center justify-center bg-black/40 px-6"
+          className="fixed inset-0 z-[1000] flex items-center justify-center bg-gray-900/20 backdrop-blur-sm px-6"
           onClick={(e) => { if (e.target === e.currentTarget) closeCreateModal(); }}
         >
-          <div className="w-full max-w-2xl rounded-2xl bg-white shadow-2xl flex flex-col" style={{ maxHeight: '90vh' }}>
-            <div className="px-6 py-4 border-b border-gray-100 flex items-start justify-between shrink-0">
-              <div>
-                <h3 className="text-[16px] font-bold text-gray-900">新增计划</h3>
+          <div className="w-full max-w-2xl rounded-2xl bg-white shadow-[0_28px_90px_rgba(15,23,42,0.18)] flex flex-col" style={{ maxHeight: '90vh' }}>
+            <div className="px-7 pt-6 pb-5 flex items-start justify-between shrink-0">
+              <div className="min-w-0">
+                <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-gray-400">
+                  {editingExistingPlanId ? 'EDIT PLAN · 修改' : 'NEW PLAN · 新建'}
+                </p>
+                <h3 className="mt-1.5 text-[20px] font-light tracking-tight text-gray-900">
+                  {editingExistingPlanId ? '修改计划' : '新增计划'}
+                </h3>
                 {editingExistingPlanId && (
-                  <p className="mt-0.5 text-[11px] text-amber-600">
-                    该部门 + 周期已有 {(value.departmentPlans.find((p) => p.id === editingExistingPlanId)?.items?.length) || 0} 项计划项，
-                    保存会追加新增项 / 更新已修改项（不会删除已挂任务关系）
+                  <p className="mt-1.5 text-[11px] text-amber-700 leading-5">
+                    已有 {(value.departmentPlans.find((p) => p.id === editingExistingPlanId)?.items?.length) || 0} 项计划项。保存会追加新增项 / 更新已修改项,不会删除已挂任务关系。
                   </p>
                 )}
               </div>
-              <button type="button" onClick={closeCreateModal} disabled={isSaving} className="text-gray-400 hover:text-gray-700 disabled:opacity-50 shrink-0">
+              <button type="button" onClick={closeCreateModal} disabled={isSaving} className="shrink-0 -mt-1 -mr-1 inline-flex items-center justify-center rounded-md p-1 text-gray-400 hover:text-gray-700 hover:bg-gray-100 disabled:opacity-50 transition-colors">
                 <X size={18} />
               </button>
             </div>
 
-            <div className="px-6 py-4 space-y-4 overflow-y-auto">
-              {/* 部门 + 周期 */}
-              <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+            <div className="px-7 pb-6 space-y-6 overflow-y-auto">
+              <div className="space-y-3">
+                <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-gray-400">BASIC · 主体与周期</p>
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
                 <div>
-                  <label className="block text-[11px] font-bold text-gray-500 mb-1.5">计划主体</label>
+                  <p className="text-[10px] font-bold uppercase tracking-[0.12em] text-gray-500 mb-1.5">计划主体</p>
                   <select
                     value={createDepartmentId}
                     onChange={(e) => setCreateDepartmentId(e.target.value)}
                     disabled={!isAdmin && visibleDepartments.length <= 1}
-                    className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-[13px] outline-none disabled:bg-gray-50 disabled:text-gray-400"
+                    className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2.5 text-[12.5px] font-medium text-gray-900 outline-none focus:border-[#5B7BFE] disabled:bg-gray-50 disabled:text-gray-400"
                   >
                     {canCreateOrgPlan && (
                       <option value={ORG_LEVEL_ID}>{organizationName}（组织级）</option>
@@ -985,7 +1039,7 @@ export function PlanWorkshopView({ value, currentUser, onSavePlan, onOpenTask, o
                   </select>
                 </div>
                 <div>
-                  <label className="block text-[11px] font-bold text-gray-500 mb-1.5">周期类型</label>
+                  <p className="text-[10px] font-bold uppercase tracking-[0.12em] text-gray-500 mb-1.5">周期类型</p>
                   <select
                     value={createCycleType}
                     onChange={(e) => {
@@ -993,7 +1047,7 @@ export function PlanWorkshopView({ value, currentUser, onSavePlan, onOpenTask, o
                       setCreateCycleType(next);
                       setCreatePeriodValue(defaultPeriodValue(next));
                     }}
-                    className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-[13px] outline-none"
+                    className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2.5 text-[12.5px] font-medium text-gray-900 outline-none focus:border-[#5B7BFE]"
                   >
                     {Object.entries(CYCLE_LABELS).map(([key, label]) => (
                       <option key={key} value={key}>{label}</option>
@@ -1001,88 +1055,91 @@ export function PlanWorkshopView({ value, currentUser, onSavePlan, onOpenTask, o
                   </select>
                 </div>
                 <div>
-                  <label className="block text-[11px] font-bold text-gray-500 mb-1.5">
+                  <p className="text-[10px] font-bold uppercase tracking-[0.12em] text-gray-500 mb-1.5">
                     周期值
-                    <span className="text-gray-400 font-normal ml-1">
-                      {createCycleType === 'month' && '(YYYY-MM)'}
-                      {createCycleType === 'quarter' && '(YYYY-Q1~Q4)'}
-                      {createCycleType === 'year' && '(YYYY)'}
-                      {createCycleType === 'week' && '(YYYY-W##)'}
+                    <span className="text-gray-300 font-normal ml-1 normal-case tracking-normal">
+                      {createCycleType === 'month' && 'YYYY-MM'}
+                      {createCycleType === 'quarter' && 'YYYY-Q1~Q4'}
+                      {createCycleType === 'year' && 'YYYY'}
+                      {createCycleType === 'week' && 'YYYY-W##'}
                     </span>
-                  </label>
+                  </p>
                   <input
                     type="text"
                     value={createPeriodValue}
                     onChange={(e) => setCreatePeriodValue(e.target.value)}
                     placeholder={defaultPeriodValue(createCycleType) || '自定义'}
-                    className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-[13px] outline-none"
+                    className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2.5 text-[12.5px] font-medium text-gray-900 outline-none focus:border-[#5B7BFE]"
                   />
+                </div>
                 </div>
               </div>
 
-              {/* 计划描述（可选） */}
-              <div>
-                <label className="block text-[11px] font-bold text-gray-500 mb-1.5">计划总述（可选）</label>
+              {/* 计划总述 */}
+              <div className="border-t border-gray-100 pt-5">
+                <p className="text-[10px] font-bold uppercase tracking-[0.12em] text-gray-500 mb-1.5">计划总述 · 可选</p>
                 <input
                   type="text"
                   value={createSummary}
                   onChange={(e) => setCreateSummary(e.target.value)}
-                  placeholder="例如：5 月主攻新客户开发与老客户复购"
-                  className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-[13px] outline-none"
+                  placeholder="例如:5 月主攻新客户开发与老客户复购"
+                  className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2.5 text-[12.5px] text-gray-900 outline-none focus:border-[#5B7BFE]"
                 />
               </div>
 
-              {/* 计划项列表（主入口：手动逐条新增）*/}
-              <div>
-                <div className="flex items-center justify-between mb-2">
-                  <span className="text-[12px] font-bold text-gray-700">计划项（{draftItems.length}）</span>
+              {/* 计划项列表 */}
+              <div className="border-t border-gray-100 pt-5">
+                <div className="flex items-center justify-between mb-3">
+                  <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-gray-400">ITEMS · 计划项 · {draftItems.length} 条</p>
                   <button
                     type="button"
                     onClick={() => setDraftItems((prev) => [...prev, newDraftItem()])}
-                    className="inline-flex items-center gap-1 text-[11px] font-bold text-[#5B7BFE] hover:underline"
+                    className="inline-flex items-center gap-1 rounded-md border border-gray-200 bg-white px-2.5 py-1 text-[11px] font-bold text-[#5B7BFE] hover:bg-gray-50 transition-colors"
                   >
-                    <Plus size={12} /> 新增
+                    <Plus size={12} /> 新增一条
                   </button>
                 </div>
-                <div className="space-y-2 max-h-[280px] overflow-y-auto">
+                <div className="space-y-2 max-h-[280px] overflow-y-auto -mx-1 px-1">
                   {draftItems.length === 0 ? (
-                    <p className="text-[11px] text-gray-400 px-3 py-3 text-center rounded-xl border border-dashed border-gray-200">
-                      还没有计划项，可点上方"+ 新增"逐条填写，或在下方粘贴整段文本让 AI 解析
+                    <p className="text-[11px] text-gray-400 py-4 text-center leading-5">
+                      还没有计划项<br />
+                      点上方"+ 新增一条"逐条填写,或下方粘贴整段文本让 AI 解析
                     </p>
                   ) : (
                     draftItems.map((item, index) => (
-                      <div key={item.id} className="rounded-xl border border-gray-100 bg-white p-3 space-y-2">
-                        <div className="flex items-start gap-2">
-                          <span className="text-[11px] font-bold text-gray-400 mt-2 w-6 text-center">{index + 1}</span>
+                      <div key={item.id} className="border-t border-gray-100 pt-3 first:border-t-0 first:pt-0">
+                        <div className="flex items-start gap-2.5">
+                          <span className="text-[10px] font-bold uppercase tracking-[0.1em] text-gray-400 mt-2.5 w-6 text-center tabular-nums">{String(index + 1).padStart(2, '0')}</span>
                           <div className="flex-1 space-y-2">
                             <input
                               type="text"
                               value={item.title}
                               onChange={(e) => setDraftItems((prev) => prev.map((it) => it.id === item.id ? { ...it, title: e.target.value } : it))}
                               placeholder="计划项标题"
-                              className="w-full rounded-lg border border-gray-200 bg-white px-2.5 py-1.5 text-[13px] font-medium outline-none"
+                              className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-[13px] font-medium text-gray-900 outline-none focus:border-[#5B7BFE]"
                             />
                             <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
                               <textarea
                                 value={item.statement}
                                 onChange={(e) => setDraftItems((prev) => prev.map((it) => it.id === item.id ? { ...it, statement: e.target.value } : it))}
-                                placeholder="说明（可选）"
+                                placeholder="说明(可选)"
                                 rows={2}
-                                className="rounded-lg border border-gray-200 bg-white px-2.5 py-1.5 text-[12px] outline-none resize-none focus:border-[#5B7BFE]"
+                                className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-[12px] text-gray-700 outline-none resize-none focus:border-[#5B7BFE]"
                               />
                               <textarea
                                 value={item.expectedOutput}
                                 onChange={(e) => setDraftItems((prev) => prev.map((it) => it.id === item.id ? { ...it, expectedOutput: e.target.value } : it))}
-                                placeholder="期望产出（可选，如：20 页方案 + 3 个 case）"
+                                placeholder="期望产出(可选,如:20 页方案 + 3 个 case)"
                                 rows={2}
-                                className="rounded-lg border border-gray-200 bg-white px-2.5 py-1.5 text-[12px] outline-none resize-none focus:border-[#5B7BFE]"
+                                className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-[12px] text-gray-700 outline-none resize-none focus:border-[#5B7BFE]"
                               />
                             </div>
                           </div>
                           <button
                             type="button"
                             onClick={() => setDraftItems((prev) => prev.filter((it) => it.id !== item.id))}
-                            className="text-gray-300 hover:text-rose-500 mt-2"
+                            className="text-gray-300 hover:text-rose-500 mt-2.5 transition-colors"
+                            title="删除这一条"
                           >
                             <Trash2 size={14} />
                           </button>
@@ -1093,30 +1150,31 @@ export function PlanWorkshopView({ value, currentUser, onSavePlan, onOpenTask, o
                 </div>
               </div>
 
-              {/* AI 智能解析（次要入口：批量粘贴整段文本）— 列表底部 */}
-              <details className="rounded-2xl border border-dashed border-[#5B7BFE]/30 bg-[#5B7BFE]/5" open={draftItems.length === 0 && !editingExistingPlanId}>
-                <summary className="cursor-pointer select-none px-4 py-3 flex items-center gap-2 text-[12px] font-bold text-[#5B7BFE]">
-                  <Sparkles size={14} />
-                  AI 智能解析
-                  <span className="ml-1 text-[10px] font-normal text-gray-400">
-                    粘贴整段计划原文 · AI 拆条 / 抽期望产出 / 剥列表标记
-                  </span>
+              {/* AI 智能解析 ─ Foldable 风格 */}
+              <details className="border-t border-gray-100 pt-5 group" open={draftItems.length === 0 && !editingExistingPlanId}>
+                <summary className="cursor-pointer select-none flex items-center gap-2 list-none -mx-2 px-2 py-2 rounded-md hover:bg-gray-50/70 transition-colors">
+                  <Sparkles size={14} className="text-[#5B7BFE]" />
+                  <div className="flex-1 min-w-0">
+                    <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-gray-400">AI · 智能解析</p>
+                    <p className="text-[11px] text-gray-500 mt-0.5">粘贴整段计划原文 · AI 自动拆条 / 抽期望产出 / 剥列表标记</p>
+                  </div>
+                  <ChevronDown size={14} className="text-gray-400 transition-transform group-open:rotate-180 shrink-0" />
                 </summary>
-                <div className="px-4 pb-4 space-y-2">
+                <div className="pt-3 space-y-2.5">
                   <textarea
                     value={pasteText}
                     onChange={(e) => setPasteText(e.target.value)}
-                    placeholder={'粘贴整段计划原文，比如月度计划、季度报告、年度战略等。\n\nAI 会自动：\n• 把每条计划的标题、说明、期望产出拆到不同字段\n• 合并多行属于同一条的内容（不会按行拆碎）\n• 忽略章节标题、空白段落、序号'}
+                    placeholder={'粘贴整段计划原文,比如月度计划、季度报告、年度战略等。\n\nAI 会自动:\n• 把每条计划的标题、说明、期望产出拆到不同字段\n• 合并多行属于同一条的内容(不会按行拆碎)\n• 忽略章节标题、空白段落、序号'}
                     rows={5}
                     disabled={isParsing}
-                    className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-[12px] outline-none resize-none disabled:bg-gray-50"
+                    className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2.5 text-[12px] text-gray-700 outline-none resize-none focus:border-[#5B7BFE] disabled:bg-gray-50"
                   />
                   <div className="flex items-center justify-between gap-2 flex-wrap">
                     <button
                       type="button"
                       onClick={() => void handleParseText()}
                       disabled={!pasteText.trim() || isParsing}
-                      className="inline-flex items-center gap-1.5 rounded-xl bg-[#5B7BFE] text-white px-3 py-1.5 text-[12px] font-bold hover:bg-[#4a6ae8] transition disabled:opacity-50"
+                      className="inline-flex items-center gap-1.5 rounded-md bg-[#5B7BFE] text-white px-3 py-1.5 text-[11px] font-bold hover:bg-[#4a6ae8] disabled:opacity-50 transition-colors"
                     >
                       {isParsing ? (
                         <>
@@ -1131,41 +1189,39 @@ export function PlanWorkshopView({ value, currentUser, onSavePlan, onOpenTask, o
                       )}
                     </button>
                     {parseConfidence && (
-                      <div className="flex items-center gap-2 text-[11px]">
-                        <span className={`rounded-full px-2 py-0.5 font-bold ${
-                          parseConfidence === 'high' ? 'bg-emerald-50 text-emerald-700'
-                          : parseConfidence === 'medium' ? 'bg-amber-50 text-amber-700'
-                          : 'bg-rose-50 text-rose-600'
+                      <div className="flex items-center gap-2 text-[10.5px]">
+                        <span className={`rounded-full border px-2 py-0.5 font-bold uppercase tracking-[0.12em] ${
+                          parseConfidence === 'high' ? 'border-emerald-200 bg-emerald-50 text-emerald-700'
+                          : parseConfidence === 'medium' ? 'border-amber-200 bg-amber-50 text-amber-700'
+                          : 'border-rose-200 bg-rose-50 text-rose-600'
                         }`}>
-                          AI 置信度：{parseConfidence === 'high' ? '高' : parseConfidence === 'medium' ? '中' : '低'}
+                          置信度 {parseConfidence === 'high' ? '高' : parseConfidence === 'medium' ? '中' : '低'}
                         </span>
                         {parseSummary && (
-                          <span className="text-gray-500 truncate max-w-[300px]" title={parseSummary}>{parseSummary}</span>
+                          <span className="text-gray-500 truncate max-w-[280px]" title={parseSummary}>{parseSummary}</span>
                         )}
                       </div>
                     )}
                   </div>
                   {editingExistingPlanId && (
-                    <p className="text-[10.5px] text-amber-700 mt-1">
-                      ⚠️ AI 解析会**覆盖**上方计划项列表。如果你只想补 1-2 条新项，建议直接用"+ 新增"按钮。
+                    <p className="text-[10.5px] text-amber-700 mt-1 leading-5">
+                      AI 解析会<strong>覆盖</strong>上方计划项列表。如果只想补 1-2 条新项,建议直接用"+ 新增"按钮。
                     </p>
                   )}
                 </div>
               </details>
 
               {createError && (
-                <div className="rounded-xl bg-rose-50 border border-rose-200 px-3 py-2 text-[12px] text-rose-600">
-                  {createError}
-                </div>
+                <p className="rounded-xl border border-rose-200 bg-rose-50 px-3 py-2 text-[12px] text-rose-600">{createError}</p>
               )}
             </div>
 
-            <div className="px-6 py-4 border-t border-gray-100 flex items-center justify-end gap-2 shrink-0">
+            <div className="px-7 py-4 border-t border-gray-100 flex items-center justify-end gap-2 shrink-0">
               <button
                 type="button"
                 onClick={closeCreateModal}
                 disabled={isSaving}
-                className="rounded-xl border border-gray-200 bg-white px-4 py-2 text-[13px] font-bold text-gray-600 hover:bg-gray-50 disabled:opacity-50"
+                className="rounded-md border border-gray-200 bg-white px-4 py-2 text-[12px] font-bold text-gray-600 hover:bg-gray-50 disabled:opacity-50 transition-colors"
               >
                 取消
               </button>
@@ -1173,7 +1229,7 @@ export function PlanWorkshopView({ value, currentUser, onSavePlan, onOpenTask, o
                 type="button"
                 onClick={handleSubmitCreate}
                 disabled={isSaving}
-                className="rounded-xl bg-[#5B7BFE] text-white px-4 py-2 text-[13px] font-bold hover:bg-[#4a6ae8] disabled:opacity-60"
+                className="rounded-md bg-[#5B7BFE] text-white px-4 py-2 text-[12px] font-bold hover:bg-[#4a6ae8] disabled:opacity-60 transition-colors"
               >
                 {isSaving ? '保存中…' : editingExistingPlanId ? '保存修改' : '新增计划'}
               </button>
@@ -1191,76 +1247,95 @@ function DepartmentRowBlock({
   onToggle,
   selectedItemId,
   onSelectItem,
+  taskCountByItemId,
 }: {
   row: DepartmentRow;
   expanded: boolean;
   onToggle: () => void;
   selectedItemId: string | null;
   onSelectItem: (id: string) => void;
+  taskCountByItemId: Record<string, number>;
 }) {
   const isOrg = row.scopeKind === 'org';
+  const hasPlan = Boolean(row.latestPlan);
+  const items = row.latestPlan?.items || [];
   return (
-    <div className={`border-b last:border-b-0 ${isOrg ? 'border-[#5B7BFE]/20 bg-[#5B7BFE]/5' : 'border-gray-100'}`}>
+    <div className="border-t border-gray-100 last:border-b">
       <button
         type="button"
         onClick={onToggle}
-        className={`w-full px-5 py-3 flex items-center gap-3 text-left transition ${isOrg ? 'hover:bg-[#5B7BFE]/10' : 'hover:bg-gray-50'}`}
+        className={`w-full flex items-center gap-3 px-3 py-3.5 text-left transition-colors ${expanded ? 'bg-gray-50/60' : 'hover:bg-gray-50/70'}`}
       >
-        {expanded ? <ChevronDown size={16} className="text-gray-400" /> : <ChevronRight size={16} className="text-gray-400" />}
+        <ChevronDown
+          size={14}
+          className={`shrink-0 text-gray-400 transition-transform ${expanded ? '' : '-rotate-90'}`}
+        />
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-2">
-            <p className={`font-bold text-[14px] truncate ${isOrg ? 'text-[#5B7BFE]' : 'text-gray-800'}`}>{row.scopeName}</p>
+            <p className="text-[13px] font-medium text-gray-900 truncate">{row.scopeName}</p>
             {isOrg && (
-              <span className="rounded-full bg-[#5B7BFE] text-white px-2 py-0.5 text-[9px] font-bold tracking-wider">组织</span>
+              <span className="rounded-full bg-[#5B7BFE]/10 px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-[0.1em] text-[#5B7BFE]">组织</span>
             )}
           </div>
-          <p className="text-[10px] text-gray-400 mt-0.5 truncate">
+          <p className="mt-0.5 text-[10.5px] text-gray-400 truncate">
             {row.leaderName}
-            {row.allPlansCount > 0 ? ` · 共 ${row.allPlansCount} 份计划` : ' · 尚未制定'}
+            {hasPlan ? ` · ${row.latestPlan?.weekLabel?.trim() || '未填周次'} · ${items.length} 项` : ' · 尚未制定'}
           </p>
         </div>
-        <div className="shrink-0 flex items-center gap-3 text-[11px]">
-          {row.latestPlan ? (
-            <>
-              <span className="text-gray-500">{row.latestPlan.weekLabel?.trim() || '未填周次'}</span>
-              <CompletenessBar pct={row.completeness} />
-            </>
+        <div className="shrink-0 flex items-center gap-2.5">
+          {hasPlan ? (
+            <CompletenessBar pct={row.completeness} />
           ) : (
-            <span className="rounded-full bg-rose-50 px-2 py-0.5 font-bold text-rose-600">未制定</span>
+            <span className="text-[10px] font-bold uppercase tracking-[0.12em] text-amber-600">待制定</span>
           )}
         </div>
       </button>
-      {expanded && row.latestPlan && (
-        <div className="px-5 pb-3 pt-1 bg-gray-50/40">
-          {(row.latestPlan.items || []).length === 0 ? (
-            <p className="text-[11px] text-gray-400 px-2 py-2">本周计划尚未填写计划项</p>
+      {expanded && hasPlan && (
+        <div className="pl-7 pr-3 pb-4 pt-1 space-y-2.5">
+          {items.length === 0 ? (
+            <p className="text-[11px] text-gray-400 py-3">本周计划尚未填写计划项</p>
           ) : (
-            <div className="space-y-1">
-              {(row.latestPlan.items || []).map((item) => (
+            items.map((item) => {
+              const isSelected = selectedItemId === item.id;
+              const statusAccentCls =
+                item.status === 'done' ? 'before:bg-emerald-500'
+                : item.status === 'paused' ? 'before:bg-gray-300'
+                : item.status === 'dropped' ? 'before:bg-rose-400'
+                : 'before:bg-[#5B7BFE]';
+              const assignedCount = taskCountByItemId[item.id] || 0;
+              return (
                 <button
                   key={item.id}
                   type="button"
                   onClick={() => onSelectItem(item.id)}
-                  className={`w-full rounded-lg px-3 py-2 text-left transition ${
-                    selectedItemId === item.id
-                      ? 'bg-[#5B7BFE]/10 border border-[#5B7BFE]/30'
-                      : 'bg-white border border-transparent hover:border-gray-200'
-                  }`}
+                  className={`relative w-full flex flex-col items-start border rounded-xl pl-6 pr-4 py-3.5 text-left transition-all duration-150
+                    before:absolute before:left-3 before:top-3.5 before:bottom-3.5 before:w-[2.5px] before:rounded-full ${statusAccentCls}
+                    ${isSelected
+                      ? 'border-[#9FB2FF] bg-[#5B7BFE]/[0.04] shadow-[0_1px_2px_rgba(91,123,254,0.05)]'
+                      : 'border-gray-100 bg-white hover:border-gray-200 hover:bg-gray-50/40 hover:shadow-[0_1px_3px_rgba(15,23,42,0.04)]'
+                    }`}
                 >
-                  <div className="flex items-start justify-between gap-2">
-                    <div className="min-w-0 flex-1">
-                      <p className={`text-[13px] font-medium truncate ${selectedItemId === item.id ? 'text-[#5B7BFE]' : 'text-gray-800'}`}>
-                        {item.title || '未命名计划项'}
-                      </p>
-                      {item.statement && (
-                        <p className="mt-0.5 text-[11px] leading-5 text-gray-500 line-clamp-2">{item.statement}</p>
-                      )}
-                    </div>
-                    <PlanItemStatusBadge status={item.status} compact />
+                  <div className="flex w-full items-start gap-2">
+                    <p className={`text-[13.5px] font-medium leading-snug flex-1 min-w-0 ${isSelected ? 'text-[#3D5CD9]' : 'text-gray-900'}`}>
+                      {item.title || '未命名计划项'}
+                    </p>
+                    {assignedCount > 0 && (
+                      <span
+                        className="shrink-0 rounded-full bg-[#5B7BFE]/10 px-2 py-0.5 text-[10px] font-bold text-[#5B7BFE]"
+                        title={`已分配 ${assignedCount} 条任务`}
+                      >
+                        已分配 · {assignedCount}
+                      </span>
+                    )}
                   </div>
+                  {item.statement && (
+                    <p className="mt-1.5 text-[11.5px] leading-[1.65] text-gray-500 line-clamp-2 w-full">
+                      {item.statement}
+                    </p>
+                  )}
                 </button>
-              ))}
-            </div>
+              );
+            })
           )}
         </div>
       )}
@@ -1269,14 +1344,20 @@ function DepartmentRowBlock({
 }
 
 function PlanItemTaskCard({ task, onOpen }: { task: Task; onOpen?: () => void }) {
-  const statusMap: Record<string, { label: string; cls: string }> = {
-    doing: { label: '进行中', cls: 'bg-blue-50 text-blue-700' },
-    done: { label: '已完成', cls: 'bg-emerald-50 text-emerald-700' },
-    paused: { label: '暂停', cls: 'bg-gray-100 text-gray-500' },
-    cancelled: { label: '已取消', cls: 'bg-gray-100 text-gray-400' },
+  const statusDotMap: Record<string, string> = {
+    doing: 'bg-[#5B7BFE]',
+    done: 'bg-emerald-500',
+    paused: 'bg-gray-300',
+    cancelled: 'bg-rose-300',
   };
-  const status = statusMap[task.status] || { label: task.status, cls: 'bg-gray-100 text-gray-500' };
-
+  const statusLabelMap: Record<string, string> = {
+    doing: '进行中',
+    done: '已完成',
+    paused: '暂停',
+    cancelled: '已取消',
+  };
+  const dotCls = statusDotMap[task.status] || 'bg-gray-300';
+  const statusLabel = statusLabelMap[task.status] || task.status;
   const clickable = Boolean(onOpen);
   return (
     <div
@@ -1290,62 +1371,33 @@ function PlanItemTaskCard({ task, onOpen }: { task: Task; onOpen?: () => void })
           onOpen?.();
         }
       }}
-      className={`group rounded-xl border border-gray-100 bg-white px-3 py-2.5 transition ${
-        clickable ? 'cursor-pointer hover:border-[#5B7BFE]/40 hover:bg-[#F8FAFF]' : ''
+      className={`group flex items-start gap-3 -mx-2 px-3 py-4 rounded-md transition-colors even:bg-[#FAFAFA] ${
+        clickable ? 'cursor-pointer hover:bg-gray-100/70' : ''
       }`}
       title={clickable ? '打开任务详情' : undefined}
     >
-      <div className="flex items-start justify-between gap-2">
-        <div className="min-w-0 flex-1">
-          <p className="text-[13px] font-bold text-gray-800 truncate">{task.title}</p>
-          <div className="mt-1 flex items-center gap-2 text-[10px] text-gray-500">
-            <span className={`rounded-full px-1.5 py-0.5 font-bold ${status.cls}`}>{status.label}</span>
-            {task.ownerName && <span>👤 {task.ownerName}</span>}
-            {task.dueDate && <span>📅 {task.dueDate.slice(0, 10)}</span>}
-          </div>
+      <span className={`mt-[7px] inline-block h-[6px] w-[6px] rounded-full shrink-0 ${dotCls}`} />
+      <div className="min-w-0 flex-1">
+        <p className="text-[13px] font-medium text-gray-900 truncate">{task.title}</p>
+        <div className="mt-1 flex items-center gap-2 text-[10.5px] text-gray-400">
+          <span>{statusLabel}</span>
+          {task.ownerName && <><span>·</span><span>{task.ownerName}</span></>}
+          {task.dueDate && <><span>·</span><span>{task.dueDate.slice(0, 10)}</span></>}
         </div>
-        {clickable ? (
-          <button
-            type="button"
-            onClick={(e) => {
-              e.stopPropagation();
-              onOpen?.();
-            }}
-            className="shrink-0 mt-0.5 inline-flex items-center justify-center rounded-md p-1 text-gray-400 hover:text-[#5B7BFE] hover:bg-[#EEF2FF]"
-            title="打开任务详情"
-            aria-label="打开任务详情"
-          >
-            <ArrowRight size={14} />
-          </button>
-        ) : (
-          <ArrowRight size={14} className="text-gray-300 mt-1 shrink-0" />
-        )}
       </div>
-    </div>
-  );
-}
-
-function StatCard({ label, value, highlight }: { label: string; value: string; highlight?: boolean }) {
-  return (
-    <div
-      className={`rounded-2xl border px-4 py-3 shadow-sm ${
-        highlight ? 'border-rose-200 bg-rose-50/40' : 'border-gray-100 bg-white'
-      }`}
-    >
-      <p className="text-[11px] text-gray-500">{label}</p>
-      <p className={`text-[22px] font-bold mt-1 tracking-tight ${highlight ? 'text-rose-600' : 'text-gray-900'}`}>
-        {value}
-      </p>
+      {clickable && (
+        <ArrowRight size={14} className="shrink-0 mt-1 text-gray-300 group-hover:text-[#5B7BFE] transition-colors" />
+      )}
     </div>
   );
 }
 
 function PlanItemStatusBadge({ status, compact = false }: { status: string; compact?: boolean }) {
-  const colorMap: Record<string, string> = {
-    active: 'bg-emerald-50 text-emerald-700',
-    paused: 'bg-gray-100 text-gray-500',
-    done: 'bg-blue-50 text-blue-700',
-    dropped: 'bg-rose-50 text-rose-500',
+  const toneMap: Record<string, string> = {
+    active: 'border-emerald-200 bg-emerald-50 text-emerald-700',
+    paused: 'border-gray-200 bg-gray-50 text-gray-500',
+    done: 'border-blue-200 bg-blue-50 text-blue-700',
+    dropped: 'border-rose-200 bg-rose-50 text-rose-500',
   };
   const labelMap: Record<string, string> = {
     active: '进行中',
@@ -1353,23 +1405,25 @@ function PlanItemStatusBadge({ status, compact = false }: { status: string; comp
     done: '已完成',
     dropped: '已废弃',
   };
+  const cls = toneMap[status] || toneMap.active;
   return (
-    <span className={`inline-block rounded-full font-bold ${colorMap[status] || colorMap.active} ${compact ? 'px-1.5 py-0.5 text-[10px]' : 'px-2 py-0.5 text-[10px]'}`}>
+    <span className={`inline-flex items-center rounded-full border font-bold uppercase tracking-[0.12em] ${cls} ${compact ? 'px-1.5 py-0.5 text-[9px]' : 'px-2.5 py-1 text-[10px]'}`}>
       {labelMap[status] || status}
     </span>
   );
 }
 
 function CompletenessBar({ pct }: { pct: number }) {
+  const colorCls = pct >= 80 ? 'bg-emerald-500' : pct >= 40 ? 'bg-amber-500' : 'bg-gray-300';
   return (
-    <div className="flex items-center justify-end gap-1.5">
-      <div className="w-16 h-1.5 rounded-full bg-gray-100 overflow-hidden">
+    <div className="flex items-center gap-2 shrink-0">
+      <div className="w-16 h-[3px] rounded-full bg-gray-100 overflow-hidden">
         <div
-          className={`h-full ${pct >= 80 ? 'bg-emerald-500' : pct >= 40 ? 'bg-amber-500' : 'bg-gray-300'}`}
+          className={`h-full ${colorCls}`}
           style={{ width: `${pct}%` }}
         />
       </div>
-      <span className="text-[11px] font-bold text-gray-700 w-9 text-right">{pct}%</span>
+      <span className="text-[10.5px] font-medium text-gray-600 w-8 text-right tabular-nums">{pct}%</span>
     </div>
   );
 }

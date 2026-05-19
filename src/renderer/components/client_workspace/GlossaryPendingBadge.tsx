@@ -41,11 +41,12 @@ export function GlossaryPendingBadge({ clientId, onNavigateToReview }: GlossaryP
     <button
       type="button"
       onClick={onNavigateToReview}
-      className="inline-flex items-center gap-1.5 rounded-full border border-amber-300 bg-amber-50 px-2.5 py-1 text-[11px] font-bold text-amber-700 hover:bg-amber-100 transition-colors"
-      title="点击去战略陪伴审核字典待补全属性"
+      className="inline-flex items-center gap-1.5 text-[10px] font-medium text-gray-500 hover:text-gray-700 transition-colors"
+      title="点击去战略陪伴澄清字典里待补全的属性"
     >
-      <span className="inline-block w-1.5 h-1.5 rounded-full bg-amber-500" />
-      字典待审 {pendingCount} 条
+      {/* 文字保持灰色低调,只有小灯用 amber + 脉冲做提醒,克制 */}
+      <span className="inline-block w-1.5 h-1.5 rounded-full bg-amber-500 animate-pulse" />
+      待澄清 {pendingCount}
     </button>
   );
 }

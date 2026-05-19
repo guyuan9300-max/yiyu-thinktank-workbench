@@ -109,26 +109,20 @@ export function ObjectStorageSettingsCard({
   };
 
   return (
-    <div className="bg-white border border-gray-100 rounded-3xl p-6 shadow-sm space-y-5">
+    <div className="space-y-5">
       <div className="flex items-start justify-between gap-4">
-        <div>
-          <div className="flex items-center gap-2">
-            <Database size={18} className="text-[#5B7BFE]" />
-            <h2 className="text-[16px] font-bold text-gray-900">对象存储 · 用于音频文件中转</h2>
-          </div>
-          <p className="text-[12px] text-gray-500 mt-1">
-            语音识别 API（如火山豆包 ASR）只接受公网可访问的音频 URL，不接受 binary 直传。
-            这里配置一个对象存储桶，系统会把你上传的录音先放进桶里拿到 URL，再交给语音识别模型转写。
-          </p>
-        </div>
+        <p className="text-[12px] text-gray-500 leading-relaxed flex-1 min-w-0">
+          语音识别 API（如火山豆包 ASR）只接受公网可访问的音频 URL，不接受 binary 直传。
+          这里配置一个对象存储桶，系统会把你上传的录音先放进桶里拿到 URL，再交给语音识别模型转写。
+        </p>
         {canEdit && (
           <button
             type="button"
             onClick={() => void handleSave()}
             disabled={isSaving || !draft.provider}
-            className="rounded-2xl bg-[#5B7BFE] px-4 py-2 text-[12px] font-bold text-white shadow-[0_10px_30px_rgba(91,123,254,0.24)] disabled:cursor-not-allowed disabled:opacity-50"
+            className="shrink-0 rounded-xl bg-[#5B7BFE] px-4 py-2 text-[12px] font-bold text-white disabled:cursor-not-allowed disabled:opacity-50"
           >
-            {isSaving ? '保存中…' : '保存对象存储配置'}
+            {isSaving ? '保存中…' : '保存'}
           </button>
         )}
       </div>

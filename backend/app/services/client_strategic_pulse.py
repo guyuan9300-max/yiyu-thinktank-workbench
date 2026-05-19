@@ -458,10 +458,12 @@ def compute_pulse_summary_for_clients(
     today = now.date()
 
     try:
+        # 冷冻项目不参与战略脉冲计算 — 它们退出所有自动周聚合
         client_rows = db.execute(
             """
             SELECT id, name, stage, alias
             FROM clients
+            WHERE frozen_at IS NULL
             ORDER BY updated_at DESC
             """
         ).fetchall()

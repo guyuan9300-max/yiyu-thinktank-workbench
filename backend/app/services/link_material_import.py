@@ -8,6 +8,7 @@ import re
 import shlex
 import shutil
 import subprocess
+import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Literal
@@ -1436,18 +1437,35 @@ def _find_bbdown() -> str | None:
 
 
 def _find_yt_dlp() -> list[str] | None:
+    # 1. PATH 里直接找
     executable = shutil.which("yt-dlp")
     if executable:
         return [executable]
+    # 2. P11 修复：当前进程的 python 同目录（Electron 打包 venv 的 yt-dlp 在 bin/yt-dlp）
+    import os as _os
+    venv_bin = _os.path.dirname(sys.executable) if sys.executable else ""
+    if venv_bin:
+        candidate = _os.path.join(venv_bin, "yt-dlp")
+        if _os.path.isfile(candidate) and _os.access(candidate, _os.X_OK):
+            return [candidate]
+    # 3. sys.executable -m yt_dlp（当前 python 里装了 yt_dlp 包）
+    if sys.executable:
+        try:
+            completed = subprocess.run(
+                [sys.executable, "-m", "yt_dlp", "--version"],
+                capture_output=True, text=True, timeout=5, check=False,
+            )
+            if completed.returncode == 0:
+                return [sys.executable, "-m", "yt_dlp"]
+        except Exception:
+            pass
+    # 4. 兜底：PATH 里的 python3 / python
     python = shutil.which("python3") or shutil.which("python")
     if python:
         try:
             completed = subprocess.run(
                 [python, "-m", "yt_dlp", "--version"],
-                capture_output=True,
-                text=True,
-                timeout=5,
-                check=False,
+                capture_output=True, text=True, timeout=5, check=False,
             )
             if completed.returncode == 0:
                 return [python, "-m", "yt_dlp"]

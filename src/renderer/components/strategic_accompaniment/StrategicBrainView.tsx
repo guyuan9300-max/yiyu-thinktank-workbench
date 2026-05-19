@@ -1059,102 +1059,106 @@ function ThoughtCard({
   };
 
   return (
-    <div className="break-inside-avoid bg-white rounded-[24px] border border-slate-100 p-6 shadow-[0_2px_10px_rgba(0,0,0,0.02)] relative hover:shadow-[0_8px_30px_rgba(0,0,0,0.04)] transition-all duration-300">
-      <div className="flex items-start justify-between mb-5 gap-4">
-        <div className="flex items-start gap-2">
-          <div className="w-2 h-2 rounded-full mt-1.5 bg-blue-500" />
-          <div>
-            <span className={`text-[13px] font-bold ${thought.isSystem ? 'text-slate-600' : 'text-slate-800'}`}>{normalizedLine}</span>
-            {thought.clientName && thought.clientName !== '系统观察' && (
-              <p className="text-[11px] text-slate-400 mt-1">{thought.clientName}</p>
-            )}
+    <div className="relative break-inside-avoid rounded-2xl border border-gray-100 bg-white p-5 transition-colors hover:border-gray-200 before:absolute before:left-0 before:top-5 before:bottom-5 before:w-[3px] before:rounded-r-full before:bg-[#5B7BFE]/55">
+      <div className="mb-4 flex items-start justify-between gap-4 pl-2">
+        <div className="min-w-0 flex-1">
+          <div className="text-[9px] font-semibold uppercase tracking-[0.16em] text-gray-400">
+            Strategic Signal
           </div>
+          <div className={`mt-1 text-[15px] font-light leading-snug tracking-tight ${thought.isSystem ? 'text-gray-700' : 'text-gray-900'}`}>
+            {normalizedLine}
+          </div>
+          {thought.clientName && thought.clientName !== '系统观察' && (
+            <p className="mt-1 text-[10.5px] text-gray-400">{thought.clientName}</p>
+          )}
         </div>
-        <div className="flex flex-wrap justify-end items-center gap-2 shrink-0">
-          <div className={`px-2.5 py-1 rounded-lg text-[10px] font-bold tracking-wide ${typeMeta.className}`}>
+        <div className="flex shrink-0 flex-wrap items-center justify-end gap-1.5">
+          <span className={`rounded-full px-2 py-[2px] text-[9.5px] font-semibold uppercase tracking-[0.12em] ring-1 ring-inset ${typeMeta.className}`}>
             {typeMeta.text}
-          </div>
+          </span>
           {statusMeta && (
-            <div className={`px-2.5 py-1 rounded-lg text-[10px] font-bold tracking-wide ${statusMeta.className}`}>
+            <span className={`rounded-full px-2 py-[2px] text-[9.5px] font-semibold uppercase tracking-[0.12em] ring-1 ring-inset ${statusMeta.className}`}>
               {statusMeta.text}
-            </div>
+            </span>
           )}
           <button
             type="button"
             onClick={() => void onToggleFavorite(thought)}
-            className={`h-7 w-7 inline-flex items-center justify-center rounded-full border transition-colors ${
+            className={`inline-flex h-7 w-7 items-center justify-center rounded-full transition-colors ring-1 ring-inset ${
               thought.isFavorite
-                ? 'border-amber-200 bg-amber-50 text-amber-500'
-                : 'border-slate-200 bg-white text-slate-400 hover:text-amber-500 hover:border-amber-200'
+                ? 'ring-amber-200 bg-amber-50/70 text-amber-500'
+                : 'ring-gray-200 bg-white text-gray-400 hover:text-amber-500 hover:ring-amber-200'
             }`}
             title={thought.isFavorite ? '取消收藏' : '收藏'}
             aria-label={thought.isFavorite ? '取消收藏' : '收藏'}
           >
-            <Star size={14} fill={thought.isFavorite ? 'currentColor' : 'none'} />
+            <Star size={13} fill={thought.isFavorite ? 'currentColor' : 'none'} />
           </button>
           <button
             type="button"
             onClick={() => void onDelete(thought)}
-            className="h-7 w-7 inline-flex items-center justify-center rounded-full border border-slate-200 bg-white text-slate-400 hover:text-rose-500 hover:border-rose-200 transition-colors"
+            className="inline-flex h-7 w-7 items-center justify-center rounded-full bg-white text-gray-400 transition-colors ring-1 ring-inset ring-gray-200 hover:text-rose-500 hover:ring-rose-200"
             title="删除"
             aria-label="删除"
           >
-            <Trash2 size={14} />
+            <Trash2 size={13} />
           </button>
         </div>
       </div>
-      <div className="mb-5">
-        <p className="text-[13px] leading-[1.9] text-slate-700 font-medium">{normalizedInsight}</p>
+
+      <div className="mb-4 pl-2">
+        <p className="text-[13px] leading-[1.85] text-gray-700">{normalizedInsight}</p>
       </div>
+
       {(normalizedFuture || normalizedAction) && (
-        <div className="grid grid-cols-1 gap-3 mb-5">
+        <div className="mb-4 space-y-2 pl-2">
           {normalizedFuture && (
-            <div className="rounded-[16px] bg-slate-50 px-4 py-3">
-              <div className="text-[10px] font-bold text-slate-400 mb-1">未来判断</div>
-              <p className="text-[12px] leading-[1.7] text-slate-700">{normalizedFuture}</p>
+            <div className="rounded-xl bg-[#FAFAFA] px-4 py-2.5 ring-1 ring-inset ring-gray-100">
+              <div className="text-[9px] font-semibold uppercase tracking-[0.16em] text-gray-400">未来判断</div>
+              <p className="mt-1 text-[12px] leading-[1.7] text-gray-700">{normalizedFuture}</p>
             </div>
           )}
           {normalizedAction && (
-            <div className="rounded-[16px] bg-blue-50/70 px-4 py-3">
-              <div className="text-[10px] font-bold text-blue-500 mb-1">建议动作</div>
-              <p className="text-[12px] leading-[1.7] text-slate-700">{normalizedAction}</p>
+            <div className="rounded-xl bg-[#5B7BFE]/4 px-4 py-2.5 ring-1 ring-inset ring-[#5B7BFE]/15">
+              <div className="text-[9px] font-semibold uppercase tracking-[0.16em] text-[#5B7BFE]">建议动作</div>
+              <p className="mt-1 text-[12px] leading-[1.7] text-gray-700">{normalizedAction}</p>
             </div>
           )}
         </div>
       )}
 
-      <div className="mt-5 pt-4 border-t border-slate-50 space-y-3">
+      <div className="mt-4 space-y-3 border-t border-gray-100 pt-4 pl-2">
         {(thought.review?.note || reviewText) && (
-          <div className="bg-slate-50 rounded-[14px] px-4 py-3">
-            <div className="text-[11px] font-semibold text-slate-500 mb-1">
+          <div className="rounded-xl bg-[#FAFAFA] px-4 py-2.5 ring-1 ring-inset ring-gray-100">
+            <div className="text-[9px] font-semibold uppercase tracking-[0.16em] text-gray-500">
               {thought.review?.status === 'confirmed' ? '我的已确认判断' : '我的备注'}
             </div>
-            <div className="text-[12px] leading-[1.7] text-slate-700">{thought.review?.note || reviewText}</div>
+            <div className="mt-1 text-[12px] leading-[1.7] text-gray-700">{thought.review?.note || reviewText}</div>
           </div>
         )}
 
         {isEditing ? (
-          <div className="bg-slate-50 rounded-[18px] p-4">
+          <div className="rounded-xl bg-[#FAFAFA] p-3 ring-1 ring-inset ring-gray-100">
             <textarea
-              className="w-full min-h-[72px] border border-slate-200 rounded-[14px] p-3 text-[13px] text-slate-700 bg-white resize-y outline-none focus:border-blue-300 focus:ring-1 focus:ring-blue-100"
+              className="w-full min-h-[72px] resize-y rounded-lg border border-gray-200 bg-white p-3 text-[13px] text-gray-700 outline-none focus:border-[#5B7BFE]"
               placeholder="补充你对这条洞察的判断..."
               value={reviewText}
               onChange={(e) => setReviewText(e.target.value)}
               autoFocus
             />
-            <div className="mt-3 flex gap-2">
+            <div className="mt-2.5 flex gap-2">
               <button
                 type="button"
                 onClick={handleDismiss}
                 disabled={isSubmitting}
-                className="text-[11px] font-bold px-3 py-1.5 rounded-full border border-rose-200 bg-rose-50 text-rose-600 hover:bg-rose-100 transition-colors disabled:opacity-60"
+                className="rounded-md px-3 py-1.5 text-[11px] font-medium text-rose-600 ring-1 ring-inset ring-rose-200 hover:bg-rose-50/60 transition-colors disabled:opacity-60"
               >
                 不准确
               </button>
               <button
                 type="button"
                 onClick={handleCreateTask}
-                className="text-[11px] font-bold px-3 py-1.5 rounded-full border border-blue-200 bg-blue-50 text-blue-600 hover:bg-blue-100 transition-colors"
+                className="rounded-md px-3 py-1.5 text-[11px] font-medium text-[#3652c9] ring-1 ring-inset ring-[#5B7BFE]/30 hover:bg-[#5B7BFE]/8 transition-colors"
               >
                 转为任务
               </button>
@@ -1162,7 +1166,7 @@ function ThoughtCard({
                 type="button"
                 onClick={handleConfirm}
                 disabled={isSubmitting}
-                className="ml-auto bg-blue-600 text-white rounded-full px-5 py-1.5 text-[12px] font-bold hover:bg-blue-700 transition-colors disabled:opacity-60"
+                className="ml-auto rounded-md bg-[#5B7BFE] px-4 py-1.5 text-[12px] font-medium text-white hover:bg-[#4A63CF] transition-colors disabled:opacity-60"
               >
                 采纳为判断
               </button>
@@ -1173,17 +1177,17 @@ function ThoughtCard({
             <button
               type="button"
               onClick={() => setIsEditing(true)}
-              className="flex-1 flex items-center gap-2 bg-transparent border border-slate-200 text-slate-500 rounded-[16px] px-4 py-2.5 text-[12px] font-semibold text-left hover:border-blue-300 hover:text-slate-700 transition-colors"
+              className="flex flex-1 items-center gap-2 rounded-lg bg-white px-4 py-2 text-[12px] font-medium text-gray-500 ring-1 ring-inset ring-gray-200 hover:text-gray-700 hover:ring-[#5B7BFE]/35 transition-colors"
             >
-              <PenLine size={14} className="text-slate-400" />
-              采纳/备注...
+              <PenLine size={13} className="text-gray-400" />
+              采纳 / 备注…
             </button>
             <button
               type="button"
               onClick={handleCreateTask}
-              className="flex items-center gap-1.5 border border-blue-200 bg-blue-50 text-blue-600 rounded-[16px] px-4 py-2.5 text-[12px] font-bold hover:bg-blue-100 transition-colors shrink-0"
+              className="shrink-0 inline-flex items-center gap-1.5 rounded-lg bg-[#5B7BFE]/8 px-4 py-2 text-[12px] font-medium text-[#3652c9] ring-1 ring-inset ring-[#5B7BFE]/30 hover:bg-[#5B7BFE]/12 transition-colors"
             >
-              <ClipboardList size={14} />
+              <ClipboardList size={13} />
               转为任务
             </button>
           </div>
@@ -1400,6 +1404,8 @@ export type StrategicBrainViewProps = {
   currentClientId?: string | null;
   onClientChange?: (clientId: string) => void;
   onCreateTaskFromThought?: (payload: ThoughtTaskPayload) => void;
+  /** UnifiedTodoSection 里点 → 时触发, 由 App 接住打开原任务编辑器并预填. */
+  onPromoteTodo?: (todo: import('../../lib/api').UnifiedTodo) => void;
   flash?: (level: 'success' | 'error' | 'info', message: string) => void;
 };
 
@@ -2089,78 +2095,82 @@ function ContradictionsTab({
   };
 
   return (
-    <section className="rounded-[28px] border border-slate-100 bg-white p-6 shadow-[0_8px_28px_rgba(15,23,42,0.05)]">
-      <div className="flex items-center justify-between mb-5">
+    <section className="rounded-2xl border border-gray-100 bg-white p-6">
+      <div className="mb-5 flex items-start justify-between gap-4">
         <div>
-          <div className="inline-flex items-center gap-2 rounded-full border border-rose-100 bg-rose-50 px-3 py-1 text-[11px] font-bold text-rose-700 mb-2">
-            <AlertOctagon size={13} />
-            矛盾 & 待确认
+          <div className="text-[10px] font-semibold uppercase tracking-[0.18em] text-rose-500">
+            Fact Contradictions
           </div>
-          <p className="text-[12px] text-slate-500">AI 在你们资料里发现的「同一件事说法不一」—— Karpathy 说：矛盾是资产，不是错误。</p>
+          <div className="mt-1 text-[15px] font-light tracking-tight text-gray-900">矛盾 & 待确认</div>
+          <p className="mt-1 text-[11.5px] text-gray-500">AI 在资料里发现的「同一件事说法不一」 — 矛盾是资产,不是错误。</p>
         </div>
         <TabClientPicker clientOptions={clientOptions} selectedClientId={selectedClientId} onClientChange={onClientChange} />
       </div>
       {!selectedClientId && (
-        <div className="rounded-2xl border border-dashed border-slate-200 bg-slate-50/60 px-4 py-8 text-center text-[12px] text-slate-400">
-          先选一个客户，查看 AI 检测到的重复文件和事实矛盾。
+        <div className="rounded-xl bg-[#FAFAFA] px-4 py-8 text-center text-[12px] text-gray-400 ring-1 ring-inset ring-gray-100">
+          先选一个客户,查看 AI 检测到的重复文件和事实矛盾。
         </div>
       )}
       <DuplicateDocumentsSection clientId={selectedClientId} flash={flash} />
-      {err && <div className="mb-4 rounded-xl border border-rose-100 bg-rose-50 px-3 py-2 text-[12px] text-rose-700">{err}</div>}
+      {err && <div className="mb-4 rounded-lg bg-rose-50/60 px-3 py-2 text-[12px] text-rose-700 ring-1 ring-inset ring-rose-200">{err}</div>}
       {selectedClientId && !loading && contradictions.length === 0 && !err && (
-        <div className="rounded-2xl border border-dashed border-emerald-100 bg-emerald-50/40 px-4 py-8 text-center text-[12px] text-emerald-700">
-          ✓ 暂无待确认的事实矛盾。AI 觉得这位客户的资料内部一致。
+        <div className="rounded-xl bg-emerald-50/30 px-4 py-8 text-center text-[12px] text-emerald-700 ring-1 ring-inset ring-emerald-100">
+          暂无待确认的事实矛盾 · AI 觉得这位客户的资料内部一致。
         </div>
       )}
       {selectedClientId && loading && (
-        <div className="rounded-2xl border border-dashed border-slate-200 bg-slate-50/60 px-4 py-8 text-center text-[12px] text-slate-400">扫描中…</div>
+        <div className="rounded-xl bg-[#FAFAFA] px-4 py-8 text-center text-[12px] text-gray-400 ring-1 ring-inset ring-gray-100">扫描中…</div>
       )}
       {contradictions.length > 0 && (
-        <div className="space-y-4">
-          {contradictions.map((c) => (
-            <div key={c.id} className="rounded-[20px] border border-rose-100/80 bg-rose-50/30 px-5 py-4">
-              <div className="flex items-baseline justify-between mb-3">
-                <div className="text-[13px] font-bold text-slate-800">
-                  <span className="text-rose-700">{c.subjectText}</span> 的 <span className="text-rose-700">{c.attribute}</span>
+        <div className="space-y-3">
+          {contradictions.map((c) => {
+            const sevAccent = c.severity === 'high' ? 'before:bg-rose-400' : c.severity === 'medium' ? 'before:bg-amber-400' : 'before:bg-gray-300';
+            const sevTone = c.severity === 'high' ? 'ring-rose-200 text-rose-700' : c.severity === 'medium' ? 'ring-amber-200 text-amber-700' : 'ring-gray-200 text-gray-600';
+            return (
+              <div key={c.id} className={`relative rounded-xl bg-white px-5 py-3.5 ring-1 ring-inset ring-gray-100 before:absolute before:left-0 before:top-3.5 before:bottom-3.5 before:w-[3px] before:rounded-r-full ${sevAccent}`}>
+                <div className="mb-3 flex items-baseline justify-between gap-3">
+                  <div className="text-[13px] font-medium text-gray-800">
+                    <span className="text-rose-700">{c.subjectText}</span> 的 <span className="text-rose-700">{c.attribute}</span>
+                  </div>
+                  <span className={`shrink-0 rounded-full px-2 py-[2px] text-[9.5px] font-semibold uppercase tracking-[0.12em] ring-1 ring-inset ${sevTone}`}>
+                    {c.severity === 'high' ? '严重' : c.severity === 'medium' ? '中等' : '一般'}
+                  </span>
                 </div>
-                <span className={`rounded-full px-2 py-0.5 text-[10px] font-bold ${c.severity === 'high' ? 'bg-rose-100 text-rose-700' : c.severity === 'medium' ? 'bg-amber-100 text-amber-700' : 'bg-slate-100 text-slate-600'}`}>
-                  {c.severity === 'high' ? '严重' : c.severity === 'medium' ? '中等' : '一般'}
-                </span>
-              </div>
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-3 mb-3">
-                <div className="rounded-[14px] border border-slate-200 bg-white px-3 py-2.5">
-                  <div className="text-[10px] font-bold text-slate-400 mb-1">说法 A</div>
-                  <div className="text-[12px] font-bold text-slate-800 mb-1.5">{c.valueA}</div>
-                  <div className="text-[10px] text-slate-500 line-clamp-2 leading-[1.6]">{c.evidenceA}</div>
-                  {c.docAFileName && <div className="mt-1.5 text-[10px] text-slate-400 truncate" title={c.docAFileName}>来源：{c.docAFileName}</div>}
+                <div className="mb-3 grid grid-cols-1 gap-2 md:grid-cols-2">
+                  <div className="rounded-lg bg-[#FAFAFA] px-3 py-2 ring-1 ring-inset ring-gray-100">
+                    <div className="text-[9px] font-semibold uppercase tracking-[0.16em] text-gray-400">说法 A</div>
+                    <div className="mt-1 text-[12px] font-medium text-gray-800">{c.valueA}</div>
+                    <div className="mt-1 line-clamp-2 text-[10.5px] leading-[1.6] text-gray-500">{c.evidenceA}</div>
+                    {c.docAFileName && <div className="mt-1 truncate text-[10px] text-gray-400" title={c.docAFileName}>来源:{c.docAFileName}</div>}
+                  </div>
+                  <div className="rounded-lg bg-[#FAFAFA] px-3 py-2 ring-1 ring-inset ring-gray-100">
+                    <div className="text-[9px] font-semibold uppercase tracking-[0.16em] text-gray-400">说法 B</div>
+                    <div className="mt-1 text-[12px] font-medium text-gray-800">{c.valueB}</div>
+                    <div className="mt-1 line-clamp-2 text-[10.5px] leading-[1.6] text-gray-500">{c.evidenceB}</div>
+                    {c.docBFileName && <div className="mt-1 truncate text-[10px] text-gray-400" title={c.docBFileName}>来源:{c.docBFileName}</div>}
+                  </div>
                 </div>
-                <div className="rounded-[14px] border border-slate-200 bg-white px-3 py-2.5">
-                  <div className="text-[10px] font-bold text-slate-400 mb-1">说法 B</div>
-                  <div className="text-[12px] font-bold text-slate-800 mb-1.5">{c.valueB}</div>
-                  <div className="text-[10px] text-slate-500 line-clamp-2 leading-[1.6]">{c.evidenceB}</div>
-                  {c.docBFileName && <div className="mt-1.5 text-[10px] text-slate-400 truncate" title={c.docBFileName}>来源：{c.docBFileName}</div>}
+                <div className="flex justify-end gap-2">
+                  <button
+                    type="button"
+                    disabled={busy === c.id}
+                    onClick={() => void handleReview(c.id, 'dismissed')}
+                    className="rounded-md bg-white px-3 py-1 text-[11px] font-medium text-gray-600 ring-1 ring-inset ring-gray-200 hover:bg-gray-50 disabled:opacity-50 transition-colors"
+                  >
+                    假告警,忽略
+                  </button>
+                  <button
+                    type="button"
+                    disabled={busy === c.id}
+                    onClick={() => void handleReview(c.id, 'resolved')}
+                    className="rounded-md bg-emerald-50/70 px-3 py-1 text-[11px] font-medium text-emerald-700 ring-1 ring-inset ring-emerald-200 hover:bg-emerald-100/70 disabled:opacity-50 transition-colors"
+                  >
+                    {busy === c.id ? '处理中…' : '已确认正解'}
+                  </button>
                 </div>
               </div>
-              <div className="flex gap-2 justify-end">
-                <button
-                  type="button"
-                  disabled={busy === c.id}
-                  onClick={() => void handleReview(c.id, 'dismissed')}
-                  className="rounded-full border border-slate-200 bg-white px-3 py-1 text-[11px] font-bold text-slate-600 hover:border-slate-300 disabled:opacity-50"
-                >
-                  假告警，忽略
-                </button>
-                <button
-                  type="button"
-                  disabled={busy === c.id}
-                  onClick={() => void handleReview(c.id, 'resolved')}
-                  className="rounded-full border border-emerald-200 bg-emerald-50 px-3 py-1 text-[11px] font-bold text-emerald-700 hover:bg-emerald-100 disabled:opacity-50"
-                >
-                  {busy === c.id ? '处理中…' : '已确认正解'}
-                </button>
-              </div>
-            </div>
-          ))}
+            );
+          })}
         </div>
       )}
     </section>
@@ -2172,6 +2182,7 @@ export function StrategicBrainView({
   currentClientId,
   onClientChange,
   onCreateTaskFromThought,
+  onPromoteTodo,
   flash,
 }: StrategicBrainViewProps) {
   // 战略陪伴当前只剩 2 个 tab：客户档案（即 contradictions/事实澄清模块）/ 判断 & 思考
@@ -2282,15 +2293,18 @@ export function StrategicBrainView({
   );
 
   return (
-    <div className="h-full flex flex-col bg-[#F9FAFB] overflow-hidden font-sans">
+    <div className="h-full flex flex-col bg-white overflow-hidden font-sans">
       {/* Header */}
-      <div className="bg-[#F9FAFB]/80 backdrop-blur-xl border-b border-slate-200/60 pt-5 pb-4 px-6 flex flex-col gap-4 shrink-0">
-        <div className="flex items-center justify-between">
+      <div className="border-b border-gray-100 pt-6 pb-0 px-8 flex flex-col gap-5 shrink-0">
+        <div className="flex items-start justify-between gap-4">
           <div>
-            <h1 className="text-[18px] font-semibold tracking-tight text-slate-900 flex items-center gap-2">
+            <div className="text-[10px] font-semibold uppercase tracking-[0.18em] text-gray-400">
+              Strategic Accompaniment
+            </div>
+            <h1 className="mt-1 text-[22px] font-light tracking-tight text-gray-900">
               战略陪伴
             </h1>
-            <p className="text-[11px] font-medium text-slate-400 mt-0.5">AI 陪伴组织成长 · 越用越懂你</p>
+            <p className="mt-0.5 text-[11.5px] text-gray-500">AI 陪伴组织成长 · 越用越懂你</p>
           </div>
           {activeTab === 'thoughts' && (
             <ThoughtScopeSelect
@@ -2304,21 +2318,29 @@ export function StrategicBrainView({
             />
           )}
         </div>
-        <div className="flex bg-slate-100/80 p-1 rounded-2xl w-fit">
-          {TABS.map(tab => (
-            <button
-              key={tab.id}
-              type="button"
-              onClick={() => setActiveTab(tab.id)}
-              className={`px-4 py-1.5 rounded-2xl text-[13px] font-medium transition-all duration-200 ${
-                activeTab === tab.id
-                  ? 'bg-white text-[#5B7BFE] shadow-sm'
-                  : 'text-slate-500 hover:text-slate-700'
-              }`}
-            >
-              {tab.label}
-            </button>
-          ))}
+        <div className="flex items-center gap-6 -mb-px">
+          {TABS.map(tab => {
+            const isActive = activeTab === tab.id;
+            return (
+              <button
+                key={tab.id}
+                type="button"
+                onClick={() => setActiveTab(tab.id)}
+                className={`relative pb-3 text-[12px] font-medium uppercase tracking-[0.14em] transition-colors ${
+                  isActive
+                    ? 'text-[#5B7BFE]'
+                    : 'text-gray-500 hover:text-gray-800'
+                }`}
+              >
+                {tab.label}
+                <span
+                  className={`absolute -bottom-px left-0 right-0 h-[2px] rounded-full transition-colors ${
+                    isActive ? 'bg-[#5B7BFE]' : 'bg-transparent'
+                  }`}
+                />
+              </button>
+            );
+          })}
         </div>
       </div>
 
@@ -2352,6 +2374,7 @@ export function StrategicBrainView({
                 if (id) onClientChange?.(id);
               }}
               flash={flash}
+              onPromoteTodo={onPromoteTodo}
             />
           )}
         </div>

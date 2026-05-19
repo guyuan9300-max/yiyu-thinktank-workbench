@@ -15,6 +15,7 @@ import {
   ChevronLeft,
   ChevronRight,
   Sparkles,
+  Snowflake,
   UploadCloud,
   Briefcase,
   FolderOpen,
@@ -37,6 +38,7 @@ import {
   Flag,
   Phone,
   Eye,
+  EyeOff,
   FolderDot,
   ArrowLeft,
   ArrowUp,
@@ -256,6 +258,8 @@ import {
   createBackup,
   createClient,
   createClientTextDocument,
+  documentAiAction,
+  type DocumentAiAction,
   startClientLinkMaterialImport,
   getLatestClientLinkMaterialImportRun,
   getClientLinkMaterialImportRun,
@@ -263,6 +267,10 @@ import {
   createProjectFlow,
   createProjectModule,
   deleteClient,
+  getClientDeletePreview,
+  type ClientDeletePreview,
+  freezeClient,
+  unfreezeClient,
   deleteClientDocument,
   createGoal,
   launchFeishuMeeting,
@@ -466,17 +474,23 @@ import type { ReportDraft } from './components/tasks/EventLineReportPanel';
 import AIReportGeneratorModal from './components/reports/AIReportGeneratorModal';
 import { TaskTemplateEditorModal } from './components/tasks/TaskTemplateEditorModal';
 import type { TemplateData } from './components/tasks/TaskTemplateEditorModal';
+import { SmartTaskParseModal } from './components/tasks/SmartTaskParseModal';
+import type { TaskAiParseResult } from './lib/api';
 import { SystemLogPanel } from './components/settings/SystemLogPanel';
+import { MaintenanceSyncPanel } from './components/settings/MaintenanceSyncPanel';
 import { StrategicBrainView, type ThoughtTaskPayload, DuplicateDocumentsSection } from './components/strategic_accompaniment/StrategicBrainView';
 import { TopicsManagementView } from './components/topics/TopicsManagementView';
 import { IntelligenceStationView } from './components/intelligence/IntelligenceStationView';
 import { TaskCalendarView } from './components/tasks/TaskCalendarView';
+import { DraggingTaskProvider, TaskRowLongPress } from './components/tasks/longPressDrag';
 import { AgentSimulationCalendarView } from './components/tasks/AgentSimulationCalendarView';
 import { AgentWeeklyPlanEditor } from './components/tasks/AgentWeeklyPlanEditor';
 import { TaskOrgContextPanel } from './components/tasks/TaskOrgContextPanel';
 import { WeeklyReviewStructuredFields, composeReviewNoteFromStructuredFields, createEmptyReviewStructuredNote, getSimpleReviewText, hasMeaningfulReviewStructuredNote } from './components/tasks/WeeklyReviewStructuredFields';
 import { reviewStatusLabel, reviewTaskDateLabel, type ReviewTaskRow } from './components/tasks/reviewDraft';
 import { GrowthProvider, notifyGrowthRefresh } from './components/growth/GrowthContext';
+import { UpdateNotifier } from './components/UpdateNotifier';
+import { AboutAppSettingsPanel } from './components/settings/AboutAppSettingsPanel';
 import { GrowthCenterView } from './components/handbook/GrowthCenterView';
 import { AppLogoMark, BrandLogoMark } from './components/settings/BrandLogoSettingsCard';
 import { DataCenterOpsPanel } from './components/data_center/DataCenterOpsPanel';
@@ -486,14 +500,19 @@ import { ContradictionAlertPanel } from './components/client_workspace/Contradic
 import { GlossaryDriftAlertPanel } from './components/client_workspace/GlossaryDriftAlertPanel';
 import { GlossaryPanel } from './components/client_workspace/GlossaryPanel';
 import { GlossaryPendingBadge } from './components/client_workspace/GlossaryPendingBadge';
+import { RichTextDocumentEditor, SAMPLE_DOCUMENT_MARKDOWN } from './components/client_workspace/RichTextDocumentEditor';
+import { GlobalAiStatusBadge } from './components/global/GlobalAiStatusBadge';
 import { WorkStatusPanel } from './components/data_center/WorkStatusPanel';
 import { FeishuOrgIntegrationPanel } from './components/settings/FeishuOrgIntegrationPanel';
 import { SpeechModelSettingsCard } from './components/settings/SpeechModelSettingsCard';
 import { ObjectStorageSettingsCard } from './components/settings/ObjectStorageSettingsCard';
 import { LocalAsrModelPanel } from './components/settings/LocalAsrModelPanel';
 import { OllamaQuickPullPanel } from './components/settings/OllamaQuickPullPanel';
-import type { OrgModelTab } from './components/settings/OrganizationModelSettingsPanel';
 import { PlanWorkshopView } from './components/plan_workshop/PlanWorkshopView';
+
+// 组织设置子 tab 标识。来自已废弃的 OrganizationModelSettingsPanel,
+// 现保留为 App 内部类型,供 settingsSection 路由切换使用。
+type OrgModelTab = 'overview' | 'departments' | 'people' | 'rules';
 import { DepartmentSignalsView } from './components/weekly_review/DepartmentSignalsView';
 import { OrganizationSetupCenter } from './components/settings/OrganizationSetupCenter';
 import type { OrganizationSetupInputDraftState } from './components/settings/OrganizationSetupCenter';
@@ -603,10 +622,63 @@ const recentRecordingMinutesByTaskId = new Map<string, string>();
 // 客户工作台「问题排队」和「合集导出」的跨挂载持久存储。
 // ClientWorkspaceView 在切顶栏 tab 时会 unmount/remount，所有内部 useState 都会重置；
 // 用 module-level Map 持有以保住"用户排过的题目/挑过的段落"在切走再回来后不丢。
+//
+// 重要：Map 实例必须挂到 globalThis 上而不是普通 module-level const。
+// 原因：dev mode vite HMR / full-reload 会重新执行 module 顶层代码，
+// 普通 `const x = new Map()` 在每次 HMR 都会生成一个新 Map，导致用户排队的题目消失。
+// 挂 globalThis 后，新 module instance 会复用上一份 Map，状态跨 HMR 持久。
 type WorkspaceQueueListener = () => void;
 const QUESTION_QUEUE_MAX_GLOBAL = 10;
-const workspaceQuestionQueueByClient = new Map<string, string[]>();
-const workspaceQuestionQueueListeners = new Set<WorkspaceQueueListener>();
+
+interface _YiyuPersistedQueueState {
+  questionQueueByClient?: Map<string, string[]>;
+  questionQueueListeners?: Set<WorkspaceQueueListener>;
+  exportBagByClient?: Map<string, string[]>;
+  exportBagListeners?: Set<WorkspaceQueueListener>;
+}
+const _yiyuPersistedQueue: _YiyuPersistedQueueState =
+  ((globalThis as unknown as { __yiyuPersistedQueue?: _YiyuPersistedQueueState }).__yiyuPersistedQueue ||=
+    {} as _YiyuPersistedQueueState);
+
+// 把 Map 序列化为 {clientId: string[]} 存进 localStorage；空 Map 直接 removeItem。
+const _QUEUE_LS_KEY = 'yiyu.workspace.questionQueueByClient.v1';
+const _EXPORT_LS_KEY = 'yiyu.workspace.exportBagByClient.v1';
+
+function _hydrateMapFromLocalStorage(key: string): Map<string, string[]> {
+  try {
+    const raw = window.localStorage.getItem(key);
+    if (!raw) return new Map();
+    const parsed = JSON.parse(raw) as Record<string, string[]>;
+    const map = new Map<string, string[]>();
+    for (const [k, v] of Object.entries(parsed)) {
+      if (Array.isArray(v) && v.every((item) => typeof item === 'string')) {
+        if (v.length > 0) map.set(k, v);
+      }
+    }
+    return map;
+  } catch {
+    return new Map();
+  }
+}
+function _persistMapToLocalStorage(key: string, map: Map<string, string[]>): void {
+  try {
+    if (map.size === 0) {
+      window.localStorage.removeItem(key);
+      return;
+    }
+    const obj: Record<string, string[]> = {};
+    for (const [k, v] of map) obj[k] = v;
+    window.localStorage.setItem(key, JSON.stringify(obj));
+  } catch {
+    // localStorage 写失败（quota / 无 window）静默
+  }
+}
+
+const workspaceQuestionQueueByClient: Map<string, string[]> =
+  _yiyuPersistedQueue.questionQueueByClient ||= _hydrateMapFromLocalStorage(_QUEUE_LS_KEY);
+const workspaceQuestionQueueListeners: Set<WorkspaceQueueListener> =
+  _yiyuPersistedQueue.questionQueueListeners ||= new Set<WorkspaceQueueListener>();
+
 function notifyWorkspaceQuestionQueueListeners(): void {
   for (const listener of workspaceQuestionQueueListeners) listener();
 }
@@ -616,11 +688,15 @@ function getWorkspaceQuestionQueue(clientId: string): string[] {
 function setWorkspaceQuestionQueue(clientId: string, next: string[]): void {
   if (next.length === 0) workspaceQuestionQueueByClient.delete(clientId);
   else workspaceQuestionQueueByClient.set(clientId, next);
+  _persistMapToLocalStorage(_QUEUE_LS_KEY, workspaceQuestionQueueByClient);
   notifyWorkspaceQuestionQueueListeners();
 }
 
-const workspaceExportBagByClient = new Map<string, string[]>();
-const workspaceExportBagListeners = new Set<WorkspaceQueueListener>();
+const workspaceExportBagByClient: Map<string, string[]> =
+  _yiyuPersistedQueue.exportBagByClient ||= _hydrateMapFromLocalStorage(_EXPORT_LS_KEY);
+const workspaceExportBagListeners: Set<WorkspaceQueueListener> =
+  _yiyuPersistedQueue.exportBagListeners ||= new Set<WorkspaceQueueListener>();
+
 function notifyWorkspaceExportBagListeners(): void {
   for (const listener of workspaceExportBagListeners) listener();
 }
@@ -630,7 +706,66 @@ function getWorkspaceExportBag(clientId: string): string[] {
 function setWorkspaceExportBag(clientId: string, next: string[]): void {
   if (next.length === 0) workspaceExportBagByClient.delete(clientId);
   else workspaceExportBagByClient.set(clientId, next);
+  _persistMapToLocalStorage(_EXPORT_LS_KEY, workspaceExportBagByClient);
   notifyWorkspaceExportBagListeners();
+}
+
+// ─── 全局冷冻项目 ─────────────────────────────────────────────
+// SOT(单一真实源)是后端 clients.frozen_at;前端通过主组件 useEffect 把 client.isFrozen
+// 同步进这个 Set,所有非工作台 view 的下拉/计算都过滤 Set 里的 id。
+// localStorage 缓存只是乐观更新的暂存:用户点开关后立刻 UI 响应,后端 API 完成后会 refetch 校正。
+// 冷冻后:
+//   - 工作台左栏「近期项目」严格不显示(只在搜索结果可临时找回)
+//   - 战略陪伴 / 资讯情报站 / 任务编辑器客户下拉全部过滤
+//   - 后端自动 job(资讯抓取/embedding 重建/notebook 刷新等)跳过冷冻项目
+const _HIDDEN_CLIENTS_LS_KEY = 'yiyu.workspace.hiddenClientIds.v1';
+interface _HiddenClientsState {
+  hiddenSet?: Set<string>;
+  listeners?: Set<WorkspaceQueueListener>;
+}
+const _hiddenClientsState: _HiddenClientsState =
+  ((globalThis as unknown as { __yiyuHiddenClients?: _HiddenClientsState }).__yiyuHiddenClients ||=
+    {} as _HiddenClientsState);
+
+function _hydrateHiddenSet(): Set<string> {
+  if (typeof window === 'undefined') return new Set();
+  try {
+    const raw = window.localStorage.getItem(_HIDDEN_CLIENTS_LS_KEY);
+    if (!raw) return new Set();
+    const parsed = JSON.parse(raw) as unknown;
+    if (Array.isArray(parsed)) {
+      return new Set(parsed.filter((value): value is string => typeof value === 'string'));
+    }
+    return new Set();
+  } catch {
+    return new Set();
+  }
+}
+function _persistHiddenSet(set: Set<string>): void {
+  if (typeof window === 'undefined') return;
+  try {
+    if (set.size === 0) {
+      window.localStorage.removeItem(_HIDDEN_CLIENTS_LS_KEY);
+    } else {
+      window.localStorage.setItem(_HIDDEN_CLIENTS_LS_KEY, JSON.stringify([...set]));
+    }
+  } catch {
+    // localStorage 满或被禁:静默,本次会话内仍按 in-memory Set 工作
+  }
+}
+const hiddenClientIds: Set<string> =
+  _hiddenClientsState.hiddenSet ||= _hydrateHiddenSet();
+const hiddenClientsListeners: Set<WorkspaceQueueListener> =
+  _hiddenClientsState.listeners ||= new Set<WorkspaceQueueListener>();
+
+function isClientHidden(clientId: string): boolean {
+  return hiddenClientIds.has(clientId);
+}
+function setClientHidden(clientId: string, hidden: boolean): void {
+  if (hidden) hiddenClientIds.add(clientId);
+  else hiddenClientIds.delete(clientId);
+  _persistHiddenSet(hiddenClientIds);
+  for (const listener of hiddenClientsListeners) listener();
 }
 
 function readStoredRecentUsedDocuments(clientId: string): RecentUsedDocument[] {
@@ -781,7 +916,7 @@ function writeStoredActiveWorkingDocuments(clientId: string, docs: ActiveWorking
 type NavKey = 'tasks' | 'client_workspace' | 'strategic_accompaniment' | 'topics_management' | 'growth_handbook' | 'plan_workshop' | 'settings';
 type TaskViewMode = 'inbox' | 'list' | 'calendar' | 'agent_schedule' | 'review' | 'event_lines' | 'plan';
 type ClientOverlayMode = 'meeting' | 'goal' | 'dna' | 'paste_document' | 'link_material' | null;
-type SettingsSectionKey = 'overview' | 'tasks' | 'client_workspace' | 'topics' | 'handbook' | 'system_admin' | 'org_overview' | 'org_departments' | 'org_people' | 'org_rules' | 'system_logs';
+type SettingsSectionKey = 'overview' | 'account' | 'tasks' | 'client_workspace' | 'topics' | 'handbook' | 'system_admin' | 'org_overview' | 'org_departments' | 'org_people' | 'org_rules' | 'system_logs' | 'about';
 type ReviewFormState = {
   weekLabel: string;
   entriesByTaskId: Record<string, WeeklyReviewTaskStructuredNote>;
@@ -869,6 +1004,7 @@ const NAV_QUERY_CLIENT_ID_PARAM = 'clientId';
 const NAV_KEYS: NavKey[] = ['tasks', 'client_workspace', 'strategic_accompaniment', 'topics_management', 'growth_handbook', 'plan_workshop', 'settings'];
 const SETTINGS_SECTION_KEYS: SettingsSectionKey[] = [
   'overview',
+  'account',
   'tasks',
   'topics',
   'handbook',
@@ -1176,16 +1312,24 @@ const AI_CONFIG_PRESETS = {
     baseUrl: '',
     model: 'mock-summarizer',
   },
+  openclaw: {
+    label: 'GPT 5.4',
+    provider: 'openclaw' as AiProvider,
+    providerLabel: 'GPT 5.4',
+    baseUrl: '',
+    model: 'openai-codex/gpt-5.4',
+  },
 } as const;
 
 type AiConfigPresetKey = keyof typeof AI_CONFIG_PRESETS;
-const AI_CONFIG_PRESET_ORDER: AiConfigPresetKey[] = ['doubao', 'qwen', 'deepseek', 'tencent', 'local', 'custom'];
+const AI_CONFIG_PRESET_ORDER: AiConfigPresetKey[] = ['doubao', 'qwen', 'deepseek', 'tencent', 'local', 'openclaw', 'custom'];
 
 const providerDefaultModels = {
   mock: 'mock-summarizer',
   openai_compatible: AI_CONFIG_PRESETS.doubao.model,
   qwen: 'qwen3.5-plus',
   doubao: 'doubao-seed-2-0-pro-260215',
+  openclaw: 'openai-codex/gpt-5.4',
 } as const;
 
 const providerDisplayNames = {
@@ -1193,6 +1337,7 @@ const providerDisplayNames = {
   openai_compatible: '自定义兼容接口',
   qwen: 'Qwen 3.5',
   doubao: '豆包 Seed 2.0 Pro（火山方舟）',
+  openclaw: 'GPT 5.4',
 } as const;
 
 function normalizeAiBaseUrl(value?: string | null) {
@@ -1293,10 +1438,11 @@ function resolveAiConfigPresetKey(draft: {
 }): AiConfigPresetKey {
   const provider = String(draft.aiProvider || '').trim();
   if (provider === AI_CONFIG_PRESETS.mock.provider) return 'custom';
+  if (provider === AI_CONFIG_PRESETS.openclaw.provider) return 'openclaw';
   const baseUrl = normalizeAiBaseUrl(draft.aiBaseUrl);
   const model = String(draft.aiModel || '').trim();
   const matchedPreset = AI_CONFIG_PRESET_ORDER.find((presetKey) => {
-    if (presetKey === 'custom' || presetKey === 'mock') return false;
+    if (presetKey === 'custom' || presetKey === 'mock' || presetKey === 'openclaw') return false;
     const preset = AI_CONFIG_PRESETS[presetKey];
     return provider === preset.provider
       && baseUrl === normalizeAiBaseUrl(preset.baseUrl)
@@ -1608,20 +1754,16 @@ const DEFAULT_LOCAL_INPUT_MEMORY: LocalInputMemory = {
   },
 };
 
+// 取消"本机模式": 启动默认为未登录 — 不再用 'local-device-user' 当 placeholder.
+// 启动时显示登录页 (loading 期间), /auth/me 加载完后:
+//   - authenticated=true → 进工作台
+//   - authenticated=false → 继续显示登录页
+// 这是 fix "退出登录后仍看见以前页面" + "重启后界面显示本机用户" 的关键.
 const DEFAULT_LOCAL_AUTH_STATE: AuthState = {
-  authenticated: true,
-  sessionMode: 'local',
-    user: {
-      id: 'local-device-user',
-      organizationId: 'local-device',
-      email: 'local@device.yiyu',
-      phone: null,
-      fullName: '本机用户',
-      primaryRole: 'employee',
-      accountStatus: 'approved',
-      membershipStatus: 'approved',
-    },
-  };
+  authenticated: false,
+  sessionMode: 'cloud',
+  user: null,
+};
 
 const EMPTY_PROJECT_STRUCTURE_RESPONSE: ProjectStructureResponse = { modules: [], flows: [] };
 const PROJECT_STRUCTURE_FAILURE_CACHE_MS = 5 * 60 * 1000;
@@ -3956,6 +4098,216 @@ function tokenizeScopeText(value?: string | null, minLength = 2, maxLength = 18)
     .filter((item) => item.length >= minLength && item.length <= maxLength);
 }
 
+/**
+ * 从任务标题/描述里抽取明确的日期 + 时间。
+ *
+ * 严格规则(经与用户对齐):
+ * - 只识别文本明确出现的时间表达;不按语气、紧迫感推断
+ * - 没识别到就返回 null,让 dueDate / dueTime 留空
+ *
+ * 识别覆盖:
+ * - 日期:今天 / 明天 / 后天 / 大后天 / 下周X / 周X / X月X日(或号) / MM-DD / MM/DD
+ * - 时间:上午X点(半/X分) / 下午X点 / 晚上X点 / X:XX / X点X分 / 中午 / 早上
+ */
+function inferTaskDueDate(params: {
+  title: string;
+  desc: string;
+  today: Date;
+}): { dueDate: string | null; dueTime: string | null; reason: string | null } {
+  const text = `${params.title}\n${params.desc}`.trim();
+  if (!text) return { dueDate: null, dueTime: null, reason: null };
+
+  const today = new Date(params.today.getFullYear(), params.today.getMonth(), params.today.getDate());
+  const formatDate = (date: Date) => {
+    const year = date.getFullYear();
+    const month = String(date.getMonth() + 1).padStart(2, '0');
+    const day = String(date.getDate()).padStart(2, '0');
+    return `${year}-${month}-${day}`;
+  };
+  const cnDigit: Record<string, number> = {
+    '零': 0, '〇': 0, '一': 1, '二': 2, '两': 2, '三': 3, '四': 4,
+    '五': 5, '六': 6, '七': 7, '八': 8, '九': 9, '十': 10,
+  };
+  // 中文数字解析:支持 1-31 范围内的"十X / X十 / 二十X / 三十X"
+  const parseCnNumber = (raw: string): number | null => {
+    if (!raw) return null;
+    if (/^\d+$/.test(raw)) return parseInt(raw, 10);
+    if (cnDigit[raw] !== undefined) return cnDigit[raw];
+    if (raw.length === 2 && raw[0] === '十' && cnDigit[raw[1]] !== undefined) {
+      return 10 + cnDigit[raw[1]];
+    }
+    if (raw.length === 2 && raw[1] === '十' && cnDigit[raw[0]] !== undefined) {
+      return cnDigit[raw[0]] * 10;
+    }
+    if (raw.length === 3 && raw[1] === '十' && cnDigit[raw[0]] !== undefined && cnDigit[raw[2]] !== undefined) {
+      return cnDigit[raw[0]] * 10 + cnDigit[raw[2]];
+    }
+    return null;
+  };
+
+  // ─── 日期识别 ───
+  let dueDate: string | null = null;
+  let dateReason = '';
+
+  // 1) 今天 / 明天 / 后天 / 大后天 (相对日期最强匹配)
+  if (/大后天/.test(text)) {
+    const d = new Date(today); d.setDate(d.getDate() + 3);
+    dueDate = formatDate(d); dateReason = '大后天';
+  } else if (/后天/.test(text)) {
+    const d = new Date(today); d.setDate(d.getDate() + 2);
+    dueDate = formatDate(d); dateReason = '后天';
+  } else if (/明天|明日|明早/.test(text)) {
+    const d = new Date(today); d.setDate(d.getDate() + 1);
+    dueDate = formatDate(d); dateReason = '明天';
+  } else if (/今天|今晚|今日/.test(text)) {
+    dueDate = formatDate(today); dateReason = '今天';
+  }
+
+  // 2) X月X日 / X月X号
+  if (!dueDate) {
+    const monthDayMatch = text.match(/([一二两三四五六七八九十]{1,3}|\d{1,2})月([一二两三四五六七八九十]{1,3}|\d{1,2})[日号]/);
+    if (monthDayMatch) {
+      const month = parseCnNumber(monthDayMatch[1]);
+      const day = parseCnNumber(monthDayMatch[2]);
+      if (month && day && month >= 1 && month <= 12 && day >= 1 && day <= 31) {
+        // 如果月份已过,假定明年
+        let year = today.getFullYear();
+        const candidate = new Date(year, month - 1, day);
+        if (candidate.getTime() < today.getTime()) {
+          year += 1;
+        }
+        dueDate = formatDate(new Date(year, month - 1, day));
+        dateReason = monthDayMatch[0];
+      }
+    }
+  }
+
+  // 3) MM-DD / MM/DD(短日期,2 位数字之间是分隔符)
+  if (!dueDate) {
+    const shortMatch = text.match(/(?<!\d)(\d{1,2})[-/](\d{1,2})(?!\d)/);
+    if (shortMatch) {
+      const month = parseInt(shortMatch[1], 10);
+      const day = parseInt(shortMatch[2], 10);
+      if (month >= 1 && month <= 12 && day >= 1 && day <= 31) {
+        let year = today.getFullYear();
+        const candidate = new Date(year, month - 1, day);
+        if (candidate.getTime() < today.getTime()) {
+          year += 1;
+        }
+        dueDate = formatDate(new Date(year, month - 1, day));
+        dateReason = shortMatch[0];
+      }
+    }
+  }
+
+  // 4) 下周X / 这周X / 周X(中文)
+  if (!dueDate) {
+    const weekdayMap: Record<string, number> = {
+      '一': 1, '二': 2, '三': 3, '四': 4, '五': 5, '六': 6, '日': 0, '天': 0,
+    };
+    const weekMatch = text.match(/(下周|下个?礼拜|这周|本周|这礼拜|本礼拜|周|星期|礼拜)([一二三四五六日天])/);
+    if (weekMatch) {
+      const targetDow = weekdayMap[weekMatch[2]];
+      if (targetDow !== undefined) {
+        const todayDow = today.getDay();
+        // 中文习惯:周一是一周开始;但 JS getDay 周日是 0
+        // 转成"周一=1, 周日=7"语义
+        const targetIsoDow = targetDow === 0 ? 7 : targetDow;
+        const todayIsoDow = todayDow === 0 ? 7 : todayDow;
+        let diff = targetIsoDow - todayIsoDow;
+        const isNextWeek = /下周|下个?礼拜/.test(weekMatch[1]);
+        if (isNextWeek) {
+          if (diff <= 0) diff += 7;
+          else diff += 0;
+          // 下周明确加 7
+          if (!/下周|下个?礼拜/.test(weekMatch[1])) diff += 7;
+          else diff = diff <= 0 ? diff + 7 : diff;
+          // 简化:下周 = 当前 + 7 天再到 weekday
+          diff = (targetIsoDow - todayIsoDow + 7) % 7;
+          if (diff === 0) diff = 7; // "下周X" 即使是今天的星期 X 也要往后推一周
+        } else {
+          // 本周:如果已经过了今天的星期,推到下周
+          if (diff <= 0) diff += 7;
+        }
+        const d = new Date(today); d.setDate(d.getDate() + diff);
+        dueDate = formatDate(d); dateReason = weekMatch[0];
+      }
+    }
+  }
+
+  // ─── 时间识别 ───
+  let dueTime: string | null = null;
+  let timeReason = '';
+
+  // 1) HH:MM(优先,最明确)
+  const hhmmMatch = text.match(/(\d{1,2})[:：](\d{2})/);
+  if (hhmmMatch) {
+    const hour = parseInt(hhmmMatch[1], 10);
+    const minute = parseInt(hhmmMatch[2], 10);
+    if (hour >= 0 && hour <= 23 && minute >= 0 && minute <= 59) {
+      dueTime = `${String(hour).padStart(2, '0')}:${String(minute).padStart(2, '0')}`;
+      timeReason = hhmmMatch[0];
+    }
+  }
+
+  // 2) [上午|下午|晚上|中午|早上] X 点 [X 分|半]
+  if (!dueTime) {
+    const periodMatch = text.match(/(上午|早上|早晨|中午|下午|傍晚|晚上|晚)?([一二两三四五六七八九十]{1,3}|\d{1,2})点(半|([一二两三四五六七八九十]{1,3}|\d{1,2})分?)?/);
+    if (periodMatch) {
+      const period = periodMatch[1] || '';
+      const hourRaw = periodMatch[2];
+      const minuteRaw = periodMatch[3] || '';
+      const hourNum = parseCnNumber(hourRaw);
+      if (hourNum !== null && hourNum >= 0 && hourNum <= 24) {
+        let hour = hourNum;
+        if (period === '下午' || period === '傍晚' || period === '晚上' || period === '晚') {
+          if (hour < 12) hour += 12;
+        } else if (period === '中午') {
+          if (hour < 6) hour += 12;
+          else if (hour === 12) hour = 12;
+        } else if (period === '上午' || period === '早上' || period === '早晨') {
+          if (hour === 12) hour = 0;
+        }
+        let minute = 0;
+        if (minuteRaw === '半') {
+          minute = 30;
+        } else if (minuteRaw) {
+          const minuteCleaned = minuteRaw.replace(/分$/, '');
+          const minuteNum = parseCnNumber(minuteCleaned);
+          if (minuteNum !== null && minuteNum >= 0 && minuteNum <= 59) {
+            minute = minuteNum;
+          }
+        }
+        if (hour >= 0 && hour <= 23) {
+          dueTime = `${String(hour).padStart(2, '0')}:${String(minute).padStart(2, '0')}`;
+          timeReason = periodMatch[0];
+        }
+      }
+    }
+  }
+
+  // 3) 纯"中午/早上"(没有具体小时)
+  if (!dueTime) {
+    if (/中午(?!\d|[一二两三四五六七八九十])/.test(text)) {
+      dueTime = '12:00'; timeReason = '中午';
+    } else if (/(早上|早晨)(?!\d|[一二两三四五六七八九十])/.test(text)) {
+      dueTime = '09:00'; timeReason = '早上';
+    }
+  }
+
+  if (!dueDate && !dueTime) {
+    return { dueDate: null, dueTime: null, reason: null };
+  }
+  const reasonParts: string[] = [];
+  if (dateReason) reasonParts.push(`日期"${dateReason}"`);
+  if (timeReason) reasonParts.push(`时间"${timeReason}"`);
+  return {
+    dueDate,
+    dueTime,
+    reason: `系统识别到${reasonParts.join(' + ')},已自动填入;改了会沿用你的修改。`,
+  };
+}
+
 function inferTaskProjectModule(params: {
   title: string;
   desc: string;
@@ -5529,7 +5881,45 @@ type ClientEditorDraft = {
   intro: string;
   stage: string;
   color: string;
+  // P7：扩展字段（批 1 接通 backend 持久化；批 3 接通 cloud sync 后跨用户可见）
+  relatedUserIds: string[];
+  isDataCenterIncluded: boolean;
 };
+
+// 旧 localStorage 迁移 key（批 0 UI-only 阶段暂存过用户的同事勾选 / 参与计算）
+// 批 1 接通 backend 后保留 read-only 兜底：如果 backend client 上没有数据但 localStorage 有，
+// 把 localStorage 当作首次回填用；保存后清掉。
+const CLIENT_EXT_LS_KEY = 'yiyu.workspace.clientDraftExtensions.v1';
+type ClientDraftExtension = {
+  relatedUserIds: string[];
+  isDataCenterIncluded: boolean;
+};
+function _readClientDraftExtension(clientId: string): ClientDraftExtension | null {
+  try {
+    const raw = window.localStorage.getItem(CLIENT_EXT_LS_KEY);
+    if (!raw) return null;
+    const obj = JSON.parse(raw) as Record<string, ClientDraftExtension>;
+    return obj[clientId] || null;
+  } catch {
+    return null;
+  }
+}
+function _clearClientDraftExtension(clientId: string): void {
+  try {
+    const raw = window.localStorage.getItem(CLIENT_EXT_LS_KEY);
+    if (!raw) return;
+    const obj = JSON.parse(raw) as Record<string, ClientDraftExtension>;
+    if (!(clientId in obj)) return;
+    delete obj[clientId];
+    if (Object.keys(obj).length === 0) {
+      window.localStorage.removeItem(CLIENT_EXT_LS_KEY);
+    } else {
+      window.localStorage.setItem(CLIENT_EXT_LS_KEY, JSON.stringify(obj));
+    }
+  } catch {
+    // localStorage 异常静默
+  }
+}
 
 type ClientEditorModalCloseReason = 'user_close' | 'cancel' | 'save_success' | 'delete_success';
 
@@ -5549,10 +5939,17 @@ function createEmptyClientEditorDraft(): ClientEditorDraft {
     intro: '',
     stage: '待导入资料',
     color: '#5B7BFE',
+    relatedUserIds: [],
+    isDataCenterIncluded: true,
   };
 }
 
 function buildClientEditorDraft(client: ClientSummary): ClientEditorDraft {
+  // 优先用 backend 返回的字段；如果 backend 还没装载（旧前端 + 老 backend），
+  // fallback 到 localStorage 暂存的旧值（一次性迁移，保存后会被清理）。
+  const fallbackExt = _readClientDraftExtension(client.id);
+  const backendRelated = Array.isArray(client.relatedUserIds) ? client.relatedUserIds : null;
+  const backendIncluded = typeof client.isDataCenterIncluded === 'boolean' ? client.isDataCenterIncluded : null;
   return {
     name: client.name,
     alias: client.alias,
@@ -5561,6 +5958,8 @@ function buildClientEditorDraft(client: ClientSummary): ClientEditorDraft {
     intro: client.intro,
     stage: client.stage,
     color: (client.color || '').trim() || '#5B7BFE',
+    relatedUserIds: backendRelated ?? fallbackExt?.relatedUserIds ?? [],
+    isDataCenterIncluded: backendIncluded ?? fallbackExt?.isDataCenterIncluded ?? true,
   };
 }
 
@@ -5571,6 +5970,8 @@ type ClientEditorModalProps = {
   onSubmit: (draft: ClientEditorDraft) => void | Promise<void>;
   onDelete: (draft: ClientEditorDraft, confirmInput: string) => void | Promise<void>;
   onInteractionState: (active: boolean, source: string, detail?: string | null) => void;
+  // 切换"全局冷冻"开关:调后端 freeze/unfreeze + 重新拉 clients 让 isFrozen 同步全局
+  onFreezeChange: (clientId: string, frozen: boolean) => Promise<void>;
 };
 
 function ClientEditorModal({
@@ -5580,17 +5981,101 @@ function ClientEditorModal({
   onSubmit,
   onDelete,
   onInteractionState,
+  onFreezeChange,
 }: ClientEditorModalProps) {
   const [draft, setDraft] = useState<ClientEditorDraft>(state.initialDraft);
   const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
   const [deleteConfirmInput, setDeleteConfirmInput] = useState('');
+  // 删除前的影响预览(连带删除的对话/文档数量),从后端拉
+  const [deletePreview, setDeletePreview] = useState<ClientDeletePreview | null>(null);
+  const [deletePreviewLoading, setDeletePreviewLoading] = useState(false);
+  // 当前项目是否被隐藏(本地 localStorage 状态,订阅 module-level listener)
+  const [isHidden, setIsHidden] = useState<boolean>(() =>
+    state.editingClientId ? isClientHidden(state.editingClientId) : false,
+  );
+  useEffect(() => {
+    if (!state.editingClientId) {
+      setIsHidden(false);
+      return;
+    }
+    setIsHidden(isClientHidden(state.editingClientId));
+    const listener = () => {
+      setIsHidden(state.editingClientId ? isClientHidden(state.editingClientId) : false);
+    };
+    hiddenClientsListeners.add(listener);
+    return () => {
+      hiddenClientsListeners.delete(listener);
+    };
+  }, [state.editingClientId, state.open]);
+
+  // ─── 同事下拉 UI 局部 state（扩展业务字段已经合并进 draft 不再独立 useState） ───
+  const [memberOptions, setMemberOptions] = useState<MentionCandidate[]>([]);
+  const [memberPickerOpen, setMemberPickerOpen] = useState(false);
+  const [memberSearchQuery, setMemberSearchQuery] = useState('');
+  const memberPickerRef = useRef<HTMLDivElement | null>(null);
+
+  // 从 draft 直接派生（draft 由 buildClientEditorDraft 在打开 modal 时填充：
+  // 来源优先级：backend client 字段 → localStorage 暂存值（旧版迁移） → 默认值）
+  const selectedMemberIds = draft.relatedUserIds;
+  const isDataCenterIncluded = draft.isDataCenterIncluded;
 
   useEffect(() => {
     if (!state.open) return;
     setDraft(state.initialDraft);
     setDeleteConfirmOpen(false);
     setDeleteConfirmInput('');
-  }, [state.initialDraft, state.open, state.requestId]);
+    setDeletePreview(null);
+    setMemberPickerOpen(false);
+    setMemberSearchQuery('');
+  }, [state.initialDraft, state.open, state.requestId, state.editingClientId]);
+
+  // 打开删除确认时拉影响预览,让用户看到"将连带删除 N 条对话 / N 篇文档"再决定
+  useEffect(() => {
+    if (!deleteConfirmOpen || !state.editingClientId) {
+      setDeletePreview(null);
+      return;
+    }
+    let cancelled = false;
+    setDeletePreviewLoading(true);
+    getClientDeletePreview(state.editingClientId)
+      .then((preview) => {
+        if (!cancelled) setDeletePreview(preview);
+      })
+      .catch(() => {
+        if (!cancelled) setDeletePreview(null);
+      })
+      .finally(() => {
+        if (!cancelled) setDeletePreviewLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [deleteConfirmOpen, state.editingClientId]);
+
+  // 拉同事列表（modal 打开时 + 搜索 query 变化）
+  useEffect(() => {
+    if (!state.open) return;
+    let cancelled = false;
+    void getMentionCandidates(memberSearchQuery.trim()).then((list) => {
+      if (cancelled) return;
+      setMemberOptions(list || []);
+    }).catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, [state.open, memberSearchQuery]);
+
+  // 点击下拉外部 → 关闭下拉
+  useEffect(() => {
+    if (!memberPickerOpen) return;
+    const onDocClick = (event: MouseEvent) => {
+      if (!memberPickerRef.current) return;
+      if (memberPickerRef.current.contains(event.target as Node)) return;
+      setMemberPickerOpen(false);
+    };
+    document.addEventListener('mousedown', onDocClick);
+    return () => document.removeEventListener('mousedown', onDocClick);
+  }, [memberPickerOpen]);
 
   if (!state.open) return null;
 
@@ -5604,137 +6089,433 @@ function ClientEditorModal({
   };
   const handleKeyDown = (event: React.KeyboardEvent<HTMLInputElement | HTMLTextAreaElement>) => {
     if (event.key !== 'Enter') return;
+    if ((event.nativeEvent as KeyboardEvent).isComposing) return; // 中文 IME 选词时按 Enter 不触发提交
     if (event.currentTarget.tagName === 'TEXTAREA' && !event.metaKey && !event.ctrlKey) return;
     if (event.shiftKey) return;
     event.preventDefault();
-    void onSubmit(draft);
+    void handleSubmitClick();
   };
   const targetName = clients.find((client) => client.id === editingClientId)?.name || draft.name.trim() || '该客户';
 
+  // 保存：直接走 onSubmit→backend；扩展字段在 draft 里一起提交。
+  // 旧 localStorage 暂存值的清理放在 submitClientEditorModal 里，保存成功后调用。
+  const handleSubmitClick = () => {
+    void onSubmit(draft);
+  };
+
+  const toggleMember = (id: string) => {
+    const next = selectedMemberIds.includes(id)
+      ? selectedMemberIds.filter((x) => x !== id)
+      : [...selectedMemberIds, id];
+    updateDraft({ relatedUserIds: next });
+  };
+
   return (
     <>
-      <div
-        className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/38 animate-in fade-in"
-      >
-        <div className="bg-white rounded-[28px] shadow-[0_20px_60px_rgba(0,0,0,0.15)] w-[580px] overflow-hidden transform animate-in zoom-in-95 border border-gray-100" onClick={(event) => event.stopPropagation()}>
-          <div className="px-8 py-6 border-b border-gray-100 flex items-center gap-4 bg-white">
+      <div className="fixed inset-0 z-50 flex items-center justify-center bg-gray-900/20 backdrop-blur-sm px-6 animate-in fade-in">
+        <div
+          className="w-full max-w-[560px] rounded-2xl bg-white shadow-[0_28px_90px_rgba(15,23,42,0.18)] flex flex-col"
+          style={{ maxHeight: '90vh' }}
+          onClick={(event) => event.stopPropagation()}
+        >
+          {/* Modal Header — eyebrow + 20px font-light 标题,跟全局 Modal 一致 */}
+          <div className="px-7 pt-6 pb-5 flex items-start justify-between shrink-0">
+            <div className="min-w-0">
+              <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-gray-400">
+                {editingClientId ? 'EDIT CLIENT · 编辑' : 'NEW CLIENT · 新建'}
+              </p>
+              <h3 className="mt-1.5 text-[20px] font-light tracking-tight text-gray-900 truncate">
+                {editingClientId
+                  ? `编辑项目${(state.initialDraft.name || draft.name).trim() ? ` · ${(state.initialDraft.name || draft.name).trim()}` : ''}`
+                  : '创建项目'}
+              </h3>
+            </div>
             <button
               type="button"
-              className="rounded-2xl border border-gray-200 bg-white p-2 text-gray-400 transition hover:text-gray-700"
               onClick={() => onClose('user_close')}
+              className="shrink-0 -mt-1 -mr-1 inline-flex items-center justify-center rounded-md p-1 text-gray-400 hover:text-gray-700 hover:bg-gray-100 transition-colors"
               aria-label="关闭项目弹窗"
             >
-              <X size={16} />
+              <X size={18} />
             </button>
-            <h3 className="text-[18px] font-bold text-gray-900 flex items-center gap-2.5">
-              <div className="w-8 h-8 rounded-xl bg-blue-50 text-[#5B7BFE] flex items-center justify-center">
-                <Briefcase size={16} strokeWidth={2.5} />
-              </div>
-              {editingClientId ? '编辑项目' : '创建项目'}
-            </h3>
           </div>
-          <div className="p-8 space-y-5">
-            <div className="grid grid-cols-1 gap-4">
-              <input
-                value={draft.name}
-                onKeyDown={handleKeyDown}
-                onFocus={() => onInteractionState(true, 'client_name_input', modalDetail)}
-                onBlur={() => onInteractionState(state.open, 'client_modal', modalDetail)}
-                onChange={(event) => updateDraft({ name: event.target.value })}
-                placeholder="项目名称"
-                className="bg-gray-50 border border-gray-200 rounded-2xl px-4 py-3 text-[13px] font-bold outline-none"
-              />
-              <input
-                value={draft.alias}
-                onKeyDown={handleKeyDown}
-                onFocus={() => onInteractionState(true, 'client_alias_input', modalDetail)}
-                onBlur={() => onInteractionState(state.open, 'client_modal', modalDetail)}
-                onChange={(event) => updateDraft({ alias: event.target.value })}
-                placeholder="项目别名（选填）"
-                className="bg-gray-50 border border-gray-200 rounded-2xl px-4 py-3 text-[13px] font-bold outline-none"
-              />
-              <div className="rounded-2xl border border-gray-200 bg-gray-50 px-4 py-3">
-                <p className="text-[12px] font-bold text-gray-700">项目颜色（会同步到任务日历）</p>
-                <div className="mt-3 flex flex-wrap gap-2">
-                  {TASK_COLOR_OPTIONS.map((color) => {
-                    const selected = draft.color === color;
-                    return (
-                      <button
-                        key={color}
-                        type="button"
-                        onClick={() => updateDraft({ color })}
-                        className={`h-7 w-7 rounded-full border-2 transition ${selected ? 'scale-105 border-slate-700' : 'border-white hover:border-slate-300'}`}
-                        style={{ backgroundColor: color }}
-                        title={color}
-                        aria-label={`选择项目颜色 ${color}`}
+
+          <div className="px-7 pb-6 space-y-5 overflow-y-auto">
+            {/* 基础字段 */}
+            <div className="space-y-3">
+              <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-gray-400">BASIC · 基础信息</p>
+              <div>
+                <p className="text-[10px] font-bold uppercase tracking-[0.12em] text-gray-500 mb-1.5">项目名称</p>
+                <input
+                  value={draft.name}
+                  onKeyDown={handleKeyDown}
+                  onFocus={() => onInteractionState(true, 'client_name_input', modalDetail)}
+                  onBlur={() => onInteractionState(state.open, 'client_modal', modalDetail)}
+                  onChange={(event) => updateDraft({ name: event.target.value })}
+                  placeholder="例如:日慈基金会"
+                  className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2.5 text-[13px] font-medium text-gray-900 outline-none focus:border-[#5B7BFE] transition-colors"
+                />
+              </div>
+              <div>
+                <p className="text-[10px] font-bold uppercase tracking-[0.12em] text-gray-500 mb-1.5">项目别名 · 可选</p>
+                <input
+                  value={draft.alias}
+                  onKeyDown={handleKeyDown}
+                  onFocus={() => onInteractionState(true, 'client_alias_input', modalDetail)}
+                  onBlur={() => onInteractionState(state.open, 'client_modal', modalDetail)}
+                  onChange={(event) => updateDraft({ alias: event.target.value })}
+                  placeholder="简称 / 内部代号"
+                  className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2.5 text-[13px] text-gray-900 outline-none focus:border-[#5B7BFE] transition-colors"
+                />
+              </div>
+            </div>
+
+            {/* 颜色选择 */}
+            <div className="border-t border-gray-100 pt-5">
+              <p className="text-[10px] font-bold uppercase tracking-[0.12em] text-gray-500 mb-3">
+                项目颜色 <span className="text-gray-300 normal-case tracking-normal ml-1">(同步到任务日历)</span>
+              </p>
+              <div className="flex flex-wrap gap-2">
+                {TASK_COLOR_OPTIONS.map((color) => {
+                  const selected = draft.color === color;
+                  return (
+                    <button
+                      key={color}
+                      type="button"
+                      onClick={() => updateDraft({ color })}
+                      className={`relative h-8 w-8 rounded-full transition-all ${
+                        selected
+                          ? 'ring-2 ring-offset-2 ring-[#5B7BFE] scale-105'
+                          : 'ring-1 ring-gray-200 hover:ring-gray-400 hover:scale-105'
+                      }`}
+                      style={{ backgroundColor: color }}
+                      title={color}
+                      aria-label={`选择项目颜色 ${color}`}
+                    />
+                  );
+                })}
+              </div>
+            </div>
+
+            {/* 编辑态扩展字段：相关同事 + 参与数据中心计算
+                  本期仅 UI 跑通，保存时写 localStorage 暂存，不入 backend DB。
+                  下版接通数据中心后迁移到 clients 表。 */}
+            {editingClientId && (
+              <div className="border-t border-gray-100 pt-5 space-y-4">
+                <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-gray-400">PEOPLE & SCOPE · 协作与范围</p>
+
+                {/* 相关同事 多选下拉 — 复用任务编辑器协作者样式 */}
+                <div>
+                  <p className="text-[10px] font-bold uppercase tracking-[0.12em] text-gray-500 mb-1.5">相关同事</p>
+                  <div ref={memberPickerRef} className="relative w-full">
+                    <button
+                      type="button"
+                      onClick={() => setMemberPickerOpen((prev) => !prev)}
+                      className="flex min-h-[40px] w-full items-center justify-between rounded-xl border border-gray-200 bg-white px-3 py-2 text-left transition hover:border-[#5B7BFE]"
+                    >
+                      <div className="flex min-w-0 flex-1 flex-wrap items-center gap-1.5">
+                        {selectedMemberIds.length > 0 ? (
+                          selectedMemberIds.map((id) => {
+                            const member = memberOptions.find((m) => m.id === id);
+                            const name = member?.fullName || id;
+                            return (
+                              <span
+                                key={id}
+                                className="inline-flex max-w-full items-center gap-1.5 rounded-full bg-slate-100 px-2.5 py-0.5 text-[12px] text-gray-700"
+                              >
+                                <span className="truncate">{name}</span>
+                                <span
+                                  role="button"
+                                  tabIndex={0}
+                                  onClick={(event) => {
+                                    event.stopPropagation();
+                                    toggleMember(id);
+                                  }}
+                                  onKeyDown={(event) => {
+                                    if (event.key === 'Enter' || event.key === ' ') {
+                                      event.preventDefault();
+                                      event.stopPropagation();
+                                      toggleMember(id);
+                                    }
+                                  }}
+                                  className="flex h-4 w-4 flex-shrink-0 items-center justify-center rounded-full text-gray-400 hover:bg-slate-200 hover:text-gray-600"
+                                  aria-label={`移除同事${name}`}
+                                >
+                                  <X size={11} />
+                                </span>
+                              </span>
+                            );
+                          })
+                        ) : (
+                          <span className="text-[12px] text-gray-400">点击选择同事</span>
+                        )}
+                      </div>
+                      <ChevronDown
+                        size={16}
+                        className={`ml-2 flex-shrink-0 text-gray-400 transition-transform ${memberPickerOpen ? 'rotate-180' : ''}`}
                       />
-                    );
-                  })}
+                    </button>
+                    {memberPickerOpen && (
+                      <div className="absolute left-0 right-0 top-[calc(100%+6px)] z-30 max-h-[260px] overflow-y-auto rounded-xl border border-gray-200 bg-white p-2 shadow-lg">
+                        <input
+                          type="text"
+                          value={memberSearchQuery}
+                          onChange={(event) => setMemberSearchQuery(event.target.value)}
+                          placeholder="搜索同事姓名"
+                          autoFocus
+                          className="w-full rounded-md border border-gray-200 px-2 py-1.5 text-[12px] outline-none focus:border-[#5B7BFE]"
+                        />
+                        <div className="mt-2 space-y-0.5">
+                          {memberOptions.length === 0 ? (
+                            <p className="px-2 py-3 text-center text-[12px] text-gray-400">未找到匹配同事</p>
+                          ) : (
+                            memberOptions.map((member) => {
+                              const checked = selectedMemberIds.includes(member.id);
+                              return (
+                                <button
+                                  key={member.id}
+                                  type="button"
+                                  onClick={() => toggleMember(member.id)}
+                                  className="flex w-full items-center justify-between rounded-md px-2 py-1.5 text-left text-[12px] hover:bg-slate-50"
+                                >
+                                  <span className="flex items-center gap-2">
+                                    <span
+                                      className={`inline-flex h-4 w-4 items-center justify-center rounded border transition-colors ${
+                                        checked ? 'bg-[#5B7BFE] border-[#5B7BFE]' : 'border-gray-300 bg-white'
+                                      }`}
+                                    >
+                                      {checked && <Check size={10} className="text-white" />}
+                                    </span>
+                                    <span className="truncate text-gray-800">{member.fullName}</span>
+                                  </span>
+                                  {member.primaryRole && (
+                                    <span className="ml-2 truncate text-[10px] text-gray-400">{member.primaryRole}</span>
+                                  )}
+                                </button>
+                              );
+                            })
+                          )}
+                        </div>
+                      </div>
+                    )}
+                  </div>
                 </div>
-              </div>
-            </div>
-            <div className="rounded-[22px] border border-blue-100 bg-blue-50/70 px-4 py-4">
-              <p className="text-[13px] font-bold text-gray-900">创建后会立刻发生什么</p>
-              <div className="mt-2 space-y-1.5 text-[12px] leading-6 text-gray-600">
-                <p>1. 这个项目会立刻出现在客户工作台搜索里。</p>
-                <p>2. 创建成功后会直接进入资料导入引导页。</p>
-                <p>3. 下一步先导入已有资料，系统会自动分析归档并建立项目上下文。</p>
-              </div>
-            </div>
-            <p className="text-[11px] text-gray-400">按 Enter 可直接创建；创建后先导入已有资料即可开始正式建库。</p>
-          </div>
-          <div className="px-8 py-5 border-t border-gray-100 bg-gray-50/50 flex items-center justify-between gap-3">
-            <div>
-              {editingClientId && (
+
+                {/* 参与数据中心计算 toggle — 简洁版，只在副标题给一行说明 */}
                 <button
-                  onClick={() => setDeleteConfirmOpen(true)}
-                  className="text-[13px] font-bold text-rose-500 hover:text-rose-600 px-3 py-2 transition-colors"
+                  type="button"
+                  onClick={() => updateDraft({ isDataCenterIncluded: !isDataCenterIncluded })}
+                  className="flex w-full items-center justify-between gap-3 rounded-xl border border-gray-200 bg-white px-3 py-2.5 text-left transition hover:border-gray-300"
                 >
-                  删除项目
+                  <div className="min-w-0">
+                    <p className="text-[12px] font-medium text-gray-800">参与数据中心计算</p>
+                    <p className="mt-0.5 text-[11px] text-gray-400">
+                      {isDataCenterIncluded ? '战略陪伴 / 咨询 / 情报 / 任务都能看到这个项目' : '仅工作台可见'}
+                    </p>
+                  </div>
+                  <span
+                    className={`relative inline-flex h-5 w-9 flex-shrink-0 items-center rounded-full transition-colors ${
+                      isDataCenterIncluded ? 'bg-[#5B7BFE]' : 'bg-gray-300'
+                    }`}
+                    aria-hidden="true"
+                  >
+                    <span
+                      className={`absolute h-4 w-4 rounded-full bg-white shadow transition-transform ${
+                        isDataCenterIncluded ? 'translate-x-[18px]' : 'translate-x-0.5'
+                      }`}
+                    />
+                  </span>
                 </button>
+              </div>
+            )}
+
+            {/* 创建说明 — 只在新建时显示 */}
+            {!editingClientId && (
+              <div className="border-t border-gray-100 pt-5">
+                <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-gray-400 mb-2">WHAT HAPPENS NEXT · 接下来</p>
+                <ul className="space-y-1.5 text-[12px] leading-6 text-gray-600">
+                  <li className="flex gap-2">
+                    <span className="text-gray-300 tabular-nums">01</span>
+                    <span>项目立刻出现在客户工作台搜索里</span>
+                  </li>
+                  <li className="flex gap-2">
+                    <span className="text-gray-300 tabular-nums">02</span>
+                    <span>创建成功后直接进入资料导入引导页</span>
+                  </li>
+                  <li className="flex gap-2">
+                    <span className="text-gray-300 tabular-nums">03</span>
+                    <span>系统自动分析归档并建立项目上下文</span>
+                  </li>
+                </ul>
+                <p className="mt-3 text-[10.5px] text-gray-400">按 Enter 可直接创建</p>
+              </div>
+            )}
+          </div>
+
+          {/* Modal Footer */}
+          <div className="px-7 py-4 border-t border-gray-100 flex items-center justify-between gap-3 shrink-0">
+            <div className="flex items-center gap-3">
+              {editingClientId && (
+                <>
+                  <button
+                    type="button"
+                    onClick={() => setDeleteConfirmOpen(true)}
+                    className="text-[12px] font-medium text-gray-500 hover:text-rose-600 px-2 py-1.5 transition-colors"
+                  >
+                    删除项目
+                  </button>
+                  {/* 全局冷冻开关 = iOS 风 toggle
+                      - 乐观更新本地 hiddenClientIds(立即 UI 响应)
+                      - 调后端 freeze/unfreeze API(持久化 + 自动 job 跳过)
+                      - 失败时由 onFreezeChange 内部回滚 + flash 报错 */}
+                  <button
+                    type="button"
+                    role="switch"
+                    aria-checked={isHidden}
+                    onClick={() => {
+                      const nextHidden = !isHidden;
+                      // 乐观更新:立即把开关切到位置(主组件 effect 会随 clients 刷新同步)
+                      setClientHidden(editingClientId, nextHidden);
+                      onInteractionState(
+                        false,
+                        'client_editor_hide_toggle',
+                        nextHidden
+                          ? `正在全局冷冻 ${draft.name || editingClientId}…`
+                          : `正在解冻 ${draft.name || editingClientId}…`,
+                      );
+                      // 调后端持久化(并 refetch clients 同步真实状态)
+                      void onFreezeChange(editingClientId, nextHidden);
+                    }}
+                    title={isHidden
+                      ? '当前已全局冷冻:所有非工作台面板下拉都不显示。点击恢复正常。'
+                      : '点击全局冷冻:左栏 + 战略陪伴 + 任务 + 资讯 + 计划等所有下拉都会同步隐藏。搜索仍可找回。'}
+                    className="inline-flex items-center gap-2.5 px-2 py-1.5 group"
+                  >
+                    <span className="text-[12px] font-medium text-gray-500 group-hover:text-gray-700 transition-colors">
+                      {isHidden ? '已冷冻项目' : '冷冻项目'}
+                    </span>
+                    <span
+                      className={`relative inline-flex h-[18px] w-[32px] items-center rounded-full transition-colors ${
+                        isHidden ? 'bg-[#5B7BFE]' : 'bg-gray-200'
+                      }`}
+                      aria-hidden
+                    >
+                      <span
+                        className={`inline-block h-[14px] w-[14px] rounded-full bg-white shadow-sm transition-transform ${
+                          isHidden ? 'translate-x-[16px]' : 'translate-x-[2px]'
+                        }`}
+                      />
+                    </span>
+                  </button>
+                </>
               )}
             </div>
-            <div className="flex items-center gap-3">
+            <div className="flex items-center gap-2">
               <button
+                type="button"
                 onClick={() => onClose('cancel')}
-                className="text-[13px] font-bold text-gray-500 hover:text-gray-800 px-5 py-2 transition-colors"
+                className="rounded-md border border-gray-200 bg-white px-4 py-2 text-[12px] font-bold text-gray-600 hover:bg-gray-50 transition-colors"
               >
                 取消
               </button>
-              <Button primary onClick={() => void onSubmit(draft)} className="px-6 shadow-md">
+              <button
+                type="button"
+                onClick={handleSubmitClick}
+                className="rounded-md bg-[#5B7BFE] text-white px-4 py-2 text-[12px] font-bold hover:bg-[#4a6ae8] transition-colors"
+              >
                 {editingClientId ? '保存项目' : '创建项目'}
-              </Button>
+              </button>
             </div>
           </div>
         </div>
       </div>
+
+      {/* 删除确认 Modal — 同样克制风格 */}
       {deleteConfirmOpen && (
-        <div className="fixed inset-0 bg-black/35 z-[60] flex items-center justify-center animate-in fade-in">
-          <div className="w-[440px] rounded-[24px] bg-white border border-rose-100 shadow-[0_24px_80px_rgba(0,0,0,0.18)] overflow-hidden" onClick={(event) => event.stopPropagation()}>
-            <div className="px-7 py-5 border-b border-rose-100 bg-rose-50/70">
-              <div className="flex items-center gap-4">
-                <button
-                  type="button"
-                  className="rounded-2xl border border-rose-200 bg-white p-2 text-rose-400 transition hover:text-rose-700"
-                  onClick={() => {
-                    setDeleteConfirmOpen(false);
-                    setDeleteConfirmInput('');
-                  }}
-                  aria-label="关闭删除确认"
-                >
-                  <X size={16} />
-                </button>
-                <div className="text-[16px] font-bold text-rose-700">确认删除客户</div>
+        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-gray-900/30 backdrop-blur-sm px-6 animate-in fade-in">
+          <div
+            className="w-full max-w-[440px] rounded-2xl bg-white shadow-[0_28px_90px_rgba(15,23,42,0.18)] flex flex-col"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <div className="px-6 pt-5 pb-4 flex items-start justify-between">
+              <div className="min-w-0">
+                <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-rose-500">DANGER · 不可恢复</p>
+                <h3 className="mt-1.5 text-[18px] font-light tracking-tight text-gray-900">确认删除客户</h3>
               </div>
-              <p className="mt-2 text-[12px] leading-6 text-rose-600">
-                这会删除当前客户的资料、工作区、问答记录和知识索引，且无法恢复。
-              </p>
+              <button
+                type="button"
+                onClick={() => {
+                  setDeleteConfirmOpen(false);
+                  setDeleteConfirmInput('');
+                }}
+                className="shrink-0 -mt-1 -mr-1 inline-flex items-center justify-center rounded-md p-1 text-gray-400 hover:text-gray-700 hover:bg-gray-100 transition-colors"
+                aria-label="关闭删除确认"
+              >
+                <X size={18} />
+              </button>
             </div>
-            <div className="px-7 py-6 space-y-4">
-              <p className="text-[13px] font-medium text-gray-600">
+            <div className="px-6 pb-5 space-y-4">
+              <p className="text-[12px] leading-6 text-gray-600">
+                这会删除当前客户的资料、工作区、问答记录和知识索引,<strong className="text-rose-600">无法恢复</strong>。
+              </p>
+
+              {/* 影响预览:列出 CASCADE 会清掉的内容数量,让用户看到代价 */}
+              {deletePreviewLoading && (
+                <div className="rounded-xl bg-[#FAFAFA] px-4 py-3 text-[11.5px] text-gray-500 ring-1 ring-inset ring-gray-100">
+                  正在统计影响范围…
+                </div>
+              )}
+              {deletePreview && (
+                <div className={`rounded-xl px-4 py-3 ring-1 ring-inset ${
+                  deletePreview.isDemoClient
+                    ? 'bg-amber-50/40 ring-amber-200'
+                    : 'bg-rose-50/40 ring-rose-200'
+                }`}>
+                  <div className={`text-[9px] font-semibold uppercase tracking-[0.18em] ${
+                    deletePreview.isDemoClient ? 'text-amber-700' : 'text-rose-600'
+                  }`}>
+                    {deletePreview.isDemoClient ? 'Demo · 演示数据' : 'Cascade · 连带删除'}
+                  </div>
+                  {deletePreview.isDemoClient && (
+                    <p className="mt-1 text-[11px] leading-5 text-amber-800">
+                      这是<strong>演示数据</strong>客户。如果你只想清空演示,推荐去
+                      <span className="mx-1 text-gray-900">系统设置 → 演示数据 → 一键清空</span>,
+                      而不是用这里删除。
+                    </p>
+                  )}
+                  <ul className="mt-2 space-y-0.5 text-[11.5px] leading-relaxed text-gray-700">
+                    {deletePreview.threadCount > 0 && (
+                      <li>· {deletePreview.threadCount} 个对话线程 + {deletePreview.messageCount} 条问答记录</li>
+                    )}
+                    {deletePreview.documentCount > 0 && (
+                      <li>· {deletePreview.documentCount} 篇文档(物理文件也会被清掉)</li>
+                    )}
+                    {deletePreview.dnaCount > 0 && (
+                      <li>· {deletePreview.dnaCount} 条 DNA 词条</li>
+                    )}
+                    {deletePreview.goalCount > 0 && (
+                      <li>· {deletePreview.goalCount} 条目标记录</li>
+                    )}
+                    {deletePreview.meetingCount > 0 && (
+                      <li>· {deletePreview.meetingCount} 条会议记录</li>
+                    )}
+                    {deletePreview.eventLineCount > 0 && (
+                      <li>· {deletePreview.eventLineCount} 条事件线</li>
+                    )}
+                    {deletePreview.taskCount > 0 && (
+                      <li>· {deletePreview.taskCount} 个任务</li>
+                    )}
+                    {deletePreview.threadCount + deletePreview.documentCount + deletePreview.dnaCount + deletePreview.goalCount + deletePreview.meetingCount + deletePreview.eventLineCount + deletePreview.taskCount === 0 && (
+                      <li className="text-gray-400">· 客户下没有关联数据,删除是安全的</li>
+                    )}
+                  </ul>
+                </div>
+              )}
+
+              <p className="text-[12px] leading-6 text-gray-600">
                 请输入客户名称
-                <span className="mx-1 font-bold text-gray-900">"{targetName}"</span>
-                以确认删除。
+                <span className="mx-1 font-medium text-gray-900">「{targetName}」</span>
+                以确认。
               </p>
               <input
                 autoFocus
@@ -5747,22 +6528,24 @@ function ClientEditorModal({
                   }
                 }}
                 placeholder="输入客户名称"
-                className="w-full rounded-2xl border border-rose-200 bg-rose-50/40 px-4 py-3 text-[13px] font-bold outline-none focus:border-rose-300"
+                className="w-full rounded-xl border border-rose-200 bg-white px-3 py-2.5 text-[13px] font-medium text-gray-900 outline-none focus:border-rose-400 transition-colors"
               />
             </div>
-            <div className="px-7 py-5 border-t border-gray-100 bg-gray-50/50 flex items-center justify-end gap-3">
+            <div className="px-6 py-4 border-t border-gray-100 flex items-center justify-end gap-2">
               <button
+                type="button"
                 onClick={() => {
                   setDeleteConfirmOpen(false);
                   setDeleteConfirmInput('');
                 }}
-                className="rounded-2xl border border-gray-200 bg-white px-5 py-2 text-[13px] font-bold text-gray-600 hover:text-gray-900"
+                className="rounded-md border border-gray-200 bg-white px-4 py-2 text-[12px] font-bold text-gray-600 hover:bg-gray-50 transition-colors"
               >
                 取消
               </button>
               <button
+                type="button"
                 onClick={() => void onDelete(draft, deleteConfirmInput)}
-                className="rounded-2xl bg-rose-500 px-5 py-2 text-[13px] font-bold text-white shadow-md hover:bg-rose-600"
+                className="rounded-md bg-rose-500 text-white px-4 py-2 text-[12px] font-bold hover:bg-rose-600 transition-colors"
               >
                 确认删除
               </button>
@@ -6083,6 +6866,14 @@ export default function App() {
   const [expandedTaskIds, setExpandedTaskIds] = useState<string[]>([]);
   const taskCalendarMonthLabel = `${taskCalendarDate.getFullYear()}-${String(taskCalendarDate.getMonth() + 1).padStart(2, '0')}`;
   const [clientOverlayMode, setClientOverlayMode] = useState<ClientOverlayMode>(null);
+  // P9：客户工作台内嵌文档编辑器（点钢笔按钮直接进入此模式，主区切到 doc editor，不弹窗）。
+  // null = 普通 chat / 工作台视图；非 null = 全屏 doc editor 模式。
+  const [clientWorkspaceInlineEditor, setClientWorkspaceInlineEditor] = useState<{
+    clientId: string;
+    title: string;
+    content: string;
+    titleEdited: boolean;
+  } | null>(null);
   const [clientEditorModalState, setClientEditorModalState] = useState<ClientEditorModalState>(() => ({
     open: false,
     editingClientId: null,
@@ -6130,6 +6921,7 @@ export default function App() {
   const [evidenceClientId, setEvidenceClientId] = useState<string | null>(initialNavigationStateRef.current.evidenceClientId);
   const [settingsSectionLoaded, setSettingsSectionLoaded] = useState<Record<SettingsSectionKey, boolean>>({
     overview: true,
+    account: false,
     tasks: true,
     client_workspace: false,
     topics: false,
@@ -6140,6 +6932,7 @@ export default function App() {
       org_people: false,
       org_rules: false,
       system_logs: false,
+      about: false,
     });
   const [logs, setLogs] = useState<
     Array<{
@@ -6166,7 +6959,58 @@ export default function App() {
   const [isSavingFeishuDeliveryProfile, setIsSavingFeishuDeliveryProfile] = useState(false);
 
   const [clients, setClients] = useState<ClientSummary[]>([]);
+  // 全局冷冻订阅 — 本地 hiddenClientIds Set 是 clients[].isFrozen 的镜像
+  // 当 clients refetch 后,把 isFrozen=true 的客户同步进 Set;反之则移除
+  // 这样所有依赖 isClientHidden() 的代码(下拉/列表)立刻反映后端真实状态
+  const [hiddenClientsVersion, setHiddenClientsVersion] = useState(0);
+  useEffect(() => {
+    const listener = () => setHiddenClientsVersion((v) => v + 1);
+    hiddenClientsListeners.add(listener);
+    return () => {
+      hiddenClientsListeners.delete(listener);
+    };
+  }, []);
+  // 把 clients[].isFrozen 同步进本地 Set(后端是 SOT)
+  // 注意:这个 effect 之前有一个 issue,当 clients 引用变(refetch)时会触发 listener,
+  //       而 listener setHiddenClientsVersion 让 dataCenterClients useMemo 重算 → 新引用,
+  //       下游 effect 看到新 deps 又跑 → 形成连锁。
+  // 防御:用 ref 缓存"上次同步过的"clients 引用,引用相同就跳过整个 effect 体
+  const lastSyncedClientsRef = useRef<ClientSummary[] | null>(null);
+  useEffect(() => {
+    if (lastSyncedClientsRef.current === clients) return;
+    lastSyncedClientsRef.current = clients;
+    let dirty = false;
+    for (const client of clients) {
+      const backendFrozen = Boolean(client.isFrozen);
+      const localHidden = hiddenClientIds.has(client.id);
+      if (backendFrozen !== localHidden) {
+        if (backendFrozen) hiddenClientIds.add(client.id);
+        else hiddenClientIds.delete(client.id);
+        dirty = true;
+      }
+    }
+    if (dirty) {
+      _persistHiddenSet(hiddenClientIds);
+      for (const listener of hiddenClientsListeners) listener();
+    }
+  }, [clients]);
+  // P7：参与数据中心的 client 子集（隐藏掉勾了"仅工作台"的项目，例如"新思考"/"顾源源文章"
+  // 这种资料筐）。客户工作台、项目编辑 modal 继续用全量 clients；战略陪伴 / 咨询 / 情报 /
+  // 任务的客户 selector 使用这个 memo，避免把资料筐客户暴露给数据中心计算视图。
+  // 增强:用户主动隐藏(isClientHidden)的项目也从这里过滤掉,实现"全局冷冻";
+  //       但当前正在浏览的 currentClientId 即使被隐藏也保留(避免切换中上下文丢失)
   const [currentClientId, setCurrentClientId] = useState<string>('');
+  const dataCenterClients = useMemo(() => {
+    void hiddenClientsVersion;
+    // 冷冻的项目对所有非工作台 view 不可见 — 战略陪伴/资讯/计划/任务下拉统统过滤
+    // 例外:当前正在浏览的 currentClientId 即使被冷冻也保留(避免切换 view 时上下文丢失,
+    //       以及防止某些 effect 在 dataCenterClients 突然不含 currentClient 时陷入死循环)
+    return clients.filter((c) => {
+      if (c.isDataCenterIncluded === false) return false;
+      if (isClientHidden(c.id) && c.id !== currentClientId) return false;
+      return true;
+    });
+  }, [clients, hiddenClientsVersion, currentClientId]);
   const [workspaceClientUiState, dispatchWorkspaceClientUi] = useReducer(
     workspaceClientUiReducer,
     initialWorkspaceClientUiState,
@@ -6259,6 +7103,7 @@ export default function App() {
   const optimisticTasksRef = useRef<Map<string, { task: Task; addedAt: number; fromLocalDraft: boolean }>>(new Map());
   const taskContextBriefPreloadRef = useRef<(taskItems: Task[], options?: { silent?: boolean }) => Promise<void>>(async () => undefined);
   const openStrategicTaskDraftRef = useRef<(payload: StrategicTaskDraftRequest) => void>(() => undefined);
+  const promoteUnifiedTodoRef = useRef<(todo: import('./lib/api').UnifiedTodo) => void>(() => undefined);
   const [updatingTaskStatusIds, setUpdatingTaskStatusIds] = useState<string[]>([]);
   const [taskLists, setTaskLists] = useState<TaskList[]>([]);
   const [taskTags, setTaskTags] = useState<TaskTag[]>([]);
@@ -6364,7 +7209,13 @@ export default function App() {
   const [loadingSubProgress, setLoadingSubProgress] = useState(0);
   const currentSessionUser = authState.user || null;
   const isCloudSession = authState.sessionMode === 'cloud';
-  const isLocalSession = !isCloudSession;
+  // 取消"本机模式": isLocalSession 永远 false. 所有 if (isLocalSession) {...} 分支
+  // 自动变 dead code (e.g. canManageSensitiveSettings 只剩 admin role check;
+  // 各处"本机模式"文案不再渲染). 不需逐行删 22 处 UI, 这是 minimal-invasive.
+  // 跟 backend auth_me 改造 (没 token 时 authenticated=False) 对齐 — 现在没登录
+  // 直接到登录页, 不再有"local-device-user"虚假身份让客户数据对所有打开 app 的人可见.
+  const isLocalSession: boolean = false;
+  void isCloudSession;
   const currentMembershipStatus = getEffectiveMembershipStatus(authState);
   const shouldShowIdentityGate = isCloudSession && currentMembershipStatus !== 'approved';
   const renderBranch = loading ? 'loading' : (!authState.authenticated || !currentSessionUser ? 'auth' : shouldShowIdentityGate ? 'identity' : 'main');
@@ -6495,6 +7346,7 @@ export default function App() {
     [taskSettingsState, taskLists],
   );
   const startupRetryRef = useRef(0);
+  const loadAllInFlightRef = useRef(false);
   const backendReadyRef = useRef(false);
   const startupLocalServiceErrorGraceUntilRef = useRef(Date.now() + 45000);
   const localServiceBannerProbeInFlightRef = useRef(false);
@@ -7376,14 +8228,26 @@ export default function App() {
     const clientItems = await getClients();
     console.info(`[bootstrap] loadClientBlock fetched clients=${clientItems.length}`);
     setClients(clientItems);
+    // 选客户优先级:
+    //   1. 显式 nextClientId(用户刚编辑/解冻/搜索点击,即使是冷冻的也尊重)
+    //   2. 当前 currentClientId — 但若它已被冷冻则跳过(否则刚冷冻当前项目又跳回来,死循环)
+    //   3. 第一个非冷冻客户
+    //   4. 实在没非冻就 fallback 全量第一个(防止所有项目都被冻)
+    const isUsable = (item: ClientSummary) => !item.isFrozen;
     const preferredClientId =
       (nextClientId && clientItems.some((item) => item.id === nextClientId) && nextClientId) ||
-      (currentClientId && clientItems.some((item) => item.id === currentClientId) && currentClientId) ||
+      (currentClientId
+        && clientItems.some((item) => item.id === currentClientId && isUsable(item))
+        && currentClientId) ||
+      clientItems.find(isUsable)?.id ||
       clientItems[0]?.id ||
       '';
     const targetClientId = preferredClientId;
     if (targetClientId) {
-      setCurrentClientId(targetClientId);
+      // 防御:值相同时跳过 setState,避免触发监听 currentClientId 的 effect 链多次重跑
+      if (currentClientId !== targetClientId) {
+        setCurrentClientId(targetClientId);
+      }
       console.info(`[bootstrap] loadClientBlock selecting client=${targetClientId}`);
       try {
         setWorkspace(await getClientWorkspace(targetClientId));
@@ -7454,11 +8318,18 @@ export default function App() {
       intro: draft.intro.trim() || '等待导入已有资料，系统将自动分析归档并建立项目上下文。',
       stage: draft.stage.trim() || '待导入资料',
       color: (draft.color || '').trim() || '#5B7BFE',
+      // P7：扩展字段一起提交。批 3 接通 cloud sync 后，cloud_backend 会按 relatedUserIds 决定可见性。
+      relatedUserIds: Array.isArray(draft.relatedUserIds) ? draft.relatedUserIds.filter(Boolean) : [],
+      isDataCenterIncluded: draft.isDataCenterIncluded !== false,
     };
     try {
       const savedClient = modalState.editingClientId
         ? await updateClient(modalState.editingClientId, payload)
         : await createClient(payload);
+      // 保存成功后，清理旧 localStorage 迁移钥匙（如果有）
+      if (savedClient?.id) {
+        _clearClientDraftExtension(savedClient.id);
+      }
       closeClientEditorModal('save_success');
       setActiveTab('client_workspace');
       if (!isEditingProject) {
@@ -7652,8 +8523,10 @@ export default function App() {
       }
       return response;
     } catch (error) {
-      if (controller.signal.aborted && sequence !== reviewLoadSequenceRef.current && reviewDashboard) {
-        return reviewDashboard;
+      // 被新调用顶替（启动期 bootstrap 与 review tab useEffect 并发是常态）：
+      // 不算失败，直接静默返回当前 dashboard（首次可能为 null，调用方需容忍）。
+      if (controller.signal.aborted && sequence !== reviewLoadSequenceRef.current) {
+        return reviewDashboard as ReviewDashboard;
       }
       throw error;
     } finally {
@@ -7688,6 +8561,12 @@ export default function App() {
   }
 
   async function loadAll(nextClientId?: string, options?: { allowStartupRetry?: boolean }) {
+    // 防御:loadAll 已在执行时,新调用直接 noop,避免某个不稳定 effect 反复触发 loadAll 导致死循环
+    if (loadAllInFlightRef.current) {
+      console.warn('[bootstrap] loadAll already in flight, skipping reentry');
+      return;
+    }
+    loadAllInFlightRef.current = true;
     setLoading(true);
     markLoadingPhase('正在连接本地后端…');
     let keepLoadingForRetry = false;
@@ -7820,6 +8699,7 @@ export default function App() {
         }
         setSettingsSectionLoaded({
           overview: true,
+          account: false,
           tasks: true,
           client_workspace: false,
           topics: false,
@@ -7830,6 +8710,7 @@ export default function App() {
           org_people: false,
           org_rules: false,
           system_logs: false,
+          about: false,
         });
         if (nextAuth.user?.primaryRole === 'admin') {
           markLoadingPhase('正在读取员工与组织数据…');
@@ -7868,6 +8749,7 @@ export default function App() {
         setFeishuAuthorizationFlowState(null);
         setSettingsSectionLoaded({
           overview: true,
+          account: false,
           tasks: true,
           client_workspace: false,
           topics: false,
@@ -7878,6 +8760,7 @@ export default function App() {
           org_people: false,
           org_rules: false,
           system_logs: false,
+          about: false,
         });
       }
       startupRetryRef.current = 0;
@@ -7900,6 +8783,7 @@ export default function App() {
       if (!keepLoadingForRetry) {
         setLoading(false);
       }
+      loadAllInFlightRef.current = false;
     }
   }
 
@@ -8049,15 +8933,48 @@ export default function App() {
     };
   }, []);
 
+  // S4.5: workspace 结构变化的启发式判断, 替代 JSON.stringify 几百 KB 对象的深比较 (Electron 卡顿元凶).
+  // 策略: 比 26 个核心 list length + 几个 scalar + nested 关键字段.
+  // Trade-off: 接受少数 false negative (e.g. 改 doc 内容但 count 一致 → UI 不刷新),
+  // 因为产品里改内容通常涉及 count/version 变化, 这种情况极罕见.
+  function isWorkspaceStructurallyUnchanged(prev: any, next: any): boolean {
+    if (prev === next) return true;
+    if (!prev || !next) return false;
+    if (prev.client?.id !== next.client?.id) return false;
+    const LIST_KEYS = [
+      'folders', 'documents', 'documentCards', 'imports', 'knowledgeJobs',
+      'recentReclassEvents', 'memoryCards', 'threads', 'recentMessages',
+      'analysisRuns', 'meetings', 'goals', 'dnaModules', 'projectModules',
+      'projectFlows', 'dnaTerms', 'relatedTasks', 'latestJudgments',
+      'latestTopics', 'latestConflicts', 'latestOpenQuestions', 'latestRunLogs',
+    ];
+    for (const key of LIST_KEYS) {
+      const a = prev[key];
+      const b = next[key];
+      const al = Array.isArray(a) ? a.length : 0;
+      const bl = Array.isArray(b) ? b.length : 0;
+      if (al !== bl) return false;
+    }
+    if (prev.surrogateCount !== next.surrogateCount) return false;
+    if (prev.memoryDocCount !== next.memoryDocCount) return false;
+    if (prev.knowledgeStatus?.lastIndexedAt !== next.knowledgeStatus?.lastIndexedAt) return false;
+    if (prev.knowledgeStatus?.totalDocs !== next.knowledgeStatus?.totalDocs) return false;
+    if (prev.knowledgeStatus?.pendingDocs !== next.knowledgeStatus?.pendingDocs) return false;
+    // 关键 nested ID 字段
+    if (prev.notebookSummary?.updatedAt !== next.notebookSummary?.updatedAt) return false;
+    if (prev.latestContextPack?.id !== next.latestContextPack?.id) return false;
+    if (prev.judgmentBundle?.updatedAt !== next.judgmentBundle?.updatedAt) return false;
+    return true;
+  }
+
   async function refreshWorkspace(clientId?: string) {
     const targetClientId = clientId ?? currentClientId;
     if (!targetClientId) return;
     const nextWorkspace = await getClientWorkspace(targetClientId);
     setWorkspace((prev) => {
       if (!prev) return nextWorkspace;
-      try {
-        if (JSON.stringify(prev) === JSON.stringify(nextWorkspace)) return prev;
-      } catch {}
+      // S4.5 fix: 用关键字段集启发式比较, 不再 JSON.stringify 30+ 字段几百 KB 的对象 — Electron 卡顿元凶
+      if (isWorkspaceStructurallyUnchanged(prev, nextWorkspace)) return prev;
       return nextWorkspace;
     });
     void loadClientPageContextBlock(targetClientId);
@@ -8071,8 +8988,25 @@ export default function App() {
       if (!prev) return prev;
       const nextStatus = progress.knowledgeStatus;
       const nextJobs = progress.knowledgeJobs || [];
-      const statusUnchanged = JSON.stringify(prev.knowledgeStatus || null) === JSON.stringify(nextStatus || null);
-      const jobsUnchanged = JSON.stringify(prev.knowledgeJobs || []) === JSON.stringify(nextJobs);
+      // S4.5 fix: 字段级比较代替 JSON.stringify
+      const prevStatus = prev.knowledgeStatus || null;
+      const statusUnchanged =
+        prevStatus === nextStatus ||
+        (
+          !!prevStatus && !!nextStatus &&
+          (prevStatus as any).status === (nextStatus as any).status &&
+          (prevStatus as any).totalDocs === (nextStatus as any).totalDocs &&
+          (prevStatus as any).pendingDocs === (nextStatus as any).pendingDocs &&
+          (prevStatus as any).lastIndexedAt === (nextStatus as any).lastIndexedAt
+        ) ||
+        (!prevStatus && !nextStatus);
+      const prevJobs = prev.knowledgeJobs || [];
+      const jobsUnchanged =
+        prevJobs.length === nextJobs.length &&
+        (prevJobs.length === 0 ||
+          ((prevJobs[0] as any)?.id === (nextJobs[0] as any)?.id &&
+           (prevJobs[prevJobs.length - 1] as any)?.id === (nextJobs[nextJobs.length - 1] as any)?.id &&
+           (prevJobs[0] as any)?.status === (nextJobs[0] as any)?.status));
       if (statusUnchanged && jobsUnchanged) return prev;
       return {
         ...prev,
@@ -8344,13 +9278,14 @@ export default function App() {
     return () => window.clearInterval(timer);
   }, [activeTab, candidates]);
 
+  // 主导航只放业务模块 (5 项). 系统设置已从这里挪到侧栏底部 "账户" 区, 跟当前登录组成一组,
+  // 跟业务模块视觉分开 — 避免把"系统级操作"跟日常工作流混在一起.
   const navItems = [
     { id: 'tasks' as const, label: '任务与日程', icon: CheckSquare },
     { id: 'client_workspace' as const, label: '工作台', icon: Briefcase },
     { id: 'strategic_accompaniment' as const, label: '战略陪伴', icon: Target },
     { id: 'topics_management' as const, label: '资讯情报站', icon: Newspaper },
     { id: 'growth_handbook' as const, label: '成长中心', icon: BookOpen },
-    { id: 'settings' as const, label: '系统设置', icon: Settings },
   ];
 
   const AuthShell = () => {
@@ -8516,175 +9451,221 @@ export default function App() {
       };
     }, [message]);
 
+    // 重写后的极简登录页 (单栏居中 Notion/Linear 风):
+    //   - 删左侧引导栏 + 3 个白色卡片 + 长文案 (用户每次登录看一次是噪声)
+    //   - 删 "显示密码" checkbox → 密码框右侧 Eye/EyeOff 切换 icon
+    //   - 删 "记住这组账号和密码" checkbox → 第二次登录从已记住下拉里选即可
+    //   - 注册才显示 1 行小字提示 (免审批立即可用), 登录态完全干净
     return (
-      <div className="min-h-screen bg-[#F9FAFB] flex items-center justify-center px-6">
-        <div className="w-full max-w-[980px] grid grid-cols-1 lg:grid-cols-[0.95fr_1.05fr] rounded-[36px] overflow-hidden border border-gray-100 shadow-[0_20px_80px_rgba(0,0,0,0.08)] bg-white">
-          <div className="p-10 bg-gradient-to-br from-[#edf2ff] via-white to-[#f8fbff] border-r border-gray-100">
-            <div className="w-12 h-12 rounded-2xl bg-[#5B7BFE]/10 text-[#5B7BFE] flex items-center justify-center mb-6">
-              <ShieldAlert size={24} />
-            </div>
-            <h1 className="text-[30px] font-bold text-gray-900 leading-tight">益语智库自用平台</h1>
-            <p className="text-[14px] text-gray-500 mt-3 leading-relaxed">先把个人账号建起来，再决定是否连接云端、加入组织或接受邀请。组织审批只发生在组织层动作里，不再挡住个人注册和登录。</p>
-            <div className="mt-8 space-y-3 text-[13px] text-gray-600">
-              <div className="bg-white border border-gray-100 rounded-2xl px-4 py-3">个人注册成功后即可直接登录，不再等待审批</div>
-              <div className="bg-white border border-gray-100 rounded-2xl px-4 py-3">加入组织、切换部门、申请权限时，再进入组织层审批或邀请流程</div>
-              <div className="bg-white border border-gray-100 rounded-2xl px-4 py-3">如果你只是个人使用，可以先在本机模式下直接开始工作</div>
-            </div>
+      <div className="min-h-screen bg-white flex items-center justify-center px-6">
+        <div className="w-full max-w-[400px] flex flex-col items-stretch py-12">
+          {/* 顶部品牌区: AppLogoMark + 品牌名 + uppercase eyebrow */}
+          <div className="flex flex-col items-center mb-10">
+            <AppLogoMark className="w-14 h-14 mb-5" />
+            <h1 className="text-[24px] font-light tracking-tight text-gray-900">益语智库</h1>
+            <p className="mt-2 text-[10px] font-bold uppercase tracking-[0.18em] text-gray-400">WORKSPACE · 战略陪伴</p>
           </div>
-          <div className="p-10 lg:p-12">
-            <div className="flex bg-gray-100/80 p-1.5 rounded-2xl border border-gray-100 mb-8 w-fit">
-              <button onClick={() => switchMode('login')} className={`px-5 py-2 rounded-xl text-[13px] font-bold ${mode === 'login' ? 'bg-white shadow-sm text-[#5B7BFE]' : 'text-gray-500'}`}>登录</button>
-              <button onClick={() => switchMode('register')} className={`px-5 py-2 rounded-xl text-[13px] font-bold ${mode === 'register' ? 'bg-white shadow-sm text-[#5B7BFE]' : 'text-gray-500'}`}>注册</button>
-            </div>
-            <div className="space-y-4">
-              {mode === 'login' && (
-                <>
-                  {rememberedAccounts.length > 0 && (
-                    <select
-                      value={form.identifier || form.email}
-                      onChange={(event) => {
-                        const selected = rememberedAccounts.find((account) => (account.identifier || account.email) === event.target.value);
-                        setForm(createEmptyForm(selected?.identifier || selected?.email || event.target.value, selected?.fullName || '', selected?.password || ''));
-                      }}
-                      className="w-full bg-gray-50 border border-gray-200 rounded-2xl px-4 py-3 text-[14px] outline-none"
-                    >
-                      <option value="">选择已记住的账号（可选）</option>
-                      {rememberedAccounts.map((account) => {
-                        const accountIdentifier = account.identifier || account.email;
-                        return (
+
+          {/* tabs: 登录 / 注册 (居中,underline 风格) */}
+          <div className="flex items-center justify-center gap-8 border-b border-gray-100 mb-7">
+            <button
+              type="button"
+              onClick={() => switchMode('login')}
+              className={`relative pb-3 text-[13px] font-medium transition-colors ${
+                mode === 'login' ? 'text-gray-900' : 'text-gray-400 hover:text-gray-600'
+              }`}
+            >
+              登录
+              <span className={`absolute left-0 right-0 -bottom-px h-[2px] rounded-full transition-colors ${mode === 'login' ? 'bg-[#5B7BFE]' : 'bg-transparent'}`} />
+            </button>
+            <button
+              type="button"
+              onClick={() => switchMode('register')}
+              className={`relative pb-3 text-[13px] font-medium transition-colors ${
+                mode === 'register' ? 'text-gray-900' : 'text-gray-400 hover:text-gray-600'
+              }`}
+            >
+              注册
+              <span className={`absolute left-0 right-0 -bottom-px h-[2px] rounded-full transition-colors ${mode === 'register' ? 'bg-[#5B7BFE]' : 'bg-transparent'}`} />
+            </button>
+          </div>
+
+          <div className="space-y-3.5">
+            {mode === 'login' && (
+              <>
+                {rememberedAccounts.length > 0 && (
+                  <select
+                    value={form.identifier || form.email}
+                    onChange={(event) => {
+                      const selected = rememberedAccounts.find((account) => (account.identifier || account.email) === event.target.value);
+                      setForm(createEmptyForm(selected?.identifier || selected?.email || event.target.value, selected?.fullName || '', selected?.password || ''));
+                    }}
+                    className="w-full bg-white border border-gray-200 rounded-xl px-3.5 py-3 text-[14px] text-gray-900 outline-none focus:border-[#5B7BFE] transition-colors"
+                  >
+                    <option value="">选择已记住的账号</option>
+                    {rememberedAccounts.map((account) => {
+                      const accountIdentifier = account.identifier || account.email;
+                      return (
                         <option key={accountIdentifier} value={accountIdentifier}>
                           {account.fullName ? `${account.fullName} · ${accountIdentifier}` : accountIdentifier}
                         </option>
-                      );})}
-                    </select>
-                  )}
-                  <input value={form.identifier} onChange={(event) => setForm((prev) => ({ ...prev, identifier: event.target.value }))} placeholder="邮箱或登录手机号" className="w-full bg-gray-50 border border-gray-200 rounded-2xl px-4 py-3 text-[14px] outline-none" />
-                  <input type={showPassword ? 'text' : 'password'} value={form.password} onChange={(event) => setForm((prev) => ({ ...prev, password: event.target.value }))} placeholder="密码" className="w-full bg-gray-50 border border-gray-200 rounded-2xl px-4 py-3 text-[14px] outline-none" />
-                  <div className="flex gap-3">
-                    <label className="flex-1 flex items-center justify-between rounded-2xl border border-gray-200 bg-gray-50 px-4 py-3 text-[13px] font-medium text-gray-700">
-                      记住我的登录状态
-                      <input type="checkbox" checked={rememberMe} onChange={(event) => setRememberMe(event.target.checked)} />
-                    </label>
-                    <label className="flex items-center gap-2 rounded-2xl border border-gray-200 bg-gray-50 px-4 py-3 text-[13px] font-medium text-gray-700">
-                      显示密码
-                      <input type="checkbox" checked={showPassword} onChange={(event) => setShowPassword(event.target.checked)} />
-                    </label>
-                  </div>
-                  <label className="flex items-center gap-2 rounded-2xl border border-gray-200 bg-gray-50 px-4 py-3 text-[13px] font-medium text-gray-700">
-                    记住这组账号和密码（仅本机）
-                    <input type="checkbox" checked={rememberInputs} onChange={(event) => setRememberInputs(event.target.checked)} />
-                  </label>
-                </>
-              )}
-              {mode === 'register' && (
-                <>
-                  <div className="rounded-2xl border border-blue-100 bg-[#F8FAFF] px-4 py-3">
-                    <p className="text-[12px] font-bold text-[#5B7BFE]">个人账号注册</p>
-                    <p className="mt-1 text-[12px] text-gray-500">注册账号依赖云端服务；开源版默认不提供云。本机模式可直接使用，后续接好云端后再注册、同步和加入组织。</p>
-                  </div>
-                  <div className="space-y-4">
-                    <div className="flex items-center gap-2 rounded-2xl bg-gray-50 p-1 text-[12px] font-bold text-gray-500">
-                      <button type="button" onClick={() => setRegisterStep(1)} className={`flex-1 rounded-xl px-3 py-2 ${registerStep === 1 ? 'bg-white text-[#5B7BFE] shadow-sm' : ''}`}>1 个人账号</button>
-                      <button type="button" onClick={() => registerAccountValid && setRegisterStep(2)} className={`flex-1 rounded-xl px-3 py-2 ${registerStep === 2 ? 'bg-white text-[#5B7BFE] shadow-sm' : ''} ${!registerAccountValid ? 'opacity-50' : ''}`}>2 组织身份</button>
+                      );
+                    })}
+                  </select>
+                )}
+                <input
+                  value={form.identifier}
+                  onChange={(event) => setForm((prev) => ({ ...prev, identifier: event.target.value }))}
+                  placeholder="邮箱或登录手机号"
+                  className="w-full bg-white border border-gray-200 rounded-xl px-3.5 py-3 text-[14px] text-gray-900 outline-none focus:border-[#5B7BFE] transition-colors"
+                />
+                <div className="relative">
+                  <input
+                    type={showPassword ? 'text' : 'password'}
+                    value={form.password}
+                    onChange={(event) => setForm((prev) => ({ ...prev, password: event.target.value }))}
+                    placeholder="密码"
+                    className="w-full bg-white border border-gray-200 rounded-xl px-3.5 py-3 pr-11 text-[14px] text-gray-900 outline-none focus:border-[#5B7BFE] transition-colors"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowPassword((s) => !s)}
+                    className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600 p-1 transition-colors"
+                    tabIndex={-1}
+                    aria-label={showPassword ? '隐藏密码' : '显示密码'}
+                  >
+                    {showPassword ? <EyeOff size={16} /> : <Eye size={16} />}
+                  </button>
+                </div>
+                <label className="flex items-center gap-2 px-1 pt-1 text-[12px] text-gray-500 cursor-pointer">
+                  <input type="checkbox" checked={rememberMe} onChange={(event) => setRememberMe(event.target.checked)} className="rounded" />
+                  在本设备保持登录
+                </label>
+              </>
+            )}
+
+            {mode === 'register' && (
+              <>
+                <p className="px-1 text-[11px] text-gray-400 leading-relaxed">
+                  免审批立即可用 · 注册后可在设置里加入组织、申请权限
+                </p>
+                {/* Step 切换:underline 风格,与登录/注册 tab 一致 */}
+                <div className="flex items-center gap-6 border-b border-gray-100 pb-px">
+                  <button
+                    type="button"
+                    onClick={() => setRegisterStep(1)}
+                    className={`relative pb-2.5 text-[12px] font-medium transition-colors ${
+                      registerStep === 1 ? 'text-gray-900' : 'text-gray-400 hover:text-gray-600'
+                    }`}
+                  >
+                    <span className="text-[10px] font-bold uppercase tracking-[0.18em] text-gray-400 mr-1.5">01</span>
+                    个人账号
+                    <span className={`absolute left-0 right-0 -bottom-px h-[2px] rounded-full ${registerStep === 1 ? 'bg-[#5B7BFE]' : 'bg-transparent'}`} />
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => registerAccountValid && setRegisterStep(2)}
+                    disabled={!registerAccountValid}
+                    className={`relative pb-2.5 text-[12px] font-medium transition-colors ${
+                      registerStep === 2 ? 'text-gray-900' : 'text-gray-400 hover:text-gray-600'
+                    } ${!registerAccountValid ? 'opacity-40 cursor-not-allowed' : ''}`}
+                  >
+                    <span className="text-[10px] font-bold uppercase tracking-[0.18em] text-gray-400 mr-1.5">02</span>
+                    组织身份
+                    <span className={`absolute left-0 right-0 -bottom-px h-[2px] rounded-full ${registerStep === 2 ? 'bg-[#5B7BFE]' : 'bg-transparent'}`} />
+                  </button>
+                </div>
+                {registerStep === 1 ? (
+                  <>
+                    <input value={form.fullName} onChange={(event) => setForm((prev) => ({ ...prev, fullName: event.target.value }))} placeholder="姓名 / 显示名" className="w-full bg-white border border-gray-200 rounded-xl px-3.5 py-3 text-[14px] text-gray-900 outline-none focus:border-[#5B7BFE] transition-colors" />
+                    <div>
+                      <input value={form.email} onChange={(event) => setForm((prev) => ({ ...prev, email: event.target.value }))} placeholder="邮箱" className="w-full bg-white border border-gray-200 rounded-xl px-3.5 py-3 text-[14px] text-gray-900 outline-none focus:border-[#5B7BFE] transition-colors" />
+                      {form.email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(form.email) && <p className="text-[11px] text-rose-500 mt-1.5 px-1">请输入有效的邮箱地址</p>}
                     </div>
-                    {registerStep === 1 ? (
-                      <>
-                        <input value={form.fullName} onChange={(event) => setForm((prev) => ({ ...prev, fullName: event.target.value }))} placeholder="姓名 / 显示名" className="w-full bg-gray-50 border border-gray-200 rounded-2xl px-4 py-3 text-[14px] outline-none" />
-                        <div>
-                          <input value={form.email} onChange={(event) => setForm((prev) => ({ ...prev, email: event.target.value }))} placeholder="邮箱" className="w-full bg-gray-50 border border-gray-200 rounded-2xl px-4 py-3 text-[14px] outline-none" />
-                          {form.email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(form.email) && <p className="text-[12px] text-red-500 mt-1 px-1">请输入有效的邮箱地址</p>}
-                        </div>
-                        <input value={form.phone} onChange={(event) => setForm((prev) => ({ ...prev, phone: event.target.value }))} placeholder="登录手机号（可选，不是飞书通知手机号）" className="w-full bg-gray-50 border border-gray-200 rounded-2xl px-4 py-3 text-[14px] outline-none" />
-                        <div>
-                          <input type={showPassword ? 'text' : 'password'} value={form.password} onChange={(event) => setForm((prev) => ({ ...prev, password: event.target.value }))} placeholder="密码（至少 8 位）" className="w-full bg-gray-50 border border-gray-200 rounded-2xl px-4 py-3 text-[14px] outline-none" />
-                          {form.password && form.password.length < 8 && <p className="text-[12px] text-red-500 mt-1 px-1">密码至少需要 8 位</p>}
-                        </div>
-                        <div>
-                          <input type={showPassword ? 'text' : 'password'} value={form.confirmPassword} onChange={(event) => setForm((prev) => ({ ...prev, confirmPassword: event.target.value }))} placeholder="确认密码" className="w-full bg-gray-50 border border-gray-200 rounded-2xl px-4 py-3 text-[14px] outline-none" />
-                          {form.confirmPassword && form.password !== form.confirmPassword && <p className="text-[12px] text-red-500 mt-1 px-1">两次输入的密码不一致</p>}
-                        </div>
-                      </>
-                    ) : (
-                      <>
-                        <input value={form.inviteCode} onChange={(event) => setForm((prev) => ({ ...prev, inviteCode: event.target.value }))} placeholder="部门邀请码（自动识别组织，可选）" className="w-full bg-gray-50 border border-gray-200 rounded-2xl px-4 py-3 text-[14px] outline-none" />
-                        {inviteStatus.message && (
-                          <div className={`rounded-2xl border px-4 py-3 text-[12px] ${inviteStatus.valid === false ? 'border-red-200 bg-red-50 text-red-700' : 'border-blue-200 bg-blue-50 text-blue-700'}`}>
-                            {inviteStatus.loading ? '正在识别邀请码...' : inviteStatus.message}
-                          </div>
-                        )}
-                        <select value={form.departmentId} onChange={(event) => setForm((prev) => ({ ...prev, departmentId: event.target.value }))} className="w-full bg-gray-50 border border-gray-200 rounded-2xl px-4 py-3 text-[14px] outline-none">
-                          <option value="">选择部门（可选）</option>
-                          {departmentOptions.map((department) => (
-                            <option key={department.id} value={department.id}>{department.name}</option>
-                          ))}
-                        </select>
-                        <input value={form.jobTitle} onChange={(event) => setForm((prev) => ({ ...prev, jobTitle: event.target.value }))} placeholder="职位（可选）" className="w-full bg-gray-50 border border-gray-200 rounded-2xl px-4 py-3 text-[14px] outline-none" />
-                        <input value={form.managerName} onChange={(event) => setForm((prev) => ({ ...prev, managerName: event.target.value }))} placeholder="直属负责人（可选）" className="w-full bg-gray-50 border border-gray-200 rounded-2xl px-4 py-3 text-[14px] outline-none" />
-                        <textarea value={form.currentFocus} onChange={(event) => setForm((prev) => ({ ...prev, currentFocus: event.target.value }))} placeholder="当前工作重点（可选）" rows={2} className="w-full bg-gray-50 border border-gray-200 rounded-2xl px-4 py-3 text-[14px] outline-none resize-none" />
-                      </>
+                    <input value={form.phone} onChange={(event) => setForm((prev) => ({ ...prev, phone: event.target.value }))} placeholder="登录手机号 (可选)" className="w-full bg-white border border-gray-200 rounded-xl px-3.5 py-3 text-[14px] text-gray-900 outline-none focus:border-[#5B7BFE] transition-colors" />
+                    <div className="relative">
+                      <input type={showPassword ? 'text' : 'password'} value={form.password} onChange={(event) => setForm((prev) => ({ ...prev, password: event.target.value }))} placeholder="密码 (至少 8 位)" className="w-full bg-white border border-gray-200 rounded-xl px-3.5 py-3 pr-11 text-[14px] text-gray-900 outline-none focus:border-[#5B7BFE] transition-colors" />
+                      <button type="button" onClick={() => setShowPassword((s) => !s)} className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600 p-1 transition-colors" tabIndex={-1} aria-label={showPassword ? '隐藏密码' : '显示密码'}>
+                        {showPassword ? <EyeOff size={16} /> : <Eye size={16} />}
+                      </button>
+                      {form.password && form.password.length < 8 && <p className="text-[11px] text-rose-500 mt-1.5 px-1">密码至少需要 8 位</p>}
+                    </div>
+                    <div>
+                      <input type={showPassword ? 'text' : 'password'} value={form.confirmPassword} onChange={(event) => setForm((prev) => ({ ...prev, confirmPassword: event.target.value }))} placeholder="确认密码" className="w-full bg-white border border-gray-200 rounded-xl px-3.5 py-3 text-[14px] text-gray-900 outline-none focus:border-[#5B7BFE] transition-colors" />
+                      {form.confirmPassword && form.password !== form.confirmPassword && <p className="text-[11px] text-rose-500 mt-1.5 px-1">两次输入的密码不一致</p>}
+                    </div>
+                  </>
+                ) : (
+                  <>
+                    <input value={form.inviteCode} onChange={(event) => setForm((prev) => ({ ...prev, inviteCode: event.target.value }))} placeholder="部门邀请码 (可选, 自动识别组织)" className="w-full bg-white border border-gray-200 rounded-xl px-3.5 py-3 text-[14px] text-gray-900 outline-none focus:border-[#5B7BFE] transition-colors" />
+                    {inviteStatus.message && (
+                      <div className={`rounded-xl border px-3.5 py-2.5 text-[11.5px] ${inviteStatus.valid === false ? 'border-rose-200 bg-rose-50 text-rose-700' : 'border-blue-200 bg-blue-50 text-blue-700'}`}>
+                        {inviteStatus.loading ? '正在识别邀请码…' : inviteStatus.message}
+                      </div>
                     )}
-                    <label className="flex items-center gap-2 rounded-2xl border border-gray-200 bg-gray-50 px-4 py-3 text-[13px] font-medium text-gray-700">
-                      显示密码
-                      <input type="checkbox" checked={showPassword} onChange={(event) => setShowPassword(event.target.checked)} />
-                    </label>
-                    <label className="flex items-center gap-2 rounded-2xl border border-gray-200 bg-gray-50 px-4 py-3 text-[13px] font-medium text-gray-700">
-                      记住这组账号和密码（仅本机）
-                      <input type="checkbox" checked={rememberInputs} onChange={(event) => setRememberInputs(event.target.checked)} />
-                    </label>
-                  </div>
-                </>
-              )}
-              {message && (() => {
-                const isSuccess = message.includes('已提交') || message.includes('成功');
-                const isPending = message.includes('等待管理员审核') || message.includes('待审核');
-                const isRejected = message.includes('未通过审核') || message.includes('停用');
-                const style = isSuccess
-                  ? 'border-emerald-200 bg-emerald-50 text-emerald-800'
-                  : isPending
-                  ? 'border-blue-200 bg-blue-50 text-blue-800'
-                  : isRejected
-                  ? 'border-red-200 bg-red-50 text-red-800'
-                  : 'border-amber-200 bg-amber-50 text-amber-800';
-                return <div className={`rounded-2xl border px-4 py-3 text-[13px] ${style}`}>{message}</div>;
-              })()}
-              {mode === 'login' ? (
-                <Button
-                  primary
-                  className="w-full py-3 text-[14px]"
-                  onClick={() => void handleSubmit()}
-                  disabled={submitting || !(form.identifier || form.email).trim() || !form.password.trim()}
-                >
-                  {submitting ? <RefreshCw size={16} className="animate-spin" /> : <ShieldAlert size={16} />}
-                  进入系统
-                </Button>
-              ) : registerStep === 1 ? (
-                <Button
-                  primary
-                  className="w-full py-3 text-[14px]"
-                  onClick={() => setRegisterStep(2)}
-                  disabled={!registerAccountValid}
-                >
-                  下一步：组织身份
-                </Button>
-              ) : (
-                <Button
-                  primary
-                  className="w-full py-3 text-[14px]"
-                  onClick={() => void handleSubmit()}
-                  disabled={submitting || !registerValid}
-                >
-                  {submitting ? <RefreshCw size={16} className="animate-spin" /> : <ShieldAlert size={16} />}
-                  提交注册
-                </Button>
-              )}
-            </div>
-            <p className="text-[12px] text-gray-400 mt-6">如果你之后要加入组织、接受邀请或切换部门，请登录后在设置里处理。</p>
-            <p className="text-[12px] text-gray-400 mt-2">勾选后会在当前设备持续保留登录状态；不勾选则只保留本次应用会话。</p>
+                    <select value={form.departmentId} onChange={(event) => setForm((prev) => ({ ...prev, departmentId: event.target.value }))} className="w-full bg-white border border-gray-200 rounded-xl px-3.5 py-3 text-[14px] text-gray-900 outline-none focus:border-[#5B7BFE] transition-colors">
+                      <option value="">选择部门 (可选)</option>
+                      {departmentOptions.map((department) => (
+                        <option key={department.id} value={department.id}>{department.name}</option>
+                      ))}
+                    </select>
+                    <input value={form.jobTitle} onChange={(event) => setForm((prev) => ({ ...prev, jobTitle: event.target.value }))} placeholder="职位 (可选)" className="w-full bg-white border border-gray-200 rounded-xl px-3.5 py-3 text-[14px] text-gray-900 outline-none focus:border-[#5B7BFE] transition-colors" />
+                    <input value={form.managerName} onChange={(event) => setForm((prev) => ({ ...prev, managerName: event.target.value }))} placeholder="直属负责人 (可选)" className="w-full bg-white border border-gray-200 rounded-xl px-3.5 py-3 text-[14px] text-gray-900 outline-none focus:border-[#5B7BFE] transition-colors" />
+                    <textarea value={form.currentFocus} onChange={(event) => setForm((prev) => ({ ...prev, currentFocus: event.target.value }))} placeholder="当前工作重点 (可选)" rows={2} className="w-full bg-white border border-gray-200 rounded-xl px-3.5 py-3 text-[14px] text-gray-900 outline-none resize-none focus:border-[#5B7BFE] transition-colors" />
+                  </>
+                )}
+              </>
+            )}
+
+            {message && (() => {
+              const isSuccess = message.includes('已提交') || message.includes('成功');
+              const isPending = message.includes('等待管理员审核') || message.includes('待审核');
+              const isRejected = message.includes('未通过审核') || message.includes('停用');
+              const style = isSuccess
+                ? 'border-emerald-200 bg-emerald-50 text-emerald-700'
+                : isPending
+                ? 'border-blue-200 bg-blue-50 text-blue-700'
+                : isRejected
+                ? 'border-rose-200 bg-rose-50 text-rose-700'
+                : 'border-amber-200 bg-amber-50 text-amber-700';
+              return <div className={`rounded-xl border px-3.5 py-2.5 text-[12px] leading-5 ${style}`}>{message}</div>;
+            })()}
+
+            {mode === 'login' ? (
+              <Button
+                primary
+                className="w-full py-3 text-[14px] mt-2"
+                onClick={() => void handleSubmit()}
+                disabled={submitting || !(form.identifier || form.email).trim() || !form.password.trim()}
+              >
+                {submitting && <RefreshCw size={16} className="animate-spin" />}
+                登录
+              </Button>
+            ) : registerStep === 1 ? (
+              <Button
+                primary
+                className="w-full py-3 text-[14px] mt-2"
+                onClick={() => setRegisterStep(2)}
+                disabled={!registerAccountValid}
+              >
+                下一步
+              </Button>
+            ) : (
+              <Button
+                primary
+                className="w-full py-3 text-[14px] mt-2"
+                onClick={() => void handleSubmit()}
+                disabled={submitting || !registerValid}
+              >
+                {submitting && <RefreshCw size={16} className="animate-spin" />}
+                注册
+              </Button>
+            )}
           </div>
         </div>
       </div>
-      );
-    };
+    );
+  };
 
   const renderCloudAuthModal = () => {
     if (!cloudAuthModalOpen) return null;
@@ -9214,6 +10195,7 @@ export default function App() {
     const [inboxCustomEndDate, setInboxCustomEndDate] = useState('');
     const [taskSearchQuery, setTaskSearchQuery] = useState('');
     const [isTaskModalOpen, setIsTaskModalOpen] = useState(false);
+    const [isSmartParseModalOpen, setIsSmartParseModalOpen] = useState(false);
     const [isDuePickerOpen, setIsDuePickerOpen] = useState(false);
     const [duePickerTab, setDuePickerTab] = useState<'date' | 'time'>('date');
     const [duePickerMonth, setDuePickerMonth] = useState(() => getTodayCalendarState().calendarDate);
@@ -9562,17 +10544,34 @@ export default function App() {
 
     useEffect(() => {
       if (!workspace?.client?.id) return;
-      setTaskClientDnaCache((prev) => ({
-        ...prev,
-        [workspace.client.id]: workspace.dnaModules || [],
-      }));
-      setProjectStructureCache((prev) => ({
-        ...prev,
-        [workspace.client.id]: {
-          modules: workspace.projectModules || [],
-          flows: workspace.projectFlows || [],
-        },
-      }));
+      const cid = workspace.client.id;
+      const nextDna = workspace.dnaModules;
+      const nextModules = workspace.projectModules;
+      const nextFlows = workspace.projectFlows;
+      // Guard：只有"上次 cache 的引用 ≠ 现在 workspace 的引用"才写。
+      // 旧实现每次都新创对象，导致 cache 引用变 → loadProjectStructureForClient（useCallback dep
+      // 含 projectStructureCache）也变 → 一连串 useEffect 重跑，最终触发 React
+      // "Maximum update depth exceeded" 警告（栈指向这里）。
+      setTaskClientDnaCache((prev) => {
+        const next = nextDna || [];
+        if (prev[cid] === next) return prev;
+        // 也兼容"两边都是空数组"的情况
+        if (prev[cid] && (!nextDna || nextDna.length === 0) && prev[cid].length === 0) return prev;
+        return { ...prev, [cid]: next };
+      });
+      setProjectStructureCache((prev) => {
+        const existing = prev[cid];
+        const modules = nextModules || [];
+        const flows = nextFlows || [];
+        if (existing && existing.modules === modules && existing.flows === flows) return prev;
+        // 兼容"两边都空"
+        if (existing
+          && (!nextModules || nextModules.length === 0) && existing.modules.length === 0
+          && (!nextFlows || nextFlows.length === 0) && existing.flows.length === 0) {
+          return prev;
+        }
+        return { ...prev, [cid]: { modules, flows } };
+      });
     }, [workspace]);
 
     const rememberProjectStructure = useCallback((clientId: string, structure: ProjectStructureResponse) => {
@@ -9727,7 +10726,8 @@ export default function App() {
             title: editingTask.title,
             desc: editingTask.desc,
             dueDate: combineTaskDueDateTime(editingTask.dueDate, editingTask.dueTime),
-            clientTokens: clients.flatMap((client) => [client.name, client.alias, client.domain]),
+            // 用 dataCenterClients(已过滤掉 hidden) — 任务推断不应该把隐藏项目当候选
+            clientTokens: dataCenterClients.flatMap((client) => [client.name, client.alias, client.domain]),
           })
         : null;
       const nextClient = !editingTask.clientTouched
@@ -9735,7 +10735,7 @@ export default function App() {
         ? inferTaskClient({
             title: editingTask.title,
             desc: editingTask.desc,
-            clients,
+            clients: dataCenterClients,
             currentClientId,
             organizationName: organizationTaskName,
           })
@@ -9750,7 +10750,16 @@ export default function App() {
             currentClientId: nextClientIdForInference,
           })
         : null;
-      if (!nextPriority && !nextClient && !nextEventLine) return;
+      // dueDate/dueTime 自动识别:仅在用户尚未填写时,从标题/描述里抽明确时间表达
+      // 严格规则:只识别明确说出的(今天下午两点 → 14:00),不按语气推断
+      const nextDueDateInfo = (!editingTask.dueDate && !editingTask.dueTime)
+        ? inferTaskDueDate({
+            title: editingTask.title,
+            desc: editingTask.desc,
+            today: new Date(),
+          })
+        : null;
+      if (!nextPriority && !nextClient && !nextEventLine && !nextDueDateInfo) return;
       setEditingTask((prev) => {
         const updates: Partial<TaskEditorState> = {};
         if (nextPriority && (!prev.priorityTouched && (prev.priority !== nextPriority.priority || prev.priorityReason !== nextPriority.reason))) {
@@ -9766,10 +10775,22 @@ export default function App() {
           updates.eventLineId = nextEventLine.eventLineId;
           updates.eventLineReason = nextEventLine.reason;
         }
+        if (nextDueDateInfo && (nextDueDateInfo.dueDate || nextDueDateInfo.dueTime)) {
+          // 二次防御:setEditingTask 回调内再确认一次 prev 仍是空(避免并发情况下覆盖用户刚输的值)
+          if (!prev.dueDate && nextDueDateInfo.dueDate) {
+            updates.dueDate = nextDueDateInfo.dueDate;
+            // ddl 字段同步成中文展示标签,跟现有 resetTaskDraft 风格一致
+            const combinedForLabel = combineTaskDueDateTime(nextDueDateInfo.dueDate, nextDueDateInfo.dueTime || prev.dueTime);
+            updates.ddl = formatTaskDueLabel(combinedForLabel);
+          }
+          if (!prev.dueTime && nextDueDateInfo.dueTime) {
+            updates.dueTime = nextDueDateInfo.dueTime;
+          }
+        }
         return Object.keys(updates).length > 0 ? { ...prev, ...updates } : prev;
       });
     }, [
-      clients,
+      dataCenterClients,
       currentClientId,
       editingTask.clientTouched,
       editingTask.desc,
@@ -10199,7 +11220,17 @@ export default function App() {
     const selectedTaskCollaborators = ownerCollaborator ? editingTask.collaborators.slice(1) : editingTask.collaborators;
     const collaboratorNames = editingTask.collaborators.map((item) => item.fullName);
     const selectedTaskTags = taskTags.filter((tag) => editingTask.tagIds.includes(tag.id));
-    const taskClientOptions = clients
+    // 任务编辑器客户下拉 — 用 dataCenterClients(已过滤隐藏项目)
+    // 但如果任务已经挂在某个隐藏的客户上(editingTask.clientId),要补回到选项里,否则下拉变空白
+    const taskClientOptionsPool = useMemo(() => {
+      const base = dataCenterClients;
+      if (editingTask.clientId && !base.some((c) => c.id === editingTask.clientId)) {
+        const fallback = clients.find((c) => c.id === editingTask.clientId);
+        if (fallback) return [...base, fallback];
+      }
+      return base;
+    }, [dataCenterClients, editingTask.clientId, clients]);
+    const taskClientOptions = taskClientOptionsPool
       .map((client) => ({ id: client.id, name: client.name, label: client.name, alias: client.alias }))
       .sort((left, right) => left.label.localeCompare(right.label, 'zh-CN'));
     const clientColorById = useMemo(
@@ -11424,6 +12455,11 @@ export default function App() {
     };
 
     const handleSaveTask = async () => {
+      // S4.1 fix: re-entry guard — 快连点保存按钮 / 录音完成自动触发 时, 防止双保存导致重复任务.
+      // 注: 这里读 state isSavingTask 即可 (React batch 保证同 tick 内多次调用看到的是同个值).
+      if (isSavingTask) {
+        return;
+      }
       if (!editingTask.title.trim()) {
         flash('error', '请填写任务标题');
         return;
@@ -11720,13 +12756,18 @@ export default function App() {
             flash('error', `${error instanceof Error ? error.message : '更新失败'}。草稿已恢复，请检查后重试。`);
           } else {
             removeOptimisticTask(optimisticTaskId);
-            const parsedDate = parseTaskDateValue(draftSnapshot.dueDate);
-            setDuePickerMonth(parsedDate ? new Date(parsedDate.getFullYear(), parsedDate.getMonth(), 1) : getTodayCalendarState().calendarDate);
-            setEditingTask(draftSnapshot);
-            setPendingTaskArchiveText(archiveTextSnapshot);
-            setPendingTaskAttachments(pendingTaskAttachmentsSnapshot);
-            setPendingSmartBriefDraftSource(smartBriefSourceSnapshot);
-            setIsTaskModalOpen(true);
+            // 仅当当前没有别的任务编辑器打开时，才把失败的草稿恢复到 modal。
+            // 否则 A 的失败回调会强制用 A 的 draftSnapshot 覆盖正在编辑的 B 的内容。
+            // 跟上面 update 分支的 guard 对齐。
+            if (!isTaskModalOpenRef.current) {
+              const parsedDate = parseTaskDateValue(draftSnapshot.dueDate);
+              setDuePickerMonth(parsedDate ? new Date(parsedDate.getFullYear(), parsedDate.getMonth(), 1) : getTodayCalendarState().calendarDate);
+              setEditingTask(draftSnapshot);
+              setPendingTaskArchiveText(archiveTextSnapshot);
+              setPendingTaskAttachments(pendingTaskAttachmentsSnapshot);
+              setPendingSmartBriefDraftSource(smartBriefSourceSnapshot);
+              setIsTaskModalOpen(true);
+            }
             flash('error', `${error instanceof Error ? error.message : '创建失败'}。草稿已恢复，请检查后重试。`);
           }
 	        }
@@ -11749,6 +12790,8 @@ export default function App() {
 	        resetTaskDraft();
 	      }
 	      const deletedId = task.id;
+	      // P0 fix: 快照前一份, 删除失败时回滚 UI (之前 catch{} 吞错, 用户看不到任何反馈)
+	      const previousTaskSnapshot = tasks.find((t) => t.id === deletedId);
 	      setTasks((prev) => prev.filter((t) => t.id !== deletedId));
 	      flash('success', '任务已删除');
 	      void (async () => {
@@ -11760,8 +12803,12 @@ export default function App() {
 	          void loadSelectedReviewBlock();
 	          void refreshWorkspace(task.clientId || undefined);
 	          if (task.eventLineId && activeEventLine?.eventLine.id === task.eventLineId) void openEventLineDetail(task.eventLineId);
-	        } catch {
-	          // 删除已经在本地乐观完成；失败时不把旧任务塞回列表，避免重复闪回。
+	        } catch (err) {
+	          // P0 fix: 删除失败 → 回滚 UI + 显式提示, 防止"幽灵复活" (刷新后任务又回来)
+	          if (previousTaskSnapshot) {
+	            setTasks((prev) => (prev.some((t) => t.id === deletedId) ? prev : [...prev, previousTaskSnapshot]));
+	          }
+	          flash('error', `删除失败: ${err instanceof Error ? err.message : String(err)}, 任务已恢复显示`);
 	        }
 	      })();
 	    };
@@ -12088,6 +13135,31 @@ export default function App() {
       setPendingTaskArchiveText('');
     };
 
+    // 智能新建任务回调:SmartTaskParseModal 解析完后,把 AI 抽出的字段灌进 editingTask
+    // 然后关掉 smart modal 并打开常规 TaskEditorModal,让用户审查/微调后保存
+    const handleSmartParseResult = (result: TaskAiParseResult, originalText: string) => {
+      const aiDueDate = result.dueDate || undefined;
+      const aiDueTime = result.dueTime || '';
+      resetTaskDraft(aiDueDate);
+      setEditingTask((prev) => ({
+        ...prev,
+        title: result.title || prev.title,
+        desc: result.desc || originalText.slice(0, 600),
+        priority: result.priority || prev.priority,
+        priorityTouched: true,
+        priorityReason: 'AI 从粘贴文本中识别',
+        dueTime: aiDueTime || prev.dueTime,
+        clientId: result.clientId || prev.clientId,
+        clientTouched: Boolean(result.clientId),
+        clientConfidence: result.clientId ? 'manual' : prev.clientConfidence,
+        clientReason: result.clientId && result.clientName
+          ? `AI 从「${result.rawLlmGuessClientName || result.clientName}」匹配到「${result.clientName}」`
+          : prev.clientReason,
+      }));
+      setIsSmartParseModalOpen(false);
+      setIsTaskModalOpen(true);
+    };
+
 	    const openTaskEditor = (task?: Task, dueDate?: string, options?: { durationMinutes?: number }) => {
 	      if (!task) {
 	        resetTaskDraft(dueDate, options);
@@ -12149,10 +13221,13 @@ export default function App() {
         planLinkReason: '可选：把任务挂到本月部门计划项上。点开下拉可手动选择或确认 AI 建议。',
       });
       // Asynchronously fetch current plan-link for this task and prefill the editor.
+      // S4.4 fix: 之前 catch(() => {}) 静默吞错 — 加载失败时 UI 显示"unset", 保存时会用空
+      // planLinkPlanItemId 覆盖云端真实关联. 现在: 标 planLinkSource='loadFailed' + 提示用户
+      // 不要轻易保存 (planLinkTouched=false 时 saveTask 会跳过 plan-link patch, 保护云端数据).
       void getTaskPlanLink(task.id).then((link) => {
         if (!link) return;
         setEditingTask((prev) => {
-          if (prev.id !== task.id || prev.planLinkTouched) return prev; // user already edited; keep their choice
+          if (prev.id !== task.id || prev.planLinkTouched) return prev;
           return {
             ...prev,
             planLinkPlanItemId: link.departmentPlanItemId || '',
@@ -12163,7 +13238,16 @@ export default function App() {
               : `AI 自动推荐 (置信度 ${Math.round((link.confidence || 0) * 100)}%)，可手动改。`,
           };
         });
-      }).catch(() => {});
+      }).catch((err) => {
+        flash('error', `计划关联加载失败 (${err instanceof Error ? err.message : '网络异常'})，未改动前不会保存覆盖`);
+        setEditingTask((prev) => {
+          if (prev.id !== task.id) return prev;
+          return {
+            ...prev,
+            planLinkReason: '⚠️ 计划关联拉取失败, 不要点保存以免覆盖云端真实数据; 关闭重开任务面板重试',
+          };
+        });
+      });
       setTagDraft({ name: '', scope: defaultTagScope, color: TASK_COLOR_OPTIONS[0] });
       setSuggestedTaskTags([]);
       setPendingTaskArchiveText('');
@@ -12202,11 +13286,13 @@ export default function App() {
         if (owningPlan) break;
       }
       openTaskEditor();
+      const owningPeriodKey = (owningPlan?.weekLabel || '').trim();
       setEditingTask((prev) => ({
         ...prev,
         title: planItem.title || prev.title,
         desc: planItem.statement || '',
         planLinkDepartmentId: owningPlan?.departmentId || prev.planLinkDepartmentId,
+        planLinkPeriodKey: owningPeriodKey || prev.planLinkPeriodKey,
         planLinkPlanItemId: planItem.id,
         planLinkSource: 'manager',
         planLinkTouched: true,
@@ -12246,9 +13332,38 @@ export default function App() {
 	        setIsTaskModalOpen(true);
 	      };
 	      openStrategicTaskDraftRef.current = openDraftFromStrategic;
+	      const promoteHandler = (todo: import('./lib/api').UnifiedTodo) => {
+	        const dueDateOnly = /^\d{4}-\d{2}-\d{2}/.test(todo.due_date) ? todo.due_date.slice(0, 10) : '';
+	        const priority: 'low' | 'normal' | 'high' =
+	          todo.severity === 'high' ? 'high'
+	          : todo.severity === 'low' ? 'low'
+	          : 'normal';
+	        // 优先用 AI 生成的背景说明 (战略陪伴下一步区块转任务时已预生成);
+	        // 没有时降级为简单的 owner/source 拼接
+	        const descLines: string[] = [];
+	        if (todo.owner) descLines.push(`负责人: ${todo.owner}`);
+	        if (todo.related_to) descLines.push(`源: ${todo.related_to}`);
+	        const fallbackDesc = descLines.join('\n');
+	        const initialDesc = (todo.description && todo.description.trim()) || fallbackDesc;
+	        openTaskEditor(undefined, dueDateOnly || undefined);
+	        setEditingTask((prev) => ({
+	          ...prev,
+	          title: todo.title || prev.title,
+	          clientId: currentClientId || prev.clientId,
+	          clientTouched: !!currentClientId,
+	          priority,
+	          priorityTouched: true,
+	          priorityReason: `从战略陪伴待办带入 (${todo.severity === 'high' ? '紧急' : todo.severity === 'low' ? '常规' : '关注'})`,
+	          desc: prev.desc || initialDesc,
+	        }));
+	      };
+	      promoteUnifiedTodoRef.current = promoteHandler;
 	      return () => {
 	        if (openStrategicTaskDraftRef.current === openDraftFromStrategic) {
 	          openStrategicTaskDraftRef.current = () => undefined;
+	        }
+	        if (promoteUnifiedTodoRef.current === promoteHandler) {
+	          promoteUnifiedTodoRef.current = () => undefined;
 	        }
 	      };
 	    });
@@ -12675,6 +13790,9 @@ export default function App() {
       } catch (error) {
         applyLocalTaskPatch(previousTaskSnapshot);
         flash('error', error instanceof Error ? error.message : '任务调整失败');
+        // 让调用方（日历拖拽 handler）知道失败：否则它们会在 await 之后照常切换视口/日期，
+        // 用户看到的是任务回到原位但日历视口已经飞走，以为任务消失了。
+        throw error;
       }
     };
 
@@ -12740,13 +13858,24 @@ export default function App() {
       setUpdatingTaskStatusIds((prev) => Array.from(new Set([...prev, ...allowedTasks.map((task) => task.id)])));
       const batchCompletedAt = new Date().toISOString();
       const batchCompletionPatch = createTaskCompletionPatch(true, batchCompletedAt);
+      // P0 fix: 快照失败时回滚用的原始 task — loadTaskBlock 也失败时, 显式回滚 failed 任务的 UI
+      const preBatchSnapshots = new Map(allowedTasks.map((task) => [task.id, task]));
       setTasks((prev) => prev.map((task) => (allowedIds.has(task.id) ? { ...task, ...batchCompletionPatch } : task)));
       try {
         const results = await Promise.allSettled(allowedTasks.map((task) => completeTaskRecord(task, true, batchCompletedAt)));
         const failedIds = allowedTasks
           .filter((_, index) => results[index].status === 'rejected')
           .map((task) => task.id);
-        await loadTaskBlock();
+        // P0 fix: loadTaskBlock 失败时, 手动回滚 failed 任务 UI (否则停在错的"已完成"状态)
+        try {
+          await loadTaskBlock();
+        } catch (loadErr) {
+          if (failedIds.length > 0) {
+            const failedIdSet = new Set(failedIds);
+            setTasks((prev) => prev.map((t) => (failedIdSet.has(t.id) ? (preBatchSnapshots.get(t.id) || t) : t)));
+          }
+          flash('error', `刷新任务列表失败: ${loadErr instanceof Error ? loadErr.message : String(loadErr)}`);
+        }
         await refreshWorkspace();
         void loadSelectedReviewBlock();
         const unfinishedIds = [...skippedIds, ...failedIds];
@@ -12757,8 +13886,11 @@ export default function App() {
         }
         flash('success', `已完成 ${allowedTasks.length} 条任务。`);
       } catch (error) {
+        // 整体失败 → 回滚所有乐观写入
+        const allowedIdSet = new Set(allowedTasks.map((t) => t.id));
+        setTasks((prev) => prev.map((t) => (allowedIdSet.has(t.id) ? (preBatchSnapshots.get(t.id) || t) : t)));
         await loadTaskBlock().catch(() => undefined);
-        flash('error', error instanceof Error ? error.message : '批量完成失败');
+        flash('error', error instanceof Error ? error.message : '批量完成失败, 已回滚');
       } finally {
         setUpdatingTaskStatusIds((prev) => prev.filter((id) => !allowedIds.has(id)));
         setIsBatchBusy(false);
@@ -12863,12 +13995,18 @@ export default function App() {
 
     const handleSaveAgentWeeklyPlan = async (payload: AgentWeeklyPlanPayload) => {
       if (currentSessionUser?.primaryRole !== 'admin') return;
-      await updateAgentWeeklyPlan(payload.weekLabel, payload.agentKey, payload);
-      await Promise.all([
-        loadAgentWorklogBlock(calendarMonthLabel),
-        loadSelectedReviewBlock(),
-      ]);
-      flash('success', '机器人部门正式计划已更新。');
+      try {
+        await updateAgentWeeklyPlan(payload.weekLabel, payload.agentKey, payload);
+        await Promise.all([
+          loadAgentWorklogBlock(calendarMonthLabel),
+          loadSelectedReviewBlock(),
+        ]);
+        flash('success', '机器人部门正式计划已更新。');
+      } catch (error) {
+        flash('error', error instanceof Error ? `保存周计划失败：${error.message}` : '保存周计划失败');
+        // rethrow 让 AgentWeeklyPlanEditor 的 finally 之外的调用链能感知到失败
+        throw error;
+      }
     };
 
     const handleManualTaskViewModeChange = (mode: TaskViewMode) => {
@@ -13354,19 +14492,48 @@ export default function App() {
               ))}
             </div>
           </div>
-          <Button
-            primary
-            className="px-6 h-[48px] rounded-2xl"
-            onClick={() => {
-              resetTaskDraft();
-              setIsTaskModalOpen(true);
-            }}
-          >
-            <Plus size={16} />
-            新建任务
-          </Button>
+          <div className="inline-flex h-[48px] overflow-hidden rounded-2xl bg-[#5B7BFE] text-white shadow-sm">
+            <button
+              type="button"
+              className="inline-flex items-center gap-1.5 px-5 text-[13px] font-medium hover:bg-[#4A63CF] transition-colors"
+              onClick={() => {
+                const presetDueDate = taskViewMode === 'calendar' && taskSelectedDate
+                  ? formatDateInputValue(taskSelectedDate)
+                  : undefined;
+                resetTaskDraft(presetDueDate);
+                setIsTaskModalOpen(true);
+              }}
+            >
+              <Plus size={16} />
+              新建任务
+            </button>
+            <span className="w-px bg-white/25" aria-hidden />
+            <button
+              type="button"
+              title="智能新建任务 — 粘贴一段文字,AI 拆成结构化字段"
+              className="inline-flex items-center gap-1.5 px-4 text-[12.5px] font-medium hover:bg-[#4A63CF] transition-colors"
+              onClick={() => setIsSmartParseModalOpen(true)}
+            >
+              <Sparkles size={14} strokeWidth={2.2} />
+              智能
+            </button>
+          </div>
         </div>
 
+        <DraggingTaskProvider
+          onDragTriggered={() => {
+            setTaskViewMode('calendar');
+            setTaskCalendarDisplayMode('month');
+          }}
+          onDateDrop={(task, dateStr) => {
+            // 切回列表瞬时执行 (不等 API), 防止用户感觉"等几百毫秒才跳, 像 bug".
+            // handleRescheduleTask 后台异步跑, 失败时内部已有 flash 错误提示 + UI 回滚.
+            setTaskViewMode('list');
+            void handleRescheduleTask(task, dateStr, { preserveCalendarViewport: false }).catch(() => {
+              // 回滚 + 错误提示已在内部完成, 无需此处再处理
+            });
+          }}
+        >
         <div ref={taskViewportRef} className="flex-1 min-w-0 overflow-y-auto scrollbar-hide">
           {taskViewMode === 'list' && (
             <div className="max-w-4xl">
@@ -13668,16 +14835,24 @@ export default function App() {
                             const isTaskContextBriefLoading = loadingTaskContextBriefIds.includes(task.id);
                             const toggleTaskCard = () => toggleTaskExpanded(task.id);
                             const displayTime = getTaskDisplayTime(task);
+                            // 左侧优先级锚线 — 给每张卡一个视觉重量和层级
+                            const priorityAccentCls =
+                              task.priority === 'high' ? 'before:bg-rose-400'
+                              : task.priority === 'low' ? 'before:bg-gray-200'
+                              : isSelected ? 'before:bg-[#5B7BFE]'
+                              : isExpanded ? 'before:bg-[#9FB2FF]'
+                              : 'before:bg-transparent';
                             return (
+                              <TaskRowLongPress key={task.id} task={task}>
                               <div
-                                key={task.id}
-                                className={`bg-white border rounded-2xl p-4 shadow-sm transition-all duration-300 group flex items-start gap-3 ${
+                                className={`relative border rounded-2xl pl-7 pr-6 py-5 transition-all duration-200 group flex items-start gap-3.5 cursor-pointer
+                                  before:absolute before:left-3 before:top-5 before:bottom-5 before:w-[3px] before:rounded-full ${priorityAccentCls} ${
                                   isSelected
-                                    ? 'border-[#9FB2FF] shadow-[0_12px_30px_rgba(91,123,254,0.12)]'
+                                    ? 'border-[#9FB2FF] bg-[#5B7BFE]/[0.04] shadow-[0_1px_2px_rgba(91,123,254,0.05)]'
                                     : isExpanded
-                                      ? 'border-blue-100 shadow-md'
-                                      : 'border-gray-100 hover:shadow-md hover:border-blue-100'
-                                } cursor-pointer`}
+                                      ? 'border-[#C9D6FF] bg-blue-50/40 shadow-[0_2px_8px_rgba(91,123,254,0.06)]'
+                                      : 'border-gray-100 bg-white hover:border-gray-200 hover:bg-gray-50/50 hover:shadow-[0_1px_3px_rgba(15,23,42,0.04)]'
+                                }`}
                                 role="button"
                                 tabIndex={0}
                                 onClick={toggleTaskCard}
@@ -13699,7 +14874,11 @@ export default function App() {
                                   disabled={isStatusUpdating || !canToggleCompletion}
                                   title={canToggleCompletion ? undefined : '只有负责人或协作者可以标记任务完成'}
                                   className={`mt-0.5 shrink-0 transition-transform active:scale-90 ${
-                                    task.priority === 'high' ? 'text-rose-400 hover:text-rose-500' : 'text-gray-300 hover:text-[#5B7BFE]'
+                                    task.status === 'done'
+                                      ? 'text-[#5B7BFE] hover:text-[#4A6AEF]'
+                                      : task.priority === 'high'
+                                        ? 'text-rose-400 hover:text-rose-500'
+                                        : 'text-gray-300 hover:text-[#5B7BFE]'
                                   } ${isStatusUpdating ? 'cursor-wait opacity-60' : ''} ${!canToggleCompletion ? 'cursor-not-allowed opacity-40 hover:text-gray-300' : ''}`}
                                 >
                                   {task.status === 'done' ? <CheckCircle2 size={22} strokeWidth={2} /> : <Circle size={22} strokeWidth={2} />}
@@ -14044,6 +15223,7 @@ export default function App() {
                         )}
                       </div>
                     </div>
+                              </TaskRowLongPress>
                             );
                           })}
                         </div>
@@ -14057,11 +15237,14 @@ export default function App() {
 
           {taskViewMode === 'inbox' && (
             <div className="max-w-4xl">
-              <div className="bg-white border border-gray-100 rounded-3xl p-5 shadow-sm">
-                <div className="flex flex-wrap items-start justify-between gap-3 mb-4">
+              <div className="bg-white border border-gray-100 rounded-2xl p-6">
+                <div className="flex flex-wrap items-start justify-between gap-3 mb-5">
                   <div>
-                    <h2 className="text-[18px] font-bold text-gray-900">协作收件箱</h2>
-                    <p className="text-[12px] text-gray-500 mt-1">这里会分开展示待确认任务和系统通知，也会保留你已发出、正等待对方确认的协作任务。</p>
+                    <div className="text-[10px] font-semibold uppercase tracking-[0.18em] text-gray-400">
+                      Collaboration Inbox
+                    </div>
+                    <h2 className="mt-1 text-[18px] font-light tracking-tight text-gray-900">协作收件箱</h2>
+                    <p className="text-[11.5px] text-gray-500 mt-1">分开展示待确认任务和系统通知,以及你已发出、正等待对方确认的协作任务。</p>
                   </div>
                   {actionableInboxTasks.length > 0 && (
                     <div className="flex items-center gap-2">
@@ -14197,12 +15380,12 @@ export default function App() {
                   )}
                 </div>
                 <div className="mb-4 flex flex-wrap items-center gap-2">
-                  <label className="flex items-center gap-2 rounded-2xl border border-gray-200 bg-white px-3 py-2 text-[12px] font-bold text-gray-500">
-                    <span>时间排序</span>
+                  <label className="flex items-center gap-2 rounded-md bg-white px-3 py-1.5 text-[11.5px] font-medium text-gray-600 ring-1 ring-inset ring-gray-200">
+                    <span className="text-[9px] font-semibold uppercase tracking-[0.16em] text-gray-400">排序</span>
                     <select
                       value={inboxTimeSort}
                       onChange={(event) => setInboxTimeSort(event.target.value as TaskTimeSort)}
-                      className="bg-transparent text-[12px] font-bold text-gray-800 outline-none"
+                      className="bg-transparent text-[12px] font-medium text-gray-800 outline-none"
                     >
                       {TASK_TIME_SORT_OPTIONS.map((option) => (
                         <option key={option.value} value={option.value}>
@@ -14211,12 +15394,12 @@ export default function App() {
                       ))}
                     </select>
                   </label>
-                  <label className="flex items-center gap-2 rounded-2xl border border-gray-200 bg-white px-3 py-2 text-[12px] font-bold text-gray-500">
-                    <span>时间范围</span>
+                  <label className="flex items-center gap-2 rounded-md bg-white px-3 py-1.5 text-[11.5px] font-medium text-gray-600 ring-1 ring-inset ring-gray-200">
+                    <span className="text-[9px] font-semibold uppercase tracking-[0.16em] text-gray-400">范围</span>
                     <select
                       value={inboxTimeRangeFilter}
                       onChange={(event) => setInboxTimeRangeFilter(event.target.value as TaskTimeRangeFilter)}
-                      className="bg-transparent text-[12px] font-bold text-gray-800 outline-none"
+                      className="bg-transparent text-[12px] font-medium text-gray-800 outline-none"
                     >
                       {TASK_TIME_RANGE_OPTIONS.map((option) => (
                         <option key={option.value} value={option.value}>
@@ -14231,14 +15414,14 @@ export default function App() {
                         type="date"
                         value={inboxCustomStartDate}
                         onChange={(event) => setInboxCustomStartDate(event.target.value)}
-                        className="rounded-2xl border border-gray-200 bg-white px-3 py-2 text-[12px] font-bold text-gray-800 outline-none"
+                        className="rounded-md bg-white px-3 py-1.5 text-[12px] font-medium text-gray-800 outline-none ring-1 ring-inset ring-gray-200 focus:ring-[#5B7BFE]/40"
                       />
-                      <span className="text-[12px] font-bold text-gray-300">至</span>
+                      <span className="text-[12px] font-medium text-gray-300">至</span>
                       <input
                         type="date"
                         value={inboxCustomEndDate}
                         onChange={(event) => setInboxCustomEndDate(event.target.value)}
-                        className="rounded-2xl border border-gray-200 bg-white px-3 py-2 text-[12px] font-bold text-gray-800 outline-none"
+                        className="rounded-md bg-white px-3 py-1.5 text-[12px] font-medium text-gray-800 outline-none ring-1 ring-inset ring-gray-200 focus:ring-[#5B7BFE]/40"
                       />
                     </>
                   )}
@@ -14246,16 +15429,16 @@ export default function App() {
                 <div className="space-y-3">
                   {(inboundConfirmableTasks.length > 0 || filteredOutboundPendingTasks.length > 0) && (
                     <>
-                      <div className="rounded-2xl border border-amber-100 bg-amber-50/50 px-4 py-3">
-                        <p className="text-[12px] font-bold text-amber-700">待确认任务</p>
+                      <div className="text-[10px] font-semibold uppercase tracking-[0.18em] text-amber-700 px-1">
+                        待确认任务
                       </div>
                       {inboundConfirmableTasks.length > 0 && (
-                        <div className="rounded-2xl border border-blue-100 bg-blue-50/40 px-4 py-3">
-                          <p className="text-[12px] font-bold text-blue-700">待你确认</p>
+                        <div className="text-[9.5px] font-semibold uppercase tracking-[0.16em] text-blue-700 px-1">
+                          · 待你确认
                         </div>
                       )}
                       {inboundConfirmableTasks.map((task) => (
-                        <div key={task.id} className="border border-gray-100 rounded-2xl px-4 py-4 flex items-start gap-3">
+                        <div key={task.id} className="relative rounded-xl bg-white px-5 py-3.5 ring-1 ring-inset ring-gray-100 flex items-start gap-3 before:absolute before:left-0 before:top-3.5 before:bottom-3.5 before:w-[3px] before:rounded-r-full before:bg-blue-400/60">
                           <input
                             type="checkbox"
                             checked={selectedInboxIds.includes(task.id)}
@@ -14266,28 +15449,28 @@ export default function App() {
                             }}
                             className="mt-1 h-4 w-4 rounded border-gray-300 text-[#5B7BFE] focus:ring-[#5B7BFE]"
                           />
-                          <div className="flex-1">
+                          <div className="flex-1 min-w-0">
                             <div className="flex items-center gap-2 mb-2">
-                              <span className="text-[14px] font-bold text-gray-900">{task.title}</span>
-                              <span className={`px-2 py-1 rounded-md text-[10px] font-bold ${task.priority === 'high' ? 'bg-rose-50 text-rose-600' : 'bg-gray-100 text-gray-500'}`}>{task.priority}</span>
+                              <span className="text-[14px] font-medium text-gray-900 tracking-tight">{task.title}</span>
+                              <span className={`px-2 py-[2px] rounded-full text-[9.5px] font-semibold uppercase tracking-[0.12em] ring-1 ring-inset ${task.priority === 'high' ? 'ring-rose-200 text-rose-700' : 'ring-gray-200 text-gray-500'}`}>{task.priority}</span>
                             </div>
-                            <p className="text-[12px] text-gray-500 mb-2">{task.desc || '来自内部协作系统的新事项。'}</p>
-                            <div className="flex flex-wrap gap-2 text-[11px] font-medium">
-                              <span className="bg-gray-50 text-gray-500 px-2 py-1 rounded-md">{task.ownerName}</span>
-                              <span className="bg-orange-50 text-orange-600 px-2 py-1 rounded-md">{task.ddl}</span>
-                              {task.creatorName && <span className="bg-blue-50 text-[#5B7BFE] px-2 py-1 rounded-md">发起人：{task.creatorName}</span>}
+                            <p className="text-[12px] text-gray-500 mb-2 leading-relaxed">{task.desc || '来自内部协作系统的新事项。'}</p>
+                            <div className="flex flex-wrap gap-1.5 text-[11px] font-medium">
+                              <span className="bg-[#FAFAFA] text-gray-600 px-2 py-[2px] rounded-full ring-1 ring-inset ring-gray-200">{task.ownerName}</span>
+                              <span className="bg-orange-50/60 text-orange-700 px-2 py-[2px] rounded-full ring-1 ring-inset ring-orange-200">{task.ddl}</span>
+                              {task.creatorName && <span className="bg-[#5B7BFE]/6 text-[#3652c9] px-2 py-[2px] rounded-full ring-1 ring-inset ring-[#5B7BFE]/25">发起人:{task.creatorName}</span>}
                             </div>
                             {task.collaborators.length > 0 && (
-                              <div className="mt-2 flex flex-wrap gap-2">
+                              <div className="mt-2 flex flex-wrap gap-1.5">
                                 {task.collaborators.map((item) => (
                                   <span
                                     key={item.userId}
-                                    className={`px-2 py-1 rounded-md text-[10px] font-bold ${
+                                    className={`px-2 py-[2px] rounded-full text-[10px] font-medium ring-1 ring-inset ${
                                       item.inboxStatus === 'accepted'
-                                        ? 'bg-emerald-50 text-emerald-600'
+                                        ? 'ring-emerald-200 text-emerald-700'
                                         : item.inboxStatus === 'returned'
-                                          ? 'bg-rose-50 text-rose-600'
-                                          : 'bg-gray-100 text-gray-500'
+                                          ? 'ring-rose-200 text-rose-700'
+                                          : 'ring-gray-200 text-gray-500'
                                     }`}
                                   >
                                     {item.fullName} · {item.inboxStatus === 'accepted' ? '已接收' : item.inboxStatus === 'returned' ? '已退回' : '待处理'}
@@ -14310,36 +15493,35 @@ export default function App() {
                         </div>
                       ))}
                       {filteredOutboundPendingTasks.length > 0 && (
-                        <div className="rounded-2xl border border-amber-100 bg-amber-50/40 px-4 py-3">
-                          <p className="text-[12px] font-bold text-amber-700">等待对方确认</p>
+                        <div className="text-[9.5px] font-semibold uppercase tracking-[0.16em] text-amber-700 px-1 pt-2">
+                          · 等待对方确认
                         </div>
                       )}
                       {filteredOutboundPendingTasks.map((task) => (
-                        <div key={`outbound-${task.id}`} className="border border-gray-100 rounded-2xl px-4 py-4 flex items-start gap-3">
-                          <div className="mt-1 h-4 w-4 rounded-full border border-amber-300 bg-amber-50" />
-                          <div className="flex-1">
+                        <div key={`outbound-${task.id}`} className="relative rounded-xl bg-white px-5 py-3.5 ring-1 ring-inset ring-gray-100 flex items-start gap-3 before:absolute before:left-0 before:top-3.5 before:bottom-3.5 before:w-[3px] before:rounded-r-full before:bg-amber-400/60">
+                          <div className="flex-1 min-w-0">
                             <div className="flex items-center gap-2 mb-2">
-                              <span className="text-[14px] font-bold text-gray-900">{task.title}</span>
-                              <span className="px-2 py-1 rounded-md text-[10px] font-bold bg-amber-50 text-amber-700">
+                              <span className="text-[14px] font-medium text-gray-900 tracking-tight">{task.title}</span>
+                              <span className="px-2 py-[2px] rounded-full text-[9.5px] font-semibold uppercase tracking-[0.12em] text-amber-700 ring-1 ring-inset ring-amber-200">
                                 待 {task.collaborationSummary.pending || 0} 人确认
                               </span>
                             </div>
-                            <p className="text-[12px] text-gray-500 mb-2">{task.desc || '你发起的协作任务正在等待对方确认。'}</p>
-                            <div className="flex flex-wrap gap-2 text-[11px] font-medium">
-                              <span className="bg-gray-50 text-gray-500 px-2 py-1 rounded-md">{task.ownerName}</span>
-                              <span className="bg-orange-50 text-orange-600 px-2 py-1 rounded-md">{task.ddl}</span>
-                              {task.creatorName && <span className="bg-blue-50 text-[#5B7BFE] px-2 py-1 rounded-md">发起人：{task.creatorName}</span>}
+                            <p className="text-[12px] text-gray-500 mb-2 leading-relaxed">{task.desc || '你发起的协作任务正在等待对方确认。'}</p>
+                            <div className="flex flex-wrap gap-1.5 text-[11px] font-medium">
+                              <span className="bg-[#FAFAFA] text-gray-600 px-2 py-[2px] rounded-full ring-1 ring-inset ring-gray-200">{task.ownerName}</span>
+                              <span className="bg-orange-50/60 text-orange-700 px-2 py-[2px] rounded-full ring-1 ring-inset ring-orange-200">{task.ddl}</span>
+                              {task.creatorName && <span className="bg-[#5B7BFE]/6 text-[#3652c9] px-2 py-[2px] rounded-full ring-1 ring-inset ring-[#5B7BFE]/25">发起人:{task.creatorName}</span>}
                             </div>
-                            <div className="mt-2 flex flex-wrap gap-2">
+                            <div className="mt-2 flex flex-wrap gap-1.5">
                               {task.collaborators.map((item) => (
                                 <span
                                   key={item.userId}
-                                  className={`px-2 py-1 rounded-md text-[10px] font-bold ${
+                                  className={`px-2 py-[2px] rounded-full text-[10px] font-medium ring-1 ring-inset ${
                                     item.inboxStatus === 'accepted'
-                                      ? 'bg-emerald-50 text-emerald-600'
+                                      ? 'ring-emerald-200 text-emerald-700'
                                       : item.inboxStatus === 'returned'
-                                        ? 'bg-rose-50 text-rose-600'
-                                        : 'bg-amber-50 text-amber-700'
+                                        ? 'ring-rose-200 text-rose-700'
+                                        : 'ring-amber-200 text-amber-700'
                                   }`}
                                 >
                                   {item.fullName} · {item.inboxStatus === 'accepted' ? '已接收' : item.inboxStatus === 'returned' ? '已退回' : '待确认'}
@@ -14356,11 +15538,11 @@ export default function App() {
                   )}
                   {inboundNotificationTasks.length > 0 && (
                     <>
-                      <div className="rounded-2xl border border-sky-100 bg-sky-50/50 px-4 py-3">
-                        <p className="text-[12px] font-bold text-sky-700">系统通知</p>
+                      <div className="text-[10px] font-semibold uppercase tracking-[0.18em] text-sky-700 px-1 pt-2">
+                        系统通知
                       </div>
                       {inboundNotificationTasks.map((task) => (
-                        <div key={`notice-${task.id}`} className="border border-gray-100 rounded-2xl px-4 py-4 flex items-start gap-3">
+                        <div key={`notice-${task.id}`} className="relative rounded-xl bg-white px-5 py-3.5 ring-1 ring-inset ring-gray-100 flex items-start gap-3 before:absolute before:left-0 before:top-3.5 before:bottom-3.5 before:w-[3px] before:rounded-r-full before:bg-sky-400/60">
                           <input
                             type="checkbox"
                             checked={selectedInboxIds.includes(task.id)}
@@ -14371,16 +15553,16 @@ export default function App() {
                             }}
                             className="mt-1 h-4 w-4 rounded border-gray-300 text-[#5B7BFE] focus:ring-[#5B7BFE]"
                           />
-                          <div className="flex-1">
+                          <div className="flex-1 min-w-0">
                             <div className="flex items-center gap-2 mb-2">
-                              <span className="px-2 py-1 rounded-md text-[10px] font-bold bg-blue-50 text-blue-600">通知</span>
-                              <span className="text-[14px] font-bold text-gray-900">{task.title}</span>
+                              <span className="px-2 py-[2px] rounded-full text-[9.5px] font-semibold uppercase tracking-[0.12em] text-sky-700 ring-1 ring-inset ring-sky-200">通知</span>
+                              <span className="text-[14px] font-medium text-gray-900 tracking-tight">{task.title}</span>
                             </div>
-                            <p className="text-[12px] text-gray-500 mb-2">{task.desc || '来自内部协作系统的新事项。'}</p>
-                            <div className="flex flex-wrap gap-2 text-[11px] font-medium">
-                              <span className="bg-gray-50 text-gray-500 px-2 py-1 rounded-md">{task.ownerName}</span>
-                              <span className="bg-orange-50 text-orange-600 px-2 py-1 rounded-md">{task.ddl}</span>
-                              {task.creatorName && <span className="bg-blue-50 text-[#5B7BFE] px-2 py-1 rounded-md">发起人：{task.creatorName}</span>}
+                            <p className="text-[12px] text-gray-500 mb-2 leading-relaxed">{task.desc || '来自内部协作系统的新事项。'}</p>
+                            <div className="flex flex-wrap gap-1.5 text-[11px] font-medium">
+                              <span className="bg-[#FAFAFA] text-gray-600 px-2 py-[2px] rounded-full ring-1 ring-inset ring-gray-200">{task.ownerName}</span>
+                              <span className="bg-orange-50/60 text-orange-700 px-2 py-[2px] rounded-full ring-1 ring-inset ring-orange-200">{task.ddl}</span>
+                              {task.creatorName && <span className="bg-[#5B7BFE]/6 text-[#3652c9] px-2 py-[2px] rounded-full ring-1 ring-inset ring-[#5B7BFE]/25">发起人:{task.creatorName}</span>}
                             </div>
                           </div>
                           <div className="flex flex-col gap-2">
@@ -14392,12 +15574,12 @@ export default function App() {
                   )}
                   {inboundConfirmableTasks.length === 0 && filteredOutboundPendingTasks.length === 0 && inboundNotificationTasks.length === 0 && (
                     <div className="text-center py-16 text-gray-400">
-                      <div className="mx-auto mb-3 w-10 h-10 rounded-full bg-emerald-50 flex items-center justify-center">
+                      <div className="mx-auto mb-3 w-10 h-10 rounded-full bg-emerald-50/60 flex items-center justify-center ring-1 ring-inset ring-emerald-200">
                         <Inbox className="w-5 h-5 text-emerald-500" />
                       </div>
-                      <p className="text-[14px] font-bold text-gray-600 mb-1">{inboxFiltersHideTasks ? '当前筛选下没有待处理协作' : '收件箱已清空'}</p>
-                      <p className="text-[13px] text-gray-400">
-                        {inboxFiltersHideTasks ? '调整时间范围后，可以查看其它待确认或等待确认的协作任务。' : '待你确认或等待对方确认的协作任务会出现在这里。'}
+                      <p className="text-[13px] font-medium text-gray-700 mb-1 tracking-tight">{inboxFiltersHideTasks ? '当前筛选下没有待处理协作' : '收件箱已清空'}</p>
+                      <p className="text-[12px] text-gray-400 leading-relaxed">
+                        {inboxFiltersHideTasks ? '调整时间范围后,可以查看其它待确认或等待确认的协作任务。' : '待你确认或等待对方确认的协作任务会出现在这里。'}
                       </p>
                     </div>
                   )}
@@ -15721,6 +16903,7 @@ export default function App() {
             </div>
           )}
         </div>
+        </DraggingTaskProvider>
 
         {activeReviewDrillTarget && (
           <div
@@ -16128,6 +17311,13 @@ export default function App() {
             onSave={(data) => void handleSaveTemplate(data)}
           />
         )}
+
+        <SmartTaskParseModal
+          open={isSmartParseModalOpen}
+          onClose={() => setIsSmartParseModalOpen(false)}
+          onParsed={handleSmartParseResult}
+        />
+
 
         {activeEventLine && (() => {
           const el = activeEventLine.eventLine;
@@ -17817,6 +19007,38 @@ export default function App() {
   const renderClientWorkspaceView = () => {
     const currentClient = clients.find((client) => client.id === currentClientId) || clients[0];
     const [searchQuery, setSearchQuery] = useState('');
+    // P9：左侧项目列表可收起。文档编辑模式或屏幕窄时主区会更宽。
+    const [isClientListCollapsed, setIsClientListCollapsed] = useState(false);
+    // 「近期项目」排序 — 本机记录"最近切到哪个客户"
+    // 用 localStorage 而非后端字段:零后端改动,每台机器各自的"最近用"独立(更符合个人体感)
+    // 切换 client(由 useEffect 监听 currentClientId 触发)时记录 timestamp
+    const RECENT_CLIENTS_LS_KEY = 'yiyu.workspace.recentClients.v1';
+    const [recentClientUsage, setRecentClientUsage] = useState<Record<string, number>>(() => {
+      if (typeof window === 'undefined') return {};
+      try {
+        const raw = window.localStorage.getItem(RECENT_CLIENTS_LS_KEY);
+        return raw ? (JSON.parse(raw) as Record<string, number>) : {};
+      } catch {
+        return {};
+      }
+    });
+    useEffect(() => {
+      if (!currentClientId) return;
+      setRecentClientUsage((prev) => {
+        const next = { ...prev, [currentClientId]: Date.now() };
+        // 只保留最近 80 个,避免 localStorage 无限增长
+        const trimmed = Object.fromEntries(
+          Object.entries(next).sort((a, b) => b[1] - a[1]).slice(0, 80),
+        );
+        try {
+          window.localStorage.setItem(RECENT_CLIENTS_LS_KEY, JSON.stringify(trimmed));
+        } catch {
+          // localStorage 满或被禁:静默忽略,本次会话内仍按 state 排序
+        }
+        return trimmed;
+      });
+    }, [currentClientId]);
+    // 隐藏项目订阅已经提到主组件层(hiddenClientsVersion 闭包外层),这里不再重复订阅
     const workspaceClientUiKey = currentClientId || WORKSPACE_COMPOSER_NO_CLIENT_KEY;
     const workspaceRightTab = getWorkspaceRightTab(workspaceClientUiState, workspaceClientUiKey);
     const setWorkspaceRightTab = (tab: WorkspaceRightTabKey) =>
@@ -18301,22 +19523,22 @@ export default function App() {
     creative: {
       label: '创意优先',
       icon: Sparkles,
-      tone: 'border-purple-300/50 bg-purple-50 text-purple-700',
+      tone: 'ring-purple-300/55 bg-purple-50/60 text-purple-700 hover:bg-purple-50',
       iconTone: 'text-purple-600',
       description: '完全自由创作，不引用任何客户资料。等同于通用 LLM 窗口',
     },
     balanced: {
       label: '兼顾资料',
       icon: Scale,
-      tone: 'border-blue-300/50 bg-blue-50 text-blue-700',
+      tone: 'ring-blue-300/55 bg-blue-50/60 text-blue-700 hover:bg-blue-50',
       iconTone: 'text-blue-600',
       description: '基于客户资料的事实底色，但叙事和措辞自由发挥。默认推荐',
     },
     strict: {
       label: '完全客观',
       icon: ShieldCheck,
-      tone: 'border-slate-300/50 bg-slate-50 text-slate-700',
-      iconTone: 'text-slate-600',
+      tone: 'ring-gray-300/55 bg-gray-50/60 text-gray-700 hover:bg-gray-50',
+      iconTone: 'text-gray-600',
       description: '严格基于资料，所有判断带溯源；不允许文学修辞',
     },
   } as const;
@@ -19096,7 +20318,41 @@ export default function App() {
       };
     }, [currentClientId, isImportSubmitting, workspace?.knowledgeStatus?.lastJobStatus]);
 
-    const filteredClients = clients.filter((client) => !searchQuery.trim() || `${client.name}${client.alias}${client.domain}`.includes(searchQuery.trim()));
+    // 工作台左栏「近期项目」排序 — localStorage 维护本机的"最后访问"字典
+    // 切到某个客户时写入 timestamp;排序时按它 DESC,未访问过的按 lastActivityAt 兜底
+    // 隐藏的项目:
+    //   - 无搜索时:从列表里隐去(默认看不到)
+    //   - 有搜索时:仍然出现(便于用户找回),但需要 UI 上标 "已隐藏"
+    //   - 当前正在浏览的项目(currentClientId)即使被隐藏也保留显示,避免上下文丢失
+    // 「近期项目」主列表:严格不显示冷冻的(即使是 currentClient 也不例外)
+    // 这样冷冻 = 真正"消失",必须搜索才能临时找回,必须解冻才永久回归
+    const filteredClients = useMemo(() => {
+      void hiddenClientsVersion;
+      const query = searchQuery.trim();
+      const matched = clients.filter((client) => {
+        if (isClientHidden(client.id)) return false;
+        if (!query) return true;
+        return `${client.name}${client.alias}${client.domain}`.includes(query);
+      });
+      return [...matched].sort((a, b) => {
+        const aTime = recentClientUsage[a.id] || 0;
+        const bTime = recentClientUsage[b.id] || 0;
+        if (aTime !== bTime) return bTime - aTime;
+        return (b.lastActivityAt || '').localeCompare(a.lastActivityAt || '');
+      });
+    }, [clients, recentClientUsage, searchQuery, hiddenClientsVersion]);
+
+    // 「已冷冻 · 搜索匹配」:仅在用户搜索时出现,展示冷冻项目让他能临时进入
+    // 点击只是 setCurrentClientId(临时访问),并不会让它出现在主列表 — 必须解冻才回归
+    const hiddenSearchMatches = useMemo(() => {
+      void hiddenClientsVersion;
+      const query = searchQuery.trim();
+      if (!query) return [];
+      return clients.filter((client) =>
+        isClientHidden(client.id)
+        && `${client.name}${client.alias}${client.domain}`.includes(query),
+      );
+    }, [clients, searchQuery, hiddenClientsVersion]);
     const currentThreadId = useMemo(
       () =>
         pickWorkspaceCurrentThreadId({
@@ -19144,6 +20400,14 @@ export default function App() {
       setIsDeletingChatPair(true);
       try {
         const result = await deleteClientChatMessagePair(currentClientId, message.id);
+        // 把已删除的 message id 从合并 bag 里剔除,避免合并导出时后端 404 "Chat message not found"
+        const purgeBagIds = (idsToRemove: string[]) => {
+          if (!currentClientId || idsToRemove.length === 0) return;
+          const next = currentExportBag.filter((id) => !idsToRemove.includes(id));
+          if (next.length !== currentExportBag.length) {
+            setWorkspaceExportBag(currentClientId, next);
+          }
+        };
         // 后端幂等：同一对里的另一条已经在上一次请求中被删除时，alreadyDeleted=true。
         // 此时 result.threadId/result.deletedIds 都是空，需要用本地 message 自身的 threadId 补齐 UI 移除。
         if (result.alreadyDeleted) {
@@ -19152,6 +20416,7 @@ export default function App() {
             threadId: message.threadId,
             messageIds: [message.id],
           });
+          purgeBagIds([message.id]);
           if (activeMessageId === message.id) setActiveMessageId(null);
           flash('info', '对话已删除');
           return;
@@ -19161,6 +20426,7 @@ export default function App() {
           threadId: result.threadId,
           messageIds: result.deletedIds,
         });
+        purgeBagIds(result.deletedIds);
         if (activeMessageId && result.deletedIds.includes(activeMessageId)) {
           setActiveMessageId(null);
         }
@@ -19629,40 +20895,7 @@ export default function App() {
       }
     }, [latestChatMessageId, thinkingPanelVisible]);
 
-    const aiStatus = useMemo(() => {
-      if (!health?.ai.provider) {
-        return {
-          label: 'AI 状态加载中',
-          className: 'text-gray-600 bg-gray-50 border-gray-200 hover:bg-gray-100',
-          dotClassName: 'bg-gray-400',
-          subtitle: '正在读取当前模型',
-        };
-      }
-      const provider = health.ai.provider as AiProvider;
-      const providerLabel = aiModelDisplayLabel(provider, health.ai.model, health.ai.providerLabel);
-      if (isRealAiConfigured(health.ai)) {
-        return {
-          label: `${providerLabel} 已连接`,
-          className: 'text-emerald-600 bg-emerald-50 border-emerald-100 hover:bg-emerald-100',
-          dotClassName: 'bg-emerald-500',
-          subtitle: health.ai.model,
-        };
-      }
-      if (provider !== 'mock') {
-        return {
-          label: `${providerLabel} 未配置`,
-          className: 'text-amber-700 bg-amber-50 border-amber-100 hover:bg-amber-100',
-          dotClassName: 'bg-amber-500',
-          subtitle: getWorkspaceAiUnavailableReason(health.ai),
-        };
-      }
-      return {
-        label: '未配置大模型',
-        className: 'text-amber-700 bg-amber-50 border-amber-100 hover:bg-amber-100',
-        dotClassName: 'bg-amber-500',
-        subtitle: '请到系统设置配置 API',
-      };
-    }, [health]);
+    // P10：工作台 AI chip 已升级到全局右上角（GlobalAiStatusBadge），原 aiStatus useMemo 已移除。
 
     const openAiSettingsFromWorkspace = () => {
       setActiveTab('settings');
@@ -19676,11 +20909,11 @@ export default function App() {
     const clientDnaReady = Boolean(workspace?.dnaModules?.some((module) => module.hasDocument));
     const clientDnaStatus = clientDnaReady
       ? {
-          className: 'text-emerald-600 bg-emerald-50 border-emerald-100 hover:bg-emerald-100',
+          className: 'text-emerald-700 bg-emerald-50 border-emerald-200',
           dotClassName: 'bg-emerald-500',
         }
       : {
-          className: 'text-gray-500 bg-gray-50 border-gray-200 hover:bg-gray-100',
+          className: 'text-gray-500 bg-gray-50 border-gray-200',
           dotClassName: 'bg-gray-400',
         };
 
@@ -20083,12 +21316,13 @@ export default function App() {
         flash('error', '请先选择项目');
         return;
       }
-      setClientTextDocumentDraft({
+      // P9：钢笔按钮点击 → 主工作台切到全屏 inline 文档编辑器，不弹 modal
+      setClientWorkspaceInlineEditor({
+        clientId: currentClientId,
         title: '',
-        content: '',
+        content: SAMPLE_DOCUMENT_MARKDOWN,
         titleEdited: false,
       });
-      setClientOverlayMode('paste_document');
     };
 
 	    const openClientLinkMaterialOverlay = () => {
@@ -20513,7 +21747,7 @@ export default function App() {
             role: 'assistant',
             createdAt: new Date(Date.now() + 1).toISOString(),
             status: 'success',
-            content: '庆华暂时没能完成这次回答。',
+            content: '本次回答未成功生成，可以重试一下。',
             modelRoute: '发送失败',
             answerMode: 'system_failure',
             evidenceStatus: 'none',
@@ -20532,8 +21766,8 @@ export default function App() {
               lastUpdatedAt: createdAt,
             },
             structuredData: {
-              content: '庆华暂时没能完成这次回答。',
-              judgment: '当前请求发送失败，尚未生成正式回答。',
+              content: '本次回答未成功生成，可以重试一下。',
+              judgment: '请求发送失败，尚未生成正式回答。',
               analysis: detail,
               actions: '请稍后重试；如果持续失败，请检查本地后端是否为最新版本。',
               timeline: '修复后可立即重试。',
@@ -20593,6 +21827,8 @@ export default function App() {
     // 队列自动派发：保持最新 sendMessage 在 ref，避免 useEffect 依赖 sendMessage 引起的 stale-closure。
     const sendMessageRef = useRef(sendMessage);
     sendMessageRef.current = sendMessage;
+    // 把 queue 长度作为依赖：不然 enqueue 后 effect 不会重新评估，要等切走再回来才补派发。
+    const currentQueueLength = currentClientId ? (getWorkspaceQuestionQueue(currentClientId).length) : 0;
     useEffect(() => {
       if (!currentClientId) return;
       if (hasPendingAnalysisRun || isComposerStartingMessage) return;
@@ -20605,7 +21841,7 @@ export default function App() {
         void sendMessageRef.current?.(head, { fromQueue: true });
       }, 80);
       return () => window.clearTimeout(timer);
-    }, [currentClientId, hasPendingAnalysisRun, isComposerStartingMessage]);
+    }, [currentClientId, hasPendingAnalysisRun, isComposerStartingMessage, currentQueueLength]);
 
     const syncMeetingFromPipeline = async (
       pipelineAction: () => Promise<{ meeting: { id: string; stage: string; transcriptText: string; notes: string }; message: string }>,
@@ -20694,6 +21930,86 @@ export default function App() {
       if (!currentClientId) return;
       setWorkspaceExportBag(currentClientId, []);
     };
+    // 把 currentExportBag 里的 assistant message 按 createdAt 拼成 markdown
+    // 格式跟后端 export_answer_to_docx 保持一致(单段=纯回答;多段=## 1. 问题 + 回答)
+    const buildMergedMarkdown = (): { title: string; body: string; count: number } => {
+      if (!workspace || currentExportBag.length === 0) {
+        return { title: '', body: '', count: 0 };
+      }
+      const messages = (workspace.recentMessages || []) as DisplayChatMessage[];
+      const messageMap = new Map(messages.map((m) => [m.id, m]));
+      const assistants = currentExportBag
+        .map((id) => messageMap.get(id))
+        .filter((m): m is DisplayChatMessage => Boolean(m) && m!.role === 'assistant')
+        .sort((a, b) => (a.createdAt || '').localeCompare(b.createdAt || ''));
+      if (assistants.length === 0) {
+        return { title: '', body: '', count: 0 };
+      }
+      const findUserQuestion = (assistant: DisplayChatMessage): string => {
+        const candidates = messages
+          .filter((m) => m.role === 'user'
+            && m.threadId === assistant.threadId
+            && (m.createdAt || '') <= (assistant.createdAt || ''))
+          .sort((a, b) => (b.createdAt || '').localeCompare(a.createdAt || ''));
+        return (candidates[0]?.content || '').trim();
+      };
+      const sections = assistants.map((assistant) => ({
+        question: findUserQuestion(assistant),
+        answer: (assistant.content || '').trim() || '(暂无内容)',
+      }));
+      if (sections.length === 1) {
+        return {
+          title: sections[0].question || sections[0].answer.slice(0, 40) || 'AI 回答',
+          body: sections[0].answer,
+          count: 1,
+        };
+      }
+      const firstQ = sections[0].question || '对话整理';
+      const parts = sections.map((section, idx) => {
+        const heading = section.question || `第 ${idx + 1} 段对话`;
+        return `## ${idx + 1}. ${heading}\n\n${section.answer}\n`;
+      });
+      return {
+        title: `${firstQ.slice(0, 36)} 等 ${sections.length} 段对话`,
+        body: parts.join('\n'),
+        count: sections.length,
+      };
+    };
+
+    const handleCopyMergedText = async () => {
+      const merged = buildMergedMarkdown();
+      if (!merged.body) {
+        flash('error', '合并列表为空或对话已失效');
+        return;
+      }
+      try {
+        await navigator.clipboard.writeText(merged.body);
+        flash('success', `已复制 ${merged.count} 段全文到剪贴板`);
+      } catch (error) {
+        flash('error', error instanceof Error ? `复制失败:${error.message}` : '复制失败');
+      }
+    };
+
+    const handleOpenMergedInEditor = () => {
+      if (!currentClientId) {
+        flash('error', '请先选择项目');
+        return;
+      }
+      const merged = buildMergedMarkdown();
+      if (!merged.body) {
+        flash('error', '合并列表为空或对话已失效');
+        return;
+      }
+      // 复用钢笔按钮的 inline 编辑器入口,标题由 AI 回答自动派生,内容预填合并后的 markdown
+      setClientWorkspaceInlineEditor({
+        clientId: currentClientId,
+        title: merged.title,
+        content: merged.body,
+        titleEdited: Boolean(merged.title),
+      });
+      flash('success', `已把 ${merged.count} 段内容打开到本地编辑器`);
+    };
+
     const handleExportBag = async () => {
       if (!currentClientId || currentExportBag.length === 0 || isExportingBag) return;
       try {
@@ -20705,12 +22021,21 @@ export default function App() {
         flash(
           'success',
           opened
-            ? `已合并 ${count} 段对话为文档：${result.fileName}`
-            : `已合并 ${count} 段对话并归档：${result.fileName}`,
+            ? `已合并 ${count} 段对话为文档:${result.fileName}`
+            : `已合并 ${count} 段对话并归档:${result.fileName}`,
         );
         clearExportBag();
       } catch (error) {
-        flash('error', error instanceof Error ? error.message : '合并导出失败');
+        const detail = error instanceof Error ? error.message : '合并导出失败';
+        // "Chat message not found" / 404 → 合并 bag 里有失效 ID(常见原因:那条问答已被删)
+        // 自动清掉脏 bag 让用户重新选择,避免反复失败
+        const looksLikeStaleBag = /Chat message not found|404|not found/i.test(detail);
+        if (looksLikeStaleBag) {
+          clearExportBag();
+          flash('error', '合并列表里有已删除的对话,已自动清空。请重新选择需要合并的回答。');
+        } else {
+          flash('error', detail);
+        }
       } finally {
         setIsExportingBag(false);
       }
@@ -20746,113 +22071,201 @@ export default function App() {
     };
 
     return (
-      <div className="h-full bg-[#F9FAFB] overflow-x-auto overflow-y-hidden">
+      <div className="h-full bg-white overflow-x-auto overflow-y-hidden">
         <div className="flex h-full min-w-[850px]">
-          <div className="w-[220px] xl:w-[260px] bg-white border-r border-gray-100 flex flex-col h-full z-10 shrink-0 shadow-[2px_0_10px_rgba(0,0,0,0.02)]">
-            <div className="p-5 xl:p-6 border-b border-gray-50">
-              <div className="mb-4 flex items-center gap-2">
+          {/* 左栏:项目列表,跟主 nav 一致的扁平 + 左锚线风格。P9：可收起。 */}
+          {isClientListCollapsed ? (
+            <div className="w-[44px] bg-white border-r border-gray-100 flex flex-col items-center pt-4 shrink-0 z-10">
+              <button
+                type="button"
+                onClick={() => setIsClientListCollapsed(false)}
+                className="inline-flex h-9 w-9 items-center justify-center rounded-lg text-gray-500 hover:bg-gray-50 hover:text-[#5B7BFE] transition-colors"
+                title="展开项目列表"
+                aria-label="展开项目列表"
+              >
+                <ChevronRight size={18} strokeWidth={2} />
+              </button>
+              {currentClient && (
+                <button
+                  type="button"
+                  onClick={() => setIsClientListCollapsed(false)}
+                  className="mt-2 inline-flex h-9 w-9 items-center justify-center rounded-lg text-gray-400 hover:text-[#5B7BFE] transition-colors"
+                  title={`当前：${currentClient.name}`}
+                >
+                  <Briefcase size={16} strokeWidth={2} />
+                </button>
+              )}
+            </div>
+          ) : (
+          <div className="w-[220px] xl:w-[260px] bg-white border-r border-gray-100 flex flex-col h-full z-10 shrink-0">
+            <div className="px-4 xl:px-5 pt-6 pb-4">
+              {/* 搜索 + 创建按钮 + 收起按钮 */}
+              <div className="mb-5 flex items-center gap-2">
                 <div className="relative group flex-1">
-                  <Search size={16} className="absolute left-3.5 top-1/2 -translate-y-1/2 text-gray-400 group-focus-within:text-[#5B7BFE] transition-colors" />
+                  <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 group-focus-within:text-[#5B7BFE] transition-colors" />
                   <input
                     type="text"
                     placeholder="搜索项目..."
                     value={searchQuery}
                     onChange={(event) => setSearchQuery(event.target.value)}
-                    className="w-full bg-gray-50/80 border border-gray-100 rounded-full pl-10 pr-4 py-2 text-[13px] font-medium outline-none focus:bg-white focus:border-[#5B7BFE] focus:ring-4 focus:ring-blue-500/10 transition-all placeholder-gray-400"
+                    className="w-full bg-white border border-gray-200 rounded-lg pl-9 pr-3 py-2 text-[13px] font-medium text-gray-800 outline-none focus:border-[#5B7BFE] transition-colors placeholder-gray-400"
                   />
                 </div>
-                <Button
-                  className="h-11 w-11 shrink-0 rounded-[16px] p-0 border border-[#E5E5EA] bg-[#F2F2F7] text-[#6B7280] shadow-[0_1px_2px_rgba(0,0,0,0.05)] hover:bg-[#E9E9EE] hover:border-[#D1D5DB] hover:text-[#4B5563]"
+                <button
+                  type="button"
                   onClick={openCreateClientModal}
+                  className="shrink-0 h-9 w-9 inline-flex items-center justify-center rounded-lg border border-gray-200 bg-white text-gray-500 hover:bg-gray-50 hover:text-[#5B7BFE] hover:border-[#5B7BFE]/40 transition-colors"
                   aria-label="创建项目"
                   title="创建项目"
                 >
-                  <Plus size={20} strokeWidth={2.4} />
-                </Button>
+                  <Plus size={16} strokeWidth={2} />
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setIsClientListCollapsed(true)}
+                  className="shrink-0 h-9 w-9 inline-flex items-center justify-center rounded-lg text-gray-400 hover:bg-gray-50 hover:text-[#5B7BFE] transition-colors"
+                  aria-label="收起项目列表"
+                  title="收起项目列表（腾出主区）"
+                >
+                  <ChevronLeft size={16} strokeWidth={2} />
+                </button>
               </div>
 
+              {/* 项目列表:扁平 list + 左锚线 active,跟主 nav 风格统一 */}
               <div>
-                <p className="text-[10px] font-bold text-gray-400 uppercase tracking-widest mb-3">近期项目</p>
-                <div className="workspace-thin-scroll max-h-[306px] space-y-1.5 overflow-y-auto pr-1 -mr-1">
-                  {filteredClients.map((client) => (
-                    <div
-                      key={client.id}
-                      className={`w-full px-2 py-1 rounded-2xl transition-all duration-200 flex items-center gap-1.5 group ${
-                        currentClientId === client.id ? 'bg-blue-50/80 shadow-[inset_0_1px_3px_rgba(91,123,254,0.05)]' : 'hover:bg-gray-50'
-                      }`}
-                    >
-                      <button
-                        onClick={() => {
-                          setCurrentClientId(client.id);
-                          void refreshWorkspace(client.id);
-                          setActiveMessageId(null);
-                        }}
-                        onDoubleClick={() => openEditClientModal(client)}
-                        className={`flex-1 text-left px-3 xl:px-4 py-2.5 rounded-2xl text-[13px] font-bold transition-all duration-200 flex items-center justify-between ${
-                          currentClientId === client.id ? 'text-[#5B7BFE]' : 'text-gray-600'
+                <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-gray-400 mb-2 px-1">近期项目</p>
+                <div className="workspace-thin-scroll max-h-[calc(100vh-280px)] overflow-y-auto -mx-1 pr-1">
+                  {filteredClients.map((client) => {
+                    const isActive = currentClientId === client.id;
+                    return (
+                      <div
+                        key={client.id}
+                        className={`relative flex items-center group transition-colors duration-150 border-l-[2.5px] rounded-r-md ${
+                          isActive
+                            ? 'border-[#5B7BFE] bg-gray-100/70'
+                            : 'border-transparent hover:bg-gray-50'
                         }`}
                       >
-                        <span className="truncate pr-2">{client.name}</span>
-                        {currentClientId === client.id && <CheckCircle2 size={16} className="text-[#5B7BFE] shrink-0 opacity-80" />}
-                      </button>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setCurrentClientId(client.id);
+                            void refreshWorkspace(client.id);
+                            setActiveMessageId(null);
+                          }}
+                          onDoubleClick={() => openEditClientModal(client)}
+                          className={`flex-1 min-w-0 text-left pl-3.5 pr-2 py-2.5 text-[13.5px] tracking-[0.005em] transition-colors truncate ${
+                            isActive ? 'font-semibold text-gray-900' : 'font-medium text-gray-700 hover:text-gray-900'
+                          }`}
+                          title={client.name}
+                        >
+                          {client.name}
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => openEditClientModal(client)}
+                          className="shrink-0 mr-1 p-1.5 rounded-md text-gray-300 hover:text-[#5B7BFE] hover:bg-white opacity-0 group-hover:opacity-100 transition-all"
+                          title={`编辑项目:${client.name}`}
+                        >
+                          <PenTool size={13} />
+                        </button>
+                      </div>
+                    );
+                  })}
+                  {filteredClients.length === 0 && hiddenSearchMatches.length === 0 && (
+                    <div className="px-2 py-4 text-center">
+                      <p className="text-[11.5px] text-gray-400">没有找到匹配的项目</p>
                       <button
-                        onClick={() => openEditClientModal(client)}
-                        className="shrink-0 rounded-xl px-2 py-2 text-[11px] font-bold text-gray-400 hover:text-[#5B7BFE] hover:bg-white transition-colors"
-                        title={`编辑项目：${client.name}`}
-                      >
-                        <PenTool size={14} />
-                      </button>
-                    </div>
-                  ))}
-                  {filteredClients.length === 0 && (
-                    <div className="rounded-2xl border border-dashed border-gray-200 bg-gray-50/70 px-4 py-4 text-center">
-                      <p className="text-[12px] font-semibold text-gray-500">没有找到匹配的项目</p>
-                      <button
+                        type="button"
                         onClick={() => {
                           setSearchQuery('');
                           openCreateClientModal();
                         }}
-                        className="mt-2 text-[12px] font-bold text-[#5B7BFE] hover:text-[#4a6be6]"
+                        className="mt-2 text-[11.5px] font-medium text-[#5B7BFE] hover:text-[#4a6be6]"
                       >
-                        清空搜索并创建项目
+                        清空搜索并创建项目 →
                       </button>
                     </div>
                   )}
                 </div>
+
+                {/* 已冷冻 · 搜索匹配 — 单独分区,只在搜索时出现;点击只是临时进入,不会让它出现在主列表 */}
+                {hiddenSearchMatches.length > 0 && (
+                  <div className="mt-5">
+                    <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-gray-400 mb-2 px-1 inline-flex items-center gap-1.5">
+                      <Snowflake size={10} strokeWidth={2} />
+                      已冷冻 · 搜索匹配
+                    </p>
+                    <div className="-mx-1 pr-1">
+                      {hiddenSearchMatches.map((client) => {
+                        const isActive = currentClientId === client.id;
+                        return (
+                          <div
+                            key={`frozen-${client.id}`}
+                            className={`relative flex items-center group transition-colors duration-150 border-l-[2.5px] rounded-r-md ${
+                              isActive
+                                ? 'border-[#5B7BFE] bg-gray-100/70'
+                                : 'border-transparent hover:bg-gray-50'
+                            }`}
+                          >
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setCurrentClientId(client.id);
+                                void refreshWorkspace(client.id);
+                                setActiveMessageId(null);
+                              }}
+                              onDoubleClick={() => openEditClientModal(client)}
+                              className={`flex-1 min-w-0 text-left pl-3.5 pr-2 py-2 text-[13px] tracking-[0.005em] truncate inline-flex items-center gap-1.5 transition-colors ${
+                                isActive ? 'font-semibold text-gray-700' : 'font-medium text-gray-400 italic hover:text-gray-700'
+                              }`}
+                              title={`${client.name} (已冷冻 · 不参与自动计算。打开编辑器可解冻)`}
+                            >
+                              <span className="truncate">{client.name}</span>
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => openEditClientModal(client)}
+                              className="shrink-0 mr-1 p-1.5 rounded-md text-gray-300 hover:text-[#5B7BFE] hover:bg-white opacity-0 group-hover:opacity-100 transition-all"
+                              title={`编辑/解冻:${client.name}`}
+                            >
+                              <PenTool size={13} />
+                            </button>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                )}
               </div>
             </div>
           </div>
+          )}
 
           <div className="flex-1 flex flex-col min-w-[320px] min-h-0 relative">
-            <div className="h-[68px] bg-white/80 backdrop-blur-md border-b border-gray-100 px-6 xl:px-8 flex items-center justify-between shrink-0 z-10 sticky top-0">
-              <div className="flex items-center gap-3">
-                <div className="w-8 h-8 bg-gradient-to-tr from-gray-800 to-gray-600 rounded-xl flex items-center justify-center text-white shadow-sm shrink-0">
-                  <Briefcase size={16} strokeWidth={2.5} />
-                </div>
-                <div className="min-w-0">
-                  <h2 className="text-[16px] xl:text-[18px] font-bold text-gray-900 truncate">{currentClient?.name || '未选择客户'}</h2>
-                </div>
+            {/* 顶部 header:eyebrow + 18px font-light 客户名 + 右侧状态 chip */}
+            <div className="h-[76px] bg-white border-b border-gray-100 px-6 xl:px-8 flex items-center justify-between shrink-0 z-10 sticky top-0">
+              <div className="min-w-0 flex-1">
+                <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-gray-400">WORKSPACE</p>
+                <h2 className="mt-0.5 text-[18px] xl:text-[20px] font-light tracking-tight text-gray-900 truncate">
+                  {currentClient?.name || '未选择客户'}
+                </h2>
               </div>
               <div className="flex items-center gap-2 shrink-0">
-                <div className="hidden lg:flex gap-2">
+                <div className="hidden lg:flex gap-1.5">
                   <button
+                    type="button"
                     onClick={() => setClientOverlayMode('dna')}
-                    className={`flex items-center gap-2 text-[12px] font-bold px-3 py-1.5 rounded-xl border shadow-sm transition-all duration-300 cursor-pointer select-none active:scale-95 ${clientDnaStatus.className}`}
+                    className={`inline-flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-[0.12em] px-2.5 py-1.5 rounded-full border transition-colors ${clientDnaStatus.className}`}
                     title={clientDnaReady ? 'DNA 已上传并启用' : 'DNA 尚未上传'}
                   >
                     <span className={`w-1.5 h-1.5 rounded-full ${clientDnaStatus.dotClassName}`} />
-                    <Target size={14} />
+                    <Target size={11} />
                     {clientDnaDisplayLabel}
                   </button>
                 </div>
-                <button
-                  onClick={() => setActiveTab('settings')}
-                  className={`flex items-center gap-2 text-[11px] xl:text-[12px] font-bold px-3 py-1.5 rounded-xl border shadow-sm transition-all duration-300 cursor-pointer select-none active:scale-95 ${aiStatus.className}`}
-                  title={health?.ai.detail || aiStatus.subtitle}
-                >
-                  <span className={`w-1.5 h-1.5 rounded-full ${aiStatus.dotClassName}`} />
-                  {aiStatus.label}
-                </button>
+                {/* P10：AI 模型状态 chip 已经升级到全局右上角（GlobalAiStatusBadge），
+                      工作台 header 不再重复展示。DNA chip 保留（客户级 metadata）。 */}
               </div>
             </div>
 
@@ -20886,28 +22299,35 @@ export default function App() {
                   <div className="w-16 h-16 xl:w-20 xl:h-20 bg-blue-50 rounded-full flex items-center justify-center mb-5">
                     <Briefcase size={30} className="text-[#5B7BFE]" strokeWidth={2} />
                   </div>
-                  <p className="text-[16px] font-bold text-gray-800 mb-2">还没有项目工作区</p>
+                  <p className="text-[16px] font-bold text-gray-800 mb-2">
+                    {clients.length === 0 ? '还没有项目工作区' : '请选择一个项目'}
+                  </p>
                   <p className="text-[12px] text-center max-w-md leading-relaxed text-gray-500 mb-6">
-                    先创建一个项目开始正式使用；如果只是想演示流程，也可以手动载入演示数据。
+                    {clients.length === 0
+                      ? '先创建一个项目开始正式使用;如果只是想演示流程,也可以手动载入演示数据(会进入「[演示] 为爱黔行」等占位客户,不会影响真实数据)。'
+                      : '左栏点击项目即可进入,或者再创建一个新项目。'}
                   </p>
                   <div className="flex items-center gap-3">
                     <Button primary onClick={openCreateClientModal}>
                       <Plus size={16} />
                       创建项目
                     </Button>
-                    <Button
-                      onClick={() =>
-                        void loadDemoData()
-                          .then(async () => {
-                            await loadAll('client_cffc');
-                            flash('success', '演示数据已载入，可用于首次演示');
-                          })
-                          .catch((error) => flash('error', error instanceof Error ? error.message : '载入演示数据失败'))
-                      }
-                    >
-                      <Sparkles size={16} />
-                      载入演示数据
-                    </Button>
+                    {/* 演示数据按钮:只在用户完全空白(没有任何真实客户)时显示 — 避免已在用的用户误触导致撞名 */}
+                    {clients.length === 0 && (
+                      <Button
+                        onClick={() =>
+                          void loadDemoData()
+                            .then(async () => {
+                              await loadAll('client_cffc');
+                              flash('success', '演示数据已载入,可用于首次演示');
+                            })
+                            .catch((error) => flash('error', error instanceof Error ? error.message : '载入演示数据失败'))
+                        }
+                      >
+                        <Sparkles size={16} />
+                        载入演示数据
+                      </Button>
+                    )}
                   </div>
                 </div>
               ) : (
@@ -21137,10 +22557,11 @@ export default function App() {
                       <div key={msg.id} className={`group/message relative flex flex-col ${msg.role === 'user' ? 'items-end' : 'items-start'}`} onClick={() => msg.role === 'assistant' && setActiveMessageId(msg.id)}>
                         {msg.role === 'user' && (
                           <div className="relative max-w-[85%]">
-                            <div className="bg-[#5B7BFE] text-white px-4 py-3 xl:px-5 xl:py-3.5 rounded-[20px] rounded-tr-sm text-[13px] xl:text-[14px] font-medium leading-relaxed shadow-[0_4px_12px_rgba(91,123,254,0.25)]">
+                            {/* 用户气泡:去 shadow,改用 #5B7BFE 实色 + rounded-2xl,跟全局 chip / button 一致 */}
+                            <div className="bg-[#5B7BFE] text-white px-4 py-3 xl:px-5 xl:py-3.5 rounded-2xl text-[13.5px] xl:text-[14.5px] font-medium leading-[1.65] tracking-[0.005em]">
                               {msg.content}
                             </div>
-                            <div className="absolute -left-[72px] top-1/2 -translate-y-1/2 hidden group-hover/message:flex items-center gap-1">
+                            <div className="absolute -left-[64px] top-1/2 -translate-y-1/2 hidden group-hover/message:flex items-center gap-1">
                               <button
                                 type="button"
                                 onClick={(event) => {
@@ -21148,11 +22569,11 @@ export default function App() {
                                   handleRepeatChatMessage(msg);
                                 }}
                                 disabled={hasPendingAnalysisRun || isComposerStartingMessage}
-                                className="flex items-center justify-center w-7 h-7 rounded-full bg-white border border-gray-200 text-gray-400 hover:text-[#5B7BFE] hover:border-blue-200 hover:bg-blue-50 transition-colors shadow-sm disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:text-gray-400 disabled:hover:bg-white disabled:hover:border-gray-200"
+                                className="inline-flex items-center justify-center w-7 h-7 rounded-md border border-gray-200 bg-white text-gray-400 hover:text-[#5B7BFE] hover:border-[#5B7BFE]/40 transition-colors disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:text-gray-400 disabled:hover:border-gray-200"
                                 aria-label="重新提问"
                                 title="重新提问"
                               >
-                                <RefreshCw size={14} />
+                                <RefreshCw size={13} />
                               </button>
                               <button
                                 type="button"
@@ -21161,11 +22582,11 @@ export default function App() {
                                   event.stopPropagation();
                                   void handleDeleteChatMessagePair(msg);
                                 }}
-                                className="flex items-center justify-center w-7 h-7 rounded-full bg-white border border-gray-200 text-gray-400 hover:text-red-500 hover:border-red-200 hover:bg-red-50 transition-colors shadow-sm disabled:opacity-40 disabled:cursor-not-allowed"
+                                className="inline-flex items-center justify-center w-7 h-7 rounded-md border border-gray-200 bg-white text-gray-400 hover:text-rose-500 hover:border-rose-200 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
                                 aria-label="删除该问答"
                                 title="删除该问答"
                               >
-                                <Trash2 size={14} />
+                                <Trash2 size={13} />
                               </button>
                             </div>
                           </div>
@@ -21182,37 +22603,37 @@ export default function App() {
                                     </span>
                                     {(msg.retrievalSummary as { multipassUsed?: boolean } | undefined)?.multipassUsed === true && (
                                       <span
-                                        className="inline-flex shrink-0 items-center gap-1 rounded-full border border-[#5B7BFE]/30 bg-[#5B7BFE]/10 px-1.5 py-0.5 text-[9px] font-bold text-[#3652c9]"
+                                        className="inline-flex shrink-0 items-center gap-1 rounded-full px-2 py-[2px] text-[9px] font-semibold uppercase tracking-[0.14em] text-[#3652c9] ring-1 ring-inset ring-[#5B7BFE]/35"
                                         title="本条回答由「深度思考」生成：先出大纲再分段写"
                                       >
-                                        <BrainCircuit size={9} strokeWidth={2.6} />
+                                        <BrainCircuit size={9} strokeWidth={2.4} />
                                         深度思考
                                       </span>
                                     )}
                                     {msg.activeSkillId && (
                                       <span
-                                        className="inline-flex shrink-0 items-center gap-1 rounded-full border border-violet-300/50 bg-violet-50 px-1.5 py-0.5 text-[9px] font-bold text-violet-700"
+                                        className="inline-flex shrink-0 items-center gap-1 rounded-full px-2 py-[2px] text-[9px] font-semibold uppercase tracking-[0.14em] text-violet-700 ring-1 ring-inset ring-violet-300/55"
                                         title={`使用了写作风格：${writingSkills.find((s) => s.id === msg.activeSkillId)?.name || msg.activeSkillId}`}
                                       >
-                                        <Palette size={9} strokeWidth={2.6} />
+                                        <Palette size={9} strokeWidth={2.4} />
                                         {writingSkills.find((s) => s.id === msg.activeSkillId)?.name || '风格'}
                                       </span>
                                     )}
                                     {msg.creativityMode === 'creative' && (
                                       <span
-                                        className="inline-flex shrink-0 items-center gap-1 rounded-full border border-purple-300/50 bg-purple-50 px-1.5 py-0.5 text-[9px] font-bold text-purple-700"
+                                        className="inline-flex shrink-0 items-center gap-1 rounded-full px-2 py-[2px] text-[9px] font-semibold uppercase tracking-[0.14em] text-purple-700 ring-1 ring-inset ring-purple-300/55"
                                         title="本条回答用「创意优先」模式生成（不引用客户资料）"
                                       >
-                                        <Sparkles size={9} strokeWidth={2.6} />
+                                        <Sparkles size={9} strokeWidth={2.4} />
                                         创意优先
                                       </span>
                                     )}
                                     {msg.creativityMode === 'balanced' && (
                                       <span
-                                        className="inline-flex shrink-0 items-center gap-1 rounded-full border border-blue-300/50 bg-blue-50 px-1.5 py-0.5 text-[9px] font-bold text-blue-700"
+                                        className="inline-flex shrink-0 items-center gap-1 rounded-full px-2 py-[2px] text-[9px] font-semibold uppercase tracking-[0.14em] text-blue-700 ring-1 ring-inset ring-blue-300/55"
                                         title="本条回答用「兼顾资料」模式生成（事实是骨头，语言是血肉）"
                                       >
-                                        <Scale size={9} strokeWidth={2.6} />
+                                        <Scale size={9} strokeWidth={2.4} />
                                         兼顾资料
                                       </span>
                                     )}
@@ -21711,14 +23132,14 @@ export default function App() {
                                           : 'text-gray-500 hover:text-gray-900 hover:bg-white hover:shadow-sm'
                                       }`}
                                       disabled={isHardSystemFailure || isHistoricalMockAnswer}
-                                      title="把这段加入合集，最后合并成一个文档导出"
+                                      title="把这段加入合并,最后合并成一个文档导出"
                                       onClick={(event) => {
                                         event.stopPropagation();
                                         toggleExportBag(msg.id);
                                       }}
                                     >
                                       {isInExportBag(msg.id) ? <CheckSquare size={14} /> : <Square size={14} />}
-                                      {isInExportBag(msg.id) ? '已加入合集' : '加入合集'}
+                                      {isInExportBag(msg.id) ? '已合并' : '合并'}
                                     </button>
                                     <button
                                       className="text-[11px] xl:text-[12px] text-gray-500 hover:text-gray-900 hover:bg-white hover:shadow-sm font-semibold flex items-center gap-1.5 transition-all px-2.5 py-1.5 rounded-lg disabled:opacity-50"
@@ -21858,27 +23279,46 @@ export default function App() {
                 </div>
               )}
               {currentExportBag.length > 0 && (
-                <div className="mb-3 flex items-center gap-3 rounded-2xl border border-[#5B7BFE]/30 bg-[#5B7BFE]/5 px-4 py-2.5">
-                  <div className="flex items-center gap-2 text-[12px] font-bold text-[#3652c9]">
+                <div className="mb-3 flex flex-wrap items-center gap-2 rounded-2xl bg-[#5B7BFE]/5 px-4 py-2.5 ring-1 ring-inset ring-[#5B7BFE]/25">
+                  <div className="flex items-center gap-2 text-[12px] font-medium text-[#3652c9]">
                     <Layers size={14} />
-                    已加入合集 {currentExportBag.length} 段
+                    已合并 {currentExportBag.length} 段
                   </div>
                   <div className="flex-1" />
                   <button
                     type="button"
                     onClick={clearExportBag}
-                    className="rounded-lg px-2 py-1 text-[11px] font-semibold text-slate-500 transition hover:bg-white hover:text-slate-800"
+                    className="rounded-md px-2 py-1 text-[11px] font-medium text-gray-500 transition hover:bg-white hover:text-gray-800"
                   >
                     清空
                   </button>
                   <button
                     type="button"
+                    onClick={() => void handleCopyMergedText()}
+                    className="inline-flex items-center gap-1.5 rounded-md bg-white px-3 py-1.5 text-[12px] font-medium text-gray-700 ring-1 ring-inset ring-gray-200 transition hover:bg-gray-50 hover:text-[#3652c9] hover:ring-[#5B7BFE]/35"
+                    title="把合并后的全文复制到剪贴板"
+                  >
+                    <Copy size={13} />
+                    复制全文
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleOpenMergedInEditor}
+                    className="inline-flex items-center gap-1.5 rounded-md bg-white px-3 py-1.5 text-[12px] font-medium text-gray-700 ring-1 ring-inset ring-gray-200 transition hover:bg-gray-50 hover:text-[#3652c9] hover:ring-[#5B7BFE]/35"
+                    title="把合并后的内容打开到本地文字编辑器,继续编辑后再保存"
+                  >
+                    <PenTool size={13} />
+                    到编辑器
+                  </button>
+                  <button
+                    type="button"
                     disabled={isExportingBag}
                     onClick={() => void handleExportBag()}
-                    className="flex items-center gap-1.5 rounded-xl bg-[#5B7BFE] px-3 py-1.5 text-[12px] font-bold text-white shadow-[0_2px_8px_rgba(91,123,254,0.3)] transition hover:bg-[#4a6be6] disabled:opacity-50"
+                    className="inline-flex items-center gap-1.5 rounded-md bg-[#5B7BFE] px-3 py-1.5 text-[12px] font-medium text-white transition hover:bg-[#4a6be6] disabled:opacity-50"
+                    title="把合并后的内容生成 Word 文档并归档到客户工作台"
                   >
                     <Download size={13} />
-                    {isExportingBag ? '导出中…' : '合并导出'}
+                    {isExportingBag ? '导出中…' : '导出 Word'}
                   </button>
                 </div>
               )}
@@ -21999,10 +23439,10 @@ export default function App() {
 	                        ? '已开启「深度思考」：下一条问题会先出大纲再分段生成（约 1–3 分钟，内容更深）。点击关闭。'
 	                        : '开启「深度思考」：下一条问题会先出大纲再分段生成（约 1–3 分钟，内容更深）。'}
 	                      aria-pressed={deepThinking}
-	                      className={`group inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-[11px] font-semibold transition-all ${
+	                      className={`group inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[11px] font-medium transition-colors ring-1 ring-inset ${
 	                        deepThinking
-	                          ? 'border-[#5B7BFE]/45 bg-[#5B7BFE]/10 text-[#3652c9] shadow-[0_1px_4px_rgba(91,123,254,0.12)] hover:bg-[#5B7BFE]/15'
-	                          : 'border-slate-200 bg-white text-slate-500 hover:border-[#5B7BFE]/35 hover:text-[#5B7BFE]'
+	                          ? 'ring-[#5B7BFE]/40 bg-[#5B7BFE]/8 text-[#3652c9] hover:bg-[#5B7BFE]/12'
+	                          : 'ring-gray-200 bg-white text-gray-600 hover:ring-[#5B7BFE]/35 hover:text-[#5B7BFE]'
 	                      }`}
 	                    >
 	                      <BrainCircuit
@@ -22035,7 +23475,7 @@ export default function App() {
 	                        title={`当前创作模式：${currentCreativityMeta.label}。${currentCreativityMeta.description}`}
 	                        aria-haspopup="listbox"
 	                        aria-expanded={creativityPickerOpen}
-	                        className={`group inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-[11px] font-semibold transition-all ${currentCreativityMeta.tone} hover:brightness-105`}
+	                        className={`group inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[11px] font-medium transition-colors ring-1 ring-inset ${currentCreativityMeta.tone}`}
 	                      >
 	                        <CurrentCreativityIcon
 	                          size={12}
@@ -22076,8 +23516,8 @@ export default function App() {
 	                                    setCreativityMode(mode);
 	                                    setCreativityPickerOpen(false);
 	                                  }}
-	                                  className={`flex w-full items-start gap-2.5 rounded-xl px-2.5 py-2 text-left transition-colors ${
-	                                    isActive ? meta.tone.replace('border-', 'border ') : 'hover:bg-slate-50'
+	                                  className={`flex w-full items-start gap-2.5 rounded-xl px-2.5 py-2 text-left transition-colors ring-1 ring-inset ${
+	                                    isActive ? meta.tone : 'ring-transparent hover:bg-gray-50'
 	                                  }`}
 	                                >
 	                                  <IconComp
@@ -22112,10 +23552,10 @@ export default function App() {
 	                          ? `当前写作风格：${activeSkill.name}。点击切换/取消。`
 	                          : '选择一个写作风格让 AI 模仿（如罗永浩风格）。也可以基于你提供的样本创建新风格。'}
 	                        aria-pressed={Boolean(activeSkill)}
-	                        className={`group inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-[11px] font-semibold transition-all ${
+	                        className={`group inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[11px] font-medium transition-colors ring-1 ring-inset ${
 	                          activeSkill
-	                            ? 'border-violet-400/45 bg-violet-50 text-violet-700 shadow-[0_1px_4px_rgba(139,92,246,0.12)] hover:bg-violet-100'
-	                            : 'border-slate-200 bg-white text-slate-500 hover:border-violet-300 hover:text-violet-600'
+	                            ? 'ring-violet-400/45 bg-violet-50/60 text-violet-700 hover:bg-violet-50'
+	                            : 'ring-gray-200 bg-white text-gray-600 hover:ring-violet-300 hover:text-violet-600'
 	                        }`}
 	                      >
 	                        <Palette
@@ -22282,6 +23722,125 @@ export default function App() {
                 })()}
               </div>
             </div>
+
+            {/* P9：客户工作台 inline 文档编辑器 —— absolute 覆盖整个中间主区
+                  （左栏 + 右工具栏保留可见，符合用户"工作台 inline 编辑"诉求）。
+                  钢笔按钮触发，编辑器 ribbon 见 RichTextDocumentEditor。 */}
+            {clientWorkspaceInlineEditor && clientWorkspaceInlineEditor.clientId === currentClientId && (
+              <div className="absolute inset-0 z-30 flex flex-col bg-[#F5F7FB]">
+                {/* Top App Bar */}
+                <div className="shrink-0 border-b border-gray-200 bg-white px-5 py-2.5 flex items-center gap-3">
+                  <button
+                    type="button"
+                    onClick={() => setClientWorkspaceInlineEditor(null)}
+                    className="inline-flex items-center gap-1.5 text-[12px] font-medium text-gray-500 hover:text-gray-900 transition-colors"
+                  >
+                    <ChevronLeft size={14} strokeWidth={2.2} />
+                    返回工作台
+                  </button>
+                  <span className="h-4 w-px bg-gray-200" />
+                  <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-gray-400">DOCUMENT</p>
+                  <input
+                    value={clientWorkspaceInlineEditor.title}
+                    onChange={(event) =>
+                      setClientWorkspaceInlineEditor((prev) =>
+                        prev ? { ...prev, title: event.target.value, titleEdited: true } : prev,
+                      )
+                    }
+                    placeholder="未命名文档（保存时自动从首段提取）"
+                    className="flex-1 max-w-[420px] bg-transparent text-[14px] font-bold text-gray-900 outline-none placeholder:text-gray-300"
+                  />
+                  <div className="ml-auto flex items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={() =>
+                        setClientWorkspaceInlineEditor((prev) =>
+                          prev ? { ...prev, content: SAMPLE_DOCUMENT_MARKDOWN } : prev,
+                        )
+                      }
+                      className="text-[11px] text-gray-400 hover:text-[#5B7BFE] transition-colors"
+                    >
+                      试试示例
+                    </button>
+                    <button
+                      type="button"
+                      onClick={async () => {
+                        if (!currentClientId || !clientWorkspaceInlineEditor) return;
+                        const content = (clientWorkspaceInlineEditor.content || '').trim();
+                        if (!content) {
+                          flash('error', '请先写一点内容');
+                          return;
+                        }
+                        try {
+                          const result = await createClientTextDocument(currentClientId, {
+                            title: clientWorkspaceInlineEditor.title.trim() || null,
+                            content,
+                          });
+                          flash('success', `已保存到项目文档库：${result.fileName}`);
+                          setClientWorkspaceInlineEditor(null);
+                          await refreshWorkspace(currentClientId).catch(() => undefined);
+                        } catch (error) {
+                          flash('error', error instanceof Error ? error.message : '保存失败');
+                        }
+                      }}
+                      className="rounded-md bg-[#5B7BFE] text-white px-3 py-1.5 text-[12px] font-bold hover:bg-[#4a6ae8] transition-colors"
+                    >
+                      保存到项目文档库
+                    </button>
+                  </div>
+                </div>
+                {/* Editor body —— 文档居中，模拟 Word 纸张感 */}
+                <div className="flex-1 overflow-y-auto py-6 px-4">
+                  <div className="mx-auto max-w-[880px]">
+                    <RichTextDocumentEditor
+                      value={clientWorkspaceInlineEditor.content}
+                      onChange={(next) =>
+                        setClientWorkspaceInlineEditor((prev) =>
+                          prev ? { ...prev, content: next } : prev,
+                        )
+                      }
+                      minHeight={640}
+                      onAiStub={async (action) => {
+                        if (!currentClientId) return;
+                        // P9：4 个 action（expand/rewrite_pro/rewrite_short/summarize）真调 LLM；其余 stub
+                        const aiActions: DocumentAiAction[] = ['expand', 'rewrite_pro', 'rewrite_short', 'summarize'];
+                        if (!aiActions.includes(action as DocumentAiAction)) {
+                          flash('info', `${action} · 下一步打通后会真的执行`);
+                          return;
+                        }
+                        const content = (clientWorkspaceInlineEditor?.content || '').trim();
+                        if (!content) {
+                          flash('error', '请先写一点内容');
+                          return;
+                        }
+                        const label: Record<DocumentAiAction, string> = {
+                          expand: '扩写',
+                          rewrite_pro: '改写（专业）',
+                          rewrite_short: '改写（简洁）',
+                          summarize: '总结',
+                        };
+                        flash('info', `${label[action as DocumentAiAction]}处理中…`);
+                        try {
+                          const result = await documentAiAction(currentClientId, {
+                            content,
+                            action: action as DocumentAiAction,
+                          });
+                          setClientWorkspaceInlineEditor((prev) =>
+                            prev ? { ...prev, content: result.content } : prev,
+                          );
+                          flash(
+                            'success',
+                            `${label[action as DocumentAiAction]}完成（${(result.durationMs / 1000).toFixed(1)} 秒）`,
+                          );
+                        } catch (error) {
+                          flash('error', error instanceof Error ? error.message : 'AI 调用失败');
+                        }
+                      }}
+                    />
+                  </div>
+                </div>
+              </div>
+            )}
           </div>
 
           <div className="w-[260px] xl:w-[320px] bg-white border-l border-gray-100 flex flex-col h-full shrink-0 z-10 shadow-[-2px_0_10px_rgba(0,0,0,0.02)]">
@@ -22566,11 +24125,11 @@ export default function App() {
                                 type="button"
                                 disabled={ocrFixing}
                                 onClick={() => void handleOcrFix()}
-                                className="ml-1 inline-flex items-center justify-center rounded-full border border-amber-300 bg-amber-50 p-1 text-amber-700 hover:bg-amber-100 disabled:opacity-60 disabled:cursor-wait"
-                                title={ocrFixing ? '正在重新识别 OCR…' : '一键修复 · 重新识别所有 OCR 不完整的文件（高 DPI + 双 prompt 模式）'}
+                                className="ml-1 inline-flex items-center text-amber-600 hover:text-amber-700 disabled:opacity-40 disabled:cursor-wait disabled:text-amber-500 transition-colors"
+                                title={ocrFixing ? '正在重新识别 OCR…' : '一键修复 · 重新识别所有 OCR 不完整的文件(高 DPI + 双 prompt 模式)'}
                                 aria-label="一键修复 OCR"
                               >
-                                <RotateCcw size={12} strokeWidth={2.4} className={ocrFixing ? 'animate-spin' : ''} />
+                                <RotateCcw size={11} strokeWidth={2.25} className={ocrFixing ? 'animate-spin' : ''} />
                               </button>
                             )}
                           </span>
@@ -24215,6 +25774,24 @@ export default function App() {
     );
   };
 
+	  const handleClientFreezeChange = async (clientId: string, frozen: boolean) => {
+	    try {
+	      const next = frozen ? await freezeClient(clientId) : await unfreezeClient(clientId);
+	      // refetch 让 clients state 同步真实 isFrozen,主组件 effect 会用它矫正本地 Set
+	      await loadClientBlock();
+	      flash(
+	        'success',
+	        frozen
+	          ? `已全局冷冻「${next.name}」— 所有自动计算、爬取、下拉都已跳过它`
+	          : `已解冻「${next.name}」— 重新参与所有自动计算`,
+	      );
+	    } catch (error) {
+	      // 后端失败:回滚本地 Set,让 UI 跟实际状态一致
+	      setClientHidden(clientId, !frozen);
+	      flash('error', error instanceof Error ? error.message : '切换冷冻状态失败');
+	    }
+	  };
+
 	  const renderClientEditorModal = () => {
 	    return (
 	      <ClientEditorModal
@@ -24224,6 +25801,7 @@ export default function App() {
         onSubmit={submitClientEditorModal}
         onDelete={confirmClientEditorDelete}
         onInteractionState={reportWorkspaceInteractionState}
+        onFreezeChange={handleClientFreezeChange}
 	      />
 	    );
 	  };
@@ -24308,11 +25886,74 @@ export default function App() {
 	  };
 
 	  const renderSettingsView = () => {
-    const isLocalSession = authState.sessionMode !== 'cloud';
+    // 取消本机模式后, sessionMode 始终 'cloud' (除非未登录, 那时这个组件不渲染), 故永 false
+    const isLocalSession: boolean = false;
     const canManageTaskTag = (tag: TaskTag) => (tag.scope === 'self' ? tag.ownerUserId === currentSessionUser?.id : currentSessionUser?.primaryRole === 'admin');
     const canManageSensitiveSettings = isLocalSession || currentSessionUser?.primaryRole === 'admin';
     const canEditBusinessSettings = canManageSensitiveSettings || systemAdminSettingsState.allowBusinessSettingsForEmployees;
     const canEditOrgDna = canManageSensitiveSettings || systemAdminSettingsState.allowOrgDnaForEmployees;
+    // ─── 共享设计语言原子 ────────────────────────────────────
+    // chipTone: 4 色状态 chip(success/warning/neutral)
+    // renderFoldable: 折叠条 + zebra(plain/tint 深浅交替) + hover 明示可点击
+    // 所有 renderXxxSection 共用,改一处全局生效。
+    const chipTone = (tone: 'success' | 'warning' | 'neutral') =>
+      tone === 'success' ? 'text-emerald-600 border-emerald-200 bg-emerald-50'
+        : tone === 'warning' ? 'text-amber-700 border-amber-200 bg-amber-50'
+          : 'text-gray-500 border-gray-200 bg-gray-50';
+
+    const renderFoldable = (params: {
+      key: string;
+      eyebrow: string;
+      title: string;
+      helper?: string;
+      statusChip?: { text: string; tone: 'success' | 'warning' | 'neutral' };
+      defaultOpen?: boolean;
+      tint?: boolean;
+      children: React.ReactNode;
+    }) => {
+      const detailsBg = params.tint ? 'bg-[#FAFAFA]' : 'bg-white';
+      const summaryHover = params.tint ? 'hover:bg-[#F4F4F5]' : 'hover:bg-gray-50/70';
+      return (
+        <details key={params.key} className={`group ${detailsBg} px-5 first:rounded-t-xl last:rounded-b-xl`} open={params.defaultOpen}>
+          <summary className={`cursor-pointer list-none flex items-center justify-between gap-4 py-5 -mx-2 px-2 rounded-md ${summaryHover} transition-colors select-none`}>
+            <div className="min-w-0">
+              <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-gray-400">{params.eyebrow}</p>
+              <h3 className="text-[18px] font-light tracking-tight text-gray-900 mt-1">{params.title}</h3>
+            </div>
+            <div className="flex items-center gap-3 shrink-0">
+              {params.statusChip && (
+                <span className={`text-[10px] font-bold uppercase tracking-[0.12em] px-2.5 py-1 rounded-full border ${chipTone(params.statusChip.tone)}`}>
+                  {params.statusChip.text}
+                </span>
+              )}
+              <ChevronDown size={18} className="text-gray-400 transition-transform group-open:rotate-180" />
+            </div>
+          </summary>
+          <div className="pt-2 pb-7 space-y-5">
+            {params.helper && <p className="text-[12px] text-gray-500 leading-relaxed">{params.helper}</p>}
+            {params.children}
+          </div>
+        </details>
+      );
+    };
+
+    // 段标题(非折叠 section 用):eyebrow + 大字号标题 + helper
+    const renderSectionHeading = (eyebrow: string, title: string, helper?: string, actions?: React.ReactNode) => (
+      <div className="flex items-start justify-between gap-4 flex-wrap">
+        <div className="min-w-0">
+          <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-gray-400">{eyebrow}</p>
+          <h2 className="mt-2 text-[22px] font-light tracking-tight text-gray-900">{title}</h2>
+          {helper && <p className="mt-1.5 text-[12px] text-gray-500 leading-relaxed max-w-2xl">{helper}</p>}
+        </div>
+        {actions && <div className="flex items-center gap-2 shrink-0">{actions}</div>}
+      </div>
+    );
+
+    // 表单字段标签(uppercase 小标签 + 表单字段)
+    const renderFieldLabel = (text: string) => (
+      <p className="text-[11px] font-bold uppercase tracking-[0.12em] text-gray-500 mb-2">{text}</p>
+    );
+
     const resetTagManager = () => {
       setEditingTagId(null);
       setTagManageDraft({ name: '', scope: defaultTagScope, color: TASK_COLOR_OPTIONS[0] });
@@ -24502,13 +26143,23 @@ export default function App() {
 
     const handleSaveAiSettings = async () => {
       try {
-        const providerForSave: AiProvider = draft.aiProvider === 'mock' ? 'mock' : 'openai_compatible';
-        const baseUrlForSave = providerForSave === 'mock' ? '' : draft.aiBaseUrl.trim();
-        const modelForSave = providerForSave === 'mock' ? AI_CONFIG_PRESETS.mock.model : draft.aiModel.trim();
+        const providerForSave: AiProvider = draft.aiProvider === 'mock'
+          ? 'mock'
+          : draft.aiProvider === 'openclaw'
+            ? 'openclaw'
+            : 'openai_compatible';
+        const baseUrlForSave = (providerForSave === 'mock' || providerForSave === 'openclaw') ? '' : draft.aiBaseUrl.trim();
+        const modelForSave = providerForSave === 'mock'
+          ? AI_CONFIG_PRESETS.mock.model
+          : providerForSave === 'openclaw'
+            ? (draft.aiModel.trim() || AI_CONFIG_PRESETS.openclaw.model)
+            : draft.aiModel.trim();
         const providerLabelForSave = providerForSave === 'mock'
           ? AI_CONFIG_PRESETS.mock.providerLabel
-          : draft.aiProviderLabel.trim() || AI_CONFIG_PRESETS.custom.providerLabel;
-        if (providerForSave !== 'mock' && !baseUrlForSave) {
+          : providerForSave === 'openclaw'
+            ? AI_CONFIG_PRESETS.openclaw.providerLabel
+            : draft.aiProviderLabel.trim() || AI_CONFIG_PRESETS.custom.providerLabel;
+        if (providerForSave !== 'mock' && providerForSave !== 'openclaw' && !baseUrlForSave) {
           flash('error', '请填写大模型接口地址 Base URL。');
           return;
         }
@@ -24516,7 +26167,7 @@ export default function App() {
           flash('error', '请填写模型名。');
           return;
         }
-        const apiKeyForSave = providerForSave === 'mock' ? '' : draft.apiKey.trim();
+        const apiKeyForSave = (providerForSave === 'mock' || providerForSave === 'openclaw') ? '' : draft.apiKey.trim();
         const currentModelChanged = providerForSave !== settingsState?.aiProvider
           || normalizeAiBaseUrl(baseUrlForSave) !== normalizeAiBaseUrl(settingsState?.aiBaseUrl)
           || modelForSave !== (settingsState?.aiModel || '');
@@ -24933,7 +26584,8 @@ export default function App() {
       {
         group: '账户与服务',
         items: [
-          { key: 'overview', label: 'AI 与云端', icon: Bot, helper: '云端地址、大模型、账号状态' },
+          { key: 'overview', label: 'AI 与云端', icon: Bot, helper: '云端地址、大模型、配套服务' },
+          { key: 'account', label: '账户', icon: User, helper: '身份信息、个人资料、密码' },
         ],
       },
       {
@@ -24954,6 +26606,7 @@ export default function App() {
         group: '运维与排查',
         items: [
           { key: 'system_logs', label: '系统日志', icon: Activity, helper: '运行日志、错误排查、导出' },
+          { key: 'about', label: '关于本软件', icon: Info, helper: '版本信息、检查更新' },
         ],
       },
     ];
@@ -24994,29 +26647,32 @@ export default function App() {
       };
       const pwInputType = changePwShowPassword ? 'text' : 'password';
       return (
-        <div className="bg-white border border-gray-100 rounded-3xl p-6 shadow-sm space-y-4">
+        <div className="space-y-4">
           <div>
-            <h2 className="text-[16px] font-bold text-gray-900">修改密码</h2>
-            <p className="text-[12px] text-gray-500 mt-1">修改当前账号的登录密码。新密码至少 8 位。</p>
-          </div>
-          <input type={pwInputType} value={changePwForm.currentPassword} onChange={(e) => setChangePwForm((p) => ({ ...p, currentPassword: e.target.value }))} placeholder="当前密码" className="w-full bg-gray-50 border border-gray-200 rounded-2xl px-4 py-3 text-[13px] outline-none" />
-          <div>
-            <input type={pwInputType} value={changePwForm.newPassword} onChange={(e) => setChangePwForm((p) => ({ ...p, newPassword: e.target.value }))} placeholder="新密码（至少 8 位）" className="w-full bg-gray-50 border border-gray-200 rounded-2xl px-4 py-3 text-[13px] outline-none" />
-            {changePwForm.newPassword && !newPwValid && <p className="text-[12px] text-red-500 mt-1 px-1">密码至少需要 8 位</p>}
+            {renderFieldLabel('当前密码')}
+            <input type={pwInputType} value={changePwForm.currentPassword} onChange={(e) => setChangePwForm((p) => ({ ...p, currentPassword: e.target.value }))} placeholder="当前密码" className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2.5 text-[13px] outline-none focus:border-[#5B7BFE]" />
           </div>
           <div>
-            <input type={pwInputType} value={changePwForm.confirmPassword} onChange={(e) => setChangePwForm((p) => ({ ...p, confirmPassword: e.target.value }))} placeholder="确认新密码" className="w-full bg-gray-50 border border-gray-200 rounded-2xl px-4 py-3 text-[13px] outline-none" />
-            {changePwForm.confirmPassword && !confirmMatch && <p className="text-[12px] text-red-500 mt-1 px-1">两次输入的密码不一致</p>}
+            {renderFieldLabel('新密码')}
+            <input type={pwInputType} value={changePwForm.newPassword} onChange={(e) => setChangePwForm((p) => ({ ...p, newPassword: e.target.value }))} placeholder="至少 8 位" className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2.5 text-[13px] outline-none focus:border-[#5B7BFE]" />
+            {changePwForm.newPassword && !newPwValid && <p className="text-[11px] text-rose-500 mt-1.5">密码至少需要 8 位</p>}
           </div>
-          <label className="flex items-center gap-2 text-[13px] font-medium text-gray-700">
+          <div>
+            {renderFieldLabel('确认新密码')}
+            <input type={pwInputType} value={changePwForm.confirmPassword} onChange={(e) => setChangePwForm((p) => ({ ...p, confirmPassword: e.target.value }))} placeholder="再输入一次" className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2.5 text-[13px] outline-none focus:border-[#5B7BFE]" />
+            {changePwForm.confirmPassword && !confirmMatch && <p className="text-[11px] text-rose-500 mt-1.5">两次输入的密码不一致</p>}
+          </div>
+          <label className="inline-flex items-center gap-2 text-[11px] text-gray-500">
             <input type="checkbox" checked={changePwShowPassword} onChange={(e) => setChangePwShowPassword(e.target.checked)} />
             显示密码
           </label>
-          {changePwError && <p className="text-[13px] text-red-600 bg-red-50 border border-red-100 rounded-2xl px-4 py-3">{changePwError}</p>}
-          <Button primary onClick={() => void handleChangePw()} disabled={!canSubmit}>
-            {changePwSubmitting ? <RefreshCw size={16} className="animate-spin" /> : <ShieldAlert size={16} />}
-            确认修改密码
-          </Button>
+          {changePwError && <p className="rounded-xl border border-rose-100 bg-rose-50 px-3 py-2 text-[12px] text-rose-700">{changePwError}</p>}
+          <div className="pt-2 border-t border-gray-100">
+            <Button primary onClick={() => void handleChangePw()} disabled={!canSubmit}>
+              {changePwSubmitting ? <RefreshCw size={16} className="animate-spin" /> : <ShieldAlert size={16} />}
+              确认修改密码
+            </Button>
+          </div>
         </div>
       );
     };
@@ -25034,51 +26690,59 @@ export default function App() {
           || (profileDraft.phone || '').trim() !== (currentSessionUser?.phone || '')
         );
       return (
-        <div className="bg-white border border-gray-100 rounded-3xl p-6 shadow-sm space-y-4">
-          <div>
-            <h2 className="text-[16px] font-bold text-gray-900">基本信息</h2>
-            <p className="text-[12px] text-gray-500 mt-1">
-              {cardIsLocal
-                ? '当前还是本机模式。连接云端后，这里会显示并允许修改姓名 / 昵称、邮箱等账号信息。'
-                : '登录云端后，你可以在这里维护姓名 / 昵称、邮箱和登录手机号。飞书通知手机号在飞书协作里单独维护。'}
+        <div className="space-y-4">
+          {cardIsLocal && (
+            <p className="rounded-xl border border-blue-100 bg-blue-50 px-3 py-2 text-[11px] text-blue-700">
+              本机模式。连接云端后这里会显示姓名 / 昵称 / 邮箱 / 登录手机号。
             </p>
+          )}
+          <div>
+            {renderFieldLabel('姓名 / 昵称')}
+            <input
+              value={cardIsLocal ? '' : (profileDraft.fullName || '')}
+              onChange={(event) => setProfileDraft((prev) => ({ ...prev, fullName: event.target.value }))}
+              placeholder={cardIsLocal ? '登录后填写' : '姓名 / 昵称'}
+              className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2.5 text-[13px] outline-none focus:border-[#5B7BFE] disabled:text-gray-400 disabled:bg-gray-50"
+              disabled={cardIsLocal}
+            />
           </div>
-          <input
-            value={cardIsLocal ? '' : (profileDraft.fullName || '')}
-            onChange={(event) => setProfileDraft((prev) => ({ ...prev, fullName: event.target.value }))}
-            placeholder={cardIsLocal ? '登录后显示姓名 / 昵称' : '姓名 / 昵称'}
-            className="w-full bg-gray-50 border border-gray-200 rounded-2xl px-4 py-3 text-[13px] outline-none disabled:text-gray-400 disabled:bg-gray-100"
-            disabled={cardIsLocal}
-          />
-          <input
-            value={cardIsLocal ? '' : (profileDraft.email || '')}
-            onChange={(event) => setProfileDraft((prev) => ({ ...prev, email: event.target.value }))}
-            placeholder={cardIsLocal ? '登录后显示邮箱' : '邮箱'}
-            className="w-full bg-gray-50 border border-gray-200 rounded-2xl px-4 py-3 text-[13px] outline-none disabled:text-gray-400 disabled:bg-gray-100"
-            disabled={cardIsLocal}
-          />
-          <input
-            value={cardIsLocal ? '' : (profileDraft.phone || '')}
-            onChange={(event) => setProfileDraft((prev) => ({ ...prev, phone: event.target.value }))}
-            placeholder={cardIsLocal ? '登录后显示手机号' : '登录手机号（可选，不是飞书通知手机号）'}
-            className="w-full bg-gray-50 border border-gray-200 rounded-2xl px-4 py-3 text-[13px] outline-none disabled:text-gray-400 disabled:bg-gray-100"
-            disabled={cardIsLocal}
-          />
+          <div>
+            {renderFieldLabel('邮箱')}
+            <input
+              value={cardIsLocal ? '' : (profileDraft.email || '')}
+              onChange={(event) => setProfileDraft((prev) => ({ ...prev, email: event.target.value }))}
+              placeholder={cardIsLocal ? '登录后填写' : '邮箱'}
+              className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2.5 text-[13px] outline-none focus:border-[#5B7BFE] disabled:text-gray-400 disabled:bg-gray-50"
+              disabled={cardIsLocal}
+            />
+          </div>
+          <div>
+            {renderFieldLabel('登录手机号')}
+            <input
+              value={cardIsLocal ? '' : (profileDraft.phone || '')}
+              onChange={(event) => setProfileDraft((prev) => ({ ...prev, phone: event.target.value }))}
+              placeholder={cardIsLocal ? '登录后填写' : '可选,与飞书通知手机号无关'}
+              className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2.5 text-[13px] outline-none focus:border-[#5B7BFE] disabled:text-gray-400 disabled:bg-gray-50"
+              disabled={cardIsLocal}
+            />
+          </div>
           {!cardIsLocal && profileMessage && (
-            <p className={`rounded-2xl border px-4 py-3 text-[13px] ${profileMessage.includes('已更新') ? 'border-emerald-200 bg-emerald-50 text-emerald-700' : 'border-red-200 bg-red-50 text-red-600'}`}>
+            <p className={`rounded-xl border px-3 py-2 text-[12px] ${profileMessage.includes('已更新') ? 'border-emerald-200 bg-emerald-50 text-emerald-700' : 'border-rose-200 bg-rose-50 text-rose-600'}`}>
               {profileMessage}
             </p>
           )}
-          {cardIsLocal ? (
-            <Button primary onClick={() => openCloudAuthModal('login')}>
-              <ShieldAlert size={16} /> 注册 / 登录
-            </Button>
-          ) : (
-            <Button primary onClick={() => void handleSaveProfile()} disabled={!canSubmit}>
-              {profileSubmitting ? <RefreshCw size={16} className="animate-spin" /> : <User size={16} />}
-              保存基本信息
-            </Button>
-          )}
+          <div className="pt-2 border-t border-gray-100">
+            {cardIsLocal ? (
+              <Button primary onClick={() => openCloudAuthModal('login')}>
+                <ShieldAlert size={16} /> 注册 / 登录
+              </Button>
+            ) : (
+              <Button primary onClick={() => void handleSaveProfile()} disabled={!canSubmit}>
+                {profileSubmitting ? <RefreshCw size={16} className="animate-spin" /> : <User size={16} />}
+                保存基本信息
+              </Button>
+            )}
+          </div>
         </div>
       );
     };
@@ -25087,33 +26751,24 @@ export default function App() {
       const status = orgMembershipState.membershipStatus || currentSessionUser?.membershipStatus || 'none';
       const canApply = isCloudSession && status !== 'approved';
       return (
-        <div className="bg-white border border-gray-100 rounded-3xl p-6 shadow-sm space-y-4">
-          <div className="flex items-start justify-between gap-4">
+        <div className="space-y-5">
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-x-8 gap-y-5">
             <div>
-              <h2 className="text-[16px] font-bold text-gray-900">身份与组织</h2>
-              <p className="text-[12px] text-gray-500 mt-1">这里确认账号属于哪个组织和部门；登录手机号和飞书通知手机号互不影响。</p>
+              <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-gray-400">账号</p>
+              <p className="mt-2 text-[14px] font-medium text-gray-900 truncate">{currentSessionUser?.email || '未登录'}</p>
+              <p className="mt-1 text-[11px] text-gray-500 flex items-center gap-1"><Phone size={11} />{currentSessionUser?.phone || '未绑定登录手机号'}</p>
             </div>
-            <span className={`rounded-full px-3 py-1 text-[11px] font-bold ${status === 'approved' ? 'bg-emerald-50 text-emerald-700' : status === 'pending' ? 'bg-amber-50 text-amber-700' : status === 'rejected' ? 'bg-rose-50 text-rose-700' : 'bg-slate-100 text-slate-600'}`}>
-              {membershipStatusLabel(status)}
-            </span>
-          </div>
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-3 text-[12px]">
-            <div className="rounded-2xl border border-gray-100 bg-gray-50 px-4 py-3">
-              <p className="font-bold text-gray-500">账号</p>
-              <p className="mt-1 text-gray-900">{currentSessionUser?.email || '未登录'}</p>
-              <p className="mt-1 text-gray-500"><Phone size={12} className="inline mr-1" />{currentSessionUser?.phone || '未绑定登录手机号'}</p>
+            <div>
+              <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-gray-400">组织 / 部门</p>
+              <p className="mt-2 text-[14px] font-medium text-gray-900 truncate">{orgMembershipState.organizationName || '尚未确认组织'}</p>
+              <p className="mt-1 text-[11px] text-gray-500 truncate">{orgMembershipState.departmentName || currentSessionUser?.departmentName || '尚未确认部门'}</p>
             </div>
-            <div className="rounded-2xl border border-gray-100 bg-gray-50 px-4 py-3">
-              <p className="font-bold text-gray-500">组织 / 部门</p>
-              <p className="mt-1 text-gray-900">{orgMembershipState.organizationName || '尚未确认组织'}</p>
-              <p className="mt-1 text-gray-500">{orgMembershipState.departmentName || currentSessionUser?.departmentName || '尚未确认部门'}</p>
-            </div>
-            <div className="rounded-2xl border border-gray-100 bg-gray-50 px-4 py-3">
-              <p className="font-bold text-gray-500">组织工作台</p>
-              <p className="mt-1 text-gray-900">{organizationWorkspaceClient?.name || (status === 'approved' ? organizationTaskName : '身份确认后自动创建')}</p>
+            <div>
+              <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-gray-400">组织工作台</p>
+              <p className="mt-2 text-[14px] font-medium text-gray-900 truncate">{organizationWorkspaceClient?.name || (status === 'approved' ? organizationTaskName : '身份确认后自动创建')}</p>
               <button
                 type="button"
-                className="mt-2 text-[12px] font-bold text-[#5B7BFE] disabled:text-gray-400"
+                className="mt-1 text-[11px] font-bold text-[#5B7BFE] hover:underline disabled:text-gray-400 disabled:no-underline"
                 disabled={!organizationClientId}
                 onClick={() => {
                   if (!organizationClientId) return;
@@ -25122,455 +26777,686 @@ export default function App() {
                   void refreshWorkspace(organizationClientId);
                 }}
               >
-                打开工作台
+                打开工作台 →
               </button>
             </div>
           </div>
           {status === 'rejected' && (
-            <p className="rounded-2xl border border-rose-100 bg-rose-50 px-4 py-3 text-[12px] text-rose-700">
+            <p className="rounded-xl border border-rose-100 bg-rose-50 px-3 py-2 text-[12px] text-rose-700">
               {orgMembershipState.membershipRejectedReason || currentSessionUser?.membershipRejectedReason || '组织身份申请未通过，请修改信息后重新提交。'}
             </p>
           )}
           {canApply && (
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-              <input value={membershipApplyDraft.inviteCode} onChange={(event) => setMembershipApplyDraft((prev) => ({ ...prev, inviteCode: event.target.value }))} placeholder="部门邀请码（自动识别组织）" className="w-full rounded-2xl border border-gray-200 bg-gray-50 px-4 py-3 text-[13px] outline-none" />
-              <select value={membershipApplyDraft.departmentId} onChange={(event) => setMembershipApplyDraft((prev) => ({ ...prev, departmentId: event.target.value }))} className="w-full rounded-2xl border border-gray-200 bg-gray-50 px-4 py-3 text-[13px] outline-none">
-                <option value="">选择部门（可选）</option>
-                {departmentOptions.map((department) => (
-                  <option key={department.id} value={department.id}>{department.name}</option>
-                ))}
-              </select>
-              <input value={membershipApplyDraft.jobTitle} onChange={(event) => setMembershipApplyDraft((prev) => ({ ...prev, jobTitle: event.target.value }))} placeholder="职位（可选）" className="w-full rounded-2xl border border-gray-200 bg-gray-50 px-4 py-3 text-[13px] outline-none" />
-              <input value={membershipApplyDraft.managerName} onChange={(event) => setMembershipApplyDraft((prev) => ({ ...prev, managerName: event.target.value }))} placeholder="直属负责人（可选）" className="w-full rounded-2xl border border-gray-200 bg-gray-50 px-4 py-3 text-[13px] outline-none" />
-              <textarea value={membershipApplyDraft.currentFocus} onChange={(event) => setMembershipApplyDraft((prev) => ({ ...prev, currentFocus: event.target.value }))} rows={2} placeholder="当前工作重点（可选）" className="md:col-span-2 w-full rounded-2xl border border-gray-200 bg-gray-50 px-4 py-3 text-[13px] outline-none resize-none" />
-              <Button primary onClick={() => void handleApplyMembership()} disabled={membershipApplySubmitting} className="md:col-span-2">
-                {membershipApplySubmitting ? <RefreshCw size={16} className="animate-spin" /> : <UserPlus size={16} />}
-                提交组织身份申请
-              </Button>
+            <div className="border-t border-gray-100 pt-5 space-y-3">
+              <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-gray-400">申请加入组织</p>
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                <div>
+                  {renderFieldLabel('邀请码')}
+                  <input value={membershipApplyDraft.inviteCode} onChange={(event) => setMembershipApplyDraft((prev) => ({ ...prev, inviteCode: event.target.value }))} placeholder="部门邀请码（自动识别组织）" className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2.5 text-[13px] outline-none focus:border-[#5B7BFE]" />
+                </div>
+                <div>
+                  {renderFieldLabel('部门（可选）')}
+                  <select value={membershipApplyDraft.departmentId} onChange={(event) => setMembershipApplyDraft((prev) => ({ ...prev, departmentId: event.target.value }))} className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2.5 text-[13px] outline-none focus:border-[#5B7BFE]">
+                    <option value="">选择部门</option>
+                    {departmentOptions.map((department) => (
+                      <option key={department.id} value={department.id}>{department.name}</option>
+                    ))}
+                  </select>
+                </div>
+                <div>
+                  {renderFieldLabel('职位（可选）')}
+                  <input value={membershipApplyDraft.jobTitle} onChange={(event) => setMembershipApplyDraft((prev) => ({ ...prev, jobTitle: event.target.value }))} placeholder="职位" className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2.5 text-[13px] outline-none focus:border-[#5B7BFE]" />
+                </div>
+                <div>
+                  {renderFieldLabel('直属负责人（可选）')}
+                  <input value={membershipApplyDraft.managerName} onChange={(event) => setMembershipApplyDraft((prev) => ({ ...prev, managerName: event.target.value }))} placeholder="姓名" className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2.5 text-[13px] outline-none focus:border-[#5B7BFE]" />
+                </div>
+                <div className="md:col-span-2">
+                  {renderFieldLabel('当前工作重点（可选）')}
+                  <textarea value={membershipApplyDraft.currentFocus} onChange={(event) => setMembershipApplyDraft((prev) => ({ ...prev, currentFocus: event.target.value }))} rows={2} placeholder="一两句话描述" className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2.5 text-[13px] outline-none focus:border-[#5B7BFE] resize-none" />
+                </div>
+              </div>
+              <div className="pt-2">
+                <Button primary onClick={() => void handleApplyMembership()} disabled={membershipApplySubmitting}>
+                  {membershipApplySubmitting ? <RefreshCw size={16} className="animate-spin" /> : <UserPlus size={16} />}
+                  提交组织身份申请
+                </Button>
+              </div>
             </div>
           )}
         </div>
       );
     };
 
-    const renderOverviewSection = () => {
+    const renderAccountSection = () => {
+      const accountStatus = orgMembershipState.membershipStatus || currentSessionUser?.membershipStatus || 'none';
+      const accountStatusTone: 'success' | 'warning' | 'neutral' =
+        accountStatus === 'approved' ? 'success'
+          : accountStatus === 'pending' ? 'warning'
+            : accountStatus === 'rejected' ? 'warning'
+              : 'neutral';
       return (
-        <div className="space-y-6">
-          <div className="bg-white border border-gray-100 rounded-3xl p-6 shadow-sm space-y-4">
-              <div className="flex items-start justify-between gap-4">
-                <div>
-                  <div className="flex flex-wrap items-center gap-3">
-                    <h2 className="text-[16px] font-bold text-gray-900">语言模型 · 用于文字分析</h2>
-                    <label className="inline-flex items-center gap-2 rounded-full border border-blue-100 bg-blue-50 px-3 py-1.5 text-[12px] font-bold text-[#335CFF]">
+        <div className="space-y-10 max-w-[860px]">
+          {/* HERO · 当前账号状态 */}
+          <div>
+            <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-gray-400">CURRENT IDENTITY</p>
+            <div className="mt-5 grid grid-cols-1 md:grid-cols-3 gap-x-10 gap-y-6">
+              <div className="flex flex-col">
+                <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-gray-400">登录账号</p>
+                <span className="mt-3 text-[20px] leading-none font-light tracking-tight text-gray-900 truncate">{currentSessionUser?.fullName || currentSessionUser?.email || '未登录'}</span>
+                <div className="mt-2 h-[2px] w-8 rounded-full bg-emerald-500" />
+                <p className="mt-2 text-[11px] text-gray-400 truncate">{isLocalSession ? '本机模式' : '云端账号'}</p>
+              </div>
+              <div className="flex flex-col">
+                <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-gray-400">组织身份</p>
+                <span className="mt-3 text-[20px] leading-none font-light tracking-tight text-gray-900 truncate">{membershipStatusLabel(accountStatus)}</span>
+                <div className={`mt-2 h-[2px] w-8 rounded-full ${accountStatus === 'approved' ? 'bg-emerald-500' : accountStatus === 'pending' ? 'bg-amber-500' : accountStatus === 'rejected' ? 'bg-rose-500' : 'bg-transparent'}`} />
+                <p className="mt-2 text-[11px] text-gray-400 truncate">{orgMembershipState.organizationName || '尚未加入组织'}</p>
+              </div>
+              <div className="flex flex-col">
+                <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-gray-400">部门</p>
+                <span className="mt-3 text-[20px] leading-none font-light tracking-tight text-gray-900 truncate">{orgMembershipState.departmentName || currentSessionUser?.departmentName || '—'}</span>
+                <div className="mt-2 h-[2px] w-8 rounded-full bg-transparent" />
+                <p className="mt-2 text-[11px] text-gray-400 truncate">{currentSessionUser?.primaryRole === 'admin' ? '管理员' : '成员'}</p>
+              </div>
+            </div>
+          </div>
+
+          {/* 3 段折叠区(zebra) */}
+          <div>
+            {renderFoldable({
+              key: 'identity',
+              eyebrow: 'IDENTITY · 身份与组织',
+              title: '账号信息 · 部门 · 工作台',
+              helper: '这里确认账号属于哪个组织和部门。登录手机号与飞书通知手机号互不影响。',
+              statusChip: { text: membershipStatusLabel(accountStatus), tone: accountStatusTone },
+              children: <AccountIdentityCard />,
+            })}
+            {renderFoldable({
+              key: 'profile',
+              eyebrow: 'PROFILE · 基本信息',
+              title: '姓名 · 邮箱 · 登录手机号',
+              helper: isLocalSession
+                ? '当前是本机模式。连接云端后可在此维护姓名 / 昵称、邮箱、登录手机号。'
+                : '飞书通知手机号在飞书集成里单独维护,不要混淆。',
+              statusChip: isLocalSession
+                ? { text: '本机', tone: 'neutral' }
+                : { text: '已登录', tone: 'success' },
+              tint: true,
+              children: <AccountProfileCard />,
+            })}
+            {!isLocalSession && renderFoldable({
+              key: 'password',
+              eyebrow: 'SECURITY · 修改密码',
+              title: '登录密码',
+              helper: '新密码至少 8 位。',
+              children: <ChangePasswordCard flash={flash} />,
+            })}
+          </div>
+        </div>
+      );
+    };
+
+    const renderOverviewSection = () => {
+      const cloudConfigured = Boolean(draft.cloudApiUrl.trim());
+      const textModelReady = draft.aiProvider !== 'mock' && Boolean(draft.aiBaseUrl);
+      const primaryReady = cloudConfigured && textModelReady;
+      const ollamaReadyCount = AI_LOCAL_MODEL_PROFILE_ORDER.filter((k) => health?.aiProfiles?.[k]?.ready).length;
+      const ollamaTotal = AI_LOCAL_MODEL_PROFILE_ORDER.length;
+      const speechConfigured = Boolean(speechModelSettingsState?.enabled);
+      const objectStorageConfigured = Boolean(objectStorageSettingsState?.enabled);
+      const feishuConfigured = Boolean(orgFeishuIntegrationState?.enabled);
+
+      const accentLine = (accent: 'success' | 'warning' | 'danger' | 'neutral') =>
+        accent === 'success' ? 'bg-emerald-500'
+          : accent === 'warning' ? 'bg-amber-500'
+            : accent === 'danger' ? 'bg-rose-500'
+              : 'bg-transparent';
+
+      const renderStatusBlock = (params: {
+        label: string;
+        valueText: string;
+        unitText?: string;
+        accent: 'success' | 'warning' | 'danger' | 'neutral';
+        helper?: string;
+      }) => (
+        <div className="flex flex-col">
+          <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-gray-400">{params.label}</p>
+          <div className="mt-3 flex items-baseline gap-1.5 min-w-0">
+            <span className="text-[28px] leading-none font-light tracking-tight text-gray-900 truncate">
+              {params.valueText}
+            </span>
+            {params.unitText && (
+              <span className="text-[14px] leading-none font-light text-gray-400 shrink-0">
+                {params.unitText}
+              </span>
+            )}
+          </div>
+          <div className={`mt-2 h-[2px] w-8 rounded-full ${accentLine(params.accent)}`} />
+          {params.helper && <p className="mt-2 text-[11px] text-gray-400 truncate">{params.helper}</p>}
+        </div>
+      );
+
+
+
+      return (
+        <div className="space-y-10 max-w-[860px]">
+          {/* HERO · CONNECTION STATUS ───────────────────────────── */}
+          <div>
+            <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-gray-400">CONNECTION STATUS</p>
+            <div className="mt-5 grid grid-cols-1 md:grid-cols-3 gap-x-10 gap-y-6">
+              {renderStatusBlock({
+                label: '云端',
+                valueText: cloudConfigured ? (cloudApiHostValue(draft.cloudApiUrl) || '已配置') : '未配置',
+                accent: cloudConfigured ? 'success' : 'neutral',
+                helper: cloudConfigured ? '组织数据库已接入' : '留空时只跑本机',
+              })}
+              {renderStatusBlock({
+                label: '文字模型',
+                valueText: textModelReady
+                  ? (draft.aiProviderLabel || aiModelDisplayLabel(draft.aiProvider, draft.aiModel, draft.aiProviderLabel))
+                  : '未接入',
+                accent: textModelReady ? 'success' : 'warning',
+                helper: textModelReady ? (draft.aiModel || '默认模型') : '问答 / 报告 / 洞察都依赖它',
+              })}
+              {renderStatusBlock({
+                label: '本地模型',
+                valueText: `${ollamaReadyCount}`,
+                unitText: `/ ${ollamaTotal} 就绪`,
+                accent: ollamaReadyCount === ollamaTotal ? 'success' : ollamaReadyCount > 0 ? 'warning' : 'neutral',
+                helper: '向量 / 视觉 / 重排 三个 Ollama profile',
+              })}
+            </div>
+          </div>
+
+          {/* 5 段统一折叠区 ─────────────────────────────────────── */}
+          <div>
+            {renderFoldable({
+              key: 'primary',
+              eyebrow: 'PRIMARY · 主链接',
+              title: '云端地址 · 大模型 · API Key',
+              helper: '用于客户工作台问答、报告生成、洞察分析等所有文字分析。本机模式可先接入；连接云端后只有管理员可写。',
+              statusChip: primaryReady ? { text: '已配置', tone: 'success' } : { text: '未完成', tone: 'warning' },
+              children: (
+                <div className="space-y-5">
+                  <div>
+                    <p className="text-[11px] font-bold uppercase tracking-[0.12em] text-gray-500 mb-2">云端服务地址</p>
+                    <div className="flex items-center overflow-hidden rounded-xl border border-gray-200 bg-white focus-within:border-[#5B7BFE]">
+                      <span className="shrink-0 border-r border-gray-200 px-3 py-2.5 text-[12px] font-medium text-gray-400">
+                        {CLOUD_API_URL_PREFIX}
+                      </span>
                       <input
-                        type="checkbox"
-                        checked={draft.advancedAiRoutingEnabled}
-                        onChange={(event) => setDraft((prev) => ({ ...prev, advancedAiRoutingEnabled: event.target.checked }))}
+                        value={cloudApiHostValue(draft.cloudApiUrl)}
+                        onChange={(event) => setDraft((prev) => ({ ...prev, cloudApiUrl: cloudApiUrlFromHost(event.target.value) }))}
+                        placeholder="101.126.34.232"
+                        className="min-w-0 flex-1 bg-transparent px-3 py-2.5 text-[13px] font-medium text-gray-900 outline-none placeholder:text-gray-400"
                         disabled={!canManageSensitiveSettings}
                       />
-                      开启高级模型分工
+                    </div>
+                    <p className="mt-1.5 text-[11px] text-gray-400">只填公网 IP 或域名。留空时不连接任何云端数据库。</p>
+                  </div>
+
+                  <div>
+                    <p className="text-[11px] font-bold uppercase tracking-[0.12em] text-gray-500 mb-2">大模型厂商</p>
+                    <select
+                      value={resolveAiConfigPresetKey(draft)}
+                      onChange={(event) => applyAiPreset(event.target.value as AiConfigPresetKey)}
+                      disabled={!canManageSensitiveSettings}
+                      className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2.5 text-[13px] font-medium text-gray-900 outline-none focus:border-[#5B7BFE] disabled:cursor-not-allowed disabled:opacity-60"
+                    >
+                      {AI_CONFIG_PRESET_ORDER.map((presetKey) => (
+                        <option key={presetKey} value={presetKey}>
+                          {AI_CONFIG_PRESETS[presetKey].label}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                    <div>
+                      <p className="text-[11px] font-bold uppercase tracking-[0.12em] text-gray-500 mb-2">服务名称</p>
+                      <input
+                        value={draft.aiProviderLabel}
+                        onChange={(event) => setDraft((prev) => ({ ...prev, aiProviderLabel: event.target.value }))}
+                        placeholder="服务名称"
+                        className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2.5 text-[13px] font-medium text-gray-900 outline-none focus:border-[#5B7BFE]"
+                        disabled={!canManageSensitiveSettings}
+                      />
+                    </div>
+                    <div>
+                      <p className="text-[11px] font-bold uppercase tracking-[0.12em] text-gray-500 mb-2">模型名</p>
+                      <input
+                        value={draft.aiModel}
+                        onChange={(event) => setDraft((prev) => ({ ...prev, aiModel: event.target.value }))}
+                        placeholder="模型名"
+                        className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2.5 text-[13px] font-medium text-gray-900 outline-none focus:border-[#5B7BFE]"
+                        disabled={!canManageSensitiveSettings}
+                      />
+                    </div>
+                  </div>
+
+                  <div>
+                    <p className="text-[11px] font-bold uppercase tracking-[0.12em] text-gray-500 mb-2">接口地址 Base URL</p>
+                    <input
+                      value={draft.aiBaseUrl}
+                      onChange={(event) => setDraft((prev) => ({ ...prev, aiProvider: 'openai_compatible', aiBaseUrl: event.target.value }))}
+                      placeholder="https://"
+                      className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2.5 text-[13px] font-medium text-gray-900 outline-none focus:border-[#5B7BFE]"
+                      disabled={!canManageSensitiveSettings || draft.aiProvider === 'mock' || draft.aiProvider === 'openclaw'}
+                    />
+                  </div>
+
+                  <div>
+                    <p className="text-[11px] font-bold uppercase tracking-[0.12em] text-gray-500 mb-2">API Key</p>
+                    <input
+                      type="password"
+                      value={draft.apiKey}
+                      onChange={(event) => setDraft((prev) => ({ ...prev, apiKey: event.target.value }))}
+                      placeholder={draft.aiProvider !== 'mock' && isLocalAiBaseUrl(draft.aiBaseUrl) ? 'API Key（本地大模型可留空）' : 'API Key'}
+                      className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2.5 text-[13px] font-medium text-gray-900 outline-none focus:border-[#5B7BFE]"
+                      disabled={!canManageSensitiveSettings || draft.aiProvider === 'mock' || draft.aiProvider === 'openclaw'}
+                      autoComplete="off"
+                    />
+                    <label className="mt-2 inline-flex items-center gap-2 text-[11px] text-gray-500">
+                      <input
+                        type="checkbox"
+                        checked={rememberAiInputKey}
+                        onChange={(event) => setRememberAiInputKey(event.target.checked)}
+                        disabled={!canManageSensitiveSettings}
+                      />
+                      记住当前 API Key（仅本机）
                     </label>
                   </div>
-                  <p className="text-[12px] text-gray-500 mt-1">
-                    用于客户工作台问答、报告生成、洞察分析等文字分析场景。本机模式可先完成首次接入；连接云端后，只有管理员可写。
-                  </p>
-                </div>
-                {canManageSensitiveSettings && (
-                  <Button primary onClick={() => void handleSaveAiSettings()}>
-                    <Bot size={16} /> 保存 AI 与云端
-                  </Button>
-                )}
-                {currentSessionUser?.primaryRole === 'admin' && (
-                  <Button onClick={() => void handleSyncAiToCloud()}>
-                    <UploadCloud size={16} /> 把本机 AI 配置上传到云端组织
-                  </Button>
-                )}
-              </div>
-              <div className="space-y-2">
-                <div className="flex items-center overflow-hidden rounded-2xl border border-gray-200 bg-gray-50 focus-within:border-[#5B7BFE]">
-                  <span className="shrink-0 border-r border-gray-200 bg-gray-100 px-4 py-3 text-[13px] font-bold text-gray-500">
-                    {CLOUD_API_URL_PREFIX}
-                  </span>
-                  <input
-                    value={cloudApiHostValue(draft.cloudApiUrl)}
-                    onChange={(event) => setDraft((prev) => ({ ...prev, cloudApiUrl: cloudApiUrlFromHost(event.target.value) }))}
-                    placeholder="101.126.34.232"
-                    className="min-w-0 flex-1 bg-transparent px-4 py-3 text-[13px] font-medium text-gray-900 outline-none placeholder:text-gray-400"
-                    disabled={!canManageSensitiveSettings}
-                  />
-                </div>
-                <p className="text-[12px] text-gray-500">
-                  只填写云服务器公网 IP 或域名，例如灰色示例里的 101.126.34.232。留空时不连接任何云端数据库。
-                </p>
-              </div>
-              <label className="block space-y-2">
-                <span className="text-[12px] font-bold text-gray-600">大模型厂商</span>
-                <select
-                  value={resolveAiConfigPresetKey(draft)}
-                  onChange={(event) => applyAiPreset(event.target.value as AiConfigPresetKey)}
-                  disabled={!canManageSensitiveSettings}
-                  className="w-full rounded-2xl border border-gray-200 bg-gray-50 px-4 py-3 text-[13px] font-bold text-gray-900 outline-none focus:border-[#5B7BFE] disabled:cursor-not-allowed disabled:opacity-60"
-                >
-                  {AI_CONFIG_PRESET_ORDER.map((presetKey) => (
-                    <option key={presetKey} value={presetKey}>
-                      {AI_CONFIG_PRESETS[presetKey].label}
-                    </option>
-                  ))}
-                </select>
-              </label>
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-              <input
-                value={draft.aiProviderLabel}
-                onChange={(event) => setDraft((prev) => ({ ...prev, aiProviderLabel: event.target.value }))}
-                placeholder="服务名称"
-                className="w-full bg-gray-50 border border-gray-200 rounded-2xl px-4 py-3 text-[13px] font-bold outline-none"
-                disabled={!canManageSensitiveSettings}
-              />
-              <input
-                value={draft.aiModel}
-                onChange={(event) => setDraft((prev) => ({ ...prev, aiModel: event.target.value }))}
-                placeholder="模型名"
-                className="w-full bg-gray-50 border border-gray-200 rounded-2xl px-4 py-3 text-[13px] font-bold outline-none"
-                disabled={!canManageSensitiveSettings}
-              />
-            </div>
-            <input
-              value={draft.aiBaseUrl}
-              onChange={(event) => setDraft((prev) => ({ ...prev, aiProvider: 'openai_compatible', aiBaseUrl: event.target.value }))}
-              placeholder="接口地址 Base URL"
-              className="w-full bg-gray-50 border border-gray-200 rounded-2xl px-4 py-3 text-[13px] font-medium outline-none"
-              disabled={!canManageSensitiveSettings || draft.aiProvider === 'mock'}
-            />
-            <input
-              type="password"
-              value={draft.apiKey}
-              onChange={(event) => setDraft((prev) => ({ ...prev, apiKey: event.target.value }))}
-              placeholder={draft.aiProvider !== 'mock' && isLocalAiBaseUrl(draft.aiBaseUrl) ? 'API Key（本地大模型可留空）' : 'API Key'}
-              className="w-full bg-gray-50 border border-gray-200 rounded-2xl px-4 py-3 text-[13px] font-medium outline-none"
-              disabled={!canManageSensitiveSettings || draft.aiProvider === 'mock'}
-              autoComplete="off"
-            />
-            <p className="text-[12px] text-gray-500">
-              当前：{aiModelDisplayLabel(draft.aiProvider, draft.aiModel, draft.aiProviderLabel)}
-              {draft.aiProvider !== 'mock' && draft.aiBaseUrl ? ` · ${draft.aiBaseUrl}` : ''}
-              {draft.cloudApiUrl.trim() ? ` · 云端 ${draft.cloudApiUrl.trim()}` : ' · 云端未配置'}
-            </p>
-            {draft.advancedAiRoutingEnabled && (
-            <div className="rounded-3xl border border-gray-100 bg-gray-50 p-4 space-y-4">
-              <div className="grid grid-cols-1 md:grid-cols-[1fr_220px] gap-3 items-start">
-                <div>
-                  <p className="text-[13px] font-bold text-gray-900">模型快速切换</p>
-                  <p className="text-[12px] text-gray-500 mt-1">
-                    高级分工关闭时仍走统一大模型；开启后按任务类型和模式解析实际模型。
-                  </p>
-                </div>
-                <select
-                  value={draft.aiModelMode}
-                  onChange={(event) => setDraft((prev) => ({ ...prev, aiModelMode: event.target.value as AiModelMode }))}
-                  disabled={!canManageSensitiveSettings}
-                  className="w-full rounded-2xl border border-gray-200 bg-white px-4 py-3 text-[13px] font-bold text-gray-900 outline-none focus:border-[#5B7BFE] disabled:cursor-not-allowed disabled:opacity-60"
-                >
-                  {AI_MODEL_MODE_OPTIONS.map((option) => (
-                    <option key={option.value} value={option.value}>{option.label}</option>
-                  ))}
-                </select>
-              </div>
-              <p className="text-[12px] text-gray-500">
-                {AI_MODEL_MODE_OPTIONS.find((option) => option.value === draft.aiModelMode)?.description}
-              </p>
-              {/* 第一组：项目内置可下载（ASR，独占一行）*/}
-              <div className="space-y-2">
-                <p className="text-[12px] font-bold text-gray-700">
-                  📥 项目内置（点一下下载，不需要装别的软件）
-                </p>
-                <div className="rounded-3xl border border-gray-200 bg-white p-4 space-y-3">
-                  <div>
-                    <p className="text-[13px] font-bold text-gray-900">本地语音识别 (ASR)</p>
-                    <p className="text-[12px] text-gray-500 mt-1">
-                      上传录音文件 / 直接录音 → 自动转写为文字资料
+
+                  {isLocalSession && (
+                    <p className="rounded-xl border border-blue-100 bg-blue-50 px-3 py-2 text-[11px] text-blue-700">
+                      本机模式：可先保存云端地址，再打开登录窗口连接云端账号。
                     </p>
-                  </div>
-                  <LocalAsrModelPanel canEdit={canManageSensitiveSettings} />
-                </div>
-              </div>
+                  )}
 
-              {/* 第二组：需要先装 Ollama（3 个并列）*/}
-              <div className="space-y-2 pt-1">
-                <p className="text-[12px] font-bold text-gray-700">
-                  🦙 需要先安装 <a href="https://ollama.com/download" target="_blank" rel="noreferrer" className="underline decoration-dotted text-[#5B7BFE]">Ollama</a>（一次性免费安装，下面 3 个模型共用一个 Ollama 服务）
-                </p>
-                <div className="grid grid-cols-1 lg:grid-cols-3 gap-3">
-                  {AI_LOCAL_MODEL_PROFILE_ORDER.map((profileKey) => {
-                    const profile = draft.aiModelProfiles[profileKey] || AI_MODEL_PROFILE_DEFAULTS[profileKey];
-                    const meta = AI_MODEL_PROFILE_META[profileKey];
-                    const profileHealth = health?.aiProfiles?.[profileKey];
-                    return (
-                      <div key={profileKey} className="rounded-3xl border border-gray-200 bg-white p-4 space-y-3">
-                        <div className="flex items-start justify-between gap-3">
-                          <div className="min-w-0">
-                            <p className="text-[13px] font-bold text-gray-900">{meta.title}</p>
-                            <p className="text-[12px] text-gray-500 mt-1">{meta.purpose}</p>
-                          </div>
-                          <label className="flex items-center gap-1.5 text-[12px] font-bold text-gray-600 shrink-0">
-                            <input
-                              type="checkbox"
-                              checked={profile.enabled}
-                              onChange={(event) => updateAiModelProfile(profileKey, { enabled: event.target.checked })}
-                              disabled={!canManageSensitiveSettings}
-                            />
-                            启用
-                          </label>
+                  {(canManageSensitiveSettings || currentSessionUser?.primaryRole === 'admin') && (
+                    <div className="flex flex-wrap items-center gap-2 pt-2 border-t border-gray-100">
+                      {canManageSensitiveSettings && (
+                        <Button primary onClick={() => void handleSaveAiSettings()}>
+                          <Bot size={14} /> 保存主链接
+                        </Button>
+                      )}
+                      {currentSessionUser?.primaryRole === 'admin' && (
+                        <Button onClick={() => void handleSyncAiToCloud()}>
+                          <UploadCloud size={14} /> 上传到云端
+                        </Button>
+                      )}
+                    </div>
+                  )}
+                </div>
+              ),
+            })}
+
+            {renderFoldable({
+              key: 'advanced',
+              eyebrow: 'ADVANCED · 高级模型分工',
+              title: '按任务派发不同模型',
+              helper: '开启后按任务类型派发不同模型（向量 / 视觉 / 重排）。关闭时所有调用都走主链接。',
+              statusChip: draft.advancedAiRoutingEnabled
+                ? { text: '已启用', tone: 'success' }
+                : { text: '未启用', tone: 'neutral' },
+              tint: true,
+              children: (
+                <div className="space-y-7">
+                  <label className="inline-flex items-center gap-2.5 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={draft.advancedAiRoutingEnabled}
+                      onChange={(event) => setDraft((prev) => ({ ...prev, advancedAiRoutingEnabled: event.target.checked }))}
+                      disabled={!canManageSensitiveSettings}
+                    />
+                    <span className="text-[13px] font-medium text-gray-900">启用高级模型分工</span>
+                  </label>
+
+                  {draft.advancedAiRoutingEnabled && (
+                    <div className="space-y-7">
+                      <div className="grid grid-cols-1 md:grid-cols-[1fr_240px] gap-3 items-start">
+                        <div className="min-w-0">
+                          <p className="text-[11px] font-bold uppercase tracking-[0.12em] text-gray-500 mb-1.5">路由模式</p>
+                          <p className="text-[11px] text-gray-400">{AI_MODEL_MODE_OPTIONS.find((option) => option.value === draft.aiModelMode)?.description}</p>
                         </div>
-                        {/* 一键拉 Ollama 模型 */}
-                        <OllamaQuickPullPanel
-                          capability={profile.capability}
-                          canEdit={canManageSensitiveSettings}
-                          currentModelName={profile.enabled ? profile.model : undefined}
-                          onModelReady={(modelName) => updateAiModelProfile(profileKey, {
-                            enabled: true,
-                            model: modelName,
-                            baseUrl: 'http://127.0.0.1:11434/v1',
-                            providerLabel: profile.providerLabel || '本地 Ollama',
-                          })}
-                        />
-                        {/* 健康状态徽章（只保留有用的"已配置/未就绪"，去掉"本地/远程""capability" 这种技术名 */}
-                        {profileHealth && (
-                          <p className={`text-[11px] ${profileHealth.ready ? 'text-emerald-700' : 'text-amber-700'}`}>
-                            {profileHealth.ready ? '✅ 已配置' : '⚠️ 未就绪'}：{profileHealth.detail}
-                          </p>
-                        )}
+                        <select
+                          value={draft.aiModelMode}
+                          onChange={(event) => setDraft((prev) => ({ ...prev, aiModelMode: event.target.value as AiModelMode }))}
+                          disabled={!canManageSensitiveSettings}
+                          className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2.5 text-[13px] font-medium text-gray-900 outline-none focus:border-[#5B7BFE] disabled:cursor-not-allowed disabled:opacity-60"
+                        >
+                          {AI_MODEL_MODE_OPTIONS.map((option) => (
+                            <option key={option.value} value={option.value}>{option.label}</option>
+                          ))}
+                        </select>
                       </div>
-                    );
-                  })}
+
+                      <div>
+                        <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-gray-400 mb-4">项目内置 · 点击下载</p>
+                        <div className="border-t border-gray-100 pt-4">
+                          <p className="text-[13px] font-bold text-gray-900">本地语音识别 (ASR)</p>
+                          <p className="text-[11px] text-gray-500 mt-0.5">上传录音 / 直接录音 → 自动转文字</p>
+                          <div className="mt-3">
+                            <LocalAsrModelPanel canEdit={canManageSensitiveSettings} />
+                          </div>
+                        </div>
+                      </div>
+
+                      <div>
+                        <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-gray-400 mb-4">
+                          需要先装 Ollama · <a href="https://ollama.com/download" target="_blank" rel="noreferrer" className="underline decoration-dotted hover:text-gray-600">下载</a>
+                        </p>
+                        <div className="grid grid-cols-1 lg:grid-cols-3 gap-x-8 gap-y-6">
+                          {AI_LOCAL_MODEL_PROFILE_ORDER.map((profileKey) => {
+                            const profile = draft.aiModelProfiles[profileKey] || AI_MODEL_PROFILE_DEFAULTS[profileKey];
+                            const meta = AI_MODEL_PROFILE_META[profileKey];
+                            const profileHealth = health?.aiProfiles?.[profileKey];
+                            return (
+                              <div key={profileKey} className="border-t border-gray-100 pt-4">
+                                <div className="flex items-start justify-between gap-2">
+                                  <div className="min-w-0">
+                                    <p className="text-[13px] font-bold text-gray-900">{meta.title}</p>
+                                    <p className="text-[11px] text-gray-500 mt-0.5">{meta.purpose}</p>
+                                  </div>
+                                  <label className="flex items-center gap-1 text-[11px] text-gray-600 shrink-0">
+                                    <input
+                                      type="checkbox"
+                                      checked={profile.enabled}
+                                      onChange={(event) => updateAiModelProfile(profileKey, { enabled: event.target.checked })}
+                                      disabled={!canManageSensitiveSettings}
+                                    />
+                                    启用
+                                  </label>
+                                </div>
+                                <div className="mt-3">
+                                  <OllamaQuickPullPanel
+                                    capability={profile.capability}
+                                    canEdit={canManageSensitiveSettings}
+                                    currentModelName={profile.enabled ? profile.model : undefined}
+                                    onModelReady={(modelName) => updateAiModelProfile(profileKey, {
+                                      enabled: true,
+                                      model: modelName,
+                                      baseUrl: 'http://127.0.0.1:11434/v1',
+                                      providerLabel: profile.providerLabel || '本地 Ollama',
+                                    })}
+                                  />
+                                </div>
+                                {profileHealth && (
+                                  <div className="mt-3 flex items-center gap-2">
+                                    <span className={`h-[2px] w-6 rounded-full ${profileHealth.ready ? 'bg-emerald-500' : 'bg-amber-500'}`} />
+                                    <p className={`text-[10px] font-bold uppercase tracking-[0.12em] ${profileHealth.ready ? 'text-emerald-600' : 'text-amber-600'}`}>
+                                      {profileHealth.ready ? '已配置' : '未就绪'}
+                                    </p>
+                                    <p className="text-[10px] text-gray-400 truncate">{profileHealth.detail}</p>
+                                  </div>
+                                )}
+                              </div>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    </div>
+                  )}
                 </div>
-              </div>
-            </div>
-            )}
-            {isLocalSession && (
-              <p className="text-[12px] text-blue-700 bg-blue-50 border border-blue-100 rounded-2xl px-4 py-3">
-                当前处于本机模式，可以先保存云端服务地址，再打开登录窗口连接云端账号。
-              </p>
-            )}
-            <label className="flex items-center gap-2 text-[12px] font-medium text-gray-700">
-              <input
-                type="checkbox"
-                checked={rememberAiInputKey}
-                onChange={(event) => setRememberAiInputKey(event.target.checked)}
-                disabled={!canManageSensitiveSettings}
-              />
-              记住当前 API Key（仅本机）
-            </label>
-            {!canManageSensitiveSettings && <p className="text-[12px] text-amber-700 bg-amber-50 border border-amber-100 rounded-2xl px-4 py-3">当前云端账号只能查看 AI 与云端状态，不能修改密钥和模型配置。</p>}
+              ),
+            })}
+
+            {renderFoldable({
+              key: 'voice',
+              eyebrow: 'VOICE · 语音模型',
+              title: '音频转文字',
+              helper: '录音 / 上传音频文件 → 自动转写为文字资料入库。',
+              statusChip: speechConfigured
+                ? { text: '已配置', tone: 'success' }
+                : { text: '未配置', tone: 'neutral' },
+              children: (
+                <SpeechModelSettingsCard
+                  settings={speechModelSettingsState}
+                  canEdit={canManageSensitiveSettings}
+                  isSaving={isSavingSpeechModelSettings}
+                  onSave={handleSaveSpeechModelSettings}
+                  onTest={handleTestSpeechModelSettings}
+                />
+              ),
+            })}
+
+            {renderFoldable({
+              key: 'storage',
+              eyebrow: 'STORAGE · 对象存储',
+              title: '音频与附件托管',
+              helper: '语音识别 API 需要公网音频 URL。这里配置一个对象存储桶，让系统先把录音放进桶里。',
+              statusChip: objectStorageConfigured
+                ? { text: '已配置', tone: 'success' }
+                : { text: '未配置', tone: 'neutral' },
+              tint: true,
+              children: (
+                <ObjectStorageSettingsCard
+                  settings={objectStorageSettingsState}
+                  canEdit={canManageSensitiveSettings}
+                  isSaving={isSavingObjectStorageSettings}
+                  onSave={handleSaveObjectStorageSettings}
+                  onTest={handleTestObjectStorageSettings}
+                />
+              ),
+            })}
+
+            {renderFoldable({
+              key: 'feishu',
+              eyebrow: 'FEISHU · 飞书集成',
+              title: '机器人 · 组织绑定 · 通知投递',
+              helper: '整个组织共用一套飞书应用，验证通过后按成员手机号自动推送任务提醒。',
+              statusChip: feishuConfigured
+                ? { text: '已接通', tone: 'success' }
+                : { text: '未接通', tone: 'neutral' },
+              children: (
+                <FeishuOrgIntegrationPanel
+                  sessionMode={authState.sessionMode === 'cloud' ? 'cloud' : 'local'}
+                  membership={orgMembershipState}
+                  integration={orgFeishuIntegrationState}
+                  deliveryProfile={feishuDeliveryProfileState}
+                  currentUserName={currentSessionUser?.fullName || null}
+                  saveBusy={isSavingOrgFeishuIntegration}
+                  savePhoneBusy={isSavingFeishuDeliveryProfile}
+                  rememberedInputs={localInputMemoryState.feishuIntegration}
+                  onSaveIntegration={handleSaveOrgFeishuIntegration}
+                  onSaveRememberedInputs={handleSaveFeishuInputMemory}
+                  onSaveDeliveryProfile={handleSaveFeishuDeliveryProfile}
+                  onOpenOrganizationSetup={() => setSettingsSection('system_admin')}
+                  onOpenCloudAuth={() => openCloudAuthModal('login')}
+                />
+              ),
+            })}
           </div>
 
-        <SpeechModelSettingsCard
-          settings={speechModelSettingsState}
-          canEdit={canManageSensitiveSettings}
-          isSaving={isSavingSpeechModelSettings}
-          onSave={handleSaveSpeechModelSettings}
-          onTest={handleTestSpeechModelSettings}
-        />
-
-        <ObjectStorageSettingsCard
-          settings={objectStorageSettingsState}
-          canEdit={canManageSensitiveSettings}
-          isSaving={isSavingObjectStorageSettings}
-          onSave={handleSaveObjectStorageSettings}
-          onTest={handleTestObjectStorageSettings}
-        />
-
-        <AccountIdentityCard />
-
-        {isLocalSession ? (
-          <AccountProfileCard />
-        ) : (
-          <>
-            <AccountProfileCard />
-            <ChangePasswordCard flash={flash} />
-          </>
-        )}
-
-        <FeishuOrgIntegrationPanel
-          sessionMode={authState.sessionMode === 'cloud' ? 'cloud' : 'local'}
-          membership={orgMembershipState}
-          integration={orgFeishuIntegrationState}
-          deliveryProfile={feishuDeliveryProfileState}
-          currentUserName={currentSessionUser?.fullName || null}
-          saveBusy={isSavingOrgFeishuIntegration}
-          savePhoneBusy={isSavingFeishuDeliveryProfile}
-          rememberedInputs={localInputMemoryState.feishuIntegration}
-          onSaveIntegration={handleSaveOrgFeishuIntegration}
-          onSaveRememberedInputs={handleSaveFeishuInputMemory}
-          onSaveDeliveryProfile={handleSaveFeishuDeliveryProfile}
-          onOpenOrganizationSetup={() => setSettingsSection('system_admin')}
-          onOpenCloudAuth={() => openCloudAuthModal('login')}
-        />
-
-        <div className="bg-white border border-gray-100 rounded-3xl p-6 shadow-sm">
-          <h2 className="text-[16px] font-bold text-gray-900 mb-4">系统概况</h2>
-          <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-4">
-            <div className="rounded-2xl bg-gray-50 border border-gray-100 p-4">
-              <p className="text-[11px] font-bold text-gray-400 uppercase tracking-widest mb-2">AI 状态</p>
-              <p className="text-[12px] text-gray-700">{health?.ai.detail || '未加载'}</p>
-            </div>
-            <div className="rounded-2xl bg-gray-50 border border-gray-100 p-4">
-              <p className="text-[11px] font-bold text-gray-400 uppercase tracking-widest mb-2">客户 / 任务</p>
-              <p className="text-[12px] text-gray-700">{health?.stats.clients || 0} 个客户，{health?.stats.tasks || 0} 条任务</p>
-            </div>
-            <div className="rounded-2xl bg-gray-50 border border-gray-100 p-4">
-              <p className="text-[11px] font-bold text-gray-400 uppercase tracking-widest mb-2">资讯 / 手册</p>
-              <p className="text-[12px] text-gray-700">{health?.stats.topics || 0} 条资讯候选，{health?.stats.handbookEntries || 0} 条沉淀</p>
-            </div>
-            <div className="rounded-2xl bg-gray-50 border border-gray-100 p-4">
-              <p className="text-[11px] font-bold text-gray-400 uppercase tracking-widest mb-2">最近备份</p>
-              <p className="text-[12px] text-gray-700">{settingsState?.lastBackupAt || '尚未备份'}</p>
-            </div>
-          </div>
+          {!canManageSensitiveSettings && (
+            <p className="border-t border-gray-100 pt-6 text-[11px] text-amber-700">
+              当前云端账号只能查看 AI 与云端状态，不能修改密钥和模型配置。
+            </p>
+          )}
         </div>
-
-        <div className="bg-white border border-gray-100 rounded-3xl p-6 shadow-sm">
-          <div className="flex flex-wrap items-center justify-between gap-4">
-            <div>
-              <h2 className="text-[16px] font-bold text-gray-900">备份</h2>
-              <p className="text-[12px] text-gray-500 mt-1">保留正式工作需要的本地备份入口；旧数据迁移和演示数据不再常驻设置首页。</p>
-            </div>
-            <Button onClick={() => { void createBackup().then(async (backup) => { await loadSettingsBlock(); flash('success', `已生成备份：${backup.backupPath.split('/').pop()}`); }).catch((error) => flash('error', error instanceof Error ? error.message : '备份失败')); }}>
-              <Database size={16} /> 立即备份
-            </Button>
-          </div>
-        </div>
-
-        <div className="bg-white border border-gray-100 rounded-3xl p-6 shadow-sm">
-          <h2 className="text-[16px] font-bold text-gray-900 mb-4">最近操作记录</h2>
-          <div className="space-y-3 max-h-[420px] overflow-y-auto">
-            {logs.map((log) => (
-              <div key={log.id} className="border border-gray-100 rounded-2xl p-4">
-                <div className="flex justify-between items-center gap-4 mb-2">
-                  <p className="text-[13px] font-bold text-gray-900">{log.action}</p>
-                  <span className="text-[10px] font-bold text-gray-400">{new Date(log.createdAt).toLocaleString('zh-CN', { hour12: false })}</span>
-                </div>
-                <p className="text-[12px] text-gray-500">{log.actorName} · {log.entityType} · {log.entityId}</p>
-              </div>
-            ))}
-          </div>
-        </div>
-      </div>
-    );
+      );
     };
 
     const renderTasksSection = () => (
-      <div className="space-y-6">
-        <div className="bg-white border border-gray-100 rounded-3xl p-6 shadow-sm">
-          <div className="flex items-start justify-between gap-4 mb-5">
-            <div>
-              <h2 className="text-[16px] font-bold text-gray-900">任务默认规则</h2>
-              <p className="text-[12px] text-gray-500 mt-1">统一任务默认清单、优先级、日期策略和复盘入口。</p>
-            </div>
-            {canEditBusinessSettings && (
-              <Button primary onClick={() => void handleSaveTaskSettings()}>
-                <Settings size={16} /> 保存任务设置
-              </Button>
-            )}
-          </div>
-          {!canEditBusinessSettings && (
-            <p className="mb-4 rounded-2xl border border-amber-100 bg-amber-50 px-4 py-3 text-[12px] text-amber-700">
-              当前账号只能查看任务默认规则，不能修改。
-            </p>
-          )}
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            <select value={taskDefaultDestinationLists.some((list) => list.id === taskSettingsDraft.defaultListId) ? taskSettingsDraft.defaultListId || '' : taskDefaultDestinationLists[0]?.id || ''} onChange={(event) => setTaskSettingsDraft((prev) => ({ ...prev, defaultListId: event.target.value || null }))} className="w-full bg-gray-50 border border-gray-200 rounded-2xl px-4 py-3 text-[13px] font-bold outline-none" disabled={!canEditBusinessSettings || taskDefaultDestinationLists.length === 0}>
+      <div className="space-y-8 max-w-[860px]">
+        {renderSectionHeading(
+          'TASKS · 任务与日程',
+          '默认规则',
+          '统一任务的默认清单、优先级、日期策略和复盘入口。改完会立刻影响下次新建任务。',
+          canEditBusinessSettings ? (
+            <Button primary onClick={() => void handleSaveTaskSettings()}>
+              <Settings size={14} /> 保存
+            </Button>
+          ) : null,
+        )}
+        {!canEditBusinessSettings && (
+          <p className="rounded-xl border border-amber-100 bg-amber-50 px-3 py-2 text-[11px] text-amber-700">
+            当前账号只能查看任务默认规则,不能修改。
+          </p>
+        )}
+        <div className="space-y-5">
+          <div>
+            {renderFieldLabel('默认清单')}
+            <select value={taskDefaultDestinationLists.some((list) => list.id === taskSettingsDraft.defaultListId) ? taskSettingsDraft.defaultListId || '' : taskDefaultDestinationLists[0]?.id || ''} onChange={(event) => setTaskSettingsDraft((prev) => ({ ...prev, defaultListId: event.target.value || null }))} className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2.5 text-[13px] font-medium text-gray-900 outline-none focus:border-[#5B7BFE] disabled:opacity-60" disabled={!canEditBusinessSettings || taskDefaultDestinationLists.length === 0}>
               {taskDefaultDestinationLists.map((list) => (
                 <option key={list.id} value={list.id}>{taskDefaultDestinationOptionLabel(list)}</option>
               ))}
             </select>
-            <select value={taskSettingsDraft.defaultPriority} onChange={(event) => setTaskSettingsDraft((prev) => ({ ...prev, defaultPriority: event.target.value as TaskSettings['defaultPriority'] }))} className="w-full bg-gray-50 border border-gray-200 rounded-2xl px-4 py-3 text-[13px] font-bold outline-none" disabled={!canEditBusinessSettings}>
-              <option value="low">默认低优先级</option>
-              <option value="normal">默认普通优先级</option>
-              <option value="high">默认高优先级</option>
-            </select>
-            <select value={taskSettingsDraft.defaultDueDatePreset} onChange={(event) => setTaskSettingsDraft((prev) => ({ ...prev, defaultDueDatePreset: event.target.value as TaskSettings['defaultDueDatePreset'] }))} className="w-full bg-gray-50 border border-gray-200 rounded-2xl px-4 py-3 text-[13px] font-bold outline-none" disabled={!canEditBusinessSettings}>
-              <option value="today">默认日期：今天</option>
-              <option value="none">默认日期：无日期</option>
-            </select>
-            <select value={taskSettingsDraft.defaultReviewScope} onChange={(event) => setTaskSettingsDraft((prev) => ({ ...prev, defaultReviewScope: event.target.value as TaskSettings['defaultReviewScope'] }))} className="w-full bg-gray-50 border border-gray-200 rounded-2xl px-4 py-3 text-[13px] font-bold outline-none" disabled={!canEditBusinessSettings}>
-              <option value="work">周复盘默认进入组织复盘</option>
-              <option value="personal">周复盘默认进入成长复盘</option>
-            </select>
-            <select value={taskSettingsDraft.autoAssignSelf ? 'self' : 'empty'} onChange={(event) => setTaskSettingsDraft((prev) => ({ ...prev, autoAssignSelf: event.target.value === 'self' }))} className="w-full bg-gray-50 border border-gray-200 rounded-2xl px-4 py-3 text-[13px] font-bold outline-none" disabled={!canEditBusinessSettings}>
-              <option value="self">未选协作者时默认给自己</option>
-              <option value="empty">未选协作者时先留空</option>
-            </select>
+          </div>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+            <div>
+              {renderFieldLabel('默认优先级')}
+              <select value={taskSettingsDraft.defaultPriority} onChange={(event) => setTaskSettingsDraft((prev) => ({ ...prev, defaultPriority: event.target.value as TaskSettings['defaultPriority'] }))} className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2.5 text-[13px] font-medium text-gray-900 outline-none focus:border-[#5B7BFE] disabled:opacity-60" disabled={!canEditBusinessSettings}>
+                <option value="low">低</option>
+                <option value="normal">普通</option>
+                <option value="high">高</option>
+              </select>
+            </div>
+            <div>
+              {renderFieldLabel('默认日期')}
+              <select value={taskSettingsDraft.defaultDueDatePreset} onChange={(event) => setTaskSettingsDraft((prev) => ({ ...prev, defaultDueDatePreset: event.target.value as TaskSettings['defaultDueDatePreset'] }))} className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2.5 text-[13px] font-medium text-gray-900 outline-none focus:border-[#5B7BFE] disabled:opacity-60" disabled={!canEditBusinessSettings}>
+                <option value="today">今天</option>
+                <option value="none">无日期</option>
+              </select>
+            </div>
+            <div>
+              {renderFieldLabel('周复盘入口')}
+              <select value={taskSettingsDraft.defaultReviewScope} onChange={(event) => setTaskSettingsDraft((prev) => ({ ...prev, defaultReviewScope: event.target.value as TaskSettings['defaultReviewScope'] }))} className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2.5 text-[13px] font-medium text-gray-900 outline-none focus:border-[#5B7BFE] disabled:opacity-60" disabled={!canEditBusinessSettings}>
+                <option value="work">组织复盘</option>
+                <option value="personal">成长复盘</option>
+              </select>
+            </div>
+            <div>
+              {renderFieldLabel('未选协作者时')}
+              <select value={taskSettingsDraft.autoAssignSelf ? 'self' : 'empty'} onChange={(event) => setTaskSettingsDraft((prev) => ({ ...prev, autoAssignSelf: event.target.value === 'self' }))} className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2.5 text-[13px] font-medium text-gray-900 outline-none focus:border-[#5B7BFE] disabled:opacity-60" disabled={!canEditBusinessSettings}>
+                <option value="self">默认给自己</option>
+                <option value="empty">先留空</option>
+              </select>
+            </div>
           </div>
         </div>
-
       </div>
     );
 
     const renderTopicsSection = () => (
-      <div className="space-y-6">
-        <div className="bg-white border border-gray-100 rounded-3xl p-6 shadow-sm">
-          <div className="flex items-start justify-between gap-4 mb-5">
-            <div>
-              <h2 className="text-[16px] font-bold text-gray-900">资讯情报站规则</h2>
-              <p className="text-[12px] text-gray-500 mt-1">集中管理抓取中文化、解析 gating、默认时间窗和任务指派策略。</p>
-            </div>
-            <Button primary onClick={() => void handleSaveTopicsSettings()} disabled={!canEditBusinessSettings}>
-              <Settings size={16} /> 保存资讯设置
-            </Button>
-          </div>
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            <label className="rounded-2xl border border-gray-200 bg-gray-50 px-4 py-3 text-[13px] font-medium flex items-center justify-between">
-              抓回内容默认中文化
+      <div className="space-y-8 max-w-[860px]">
+        {renderSectionHeading(
+          'TOPICS · 资讯情报站',
+          '抓取与转任务规则',
+          '集中管理抓取中文化、解析 gating、默认时间窗、任务指派策略。改完立刻影响下一次抓取行为。',
+          <Button primary onClick={() => void handleSaveTopicsSettings()} disabled={!canEditBusinessSettings}>
+            <Settings size={14} /> 保存
+          </Button>,
+        )}
+        {!canEditBusinessSettings && (
+          <p className="rounded-xl border border-amber-100 bg-amber-50 px-3 py-2 text-[11px] text-amber-700">
+            当前账号只能查看资讯规则,不能修改。
+          </p>
+        )}
+        <div className="space-y-5">
+          <div className="space-y-3 border-t border-gray-100 pt-5">
+            <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-gray-400">抓取行为</p>
+            <label className="flex items-center justify-between gap-4 py-2">
+              <div>
+                <p className="text-[13px] font-medium text-gray-900">抓回内容默认中文化</p>
+                <p className="text-[11px] text-gray-500 mt-0.5">非中文资讯会自动翻译。</p>
+              </div>
               <input type="checkbox" checked={topicsDraft.chineseOnly} onChange={(event) => setTopicsDraft((prev) => ({ ...prev, chineseOnly: event.target.checked }))} disabled={!canEditBusinessSettings} />
             </label>
-            <label className="rounded-2xl border border-gray-200 bg-gray-50 px-4 py-3 text-[13px] font-medium flex items-center justify-between">
-              解析完成前禁止查看解析 / 转任务
+            <label className="flex items-center justify-between gap-4 py-2">
+              <div>
+                <p className="text-[13px] font-medium text-gray-900">解析完成前禁止操作</p>
+                <p className="text-[11px] text-gray-500 mt-0.5">未解析完不能看解析、不能转任务。</p>
+              </div>
               <input type="checkbox" checked={topicsDraft.requireInsightBeforeActions} onChange={(event) => setTopicsDraft((prev) => ({ ...prev, requireInsightBeforeActions: event.target.checked }))} disabled={!canEditBusinessSettings} />
             </label>
-            <select value={topicsDraft.defaultTimeRange} onChange={(event) => setTopicsDraft((prev) => ({ ...prev, defaultTimeRange: event.target.value }))} className="w-full bg-gray-50 border border-gray-200 rounded-2xl px-4 py-3 text-[13px] font-bold outline-none" disabled={!canEditBusinessSettings}>
-              <option value="1_day">默认时间窗：1 天</option>
-              <option value="3_days">默认时间窗：3 天</option>
-              <option value="7_days">默认时间窗：7 天</option>
-              <option value="14_days">默认时间窗：14 天</option>
-            </select>
-            <select value={topicsDraft.defaultTaskOwnerMode} onChange={(event) => setTopicsDraft((prev) => ({ ...prev, defaultTaskOwnerMode: event.target.value as TopicsSettings['defaultTaskOwnerMode'] }))} className="w-full bg-gray-50 border border-gray-200 rounded-2xl px-4 py-3 text-[13px] font-bold outline-none" disabled={!canEditBusinessSettings}>
-              <option value="self">转任务默认指派给自己</option>
-              <option value="empty">转任务默认不带负责人</option>
-            </select>
-            <input value={topicsDraft.defaultSourceStrategy} onChange={(event) => setTopicsDraft((prev) => ({ ...prev, defaultSourceStrategy: event.target.value }))} placeholder="默认来源策略" className="w-full bg-gray-50 border border-gray-200 rounded-2xl px-4 py-3 text-[13px] font-medium outline-none md:col-span-2" disabled={!canEditBusinessSettings} />
+          </div>
+          <div className="space-y-3 border-t border-gray-100 pt-5">
+            <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-gray-400">默认参数</p>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+              <div>
+                {renderFieldLabel('时间窗')}
+                <select value={topicsDraft.defaultTimeRange} onChange={(event) => setTopicsDraft((prev) => ({ ...prev, defaultTimeRange: event.target.value }))} className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2.5 text-[13px] font-medium text-gray-900 outline-none focus:border-[#5B7BFE] disabled:opacity-60" disabled={!canEditBusinessSettings}>
+                  <option value="1_day">1 天</option>
+                  <option value="3_days">3 天</option>
+                  <option value="7_days">7 天</option>
+                  <option value="14_days">14 天</option>
+                </select>
+              </div>
+              <div>
+                {renderFieldLabel('转任务负责人')}
+                <select value={topicsDraft.defaultTaskOwnerMode} onChange={(event) => setTopicsDraft((prev) => ({ ...prev, defaultTaskOwnerMode: event.target.value as TopicsSettings['defaultTaskOwnerMode'] }))} className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2.5 text-[13px] font-medium text-gray-900 outline-none focus:border-[#5B7BFE] disabled:opacity-60" disabled={!canEditBusinessSettings}>
+                  <option value="self">默认给自己</option>
+                  <option value="empty">不带负责人</option>
+                </select>
+              </div>
+              <div className="md:col-span-2">
+                {renderFieldLabel('默认来源策略')}
+                <input value={topicsDraft.defaultSourceStrategy} onChange={(event) => setTopicsDraft((prev) => ({ ...prev, defaultSourceStrategy: event.target.value }))} placeholder="例如:优先抓官方公告、过滤站外转载" className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2.5 text-[13px] font-medium text-gray-900 outline-none focus:border-[#5B7BFE]" disabled={!canEditBusinessSettings} />
+              </div>
+            </div>
           </div>
         </div>
       </div>
     );
 
     const renderHandbookSection = () => (
-      <div className="space-y-6">
-        <div className="bg-white border border-gray-100 rounded-3xl p-6 shadow-sm">
-          <div className="flex items-start justify-between gap-4 mb-5">
-            <div>
-              <h2 className="text-[16px] font-bold text-gray-900">成长手册规则</h2>
-              <p className="text-[12px] text-gray-500 mt-1">统一默认标签、默认分类和组织沉淀 / 个人沉淀边界说明。</p>
+      <div className="space-y-8 max-w-[860px]">
+        {renderSectionHeading(
+          'HANDBOOK · 成长手册',
+          '沉淀规则',
+          '统一默认标签、默认分类、沉淀入口和组织 / 个人沉淀的显示边界。',
+          <Button primary onClick={() => void handleSaveHandbookSettings()} disabled={!canEditBusinessSettings}>
+            <Settings size={14} /> 保存
+          </Button>,
+        )}
+        {!canEditBusinessSettings && (
+          <p className="rounded-xl border border-amber-100 bg-amber-50 px-3 py-2 text-[11px] text-amber-700">
+            当前账号只能查看成长手册规则,不能修改。
+          </p>
+        )}
+        <div className="space-y-5">
+          <div className="space-y-3 border-t border-gray-100 pt-5">
+            <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-gray-400">默认值</p>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+              <div>
+                {renderFieldLabel('默认标签')}
+                <input value={handbookDraft.defaultTagsText} onChange={(event) => setHandbookDraft((prev) => ({ ...prev, defaultTagsText: event.target.value }))} placeholder="逗号分隔,如:复盘,洞察,案例" className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2.5 text-[13px] font-medium text-gray-900 outline-none focus:border-[#5B7BFE]" disabled={!canEditBusinessSettings} />
+              </div>
+              <div>
+                {renderFieldLabel('默认分类')}
+                <input value={handbookDraft.defaultCategory} onChange={(event) => setHandbookDraft((prev) => ({ ...prev, defaultCategory: event.target.value }))} placeholder="例如:工作方法、行业洞察" className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2.5 text-[13px] font-medium text-gray-900 outline-none focus:border-[#5B7BFE]" disabled={!canEditBusinessSettings} />
+              </div>
             </div>
-            <Button primary onClick={() => void handleSaveHandbookSettings()} disabled={!canEditBusinessSettings}>
-              <Settings size={16} /> 保存成长手册设置
-            </Button>
           </div>
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            <input value={handbookDraft.defaultTagsText} onChange={(event) => setHandbookDraft((prev) => ({ ...prev, defaultTagsText: event.target.value }))} placeholder="默认标签，逗号分隔" className="w-full bg-gray-50 border border-gray-200 rounded-2xl px-4 py-3 text-[13px] font-medium outline-none" disabled={!canEditBusinessSettings} />
-            <input value={handbookDraft.defaultCategory} onChange={(event) => setHandbookDraft((prev) => ({ ...prev, defaultCategory: event.target.value }))} placeholder="默认分类" className="w-full bg-gray-50 border border-gray-200 rounded-2xl px-4 py-3 text-[13px] font-medium outline-none" disabled={!canEditBusinessSettings} />
-            <label className="rounded-2xl border border-gray-200 bg-gray-50 px-4 py-3 text-[13px] font-medium flex items-center justify-between">
-              允许从任务沉淀进入成长手册
+          <div className="space-y-3 border-t border-gray-100 pt-5">
+            <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-gray-400">沉淀入口</p>
+            <label className="flex items-center justify-between gap-4 py-2">
+              <div>
+                <p className="text-[13px] font-medium text-gray-900">允许从任务沉淀</p>
+                <p className="text-[11px] text-gray-500 mt-0.5">任务完成时可直接沉淀到手册。</p>
+              </div>
               <input type="checkbox" checked={handbookDraft.allowTaskSource} onChange={(event) => setHandbookDraft((prev) => ({ ...prev, allowTaskSource: event.target.checked }))} disabled={!canEditBusinessSettings} />
             </label>
-            <label className="rounded-2xl border border-gray-200 bg-gray-50 px-4 py-3 text-[13px] font-medium flex items-center justify-between">
-              允许从分析结论沉淀进入成长手册
+            <label className="flex items-center justify-between gap-4 py-2">
+              <div>
+                <p className="text-[13px] font-medium text-gray-900">允许从分析结论沉淀</p>
+                <p className="text-[11px] text-gray-500 mt-0.5">AI 分析结论可一键收入手册。</p>
+              </div>
               <input type="checkbox" checked={handbookDraft.allowAnalysisSource} onChange={(event) => setHandbookDraft((prev) => ({ ...prev, allowAnalysisSource: event.target.checked }))} disabled={!canEditBusinessSettings} />
             </label>
-            <select value={handbookDraft.visibilityBoundary} onChange={(event) => setHandbookDraft((prev) => ({ ...prev, visibilityBoundary: event.target.value }))} className="w-full bg-gray-50 border border-gray-200 rounded-2xl px-4 py-3 text-[13px] font-bold outline-none md:col-span-2" disabled={!canEditBusinessSettings}>
-              <option value="organization_and_personal">组织沉淀与个人沉淀分开展示</option>
-              <option value="organization_first">优先显示组织沉淀</option>
-              <option value="personal_first">优先显示个人沉淀</option>
-            </select>
+          </div>
+          <div className="space-y-3 border-t border-gray-100 pt-5">
+            <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-gray-400">显示边界</p>
+            <div>
+              {renderFieldLabel('组织 / 个人沉淀的展示顺序')}
+              <select value={handbookDraft.visibilityBoundary} onChange={(event) => setHandbookDraft((prev) => ({ ...prev, visibilityBoundary: event.target.value }))} className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2.5 text-[13px] font-medium text-gray-900 outline-none focus:border-[#5B7BFE] disabled:opacity-60" disabled={!canEditBusinessSettings}>
+                <option value="organization_and_personal">分开展示</option>
+                <option value="organization_first">优先组织沉淀</option>
+                <option value="personal_first">优先个人沉淀</option>
+              </select>
+            </div>
           </div>
         </div>
       </div>
@@ -25635,114 +27521,168 @@ export default function App() {
         }
       };
 
+      const activeList = employeeReviews.filter((e) => e.accountStatus === 'approved' && (e.membershipStatus || 'approved') === 'approved' && e.primaryRole !== 'admin');
+
       const renderEmployeeRow = (employee: typeof employeeReviews[number], actions: React.ReactNode) => (
-        <div key={employee.id} className="flex items-center justify-between gap-4 rounded-2xl border border-gray-100 bg-gray-50 px-4 py-3">
+        <div key={employee.id} className="flex items-center justify-between gap-4 -mx-2 px-2 py-3 rounded-md hover:bg-gray-50/70 transition-colors">
           <div className="min-w-0">
-            <p className="text-[13px] font-bold text-gray-900 truncate">{employee.fullName}</p>
-            <p className="text-[12px] text-gray-500 truncate">{employee.email}{employee.departmentName ? ` · ${employee.departmentName}` : ''}{employee.jobTitle ? ` · ${employee.jobTitle}` : ''}</p>
+            <p className="text-[13px] font-medium text-gray-900 truncate">{employee.fullName}</p>
+            <p className="text-[11px] text-gray-500 truncate mt-0.5">{employee.email}{employee.departmentName ? ` · ${employee.departmentName}` : ''}{employee.jobTitle ? ` · ${employee.jobTitle}` : ''}</p>
           </div>
-          <div className="flex items-center gap-2 flex-shrink-0">{actions}</div>
+          <div className="flex items-center gap-1.5 flex-shrink-0">{actions}</div>
         </div>
       );
 
-      if (pendingList.length === 0 && rejectedList.length === 0 && disabledList.length === 0) return null;
+      const renderGroup = (eyebrow: string, count: number, children: React.ReactNode) => (
+        <div className="border-t border-gray-100 pt-4">
+          <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-gray-400 mb-1">{eyebrow} · {count}</p>
+          <div>{children}</div>
+        </div>
+      );
+
+      if (pendingList.length === 0 && rejectedList.length === 0 && disabledList.length === 0 && activeList.length === 0) return null;
 
       return (
-        <div className="bg-white border border-gray-100 rounded-3xl p-6 shadow-sm space-y-5">
+        <div className="space-y-5">
+          {pendingList.length > 0 && renderGroup('待审核', pendingList.length,
+            pendingList.map((employee) => renderEmployeeRow(employee, (
+              <>
+                <button type="button" disabled={employeeReviewBusyId === employee.id} onClick={() => void handleApprove(employee.id)} className="rounded-md border border-emerald-200 bg-emerald-50 px-3 py-1.5 text-[11px] font-bold text-emerald-700 hover:bg-emerald-100 disabled:opacity-50 transition-colors">批准</button>
+                {rejectingEmployeeId === employee.id ? (
+                  <div className="flex items-center gap-1">
+                    <input value={employeeRejectReason} onChange={(e) => setEmployeeRejectReason(e.target.value)} placeholder="驳回原因(可选)" className="w-40 rounded-md border border-gray-200 bg-white px-2 py-1.5 text-[11px] outline-none focus:border-rose-300" />
+                    <button type="button" disabled={employeeReviewBusyId === employee.id} onClick={() => void handleReject(employee.id)} className="rounded-md border border-rose-200 bg-rose-50 px-3 py-1.5 text-[11px] font-bold text-rose-700 hover:bg-rose-100 disabled:opacity-50">确认</button>
+                    <button type="button" onClick={() => { setRejectingEmployeeId(null); setEmployeeRejectReason(''); }} className="rounded-md border border-gray-200 bg-white px-2 py-1.5 text-[11px] text-gray-500">取消</button>
+                  </div>
+                ) : (
+                  <button type="button" onClick={() => setRejectingEmployeeId(employee.id)} className="rounded-md border border-rose-200 bg-rose-50 px-3 py-1.5 text-[11px] font-bold text-rose-700 hover:bg-rose-100 transition-colors">驳回</button>
+                )}
+              </>
+            )))
+          )}
+          {rejectedList.length > 0 && renderGroup('已驳回', rejectedList.length,
+            rejectedList.map((employee) => renderEmployeeRow(employee, (
+              <span className="text-[11px] text-rose-400">{employee.membershipRejectedReason || employee.rejectedReason || '未通过'}</span>
+            )))
+          )}
+          {disabledList.length > 0 && renderGroup('已停用', disabledList.length,
+            disabledList.map((employee) => renderEmployeeRow(employee, (
+              <span className="text-[11px] text-gray-400">已停用</span>
+            )))
+          )}
+          {activeList.length > 0 && renderGroup('在职员工', activeList.length,
+            activeList.map((employee) => renderEmployeeRow(employee, (
+              <>
+                {resetPwEmployeeId === employee.id ? (
+                  <div className="flex items-center gap-1">
+                    <input type="password" value={resetPwValue} onChange={(e) => setResetPwValue(e.target.value)} placeholder="≥8 位" className="w-32 rounded-md border border-gray-200 bg-white px-2 py-1.5 text-[11px] outline-none focus:border-[#5B7BFE]" />
+                    <button type="button" disabled={employeeReviewBusyId === employee.id || resetPwValue.length < 8} onClick={() => void handleResetPw(employee.id)} className="rounded-md border border-blue-200 bg-blue-50 px-3 py-1.5 text-[11px] font-bold text-blue-700 hover:bg-blue-100 disabled:opacity-50">确认</button>
+                    <button type="button" onClick={() => { setResetPwEmployeeId(null); setResetPwValue(''); }} className="rounded-md border border-gray-200 bg-white px-2 py-1.5 text-[11px] text-gray-500">取消</button>
+                  </div>
+                ) : (
+                  <button type="button" onClick={() => setResetPwEmployeeId(employee.id)} className="rounded-md border border-blue-200 bg-blue-50 px-3 py-1.5 text-[11px] font-bold text-blue-700 hover:bg-blue-100 transition-colors">重置密码</button>
+                )}
+                <button type="button" disabled={employeeReviewBusyId === employee.id} onClick={() => void handleDisable(employee.id)} className="rounded-md border border-gray-200 bg-white px-3 py-1.5 text-[11px] font-bold text-rose-500 hover:bg-rose-50 disabled:opacity-50 transition-colors">停用</button>
+              </>
+            )))
+          )}
+        </div>
+      );
+    };
+
+    const renderSystemAdminSection = (initialAdvancedTab: OrgModelTab | null = null) => {
+      const pendingReviewCount = employeeReviews.filter((e) => (e.membershipStatus || e.accountStatus) === 'pending').length;
+      const totalEmployeeCount = employeeReviews.filter((e) => e.accountStatus === 'approved' && (e.membershipStatus || 'approved') === 'approved').length;
+      const isCloud = authState.sessionMode === 'cloud';
+      const hasReviewContent = employeeReviews.some((e) =>
+        (e.membershipStatus || e.accountStatus) === 'pending'
+        || (e.membershipStatus || e.accountStatus) === 'rejected'
+        || e.accountStatus === 'disabled'
+        || (e.accountStatus === 'approved' && (e.membershipStatus || 'approved') === 'approved' && e.primaryRole !== 'admin')
+      );
+      return (
+        <div className="space-y-10">
+          {/* HERO · 组织状态 */}
           <div>
-            <h2 className="text-[16px] font-bold text-gray-900">员工账号审核</h2>
-            <p className="text-[12px] text-gray-500 mt-1">审批注册申请、驳回、停用或重置密码。</p>
+            <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-gray-400">ORGANIZATION</p>
+            <div className="mt-5 grid grid-cols-1 md:grid-cols-3 gap-x-10 gap-y-6 max-w-[680px]">
+              <div className="flex flex-col">
+                <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-gray-400">在职员工</p>
+                <div className="mt-3 flex items-baseline gap-1.5">
+                  <span className="text-[28px] leading-none font-light tracking-tight text-gray-900">{totalEmployeeCount}</span>
+                  <span className="text-[13px] leading-none font-light text-gray-400">人</span>
+                </div>
+                <div className={`mt-2 h-[2px] w-8 rounded-full ${totalEmployeeCount > 0 ? 'bg-emerald-500' : 'bg-transparent'}`} />
+                <p className="mt-2 text-[11px] text-gray-400 truncate">{orgMembershipState.organizationName || '尚未确认组织'}</p>
+              </div>
+              <div className="flex flex-col">
+                <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-gray-400">待审核</p>
+                <div className="mt-3 flex items-baseline gap-1.5">
+                  <span className="text-[28px] leading-none font-light tracking-tight text-gray-900">{pendingReviewCount}</span>
+                  <span className="text-[13px] leading-none font-light text-gray-400">人</span>
+                </div>
+                <div className={`mt-2 h-[2px] w-8 rounded-full ${pendingReviewCount > 0 ? 'bg-amber-500' : 'bg-transparent'}`} />
+                <p className="mt-2 text-[11px] text-gray-400 truncate">{pendingReviewCount > 0 ? '请尽快处理' : '无新申请'}</p>
+              </div>
+              <div className="flex flex-col">
+                <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-gray-400">云端</p>
+                <span className="mt-3 text-[20px] leading-none font-light tracking-tight text-gray-900 truncate">{isCloud ? '已连接' : '本机模式'}</span>
+                <div className={`mt-2 h-[2px] w-8 rounded-full ${isCloud ? 'bg-emerald-500' : 'bg-amber-500'}`} />
+                <p className="mt-2 text-[11px] text-gray-400 truncate">{isCloud ? '组织数据库已接通' : '需连云端后才能搭建组织'}</p>
+              </div>
+            </div>
           </div>
-          {pendingList.length > 0 && (
-            <div className="space-y-2">
-              <p className="text-[12px] font-bold text-amber-600 uppercase tracking-widest">待审核 ({pendingList.length})</p>
-              {pendingList.map((employee) => renderEmployeeRow(employee, (
-                <>
-                  <button type="button" disabled={employeeReviewBusyId === employee.id} onClick={() => void handleApprove(employee.id)} className="rounded-xl border border-emerald-200 bg-emerald-50 px-3 py-1.5 text-[12px] font-bold text-emerald-700 hover:bg-emerald-100 disabled:opacity-50">批准</button>
-                  {rejectingEmployeeId === employee.id ? (
-                    <div className="flex items-center gap-1">
-                      <input value={employeeRejectReason} onChange={(e) => setEmployeeRejectReason(e.target.value)} placeholder="驳回原因（可选）" className="w-40 rounded-xl border border-gray-200 bg-white px-2 py-1.5 text-[12px] outline-none" />
-                      <button type="button" disabled={employeeReviewBusyId === employee.id} onClick={() => void handleReject(employee.id)} className="rounded-xl border border-red-200 bg-red-50 px-3 py-1.5 text-[12px] font-bold text-red-700 hover:bg-red-100 disabled:opacity-50">确认驳回</button>
-                      <button type="button" onClick={() => { setRejectingEmployeeId(null); setEmployeeRejectReason(''); }} className="rounded-xl border border-gray-200 bg-white px-2 py-1.5 text-[12px] text-gray-500">取消</button>
-                    </div>
-                  ) : (
-                    <button type="button" onClick={() => setRejectingEmployeeId(employee.id)} className="rounded-xl border border-red-200 bg-red-50 px-3 py-1.5 text-[12px] font-bold text-red-700 hover:bg-red-100">驳回</button>
-                  )}
-                </>
-              )))}
+
+          {!isCloud && (
+            <p className="rounded-xl border border-amber-100 bg-amber-50 px-4 py-3 text-[12px] text-amber-700">
+              连接云端并加入或创建组织后,才能继续配置组织结构、邀请码与飞书协作底座。
+            </p>
+          )}
+
+          {/* 员工审核 - Foldable,有内容才显示 */}
+          {currentSessionUser?.primaryRole === 'admin' && hasReviewContent && (
+            <div>
+              {renderFoldable({
+                key: 'employee-review',
+                eyebrow: 'REVIEW · 员工账号审核',
+                title: '注册申请 · 在职管理',
+                helper: '批准注册申请、驳回不符合条件的账号、停用离职员工或重置密码。',
+                statusChip: pendingReviewCount > 0
+                  ? { text: `${pendingReviewCount} 人待审`, tone: 'warning' }
+                  : { text: `${totalEmployeeCount} 人在职`, tone: 'neutral' },
+                defaultOpen: pendingReviewCount > 0,
+                children: <EmployeeReviewPanel />,
+              })}
             </div>
           )}
-          {rejectedList.length > 0 && (
-            <div className="space-y-2">
-              <p className="text-[12px] font-bold text-red-500 uppercase tracking-widest">已驳回 ({rejectedList.length})</p>
-              {rejectedList.map((employee) => renderEmployeeRow(employee, (
-                <span className="text-[12px] text-red-400">{employee.membershipRejectedReason || employee.rejectedReason || '未通过'}</span>
-              )))}
-            </div>
-          )}
-          {disabledList.length > 0 && (
-            <div className="space-y-2">
-              <p className="text-[12px] font-bold text-gray-400 uppercase tracking-widest">已停用 ({disabledList.length})</p>
-              {disabledList.map((employee) => renderEmployeeRow(employee, (
-                <span className="text-[12px] text-gray-400">已停用</span>
-              )))}
-            </div>
-          )}
-          {employeeReviews.filter((e) => e.accountStatus === 'approved' && (e.membershipStatus || 'approved') === 'approved' && e.primaryRole !== 'admin').length > 0 && (
-            <div className="space-y-2">
-              <p className="text-[12px] font-bold text-gray-500 uppercase tracking-widest">在职员工管理</p>
-              {employeeReviews.filter((e) => e.accountStatus === 'approved' && (e.membershipStatus || 'approved') === 'approved' && e.primaryRole !== 'admin').map((employee) => renderEmployeeRow(employee, (
-                <>
-                  {resetPwEmployeeId === employee.id ? (
-                    <div className="flex items-center gap-1">
-                      <input type="password" value={resetPwValue} onChange={(e) => setResetPwValue(e.target.value)} placeholder="新密码（≥8位）" className="w-36 rounded-xl border border-gray-200 bg-white px-2 py-1.5 text-[12px] outline-none" />
-                      <button type="button" disabled={employeeReviewBusyId === employee.id || resetPwValue.length < 8} onClick={() => void handleResetPw(employee.id)} className="rounded-xl border border-blue-200 bg-blue-50 px-3 py-1.5 text-[12px] font-bold text-blue-700 hover:bg-blue-100 disabled:opacity-50">确认</button>
-                      <button type="button" onClick={() => { setResetPwEmployeeId(null); setResetPwValue(''); }} className="rounded-xl border border-gray-200 bg-white px-2 py-1.5 text-[12px] text-gray-500">取消</button>
-                    </div>
-                  ) : (
-                    <button type="button" onClick={() => setResetPwEmployeeId(employee.id)} className="rounded-xl border border-blue-200 bg-blue-50 px-3 py-1.5 text-[12px] font-bold text-blue-700 hover:bg-blue-100">重置密码</button>
-                  )}
-                  <button type="button" disabled={employeeReviewBusyId === employee.id} onClick={() => void handleDisable(employee.id)} className="rounded-xl border border-gray-200 bg-white px-3 py-1.5 text-[12px] font-bold text-red-500 hover:bg-red-50 disabled:opacity-50">停用</button>
-                </>
-              )))}
+
+          {/* 组织搭建中心 - 独立工作台,保留原样不嵌套 */}
+          {isCloud && (
+            <div>
+              <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-gray-400 mb-4">STRUCTURE · 组织搭建中心</p>
+              <OrganizationSetupCenter
+                value={orgModelDraft}
+                departmentCatalog={departmentOptions}
+                employees={employeeReviews}
+                canEdit
+                isSaving={isSavingOrgModel}
+                activeWeekLabel={currentWeekLabel()}
+                initialAdvancedTab={initialAdvancedTab}
+                onChange={handleChangeOrgModelDraft}
+                getInputDrafts={getOrgSetupInputDrafts}
+                setInputDrafts={setOrgSetupInputDrafts}
+                onSave={(nextDraft) => handleSaveOrgModel(nextDraft)}
+                onUploadIntroDocument={(title) => handleParseOrgIntroDocument(title)}
+                onOpenSection={(section) => setSettingsSection(section)}
+              />
             </div>
           )}
         </div>
       );
     };
 
-    const renderSystemAdminSection = (initialAdvancedTab: OrgModelTab | null = null) => (
-      <div className="space-y-6">
-        {currentSessionUser?.primaryRole === 'admin' && (
-          <EmployeeReviewPanel />
-        )}
-        {authState.sessionMode === 'cloud' ? (
-          <OrganizationSetupCenter
-            value={orgModelDraft}
-            departmentCatalog={departmentOptions}
-            employees={employeeReviews}
-            canEdit
-            isSaving={isSavingOrgModel}
-            activeWeekLabel={currentWeekLabel()}
-            initialAdvancedTab={initialAdvancedTab}
-            onChange={handleChangeOrgModelDraft}
-            getInputDrafts={getOrgSetupInputDrafts}
-            setInputDrafts={setOrgSetupInputDrafts}
-            onSave={(nextDraft) => handleSaveOrgModel(nextDraft)}
-            onUploadIntroDocument={(title) => handleParseOrgIntroDocument(title)}
-            onOpenSection={(section) => setSettingsSection(section)}
-          />
-        ) : (
-          <div className="bg-white border border-gray-100 rounded-3xl p-6 shadow-sm text-[13px] text-gray-600 leading-6">
-            连接云端并加入或创建组织后，才能继续配置组织结构、邀请码与飞书协作底座。
-          </div>
-        )}
-
-      </div>
-    );
-
     const renderSectionContent = () => {
-      if (!settingsSectionLoaded[settingsSection] && !['overview', 'tasks', 'system_logs'].includes(settingsSection)) {
+      if (!settingsSectionLoaded[settingsSection] && !['overview', 'account', 'tasks', 'system_logs'].includes(settingsSection)) {
         return (
           <div className="bg-white border border-gray-100 rounded-3xl p-8 shadow-sm text-[13px] text-gray-500 flex items-center gap-3">
             <RefreshCw size={16} className="animate-spin" />
@@ -25753,6 +27693,8 @@ export default function App() {
       switch (settingsSection) {
         case 'overview':
           return renderOverviewSection();
+        case 'account':
+          return renderAccountSection();
         case 'tasks':
           return renderTasksSection();
         case 'client_workspace':
@@ -25771,27 +27713,135 @@ export default function App() {
           return renderSystemAdminSection(orgSectionMeta.org_people.tab);
         case 'org_rules':
           return renderSystemAdminSection(orgSectionMeta.org_rules.tab);
+        case 'about':
+          return <AboutAppSettingsPanel desktopAppInfo={desktopAppInfo} />;
         case 'system_logs':
           return (
-            <div className="bg-white border border-gray-100 rounded-3xl p-6 shadow-sm">
-              <h2 className="text-[16px] font-bold text-gray-900 mb-1">系统运行日志</h2>
-              <p className="text-[12px] text-gray-500 mb-5">记录 API 请求、后台任务、桌面界面错误和运行异常；设置首页的“操作记录”只展示业务操作。</p>
-              <SystemLogPanel
-                maintenanceModeStatus={maintenanceModeStatus}
-                maintenanceModeError={maintenanceModeError}
-                maintenanceModeLoading={isMaintenanceModeLoading}
-                maintenanceModeBusyAction={maintenanceModeBusyAction}
-                onRefreshMaintenanceMode={() => {
-                  void refreshMaintenanceModeStatus();
-                }}
-                onEnterMaintenanceMode={() => {
-                  void handleEnterMaintenanceMode();
-                }}
-                onExitMaintenanceMode={() => {
-                  void handleExitMaintenanceMode();
-                }}
-                isAdmin={currentSessionUser?.primaryRole === 'admin'}
-              />
+            <div className="space-y-10 max-w-[860px]">
+              {/* HERO · SYSTEM OVERVIEW */}
+              <div>
+                <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-gray-400">SYSTEM OVERVIEW</p>
+                <div className="mt-5 grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-x-8 gap-y-6">
+                  <div className="flex flex-col min-w-0">
+                    <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-gray-400">AI 状态</p>
+                    <span className="mt-3 text-[20px] leading-none font-light tracking-tight text-gray-900 truncate">{health?.ai.detail ? (health.ai.detail.length > 18 ? '运行中' : health.ai.detail) : '未加载'}</span>
+                    <div className={`mt-2 h-[2px] w-8 rounded-full ${health?.ai.detail ? 'bg-emerald-500' : 'bg-gray-300'}`} />
+                    <p className="mt-2 text-[11px] text-gray-400 truncate">{health?.ai.detail || '尚未探测'}</p>
+                  </div>
+                  <div className="flex flex-col min-w-0">
+                    <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-gray-400">客户 / 任务</p>
+                    <div className="mt-3 flex items-baseline gap-1.5">
+                      <span className="text-[24px] leading-none font-light tracking-tight text-gray-900">{health?.stats.clients || 0}</span>
+                      <span className="text-[12px] leading-none font-light text-gray-400">客户</span>
+                    </div>
+                    <div className="mt-2 h-[2px] w-8 rounded-full bg-transparent" />
+                    <p className="mt-2 text-[11px] text-gray-400">{health?.stats.tasks || 0} 条任务</p>
+                  </div>
+                  <div className="flex flex-col min-w-0">
+                    <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-gray-400">资讯 / 手册</p>
+                    <div className="mt-3 flex items-baseline gap-1.5">
+                      <span className="text-[24px] leading-none font-light tracking-tight text-gray-900">{health?.stats.topics || 0}</span>
+                      <span className="text-[12px] leading-none font-light text-gray-400">资讯</span>
+                    </div>
+                    <div className="mt-2 h-[2px] w-8 rounded-full bg-transparent" />
+                    <p className="mt-2 text-[11px] text-gray-400">{health?.stats.handbookEntries || 0} 条沉淀</p>
+                  </div>
+                  <div className="flex flex-col min-w-0">
+                    <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-gray-400">最近备份</p>
+                    <span className="mt-3 text-[20px] leading-none font-light tracking-tight text-gray-900 truncate">{settingsState?.lastBackupAt ? '已备份' : '从未'}</span>
+                    <div className={`mt-2 h-[2px] w-8 rounded-full ${settingsState?.lastBackupAt ? 'bg-emerald-500' : 'bg-amber-500'}`} />
+                    <p className="mt-2 text-[11px] text-gray-400 truncate">{settingsState?.lastBackupAt || '建议立即备份'}</p>
+                  </div>
+                </div>
+              </div>
+
+              {/* 4 段 Foldable: 推送同步 / 运行日志 / 备份 / 最近操作 */}
+              <div>
+                {renderFoldable({
+                  key: 'sync',
+                  eyebrow: 'SYNC · 推送同步',
+                  title: '维护模式开关 · 授权同事',
+                  helper: '打开推送同步后,可以把代码改动推送到 main 分支。admin 直通,普通员工需要先获得授权。',
+                  statusChip: currentSessionUser?.primaryRole === 'admin'
+                    ? { text: 'Admin 直通', tone: 'success' }
+                    : maintenanceModeStatus?.active
+                      ? { text: '已打开', tone: 'success' }
+                      : { text: '未打开', tone: 'neutral' },
+                  children: (
+                    <MaintenanceSyncPanel
+                      maintenanceModeStatus={maintenanceModeStatus}
+                      maintenanceModeError={maintenanceModeError}
+                      maintenanceModeLoading={isMaintenanceModeLoading}
+                      maintenanceModeBusyAction={maintenanceModeBusyAction}
+                      onRefreshMaintenanceMode={() => {
+                        void refreshMaintenanceModeStatus();
+                      }}
+                      onEnterMaintenanceMode={() => {
+                        void handleEnterMaintenanceMode();
+                      }}
+                      onExitMaintenanceMode={() => {
+                        void handleExitMaintenanceMode();
+                      }}
+                      isAdmin={currentSessionUser?.primaryRole === 'admin'}
+                    />
+                  ),
+                })}
+                {renderFoldable({
+                  key: 'runtime-logs',
+                  eyebrow: 'LOGS · 系统运行日志',
+                  title: 'API · 后台任务 · 桌面界面',
+                  helper: '记录 API 请求、后台任务、桌面界面错误和运行异常。下方"最近操作记录"只展示业务操作。',
+                  tint: true,
+                  children: <SystemLogPanel />,
+                })}
+                {renderFoldable({
+                  key: 'backup',
+                  eyebrow: 'BACKUP · 本地备份',
+                  title: '一键备份本地数据库',
+                  helper: '保留正式工作需要的本地备份入口。备份会保存到本机 userData 目录,可在崩溃后恢复。',
+                  statusChip: settingsState?.lastBackupAt
+                    ? { text: '已备份', tone: 'success' }
+                    : { text: '从未备份', tone: 'warning' },
+                  children: (
+                    <div className="space-y-4">
+                      <div className="flex items-center justify-between gap-4">
+                        <div>
+                          <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-gray-400">最近备份时间</p>
+                          <p className="mt-1.5 text-[13px] text-gray-900">{settingsState?.lastBackupAt || '尚未生成过备份'}</p>
+                        </div>
+                        <Button onClick={() => { void createBackup().then(async (backup) => { await loadSettingsBlock(); flash('success', `已生成备份:${backup.backupPath.split('/').pop()}`); }).catch((error) => flash('error', error instanceof Error ? error.message : '备份失败')); }}>
+                          <Database size={14} /> 立即备份
+                        </Button>
+                      </div>
+                    </div>
+                  ),
+                })}
+                {renderFoldable({
+                  key: 'audit',
+                  eyebrow: 'AUDIT · 最近操作记录',
+                  title: '业务操作审计',
+                  helper: '展示新建、编辑、删除等业务操作。技术错误请看上方"系统运行日志"。',
+                  statusChip: { text: `${logs.length} 条`, tone: 'neutral' },
+                  tint: true,
+                  children: (
+                    <div className="space-y-2 max-h-[420px] overflow-y-auto">
+                      {logs.length === 0 ? (
+                        <p className="text-[12px] text-gray-400 py-4 text-center">暂无操作记录</p>
+                      ) : (
+                        logs.map((log) => (
+                          <div key={log.id} className="border-t border-gray-100 pt-3 pb-1">
+                            <div className="flex justify-between items-baseline gap-4">
+                              <p className="text-[13px] font-medium text-gray-900 truncate">{log.action}</p>
+                              <span className="text-[10px] text-gray-400 shrink-0">{new Date(log.createdAt).toLocaleString('zh-CN', { hour12: false })}</span>
+                            </div>
+                            <p className="text-[11px] text-gray-500 mt-0.5 truncate">{log.actorName} · {log.entityType} · {log.entityId}</p>
+                          </div>
+                        ))
+                      )}
+                    </div>
+                  ),
+                })}
+              </div>
             </div>
           );
         default:
@@ -25809,19 +27859,19 @@ export default function App() {
         </div>
         <div className="flex-1 min-h-0 overflow-y-auto">
           <div className="grid grid-cols-1 gap-6 xl:grid-cols-[260px_minmax(0,1fr)]">
-            <div className="bg-white border border-gray-100 rounded-3xl shadow-sm h-fit p-4">
-              <div className="mb-3">
-                <p className="text-[11px] font-bold uppercase tracking-[0.18em] text-gray-400">设置导航</p>
-                <p className="mt-1 text-[12px] text-gray-500">只保留常用配置入口，低频诊断能力不常驻展示。</p>
+            <nav className="h-fit space-y-7">
+              <div>
+                <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-gray-400">NAVIGATION</p>
+                <h2 className="mt-2 text-[18px] font-light tracking-tight text-gray-900">设置入口</h2>
               </div>
-              <div className="space-y-4">
-                {sectionGroups.map((group) => {
+              <div className="space-y-6">
+                {sectionGroups.map((group, groupIndex) => {
                   const visibleItems = group.items.filter((section) => currentSessionUser?.primaryRole === 'admin' || !['system_admin', 'org_overview', 'org_departments', 'org_people', 'org_rules'].includes(section.key));
                   if (visibleItems.length === 0) return null;
                   return (
-                    <div key={group.group}>
-                      <p className="mb-1.5 px-4 text-[10px] font-bold uppercase tracking-[0.12em] text-gray-400">{group.group}</p>
-                      <div className="space-y-1">
+                    <div key={group.group} className={groupIndex > 0 ? 'border-t border-gray-100 pt-5' : ''}>
+                      <p className="mb-2 text-[10px] font-bold uppercase tracking-[0.18em] text-gray-400">{group.group}</p>
+                      <div>
                         {visibleItems.map((section) => {
                           const Icon = section.icon;
                           const isActive = settingsSection === section.key;
@@ -25832,12 +27882,14 @@ export default function App() {
                               onClick={() => {
                                 setSettingsSection(section.key);
                               }}
-                              className={`w-full rounded-2xl border px-4 py-2.5 text-left transition-all ${isActive ? 'border-blue-200 bg-blue-50/60 text-[#335CFF]' : 'border-transparent hover:border-gray-100 hover:bg-gray-50 text-gray-700'}`}
+                              className={`w-full flex items-center gap-3 border-l-2 py-2 pl-3.5 pr-3 text-left transition-colors ${
+                                isActive
+                                  ? 'border-[#5B7BFE] bg-gray-50 text-gray-900'
+                                  : 'border-transparent hover:bg-gray-50/60 text-gray-600 hover:text-gray-900'
+                              }`}
                             >
-                              <div className="flex items-center gap-3">
-                                <Icon size={15} />
-                                <p className="text-[12px] font-bold">{section.label}</p>
-                              </div>
+                              <Icon size={14} className={isActive ? 'text-[#5B7BFE]' : 'text-gray-400'} />
+                              <span className={`text-[13px] ${isActive ? 'font-medium' : 'font-normal'}`}>{section.label}</span>
                             </button>
                           );
                         })}
@@ -25846,7 +27898,7 @@ export default function App() {
                   );
                 })}
               </div>
-            </div>
+            </nav>
             <div className="min-w-0">{renderSectionContent()}</div>
           </div>
         </div>
@@ -25968,7 +28020,7 @@ export default function App() {
       <CockpitEvidenceView />
     ) : (
       <StrategicBrainView
-        clients={clients}
+        clients={dataCenterClients}
         currentClientId={currentClientId}
         onClientChange={(clientId) => {
           setCurrentClientId(clientId);
@@ -25978,6 +28030,10 @@ export default function App() {
 	          setActiveTab('tasks');
 	          window.setTimeout(() => openStrategicTaskDraftRef.current(payload), 0);
 	        }}
+        onPromoteTodo={(todo) => {
+          setActiveTab('tasks');
+          window.setTimeout(() => promoteUnifiedTodoRef.current(todo), 0);
+        }}
         flash={flash}
       />
     ),
@@ -26109,66 +28165,47 @@ export default function App() {
     const valueIndex = splashMessageTick % VALUE_MESSAGES.length;
     const isError = loadingPhase.includes('受阻');
     return (
-      <div
-        className="min-h-screen flex flex-col items-center justify-center px-6 relative overflow-hidden select-none"
-        style={{ background: 'linear-gradient(160deg, #1E293B 0%, #334155 30%, #F8FAFC 100%)' }}
-      >
-        <div className="absolute inset-0 pointer-events-none" aria-hidden="true">
-          {[...Array(6)].map((_, i) => (
-            <div
-              key={i}
-              className="absolute rounded-full opacity-[0.07]"
-              style={{
-                width: `${60 + i * 40}px`,
-                height: `${60 + i * 40}px`,
-                background: 'radial-gradient(circle, #5B7BFE 0%, transparent 70%)',
-                left: `${10 + i * 15}%`,
-                top: `${20 + (i % 3) * 25}%`,
-                animation: `splash-float ${6 + i * 2}s ease-in-out infinite alternate`,
-                animationDelay: `${i * 0.8}s`,
-              }}
-            />
-          ))}
-        </div>
+      <div className="min-h-screen flex flex-col items-center justify-center px-6 bg-white select-none">
         <style>{`
-          @keyframes splash-float { 0% { transform: translateY(0) scale(1); } 100% { transform: translateY(-20px) scale(1.1); } }
-          @keyframes splash-breathe { 0%,100% { opacity:.9; transform:scale(1); } 50% { opacity:1; transform:scale(1.04); } }
-          @keyframes splash-fade-up { 0% { opacity:0; transform:translateY(12px); } 100% { opacity:1; transform:translateY(0); } }
-          @keyframes splash-glow { 0%,100% { box-shadow:0 0 8px rgba(91,123,254,.3); } 50% { box-shadow:0 0 16px rgba(91,123,254,.6); } }
+          @keyframes splash-fade-up { 0% { opacity: 0; transform: translateY(8px); } 100% { opacity: 1; transform: translateY(0); } }
+          @keyframes splash-float { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(-3px); } }
         `}</style>
 
-        <div className="flex flex-col items-center gap-5 z-10" style={{ animation: 'splash-breathe 3s ease-in-out infinite' }}>
-          <div className="w-20 h-20 rounded-2xl bg-white/95 shadow-lg flex items-center justify-center backdrop-blur-sm">
-            <AppLogoMark className="w-14 h-14" />
-          </div>
-          <div className="text-center">
-            <h1 className="text-[28px] font-bold text-white tracking-wide" style={{ textShadow: '0 2px 12px rgba(0,0,0,.15)' }}>益语智库</h1>
-            <p className="mt-1 text-[13px] text-white/50 tracking-widest">YIYU THINKTANK WORKBENCH</p>
-          </div>
+        {/* 品牌区:logo + 标题 + 大写小标签 — 跟登录页完全一致 */}
+        <div className="flex flex-col items-center" style={{ animation: 'splash-float 6s ease-in-out infinite' }}>
+          <AppLogoMark className="w-16 h-16" />
+          <h1 className="mt-5 text-[26px] font-light tracking-tight text-gray-900">益语智库</h1>
+          <p className="mt-2 text-[10px] font-bold uppercase tracking-[0.22em] text-gray-400">
+            YIYU THINKTANK WORKBENCH
+          </p>
+          <span className="mt-3 h-[2px] w-8 rounded-full bg-[#5B7BFE]/60" />
         </div>
 
-        <div className="mt-10 h-[48px] flex items-center justify-center z-10">
+        {/* Slogan 轮播区 */}
+        <div className="mt-12 h-[44px] flex items-center justify-center max-w-[420px]">
           <p
             key={valueIndex}
-            className="text-[16px] text-white/80 text-center font-light tracking-wide leading-relaxed"
-            style={{ animation: 'splash-fade-up 0.6s ease-out both' }}
+            className={`text-[14px] text-center font-light leading-relaxed ${isError ? 'text-rose-600' : 'text-gray-500'}`}
+            style={{ animation: 'splash-fade-up 0.5s ease-out both' }}
           >
             {isError ? loadingPhase : VALUE_MESSAGES[valueIndex]}
           </p>
         </div>
 
-        <div className="mt-8 w-[280px] z-10">
-          <div className="h-[3px] rounded-full bg-white/10 overflow-hidden">
+        {/* 进度条 + 阶段文字 */}
+        <div className="mt-10 w-[280px]">
+          <div className="h-[2px] rounded-full bg-gray-100 overflow-hidden">
             <div
               className="h-full rounded-full transition-all duration-700 ease-out"
               style={{
                 width: `${progressPercent}%`,
-                background: isError ? 'linear-gradient(90deg,#EF4444,#F87171)' : 'linear-gradient(90deg,#5B7BFE,#818CF8)',
-                animation: isError ? 'none' : 'splash-glow 2s ease-in-out infinite',
+                backgroundColor: isError ? '#F43F5E' : '#5B7BFE',
               }}
             />
           </div>
-          <p className="mt-3 text-[11px] text-white/30 text-center">{loadingPhase}</p>
+          <p className="mt-4 text-[10px] font-bold uppercase tracking-[0.18em] text-gray-400 text-center">
+            {isError ? loadingPhase : loadingPhase.replace(/…$/, '')}
+          </p>
         </div>
       </div>
     );
@@ -26189,6 +28226,26 @@ export default function App() {
   return (
     <GrowthProvider>
       <div className="window-drag window-drag-strip" aria-hidden="true" />
+      {/* P10：数据中心 + AI 模型 全局右上角灯
+            位置：drag-strip 右端；录音 indicator 出现时往左偏 ~12px gap。
+            点击 → 跳设置 → AI 配置区。 */}
+      <div
+        className="window-no-drag fixed z-[9000] pointer-events-auto"
+        style={{
+          top: 'calc(var(--window-drag-strip-height) + 6px)',
+          right: recordingSession.isActive ? 200 : 12,
+        }}
+      >
+        <GlobalAiStatusBadge
+          health={health}
+          backendOnline={!backendCompatibilityError && Boolean(health)}
+          onClickConfigure={() => {
+            setActiveTab('settings');
+            setSettingsSection('overview');
+            void loadSettingsBlock().catch(() => undefined);
+          }}
+        />
+      </div>
       {recordingSession.isActive && (
         <div
           className="window-no-drag fixed right-3 z-[9000] pointer-events-auto"
@@ -26286,26 +28343,26 @@ export default function App() {
           height: 'calc(100vh - var(--window-drag-strip-height))',
         }}
       >
-        <div className={`px-4 py-6 md:py-7 ${isSidebarCollapsed ? 'md:px-3' : 'md:px-6'}`}>
-          <div className={`flex items-center gap-3 md:gap-4 justify-center ${isSidebarCollapsed ? 'md:justify-center' : 'md:justify-start'}`}>
-            <BrandLogoMark className={`w-8 h-8 ${isSidebarCollapsed ? 'md:w-10 md:h-10' : 'md:w-11 md:h-11'}`} />
-            <span className={`font-bold text-[18px] md:text-[20px] text-gray-900 tracking-tight ${isSidebarCollapsed ? 'hidden' : 'hidden md:block'}`}>益语智库</span>
-          </div>
-          <div className={`mt-3 hidden md:flex ${isSidebarCollapsed ? 'justify-center' : 'justify-start pl-[2px]'}`}>
+        <div className={`px-4 py-6 md:py-7 ${isSidebarCollapsed ? 'md:px-3' : 'md:px-5'}`}>
+          <div className={`flex items-center gap-3 justify-center ${isSidebarCollapsed ? 'md:justify-center' : 'md:justify-between'}`}>
+            <div className="flex items-center gap-2.5 min-w-0">
+              <BrandLogoMark className={`shrink-0 ${isSidebarCollapsed ? 'md:w-9 md:h-9' : 'md:w-9 md:h-9'} w-8 h-8`} />
+              <span className={`text-[17px] font-light tracking-tight text-gray-900 truncate ${isSidebarCollapsed ? 'hidden' : 'hidden md:block'}`}>益语智库</span>
+            </div>
             <button
               type="button"
               onClick={() => setIsSidebarCollapsed((current) => !current)}
-              className="inline-flex h-6 items-center justify-center text-gray-400 transition-colors hover:text-[#5B7BFE]"
+              className={`shrink-0 inline-flex h-6 w-6 items-center justify-center rounded-md text-gray-400 hover:text-gray-700 hover:bg-gray-50 transition-colors ${isSidebarCollapsed ? 'hidden md:inline-flex' : 'hidden md:inline-flex'}`}
               title={isSidebarCollapsed ? '展开侧栏' : '收起侧栏'}
               aria-label={isSidebarCollapsed ? '展开侧栏' : '收起侧栏'}
             >
-              {isSidebarCollapsed ? <ChevronRight size={14} /> : <ChevronLeft size={14} />}
+              {isSidebarCollapsed ? <ChevronRight size={13} /> : <ChevronLeft size={13} />}
             </button>
           </div>
         </div>
 
         <div className="flex-1 min-h-0 overflow-y-auto overscroll-contain">
-          <nav className={`px-2 mt-2 space-y-2 overflow-visible ${isSidebarCollapsed ? 'md:px-3' : 'md:px-4'}`}>
+          <nav className={`mt-2 space-y-0.5 ${isSidebarCollapsed ? 'md:px-2' : 'md:px-2.5'}`}>
             {navItems.map((item) => {
               const isActive = activeTab === item.id;
               return (
@@ -26314,14 +28371,32 @@ export default function App() {
                   type="button"
                   aria-label={item.label}
                   onClick={() => setActiveTab(item.id)}
-                  className={`relative w-full flex items-center justify-center px-2 py-3 md:py-3.5 rounded-2xl text-[14px] transition-all duration-300 font-bold group ${isSidebarCollapsed ? 'md:justify-center md:px-2' : 'md:justify-start md:px-4'} ${isActive ? 'bg-[#5B7BFE]/10 text-[#5B7BFE]' : 'text-gray-500 hover:bg-gray-50 hover:text-gray-900'}`}
+                  className={`group relative w-full flex items-center transition-colors duration-150 ${
+                    isSidebarCollapsed
+                      ? `justify-center py-3 rounded-md ${isActive ? 'bg-gray-100' : 'hover:bg-gray-50'}`
+                      : `border-l-[2.5px] py-3 pl-4 pr-3 rounded-r-md ${
+                          isActive
+                            ? 'border-[#5B7BFE] bg-gray-100/70 text-gray-900'
+                            : 'border-transparent text-gray-700 hover:bg-gray-50 hover:text-gray-900'
+                        }`
+                  }`}
                 >
-                  <div className="flex items-center gap-3.5 relative">
-                    <item.icon size={20} strokeWidth={isActive ? 2.5 : 2} className={`shrink-0 transition-colors ${isActive ? 'text-[#5B7BFE]' : 'text-gray-400 group-hover:text-gray-700'}`} />
-                    <span className={`${isSidebarCollapsed ? 'hidden' : 'hidden md:block'} truncate tracking-wide`}>{item.label}</span>
-                  </div>
+                  <item.icon
+                    size={18}
+                    strokeWidth={isActive ? 2.25 : 2}
+                    className={`shrink-0 transition-colors ${isSidebarCollapsed ? '' : 'mr-3.5'} ${
+                      isActive ? 'text-[#5B7BFE]' : 'text-gray-500 group-hover:text-gray-800'
+                    }`}
+                  />
+                  <span
+                    className={`${isSidebarCollapsed ? 'hidden' : 'hidden md:block'} truncate text-[14.5px] tracking-[0.005em] ${
+                      isActive ? 'font-semibold' : 'font-medium'
+                    }`}
+                  >
+                    {item.label}
+                  </span>
                   {isSidebarCollapsed && (
-                    <span className="pointer-events-none absolute left-full top-1/2 z-30 ml-3 hidden -translate-y-1/2 whitespace-nowrap rounded-xl border border-gray-200 bg-white px-3 py-2 text-[12px] font-bold text-gray-700 shadow-[0_12px_30px_rgba(15,23,42,0.12)] opacity-0 transition-all duration-200 group-hover:translate-x-1 group-hover:opacity-100 md:block">
+                    <span className="pointer-events-none absolute left-full top-1/2 z-30 ml-3 hidden -translate-y-1/2 whitespace-nowrap rounded-md border border-gray-200 bg-white px-2.5 py-1.5 text-[12px] font-semibold text-gray-800 shadow-[0_8px_24px_rgba(15,23,42,0.12)] opacity-0 transition-all duration-200 group-hover:translate-x-1 group-hover:opacity-100 md:block">
                       {item.label}
                     </span>
                   )}
@@ -26331,7 +28406,7 @@ export default function App() {
           </nav>
 
           {canShowCollabSync && InternalCollabSyncCard && (
-            <div className={`px-3 pb-3 ${isSidebarCollapsed ? 'md:px-3' : 'md:px-4'} hidden md:block`}>
+            <div className="hidden md:block">
               <React.Suspense fallback={null}>
                 <InternalCollabSyncCard
                   collapsed={isSidebarCollapsed}
@@ -26357,37 +28432,103 @@ export default function App() {
             </div>
           )}
 
-          <div className={`px-4 pb-5 ${isSidebarCollapsed ? 'hidden' : 'hidden md:block'}`}>
-            <div className="bg-gray-50 rounded-2xl p-4 border border-gray-100">
-              <p className="text-[10px] font-bold text-gray-400 uppercase tracking-widest mb-2">当前登录</p>
-              <p className="text-[13px] font-bold text-gray-800">{isLocalSession ? '本机模式' : currentSessionUser.fullName}</p>
-              <p className="text-[11px] text-gray-500 mt-1">{isLocalSession ? `未连接云端 · ${sidebarAiStatusLabel} · ${health?.stats.clients || 0} 客户` : `${currentSessionUser.primaryRole} · ${sidebarAiStatusLabel} · ${health?.stats.clients || 0} 客户`}</p>
-              {isLocalSession ? (
-                <button
-                  className="mt-3 text-[12px] font-bold text-[#5B7BFE]"
-                  onClick={() => openCloudAuthModal('login')}
-                >
-                  注册 / 登录
-                </button>
-              ) : (
-                <button
-                  className="mt-3 text-[12px] font-bold text-[#5B7BFE]"
-                  onClick={() => {
-                    if (!window.confirm('确定要退出登录吗？')) return;
-                    void logout()
-                      .then(async (response) => {
-                        setAuthState(response);
-                        await loadAll();
-                      })
-                      .catch((error) => flash('error', error instanceof Error ? error.message : '退出失败'));
-                  }}
-                >
-                  退出登录
-                </button>
-              )}
-            </div>
-          </div>
         </div>
+
+        {/* 底部"账户与设置"区 — 系统设置 + 当前登录 同组, 跟上方业务模块用单条 hairline 分开.
+            展开态: 系统设置作为标签按钮, 下面是当前登录卡片
+            收起态: 只显示系统设置齿轮 icon (跟主 nav icon 风格一致), 当前登录隐藏 */}
+        {(() => {
+          const isSettingsActive = activeTab === 'settings';
+
+          if (isSidebarCollapsed) {
+            // 收起态: 只显示设置齿轮 (贴底), hover 提示
+            return (
+              <div className="mt-auto px-2 pb-3 hidden md:block border-t border-gray-100 pt-2">
+                <button
+                  type="button"
+                  aria-label="系统设置"
+                  onClick={() => setActiveTab('settings')}
+                  className={`group relative w-full flex items-center justify-center py-3 rounded-md transition-colors duration-150 ${
+                    isSettingsActive ? 'bg-gray-50' : 'hover:bg-gray-50/60'
+                  }`}
+                >
+                  <Settings
+                    size={17}
+                    strokeWidth={isSettingsActive ? 2 : 1.6}
+                    className={`shrink-0 transition-colors ${
+                      isSettingsActive ? 'text-[#5B7BFE]' : 'text-gray-400 group-hover:text-gray-600'
+                    }`}
+                  />
+                  <span className="pointer-events-none absolute left-full top-1/2 z-30 ml-3 hidden -translate-y-1/2 whitespace-nowrap rounded-md border border-gray-200 bg-white px-2.5 py-1.5 text-[11px] font-medium text-gray-700 shadow-[0_8px_24px_rgba(15,23,42,0.1)] opacity-0 transition-all duration-200 group-hover:translate-x-1 group-hover:opacity-100 md:block">
+                    系统设置
+                  </span>
+                </button>
+              </div>
+            );
+          }
+
+          // 展开态: 系统设置标签按钮 + 当前登录卡片, 同一组, 顶部 hairline 跟主 nav 分开
+          return (
+            <div className="mt-auto hidden md:block border-t border-gray-100">
+              {/* 系统设置 — 跟主 nav 同款按钮风格 (左 border 高亮), 视觉上自然衔接 */}
+              <div className="px-2.5 pt-2">
+                <button
+                  type="button"
+                  aria-label="系统设置"
+                  onClick={() => setActiveTab('settings')}
+                  className={`group relative w-full flex items-center transition-colors duration-150 border-l-2 py-2.5 pl-4 pr-3 ${
+                    isSettingsActive
+                      ? 'border-[#5B7BFE] bg-gray-50/80 text-gray-900'
+                      : 'border-transparent text-gray-500 hover:bg-gray-50/50 hover:text-gray-800'
+                  }`}
+                >
+                  <Settings
+                    size={17}
+                    strokeWidth={isSettingsActive ? 2 : 1.6}
+                    className={`shrink-0 mr-3 transition-colors ${
+                      isSettingsActive ? 'text-[#5B7BFE]' : 'text-gray-400 group-hover:text-gray-600'
+                    }`}
+                  />
+                  <span className={`truncate text-[14px] tracking-[0.01em] ${isSettingsActive ? 'font-medium' : 'font-normal'}`}>
+                    系统设置
+                  </span>
+                </button>
+              </div>
+
+              {/* 当前登录 — 紧贴系统设置下方, 用稍微缩进的轻量信息块, 不再有顶部 border */}
+              <div className="px-5 pb-4 pt-2">
+                <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-gray-400 mb-1">CURRENT · 当前登录</p>
+                <p className="text-[12px] font-medium text-gray-900 truncate">{isLocalSession ? '本机模式' : currentSessionUser.fullName}</p>
+                <p className="text-[10.5px] text-gray-400 truncate mt-0.5">{isLocalSession ? `未连接云端 · ${sidebarAiStatusLabel} · ${health?.stats.clients || 0} 客户` : `${sidebarAiStatusLabel} · ${health?.stats.clients || 0} 客户`}</p>
+                {isLocalSession ? (
+                  <button
+                    type="button"
+                    className="mt-1.5 text-[10.5px] text-gray-400 hover:text-[#5B7BFE] transition-colors"
+                    onClick={() => openCloudAuthModal('login')}
+                  >
+                    注册 / 登录 →
+                  </button>
+                ) : (
+                  <button
+                    type="button"
+                    className="mt-1.5 text-[10.5px] text-gray-400 hover:text-rose-500 transition-colors"
+                    onClick={() => {
+                      if (!window.confirm('确定要退出登录吗？')) return;
+                      void logout()
+                        .then(async (response) => {
+                          setAuthState(response);
+                          await loadAll();
+                        })
+                        .catch((error) => flash('error', error instanceof Error ? error.message : '退出失败'));
+                    }}
+                  >
+                    退出登录 →
+                  </button>
+                )}
+              </div>
+            </div>
+          );
+        })()}
       </aside>
 
       <main
@@ -26499,6 +28640,7 @@ export default function App() {
         </div>
       )}
       </div>
+      <UpdateNotifier />
     </GrowthProvider>
   );
 }
