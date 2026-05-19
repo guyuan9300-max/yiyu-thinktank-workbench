@@ -119,6 +119,34 @@ function restoreSourceElectronBundleIdentity() {
   }
 }
 
+// 提示当前使用的 data dir,避免 v2.1 分支误用 main 数据目录(污染 v1.0 baseline)
+// main.ts:979 已支持读 YIYU_WORKBENCH_DATA_DIR;这里只是开发者可见的提示
+function announceDataDir() {
+  const explicit = process.env.YIYU_WORKBENCH_DATA_DIR;
+  if (explicit) {
+    console.log(`[run-local-electron] YIYU_WORKBENCH_DATA_DIR (explicit) = ${explicit}`);
+    return;
+  }
+  // 检测当前 git 分支,如果是 v2.1-* 但没显式 export,大声告警
+  const gitResult = spawnSync('git', ['rev-parse', '--abbrev-ref', 'HEAD'], {
+    cwd: projectRoot,
+    stdio: 'pipe',
+    encoding: 'utf8',
+  });
+  const branch = (gitResult.stdout || '').trim();
+  if (branch.startsWith('v2.1') || branch.startsWith('v2.2')) {
+    console.warn(
+      `\n[run-local-electron] ⚠️  当前 git 分支 = ${branch},但未 export YIYU_WORKBENCH_DATA_DIR\n` +
+      `   会使用默认 data 目录(${'~/Library/Application Support/YiyuThinkTankWorkbench2'})—— 这会污染 v1.0 baseline 数据!\n` +
+      `   建议:export YIYU_WORKBENCH_DATA_DIR="$HOME/Library/Application Support/YiyuThinkTankWorkbench2-${branch}"\n`
+    );
+  } else {
+    console.log(`[run-local-electron] YIYU_WORKBENCH_DATA_DIR = (fallback to Electron userData,branch=${branch || 'unknown'})`);
+  }
+}
+
+announceDataDir();
+
 if (process.platform !== 'darwin') {
   const child = spawn(sourceElectronBinary, appArgs.length ? appArgs : ['.'], {
     cwd: projectRoot,

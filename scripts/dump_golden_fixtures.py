@@ -50,7 +50,14 @@ TIMESTAMP_FIELDS = {
 
 
 def _scrub(value: Any) -> Any:
-    """递归清掉时间戳字段 + 把 dataclass/Path 转 JSON-friendly"""
+    """递归清掉时间戳字段 + 把 dataclass/Path/datetime 转 JSON-friendly
+
+    规则:
+    - TIMESTAMP_FIELDS 里的 key 直接从 dict 删掉(避免重跑产生 diff)
+    - datetime/date 保留为 ISO 字符串(业务字段如 deadline 不能无声变 null)
+    - dataclass → asdict
+    - Path → str
+    """
     if is_dataclass(value):
         value = asdict(value)
     if isinstance(value, dict):
@@ -59,8 +66,8 @@ def _scrub(value: Any) -> Any:
         return [_scrub(v) for v in value]
     if isinstance(value, Path):
         return str(value)
-    if hasattr(value, "isoformat"):  # datetime / date
-        return None  # 直接丢弃,不保留
+    if hasattr(value, "isoformat"):  # datetime / date — 保留 ISO 串
+        return value.isoformat()
     return value
 
 
@@ -265,6 +272,14 @@ def main() -> int:
             summary.append({"client": client_name, "status": "failed", "error": str(exc)})
             continue
 
+        # 检查 collector 是否静默失败(WARN-1 防护)
+        bundle = snapshot.get("fact_bundle")
+        todos = snapshot.get("unified_todos")
+        if isinstance(bundle, dict) and "error" in bundle:
+            print(f"  ⚠ fact_bundle collector 报错: {bundle['error']}", file=sys.stderr)
+        if isinstance(todos, list) and len(todos) == 1 and isinstance(todos[0], dict) and "error" in todos[0]:
+            print(f"  ⚠ unified_todos collector 报错: {todos[0]['error']}", file=sys.stderr)
+
         out_path = out_dir / f"{_safe_filename(client_name)}.json"
         out_path.write_text(
             json.dumps(snapshot, ensure_ascii=False, indent=2, default=str),
@@ -278,7 +293,8 @@ def main() -> int:
             f"{len(raw['entities'])} entities / "
             f"{len(raw['glossary_attributes'])} attrs / "
             f"{len(raw['commitments'])} commits / "
-            f"{len(raw['tasks'])} tasks"
+            f"{len(raw['tasks'])} tasks / "
+            f"{len(todos) if isinstance(todos, list) else 0} todos"
         )
         summary.append({
             "client": client_name,
