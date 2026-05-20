@@ -119,6 +119,21 @@ TIMELY_ROUTE_QUERY_TERMS = {
     "新闻舆情": ("报道", "案例"),
 }
 
+# M7: 公益+政府专业垂直域名. 给 brand_strategy 锐词 (心智素养/县教育局/学术合作 等)
+# 加 site:domain 限定符 query, 把 360/搜狗/Bing 的搜索范围限定到这些专业站点,
+# 大幅提升抓回资讯的"机会信号"密度 — 比普通公网搜索得到的"豆瓣阅读/百度知道"泛页面锐很多.
+# 选源原则: 只选公开可索引的 (有 robots.txt + 公开页面), 不用反爬严的.
+TIMELY_VERTICAL_SOURCE_DOMAINS: tuple[str, ...] = (
+    "ccgp.gov.cn",         # 中国政府采购网 — 采购公告 (县教育局/民政局采购入口)
+    "moe.gov.cn",          # 教育部 — 教育政策/中小学心理健康通知
+    "mca.gov.cn",          # 民政部 — 社会组织/公益创投相关政策
+    "nhc.gov.cn",          # 国家卫健委 — 儿童青少年心理健康政策
+    "gongyishibao.com",    # 公益时报 — 公益行业新闻
+    "shanda.cn",           # 善达网 — 公益垂直媒体
+    "cfngo.org",           # 中基协官网 — 基金会专业内容
+    "cdb.org.cn",          # 中国发展简报 — 公益深度报道
+)
+
 
 def _refresh_cycle_hours(db: Database, content_kind: str) -> int:
     key = (
@@ -1112,6 +1127,37 @@ def _build_rule_intents(
                             expires_at=timely_expires,
                         )
                     )
+            # M7: 给"战略相关方机会"这个 route (route_specs[0], 含 bs_atoms) 额外加
+            # site:专业域名 限定符变种 — 把 360/搜狗/Bing 的搜索范围限定到公益+政府
+            # 专业站点 (中国政府采购网 / 教育部 / 民政部 / 公益时报 / 中基协 等).
+            # 大幅提升机会信号密度: 比泛公网搜索拿到的"豆瓣阅读/百度知道/创业网"更锐.
+            if route_label == "战略相关方机会":
+                for atom in atoms_for_route[:6]:
+                    for domain_idx, vertical_domain in enumerate(TIMELY_VERTICAL_SOURCE_DOMAINS):
+                        vertical_query = _short_query(f"site:{vertical_domain}", atom, max_units=3)
+                        if not vertical_query:
+                            continue
+                        intents.append(
+                            _make_intent(
+                                scope=scope,
+                                content_kind="timely_intelligence",
+                                query=vertical_query,
+                                reason=f"专业垂直源限定：{vertical_domain} × {atom}",
+                                # priority 92-85 — 比 BS 普通组合(P95-97)略低, 不抢 top
+                                # 槽位但确保在前 30 名能被搜索, 抓回的资讯质量天然高.
+                                priority=92 - domain_idx,
+                                exclude_terms=excludes,
+                                source_inputs=[
+                                    *timely_surface_inputs,
+                                    f"timely_route:{route_label}",
+                                    f"strategy_atom:{atom}",
+                                    f"vertical_source:{vertical_domain}",
+                                    "tag_profile:v1",
+                                ],
+                                input_hash=input_hash,
+                                expires_at=timely_expires,
+                            )
+                        )
         for route_index, (route_label, route_terms) in enumerate(TIMELY_SEARCH_ROUTES, start=1):
             baseline_atom = timely_atoms[(route_index - 1) % len(timely_atoms)] if timely_atoms else "公益"
             route_query_terms = _timely_route_terms(route_label, route_terms)
