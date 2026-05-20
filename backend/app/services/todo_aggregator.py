@@ -123,16 +123,13 @@ def collect_all_todos(db: Any, client_id: str) -> list[UnifiedTodo]:
         pass
 
     # 源 3 · commitments (pending) — 区分方向
+    # W3:走 CommitmentRepository (SSOT),不再裸 SQL
     try:
-        rows = db.fetchall(
-            """SELECT id, committer, recipient, content, deadline, status, commitment_type
-               FROM commitments
-               WHERE client_id=? AND status='pending'""",
-            (client_id,),
-        )
-        for r in rows:
-            committer = str(r["committer"] or "")
-            recipient = str(r["recipient"] or "")
+        from app.modules.commitment import get_commitment_repository
+        commitments = get_commitment_repository(db).list_pending_for_client(client_id)
+        for c in commitments:
+            committer = c.committer
+            recipient = c.recipient
             # 简单判方向: 含"益语/顾源源/...XX 老师" 类的算我方, 否则按字面
             our_side_keywords = ["益语", "顾源源", "顾老师", "陪伴", "智库"]
             committer_is_ours = any(k in committer for k in our_side_keywords)
@@ -143,17 +140,17 @@ def collect_all_todos(db: Any, client_id: str) -> list[UnifiedTodo]:
                 direction = "客户→我方"
             else:
                 direction = "双方"
-            due = str(r["deadline"] or "")
+            due = c.deadline or ""
             out.append(UnifiedTodo(
-                id=f"commit:{r['id']}",
+                id=f"commit:{c.id}",
                 source="commitment",
-                title=f"{committer} 向 {recipient}: {r['content']}",
+                title=f"{committer} 向 {recipient}: {c.content}",
                 owner=committer,
                 due_date=due,
                 status="pending",
                 direction=direction,
-                related_to=str(r["commitment_type"] or "delivery"),
-                raw_id=str(r["id"]),
+                related_to=c.commitment_type or "delivery",
+                raw_id=c.id,
                 severity=_severity_by_due(due),
             ))
     except Exception:

@@ -447,15 +447,16 @@ def dim_11_performance() -> DimensionReport:
         token = conn.execute("SELECT value FROM settings WHERE key='cloud_access_token'").fetchone()
         url = conn.execute("SELECT value FROM settings WHERE key='cloud_api_url'").fetchone()
         conn.close()
-        if not token or not url:
+        token_val = token["value"] if token else ""
+        url_val = url["value"] if url else ""
+        # 修(W3):Row 对象始终 truthy,要查 value 是否空字符串。空 = cloud session 过期 → SKIP
+        if not token_val or not url_val:
             return DimensionReport(
                 name="性能基线",
                 status="SKIPPED",
-                error="no cloud creds",
+                error="cloud creds empty (session expired? need re-login locally)",
                 duration_ms=(time.perf_counter() - started) * 1000,
             )
-        token_val = token["value"]
-        url_val = url["value"]
     except Exception as exc:  # noqa: BLE001
         return DimensionReport(
             name="性能基线",
@@ -574,17 +575,19 @@ def dim_12_data_consistency() -> DimensionReport:
     url = conn.execute("SELECT value FROM settings WHERE key='cloud_api_url'").fetchone()
     conn.close()
 
-    if not session_row or not token or not url:
+    # 修(W3):Row 对象始终 truthy,要查 value 是否空字符串
+    session_val = session_row["value"] if session_row else ""
+    token_val = token["value"] if token else ""
+    url_val = url["value"] if url else ""
+    if not session_val or not token_val or not url_val:
         return DimensionReport(
             name="数据真实性比对",
             status="SKIPPED",
-            error="no cloud_session_user or creds",
+            error="cloud session/creds empty (need re-login locally)",
             duration_ms=(time.perf_counter() - started) * 1000,
         )
 
-    session = json.loads(session_row["value"])
-    token_val = token["value"]
-    url_val = url["value"]
+    session = json.loads(session_val)
 
     from app.db import Database
     from app.modules.organization import (

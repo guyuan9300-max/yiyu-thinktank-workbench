@@ -467,36 +467,30 @@ def _collect_risk_signals(db: Database, client_id: str) -> list[RiskSignalFact]:
 
 
 def _collect_commitments(db: Database, client_id: str) -> list[CommitmentFact]:
-    """承诺 (双向结构化, 含履约状态)."""
+    """承诺 (双向结构化, 含履约状态).
+
+    W3:走 CommitmentRepository (SSOT),不再裸 SQL。related_terms 仍在本地解 term_ids→term
+    (避免 N+1 提示风险,等 W4 在 Repository 加 join 版本)。
+    """
     try:
-        rows = db.fetchall(
-            """
-            SELECT committer, recipient, commitment_type, content, deadline, status, related_term_ids_json
-            FROM commitments WHERE client_id = ? AND status != 'cancelled'
-            ORDER BY CASE status WHEN 'overdue' THEN 0 WHEN 'pending' THEN 1 ELSE 2 END, deadline
-            """,
-            (client_id,),
-        )
+        from app.modules.commitment import get_commitment_repository
+        commitments = get_commitment_repository(db).list_active_for_client(client_id)
     except Exception:
         return []
     out: list[CommitmentFact] = []
-    for r in rows:
-        term_ids_raw = _safe_json(r["related_term_ids_json"], [])
-        related_terms = []
-        if isinstance(term_ids_raw, list):
-            for tid in term_ids_raw:
-                if not isinstance(tid, str):
-                    continue
-                term_row = db.fetchone("SELECT term FROM client_glossary WHERE id = ?", (tid,))
-                if term_row:
-                    related_terms.append(str(term_row["term"]))
+    for c in commitments:
+        related_terms: list[str] = []
+        for tid in c.related_term_ids:
+            term_row = db.fetchone("SELECT term FROM client_glossary WHERE id = ?", (tid,))
+            if term_row:
+                related_terms.append(str(term_row["term"]))
         out.append(CommitmentFact(
-            committer=str(r["committer"] or ""),
-            recipient=str(r["recipient"] or ""),
-            commitment_type=str(r["commitment_type"] or "delivery"),
-            content=str(r["content"] or ""),
-            deadline=str(r["deadline"] or "")[:10] if r["deadline"] else "",
-            status=str(r["status"] or "pending"),
+            committer=c.committer,
+            recipient=c.recipient,
+            commitment_type=c.commitment_type or "delivery",
+            content=c.content,
+            deadline=(c.deadline or "")[:10],
+            status=c.status or "pending",
             related_terms=related_terms,
         ))
     return out

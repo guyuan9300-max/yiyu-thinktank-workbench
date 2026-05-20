@@ -1,14 +1,66 @@
 """GlossaryRepository · 字典/属性数据唯一读写入口
 
-W2 范围:核心读 + 1 个写(verification)。
-W3 把 services/glossary_*.py 6 个文件全切到本 Repository。
+W3 扩容:
+- 把 client_glossary 表的 5 个 CRUD 方法补全(list 含分页/查询,create/update/delete/get)
+- 接受 sqlite3.Connection 或 Database 两种 db(_DbLike 协议),legacy services 也能调
 """
 from __future__ import annotations
 
 import json
-from typing import Any
+import sqlite3
+import uuid
+from datetime import datetime, timezone
+from typing import Any, Protocol
 
 from .types import GlossaryAttribute, GlossaryTerm
+
+
+# ── DB 协议 + Adapter ──────────────────────────────────────────────
+# Repository 支持 2 类对象:
+# 1. Database wrapper (backend/app/db.py: .fetchone/.fetchall/.execute)
+# 2. 直接的 sqlite3.Connection (legacy services 用)
+#
+# 第 2 类自动包装,这样 legacy 函数签名不用改。
+
+
+class _DbLike(Protocol):
+    def fetchone(self, query: str, params: tuple = ()) -> sqlite3.Row | None: ...
+    def fetchall(self, query: str, params: tuple = ()) -> list[sqlite3.Row]: ...
+    def execute(self, query: str, params: tuple = ()) -> None: ...
+
+
+class _ConnAdapter:
+    """把 sqlite3.Connection 包成 _DbLike 接口(legacy services 用)"""
+
+    def __init__(self, conn: sqlite3.Connection):
+        self._conn = conn
+
+    def fetchone(self, query: str, params: tuple = ()) -> sqlite3.Row | None:
+        return self._conn.execute(query, params).fetchone()
+
+    def fetchall(self, query: str, params: tuple = ()) -> list[sqlite3.Row]:
+        return self._conn.execute(query, params).fetchall()
+
+    def execute(self, query: str, params: tuple = ()) -> None:
+        self._conn.execute(query, params)
+
+
+def _wrap_db(db: Any) -> _DbLike:
+    """同时支持 Database 包装器 和 raw sqlite3.Connection"""
+    if isinstance(db, sqlite3.Connection):
+        return _ConnAdapter(db)
+    return db
+
+
+def _now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _normalize_term(term: str) -> str:
+    return term.strip().lower()
+
+
+# ── Row → Type ──────────────────────────────────────────────────────
 
 
 def _row_to_term(row: Any) -> GlossaryTerm:
@@ -60,9 +112,9 @@ def _row_to_attribute(row: Any) -> GlossaryAttribute:
 
 class GlossaryRepository:
     def __init__(self, db: Any):
-        self._db = db
+        self._db = _wrap_db(db)
 
-    # ── Term ──
+    # ── Term · read ──────────────────────────────────────────────
 
     def get_term_by_id(self, term_id: str) -> GlossaryTerm | None:
         if not term_id:
@@ -93,7 +145,147 @@ class GlossaryRepository:
         )
         return _row_to_term(row) if row else None
 
-    # ── Attribute ──
+    def list_terms_paginated(
+        self,
+        client_id: str,
+        *,
+        query: str | None = None,
+        limit: int = 100,
+        offset: int = 0,
+    ) -> tuple[list[GlossaryTerm], int]:
+        """分页查询术语 + 模糊匹配(term / aliases)。返回 (terms, total)。
+
+        W3 新增:替代 legacy services/glossary_store.list_glossary。
+        """
+        if not client_id:
+            return [], 0
+        where = ["client_id = ?"]
+        params: list[object] = [client_id]
+        if query:
+            where.append("(term LIKE ? OR aliases_json LIKE ?)")
+            wildcard = f"%{query}%"
+            params.append(wildcard)
+            params.append(wildcard)
+        where_clause = " AND ".join(where)
+
+        count_row = self._db.fetchone(
+            f"SELECT COUNT(*) AS n FROM client_glossary WHERE {where_clause}",
+            tuple(params),
+        )
+        total = int(count_row["n"] or 0) if count_row else 0
+
+        rows = self._db.fetchall(
+            f"SELECT * FROM client_glossary WHERE {where_clause} "
+            "ORDER BY updated_at DESC LIMIT ? OFFSET ?",
+            tuple(params + [limit, offset]),
+        )
+        return [_row_to_term(r) for r in rows], total
+
+    # ── Term · write ─────────────────────────────────────────────
+
+    def create_term(
+        self,
+        *,
+        client_id: str,
+        term: str,
+        definition: str = "",
+        aliases: list[str] | None = None,
+        category: str = "",
+        evidence_tier: str = "first_party",
+    ) -> GlossaryTerm:
+        """创建术语。UNIQUE(client_id, normalized_term) 保护重复。
+
+        W3 新增:替代 legacy services/glossary_store.create_glossary_entry。
+        """
+        if not term or not term.strip():
+            raise ValueError("term 不能为空")
+        if not client_id:
+            raise ValueError("client_id 不能为空")
+        timestamp = _now_iso()
+        entry_id = str(uuid.uuid4())
+        normalized = _normalize_term(term)
+        aliases_list = aliases or []
+        self._db.execute(
+            """
+            INSERT INTO client_glossary (
+                id, client_id, term, normalized_term, definition,
+                aliases_json, category, evidence_tier, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                entry_id,
+                client_id,
+                term.strip(),
+                normalized,
+                definition.strip(),
+                json.dumps(aliases_list, ensure_ascii=False),
+                category.strip(),
+                evidence_tier,
+                timestamp,
+                timestamp,
+            ),
+        )
+        result = self.get_term_by_id(entry_id)
+        assert result is not None, "create_term 写入后立即读不到,db 异常"
+        return result
+
+    def update_term(
+        self,
+        term_id: str,
+        *,
+        term: str | None = None,
+        definition: str | None = None,
+        aliases: list[str] | None = None,
+        category: str | None = None,
+    ) -> GlossaryTerm:
+        """部分更新术语。term 改动会同步重算 normalized_term。
+
+        W3 新增:替代 legacy services/glossary_store.update_glossary_entry。
+        """
+        existing = self.get_term_by_id(term_id)
+        if existing is None:
+            raise ValueError(f"glossary entry not found: {term_id}")
+        new_term = term.strip() if term is not None else existing.term
+        new_definition = definition.strip() if definition is not None else existing.definition
+        new_aliases = list(aliases) if aliases is not None else list(existing.aliases)
+        new_category = category.strip() if category is not None else existing.category
+        new_normalized = _normalize_term(new_term)
+        self._db.execute(
+            """
+            UPDATE client_glossary
+            SET term = ?, normalized_term = ?, definition = ?, aliases_json = ?,
+                category = ?, updated_at = ?
+            WHERE id = ?
+            """,
+            (
+                new_term,
+                new_normalized,
+                new_definition,
+                json.dumps(new_aliases, ensure_ascii=False),
+                new_category,
+                _now_iso(),
+                term_id,
+            ),
+        )
+        result = self.get_term_by_id(term_id)
+        assert result is not None, "update_term 写入后立即读不到,db 异常"
+        return result
+
+    def delete_term(self, term_id: str) -> bool:
+        """删除术语。返回是否实际删除(false = 不存在)。
+
+        W3 新增:替代 legacy services/glossary_store.delete_glossary_entry。
+        注意:这里通过 _DbLike.execute 走,无法读 rowcount;先 SELECT 再 DELETE 来保留语义。
+        """
+        if not term_id:
+            return False
+        existing = self.get_term_by_id(term_id)
+        if existing is None:
+            return False
+        self._db.execute("DELETE FROM client_glossary WHERE id = ?", (term_id,))
+        return True
+
+    # ── Attribute ────────────────────────────────────────────────
 
     def list_attributes_for_term(self, term_id: str) -> list[GlossaryAttribute]:
         if not term_id:
@@ -136,8 +328,6 @@ class GlossaryRepository:
             (client_id,),
         )
         return int(row["n"]) if row else 0
-
-    # ── Write ──
 
     def verify_attribute(
         self,

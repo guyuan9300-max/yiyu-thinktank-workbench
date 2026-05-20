@@ -335,41 +335,31 @@ def _load_commitments(
     seen_keys: set[str] = set()
 
     # 1) 新承诺表 (commitments) — 优先级高, 已结构化
-    rows = db.execute(
-        """
-        SELECT id, committer, recipient, commitment_type, content,
-               deadline, status, source_type, source_id, created_at
-        FROM commitments
-        WHERE client_id = ?
-        ORDER BY
-            CASE status WHEN 'pending' THEN 0 WHEN 'fulfilled' THEN 1 ELSE 2 END,
-            COALESCE(deadline, '9999') ASC,
-            updated_at DESC
-        """,
-        (client_id,),
-    ).fetchall()
-    for r in rows:
-        committer = (r["committer"] or "").strip()
-        recipient = (r["recipient"] or "").strip()
-        content = (r["content"] or "").strip()
+    # W3:走 CommitmentRepository (SSOT),不再裸 SQL
+    from app.modules.commitment import get_commitment_repository
+    commitments = get_commitment_repository(db).list_for_client_status_grouped(client_id)
+    for c in commitments:
+        committer = c.committer.strip()
+        recipient = c.recipient.strip()
+        content = c.content.strip()
         title = content if not recipient else f"{committer}向{recipient}: {content}" if committer else f"→{recipient}: {content}"
-        status = (r["status"] or "pending").strip()
+        status = c.status.strip() or "pending"
         # 去重: 同一个 committer→recipient + 内容前 40 字 视为重复
         dedup_key = f"{committer}|{recipient}|{content[:40]}"
         if dedup_key in seen_keys:
             continue
         seen_keys.add(dedup_key)
         out.append({
-            "id": r["id"],
+            "id": c.id,
             "title": title,
             "ownerName": committer,
-            "dueDate": r["deadline"] or "",
+            "dueDate": c.deadline or "",
             "confidence": 1.0 if status == "fulfilled" else 0.85,
             "publishStatus": status,  # pending / fulfilled / cancelled
             "meetingId": "",
             "meetingTitle": "",
             "meetingScheduledAt": "",
-            "createdAt": r["created_at"] or "",
+            "createdAt": c.created_at or "",
         })
 
     # 2) 老 action_items (从会议抽出来的). 跟 commitments 表数据一般不重叠.
