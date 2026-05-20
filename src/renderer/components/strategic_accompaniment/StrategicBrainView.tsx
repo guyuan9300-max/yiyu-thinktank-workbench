@@ -11,6 +11,7 @@ import {
 import { FileTypeIcon } from '../FileTypeIcon';
 import { StrategicClarificationView } from './StrategicClarificationView';
 import {
+  createAnalysisJob,
   getClientContradictions,
   getClientDigitalAssets,
   getClientDuplicateDocuments,
@@ -605,28 +606,59 @@ function ClientStrategicPulseSection({ clientId }: { clientId: string }) {
   const [pulse, setPulse] = useState<StrategicPulse | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [refreshing, setRefreshing] = useState(false);
+  const [refreshMsg, setRefreshMsg] = useState<string | null>(null);
 
-  useEffect(() => {
-    let mounted = true;
+  const loadPulse = useCallback((mountedRef?: { current: boolean }) => {
     setLoading(true);
     setError(null);
-    getClientStrategicPulse(clientId)
+    return getClientStrategicPulse(clientId)
       .then((result) => {
-        if (mounted) setPulse(result);
+        if (!mountedRef || mountedRef.current) setPulse(result);
       })
       .catch((err) => {
-        if (mounted) {
+        if (!mountedRef || mountedRef.current) {
           setError(err instanceof Error ? err.message : '加载失败');
           setPulse(null);
         }
       })
       .finally(() => {
-        if (mounted) setLoading(false);
+        if (!mountedRef || mountedRef.current) setLoading(false);
       });
-    return () => {
-      mounted = false;
-    };
   }, [clientId]);
+
+  useEffect(() => {
+    const mountedRef = { current: true };
+    void loadPulse(mountedRef);
+    return () => {
+      mountedRef.current = false;
+    };
+  }, [loadPulse]);
+
+  // 用户手动触发分析 → 入队 analysis_job → worker 异步跑 projection → evidence_cards
+  const handleRefreshUnderstanding = useCallback(async () => {
+    if (refreshing) return;
+    setRefreshing(true);
+    setRefreshMsg(null);
+    try {
+      await createAnalysisJob({
+        jobType: 'strategy_pack',
+        clientId,
+        scopeType: 'client',
+        scopeId: clientId,
+        triggerType: 'manual',
+        question: 'manual:refresh_understanding',
+        intentProfile: 'client_overview',
+      });
+      setRefreshMsg('✓ 已请求 AI 重新理解,几分钟后再刷新页面查看新动态');
+      // 5 秒后清掉提示, 用户可点"再刷新"重看
+      window.setTimeout(() => setRefreshMsg(null), 8000);
+    } catch (err) {
+      setRefreshMsg(err instanceof Error ? `请求失败:${err.message}` : '请求失败');
+    } finally {
+      setRefreshing(false);
+    }
+  }, [clientId, refreshing]);
 
   if (loading) {
     return (
@@ -648,6 +680,29 @@ function ClientStrategicPulseSection({ clientId }: { clientId: string }) {
 
   return (
     <section className="rounded-[24px] border border-slate-200 bg-white px-6 py-5 sm:px-8 sm:py-6 shadow-sm">
+      {/* Header: 标题 + 刷新理解按钮(用户兜底入队 analysis_job) */}
+      <div className="mb-4 flex items-center justify-between gap-3 border-b border-slate-100 pb-3">
+        <div className="flex items-center gap-2">
+          <Activity size={16} className="text-[#5B7BFE]" />
+          <h2 className="text-[14px] font-bold text-slate-900">客户脉搏</h2>
+          {refreshMsg && (
+            <span className={`ml-2 text-[11px] ${refreshMsg.startsWith('✓') ? 'text-emerald-600' : 'text-rose-600'}`}>
+              {refreshMsg}
+            </span>
+          )}
+        </div>
+        <button
+          type="button"
+          onClick={() => void handleRefreshUnderstanding()}
+          disabled={refreshing}
+          title="让 AI 重新读一遍这个客户的所有资料和讲述,刷新本周新动态/承诺/风险"
+          className="inline-flex items-center gap-1.5 rounded-xl border border-[#D8E5FF] bg-white px-3 py-1.5 text-[11px] font-bold text-[#4A63CF] shadow-sm hover:border-[#5B7BFE] hover:bg-blue-50 disabled:cursor-not-allowed disabled:opacity-50"
+        >
+          <RefreshCw size={12} className={refreshing ? 'animate-spin' : ''} />
+          {refreshing ? '请求中...' : '让 AI 重新理解'}
+        </button>
+      </div>
+
       <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
         <PulseColumn
           icon={<Activity size={14} className="text-slate-500" />}
@@ -2193,6 +2248,9 @@ export function StrategicBrainView({
   const [thoughtsError, setThoughtsError] = useState<string | null>(null);
   const [thoughtClientId, setThoughtClientId] = useState(currentClientId || '');
   const [thoughtsRefreshing, setThoughtsRefreshing] = useState(false);
+  // 兜底:让 AI 全面重新理解这个客户(同时跑 analysis_job + refresh strategic_thoughts)
+  const [globalRefreshing, setGlobalRefreshing] = useState(false);
+  const [globalRefreshMsg, setGlobalRefreshMsg] = useState<string | null>(null);
 
   const thoughtClientOptions = useMemo(() => {
     const map = new Map<string, { id: string; name: string }>();
@@ -2266,6 +2324,46 @@ export function StrategicBrainView({
     }
   }, [flash, thoughtClientId]);
 
+  // 全局兜底"让 AI 重新理解":同时跑 analysis_job(写 evidence_cards)+ 刷新研判
+  const handleGlobalRefresh = useCallback(async () => {
+    if (!thoughtClientId || globalRefreshing) return;
+    setGlobalRefreshing(true);
+    setGlobalRefreshMsg(null);
+    try {
+      // 入队 analysis_job(异步, worker 几秒内消费, 写入 evidence_cards)
+      await createAnalysisJob({
+        jobType: 'strategy_pack',
+        clientId: thoughtClientId,
+        scopeType: 'client',
+        scopeId: thoughtClientId,
+        triggerType: 'manual',
+        question: 'manual:全局刷新理解',
+        intentProfile: 'client_overview',
+      });
+      // 同步刷新研判(立刻跑 LLM 生成 strategic_thought_insights)
+      try {
+        const response = await refreshStrategicThoughts({
+          clientId: thoughtClientId,
+          limit: 8,
+        });
+        const items = response.items || [];
+        setThoughts(items);
+        // 如果产生了新研判,自动切到 thoughts tab 让用户立刻看到
+        if (items.length > 0) {
+          setActiveTab('thoughts');
+        }
+      } catch {
+        // 研判刷新失败不阻塞主流程
+      }
+      setGlobalRefreshMsg('✓ AI 理解已刷新,请看「思考」tab');
+      window.setTimeout(() => setGlobalRefreshMsg(null), 10000);
+    } catch (error) {
+      setGlobalRefreshMsg(error instanceof Error ? `请求失败:${error.message}` : '请求失败');
+    } finally {
+      setGlobalRefreshing(false);
+    }
+  }, [thoughtClientId, globalRefreshing]);
+
   const handleToggleFavoriteThought = useCallback(
     async (thought: StrategicThought) => {
       try {
@@ -2306,17 +2404,39 @@ export function StrategicBrainView({
             </h1>
             <p className="mt-0.5 text-[11.5px] text-gray-500">AI 陪伴组织成长 · 越用越懂你</p>
           </div>
-          {activeTab === 'thoughts' && (
-            <ThoughtScopeSelect
-              clients={thoughtClientOptions}
-              selectedClientId={thoughtClientId}
-              disabled={thoughtsLoading && !thoughtClientOptions.length}
-              onChange={(clientId) => {
-                setThoughtClientId(clientId);
-                if (clientId) onClientChange?.(clientId);
-              }}
-            />
-          )}
+          <div className="flex items-center gap-3">
+            {/* 全局兜底:让 AI 重新理解这个客户(input → analysis_job + refresh thoughts) */}
+            {thoughtClientId && (
+              <div className="flex items-center gap-2">
+                {globalRefreshMsg && (
+                  <span className={`text-[11px] ${globalRefreshMsg.startsWith('✓') ? 'text-emerald-600' : 'text-rose-600'}`}>
+                    {globalRefreshMsg}
+                  </span>
+                )}
+                <button
+                  type="button"
+                  onClick={() => void handleGlobalRefresh()}
+                  disabled={globalRefreshing}
+                  title="让 AI 重新读一遍这个客户的所有资料,生成本周新动态/研判/承诺/风险"
+                  className="inline-flex items-center gap-1.5 rounded-xl border border-[#D8E5FF] bg-white px-3 py-1.5 text-[11px] font-bold text-[#4A63CF] shadow-sm hover:border-[#5B7BFE] hover:bg-blue-50 disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  <RefreshCw size={12} className={globalRefreshing ? 'animate-spin' : ''} />
+                  {globalRefreshing ? '请求中...' : '让 AI 重新理解'}
+                </button>
+              </div>
+            )}
+            {activeTab === 'thoughts' && (
+              <ThoughtScopeSelect
+                clients={thoughtClientOptions}
+                selectedClientId={thoughtClientId}
+                disabled={thoughtsLoading && !thoughtClientOptions.length}
+                onChange={(clientId) => {
+                  setThoughtClientId(clientId);
+                  if (clientId) onClientChange?.(clientId);
+                }}
+              />
+            )}
+          </div>
         </div>
         <div className="flex items-center gap-6 -mb-px">
           {TABS.map(tab => {

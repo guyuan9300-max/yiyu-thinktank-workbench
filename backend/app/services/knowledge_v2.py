@@ -2636,18 +2636,20 @@ def ingest_document_knowledge(
             logger.exception("fanout glossary_attribute_extractor 失败 (doc=%s)", v2_document_id)
 
         # Stage B 扇出 #9.5: portrait build 自动接通 (relations / risk_signals / commitments)
-        # 触发条件: atomic_facts ≥ 50 + commitments 表为空 (避免重复跑)
+        # 触发条件: atomic_facts ≥ 10 + 该客户没有 ai_inferred commits (避免反复跑)
+        # 关键: 只看 ai_inferred commits, 不算 smart_import_story 这类用户来源 —
+        #       否则 smart_import 一写入 commitments 就把 portrait 永久卡死
         # 异步线程跑, 不阻塞 ingest 主流程
         try:
             atomic_count_p = int(db.scalar(
                 "SELECT COUNT(*) AS n FROM atomic_facts WHERE client_id = ? AND status = 'active'",
                 (client_id,),
             ) or 0)
-            commit_count = int(db.scalar(
-                "SELECT COUNT(*) AS n FROM commitments WHERE client_id = ?",
+            ai_commit_count = int(db.scalar(
+                "SELECT COUNT(*) AS n FROM commitments WHERE client_id = ? AND source_type = 'ai_inferred'",
                 (client_id,),
             ) or 0)
-            if atomic_count_p >= 50 and commit_count == 0:
+            if atomic_count_p >= 10 and ai_commit_count == 0:
                 import threading
 
                 def _bg_portrait_build() -> None:
@@ -2674,8 +2676,8 @@ def ingest_document_knowledge(
                     name=f"portrait-build-{client_id}",
                 ).start()
                 logger.info(
-                    "[fanout#9.5] triggered async portrait build (client=%s, atomic=%d, commits=%d)",
-                    client_id, atomic_count_p, commit_count,
+                    "[fanout#9.5] triggered async portrait build (client=%s, atomic=%d, ai_commits=%d)",
+                    client_id, atomic_count_p, ai_commit_count,
                 )
         except Exception:
             logger.exception("[fanout#9.5] portrait build trigger check failed")
@@ -2705,6 +2707,39 @@ def ingest_document_knowledge(
         )
     except Exception:
         logger.exception("[fanout#10] narrative_stale_signals upsert failed (client=%s)", client_id)
+
+    # ─────────────────────────────────────────────────────────────────────
+    # fanout#11 · 自动 enqueue analysis_job
+    # ingest 完一份资料 → 主动入队让 worker 跑 projection → evidence_cards
+    # 关闭"Stage B 标记后没人消费"的断层. dedupe_key 保证不重复入队.
+    # ─────────────────────────────────────────────────────────────────────
+    try:
+        from app.models import AnalysisJobCreatePayload
+        from app.services.analysis_center import create_analysis_job
+
+        create_analysis_job(
+            db,
+            AnalysisJobCreatePayload(
+                jobType="strategy_pack",
+                clientId=client_id,
+                scopeType="client",
+                scopeId=client_id,
+                priority="normal",
+                triggerType="auto",
+                question="auto:document_ingest",
+                intentProfile="client_overview",
+            ),
+            source_snapshot={
+                "clientId": client_id,
+                "scopeType": "client",
+                "scopeId": client_id,
+                "triggerType": "auto",
+                "reason": "document_ingest",
+                "documentId": document_id,
+            },
+        )
+    except Exception:
+        logger.exception("[fanout#11] enqueue analysis_job failed (client=%s)", client_id)
 
     return {
         "knowledge_document_id": v2_document_id,
@@ -4608,6 +4643,51 @@ def _score_document_row(query_terms: list[str], prompt: str, row: Any) -> tuple[
     return score, matched
 
 
+def _retrieve_atomic_facts_for_prompt(
+    db: Database,
+    client_id: str,
+    prompt: str,
+    query_terms: list[str],
+    limit: int = 5,
+) -> dict[str, Any]:
+    # 让工作台搜索能命中 atomic_facts 里的客户本质属性（成立时间、核心目标、人物头衔等）。
+    # 关键词命中 subject/attribute/value 三列，无命中则用 confidence 最高的兜底。
+    rows: list = []
+    keys = [t for t in (query_terms or [])[:6] if len(t) >= 2]
+    if keys and client_id:
+        like_clauses = " OR ".join(
+            ["(subject_text LIKE ? OR attribute LIKE ? OR value_text LIKE ?)"] * len(keys)
+        )
+        params: list = [client_id]
+        for term in keys:
+            pat = f"%{term}%"
+            params.extend([pat, pat, pat])
+        params.append(limit)
+        try:
+            rows = list(
+                db.fetchall(
+                    f"SELECT subject_text, attribute, value_text, confidence "
+                    f"FROM atomic_facts WHERE client_id = ? AND status = 'active' AND ({like_clauses}) "
+                    f"ORDER BY confidence DESC, updated_at DESC LIMIT ?",
+                    tuple(params),
+                )
+            )
+        except Exception:
+            rows = []
+    if not rows:
+        return {"text": "", "count": 0}
+    lines = ["[客户本质属性]（来自数据中心 atomic_facts，作辅助提示）"]
+    for row in rows:
+        subject = str(row["subject_text"] or "").strip()
+        attr = str(row["attribute"] or "").strip()
+        value = str(row["value_text"] or "").strip()
+        if subject and attr and value:
+            lines.append(f"  · {subject} · {attr}：{value[:200]}")
+    if len(lines) == 1:
+        return {"text": "", "count": 0}
+    return {"text": "\n".join(lines), "count": len(lines) - 1}
+
+
 def retrieve_knowledge_bundle(
     db: Database,
     data_dir: Path,
@@ -4810,6 +4890,7 @@ def retrieve_knowledge_bundle(
     families = list(family_pool.values())
     families.sort(key=lambda item: (1 if item.get("isPriorityWorkingDocument") else 0, float(item["bestScore"])), reverse=True)
     if not families:
+        empty_atomic = _retrieve_atomic_facts_for_prompt(db, client_id, prompt, query_terms)
         return RetrievalBundle(
             citations=[],
             coverage=0.0,
@@ -4826,8 +4907,9 @@ def retrieve_knowledge_bundle(
                 "backgroundTrail": [],
                 "workingDocumentIds": sorted(priority_ids),
                 "workingDocumentHitCount": 0,
+                "atomicFactHitCount": empty_atomic["count"],
             },
-            context_text="",
+            context_text=empty_atomic["text"],
             matched_terms=[],
             failure_reason="no_candidate_documents",
         )
@@ -5138,6 +5220,10 @@ def retrieve_knowledge_bundle(
         "workingDocumentIds": sorted(priority_ids),
         "workingDocumentHitCount": sum(1 for item in citations if str(item.knowledge_document_id or "").strip() in priority_ids),
     }
+    atomic_block = _retrieve_atomic_facts_for_prompt(db, client_id, prompt, query_terms)
+    retrieval_summary["atomicFactHitCount"] = atomic_block["count"]
+    if atomic_block["text"]:
+        context_lines.append(atomic_block["text"])
     return RetrievalBundle(
         citations=citations,
         coverage=coverage,

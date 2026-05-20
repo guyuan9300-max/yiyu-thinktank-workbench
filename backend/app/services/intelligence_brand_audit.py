@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Any
@@ -44,30 +45,53 @@ MIN_THEMES_FOR_AUDIT = 2       # 至少 2 个主题才生成简报
 
 AUDIT_SYSTEM_INSTRUCTION = (
     "你是资深品牌 / 公关分析师，给客户写一份品牌印象速读。"
-    "客户会拿这份简报开品牌会，所以你必须做到以下三件事，否则就是失败的简报：\n"
+    "客户会拿这份简报开品牌会，所以你必须做到以下几件事，否则就是失败的简报：\n"
     "\n"
-    "1. 【避免套话】"
-    "禁止使用『反响良好』『口碑较好』『有一定知名度』『需要进一步加强宣传』之类的空泛表述。"
-    "每个判断都必须引用具体主题 label（来自 themes 数组）或具体数字（多少条 / 占比多少）。\n"
+    "1. 【narrative_md 是一段连贯叙述，不是数据报告】\n"
+    "narrative_md 要写成 220-350 字的一段连贯中文文字, 像品牌顾问开会的口头总结, "
+    "不要逐条编号, 不要『主题1: ... 主题2: ...』这种格式. 内部必须包含三个层次, 自然过渡:\n"
+    "  (a) 综合印象: 通过这些资料看, 这家机构当下在公众视野里整体呈现什么形象（1-2 句）\n"
+    "  (b) 最突出的是什么: 反复出现、已经成为它鲜明识别的主题/项目/叙事是哪些（1-2 句）\n"
+    "  (c) 主要缺失是什么: 从客户自我品牌定位（self_propositions）角度看, 哪些原本希望被外界"
+    "感知的部分, 在公众资料里几乎没有出现（1-2 句）\n"
     "\n"
-    "2. 【写出张力】"
-    "tensions 必须以『你说 X，但公众看到 Y』的格式写，至少给出 2 条；"
-    "每条必须分别引用一个 self_proposition（来自 brand_proposition）和一个 public_theme（来自 themes）。"
-    "如果两者真的高度对齐没有张力，也要写出『最大的空白是什么』（公众没说的部分）。\n"
+    "【硬约束 - narrative_md 里绝对不能写数字】\n"
+    "禁止出现『X 条』『X%』『出现 N 次』『N 个主题』『前 X 项』等任何数字+量词的组合, "
+    "禁止出现具体数字（17/13/6/5/4 之类）. 数字数据已经在 tensions/recommendations 里"
+    "由 self_anchor/public_anchor 标记承担, narrative_md 是定性叙述, 不是统计报告.\n"
+    "用『最稳定的识别』『反复被强化』『几乎没有形成感知』『仅有零星表达』『已经成为标志』"
+    "这类定性词替代数字.\n"
     "\n"
-    "3. 【建议必须可执行】"
-    "recommendations 每条必须含『动作动词 + 具体对象』，比如：\n"
-    "  - 好：『发一次资金透明度年报，用结构化数据填补「透明」语义空白』\n"
-    "  - 差：『提升透明度』『加强专业品牌』『多做内容』\n"
+    "正面示例 (好):\n"
+    "  『日慈在公众视野里最稳定的形象, 是青少年儿童心理公益的项目执行方, "
+    "尤其围绕「心灵魔法学院」这条主线被反复识别和点名. 最突出的是它的项目可见度"
+    "和透明运作信号, 公众不仅知道它在做什么, 也开始把它和正向评价绑定. "
+    "但客户希望被记住的「学校成长画像」与「青少年心理生态网络」, 目前在外部"
+    "几乎没有形成独立讨论, 仍停留在零散表述, 没有汇成稳固的公众认知.』\n"
     "\n"
-    "content_angles 给两组词：\n"
-    "  - amplify：下次发声应强化的主题（来自现有 positive 主题或缺失的自我定位）\n"
-    "  - new：完全没人讨论但你想被定义的方向\n"
-    "**禁止**生成 reduce 类建议——"
-    "「让客户少说什么」是一个高风险判断，需要上下文才能决定，"
-    "AI 在缺乏完整组织上下文时容易踩雷，统一不出。\n"
+    "反面示例 (差, 禁止):\n"
+    "  『41 条公众印象里, 最强的识别锚点是「机构信息公开」17 条和「专注少儿心理公益」"
+    "13 条, 「公益项目获好评」6 条...』(出现了数字, 像统计报告, 不是叙述)\n"
+    "  『反响良好, 知名度较高, 需要进一步加强宣传』(套话, 没有具体形象)\n"
     "\n"
-    "只返回 JSON，严禁 Markdown 围栏，严禁解释。"
+    "如果客户没填 self_propositions, 第三部分写『品牌方尚未明确自我定位, 因此"
+    "缺失维度暂时无法对照判断』.\n"
+    "\n"
+    "2. 【tensions / recommendations 反而要具体】\n"
+    "narrative 不用数据, 但 tensions 必须以『你说 X，但公众看到 Y』的格式写, 至少 2 条;"
+    "每条分别引用一个 self_proposition 和一个 public_theme 的 label.\n"
+    "recommendations 每条必须含『动作动词 + 具体对象』, 例:\n"
+    "  - 好: 『发一次资金透明度年报，用结构化数据填补「透明」语义空白』\n"
+    "  - 差: 『提升透明度』『加强专业品牌』『多做内容』\n"
+    "\n"
+    "3. 【content_angles】\n"
+    "给两组词:\n"
+    "  - amplify: 下次发声应强化的主题（来自现有 positive 主题或缺失的自我定位）\n"
+    "  - new: 完全没人讨论但你想被定义的方向\n"
+    "**禁止**生成 reduce 类建议——『让客户少说什么』是高风险判断, 需要上下文才能决定, "
+    "AI 在缺乏完整组织上下文时容易踩雷, 统一不出.\n"
+    "\n"
+    "只返回 JSON, 严禁 Markdown 围栏, 严禁解释."
 )
 
 
@@ -82,7 +106,7 @@ AUDIT_RESPONSE_SCHEMA = {
         },
         "narrative_md": {
             "type": "string",
-            "minLength": 80,
+            "minLength": 200,
             "maxLength": 1200,
         },
         "tensions": {
@@ -146,11 +170,37 @@ def _build_audit_prompt(
         lines.append("  （客户尚未填写自我定位，所有张力和建议要明确指出『缺乏自我定位』）")
     lines.append("")
 
-    lines.append("public_themes（已聚出的公众印象主题）:")
+    # 重要: 不再给 LLM 喂具体 itemCount 数字, 改成定性的频次档位 (高/中/低),
+    # 否则 LLM 会顽固把 "17 条 / 13 条" 写进 narrative_md, 导致它读起来像统计报告.
+    # 频次档位仍保留 sentimentTone, 让 LLM 能判断正/中/负基调.
+    counts = sorted({int(t.get("itemCount") or 0) for t in themes if t}, reverse=True)
+    high_cut = counts[max(0, len(counts) // 3 - 1)] if counts else 0
+    low_cut = counts[min(len(counts) - 1, 2 * len(counts) // 3)] if counts else 0
+    def _freq_label(n: int) -> str:
+        if not counts:
+            return "未知频次"
+        if n >= max(high_cut, 1):
+            return "高频(反复出现)"
+        if n >= max(low_cut, 1):
+            return "中频"
+        return "低频(仅零星出现)"
+
+    lines.append("public_themes（已聚出的公众印象主题, 含频次档位/不含具体数字）:")
     for t in themes:
+        item_count = int(t.get("itemCount") or 0)
         lines.append(
-            f"  - 「{t['themeLabel']}」({t['sentimentTone']}/{t['itemCount']}条) — {t['themeSummary']}"
+            f"  - 「{t['themeLabel']}」({t['sentimentTone']} · {_freq_label(item_count)}) — {t['themeSummary']}"
         )
+    lines.append("")
+    lines.append(
+        "重要: 上面的频次只用『高频/中频/低频(零星)』表达, 没有具体数字. "
+        "narrative_md 也必须沿用这种相对描述, 不要写出任何『X 条』『N%』."
+    )
+    lines.append(
+        "⚠️ 反复警告: 你看不到任何具体数字（17/13/41/12/21000 等都没出现在上下文里）. "
+        "如果 narrative_md 里出现任何具体数字, 那一定是你脑补编造的, 这是严重错误. "
+        "请只写定性描述, 例如『反复出现』『最稳定』『几乎缺席』."
+    )
     lines.append("")
 
     if gap_alignments:
@@ -182,8 +232,11 @@ def _build_audit_prompt(
         lines.append("")
 
     lines.append(
-        "请基于以上素材，输出一份可直接交付客户的品牌印象速读 JSON。"
-        "再次提醒：避免套话，每个判断必须引用主题 label 或具体数字。"
+        "请基于以上素材，输出一份可直接交付客户的品牌印象速读 JSON。\n"
+        "再次提醒:\n"
+        "- narrative_md 写成 220-350 字一段连贯中文叙述（综合印象 / 最突出 / 主要缺失 三个层次自然过渡），"
+        "禁止数据佐证（X 条 / N%）, 禁止套话.\n"
+        "- tensions / recommendations 反而要具体, 引用主题 label, 动词+对象."
     )
     return "\n".join(lines)
 
@@ -360,10 +413,38 @@ def _invoke_llm(
     return raw if isinstance(raw, dict) else None
 
 
+_NARRATIVE_NUMBER_RE = re.compile(
+    # 阿拉伯数字 + 中文/英文量词 (条/个/项/次/篇/份/% 等)
+    # 加可选小数点和千分位逗号, 避免漏掉 "21,000名" "1.2万"
+    r"(?<![A-Za-z])[0-9]+(?:[\.,][0-9]+)?\s*(?:条|个主题|个|项|次|篇|份|%|％|名|人|所|家|场)"
+)
+_NARRATIVE_RANGE_RE = re.compile(r"[0-9]+(?:[\.,][0-9]+)?\s*-\s*[0-9]+(?:[\.,][0-9]+)?")
+
+
+def _sanitize_narrative_numbers(narrative: str) -> str:
+    """把 LLM 偶尔脑补出来的具体数字 (例 '17条 / 41条 / 12省') 替换成定性描述.
+
+    上下文给 LLM 的 themes 已经去掉数字 (只剩高频/中频/低频), 但 LLM 偶尔会脑补.
+    这是兜底, 把数字 + 量词整段替换成 '不少' (高频) / '部分' (中频) 之类中性描述.
+    保守做法: 直接删除"数字 + 量词", 让句子读起来仍通顺.
+    """
+    if not narrative:
+        return narrative
+    # 简单粗暴: 把 "17条" / "41 条" / "5%" / "12省" 这类整段删掉
+    cleaned = _NARRATIVE_NUMBER_RE.sub("", narrative)
+    cleaned = _NARRATIVE_RANGE_RE.sub("", cleaned)
+    # 顺手清掉双空格 / 漏出来的 "和、" 之类逗号孤儿
+    cleaned = re.sub(r"\s{2,}", " ", cleaned)
+    cleaned = re.sub(r"(?<=[一-鿿])\s+(?=[一-鿿])", "", cleaned)
+    return cleaned.strip()
+
+
 def _normalize_audit(raw: dict[str, Any]) -> dict[str, Any]:
     """把 LLM 返回的 JSON 整理成内部结构（裁剪长字段、过滤空项）。"""
     headline = str(raw.get("headline") or "").strip()[:120]
     narrative = str(raw.get("narrative_md") or "").strip()[:2000]
+    # P14: narrative_md 是定性叙述, 后处理掉 LLM 脑补的具体数字 (兜底).
+    narrative = _sanitize_narrative_numbers(narrative)
 
     tensions_raw = raw.get("tensions") or []
     tensions: list[dict[str, Any]] = []

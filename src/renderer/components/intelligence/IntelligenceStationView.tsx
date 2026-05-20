@@ -29,6 +29,7 @@ import {
 
 import type {
   BrandMirrorSnapshot,
+  BrandStrategyExtract,
   IntelligenceCandidateSample,
   IntelligenceContentKind,
   IntelligenceDismissReasonCode,
@@ -82,6 +83,8 @@ import {
   recomputeBrandAudit,
   fetchBrandMirrorSnapshot,
   triggerBrandMirrorAnalysis,
+  fetchBrandStrategyExtract,
+  triggerBrandStrategyExtraction,
   type SentimentItem,
   type SentimentProfile,
   type SentimentRefreshResult,
@@ -2231,6 +2234,8 @@ function SentimentMonitorPanel({ workObject }: { workObject: IntelligenceWorkObj
   const [auditNote, setAuditNote] = useState<string | null>(null);
   const [auditRecomputing, setAuditRecomputing] = useState(false);
   const [auditStep, setAuditStep] = useState<string>(''); // 显示当前级联步骤
+  // P14-B 品牌战略闭环卡需要 brandMirror 数据（自我表达 / 媒体 / 合作）
+  const [brandMirror, setBrandMirror] = useState<BrandMirrorSnapshot | null>(null);
   const [loading, setLoading] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
@@ -2265,6 +2270,25 @@ function SentimentMonitorPanel({ workObject }: { workObject: IntelligenceWorkObj
       setLoading(false);
     }
   }, [hasScope, clientId, projectModuleId]);
+
+  // P14-B: 自动加载 brand mirror snapshot (用于品牌战略闭环卡的 ④⑤⑥ 环数据)
+  useEffect(() => {
+    if (!clientId) {
+      setBrandMirror(null);
+      return;
+    }
+    let cancelled = false;
+    fetchBrandMirrorSnapshot(clientId)
+      .then((res) => {
+        if (!cancelled) setBrandMirror(res.snapshot);
+      })
+      .catch(() => {
+        if (!cancelled) setBrandMirror(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [clientId]);
 
   // 智能级联：缺什么补什么 — audit 缺 → themes 缺 → items 缺 → refresh
   const handleRecomputeAudit = async () => {
@@ -2403,6 +2427,9 @@ function SentimentMonitorPanel({ workObject }: { workObject: IntelligenceWorkObj
       {/* ⓪ 品牌印象速读（P6）— 最显眼，放最顶 */}
       <BrandAuditCard
         audit={audit}
+        brandMirror={brandMirror}
+        targetName={targetName}
+        clientId={clientId}
         recomputeNote={auditNote}
         recomputing={auditRecomputing}
         recomputeStep={auditStep}
@@ -2861,12 +2888,18 @@ function BrandPropositionEditor({
 
 function BrandAuditCard({
   audit,
+  brandMirror,
+  targetName,
+  clientId,
   recomputeNote,
   recomputing,
   recomputeStep,
   onRecompute,
 }: {
   audit: BrandAudit | null;
+  brandMirror: BrandMirrorSnapshot | null;
+  targetName: string;
+  clientId: string | undefined;
   recomputeNote: string | null;
   recomputing: boolean;
   recomputeStep?: string;
@@ -2939,50 +2972,27 @@ function BrandAuditCard({
         </div>
       </div>
 
-      {/* 叙事 narrative */}
+      {/* 品牌印象主体叙述 — 一段连贯文字（综合印象 / 最突出 / 主要缺失） */}
       {audit.narrativeMd && (
-        <div className="mt-3 rounded-lg border border-violet-100 bg-white px-4 py-3">
-          <div className="text-[10px] font-bold uppercase tracking-[0.16em] text-violet-500">
-            公众真实印象
-          </div>
-          <p className="mt-2 whitespace-pre-line text-[12px] leading-7 text-gray-700">
+        <div className="mt-3 rounded-lg border border-violet-100 bg-white px-5 py-4">
+          <p className="whitespace-pre-line text-[13px] leading-8 text-gray-800">
             {audit.narrativeMd}
           </p>
         </div>
       )}
 
-      {/* 张力 tensions */}
-      {audit.tensions && audit.tensions.length > 0 && (
-        <div className="mt-3 rounded-lg border border-amber-200 bg-amber-50/40 px-4 py-3">
-          <div className="flex items-center gap-1.5">
-            <AlertTriangle size={12} className="text-amber-600" />
-            <span className="text-[10px] font-bold uppercase tracking-[0.16em] text-amber-700">
-              关键张力 · 自我 vs 公众
-            </span>
-          </div>
-          <ul className="mt-2 space-y-2">
-            {audit.tensions.map((t, idx) => (
-              <li key={idx} className="text-[12px] leading-6 text-amber-950">
-                <span className="font-bold">{idx + 1}.</span> {t.statement}
-                {(t.selfAnchor || t.publicAnchor) && (
-                  <div className="mt-1 flex flex-wrap gap-1 text-[10px]">
-                    {t.selfAnchor && (
-                      <span className="rounded-sm bg-amber-100 px-1.5 py-0.5 font-semibold text-amber-800">
-                        自称：{t.selfAnchor}
-                      </span>
-                    )}
-                    {t.publicAnchor && (
-                      <span className="rounded-sm bg-amber-200/60 px-1.5 py-0.5 font-semibold text-amber-900">
-                        公众：{t.publicAnchor}
-                      </span>
-                    )}
-                  </div>
-                )}
-              </li>
-            ))}
-          </ul>
-        </div>
-      )}
+      {/* P14-D: 战略推演树 (从战略陪伴上传的 .md LLM 抽取)
+          — 战略主张 + 方法学 + 利益相关方应然矩阵
+          — 这是后续闭环卡的"应当如何"锚点 */}
+      <BrandStrategyTreeCard targetName={targetName} clientId={clientId} />
+
+      {/* P14-B: 品牌战略闭环卡 — 6 环纵向,从战略目标到达成度
+          (替换原"关键张力·自我 vs 公众",张力被自然吸收进闭环里) */}
+      <BrandStrategyLoopCard
+        audit={audit}
+        brandMirror={brandMirror}
+        targetName={targetName}
+      />
 
       {/* 建议 recommendations */}
       {audit.recommendations && audit.recommendations.length > 0 && (
@@ -3062,6 +3072,1001 @@ function BrandAuditCard({
         </p>
       )}
     </section>
+  );
+}
+
+
+// ──────────────────────────────────────────────────────────────────────────
+// P14-D · 战略推演树卡 (接通真实 API)
+// 数据源: client_brand_strategy_extracts (LLM 抽自战略陪伴上传的 strategy.md + methodology.md)
+// 状态机:
+//   - 无 clientId → 提示选客户
+//   - loading → spinner
+//   - extract=null → 显示"请先在战略陪伴上传战略文档+方法论文档"
+//   - extract.error → 显示错误 + 重试按钮
+//   - extract 有效 → 显示三段结构
+//   - isStale → 顶部条幅提示"源文档已更新, 建议重新抽取"
+// 这棵树是品牌评估的"应当如何"锚点, 决定下游闭环卡每条链路怎么打分
+// ──────────────────────────────────────────────────────────────────────────
+
+// __MOCK__ P14-E · 利益相关方品牌外立面感知度 (UI 实验)
+// 目标信号: 从外立面 (官网 + 公众号 + 主流媒体报道) 角度看, 每类利益相关方
+//          应当看到的核心要素中, 有多少已被实际承载, 多少是缺口.
+// 真正数据应当来自: LLM 对照 stakeholder.coreMessage (n 类) × brand_official_corpus.
+// 当前为前端硬编码 mock (日慈 12 类), name → 感知度评估. 待 UI 确认后接通后端字段.
+type StakeholderPerceivabilityTier = 'covered' | 'partial' | 'missing';
+interface StakeholderPerceivabilityMock {
+  tier: StakeholderPerceivabilityTier;
+  score: number;
+  covered: string[];
+  gap: string[];
+}
+const MOCK_STAKEHOLDER_PERCEIVABILITY: Record<string, StakeholderPerceivabilityMock> = {
+  '大额企业资助方': {
+    tier: 'partial', score: 35,
+    covered: ['治理透明'],
+    gap: ['项目效果评估', '联合白皮书', '可复制价值'],
+  },
+  '月捐持续陪伴用户': {
+    tier: 'missing', score: 10,
+    covered: [],
+    gap: ['月度进展', '透明反馈', '受益连接'],
+  },
+  '99公益日单次捐赠公众': {
+    tier: 'partial', score: 42,
+    covered: ['受益故事'],
+    gap: ['即时性', '温度叙事'],
+  },
+  '县教育局': {
+    tier: 'missing', score: 5,
+    covered: [],
+    gap: ['县域案例落地', '财政负担说明', '低试错成本'],
+  },
+  '中央及部委政策制定者': {
+    tier: 'missing', score: 8,
+    covered: [],
+    gap: ['政策援引话语', '合作备忘录', '顶层设计案例'],
+  },
+  '学术合作方': {
+    tier: 'covered', score: 72,
+    covered: ['心智素养原创框架', '积极心理学+SEL'],
+    gap: ['本土文化语境', '学术合作公开'],
+  },
+  '同行公益机构': {
+    tier: 'partial', score: 65,
+    covered: ['心智素养框架', '行业语言'],
+    gap: ['引领姿态', '行业标准定义'],
+  },
+  '一线心理教师与班主任': {
+    tier: 'partial', score: 50,
+    covered: ['快速上手', '暑期游学营'],
+    gap: ['减轻工作负担', '持续督导'],
+  },
+  '学校校长与主管': {
+    tier: 'missing', score: 22,
+    covered: ['解决方案'],
+    gap: ['示范项目展示', '组织化落地价值'],
+  },
+  '受益学生家长': {
+    tier: 'missing', score: 12,
+    covered: [],
+    gap: ['进展反馈', '过程透明化'],
+  },
+  '主流权威媒体': {
+    tier: 'partial', score: 38,
+    covered: ['方法学定义'],
+    gap: ['行业深度叙事', '社会意义高度'],
+  },
+  '垂直公益媒体': {
+    tier: 'partial', score: 58,
+    covered: ['心智素养', '课程矩阵'],
+    gap: ['四级飞轮', '行业合作'],
+  },
+};
+const STAKEHOLDER_TIER_STYLE: Record<StakeholderPerceivabilityTier, {
+  icon: string;
+  rowBg: string;
+  barColor: string;
+  scoreText: string;
+  sectorFill: string;     // SVG 扇形填充 (浅色)
+  sectorStroke: string;   // SVG 扇形描边 (深色)
+}> = {
+  covered: { icon: '✅', rowBg: 'bg-emerald-50/40', barColor: 'bg-emerald-500', scoreText: 'text-emerald-700', sectorFill: '#d1fae5', sectorStroke: '#10b981' },
+  partial: { icon: '⚠️', rowBg: 'bg-amber-50/30', barColor: 'bg-amber-500', scoreText: 'text-amber-700', sectorFill: '#fef3c7', sectorStroke: '#f59e0b' },
+  missing: { icon: '❌', rowBg: 'bg-rose-50/30', barColor: 'bg-rose-400', scoreText: 'text-rose-700', sectorFill: '#fee2e2', sectorStroke: '#f43f5e' },
+};
+
+// 极坐标 → 笛卡尔
+function polarToCart(cx: number, cy: number, r: number, angleDeg: number): { x: number; y: number } {
+  const rad = (angleDeg * Math.PI) / 180;
+  return { x: cx + r * Math.cos(rad), y: cy + r * Math.sin(rad) };
+}
+
+// 环形扇形 (donut sector) path
+function donutSectorPath(cx: number, cy: number, rIn: number, rOut: number, startDeg: number, endDeg: number): string {
+  const startInner = polarToCart(cx, cy, rIn, startDeg);
+  const endInner = polarToCart(cx, cy, rIn, endDeg);
+  const startOuter = polarToCart(cx, cy, rOut, startDeg);
+  const endOuter = polarToCart(cx, cy, rOut, endDeg);
+  const largeArc = endDeg - startDeg > 180 ? 1 : 0;
+  return [
+    `M ${startInner.x} ${startInner.y}`,
+    `L ${startOuter.x} ${startOuter.y}`,
+    `A ${rOut} ${rOut} 0 ${largeArc} 1 ${endOuter.x} ${endOuter.y}`,
+    `L ${endInner.x} ${endInner.y}`,
+    `A ${rIn} ${rIn} 0 ${largeArc} 0 ${startInner.x} ${startInner.y}`,
+    'Z',
+  ].join(' ');
+}
+
+function BrandStrategyTreeCard({
+  targetName,
+  clientId,
+}: {
+  targetName: string;
+  clientId: string | undefined;
+}) {
+  const [extract, setExtract] = useState<BrandStrategyExtract | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [extracting, setExtracting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!clientId) {
+      setExtract(null);
+      return;
+    }
+    let cancelled = false;
+    setLoading(true);
+    setError(null);
+    fetchBrandStrategyExtract(clientId)
+      .then((res) => {
+        if (!cancelled) setExtract(res.extract);
+      })
+      .catch((e) => {
+        if (!cancelled) setError(e instanceof Error ? e.message : '加载失败');
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [clientId]);
+
+  const handleExtract = async () => {
+    if (!clientId || extracting) return;
+    setExtracting(true);
+    setError(null);
+    try {
+      const fresh = await triggerBrandStrategyExtraction(clientId);
+      setExtract(fresh);
+      if (fresh.error) setError(fresh.error);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : '抽取失败');
+    } finally {
+      setExtracting(false);
+    }
+  };
+
+  if (!clientId) return null;
+
+  if (loading && !extract) {
+    return (
+      <section className="mt-3 rounded-xl border border-dashed border-indigo-200 bg-indigo-50/40 px-5 py-6">
+        <div className="flex items-center gap-2">
+          <Loader2 size={14} className="animate-spin text-indigo-500" />
+          <span className="text-[12px] text-indigo-700">加载战略推演树…</span>
+        </div>
+      </section>
+    );
+  }
+
+  if (!extract) {
+    return (
+      <section className="mt-3 rounded-xl border border-dashed border-indigo-200 bg-indigo-50/40 px-5 py-6">
+        <div className="flex items-center gap-2">
+          <Sparkles size={16} className="text-indigo-500" />
+          <h3 className="text-[13px] font-black text-indigo-900">战略推演树</h3>
+          <span className="ml-auto rounded-md bg-amber-100 px-2 py-0.5 text-[10px] font-bold text-amber-700">
+            待生成
+          </span>
+        </div>
+        <p className="mt-3 text-[12px] leading-7 text-indigo-900/80">
+          这一格是品牌评估的「应当如何」锚点：战略主张 + 方法学 + 利益相关方矩阵。
+          完成后，下方闭环卡才能逐条评估&quot;实际传达 vs 应当传达&quot;的缺口。
+        </p>
+        <p className="mt-3 text-[11px] leading-6 text-indigo-700/70">
+          推荐流程：先去 <b>战略陪伴页</b> 上传 <code className="rounded-sm bg-white px-1.5 py-0.5">战略文档.md</code> 和 <code className="rounded-sm bg-white px-1.5 py-0.5">方法论文档.md</code>，回到这里点&quot;LLM 抽取&quot;。
+        </p>
+        <div className="mt-3 flex items-center gap-2 flex-wrap">
+          <button
+            type="button"
+            onClick={() => void handleExtract()}
+            disabled={extracting}
+            className="inline-flex items-center gap-1.5 rounded-md bg-indigo-600 px-3 py-1.5 text-[11px] font-bold text-white hover:bg-indigo-700 disabled:opacity-60"
+          >
+            {extracting ? <Loader2 size={12} className="animate-spin" /> : <Sparkles size={12} />}
+            {extracting ? 'LLM 抽取中（30-90 秒）' : '从两份 .md LLM 抽取战略推演树'}
+          </button>
+          {error && (
+            <span className="text-[11px] text-rose-600">{error}</span>
+          )}
+        </div>
+      </section>
+    );
+  }
+
+  const isStale = extract.isStale;
+  const hasError = Boolean(extract.error);
+
+  return (
+    <section className="mt-3 rounded-xl border-2 border-indigo-300 bg-gradient-to-br from-indigo-50/60 via-white to-white px-5 py-4">
+      <div className="mb-3 flex items-start gap-2">
+        <Sparkles size={16} className="mt-0.5 shrink-0 text-indigo-600" />
+        <div className="min-w-0 flex-1">
+          <div className="flex items-center gap-2 flex-wrap">
+            <h3 className="text-[14px] font-black text-indigo-900">战略推演树</h3>
+            <span className="text-[10px] text-gray-500">· {targetName}</span>
+            {extract.confirmedAt ? (
+              <span className="rounded-md bg-emerald-100 px-2 py-0.5 text-[10px] font-bold text-emerald-700">
+                已确认
+              </span>
+            ) : (
+              <span className="rounded-md bg-amber-100 px-2 py-0.5 text-[10px] font-bold text-amber-700">
+                LLM 草稿 · 待咨询师确认
+              </span>
+            )}
+            {extract.llmModel && (
+              <span className="rounded-sm bg-indigo-50 px-1.5 py-0.5 text-[10px] text-indigo-700">
+                {extract.llmModel}
+              </span>
+            )}
+            <span className="ml-auto text-[10px] text-gray-400 tabular-nums">
+              抽取于 {extract.extractedAt.slice(0, 16).replace('T', ' ')}
+            </span>
+          </div>
+          <p className="mt-1 text-[10px] leading-5 text-indigo-900/70">
+            品牌评估的&quot;应当如何&quot;锚点 · 下方闭环卡用这棵树逐条对照实际传达
+          </p>
+        </div>
+      </div>
+
+      {isStale && (
+        <div className="mb-3 rounded-lg border border-amber-300 bg-amber-50 px-3 py-2 flex items-center gap-2">
+          <AlertTriangle size={12} className="text-amber-600 shrink-0" />
+          <span className="flex-1 text-[11px] text-amber-900">
+            源文档已在战略陪伴页更新，当前推演树基于旧版本。建议重新抽取。
+          </span>
+          <button
+            type="button"
+            onClick={() => void handleExtract()}
+            disabled={extracting}
+            className="inline-flex items-center gap-1 rounded-md bg-amber-600 px-2 py-1 text-[10px] font-bold text-white hover:bg-amber-700 disabled:opacity-60"
+          >
+            {extracting ? <Loader2 size={10} className="animate-spin" /> : <RefreshCw size={10} />}
+            重新抽取
+          </button>
+        </div>
+      )}
+
+      {hasError && (
+        <div className="mb-3 rounded-lg border border-rose-200 bg-rose-50 px-3 py-2">
+          <div className="text-[10px] font-bold text-rose-700">LLM 抽取出错</div>
+          <div className="mt-0.5 text-[11px] text-rose-900 break-all">{extract.error}</div>
+        </div>
+      )}
+
+      {extract.strategicObjective && (
+        <div className="mb-3 rounded-lg border border-indigo-200 bg-white px-4 py-3">
+          <div className="mb-1.5 flex items-baseline gap-2">
+            <span className="rounded-sm bg-indigo-100 px-1.5 py-0.5 text-[10px] font-black text-indigo-800">
+              📍 战略主张
+            </span>
+            <span className="text-[10px] text-gray-500">What &amp; Why · 一段完整描述</span>
+          </div>
+          <p className="text-[13px] leading-7 text-gray-800">
+            {extract.strategicObjective}
+          </p>
+          {extract.strategicObjectiveSources.length > 0 && (
+            <p className="mt-2 text-[10px] text-gray-400">
+              抽自：{extract.strategicObjectiveSources.map((s, i) => (
+                <span key={s} className="inline-flex">
+                  {i > 0 && <span className="mx-1">·</span>}
+                  <span className="rounded-sm bg-gray-100 px-1.5 py-0.5 text-gray-600">{s}</span>
+                </span>
+              ))}
+            </p>
+          )}
+        </div>
+      )}
+
+      {extract.methodology && (
+        <div className="mb-3 rounded-lg border border-indigo-200 bg-white px-4 py-3">
+          <div className="mb-1.5 flex items-baseline gap-2">
+            <span className="rounded-sm bg-indigo-100 px-1.5 py-0.5 text-[10px] font-black text-indigo-800">
+              🔧 方法学
+            </span>
+            <span className="text-[10px] text-gray-500">How · 实现战略主张的方法论框架</span>
+          </div>
+          <p className="text-[12px] leading-7 text-gray-700">
+            {extract.methodology}
+          </p>
+          {extract.methodologySources.length > 0 && (
+            <p className="mt-2 text-[10px] text-gray-400">
+              抽自：{extract.methodologySources.map((s, i) => (
+                <span key={s} className="inline-flex">
+                  {i > 0 && <span className="mx-1">·</span>}
+                  <span className="rounded-sm bg-gray-100 px-1.5 py-0.5 text-gray-600">{s}</span>
+                </span>
+              ))}
+            </p>
+          )}
+        </div>
+      )}
+
+      {extract.stakeholders.length > 0 && (() => {
+        // 按感知度 score 降序; mock 未匹配的相关方放最后
+        const sorted = [...extract.stakeholders].sort((a, b) => {
+          const sa = MOCK_STAKEHOLDER_PERCEIVABILITY[a.name]?.score ?? -1;
+          const sb = MOCK_STAKEHOLDER_PERCEIVABILITY[b.name]?.score ?? -1;
+          return sb - sa;
+        });
+        const scored = sorted.filter((s) => MOCK_STAKEHOLDER_PERCEIVABILITY[s.name]);
+        const totalScored = scored.length;
+        const avg = totalScored > 0
+          ? Math.round(scored.reduce((acc, s) => acc + (MOCK_STAKEHOLDER_PERCEIVABILITY[s.name]?.score ?? 0), 0) / totalScored)
+          : 0;
+        const tierCount = scored.reduce(
+          (acc, s) => {
+            const t = MOCK_STAKEHOLDER_PERCEIVABILITY[s.name]?.tier;
+            if (t) acc[t] += 1;
+            return acc;
+          },
+          { covered: 0, partial: 0, missing: 0 } as Record<StakeholderPerceivabilityTier, number>,
+        );
+        // 仅渲染前 10 名; 11+ 名放底部一行提示
+        const top10 = sorted.slice(0, 10);
+        const remaining = sorted.slice(10);
+
+        // SVG 几何参数
+        const SVG_SIZE = 660;
+        const CX = SVG_SIZE / 2;
+        const CY = SVG_SIZE / 2;
+        const R_CENTER = 88;     // 中心圆半径
+        const R_INNER = 165;     // name 圈外边界
+        const R_OUTER = 310;     // 整个环外边界
+        const SECTOR_ANGLE = 36; // 360 / 10
+        const START_ANGLE = -90; // 12 点钟方向 = -90° (SVG 坐标 0° 是 3 点钟)
+        const GAP_DEG = 2.0;     // 扇形之间的留白角度 (留白更宽 = 花瓣感)
+
+        // 渐变色 (浅 → 深) per tier
+        const tierGradients = {
+          covered: { light: '#ecfdf5', mid: '#a7f3d0', dark: '#10b981', deep: '#047857' },
+          partial: { light: '#fffbeb', mid: '#fde68a', dark: '#f59e0b', deep: '#b45309' },
+          missing: { light: '#fff1f2', mid: '#fecdd3', dark: '#fb7185', deep: '#be123c' },
+        } as const;
+
+        return (
+          <div className="rounded-lg border border-indigo-200 bg-white px-4 py-3">
+            {/* Header */}
+            <div className="mb-3 flex items-baseline gap-2 flex-wrap">
+              <span className="rounded-sm bg-indigo-100 px-1.5 py-0.5 text-[10px] font-black text-indigo-800">
+                👥 利益相关方感知度
+              </span>
+              <span className="text-[10px] text-gray-500">
+                基于品牌外立面 (官网 + 公众号 + 主流媒体) 评估 · 仅显示前 10 名
+              </span>
+              <span className="ml-auto rounded-sm border border-amber-200 bg-amber-50 px-1.5 py-0.5 text-[10px] text-amber-700">
+                UI Mock · 待接通真实评分
+              </span>
+            </div>
+
+            {/* 环形仪表盘 */}
+            <div className="flex justify-center py-3">
+              <svg
+                viewBox={`0 0 ${SVG_SIZE} ${SVG_SIZE}`}
+                className="h-auto w-full max-w-[660px]"
+                style={{ fontFamily: 'inherit' }}
+              >
+                <defs>
+                  {/* 径向渐变 (内浅外深) per tier — 用 userSpaceOnUse 让所有扇形共享同一辐射中心 */}
+                  {(Object.keys(tierGradients) as Array<keyof typeof tierGradients>).map((tier) => {
+                    const g = tierGradients[tier];
+                    return (
+                      <radialGradient
+                        key={`grad-${tier}`}
+                        id={`grad-${tier}`}
+                        cx={CX}
+                        cy={CY}
+                        r={R_OUTER}
+                        gradientUnits="userSpaceOnUse"
+                      >
+                        <stop offset="0%" stopColor={g.light} />
+                        <stop offset={`${(R_INNER / R_OUTER) * 100}%`} stopColor={g.mid} />
+                        <stop offset="100%" stopColor={g.dark} />
+                      </radialGradient>
+                    );
+                  })}
+                  {/* 扇形 drop shadow */}
+                  <filter id="sector-shadow" x="-20%" y="-20%" width="140%" height="140%">
+                    <feGaussianBlur in="SourceAlpha" stdDeviation="2.5" />
+                    <feOffset dx="0" dy="2" result="offsetblur" />
+                    <feFlood floodColor="#1e293b" floodOpacity="0.18" />
+                    <feComposite in2="offsetblur" operator="in" />
+                    <feMerge>
+                      <feMergeNode />
+                      <feMergeNode in="SourceGraphic" />
+                    </feMerge>
+                  </filter>
+                  {/* 中心圆光晕 */}
+                  <filter id="center-glow" x="-50%" y="-50%" width="200%" height="200%">
+                    <feGaussianBlur in="SourceAlpha" stdDeviation="6" />
+                    <feFlood floodColor="#6366f1" floodOpacity="0.25" />
+                    <feComposite in2="SourceAlpha" operator="in" />
+                    <feMerge>
+                      <feMergeNode />
+                      <feMergeNode in="SourceGraphic" />
+                    </feMerge>
+                  </filter>
+                  {/* score 大字微阴影 (在彩色扇形上更立体) */}
+                  <filter id="score-shadow">
+                    <feDropShadow dx="0" dy="1" stdDeviation="0.6" floodColor="#ffffff" floodOpacity="0.7" />
+                  </filter>
+                </defs>
+
+                {/* 整体外层光晕底盘 (让花瓣有"放在底盘上"的感觉) */}
+                <circle
+                  cx={CX}
+                  cy={CY}
+                  r={R_OUTER + 6}
+                  fill="#f8fafc"
+                  stroke="#e2e8f0"
+                  strokeWidth="1"
+                />
+
+                {top10.map((s, idx) => {
+                  const p = MOCK_STAKEHOLDER_PERCEIVABILITY[s.name];
+                  if (!p) return null;
+                  const tierGrad = tierGradients[p.tier];
+                  const segStart = START_ANGLE + idx * SECTOR_ANGLE + GAP_DEG / 2;
+                  const segEnd = START_ANGLE + (idx + 1) * SECTOR_ANGLE - GAP_DEG / 2;
+                  const midAngle = (segStart + segEnd) / 2;
+
+                  // 文字位置 (重新分层, 给字号对比留空间)
+                  const nameRadius = (R_CENTER + R_INNER) / 2 + 4;    // ≈ 130
+                  const scoreRadius = R_INNER + 38;                    // ≈ 203
+                  const detailRadius = scoreRadius + 36;               // ≈ 239
+                  const rankRadius = R_OUTER - 18;                     // ≈ 292
+
+                  const nameP = polarToCart(CX, CY, nameRadius, midAngle);
+                  const scoreP = polarToCart(CX, CY, scoreRadius, midAngle);
+                  const detailP = polarToCart(CX, CY, detailRadius, midAngle);
+                  const rankP = polarToCart(CX, CY, rankRadius, midAngle);
+
+                  // name 截断
+                  const truncName = s.name.length > 7 ? s.name.slice(0, 6) + '…' : s.name;
+
+                  return (
+                    <g key={`${s.name}-${idx}`}>
+                      {/* 扇形主体 (渐变 fill + drop shadow) */}
+                      <path
+                        d={donutSectorPath(CX, CY, R_CENTER + 6, R_OUTER, segStart, segEnd)}
+                        fill={`url(#grad-${p.tier})`}
+                        filter="url(#sector-shadow)"
+                      />
+                      {/* 扇形内圈高光 (顶面微亮带, 增立体感) */}
+                      <path
+                        d={donutSectorPath(CX, CY, R_CENTER + 6, R_CENTER + 14, segStart, segEnd)}
+                        fill="white"
+                        opacity="0.35"
+                      />
+                      {/* 排名小徽章 (最外侧白圆) */}
+                      <circle
+                        cx={rankP.x}
+                        cy={rankP.y}
+                        r="11"
+                        fill="white"
+                        stroke={tierGrad.deep}
+                        strokeWidth="1.5"
+                      />
+                      <text
+                        x={rankP.x}
+                        y={rankP.y + 0.5}
+                        textAnchor="middle"
+                        dominantBaseline="central"
+                        fontSize="11"
+                        fontWeight="800"
+                        fill={tierGrad.deep}
+                        style={{ fontVariantNumeric: 'tabular-nums' }}
+                      >
+                        {idx + 1}
+                      </text>
+                      {/* score 巨大字 */}
+                      <text
+                        x={scoreP.x}
+                        y={scoreP.y}
+                        textAnchor="middle"
+                        dominantBaseline="central"
+                        fontSize="34"
+                        fontWeight="200"
+                        fill="#ffffff"
+                        filter="url(#score-shadow)"
+                        style={{ fontVariantNumeric: 'tabular-nums', letterSpacing: '-1px' }}
+                      >
+                        {p.score}
+                        <tspan fontSize="16" dy="-10" fontWeight="400">%</tspan>
+                      </text>
+                      {/* covered / gap 数量 */}
+                      <text
+                        x={detailP.x}
+                        y={detailP.y}
+                        textAnchor="middle"
+                        dominantBaseline="central"
+                        fontSize="11"
+                        fontWeight="700"
+                        fill="#ffffff"
+                        opacity="0.95"
+                      >
+                        <tspan>✓{p.covered.length}</tspan>
+                        <tspan dx="8">✗{p.gap.length}</tspan>
+                      </text>
+                      {/* name (靠近中心, 白底椭圆衬底让字更清晰) */}
+                      <text
+                        x={nameP.x}
+                        y={nameP.y}
+                        textAnchor="middle"
+                        dominantBaseline="central"
+                        fontSize="13"
+                        fontWeight="800"
+                        fill="#1e293b"
+                      >
+                        {truncName}
+                        <title>{s.name}</title>
+                      </text>
+                    </g>
+                  );
+                })}
+
+                {/* 中心圆 (双层: 外光晕 + 内实心) */}
+                <circle cx={CX} cy={CY} r={R_CENTER + 6} fill="#eef2ff" opacity="0.85" />
+                <circle
+                  cx={CX}
+                  cy={CY}
+                  r={R_CENTER}
+                  fill="white"
+                  stroke="#a5b4fc"
+                  strokeWidth="2"
+                  filter="url(#center-glow)"
+                />
+                <text
+                  x={CX}
+                  y={CY - 30}
+                  textAnchor="middle"
+                  dominantBaseline="central"
+                  fontSize="10"
+                  fontWeight="700"
+                  fill="#6366f1"
+                  letterSpacing="3"
+                >
+                  品牌外立面
+                </text>
+                <text
+                  x={CX}
+                  y={CY - 14}
+                  textAnchor="middle"
+                  dominantBaseline="central"
+                  fontSize="10"
+                  fill="#6b7280"
+                  letterSpacing="2"
+                >
+                  平均感知度
+                </text>
+                <text
+                  x={CX}
+                  y={CY + 14}
+                  textAnchor="middle"
+                  dominantBaseline="central"
+                  fontSize="46"
+                  fontWeight="200"
+                  fill="#4338ca"
+                  style={{ fontVariantNumeric: 'tabular-nums', letterSpacing: '-2px' }}
+                >
+                  {avg}
+                  <tspan fontSize="22" dy="-14" fontWeight="400">%</tspan>
+                </text>
+                <text
+                  x={CX}
+                  y={CY + 46}
+                  textAnchor="middle"
+                  dominantBaseline="central"
+                  fontSize="10"
+                  fontWeight="700"
+                  style={{ fontVariantNumeric: 'tabular-nums' }}
+                >
+                  <tspan fill="#10b981">✓ {tierCount.covered}</tspan>
+                  <tspan dx="6" fill="#f59e0b">⚠ {tierCount.partial}</tspan>
+                  <tspan dx="6" fill="#f43f5e">✗ {tierCount.missing}</tspan>
+                </text>
+                <text
+                  x={CX}
+                  y={CY + 60}
+                  textAnchor="middle"
+                  dominantBaseline="central"
+                  fontSize="9"
+                  fill="#94a3b8"
+                >
+                  共 {totalScored} 类相关方
+                </text>
+              </svg>
+            </div>
+
+            {/* 排名 11+ 兜底 */}
+            {remaining.length > 0 && (
+              <div className="mt-2 rounded-md border border-rose-200 bg-rose-50/40 px-3 py-2 flex flex-wrap items-center gap-2">
+                <span className="text-[10px] font-bold text-rose-800">📉 未进入前 10 名</span>
+                {remaining.map((s) => {
+                  const p = MOCK_STAKEHOLDER_PERCEIVABILITY[s.name];
+                  return (
+                    <span
+                      key={s.name}
+                      className="inline-flex items-center gap-1 rounded-sm bg-white/80 px-2 py-0.5 text-[10px] text-rose-900 border border-rose-200/60"
+                    >
+                      <span>{s.name}</span>
+                      {p && (
+                        <span className="font-bold tabular-nums text-rose-700">{p.score}%</span>
+                      )}
+                    </span>
+                  );
+                })}
+              </div>
+            )}
+
+            <p className="mt-3 text-[10px] leading-5 text-gray-400">
+              💡 感知度 = 外立面 (官网/公众号/媒体报道) 实际承载的核心要素 ÷ 该相关方应看到的核心要素。
+              不评估真实合作关系 (如大额资助方的专属对接), 只看任何路人能从公开外立面读到什么. ✓ 已传 / ✗ 缺失 数量见每段标记.
+            </p>
+          </div>
+        );
+      })()}
+
+      <div className="mt-3 flex items-center gap-2 flex-wrap">
+        <button
+          type="button"
+          onClick={() => void handleExtract()}
+          disabled={extracting}
+          className="inline-flex items-center gap-1.5 rounded-md border border-indigo-200 bg-white px-3 py-1.5 text-[11px] font-semibold text-indigo-700 hover:bg-indigo-50 disabled:opacity-60"
+        >
+          {extracting ? <Loader2 size={12} className="animate-spin" /> : <RefreshCw size={12} />}
+          {extracting ? '抽取中…' : '重新抽取'}
+        </button>
+        <button
+          type="button"
+          className="inline-flex items-center gap-1.5 rounded-md border border-gray-200 bg-white px-3 py-1.5 text-[11px] font-semibold text-gray-700 hover:bg-gray-50"
+          disabled
+          title="后续接通：保存为已确认状态"
+        >
+          <FileCheck2 size={12} />
+          咨询师确认（待接通）
+        </button>
+        <button
+          type="button"
+          className="inline-flex items-center gap-1.5 rounded-md border border-gray-200 bg-white px-3 py-1.5 text-[11px] font-semibold text-gray-700 hover:bg-gray-50"
+          disabled
+          title="后续接通：手动编辑某一项"
+        >
+          <Lightbulb size={12} />
+          手动编辑（待接通）
+        </button>
+        <span className="ml-auto text-[10px] text-gray-400">
+          {extract.confirmedAt
+            ? `已确认 ${extract.confirmedAt.slice(0, 16).replace('T', ' ')}`
+            : '尚未确认 · 当前为 LLM 抽取草稿'}
+        </span>
+      </div>
+    </section>
+  );
+}
+
+// ──────────────────────────────────────────────────────────────────────────
+// P14-B · 品牌战略闭环卡 (替换原"关键张力" tensions 块)
+// 纵向 6 环: 战略目标 → 品牌关键要素 → 渠道×受众 → 公众接收画像 →
+// 反应/情绪 → 行动信号 → (战略达成度)
+// 数据来源:
+//   - audit.tensions / headline (战略缺口 + 一句话定位, 来自原 tensions)
+//   - brandMirror.selfPresentation (公众接收画像)
+//   - brandMirror.wordCloud (高权重词作为外显强调要素)
+//   - brandMirror.mediaCoverage (反应/情绪按渠道聚合)
+//   - brandMirror.partners (行动信号 - 合作方)
+// 缺数据的环显示"待配置"提示而不是空白
+// ──────────────────────────────────────────────────────────────────────────
+
+function BrandStrategyLoopCard({
+  audit,
+  brandMirror,
+  targetName,
+}: {
+  audit: BrandAudit;
+  brandMirror: BrandMirrorSnapshot | null;
+  targetName: string;
+}) {
+  const hasMirror = Boolean(brandMirror);
+
+  // ② 品牌关键要素: 从词云抽 weight≥80 且 sourceDiversity≥4 的 (跨多信源被强调)
+  const emphasisFromMirror = (brandMirror?.wordCloud || [])
+    .filter((w) => w.weight >= 80 && w.sourceDiversity >= 4)
+    .slice(0, 5);
+
+  // ④ 公众接收: 直接用 selfPresentation 前 4
+  const publicReceived = (brandMirror?.selfPresentation || []).slice(0, 4);
+
+  // ⑤ 反应: mediaCoverage 按 tone 聚合
+  const mediaByTone = (brandMirror?.mediaCoverage || []).reduce<Record<string, number>>(
+    (acc, m) => ({ ...acc, [m.tone]: (acc[m.tone] || 0) + 1 }),
+    {},
+  );
+
+  // ⑥ 行动信号: partners 按 type 聚合
+  const partnerByType = (brandMirror?.partners || []).reduce<Record<string, number>>(
+    (acc, p) => ({ ...acc, [p.type]: (acc[p.type] || 0) + 1 }),
+    {},
+  );
+
+  // 张力 (来自 audit.tensions) 被吸进闭环里 - 用于第 ④ 环边上的"vs"对照
+  const tensionAnchors = (audit.tensions || []).map((t) => ({
+    self: t.selfAnchor,
+    pub: t.publicAnchor,
+  })).filter((x) => x.self || x.pub);
+
+  return (
+    <section className="mt-3 rounded-xl border border-violet-200 bg-gradient-to-br from-violet-50/30 via-white to-amber-50/20 px-5 py-4">
+      <div className="mb-3 flex items-baseline gap-2">
+        <span className="text-[10px] font-black uppercase tracking-[0.16em] text-violet-700">
+          品牌战略闭环
+        </span>
+        <span className="text-[10px] text-gray-500">
+          · {targetName} 从战略到行动的传达链路
+        </span>
+        {!hasMirror && (
+          <span className="ml-auto rounded-sm bg-amber-100 px-1.5 py-0.5 text-[10px] font-bold text-amber-700">
+            未生成画像
+          </span>
+        )}
+      </div>
+
+      <div className="space-y-2.5">
+        {/* ① 战略目标 */}
+        <LoopRow
+          step="①"
+          label="战略目标"
+          desc="来自战略陪伴档案 · 决定品牌应该传达什么"
+          color="violet"
+        >
+          <p className="text-[12px] leading-6 text-gray-700">
+            <span className="rounded-sm bg-amber-50 px-1.5 py-0.5 text-[10px] font-semibold text-amber-700">
+              待配置
+            </span>
+            <span className="ml-2 text-gray-500">
+              在战略陪伴档案里填写「3 年战略主张」后, 此处会显示
+            </span>
+          </p>
+        </LoopRow>
+        <LoopArrow text="应当向外强调" />
+
+        {/* ② 品牌关键要素 */}
+        <LoopRow
+          step="②"
+          label="品牌关键要素"
+          desc={
+            hasMirror
+              ? "跨多类信源高频出现 → 已成外显强调"
+              : "需要先生成品牌画像"
+          }
+          color="blue"
+        >
+          {emphasisFromMirror.length > 0 ? (
+            <div className="flex flex-wrap gap-1.5">
+              {emphasisFromMirror.map((w) => (
+                <span
+                  key={w.word}
+                  className="inline-flex items-center gap-1 rounded-md bg-blue-50 px-2 py-1 text-[11px] font-semibold text-blue-900"
+                  title={`权重 ${w.weight}, 跨 ${w.sourceDiversity} 类信源`}
+                >
+                  {w.word}
+                  <span className="text-[9px] text-blue-500">●{w.sourceDiversity}</span>
+                </span>
+              ))}
+            </div>
+          ) : (
+            <span className="text-[11px] text-gray-400">
+              {hasMirror ? "暂无满足条件的高频要素 (weight≥80 且 ≥4 类信源)" : "—"}
+            </span>
+          )}
+        </LoopRow>
+        <LoopArrow text="通过渠道分发给" />
+
+        {/* ③ 渠道 × 利益相关方矩阵 */}
+        <LoopRow
+          step="③"
+          label="渠道 × 利益相关方"
+          desc="官方信息出口对应触达的人群"
+          color="cyan"
+        >
+          <p className="text-[12px] leading-6 text-gray-700">
+            <span className="rounded-sm bg-amber-50 px-1.5 py-0.5 text-[10px] font-semibold text-amber-700">
+              Phase 2 待开发
+            </span>
+            <span className="ml-2 text-gray-500">
+              将基于 official_channels_json + 利益相关方分类生成矩阵
+            </span>
+          </p>
+        </LoopRow>
+        <LoopArrow text="实际让外界听到了" />
+
+        {/* ④ 公众接收的画像 */}
+        <LoopRow
+          step="④"
+          label="公众接收的画像"
+          desc="LLM 从全部官方语料里抽取的实际形象"
+          color="emerald"
+        >
+          {publicReceived.length > 0 ? (
+            <ul className="space-y-1">
+              {publicReceived.map((s) => (
+                <li key={s.label} className="flex items-baseline gap-2 text-[12px] leading-6">
+                  <span className="font-bold text-emerald-900">「{s.label}」</span>
+                  <span className="text-[10px] tabular-nums text-emerald-600">
+                    强度 {s.score}
+                  </span>
+                  <span className="flex-1 text-[11px] text-gray-600">{s.rationale}</span>
+                </li>
+              ))}
+            </ul>
+          ) : (
+            <span className="text-[11px] text-gray-400">
+              {hasMirror ? "暂无识别到的公众画像" : "需要先生成品牌画像"}
+            </span>
+          )}
+          {/* 张力对照 */}
+          {tensionAnchors.length > 0 && (
+            <div className="mt-2 rounded-md border border-amber-200 bg-amber-50/50 px-2.5 py-1.5">
+              <div className="text-[10px] font-bold text-amber-700">
+                ⚖ 强调 vs 接收 · 关键张力
+              </div>
+              <ul className="mt-1 space-y-0.5">
+                {tensionAnchors.slice(0, 3).map((t, i) => (
+                  <li key={i} className="text-[11px] leading-5 text-amber-950">
+                    强调「{t.self || '—'}」, 但接收到「{t.pub || '—'}」
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+        </LoopRow>
+        <LoopArrow text="引发的情绪/反应" />
+
+        {/* ⑤ 反应 / 情绪 */}
+        <LoopRow
+          step="⑤"
+          label="反应 / 情绪"
+          desc="各信源对机构的整体基调"
+          color="rose"
+        >
+          {Object.keys(mediaByTone).length > 0 ? (
+            <div className="flex flex-wrap gap-1.5">
+              {(["positive", "neutral", "negative"] as const).map((t) =>
+                mediaByTone[t] ? (
+                  <span
+                    key={t}
+                    className={`inline-flex items-center gap-1 rounded-md px-2 py-1 text-[11px] font-semibold ${
+                      t === "positive"
+                        ? "bg-emerald-50 text-emerald-800"
+                        : t === "negative"
+                          ? "bg-rose-50 text-rose-800"
+                          : "bg-gray-100 text-gray-700"
+                    }`}
+                  >
+                    {t === "positive" ? "正向" : t === "negative" ? "负向" : "中性"}
+                    <span className="text-[10px] opacity-70">{mediaByTone[t]} 类信源</span>
+                  </span>
+                ) : null,
+              )}
+            </div>
+          ) : (
+            <span className="text-[11px] text-gray-400">
+              {hasMirror ? "暂无 media coverage tone 信号" : "—"}
+            </span>
+          )}
+        </LoopRow>
+        <LoopArrow text="转化为可观察的行动" />
+
+        {/* ⑥ 行动信号 (代理变量) */}
+        <LoopRow
+          step="⑥"
+          label="行动信号"
+          desc="可观察的合作 / 引用 / 网络扩张"
+          color="amber"
+        >
+          {Object.keys(partnerByType).length > 0 ? (
+            <ul className="space-y-1">
+              {Object.entries(partnerByType).map(([type, count]) => (
+                <li key={type} className="flex items-baseline gap-2 text-[12px]">
+                  <span className="rounded-sm bg-amber-100 px-1.5 py-0.5 text-[10px] font-semibold text-amber-800">
+                    {type}
+                  </span>
+                  <span className="text-gray-700">{count} 个识别合作方</span>
+                </li>
+              ))}
+              <li className="mt-1 text-[10px] text-gray-400">
+                Phase 3 将扩展: 招聘动态 · 学术引用 · 媒体引用密度
+              </li>
+            </ul>
+          ) : (
+            <span className="text-[11px] text-gray-400">
+              {hasMirror ? "暂无识别到的合作方" : "需要先生成品牌画像"}
+            </span>
+          )}
+        </LoopRow>
+
+        {/* 战略达成度 (Phase 4) */}
+        <div className="mt-3 rounded-lg border border-dashed border-violet-200 bg-violet-50/30 px-3 py-2.5">
+          <div className="flex items-baseline gap-2">
+            <span className="text-[10px] font-black uppercase tracking-[0.16em] text-violet-700">
+              📊 战略目标达成度
+            </span>
+            <span className="rounded-sm bg-amber-50 px-1.5 py-0.5 text-[10px] font-semibold text-amber-700">
+              Phase 4 待开发
+            </span>
+          </div>
+          <p className="mt-1 text-[10px] leading-5 text-violet-900/70">
+            完成战略目标录入 + 利益相关方矩阵后, 此处会自动评估每个战略路径的达成百分比, 并指出主要缺口.
+          </p>
+        </div>
+      </div>
+    </section>
+  );
+}
+
+function LoopRow({
+  step,
+  label,
+  desc,
+  color,
+  children,
+}: {
+  step: string;
+  label: string;
+  desc: string;
+  color: "violet" | "blue" | "cyan" | "emerald" | "rose" | "amber";
+  children: React.ReactNode;
+}) {
+  const colorClass: Record<typeof color, string> = {
+    violet: "border-violet-200 bg-white",
+    blue: "border-blue-200 bg-white",
+    cyan: "border-cyan-200 bg-white",
+    emerald: "border-emerald-200 bg-white",
+    rose: "border-rose-200 bg-white",
+    amber: "border-amber-200 bg-white",
+  } as const;
+  return (
+    <div className={`rounded-lg border ${colorClass[color]} px-3 py-2.5`}>
+      <div className="flex items-baseline gap-2">
+        <span className="text-[12px] font-black text-gray-400 tabular-nums">{step}</span>
+        <span className="text-[12px] font-black text-gray-900">{label}</span>
+        <span className="text-[10px] text-gray-500">— {desc}</span>
+      </div>
+      <div className="mt-1.5">{children}</div>
+    </div>
+  );
+}
+
+function LoopArrow({ text }: { text: string }) {
+  return (
+    <div className="flex items-center justify-center gap-1.5 px-3 py-0.5 text-[10px] font-medium text-gray-400">
+      <span className="h-px flex-1 bg-gradient-to-r from-transparent to-gray-300" />
+      <span>↓ {text}</span>
+      <span className="h-px flex-1 bg-gradient-to-l from-transparent to-gray-300" />
+    </div>
   );
 }
 

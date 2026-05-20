@@ -251,6 +251,7 @@ from app.models import (
     ClientTextDocumentPayload,
     DocumentAiActionPayload,
     DocumentAiActionResponse,
+    DocumentAiActionSourceRef,
     ClientTextDocumentResponse,
     ClientNotebookResponse,
     ClientWorkspaceResponse,
@@ -9540,6 +9541,40 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                     "UPDATE clients SET sync_status = 'pending', pending_sync_action = ? WHERE id = ?",
                     (action, client_id),
                 )
+        except HTTPException as http_error:
+            # 405 = 火山云 cloud_backend 部署版本未注册该 method (POST/PUT /api/v1/clients).
+            # 这不是临时故障——重试到天荒地老也不会变, 改标 cloud_unsupported 终结重试.
+            # 修复路径: 把 cloud_backend/ 当前代码部署到火山云 (scripts/deploy-cloud-backend-volcengine.sh).
+            if http_error.status_code == 405:
+                state.db.execute(
+                    """
+                    UPDATE clients
+                    SET sync_status = 'cloud_unsupported',
+                        pending_sync_action = '',
+                        last_sync_error = ?
+                    WHERE id = ?
+                    """,
+                    (
+                        f"火山云 cloud_backend 未注册 {'POST' if action == 'create' else 'PUT'} /api/v1/clients (HTTP 405). 部署版本过旧, 联系运维更新.",
+                        client_id,
+                    ),
+                )
+                logger.warning(
+                    "[CLIENT-SYNC] 云端未注册 %s /api/v1/clients (HTTP 405). client=%s 标 cloud_unsupported, 终止重试.",
+                    "POST" if action == "create" else "PUT",
+                    client_id,
+                )
+            else:
+                state.db.execute(
+                    """
+                    UPDATE clients
+                    SET sync_status = 'pending',
+                        pending_sync_action = ?,
+                        last_sync_error = ?
+                    WHERE id = ?
+                    """,
+                    (action, str(http_error.detail or http_error)[:500], client_id),
+                )
         except Exception as error:
             state.db.execute(
                 """
@@ -13221,7 +13256,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             stage=str(row["stage"]),
             color=str(row["color"] or "#5B7BFE"),
             folderCount=state.db.scalar("SELECT COUNT(DISTINCT label) AS count FROM client_folders WHERE client_id = ? AND is_hidden = 0", (client_id,)),
-            documentCount=state.db.scalar("SELECT COUNT(1) AS count FROM documents WHERE client_id = ?", (client_id,)),
+            documentCount=state.db.scalar("SELECT COUNT(1) AS count FROM documents WHERE client_id = ? AND content_domain = 'work'", (client_id,)),
             taskCount=state.db.scalar(
                 """
                 SELECT COUNT(1) AS count
@@ -15150,6 +15185,99 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         lines.append("- 来源：手机咨询助手")
         return lines
 
+    def collect_data_center_context_for_consultation(
+        client_id: str, question: str, max_facts: int = 5, max_atomic: int = 3, max_risks: int = 3
+    ) -> str:
+        # 把数据中心的 3 张表（memory_facts / atomic_facts / risk_signals）拉一遍，
+        # 拼成 markdown 段落，让咨询沉淀文档自带组织上下文。
+        # 失败时返回空串，不阻塞主流程。
+        if not client_id:
+            return ""
+        sections: list[str] = []
+        try:
+            mem_rows = list(
+                state.db.fetchall(
+                    "SELECT fact_key, fact_value, confidence, updated_at "
+                    "FROM memory_facts WHERE scope_type = 'client' AND scope_id = ? "
+                    "ORDER BY updated_at DESC LIMIT ?",
+                    (client_id, max_facts),
+                )
+            )
+            if mem_rows:
+                sections.append("### 客户记忆要点")
+                for row in mem_rows:
+                    fk = str(row["fact_key"] or "").strip()
+                    fv = str(row["fact_value"] or "").strip()
+                    if not fv:
+                        continue
+                    confidence = float(row["confidence"] or 0)
+                    sections.append(f"- **{fk or '未命名'}**：{fv[:300]}（置信度 {confidence:.2f}）")
+                sections.append("")
+        except Exception as exc:
+            logger.warning("[consultation] memory_facts query failed: %s", exc)
+        try:
+            keys = [w for w in re.findall(r"[一-鿿]{2,}|[A-Za-z0-9]{3,}", question)[:6]]
+            atomic_rows: list = []
+            if keys:
+                like_clauses = " OR ".join(
+                    ["(subject_text LIKE ? OR attribute LIKE ? OR value_text LIKE ?)"] * len(keys)
+                )
+                params: list = [client_id]
+                for term in keys:
+                    pat = f"%{term}%"
+                    params.extend([pat, pat, pat])
+                params.append(max_atomic)
+                atomic_rows = list(
+                    state.db.fetchall(
+                        f"SELECT subject_text, attribute, value_text, confidence "
+                        f"FROM atomic_facts WHERE client_id = ? AND status = 'active' AND ({like_clauses}) "
+                        f"ORDER BY confidence DESC, updated_at DESC LIMIT ?",
+                        tuple(params),
+                    )
+                )
+            if not atomic_rows:
+                atomic_rows = list(
+                    state.db.fetchall(
+                        "SELECT subject_text, attribute, value_text, confidence "
+                        "FROM atomic_facts WHERE client_id = ? AND status = 'active' "
+                        "ORDER BY updated_at DESC LIMIT ?",
+                        (client_id, max_atomic),
+                    )
+                )
+            if atomic_rows:
+                sections.append("### 客户本质属性（数据中心 atomic_facts）")
+                for row in atomic_rows:
+                    subject = str(row["subject_text"] or "").strip()
+                    attr = str(row["attribute"] or "").strip()
+                    value = str(row["value_text"] or "").strip()
+                    if subject and attr and value:
+                        sections.append(f"- {subject} · {attr}：{value[:200]}")
+                sections.append("")
+        except Exception as exc:
+            logger.warning("[consultation] atomic_facts query failed: %s", exc)
+        try:
+            risk_rows = list(
+                state.db.fetchall(
+                    "SELECT title, description, severity, signal_kind "
+                    "FROM risk_signals WHERE client_id = ? AND status = 'active' "
+                    "ORDER BY captured_at DESC LIMIT ?",
+                    (client_id, max_risks),
+                )
+            )
+            if risk_rows:
+                sections.append("### 潜在风险信号")
+                for row in risk_rows:
+                    title = str(row["title"] or "").strip()
+                    severity = str(row["severity"] or "medium")
+                    desc = str(row["description"] or "").strip()
+                    sections.append(f"- 【{severity}】{title}{('：' + desc[:150]) if desc else ''}")
+                sections.append("")
+        except Exception as exc:
+            logger.warning("[consultation] risk_signals query failed: %s", exc)
+        if not sections:
+            return ""
+        return "\n".join(sections).strip()
+
     def build_consultation_memory_markdown(request: ConsultationKnowledgeRequestRecord) -> str:
         lines = [
             "# 手机咨询沉淀记忆",
@@ -15162,6 +15290,11 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         if request.question.strip():
             lines.extend(["## 原始问题", request.question.strip(), ""])
         lines.extend(["## 答案内容", request.answer.strip(), ""])
+        data_center_block = collect_data_center_context_for_consultation(
+            request.clientId or "", request.question or ""
+        )
+        if data_center_block:
+            lines.extend(["## 数据中心关联上下文", data_center_block, ""])
         return "\n".join(lines).strip() + "\n"
 
     def build_consultation_archive_content(request: ConsultationKnowledgeRequestRecord) -> str:
@@ -16796,7 +16929,12 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 tags=_parse_json_list(row["tags_json"]),
                 importedAt=str(row["created_at"]),
             )
-            for row in state.db.fetchall("SELECT * FROM documents WHERE client_id = ? ORDER BY created_at DESC LIMIT ?", (client_id, document_limit))
+            # 工作台 Files Tab 只展示用户上传的真实文件；系统生成的功能性文档
+            # (task_doc / meeting_doc / review_doc / event_line_doc / project_doc /
+            # judgment_doc / calendar_doc / internet_fact_card / internet_source_doc /
+            # wechat_article_excerpt / project_enrichment_doc / ...) 通过其他入口访问。
+            # 与前端引证 tab 的过滤规则保持一致 (App.tsx 中 userFacingEvidence)。
+            for row in state.db.fetchall("SELECT * FROM documents WHERE client_id = ? AND content_domain = 'work' AND (canonical_kind = 'raw_file' OR canonical_kind IS NULL OR canonical_kind = '') ORDER BY created_at DESC LIMIT ?", (client_id, document_limit))
         ]
         def _coerce_import_mode(raw: str) -> str:
             # ImportRecord.mode 现在只接 'folder' / 'file'；老数据/异步流程可能塞过
@@ -18678,6 +18816,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             updated_at: str | None,
             project_filter: bool = False,
             limit: int = 1400,
+            skip_other_client_filter: bool = False,
         ) -> None:
             clean_title = _insight_clean_text(title, limit=140)
             clean_text = _insight_clean_text(text, limit=limit)
@@ -18686,7 +18825,11 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             combined = f"{clean_title} {clean_text}"
             if project_module_id and project_filter and not _matches_project_terms(combined, terms):
                 return
-            if _contains_other_client_name(combined, current_client_name=client_name, other_client_names=other_client_names):
+            # 跳过"含其他客户名"过滤 — 用于 smart_import / v2_documents,
+            # 因为这些文档已经明确绑定到本客户,内容里提到合作方/对标客户名是正常的
+            if not skip_other_client_filter and _contains_other_client_name(
+                combined, current_client_name=client_name, other_client_names=other_client_names
+            ):
                 return
             records.append(
                 {
@@ -18929,6 +19072,41 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 ),
                 updated_at=str(row["updated_at"] or ""),
                 project_filter=bool(project_module_id),
+            )
+
+        # v2_documents (smart_import / 新 OCR 流程写入的地方)
+        # 老 document_cards 是 v1 流程产物, smart_import 不写;
+        # 必须同时读 v2_documents 才能让 smart_import 文档进入战略 LLM 上下文.
+        for row in state.db.fetchall(
+            """
+            SELECT id, document_id, file_name, kind, canonical_kind,
+                   preview_text, doc_index_text, updated_at
+            FROM v2_documents
+            WHERE client_id = ?
+              AND parse_status IN ('ready', 'partial_ready')
+              AND COALESCE(preview_text, '') != ''
+            ORDER BY updated_at DESC
+            LIMIT 20
+            """,
+            (client_id,),
+        ):
+            add_record(
+                category="dynamic_signal",
+                label="知识文档",
+                source_type="document",
+                source_id=str(row["id"]),
+                title=str(row["file_name"] or "知识文档"),
+                text=" ".join(
+                    [
+                        str(row["preview_text"] or "")[:800],
+                        str(row["doc_index_text"] or "")[:600],
+                        str(row["kind"] or ""),
+                    ]
+                ),
+                updated_at=str(row["updated_at"] or ""),
+                project_filter=bool(project_module_id),
+                limit=1800,
+                skip_other_client_filter=True,
             )
 
         for row in state.db.fetchall(
@@ -27709,6 +27887,90 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             "consumedCount": len(consumed),
         }
 
+    # ───────────────────────────────────────────────────────────────────
+    # 客户战略文档 (战略定位 + 业务方法论)
+    # 不让 LLM 自动生成 — 用户上传 .md 文件, 给品牌监控/提案/chat 等模块结构化引用
+    # ───────────────────────────────────────────────────────────────────
+
+    _VALID_DOC_TYPES = {"strategy", "methodology"}
+    _MAX_MD_BYTES = 200 * 1024  # 200 KB 上限 (一份典型战略文档)
+
+    @app.get("/api/v1/clients/{client_id}/strategic-docs")
+    def list_strategic_docs(client_id: str) -> dict:
+        """读客户已上传的战略文档. 返回两份 (strategy + methodology) 的状态."""
+        rows = state.db.fetchall(
+            """SELECT doc_type, file_name, md_content, uploaded_at, uploaded_by
+               FROM client_strategic_documents WHERE client_id = ?""",
+            (client_id,),
+        )
+        docs = {r["doc_type"]: {
+            "fileName": r["file_name"] or "",
+            "mdContent": r["md_content"] or "",
+            "uploadedAt": r["uploaded_at"] or "",
+            "uploadedBy": r["uploaded_by"] or "",
+        } for r in rows}
+        return {
+            "clientId": client_id,
+            "strategy": docs.get("strategy"),
+            "methodology": docs.get("methodology"),
+            "hasStrategy": "strategy" in docs,
+            "hasMethodology": "methodology" in docs,
+        }
+
+    @app.post("/api/v1/clients/{client_id}/strategic-docs")
+    def upload_strategic_doc(client_id: str, payload: dict) -> dict:
+        """上传一份战略文档 (.md). payload: {docType, fileName, mdContent}.
+
+        严格校验:
+          - docType 必须是 'strategy' 或 'methodology'
+          - fileName 必须 .md / .markdown 后缀
+          - mdContent ≤ 200KB
+        """
+        p = payload or {}
+        doc_type = str(p.get("docType") or "").strip().lower()
+        file_name = str(p.get("fileName") or "").strip()
+        md_content = str(p.get("mdContent") or "")
+        if doc_type not in _VALID_DOC_TYPES:
+            raise HTTPException(status_code=400, detail="docType 必须是 strategy 或 methodology")
+        if not file_name.lower().endswith((".md", ".markdown")):
+            raise HTTPException(status_code=400, detail="文件必须是 .md / .markdown 格式")
+        if len(md_content.encode("utf-8")) > _MAX_MD_BYTES:
+            raise HTTPException(status_code=413, detail=f"文档过大 (>200KB), 请精简后再上传")
+        if not md_content.strip():
+            raise HTTPException(status_code=400, detail="文档内容为空")
+
+        # 解析当前 user
+        uploaded_by = ""
+        try:
+            sess = state.session_manager.current_session_record() if hasattr(state, "session_manager") else None
+            if sess: uploaded_by = str(sess.get("user_id") or "")
+        except Exception:
+            pass
+
+        state.db.execute(
+            """INSERT INTO client_strategic_documents
+               (client_id, doc_type, file_name, md_content, uploaded_at, uploaded_by)
+               VALUES (?, ?, ?, ?, ?, ?)
+               ON CONFLICT(client_id, doc_type) DO UPDATE SET
+                 file_name = excluded.file_name,
+                 md_content = excluded.md_content,
+                 uploaded_at = excluded.uploaded_at,
+                 uploaded_by = excluded.uploaded_by""",
+            (client_id, doc_type, file_name, md_content, now_iso(), uploaded_by),
+        )
+        return {"ok": True, "docType": doc_type, "fileName": file_name}
+
+    @app.delete("/api/v1/clients/{client_id}/strategic-docs/{doc_type}")
+    def delete_strategic_doc(client_id: str, doc_type: str) -> dict:
+        """删除某份战略文档. 删除后, 该客户对应的 strategic_dna 进入'未配置'状态."""
+        if doc_type not in _VALID_DOC_TYPES:
+            raise HTTPException(status_code=400, detail="docType 必须是 strategy 或 methodology")
+        state.db.execute(
+            "DELETE FROM client_strategic_documents WHERE client_id=? AND doc_type=?",
+            (client_id, doc_type),
+        )
+        return {"ok": True}
+
     @app.get("/api/v1/clients/{client_id}/meeting-action-items")
     def list_meeting_action_items(
         client_id: str, days: int = 30, max_items: int = 30,
@@ -27854,6 +28116,192 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         """
         from app.services.glossary_attribute_extractor import extract_candidates
         return extract_candidates(state.db, state.ai, client_id)
+
+    # ---------------- P15 智能文件导入 (故事线导入) ----------------
+
+    @app.post("/api/v1/smart-import/sessions")
+    def smart_import_create_session(payload: dict) -> dict:
+        """新建一个智能文件导入会话.
+
+        payload: { clientId?, projectEventLineId?, title? }
+        narratorUserId 从当前 session_user 取.
+        """
+        from app.services import smart_file_import as sfi
+        session_user = get_cached_session_user()
+        narrator = session_user.id if session_user else (payload.get("narratorUserId") or "")
+        sid = sfi.create_session(
+            state.db,
+            narrator_user_id=str(narrator),
+            client_id=(payload.get("clientId") or None),
+            project_event_line_id=(payload.get("projectEventLineId") or None),
+            title=str(payload.get("title") or "智能文件导入"),
+        )
+        return sfi.get_session(state.db, sid)
+
+    @app.get("/api/v1/smart-import/sessions/{session_id}")
+    def smart_import_get_session(session_id: str) -> dict:
+        """读取会话完整状态(含 chunks + staged_files), 用于恢复 / 预览."""
+        from app.services import smart_file_import as sfi
+        try:
+            return sfi.get_session(state.db, session_id)
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    @app.patch("/api/v1/smart-import/sessions/{session_id}")
+    def smart_import_update_session(session_id: str, payload: dict) -> dict:
+        from app.services import smart_file_import as sfi
+        try:
+            sfi.update_session(
+                state.db, session_id,
+                client_id=payload.get("clientId"),
+                project_event_line_id=payload.get("projectEventLineId"),
+                title=payload.get("title"),
+            )
+            return sfi.get_session(state.db, session_id)
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    @app.delete("/api/v1/smart-import/sessions/{session_id}")
+    def smart_import_discard_session(session_id: str) -> dict:
+        from app.services import smart_file_import as sfi
+        sfi.discard_session(state.db, session_id)
+        return {"ok": True}
+
+    @app.post("/api/v1/smart-import/sessions/{session_id}/files")
+    def smart_import_upload_file(
+        session_id: str,
+        file: UploadFile = File(...),
+    ) -> dict:
+        """上传文件到 staging pool."""
+        from app.services import smart_file_import as sfi
+        try:
+            content = file.file.read()
+            return sfi.upload_staged_file(
+                state.db,
+                session_id=session_id,
+                filename=file.filename or "uploaded",
+                content=content,
+                mime_type=file.content_type or "",
+                data_dir=state.data_dir,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.delete("/api/v1/smart-import/files/{file_id}")
+    def smart_import_delete_file(file_id: str) -> dict:
+        from app.services import smart_file_import as sfi
+        sfi.delete_staged_file(state.db, file_id)
+        return {"ok": True}
+
+    @app.patch("/api/v1/smart-import/files/{file_id}/assign")
+    def smart_import_assign_file(file_id: str, payload: dict) -> dict:
+        """挂载/取消挂载 file ↔ chunk."""
+        from app.services import smart_file_import as sfi
+        try:
+            sfi.assign_file_to_chunk(
+                state.db,
+                file_id=file_id,
+                chunk_id=payload.get("chunkId") or None,
+            )
+            return {"ok": True}
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.post("/api/v1/smart-import/sessions/{session_id}/chunks")
+    def smart_import_add_chunk(session_id: str, payload: dict) -> dict:
+        """新增一段故事.
+
+        payload: { rawText: str, fileIds?: list[str], autoParse?: bool }
+        """
+        from app.services import smart_file_import as sfi
+        try:
+            chunk_id = sfi.add_chunk(
+                state.db, state.ai,
+                session_id=session_id,
+                raw_text=str(payload.get("rawText") or ""),
+                file_ids=list(payload.get("fileIds") or []),
+                auto_parse=bool(payload.get("autoParse", True)),
+            )
+            return sfi.get_session(state.db, session_id)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.patch("/api/v1/smart-import/chunks/{chunk_id}")
+    def smart_import_update_chunk(chunk_id: str, payload: dict) -> dict:
+        from app.services import smart_file_import as sfi
+        sfi.update_chunk_text(
+            state.db, state.ai, chunk_id,
+            raw_text=str(payload.get("rawText") or ""),
+            auto_parse=bool(payload.get("autoParse", True)),
+        )
+        # 返回 session 全量
+        chunk_row = state.db.fetchone(
+            "SELECT session_id FROM import_story_chunks WHERE id=?", (chunk_id,),
+        )
+        if not chunk_row:
+            raise HTTPException(status_code=404, detail="chunk not found")
+        return sfi.get_session(state.db, chunk_row["session_id"])
+
+    @app.delete("/api/v1/smart-import/chunks/{chunk_id}")
+    def smart_import_delete_chunk(chunk_id: str) -> dict:
+        from app.services import smart_file_import as sfi
+        sfi.delete_chunk(state.db, chunk_id)
+        return {"ok": True}
+
+    @app.post("/api/v1/smart-import/chunks/{chunk_id}/parse")
+    def smart_import_parse_chunk(chunk_id: str) -> dict:
+        """显式触发 chunk 的 LLM 解析 (用户点'重新解析')."""
+        from app.services import smart_file_import as sfi
+        try:
+            parsed = sfi.parse_chunk(state.db, state.ai, chunk_id)
+            return {"ok": True, "parsed": parsed}
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except Exception as exc:  # noqa: BLE001
+            raise HTTPException(status_code=502, detail=f"LLM 解析失败: {exc}") from exc
+
+    @app.patch("/api/v1/smart-import/chunks/{chunk_id}/parsed")
+    def smart_import_patch_chunk_parsed(chunk_id: str, payload: dict) -> dict:
+        """用户 inline 编辑某字段后, 写回 chunk.parsed_json (不重调 LLM)."""
+        from app.services import smart_file_import as sfi
+        try:
+            sfi.patch_chunk_parsed(state.db, chunk_id, payload.get("parsed") or {})
+            chunk_row = state.db.fetchone(
+                "SELECT session_id FROM import_story_chunks WHERE id=?", (chunk_id,),
+            )
+            if not chunk_row:
+                raise HTTPException(status_code=404, detail="chunk not found")
+            return sfi.get_session(state.db, chunk_row["session_id"])
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.get("/api/v1/smart-import/sessions/{session_id}/preview")
+    def smart_import_preview(session_id: str) -> dict:
+        """聚合所有 chunks 的解析结果, 给前端预览全部模态用."""
+        from app.services import smart_file_import as sfi
+        try:
+            return sfi.aggregate_session_to_plan(state.db, session_id)
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    @app.post("/api/v1/smart-import/sessions/{session_id}/commit")
+    def smart_import_commit_session(session_id: str) -> dict:
+        """把 session 的 LLM 解析结果一次性写入数据中心 (entities/atomic_facts/
+        commitments/risks/events/documents). 之后 session status='imported'."""
+        from app.services import smart_file_import as sfi
+        from app.services.knowledge_v2 import ingest_document_knowledge
+        try:
+            stats = sfi.commit_session(
+                state.db, state.ai,
+                session_id=session_id,
+                data_dir=state.data_dir,
+                ingest_document_fn=ingest_document_knowledge,
+            )
+            return {"ok": True, "stats": stats}
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except Exception as exc:
+            raise HTTPException(status_code=502, detail=f"commit 失败: {exc}") from exc
 
     @app.post("/api/v1/clients/{client_id}/glossary-attributes/auto-verify")
     def auto_verify_glossary_attributes_proxy(
@@ -44766,59 +45214,86 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
 
     @app.post("/api/v1/clients/{client_id}/documents/ai-action", response_model=DocumentAiActionResponse)
     def document_ai_action(client_id: str, payload: DocumentAiActionPayload) -> DocumentAiActionResponse:
-        """P9：客户工作台 inline 编辑器 AI 助手 action。
-        接收当前 markdown，按 action 切换 prompt，返回新 markdown。
+        """P9 / P11 / P12 / P13a：客户工作台 inline 编辑器 AI 助手 action。
+
+        P13a 起 prompt 编排迁到 services/editor_ai/ 子模块：
+          operations.py 持每个 op 的 system / user_prefix / faithful / allowed_contexts 配置
+          contexts.py   每个 context source（client_materials / strategy_dimension / event_timeline）
+                        一个 retriever；P13a 都返回空，行为零变化；P13b/c 接入真召回
+          composer.py   把 op + contexts + 用户输入拼成最终 (system, prompt, temperature)
+        endpoint 退化成 thin wrapper：召回 → composer → LLM → 回包。
         """
+        from .services.editor_ai import (
+            OPERATIONS,
+            ContextSourceSpec as _EditorContextSpec,
+            compose_prompt,
+            retrieve_contexts,
+        )
+
         build_client_summary(client_id)
         content = (payload.content or "").strip()
         if not content:
             raise HTTPException(status_code=400, detail="文档内容为空，无法处理")
         action = payload.action
-        action_prompts: dict[str, tuple[str, str]] = {
-            "expand": (
-                "你是文档扩写助手。把用户给的 markdown 文档扩写得更详实：把简短的点扩展成完整段落、补充背景与细节、保留原意。"
-                "**严格保持 markdown 格式**——原有的标题层级、列表、引用、表格、加粗、链接都要保留并自然扩展。"
-                "不要添加任何「以下是扩写后的内容」之类的元话语，直接输出扩写后的 markdown 全文。",
-                "请把下面这份文档扩写得更详实，保留 markdown 格式：\n\n",
-            ),
-            "rewrite_pro": (
-                "你是公文改写助手。把用户给的 markdown 改写成更专业、更正式的书面语：保留原意、提升用词精度、统一句式。"
-                "保持原 markdown 格式与结构。不要添加元话语，直接输出改写后的 markdown 全文。",
-                "请把下面这份文档改写成更专业的书面表达：\n\n",
-            ),
-            "rewrite_short": (
-                "你是文档精简助手。把用户给的 markdown 改写得更简洁：删冗余、并短句、保留关键信息。"
-                "保持原 markdown 结构（标题层级、列表）。不要添加元话语，直接输出改写后的 markdown 全文。",
-                "请把下面这份文档精简改写：\n\n",
-            ),
-            "summarize": (
-                "你是文档总结助手。把用户给的 markdown 文档总结成一份精炼版："
-                "顶部一个 ## 标题「核心要点」，然后 3-6 条 bullet 列要点；"
-                "再来一个 ## 标题「关键事实」，列出文档中最重要的事实数据。"
-                "不要添加元话语，直接输出 markdown。",
-                "请总结下面这份文档：\n\n",
-            ),
-        }
-        if action not in action_prompts:
+        op = OPERATIONS.get(action)
+        if op is None:
             raise HTTPException(status_code=400, detail=f"未知 action：{action}")
-        system, prefix = action_prompts[action]
 
-        # 内容长度软上限：12000 字以上截尾，避免触发模型 token 上限
-        if len(content) > 12000:
-            content = content[:12000] + "\n\n（文档过长已截断，仅处理前 12000 字）"
+        user_request = (payload.userRequest or "").strip()
+        creativity = payload.creativityMode
 
-        prompt = prefix + content
+        # 写作风格 skill 注入（从 writing_skills 表读 distilled_md）
+        skill_md = ""
+        if payload.activeSkillId:
+            try:
+                skill_row = state.db.fetchone(
+                    "SELECT name, distilled_md FROM writing_skills WHERE id = ?",
+                    (payload.activeSkillId,),
+                )
+                if skill_row and skill_row["distilled_md"]:
+                    skill_md = str(skill_row["distilled_md"])
+            except Exception as exc:
+                logger.warning("[document_ai_action] load writing skill failed: %s", exc)
+
+        # 召回 context（P13a：所有 retriever 都返回空，行为零变化；
+        # 不在 op.allowed_contexts 里的 spec 静默丢弃，防止 UI 传错类型）
+        context_specs = [
+            _EditorContextSpec(
+                type=src.type,
+                query=src.query,
+                refId=src.refId,
+                topK=src.topK,
+                params=src.params or {},
+            )
+            for src in (payload.contextSources or [])
+            if src.type in op.allowed_contexts
+        ]
+        retrieved = retrieve_contexts(context_specs, client_id=client_id, db=state.db)
+
+        # P14a：选区文本（用户在编辑器框选了一段时，前端把这段裸文本传上来）
+        selection_text = (payload.selectionText or "").strip()
+
+        # composer 一把组装好 (system, prompt, temperature, effective_creativity, sources, target_scope)
+        composition = compose_prompt(
+            op,
+            content=content,
+            selection_text=selection_text,
+            user_request=user_request,
+            skill_md=skill_md,
+            creativity=creativity,
+            contexts=retrieved,
+        )
 
         from time import perf_counter as _pc
         started = _pc()
         try:
             result = state.ai._qwen_generate(  # noqa: SLF001
-                prompt=prompt,
-                system_instruction=system,
+                prompt=composition.prompt,
+                system_instruction=composition.system,
                 response_schema=None,
-                timeout_seconds=90.0,
-                max_tokens=4500,
-                temperature=0.4 if action in ("expand", "summarize") else 0.3,
+                timeout_seconds=120.0,
+                max_tokens=5000,
+                temperature=composition.temperature,
                 top_p=0.9,
             )
         except Exception as exc:
@@ -44831,9 +45306,38 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             "client.document.ai_action",
             "client",
             client_id,
-            {"action": action, "inputChars": len(content), "outputChars": len(new_content), "durationMs": round(duration_ms, 1)},
+            {
+                "action": action,
+                "inputChars": len(content),
+                "selectionChars": len(selection_text),
+                "targetScope": composition.target_scope,
+                "outputChars": len(new_content),
+                "durationMs": round(duration_ms, 1),
+                "creativityMode": creativity,
+                "effectiveCreativity": composition.effective_creativity,
+                "userRequestChars": len(user_request),
+                "activeSkillId": payload.activeSkillId,
+                "contextSources": [c.type for c in context_specs],
+                "retrievedChunks": sum(len(c.chunks) for c in retrieved),
+            },
         )
-        return DocumentAiActionResponse(content=new_content, action=action, durationMs=round(duration_ms, 1))
+        return DocumentAiActionResponse(
+            content=new_content,
+            action=action,
+            durationMs=round(duration_ms, 1),
+            sources=[
+                DocumentAiActionSourceRef(
+                    type=src.type,
+                    title=src.title,
+                    snippet=src.snippet,
+                    refId=src.refId,
+                    extra=src.extra,
+                )
+                for src in composition.sources
+            ],
+            effectiveCreativity=composition.effective_creativity,
+            targetScope=composition.target_scope,
+        )
 
     @app.post("/api/v1/clients/{client_id}/link-materials/import/start", response_model=LinkMaterialImportRunRecord)
     def start_client_link_material_import(client_id: str, payload: LinkMaterialImportStartPayload) -> LinkMaterialImportRunRecord:
@@ -46505,6 +47009,30 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                     task_id,
                 ),
             )
+            # P1-3：任务标 done → 反向 mark 关联 commitments fulfilled
+            # commitments 表用 soft reference（source_type='task' + source_id=task_id），
+            # 当前由 narrative_generator.upsert_commitments_from_narrative 写入；任务在工作台被勾完成时
+            # 反向把 pending commitment 标 fulfilled，让承诺履约率追踪闭环。
+            prior_status_for_commitment = str(row["status"] or "")
+            if merged["status"] == "done" and prior_status_for_commitment != "done":
+                try:
+                    cur = state.db.execute(
+                        "UPDATE commitments SET status='fulfilled', fulfilled_at=?, updated_at=? "
+                        "WHERE source_type='task' AND source_id=? AND status='pending'",
+                        (
+                            merged.get("completed_at") or now_iso(),
+                            now_iso(),
+                            task_id,
+                        ),
+                    )
+                    n_fulfilled = getattr(cur, "rowcount", 0) or 0
+                    if n_fulfilled > 0:
+                        logger.info(
+                            "[task→commitment] task=%s marked %d commitment(s) fulfilled",
+                            task_id, n_fulfilled,
+                        )
+                except Exception as exc:
+                    logger.warning("[task→commitment] mark fulfilled failed: %s", exc)
             _sync_task_attachment_scope(
                 state.db,
                 state.data_dir,
@@ -52888,6 +53416,69 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             raise HTTPException(status_code=400, detail="clientId 必填")
         snapshot = latest_brand_mirror_snapshot(state.db, client_id=client_id)
         return {"snapshot": snapshot}
+
+    # ──────────────────────────────────────────────────────────────────────
+    # P14-D · 战略推演树 (从战略陪伴上传的 strategy.md + methodology.md
+    #          抽出战略主张/方法学/应然利益相关方矩阵)
+    # ──────────────────────────────────────────────────────────────────────
+
+    @app.post("/api/v1/intelligence/brand-mirror/strategy-extract")
+    def trigger_brand_strategy_extraction(payload: dict) -> dict:
+        """同步跑一次抽取 (30-90 秒).
+
+        前置: 客户必须先在战略陪伴上传两份 .md (strategy + methodology).
+        没传两份 → 400 with 提示文案.
+        """
+        body = payload or {}
+        client_id = (body.get("clientId") or "").strip()
+        if not client_id:
+            raise HTTPException(status_code=400, detail="clientId 必填")
+        client_row = state.db.fetchone(
+            "SELECT name FROM clients WHERE id = ?", (client_id,),
+        )
+        if not client_row:
+            raise HTTPException(status_code=404, detail="客户不存在")
+        client_name = str(client_row["name"] or "").strip()
+
+        from app.services.brand_strategy_extractor import run_brand_strategy_extraction
+
+        try:
+            extract = run_brand_strategy_extraction(
+                state.db, state.ai,
+                client_id=client_id,
+                client_name=client_name,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+        except Exception as exc:  # noqa: BLE001
+            raise HTTPException(status_code=500, detail=f"战略推演树抽取失败: {str(exc)[:400]}")
+
+        return {
+            "clientId": extract.client_id,
+            "strategicObjective": extract.strategic_objective,
+            "strategicObjectiveSources": extract.strategic_objective_sources,
+            "methodology": extract.methodology,
+            "methodologySources": extract.methodology_sources,
+            "stakeholders": extract.stakeholders,
+            "llmModel": extract.llm_model,
+            "error": extract.error,
+            "extractedAt": extract.extracted_at,
+            "isStale": False,
+        }
+
+    @app.get("/api/v1/intelligence/brand-mirror/strategy-extract")
+    def get_brand_strategy_extract_endpoint(clientId: str) -> dict:
+        """读最新的战略推演树缓存. 没有则 {extract: null}.
+
+        返回里含 isStale: true 表示用户上传的 md 已经变了, 应该重新抽取.
+        """
+        from app.services.brand_strategy_extractor import get_brand_strategy_extract
+
+        client_id = (clientId or "").strip()
+        if not client_id:
+            raise HTTPException(status_code=400, detail="clientId 必填")
+        extract = get_brand_strategy_extract(state.db, client_id=client_id)
+        return {"extract": extract}
 
     @app.post("/api/v1/intelligence/sentiment/audit/recompute")
     def recompute_brand_audit_endpoint(payload: dict) -> dict:

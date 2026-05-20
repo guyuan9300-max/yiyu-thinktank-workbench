@@ -574,6 +574,7 @@ async function requestForm<T>(path: string, formData: FormData, options?: FormRe
     });
   }
   const response = await fetch(`${baseUrl}${path}`, {
+    method: options?.method || 'POST',
     ...options,
     body: formData,
   });
@@ -2224,12 +2225,61 @@ export async function getClientClarificationContext(clientId: string) {
   return request<ClarificationContext>(`/api/v1/clients/${encodeURIComponent(clientId)}/clarification-context`);
 }
 
-// ─── Phase 1.5c · 战略陪伴 6 维度故事网 (云端共享, 共同编织) ─────────
+// ─── Phase 1.5c · 战略陪伴维度故事网 (云端共享, 共同编织) ─────────
 export type NarrativeDimensionKey =
-  // v1.0 新 6 层
-  | 'essence' | 'cooperation' | 'business_intro' | 'people' | 'timeline' | 'next_steps'
+  // v1.0 6 层 (云端 storage 真维度)
+  | 'essence'
+  | 'cooperation'
+  | 'business_intro'
+  | 'people'
+  | 'timeline'
+  | 'next_steps'
   // 兼容旧 rev (已废弃)
   | 'history' | 'commitments' | 'risks' | 'next';
+
+// 战略文档 (用户上传 .md, 独立存储, 不进 narrative.dimensions)
+export type StrategicDocType = 'strategy' | 'methodology';
+
+export type StrategicDocEntry = {
+  fileName: string;
+  mdContent: string;
+  uploadedAt: string;
+  uploadedBy: string;
+};
+
+export type StrategicDocsResponse = {
+  clientId: string;
+  strategy: StrategicDocEntry | null;
+  methodology: StrategicDocEntry | null;
+  hasStrategy: boolean;
+  hasMethodology: boolean;
+};
+
+export async function getStrategicDocs(clientId: string): Promise<StrategicDocsResponse> {
+  return request<StrategicDocsResponse>(
+    `/api/v1/clients/${encodeURIComponent(clientId)}/strategic-docs`,
+  );
+}
+
+export async function uploadStrategicDoc(
+  clientId: string,
+  payload: { docType: StrategicDocType; fileName: string; mdContent: string },
+): Promise<{ ok: boolean; docType: string; fileName: string }> {
+  return request(
+    `/api/v1/clients/${encodeURIComponent(clientId)}/strategic-docs`,
+    { method: 'POST', body: JSON.stringify(payload) },
+  );
+}
+
+export async function deleteStrategicDoc(
+  clientId: string,
+  docType: StrategicDocType,
+): Promise<{ ok: boolean }> {
+  return request(
+    `/api/v1/clients/${encodeURIComponent(clientId)}/strategic-docs/${docType}`,
+    { method: 'DELETE' },
+  );
+}
 
 export type NarrativeConfidence = 'high' | 'medium' | 'low';
 
@@ -3464,14 +3514,71 @@ export async function createClientTextDocument(clientId: string, payload: { titl
   });
 }
 
-// P9：客户工作台 inline 编辑器 AI 助手
-//   action: 扩写 / 改写专业 / 改写简洁 / 总结
-export type DocumentAiAction = 'expand' | 'rewrite_pro' | 'rewrite_short' | 'summarize';
+// P9 / P11：客户工作台 inline 编辑器 AI 助手
+//   action：7 个任务类型
+//   userRequest：用户在 inline 提示框写的具体要求（可空）
+//   creativityMode：creative=完全自由 / balanced=兼顾资料（默认）/ strict=严格依据
+//   activeSkillId：写作风格 skill id（指向 writing_skills 表）
+export type DocumentAiAction =
+  // A 类 · 纯文本变换
+  | 'expand'
+  | 'rewrite_pro'
+  | 'rewrite_short'
+  | 'summarize'
+  | 'extract'
+  | 'translate'
+  | 'style_distilled'
+  // B 类 · 资料增强（P13b/c 接入；前端 UI 暂未暴露这些 op）
+  | 'insert_from_materials'
+  | 'rewrite_by_strategy'
+  | 'insert_data_table';
+export type DocumentAiCreativityMode = 'creative' | 'balanced' | 'strict';
+
+// P13b+：资料源类型 + 规格 + 引证回包
+export type DocumentAiContextSourceType =
+  | 'selection_only'
+  | 'current_doc'
+  | 'client_materials'
+  | 'strategy_dimension'
+  | 'event_timeline';
+export type DocumentAiContextSourceSpec = {
+  type: DocumentAiContextSourceType;
+  query?: string;
+  refId?: string | null;
+  topK?: number;
+  params?: Record<string, unknown>;
+};
+export type DocumentAiSourceRef = {
+  type: string;
+  title: string;
+  snippet?: string;
+  refId?: string | null;
+  extra?: Record<string, unknown>;
+};
+export type DocumentAiActionResponse = {
+  content: string;
+  action: string;
+  durationMs: number;
+  sources?: DocumentAiSourceRef[];
+  effectiveCreativity?: DocumentAiCreativityMode;
+  // P14a：后端实际作用范围。"selection" = 只处理了选区；"full_doc" = 处理整篇。
+  targetScope?: 'selection' | 'full_doc';
+};
+
 export async function documentAiAction(
   clientId: string,
-  payload: { content: string; action: DocumentAiAction },
+  payload: {
+    content: string;
+    action: DocumentAiAction;
+    userRequest?: string;
+    creativityMode?: DocumentAiCreativityMode;
+    activeSkillId?: string | null;
+    contextSources?: DocumentAiContextSourceSpec[];
+    // P14a：用户在编辑器框选的裸文本。空 = 处理整篇。
+    selectionText?: string;
+  },
 ) {
-  return request<{ content: string; action: string; durationMs: number }>(
+  return request<DocumentAiActionResponse>(
     `/api/v1/clients/${clientId}/documents/ai-action`,
     {
       method: 'POST',
@@ -5313,6 +5420,22 @@ export async function triggerBrandMirrorAnalysis(clientId: string) {
   );
 }
 
+// P14-D 战略推演树 (从战略陪伴上传的 strategy.md + methodology.md LLM 抽取)
+import type { BrandStrategyExtract } from '../../shared/types';
+
+export async function fetchBrandStrategyExtract(clientId: string) {
+  return request<{ extract: BrandStrategyExtract | null }>(
+    `/api/v1/intelligence/brand-mirror/strategy-extract?clientId=${encodeURIComponent(clientId)}`,
+  );
+}
+
+export async function triggerBrandStrategyExtraction(clientId: string) {
+  return request<BrandStrategyExtract>(
+    '/api/v1/intelligence/brand-mirror/strategy-extract',
+    { method: 'POST', body: JSON.stringify({ clientId }) },
+  );
+}
+
 // ──────────────────────────────────────────────────────────
 // Phase 3：本地 AI 推理调度 health / queue
 // ──────────────────────────────────────────────────────────
@@ -5391,6 +5514,227 @@ export async function getLocalAiQueue(params?: {
 export async function runLocalAiNow(force = false): Promise<LocalAiRunNowResponse> {
   return request<LocalAiRunNowResponse>(
     `/api/v1/local-ai/run-now?force=${force ? 'true' : 'false'}`,
+    { method: 'POST' },
+  );
+}
+
+// ============================================================
+// P15 · 智能文件导入 (Smart File Import / 故事线导入)
+// ============================================================
+
+export type SmartImportSessionStatus =
+  | 'drafting' | 'parsing' | 'ready_for_review' | 'imported' | 'discarded';
+
+export interface SmartImportSession {
+  id: string;
+  client_id: string | null;
+  project_event_line_id: string | null;
+  narrator_user_id: string;
+  title: string;
+  status: SmartImportSessionStatus;
+  total_chunks: number;
+  total_files: number;
+  created_at: string;
+  updated_at: string;
+  imported_at: string | null;
+}
+
+export interface SmartImportStagedFile {
+  id: string;
+  session_id: string;
+  original_filename: string;
+  storage_path: string;
+  size_bytes: number;
+  mime_type: string;
+  assigned_chunk_id: string | null;
+  role_override: string | null;
+  document_id: string | null;
+  document_inserted_at: string | null;
+  upload_at: string;
+}
+
+export interface SmartImportParsedEntity {
+  name?: string;
+  kind?: string;
+  role_in_project?: string;
+}
+
+export interface SmartImportParsedRelationship {
+  from?: string;
+  to?: string;
+  type?: string;
+  description?: string;
+}
+
+export interface SmartImportParsedFileClassification {
+  original_filename?: string;
+  role?: string;
+  subject_entity_name?: string;
+  evidence_tier?: string;
+  narrator_hint?: string;
+  confidence?: number;
+}
+
+export interface SmartImportParsedChunkOutput {
+  entities?: SmartImportParsedEntity[];
+  relationships?: SmartImportParsedRelationship[];
+  events?: Array<{ happened_at?: string; actor?: string; action?: string; target?: string; summary?: string }>;
+  opinions?: Array<{ holder?: string; subject?: string; polarity?: string; raw_quote?: string }>;
+  files_classified?: SmartImportParsedFileClassification[];
+  files_suggested_to_attach?: Array<{ original_filename?: string; reason?: string }>;
+  commitments?: Array<{ committer?: string; recipient?: string; content?: string; commitment_type?: string; deadline?: string | null; status?: string }>;
+  risk_signals?: Array<{ title?: string; severity?: string; description?: string; subject?: string; signal_kind?: string }>;
+  open_questions?: string[];
+}
+
+export interface SmartImportChunk {
+  id: string;
+  session_id: string;
+  sequence: number;
+  raw_text: string;
+  parsed_json: string;
+  parsed: SmartImportParsedChunkOutput;
+  parse_status: 'pending' | 'parsing' | 'parsed' | 'failed';
+  parse_error: string;
+  user_edited_parsed: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface SmartImportSessionState {
+  session: SmartImportSession;
+  chunks: SmartImportChunk[];
+  staged_files: SmartImportStagedFile[];
+}
+
+export interface SmartImportPreviewPlan {
+  session_id: string;
+  chunks_total: number;
+  chunks_parsed: number;
+  chunks_failed: Array<{ chunk_id: string; sequence: number }>;
+  entities: SmartImportParsedEntity[];
+  relationships: SmartImportParsedRelationship[];
+  events: SmartImportParsedChunkOutput['events'];
+  opinions: SmartImportParsedChunkOutput['opinions'];
+  commitments: SmartImportParsedChunkOutput['commitments'];
+  risk_signals: SmartImportParsedChunkOutput['risk_signals'];
+  files_classified: SmartImportParsedFileClassification[];
+  files_suggested_to_attach: Array<{ original_filename?: string; reason?: string }>;
+  open_questions: string[];
+}
+
+export interface SmartImportCommitStats {
+  entities_created: number;
+  atomic_facts_created: number;
+  commitments_created: number;
+  risk_signals_created: number;
+  events_created: number;
+  documents_created: number;
+  errors: string[];
+}
+
+export async function createSmartImportSession(payload: {
+  clientId?: string;
+  projectEventLineId?: string;
+  title?: string;
+}): Promise<SmartImportSessionState> {
+  return request<SmartImportSessionState>('/api/v1/smart-import/sessions', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function getSmartImportSession(sessionId: string): Promise<SmartImportSessionState> {
+  return request<SmartImportSessionState>(`/api/v1/smart-import/sessions/${sessionId}`);
+}
+
+export async function updateSmartImportSession(
+  sessionId: string,
+  payload: { clientId?: string; projectEventLineId?: string; title?: string },
+): Promise<SmartImportSessionState> {
+  return request<SmartImportSessionState>(`/api/v1/smart-import/sessions/${sessionId}`, {
+    method: 'PATCH',
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function discardSmartImportSession(sessionId: string): Promise<{ ok: boolean }> {
+  return request<{ ok: boolean }>(`/api/v1/smart-import/sessions/${sessionId}`, {
+    method: 'DELETE',
+  });
+}
+
+export async function uploadSmartImportFile(
+  sessionId: string,
+  file: File,
+): Promise<SmartImportStagedFile> {
+  const formData = new FormData();
+  formData.append('file', file, file.name);
+  return requestForm<SmartImportStagedFile>(`/api/v1/smart-import/sessions/${sessionId}/files`, formData);
+}
+
+export async function deleteSmartImportFile(fileId: string): Promise<{ ok: boolean }> {
+  return request<{ ok: boolean }>(`/api/v1/smart-import/files/${fileId}`, { method: 'DELETE' });
+}
+
+export async function assignSmartImportFile(
+  fileId: string,
+  chunkId: string | null,
+): Promise<{ ok: boolean }> {
+  return request<{ ok: boolean }>(`/api/v1/smart-import/files/${fileId}/assign`, {
+    method: 'PATCH',
+    body: JSON.stringify({ chunkId }),
+  });
+}
+
+export async function addSmartImportChunk(
+  sessionId: string,
+  payload: { rawText: string; fileIds?: string[]; autoParse?: boolean },
+): Promise<SmartImportSessionState> {
+  return request<SmartImportSessionState>(`/api/v1/smart-import/sessions/${sessionId}/chunks`, {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function updateSmartImportChunk(
+  chunkId: string,
+  payload: { rawText: string; autoParse?: boolean },
+): Promise<SmartImportSessionState> {
+  return request<SmartImportSessionState>(`/api/v1/smart-import/chunks/${chunkId}`, {
+    method: 'PATCH',
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function deleteSmartImportChunk(chunkId: string): Promise<{ ok: boolean }> {
+  return request<{ ok: boolean }>(`/api/v1/smart-import/chunks/${chunkId}`, { method: 'DELETE' });
+}
+
+export async function parseSmartImportChunk(chunkId: string): Promise<{ ok: boolean; parsed: SmartImportParsedChunkOutput }> {
+  return request<{ ok: boolean; parsed: SmartImportParsedChunkOutput }>(
+    `/api/v1/smart-import/chunks/${chunkId}/parse`,
+    { method: 'POST' },
+  );
+}
+
+export async function patchSmartImportChunkParsed(
+  chunkId: string,
+  parsed: SmartImportParsedChunkOutput,
+): Promise<SmartImportSessionState> {
+  return request<SmartImportSessionState>(`/api/v1/smart-import/chunks/${chunkId}/parsed`, {
+    method: 'PATCH',
+    body: JSON.stringify({ parsed }),
+  });
+}
+
+export async function getSmartImportPreview(sessionId: string): Promise<SmartImportPreviewPlan> {
+  return request<SmartImportPreviewPlan>(`/api/v1/smart-import/sessions/${sessionId}/preview`);
+}
+
+export async function commitSmartImportSession(sessionId: string): Promise<{ ok: boolean; stats: SmartImportCommitStats }> {
+  return request<{ ok: boolean; stats: SmartImportCommitStats }>(
+    `/api/v1/smart-import/sessions/${sessionId}/commit`,
     { method: 'POST' },
   );
 }

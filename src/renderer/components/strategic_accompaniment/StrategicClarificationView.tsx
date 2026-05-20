@@ -19,7 +19,7 @@
  *   6. next          下一步
  */
 
-import { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useState } from 'react';
 import {
   Users, Target, Clock, AlertCircle, CheckCircle, HelpCircle,
   Mic, Type, ExternalLink, ChevronDown, FileSearch, Briefcase,
@@ -44,10 +44,15 @@ import {
   logSuggestionAction,
   getSuggestionLog,
   removeSuggestionLogEntry,
+  getStrategicDocs,
+  uploadStrategicDoc,
+  deleteStrategicDoc,
   type MeetingActionItem,
   type NextStepItem,
   type SuggestionLogEntry,
   type SuggestionAction,
+  type StrategicDocsResponse,
+  type StrategicDocType,
   type ClarificationContext,
   type ClarificationEventLine,
   type ClarificationTimelineItem,
@@ -306,13 +311,14 @@ const DIMENSION_META: Record<NarrativeDimensionKey, {
   icon: typeof Compass;
   hint: string;
 }> = {
-  // v1.0 新 6 层
-  essence:        { label: '项目介绍',     icon: Compass,       hint: '客户机构是谁 / 赛道 / 行业定位 / 影响力' },
-  cooperation:    { label: '合作关系',     icon: Handshake,     hint: '益语跟客户的服务关系 / 合作周期 / 核心交付' },
-  business_intro: { label: '业务介绍',     icon: Briefcase,     hint: '客户机构内含项目逐个详介' },
-  people:         { label: '关键人物',     icon: Network,       hint: '益语方 + 客户方 + 每个项目对应角色' },
-  timeline:       { label: '时间线',       icon: History,       hint: '合作里程碑 (起点→转折→现状)' },
-  next_steps:     { label: '本阶段战略思路', icon: ArrowRight,    hint: '战略层 / 关系层 / 风险对冲 — 给方向, 不列条目(看右侧"下一步要做什么")' },
+  // v1.0 6 层 (云端 narrative 真维度)
+  // strategic_dna 不在这里 — 它是独立 UI (StrategicDnaCard), 数据从 /strategic-docs endpoint 拿
+  essence:        { label: '组织介绍',           icon: Compass,       hint: '客户机构是谁 / 赛道 / 行业定位 / 影响力' },
+  business_intro: { label: '业务介绍',           icon: Briefcase,     hint: '客户机构内含项目逐个详介' },
+  cooperation:    { label: '合作关系',           icon: Handshake,     hint: '益语跟客户的服务关系 / 合作周期 / 核心交付' },
+  people:         { label: '关键人物',           icon: Network,       hint: '益语方 + 客户方 + 每个项目对应角色' },
+  timeline:       { label: '时间线',             icon: History,       hint: '合作里程碑 (起点→转折→现状)' },
+  next_steps:     { label: '本阶段战略思路',     icon: ArrowRight,    hint: '战略层 / 关系层 / 风险对冲 — 给方向, 不列条目(看右侧"下一步要做什么")' },
   // 兼容旧 rev (废弃但仍可能从云端拿到)
   history:        { label: '来龙去脉 (旧)',     icon: History,       hint: '已废弃, 见时间线' },
   commitments:    { label: '承诺网 (旧)',       icon: Handshake,     hint: '已废弃, 见承诺与下一步' },
@@ -321,7 +327,9 @@ const DIMENSION_META: Record<NarrativeDimensionKey, {
 };
 
 const DIMENSION_ORDER: NarrativeDimensionKey[] = [
-  // 业务介绍 在 合作关系 之上 (用户要求: 先了解业务, 再看合作)
+  // 6 层 narrative 维度 (云端 storage 真维度)
+  // 注: StrategicDnaCard (战略定位与发展路径, 用户上传的 .md) 是独立组件, 在循环外渲染,
+  // 视觉上插在 essence 之后 / business_intro 之前
   'essence', 'business_intro', 'cooperation', 'people', 'timeline', 'next_steps',
   // 旧 dim 兼容显示在最后, 实际新 rev 不会有
   'history', 'commitments', 'risks', 'next',
@@ -402,6 +410,195 @@ function parseBusinessIntro(text: string): Segment[] | null {
   return null;
 }
 
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// 战略定位与发展路径 (用户上传的 .md, 不让 LLM 编造)
+// 视觉上插在 essence 卡之后, 跟其他维度卡同构, 但数据源是独立 endpoint
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+function StrategicDnaCard({
+  clientId,
+  flash,
+}: {
+  clientId: string;
+  flash?: (level: 'success' | 'error' | 'info', message: string) => void;
+}) {
+  const [data, setData] = useState<StrategicDocsResponse | null>(null);
+  const [loading, setLoading] = useState(false);
+
+  const reload = useCallback(() => {
+    if (!clientId) return;
+    setLoading(true);
+    getStrategicDocs(clientId)
+      .then((d) => setData(d))
+      .catch(() => setData(null))
+      .finally(() => setLoading(false));
+  }, [clientId]);
+
+  useEffect(() => {
+    reload();
+  }, [reload]);
+
+  const handleFilePick = (docType: StrategicDocType) => async (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    event.target.value = '';  // 允许重选同一文件
+    if (!file) return;
+    if (!file.name.toLowerCase().endsWith('.md') && !file.name.toLowerCase().endsWith('.markdown')) {
+      flash?.('error', '只接受 .md / .markdown 格式');
+      return;
+    }
+    if (file.size > 200 * 1024) {
+      flash?.('error', '文档过大 (>200KB), 请精简后再上传');
+      return;
+    }
+    try {
+      const mdContent = await file.text();
+      await uploadStrategicDoc(clientId, { docType, fileName: file.name, mdContent });
+      flash?.('success', `已上传 ${docType === 'strategy' ? '战略文档' : '方法论文档'}`);
+      reload();
+    } catch (err) {
+      flash?.('error', err instanceof Error ? err.message : '上传失败');
+    }
+  };
+
+  const handleDelete = async (docType: StrategicDocType) => {
+    if (!window.confirm(`确认删除${docType === 'strategy' ? '战略文档' : '方法论文档'}? 删除后, 品牌监控/提案等模块将看不到此客户的战略基线.`)) return;
+    try {
+      await deleteStrategicDoc(clientId, docType);
+      flash?.('info', '已删除');
+      reload();
+    } catch (err) {
+      flash?.('error', err instanceof Error ? err.message : '删除失败');
+    }
+  };
+
+  if (loading && !data) {
+    return (
+      <div className="rounded-2xl border border-slate-100 bg-white p-5">
+        <div className="text-[11px] text-slate-400">加载战略文档...</div>
+      </div>
+    );
+  }
+
+  const hasAny = data?.hasStrategy || data?.hasMethodology;
+  const hasAll = data?.hasStrategy && data?.hasMethodology;
+
+  return (
+    <div className="rounded-2xl border border-violet-100 bg-gradient-to-br from-violet-50/40 to-white p-5">
+      <div className="flex items-center justify-between gap-2 mb-3">
+        <div className="flex items-center gap-2">
+          <Target size={16} className="text-violet-600" />
+          <h3 className="text-[15px] font-bold text-violet-900">战略定位与发展路径</h3>
+        </div>
+        <span className="text-[10px] text-violet-700 bg-violet-100 rounded-full px-2 py-0.5 font-bold">
+          {hasAll ? '已配置' : hasAny ? '部分配置' : '未配置'}
+        </span>
+      </div>
+
+      {!hasAny && (
+        <div className="space-y-3">
+          <div className="text-[12px] leading-relaxed text-slate-700 bg-violet-50/60 rounded-xl px-4 py-3 border border-violet-100">
+            <p className="font-semibold text-violet-900 mb-1">AI 说:</p>
+            <p>
+              我在客户资料里没找到足够多的战略方向内容和明确的业务方法论文档. 这两份是品牌监控、情报匹配、提案生成等模块判断客户事情的关键基线. 建议把客户内部讨论过的战略文档和方法论保存为 <code className="bg-white px-1.5 py-0.5 rounded text-[11px]">.md</code> 上传 — 上传后这些模块的准确度会显著提升, 也避免 AI 编造战略误导决策.
+            </p>
+          </div>
+        </div>
+      )}
+
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mt-3">
+        <StrategicDocSlot
+          docType="strategy"
+          title="战略文档"
+          hint="客户在赛道里走什么路线"
+          entry={data?.strategy ?? null}
+          onPick={handleFilePick('strategy')}
+          onDelete={() => handleDelete('strategy')}
+        />
+        <StrategicDocSlot
+          docType="methodology"
+          title="方法论文档"
+          hint="客户的发展路径和工作方法"
+          entry={data?.methodology ?? null}
+          onPick={handleFilePick('methodology')}
+          onDelete={() => handleDelete('methodology')}
+        />
+      </div>
+    </div>
+  );
+}
+
+function StrategicDocSlot({
+  docType,
+  title,
+  hint,
+  entry,
+  onPick,
+  onDelete,
+}: {
+  docType: StrategicDocType;
+  title: string;
+  hint: string;
+  entry: { fileName: string; mdContent: string; uploadedAt: string; uploadedBy: string } | null;
+  onPick: (event: React.ChangeEvent<HTMLInputElement>) => void;
+  onDelete: () => void;
+}) {
+  const [expanded, setExpanded] = useState(false);
+  const inputId = `strategic-upload-${docType}`;
+
+  if (!entry) {
+    return (
+      <label htmlFor={inputId} className="block cursor-pointer rounded-xl border-2 border-dashed border-violet-200 hover:border-violet-400 bg-white px-4 py-4 text-center transition-colors">
+        <UploadCloud size={18} className="mx-auto text-violet-500 mb-2" />
+        <div className="text-[12px] font-bold text-slate-800">{title}</div>
+        <div className="text-[10px] text-slate-500 mt-0.5">{hint}</div>
+        <div className="text-[10px] text-violet-600 font-bold mt-2">点击上传 .md 文件</div>
+        <input id={inputId} type="file" accept=".md,.markdown,text/markdown" className="hidden" onChange={onPick} />
+      </label>
+    );
+  }
+  const previewLines = entry.mdContent.split('\n').slice(0, 5).join('\n');
+  const hasMore = entry.mdContent.split('\n').length > 5;
+  return (
+    <div className="rounded-xl border border-violet-200 bg-white px-4 py-3">
+      <div className="flex items-start justify-between gap-2 mb-1.5">
+        <div className="min-w-0 flex-1">
+          <div className="text-[12px] font-bold text-slate-800">{title}</div>
+          <div className="text-[10px] text-slate-500 truncate mt-0.5">📄 {entry.fileName}</div>
+          <div className="text-[10px] text-slate-400 mt-0.5">
+            上传于 {entry.uploadedAt.slice(0, 16).replace('T', ' ')}
+          </div>
+        </div>
+        <div className="flex items-center gap-1 shrink-0">
+          <label htmlFor={`${inputId}-replace`} className="cursor-pointer text-[10px] text-violet-600 hover:text-violet-800 font-bold">
+            重传
+            <input id={`${inputId}-replace`} type="file" accept=".md,.markdown,text/markdown" className="hidden" onChange={onPick} />
+          </label>
+          <button
+            type="button"
+            onClick={onDelete}
+            className="text-[10px] text-rose-500 hover:text-rose-700 font-bold"
+          >
+            删除
+          </button>
+        </div>
+      </div>
+      <div className="mt-2 text-[11px] text-slate-700 leading-relaxed bg-slate-50 rounded-lg px-3 py-2 max-h-[180px] overflow-y-auto whitespace-pre-wrap font-mono">
+        {expanded ? entry.mdContent : previewLines}
+        {!expanded && hasMore && '...'}
+      </div>
+      {hasMore && (
+        <button
+          type="button"
+          onClick={() => setExpanded((v) => !v)}
+          className="mt-1.5 text-[10px] text-violet-600 hover:text-violet-800 font-bold"
+        >
+          {expanded ? '▲ 收起' : '▼ 展开全文'}
+        </button>
+      )}
+    </div>
+  );
+}
+
 function BusinessIntroSegmented({ text }: { text: string }) {
   const segs = parseBusinessIntro(text);
   if (!segs || segs.length === 0) {
@@ -480,12 +677,13 @@ function NarrativePanel({
       <div className="space-y-4 min-w-0">
         {/* (状态条 + 加工层缺口 已按需求删除, 主体直接进入 6 段叙事) */}
 
-        {/* 6 段叙事 */}
+        {/* 6 段叙事 + StrategicDnaCard 插在 essence 之后 / business_intro 之前
+            (战略定位与发展路径 — 用户上传的 .md, 独立数据源, 不让 LLM 编造) */}
         {DIMENSION_ORDER.map((key) => {
           const dim = dimsByKey.get(key);
           if (!dim) return null;
           const dimClars = applied.filter((c) => c.dimension === key);
-          return (
+          const card = (
             <NarrativeDimensionCard
               key={key}
               dim={dim}
@@ -493,6 +691,16 @@ function NarrativePanel({
               onClarify={(answer, question) => onClarify(key, answer, question)}
             />
           );
+          // essence 渲染完后, 紧跟着插入战略定位与发展路径卡
+          if (key === 'essence') {
+            return (
+              <React.Fragment key="essence-with-dna">
+                {card}
+                <StrategicDnaCard clientId={narrative.clientId} flash={flash} />
+              </React.Fragment>
+            );
+          }
+          return card;
         })}
       </div>
 

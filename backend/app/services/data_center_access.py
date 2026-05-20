@@ -6,6 +6,10 @@ from typing import Any
 
 PRIVATE_VISIBILITY_SCOPES = {"self", "private", "personal"}
 PRIVATE_CONTENT_DOMAINS = {"personal", "private"}
+# 外部观察源 (情报站爬取 / 品牌镜子官方语料): 永远不进数据中心 retrieval 通道。
+# 与 PRIVATE 不同 — 这些不是"对特定用户可见的私密文档", 而是"任何人都不该当客户事实用"。
+# 品牌镜子模块自己按 content_domain='brand_official_corpus' 直查, 不走 data center 通道。
+EXTERNAL_OBSERVATION_DOMAINS = {"internet_enrichment", "brand_official_corpus"}
 CEO_ROLES = {"ceo", "admin", "organization_admin", "org_admin"}
 
 
@@ -103,6 +107,12 @@ def _scope_clause(
     if context.organization_id:
         clauses.append(f"{organization_expr} = ?")
         params.append(context.organization_id)
+
+    # 外部观察源永远屏蔽: 不论 include_personal / ceo / owner, 都不进数据中心 retrieval。
+    if EXTERNAL_OBSERVATION_DOMAINS:
+        external_placeholders = ", ".join("?" for _ in EXTERNAL_OBSERVATION_DOMAINS)
+        clauses.append(f"LOWER({content_domain_expr}) NOT IN ({external_placeholders})")
+        params.extend(sorted(EXTERNAL_OBSERVATION_DOMAINS))
 
     private_visibility = ", ".join("?" for _ in PRIVATE_VISIBILITY_SCOPES)
     private_domains = ", ".join("?" for _ in PRIVATE_CONTENT_DOMAINS)

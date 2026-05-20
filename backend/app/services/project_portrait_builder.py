@@ -315,9 +315,10 @@ def build_portrait(db: Database, ai: AiService, client_id: str) -> dict[str, Any
     # 写入 3 张表
     now = datetime.now(timezone.utc).isoformat()
     # 清空旧 (该 client) — 回填覆盖
-    db.execute("DELETE FROM glossary_relations WHERE client_id=?", (client_id,))
-    db.execute("DELETE FROM risk_signals WHERE client_id=?", (client_id,))
-    db.execute("DELETE FROM commitments WHERE client_id=?", (client_id,))
+    # 关键: 只删 source_type='ai_inferred' 的, 保护 smart_import_story 等用户来源的数据
+    db.execute("DELETE FROM glossary_relations WHERE client_id=? AND source='ai_inferred'", (client_id,))
+    db.execute("DELETE FROM risk_signals WHERE client_id=? AND source_type='ai_inferred'", (client_id,))
+    db.execute("DELETE FROM commitments WHERE client_id=? AND source_type='ai_inferred'", (client_id,))
 
     n_rel = 0
     for r in relations:

@@ -7921,18 +7921,72 @@ class ClientTextDocumentResponse(BaseModel):
     path: str
 
 
-# P9：客户工作台 inline 编辑器 AI 助手 action
-#   action 字段决定 LLM 任务：扩写 / 改写专业 / 改写简洁 / 总结
-#   入参：当前文档 markdown（content），返回：新 markdown（content）
+# P9 / P11：客户工作台 inline 编辑器 AI 助手 action
+#   action：要执行的 LLM 任务（扩写 / 改写 / 总结 / 提取 / 翻译 / 风格化）
+#   userRequest：用户在 inline 提示框写的具体要求（可空）
+#   creativityMode：creative=完全自由 / balanced=兼顾资料（默认）/ strict=严格依据
+#   activeSkillId：选中的写作风格 skill id（指向 writing_skills 表）
+class DocumentAiActionContextSourceSpec(BaseModel):
+    """前端传给后端的 context source 规格（P13b+ 使用）。"""
+    type: Literal[
+        "selection_only",
+        "current_doc",
+        "client_materials",
+        "strategy_dimension",
+        "event_timeline",
+    ]
+    query: str = ""
+    refId: str | None = None
+    topK: int = 5
+    params: dict = {}
+
+
+class DocumentAiActionSourceRef(BaseModel):
+    """单个被召回资料的引证元信息（返给前端展示用）。"""
+    type: str
+    title: str
+    snippet: str = ""
+    refId: str | None = None
+    extra: dict = {}
+
+
 class DocumentAiActionPayload(BaseModel):
     content: str
-    action: Literal["expand", "rewrite_pro", "rewrite_short", "summarize"]
+    action: Literal[
+        # A 类 · 纯文本变换
+        "expand",
+        "rewrite_pro",
+        "rewrite_short",
+        "summarize",
+        "extract",
+        "translate",
+        "style_distilled",
+        # B 类 · 资料增强（P13b/c 接入）
+        "insert_from_materials",
+        "rewrite_by_strategy",
+        "insert_data_table",
+    ]
+    userRequest: str = ""
+    creativityMode: Literal["creative", "balanced", "strict"] = "balanced"
+    activeSkillId: str | None = None
+    # P13b+：资料源列表。P13a 默认空，行为零变化。
+    contextSources: list[DocumentAiActionContextSourceSpec] = []
+    # P14a：用户当前选区文本（window.getSelection().toString()）。
+    # 非空 → 模型只处理这段；空 → 走全文老行为。
+    selectionText: str = ""
 
 
 class DocumentAiActionResponse(BaseModel):
     content: str
     action: str
     durationMs: float = 0.0
+    # P13b+：本次召回到的资料引证。P13a 一律为空数组。
+    sources: list[DocumentAiActionSourceRef] = []
+    # 后端实际使用的 creativity 值（faithful 类 op 会被覆盖为 strict）
+    effectiveCreativity: str = "balanced"
+    # P14a：本次实际作用范围。"selection" = 后端只处理了选区，前端只替换选区；
+    # "full_doc" = 处理整篇，前端整篇替换。
+    targetScope: Literal["selection", "full_doc"] = "full_doc"
 
 
 class LinkMaterialImportStartPayload(BaseModel):

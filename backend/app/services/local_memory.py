@@ -289,8 +289,18 @@ def save_pending_quotes(
     quotes: list[dict[str, str]],
     user_id: str = "user_guyuan",
     user_name: str = "顾源源",
+    *,
+    exp_wall_source_type: str = "client_analysis",
+    exp_wall_source_object_id: str = "",
+    exp_wall_category: str = "方法论",
 ) -> int:
-    """Save extracted quotes as pending captures in growth system."""
+    """Save extracted quotes as pending captures + push to organization exp wall.
+
+    Writes two tables:
+      - growth_signal_events / growth_capture_states (个人捕获池，待加工)
+      - exp_wall_quotes (组织墙，立刻可见、可被点赞复用)
+    exp_wall_source_type 必须在 {task, meeting, document, client_analysis, ai_chat}。
+    """
     from uuid import uuid4 as _uuid4
     saved = 0
     now = _now_iso()
@@ -314,6 +324,26 @@ def save_pending_quotes(
                 (f"gc_{_uuid4().hex[:10]}", user_id, sig_id, f"AI从{source}中提炼", now, now),
             )
             saved += 1
+        except Exception:
+            pass
+        try:
+            from app.services.exp_wall_service import insert_quote, SOURCE_TYPES
+            wall_source = exp_wall_source_type if exp_wall_source_type in SOURCE_TYPES else "client_analysis"
+            existing = db.fetchone(
+                "SELECT id FROM exp_wall_quotes WHERE author_user_id = ? AND quote_text = ? AND status = 'active' LIMIT 1",
+                (user_id, text),
+            )
+            if not existing:
+                insert_quote(
+                    db,
+                    author_user_id=user_id,
+                    quote_text=text,
+                    source_excerpt=source[:500],
+                    source_type=wall_source,
+                    source_object_id=exp_wall_source_object_id,
+                    category=exp_wall_category,
+                    now=now,
+                )
         except Exception:
             pass
     return saved

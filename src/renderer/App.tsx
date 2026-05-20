@@ -236,6 +236,7 @@ import {
 import {
   getWorkspaceFallbackNotice,
   getWorkspaceRuntimeMismatchNotice,
+  stripFileCitations,
 } from '../shared/workspaceChatPresentation';
 import {
   buildEvidenceCitationCards,
@@ -475,6 +476,7 @@ import AIReportGeneratorModal from './components/reports/AIReportGeneratorModal'
 import { TaskTemplateEditorModal } from './components/tasks/TaskTemplateEditorModal';
 import type { TemplateData } from './components/tasks/TaskTemplateEditorModal';
 import { SmartTaskParseModal } from './components/tasks/SmartTaskParseModal';
+import { SmartFileImportModal } from './components/smart_file_import/SmartFileImportModal';
 import type { TaskAiParseResult } from './lib/api';
 import { SystemLogPanel } from './components/settings/SystemLogPanel';
 import { MaintenanceSyncPanel } from './components/settings/MaintenanceSyncPanel';
@@ -501,7 +503,7 @@ import { GlossaryDriftAlertPanel } from './components/client_workspace/GlossaryD
 import { GlossaryPanel } from './components/client_workspace/GlossaryPanel';
 import { GlossaryPendingBadge } from './components/client_workspace/GlossaryPendingBadge';
 import { RichTextDocumentEditor, SAMPLE_DOCUMENT_MARKDOWN } from './components/client_workspace/RichTextDocumentEditor';
-import { GlobalAiStatusBadge } from './components/global/GlobalAiStatusBadge';
+import { SystemStatusPanel } from './components/global/SystemStatusPanel';
 import { WorkStatusPanel } from './components/data_center/WorkStatusPanel';
 import { FeishuOrgIntegrationPanel } from './components/settings/FeishuOrgIntegrationPanel';
 import { SpeechModelSettingsCard } from './components/settings/SpeechModelSettingsCard';
@@ -6874,6 +6876,9 @@ export default function App() {
     content: string;
     titleEdited: boolean;
   } | null>(null);
+  // P12：inline editor 全屏开关。fullscreen=true 时 fixed inset-0 z-[1000] 盖住整个 Electron window；
+  // false 时 absolute inset-0 z-30 只盖中间主区（左侧栏 + 右工具栏可见）。
+  const [isInlineEditorFullscreen, setIsInlineEditorFullscreen] = useState(false);
   const [clientEditorModalState, setClientEditorModalState] = useState<ClientEditorModalState>(() => ({
     open: false,
     editingClientId: null,
@@ -19111,6 +19116,8 @@ export default function App() {
     };
     const [isEvidencePanelExpanded, setIsEvidencePanelExpanded] = useState(false);
     const [expandedEvidenceIds, setExpandedEvidenceIds] = useState<Set<string>>(() => new Set());
+    // 智能文件导入模态框开关:工具页 Sparkles 按钮触发
+    const [isSmartFileImportOpen, setIsSmartFileImportOpen] = useState(false);
     // 复制成功的内联反馈：哪条消息刚被复制，按钮原地显示对勾 1.5 秒
     const [recentlyCopiedMessageId, setRecentlyCopiedMessageId] = useState<string | null>(null);
     // 删除对话锁：成对删除一次请求会删两条，期间锁住按钮避免用户对另一条再点一次触发 404
@@ -21955,7 +21962,8 @@ export default function App() {
       };
       const sections = assistants.map((assistant) => ({
         question: findUserQuestion(assistant),
-        answer: (assistant.content || '').trim() || '(暂无内容)',
+        // 跟屏幕渲染保持一致: 清洗 LLM 答案里裸露的文件名引用
+        answer: stripFileCitations(assistant.content) || '(暂无内容)',
       }));
       if (sections.length === 1) {
         return {
@@ -22071,6 +22079,19 @@ export default function App() {
     };
 
     return (
+      <>
+      <SmartFileImportModal
+        open={isSmartFileImportOpen}
+        clientId={currentClientId || undefined}
+        onClose={() => setIsSmartFileImportOpen(false)}
+        onImported={(stats) => {
+          flash('success',
+            `已导入数据中心: ${stats.documents_created} 个文件 · ${stats.entities_created} 个人物 · ` +
+            `${stats.commitments_created} 个承诺 · ${stats.risk_signals_created} 个风险`,
+          );
+          if (currentClientId) void refreshWorkspace(currentClientId);
+        }}
+      />
       <div className="h-full bg-white overflow-x-auto overflow-y-hidden">
         <div className="flex h-full min-w-[850px]">
           {/* 左栏:项目列表,跟主 nav 一致的扁平 + 左锚线风格。P9：可收起。 */}
@@ -22795,7 +22816,7 @@ export default function App() {
                                       return (
                                         <>
                                           <StreamingAnswerDocument
-                                            text={msg.content}
+                                            text={stripFileCitations(msg.content)}
                                             streaming={msg.status === 'loading'}
                                           />
                                           {isLoading && <ChatThinkingHint compact />}
@@ -22833,7 +22854,7 @@ export default function App() {
                                         <div className="rounded-2xl border border-emerald-100 bg-white px-4 py-4">
                                           <p className="text-[11px] font-bold uppercase tracking-[0.16em] text-emerald-600">直接回答</p>
                                           <div className="mt-2 text-[13px] leading-7 text-gray-800 whitespace-pre-wrap">
-                                            {workspaceAnswerExperience.directAnswer || msg.content}
+                                            {stripFileCitations(workspaceAnswerExperience.directAnswer || msg.content)}
                                           </div>
                                         </div>
 
@@ -23072,12 +23093,15 @@ export default function App() {
                                       {shouldRenderStateSections && (
                                         <p className="mb-3 text-[11px] font-bold uppercase tracking-[0.16em] text-slate-400">延展分析</p>
                                       )}
-                                      <AnswerDocument text={msg.content} />
+                                      <AnswerDocument text={stripFileCitations(msg.content)} />
                                     </div>
                                   )}
 
                                 </div>
 
+                                {/* action bar (复制/收藏/导出/合并/采纳为判断/转任务) — 仅在
+                                    streaming 完成后才显示, 避免半截答案触发操作 */}
+                                {msg.status !== 'loading' && (
                                 <div className="bg-gray-50/80 border-t border-gray-100 px-3 xl:px-4 py-3 flex items-center justify-between">
                                   <div className="flex gap-1 xl:gap-2">
                                     <button
@@ -23088,7 +23112,7 @@ export default function App() {
                                       }`}
                                       onClick={(event) => {
                                         event.stopPropagation();
-                                        void navigator.clipboard.writeText(`${msg.content}`.trim());
+                                        void navigator.clipboard.writeText(stripFileCitations(msg.content));
                                         setRecentlyCopiedMessageId(msg.id);
                                         window.setTimeout(() => {
                                           setRecentlyCopiedMessageId((prev) => (prev === msg.id ? null : prev));
@@ -23185,7 +23209,8 @@ export default function App() {
                                         }
                                         void createTask({
                                           title: `${currentClient?.name || '客户'} · ${msg.structuredData?.actions?.slice(0, 18) || '跟进事项'}`,
-                                          desc: msg.structuredData?.analysis || msg.content,
+                                          // 跟屏幕一致: 清洗 LLM 答案里裸露的文件名 (strategy.md 等)
+                                          desc: stripFileCitations(msg.structuredData?.analysis || msg.content),
                                           priority: 'normal',
                                           listId: effectiveTaskSettings.defaultListId || activeTaskLists[0]?.id || 'list-0',
                                           dueDate: defaultDueDateFromPreset(effectiveTaskSettings.defaultDueDatePreset) || null,
@@ -23219,6 +23244,7 @@ export default function App() {
                                     )}
                                   </div>
                                 </div>
+                                )}
                               </div>
                           </div>
                         )}
@@ -23727,12 +23753,21 @@ export default function App() {
                   （左栏 + 右工具栏保留可见，符合用户"工作台 inline 编辑"诉求）。
                   钢笔按钮触发，编辑器 ribbon 见 RichTextDocumentEditor。 */}
             {clientWorkspaceInlineEditor && clientWorkspaceInlineEditor.clientId === currentClientId && (
-              <div className="absolute inset-0 z-30 flex flex-col bg-[#F5F7FB]">
+              <div
+                className={
+                  isInlineEditorFullscreen
+                    ? 'fixed inset-0 z-[1000] flex flex-col bg-[#F5F7FB]'
+                    : 'absolute inset-0 z-30 flex flex-col bg-[#F5F7FB]'
+                }
+              >
                 {/* Top App Bar */}
                 <div className="shrink-0 border-b border-gray-200 bg-white px-5 py-2.5 flex items-center gap-3">
                   <button
                     type="button"
-                    onClick={() => setClientWorkspaceInlineEditor(null)}
+                    onClick={() => {
+                      setClientWorkspaceInlineEditor(null);
+                      setIsInlineEditorFullscreen(false);
+                    }}
                     className="inline-flex items-center gap-1.5 text-[12px] font-medium text-gray-500 hover:text-gray-900 transition-colors"
                   >
                     <ChevronLeft size={14} strokeWidth={2.2} />
@@ -23778,6 +23813,7 @@ export default function App() {
                           });
                           flash('success', `已保存到项目文档库：${result.fileName}`);
                           setClientWorkspaceInlineEditor(null);
+                          setIsInlineEditorFullscreen(false);
                           await refreshWorkspace(currentClientId).catch(() => undefined);
                         } catch (error) {
                           flash('error', error instanceof Error ? error.message : '保存失败');
@@ -23789,10 +23825,10 @@ export default function App() {
                     </button>
                   </div>
                 </div>
-                {/* Editor body —— 文档居中，模拟 Word 纸张感 */}
-                <div className="flex-1 overflow-y-auto py-6 px-4">
-                  <div className="mx-auto max-w-[880px]">
-                    <RichTextDocumentEditor
+                {/* Editor body —— 工具栏紧贴 App Bar 无缝衔接（无 padding 无圆角），
+                      文档内容居中由 RichTextDocumentEditor 内部 contentEditable 的 max-w 控制 */}
+                <div className="flex-1 overflow-y-auto bg-white">
+                  <RichTextDocumentEditor
                       value={clientWorkspaceInlineEditor.content}
                       onChange={(next) =>
                         setClientWorkspaceInlineEditor((prev) =>
@@ -23800,10 +23836,53 @@ export default function App() {
                         )
                       }
                       minHeight={640}
-                      onAiStub={async (action) => {
-                        if (!currentClientId) return;
-                        // P9：4 个 action（expand/rewrite_pro/rewrite_short/summarize）真调 LLM；其余 stub
-                        const aiActions: DocumentAiAction[] = ['expand', 'rewrite_pro', 'rewrite_short', 'summarize'];
+                      writingSkills={writingSkills.map((s) => ({ id: s.id, name: s.name }))}
+                      defaultActiveSkillId={activeSkillId}
+                      defaultCreativityMode={creativityMode}
+                      onAiAction={async (action, opts) => {
+                        // P11：7 个 AI action 全 wire 到 backend，stub action（文档/样式 tab）走 flash
+                        const targetClientId = clientWorkspaceInlineEditor?.clientId || currentClientId;
+                        if (!targetClientId) {
+                          flash('error', '请先选择项目');
+                          return;
+                        }
+                        // P12：文档 tab 真实功能（__前缀）—— 全屏 / 导出 docx 走本地行为，不走 AI 链路
+                        if (action === '__toggle_fullscreen') {
+                          setIsInlineEditorFullscreen((prev) => !prev);
+                          return;
+                        }
+                        if (action === '__export_docx') {
+                          const content = (clientWorkspaceInlineEditor?.content || '').trim();
+                          if (!content) {
+                            flash('error', '请先写一点内容');
+                            return;
+                          }
+                          try {
+                            const result = await createClientTextDocument(targetClientId, {
+                              title: clientWorkspaceInlineEditor?.title.trim() || null,
+                              content,
+                            });
+                            flash('success', `已导出 docx：${result.fileName}`);
+                            await refreshWorkspace(targetClientId).catch(() => undefined);
+                            try {
+                              await revealInFinderBridge(result.path);
+                            } catch {
+                              /* reveal 失败不影响导出 */
+                            }
+                          } catch (error) {
+                            flash('error', error instanceof Error ? error.message : '导出失败');
+                          }
+                          return;
+                        }
+                        const aiActions: DocumentAiAction[] = [
+                          'expand',
+                          'rewrite_pro',
+                          'rewrite_short',
+                          'summarize',
+                          'extract',
+                          'translate',
+                          'style_distilled',
+                        ];
                         if (!aiActions.includes(action as DocumentAiAction)) {
                           flash('info', `${action} · 下一步打通后会真的执行`);
                           return;
@@ -23815,29 +23894,48 @@ export default function App() {
                         }
                         const label: Record<DocumentAiAction, string> = {
                           expand: '扩写',
-                          rewrite_pro: '改写（专业）',
-                          rewrite_short: '改写（简洁）',
+                          rewrite_pro: '改写 · 专业',
+                          rewrite_short: '改写 · 简洁',
                           summarize: '总结',
+                          extract: '提取要点',
+                          translate: '翻译',
+                          style_distilled: '风格化',
+                          // P13b/c：资料增强类 op 的人话名
+                          insert_from_materials: '从资料生成此处',
+                          rewrite_by_strategy: '按战略方向重写',
+                          insert_data_table: '插入数据表',
                         };
-                        flash('info', `${label[action as DocumentAiAction]}处理中…`);
+                        const selectionText = (opts?.selectionText || '').trim();
+                        const scopeHint = selectionText
+                          ? `（处理选区 ${selectionText.length} 字）`
+                          : '（处理整篇）';
+                        flash('info', `${label[action as DocumentAiAction]}${scopeHint}处理中…`);
                         try {
-                          const result = await documentAiAction(currentClientId, {
+                          const result = await documentAiAction(targetClientId, {
                             content,
                             action: action as DocumentAiAction,
+                            userRequest: opts?.userRequest || '',
+                            creativityMode: opts?.creativityMode || 'balanced',
+                            activeSkillId: opts?.activeSkillId || null,
+                            selectionText,
                           });
-                          setClientWorkspaceInlineEditor((prev) =>
-                            prev ? { ...prev, content: result.content } : prev,
-                          );
+                          // P14a：编辑器自己应用结果（替换选区 / 替换整篇），App 层不再 setContent，
+                          // 因为 setMarkdown / insertMarkdown 会触发 onChange → 自动同步父状态
+                          const scopeLabel = result.targetScope === 'selection' ? '已替换选区' : '已替换整篇';
                           flash(
                             'success',
-                            `${label[action as DocumentAiAction]}完成（${(result.durationMs / 1000).toFixed(1)} 秒）`,
+                            `${label[action as DocumentAiAction]}完成 · ${scopeLabel}（${(result.durationMs / 1000).toFixed(1)} 秒）`,
                           );
+                          return {
+                            content: result.content,
+                            targetScope: result.targetScope || 'full_doc',
+                          };
                         } catch (error) {
                           flash('error', error instanceof Error ? error.message : 'AI 调用失败');
+                          throw error;
                         }
                       }}
                     />
-                  </div>
                 </div>
               </div>
             )}
@@ -24109,40 +24207,6 @@ export default function App() {
                       );
                     })()}
 
-                    <div className="mt-2 flex items-center justify-between gap-3 text-[10px] leading-4 text-gray-400">
-                      <span>{knowledgeStatus?.totalDocuments || 0} 份文件</span>
-                      {(() => {
-                        const rate = typeof knowledgeStatus?.ocrReadyRate === 'number' ? knowledgeStatus.ocrReadyRate : null;
-                        const needsFix = rate !== null && rate < 100;
-                        return (
-                          <span
-                            className="inline-flex items-center gap-1"
-                            title="OCR 识别率 = ready × 100% + partial × 70%（按 R13 完整扫描度加权）"
-                          >
-                            OCR 识别率 {rate !== null ? `${rate.toFixed(1)}%` : '—'}
-                            {needsFix && (
-                              <button
-                                type="button"
-                                disabled={ocrFixing}
-                                onClick={() => void handleOcrFix()}
-                                className="ml-1 inline-flex items-center text-amber-600 hover:text-amber-700 disabled:opacity-40 disabled:cursor-wait disabled:text-amber-500 transition-colors"
-                                title={ocrFixing ? '正在重新识别 OCR…' : '一键修复 · 重新识别所有 OCR 不完整的文件(高 DPI + 双 prompt 模式)'}
-                                aria-label="一键修复 OCR"
-                              >
-                                <RotateCcw size={11} strokeWidth={2.25} className={ocrFixing ? 'animate-spin' : ''} />
-                              </button>
-                            )}
-                          </span>
-                        );
-                      })()}
-                      {currentClientId && (
-                        <GlossaryPendingBadge
-                          clientId={currentClientId}
-                          onNavigateToReview={() => setActiveTab('strategic_accompaniment')}
-                        />
-                      )}
-                    </div>
-
                     <div className={`mt-2 min-h-[46px] transition-opacity duration-200 ${knowledgeJobProgressView.hasActivity ? 'opacity-100' : 'pointer-events-none opacity-0'}`}>
                       <div className="rounded-2xl border border-blue-100 bg-blue-50/60 px-3 py-2">
                         <div className="mb-1.5 flex items-center justify-between gap-2">
@@ -24188,6 +24252,41 @@ export default function App() {
                   <tab.icon size={13} /> {tab.label}
                 </button>
               ))}
+            </div>
+
+            {/* 资料状态摘要(挨着 Tab bar):份数 / OCR / 待清单 */}
+            <div className="flex items-center justify-between gap-3 border-b border-gray-100 bg-gray-50/40 px-4 py-1.5 text-[10px] leading-4 text-gray-400 shrink-0">
+              <span>{knowledgeStatus?.totalDocuments || 0} 份文件</span>
+              {(() => {
+                const rate = typeof knowledgeStatus?.ocrReadyRate === 'number' ? knowledgeStatus.ocrReadyRate : null;
+                const needsFix = rate !== null && rate < 100;
+                return (
+                  <span
+                    className="inline-flex items-center gap-1"
+                    title="OCR 识别率 = ready × 100% + partial × 70%（按 R13 完整扫描度加权）"
+                  >
+                    OCR 识别率 {rate !== null ? `${rate.toFixed(1)}%` : '—'}
+                    {needsFix && (
+                      <button
+                        type="button"
+                        disabled={ocrFixing}
+                        onClick={() => void handleOcrFix()}
+                        className="ml-1 inline-flex items-center text-amber-600 hover:text-amber-700 disabled:opacity-40 disabled:cursor-wait disabled:text-amber-500 transition-colors"
+                        title={ocrFixing ? '正在重新识别 OCR…' : '一键修复 · 重新识别所有 OCR 不完整的文件(高 DPI + 双 prompt 模式)'}
+                        aria-label="一键修复 OCR"
+                      >
+                        <RotateCcw size={11} strokeWidth={2.25} className={ocrFixing ? 'animate-spin' : ''} />
+                      </button>
+                    )}
+                  </span>
+                );
+              })()}
+              {currentClientId && (
+                <GlossaryPendingBadge
+                  clientId={currentClientId}
+                  onNavigateToReview={() => setActiveTab('strategic_accompaniment')}
+                />
+              )}
             </div>
 
             {/* Tab: 工具 */}
@@ -24269,6 +24368,18 @@ export default function App() {
                         >
                           <span className="flex h-full w-full items-center justify-center">
                             <Link2 size={23} />
+                          </span>
+                        </button>
+                        <button
+                          type="button"
+                          className="aspect-square rounded-[24px] border border-gray-200 bg-white text-slate-600 shadow-sm transition hover:border-[#C7D5FF] hover:text-[#4A63CF] hover:shadow-[0_8px_20px_rgba(91,123,254,0.08)] disabled:cursor-not-allowed disabled:opacity-50"
+                          disabled={isBackendBlocked || !currentClientId}
+                          onClick={() => setIsSmartFileImportOpen(true)}
+                          title="智能文件导入 · 讲故事 + 挂文件,自动分类归档"
+                          aria-label="智能文件导入"
+                        >
+                          <span className="flex h-full w-full items-center justify-center">
+                            <Sparkles size={23} />
                           </span>
                         </button>
                         {/* 资料速记、结构导入 — 功能待实现，暂不显示入口 */}
@@ -25771,6 +25882,7 @@ export default function App() {
         )}
 
       </div>
+      </>
     );
   };
 
@@ -28226,26 +28338,8 @@ export default function App() {
   return (
     <GrowthProvider>
       <div className="window-drag window-drag-strip" aria-hidden="true" />
-      {/* P10：数据中心 + AI 模型 全局右上角灯
-            位置：drag-strip 右端；录音 indicator 出现时往左偏 ~12px gap。
-            点击 → 跳设置 → AI 配置区。 */}
-      <div
-        className="window-no-drag fixed z-[9000] pointer-events-auto"
-        style={{
-          top: 'calc(var(--window-drag-strip-height) + 6px)',
-          right: recordingSession.isActive ? 200 : 12,
-        }}
-      >
-        <GlobalAiStatusBadge
-          health={health}
-          backendOnline={!backendCompatibilityError && Boolean(health)}
-          onClickConfigure={() => {
-            setActiveTab('settings');
-            setSettingsSection('overview');
-            void loadSettingsBlock().catch(() => undefined);
-          }}
-        />
-      </div>
+      {/* P10 v2：数据中心 + AI 状态灯已迁移到 sidebar 底部的 SystemStatusPanel，
+            不再占据 drag-strip 区域，避免遮挡录音 indicator 和系统装饰条。 */}
       {recordingSession.isActive && (
         <div
           className="window-no-drag fixed right-3 z-[9000] pointer-events-auto"
@@ -28434,6 +28528,24 @@ export default function App() {
 
         </div>
 
+        {/* P10 v2：系统状态 panel —— 在系统设置上方独立成块
+              展开态：list（数据中心 / 大模型），点击跳设置
+              收起态：纵向 mini 圆点列，hover tooltip 显示状态 */}
+        <div className="mt-auto">
+          <SystemStatusPanel
+            health={health}
+            backendOnline={!backendCompatibilityError && Boolean(health)}
+            collapsed={isSidebarCollapsed}
+            onSelectSection={(section) => {
+              setActiveTab('settings');
+              setSettingsSection('overview');
+              void loadSettingsBlock().catch(() => undefined);
+              // section 信息保留，后续可让设置页 deep link 到具体 anchor
+              void section;
+            }}
+          />
+        </div>
+
         {/* 底部"账户与设置"区 — 系统设置 + 当前登录 同组, 跟上方业务模块用单条 hairline 分开.
             展开态: 系统设置作为标签按钮, 下面是当前登录卡片
             收起态: 只显示系统设置齿轮 icon (跟主 nav icon 风格一致), 当前登录隐藏 */}
@@ -28441,9 +28553,9 @@ export default function App() {
           const isSettingsActive = activeTab === 'settings';
 
           if (isSidebarCollapsed) {
-            // 收起态: 只显示设置齿轮 (贴底), hover 提示
+            // 收起态: 只显示设置齿轮，紧贴 SystemStatusPanel 下方
             return (
-              <div className="mt-auto px-2 pb-3 hidden md:block border-t border-gray-100 pt-2">
+              <div className="px-2 pb-3 hidden md:block border-t border-gray-100 pt-2">
                 <button
                   type="button"
                   aria-label="系统设置"
@@ -28467,9 +28579,9 @@ export default function App() {
             );
           }
 
-          // 展开态: 系统设置标签按钮 + 当前登录卡片, 同一组, 顶部 hairline 跟主 nav 分开
+          // 展开态: 系统设置 + 当前登录, 紧贴 SystemStatusPanel 下方
           return (
-            <div className="mt-auto hidden md:block border-t border-gray-100">
+            <div className="hidden md:block border-t border-gray-100">
               {/* 系统设置 — 跟主 nav 同款按钮风格 (左 border 高亮), 视觉上自然衔接 */}
               <div className="px-2.5 pt-2">
                 <button

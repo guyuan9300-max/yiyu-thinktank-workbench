@@ -1797,7 +1797,10 @@ function startBackend() {
   // Dev-only: hot-reload Python on source changes so we don't need to restart
   // Electron after every backend edit. Packaged builds keep the old behaviour
   // (no reload) since the bundled source is immutable.
-  if (!app.isPackaged) {
+  // YIYU_BACKEND_NO_RELOAD=1 forces the no-reload path even in dev, so the
+  // backend survives external tools (e.g. parallel AI assistants) touching
+  // backend/app/*.py while a verification session is running.
+  if (!app.isPackaged && process.env.YIYU_BACKEND_NO_RELOAD !== '1') {
     args.push('--reload', '--reload-dir', path.join(projectRoot, 'backend', 'app'));
   }
   backendProcess = spawn(

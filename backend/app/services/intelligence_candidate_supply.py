@@ -4610,6 +4610,20 @@ def _promote_candidate(
             ):
                 continue
             item_id = _new_id("iitem")
+            # P2-2：生成"建议建任务跟踪"action，让资讯不只是被动展示。
+            # 规则：识别政策/动态/合作/披露这类需要跟进的资讯 → 生成 task suggestion；
+            # 否则用 dimension 兜底生成"关注 X 维度"提示。
+            _intel_title = (card.title or "").strip()
+            _intel_summary = (card.summary or "").strip()
+            _intel_keywords = ("政策", "新规", "发布", "更新", "合作", "签署", "公告", "披露",
+                              "整改", "处罚", "倡议", "立项", "招标", "中标")
+            _intel_signal = any(k in (_intel_title + _intel_summary) for k in _intel_keywords)
+            if _intel_signal:
+                _suggested_action_text = f"建议建任务跟踪：{_intel_title[:60]}（关注后续推进与回执）"
+            elif card.dimension:
+                _suggested_action_text = f"关注「{card.dimension}」维度变化，必要时建任务跟进"
+            else:
+                _suggested_action_text = ""
             db.execute(
                 """
                 INSERT INTO intelligence_items(
@@ -4621,7 +4635,7 @@ def _promote_candidate(
                     verification_status, verification_reason,
                     user_status, created_at, updated_at
                 )
-                VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '', ?, NULL, NULL, '', '', '[]', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?)
+                VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '', ?, NULL, NULL, '', ?, '[]', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?)
                 """,
                 (
                     item_id,
@@ -4635,6 +4649,7 @@ def _promote_candidate(
                     to_json(card.key_points),
                     card.analysis,
                     to_json(["已核验资料", card.dimension, *[tag for tag in verification.mapped_tags if tag != card.dimension][:2]]),
+                    _suggested_action_text,
                     _source_display_name(draft),
                     draft.hit.url,
                     published_at,

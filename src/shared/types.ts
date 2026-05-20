@@ -7799,3 +7799,30 @@ export interface BrandMirrorSnapshot {
   error: string | null;
   createdAt: string;
 }
+
+// P14-D 战略推演树 (从战略陪伴 .md 抽出的应然结构)
+export interface BrandStrategyStakeholder {
+  name: string;
+  rationale?: string;
+  distinguishingFeature?: string;
+  coreMessage: string;
+  desiredAction: string;
+  keyExamples?: string[];
+}
+
+export interface BrandStrategyExtract {
+  clientId: string;
+  strategicObjective: string;
+  strategicObjectiveSources: string[];
+  methodology: string;
+  methodologySources: string[];
+  stakeholders: BrandStrategyStakeholder[];
+  sourceStrategyMdHash: string;
+  sourceMethodologyMdHash: string;
+  llmModel: string;
+  error: string | null;
+  extractedAt: string;
+  confirmedBy: string | null;
+  confirmedAt: string | null;
+  isStale: boolean;
+}
