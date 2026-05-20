@@ -70,6 +70,7 @@ def _profile():
 
 
 def _employees():
+    """混合状态员工(reviewer W3:测过滤行为不能只用 approved 用户)"""
     return [
         {"id": "user_guyuan", "fullName": "顾源源", "email": "guyuan@klngo.org",
          "primaryRole": "admin", "accountStatus": "approved",
@@ -87,6 +88,16 @@ def _employees():
          "primaryRole": "admin", "accountStatus": "approved",
          "membershipStatus": "approved", "departmentId": None,
          "isDepartmentLead": True, "updatedAt": "2026-05-19T07:11:27"},
+        # pending:等审批,不应在默认 list_users() 里出现
+        {"id": "emp_pending_test", "fullName": "申请中员工", "email": "p@k.org",
+         "primaryRole": "employee", "accountStatus": "pending",
+         "membershipStatus": "pending", "departmentId": None,
+         "isDepartmentLead": False, "updatedAt": "2026-05-20T01:00:00"},
+        # disabled:被禁,不应在默认 list_users() 里出现
+        {"id": "emp_disabled_test", "fullName": "禁用员工", "email": "d@k.org",
+         "primaryRole": "employee", "accountStatus": "disabled",
+         "membershipStatus": "approved", "departmentId": "department_b3zvoei7",
+         "isDepartmentLead": False, "updatedAt": "2026-05-15T10:00:00"},
     ]
 
 
@@ -193,12 +204,33 @@ def test_list_users_by_department(directory):
 
 
 @pytest.mark.integration
-def test_list_users_filter_by_status(directory):
-    users = directory.list_users(account_status="approved")
+def test_list_users_default_excludes_pending_and_disabled(directory):
+    """默认 status='approved',pending/disabled 用户不应出现(reviewer W3)"""
+    users = directory.list_users()  # 默认参数
+    names = {u.full_name for u in users}
+    assert "顾源源" in names
+    assert "申请中员工" not in names  # pending 被过滤
+    assert "禁用员工" not in names      # disabled 被过滤
     assert len(users) == 4
-    # 不存在的 status
-    users = directory.list_users(account_status="pending")
-    assert len(users) == 0
+
+
+@pytest.mark.integration
+def test_list_users_explicit_status_filter(directory):
+    """显式过滤特定 status 能拿到对应用户(reviewer W3)"""
+    pending_users = directory.list_users(account_status="pending")
+    assert {u.full_name for u in pending_users} == {"申请中员工"}
+
+    disabled_users = directory.list_users(account_status="disabled")
+    assert {u.full_name for u in disabled_users} == {"禁用员工"}
+
+
+@pytest.mark.integration
+def test_list_users_no_status_filter_returns_all(directory):
+    """account_status=None 拿全部用户(reviewer W3:容易被忽略的路径)"""
+    all_users = directory.list_users(account_status=None)
+    assert len(all_users) == 6  # 4 approved + 1 pending + 1 disabled
+    statuses = {u.account_status for u in all_users}
+    assert statuses == {"approved", "pending", "disabled"}
 
 
 @pytest.mark.integration

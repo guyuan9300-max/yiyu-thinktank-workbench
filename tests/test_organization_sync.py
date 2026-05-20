@@ -78,6 +78,7 @@ def _profile_v1() -> dict:
 
 
 def _employees_v1() -> list[dict]:
+    """模拟真实生产员工列表 · 混合 approved/pending/disabled 状态(reviewer W3 修)"""
     return [
         {"id": "user_guyuan", "fullName": "顾源源", "email": "guyuan@klngo.org",
          "primaryRole": "admin", "accountStatus": "approved",
@@ -98,6 +99,16 @@ def _employees_v1() -> list[dict]:
          "membershipStatus": "approved", "departmentId": "department_b3zvoei7",
          "departmentName": "合作发展部", "isDepartmentLead": True,
          "updatedAt": "2026-05-19T07:11:27"},
+        # pending:已申请但未审批
+        {"id": "emp_pending_001", "fullName": "申请中员工", "email": "pending@klngo.org",
+         "primaryRole": "employee", "accountStatus": "pending",
+         "membershipStatus": "pending", "departmentId": None,
+         "isDepartmentLead": False, "updatedAt": "2026-05-20T01:00:00"},
+        # disabled:被禁用
+        {"id": "emp_disabled_001", "fullName": "已禁用员工", "email": "disabled@klngo.org",
+         "primaryRole": "employee", "accountStatus": "disabled",
+         "membershipStatus": "approved", "departmentId": "department_b3zvoei7",
+         "isDepartmentLead": False, "updatedAt": "2026-05-15T10:00:00"},
     ]
 
 
@@ -313,6 +324,77 @@ def test_derive_cru_disabled_keeps_table_untouched(db: Database):
         now_iso=lambda: "2026-05-20T13:00:00",
     )
     assert len(db.fetchall("SELECT 1 FROM mirror_client_related_users")) == 1
+
+
+@pytest.mark.integration
+def test_sync_includes_pending_and_disabled_users(db: Database):
+    """sync 把所有 accountStatus 的用户都写进 mirror,过滤交给查询层(reviewer W3)"""
+    sync_organization_directory(
+        db, cloud_base_url="http://t", cloud_token="x",
+        derive_cru_from_local=False,
+        http_get=_make_mock_http(_profile_v1(), _employees_v1()),
+        now_iso=lambda: "2026-05-20T12:00:00",
+    )
+    # pending + disabled 用户都应该在 mirror 表里
+    statuses = {r["account_status"] for r in db.fetchall("SELECT account_status FROM mirror_users")}
+    assert "approved" in statuses
+    assert "pending" in statuses
+    assert "disabled" in statuses
+
+
+@pytest.mark.integration
+def test_http_401_token_expired_keeps_old_mirror(db: Database):
+    """HTTP 401(token 过期)→ sync 失败,旧 mirror 保留(reviewer W3)"""
+    # 先有数据
+    sync_organization_directory(
+        db, cloud_base_url="http://t", cloud_token="x",
+        derive_cru_from_local=False,
+        http_get=_make_mock_http(_profile_v1(), _employees_v1()),
+        now_iso=lambda: "2026-05-20T12:00:00",
+    )
+    before_count = len(db.fetchall("SELECT 1 FROM mirror_users"))
+    assert before_count > 0
+
+    # 模拟 token 过期 → HTTP 401
+    def http_401(base_url, path, token, **kwargs):
+        raise urllib.error.HTTPError(
+            url=base_url + path, code=401, msg="Unauthorized",
+            hdrs=None, fp=None,  # type: ignore[arg-type]
+        )
+
+    report = sync_organization_directory(
+        db, cloud_base_url="http://t", cloud_token="x",
+        derive_cru_from_local=False,
+        http_get=http_401,
+        now_iso=lambda: "2026-05-20T13:00:00",
+    )
+    assert report.status == "failed"
+    assert "401" in (report.error or "") or "http" in (report.error or "")
+    # 老数据保留
+    after_count = len(db.fetchall("SELECT 1 FROM mirror_users"))
+    assert after_count == before_count
+
+
+@pytest.mark.integration
+def test_malformed_json_response_returns_failed(db: Database):
+    """云端返回结构不对(没 organization key)→ sync 失败,不污染本地(reviewer W3)"""
+    def http_bad_shape(base_url, path, token, **kwargs):
+        if path == "/api/v1/settings/org-model/profile":
+            return {"unexpected": "shape"}  # 缺少 organization key
+        if path == "/api/v1/employees/directory":
+            return []
+        raise ValueError(path)
+
+    report = sync_organization_directory(
+        db, cloud_base_url="http://t", cloud_token="x",
+        derive_cru_from_local=False,
+        http_get=http_bad_shape,
+        now_iso=lambda: "2026-05-20T12:00:00",
+    )
+    assert report.status == "failed"
+    assert "shape" in (report.error or "") or "organization" in (report.error or "")
+    # mirror 表里没有任何 row
+    assert len(db.fetchall("SELECT 1 FROM mirror_users")) == 0
 
 
 @pytest.mark.integration
