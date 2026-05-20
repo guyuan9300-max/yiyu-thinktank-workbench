@@ -1125,6 +1125,51 @@ def build_client_file_catalog(
     return "\n".join(lines)
 
 
+def _brand_strategy_block(
+    brand_strategy: dict[str, object] | None,
+    *,
+    budget: int,
+) -> str:
+    """段 7: 客户战略主张+方法学+应然相关方 (来自 brand_strategy_extractor 抽取).
+
+    数据来源是用户上传的 strategy.md / methodology.md → brand_strategy_extractor LLM
+    抽出来的结构化"战略骨架". 给 chat 主答案 prompt 一个明确的"客户战略锚点", 让 LLM
+    在回答里基于真战略 (心智素养 / 县域复制 / 应然相关方) 推导, 不是凭空编造方向.
+    """
+    if not isinstance(brand_strategy, dict):
+        return ""
+    so = _clean_text(brand_strategy.get("strategicObjective") or "", limit=400)
+    methodology = _clean_text(brand_strategy.get("methodology") or "", limit=400)
+    stakeholders_raw = brand_strategy.get("stakeholders") or []
+    stakeholder_names: list[str] = []
+    for s in stakeholders_raw[:10]:
+        if isinstance(s, dict):
+            name = _clean_text(s.get("name") or "", limit=24)
+            if name:
+                stakeholder_names.append(name)
+
+    if not so and not methodology and not stakeholder_names:
+        return ""
+
+    lines: list[str] = ["【客户战略骨架（用户已上传 strategy.md + methodology.md 的结构化抽取）】"]
+    used = len(lines[0])
+    if so:
+        line = f"\n战略主张：{so}"
+        if used + len(line) <= budget:
+            lines.append(line)
+            used += len(line)
+    if methodology:
+        line = f"\n方法学：{methodology}"
+        if used + len(line) <= budget:
+            lines.append(line)
+            used += len(line)
+    if stakeholder_names:
+        line = f"\n应然关注相关方：{'、'.join(stakeholder_names[:8])}"
+        if used + len(line) <= budget:
+            lines.append(line)
+    return "\n".join(lines)
+
+
 def build_strategic_pack(
     workspace_snapshot: ClientWorkspaceResponse | None,
     *,
@@ -1136,6 +1181,8 @@ def build_strategic_pack(
     chat_insight_budget: int = 2400,
     documents_budget: int = 1500,
     notebook_budget: int = 900,
+    brand_strategy: dict[str, object] | None = None,
+    brand_strategy_budget: int = 1200,
 ) -> str:
     """构造"战略素材包"：组织 DNA + 已采纳判断推导 + 项目演进时间线 + 历史 chat 沉淀 + 文档目录 + 组织记忆。
 
@@ -1152,6 +1199,12 @@ def build_strategic_pack(
         return ""
 
     sections: list[str] = []
+
+    # 段 0: 客户战略骨架 (来自用户上传的 strategy.md/methodology.md, 经 brand_strategy_extractor 抽取).
+    # 放在最前面是因为这是 chat 答案的"战略锚点", 后面所有素材都应该围绕这个锚点解读.
+    brand_strategy_block_text = _brand_strategy_block(brand_strategy, budget=brand_strategy_budget)
+    if brand_strategy_block_text:
+        sections.append(brand_strategy_block_text)
 
     # 段 1：组织 DNA（差异化定位 / 赛道边界 / 核心论点）
     dna_block = _strategic_dna_block(workspace_snapshot, prompt=prompt, budget=dna_budget)

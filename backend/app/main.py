@@ -43285,9 +43285,18 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
 
                 try:
                     # R1：构造"战略素材包"喂给 Pass 1（出大纲），避免大纲只能围绕"项目进展"组织。
+                    # P14-D 链路: 把用户上传 strategy.md/methodology.md 的结构化抽取作为
+                    # 战略锚点注入, 让 chat 主答案基于客户真战略推导, 不凭空编造方向.
+                    _multipass_brand_strategy: dict | None = None
+                    try:
+                        from app.services.brand_strategy_extractor import get_brand_strategy_extract
+                        _multipass_brand_strategy = get_brand_strategy_extract(state.db, client_id=client_id)
+                    except Exception:
+                        _multipass_brand_strategy = None
                     multipass_strategic_pack = build_strategic_pack(
                         workspace_snapshot,
                         prompt=prompt_for_context,
+                        brand_strategy=_multipass_brand_strategy,
                     ) or ""
                     # P-D.1: multipass 也注入字典权威包 + universal/contract 解构字段，
                     # 让深度思考模式的回答也基于字典 verified 事实展开，不绕过数据中心。
@@ -43407,9 +43416,17 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                             if isinstance(existing_strategic, str) and existing_strategic.strip():
                                 single_pass_strategic_pack = existing_strategic
                             else:
+                                # P14-D 链路 (single-pass): 同 multipass, 注入 brand_strategy 锚点
+                                _single_brand_strategy: dict | None = None
+                                try:
+                                    from app.services.brand_strategy_extractor import get_brand_strategy_extract
+                                    _single_brand_strategy = get_brand_strategy_extract(state.db, client_id=client_id)
+                                except Exception:
+                                    _single_brand_strategy = None
                                 single_pass_strategic_pack = build_strategic_pack(
                                     workspace_snapshot,
                                     prompt=prompt_for_context,
+                                    brand_strategy=_single_brand_strategy,
                                 ) or ""
                     except Exception as exc:  # noqa: BLE001 — strategic_pack 失败不阻断单次回答
                         logger.warning("[single-pass] build_strategic_pack failed: %s", exc)
