@@ -270,7 +270,38 @@ def _clean_timely_query_atom(term: str) -> str:
     text = re.sub(r"^(与|和|及|以及)", "", text)
     text = re.sub(r"(等有关的?|相关的?|有关的?)", "", text)
     text = _clean_text(text, max_len=60)
-    return "" if _is_timely_query_noise(text) else text
+    if _is_timely_query_noise(text):
+        return ""
+    if _is_too_generic_timely_atom(text):
+        return ""
+    return text
+
+
+# M6: 太泛的 atom — 当它作为 atom 跟 route_terms 组合, 抓回来的全是无关泛资讯
+# 例: "广东" × "通知" / "项目" × "北京" / "项目" × "公益创投"
+# 这些 atom 应该被 BS atom (县教育局/学术合作方/心智素养) 替换掉, 不能占住 atom 池
+_TIMELY_ATOM_BLOCKLIST: frozenset[str] = frozenset({
+    # 省/直辖市 - 单独作为 atom 太泛
+    "北京", "上海", "天津", "重庆",
+    "广东", "广州", "深圳", "佛山", "东莞", "珠海", "中山", "湛江",
+    "浙江", "杭州", "宁波",
+    "江苏", "南京", "苏州",
+    "山东", "济南", "青岛",
+    "四川", "成都", "湖南", "湖北", "武汉", "福建", "厦门", "广西",
+    "河南", "河北", "辽宁", "安徽", "云南", "贵州", "陕西", "西安",
+    "新疆", "西藏", "内蒙古", "宁夏", "甘肃", "海南", "吉林", "黑龙江", "山西",
+    # 单字通用名词 — 几乎不带语义
+    "项目", "工作",
+})
+
+
+def _is_too_generic_timely_atom(atom: str) -> bool:
+    """识别太泛的 atom (纯行政区/通用名词). 这些 atom 跟 route_terms 组合产生的 query
+    召回率高但跟客户战略无关, 大量浪费搜索 quota.
+
+    被 block 的 atom 应当让位给 brand_strategy 注入的应然相关方 (县教育局/学术合作方等)
+    或者 timely_focus_atoms (用户在 focus 里写的真关注点)."""
+    return atom in _TIMELY_ATOM_BLOCKLIST
 
 
 def _timely_route_terms(route_label: str, fallback_terms: tuple[str, ...]) -> tuple[str, ...]:
@@ -796,6 +827,25 @@ def _make_intent(
     )
 
 
+def _brand_strategy_atoms(brand_strategy: object | None) -> list[str]:
+    """从 brand_strategy_extract 拿可作搜索 atom 的核心短语.
+
+    主要来源 stakeholders[].name — 它们是 LLM 抽取时已经结构化的"应然相关方"
+    名字, 比如"县教育局"/"学术合作方"/"99公益日单次捐赠公众",
+    天然适合作为 timely_intelligence 路线 × atom 组合的左侧词,
+    比规则引擎机械拼"项目 × 广东"靠战略真信号近得多.
+    """
+    if not isinstance(brand_strategy, dict):
+        return []
+    atoms: list[str] = []
+    for item in brand_strategy.get("stakeholders") or []:
+        if isinstance(item, dict):
+            name = _clean_text(item.get("name") or "", max_len=20)
+            if name:
+                atoms.append(name)
+    return _dedupe(atoms, limit=10)
+
+
 def _build_rule_intents(
     *,
     scope: IntelligenceSearchScope,
@@ -980,6 +1030,11 @@ def _build_rule_intents(
             ],
             limit=30,
         ) or [domain or "公益"]
+        # 注入 brand_strategy 应然相关方 → 让规则 query 含"县教育局"/"学术合作方"等战略锐词,
+        # 直接替换掉原本规则引擎机械拼出的"项目 × 广东""项目 × 北京"这种泛词
+        bs_atoms = _brand_strategy_atoms(context.get("brandStrategy"))
+        if bs_atoms:
+            timely_atoms = _dedupe([*bs_atoms, *timely_atoms], limit=30)
         feedback_terms = context.get("feedbackTerms") if isinstance(context.get("feedbackTerms"), dict) else {}
         timely_feedback = feedback_terms.get("timely_intelligence") if isinstance(feedback_terms.get("timely_intelligence"), dict) else {}
         for line in _as_text_list(timely_feedback.get("positive"), limit=6):
@@ -1006,6 +1061,19 @@ def _build_rule_intents(
                     route_specs.append((label, keywords, atoms))
         if not route_specs:
             route_specs = [(label, terms, timely_atoms[:8]) for label, terms in TIMELY_SEARCH_ROUTES]
+
+        # M5: 把 brand_strategy 应然相关方词作为最优先 route, 抢 route_index 1-N. 这样
+        # BS 词的 query priority = 98-1, 98-2, ... 跟规则引擎泛词(广东/项目/北京)平起平坐
+        # 甚至更高. 不这样做的话 strategy_routes 自身 atoms(含行政区)会抢前 priority 槽位,
+        # BS 词被压到 P79-88, 搜索 quota 全被泛词吃掉.
+        if bs_atoms:
+            bs_route_spec = (
+                "战略相关方机会",
+                ("机会", "采购", "项目", "申报", "合作", "通知"),
+                bs_atoms,
+            )
+            route_specs.insert(0, bs_route_spec)
+
         for route_label, route_terms, route_atoms in route_specs:
             atoms_for_route = _dedupe([*route_atoms, *timely_atoms], limit=10)
             route_query_terms = _timely_route_terms(route_label, route_terms)
@@ -1116,6 +1184,34 @@ def _build_ai_prompt(context: dict[str, object], content_kind: str) -> tuple[str
             gap_lines.extend(_as_text_list([item.get("title"), item.get("summary")], limit=2))
     if gap_lines:
         prompt_lines.append("组织缺口：" + "、".join(_dedupe(gap_lines, limit=6)))
+
+    # 用户上传的战略文档抽取结果 (brand_strategy_extractor 输出). 没数据时跳过.
+    # 这块比 client.intro/domain 等浅信息更锐, 给 LLM 一个"客户真实想做的事"的钉子,
+    # 避免它只从机构名+赛道泛泛展开, 抓出来的查询词会更贴战略而不是同赛道泛词.
+    brand_strategy = context.get("brandStrategy") if isinstance(context.get("brandStrategy"), dict) else None
+    if brand_strategy:
+        so = _clean_text(brand_strategy.get("strategicObjective"), max_len=240)
+        methodology_txt = _clean_text(brand_strategy.get("methodology"), max_len=240)
+        if so:
+            prompt_lines.append(f"客户战略主张（用户已确认）：{so}")
+        if methodology_txt:
+            prompt_lines.append(f"客户方法学（用户已确认）：{methodology_txt}")
+        stakeholders_raw = brand_strategy.get("stakeholders") or []
+        stakeholder_names: list[str] = []
+        for s in stakeholders_raw[:10]:
+            if isinstance(s, dict):
+                name = _clean_text(s.get("name"), max_len=20)
+                if name:
+                    stakeholder_names.append(name)
+            elif isinstance(s, str):
+                name = _clean_text(s, max_len=20)
+                if name:
+                    stakeholder_names.append(name)
+        if stakeholder_names:
+            prompt_lines.append(
+                "应然关注的相关方（用户战略推导）：" + "、".join(stakeholder_names[:8])
+            )
+
     if content_kind == "profile_completion":
         prompt_lines.append("目标：生成用于补齐客户/项目固定资料的中文公开源查询词，优先官网、信息公开、年报、项目报告、合作方、服务对象规模、成效资料。")
     else:
@@ -1195,6 +1291,19 @@ def _cap_intents(intents: list[GeneratedSearchIntent]) -> list[GeneratedSearchIn
         kind_items = [item for item in intents if item.content_kind == content_kind and item.query]
         kind_items.sort(key=lambda item: (-item.priority, len(item.query), item.query))
         seen: set[str] = set()
+
+        # ★ 优先保留 AI (brand_strategy 注入) 生成的查询词. 这些是基于用户上传的 strategy.md /
+        # methodology.md 抽出来的"战略锐词" (县教育局/心智素养/县域复制 等), 比规则引擎的
+        # "项目 × 行政区"机械笛卡尔积更命中真实战略, 不能被规则泛词挤掉. 上限 6 条防止 LLM 跑偏.
+        ai_items = [item for item in kind_items if "ai_expansion" in (item.source_inputs or ())]
+        for ai_item in ai_items[:6]:
+            key = re.sub(r"\s+", "", ai_item.query).lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            capped.append(ai_item)
+            if sum(1 for existing in capped if existing.content_kind == content_kind) >= limits.get(content_kind, 12):
+                break
 
         if content_kind == "timely_intelligence":
             for route_label, _route_terms in TIMELY_SEARCH_ROUTES:
@@ -1320,6 +1429,20 @@ def generate_intelligence_search_intents(
             project_module_id=scope.project_module_id,
             display_name=scope.display_name,
         ).as_payload()
+
+    # 用户上传的 strategy.md / methodology.md → brand_strategy_extractor 抽取的结构化结果
+    # 注入到 context 给 _build_ai_prompt 用. 没抽取 / 抽取为空 时跳过, fallback 到旧 prompt
+    if scope.client_id:
+        try:
+            from app.services.brand_strategy_extractor import get_brand_strategy_extract
+            extract = get_brand_strategy_extract(db, client_id=scope.client_id)
+            if extract and (
+                (extract.get("strategicObjective") or "").strip()
+                or (extract.get("methodology") or "").strip()
+            ):
+                context["brandStrategy"] = extract
+        except Exception:
+            pass  # brand_strategy 失败不阻塞情报站主链
     input_hash = _context_hash(context, content_kinds)
     timestamp = now_iso()
     cycle_hours = {kind: _refresh_cycle_hours(db, kind) for kind in CONTENT_KINDS}

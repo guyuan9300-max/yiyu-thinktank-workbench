@@ -45,16 +45,18 @@ from app.services.narrative_collector import (
 # ============================================================
 
 DIMENSIONS: tuple[str, ...] = (
-    "essence",         # Layer 1
-    "cooperation",     # Layer 2 (新)
-    "business_intro",  # Layer 3 (新)
-    "people",          # Layer 4 (语义升级)
-    "timeline",        # Layer 5 (新, 替代 history)
-    "next_steps",      # Layer 6 (替代 commitments + next)
+    "essence",          # Layer 1 (组织介绍)
+    # strategic_dna (Layer 1.5) — 战略定位+发展路径, 由用户上传 .md 文档 (不让 LLM 生成)
+    # 见 backend/app/main.py /clients/:id/strategic-docs endpoint + 前端独立组件
+    "cooperation",      # Layer 2
+    "business_intro",   # Layer 3
+    "people",           # Layer 4
+    "timeline",         # Layer 5
+    "next_steps",       # Layer 6
 )
 
 DIMENSION_LABELS = {
-    "essence": "项目本质",
+    "essence": "组织介绍",
     "cooperation": "合作关系",
     "business_intro": "业务介绍",
     "people": "关键人物",
@@ -64,7 +66,7 @@ DIMENSION_LABELS = {
 
 DIMENSION_BRIEF = {
     "essence": (
-        "**Layer 1 · 项目本质 — 客户机构是谁** (后面所有层的基础)"
+        "**Layer 1 · 组织介绍 — 客户机构是谁** (后面所有层的基础)"
         "\n  5-8 句话**纯介绍**: 这家客户机构做什么 (赛道+业务领域) / 在行业的定位 / 创立背景 / 影响力规模 / 总部位置 / 服务对象"
         "\n  数据来源: atomic_facts (位置/使命/愿景/赛道等) + entities (organization) + v2_documents 标题"
         "\n  **严格禁止**:"
@@ -72,7 +74,8 @@ DIMENSION_BRIEF = {
         "\n    2. **不要做顾问主观判断** — essence 是介绍机构事实, 不是顾问视角"
         "\n    3. **任何层都禁用『我作为顾问看/我推荐/我判断/我觉得』第一人称套话** (这是 prompt 模板泄漏, 客户看着不专业)"
         "\n    4. 不要讲『益语跟客户的合作』 (那是 Layer 2) — 严格分离视角"
-        "\n    5. 不要写 fact 的因果/目的归因 (那是 e 类隐含归因)"
+        "\n    5. 不要讲『客户的战略定位/方法论』 (那是用户上传的 strategic_docs, 不在 narrative 范围)"
+        "\n    6. 不要写 fact 的因果/目的归因 (那是 e 类隐含归因)"
     ),
     "cooperation": (
         "**Layer 2 · 合作关系 — 益语跟客户的服务关系** (基于 Layer 1 机构定位)"
@@ -249,10 +252,11 @@ SYSTEM_PROMPT = """你是已经跟这个项目走了**半年**的高级战略顾
 == 输出必须层层递进, 后层建立在前层之上, 不能扁平罗列 ==
 ============================================================
 
-  Layer 1 (essence) · **项目本质 — 客户机构是谁** (所有后面层的基础)
+  Layer 1 (essence) · **组织介绍 — 客户机构是谁** (所有后面层的基础)
        讲: 这家客户机构做什么 (赛道+业务领域) / 行业定位 / 创立背景 / 影响力规模
-       *只讲『客户机构本身』, 不讲『益语跟客户的合作』 (那是 Layer 2)*
-       *如果这层模糊, 后面全模糊*
+       *只讲『客户机构本身的基本情况』*
+       *不讲『益语跟客户的合作』 (那是 Layer 2)*
+       *不讲『客户的战略定位与方法论』 (那是用户上传的 strategic_docs, 不归 narrative 管)*
 
   Layer 2 (cooperation) · **合作关系 — 益语跟这家客户的服务关系** (基于 Layer 1 机构定位)
        讲: (a) 益语为这家客户提供什么服务 (战略陪伴/方法论沉淀/具体内容)
@@ -921,6 +925,17 @@ def generate_narrative_dimensions(
 
     prompt = build_user_prompt(bundle)
     system_prompt = build_system_prompt(bundle)
+
+    # 连锁克制注入: 客户上传战略文档 + 方法论文档时, 让 LLM 基于真文档写;
+    # 没上传时, 强制 LLM 在 next_steps 维度声明"未配置, 判断可能不准".
+    # 防止 LLM 在没有真战略基线时编造结论误导下游决策.
+    if db is not None:
+        try:
+            from app.services.strategic_context import get_strategic_context_for_prompt
+            _strat_ctx = get_strategic_context_for_prompt(db.conn if hasattr(db, "conn") else db, bundle.client_id)
+            prompt = _strat_ctx["prompt_prefix"] + prompt
+        except Exception:
+            pass  # helper 失败不阻塞 narrative 生成
     try:
         result = ai._qwen_generate(  # noqa: SLF001 — intentional reuse
             prompt,
