@@ -63,6 +63,50 @@ export function getWorkspaceFallbackNotice(input: {
   };
 }
 
+/**
+ * 客户工作台问答 chat 输出抑制 — 去掉 LLM 在正文里裸露的文件名引用 (例如
+ * "（见 strategy.md）" / "[methodology.md]" / "在 survey.docx 中提到的...")。
+ *
+ * Why: 战略文档 prompt 注入后, LLM 会在正文里直接引用文件名, 看着像 prompt
+ * 模板泄漏, 客户看着不专业. 我们在前端 chat 渲染前清掉这些 token,
+ * 同时把常见的 strategy.md / methodology.md 替换为友好中文标签.
+ *
+ * How to apply: 在 chat 消息渲染前调用; 不要应用到 strategic narrative
+ * 维度卡片渲染 (那边明确告诉用户"溯源到 strategy.md / methodology.md" 是 feature).
+ */
+export function stripFileCitations(text: string | null | undefined): string {
+  if (!text) return '';
+  let result = String(text);
+
+  // 1. 整段括号引用 (中英文括号 + 包含文件后缀的句子级片段) — 整段删
+  //    例: (见 strategy.md) / （来源: strategy.md, methodology.md）
+  //    .md/.markdown/.docx/.pdf/.txt 都覆盖
+  //    注: （ = （  ） = )  用 unicode 转义避免源码编码问题
+  result = result.replace(/\s*\(([^()]*?\.(?:md|markdown|docx|pdf|txt))[^()]*\)/gi, '');
+  result = result.replace(/\s*（([^（）]*?\.(?:md|markdown|docx|pdf|txt))[^（）]*）/gi, '');
+
+  // 2. 方括号引用: [xxx.md]
+  result = result.replace(/\s*\[[^[\]]*?\.(?:md|markdown|docx|pdf|txt)[^[\]]*\]/gi, '');
+
+  // 3. 已知核心文件名 → 友好中文标签 (保留语义)
+  result = result.replace(/\bstrategy\.md\b/gi, '战略文档');
+  result = result.replace(/\bmethodology\.md\b/gi, '方法论文档');
+
+  // 4. 其他未知裸文件名 token (例: survey.docx) → 通用标签 "客户资料"
+  //    避免漏过的文件名继续暴露在正文里
+  result = result.replace(/\b[\w\-]+\.(?:md|markdown|docx|pdf|txt)\b/gi, '客户资料');
+
+  // 5. 清理 step 1-2 删括号留下的相邻标点 + 多余空白
+  result = result.replace(/[，,、]\s*([。！？\n])/g, '$1');
+  result = result.replace(/[，,]\s*[，,]/g, '，');
+  result = result.replace(/\(\s*\)/g, '');
+  result = result.replace(/（\s*）/g, '');
+  result = result.replace(/[ \t]{2,}/g, ' ');
+  result = result.replace(/\n{3,}/g, '\n\n');
+
+  return result.trim();
+}
+
 export function getWorkspaceRuntimeMismatchNotice(input: {
   sourceIntegrityMatch?: boolean | null;
   sourceIntegrityWarning?: string | null;
