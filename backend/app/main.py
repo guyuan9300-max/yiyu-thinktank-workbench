@@ -53035,6 +53035,81 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             "updatedAt": now_ts,
         }
 
+    # ═══════════════════════════════════════════════════════════════════════════
+    # v2.1 local organization API · 走 mirror 表 + OrganizationDirectory
+    # SSOT 铁律:前端读部门/员工只能走这里(不能直接 cloud_session_user.departmentName)
+    # ═══════════════════════════════════════════════════════════════════════════
+
+    @app.get("/api/v1/local/organization/profile")
+    def get_local_organization_profile() -> dict:
+        """从本地 mirror 表读完整组织 profile · 前端 useOrganization hook 用"""
+        from app.modules.organization import get_organization_directory
+        directory = get_organization_directory(state.db)
+        org = directory.get_organization()
+        return {
+            "organization": {
+                "id": org.id,
+                "name": org.name,
+                "slug": org.slug,
+                "syncedAt": org.synced_from_cloud_at,
+            } if org else None,
+            "departments": [
+                {
+                    "id": d.id,
+                    "name": d.name,
+                    "color": d.color,
+                    "leaderUserId": d.leader_user_id,
+                    "leaderName": d.leader_name,
+                    "active": d.active,
+                }
+                for d in directory.list_all_departments()
+            ],
+            "users": [
+                {
+                    "id": u.id,
+                    "fullName": u.full_name,
+                    "email": u.email,
+                    "departmentId": u.department_id,
+                    "primaryRole": u.primary_role,
+                    "accountStatus": u.account_status,
+                    "isDepartmentLead": u.is_department_lead,
+                    "isManager": u.is_manager,
+                    "managerUserId": u.manager_user_id,
+                    "taskEditScope": u.task_edit_scope,
+                    "canApproveTasks": u.can_approve_tasks,
+                    "canReassignTasks": u.can_reassign_tasks,
+                    "canChangeDeadline": u.can_change_deadline,
+                    "projectRoleLabels": list(u.project_role_labels),
+                    "avatarUrl": u.avatar_url,
+                }
+                for u in directory.list_users()
+            ],
+        }
+
+    @app.post("/api/v1/local/organization/sync")
+    def trigger_organization_sync() -> dict:
+        """触发从火山云同步组织数据到本地 mirror 表"""
+        from app.modules.organization import sync_organization_directory
+        base_url = cloud_api_base_url()
+        token = get_cloud_token()
+        if not base_url or not token:
+            raise HTTPException(status_code=400, detail="cloud not configured")
+        report = sync_organization_directory(
+            state.db,
+            cloud_base_url=base_url,
+            cloud_token=token,
+            derive_cru_from_local=True,
+        )
+        return {
+            "status": report.status,
+            "syncedAt": report.synced_at,
+            "error": report.error,
+            "tables": [
+                {"table": t.table, "upserted": t.upserted, "deleted": t.deleted, "skipped": t.skipped}
+                for t in report.tables
+            ],
+        }
+
     return app
 
 
