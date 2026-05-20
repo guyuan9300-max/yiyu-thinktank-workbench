@@ -17,6 +17,7 @@ import {
   getClientDuplicateDocuments,
   getClientKnowledgeStatus,
   getClientStrategicPulse,
+  regenerateClientNarrative,
   resolveDuplicateDocuments,
   getStrategicThoughts,
   refreshClientDigitalAssetNarrative,
@@ -2340,23 +2341,24 @@ export function StrategicBrainView({
         question: 'manual:全局刷新理解',
         intentProfile: 'client_overview',
       });
-      // 同步刷新研判(立刻跑 LLM 生成 strategic_thought_insights)
-      try {
-        const response = await refreshStrategicThoughts({
-          clientId: thoughtClientId,
-          limit: 8,
-        });
-        const items = response.items || [];
+      // 并行触发 narrative regenerate(客户档案/事实澄清 tab 看的)+ refresh thoughts(思考 tab)
+      // 这两个都跑 LLM, 各自独立,不阻塞彼此
+      const [thoughtsResult] = await Promise.allSettled([
+        refreshStrategicThoughts({ clientId: thoughtClientId, limit: 8 }),
+        regenerateClientNarrative(thoughtClientId, {
+          trigger: 'manual_global_refresh',
+          force: true,
+        }),
+      ]);
+      if (thoughtsResult.status === 'fulfilled') {
+        const items = thoughtsResult.value.items || [];
         setThoughts(items);
-        // 如果产生了新研判,自动切到 thoughts tab 让用户立刻看到
         if (items.length > 0) {
           setActiveTab('thoughts');
         }
-      } catch {
-        // 研判刷新失败不阻塞主流程
       }
-      setGlobalRefreshMsg('✓ AI 理解已刷新,请看「思考」tab');
-      window.setTimeout(() => setGlobalRefreshMsg(null), 10000);
+      setGlobalRefreshMsg('✓ AI 理解已刷新,客户档案/思考 都已更新,刷新页面或切 tab 查看');
+      window.setTimeout(() => setGlobalRefreshMsg(null), 12000);
     } catch (error) {
       setGlobalRefreshMsg(error instanceof Error ? `请求失败:${error.message}` : '请求失败');
     } finally {

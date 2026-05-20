@@ -3430,15 +3430,17 @@ function BrandStrategyTreeCard({
         const remaining = sorted.slice(10);
 
         // SVG 几何参数
-        const SVG_SIZE = 660;
+        const SVG_SIZE = 680;
         const CX = SVG_SIZE / 2;
         const CY = SVG_SIZE / 2;
-        const R_CENTER = 88;     // 中心圆半径
-        const R_INNER = 165;     // name 圈外边界
-        const R_OUTER = 310;     // 整个环外边界
-        const SECTOR_ANGLE = 36; // 360 / 10
-        const START_ANGLE = -90; // 12 点钟方向 = -90° (SVG 坐标 0° 是 3 点钟)
-        const GAP_DEG = 2.0;     // 扇形之间的留白角度 (留白更宽 = 花瓣感)
+        const R_CENTER = 90;        // 中心圆半径
+        const R_INNER = 160;        // name 圈外边界 (10 段等大)
+        const R_OUTER_MAX = 322;    // 第 1 名花瓣外缘
+        const R_OUTER_MIN = 248;    // 第 10 名花瓣外缘
+        const SECTOR_ANGLE = 36;    // 360 / 10
+        const START_ANGLE = -90;    // 12 点钟方向
+        const GAP_DEG = 2.4;        // 扇形之间的留白角度
+        const R_MAX_DRAW = R_OUTER_MAX + 12; // 整体底盘留空
 
         // 渐变色 (浅 → 深) per tier
         const tierGradients = {
@@ -3479,11 +3481,11 @@ function BrandStrategyTreeCard({
                         id={`grad-${tier}`}
                         cx={CX}
                         cy={CY}
-                        r={R_OUTER}
+                        r={R_OUTER_MAX}
                         gradientUnits="userSpaceOnUse"
                       >
                         <stop offset="0%" stopColor={g.light} />
-                        <stop offset={`${(R_INNER / R_OUTER) * 100}%`} stopColor={g.mid} />
+                        <stop offset={`${(R_INNER / R_OUTER_MAX) * 100}%`} stopColor={g.mid} />
                         <stop offset="100%" stopColor={g.dark} />
                       </radialGradient>
                     );
@@ -3519,7 +3521,7 @@ function BrandStrategyTreeCard({
                 <circle
                   cx={CX}
                   cy={CY}
-                  r={R_OUTER + 6}
+                  r={R_MAX_DRAW}
                   fill="#f8fafc"
                   stroke="#e2e8f0"
                   strokeWidth="1"
@@ -3528,98 +3530,104 @@ function BrandStrategyTreeCard({
                 {top10.map((s, idx) => {
                   const p = MOCK_STAKEHOLDER_PERCEIVABILITY[s.name];
                   if (!p) return null;
+                  const rank = idx + 1;
                   const tierGrad = tierGradients[p.tier];
                   const segStart = START_ANGLE + idx * SECTOR_ANGLE + GAP_DEG / 2;
                   const segEnd = START_ANGLE + (idx + 1) * SECTOR_ANGLE - GAP_DEG / 2;
                   const midAngle = (segStart + segEnd) / 2;
 
-                  // 文字位置 (重新分层, 给字号对比留空间)
-                  const nameRadius = (R_CENTER + R_INNER) / 2 + 4;    // ≈ 130
-                  const scoreRadius = R_INNER + 38;                    // ≈ 203
-                  const detailRadius = scoreRadius + 36;               // ≈ 239
-                  const rankRadius = R_OUTER - 18;                     // ≈ 292
+                  // 花瓣外缘按排名递减 (装饰性错落, 不映射连续 score)
+                  // #1 最长 (R_OUTER_MAX), #10 最短 (R_OUTER_MIN), 中间均匀过渡
+                  const rOuter = R_OUTER_MAX - ((rank - 1) / 9) * (R_OUTER_MAX - R_OUTER_MIN);
+
+                  // 文字位置 — 都用 rOuter 算, 让字始终落在花瓣内
+                  const petalSpan = rOuter - R_INNER;
+                  const nameRadius = (R_CENTER + R_INNER) / 2 + 4;
+                  const scoreRadius = R_INNER + petalSpan * 0.42;
+                  const detailRadius = R_INNER + petalSpan * 0.74;
+                  const rankRadius = rOuter - 16;
 
                   const nameP = polarToCart(CX, CY, nameRadius, midAngle);
                   const scoreP = polarToCart(CX, CY, scoreRadius, midAngle);
                   const detailP = polarToCart(CX, CY, detailRadius, midAngle);
                   const rankP = polarToCart(CX, CY, rankRadius, midAngle);
 
-                  // name 截断
                   const truncName = s.name.length > 7 ? s.name.slice(0, 6) + '…' : s.name;
 
                   return (
                     <g key={`${s.name}-${idx}`}>
-                      {/* 扇形主体 (渐变 fill + drop shadow) */}
+                      {/* 扇形主体 (渐变 fill + drop shadow, 外缘按排名递减) */}
                       <path
-                        d={donutSectorPath(CX, CY, R_CENTER + 6, R_OUTER, segStart, segEnd)}
+                        d={donutSectorPath(CX, CY, R_CENTER + 6, rOuter, segStart, segEnd)}
                         fill={`url(#grad-${p.tier})`}
                         filter="url(#sector-shadow)"
+                        strokeLinejoin="round"
                       />
-                      {/* 扇形内圈高光 (顶面微亮带, 增立体感) */}
+                      {/* 扇形内圈高光 (顶面微亮带) */}
                       <path
                         d={donutSectorPath(CX, CY, R_CENTER + 6, R_CENTER + 14, segStart, segEnd)}
                         fill="white"
                         opacity="0.35"
                       />
-                      {/* 排名小徽章 (最外侧白圆) */}
+                      {/* 排名徽章 (白圆 + tier 色边 + tier 色数字) */}
                       <circle
                         cx={rankP.x}
                         cy={rankP.y}
-                        r="11"
+                        r="12"
                         fill="white"
                         stroke={tierGrad.deep}
-                        strokeWidth="1.5"
+                        strokeWidth="1.8"
                       />
                       <text
                         x={rankP.x}
-                        y={rankP.y + 0.5}
+                        y={rankP.y}
                         textAnchor="middle"
-                        dominantBaseline="central"
-                        fontSize="11"
+                        fontSize="12"
                         fontWeight="800"
                         fill={tierGrad.deep}
+                        dy="0.36em"
                         style={{ fontVariantNumeric: 'tabular-nums' }}
                       >
-                        {idx + 1}
+                        {rank}
                       </text>
-                      {/* score 巨大字 */}
+                      {/* score 巨大字 (用 dy 补偿基线对齐) */}
                       <text
                         x={scoreP.x}
                         y={scoreP.y}
                         textAnchor="middle"
-                        dominantBaseline="central"
-                        fontSize="34"
-                        fontWeight="200"
+                        fontSize="32"
+                        fontWeight="300"
                         fill="#ffffff"
                         filter="url(#score-shadow)"
+                        dy="0.34em"
                         style={{ fontVariantNumeric: 'tabular-nums', letterSpacing: '-1px' }}
                       >
-                        {p.score}
-                        <tspan fontSize="16" dy="-10" fontWeight="400">%</tspan>
+                        <tspan>{p.score}</tspan>
+                        <tspan fontSize="15" dy="-0.55em" fontWeight="400" dx="1">%</tspan>
                       </text>
                       {/* covered / gap 数量 */}
                       <text
                         x={detailP.x}
                         y={detailP.y}
                         textAnchor="middle"
-                        dominantBaseline="central"
                         fontSize="11"
                         fontWeight="700"
                         fill="#ffffff"
                         opacity="0.95"
+                        dy="0.36em"
                       >
                         <tspan>✓{p.covered.length}</tspan>
                         <tspan dx="8">✗{p.gap.length}</tspan>
                       </text>
-                      {/* name (靠近中心, 白底椭圆衬底让字更清晰) */}
+                      {/* name (靠近中心, 加 dy 中文居中补偿) */}
                       <text
                         x={nameP.x}
                         y={nameP.y}
                         textAnchor="middle"
-                        dominantBaseline="central"
                         fontSize="13"
                         fontWeight="800"
                         fill="#1e293b"
+                        dy="0.36em"
                       >
                         {truncName}
                         <title>{s.name}</title>
@@ -3641,24 +3649,24 @@ function BrandStrategyTreeCard({
                 />
                 <text
                   x={CX}
-                  y={CY - 30}
+                  y={CY - 36}
                   textAnchor="middle"
-                  dominantBaseline="central"
                   fontSize="10"
                   fontWeight="700"
                   fill="#6366f1"
                   letterSpacing="3"
+                  dy="0.36em"
                 >
                   品牌外立面
                 </text>
                 <text
                   x={CX}
-                  y={CY - 14}
+                  y={CY - 18}
                   textAnchor="middle"
-                  dominantBaseline="central"
                   fontSize="10"
                   fill="#6b7280"
                   letterSpacing="2"
+                  dy="0.36em"
                 >
                   平均感知度
                 </text>
@@ -3666,22 +3674,22 @@ function BrandStrategyTreeCard({
                   x={CX}
                   y={CY + 14}
                   textAnchor="middle"
-                  dominantBaseline="central"
                   fontSize="46"
                   fontWeight="200"
                   fill="#4338ca"
+                  dy="0.34em"
                   style={{ fontVariantNumeric: 'tabular-nums', letterSpacing: '-2px' }}
                 >
-                  {avg}
-                  <tspan fontSize="22" dy="-14" fontWeight="400">%</tspan>
+                  <tspan>{avg}</tspan>
+                  <tspan fontSize="22" dy="-0.6em" fontWeight="400" dx="2">%</tspan>
                 </text>
                 <text
                   x={CX}
                   y={CY + 46}
                   textAnchor="middle"
-                  dominantBaseline="central"
                   fontSize="10"
                   fontWeight="700"
+                  dy="0.36em"
                   style={{ fontVariantNumeric: 'tabular-nums' }}
                 >
                   <tspan fill="#10b981">✓ {tierCount.covered}</tspan>
@@ -3690,11 +3698,11 @@ function BrandStrategyTreeCard({
                 </text>
                 <text
                   x={CX}
-                  y={CY + 60}
+                  y={CY + 62}
                   textAnchor="middle"
-                  dominantBaseline="central"
                   fontSize="9"
                   fill="#94a3b8"
+                  dy="0.36em"
                 >
                   共 {totalScored} 类相关方
                 </text>
