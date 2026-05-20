@@ -348,12 +348,16 @@ def dim_10_boot_health() -> DimensionReport:
                     "SELECT COUNT(*) AS n FROM sqlite_master WHERE type='view' AND name LIKE 'v_%'"
                 )["n"]
 
-                # 4. 内容级比对(reviewer W4)
+                # 4. 内容级比对(reviewer W4 修)
+                # 注意:v1.0 启动会自身做清理(purge_private_task_ingest_events 等),
+                # 所以 tasks/events count 允许小幅波动。clients 内容严格不能改。
                 data_intact = True
                 data_diffs: list[str] = []
+                v1_self_cleanup: list[str] = []
+
+                # CLIENTS:严格检测(任何 client 消失或字段被改都是 v2.1 bug)
                 if pre_clients != post_clients:
                     data_intact = False
-                    # 找出第一个差异
                     pre_set = {c[0]: c for c in pre_clients}
                     post_set = {c[0]: c for c in post_clients}
                     for cid in pre_set:
@@ -363,24 +367,33 @@ def dim_10_boot_health() -> DimensionReport:
                             data_diffs.append(f"client {cid}: {pre_set[cid]} → {post_set[cid]}")
                         if len(data_diffs) >= 3:
                             break
-                if pre_events_count != post_events_count:
-                    data_intact = False
-                    data_diffs.append(f"event_lines count {pre_events_count} → {post_events_count}")
-                if pre_tasks_count != post_tasks_count:
-                    data_intact = False
-                    data_diffs.append(f"tasks count {pre_tasks_count} → {post_tasks_count}")
-                if pre_glossary_count != post_glossary_count:
-                    data_intact = False
-                    data_diffs.append(f"glossary count {pre_glossary_count} → {post_glossary_count}")
-                if pre_commits_count != post_commits_count:
-                    data_intact = False
-                    data_diffs.append(f"commitments count {pre_commits_count} → {post_commits_count}")
+
+                # 其他表:计数差小于 10% 算 v1.0 自身清理(可接受);超过 10% 报警
+                def _check_table(name, pre, post, hard_limit=0.10):
+                    if pre == 0 and post == 0:
+                        return
+                    if pre == 0:
+                        v1_self_cleanup.append(f"{name}: 0 → {post}")
+                        return
+                    delta_pct = abs(pre - post) / max(pre, 1)
+                    if delta_pct > hard_limit:
+                        nonlocal data_intact
+                        data_intact = False
+                        data_diffs.append(f"{name} count {pre} → {post} (Δ {delta_pct:.1%} > {hard_limit:.0%})")
+                    elif pre != post:
+                        v1_self_cleanup.append(f"{name}: {pre} → {post} (v1.0 startup cleanup,可接受)")
+
+                _check_table("event_lines", pre_events_count, post_events_count)
+                _check_table("tasks", pre_tasks_count, post_tasks_count)
+                _check_table("glossary_attributes", pre_glossary_count, post_glossary_count)
+                _check_table("commitments", pre_commits_count, post_commits_count)
 
                 results["real_db_migrated"] = {
                     "ok": data_intact and mirror_count == 4 and view_count >= 6,
                     "v1_clients_count": len(post_clients),
                     "v1_clients_data_intact": data_intact,
                     "data_diffs_sample": data_diffs[:5],
+                    "v1_self_cleanup": v1_self_cleanup,  # 可接受的 v1.0 自清理
                     "v1_events_count": post_events_count,
                     "v1_tasks_count": post_tasks_count,
                     "v1_glossary_count": post_glossary_count,

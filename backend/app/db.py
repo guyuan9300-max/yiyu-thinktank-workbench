@@ -10,7 +10,7 @@ from pathlib import Path
 # 之前 20260518001 (200 亿) 远超上限, SQLite 静默 set 为 0, 每次启动都重做完整迁移
 # (这是 20260518 那次坏 db 的真正根因之一: 重做时遇上 reload race + backfill 无事务).
 # 改用 YYYYMMDD 格式 (8 位), 每次 schema 变化递增日期. 20260519 = 此次修复.
-BACKEND_SCHEMA_VERSION = 20260522  # v2.1 organization 模块 mirror 表 + 6 个核心 views
+BACKEND_SCHEMA_VERSION = 20260523  # v2.1 W2-B: llm_context 模块 prompt_log 表
 
 
 # R6：内置罗永浩写作风格的 distilled prompt（手工 distill，不依赖在线抓取，避免外部依赖）。
@@ -4287,6 +4287,10 @@ class Database:
             # 第一砖:organization 模块(4 张 cloud mirror 表 + readonly 触发器)
             from app.modules.organization import SCHEMA_SQL as ORGANIZATION_SCHEMA_SQL
             self.conn.executescript(ORGANIZATION_SCHEMA_SQL)
+
+            # 第二砖:llm_context 模块(prompt_log 表 · Karpathy 一等公民)
+            from app.llm_context import SCHEMA_SQL as LLM_CONTEXT_SCHEMA_SQL
+            self.conn.executescript(LLM_CONTEXT_SCHEMA_SQL)
 
             # 6 个核心 SQL Views(CQRS read model · 临时聚合在 organization 模块)
             # 必须最后建,因为引用了 mirror 表 + clients/event_lines/tasks 等业务表
