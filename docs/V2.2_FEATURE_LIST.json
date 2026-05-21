@@ -1,0 +1,309 @@
+{
+  "$schema": "v2.2 feature list — machine-readable, Anthropic long-task harness style",
+  "version": "1.0",
+  "created_at": "2026-05-21",
+  "north_star": "docs/V2.2_NORTH_STAR.md",
+  "rfc": "docs/V2.2_RFC.md",
+  "current_phase": "phase_1",
+  "current_milestone": "M1_ClientFactView",
+
+  "status_legend": {
+    "pending": "未开工",
+    "spec_in_progress": "Planner 正在写 spec",
+    "spec_done": "spec 写完,等 Generator",
+    "impl_in_progress": "Generator 正在写代码",
+    "impl_done": "代码写完,等 Evaluator",
+    "verified": "Evaluator 双校验门 PASS",
+    "impl_failed": "校验门 FAIL,需返工",
+    "deferred": "明确推到 v2.3"
+  },
+
+  "phases": [
+    {
+      "id": "phase_1",
+      "name": "L2 客户共识层 (ClientFactView)",
+      "weeks": "4-5",
+      "milestone_goal": "建立 ClientFactView,所有 client_id 相关查询走唯一入口",
+      "gate_a_check": "9 大模块手工跑过 + acceptance runner 全过 + 多账号 e2e",
+      "gate_b_check": "问机器人 '日慈基金会现在有哪些事件线？任务进度？' → 答案应跨表合并出客户全貌",
+      "features": [
+        {
+          "id": "F1.1",
+          "title": "backend/app/modules/client/ 扩为完整 Repository",
+          "description": "从 38 行占位扩到完整,参考 mobile cloud_backend 的 28 endpoints shape。包含 get_client_by_id / list_clients / list_with_facts / scope_filter 等核心方法",
+          "estimated_days": 3,
+          "status": "pending",
+          "depends_on": [],
+          "serves_goal": "B",
+          "files": [
+            "backend/app/modules/client/repository.py (new full impl)",
+            "backend/app/modules/client/types.py (new)",
+            "backend/app/modules/client/__init__.py"
+          ]
+        },
+        {
+          "id": "F1.2",
+          "title": "建 ClientFactView 视图层",
+          "description": "一个客户的全部事实合并视图(client + event_lines + tasks + commitments + dna_documents + atomic_facts)。这是 L2 共识层的核心。",
+          "estimated_days": 5,
+          "status": "pending",
+          "depends_on": ["F1.1"],
+          "serves_goal": "B",
+          "files": [
+            "backend/app/modules/client/fact_view.py (new)",
+            "tests/test_client_fact_view.py (new)"
+          ]
+        },
+        {
+          "id": "F1.3",
+          "title": "ClientScopeFilter — 所有 client_id 查询的统一过滤器",
+          "description": "包含 is_frozen / archived 唯一真相。所有上层查询都通过这层做 client_id scope check + frozen check。",
+          "estimated_days": 3,
+          "status": "pending",
+          "depends_on": ["F1.1"],
+          "serves_goal": "A",
+          "files": [
+            "backend/app/modules/client/scope_filter.py (new)",
+            "tests/test_client_scope_filter.py (new)"
+          ]
+        },
+        {
+          "id": "F1.4",
+          "title": "main.py 高频 client_id 查询切到 ClientFactView (top 50 处)",
+          "description": "只切 top 50 处,不强求 1063 处全切。优先切影响客户档案/任务详情/战略陪伴的查询。",
+          "estimated_days": 5,
+          "status": "pending",
+          "depends_on": ["F1.2", "F1.3"],
+          "serves_goal": "A",
+          "files": [
+            "backend/app/main.py (改 ~50 处 client_id 查询)"
+          ]
+        },
+        {
+          "id": "F1.5",
+          "title": "前端 useClientFact hook",
+          "description": "替代 6 大 view 里直接 fetch 的部分。React hook 形态,内部消费 ClientFactView API",
+          "estimated_days": 5,
+          "status": "pending",
+          "depends_on": ["F1.2"],
+          "serves_goal": "A",
+          "files": [
+            "src/renderer/hooks/useClientFact.ts (new)",
+            "src/renderer/lib/api.ts (加 fetchClientFactView)"
+          ]
+        },
+        {
+          "id": "F1.6",
+          "title": "5 个最严重 view 接入 useClientFact",
+          "description": "IntelligenceStationView (重写最多) / StrategicBrainView / StrategicClarificationView / EventLineReportPanel / GrowthCenterView。每个 view 切完都跑双校验门。",
+          "estimated_days": 7,
+          "status": "pending",
+          "depends_on": ["F1.5"],
+          "serves_goal": "A",
+          "files": [
+            "src/renderer/components/intelligence/IntelligenceStationView.tsx",
+            "src/renderer/components/strategic/StrategicBrainView.tsx",
+            "src/renderer/components/strategic/StrategicClarificationView.tsx",
+            "src/renderer/components/EventLineReportPanel.tsx",
+            "src/renderer/components/growth/GrowthCenterView.tsx"
+          ]
+        },
+        {
+          "id": "F1.7",
+          "title": "多账号同步:is_frozen / archived 字段统一在 ClientFactView 内仲裁",
+          "description": "修 v1.0 'frozen_at 被云端覆盖' 这个客户已知 bug。多账号场景下 ClientFactView 是唯一仲裁者。",
+          "estimated_days": 3,
+          "status": "pending",
+          "depends_on": ["F1.3"],
+          "serves_goal": "A",
+          "files": [
+            "backend/app/modules/client/scope_filter.py (扩 sync 仲裁)",
+            "tests/test_multi_account_sync.py (new)"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "phase_2",
+      "name": "L3 ExtractionRunner 统一入库管线",
+      "weeks": "3-4",
+      "milestone_goal": "5/19 张真那场会的 docx 自动沉淀进数据中心",
+      "gate_a_check": "F2 改的字段全部向后兼容,9 大模块逐项跑过仍正常",
+      "gate_b_check": "把 5/19 张真会议 docx 重新塞进资料库,机器人能复述出 ≥ 4 条关键事实 + 带出处",
+      "features": [
+        {
+          "id": "F2.1",
+          "title": "document_llm_extractor.py — LLM 抽取 docx → JSON",
+          "description": "新建 service。输入 markdown,输出 JSON {decisions, facts, todos, entities, risks}。每条带 confidence",
+          "estimated_days": 4,
+          "status": "pending",
+          "depends_on": ["phase_1"],
+          "serves_goal": "B",
+          "files": ["backend/app/services/document_llm_extractor.py"]
+        },
+        {
+          "id": "F2.2",
+          "title": "atomic_facts schema 扩容 — 加 key_decisions / org_events 新表",
+          "description": "三元组(subject,attribute,value)装不下复合事件。新表存复合决策/组织事件",
+          "estimated_days": 3,
+          "status": "pending",
+          "depends_on": [],
+          "serves_goal": "B",
+          "files": [
+            "backend/app/db.py (加 schema)",
+            "tests/test_key_decisions_schema.py (new)"
+          ]
+        },
+        {
+          "id": "F2.3",
+          "title": "v2_documents parse_status='ready' 后自动 trigger LLM extractor",
+          "description": "修 knowledge_v2 主链路,parse 完之后自动调 F2.1",
+          "estimated_days": 2,
+          "status": "pending",
+          "depends_on": ["F2.1"],
+          "serves_goal": "B",
+          "files": ["backend/app/services/knowledge_v2.py"]
+        },
+        {
+          "id": "F2.4",
+          "title": "4 条入库路径合并为统一 IngestPipeline",
+          "description": "smart_file_import / knowledge_v2 / internet_crawler / wechat_sogou_ingest 统一抽取语义",
+          "estimated_days": 5,
+          "status": "pending",
+          "depends_on": ["F2.1", "F2.3"],
+          "serves_goal": "B",
+          "files": [
+            "backend/app/services/ingest_pipeline.py (new)",
+            "其他 4 个 service 改为调 IngestPipeline"
+          ]
+        },
+        {
+          "id": "F2.5",
+          "title": "clarification 闭环 — 低 confidence 抽取写 pending_clarifications",
+          "description": "F2.1 输出的 low confidence 事实自动入 clarification 队列,UI 给用户审核",
+          "estimated_days": 3,
+          "status": "pending",
+          "depends_on": ["F2.1"],
+          "serves_goal": "B",
+          "files": [
+            "backend/app/services/clarification_pre_search.py (扩)",
+            "src/renderer/components/clarification/ClarificationPanel.tsx (扩)"
+          ]
+        },
+        {
+          "id": "F2.6",
+          "title": "event_lines.current_blocker/recent_decision/next_step 多值化",
+          "description": "新表 event_line_state_changes,允许一对多",
+          "estimated_days": 3,
+          "status": "pending",
+          "depends_on": [],
+          "serves_goal": "A",
+          "files": [
+            "backend/app/db.py (加 event_line_state_changes 表)",
+            "backend/app/modules/event_line/ (新模块)"
+          ]
+        },
+        {
+          "id": "F2.7",
+          "title": "provenance 链路打通 — 抽取结果带 source chunk_id + 前端可回原文",
+          "description": "atomic_facts.source_v2_chunk_id 已经有,补 UI 反查链路",
+          "estimated_days": 3,
+          "status": "pending",
+          "depends_on": ["F2.1"],
+          "serves_goal": "B",
+          "files": [
+            "src/renderer/components/evidence/EvidenceTrailButton.tsx (new)",
+            "backend/app/main.py (加 GET /api/v1/atomic_fact/{id}/source)"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "phase_3",
+      "name": "L4 NarrativeKernel 事件驱动 + 手机端接入",
+      "weeks": "3-4",
+      "milestone_goal": "四面板自动一致;手机端能拿到桌面端同等深度的数据",
+      "gate_a_check": "所有功能在双端跑通 + multi-account + 大文件 ingest",
+      "gate_b_check": "在手机上问 '5/19 张真那场会后客户战略状态变了吗?' 答案带战略状态变化 + 桌面 narrative 同步显示",
+      "features": [
+        {
+          "id": "F3.1",
+          "title": "NarrativeKernel 合并 5 个分散 narrative_* 服务",
+          "description": "事件驱动(依赖 ClientFactView 变更通知)",
+          "estimated_days": 5,
+          "status": "pending",
+          "depends_on": ["phase_2"],
+          "serves_goal": "B",
+          "files": [
+            "backend/app/services/narrative_kernel.py (new)",
+            "5 个 narrative_*.py 改为调 NarrativeKernel"
+          ]
+        },
+        {
+          "id": "F3.2",
+          "title": "桌面 sqlite ↔ 云端 mirror 改造:cloud_backend 直接读 ClientFactView",
+          "description": "cloud_client_dna_summaries 不再独立冗余,改读 ClientFactView",
+          "estimated_days": 4,
+          "status": "pending",
+          "depends_on": ["phase_1"],
+          "serves_goal": "A",
+          "files": ["cloud_backend/app/main.py (改 RAG 链路)"]
+        },
+        {
+          "id": "F3.3",
+          "title": "手机端 cloud_backend endpoint 升级:暴露 ClientFactView 全部能力",
+          "description": "不再 lite 版,手机端能看到桌面端同等深度",
+          "estimated_days": 4,
+          "status": "pending",
+          "depends_on": ["F3.2"],
+          "serves_goal": "B",
+          "files": [
+            "cloud_backend/app/main.py (加 endpoints)",
+            "mobile/lib/api.ts (扩)"
+          ]
+        },
+        {
+          "id": "F3.4",
+          "title": "手机端机器人问答接通 L2/L3/L4",
+          "description": "跨设备问同一个问题得到一致答案",
+          "estimated_days": 5,
+          "status": "pending",
+          "depends_on": ["F3.3"],
+          "serves_goal": "B",
+          "files": ["mobile/app/(tabs)/consult.tsx"]
+        },
+        {
+          "id": "F3.5",
+          "title": "关系网/客户档案/战略陪伴 UI 接入事件驱动刷新",
+          "description": "不再定期 regen,事件触发立刻刷",
+          "estimated_days": 4,
+          "status": "pending",
+          "depends_on": ["F3.1"],
+          "serves_goal": "B",
+          "files": [
+            "src/renderer/components/strategic/* (改刷新逻辑)",
+            "src/renderer/hooks/useEventDriven.ts (new)"
+          ]
+        },
+        {
+          "id": "F3.6",
+          "title": "dogfood 1 周 + 修复 bug",
+          "description": "顾源源日常用 v2.2 版,记录所有 bug,修完才发 release",
+          "estimated_days": 5,
+          "status": "pending",
+          "depends_on": ["F3.5"],
+          "serves_goal": "A+B",
+          "files": ["docs/V2.2_DOGFOOD_LOG.md (new)"]
+        }
+      ]
+    }
+  ],
+
+  "deferred_to_v2_3": [
+    "App.tsx 28k 行单文件拆分(L5 视图层完全模块化)",
+    "main.py 1063 处 SQL 全部清零(只切 top 50)",
+    "全部 195 services 进 modules(只切关键)",
+    "其他 ingest 路径如 wechat_rsshub/website_audit 进 IngestPipeline",
+    "成长中心 narrative 重写"
+  ]
+}
