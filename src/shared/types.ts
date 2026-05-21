@@ -7027,7 +7027,7 @@ export interface SpeechModelTestResult {
   latencyMs?: number | null;
 }
 
-// === I1b-1：对象存储（音频中转）配置 ===
+// === I1b-1：对象存储配置 ===
 
 export type ObjectStorageProviderId = 'volcano_tos' | 'aliyun_oss' | 'aws_s3';
 
@@ -7037,6 +7037,9 @@ export interface ObjectStorageSettings {
   extraConfig: Record<string, string>;
   enabled: boolean;
   updatedAt: string;
+  hasCredentials?: boolean;
+  managedByCloud?: boolean;
+  configuredBy?: string | null;
 }
 
 export interface ObjectStorageSettingsPayload {
@@ -7462,6 +7465,34 @@ export interface IntelligenceRefreshPayload {
   scopeId?: string | null;
   contentKind: IntelligenceContentKind;
   force?: boolean;
+  triggerSource?: string;
+}
+
+export interface IntelligenceAutoRefreshDuePayload {
+  contentKinds?: Array<Extract<IntelligenceContentKind, 'profile_completion' | 'timely_intelligence'>>;
+  scopeType?: 'all' | 'client';
+  scopeId?: string | null;
+}
+
+export interface IntelligenceAutoRefreshDueResultItem {
+  scopeType: 'client';
+  scopeId: string;
+  clientId: string;
+  name: string;
+  contentKind: Extract<IntelligenceContentKind, 'profile_completion' | 'timely_intelligence'>;
+  queued: boolean;
+  queuedJobId?: string | null;
+  lastRunAt?: string | null;
+  skippedReason?: string;
+  autoDueReason?: string;
+}
+
+export interface IntelligenceAutoRefreshDueResult {
+  checkedAt: string;
+  queuedCount: number;
+  skippedCount: number;
+  results: IntelligenceAutoRefreshDueResultItem[];
+  message: string;
 }
 
 export interface IntelligenceRefreshObjectResult {

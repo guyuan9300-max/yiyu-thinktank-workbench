@@ -1409,6 +1409,32 @@ class OrgAiConfigSecretRecord(BaseModel):
     updatedAt: str
 
 
+ObjectStorageProvider = Literal["volcano_tos", "aliyun_oss", "aws_s3"]
+
+
+class OrgObjectStorageConfigRecord(BaseModel):
+    orgId: str
+    provider: str = ""
+    extraConfig: dict[str, str] = Field(default_factory=dict)
+    enabled: bool = False
+    hasCredentials: bool = False
+    configuredBy: str | None = None
+    updatedAt: str
+
+
+class OrgObjectStorageConfigUpdatePayload(BaseModel):
+    provider: ObjectStorageProvider
+    credentials: dict[str, str] = Field(default_factory=dict)
+    extraConfig: dict[str, str] = Field(default_factory=dict)
+    enabled: bool = False
+    clearCredentials: bool = False
+
+
+class OrgObjectStorageConfigSecretRecord(OrgObjectStorageConfigRecord):
+    """Only returned to authenticated org members for local backend use."""
+    credentials: dict[str, str] = Field(default_factory=dict)
+
+
 class TaskNotePayload(BaseModel):
     note: str
 

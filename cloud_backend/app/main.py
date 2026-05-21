@@ -158,6 +158,9 @@ from app.models import (
     OrgAiConfigRecord,
     OrgAiConfigUpdatePayload,
     OrgAiConfigSecretRecord,
+    OrgObjectStorageConfigRecord,
+    OrgObjectStorageConfigSecretRecord,
+    OrgObjectStorageConfigUpdatePayload,
     TaskOrgContextRecord,
     TaskRecord,
     TaskReturnPayload,
@@ -11296,6 +11299,71 @@ def create_app() -> FastAPI:
         nonce = base64.b64decode(nonce_b64)
         return cipher.decrypt(nonce, ct, None).decode("utf-8")
 
+    def _org_secret_encrypt(plain_text: str, org_id: str, purpose: str) -> tuple[str, str]:
+        """AES-256-GCM encrypt using an org-scoped key for a named secret purpose."""
+        import base64
+        from hashlib import sha256
+        from os import urandom
+        key = sha256(f"{state.secret_key}:{org_id}:{purpose}".encode()).digest()
+        nonce = urandom(12)
+        from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+        cipher = AESGCM(key)
+        ct = cipher.encrypt(nonce, plain_text.encode("utf-8"), None)
+        return base64.b64encode(ct).decode(), base64.b64encode(nonce).decode()
+
+    def _org_secret_decrypt(encrypted_b64: str, nonce_b64: str, org_id: str, purpose: str) -> str:
+        import base64
+        from hashlib import sha256
+        if not encrypted_b64 or not nonce_b64:
+            return ""
+        key = sha256(f"{state.secret_key}:{org_id}:{purpose}".encode()).digest()
+        from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+        cipher = AESGCM(key)
+        ct = base64.b64decode(encrypted_b64)
+        nonce = base64.b64decode(nonce_b64)
+        return cipher.decrypt(nonce, ct, None).decode("utf-8")
+
+    def _object_storage_extra_from_row(row) -> dict[str, str]:
+        if not row:
+            return {}
+        try:
+            parsed = json.loads(str(row["extra_config_json"] or "{}"))
+            if isinstance(parsed, dict):
+                return {str(key): str(value) for key, value in parsed.items()}
+        except Exception:
+            pass
+        return {}
+
+    def _object_storage_credentials_from_row(row, org_id: str) -> dict[str, str]:
+        if not row or not row["credentials_encrypted"]:
+            return {}
+        try:
+            plain = _org_secret_decrypt(
+                str(row["credentials_encrypted"]),
+                str(row["encryption_nonce"]),
+                org_id,
+                "object_storage_config",
+            )
+            parsed = json.loads(plain or "{}")
+            if isinstance(parsed, dict):
+                return {str(key): str(value) for key, value in parsed.items()}
+        except Exception:
+            return {}
+        return {}
+
+    def _object_storage_record_from_row(row, org_id: str) -> OrgObjectStorageConfigRecord:
+        if not row:
+            return OrgObjectStorageConfigRecord(orgId=org_id, updatedAt=now_iso())
+        return OrgObjectStorageConfigRecord(
+            orgId=str(row["org_id"]),
+            provider=str(row["provider"] or ""),
+            extraConfig=_object_storage_extra_from_row(row),
+            enabled=bool(row["enabled"]),
+            hasCredentials=bool(row["credentials_encrypted"]),
+            configuredBy=str(row["configured_by"]) if row["configured_by"] else None,
+            updatedAt=str(row["updated_at"] or ""),
+        )
+
     @app.get("/api/v1/settings/org-ai-config", response_model=OrgAiConfigRecord)
     def get_org_ai_config(
         current_user: SessionUser = Depends(lambda authorization=Header(default=None): _require_auth(app, authorization)),
@@ -11397,6 +11465,89 @@ def create_app() -> FastAPI:
             aiModel=str(row["ai_model"]),
             apiKey=decrypted,
             updatedAt=str(row["updated_at"]),
+        )
+
+    @app.get("/api/v1/settings/org-object-storage-config", response_model=OrgObjectStorageConfigRecord)
+    def get_org_object_storage_config(
+        current_user: SessionUser = Depends(lambda authorization=Header(default=None): _require_auth(app, authorization)),
+    ) -> OrgObjectStorageConfigRecord:
+        row = state.db.fetchone(
+            "SELECT * FROM org_object_storage_config WHERE org_id = ?",
+            (current_user.organizationId,),
+        )
+        return _object_storage_record_from_row(row, current_user.organizationId)
+
+    @app.post("/api/v1/settings/org-object-storage-config", response_model=OrgObjectStorageConfigRecord)
+    def update_org_object_storage_config(
+        payload: OrgObjectStorageConfigUpdatePayload,
+        current_user: SessionUser = Depends(lambda authorization=Header(default=None): _require_admin(app, authorization)),
+    ) -> OrgObjectStorageConfigRecord:
+        org_id = current_user.organizationId
+        timestamp = now_iso()
+        existing = state.db.fetchone("SELECT * FROM org_object_storage_config WHERE org_id = ?", (org_id,))
+        encrypted_credentials = str(existing["credentials_encrypted"]) if existing else ""
+        encryption_nonce = str(existing["encryption_nonce"]) if existing else ""
+        cleaned_credentials = {
+            str(key): str(value).strip()
+            for key, value in dict(payload.credentials or {}).items()
+            if str(value).strip()
+        }
+        if payload.clearCredentials:
+            encrypted_credentials = ""
+            encryption_nonce = ""
+        elif cleaned_credentials:
+            encrypted_credentials, encryption_nonce = _org_secret_encrypt(
+                json.dumps(cleaned_credentials, ensure_ascii=False),
+                org_id,
+                "object_storage_config",
+            )
+        extra_config = {
+            str(key): str(value).strip()
+            for key, value in dict(payload.extraConfig or {}).items()
+            if str(value).strip()
+        }
+        state.db.execute(
+            """
+            INSERT INTO org_object_storage_config(
+                org_id, provider, credentials_encrypted, encryption_nonce, extra_config_json,
+                enabled, configured_by, updated_at
+            )
+            VALUES(?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(org_id) DO UPDATE SET
+                provider = excluded.provider,
+                credentials_encrypted = excluded.credentials_encrypted,
+                encryption_nonce = excluded.encryption_nonce,
+                extra_config_json = excluded.extra_config_json,
+                enabled = excluded.enabled,
+                configured_by = excluded.configured_by,
+                updated_at = excluded.updated_at
+            """,
+            (
+                org_id,
+                payload.provider,
+                encrypted_credentials,
+                encryption_nonce,
+                json.dumps(extra_config, ensure_ascii=False),
+                1 if payload.enabled else 0,
+                current_user.id,
+                timestamp,
+            ),
+        )
+        row = state.db.fetchone("SELECT * FROM org_object_storage_config WHERE org_id = ?", (org_id,))
+        return _object_storage_record_from_row(row, org_id)
+
+    @app.get("/api/v1/settings/org-object-storage-config/secret", response_model=OrgObjectStorageConfigSecretRecord)
+    def get_org_object_storage_config_secret(
+        current_user: SessionUser = Depends(lambda authorization=Header(default=None): _require_auth(app, authorization)),
+    ) -> OrgObjectStorageConfigSecretRecord:
+        row = state.db.fetchone(
+            "SELECT * FROM org_object_storage_config WHERE org_id = ?",
+            (current_user.organizationId,),
+        )
+        base = _object_storage_record_from_row(row, current_user.organizationId)
+        return OrgObjectStorageConfigSecretRecord(
+            **base.model_dump(),
+            credentials=_object_storage_credentials_from_row(row, current_user.organizationId),
         )
 
     @app.get("/api/v1/settings/org-model/profile", response_model=OrgModelProfileRecord)

@@ -6439,7 +6439,7 @@ export default function App() {
   // 语音识别模型配置（input-breadth 线程 I1a 新增）
   const [speechModelSettingsState, setSpeechModelSettingsState] = useState<SpeechModelSettings | null>(null);
   const [isSavingSpeechModelSettings, setIsSavingSpeechModelSettings] = useState(false);
-  // 对象存储（音频中转）配置（input-breadth 线程 I1b-1 新增）
+  // 对象存储（文件中转/归档）配置（input-breadth 线程 I1b-1 新增）
   const [objectStorageSettingsState, setObjectStorageSettingsState] = useState<ObjectStorageSettings | null>(null);
   const [isSavingObjectStorageSettings, setIsSavingObjectStorageSettings] = useState(false);
   const orgSetupInputDraftsRef = useRef<OrganizationSetupInputDraftState>({});
@@ -24624,7 +24624,7 @@ export default function App() {
       try {
         const next = await updateObjectStorageSettings(payload);
         setObjectStorageSettingsState(next);
-        flash('success', '对象存储配置已保存（仅本机）');
+        flash('success', next.managedByCloud ? '组织对象存储配置已保存，成员将自动同步可用' : '对象存储配置已保存（仅本机）');
       } catch (error) {
         flash('error', error instanceof Error ? error.message : '保存失败');
       } finally {

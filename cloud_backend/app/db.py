@@ -1062,6 +1062,19 @@ class Database:
                     FOREIGN KEY(configured_by) REFERENCES employee_accounts(id) ON DELETE SET NULL
                 );
 
+                CREATE TABLE IF NOT EXISTS org_object_storage_config (
+                    org_id TEXT PRIMARY KEY,
+                    provider TEXT NOT NULL DEFAULT '',
+                    credentials_encrypted TEXT NOT NULL DEFAULT '',
+                    encryption_nonce TEXT NOT NULL DEFAULT '',
+                    extra_config_json TEXT NOT NULL DEFAULT '{}',
+                    enabled INTEGER NOT NULL DEFAULT 0,
+                    configured_by TEXT,
+                    updated_at TEXT NOT NULL,
+                    FOREIGN KEY(org_id) REFERENCES organizations(id) ON DELETE CASCADE,
+                    FOREIGN KEY(configured_by) REFERENCES employee_accounts(id) ON DELETE SET NULL
+                );
+
                 CREATE TABLE IF NOT EXISTS org_feishu_integrations (
                     organization_id TEXT PRIMARY KEY,
                     app_id TEXT NOT NULL DEFAULT '',
