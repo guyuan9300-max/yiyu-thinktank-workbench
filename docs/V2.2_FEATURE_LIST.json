@@ -52,12 +52,29 @@
           "title": "建 ClientFactView 视图层",
           "description": "一个客户的全部事实合并视图(client + event_lines + tasks + commitments + dna_documents + atomic_facts)。这是 L2 共识层的核心。",
           "estimated_days": 5,
-          "status": "pending",
+          "status": "verified",
+          "completed_at": "2026-05-21T23:05",
+          "verified_at": "2026-05-21T23:10",
+          "commit": "a1f214c",
+          "tests_passing": "26/26 (含 2 个真实日慈 db 集成)",
+          "spec_file": "docs/V2.2_PHASE1_SPEC_F12.md",
+          "eval_report": "docs/V2.2_PHASE1_F12_EVAL.md",
+          "real_data_metrics": {
+            "client": "日慈基金会",
+            "event_lines": 3,
+            "tasks_all": 14,
+            "tasks_active": 0,
+            "commitments": 36,
+            "dna_documents": 4,
+            "atomic_facts_active": 197
+          },
           "depends_on": ["F1.1"],
           "serves_goal": "B",
           "files": [
-            "backend/app/modules/client/fact_view.py (new)",
-            "tests/test_client_fact_view.py (new)"
+            "backend/app/modules/client/facts.py (130 行)",
+            "backend/app/modules/client/fact_view.py (340 行)",
+            "backend/app/modules/client/__init__.py (扩出 9 个新名字)",
+            "tests/test_client_fact_view.py (700 行, 26 tests)"
           ]
         },
         {
