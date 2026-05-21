@@ -10,7 +10,7 @@ from pathlib import Path
 # 之前 20260518001 (200 亿) 远超上限, SQLite 静默 set 为 0, 每次启动都重做完整迁移
 # (这是 20260518 那次坏 db 的真正根因之一: 重做时遇上 reload race + backfill 无事务).
 # 改用 YYYYMMDD 格式 (8 位), 每次 schema 变化递增日期. 20260519 = 此次修复.
-BACKEND_SCHEMA_VERSION = 20260525  # v2.2 F1.8/F1.9: atomic_facts 5 维元数据 + event_log 总线表 (N3 A2)
+BACKEND_SCHEMA_VERSION = 20260526  # v2.2 F2.0 (N3 A5): AI Memory 5 表占位 — 3.0 共享办公室预留
 
 
 # R6：内置罗永浩写作风格的 distilled prompt（手工 distill，不依赖在线抓取，避免外部依赖）。
@@ -3286,6 +3286,116 @@ class Database:
                     ON event_log(event_type, occurred_at DESC);
                 CREATE INDEX IF NOT EXISTS idx_event_log_actor
                     ON event_log(actor_type, actor_id, occurred_at DESC);
+                """
+            )
+
+            # ─────────────────────────────────────────────────────────────
+            # v2.2 F2.0 (N3 A5 预留): AI Memory 5 张表占位
+            # 配合 NORTH_STAR N3 "为 3.0 埋好接入基础, 不返工"
+            #
+            # 3.0 是"给 AI 配共享办公室" — AI 跟人共享同一工作空间, 越用越聪明。
+            # 越用越聪明的具体机制需要 4 类记忆 (我跟 Claude 自己的 memory 系统验证过):
+            #   1. 事件记忆 (AI 做了什么) → ai_episode_log
+            #   2. 反馈学习 (用户纠正过的) → ai_learned_rules
+            #   3. 用户偏好 (写作风格/忌讳) → user_ai_preferences
+            #   4. 程序记忆 (工作套路) → project_procedures
+            #   + 用户对 AI 输出的评价 → ai_feedback_signals
+            #
+            # v2.2 阶段: 只 CREATE + 单向写入, 不读取。
+            # 上线那天就开始积累真实数据, 3.0 启动时有 N 个月样本, 不是空白账户。
+            # 这是 Anthropic dogfood 哲学: 启动越晚越亏。
+            # ─────────────────────────────────────────────────────────────
+            self.conn.executescript(
+                """
+                -- ① ai_episode_log: AI 每次行动的日志 (干了什么、为什么、引用了哪些 fact)
+                CREATE TABLE IF NOT EXISTS ai_episode_log (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    ai_session_id TEXT NOT NULL,
+                    user_id TEXT,                       -- 跟哪个用户协作 (空 = 后台 AI 任务)
+                    client_id TEXT,                     -- 关联客户 (可空)
+                    action_type TEXT NOT NULL,          -- 'extracted_fact' / 'created_task' / 'sent_clarification' / ...
+                    action_summary TEXT NOT NULL DEFAULT '',
+                    referenced_fact_ids_json TEXT NOT NULL DEFAULT '[]',  -- AI 引用了哪些 atomic_facts
+                    referenced_doc_ids_json TEXT NOT NULL DEFAULT '[]',   -- 引用了哪些 v2_documents
+                    outcome TEXT NOT NULL DEFAULT 'pending',  -- 'pending' / 'accepted' / 'rejected' / 'reverted'
+                    occurred_at TEXT NOT NULL,
+                    completed_at TEXT
+                );
+                CREATE INDEX IF NOT EXISTS idx_ai_episode_log_session
+                    ON ai_episode_log(ai_session_id, occurred_at DESC);
+                CREATE INDEX IF NOT EXISTS idx_ai_episode_log_user_client
+                    ON ai_episode_log(user_id, client_id, occurred_at DESC);
+                CREATE INDEX IF NOT EXISTS idx_ai_episode_log_outcome
+                    ON ai_episode_log(outcome, occurred_at DESC);
+
+                -- ② ai_learned_rules: 从用户纠错中抽出的规则 (类似我的 feedback_* memory)
+                CREATE TABLE IF NOT EXISTS ai_learned_rules (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    rule_name TEXT NOT NULL,             -- e.g. 'never_use_word_empowerment'
+                    rule_body TEXT NOT NULL,             -- 规则正文
+                    rule_why TEXT NOT NULL DEFAULT '',   -- 用户给的理由
+                    rule_how_to_apply TEXT NOT NULL DEFAULT '',  -- 什么场景下激活
+                    learned_from_episode_id INTEGER,     -- 从哪条 episode 抽出来的
+                    confidence REAL NOT NULL DEFAULT 0.5, -- 用户重复纠正会涨
+                    activated_count INTEGER NOT NULL DEFAULT 0,  -- 这条规则被激活几次
+                    user_id TEXT,                        -- 哪个用户的规则 (空 = 全局)
+                    client_id TEXT,                      -- 哪个客户的规则 (空 = 全用户/全客户)
+                    learned_at TEXT NOT NULL,
+                    last_activated_at TEXT,
+                    FOREIGN KEY(learned_from_episode_id) REFERENCES ai_episode_log(id) ON DELETE SET NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_ai_learned_rules_user_client
+                    ON ai_learned_rules(user_id, client_id, confidence DESC);
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_ai_learned_rules_name_scope
+                    ON ai_learned_rules(rule_name, COALESCE(user_id, ''), COALESCE(client_id, ''));
+
+                -- ③ user_ai_preferences: 用户级别的 AI 协作偏好 (类似我的 user_* memory)
+                CREATE TABLE IF NOT EXISTS user_ai_preferences (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id TEXT NOT NULL,
+                    preference_key TEXT NOT NULL,        -- e.g. 'writing_style' / 'response_length' / 'preferred_format'
+                    preference_value TEXT NOT NULL,      -- e.g. '直接不绕弯' / 'short' / 'markdown_table'
+                    inferred_from TEXT NOT NULL DEFAULT 'user_explicit',  -- 'user_explicit' / 'ai_inferred' / 'history_pattern'
+                    confidence REAL NOT NULL DEFAULT 0.5,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_user_ai_preferences_key
+                    ON user_ai_preferences(user_id, preference_key);
+
+                -- ④ project_procedures: 项目级别的执行套路 (e.g. 给日慈写工作坊方案的 6 步)
+                CREATE TABLE IF NOT EXISTS project_procedures (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    procedure_name TEXT NOT NULL,        -- e.g. 'workshop_proposal_for_rici'
+                    client_id TEXT,                      -- 哪个客户 (空 = 通用套路)
+                    project_category TEXT NOT NULL DEFAULT '',  -- 'workshop' / 'contract' / 'review' / ...
+                    steps_json TEXT NOT NULL DEFAULT '[]',  -- 步骤序列, 每步含 {step_name, expected_output, ai_can_do, requires_human}
+                    success_count INTEGER NOT NULL DEFAULT 0,
+                    failure_count INTEGER NOT NULL DEFAULT 0,
+                    last_executed_at TEXT,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_project_procedures_client_category
+                    ON project_procedures(client_id, project_category);
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_project_procedures_name
+                    ON project_procedures(procedure_name, COALESCE(client_id, ''));
+
+                -- ⑤ ai_feedback_signals: 用户对 AI 输出的明确反馈 (👍/👎/修改)
+                CREATE TABLE IF NOT EXISTS ai_feedback_signals (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    episode_id INTEGER NOT NULL,         -- 关联到 ai_episode_log
+                    user_id TEXT NOT NULL,
+                    signal_type TEXT NOT NULL,           -- 'thumbs_up' / 'thumbs_down' / 'edited' / 'reverted' / 'accepted'
+                    signal_target TEXT NOT NULL DEFAULT '',  -- 反馈针对的具体字段 ('action_summary' / 'reasoning' / ...)
+                    user_correction TEXT NOT NULL DEFAULT '',  -- 用户的修正内容 (用于训练 ai_learned_rules)
+                    created_at TEXT NOT NULL,
+                    FOREIGN KEY(episode_id) REFERENCES ai_episode_log(id) ON DELETE CASCADE
+                );
+                CREATE INDEX IF NOT EXISTS idx_ai_feedback_signals_episode
+                    ON ai_feedback_signals(episode_id, created_at DESC);
+                CREATE INDEX IF NOT EXISTS idx_ai_feedback_signals_user_signal
+                    ON ai_feedback_signals(user_id, signal_type, created_at DESC);
                 """
             )
             # 回填：external_* / 社交平台 / 公众号等外部观察源
