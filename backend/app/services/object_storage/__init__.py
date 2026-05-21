@@ -1,6 +1,7 @@
 """对象存储 provider 抽象层。
 
-目标：把音频文件中转到一个公网可访问的 URL，供火山 ASR（或其他 ASR provider）拉取转写。
+目标：把录音、附件或其他后台处理文件中转到一个公网可访问的 URL，
+供火山 ASR（或其他 ASR provider）和后续文件处理流程拉取。
 
 Provider 协议：
 - ``test_connection``：用一个小探针对象验证桶可读可写

@@ -8421,18 +8421,21 @@ class SpeechModelTestResult(BaseModel):
     latencyMs: float | None = None
 
 
-# === I1b-1：对象存储（音频中转）配置 ===
+# === I1b-1：对象存储（文件中转/归档）配置 ===
 
 ObjectStorageProvider = Literal["volcano_tos", "aliyun_oss", "aws_s3"]
 
 
 class ObjectStorageSettingsRecord(BaseModel):
-    """单 org 级对象存储配置。Provider 抽象，credentials/extra 用 JSON 灵活承载。"""
+    """组织/本机对象存储配置。Provider 抽象，credentials/extra 用 JSON 灵活承载。"""
     provider: str = ""
     credentials: dict[str, str] = Field(default_factory=dict)
     extraConfig: dict[str, str] = Field(default_factory=dict)
     enabled: bool = False
     updatedAt: str = ""
+    hasCredentials: bool = False
+    managedByCloud: bool = False
+    configuredBy: str | None = None
 
 
 class ObjectStorageSettingsPayload(BaseModel):
@@ -8813,6 +8816,15 @@ class IntelligenceRefreshPayload(BaseModel):
     scopeId: str | None = None
     contentKind: str
     force: bool = True
+    triggerSource: str = "manual"
+
+
+class IntelligenceAutoRefreshDuePayload(BaseModel):
+    contentKinds: list[Literal["profile_completion", "timely_intelligence"]] = Field(
+        default_factory=lambda: ["profile_completion", "timely_intelligence"]
+    )
+    scopeType: Literal["all", "client"] = "all"
+    scopeId: str | None = None
 
 
 class IntelligenceRefreshObjectResult(BaseModel):

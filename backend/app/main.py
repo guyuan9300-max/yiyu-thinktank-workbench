@@ -730,6 +730,7 @@ from app.models import (
     IntelligenceVerificationRuleRecord,
     IntelligenceVerificationRulePayload,
     IntelligenceVerificationFeedbackPayload,
+    IntelligenceAutoRefreshDuePayload,
     IntelligenceRefreshPayload,
     IntelligenceRefreshResult,
     IntelligenceRefreshRunRecord,
@@ -29477,6 +29478,103 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             logger.warning("[cloud-ai-sync] push failed: %s", exc)
         return dict(_cloud_ai_sync_status)
 
+    _cloud_object_storage_sync_status: dict[str, object] = {"state": "never"}
+
+    def _sync_object_storage_config_from_cloud() -> dict[str, object]:
+        """Pull org-level object storage config from cloud and cache it locally.
+
+        The local cache is used by backend upload/transcode flows. UI responses may
+        redact credentials for non-admin users.
+        """
+        from app.services.object_storage.settings_store import save_object_storage_settings
+
+        try:
+            secret_payload = cloud_request("GET", "/api/v1/settings/org-object-storage-config/secret")
+            if not isinstance(secret_payload, dict):
+                raise RuntimeError("云端响应非 JSON 对象")
+            provider = str(secret_payload.get("provider") or "").strip()
+            enabled = bool(secret_payload.get("enabled"))
+            credentials_raw = secret_payload.get("credentials")
+            extra_raw = secret_payload.get("extraConfig")
+            credentials = {
+                str(key): str(value)
+                for key, value in (credentials_raw.items() if isinstance(credentials_raw, dict) else [])
+                if str(value).strip()
+            }
+            extra_config = {
+                str(key): str(value)
+                for key, value in (extra_raw.items() if isinstance(extra_raw, dict) else [])
+                if str(value).strip()
+            }
+            if not provider:
+                _cloud_object_storage_sync_status.clear()
+                _cloud_object_storage_sync_status.update({
+                    "state": "skipped",
+                    "at": now_iso(),
+                    "reason": "云端组织对象存储配置为空",
+                    "provider": None,
+                    "enabled": False,
+                    "hasCredentials": False,
+                })
+                return dict(_cloud_object_storage_sync_status)
+            save_object_storage_settings(
+                state.db,
+                ObjectStorageSettingsPayload(
+                    provider=provider,
+                    credentials=credentials,
+                    extraConfig=extra_config,
+                    enabled=enabled,
+                ),
+                now_iso=str(secret_payload.get("updatedAt") or now_iso()),
+            )
+            state.db.set_setting("settings.object_storage_managed_by_cloud", "1")
+            state.db.set_setting("settings.object_storage_configured_by", str(secret_payload.get("configuredBy") or ""))
+            _cloud_object_storage_sync_status.clear()
+            _cloud_object_storage_sync_status.update({
+                "state": "synced",
+                "at": now_iso(),
+                "provider": provider,
+                "enabled": enabled,
+                "hasCredentials": bool(credentials),
+            })
+        except Exception as exc:
+            _cloud_object_storage_sync_status.clear()
+            _cloud_object_storage_sync_status.update({
+                "state": "failed",
+                "at": now_iso(),
+                "reason": str(exc)[:200] or exc.__class__.__name__,
+            })
+            logger.warning("[cloud-object-storage-sync] pull failed: %s", exc)
+        return dict(_cloud_object_storage_sync_status)
+
+    def _push_object_storage_config_to_cloud(payload: ObjectStorageSettingsPayload) -> dict[str, object]:
+        try:
+            response = cloud_request(
+                "POST",
+                "/api/v1/settings/org-object-storage-config",
+                json_body={
+                    "provider": payload.provider,
+                    "credentials": dict(payload.credentials or {}),
+                    "extraConfig": dict(payload.extraConfig or {}),
+                    "enabled": bool(payload.enabled),
+                    "clearCredentials": False,
+                },
+            )
+            if not isinstance(response, dict):
+                raise RuntimeError("云端响应非 JSON 对象")
+            return _sync_object_storage_config_from_cloud()
+        except Exception as exc:
+            _cloud_object_storage_sync_status.clear()
+            _cloud_object_storage_sync_status.update({
+                "state": "failed",
+                "at": now_iso(),
+                "reason": str(exc)[:200] or exc.__class__.__name__,
+                "provider": payload.provider,
+                "enabled": payload.enabled,
+            })
+            logger.warning("[cloud-object-storage-sync] push failed: %s", exc)
+            return dict(_cloud_object_storage_sync_status)
+
     @app.get("/api/v1/auth/me", response_model=AuthStateResponse)
     def auth_me() -> AuthStateResponse:
         # 取消"本机模式": 没有 cloud token 直接 authenticated=False, 前端跳登录页.
@@ -29516,6 +29614,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             raise
         import threading
         threading.Thread(target=_sync_org_ai_config_from_cloud, daemon=True).start()
+        threading.Thread(target=_sync_object_storage_config_from_cloud, daemon=True).start()
         return AuthStateResponse(authenticated=True, user=user, sessionMode="cloud")
 
     @app.get("/api/v1/account/overview", response_model=AccountOverviewResponse)
@@ -29837,6 +29936,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         _ensure_local_organization_workspace_from_cloud_membership()
         log_activity("auth.register", "session", user.id, {"email": user.email})
         Thread(target=_sync_org_ai_config_from_cloud, daemon=True, name="cloud-ai-sync-register").start()
+        Thread(target=_sync_object_storage_config_from_cloud, daemon=True, name="cloud-object-storage-sync-register").start()
         return AuthStateResponse(authenticated=True, user=user, sessionMode="cloud")
 
     @app.post("/api/v1/auth/login", response_model=AuthStateResponse)
@@ -29860,6 +29960,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         _ensure_local_organization_workspace_from_cloud_membership()
         log_activity("auth.login", "session", user.id, {"email": user.email})
         Thread(target=_sync_org_ai_config_from_cloud, daemon=True, name="cloud-ai-sync-login").start()
+        Thread(target=_sync_object_storage_config_from_cloud, daemon=True, name="cloud-object-storage-sync-login").start()
         return AuthStateResponse(authenticated=True, user=user)
 
     @app.post("/api/v1/auth/change-password")
@@ -35242,30 +35343,55 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             latencyMs=result.latency_ms,
         )
 
-    # === I1b-1：对象存储（音频中转）配置 API ===
+    # === I1b-1：对象存储（文件中转/归档）配置 API ===
 
     @app.get("/api/v1/settings/object-storage", response_model=ObjectStorageSettingsRecord)
     def get_object_storage_settings_endpoint() -> ObjectStorageSettingsRecord:
         from app.services.object_storage.settings_store import get_object_storage_settings
-        return get_object_storage_settings(state.db)
+        if get_cloud_token():
+            _sync_object_storage_config_from_cloud()
+        return get_object_storage_settings(
+            state.db,
+            redact_credentials=bool(get_cached_session_user()) and not current_session_is_admin(),
+            managed_by_cloud=state.db.get_setting("settings.object_storage_managed_by_cloud", "") == "1",
+            configured_by=state.db.get_setting("settings.object_storage_configured_by", "") or None,
+        )
 
     @app.put("/api/v1/settings/object-storage", response_model=ObjectStorageSettingsRecord)
     def update_object_storage_settings_endpoint(
         payload: ObjectStorageSettingsPayload,
     ) -> ObjectStorageSettingsRecord:
-        ensure_business_settings_editable()
-        from app.services.object_storage.settings_store import save_object_storage_settings
+        from app.services.object_storage.settings_store import get_object_storage_settings, save_object_storage_settings
         provider_name = (payload.provider or "").strip()
         if not provider_name:
             raise HTTPException(status_code=400, detail="请选择对象存储服务商")
-        next_record = save_object_storage_settings(state.db, payload, now_iso=now_iso())
+        if get_cloud_token():
+            if not current_session_is_admin():
+                raise HTTPException(status_code=403, detail="只有组织管理员可以修改组织对象存储配置。")
+            sync_status = _push_object_storage_config_to_cloud(payload)
+            if sync_status.get("state") == "failed":
+                raise HTTPException(status_code=502, detail=f"云端对象存储配置保存失败：{sync_status.get('reason') or '未知错误'}")
+            next_record = get_object_storage_settings(
+                state.db,
+                redact_credentials=False,
+                managed_by_cloud=True,
+                configured_by=state.db.get_setting("settings.object_storage_configured_by", "") or None,
+            )
+        else:
+            ensure_business_settings_editable()
+            next_record = save_object_storage_settings(state.db, payload, now_iso=now_iso())
         log_activity(
             "settings.object_storage.update",
             "settings",
             "object_storage",
             {"provider": provider_name, "enabled": payload.enabled},
         )
-        return next_record
+        return next_record.model_copy(
+            update={
+                "managedByCloud": state.db.get_setting("settings.object_storage_managed_by_cloud", "") == "1",
+                "configuredBy": state.db.get_setting("settings.object_storage_configured_by", "") or None,
+            }
+        )
 
     @app.post("/api/v1/settings/object-storage/test", response_model=ObjectStorageTestResult)
     def test_object_storage_settings_endpoint(
@@ -52716,6 +52842,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             raise HTTPException(status_code=404, detail="客户不存在")
 
         batch_created_at = _intel_now()
+        trigger_source = (payload.triggerSource or "manual").strip() or "manual"
 
         def _create_refresh_run(client_id: str, client_name: str) -> str:
             run_id = f"irun_{_uuid_intel.uuid4().hex[:12]}"
@@ -52725,13 +52852,14 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                     id, scope_type, scope_id, client_id, project_module_id, content_kind,
                     trigger_source, status, stage, message, created_at, updated_at
                 )
-                VALUES(?, 'client', ?, ?, NULL, ?, 'manual', 'queued', 'queued', ?, ?, ?)
+                VALUES(?, 'client', ?, ?, NULL, ?, ?, 'queued', 'queued', ?, ?, ?)
                 """,
                 (
                     run_id,
                     client_id,
                     client_id,
                     content_kind,
+                    trigger_source,
                     f"已排队：{client_name} 的{'资料补全' if content_kind == 'profile_completion' else '时效情报'}后台研究将继续执行",
                     batch_created_at,
                     batch_created_at,
@@ -52853,7 +52981,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                             ai_service=state.ai,
                             scope=scope,
                             intents=generation.intents,
-                            trigger_source="manual",
+                            trigger_source=trigger_source,
                             max_fetch_jobs=round_fetch_jobs,
                             timely_promote_limit=(
                                 max(0, 5 - int(aggregate.get("promotedCount") or 0))
@@ -53044,6 +53172,146 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             message=message,
             generatedAt=_intel_now(),
         )
+
+    @app.post("/api/v1/intelligence/auto-refresh-due")
+    def auto_refresh_intelligence_due(
+        payload: IntelligenceAutoRefreshDuePayload,
+        background_tasks: BackgroundTasks,
+    ) -> dict[str, object]:
+        """打开软件/进入情报站后，按现实时间补排到期的后台研究任务。"""
+
+        def _parse_iso(value: object) -> datetime | None:
+            text = str(value or "").strip()
+            if not text:
+                return None
+            try:
+                return datetime.fromisoformat(text.replace("Z", "+00:00")).replace(tzinfo=None)
+            except Exception:
+                return None
+
+        def _cycle_hours(kind: str) -> int:
+            settings = _refresh_cycle_settings()
+            return settings.profileCompletionHours if kind == "profile_completion" else settings.timelyIntelligenceHours
+
+        content_kinds = []
+        for kind in payload.contentKinds or ["profile_completion", "timely_intelligence"]:
+            if kind in {"profile_completion", "timely_intelligence"} and kind not in content_kinds:
+                content_kinds.append(kind)
+        if not content_kinds:
+            raise HTTPException(status_code=400, detail="contentKinds 至少包含一个有效类型")
+
+        if payload.scopeType == "client" and payload.scopeId:
+            client_row = state.db.fetchone("SELECT id, name FROM clients WHERE id=?", (payload.scopeId,))
+            target_rows = [client_row] if client_row else []
+            if not target_rows:
+                raise HTTPException(status_code=404, detail="客户不存在")
+        elif payload.scopeType == "all":
+            target_rows = state.db.fetchall("SELECT id, name FROM clients ORDER BY name")
+        else:
+            raise HTTPException(status_code=400, detail="scopeType 必须是 all 或 client，且 client 时需 scopeId")
+
+        now = datetime.utcnow().replace(microsecond=0)
+        checked_at = _intel_now()
+        results: list[dict[str, object]] = []
+        queued_count = 0
+        skipped_count = 0
+
+        for client_row in target_rows:
+            client_id = str(client_row["id"])
+            client_name = str(client_row["name"] or "")
+            for kind in content_kinds:
+                active = state.db.fetchone(
+                    """
+                    SELECT id
+                    FROM intelligence_refresh_runs
+                    WHERE client_id = ? AND content_kind = ? AND status IN ('queued', 'running')
+                    ORDER BY updated_at DESC
+                    LIMIT 1
+                    """,
+                    (client_id, kind),
+                )
+                if active is not None:
+                    skipped_count += 1
+                    results.append(
+                        {
+                            "scopeType": "client",
+                            "scopeId": client_id,
+                            "clientId": client_id,
+                            "name": client_name,
+                            "contentKind": kind,
+                            "queued": False,
+                            "skippedReason": "已有排队或运行中的刷新任务",
+                        }
+                    )
+                    continue
+
+                latest = state.db.fetchone(
+                    """
+                    SELECT COALESCE(finished_at, updated_at, created_at) AS last_at
+                    FROM intelligence_refresh_runs
+                    WHERE client_id = ? AND content_kind = ? AND status IN ('completed', 'failed')
+                    ORDER BY COALESCE(finished_at, updated_at, created_at) DESC
+                    LIMIT 1
+                    """,
+                    (client_id, kind),
+                )
+                last_at = _parse_iso(latest["last_at"]) if latest is not None else None
+                hours = _cycle_hours(kind)
+                due = last_at is None or last_at <= now - timedelta(hours=hours)
+                if not due:
+                    skipped_count += 1
+                    results.append(
+                        {
+                            "scopeType": "client",
+                            "scopeId": client_id,
+                            "clientId": client_id,
+                            "name": client_name,
+                            "contentKind": kind,
+                            "queued": False,
+                            "lastRunAt": last_at.isoformat(timespec="seconds") + "Z" if last_at else None,
+                            "skippedReason": "默认周期未到期",
+                        }
+                    )
+                    continue
+
+                refresh_result = trigger_intelligence_refresh(
+                    IntelligenceRefreshPayload(
+                        scopeType="client",
+                        scopeId=client_id,
+                        contentKind=kind,
+                        force=True,
+                        triggerSource="auto_due",
+                    ),
+                    background_tasks,
+                )
+                queued_job_id = None
+                if refresh_result.results:
+                    queued_job_id = refresh_result.results[0].queuedJobId
+                queued_count += 1
+                results.append(
+                    {
+                        "scopeType": "client",
+                        "scopeId": client_id,
+                        "clientId": client_id,
+                        "name": client_name,
+                        "contentKind": kind,
+                        "queued": True,
+                        "queuedJobId": queued_job_id,
+                        "autoDueReason": f"距离上次刷新已超过默认周期 {hours} 小时" if last_at else "尚无历史刷新记录",
+                    }
+                )
+
+        return {
+            "checkedAt": checked_at,
+            "queuedCount": queued_count,
+            "skippedCount": skipped_count,
+            "results": results,
+            "message": (
+                f"已到默认周期，后台已自动排队补跑 {queued_count} 个对象"
+                if queued_count
+                else "默认周期未到期，暂无需要自动补跑的对象"
+            ),
+        }
 
     @app.get("/api/v1/intelligence/source-diagnostics", response_model=IntelligenceSourceDiagnosticsResponse)
     def get_source_diagnostics_endpoint(

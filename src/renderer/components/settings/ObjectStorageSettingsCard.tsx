@@ -111,10 +111,17 @@ export function ObjectStorageSettingsCard({
   return (
     <div className="space-y-5">
       <div className="flex items-start justify-between gap-4">
-        <p className="text-[12px] text-gray-500 leading-relaxed flex-1 min-w-0">
-          语音识别 API（如火山豆包 ASR）只接受公网可访问的音频 URL，不接受 binary 直传。
-          这里配置一个对象存储桶，系统会把你上传的录音先放进桶里拿到 URL，再交给语音识别模型转写。
-        </p>
+        <div className="flex-1 min-w-0">
+          <p className="text-[12px] text-gray-500 leading-relaxed">
+            语音识别 API（如火山豆包 ASR）只接受公网可访问的音频 URL，不接受 binary 直传。
+            这里配置一个对象存储桶，系统会把你上传的录音先放进桶里拿到 URL，再交给语音识别模型转写。
+          </p>
+          {settings?.managedByCloud && (
+            <p className="text-[12px] text-emerald-700 mt-2">
+              已使用组织管理员配置的对象存储{settings.hasCredentials ? '，成员可直接使用相关文件能力。' : '，但凭证尚未完整。'}
+            </p>
+          )}
+        </div>
         {canEdit && (
           <button
             type="button"
@@ -200,7 +207,7 @@ export function ObjectStorageSettingsCard({
                 onChange={(e) => setEnabled(e.target.checked)}
                 disabled={!canEdit}
               />
-              启用对象存储（保存后客户工作台才能上传录音）
+              启用对象存储（保存后文件中转、录音转写等能力才能使用）
             </label>
           </div>
 
@@ -242,7 +249,7 @@ export function ObjectStorageSettingsCard({
 
       {!canEdit && (
         <p className="text-[12px] text-amber-700 bg-amber-50 border border-amber-100 rounded-2xl px-4 py-3">
-          当前账号没有修改模型配置的权限，仅可查看。
+          当前账号没有修改组织对象存储配置的权限，仅可查看；如需调整桶、区域或密钥，请联系组织管理员。
         </p>
       )}
     </div>
