@@ -127,12 +127,19 @@
           "title": "前端 useClientFact hook",
           "description": "替代 6 大 view 里直接 fetch 的部分。React hook 形态,内部消费 ClientFactView API",
           "estimated_days": 5,
-          "status": "pending",
+          "actual_days": 0.5,
+          "status": "verified",
+          "completed_at": "2026-05-21T23:45",
+          "verified_at": "2026-05-21T23:50",
+          "commit": "ff55a4b",
+          "tests_passing": "5/5 (node:test) + tsc 0 errors + 113 后端回归 PASS",
           "depends_on": ["F1.2"],
-          "serves_goal": "A",
+          "serves_goal": "A+B",
           "files": [
-            "src/renderer/hooks/useClientFact.ts (new)",
-            "src/renderer/lib/api.ts (加 fetchClientFactView)"
+            "src/renderer/lib/clientFactTypes.ts (142 行 TS 类型)",
+            "src/renderer/lib/api.ts (+36 行 fetchClientFactBundle)",
+            "src/renderer/hooks/useClientFact.ts (106 行 hook 含竞态保护)",
+            "src/renderer/lib/clientFactTypes.test.ts (126 行, 5 tests)"
           ]
         },
         {
