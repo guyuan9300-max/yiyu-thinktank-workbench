@@ -9062,3 +9062,120 @@ class ClientDeletePreview(BaseModel):
     eventLineCount: int = 0
     taskCount: int = 0
     isDemoClient: bool = False
+
+
+# ── v2.2 Phase 1 F1.4a · ClientFactBundle 响应模型 ──
+# 镜像 backend/app/modules/client/facts.py 里的 dataclass
+# 供 GET /api/v1/clients/{client_id}/fact-bundle 用
+
+
+class EventLineFactResponse(BaseModel):
+    id: str
+    name: str
+    kind: str
+    status: str
+    stage: str
+    summary: str
+    intent: str
+    current_blocker: str
+    recent_decision: str
+    next_step: str
+    evidence_count: int
+    owner_id: str | None = None
+    owner_name: str | None = None
+    primary_client_id: str
+    primary_client_name: str
+    created_at: str
+    updated_at: str
+
+
+class TaskFactResponse(BaseModel):
+    id: str
+    title: str
+    description_preview: str
+    status: str
+    priority: str
+    progress_status: str
+    owner_id: str | None = None
+    owner_name: str
+    creator_id: str
+    deadline_at: str | None = None
+    due_date: str | None = None
+    scheduled_start_at: str | None = None
+    completed_at: str | None = None
+    event_line_id: str | None = None
+    business_category: str | None = None
+    current_blocker: str
+    next_action: str
+    recent_decision: str
+    evidence_count: int
+    source_type: str
+    source_id: str | None = None
+    created_at: str
+    updated_at: str
+
+
+class CommitmentFactResponse(BaseModel):
+    id: str
+    committer: str
+    recipient: str
+    commitment_type: str
+    content: str
+    deadline: str | None = None
+    status: str
+    created_at: str
+    updated_at: str
+
+
+class DnaDocumentRefResponse(BaseModel):
+    module_key: str
+    title: str
+    summary: str
+    file_name: str
+    source_kind: str
+    updated_at: str
+    updated_by: str
+    has_full_content: bool
+
+
+class AtomicFactRefResponse(BaseModel):
+    id: str
+    subject_text: str
+    attribute: str
+    value_text: str
+    confidence: float
+    source_v2_document_id: str | None = None
+    source_v2_chunk_id: str | None = None
+    evidence_text: str | None = None
+    status: str
+    updated_at: str
+
+
+class ClientRecordResponse(BaseModel):
+    """v2.2 F1.4a · 客户基础记录响应 (跟 backend/app/modules/client/types.py 对齐)"""
+
+    id: str
+    name: str
+    alias: str
+    domain: str
+    type: str
+    intro: str
+    stage: str
+    color: str
+    created_at: str
+    updated_at: str
+
+
+class ClientFactBundleResponse(BaseModel):
+    """v2.2 F1.4a · 客户完整事实包响应 — L2 共识层 endpoint 返回类型"""
+
+    client: ClientRecordResponse
+    event_lines: list[EventLineFactResponse]
+    tasks: list[TaskFactResponse]
+    commitments: list[CommitmentFactResponse]
+    dna_documents: list[DnaDocumentRefResponse]
+    atomic_facts: list[AtomicFactRefResponse]
+    key_decisions: list[dict[str, object]] = Field(default_factory=list)
+    snapshot_at: str
+    sources: dict[str, str]
+    counts: dict[str, int]

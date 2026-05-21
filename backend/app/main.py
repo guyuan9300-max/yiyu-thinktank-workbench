@@ -165,6 +165,15 @@ from app.local_request_guard import (
     validate_local_browser_request,
 )
 from app.models import (
+    # v2.2 Phase 1 F1.4a · ClientFactView response models
+    AtomicFactRefResponse,
+    ClientFactBundleResponse,
+    ClientRecordResponse,
+    CommitmentFactResponse,
+    DnaDocumentRefResponse,
+    EventLineFactResponse,
+    TaskFactResponse,
+    # 既有
     ActivityLogRecord,
     AgentWeeklyDigestRecord,
     AgentWeeklyPlanPayload,
@@ -794,7 +803,6 @@ from app.services.workspace_chat_multipass import (
     MultipassPlanError,
     generate_multipass_answer,
 )
-from app.services.workspace_file_search import build_file_search_user_summary
 from app.services.workspace_followups import (
     WorkspaceFollowupResult,
     build_workspace_followup_context,
@@ -8372,7 +8380,9 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 )
             except Exception:
                 pass
-        client_row = state.db.fetchone("SELECT name FROM clients WHERE id = ?", (client_id,)) if client_id else None
+        # v2.2 F1.4b 切迁: 走 ClientRepository (L2 共识层), 不再裸 SQL
+        from app.modules.client import get_client_repository as _get_client_repo_1
+        _client = _get_client_repo_1(state.db).get_by_id(client_id) if client_id else None
         project_module_id = str(payload.get("projectModuleId")) if payload.get("projectModuleId") else None
         project_flow_id = str(payload.get("projectFlowId")) if payload.get("projectFlowId") else None
         project_module, project_flow = resolve_project_structure_refs(client_id, project_module_id, project_flow_id, strict=False) if client_id else (None, None)
@@ -8525,7 +8535,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             durationMinutes=int(temporal_fields["duration_minutes"] or 60),
             scopeMode=str(payload.get("scopeMode") or "COLLAB_SHARED"),  # type: ignore[arg-type]
             clientId=client_id,
-            clientName=str(client_row["name"]) if client_row else None,
+            clientName=_client.name if _client else None,  # v2.2 F1.4b · 走 ClientRepository
             eventLineId=event_line_id,
             eventLineName=event_line_name,
             projectModuleId=project_module.id if project_module else project_module_id,
@@ -8690,10 +8700,12 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         resolved_client_id = text_value("primaryClientId", "primary_client_id", fallback_client_id)
         if not resolved_client_id and fallback_client_id:
             resolved_client_id = fallback_client_id.strip() or None
-        client_row = state.db.fetchone("SELECT name FROM clients WHERE id = ?", (resolved_client_id,)) if resolved_client_id else None
+        # v2.2 F1.4b 切迁: ClientRepository (L2 共识层)
+        from app.modules.client import get_client_repository as _get_client_repo_2
+        _client2 = _get_client_repo_2(state.db).get_by_id(resolved_client_id) if resolved_client_id else None
         resolved_client_name = (
-            str(client_row["name"])
-            if client_row and client_row["name"]
+            _client2.name
+            if _client2 and _client2.name
             else text_value("primaryClientName", "primary_client_name")
         )
 
@@ -8802,10 +8814,12 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
     def _event_line_cloud_payload_from_row(row, *, include_id: bool = False) -> dict[str, object | None]:
         local_id = str(row["id"])
         client_id = str(row["primary_client_id"]).strip() if row["primary_client_id"] else None
-        client_row = state.db.fetchone("SELECT name FROM clients WHERE id = ?", (client_id,)) if client_id else None
+        # v2.2 F1.4b 切迁: ClientRepository (L2 共识层)
+        from app.modules.client import get_client_repository as _get_client_repo_3
+        _client3 = _get_client_repo_3(state.db).get_by_id(client_id) if client_id else None
         primary_client_name = (
-            str(client_row["name"])
-            if client_row and client_row["name"]
+            _client3.name
+            if _client3 and _client3.name
             else (str(row["primary_client_name"]) if row["primary_client_name"] else None)
         )
         payload: dict[str, object | None] = {
@@ -27544,6 +27558,61 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         except RuntimeError as exc:
             raise HTTPException(status_code=502, detail=str(exc)) from exc
 
+    # ─── v2.2 Phase 1 F1.4a · L2 共识层 endpoint ───────────────────────
+    # 暴露 ClientFactView 给前端 / 机器人 / 任何 caller, 一次拿客户的全部事实
+    # (client + event_lines + tasks + commitments + dna_documents + atomic_facts)
+    # 详见 docs/V2.2_PHASE1_SPEC_F14.md
+
+    @app.get(
+        "/api/v1/clients/{client_id}/fact-bundle",
+        response_model=ClientFactBundleResponse,
+    )
+    def get_client_fact_bundle(
+        client_id: str,
+        include_archived: bool = Query(False),
+        lite: bool = Query(False, description="只返回 counts, 不拿事实列表"),
+    ) -> ClientFactBundleResponse:
+        """v2.2 F1.4a · 客户完整事实视图 (L2 共识层)
+
+        机器人问答 / 前端 useClientFact hook / 战略陪伴等都该走这里, 不再直查表.
+        修 v2.1 "多池并列" 数据不一致问题的根 — 一份事实, 一个入口.
+        """
+        from app.modules.client import get_client_fact_view
+
+        view = get_client_fact_view(state.db)
+        if lite:
+            bundle = view.get_fact_bundle_lite(client_id)
+        else:
+            bundle = view.get_fact_bundle(
+                client_id, include_archived=include_archived
+            )
+        if bundle is None:
+            raise HTTPException(
+                status_code=404,
+                detail="Client not found or archived (use include_archived=true to see)",
+            )
+        # 转换 dataclass → pydantic response
+        return ClientFactBundleResponse(
+            client=ClientRecordResponse(**bundle.client.__dict__),
+            event_lines=[
+                EventLineFactResponse(**e.__dict__) for e in bundle.event_lines
+            ],
+            tasks=[TaskFactResponse(**t.__dict__) for t in bundle.tasks],
+            commitments=[
+                CommitmentFactResponse(**c.__dict__) for c in bundle.commitments
+            ],
+            dna_documents=[
+                DnaDocumentRefResponse(**d.__dict__) for d in bundle.dna_documents
+            ],
+            atomic_facts=[
+                AtomicFactRefResponse(**a.__dict__) for a in bundle.atomic_facts
+            ],
+            key_decisions=[],  # Phase 2 才有
+            snapshot_at=bundle.snapshot_at,
+            sources=bundle.sources,
+            counts=bundle.counts,
+        )
+
     # ─── Phase 1.5c · 战略陪伴叙事面板 (云端原生, 本地 proxy) ─────────
     # 6 维度故事网 + 共同编织澄清, 同组织 A/B 账号同源 (见 cloud_backend
     # /api/v1/clients/{id}/narrative*). 本地仅 proxy 到云端, 不缓存,
@@ -42778,14 +42847,6 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             generation_mode="fallback",
             rejected_count=0,
         )
-        if workspace_workflow == "file_search" and search_result is not None and getattr(search_result, "suggestedFollowups", None):
-            return build_workspace_followup_result_from_candidates(
-                list(search_result.suggestedFollowups or []),
-                scenario=scenario,
-                generation_mode="file_search",
-                client_name=client_name,
-                workspace_workflow=workspace_workflow,
-            )
         if not str(answer_content or "").strip():
             return WorkspaceFollowupResult(
                 questions=[],
@@ -42949,12 +43010,8 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         evidence = _resolve_primary_evidence(kernel_result)
         workspace_workflow = workspace_route.workflow
         workspace_generation_mode = workspace_route.generationMode
-        # inline AI 旁路绝不走 file_search(那是 chat 的"找文件"短路,不调 LLM 只返文件列表)。
-        # router 会把含"资料"/"文件"/"找"等词的 prompt 误判为 file_search,
-        # 但 inline 编辑器永远是改写/扩写/翻译任务,需要 LLM 真生成。强制改回 synthesis。
-        if assistant_id is None and workspace_workflow == "file_search":
-            workspace_workflow = "synthesis"
-            workspace_generation_mode = "long_synthesis"
+        # （旧 file_search 路由强制改回 synthesis 的防守已删除——
+        # router 不再返回 file_search，inline AI 永远走 synthesis 链路。）
         primary_sources = list(workspace_route.dataSources)
         question_focus_frame = build_question_focus_frame(
             prompt=prompt_for_context,
@@ -42999,8 +43056,8 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             purpose=None,
             max_chars=22000,
         )
-        if workspace_generation_mode == "no_generation":
-            generation_profile = "search_only"
+        # （workspace_generation_mode == "no_generation" 分支已删除——
+        # 它只由 file_search 路由设置，router 不再返回该值。）
         if workspace_generation_mode == "consultant_synthesis":
             material_access_mode = "consultant_synthesis_v1"
             generation_profile = "consultant_synthesis"
@@ -43313,21 +43370,9 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             actions="",
             timeline="",
         )
-        if workspace_workflow == "file_search":
-            provider_used = None
-            model_used = None
-            model_route = "文件查找"
-            llm_invoked = False
-            structured = AiStructuredResponse(
-                content=build_file_search_user_summary(kernel_result.searchResult),
-                judgment="本轮为文件查找结果，不生成战略综合回答。",
-                analysis="用户意图为找文件/找原文，已返回命中文件与片段。",
-                actions="可点击文件打开原文，或选择若干文件后生成综合回答。",
-                timeline="即时可处理。",
-            )
-            answer_mode = "grounded_answer"
-            evidence_status = "sufficient" if kernel_result.searchResult and kernel_result.searchResult.hits else "none"
-        else:
+        # （workspace_workflow == "file_search" 分支已删除——
+        # router 永远不再返回 file_search，所有查询都走 synthesis 真生成路径。）
+        if True:
             # P0+: Outline-First 多段生成（Pass 1 出大纲 → Pass 2-N 分段写）
             # 触发条件：用户在前端勾选「深度思考」开关（chat_messages.deep_thinking_requested=1）。
             # env YIYU_WORKSPACE_MULTIPASS_ENABLED=0 为系统级 kill switch，运维兜底用，无论用户怎么点都不走 multipass。
@@ -44033,9 +44078,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 "progressFloor": 100.0,
                 "progressCeiling": 100.0,
                 "stageLabel": (
-                    "文件查找结果已生成"
-                    if workspace_workflow == "file_search" and answer_mode != "system_failure"
-                    else "回答已生成"
+                    "回答已生成"
                     if answer_mode != "system_failure"
                     else "回答生成失败"
                 ),
@@ -44193,19 +44236,20 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                     },
                 ),
             )
-            if workspace_workflow != "file_search":
-                _run_post_finalize_step(
-                    assistant_id,
-                    stage="chat_fact_extraction",
-                    action=lambda: _schedule_chat_fact_extraction(
-                        state,
-                        client_id=client_id,
-                        thread_id=thread_id,
-                        user_prompt=prompt,
-                        assistant_content=structured.content,
-                        answer_mode=answer_mode,
-                    ),
-                )
+            # （workspace_workflow != "file_search" 守卫已删除——router 永远不返回 file_search，
+            # 所有查询都走 chat_fact_extraction。）
+            _run_post_finalize_step(
+                assistant_id,
+                stage="chat_fact_extraction",
+                action=lambda: _schedule_chat_fact_extraction(
+                    state,
+                    client_id=client_id,
+                    thread_id=thread_id,
+                    user_prompt=prompt,
+                    assistant_content=structured.content,
+                    answer_mode=answer_mode,
+                ),
+            )
             row = state.db.fetchone("SELECT * FROM chat_messages WHERE id = ?", (assistant_id,))
             assert row is not None
             return build_chat_message(row)
@@ -44361,39 +44405,19 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         def run_enrichment() -> None:
             followup_mode = "failed"
             try:
-                if workspace_workflow == "file_search":
-                    scenario = classify_workspace_followup_scenario(
-                        prompt=prompt,
-                        answer_content=answer_content,
-                        workspace_workflow=workspace_workflow,
-                        primary_sources=primary_sources,
-                        missing_context=missing_context,
-                    )
-                    raw_candidates = (
-                        [str(item) for item in (search_result.suggestedFollowups or []) if str(item).strip()]
-                        if search_result is not None
-                        else []
-                    )
-                    followup_mode = "file_search" if raw_candidates else "fallback"
-                    followup_result = build_workspace_followup_result_from_candidates(
-                        raw_candidates,
-                        scenario=scenario,
-                        generation_mode=followup_mode,
-                        client_name=client_name,
-                        workspace_workflow=workspace_workflow,
-                    )
-                else:
-                    followup_result = build_workspace_followup_questions(
-                        prompt=prompt,
-                        answer_content=answer_content,
-                        workspace_workflow=workspace_workflow,
-                        client_name=client_name,
-                        primary_sources=primary_sources,
-                        missing_context=missing_context,
-                        search_result=search_result,
-                        raise_on_generation_error=True,
-                    )
-                    followup_mode = followup_result.generation_mode
+                # （workspace_workflow == "file_search" 分支已删除——
+                # router 永远不返回 file_search，所有查询走 build_workspace_followup_questions 真生成。）
+                followup_result = build_workspace_followup_questions(
+                    prompt=prompt,
+                    answer_content=answer_content,
+                    workspace_workflow=workspace_workflow,
+                    client_name=client_name,
+                    primary_sources=primary_sources,
+                    missing_context=missing_context,
+                    search_result=search_result,
+                    raise_on_generation_error=True,
+                )
+                followup_mode = followup_result.generation_mode
                 _merge_assistant_retrieval_summary(
                     assistant_id,
                     {
@@ -44429,7 +44453,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                     },
                     answer_mode=answer_mode,
                     timestamp=now_iso(),
-                    allow_model=workspace_workflow != "file_search",
+                    allow_model=True,  # （workspace_workflow != "file_search" guard 已简化——router 永远不返回 file_search）
                 )
                 _merge_assistant_retrieval_summary(
                     assistant_id,
@@ -45630,6 +45654,54 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
     @app.post("/api/v1/clients/{client_id}/documents/from-text", response_model=ClientTextDocumentResponse)
     def create_client_document_from_text(client_id: str, payload: ClientTextDocumentPayload) -> ClientTextDocumentResponse:
         return create_client_text_document(client_id, payload)
+
+    @app.patch("/api/v1/documents/{document_id}/content", response_model=ClientTextDocumentResponse)
+    def update_document_content(document_id: str, payload: ClientTextDocumentPayload) -> ClientTextDocumentResponse:
+        """覆盖式保存:把 markdown 内容渲染回原 docx 文件,不创建新 document 行,不走 dedup。
+        用于「智能编辑器 → 保存」按钮:用户从 docx 打开编辑后点保存,期望覆盖原文件。
+        """
+        from app.services.link_material_import import render_polished_markdown_to_docx
+
+        row = state.db.fetchone("SELECT id, client_id, title, path FROM documents WHERE id = ?", (document_id,))
+        if not row:
+            raise HTTPException(status_code=404, detail="文档不存在或已被删除")
+        existing_path = Path(str(row["path"]))
+        if not existing_path.exists():
+            raise HTTPException(status_code=410, detail="原文件已不在磁盘上,无法覆盖保存。请改用'另存为'重新建一份")
+
+        normalized_content = str(payload.content or "").replace("\r\n", "\n").strip()
+        if not normalized_content:
+            raise HTTPException(status_code=400, detail="请先粘贴文档内容。")
+        # title 可改,但不强制 — 仅在用户显式传入且非空时覆盖,否则保留原 title
+        new_title = str(payload.title or "").strip() or str(row["title"] or "")
+
+        # 直接覆盖原 docx 文件(不变 path,不变 document_id,不重新走 dedup)
+        render_polished_markdown_to_docx(
+            title=new_title,
+            source_url="",
+            markdown_body=normalized_content,
+            output_path=existing_path,
+        )
+
+        # 更新 documents 行的 title 和 excerpt(其他字段保留)
+        excerpt = normalized_content[:140]
+        state.db.execute(
+            "UPDATE documents SET title = ?, excerpt = ? WHERE id = ?",
+            (new_title, excerpt, document_id),
+        )
+        log_activity(
+            "client.document.update_content",
+            "document",
+            document_id,
+            {"clientId": str(row["client_id"]), "title": new_title, "path": str(existing_path)},
+        )
+        return ClientTextDocumentResponse(
+            clientId=str(row["client_id"]),
+            documentId=document_id,
+            title=new_title,
+            fileName=existing_path.name,
+            path=str(existing_path),
+        )
 
     @app.post("/api/v1/clients/{client_id}/documents/ai-action", response_model=DocumentAiActionResponse)
     def document_ai_action(client_id: str, payload: DocumentAiActionPayload) -> DocumentAiActionResponse:
