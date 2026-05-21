@@ -1750,6 +1750,33 @@ export async function deleteClient(id: string) {
   });
 }
 
+// ─── v2.2 Phase 1 F1.5 · ClientFactBundle (L2 共识层) ───
+import type { ClientFactBundle, FetchClientFactBundleOptions } from './clientFactTypes';
+
+/**
+ * v2.2 F1.5 · 拿一个客户的完整事实包 (L2 共识层入口)
+ *
+ * 后端: backend/app/main.py GET /api/v1/clients/{client_id}/fact-bundle
+ * 数据: 跨 6 表合并 (client + event_lines + tasks + commitments + dna_documents + atomic_facts)
+ *
+ * 用法 (在 React 组件里, 推荐用 useClientFact hook):
+ *   const bundle = await fetchClientFactBundle('client_284afd836e');
+ *   // bundle.event_lines / bundle.tasks / bundle.counts / ...
+ *
+ * 404: client 不存在或 archived (用 includeArchived=true 解锁 archived)
+ */
+export async function fetchClientFactBundle(
+  clientId: string,
+  options?: FetchClientFactBundleOptions,
+): Promise<ClientFactBundle> {
+  const params = new URLSearchParams();
+  if (options?.includeArchived) params.set('include_archived', 'true');
+  if (options?.lite) params.set('lite', 'true');
+  const query = params.toString();
+  const path = `/api/v1/clients/${encodeURIComponent(clientId)}/fact-bundle${query ? `?${query}` : ''}`;
+  return request<ClientFactBundle>(path);
+}
+
 export type ClientDeletePreview = {
   clientId: string;
   name: string;
@@ -3525,6 +3552,15 @@ export async function exportAnswer(
 export async function createClientTextDocument(clientId: string, payload: { title?: string | null; content: string }) {
   return request<{ clientId: string; documentId: string; title: string; fileName: string; path: string }>(`/api/v1/clients/${clientId}/documents/from-text`, {
     method: 'POST',
+    body: JSON.stringify(payload),
+  });
+}
+
+// 覆盖式保存:把 markdown 渲染回原 docx 文件,documentId/path 不变。
+// 用于「智能编辑器 → 保存」按钮:用户从 docx 打开编辑后期望覆盖原文件。
+export async function updateDocumentContent(documentId: string, payload: { title?: string | null; content: string }) {
+  return request<{ clientId: string; documentId: string; title: string; fileName: string; path: string }>(`/api/v1/documents/${encodeURIComponent(documentId)}/content`, {
+    method: 'PATCH',
     body: JSON.stringify(payload),
   });
 }
