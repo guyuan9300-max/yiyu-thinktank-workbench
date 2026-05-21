@@ -3500,6 +3500,12 @@ export async function cancelVectorizeAnswer(clientId: string, messageId: string)
   );
 }
 
+export async function getDocumentText(documentId: string) {
+  return request<{ content: string; kind: string; title: string }>(
+    `/api/v1/documents/${encodeURIComponent(documentId)}/text`,
+  );
+}
+
 export async function exportAnswer(
   clientId: string,
   messageIdOrIds: string | string[],
@@ -3588,6 +3594,9 @@ export async function documentAiAction(
     contextSources?: DocumentAiContextSourceSpec[];
     // P14a：用户在编辑器框选的裸文本。空 = 处理整篇。
     selectionText?: string;
+    // 用户从右侧文件列表 attach 到对话引用的 document_id 列表(跟 chat 共用 state)。
+    // 后端会作为 priority_document_ids 优先召回。
+    workingDocumentIds?: string[];
   },
 ) {
   return request<DocumentAiActionResponse>(

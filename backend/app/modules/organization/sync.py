@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import urllib.error
 import urllib.request
 from dataclasses import dataclass, field
@@ -309,6 +310,21 @@ def sync_organization_directory(
     return SyncReport(status="ok", synced_at=synced_at, tables=reports)
 
 
+_ALLOWED_SYNC_TABLES = {
+    "mirror_organizations",
+    "mirror_departments",
+    "mirror_users",
+    "mirror_client_related_users",
+}
+_IDENT_PATTERN = re.compile(r"^[a-z_][a-z0-9_]*$")
+
+
+def _assert_safe_ident(name: str, kind: str) -> None:
+    """白名单 + 正则校验, 防止表名/列名 SQL 注入 (P0 防御)."""
+    if not name or not _IDENT_PATTERN.match(name):
+        raise ValueError(f"unsafe {kind} identifier: {name!r}")
+
+
 def _upsert_table(
     conn,
     table: str,
@@ -319,7 +335,17 @@ def _upsert_table(
     delete_scope_sql: str | None = None,
     delete_scope_params: list[str] | None = None,
 ) -> SyncTableReport:
-    """UPSERT + 删除 scope 内云端不再存在的行"""
+    """UPSERT + 删除 scope 内云端不再存在的行.
+
+    P0 安全: table 必须在 _ALLOWED_SYNC_TABLES 白名单, 所有 columns/id_columns
+    都过 _assert_safe_ident 防止 SQL injection.
+    """
+    if table not in _ALLOWED_SYNC_TABLES:
+        raise ValueError(f"table {table!r} not in sync whitelist")
+    for col in columns:
+        _assert_safe_ident(col, "column")
+    for col in id_columns:
+        _assert_safe_ident(col, "id_column")
     # 1. UPSERT
     placeholders = ",".join("?" * len(columns))
     col_list = ",".join(columns)

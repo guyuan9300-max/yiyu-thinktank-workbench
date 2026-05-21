@@ -2399,6 +2399,7 @@ def upsert_surrogate_record(
     surrogate_md_path: str,
     payload: dict[str, Any],
     timestamp: str,
+    chat_message_id: str | None = None,
 ) -> None:
     existing = db.fetchone("SELECT id FROM knowledge_surrogates WHERE id = ?", (surrogate_id,))
     values = (
@@ -2425,10 +2426,11 @@ def upsert_surrogate_record(
             UPDATE knowledge_surrogates
             SET knowledge_document_id = ?, client_id = ?, source_type = ?, title = ?, folder_category = ?, surrogate_md_path = ?,
                 overview_summary = ?, retrieval_summary = ?, document_role = ?, core_questions_json = ?, query_hints_json = ?,
-                distinct_findings_json = ?, entities_json = ?, time_markers_json = ?, source_links_json = ?, updated_at = ?
+                distinct_findings_json = ?, entities_json = ?, time_markers_json = ?, source_links_json = ?, updated_at = ?,
+                chat_message_id = COALESCE(?, chat_message_id)
             WHERE id = ?
             """,
-            (*values, surrogate_id),
+            (*values, chat_message_id, surrogate_id),
         )
         return
     db.execute(
@@ -2436,11 +2438,12 @@ def upsert_surrogate_record(
         INSERT INTO knowledge_surrogates(
             id, knowledge_document_id, client_id, source_type, title, folder_category, surrogate_md_path,
             overview_summary, retrieval_summary, document_role, core_questions_json, query_hints_json,
-            distinct_findings_json, entities_json, time_markers_json, source_links_json, created_at, updated_at
+            distinct_findings_json, entities_json, time_markers_json, source_links_json, created_at, updated_at,
+            chat_message_id
         )
-        VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
-        (surrogate_id, *values, timestamp),
+        (surrogate_id, *values, timestamp, chat_message_id),
     )
 
 
@@ -3674,6 +3677,8 @@ def create_memory_surrogate_from_answer(
     source_links: list[dict[str, Any]],
     created_at: str,
     ai_service: Any | None = None,
+    human_markdown: str | None = None,
+    chat_message_id: str | None = None,
 ) -> dict[str, Any]:
     doc_uid = f"mem_{hashlib.sha1(f'{client_id}:{title}:{content}'.encode('utf-8')).hexdigest()[:12]}"
     payload = {
@@ -3700,16 +3705,26 @@ def create_memory_surrogate_from_answer(
                 payload.update({key: value for key, value in enriched.items() if value not in (None, "")})
         except Exception:
             pass
-    surrogate_md_path = write_surrogate_markdown(
-        data_dir,
-        client_id=client_id,
-        doc_uid=doc_uid,
-        folder_category="战略陪伴",
-        title=title,
-        source_type="memory_answer",
-        source_path=None,
-        payload=payload,
-    )
+    # 当调用方传入 human_markdown（人读完整原文）时，跳过 write_surrogate_markdown 的机读元数据格式，
+    # 直接把人读 MD 写入 surrogateMdPath。用户打开收藏时看到的就是完整原文。
+    # payload 仍写入 surrogate DB 表，供 master_index FTS 检索使用——不影响 RAG。
+    if human_markdown is not None:
+        root = vector_store_root(data_dir, client_id)
+        target = root / "memory" / f"{doc_uid}.md"
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(human_markdown, encoding="utf-8")
+        surrogate_md_path = str(target)
+    else:
+        surrogate_md_path = write_surrogate_markdown(
+            data_dir,
+            client_id=client_id,
+            doc_uid=doc_uid,
+            folder_category="战略陪伴",
+            title=title,
+            source_type="memory_answer",
+            source_path=None,
+            payload=payload,
+        )
     surrogate_id = f"sur_{doc_uid}"
     upsert_surrogate_record(
         db,
@@ -3722,6 +3737,7 @@ def create_memory_surrogate_from_answer(
         surrogate_md_path=surrogate_md_path,
         payload=payload,
         timestamp=created_at,
+        chat_message_id=chat_message_id,
     )
     searchable_text = "\n".join(
         [

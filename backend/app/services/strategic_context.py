@@ -72,33 +72,31 @@ def get_strategic_context_for_prompt(
         missing = "方法论文档" if has_strategy else "战略文档"
         partial_md = strategy_md if has_strategy else methodology_md
         partial_label = docs["strategy"]["file_name"] if has_strategy else docs["methodology"]["file_name"]
+        # 修订: 删强制 LLM 复述声明 (会污染所有 narrative 文本); 只保留事实告知 + 语气约束.
+        # UI 上已有 StrategicDnaCard 显式标"未配置"提示, 无需 LLM 再重复写在文本里.
         prompt_prefix = (
             f"## 客户部分上传的战略基线\n\n"
             f"### 已上传: {which} ({partial_label})\n"
             f"{partial_md}\n\n"
             "---\n"
-            f"⚠️ 关键约束: 此客户**只上传了{which}, 未上传{missing}**. "
-            f"凡是涉及{missing.replace('文档', '')}相关的判断, 你必须在输出开头声明:\n"
-            f"  『我看到了{which}, 但客户的{missing}还没上传, 以下涉及"
-            f"{missing.replace('文档', '')}的判断主要基于碎片资料和该领域的通用经验, "
-            "战略层判断可能不准.』\n"
-            f"在涉及{missing.replace('文档', '')}的部分, 用『看上去/可能/初步看』"
-            "替代笃定语气, 避免编造结论性表述.\n\n"
+            f"⚙️ 使用约束: 此客户只上传了{which}, 未上传{missing}. "
+            f"涉及{missing.replace('文档', '')}相关判断时, 用『看上去/可能/初步看』"
+            "替代笃定语气, 不要编造结论性表述. 不要在 narrative 文本里复述"
+            "『未上传方法论文档』这类元信息 — UI 已有显式标识.\n\n"
         )
         honesty_clause_appendix = ""
     else:
+        # 修订: 同上, 删强制复述指令.
+        # 原版让 LLM 在每个 narrative 维度第一句复述"我在客户资料里没找到..." → 污染所有客户的战略陪伴.
+        # 改成: 事实告知 + 语气约束, 不强制 LLM 把这段元信息写进 narrative 文本.
         prompt_prefix = (
-            "## ⚠️ 客户战略文档未配置\n\n"
-            "此客户**尚未上传战略文档和方法论文档**. 这两份是品牌监控、提案、"
-            "情报匹配等模块判断客户事情的关键基线.\n\n"
+            "## ⚙️ 客户战略文档未配置\n\n"
+            "此客户尚未上传战略文档和方法论文档.\n\n"
             "---\n"
-            "⚠️ 关键约束: 你**不允许编造客户的战略定位或方法论**. "
-            "你必须在输出第一句明确写:\n"
-            "  『我在客户资料里没找到足够多的战略方向内容和明确的业务方法论, "
-            "以下分析主要基于碎片文件和该领域的独特经验, 战略层判断可能不准, "
-            "建议先上传战略文档.md和方法论文档.md.』\n\n"
-            "在涉及战略层的判断时, 用『看上去/可能/初步看』替代笃定语气. "
-            "宁可只就具体事实回答, 也不要硬推战略结论.\n\n"
+            "⚙️ 使用约束: 不允许编造客户的战略定位或方法论. "
+            "涉及战略层判断时, 用『看上去/可能/初步看』替代笃定语气. "
+            "宁可只就具体事实回答, 也不要硬推战略结论. "
+            "不要在 narrative 文本里复述『战略文档未配置』这类元信息 — UI 已有显式标识.\n\n"
         )
         honesty_clause_appendix = ""
 

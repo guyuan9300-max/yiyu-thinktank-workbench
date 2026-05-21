@@ -51,11 +51,14 @@ def _new_id(prefix: str) -> str:
 
 
 def _safe_json_loads(text: str | None, default: Any) -> Any:
+    """JSON 解析容错版. 解析失败时 log warning 后返回 default,
+    避免 UI 静默拿到空对象但又没有任何错误线索."""
     if not text:
         return default
     try:
         return json.loads(text)
-    except (json.JSONDecodeError, TypeError):
+    except (json.JSONDecodeError, TypeError) as exc:
+        logger.warning("[smart_file_import] _safe_json_loads failed, fallback to default: %s", exc)
         return default
 
 
@@ -224,6 +227,8 @@ def upload_staged_file(
     except Exception:
         pass
 
+    # 返回完整 SmartImportStagedFile 字段(跟 get_session 输出的 row 形状一致),
+    # 避免前端读 assigned_chunk_id/role_override/document_id/document_inserted_at 时 undefined
     return {
         "id": file_id,
         "session_id": session_id,
@@ -231,6 +236,10 @@ def upload_staged_file(
         "storage_path": str(storage),
         "size_bytes": len(content),
         "mime_type": mime_type or "",
+        "assigned_chunk_id": None,
+        "role_override": None,
+        "document_id": None,
+        "document_inserted_at": None,
         "upload_at": now,
     }
 
@@ -810,13 +819,27 @@ def _normalize_entity_name(name: str) -> str:
 
 
 def _upsert_entity(db: Any, *, client_id: str, name: str, kind: str, attrs: dict, now: str) -> str:
-    """按 (client_id, normalized_name) upsert. 返回 entity id."""
+    """按 (client_id, normalized_name) upsert. 返回 entity id.
+
+    优先复用 active entity; 若仅找到 merged 的同名实体, **复活它**
+    (status='active'), 而不是新建 — 避免反复创建/合并循环.
+    """
     normalized = _normalize_entity_name(name)
+    # 优先找 active
     existing = db.fetchone(
-        "SELECT id, attributes_json, mention_count FROM entities "
-        "WHERE client_id = ? AND normalized_name = ?",
+        "SELECT id, attributes_json, mention_count, status FROM entities "
+        "WHERE client_id = ? AND normalized_name = ? AND status = 'active' "
+        "LIMIT 1",
         (client_id, normalized),
     )
+    # active 没找到 → 找 merged 的同名(可能 self_verify 之前合并过), 复活它
+    if not existing:
+        existing = db.fetchone(
+            "SELECT id, attributes_json, mention_count, status FROM entities "
+            "WHERE client_id = ? AND normalized_name = ? AND status = 'merged' "
+            "ORDER BY mention_count DESC LIMIT 1",
+            (client_id, normalized),
+        )
     if existing:
         # 合并 attributes
         try:
@@ -824,9 +847,10 @@ def _upsert_entity(db: Any, *, client_id: str, name: str, kind: str, attrs: dict
         except Exception:  # noqa: BLE001
             merged = {}
         merged.update(attrs or {})
+        # 同时把 status 复位到 active(如果是从 merged 找到的)
         db.execute(
             "UPDATE entities SET attributes_json=?, mention_count=mention_count+1, "
-            "last_seen_at=?, updated_at=? WHERE id=?",
+            "status='active', last_seen_at=?, updated_at=? WHERE id=?",
             (json.dumps(merged, ensure_ascii=False), now, now, existing["id"]),
         )
         return str(existing["id"])
@@ -919,7 +943,27 @@ def commit_session(
         "errors": [],
     }
 
+    # P1-1: 显式 BEGIN IMMEDIATE 事务包裹整个写库流程, 任何系统级失败 → ROLLBACK.
+    # 单条业务错误(format/dedup)仍走内层 try/except,只跳过那条不影响整体.
+    # P0-Bug2: 收集所有事务内 copy 出的目标文件, rollback 时 cleanup 防孤儿文件.
+    copied_files: list[Path] = []
+    db.begin_transaction("IMMEDIATE")
     try:
+        # P0 TOCTOU 防御: 事务内再次检查 status,
+        # 防止两个并发请求都通过函数最前面的检查后, 都进入事务写库, 导致数据重复.
+        # IMMEDIATE 锁后, 另一个并发请求会在 begin_transaction 阻塞, 它进来时再次读 status
+        # 看到的就是上一个事务标完 'imported' 的状态, 直接 raise.
+        recheck_row = db.fetchone(
+            "SELECT status FROM import_story_sessions WHERE id=?", (session_id,)
+        )
+        if not recheck_row:
+            raise ValueError(f"session disappeared: {session_id}")
+        cur_status = str(recheck_row["status"] or "")
+        if cur_status == "imported":
+            raise ValueError("session already imported (race detected)")
+        if cur_status == "discarded":
+            raise ValueError("session is discarded (race detected)")
+
         # === 1. entities upsert ===
         entity_name_to_id: dict[str, str] = {}
         for e in plan["entities"]:
@@ -1101,6 +1145,7 @@ def commit_session(
                     counter += 1
                     dest = dest.with_name(f"{base}_{counter}{suffix}")
                 shutil.copy2(src, dest)
+                copied_files.append(dest)  # 事务 rollback 时 cleanup 用
 
                 doc_id = _new_id("doc")
                 kind = (sf["mime_type"] or "").lower()
@@ -1166,9 +1211,19 @@ def commit_session(
             "UPDATE import_story_sessions SET status='imported', imported_at=?, updated_at=? WHERE id=?",
             (now, now, session_id),
         )
-        db.conn.commit()
+        db.commit_transaction()
     except Exception:
-        db.conn.rollback()
+        try:
+            db.rollback_transaction()
+        except Exception:  # noqa: BLE001
+            logger.exception("[smart-import commit] rollback also failed for session %s", session_id)
+        # P0-Bug2: 事务回滚后, cleanup 已经复制到客户工作区的孤儿文件
+        for orphan in copied_files:
+            try:
+                if orphan.exists():
+                    orphan.unlink()
+            except Exception:  # noqa: BLE001
+                logger.warning("[smart-import commit] cleanup orphan file failed: %s", orphan)
         logger.exception("[smart-import commit] failed for session %s", session_id)
         raise
 
@@ -1188,6 +1243,33 @@ def commit_session(
     return stats
 
 
+def _reap_stale_knowledge_jobs(db: Any, *, max_running_minutes: int = 30) -> int:
+    """把跑了 > N 分钟还 status='running' 的 knowledge_jobs 标 failed.
+
+    用途: daemon thread 崩溃 / 进程被杀, 留下卡死的 'running' job, UI 进度条永远转.
+    每次 _bg_ingest_files 结束时顺手清一遍. 返回 reap 数.
+    """
+    try:
+        cur = db.execute(
+            """UPDATE knowledge_jobs
+               SET status='failed',
+                   last_error=COALESCE(last_error,'') || ' [auto-reaped: stale running > ? min]',
+                   finished_at=?,
+                   updated_at=?
+               WHERE status='running'
+                 AND COALESCE(updated_at, started_at, created_at) < datetime('now', ?)""",
+            (max_running_minutes, _now(), _now(), f"-{max_running_minutes} minutes"),
+        )
+        db.conn.commit()
+        n = cur.rowcount or 0
+        if n > 0:
+            logger.info("[reap_stale_knowledge_jobs] reaped %d stale jobs", n)
+        return n
+    except Exception:
+        logger.exception("[reap_stale_knowledge_jobs] failed")
+        return 0
+
+
 def _bg_ingest_files(
     db: Any,
     ingest_document_fn: Any,
@@ -1197,88 +1279,80 @@ def _bg_ingest_files(
     job_id: str,
     queue: list[dict[str, Any]],
 ) -> None:
-    """后台 daemon 线程: 逐个文件跑 ingest, 实时更新 knowledge_jobs 进度."""
+    """后台 daemon 线程: 逐个文件跑 ingest, 实时更新 knowledge_jobs 进度.
+
+    P1-2: 任何阶段崩溃都用 finally + outer try 兜底, 必须把 job 标记成 completed/failed,
+          不留 'running' 孤儿状态. 末尾还会跑 timeout reaper 清前的孤儿 job.
+    """
     processed = 0
     last_error = ""
-    for item in queue:
-        try:
-            ingest_document_fn(
-                db,
-                data_dir=Path(data_dir),
-                client_id=client_id,
-                import_id=None,
-                document_id=item["doc_id"],
-                source_path=Path(item["dest"]),
-                original_source_path=Path(item["dest"]),
-                title=item["title"],
-                kind=item["kind"],
-                source="smart_import",
-                fallback_excerpt=item["excerpt"],
-                created_at=_now(),
-                ai_service=ai,
-            )
-        except Exception as exc:  # noqa: BLE001
-            logger.exception("[smart-import bg ingest] doc=%s failed", item["doc_id"])
-            last_error = f"{item['title']}: {str(exc)[:120]}"
-        finally:
-            processed += 1
+    fatal_error: str | None = None  # outer 致命错误标记
+    try:
+        for item in queue:
             try:
-                db.execute(
-                    """UPDATE knowledge_jobs SET processed_items = ?,
-                       last_error = ?, updated_at = ? WHERE id = ?""",
-                    (processed, last_error[:500], _now(), job_id),
+                ingest_document_fn(
+                    db,
+                    data_dir=Path(data_dir),
+                    client_id=client_id,
+                    import_id=None,
+                    document_id=item["doc_id"],
+                    source_path=Path(item["dest"]),
+                    original_source_path=Path(item["dest"]),
+                    title=item["title"],
+                    kind=item["kind"],
+                    source="smart_import",
+                    fallback_excerpt=item["excerpt"],
+                    created_at=_now(),
+                    ai_service=ai,
                 )
-                db.conn.commit()
-            except Exception:
-                logger.exception("[smart-import bg ingest] update progress failed")
+            except Exception as exc:  # noqa: BLE001
+                logger.exception("[smart-import bg ingest] doc=%s failed", item["doc_id"])
+                last_error = f"{item['title']}: {str(exc)[:120]}"
+            finally:
+                processed += 1
+                try:
+                    db.execute(
+                        """UPDATE knowledge_jobs SET processed_items = ?,
+                           last_error = ?, updated_at = ? WHERE id = ?""",
+                        (processed, last_error[:500], _now(), job_id),
+                    )
+                    db.conn.commit()
+                except Exception:
+                    logger.exception(
+                        "[smart-import bg ingest] update progress failed job=%s", job_id,
+                    )
+    except Exception as outer_exc:  # noqa: BLE001
+        # daemon 内部不可恢复异常 (e.g. KeyboardInterrupt/MemoryError/db handle 死)
+        fatal_error = f"{type(outer_exc).__name__}: {str(outer_exc)[:160]}"
+        logger.exception("[smart-import bg ingest] fatal job=%s", job_id)
+    finally:
+        # 必须把 job 标记到终态, 不留 'running' 孤儿
+        final_status = "failed" if fatal_error else "completed"
+        final_error = fatal_error if fatal_error else (last_error if last_error else None)
+        try:
+            finished = _now()
+            db.execute(
+                """UPDATE knowledge_jobs SET status = ?, processed_items = ?,
+                   last_error = ?, finished_at = ?, updated_at = ? WHERE id = ?""",
+                (final_status, processed, (final_error or "")[:500], finished, finished, job_id),
+            )
+            db.conn.commit()
+        except Exception:
+            logger.exception("[smart-import bg ingest] finalize FAILED job=%s", job_id)
+        # 顺手清理超时 running 孤儿 (跑了 > 30 分钟还 running 的, 标 failed)
+        try:
+            _reap_stale_knowledge_jobs(db, max_running_minutes=30)
+        except Exception:
+            logger.exception("[smart-import bg ingest] reap_stale failed")
 
-    # 全部完成 → mark completed
+    # 全部 ingest 完成后, 走数据中心统一 broadcast 钩子
+    # → 入队 analysis_job + 标 narrative_stale + 后台跑 portrait/narrative
     try:
-        finished = _now()
-        db.execute(
-            """UPDATE knowledge_jobs SET status = 'completed', processed_items = ?,
-               finished_at = ?, updated_at = ? WHERE id = ?""",
-            (processed, finished, finished, job_id),
+        from app.services.data_center_broadcast import broadcast_data_changed
+        broadcast_data_changed(
+            db, ai,
+            client_id=client_id,
+            scope="smart_import_story",
         )
-        db.conn.commit()
     except Exception:
-        logger.exception("[smart-import bg ingest] finalize failed")
-
-    # 全部 ingest 完成后, 自动 enqueue 一个 analysis_job
-    # 让后台 worker 把这次 import 的成果 projection 成 evidence_cards
-    # → 战略陪伴看到本周新动态
-    try:
-        _enqueue_analysis_after_ingest(db, client_id, reason="smart_import_story")
-    except Exception:
-        logger.exception("[smart-import bg ingest] enqueue analysis_job failed")
-
-
-def _enqueue_analysis_after_ingest(db: Any, client_id: str, *, reason: str) -> None:
-    """smart_import / 普通 ingest 完成后, 自动入队 analysis_job 让 evidence_cards 生成.
-
-    幂等: create_analysis_job 内部有 dedupe_key 去重 (相同 client + scope + trigger
-    在 queued/running 状态下不会重复入队).
-    """
-    from app.models import AnalysisJobCreatePayload  # lazy import 避免循环依赖
-    from app.services.analysis_center import create_analysis_job
-
-    create_analysis_job(
-        db,
-        AnalysisJobCreatePayload(
-            jobType="strategy_pack",
-            clientId=client_id,
-            scopeType="client",
-            scopeId=client_id,
-            priority="normal",
-            triggerType="auto",
-            question=f"auto:{reason}",
-            intentProfile="client_overview",
-        ),
-        source_snapshot={
-            "clientId": client_id,
-            "scopeType": "client",
-            "scopeId": client_id,
-            "triggerType": "auto",
-            "reason": reason,
-        },
-    )
+        logger.exception("[smart-import bg ingest] broadcast failed")

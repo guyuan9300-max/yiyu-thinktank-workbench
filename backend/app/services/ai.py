@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import json
+import logging
 import re
 import shutil
 import subprocess
+import time
 from dataclasses import dataclass
 from datetime import datetime
 from time import perf_counter
@@ -14,6 +16,30 @@ import httpx
 
 from app.db import Database
 from app.models import AiStructuredResponse
+
+logger = logging.getLogger(__name__)
+
+
+# Tier1 优化:LLM 调用瞬时错误判定 — 锁竞争 / 429 / 5xx / 网络抖动都算瞬时,
+# 上层加退避重试可大幅降低失败率(尤其是 openclaw session file 锁竞争场景)。
+_TRANSIENT_TOKENS = (
+    "session file locked",
+    "rate limit",
+    "too many",
+    "timeout",
+    "timed out",
+    "connection",
+    "econnreset",
+    "429",
+    "502",
+    "503",
+    "504",
+)
+
+
+def _is_transient_llm_error(message: str) -> bool:
+    lowered = (message or "").lower()
+    return any(token in lowered for token in _TRANSIENT_TOKENS)
 
 
 DEFAULT_PROVIDER = "openai_compatible"
@@ -4807,6 +4833,44 @@ class AiService:
             return self._load_relaxed_json(text)
         return text
 
+    def _openclaw_generate_with_retry(
+        self,
+        prompt: str,
+        system_instruction: str,
+        response_schema: dict | None,
+        timeout_seconds: float = 60.0,
+    ) -> object:
+        # 总尝试 4 次(1 次初次 + 3 次重试),退避序列 1s/2s/4s,加起来最多额外等 7s,
+        # 加上每次内部 10s 锁超时 = 最多 47s。比"立刻 502"温柔得多。
+        max_attempts = 4
+        backoff_schedule = (1.0, 2.0, 4.0)
+        last_exc: Exception | None = None
+        for attempt in range(1, max_attempts + 1):
+            try:
+                return self._openclaw_generate(
+                    prompt=prompt,
+                    system_instruction=system_instruction,
+                    response_schema=response_schema,
+                    timeout_seconds=timeout_seconds,
+                )
+            except AiInvocationError as exc:
+                last_exc = exc
+                if not _is_transient_llm_error(str(exc)) or attempt >= max_attempts:
+                    raise
+                backoff = backoff_schedule[min(attempt - 1, len(backoff_schedule) - 1)]
+                logger.warning(
+                    "[openclaw] transient error attempt=%d/%d backoff=%.1fs detail=%s",
+                    attempt,
+                    max_attempts,
+                    backoff,
+                    str(exc)[:200],
+                )
+                time.sleep(backoff)
+        # 理论上 unreachable — 上面的循环要么 return,要么 raise。但保险起见兜一手。
+        if last_exc:
+            raise last_exc
+        raise RuntimeError("openclaw retry exhausted with no captured exception")
+
     def _qwen_generate(
         self,
         prompt: str,
@@ -4824,7 +4888,10 @@ class AiService:
     ) -> object:
         active_provider = provider_override or self.current_provider()
         if active_provider == OPENCLAW_PROVIDER:
-            return self._openclaw_generate(
+            # Tier1 优化:openclaw 走 CLI 子进程 + 共享 session 文件,锁竞争是已知
+            # 结构性问题(详见 docs/CODEMAPS 或排查日志)。在外层包一层短退避重试,
+            # 把"必失败"压缩成"偶尔多等几秒",对普通用户的瞬时错误也一并兜底。
+            return self._openclaw_generate_with_retry(
                 prompt=prompt,
                 system_instruction=system_instruction,
                 response_schema=response_schema,
@@ -4879,29 +4946,48 @@ class AiService:
                     _resp.raise_for_status()
                     return _resp.json()
 
-            pool = ThreadPoolExecutor(max_workers=1)
-            future = pool.submit(_do_request)
-            try:
-                result = future.result(timeout=hard_limit)
-                text = (
-                    result.get("choices", [{}])[0]
-                    .get("message", {})
-                    .get("content", "")
-                )
-                self._record_resolved_profile(profile)
-                if response_schema:
-                    return self._load_relaxed_json(text)
-                return text
-            except FutureTimeout:
-                future.cancel()
-                errors.append(f"{display_label} 硬超时（{hard_limit:.0f}秒）")
-            except Exception as error:
-                detail = self._format_provider_error(error) if hasattr(self, "_format_provider_error") else str(error)
-                errors.append(f"{display_label} 调用失败：{detail}")
-            finally:
-                # 不要在超时后等待工作线程自然结束，否则外层调用会被 shutdown(wait=True)
-                # 卡死，自动填表 run 会永久停在 running。
-                pool.shutdown(wait=False, cancel_futures=True)
+            # Tier1 优化:同一候选最多尝试 3 次(初次 + 2 次重试),专治瞬时
+            # 429 / 5xx / 网络抖动。硬超时立即跳出换下一候选,不浪费时间重试。
+            candidate_attempts = 3
+            candidate_backoff = (1.0, 2.0)
+            for attempt in range(1, candidate_attempts + 1):
+                pool = ThreadPoolExecutor(max_workers=1)
+                future = pool.submit(_do_request)
+                try:
+                    result = future.result(timeout=hard_limit)
+                    text = (
+                        result.get("choices", [{}])[0]
+                        .get("message", {})
+                        .get("content", "")
+                    )
+                    self._record_resolved_profile(profile)
+                    if response_schema:
+                        return self._load_relaxed_json(text)
+                    return text
+                except FutureTimeout:
+                    future.cancel()
+                    errors.append(f"{display_label} 硬超时（{hard_limit:.0f}秒）")
+                    break  # 硬超时不重试,直接换候选
+                except Exception as error:
+                    detail = self._format_provider_error(error) if hasattr(self, "_format_provider_error") else str(error)
+                    if _is_transient_llm_error(detail) and attempt < candidate_attempts:
+                        backoff = candidate_backoff[min(attempt - 1, len(candidate_backoff) - 1)]
+                        logger.warning(
+                            "[%s] transient error attempt=%d/%d backoff=%.1fs detail=%s",
+                            display_label,
+                            attempt,
+                            candidate_attempts,
+                            backoff,
+                            detail[:200],
+                        )
+                        time.sleep(backoff)
+                        continue
+                    errors.append(f"{display_label} 调用失败：{detail}")
+                    break
+                finally:
+                    # 不要在超时后等待工作线程自然结束，否则外层调用会被 shutdown(wait=True)
+                    # 卡死，自动填表 run 会永久停在 running。
+                    pool.shutdown(wait=False, cancel_futures=True)
         raise RuntimeError("；".join(errors) or "没有可用的大模型配置。")
 
     def _qwen_generate_streaming(

@@ -236,7 +236,7 @@ import {
 import {
   getWorkspaceFallbackNotice,
   getWorkspaceRuntimeMismatchNotice,
-  stripFileCitations,
+  cleanChatOutput,
 } from '../shared/workspaceChatPresentation';
 import {
   buildEvidenceCitationCards,
@@ -443,6 +443,8 @@ import {
   updateTopicsSettings,
   upsertDna,
   vectorizeAnswer,
+  cancelVectorizeAnswer,
+  getDocumentText,
   exportAnswer,
   executeProposal,
   startClientTemplateFill,
@@ -466,6 +468,8 @@ import {
   retryKnowledgeParseFailures,
 } from './lib/api';
 import { getClientDnaPromptTemplate } from './lib/clientDnaPromptTemplates';
+import { reportClientError } from './lib/clientErrorReport';
+import { appPrompt } from './lib/appPrompt';
 import { useRecordingSession, formatRecordingClock, type TranscribedPayload } from './lib/useRecordingSession';
 import { useTypewriter } from './lib/useTypewriter';
 import { ClientProjectSetupPage } from './components/client_workspace/ClientProjectSetupPage';
@@ -495,14 +499,11 @@ import { UpdateNotifier } from './components/UpdateNotifier';
 import { AboutAppSettingsPanel } from './components/settings/AboutAppSettingsPanel';
 import { GrowthCenterView } from './components/handbook/GrowthCenterView';
 import { AppLogoMark, BrandLogoMark } from './components/settings/BrandLogoSettingsCard';
-import { DataCenterOpsPanel } from './components/data_center/DataCenterOpsPanel';
 import { FileSearchResultPanel } from './components/data_center/FileSearchResultPanel';
-import { EntityListPanel } from './components/client_workspace/EntityListPanel';
 import { ContradictionAlertPanel } from './components/client_workspace/ContradictionAlertPanel';
 import { GlossaryDriftAlertPanel } from './components/client_workspace/GlossaryDriftAlertPanel';
-import { GlossaryPanel } from './components/client_workspace/GlossaryPanel';
 import { GlossaryPendingBadge } from './components/client_workspace/GlossaryPendingBadge';
-import { RichTextDocumentEditor, SAMPLE_DOCUMENT_MARKDOWN } from './components/client_workspace/RichTextDocumentEditor';
+import { RichTextDocumentEditor } from './components/client_workspace/RichTextDocumentEditor';
 import { SystemStatusPanel } from './components/global/SystemStatusPanel';
 import { WorkStatusPanel } from './components/data_center/WorkStatusPanel';
 import { FeishuOrgIntegrationPanel } from './components/settings/FeishuOrgIntegrationPanel';
@@ -602,7 +603,61 @@ type ActiveWorkingDocument = {
 
 const ACTIVE_WORKING_DOCUMENTS_STORAGE_KEY = 'yiyu.workspace.activeWorkingDocuments.v1';
 const ACTIVE_WORKING_DOCUMENTS_MAX_AGE_MS = 6 * 60 * 60 * 1000;
-const ACTIVE_WORKING_DOCUMENTS_LIMIT = 6;
+const ACTIVE_WORKING_DOCUMENTS_LIMIT = 5;
+
+// inline editor 草稿(Tier 1) — 钢笔新建空白文档时启用,localStorage 自动保存防止丢失。
+// 1 个客户对应 1 份草稿,新建会覆盖旧的。保存到项目文档库成功后清掉。
+const INLINE_EDITOR_DRAFT_STORAGE_KEY_PREFIX = 'yiyu.workspace.inlineEditorDraft.v1.';
+const INLINE_EDITOR_DRAFT_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000; // 7 天
+
+type InlineEditorDraft = {
+  content: string;
+  title: string;
+  updatedAt: number;
+};
+
+function readInlineEditorDraft(clientId: string): InlineEditorDraft | null {
+  if (!clientId) return null;
+  try {
+    const raw = window.localStorage.getItem(INLINE_EDITOR_DRAFT_STORAGE_KEY_PREFIX + clientId);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as InlineEditorDraft;
+    if (!parsed || typeof parsed !== 'object') return null;
+    if (typeof parsed.content !== 'string' || typeof parsed.title !== 'string') return null;
+    // 太老的草稿直接当不存在(避免 7 天前的孤立草稿一直弹出来)
+    if (typeof parsed.updatedAt === 'number' && Date.now() - parsed.updatedAt > INLINE_EDITOR_DRAFT_MAX_AGE_MS) {
+      window.localStorage.removeItem(INLINE_EDITOR_DRAFT_STORAGE_KEY_PREFIX + clientId);
+      return null;
+    }
+    // 内容空也当没草稿,避免回到空草稿白白触发"已恢复"banner
+    if (!parsed.content.trim() && !parsed.title.trim()) return null;
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
+function writeInlineEditorDraft(clientId: string, content: string, title: string): void {
+  if (!clientId) return;
+  try {
+    const payload: InlineEditorDraft = { content, title, updatedAt: Date.now() };
+    window.localStorage.setItem(
+      INLINE_EDITOR_DRAFT_STORAGE_KEY_PREFIX + clientId,
+      JSON.stringify(payload),
+    );
+  } catch {
+    // localStorage 满了或被禁用,忽略
+  }
+}
+
+function clearInlineEditorDraft(clientId: string): void {
+  if (!clientId) return;
+  try {
+    window.localStorage.removeItem(INLINE_EDITOR_DRAFT_STORAGE_KEY_PREFIX + clientId);
+  } catch {
+    // ignore
+  }
+}
 
 type RecentUsedDocument = {
   documentId: string;
@@ -3495,7 +3550,7 @@ const AnalysisRunCard = React.memo(function AnalysisRunCard({
         <div className="bg-white border border-gray-100 rounded-[24px] px-3 xl:px-4 py-3 flex items-center justify-between">
           <div className="flex gap-1 xl:gap-2">
             <button
-              className="text-[11px] xl:text-[12px] text-gray-500 hover:text-gray-900 hover:bg-white hover:shadow-sm font-semibold flex items-center gap-1.5 transition-all px-2.5 py-1.5 rounded-lg"
+              className="text-[11px] xl:text-[12px] text-gray-500 hover:text-gray-900 font-semibold flex items-center gap-1.5 transition-all px-2.5 py-1.5 rounded-lg"
               onClick={() => {
                 void navigator.clipboard.writeText(`${run.longAnswer || ''}`.trim());
               }}
@@ -3504,14 +3559,14 @@ const AnalysisRunCard = React.memo(function AnalysisRunCard({
               复制
             </button>
             <button
-              className="text-[11px] xl:text-[12px] text-gray-500 hover:text-gray-900 hover:bg-white hover:shadow-sm font-semibold flex items-center gap-1.5 transition-all px-2.5 py-1.5 rounded-lg"
+              className="text-[11px] xl:text-[12px] text-gray-500 hover:text-gray-900 font-semibold flex items-center gap-1.5 transition-all px-2.5 py-1.5 rounded-lg"
               onClick={() => onVectorize(run.assistantMessageId)}
             >
               <Sparkles size={14} />
               收藏
             </button>
             <button
-              className="text-[11px] xl:text-[12px] text-gray-500 hover:text-gray-900 hover:bg-white hover:shadow-sm font-semibold flex items-center gap-1.5 transition-all px-2.5 py-1.5 rounded-lg"
+              className="text-[11px] xl:text-[12px] text-gray-500 hover:text-gray-900 font-semibold flex items-center gap-1.5 transition-all px-2.5 py-1.5 rounded-lg"
               onClick={() => onExport(run.assistantMessageId)}
             >
               <Download size={14} />
@@ -4959,6 +5014,9 @@ function getTaskDueState(task: Task) {
 function taskCanToggleCompletion(task: Task, userId: string | null | undefined) {
   if (!userId) return false;
   if (task.ownerId === userId) return true;
+  // 兜底：自己建的任务也能完成。早期 bug 会把 owner_id 留空（应当默认成 creator），
+  // 让用户连自己创建的任务都点不了完成。后端默认值已修；这里防 owner_id 还空着的历史行。
+  if (task.creatorId && task.creatorId === userId) return true;
   return task.collaborators.some((item) => item.userId === userId);
 }
 
@@ -6870,15 +6928,85 @@ export default function App() {
   const [clientOverlayMode, setClientOverlayMode] = useState<ClientOverlayMode>(null);
   // P9：客户工作台内嵌文档编辑器（点钢笔按钮直接进入此模式，主区切到 doc editor，不弹窗）。
   // null = 普通 chat / 工作台视图；非 null = 全屏 doc editor 模式。
+  // enableDraftPersist:钢笔新建空白文档时为 true → debounce 写 localStorage,关编辑器/闪退能找回。
+  // 其他 entry(从 AI 答案带内容、打开已有文档)= undefined/false,避免覆盖已有文档草稿。
   const [clientWorkspaceInlineEditor, setClientWorkspaceInlineEditor] = useState<{
     clientId: string;
     title: string;
     content: string;
     titleEdited: boolean;
+    enableDraftPersist?: boolean;
+    recoveredFromDraft?: boolean;
   } | null>(null);
   // P12：inline editor 全屏开关。fullscreen=true 时 fixed inset-0 z-[1000] 盖住整个 Electron window；
   // false 时 absolute inset-0 z-30 只盖中间主区（左侧栏 + 右工具栏可见）。
   const [isInlineEditorFullscreen, setIsInlineEditorFullscreen] = useState(false);
+  // 用户在 inline editor 模式下点右侧文件 ← 箭头 → bump 这个 key,编辑器 useEffect 会自动弹出 AI popover。
+  // counter 模式而不是 boolean,避免"开了又关用户又点"时第二次不触发(boolean 要 reset)。
+  const [inlineEditorOpenAiPromptKey, setInlineEditorOpenAiPromptKey] = useState(0);
+
+  // 用户收藏的快捷工具 key 列表。
+  // 工具页里点 ☆ 加入收藏，会持久化到 localStorage，并在快捷工具区下方追加显示。
+  // 与原有 5 个固定按钮并存——固定按钮是产品默认入口，收藏是用户主导的额外快捷。
+  const [favoriteWorkspaceTools, setFavoriteWorkspaceTools] = useState<string[]>(() => {
+    if (typeof window === 'undefined') return [];
+    try {
+      const raw = window.localStorage.getItem('yiyu.workspace.favoriteTools');
+      const parsed = raw ? JSON.parse(raw) : [];
+      return Array.isArray(parsed) ? parsed.filter((item): item is string => typeof item === 'string') : [];
+    } catch {
+      return [];
+    }
+  });
+  useEffect(() => {
+    try {
+      window.localStorage.setItem('yiyu.workspace.favoriteTools', JSON.stringify(favoriteWorkspaceTools));
+    } catch {
+      // localStorage 写失败（隐私模式 / 配额满）不影响主流程
+    }
+  }, [favoriteWorkspaceTools]);
+
+  // inline editor 草稿 debounce 写入 localStorage —— 防丢失底线(Tier 1)
+  // 只在钢笔新建 entry(enableDraftPersist=true)启用,避免覆盖来自已有文档的 entry。
+  useEffect(() => {
+    if (!clientWorkspaceInlineEditor?.enableDraftPersist) return;
+    const { clientId, content, title } = clientWorkspaceInlineEditor;
+    // 全空就直接清,避免空草稿堆在 localStorage
+    if (!content.trim() && !title.trim()) {
+      clearInlineEditorDraft(clientId);
+      return;
+    }
+    const timer = window.setTimeout(() => {
+      writeInlineEditorDraft(clientId, content, title);
+    }, 1000);
+    return () => window.clearTimeout(timer);
+  }, [
+    clientWorkspaceInlineEditor?.clientId,
+    clientWorkspaceInlineEditor?.content,
+    clientWorkspaceInlineEditor?.title,
+    clientWorkspaceInlineEditor?.enableDraftPersist,
+  ]);
+
+  // 快捷工具区最多 5 个，超出时拒绝并 flash 提示。
+  // flash 函数在文件下方才声明（line ~7399），这里用 ref 转一手避免"used before declaration"。
+  const flashRef = useRef<((type: 'success' | 'error' | 'info', text: string) => void) | null>(null);
+  // 多个 modal 的 backdrop 点击关闭共享 ref —— 这些 modal 互斥渲染.
+  // 用于区分"真点击 backdrop"和"从 modal 内部 input/textarea 拖选鼠标滑出".
+  // 详见 src/renderer/lib/useBackdropClickClose.ts
+  const backdropMouseDownRef = useRef(false);
+  const toggleFavoriteWorkspaceTool = useCallback((toolKey: string) => {
+    const FAVORITE_LIMIT = 5;
+    setFavoriteWorkspaceTools((prev) => {
+      if (prev.includes(toolKey)) {
+        return prev.filter((key) => key !== toolKey);
+      }
+      if (prev.length >= FAVORITE_LIMIT) {
+        flashRef.current?.('info', `快捷工具区最多 ${FAVORITE_LIMIT} 个，请先移除一个再添加`);
+        return prev;
+      }
+      return [...prev, toolKey];
+    });
+  }, []);
   const [clientEditorModalState, setClientEditorModalState] = useState<ClientEditorModalState>(() => ({
     open: false,
     editingClientId: null,
@@ -7378,6 +7506,7 @@ export default function App() {
         })
         .catch(() => {
           showBanner(type, text);
+          reportClientError('error', text);
         })
         .finally(() => {
           localServiceBannerProbeInFlightRef.current = false;
@@ -7385,7 +7514,13 @@ export default function App() {
       return;
     }
     showBanner(type, text);
+    // 只上报 error (不上报 success/info),否则日志噪声太大.
+    if (type === 'error') {
+      reportClientError('error', text);
+    }
   };
+  // 同步 flash 到 flashRef，让上方早期声明的 toggleFavoriteWorkspaceTool 能调用最新的 flash
+  flashRef.current = flash;
 
   const recordingSession = useRecordingSession({
     onTranscribed: async (payload: TranscribedPayload) => {
@@ -10189,6 +10324,12 @@ export default function App() {
     const [taskListCustomStartDate, setTaskListCustomStartDate] = useState('');
     const [taskListCustomEndDate, setTaskListCustomEndDate] = useState('');
     const [selectedListTaskIds, setSelectedListTaskIds] = useState<string[]>([]);
+    // 多选模式：默认关，关闭时任务卡上的勾选方框不渲染，避免跟「完成」圆圈视觉打架
+    const [isMultiSelectMode, setIsMultiSelectMode] = useState(false);
+    const exitMultiSelectMode = () => {
+      setIsMultiSelectMode(false);
+      setSelectedListTaskIds([]);
+    };
     const [collapsedTaskGroups, setCollapsedTaskGroups] = useState<Partial<Record<TaskExecutionGroupKey, boolean>>>({ done: true });
     const [isBatchBusy, setIsBatchBusy] = useState(false);
     const [hideCompletedInList, setHideCompletedInList] = useState(false);
@@ -12185,7 +12326,12 @@ export default function App() {
         return;
       }
       if (isCreatingTaskProjectFlow) return;
-      const name = window.prompt('输入流程名称', '');
+      const promptResult = await appPrompt({
+        title: '新建流程',
+        fields: [{ name: 'value', label: '流程名称', required: true }],
+        confirmLabel: '创建',
+      });
+      const name = promptResult?.value;
       if (!name || !name.trim()) return;
       setIsCreatingTaskProjectFlow(true);
       try {
@@ -12541,7 +12687,7 @@ export default function App() {
         ownerId,
         ownerName,
         collaboratorIds: editingTask.collaborators.map((item) => item.id),
-        tagIds: [],
+        tagIds: [...editingTask.tagIds],
       };
       const draftSnapshot: TaskEditorState = {
         ...editingTask,
@@ -12934,9 +13080,9 @@ export default function App() {
           });
           flash(result.deliveryStatus === 'failed' ? 'error' : 'success', result.deliveryMessage);
           if (result.deliveryStatus !== 'sent') {
-            window.alert(
-              `${result.deliveryMessage}\n\n会议草稿：${result.meeting.title}\n会议编号：${result.meeting.id}\n\n${result.commandHint}`,
-            );
+            const alertText = `${result.deliveryMessage}\n\n会议草稿：${result.meeting.title}\n会议编号：${result.meeting.id}\n\n${result.commandHint}`;
+            reportClientError(result.deliveryStatus === 'failed' ? 'error' : 'warn', alertText, { feature: 'meeting_delivery' });
+            window.alert(alertText);
           }
           if (primaryClientId === currentClientId) {
             await refreshWorkspace(primaryClientId);
@@ -14039,8 +14185,13 @@ export default function App() {
     };
 
     const handleReturnTaskReview = async (taskId: string) => {
-      const reason = window.prompt('请填写退回复核原因');
-      if (reason === null) return;
+      const result = await appPrompt({
+        title: '退回复核',
+        fields: [{ name: 'value', label: '请填写退回复核原因', required: true, multiline: true }],
+        confirmLabel: '退回',
+      });
+      if (!result) return;
+      const reason = result.value ?? '';
       if (!reason.trim()) {
         flash('error', '请填写退回复核原因。');
         return;
@@ -14058,8 +14209,13 @@ export default function App() {
     };
 
     const handleCompleteWithReview = async (taskId: string) => {
-      const reviewNote = window.prompt('请填写完成复核备注（说明完成情况）');
-      if (reviewNote === null) return;
+      const result = await appPrompt({
+        title: '完成并发起复核',
+        fields: [{ name: 'value', label: '请填写完成复核备注（说明完成情况）', required: true, multiline: true }],
+        confirmLabel: '提交',
+      });
+      if (!result) return;
+      const reviewNote = result.value ?? '';
       if (!reviewNote.trim()) {
         flash('error', '请填写复核备注。');
         return;
@@ -14119,7 +14275,16 @@ export default function App() {
           await approveProposal(proposalId);
           flash('success', 'Proposal 已批准。');
         } else if (action === 'reject') {
-          const reason = window.prompt('请填写驳回原因（可选）') || '';
+          const promptResult = await appPrompt({
+            title: '驳回 Proposal',
+            fields: [{ name: 'value', label: '请填写驳回原因（可选）', multiline: true }],
+            confirmLabel: '驳回',
+          });
+          if (!promptResult) {
+            updateProposalBusy(busyKey, null);
+            return;
+          }
+          const reason = promptResult.value || '';
           await rejectProposal(proposalId, { note: reason.trim() });
           flash('success', 'Proposal 已驳回。');
         } else {
@@ -14642,6 +14807,18 @@ export default function App() {
                   )}
                 </div>
               </div>
+              {isMultiSelectMode && selectedListTaskIds.length === 0 && (
+                <div className="mb-4 flex flex-wrap items-center justify-between gap-2 rounded-2xl border border-blue-100 bg-blue-50/60 px-4 py-2.5 text-[12px] text-[#5B7BFE]">
+                  <span className="font-bold">多选模式开启 — 在任务卡片上勾选方框，或点 group 右上「选择本组」批量选中。</span>
+                  <button
+                    type="button"
+                    onClick={exitMultiSelectMode}
+                    className="rounded-xl border border-blue-200 bg-white px-3 py-1 text-[11px] font-bold text-[#5B7BFE] transition hover:bg-blue-100"
+                  >
+                    退出多选
+                  </button>
+                </div>
+              )}
               {selectedListTaskIds.length > 0 && (
                 <div className="sticky top-0 z-20 mb-4 rounded-2xl border border-blue-100 bg-white/95 px-4 py-3 shadow-[0_12px_34px_rgba(91,123,254,0.14)] backdrop-blur">
                   <div className="flex flex-wrap items-center gap-2">
@@ -14661,6 +14838,14 @@ export default function App() {
                       className="rounded-xl border border-gray-200 bg-white px-3 py-1.5 text-[12px] font-bold text-gray-500 transition hover:text-gray-800 disabled:opacity-50"
                     >
                       清空
+                    </button>
+                    <button
+                      type="button"
+                      onClick={exitMultiSelectMode}
+                      disabled={isBatchBusy}
+                      className="rounded-xl border border-gray-200 bg-white px-3 py-1.5 text-[12px] font-bold text-gray-500 transition hover:border-rose-200 hover:text-rose-500 disabled:opacity-50"
+                    >
+                      退出多选
                     </button>
                     <button
                       type="button"
@@ -14805,20 +14990,37 @@ export default function App() {
                           <span className="rounded-full bg-gray-100 px-2 py-0.5 text-[10px] font-bold text-gray-500">{group.tasks.length}</span>
                           <span className="hidden truncate text-[11px] text-gray-400 md:block">{group.hint}</span>
                         </button>
-                        <button
-                          type="button"
-                          onClick={() => toggleListGroupSelection(group.tasks)}
-                          disabled={!hasGroupTasks}
-                          className={`rounded-xl border px-3 py-1.5 text-[11px] font-bold transition ${
-                            isGroupFullySelected
-                              ? 'border-[#5B7BFE] bg-[#EEF2FF] text-[#5B7BFE]'
-                              : hasGroupTasks
+                        {isMultiSelectMode ? (
+                          <button
+                            type="button"
+                            onClick={() => toggleListGroupSelection(group.tasks)}
+                            disabled={!hasGroupTasks}
+                            className={`rounded-xl border px-3 py-1.5 text-[11px] font-bold transition ${
+                              isGroupFullySelected
+                                ? 'border-[#5B7BFE] bg-[#EEF2FF] text-[#5B7BFE]'
+                                : hasGroupTasks
+                                  ? 'border-gray-200 bg-white text-gray-500 hover:border-[#C9D6FF] hover:text-[#5B7BFE]'
+                                  : 'cursor-not-allowed border-gray-100 bg-gray-50 text-gray-300'
+                            }`}
+                          >
+                            {!hasGroupTasks ? '暂无任务' : isGroupFullySelected ? '取消本组' : selectedCount > 0 ? `已选 ${selectedCount}` : '选择本组'}
+                          </button>
+                        ) : (
+                          <button
+                            type="button"
+                            onClick={() => setIsMultiSelectMode(true)}
+                            disabled={!hasGroupTasks}
+                            title={hasGroupTasks ? '进入多选模式，任务卡片上才会出现勾选方框' : ''}
+                            className={`inline-flex items-center gap-1 rounded-xl border px-3 py-1.5 text-[11px] font-bold transition ${
+                              hasGroupTasks
                                 ? 'border-gray-200 bg-white text-gray-500 hover:border-[#C9D6FF] hover:text-[#5B7BFE]'
                                 : 'cursor-not-allowed border-gray-100 bg-gray-50 text-gray-300'
-                          }`}
-                        >
-                          {!hasGroupTasks ? '暂无任务' : isGroupFullySelected ? '取消本组' : selectedCount > 0 ? `已选 ${selectedCount}` : '选择本组'}
-                        </button>
+                            }`}
+                          >
+                            <CheckSquare size={12} />
+                            {hasGroupTasks ? '多选' : '暂无任务'}
+                          </button>
+                        )}
                       </div>
                       {!isGroupCollapsed && (
                         <div className="space-y-3">
@@ -14888,19 +15090,21 @@ export default function App() {
                                 >
                                   {task.status === 'done' ? <CheckCircle2 size={22} strokeWidth={2} /> : <Circle size={22} strokeWidth={2} />}
                                 </button>
-                                <button
-                                  type="button"
-                                  onClick={(event) => {
-                                    event.stopPropagation();
-                                    toggleListTaskSelection(task.id);
-                                  }}
-                                  className={`mt-1 flex h-4 w-4 shrink-0 items-center justify-center rounded border transition ${
-                                    isSelected ? 'border-[#5B7BFE] bg-[#5B7BFE]' : 'border-gray-200 bg-white hover:border-[#9FB2FF]'
-                                  }`}
-                                  aria-label={isSelected ? '取消选择任务' : '选择任务'}
-                                >
-                                  {isSelected && <CheckCircle2 size={11} className="text-white" />}
-                                </button>
+                                {isMultiSelectMode && (
+                                  <button
+                                    type="button"
+                                    onClick={(event) => {
+                                      event.stopPropagation();
+                                      toggleListTaskSelection(task.id);
+                                    }}
+                                    className={`mt-1 flex h-4 w-4 shrink-0 items-center justify-center rounded border transition ${
+                                      isSelected ? 'border-[#5B7BFE] bg-[#5B7BFE]' : 'border-gray-200 bg-white hover:border-[#9FB2FF]'
+                                    }`}
+                                    aria-label={isSelected ? '取消选择任务' : '选择任务'}
+                                  >
+                                    {isSelected && <CheckCircle2 size={11} className="text-white" />}
+                                  </button>
+                                )}
                                 <div className="min-w-0 flex-1 pt-0.5">
                                   <div className="flex items-start justify-between gap-3">
                                     <div className="min-w-0 flex-1 text-left">
@@ -15911,8 +16115,11 @@ export default function App() {
                 <div
                   className="fixed inset-0 z-[1000] flex items-center justify-center bg-black/30 backdrop-blur-sm px-6"
                   style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
+                  onMouseDown={(e) => { backdropMouseDownRef.current = (e.target === e.currentTarget); }}
                   onClick={(e) => {
-                    if (e.target === e.currentTarget && !isDeletingEventLine) setEventLineConfirm(null);
+                    const downedHere = backdropMouseDownRef.current;
+                    backdropMouseDownRef.current = false;
+                    if (downedHere && e.target === e.currentTarget && !isDeletingEventLine) setEventLineConfirm(null);
                   }}
                 >
                   <div className="w-full max-w-md rounded-xl border border-gray-200 bg-white p-6 shadow-2xl">
@@ -16015,8 +16222,11 @@ export default function App() {
                   <div
                     className="fixed inset-0 z-[1000] flex items-center justify-center bg-black/30 backdrop-blur-sm px-6"
                     style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
+                    onMouseDown={(e) => { backdropMouseDownRef.current = (e.target === e.currentTarget); }}
                     onClick={(e) => {
-                      if (e.target === e.currentTarget && !busy) setEventLineMergeDialog(null);
+                      const downedHere = backdropMouseDownRef.current;
+                      backdropMouseDownRef.current = false;
+                      if (downedHere && e.target === e.currentTarget && !busy) setEventLineMergeDialog(null);
                     }}
                   >
                     <div className="w-full max-w-lg rounded-xl border border-gray-200 bg-white p-6 shadow-2xl">
@@ -19235,6 +19445,10 @@ export default function App() {
         return [next, ...previous].slice(0, ACTIVE_WORKING_DOCUMENTS_LIMIT);
       });
       markDocumentAsUsed({ documentId: docId, title: fileLabel, path });
+      // inline editor 已打开时,文件 attach 后自动弹出 AI popover(避免 chip 进了 state 但用户没感知)
+      if (clientWorkspaceInlineEditor) {
+        setInlineEditorOpenAiPromptKey((k) => k + 1);
+      }
       if (alreadyAttached) {
         flash('info', `「${fileLabel}」已在对话引用里`);
       } else {
@@ -21324,11 +21538,15 @@ export default function App() {
         return;
       }
       // P9：钢笔按钮点击 → 主工作台切到全屏 inline 文档编辑器，不弹 modal
+      // Tier 1 草稿恢复:有 localStorage 草稿就 prefill,banner 提示用户可重置
+      const recoveredDraft = readInlineEditorDraft(currentClientId);
       setClientWorkspaceInlineEditor({
         clientId: currentClientId,
-        title: '',
-        content: SAMPLE_DOCUMENT_MARKDOWN,
-        titleEdited: false,
+        title: recoveredDraft?.title || '',
+        content: recoveredDraft?.content || '',
+        titleEdited: Boolean(recoveredDraft?.title),
+        enableDraftPersist: true,
+        recoveredFromDraft: Boolean(recoveredDraft),
       });
     };
 
@@ -21892,6 +22110,25 @@ export default function App() {
       }
     };
 
+    const handleCancelVectorizeAnswer = async (messageId: string) => {
+      // C：取消收藏。后端删 surrogate + .md，refreshWorkspace 后 memoryCards 自然移除这条
+      if (!currentClientId || answerActionState[messageId]) return;
+      try {
+        setAnswerActionState((prev) => ({ ...prev, [messageId]: 'cancel-vectorize' }));
+        await cancelVectorizeAnswer(currentClientId, messageId);
+        await refreshWorkspace(currentClientId);
+        flash('success', '已取消收藏');
+      } catch (error) {
+        flash('error', error instanceof Error ? error.message : '取消收藏失败');
+      } finally {
+        setAnswerActionState((prev) => {
+          const next = { ...prev };
+          delete next[messageId];
+          return next;
+        });
+      }
+    };
+
     const handleExportAnswer = async (messageId: string) => {
       if (!currentClientId || answerActionState[messageId]) return;
       try {
@@ -21963,7 +22200,7 @@ export default function App() {
       const sections = assistants.map((assistant) => ({
         question: findUserQuestion(assistant),
         // 跟屏幕渲染保持一致: 清洗 LLM 答案里裸露的文件名引用
-        answer: stripFileCitations(assistant.content) || '(暂无内容)',
+        answer: cleanChatOutput(assistant.content) || '(暂无内容)',
       }));
       if (sections.length === 1) {
         return {
@@ -22816,7 +23053,7 @@ export default function App() {
                                       return (
                                         <>
                                           <StreamingAnswerDocument
-                                            text={stripFileCitations(msg.content)}
+                                            text={cleanChatOutput(msg.content)}
                                             streaming={msg.status === 'loading'}
                                           />
                                           {isLoading && <ChatThinkingHint compact />}
@@ -22854,7 +23091,7 @@ export default function App() {
                                         <div className="rounded-2xl border border-emerald-100 bg-white px-4 py-4">
                                           <p className="text-[11px] font-bold uppercase tracking-[0.16em] text-emerald-600">直接回答</p>
                                           <div className="mt-2 text-[13px] leading-7 text-gray-800 whitespace-pre-wrap">
-                                            {stripFileCitations(workspaceAnswerExperience.directAnswer || msg.content)}
+                                            {cleanChatOutput(workspaceAnswerExperience.directAnswer || msg.content)}
                                           </div>
                                         </div>
 
@@ -23093,7 +23330,7 @@ export default function App() {
                                       {shouldRenderStateSections && (
                                         <p className="mb-3 text-[11px] font-bold uppercase tracking-[0.16em] text-slate-400">延展分析</p>
                                       )}
-                                      <AnswerDocument text={stripFileCitations(msg.content)} />
+                                      <AnswerDocument text={cleanChatOutput(msg.content)} />
                                     </div>
                                   )}
 
@@ -23102,17 +23339,17 @@ export default function App() {
                                 {/* action bar (复制/收藏/导出/合并/采纳为判断/转任务) — 仅在
                                     streaming 完成后才显示, 避免半截答案触发操作 */}
                                 {msg.status !== 'loading' && (
-                                <div className="bg-gray-50/80 border-t border-gray-100 px-3 xl:px-4 py-3 flex items-center justify-between">
+                                <div className="px-3 xl:px-4 py-3 flex items-center justify-between">
                                   <div className="flex gap-1 xl:gap-2">
                                     <button
-                                      className={`text-[11px] xl:text-[12px] hover:bg-white hover:shadow-sm font-semibold flex items-center gap-1.5 transition-all px-2.5 py-1.5 rounded-lg ${
+                                      className={`text-[11px] xl:text-[12px] font-semibold flex items-center gap-1.5 transition-all px-2.5 py-1.5 rounded-lg ${
                                         recentlyCopiedMessageId === msg.id
                                           ? 'text-emerald-600'
                                           : 'text-gray-500 hover:text-gray-900'
                                       }`}
                                       onClick={(event) => {
                                         event.stopPropagation();
-                                        void navigator.clipboard.writeText(stripFileCitations(msg.content));
+                                        void navigator.clipboard.writeText(cleanChatOutput(msg.content));
                                         setRecentlyCopiedMessageId(msg.id);
                                         window.setTimeout(() => {
                                           setRecentlyCopiedMessageId((prev) => (prev === msg.id ? null : prev));
@@ -23129,18 +23366,44 @@ export default function App() {
                                         </>
                                       )}
                                     </button>
+                                    {(() => {
+                                      // C：识别这条 message 是否已被收藏（按 chatMessageId 反查 memoryCards）
+                                      const isFavorited = (workspace?.memoryCards || []).some(
+                                        (card) => card.chatMessageId === msg.id,
+                                      );
+                                      const actionState = answerActionState[msg.id];
+                                      const isBusy = Boolean(actionState);
+                                      const label = actionState === 'vectorize'
+                                        ? '收藏中…'
+                                        : actionState === 'cancel-vectorize'
+                                          ? '取消中…'
+                                          : isFavorited
+                                            ? '取消收藏'
+                                            : '收藏';
+                                      return (
+                                        <button
+                                          className={`text-[11px] xl:text-[12px] font-semibold flex items-center gap-1.5 transition-all px-2.5 py-1.5 rounded-lg disabled:opacity-50 ${
+                                            isFavorited
+                                              ? 'text-amber-600 hover:text-amber-700'
+                                              : 'text-gray-500 hover:text-gray-900'
+                                          }`}
+                                          disabled={isHardSystemFailure || isHistoricalMockAnswer || isBusy}
+                                          title={isFavorited ? '点击移除这条已收藏的回答' : '收藏这条回答到记忆卡'}
+                                          onClick={(event) => {
+                                            event.stopPropagation();
+                                            if (isFavorited) {
+                                              void handleCancelVectorizeAnswer(msg.id);
+                                            } else {
+                                              void handleVectorizeAnswer(msg.id);
+                                            }
+                                          }}
+                                        >
+                                          <Sparkles size={14} /> {label}
+                                        </button>
+                                      );
+                                    })()}
                                     <button
-                                      className="text-[11px] xl:text-[12px] text-gray-500 hover:text-gray-900 hover:bg-white hover:shadow-sm font-semibold flex items-center gap-1.5 transition-all px-2.5 py-1.5 rounded-lg disabled:opacity-50"
-                                      disabled={isHardSystemFailure || isHistoricalMockAnswer || Boolean(answerActionState[msg.id])}
-                                      onClick={(event) => {
-                                        event.stopPropagation();
-                                        void handleVectorizeAnswer(msg.id);
-                                      }}
-                                    >
-                                      <Sparkles size={14} /> {answerActionState[msg.id] === 'vectorize' ? '收藏中…' : '收藏'}
-                                    </button>
-                                    <button
-                                      className="text-[11px] xl:text-[12px] text-gray-500 hover:text-gray-900 hover:bg-white hover:shadow-sm font-semibold flex items-center gap-1.5 transition-all px-2.5 py-1.5 rounded-lg disabled:opacity-50"
+                                      className="text-[11px] xl:text-[12px] text-gray-500 hover:text-gray-900 font-semibold flex items-center gap-1.5 transition-all px-2.5 py-1.5 rounded-lg disabled:opacity-50"
                                       disabled={isHardSystemFailure || isHistoricalMockAnswer || Boolean(answerActionState[msg.id])}
                                       onClick={(event) => {
                                         event.stopPropagation();
@@ -23153,7 +23416,7 @@ export default function App() {
                                       className={`text-[11px] xl:text-[12px] font-semibold flex items-center gap-1.5 transition-all px-2.5 py-1.5 rounded-lg disabled:opacity-50 ${
                                         isInExportBag(msg.id)
                                           ? 'text-[#5B7BFE] bg-[#5B7BFE]/10 hover:bg-[#5B7BFE]/15'
-                                          : 'text-gray-500 hover:text-gray-900 hover:bg-white hover:shadow-sm'
+                                          : 'text-gray-500 hover:text-gray-900'
                                       }`}
                                       disabled={isHardSystemFailure || isHistoricalMockAnswer}
                                       title="把这段加入合并,最后合并成一个文档导出"
@@ -23166,9 +23429,9 @@ export default function App() {
                                       {isInExportBag(msg.id) ? '已合并' : '合并'}
                                     </button>
                                     <button
-                                      className="text-[11px] xl:text-[12px] text-gray-500 hover:text-gray-900 hover:bg-white hover:shadow-sm font-semibold flex items-center gap-1.5 transition-all px-2.5 py-1.5 rounded-lg disabled:opacity-50"
+                                      className="text-[11px] xl:text-[12px] text-gray-500 hover:text-gray-900 font-semibold flex items-center gap-1.5 transition-all px-2.5 py-1.5 rounded-lg disabled:opacity-50"
                                       disabled={isHardSystemFailure || isHistoricalMockAnswer || Boolean(answerActionState[msg.id])}
-                                      title="把这个答案沉淀为客户判断，进入数据中心"
+                                      title="把这个答案加入数据中心数据库，沉淀为客户判断"
                                       onClick={(event) => {
                                         event.stopPropagation();
                                         const run = async () => {
@@ -23176,9 +23439,9 @@ export default function App() {
                                             setAnswerActionState((prev) => ({ ...prev, [msg.id]: 'promote-judgment' }));
                                             const result = await promoteWorkspaceAnswerToJudgment(msg.id);
                                             window.dispatchEvent(new CustomEvent('workspace-answer-value-refresh'));
-                                            flash('success', result.summary || '已沉淀为判断');
+                                            flash('success', result.summary || '已加入数据库');
                                           } catch (error) {
-                                            flash('error', error instanceof Error ? error.message : '沉淀失败');
+                                            flash('error', error instanceof Error ? error.message : '加入数据库失败');
                                           } finally {
                                             setAnswerActionState((prev) => ({ ...prev, [msg.id]: '' }));
                                           }
@@ -23186,10 +23449,37 @@ export default function App() {
                                         void run();
                                       }}
                                     >
-                                      <CheckCircle2 size={14} /> {answerActionState[msg.id] === 'promote-judgment' ? '沉淀中…' : '采纳为判断'}
+                                      <CheckCircle2 size={14} /> {answerActionState[msg.id] === 'promote-judgment' ? '加入中…' : '加入数据库'}
                                     </button>
                                     <button
-                                      className="text-[11px] xl:text-[12px] text-gray-500 hover:text-gray-900 hover:bg-white hover:shadow-sm font-semibold flex items-center gap-1.5 transition-all px-2.5 py-1.5 rounded-lg disabled:opacity-50"
+                                      className="text-[11px] xl:text-[12px] text-gray-500 hover:text-gray-900 font-semibold flex items-center gap-1.5 transition-all px-2.5 py-1.5 rounded-lg disabled:opacity-50"
+                                      disabled={isHardSystemFailure || isHistoricalMockAnswer || !currentClientId || clientWorkspaceInlineEditor !== null}
+                                      title={
+                                        clientWorkspaceInlineEditor !== null
+                                          ? '当前有智能编辑器在打开,请先关闭再用此入口,避免覆盖正在编辑的内容'
+                                          : '用智能编辑器打开这段 AI 回答，方便扩写/改写/翻译'
+                                      }
+                                      onClick={(event) => {
+                                        event.stopPropagation();
+                                        if (!currentClientId) {
+                                          flash('error', '请先选择项目');
+                                          return;
+                                        }
+                                        // 跟收藏卡的"用智能编辑器打开"是同一条路径：set inline editor state，
+                                        // overlay 在中间主区弹出，左侧栏 + 右侧栏仍可见
+                                        const cleaned = cleanChatOutput(msg.content) || msg.content || '';
+                                        setClientWorkspaceInlineEditor({
+                                          clientId: currentClientId,
+                                          title: '',
+                                          content: cleaned,
+                                          titleEdited: false,
+                                        });
+                                      }}
+                                    >
+                                      <PenTool size={14} /> 智能编辑
+                                    </button>
+                                    <button
+                                      className="text-[11px] xl:text-[12px] text-gray-500 hover:text-gray-900 font-semibold flex items-center gap-1.5 transition-all px-2.5 py-1.5 rounded-lg disabled:opacity-50"
                                       disabled={isHardSystemFailure || isHistoricalMockAnswer}
                                       title="把这个答案转成任务，进入任务板"
                                       onClick={(event) => {
@@ -23210,7 +23500,7 @@ export default function App() {
                                         void createTask({
                                           title: `${currentClient?.name || '客户'} · ${msg.structuredData?.actions?.slice(0, 18) || '跟进事项'}`,
                                           // 跟屏幕一致: 清洗 LLM 答案里裸露的文件名 (strategy.md 等)
-                                          desc: stripFileCitations(msg.structuredData?.analysis || msg.content),
+                                          desc: cleanChatOutput(msg.structuredData?.analysis || msg.content),
                                           priority: 'normal',
                                           listId: effectiveTaskSettings.defaultListId || activeTaskLists[0]?.id || 'list-0',
                                           dueDate: defaultDueDateFromPreset(effectiveTaskSettings.defaultDueDatePreset) || null,
@@ -23233,7 +23523,7 @@ export default function App() {
                                     </button>
                                     {isHardSystemFailure && msg.requestPrompt && (
                                       <button
-                                        className="text-[11px] xl:text-[12px] text-rose-600 hover:text-rose-700 hover:bg-white hover:shadow-sm font-semibold flex items-center gap-1.5 transition-all px-2.5 py-1.5 rounded-lg"
+                                        className="text-[11px] xl:text-[12px] text-rose-600 hover:text-rose-700 font-semibold flex items-center gap-1.5 transition-all px-2.5 py-1.5 rounded-lg"
                                         onClick={(event) => {
                                           event.stopPropagation();
                                           void sendMessage(msg.requestPrompt);
@@ -23369,7 +23659,8 @@ export default function App() {
 	                  </div>
 	                )}
 	                <div className="min-w-0 flex-1">
-	                  {activeWorkingDocuments.length > 0 && (
+	                  {/* chat composer 的 chip 列表:inline editor 打开时隐藏,避免和 popover 里的 chip 双显示 */}
+	                  {!clientWorkspaceInlineEditor && activeWorkingDocuments.length > 0 && (
 	                    <div className="flex max-h-[70px] flex-wrap gap-1.5 overflow-y-auto px-2.5 pt-1">
 	                      {activeWorkingDocuments.map((document) => {
 	                        const statusLabel = document.status === 'ready'
@@ -23788,17 +24079,6 @@ export default function App() {
                   <div className="ml-auto flex items-center gap-2">
                     <button
                       type="button"
-                      onClick={() =>
-                        setClientWorkspaceInlineEditor((prev) =>
-                          prev ? { ...prev, content: SAMPLE_DOCUMENT_MARKDOWN } : prev,
-                        )
-                      }
-                      className="text-[11px] text-gray-400 hover:text-[#5B7BFE] transition-colors"
-                    >
-                      试试示例
-                    </button>
-                    <button
-                      type="button"
                       onClick={async () => {
                         if (!currentClientId || !clientWorkspaceInlineEditor) return;
                         const content = (clientWorkspaceInlineEditor.content || '').trim();
@@ -23812,6 +24092,8 @@ export default function App() {
                             content,
                           });
                           flash('success', `已保存到项目文档库：${result.fileName}`);
+                          // 已正式 promote 成文档,草稿不需要了
+                          clearInlineEditorDraft(currentClientId);
                           setClientWorkspaceInlineEditor(null);
                           setIsInlineEditorFullscreen(false);
                           await refreshWorkspace(currentClientId).catch(() => undefined);
@@ -23825,6 +24107,41 @@ export default function App() {
                     </button>
                   </div>
                 </div>
+                {/* Tier 1 草稿恢复提示条:辅助信息,低调灰色样式,不抢正文注意力 */}
+                {clientWorkspaceInlineEditor.recoveredFromDraft && (
+                  <div className="shrink-0 border-b border-gray-100 bg-gray-50 px-5 py-1.5 flex items-center gap-3">
+                    <span className="text-[10.5px] text-gray-400">
+                      已恢复上次未保存的草稿
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        if (!currentClientId) return;
+                        clearInlineEditorDraft(currentClientId);
+                        setClientWorkspaceInlineEditor((prev) =>
+                          prev
+                            ? { ...prev, title: '', content: '', titleEdited: false, recoveredFromDraft: false }
+                            : prev,
+                        );
+                      }}
+                      className="text-[10.5px] text-gray-400 hover:text-gray-700 underline underline-offset-2"
+                    >
+                      重新开始空白
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() =>
+                        setClientWorkspaceInlineEditor((prev) =>
+                          prev ? { ...prev, recoveredFromDraft: false } : prev,
+                        )
+                      }
+                      className="ml-auto text-gray-300 hover:text-gray-600"
+                      aria-label="关闭提示"
+                    >
+                      <X size={11} />
+                    </button>
+                  </div>
+                )}
                 {/* Editor body —— 工具栏紧贴 App Bar 无缝衔接（无 padding 无圆角），
                       文档内容居中由 RichTextDocumentEditor 内部 contentEditable 的 max-w 控制 */}
                 <div className="flex-1 overflow-y-auto bg-white">
@@ -23839,6 +24156,17 @@ export default function App() {
                       writingSkills={writingSkills.map((s) => ({ id: s.id, name: s.name }))}
                       defaultActiveSkillId={activeSkillId}
                       defaultCreativityMode={creativityMode}
+                      workingDocuments={activeWorkingDocuments.map((d) => ({
+                        documentId: d.documentId,
+                        title: d.title,
+                        status: d.status,
+                      }))}
+                      onRemoveWorkingDocument={(docId) =>
+                        setActiveWorkingDocuments((prev) =>
+                          prev.filter((item) => item.documentId !== docId),
+                        )
+                      }
+                      triggerOpenAiPromptKey={inlineEditorOpenAiPromptKey}
                       onAiAction={async (action, opts) => {
                         // P11：7 个 AI action 全 wire 到 backend，stub action（文档/样式 tab）走 flash
                         const targetClientId = clientWorkspaceInlineEditor?.clientId || currentClientId;
@@ -23888,8 +24216,13 @@ export default function App() {
                           return;
                         }
                         const content = (clientWorkspaceInlineEditor?.content || '').trim();
-                        if (!content) {
-                          flash('error', '请先写一点内容');
+                        // 放宽:空白文档也允许 — 只要有 选区 / 指令 / 引用文件 任一,后端就能生成。
+                        // 全都没有时后端返 400 + 友好提示。
+                        const selText = (opts?.selectionText || '').trim();
+                        const userReq = (opts?.userRequest || '').trim();
+                        const hasFiles = (opts?.workingDocumentIds || []).length > 0;
+                        if (!content && !selText && !userReq && !hasFiles) {
+                          flash('error', '请先写一点内容,或框选一段,或在 AI 输入框给指令,或引用文件');
                           return;
                         }
                         const label: Record<DocumentAiAction, string> = {
@@ -23918,10 +24251,38 @@ export default function App() {
                             creativityMode: opts?.creativityMode || 'balanced',
                             activeSkillId: opts?.activeSkillId || null,
                             selectionText,
+                            workingDocumentIds: opts?.workingDocumentIds || [],
                           });
+                          // 跟 chat 提交后同逻辑:清掉 referenceSource='citation' 那批(用过即焚),
+                          // 保留 import 那批(用户主动 import 进来的文件留住)
+                          setActiveWorkingDocuments((prev) =>
+                            prev.filter((d) => d.referenceSource !== 'citation'),
+                          );
+                          // 被 AI 命中(在 sources 引用)的文件 → 标记为"最近使用",
+                          // 触发右侧 Files Tab 自动排到最前。用户能立刻看到 AI 用了哪些资料。
+                          // path 从当前 workspace.documents 反查;查不到留空(不影响排序,只影响后续打开链接)。
+                          if (result.sources && result.sources.length > 0) {
+                            const docPathLookup = new Map<string, string>(
+                              (workspace?.documents || []).map((d) => [d.id, d.path || '']),
+                            );
+                            for (const src of result.sources) {
+                              const refId = src.refId || '';
+                              if (!refId) continue;
+                              markDocumentAsUsed({
+                                documentId: refId,
+                                title: src.title || '客户资料',
+                                path: docPathLookup.get(refId) || '',
+                              });
+                            }
+                          }
                           // P14a：编辑器自己应用结果（替换选区 / 替换整篇），App 层不再 setContent，
                           // 因为 setMarkdown / insertMarkdown 会触发 onChange → 自动同步父状态
-                          const scopeLabel = result.targetScope === 'selection' ? '已替换选区' : '已替换整篇';
+                          const scopeLabel =
+                            result.targetScope === 'selection'
+                              ? '已替换选区'
+                              : result.targetScope === 'cursor_insert'
+                              ? '已在光标处插入'
+                              : '已替换整篇';
                           flash(
                             'success',
                             `${label[action as DocumentAiAction]}完成 · ${scopeLabel}（${(result.durationMs / 1000).toFixed(1)} 秒）`,
@@ -23958,82 +24319,86 @@ export default function App() {
                   'aspect-square rounded-[18px] border border-gray-200 bg-white text-slate-600 shadow-sm transition hover:border-[#C7D5FF] hover:text-[#4A63CF] hover:shadow-[0_8px_20px_rgba(91,123,254,0.08)] disabled:cursor-not-allowed disabled:opacity-50';
                 return (
                   <>
-                    <div className="mt-3 grid grid-cols-5 gap-2">
-                      <button
-                        type="button"
-                        className={quickToolButtonClass}
-                        disabled={isBackendBlocked}
-                        onClick={() => void handleSelectImportFolder()}
-                        title="导入文件夹"
-                        aria-label="导入文件夹"
-                      >
-                        <span className="flex h-full w-full items-center justify-center">
-                          <FolderOpen size={18} />
-                        </span>
-                      </button>
-                      <button
-                        type="button"
-                        className={quickToolButtonClass}
-                        disabled={isBackendBlocked}
-                        onClick={() => void handleSelectImportFiles()}
-                        title="导入文件"
-                        aria-label="导入文件"
-                      >
-                        <span className="flex h-full w-full items-center justify-center">
-                          <UploadCloud size={18} />
-                        </span>
-                      </button>
-                      <button
-                        type="button"
-                        className={`${quickToolButtonClass} ${
-                          templateFillDialog?.open
-                            ? 'bg-blue-50 border-[#C7D5FF] text-[#5B7BFE]'
-                            : ''
-                        }`}
-                        disabled={isBackendBlocked || isTemplateFilling}
-                        onClick={() => void handleFillTemplate()}
-                        title="填写模板"
-                        aria-label="填写模板"
-                      >
-                        <span className="flex h-full w-full items-center justify-center">
-                          <LayoutTemplate size={18} />
-                        </span>
-                      </button>
-                      <button
-                        type="button"
-                        className={quickToolButtonClass}
-                        disabled={isBackendBlocked}
-                        onClick={openClientTextDocumentOverlay}
-                        title="粘贴生成文档"
-                        aria-label="粘贴生成文档"
-                      >
-                        <span className="flex h-full w-full items-center justify-center">
-                          <PenTool size={18} />
-                        </span>
-                      </button>
-                      <button
-                        type="button"
-                        className={`${quickToolButtonClass} ${
-                          isLinkMaterialInlineExpanded
-                            ? 'bg-blue-50 border-[#C7D5FF] text-[#5B7BFE]'
-                            : ''
-                        }`}
-                        disabled={isBackendBlocked}
-                        onClick={() => {
-                          if (!currentClientId) {
-                            flash('error', '请先选择项目');
-                            return;
-                          }
-                          setIsLinkMaterialInlineExpanded((value) => !value);
-                        }}
-                        title="链接转文字"
-                        aria-label="链接转文字"
-                      >
-                        <span className="flex h-full w-full items-center justify-center">
-                          <Link2 size={18} />
-                        </span>
-                      </button>
-                    </div>
+                    {(() => {
+                      // 快捷工具区：完全由用户从工具页 ☆ 收藏管理，最多 5 个。默认空。
+                      // workspaceToolsRegistry 集中定义每个 tool 的 icon/title/onClick/disabled，
+                      // 跟工具页里 6 个按钮严格一一对应；未来加新工具时这里和工具页同步加一条。
+                      const workspaceToolsRegistry: Record<string, {
+                        icon: React.ReactNode;
+                        title: string;
+                        onClick: () => void;
+                        disabled: boolean;
+                      }> = {
+                        import_folder: {
+                          icon: <FolderOpen size={18} />,
+                          title: '导入文件夹',
+                          onClick: () => void handleSelectImportFolder(),
+                          disabled: isBackendBlocked,
+                        },
+                        import_files: {
+                          icon: <UploadCloud size={18} />,
+                          title: '导入文件',
+                          onClick: () => void handleSelectImportFiles(),
+                          disabled: isBackendBlocked,
+                        },
+                        fill_template: {
+                          icon: <LayoutTemplate size={18} />,
+                          title: '填写模板',
+                          onClick: () => void handleFillTemplate(),
+                          disabled: isBackendBlocked || isTemplateFilling,
+                        },
+                        text_doc: {
+                          icon: <PenTool size={18} />,
+                          title: '智能编辑',
+                          onClick: openClientTextDocumentOverlay,
+                          disabled: isBackendBlocked,
+                        },
+                        link_material: {
+                          icon: <Link2 size={18} />,
+                          title: '链接转资料',
+                          onClick: openClientLinkMaterialOverlay,
+                          disabled: isBackendBlocked,
+                        },
+                        smart_import: {
+                          icon: <Sparkles size={18} />,
+                          title: '智能文件导入',
+                          onClick: () => setIsSmartFileImportOpen(true),
+                          disabled: isBackendBlocked || !currentClientId,
+                        },
+                      };
+                      const validFavorites = favoriteWorkspaceTools.filter((key) => workspaceToolsRegistry[key]);
+                      if (validFavorites.length === 0) {
+                        return (
+                          <div className="mt-3 rounded-2xl border border-dashed border-gray-200 bg-gray-50/60 px-3 py-4 text-center">
+                            <p className="text-[11px] leading-5 text-gray-400">
+                              暂无快捷工具 · 在右边「工具」里点 ☆ 收藏（最多 5 个）
+                            </p>
+                          </div>
+                        );
+                      }
+                      return (
+                        <div className="mt-3 grid grid-cols-5 gap-2">
+                          {validFavorites.map((key) => {
+                            const tool = workspaceToolsRegistry[key];
+                            return (
+                              <button
+                                key={`fav-${key}`}
+                                type="button"
+                                className={quickToolButtonClass}
+                                disabled={tool.disabled}
+                                onClick={tool.onClick}
+                                title={tool.title}
+                                aria-label={tool.title}
+                              >
+                                <span className="flex h-full w-full items-center justify-center">
+                                  {tool.icon}
+                                </span>
+                              </button>
+                            );
+                          })}
+                        </div>
+                      );
+                    })()}
 
                     {isLinkMaterialInlineExpanded && (
                       <div className="mt-2.5 space-y-2">
@@ -24233,28 +24598,7 @@ export default function App() {
               })()}
             </div>
 
-            {/* Tab bar */}
-            <div className="flex border-b border-gray-100 bg-gray-50/60 px-2 pt-2 gap-0.5 shrink-0">
-              {([
-                { key: 'files', label: '文件', icon: FolderOpen },
-                { key: 'memory', label: '收藏', icon: BrainCircuit },
-                { key: 'tools', label: '工具', icon: UploadCloud },
-              ] as const).map((tab) => (
-                <button
-                  key={tab.key}
-                  className={`flex-1 text-[11px] font-bold py-2 px-1 rounded-t-xl transition-colors flex items-center justify-center gap-1 ${
-                    workspaceRightTab === tab.key
-                      ? 'bg-white text-[#5B7BFE] border border-gray-100 border-b-white -mb-px'
-                      : 'text-gray-400 hover:text-gray-600'
-                  }`}
-                  onClick={() => setWorkspaceRightTab(tab.key)}
-                >
-                  <tab.icon size={13} /> {tab.label}
-                </button>
-              ))}
-            </div>
-
-            {/* 资料状态摘要(挨着 Tab bar):份数 / OCR / 待清单 */}
+            {/* 资料状态摘要(挪到 Tab bar 上方更显眼):份数 / OCR / 待清单 */}
             <div className="flex items-center justify-between gap-3 border-b border-gray-100 bg-gray-50/40 px-4 py-1.5 text-[10px] leading-4 text-gray-400 shrink-0">
               <span>{knowledgeStatus?.totalDocuments || 0} 份文件</span>
               {(() => {
@@ -24289,6 +24633,27 @@ export default function App() {
               )}
             </div>
 
+            {/* Tab bar */}
+            <div className="flex border-b border-gray-100 bg-gray-50/60 px-2 pt-2 gap-0.5 shrink-0">
+              {([
+                { key: 'files', label: '文件', icon: FolderOpen },
+                { key: 'memory', label: '收藏', icon: BrainCircuit },
+                { key: 'tools', label: '工具', icon: UploadCloud },
+              ] as const).map((tab) => (
+                <button
+                  key={tab.key}
+                  className={`flex-1 text-[11px] font-bold py-2 px-1 rounded-t-xl transition-colors flex items-center justify-center gap-1 ${
+                    workspaceRightTab === tab.key
+                      ? 'bg-white text-[#5B7BFE] border border-gray-100 border-b-white -mb-px'
+                      : 'text-gray-400 hover:text-gray-600'
+                  }`}
+                  onClick={() => setWorkspaceRightTab(tab.key)}
+                >
+                  <tab.icon size={13} /> {tab.label}
+                </button>
+              ))}
+            </div>
+
             {/* Tab: 工具 */}
             {workspaceRightTab === 'tools' && <div className="p-5 xl:p-6 border-b border-gray-50 bg-gray-50/50 flex-1 overflow-y-auto">
               <h3 className="text-[13px] xl:text-[14px] font-bold text-gray-900 mb-4 flex items-center gap-2">
@@ -24310,78 +24675,49 @@ export default function App() {
                   return (
                     <>
                       <div className="grid grid-cols-3 gap-3">
-                        <button
-                          type="button"
-                          className="aspect-square rounded-[24px] border border-gray-200 bg-white text-slate-600 shadow-sm transition hover:border-[#C7D5FF] hover:text-[#4A63CF] hover:shadow-[0_8px_20px_rgba(91,123,254,0.08)] disabled:cursor-not-allowed disabled:opacity-50"
-                          disabled={isBackendBlocked}
-                          onClick={() => void handleSelectImportFolder()}
-                          title="导入文件夹"
-                          aria-label="导入文件夹"
-                        >
-                          <span className="flex h-full w-full items-center justify-center">
-                            <FolderOpen size={23} />
-                          </span>
-                        </button>
-                        <button
-                          type="button"
-                          className="aspect-square rounded-[24px] border border-gray-200 bg-white text-slate-600 shadow-sm transition hover:border-[#C7D5FF] hover:text-[#4A63CF] hover:shadow-[0_8px_20px_rgba(91,123,254,0.08)] disabled:cursor-not-allowed disabled:opacity-50"
-                          disabled={isBackendBlocked}
-                          onClick={() => void handleSelectImportFiles()}
-                          title="导入文件"
-                          aria-label="导入文件"
-                        >
-                          <span className="flex h-full w-full items-center justify-center">
-                            <UploadCloud size={23} />
-                          </span>
-                        </button>
-                        <button
-                          type="button"
-                          className="aspect-square rounded-[24px] border border-gray-200 bg-white text-slate-600 shadow-sm transition hover:border-[#C7D5FF] hover:text-[#4A63CF] hover:shadow-[0_8px_20px_rgba(91,123,254,0.08)] disabled:cursor-not-allowed disabled:opacity-50"
-                          disabled={isBackendBlocked || isTemplateFilling}
-                          onClick={() => void handleFillTemplate()}
-                          title="填写模板"
-                          aria-label="填写模板"
-                        >
-                          <span className="flex h-full w-full items-center justify-center">
-                            <LayoutTemplate size={23} />
-                          </span>
-                        </button>
-                        <button
-                          type="button"
-                          className="aspect-square rounded-[24px] border border-gray-200 bg-white text-slate-600 shadow-sm transition hover:border-[#C7D5FF] hover:text-[#4A63CF] hover:shadow-[0_8px_20px_rgba(91,123,254,0.08)] disabled:cursor-not-allowed disabled:opacity-50"
-                          disabled={isBackendBlocked}
-                          onClick={openClientTextDocumentOverlay}
-                          title="粘贴生成文档"
-                          aria-label="粘贴生成文档"
-                        >
-                          <span className="flex h-full w-full items-center justify-center">
-                            <PenTool size={23} />
-                          </span>
-                        </button>
-                        <button
-                          type="button"
-                          className="aspect-square rounded-[24px] border border-gray-200 bg-white text-slate-600 shadow-sm transition hover:border-[#C7D5FF] hover:text-[#4A63CF] hover:shadow-[0_8px_20px_rgba(91,123,254,0.08)] disabled:cursor-not-allowed disabled:opacity-50"
-                          disabled={isBackendBlocked}
-                          onClick={openClientLinkMaterialOverlay}
-                          title="链接转资料"
-                          aria-label="链接转资料"
-                        >
-                          <span className="flex h-full w-full items-center justify-center">
-                            <Link2 size={23} />
-                          </span>
-                        </button>
-                        <button
-                          type="button"
-                          className="aspect-square rounded-[24px] border border-gray-200 bg-white text-slate-600 shadow-sm transition hover:border-[#C7D5FF] hover:text-[#4A63CF] hover:shadow-[0_8px_20px_rgba(91,123,254,0.08)] disabled:cursor-not-allowed disabled:opacity-50"
-                          disabled={isBackendBlocked || !currentClientId}
-                          onClick={() => setIsSmartFileImportOpen(true)}
-                          title="智能文件导入 · 讲故事 + 挂文件,自动分类归档"
-                          aria-label="智能文件导入"
-                        >
-                          <span className="flex h-full w-full items-center justify-center">
-                            <Sparkles size={23} />
-                          </span>
-                        </button>
+                        {/* 工具页 6 个工具：每个 hover 出 ☆ 收藏按钮，点击加入/移出快捷工具区 */}
+                        {([
+                          { key: 'import_folder', icon: <FolderOpen size={23} />, title: '导入文件夹', onClick: () => void handleSelectImportFolder(), disabled: isBackendBlocked },
+                          { key: 'import_files', icon: <UploadCloud size={23} />, title: '导入文件', onClick: () => void handleSelectImportFiles(), disabled: isBackendBlocked },
+                          { key: 'fill_template', icon: <LayoutTemplate size={23} />, title: '填写模板', onClick: () => void handleFillTemplate(), disabled: isBackendBlocked || isTemplateFilling },
+                          { key: 'text_doc', icon: <PenTool size={23} />, title: '智能编辑', onClick: openClientTextDocumentOverlay, disabled: isBackendBlocked },
+                          { key: 'link_material', icon: <Link2 size={23} />, title: '链接转资料', onClick: openClientLinkMaterialOverlay, disabled: isBackendBlocked },
+                          { key: 'smart_import', icon: <Sparkles size={23} />, title: '智能文件导入 · 讲故事 + 挂文件,自动分类归档', onClick: () => setIsSmartFileImportOpen(true), disabled: isBackendBlocked || !currentClientId },
+                        ] as const).map((tool) => {
+                          const isFavorited = favoriteWorkspaceTools.includes(tool.key);
+                          return (
+                            <div key={tool.key} className="relative group/tool">
+                              <button
+                                type="button"
+                                className="aspect-square w-full rounded-[24px] border border-gray-200 bg-white text-slate-600 shadow-sm transition hover:border-[#C7D5FF] hover:text-[#4A63CF] hover:shadow-[0_8px_20px_rgba(91,123,254,0.08)] disabled:cursor-not-allowed disabled:opacity-50"
+                                disabled={tool.disabled}
+                                onClick={tool.onClick}
+                                title={tool.title}
+                                aria-label={tool.title}
+                              >
+                                <span className="flex h-full w-full items-center justify-center">
+                                  {tool.icon}
+                                </span>
+                              </button>
+                              <button
+                                type="button"
+                                className={`absolute top-1 right-1 flex h-5 w-5 items-center justify-center rounded-full text-[12px] leading-none transition ${
+                                  isFavorited
+                                    ? 'bg-amber-100 text-amber-600 opacity-100 shadow-sm'
+                                    : 'bg-white/80 text-gray-300 opacity-0 group-hover/tool:opacity-100 hover:text-amber-500'
+                                }`}
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  toggleFavoriteWorkspaceTool(tool.key);
+                                }}
+                                title={isFavorited ? '从快捷工具区移除' : '加入快捷工具区'}
+                                aria-label={isFavorited ? '从快捷工具区移除' : '加入快捷工具区'}
+                              >
+                                {isFavorited ? '★' : '☆'}
+                              </button>
+                            </div>
+                          );
+                        })}
                         {/* 资料速记、结构导入 — 功能待实现，暂不显示入口 */}
                       </div>
 
@@ -24425,19 +24761,9 @@ export default function App() {
                           ) : null}
                         </div>
                       )}
-                      <DataCenterOpsPanel
-                        clientId={currentClientId}
-                        flash={flash}
-                        onRefreshWorkspace={() => {
-                          if (!currentClientId) return;
-                          void refreshWorkspace(currentClientId);
-                        }}
-                      />
                       {currentClientId && <GlossaryDriftAlertPanel clientId={currentClientId} />}
                       {currentClientId && <ContradictionAlertPanel clientId={currentClientId} />}
                       {currentClientId && <DuplicateDocumentsSection clientId={currentClientId} hideWhenEmpty />}
-                      {currentClientId && <EntityListPanel clientId={currentClientId} />}
-                      {currentClientId && <GlossaryPanel clientId={currentClientId} />}
                     </>
                   );
                 })()}
@@ -24499,6 +24825,47 @@ export default function App() {
                       >
                         <ExternalLink size={16} />
                       </button>
+                      {(() => {
+                        // 仅对 Word 文档 (.docx/.doc) 显示"用智能编辑器打开"按钮
+                        const lowered = (path || '').toLowerCase();
+                        const isWord = lowered.endsWith('.docx') || lowered.endsWith('.doc');
+                        if (!isWord || !documentId) return null;
+                        // 智能编辑器已经打开时锁住此按钮,避免覆盖当前正在编辑的内容
+                        const editorBusy = clientWorkspaceInlineEditor !== null;
+                        return (
+                          <button
+                            type="button"
+                            disabled={editorBusy}
+                            onClick={async () => {
+                              if (!currentClientId) {
+                                flash('error', '请先选择项目');
+                                return;
+                              }
+                              try {
+                                const result = await getDocumentText(documentId);
+                                markDocumentAsUsed({ documentId, title: fileLabel, path });
+                                setClientWorkspaceInlineEditor({
+                                  clientId: currentClientId,
+                                  title: result.title || fileLabel,
+                                  content: result.content || '',
+                                  titleEdited: true,
+                                });
+                              } catch (error) {
+                                flash('error', error instanceof Error ? `打开失败：${error.message}` : '打开失败');
+                              }
+                            }}
+                            className={`rounded-lg p-1.5 transition-colors ${
+                              editorBusy
+                                ? 'text-slate-300 cursor-not-allowed'
+                                : 'text-slate-500 hover:text-[#5B7BFE] hover:bg-blue-50'
+                            }`}
+                            title={editorBusy ? '当前有智能编辑器在打开,请先关闭再用此入口' : '用智能编辑器打开（支持 AI 改写/扩写/翻译）'}
+                            aria-label="用智能编辑器打开"
+                          >
+                            <PenTool size={16} />
+                          </button>
+                        );
+                      })()}
                       <button
                         type="button"
                         disabled={!canOpen}
@@ -24592,7 +24959,32 @@ export default function App() {
                   )}
                   <div className="space-y-2.5">
                     {!searchActive && (() => {
-                      const allDocs = workspace?.documents || [];
+                      // 文件 tab 只显示用户主动导入的原始文件 + 用户在工具/编辑器里产出的成品文档。
+                      // 过滤掉所有系统过程文件（AI 衍生 md、事件线/任务/复盘的 md 镜像、导入中间产物等）。
+                      const AI_GENERATED_DOC_SOURCES = new Set<string>([
+                        'workspace_native',
+                        'answer_memory_doc',
+                        'answer_export_doc',
+                        'consultation_knowledge_memory',
+                        'auto_repair',
+                        'internet_enrichment',
+                        'readiness_action',
+                      ]);
+                      // 系统过程 md 文件名模式：<entity 前缀>_<hex id>_<标题>.md
+                      // 用户不会手动给文件起这种名字，所以匹配上肯定是系统生成。
+                      const SYSTEM_FILENAME_PREFIX_PATTERN = /^(doc|eline|task|review|client|meeting|judgment|proposal|fact|sur|midx|cffc|mem|prof)_[0-9a-f]{6,}_/i;
+                      const allDocs = (workspace?.documents || []).filter((doc) => {
+                        if (AI_GENERATED_DOC_SOURCES.has(doc.source)) return false;
+                        const path = doc.path || '';
+                        // 系统导入流水的中间目录（每次 import 把 PDF/docx 提取成 doc_<id>_*.md 镜像）
+                        if (path.includes('/_imports/imp_')) return false;
+                        // 系统元数据目录（_v2_meta/system_docs 下的事件线/任务/复盘 md）
+                        if (path.includes('/_v2_meta/')) return false;
+                        // 文件名以系统 entity 前缀 + hex id 开头的 md (兜底,覆盖前两条没抓到的)
+                        const basename = path ? path.split(/[/\\]/).pop() || '' : (doc.title || '');
+                        if ((doc.kind === 'md' || doc.kind === 'markdown') && SYSTEM_FILENAME_PREFIX_PATTERN.test(basename)) return false;
+                        return true;
+                      });
                       // 按"最近一次活动时间"统一倒序：max(被使用的时间戳, 新增导入的时间戳)。
                       // 这样刚导入的新文件会和刚被使用的文件混排在最前面，不再固定分两段。
                       const usedAtMap = new Map<string, number>(
@@ -24747,7 +25139,12 @@ export default function App() {
                   {pendingDeleteDocument && (
                     <div
                       className="fixed inset-0 z-[1000] flex items-center justify-center bg-black/40 px-6"
-                      onClick={(e) => { if (e.target === e.currentTarget && !isDeletingDocument) setPendingDeleteDocument(null); }}
+                      onMouseDown={(e) => { backdropMouseDownRef.current = (e.target === e.currentTarget); }}
+                      onClick={(e) => {
+                        const downedHere = backdropMouseDownRef.current;
+                        backdropMouseDownRef.current = false;
+                        if (downedHere && e.target === e.currentTarget && !isDeletingDocument) setPendingDeleteDocument(null);
+                      }}
                     >
                       <div className="w-full max-w-md rounded-2xl bg-white shadow-2xl">
                         <div className="px-5 py-4 border-b border-gray-100 flex items-center gap-2">
@@ -25106,14 +25503,34 @@ export default function App() {
                           <span className="text-[10px] text-gray-400">{(card.updatedAt || card.createdAt || '').slice(0, 10)}</span>
                           {card.surrogateMdPath && (
                             <button
-                              className="rounded-lg bg-white px-2.5 py-1.5 text-[10px] font-bold text-gray-600 shadow-sm hover:text-[#5B7BFE]"
-                              onClick={() =>
-                                void openPathBridge(card.surrogateMdPath).then((opened) => {
-                                  if (!opened) flash('error', '记忆文档路径不存在或当前无法打开');
-                                })
-                              }
+                              disabled={clientWorkspaceInlineEditor !== null}
+                              className={`rounded-lg px-2.5 py-1.5 text-[10px] font-bold shadow-sm ${
+                                clientWorkspaceInlineEditor !== null
+                                  ? 'bg-gray-50 text-gray-300 cursor-not-allowed'
+                                  : 'bg-white text-gray-600 hover:text-[#5B7BFE]'
+                              }`}
+                              title={clientWorkspaceInlineEditor !== null ? '当前有智能编辑器在打开,请先关闭再用此入口' : '用智能编辑器打开'}
+                              onClick={async () => {
+                                // 用智能编辑器（client_workspace_inline_editor）打开收藏的 MD,
+                                // 走和工具页"粘贴生成文档"同一条编辑器路径，进去后能直接用 AI 改写/扩写/翻译。
+                                if (!currentClientId) {
+                                  flash('error', '请先选择项目');
+                                  return;
+                                }
+                                try {
+                                  const content = await window.yiyuWorkbench.readTextFile(card.surrogateMdPath);
+                                  setClientWorkspaceInlineEditor({
+                                    clientId: currentClientId,
+                                    title: memoryTitle,
+                                    content: content || '',
+                                    titleEdited: true,
+                                  });
+                                } catch (error) {
+                                  flash('error', error instanceof Error ? `无法读取该收藏：${error.message}` : '无法读取该收藏');
+                                }
+                              }}
                             >
-                              <ExternalLink size={12} className="mr-1 inline" /> 打开 MD
+                              <PenTool size={12} className="mr-1 inline" /> 用智能编辑器打开
                             </button>
                           )}
                         </div>

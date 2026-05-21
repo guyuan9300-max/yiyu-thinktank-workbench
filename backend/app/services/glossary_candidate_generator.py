@@ -326,11 +326,13 @@ def _collect_event_line_intents(db: Database, client_id: str) -> list[dict]:
 
 
 def _collect_candidates(db: Database, client_id: str) -> dict:
+    # 必须过滤 status='active' — 排除 self_verify 合并掉的重复实体, 避免幽灵实体参与字典候选评分
     entity_rows = db.fetchall(
         """
         SELECT id, entity_type, display_name, normalized_name, mention_count
         FROM entities
         WHERE client_id = ? AND mention_count >= 2
+          AND status = 'active'
         ORDER BY entity_type, mention_count DESC
         """,
         (client_id,),

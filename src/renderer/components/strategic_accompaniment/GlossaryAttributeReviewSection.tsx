@@ -60,7 +60,7 @@ export function GlossaryAttributeReviewSection({
       const data = await listGlossaryAttributes(clientId, 'pending');
       setAttrs(data.attributes ?? []);
     } catch (err) {
-      flash?.('error', `字典待审加载失败: ${err instanceof Error ? err.message : String(err)}`);
+      flash?.('error', `事实澄清加载失败: ${err instanceof Error ? err.message : String(err)}`);
     } finally {
       setLoading(false);
     }
@@ -80,7 +80,7 @@ export function GlossaryAttributeReviewSection({
     try {
       if (action === 'verify') {
         await verifyGlossaryAttribute(clientId, attrId, clarifyPayload ?? {});
-        flash?.('success', clarifyPayload ? '已澄清并采纳, 进字典权威值' : '已采纳, 进字典权威值');
+        flash?.('success', clarifyPayload ? '已澄清并采纳,进入客户档案权威值' : '已采纳,进入客户档案权威值');
       } else {
         await rejectGlossaryAttribute(clientId, attrId);
         flash?.('success', '已拒绝');
@@ -139,7 +139,7 @@ export function GlossaryAttributeReviewSection({
         className="text-[12px] text-slate-500 hover:text-slate-700 mt-4 flex items-center gap-1"
       >
         <BookOpen size={13} />
-        展开字典待审 ({attrs.length})
+        展开事实澄清 ({attrs.length})
       </button>
     );
   }
@@ -162,7 +162,7 @@ export function GlossaryAttributeReviewSection({
       <header className="flex items-center justify-between gap-3 mb-3">
         <div className="flex items-center gap-2 flex-wrap">
           <BookOpen size={14} className="text-blue-600" />
-          <h3 className="text-[13px] font-bold text-blue-800">字典待审 · 学霸笔记本</h3>
+          <h3 className="text-[13px] font-bold text-blue-800">事实澄清</h3>
           <span className="text-[11px] text-blue-600 bg-blue-100 rounded-full px-2 py-0.5 font-semibold">
             {attrs.length} 条
           </span>
@@ -177,7 +177,7 @@ export function GlossaryAttributeReviewSection({
             </button>
           )}
           <span className="text-[11px] text-slate-500">
-            采纳进入字典权威值, chat/narrative 直接 cite
+            AI 替你整理 · 一键审核后进客户档案,以后问答/报告里 AI 都会引用
           </span>
         </div>
         <button

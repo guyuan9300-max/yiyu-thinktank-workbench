@@ -1801,7 +1801,17 @@ function startBackend() {
   // backend survives external tools (e.g. parallel AI assistants) touching
   // backend/app/*.py while a verification session is running.
   if (!app.isPackaged && process.env.YIYU_BACKEND_NO_RELOAD !== '1') {
-    args.push('--reload', '--reload-dir', path.join(projectRoot, 'backend', 'app'));
+    // --reload-delay 2: 2 秒防抖窗口,多次 touch 合并成一次 reload
+    //   (并行 AI assistants 改 backend/app/*.py 时不再触发 reload 风暴)
+    // --reload-exclude: 跳过 __pycache__/*.pyc/test 缓存目录,只监听真业务文件
+    args.push(
+      '--reload',
+      '--reload-dir', path.join(projectRoot, 'backend', 'app'),
+      '--reload-delay', '2',
+      '--reload-exclude', '**/__pycache__/**',
+      '--reload-exclude', '**/*.pyc',
+      '--reload-exclude', '**/.pytest_cache/**',
+    );
   }
   backendProcess = spawn(
     entrypoint,

@@ -1,4 +1,7 @@
-import React, { useImperativeHandle, useRef, useState } from 'react';
+import React, { useEffect, useImperativeHandle, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
+import { alertWithLog } from '../../lib/clientErrorReport';
+import { appPrompt } from '../../lib/appPrompt';
 import {
   Sparkles,
   Wand2,
@@ -19,6 +22,9 @@ import {
   Loader2,
   X,
   Play,
+  Paperclip,
+  Undo2,
+  Redo2,
 } from 'lucide-react';
 
 import type { DocumentAiAction, DocumentAiCreativityMode } from '../../lib/api';
@@ -35,15 +41,18 @@ export type RichTextDocumentEditorAiOpts = {
   // P14a：当前用户在编辑器里框选的纯文本（window.getSelection()）。
   // 非空 → 后端只处理这段、前端只替换这段；空 → 处理整篇。
   selectionText: string;
+  // 用户在 popover 弹出时已 attach 的 working docs(可能后续在 popover 里 × 掉)
+  workingDocumentIds: string[];
 };
 
 // P14a：onAiAction 的返回值。
-// targetScope = "selection" → 前端用 insertMarkdown 只替换选区
-// targetScope = "full_doc"  → 前端用 setMarkdown 整篇替换
+// targetScope = "selection"      → 用户框选了一段:还原选区 → insertMarkdown 替换选区
+// targetScope = "cursor_insert"  → 用户没框选,只有光标:还原光标位置 → insertMarkdown 在光标处插入,不动其他内容
+// targetScope = "full_doc"       → 替换整篇(老逻辑,目前后端只在 fallback 路径用)
 // 不返回（undefined）→ App 层已经自己处理过（兼容 __export_docx / __toggle_fullscreen）
 export type RichTextDocumentEditorAiResult = {
   content: string;
-  targetScope: 'selection' | 'full_doc';
+  targetScope: 'selection' | 'cursor_insert' | 'full_doc';
 };
 
 import {
@@ -61,10 +70,19 @@ import {
   toolbarPlugin,
   BoldItalicUnderlineToggles,
   StrikeThroughSupSubToggles,
-  BlockTypeSelect,
   UndoRedo,
-  ListsToggle,
+  // 替换 BlockTypeSelect + ListsToggle 为自定义中文下拉（BlockChoiceSelect），
+  // 直接读 currentBlockType$/currentListType$ 并通过 applyBlockType$/applyListType$ 切换。
+  currentBlockType$,
+  applyBlockType$,
+  currentListType$,
+  applyListType$,
+  // Tab Bar 常驻 Undo/Redo:跨 tab 不卸载,避免 UndoRedo 切走再回来 canUndo state 丢失
+  activeEditor$,
 } from '@mdxeditor/editor';
+import { CAN_UNDO_COMMAND, CAN_REDO_COMMAND, UNDO_COMMAND, REDO_COMMAND, COMMAND_PRIORITY_CRITICAL } from 'lexical';
+import { useCellValues, usePublisher } from '@mdxeditor/gurx';
+import { ChevronDown } from 'lucide-react';
 import '@mdxeditor/editor/style.css';
 
 /**
@@ -105,6 +123,25 @@ export type RichTextDocumentEditorProps = {
   defaultActiveSkillId?: string | null;
   /** 默认写作模式（从外部 chat 同步） */
   defaultCreativityMode?: DocumentAiCreativityMode;
+  /**
+   * 用户从右侧文件列表 attach 到对话引用的 working docs(跟 chat composer 共用 state)。
+   * AI 生成 popover 渲染为 chip 列表,提交时一起发给后端做 priority 召回。
+   */
+  workingDocuments?: RichTextDocumentEditorWorkingDoc[];
+  /** 让用户在 popover 里点 × 移除某条 working doc(透传到外层 setActiveWorkingDocuments) */
+  onRemoveWorkingDocument?: (documentId: string) => void;
+  /**
+   * 外部触发 AI popover 自动打开的 counter — 用户在右侧文件列表点 ← 箭头 attach 文件后,
+   * 外层 bump 这个 key,编辑器 useEffect 检测到变化就开 popover,
+   * popover 里直接显示刚加进来的 chip,用户接着输入指令就可以执行。
+   */
+  triggerOpenAiPromptKey?: number;
+};
+
+export type RichTextDocumentEditorWorkingDoc = {
+  documentId: string;
+  title: string;
+  status: 'queued' | 'processing' | 'ready' | 'partial_ready' | 'failed';
 };
 
 // P12：字号 + 主题 内置 state（不污染 App.tsx）
@@ -147,6 +184,9 @@ export const RichTextDocumentEditor = React.forwardRef<MDXEditorMethods, RichTex
       writingSkills,
       defaultActiveSkillId,
       defaultCreativityMode,
+      workingDocuments,
+      onRemoveWorkingDocument,
+      triggerOpenAiPromptKey,
     },
     ref,
   ) {
@@ -190,6 +230,9 @@ export const RichTextDocumentEditor = React.forwardRef<MDXEditorMethods, RichTex
                   writingSkills={writingSkills || []}
                   defaultActiveSkillId={defaultActiveSkillId ?? null}
                   defaultCreativityMode={defaultCreativityMode ?? 'balanced'}
+                  workingDocuments={workingDocuments || []}
+                  onRemoveWorkingDocument={onRemoveWorkingDocument}
+                  triggerOpenAiPromptKey={triggerOpenAiPromptKey}
                   fontSize={fontSize}
                   setFontSize={setFontSize}
                   theme={theme}
@@ -249,6 +292,9 @@ function RibbonToolbar({
   writingSkills,
   defaultActiveSkillId,
   defaultCreativityMode,
+  workingDocuments,
+  onRemoveWorkingDocument,
+  triggerOpenAiPromptKey,
   fontSize,
   setFontSize,
   theme,
@@ -264,6 +310,9 @@ function RibbonToolbar({
   writingSkills: RichTextDocumentEditorWritingSkill[];
   defaultActiveSkillId: string | null;
   defaultCreativityMode: DocumentAiCreativityMode;
+  workingDocuments: RichTextDocumentEditorWorkingDoc[];
+  onRemoveWorkingDocument?: (documentId: string) => void;
+  triggerOpenAiPromptKey?: number;
   fontSize: EditorFontSize;
   setFontSize: React.Dispatch<React.SetStateAction<EditorFontSize>>;
   theme: EditorTheme;
@@ -273,6 +322,21 @@ function RibbonToolbar({
   const [aiPrompt, setAiPrompt] = useState<AiPromptState | null>(null);
   // P14a：用户点 AI 按钮"那一刻"的选区快照（用于送到后端做 prompt 上下文）。
   const [capturedSelection, setCapturedSelection] = useState<string>('');
+  // WPS 风浮层定位:popover 出现在 caret/选区附近,而不是 toolbar 下方全宽。
+  const [popoverAnchor, setPopoverAnchor] = useState<{ top: number; left: number } | null>(null);
+  // 异步 AI 任务托盘:submit 后立刻关 popover + 设这个 state,Tab Bar 右侧渲染进度环 icon,
+  // 用户可继续干别的;完成后插入结果到 snapshot.range,清 state,icon 隐藏。
+  const [aiInFlight, setAiInFlight] = useState<{ startedAt: number; action: DocumentAiAction } | null>(null);
+  const aiInFlightRef = useRef(aiInFlight);
+  aiInFlightRef.current = aiInFlight;
+  // 飞行期用户再发(右键 / ← 箭头)→ icon 闪一下提示"AI 在跑别再发"
+  const [flashing, setFlashing] = useState(false);
+  const flashingTimeoutRef = useRef<number | null>(null);
+  const triggerFlashIcon = () => {
+    setFlashing(true);
+    if (flashingTimeoutRef.current !== null) window.clearTimeout(flashingTimeoutRef.current);
+    flashingTimeoutRef.current = window.setTimeout(() => setFlashing(false), 550);
+  };
   // P14a-fix：DOM Range 快照。点 AI 按钮后 AiPromptPanel textarea 抢 focus 会把
   // window selection 清空，提交时已经没法用 window.getSelection() 拿回选区。
   // 用 ref 而不是 state——Range 是 mutable DOM 对象，存在 ref 里避免 stale closure。
@@ -280,27 +344,67 @@ function RibbonToolbar({
   // 自动从 DOM selection 同步，然后 editor.insertMarkdown() 就能精确替换选区。
   const capturedRangeRef = useRef<Range | null>(null);
 
-  const captureCurrentSelection = (): { text: string; range: Range | null } => {
+  const captureCurrentSelection = (): { text: string; range: Range | null; rect: DOMRect | null } => {
     try {
       const sel = window.getSelection();
-      if (!sel || sel.isCollapsed || sel.rangeCount === 0) return { text: '', range: null };
-      const text = sel.toString().trim();
-      // cloneRange()：Range 是 mutable 的，sel 后续改了会污染我们的快照。
+      if (!sel || sel.rangeCount === 0) return { text: '', range: null, rect: null };
+      // collapsed = 只有光标无选区。也要 capture(用于 cursor_insert 场景在光标处插入新内容)。
+      // cloneRange():Range 是 mutable 的,sel 后续改了会污染我们的快照。
       const range = sel.getRangeAt(0).cloneRange();
-      return { text, range };
+      const text = sel.isCollapsed ? '' : sel.toString().trim();
+      // 拿 caret/选区 viewport 坐标,popover 跟这个位置浮出(WPS 风)
+      const rect = range.getBoundingClientRect();
+      return { text, range, rect };
     } catch {
-      return { text: '', range: null };
+      return { text: '', range: null, rect: null };
     }
   };
 
-  const openAiPrompt = (action: DocumentAiAction) => {
-    // 先抓选区再开面板，否则面板的 textarea focus 会把 window selection 清掉
-    const { text, range } = captureCurrentSelection();
+  // 算 popover viewport 坐标:输入是"参考点"(可以是选区 rect 或一个 click 坐标点),
+  // 输出是 popover 左上角坐标,做了 right/bottom 边缘 flip。
+  const computePopoverAnchor = (refRect: {
+    top: number; left: number; bottom: number; right: number;
+  }): { top: number; left: number } => {
+    const POPOVER_W = 360;
+    const POPOVER_H = 160;
+    const MARGIN = 12;
+    let left = refRect.left;
+    let top = refRect.bottom + 8;
+    if (left + POPOVER_W + MARGIN > window.innerWidth) {
+      left = window.innerWidth - POPOVER_W - MARGIN;
+    }
+    if (top + POPOVER_H + MARGIN > window.innerHeight) {
+      top = Math.max(MARGIN, refRect.top - POPOVER_H - 8);
+    }
+    if (left < MARGIN) left = MARGIN;
+    return { top, left };
+  };
+
+  const openAiPrompt = (
+    action: DocumentAiAction,
+    labelOverride?: string,
+    // 右键触发时传 click 坐标(零宽零高的"点 rect");不传则按 caret/选区算
+    anchorOverride?: { top: number; left: number; bottom: number; right: number },
+  ) => {
+    const { text, range, rect } = captureCurrentSelection();
     setCapturedSelection(text);
     capturedRangeRef.current = range;
+    let anchor: { top: number; left: number };
+    if (anchorOverride) {
+      anchor = computePopoverAnchor(anchorOverride);
+    } else if (rect && rect.width + rect.height > 0) {
+      anchor = computePopoverAnchor(rect);
+    } else {
+      // 兜底:落到 viewport 中上
+      anchor = {
+        top: window.innerHeight / 3,
+        left: Math.max(12, (window.innerWidth - 360) / 2),
+      };
+    }
+    setPopoverAnchor(anchor);
     setAiPrompt({
       action,
-      label: AI_ACTION_LABELS[action],
+      label: labelOverride ?? AI_ACTION_LABELS[action],
       userRequest: '',
       creativityMode: defaultCreativityMode,
       activeSkillId: defaultActiveSkillId,
@@ -308,10 +412,60 @@ function RibbonToolbar({
     });
   };
 
+  // 全局 contextmenu 监听 — 用户在编辑器内容区右键 = 触发 AI 生成 popover
+  // 在 click 坐标处弹出;阻止浏览器默认菜单。
+  // 飞行期(aiInFlightRef 非 null):不开 popover,触发 icon flash 提示。
+  const openAiPromptRef = useRef(openAiPrompt);
+  openAiPromptRef.current = openAiPrompt;
+  const triggerFlashIconRef = useRef(triggerFlashIcon);
+  triggerFlashIconRef.current = triggerFlashIcon;
+  useEffect(() => {
+    const handler = (e: MouseEvent) => {
+      const target = e.target as Element | null;
+      if (!target || typeof target.closest !== 'function') return;
+      // 只在 contentEditable 编辑区域内的右键才劫持(避免 toolbar / 外部右键被吃掉)
+      if (!target.closest('[contenteditable="true"]')) return;
+      e.preventDefault();
+      // 飞行期 block + flash 提示
+      if (aiInFlightRef.current) {
+        triggerFlashIconRef.current();
+        return;
+      }
+      openAiPromptRef.current('expand', 'AI 生成', {
+        top: e.clientY,
+        left: e.clientX,
+        bottom: e.clientY,
+        right: e.clientX,
+      });
+    };
+    document.addEventListener('contextmenu', handler);
+    return () => document.removeEventListener('contextmenu', handler);
+  }, []);
+
+  // 外部触发(用户在右侧文件 ← 箭头 attach 文件)→ 自动开 popover。
+  // 飞行期 block + flash 提示;文件还是 attach 到 state 了(外层做的),只是 popover 不弹。
+  const prevTriggerKeyRef = useRef<number | undefined>(triggerOpenAiPromptKey);
+  useEffect(() => {
+    if (triggerOpenAiPromptKey === undefined) return;
+    if (prevTriggerKeyRef.current === triggerOpenAiPromptKey) return;
+    prevTriggerKeyRef.current = triggerOpenAiPromptKey;
+    if (triggerOpenAiPromptKey > 0) {
+      if (aiInFlightRef.current) {
+        triggerFlashIconRef.current();
+        return;
+      }
+      openAiPromptRef.current('expand', 'AI 生成');
+    }
+  }, [triggerOpenAiPromptKey]);
+
   // P14a-fix：把 capturedRangeRef 里的 DOM Range 还原回 window selection，
   // 让 editor 重新拿到这段选区。返回 true 表示还原成功。
   // 失败情况：Range 引用的 DOM 节点已被卸载/重渲染（极少数，比如 AI 调用期间
   // 父组件强制更新了 value prop）。
+  // 还原 Range(选区 OR 光标位置)。
+  // - 选区场景:还原非折叠 Range,后续 insertMarkdown 是"替换选区"
+  // - 光标场景:还原折叠 Range(只有光标位置),后续 insertMarkdown 是"光标处插入"
+  // 任何场景下成功还原都返 true(老版本只对非折叠返 true,导致光标位置无法走 insert 路径)。
   const restoreCapturedRange = (): boolean => {
     const range = capturedRangeRef.current;
     if (!range) return false;
@@ -324,84 +478,170 @@ function RibbonToolbar({
       if (!sel) return false;
       sel.removeAllRanges();
       sel.addRange(range);
-      return !sel.isCollapsed;
+      return sel.rangeCount > 0;  // 折叠也算成功(光标位置仍是合法 insert 锚点)
     } catch {
       return false;
     }
   };
 
   const submitAiPrompt = async () => {
-    if (!aiPrompt || aiPrompt.submitting || !onAiAction) return;
-    setAiPrompt({ ...aiPrompt, submitting: true });
+    if (!aiPrompt || !onAiAction) return;
+    // 飞行期再次 submit(理论不该发生,popover 关了应该没法点) → flash 提示
+    if (aiInFlightRef.current) {
+      triggerFlashIcon();
+      return;
+    }
+    // 1) snapshot 所有提交时刻状态(关 popover 后这些 state 会清,异步回来还要用)
+    const snapshot = {
+      action: aiPrompt.action,
+      userRequest: aiPrompt.userRequest.trim(),
+      creativityMode: aiPrompt.creativityMode,
+      activeSkillId: aiPrompt.activeSkillId,
+      selectionText: capturedSelection,
+      workingDocumentIds: workingDocuments
+        .filter((d) => d.status !== 'failed')
+        .map((d) => d.documentId),
+      range: capturedRangeRef.current,
+    };
+    // 2) 立刻关 popover + 设 in-flight(用户感觉"提交了就消失了,我可以干别的")
+    setAiPrompt(null);
+    setCapturedSelection('');
+    setPopoverAnchor(null);
+    capturedRangeRef.current = null;
+    setAiInFlight({ startedAt: Date.now(), action: snapshot.action });
     try {
-      const result = await onAiAction(aiPrompt.action, {
-        userRequest: aiPrompt.userRequest.trim(),
-        creativityMode: aiPrompt.creativityMode,
-        activeSkillId: aiPrompt.activeSkillId,
-        selectionText: capturedSelection,
+      const result = await onAiAction(snapshot.action, {
+        userRequest: snapshot.userRequest,
+        creativityMode: snapshot.creativityMode,
+        activeSkillId: snapshot.activeSkillId,
+        selectionText: snapshot.selectionText,
+        workingDocumentIds: snapshot.workingDocumentIds,
       });
       if (result && result.content) {
         const editor = editorRef.current;
         if (editor) {
-          if (result.targetScope === 'selection' && capturedRangeRef.current) {
-            // 选区模式：还原 DOM Range → focus editor →
-            // editor.insertMarkdown() 在 Lexical 非折叠选区上等价于"删除选区 + 在原位插入"
+          // 还原 submit 那一刻的 range(用户在飞行期间可能光标动过,但我们要插到原位置)
+          capturedRangeRef.current = snapshot.range;
+          // 关键修复:用户在飞行期间可能点击编辑器其他位置,Lexical 内部 selection 已经移到 B。
+          // 单纯 restoreCapturedRange + editor.focus 不会强制 Lexical 重新 sync(编辑器已 focused),
+          // 导致 insertMarkdown 命中 B 而不是 A。
+          // 解法:先 blur 当前 focused 元素 → Lexical 失去内部 selection → restoreCapturedRange 设
+          // window selection 到 A → editor.focus 把 Lexical re-sync 到 A → insertMarkdown 命中 A。
+          const activeEl = document.activeElement as HTMLElement | null;
+          if (activeEl && typeof activeEl.blur === 'function') {
+            try {
+              activeEl.blur();
+            } catch {
+              /* blur 失败不阻断后续 */
+            }
+          }
+          if (result.targetScope === 'selection' && snapshot.range) {
             const restored = restoreCapturedRange();
             if (restored) {
-              editor.focus();
-              // focus() 之后 Lexical 会从 DOM selection 同步内部 selection，
-              // 此时 insertMarkdown 命中真选区做替换
-              editor.insertMarkdown(result.content);
-              // insertMarkdown 会触发 onChange，父组件 value 自动同步，
-              // 不需要再手动 notifyContentChange
+              editor.focus(() => {
+                try {
+                  editor.insertMarkdown(result.content);
+                } catch (err) {
+                  // eslint-disable-next-line no-console
+                  console.warn('[submitAiPrompt selection] insertMarkdown failed', err);
+                }
+              });
             } else {
-              // Range 失效（DOM 重渲染了），不静默追加到末尾——那是错误的产品行为。
-              // 抛错让父组件 flash('error') 让用户知道并重试。
-              throw new Error('选区已失效，请重新选中文字再点 AI');
+              throw new Error('选区已失效,请重新选中文字再点 AI');
+            }
+          } else if (result.targetScope === 'cursor_insert') {
+            const restored = snapshot.range ? restoreCapturedRange() : false;
+            if (restored) {
+              editor.focus(() => {
+                try {
+                  editor.insertMarkdown(result.content);
+                } catch (err) {
+                  // eslint-disable-next-line no-console
+                  console.warn('[submitAiPrompt cursor_insert] insertMarkdown failed', err);
+                }
+              });
+            } else {
+              editor.focus(
+                () => {
+                  try {
+                    editor.insertMarkdown('\n\n' + result.content);
+                  } catch (err) {
+                    // eslint-disable-next-line no-console
+                    console.warn('[submitAiPrompt cursor_insert fallback] insertMarkdown failed', err);
+                  }
+                },
+                { defaultSelection: 'rootEnd' },
+              );
             }
           } else {
-            // 整篇模式：直接替换全文
             editor.setMarkdown(result.content);
             notifyContentChange?.(result.content);
             editor.focus();
           }
         }
       }
-      setAiPrompt(null);
-      setCapturedSelection('');
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'AI 操作失败,请重试';
+      // eslint-disable-next-line no-console
+      console.warn('[editor-ai] submitAiPrompt failed:', err);
+      alertWithLog(`⚠️ ${message}`, { feature: 'editor_ai_action', extra: { action: snapshot.action } });
+    } finally {
       capturedRangeRef.current = null;
-    } catch {
-      setAiPrompt((prev) => (prev ? { ...prev, submitting: false } : null));
+      setAiInFlight(null);
     }
   };
 
   return (
     <>
-      {/* Tab Bar */}
-      <div className="flex items-center gap-0 border-b border-gray-100 bg-[#FAFAFB] px-3">
-        {RIBBON_TABS.map((tab) => {
-          const isActive = active === tab.key;
-          return (
-            <button
-              key={tab.key}
-              type="button"
-              onClick={() => {
-                setActive(tab.key);
-                if (tab.key !== 'ai') setAiPrompt(null);
-              }}
-              className={`relative px-4 py-2 text-[12px] font-medium transition-colors ${
-                isActive
-                  ? 'text-[#5B7BFE]'
-                  : 'text-gray-500 hover:text-gray-800'
-              }`}
-            >
-              {tab.label}
-              {isActive && (
-                <span className="absolute inset-x-2 -bottom-px h-0.5 bg-[#5B7BFE] rounded-t" />
-              )}
-            </button>
-          );
-        })}
+      {/* Tab Bar — AI 生成走"在编辑器内右键"触发;Tab Bar 右侧条件渲染 AI 进度 icon(只在飞行期可见) */}
+      <div className="flex items-center justify-between border-b border-gray-100 bg-[#FAFAFB] px-3">
+        <div className="flex items-center gap-0">
+          {RIBBON_TABS.map((tab) => {
+            const isActive = active === tab.key;
+            return (
+              <button
+                key={tab.key}
+                type="button"
+                onClick={() => {
+                  setActive(tab.key);
+                  // 不 clear aiPrompt — 切 tab 时 popover 跟随光标位置,跟 tab 解耦
+                }}
+                className={`relative px-4 py-2 text-[12px] font-medium transition-colors ${
+                  isActive
+                    ? 'text-[#5B7BFE]'
+                    : 'text-gray-500 hover:text-gray-800'
+                }`}
+              >
+                {tab.label}
+                {isActive && (
+                  <span className="absolute inset-x-2 -bottom-px h-0.5 bg-[#5B7BFE] rounded-t" />
+                )}
+              </button>
+            );
+          })}
+        </div>
+        {/* Tab Bar 右侧常驻控件:撤销/重做(不卸载 → history state 一直有效)+ AI 进度 icon */}
+        <div className="flex items-center gap-2">
+          <RibbonUndoRedo />
+        {/* AI 进度指示 icon:
+            - 只在 aiInFlight 非 null 时渲染(平时完全隐藏)
+            - 不可点击(pointer-events-none),纯状态指示
+            - 进度环:外圈渐变 spin(animate-spin) + 中间 Sparkles icon
+            - flashing:用户飞行期再触发 → scale + 蓝色 ring 闪一下,提示"AI 还在跑别再发" */}
+        {aiInFlight && (
+          <div
+            className={`pointer-events-none relative inline-flex h-7 w-7 items-center justify-center transition-all duration-200 ease-out ${
+              flashing ? 'scale-150 ring-2 ring-[#5B7BFE]/60 rounded-full' : 'scale-100'
+            }`}
+            title="AI 正在生成,请稍候"
+            aria-label="AI 正在生成"
+          >
+            {/* 进度环 — 旋转 indeterminate spinner */}
+            <div className="absolute inset-0 rounded-full border-2 border-blue-100 border-t-[#5B7BFE] animate-spin" />
+            <Sparkles size={12} className="text-[#5B7BFE] relative z-10" />
+          </div>
+        )}
+        </div>
       </div>
 
       {/* Tool Area */}
@@ -420,16 +660,20 @@ function RibbonToolbar({
         )}
       </div>
 
-      {/* AI Prompt Panel —— 仅 AI tab + 点了某个 action 时展开 */}
-      {active === 'ai' && aiPrompt && (
+      {/* AI Prompt Panel —— WPS 风浮层,跟随 caret/选区位置,不占工具栏全宽 */}
+      {aiPrompt && popoverAnchor && (
         <AiPromptPanel
           state={aiPrompt}
           setState={setAiPrompt}
           writingSkills={writingSkills}
           capturedSelection={capturedSelection}
+          anchor={popoverAnchor}
+          workingDocuments={workingDocuments}
+          onRemoveWorkingDocument={onRemoveWorkingDocument}
           onCancel={() => {
             setAiPrompt(null);
             setCapturedSelection('');
+            setPopoverAnchor(null);
           }}
           onSubmit={submitAiPrompt}
         />
@@ -443,6 +687,9 @@ function AiPromptPanel({
   setState,
   writingSkills,
   capturedSelection,
+  anchor,
+  workingDocuments,
+  onRemoveWorkingDocument,
   onCancel,
   onSubmit,
 }: {
@@ -450,67 +697,134 @@ function AiPromptPanel({
   setState: React.Dispatch<React.SetStateAction<AiPromptState | null>>;
   writingSkills: RichTextDocumentEditorWritingSkill[];
   capturedSelection: string;
+  anchor: { top: number; left: number };
+  workingDocuments: RichTextDocumentEditorWorkingDoc[];
+  onRemoveWorkingDocument?: (documentId: string) => void;
   onCancel: () => void;
   onSubmit: () => void;
 }) {
-  // P14a：用 capturedSelection 决定面板顶部说的是「处理这段」还是「处理整篇」
   const hasSelection = capturedSelection.length > 0;
-  const selectionPreview = capturedSelection.length > 80
-    ? capturedSelection.slice(0, 80) + '…'
-    : capturedSelection;
+  const popoverRef = useRef<HTMLDivElement>(null);
+
+  // Esc 关闭 + 点击外部关闭(submitting 时不关 — 让用户能看 spinner 同时干别的)
+  useEffect(() => {
+    const handleKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape' && !state.submitting) onCancel();
+    };
+    const handleClickOutside = (e: MouseEvent) => {
+      if (state.submitting) return;
+      const target = e.target as Node;
+      if (popoverRef.current && !popoverRef.current.contains(target)) {
+        onCancel();
+      }
+    };
+    document.addEventListener('keydown', handleKey);
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => {
+      document.removeEventListener('keydown', handleKey);
+      document.removeEventListener('mousedown', handleClickOutside);
+    };
+  }, [state.submitting, onCancel]);
+
+  const creativityModes = [
+    { key: 'strict' as DocumentAiCreativityMode, icon: ShieldCheck, shortLabel: '客观', hint: '完全客观 · 严格依据原文,不臆测' },
+    { key: 'balanced' as DocumentAiCreativityMode, icon: Scale, shortLabel: '兼顾', hint: '兼顾资料 · 事实底色 + 自由措辞(默认)' },
+    { key: 'creative' as DocumentAiCreativityMode, icon: Sparkles, shortLabel: '创意', hint: '创意优先 · 不受原文限制,自由发挥' },
+  ];
+  const activeMode = creativityModes.find((m) => m.key === state.creativityMode) ?? creativityModes[1];
 
   return (
-    <div className="border-t border-gray-100 bg-blue-50/30 px-4 py-3">
-      <div className="mx-auto max-w-[880px] space-y-3">
-        {/* 标题：当前 action + 作用范围 */}
-        <div className="flex items-center gap-2 flex-wrap">
-          <span className="text-[10px] font-bold uppercase tracking-[0.18em] text-[#5B7BFE]">AI · {state.label}</span>
+    <div
+      ref={popoverRef}
+      className="fixed z-50 w-[360px] rounded-xl border border-gray-200 bg-white shadow-[0_8px_32px_rgba(0,0,0,0.12)] overflow-hidden"
+      style={{ top: anchor.top, left: anchor.left }}
+    >
+      {/* Header:label + scope + 关 */}
+      <div className="flex items-center justify-between gap-2 border-b border-gray-100 bg-gradient-to-r from-blue-50/60 to-white px-3 py-1.5">
+        <div className="flex min-w-0 items-center gap-1.5">
+          <Sparkles size={12} className="shrink-0 text-[#5B7BFE]" />
+          <span className="shrink-0 text-[11.5px] font-bold text-[#5B7BFE]">{state.label}</span>
           {hasSelection ? (
-            <span className="inline-flex items-center gap-1 rounded-md bg-blue-100 px-2 py-0.5 text-[11px] font-medium text-[#5B7BFE]">
-              作用范围 · 选区（{capturedSelection.length} 字）
+            <span className="shrink-0 rounded-full bg-blue-100 px-1.5 py-px text-[10px] font-medium text-[#5B7BFE]">
+              选区 {capturedSelection.length} 字
             </span>
           ) : (
-            <span className="inline-flex items-center gap-1 rounded-md bg-gray-100 px-2 py-0.5 text-[11px] font-medium text-gray-600">
-              作用范围 · 整篇文档
+            <span className="shrink-0 rounded-full bg-gray-100 px-1.5 py-px text-[10px] font-medium text-gray-500">
+              光标处插入
             </span>
           )}
-          <span className="text-[11px] text-gray-500">
-            {hasSelection
-              ? '只处理你框选的这段，结果替换原选区'
-              : '没框选 → 处理整篇；想只处理一段，请先在文档里框选'}
-          </span>
         </div>
+        <button
+          type="button"
+          onClick={onCancel}
+          disabled={state.submitting}
+          className="rounded p-0.5 text-gray-400 hover:bg-gray-100 hover:text-gray-700 disabled:opacity-40"
+          title="关闭 (Esc)"
+        >
+          <X size={14} />
+        </button>
+      </div>
 
-        {/* P14a：选区预览（只读，让用户确认 AI 看到的是不是想要的那段） */}
-        {hasSelection && (
-          <div className="rounded-md border border-blue-200 bg-white/70 px-3 py-2 text-[12px] leading-5 text-gray-700">
-            <span className="text-[10px] font-bold uppercase tracking-[0.15em] text-blue-400 mr-2">选区预览</span>
-            <span className="whitespace-pre-wrap break-words">{selectionPreview}</span>
+      {/* Body:chip 列表(从右侧文件 ← 加进来的)+ textarea */}
+      <div className="px-3 py-2">
+        {workingDocuments.length > 0 && (
+          <div className="mb-1.5 flex max-h-[60px] flex-wrap gap-1 overflow-y-auto">
+            {workingDocuments.map((doc) => {
+              const tone = doc.status === 'failed'
+                ? 'border-rose-200 bg-rose-50 text-rose-700'
+                : doc.status === 'ready' || doc.status === 'partial_ready'
+                  ? 'border-emerald-200 bg-emerald-50 text-emerald-700'
+                  : 'border-blue-200 bg-blue-50 text-blue-700';
+              return (
+                <span
+                  key={doc.documentId}
+                  className={`group inline-flex max-w-full items-center gap-1 rounded-md border px-1.5 py-0.5 text-[10.5px] font-medium ${tone}`}
+                  title={doc.title}
+                >
+                  <Paperclip size={10} className="shrink-0" />
+                  <span className="max-w-[160px] truncate">{doc.title}</span>
+                  {onRemoveWorkingDocument && (
+                    <button
+                      type="button"
+                      onClick={() => onRemoveWorkingDocument(doc.documentId)}
+                      disabled={state.submitting}
+                      aria-label={`移除引用 ${doc.title}`}
+                      className="shrink-0 rounded-full p-0.5 opacity-55 transition hover:bg-white/70 hover:opacity-100 disabled:opacity-30"
+                    >
+                      <X size={9} />
+                    </button>
+                  )}
+                </span>
+              );
+            })}
           </div>
         )}
-
-        {/* userRequest 输入框 */}
         <textarea
           value={state.userRequest}
           onChange={(event) => setState((prev) => (prev ? { ...prev, userRequest: event.target.value } : prev))}
-          placeholder="例如：重点强调财务影响 / 翻译成日文 / 用更口语化的风格 / 限制在 300 字以内"
+          placeholder={hasSelection ? '告诉 AI 怎么改这段…' : '告诉 AI 在光标处写什么…'}
           rows={2}
           disabled={state.submitting}
           autoFocus
-          className="w-full rounded-lg border border-gray-200 bg-white px-3 py-2 text-[12.5px] leading-6 text-gray-800 outline-none focus:border-[#5B7BFE] resize-none disabled:opacity-60"
+          onKeyDown={(e) => {
+            if (e.key === 'Enter' && (e.metaKey || e.ctrlKey) && !state.submitting && state.userRequest.trim()) {
+              e.preventDefault();
+              onSubmit();
+            }
+          }}
+          className="w-full resize-none rounded-md border border-gray-200 bg-white px-2 py-1.5 text-[12px] leading-5 text-gray-800 outline-none focus:border-[#5B7BFE] disabled:opacity-60"
         />
+      </div>
 
-        {/* 写作模式（creative / balanced / strict） */}
-        <div className="flex items-center gap-3 flex-wrap">
-          <span className="text-[11px] font-bold text-gray-500 min-w-[68px]">写作模式</span>
-          <div className="flex gap-1">
-            {(
-              [
-                { key: 'creative' as DocumentAiCreativityMode, label: '创意优先', icon: Sparkles, hint: '不受原文限制，自由发挥' },
-                { key: 'balanced' as DocumentAiCreativityMode, label: '兼顾资料', icon: Scale, hint: '事实底色 + 自由措辞（默认）' },
-                { key: 'strict' as DocumentAiCreativityMode, label: '完全客观', icon: ShieldCheck, hint: '严格依据原文，不臆测' },
-              ] as const
-            ).map((m) => {
+      {/* Footer:模式 icons + 风格(精简) + 执行 */}
+      <div className="flex items-center justify-between gap-1.5 border-t border-gray-100 bg-gray-50/60 px-2.5 py-1.5">
+        {/* 左:当前模式 label + 3 个 icon */}
+        <div className="flex shrink-0 items-center gap-1">
+          <span className="text-[10.5px] font-medium text-[#5B7BFE] tabular-nums">
+            {activeMode.shortLabel}
+          </span>
+          <div className="flex items-center gap-0.5">
+            {creativityModes.map((m) => {
               const isActive = state.creativityMode === m.key;
               const Icon = m.icon;
               return (
@@ -520,73 +834,57 @@ function AiPromptPanel({
                   onClick={() => setState((prev) => (prev ? { ...prev, creativityMode: m.key } : prev))}
                   disabled={state.submitting}
                   title={m.hint}
-                  className={`inline-flex items-center gap-1 rounded-md border px-2.5 py-1 text-[11.5px] font-medium transition-colors ${
+                  className={`rounded p-1 transition-colors ${
                     isActive
-                      ? 'border-[#5B7BFE] bg-white text-[#5B7BFE]'
-                      : 'border-gray-200 bg-white text-gray-500 hover:border-gray-300 hover:text-gray-800'
+                      ? 'bg-[#5B7BFE]/10 text-[#5B7BFE]'
+                      : 'text-gray-400 hover:bg-gray-200 hover:text-gray-700'
                   }`}
                 >
-                  <Icon size={12} />
-                  {m.label}
+                  <Icon size={13} />
                 </button>
               );
             })}
           </div>
         </div>
 
-        {/* 写作风格 skill 下拉 */}
-        <div className="flex items-center gap-3 flex-wrap">
-          <span className="text-[11px] font-bold text-gray-500 min-w-[68px]">写作风格</span>
+        {writingSkills.length > 0 && (
           <select
             value={state.activeSkillId || ''}
             onChange={(event) =>
               setState((prev) => (prev ? { ...prev, activeSkillId: event.target.value || null } : prev))
             }
-            disabled={state.submitting || writingSkills.length === 0}
-            className="rounded-md border border-gray-200 bg-white px-2 py-1 text-[11.5px] text-gray-700 outline-none focus:border-[#5B7BFE] disabled:opacity-60"
+            disabled={state.submitting}
+            title="写作风格"
+            className="w-[88px] shrink-0 truncate rounded border border-gray-200 bg-white px-1.5 py-0.5 text-[10.5px] text-gray-600 outline-none focus:border-[#5B7BFE] disabled:opacity-60"
           >
-            <option value="">{writingSkills.length === 0 ? '（暂无蒸馏的风格档案）' : '不指定风格'}</option>
+            <option value="">默认风格</option>
             {writingSkills.map((s) => (
               <option key={s.id} value={s.id}>
                 {s.name}
               </option>
             ))}
           </select>
-          {writingSkills.length === 0 && (
-            <span className="text-[10.5px] text-gray-400">在战略陪伴 chat 那边可以蒸馏出新的写作风格</span>
-          )}
-        </div>
+        )}
 
-        {/* 操作按钮 */}
-        <div className="flex items-center justify-end gap-2 pt-1">
-          <button
-            type="button"
-            onClick={onCancel}
-            disabled={state.submitting}
-            className="inline-flex items-center gap-1 rounded-md border border-gray-200 bg-white px-3 py-1.5 text-[11.5px] font-medium text-gray-600 hover:bg-gray-50 disabled:opacity-60"
-          >
-            <X size={12} />
-            取消
-          </button>
-          <button
-            type="button"
-            onClick={onSubmit}
-            disabled={state.submitting}
-            className="inline-flex items-center gap-1.5 rounded-md bg-[#5B7BFE] px-4 py-1.5 text-[11.5px] font-bold text-white hover:bg-[#4a6ae8] disabled:opacity-60"
-          >
-            {state.submitting ? (
-              <>
-                <Loader2 size={12} className="animate-spin" />
-                AI 处理中...
-              </>
-            ) : (
-              <>
-                <Play size={12} />
-                执行 {state.label}
-              </>
-            )}
-          </button>
-        </div>
+        <button
+          type="button"
+          onClick={onSubmit}
+          disabled={state.submitting || !state.userRequest.trim()}
+          title="⌘ Enter 提交"
+          className="inline-flex shrink-0 items-center gap-1 rounded-md bg-[#5B7BFE] px-2.5 py-1 text-[11px] font-bold text-white shadow-sm hover:bg-[#4A6AEE] disabled:cursor-not-allowed disabled:opacity-50"
+        >
+          {state.submitting ? (
+            <>
+              <Loader2 size={11} className="animate-spin" />
+              处理中
+            </>
+          ) : (
+            <>
+              <Play size={11} />
+              执行
+            </>
+          )}
+        </button>
       </div>
     </div>
   );
@@ -602,6 +900,180 @@ function ToolGroup({ label, children }: { label: string; children: React.ReactNo
   );
 }
 
+// 中文版「格式」下拉：合并 MDXEditor 的 BlockTypeSelect + ListsToggle，
+// 选项带 T/H1/H2/H3/Hn/1./•/☐/" badge + 中文标签，点击即把当前光标段落转成该格式。
+type ApplyBlockFn = (value: 'paragraph' | 'quote' | 'h1' | 'h2' | 'h3' | 'h4' | 'h5' | 'h6' | '') => void;
+type ApplyListFn = (value: 'number' | 'bullet' | 'check' | '') => void;
+type BlockChoice = {
+  key: string;
+  label: string;
+  badge: string;
+  isActive: (block: string, list: string) => boolean;
+  apply: (applyBlock: ApplyBlockFn, applyList: ApplyListFn) => void;
+};
+const BLOCK_CHOICES: BlockChoice[] = [
+  { key: 'paragraph', label: '正文', badge: 'T', isActive: (b, l) => b === 'paragraph' && !l, apply: (b, l) => { l(''); b('paragraph'); } },
+  { key: 'h1', label: '一级标题', badge: 'H1', isActive: (b, l) => b === 'h1' && !l, apply: (b, l) => { l(''); b('h1'); } },
+  { key: 'h2', label: '二级标题', badge: 'H2', isActive: (b, l) => b === 'h2' && !l, apply: (b, l) => { l(''); b('h2'); } },
+  { key: 'h3', label: '三级标题', badge: 'H3', isActive: (b, l) => b === 'h3' && !l, apply: (b, l) => { l(''); b('h3'); } },
+  { key: 'hn', label: '其他标题', badge: 'Hn', isActive: (b, l) => (b === 'h4' || b === 'h5' || b === 'h6') && !l, apply: (b, l) => { l(''); b('h4'); } },
+  { key: 'ol', label: '有序列表', badge: '1.', isActive: (_b, l) => l === 'number', apply: (_b, l) => { l('number'); } },
+  { key: 'ul', label: '无序列表', badge: '•', isActive: (_b, l) => l === 'bullet', apply: (_b, l) => { l('bullet'); } },
+  { key: 'check', label: '任务列表', badge: '☐', isActive: (_b, l) => l === 'check', apply: (_b, l) => { l('check'); } },
+  { key: 'quote', label: '引用', badge: '"', isActive: (b, l) => b === 'quote' && !l, apply: (b, l) => { l(''); b('quote'); } },
+];
+
+// Tab Bar 常驻 Undo/Redo 按钮 — 不像 MDXEditor 内置的 UndoRedo(那个在"开始" tab 里,
+// 切走会被卸载,导致 canUndo state 重置)。这个组件在 RibbonToolbar 顶层渲染,
+// 全程不卸载,所以 Lexical 的 CAN_UNDO_COMMAND/CAN_REDO_COMMAND 监听一直在,
+// 不管用户切到哪个 tab 都能撤销/重做。
+function RibbonUndoRedo() {
+  const [activeEditor] = useCellValues(activeEditor$);
+  const [canUndo, setCanUndo] = useState(false);
+  const [canRedo, setCanRedo] = useState(false);
+
+  useEffect(() => {
+    if (!activeEditor) return;
+    // mergeRegister 简化版:返回 cleanup 数组 → 一起 cleanup
+    const unregUndo = activeEditor.registerCommand(
+      CAN_UNDO_COMMAND,
+      (payload: boolean) => {
+        setCanUndo(payload);
+        return false;
+      },
+      COMMAND_PRIORITY_CRITICAL,
+    );
+    const unregRedo = activeEditor.registerCommand(
+      CAN_REDO_COMMAND,
+      (payload: boolean) => {
+        setCanRedo(payload);
+        return false;
+      },
+      COMMAND_PRIORITY_CRITICAL,
+    );
+    return () => {
+      unregUndo();
+      unregRedo();
+    };
+  }, [activeEditor]);
+
+  const isMac = typeof navigator !== 'undefined' && /Mac|iPod|iPhone|iPad/.test(navigator.platform);
+  const undoShortcut = isMac ? '⌘Z' : 'Ctrl+Z';
+  const redoShortcut = isMac ? '⌘⇧Z' : 'Ctrl+Y';
+  return (
+    <div className="flex items-center gap-0.5">
+      <button
+        type="button"
+        onClick={() => activeEditor?.dispatchCommand(UNDO_COMMAND, undefined)}
+        disabled={!canUndo}
+        title={`撤销 (${undoShortcut})`}
+        aria-label="撤销"
+        className="rounded p-1 text-gray-500 transition-colors hover:bg-gray-200 hover:text-gray-800 disabled:cursor-not-allowed disabled:opacity-30 disabled:hover:bg-transparent disabled:hover:text-gray-500"
+      >
+        <Undo2 size={14} />
+      </button>
+      <button
+        type="button"
+        onClick={() => activeEditor?.dispatchCommand(REDO_COMMAND, undefined)}
+        disabled={!canRedo}
+        title={`重做 (${redoShortcut})`}
+        aria-label="重做"
+        className="rounded p-1 text-gray-500 transition-colors hover:bg-gray-200 hover:text-gray-800 disabled:cursor-not-allowed disabled:opacity-30 disabled:hover:bg-transparent disabled:hover:text-gray-500"
+      >
+        <Redo2 size={14} />
+      </button>
+    </div>
+  );
+}
+
+function BlockChoiceSelect() {
+  const [blockType, listType] = useCellValues(currentBlockType$, currentListType$);
+  const applyBlock = usePublisher(applyBlockType$) as ApplyBlockFn;
+  const applyList = usePublisher(applyListType$) as ApplyListFn;
+  const [open, setOpen] = useState(false);
+  // 触发器 button 的屏幕坐标，用于把下拉面板 fixed-position 渲染到 portal。
+  // 不用 absolute 是因为 MDXEditor toolbar 有 sticky stacking context，
+  // 子层 z-index 无法穿越到编辑器其他区域。
+  const [anchorRect, setAnchorRect] = useState<{ left: number; top: number; width: number } | null>(null);
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  const panelRef = useRef<HTMLDivElement>(null);
+
+  // 打开时记录触发器位置（每次打开都重新算，防 sticky 滚动位置变了）
+  useEffect(() => {
+    if (open && triggerRef.current) {
+      const rect = triggerRef.current.getBoundingClientRect();
+      setAnchorRect({ left: rect.left, top: rect.bottom + 4, width: rect.width });
+    }
+  }, [open]);
+
+  // 点击下拉外面关闭 — 触发器和面板都不算"外面"
+  useEffect(() => {
+    if (!open) return;
+    const handler = (event: MouseEvent) => {
+      const target = event.target as Node;
+      if (triggerRef.current?.contains(target)) return;
+      if (panelRef.current?.contains(target)) return;
+      setOpen(false);
+    };
+    window.addEventListener('mousedown', handler);
+    return () => window.removeEventListener('mousedown', handler);
+  }, [open]);
+
+  const currentBlock = (blockType as string) || '';
+  const currentList = (listType as string) || '';
+  const active = BLOCK_CHOICES.find((c) => c.isActive(currentBlock, currentList)) || BLOCK_CHOICES[0];
+
+  return (
+    <>
+      <button
+        ref={triggerRef}
+        type="button"
+        className="inline-flex items-center gap-1.5 rounded-md border border-gray-200 bg-white px-2 py-1 text-[11px] font-semibold text-gray-700 hover:border-[#5B7BFE] hover:text-[#5B7BFE]"
+        onClick={() => setOpen((v) => !v)}
+        title="切换段落格式"
+      >
+        <span className="inline-flex h-4 min-w-[18px] items-center justify-center rounded bg-gray-100 px-1 text-[10px] font-black text-gray-700">{active.badge}</span>
+        <span>{active.label}</span>
+        <ChevronDown size={11} />
+      </button>
+      {open && anchorRect && createPortal(
+        <div
+          ref={panelRef}
+          className="rounded-lg border border-gray-200 bg-white shadow-lg py-1"
+          style={{
+            position: 'fixed',
+            left: anchorRect.left,
+            top: anchorRect.top,
+            minWidth: Math.max(160, anchorRect.width),
+            zIndex: 10000,
+          }}
+        >
+          {BLOCK_CHOICES.map((choice) => {
+            const isActive = choice.isActive(currentBlock, currentList);
+            return (
+              <button
+                key={choice.key}
+                type="button"
+                className={`flex w-full items-center gap-2 px-2.5 py-1.5 text-left text-[12px] hover:bg-blue-50 ${
+                  isActive ? 'bg-blue-50 text-[#5B7BFE] font-bold' : 'text-gray-700'
+                }`}
+                onClick={() => {
+                  choice.apply(applyBlock, applyList);
+                  setOpen(false);
+                }}
+              >
+                <span className="inline-flex h-5 min-w-[24px] items-center justify-center rounded bg-gray-100 text-[10px] font-black text-gray-700">{choice.badge}</span>
+                <span>{choice.label}</span>
+              </button>
+            );
+          })}
+        </div>,
+        document.body,
+      )}
+    </>
+  );
+}
+
 // ─── 开始 tab ───
 function StartGroup() {
   return (
@@ -613,41 +1085,77 @@ function StartGroup() {
         <BoldItalicUnderlineToggles />
         <StrikeThroughSupSubToggles />
       </ToolGroup>
-      <ToolGroup label="段落">
-        <BlockTypeSelect />
-      </ToolGroup>
-      <ToolGroup label="列表">
-        <ListsToggle />
+      <ToolGroup label="格式">
+        <BlockChoiceSelect />
       </ToolGroup>
     </>
   );
 }
 
 // ─── 插入 tab ───
-// 用自定义按钮 + window.prompt 直接插入 markdown：
+// 用自定义按钮直接写 markdown：
 //   - MDXEditor 内置 <InsertTable/> <InsertImage/> <CreateLink/> 的 dialog 在 inline
-//     editor 的 absolute overlay stacking context 内被遮，点击无反应；
-//   - 改用 editorRef.current.insertMarkdown() 直接写入，100% 可工作。
+//     editor 的 absolute overlay stacking context 内被遮,点击无反应;
+//   - Electron renderer 禁用 window.prompt(contextIsolation+nodeIntegration=false 默认行为),
+//     返回 null 静默失败,所以不能用 window.prompt;
+//   - 统一改用全局 appPrompt() 弹窗(挂在 main.tsx <AppPromptHost />),
+//     editor.insertMarkdown() 写入 markdown,100% 可工作。
 function InsertGroup({ editorRef }: { editorRef: React.RefObject<MDXEditorMethods | null> }) {
+  // MDXEditor 的 insertMarkdown 需要 editor 已 focus 才能命中正确光标位置。
+  // 工具栏按钮点击会抢走 focus → 编辑器 selection 失效 → insertMarkdown 静默失败。
+  // 用 focus(callback) 形式确保 selection 同步到位后再 insert。
   const insertAt = (text: string) => {
     const editor = editorRef.current;
     if (!editor) return;
-    editor.insertMarkdown(text);
-    editor.focus();
+    editor.focus(
+      () => {
+        try {
+          editor.insertMarkdown(text);
+        } catch (err) {
+          // eslint-disable-next-line no-console
+          console.warn('[editor-insert] insertMarkdown failed', err);
+        }
+      },
+      { defaultSelection: 'rootEnd' },
+    );
   };
   const handleInsertTable = () => {
     insertAt('\n\n| 列 1 | 列 2 | 列 3 |\n| --- | --- | --- |\n|  |  |  |\n|  |  |  |\n\n');
   };
-  const handleInsertImage = () => {
-    const url = window.prompt('图片 URL（http/https 或 data:）');
-    if (!url) return;
-    const alt = window.prompt('图片说明（可选，回车跳过）') || '';
-    insertAt(`![${alt}](${url})`);
+  const handleInsertImage = async () => {
+    const result = await appPrompt({
+      title: '插入图片',
+      fields: [
+        {
+          name: 'url',
+          label: '图片 URL（http/https 或 data:）',
+          placeholder: 'https://... 或 data:image/png;base64,...',
+          required: true,
+        },
+        { name: 'alt', label: '图片说明（可选）' },
+      ],
+      confirmLabel: '插入',
+    });
+    if (!result) return;
+    insertAt(`![${(result.alt || '').trim()}](${result.url.trim()})`);
   };
-  const handleInsertLink = () => {
-    const url = window.prompt('链接 URL（含 https://）');
-    if (!url) return;
-    const text = window.prompt('显示文字（回车用 URL 本身）') || url;
+  const handleInsertLink = async () => {
+    const result = await appPrompt({
+      title: '插入链接',
+      fields: [
+        {
+          name: 'url',
+          label: '链接 URL（含 https://）',
+          placeholder: 'https://example.com',
+          required: true,
+        },
+        { name: 'text', label: '显示文字（可选，留空用 URL）' },
+      ],
+      confirmLabel: '插入',
+    });
+    if (!result) return;
+    const url = result.url.trim();
+    const text = (result.text || '').trim() || url;
     insertAt(`[${text}](${url})`);
   };
   return (
@@ -818,37 +1326,3 @@ function StyleGroup({
 }
 
 /** 给用户预览效果用的样例 markdown */
-export const SAMPLE_DOCUMENT_MARKDOWN = `# 善加基金会 2025 Q2 项目复盘
-
-## 一、主要进展
-
-- **资助项目**已完成 12 个，超额完成季度目标（计划 10 个）
-- *妈妈岗*再就业项目覆盖了 3 个新城市：广州、佛山、东莞
-- 完成 1 次理事会，主要议题：
-  1. 2026 年度预算审议
-  2. 鲁冰花舍项目延期方案
-  3. 大额捐赠人 KYC 流程优化
-
-> 本季度获得广东省社会组织评估 **3A 级**，具备公益性捐赠税前扣除资格。
-
----
-
-## 二、当前关注的问题
-
-- [ ] 缘救宝贝项目南方扩张方案 *待定*
-- [ ] Q3 募捐目标与渠道分配
-- [ ] 鲁冰花舍 2025 年度支出占比临近上限
-
-## 三、关键数据
-
-| 指标 | Q1 | Q2 | 同比 |
-|---|---|---|---|
-| 累计募捐 | 380 万 | 520 万 | +37% |
-| 公益支出 | 290 万 | 410 万 | +41% |
-| 受益家庭 | 4,200 | 5,800 | +38% |
-
-## 四、下一步
-
-详细数据见 [Q2 财务快报](https://example.com/q2-report)，
-后续按 \`Q3 工作清单\` 推进。
-`;

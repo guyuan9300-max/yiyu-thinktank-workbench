@@ -312,89 +312,103 @@ def build_portrait(db: Database, ai: AiService, client_id: str) -> dict[str, Any
     risks = result.get("risk_signals") or []
     commits = result.get("commitments") or []
 
-    # 写入 3 张表
+    # 写入 3 张表 — DELETE + INSERT 必须在同一事务里
+    # P0 修复: 之前 DELETE 后 INSERT 中间崩 → 旧数据被删, 新数据没写, 永久丢失.
+    #         现用 db.run_in_transaction 包裹, 失败自动 rollback.
     now = datetime.now(timezone.utc).isoformat()
-    # 清空旧 (该 client) — 回填覆盖
-    # 关键: 只删 source_type='ai_inferred' 的, 保护 smart_import_story 等用户来源的数据
-    db.execute("DELETE FROM glossary_relations WHERE client_id=? AND source='ai_inferred'", (client_id,))
-    db.execute("DELETE FROM risk_signals WHERE client_id=? AND source_type='ai_inferred'", (client_id,))
-    db.execute("DELETE FROM commitments WHERE client_id=? AND source_type='ai_inferred'", (client_id,))
+    counters = {"n_rel": 0, "n_risk": 0, "n_commit": 0}
 
-    n_rel = 0
-    for r in relations:
-        if not isinstance(r, dict):
-            continue
-        subj = term_name_to_id.get(str(r.get("subject_term") or "").strip())
-        obj = term_name_to_id.get(str(r.get("object_term") or "").strip())
-        predicate = str(r.get("predicate") or "").strip()
-        if not subj or not predicate:
-            continue
-        db.execute(
-            """INSERT INTO glossary_relations
-               (id, client_id, subject_term_id, predicate, object_term_id,
-                source, confidence, status, note, created_at, updated_at)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
-            (str(uuid.uuid4()), client_id, subj, predicate, obj,
-             "ai_inferred",
-             _conf_to_float(r.get("confidence")),
-             "pending", str(r.get("evidence", ""))[:200],
-             now, now),
-        )
-        n_rel += 1
+    def _persist(conn) -> None:  # noqa: ANN001
+        # 1) 清空旧 ai_inferred 数据(保护 smart_import_story 等用户来源)
+        conn.execute("DELETE FROM glossary_relations WHERE client_id=? AND source='ai_inferred'", (client_id,))
+        conn.execute("DELETE FROM risk_signals WHERE client_id=? AND source_type='ai_inferred'", (client_id,))
+        conn.execute("DELETE FROM commitments WHERE client_id=? AND source_type='ai_inferred'", (client_id,))
 
-    n_risk = 0
-    for s in risks:
-        if not isinstance(s, dict):
-            continue
-        title = str(s.get("title") or "").strip()
-        if not title:
-            continue
-        related_term_ids = []
-        for term_name in (s.get("related_terms") or []):
-            tid = term_name_to_id.get(str(term_name).strip())
-            if tid and tid not in related_term_ids:
-                related_term_ids.append(tid)
-        db.execute(
-            """INSERT INTO risk_signals
-               (id, client_id, signal_kind, title, description, severity,
-                related_term_ids_json, source_type, source_id, captured_at, status, created_at, updated_at)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-            (str(uuid.uuid4()), client_id,
-             str(s.get("signal_kind", "other") or "other"),
-             title, str(s.get("description", ""))[:500],
-             str(s.get("severity", "medium")),
-             json.dumps(related_term_ids, ensure_ascii=False),
-             "ai_inferred", "", now, "active", now, now),
-        )
-        n_risk += 1
+        # 2) relations
+        for r in relations:
+            if not isinstance(r, dict):
+                continue
+            subj = term_name_to_id.get(str(r.get("subject_term") or "").strip())
+            obj = term_name_to_id.get(str(r.get("object_term") or "").strip())
+            predicate = str(r.get("predicate") or "").strip()
+            if not subj or not predicate:
+                continue
+            conn.execute(
+                """INSERT INTO glossary_relations
+                   (id, client_id, subject_term_id, predicate, object_term_id,
+                    source, confidence, status, note, created_at, updated_at)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+                (str(uuid.uuid4()), client_id, subj, predicate, obj,
+                 "ai_inferred", _conf_to_float(r.get("confidence")),
+                 "pending", str(r.get("evidence", ""))[:200], now, now),
+            )
+            counters["n_rel"] += 1
 
-    n_commit = 0
-    for c in commits:
-        if not isinstance(c, dict):
-            continue
-        content = str(c.get("content") or "").strip()
-        if not content:
-            continue
-        related_term_ids = []
-        for term_name in (c.get("related_terms") or []):
-            tid = term_name_to_id.get(str(term_name).strip())
-            if tid and tid not in related_term_ids:
-                related_term_ids.append(tid)
-        db.execute(
-            """INSERT INTO commitments
-               (id, client_id, committer, recipient, commitment_type, content, deadline,
-                status, related_term_ids_json, source_type, source_id, created_at, updated_at)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-            (str(uuid.uuid4()), client_id,
-             str(c.get("committer", ""))[:50], str(c.get("recipient", ""))[:50],
-             str(c.get("commitment_type", "delivery")),
-             content[:500],
-             str(c.get("deadline", "")) or None,
-             str(c.get("status", "pending")),
-             json.dumps(related_term_ids, ensure_ascii=False),
-             "ai_inferred", "", now, now),
-        )
-        n_commit += 1
+        # 3) risks
+        for s in risks:
+            if not isinstance(s, dict):
+                continue
+            title = str(s.get("title") or "").strip()
+            if not title:
+                continue
+            related_term_ids = []
+            for term_name in (s.get("related_terms") or []):
+                tid = term_name_to_id.get(str(term_name).strip())
+                if tid and tid not in related_term_ids:
+                    related_term_ids.append(tid)
+            conn.execute(
+                """INSERT INTO risk_signals
+                   (id, client_id, signal_kind, title, description, severity,
+                    related_term_ids_json, source_type, source_id, captured_at, status, created_at, updated_at)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                (str(uuid.uuid4()), client_id,
+                 str(s.get("signal_kind", "other") or "other"),
+                 title, str(s.get("description", ""))[:500],
+                 str(s.get("severity", "medium")),
+                 json.dumps(related_term_ids, ensure_ascii=False),
+                 "ai_inferred", "", now, "active", now, now),
+            )
+            counters["n_risk"] += 1
+
+        # 4) commitments
+        for c in commits:
+            if not isinstance(c, dict):
+                continue
+            content = str(c.get("content") or "").strip()
+            if not content:
+                continue
+            related_term_ids = []
+            for term_name in (c.get("related_terms") or []):
+                tid = term_name_to_id.get(str(term_name).strip())
+                if tid and tid not in related_term_ids:
+                    related_term_ids.append(tid)
+            conn.execute(
+                """INSERT INTO commitments
+                   (id, client_id, committer, recipient, commitment_type, content, deadline,
+                    status, related_term_ids_json, source_type, source_id, created_at, updated_at)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                (str(uuid.uuid4()), client_id,
+                 str(c.get("committer", ""))[:50], str(c.get("recipient", ""))[:50],
+                 str(c.get("commitment_type", "delivery")),
+                 content[:500],
+                 str(c.get("deadline", "")) or None,
+                 str(c.get("status", "pending")),
+                 json.dumps(related_term_ids, ensure_ascii=False),
+                 "ai_inferred", "", now, now),
+            )
+            counters["n_commit"] += 1
+
+    # 整体原子执行: 任何 INSERT 失败 → ROLLBACK, 旧数据保留
+    try:
+        db.run_in_transaction(_persist)
+    except Exception as exc:  # noqa: BLE001
+        return {
+            "status": "tx_failed",
+            "error": f"{type(exc).__name__}: {str(exc)[:200]}",
+            "relations": 0, "risk_signals": 0, "commitments": 0,
+        }
+
+    n_rel, n_risk, n_commit = counters["n_rel"], counters["n_risk"], counters["n_commit"]
 
     return {
         "status": "ok",

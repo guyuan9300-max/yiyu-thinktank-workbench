@@ -2496,6 +2496,10 @@ class Database:
             self._ensure_column("client_folders", "confidence", "REAL NOT NULL DEFAULT 0")
             self._ensure_column("knowledge_documents", "import_source_path", "TEXT")
             self._ensure_column("knowledge_documents", "current_human_path", "TEXT")
+            # C 取消收藏：knowledge_surrogates 加 chat_message_id 列,
+            # 让 source_type='memory_answer' 的行能反查"哪条 chat message 收藏的",
+            # 前端据此识别已收藏并显示"取消收藏"按钮。
+            self._ensure_column("knowledge_surrogates", "chat_message_id", "TEXT")
             self._ensure_column("knowledge_documents", "human_folder_category", "TEXT")
             self._ensure_column("knowledge_documents", "reclassified_at", "TEXT")
             self._ensure_column("knowledge_documents", "reclass_reason", "TEXT")
@@ -4527,4 +4531,8 @@ def to_json(value: object) -> str:
 def from_json(value: str | None, default: object) -> object:
     if not value:
         return default
-    return json.loads(value)
+    try:
+        return json.loads(value)
+    except (json.JSONDecodeError, TypeError):
+        # P0 修复: 损坏 JSON 不应该让上层崩溃; 用 default 兜底
+        return default

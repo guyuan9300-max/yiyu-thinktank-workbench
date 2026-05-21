@@ -326,11 +326,11 @@ function DiarizationCard({ canEdit }: LocalAsrModelPanelProps) {
   const emb = status.embeddingInstalled;
 
   return (
-    <div className="space-y-3 rounded-2xl border border-purple-100 bg-purple-50/60 px-4 py-3">
+    <div className="space-y-3 rounded-2xl border border-slate-200 bg-slate-50/60 px-4 py-3">
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
           <p className="text-[13px] font-bold text-gray-800 inline-flex items-center gap-1.5">
-            <Users size={14} className="text-purple-600" />
+            <Users size={14} className="text-slate-600" />
             说话人分离（可选 · 多人录音区分谁在说）
           </p>
           <p className="text-[12px] text-gray-600 mt-0.5">
@@ -345,7 +345,7 @@ function DiarizationCard({ canEdit }: LocalAsrModelPanelProps) {
             <CheckCircle2 size={12} /> 已就绪 · {formatBytes(status.sizeBytes)}
           </span>
         ) : status.downloadInProgress && (status.downloadCurrentModel === status.segmentationModelName || status.downloadCurrentModel === status.embeddingModelName) ? (
-          <span className="inline-flex items-center gap-1 rounded-full bg-purple-50 border border-purple-100 px-2.5 py-1 text-[11px] font-bold text-purple-700">
+          <span className="inline-flex items-center gap-1 rounded-full bg-slate-50 border border-slate-200 px-2.5 py-1 text-[11px] font-bold text-slate-700">
             <Loader2 size={12} className="animate-spin" /> 下载中
           </span>
         ) : (
@@ -368,9 +368,9 @@ function DiarizationCard({ canEdit }: LocalAsrModelPanelProps) {
 
       {status.downloadInProgress && (status.downloadCurrentModel === status.segmentationModelName || status.downloadCurrentModel === status.embeddingModelName) && (
         <div className="space-y-1.5">
-          <div className="h-2 rounded-full bg-purple-100 overflow-hidden">
+          <div className="h-2 rounded-full bg-slate-100 overflow-hidden">
             <div
-              className="h-full bg-purple-500 transition-all"
+              className="h-full bg-slate-500 transition-all"
               style={{ width: `${downloadPercent}%` }}
             />
           </div>
@@ -405,7 +405,7 @@ function DiarizationCard({ canEdit }: LocalAsrModelPanelProps) {
             type="button"
             onClick={() => void handleStartDownload()}
             disabled={!canEdit || loading}
-            className="inline-flex items-center gap-1.5 rounded-2xl bg-purple-500 px-4 py-2 text-[12px] font-bold text-white shadow-[0_4px_12px_rgba(168,85,247,0.18)] disabled:cursor-not-allowed disabled:opacity-50"
+            className="inline-flex items-center gap-1.5 rounded-2xl bg-slate-500 px-4 py-2 text-[12px] font-bold text-white shadow-sm disabled:cursor-not-allowed disabled:opacity-50"
           >
             <Download size={13} />
             下载说话人分离模型（{seg && !emb ? '仅缺 embedding' : !seg && emb ? '仅缺切分' : '约 40MB · 两个模型'}）

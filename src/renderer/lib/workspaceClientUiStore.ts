@@ -31,6 +31,7 @@ export type WorkspaceSurfaceMode = 'setup' | 'workspace';
 export type WorkspaceImportDropZone = 'buffer' | 'composer' | null;
 export type WorkspaceAnswerActionName =
   | 'vectorize'
+  | 'cancel-vectorize'
   | 'export'
   | 'create-task'
   | 'request-evidence'

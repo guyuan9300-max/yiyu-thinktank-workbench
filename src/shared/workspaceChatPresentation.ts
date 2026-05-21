@@ -107,6 +107,52 @@ export function stripFileCitations(text: string | null | undefined): string {
   return result.trim();
 }
 
+/**
+ * 删除 LLM 输出里的字典引证标记(例 `[📚 心盛计划.累计服务大学生数]`)。
+ *
+ * Why: 后端 system 指令引导 LLM 用 `[📚 term.attribute]` 标记关键事实的字典溯源,
+ * `citation_validator.py` 校验有效性后**保留**有效标记给前端做漂亮渲染。但前端
+ * 一直没接渲染层,标记直接显示在 chat 正文 → 用户看见"[📚 心盛计划.累计服务人数][📚 ...]"
+ * 很碎,不连贯。
+ *
+ * 用户决定:LLM **应该**继续基于字典 verified 值生成事实(grounding 不变),但
+ * **不在正文里显示字典溯源标记**(以及上游 validator 替换出的 ⚠️ 引用失效标记)。
+ *
+ * 格式覆盖(对应 services/citation_validator.py 的 _CITE_PATTERN):
+ * - `[📚 term.attribute_name]` 标准格式
+ * - `[📚 term · attribute_name]` 中点分隔
+ * - `[📚term.attr]` / `[📚 term . attr]` LLM 偶尔产出的紧凑/松散变体
+ * - `[⚠️ 引用失效：「X.Y」不在字典 verified 列表，请在字典审核此项]` validator 替换的失效标记
+ */
+export function stripGlossaryCitations(text: string | null | undefined): string {
+  if (!text) return '';
+  let result = String(text);
+
+  // 1. 📚 字典引证 — 覆盖标准 / 紧凑 / 中点分隔三种变体
+  result = result.replace(/\s*\[\s*📚[^\]]*\]/g, '');
+
+  // 2. validator 替换的 ⚠️ 失效标记 — 用户也不该看见
+  //    格式:`[⚠️ 引用失效：...]`(中文方括号内含 引用失效 字样)
+  result = result.replace(/\s*\[\s*⚠️\s*引用失效[^\]]*\]/g, '');
+
+  // 3. 清理删除后留下的多余标点 / 空白(跟 stripFileCitations 同一套规则)
+  result = result.replace(/[，,、]\s*([。！？\n])/g, '$1');
+  result = result.replace(/[，,]\s*[，,]/g, '，');
+  result = result.replace(/[ \t]{2,}/g, ' ');
+  result = result.replace(/\n{3,}/g, '\n\n');
+
+  return result.trim();
+}
+
+/**
+ * chat 输出的统一清理入口 — 文件名引证 + 字典引证 + ⚠️ 失效标记 都过一遍。
+ *
+ * App.tsx 的 chat 渲染点应调这个,而不是单独调 stripFileCitations。
+ */
+export function cleanChatOutput(text: string | null | undefined): string {
+  return stripGlossaryCitations(stripFileCitations(text));
+}
+
 export function getWorkspaceRuntimeMismatchNotice(input: {
   sourceIntegrityMatch?: boolean | null;
   sourceIntegrityWarning?: string | null;

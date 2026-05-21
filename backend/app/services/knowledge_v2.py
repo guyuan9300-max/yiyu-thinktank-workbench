@@ -2635,52 +2635,8 @@ def ingest_document_knowledge(
         except Exception:
             logger.exception("fanout glossary_attribute_extractor 失败 (doc=%s)", v2_document_id)
 
-        # Stage B 扇出 #9.5: portrait build 自动接通 (relations / risk_signals / commitments)
-        # 触发条件: atomic_facts ≥ 10 + 该客户没有 ai_inferred commits (避免反复跑)
-        # 关键: 只看 ai_inferred commits, 不算 smart_import_story 这类用户来源 —
-        #       否则 smart_import 一写入 commitments 就把 portrait 永久卡死
-        # 异步线程跑, 不阻塞 ingest 主流程
-        try:
-            atomic_count_p = int(db.scalar(
-                "SELECT COUNT(*) AS n FROM atomic_facts WHERE client_id = ? AND status = 'active'",
-                (client_id,),
-            ) or 0)
-            ai_commit_count = int(db.scalar(
-                "SELECT COUNT(*) AS n FROM commitments WHERE client_id = ? AND source_type = 'ai_inferred'",
-                (client_id,),
-            ) or 0)
-            if atomic_count_p >= 10 and ai_commit_count == 0:
-                import threading
-
-                def _bg_portrait_build() -> None:
-                    try:
-                        from app.services.project_portrait_builder import (
-                            backfill_task_glossary_links, build_portrait,
-                        )
-                        backfill_task_glossary_links(db, client_id)
-                        portrait_result = build_portrait(db, ai_service, client_id)
-                        logger.info(
-                            "[fanout#9.5] auto portrait build client=%s status=%s relations=%d risks=%d commits=%d",
-                            client_id,
-                            portrait_result.get("status"),
-                            portrait_result.get("relations", 0),
-                            portrait_result.get("risk_signals", 0),
-                            portrait_result.get("commitments", 0),
-                        )
-                    except Exception:
-                        logger.exception("[fanout#9.5] auto portrait build failed (client=%s)", client_id)
-
-                threading.Thread(
-                    target=_bg_portrait_build,
-                    daemon=True,
-                    name=f"portrait-build-{client_id}",
-                ).start()
-                logger.info(
-                    "[fanout#9.5] triggered async portrait build (client=%s, atomic=%d, ai_commits=%d)",
-                    client_id, atomic_count_p, ai_commit_count,
-                )
-        except Exception:
-            logger.exception("[fanout#9.5] portrait build trigger check failed")
+        # Stage B 扇出 #9.5: portrait build 已迁到 data_center_broadcast (统一 throttle/dedup).
+        # 见本函数末尾的 fanout#11 (broadcast_data_changed).
 
     # ─────────────────────────────────────────────────────────────────────
     # fanout#10 · narrative 待重生标记
@@ -2709,37 +2665,21 @@ def ingest_document_knowledge(
         logger.exception("[fanout#10] narrative_stale_signals upsert failed (client=%s)", client_id)
 
     # ─────────────────────────────────────────────────────────────────────
-    # fanout#11 · 自动 enqueue analysis_job
-    # ingest 完一份资料 → 主动入队让 worker 跑 projection → evidence_cards
-    # 关闭"Stage B 标记后没人消费"的断层. dedupe_key 保证不重复入队.
+    # fanout#11 · 数据中心统一 broadcast 钩子
+    # ingest 完一份资料 → 通知所有下游 collector / re-aggregator 更新:
+    #   - 入队 analysis_job (worker 跑 projection → evidence_cards)
+    #   - 标 narrative_stale_signals (前端进 narrative tab 自动 regenerate)
+    #   - 后台跑 portrait_build + narrative regenerate (throttle)
     # ─────────────────────────────────────────────────────────────────────
     try:
-        from app.models import AnalysisJobCreatePayload
-        from app.services.analysis_center import create_analysis_job
-
-        create_analysis_job(
-            db,
-            AnalysisJobCreatePayload(
-                jobType="strategy_pack",
-                clientId=client_id,
-                scopeType="client",
-                scopeId=client_id,
-                priority="normal",
-                triggerType="auto",
-                question="auto:document_ingest",
-                intentProfile="client_overview",
-            ),
-            source_snapshot={
-                "clientId": client_id,
-                "scopeType": "client",
-                "scopeId": client_id,
-                "triggerType": "auto",
-                "reason": "document_ingest",
-                "documentId": document_id,
-            },
+        from app.services.data_center_broadcast import broadcast_data_changed
+        broadcast_data_changed(
+            db, ai_service,
+            client_id=client_id,
+            scope="document_ingest",
         )
     except Exception:
-        logger.exception("[fanout#11] enqueue analysis_job failed (client=%s)", client_id)
+        logger.exception("[fanout#11] broadcast failed (client=%s)", client_id)
 
     return {
         "knowledge_document_id": v2_document_id,

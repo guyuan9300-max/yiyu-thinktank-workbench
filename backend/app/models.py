@@ -1140,6 +1140,27 @@ class AiStructuredResponse(BaseModel):
     timeline: str
 
 
+class GroundedAnswerResult(BaseModel):
+    """Pure result of grounded answer generation — no DB side effects.
+
+    inline AI / document_ai_action 用这个类型,复用 chat 主链路的 RAG + grounding +
+    校验,但不创建 chat thread / chat_messages 行。chat 路径仍然返回 ChatMessageRecord
+    (内部走 UPDATE chat_messages 后 fetchone 再 build_chat_message)。
+
+    state_answer_sections 字段值得注意:Q&A 链路有个已知的 finalize bug,当
+    primary_generation_partial_preserved 触发时,真实答案被写到 state_answer_sections.official
+    而不是 content 字段。inline AI 应该优先读 state_answer_sections.official 作为真答案。
+    """
+    content: str
+    structured: AiStructuredResponse
+    answer_mode: str
+    evidence_status: str
+    failure_reason: str | None = None
+    evidence: list[dict] = Field(default_factory=list)
+    retrieval_summary: dict = Field(default_factory=dict)
+    state_answer_sections: dict = Field(default_factory=dict)
+
+
 ChatRetrievalDecisionReason = Literal[
     "state_first_default",
     "document_drilldown_requested",
@@ -7974,6 +7995,9 @@ class DocumentAiActionPayload(BaseModel):
     # P14a：用户当前选区文本（window.getSelection().toString()）。
     # 非空 → 模型只处理这段；空 → 走全文老行为。
     selectionText: str = ""
+    # 用户从右侧文件列表 attach 到对话引用的 document_id 列表。
+    # 跟 ChatRequest.workingDocumentIds 同语义,作为 RAG 召回的优先种子。
+    workingDocumentIds: list[str] = Field(default_factory=list)
 
 
 class DocumentAiActionResponse(BaseModel):
@@ -7986,7 +8010,7 @@ class DocumentAiActionResponse(BaseModel):
     effectiveCreativity: str = "balanced"
     # P14a：本次实际作用范围。"selection" = 后端只处理了选区，前端只替换选区；
     # "full_doc" = 处理整篇，前端整篇替换。
-    targetScope: Literal["selection", "full_doc"] = "full_doc"
+    targetScope: Literal["selection", "cursor_insert", "full_doc"] = "full_doc"
 
 
 class LinkMaterialImportStartPayload(BaseModel):
@@ -8077,6 +8101,8 @@ class KnowledgeMemoryRecord(BaseModel):
     sourceLinks: list[dict[str, object]] = Field(default_factory=list)
     createdAt: str
     updatedAt: str
+    # C 取消收藏：标记这条 memory 来自哪条 chat message,前端据此判断"已收藏"并切换按钮
+    chatMessageId: str | None = None
 
 
 # ── UnderstandingSnapshotV1: 统一理解输出对象 ──

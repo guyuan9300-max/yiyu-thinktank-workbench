@@ -7,6 +7,7 @@
  * 目的：让用户直接看到「我的 Mac 现在能不能跑下一条任务」+ 为什么。
  */
 import { useEffect, useState, useCallback } from 'react';
+import { alertWithLog } from '../../lib/clientErrorReport';
 import {
   getLocalAiHealth,
   getLocalAiQueue,
@@ -87,7 +88,8 @@ export function LocalAiHealthCard({
       await refresh();
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      window.setTimeout(() => alert(`触发失败：${msg}`), 0);
+      // 同时上报到 backend 日志,让此类失败可事后追溯
+      window.setTimeout(() => alertWithLog(`触发失败：${msg}`, { feature: 'local_ai_run_now' }), 0);
     } finally {
       setRunningNow(false);
     }

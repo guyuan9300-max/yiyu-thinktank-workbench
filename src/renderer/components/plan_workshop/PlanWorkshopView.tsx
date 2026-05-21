@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { ChevronDown, ArrowRight, Plus, RefreshCw, X, Trash2, Sparkles, Check, RotateCcw, Pencil } from 'lucide-react';
 
 import { getPlanItemTaskCounts, getTasksForPlanItem, parseDepartmentPlan } from '../../lib/api';
+import { useBackdropClickClose } from '../../lib/useBackdropClickClose';
 import type {
   OrgDepartmentPlanItemSettings,
   OrgDepartmentPlanSettings,
@@ -551,6 +552,8 @@ export function PlanWorkshopView({ value, currentUser, onSavePlan, onOpenTask, o
     setIsCreateOpen(false);
   };
 
+  const createModalBackdropHandlers = useBackdropClickClose(closeCreateModal, !isSaving && !isParsing);
+
   const handleParseText = async () => {
     if (!pasteText.trim()) {
       setCreateError('请先粘贴计划文本再进行解析');
@@ -996,7 +999,7 @@ export function PlanWorkshopView({ value, currentUser, onSavePlan, onOpenTask, o
       {isCreateOpen && (
         <div
           className="fixed inset-0 z-[1000] flex items-center justify-center bg-gray-900/20 backdrop-blur-sm px-6"
-          onClick={(e) => { if (e.target === e.currentTarget) closeCreateModal(); }}
+          {...createModalBackdropHandlers}
         >
           <div className="w-full max-w-2xl rounded-2xl bg-white shadow-[0_28px_90px_rgba(15,23,42,0.18)] flex flex-col" style={{ maxHeight: '90vh' }}>
             <div className="px-7 pt-6 pb-5 flex items-start justify-between shrink-0">

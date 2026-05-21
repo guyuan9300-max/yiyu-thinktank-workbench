@@ -42,7 +42,7 @@ export function GlossaryPendingBadge({ clientId, onNavigateToReview }: GlossaryP
       type="button"
       onClick={onNavigateToReview}
       className="inline-flex items-center gap-1.5 text-[10px] font-medium text-gray-500 hover:text-gray-700 transition-colors"
-      title="点击去战略陪伴澄清字典里待补全的属性"
+      title="点击去战略陪伴 · 事实澄清"
     >
       {/* 文字保持灰色低调,只有小灯用 amber + 脉冲做提醒,克制 */}
       <span className="inline-block w-1.5 h-1.5 rounded-full bg-amber-500 animate-pulse" />

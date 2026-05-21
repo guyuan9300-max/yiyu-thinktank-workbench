@@ -1,6 +1,7 @@
 import React from 'react';
 import ReactDOM from 'react-dom/client';
 import App from './App';
+import { AppPromptHost } from './lib/appPrompt';
 import './styles.css';
 
 declare global {
@@ -122,6 +123,7 @@ root.render(
     <RendererErrorBoundary>
       <BootMarker />
       <App />
+      <AppPromptHost />
     </RendererErrorBoundary>
   </React.StrictMode>
 );

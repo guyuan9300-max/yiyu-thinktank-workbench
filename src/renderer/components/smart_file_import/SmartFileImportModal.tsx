@@ -1071,9 +1071,10 @@ function PreviewPlanModal({ plan, onClose, onConfirm, committing }: PreviewPlanM
           <button
             onClick={onConfirm}
             disabled={committing}
-            className="rounded-xl bg-[#5B7BFE] px-5 py-2 text-[12px] font-bold text-white hover:bg-[#4A6BE6] disabled:opacity-50"
+            className="inline-flex items-center gap-1.5 rounded-xl bg-[#5B7BFE] px-5 py-2 text-[12px] font-bold text-white hover:bg-[#4A6BE6] disabled:opacity-50 transition-colors"
           >
-            {committing ? '导入中...' : '✅ 确认 · 全部导入'}
+            {committing ? <Loader2 size={14} className="animate-spin" /> : <CheckCircle2 size={14} />}
+            {committing ? '导入中...' : '确认 · 全部导入'}
           </button>
         </div>
       </div>

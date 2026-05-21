@@ -1546,7 +1546,35 @@ def _build_related_refs(workspace: ClientWorkspaceResponse) -> dict[str, list[st
 
 
 def _build_analysis_center_summary(db: Database, client_id: str) -> AnalysisCenterSummaryRecord:
-    latest_job = db.fetchone("SELECT * FROM analysis_jobs WHERE client_id = ? ORDER BY updated_at DESC LIMIT 1", (client_id,))
+    # P1-3 性能: 把原来 8 个独立 COUNT 合并成 1 个 UNION ALL, 250MB db 时减少 7-8x 扫表
+    # 每个 SELECT 返回 (key, count) 形式, Python 里 dict 化用.
+    count_rows = db.fetchall(
+        """
+        SELECT 'evidence' AS k, COUNT(*) AS n FROM evidence_cards WHERE client_id = ?
+        UNION ALL
+        SELECT 'theme', COUNT(*) FROM theme_clusters WHERE client_id = ?
+        UNION ALL
+        SELECT 'conflict', COUNT(*) FROM conflict_groups WHERE client_id = ?
+        UNION ALL
+        SELECT 'open_q', COUNT(*) FROM open_questions WHERE client_id = ?
+        UNION ALL
+        SELECT 'judg_draft', COUNT(*) FROM judgment_versions
+          WHERE client_id = ? AND status IN ('draft','awaiting_review','awaiting_revision')
+        UNION ALL
+        SELECT 'judg_approved', COUNT(*) FROM judgment_versions
+          WHERE client_id = ? AND status = 'approved'
+        UNION ALL
+        SELECT 'analysis_job', COUNT(*) FROM analysis_jobs WHERE client_id = ?
+        """,
+        (client_id,) * 7,
+    )
+    counts = {row["k"]: int(row["n"] or 0) for row in count_rows}
+
+    # latest_* 仍单查 (各表 ORDER BY DESC LIMIT 1 走索引, 单次很快, 没必要合并)
+    latest_job = db.fetchone(
+        "SELECT status, stage_label FROM analysis_jobs WHERE client_id = ? ORDER BY updated_at DESC LIMIT 1",
+        (client_id,),
+    )
     latest_context_pack = db.fetchone(
         "SELECT updated_at FROM context_packs WHERE client_id = ? ORDER BY updated_at DESC LIMIT 1",
         (client_id,),
@@ -1557,19 +1585,13 @@ def _build_analysis_center_summary(db: Database, client_id: str) -> AnalysisCent
     )
     return AnalysisCenterSummaryRecord(
         clientId=client_id,
-        evidenceCardCount=db.scalar("SELECT COUNT(*) AS count FROM evidence_cards WHERE client_id = ?", (client_id,)),
-        themeClusterCount=db.scalar("SELECT COUNT(*) AS count FROM theme_clusters WHERE client_id = ?", (client_id,)),
-        conflictGroupCount=db.scalar("SELECT COUNT(*) AS count FROM conflict_groups WHERE client_id = ?", (client_id,)),
-        openQuestionCount=db.scalar("SELECT COUNT(*) AS count FROM open_questions WHERE client_id = ?", (client_id,)),
-        draftJudgmentCount=db.scalar(
-            "SELECT COUNT(*) AS count FROM judgment_versions WHERE client_id = ? AND status IN ('draft', 'awaiting_review', 'awaiting_revision')",
-            (client_id,),
-        ),
-        approvedJudgmentCount=db.scalar(
-            "SELECT COUNT(*) AS count FROM judgment_versions WHERE client_id = ? AND status = 'approved'",
-            (client_id,),
-        ),
-        analysisJobCount=db.scalar("SELECT COUNT(*) AS count FROM analysis_jobs WHERE client_id = ?", (client_id,)),
+        evidenceCardCount=counts.get("evidence", 0),
+        themeClusterCount=counts.get("theme", 0),
+        conflictGroupCount=counts.get("conflict", 0),
+        openQuestionCount=counts.get("open_q", 0),
+        draftJudgmentCount=counts.get("judg_draft", 0),
+        approvedJudgmentCount=counts.get("judg_approved", 0),
+        analysisJobCount=counts.get("analysis_job", 0),
         latestJobStatus=str(latest_job["status"]) if latest_job and latest_job["status"] else None,
         latestJobLabel=str(latest_job["stage_label"]) if latest_job and latest_job["stage_label"] else None,
         latestContextPackUpdatedAt=str(latest_context_pack["updated_at"]) if latest_context_pack else None,

@@ -1,7 +1,11 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { stripFileCitations } from './workspaceChatPresentation.js';
+import {
+  cleanChatOutput,
+  stripFileCitations,
+  stripGlossaryCitations,
+} from './workspaceChatPresentation.js';
 
 test('stripFileCitations returns empty for nullish', () => {
   assert.equal(stripFileCitations(null), '');
@@ -71,4 +75,74 @@ test('stripFileCitations trims edges and caps blank lines at \\n\\n', () => {
   assert.match(out, /^客户走县域路线。/);
   assert.match(out, /不走 KOL 路线。$/);
   assert.ok(!/\n\n\n/.test(out), `expected ≤2 newlines in a row, got: ${JSON.stringify(out)}`);
+});
+
+// ────────────────────────────────────────────────────────────
+// stripGlossaryCitations — 删字典 📚 / ⚠️ 引证标记
+// ────────────────────────────────────────────────────────────
+
+test('stripGlossaryCitations returns empty for nullish', () => {
+  assert.equal(stripGlossaryCitations(null), '');
+  assert.equal(stripGlossaryCitations(undefined), '');
+  assert.equal(stripGlossaryCitations(''), '');
+});
+
+test('stripGlossaryCitations removes standard [📚 term.attribute] marker', () => {
+  const input = '心盛计划累计服务近 17 万名大学生 [📚 心盛计划.累计服务大学生数]，覆盖高校同辈互助。';
+  const out = stripGlossaryCitations(input);
+  assert.equal(out, '心盛计划累计服务近 17 万名大学生，覆盖高校同辈互助。');
+});
+
+test('stripGlossaryCitations removes compact form without space', () => {
+  const input = '日慈基金会2013年12月成立[📚日慈基金会.成立时间]，定位前置型心育。';
+  const out = stripGlossaryCitations(input);
+  assert.equal(out, '日慈基金会2013年12月成立，定位前置型心育。');
+});
+
+test('stripGlossaryCitations removes mid-dot separator variant', () => {
+  const input = '覆盖儿童 90 万名 [📚 心灵魔法学院 · 服务对象与规模]，2024 年扩展到 31 省。';
+  const out = stripGlossaryCitations(input);
+  assert.equal(out, '覆盖儿童 90 万名，2024 年扩展到 31 省。');
+});
+
+test('stripGlossaryCitations removes multiple consecutive citations', () => {
+  const input = '关键数据 [📚 心盛计划.累计服务人数][📚 心灵魔法学院.服务对象与规模] 来源可溯。';
+  const out = stripGlossaryCitations(input);
+  assert.equal(out, '关键数据 来源可溯。');
+});
+
+test('stripGlossaryCitations removes ⚠️ invalid-citation placeholder from validator', () => {
+  const input = '该数字为 200 万 [⚠️ 引用失效：「鲁冰花舍.2023支出」不在字典 verified 列表，请在字典审核此项]，需复核。';
+  const out = stripGlossaryCitations(input);
+  assert.equal(out, '该数字为 200 万，需复核。');
+});
+
+test('stripGlossaryCitations preserves text without any markers', () => {
+  const input = '日慈基金会专注青少年心理健康教育，三大业务板块清晰。';
+  const out = stripGlossaryCitations(input);
+  assert.equal(out, input);
+});
+
+test('stripGlossaryCitations does not touch file citations', () => {
+  // 不重叠职责:文件名引证由 stripFileCitations 管,这里只管 📚
+  const input = '客户战略 [📚 日慈.战略主线] 跟 strategy.md 描述一致。';
+  const out = stripGlossaryCitations(input);
+  // 📚 没了,但 strategy.md 还在(应由 stripFileCitations 接力)
+  assert.equal(out, '客户战略 跟 strategy.md 描述一致。');
+});
+
+// ────────────────────────────────────────────────────────────
+// cleanChatOutput — 组合入口
+// ────────────────────────────────────────────────────────────
+
+test('cleanChatOutput strips both file and glossary citations end-to-end', () => {
+  const input = '基于 strategy.md, 日慈 2013 年成立 [📚 日慈.成立时间], 三大业务板块 (见 methodology.md)。';
+  const out = cleanChatOutput(input);
+  // strategy.md → 战略文档, (见 methodology.md) 整段删, [📚...] 删
+  assert.equal(out, '基于 战略文档, 日慈 2013 年成立, 三大业务板块。');
+});
+
+test('cleanChatOutput handles nullish', () => {
+  assert.equal(cleanChatOutput(null), '');
+  assert.equal(cleanChatOutput(undefined), '');
 });

@@ -444,6 +444,9 @@ def _collect_risk_signals(db: Database, client_id: str) -> list[RiskSignalFact]:
         )
     except Exception:
         return []
+    # P1-4 性能: 原代码 for 循环里逐个 fetchone client_glossary → N+1 查询.
+    # 改成一次性 batch fetch 整个 client 的字典, 在 Python 里 dict lookup.
+    term_id_to_name = _load_glossary_id_to_term(db, client_id)
     out: list[RiskSignalFact] = []
     for r in rows:
         term_ids_raw = _safe_json(r["related_term_ids_json"], [])
@@ -452,9 +455,9 @@ def _collect_risk_signals(db: Database, client_id: str) -> list[RiskSignalFact]:
             for tid in term_ids_raw:
                 if not isinstance(tid, str):
                     continue
-                term_row = db.fetchone("SELECT term FROM client_glossary WHERE id = ?", (tid,))
-                if term_row:
-                    related_terms.append(str(term_row["term"]))
+                name = term_id_to_name.get(tid)
+                if name:
+                    related_terms.append(name)
         out.append(RiskSignalFact(
             title=str(r["title"] or ""),
             signal_kind=str(r["signal_kind"] or "other"),
@@ -464,6 +467,18 @@ def _collect_risk_signals(db: Database, client_id: str) -> list[RiskSignalFact]:
             status=str(r["status"] or "active"),
         ))
     return out
+
+
+def _load_glossary_id_to_term(db: Database, client_id: str) -> dict[str, str]:
+    """一次性 batch fetch 整个 client 字典 → {id: term}. 避免 risk_signal/commitment 解析时 N+1."""
+    try:
+        rows = db.fetchall(
+            "SELECT id, term FROM client_glossary WHERE client_id = ?",
+            (client_id,),
+        )
+    except Exception:
+        return {}
+    return {str(r["id"]): str(r["term"] or "") for r in rows if r["id"]}
 
 
 def _collect_commitments(db: Database, client_id: str) -> list[CommitmentFact]:
@@ -477,13 +492,15 @@ def _collect_commitments(db: Database, client_id: str) -> list[CommitmentFact]:
         commitments = get_commitment_repository(db).list_active_for_client(client_id)
     except Exception:
         return []
+    # P1-4 性能: 一次性 batch fetch 字典(同 _collect_risk_signals).
+    term_id_to_name = _load_glossary_id_to_term(db, client_id)
     out: list[CommitmentFact] = []
     for c in commitments:
         related_terms: list[str] = []
         for tid in c.related_term_ids:
-            term_row = db.fetchone("SELECT term FROM client_glossary WHERE id = ?", (tid,))
-            if term_row:
-                related_terms.append(str(term_row["term"]))
+            name = term_id_to_name.get(tid)
+            if name:
+                related_terms.append(name)
         out.append(CommitmentFact(
             committer=c.committer,
             recipient=c.recipient,
@@ -842,12 +859,14 @@ def _safe_json(raw: Any, default: Any) -> Any:
 
 
 def _collect_persons(db: Database, client_id: str, limit: int) -> list[PersonFact]:
+    # 必须过滤 status='active' — 排除 self_verify 标记为 'merged' 的重复实体
     rows = db.fetchall(
         """
         SELECT id, display_name, mention_count, aliases_json, attributes_json
         FROM entities
         WHERE client_id = ? AND entity_type = 'person'
           AND mention_count >= 2
+          AND status = 'active'
         ORDER BY mention_count DESC, confidence DESC
         LIMIT ?
         """,
@@ -871,11 +890,13 @@ def _collect_persons(db: Database, client_id: str, limit: int) -> list[PersonFac
 
 
 def _collect_time_anchors(db: Database, client_id: str, limit: int) -> list[TimeAnchorFact]:
+    # 必须过滤 status='active' — 排除 self_verify merged 的实体
     rows = db.fetchall(
         """
         SELECT id, display_name, mention_count
         FROM entities
         WHERE client_id = ? AND entity_type = 'date' AND mention_count >= 2
+          AND status = 'active'
         ORDER BY mention_count DESC LIMIT ?
         """,
         (client_id, limit),
@@ -892,11 +913,13 @@ def _collect_time_anchors(db: Database, client_id: str, limit: int) -> list[Time
 
 
 def _collect_money_anchors(db: Database, client_id: str, limit: int) -> list[MoneyFact]:
+    # 必须过滤 status='active' — 排除 self_verify merged 的实体
     rows = db.fetchall(
         """
         SELECT id, display_name, mention_count
         FROM entities
         WHERE client_id = ? AND entity_type = 'amount' AND mention_count >= 1
+          AND status = 'active'
         ORDER BY mention_count DESC LIMIT ?
         """,
         (client_id, limit),

@@ -17,6 +17,7 @@ import React, { useEffect, useRef, useState } from 'react';
 import { Sparkles, X, Loader2 } from 'lucide-react';
 
 import { aiParseTask, type TaskAiParseResult } from '../../lib/api';
+import { useBackdropClickClose } from '../../lib/useBackdropClickClose';
 
 type SmartTaskParseModalProps = {
   open: boolean;
@@ -85,14 +86,12 @@ export function SmartTaskParseModal({ open, onClose, onParsed }: SmartTaskParseM
     }
   };
 
+  const backdropHandlers = useBackdropClickClose(onClose, !submitting);
+
   return (
     <div
       className="fixed inset-0 z-[60] flex items-center justify-center bg-gray-900/15 backdrop-blur-md transition-opacity"
-      onClick={(event) => {
-        if (event.target === event.currentTarget && !submitting) {
-          onClose();
-        }
-      }}
+      {...backdropHandlers}
     >
       <div className="w-[min(640px,92vw)] rounded-2xl bg-white shadow-[0_24px_70px_rgba(15,23,42,0.18)] ring-1 ring-inset ring-gray-100">
         {/* Header */}

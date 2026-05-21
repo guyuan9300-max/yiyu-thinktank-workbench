@@ -708,7 +708,9 @@ export interface DocumentRecord {
   title: string;
   path: string;
   kind: string;
-  source: 'folder' | 'file' | 'meeting';
+  // 后端实际有 30+ 种 source 值（folder/file/task_attachment/workspace_native/answer_memory_doc/auto_repair...），
+  // 老 union 类型不全导致前端无法 type-safe 比较；放宽为 string，由消费方明确处理已知集合。
+  source: string;
   excerpt: string;
   tags: string[];
   importedAt: string;
@@ -6413,6 +6415,8 @@ export interface KnowledgeMemoryRecord {
   sourceLinks?: Array<Record<string, unknown>>;
   createdAt: string;
   updatedAt: string;
+  // C: 哪条 chat message 收藏出来的(用于"已收藏"识别和取消收藏)
+  chatMessageId?: string | null;
 }
 
 export interface SettingsPayload {
