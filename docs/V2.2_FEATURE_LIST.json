@@ -100,13 +100,26 @@
         {
           "id": "F1.4",
           "title": "main.py 高频 client_id 查询切到 ClientFactView (top 50 处)",
-          "description": "只切 top 50 处,不强求 1063 处全切。优先切影响客户档案/任务详情/战略陪伴的查询。",
+          "description": "只切 top 50 处,不强求 1063 处全切。优先切影响客户档案/任务详情/战略陪伴的查询。F1.4a 加新 endpoint + F1.4b 切迁 3 处第一批",
           "estimated_days": 5,
-          "status": "pending",
+          "actual_partial": "first batch (3/50, plus new endpoint)",
+          "status": "verified_partial",
+          "completed_at": "2026-05-21T23:30",
+          "verified_at": "2026-05-21T23:35",
+          "commit": "a628e09",
+          "tests_passing": "78/78 regression + main.py import OK",
+          "spec_file": "docs/V2.2_PHASE1_SPEC_F14.md",
+          "eval_report": "docs/V2.2_PHASE1_F14_EVAL.md",
+          "issues": [
+            "commit a628e09 携带了 main.py 上的业务脏改动 (workspace_query_router 删 file_search 配套), 违反 NORTH_STAR §6 业务并行污染。后续 session 必须用 git add -p。"
+          ],
+          "main_py_sql_count": "1063 → 1060 (减 3)",
           "depends_on": ["F1.2", "F1.3"],
-          "serves_goal": "A",
+          "serves_goal": "A+B",
           "files": [
-            "backend/app/main.py (改 ~50 处 client_id 查询)"
+            "backend/app/main.py (3 处切迁 + 1 个新 endpoint)",
+            "backend/app/models.py (7 个 Pydantic Response model)",
+            "docs/V2.2_PHASE1_SPEC_F14.md (Planner spec)"
           ]
         },
         {
