@@ -82,12 +82,19 @@
           "title": "ClientScopeFilter — 所有 client_id 查询的统一过滤器",
           "description": "包含 is_frozen / archived 唯一真相。所有上层查询都通过这层做 client_id scope check + frozen check。",
           "estimated_days": 3,
-          "status": "pending",
+          "actual_days": 1,
+          "status": "verified",
+          "completed_at": "2026-05-21T23:25",
+          "verified_at": "2026-05-21T23:30",
+          "commit": "f9880ef",
+          "tests_passing": "27/27",
+          "spec_file": "docs/V2.2_PHASE1_SPEC_F13.md",
           "depends_on": ["F1.1"],
           "serves_goal": "A",
           "files": [
-            "backend/app/modules/client/scope_filter.py (new)",
-            "tests/test_client_scope_filter.py (new)"
+            "backend/app/modules/client/scope_filter.py (152 行)",
+            "backend/app/modules/client/__init__.py (扩 8 个新名字)",
+            "tests/test_client_scope_filter.py (406 行, 27 tests)"
           ]
         },
         {
