@@ -495,6 +495,8 @@ import { TaskOrgContextPanel } from './components/tasks/TaskOrgContextPanel';
 import { WeeklyReviewStructuredFields, composeReviewNoteFromStructuredFields, createEmptyReviewStructuredNote, getSimpleReviewText, hasMeaningfulReviewStructuredNote } from './components/tasks/WeeklyReviewStructuredFields';
 import { reviewStatusLabel, reviewTaskDateLabel, type ReviewTaskRow } from './components/tasks/reviewDraft';
 import { GrowthProvider, notifyGrowthRefresh } from './components/growth/GrowthContext';
+// v2.2 F1.6: L2 ClientFactBundle 跨 view 共享 - 见 docs/V2.2_NORTH_STAR.md N1+N2
+import { ClientFactProvider } from './contexts/ClientFactContext';
 import { UpdateNotifier } from './components/UpdateNotifier';
 import { AboutAppSettingsPanel } from './components/settings/AboutAppSettingsPanel';
 import { GrowthCenterView } from './components/handbook/GrowthCenterView';
@@ -28754,6 +28756,8 @@ export default function App() {
 
   return (
     <GrowthProvider>
+      {/* v2.2 F1.6: 全局共享 ClientFactBundle - currentClientId 切换时所有接入 view 自动同步 */}
+      <ClientFactProvider currentClientId={currentClientId || null}>
       <div className="window-drag window-drag-strip" aria-hidden="true" />
       {/* P10 v2：数据中心 + AI 状态灯已迁移到 sidebar 底部的 SystemStatusPanel，
             不再占据 drag-strip 区域，避免遮挡录音 indicator 和系统装饰条。 */}
@@ -29170,6 +29174,7 @@ export default function App() {
       )}
       </div>
       <UpdateNotifier />
+      </ClientFactProvider>
     </GrowthProvider>
   );
 }
