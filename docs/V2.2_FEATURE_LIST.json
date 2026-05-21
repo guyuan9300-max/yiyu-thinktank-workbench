@@ -32,13 +32,19 @@
           "title": "backend/app/modules/client/ 扩为完整 Repository",
           "description": "从 38 行占位扩到完整,参考 mobile cloud_backend 的 28 endpoints shape。包含 get_client_by_id / list_clients / list_with_facts / scope_filter 等核心方法",
           "estimated_days": 3,
-          "status": "pending",
+          "status": "verified",
+          "completed_at": "2026-05-21T22:50",
+          "verified_at": "2026-05-21T22:55",
+          "commit": "010fe20",
+          "tests_passing": "25/25",
+          "eval_report": "docs/V2.2_PHASE1_EVAL.md",
           "depends_on": [],
           "serves_goal": "B",
           "files": [
-            "backend/app/modules/client/repository.py (new full impl)",
-            "backend/app/modules/client/types.py (new)",
-            "backend/app/modules/client/__init__.py"
+            "backend/app/modules/client/repository.py (227 行)",
+            "backend/app/modules/client/types.py (66 行)",
+            "backend/app/modules/client/__init__.py",
+            "tests/test_client_repository.py (300 行, 25 tests)"
           ]
         },
         {
