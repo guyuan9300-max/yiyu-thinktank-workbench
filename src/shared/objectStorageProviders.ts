@@ -73,7 +73,7 @@ export const OBJECT_STORAGE_PROVIDERS: ObjectStorageDescriptor[] = [
         label: 'Bucket（桶名）',
         type: 'text',
         placeholder: '你在 TOS 控制台创建的桶名',
-        helper: '建议为录音转写场景单独建一个桶，命名如 yiyu-audio-prod。',
+        helper: '建议为工作台文件中转单独建一个私有桶，命名如 yiyu-workbench-files-prod。',
       },
     ],
   },

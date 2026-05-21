@@ -4698,7 +4698,7 @@ class Database:
                 VALUES (1, '', '{}', '', '{}', 0, '')
                 """
             )
-            # 对象存储配置（I1b-1）：单行 org 级，承载音频文件中转所需的桶/凭证
+            # 对象存储配置（I1b-1）：单行配置，承载文件中转/归档所需的桶/凭证
             # 用 JSON 字段灵活承载，未来扩展阿里 OSS / AWS S3 等只需新建 provider 不动 schema
             self.conn.execute(
                 """
