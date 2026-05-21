@@ -10,7 +10,7 @@ from pathlib import Path
 # 之前 20260518001 (200 亿) 远超上限, SQLite 静默 set 为 0, 每次启动都重做完整迁移
 # (这是 20260518 那次坏 db 的真正根因之一: 重做时遇上 reload race + backfill 无事务).
 # 改用 YYYYMMDD 格式 (8 位), 每次 schema 变化递增日期. 20260519 = 此次修复.
-BACKEND_SCHEMA_VERSION = 20260524  # v2.2 F1.7: client_stage_audit 表 + N3 actor_type/actor_id 预留
+BACKEND_SCHEMA_VERSION = 20260525  # v2.2 F1.8/F1.9: atomic_facts 5 维元数据 + event_log 总线表 (N3 A2)
 
 
 # R6：内置罗永浩写作风格的 distilled prompt（手工 distill，不依赖在线抓取，避免外部依赖）。
@@ -3188,6 +3188,105 @@ class Database:
             self._ensure_column(
                 "client_glossary", "evidence_tier",
                 "TEXT NOT NULL DEFAULT 'first_party'",
+            )
+
+            # ─────────────────────────────────────────────────────────────
+            # v2.2 F1.8/F1.9: atomic_facts 5 维元数据 + N3 A1/A4 字段
+            # 详细规范见 docs/V2.2_INFORMATION_SOURCE_METADATA.md
+            # 跟 evidence_tier 共存:  evidence_tier 是 v1.0 粗 3 分类, source_type 是 v2.2 细 14 分类
+            # ─────────────────────────────────────────────────────────────
+            # 维度 1: 来源类型 (14 类细分, 决定基础置信度)
+            #   client_official_doc / client_internal_doc / client_verbal_meeting
+            #   collaboration_task / collaboration_review
+            #   user_observation / user_verbal_fact
+            #   internet_official / internet_media / internet_ugc / internet_ai_inferred
+            #   llm_extracted / system_derived / ai_agent_authored
+            self._ensure_column(
+                "atomic_facts", "source_type",
+                "TEXT NOT NULL DEFAULT 'llm_extracted'",
+            )
+            # 维度 2: 业务角色 (fact/decision/risk/progress/plan/lesson/observation/speculation/quote/commitment)
+            self._ensure_column(
+                "atomic_facts", "content_role",
+                "TEXT NOT NULL DEFAULT 'fact'",
+            )
+            # 维度 4: 作者/受众 (N3 A1 预留 — 区分 human/ai_agent/system)
+            self._ensure_column(
+                "atomic_facts", "actor_type",
+                "TEXT NOT NULL DEFAULT 'human'",
+            )
+            self._ensure_column("atomic_facts", "actor_id", "TEXT NOT NULL DEFAULT ''")
+            # 说话者 (语录类事实必填), 来自 entities (person)
+            self._ensure_column("atomic_facts", "speaker_person_id", "TEXT")
+            # 事件发生时间 (≠ 录入时间)
+            self._ensure_column("atomic_facts", "time_anchor", "TEXT")
+            # 维度 5: 生命周期 (N3 A4 预留 — verification + N2 引用规则的关键)
+            self._ensure_column(
+                "atomic_facts", "verification_status",
+                "TEXT NOT NULL DEFAULT 'unverified'",
+            )
+            self._ensure_column(
+                "atomic_facts", "confidence_source",
+                "TEXT NOT NULL DEFAULT 'rule'",
+            )
+            self._ensure_column(
+                "atomic_facts", "validity_status",
+                "TEXT NOT NULL DEFAULT 'current'",
+            )
+            self._ensure_column("atomic_facts", "superseded_by_id", "TEXT")
+            # N3 A3 预留: provenance 链 (3.0 fact graph 用)
+            self._ensure_column("atomic_facts", "reasoning_trace_id", "TEXT")
+            self._ensure_column(
+                "atomic_facts", "derived_from_ids_json",
+                "TEXT NOT NULL DEFAULT '[]'",
+            )
+            # 索引: 按 verification_status 找待审 + 按 validity 过滤 superseded
+            try:
+                self.conn.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_atomic_facts_verification "
+                    "ON atomic_facts(client_id, verification_status, content_role)"
+                )
+                self.conn.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_atomic_facts_validity "
+                    "ON atomic_facts(client_id, validity_status, time_anchor DESC)"
+                )
+            except sqlite3.OperationalError:
+                pass
+
+            # ─────────────────────────────────────────────────────────────
+            # v2.2 F1.9 (N3 A2 预留): event_log 持久化事件总线
+            # 现有 broadcast_data_changed 是临时分发, 不落地。
+            # 3.0 AI agent 需要看历史 (我上周做了什么) + 反馈学习信号 (用户撤销了哪些操作)
+            # → 必须持久化每次写操作的事件流。
+            #
+            # 此表只写不读 (v2.2 阶段), 真实读取逻辑留 3.0 实施。
+            # 现有 broadcast_data_changed 触发点会顺手写一行进来。
+            # ─────────────────────────────────────────────────────────────
+            self.conn.executescript(
+                """
+                CREATE TABLE IF NOT EXISTS event_log (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    event_type TEXT NOT NULL,           -- e.g. 'client.fact_created' / 'task.completed'
+                    actor_type TEXT NOT NULL DEFAULT 'human',  -- N3: human/ai_agent/system
+                    actor_id TEXT NOT NULL DEFAULT '',
+                    entity_type TEXT NOT NULL,          -- 'client' / 'task' / 'event_line' / 'fact'
+                    entity_id TEXT NOT NULL,
+                    client_id TEXT,                     -- 关联客户 (可空, 组织级事件无)
+                    payload_json TEXT NOT NULL DEFAULT '{}',
+                    occurred_at TEXT NOT NULL,
+                    reversed_at TEXT,                   -- 爱马仕"终身保修"原则: 可撤销时填这里
+                    reversed_by TEXT,                   -- 撤销人
+                    reversed_reason TEXT NOT NULL DEFAULT ''
+                );
+                CREATE INDEX IF NOT EXISTS idx_event_log_entity
+                    ON event_log(entity_type, entity_id, occurred_at DESC);
+                CREATE INDEX IF NOT EXISTS idx_event_log_client_time
+                    ON event_log(client_id, occurred_at DESC);
+                CREATE INDEX IF NOT EXISTS idx_event_log_event_type
+                    ON event_log(event_type, occurred_at DESC);
+                CREATE INDEX IF NOT EXISTS idx_event_log_actor
+                    ON event_log(actor_type, actor_id, occurred_at DESC);
+                """
             )
             # 回填：external_* / 社交平台 / 公众号等外部观察源
             # 容错: data_center_ingest_events 表可能在某些精简 db 里不存在, 不阻塞启动
