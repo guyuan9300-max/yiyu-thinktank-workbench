@@ -1677,6 +1677,30 @@ def _schedule_chat_fact_extraction(
         logger.warning("[chat-fact-extract] Failed to start fallback background thread", exc_info=True)
 
 
+def _safe_bool_int(value: object, *, default: bool = False) -> bool:
+    """把 sqlite 列里的值安全转 bool. 容忍 None / int / 'yes'/'no'/'true'/'1' 等损坏数据.
+
+    P0 修复: 防止 task_settings 等表里数据列被早期 bug 写成字符串导致 int() ValueError.
+    """
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    s = str(value).strip().lower()
+    if not s:
+        return default
+    if s in ("1", "true", "yes", "y", "t"):
+        return True
+    if s in ("0", "false", "no", "n", "f"):
+        return False
+    try:
+        return bool(int(s))
+    except (ValueError, TypeError):
+        return default
+
+
 def _parse_json_list(value: str | None) -> list[str]:
     data = from_json(value, [])
     return [str(item) for item in data] if isinstance(data, list) else []
@@ -1818,9 +1842,9 @@ def _task_in_week(task: TaskRecord, week_label: str) -> bool:
             defaultDueDatePreset=str(row["default_due_date_preset"] or defaults.defaultDueDatePreset),  # type: ignore[arg-type]
             defaultViewMode=str(row["default_view_mode"] or defaults.defaultViewMode),  # type: ignore[arg-type]
             listSortMode=str(row["list_sort_mode"] or defaults.listSortMode),  # type: ignore[arg-type]
-            showCompletedTasks=bool(int(row["show_completed_tasks"] or 0)),
+            showCompletedTasks=_safe_bool_int(row["show_completed_tasks"], default=False),
             defaultReviewScope=str(row["default_review_scope"] or defaults.defaultReviewScope),  # type: ignore[arg-type]
-            autoAssignSelf=bool(int(row["auto_assign_self"] if row["auto_assign_self"] is not None else 1)),
+            autoAssignSelf=_safe_bool_int(row["auto_assign_self"], default=True),
             updatedAt=str(row["updated_at"] or defaults.updatedAt),
         )
 
@@ -3666,9 +3690,9 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             defaultDueDatePreset=str(row["default_due_date_preset"] or defaults.defaultDueDatePreset),  # type: ignore[arg-type]
             defaultViewMode=str(row["default_view_mode"] or defaults.defaultViewMode),  # type: ignore[arg-type]
             listSortMode=str(row["list_sort_mode"] or defaults.listSortMode),  # type: ignore[arg-type]
-            showCompletedTasks=bool(int(row["show_completed_tasks"] or 0)),
+            showCompletedTasks=_safe_bool_int(row["show_completed_tasks"], default=False),
             defaultReviewScope=str(row["default_review_scope"] or defaults.defaultReviewScope),  # type: ignore[arg-type]
-            autoAssignSelf=bool(int(row["auto_assign_self"] if row["auto_assign_self"] is not None else 1)),
+            autoAssignSelf=_safe_bool_int(row["auto_assign_self"], default=True),
             updatedAt=str(row["updated_at"] or defaults.updatedAt),
         )
 
@@ -26723,7 +26747,10 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         """Strategic brain dashboard — aggregate pulse metrics from all subsystems.
 
         冷冻项目不进入 dashboard 卡片列表 — 它们已退出战略陪伴的视野。
+        P0 安全加固: 必须已登录才能看(组织级数据汇总).
         """
+        if not get_cached_session_user():
+            raise HTTPException(status_code=401, detail="未登录,无法查看组织级 dashboard")
         client_rows = state.db.fetchall(
             """
             SELECT id, name, stage, intro
@@ -26804,7 +26831,12 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
 
     @app.get("/api/v1/digital-assets/dashboard", response_model=DigitalAssetDashboardRecord)
     def get_digital_asset_dashboard() -> DigitalAssetDashboardRecord:
-        """Organization digital asset center — read-only asset map across clients."""
+        """Organization digital asset center — read-only asset map across clients.
+
+        P0 安全加固: 必须已登录才能看(组织级资产盘点).
+        """
+        if not get_cached_session_user():
+            raise HTTPException(status_code=401, detail="未登录,无法查看数字资产中心")
         return build_digital_asset_dashboard(state.db)
 
     def _append_organization_dna_refresh_event(run_id: str, level: str, message: str, detail: dict[str, object] | None = None) -> None:
@@ -28444,8 +28476,9 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                     title = str(tr["title"] or "")
                     if any(k in title for k in key_terms):
                         state.db.execute(
-                            "UPDATE tasks SET progress_status='done', updated_at=? WHERE id=?",
-                            (now, str(tr["id"])),
+                            "UPDATE tasks SET status='done', progress_status='done', "
+                            "completed_at=COALESCE(completed_at, ?), updated_at=? WHERE id=?",
+                            (now, now, str(tr["id"])),
                         )
                         linked_tasks.append(str(tr["id"]))
         except Exception:
@@ -28469,9 +28502,11 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         now = now_iso()
         if kind == "task":
             # tasks 没有 cancelled 状态, 统一用 done; cancel 加 tag 标记便于追溯
+            # 注意:status 和 progress_status 双轨字段必须同时写,否则前端列表/日历仍当 todo 显示。
             state.db.execute(
-                "UPDATE tasks SET progress_status='done', updated_at=? WHERE id=? AND client_id=?",
-                (now, raw_id, client_id),
+                "UPDATE tasks SET status='done', progress_status='done', "
+                "completed_at=COALESCE(completed_at, ?), updated_at=? WHERE id=? AND client_id=?",
+                (now, now, raw_id, client_id),
             )
         elif kind == "commit":
             new_status = "fulfilled" if action == "complete" else "cancelled"
@@ -42914,6 +42949,12 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         evidence = _resolve_primary_evidence(kernel_result)
         workspace_workflow = workspace_route.workflow
         workspace_generation_mode = workspace_route.generationMode
+        # inline AI 旁路绝不走 file_search(那是 chat 的"找文件"短路,不调 LLM 只返文件列表)。
+        # router 会把含"资料"/"文件"/"找"等词的 prompt 误判为 file_search,
+        # 但 inline 编辑器永远是改写/扩写/翻译任务,需要 LLM 真生成。强制改回 synthesis。
+        if assistant_id is None and workspace_workflow == "file_search":
+            workspace_workflow = "synthesis"
+            workspace_generation_mode = "long_synthesis"
         primary_sources = list(workspace_route.dataSources)
         question_focus_frame = build_question_focus_frame(
             prompt=prompt_for_context,
@@ -45451,6 +45492,50 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         )
         return {"ok": True, "surrogateId": surrogate_id}
 
+    @app.get("/api/v1/documents/{document_id}/text")
+    def get_document_text(document_id: str) -> dict:
+        """读取文档的纯文本/markdown 表示，给前端"用智能编辑器打开"用。
+        - .docx/.doc：用 python-docx 提取段落 + 表格，title 转 ## markdown 二级标题
+        - .md/.txt：直接读文件
+        - 其他类型暂不支持
+        """
+        row = state.db.fetchone("SELECT path, kind FROM documents WHERE id = ?", (document_id,))
+        if not row:
+            raise HTTPException(status_code=404, detail="找不到这份文档")
+        path = Path(str(row["path"] or ""))
+        kind = str(row["kind"] or "").lower()
+        if not str(path):
+            raise HTTPException(status_code=404, detail="文档路径为空")
+        if not path.exists():
+            raise HTTPException(status_code=404, detail="原文件不存在或已被移走")
+        suffix = path.suffix.lower()
+        if kind in ("docx", "doc") or suffix in (".docx", ".doc"):
+            from app.services.knowledge_v2 import _read_docx_text
+            try:
+                _, sections = _read_docx_text(path)
+            except Exception as exc:
+                raise HTTPException(status_code=500, detail=f"读取 Word 文档失败：{exc}") from exc
+            if sections:
+                lines: list[str] = []
+                for s in sections:
+                    title = str(s.get("title") or "").strip()
+                    text = str(s.get("text") or "").strip()
+                    if title and title != "正文":
+                        lines.append(f"## {title}")
+                        lines.append("")
+                    if text:
+                        lines.append(text)
+                        lines.append("")
+                content = "\n".join(lines).strip()
+            else:
+                content = ""
+            return {"content": content, "kind": "docx", "title": path.stem}
+        if kind == "md" or suffix == ".md":
+            return {"content": path.read_text(encoding="utf-8"), "kind": "md", "title": path.stem}
+        if suffix == ".txt":
+            return {"content": path.read_text(encoding="utf-8"), "kind": "txt", "title": path.stem}
+        raise HTTPException(status_code=415, detail=f"暂不支持读取 {kind or suffix} 类型的文档")
+
     @app.post("/api/v1/clients/{client_id}/knowledge/enrich-surrogates")
     def enrich_surrogates(client_id: str) -> dict:
         """Batch-enrich all document surrogates for a client with AI-generated retrieval summaries."""
@@ -45563,8 +45648,6 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
 
         build_client_summary(client_id)
         content = (payload.content or "").strip()
-        if not content:
-            raise HTTPException(status_code=400, detail="文档内容为空，无法处理")
         action = payload.action
         op = OPERATIONS.get(action)
         if op is None:
@@ -45573,6 +45656,13 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         user_request = (payload.userRequest or "").strip()
         creativity = payload.creativityMode
         selection_text = (payload.selectionText or "").strip()
+        # 至少要有一个输入信号(选区 / 整篇内容 / 用户指令 / attach 的文件)才有意义跑 AI。
+        # 空白文档 + 无选区 + 无指令 + 无文件 → 拒绝(LLM 没东西可基于)。
+        if not selection_text and not content and not user_request and not payload.workingDocumentIds:
+            raise HTTPException(
+                status_code=400,
+                detail="请先在编辑器写一点内容,或框选一段,或在 AI 输入框给指令,或从右侧引用文件后再执行。",
+            )
 
         # 决定作用范围 —
         # Case 1:有选区 → 选区作为待改写背景,生成内容替换选区
@@ -45648,6 +45738,10 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         from time import perf_counter as _pc
         started = _pc()
         try:
+            # 用户在右侧文件列表点 ← 箭头 attach 的文件,透传给数据中心作为优先召回种子
+            working_doc_ids = [
+                str(d).strip() for d in (payload.workingDocumentIds or []) if str(d).strip()
+            ] or None
             grounded = resolve_chat_answer_data_center_primary(
                 client_id=client_id,
                 thread_id=None,               # inline 旁路,不创建 chat thread
@@ -45656,7 +45750,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 search_id=None,
                 request_started=started,
                 run_id=None,
-                working_document_ids=None,
+                working_document_ids=working_doc_ids,
                 inline_creativity_override=effective_creativity,  # 用户在 popover 选的写作模式
             )
         except Exception as exc:
@@ -45721,7 +45815,9 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                     type="client_materials",
                     title=str(ev.get("title") or ev.get("documentTitle") or "客户资料"),
                     snippet=str(ev.get("excerpt") or ev.get("snippet") or "")[:240],
-                    refId=str(ev.get("id") or ev.get("documentId") or "") or None,
+                    # 优先取 documentId（真 documents 表 id,前端能反查 path/排序）;
+                    # ev["id"] 是临时 ev_xxx evidence id,跟 documents 表无关,只作 fallback。
+                    refId=str(ev.get("documentId") or ev.get("id") or "") or None,
                     extra={"answerMode": answer_mode, "evidenceStatus": evidence_status},
                 )
             )
@@ -47380,6 +47476,11 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 "start_date": temporal_fields["start_date"],
                 "due_date": temporal_due_date,
                 "duration_minutes": temporal_fields["duration_minutes"],
+                "owner_id": (
+                    payload.ownerId
+                    if "ownerId" in payload.model_fields_set
+                    else (str(row["owner_id"]) if row["owner_id"] else None)
+                ),
                 "owner_name": payload.ownerName or row["owner_name"],
                 "business_category": business_category,
                 "current_blocker": current_blocker,
@@ -47393,7 +47494,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             state.db.execute(
                 """
                 UPDATE tasks
-                SET title = ?, description = ?, status = ?, priority = ?, list_id = ?, scope_mode = ?, client_id = ?, event_line_id = ?, project_module_id = ?, project_flow_id = ?, ddl = ?, deadline_at = ?, scheduled_start_at = ?, scheduled_end_at = ?, completed_at = ?, start_date = ?, due_date = ?, duration_minutes = ?, owner_name = ?, business_category = ?, current_blocker = ?, next_action = ?, recent_decision = ?, evidence_count = ?, tags_json = ?, tag_ids_json = ?, updated_at = ?
+                SET title = ?, description = ?, status = ?, priority = ?, list_id = ?, scope_mode = ?, client_id = ?, event_line_id = ?, project_module_id = ?, project_flow_id = ?, ddl = ?, deadline_at = ?, scheduled_start_at = ?, scheduled_end_at = ?, completed_at = ?, start_date = ?, due_date = ?, duration_minutes = ?, owner_id = ?, owner_name = ?, business_category = ?, current_blocker = ?, next_action = ?, recent_decision = ?, evidence_count = ?, tags_json = ?, tag_ids_json = ?, updated_at = ?
                 WHERE id = ?
                 """,
                 (
@@ -47415,6 +47516,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                     merged["start_date"],
                     merged["due_date"],
                     merged["duration_minutes"],
+                    merged["owner_id"],
                     merged["owner_name"],
                     merged["business_category"],
                     merged["current_blocker"],
@@ -47427,6 +47529,48 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                     task_id,
                 ),
             )
+            # 协作者同步：payload 显式给了 collaboratorIds 时，diff 然后增删 task_collaborators。
+            # 旧版 update_task 本地路径完全不动这张表，导致编辑器里改了协作者后，
+            # 数据库一直反映创建时状态；inbox/可完成权限判断全错。
+            if "collaboratorIds" in payload.model_fields_set:
+                desired_ids = list(dict.fromkeys(payload.collaboratorIds or []))
+                existing_rows = state.db.fetchall(
+                    "SELECT user_id FROM task_collaborators WHERE task_id = ?",
+                    (task_id,),
+                )
+                existing_ids = {str(r["user_id"]) for r in existing_rows}
+                desired_set = set(desired_ids)
+                # 删除被移走的协作者
+                for uid in existing_ids - desired_set:
+                    state.db.execute(
+                        "DELETE FROM task_collaborators WHERE task_id = ? AND user_id = ?",
+                        (task_id, uid),
+                    )
+                # 添加新协作者 + 更新存在协作者的顺序
+                org_id_for_collab = ""
+                org_row = state.db.fetchone("SELECT organization_id FROM tasks WHERE id = ?", (task_id,))
+                if org_row and org_row["organization_id"]:
+                    org_id_for_collab = str(org_row["organization_id"])
+                for idx, uid in enumerate(desired_ids):
+                    if uid in existing_ids:
+                        state.db.execute(
+                            "UPDATE task_collaborators SET order_index = ?, updated_at = ? "
+                            "WHERE task_id = ? AND user_id = ?",
+                            (idx, update_timestamp, task_id, uid),
+                        )
+                    else:
+                        op_row = state.db.fetchone("SELECT name FROM operators WHERE id = ?", (uid,))
+                        full_name = str(op_row["name"]) if op_row and op_row["name"] else ""
+                        state.db.execute(
+                            """
+                            INSERT OR IGNORE INTO task_collaborators(
+                                task_id, organization_id, user_id, full_name, email,
+                                order_index, is_owner, inbox_status, return_reason, handled_at,
+                                created_at, updated_at
+                            ) VALUES(?, ?, ?, ?, ?, ?, 0, 'pending', NULL, NULL, ?, ?)
+                            """,
+                            (task_id, org_id_for_collab, uid, full_name, "", idx, update_timestamp, update_timestamp),
+                        )
             # P1-3：任务标 done → 反向 mark 关联 commitments fulfilled
             # commitments 表用 soft reference（source_type='task' + source_id=task_id），
             # 当前由 narrative_generator.upsert_commitments_from_narrative 写入；任务在工作台被勾完成时
@@ -53913,11 +54057,13 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         strategic_objective = str(body.get("strategicObjective") or "").strip()
         methodology = str(body.get("methodology") or "").strip()
 
-        # 200 字总硬限 — 跟 prompt 端约束保持一致 (留 10% buffer 应付标点)
-        if len(strategic_objective) + len(methodology) > 220:
+        # 200 字硬限 — 跟前端 handleSave (200) + LLM prompt "严格上限 200" 严格对齐, 0 buffer.
+        # 之前留 220 buffer 给用户直接发 PUT 留了绕过前端校验的空子, 现关掉.
+        total_chars = len(strategic_objective) + len(methodology)
+        if total_chars > 200:
             raise HTTPException(
                 status_code=400,
-                detail=f"战略主张 + 方法学 总长度 {len(strategic_objective) + len(methodology)} 字, 超过 200 字上限",
+                detail=f"战略主张 + 方法学 总长度 {total_chars} 字, 超过 200 字上限",
             )
 
         # 必须先有 LLM 抽取结果才能编辑 — 用户路径: 上传 .md → 跑 LLM → 编辑

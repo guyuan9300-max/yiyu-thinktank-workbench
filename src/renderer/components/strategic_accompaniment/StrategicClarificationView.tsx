@@ -19,18 +19,16 @@
  *   6. next          下一步
  */
 
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
   Users, Target, Clock, AlertCircle, CheckCircle, HelpCircle,
-  Mic, Type, ExternalLink, ChevronDown, FileSearch, Briefcase,
-  Sparkles, MessageCircle, Building2, RefreshCw, Database, GitBranch,
+  Mic, Type, ExternalLink, ChevronDown, Briefcase,
+  Sparkles, MessageCircle, RefreshCw, Database, GitBranch,
   Compass, Network, History, Handshake, AlertTriangle, ArrowRight,
   UploadCloud, ClipboardCheck, X,
 } from 'lucide-react';
 import {
   getClientClarificationContext,
-  getClientDuplicateDocuments,
-  resolveDuplicateDocuments,
   getClientNarrative,
   listClientNarrativeClarifications,
   submitClientNarrativeClarification,
@@ -63,7 +61,6 @@ import {
   type ClarificationCommitment,
   type ClarificationNeed,
   type ClarificationProfile,
-  type DuplicateDocumentGroup,
   type ClientNarrative,
   type NarrativeDimensionRecord,
   type NarrativeDimensionKey,
@@ -106,10 +103,19 @@ export function StrategicClarificationView({
   const [regeneratingDimensions, setRegeneratingDimensions] = useState<Set<NarrativeDimensionKey>>(new Set());
   const [refreshTodoKey, setRefreshTodoKey] = useState(0);
 
-  // S4.2 fix: 切客户竞态 — 之前 mounted flag 只在 .then() 里检查, 但 loadAll 内部的 setState
-  // 已经发生(setNarrative/setClarifications/setCtx 都在 try 里直接调用), flag 形同虚设.
-  // 改成: 把 mounted check 推到每个 setState 之前. 切客户 → cleanup mounted=false →
-  // 旧请求即使返回, 也不会再 setState 覆盖新客户的数据.
+  // 根因修复: 切客户竞态 — async 操作(submit clarification / regenerate narrative /
+  // regenerate single dim)期间用户可能切到另一客户. await 返回时如果直接 setX(新数据),
+  // 旧客户的响应会污染新客户的 UI. 通用解法: ref 持有"当前真实 selectedClientId",
+  // 每个 async handler 开头捕获 capturedId, await 后校验 ref.current === captured.
+  //
+  // 注: useEffect 内的 loadAll 已有 isMounted 闭包做同等校验; 事件 handler
+  // (handleClarify / handleRegenerate / handleRegenerateDimension) 无法用 useEffect cleanup,
+  // 必须靠 ref 这条独立路径.
+  const selectedClientIdRef = useRef(selectedClientId);
+  useEffect(() => {
+    selectedClientIdRef.current = selectedClientId;
+  }, [selectedClientId]);
+
   const loadAll = useCallback(async (clientId: string, isMounted: () => boolean) => {
     if (!isMounted()) return;
     setLoading(true);
@@ -172,19 +178,24 @@ export function StrategicClarificationView({
 
   const handleClarify = async (dimension: NarrativeDimensionKey, answer: string, question?: string) => {
     if (!selectedClientId || !answer.trim()) return;
+    const capturedClientId = selectedClientId;
     try {
-      await submitClientNarrativeClarification(selectedClientId, {
+      await submitClientNarrativeClarification(capturedClientId, {
         dimension,
         answer: answer.trim(),
         question,
       });
+      // 切客户后, 旧客户的 success flash 不显示 (避免误导)
+      if (selectedClientIdRef.current !== capturedClientId) return;
       flash?.('success', '已提交澄清, 点"重新生成"让 AI 更新故事网。');
-      const c = await listClientNarrativeClarifications(selectedClientId);
+      const c = await listClientNarrativeClarifications(capturedClientId);
+      if (selectedClientIdRef.current !== capturedClientId) return;
       setClarifications(c.clarifications);
       setNarrative((cur) =>
         cur ? { ...cur, openClarificationsCount: cur.openClarificationsCount + 1 } : cur,
       );
     } catch (err) {
+      if (selectedClientIdRef.current !== capturedClientId) return;
       flash?.('error', err instanceof Error ? err.message : '提交失败');
     }
   };
@@ -192,25 +203,32 @@ export function StrategicClarificationView({
   const handleRegenerateDimension = async (dim: NarrativeDimensionKey) => {
     if (!selectedClientId) return;
     if (regeneratingDimensions.has(dim)) return; // 已在刷新此维度,忽略重复点击
+    const capturedClientId = selectedClientId;
     setRegeneratingDimensions((prev) => {
       const next = new Set(prev);
       next.add(dim);
       return next;
     });
     try {
-      const fresh = await regenerateClientNarrative(selectedClientId, {
+      const fresh = await regenerateClientNarrative(capturedClientId, {
         trigger: 'manual_single_dimension',
         force: true,
         dimensions: [dim],
       });
+      // 切客户后, 旧客户的 narrative 不写入新客户 state
+      if (selectedClientIdRef.current !== capturedClientId) return;
       setNarrative(fresh);
-      const c = await listClientNarrativeClarifications(selectedClientId);
+      const c = await listClientNarrativeClarifications(capturedClientId);
+      if (selectedClientIdRef.current !== capturedClientId) return;
       setClarifications(c.clarifications);
       const label = DIMENSION_META[dim]?.label || dim;
       flash?.('success', `已重新生成: ${label} (v${fresh.rev}, 其他板块未变)`);
     } catch (err) {
+      if (selectedClientIdRef.current !== capturedClientId) return;
       flash?.('error', err instanceof Error ? err.message : `${DIMENSION_META[dim]?.label || dim} 生成失败`);
     } finally {
+      // 不论是否切客户都要清掉 regenerating flag (UI 不再 spin),
+      // 切了客户也无所谓 — regeneratingDimensions 本身不影响新客户的 UI
       setRegeneratingDimensions((prev) => {
         const next = new Set(prev);
         next.delete(dim);
@@ -227,16 +245,22 @@ export function StrategicClarificationView({
       '全部重生会覆盖 6 个维度全部内容,包括其他同事已校准的部分.\n如果只想更新某一个板块,请关闭此弹窗,点该板块右上角刷新按钮.\n\n确认要全部重生吗?',
     );
     if (!confirmed) return;
+    const capturedClientId = selectedClientId;
     setRegenerating(true);
     try {
-      const fresh = await regenerateClientNarrative(selectedClientId, { trigger: 'manual', force: true });
+      const fresh = await regenerateClientNarrative(capturedClientId, { trigger: 'manual', force: true });
+      // 切客户后, 旧客户的全部重生结果不写入新客户 state
+      if (selectedClientIdRef.current !== capturedClientId) return;
       setNarrative(fresh);
-      const c = await listClientNarrativeClarifications(selectedClientId);
+      const c = await listClientNarrativeClarifications(capturedClientId);
+      if (selectedClientIdRef.current !== capturedClientId) return;
       setClarifications(c.clarifications);
       flash?.('success', `已重新生成 v${fresh.rev} (生成方: ${fresh.generator})`);
     } catch (err) {
+      if (selectedClientIdRef.current !== capturedClientId) return;
       flash?.('error', err instanceof Error ? err.message : '生成失败');
     } finally {
+      // regenerating spin 始终要清, 否则 UI 永远转
       setRegenerating(false);
     }
   };
@@ -469,22 +493,37 @@ function StrategicDnaCard({
   const [extracting, setExtracting] = useState(false);
   const [saving, setSaving] = useState(false);
 
+  // 根因修复: clientId 是 prop, 父组件切客户时 prop 变化, 但本组件的 async 操作
+  // (reload / upload / LLM extract 最长 1-2 分钟) 期间不知道. clientIdRef 持有
+  // "ref 视角的最新 clientId", 每个 await 后校验 ref.current === capturedClientId,
+  // 不一致就丢弃响应 (旧客户的数据不污染新客户 UI).
+  const clientIdRef = useRef(clientId);
+  useEffect(() => {
+    clientIdRef.current = clientId;
+  }, [clientId]);
+
   const reload = useCallback(() => {
     if (!clientId) return;
+    const capturedClientId = clientId;
     setLoading(true);
     void Promise.all([
-      getStrategicDocs(clientId),
-      fetchBrandStrategyExtract(clientId),
+      getStrategicDocs(capturedClientId),
+      fetchBrandStrategyExtract(capturedClientId),
     ])
       .then(([d, e]) => {
+        if (clientIdRef.current !== capturedClientId) return;  // 切客户了, 丢弃
         setDocs(d);
         setExtract(e.extract);
       })
       .catch(() => {
+        if (clientIdRef.current !== capturedClientId) return;
         setDocs(null);
         setExtract(null);
       })
-      .finally(() => setLoading(false));
+      .finally(() => {
+        if (clientIdRef.current !== capturedClientId) return;
+        setLoading(false);
+      });
   }, [clientId]);
 
   useEffect(() => {
@@ -503,26 +542,37 @@ function StrategicDnaCard({
       flash?.('error', '文档过大 (>200KB), 请精简后再上传');
       return;
     }
+    const capturedClientId = clientId;
     try {
       const mdContent = await file.text();
-      await uploadStrategicDoc(clientId, { docType, fileName: file.name, mdContent });
+      await uploadStrategicDoc(capturedClientId, { docType, fileName: file.name, mdContent });
+      // 切客户后, 旧客户的 success flash 不打 (避免误导新客户视角)
+      if (clientIdRef.current !== capturedClientId) return;
       flash?.('success', `已上传 ${docType === 'strategy' ? '战略文档' : '方法论文档'}, 正在让 AI 抽取核心 200 字...`);
-      // 上传后自动 trigger LLM 抽取 (如果两份都已上传)
-      const next = await getStrategicDocs(clientId);
+      const next = await getStrategicDocs(capturedClientId);
+      if (clientIdRef.current !== capturedClientId) return;
       setDocs(next);
       if (next.hasStrategy && next.hasMethodology) {
+        // LLM 抽取是最长操作 (60-120s), 用户最可能在这段时间切走
         setExtracting(true);
         try {
-          await triggerBrandStrategyExtraction(clientId);
+          await triggerBrandStrategyExtraction(capturedClientId);
+          if (clientIdRef.current !== capturedClientId) return;
           flash?.('success', '✓ AI 抽取完成');
         } catch (err) {
+          if (clientIdRef.current !== capturedClientId) return;
           flash?.('error', err instanceof Error ? `AI 抽取失败: ${err.message}` : 'AI 抽取失败');
         } finally {
-          setExtracting(false);
-          reload();
+          // setExtracting(false) 切了客户也无害, 因为新客户的 extracting state 是自己实例的
+          // 但 reload() 必须只在还是同客户时调, 否则触发新客户的 fetch
+          if (clientIdRef.current === capturedClientId) {
+            setExtracting(false);
+            reload();
+          }
         }
       }
     } catch (err) {
+      if (clientIdRef.current !== capturedClientId) return;
       flash?.('error', err instanceof Error ? err.message : '上传失败');
     }
   };
@@ -546,16 +596,20 @@ function StrategicDnaCard({
       flash?.('error', '战略主张和方法学都不能为空');
       return;
     }
+    const capturedClientId = clientId;
     setSaving(true);
     try {
-      const resp = await updateBrandStrategyExtract(clientId, editingDraft);
+      const resp = await updateBrandStrategyExtract(capturedClientId, editingDraft);
+      if (clientIdRef.current !== capturedClientId) return;
       setExtract(resp.extract);
       setEditing(false);
       flash?.('success', '已保存');
     } catch (err) {
+      if (clientIdRef.current !== capturedClientId) return;
       flash?.('error', err instanceof Error ? err.message : '保存失败');
     } finally {
-      setSaving(false);
+      // setSaving(false) 写到当前实例的 state, 切客户后是新组件实例, 旧实例无人看, 不影响
+      if (clientIdRef.current === capturedClientId) setSaving(false);
     }
   };
 
@@ -576,18 +630,18 @@ function StrategicDnaCard({
   const hasExtract = Boolean(extract && (extract.strategicObjective || extract.methodology));
 
   return (
-    <div className="rounded-2xl border border-violet-100 bg-gradient-to-br from-violet-50/40 to-white p-5">
+    <div className="rounded-2xl border border-slate-100 bg-gradient-to-br from-slate-50/40 to-white p-5">
       <div className="flex items-center justify-between gap-2 mb-3">
         <div className="flex items-center gap-2">
-          <Target size={16} className="text-violet-600" />
-          <h3 className="text-[15px] font-bold text-violet-900">战略定位与发展路径</h3>
+          <Target size={16} className="text-slate-600" />
+          <h3 className="text-[15px] font-bold text-slate-900">战略定位与发展路径</h3>
           {extract?.isStale && (
             <span className="text-[10px] text-amber-700 bg-amber-100 rounded-full px-2 py-0.5 font-bold" title="上传的 .md 已变, 抽取结果可能过期">
               文档已更新, 待重抽
             </span>
           )}
         </div>
-        <span className="text-[10px] text-violet-700 bg-violet-100 rounded-full px-2 py-0.5 font-bold">
+        <span className="text-[10px] text-slate-700 bg-slate-100 rounded-full px-2 py-0.5 font-bold">
           {hasExtract ? '已配置' : hasAllDocs ? '抽取中' : '未配置'}
         </span>
       </div>
@@ -595,8 +649,8 @@ function StrategicDnaCard({
       {/* 1. 未上传任何 .md → 显示 2 个上传槽位 */}
       {!hasAllDocs && !hasExtract && (
         <>
-          <div className="text-[12px] leading-relaxed text-slate-700 bg-violet-50/60 rounded-xl px-4 py-3 border border-violet-100 mb-3">
-            <p className="font-semibold text-violet-900 mb-1">AI 说:</p>
+          <div className="text-[12px] leading-relaxed text-slate-700 bg-slate-50/60 rounded-xl px-4 py-3 border border-slate-100 mb-3">
+            <p className="font-semibold text-slate-900 mb-1">AI 说:</p>
             <p>
               我没找到客户的战略文档和业务方法论. 上传这两份 <code className="bg-white px-1.5 py-0.5 rounded text-[11px]">.md</code> 后,
               AI 会抽出 200 字以内的"战略主张 + 方法学", 你可以再手动微调. 这份骨架是品牌监控/情报站/chat 等模块识别客户战略的关键基线.
@@ -623,7 +677,7 @@ function StrategicDnaCard({
 
       {/* 2. 已上传但还在抽取 / 抽取失败 */}
       {hasAllDocs && !hasExtract && (
-        <div className="rounded-xl border border-violet-100 bg-white px-4 py-3 text-[12px] text-slate-600">
+        <div className="rounded-xl border border-slate-100 bg-white px-4 py-3 text-[12px] text-slate-600">
           {extracting ? '⏳ AI 正在抽取战略主张 + 方法学 (约 1-2 分钟)...' : '已上传两份文档, 但还没抽取出结果. 重传任意一份重新触发.'}
         </div>
       )}
@@ -631,16 +685,16 @@ function StrategicDnaCard({
       {/* 3. 已配置 — 显示 LLM 抽取的 200 字 + 编辑/重传 */}
       {hasExtract && !editing && extract && (
         <div className="space-y-3">
-          <div className="rounded-xl border border-violet-200 bg-white px-4 py-3">
+          <div className="rounded-xl border border-slate-200 bg-white px-4 py-3">
             <div className="flex items-center justify-between gap-2 mb-1.5">
-              <div className="text-[11px] font-bold uppercase tracking-[0.12em] text-violet-700">战略主张</div>
+              <div className="text-[11px] font-bold uppercase tracking-[0.12em] text-slate-700">战略主张</div>
               <span className="text-[10px] text-slate-400 tabular-nums">{extract.strategicObjective.length} 字</span>
             </div>
             <p className="text-[13px] leading-[1.75] text-slate-800 whitespace-pre-wrap">{extract.strategicObjective}</p>
           </div>
-          <div className="rounded-xl border border-violet-200 bg-white px-4 py-3">
+          <div className="rounded-xl border border-slate-200 bg-white px-4 py-3">
             <div className="flex items-center justify-between gap-2 mb-1.5">
-              <div className="text-[11px] font-bold uppercase tracking-[0.12em] text-violet-700">组织方法学</div>
+              <div className="text-[11px] font-bold uppercase tracking-[0.12em] text-slate-700">组织方法学</div>
               <span className="text-[10px] text-slate-400 tabular-nums">{extract.methodology.length} 字</span>
             </div>
             <p className="text-[13px] leading-[1.75] text-slate-800 whitespace-pre-wrap">{extract.methodology}</p>
@@ -649,17 +703,17 @@ function StrategicDnaCard({
             <button
               type="button"
               onClick={handleStartEdit}
-              className="inline-flex items-center gap-1.5 rounded-full border border-violet-200 bg-white px-3 py-1.5 text-[11px] font-bold text-violet-700 hover:bg-violet-50"
+              className="inline-flex items-center gap-1.5 rounded-full border border-slate-200 bg-white px-3 py-1.5 text-[11px] font-bold text-slate-700 hover:bg-slate-50"
             >
               <Type size={12} />
               编辑
             </button>
-            <label htmlFor="strategic-doc-replace-strategy" className="cursor-pointer inline-flex items-center gap-1.5 rounded-full border border-violet-200 bg-white px-3 py-1.5 text-[11px] font-bold text-violet-700 hover:bg-violet-50">
+            <label htmlFor="strategic-doc-replace-strategy" className="cursor-pointer inline-flex items-center gap-1.5 rounded-full border border-slate-200 bg-white px-3 py-1.5 text-[11px] font-bold text-slate-700 hover:bg-slate-50">
               <UploadCloud size={12} />
               重传战略文档
               <input id="strategic-doc-replace-strategy" type="file" accept=".md,.markdown,text/markdown" className="hidden" onChange={handleFilePick('strategy')} />
             </label>
-            <label htmlFor="strategic-doc-replace-methodology" className="cursor-pointer inline-flex items-center gap-1.5 rounded-full border border-violet-200 bg-white px-3 py-1.5 text-[11px] font-bold text-violet-700 hover:bg-violet-50">
+            <label htmlFor="strategic-doc-replace-methodology" className="cursor-pointer inline-flex items-center gap-1.5 rounded-full border border-slate-200 bg-white px-3 py-1.5 text-[11px] font-bold text-slate-700 hover:bg-slate-50">
               <UploadCloud size={12} />
               重传方法论
               <input id="strategic-doc-replace-methodology" type="file" accept=".md,.markdown,text/markdown" className="hidden" onChange={handleFilePick('methodology')} />
@@ -704,7 +758,7 @@ function StrategicDnaCard({
                 type="button"
                 onClick={() => void handleSave()}
                 disabled={saving || editingDraft.strategicObjective.length + editingDraft.methodology.length > 200}
-                className="inline-flex items-center gap-1.5 rounded-full bg-violet-600 text-white px-3 py-1.5 text-[11px] font-bold hover:bg-violet-700 disabled:opacity-50 disabled:cursor-not-allowed"
+                className="inline-flex items-center gap-1.5 rounded-full bg-slate-700 text-white px-3 py-1.5 text-[11px] font-bold hover:bg-slate-800 disabled:opacity-50 disabled:cursor-not-allowed"
               >
                 {saving ? '保存中...' : '保存'}
               </button>
@@ -734,13 +788,13 @@ function StrategicDocUploadSlot({
   return (
     <label htmlFor={inputId} className={`block cursor-pointer rounded-xl border-2 border-dashed px-4 py-4 text-center transition-colors ${
       uploaded
-        ? 'border-violet-300 bg-violet-50/60 hover:border-violet-400'
-        : 'border-violet-200 bg-white hover:border-violet-400'
+        ? 'border-slate-300 bg-slate-50/60 hover:border-slate-300'
+        : 'border-slate-200 bg-white hover:border-slate-300'
     }`}>
-      <UploadCloud size={18} className="mx-auto text-violet-500 mb-2" />
+      <UploadCloud size={18} className="mx-auto text-slate-500 mb-2" />
       <div className="text-[12px] font-bold text-slate-800">{title}{uploaded ? ' ✓' : ''}</div>
       <div className="text-[10px] text-slate-500 mt-0.5">{hint}</div>
-      <div className="text-[10px] text-violet-600 font-bold mt-2">
+      <div className="text-[10px] text-slate-600 font-bold mt-2">
         {uploaded ? '已上传, 点击替换' : '点击上传 .md 文件'}
       </div>
       <input id={inputId} type="file" accept=".md,.markdown,text/markdown" className="hidden" onChange={onPick} />
@@ -762,9 +816,9 @@ function StrategicEditField({
 }) {
   const over = value.length > 100;
   return (
-    <div className="rounded-xl border border-violet-200 bg-white px-4 py-3">
+    <div className="rounded-xl border border-slate-200 bg-white px-4 py-3">
       <div className="flex items-center justify-between gap-2 mb-1.5">
-        <div className="text-[11px] font-bold uppercase tracking-[0.12em] text-violet-700">{label}</div>
+        <div className="text-[11px] font-bold uppercase tracking-[0.12em] text-slate-700">{label}</div>
         <span className={`text-[10px] tabular-nums ${over ? 'text-rose-600 font-bold' : 'text-slate-400'}`}>
           {value.length} / 100 字
         </span>
@@ -774,7 +828,7 @@ function StrategicEditField({
         onChange={(e) => onChange(e.target.value)}
         placeholder={placeholder}
         rows={4}
-        className="w-full resize-none rounded-lg border border-slate-200 bg-slate-50/40 px-3 py-2 text-[13px] leading-[1.75] text-slate-800 placeholder:text-slate-400 focus:outline-none focus:border-violet-400 focus:bg-white"
+        className="w-full resize-none rounded-lg border border-slate-200 bg-slate-50/40 px-3 py-2 text-[13px] leading-[1.75] text-slate-800 placeholder:text-slate-400 focus:outline-none focus:border-slate-300 focus:bg-white"
       />
     </div>
   );
@@ -1118,7 +1172,7 @@ function NarrativeDimensionCard({
 }
 
 const KIND_META: Record<NextStepItem['kind'], { label: string; bg: string; text: string }> = {
-  meeting:         { label: '会议',   bg: 'bg-violet-100',  text: 'text-violet-700' },
+  meeting:         { label: '会议',   bg: 'bg-slate-100',  text: 'text-slate-700' },
   commitment:      { label: '承诺',   bg: 'bg-blue-100',    text: 'text-blue-700' },
   task:            { label: '任务',   bg: 'bg-amber-100',   text: 'text-amber-700' },
   meeting_action:  { label: '会议待办', bg: 'bg-emerald-100', text: 'text-emerald-700' },
@@ -1224,10 +1278,10 @@ function MeetingActionItemsCard({
   }
   if (items.length === 0) {
     return (
-      <section className="rounded-2xl border border-violet-100 bg-violet-50/40 px-4 py-3">
+      <section className="rounded-2xl border border-slate-100 bg-slate-50/60 px-4 py-3">
         <div className="flex items-center gap-2 mb-1">
-          <ClipboardCheck size={13} className="text-violet-600" />
-          <h3 className="text-[12px] font-bold text-violet-800">下一步要做什么</h3>
+          <ClipboardCheck size={13} className="text-slate-600" />
+          <h3 className="text-[12px] font-bold text-slate-800">下一步要做什么</h3>
           <div className="flex-1" />
           {onRegenerateNarrative && (
             <button
@@ -1236,7 +1290,7 @@ function MeetingActionItemsCard({
               disabled={narrativeRegenerating}
               title="重新生成全部 6 段叙事 (重生后下一步列表也会更新)"
               aria-label="重新生成全部 6 段叙事"
-              className="inline-flex items-center justify-center w-6 h-6 rounded-full text-violet-600 hover:bg-violet-100 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+              className="inline-flex items-center justify-center w-6 h-6 rounded-full text-slate-600 hover:bg-slate-100 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
             >
               <RefreshCw size={12} className={narrativeRegenerating ? 'animate-spin' : ''} />
             </button>
@@ -1250,11 +1304,11 @@ function MeetingActionItemsCard({
   }
 
   return (
-    <section className="rounded-2xl border border-violet-100 bg-violet-50/40 px-4 py-3">
+    <section className="rounded-2xl border border-slate-100 bg-slate-50/60 px-4 py-3">
       <div className="flex items-center gap-2 mb-2">
-        <ClipboardCheck size={13} className="text-violet-600" />
-        <h3 className="text-[12px] font-bold text-violet-800">下一步要做什么</h3>
-        <span className="text-[10px] text-violet-700 bg-violet-100 rounded-full px-2 py-0.5 font-bold">
+        <ClipboardCheck size={13} className="text-slate-600" />
+        <h3 className="text-[12px] font-bold text-slate-800">下一步要做什么</h3>
+        <span className="text-[10px] text-slate-700 bg-slate-100 rounded-full px-2 py-0.5 font-bold">
           {items.length}
         </span>
         <div className="flex-1" />
@@ -1265,7 +1319,7 @@ function MeetingActionItemsCard({
             disabled={narrativeRegenerating}
             title="重新生成全部 6 段叙事 (重生后下一步列表也会更新)"
             aria-label="重新生成全部 6 段叙事"
-            className="inline-flex items-center justify-center w-6 h-6 rounded-full text-violet-600 hover:bg-violet-100 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+            className="inline-flex items-center justify-center w-6 h-6 rounded-full text-slate-600 hover:bg-slate-100 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
           >
             <RefreshCw size={12} className={narrativeRegenerating ? 'animate-spin' : ''} />
           </button>
@@ -1299,7 +1353,7 @@ function ActionRow({
 }) {
   const meta = KIND_META[item.kind] ?? KIND_META.meeting;
   return (
-    <div className="rounded-xl border border-slate-100 bg-white px-3 py-2.5 hover:border-violet-200 transition-colors">
+    <div className="rounded-xl border border-slate-100 bg-white px-3 py-2.5 hover:border-slate-200 transition-colors">
       {/* 第一行: 左 kind chip + 右 三按钮 */}
       <div className="flex items-center justify-between gap-2 mb-1.5">
         <span className={`text-[10px] font-bold ${meta.text} ${meta.bg} rounded px-1.5 py-0.5`}>
@@ -1311,7 +1365,7 @@ function ActionRow({
               type="button"
               onClick={onPromote}
               title="制定任务"
-              className="inline-flex items-center justify-center w-6 h-6 rounded-full text-violet-600 hover:bg-violet-100 hover:text-violet-800"
+              className="inline-flex items-center justify-center w-6 h-6 rounded-full text-slate-600 hover:bg-slate-100 hover:text-slate-800"
             >
               <ArrowRight size={13} />
             </button>

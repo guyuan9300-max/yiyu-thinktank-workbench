@@ -20,7 +20,6 @@ import {
   regenerateClientNarrative,
   resolveDuplicateDocuments,
   getStrategicThoughts,
-  refreshClientDigitalAssetNarrative,
   refreshStrategicThoughts,
   reviewContradiction,
   reviewStrategicThought,
