@@ -10,7 +10,7 @@ from pathlib import Path
 # 之前 20260518001 (200 亿) 远超上限, SQLite 静默 set 为 0, 每次启动都重做完整迁移
 # (这是 20260518 那次坏 db 的真正根因之一: 重做时遇上 reload race + backfill 无事务).
 # 改用 YYYYMMDD 格式 (8 位), 每次 schema 变化递增日期. 20260519 = 此次修复.
-BACKEND_SCHEMA_VERSION = 20260523  # v2.1 W2-B: llm_context 模块 prompt_log 表
+BACKEND_SCHEMA_VERSION = 20260524  # v2.2 F1.7: client_stage_audit 表 + N3 actor_type/actor_id 预留
 
 
 # R6：内置罗永浩写作风格的 distilled prompt（手工 distill，不依赖在线抓取，避免外部依赖）。
@@ -2884,6 +2884,30 @@ class Database:
                 );
                 CREATE UNIQUE INDEX IF NOT EXISTS idx_client_glossary_client_term
                     ON client_glossary(client_id, normalized_term);
+
+                -- v2.2 F1.7: client_stage_audit 客户阶段变更审计表
+                -- 修 v1.0 'frozen_at 被云端覆盖' bug 的关键证据链
+                -- 所有 clients.stage 变更 (freeze/unfreeze/archive/cloud_sync) 必须走 ClientRepository
+                --   并自动写一条 audit log。actor_type + actor_id 同时满足 N3 (3.0 AI actor 预留)。
+                CREATE TABLE IF NOT EXISTS client_stage_audit (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    client_id TEXT NOT NULL,
+                    old_stage TEXT,
+                    new_stage TEXT NOT NULL,
+                    -- N3 接入预留 (A1): 区分 human / ai_agent / system
+                    actor_type TEXT NOT NULL DEFAULT 'system',
+                    -- N3 接入预留: user_id 或 'cloud_sync' / 'local_freeze_guard' 等 system 标识
+                    actor_id TEXT NOT NULL DEFAULT '',
+                    reason TEXT NOT NULL DEFAULT '',
+                    -- guard_action: 'applied' (写入成功) / 'guarded' (云端覆盖被 frozen 守门阻止)
+                    guard_action TEXT NOT NULL DEFAULT 'applied',
+                    changed_at TEXT NOT NULL,
+                    FOREIGN KEY(client_id) REFERENCES clients(id) ON DELETE CASCADE
+                );
+                CREATE INDEX IF NOT EXISTS idx_client_stage_audit_client_changed
+                    ON client_stage_audit(client_id, changed_at DESC);
+                CREATE INDEX IF NOT EXISTS idx_client_stage_audit_guarded
+                    ON client_stage_audit(guard_action) WHERE guard_action = 'guarded';
 
                 -- Phase 1：结构化表格（xlsx 每个 sheet 一行）
                 -- 用作 RAG 检索 + 计算查询的"一等公民"

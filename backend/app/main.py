@@ -9683,6 +9683,24 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             local_updated = str(existing["updated_at"] or "")
             if local_sync in {"pending", "local"} and local_updated and local_updated > cloud_updated_at:
                 return str(existing["id"])
+
+            # ★ v2.2 F1.7 (修 v1.0 客户 bug #1: frozen 被云端覆盖):
+            # stage 字段必须经 ClientRepository.apply_cloud_stage_change 守门。
+            # 本地 stage='frozen' 时云端 stage 不允许覆盖, 并记 audit log。
+            cloud_stage_target = str(payload.get("stage") or "待导入资料")
+            local_stage = str(existing["stage"] or "")
+            from app.modules.client.repository import ClientRepository
+            _client_repo = ClientRepository(state.db)
+            # 调守门: 决定最终写入的 stage 是云端值还是保留本地 frozen
+            stage_applied, _stage_msg = _client_repo.apply_cloud_stage_change(
+                str(existing["id"]), cloud_stage_target,
+            )
+            # apply_cloud_stage_change 内部已经写了 stage 字段(如果允许)+ audit log
+            # 这里只需要决定接下来 UPDATE 时 stage 字段写啥:
+            #   - 守门允许 → stage 已被 Repository 写入云端值, 这里用 cloud_stage_target
+            #   - 守门拒绝 → 保留本地 frozen, 这里用 local_stage
+            final_stage = cloud_stage_target if stage_applied else local_stage
+
             state.db.execute(
                 """
                 UPDATE clients
@@ -9699,7 +9717,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                     str(payload.get("domain") or "项目"),
                     str(payload.get("type") or "项目"),
                     str(payload.get("intro") or ""),
-                    str(payload.get("stage") or "待导入资料"),
+                    final_stage,  # ← v2.2 F1.7: 经守门后的 stage
                     str(payload.get("color") or "#5B7BFE"),
                     related_user_ids_json,
                     is_dc,

@@ -204,35 +204,233 @@ class ClientRepository:
         return result
 
     # ── 状态唯一真相 (L2 核心) ────────────────────────────────────
-    def freeze(self, client_id: str, reason: str = "") -> ClientRecord:
+    def _write_stage_audit(
+        self,
+        *,
+        client_id: str,
+        old_stage: str | None,
+        new_stage: str,
+        actor_type: str = "human",
+        actor_id: str = "",
+        reason: str = "",
+        guard_action: str = "applied",
+    ) -> None:
+        """v2.2 F1.7: 客户阶段变更审计落地。
+
+        所有 clients.stage 变化必须经此. 用法:
+        - freeze/unfreeze/archive 内部自动调用
+        - cloud sync 覆盖被守门时也写一条 guard_action='guarded' (用于诊断 v1.0 bug)
+
+        N3 (3.0 接入预留): actor_type 区分 human/ai_agent/system, 后续 AI agent 改阶段时一致。
+        """
+        self._db.execute(
+            """
+            INSERT INTO client_stage_audit (
+                client_id, old_stage, new_stage,
+                actor_type, actor_id, reason, guard_action, changed_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                client_id,
+                old_stage,
+                new_stage,
+                actor_type,
+                actor_id,
+                reason,
+                guard_action,
+                _now_iso(),
+            ),
+        )
+
+    def freeze(
+        self,
+        client_id: str,
+        reason: str = "",
+        *,
+        actor_type: str = "human",
+        actor_id: str = "",
+    ) -> ClientRecord:
         """冻结 = 不被云端同步覆盖。L2 状态字段唯一真相的入口。
 
         修 v1.0 'frozen_at 被云端覆盖' bug 的关键 — 只能通过本方法改 stage='frozen'。
-        Phase 1 F1.7 会扩 client_stage_audit 表记录 reason + by_user。
+        v2.2 F1.7 落地: 写 client_stage_audit log 记录 actor + reason。
+
+        N3 (3.0 接入预留): actor_type='ai_agent' 时表示 AI 主动冻结, 跟人触发区分。
 
         Args:
             client_id: 要冻结的客户 id
-            reason: 冻结原因 (Phase 1 暂未持久化, F1.7 实施时再补)
+            reason: 冻结原因 (持久化到 audit log)
+            actor_type: 'human' / 'ai_agent' / 'system'
+            actor_id: user_id 或 ai_session_id
         """
         existing = self.get_by_id(client_id)
         if existing is None:
             raise ValueError(f"client not found: {client_id}")
         if existing.stage == "frozen":
             return existing  # 已冻结, 幂等
-        # TODO Phase 1 F1.7: INSERT INTO client_stage_audit (..., reason=reason, ...)
-        _ = reason  # 当前 unused, F1.7 会用
-        return self.update(client_id, ClientUpdatePayload(stage="frozen"))
+        old_stage = existing.stage
+        result = self.update(client_id, ClientUpdatePayload(stage="frozen"))
+        self._write_stage_audit(
+            client_id=client_id,
+            old_stage=old_stage,
+            new_stage="frozen",
+            actor_type=actor_type,
+            actor_id=actor_id,
+            reason=reason,
+        )
+        return result
 
-    def unfreeze(self, client_id: str) -> ClientRecord:
-        """解冻 → stage='active'"""
+    def unfreeze(
+        self,
+        client_id: str,
+        reason: str = "",
+        *,
+        actor_type: str = "human",
+        actor_id: str = "",
+    ) -> ClientRecord:
+        """解冻 → stage='active', 写 audit log"""
         existing = self.get_by_id(client_id)
         if existing is None:
             raise ValueError(f"client not found: {client_id}")
-        return self.update(client_id, ClientUpdatePayload(stage="active"))
+        if existing.stage == "active":
+            return existing
+        old_stage = existing.stage
+        result = self.update(client_id, ClientUpdatePayload(stage="active"))
+        self._write_stage_audit(
+            client_id=client_id,
+            old_stage=old_stage,
+            new_stage="active",
+            actor_type=actor_type,
+            actor_id=actor_id,
+            reason=reason,
+        )
+        return result
 
-    def archive(self, client_id: str) -> ClientRecord:
-        """归档 → stage='archived' (仍可读, 默认列表隐藏)"""
-        return self.update(client_id, ClientUpdatePayload(stage="archived"))
+    def archive(
+        self,
+        client_id: str,
+        reason: str = "",
+        *,
+        actor_type: str = "human",
+        actor_id: str = "",
+    ) -> ClientRecord:
+        """归档 → stage='archived' (仍可读, 默认列表隐藏), 写 audit log"""
+        existing = self.get_by_id(client_id)
+        if existing is None:
+            raise ValueError(f"client not found: {client_id}")
+        if existing.stage == "archived":
+            return existing
+        old_stage = existing.stage
+        result = self.update(client_id, ClientUpdatePayload(stage="archived"))
+        self._write_stage_audit(
+            client_id=client_id,
+            old_stage=old_stage,
+            new_stage="archived",
+            actor_type=actor_type,
+            actor_id=actor_id,
+            reason=reason,
+        )
+        return result
+
+    # ── v2.2 F1.7: 多账号同步守门(给 main.py _upsert_cloud_client_shadow_local 用) ─
+    def apply_cloud_stage_change(
+        self,
+        client_id: str,
+        cloud_stage: str,
+        *,
+        actor_id: str = "cloud_sync",
+    ) -> tuple[bool, str]:
+        """从云端同步过来的 stage 变化,本地 frozen 时拒绝覆盖。
+
+        修 v1.0 bug: 'local 冷冻被云端 active 覆盖' 的核心守门。
+
+        Args:
+            client_id: 客户 id
+            cloud_stage: 云端要写入的新 stage
+            actor_id: 标识同步来源, 默认 'cloud_sync'
+
+        Returns:
+            (applied, message)
+            - applied=True: 已写入, message=''
+            - applied=False: 守门拒绝, message='local frozen, cloud stage X rejected'
+        """
+        existing = self.get_by_id(client_id)
+        if existing is None:
+            # 新客户, 直接走云端 stage (没有本地状态可保护)
+            return (True, "")
+
+        old_stage = existing.stage
+        if old_stage == cloud_stage:
+            return (True, "")  # 一致, 无需变化
+
+        # ★ 守门规则: 本地 frozen 不被云端覆盖
+        if old_stage == "frozen" and cloud_stage != "frozen":
+            self._write_stage_audit(
+                client_id=client_id,
+                old_stage=old_stage,
+                new_stage=cloud_stage,  # 记录云端想改的目标
+                actor_type="system",
+                actor_id=actor_id,
+                reason=f"local frozen, cloud stage='{cloud_stage}' rejected (v1.0 bug guard)",
+                guard_action="guarded",
+            )
+            return (False, f"local frozen, cloud stage '{cloud_stage}' rejected")
+
+        # 其他 stage 变化照常应用 + 写 audit
+        self.update(client_id, ClientUpdatePayload(stage=cloud_stage))
+        self._write_stage_audit(
+            client_id=client_id,
+            old_stage=old_stage,
+            new_stage=cloud_stage,
+            actor_type="system",
+            actor_id=actor_id,
+            reason=f"cloud sync stage change",
+        )
+        return (True, "")
+
+    def list_stage_audit(
+        self,
+        client_id: str,
+        *,
+        limit: int = 50,
+        guarded_only: bool = False,
+    ) -> list[dict[str, Any]]:
+        """读 client_stage_audit log. 用于 dogfood 时诊断 v1.0 bug 是否复现。
+
+        Args:
+            client_id: 客户 id
+            limit: 返回最近 N 条
+            guarded_only: 只看被云端覆盖守门挡下的记录
+        """
+        where = "WHERE client_id = ?"
+        params: tuple[Any, ...] = (client_id,)
+        if guarded_only:
+            where += " AND guard_action = 'guarded'"
+        rows = self._db.fetchall(
+            f"""
+            SELECT id, client_id, old_stage, new_stage, actor_type, actor_id,
+                   reason, guard_action, changed_at
+            FROM client_stage_audit
+            {where}
+            ORDER BY changed_at DESC
+            LIMIT ?
+            """,
+            (*params, limit),
+        )
+        return [
+            {
+                "id": int(r["id"]),
+                "client_id": str(r["client_id"]),
+                "old_stage": str(r["old_stage"]) if r["old_stage"] else None,
+                "new_stage": str(r["new_stage"]),
+                "actor_type": str(r["actor_type"]),
+                "actor_id": str(r["actor_id"]),
+                "reason": str(r["reason"]),
+                "guard_action": str(r["guard_action"]),
+                "changed_at": str(r["changed_at"]),
+            }
+            for r in rows
+        ]
 
     def is_frozen(self, client_id: str) -> bool:
         """是否处于 frozen 状态 (多账号同步时此态不被云端覆盖)"""
