@@ -2354,6 +2354,8 @@ export type NarrativeClarificationPayload = {
 export type NarrativeRegeneratePayload = {
   trigger?: string;
   force?: boolean;
+  /** 单维度模式: 仅刷新指定维度,其他维度保留 cloud 现有内容. 不传 / 空数组 = 全部重生 */
+  dimensions?: NarrativeDimensionKey[];
 };
 
 export async function getClientNarrative(clientId: string): Promise<ClientNarrative> {
@@ -3491,6 +3493,13 @@ export async function vectorizeAnswer(clientId: string, messageId: string) {
   });
 }
 
+export async function cancelVectorizeAnswer(clientId: string, messageId: string) {
+  return request<{ ok: boolean; surrogateId: string }>(
+    `/api/v1/clients/${clientId}/knowledge/memory-cards/by-message/${encodeURIComponent(messageId)}`,
+    { method: 'DELETE' },
+  );
+}
+
 export async function exportAnswer(
   clientId: string,
   messageIdOrIds: string | string[],
@@ -3561,8 +3570,11 @@ export type DocumentAiActionResponse = {
   durationMs: number;
   sources?: DocumentAiSourceRef[];
   effectiveCreativity?: DocumentAiCreativityMode;
-  // P14a：后端实际作用范围。"selection" = 只处理了选区；"full_doc" = 处理整篇。
-  targetScope?: 'selection' | 'full_doc';
+  // 后端实际作用范围。
+  // "selection"     = 用户框选了一段,生成内容替换选区
+  // "cursor_insert" = 用户无选区,生成内容在光标位置插入,不动其他内容
+  // "full_doc"      = 替换整篇(老路径,目前后端只在 fallback 用)
+  targetScope?: 'selection' | 'cursor_insert' | 'full_doc';
 };
 
 export async function documentAiAction(
@@ -5422,6 +5434,7 @@ export async function triggerBrandMirrorAnalysis(clientId: string) {
 
 // P14-D 战略推演树 (从战略陪伴上传的 strategy.md + methodology.md LLM 抽取)
 import type { BrandStrategyExtract } from '../../shared/types';
+export type { BrandStrategyExtract };
 
 export async function fetchBrandStrategyExtract(clientId: string) {
   return request<{ extract: BrandStrategyExtract | null }>(
@@ -5433,6 +5446,17 @@ export async function triggerBrandStrategyExtraction(clientId: string) {
   return request<BrandStrategyExtract>(
     '/api/v1/intelligence/brand-mirror/strategy-extract',
     { method: 'POST', body: JSON.stringify({ clientId }) },
+  );
+}
+
+/** 用户手动编辑 LLM 抽取的战略主张 + 方法学 (200 字以内). 不影响 stakeholders / sources / hash. */
+export async function updateBrandStrategyExtract(
+  clientId: string,
+  payload: { strategicObjective: string; methodology: string },
+) {
+  return request<{ extract: BrandStrategyExtract }>(
+    '/api/v1/intelligence/brand-mirror/strategy-extract',
+    { method: 'PUT', body: JSON.stringify({ clientId, ...payload }) },
   );
 }
 

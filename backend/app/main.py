@@ -263,6 +263,7 @@ from app.models import (
     DnaTermPayload,
     DocumentCardRecord,
     DocumentRecord,
+    GroundedAnswerResult,
     DeepDnaDraft,
     DeepDnaRecord,
     DeepDnaSourceRecord,
@@ -804,6 +805,7 @@ from app.services.workspace_followups import (
 from app.services.workspace_query_router import route_workspace_query
 from app.services.workspace_thread_memory import (
     build_contextual_prompt,
+    empty_thread_context_pack,
     inject_thread_memory_into_context,
     load_thread_context_pack,
     render_thread_memory_context,
@@ -3447,6 +3449,13 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             )
         except Exception as exc:
             logger.warning("[startup] recover stale client_analysis_runs failed: %s", exc)
+        # 第二次扫 chat_messages。第一次扫(行 3430)发生在 client_analysis_runs 被改 failed 之前 —
+        # 看到 run 还 running + threshold 没到就 skip,导致 chat_message 永远 loading。
+        # 这里再扫一次:此刻 run 已经 failed,新加的 failed/canceled 分支会立刻收口。
+        try:
+            recover_stale_loading_chat_messages()
+        except Exception as exc:
+            logger.warning("[startup] second pass recover_stale_loading_chat_messages failed: %s", exc)
         # Recover orphan sync states left by previous-process crash or uvicorn --reload.
         # Any row stuck in 'syncing' cannot still be syncing — the worker that owned it is gone.
         # The cloud-push path is fire-and-forget (`_try_cloud_sync_task` in a daemon Thread) and
@@ -4245,7 +4254,27 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             )
             if latest_run:
                 run_status = str(latest_run["status"] or "")
-                if run_status in {"completed", "failed", "canceled"}:
+                if run_status == "completed":
+                    # 正常 finalize 流程 应该已经把 chat_message 同步更新过。
+                    # 若此处仍 loading,可能是 finalize 中断,但保守起见不动正文,避免误覆盖成功答案。
+                    continue
+                if run_status in {"failed", "canceled"}:
+                    # run 已终态但 chat_message 还 loading → 启动序里两个 recovery 互踩的脱节态。
+                    # 立刻 recovery,不等 threshold(run 都死了,等也没意义)。
+                    basis_time = _parse_local_datetime(
+                        latest_run["updated_at"] or latest_run["created_at"],
+                        fallback=now,
+                    )
+                    if _recover_one_stale_loading_chat_message(
+                        row,
+                        reason="analysis_run_stale_recovered",
+                        basis=f"analysis_run.status={run_status}",
+                        basis_time=basis_time,
+                        threshold_seconds=0,  # 立刻收口
+                        now=now,
+                        run_row=latest_run,
+                    ):
+                        recovered += 1
                     continue
                 run_phase = str(latest_run["phase"] or "queued")
                 threshold = (
@@ -9411,10 +9440,13 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             if task_id:
                 cloud_task_ids.add(task_id)
 
-        # Reconciliation: detect "ghost-synced" local tasks where local sync_status='synced' and
-        # cloud_id is set, but cloud has no such task (e.g. cloud DB was reset, or earlier push
-        # silently failed). Without this, those tasks stay invisible to the cloud forever — they
-        # show up in your local board but no other org member can see them in their cloud view.
+        # Reconciliation: 只 log，不再清空 cloud_id 也不再 queue re-create。
+        # 旧版本基于 cloud_task_ids 这个集合做"云端没了 → 重建"判定，但 cloud_task_ids 只是
+        # 这一次拉取响应里的子集（受 ACL/分页/scope 过滤），把"不在本次响应里"等同于"云端没了"
+        # 是错的，会清空 cloud_id 触发下一次拉取生成双胞胎行。
+        # 真正"云端丢任务"是极小概率事件，宁可让任务停在 synced 状态等用户手动重推，也不能
+        # 自动制造双胞胎。
+        # 未来要做这个判定，必须对每个嫌疑任务直接 GET /api/v1/tasks/{cloud_id} 拿 404 实锤。
         try:
             cached_session = get_cached_session_user()
             if cached_session and cached_session.id:
@@ -9429,36 +9461,16 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                     """,
                     (my_user_id, my_user_id),
                 )
-                ghost_ids: list[tuple[str, str, str]] = []
+                suspect_count = 0
                 for row in ghost_rows:
                     cloud_ref = str(row["cloud_id"] or "").strip()
                     if cloud_ref and cloud_ref not in cloud_task_ids:
-                        ghost_ids.append((str(row["id"]), cloud_ref, str(row["title"] or "")))
-                if ghost_ids:
-                    reconciliation_ts = now_iso()
-                    for local_id, cloud_ref, title in ghost_ids:
-                        state.db.execute(
-                            """
-                            UPDATE tasks
-                            SET sync_status = 'pending',
-                                pending_sync_action = 'create',
-                                cloud_id = '',
-                                last_synced_at = '',
-                                last_cloud_version = '',
-                                last_sync_error = ?,
-                                updated_at = ?
-                            WHERE id = ?
-                            """,
-                            (
-                                f"Reconciliation: cloud_id={cloud_ref} not found on cloud; queuing re-create",
-                                reconciliation_ts,
-                                local_id,
-                            ),
-                        )
+                        suspect_count += 1
+                if suspect_count:
                     logger.info(
-                        "[TASK-RECONCILE] queued %d ghost-synced task(s) for re-create: %s",
-                        len(ghost_ids),
-                        ", ".join(f"{tid}({title[:20]!r})" for tid, _, title in ghost_ids[:5]),
+                        "[TASK-RECONCILE] %d local task(s) not in this pull's response — NOT touching them; "
+                        "bulk pull is filtered by ACL/page/scope and is not authoritative.",
+                        suspect_count,
                     )
         except Exception as _reconcile_err:
             logger.warning("[TASK-RECONCILE] failed (continuing anyway): %s", _reconcile_err)
@@ -14060,7 +14072,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             """
             SELECT id, client_id, source_type, title, folder_category, surrogate_md_path,
                    overview_summary, retrieval_summary, document_role, source_links_json,
-                   created_at, updated_at
+                   created_at, updated_at, chat_message_id
             FROM knowledge_surrogates
             WHERE client_id = ? AND source_type = 'memory_answer'
             ORDER BY updated_at DESC
@@ -14087,6 +14099,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                     sourceLinks=[item for item in source_links if isinstance(item, dict)],
                     createdAt=str(row["created_at"]),
                     updatedAt=str(row["updated_at"]),
+                    chatMessageId=(str(row["chat_message_id"]) if row["chat_message_id"] else None),
                 )
             )
         return cards
@@ -23283,6 +23296,17 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         task_id = new_id("task")
         list_id = _ensure_local_task_list(payload.listId or (_get_local_task_settings().defaultListId or "list-0"))
         resolved_tags = normalize_local_task_tags(payload.tagIds, payload.tags)
+        # 兜底 owner：用户自己建的任务，没明确指定时默认 owner = 当前登录用户。
+        # 之前有 bug：前端 currentSessionUser 未就绪时 ownerId 就是 null，落库变成"未指定负责人"，
+        # 用户连自己创建的任务都点不了完成。后端拿得到 session，强制兜底掉。
+        resolved_owner_id = (payload.ownerId or "").strip()
+        resolved_owner_name = (payload.ownerName or "").strip()
+        if not resolved_owner_id:
+            _session_user_for_owner = get_cached_session_user()
+            if _session_user_for_owner:
+                resolved_owner_id = _session_user_for_owner.id
+                if not resolved_owner_name:
+                    resolved_owner_name = _session_user_for_owner.fullName
         has_cloud = bool(get_cloud_token())
         initial_sync_status = "local" if not has_cloud else "syncing"
         temporal_fields = derive_task_temporal_fields(
@@ -23317,8 +23341,8 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 status,
                 payload.priority,
                 list_id,
-                payload.ownerId,
-                payload.ownerName,
+                resolved_owner_id or None,
+                resolved_owner_name,
                 resolved_ddl,
                 temporal_fields["deadline_at"],
                 temporal_fields["scheduled_start_at"],
@@ -23358,7 +23382,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                     normalized_event_line_id,
                     task_id,
                     timestamp,
-                    payload.ownerName or "",
+                    resolved_owner_name or "",
                     f"新增任务：{payload.title}",
                     (payload.desc or "").strip() or f"创建任务：{payload.title}",
                     to_json({"eventType": "created"}),
@@ -28669,6 +28693,51 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
 
         dims, overall, model_used = generate_narrative_dimensions(state.ai, bundle, db=state.db)
 
+        # 单维度模式: payload.dimensions 指定本次仅刷新的维度名列表 (如 ["essence", "timeline"]).
+        # 未指定的维度从 cloud 现有 narrative 中提取并保留 — 防止 ingest 把它们清空,
+        # 进而覆盖其他同事或自己之前校准过的内容. payload.dimensions 为空 / None / 不是 list
+        # 时保持原行为 (全 6 维度都用 fresh 内容,即"全部重生").
+        requested_dimensions = (payload or {}).get("dimensions")
+        if isinstance(requested_dimensions, list) and requested_dimensions:
+            only_dimensions_set = {str(d) for d in requested_dimensions if str(d).strip()}
+            if only_dimensions_set:
+                try:
+                    existing = cloud_request(
+                        "GET",
+                        f"/api/v1/clients/{client_id}/narrative",
+                        timeout=10.0,
+                    )
+                except Exception:
+                    existing = None
+                if isinstance(existing, dict):
+                    existing_dims_list = existing.get("dimensions") or []
+                    existing_dims_map: dict[str, dict] = {}
+                    for item in existing_dims_list:
+                        if not isinstance(item, dict):
+                            continue
+                        dim_key = str(item.get("dimension") or "")
+                        if not dim_key:
+                            continue
+                        existing_dims_map[dim_key] = {
+                            "narrative": str(item.get("narrative") or ""),
+                            "confidence": str(item.get("confidence") or "low"),
+                            "confidenceReason": str(item.get("confidenceReason") or ""),
+                            "references": item.get("references") or [],
+                            "dataLayerGap": str(item.get("dataLayerGap") or ""),
+                            "openClarifications": item.get("openClarifications") or [],
+                            "structuredTodos": item.get("structuredTodos") or [],
+                        }
+                    from app.services.narrative_generator import DIMENSIONS as _ALL_DIMENSIONS
+                    preserved_count = 0
+                    for dim_name in _ALL_DIMENSIONS:
+                        if dim_name not in only_dimensions_set and dim_name in existing_dims_map:
+                            dims[dim_name] = existing_dims_map[dim_name]
+                            preserved_count += 1
+                    logger.info(
+                        "[narrative-regenerate] 单维度模式 client=%s only=%s 保留 cloud 现有 %d 维度",
+                        client_id, sorted(only_dimensions_set), preserved_count,
+                    )
+
         # 机制化 P0: narrative 输出的 structuredTodos 自动 upsert 进 commitments 表
         # 任何客户每次重生 narrative, 待办自动结构化 (UI/chat/日历都能拿到), 不依赖手动
         try:
@@ -28921,6 +28990,28 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             _heal_engine = SelfHealEngine(state.db, state.data_dir, state.ai)
         return _heal_engine
 
+    @app.post("/api/v1/system/broadcast-data-changed")
+    def system_broadcast_data_changed(payload: dict) -> dict:
+        """数据中心写后扩散统一入口(用户手动触发/dev/管理后台都可调).
+
+        Body: {clientId, scope?, syncNarrative?, syncThoughts?, syncPortrait?, resetThrottle?}
+        Returns: broadcast 结果 (triggered/skipped/errors).
+        """
+        from app.services.data_center_broadcast import broadcast_data_changed, reset_throttle
+        client_id = str(payload.get("clientId") or "").strip()
+        if not client_id:
+            raise HTTPException(status_code=400, detail="clientId required")
+        if payload.get("resetThrottle"):
+            reset_throttle(client_id)
+        return broadcast_data_changed(
+            state.db, state.ai,
+            client_id=client_id,
+            scope=str(payload.get("scope") or "manual_admin"),
+            sync_narrative=bool(payload.get("syncNarrative", True)),
+            sync_thoughts=bool(payload.get("syncThoughts", False)),
+            sync_portrait=bool(payload.get("syncPortrait", True)),
+        )
+
     @app.get("/api/v1/system/health-check")
     def system_health_check() -> dict:
         engine = _get_heal_engine()
@@ -28934,6 +29025,81 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             "sick": sick_count,
             "probes": probes,
         }
+
+    # Rate limit + 去重: 同一 (level, message) 60s 内同样内容只记一次,
+    # 防止前端死循环或 polling 失败短时间内刷爆日志.
+    _client_error_dedupe: dict[tuple, float] = {}
+    _CLIENT_ERROR_DEDUPE_TTL_S = 60.0
+
+    def _mask_sensitive(text: str) -> str:
+        """脱敏: 去掉日志里常见的 token / 邮箱 / 长 hex 串."""
+        import re
+        if not text:
+            return text
+        # JWT (eyJ...)
+        text = re.sub(r"\beyJ[A-Za-z0-9_\-]+\.[A-Za-z0-9_\-]+\.[A-Za-z0-9_\-]+", "<JWT>", text)
+        # 邮箱
+        text = re.sub(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}", "<EMAIL>", text)
+        # 长 hex 串 (>=32 chars,可能是 hash/access key)
+        text = re.sub(r"\b[a-f0-9]{32,}\b", "<HEX>", text)
+        # Authorization 头里的 Bearer
+        text = re.sub(r"(Bearer\s+)[A-Za-z0-9_\-\.]+", r"\1<TOKEN>", text, flags=re.IGNORECASE)
+        return text
+
+    @app.post("/api/v1/system/client-error")
+    def system_client_error(payload: dict) -> dict:
+        """接收前端 fire-and-forget 错误上报,写进 jsonl (source='renderer').
+
+        前端 flash('error', ...) 自动调这里, 让 UI 错误也能被持久化排查.
+        Body: {level?, message, route?, feature?, userAgent?, extra?}
+        """
+        if not state.system_logger:
+            return {"ok": False, "reason": "logger_not_ready"}
+        raw_message = str((payload or {}).get("message") or "").strip()
+        if not raw_message:
+            return {"ok": False, "reason": "empty_message"}
+        message = _mask_sensitive(raw_message[:2000])  # 截断 + 脱敏
+        level_raw = str((payload or {}).get("level") or "error").lower()
+        level: str = "ERROR" if level_raw in {"error", "fatal"} else (
+            "WARN" if level_raw in {"warn", "warning"} else "INFO"
+        )
+        # 去重 (60s 同 level+message 只记一次)
+        key = (level, message)
+        now_ts = time.time()
+        last_ts = _client_error_dedupe.get(key, 0.0)
+        if now_ts - last_ts < _CLIENT_ERROR_DEDUPE_TTL_S:
+            return {"ok": True, "deduped": True}
+        _client_error_dedupe[key] = now_ts
+        # 顺便清理过期 key (>5min) 防止字典膨胀
+        if len(_client_error_dedupe) > 200:
+            cutoff = now_ts - 300
+            for k in [k for k, ts in _client_error_dedupe.items() if ts < cutoff]:
+                _client_error_dedupe.pop(k, None)
+
+        route = _mask_sensitive(str((payload or {}).get("route") or "")[:300])
+        feature = str((payload or {}).get("feature") or "")[:80]
+        user_agent = str((payload or {}).get("userAgent") or "")[:300]
+        extra_raw = (payload or {}).get("extra")
+        extra_str = ""
+        if extra_raw is not None:
+            try:
+                extra_str = _mask_sensitive(json.dumps(extra_raw, ensure_ascii=False, default=str)[:1000])
+            except Exception:
+                extra_str = "<unserializable>"
+        session_user = get_cached_session_user()
+        user_name = session_user.fullName if session_user else ""
+
+        state.system_logger.write(
+            level,  # type: ignore[arg-type]
+            "renderer",
+            message,
+            route=route or None,
+            feature=feature or None,
+            userAgent=user_agent or None,
+            extra=extra_str or None,
+            user=user_name or None,
+        )
+        return {"ok": True}
 
     @app.post("/api/v1/system/self-heal")
     def system_self_heal(remedy_id: str | None = None) -> dict:
@@ -42635,22 +42801,43 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
 
     def resolve_chat_answer_data_center_primary(
         client_id: str,
-        thread_id: str,
+        thread_id: str | None,
         prompt: str,
-        assistant_id: str,
+        assistant_id: str | None,
         search_id: str | None,
         request_started: float,
         run_id: str | None = None,
         working_document_ids: list[str] | None = None,
-    ) -> ChatMessageRecord:
+        inline_creativity_override: str | None = None,
+    ) -> ChatMessageRecord | GroundedAnswerResult:
+        """Q&A 主答案管线 — 同时服务 chat 端点和 inline AI(document_ai_action)。
+
+        - assistant_id / thread_id 都非 None → chat 路径,写 chat_messages 后 return ChatMessageRecord
+        - assistant_id 为 None → inline AI 旁路,跳过所有 chat 状态写入,return GroundedAnswerResult
+        - 中间召回 + LLM + grounding 完全复用同一套
+        """
         del search_id
         if is_client_analysis_run_canceled(run_id):
-            return fetch_chat_message_for_client(client_id, assistant_id)
+            # chat 路径:被取消时返回当前 chat_messages 状态;inline 路径:返回空结果
+            if assistant_id is not None:
+                return fetch_chat_message_for_client(client_id, assistant_id)
+            return GroundedAnswerResult(
+                content="",
+                structured=AiStructuredResponse(content="", judgment="", analysis="", actions="", timeline=""),
+                answer_mode="system_failure",
+                evidence_status="none",
+                failure_reason="canceled_before_start",
+            )
         # P2.16 REMOVE(raw-document-pack-legacy-fallback): legacy fallback setting is ignored for
         # workspace/chat main answers; failures may use only the open short fault fallback below.
         use_legacy_fallback = False
-        thread_memory_pack = load_thread_context_pack(state.db, client_id, thread_id, bootstrap=True)
-        thread_memory_resolved_references = resolve_thread_references(prompt, thread_memory_pack)
+        # Step 3.2 guard: inline AI 旁路时 thread_id 为 None,跳过 thread memory 加载
+        if thread_id is not None:
+            thread_memory_pack = load_thread_context_pack(state.db, client_id, thread_id, bootstrap=True)
+            thread_memory_resolved_references = resolve_thread_references(prompt, thread_memory_pack)
+        else:
+            thread_memory_pack = empty_thread_context_pack(client_id, "")
+            thread_memory_resolved_references = []
         thread_memory_context = (
             render_thread_memory_context(thread_memory_pack, thread_memory_resolved_references)
             if thread_memory_resolved_references
@@ -42886,12 +43073,14 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                     "consultantBoundaryNotes": consultant_material_pack.boundary_notes,
                 }
             )
-        update_loading_assistant_message(
-            assistant_id,
-            retrieval_summary=pre_llm_meta,
-            timing={"retrievalMs": retrieval_elapsed_ms},
-            content="数据中心主链已就绪，正在组织回答……",
-        )
+        # Step 3.1 守卫:assistant_id 为 None 表示 inline AI 旁路调用,跳过 chat 状态更新
+        if assistant_id is not None:
+            update_loading_assistant_message(
+                assistant_id,
+                retrieval_summary=pre_llm_meta,
+                timing={"retrievalMs": retrieval_elapsed_ms},
+                content="数据中心主链已就绪，正在组织回答……",
+            )
         if run_id:
             update_client_analysis_run(
                 run_id,
@@ -42904,7 +43093,16 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 evidence_summary=evidence_summary,
             )
         if is_client_analysis_run_canceled(run_id):
-            return fetch_chat_message_for_client(client_id, assistant_id)
+            # 跟开头那个 cancel-check 同样规则:chat 路径返 chat_messages,inline 路径返空结果
+            if assistant_id is not None:
+                return fetch_chat_message_for_client(client_id, assistant_id)
+            return GroundedAnswerResult(
+                content="",
+                structured=AiStructuredResponse(content="", judgment="", analysis="", actions="", timeline=""),
+                answer_mode="system_failure",
+                evidence_status="none",
+                failure_reason="canceled_mid_run",
+            )
 
         intro_like_prompt = any(
             token in re.sub(r"\s+", "", str(prompt or "").lower())
@@ -43022,20 +43220,22 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                     if isinstance(partial.get("structured"), dict)
                     else None
                 )
-            update_loading_assistant_message(
-                assistant_id,
-                retrieval_summary={
-                    "phase": "generating",
-                    "stageLabel": str(partial.get("stageLabel") or "正在生成回答"),
-                    "progress": float(partial.get("progress") or 74.0),
-                    "generationStartedAt": generation_started_at,
-                    "generationTimeoutSeconds": generation_timeout_seconds,
-                    "providerUsed": generation_provider,
-                    "modelUsed": generation_model,
-                    "modelLabel": generation_model_label,
-                },
-                content=partial_content if content_is_meaningful else None,
-            )
+            # Step 3.1 守卫:inline AI 旁路时跳过 chat 流式状态推送
+            if assistant_id is not None:
+                update_loading_assistant_message(
+                    assistant_id,
+                    retrieval_summary={
+                        "phase": "generating",
+                        "stageLabel": str(partial.get("stageLabel") or "正在生成回答"),
+                        "progress": float(partial.get("progress") or 74.0),
+                        "generationStartedAt": generation_started_at,
+                        "generationTimeoutSeconds": generation_timeout_seconds,
+                        "providerUsed": generation_provider,
+                        "modelUsed": generation_model,
+                        "modelLabel": generation_model_label,
+                    },
+                    content=partial_content if content_is_meaningful else None,
+                )
             if run_id:
                 update_kwargs: dict[str, object] = {
                     "phase": "generating_long_answer",
@@ -43113,24 +43313,30 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             writing_skill_md = ""
             # R7：读 creativity_mode（NULL/不识别值 → 'strict' 老消息兼容）
             chat_creativity_mode = "strict"
-            try:
-                active_skill_row = state.db.fetchone(
-                    "SELECT active_skill_id, creativity_mode FROM chat_messages WHERE id = ?",
-                    (assistant_id,),
-                )
-                if active_skill_row:
-                    raw_creativity = active_skill_row["creativity_mode"]
-                    if raw_creativity and str(raw_creativity) in {"creative", "balanced", "strict"}:
-                        chat_creativity_mode = str(raw_creativity)
-                    if active_skill_row["active_skill_id"]:
-                        skill_row = state.db.fetchone(
-                            "SELECT distilled_md FROM writing_skills WHERE id = ?",
-                            (str(active_skill_row["active_skill_id"]),),
-                        )
-                        if skill_row and skill_row["distilled_md"]:
-                            writing_skill_md = str(skill_row["distilled_md"])
-            except Exception as exc:  # noqa: BLE001
-                logger.warning("[chat] read active_skill / creativity_mode failed: %s", exc)
+            # inline AI 旁路:assistant_id=None 时 DB 查不到,改从 inline_creativity_override 拿
+            # (否则用户在 popover 里选的 creative/balanced/strict 完全不生效)
+            if assistant_id is None:
+                if inline_creativity_override in {"creative", "balanced", "strict"}:
+                    chat_creativity_mode = inline_creativity_override
+            else:
+                try:
+                    active_skill_row = state.db.fetchone(
+                        "SELECT active_skill_id, creativity_mode FROM chat_messages WHERE id = ?",
+                        (assistant_id,),
+                    )
+                    if active_skill_row:
+                        raw_creativity = active_skill_row["creativity_mode"]
+                        if raw_creativity and str(raw_creativity) in {"creative", "balanced", "strict"}:
+                            chat_creativity_mode = str(raw_creativity)
+                        if active_skill_row["active_skill_id"]:
+                            skill_row = state.db.fetchone(
+                                "SELECT distilled_md FROM writing_skills WHERE id = ?",
+                                (str(active_skill_row["active_skill_id"]),),
+                            )
+                            if skill_row and skill_row["distilled_md"]:
+                                writing_skill_md = str(skill_row["distilled_md"])
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("[chat] read active_skill / creativity_mode failed: %s", exc)
             logger.debug(
                 "[MULTIPASS-DEBUG] enter else branch: workflow=%s generation_mode=%s multipass_enabled=%s deep_thinking_requested=%s writing_skill_chars=%d",
                 workspace_workflow, workspace_generation_mode, multipass_enabled, deep_thinking_requested, len(writing_skill_md),
@@ -43224,7 +43430,9 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                             "timeline": "",
                         },
                     })
-                    _merge_assistant_retrieval_summary(assistant_id, _build_multipass_summary_block())
+                    # Step 3.1 守卫:inline 旁路无 assistant_id 时不写 retrieval_summary
+                    if assistant_id is not None:
+                        _merge_assistant_retrieval_summary(assistant_id, _build_multipass_summary_block())
 
                 def _on_section_started(index: int, plan) -> None:  # noqa: ANN001
                     multipass_state["current_section_index"] = index
@@ -43236,7 +43444,8 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                         "progress": 66.0 + index * 7.0,
                         "structured": None,
                     })
-                    _merge_assistant_retrieval_summary(assistant_id, _build_multipass_summary_block())
+                    if assistant_id is not None:
+                        _merge_assistant_retrieval_summary(assistant_id, _build_multipass_summary_block())
 
                 def _on_section_partial(index: int, partial: dict[str, Any]) -> None:
                     # R4：流式 partial 推送 —— 每收到一批 token 就把累计文本写到 db.content，
@@ -43281,7 +43490,8 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                         "progress": min(95.0, 70.0 + (index + 1) * 7.0),
                         "structured": None,
                     })
-                    _merge_assistant_retrieval_summary(assistant_id, _build_multipass_summary_block())
+                    if assistant_id is not None:
+                        _merge_assistant_retrieval_summary(assistant_id, _build_multipass_summary_block())
 
                 try:
                     # R1：构造"战略素材包"喂给 Pass 1（出大纲），避免大纲只能围绕"项目进展"组织。
@@ -43366,25 +43576,27 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                     logger.warning("[multipass] unexpected error, fallback to single-pass", exc_info=True)
 
             # 把 multipass 最终状态写到 retrieval_summary，让前端"思考过程"组件能判断走的哪条路径
-            _merge_assistant_retrieval_summary(
-                assistant_id,
-                {
-                    "multipassUsed": bool(multipass_used),
-                    "multipassFallbackReason": multipass_fallback_reason,
-                    "multipassSectionsGenerated": (
-                        int(multipass_outcome.sections_generated)
-                        if multipass_outcome is not None else 0
-                    ),
-                    "multipassSectionsPlanned": (
-                        len(multipass_outcome.outline.sections)
-                        if multipass_outcome is not None else 0
-                    ),
-                    "multipassFailureStage": (
-                        multipass_outcome.failure_stage
-                        if multipass_outcome is not None else None
-                    ),
-                },
-            )
+            # Step 3.1 守卫:inline 旁路时跳过
+            if assistant_id is not None:
+                _merge_assistant_retrieval_summary(
+                    assistant_id,
+                    {
+                        "multipassUsed": bool(multipass_used),
+                        "multipassFallbackReason": multipass_fallback_reason,
+                        "multipassSectionsGenerated": (
+                            int(multipass_outcome.sections_generated)
+                            if multipass_outcome is not None else 0
+                        ),
+                        "multipassSectionsPlanned": (
+                            len(multipass_outcome.outline.sections)
+                            if multipass_outcome is not None else 0
+                        ),
+                        "multipassFailureStage": (
+                            multipass_outcome.failure_stage
+                            if multipass_outcome is not None else None
+                        ),
+                    },
+                )
 
             if multipass_used:
                 pass  # 已经成功，跳过单次调用
@@ -43789,169 +44001,186 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             }
         )
 
-        timestamp = now_iso()
-        state.db.execute(
-            """
-            UPDATE chat_messages
-            SET content = ?, structured_data_json = ?, model_route = ?, llm_invoked = ?, provider_used = ?,
-                answer_mode = ?, evidence_status = ?, failure_reason = ?, timing_json = ?, retrieval_summary_json = ?,
-                evidence_json = ?, status = 'success', created_at = ?
-            WHERE id = ?
-            """,
-            (
-                structured.content,
-                to_json(structured.model_dump(mode="json")),
-                model_route,
-                1 if llm_invoked else 0,
-                provider_used,
-                answer_mode,
-                evidence_status,
-                failure_reason,
-                to_json({"totalMs": total_elapsed_ms, "retrievalMs": retrieval_elapsed_ms, "llmMs": llm_elapsed_ms}),
-                to_json(response_meta),
-                to_json([item.model_dump(mode="json") for item in evidence]),
-                timestamp,
-                assistant_id,
-            ),
-        )
-        if answer_mode != "system_failure":
-            _run_post_finalize_step(
-                assistant_id,
-                stage="post_answer_enrichment_submit",
-                action=lambda: _schedule_post_answer_enrichment(
-                    assistant_id=assistant_id,
-                    client_id=client_id,
-                    thread_id=thread_id,
-                    prompt=prompt,
-                    answer_content=structured.content,
-                    answer_mode=answer_mode,
-                    workspace_workflow=workspace_workflow,
-                    workspace_generation_mode=workspace_generation_mode,
-                    client_name=client_name,
-                    primary_sources=primary_sources,
-                    missing_context=list(page_context_pack.missingContext[:6]) if page_context_pack is not None else [],
-                    search_result=kernel_result.searchResult,
-                    answer_material_summary=answer_material_summary,
-                ),
-            )
-        answer_run_id = new_id("ans")
-        _run_post_finalize_step(
-            assistant_id,
-            stage="answer_run_insert",
-            action=lambda: state.db.execute(
+        # Step 3.1 守卫:assistant_id 为 None 表示 inline AI 旁路调用(Step 3.2 会添加 else 分支
+        # 返回 GroundedAnswerResult)。当前 signature 仍是 str,所有 chat 调用 always non-None,
+        # 这个 if 在 chat 路径上 always True,行为字节级保持。
+        if assistant_id is not None:
+            timestamp = now_iso()
+            state.db.execute(
                 """
-                INSERT INTO answer_runs(
-                    id, client_id, thread_id, prompt, status, coverage_score, retrieval_mode, llm_invoked,
-                    provider_used, failure_reason, retrieval_json, created_at
-                )
-                VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                UPDATE chat_messages
+                SET content = ?, structured_data_json = ?, model_route = ?, llm_invoked = ?, provider_used = ?,
+                    answer_mode = ?, evidence_status = ?, failure_reason = ?, timing_json = ?, retrieval_summary_json = ?,
+                    evidence_json = ?, status = 'success', created_at = ?
+                WHERE id = ?
                 """,
                 (
-                    answer_run_id,
-                    client_id,
-                    thread_id,
-                    prompt,
-                    "completed" if answer_mode in {"grounded_answer", "grounded_fallback", "general_answer"} else "failed",
-                    float(1.0 if evidence else 0.0),
-                    route_decision.retrievalMode,
+                    structured.content,
+                    to_json(structured.model_dump(mode="json")),
+                    model_route,
                     1 if llm_invoked else 0,
                     provider_used,
+                    answer_mode,
+                    evidence_status,
                     failure_reason,
+                    to_json({"totalMs": total_elapsed_ms, "retrievalMs": retrieval_elapsed_ms, "llmMs": llm_elapsed_ms}),
                     to_json(response_meta),
+                    to_json([item.model_dump(mode="json") for item in evidence]),
                     timestamp,
-                ),
-            ),
-        )
-        _run_post_finalize_step(
-            assistant_id,
-            stage="chat_thread_timestamp",
-            action=lambda: state.db.execute("UPDATE chat_threads SET updated_at = ? WHERE id = ?", (timestamp, thread_id)),
-        )
-        _run_post_finalize_step(
-            assistant_id,
-            stage="generation_runtime_record",
-            action=lambda: record_generation_result(
-                state.db,
-                client_id=client_id,
-                answer_intent=str(answer_intent or "general"),
-                provider=provider_used if llm_invoked else None,
-                model=model_used if llm_invoked else None,
-                answer_mode=answer_mode,
-                failure_reason=failure_reason,
-                error_detail=generation_failure_detail or final_failure_stage,
-                llm_invoked=llm_invoked,
-                total_ms=float(total_elapsed_ms),
-            ),
-        )
-        run_long_answer = structured.content if answer_mode != "system_failure" else None
-        run_structured_summary = structured if answer_mode != "system_failure" else None
-        run_long_answer_status = (
-            "failed"
-            if answer_mode == "system_failure"
-            else "fallback"
-            if answer_mode == "grounded_fallback"
-            else "ready"
-        )
-        run_summary_status = run_long_answer_status
-        if run_id:
-            _run_post_finalize_step(
-                assistant_id,
-                stage="analysis_run_final_update",
-                action=lambda: update_client_analysis_run(
-                    run_id,
-                    status="completed" if answer_mode != "system_failure" else "failed",
-                    phase="completed" if answer_mode != "system_failure" else "failed",
-                    progress=100.0,
-                    progress_floor=100.0,
-                    progress_ceiling=100.0,
-                    stage_label="分析已完成" if answer_mode != "system_failure" else "回答生成失败",
-                    elapsed_ms=total_elapsed_ms,
-                    evidence_summary=evidence_summary,
-                    long_answer=run_long_answer,
-                    structured_summary=run_structured_summary,
-                    long_answer_status=run_long_answer_status,
-                    summary_status=run_summary_status,
-                    answer_mode=answer_mode,
-                    llm_invoked=llm_invoked,
-                    provider_used=provider_used,
-                    failure_reason=failure_reason,
-                    timing={"totalMs": total_elapsed_ms, "retrievalMs": retrieval_elapsed_ms, "llmMs": llm_elapsed_ms},
+                    assistant_id,
                 ),
             )
-        _run_post_finalize_step(
-            assistant_id,
-            stage="chat_reply_activity",
-            action=lambda: log_activity(
-                "chat.reply",
-                "chat_thread",
-                thread_id,
-                {
-                    "clientId": client_id,
-                    "prompt": prompt,
-                    "coverage": 1.0 if evidence else 0.0,
-                    "citationCount": len(evidence),
-                    "answerMode": answer_mode,
-                    "dataCenterPrimaryEnabled": True,
-                    "workspaceWorkflow": workspace_workflow,
-                },
-            ),
-        )
-        if workspace_workflow != "file_search":
+            if answer_mode != "system_failure":
+                _run_post_finalize_step(
+                    assistant_id,
+                    stage="post_answer_enrichment_submit",
+                    action=lambda: _schedule_post_answer_enrichment(
+                        assistant_id=assistant_id,
+                        client_id=client_id,
+                        thread_id=thread_id,
+                        prompt=prompt,
+                        answer_content=structured.content,
+                        answer_mode=answer_mode,
+                        workspace_workflow=workspace_workflow,
+                        workspace_generation_mode=workspace_generation_mode,
+                        client_name=client_name,
+                        primary_sources=primary_sources,
+                        missing_context=list(page_context_pack.missingContext[:6]) if page_context_pack is not None else [],
+                        search_result=kernel_result.searchResult,
+                        answer_material_summary=answer_material_summary,
+                    ),
+                )
+            answer_run_id = new_id("ans")
             _run_post_finalize_step(
                 assistant_id,
-                stage="chat_fact_extraction",
-                action=lambda: _schedule_chat_fact_extraction(
-                    state,
+                stage="answer_run_insert",
+                action=lambda: state.db.execute(
+                    """
+                    INSERT INTO answer_runs(
+                        id, client_id, thread_id, prompt, status, coverage_score, retrieval_mode, llm_invoked,
+                        provider_used, failure_reason, retrieval_json, created_at
+                    )
+                    VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        answer_run_id,
+                        client_id,
+                        thread_id,
+                        prompt,
+                        "completed" if answer_mode in {"grounded_answer", "grounded_fallback", "general_answer"} else "failed",
+                        float(1.0 if evidence else 0.0),
+                        route_decision.retrievalMode,
+                        1 if llm_invoked else 0,
+                        provider_used,
+                        failure_reason,
+                        to_json(response_meta),
+                        timestamp,
+                    ),
+                ),
+            )
+            _run_post_finalize_step(
+                assistant_id,
+                stage="chat_thread_timestamp",
+                action=lambda: state.db.execute("UPDATE chat_threads SET updated_at = ? WHERE id = ?", (timestamp, thread_id)),
+            )
+            _run_post_finalize_step(
+                assistant_id,
+                stage="generation_runtime_record",
+                action=lambda: record_generation_result(
+                    state.db,
                     client_id=client_id,
-                    thread_id=thread_id,
-                    user_prompt=prompt,
-                    assistant_content=structured.content,
+                    answer_intent=str(answer_intent or "general"),
+                    provider=provider_used if llm_invoked else None,
+                    model=model_used if llm_invoked else None,
                     answer_mode=answer_mode,
+                    failure_reason=failure_reason,
+                    error_detail=generation_failure_detail or final_failure_stage,
+                    llm_invoked=llm_invoked,
+                    total_ms=float(total_elapsed_ms),
                 ),
             )
-        row = state.db.fetchone("SELECT * FROM chat_messages WHERE id = ?", (assistant_id,))
-        assert row is not None
-        return build_chat_message(row)
+            run_long_answer = structured.content if answer_mode != "system_failure" else None
+            run_structured_summary = structured if answer_mode != "system_failure" else None
+            run_long_answer_status = (
+                "failed"
+                if answer_mode == "system_failure"
+                else "fallback"
+                if answer_mode == "grounded_fallback"
+                else "ready"
+            )
+            run_summary_status = run_long_answer_status
+            if run_id:
+                _run_post_finalize_step(
+                    assistant_id,
+                    stage="analysis_run_final_update",
+                    action=lambda: update_client_analysis_run(
+                        run_id,
+                        status="completed" if answer_mode != "system_failure" else "failed",
+                        phase="completed" if answer_mode != "system_failure" else "failed",
+                        progress=100.0,
+                        progress_floor=100.0,
+                        progress_ceiling=100.0,
+                        stage_label="分析已完成" if answer_mode != "system_failure" else "回答生成失败",
+                        elapsed_ms=total_elapsed_ms,
+                        evidence_summary=evidence_summary,
+                        long_answer=run_long_answer,
+                        structured_summary=run_structured_summary,
+                        long_answer_status=run_long_answer_status,
+                        summary_status=run_summary_status,
+                        answer_mode=answer_mode,
+                        llm_invoked=llm_invoked,
+                        provider_used=provider_used,
+                        failure_reason=failure_reason,
+                        timing={"totalMs": total_elapsed_ms, "retrievalMs": retrieval_elapsed_ms, "llmMs": llm_elapsed_ms},
+                    ),
+                )
+            _run_post_finalize_step(
+                assistant_id,
+                stage="chat_reply_activity",
+                action=lambda: log_activity(
+                    "chat.reply",
+                    "chat_thread",
+                    thread_id,
+                    {
+                        "clientId": client_id,
+                        "prompt": prompt,
+                        "coverage": 1.0 if evidence else 0.0,
+                        "citationCount": len(evidence),
+                        "answerMode": answer_mode,
+                        "dataCenterPrimaryEnabled": True,
+                        "workspaceWorkflow": workspace_workflow,
+                    },
+                ),
+            )
+            if workspace_workflow != "file_search":
+                _run_post_finalize_step(
+                    assistant_id,
+                    stage="chat_fact_extraction",
+                    action=lambda: _schedule_chat_fact_extraction(
+                        state,
+                        client_id=client_id,
+                        thread_id=thread_id,
+                        user_prompt=prompt,
+                        assistant_content=structured.content,
+                        answer_mode=answer_mode,
+                    ),
+                )
+            row = state.db.fetchone("SELECT * FROM chat_messages WHERE id = ?", (assistant_id,))
+            assert row is not None
+            return build_chat_message(row)
+        # Step 3.2:assistant_id 为 None → inline AI 旁路。返回纯结果,不写 chat_messages。
+        # 注意 state_answer_sections.official 可能比 structured.content 信息更丰富
+        # (chat 链路有个已知 finalize bug,真答案写到 official 字段,详见 GroundedAnswerResult docstring)。
+        return GroundedAnswerResult(
+            content=structured.content,
+            structured=structured,
+            answer_mode=answer_mode,
+            evidence_status=evidence_status,
+            failure_reason=failure_reason,
+            evidence=[item.model_dump(mode="json") for item in evidence],
+            retrieval_summary=response_meta,
+            state_answer_sections=state_answer_sections.model_dump(mode="json"),
+        )
 
     def resolve_chat_answer(
         client_id: str,
@@ -45095,16 +45324,67 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             working_document_ids=payload.workingDocumentIds,
         )
 
+    def _fallback_memory_title(content: str) -> str:
+        """LLM 失败时的兜底：取 content 第一行非空文本前 10 字，去掉 markdown 标记。"""
+        if not content:
+            return ""
+        for line in content.splitlines():
+            cleaned = re.sub(r"^[#*\->\s]+", "", line).strip()
+            if cleaned:
+                return cleaned[:10]
+        return ""
+
+    def _summarize_memory_title(ai_service: Any, content: str) -> str:
+        """让 LLM 把答案总结成 10 字以内主题作为收藏标题。失败返回空串让上层 fallback。"""
+        if not content or not ai_service:
+            return ""
+        snippet = content.strip()
+        if len(snippet) > 2000:
+            snippet = snippet[:2000]
+        try:
+            result = ai_service._qwen_generate(  # noqa: SLF001
+                prompt=(
+                    "把下面这段 AI 回答总结成一个 10 字以内的中文主题标题，"
+                    "突出主题本身，不要加引号、不要加书名号、不要任何前缀（如'主题：'）、"
+                    "不要句号。直接输出标题文本。\n\n"
+                    f"<回答>\n{snippet}\n</回答>"
+                ),
+                system_instruction="你是档案管理员，擅长把长答案压缩成精炼的 10 字以内主题标题。",
+                response_schema=None,
+                max_tokens=64,
+                temperature=0.2,
+                task_kind="default",
+            )
+            raw = (result if isinstance(result, str) else str(result)).strip()
+            # 防御性清理：去掉模型偶尔加的引号、句号、前缀冒号。
+            raw = re.sub(r'^["\'《【\s]+|["\'》】。．.\s]+$', "", raw)
+            if "：" in raw and len(raw.split("：", 1)[0]) <= 4:
+                raw = raw.split("：", 1)[1].strip()
+            if not raw:
+                return ""
+            # 截到 10 字以内
+            return raw[:10]
+        except Exception:
+            return ""
+
     @app.post("/api/v1/clients/{client_id}/knowledge/vectorize-answer", response_model=ClientTextDocumentResponse)
     def vectorize_answer(client_id: str, payload: VectorizeAnswerPayload) -> ClientTextDocumentResponse:
         build_client_summary(client_id)
         message = fetch_chat_message_for_client(client_id, payload.messageId)
         timestamp = now_iso()
+        client_name = build_client_summary(client_id).name
+        # B：用 AI 总结 10 字以内主题作为标题（替代千篇一律的 "客户名 · 战略陪伴记忆"）。
+        # LLM 失败时回退到 content 前 10 字，再不行用兜底标题。
+        memory_title = (
+            _summarize_memory_title(state.ai, message.content)
+            or _fallback_memory_title(message.content)
+            or f"{client_name} · 战略陪伴记忆"
+        )
         memory = create_memory_surrogate_from_answer(
             state.db,
             data_dir=state.data_dir,
             client_id=client_id,
-            title=f"{build_client_summary(client_id).name} · 战略陪伴记忆",
+            title=memory_title,
             content=message.content,
             actions=message.structuredData.actions if message.structuredData else "",
             analysis=message.structuredData.analysis if message.structuredData else "",
@@ -45119,6 +45399,10 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             ],
             created_at=timestamp,
             ai_service=state.ai,
+            # A：把人读完整 MD 传进去，让 surrogateMdPath 直接指向人读原文。
+            human_markdown=build_answer_memory_markdown(client_id, message),
+            # C：绑定 chat_message_id，前端据此识别"这条 message 已收藏" + 支持取消收藏。
+            chat_message_id=payload.messageId,
         )
         generated = create_answer_memory_markdown_document(client_id, message)
         log_activity(
@@ -45133,6 +45417,39 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             },
         )
         return generated
+
+    @app.delete("/api/v1/clients/{client_id}/knowledge/memory-cards/by-message/{message_id}")
+    def cancel_vectorize_answer(client_id: str, message_id: str) -> dict:
+        """C：取消收藏。删 knowledge_surrogates 行 + vector_store 下的 surrogate .md。
+        客户档案 documents 表里的人读 .md 不动——那是项目文档库的一部分。
+        """
+        row = state.db.fetchone(
+            """
+            SELECT id, surrogate_md_path FROM knowledge_surrogates
+            WHERE client_id = ? AND chat_message_id = ? AND source_type = 'memory_answer'
+            ORDER BY updated_at DESC LIMIT 1
+            """,
+            (client_id, message_id),
+        )
+        if not row:
+            raise HTTPException(status_code=404, detail="未找到这条收藏")
+        surrogate_id = str(row["id"])
+        surrogate_md_path = str(row["surrogate_md_path"] or "")
+        if surrogate_md_path:
+            try:
+                Path(surrogate_md_path).unlink(missing_ok=True)
+            except Exception:
+                # 文件可能已被外部删除/路径异常,不阻塞 DB 清理
+                pass
+        # knowledge_master_index 通过 FOREIGN KEY ON DELETE CASCADE 自动清理
+        state.db.execute("DELETE FROM knowledge_surrogates WHERE id = ?", (surrogate_id,))
+        log_activity(
+            "knowledge.cancel_vectorize_answer",
+            "knowledge_memory",
+            surrogate_id,
+            {"clientId": client_id, "messageId": message_id},
+        )
+        return {"ok": True, "surrogateId": surrogate_id}
 
     @app.post("/api/v1/clients/{client_id}/knowledge/enrich-surrogates")
     def enrich_surrogates(client_id: str) -> dict:
@@ -45231,21 +45548,18 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
 
     @app.post("/api/v1/clients/{client_id}/documents/ai-action", response_model=DocumentAiActionResponse)
     def document_ai_action(client_id: str, payload: DocumentAiActionPayload) -> DocumentAiActionResponse:
-        """P9 / P11 / P12 / P13a：客户工作台 inline 编辑器 AI 助手 action。
+        """客户工作台 inline 编辑器 AI 助手 action(Step 4 重构后)。
 
-        P13a 起 prompt 编排迁到 services/editor_ai/ 子模块：
-          operations.py 持每个 op 的 system / user_prefix / faithful / allowed_contexts 配置
-          contexts.py   每个 context source（client_materials / strategy_dimension / event_timeline）
-                        一个 retriever；P13a 都返回空，行为零变化；P13b/c 接入真召回
-          composer.py   把 op + contexts + 用户输入拼成最终 (system, prompt, temperature)
-        endpoint 退化成 thin wrapper：召回 → composer → LLM → 回包。
+        架构:**完全复用 chat 主链路 RAG + grounded 验证 + 防幻觉约束**,
+        通过 resolve_chat_answer_data_center_primary(assistant_id=None) 旁路调用。
+        - 数据中心召回(跟问答页面完全同一套)
+        - 6 条防幻觉硬约束(数据可信 / 主体归属 / 隐私 / 推理对比 / 多值冲突 / 引证溯源)
+        - LLM 重试 + grounded fallback + 失败阶段追踪
+        inline AI 只在外面套一层 editor 约束(选区/字数/markdown 格式),
+        editor_ai/contexts.py 的空 stub retriever 已不再使用。
         """
-        from .services.editor_ai import (
-            OPERATIONS,
-            ContextSourceSpec as _EditorContextSpec,
-            compose_prompt,
-            retrieve_contexts,
-        )
+        from .services.editor_ai import OPERATIONS
+        from .services.editor_ai.operations import CREATIVITY_HINTS
 
         build_client_summary(client_id)
         content = (payload.content or "").strip()
@@ -45258,8 +45572,35 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
 
         user_request = (payload.userRequest or "").strip()
         creativity = payload.creativityMode
+        selection_text = (payload.selectionText or "").strip()
 
-        # 写作风格 skill 注入（从 writing_skills 表读 distilled_md）
+        # 决定作用范围 —
+        # Case 1:有选区 → 选区作为待改写背景,生成内容替换选区
+        # Case 2:无选区 → 没有文字背景,只跟 userRequest 自由生成,在光标处插入(不改其他内容)
+        if selection_text and op.user_prefix_selection:
+            target_scope = "selection"
+            body_to_transform = selection_text
+            task_prefix = op.user_prefix_selection.rstrip()
+        else:
+            # 无选区 = 用户没要"改写什么",只给指令要新内容。content 不作为待改写传给 LLM,
+            # 光标插入语义靠 target_scope='cursor_insert' 通知前端。
+            target_scope = "cursor_insert"
+            body_to_transform = ""
+            task_prefix = (
+                "请在用户当前光标位置生成一段新的 markdown 内容。"
+                "不要重复或修改用户已有的文档内容,只输出要插入到光标处的新段落。"
+            )
+
+        # 输入软上限截断(跟旧实现一致 12000 字)
+        CONTENT_SOFT_LIMIT = 12000
+        if len(body_to_transform) > CONTENT_SOFT_LIMIT:
+            body_to_transform = body_to_transform[:CONTENT_SOFT_LIMIT] + "\n\n（内容过长已截断，仅处理前 12000 字）"
+
+        # creativity 解析:faithful 类 op 强制 strict
+        effective_creativity = "strict" if op.faithful else creativity
+        creativity_hint = CREATIVITY_HINTS.get(effective_creativity, "")
+
+        # 写作风格 skill(可选)
         skill_md = ""
         if payload.activeSkillId:
             try:
@@ -45272,53 +45613,119 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             except Exception as exc:
                 logger.warning("[document_ai_action] load writing skill failed: %s", exc)
 
-        # 召回 context（P13a：所有 retriever 都返回空，行为零变化；
-        # 不在 op.allowed_contexts 里的 spec 静默丢弃，防止 UI 传错类型）
-        context_specs = [
-            _EditorContextSpec(
-                type=src.type,
-                query=src.query,
-                refId=src.refId,
-                topK=src.topK,
-                params=src.params or {},
-            )
-            for src in (payload.contextSources or [])
-            if src.type in op.allowed_contexts
+        # 构造给 chat 主链路消化的 prompt:
+        # chat 链路的 system_instruction 内置 grounded / 主体归属 / 防幻觉约束,这里只补 editor 任务声明
+        chat_prompt_parts: list[str] = [
+            f"【inline 编辑器任务】{op.label}",
+            task_prefix,
         ]
-        retrieved = retrieve_contexts(context_specs, client_id=client_id, db=state.db)
-
-        # P14a：选区文本（用户在编辑器框选了一段时，前端把这段裸文本传上来）
-        selection_text = (payload.selectionText or "").strip()
-
-        # composer 一把组装好 (system, prompt, temperature, effective_creativity, sources, target_scope)
-        composition = compose_prompt(
-            op,
-            content=content,
-            selection_text=selection_text,
-            user_request=user_request,
-            skill_md=skill_md,
-            creativity=creativity,
-            contexts=retrieved,
+        if user_request:
+            chat_prompt_parts.append(f"【用户具体要求】\n{user_request}")
+        if creativity_hint:
+            chat_prompt_parts.append(creativity_hint)
+        if skill_md:
+            chat_prompt_parts.append(f"【写作风格档案(请按此风格调整措辞与节奏)】\n{skill_md}")
+        # Case 1 有选区 → 把选区作为待处理内容塞进 prompt
+        # Case 2 无选区 → 不塞,LLM 不需要"参考"任何文档片段,完全跟指令 + RAG
+        if body_to_transform:
+            chat_prompt_parts.append(f"【需要处理的内容】\n{body_to_transform}")
+        # 输出范围 + 行为约束(分 case 写明确,避免 LLM 误解)
+        if target_scope == "selection":
+            output_scope_hint = "只输出改写选区的结果,不要重复其他文档内容"
+        elif target_scope == "cursor_insert":
+            output_scope_hint = "只输出要插入光标位置的新内容,不要复述用户指令,不要把已有文档内容再写一遍"
+        else:
+            output_scope_hint = "处理完整内容"
+        chat_prompt_parts.append(
+            "【输出要求 — 必须严格遵守】\n"
+            f"1. 只输出处理后的 markdown 内容本身,不要任何前言/后语/元话语(\"以下是...\"、\"我已经...\"等都禁止)\n"
+            "2. 保留 markdown 结构(标题层级、列表、加粗、引用、链接等)\n"
+            "3. 事实必须可溯源到数据中心召回的客户资料,不发明,不臆测\n"
+            f"4. 输出范围:{output_scope_hint}"
         )
+        chat_prompt = "\n\n".join(p for p in chat_prompt_parts if p)
 
         from time import perf_counter as _pc
         started = _pc()
         try:
-            result = state.ai._qwen_generate(  # noqa: SLF001
-                prompt=composition.prompt,
-                system_instruction=composition.system,
-                response_schema=None,
-                timeout_seconds=120.0,
-                max_tokens=5000,
-                temperature=composition.temperature,
-                top_p=0.9,
+            grounded = resolve_chat_answer_data_center_primary(
+                client_id=client_id,
+                thread_id=None,               # inline 旁路,不创建 chat thread
+                prompt=chat_prompt,
+                assistant_id=None,            # 关键:None 触发 GroundedAnswerResult 返回,跳过所有 chat 写入
+                search_id=None,
+                request_started=started,
+                run_id=None,
+                working_document_ids=None,
+                inline_creativity_override=effective_creativity,  # 用户在 popover 选的写作模式
             )
         except Exception as exc:
+            # Tier1 错误分类:锁竞争/瞬时类返 503(让前端自动重试 3 次),真致命返 502
+            logger.exception(
+                "[document_ai_action] AI 调用失败 action=%s client=%s",
+                action,
+                client_id,
+            )
+            exc_str = str(exc)
+            lowered = exc_str.lower()
+            if "session file locked" in lowered or ("locked" in lowered and "timeout" in lowered):
+                raise HTTPException(status_code=503, detail="AI 正在处理其他任务,请稍后再试") from exc
+            if any(token in lowered for token in ("429", "rate limit", "too many")):
+                raise HTTPException(status_code=503, detail="AI 调用过于频繁,请稍候片刻再试") from exc
+            if any(token in lowered for token in ("timeout", "timed out", "connection", "econnreset")):
+                raise HTTPException(status_code=503, detail="AI 调用超时,请稍后重试") from exc
             raise HTTPException(status_code=502, detail=f"AI 调用失败：{exc}") from exc
+
         duration_ms = (_pc() - started) * 1000
-        new_content = str(result or "").strip()
+
+        # 防御:assistant_id=None 一定返 GroundedAnswerResult,但万一类型异常,降级
+        if not isinstance(grounded, GroundedAnswerResult):
+            logger.warning("[document_ai_action] expected GroundedAnswerResult, got %s", type(grounded).__name__)
+            new_content = str(getattr(grounded, "content", "") or "").strip()
+            answer_mode = "unknown"
+            evidence_status = "unknown"
+            evidence_items: list[dict] = []
+        else:
+            # 优先取 state_answer_sections.official(chat finalize bug 兜底:真答案藏这里)
+            official = ""
+            if isinstance(grounded.state_answer_sections, dict):
+                official_raw = grounded.state_answer_sections.get("official")
+                if isinstance(official_raw, str) and official_raw.strip():
+                    official = official_raw.strip()
+            new_content = official or grounded.content.strip()
+            answer_mode = grounded.answer_mode
+            evidence_status = grounded.evidence_status
+            evidence_items = grounded.evidence
+
+        # 删字典 📚 / ⚠️ 引证标记 — LLM 应该基于字典 verified 值生成事实(grounding 不变),
+        # 但用户不希望在正文里看见 "[📚 心盛计划.累计服务人数]" 这种碎片标记。
+        # 跟前端 stripGlossaryCitations 同一套规则(_CITE_PATTERN in citation_validator.py)。
+        # 后端在这里做一道兜底:编辑器拿到的就是干净 markdown,不依赖前端 strip。
+        new_content = re.sub(r"\s*\[\s*📚[^\]]*\]", "", new_content)
+        new_content = re.sub(r"\s*\[\s*⚠️\s*引用失效[^\]]*\]", "", new_content)
+        # 清理留下的孤立标点
+        new_content = re.sub(r"[，,、]\s*([。！？\n])", r"\1", new_content)
+        new_content = re.sub(r"[，,]\s*[，,]", "，", new_content)
+        new_content = new_content.strip()
+
         if not new_content:
             raise HTTPException(status_code=502, detail="AI 返回为空")
+
+        # 把 chat 主链路召回的 evidence 转成 DocumentAiActionSourceRef(给编辑器右侧引证面板)
+        sources: list[DocumentAiActionSourceRef] = []
+        for ev in evidence_items[:8]:
+            if not isinstance(ev, dict):
+                continue
+            sources.append(
+                DocumentAiActionSourceRef(
+                    type="client_materials",
+                    title=str(ev.get("title") or ev.get("documentTitle") or "客户资料"),
+                    snippet=str(ev.get("excerpt") or ev.get("snippet") or "")[:240],
+                    refId=str(ev.get("id") or ev.get("documentId") or "") or None,
+                    extra={"answerMode": answer_mode, "evidenceStatus": evidence_status},
+                )
+            )
+
         log_activity(
             "client.document.ai_action",
             "client",
@@ -45327,33 +45734,27 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 "action": action,
                 "inputChars": len(content),
                 "selectionChars": len(selection_text),
-                "targetScope": composition.target_scope,
+                "targetScope": target_scope,
                 "outputChars": len(new_content),
                 "durationMs": round(duration_ms, 1),
                 "creativityMode": creativity,
-                "effectiveCreativity": composition.effective_creativity,
+                "effectiveCreativity": effective_creativity,
                 "userRequestChars": len(user_request),
                 "activeSkillId": payload.activeSkillId,
-                "contextSources": [c.type for c in context_specs],
-                "retrievedChunks": sum(len(c.chunks) for c in retrieved),
+                "contextSources": ["chat_pipeline_rag"],  # Step 4 后召回走 chat 主链路
+                "retrievedChunks": len(evidence_items),
+                "answerMode": answer_mode,
+                "evidenceStatus": evidence_status,
             },
         )
+
         return DocumentAiActionResponse(
             content=new_content,
             action=action,
             durationMs=round(duration_ms, 1),
-            sources=[
-                DocumentAiActionSourceRef(
-                    type=src.type,
-                    title=src.title,
-                    snippet=src.snippet,
-                    refId=src.refId,
-                    extra=src.extra,
-                )
-                for src in composition.sources
-            ],
-            effectiveCreativity=composition.effective_creativity,
-            targetScope=composition.target_scope,
+            sources=sources,
+            effectiveCreativity=effective_creativity,
+            targetScope=target_scope,
         )
 
     @app.post("/api/v1/clients/{client_id}/link-materials/import/start", response_model=LinkMaterialImportRunRecord)
@@ -53496,6 +53897,49 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             raise HTTPException(status_code=400, detail="clientId 必填")
         extract = get_brand_strategy_extract(state.db, client_id=client_id)
         return {"extract": extract}
+
+    @app.put("/api/v1/intelligence/brand-mirror/strategy-extract")
+    def update_brand_strategy_extract_endpoint(payload: dict) -> dict:
+        """用户手动编辑 LLM 抽取的战略主张 + 方法学 (最多 200 字).
+
+        用户在前端 StrategicDnaCard 里点编辑后保存, 覆盖 LLM 的输出. 不影响 stakeholders /
+        sources / hash / extracted_at, 保留 LLM 抽取的"应然相关方矩阵"作为下游引用源.
+        """
+        body = payload or {}
+        client_id = (body.get("clientId") or "").strip()
+        if not client_id:
+            raise HTTPException(status_code=400, detail="clientId 必填")
+
+        strategic_objective = str(body.get("strategicObjective") or "").strip()
+        methodology = str(body.get("methodology") or "").strip()
+
+        # 200 字总硬限 — 跟 prompt 端约束保持一致 (留 10% buffer 应付标点)
+        if len(strategic_objective) + len(methodology) > 220:
+            raise HTTPException(
+                status_code=400,
+                detail=f"战略主张 + 方法学 总长度 {len(strategic_objective) + len(methodology)} 字, 超过 200 字上限",
+            )
+
+        # 必须先有 LLM 抽取结果才能编辑 — 用户路径: 上传 .md → 跑 LLM → 编辑
+        existing = state.db.fetchone(
+            "SELECT client_id FROM client_brand_strategy_extracts WHERE client_id = ?",
+            (client_id,),
+        )
+        if not existing:
+            raise HTTPException(
+                status_code=404,
+                detail="该客户还没有战略推演树, 请先上传 strategy.md + methodology.md 让 AI 抽取",
+            )
+
+        from app.services.brand_strategy_extractor import get_brand_strategy_extract
+
+        state.db.execute(
+            """UPDATE client_brand_strategy_extracts
+               SET strategic_objective = ?, methodology = ?, updated_at = ?
+               WHERE client_id = ?""",
+            (strategic_objective, methodology, now_iso(), client_id),
+        )
+        return {"extract": get_brand_strategy_extract(state.db, client_id=client_id)}
 
     @app.post("/api/v1/intelligence/sentiment/audit/recompute")
     def recompute_brand_audit_endpoint(payload: dict) -> dict:

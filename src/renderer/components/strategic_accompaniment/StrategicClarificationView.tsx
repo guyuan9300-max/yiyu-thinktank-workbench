@@ -45,13 +45,17 @@ import {
   removeSuggestionLogEntry,
   getStrategicDocs,
   uploadStrategicDoc,
-  deleteStrategicDoc,
+  // deleteStrategicDoc 不再使用 — 用户不能删战略文档 (它是下游品牌监控/情报站/chat 的关键基线)
+  fetchBrandStrategyExtract,
+  triggerBrandStrategyExtraction,
+  updateBrandStrategyExtract,
   type MeetingActionItem,
   type NextStepItem,
   type SuggestionLogEntry,
   type SuggestionAction,
   type StrategicDocsResponse,
   type StrategicDocType,
+  type BrandStrategyExtract,
   type ClarificationContext,
   type ClarificationEventLine,
   type ClarificationTimelineItem,
@@ -433,6 +437,20 @@ function parseBusinessIntro(text: string): Segment[] | null {
 // 视觉上插在 essence 卡之后, 跟其他维度卡同构, 但数据源是独立 endpoint
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
+/**
+ * 战略定位与发展路径 — 改造后的卡片 (2026-05-21).
+ *
+ * 设计原则:
+ *   1. 用户上传 strategy.md + methodology.md → backend LLM 抽取 → 显示**精炼后的 200 字以内文本** (不显示 .md 原文)
+ *   2. 抽取出来的"战略主张 + 方法学"用户可以**直接编辑** (覆盖 LLM 输出, 保留下游 stakeholders 不动)
+ *   3. 只保留**重传** (上传/替换 .md), **不允许删除** — 战略文档是下游品牌监控/情报站/chat 的关键基线
+ *
+ * 状态机:
+ *   [未上传]    → 显示 2 个上传槽位 (.md 文件)
+ *   [已上传]    → 显示 LLM 抽取的 200 字文本 + [编辑] / [重传 .md] 按钮
+ *   [编辑中]    → 显示 2 个 textarea (战略主张 / 方法学), 字数实时计数, 可保存/取消
+ *   [保存中]    → disabled
+ */
 function StrategicDnaCard({
   clientId,
   flash,
@@ -440,15 +458,32 @@ function StrategicDnaCard({
   clientId: string;
   flash?: (level: 'success' | 'error' | 'info', message: string) => void;
 }) {
-  const [data, setData] = useState<StrategicDocsResponse | null>(null);
+  const [docs, setDocs] = useState<StrategicDocsResponse | null>(null);
+  const [extract, setExtract] = useState<BrandStrategyExtract | null>(null);
   const [loading, setLoading] = useState(false);
+  const [editing, setEditing] = useState(false);
+  const [editingDraft, setEditingDraft] = useState<{ strategicObjective: string; methodology: string }>({
+    strategicObjective: '',
+    methodology: '',
+  });
+  const [extracting, setExtracting] = useState(false);
+  const [saving, setSaving] = useState(false);
 
   const reload = useCallback(() => {
     if (!clientId) return;
     setLoading(true);
-    getStrategicDocs(clientId)
-      .then((d) => setData(d))
-      .catch(() => setData(null))
+    void Promise.all([
+      getStrategicDocs(clientId),
+      fetchBrandStrategyExtract(clientId),
+    ])
+      .then(([d, e]) => {
+        setDocs(d);
+        setExtract(e.extract);
+      })
+      .catch(() => {
+        setDocs(null);
+        setExtract(null);
+      })
       .finally(() => setLoading(false));
   }, [clientId]);
 
@@ -471,25 +506,65 @@ function StrategicDnaCard({
     try {
       const mdContent = await file.text();
       await uploadStrategicDoc(clientId, { docType, fileName: file.name, mdContent });
-      flash?.('success', `已上传 ${docType === 'strategy' ? '战略文档' : '方法论文档'}`);
-      reload();
+      flash?.('success', `已上传 ${docType === 'strategy' ? '战略文档' : '方法论文档'}, 正在让 AI 抽取核心 200 字...`);
+      // 上传后自动 trigger LLM 抽取 (如果两份都已上传)
+      const next = await getStrategicDocs(clientId);
+      setDocs(next);
+      if (next.hasStrategy && next.hasMethodology) {
+        setExtracting(true);
+        try {
+          await triggerBrandStrategyExtraction(clientId);
+          flash?.('success', '✓ AI 抽取完成');
+        } catch (err) {
+          flash?.('error', err instanceof Error ? `AI 抽取失败: ${err.message}` : 'AI 抽取失败');
+        } finally {
+          setExtracting(false);
+          reload();
+        }
+      }
     } catch (err) {
       flash?.('error', err instanceof Error ? err.message : '上传失败');
     }
   };
 
-  const handleDelete = async (docType: StrategicDocType) => {
-    if (!window.confirm(`确认删除${docType === 'strategy' ? '战略文档' : '方法论文档'}? 删除后, 品牌监控/提案等模块将看不到此客户的战略基线.`)) return;
+  const handleStartEdit = () => {
+    if (!extract) return;
+    setEditingDraft({
+      strategicObjective: extract.strategicObjective || '',
+      methodology: extract.methodology || '',
+    });
+    setEditing(true);
+  };
+
+  const handleSave = async () => {
+    const total = editingDraft.strategicObjective.length + editingDraft.methodology.length;
+    if (total > 200) {
+      flash?.('error', `战略主张 + 方法学 共 ${total} 字, 超过 200 字上限, 请精简`);
+      return;
+    }
+    if (!editingDraft.strategicObjective.trim() || !editingDraft.methodology.trim()) {
+      flash?.('error', '战略主张和方法学都不能为空');
+      return;
+    }
+    setSaving(true);
     try {
-      await deleteStrategicDoc(clientId, docType);
-      flash?.('info', '已删除');
-      reload();
+      const resp = await updateBrandStrategyExtract(clientId, editingDraft);
+      setExtract(resp.extract);
+      setEditing(false);
+      flash?.('success', '已保存');
     } catch (err) {
-      flash?.('error', err instanceof Error ? err.message : '删除失败');
+      flash?.('error', err instanceof Error ? err.message : '保存失败');
+    } finally {
+      setSaving(false);
     }
   };
 
-  if (loading && !data) {
+  const handleCancel = () => {
+    setEditing(false);
+    setEditingDraft({ strategicObjective: '', methodology: '' });
+  };
+
+  if (loading && !docs && !extract) {
     return (
       <div className="rounded-2xl border border-slate-100 bg-white p-5">
         <div className="text-[11px] text-slate-400">加载战略文档...</div>
@@ -497,8 +572,8 @@ function StrategicDnaCard({
     );
   }
 
-  const hasAny = data?.hasStrategy || data?.hasMethodology;
-  const hasAll = data?.hasStrategy && data?.hasMethodology;
+  const hasAllDocs = Boolean(docs?.hasStrategy && docs?.hasMethodology);
+  const hasExtract = Boolean(extract && (extract.strategicObjective || extract.methodology));
 
   return (
     <div className="rounded-2xl border border-violet-100 bg-gradient-to-br from-violet-50/40 to-white p-5">
@@ -506,113 +581,201 @@ function StrategicDnaCard({
         <div className="flex items-center gap-2">
           <Target size={16} className="text-violet-600" />
           <h3 className="text-[15px] font-bold text-violet-900">战略定位与发展路径</h3>
+          {extract?.isStale && (
+            <span className="text-[10px] text-amber-700 bg-amber-100 rounded-full px-2 py-0.5 font-bold" title="上传的 .md 已变, 抽取结果可能过期">
+              文档已更新, 待重抽
+            </span>
+          )}
         </div>
         <span className="text-[10px] text-violet-700 bg-violet-100 rounded-full px-2 py-0.5 font-bold">
-          {hasAll ? '已配置' : hasAny ? '部分配置' : '未配置'}
+          {hasExtract ? '已配置' : hasAllDocs ? '抽取中' : '未配置'}
         </span>
       </div>
 
-      {!hasAny && (
-        <div className="space-y-3">
-          <div className="text-[12px] leading-relaxed text-slate-700 bg-violet-50/60 rounded-xl px-4 py-3 border border-violet-100">
+      {/* 1. 未上传任何 .md → 显示 2 个上传槽位 */}
+      {!hasAllDocs && !hasExtract && (
+        <>
+          <div className="text-[12px] leading-relaxed text-slate-700 bg-violet-50/60 rounded-xl px-4 py-3 border border-violet-100 mb-3">
             <p className="font-semibold text-violet-900 mb-1">AI 说:</p>
             <p>
-              我在客户资料里没找到足够多的战略方向内容和明确的业务方法论文档. 这两份是品牌监控、情报匹配、提案生成等模块判断客户事情的关键基线. 建议把客户内部讨论过的战略文档和方法论保存为 <code className="bg-white px-1.5 py-0.5 rounded text-[11px]">.md</code> 上传 — 上传后这些模块的准确度会显著提升, 也避免 AI 编造战略误导决策.
+              我没找到客户的战略文档和业务方法论. 上传这两份 <code className="bg-white px-1.5 py-0.5 rounded text-[11px]">.md</code> 后,
+              AI 会抽出 200 字以内的"战略主张 + 方法学", 你可以再手动微调. 这份骨架是品牌监控/情报站/chat 等模块识别客户战略的关键基线.
             </p>
+          </div>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <StrategicDocUploadSlot
+              docType="strategy"
+              title="战略文档"
+              hint="客户在赛道里走什么路线"
+              uploaded={Boolean(docs?.hasStrategy)}
+              onPick={handleFilePick('strategy')}
+            />
+            <StrategicDocUploadSlot
+              docType="methodology"
+              title="方法论文档"
+              hint="客户的发展路径和工作方法"
+              uploaded={Boolean(docs?.hasMethodology)}
+              onPick={handleFilePick('methodology')}
+            />
+          </div>
+        </>
+      )}
+
+      {/* 2. 已上传但还在抽取 / 抽取失败 */}
+      {hasAllDocs && !hasExtract && (
+        <div className="rounded-xl border border-violet-100 bg-white px-4 py-3 text-[12px] text-slate-600">
+          {extracting ? '⏳ AI 正在抽取战略主张 + 方法学 (约 1-2 分钟)...' : '已上传两份文档, 但还没抽取出结果. 重传任意一份重新触发.'}
+        </div>
+      )}
+
+      {/* 3. 已配置 — 显示 LLM 抽取的 200 字 + 编辑/重传 */}
+      {hasExtract && !editing && extract && (
+        <div className="space-y-3">
+          <div className="rounded-xl border border-violet-200 bg-white px-4 py-3">
+            <div className="flex items-center justify-between gap-2 mb-1.5">
+              <div className="text-[11px] font-bold uppercase tracking-[0.12em] text-violet-700">战略主张</div>
+              <span className="text-[10px] text-slate-400 tabular-nums">{extract.strategicObjective.length} 字</span>
+            </div>
+            <p className="text-[13px] leading-[1.75] text-slate-800 whitespace-pre-wrap">{extract.strategicObjective}</p>
+          </div>
+          <div className="rounded-xl border border-violet-200 bg-white px-4 py-3">
+            <div className="flex items-center justify-between gap-2 mb-1.5">
+              <div className="text-[11px] font-bold uppercase tracking-[0.12em] text-violet-700">组织方法学</div>
+              <span className="text-[10px] text-slate-400 tabular-nums">{extract.methodology.length} 字</span>
+            </div>
+            <p className="text-[13px] leading-[1.75] text-slate-800 whitespace-pre-wrap">{extract.methodology}</p>
+          </div>
+          <div className="flex items-center justify-end gap-2 pt-1">
+            <button
+              type="button"
+              onClick={handleStartEdit}
+              className="inline-flex items-center gap-1.5 rounded-full border border-violet-200 bg-white px-3 py-1.5 text-[11px] font-bold text-violet-700 hover:bg-violet-50"
+            >
+              <Type size={12} />
+              编辑
+            </button>
+            <label htmlFor="strategic-doc-replace-strategy" className="cursor-pointer inline-flex items-center gap-1.5 rounded-full border border-violet-200 bg-white px-3 py-1.5 text-[11px] font-bold text-violet-700 hover:bg-violet-50">
+              <UploadCloud size={12} />
+              重传战略文档
+              <input id="strategic-doc-replace-strategy" type="file" accept=".md,.markdown,text/markdown" className="hidden" onChange={handleFilePick('strategy')} />
+            </label>
+            <label htmlFor="strategic-doc-replace-methodology" className="cursor-pointer inline-flex items-center gap-1.5 rounded-full border border-violet-200 bg-white px-3 py-1.5 text-[11px] font-bold text-violet-700 hover:bg-violet-50">
+              <UploadCloud size={12} />
+              重传方法论
+              <input id="strategic-doc-replace-methodology" type="file" accept=".md,.markdown,text/markdown" className="hidden" onChange={handleFilePick('methodology')} />
+            </label>
           </div>
         </div>
       )}
 
-      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mt-3">
-        <StrategicDocSlot
-          docType="strategy"
-          title="战略文档"
-          hint="客户在赛道里走什么路线"
-          entry={data?.strategy ?? null}
-          onPick={handleFilePick('strategy')}
-          onDelete={() => handleDelete('strategy')}
-        />
-        <StrategicDocSlot
-          docType="methodology"
-          title="方法论文档"
-          hint="客户的发展路径和工作方法"
-          entry={data?.methodology ?? null}
-          onPick={handleFilePick('methodology')}
-          onDelete={() => handleDelete('methodology')}
-        />
-      </div>
+      {/* 4. 编辑中 — 2 个 textarea + 字数计数 + 保存/取消 */}
+      {hasExtract && editing && (
+        <div className="space-y-3">
+          <StrategicEditField
+            label="战略主张"
+            value={editingDraft.strategicObjective}
+            onChange={(v) => setEditingDraft((d) => ({ ...d, strategicObjective: v }))}
+            placeholder="一句话讲清楚客户的战略主张 — 文档里最核心的 What & Why"
+          />
+          <StrategicEditField
+            label="组织方法学"
+            value={editingDraft.methodology}
+            onChange={(v) => setEditingDraft((d) => ({ ...d, methodology: v }))}
+            placeholder="一句话讲清楚客户实现战略的方法学骨架 — 关键路径/飞轮/抓手"
+          />
+          <div className="flex items-center justify-between gap-2 pt-1">
+            <div className={`text-[11px] tabular-nums ${
+              editingDraft.strategicObjective.length + editingDraft.methodology.length > 200
+                ? 'text-rose-600 font-bold'
+                : 'text-slate-500'
+            }`}>
+              总计 {editingDraft.strategicObjective.length + editingDraft.methodology.length} / 200 字
+            </div>
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={handleCancel}
+                disabled={saving}
+                className="inline-flex items-center gap-1.5 rounded-full border border-slate-200 bg-white px-3 py-1.5 text-[11px] font-bold text-slate-600 hover:bg-slate-50 disabled:opacity-50"
+              >
+                取消
+              </button>
+              <button
+                type="button"
+                onClick={() => void handleSave()}
+                disabled={saving || editingDraft.strategicObjective.length + editingDraft.methodology.length > 200}
+                className="inline-flex items-center gap-1.5 rounded-full bg-violet-600 text-white px-3 py-1.5 text-[11px] font-bold hover:bg-violet-700 disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                {saving ? '保存中...' : '保存'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
 
-function StrategicDocSlot({
+/** 未上传态的上传槽位 (dashed box, 点击触发 file picker). */
+function StrategicDocUploadSlot({
   docType,
   title,
   hint,
-  entry,
+  uploaded,
   onPick,
-  onDelete,
 }: {
   docType: StrategicDocType;
   title: string;
   hint: string;
-  entry: { fileName: string; mdContent: string; uploadedAt: string; uploadedBy: string } | null;
+  uploaded: boolean;
   onPick: (event: React.ChangeEvent<HTMLInputElement>) => void;
-  onDelete: () => void;
 }) {
-  const [expanded, setExpanded] = useState(false);
   const inputId = `strategic-upload-${docType}`;
+  return (
+    <label htmlFor={inputId} className={`block cursor-pointer rounded-xl border-2 border-dashed px-4 py-4 text-center transition-colors ${
+      uploaded
+        ? 'border-violet-300 bg-violet-50/60 hover:border-violet-400'
+        : 'border-violet-200 bg-white hover:border-violet-400'
+    }`}>
+      <UploadCloud size={18} className="mx-auto text-violet-500 mb-2" />
+      <div className="text-[12px] font-bold text-slate-800">{title}{uploaded ? ' ✓' : ''}</div>
+      <div className="text-[10px] text-slate-500 mt-0.5">{hint}</div>
+      <div className="text-[10px] text-violet-600 font-bold mt-2">
+        {uploaded ? '已上传, 点击替换' : '点击上传 .md 文件'}
+      </div>
+      <input id={inputId} type="file" accept=".md,.markdown,text/markdown" className="hidden" onChange={onPick} />
+    </label>
+  );
+}
 
-  if (!entry) {
-    return (
-      <label htmlFor={inputId} className="block cursor-pointer rounded-xl border-2 border-dashed border-violet-200 hover:border-violet-400 bg-white px-4 py-4 text-center transition-colors">
-        <UploadCloud size={18} className="mx-auto text-violet-500 mb-2" />
-        <div className="text-[12px] font-bold text-slate-800">{title}</div>
-        <div className="text-[10px] text-slate-500 mt-0.5">{hint}</div>
-        <div className="text-[10px] text-violet-600 font-bold mt-2">点击上传 .md 文件</div>
-        <input id={inputId} type="file" accept=".md,.markdown,text/markdown" className="hidden" onChange={onPick} />
-      </label>
-    );
-  }
-  const previewLines = entry.mdContent.split('\n').slice(0, 5).join('\n');
-  const hasMore = entry.mdContent.split('\n').length > 5;
+/** 编辑态的 textarea + label + 100 字红线提示. */
+function StrategicEditField({
+  label,
+  value,
+  onChange,
+  placeholder,
+}: {
+  label: string;
+  value: string;
+  onChange: (v: string) => void;
+  placeholder: string;
+}) {
+  const over = value.length > 100;
   return (
     <div className="rounded-xl border border-violet-200 bg-white px-4 py-3">
-      <div className="flex items-start justify-between gap-2 mb-1.5">
-        <div className="min-w-0 flex-1">
-          <div className="text-[12px] font-bold text-slate-800">{title}</div>
-          <div className="text-[10px] text-slate-500 truncate mt-0.5">📄 {entry.fileName}</div>
-          <div className="text-[10px] text-slate-400 mt-0.5">
-            上传于 {entry.uploadedAt.slice(0, 16).replace('T', ' ')}
-          </div>
-        </div>
-        <div className="flex items-center gap-1 shrink-0">
-          <label htmlFor={`${inputId}-replace`} className="cursor-pointer text-[10px] text-violet-600 hover:text-violet-800 font-bold">
-            重传
-            <input id={`${inputId}-replace`} type="file" accept=".md,.markdown,text/markdown" className="hidden" onChange={onPick} />
-          </label>
-          <button
-            type="button"
-            onClick={onDelete}
-            className="text-[10px] text-rose-500 hover:text-rose-700 font-bold"
-          >
-            删除
-          </button>
-        </div>
+      <div className="flex items-center justify-between gap-2 mb-1.5">
+        <div className="text-[11px] font-bold uppercase tracking-[0.12em] text-violet-700">{label}</div>
+        <span className={`text-[10px] tabular-nums ${over ? 'text-rose-600 font-bold' : 'text-slate-400'}`}>
+          {value.length} / 100 字
+        </span>
       </div>
-      <div className="mt-2 text-[11px] text-slate-700 leading-relaxed bg-slate-50 rounded-lg px-3 py-2 max-h-[180px] overflow-y-auto whitespace-pre-wrap font-mono">
-        {expanded ? entry.mdContent : previewLines}
-        {!expanded && hasMore && '...'}
-      </div>
-      {hasMore && (
-        <button
-          type="button"
-          onClick={() => setExpanded((v) => !v)}
-          className="mt-1.5 text-[10px] text-violet-600 hover:text-violet-800 font-bold"
-        >
-          {expanded ? '▲ 收起' : '▼ 展开全文'}
-        </button>
-      )}
+      <textarea
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        placeholder={placeholder}
+        rows={4}
+        className="w-full resize-none rounded-lg border border-slate-200 bg-slate-50/40 px-3 py-2 text-[13px] leading-[1.75] text-slate-800 placeholder:text-slate-400 focus:outline-none focus:border-violet-400 focus:bg-white"
+      />
     </div>
   );
 }
