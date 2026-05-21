@@ -1264,10 +1264,8 @@ function ThoughtsTab({
   onReview,
   onCreateTask,
   onRetry,
-  onRefresh,
   onToggleFavorite,
   onDelete,
-  refreshing,
 }: {
   thoughts: StrategicThought[];
   loading: boolean;
@@ -1279,10 +1277,8 @@ function ThoughtsTab({
   onReview: (thoughtId: string, action: 'confirm' | 'dismiss', note: string) => Promise<void>;
   onCreateTask?: (payload: ThoughtTaskPayload) => void;
   onRetry: () => void;
-  onRefresh: () => Promise<void>;
   onToggleFavorite: (thought: StrategicThought) => Promise<void>;
   onDelete: (thought: StrategicThought) => Promise<void>;
-  refreshing: boolean;
 }) {
   if (loading) {
     return (
@@ -1313,27 +1309,16 @@ function ThoughtsTab({
       <div className="bg-white border border-slate-100 rounded-[20px] px-5 py-6">
         <p className="text-[13px] leading-7 text-slate-500">
           {selectedClientId
-            ? `${selectedProjectModuleName || selectedClientName || '这个客户'}当前还没有足够材料形成高价值研判。`
+            ? `${selectedProjectModuleName || selectedClientName || '这个客户'}当前还没有足够材料形成高价值研判。点页面顶部"让 AI 重新理解"再生成。`
             : '当前还没有足够材料形成高价值研判。'}
         </p>
-        {selectedClientId && (
-          <button
-            type="button"
-            onClick={() => void onRefresh()}
-            disabled={refreshing}
-            className="mt-3 inline-flex items-center gap-2 rounded-full border border-blue-200 bg-blue-50 px-4 py-2 text-[12px] font-bold text-blue-600 hover:bg-blue-100 disabled:opacity-60"
-          >
-            <RefreshCw size={14} className={refreshing ? 'animate-spin' : ''} />
-            {refreshing ? '正在刷新研判' : '刷新研判'}
-          </button>
-        )}
       </div>
     );
   }
 
   return (
     <div>
-      <div className="mb-4 flex items-center justify-between gap-3 px-1">
+      <div className="mb-4 flex items-center gap-3 px-1">
         <div className="text-[12px] text-slate-400">
           {selectedProjectModuleId
             ? `${selectedProjectModuleName || '当前项目'} · ${thoughts.length} 条洞察`
@@ -1341,17 +1326,6 @@ function ThoughtsTab({
               ? `${selectedClientName || '当前客户'} · ${thoughts.length} 条洞察`
               : `全部客户 · ${thoughts.length} 条洞察`}
         </div>
-        {selectedClientId && (
-          <button
-            type="button"
-            onClick={() => void onRefresh()}
-            disabled={refreshing}
-            className="inline-flex items-center gap-2 rounded-full border border-blue-200 bg-white px-4 py-2 text-[12px] font-bold text-blue-600 hover:bg-blue-50 disabled:opacity-60"
-          >
-            <RefreshCw size={14} className={refreshing ? 'animate-spin' : ''} />
-            {refreshing ? '刷新中' : '刷新研判'}
-          </button>
-        )}
       </div>
       <div className="columns-1 md:columns-2 gap-5 space-y-5">
         {thoughts.map((thought) => (
@@ -2248,7 +2222,6 @@ export function StrategicBrainView({
   const [thoughtsLoading, setThoughtsLoading] = useState(false);
   const [thoughtsError, setThoughtsError] = useState<string | null>(null);
   const [thoughtClientId, setThoughtClientId] = useState(currentClientId || '');
-  const [thoughtsRefreshing, setThoughtsRefreshing] = useState(false);
   // 兜底:让 AI 全面重新理解这个客户(同时跑 analysis_job + refresh strategic_thoughts)
   const [globalRefreshing, setGlobalRefreshing] = useState(false);
   const [globalRefreshMsg, setGlobalRefreshMsg] = useState<string | null>(null);
@@ -2307,23 +2280,9 @@ export function StrategicBrainView({
     [flash, loadThoughts],
   );
 
-  const handleRefreshThoughts = useCallback(async () => {
-    if (!thoughtClientId) return;
-    setThoughtsRefreshing(true);
-    setThoughtsError(null);
-    try {
-      const response = await refreshStrategicThoughts({
-        clientId: thoughtClientId,
-        limit: 8,
-      });
-      setThoughts(response.items || []);
-      flash?.('success', '研判已刷新');
-    } catch (error) {
-      setThoughtsError(error instanceof Error ? error.message : '刷新失败');
-    } finally {
-      setThoughtsRefreshing(false);
-    }
-  }, [flash, thoughtClientId]);
+  // 原 handleRefreshThoughts (单纯刷新研判, 不动客户档案) 已删. 思考 tab 内的两个
+  // "刷新研判" 按钮 (空态/有数据态) 都收纳到顶部 "让 AI 重新理解" 全局按钮, 避免用户
+  // 混淆 (顶部=全局 / tab内=仅研判) 的双入口困惑.
 
   // 全局兜底"让 AI 重新理解":同时跑 analysis_job(写 evidence_cards)+ 刷新研判
   const handleGlobalRefresh = useCallback(async () => {
@@ -2481,10 +2440,8 @@ export function StrategicBrainView({
               onReview={handleThoughtReview}
               onCreateTask={onCreateTaskFromThought}
               onRetry={() => void loadThoughts()}
-              onRefresh={handleRefreshThoughts}
               onToggleFavorite={handleToggleFavoriteThought}
               onDelete={handleDeleteThought}
-              refreshing={thoughtsRefreshing}
             />
           )}
           {activeTab === 'contradictions' && (

@@ -36,7 +36,6 @@ import {
   submitClientNarrativeClarification,
   regenerateClientNarrative,
   getNarrativeStaleStatus,
-  clearNarrativeStale,
   getMeetingActionItems,
   getNextSteps,
   getNextStepBackground,
@@ -99,6 +98,8 @@ export function StrategicClarificationView({
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [regenerating, setRegenerating] = useState(false);
+  /** 单维度刷新进行中的维度集合 — 允许多个维度并发刷新但避免同一维度重复点击 */
+  const [regeneratingDimensions, setRegeneratingDimensions] = useState<Set<NarrativeDimensionKey>>(new Set());
   const [refreshTodoKey, setRefreshTodoKey] = useState(0);
 
   // S4.2 fix: 切客户竞态 — 之前 mounted flag 只在 .then() 里检查, 但 loadAll 内部的 setState
@@ -143,11 +144,9 @@ export function StrategicClarificationView({
     return () => { mounted = false; };
   }, [selectedClientId, loadAll]);
 
-  // ingest 后 narrative 自动重生:
-  //   1. load narrative 完成后, 调 stale-status
-  //   2. 若 isStale (有新文档进, 但 narrative 是旧的) → 后台触发 regenerate, 不阻塞 UI
-  //   3. regen 成功后清掉 stale 标记 + 替换前端 narrative
-  // 不在 loadAll 里做, 因为 loadAll 由切客户/手动 reload 触发, 这里要等 narrative 加载好.
+  // stale 信号检测 (只通知,不自动 regen).
+  // 历史版本会自动 regenerate, 但多人协作场景下任意同事打开页面都会触发 → 覆盖别人校准的内容.
+  // 改成"检测到 stale 仅 flash 提示", 由用户决定按板块单独刷新还是全局重生.
   useEffect(() => {
     if (!selectedClientId || !narrative || regenerating) return;
     let cancelled = false;
@@ -155,23 +154,13 @@ export function StrategicClarificationView({
       try {
         const stale = await getNarrativeStaleStatus(selectedClientId);
         if (cancelled || !stale.isStale) return;
-        flash?.('info', `检测到新材料 (${stale.lastDocTitle || '新文档'}), 正在后台更新洞察…`);
-        const fresh = await regenerateClientNarrative(selectedClientId, {
-          trigger: 'auto_after_ingest',
-          force: true,
-        });
-        if (cancelled) return;
-        setNarrative(fresh);
-        try {
-          const c = await listClientNarrativeClarifications(selectedClientId);
-          if (!cancelled) setClarifications(c.clarifications);
-        } catch { /* 澄清拉失败不影响 narrative 更新 */ }
-        await clearNarrativeStale(selectedClientId).catch(() => {});
-        if (!cancelled) flash?.('success', `已自动结合新材料生成 v${fresh.rev}`);
+        flash?.(
+          'info',
+          `检测到新材料 (${stale.lastDocTitle || '新文档'}). 点对应板块右上角刷新按钮单独更新, 或点"下一步要做什么"卡片标题旁的 ↻ 全部重生.`,
+        );
       } catch (err) {
-        // 静默失败 — 自动逻辑不应打扰用户; 手动"重新生成"按钮仍然可用
         // eslint-disable-next-line no-console
-        console.warn('[narrative auto-regen] skip', err);
+        console.warn('[narrative stale-status] skip', err);
       }
     })();
     return () => { cancelled = true; };
@@ -196,8 +185,44 @@ export function StrategicClarificationView({
     }
   };
 
+  const handleRegenerateDimension = async (dim: NarrativeDimensionKey) => {
+    if (!selectedClientId) return;
+    if (regeneratingDimensions.has(dim)) return; // 已在刷新此维度,忽略重复点击
+    setRegeneratingDimensions((prev) => {
+      const next = new Set(prev);
+      next.add(dim);
+      return next;
+    });
+    try {
+      const fresh = await regenerateClientNarrative(selectedClientId, {
+        trigger: 'manual_single_dimension',
+        force: true,
+        dimensions: [dim],
+      });
+      setNarrative(fresh);
+      const c = await listClientNarrativeClarifications(selectedClientId);
+      setClarifications(c.clarifications);
+      const label = DIMENSION_META[dim]?.label || dim;
+      flash?.('success', `已重新生成: ${label} (v${fresh.rev}, 其他板块未变)`);
+    } catch (err) {
+      flash?.('error', err instanceof Error ? err.message : `${DIMENSION_META[dim]?.label || dim} 生成失败`);
+    } finally {
+      setRegeneratingDimensions((prev) => {
+        const next = new Set(prev);
+        next.delete(dim);
+        return next;
+      });
+    }
+  };
+
   const handleRegenerate = async () => {
     if (!selectedClientId) return;
+    // 全部重生会覆盖所有 6 个维度,包括其他同事可能已经校准过的内容.
+    // 加 confirm 防止误点; 想精细更新请用维度卡上的单刷按钮.
+    const confirmed = window.confirm(
+      '全部重生会覆盖 6 个维度全部内容,包括其他同事已校准的部分.\n如果只想更新某一个板块,请关闭此弹窗,点该板块右上角刷新按钮.\n\n确认要全部重生吗?',
+    );
+    if (!confirmed) return;
     setRegenerating(true);
     try {
       const fresh = await regenerateClientNarrative(selectedClientId, { trigger: 'manual', force: true });
@@ -266,6 +291,8 @@ export function StrategicClarificationView({
           onClarify={handleClarify}
           onRegenerate={handleRegenerate}
           regenerating={regenerating}
+          onRegenerateDimension={handleRegenerateDimension}
+          regeneratingDimensions={regeneratingDimensions}
           clientName={clientOptions.find((c) => c.id === selectedClientId)?.name ?? ''}
           refreshTodoKey={refreshTodoKey}
           onPromoteTodo={onPromoteTodo}
@@ -285,19 +312,10 @@ export function StrategicClarificationView({
         />
       )}
 
-      {/* 底部 · AI 引用源·字典层 (旧 5 区块折叠) */}
-      {selectedClientId && ctx && (
-        <div className="mt-6">
-          <ReferenceLayerSection ctx={ctx} />
-        </div>
-      )}
-
-      {/* 数据卫生折叠 */}
-      {selectedClientId && (
-        <div className="mt-4">
-          <DataHygieneSection clientId={selectedClientId} flash={flash} />
-        </div>
-      )}
+      {/* 原"AI 引用源·字典层" (ReferenceLayerSection) 和"数据卫生" (DataHygieneSection)
+          两个 section 已删 — ReferenceLayerSection 是 db raw row 调试视图, 核心流程不依赖;
+          DataHygieneSection 的重复文件清理已经在客户工作台 → 资料区覆盖, 不需要在战略陪伴
+          重复出现. */}
     </section>
   );
 }
@@ -636,6 +654,8 @@ function NarrativePanel({
   onClarify,
   onRegenerate,
   regenerating,
+  onRegenerateDimension,
+  regeneratingDimensions,
   clientName,
   refreshTodoKey,
   onPromoteTodo,
@@ -646,6 +666,8 @@ function NarrativePanel({
   onClarify: (dim: NarrativeDimensionKey, answer: string, question?: string) => void;
   onRegenerate: () => void;
   regenerating: boolean;
+  onRegenerateDimension: (dim: NarrativeDimensionKey) => void;
+  regeneratingDimensions: ReadonlySet<NarrativeDimensionKey>;
   clientName: string;
   refreshTodoKey: number;
   onPromoteTodo?: (todo: import('../../lib/api').UnifiedTodo) => void;
@@ -667,7 +689,9 @@ function NarrativePanel({
     : narrative.generator === 'backend_local_ai'
       ? '本地 AI 真生成 (消费 atomic_facts+entities)'
       : 'AI 真生成';
-  const overallPct = Math.round(narrative.overallConfidence * 100);
+  // overallPct (整体把握度) 之前用于右栏顶部的"整体把握度"section, 该 section 已删 —
+  // 把握度信息分散在各维度卡片里, 不再聚合一个数字. 保留 narrative.overallConfidence 字段
+  // 作为后端的诚实信号, 前端不再露出.
 
   // (客户名 + AI 本次看到 由父组件 StrategicClarificationView 顶部渲染, 不在这里重复)
 
@@ -689,6 +713,8 @@ function NarrativePanel({
               dim={dim}
               appliedClarifications={dimClars}
               onClarify={(answer, question) => onClarify(key, answer, question)}
+              onRefresh={() => onRegenerateDimension(key)}
+              refreshing={regeneratingDimensions.has(key)}
             />
           );
           // essence 渲染完后, 紧跟着插入战略定位与发展路径卡
@@ -704,31 +730,17 @@ function NarrativePanel({
         })}
       </div>
 
-      {/* 右侧 — 把握度卡片 + 澄清记录流 (共同编织追溯) */}
+      {/* 右侧 — 把握度卡片 + 澄清记录流 (共同编织追溯)
+          (原"整体把握度 + 全部重生"section 已删 — 把握度信息在每个维度卡片里都有, "全部重生"
+           入口收纳到下方"下一步要做什么"卡片标题旁的 icon, 视觉更紧凑.) */}
       <div className="space-y-3">
-        {/* 顶部: 整体把握度 + 重新生成 */}
-        <section className="rounded-2xl border border-slate-100 bg-slate-50/60 px-4 py-3">
-          <div className="flex items-center justify-between gap-3">
-            <div>
-              <div className="text-[10px] text-slate-500 mb-0.5">整体把握度</div>
-              <div className="text-[22px] font-bold text-slate-800 leading-none">{overallPct}%</div>
-            </div>
-            <button
-              type="button"
-              onClick={onRegenerate}
-              disabled={regenerating}
-              className="inline-flex items-center gap-1.5 rounded-full bg-blue-600 text-white px-3 py-1.5 text-[11px] font-bold hover:bg-blue-700 disabled:opacity-50"
-            >
-              <RefreshCw size={12} className={regenerating ? 'animate-spin' : ''} />
-              {regenerating ? '生成中...' : '重新生成'}
-            </button>
-          </div>
-        </section>
         <MeetingActionItemsCard
           clientId={narrative.clientId}
           onPromote={onPromoteTodo}
           refreshKey={refreshTodoKey}
           onLogChange={() => setLocalRefreshKey((k) => k + 1)}
+          onRegenerateNarrative={onRegenerate}
+          narrativeRegenerating={regenerating}
         />
         <SuggestionLogCard
           clientId={narrative.clientId}
@@ -747,10 +759,15 @@ function NarrativeDimensionCard({
   dim,
   appliedClarifications,
   onClarify,
+  onRefresh,
+  refreshing,
 }: {
   dim: NarrativeDimensionRecord;
   appliedClarifications: NarrativeClarification[];
   onClarify: (answer: string, question?: string) => void;
+  /** 单维度刷新: 只重生此维度,其他维度保留 cloud 现有内容 */
+  onRefresh?: () => void;
+  refreshing?: boolean;
 }) {
   const meta = DIMENSION_META[dim.dimension];
   const Icon = meta.icon;
@@ -800,6 +817,17 @@ function NarrativeDimensionCard({
           >
             <UploadCloud size={14} />
           </button>
+          {onRefresh && (
+            <button
+              type="button"
+              onClick={onRefresh}
+              disabled={refreshing}
+              className="inline-flex items-center justify-center w-6 h-6 rounded-full text-slate-400 hover:text-blue-600 hover:bg-blue-50 transition disabled:opacity-50 disabled:cursor-not-allowed"
+              title={`仅刷新此板块 (${meta.label}). 其他板块内容不受影响, 不会覆盖同事已校准的内容.`}
+            >
+              <RefreshCw size={13} className={refreshing ? 'animate-spin' : ''} />
+            </button>
+          )}
         </div>
       </div>
 
@@ -938,11 +966,17 @@ function MeetingActionItemsCard({
   onPromote,
   refreshKey,
   onLogChange,
+  onRegenerateNarrative,
+  narrativeRegenerating,
 }: {
   clientId: string;
   onPromote?: (todo: import('../../lib/api').UnifiedTodo) => void;
   refreshKey?: number;
   onLogChange?: () => void;
+  /** 触发全部 6 段叙事 + 下一步列表重生成 — 原"全部重生"按钮收纳到这里 */
+  onRegenerateNarrative?: () => void;
+  /** narrative 全局重生进行中 — disable 按钮 + 旋转动画 */
+  narrativeRegenerating?: boolean;
 }) {
   const [items, setItems] = useState<NextStepItem[]>([]);
   const [loading, setLoading] = useState(false);
@@ -1031,6 +1065,19 @@ function MeetingActionItemsCard({
         <div className="flex items-center gap-2 mb-1">
           <ClipboardCheck size={13} className="text-violet-600" />
           <h3 className="text-[12px] font-bold text-violet-800">下一步要做什么</h3>
+          <div className="flex-1" />
+          {onRegenerateNarrative && (
+            <button
+              type="button"
+              onClick={onRegenerateNarrative}
+              disabled={narrativeRegenerating}
+              title="重新生成全部 6 段叙事 (重生后下一步列表也会更新)"
+              aria-label="重新生成全部 6 段叙事"
+              className="inline-flex items-center justify-center w-6 h-6 rounded-full text-violet-600 hover:bg-violet-100 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+            >
+              <RefreshCw size={12} className={narrativeRegenerating ? 'animate-spin' : ''} />
+            </button>
+          )}
         </div>
         <div className="text-[11px] text-slate-500">
           暂无新的建议 — 上传新会议纪要或点下方"推荐历史"找回。
@@ -1047,6 +1094,19 @@ function MeetingActionItemsCard({
         <span className="text-[10px] text-violet-700 bg-violet-100 rounded-full px-2 py-0.5 font-bold">
           {items.length}
         </span>
+        <div className="flex-1" />
+        {onRegenerateNarrative && (
+          <button
+            type="button"
+            onClick={onRegenerateNarrative}
+            disabled={narrativeRegenerating}
+            title="重新生成全部 6 段叙事 (重生后下一步列表也会更新)"
+            aria-label="重新生成全部 6 段叙事"
+            className="inline-flex items-center justify-center w-6 h-6 rounded-full text-violet-600 hover:bg-violet-100 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+          >
+            <RefreshCw size={12} className={narrativeRegenerating ? 'animate-spin' : ''} />
+          </button>
+        )}
       </div>
       <div className="space-y-1.5 max-h-[460px] overflow-y-auto pr-0.5">
         {items.map((it) => (
@@ -1314,40 +1374,6 @@ function AppliedClarificationsCard({ applied }: { applied: NarrativeClarificatio
   );
 }
 
-// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-// AI 引用源·字典层 (旧 5 区块折叠, 给用户钻取真实 db row)
-// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-function ReferenceLayerSection({ ctx }: { ctx: ClarificationContext }) {
-  const [expanded, setExpanded] = useState(false);
-  return (
-    <section className="rounded-2xl border border-slate-100 bg-slate-50/40 px-4 py-3">
-      <button
-        type="button"
-        onClick={() => setExpanded((v) => !v)}
-        className="w-full flex items-center justify-between text-left"
-      >
-        <div className="flex items-center gap-2">
-          <Database size={13} className="text-slate-400" />
-          <h4 className="text-[12px] font-bold text-slate-600">AI 引用源 · 字典层</h4>
-          <span className="text-[10px] text-slate-400">
-            上面叙事的原始素材 ({ctx.eventLines.length} 主线 · {ctx.timeline.length} 事件 · {ctx.commitments.length} 承诺 · {ctx.peopleCandidates.length} 人物候选)
-          </span>
-        </div>
-        <ChevronDown size={14} className={`text-slate-400 transition-transform ${expanded ? 'rotate-180' : ''}`} />
-      </button>
-      {expanded && (
-        <div className="mt-3 space-y-3">
-          <ProjectSkeletonBlock eventLines={ctx.eventLines} profile={ctx.profile} />
-          <KeyPeopleBlock people={ctx.peopleCandidates} />
-          <CommitmentChainBlock commitments={ctx.commitments} />
-          <TimelineBlock items={ctx.timeline} />
-          <BusinessMeaningBlock profile={ctx.profile} eventLines={ctx.eventLines} />
-        </div>
-      )}
-    </section>
-  );
-}
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 // 客户选择器
@@ -1851,73 +1877,5 @@ function QuestionCard({ question }: {
         </button>
       </div>
     </div>
-  );
-}
-
-// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-// 底部 · 数据卫生 (折叠) - 重复文件 + 误归类 + 测试数据
-// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-function DataHygieneSection({
-  clientId,
-  flash,
-}: {
-  clientId: string;
-  flash?: (level: 'success' | 'error' | 'info', message: string) => void;
-}) {
-  const [expanded, setExpanded] = useState(false);
-  const [groups, setGroups] = useState<DuplicateDocumentGroup[]>([]);
-  const [loading, setLoading] = useState(false);
-
-  useEffect(() => {
-    if (!clientId) {
-      setGroups([]);
-      return;
-    }
-    let mounted = true;
-    setLoading(true);
-    getClientDuplicateDocuments(clientId)
-      .then((data) => { if (mounted) setGroups(Array.isArray(data) ? data : []); })
-      .catch(() => { if (mounted) setGroups([]); })
-      .finally(() => { if (mounted) setLoading(false); });
-    return () => { mounted = false; };
-  }, [clientId]);
-
-  const hasDup = groups.length > 0;
-
-  return (
-    <section className="rounded-[18px] border border-slate-100 bg-slate-50/40 px-4 py-3">
-      <button
-        type="button"
-        onClick={() => setExpanded(!expanded)}
-        className="w-full flex items-center justify-between text-left"
-      >
-        <div className="flex items-center gap-2">
-          <Building2 size={13} className="text-slate-400" />
-          <h4 className="text-[12px] font-bold text-slate-600">数据卫生</h4>
-          {hasDup && (
-            <span className="text-[10px] font-bold text-amber-600 rounded-full bg-amber-50 px-2 py-0.5">
-              {groups.length} 组重复文件
-            </span>
-          )}
-        </div>
-        <ChevronDown size={14} className={`text-slate-400 transition-transform ${expanded ? 'rotate-180' : ''}`} />
-      </button>
-
-      {expanded && (
-        <div className="mt-3 space-y-2">
-          {loading && <div className="text-[11px] text-slate-400">扫描中...</div>}
-          {!loading && !hasDup && (
-            <div className="text-[11px] text-emerald-600">✓ 没发现重复文件</div>
-          )}
-          {hasDup && (
-            <div className="text-[11px] text-slate-600 leading-[1.7]">
-              共 {groups.length} 组可清理。
-              <span className="text-slate-400"> (Phase 1 升级后这里会加: 误归类剔除 + 测试数据标记 + 模拟角色清理)</span>
-            </div>
-          )}
-        </div>
-      )}
-    </section>
   );
 }
