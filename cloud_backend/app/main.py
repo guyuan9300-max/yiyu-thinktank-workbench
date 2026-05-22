@@ -14181,19 +14181,26 @@ def create_app() -> FastAPI:
                 "缺失：需要至少补一项客户、事件线、任务板或工作台资料，系统才能进入业务回答。"
             )
         elif answer_mode == "limited_context":
+            # limited_context：上下文偏薄但仍可作答。原版强制三段念缺失清单，
+            # 用户感知差；改为：先正面回答能答的部分，回答末尾用一行简短提示缺什么，
+            # 不再用「念缺失清单」当主体。evidence/missingContext 由前端单独以小卡渲染。
             system_prompt = (
-                "你是益语智库的资深战略顾问，但当前处于 limited_context 模式。\n"
-                "你只能根据【已知事实】回答，严禁根据客户名字、组织类型或常识去推断使命、业务、项目领域或合作状态。\n"
-                "尤其禁止出现“通常基金会可能……”“大概率……”“一般来说……”这类按名称推断的内容。\n"
-                "回答必须严格三段：\n"
-                "第一段：当前已知事实。\n"
-                "第二段：当前明确缺失的上下文。\n"
-                "第三段：为了把回答变准，下一步最该补什么。\n"
-                "如果问题是介绍客户，直接说明“当前只知道客户名/任务板/工作台片段，不足以准确介绍其使命与项目”。"
+                "你是益语智库的资深战略顾问。当前上下文偏薄（limited_context），"
+                "请先正面回答用户问题中你能基于【已知事实】给出确定结论的部分；"
+                "对于无法回答的部分，用一行简短自然语言指出缺什么即可——不要把回答主体改成念缺失清单。\n"
+                "硬约束：\n"
+                "- 严禁依据客户名字、组织类型或常识脑补使命、业务、项目领域、合作状态；"
+                "禁止出现“通常……”“大概率……”“一般来说……”等按名称推断的句式。\n"
+                "- 任何判断必须可在【已知事实】中找到出处；缺失信息时坦白说“目前还没有这方面的资料”，"
+                "不要用空泛的「信息不足」当回答主体。\n"
+                "- 如果问题是介绍客户、且【已知事实】只有客户名/任务板片段，先简述当前可见的合作切片，"
+                "再用一句话说还需要哪类材料才能完整介绍。\n"
+                "格式：先给一段直接回答（≤3 句），再用 1 行小字说明本次基于哪些已知材料、还缺什么；"
+                "避免一二三段标题样式。"
             )
             system_prompt += role_boundary
             system_prompt += "\n\n【已知事实】\n" + known_facts_text
-            system_prompt += "\n\n【明确缺失】\n" + missing_sources_text
+            system_prompt += "\n\n【缺失提示——仅用作末尾一行提示，不要展开】\n" + missing_sources_text
             if knowledge_context:
                 system_prompt += knowledge_context
             user_prompt = normalized_message
@@ -15248,6 +15255,22 @@ def create_app() -> FastAPI:
             tags=all_tags,
             commonTags=[tag.name for tag in all_tags if tag.scope == "org"],
         )
+
+    @app.get("/api/v1/tasks/{task_id}", response_model=TaskRecord)
+    def get_task(
+        task_id: str,
+        current_user: SessionUser = Depends(lambda authorization=Header(default=None): _require_auth(app, authorization)),
+    ) -> TaskRecord:
+        row = _task_row_or_404(state, task_id)
+        if str(row["organization_id"]) != current_user.organizationId:
+            raise HTTPException(status_code=404, detail="Task not found")
+        if current_user.primaryRole != "admin":
+            owner_id = str(row["owner_id"]) if row["owner_id"] else None
+            creator_id = str(row["creator_id"])
+            collaborator_ids = set(_task_collaborator_ids(state, task_id))
+            if current_user.id not in collaborator_ids and current_user.id != owner_id and current_user.id != creator_id:
+                raise HTTPException(status_code=404, detail="Task not found")
+        return _task_record(state, row, current_user.id)
 
     @app.post("/api/v1/tasks", response_model=TaskRecord)
     def create_task(payload: TaskCreatePayload, current_user: SessionUser = Depends(lambda authorization=Header(default=None): _require_auth(app, authorization))) -> TaskRecord:
