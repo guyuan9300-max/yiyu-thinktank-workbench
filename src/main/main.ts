@@ -3269,7 +3269,42 @@ ipcMain.handle('yiyu-workbench:setWorkspaceInteractionState', async (_event, pay
 });
 
 ipcMain.handle('yiyu-workbench:rebuildAndInstallFromRepo', async (_event, repoPath: string) => {
+  // P0-2 修复: 旧实现把 repoPath 拼成 `zsh -lc "cd \"<path>\" && ..."` 单字符串.
+  // JSON.stringify 的引号转义在 zsh 双引号内**不能阻止 $(...) 命令替换**.
+  // 实测: repoPath = "a$(touch /tmp/__pwned)b" 会真的执行 touch.
+  // 修法两层:
+  //   1) 路径白名单 — 必须是绝对路径 + 只允许 ASCII alnum / _ - / . 空格
+  //      (任何 backtick / $ / ; / | / & / 引号 / 换行 直接拒绝)
+  //   2) spawn 改用数组参数(no shell 解释), 每一步独立 spawn 不串
+  if (typeof repoPath !== 'string' || repoPath.length === 0) {
+    throw new Error('rebuildAndInstallFromRepo: 缺少 repoPath');
+  }
   const normalizedRepoPath = path.resolve(repoPath);
+  // 白名单: 只允许 ASCII 字母/数字/下划线/连字符/点/斜杠/空格
+  // (绝大多数 macOS 用户目录路径都满足, 同时拒绝所有 shell 元字符)
+  const SAFE_PATH_RE = /^[a-zA-Z0-9_\-./ ]+$/;
+  if (!SAFE_PATH_RE.test(normalizedRepoPath)) {
+    appendElectronLaunchLog(
+      'ERROR',
+      `[rebuild-install-request] 拒绝含 shell 元字符的路径 path=${normalizedRepoPath.slice(0, 200)}`,
+    );
+    throw new Error('rebuildAndInstallFromRepo: 路径含不安全字符,只允许字母/数字/_/-/./空格/斜杠');
+  }
+  // 二次验证: 该路径必须真实存在且是目录
+  let pathStat: fs.Stats;
+  try {
+    pathStat = fs.statSync(normalizedRepoPath);
+  } catch {
+    throw new Error('rebuildAndInstallFromRepo: 路径不存在');
+  }
+  if (!pathStat.isDirectory()) {
+    throw new Error('rebuildAndInstallFromRepo: 路径不是目录');
+  }
+  // 第三层验证: 该目录必须是合法 git repo + 含 package.json (防 IPC 调用任意目录)
+  if (!fs.existsSync(path.join(normalizedRepoPath, 'package.json')) ||
+      !fs.existsSync(path.join(normalizedRepoPath, '.git'))) {
+    throw new Error('rebuildAndInstallFromRepo: 路径不是合法的 yiyu git repo');
+  }
   const metadata = {
     repoPath: normalizedRepoPath,
     startupGatePageActive: isStartupGatePageActive(),
@@ -3282,20 +3317,34 @@ ipcMain.handle('yiyu-workbench:rebuildAndInstallFromRepo', async (_event, repoPa
     appendElectronLaunchLog('ERROR', `[rebuild-install-request] deferred because workspace interaction is active ${JSON.stringify(workspaceInteractionState)}`);
     return false;
   }
-  const rebuildCommand = [
-    `cd ${JSON.stringify(normalizedRepoPath)}`,
-    `mkdir -p ${JSON.stringify(runtimeLogsDir)}`,
-    `npm run dist:mac-local >> ${JSON.stringify(collabRebuildLogPath)} 2>&1`,
-    `node scripts/open-installed-app.mjs >> ${JSON.stringify(collabRebuildLogPath)} 2>&1`,
-  ].join(' && ');
   fs.mkdirSync(runtimeLogsDir, { recursive: true });
   fs.appendFileSync(collabRebuildLogPath, `\n[${new Date().toISOString()}] start rebuild from ${normalizedRepoPath}\n`, 'utf8');
-  const child = spawn('zsh', ['-lc', rebuildCommand], {
+  // 用 spawn 数组参数: 不走 shell, 不存在命令注入面
+  // npm run dist:mac-local 必须在 repo 目录 cwd 下跑
+  const logStream = fs.createWriteStream(collabRebuildLogPath, { flags: 'a' });
+  const rebuildChild = spawn('npm', ['run', 'dist:mac-local'], {
     cwd: normalizedRepoPath,
     detached: true,
-    stdio: 'ignore',
+    stdio: ['ignore', logStream, logStream],
   });
-  child.unref();
+  rebuildChild.unref();
+  // open-installed-app 在 rebuild 之后才有意义, 但这里 detached 不能 chain.
+  // 改成: rebuild 进程结束时 spawn 第二条命令
+  rebuildChild.on('exit', (code) => {
+    fs.appendFileSync(
+      collabRebuildLogPath,
+      `\n[${new Date().toISOString()}] rebuild exited code=${code}, launching installed app\n`,
+      'utf8',
+    );
+    if (code === 0) {
+      const launchChild = spawn('node', ['scripts/open-installed-app.mjs'], {
+        cwd: normalizedRepoPath,
+        detached: true,
+        stdio: ['ignore', logStream, logStream],
+      });
+      launchChild.unref();
+    }
+  });
   setTimeout(() => {
     requestAppQuit('rebuild_and_install_from_repo', 'ipc:yiyu-workbench:rebuildAndInstallFromRepo', metadata);
   }, 300);
@@ -3423,6 +3472,26 @@ ipcMain.handle('yiyu-workbench:unwatchFile', async (_event, targetPath: string) 
 });
 
 ipcMain.handle('yiyu-workbench:openExternalUrl', async (_event, targetUrl: string) => {
+  // P0-1 修复: shell.openExternal 旧版无 scheme 校验, 渲染层注入即可触发
+  // file:// (打开任意本地文件) / javascript: / smb:// 等危险 scheme.
+  // 白名单只允许 http(s):// 和 mailto:.
+  if (typeof targetUrl !== 'string' || targetUrl.length === 0) {
+    throw new Error('openExternalUrl: 缺少 url');
+  }
+  let parsed: URL;
+  try {
+    parsed = new URL(targetUrl);
+  } catch {
+    throw new Error('openExternalUrl: 无效 URL');
+  }
+  const allowedSchemes = ['http:', 'https:', 'mailto:'];
+  if (!allowedSchemes.includes(parsed.protocol)) {
+    appendElectronLaunchLog(
+      'ERROR',
+      `[openExternalUrl] 拒绝非白名单 scheme=${parsed.protocol} url=${targetUrl.slice(0, 200)}`,
+    );
+    throw new Error(`openExternalUrl: 拒绝打开 ${parsed.protocol} 类型链接,仅允许 http / https / mailto`);
+  }
   await shell.openExternal(targetUrl);
   return true;
 });
