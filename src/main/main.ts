@@ -75,6 +75,12 @@ type PackagedRuntimeSeedManifest = {
     sha256?: string;
     fileCount?: number;
   };
+  // B 方案:预装 venv 元数据
+  backendVenv?: {
+    path?: string;
+    sha256?: string;
+    fileCount?: number;
+  };
 };
 
 type PackagedRuntimeSeed = {
@@ -84,6 +90,9 @@ type PackagedRuntimeSeed = {
   seedPython: string;
   requirementsPath: string;
   wheelhousePath: string;
+  // B 方案:预装的 backend-venv 目录在 .app bundle 内的绝对路径
+  // 客户机首次启动直接复制这个目录,不再 pip install
+  backendVenvPath: string;
 };
 
 let mainWindow: BrowserWindow | null = null;
@@ -116,6 +125,8 @@ const PACKAGED_RUNTIME_MANIFEST_FILE = 'runtime-seed-manifest.json';
 const PACKAGED_RUNTIME_REQUIREMENTS_FILE = 'backend-requirements.txt';
 const PACKAGED_RUNTIME_WHEELHOUSE_DIR = 'wheelhouse';
 const PACKAGED_RUNTIME_PYTHON_SEED_DIR = 'python-seed';
+// B 方案:预装 backend-venv 目录名,跟 scripts/app-manifest.mjs 的 RUNTIME_BACKEND_VENV_DIR 对齐
+const PACKAGED_RUNTIME_BACKEND_VENV_DIR = 'backend-venv-prebuilt';
 
 function normalizeHttpUrl(rawUrl?: string | null) {
   const trimmed = rawUrl?.trim();
@@ -1182,6 +1193,8 @@ function readPackagedRuntimeSeed(): PackagedRuntimeSeed {
   );
   const requirementsPath = path.join(root, manifest.backend?.requirementsPath || PACKAGED_RUNTIME_REQUIREMENTS_FILE);
   const wheelhousePath = path.join(root, manifest.wheelhouse?.path || PACKAGED_RUNTIME_WHEELHOUSE_DIR);
+  // B 方案:预装 venv 路径
+  const backendVenvPath = path.join(root, manifest.backendVenv?.path || PACKAGED_RUNTIME_BACKEND_VENV_DIR);
   return {
     root,
     manifestPath,
@@ -1189,6 +1202,7 @@ function readPackagedRuntimeSeed(): PackagedRuntimeSeed {
     seedPython,
     requirementsPath,
     wheelhousePath,
+    backendVenvPath,
   };
 }
 
@@ -1221,8 +1235,13 @@ function validatePackagedRuntimeSeed(seed: PackagedRuntimeSeed) {
   if (!fs.existsSync(seed.requirementsPath)) {
     throw new Error(`内置依赖清单缺失：${seed.requirementsPath}`);
   }
-  if (!fs.existsSync(seed.wheelhousePath)) {
-    throw new Error(`内置 wheelhouse 缺失：${seed.wheelhousePath}`);
+  // B 方案:优先 backend-venv-prebuilt;只要预装 venv 存在就不要求 wheelhouse
+  // (老的回退 pip install 路径仍可工作,但新版本一律走 prebuilt)
+  const hasPrebuiltVenv = fs.existsSync(seed.backendVenvPath)
+    && fs.existsSync(path.join(seed.backendVenvPath, 'bin', 'python'))
+    && fs.existsSync(path.join(seed.backendVenvPath, 'bin', 'uvicorn'));
+  if (!hasPrebuiltVenv && !fs.existsSync(seed.wheelhousePath)) {
+    throw new Error(`内置 backend 运行时缺失：既无预装 venv (${seed.backendVenvPath}) 也无 wheelhouse (${seed.wheelhousePath})`);
   }
   const seedEncodings = path.join(
     seed.root,
@@ -1239,20 +1258,23 @@ function validatePackagedRuntimeSeed(seed: PackagedRuntimeSeed) {
   if (!fs.existsSync(seedLibPython)) {
     throw new Error(`内置 Python 动态库缺失：${seedLibPython}`);
   }
-  const wheelFiles = fs.readdirSync(seed.wheelhousePath).filter((item) => item.endsWith('.whl'));
-  if (wheelFiles.length === 0) {
-    throw new Error(`内置 wheelhouse 为空：${seed.wheelhousePath}`);
+  // 仅在走 legacy wheelhouse 路径时才校验 wheelhouse 目录
+  if (!hasPrebuiltVenv) {
+    const wheelFiles = fs.readdirSync(seed.wheelhousePath).filter((item) => item.endsWith('.whl'));
+    if (wheelFiles.length === 0) {
+      throw new Error(`内置 wheelhouse 为空：${seed.wheelhousePath}`);
+    }
+    if (seed.manifest.wheelhouse?.sha256) {
+      const actualWheelhouseHash = sha256DirectoryHex(seed.wheelhousePath);
+      if (actualWheelhouseHash !== seed.manifest.wheelhouse.sha256) {
+        throw new Error('内置 wheelhouse hash 不匹配');
+      }
+    }
   }
   if (seed.manifest.backend?.requirementsSha256) {
     const actualRequirementsHash = sha256FileHex(seed.requirementsPath);
     if (actualRequirementsHash !== seed.manifest.backend.requirementsSha256) {
       throw new Error('内置后端依赖清单 hash 不匹配');
-    }
-  }
-  if (seed.manifest.wheelhouse?.sha256) {
-    const actualWheelhouseHash = sha256DirectoryHex(seed.wheelhousePath);
-    if (actualWheelhouseHash !== seed.manifest.wheelhouse.sha256) {
-      throw new Error('内置 wheelhouse hash 不匹配');
     }
   }
 }
@@ -1374,33 +1396,63 @@ async function ensurePackagedBackendRuntime(venvPath: string) {
   fs.rmSync(venvPath, { recursive: true, force: true });
   fs.mkdirSync(path.dirname(venvPath), { recursive: true });
   await assertPythonRuntimeUsable(seed.seedPython, 'backend:packaged-seed-python-smoke', backendEnv());
-  await runCommand(seed.seedPython, ['-m', 'venv', '--without-pip', '--copies', venvPath], backendEnv(), 'backend:packaged-venv');
-  const seedLibPython = path.join(seed.root, PACKAGED_RUNTIME_PYTHON_SEED_DIR, 'lib', 'libpython3.11.dylib');
-  const venvLibPython = path.join(venvPath, 'lib', 'libpython3.11.dylib');
-  if (fs.existsSync(seedLibPython)) {
-    fs.copyFileSync(seedLibPython, venvLibPython);
+
+  // B 方案根治路径:.app 内有预装 venv → 复制 + 改 pyvenv.cfg,跳过 pip install
+  // 旧路径(pip install from wheelhouse)被废弃,因为 wheel 内嵌 binary 公证拒收
+  const hasPrebuiltVenv = fs.existsSync(seed.backendVenvPath)
+    && fs.existsSync(path.join(seed.backendVenvPath, 'bin', 'python'))
+    && fs.existsSync(path.join(seed.backendVenvPath, 'bin', 'uvicorn'));
+
+  if (hasPrebuiltVenv) {
+    appendElectronLaunchLog('INFO', `[backend:packaged-runtime] copying pre-built venv from ${seed.backendVenvPath}`);
+    // recursive copy (含 site-packages 所有 .so/.dylib)
+    fs.cpSync(seed.backendVenvPath, venvPath, { recursive: true, dereference: false, verbatimSymlinks: true });
+
+    // 重写 pyvenv.cfg 占位符,指向客户机当前的 seed python 路径
+    const pyvenvCfgPath = path.join(venvPath, 'pyvenv.cfg');
+    if (fs.existsSync(pyvenvCfgPath)) {
+      const seedBinDir = path.join(seed.root, PACKAGED_RUNTIME_PYTHON_SEED_DIR, 'bin');
+      const seedPythonAbs = path.join(seedBinDir, 'python3.11');
+      const cfg = fs.readFileSync(pyvenvCfgPath, 'utf8');
+      const fixed = cfg
+        .replace('__YIYU_RUNTIME_HOME__', seedBinDir)
+        .replace('__YIYU_RUNTIME_EXECUTABLE__', seedPythonAbs)
+        .replace('__YIYU_RUNTIME_COMMAND__', `${seedPythonAbs} -m venv --copies --without-pip ${venvPath}`);
+      fs.writeFileSync(pyvenvCfgPath, fixed);
+    }
+  } else {
+    // 回退兼容路径:旧版本 build 没生成预装 venv 时仍走 pip install
+    // 这条路径将随老版本淘汰,新版本统一走 hasPrebuiltVenv=true
+    appendElectronLaunchLog('INFO', '[backend:packaged-runtime] no pre-built venv found, falling back to legacy pip install path');
+    await runCommand(seed.seedPython, ['-m', 'venv', '--without-pip', '--copies', venvPath], backendEnv(), 'backend:packaged-venv');
+    const seedLibPython = path.join(seed.root, PACKAGED_RUNTIME_PYTHON_SEED_DIR, 'lib', 'libpython3.11.dylib');
+    const venvLibPython = path.join(venvPath, 'lib', 'libpython3.11.dylib');
+    if (fs.existsSync(seedLibPython)) {
+      fs.copyFileSync(seedLibPython, venvLibPython);
+    }
+    await runCommand(
+      path.join(venvPath, 'bin', 'python'),
+      ['-m', 'ensurepip', '--upgrade', '--default-pip'],
+      backendEnv({ VIRTUAL_ENV: venvPath }),
+      'backend:packaged-ensurepip',
+    );
+    await runCommand(
+      path.join(venvPath, 'bin', 'python'),
+      [
+        '-m',
+        'pip',
+        'install',
+        '--no-index',
+        '--find-links',
+        seed.wheelhousePath,
+        '--requirement',
+        seed.requirementsPath,
+      ],
+      backendEnv({ VIRTUAL_ENV: venvPath }),
+      'backend:packaged-wheelhouse',
+    );
   }
-  await runCommand(
-    path.join(venvPath, 'bin', 'python'),
-    ['-m', 'ensurepip', '--upgrade', '--default-pip'],
-    backendEnv({ VIRTUAL_ENV: venvPath }),
-    'backend:packaged-ensurepip',
-  );
-  await runCommand(
-    path.join(venvPath, 'bin', 'python'),
-    [
-      '-m',
-      'pip',
-      'install',
-      '--no-index',
-      '--find-links',
-      seed.wheelhousePath,
-      '--requirement',
-      seed.requirementsPath,
-    ],
-    backendEnv({ VIRTUAL_ENV: venvPath }),
-    'backend:packaged-wheelhouse',
-  );
+
   await assertPythonRuntimeUsable(pythonPath, 'backend:packaged-python-smoke', backendEnv({ VIRTUAL_ENV: venvPath }));
   if (!isExecutable(uvicornPath)) {
     throw new Error('内置后端运行时安装完成后仍缺少 uvicorn');
@@ -2428,7 +2480,11 @@ function buildBackendStartupError(prefix: string) {
   return prefix;
 }
 
-async function waitForBackend(timeoutMs = 45000): Promise<BackendHealthPayload> {
+// 首次冷启动 timeout 抬到 180s：backend/app/models.py 有 720+ 个 Pydantic BaseModel
+// 子类,加上 qdrant_client / fastembed 等大型库,首次 import 需要 100s+。
+// .pyc 缓存热的情况下 30-40s 就够,但保留余量避免冷启动失败。
+// retry/restart 那几条(20s/30s)不动 — backend 已经热,够用。
+async function waitForBackend(timeoutMs = 180_000): Promise<BackendHealthPayload> {
   const startedAt = Date.now();
   while (Date.now() - startedAt < timeoutMs) {
     if (backendExitDetail) {
@@ -2472,7 +2528,9 @@ async function waitForBackend(timeoutMs = 45000): Promise<BackendHealthPayload> 
   throw new Error(buildBackendStartupError(`后端服务启动超时（>${Math.round(timeoutMs / 1000)} 秒）`));
 }
 
-async function waitForCloudBackend(timeoutMs = 20000): Promise<void> {
+async function waitForCloudBackend(timeoutMs = 60000): Promise<void> {
+  // 默认从 20s 提到 60s——cloud_backend 首次启动可能要跑 schema migration / 加载向量库等慢操作,
+  // 20s 不够会被 Electron 主进程 kill,留下 47830 端口空、维护模式 502 假象。
   const startedAt = Date.now();
   while (Date.now() - startedAt < timeoutMs) {
     try {

@@ -37,6 +37,9 @@ export const RUNTIME_SEED_MANIFEST_FILE = 'runtime-seed-manifest.json';
 export const RUNTIME_BACKEND_REQUIREMENTS_FILE = 'backend-requirements.txt';
 export const RUNTIME_PYTHON_SEED_DIR = 'python-seed';
 export const RUNTIME_WHEELHOUSE_DIR = 'wheelhouse';
+// B 方案:预装 backend venv,打进 app bundle 给客户机首次启动直接复制使用
+// 避免之前 wheelhouse 里 .whl 内嵌 .so 没签名导致 Apple 公证拒收的问题
+export const RUNTIME_BACKEND_VENV_DIR = 'backend-venv-prebuilt';
 
 const HASH_EXTENSIONS = new Set(['.py', '.toml', '.json', '.yaml', '.yml', '.lock']);
 const PACKAGED_APP_CONTENT_ROOT = path.join('Contents', 'Resources', 'app');
@@ -417,6 +420,12 @@ export function inspectPackagedRuntimeSeed(appPath) {
   const pythonLib = path.join(runtimeRoot, RUNTIME_PYTHON_SEED_DIR, 'lib', 'libpython3.11.dylib');
   const wheelhousePath = path.join(runtimeRoot, manifest?.wheelhouse?.path || RUNTIME_WHEELHOUSE_DIR);
   const wheelFiles = listWheelFiles(wheelhousePath);
+  // B 方案:预装 venv 路径
+  const backendVenvPath = path.join(runtimeRoot, manifest?.backendVenv?.path || RUNTIME_BACKEND_VENV_DIR);
+  const backendVenvExists = fs.existsSync(backendVenvPath)
+    && fs.existsSync(path.join(backendVenvPath, 'bin', 'python'))
+    && fs.existsSync(path.join(backendVenvPath, 'bin', 'uvicorn'));
+  const backendVenvSha256 = fs.existsSync(backendVenvPath) ? sha256Directory(backendVenvPath) : null;
   const requirementsSha256 = fs.existsSync(requirementsPath) ? sha256File(requirementsPath) : null;
   const wheelhouseSha256 = fs.existsSync(wheelhousePath) ? sha256Directory(wheelhousePath) : null;
   const missing = [];
@@ -425,7 +434,11 @@ export function inspectPackagedRuntimeSeed(appPath) {
   if (!fs.existsSync(pythonExecutable)) missing.push(`missing python seed executable: ${pythonExecutable}`);
   if (!fs.existsSync(pythonLib)) missing.push(`missing python seed libpython: ${pythonLib}`);
   if (!fs.existsSync(requirementsPath)) missing.push(`missing ${RUNTIME_BACKEND_REQUIREMENTS_FILE}`);
-  if (wheelFiles.length === 0) missing.push(`empty ${RUNTIME_WHEELHOUSE_DIR}`);
+  // B 方案:wheelhouse 跟 backendVenv 两者要有其一
+  // 优先 backendVenv(新版),没有则回退到 wheelhouse 兼容旧 build
+  if (!backendVenvExists && wheelFiles.length === 0) {
+    missing.push(`neither ${RUNTIME_BACKEND_VENV_DIR} nor populated ${RUNTIME_WHEELHOUSE_DIR}`);
+  }
   const requirementsHashMatch = Boolean(
     manifest?.backend?.requirementsSha256
       && requirementsSha256
@@ -436,12 +449,17 @@ export function inspectPackagedRuntimeSeed(appPath) {
       && wheelhouseSha256
       && manifest.wheelhouse.sha256 === wheelhouseSha256,
   );
+  const backendVenvHashMatch = Boolean(
+    manifest?.backendVenv?.sha256
+      && backendVenvSha256
+      && manifest.backendVenv.sha256 === backendVenvSha256,
+  );
   if (manifest && !requirementsHashMatch) {
     missing.push('backend requirements hash mismatch');
   }
-  if (manifest && !wheelhouseHashMatch) {
-    missing.push('wheelhouse hash mismatch');
-  }
+  // backendVenv 的 hash 不校验:codesign re-sign 会改 .so/.dylib 注入签名,hash 必变,这是预期行为。
+  // 完整性靠 backendVenvExists(bin/python + bin/uvicorn 存在)保证。
+  // wheelhouse hash 同样不强制——新版没 wheelhouse,旧版 build 才有。
   return {
     runtimeRoot,
     manifestPath: path.join(runtimeRoot, RUNTIME_SEED_MANIFEST_FILE),
@@ -457,6 +475,10 @@ export function inspectPackagedRuntimeSeed(appPath) {
     wheelFileCount: wheelFiles.length,
     wheelhouseSha256,
     wheelhouseHashMatch,
+    backendVenvPath,
+    backendVenvExists,
+    backendVenvSha256,
+    backendVenvHashMatch,
     missing,
     match: missing.length === 0,
   };
