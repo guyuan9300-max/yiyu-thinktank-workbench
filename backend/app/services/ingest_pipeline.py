@@ -497,6 +497,63 @@ def _value_normalize(text: str) -> str:
     return text.strip().lower()
 
 
+# ─── V2.3 阶段 1 P2 · source_registry 映射辅助 ──────────
+
+
+_PATH_TO_CHANNEL: dict[str, dict[str, str]] = {
+    "workbench_file": {
+        "client_internal_doc": "smart_file_import",
+        "client_official_doc": "workbench_upload",
+        "default": "workbench_upload",
+    },
+    "task_review": {
+        "collaboration_task": "task_create",
+        "collaboration_review": "weekly_review",
+        "default": "task_create",
+    },
+    "internet_crawler": {
+        "internet_official": "intelligence_radar",
+        "internet_media": "intelligence_radar",
+        "internet_ugc": "intelligence_radar",
+        "default": "intelligence_radar",
+    },
+    "mobile_ai_chat": {
+        "user_verbal_fact": "workspace_chat",
+        "user_observation": "workspace_chat",
+        "default": "workspace_chat",
+    },
+}
+
+
+_SOURCE_TYPE_TO_ROLE: dict[str, str] = {
+    # 蓝图 § 四 机制一: source_type → 默认 source_role
+    "client_official_doc": "client_official",
+    "client_internal_doc": "client_internal",
+    "collaboration_task": "yiyu_advisory",
+    "collaboration_review": "yiyu_advisory",
+    "user_verbal_fact": "user_oral",
+    "user_observation": "user_oral",
+    "internet_official": "client_official",
+    "internet_media": "media_observation",
+    "internet_ugc": "ugc_signal",
+    "internet_ai_inferred": "ai_derived",
+    "llm_extracted": "ai_derived",
+    "system_derived": "system_internal",
+    "ai_agent_authored": "ai_derived",
+}
+
+
+def _infer_channel(path: str, source_type: str) -> str:
+    """根据 IngestPath + source_type 推 source_channel (V2.3 阶段 1 P2)."""
+    mapping = _PATH_TO_CHANNEL.get(path, {})
+    return mapping.get(source_type, mapping.get("default", "unknown"))
+
+
+def _infer_role_from_source_type(source_type: str) -> str:
+    """根据 source_type 推默认 source_role (V2.3 阶段 1 P2)."""
+    return _SOURCE_TYPE_TO_ROLE.get(source_type, "unknown")
+
+
 class IngestPipeline:
     """4 主路径统一入口 — N2 核心。
 
@@ -511,18 +568,79 @@ class IngestPipeline:
        Karpathy §2 LLM as OS · 一处写全局刷, 不让 IngestPipeline 成为孤立写入点
     """
 
-    def __init__(self, db: _DbLike, ai: Any | None = None):
+    def __init__(self, db: _DbLike, ai: Any | None = None,
+                 *, ensure_v23_schema: bool = True):
         """初始化.
 
         Args:
             db: sqlite Database wrapper.
             ai: AI service (可选). 传了之后写完 atomic_facts 自动调 broadcast_data_changed.
                 不传 (None) 时跳过 broadcast (向后兼容旧调用方).
+            ensure_v23_schema: 默认 True, 启动时确保 V2.3 阶段 1 新表已建
+                · source_registry (蓝图 § 七 第 1 层)
+                · atomic_fact_confidence_history (A 补充 1 置信度时间序列)
+                · atomic_facts.source_registry_id 列 (ALTER TABLE if not exists)
         """
         self._db = db
         self._ai = ai
+        if ensure_v23_schema:
+            self._ensure_v23_schema()
+
+    def _ensure_v23_schema(self) -> None:
+        """V2.3 阶段 1 P2: 确保 source_registry / confidence_history 表 + atomic_facts 新列."""
+        try:
+            from app.services.source_registry_store import ensure_schema as ensure_sr
+            from app.services.atomic_fact_confidence_history import ensure_schema as ensure_ch
+            ensure_sr(self._db)
+            ensure_ch(self._db)
+            # atomic_facts 加 source_registry_id 列 (向后兼容, 旧数据 NULL)
+            try:
+                self._db.execute(
+                    "ALTER TABLE atomic_facts ADD COLUMN source_registry_id TEXT"
+                )
+            except Exception:
+                pass  # 列已存在 (SQLite idempotent 友好)
+            try:
+                self._db.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_atomic_facts_source_registry "
+                    "ON atomic_facts (source_registry_id)"
+                )
+            except Exception:
+                pass
+        except Exception as exc:
+            logger.warning("V2.3 schema 启动失败 (跳过, 旧路径仍可用): %s", exc)
 
     def ingest(self, req: IngestRequest) -> IngestResult:
+        # ★ V2.3 阶段 1 P2 · 4 必填强校验 (蓝图 § 一 核心问题 2 "属于谁")
+        # client_id 必填 (其他 3 个 project_id/user_id/org_id 至少 IngestRequest 携带 metadata.actor_id)
+        if not req.client_id:
+            raise ValueError(
+                "V2.3 P2 强校验: IngestRequest.client_id 必填 "
+                f"(path={req.path}, subject={req.subject_text[:30]})"
+            )
+
+        # ★ V2.3 阶段 1 P2 · 先 register_source (蓝图 § 八 步骤 1 进入前先分型)
+        source_registry_id: str | None = None
+        try:
+            from app.services.source_registry_store import register_source
+            source_registry_id = register_source(
+                self._db,
+                source_type=req.metadata.source_type,
+                source_channel=_infer_channel(req.path, req.metadata.source_type),
+                source_owner=req.metadata.actor_id or None,
+                client_id=req.client_id,
+                user_id=req.metadata.actor_id if req.metadata.actor_type == "human" else None,
+                source_time=req.metadata.time_anchor,
+                content=f"{req.subject_text}|{req.attribute}|{req.value_text}",
+                source_role=_infer_role_from_source_type(req.metadata.source_type),
+                raw_reference=req.source_v2_document_id or req.source_v2_chunk_id,
+                strict_4_required=False,  # 暂宽松 (向后兼容 backfill); client_id 已强校验
+            )
+        except Exception as exc:
+            logger.warning(
+                "V2.3 register_source 失败 (继续写 atomic_facts, source_id 为 None): %s", exc
+            )
+
         # 1. 查同 subject+attribute 的已有事实
         existing_rows = self._db.fetchall(
             """
@@ -590,14 +708,16 @@ class IngestPipeline:
                 source_type, content_role, actor_type, actor_id,
                 speaker_person_id, time_anchor,
                 verification_status, confidence_source, validity_status,
-                update_relation, reasoning_trace_id, derived_from_ids_json
+                update_relation, reasoning_trace_id, derived_from_ids_json,
+                source_registry_id
             ) VALUES (
                 ?, ?, ?, ?, ?, ?,
                 ?, ?, ?, ?, 'active', ?, ?,
                 ?, ?, ?, ?,
                 ?, ?,
                 ?, ?, 'current',
-                ?, ?, ?
+                ?, ?, ?,
+                ?
             )
             """,
             (
@@ -613,8 +733,27 @@ class IngestPipeline:
                 verdict.relation,
                 req.metadata.reasoning_trace_id,
                 json.dumps(req.metadata.derived_from_ids, ensure_ascii=False),
+                source_registry_id,  # V2.3 阶段 1 P2 · 关联 source_registry
             ),
         )
+
+        # ★ V2.3 阶段 1 P2 · 写 atomic_fact_confidence_history (initial_extract)
+        # 蓝图 § 四 机制一 "置信度不是固定数字, 而是不断变化的状态"
+        try:
+            from app.services.atomic_fact_confidence_history import record_confidence_change
+            record_confidence_change(
+                self._db,
+                fact_id=fact_id,
+                new_confidence=req.metadata.confidence_score,
+                trigger_event="initial_extract",
+                evidence_link=source_registry_id,
+                actor_id=req.metadata.actor_id or "ingest_pipeline",
+                reasoning_note=f"ingest({req.path}) initial_confidence",
+            )
+        except Exception as exc:
+            logger.warning(
+                "V2.3 confidence_history 写入失败 (跳过, atomic_facts 主写入已成功): %s", exc
+            )
 
         # 6. 如果是 supersedes, 回填新事实 id 到旧事实的 superseded_by_id
         if verdict.relation == "supersedes" and verdict.target_fact_id:
