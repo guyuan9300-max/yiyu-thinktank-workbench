@@ -10,7 +10,7 @@ from pathlib import Path
 # 之前 20260518001 (200 亿) 远超上限, SQLite 静默 set 为 0, 每次启动都重做完整迁移
 # (这是 20260518 那次坏 db 的真正根因之一: 重做时遇上 reload race + backfill 无事务).
 # 改用 YYYYMMDD 格式 (8 位), 每次 schema 变化递增日期. 20260519 = 此次修复.
-BACKEND_SCHEMA_VERSION = 20260526  # v2.2 F2.0 (N3 A5): AI Memory 5 表占位 — 3.0 共享办公室预留
+BACKEND_SCHEMA_VERSION = 20260527  # v2.2 Phase 2 起步: update_relation + ai_improvement_suggestions (信息商 + 被动建议)
 
 
 # R6：内置罗永浩写作风格的 distilled prompt（手工 distill，不依赖在线抓取，避免外部依赖）。
@@ -3240,6 +3240,30 @@ class Database:
                 "atomic_facts", "derived_from_ids_json",
                 "TEXT NOT NULL DEFAULT '[]'",
             )
+            # ─────────────────────────────────────────────────────────────
+            # v2.2 Phase 2 起步: "信息商" 字段
+            # 顾源源 5/22 洞察 — 信息冲突 ≠ 信息更新, AI 要有分辨能力
+            #
+            # update_relation 取值:
+            #   'none'        — 这是一条新事实, 跟现有事实无冲突
+            #   'conflict'    — 跟现有事实矛盾, 无法判断谁对 → 进澄清队列
+            #   'supersedes'  — 这条事实更新了旧事实 (旧事实标 superseded_by_id)
+            #                   场景: 用户说"合同金额 300 万要改成 800 万重签", AI 识别"重签"语义
+            #   'complement'  — 跟现有事实互补 (不同时间锚 / 不同切面), 两条都保留
+            #
+            # 写入时 LLM 必须先判断 update_relation, 不是简单写入。
+            # ─────────────────────────────────────────────────────────────
+            self._ensure_column(
+                "atomic_facts", "update_relation",
+                "TEXT NOT NULL DEFAULT 'none'",
+            )
+            try:
+                self.conn.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_atomic_facts_update_relation "
+                    "ON atomic_facts(client_id, update_relation, validity_status)"
+                )
+            except sqlite3.OperationalError:
+                pass
             # 索引: 按 verification_status 找待审 + 按 validity 过滤 superseded
             try:
                 self.conn.execute(
@@ -3396,6 +3420,32 @@ class Database:
                     ON ai_feedback_signals(episode_id, created_at DESC);
                 CREATE INDEX IF NOT EXISTS idx_ai_feedback_signals_user_signal
                     ON ai_feedback_signals(user_id, signal_type, created_at DESC);
+
+                -- ⑥ ai_improvement_suggestions (顾源源 5/22 洞察 — AI 反向给人类提流程建议)
+                -- 不是给单条事实澄清, 而是 AI 在执行多次任务后发现"工具/流程本身缺什么"
+                -- 例: AI 多次拟合同时分不清"服务类 vs 销售类", 建议系统加一个新标签
+                --
+                -- 被动展示模式 (顾源源原话): 不主动 push, 用户进 "设置 → AI 管理" 才看 list
+                -- 跟"AI 不主动讨好/扩张"的偏好一致
+                CREATE TABLE IF NOT EXISTS ai_improvement_suggestions (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    ai_session_id TEXT,                  -- 哪个 AI session 提的
+                    suggestion_category TEXT NOT NULL,   -- 'add_tag' / 'add_field' / 'change_workflow' / 'fix_naming'
+                    suggestion_title TEXT NOT NULL,      -- 一句话标题
+                    suggestion_body TEXT NOT NULL,       -- 详细说明
+                    observed_pain_count INTEGER NOT NULL DEFAULT 1,  -- AI 遇到这个痛点几次了 (重复 → 升优先级)
+                    related_episode_ids_json TEXT NOT NULL DEFAULT '[]',  -- 关联到哪些 ai_episode_log
+                    suggested_at TEXT NOT NULL,
+                    last_observed_at TEXT NOT NULL,
+                    review_status TEXT NOT NULL DEFAULT 'pending',  -- pending/accepted/rejected/implemented
+                    reviewed_by TEXT,                    -- 用户 id
+                    reviewed_at TEXT,
+                    review_note TEXT NOT NULL DEFAULT ''
+                );
+                CREATE INDEX IF NOT EXISTS idx_ai_improvement_suggestions_pending
+                    ON ai_improvement_suggestions(review_status, observed_pain_count DESC, last_observed_at DESC);
+                CREATE INDEX IF NOT EXISTS idx_ai_improvement_suggestions_category
+                    ON ai_improvement_suggestions(suggestion_category, suggested_at DESC);
                 """
             )
             # 回填：external_* / 社交平台 / 公众号等外部观察源
