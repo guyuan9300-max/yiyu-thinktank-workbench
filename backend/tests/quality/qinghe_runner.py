@@ -50,6 +50,13 @@ from app.services.time_anchor_normalizer import (  # noqa: E402
     iso_to_cn_aliases,
     parse_to_iso_date,
 )
+from app.services.user_correction_handler import (  # noqa: E402
+    apply_user_correction,
+    get_authoritative_value,
+)
+
+CLIENT_EDUCATION_ID = "client_qinghe_edu_v23test"
+CLIENT_EDUCATION_NAME = "青禾教育研究中心"
 
 from .qinghe_dataset import (  # noqa: E402
     CLIENT_ID,
@@ -72,7 +79,10 @@ def _now_iso() -> str:
 
 
 def setup_db(db_path: Path) -> Database:
-    """建空 db + 写 client + 写 project (V2.1 完整 schema)."""
+    """建空 db + 写 client + 写 project (V2.1 完整 schema).
+
+    V2.4 P2-7 加: 第二个客户"青禾教育研究中心"做跨客户隔离测试.
+    """
     db = Database(db_path)
     now = _now_iso()
     db.execute(
@@ -84,6 +94,36 @@ def setup_db(db_path: Path) -> Database:
             CLIENT_ID, CLIENT_NAME, "青禾", "公益", "陪伴",
             "公益基金会客户,2026 年 5 月起服务,乡村儿童阅读陪伴项目试点中",
             "推进中", "#5B7BFE", now, now,
+        ),
+    )
+    # V2.4 P2-7: 第二个客户 (同名"青禾"前缀, 不同实体)
+    db.execute(
+        """INSERT INTO clients (
+            id, name, alias, domain, type, intro, stage, color,
+            created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        (
+            CLIENT_EDUCATION_ID, CLIENT_EDUCATION_NAME, "青禾教育",
+            "教育", "研究", "教育研究中心客户,跟基金会无关 (跨客户隔离测试)",
+            "试点", "#FE7B5B", now, now,
+        ),
+    )
+    # 在教育中心写一条 atomic_fact "李明 = 教育中心客户经理"
+    # 测试: 用户纠错青禾基金会的李明角色, 不应影响教育中心的李明
+    db.execute(
+        """INSERT INTO atomic_facts (
+            id, client_id, subject_text, attribute, value_text,
+            value_normalized, source_type, content_role,
+            confidence, time_anchor, status, evidence_text,
+            verification_status, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, 'user_confirmed', ?, ?)""",
+        (
+            "af_edu_li_ming",
+            CLIENT_EDUCATION_ID, "李明", "角色", "教育中心客户经理",
+            "客户经理", "client_internal_doc", "fact",
+            0.95, "2026-05-15T00:00:00+00:00",
+            "教育中心李明 (不同人, 仅同名)",
+            now, now,
         ),
     )
     # 注: V2.1 没有独立 projects 表, 项目作为 event_line 存在
@@ -823,6 +863,11 @@ def run_full_quality_test(db_path: Path | None = None) -> dict:
     conflict_result = detect_conflicts_all(db, CLIENT_ID)
     # V2.4 P0-3: 时间标准化 backfill (atomic_facts time_anchor → 中文 aliases)
     time_aliases_updated = backfill_time_aliases(db, CLIENT_ID)
+
+    # V2.4 P2-7: 用户纠错回写
+    correction_results = run_user_corrections(db)
+    isolation_check = run_isolation_check(db)
+    # 用户纠错可能 supersede 旧事实, 故事卡需要重生成
     story_card_md = run_story_card(db)
     qa_results = run_50_questions(db)
     scoring = run_full_scoring(
@@ -870,6 +915,8 @@ def run_full_quality_test(db_path: Path | None = None) -> dict:
             "fact_contradictions_written": conflict_result.fact_contradictions_written,
             "clarifications_written": conflict_result.clarifications_written,
         },
+        "user_correction": correction_results,
+        "cross_client_isolation": isolation_check,
         "semantic_table_counts": semantic_table_counts,
         "story_card_md": story_card_md,
         "qa_results": qa_results,
@@ -884,6 +931,105 @@ def _count(db: Database, table: str, where: str, params: tuple) -> int:
         return dict(row)["c"] if row else 0
     except Exception:
         return 0
+
+
+# ─── V2.4 P2-7 用户纠错 + 跨客户隔离 ─────────────
+
+
+def run_user_corrections(db: Database) -> dict:
+    """执行 2 次用户纠错 (预算 / 范围), 返回前后对比."""
+    # 找 D11_correction 写入的 atomic_fact id (用于标记为权威源)
+    rows = db.fetchall(
+        """SELECT id FROM atomic_facts
+           WHERE client_id = ? AND source_type = 'user_verbal_fact'
+             AND value_text LIKE '%300%'""",
+        (CLIENT_ID,),
+    )
+    correction_fact_id = dict(rows[0])["id"] if rows else None
+
+    # 纠错前 snapshot
+    budget_before = get_authoritative_value(
+        db, CLIENT_ID, "乡村儿童阅读陪伴项目", "预算",
+    )
+
+    # 1) 预算 500 → 300
+    r1 = apply_user_correction(
+        db, client_id=CLIENT_ID,
+        corrected_subject="乡村儿童阅读陪伴项目",
+        corrected_attribute_base="预算",
+        new_authoritative_value="300 万元",
+        correction_source_fact_id=correction_fact_id,
+        user_note="500 万是 v1 旧版和媒体口径, 当前权威 300 万",
+    )
+
+    # 2) 范围 10 所 → 3 所
+    range_correction_rows = db.fetchall(
+        """SELECT id FROM atomic_facts
+           WHERE client_id = ? AND source_type = 'user_verbal_fact'
+             AND value_text LIKE '%3 所%'""",
+        (CLIENT_ID,),
+    )
+    range_correction_fact_id = (
+        dict(range_correction_rows[0])["id"] if range_correction_rows else None
+    )
+    r2 = apply_user_correction(
+        db, client_id=CLIENT_ID,
+        corrected_subject="乡村儿童阅读陪伴项目",
+        corrected_attribute_base="学校",
+        new_authoritative_value="3 所学校",
+        correction_source_fact_id=range_correction_fact_id,
+        user_note="10 所是 v1 + 媒体, 当前权威 3 所试点",
+    )
+
+    # 纠错后 snapshot
+    budget_after = get_authoritative_value(
+        db, CLIENT_ID, "乡村儿童阅读陪伴项目", "预算",
+    )
+
+    return {
+        "budget_correction": {
+            "before_authoritative": budget_before["value"] if budget_before else None,
+            "after_authoritative": budget_after["value"] if budget_after else None,
+            "superseded": r1.superseded_count,
+            "old_versions_after": [v["value_text"] for v in (budget_after or {}).get("old_versions", [])][:5],
+            "clarifications_resolved": r1.clarifications_resolved,
+            "errors": r1.errors[:3],
+        },
+        "range_correction": {
+            "superseded": r2.superseded_count,
+            "clarifications_resolved": r2.clarifications_resolved,
+            "errors": r2.errors[:3],
+        },
+        "hard_indicator_4_passed": (
+            budget_after and "300" in (budget_after.get("value") or "")
+            and r1.superseded_count >= 1
+        ),
+    }
+
+
+def run_isolation_check(db: Database) -> dict:
+    """跨客户隔离: 查青禾基金会的'李明' 应不含教育中心的事实."""
+    foundation_li = db.fetchall(
+        """SELECT id, value_text, source_type FROM atomic_facts
+           WHERE client_id = ? AND subject_text = '李明' AND status = 'active'""",
+        (CLIENT_ID,),
+    )
+    education_li = db.fetchall(
+        """SELECT id, value_text, source_type FROM atomic_facts
+           WHERE client_id = ? AND subject_text = '李明' AND status = 'active'""",
+        (CLIENT_EDUCATION_ID,),
+    )
+    f_values = [dict(r)["value_text"] for r in foundation_li]
+    e_values = [dict(r)["value_text"] for r in education_li]
+
+    # 隔离 PASS 条件: 教育中心的"教育中心客户经理"不能出现在基金会查询里
+    leak = any("教育中心" in v for v in f_values)
+    return {
+        "foundation_li_ming_facts": f_values,
+        "education_li_ming_facts": e_values,
+        "leak_detected": leak,
+        "isolation_passed": not leak,
+    }
 
 
 if __name__ == "__main__":

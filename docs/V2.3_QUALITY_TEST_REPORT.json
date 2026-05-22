@@ -1,17 +1,17 @@
 {
   "test_meta": {
-    "run_at": "2026-05-22T23:34:43.150900+00:00",
+    "run_at": "2026-05-22T23:39:27.002518+00:00",
     "client_id": "client_qinghe_v23test",
     "client_name": "青禾公益基金会",
     "project_name": "乡村儿童阅读陪伴项目",
-    "db_path": "/var/folders/dh/rnl6b50x44vc5g5l9p716x880000gn/T/qinghe_v23test_ej1s6lqw/app.db",
+    "db_path": "/var/folders/dh/rnl6b50x44vc5g5l9p716x880000gn/T/qinghe_v23test_r5ll1jpo/app.db",
     "data_count": 12,
     "question_count": 50
   },
   "ingest_results": [
     {
       "datum_id": "A1_meeting_5_6",
-      "fact_id": "af_c1f49ba3a53c",
+      "fact_id": "af_4dfa601b255b",
       "written": true,
       "update_relation": "none",
       "superseded_target_id": null,
@@ -22,7 +22,7 @@
     },
     {
       "datum_id": "A1_meeting_5_6",
-      "fact_id": "af_4021ac6aa928",
+      "fact_id": "af_122d220eb23c",
       "written": true,
       "update_relation": "none",
       "superseded_target_id": null,
@@ -33,7 +33,7 @@
     },
     {
       "datum_id": "A1_meeting_5_6",
-      "fact_id": "af_1d235c7e0224",
+      "fact_id": "af_06bbbf760124",
       "written": true,
       "update_relation": "none",
       "superseded_target_id": null,
@@ -44,7 +44,7 @@
     },
     {
       "datum_id": "A2_send_v1_5_11",
-      "fact_id": "af_35407e54abb6",
+      "fact_id": "af_c862f6375a3c",
       "written": true,
       "update_relation": "none",
       "superseded_target_id": null,
@@ -55,7 +55,7 @@
     },
     {
       "datum_id": "A2_send_v1_5_11",
-      "fact_id": "af_ce50c933453d",
+      "fact_id": "af_828ad2b0632a",
       "written": true,
       "update_relation": "none",
       "superseded_target_id": null,
@@ -66,7 +66,7 @@
     },
     {
       "datum_id": "A3_weekly_review",
-      "fact_id": "af_c680a619b240",
+      "fact_id": "af_567d1706be8f",
       "written": true,
       "update_relation": "none",
       "superseded_target_id": null,
@@ -77,7 +77,7 @@
     },
     {
       "datum_id": "A3_weekly_review",
-      "fact_id": "af_0a01f7e58811",
+      "fact_id": "af_9f5a07012dd7",
       "written": true,
       "update_relation": "complement",
       "superseded_target_id": null,
@@ -88,7 +88,7 @@
     },
     {
       "datum_id": "A3_weekly_review",
-      "fact_id": "af_62646735323a",
+      "fact_id": "af_32b52a7d0ef9",
       "written": true,
       "update_relation": "none",
       "superseded_target_id": null,
@@ -99,7 +99,7 @@
     },
     {
       "datum_id": "B4_v1_5_8",
-      "fact_id": "af_9c3b10563ef0",
+      "fact_id": "af_8846a6d9b529",
       "written": true,
       "update_relation": "none",
       "superseded_target_id": null,
@@ -110,7 +110,7 @@
     },
     {
       "datum_id": "B4_v1_5_8",
-      "fact_id": "af_d0954c7dd9a8",
+      "fact_id": "af_163bd0f799c6",
       "written": true,
       "update_relation": "none",
       "superseded_target_id": null,
@@ -121,7 +121,7 @@
     },
     {
       "datum_id": "B4_v1_5_8",
-      "fact_id": "af_275725818df0",
+      "fact_id": "af_7b14ae7f0d36",
       "written": true,
       "update_relation": "none",
       "superseded_target_id": null,
@@ -132,7 +132,7 @@
     },
     {
       "datum_id": "B5_v2_5_18",
-      "fact_id": "af_4ca54ad51d06",
+      "fact_id": "af_b2d961186f65",
       "written": true,
       "update_relation": "none",
       "superseded_target_id": null,
@@ -143,7 +143,7 @@
     },
     {
       "datum_id": "B5_v2_5_18",
-      "fact_id": "af_44db3bd6d7b9",
+      "fact_id": "af_b094dcaef5aa",
       "written": true,
       "update_relation": "none",
       "superseded_target_id": null,
@@ -154,7 +154,7 @@
     },
     {
       "datum_id": "B5_v2_5_18",
-      "fact_id": "af_b94b58b2cde7",
+      "fact_id": "af_fc2992dcf0d4",
       "written": true,
       "update_relation": "none",
       "superseded_target_id": null,
@@ -165,7 +165,7 @@
     },
     {
       "datum_id": "B5_v2_5_18",
-      "fact_id": "af_a9c857aaaf99",
+      "fact_id": "af_0a0808571910",
       "written": true,
       "update_relation": "none",
       "superseded_target_id": null,
@@ -176,7 +176,7 @@
     },
     {
       "datum_id": "B6_our_feedback_5_20",
-      "fact_id": "af_fcf2dda47405",
+      "fact_id": "af_44305913e60e",
       "written": true,
       "update_relation": "none",
       "superseded_target_id": null,
@@ -187,7 +187,7 @@
     },
     {
       "datum_id": "B6_our_feedback_5_20",
-      "fact_id": "af_17964d9754e6",
+      "fact_id": "af_e622bef40d3a",
       "written": true,
       "update_relation": "none",
       "superseded_target_id": null,
@@ -198,7 +198,7 @@
     },
     {
       "datum_id": "B6_our_feedback_5_20",
-      "fact_id": "af_f5d06fe2778c",
+      "fact_id": "af_cf82a5a2cdf5",
       "written": true,
       "update_relation": "none",
       "superseded_target_id": null,
@@ -209,7 +209,7 @@
     },
     {
       "datum_id": "C7_official_site_5_3",
-      "fact_id": "af_d025cc7f9a19",
+      "fact_id": "af_96bc407fe369",
       "written": true,
       "update_relation": "none",
       "superseded_target_id": null,
@@ -220,7 +220,7 @@
     },
     {
       "datum_id": "C7_official_site_5_3",
-      "fact_id": "af_00b1cae3c264",
+      "fact_id": "af_7c56011275f2",
       "written": true,
       "update_relation": "none",
       "superseded_target_id": null,
@@ -231,7 +231,7 @@
     },
     {
       "datum_id": "C8_media_5_9",
-      "fact_id": "af_3e769d813a94",
+      "fact_id": "af_6a7212b31809",
       "written": true,
       "update_relation": "none",
       "superseded_target_id": null,
@@ -242,7 +242,7 @@
     },
     {
       "datum_id": "C8_media_5_9",
-      "fact_id": "af_1ce3056c3326",
+      "fact_id": "af_3739d6b57931",
       "written": true,
       "update_relation": "none",
       "superseded_target_id": null,
@@ -253,7 +253,7 @@
     },
     {
       "datum_id": "D9_background",
-      "fact_id": "af_1609dfe1dd44",
+      "fact_id": "af_07688eba7458",
       "written": true,
       "update_relation": "none",
       "superseded_target_id": null,
@@ -264,7 +264,7 @@
     },
     {
       "datum_id": "D9_background",
-      "fact_id": "af_d1c790f40818",
+      "fact_id": "af_82bd6574d723",
       "written": true,
       "update_relation": "none",
       "superseded_target_id": null,
@@ -275,7 +275,7 @@
     },
     {
       "datum_id": "D9_background",
-      "fact_id": "af_8ed987ac15cb",
+      "fact_id": "af_0813501ea5be",
       "written": true,
       "update_relation": "none",
       "superseded_target_id": null,
@@ -286,7 +286,7 @@
     },
     {
       "datum_id": "D9_background",
-      "fact_id": "af_16c77a507736",
+      "fact_id": "af_dfbea65edd58",
       "written": true,
       "update_relation": "none",
       "superseded_target_id": null,
@@ -297,7 +297,7 @@
     },
     {
       "datum_id": "D10_hidden_risk",
-      "fact_id": "af_d8f27c3ffa7a",
+      "fact_id": "af_36aa0c333dee",
       "written": true,
       "update_relation": "none",
       "superseded_target_id": null,
@@ -308,7 +308,7 @@
     },
     {
       "datum_id": "D10_hidden_risk",
-      "fact_id": "af_f93cebc0ebf3",
+      "fact_id": "af_64928b99646e",
       "written": true,
       "update_relation": "none",
       "superseded_target_id": null,
@@ -319,7 +319,7 @@
     },
     {
       "datum_id": "D11_correction",
-      "fact_id": "af_644da8e1df7e",
+      "fact_id": "af_6a2a5f664a06",
       "written": true,
       "update_relation": "none",
       "superseded_target_id": null,
@@ -330,7 +330,7 @@
     },
     {
       "datum_id": "D11_correction",
-      "fact_id": "af_cc14c0985985",
+      "fact_id": "af_e452bc69759e",
       "written": true,
       "update_relation": "none",
       "superseded_target_id": null,
@@ -341,7 +341,7 @@
     },
     {
       "datum_id": "D11_correction",
-      "fact_id": "af_6b401fec2a28",
+      "fact_id": "af_0d5bfb351019",
       "written": true,
       "update_relation": "none",
       "superseded_target_id": null,
@@ -352,7 +352,7 @@
     },
     {
       "datum_id": "E12_method_card",
-      "fact_id": "af_ca98c42d4f2c",
+      "fact_id": "af_52c54165e652",
       "written": true,
       "update_relation": "none",
       "superseded_target_id": null,
@@ -363,7 +363,7 @@
     },
     {
       "datum_id": "E12_method_card",
-      "fact_id": "af_deb437dd06d1",
+      "fact_id": "af_a58f100751e5",
       "written": true,
       "update_relation": "none",
       "superseded_target_id": null,
@@ -397,21 +397,53 @@
     "fact_contradictions_written": 5,
     "clarifications_written": 5
   },
+  "user_correction": {
+    "budget_correction": {
+      "before_authoritative": "300 万元",
+      "after_authoritative": "300 万元",
+      "superseded": 2,
+      "old_versions_after": [
+        "500 万元",
+        "500 万元"
+      ],
+      "clarifications_resolved": 3,
+      "errors": []
+    },
+    "range_correction": {
+      "superseded": 2,
+      "clarifications_resolved": 0,
+      "errors": []
+    },
+    "hard_indicator_4_passed": true
+  },
+  "cross_client_isolation": {
+    "foundation_li_ming_facts": [
+      "5/10 前提供 3 所试点学校名单",
+      "执行推进",
+      "执行积极但非拍板人",
+      "青禾公益基金会项目经理"
+    ],
+    "education_li_ming_facts": [
+      "教育中心客户经理"
+    ],
+    "leak_detected": false,
+    "isolation_passed": true
+  },
   "semantic_table_counts": {
     "event_line_activities": 33,
     "risk_signals": 6,
     "commitments": 1,
     "strategic_thought_insights": 6,
     "fact_contradictions": 5,
-    "clarification_records": 6
+    "clarification_records": 3
   },
-  "story_card_md": "# 📋 项目故事卡 · 青禾公益基金会\n\n_生成时间: 2026-05-22 23:34_  \n_客户 ID: `client_qinghe_v23test`_  \n\n\n## 📊 整体把握度\n\n- **事实总数**: 33 条 · 平均把握度: 81%\n- **来源分布**: 客户官方 10 · 用户口述 9 · 外部公开 4\n- **待澄清**: 6 个 · **冲突**: 5 个\n\n> 顾源源 5/22 蓝图 § 九 + 5/23 V2.4 P0-4 故事卡升级\n\n---\n\n## 1️⃣ 项目背景\n\n**青禾公益基金会** · 阶段: 推进中\n\n公益基金会客户,2026 年 5 月起服务,乡村儿童阅读陪伴项目试点中\n\n\n## 2️⃣ 当前阶段\n\n- **乡村儿童阅读陪伴项目** · 试点筹备 · active\n  - 卡点: 学校名单未确认\n  - 下一步: 确认试点范围和预算边界\n\n_活跃任务: 0 条_\n\n\n## 3️⃣ 关键人物\n\n- **李明** · 新角色 = 执行推进 🟢 _(客户文件)_\n- **李明** · 用户判断 = 执行积极但非拍板人 🟡 _(用户口述判断, 待客户官方确认)_\n- **李明** · 角色 = 青禾公益基金会项目经理\n- **王华** · 用户判断 = 方向影响者 🟡 _(用户口述判断, 待客户官方确认)_\n- **王华** · 角色 = 秘书长 / 内部协调 🟢 _(客户文件)_\n- **陈老师** · 用户判断 = 最终拍板人 (待客户官方确认) 🟡 _(用户口述判断, 待客户官方确认)_\n\n\n## 4️⃣ 时间线\n\n- **2026-05-22** · sys: 乡村儿童阅读陪伴项目 · 500 万评价\n- **2026-05-22** · sys: 乡村儿童阅读陪伴项目 · 当前权威范围\n- **2026-05-22** · sys: 乡村儿童阅读陪伴项目 · 当前权威预算\n- **2026-05-22** · sys: 项目 · 用户担忧\n- **2026-05-22** · sys: 项目 · 隐性风险\n- **2026-05-22** · sys: 青禾公益基金会 · 风险\n- **2026-05-22** · 陈老师: 陈老师 · 用户判断\n- **2026-05-22** · 王华: 王华 · 用户判断\n- **2026-05-22** · 李明: 李明 · 用户判断\n- **2026-05-22** · sys: 项目 · 下周重点\n- **2026-05-22** · sys: 项目 · 卡点\n- **2026-05-22** · sys: 项目 · 卡点\n- **2026-05-20** · sys: 项目 · 验证维度\n- **2026-05-20** · sys: 项目 · 风险\n- **2026-05-20** · sys: 我方 · 判断\n\n\n## 5️⃣ 核心事实\n\n- **项目** · 验证维度 = 家长参与/学校配合/志愿者稳定性/活动持续性 _(conf 0.90 · 🟢 客户内部)_\n- **项目** · 风险 = 扩张过快导致服务质量失控 _(conf 0.90 · 🟢 客户内部)_\n- **我方** · 判断 = 先验证机制再扩大点位 _(conf 0.90 · 🟢 客户内部)_\n- **王华** · 角色 = 秘书长 / 内部协调 _(conf 0.90 · 🟢 客户内部)_\n- **李明** · 新角色 = 执行推进 _(conf 0.90 · 🟢 客户内部)_\n- **乡村儿童阅读陪伴项目** · 总预算(v2) = 300 万元 _(conf 0.90 · 🟢 客户内部)_\n- **乡村儿童阅读陪伴项目** · 试点学校数(v2) = 3 所 _(conf 0.90 · 🟢 客户内部)_\n- **乡村儿童阅读陪伴项目** · 负责人(v1) = 李明 _(conf 0.90 · 🟢 客户内部)_\n- **乡村儿童阅读陪伴项目** · 总预算(v1) = 500 万元 _(conf 0.90 · 🟢 客户内部)_\n- **乡村儿童阅读陪伴项目** · 覆盖学校数(v1) = 10 所 _(conf 0.90 · 🟢 客户内部)_\n- **我方** · 核心判断 = 不建议一开始扩到 10 所学校 _(conf 0.90 · ⚪ 系统派生)_\n- **我方** · 行动 = 5/11 发送第一版试点方案 _(conf 0.90 · ⚪ 系统派生)_\n- **李明** · 角色 = 青禾公益基金会项目经理 _(conf 0.90 · ⚪ 系统派生)_\n- **李明** · 承诺 = 5/10 前提供 3 所试点学校名单 _(conf 0.90 · ⚪ 系统派生)_\n- **乡村儿童阅读陪伴项目** · 首次沟通日期 = 2026-05-06 _(conf 0.90 · ⚪ 系统派生)_\n- **王华** · 出席 = 5/3 启动会 _(conf 0.85 · 🔵 外部公开)_\n- **乡村儿童阅读陪伴项目** · 对外公开日 = 2026-05-03 _(conf 0.85 · 🔵 外部公开)_\n- **项目** · 下周重点 = 确认试点范围和预算边界 _(conf 0.85 · ⚪ 系统派生)_\n- **项目** · 卡点 = 预算口径不统一 _(conf 0.85 · ⚪ 系统派生)_\n- **项目** · 卡点 = 学校名单未确认 _(conf 0.85 · ⚪ 系统派生)_\n\n\n## 6️⃣ 关键判断\n\n- **我方 · 核心判断** _strategic_shift_\n  - 不建议一开始扩到 10 所学校\n- **项目 · 下周重点** _next_step_\n  - 确认试点范围和预算边界\n- **我方 · 判断** _strategic_shift_\n  - 先验证机制再扩大点位\n- **李明 · 用户判断** _user_observation_\n  - 执行积极但非拍板人\n- **王华 · 用户判断** _user_observation_\n  - 方向影响者\n- **陈老师 · 用户判断** _user_observation_\n  - 最终拍板人 (待客户官方确认)\n\n\n## 7️⃣ 冲突与待澄清\n\n**澄清队列 (跨源嫌疑)**:\n- 李明 在不同资料里角色描述不同: 角色:青禾公益基金会项目经理, 负责人, 执行推进. 请确认 李明 当前真实角色, 系统会更新人物档案.\n- 陈老师 相关信息只在用户口述里出现 (例如: 「最终拍板人 (待客户官方确认)」), 客户官方文件和外部公开信息都没有提到. 是否需要找客户正式确认这个人物的角色和职责?\n- 乡村儿童阅读陪伴项目 的 总预算 对外口径可能滞后: 媒体说「500 万元」(同 v1 旧版), 客户最新 v2 已是「300 万元」. 对外引用应该用 v2 吗? 是否需要提醒客户更新外部口径?\n- 项目 的 卡点: 「预算口径不统一」(来源 collaboration_review) vs 「学校名单未确认」(来源 collaboration_review) — 哪个是当前权威值? 用户确认后系统会标旧值为 superseded.\n- 乡村儿童阅读陪伴项目 的 总预算: 「300 万元」(来源 client_internal_doc) vs 「500 万元」(来源 client_internal_doc) — 系统检测到 v1/v2 版本链, 请确认 v2 是否覆盖 v1\n- 乡村儿童阅读陪伴项目 的 总预算: 「300 万元」 vs 「500 万元」 — 哪个是当前权威值?\n\n**事实冲突**:\n- role_diff (medium): \n- oral_no_official (high): \n- media_lag (medium): \n- value_diff (high): \n- version_chain (medium): \n\n\n## 8️⃣ 风险\n\n- **青禾公益基金会 · 风险** · operational_risk · 严重度 medium\n  - 内部尚未想清长期运营机制\n- **项目 · 用户担忧** · operational_risk · 严重度 medium\n  - 3 校试点被对外说成 10 校推广\n- **项目 · 卡点** · operational_risk · 严重度 high\n  - 学校名单未确认\n- **项目 · 卡点** · operational_risk · 严重度 high\n  - 预算口径不统一\n- **项目 · 风险** · operational_risk · 严重度 high\n  - 扩张过快导致服务质量失控\n- **项目 · 隐性风险** · operational_risk · 严重度 high\n  - 宣传压力 > 服务质量\n\n\n## 9️⃣ 下一步\n\n\n**承诺**:\n- 李明 → 项目方: 5/10 前提供 3 所试点学校名单\n\n\n## 🔟 证据来源\n\n- v2_documents: 0 份\n- atomic_facts: 33 条\n- source_registry: 33 条 (V2.3 阶段 1 接通后填充)\n\n\n\n---\n## 🧭 段级标记说明\n\n- 来源: `client_official` / `client_internal` / `user_oral` / `media` / `system`\n- 把握度: conf 字段 (0-1)\n- 待确认: 段 7 列 pending clarifications 即是\n- 用户口述与客户官方文件区分: 段 3 / 段 6 已按 source 标",
+  "story_card_md": "# 📋 项目故事卡 · 青禾公益基金会\n\n_生成时间: 2026-05-22 23:39_  \n_客户 ID: `client_qinghe_v23test`_  \n\n\n## 📊 整体把握度\n\n- **事实总数**: 29 条 · 平均把握度: 83%\n- **来源分布**: 客户官方 8 · 用户口述 9 · 外部公开 2\n- **待澄清**: 3 个 · **冲突**: 5 个\n\n> 顾源源 5/22 蓝图 § 九 + 5/23 V2.4 P0-4 故事卡升级\n\n---\n\n## 1️⃣ 项目背景\n\n**青禾公益基金会** · 阶段: 推进中\n\n公益基金会客户,2026 年 5 月起服务,乡村儿童阅读陪伴项目试点中\n\n\n## 2️⃣ 当前阶段\n\n- **乡村儿童阅读陪伴项目** · 试点筹备 · active\n  - 卡点: 学校名单未确认\n  - 下一步: 确认试点范围和预算边界\n\n_活跃任务: 0 条_\n\n\n## 3️⃣ 关键人物\n\n- **李明** · 新角色 = 执行推进 🟢 _(客户文件)_\n- **李明** · 用户判断 = 执行积极但非拍板人 🟡 _(用户口述判断, 待客户官方确认)_\n- **李明** · 角色 = 青禾公益基金会项目经理\n- **王华** · 用户判断 = 方向影响者 🟡 _(用户口述判断, 待客户官方确认)_\n- **王华** · 角色 = 秘书长 / 内部协调 🟢 _(客户文件)_\n- **陈老师** · 用户判断 = 最终拍板人 (待客户官方确认) 🟡 _(用户口述判断, 待客户官方确认)_\n\n\n## 4️⃣ 时间线\n\n- **2026-05-22** · sys: 乡村儿童阅读陪伴项目 · 500 万评价\n- **2026-05-22** · sys: 乡村儿童阅读陪伴项目 · 当前权威范围\n- **2026-05-22** · sys: 乡村儿童阅读陪伴项目 · 当前权威预算\n- **2026-05-22** · sys: 项目 · 用户担忧\n- **2026-05-22** · sys: 项目 · 隐性风险\n- **2026-05-22** · sys: 青禾公益基金会 · 风险\n- **2026-05-22** · 陈老师: 陈老师 · 用户判断\n- **2026-05-22** · 王华: 王华 · 用户判断\n- **2026-05-22** · 李明: 李明 · 用户判断\n- **2026-05-22** · sys: 项目 · 下周重点\n- **2026-05-22** · sys: 项目 · 卡点\n- **2026-05-22** · sys: 项目 · 卡点\n- **2026-05-20** · sys: 项目 · 验证维度\n- **2026-05-20** · sys: 项目 · 风险\n- **2026-05-20** · sys: 我方 · 判断\n\n\n## 5️⃣ 核心事实\n\n- **乡村儿童阅读陪伴项目** · 当前权威范围 = 3 所学校 _(conf 1.00 · 🟡 用户口述)_\n- **乡村儿童阅读陪伴项目** · 当前权威预算 = 300 万元 _(conf 1.00 · 🟡 用户口述)_\n- **项目** · 验证维度 = 家长参与/学校配合/志愿者稳定性/活动持续性 _(conf 0.90 · 🟢 客户内部)_\n- **项目** · 风险 = 扩张过快导致服务质量失控 _(conf 0.90 · 🟢 客户内部)_\n- **我方** · 判断 = 先验证机制再扩大点位 _(conf 0.90 · 🟢 客户内部)_\n- **王华** · 角色 = 秘书长 / 内部协调 _(conf 0.90 · 🟢 客户内部)_\n- **李明** · 新角色 = 执行推进 _(conf 0.90 · 🟢 客户内部)_\n- **乡村儿童阅读陪伴项目** · 总预算(v2) = 300 万元 _(conf 0.90 · 🟢 客户内部)_\n- **乡村儿童阅读陪伴项目** · 试点学校数(v2) = 3 所 _(conf 0.90 · 🟢 客户内部)_\n- **乡村儿童阅读陪伴项目** · 负责人(v1) = 李明 _(conf 0.90 · 🟢 客户内部)_\n- **我方** · 核心判断 = 不建议一开始扩到 10 所学校 _(conf 0.90 · ⚪ 系统派生)_\n- **我方** · 行动 = 5/11 发送第一版试点方案 _(conf 0.90 · ⚪ 系统派生)_\n- **李明** · 角色 = 青禾公益基金会项目经理 _(conf 0.90 · ⚪ 系统派生)_\n- **李明** · 承诺 = 5/10 前提供 3 所试点学校名单 _(conf 0.90 · ⚪ 系统派生)_\n- **乡村儿童阅读陪伴项目** · 首次沟通日期 = 2026-05-06 _(conf 0.90 · ⚪ 系统派生)_\n- **王华** · 出席 = 5/3 启动会 _(conf 0.85 · 🔵 外部公开)_\n- **乡村儿童阅读陪伴项目** · 对外公开日 = 2026-05-03 _(conf 0.85 · 🔵 外部公开)_\n- **项目** · 下周重点 = 确认试点范围和预算边界 _(conf 0.85 · ⚪ 系统派生)_\n- **项目** · 卡点 = 预算口径不统一 _(conf 0.85 · ⚪ 系统派生)_\n- **项目** · 卡点 = 学校名单未确认 _(conf 0.85 · ⚪ 系统派生)_\n\n\n## 6️⃣ 关键判断\n\n- **我方 · 核心判断** _strategic_shift_\n  - 不建议一开始扩到 10 所学校\n- **项目 · 下周重点** _next_step_\n  - 确认试点范围和预算边界\n- **我方 · 判断** _strategic_shift_\n  - 先验证机制再扩大点位\n- **李明 · 用户判断** _user_observation_\n  - 执行积极但非拍板人\n- **王华 · 用户判断** _user_observation_\n  - 方向影响者\n- **陈老师 · 用户判断** _user_observation_\n  - 最终拍板人 (待客户官方确认)\n\n\n## 7️⃣ 冲突与待澄清\n\n**澄清队列 (跨源嫌疑)**:\n- 李明 在不同资料里角色描述不同: 角色:青禾公益基金会项目经理, 负责人, 执行推进. 请确认 李明 当前真实角色, 系统会更新人物档案.\n- 陈老师 相关信息只在用户口述里出现 (例如: 「最终拍板人 (待客户官方确认)」), 客户官方文件和外部公开信息都没有提到. 是否需要找客户正式确认这个人物的角色和职责?\n- 项目 的 卡点: 「预算口径不统一」(来源 collaboration_review) vs 「学校名单未确认」(来源 collaboration_review) — 哪个是当前权威值? 用户确认后系统会标旧值为 superseded.\n\n**事实冲突**:\n- role_diff (medium): \n- oral_no_official (high): \n- media_lag (medium): \n- value_diff (high): \n- version_chain (medium): \n\n\n## 8️⃣ 风险\n\n- **青禾公益基金会 · 风险** · operational_risk · 严重度 medium\n  - 内部尚未想清长期运营机制\n- **项目 · 用户担忧** · operational_risk · 严重度 medium\n  - 3 校试点被对外说成 10 校推广\n- **项目 · 卡点** · operational_risk · 严重度 high\n  - 学校名单未确认\n- **项目 · 卡点** · operational_risk · 严重度 high\n  - 预算口径不统一\n- **项目 · 风险** · operational_risk · 严重度 high\n  - 扩张过快导致服务质量失控\n- **项目 · 隐性风险** · operational_risk · 严重度 high\n  - 宣传压力 > 服务质量\n\n\n## 9️⃣ 下一步\n\n\n**承诺**:\n- 李明 → 项目方: 5/10 前提供 3 所试点学校名单\n\n\n## 🔟 证据来源\n\n- v2_documents: 0 份\n- atomic_facts: 33 条\n- source_registry: 33 条 (V2.3 阶段 1 接通后填充)\n\n\n\n---\n## 🧭 段级标记说明\n\n- 来源: `client_official` / `client_internal` / `user_oral` / `media` / `system`\n- 把握度: conf 字段 (0-1)\n- 待确认: 段 7 列 pending clarifications 即是\n- 用户口述与客户官方文件区分: 段 3 / 段 6 已按 source 标",
   "qa_results": [
     {
       "qid": "Q01",
       "prompt": "这个项目最早是怎么来的?",
-      "answer": "- **乡村儿童阅读陪伴项目** · 总预算(v2) = 300 万元 [2026-05-18 / 5月18日 / 5 月 18 日 / 5/18] _(source: client_internal_doc, conf: 0.90)_\n- **乡村儿童阅读陪伴项目** · 试点学校数(v2) = 3 所 [2026-05-18 / 5月18日 / 5 月 18 日 / 5/18] _(source: client_internal_doc, conf: 0.90)_\n- **乡村儿童阅读陪伴项目** · 负责人(v1) = 李明 [2026-05-08 / 5月8日 / 5 月 8 日 / 5/8] _(source: client_internal_doc, conf: 0.90)_\n- **乡村儿童阅读陪伴项目** · 总预算(v1) = 500 万元 [2026-05-08 / 5月8日 / 5 月 8 日 / 5/8] _(source: client_internal_doc, conf: 0.90)_\n- **乡村儿童阅读陪伴项目** · 覆盖学校数(v1) = 10 所 [2026-05-08 / 5月8日 / 5 月 8 日 / 5/8] _(source: client_internal_doc, conf: 0.90)_\n- **李明** · 角色 = 青禾公益基金会项目经理 [2026-05-06 / 5月6日 / 5 月 6 日 / 5/6] _(source: collaboration_task, conf: 0.90)_\n- **李明** · 承诺 = 5/10 前提供 3 所试点学校名单 [2026-05-06 / 5月6日 / 5 月 6 日 / 5/6] _(source: collaboration_task, conf: 0.90)_\n- **乡村儿童阅读陪伴项目** · 首次沟通日期 = 2026-05-06 [2026-05-06 / 5月6日 / 5 月 6 日 / 5/6] _(source: collaboration_task, conf: 0.90)_\n- **乡村儿童阅读陪伴项目** · 对外公开日 = 2026-05-03 [2026-05-03 / 5月3日 / 5 月 3 日 / 5/3] _(source: internet_official, conf: 0.85)_\n- **乡村儿童阅读陪伴项目** · 500 万评价 = 旧版/外部滞后口径 [2026-05-22 / 5月22日 / 5 月 22 日 / 5/22] _(source: user_verbal_fact, conf: 0.75)_",
-      "facts_used_count": 15,
+      "answer": "- **乡村儿童阅读陪伴项目** · 当前权威范围 = 3 所学校 [2026-05-22 / 5月22日 / 5 月 22 日 / 5/22] _(source: user_verbal_fact, conf: 1.00)_\n- **乡村儿童阅读陪伴项目** · 当前权威预算 = 300 万元 [2026-05-22 / 5月22日 / 5 月 22 日 / 5/22] _(source: user_verbal_fact, conf: 1.00)_\n- **乡村儿童阅读陪伴项目** · 总预算(v2) = 300 万元 [2026-05-18 / 5月18日 / 5 月 18 日 / 5/18] _(source: client_internal_doc, conf: 0.90)_\n- **乡村儿童阅读陪伴项目** · 试点学校数(v2) = 3 所 [2026-05-18 / 5月18日 / 5 月 18 日 / 5/18] _(source: client_internal_doc, conf: 0.90)_\n- **乡村儿童阅读陪伴项目** · 负责人(v1) = 李明 [2026-05-08 / 5月8日 / 5 月 8 日 / 5/8] _(source: client_internal_doc, conf: 0.90)_\n- **李明** · 角色 = 青禾公益基金会项目经理 [2026-05-06 / 5月6日 / 5 月 6 日 / 5/6] _(source: collaboration_task, conf: 0.90)_\n- **李明** · 承诺 = 5/10 前提供 3 所试点学校名单 [2026-05-06 / 5月6日 / 5 月 6 日 / 5/6] _(source: collaboration_task, conf: 0.90)_\n- **乡村儿童阅读陪伴项目** · 首次沟通日期 = 2026-05-06 [2026-05-06 / 5月6日 / 5 月 6 日 / 5/6] _(source: collaboration_task, conf: 0.90)_\n- **乡村儿童阅读陪伴项目** · 对外公开日 = 2026-05-03 [2026-05-03 / 5月3日 / 5 月 3 日 / 5/3] _(source: internet_official, conf: 0.85)_\n- **乡村儿童阅读陪伴项目** · 500 万评价 = 旧版/外部滞后口径 [2026-05-22 / 5月22日 / 5 月 22 日 / 5/22] _(source: user_verbal_fact, conf: 0.75)_",
+      "facts_used_count": 11,
       "must_contain_hits": [
         "阅读",
         "青禾",
@@ -441,8 +473,8 @@
     {
       "qid": "Q03",
       "prompt": "青禾这个阅读陪伴项目最初的设想是什么?后来跟初版相比有什么调整?能不能把这条变化路径讲清楚。",
-      "answer": "- **乡村儿童阅读陪伴项目** · 试点学校数(v2) = 3 所 [2026-05-18 / 5月18日 / 5 月 18 日 / 5/18] _(source: client_internal_doc, conf: 0.90)_\n- **乡村儿童阅读陪伴项目** · 覆盖学校数(v1) = 10 所 [2026-05-08 / 5月8日 / 5 月 8 日 / 5/8] _(source: client_internal_doc, conf: 0.90)_\n- **我方** · 核心判断 = 不建议一开始扩到 10 所学校 [2026-05-11 / 5月11日 / 5 月 11 日 / 5/11] _(source: collaboration_task, conf: 0.90)_\n- **我方** · 行动 = 5/11 发送第一版试点方案 [2026-05-11 / 5月11日 / 5 月 11 日 / 5/11] _(source: collaboration_task, conf: 0.90)_\n- **李明** · 承诺 = 5/10 前提供 3 所试点学校名单 [2026-05-06 / 5月6日 / 5 月 6 日 / 5/6] _(source: collaboration_task, conf: 0.90)_\n- **项目** · 下周重点 = 确认试点范围和预算边界 [2026-05-22 / 5月22日 / 5 月 22 日 / 5/22] _(source: collaboration_review, conf: 0.85)_\n- **试点项目方法** · 验证维度 = 学校配合/家长参与/志愿者稳定性 [2026-04-15 / 4月15日 / 4 月 15 日 / 4/15] _(source: system_derived, conf: 0.80)_\n- **试点项目方法** · 原则 = 2-3 个点位先验证再扩展 [2026-04-15 / 4月15日 / 4 月 15 日 / 4/15] _(source: system_derived, conf: 0.80)_\n- **乡村儿童阅读陪伴项目** · 当前权威范围 = 3 所学校 [2026-05-22 / 5月22日 / 5 月 22 日 / 5/22] _(source: user_verbal_fact, conf: 0.75)_\n- **项目** · 用户担忧 = 3 校试点被对外说成 10 校推广 [2026-05-22 / 5月22日 / 5 月 22 日 / 5/22] _(source: user_observation, conf: 0.65)_",
-      "facts_used_count": 11,
+      "answer": "- **乡村儿童阅读陪伴项目** · 当前权威范围 = 3 所学校 [2026-05-22 / 5月22日 / 5 月 22 日 / 5/22] _(source: user_verbal_fact, conf: 1.00)_\n- **乡村儿童阅读陪伴项目** · 试点学校数(v2) = 3 所 [2026-05-18 / 5月18日 / 5 月 18 日 / 5/18] _(source: client_internal_doc, conf: 0.90)_\n- **我方** · 核心判断 = 不建议一开始扩到 10 所学校 [2026-05-11 / 5月11日 / 5 月 11 日 / 5/11] _(source: collaboration_task, conf: 0.90)_\n- **我方** · 行动 = 5/11 发送第一版试点方案 [2026-05-11 / 5月11日 / 5 月 11 日 / 5/11] _(source: collaboration_task, conf: 0.90)_\n- **李明** · 承诺 = 5/10 前提供 3 所试点学校名单 [2026-05-06 / 5月6日 / 5 月 6 日 / 5/6] _(source: collaboration_task, conf: 0.90)_\n- **项目** · 下周重点 = 确认试点范围和预算边界 [2026-05-22 / 5月22日 / 5 月 22 日 / 5/22] _(source: collaboration_review, conf: 0.85)_\n- **试点项目方法** · 验证维度 = 学校配合/家长参与/志愿者稳定性 [2026-04-15 / 4月15日 / 4 月 15 日 / 4/15] _(source: system_derived, conf: 0.80)_\n- **试点项目方法** · 原则 = 2-3 个点位先验证再扩展 [2026-04-15 / 4月15日 / 4 月 15 日 / 4/15] _(source: system_derived, conf: 0.80)_\n- **项目** · 用户担忧 = 3 校试点被对外说成 10 校推广 [2026-05-22 / 5月22日 / 5 月 22 日 / 5/22] _(source: user_observation, conf: 0.65)_",
+      "facts_used_count": 9,
       "must_contain_hits": [
         "10 所",
         "3 所",
@@ -456,14 +488,13 @@
     {
       "qid": "Q04",
       "prompt": "外部媒体是怎么报道这个项目的?",
-      "answer": "- **乡村儿童阅读陪伴项目** · 总预算(v1) = 500 万元 [2026-05-08 / 5月8日 / 5 月 8 日 / 5/8] _(source: client_internal_doc, conf: 0.90)_\n- **乡村儿童阅读陪伴项目** · 覆盖学校数(v1) = 10 所 [2026-05-08 / 5月8日 / 5 月 8 日 / 5/8] _(source: client_internal_doc, conf: 0.90)_\n- **我方** · 核心判断 = 不建议一开始扩到 10 所学校 [2026-05-11 / 5月11日 / 5 月 11 日 / 5/11] _(source: collaboration_task, conf: 0.90)_\n- **乡村儿童阅读陪伴项目** · 500 万评价 = 旧版/外部滞后口径 [2026-05-22 / 5月22日 / 5 月 22 日 / 5/22] _(source: user_verbal_fact, conf: 0.75)_\n- **乡村儿童阅读陪伴项目** · 媒体口径预算 = 500 万元 [2026-05-09 / 5月9日 / 5 月 9 日 / 5/9] _(source: internet_media, conf: 0.60)_\n- **乡村儿童阅读陪伴项目** · 媒体口径学校数 = 10 所 [2026-05-09 / 5月9日 / 5 月 9 日 / 5/9] _(source: internet_media, conf: 0.60)_",
-      "facts_used_count": 6,
+      "answer": "- **我方** · 核心判断 = 不建议一开始扩到 10 所学校 [2026-05-11 / 5月11日 / 5 月 11 日 / 5/11] _(source: collaboration_task, conf: 0.90)_\n- **乡村儿童阅读陪伴项目** · 500 万评价 = 旧版/外部滞后口径 [2026-05-22 / 5月22日 / 5 月 22 日 / 5/22] _(source: user_verbal_fact, conf: 0.75)_",
+      "facts_used_count": 2,
       "must_contain_hits": [
         "10 所",
-        "500 万",
-        "媒体"
+        "500 万"
       ],
-      "must_contain_hit_rate": 1.0,
+      "must_contain_hit_rate": 0.6666666666666666,
       "not_contain_violations": [],
       "has_evidence": true,
       "correct": true
@@ -485,7 +516,7 @@
     {
       "qid": "Q06",
       "prompt": "这个项目现在确认的预算是多少?",
-      "answer": "- **乡村儿童阅读陪伴项目** · 总预算(v2) = 300 万元 [2026-05-18 / 5月18日 / 5 月 18 日 / 5/18] _(source: client_internal_doc, conf: 0.90)_\n- **乡村儿童阅读陪伴项目** · 当前权威预算 = 300 万元 [2026-05-22 / 5月22日 / 5 月 22 日 / 5/22] _(source: user_verbal_fact, conf: 0.75)_",
+      "answer": "- **乡村儿童阅读陪伴项目** · 当前权威预算 = 300 万元 [2026-05-22 / 5月22日 / 5 月 22 日 / 5/22] _(source: user_verbal_fact, conf: 1.00)_\n- **乡村儿童阅读陪伴项目** · 总预算(v2) = 300 万元 [2026-05-18 / 5月18日 / 5 月 18 日 / 5/18] _(source: client_internal_doc, conf: 0.90)_",
       "facts_used_count": 2,
       "must_contain_hits": [
         "300"
@@ -498,8 +529,8 @@
     {
       "qid": "Q07",
       "prompt": "为什么资料里出现过 500 万这个数字?这个数字现在还作数吗?",
-      "answer": "- **乡村儿童阅读陪伴项目** · 总预算(v2) = 300 万元 [2026-05-18 / 5月18日 / 5 月 18 日 / 5/18] _(source: client_internal_doc, conf: 0.90)_\n- **乡村儿童阅读陪伴项目** · 负责人(v1) = 李明 [2026-05-08 / 5月8日 / 5 月 8 日 / 5/8] _(source: client_internal_doc, conf: 0.90)_\n- **乡村儿童阅读陪伴项目** · 总预算(v1) = 500 万元 [2026-05-08 / 5月8日 / 5 月 8 日 / 5/8] _(source: client_internal_doc, conf: 0.90)_\n- **乡村儿童阅读陪伴项目** · 覆盖学校数(v1) = 10 所 [2026-05-08 / 5月8日 / 5 月 8 日 / 5/8] _(source: client_internal_doc, conf: 0.90)_\n- **乡村儿童阅读陪伴项目** · 500 万评价 = 旧版/外部滞后口径 [2026-05-22 / 5月22日 / 5 月 22 日 / 5/22] _(source: user_verbal_fact, conf: 0.75)_\n- **乡村儿童阅读陪伴项目** · 当前权威预算 = 300 万元 [2026-05-22 / 5月22日 / 5 月 22 日 / 5/22] _(source: user_verbal_fact, conf: 0.75)_\n- **乡村儿童阅读陪伴项目** · 媒体口径预算 = 500 万元 [2026-05-09 / 5月9日 / 5 月 9 日 / 5/9] _(source: internet_media, conf: 0.60)_",
-      "facts_used_count": 7,
+      "answer": "- **乡村儿童阅读陪伴项目** · 当前权威预算 = 300 万元 [2026-05-22 / 5月22日 / 5 月 22 日 / 5/22] _(source: user_verbal_fact, conf: 1.00)_\n- **乡村儿童阅读陪伴项目** · 总预算(v2) = 300 万元 [2026-05-18 / 5月18日 / 5 月 18 日 / 5/18] _(source: client_internal_doc, conf: 0.90)_\n- **乡村儿童阅读陪伴项目** · 负责人(v1) = 李明 [2026-05-08 / 5月8日 / 5 月 8 日 / 5/8] _(source: client_internal_doc, conf: 0.90)_\n- **乡村儿童阅读陪伴项目** · 500 万评价 = 旧版/外部滞后口径 [2026-05-22 / 5月22日 / 5 月 22 日 / 5/22] _(source: user_verbal_fact, conf: 0.75)_",
+      "facts_used_count": 4,
       "must_contain_hits": [
         "500",
         "v1",
@@ -514,15 +545,14 @@
     {
       "qid": "Q08",
       "prompt": "请把项目从最初到现在的预算口径梳理一遍,说明哪个是客户官方最新版,哪个是媒体口径,哪个是用户纠正,以及为什么现在权威值是 300 万。",
-      "answer": "- **乡村儿童阅读陪伴项目** · 总预算(v2) = 300 万元 [2026-05-18 / 5月18日 / 5 月 18 日 / 5/18] _(source: client_internal_doc, conf: 0.90)_\n- **乡村儿童阅读陪伴项目** · 试点学校数(v2) = 3 所 [2026-05-18 / 5月18日 / 5 月 18 日 / 5/18] _(source: client_internal_doc, conf: 0.90)_\n- **乡村儿童阅读陪伴项目** · 负责人(v1) = 李明 [2026-05-08 / 5月8日 / 5 月 8 日 / 5/8] _(source: client_internal_doc, conf: 0.90)_\n- **乡村儿童阅读陪伴项目** · 总预算(v1) = 500 万元 [2026-05-08 / 5月8日 / 5 月 8 日 / 5/8] _(source: client_internal_doc, conf: 0.90)_\n- **乡村儿童阅读陪伴项目** · 覆盖学校数(v1) = 10 所 [2026-05-08 / 5月8日 / 5 月 8 日 / 5/8] _(source: client_internal_doc, conf: 0.90)_\n- **乡村儿童阅读陪伴项目** · 当前权威预算 = 300 万元 [2026-05-22 / 5月22日 / 5 月 22 日 / 5/22] _(source: user_verbal_fact, conf: 0.75)_\n- **乡村儿童阅读陪伴项目** · 媒体口径预算 = 500 万元 [2026-05-09 / 5月9日 / 5 月 9 日 / 5/9] _(source: internet_media, conf: 0.60)_\n- **乡村儿童阅读陪伴项目** · 媒体口径学校数 = 10 所 [2026-05-09 / 5月9日 / 5 月 9 日 / 5/9] _(source: internet_media, conf: 0.60)_",
-      "facts_used_count": 8,
+      "answer": "- **乡村儿童阅读陪伴项目** · 当前权威预算 = 300 万元 [2026-05-22 / 5月22日 / 5 月 22 日 / 5/22] _(source: user_verbal_fact, conf: 1.00)_\n- **乡村儿童阅读陪伴项目** · 总预算(v2) = 300 万元 [2026-05-18 / 5月18日 / 5 月 18 日 / 5/18] _(source: client_internal_doc, conf: 0.90)_\n- **乡村儿童阅读陪伴项目** · 试点学校数(v2) = 3 所 [2026-05-18 / 5月18日 / 5 月 18 日 / 5/18] _(source: client_internal_doc, conf: 0.90)_\n- **乡村儿童阅读陪伴项目** · 负责人(v1) = 李明 [2026-05-08 / 5月8日 / 5 月 8 日 / 5/8] _(source: client_internal_doc, conf: 0.90)_",
+      "facts_used_count": 4,
       "must_contain_hits": [
         "v1",
         "v2",
-        "媒体",
         "300"
       ],
-      "must_contain_hit_rate": 0.8,
+      "must_contain_hit_rate": 0.6,
       "not_contain_violations": [],
       "has_evidence": true,
       "correct": true
@@ -530,8 +560,8 @@
     {
       "qid": "Q09",
       "prompt": "外部公开信息里项目的预算是多少?跟内部最新一致吗?",
-      "answer": "- **乡村儿童阅读陪伴项目** · 总预算(v1) = 500 万元 [2026-05-08 / 5月8日 / 5 月 8 日 / 5/8] _(source: client_internal_doc, conf: 0.90)_\n- **乡村儿童阅读陪伴项目** · 覆盖学校数(v1) = 10 所 [2026-05-08 / 5月8日 / 5 月 8 日 / 5/8] _(source: client_internal_doc, conf: 0.90)_\n- **我方** · 核心判断 = 不建议一开始扩到 10 所学校 [2026-05-11 / 5月11日 / 5 月 11 日 / 5/11] _(source: collaboration_task, conf: 0.90)_\n- **乡村儿童阅读陪伴项目** · 500 万评价 = 旧版/外部滞后口径 [2026-05-22 / 5月22日 / 5 月 22 日 / 5/22] _(source: user_verbal_fact, conf: 0.75)_\n- **乡村儿童阅读陪伴项目** · 媒体口径预算 = 500 万元 [2026-05-09 / 5月9日 / 5 月 9 日 / 5/9] _(source: internet_media, conf: 0.60)_\n- **乡村儿童阅读陪伴项目** · 媒体口径学校数 = 10 所 [2026-05-09 / 5月9日 / 5 月 9 日 / 5/9] _(source: internet_media, conf: 0.60)_",
-      "facts_used_count": 6,
+      "answer": "- **我方** · 核心判断 = 不建议一开始扩到 10 所学校 [2026-05-11 / 5月11日 / 5 月 11 日 / 5/11] _(source: collaboration_task, conf: 0.90)_\n- **乡村儿童阅读陪伴项目** · 500 万评价 = 旧版/外部滞后口径 [2026-05-22 / 5月22日 / 5 月 22 日 / 5/22] _(source: user_verbal_fact, conf: 0.75)_",
+      "facts_used_count": 2,
       "must_contain_hits": [
         "500",
         "10 所",
@@ -545,7 +575,7 @@
     {
       "qid": "Q10",
       "prompt": "如果对外发宣传稿引用预算,我应该用哪个数字?",
-      "answer": "- **乡村儿童阅读陪伴项目** · 总预算(v2) = 300 万元 [2026-05-18 / 5月18日 / 5 月 18 日 / 5/18] _(source: client_internal_doc, conf: 0.90)_\n- **乡村儿童阅读陪伴项目** · 500 万评价 = 旧版/外部滞后口径 [2026-05-22 / 5月22日 / 5 月 22 日 / 5/22] _(source: user_verbal_fact, conf: 0.75)_\n- **乡村儿童阅读陪伴项目** · 当前权威预算 = 300 万元 [2026-05-22 / 5月22日 / 5 月 22 日 / 5/22] _(source: user_verbal_fact, conf: 0.75)_",
+      "answer": "- **乡村儿童阅读陪伴项目** · 当前权威预算 = 300 万元 [2026-05-22 / 5月22日 / 5 月 22 日 / 5/22] _(source: user_verbal_fact, conf: 1.00)_\n- **乡村儿童阅读陪伴项目** · 总预算(v2) = 300 万元 [2026-05-18 / 5月18日 / 5 月 18 日 / 5/18] _(source: client_internal_doc, conf: 0.90)_\n- **乡村儿童阅读陪伴项目** · 500 万评价 = 旧版/外部滞后口径 [2026-05-22 / 5月22日 / 5 月 22 日 / 5/22] _(source: user_verbal_fact, conf: 0.75)_",
       "facts_used_count": 3,
       "must_contain_hits": [
         "300",
@@ -559,7 +589,7 @@
     {
       "qid": "Q11",
       "prompt": "项目范围现在是 3 所学校还是 10 所学校?",
-      "answer": "- **乡村儿童阅读陪伴项目** · 试点学校数(v2) = 3 所 [2026-05-18 / 5月18日 / 5 月 18 日 / 5/18] _(source: client_internal_doc, conf: 0.90)_\n- **李明** · 承诺 = 5/10 前提供 3 所试点学校名单 [2026-05-06 / 5月6日 / 5 月 6 日 / 5/6] _(source: collaboration_task, conf: 0.90)_\n- **乡村儿童阅读陪伴项目** · 当前权威范围 = 3 所学校 [2026-05-22 / 5月22日 / 5 月 22 日 / 5/22] _(source: user_verbal_fact, conf: 0.75)_",
+      "answer": "- **乡村儿童阅读陪伴项目** · 当前权威范围 = 3 所学校 [2026-05-22 / 5月22日 / 5 月 22 日 / 5/22] _(source: user_verbal_fact, conf: 1.00)_\n- **乡村儿童阅读陪伴项目** · 试点学校数(v2) = 3 所 [2026-05-18 / 5月18日 / 5 月 18 日 / 5/18] _(source: client_internal_doc, conf: 0.90)_\n- **李明** · 承诺 = 5/10 前提供 3 所试点学校名单 [2026-05-06 / 5月6日 / 5 月 6 日 / 5/6] _(source: collaboration_task, conf: 0.90)_",
       "facts_used_count": 3,
       "must_contain_hits": [
         "3 所"
@@ -572,8 +602,8 @@
     {
       "qid": "Q12",
       "prompt": "项目范围有没有过调整?为什么会调整?",
-      "answer": "- **乡村儿童阅读陪伴项目** · 试点学校数(v2) = 3 所 [2026-05-18 / 5月18日 / 5 月 18 日 / 5/18] _(source: client_internal_doc, conf: 0.90)_\n- **乡村儿童阅读陪伴项目** · 覆盖学校数(v1) = 10 所 [2026-05-08 / 5月8日 / 5 月 8 日 / 5/8] _(source: client_internal_doc, conf: 0.90)_\n- **我方** · 核心判断 = 不建议一开始扩到 10 所学校 [2026-05-11 / 5月11日 / 5 月 11 日 / 5/11] _(source: collaboration_task, conf: 0.90)_\n- **我方** · 行动 = 5/11 发送第一版试点方案 [2026-05-11 / 5月11日 / 5 月 11 日 / 5/11] _(source: collaboration_task, conf: 0.90)_\n- **李明** · 承诺 = 5/10 前提供 3 所试点学校名单 [2026-05-06 / 5月6日 / 5 月 6 日 / 5/6] _(source: collaboration_task, conf: 0.90)_\n- **项目** · 下周重点 = 确认试点范围和预算边界 [2026-05-22 / 5月22日 / 5 月 22 日 / 5/22] _(source: collaboration_review, conf: 0.85)_\n- **试点项目方法** · 验证维度 = 学校配合/家长参与/志愿者稳定性 [2026-04-15 / 4月15日 / 4 月 15 日 / 4/15] _(source: system_derived, conf: 0.80)_\n- **试点项目方法** · 原则 = 2-3 个点位先验证再扩展 [2026-04-15 / 4月15日 / 4 月 15 日 / 4/15] _(source: system_derived, conf: 0.80)_\n- **乡村儿童阅读陪伴项目** · 当前权威范围 = 3 所学校 [2026-05-22 / 5月22日 / 5 月 22 日 / 5/22] _(source: user_verbal_fact, conf: 0.75)_\n- **项目** · 用户担忧 = 3 校试点被对外说成 10 校推广 [2026-05-22 / 5月22日 / 5 月 22 日 / 5/22] _(source: user_observation, conf: 0.65)_",
-      "facts_used_count": 11,
+      "answer": "- **乡村儿童阅读陪伴项目** · 当前权威范围 = 3 所学校 [2026-05-22 / 5月22日 / 5 月 22 日 / 5/22] _(source: user_verbal_fact, conf: 1.00)_\n- **乡村儿童阅读陪伴项目** · 试点学校数(v2) = 3 所 [2026-05-18 / 5月18日 / 5 月 18 日 / 5/18] _(source: client_internal_doc, conf: 0.90)_\n- **我方** · 核心判断 = 不建议一开始扩到 10 所学校 [2026-05-11 / 5月11日 / 5 月 11 日 / 5/11] _(source: collaboration_task, conf: 0.90)_\n- **我方** · 行动 = 5/11 发送第一版试点方案 [2026-05-11 / 5月11日 / 5 月 11 日 / 5/11] _(source: collaboration_task, conf: 0.90)_\n- **李明** · 承诺 = 5/10 前提供 3 所试点学校名单 [2026-05-06 / 5月6日 / 5 月 6 日 / 5/6] _(source: collaboration_task, conf: 0.90)_\n- **项目** · 下周重点 = 确认试点范围和预算边界 [2026-05-22 / 5月22日 / 5 月 22 日 / 5/22] _(source: collaboration_review, conf: 0.85)_\n- **试点项目方法** · 验证维度 = 学校配合/家长参与/志愿者稳定性 [2026-04-15 / 4月15日 / 4 月 15 日 / 4/15] _(source: system_derived, conf: 0.80)_\n- **试点项目方法** · 原则 = 2-3 个点位先验证再扩展 [2026-04-15 / 4月15日 / 4 月 15 日 / 4/15] _(source: system_derived, conf: 0.80)_\n- **项目** · 用户担忧 = 3 校试点被对外说成 10 校推广 [2026-05-22 / 5月22日 / 5 月 22 日 / 5/22] _(source: user_observation, conf: 0.65)_",
+      "facts_used_count": 9,
       "must_contain_hits": [
         "10 所",
         "3 所",
@@ -587,16 +617,15 @@
     {
       "qid": "Q13",
       "prompt": "请对比 v1 方案、v2 方案、外部媒体口径在项目范围上的差异,说明哪个是当前权威值。",
-      "answer": "- **乡村儿童阅读陪伴项目** · 总预算(v2) = 300 万元 [2026-05-18 / 5月18日 / 5 月 18 日 / 5/18] _(source: client_internal_doc, conf: 0.90)_\n- **乡村儿童阅读陪伴项目** · 试点学校数(v2) = 3 所 [2026-05-18 / 5月18日 / 5 月 18 日 / 5/18] _(source: client_internal_doc, conf: 0.90)_\n- **乡村儿童阅读陪伴项目** · 负责人(v1) = 李明 [2026-05-08 / 5月8日 / 5 月 8 日 / 5/8] _(source: client_internal_doc, conf: 0.90)_\n- **乡村儿童阅读陪伴项目** · 总预算(v1) = 500 万元 [2026-05-08 / 5月8日 / 5 月 8 日 / 5/8] _(source: client_internal_doc, conf: 0.90)_\n- **乡村儿童阅读陪伴项目** · 覆盖学校数(v1) = 10 所 [2026-05-08 / 5月8日 / 5 月 8 日 / 5/8] _(source: client_internal_doc, conf: 0.90)_\n- **我方** · 核心判断 = 不建议一开始扩到 10 所学校 [2026-05-11 / 5月11日 / 5 月 11 日 / 5/11] _(source: collaboration_task, conf: 0.90)_\n- **李明** · 承诺 = 5/10 前提供 3 所试点学校名单 [2026-05-06 / 5月6日 / 5 月 6 日 / 5/6] _(source: collaboration_task, conf: 0.90)_\n- **乡村儿童阅读陪伴项目** · 当前权威范围 = 3 所学校 [2026-05-22 / 5月22日 / 5 月 22 日 / 5/22] _(source: user_verbal_fact, conf: 0.75)_\n- **乡村儿童阅读陪伴项目** · 媒体口径预算 = 500 万元 [2026-05-09 / 5月9日 / 5 月 9 日 / 5/9] _(source: internet_media, conf: 0.60)_\n- **乡村儿童阅读陪伴项目** · 媒体口径学校数 = 10 所 [2026-05-09 / 5月9日 / 5 月 9 日 / 5/9] _(source: internet_media, conf: 0.60)_",
-      "facts_used_count": 10,
+      "answer": "- **乡村儿童阅读陪伴项目** · 当前权威范围 = 3 所学校 [2026-05-22 / 5月22日 / 5 月 22 日 / 5/22] _(source: user_verbal_fact, conf: 1.00)_\n- **乡村儿童阅读陪伴项目** · 总预算(v2) = 300 万元 [2026-05-18 / 5月18日 / 5 月 18 日 / 5/18] _(source: client_internal_doc, conf: 0.90)_\n- **乡村儿童阅读陪伴项目** · 试点学校数(v2) = 3 所 [2026-05-18 / 5月18日 / 5 月 18 日 / 5/18] _(source: client_internal_doc, conf: 0.90)_\n- **乡村儿童阅读陪伴项目** · 负责人(v1) = 李明 [2026-05-08 / 5月8日 / 5 月 8 日 / 5/8] _(source: client_internal_doc, conf: 0.90)_\n- **我方** · 核心判断 = 不建议一开始扩到 10 所学校 [2026-05-11 / 5月11日 / 5 月 11 日 / 5/11] _(source: collaboration_task, conf: 0.90)_\n- **李明** · 承诺 = 5/10 前提供 3 所试点学校名单 [2026-05-06 / 5月6日 / 5 月 6 日 / 5/6] _(source: collaboration_task, conf: 0.90)_",
+      "facts_used_count": 6,
       "must_contain_hits": [
         "v1",
         "v2",
-        "媒体",
         "3 所",
         "10 所"
       ],
-      "must_contain_hit_rate": 1.0,
+      "must_contain_hit_rate": 0.8,
       "not_contain_violations": [],
       "has_evidence": true,
       "correct": true
@@ -720,8 +749,8 @@
     {
       "qid": "Q22",
       "prompt": "除了已记录的明显风险,有没有用户口述里的隐性风险?",
-      "answer": "- **乡村儿童阅读陪伴项目** · 覆盖学校数(v1) = 10 所 [2026-05-08 / 5月8日 / 5 月 8 日 / 5/8] _(source: client_internal_doc, conf: 0.90)_\n- **我方** · 核心判断 = 不建议一开始扩到 10 所学校 [2026-05-11 / 5月11日 / 5 月 11 日 / 5/11] _(source: collaboration_task, conf: 0.90)_\n- **项目** · 隐性风险 = 宣传压力 > 服务质量 [2026-05-22 / 5月22日 / 5 月 22 日 / 5/22] _(source: user_observation, conf: 0.65)_\n- **乡村儿童阅读陪伴项目** · 媒体口径学校数 = 10 所 [2026-05-09 / 5月9日 / 5 月 9 日 / 5/9] _(source: internet_media, conf: 0.60)_",
-      "facts_used_count": 4,
+      "answer": "- **我方** · 核心判断 = 不建议一开始扩到 10 所学校 [2026-05-11 / 5月11日 / 5 月 11 日 / 5/11] _(source: collaboration_task, conf: 0.90)_\n- **项目** · 隐性风险 = 宣传压力 > 服务质量 [2026-05-22 / 5月22日 / 5 月 22 日 / 5/22] _(source: user_observation, conf: 0.65)_",
+      "facts_used_count": 2,
       "must_contain_hits": [
         "宣传",
         "10 所"
@@ -780,7 +809,7 @@
     {
       "qid": "Q26",
       "prompt": "目前有哪些承诺还没完成?",
-      "answer": "- **乡村儿童阅读陪伴项目** · 试点学校数(v2) = 3 所 [2026-05-18 / 5月18日 / 5 月 18 日 / 5/18] _(source: client_internal_doc, conf: 0.90)_\n- **李明** · 承诺 = 5/10 前提供 3 所试点学校名单 [2026-05-06 / 5月6日 / 5 月 6 日 / 5/6] _(source: collaboration_task, conf: 0.90)_\n- **项目** · 卡点 = 学校名单未确认 [2026-05-22 / 5月22日 / 5 月 22 日 / 5/22] _(source: collaboration_review, conf: 0.85)_\n- **乡村儿童阅读陪伴项目** · 当前权威范围 = 3 所学校 [2026-05-22 / 5月22日 / 5 月 22 日 / 5/22] _(source: user_verbal_fact, conf: 0.75)_",
+      "answer": "- **乡村儿童阅读陪伴项目** · 当前权威范围 = 3 所学校 [2026-05-22 / 5月22日 / 5 月 22 日 / 5/22] _(source: user_verbal_fact, conf: 1.00)_\n- **乡村儿童阅读陪伴项目** · 试点学校数(v2) = 3 所 [2026-05-18 / 5月18日 / 5 月 18 日 / 5/18] _(source: client_internal_doc, conf: 0.90)_\n- **李明** · 承诺 = 5/10 前提供 3 所试点学校名单 [2026-05-06 / 5月6日 / 5 月 6 日 / 5/6] _(source: collaboration_task, conf: 0.90)_\n- **项目** · 卡点 = 学校名单未确认 [2026-05-22 / 5月22日 / 5 月 22 日 / 5/22] _(source: collaboration_review, conf: 0.85)_",
       "facts_used_count": 4,
       "must_contain_hits": [
         "3 所",
@@ -795,7 +824,7 @@
     {
       "qid": "Q27",
       "prompt": "李明在 5/6 那次会议上承诺了什么?现在兑现了吗?",
-      "answer": "- **乡村儿童阅读陪伴项目** · 试点学校数(v2) = 3 所 [2026-05-18 / 5月18日 / 5 月 18 日 / 5/18] _(source: client_internal_doc, conf: 0.90)_\n- **李明** · 承诺 = 5/10 前提供 3 所试点学校名单 [2026-05-06 / 5月6日 / 5 月 6 日 / 5/6] _(source: collaboration_task, conf: 0.90)_\n- **项目** · 卡点 = 学校名单未确认 [2026-05-22 / 5月22日 / 5 月 22 日 / 5/22] _(source: collaboration_review, conf: 0.85)_\n- **乡村儿童阅读陪伴项目** · 当前权威范围 = 3 所学校 [2026-05-22 / 5月22日 / 5 月 22 日 / 5/22] _(source: user_verbal_fact, conf: 0.75)_",
+      "answer": "- **乡村儿童阅读陪伴项目** · 当前权威范围 = 3 所学校 [2026-05-22 / 5月22日 / 5 月 22 日 / 5/22] _(source: user_verbal_fact, conf: 1.00)_\n- **乡村儿童阅读陪伴项目** · 试点学校数(v2) = 3 所 [2026-05-18 / 5月18日 / 5 月 18 日 / 5/18] _(source: client_internal_doc, conf: 0.90)_\n- **李明** · 承诺 = 5/10 前提供 3 所试点学校名单 [2026-05-06 / 5月6日 / 5 月 6 日 / 5/6] _(source: collaboration_task, conf: 0.90)_\n- **项目** · 卡点 = 学校名单未确认 [2026-05-22 / 5月22日 / 5 月 22 日 / 5/22] _(source: collaboration_review, conf: 0.85)_",
       "facts_used_count": 4,
       "must_contain_hits": [
         "5/10",
@@ -851,8 +880,8 @@
     {
       "qid": "Q31",
       "prompt": "这批资料里有哪些地方互相矛盾?",
-      "answer": "- **乡村儿童阅读陪伴项目** · 总预算(v2) = 300 万元 [2026-05-18 / 5月18日 / 5 月 18 日 / 5/18] _(source: client_internal_doc, conf: 0.90)_\n- **乡村儿童阅读陪伴项目** · 试点学校数(v2) = 3 所 [2026-05-18 / 5月18日 / 5 月 18 日 / 5/18] _(source: client_internal_doc, conf: 0.90)_\n- **乡村儿童阅读陪伴项目** · 总预算(v1) = 500 万元 [2026-05-08 / 5月8日 / 5 月 8 日 / 5/8] _(source: client_internal_doc, conf: 0.90)_\n- **乡村儿童阅读陪伴项目** · 覆盖学校数(v1) = 10 所 [2026-05-08 / 5月8日 / 5 月 8 日 / 5/8] _(source: client_internal_doc, conf: 0.90)_\n- **我方** · 核心判断 = 不建议一开始扩到 10 所学校 [2026-05-11 / 5月11日 / 5 月 11 日 / 5/11] _(source: collaboration_task, conf: 0.90)_\n- **李明** · 承诺 = 5/10 前提供 3 所试点学校名单 [2026-05-06 / 5月6日 / 5 月 6 日 / 5/6] _(source: collaboration_task, conf: 0.90)_\n- **乡村儿童阅读陪伴项目** · 500 万评价 = 旧版/外部滞后口径 [2026-05-22 / 5月22日 / 5 月 22 日 / 5/22] _(source: user_verbal_fact, conf: 0.75)_\n- **乡村儿童阅读陪伴项目** · 当前权威范围 = 3 所学校 [2026-05-22 / 5月22日 / 5 月 22 日 / 5/22] _(source: user_verbal_fact, conf: 0.75)_\n- **乡村儿童阅读陪伴项目** · 当前权威预算 = 300 万元 [2026-05-22 / 5月22日 / 5 月 22 日 / 5/22] _(source: user_verbal_fact, conf: 0.75)_\n- **乡村儿童阅读陪伴项目** · 媒体口径预算 = 500 万元 [2026-05-09 / 5月9日 / 5 月 9 日 / 5/9] _(source: internet_media, conf: 0.60)_",
-      "facts_used_count": 11,
+      "answer": "- **乡村儿童阅读陪伴项目** · 当前权威范围 = 3 所学校 [2026-05-22 / 5月22日 / 5 月 22 日 / 5/22] _(source: user_verbal_fact, conf: 1.00)_\n- **乡村儿童阅读陪伴项目** · 当前权威预算 = 300 万元 [2026-05-22 / 5月22日 / 5 月 22 日 / 5/22] _(source: user_verbal_fact, conf: 1.00)_\n- **乡村儿童阅读陪伴项目** · 总预算(v2) = 300 万元 [2026-05-18 / 5月18日 / 5 月 18 日 / 5/18] _(source: client_internal_doc, conf: 0.90)_\n- **乡村儿童阅读陪伴项目** · 试点学校数(v2) = 3 所 [2026-05-18 / 5月18日 / 5 月 18 日 / 5/18] _(source: client_internal_doc, conf: 0.90)_\n- **我方** · 核心判断 = 不建议一开始扩到 10 所学校 [2026-05-11 / 5月11日 / 5 月 11 日 / 5/11] _(source: collaboration_task, conf: 0.90)_\n- **李明** · 承诺 = 5/10 前提供 3 所试点学校名单 [2026-05-06 / 5月6日 / 5 月 6 日 / 5/6] _(source: collaboration_task, conf: 0.90)_\n- **乡村儿童阅读陪伴项目** · 500 万评价 = 旧版/外部滞后口径 [2026-05-22 / 5月22日 / 5 月 22 日 / 5/22] _(source: user_verbal_fact, conf: 0.75)_",
+      "facts_used_count": 7,
       "must_contain_hits": [
         "500",
         "300",
@@ -867,14 +896,13 @@
     {
       "qid": "Q32",
       "prompt": "预算和范围的冲突分别来自哪些来源?",
-      "answer": "- **乡村儿童阅读陪伴项目** · 总预算(v2) = 300 万元 [2026-05-18 / 5月18日 / 5 月 18 日 / 5/18] _(source: client_internal_doc, conf: 0.90)_\n- **乡村儿童阅读陪伴项目** · 试点学校数(v2) = 3 所 [2026-05-18 / 5月18日 / 5 月 18 日 / 5/18] _(source: client_internal_doc, conf: 0.90)_\n- **乡村儿童阅读陪伴项目** · 负责人(v1) = 李明 [2026-05-08 / 5月8日 / 5 月 8 日 / 5/8] _(source: client_internal_doc, conf: 0.90)_\n- **乡村儿童阅读陪伴项目** · 总预算(v1) = 500 万元 [2026-05-08 / 5月8日 / 5 月 8 日 / 5/8] _(source: client_internal_doc, conf: 0.90)_\n- **乡村儿童阅读陪伴项目** · 覆盖学校数(v1) = 10 所 [2026-05-08 / 5月8日 / 5 月 8 日 / 5/8] _(source: client_internal_doc, conf: 0.90)_\n- **乡村儿童阅读陪伴项目** · 媒体口径预算 = 500 万元 [2026-05-09 / 5月9日 / 5 月 9 日 / 5/9] _(source: internet_media, conf: 0.60)_\n- **乡村儿童阅读陪伴项目** · 媒体口径学校数 = 10 所 [2026-05-09 / 5月9日 / 5 月 9 日 / 5/9] _(source: internet_media, conf: 0.60)_",
-      "facts_used_count": 7,
+      "answer": "- **乡村儿童阅读陪伴项目** · 总预算(v2) = 300 万元 [2026-05-18 / 5月18日 / 5 月 18 日 / 5/18] _(source: client_internal_doc, conf: 0.90)_\n- **乡村儿童阅读陪伴项目** · 试点学校数(v2) = 3 所 [2026-05-18 / 5月18日 / 5 月 18 日 / 5/18] _(source: client_internal_doc, conf: 0.90)_\n- **乡村儿童阅读陪伴项目** · 负责人(v1) = 李明 [2026-05-08 / 5月8日 / 5 月 8 日 / 5/8] _(source: client_internal_doc, conf: 0.90)_",
+      "facts_used_count": 3,
       "must_contain_hits": [
         "v1",
-        "v2",
-        "媒体"
+        "v2"
       ],
-      "must_contain_hit_rate": 1.0,
+      "must_contain_hit_rate": 0.6666666666666666,
       "not_contain_violations": [],
       "has_evidence": true,
       "correct": true
@@ -882,8 +910,8 @@
     {
       "qid": "Q33",
       "prompt": "把所有冲突按严重度排序,说明每个冲突来源,当前权威值是哪个,为什么权威值是它而不是另一个。",
-      "answer": "- **李明** · 新角色 = 执行推进 [2026-05-18 / 5月18日 / 5 月 18 日 / 5/18] _(source: client_internal_doc, conf: 0.90)_\n- **乡村儿童阅读陪伴项目** · 总预算(v2) = 300 万元 [2026-05-18 / 5月18日 / 5 月 18 日 / 5/18] _(source: client_internal_doc, conf: 0.90)_\n- **乡村儿童阅读陪伴项目** · 负责人(v1) = 李明 [2026-05-08 / 5月8日 / 5 月 8 日 / 5/8] _(source: client_internal_doc, conf: 0.90)_\n- **乡村儿童阅读陪伴项目** · 总预算(v1) = 500 万元 [2026-05-08 / 5月8日 / 5 月 8 日 / 5/8] _(source: client_internal_doc, conf: 0.90)_\n- **李明** · 角色 = 青禾公益基金会项目经理 [2026-05-06 / 5月6日 / 5 月 6 日 / 5/6] _(source: collaboration_task, conf: 0.90)_\n- **李明** · 承诺 = 5/10 前提供 3 所试点学校名单 [2026-05-06 / 5月6日 / 5 月 6 日 / 5/6] _(source: collaboration_task, conf: 0.90)_\n- **项目** · 下周重点 = 确认试点范围和预算边界 [2026-05-22 / 5月22日 / 5 月 22 日 / 5/22] _(source: collaboration_review, conf: 0.85)_\n- **项目** · 卡点 = 预算口径不统一 [2026-05-22 / 5月22日 / 5 月 22 日 / 5/22] _(source: collaboration_review, conf: 0.85)_\n- **乡村儿童阅读陪伴项目** · 当前权威范围 = 3 所学校 [2026-05-22 / 5月22日 / 5 月 22 日 / 5/22] _(source: user_verbal_fact, conf: 0.75)_\n- **乡村儿童阅读陪伴项目** · 当前权威预算 = 300 万元 [2026-05-22 / 5月22日 / 5 月 22 日 / 5/22] _(source: user_verbal_fact, conf: 0.75)_",
-      "facts_used_count": 12,
+      "answer": "- **乡村儿童阅读陪伴项目** · 当前权威范围 = 3 所学校 [2026-05-22 / 5月22日 / 5 月 22 日 / 5/22] _(source: user_verbal_fact, conf: 1.00)_\n- **乡村儿童阅读陪伴项目** · 当前权威预算 = 300 万元 [2026-05-22 / 5月22日 / 5 月 22 日 / 5/22] _(source: user_verbal_fact, conf: 1.00)_\n- **李明** · 新角色 = 执行推进 [2026-05-18 / 5月18日 / 5 月 18 日 / 5/18] _(source: client_internal_doc, conf: 0.90)_\n- **乡村儿童阅读陪伴项目** · 总预算(v2) = 300 万元 [2026-05-18 / 5月18日 / 5 月 18 日 / 5/18] _(source: client_internal_doc, conf: 0.90)_\n- **乡村儿童阅读陪伴项目** · 负责人(v1) = 李明 [2026-05-08 / 5月8日 / 5 月 8 日 / 5/8] _(source: client_internal_doc, conf: 0.90)_\n- **李明** · 角色 = 青禾公益基金会项目经理 [2026-05-06 / 5月6日 / 5 月 6 日 / 5/6] _(source: collaboration_task, conf: 0.90)_\n- **李明** · 承诺 = 5/10 前提供 3 所试点学校名单 [2026-05-06 / 5月6日 / 5 月 6 日 / 5/6] _(source: collaboration_task, conf: 0.90)_\n- **项目** · 下周重点 = 确认试点范围和预算边界 [2026-05-22 / 5月22日 / 5 月 22 日 / 5/22] _(source: collaboration_review, conf: 0.85)_\n- **项目** · 卡点 = 预算口径不统一 [2026-05-22 / 5月22日 / 5 月 22 日 / 5/22] _(source: collaboration_review, conf: 0.85)_\n- **李明** · 用户判断 = 执行积极但非拍板人 [2026-05-22 / 5月22日 / 5 月 22 日 / 5/22] _(source: user_observation, conf: 0.65)_",
+      "facts_used_count": 10,
       "must_contain_hits": [
         "预算",
         "范围",
@@ -898,14 +926,13 @@
     {
       "qid": "Q34",
       "prompt": "外部口径和内部口径有差异吗?",
-      "answer": "- **乡村儿童阅读陪伴项目** · 总预算(v1) = 500 万元 [2026-05-08 / 5月8日 / 5 月 8 日 / 5/8] _(source: client_internal_doc, conf: 0.90)_\n- **乡村儿童阅读陪伴项目** · 覆盖学校数(v1) = 10 所 [2026-05-08 / 5月8日 / 5 月 8 日 / 5/8] _(source: client_internal_doc, conf: 0.90)_\n- **我方** · 核心判断 = 不建议一开始扩到 10 所学校 [2026-05-11 / 5月11日 / 5 月 11 日 / 5/11] _(source: collaboration_task, conf: 0.90)_\n- **乡村儿童阅读陪伴项目** · 500 万评价 = 旧版/外部滞后口径 [2026-05-22 / 5月22日 / 5 月 22 日 / 5/22] _(source: user_verbal_fact, conf: 0.75)_\n- **乡村儿童阅读陪伴项目** · 媒体口径预算 = 500 万元 [2026-05-09 / 5月9日 / 5 月 9 日 / 5/9] _(source: internet_media, conf: 0.60)_\n- **乡村儿童阅读陪伴项目** · 媒体口径学校数 = 10 所 [2026-05-09 / 5月9日 / 5 月 9 日 / 5/9] _(source: internet_media, conf: 0.60)_",
-      "facts_used_count": 6,
+      "answer": "- **我方** · 核心判断 = 不建议一开始扩到 10 所学校 [2026-05-11 / 5月11日 / 5 月 11 日 / 5/11] _(source: collaboration_task, conf: 0.90)_\n- **乡村儿童阅读陪伴项目** · 500 万评价 = 旧版/外部滞后口径 [2026-05-22 / 5月22日 / 5 月 22 日 / 5/22] _(source: user_verbal_fact, conf: 0.75)_",
+      "facts_used_count": 2,
       "must_contain_hits": [
-        "媒体",
         "10 所",
         "500"
       ],
-      "must_contain_hit_rate": 1.0,
+      "must_contain_hit_rate": 0.6666666666666666,
       "not_contain_violations": [],
       "has_evidence": true,
       "correct": true
@@ -957,12 +984,26 @@
     {
       "qid": "Q38",
       "prompt": "项目在 5 月 8 日到 5 月 20 日之间发生了哪些关键变化?",
-      "answer": "- **乡村儿童阅读陪伴项目** · 总预算(v2) = 300 万元 [2026-05-18 / 5月18日 / 5 月 18 日 / 5/18] _(source: client_internal_doc, conf: 0.90)_\n- **乡村儿童阅读陪伴项目** · 试点学校数(v2) = 3 所 [2026-05-18 / 5月18日 / 5 月 18 日 / 5/18] _(source: client_internal_doc, conf: 0.90)_\n- **乡村儿童阅读陪伴项目** · 负责人(v1) = 李明 [2026-05-08 / 5月8日 / 5 月 8 日 / 5/8] _(source: client_internal_doc, conf: 0.90)_\n- **乡村儿童阅读陪伴项目** · 总预算(v1) = 500 万元 [2026-05-08 / 5月8日 / 5 月 8 日 / 5/8] _(source: client_internal_doc, conf: 0.90)_\n- **乡村儿童阅读陪伴项目** · 覆盖学校数(v1) = 10 所 [2026-05-08 / 5月8日 / 5 月 8 日 / 5/8] _(source: client_internal_doc, conf: 0.90)_\n- **乡村儿童阅读陪伴项目** · 媒体口径预算 = 500 万元 [2026-05-09 / 5月9日 / 5 月 9 日 / 5/9] _(source: internet_media, conf: 0.60)_\n- **乡村儿童阅读陪伴项目** · 媒体口径学校数 = 10 所 [2026-05-09 / 5月9日 / 5 月 9 日 / 5/9] _(source: internet_media, conf: 0.60)_",
-      "facts_used_count": 7,
+      "answer": "- **乡村儿童阅读陪伴项目** · 总预算(v2) = 300 万元 [2026-05-18 / 5月18日 / 5 月 18 日 / 5/18] _(source: client_internal_doc, conf: 0.90)_\n- **乡村儿童阅读陪伴项目** · 试点学校数(v2) = 3 所 [2026-05-18 / 5月18日 / 5 月 18 日 / 5/18] _(source: client_internal_doc, conf: 0.90)_\n- **乡村儿童阅读陪伴项目** · 负责人(v1) = 李明 [2026-05-08 / 5月8日 / 5 月 8 日 / 5/8] _(source: client_internal_doc, conf: 0.90)_",
+      "facts_used_count": 3,
       "must_contain_hits": [
         "v1",
-        "v2",
-        "媒体"
+        "v2"
+      ],
+      "must_contain_hit_rate": 0.5,
+      "not_contain_violations": [],
+      "has_evidence": true,
+      "correct": false
+    },
+    {
+      "qid": "Q39",
+      "prompt": "哪几天有外部信息进入?哪几天有客户文件进入?",
+      "answer": "- **王华** · 角色 = 秘书长 / 内部协调 [2026-05-18 / 5月18日 / 5 月 18 日 / 5/18] _(source: client_internal_doc, conf: 0.90)_\n- **李明** · 新角色 = 执行推进 [2026-05-18 / 5月18日 / 5 月 18 日 / 5/18] _(source: client_internal_doc, conf: 0.90)_\n- **乡村儿童阅读陪伴项目** · 总预算(v2) = 300 万元 [2026-05-18 / 5月18日 / 5 月 18 日 / 5/18] _(source: client_internal_doc, conf: 0.90)_\n- **乡村儿童阅读陪伴项目** · 试点学校数(v2) = 3 所 [2026-05-18 / 5月18日 / 5 月 18 日 / 5/18] _(source: client_internal_doc, conf: 0.90)_\n- **乡村儿童阅读陪伴项目** · 负责人(v1) = 李明 [2026-05-08 / 5月8日 / 5 月 8 日 / 5/8] _(source: client_internal_doc, conf: 0.90)_\n- **王华** · 出席 = 5/3 启动会 [2026-05-03 / 5月3日 / 5 月 3 日 / 5/3] _(source: internet_official, conf: 0.85)_\n- **乡村儿童阅读陪伴项目** · 对外公开日 = 2026-05-03 [2026-05-03 / 5月3日 / 5 月 3 日 / 5/3] _(source: internet_official, conf: 0.85)_",
+      "facts_used_count": 7,
+      "must_contain_hits": [
+        "5 月 3 日",
+        "5 月 8 日",
+        "5 月 18 日"
       ],
       "must_contain_hit_rate": 0.75,
       "not_contain_violations": [],
@@ -970,26 +1011,10 @@
       "correct": true
     },
     {
-      "qid": "Q39",
-      "prompt": "哪几天有外部信息进入?哪几天有客户文件进入?",
-      "answer": "- **王华** · 角色 = 秘书长 / 内部协调 [2026-05-18 / 5月18日 / 5 月 18 日 / 5/18] _(source: client_internal_doc, conf: 0.90)_\n- **李明** · 新角色 = 执行推进 [2026-05-18 / 5月18日 / 5 月 18 日 / 5/18] _(source: client_internal_doc, conf: 0.90)_\n- **乡村儿童阅读陪伴项目** · 总预算(v2) = 300 万元 [2026-05-18 / 5月18日 / 5 月 18 日 / 5/18] _(source: client_internal_doc, conf: 0.90)_\n- **乡村儿童阅读陪伴项目** · 试点学校数(v2) = 3 所 [2026-05-18 / 5月18日 / 5 月 18 日 / 5/18] _(source: client_internal_doc, conf: 0.90)_\n- **乡村儿童阅读陪伴项目** · 负责人(v1) = 李明 [2026-05-08 / 5月8日 / 5 月 8 日 / 5/8] _(source: client_internal_doc, conf: 0.90)_\n- **乡村儿童阅读陪伴项目** · 总预算(v1) = 500 万元 [2026-05-08 / 5月8日 / 5 月 8 日 / 5/8] _(source: client_internal_doc, conf: 0.90)_\n- **乡村儿童阅读陪伴项目** · 覆盖学校数(v1) = 10 所 [2026-05-08 / 5月8日 / 5 月 8 日 / 5/8] _(source: client_internal_doc, conf: 0.90)_\n- **王华** · 出席 = 5/3 启动会 [2026-05-03 / 5月3日 / 5 月 3 日 / 5/3] _(source: internet_official, conf: 0.85)_\n- **乡村儿童阅读陪伴项目** · 对外公开日 = 2026-05-03 [2026-05-03 / 5月3日 / 5 月 3 日 / 5/3] _(source: internet_official, conf: 0.85)_\n- **乡村儿童阅读陪伴项目** · 媒体口径预算 = 500 万元 [2026-05-09 / 5月9日 / 5 月 9 日 / 5/9] _(source: internet_media, conf: 0.60)_",
-      "facts_used_count": 11,
-      "must_contain_hits": [
-        "5 月 3 日",
-        "5 月 8 日",
-        "5 月 9 日",
-        "5 月 18 日"
-      ],
-      "must_contain_hit_rate": 1.0,
-      "not_contain_violations": [],
-      "has_evidence": true,
-      "correct": true
-    },
-    {
       "qid": "Q40",
       "prompt": "未来一周(5/23—5/29)按现有信息推断,会发生哪些可能事件?比如哪个承诺会到期,哪个矛盾该被澄清。",
-      "answer": "- **乡村儿童阅读陪伴项目** · 总预算(v2) = 300 万元 [2026-05-18 / 5月18日 / 5 月 18 日 / 5/18] _(source: client_internal_doc, conf: 0.90)_\n- **乡村儿童阅读陪伴项目** · 总预算(v1) = 500 万元 [2026-05-08 / 5月8日 / 5 月 8 日 / 5/8] _(source: client_internal_doc, conf: 0.90)_\n- **李明** · 承诺 = 5/10 前提供 3 所试点学校名单 [2026-05-06 / 5月6日 / 5 月 6 日 / 5/6] _(source: collaboration_task, conf: 0.90)_\n- **项目** · 下周重点 = 确认试点范围和预算边界 [2026-05-22 / 5月22日 / 5 月 22 日 / 5/22] _(source: collaboration_review, conf: 0.85)_\n- **项目** · 卡点 = 预算口径不统一 [2026-05-22 / 5月22日 / 5 月 22 日 / 5/22] _(source: collaboration_review, conf: 0.85)_\n- **项目** · 卡点 = 学校名单未确认 [2026-05-22 / 5月22日 / 5 月 22 日 / 5/22] _(source: collaboration_review, conf: 0.85)_\n- **乡村儿童阅读陪伴项目** · 当前权威预算 = 300 万元 [2026-05-22 / 5月22日 / 5 月 22 日 / 5/22] _(source: user_verbal_fact, conf: 0.75)_\n- **陈老师** · 用户判断 = 最终拍板人 (待客户官方确认) [2026-05-22 / 5月22日 / 5 月 22 日 / 5/22] _(source: user_observation, conf: 0.65)_\n- **乡村儿童阅读陪伴项目** · 媒体口径预算 = 500 万元 [2026-05-09 / 5月9日 / 5 月 9 日 / 5/9] _(source: internet_media, conf: 0.60)_",
-      "facts_used_count": 9,
+      "answer": "- **乡村儿童阅读陪伴项目** · 当前权威预算 = 300 万元 [2026-05-22 / 5月22日 / 5 月 22 日 / 5/22] _(source: user_verbal_fact, conf: 1.00)_\n- **乡村儿童阅读陪伴项目** · 总预算(v2) = 300 万元 [2026-05-18 / 5月18日 / 5 月 18 日 / 5/18] _(source: client_internal_doc, conf: 0.90)_\n- **李明** · 承诺 = 5/10 前提供 3 所试点学校名单 [2026-05-06 / 5月6日 / 5 月 6 日 / 5/6] _(source: collaboration_task, conf: 0.90)_\n- **项目** · 下周重点 = 确认试点范围和预算边界 [2026-05-22 / 5月22日 / 5 月 22 日 / 5/22] _(source: collaboration_review, conf: 0.85)_\n- **项目** · 卡点 = 预算口径不统一 [2026-05-22 / 5月22日 / 5 月 22 日 / 5/22] _(source: collaboration_review, conf: 0.85)_\n- **项目** · 卡点 = 学校名单未确认 [2026-05-22 / 5月22日 / 5 月 22 日 / 5/22] _(source: collaboration_review, conf: 0.85)_\n- **陈老师** · 用户判断 = 最终拍板人 (待客户官方确认) [2026-05-22 / 5月22日 / 5 月 22 日 / 5/22] _(source: user_observation, conf: 0.65)_",
+      "facts_used_count": 7,
       "must_contain_hits": [
         "学校名单",
         "确认",
@@ -1003,7 +1028,7 @@
     {
       "qid": "Q41",
       "prompt": "哪些信息是客户官方确认的?",
-      "answer": "- **王华** · 角色 = 秘书长 / 内部协调 [2026-05-18 / 5月18日 / 5 月 18 日 / 5/18] _(source: client_internal_doc, conf: 0.90)_\n- **李明** · 新角色 = 执行推进 [2026-05-18 / 5月18日 / 5 月 18 日 / 5/18] _(source: client_internal_doc, conf: 0.90)_\n- **乡村儿童阅读陪伴项目** · 总预算(v2) = 300 万元 [2026-05-18 / 5月18日 / 5 月 18 日 / 5/18] _(source: client_internal_doc, conf: 0.90)_\n- **乡村儿童阅读陪伴项目** · 试点学校数(v2) = 3 所 [2026-05-18 / 5月18日 / 5 月 18 日 / 5/18] _(source: client_internal_doc, conf: 0.90)_\n- **乡村儿童阅读陪伴项目** · 负责人(v1) = 李明 [2026-05-08 / 5月8日 / 5 月 8 日 / 5/8] _(source: client_internal_doc, conf: 0.90)_\n- **李明** · 角色 = 青禾公益基金会项目经理 [2026-05-06 / 5月6日 / 5 月 6 日 / 5/6] _(source: collaboration_task, conf: 0.90)_\n- **李明** · 承诺 = 5/10 前提供 3 所试点学校名单 [2026-05-06 / 5月6日 / 5 月 6 日 / 5/6] _(source: collaboration_task, conf: 0.90)_\n- **王华** · 出席 = 5/3 启动会 [2026-05-03 / 5月3日 / 5 月 3 日 / 5/3] _(source: internet_official, conf: 0.85)_\n- **乡村儿童阅读陪伴项目** · 当前权威范围 = 3 所学校 [2026-05-22 / 5月22日 / 5 月 22 日 / 5/22] _(source: user_verbal_fact, conf: 0.75)_\n- **乡村儿童阅读陪伴项目** · 当前权威预算 = 300 万元 [2026-05-22 / 5月22日 / 5 月 22 日 / 5/22] _(source: user_verbal_fact, conf: 0.75)_",
+      "answer": "- **乡村儿童阅读陪伴项目** · 当前权威范围 = 3 所学校 [2026-05-22 / 5月22日 / 5 月 22 日 / 5/22] _(source: user_verbal_fact, conf: 1.00)_\n- **乡村儿童阅读陪伴项目** · 当前权威预算 = 300 万元 [2026-05-22 / 5月22日 / 5 月 22 日 / 5/22] _(source: user_verbal_fact, conf: 1.00)_\n- **王华** · 角色 = 秘书长 / 内部协调 [2026-05-18 / 5月18日 / 5 月 18 日 / 5/18] _(source: client_internal_doc, conf: 0.90)_\n- **李明** · 新角色 = 执行推进 [2026-05-18 / 5月18日 / 5 月 18 日 / 5/18] _(source: client_internal_doc, conf: 0.90)_\n- **乡村儿童阅读陪伴项目** · 总预算(v2) = 300 万元 [2026-05-18 / 5月18日 / 5 月 18 日 / 5/18] _(source: client_internal_doc, conf: 0.90)_\n- **乡村儿童阅读陪伴项目** · 试点学校数(v2) = 3 所 [2026-05-18 / 5月18日 / 5 月 18 日 / 5/18] _(source: client_internal_doc, conf: 0.90)_\n- **乡村儿童阅读陪伴项目** · 负责人(v1) = 李明 [2026-05-08 / 5月8日 / 5 月 8 日 / 5/8] _(source: client_internal_doc, conf: 0.90)_\n- **李明** · 角色 = 青禾公益基金会项目经理 [2026-05-06 / 5月6日 / 5 月 6 日 / 5/6] _(source: collaboration_task, conf: 0.90)_\n- **李明** · 承诺 = 5/10 前提供 3 所试点学校名单 [2026-05-06 / 5月6日 / 5 月 6 日 / 5/6] _(source: collaboration_task, conf: 0.90)_\n- **王华** · 出席 = 5/3 启动会 [2026-05-03 / 5月3日 / 5 月 3 日 / 5/3] _(source: internet_official, conf: 0.85)_",
       "facts_used_count": 12,
       "must_contain_hits": [
         "v2",
@@ -1048,31 +1073,28 @@
     {
       "qid": "Q44",
       "prompt": "哪些信息是外部公开的?可信度怎样?",
-      "answer": "- **王华** · 出席 = 5/3 启动会 [2026-05-03 / 5月3日 / 5 月 3 日 / 5/3] _(source: internet_official, conf: 0.85)_\n- **乡村儿童阅读陪伴项目** · 对外公开日 = 2026-05-03 [2026-05-03 / 5月3日 / 5 月 3 日 / 5/3] _(source: internet_official, conf: 0.85)_\n- **乡村儿童阅读陪伴项目** · 媒体口径预算 = 500 万元 [2026-05-09 / 5月9日 / 5 月 9 日 / 5/9] _(source: internet_media, conf: 0.60)_\n- **乡村儿童阅读陪伴项目** · 媒体口径学校数 = 10 所 [2026-05-09 / 5月9日 / 5 月 9 日 / 5/9] _(source: internet_media, conf: 0.60)_",
-      "facts_used_count": 4,
+      "answer": "- **王华** · 出席 = 5/3 启动会 [2026-05-03 / 5月3日 / 5 月 3 日 / 5/3] _(source: internet_official, conf: 0.85)_\n- **乡村儿童阅读陪伴项目** · 对外公开日 = 2026-05-03 [2026-05-03 / 5月3日 / 5 月 3 日 / 5/3] _(source: internet_official, conf: 0.85)_",
+      "facts_used_count": 2,
       "must_contain_hits": [
-        "媒体",
-        "5/3",
-        "5/9"
+        "5/3"
       ],
-      "must_contain_hit_rate": 0.75,
+      "must_contain_hit_rate": 0.25,
       "not_contain_violations": [],
       "has_evidence": true,
-      "correct": true
+      "correct": false
     },
     {
       "qid": "Q45",
       "prompt": "请把全部信息按客户官方/我方判断/外部公开/用户口述/方法卡5 类各举 2 个例子。",
-      "answer": "- **项目** · 风险 = 扩张过快导致服务质量失控 [2026-05-20 / 5月20日 / 5 月 20 日 / 5/20] _(source: client_internal_doc, conf: 0.90)_\n- **乡村儿童阅读陪伴项目** · 总预算(v2) = 300 万元 [2026-05-18 / 5月18日 / 5 月 18 日 / 5/18] _(source: client_internal_doc, conf: 0.90)_\n- **乡村儿童阅读陪伴项目** · 试点学校数(v2) = 3 所 [2026-05-18 / 5月18日 / 5 月 18 日 / 5/18] _(source: client_internal_doc, conf: 0.90)_\n- **试点项目方法** · 验证维度 = 学校配合/家长参与/志愿者稳定性 [2026-04-15 / 4月15日 / 4 月 15 日 / 4/15] _(source: system_derived, conf: 0.80)_\n- **试点项目方法** · 原则 = 2-3 个点位先验证再扩展 [2026-04-15 / 4月15日 / 4 月 15 日 / 4/15] _(source: system_derived, conf: 0.80)_\n- **陈老师** · 用户判断 = 最终拍板人 (待客户官方确认) [2026-05-22 / 5月22日 / 5 月 22 日 / 5/22] _(source: user_observation, conf: 0.65)_\n- **乡村儿童阅读陪伴项目** · 媒体口径预算 = 500 万元 [2026-05-09 / 5月9日 / 5 月 9 日 / 5/9] _(source: internet_media, conf: 0.60)_\n- **乡村儿童阅读陪伴项目** · 媒体口径学校数 = 10 所 [2026-05-09 / 5月9日 / 5 月 9 日 / 5/9] _(source: internet_media, conf: 0.60)_",
-      "facts_used_count": 8,
+      "answer": "- **项目** · 风险 = 扩张过快导致服务质量失控 [2026-05-20 / 5月20日 / 5 月 20 日 / 5/20] _(source: client_internal_doc, conf: 0.90)_\n- **乡村儿童阅读陪伴项目** · 总预算(v2) = 300 万元 [2026-05-18 / 5月18日 / 5 月 18 日 / 5/18] _(source: client_internal_doc, conf: 0.90)_\n- **乡村儿童阅读陪伴项目** · 试点学校数(v2) = 3 所 [2026-05-18 / 5月18日 / 5 月 18 日 / 5/18] _(source: client_internal_doc, conf: 0.90)_\n- **试点项目方法** · 验证维度 = 学校配合/家长参与/志愿者稳定性 [2026-04-15 / 4月15日 / 4 月 15 日 / 4/15] _(source: system_derived, conf: 0.80)_\n- **试点项目方法** · 原则 = 2-3 个点位先验证再扩展 [2026-04-15 / 4月15日 / 4 月 15 日 / 4/15] _(source: system_derived, conf: 0.80)_\n- **陈老师** · 用户判断 = 最终拍板人 (待客户官方确认) [2026-05-22 / 5月22日 / 5 月 22 日 / 5/22] _(source: user_observation, conf: 0.65)_",
+      "facts_used_count": 6,
       "must_contain_hits": [
         "v2",
         "扩张",
-        "媒体",
         "陈老师",
         "方法"
       ],
-      "must_contain_hit_rate": 1.0,
+      "must_contain_hit_rate": 0.8,
       "not_contain_violations": [],
       "has_evidence": true,
       "correct": true
@@ -1154,8 +1176,8 @@
       "D2_entity_recall": 20.0,
       "D3_conflicts": 20.0,
       "D4_story_card": 20.0,
-      "D5_qa": 19.2,
-      "TOTAL": 99.2
+      "D5_qa": 18.400000000000002,
+      "TOTAL": 98.4
     },
     "grade": "A",
     "verdict": "可进入真实客户试点",
@@ -1387,24 +1409,10 @@
         }
       },
       "D3": {
-        "clarifications_total": 6,
+        "clarifications_total": 3,
         "fact_contradictions_total": 5,
-        "value_conflicts_detected": 3,
+        "value_conflicts_detected": 1,
         "value_conflicts_sample": [
-          {
-            "name": "预算口径冲突",
-            "v1": "500 万",
-            "v2": "300 万",
-            "v1_source": "client_internal_doc",
-            "v2_source": "client_internal_doc"
-          },
-          {
-            "name": "项目范围冲突",
-            "v1": "10 所",
-            "v2": "3 所",
-            "v1_source": "client_internal_doc",
-            "v2_source": "client_internal_doc"
-          },
           {
             "name": "李明角色冲突",
             "v1": "负责人(v1)",
@@ -1418,7 +1426,6 @@
             "conflict": "预算口径冲突",
             "hit": true,
             "via": [
-              "atomic_facts_value_conflict",
               "fact_contradictions"
             ]
           },
@@ -1426,7 +1433,6 @@
             "conflict": "项目范围冲突",
             "hit": true,
             "via": [
-              "atomic_facts_value_conflict",
               "fact_contradictions"
             ]
           },
@@ -1454,34 +1460,22 @@
         ],
         "clarifications_sample": [
           {
-            "id": "clar_9691796b847145408d8238a8",
+            "id": "clar_80cf919c2ba34018b6599d61",
             "question": "李明 在不同资料里角色描述不同: 角色:青禾公益基金会项目经理, 负责人, 执行推进. 请确认 李明 当前真实角色, 系统会更新人物档案.",
             "slot_key": "role_diff/李明",
             "write_scope_json": "{\"client_id\": \"client_qinghe_v23test\", \"person\": \"李明\", \"conflict_kind\": \"role_diff\", \"roles\": [\"角色:青禾公益基金会项目经理\", \"负责人\", \"执行推进\"]}"
           },
           {
-            "id": "clar_80813c475d984795a25440fd",
+            "id": "clar_d66923d822d94d85a43cd519",
             "question": "陈老师 相关信息只在用户口述里出现 (例如: 「最终拍板人 (待客户官方确认)」), 客户官方文件和外部公开信息都没有提到. 是否需要找客户正式确认这个人物的角色和职责?",
             "slot_key": "oral_no_official/陈老师",
-            "write_scope_json": "{\"client_id\": \"client_qinghe_v23test\", \"subject\": \"陈老师\", \"conflict_kind\": \"oral_no_official\", \"oral_facts\": [\"af_8ed987ac15cb\"]}"
+            "write_scope_json": "{\"client_id\": \"client_qinghe_v23test\", \"subject\": \"陈老师\", \"conflict_kind\": \"oral_no_official\", \"oral_facts\": [\"af_0813501ea5be\"]}"
           },
           {
-            "id": "clar_1b0b32fce8f54b3695e2975b",
-            "question": "乡村儿童阅读陪伴项目 的 总预算 对外口径可能滞后: 媒体说「500 万元」(同 v1 旧版), 客户最新 v2 已是「300 万元」. 对外引用应该用 v2 吗? 是否需要提醒客户更新外部口径?",
-            "slot_key": "media_lag/乡村儿童阅读陪伴项目_总预算",
-            "write_scope_json": "{\"client_id\": \"client_qinghe_v23test\", \"subject\": \"乡村儿童阅读陪伴项目\", \"attribute_base\": \"总预算\", \"conflict_kind\": \"media_lag\", \"media_value\": \"500 万元\", \"v1_value\": \"500 万元\", \"v2_value\": \"300 万元\"}"
-          },
-          {
-            "id": "clar_f8d9f3bb7c534b1c91944b03",
+            "id": "clar_1c636d20bdd846879aba24ab",
             "question": "项目 的 卡点: 「预算口径不统一」(来源 collaboration_review) vs 「学校名单未确认」(来源 collaboration_review) — 哪个是当前权威值? 用户确认后系统会标旧值为 superseded.",
             "slot_key": "value_diff/项目_卡点",
-            "write_scope_json": "{\"client_id\": \"client_qinghe_v23test\", \"subject\": \"项目\", \"attribute_base\": \"卡点\", \"conflict_kind\": \"value_diff\", \"values\": [{\"v\": \"预算口径不统一\", \"src\": \"collaboration_review\", \"fid\": \"af_0a01f7e58811\"}, {\"v\": \"学校名单未确认\", \"src\": \"collaboration_review\", \"fid\": \"af_c680a619b240\"}]}"
-          },
-          {
-            "id": "clar_eadefdf415004fa0973d8f93",
-            "question": "乡村儿童阅读陪伴项目 的 总预算: 「300 万元」(来源 client_internal_doc) vs 「500 万元」(来源 client_internal_doc) — 系统检测到 v1/v2 版本链, 请确认 v2 是否覆盖 v1, 并标记权威值.",
-            "slot_key": "value_diff/乡村儿童阅读陪伴项目_总预算",
-            "write_scope_json": "{\"client_id\": \"client_qinghe_v23test\", \"subject\": \"乡村儿童阅读陪伴项目\", \"attribute_base\": \"总预算\", \"conflict_kind\": \"version_chain\", \"values\": [{\"v\": \"300 万元\", \"src\": \"client_internal_doc\", \"fid\": \"af_44db3bd6d7b9\"}, {\"v\": \"500 万元\", \"src\": \"client_internal_doc\", \"fid\": \"af_d0954c7dd9a8\"}]}"
+            "write_scope_json": "{\"client_id\": \"client_qinghe_v23test\", \"subject\": \"项目\", \"attribute_base\": \"卡点\", \"conflict_kind\": \"value_diff\", \"values\": [{\"v\": \"预算口径不统一\", \"src\": \"collaboration_review\", \"fid\": \"af_9f5a07012dd7\"}, {\"v\": \"学校名单未确认\", \"src\": \"collaboration_review\", \"fid\": \"af_567d1706be8f\"}]}"
           }
         ]
       },
@@ -1544,12 +1538,12 @@
           "王华"
         ],
         "conflicts_keywords_in_card": 4,
-        "card_length": 4100
+        "card_length": 3819
       },
       "D5": {
         "total": 50,
-        "correct": 48,
-        "correct_rate": 0.96,
+        "correct": 46,
+        "correct_rate": 0.92,
         "has_evidence_count": 50,
         "violations_count": 0,
         "wrong_questions": [
@@ -1561,6 +1555,16 @@
           {
             "qid": "Q17",
             "prompt": "谁是最终拍板人?",
+            "missing": []
+          },
+          {
+            "qid": "Q38",
+            "prompt": "项目在 5 月 8 日到 5 月 20 日之间发生了哪些关键变化?",
+            "missing": []
+          },
+          {
+            "qid": "Q44",
+            "prompt": "哪些信息是外部公开的?可信度怎样?",
             "missing": []
           }
         ]
