@@ -23,18 +23,25 @@ import {
 import { setupAutoUpdater } from './autoUpdater.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const DEFAULT_BACKEND_PORT = 47829;
-const DEFAULT_CLOUD_BACKEND_PORT = 47830;
+// V2.1 Lab 模式 (顾源源 5/22 方案 C): ENV YIYU_LAB_MODE=1 触发, 跟主仓库 app 物理隔离
+// - 端口避开主仓库 47829/47830, 用 47831/47832
+// - userData 独立到 YiyuThinkTankWorkbench2_V21Lab, db 不冲突
+// - bundle id + display name 不同, macOS Electron 允许双 app 同跑
+// - 默认 (无 ENV) 行为完全跟主仓库一致, cherry-pick 主仓库 bug fix 不破坏
+const LAB_MODE = process.env.YIYU_LAB_MODE === '1';
+const DEFAULT_BACKEND_PORT = LAB_MODE ? 47831 : 47829;
+const DEFAULT_CLOUD_BACKEND_PORT = LAB_MODE ? 47832 : 47830;
 const DEFAULT_PACKAGED_REMOTE_CLOUD_API_URL = 'http://101.126.34.232';
 const projectRoot = path.resolve(__dirname, '../..');
 const isDev = !app.isPackaged && Boolean(process.env.VITE_DEV_SERVER_URL);
 const REQUIRED_BACKEND_FEATURES = ['knowledge.vectorize-answer', 'knowledge.reclass-events', 'chat.general-answer', 'chat.async-status'];
 const REQUIRED_BACKEND_SCHEMA_VERSION = 20260420;
-const APP_DISPLAY_NAME = '益语智库自用平台 V2.0';
-const APP_BUNDLE_ID = 'com.yiyu.selfworkbench2';
+const APP_DISPLAY_NAME = LAB_MODE ? '益语智库 V2.1 Lab' : '益语智库自用平台 V2.0';
+const APP_BUNDLE_ID = LAB_MODE ? 'com.yiyu.selfworkbench2.v21lab' : 'com.yiyu.selfworkbench2';
 const releasePlanPath = path.join(projectRoot, 'docs', 'mac-release-update-plan.md');
 const releaseArtifactsPath = path.join(projectRoot, 'dist');
-const fixedUserDataPath = path.join(app.getPath('appData'), 'YiyuThinkTankWorkbench2');
+const USER_DATA_DIR_NAME = LAB_MODE ? 'YiyuThinkTankWorkbench2_V21Lab' : 'YiyuThinkTankWorkbench2';
+const fixedUserDataPath = path.join(app.getPath('appData'), USER_DATA_DIR_NAME);
 const runtimeLogsDir = path.join(fixedUserDataPath, 'runtime', 'logs');
 const runtimeUiDir = path.join(fixedUserDataPath, 'runtime', 'ui');
 const electronLaunchLogPath = path.join(runtimeLogsDir, 'electron-launch.log');

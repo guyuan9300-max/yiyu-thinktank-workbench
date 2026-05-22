@@ -10,7 +10,10 @@ import type {
   PushPreview,
 } from '../shared/types.js';
 
-const backendBaseUrl = process.env.YIYU_BACKEND_URL ?? 'http://127.0.0.1:47829';
+// V2.1 Lab 模式 (顾源源 5/22 方案 C): ENV YIYU_LAB_MODE=1 时 frontend 连 V2.1 backend (47831)
+const LAB_MODE_PRELOAD = process.env.YIYU_LAB_MODE === '1';
+const DEFAULT_BACKEND_PORT_PRELOAD = LAB_MODE_PRELOAD ? 47831 : 47829;
+const backendBaseUrl = process.env.YIYU_BACKEND_URL ?? `http://127.0.0.1:${DEFAULT_BACKEND_PORT_PRELOAD}`;
 
 interface UpdateEventPayload {
   kind: 'checking' | 'available' | 'not-available' | 'download-progress' | 'downloaded' | 'error';
