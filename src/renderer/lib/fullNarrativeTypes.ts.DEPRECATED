@@ -1,5 +1,13 @@
 /**
- * v2.2 N2 · 客户故事全景 (FullNarrative) 前端类型
+ * [DEPRECATED 2026-05-22 · 顾源源新计划接力指令 阶段 0]
+ *
+ * V2.1 8 段类型 (identity/people/main_lines/recent_changes/risks/our_collab/
+ * open_questions/timeline). 跟产品手册 §03 钦定 6 段冲突, 整体废弃.
+ *
+ * 历史 commit: 4b254c1.
+ * 参考: docs/V2.2_NEW_PLAN_20260522.md + 产品手册 §03.
+ *
+ * v2.2 N2 · 客户故事全景 (FullNarrative) 前端类型 — 历史代码留作记录
  *
  * 服务: 顾源源 5/22 关键洞察
  *   "AI 把碎片拼成完整故事网, 从任意入口看到全局, 才是 N2 真目标."

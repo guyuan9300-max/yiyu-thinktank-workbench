@@ -1,4 +1,9 @@
-"""[B] 自检 · V2.2 N2 5/19 金标准 runner 不依赖真实 db 的逻辑测试
+"""[DEPRECATED 2026-05-22 · 顾源源新计划接力指令 阶段 0]
+
+baseline runner 自检测试. 跟随 scripts/run_v22_n2_baseline.py.DEPRECATED 一起废弃.
+参考: docs/V2.2_NEW_PLAN_20260522.md §阶段 2.
+
+[B] 自检 · V2.2 N2 5/19 金标准 runner 不依赖真实 db 的逻辑测试 — 历史代码留作记录
 
 跑法:
     cd backend && .venv/bin/python3 -m pytest tests/test_v22_n2_baseline_runner.py -v

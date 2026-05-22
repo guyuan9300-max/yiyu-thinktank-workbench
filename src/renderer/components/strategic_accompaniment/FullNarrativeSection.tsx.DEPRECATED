@@ -1,5 +1,13 @@
 /**
- * v2.2 N2 · FullNarrativeSection · "故事全景" 8 段共用组件
+ * [DEPRECATED 2026-05-22 · 顾源源新计划接力指令 阶段 0]
+ *
+ * V2.1 8 段渲染组件. 新计划用主仓库现有 NarrativePanel (6 段).
+ * 不要在新代码 import 本组件. 已从 StrategicClarificationView 移除引用.
+ *
+ * 历史 commit: 4b254c1.
+ * 参考: docs/V2.2_NEW_PLAN_20260522.md §0.1 + 产品手册 §03.
+ *
+ * v2.2 N2 · FullNarrativeSection · "故事全景" 8 段共用组件 — 历史代码留作记录
  *
  * 服务: 顾源源 5/22 关键洞察
  *   "AI 把碎片拼成完整故事网, 从任意入口看到全局, 才是 N2 真目标."

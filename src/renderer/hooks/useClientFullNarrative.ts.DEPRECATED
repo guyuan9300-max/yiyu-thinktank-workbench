@@ -1,5 +1,14 @@
 /**
- * v2.2 N2 · useClientFullNarrative · React hook
+ * [DEPRECATED 2026-05-22 · 顾源源新计划接力指令 阶段 0]
+ *
+ * V2.1 8 段 hook, 跟产品手册 §03 钦定 6 段 (essence/cooperation/business_intro/
+ * people/timeline/next_steps) 冲突. 新计划用主仓库 NarrativePanel + 现有
+ * getClientNarrative API 走 6 段.
+ *
+ * 历史 commit: 4b254c1.
+ * 参考: docs/V2.2_NEW_PLAN_20260522.md §0.1 + 产品手册 §03.
+ *
+ * v2.2 N2 · useClientFullNarrative · React hook — 历史代码留作记录
  *
  * 服务: V2.2_NORTH_STAR.md 目标 N2 · 顾源源 5/22 关键洞察
  *   "AI 把碎片拼成完整故事网, 从任意入口看到全局, 才是 N2 真目标."

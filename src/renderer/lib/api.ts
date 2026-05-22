@@ -1752,8 +1752,10 @@ export async function deleteClient(id: string) {
 
 // ─── v2.2 Phase 1 F1.5 · ClientFactBundle (L2 共识层) ───
 import type { ClientFactBundle, FetchClientFactBundleOptions } from './clientFactTypes';
-// ─── v2.2 N2 · FullNarrative (8 段故事网, 任意入口看全局) ───
-import type { FullNarrative, FetchFullNarrativeOptions } from './fullNarrativeTypes';
+// ─── [DEPRECATED 2026-05-22 · 新计划阶段 0] V2.1 N2 FullNarrative 8 段类型已废弃 ───
+// 跟产品手册 §03 钦定 6 段 (essence/cooperation/business_intro/people/timeline/next_steps) 冲突.
+// 主仓库 narrative_generator 才是真 endpoint. 见 fullNarrativeTypes.ts.DEPRECATED.
+// import type { FullNarrative, FetchFullNarrativeOptions } from './fullNarrativeTypes';
 
 /**
  * v2.2 F1.5 · 拿一个客户的完整事实包 (L2 共识层入口)
@@ -1780,35 +1782,27 @@ export async function fetchClientFactBundle(
 }
 
 /**
- * v2.2 N2 · 拿一个客户的"故事全景" (8 段, 任意入口看全局)
+ * [DEPRECATED 2026-05-22 · 新计划阶段 0]
  *
- * 后端: backend/app/api/full_narrative_router.py
- * Endpoint: GET /api/v1/clients/{client_id}/full-narrative
- * Kernel: backend/app/services/narrative_kernel.py · NarrativeKernel
+ * V2.1 8 段 fetcher 已废弃. 跟产品手册 §03 钦定 6 段 (essence/cooperation/
+ * business_intro/people/timeline/next_steps) 冲突. 主仓库现有 getClientNarrative
+ * 是真 endpoint (6 段). 见 fullNarrativeTypes.ts.DEPRECATED.
  *
- * 服务顾源源 5/22 关键洞察:
- *   "AI 把碎片拼成完整故事网, 从任意入口看到全局, 才是 N2 真目标."
- *
- * 用法 (推荐用 useClientFullNarrative hook):
- *   const narrative = await fetchClientFullNarrative('client_xxx', { actorId: 'view_strategic_clarification' });
- *
- * 404: client 不存在
- * 422: Idempotency-Key mismatch (同 key + 不同 client) 或 5 维 acceptance 失败
- * 409: 同 key 正在生成中 (NarrativeKernel v1 LLM 调用时可能出现)
+ * 历史 commit: 4b254c1.
  */
-export async function fetchClientFullNarrative(
-  clientId: string,
-  options?: FetchFullNarrativeOptions,
-): Promise<FullNarrative> {
-  const params = new URLSearchParams();
-  if (options?.forceRefresh) params.set('force_refresh', 'true');
-  const query = params.toString();
-  const path = `/api/v1/clients/${encodeURIComponent(clientId)}/full-narrative${query ? `?${query}` : ''}`;
-  const headers: Record<string, string> = {};
-  if (options?.idempotencyKey) headers['Idempotency-Key'] = options.idempotencyKey;
-  if (options?.actorId) headers['X-Actor-Id'] = options.actorId;
-  return request<FullNarrative>(path, { headers });
-}
+// export async function fetchClientFullNarrative(
+//   clientId: string,
+//   options?: FetchFullNarrativeOptions,
+// ): Promise<FullNarrative> {
+//   const params = new URLSearchParams();
+//   if (options?.forceRefresh) params.set('force_refresh', 'true');
+//   const query = params.toString();
+//   const path = `/api/v1/clients/${encodeURIComponent(clientId)}/full-narrative${query ? `?${query}` : ''}`;
+//   const headers: Record<string, string> = {};
+//   if (options?.idempotencyKey) headers['Idempotency-Key'] = options.idempotencyKey;
+//   if (options?.actorId) headers['X-Actor-Id'] = options.actorId;
+//   return request<FullNarrative>(path, { headers });
+// }
 
 export type ClientDeletePreview = {
   clientId: string;

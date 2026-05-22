@@ -1,5 +1,17 @@
 #!/usr/bin/env python3
-"""[B] V2.2 N2 北极星 · 5/19 张真会议金标准回归 runner
+"""[DEPRECATED 2026-05-22 · 顾源源新计划接力指令 阶段 0]
+
+新计划 (docs/V2.2_NEW_PLAN_20260522.md) 把 V2.2 N2 重定向到主仓库
+narrative_generator (6 段 essence/cooperation/business_intro/people/timeline/next_steps).
+本 runner 测的是 atomic_facts 单源命中, 跟产品手册 §03 钦定 6 段冲突.
+
+baseline 重写时机: 新计划阶段 2 — 测主仓库战略陪伴 6 段渲染的最终用户命中率,
+不是 atomic_facts 一张表的 7 道金标准命中.
+
+历史 commits: d66c026 / 5aa92d8 (87% atomic_facts 单源 P% — 已撤回)
+重写参考: docs/V2.2_NEW_PLAN_20260522.md 阶段 2 + 产品手册 §03
+
+[B] V2.2 N2 北极星 · 5/19 张真会议金标准回归 runner (历史代码留作记录)
 
 服务: V2.2_NORTH_STAR.md N2 (机器人能拿全数据流畅回答)
 触发: AI A 跑 F2.1 DocumentLLMExtractor 抽完 5/19 docx 后 → 跑这个 runner

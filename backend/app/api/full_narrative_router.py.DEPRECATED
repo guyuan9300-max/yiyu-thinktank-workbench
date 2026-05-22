@@ -1,6 +1,18 @@
-"""v2.2 N2 · GET /api/v1/clients/{client_id}/full-narrative
+"""[DEPRECATED 2026-05-22 · 顾源源新计划接力指令 阶段 0]
 
-外壳 by B (任务 1 接力指令 2026-05-22).
+新计划把 V2.2 N2 重定向到主仓库 narrative_generator (产品手册 §03 钦定 6 段:
+essence/cooperation/business_intro/people/timeline/next_steps).
+本 endpoint 是 V2.1 实验的 8 段假增量, 跟主仓库重复造轮子.
+
+正确 endpoint: 主仓库现有 narrative/refresh (待 B 阶段 1 grep 出 URL).
+本 router 已从 main.py include_router 移除 (commit 待 commit).
+
+历史 commits: 07b5dd7 (endpoint shell) / 90bf24f (8 集成测试)
+重设计参考: docs/V2.2_NEW_PLAN_20260522.md §0.1 + 产品手册 §03
+
+v2.2 N2 · GET /api/v1/clients/{client_id}/full-narrative
+
+外壳 by B (任务 1 接力指令 2026-05-22) — 历史代码留作记录
 内核 by A (backend/app/services/narrative_kernel.py · NarrativeKernel).
 
 服务: 顾源源 5/22 关键洞察

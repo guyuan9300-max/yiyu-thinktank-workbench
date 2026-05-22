@@ -68,7 +68,10 @@ import {
 } from '../../lib/api';
 import { GlossaryAttributeReviewSection } from './GlossaryAttributeReviewSection';
 import { UnifiedTodoSection } from './UnifiedTodoSection';
-import { FullNarrativeSection } from './FullNarrativeSection';
+// [DEPRECATED 2026-05-22 · 新计划阶段 0] V2.1 8 段组件已废弃, 跟产品手册 §03 钦定
+// 6 段 (essence/cooperation/business_intro/people/timeline/next_steps) 冲突.
+// 主仓库现有 NarrativePanel (走 narrative_generator) 才是真渲染入口.
+// import { FullNarrativeSection } from './FullNarrativeSection';
 
 interface StrategicClarificationViewProps {
   clientOptions: Array<{ id: string; name: string }>;
@@ -313,14 +316,16 @@ export function StrategicClarificationView({
         </div>
       )}
 
-      {/* v2.2 N2 (B 任务 1): 故事全景 (8 段, 任意入口看全局) — 优先于旧 6 维度面板.
-          NarrativeKernel v0 deterministic 模式, A 实现 v1 LLM 编排后内容自然语言化. */}
-      {selectedClientId && (
+      {/* [DEPRECATED 2026-05-22 · 新计划阶段 0] V2.1 8 段 FullNarrativeSection 已废弃,
+          跟产品手册 §03 钦定 6 段 (essence/cooperation/business_intro/people/
+          timeline/next_steps) 冲突. 下面的 NarrativePanel 走主仓库 6 段叙事,
+          才是真渲染入口. */}
+      {/* {selectedClientId && (
         <FullNarrativeSection
           clientId={selectedClientId}
           actorId="view_strategic_clarification"
         />
-      )}
+      )} */}
 
       {selectedClientId && narrative && !loading && (
         <NarrativePanel
