@@ -7143,6 +7143,9 @@ export interface CollabActionResult {
   changedPaths: string[];
   createdCommit: boolean;
   commitMessage?: string | null;
+  // P1-2: stash pop 失败时填(本地未选中改动已 stash 但未恢复),
+  // UI 必须提示用户手动 `git stash pop` 找回工作区.
+  stashRestoreWarning?: string | null;
 }
 
 // === 输入广度线程：语音识别模型配置 ===

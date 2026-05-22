@@ -65,6 +65,10 @@ type RepoSnapshot = {
   remoteChangeCount: number;
   remoteTargetRevision: string;
   statusText: string;
+  // P1-1: fetch origin 是否失败 (网络/认证). true 时 push 必须阻断,
+  // 否则可能用过期 origin/main 算出 behindCount=0 跳过 merge 强推覆盖远端.
+  fetchFailed: boolean;
+  fetchErrorMessage: string;
 };
 
 type RepoOptions = {
@@ -1097,8 +1101,20 @@ async function collectRepoSnapshot(options: RepoOptions): Promise<RepoSnapshot> 
 
   await exportSharedSettingsToRepo(repoPath, options.appDbPath);
 
+  // P1-1 修复: fetch origin 失败旧版被 allowNonZero 静默吞,
+  // 后续 behindCount 用过期 origin/main 算成 0 → 跳过 merge 直接 push,
+  // 强行覆盖远端新提交 → 代码丢失. 失败时记录到 snapshot 让 UI 阻断后续推送.
+  let fetchFailed = false;
+  let fetchErrorMessage = '';
   if (options.fetchRemote) {
-    await runGit(gitContext.gitRepoPath, ['fetch', 'origin'], { allowNonZero: true });
+    const fetchResult = await runGit(gitContext.gitRepoPath, ['fetch', 'origin'], { allowNonZero: true });
+    if (fetchResult.exitCode !== 0) {
+      fetchFailed = true;
+      fetchErrorMessage = (fetchResult.stderr || '').trim().slice(0, 500)
+        || `git fetch origin 失败(exitCode=${fetchResult.exitCode})`;
+      // 不直接 throw,先继续走完 snapshot 让 UI 拿到完整状态,
+      // 在 snapshot 末尾通过 fetchFailed 字段告诉 UI 阻断 push.
+    }
   }
   const remoteTargetRevision = await resolvePullTargetRevision(gitContext, options.targetCommit);
 
@@ -1170,6 +1186,8 @@ async function collectRepoSnapshot(options: RepoOptions): Promise<RepoSnapshot> 
     remoteChangeCount: remoteEntries.length,
     remoteTargetRevision,
     statusText: createStatusText(snapshotBase, suggestedRepoPath && suggestedRepoPath !== repoRoot ? suggestedRepoPath : null),
+    fetchFailed,
+    fetchErrorMessage,
   };
 }
 
@@ -1423,8 +1441,17 @@ async function pushPartialStash(context: RepoWorkContext, targetPaths: string[],
   return before.stdout !== after.stdout;
 }
 
-async function popLatestStash(context: RepoWorkContext) {
-  await runGit(context.gitRepoPath, ['stash', 'pop'], { allowNonZero: true });
+// P1-2: stash pop 失败旧版被 caller `.catch(() => {})` 静默吞掉.
+// stash pop 在 stash 与新 checkout 内容冲突时会失败, 此时 stash 条目仍在栈中
+// 但工作区未恢复 - 用户看到"同步成功",实际未选中的本地改动被 stash 锁住永远找不回.
+// 改为返回 {ok, stderr} 让 caller 能识别并提示用户手动恢复.
+type StashPopResult = { ok: boolean; stderr: string };
+async function popLatestStash(context: RepoWorkContext): Promise<StashPopResult> {
+  const result = await runGit(context.gitRepoPath, ['stash', 'pop'], { allowNonZero: true });
+  if (result.exitCode !== 0) {
+    return { ok: false, stderr: (result.stderr || '').trim().slice(0, 500) };
+  }
+  return { ok: true, stderr: '' };
 }
 
 async function addPathsToIndex(context: RepoWorkContext, targetPaths: string[]) {
@@ -1506,6 +1533,8 @@ export async function previewPushToMain(options: RepoOptions): Promise<PushPrevi
   else if (!snapshot.isValid) executionBlockReason = '当前目录不是有效 Git 仓库，请重新绑定源码目录。';
   else if (!snapshot.isMainBranch) executionBlockReason = '当前不在 main 分支，先切回 main 再继续。';
   else if (snapshot.hasUnmergedPaths) executionBlockReason = '检测到 Git 冲突，先手工收口后再执行。';
+  // P1-1: fetch origin 失败时阻断 push,防止用过期 origin/main 算 behindCount=0 强推覆盖远端
+  else if (snapshot.fetchFailed) executionBlockReason = `无法连上 origin (${snapshot.fetchErrorMessage || 'fetch failed'}),先确认 GitHub 网络/凭据再推送。`;
   else if (!files.length && snapshot.aheadCount === 0) executionBlockReason = '当前没有可提交的本地文件改动。';
   if (!executionBlockReason && snapshot.aheadCount > 0) {
     notices.push(`你本地还有 ${snapshot.aheadCount} 个已提交但未推送的 commit。确认后会和这次勾选的改动一起推到 main。`);
@@ -1568,6 +1597,7 @@ export async function commitAndPushToMain(
   // 导致 backend 每次推送都被重启。
   const willMergeUnselected = preview.status.behindCount > 0;
   let hasStashedUnselected = false;
+  let stashRestoreWarning: string | null = null;
   if (willMergeUnselected && unselectedPaths.length > 0) {
     hasStashedUnselected = await pushPartialStash(context, unselectedPaths, 'codex-collab-unselected-before-push');
   }
@@ -1616,9 +1646,15 @@ export async function commitAndPushToMain(
     throw new Error(`提交已生成，但同步到 main 失败：${detail}`);
   } finally {
     if (hasStashedUnselected) {
-      await popLatestStash(context).catch(() => {
-        // Keep the push result even if local leftover changes fail to pop back cleanly.
-      });
+      // P1-2 修复: 旧实现 .catch(() => {}) 静默吞 — stash pop 失败时本地改动留在 stash 栈但
+      // 工作区未恢复, 用户以为同步成功实际丢了改动. 改为捕获结果, 失败时记到 stash 恢复提示.
+      const stashResult = await popLatestStash(context).catch((err): StashPopResult => ({
+        ok: false,
+        stderr: err instanceof Error ? err.message : String(err),
+      }));
+      if (!stashResult.ok) {
+        stashRestoreWarning = stashResult.stderr || 'stash pop 失败,需要手动恢复';
+      }
     }
   }
   const status = await getCollabRepoStatus({
@@ -1631,6 +1667,7 @@ export async function commitAndPushToMain(
     changedPaths: selectedPaths,
     createdCommit: selectedPaths.length > 0,
     commitMessage: selectedPaths.length > 0 ? message : undefined,
+    stashRestoreWarning,
   };
 }
 
@@ -1789,6 +1826,7 @@ export async function pullSelectedFromMain(
     }
   }
   let hasStashedPreservedLocalChanges = false;
+  let pullStashRestoreWarning: string | null = null;
   if (preservedLocalPaths.size > 0) {
     hasStashedPreservedLocalChanges = await pushPartialStash(
       context,
@@ -1817,9 +1855,14 @@ export async function pullSelectedFromMain(
     throw error;
   } finally {
     if (hasStashedPreservedLocalChanges) {
-      await popLatestStash(context).catch(() => {
-        // Keep the synced result even if preserved local changes need manual attention.
-      });
+      // P1-2: pull 路径 stash pop 失败旧版也吞,本地未选中改动留 stash 永远不提示.
+      const stashResult = await popLatestStash(context).catch((err): StashPopResult => ({
+        ok: false,
+        stderr: err instanceof Error ? err.message : String(err),
+      }));
+      if (!stashResult.ok) {
+        pullStashRestoreWarning = stashResult.stderr || 'pull 后 stash pop 失败,需要手动恢复';
+      }
     }
   }
 
@@ -1833,5 +1876,6 @@ export async function pullSelectedFromMain(
     changedPaths: selectedPaths,
     createdCommit: true,
     commitMessage: message,
+    stashRestoreWarning: pullStashRestoreWarning,
   };
 }
