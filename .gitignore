@@ -64,3 +64,6 @@ docs/*.pdf
 run-filter-repo-cleanup.sh
 # backend/output 是产物目录（cowork 误推过 118 个文件）
 backend/output/
+
+# V2.1/V2.2 实验线产物：W1/W2/W3 验收报告 + pytest cache（已迁移到独立仓库 yiyu-thinktank-v2.1/v2.2-experiment）
+/tests/
