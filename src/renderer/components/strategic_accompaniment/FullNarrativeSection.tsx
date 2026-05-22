@@ -1,0 +1,182 @@
+/**
+ * v2.2 N2 · FullNarrativeSection · "故事全景" 8 段共用组件
+ *
+ * 服务: 顾源源 5/22 关键洞察
+ *   "AI 把碎片拼成完整故事网, 从任意入口看到全局, 才是 N2 真目标."
+ *
+ * 设计:
+ *   - 任何 view 1 行接入: <FullNarrativeSection clientId={cid} actorId="view_xxx" />
+ *   - 内部用 useClientFullNarrative hook 自动拉数据
+ *   - 渲染 8 段 (固定 SECTION_KEYS), 折叠/展开支持
+ *   - 显示 acceptance_status warning (数据稀疏 / 0 fact 提示)
+ *   - 简易 markdown 渲染 (whitespace-pre-wrap, 不引新依赖, 后续 LLM 接入后升级 react-markdown)
+ *
+ * 当前 NarrativeKernel v0 (A) = deterministic 模式 (列事实, 不调 LLM)
+ * 未来 NarrativeKernel v1 (A + 顾源源对 prompt) = LLM 编排自然语言叙事
+ */
+import { useState } from 'react';
+import { BookOpen, ChevronDown, ChevronRight, AlertCircle, Sparkles } from 'lucide-react';
+
+import { useClientFullNarrative } from '../../hooks/useClientFullNarrative';
+import type { SectionKey, StorySection } from '../../lib/fullNarrativeTypes';
+
+export interface FullNarrativeSectionProps {
+  /** 客户 id. null/空 时组件返回 null (不渲染) */
+  clientId: string | null | undefined;
+  /** 当前 view 标识 (跟踪是哪个入口调的, 用于 audit / 日志) */
+  actorId: string;
+  /** 默认展开的段 (默认 'identity') */
+  defaultExpandedKey?: SectionKey;
+  /** 自定义标题前缀 (不同入口可加自己的小标题, 默认 '故事全景') */
+  titlePrefix?: string;
+}
+
+export function FullNarrativeSection({
+  clientId,
+  actorId,
+  defaultExpandedKey = 'identity',
+  titlePrefix = '故事全景',
+}: FullNarrativeSectionProps) {
+  const { narrative, isLoading, error } = useClientFullNarrative({
+    clientId,
+    actorId,
+  });
+
+  const [expanded, setExpanded] = useState<Set<string>>(
+    () => new Set([defaultExpandedKey]),
+  );
+
+  if (!clientId) return null;
+
+  if (isLoading) {
+    return (
+      <div className="rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-[13px] text-slate-500">
+        <BookOpen className="inline h-4 w-4 mr-1.5 -mt-0.5" />
+        正在拉取故事全景...
+      </div>
+    );
+  }
+
+  if (error) {
+    return (
+      <div className="rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-[13px] text-rose-700">
+        <AlertCircle className="inline h-4 w-4 mr-1.5 -mt-0.5" />
+        故事全景加载失败: {error.message}
+      </div>
+    );
+  }
+
+  if (!narrative) return null;
+
+  const totalSections = narrative.story_sections.length;
+  const sectionsWithCitations = narrative.story_sections.filter(
+    (s) => s.cited_fact_ids.length > 0,
+  ).length;
+
+  const toggleSection = (key: string) => {
+    setExpanded((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+  };
+
+  return (
+    <section
+      className="rounded-2xl border border-indigo-100 bg-gradient-to-br from-indigo-50/40 to-white p-4 mb-4"
+      data-testid="full-narrative-section"
+      data-client-id={narrative.client_id}
+      data-generation-session-id={narrative.generation_session_id}
+    >
+      {/* Header */}
+      <header className="flex items-start justify-between mb-3">
+        <div>
+          <h3 className="text-[15px] font-bold text-slate-900 flex items-center gap-1.5">
+            <Sparkles className="h-4 w-4 text-indigo-500" />
+            {titlePrefix} · {narrative.client_name}
+          </h3>
+          <p className="text-[11px] text-slate-500 mt-0.5">
+            {totalSections} 段 · {sectionsWithCitations} 段有引用 ·
+            参考 {narrative.total_facts_consulted} 条事实
+          </p>
+        </div>
+        {narrative.acceptance_status === 'warning' && (
+          <div className="text-[11px] text-amber-700 bg-amber-50 border border-amber-200 px-2 py-1 rounded-md max-w-[60%]">
+            <AlertCircle className="inline h-3 w-3 mr-0.5 -mt-0.5" />
+            {narrative.acceptance_notes[0] || '数据稀疏'}
+          </div>
+        )}
+      </header>
+
+      {/* 8 段 */}
+      <div className="space-y-2">
+        {narrative.story_sections.map((section) => (
+          <NarrativeSectionRow
+            key={section.section_key}
+            section={section}
+            isExpanded={expanded.has(section.section_key)}
+            onToggle={() => toggleSection(section.section_key)}
+          />
+        ))}
+      </div>
+
+      {/* footer */}
+      <footer className="mt-3 pt-2 border-t border-slate-100 text-[10px] text-slate-400">
+        generation_session_id: {narrative.generation_session_id} ·
+        生成时间: {narrative.generated_at}
+      </footer>
+    </section>
+  );
+}
+
+interface NarrativeSectionRowProps {
+  section: StorySection;
+  isExpanded: boolean;
+  onToggle: () => void;
+}
+
+function NarrativeSectionRow({ section, isExpanded, onToggle }: NarrativeSectionRowProps) {
+  const citedCount = section.cited_fact_ids.length;
+  const confidence = Math.round(section.confidence * 100);
+
+  return (
+    <div className="rounded-lg border border-slate-100 bg-white">
+      <button
+        type="button"
+        onClick={onToggle}
+        className="w-full flex items-center justify-between px-3 py-2 text-left hover:bg-slate-50 rounded-lg"
+      >
+        <span className="flex items-center gap-2">
+          {isExpanded ? (
+            <ChevronDown className="h-3.5 w-3.5 text-slate-400" />
+          ) : (
+            <ChevronRight className="h-3.5 w-3.5 text-slate-400" />
+          )}
+          <span className="text-[13px] font-medium text-slate-800">{section.title}</span>
+        </span>
+        <span className="text-[10px] text-slate-400 flex items-center gap-2">
+          {citedCount > 0 && (
+            <span className="bg-indigo-50 text-indigo-600 px-1.5 py-0.5 rounded">
+              {citedCount} 引用
+            </span>
+          )}
+          {confidence > 0 && <span>conf {confidence}%</span>}
+        </span>
+      </button>
+      {isExpanded && (
+        <div className="px-3 pb-3 pt-1 border-t border-slate-100">
+          <pre className="whitespace-pre-wrap text-[12px] text-slate-700 font-sans leading-relaxed">
+            {section.body_markdown}
+          </pre>
+          {citedCount > 0 && (
+            <div className="mt-2 text-[10px] text-slate-400">
+              cited_fact_ids: {section.cited_fact_ids.slice(0, 5).join(', ')}
+              {citedCount > 5 && ` ... 还有 ${citedCount - 5} 条`}
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}

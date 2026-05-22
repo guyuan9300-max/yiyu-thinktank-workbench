@@ -68,6 +68,7 @@ import {
 } from '../../lib/api';
 import { GlossaryAttributeReviewSection } from './GlossaryAttributeReviewSection';
 import { UnifiedTodoSection } from './UnifiedTodoSection';
+import { FullNarrativeSection } from './FullNarrativeSection';
 
 interface StrategicClarificationViewProps {
   clientOptions: Array<{ id: string; name: string }>;
@@ -310,6 +311,15 @@ export function StrategicClarificationView({
         <div className="rounded-2xl border border-rose-100 bg-rose-50 px-4 py-3 text-[12px] text-rose-700">
           {error}
         </div>
+      )}
+
+      {/* v2.2 N2 (B 任务 1): 故事全景 (8 段, 任意入口看全局) — 优先于旧 6 维度面板.
+          NarrativeKernel v0 deterministic 模式, A 实现 v1 LLM 编排后内容自然语言化. */}
+      {selectedClientId && (
+        <FullNarrativeSection
+          clientId={selectedClientId}
+          actorId="view_strategic_clarification"
+        />
       )}
 
       {selectedClientId && narrative && !loading && (
