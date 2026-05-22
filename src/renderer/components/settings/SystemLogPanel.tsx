@@ -150,21 +150,30 @@ export function SystemLogPanel() {
 
       {/* Filters */}
       <div className="flex flex-wrap gap-2 items-center">
-        <div className="flex items-center gap-1.5">
+        {/* AUDIT-20260518-085: 桌面运行日志(electron-launch.log)只能返回当前 run,不支持日期过滤.
+            选择 source=desktop 时禁用日期控件并显示说明,避免用户调日期后看到"昨天日志为空"的误导. */}
+        <div className={`flex items-center gap-1.5 ${source === 'desktop' ? 'opacity-50' : ''}`}>
           <Calendar size={12} className="text-slate-400" />
           <input
             type="date"
             value={startDate}
             onChange={(e) => setStartDate(e.target.value)}
-            className="border border-slate-200 rounded-lg px-2.5 py-1.5 text-[12px] text-slate-700 bg-white outline-none focus:border-blue-300"
+            disabled={source === 'desktop'}
+            title={source === 'desktop' ? '桌面运行日志只能查看当前 run,不支持日期范围' : undefined}
+            className="border border-slate-200 rounded-lg px-2.5 py-1.5 text-[12px] text-slate-700 bg-white outline-none focus:border-blue-300 disabled:cursor-not-allowed disabled:bg-slate-50"
           />
           <span className="text-[11px] text-slate-400">至</span>
           <input
             type="date"
             value={endDate}
             onChange={(e) => setEndDate(e.target.value)}
-            className="border border-slate-200 rounded-lg px-2.5 py-1.5 text-[12px] text-slate-700 bg-white outline-none focus:border-blue-300"
+            disabled={source === 'desktop'}
+            title={source === 'desktop' ? '桌面运行日志只能查看当前 run,不支持日期范围' : undefined}
+            className="border border-slate-200 rounded-lg px-2.5 py-1.5 text-[12px] text-slate-700 bg-white outline-none focus:border-blue-300 disabled:cursor-not-allowed disabled:bg-slate-50"
           />
+          {source === 'desktop' && (
+            <span className="text-[11px] text-amber-600 ml-1">仅当前 run</span>
+          )}
         </div>
         <select
           value={level}

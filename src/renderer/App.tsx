@@ -4462,13 +4462,18 @@ function inferTaskPriority(params: {
   const matchedClient = (params.clientTokens || []).find((token) => token && text.includes(token.toLowerCase()));
   const dueToday = dueDate && !isPastCalendarDueDay(dueDate, today) && startOfCalendarDay(dueDate).getTime() === startOfCalendarDay(today).getTime();
   const duePast = dueDate && isPastCalendarDueDay(dueDate, today);
-  if (duePast || dueToday || hasUrgentKeyword || (matchedClient && hasStrategicKeyword)) {
+  // AUDIT-20260518-016 修复: dueToday 不再自动升高优先级.
+  // 大量普通"当天到期"任务被一律标 high, 会削弱优先级区分度.
+  // 仅 duePast / 明确紧急词 / 战略客户 + 推进动作 才升 high; 当天到期作为标签提醒.
+  if (duePast || hasUrgentKeyword || (matchedClient && hasStrategicKeyword)) {
     if (duePast) return { priority: 'high', reason: '系统识别为高优先级：任务已过截止日，需优先处理。' };
-    if (dueToday) return { priority: 'high', reason: '系统识别为高优先级：任务截止到今天，建议优先推进。' };
     if (matchedClient && hasStrategicKeyword) {
       return { priority: 'high', reason: `系统识别为高优先级：内容涉及客户"${matchedClient}"且带有明确推进动作。` };
     }
     return { priority: 'high', reason: '系统识别为高优先级：标题或说明中包含明显的紧急/交付信号。' };
+  }
+  if (dueToday) {
+    return { priority: 'normal', reason: '截止到今天，已用普通优先级；如确实紧急可手动调高。' };
   }
   if (hasLowKeyword && !hasStrategicKeyword) {
     return { priority: 'low', reason: '系统识别为低优先级：更像储备、归档或长期研究事项。' };
@@ -8227,6 +8232,11 @@ export default function App() {
   // 同步 flash 到 flashRef，让上方早期声明的 toggleFavoriteWorkspaceTool 能调用最新的 flash
   flashRef.current = flash;
 
+  // AUDIT-20260518-013 修复: 录音失败 (麦克风权限 / 设备占用 / 浏览器限制) 旧实现
+  // 只走全局 flash, 任务编辑器内不显示就地错误, 用户感知不到.
+  // 这里加一个 state 让任务编辑器录音区能 inline 展示错误, 同时仍保留 flash 全局提示.
+  const [taskRecordingError, setTaskRecordingError] = useState<string | null>(null);
+
   const recordingSession = useRecordingSession({
     onTranscribed: async (payload: TranscribedPayload) => {
       const { binding, transcript, absolutePath, language, durationMs, sourceFormat } = payload;
@@ -8337,6 +8347,8 @@ export default function App() {
     },
     onError: (message: string) => {
       flash('error', message);
+      // 同时设 inline state 让任务编辑器录音区显示就地错误
+      setTaskRecordingError(message);
     },
   });
 
@@ -10877,6 +10889,8 @@ export default function App() {
     setTaskSelectedDay,
     setTaskViewMode,
     settingsState,
+    taskRecordingError,
+    setTaskRecordingError,
     taskEvidenceError,
     taskEvidencePreview,
     taskEvidenceTask,
@@ -10945,6 +10959,8 @@ export default function App() {
     setTaskSelectedDay: typeof setTaskSelectedDay;
     setTaskViewMode: typeof setTaskViewMode;
     settingsState: typeof settingsState;
+    taskRecordingError: typeof taskRecordingError;
+    setTaskRecordingError: typeof setTaskRecordingError;
     taskEvidenceError: typeof taskEvidenceError;
     taskEvidencePreview: typeof taskEvidencePreview;
     taskEvidenceTask: typeof taskEvidenceTask;
@@ -11014,6 +11030,8 @@ export default function App() {
       setTaskSelectedDay,
       setTaskViewMode,
       settingsState,
+      taskRecordingError,
+      setTaskRecordingError,
       taskEvidenceError,
       taskEvidencePreview,
       taskEvidenceTask,
@@ -11247,6 +11265,8 @@ export default function App() {
       console.info(`[task-modal] close reason=${reason}`);
       resetTaskModalTransientState();
       setIsTaskModalOpen(false);
+      // AUDIT-20260518-013: 关闭 modal 时清掉录音错误提示, 下次打开任务编辑器不残留
+      setTaskRecordingError(null);
     };
     const [hidePersonalTasks, setHidePersonalTasks] = useState(false);
     const [reviewScope, setReviewScope] = useState<'work' | 'personal'>(effectiveTaskSettings.defaultReviewScope);
@@ -18918,6 +18938,24 @@ export default function App() {
                           ))}
                         </div>
                       ) : null}
+                      {/* AUDIT-20260518-013: 录音失败 inline 提示 — 用户在编辑器内看到具体原因 */}
+                      {taskRecordingError && (
+                        <div className="mt-2 flex items-start gap-2 rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-[12px] text-rose-700">
+                          <span className="mt-0.5 inline-block h-1.5 w-1.5 shrink-0 rounded-full bg-rose-500" />
+                          <div className="flex-1 min-w-0">
+                            <p className="font-medium">录音启动失败</p>
+                            <p className="mt-0.5 text-rose-600/90 break-words">{taskRecordingError}</p>
+                          </div>
+                          <button
+                            type="button"
+                            onClick={() => setTaskRecordingError(null)}
+                            className="shrink-0 rounded p-0.5 text-rose-400 transition hover:bg-rose-100 hover:text-rose-600"
+                            aria-label="清除录音错误提示"
+                          >
+                            <X size={12} />
+                          </button>
+                        </div>
+                      )}
                       <div className="mt-2 flex items-center justify-between">
                         <p className="text-xs text-gray-400">
                           {isEditingTaskPersonal
@@ -19341,25 +19379,29 @@ export default function App() {
                       </select>
                     </TaskPropertyRow>
 
-                    <TaskPropertyRow icon={<Layout size={16} />} label={isEditingTaskPersonal ? '个人日程' : '任务清单'}>
-                      <select
-                        value={editingTask.listId}
-                        onChange={(event) => setEditingTask((prev) => ({ ...prev, listId: event.target.value }))}
-                        className="w-full rounded border border-transparent bg-transparent px-2 py-1 text-sm font-medium text-gray-700 hover:bg-gray-100"
-                      >
-                        {(isEditingTaskPersonal ? personalTaskLists : orgTaskLists).length === 0 ? (
-                          <option value="">
-                            {isEditingTaskPersonal ? '暂无个人日程清单' : '暂无组织清单'}
-                          </option>
-                        ) : (
-                          (isEditingTaskPersonal ? personalTaskLists : orgTaskLists).map((list) => (
-                            <option key={list.id} value={list.id}>
-                              {list.name}
-                            </option>
-                          ))
-                        )}
-                      </select>
-                    </TaskPropertyRow>
+                    {/* AUDIT-20260518-017: 组织任务清单已废弃,任务组织改由事件线、部门计划、
+                          项目模板/标准流程承接. 只在"个人日程"模式下保留 select(个人轻量分类),
+                          组织任务里不再展示这个字段, 用户也不能再误选已废弃的清单.
+                          保留 editingTask.listId 字段 + fallback 到 defaultListId 兼容历史. */}
+                    {isEditingTaskPersonal && (
+                      <TaskPropertyRow icon={<Layout size={16} />} label="个人日程">
+                        <select
+                          value={editingTask.listId}
+                          onChange={(event) => setEditingTask((prev) => ({ ...prev, listId: event.target.value }))}
+                          className="w-full rounded border border-transparent bg-transparent px-2 py-1 text-sm font-medium text-gray-700 hover:bg-gray-100"
+                        >
+                          {personalTaskLists.length === 0 ? (
+                            <option value="">暂无个人日程清单</option>
+                          ) : (
+                            personalTaskLists.map((list) => (
+                              <option key={list.id} value={list.id}>
+                                {list.name}
+                              </option>
+                            ))
+                          )}
+                        </select>
+                      </TaskPropertyRow>
+                    )}
                   </div>
 
                   <div className="border-b border-gray-100 p-5">
