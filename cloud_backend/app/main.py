@@ -3997,7 +3997,9 @@ def _maintenance_permission_row(state: AppState, organization_id: str, user_id: 
 def _can_enter_maintenance_mode(state: AppState, user: SessionUser) -> bool:
     if user.membershipStatus != "approved" or user.accountStatus != "approved":
         return False
-    if user.primaryRole == "admin":
+    # 组织负责人 (organization_lead) 等同于 admin 拥有维护模式超级权限。
+    # _is_organization_lead 内部已经处理 admin 快路径,不需要再单独判断。
+    if _is_organization_lead(state, user.organizationId, user.id, user.primaryRole):
         return True
     return _maintenance_permission_row(state, user.organizationId, user.id) is not None
 
@@ -4005,7 +4007,7 @@ def _can_enter_maintenance_mode(state: AppState, user: SessionUser) -> bool:
 def _can_manage_maintenance_permissions(state: AppState, user: SessionUser) -> bool:
     if user.membershipStatus != "approved" or user.accountStatus != "approved":
         return False
-    if user.primaryRole == "admin":
+    if _is_organization_lead(state, user.organizationId, user.id, user.primaryRole):
         return True
     row = _maintenance_permission_row(state, user.organizationId, user.id)
     return bool(row and int(row["can_manage_permissions"] or 0))
