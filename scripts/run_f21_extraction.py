@@ -75,6 +75,10 @@ class ExtractionReport:
     # 错误
     errors: list[str] = field(default_factory=list)
     extraction_summary: str = ""
+    # ★ 抽出的事实样本 (顾源源评判用) — 全部 facts dump
+    extracted_facts: list[dict] = field(default_factory=list)
+    # tmp data dir 路径 (不自动删除, 顾源源可手动查 / 删)
+    tmp_data_dir: str = ""
 
 
 def _now() -> str:
@@ -197,6 +201,37 @@ def main() -> int:
             marker = "✓" if count > 0 else "✗"
             print(f"    {marker} {kw}: {count} 条", flush=True)
 
+        # ★ dump 全部抽出的 facts 到报告 (顾源源评判用, tmp 删了也能看)
+        fact_rows = state.db.fetchall(
+            """
+            SELECT id, subject_text, attribute, value_text, content_role,
+                   source_type, confidence, time_anchor, speaker_person_id,
+                   verification_status, update_relation, evidence_text
+            FROM atomic_facts
+            WHERE actor_id = ?
+            ORDER BY created_at
+            """,
+            (ai_session_id,),
+        )
+        report.extracted_facts = [
+            {
+                "id": str(r["id"]),
+                "subject": str(r["subject_text"] or ""),
+                "attribute": str(r["attribute"] or ""),
+                "value": str(r["value_text"] or ""),
+                "role": str(r["content_role"] or ""),
+                "source_type": str(r["source_type"] or ""),
+                "confidence": float(r["confidence"] or 0),
+                "time_anchor": str(r["time_anchor"] or ""),
+                "speaker": str(r["speaker_person_id"] or ""),
+                "verify": str(r["verification_status"] or ""),
+                "update_relation": str(r["update_relation"] or ""),
+                "evidence": (str(r["evidence_text"] or ""))[:200],
+            }
+            for r in fact_rows
+        ]
+        print(f"  ✓ 已 dump {len(report.extracted_facts)} 条 facts 到报告", flush=True)
+
         client.__exit__(None, None, None)
 
     except Exception as exc:
@@ -205,9 +240,11 @@ def main() -> int:
         print(f"\n✗ 出错:\n{tb[-2000:]}", flush=True)
         return 1
     finally:
-        # cleanup tmp
-        if 'tmp_dir' in locals() and Path(tmp_dir).exists():
-            shutil.rmtree(tmp_dir, ignore_errors=True)
+        # ★ 不删 tmp — 顾源源可能要看 atomic_facts 表里抽到的事实, 手动 sqlite 查
+        # 命令: sqlite3 /tmp/f21_extraction_xxx/data/app.db "SELECT * FROM atomic_facts"
+        if 'tmp_dir' in locals():
+            report.tmp_data_dir = str(tmp_dir)
+            print(f"  ℹ tmp db 保留 (review 用): {tmp_dir}", flush=True)
 
         report.completed_at = _now()
         report.duration_seconds = time.perf_counter() - started_perf
