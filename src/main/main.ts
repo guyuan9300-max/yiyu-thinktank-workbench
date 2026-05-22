@@ -50,10 +50,13 @@ const emergencyBootstrapLogPath = '/tmp/yiyu-thinktank-electron-bootstrap.log';
 const savedApplicationStatePath = path.join(app.getPath('home'), 'Library', 'Saved Application State', `${APP_BUNDLE_ID}.savedState`);
 app.setName(APP_DISPLAY_NAME);
 app.setPath('userData', fixedUserDataPath);
+// V2.1 Lab 版本号: 默认 0.2.2 (主仓库) + LAB_MODE 加后缀 ".1" → 0.2.2.1
+// 顾源源 5/22 要求: 关于本软件页面要看到 0.2.2.1, 区分双 app
+const APP_VERSION_DISPLAY = LAB_MODE ? `${app.getVersion()}.1` : app.getVersion();
 app.setAboutPanelOptions({
   applicationName: APP_DISPLAY_NAME,
-  applicationVersion: app.getVersion(),
-  version: app.getVersion(),
+  applicationVersion: APP_VERSION_DISPLAY,
+  version: APP_VERSION_DISPLAY,
 });
 
 type RuntimeSyncMetadata = {
@@ -1725,7 +1728,8 @@ async function resolveDesktopAppInfo(healthOverride?: BackendHealthPayload | nul
   }
 
   const appInfo = buildDesktopAppInfo({
-    appVersion: app.getVersion(),
+    // V2.1 Lab 模式下版本号带 ".1" 后缀, 前端"关于本软件"页面区分双 app
+    appVersion: APP_VERSION_DISPLAY,
     runtimeMode: app.isPackaged ? 'packaged' : 'dev',
     isPackaged: app.isPackaged,
     platform: process.platform,
