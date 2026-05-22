@@ -97,6 +97,9 @@ def main() -> int:
         print(f"✗ prod db 不存在: {PROD_DB}")
         return 1
 
+    # M-C.2 (顾源源 5/22 autonomous): --commit 写真 prod (默认 tmp dry-run)
+    is_commit = "--commit" in sys.argv
+
     report = ExtractionReport(
         doc_id="", doc_file_name=doc_file_name, doc_size_chars=0,
         started_at=_now(),
@@ -104,18 +107,23 @@ def main() -> int:
     started_perf = time.perf_counter()
 
     try:
-        # ─── Phase 1: copy prod db + start app ──────────────
-        print("▸ 1/5 复制 prod db 到 tmp...", flush=True)
-        tmp_dir = Path(tempfile.mkdtemp(prefix="f21_extraction_"))
-        data_dir = tmp_dir / "data"
-        data_dir.mkdir()
-        shutil.copy(PROD_DB, data_dir / "app.db")
-        # 清掉 -wal / -shm 避免引用过期连接
-        for ext in ("-wal", "-shm"):
-            wal = data_dir / f"app.db{ext}"
-            if wal.exists():
-                wal.unlink()
-        print(f"  ✓ tmp data_dir: {data_dir}", flush=True)
+        # ─── Phase 1: copy prod db + start app (or 直接用 prod 当 --commit) ──
+        if is_commit:
+            print("▸ 1/5 ★ COMMIT 模式 — 直接用 prod db (会污染真数据)", flush=True)
+            data_dir = PROD_DB.parent
+            print(f"  ⚠ data_dir: {data_dir}", flush=True)
+        else:
+            print("▸ 1/5 复制 prod db 到 tmp...", flush=True)
+            tmp_dir = Path(tempfile.mkdtemp(prefix="f21_extraction_"))
+            data_dir = tmp_dir / "data"
+            data_dir.mkdir()
+            shutil.copy(PROD_DB, data_dir / "app.db")
+            # 清掉 -wal / -shm 避免引用过期连接
+            for ext in ("-wal", "-shm"):
+                wal = data_dir / f"app.db{ext}"
+                if wal.exists():
+                    wal.unlink()
+            print(f"  ✓ tmp data_dir: {data_dir}", flush=True)
 
         print("▸ 2/5 起 FastAPI app (会跑 migrations, 30-60 秒)...", flush=True)
         from fastapi.testclient import TestClient
