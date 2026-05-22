@@ -86,8 +86,6 @@ export function SmartTaskParseModal({ open, onClose, onParsed }: SmartTaskParseM
     }
   };
 
-  const backdropHandlers = useBackdropClickClose(onClose, !submitting);
-
   return (
     <div
       className="fixed inset-0 z-[60] flex items-center justify-center bg-gray-900/15 backdrop-blur-md transition-opacity"
