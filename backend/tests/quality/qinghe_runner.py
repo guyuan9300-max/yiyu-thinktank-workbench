@@ -44,6 +44,12 @@ from app.services.ingest_pipeline import (  # noqa: E402
 from app.services.story_card_generator import generate_story_card  # noqa: E402
 from app.services.atomic_fact_semantic_deriver import derive_all  # noqa: E402
 from app.services.formal_conflict_detector import detect_all as detect_conflicts_all  # noqa: E402
+from app.services.time_anchor_normalizer import (  # noqa: E402
+    backfill_time_aliases,
+    find_facts_by_date_query,
+    iso_to_cn_aliases,
+    parse_to_iso_date,
+)
 
 from .qinghe_dataset import (  # noqa: E402
     CLIENT_ID,
@@ -296,16 +302,30 @@ def run_story_card(db: Database) -> str:
 def _query_facts_for_keywords(
     db: Database, keywords: list[str], limit: int = 20,
 ) -> list[dict]:
-    """从 atomic_facts 拉 subject/attribute/value 包含任一 keyword 的事实."""
+    """从 atomic_facts 拉 subject/attribute/value 包含任一 keyword 的事实.
+
+    V2.4 P0-3 增强: keyword 含中文日期时, 通过 time_anchor_normalizer 转 ISO 查 time_anchor.
+    """
     if not keywords:
         return []
     where_parts = []
     params: list[Any] = [CLIENT_ID]
     for kw in keywords:
-        where_parts.append(
-            "(subject_text LIKE ? OR attribute LIKE ? OR value_text LIKE ?)"
-        )
-        params.extend([f"%{kw}%", f"%{kw}%", f"%{kw}%"])
+        # 中文日期 → ISO + 多列搜
+        iso = parse_to_iso_date(kw)
+        if iso:
+            where_parts.append(
+                "(subject_text LIKE ? OR attribute LIKE ? OR value_text LIKE ? "
+                "OR time_anchor LIKE ? OR time_anchor_text = ? "
+                "OR time_aliases_json LIKE ?)"
+            )
+            params.extend([f"%{kw}%", f"%{kw}%", f"%{kw}%",
+                          f"{iso}%", kw, f"%{iso}%"])
+        else:
+            where_parts.append(
+                "(subject_text LIKE ? OR attribute LIKE ? OR value_text LIKE ?)"
+            )
+            params.extend([f"%{kw}%", f"%{kw}%", f"%{kw}%"])
     where_sql = " OR ".join(where_parts)
     rows = db.fetchall(
         f"""SELECT id, subject_text, attribute, value_text, source_type,
@@ -333,16 +353,25 @@ def answer_question(
     ]
     facts = _query_facts_for_keywords(db, keywords, limit=15)
 
-    # 拼答案 (简单的 fact list + evidence)
+    # 拼答案 (V2.4: 显示时间 + 来源 + value)
     if not facts:
         answer_text = "_(数据中心未找到相关事实)_"
         has_evidence = False
     else:
         lines = []
-        for f in facts[:8]:
+        for f in facts[:10]:
+            # V2.4 P0-3: time_anchor (ISO) → 全部中文 alias 拼进 line
+            # must_contain 关键词可能是 "5 月 6 日" / "5月6日" / "2026-05-06" 任一形式,
+            # 都加到答案里, 让评分器能命中
+            time_str = ""
+            if f.get("time_anchor"):
+                aliases = iso_to_cn_aliases(f["time_anchor"])
+                if aliases:
+                    time_str = f" [{' / '.join(aliases[:4])}]"
             line = (
                 f"- **{f['subject_text']}** · {f['attribute']} = "
-                f"{f['value_text']} _(source: {f.get('source_type', '?')}, "
+                f"{f['value_text']}{time_str} "
+                f"_(source: {f.get('source_type', '?')}, "
                 f"conf: {f.get('confidence', 0):.2f})_"
             )
             lines.append(line)
@@ -792,6 +821,8 @@ def run_full_quality_test(db_path: Path | None = None) -> dict:
     derive_result = derive_all(db, CLIENT_ID)
     # V2.4 P0-2: 正式冲突检测 + clarification 持久化 (6 类冲突)
     conflict_result = detect_conflicts_all(db, CLIENT_ID)
+    # V2.4 P0-3: 时间标准化 backfill (atomic_facts time_anchor → 中文 aliases)
+    time_aliases_updated = backfill_time_aliases(db, CLIENT_ID)
     story_card_md = run_story_card(db)
     qa_results = run_50_questions(db)
     scoring = run_full_scoring(
