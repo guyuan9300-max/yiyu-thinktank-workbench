@@ -55,6 +55,10 @@ export function SmartTaskParseModal({ open, onClose, onParsed }: SmartTaskParseM
     return () => window.removeEventListener('keydown', handleKey);
   }, [open, onClose, submitting]);
 
+  // 所有 hook 必须在 early return 之前调用,否则 open 切换时 hook 数量不一致,
+  // 触发 React "Rendered more hooks than during the previous render" 报错。
+  const backdropHandlers = useBackdropClickClose(onClose, !submitting);
+
   if (!open) return null;
 
   const handleParse = async () => {
