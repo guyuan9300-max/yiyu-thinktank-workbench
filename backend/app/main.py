@@ -15,6 +15,42 @@ import time
 import traceback
 from concurrent.futures import ThreadPoolExecutor
 from app.services.system_logger import SystemLogger as _SystemLogger
+
+
+def _assert_local_backend_host_is_loopback() -> None:
+    """Defense-in-depth: 本地 backend 必须只 bind 127.0.0.1.
+
+    Electron 的 main.ts spawn uvicorn 时已经硬编码 --host 127.0.0.1.
+    这里再加一道 startup-time assert, 防止:
+    (1) main.ts 被改成 0.0.0.0 后没 review
+    (2) 有人直接命令行启动 backend 漏 --host
+    (3) packaged 流程被注入 BACKEND_HOST 类环境变量
+
+    检查方式: 扫 sys.argv 是否含 --host <non-loopback>.
+    sys.argv[0] 通常是 'uvicorn'(或对应路径), 后续是 'app.main:app --host ...'.
+    """
+    args = sys.argv
+    host_value: str | None = None
+    for i, a in enumerate(args):
+        if a == "--host" and i + 1 < len(args):
+            host_value = args[i + 1]
+            break
+        if a.startswith("--host="):
+            host_value = a.split("=", 1)[1]
+            break
+    if host_value is None:
+        # 没显式传 --host, uvicorn 默认 127.0.0.1, OK
+        return
+    safe_hosts = {"127.0.0.1", "localhost", "::1"}
+    if host_value not in safe_hosts:
+        raise RuntimeError(
+            f"Local backend 拒绝绑定非 loopback 地址 (got --host={host_value!r}). "
+            f"本地 backend 没有跨用户鉴权, 监听非 127.0.0.1 会让局域网内任何设备"
+            f"直接访问本机所有用户数据. 如需调试外网访问, 走 cloud_backend."
+        )
+
+
+_assert_local_backend_host_is_loopback()
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path

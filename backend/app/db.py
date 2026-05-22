@@ -5133,6 +5133,24 @@ class Database:
         if column_name in existing:
             return
         self.conn.execute(f"ALTER TABLE {table_name} ADD COLUMN {column_name} {definition}")
+        # SQLite ALTER TABLE ADD COLUMN 的 NOT NULL DEFAULT 只对未来 INSERT 生效;
+        # 已存在的历史行该列仍为 NULL. 后续业务用 `WHERE col != ''` / `COALESCE(col)`
+        # 之类的过滤就会跟"全部都有 default 值"的预期对不上.
+        # 这里只针对显式 `NOT NULL DEFAULT <literal>` 的情况做一次 backfill,
+        # 把 NULL 行回填成 default. 不解析复杂表达式(只匹配字符串字面量 / 整数 / 0/1),
+        # 复杂 default 走 noop 让调用方自己写迁移.
+        import re as _re_for_default
+        m = _re_for_default.search(
+            r"NOT\s+NULL\s+DEFAULT\s+(?P<default>'(?:[^'\\]|\\.)*'|\"(?:[^\"\\]|\\.)*\"|-?\d+(?:\.\d+)?)",
+            definition,
+            _re_for_default.IGNORECASE,
+        )
+        if m:
+            default_literal = m.group("default")
+            # 字面量已经是合法 SQL token, 直接拼到 SET col = <default>
+            self.conn.execute(
+                f"UPDATE {table_name} SET {column_name} = {default_literal} WHERE {column_name} IS NULL"
+            )
 
     def has_column(self, table_name: str, column_name: str) -> bool:
         with self._lock:
