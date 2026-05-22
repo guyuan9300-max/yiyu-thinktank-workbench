@@ -72,14 +72,14 @@ def _section_2_current_phase(db: _DbLike, client_id: str) -> str:
 
 
 def _section_3_key_people(db: _DbLike, client_id: str) -> str:
-    """段 3 · 关键人物 — entities + atomic_facts (新任职务/角色)."""
-    # atomic_facts 含 attribute='职务/角色' 的人物
+    """段 3 · 关键人物 — V2.4 P0-4 加 source + 用户口述/客户官方标."""
     rows = db.fetchall(
-        """SELECT DISTINCT subject_text, attribute, value_text
+        """SELECT DISTINCT subject_text, attribute, value_text, source_type, confidence
            FROM atomic_facts
            WHERE client_id = ?
              AND (attribute LIKE '%职务%' OR attribute LIKE '%角色%'
-                  OR attribute LIKE '%新任%' OR attribute LIKE '%接任%')
+                  OR attribute LIKE '%新任%' OR attribute LIKE '%接任%'
+                  OR attribute LIKE '%用户判断%')
              AND status = 'active' LIMIT 15""",
         (client_id,),
     )
@@ -87,7 +87,14 @@ def _section_3_key_people(db: _DbLike, client_id: str) -> str:
         return "_(无关键人物职务变更记录)_"
     lines = []
     for r in rows:
-        lines.append(f"- **{r['subject_text']}** · {r['attribute']} = {r['value_text'][:80]}")
+        src = r["source_type"] or ""
+        if src.startswith("user_"):
+            tag = " 🟡 _(用户口述判断, 待客户官方确认)_"
+        elif src.startswith("client_"):
+            tag = " 🟢 _(客户文件)_"
+        else:
+            tag = ""
+        lines.append(f"- **{r['subject_text']}** · {r['attribute']} = {r['value_text'][:80]}{tag}")
     return "\n".join(lines)
 
 
@@ -113,9 +120,9 @@ def _section_4_timeline(db: _DbLike, client_id: str) -> str:
 
 
 def _section_5_core_facts(db: _DbLike, client_id: str) -> str:
-    """段 5 · 核心事实 — atomic_facts 高置信."""
+    """段 5 · 核心事实 — atomic_facts 高置信. V2.4 P0-4 加 source/标记."""
     rows = db.fetchall(
-        """SELECT subject_text, attribute, value_text, confidence
+        """SELECT subject_text, attribute, value_text, confidence, source_type
            FROM atomic_facts
            WHERE client_id = ? AND confidence >= 0.85 AND status = 'active'
            ORDER BY confidence DESC, created_at DESC LIMIT 20""",
@@ -125,9 +132,24 @@ def _section_5_core_facts(db: _DbLike, client_id: str) -> str:
         return "_(无高置信事实)_"
     lines = []
     for r in rows:
+        src = r["source_type"] or "?"
+        # 来源标记
+        if src.startswith("client_official"):
+            badge = "🟢 客户官方"
+        elif src.startswith("client_"):
+            badge = "🟢 客户内部"
+        elif src.startswith("user_"):
+            badge = "🟡 用户口述"
+        elif src.startswith("internet_"):
+            badge = "🔵 外部公开"
+        else:
+            badge = "⚪ 系统派生"
+        # 待确认标记 (置信度 < 0.85 应 pending)
+        pending = " ⚠️ 待确认" if r["confidence"] < 0.85 else ""
         lines.append(
             f"- **{r['subject_text'][:20]}** · {r['attribute'][:20]} = "
-            f"{(r['value_text'] or '')[:60]} _(conf {r['confidence']:.2f})_"
+            f"{(r['value_text'] or '')[:60]} "
+            f"_(conf {r['confidence']:.2f} · {badge}){pending}_"
         )
     return "\n".join(lines)
 
@@ -258,12 +280,59 @@ def _section_10_evidence_sources(db: _DbLike, client_id: str) -> str:
 # ─── 主入口 ────────────────────────────────────────
 
 
+def _section_overall_confidence(db: _DbLike, client_id: str) -> dict:
+    """计算每个语义层的整体把握度 + 冲突数 + 待确认数 (供故事卡 header 用).
+
+    V2.4 P0-4: 每段头部展示 把握度 / 来源占比 / 待确认 / 冲突.
+    """
+    af_row = db.fetchone(
+        """SELECT COUNT(*) AS total,
+                  AVG(confidence) AS avg_conf,
+                  SUM(CASE WHEN source_type LIKE 'client_%' THEN 1 ELSE 0 END) AS client_n,
+                  SUM(CASE WHEN source_type LIKE 'user_%' THEN 1 ELSE 0 END) AS oral_n,
+                  SUM(CASE WHEN source_type LIKE 'internet_%' THEN 1 ELSE 0 END) AS web_n
+           FROM atomic_facts WHERE client_id = ? AND status = 'active'""",
+        (client_id,),
+    )
+    af = dict(af_row) if af_row else {}
+    clar_row = db.fetchone(
+        """SELECT COUNT(*) AS c FROM clarification_records
+           WHERE scope_type='client' AND scope_id=? AND status='pending'""",
+        (client_id,),
+    )
+    pending_clar = dict(clar_row)["c"] if clar_row else 0
+    cont_row = None
+    try:
+        cont_row = db.fetchone(
+            "SELECT COUNT(*) AS c FROM fact_contradictions WHERE client_id=?",
+            (client_id,),
+        )
+    except Exception:
+        pass
+    cont_n = dict(cont_row)["c"] if cont_row else 0
+
+    return {
+        "total_facts": af.get("total", 0) or 0,
+        "avg_confidence": float(af.get("avg_conf") or 0),
+        "client_official_n": af.get("client_n", 0) or 0,
+        "user_oral_n": af.get("oral_n", 0) or 0,
+        "external_n": af.get("web_n", 0) or 0,
+        "pending_clarifications": pending_clar,
+        "contradictions": cont_n,
+    }
+
+
 def generate_story_card(db: _DbLike, client_id: str) -> str:
-    """生成项目故事卡 markdown (10 段)."""
+    """生成项目故事卡 markdown (10 段).
+
+    V2.4 P0-4: 头部加整体 confidence + 来源占比 + 待确认/冲突计数.
+              每段保留原内容 (源自语义表), 标题加 emoji + 段级标记.
+    """
     client = db.fetchone("SELECT name FROM clients WHERE id = ?", (client_id,))
     client_name = client["name"] if client else client_id
 
     now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M")
+    summary = _section_overall_confidence(db, client_id)
 
     sections = [
         ("1️⃣ 项目背景", _section_1_background(db, client_id)),
@@ -280,11 +349,31 @@ def generate_story_card(db: _DbLike, client_id: str) -> str:
 
     md = [f"# 📋 项目故事卡 · {client_name}\n"]
     md.append(f"_生成时间: {now}_  \n_客户 ID: `{client_id}`_  \n")
-    md.append("> 顾源源 5/22 蓝图 § 九 钦定 10 段产品形态\n")
+    md.append("\n## 📊 整体把握度\n")
+    md.append(
+        f"- **事实总数**: {summary['total_facts']} 条 · "
+        f"平均把握度: {summary['avg_confidence']:.0%}"
+    )
+    md.append(
+        f"- **来源分布**: 客户官方 {summary['client_official_n']} · "
+        f"用户口述 {summary['user_oral_n']} · "
+        f"外部公开 {summary['external_n']}"
+    )
+    md.append(
+        f"- **待澄清**: {summary['pending_clarifications']} 个 · "
+        f"**冲突**: {summary['contradictions']} 个"
+    )
+    md.append("\n> 顾源源 5/22 蓝图 § 九 + 5/23 V2.4 P0-4 故事卡升级\n")
     md.append("---\n")
     for title, content in sections:
         md.append(f"## {title}\n")
         md.append(content)
         md.append("\n")
+
+    md.append("\n---\n## 🧭 段级标记说明\n")
+    md.append("- 来源: `client_official` / `client_internal` / `user_oral` / `media` / `system`")
+    md.append("- 把握度: conf 字段 (0-1)")
+    md.append("- 待确认: 段 7 列 pending clarifications 即是")
+    md.append("- 用户口述与客户官方文件区分: 段 3 / 段 6 已按 source 标")
 
     return "\n".join(md)
