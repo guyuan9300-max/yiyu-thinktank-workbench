@@ -54,22 +54,37 @@ class MacOSKeychainSecretStore:
         api_key = value.strip()
         if not api_key:
             raise RuntimeError("API 密钥不能为空。")
-        subprocess.run(
-            [
-                "security",
-                "add-generic-password",
-                "-a",
-                self.account_name,
-                "-s",
-                self.service_name,
-                "-w",
-                api_key,
-                "-U",
-            ],
-            check=True,
-            capture_output=True,
-            text=True,
-        )
+        # 注意: CalledProcessError.cmd 会包含完整 argv (含 api_key 明文).
+        # 直接让异常往上抛, 上层 except Exception 把 exc 拼进 HTTP 响应体就会泄漏 secret.
+        # 这里 catch + 重抛 sanitized RuntimeError, 异常 message 里不能引用原 exc 或 exc.cmd.
+        try:
+            subprocess.run(
+                [
+                    "security",
+                    "add-generic-password",
+                    "-a",
+                    self.account_name,
+                    "-s",
+                    self.service_name,
+                    "-w",
+                    api_key,
+                    "-U",
+                ],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+        except subprocess.CalledProcessError as exc:
+            # 只保留 returncode + stderr (后者通常不含 -w 后的 api_key),
+            # 完全不引用 exc.cmd / exc.args
+            stderr_safe = ""
+            if exc.stderr:
+                stderr_text = exc.stderr if isinstance(exc.stderr, str) else exc.stderr.decode("utf-8", errors="replace")
+                # 二次防御: 显式过滤包含 api_key 的行 (虽然 stderr 通常不含)
+                stderr_safe = "\n".join(line for line in stderr_text.splitlines() if api_key not in line)
+            raise RuntimeError(
+                f"keychain set_api_key 失败 (returncode={exc.returncode}): {stderr_safe or '无错误输出'}"
+            ) from None  # from None 切断 __cause__,防止 traceback 链路里仍能看到原 exc.cmd
 
     def get_api_key(self) -> str:
         self._ensure_supported()

@@ -6873,7 +6873,10 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             elif payload.appSecret and payload.appSecret.strip():
                 state.feishu_secret_store.set_api_key(payload.appSecret.strip())
         except Exception as exc:
-            raise HTTPException(status_code=500, detail=f"飞书密钥保存失败：{exc}") from exc
+            # secrets.py 内部已经 sanitize 过 exception, 这里再加一道防御:
+            # 即便底层泄漏, 也不把 exc 直接拼进 detail. 服务端日志保留完整 exc 便于排错.
+            logger.exception("set_feishu_app_secret failed")
+            raise HTTPException(status_code=500, detail="飞书密钥保存失败,请查看后端日志定位原因。") from None
 
         if payload.sendTestMessage:
             app_id = next_record.appId.strip()
@@ -7163,9 +7166,30 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         document_content = (payload.markdownContent or "").strip()
         file_name = (payload.fileName or "").strip()
         if payload.filePath:
-            source_path = Path(payload.filePath).expanduser()
-            if not source_path.exists() or not source_path.is_file():
+            # 用户从系统文件对话框选的本机路径,不限定到 data_dir(允许桌面/下载夹).
+            # 但 resolve(strict=True) + 限制是普通文件(不是 symlink 链向 /etc/passwd 之类)
+            # + 大小上限(防 /dev/zero 这种伪文件被读爆内存) — 三层防御.
+            try:
+                source_path = Path(payload.filePath).expanduser().resolve(strict=True)
+            except (OSError, RuntimeError):
                 raise HTTPException(status_code=400, detail="背景文件不存在")
+            if not source_path.is_file():
+                raise HTTPException(status_code=400, detail="背景文件不存在")
+            # resolve(strict=True) 已 follow symlink,这里再用 lstat 显式拒绝原 path 是 symlink
+            # (防"用户对话框选了一个 symlink,目标是 ~/.ssh/id_rsa")
+            original_path = Path(payload.filePath).expanduser()
+            try:
+                if original_path.is_symlink():
+                    raise HTTPException(status_code=400, detail="不接受符号链接文件")
+            except OSError:
+                raise HTTPException(status_code=400, detail="背景文件无法访问")
+            try:
+                file_size = source_path.stat().st_size
+            except OSError:
+                raise HTTPException(status_code=400, detail="背景文件无法读取")
+            MAX_ORG_DOC_BYTES = 32 * 1024 * 1024  # 32 MB,真实 docx/pdf 上限
+            if file_size > MAX_ORG_DOC_BYTES:
+                raise HTTPException(status_code=413, detail=f"文件过大(>{MAX_ORG_DOC_BYTES // 1024 // 1024} MB)")
             if not _is_supported_org_dna_file_name(source_path.name):
                 raise HTTPException(status_code=400, detail=f"只允许上传 {_supported_org_intro_file_label()} 文件")
             try:
@@ -37490,9 +37514,21 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
 
     @app.post("/api/v1/settings/legacy-scan", response_model=LegacyScanResponse)
     def legacy_scan(payload: LegacyScanRequest) -> LegacyScanResponse:
-        target = Path(payload.path).expanduser()
-        if not target.exists():
+        # 路径校验: 必须落在 state.data_dir 内. 旧实现允许 payload.path = "/" 或 "~/.."
+        # 全盘 rglob 枚举 db/sqlite 文件名 (即便 backend 监听 127.0.0.1, 同机器其他用户
+        # 或恶意脚本也能调). resolve() + is_relative_to() 是 Python 3.9+ 标准做法.
+        try:
+            target = Path(payload.path).expanduser().resolve(strict=True)
+        except (OSError, RuntimeError):
             raise HTTPException(status_code=404, detail="Path not found")
+        allowed_root = state.data_dir.resolve()
+        try:
+            target.relative_to(allowed_root)
+        except ValueError:
+            raise HTTPException(
+                status_code=403,
+                detail=f"路径越界:仅允许扫 {allowed_root} 内的路径",
+            )
         entries: list[LegacyScanEntry] = []
         for path in target.rglob("*"):
             if path.is_file() and path.suffix.lower() in {".db", ".sqlite", ".json", ".csv"}:
