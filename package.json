@@ -32,7 +32,8 @@
     "release:mac": "npm run dist:mac",
     "release:mac:verify-dmg": "node scripts/verify-mac-dmg.mjs",
     "release:mac:publish": "node scripts/publish-to-tos.mjs",
-    "release:mac:publish:dry": "node scripts/publish-to-tos.mjs --dry-run"
+    "release:mac:publish:dry": "node scripts/publish-to-tos.mjs --dry-run",
+    "release:mac:tos": "node scripts/release-mac-to-tos.mjs"
   },
   "build": {
     "appId": "com.yiyu.selfworkbench2",

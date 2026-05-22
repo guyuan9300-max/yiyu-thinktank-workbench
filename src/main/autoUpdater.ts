@@ -25,6 +25,7 @@ interface UpdateEventPayload {
 const UPDATE_EVENT_CHANNEL = 'yiyu-workbench:update-event';
 const CHECK_DELAY_MS = 10_000;
 const RECHECK_INTERVAL_MS = 6 * 60 * 60 * 1000;
+const UPDATE_FEED_URL = 'https://yiyu-thinktank-releases.tos-cn-beijing.volces.com/desktop/mac/latest-mac.yml';
 
 let mainWindowRef: BrowserWindow | null = null;
 let setupDone = false;
@@ -49,6 +50,20 @@ function shouldEnable(): boolean {
     return false;
   }
   return true;
+}
+
+function normalizeUpdateErrorMessage(message: string): string {
+  const lower = message.toLowerCase();
+  if (message.includes('latest-mac.yml') && (message.includes('404') || lower.includes('not found'))) {
+    return `当前更新源尚未发布可用版本或暂不可访问。请确认 ${UPDATE_FEED_URL} 已发布。`;
+  }
+  if (lower.includes('net::err_internet_disconnected') || lower.includes('enotfound') || lower.includes('econnreset') || lower.includes('timeout')) {
+    return '当前网络无法连接更新源，请稍后重试。';
+  }
+  if (lower.includes('sha512') || lower.includes('signature') || lower.includes('code signature')) {
+    return '更新包签名或校验未通过，已停止安装，请联系发布负责人重新发布。';
+  }
+  return message;
 }
 
 export function setupAutoUpdater(mainWindow: BrowserWindow): void {
@@ -100,9 +115,10 @@ export function setupAutoUpdater(mainWindow: BrowserWindow): void {
   });
 
   autoUpdater.on('error', (err) => {
+    const message = normalizeUpdateErrorMessage(err?.message ?? String(err ?? 'unknown updater error'));
     broadcast({
       kind: 'error',
-      message: err?.message ?? String(err ?? 'unknown updater error'),
+      message,
     });
   });
 
@@ -114,7 +130,7 @@ export function setupAutoUpdater(mainWindow: BrowserWindow): void {
       const result = await autoUpdater.checkForUpdates();
       return { ok: true, version: result?.updateInfo?.version ?? null };
     } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
+      const message = normalizeUpdateErrorMessage(err instanceof Error ? err.message : String(err));
       console.error('[autoUpdater] checkForUpdates failed:', message);
       return { ok: false, reason: message };
     }

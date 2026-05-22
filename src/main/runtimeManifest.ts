@@ -225,6 +225,7 @@ export function buildDesktopAppInfo(input: {
   executablePath: string;
   releasePlanPath: string;
   releaseArtifactsPath: string;
+  cloudBackendUrl?: string | null;
   updateChannel: 'stable' | 'beta';
   updaterPhase: 'planning' | 'preparing_release' | 'ready_for_feed' | 'ready_for_in_app_update';
   recommendedInstallPath: string;
@@ -290,6 +291,7 @@ export function buildDesktopAppInfo(input: {
     executablePath: input.executablePath,
     releasePlanPath: input.releasePlanPath,
     releaseArtifactsPath: input.releaseArtifactsPath,
+    cloudBackendUrl: input.cloudBackendUrl || null,
     updateChannel: input.updateChannel,
     updaterPhase: input.updaterPhase,
     recommendedInstallPath: input.recommendedInstallPath,
