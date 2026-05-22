@@ -144,6 +144,27 @@ def db() -> sqlite3.Connection:
         )
         """
     )
+    # [B] fixture 同步债修复: AI A commit 40264eb (F1.7 + N3 A1) 加了
+    # client_stage_audit 表 schema 到 backend/app/db.py, 但本 fixture 没同步加。
+    # ClientRepository.archive() / freeze() 等会写 audit log, 找不到表就抛
+    # OperationalError, 导致 4 个测试 pre-existing failure
+    # (test_get_fact_bundle_archived_returns_none 等)。
+    # 这里加上 schema 跟 db.py 对齐。
+    conn.execute(
+        """
+        CREATE TABLE client_stage_audit (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            client_id TEXT NOT NULL,
+            old_stage TEXT,
+            new_stage TEXT NOT NULL,
+            actor_type TEXT NOT NULL DEFAULT 'system',
+            actor_id TEXT NOT NULL DEFAULT '',
+            reason TEXT NOT NULL DEFAULT '',
+            guard_action TEXT NOT NULL DEFAULT 'applied',
+            changed_at TEXT NOT NULL
+        )
+        """
+    )
     return conn
 
 
