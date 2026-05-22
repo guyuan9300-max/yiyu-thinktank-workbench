@@ -167,6 +167,76 @@ class Database:
                     FOREIGN KEY(client_id) REFERENCES clients(id) ON DELETE CASCADE
                 );
 
+                -- 智能导入(import story) 4 张表 + 3 个索引
+                -- 历史上由临时 migration 建过表,但 CREATE TABLE 语句没沉淀进 schema,
+                -- 导致新装的 client 没这几张表,智能导入直接报 OperationalError: no such table.
+                CREATE TABLE IF NOT EXISTS import_story_sessions (
+                    id TEXT PRIMARY KEY,
+                    client_id TEXT,
+                    project_event_line_id TEXT,
+                    narrator_user_id TEXT NOT NULL DEFAULT '',
+                    title TEXT NOT NULL DEFAULT '',
+                    status TEXT NOT NULL DEFAULT 'drafting'
+                        CHECK(status IN ('drafting','parsing','ready_for_review','imported','discarded')),
+                    total_chunks INTEGER NOT NULL DEFAULT 0,
+                    total_files INTEGER NOT NULL DEFAULT 0,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    imported_at TEXT,
+                    FOREIGN KEY(client_id) REFERENCES clients(id) ON DELETE SET NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_import_story_sessions_client
+                    ON import_story_sessions(client_id, updated_at DESC);
+                CREATE INDEX IF NOT EXISTS idx_import_story_sessions_narrator
+                    ON import_story_sessions(narrator_user_id, status, updated_at DESC);
+
+                CREATE TABLE IF NOT EXISTS import_story_chunks (
+                    id TEXT PRIMARY KEY,
+                    session_id TEXT NOT NULL,
+                    sequence INTEGER NOT NULL DEFAULT 0,
+                    raw_text TEXT NOT NULL DEFAULT '',
+                    parsed_json TEXT NOT NULL DEFAULT '{}',
+                    parse_status TEXT NOT NULL DEFAULT 'pending'
+                        CHECK(parse_status IN ('pending','parsing','parsed','failed')),
+                    parse_error TEXT NOT NULL DEFAULT '',
+                    user_edited_parsed INTEGER NOT NULL DEFAULT 0,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    FOREIGN KEY(session_id) REFERENCES import_story_sessions(id) ON DELETE CASCADE
+                );
+                CREATE INDEX IF NOT EXISTS idx_import_story_chunks_session
+                    ON import_story_chunks(session_id, sequence ASC);
+
+                CREATE TABLE IF NOT EXISTS import_staged_files (
+                    id TEXT PRIMARY KEY,
+                    session_id TEXT NOT NULL,
+                    original_filename TEXT NOT NULL,
+                    storage_path TEXT NOT NULL,
+                    size_bytes INTEGER NOT NULL DEFAULT 0,
+                    mime_type TEXT NOT NULL DEFAULT '',
+                    assigned_chunk_id TEXT,
+                    role_override TEXT
+                        CHECK(role_override IS NULL OR role_override IN (
+                            'client_owned','partner_submission','yiyu_advisory',
+                            'external_reference','policy_industry')),
+                    document_id TEXT,
+                    document_inserted_at TEXT,
+                    upload_at TEXT NOT NULL,
+                    FOREIGN KEY(session_id) REFERENCES import_story_sessions(id) ON DELETE CASCADE,
+                    FOREIGN KEY(assigned_chunk_id) REFERENCES import_story_chunks(id) ON DELETE SET NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS import_story_chunk_files (
+                    chunk_id TEXT NOT NULL,
+                    staged_file_id TEXT NOT NULL,
+                    sequence_in_chunk INTEGER NOT NULL DEFAULT 0,
+                    role_hint TEXT NOT NULL DEFAULT '',
+                    created_at TEXT NOT NULL,
+                    PRIMARY KEY(chunk_id, staged_file_id),
+                    FOREIGN KEY(chunk_id) REFERENCES import_story_chunks(id) ON DELETE CASCADE,
+                    FOREIGN KEY(staged_file_id) REFERENCES import_staged_files(id) ON DELETE CASCADE
+                );
+
                 CREATE TABLE IF NOT EXISTS knowledge_documents (
                     id TEXT PRIMARY KEY,
                     client_id TEXT NOT NULL,
