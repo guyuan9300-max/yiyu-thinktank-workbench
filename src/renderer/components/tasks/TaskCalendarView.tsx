@@ -716,6 +716,17 @@ export function TaskCalendarView({
   const weekEndDate = visibleWeekPage.endDate;
   const weekTasks = visibleWeekPage.tasks;
   const weekTimedTasks = visibleWeekPage.timedTasks;
+  // resize useEffect 不能依赖 weekTimedTasks / onUpdateTaskDuration / onCalendarNotice,
+  // 否则后台任务刷新 / 父组件 re-render 会重新注册 listener, 丢拖拽中状态.
+  // 用 ref 同步, handler 内读 ref.current.
+  const weekTimedTasksRef = useRef(weekTimedTasks);
+  weekTimedTasksRef.current = weekTimedTasks;
+  const onUpdateTaskDurationRef = useRef(onUpdateTaskDuration);
+  onUpdateTaskDurationRef.current = onUpdateTaskDuration;
+  const onCalendarNoticeRef = useRef(onCalendarNotice);
+  onCalendarNoticeRef.current = onCalendarNotice;
+  const onRescheduleTaskRef = useRef(onRescheduleTask);
+  onRescheduleTaskRef.current = onRescheduleTask;
   const weekDisplayItemsByDay = useMemo(() => {
     const mapping = new Map<number, WeekTaskDisplayItem[]>();
     visibleWeekPage.days.forEach((_, dayIndex) => {
@@ -780,7 +791,8 @@ export function TaskCalendarView({
 
     const handleMouseUp = () => {
       const draft = resizeDraftRef.current;
-      const task = weekTimedTasks.find((item) => item.task.id === draft?.taskId)?.task;
+      // 从 ref 读最新 weekTimedTasks, 避免 effect 依赖它导致拖拽中重订阅
+      const task = weekTimedTasksRef.current.find((item) => item.task.id === draft?.taskId)?.task;
       const nextDuration = resizePreviewRef.current ?? draft?.baseDuration ?? null;
       const nextStartMinute = draft?.mode === 'top' ? resizePreviewStartMinuteRef.current : null;
       resizeDraftRef.current = null;
@@ -809,7 +821,7 @@ export function TaskCalendarView({
       if (changed && task && draft && nextDuration) {
         if (isLocalDraftTaskId(task.id)) {
           clearPreview();
-          onCalendarNotice?.('info', LOCAL_DRAFT_NOTICE);
+          onCalendarNoticeRef.current?.('info', LOCAL_DRAFT_NOTICE);
           return;
         }
         // 注意:这里 await 期间 isResizing 仍为 true,
@@ -819,11 +831,11 @@ export function TaskCalendarView({
             if (draft.mode === 'top' && draft.dayDate && nextStartMinute !== null) {
               const newDueDate = combineDateAndTime(draft.dayDate, nextStartMinute);
               await Promise.all([
-                onRescheduleTask(task, newDueDate, { preserveCalendarViewport: true }),
-                onUpdateTaskDuration(task, nextDuration),
+                onRescheduleTaskRef.current(task, newDueDate, { preserveCalendarViewport: true }),
+                onUpdateTaskDurationRef.current(task, nextDuration),
               ]);
             } else {
-              await onUpdateTaskDuration(task, nextDuration);
+              await onUpdateTaskDurationRef.current(task, nextDuration);
             }
           } catch {
             // 回滚由父组件 loadTaskBlock 或 catch 提示处理
@@ -844,7 +856,10 @@ export function TaskCalendarView({
       document.body.style.cursor = '';
       document.body.style.userSelect = '';
     };
-  }, [onCalendarNotice, onUpdateTaskDuration, onRescheduleTask, resizingTaskId, weekTimedTasks]);
+    // 只依赖 resizingTaskId (开始/结束 resize 的"事件" 信号),
+    // 其他状态/callback 通过 ref 访问最新值, 拖拽中即便父组件 re-render 也不丢 listener.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [resizingTaskId]);
 
   const cleanupWeekCreateInteraction = useCallback(() => {
     weekCreateCleanupRef.current?.();
