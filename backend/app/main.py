@@ -3119,6 +3119,12 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
     app = FastAPI(title=APP_NAME, version=APP_VERSION)
     app.state.app_state = state
 
+    # v2.2 N2 (B 任务 1): 模块化 router 接入. 后续 endpoint 拆分模板.
+    # backend/app/api/ 下每个 router 在这里 include 一次. 现有 27000 行
+    # closure 风格的 endpoint 保持不动, 新 endpoint 走 router 模式.
+    from app.api import full_narrative_router  # noqa: PLC0415
+    app.include_router(full_narrative_router.router)
+
     # 迭代 2 F3：把版本查找回调注入 data_center_kernel，让 _to_search_hit
     # 能给前端塞版本徽章信息（"v2 · 最新" / "已被 v3 取代"）。
     def _lookup_version_info_for_kernel(document_id: str) -> dict[str, object]:
