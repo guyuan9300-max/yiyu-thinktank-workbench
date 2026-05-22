@@ -10,7 +10,7 @@ from pathlib import Path
 # 之前 20260518001 (200 亿) 远超上限, SQLite 静默 set 为 0, 每次启动都重做完整迁移
 # (这是 20260518 那次坏 db 的真正根因之一: 重做时遇上 reload race + backfill 无事务).
 # 改用 YYYYMMDD 格式 (8 位), 每次 schema 变化递增日期. 20260519 = 此次修复.
-BACKEND_SCHEMA_VERSION = 20260528  # v2.2 F2.2 + F2.6: key_decisions / org_events / event_line_state_changes 复合事件 + 状态流
+BACKEND_SCHEMA_VERSION = 20260529  # v2.2 F2.8 (N3 A6): idempotency_keys 表 — 防 AI retry 重复创建
 
 
 # R6：内置罗永浩写作风格的 distilled prompt（手工 distill，不依赖在线抓取，避免外部依赖）。
@@ -3417,6 +3417,53 @@ class Database:
                     ON event_line_state_changes(change_type, triggered_at DESC);
                 CREATE INDEX IF NOT EXISTS idx_event_line_state_changes_trigger
                     ON event_line_state_changes(trigger_source_type, trigger_source_id);
+                """
+            )
+
+            # ─────────────────────────────────────────────────────────────
+            # v2.2 F2.8 (N3 A6): idempotency_keys 表
+            #
+            # 防 AI agent retry 时重复创建任务/事实。例:
+            #   3.0 AI 拟合同时, 假设 LLM 调用 timeout → retry
+            #   → 如果没幂等保护, 会生成 2 份完全一样的合同
+            #   → 有 Idempotency-Key 后, 第二次返回第一次的结果, 不重建
+            #
+            # 设计选择 (顾源源 5/22 决策 "高把握度先做"):
+            # - schema + IdempotencyStore 工具函数先做 (本 commit)
+            # - 全局 middleware 接入留给后续 (涉及 streaming response 冲突, 风险中)
+            # - endpoint 按需调用 IdempotencyStore.check_or_record() 渐进改造
+            # ─────────────────────────────────────────────────────────────
+            self.conn.executescript(
+                """
+                CREATE TABLE IF NOT EXISTS idempotency_keys (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    -- 客户端 (或 AI agent) 生成的唯一 key (推荐 UUID v4)
+                    idempotency_key TEXT NOT NULL,
+                    -- 关联请求路径 + 方法 (避免不同 endpoint 复用同 key 造成歧义)
+                    request_method TEXT NOT NULL,           -- POST / PATCH / DELETE
+                    request_path TEXT NOT NULL,             -- /api/v1/tasks
+                    -- 请求体 hash (用于检测同 key 但不同 body 的攻击)
+                    request_body_hash TEXT NOT NULL DEFAULT '',
+                    -- 缓存的响应
+                    response_status INTEGER NOT NULL,       -- HTTP status
+                    response_body TEXT NOT NULL DEFAULT '', -- JSON 序列化后的 body
+                    -- N3: actor 跟踪
+                    actor_type TEXT NOT NULL DEFAULT 'human',
+                    actor_id TEXT NOT NULL DEFAULT '',
+                    -- 时间
+                    created_at TEXT NOT NULL,
+                    expires_at TEXT NOT NULL,               -- 24 小时窗口默认
+                    -- 状态
+                    status TEXT NOT NULL DEFAULT 'completed'  -- in_progress / completed / failed
+                );
+                -- UNIQUE 防同 key+method+path 重复, 是幂等的核心保证
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_idempotency_keys_lookup
+                    ON idempotency_keys(idempotency_key, request_method, request_path);
+                CREATE INDEX IF NOT EXISTS idx_idempotency_keys_expires
+                    ON idempotency_keys(expires_at)
+                    WHERE status != 'failed';
+                CREATE INDEX IF NOT EXISTS idx_idempotency_keys_actor
+                    ON idempotency_keys(actor_type, actor_id, created_at DESC);
                 """
             )
             # 索引: 按 verification_status 找待审 + 按 validity 过滤 superseded
