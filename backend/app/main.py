@@ -24026,7 +24026,37 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                         continue
                     response = cloud_request("PATCH", f"/api/v1/tasks/{cloud_id}", json_body=cloud_payload, timeout=6.0)
                 else:
-                    response = cloud_request("POST", "/api/v1/tasks", json_body=cloud_payload, timeout=6.0)
+                    # P1-11 修复: 云端 TaskCreatePayload 不接受 progressStatus 字段,
+                    # 而本地 cloud_payload (l23213) 把 progressStatus 加进去了.
+                    # POST 时云端 Pydantic 忽略未知字段, 云端任务被设默认 'todo',
+                    # 用户已完成的任务上传后云端是 todo → 复盘里"已完成的任务又回到待办".
+                    # 改为两步: 先 POST 不带 progressStatus, 再 PATCH 带 progressStatus.
+                    create_payload = {k: v for k, v in cloud_payload.items() if k != "progressStatus"}
+                    response = cloud_request("POST", "/api/v1/tasks", json_body=create_payload, timeout=6.0)
+                    # 如 POST 成功且 cloud_payload 含非默认 progressStatus, 立刻 PATCH 校准
+                    target_progress = cloud_payload.get("progressStatus")
+                    if (
+                        isinstance(response, dict)
+                        and response.get("id")
+                        and target_progress
+                        and target_progress != "todo"
+                    ):
+                        try:
+                            patched = cloud_request(
+                                "PATCH",
+                                f"/api/v1/tasks/{response['id']}",
+                                json_body={"progressStatus": target_progress},
+                                timeout=6.0,
+                            )
+                            if isinstance(patched, dict) and patched.get("id"):
+                                response = patched  # 用 PATCH 后的结果继续后续 mirror
+                        except Exception as patch_err:
+                            # PATCH 失败不阻塞 POST 已经成功的 task, 仅记 warning.
+                            # 下次本地 update 标记 pending=update 时会再次 sync.
+                            logger.warning(
+                                "[SYNC-PENDING] task %s create OK but progressStatus PATCH 失败: %s",
+                                task_id, patch_err,
+                            )
                 if isinstance(response, dict) and response.get("id"):
                     synced_cloud_id = str(response["id"])
                     synced_at = now_iso()
