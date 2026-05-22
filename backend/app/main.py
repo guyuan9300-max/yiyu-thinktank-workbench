@@ -9689,7 +9689,8 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             # 本地 stage='frozen' 时云端 stage 不允许覆盖, 并记 audit log。
             cloud_stage_target = str(payload.get("stage") or "待导入资料")
             local_stage = str(existing["stage"] or "")
-            from app.modules.client.repository import ClientRepository
+            # v2.2: 走 __init__.py 接口,不直接 import 内部文件 (W2 模块边界铁律)
+            from app.modules.client import ClientRepository
             _client_repo = ClientRepository(state.db)
             # 调守门: 决定最终写入的 stage 是云端值还是保留本地 frozen
             stage_applied, _stage_msg = _client_repo.apply_cloud_stage_change(
