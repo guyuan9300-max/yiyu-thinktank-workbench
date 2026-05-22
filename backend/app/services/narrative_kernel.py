@@ -87,8 +87,12 @@ SECTION_ROLE_FILTERS: dict[str, set[str]] = {
 
 # Tier A/B/C 引用规则 (R1)
 TIER_A_SOURCE_TYPES = {"client_official_doc", "client_internal_doc", "client_verbal_meeting"}
-TIER_B_SOURCE_TYPES = {"collaboration_task", "collaboration_review", "user_verbal_fact"}
-TIER_C_SOURCE_TYPES = {"internet_official", "internet_media"}
+TIER_B_SOURCE_TYPES = {
+    "collaboration_task", "collaboration_review",
+    "user_verbal_fact", "user_observation",  # 用户口述 + 主观观察, 都算 Tier B
+    "llm_extracted",  # F2.1 LLM 抽出来的也算 Tier B (未验证版)
+}
+TIER_C_SOURCE_TYPES = {"internet_official", "internet_media", "system_derived"}
 EXCLUDED_SOURCE_TYPES = {"internet_ugc", "internet_ai_inferred"}
 
 
