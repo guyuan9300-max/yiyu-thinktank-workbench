@@ -936,29 +936,51 @@ def _collect_money_anchors(db: Database, client_id: str, limit: int) -> list[Mon
 
 
 def _collect_atomic_facts(db: Database, client_id: str, limit: int) -> dict[str, list[AtomicFactRow]]:
+    """拉 atomic_facts (顾源源 5/22 M-C.1: 放宽 status 过滤).
+
+    原 query: status='active' AND confidence>=0.6 → 漏掉 503 条 superseded
+    实测发现: 503 条 superseded 是"被新版替代的旧版本", N2 跨源印证需要它们
+    (用户问"以前 X 是 Y" 也需要旧版本事实).
+
+    改: status IN ('active', 'superseded'), 但 active 优先 + 同 (subject, attribute, value)
+    只保留 active 那条 (去重).
+    """
     rows = db.fetchall(
         """
-        SELECT id, subject_text, attribute, value_text, confidence, source_v2_document_id
+        SELECT id, subject_text, attribute, value_text, confidence, source_v2_document_id,
+               status, created_at
         FROM atomic_facts
-        WHERE client_id = ? AND status = 'active' AND confidence >= 0.6
-        ORDER BY confidence DESC, created_at DESC
+        WHERE client_id = ?
+          AND status IN ('active', 'superseded')
+          AND confidence >= 0.6
+        ORDER BY
+          CASE status WHEN 'active' THEN 0 ELSE 1 END,
+          confidence DESC,
+          created_at DESC
         LIMIT ?
         """,
         (client_id, limit),
     )
     grouped: dict[str, list[AtomicFactRow]] = {}
+    seen_sav: set[tuple[str, str, str]] = set()
     for r in rows:
         attr = str(r["attribute"] or "").strip() or "其他"
+        subj = str(r["subject_text"] or "").strip()
+        value = str(r["value_text"] or "").strip()
+        if not subj and not value:
+            continue
+        sav_key = (subj.lower(), attr.lower(), value.lower())
+        if sav_key in seen_sav:
+            continue  # active 已写入, 同 SAV 的 superseded 跳过
+        seen_sav.add(sav_key)
         fact = AtomicFactRow(
             id=str(r["id"]),
-            subject=str(r["subject_text"] or "").strip(),
+            subject=subj,
             attribute=attr,
-            value=str(r["value_text"] or "").strip(),
+            value=value,
             confidence=float(r["confidence"] or 0.0),
             source_doc_id=str(r["source_v2_document_id"]) if r["source_v2_document_id"] else None,
         )
-        if not fact.subject and not fact.value:
-            continue
         grouped.setdefault(attr, []).append(fact)
     return grouped
 

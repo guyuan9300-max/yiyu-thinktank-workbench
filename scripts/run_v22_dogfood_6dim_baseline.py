@@ -32,10 +32,13 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-# 用主仓库的 backend (有 narrative_generator + collector + ai_service)
+# V2.1 backend 优先 (M-C.1 在这里改 collector), fallback 到主仓库
+# 顾源源 5/22 红线: V2.1 lab 跟主仓库 物理隔离, 测的是 V2.1 改完的效果
 MAIN_REPO = Path.home() / "openclaw/workspace/yiyu-thinktank-workbench"
-sys.path.insert(0, str(MAIN_REPO / "backend"))
-sys.path.insert(0, str(MAIN_REPO))
+sys.path.insert(0, str(ROOT / "backend"))   # ★ V2.1 backend 第一优先
+sys.path.insert(0, str(ROOT))
+sys.path.append(str(MAIN_REPO / "backend"))  # fallback (V2.1 没的从主仓库取)
+sys.path.append(str(MAIN_REPO))
 
 REPORTS_DIR = ROOT / "tests" / "reports"
 REPORTS_DIR.mkdir(parents=True, exist_ok=True)
@@ -126,7 +129,9 @@ def main() -> int:
             "persons": len(bundle.persons) if hasattr(bundle, "persons") else 0,
             "time_anchors": len(bundle.time_anchors) if hasattr(bundle, "time_anchors") else 0,
             "money_anchors": len(bundle.money_anchors) if hasattr(bundle, "money_anchors") else 0,
-            "atomic_facts": len(bundle.atomic_facts_by_dim) if hasattr(bundle, "atomic_facts_by_dim") else 0,
+            # M-C.1 修字段名: atomic_facts_by_attribute (dict[attr → list[fact]])
+            "atomic_facts_attrs": len(bundle.atomic_facts_by_attribute) if hasattr(bundle, "atomic_facts_by_attribute") else 0,
+            "atomic_facts_total": sum(len(v) for v in bundle.atomic_facts_by_attribute.values()) if hasattr(bundle, "atomic_facts_by_attribute") else 0,
             "event_lines": len(bundle.event_lines) if hasattr(bundle, "event_lines") else 0,
             "activities": len(bundle.activities) if hasattr(bundle, "activities") else 0,
             "tasks": len(bundle.tasks) if hasattr(bundle, "tasks") else 0,
