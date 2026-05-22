@@ -1,0 +1,274 @@
+"""[B-V2.1] v2.2 N2 任务 1 · full-narrative endpoint 端到端测试
+
+跑法:
+    cd backend && .venv/bin/python3 -m pytest tests/test_v22_full_narrative_endpoint.py -v
+
+服务:
+- V2.2_NORTH_STAR.md N2 (顾源源 5/22 关键洞察: "任意入口看全局")
+- B 接力指令任务 1 (★★★ N2 突破核心)
+
+测试场景:
+1. client_id 不存在 → 404
+2. client_id 存在但 0 atomic_facts → 200, status='passed' with warning, 8 段全填占位
+3. client_id 存在 + 多条 atomic_facts → 200, 8 段有 citations, acceptance passed
+4. response shape: 8 段 + 字段齐全 (5 维 acceptance 必过项)
+5. Idempotency-Key + 同 client + 缓存命中
+6. Idempotency-Key + 不同 client → 422 mismatch
+7. Idempotency-Key + 不带 header → 100% 向后兼容
+8. 多入口拿到一致 shape (StrategicClarification / StrategicBrain / TaskDetail 调同 endpoint)
+"""
+from __future__ import annotations
+
+import sys
+import uuid
+from pathlib import Path
+
+import pytest
+from fastapi.testclient import TestClient
+
+sys.path.append(str(Path(__file__).resolve().parents[1]))
+
+from app.main import create_app  # noqa: E402
+from app.services.narrative_kernel import SECTION_KEYS  # noqa: E402
+
+
+@pytest.fixture
+def client(tmp_path: Path) -> TestClient:
+    """每测试独立 app + tmp data_dir."""
+    app = create_app(tmp_path / "data")
+    test_client = TestClient(app)
+    test_client.__enter__()
+    yield test_client
+    test_client.__exit__(None, None, None)
+
+
+def _new_key() -> str:
+    return f"narr-test-{uuid.uuid4().hex[:12]}"
+
+
+def _create_client(test_client: TestClient, name: str = "测试客户A") -> str:
+    """造一个 client, 返 client_id."""
+    r = test_client.post(
+        "/api/v1/clients",
+        json={
+            "name": name,
+            "alias": "测试",
+            "domain": "测试",
+            "type": "战略陪伴",
+            "intro": "",
+            "stage": "active",
+        },
+    )
+    assert r.status_code == 200, r.text
+    return r.json()["id"]
+
+
+def _seed_atomic_facts(
+    test_client: TestClient,
+    client_id: str,
+    count: int = 10,
+) -> list[str]:
+    """直接插 atomic_facts 表 (bypass endpoint, 测试 fixture).
+
+    返回 fact_ids 列表.
+    """
+    state = test_client.app.state.app_state
+    fact_ids: list[str] = []
+    roles = ["fact", "decision", "plan", "risk", "commitment", "observation", "quote", "progress"]
+    source_types = [
+        "client_official_doc", "client_internal_doc", "collaboration_task",
+        "user_verbal_fact", "internet_official",
+    ]
+    for i in range(count):
+        fid = f"af_test_{uuid.uuid4().hex[:10]}"
+        value_text = f"值{i}"
+        state.db.execute(
+            """
+            INSERT INTO atomic_facts(
+                id, client_id, subject_text, attribute, value_text, value_normalized,
+                content_role, source_type, confidence, status,
+                validity_status, verification_status,
+                time_anchor, evidence_text, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                fid, client_id, f"主体{i}", f"属性{i}", value_text, value_text,
+                roles[i % len(roles)],
+                source_types[i % len(source_types)],
+                0.85,
+                "active", "current", "unverified",
+                f"2026-05-{(i % 28) + 1:02d}",
+                f"证据片段 {i}",
+                "2026-05-22T00:00:00Z",
+                "2026-05-22T00:00:00Z",
+            ),
+        )
+        fact_ids.append(fid)
+    return fact_ids
+
+
+# ── 场景 1: 404 ───────────────────────────────────────────────
+
+
+def test_unknown_client_returns_404(client: TestClient) -> None:
+    r = client.get("/api/v1/clients/nonexistent_xyz/full-narrative")
+    assert r.status_code == 404
+    assert "not found" in r.json()["detail"].lower()
+
+
+# ── 场景 2: 0 atomic_facts (空客户) ───────────────────────────
+
+
+def test_empty_client_returns_200_with_warnings(client: TestClient) -> None:
+    """新建 client, 0 fact. 应该 200, 8 段全占位 + warnings."""
+    cid = _create_client(client, name="空客户")
+    r = client.get(f"/api/v1/clients/{cid}/full-narrative")
+    assert r.status_code == 200, r.text
+    data = r.json()
+    assert data["client_id"] == cid
+    assert data["client_name"] == "空客户"
+    # 8 段
+    assert len(data["story_sections"]) == len(SECTION_KEYS)
+    # 5 维必过: section_key / title / body_markdown 字段齐全
+    section_keys = [s["section_key"] for s in data["story_sections"]]
+    assert set(section_keys) == set(SECTION_KEYS)
+    for s in data["story_sections"]:
+        assert s["title"]
+        assert s["body_markdown"]
+        assert 0.0 <= s["confidence"] <= 1.0
+    # 软约束触发 warning
+    assert data["acceptance_status"] == "warning"
+    assert any("total_facts_consulted=0" in n for n in data["acceptance_notes"])
+    assert data["total_facts_consulted"] == 0
+
+
+# ── 场景 3: 多条 atomic_facts → 段有 citations ─────────────
+
+
+def test_client_with_facts_returns_citations(client: TestClient) -> None:
+    """seed 15 条 atomic_facts → 各段应该有 cited_fact_ids."""
+    cid = _create_client(client, name="带事实客户")
+    fact_ids = _seed_atomic_facts(client, cid, count=15)
+    r = client.get(f"/api/v1/clients/{cid}/full-narrative")
+    assert r.status_code == 200, r.text
+    data = r.json()
+    assert data["total_facts_consulted"] >= 1
+    # 至少有一段有 citations
+    cited_sections = [
+        s for s in data["story_sections"] if s["cited_fact_ids"]
+    ]
+    assert len(cited_sections) >= 1, "expected at least 1 section with citations"
+    # 所有 cited_fact_ids 应该在 seeded 集合里
+    all_cited = set()
+    for s in data["story_sections"]:
+        all_cited.update(s["cited_fact_ids"])
+    assert all_cited.issubset(set(fact_ids)), "cited fact_ids must come from seeded facts"
+
+
+# ── 场景 4: response shape (5 维 acceptance 必过项) ───────────
+
+
+def test_response_shape_5d_acceptance(client: TestClient) -> None:
+    """所有 5 维 acceptance 必过项字段齐全."""
+    cid = _create_client(client)
+    r = client.get(f"/api/v1/clients/{cid}/full-narrative")
+    assert r.status_code == 200
+    data = r.json()
+    # 顶层必备字段
+    for f in [
+        "client_id", "client_name", "story_sections", "generated_at",
+        "generation_session_id", "total_facts_consulted",
+        "facts_excluded_by_tier", "acceptance_status", "acceptance_notes",
+    ]:
+        assert f in data, f"missing top field: {f}"
+    # generation_session_id 非空
+    assert data["generation_session_id"]
+    # 段字段
+    for s in data["story_sections"]:
+        for f in [
+            "section_key", "title", "body_markdown",
+            "cited_fact_ids", "cited_doc_ids", "confidence",
+            "source_count_by_tier",
+        ]:
+            assert f in s, f"missing section field: {f}"
+
+
+# ── 场景 5: Idempotency-Key 同 client 缓存命中 ───────────────
+
+
+def test_idempotency_same_client_same_key_returns_cached(client: TestClient) -> None:
+    """同 key + 同 client_id → 第 2 次返 cached, generation_session_id 相同."""
+    cid = _create_client(client)
+    key = _new_key()
+    h = {"Idempotency-Key": key}
+    r1 = client.get(f"/api/v1/clients/{cid}/full-narrative", headers=h)
+    assert r1.status_code == 200
+    r2 = client.get(f"/api/v1/clients/{cid}/full-narrative", headers=h)
+    assert r2.status_code == 200
+    # 缓存命中 → session_id 完全一致 (不重新生成)
+    assert r1.json()["generation_session_id"] == r2.json()["generation_session_id"]
+
+
+# ── 场景 6: Idempotency-Key 不同 client → 422 ──────────────────
+
+
+def test_idempotency_same_key_different_client_returns_422(client: TestClient) -> None:
+    """同 key + 不同 client_id → IdempotencyKeyMismatchError → 422."""
+    cid1 = _create_client(client, name="客户1")
+    cid2 = _create_client(client, name="客户2")
+    key = _new_key()
+    h = {"Idempotency-Key": key}
+    r1 = client.get(f"/api/v1/clients/{cid1}/full-narrative", headers=h)
+    assert r1.status_code == 200
+    # 同 key 攻击场景: 改 client_id 想拿别人的故事 → 拒绝
+    r2 = client.get(f"/api/v1/clients/{cid2}/full-narrative", headers=h)
+    assert r2.status_code == 422
+    assert "idempotency" in r2.text.lower() or "mismatch" in r2.text.lower()
+
+
+# ── 场景 7: 不带 Idempotency-Key 100% 向后兼容 ─────────────
+
+
+def test_no_idempotency_key_works(client: TestClient) -> None:
+    """不带 header → 行为跟旧 client 一致, 每次重新生成."""
+    cid = _create_client(client)
+    r1 = client.get(f"/api/v1/clients/{cid}/full-narrative")
+    r2 = client.get(f"/api/v1/clients/{cid}/full-narrative")
+    assert r1.status_code == 200
+    assert r2.status_code == 200
+    # 没缓存 → 每次新 session_id
+    assert r1.json()["generation_session_id"] != r2.json()["generation_session_id"]
+
+
+# ── 场景 8: 任意入口 shape 一致 (核心 N2 验证) ─────────────
+
+
+def test_any_entry_returns_same_shape(client: TestClient) -> None:
+    """3 个前端入口模拟: 全用同 client_id 调本 endpoint, 字段齐全 + section_keys 一致.
+
+    → "任意入口看全局" 全栈契约对齐.
+    """
+    cid = _create_client(client)
+    _seed_atomic_facts(client, cid, count=8)
+
+    # 模拟 3 个 view 调用 (X-Actor-Id 不同 = 不同入口的 user trace)
+    entries = [
+        {"X-Actor-Id": "view_strategic_clarification"},
+        {"X-Actor-Id": "view_strategic_brain"},
+        {"X-Actor-Id": "view_task_detail"},
+    ]
+    responses = [
+        client.get(f"/api/v1/clients/{cid}/full-narrative", headers=h).json()
+        for h in entries
+    ]
+    # 8 段
+    for r in responses:
+        assert len(r["story_sections"]) == len(SECTION_KEYS)
+    # section_keys 完全一致 (不会因入口不同而段不同)
+    section_keys_per_view = [
+        [s["section_key"] for s in r["story_sections"]]
+        for r in responses
+    ]
+    assert section_keys_per_view[0] == section_keys_per_view[1] == section_keys_per_view[2]
+    # client_id 完全一致
+    assert all(r["client_id"] == cid for r in responses)
