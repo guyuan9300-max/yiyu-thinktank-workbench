@@ -15297,22 +15297,39 @@ export default function App() {
       group: ReviewTaskGroup,
       nextStatus: 'done' | 'delayed' | 'cancelled',
     ) => {
+      // AUDIT-20260518-035 修复: "取消" 按钮以前直接 deleteTask 删除任务整体,
+      // 用户以为是 "本周不复盘",实际是高破坏性删除. 改为:
+      //   1. 二次确认弹窗,明确说明会取消任务(而不是"删除")
+      //   2. 把任务状态置为 rejected (本周复盘里显示"已取消", 任务详情仍可恢复),
+      //      不再调 deleteTask,任务记录保留,可在任务详情手工恢复或重开
+      //   3. 不再从 reviewForm 删除 entry,避免下次进周复盘时同条任务重新出现
+      //      还要从头标记
+      if (nextStatus === 'cancelled') {
+        const groupLabel = group.taskCount > 1 ? `本组 ${group.taskCount} 条任务` : '该任务';
+        const confirmed = window.confirm(
+          `确定要取消${groupLabel}吗?\n\n` +
+          '任务将被标记为"已取消",在本周复盘里隐藏.\n' +
+          '任务记录保留,如需恢复请到任务详情手动重开.\n\n' +
+          '注:本操作不会删除任务,但会从任务列表过滤掉已取消状态.',
+        );
+        if (!confirmed) return;
+      }
       setReviewStatusChangingGroupId(group.id);
       try {
         setSavedReviewGroupId((current) => (current === group.id ? null : current));
         markReviewTasksDirty(group.rows.map(({ task }) => task.id));
         if (nextStatus === 'cancelled') {
-          await Promise.all(group.rows.map(({ task }) => deleteTask(task.id)));
-          setReviewForm((prev) => {
-            const nextEntries = { ...prev.entriesByTaskId };
-            for (const { task } of group.rows) {
-              delete nextEntries[task.id];
-            }
-            return {
-              ...prev,
-              entriesByTaskId: nextEntries,
-            };
-          });
+          // 用 updateTask 直接把 status 设为 rejected,不带 completedAt
+          // (completedAt 语义是"完成时间", 取消不是完成).
+          // 任务从任务列表的活跃视图过滤掉, 但在任务详情/全部状态视图仍可见,
+          // 用户可手动改回 doing/todo 来恢复.
+          await Promise.all(
+            group.rows.map(({ task }) =>
+              updateTask(task.id, { status: 'rejected' }),
+            ),
+          );
+          // 不删 reviewForm.entriesByTaskId, 保留 review entry 让本组在复盘里
+          // 仍能看到"已取消"helperLabel, 提供从复盘退出的视觉反馈.
         } else {
           const willBeDone = nextStatus === 'done';
           const completedAt = willBeDone ? new Date().toISOString() : undefined;
@@ -15350,11 +15367,11 @@ export default function App() {
             : nextStatus === 'delayed'
               ? '已标记为延迟。'
               : group.taskCount > 1
-                ? '本组任务已删除。'
-                : '任务已删除。',
+                ? '本组任务已取消(任务记录保留,可在任务详情恢复)。'
+                : '任务已取消(任务记录保留,可在任务详情恢复)。',
         );
       } catch (error) {
-        flash('error', error instanceof Error ? error.message : nextStatus === 'cancelled' ? '任务删除失败' : '任务状态更新失败');
+        flash('error', error instanceof Error ? error.message : nextStatus === 'cancelled' ? '任务取消失败' : '任务状态更新失败');
       } finally {
         setReviewStatusChangingGroupId((current) => (current === group.id ? null : current));
       }

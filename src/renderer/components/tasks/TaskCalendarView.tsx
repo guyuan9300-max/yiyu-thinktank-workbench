@@ -446,7 +446,27 @@ export function TaskCalendarView({
   // 标记"刚刚 drop 完"的时间戳：浏览器在 drop 之后还会派发 click，
   // 没有这个标志位就会让 handleCreateTaskFromWeekSlot 误以为用户点击空槽要建任务。
   const justDroppedAtRef = useRef(0);
-  const today = useMemo(() => new Date(), []);
+  // AUDIT-20260518-022 修复: today 不能用 useMemo([], []) 固定到首次渲染时间.
+  // 软件长时间打开跨过零点后, today 仍指向昨天, 月历高亮和"今日"判断全错.
+  // 改为 state + 分钟级 interval + window focus 重算, 跨零点立刻刷新.
+  const [today, setToday] = useState(() => new Date());
+  useEffect(() => {
+    const ymd = (d: Date) => `${d.getFullYear()}-${d.getMonth()}-${d.getDate()}`;
+    const refresh = () => {
+      const now = new Date();
+      setToday((prev) => (ymd(prev) === ymd(now) ? prev : now));
+    };
+    // 分钟级 tick: 至少能在跨过零点的一分钟内捕捉到日期变化
+    const interval = window.setInterval(refresh, 60_000);
+    // 窗口重新激活时也立刻校准 (用户合电脑后打开就是新的一天)
+    window.addEventListener('focus', refresh);
+    document.addEventListener('visibilitychange', refresh);
+    return () => {
+      window.clearInterval(interval);
+      window.removeEventListener('focus', refresh);
+      document.removeEventListener('visibilitychange', refresh);
+    };
+  }, []);
   const taskDateForCalendar = resolveTaskCalendarDate;
 
   // 月视图打开时，让"今天"滚动到视口上 1/3 位置（过去 1/3 + 未来 2/3）。

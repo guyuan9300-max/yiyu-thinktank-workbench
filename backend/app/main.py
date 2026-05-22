@@ -29820,6 +29820,35 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
 
         dims, overall, model_used = generate_narrative_dimensions(state.ai, bundle, db=state.db)
 
+        # AUDIT-20260518-048 修复: AI 失败时, narrative_generator._all_stub 会把所有 6 维度
+        # 填上 "AI 暂时讲不出此维度 — xxx 调用失败" 的占位文本, model_used="stub".
+        # 旧实现仍把 stub dims POST 给云端 ingest, 覆盖上一版有效 narrative — 用户辛苦攒下的
+        # 客户档案被一次模型断线全清空. 这里短路: 如果本次返回是 stub, 不调 cloud ingest,
+        # 也不返回 stub dims 给前端; 直接抛 500 + 友好 detail, 前端继续显示上一版 narrative.
+        if model_used == "stub":
+            stub_reason = ""
+            try:
+                # 从任一维度 confidenceReason 提取根因, 便于前端展示
+                for dim_data in dims.values():
+                    if isinstance(dim_data, dict):
+                        reason = str(dim_data.get("confidenceReason") or "")
+                        if reason and "失败" in reason or "未就绪" in reason or "AI 未" in reason:
+                            stub_reason = reason
+                            break
+            except Exception:
+                pass
+            logger.warning(
+                "[narrative-regenerate] AI stub 返回, 保留旧版 narrative 不写入 cloud. client=%s reason=%s",
+                client_id, stub_reason or "(未提取到具体原因)",
+            )
+            raise HTTPException(
+                status_code=503,
+                detail=(
+                    f"AI 本次生成失败,已保留上一版客户档案不变。"
+                    f"请稍后重试。失败原因:{stub_reason or '模型暂时不可用'}"
+                ),
+            )
+
         # 单维度模式: payload.dimensions 指定本次仅刷新的维度名列表 (如 ["essence", "timeline"]).
         # 未指定的维度从 cloud 现有 narrative 中提取并保留 — 防止 ingest 把它们清空,
         # 进而覆盖其他同事或自己之前校准过的内容. payload.dimensions 为空 / None / 不是 list
@@ -53253,11 +53282,18 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 el_row = state.db.fetchone("SELECT primary_client_id FROM event_lines WHERE id = ?", (el_id,))
                 if el_row and el_row["primary_client_id"]:
                     resolved_client_id = str(el_row["primary_client_id"])
-        # Fall back to organization's default client
+        # AUDIT-20260518-014 修复: 旧 fallback 用 "SELECT id FROM clients ORDER BY name LIMIT 1"
+        # 任取一个客户作为归档目标. 录音转写会沉淀到工作台,归档到错的客户会污染客户资料、
+        # 任务附件和 AI 摘要. 改为明确要求 client_id 必须从 task / event_line / 显式 form 拿到,
+        # 都拿不到就 400, 让前端先选项目, 不静默写到错对象上.
         if not resolved_client_id:
-            org_client = state.db.fetchone("SELECT id FROM clients ORDER BY name LIMIT 1")
-            if org_client:
-                resolved_client_id = str(org_client["id"])
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "附件归档需要明确的项目或事件线。"
+                    "请先在任务编辑器选择客户/项目,或将该任务挂到事件线后再上传。"
+                ),
+            )
         build_client_summary(resolved_client_id)
         ensure_standard_client_folders(resolved_client_id)
 
@@ -53713,8 +53749,13 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             except Exception:
                 pass  # cloud down — reject locally
         timestamp = now_iso()
+        # AUDIT-20260518-003 修复: 旧 fallback 把整条任务设为 rejected, 对多人协作过于粗暴 —
+        # 一个协作者退回会让整条任务被拒绝/隐藏, 影响发起人和其他协作者. 与云端 ACL 语义不一致.
+        # 改为只更新当前协作者状态 (returned + reason), 不动 tasks.status / progress_status —
+        # 发起人 / 负责人会通过任务详情的 collaborator-return 反馈看到退回, 再决定改写、重发或关闭整条任务.
         _mark_task_collaborator_handled(task_id, session_user.id if session_user else None, "returned", reason=payload.reason)
-        state.db.execute("UPDATE tasks SET status = 'rejected', updated_at = ? WHERE id = ?", (timestamp, task_id))
+        # 仅刷 updated_at 让任务在列表/同步中重新排序到顶部, 不变更任务 status.
+        state.db.execute("UPDATE tasks SET updated_at = ? WHERE id = ?", (timestamp, task_id))
         upsert_task_note(task_id, payload.reason)
         log_activity("task.reject", "task", task_id, {"reason": payload.reason, "userId": session_user.id if session_user else None})
         return fetch_tasks("t.id = ?", (task_id,))[0]
@@ -57533,8 +57574,14 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         clauses: list[str] = []
         params: list[object] = []
         if contentKind:
-            if contentKind not in {"profile_completion", "timely_intelligence"}:
-                raise HTTPException(status_code=400, detail="contentKind 必须是 profile_completion 或 timely_intelligence")
+            # AUDIT-20260518-055: 跟 IntelligenceContentKind Literal 对齐.
+            # profile_completion 已下线, public_opinion 是新增的舆情监控.
+            # 兼容旧客户端: 旧版本可能仍传 profile_completion, 我们静默不返回任何 row 而不是 400,
+            # 避免老安装包打开资讯情报站立刻报错.
+            if contentKind == "profile_completion":
+                return []
+            if contentKind not in {"timely_intelligence", "public_opinion"}:
+                raise HTTPException(status_code=400, detail="contentKind 必须是 timely_intelligence 或 public_opinion")
             clauses.append("content_kind = ?")
             params.append(contentKind)
         if scopeType and scopeType != "all":
@@ -57561,7 +57608,17 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             """,
             tuple([*params, limit]),
         )
-        return [_intelligence_refresh_run_from_row(row) for row in rows]
+        # AUDIT-20260518-055 修复: 新版把 IntelligenceContentKind 收窄成
+        # Literal["timely_intelligence", "public_opinion"], 不再含 profile_completion.
+        # 但本机历史 intelligence_refresh_runs 表里仍有 profile_completion 旧记录,
+        # 直接构造 IntelligenceRefreshRunRecord 时 Pydantic 校验会 500.
+        # 这里过滤掉 content_kind 已下线的行, 兼容旧数据库.
+        valid_kinds = {"timely_intelligence", "public_opinion"}
+        return [
+            _intelligence_refresh_run_from_row(row)
+            for row in rows
+            if str(row["content_kind"] or "") in valid_kinds
+        ]
 
     @app.post("/api/v1/intelligence/refresh", response_model=IntelligenceRefreshResult)
     def trigger_intelligence_refresh(
