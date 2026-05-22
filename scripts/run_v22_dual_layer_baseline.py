@@ -37,9 +37,14 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
+# V2.1 backend 优先 (A 5/22 autonomous loop 在 V2.1 改了 narrative_generator/collector/extractor)
+# 顾源源红线: V2.1 改的不污染主仓库, 但 baseline 必须测 V2.1 真实效果
+# 跟 scripts/run_v22_dogfood_6dim_baseline.py 同 sys.path 策略 (A M-C.1 修过, f5dde56)
 MAIN_REPO = Path.home() / "openclaw/workspace/yiyu-thinktank-workbench"
-sys.path.insert(0, str(MAIN_REPO / "backend"))
-sys.path.insert(0, str(MAIN_REPO))
+sys.path.insert(0, str(ROOT / "backend"))   # ★ V2.1 backend 第一优先
+sys.path.insert(0, str(ROOT))
+sys.path.append(str(MAIN_REPO / "backend"))  # fallback (V2.1 没的从主仓库取)
+sys.path.append(str(MAIN_REPO))
 
 REPORTS_DIR = ROOT / "tests" / "reports"
 REPORTS_DIR.mkdir(parents=True, exist_ok=True)
