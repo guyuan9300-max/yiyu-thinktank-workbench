@@ -27782,7 +27782,6 @@ export default function App() {
                       onExitMaintenanceMode={() => {
                         void handleExitMaintenanceMode();
                       }}
-                      isAdmin={currentSessionUser?.primaryRole === 'admin'}
                     />
                   ),
                 })}
