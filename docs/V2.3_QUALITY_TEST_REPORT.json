@@ -1,17 +1,17 @@
 {
   "test_meta": {
-    "run_at": "2026-05-22T23:27:10.352267+00:00",
+    "run_at": "2026-05-22T23:30:41.416811+00:00",
     "client_id": "client_qinghe_v23test",
     "client_name": "青禾公益基金会",
     "project_name": "乡村儿童阅读陪伴项目",
-    "db_path": "/var/folders/dh/rnl6b50x44vc5g5l9p716x880000gn/T/qinghe_v23test_tk0odci7/app.db",
+    "db_path": "/var/folders/dh/rnl6b50x44vc5g5l9p716x880000gn/T/qinghe_v23test_tjgal9mi/app.db",
     "data_count": 12,
     "question_count": 50
   },
   "ingest_results": [
     {
       "datum_id": "A1_meeting_5_6",
-      "fact_id": "af_b31e11f83ffb",
+      "fact_id": "af_afd486115f3f",
       "written": true,
       "update_relation": "none",
       "superseded_target_id": null,
@@ -22,7 +22,7 @@
     },
     {
       "datum_id": "A1_meeting_5_6",
-      "fact_id": "af_6043c4f9f40b",
+      "fact_id": "af_86b0cd2f439c",
       "written": true,
       "update_relation": "none",
       "superseded_target_id": null,
@@ -33,7 +33,7 @@
     },
     {
       "datum_id": "A1_meeting_5_6",
-      "fact_id": "af_90619dd36c77",
+      "fact_id": "af_d77034cf33c9",
       "written": true,
       "update_relation": "none",
       "superseded_target_id": null,
@@ -44,7 +44,7 @@
     },
     {
       "datum_id": "A2_send_v1_5_11",
-      "fact_id": "af_146d18758a53",
+      "fact_id": "af_9f794bf643d1",
       "written": true,
       "update_relation": "none",
       "superseded_target_id": null,
@@ -55,7 +55,7 @@
     },
     {
       "datum_id": "A2_send_v1_5_11",
-      "fact_id": "af_666bb482d392",
+      "fact_id": "af_4821e6bbe72e",
       "written": true,
       "update_relation": "none",
       "superseded_target_id": null,
@@ -66,7 +66,7 @@
     },
     {
       "datum_id": "A3_weekly_review",
-      "fact_id": "af_42677677a02a",
+      "fact_id": "af_1d72f29bb30c",
       "written": true,
       "update_relation": "none",
       "superseded_target_id": null,
@@ -77,7 +77,7 @@
     },
     {
       "datum_id": "A3_weekly_review",
-      "fact_id": "af_37d73383673d",
+      "fact_id": "af_ea7349ded228",
       "written": true,
       "update_relation": "complement",
       "superseded_target_id": null,
@@ -88,7 +88,7 @@
     },
     {
       "datum_id": "A3_weekly_review",
-      "fact_id": "af_c836a5fe0771",
+      "fact_id": "af_2e3bd11dce62",
       "written": true,
       "update_relation": "none",
       "superseded_target_id": null,
@@ -99,7 +99,7 @@
     },
     {
       "datum_id": "B4_v1_5_8",
-      "fact_id": "af_5ecbb6953556",
+      "fact_id": "af_92ab8aedc619",
       "written": true,
       "update_relation": "none",
       "superseded_target_id": null,
@@ -110,7 +110,7 @@
     },
     {
       "datum_id": "B4_v1_5_8",
-      "fact_id": "af_2729af07107b",
+      "fact_id": "af_17c5d685754f",
       "written": true,
       "update_relation": "none",
       "superseded_target_id": null,
@@ -121,7 +121,7 @@
     },
     {
       "datum_id": "B4_v1_5_8",
-      "fact_id": "af_774b9be1b3f8",
+      "fact_id": "af_9aa754b7b8bd",
       "written": true,
       "update_relation": "none",
       "superseded_target_id": null,
@@ -132,7 +132,7 @@
     },
     {
       "datum_id": "B5_v2_5_18",
-      "fact_id": "af_758f8a849dd2",
+      "fact_id": "af_410cfa6d474d",
       "written": true,
       "update_relation": "none",
       "superseded_target_id": null,
@@ -143,7 +143,7 @@
     },
     {
       "datum_id": "B5_v2_5_18",
-      "fact_id": "af_040e7b1948d2",
+      "fact_id": "af_91958edefc39",
       "written": true,
       "update_relation": "none",
       "superseded_target_id": null,
@@ -154,7 +154,7 @@
     },
     {
       "datum_id": "B5_v2_5_18",
-      "fact_id": "af_348671124b2f",
+      "fact_id": "af_94a241cd073e",
       "written": true,
       "update_relation": "none",
       "superseded_target_id": null,
@@ -165,7 +165,7 @@
     },
     {
       "datum_id": "B5_v2_5_18",
-      "fact_id": "af_2eb9c41a5d73",
+      "fact_id": "af_b03e688c18d0",
       "written": true,
       "update_relation": "none",
       "superseded_target_id": null,
@@ -176,7 +176,7 @@
     },
     {
       "datum_id": "B6_our_feedback_5_20",
-      "fact_id": "af_aa9f4c7de022",
+      "fact_id": "af_5d160d314fff",
       "written": true,
       "update_relation": "none",
       "superseded_target_id": null,
@@ -187,7 +187,7 @@
     },
     {
       "datum_id": "B6_our_feedback_5_20",
-      "fact_id": "af_75072a2457a3",
+      "fact_id": "af_2e336bf6765f",
       "written": true,
       "update_relation": "none",
       "superseded_target_id": null,
@@ -198,7 +198,7 @@
     },
     {
       "datum_id": "B6_our_feedback_5_20",
-      "fact_id": "af_ccc22dc339f1",
+      "fact_id": "af_ef9aa8afb666",
       "written": true,
       "update_relation": "none",
       "superseded_target_id": null,
@@ -209,7 +209,7 @@
     },
     {
       "datum_id": "C7_official_site_5_3",
-      "fact_id": "af_d76511080dc5",
+      "fact_id": "af_edf7c6ccbe96",
       "written": true,
       "update_relation": "none",
       "superseded_target_id": null,
@@ -220,7 +220,7 @@
     },
     {
       "datum_id": "C7_official_site_5_3",
-      "fact_id": "af_df197300cc03",
+      "fact_id": "af_afec24417180",
       "written": true,
       "update_relation": "none",
       "superseded_target_id": null,
@@ -231,7 +231,7 @@
     },
     {
       "datum_id": "C8_media_5_9",
-      "fact_id": "af_128085c3dda8",
+      "fact_id": "af_931d64ec43ae",
       "written": true,
       "update_relation": "none",
       "superseded_target_id": null,
@@ -242,7 +242,7 @@
     },
     {
       "datum_id": "C8_media_5_9",
-      "fact_id": "af_1b19fc8069db",
+      "fact_id": "af_eb3129cce145",
       "written": true,
       "update_relation": "none",
       "superseded_target_id": null,
@@ -253,7 +253,7 @@
     },
     {
       "datum_id": "D9_background",
-      "fact_id": "af_141e7d997cbd",
+      "fact_id": "af_21487b84bc2a",
       "written": true,
       "update_relation": "none",
       "superseded_target_id": null,
@@ -264,7 +264,7 @@
     },
     {
       "datum_id": "D9_background",
-      "fact_id": "af_7d1d5f016108",
+      "fact_id": "af_b11d7083b9ce",
       "written": true,
       "update_relation": "none",
       "superseded_target_id": null,
@@ -275,7 +275,7 @@
     },
     {
       "datum_id": "D9_background",
-      "fact_id": "af_76deaaca3d00",
+      "fact_id": "af_786193873815",
       "written": true,
       "update_relation": "none",
       "superseded_target_id": null,
@@ -286,7 +286,7 @@
     },
     {
       "datum_id": "D9_background",
-      "fact_id": "af_2c89536f8731",
+      "fact_id": "af_fa012d0c9f08",
       "written": true,
       "update_relation": "none",
       "superseded_target_id": null,
@@ -297,7 +297,7 @@
     },
     {
       "datum_id": "D10_hidden_risk",
-      "fact_id": "af_5694eeabf1a8",
+      "fact_id": "af_d3dc59d096aa",
       "written": true,
       "update_relation": "none",
       "superseded_target_id": null,
@@ -308,7 +308,7 @@
     },
     {
       "datum_id": "D10_hidden_risk",
-      "fact_id": "af_16fac97a1171",
+      "fact_id": "af_bd1096795470",
       "written": true,
       "update_relation": "none",
       "superseded_target_id": null,
@@ -319,7 +319,7 @@
     },
     {
       "datum_id": "D11_correction",
-      "fact_id": "af_be552abb2cd6",
+      "fact_id": "af_f5cf69c7656b",
       "written": true,
       "update_relation": "none",
       "superseded_target_id": null,
@@ -330,7 +330,7 @@
     },
     {
       "datum_id": "D11_correction",
-      "fact_id": "af_dae288632214",
+      "fact_id": "af_d105ecdff7be",
       "written": true,
       "update_relation": "none",
       "superseded_target_id": null,
@@ -341,7 +341,7 @@
     },
     {
       "datum_id": "D11_correction",
-      "fact_id": "af_fceb086c625a",
+      "fact_id": "af_156b1eaaa0cc",
       "written": true,
       "update_relation": "none",
       "superseded_target_id": null,
@@ -352,7 +352,7 @@
     },
     {
       "datum_id": "E12_method_card",
-      "fact_id": "af_28ee0c015dc2",
+      "fact_id": "af_61f112f7d674",
       "written": true,
       "update_relation": "none",
       "superseded_target_id": null,
@@ -363,7 +363,7 @@
     },
     {
       "datum_id": "E12_method_card",
-      "fact_id": "af_92ab417f63c1",
+      "fact_id": "af_57e3e0dcdf04",
       "written": true,
       "update_relation": "none",
       "superseded_target_id": null,
@@ -389,15 +389,23 @@
     "commitments_new": 1,
     "strategic_insights_new": 6
   },
+  "conflict_result": {
+    "same_attr_value_diff": 2,
+    "role_diff": 1,
+    "media_lag": 1,
+    "oral_no_official": 1,
+    "fact_contradictions_written": 5,
+    "clarifications_written": 5
+  },
   "semantic_table_counts": {
     "event_line_activities": 33,
     "risk_signals": 6,
     "commitments": 1,
     "strategic_thought_insights": 6,
-    "fact_contradictions": 0,
-    "clarification_records": 1
+    "fact_contradictions": 5,
+    "clarification_records": 6
   },
-  "story_card_md": "# 📋 项目故事卡 · 青禾公益基金会\n\n_生成时间: 2026-05-22 23:27_  \n_客户 ID: `client_qinghe_v23test`_  \n\n> 顾源源 5/22 蓝图 § 九 钦定 10 段产品形态\n\n---\n\n## 1️⃣ 项目背景\n\n**青禾公益基金会** · 阶段: 推进中\n\n公益基金会客户,2026 年 5 月起服务,乡村儿童阅读陪伴项目试点中\n\n\n## 2️⃣ 当前阶段\n\n- **乡村儿童阅读陪伴项目** · 试点筹备 · active\n  - 卡点: 学校名单未确认\n  - 下一步: 确认试点范围和预算边界\n\n_活跃任务: 0 条_\n\n\n## 3️⃣ 关键人物\n\n- **李明** · 新角色 = 执行推进\n- **李明** · 角色 = 青禾公益基金会项目经理\n- **王华** · 角色 = 秘书长 / 内部协调\n\n\n## 4️⃣ 时间线\n\n- **2026-05-22** · sys: 乡村儿童阅读陪伴项目 · 500 万评价\n- **2026-05-22** · sys: 乡村儿童阅读陪伴项目 · 当前权威范围\n- **2026-05-22** · sys: 乡村儿童阅读陪伴项目 · 当前权威预算\n- **2026-05-22** · sys: 项目 · 用户担忧\n- **2026-05-22** · sys: 项目 · 隐性风险\n- **2026-05-22** · sys: 青禾公益基金会 · 风险\n- **2026-05-22** · 陈老师: 陈老师 · 用户判断\n- **2026-05-22** · 王华: 王华 · 用户判断\n- **2026-05-22** · 李明: 李明 · 用户判断\n- **2026-05-22** · sys: 项目 · 下周重点\n- **2026-05-22** · sys: 项目 · 卡点\n- **2026-05-22** · sys: 项目 · 卡点\n- **2026-05-20** · sys: 项目 · 验证维度\n- **2026-05-20** · sys: 项目 · 风险\n- **2026-05-20** · sys: 我方 · 判断\n\n\n## 5️⃣ 核心事实\n\n- **项目** · 验证维度 = 家长参与/学校配合/志愿者稳定性/活动持续性 _(conf 0.90)_\n- **项目** · 风险 = 扩张过快导致服务质量失控 _(conf 0.90)_\n- **我方** · 判断 = 先验证机制再扩大点位 _(conf 0.90)_\n- **王华** · 角色 = 秘书长 / 内部协调 _(conf 0.90)_\n- **李明** · 新角色 = 执行推进 _(conf 0.90)_\n- **乡村儿童阅读陪伴项目** · 总预算(v2) = 300 万元 _(conf 0.90)_\n- **乡村儿童阅读陪伴项目** · 试点学校数(v2) = 3 所 _(conf 0.90)_\n- **乡村儿童阅读陪伴项目** · 负责人(v1) = 李明 _(conf 0.90)_\n- **乡村儿童阅读陪伴项目** · 总预算(v1) = 500 万元 _(conf 0.90)_\n- **乡村儿童阅读陪伴项目** · 覆盖学校数(v1) = 10 所 _(conf 0.90)_\n- **我方** · 核心判断 = 不建议一开始扩到 10 所学校 _(conf 0.90)_\n- **我方** · 行动 = 5/11 发送第一版试点方案 _(conf 0.90)_\n- **李明** · 角色 = 青禾公益基金会项目经理 _(conf 0.90)_\n- **李明** · 承诺 = 5/10 前提供 3 所试点学校名单 _(conf 0.90)_\n- **乡村儿童阅读陪伴项目** · 首次沟通日期 = 2026-05-06 _(conf 0.90)_\n- **王华** · 出席 = 5/3 启动会 _(conf 0.85)_\n- **乡村儿童阅读陪伴项目** · 对外公开日 = 2026-05-03 _(conf 0.85)_\n- **项目** · 下周重点 = 确认试点范围和预算边界 _(conf 0.85)_\n- **项目** · 卡点 = 预算口径不统一 _(conf 0.85)_\n- **项目** · 卡点 = 学校名单未确认 _(conf 0.85)_\n\n\n## 6️⃣ 关键判断\n\n- **我方 · 核心判断** _strategic_shift_\n  - 不建议一开始扩到 10 所学校\n- **项目 · 下周重点** _next_step_\n  - 确认试点范围和预算边界\n- **我方 · 判断** _strategic_shift_\n  - 先验证机制再扩大点位\n- **李明 · 用户判断** _user_observation_\n  - 执行积极但非拍板人\n- **王华 · 用户判断** _user_observation_\n  - 方向影响者\n- **陈老师 · 用户判断** _user_observation_\n  - 最终拍板人 (待客户官方确认)\n\n\n## 7️⃣ 冲突与待澄清\n\n**澄清队列 (跨源嫌疑)**:\n- 乡村儿童阅读陪伴项目 的 总预算: 「300 万元」 vs 「500 万元」 — 哪个是当前权威值?\n\n\n## 8️⃣ 风险\n\n- **青禾公益基金会 · 风险** · operational_risk · 严重度 medium\n  - 内部尚未想清长期运营机制\n- **项目 · 用户担忧** · operational_risk · 严重度 medium\n  - 3 校试点被对外说成 10 校推广\n- **项目 · 卡点** · operational_risk · 严重度 high\n  - 学校名单未确认\n- **项目 · 卡点** · operational_risk · 严重度 high\n  - 预算口径不统一\n- **项目 · 风险** · operational_risk · 严重度 high\n  - 扩张过快导致服务质量失控\n- **项目 · 隐性风险** · operational_risk · 严重度 high\n  - 宣传压力 > 服务质量\n\n\n## 9️⃣ 下一步\n\n\n**承诺**:\n- 李明 → 项目方: 5/10 前提供 3 所试点学校名单\n\n\n## 🔟 证据来源\n\n- v2_documents: 0 份\n- atomic_facts: 33 条\n- source_registry: 33 条 (V2.3 阶段 1 接通后填充)\n\n",
+  "story_card_md": "# 📋 项目故事卡 · 青禾公益基金会\n\n_生成时间: 2026-05-22 23:30_  \n_客户 ID: `client_qinghe_v23test`_  \n\n> 顾源源 5/22 蓝图 § 九 钦定 10 段产品形态\n\n---\n\n## 1️⃣ 项目背景\n\n**青禾公益基金会** · 阶段: 推进中\n\n公益基金会客户,2026 年 5 月起服务,乡村儿童阅读陪伴项目试点中\n\n\n## 2️⃣ 当前阶段\n\n- **乡村儿童阅读陪伴项目** · 试点筹备 · active\n  - 卡点: 学校名单未确认\n  - 下一步: 确认试点范围和预算边界\n\n_活跃任务: 0 条_\n\n\n## 3️⃣ 关键人物\n\n- **李明** · 新角色 = 执行推进\n- **李明** · 角色 = 青禾公益基金会项目经理\n- **王华** · 角色 = 秘书长 / 内部协调\n\n\n## 4️⃣ 时间线\n\n- **2026-05-22** · sys: 乡村儿童阅读陪伴项目 · 500 万评价\n- **2026-05-22** · sys: 乡村儿童阅读陪伴项目 · 当前权威范围\n- **2026-05-22** · sys: 乡村儿童阅读陪伴项目 · 当前权威预算\n- **2026-05-22** · sys: 项目 · 用户担忧\n- **2026-05-22** · sys: 项目 · 隐性风险\n- **2026-05-22** · sys: 青禾公益基金会 · 风险\n- **2026-05-22** · 陈老师: 陈老师 · 用户判断\n- **2026-05-22** · 王华: 王华 · 用户判断\n- **2026-05-22** · 李明: 李明 · 用户判断\n- **2026-05-22** · sys: 项目 · 下周重点\n- **2026-05-22** · sys: 项目 · 卡点\n- **2026-05-22** · sys: 项目 · 卡点\n- **2026-05-20** · sys: 项目 · 验证维度\n- **2026-05-20** · sys: 项目 · 风险\n- **2026-05-20** · sys: 我方 · 判断\n\n\n## 5️⃣ 核心事实\n\n- **项目** · 验证维度 = 家长参与/学校配合/志愿者稳定性/活动持续性 _(conf 0.90)_\n- **项目** · 风险 = 扩张过快导致服务质量失控 _(conf 0.90)_\n- **我方** · 判断 = 先验证机制再扩大点位 _(conf 0.90)_\n- **王华** · 角色 = 秘书长 / 内部协调 _(conf 0.90)_\n- **李明** · 新角色 = 执行推进 _(conf 0.90)_\n- **乡村儿童阅读陪伴项目** · 总预算(v2) = 300 万元 _(conf 0.90)_\n- **乡村儿童阅读陪伴项目** · 试点学校数(v2) = 3 所 _(conf 0.90)_\n- **乡村儿童阅读陪伴项目** · 负责人(v1) = 李明 _(conf 0.90)_\n- **乡村儿童阅读陪伴项目** · 总预算(v1) = 500 万元 _(conf 0.90)_\n- **乡村儿童阅读陪伴项目** · 覆盖学校数(v1) = 10 所 _(conf 0.90)_\n- **我方** · 核心判断 = 不建议一开始扩到 10 所学校 _(conf 0.90)_\n- **我方** · 行动 = 5/11 发送第一版试点方案 _(conf 0.90)_\n- **李明** · 角色 = 青禾公益基金会项目经理 _(conf 0.90)_\n- **李明** · 承诺 = 5/10 前提供 3 所试点学校名单 _(conf 0.90)_\n- **乡村儿童阅读陪伴项目** · 首次沟通日期 = 2026-05-06 _(conf 0.90)_\n- **王华** · 出席 = 5/3 启动会 _(conf 0.85)_\n- **乡村儿童阅读陪伴项目** · 对外公开日 = 2026-05-03 _(conf 0.85)_\n- **项目** · 下周重点 = 确认试点范围和预算边界 _(conf 0.85)_\n- **项目** · 卡点 = 预算口径不统一 _(conf 0.85)_\n- **项目** · 卡点 = 学校名单未确认 _(conf 0.85)_\n\n\n## 6️⃣ 关键判断\n\n- **我方 · 核心判断** _strategic_shift_\n  - 不建议一开始扩到 10 所学校\n- **项目 · 下周重点** _next_step_\n  - 确认试点范围和预算边界\n- **我方 · 判断** _strategic_shift_\n  - 先验证机制再扩大点位\n- **李明 · 用户判断** _user_observation_\n  - 执行积极但非拍板人\n- **王华 · 用户判断** _user_observation_\n  - 方向影响者\n- **陈老师 · 用户判断** _user_observation_\n  - 最终拍板人 (待客户官方确认)\n\n\n## 7️⃣ 冲突与待澄清\n\n**澄清队列 (跨源嫌疑)**:\n- 李明 在不同资料里角色描述不同: 负责人, 执行推进, 角色:青禾公益基金会项目经理. 请确认 李明 当前真实角色, 系统会更新人物档案.\n- 陈老师 相关信息只在用户口述里出现 (例如: 「最终拍板人 (待客户官方确认)」), 客户官方文件和外部公开信息都没有提到. 是否需要找客户正式确认这个人物的角色和职责?\n- 乡村儿童阅读陪伴项目 的 总预算 对外口径可能滞后: 媒体说「500 万元」(同 v1 旧版), 客户最新 v2 已是「300 万元」. 对外引用应该用 v2 吗? 是否需要提醒客户更新外部口径?\n- 项目 的 卡点: 「预算口径不统一」(来源 collaboration_review) vs 「学校名单未确认」(来源 collaboration_review) — 哪个是当前权威值? 用户确认后系统会标旧值为 superseded.\n- 乡村儿童阅读陪伴项目 的 总预算: 「300 万元」(来源 client_internal_doc) vs 「500 万元」(来源 client_internal_doc) — 系统检测到 v1/v2 版本链, 请确认 v2 是否覆盖 v1\n- 乡村儿童阅读陪伴项目 的 总预算: 「500 万元」 vs 「300 万元」 — 哪个是当前权威值?\n\n**事实冲突**:\n- role_diff (medium): \n- oral_no_official (high): \n- media_lag (medium): \n- value_diff (high): \n- version_chain (medium): \n\n\n## 8️⃣ 风险\n\n- **青禾公益基金会 · 风险** · operational_risk · 严重度 medium\n  - 内部尚未想清长期运营机制\n- **项目 · 用户担忧** · operational_risk · 严重度 medium\n  - 3 校试点被对外说成 10 校推广\n- **项目 · 卡点** · operational_risk · 严重度 high\n  - 学校名单未确认\n- **项目 · 卡点** · operational_risk · 严重度 high\n  - 预算口径不统一\n- **项目 · 风险** · operational_risk · 严重度 high\n  - 扩张过快导致服务质量失控\n- **项目 · 隐性风险** · operational_risk · 严重度 high\n  - 宣传压力 > 服务质量\n\n\n## 9️⃣ 下一步\n\n\n**承诺**:\n- 李明 → 项目方: 5/10 前提供 3 所试点学校名单\n\n\n## 🔟 证据来源\n\n- v2_documents: 0 份\n- atomic_facts: 33 条\n- source_registry: 33 条 (V2.3 阶段 1 接通后填充)\n\n",
   "qa_results": [
     {
       "qid": "Q01",
@@ -1364,8 +1372,8 @@
         }
       },
       "D3": {
-        "clarifications_total": 1,
-        "fact_contradictions_total": 0,
+        "clarifications_total": 6,
+        "fact_contradictions_total": 5,
         "value_conflicts_detected": 3,
         "value_conflicts_sample": [
           {
@@ -1395,14 +1403,16 @@
             "conflict": "预算口径冲突",
             "hit": true,
             "via": [
-              "atomic_facts_value_conflict"
+              "atomic_facts_value_conflict",
+              "fact_contradictions"
             ]
           },
           {
             "conflict": "项目范围冲突",
             "hit": true,
             "via": [
-              "atomic_facts_value_conflict"
+              "atomic_facts_value_conflict",
+              "fact_contradictions"
             ]
           },
           {
@@ -1429,10 +1439,34 @@
         ],
         "clarifications_sample": [
           {
-            "id": "clar_vconf_bc13b32771554b79",
-            "question": "乡村儿童阅读陪伴项目 的 总预算: 「300 万元」 vs 「500 万元」 — 哪个是当前权威值?",
-            "slot_key": "value_conflict/乡村儿童阅读陪伴项目_总预算",
-            "write_scope_json": "{\"client_id\": \"client_qinghe_v23test\", \"subject\": \"乡村儿童阅读陪伴项目\", \"attribute_base\": \"总预算\", \"conflicting_values\": [\"300 万元\", \"500 万元\"], \"fact_count\": 2}"
+            "id": "clar_ec389a3695494a728097f9ea",
+            "question": "李明 在不同资料里角色描述不同: 负责人, 执行推进, 角色:青禾公益基金会项目经理. 请确认 李明 当前真实角色, 系统会更新人物档案.",
+            "slot_key": "role_diff/李明",
+            "write_scope_json": "{\"client_id\": \"client_qinghe_v23test\", \"person\": \"李明\", \"conflict_kind\": \"role_diff\", \"roles\": [\"负责人\", \"执行推进\", \"角色:青禾公益基金会项目经理\"]}"
+          },
+          {
+            "id": "clar_4cca66ff50b94e88828c44c0",
+            "question": "陈老师 相关信息只在用户口述里出现 (例如: 「最终拍板人 (待客户官方确认)」), 客户官方文件和外部公开信息都没有提到. 是否需要找客户正式确认这个人物的角色和职责?",
+            "slot_key": "oral_no_official/陈老师",
+            "write_scope_json": "{\"client_id\": \"client_qinghe_v23test\", \"subject\": \"陈老师\", \"conflict_kind\": \"oral_no_official\", \"oral_facts\": [\"af_786193873815\"]}"
+          },
+          {
+            "id": "clar_8be7b68279534b7aafe735e9",
+            "question": "乡村儿童阅读陪伴项目 的 总预算 对外口径可能滞后: 媒体说「500 万元」(同 v1 旧版), 客户最新 v2 已是「300 万元」. 对外引用应该用 v2 吗? 是否需要提醒客户更新外部口径?",
+            "slot_key": "media_lag/乡村儿童阅读陪伴项目_总预算",
+            "write_scope_json": "{\"client_id\": \"client_qinghe_v23test\", \"subject\": \"乡村儿童阅读陪伴项目\", \"attribute_base\": \"总预算\", \"conflict_kind\": \"media_lag\", \"media_value\": \"500 万元\", \"v1_value\": \"500 万元\", \"v2_value\": \"300 万元\"}"
+          },
+          {
+            "id": "clar_4d3870fe6d9643eebb186b4b",
+            "question": "项目 的 卡点: 「预算口径不统一」(来源 collaboration_review) vs 「学校名单未确认」(来源 collaboration_review) — 哪个是当前权威值? 用户确认后系统会标旧值为 superseded.",
+            "slot_key": "value_diff/项目_卡点",
+            "write_scope_json": "{\"client_id\": \"client_qinghe_v23test\", \"subject\": \"项目\", \"attribute_base\": \"卡点\", \"conflict_kind\": \"value_diff\", \"values\": [{\"v\": \"预算口径不统一\", \"src\": \"collaboration_review\", \"fid\": \"af_ea7349ded228\"}, {\"v\": \"学校名单未确认\", \"src\": \"collaboration_review\", \"fid\": \"af_1d72f29bb30c\"}]}"
+          },
+          {
+            "id": "clar_c52f8c3dbd384eba83af9622",
+            "question": "乡村儿童阅读陪伴项目 的 总预算: 「300 万元」(来源 client_internal_doc) vs 「500 万元」(来源 client_internal_doc) — 系统检测到 v1/v2 版本链, 请确认 v2 是否覆盖 v1, 并标记权威值.",
+            "slot_key": "value_diff/乡村儿童阅读陪伴项目_总预算",
+            "write_scope_json": "{\"client_id\": \"client_qinghe_v23test\", \"subject\": \"乡村儿童阅读陪伴项目\", \"attribute_base\": \"总预算\", \"conflict_kind\": \"version_chain\", \"values\": [{\"v\": \"300 万元\", \"src\": \"client_internal_doc\", \"fid\": \"af_91958edefc39\"}, {\"v\": \"500 万元\", \"src\": \"client_internal_doc\", \"fid\": \"af_17c5d685754f\"}]}"
           }
         ]
       },
@@ -1495,7 +1529,7 @@
           "王华"
         ],
         "conflicts_keywords_in_card": 4,
-        "card_length": 2788
+        "card_length": 3427
       },
       "D5": {
         "total": 50,

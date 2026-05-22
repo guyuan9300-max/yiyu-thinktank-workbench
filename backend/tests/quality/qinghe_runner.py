@@ -43,6 +43,7 @@ from app.services.ingest_pipeline import (  # noqa: E402
 )
 from app.services.story_card_generator import generate_story_card  # noqa: E402
 from app.services.atomic_fact_semantic_deriver import derive_all  # noqa: E402
+from app.services.formal_conflict_detector import detect_all as detect_conflicts_all  # noqa: E402
 
 from .qinghe_dataset import (  # noqa: E402
     CLIENT_ID,
@@ -789,6 +790,8 @@ def run_full_quality_test(db_path: Path | None = None) -> dict:
     cross_source_stats = run_cross_source_scan(db)
     # V2.4 P0-1: atomic_facts → 4 张语义表派生
     derive_result = derive_all(db, CLIENT_ID)
+    # V2.4 P0-2: 正式冲突检测 + clarification 持久化 (6 类冲突)
+    conflict_result = detect_conflicts_all(db, CLIENT_ID)
     story_card_md = run_story_card(db)
     qa_results = run_50_questions(db)
     scoring = run_full_scoring(
@@ -827,6 +830,14 @@ def run_full_quality_test(db_path: Path | None = None) -> dict:
             "risk_signals_new": derive_result.risk_signals_new,
             "commitments_new": derive_result.commitments_new,
             "strategic_insights_new": derive_result.strategic_insights_new,
+        },
+        "conflict_result": {
+            "same_attr_value_diff": conflict_result.same_attr_value_diff,
+            "role_diff": conflict_result.role_diff,
+            "media_lag": conflict_result.media_lag,
+            "oral_no_official": conflict_result.oral_no_official,
+            "fact_contradictions_written": conflict_result.fact_contradictions_written,
+            "clarifications_written": conflict_result.clarifications_written,
         },
         "semantic_table_counts": semantic_table_counts,
         "story_card_md": story_card_md,
