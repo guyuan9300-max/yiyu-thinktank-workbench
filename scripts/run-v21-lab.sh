@@ -46,8 +46,9 @@ if [ ! -f "$LAB_DB_DIR/app.db" ]; then
     fi
 fi
 
-# 启动 V2.1 dev (vite + electron)
+# 启动 V2.1 dev:lab (vite 4174 + electron + main tsc-watch)
+# dev:lab 是 V2.1 lab 专属脚本, vite port 4174 (主仓库用 4173, 避冲突)
 echo ""
-echo "▸ 启动 V2.1 lab dev (YIYU_LAB_MODE=1)..."
+echo "▸ 启动 V2.1 lab dev (YIYU_LAB_MODE=1 + vite:4174 + backend:47831)..."
 export YIYU_LAB_MODE=1
-npm run dev
+npm run dev:lab
