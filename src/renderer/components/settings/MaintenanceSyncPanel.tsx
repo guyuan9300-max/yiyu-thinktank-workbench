@@ -20,7 +20,6 @@ type MaintenanceSyncPanelProps = {
   onRefreshMaintenanceMode: () => void;
   onEnterMaintenanceMode: () => void;
   onExitMaintenanceMode: () => void;
-  isAdmin?: boolean;
 };
 
 function statusLabel(status: MaintenanceModeStatus | null, error: string | null) {
@@ -40,7 +39,6 @@ export function MaintenanceSyncPanel({
   onRefreshMaintenanceMode,
   onEnterMaintenanceMode,
   onExitMaintenanceMode,
-  isAdmin = false,
 }: MaintenanceSyncPanelProps) {
   const [members, setMembers] = useState<MaintenanceMemberPermission[]>([]);
   const [isMembersLoading, setIsMembersLoading] = useState(false);
@@ -98,13 +96,13 @@ export function MaintenanceSyncPanel({
     }
   }, []);
 
-  // toggle 行为:admin 永远开,不可关;普通员工根据 canEnter 决定
-  const toggleDisabled = isAdmin
-    || maintenanceModeLoading
+  // toggle 行为:由后端 canEnter / canExit 决定。
+  // 「admin 直通」语义 = admin 不需要走员工授权列表,后端已直接给 canEnter=true,
+  // 前端这里不该再额外把 isAdmin 当 disable / 拦截点击,否则 admin 反而点不动开关。
+  const toggleDisabled = maintenanceModeLoading
     || maintenanceModeBusyAction !== null
     || (!isActive && !canEnter);
   const handleToggle = () => {
-    if (isAdmin) return; // admin 直通,不响应
     if (isActive) {
       onExitMaintenanceMode();
     } else {
@@ -123,10 +121,10 @@ export function MaintenanceSyncPanel({
               type="button"
               onClick={handleToggle}
               disabled={toggleDisabled}
-              title={isAdmin ? '管理员永久开启,不可关闭' : isActive ? '点击关闭维护模式' : (canEnter ? '点击打开维护模式' : '当前账号无维护权限')}
+              title={isActive ? '点击关闭维护模式' : (canEnter ? '点击打开维护模式' : '当前账号无维护权限')}
               className={`relative inline-flex h-6 w-11 shrink-0 items-center rounded-full transition-colors focus:outline-none focus:ring-2 focus:ring-emerald-500/30 ${
                 isActive ? 'bg-emerald-500' : 'bg-gray-300'
-              } ${isAdmin ? 'cursor-default' : toggleDisabled ? 'cursor-not-allowed opacity-50' : 'cursor-pointer hover:opacity-90'}`}
+              } ${toggleDisabled ? 'cursor-not-allowed opacity-50' : 'cursor-pointer hover:opacity-90'}`}
             >
               <span
                 className={`inline-block h-4 w-4 transform rounded-full bg-white shadow transition-transform ${
