@@ -337,6 +337,16 @@ function RibbonToolbar({
     if (flashingTimeoutRef.current !== null) window.clearTimeout(flashingTimeoutRef.current);
     flashingTimeoutRef.current = window.setTimeout(() => setFlashing(false), 550);
   };
+  // 组件卸载时清挂着的 flashing timeout, 防止 setFlashing 在已 unmounted 组件上调用
+  // (用户在 AI 飞行中切走文档 tab 就会触发).
+  useEffect(() => {
+    return () => {
+      if (flashingTimeoutRef.current !== null) {
+        window.clearTimeout(flashingTimeoutRef.current);
+        flashingTimeoutRef.current = null;
+      }
+    };
+  }, []);
   // P14a-fix：DOM Range 快照。点 AI 按钮后 AiPromptPanel textarea 抢 focus 会把
   // window selection 清空，提交时已经没法用 window.getSelection() 拿回选区。
   // 用 ref 而不是 state——Range 是 mutable DOM 对象，存在 ref 里避免 stale closure。

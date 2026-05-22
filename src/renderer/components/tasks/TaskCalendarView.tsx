@@ -422,13 +422,25 @@ export function TaskCalendarView({
     return now.getHours() * 60 + now.getMinutes();
   });
   useEffect(() => {
+    // 闭包内私有持有 interval id,避免之前用 window.__taskCalendarNowInterval 的
+    // 全局变量被两个 TaskCalendarView 实例互相覆盖、unmount 时清不掉的问题.
+    let intervalId: number | null = null;
+    let cancelled = false;
     const tick = () => {
       const now = new Date();
       setCurrentMinuteOfDay(now.getHours() * 60 + now.getMinutes());
     };
-    // 15s 一次. 没必要对齐分钟边界 — 用户主观感受是平滑就够
-    const interval = window.setInterval(tick, 15000);
-    return () => window.clearInterval(interval);
+    // 15s 一次顺滑刷新(60s 误差≈14px 跳一下,15s≈3.5px 顺滑) + cancelled 防 unmount 后 race
+    intervalId = window.setInterval(() => {
+      if (cancelled) return;
+      tick();
+    }, 15000);
+    return () => {
+      cancelled = true;
+      if (intervalId !== null) {
+        window.clearInterval(intervalId);
+      }
+    };
   }, []);
   const weekCreateDraftRef = useRef<{
     dayKey: number;

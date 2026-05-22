@@ -7,7 +7,7 @@
  *   保证用户看到的是已经熟悉的"新建任务"界面, 只是预填了字段.
  * ✓/🗑 dismiss: 标记 commitment.status=fulfilled/cancelled, 下次 narrative 不复活.
  */
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { Loader2, ArrowRight, Trash2, Check } from 'lucide-react';
 import {
   getUnifiedTodos,
@@ -42,16 +42,32 @@ export function UnifiedTodoSection({ clientId, flash, onPromote }: UnifiedTodoSe
   const [data, setData] = useState<UnifiedTodosResponse | null>(null);
   const [loading, setLoading] = useState(false);
   const [acting, setActing] = useState<Set<string>>(new Set());
+  // mounted guard: 用户点完"完成/取消"立刻切客户或 tab,
+  // dismissUnifiedTodo / getUnifiedTodos 的 promise 仍在飞 — resolve 时如果还在 setState,
+  // 会触发 React "state update on unmounted component" 警告且写到错的客户上.
+  const mountedRef = useRef(true);
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+    };
+  }, []);
 
   const load = useCallback(() => {
     if (!clientId) return;
     setLoading(true);
     void getUnifiedTodos(clientId)
-      .then(setData)
-      .catch((err) => {
-        flash?.('error', `待办加载失败: ${err instanceof Error ? err.message : String(err)}`);
+      .then((d) => {
+        if (mountedRef.current) setData(d);
       })
-      .finally(() => setLoading(false));
+      .catch((err) => {
+        if (mountedRef.current) {
+          flash?.('error', `待办加载失败: ${err instanceof Error ? err.message : String(err)}`);
+        }
+      })
+      .finally(() => {
+        if (mountedRef.current) setLoading(false);
+      });
   }, [clientId, flash]);
 
   useEffect(() => {
@@ -83,12 +99,15 @@ export function UnifiedTodoSection({ clientId, flash, onPromote }: UnifiedTodoSe
     setActingFor(todo.id, true);
     try {
       await dismissUnifiedTodo(clientId, todo.id, action);
+      if (!mountedRef.current) return;
       flash?.('success', action === 'complete' ? '已标记完成' : '已从列表移除, 下次不再生成');
       load();
     } catch (err) {
-      flash?.('error', `操作失败: ${err instanceof Error ? err.message : String(err)}`);
+      if (mountedRef.current) {
+        flash?.('error', `操作失败: ${err instanceof Error ? err.message : String(err)}`);
+      }
     } finally {
-      setActingFor(todo.id, false);
+      if (mountedRef.current) setActingFor(todo.id, false);
     }
   };
 
