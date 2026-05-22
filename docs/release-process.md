@@ -73,20 +73,35 @@
 
 ## 发布步骤
 
+推荐让开发同事机器上的 Codex 按 `docs/codex-release-runbook.md` 执行。触发语：
+
+> 我已经提交最新修改到 main，你可以发布新版本了
+
+对应总入口：
+
+```bash
+git checkout main
+git pull --ff-only origin main
+npm run release:mac:tos
+```
+
+手动拆解时按以下顺序：
+
 1. 确认本次版本号与发布渠道。
 2. 在受控构建机或 CI 执行 macOS 构建。
 3. 对 `.app` 与产物完成签名。
 4. 完成 notarization 并确认通过。
-5. 将产物上传到对应渠道目录。
-6. 更新官网手动下载入口：
+5. 将 DMG、ZIP、blockmap 上传到对应渠道目录。
+6. 最后上传 `latest-mac.yml`，让客户端开始发现新版。
+7. 更新官网手动下载入口：
    - `stable` 发布时更新官网主下载入口
    - `beta` 仅更新测试版入口
-7. 在干净机器完成安装与启动验证。
-8. 用旧版本客户端验证：
+8. 在干净机器完成安装与启动验证。
+9. 用旧版本客户端验证：
    - 可发现新版本
    - 可完成下载
    - 可完成重启安装
-9. 记录发版日志。
+10. 记录发版日志。
 
 ## 发布后验证
 
@@ -170,6 +185,12 @@
 正式构建完成后:
 
 ```bash
+npm run release:mac:tos            # 推荐:检查、构建、验证、预演、上传、URL 验证一条龙
+```
+
+如果需要拆开排查:
+
+```bash
 npm run release:mac:publish:dry    # 先预演,看要传的文件列表
 npm run release:mac:publish        # 实际上传
 ```
@@ -180,6 +201,8 @@ npm run release:mac:publish        # 实际上传
 - `yiyu-workbench-<version>-arm64.zip` — electron-updater 真正用来更新的产物(必须存在)
 - `yiyu-workbench-<version>-arm64.zip.blockmap` — 增量更新差分用
 - `latest-mac.yml` — 更新清单,electron-updater 第一个读的就是它(覆盖式替换 = 新版本立即生效)
+
+注意：脚本会先传安装包和 blockmap，最后才覆盖 `latest-mac.yml`。不要手工反过来传，否则用户可能读到指向不存在文件的更新清单。
 
 ### 公开下载链接
 
@@ -218,6 +241,10 @@ npm run release:mac:publish        # 实际上传
 - 【立即重启更新】按钮(仅当后台已下载完成时显示,给急着用新功能的用户)
 
 错误也不打扰用户,只走 console.log + macOS Console.app 日志诊断。
+
+维护同步入口与检查更新是两条链路:
+- 【检查更新】始终读取益语官方火山云 TOS 更新源,不读取 GitHub。
+- GitHub 推送/拉取只在内部维护模式下出现,且仅当登录账号连接益语智库官方云、组织识别为益语时显示。
 
 如果未来想给重大版本加一次性"What's New"弹窗,可以基于 `window.__yiyuUpdateState__.downloadedVersion` 在启动时判断"上次还没看过新版日志"再弹一次。
 

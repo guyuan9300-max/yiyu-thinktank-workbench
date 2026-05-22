@@ -6888,6 +6888,7 @@ export interface DesktopAppInfo {
   executablePath: string;
   releasePlanPath: string;
   releaseArtifactsPath: string;
+  cloudBackendUrl?: string | null;
   updateChannel: 'stable' | 'beta';
   updaterPhase: 'planning' | 'preparing_release' | 'ready_for_feed' | 'ready_for_in_app_update';
   recommendedInstallPath: string;

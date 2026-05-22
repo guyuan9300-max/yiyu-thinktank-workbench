@@ -1832,6 +1832,18 @@ const DEFAULT_LOCAL_AUTH_STATE: AuthState = {
   sessionMode: 'cloud',
   user: null,
 };
+const YIYU_OFFICIAL_CLOUD_URL = 'http://101.126.34.232';
+const YIYU_ORG_NAME_PATTERNS = ['益语智库', '益语软件'];
+
+function normalizeUrlForComparison(rawUrl?: string | null) {
+  return (rawUrl || '').trim().replace(/\/+$/, '');
+}
+
+function isYiyuOfficialOrganizationName(name?: string | null) {
+  const normalized = (name || '').trim();
+  if (!normalized) return false;
+  return YIYU_ORG_NAME_PATTERNS.some((pattern) => normalized.includes(pattern));
+}
 
 const EMPTY_PROJECT_STRUCTURE_RESPONSE: ProjectStructureResponse = { modules: [], flows: [] };
 const PROJECT_STRUCTURE_FAILURE_CACHE_MS = 5 * 60 * 1000;
@@ -7604,7 +7616,14 @@ export default function App() {
   // 跟 backend auth_me 改造 (没 token 时 authenticated=False) 对齐 — 现在没登录
   // 直接到登录页, 不再有"local-device-user"虚假身份让客户数据对所有打开 app 的人可见.
   const isLocalSession: boolean = false;
-  void isCloudSession;
+  const isYiyuOfficialCloudSession = Boolean(
+    isCloudSession
+    && normalizeUrlForComparison(desktopAppInfo?.cloudBackendUrl) === YIYU_OFFICIAL_CLOUD_URL
+    && (
+      isYiyuOfficialOrganizationName(orgMembershipState.organizationName)
+      || isYiyuOfficialOrganizationName(orgModelState.organization.name)
+    ),
+  );
   const currentMembershipStatus = getEffectiveMembershipStatus(authState);
   const shouldShowIdentityGate = isCloudSession && currentMembershipStatus !== 'approved';
   const renderBranch = loading ? 'loading' : (!authState.authenticated || !currentSessionUser ? 'auth' : shouldShowIdentityGate ? 'identity' : 'main');
@@ -28596,16 +28615,16 @@ export default function App() {
 
               {/* 4 段 Foldable: 推送同步 / 运行日志 / 备份 / 最近操作 */}
               <div>
-                {renderFoldable({
+                {isYiyuOfficialCloudSession && renderFoldable({
                   key: 'sync',
-                  eyebrow: 'SYNC · 推送同步',
-                  title: '维护模式开关 · 授权同事',
-                  helper: '打开推送同步后,可以把代码改动推送到 main 分支。admin 直通,普通员工需要先获得授权。',
+                  eyebrow: 'SYNC · 内部同步',
+                  title: '维护模式开关 · GitHub main 协作',
+                  helper: '仅连接益语智库官方云的内部账号显示。普通用户更新软件只走“关于本软件”里的检查更新，不需要 GitHub 授权。',
                   statusChip: currentSessionUser?.primaryRole === 'admin'
                     ? { text: 'Admin 直通', tone: 'success' }
                     : maintenanceModeStatus?.active
                       ? { text: '已打开', tone: 'success' }
-                      : { text: '未打开', tone: 'neutral' },
+                      : { text: '需授权', tone: 'neutral' },
                   children: (
                     <MaintenanceSyncPanel
                       maintenanceModeStatus={maintenanceModeStatus}

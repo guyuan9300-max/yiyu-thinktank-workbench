@@ -14,6 +14,8 @@ type UpdateUiState =
   | { kind: 'up-to-date'; checkedAt: number }
   | { kind: 'error'; message: string };
 
+const UPDATE_FEED_LABEL = '益语官方火山云 TOS';
+
 function formatPercent(percent: number | undefined): string {
   if (typeof percent !== 'number' || !Number.isFinite(percent)) return '0%';
   return `${Math.max(0, Math.min(100, percent)).toFixed(0)}%`;
@@ -89,6 +91,13 @@ export function AboutAppSettingsPanel({ desktopAppInfo }: Props): React.ReactEle
     ? `${desktopAppInfo.platform} · ${desktopAppInfo.arch}${desktopAppInfo.isPackaged ? '' : ' · 开发模式'}`
     : '—';
   const channelLabel = desktopAppInfo?.updateChannel === 'beta' ? 'Beta 通道' : '稳定通道';
+  const lastCheckLabel = updateState.kind === 'up-to-date'
+    ? new Date(updateState.checkedAt).toLocaleString('zh-CN', { hour12: false })
+    : updateState.kind === 'checking'
+      ? '正在检查'
+      : updateState.kind === 'error'
+        ? '检查失败'
+        : '尚未手动检查';
 
   return (
     <div className="mx-auto w-full max-w-3xl space-y-6">
@@ -115,6 +124,14 @@ export function AboutAppSettingsPanel({ desktopAppInfo }: Props): React.ReactEle
           <div>
             <dt className="text-[11px] font-bold uppercase tracking-[0.12em] text-gray-400">更新通道</dt>
             <dd className="mt-1 text-[13px] text-gray-700">{channelLabel}</dd>
+          </div>
+          <div>
+            <dt className="text-[11px] font-bold uppercase tracking-[0.12em] text-gray-400">更新源</dt>
+            <dd className="mt-1 text-[13px] text-gray-700">{UPDATE_FEED_LABEL}</dd>
+          </div>
+          <div>
+            <dt className="text-[11px] font-bold uppercase tracking-[0.12em] text-gray-400">最近检查</dt>
+            <dd className="mt-1 text-[13px] text-gray-700">{lastCheckLabel}</dd>
           </div>
           {desktopAppInfo?.frontendBuildVersion && (
             <div>

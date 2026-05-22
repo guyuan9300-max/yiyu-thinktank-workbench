@@ -1738,6 +1738,7 @@ async function resolveDesktopAppInfo(healthOverride?: BackendHealthPayload | nul
     executablePath,
     releasePlanPath,
     releaseArtifactsPath,
+    cloudBackendUrl: cloudBackendUrl() || null,
     updateChannel: 'stable',
     updaterPhase: 'planning',
     recommendedInstallPath,
