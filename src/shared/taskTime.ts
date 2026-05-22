@@ -184,13 +184,11 @@ function parseTaskDateTimeOrDate(value?: string | null) {
 }
 
 export function getTaskReviewDate(task: TaskTimeInput) {
-  if (isTaskDone(task)) {
-    return (
-      parseTaskDateTimeOrDate(task.completedAt)
-      || parseTaskDateTimeOrDate(task.updatedAt)
-      || getTaskExecutionDate(task)
-    );
-  }
+  // 任务的"周归属"= 任务自身的执行日期(scheduledStart/due),不能用 completedAt。
+  // 否则"上周的任务本周点完成"会被错误地归到本周。用户预期:任务是哪一周的就一直是哪一周的,
+  // 完成动作不影响周归属。
+  // 历史 fallback(done 时用 completedAt/updatedAt)只为处理"无日期任务完成后无处归属"的边缘场景,
+  // 但那种任务本来就该停留在 done 组,而不是被强行塞进当周。
   return getTaskExecutionDate(task);
 }
 
