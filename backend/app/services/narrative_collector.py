@@ -688,17 +688,22 @@ def _retrieve_top_chunks(
     for kw in keywords:
         if not kw.strip():
             continue
+        # P1-6 修复: LIKE 参数旧版 f"%{kw}%" 直接拼,kw 来自 glossary.canonical_name
+        # (用户在 UI 输入). 若用户输入含 % 或 _ (例: "100%公益"),会匹配所有行 →
+        # 该客户全部 chunk 进 prompt 超出数据边界 + 全表扫 CPU/内存峰值.
+        # SQLite LIKE 支持 ESCAPE 子句, 用 \ 作为转义符.
+        kw_escaped = kw.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
         try:
             rows = db.fetchall(
                 f"""SELECT vc.content, d.title AS doc_title,
-                          CASE WHEN d.title LIKE ? THEN 1 ELSE 0 END AS title_match,
+                          CASE WHEN d.title LIKE ? ESCAPE '\\' THEN 1 ELSE 0 END AS title_match,
                           CASE WHEN ({meeting_like_clauses}) THEN 1 ELSE 0 END AS is_meeting_like,
                           COALESCE(vd.imported_at, vd.updated_at, '') AS sort_at
                    FROM v2_chunks vc
                    JOIN v2_documents vd ON vd.id = vc.v2_document_id
                    JOIN documents d ON d.id = vd.document_id
                    WHERE vd.client_id = ?
-                     AND vc.content LIKE ?
+                     AND vc.content LIKE ? ESCAPE '\\'
                      {owner_filter_sql}
                    ORDER BY title_match DESC,
                             is_meeting_like DESC,
@@ -706,10 +711,10 @@ def _retrieve_top_chunks(
                             LENGTH(vc.content) DESC
                    LIMIT ?""",
                 (
-                    f"%{kw}%",
+                    f"%{kw_escaped}%",
                     *meeting_like_params,
                     client_id,
-                    f"%{kw}%",
+                    f"%{kw_escaped}%",
                     *owner_filter_params,
                     limit * 5,
                 ),

@@ -570,13 +570,51 @@ def _format_clarifications(clars: list[ClarificationFact], heading: str) -> str:
     return "\n".join(lines)
 
 
+def _sanitize_prompt_injection(text: str) -> str:
+    """P1-3 修复: 防 prompt 注入. DNA snippets / glossary / 任何来自用户输入的字段
+    在拼进 system prompt 前过一次清洗,剥掉 LLM 角色切换 / 指令覆盖关键词.
+
+    防御策略:
+    1. 去掉所有花括号 { } — 防止用户输入伪造 {NEW_SYSTEM} 类 placeholder 干扰 .replace()
+    2. 去掉常见角色切换 / 越狱指令片段 (中英文)
+    3. 截断到合理长度防 token 爆炸
+    """
+    if not text:
+        return ""
+    s = str(text)
+    # 1) 去掉花括号 + 反斜杠转义符 (placeholder 干扰)
+    s = s.replace("{", "(").replace("}", ")")
+    # 2) 中英文常见越狱关键词 → 隐藏后缀, 让 LLM 看见但不会按指令执行
+    import re as _re
+    injection_patterns = [
+        r"(?i)ignore\s+(all\s+)?(previous|above|prior)\s+(instructions?|prompts?|rules?)",
+        r"(?i)disregard\s+(all\s+)?(previous|above|prior)\s+(instructions?|prompts?|rules?)",
+        r"(?i)you\s+are\s+now\s+",
+        r"(?i)system\s*[:：]\s*",
+        r"忽略(以上|之前|前面)?(所有)?(指令|规则|提示)",
+        r"你(现在|从现在起)是",
+        r"扮演",
+        r"系统消息[:：]",
+    ]
+    for pat in injection_patterns:
+        s = _re.sub(pat, "[redacted]", s)
+    # 3) 截断单条上限 2000 字符
+    if len(s) > 2000:
+        s = s[:2000] + "...[truncated]"
+    return s
+
+
 def _format_business_context(snippets: list[BusinessContextSnippet]) -> str:
     """把 DNA snippets 渲染成 SYSTEM_PROMPT 的『默认常识』段."""
     if not snippets:
         return _default_business_context()
     lines = []
     for s in snippets:
-        lines.append(f"- [{s.source} · {s.category}] {s.body}")
+        # P1-3: source/category/body 都过 prompt 注入清洗
+        safe_source = _sanitize_prompt_injection(s.source)
+        safe_category = _sanitize_prompt_injection(s.category)
+        safe_body = _sanitize_prompt_injection(s.body)
+        lines.append(f"- [{safe_source} · {safe_category}] {safe_body}")
     return "\n".join(lines)
 
 

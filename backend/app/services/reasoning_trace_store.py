@@ -50,9 +50,36 @@
 from __future__ import annotations
 
 import json
+import re
 import sqlite3
 import uuid
 from dataclasses import dataclass
+
+
+def _sanitize_error_for_storage(error_message: str) -> str:
+    """P1-5: 写库 / 写日志前剥掉 LLM provider 错误响应体里的潜在 secret.
+
+    豆包 / 通义 / OpenAI / Anthropic 等 provider 错误 body 可能含:
+    - "Authorization: Bearer ey..." 或 "Bearer sk-..."
+    - "api_key=xxx" / "x-api-key: xxx"
+    - 完整 Bearer token / sk-xxx / pk_xxx / volc_xxx 前缀
+    - request_id 等可追溯标识
+    """
+    if not error_message:
+        return ""
+    s = str(error_message)
+    patterns = [
+        (r"(?i)Bearer\s+[A-Za-z0-9_\-\.=+/]+", "Bearer [redacted]"),
+        (r"(?i)Authorization\s*:\s*\S+", "Authorization: [redacted]"),
+        (r"(?i)x[\-_]api[\-_]key\s*[:=]\s*[A-Za-z0-9_\-]+", "x-api-key: [redacted]"),
+        (r"(?i)api[\-_]key\s*[:=]\s*[A-Za-z0-9_\-]+", "api_key=[redacted]"),
+        (r"(?<![A-Za-z0-9_])sk-[A-Za-z0-9_\-]{20,}", "sk-[redacted]"),
+        (r"(?<![A-Za-z0-9_])volc_[A-Za-z0-9_\-]{20,}", "volc_[redacted]"),
+        (r"(?<![A-Za-z0-9_])eyJ[A-Za-z0-9_\-\.]{20,}", "eyJ[redacted-JWT]"),
+    ]
+    for pat, repl in patterns:
+        s = re.sub(pat, repl, s)
+    return s[:1000]
 from datetime import datetime, timezone
 from typing import Any, Literal, Protocol
 
@@ -224,13 +251,17 @@ class ReasoningTraceStore:
         duration_ms = None
         if start:
             duration_ms = int((now - start).total_seconds() * 1000)
+        # P1-5 修复: 旧版 error_message[:1000] 直接写库.
+        # AiInvocationError detail 会拼接 LLM provider 错误响应体,
+        # 豆包/通义等 provider 错误响应有时含 Bearer token / api_key=... / request_id
+        # 可用于重放或追溯. 写库前正则脱敏掉常见 secret pattern.
         self._db.execute(
             """
             UPDATE reasoning_traces
             SET completed_at = ?, duration_ms = ?, status = 'failed', error_message = ?
             WHERE id = ?
             """,
-            (now.isoformat(), duration_ms, error_message[:1000], trace_id),
+            (now.isoformat(), duration_ms, _sanitize_error_for_storage(error_message), trace_id),
         )
         self._started_at_cache.pop(trace_id, None)
 

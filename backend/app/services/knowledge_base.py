@@ -1515,6 +1515,25 @@ def sync_qdrant_for_client(
             )
     if needs_master_sync or needs_chunk_sync:
         db.set_setting(signature_key, current_signature)
+        # P1-4 修复: signature 切换时新 collection 已 upsert 完, 删旧 (legacy)
+        # collection 以免 _pick_collection_with_fallback 仍 fallback 到旧向量空间
+        # (embedding 模型切换后旧向量跟新查询向量语义不兼容 → 检索错位).
+        if signature_changed and stored_signature:
+            legacy_master = legacy_collection_name("master_index", client_id)
+            legacy_chunk = legacy_collection_name("raw_chunk", client_id)
+            for legacy in (legacy_master, legacy_chunk):
+                try:
+                    # 只删跟当前 active_name 不同名的 legacy collection,
+                    # 防止误删自己 (新 signature 跟旧一致时 collection_name 可能相同)
+                    if legacy and legacy != master_name and legacy != chunk_name:
+                        client.delete_collection(collection_name=legacy)
+                except Exception as exc:
+                    # 删失败不阻塞主流程,仅 warning(下次 sync 还会重试)
+                    import logging as _log
+                    _log.getLogger(__name__).warning(
+                        "[qdrant] failed to delete legacy collection %s for client=%s: %s",
+                        legacy, client_id, exc,
+                    )
 
 
 def search_master_index_qdrant(
