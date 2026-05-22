@@ -42,6 +42,7 @@ from app.services.ingest_pipeline import (  # noqa: E402
     metadata_for_workbench_file,
 )
 from app.services.story_card_generator import generate_story_card  # noqa: E402
+from app.services.atomic_fact_semantic_deriver import derive_all  # noqa: E402
 
 from .qinghe_dataset import (  # noqa: E402
     CLIENT_ID,
@@ -786,11 +787,28 @@ def run_full_quality_test(db_path: Path | None = None) -> dict:
     db = setup_db(db_path)
     ingest_results = ingest_all_12_data(db)
     cross_source_stats = run_cross_source_scan(db)
+    # V2.4 P0-1: atomic_facts → 4 张语义表派生
+    derive_result = derive_all(db, CLIENT_ID)
     story_card_md = run_story_card(db)
     qa_results = run_50_questions(db)
     scoring = run_full_scoring(
         db, ingest_results, cross_source_stats, story_card_md, qa_results,
     )
+
+    # V2.4 派生统计 (4 张语义表的真实持久化条数)
+    semantic_table_counts = {
+        "event_line_activities": _count(db, "event_line_activities",
+                                        "event_line_id IN (SELECT id FROM event_lines WHERE primary_client_id = ?)",
+                                        (CLIENT_ID,)),
+        "risk_signals": _count(db, "risk_signals", "client_id = ?", (CLIENT_ID,)),
+        "commitments": _count(db, "commitments", "client_id = ?", (CLIENT_ID,)),
+        "strategic_thought_insights": _count(db, "strategic_thought_insights",
+                                             "client_id = ? AND is_deleted = 0", (CLIENT_ID,)),
+        "fact_contradictions": _count(db, "fact_contradictions", "client_id = ?", (CLIENT_ID,)),
+        "clarification_records": _count(db, "clarification_records",
+                                        "scope_type = 'client' AND scope_id = ? AND status = 'pending'",
+                                        (CLIENT_ID,)),
+    }
 
     return {
         "test_meta": {
@@ -804,10 +822,26 @@ def run_full_quality_test(db_path: Path | None = None) -> dict:
         },
         "ingest_results": ingest_results,
         "cross_source_stats": cross_source_stats,
+        "derive_result": {
+            "event_line_activities_new": derive_result.event_line_activities_new,
+            "risk_signals_new": derive_result.risk_signals_new,
+            "commitments_new": derive_result.commitments_new,
+            "strategic_insights_new": derive_result.strategic_insights_new,
+        },
+        "semantic_table_counts": semantic_table_counts,
         "story_card_md": story_card_md,
         "qa_results": qa_results,
         "scoring": scoring,
     }
+
+
+def _count(db: Database, table: str, where: str, params: tuple) -> int:
+    """辅助: 数表."""
+    try:
+        row = db.fetchone(f"SELECT COUNT(*) AS c FROM {table} WHERE {where}", params)
+        return dict(row)["c"] if row else 0
+    except Exception:
+        return 0
 
 
 if __name__ == "__main__":
