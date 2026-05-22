@@ -35305,7 +35305,12 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
 
     @app.get("/api/v1/clients", response_model=list[ClientSummary])
     def list_clients() -> list[ClientSummary]:
+        # 1. ensure 益语智库这条 organization workspace client(本地镜像)
         _ensure_local_organization_workspace_from_cloud_membership()
+        # 2. 主动拉一次云端可见客户:同事新建客户/勾你进 relatedUserIds 后,你切到客户工作台
+        #    应该能立刻看到新客户。_pull_cloud_clients_to_local 有 30 秒 TTL + in_flight 锁,
+        #    不会过载;无 cloud token 时会自己跳过。
+        _pull_cloud_clients_to_local()
         return [build_client_summary(str(row["id"])) for row in state.db.fetchall("SELECT id FROM clients ORDER BY updated_at DESC")]
 
     @app.get("/api/v1/clients/search-similar")
