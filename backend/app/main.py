@@ -24,7 +24,7 @@ from urllib.parse import quote, urlparse, urlunparse
 from uuid import uuid4
 
 import httpx
-from fastapi import BackgroundTasks, Body, FastAPI, File, Form, HTTPException, Query, Request, UploadFile
+from fastapi import BackgroundTasks, Body, FastAPI, File, Form, Header, HTTPException, Query, Request, UploadFile
 from pydantic import BaseModel, Field
 
 
@@ -30065,7 +30065,40 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         return [build_event_line(row) for row in rows]
 
     @app.post("/api/v1/event-lines", response_model=EventLineRecord)
-    def create_event_line(payload: EventLineCreatePayload) -> EventLineRecord:
+    def create_event_line(
+        payload: EventLineCreatePayload,
+        idempotency_key: str | None = Header(None, alias="Idempotency-Key"),
+        actor_type: str = Header("human", alias="X-Actor-Type"),
+        actor_id: str = Header("", alias="X-Actor-Id"),
+    ) -> EventLineRecord:
+        # v2.2 F2.8 (N3 A6): 幂等性检查 - 防 AI agent retry 重复创建
+        _METHOD, _PATH = "POST", "/api/v1/event-lines"
+        _idemp = None
+        if idempotency_key:
+            from app.services.idempotency_store import (
+                IdempotencyKeyMismatchError,
+                get_idempotency_store,
+            )
+            _idemp = get_idempotency_store(state.db)
+            try:
+                _cached = _idemp.find(
+                    idempotency_key, _METHOD, _PATH,
+                    payload=payload.model_dump(),
+                )
+            except IdempotencyKeyMismatchError as _e:
+                raise HTTPException(status_code=422, detail=str(_e))
+            if _cached and _cached.status == "completed":
+                return EventLineRecord.model_validate_json(_cached.response_body)
+            if _cached and _cached.status == "in_progress":
+                raise HTTPException(
+                    status_code=409,
+                    detail="Request still in progress, retry after a brief wait",
+                )
+            _idemp.start(
+                idempotency_key, _METHOD, _PATH,
+                payload=payload.model_dump(),
+                actor_type=actor_type, actor_id=actor_id,
+            )
         timestamp = now_iso()
         event_line_id = (payload.id or "").strip() or new_id("eline")
         client_id = str(payload.primaryClientId).strip() if payload.primaryClientId else None
@@ -30138,7 +30171,14 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         )
         if not row:
             raise HTTPException(status_code=500, detail="Event line creation failed")
-        return build_event_line(row)
+        # v2.2 F2.8: 缓存响应供 retry 复用
+        _result = build_event_line(row)
+        if _idemp:
+            _idemp.complete(
+                idempotency_key, _METHOD, _PATH,
+                status=200, response_body=_result.model_dump(mode="json"),
+            )
+        return _result
 
     @app.get("/api/v1/event-lines/{event_line_id}", response_model=EventLineDetailRecord)
     def get_event_line(event_line_id: str) -> EventLineDetailRecord:
@@ -35967,7 +36007,37 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         return {"query": query, "matches": matches[:5]}
 
     @app.post("/api/v1/clients", response_model=ClientSummary)
-    def create_client(payload: ClientMutationPayload) -> ClientSummary:
+    def create_client(
+        payload: ClientMutationPayload,
+        idempotency_key: str | None = Header(None, alias="Idempotency-Key"),
+        actor_type: str = Header("human", alias="X-Actor-Type"),
+        actor_id: str = Header("", alias="X-Actor-Id"),
+    ) -> ClientSummary:
+        # v2.2 F2.8 (N3 A6): 幂等性检查
+        _METHOD, _PATH = "POST", "/api/v1/clients"
+        _idemp = None
+        if idempotency_key:
+            from app.services.idempotency_store import (
+                IdempotencyKeyMismatchError,
+                get_idempotency_store,
+            )
+            _idemp = get_idempotency_store(state.db)
+            try:
+                _cached = _idemp.find(
+                    idempotency_key, _METHOD, _PATH,
+                    payload=payload.model_dump(),
+                )
+            except IdempotencyKeyMismatchError as _e:
+                raise HTTPException(status_code=422, detail=str(_e))
+            if _cached and _cached.status == "completed":
+                return ClientSummary.model_validate_json(_cached.response_body)
+            if _cached and _cached.status == "in_progress":
+                raise HTTPException(409, "Request still in progress, retry shortly")
+            _idemp.start(
+                idempotency_key, _METHOD, _PATH,
+                payload=payload.model_dump(),
+                actor_type=actor_type, actor_id=actor_id,
+            )
         client_id = new_id("client")
         timestamp = now_iso()
         client_color = (payload.color or "").strip() or "#5B7BFE"
@@ -36011,7 +36081,14 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             Thread(target=_try_cloud_sync_client, args=(client_id, "create"), daemon=True).start()
         except Exception as exc:
             logger.warning("[CLIENT-SYNC] schedule create push failed: %s", exc)
-        return build_client_summary(client_id)
+        # v2.2 F2.8: 缓存响应供 retry 复用
+        _result = build_client_summary(client_id)
+        if _idemp:
+            _idemp.complete(
+                idempotency_key, _METHOD, _PATH,
+                status=200, response_body=_result.model_dump(mode="json"),
+            )
+        return _result
 
     @app.put("/api/v1/clients/{client_id}", response_model=ClientSummary)
     def update_client(client_id: str, payload: ClientMutationPayload) -> ClientSummary:
