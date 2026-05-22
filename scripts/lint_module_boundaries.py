@@ -160,7 +160,13 @@ def lint_directory(
 
     violations: list[Violation] = []
     for path in root.rglob("*.py"):
-        if any(p in str(path) for p in (".venv", "__pycache__", "node_modules", ".git/")):
+        if any(p in str(path) for p in (
+            ".venv", "__pycache__", "node_modules", ".git/",
+            "/dist/",  # build 产物 (打包的 .app 内嵌的过期源码)
+            "/build/",
+            "/.build-logs/",
+            "/output/",
+        )):
             continue
         rel = str(path.relative_to(root))
         if _is_exempt(rel):
