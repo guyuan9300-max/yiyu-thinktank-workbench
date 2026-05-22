@@ -16,11 +16,14 @@
 from __future__ import annotations
 
 import json
+import logging
 import sqlite3
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Literal, Protocol
+
+logger = logging.getLogger(__name__)
 
 
 # ─── 类型 ─────────────────────────────────────────────────────────
@@ -504,10 +507,20 @@ class IngestPipeline:
     4. 写 atomic_facts (或不写, 如果 update_relation='none' 且 value 重复)
     5. 顺手写 event_log (3.0 看历史用)
     6. 如果 ai_session_id 给了, 顺手写 ai_episode_log
+    7. ★ M-A · 写后调 broadcast_data_changed 触发 L1+L2 扩散 (顾源源 5/22 钦定)
+       Karpathy §2 LLM as OS · 一处写全局刷, 不让 IngestPipeline 成为孤立写入点
     """
 
-    def __init__(self, db: _DbLike):
+    def __init__(self, db: _DbLike, ai: Any | None = None):
+        """初始化.
+
+        Args:
+            db: sqlite Database wrapper.
+            ai: AI service (可选). 传了之后写完 atomic_facts 自动调 broadcast_data_changed.
+                不传 (None) 时跳过 broadcast (向后兼容旧调用方).
+        """
         self._db = db
+        self._ai = ai
 
     def ingest(self, req: IngestRequest) -> IngestResult:
         # 1. 查同 subject+attribute 的已有事实
@@ -649,6 +662,25 @@ class IngestPipeline:
                 outcome="pending",
             )
 
+        # ★ M-A · broadcast 接通 (顾源源 5/22 钦定 + Karpathy §2 LLM-as-OS syslog 启用)
+        # 写完 atomic_facts + event_log + ai_episode_log 之后, 触发数据中心 L1+L2 扩散.
+        # 让 4 主路径 (workbench_file / task_review / internet_crawler / mobile_ai_chat)
+        # 任何一路写入都触发 narrative regenerate + portrait_build + L3 自校验.
+        # 不传 ai 时跳过 (向后兼容). 失败不阻塞 ingest 主流程.
+        if self._ai is not None:
+            try:
+                from app.services.data_center_broadcast import broadcast_data_changed
+                broadcast_data_changed(
+                    self._db, self._ai,
+                    client_id=req.client_id,
+                    scope=f"ingest_pipeline:{req.path}",
+                )
+            except Exception as exc:
+                logger.warning(
+                    "ingest_pipeline broadcast failed for client=%s fact=%s: %s",
+                    req.client_id, fact_id, exc,
+                )
+
         return IngestResult(
             fact_id=fact_id,
             update_relation=verdict.relation,
@@ -658,5 +690,5 @@ class IngestPipeline:
         )
 
 
-def get_ingest_pipeline(db: _DbLike) -> IngestPipeline:
-    return IngestPipeline(db)
+def get_ingest_pipeline(db: _DbLike, ai: Any | None = None) -> IngestPipeline:
+    return IngestPipeline(db, ai)
