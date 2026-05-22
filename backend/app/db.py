@@ -10,7 +10,7 @@ from pathlib import Path
 # 之前 20260518001 (200 亿) 远超上限, SQLite 静默 set 为 0, 每次启动都重做完整迁移
 # (这是 20260518 那次坏 db 的真正根因之一: 重做时遇上 reload race + backfill 无事务).
 # 改用 YYYYMMDD 格式 (8 位), 每次 schema 变化递增日期. 20260519 = 此次修复.
-BACKEND_SCHEMA_VERSION = 20260527  # v2.2 Phase 2 起步: update_relation + ai_improvement_suggestions (信息商 + 被动建议)
+BACKEND_SCHEMA_VERSION = 20260528  # v2.2 F2.2 + F2.6: key_decisions / org_events / event_line_state_changes 复合事件 + 状态流
 
 
 # R6：内置罗永浩写作风格的 distilled prompt（手工 distill，不依赖在线抓取，避免外部依赖）。
@@ -3264,6 +3264,161 @@ class Database:
                 )
             except sqlite3.OperationalError:
                 pass
+
+            # ─────────────────────────────────────────────────────────────
+            # v2.2 F2.2: key_decisions + org_events 复合事件容器
+            #
+            # atomic_facts 是 subject+attribute+value 三元组形态, 适合"客户的某属性=某值"。
+            # 但实际工作中很多事实是"复合事件":
+            #   - 一次会议里同时产生 3 个决策 + 2 个新主题 + 1 个 todo
+            #   - 一次组织变动 (高老师离职) 同时涉及 3 个 person + 影响 2 条 event_line
+            # 三元组装不下这种"事件" 形态, 强塞进去会丢失"哪几件事是一起发生的"。
+            #
+            # key_decisions: 客户级关键决策 (会议纪要 / 决议)
+            # org_events: 组织事件 (人员变动 / 法人变更 / 资金事件 / 战略调整)
+            #
+            # 跟 atomic_facts 关系: 一个 key_decision 会 derived → 多条 atomic_facts
+            #   (例: "张真接任法人" decision → atomic_fact(张真.角色=法人代表))
+            # ─────────────────────────────────────────────────────────────
+            self.conn.executescript(
+                """
+                CREATE TABLE IF NOT EXISTS key_decisions (
+                    id TEXT PRIMARY KEY,
+                    client_id TEXT NOT NULL,
+                    -- 来源
+                    source_v2_document_id TEXT,        -- 来源文档
+                    source_v2_chunk_id TEXT,           -- 精确到段落
+                    meeting_id TEXT,                   -- 如果是会议决议
+                    -- 决策内容
+                    decision_title TEXT NOT NULL,      -- 一句话标题
+                    decision_body TEXT NOT NULL,       -- 详细说明
+                    decision_type TEXT NOT NULL DEFAULT 'general',
+                        -- general / personnel / strategic / financial / legal / partnership
+                    -- 决策人
+                    decided_by_person_ids_json TEXT NOT NULL DEFAULT '[]',  -- 多人参与决策
+                    decided_at TEXT,                   -- 决策日期 (≠ 录入日期)
+                    -- 影响范围
+                    affected_event_line_ids_json TEXT NOT NULL DEFAULT '[]',  -- 影响哪些事件线
+                    related_atomic_fact_ids_json TEXT NOT NULL DEFAULT '[]', -- 派生出的 atomic_facts
+                    -- 5 维元数据 (跟 atomic_facts 对齐)
+                    source_type TEXT NOT NULL DEFAULT 'client_internal_doc',
+                    actor_type TEXT NOT NULL DEFAULT 'human',
+                    actor_id TEXT NOT NULL DEFAULT '',
+                    confidence REAL NOT NULL DEFAULT 0.85,
+                    verification_status TEXT NOT NULL DEFAULT 'unverified',
+                    -- 执行状态
+                    execution_status TEXT NOT NULL DEFAULT 'pending',
+                        -- pending / in_progress / done / cancelled / superseded
+                    superseded_by_id TEXT,             -- 被后续决策推翻
+                    -- 时间戳
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    FOREIGN KEY(client_id) REFERENCES clients(id) ON DELETE CASCADE
+                );
+                CREATE INDEX IF NOT EXISTS idx_key_decisions_client_time
+                    ON key_decisions(client_id, decided_at DESC);
+                CREATE INDEX IF NOT EXISTS idx_key_decisions_execution
+                    ON key_decisions(client_id, execution_status, decided_at DESC);
+                CREATE INDEX IF NOT EXISTS idx_key_decisions_type
+                    ON key_decisions(client_id, decision_type, decided_at DESC);
+
+                CREATE TABLE IF NOT EXISTS org_events (
+                    id TEXT PRIMARY KEY,
+                    client_id TEXT NOT NULL,
+                    event_type TEXT NOT NULL,
+                        -- personnel_change / legal_change / funding /
+                        -- strategic_pivot / partnership / risk_signal / milestone
+                    event_title TEXT NOT NULL,
+                    event_body TEXT NOT NULL,
+                    -- 涉及对象
+                    involved_person_ids_json TEXT NOT NULL DEFAULT '[]',
+                    involved_event_line_ids_json TEXT NOT NULL DEFAULT '[]',
+                    related_atomic_fact_ids_json TEXT NOT NULL DEFAULT '[]',
+                    related_decision_ids_json TEXT NOT NULL DEFAULT '[]',
+                    -- 影响评估
+                    impact_severity TEXT NOT NULL DEFAULT 'medium',
+                        -- low / medium / high / critical
+                    impact_direction TEXT NOT NULL DEFAULT 'neutral',
+                        -- positive / neutral / negative / blocking
+                    -- 时间
+                    occurred_at TEXT,                  -- 事件发生时间
+                    observed_at TEXT NOT NULL,         -- 被记录到的时间
+                    -- 来源
+                    source_v2_document_id TEXT,
+                    source_v2_chunk_id TEXT,
+                    -- 5 维元数据
+                    source_type TEXT NOT NULL DEFAULT 'client_internal_doc',
+                    actor_type TEXT NOT NULL DEFAULT 'human',
+                    actor_id TEXT NOT NULL DEFAULT '',
+                    confidence REAL NOT NULL DEFAULT 0.80,
+                    verification_status TEXT NOT NULL DEFAULT 'unverified',
+                    -- 时间戳
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    FOREIGN KEY(client_id) REFERENCES clients(id) ON DELETE CASCADE
+                );
+                CREATE INDEX IF NOT EXISTS idx_org_events_client_time
+                    ON org_events(client_id, occurred_at DESC);
+                CREATE INDEX IF NOT EXISTS idx_org_events_severity
+                    ON org_events(client_id, impact_severity, occurred_at DESC);
+                CREATE INDEX IF NOT EXISTS idx_org_events_type
+                    ON org_events(client_id, event_type, occurred_at DESC);
+                """
+            )
+
+            # ─────────────────────────────────────────────────────────────
+            # v2.2 F2.6: event_line_state_changes 子表 (主线状态变更事件流)
+            #
+            # 现有 event_lines.current_blocker/recent_decision/next_step 是单值字段,
+            # 装不下"主线状态变化的历史序列"。例:
+            #   - 5/1 主线 active → 5/15 因高老师离职 → blocked → 5/20 强哥接手 → active
+            # 这种状态变化序列对"AI 理解主线如何走过" 至关重要 (N2 软件灵魂)。
+            #
+            # 每条 state_change 一行, 按 triggered_at 排序就是主线的完整故事。
+            # 关联到 trigger_source (是 fact 还是 task 触发的状态变化)。
+            # ─────────────────────────────────────────────────────────────
+            self.conn.executescript(
+                """
+                CREATE TABLE IF NOT EXISTS event_line_state_changes (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    event_line_id TEXT NOT NULL,
+                    -- 变化类型
+                    change_type TEXT NOT NULL,
+                        -- state_change / owner_change / blocker_added / blocker_resolved
+                        -- / decision_made / progress_milestone / risk_emerged
+                    -- 状态变化 (仅 change_type=state_change 时填)
+                    from_status TEXT,
+                    to_status TEXT,
+                    -- 责任人变化 (仅 change_type=owner_change 时填)
+                    from_owner_id TEXT,
+                    to_owner_id TEXT,
+                    -- 通用字段
+                    change_title TEXT NOT NULL,
+                    change_body TEXT NOT NULL DEFAULT '',
+                    -- 触发源 (告诉我们这个状态变化是从哪条信息推出来的)
+                    trigger_source_type TEXT,           -- 'atomic_fact' / 'key_decision' / 'task' / 'manual'
+                    trigger_source_id TEXT,
+                    -- 时间
+                    triggered_at TEXT NOT NULL,         -- 变化发生时间 (≠ 录入)
+                    observed_at TEXT NOT NULL,
+                    -- 5 维元数据
+                    actor_type TEXT NOT NULL DEFAULT 'human',
+                    actor_id TEXT NOT NULL DEFAULT '',
+                    confidence REAL NOT NULL DEFAULT 0.80,
+                    -- 评估
+                    impact_severity TEXT NOT NULL DEFAULT 'medium',
+                    reversed_at TEXT,                   -- 后续被推翻 (爱马仕"可撤销")
+                    reversed_reason TEXT NOT NULL DEFAULT '',
+                    FOREIGN KEY(event_line_id) REFERENCES event_lines(id) ON DELETE CASCADE
+                );
+                CREATE INDEX IF NOT EXISTS idx_event_line_state_changes_line_time
+                    ON event_line_state_changes(event_line_id, triggered_at DESC);
+                CREATE INDEX IF NOT EXISTS idx_event_line_state_changes_type
+                    ON event_line_state_changes(change_type, triggered_at DESC);
+                CREATE INDEX IF NOT EXISTS idx_event_line_state_changes_trigger
+                    ON event_line_state_changes(trigger_source_type, trigger_source_id);
+                """
+            )
             # 索引: 按 verification_status 找待审 + 按 validity 过滤 superseded
             try:
                 self.conn.execute(
