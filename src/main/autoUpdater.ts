@@ -25,7 +25,8 @@ interface UpdateEventPayload {
 const UPDATE_EVENT_CHANNEL = 'yiyu-workbench:update-event';
 const CHECK_DELAY_MS = 10_000;
 const RECHECK_INTERVAL_MS = 6 * 60 * 60 * 1000;
-const UPDATE_FEED_URL = 'https://yiyu-thinktank-releases.tos-cn-beijing.volces.com/desktop/mac/latest-mac.yml';
+const UPDATE_FEED_BASE_URL = 'https://yiyu-thinktank-releases.tos-cn-beijing.volces.com/desktop/mac/';
+const UPDATE_FEED_URL = `${UPDATE_FEED_BASE_URL}latest-mac.yml`;
 
 let mainWindowRef: BrowserWindow | null = null;
 let setupDone = false;
@@ -54,6 +55,9 @@ function shouldEnable(): boolean {
 
 function normalizeUpdateErrorMessage(message: string): string {
   const lower = message.toLowerCase();
+  if (message.includes('app-update.yml') && (lower.includes('enoent') || lower.includes('no such file'))) {
+    return `当前安装包缺少更新配置文件，已改为使用益语官方火山云更新源。请稍后重试；若仍失败，请确认 ${UPDATE_FEED_URL} 已发布。`;
+  }
   if (message.includes('latest-mac.yml') && (message.includes('404') || lower.includes('not found'))) {
     return `当前更新源尚未发布可用版本或暂不可访问。请确认 ${UPDATE_FEED_URL} 已发布。`;
   }
@@ -77,6 +81,10 @@ export function setupAutoUpdater(mainWindow: BrowserWindow): void {
   autoUpdater.autoDownload = true;
   autoUpdater.autoInstallOnAppQuit = true;
   autoUpdater.allowDowngrade = false;
+  autoUpdater.setFeedURL({
+    provider: 'generic',
+    url: UPDATE_FEED_BASE_URL,
+  });
   autoUpdater.logger = {
     info: (msg: unknown) => console.log('[autoUpdater]', msg),
     warn: (msg: unknown) => console.warn('[autoUpdater]', msg),
