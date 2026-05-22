@@ -998,14 +998,43 @@ def commit_session(
                 continue
             seen_opinions.add(dedup_key)
             try:
+                # ★ V2.3 阶段 2 M-D2.1: smart_file_import opinion 接 source_registry
+                # 蓝图 § 七 第 1 层 + B AI K-3 §1 错层修
+                fact_id = _new_id("af")
+                source_registry_id: str | None = None
+                try:
+                    from app.services.source_registry_store import register_source, ensure_schema
+                    from app.services.atomic_fact_confidence_history import (
+                        ensure_schema as ensure_ch, record_confidence_change,
+                    )
+                    ensure_schema(db)
+                    ensure_ch(db)
+                    try:
+                        db.execute("ALTER TABLE atomic_facts ADD COLUMN source_registry_id TEXT")
+                    except Exception:
+                        pass
+                    source_registry_id = register_source(
+                        db,
+                        source_type="oral_claim",  # 智能导入讲述
+                        source_channel="smart_import_narration",
+                        source_owner="smart_file_import",
+                        client_id=client_id,
+                        content=f"{holder}|{subj}|{polarity}",
+                        source_role="user_oral",
+                        raw_reference=f"smart_import_session={session_id}",
+                        strict_4_required=False,
+                    )
+                except Exception as exc:
+                    pass  # 失败则 source_registry_id=None, 仍写 atomic_facts
+
                 db.execute(
                     """INSERT INTO atomic_facts
                        (id, client_id, subject_entity_id, subject_text, attribute,
                         value_text, value_normalized, confidence, evidence_text,
-                        status, created_at, updated_at)
-                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?)""",
+                        status, created_at, updated_at, source_registry_id)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?)""",
                     (
-                        _new_id("af"), client_id,
+                        fact_id, client_id,
                         entity_name_to_id.get(holder),
                         holder,
                         f"对「{subj}」的评价",
@@ -1013,9 +1042,22 @@ def commit_session(
                         polarity,
                         0.92,
                         f"smart_import_session={session_id}; quote='{quote}'",
-                        now, now,
+                        now, now, source_registry_id,
                     ),
                 )
+                # V2.3 confidence_history initial_extract
+                if source_registry_id:
+                    try:
+                        from app.services.atomic_fact_confidence_history import record_confidence_change
+                        record_confidence_change(
+                            db, fact_id=fact_id, new_confidence=0.92,
+                            trigger_event="initial_extract",
+                            evidence_link=source_registry_id,
+                            actor_id="smart_file_import",
+                            reasoning_note=f"smart_import_opinion {holder}→{subj}",
+                        )
+                    except Exception:
+                        pass
                 stats["atomic_facts_created"] += 1
             except Exception as exc:  # noqa: BLE001
                 stats["errors"].append(f"opinion '{holder}→{subj}': {exc}")

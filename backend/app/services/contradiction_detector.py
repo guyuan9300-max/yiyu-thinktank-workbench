@@ -52,6 +52,11 @@ def insert_fact(
     Dedup 键：(client_id, subject_text, attribute, value_normalized, status='active')
     同一个事实从多个 chunk 提及不应当产生 N 条重复 fact——否则矛盾检测
     会对每对组合都触发，产生 N×N 个冗余告警。
+
+    V2.3 阶段 2 M-D2.1 接通 (顾源源 5/22 钦定):
+      · 旧路径保持工作 (向后兼容)
+      · 新加: 自动 register_source 拿 source_id + 写 atomic_facts.source_registry_id
+      · 失败时跳过 (旧路径正常)
     """
     timestamp = now or _now_iso()
     # 先查是否已存在相同的 active fact
@@ -76,14 +81,54 @@ def insert_fact(
         return str(existing["id"])
 
     fact_id = str(uuid.uuid4())
+
+    # ★ V2.3 阶段 2 M-D2.1 接 source_registry (向后兼容: 失败跳过, 主 INSERT 仍跑)
+    source_registry_id: str | None = None
+    try:
+        # 用 _SqliteAdapter 把 sqlite3.Connection 包装成 _DbLike 接口
+        from app.services.source_registry_store import register_source, ensure_schema
+        from app.services.atomic_fact_confidence_history import (
+            ensure_schema as ensure_ch,
+            record_confidence_change,
+        )
+
+        class _SqliteAdapter:
+            def __init__(self, c): self._c = c
+            def execute(self, sql, params=()): return self._c.execute(sql, params)
+            def fetchone(self, sql, params=()): return self._c.execute(sql, params).fetchone()
+            def fetchall(self, sql, params=()): return self._c.execute(sql, params).fetchall()
+
+        adapter = _SqliteAdapter(conn)
+        ensure_schema(adapter)
+        ensure_ch(adapter)
+        # atomic_facts 加列 (idempotent)
+        try:
+            conn.execute("ALTER TABLE atomic_facts ADD COLUMN source_registry_id TEXT")
+        except Exception:
+            pass
+
+        source_registry_id = register_source(
+            adapter,
+            source_type="llm_extracted",
+            source_channel="document_llm_extractor",  # contradiction_detector 通常被 fact_extractor 调
+            source_owner="contradiction_detector",
+            client_id=client_id,
+            content=f"{fact.subject_text}|{fact.attribute}|{fact.value_text}",
+            source_role="ai_derived",
+            raw_reference=source_v2_document_id or source_v2_chunk_id,
+            strict_4_required=False,  # contradiction_detector 兼容旧调用
+        )
+    except Exception as exc:
+        logger.warning("contradiction_detector V2.3 register_source 失败: %s", exc)
+
     conn.execute(
         """
         INSERT INTO atomic_facts (
             id, client_id, subject_entity_id, subject_text, attribute,
             value_text, value_normalized, confidence,
             source_v2_chunk_id, source_v2_document_id, evidence_text,
-            status, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?)
+            status, created_at, updated_at, source_registry_id
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?)
         """,
         (
             fact_id,
@@ -99,8 +144,24 @@ def insert_fact(
             fact.evidence_text,
             timestamp,
             timestamp,
+            source_registry_id,  # V2.3 阶段 2 M-D2.1
         ),
     )
+
+    # V2.3 阶段 2 M-D2.1 · 写 confidence_history initial_extract
+    if source_registry_id:
+        try:
+            adapter = _SqliteAdapter(conn)
+            record_confidence_change(
+                adapter, fact_id=fact_id, new_confidence=fact.confidence,
+                trigger_event="initial_extract",
+                evidence_link=source_registry_id,
+                actor_id="contradiction_detector",
+                reasoning_note=f"insert_fact via contradiction_detector",
+            )
+        except Exception as exc:
+            logger.warning("contradiction_detector confidence_history 失败: %s", exc)
+
     return fact_id
 
 
