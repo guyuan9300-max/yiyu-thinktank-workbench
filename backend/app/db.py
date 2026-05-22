@@ -10,7 +10,7 @@ from pathlib import Path
 # 之前 20260518001 (200 亿) 远超上限, SQLite 静默 set 为 0, 每次启动都重做完整迁移
 # (这是 20260518 那次坏 db 的真正根因之一: 重做时遇上 reload race + backfill 无事务).
 # 改用 YYYYMMDD 格式 (8 位), 每次 schema 变化递增日期. 20260519 = 此次修复.
-BACKEND_SCHEMA_VERSION = 20260529  # v2.2 F2.8 (N3 A6): idempotency_keys 表 — 防 AI retry 重复创建
+BACKEND_SCHEMA_VERSION = 20260530  # v2.2 F2.7 (N3 A3): reasoning_traces 表 — provenance + AI 推理链路追溯
 
 
 # R6：内置罗永浩写作风格的 distilled prompt（手工 distill，不依赖在线抓取，避免外部依赖）。
@@ -3464,6 +3464,67 @@ class Database:
                     WHERE status != 'failed';
                 CREATE INDEX IF NOT EXISTS idx_idempotency_keys_actor
                     ON idempotency_keys(actor_type, actor_id, created_at DESC);
+                """
+            )
+
+            # ─────────────────────────────────────────────────────────────
+            # v2.2 F2.7 (N3 A3): reasoning_traces — provenance + AI 推理链路
+            #
+            # 顾源源 5/22 原话: "AI 要对接收的信息有分辨能力"
+            # 当 AI 写一条 atomic_fact 时, 应该能追溯:
+            #   1. 它读了哪几份 v2_documents / chunks (input)
+            #   2. 它跑了什么 prompt / 模型 (process)
+            #   3. 它怎么从碎片推出这条结论 (reasoning chain)
+            #   4. 写入时是否触发了 supersede / conflict 判断 (output)
+            #
+            # 用户后来如果发现这条事实有问题:
+            #   查 atomic_facts.reasoning_trace_id 关联到 reasoning_traces 表
+            #   看到 AI 用了哪些段落 + 怎么推的, 立即定位错在哪
+            #   比"AI 黑盒抽错了我要重头看" 强 100 倍
+            #
+            # 3.0 fact graph 用: 一条事实派生出多条事实时, derived_from_ids_json
+            # 配合 reasoning_traces 形成完整因果图
+            # ─────────────────────────────────────────────────────────────
+            self.conn.executescript(
+                """
+                CREATE TABLE IF NOT EXISTS reasoning_traces (
+                    id TEXT PRIMARY KEY,
+                    -- 谁跑的 (LLM 调用 session / AI agent)
+                    ai_session_id TEXT NOT NULL,
+                    -- 输出关联 (这个 trace 派生出哪条 fact / decision / event)
+                    output_entity_type TEXT NOT NULL,    -- 'atomic_fact' / 'key_decision' / 'org_event' / 'task'
+                    output_entity_id TEXT,                -- 关联 id (写完才回填)
+                    -- 输入: 用了哪些资料
+                    input_doc_ids_json TEXT NOT NULL DEFAULT '[]',     -- v2_documents
+                    input_chunk_ids_json TEXT NOT NULL DEFAULT '[]',   -- v2_chunks
+                    input_fact_ids_json TEXT NOT NULL DEFAULT '[]',    -- 上游 atomic_facts
+                    -- 过程: prompt + 模型
+                    prompt_summary TEXT NOT NULL DEFAULT '',           -- 给的 prompt 摘要 (≤500 字, 不存全文避免重复存储)
+                    prompt_log_id TEXT,                                -- 关联到 llm_context.prompt_log
+                    model_name TEXT NOT NULL DEFAULT '',
+                    model_version TEXT NOT NULL DEFAULT '',
+                    -- 输出: AI 推理痕迹
+                    reasoning_steps_json TEXT NOT NULL DEFAULT '[]',   -- ['观察 X 说 Y', '考虑 Z', '结论...']
+                    output_summary TEXT NOT NULL DEFAULT '',           -- 最终结论 (一句话)
+                    -- 结果元数据
+                    confidence REAL NOT NULL DEFAULT 0.5,
+                    triggered_update_relation TEXT NOT NULL DEFAULT 'none',
+                        -- 'none' / 'conflict' / 'supersedes' / 'complement'
+                    -- 时间 + 性能
+                    started_at TEXT NOT NULL,
+                    completed_at TEXT,
+                    duration_ms INTEGER,
+                    -- 状态
+                    status TEXT NOT NULL DEFAULT 'pending',
+                        -- 'pending' / 'completed' / 'failed' / 'reverted'
+                    error_message TEXT NOT NULL DEFAULT ''
+                );
+                CREATE INDEX IF NOT EXISTS idx_reasoning_traces_session
+                    ON reasoning_traces(ai_session_id, started_at DESC);
+                CREATE INDEX IF NOT EXISTS idx_reasoning_traces_output_entity
+                    ON reasoning_traces(output_entity_type, output_entity_id);
+                CREATE INDEX IF NOT EXISTS idx_reasoning_traces_status
+                    ON reasoning_traces(status, started_at DESC);
                 """
             )
             # 索引: 按 verification_status 找待审 + 按 validity 过滤 superseded
