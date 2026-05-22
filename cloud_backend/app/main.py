@@ -13,7 +13,11 @@ import time
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from threading import Event, Thread
+from threading import Event, Lock, Thread
+
+# P0-3: 全局 refresh_token rotation Lock, 防 TOCTOU race 让同一 token 双花.
+# Module-level 单例, 跨所有 worker 线程串行 refresh.
+_REFRESH_TOKEN_ROTATION_LOCK = Lock()
 from typing import Literal, cast
 from urllib.parse import parse_qs, unquote, urlparse
 from uuid import uuid4
@@ -10049,8 +10053,25 @@ def _task_record(state: AppState, row, viewer_id: str | None = None) -> TaskReco
     )
 
 
-def _task_row_or_404(state: AppState, task_id: str):
-    row = state.db.fetchone("SELECT * FROM tasks WHERE id = ?", (task_id,))
+def _task_row_or_404(state: AppState, task_id: str, *, organization_id: str | None = None):
+    """读 task row 或 404.
+
+    P0-5 修复: 旧版只按 task_id 查, 不带 organization_id, A 组织成员
+    可以提交其他 org 的 task_id (比如在 weekly review taskEntries 里),
+    把 B 组织私有 task title 拉进 A 组织的复盘报告 — 跨租户数据泄漏.
+
+    新版: 调用方 SHOULD 显式传 organization_id, 跨 org 查找返回 404.
+    保留 organization_id=None 的 legacy 模式 (28+ 现有 caller 渐进式迁移),
+    但新 caller 必须传 organization_id, 关键路径 (任务 mutation /
+    任务读取展示给 user / 任务被嵌入 review) 必须校验.
+    """
+    if organization_id:
+        row = state.db.fetchone(
+            "SELECT * FROM tasks WHERE id = ? AND organization_id = ?",
+            (task_id, organization_id),
+        )
+    else:
+        row = state.db.fetchone("SELECT * FROM tasks WHERE id = ?", (task_id,))
     if not row:
         raise HTTPException(status_code=404, detail="Task not found")
     return row
@@ -12606,45 +12627,52 @@ def create_app() -> FastAPI:
 
     @app.post("/api/v1/auth/refresh", response_model=AuthTokenResponse)
     def refresh_auth(payload: RefreshPayload) -> AuthTokenResponse:
-        session_row = state.db.fetchone("SELECT * FROM auth_refresh_sessions WHERE refresh_token = ?", (payload.refreshToken,))
-        if not session_row:
-            raise HTTPException(status_code=401, detail="登录状态已过期，请重新登录")
-        if session_row["revoked_at"]:
-            raise HTTPException(status_code=401, detail="登录状态已失效，请重新登录")
-        expires_at = datetime.fromisoformat(str(session_row["expires_at"]))
-        if expires_at <= datetime.now():
+        # P0-3 修复: refresh_token TOCTOU race.
+        # 旧版 SELECT-then-UPDATE 两个独立 execute 各自 auto-commit,
+        # 两个并发请求带同一 refresh_token 都通过 SELECT 校验都拿到 valid token —
+        # 攻击者中间人截获 token 后跟合法客户竞速可双花.
+        # 用 module-level threading.Lock 把"读 session + 校验 + rotate token" 包成原子 —
+        # 单进程 backend 下保证全局串行 (yiyu 内部多人也只有一个 cloud_backend 进程实例).
+        with _REFRESH_TOKEN_ROTATION_LOCK:
+            session_row = state.db.fetchone("SELECT * FROM auth_refresh_sessions WHERE refresh_token = ?", (payload.refreshToken,))
+            if not session_row:
+                raise HTTPException(status_code=401, detail="登录状态已过期，请重新登录")
+            if session_row["revoked_at"]:
+                raise HTTPException(status_code=401, detail="登录状态已失效，请重新登录")
+            expires_at = datetime.fromisoformat(str(session_row["expires_at"]))
+            if expires_at <= datetime.now():
+                state.db.execute(
+                    "UPDATE auth_refresh_sessions SET revoked_at = ? WHERE id = ?",
+                    (now_iso(), str(session_row["id"])),
+                )
+                raise HTTPException(status_code=401, detail="登录状态已过期，请重新登录")
+            row = state.db.fetchone("SELECT * FROM employee_accounts WHERE id = ?", (str(session_row["user_id"]),))
+            if not row:
+                state.db.execute(
+                    "UPDATE auth_refresh_sessions SET revoked_at = ? WHERE id = ?",
+                    (now_iso(), str(session_row["id"])),
+                )
+                raise HTTPException(status_code=401, detail="账号不存在，请重新登录")
+            row = _ensure_login_allowed(row)
+            timestamp = now_iso()
+            next_refresh_token = new_id("rt")
+            next_expires_at = (datetime.now() + timedelta(days=30)).replace(microsecond=0).isoformat()
             state.db.execute(
-                "UPDATE auth_refresh_sessions SET revoked_at = ? WHERE id = ?",
-                (now_iso(), str(session_row["id"])),
+                "UPDATE auth_refresh_sessions SET refresh_token = ?, expires_at = ?, revoked_at = NULL WHERE id = ?",
+                (next_refresh_token, next_expires_at, str(session_row["id"])),
             )
-            raise HTTPException(status_code=401, detail="登录状态已过期，请重新登录")
-        row = state.db.fetchone("SELECT * FROM employee_accounts WHERE id = ?", (str(session_row["user_id"]),))
-        if not row:
             state.db.execute(
-                "UPDATE auth_refresh_sessions SET revoked_at = ? WHERE id = ?",
-                (now_iso(), str(session_row["id"])),
+                "UPDATE employee_accounts SET last_login_at = ?, updated_at = ? WHERE id = ?",
+                (timestamp, timestamp, str(row["id"])),
             )
-            raise HTTPException(status_code=401, detail="账号不存在，请重新登录")
-        row = _ensure_login_allowed(row)
-        timestamp = now_iso()
-        next_refresh_token = new_id("rt")
-        next_expires_at = (datetime.now() + timedelta(days=30)).replace(microsecond=0).isoformat()
-        state.db.execute(
-            "UPDATE auth_refresh_sessions SET refresh_token = ?, expires_at = ?, revoked_at = NULL WHERE id = ?",
-            (next_refresh_token, next_expires_at, str(session_row["id"])),
-        )
-        state.db.execute(
-            "UPDATE employee_accounts SET last_login_at = ?, updated_at = ? WHERE id = ?",
-            (timestamp, timestamp, str(row["id"])),
-        )
-        _log_audit(
-            state,
-            "refresh_login",
-            actor_user_id=str(row["id"]),
-            target_user_id=str(row["id"]),
-            detail={"sessionId": str(session_row["id"])},
-        )
-        return _issue_auth_tokens(row, session_id=str(session_row["id"]), refresh_token=next_refresh_token)
+            _log_audit(
+                state,
+                "refresh_login",
+                actor_user_id=str(row["id"]),
+                target_user_id=str(row["id"]),
+                detail={"sessionId": str(session_row["id"])},
+            )
+            return _issue_auth_tokens(row, session_id=str(session_row["id"]), refresh_token=next_refresh_token)
 
     @app.get("/api/v1/auth/me", response_model=SessionUser)
     def me(current_user: SessionUser = Depends(lambda authorization=Header(default=None): _require_auth(app, authorization))) -> SessionUser:
@@ -13829,9 +13857,11 @@ def create_app() -> FastAPI:
 
     @app.get("/api/v1/settings/org-ai-config/secret", response_model=OrgAiConfigSecretRecord)
     def get_org_ai_config_secret(
-        current_user: SessionUser = Depends(lambda authorization=Header(default=None): _require_auth(app, authorization)),
+        current_user: SessionUser = Depends(lambda authorization=Header(default=None): _require_admin(app, authorization)),
     ) -> OrgAiConfigSecretRecord:
-        """Returns decrypted API key — only accessible to authenticated org members."""
+        """P0-4 修复: 旧版用 _require_auth 任何成员可读 LLM API key 明文 →
+        普通员工能复制 key 离开组织,造成 billable usage abuse + credential revocation.
+        改为 _require_admin, 仅管理员可读解密后的 secret."""
         row = state.db.fetchone("SELECT * FROM org_ai_config WHERE org_id = ?", (current_user.organizationId,))
         if not row or not row["api_key_encrypted"]:
             return OrgAiConfigSecretRecord(
@@ -13932,8 +13962,10 @@ def create_app() -> FastAPI:
 
     @app.get("/api/v1/settings/org-object-storage-config/secret", response_model=OrgObjectStorageConfigSecretRecord)
     def get_org_object_storage_config_secret(
-        current_user: SessionUser = Depends(lambda authorization=Header(default=None): _require_auth(app, authorization)),
+        current_user: SessionUser = Depends(lambda authorization=Header(default=None): _require_admin(app, authorization)),
     ) -> OrgObjectStorageConfigSecretRecord:
+        # P0-4 修复: 同 ai-config/secret, _require_auth → _require_admin.
+        # TOS Access Key + Secret Key 不能让普通成员读, 否则可跨租户访问 bucket.
         row = state.db.fetchone(
             "SELECT * FROM org_object_storage_config WHERE org_id = ?",
             (current_user.organizationId,),
@@ -15527,7 +15559,10 @@ def create_app() -> FastAPI:
         except HTTPException:
             raise
         except Exception as exc:
-            raise HTTPException(status_code=500, detail=f"合并失败：{exc}") from exc
+            # P1-9: 旧版 detail=f"合并失败：{exc}" 把 Python str(exc) 暴露到响应,
+            # 可能含表名/路径/依赖版本. 记日志, 返回通用文案.
+            logger.exception("[merge-client] failed")
+            raise HTTPException(status_code=500, detail="合并失败,请查看后端日志定位原因。") from None
 
         # 返回 target 最新状态
         refreshed = _event_line_row_or_404(state, target_id, org_id)
@@ -16710,7 +16745,9 @@ def create_app() -> FastAPI:
                     _sync_qwen_chat, api_key, chat_payload, timeout
                 )
             except Exception as error:
-                raise HTTPException(status_code=502, detail=f"AI 回复失败：{error}") from error
+                # P1-9: 不把 LLM provider 错误 body 直接暴露给前端 (可能含 token / 内网 URL)
+                logger.exception("[ai-chat] qwen call failed")
+                raise HTTPException(status_code=502, detail="AI 回复失败,请稍后重试。") from None
 
         context_bundle_hash = hashlib.sha256(
             json.dumps(
@@ -16855,7 +16892,9 @@ def create_app() -> FastAPI:
                 media_type=f"image/{out_format.lower()}",
             )
         except Exception as exc:
-            raise HTTPException(status_code=500, detail=f"缩略图生成失败: {exc}") from exc
+            # P1-9: 不暴露 PIL / imagemagick / 路径细节
+            logger.exception("[thumbnail] failed")
+            raise HTTPException(status_code=500, detail="缩略图生成失败,请稍后重试。") from None
 
     @app.get("/api/public/task-attachments/{attachment_id}/text-content")
     def get_attachment_text_content(attachment_id: str) -> dict:
@@ -17033,7 +17072,9 @@ def create_app() -> FastAPI:
             except RuntimeError as error:
                 raise HTTPException(status_code=400, detail=str(error)) from error
             except Exception as error:
-                raise HTTPException(status_code=502, detail=f"语音转写失败：{error}") from error
+                # P1-9: 不暴露 ASR provider 错误 body
+                logger.exception("[speech-transcribe] failed")
+                raise HTTPException(status_code=502, detail="语音转写失败,请稍后重试。") from None
             finally:
                 try:
                     audio_path.unlink(missing_ok=True)
@@ -17088,26 +17129,39 @@ def create_app() -> FastAPI:
         payload: RolePayload,
         current_user: SessionUser = Depends(lambda authorization=Header(default=None): _require_admin(app, authorization)),
     ) -> EmployeeRecord:
+        # P1-7 修复: 旧版 UPDATE accounts + DELETE bindings + INSERT bindings 三步
+        # 各自 auto-commit, server crash 在 DELETE 和 INSERT 之间会留账号已 approved
+        # 但 role binding 缺失的 dangling state. 用 run_in_transaction 包成原子.
         _get_org_user_or_404(state, current_user.organizationId, employee_id)
         timestamp = now_iso()
-        state.db.execute(
-            """
-            UPDATE employee_accounts
-            SET primary_role = ?, account_status = 'approved', membership_status = 'approved', approved_at = ?, approved_by = ?, rejected_reason = NULL, membership_rejected_reason = NULL, disabled_at = NULL, updated_at = ?
-            WHERE id = ? AND organization_id = ?
-            """,
-            (payload.role, timestamp, current_user.id, timestamp, employee_id, current_user.organizationId),
-        )
-        existing_role = state.db.fetchone("SELECT id FROM employee_role_bindings WHERE user_id = ?", (employee_id,))
-        if existing_role:
-            state.db.execute("DELETE FROM employee_role_bindings WHERE user_id = ?", (employee_id,))
-        state.db.execute(
-            "INSERT INTO employee_role_bindings(id, user_id, role, created_at) VALUES(?, ?, ?, ?)",
-            (new_id("role"), employee_id, payload.role, timestamp),
-        )
-        _sync_employee_org_binding_from_account(state, current_user.organizationId, employee_id)
-        _log_audit(state, "approve_employee", actor_user_id=current_user.id, target_user_id=employee_id, detail={"role": payload.role})
-        return _employee_record(_get_org_user_or_404(state, current_user.organizationId, employee_id))
+        org_id = current_user.organizationId
+        actor_id = current_user.id
+
+        def _apply_approve(conn):
+            conn.execute(
+                """
+                UPDATE employee_accounts
+                SET primary_role = ?, account_status = 'approved', membership_status = 'approved', approved_at = ?, approved_by = ?, rejected_reason = NULL, membership_rejected_reason = NULL, disabled_at = NULL, updated_at = ?
+                WHERE id = ? AND organization_id = ?
+                """,
+                (payload.role, timestamp, actor_id, timestamp, employee_id, org_id),
+            )
+            existing_role = conn.execute(
+                "SELECT id FROM employee_role_bindings WHERE user_id = ?", (employee_id,)
+            ).fetchone()
+            if existing_role:
+                conn.execute("DELETE FROM employee_role_bindings WHERE user_id = ?", (employee_id,))
+            conn.execute(
+                "INSERT INTO employee_role_bindings(id, user_id, role, created_at) VALUES(?, ?, ?, ?)",
+                (new_id("role"), employee_id, payload.role, timestamp),
+            )
+
+        state.db.run_in_transaction(_apply_approve)
+        # _sync_employee_org_binding_from_account 内部还有写,但它是补全级 (best-effort).
+        # _log_audit 是事后审计,即使前面 sync 失败也要留 audit log.
+        _sync_employee_org_binding_from_account(state, org_id, employee_id)
+        _log_audit(state, "approve_employee", actor_user_id=actor_id, target_user_id=employee_id, detail={"role": payload.role})
+        return _employee_record(_get_org_user_or_404(state, org_id, employee_id))
 
     @app.post("/api/v1/admin/employees/{employee_id}/reject", response_model=EmployeeRecord)
     def reject_employee(
@@ -18305,7 +18359,9 @@ def create_app() -> FastAPI:
         except RuntimeError as error:
             raise HTTPException(status_code=400, detail=str(error)) from error
         except Exception as error:
-            raise HTTPException(status_code=502, detail=f"录音转写失败：{error}") from error
+            # P1-9: 不暴露 attachment transcribe provider 错误细节
+            logger.exception("[recording-transcribe-to-doc] failed")
+            raise HTTPException(status_code=502, detail="录音转写失败,请稍后重试。") from None
 
         if not transcript:
             raise HTTPException(status_code=400, detail="录音已上传，但未识别出有效文本。")
@@ -18664,7 +18720,10 @@ def create_app() -> FastAPI:
             task_id = str(entry.get("taskId", "")).strip()
             if not task_id:
                 continue
-            task_row = _task_record(state, _task_row_or_404(state, task_id), current_user.id)
+            # P0-5 修复: 必须按 current_user.organizationId 校验 task 属同组织,
+            # 否则 A 组织成员可在 taskEntries 提交 B 组织任务 ID,
+            # B 组织私有 task title 被嵌入 A 组织的复盘文本 → 跨租户数据泄漏.
+            task_row = _task_record(state, _task_row_or_404(state, task_id, organization_id=current_user.organizationId), current_user.id)
             structured_note = _coerce_review_structured_note_payload(entry.get("structuredNote"))
             note = _compose_review_note(structured_note, str(entry.get("note", "")).strip())
             domain = str(entry.get("contentDomain") or ("personal" if _is_private_task(task_row) else "work"))
