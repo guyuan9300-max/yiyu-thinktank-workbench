@@ -884,8 +884,15 @@ def run_full_quality_test(db_path: Path | None = None) -> dict:
         "strategic_thought_insights": _count(db, "strategic_thought_insights",
                                              "client_id = ? AND is_deleted = 0", (CLIENT_ID,)),
         "fact_contradictions": _count(db, "fact_contradictions", "client_id = ?", (CLIENT_ID,)),
+        # V2.4: 数总条数 (pending + resolved), 用户纠错 resolve 不应减分
         "clarification_records": _count(db, "clarification_records",
+                                        "scope_type = 'client' AND scope_id = ?",
+                                        (CLIENT_ID,)),
+        "clarification_records_pending": _count(db, "clarification_records",
                                         "scope_type = 'client' AND scope_id = ? AND status = 'pending'",
+                                        (CLIENT_ID,)),
+        "clarification_records_resolved": _count(db, "clarification_records",
+                                        "scope_type = 'client' AND scope_id = ? AND status = 'resolved'",
                                         (CLIENT_ID,)),
     }
 

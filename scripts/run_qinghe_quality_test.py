@@ -20,6 +20,7 @@ sys.path.insert(0, str(ROOT / "backend"))
 sys.path.insert(0, str(ROOT))
 
 from backend.tests.quality.qinghe_runner import run_full_quality_test  # noqa: E402
+from backend.tests.quality.qinghe_v24_scoring import render_v24_report  # noqa: E402
 
 
 def _now_iso() -> str:
@@ -201,7 +202,13 @@ def main():
 
     md = render_report_markdown(result)
     args.output.write_text(md, encoding="utf-8")
-    print(f"📝 报告: {args.output}")
+    print(f"📝 V2.3 旧报告: {args.output}")
+
+    # V2.4 P2-8 新评分报告 (门禁 + 7 维分)
+    v24_md = render_v24_report(result)
+    v24_path = ROOT / "docs" / "V2.4_QUALITY_TEST_REPORT.md"
+    v24_path.write_text(v24_md, encoding="utf-8")
+    print(f"📝 V2.4 新评分报告: {v24_path}")
 
     # JSON 详情 (机读)
     args.json_output.write_text(
