@@ -64,6 +64,92 @@ class FactProbe:
     expected_source_contains: str = ""  # 空 = 不限制 source
 
 
+# ── 6 件待办 (顾源源 5/22 接力指令 任务 2) ───────────────────
+# B 门进阶判定: 5/19 会议 → AI 是否抽出了具体待办事项 (plan/commitment role)
+
+PROBES_TODO_6: tuple[FactProbe, ...] = (
+    FactProbe(
+        id="t1_values_draft",
+        label="价值观稿",
+        keywords=("价值观", "稿"),
+        search_fields=("subject_text", "value_text", "attribute"),
+        expected_roles=("plan", "commitment", "decision"),
+    ),
+    FactProbe(
+        id="t2_brand_assessment",
+        label="品牌评估",
+        keywords=("品牌", "评估"),
+        search_fields=("subject_text", "value_text", "attribute"),
+        expected_roles=("plan", "commitment", "decision"),
+    ),
+    FactProbe(
+        id="t3_july_agenda",
+        label="7 月议程",
+        keywords=("7月", "议程"),
+        search_fields=("subject_text", "value_text", "attribute"),
+        expected_roles=("plan", "commitment", "decision"),
+    ),
+    FactProbe(
+        id="t4_xingsheng_sort",
+        label="兴盛梳理",
+        keywords=("兴盛", "梳理"),
+        search_fields=("subject_text", "value_text", "attribute"),
+        expected_roles=("plan", "commitment", "decision"),
+    ),
+    FactProbe(
+        id="t5_values_research",
+        label="价值观调研",
+        keywords=("价值观", "调研"),
+        search_fields=("subject_text", "value_text", "attribute"),
+        expected_roles=("plan", "commitment", "decision"),
+    ),
+    FactProbe(
+        id="t6_brand_design_link",
+        label="品牌设计对接",
+        keywords=("品牌设计", "对接"),
+        search_fields=("subject_text", "value_text", "attribute"),
+        expected_roles=("plan", "commitment", "decision"),
+    ),
+)
+
+
+# ── 5 关键人物归一 (接力指令 任务 2) ─────────────────────
+# 验证 LLM 抽取是否覆盖会议关键人 (subject_text 或 speaker_person_id 含)
+
+PROBES_PEOPLE_5: tuple[FactProbe, ...] = (
+    FactProbe(
+        id="ppl1_zhangzhen",
+        label="张真",
+        keywords=("张真",),
+        search_fields=("subject_text", "value_text", "attribute"),
+    ),
+    FactProbe(
+        id="ppl2_guyuanyuan",
+        label="顾源源",
+        keywords=("顾源源",),
+        search_fields=("subject_text", "value_text", "attribute"),
+    ),
+    FactProbe(
+        id="ppl3_yanbin",
+        label="严斌",
+        keywords=("严斌",),
+        search_fields=("subject_text", "value_text", "attribute"),
+    ),
+    FactProbe(
+        id="ppl4_qiang",
+        label="强哥",
+        keywords=("强哥",),
+        search_fields=("subject_text", "value_text", "attribute"),
+    ),
+    FactProbe(
+        id="ppl5_gao",
+        label="高老师",
+        keywords=("高老师",),
+        search_fields=("subject_text", "value_text", "attribute"),
+    ),
+)
+
+
 PROBES_5_19_TRUE_ALIGN: tuple[FactProbe, ...] = (
     FactProbe(
         id="p1_legal_rep",
@@ -258,6 +344,9 @@ class BaselineReport:
     client_id: str
     db_path: str
     probes: list[ProbeResult]
+    # 接力指令 任务 2: 顺手扩展 — 6 待办 + 5 人物归一
+    todo_probes: list[ProbeResult] = field(default_factory=list)
+    people_probes: list[ProbeResult] = field(default_factory=list)
 
     @property
     def hit_count(self) -> int:
@@ -271,7 +360,45 @@ class BaselineReport:
     def total(self) -> int:
         return len(self.probes)
 
+    @property
+    def todo_hit_count(self) -> int:
+        return sum(1 for p in self.todo_probes if p.hit)
+
+    @property
+    def people_hit_count(self) -> int:
+        return sum(1 for p in self.people_probes if p.hit)
+
+    @property
+    def combined_score_percent(self) -> float:
+        """综合 P% (3 类加权): 主 probes 50% + todo 30% + people 20%"""
+        if not (self.probes or self.todo_probes or self.people_probes):
+            return 0.0
+        main_pct = (
+            self.hit_count / len(self.probes) if self.probes else 0
+        ) * 50
+        todo_pct = (
+            self.todo_hit_count / len(self.todo_probes)
+            if self.todo_probes else 0
+        ) * 30
+        people_pct = (
+            self.people_hit_count / len(self.people_probes)
+            if self.people_probes else 0
+        ) * 20
+        return round(main_pct + todo_pct + people_pct, 1)
+
     def to_dict(self) -> dict[str, Any]:
+        def _probe_to_dict(p: ProbeResult) -> dict[str, Any]:
+            return {
+                "id": p.probe.id,
+                "label": p.probe.label,
+                "hit_count": p.hit_count,
+                "strong_hit": p.strong_hit,
+                "has_correct_role": p.has_correct_role,
+                "has_5_19_source": p.has_5_19_source,
+                "confidence_avg": round(p.confidence_avg, 2),
+                "sample_rows": p.sample_rows,
+            }
+
         return {
             "client_id": self.client_id,
             "db_path": self.db_path,
@@ -281,21 +408,21 @@ class BaselineReport:
                 "strong_hit": self.strong_hit_count,
                 "hit_rate": f"{self.hit_count}/{self.total}",
                 "strong_hit_rate": f"{self.strong_hit_count}/{self.total}",
-                "b_gate_pass": self.hit_count >= 4,  # ≥4/7 = B 门 PASS
+                "b_gate_pass": self.hit_count >= 4,
+                # 接力指令 任务 2 扩展
+                "todo_hit_rate": (
+                    f"{self.todo_hit_count}/{len(self.todo_probes)}"
+                    if self.todo_probes else "0/0"
+                ),
+                "people_hit_rate": (
+                    f"{self.people_hit_count}/{len(self.people_probes)}"
+                    if self.people_probes else "0/0"
+                ),
+                "combined_score_percent": self.combined_score_percent,
             },
-            "probes": [
-                {
-                    "id": p.probe.id,
-                    "label": p.probe.label,
-                    "hit_count": p.hit_count,
-                    "strong_hit": p.strong_hit,
-                    "has_correct_role": p.has_correct_role,
-                    "has_5_19_source": p.has_5_19_source,
-                    "confidence_avg": round(p.confidence_avg, 2),
-                    "sample_rows": p.sample_rows,
-                }
-                for p in self.probes
-            ],
+            "probes": [_probe_to_dict(p) for p in self.probes],
+            "todo_probes": [_probe_to_dict(p) for p in self.todo_probes],
+            "people_probes": [_probe_to_dict(p) for p in self.people_probes],
         }
 
     def to_human_text(self) -> str:
@@ -343,6 +470,50 @@ class BaselineReport:
         missing = [p.probe.label for p in self.probes if not p.hit]
         if missing:
             lines.append(f"  缺失 ({len(missing)} 项): {', '.join(missing)}")
+        lines.append("")
+
+        # ── 接力指令 任务 2 扩展: 6 待办 + 5 人物 + 综合 P% ──
+        if self.todo_probes:
+            lines.append(f"  {'待办 (6 件)':<28}  {'命中':<6}  {'role 对':<8}")
+            lines.append("  " + "-" * 50)
+            for p in self.todo_probes:
+                hit_mark = "✓" if p.hit else "✗"
+                role_mark = "✓" if p.has_correct_role else "—"
+                lines.append(
+                    f"  {p.probe.label:<22}  {hit_mark} {p.hit_count:>3}    "
+                    f"{role_mark:<8}"
+                )
+            lines.append("  " + "-" * 50)
+            lines.append(
+                f"  待办命中: {self.todo_hit_count}/{len(self.todo_probes)}"
+            )
+            lines.append("")
+
+        if self.people_probes:
+            lines.append(f"  {'人物归一 (5 人)':<28}  {'命中':<6}")
+            lines.append("  " + "-" * 40)
+            for p in self.people_probes:
+                hit_mark = "✓" if p.hit else "✗"
+                lines.append(
+                    f"  {p.probe.label:<22}  {hit_mark} {p.hit_count:>3}"
+                )
+            lines.append("  " + "-" * 40)
+            lines.append(
+                f"  人物命中: {self.people_hit_count}/{len(self.people_probes)}"
+            )
+            lines.append("")
+
+        if self.todo_probes or self.people_probes:
+            score = self.combined_score_percent
+            score_mark = "🟢" if score >= 70 else ("🟡" if score >= 40 else "🔴")
+            lines.append(
+                f"  综合 N2 命中 P%: {score_mark} {score:.1f}%  "
+                f"(主 50% × {self.hit_count}/{self.total} + "
+                f"待办 30% × {self.todo_hit_count}/{len(self.todo_probes)} + "
+                f"人物 20% × {self.people_hit_count}/{len(self.people_probes)})"
+            )
+            lines.append("")
+
         lines.append("=" * 70)
         return "\n".join(lines)
 
@@ -351,15 +522,19 @@ def run_baseline(
     db_path: Path,
     client_id: str = DEFAULT_CLIENT_ID,
     probes: tuple[FactProbe, ...] = PROBES_5_19_TRUE_ALIGN,
+    include_extended: bool = True,
 ) -> BaselineReport:
-    """主入口 — 跑 baseline 并返回 report"""
+    """主入口 — 跑 baseline 并返回 report.
+
+    include_extended (接力指令任务 2): 顺手跑 PROBES_TODO_6 + PROBES_PEOPLE_5
+    可关 (向后兼容老 12 个自检测试 — 它们用 probes= 自定义参数, 没传 include_extended).
+    """
     if not db_path.exists():
         raise FileNotFoundError(f"DB 不存在: {db_path}")
 
     conn = sqlite3.connect(str(db_path))
     conn.row_factory = sqlite3.Row
     try:
-        # 验证 atomic_facts 表存在
         check = conn.execute(
             "SELECT name FROM sqlite_master "
             "WHERE type='table' AND name='atomic_facts'"
@@ -368,6 +543,16 @@ def run_baseline(
             raise RuntimeError(f"atomic_facts 表不存在 (DB: {db_path})")
 
         results = [probe_fact(conn, probe, client_id) for probe in probes]
+        todo_results: list[ProbeResult] = []
+        people_results: list[ProbeResult] = []
+        # 仅当跑默认 7 主 probes 时, 顺手跑扩展 (避免自检测试拿到意外数据)
+        if include_extended and probes is PROBES_5_19_TRUE_ALIGN:
+            todo_results = [
+                probe_fact(conn, p, client_id) for p in PROBES_TODO_6
+            ]
+            people_results = [
+                probe_fact(conn, p, client_id) for p in PROBES_PEOPLE_5
+            ]
     finally:
         conn.close()
 
@@ -375,6 +560,8 @@ def run_baseline(
         client_id=client_id,
         db_path=str(db_path),
         probes=results,
+        todo_probes=todo_results,
+        people_probes=people_results,
     )
 
 
