@@ -685,6 +685,24 @@ def build_user_prompt(bundle: ClientFactBundle) -> str:
     lines.append("\n# 已抽好的业务事实 (atomic_facts, attribute=主题, 高置信度)")
     lines.append(_format_atomic_facts(bundle.atomic_facts_by_attribute))
 
+    # ★★★ M-C.3 强制 mention 清单 (顾源源 5/22 autonomous loop, V2.1 lab 改)
+    # 防 LLM 自由度过高跳过关键 atomic_facts → 强制 6 段叙事 mention 每个关键变更
+    _critical_attrs = ("职务", "角色", "合并", "重组", "命名", "统领", "类型", "接任", "变更", "新任",
+                       "改名", "拆分", "重命名", "兼任", "升任", "卸任", "调岗", "离职", "重要")
+    _critical_facts = []
+    for _attr, _facts in bundle.atomic_facts_by_attribute.items():
+        if any(_k in _attr for _k in _critical_attrs):
+            for _f in _facts[:3]:
+                _critical_facts.append(
+                    f"  · [{_f.attribute}] {_f.subject}.{_f.attribute} = {(_f.value or '')[:80]}"
+                )
+    if _critical_facts:
+        lines.append("\n# ★★★ 强制 mention 清单 (顾源源 5/22 M-C.3 钦定 — 漏一个视为 LLM 失败)")
+        lines.append("# 下列是涉及人事变更 / 项目合并 / 角色调整 / 新产品命名 的关键 atomic_facts.")
+        lines.append("# 6 段叙事中, 每条 fact 的 subject 和 value **必须至少 mention 一次**.")
+        lines.append("# 不允许遗漏 — 这是 N2 北极星 \"任意入口看全局\" 的硬约束.")
+        lines.extend(_critical_facts[:25])
+
     lines.append("\n# 业务主线 (event_lines)")
     lines.append(_format_event_lines(bundle.event_lines))
 
