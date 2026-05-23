@@ -11,6 +11,20 @@
   4. 不依赖 dogfood_real snapshot
   5. 能重复跑一次, 不产生重复任务和重复澄清
 
+顾源源 5/23 11:00 加严 8 步 (跑前/跑中/跑后全覆盖):
+  1. curl smoke endpoint (跑前先确认 R2 endpoint 真存在, 不是 404)
+  2. 提交日慈会议纪要
+  3. 提交 CFFC 会议纪要
+  4. sqlite3 查 V2.1 lab db 前后差异
+  5. 核对 facts / event_line / risks / commitments / clarifications / approval_queue / agent_run_log
+  6. 验证跨客户隔离 (跑客户 A 后, 客户 B 在 V2.1 lab db 数据不动)
+  7. 验证重复运行不重复写入
+  8. 输出 V2.1 R2 HTTP 真实运行报告
+
+★ 严卡:
+  - 不接受 dogfood_real / snapshot 作为通过依据
+  - 不再用旧主仓库 prod db 扣分
+
 跑法:
     cd ~/openclaw/workspace/V2.1
     # 前置: A 已暴露 endpoint + 用户已跑 npm run db:init:lab + npm run dev:lab
@@ -50,7 +64,8 @@ REPORTS_DIR.mkdir(parents=True, exist_ok=True)
 V21_LAB_DB = Path.home() / "Library/Application Support/YiyuThinkTankWorkbench2_V21Lab/app.db"
 
 DEFAULT_BASE_URL = "http://localhost:47831"
-DEFAULT_CLIENTS = ["日慈基金会", "益语智库", "善加基金会"]
+# 顾源源 5/23 11:00 钦定: "提交日慈会议纪要 + 提交 CFFC 会议纪要"
+DEFAULT_CLIENTS = ["日慈基金会", "CFFC"]
 
 # 真实会议纪要场景 (3 客户共用同一段, 替换 X)
 GOLDEN_MEETING_TEMPLATE = """
@@ -147,7 +162,11 @@ def check_hard_gate_2_tables_exist(snap: dict) -> dict:
 
 
 def check_hard_gate_3_records_real(snap_before: dict, snap_after: dict) -> dict:
-    """硬门槛 3: 会议纪要处理后, 事实/风险/承诺/澄清/任务/run log/approval queue 真有记录."""
+    """硬门槛 3: 会议纪要处理后, 事实/事件线/风险/承诺/澄清/任务/run log/approval queue 真有记录.
+
+    顾源源 5/23 11:00 第 5 步: 核对 facts / event_line / risks / commitments /
+    clarifications / approval_queue / agent_run_log.
+    """
     deltas = {}
     for t in CRITICAL_TABLES:
         b = snap_before.get(t, {}).get("client") or 0
@@ -155,17 +174,22 @@ def check_hard_gate_3_records_real(snap_before: dict, snap_after: dict) -> dict:
         deltas[t] = a - b
 
     pass_atomic = deltas.get("atomic_facts", 0) >= HARD_GATE_THRESHOLDS["min_atomic_facts"]
+    pass_event_line = deltas.get("event_line_activities", 0) >= 1
     pass_risk = deltas.get("risk_signals", 0) >= HARD_GATE_THRESHOLDS["min_risk_signals"]
     pass_commit = deltas.get("commitments", 0) >= HARD_GATE_THRESHOLDS["min_commitments"]
     pass_clarify = deltas.get("clarification_records", 0) >= HARD_GATE_THRESHOLDS["min_clarification_records"]
     pass_run_log = deltas.get("agent_run_log", 0) >= HARD_GATE_THRESHOLDS["min_agent_run_log"]
     pass_approval = deltas.get("approval_queue", 0) >= HARD_GATE_THRESHOLDS["min_approval_queue"]
 
-    all_pass = all([pass_atomic, pass_risk, pass_commit, pass_clarify, pass_run_log, pass_approval])
+    all_pass = all([
+        pass_atomic, pass_event_line, pass_risk, pass_commit,
+        pass_clarify, pass_run_log, pass_approval,
+    ])
     return {
         "pass": all_pass,
         "evidence": {
             "atomic_facts +": deltas.get("atomic_facts", 0),
+            "event_line_activities +": deltas.get("event_line_activities", 0),
             "risk_signals +": deltas.get("risk_signals", 0),
             "commitments +": deltas.get("commitments", 0),
             "clarification_records +": deltas.get("clarification_records", 0),
@@ -173,6 +197,67 @@ def check_hard_gate_3_records_real(snap_before: dict, snap_after: dict) -> dict:
             "approval_queue +": deltas.get("approval_queue", 0),
         },
     }
+
+
+def check_hard_gate_6_cross_client_isolation(
+    snap_other_before: dict, snap_other_after: dict, other_client_id: str,
+) -> dict:
+    """硬门槛 6: 跨客户隔离 (顾源源 5/23 11:00 第 6 步).
+
+    跑客户 A 后, 客户 B 在 V2.1 lab db 的 (client_id = B) 数据不动.
+    若 B 数据动了 → 客户隔离破, R2 不过.
+    """
+    if not snap_other_before or not snap_other_after:
+        return {"pass": None, "evidence": "无对照客户, 跳过 (single-client 模式)"}
+    leaks: list[str] = []
+    for t in [
+        "atomic_facts", "event_line_activities", "risk_signals",
+        "commitments", "clarification_records",
+        "agent_run_log", "approval_queue",
+    ]:
+        b = snap_other_before.get(t, {}).get("client") or 0
+        a = snap_other_after.get(t, {}).get("client") or 0
+        if a != b:
+            leaks.append(f"{t}: {b}→{a}")
+    return {
+        "pass": len(leaks) == 0,
+        "evidence": (
+            f"对照客户 {other_client_id} 数据未动 (0 leak)"
+            if not leaks
+            else f"客户隔离破: {leaks}"
+        ),
+    }
+
+
+def smoke_check_endpoints(base_url: str) -> dict:
+    """顾源源 5/23 11:00 第 1 步: curl smoke endpoint.
+
+    跑前先确认 R2 endpoint 真存在 (不是 404), 否则后面跑没意义.
+    返回 dict: { endpoint: {status_code, note} }.
+    """
+    smoke_targets = [
+        ("POST", "/api/v1/meeting-minutes/process", {"client_id": "smoke", "meeting_text": "smoke", "mode": "draft"}),
+        ("GET", "/api/v1/approvals", None),
+    ]
+    results: dict = {}
+    for method, path, payload in smoke_targets:
+        try:
+            if method == "GET":
+                r = httpx.get(f"{base_url}{path}", timeout=3.0)
+            else:
+                r = httpx.post(f"{base_url}{path}", json=payload, timeout=3.0)
+            results[f"{method} {path}"] = {
+                "status_code": r.status_code,
+                # 404 = 没暴露 / 422 = 存在但 payload 不对 / 200 = ok
+                "exists": r.status_code != 404,
+            }
+        except Exception as exc:
+            results[f"{method} {path}"] = {
+                "status_code": "exception",
+                "exists": False,
+                "error": str(exc),
+            }
+    return results
 
 
 def check_hard_gate_4_no_snapshot(snap_after: dict, test_run_id: str) -> dict:
@@ -307,8 +392,13 @@ def run_r2_for_client(
     db_path: Path,
     mode: str = "draft",
     test_repeatable: bool = True,
+    other_client_name: str | None = None,
 ) -> dict:
-    """单客户跑完整 R2."""
+    """单客户跑完整 R2.
+
+    other_client_name: 跨客户隔离对照客户 (顾源源 5/23 11:00 第 6 步).
+        跑客户 A 时, 同时采集 B 的 baseline → 跑完看 B 数据是否动 (应不动).
+    """
     test_run_id = f"r2_{uuid.uuid4().hex[:12]}"
     print(f"\n{'=' * 72}")
     print(f"  V2.1 RC R2 真测试 · 客户: {client_name} · test_run_id={test_run_id}")
@@ -331,9 +421,17 @@ def run_r2_for_client(
             "error": f"客户不存在: {client_name}",
         }
 
-    # Step 2: 第 0 轮 baseline
+    # Step 2: 第 0 轮 baseline + 跨客户对照 baseline
     snap_before = snapshot_tables(conn, client_id)
-    print(f"▸ [0/5] R0 baseline 采集: 11 张表存在 {sum(1 for v in snap_before.values() if v['exists'])}/11")
+    print(f"▸ [0/6] R0 baseline 采集: 11 张表存在 {sum(1 for v in snap_before.values() if v['exists'])}/11")
+
+    other_client_id: str | None = None
+    snap_other_before: dict | None = None
+    if other_client_name:
+        other_client_id = lookup_client_id(conn, other_client_name)
+        if other_client_id and other_client_id != client_id:
+            snap_other_before = snapshot_tables(conn, other_client_id)
+            print(f"  对照客户: {other_client_name} ({other_client_id}) baseline 采集")
 
     # Step 3: 调真 HTTP endpoint
     meeting_text = GOLDEN_MEETING_TEMPLATE.format(client=client_name)
@@ -385,10 +483,13 @@ def run_r2_for_client(
         })
         print(f"  🔴 异常: {exc}")
 
-    # Step 4: 第 2 轮 baseline
+    # Step 4: 第 2 轮 baseline + 跨客户对照 after
     time.sleep(2)  # 等异步派生器跑完
     snap_after = snapshot_tables(conn, client_id)
-    print(f"▸ [2/5] R2 baseline 采集")
+    snap_other_after: dict | None = None
+    if other_client_id and snap_other_before is not None:
+        snap_other_after = snapshot_tables(conn, other_client_id)
+    print(f"▸ [2/6] R2 baseline 采集")
 
     # Step 5: 硬门槛 5 重复跑 (幂等性测试)
     snap_after_second = None
@@ -418,21 +519,24 @@ def run_r2_for_client(
         except Exception as exc:
             print(f"  ⚠️ 重复跑失败: {exc}")
 
-    # Step 6: 5 硬门槛检查
-    print(f"▸ [4/5] 5 硬门槛检查...")
+    # Step 6: 6 硬门槛检查 (5 + 跨客户隔离)
+    print(f"▸ [4/6] 6 硬门槛检查 (含跨客户隔离)...")
     hard_gates = {
         "1": check_hard_gate_1_http_only(call_log),
         "2": check_hard_gate_2_tables_exist(snap_after),
         "3": check_hard_gate_3_records_real(snap_before, snap_after),
         "4": check_hard_gate_4_no_snapshot(snap_after, test_run_id),
         "5": check_hard_gate_5_idempotent(call_log, snap_after, snap_after_second),
+        "6": check_hard_gate_6_cross_client_isolation(
+            snap_other_before, snap_other_after, other_client_id or "",
+        ),
     }
     for k, v in hard_gates.items():
         mark = "✅" if v["pass"] else "🔴" if v["pass"] is False else "⚠️"
         print(f"  门槛 {k}: {mark} {v['evidence']}")
 
     # Step 7: 100 分制评分
-    print(f"▸ [5/5] 100 分制 7 维度评分...")
+    print(f"▸ [5/6] 100 分制 7 维度评分...")
     scores = score_v30_r2(snap_before, snap_after, call_log, hard_gates, test_result)
     print(f"  总分: {scores['total']}/100")
     for k, v in scores.items():
@@ -444,11 +548,15 @@ def run_r2_for_client(
     return {
         "client_name": client_name,
         "client_id": client_id,
+        "other_client_name": other_client_name,
+        "other_client_id": other_client_id,
         "test_run_id": test_run_id,
         "mode": mode,
         "snap_before": snap_before,
         "snap_after": snap_after,
         "snap_after_second": snap_after_second,
+        "snap_other_before": snap_other_before,
+        "snap_other_after": snap_other_after,
         "call_log": call_log,
         "hard_gates": hard_gates,
         "scores": scores,
@@ -476,8 +584,8 @@ def main() -> int:
         print(f"  请先跑: cd ~/openclaw/workspace/V2.1 && npm run db:init:lab")
         return 1
 
-    # 前置: V2.1 backend 健康检查
-    print(f"\n▸ 前置检查 · V2.1 backend ({args.base_url}) 是否可达...")
+    # 前置 1: V2.1 backend 健康检查
+    print(f"\n▸ 前置 1 · V2.1 backend ({args.base_url}) 是否可达...")
     try:
         r = httpx.get(f"{args.base_url}/api/v1/clients", timeout=5)
         if r.status_code != 200:
@@ -489,13 +597,48 @@ def main() -> int:
         print(f"  请先跑: cd ~/openclaw/workspace/V2.1 && npm run dev:lab")
         return 1
 
+    # 前置 2: smoke check R2 endpoint 真存在 (顾源源 5/23 11:00 第 1 步)
+    print(f"\n▸ 前置 2 · smoke check R2 endpoint 是否暴露 (顾源源第 1 步)...")
+    smoke = smoke_check_endpoints(args.base_url)
+    all_exists = True
+    for ep, info in smoke.items():
+        mark = "✅" if info["exists"] else "🔴"
+        print(f"  {mark} {ep} → HTTP {info['status_code']}")
+        if not info["exists"]:
+            all_exists = False
+    if not all_exists:
+        print(f"\n  🔴 R2 endpoint 仍 404 (A 阻塞未解), R2 真测试无法进行.")
+        print(f"  → 等 A 暴露 endpoint 后重跑.")
+        # 写一份 "endpoint 未暴露" 的简短 markdown 报告, 便于追溯
+        endpoint_blocked_md = (
+            f"# V2.1 RC R2 真测试中止 · R2 endpoint 未暴露\n\n"
+            f"> 时间: {_now_iso()}\n"
+            f"> base_url: {args.base_url}\n\n"
+            f"## smoke check\n\n"
+        )
+        for ep, info in smoke.items():
+            mark = "✅" if info["exists"] else "🔴"
+            endpoint_blocked_md += f"- {mark} {ep} → HTTP {info['status_code']}\n"
+        endpoint_blocked_md += (
+            f"\n## 下一步\n\nA 暴露 R2 endpoint 后重跑本脚本. (BLOCKER)\n"
+        )
+        md_blocked_path = ROOT / "docs" / f"B_AI_V2_5_R2_BLOCKED_{_now_filename()}.md"
+        md_blocked_path.write_text(endpoint_blocked_md, encoding="utf-8")
+        print(f"  → 已写: {md_blocked_path}")
+        return 2  # blocked
+
+    # 跨客户隔离对照: 跑客户 A 时取 B 当对照, 跑 B 时取 A 当对照
+    client_list = [c.strip() for c in args.clients.split(",")]
     all_results = []
     started = time.perf_counter()
-    for cname in args.clients.split(","):
-        cname = cname.strip()
+    for i, cname in enumerate(client_list):
+        other_name = client_list[(i + 1) % len(client_list)] if len(client_list) > 1 else None
+        if other_name == cname:
+            other_name = None
         result = run_r2_for_client(
             cname, args.base_url, db_path,
             mode=args.mode, test_repeatable=not args.no_repeat,
+            other_client_name=other_name,
         )
         all_results.append(result)
 
@@ -557,21 +700,21 @@ def render_md_report(all_results: list[dict], mode: str, duration: float, avg_sc
     lines.append(f"状态: {'🟢 PASS' if avg_score >= 70 else '🔴 FAIL'}")
     lines.append("")
 
-    # 5 硬门槛汇总
-    lines.append(f"## 5 硬门槛 (3 客户汇总)")
+    # 6 硬门槛汇总 (含跨客户隔离)
+    lines.append(f"## 6 硬门槛汇总 (顾源源 5/23 11:00 加严)")
     lines.append("")
-    lines.append("| 客户 | 1 HTTP only | 2 11 表 | 3 真记录 | 4 不靠 snapshot | 5 幂等 |")
-    lines.append("|---|---|---|---|---|---|")
+    lines.append("| 客户 | 1 HTTP only | 2 11 表 | 3 真记录 | 4 不靠 snapshot | 5 幂等 | 6 跨客户隔离 |")
+    lines.append("|---|---|---|---|---|---|---|")
     for r in all_results:
         if "hard_gates" not in r:
-            lines.append(f"| {r['client_name']} | ⚠️ skip ({r.get('error', '?')}) | | | | |")
+            lines.append(f"| {r['client_name']} | ⚠️ skip ({r.get('error', '?')}) | | | | | |")
             continue
         gates = r["hard_gates"]
         marks = []
-        for i in ["1", "2", "3", "4", "5"]:
+        for i in ["1", "2", "3", "4", "5", "6"]:
             p = gates.get(i, {}).get("pass")
             marks.append("✅" if p else "🔴" if p is False else "⚠️")
-        lines.append(f"| {r['client_name']} | {marks[0]} | {marks[1]} | {marks[2]} | {marks[3]} | {marks[4]} |")
+        lines.append(f"| {r['client_name']} | {marks[0]} | {marks[1]} | {marks[2]} | {marks[3]} | {marks[4]} | {marks[5]} |")
     lines.append("")
 
     # 7 维度评分
