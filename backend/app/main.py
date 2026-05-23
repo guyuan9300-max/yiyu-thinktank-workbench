@@ -38402,6 +38402,66 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
     # 跨客户隔离 / JSON schema / 不绕 Approval Queue / 审计 actor_type
     # ──────────────────────────────────────────────────────────────────────
 
+    def _expand_agent_state(snapshot: dict, *, pack, client_id: str | None, project_id: str | None) -> dict:
+        """V3 收尾 M1 · 把 summarize_for_api_response 输出展开为顾源源 §M1 要求的 14 个顶层独立字段."""
+        client_profile: dict = {}
+        active_projects: list[dict] = []
+        latest_events: list[dict] = []
+        if client_id:
+            try:
+                cs = build_client_summary(client_id)
+                # cs 是 ClientSummary, 取关键字段
+                client_profile = {
+                    "id": getattr(cs, "id", client_id),
+                    "name": getattr(cs, "name", ""),
+                    "domain": getattr(cs, "domain", None),
+                    "stage": getattr(cs, "stage", None),
+                }
+            except Exception:
+                client_profile = {"id": client_id}
+            try:
+                rows = state.db.fetchall(
+                    """SELECT id, name, status, stage, evidence_count, summary, updated_at
+                       FROM event_lines WHERE primary_client_id = ?
+                       ORDER BY evidence_count DESC, updated_at DESC LIMIT 10""",
+                    (client_id,),
+                )
+                active_projects = [dict(r) for r in rows or []]
+            except Exception:
+                pass
+            try:
+                rows = state.db.fetchall(
+                    """SELECT a.id, a.happened_at, a.actor_name, a.title, a.summary
+                       FROM event_line_activities a
+                       JOIN event_lines e ON a.event_line_id = e.id
+                       WHERE e.primary_client_id = ?
+                       ORDER BY a.happened_at DESC LIMIT 10""",
+                    (client_id,),
+                )
+                latest_events = [dict(r) for r in rows or []]
+            except Exception:
+                pass
+
+        # 把 pack 数据展平到顶层
+        snapshot.setdefault("client_profile", client_profile)
+        snapshot.setdefault("active_projects", active_projects)
+        snapshot.setdefault("latest_events", latest_events)
+        snapshot["file_identities"] = list(getattr(pack, "files", []) or [])
+        snapshot["contract_structures"] = list(getattr(pack, "contracts", []) or [])
+        snapshot["historical_reference_links"] = list(getattr(pack, "historical_links", []) or [])
+        snapshot["commitments"] = list(getattr(pack, "commitments", []) or [])
+        snapshot["risk_signals"] = list(getattr(pack, "risks", []) or [])
+        snapshot["clarifications"] = list(getattr(pack, "clarifications", []) or [])
+        snapshot["approval_queue"] = list(getattr(pack, "approvals", []) or [])
+        snapshot["data_gaps"] = list(getattr(pack, "data_gaps", []) or [])
+        # agent_run_logs 最近 5 条 (audit)
+        try:
+            from app.services.agent_governance import list_recent_agent_runs
+            snapshot["agent_run_logs"] = list_recent_agent_runs(state.db, client_id=client_id, limit=5)
+        except Exception:
+            snapshot["agent_run_logs"] = []
+        return snapshot
+
     @app.get("/api/v1/clients/{client_id}/agent-state")
     def get_client_agent_state(
         client_id: str,
@@ -38415,6 +38475,10 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         + 待澄清 + 待审批 + 数据缺口 + recommended_next_actions
 
         跨客户硬隔离: 必须传 client_id, 不存在则 404.
+        V3 收尾 M1: 加 14 个顶层独立字段 (client_profile/active_projects/latest_events/
+                   file_identities/contract_structures/historical_reference_links/
+                   commitments/risk_signals/clarifications/approval_queue/data_gaps/
+                   agent_run_logs/recommended_next_actions/evidence_summary).
         """
         # 客户存在性校验 (跨客户隔离硬门槛)
         build_client_summary(client_id)
@@ -38484,6 +38548,9 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             })
         snapshot["recommended_next_actions"] = actions
 
+        # V3 收尾 M1: 展平 14 个顶层独立字段 (顾源源 §M1)
+        snapshot = _expand_agent_state(snapshot, pack=pack, client_id=client_id, project_id=None)
+
         # 审计 (V3 Agent 调度入口必登记)
         try:
             from app.services.agent_governance import log_agent_run_start, log_agent_run_complete
@@ -38505,6 +38572,107 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
 
         return snapshot
 
+    @app.get("/api/v1/projects/{project_id}/agent-state")
+    def get_project_agent_state(
+        project_id: str,
+        x_actor_type: str = Header("external_ai_agent", alias="X-Actor-Type"),
+        x_actor_id: str = Header("", alias="X-Actor-Id"),
+    ) -> dict:
+        """V3 收尾 M1 · 项目级 agent-state (顾源源 §M1 必做).
+
+        project_id 实际是 event_line.id (益语智库的"项目" = 事件线).
+        返回: event_line 基本信息 + 关联活动 + 关联客户的合同/承诺/风险 子集.
+        """
+        # 先找 event_line
+        row = state.db.fetchone(
+            """SELECT id, name, primary_client_id, status, stage, evidence_count, summary,
+                      intent, current_blocker, recent_decision, next_step, updated_at
+               FROM event_lines WHERE id = ?""",
+            (project_id,),
+        )
+        if not row:
+            # 兼容: 也许传的是 project_module_id
+            row = state.db.fetchone(
+                "SELECT id, client_id AS primary_client_id, name FROM project_modules WHERE id = ?",
+                (project_id,),
+            )
+            if not row:
+                raise HTTPException(status_code=404, detail="project not found (tried event_lines & project_modules)")
+        d = dict(row)
+        client_id = d.get("primary_client_id")
+        if not client_id:
+            raise HTTPException(status_code=404, detail="project has no associated client")
+
+        from app.services.company_brain_context_builder import (
+            build_company_brain_context, summarize_for_api_response,
+        )
+        # 复用 client 上下文, 但在 client_profile 标记当前 project
+        pack = build_company_brain_context(
+            state.db, client_id=client_id, project_id=project_id,
+            task_type="workbench_qa",  # type: ignore
+        )
+        snapshot = summarize_for_api_response(pack)
+
+        # 加 project 维度独有字段
+        snapshot["project"] = d
+        snapshot["project_activities"] = []
+        try:
+            rows = state.db.fetchall(
+                """SELECT id, happened_at, actor_name, title, summary
+                   FROM event_line_activities WHERE event_line_id = ?
+                   ORDER BY happened_at DESC LIMIT 20""",
+                (project_id,),
+            )
+            snapshot["project_activities"] = [dict(r) for r in rows or []]
+        except Exception:
+            pass
+
+        # recommended_next_actions (基于 project 状态)
+        actions: list[dict] = []
+        if d.get("current_blocker"):
+            actions.append({
+                "type": "resolve_project_blocker",
+                "reason": f"项目阻塞: {d['current_blocker'][:80]}",
+                "risk_level": "medium", "approval_required": False,
+                "evidence_table": "event_lines.current_blocker",
+            })
+        if d.get("next_step"):
+            actions.append({
+                "type": "execute_planned_next_step",
+                "reason": f"已规划下一步: {d['next_step'][:80]}",
+                "risk_level": "low", "approval_required": False,
+                "evidence_table": "event_lines.next_step",
+            })
+        if not actions:
+            actions.append({
+                "type": "review_project_status",
+                "reason": "项目无明确阻塞或下一步, 建议复盘",
+                "risk_level": "low", "approval_required": False,
+                "evidence_table": "event_lines",
+            })
+        snapshot["recommended_next_actions"] = actions
+
+        # 展平顶层字段 (project 维度复用 client 维度的)
+        snapshot = _expand_agent_state(snapshot, pack=pack, client_id=client_id, project_id=project_id)
+
+        # 审计
+        try:
+            from app.services.agent_governance import log_agent_run_start, log_agent_run_complete
+            run_id = log_agent_run_start(
+                state.db,
+                actor_type=x_actor_type,  # type: ignore
+                actor_id=x_actor_id or "anonymous",
+                tool_name="project-agent-state",
+                input_payload={"project_id": project_id, "client_id": client_id},
+                client_id=client_id,
+            )
+            log_agent_run_complete(state.db, run_id, status="success",
+                                   output_payload={"project_id": project_id})
+        except Exception:
+            pass
+
+        return snapshot
+
     @app.get("/api/v1/clients/{client_id}/data-gaps")
     def get_client_data_gaps(
         client_id: str,
@@ -38515,7 +38683,14 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         """V3.0 M1-2 · Agent 读已知数据缺口.
 
         Query: status (open/resolved/all) · severity (high/medium/low) · limit
-        Response: {client_id, total, items: [{id, gap_type, subject, ...}]}
+        Response: {client_id, total, items: [{gap_id, gap_type, description,
+                  missing_evidence, related_facts, related_files,
+                  suggested_tools, suggested_clarification, priority,
+                  approval_required, ...}]}
+
+        V3 收尾 M3: 字段升级 — 加 suggested_tools/suggested_clarification/
+                   missing_evidence/related_facts/related_files/priority/
+                   approval_required/description 满足顾源源 §M3 必返 10 字段.
         """
         build_client_summary(client_id)
         clauses = ["client_id = ?"]
@@ -38534,19 +38709,96 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                          detected_at DESC LIMIT ?""",
             tuple(params + [limit]),
         )
+
+        # V3 收尾 M3: gap_type → suggested_tools 映射 (顾源源 §M3 必填)
+        TOOL_BY_GAP_TYPE = {
+            "no_external_evidence": ["data_gaps.compensate", "intelligence.search", "smart_import.classify"],
+            "stale_value": ["text.resolve-history", "authority.resolve", "smart_import.classify"],
+            "contradiction": ["evidence.check", "authority.resolve", "clarifications.list"],
+            "missing_authority": ["clarifications.list", "authority.resolve"],
+            "missing_amount": ["text.resolve-history", "smart_import.classify"],
+            "missing_date": ["text.resolve-history", "smart_import.classify"],
+        }
         items = []
         for r in rows or []:
-            d = dict(r)
+            raw = dict(r)
             try:
-                d["related_fact_ids"] = json.loads(d.pop("related_fact_ids_json") or "[]")
+                related_fact_ids = json.loads(raw.get("related_fact_ids_json") or "[]")
             except Exception:
-                d["related_fact_ids"] = []
-            items.append(d)
+                related_fact_ids = []
+            subject = str(raw.get("subject") or "")
+            gap_type = str(raw.get("gap_type") or "")
+            severity = str(raw.get("severity") or "low")
+            severity_priority = {"high": "high", "medium": "medium", "low": "low"}.get(severity, "low")
+            suggested_tools = TOOL_BY_GAP_TYPE.get(gap_type, ["clarifications.list", "smart_import.classify"])
+
+            # related_facts (真查 atomic_facts)
+            related_facts = []
+            if related_fact_ids:
+                try:
+                    placeholders = ",".join(["?"] * len(related_fact_ids[:5]))
+                    fact_rows = state.db.fetchall(
+                        f"""SELECT id, subject_text, attribute, value_text, confidence
+                            FROM atomic_facts WHERE id IN ({placeholders})""",
+                        tuple(related_fact_ids[:5]),
+                    )
+                    related_facts = [dict(fr) for fr in fact_rows or []]
+                except Exception:
+                    pass
+            # related_files (用 subject 关键字找)
+            related_files = []
+            if subject:
+                try:
+                    file_rows = state.db.fetchall(
+                        """SELECT id, file_name, file_type, file_role
+                           FROM file_identities WHERE client_id = ?
+                             AND (file_name LIKE ? OR project_name LIKE ?) LIMIT 3""",
+                        (client_id, f"%{subject[:8]}%", f"%{subject[:8]}%"),
+                    )
+                    related_files = [dict(fl) for fl in file_rows or []]
+                except Exception:
+                    pass
+            # missing_evidence (基于 gap_type)
+            missing_evidence = []
+            if gap_type == "no_external_evidence":
+                missing_evidence = [f"外部第三方资料 (subject={subject})"]
+            elif gap_type == "stale_value":
+                missing_evidence = [f"最新口径文件 (subject={subject}, internal={raw.get('internal_value')})"]
+            elif gap_type == "contradiction":
+                missing_evidence = [f"权威解释 (internal={raw.get('internal_value')}, external={raw.get('external_value')})"]
+
+            items.append({
+                # 顾源源 §M3 必返 10 字段:
+                "gap_id": raw["id"],
+                "gap_type": gap_type,
+                "description": raw.get("suggested_action") or f"{gap_type}: {subject}",
+                "missing_evidence": missing_evidence,
+                "related_facts": related_facts,
+                "related_files": related_files,
+                "suggested_tools": suggested_tools,
+                "suggested_clarification": (
+                    f"请确认\"{subject}\"的最新口径 / 出处"
+                    if gap_type in ("stale_value", "contradiction", "missing_authority") else
+                    f"是否需要补\"{subject}\"的外部第三方资料?"
+                ),
+                "priority": severity_priority,
+                "approval_required": False,  # 读 data_gap 本身不需审批; compensate 也是 low-risk
+                # 原始字段保留兼容:
+                "subject": subject,
+                "internal_value": raw.get("internal_value"),
+                "external_value": raw.get("external_value"),
+                "severity": severity,
+                "suggested_action": raw.get("suggested_action"),
+                "status": raw.get("status"),
+                "detected_at": raw.get("detected_at"),
+                "related_fact_ids": related_fact_ids,
+            })
         return {
             "client_id": client_id,
             "filter": {"status": status_filter, "severity": severity, "limit": limit},
             "total": len(items),
             "items": items,
+            "schema_version": "v3_m3_full_fields",
         }
 
     @app.post("/api/v1/clients/{client_id}/data-gaps/compensate")
@@ -38639,6 +38891,327 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         if not row:
             raise HTTPException(status_code=404, detail="agent_run_log not found")
         return dict(row)
+
+    # ──────────────────────────────────────────────────────────────────────
+    # V3 收尾 M2 · Tool Registry endpoint (顾源源 §M2 必做)
+    # 17 工具完整 schema, 外置 Claude / Codex 读到这个就知道什么时候用什么工具
+    # ──────────────────────────────────────────────────────────────────────
+
+    @app.get("/api/v1/tool-registry")
+    def get_tool_registry(
+        status_filter: str | None = None,
+        risk_level: str | None = None,
+    ) -> dict:
+        """V3 收尾 M2 · Tool Registry v2 — 17 工具完整 schema.
+
+        Query: status (available/partial/missing) / risk_level (low/medium/high)
+        """
+        registry: list[dict] = [
+            # ── 公司大脑读 (read) ──────────────────────────────
+            {
+                "tool_name": "clients.agent_state",
+                "description": "拿客户级公司大脑完整快照 (14 顶层字段)",
+                "when_to_use": "Agent 启动时第一步 / 任何动作前需要了解客户当前状态",
+                "when_not_to_use": "不需要细粒度评估时 (走 evidence.check); 客户存在性未知时",
+                "endpoint": "GET /api/v1/clients/{client_id}/agent-state",
+                "input_schema": {"client_id": "str (path)", "task_type": "str (query, default workbench_qa)"},
+                "output_schema": {"client_profile": "dict", "active_projects": "list",
+                                   "file_identities": "list", "contract_structures": "list",
+                                   "commitments": "list", "risk_signals": "list",
+                                   "clarifications": "list", "approval_queue": "list",
+                                   "data_gaps": "list", "recommended_next_actions": "list",
+                                   "evidence_summary": "dict"},
+                "example_input": {"client_id": "client_a4d1db29a7"},
+                "example_output": {"evidence_summary": {"contracts": 2, "files": 3}, "...": "..."},
+                "risk_level": "low", "approval_required": False,
+                "read_scope": "client_id 内全部 R3/R4 表",
+                "write_scope": "agent_run_log audit only",
+                "status": "available", "writes_to": ["agent_run_log"],
+                "reads_from": ["contract_structures", "file_identities", "atomic_facts",
+                                "commitments", "risk_signals", "clarification_records",
+                                "approval_queue", "data_gaps", "event_lines", "event_line_activities"],
+            },
+            {
+                "tool_name": "projects.agent_state",
+                "description": "拿项目级 (event_line) 公司大脑快照",
+                "when_to_use": "聚焦单个项目时 / 项目复盘 / 项目状态汇报",
+                "when_not_to_use": "客户层面综合时(用 clients.agent_state)",
+                "endpoint": "GET /api/v1/projects/{project_id}/agent-state",
+                "input_schema": {"project_id": "str (event_line.id 或 project_module.id)"},
+                "output_schema": {"project": "dict", "project_activities": "list", "evidence_summary": "dict"},
+                "example_input": {"project_id": "el_xxx"},
+                "example_output": {"project": {"name": "...", "stage": "..."}},
+                "risk_level": "low", "approval_required": False,
+                "read_scope": "project_id 关联 client + event_line", "write_scope": "agent_run_log",
+                "status": "available", "writes_to": ["agent_run_log"],
+                "reads_from": ["event_lines", "event_line_activities", "(client 数据子集)"],
+            },
+            {
+                "tool_name": "workspace.chat",
+                "description": "自然语言问答(LLM 调用), 返 companyBrainSummary",
+                "when_to_use": "Agent 需要复杂推理 / 综合回答时",
+                "when_not_to_use": "纯数据查询 (用 clients.agent_state 更快); LLM 不可用时",
+                "endpoint": "POST /api/v1/clients/{client_id}/workspace/chat",
+                "input_schema": {"client_id": "str", "prompt": "str"},
+                "output_schema": {"content": "str", "companyBrainSummary": "dict",
+                                   "evidence": "list", "proposedClarifications": "list"},
+                "example_input": {"prompt": "CFFC 合同金额"},
+                "example_output": {"content": "...", "companyBrainSummary": "...{9 类 evidence}..."},
+                "risk_level": "low", "approval_required": False,
+                "read_scope": "client_id 全数据", "write_scope": "chat_messages + atomic_facts(反向入库 P0-3)",
+                "status": "available", "writes_to": ["chat_messages", "atomic_facts"],
+                "reads_from": ["(ContextBuilder 全部 12 类)"],
+            },
+            # ── 公司大脑判 (judge) ─────────────────────────────
+            {
+                "tool_name": "evidence.check",
+                "description": "给目标/草稿, 判证据充分性",
+                "when_to_use": "Agent 写文档/任务前自检; 检查输出是否凭空数字",
+                "when_not_to_use": "不需要 judge 的纯查询",
+                "endpoint": "POST /api/v1/clients/{client_id}/evidence/check",
+                "input_schema": {"text": "str", "target_kind": "goal|draft|answer|plan"},
+                "output_schema": {"evidence_sufficient": "bool", "missing_evidence": "list",
+                                   "conflicting_evidence": "list", "proposed_clarifications": "list"},
+                "example_input": {"text": "预算 800 万", "target_kind": "draft"},
+                "example_output": {"evidence_sufficient": False, "missing_evidence": ["..."]},
+                "risk_level": "low", "approval_required": False,
+                "read_scope": "client_id atomic_facts + contracts + files",
+                "write_scope": "(read-only)",
+                "status": "available", "writes_to": [], "reads_from": ["atomic_facts", "contract_structures", "file_identities"],
+            },
+            {
+                "tool_name": "quality.context",
+                "description": "给输出, 评质量风险 (outdated_amount / uncertainty_leak / fabricated_number / low_credibility)",
+                "when_to_use": "Agent 交付前; 用户审阅前; 自动 QA gate",
+                "when_not_to_use": "纯内部数据查询",
+                "endpoint": "POST /api/v1/clients/{client_id}/quality/context",
+                "input_schema": {"text": "str", "output_kind": "contract_draft|proposal|answer|report"},
+                "output_schema": {"quality_risks": "list", "rework_suggestions": "list",
+                                   "authoritative_facts": "list", "missing_fields": "list"},
+                "example_input": {"text": "...800 万...", "output_kind": "proposal"},
+                "example_output": {"quality_risks": [{"type": "outdated_amount", "severity": "high"}]},
+                "risk_level": "low", "approval_required": False,
+                "read_scope": "client_id 全数据", "write_scope": "(read-only)",
+                "status": "available", "writes_to": [], "reads_from": ["atomic_facts", "contract_structures", "risk_signals", "data_gaps", "external_evidence_cards", "clarification_records"],
+            },
+            {
+                "tool_name": "authority.resolve",
+                "description": "多口径权威判定 (5 级 authority_score)",
+                "when_to_use": "Agent 取数前; 多个 value 候选时",
+                "when_not_to_use": "已知唯一权威值时",
+                "endpoint": "POST /api/v1/clients/{client_id}/authority/resolve",
+                "input_schema": {"subject": "str", "attribute": "str"},
+                "output_schema": {"candidates": "list", "recommended": "dict", "recommended_reason": "str"},
+                "example_input": {"subject": "乡村教育帮扶", "attribute": "金额"},
+                "example_output": {"recommended": {"amount": "300万元人民币"}},
+                "risk_level": "low", "approval_required": False,
+                "read_scope": "client_id atomic_facts + judgments + contracts", "write_scope": "(read-only)",
+                "status": "available", "writes_to": [], "reads_from": ["judgment_versions", "atomic_facts", "contract_structures"],
+            },
+            # ── 公司大脑行动 (act) ─────────────────────────────
+            {
+                "tool_name": "actions.suggest",
+                "description": "基于客户状态给 ≥5 候选行动 (含 risk_level / approval / evidence)",
+                "when_to_use": "Agent 需要决定下一步时",
+                "when_not_to_use": "已知动作时",
+                "endpoint": "POST /api/v1/clients/{client_id}/actions/suggest",
+                "input_schema": {"client_id": "str"},
+                "output_schema": {"actions": "list[{type, reason, risk_level, approval_required, evidence, endpoint_hint, dry_run_endpoint, user_visible_result}]"},
+                "example_input": {},
+                "example_output": {"total": 7, "actions": ["..."]},
+                "risk_level": "low", "approval_required": False,
+                "read_scope": "client_id 公司大脑状态", "write_scope": "agent_run_log",
+                "status": "available", "writes_to": ["agent_run_log"], "reads_from": ["(ContextBuilder)"],
+            },
+            {
+                "tool_name": "actions.dry_run",
+                "description": "预演动作 - 告诉 Agent 会改哪些表 / 需哪些审批, 本身不写业务库",
+                "when_to_use": "Agent 执行高风险动作前必跑",
+                "when_not_to_use": "纯查询",
+                "endpoint": "POST /api/v1/actions/dry-run",
+                "input_schema": {"action_type": "str (∈8 已知)", "client_id": "str", "payload": "dict"},
+                "output_schema": {"would_write_tables": "list", "approval_required": "bool", "safety_check": "dict", "dry_run_safe": "bool"},
+                "example_input": {"action_type": "create_task_draft", "client_id": "client_a4d1db29a7"},
+                "example_output": {"would_write_tables": ["tasks", "..."], "approval_required": True},
+                "risk_level": "low", "approval_required": False,
+                "read_scope": "(action_type 知识库)", "write_scope": "agent_run_log only",
+                "status": "available", "writes_to": ["agent_run_log"], "reads_from": [],
+            },
+            # ── 数据缺口 ──────────────────────────────────────
+            {
+                "tool_name": "data_gaps.list",
+                "description": "查已知数据缺口 (含 suggested_tools / suggested_clarification / priority)",
+                "when_to_use": "Agent 评估完整性时; 准备 next actions 时",
+                "when_not_to_use": "细粒度证据检查 (用 evidence.check)",
+                "endpoint": "GET /api/v1/clients/{client_id}/data-gaps",
+                "input_schema": {"client_id": "str", "status_filter": "open|resolved|all (query)", "severity": "high|medium|low (query)"},
+                "output_schema": {"items": "list[{gap_id, gap_type, description, missing_evidence, related_facts, related_files, suggested_tools, suggested_clarification, priority, approval_required}]"},
+                "example_input": {"client_id": "client_a4d1db29a7", "severity": "high"},
+                "example_output": {"total": 10, "items": ["..."]},
+                "risk_level": "low", "approval_required": False,
+                "read_scope": "client_id data_gaps", "write_scope": "(read-only)",
+                "status": "available", "writes_to": [], "reads_from": ["data_gaps", "atomic_facts", "file_identities"],
+            },
+            {
+                "tool_name": "data_gaps.compensate",
+                "description": "触发 data_gap 补证 pipeline (detect + harvest + persist)",
+                "when_to_use": "用户授权 Agent 补证时; 定期巡检时",
+                "when_not_to_use": "已知不会有外部证据的领域 (内部话题)",
+                "endpoint": "POST /api/v1/clients/{client_id}/data-gaps/compensate",
+                "input_schema": {"client_id": "str", "Idempotency-Key": "str (header optional)"},
+                "output_schema": {"gaps_detected": "int", "external_harvest": "dict", "agent_run_id": "str"},
+                "example_input": {"client_id": "client_a4d1db29a7"},
+                "example_output": {"gaps_detected": 10, "external_harvest": {"items_found": 0}},
+                "risk_level": "low", "approval_required": False,
+                "read_scope": "client_id 数据", "write_scope": "data_gaps + external_evidence_cards + agent_run_log",
+                "status": "available", "writes_to": ["data_gaps", "external_evidence_cards", "agent_run_log"], "reads_from": ["atomic_facts", "contract_structures"],
+            },
+            # ── 审批 / 审计 ─────────────────────────────────
+            {
+                "tool_name": "approvals.list",
+                "description": "列待审批",
+                "when_to_use": "Agent 看自己/他人的 pending approval",
+                "when_not_to_use": "需要审批动作时(用 approvals.decide)",
+                "endpoint": "GET /api/v1/approvals",
+                "input_schema": {"client_id": "str (query optional)", "limit": "int"},
+                "output_schema": {"items": "list[Approval]"},
+                "example_input": {"client_id": "client_a4d1db29a7"},
+                "example_output": [{"id": "appr_xxx", "status": "pending", "...": "..."}],
+                "risk_level": "low", "approval_required": False,
+                "read_scope": "approval_queue", "write_scope": "(read-only)",
+                "status": "available", "writes_to": [], "reads_from": ["approval_queue"],
+            },
+            {
+                "tool_name": "approvals.decide",
+                "description": "对一条 approval 做出 approve/reject 决定",
+                "when_to_use": "用户授权 Agent 代理审批时(罕见, 通常用户决)",
+                "when_not_to_use": "Agent 自己发起的审批 (不能 self-approve)",
+                "endpoint": "POST /api/v1/approvals/{id}/approve | /reject | /decide",
+                "input_schema": {"approval_id": "str (path)", "decided_by": "str", "note": "str"},
+                "output_schema": {"id": "str", "status": "approved|rejected"},
+                "example_input": {"decided_by": "human:gu", "note": "看过"},
+                "example_output": {"status": "approved"},
+                "risk_level": "high", "approval_required": True,  # 决审本身就是 approval gate
+                "read_scope": "approval_queue", "write_scope": "approval_queue",
+                "status": "available", "writes_to": ["approval_queue"], "reads_from": ["approval_queue"],
+            },
+            {
+                "tool_name": "agent_run_logs.list",
+                "description": "列 agent_run 历史(按 client / actor 过滤)",
+                "when_to_use": "Agent 看自己跑过什么; 审计;",
+                "when_not_to_use": "需要 v2 runtime_run_logs (那是 analysis center 的)",
+                "endpoint": "GET /api/v1/agent-run-logs",
+                "input_schema": {"client_id": "str (query)", "actor_type": "human|external_ai_agent|...", "limit": "int"},
+                "output_schema": {"items": "list[AgentRunLog]"},
+                "example_input": {"client_id": "client_a4d1db29a7", "actor_type": "external_ai_agent"},
+                "example_output": {"total": 38, "items": ["..."]},
+                "risk_level": "low", "approval_required": False,
+                "read_scope": "agent_run_log", "write_scope": "(read-only)",
+                "status": "available", "writes_to": [], "reads_from": ["agent_run_log"],
+            },
+            # ── 写入类 ────────────────────────────────────────
+            {
+                "tool_name": "tasks.create",
+                "description": "创建任务 (自动接 historical_resolver)",
+                "when_to_use": "Agent 起草任务草稿时",
+                "when_not_to_use": "发送任务到飞书前 (那是 publish, 走 approval)",
+                "endpoint": "POST /api/v1/tasks",
+                "input_schema": {"title": "str", "desc": "str", "clientId": "str", "listId": "str", "priority": "low|normal|high", "scopeMode": "PERSONAL_ONLY|COLLAB_SHARED", "X-Actor-Type": "header", "Idempotency-Key": "header"},
+                "output_schema": {"id": "task_xxx", "status": "todo"},
+                "example_input": {"title": "整理 CFFC 合同变更说明", "clientId": "client_a4d1db29a7", "listId": "list-1"},
+                "example_output": {"id": "task_xxx"},
+                "risk_level": "medium", "approval_required": True,  # publish 走 approval
+                "read_scope": "client_id", "write_scope": "tasks + historical_reference_links + clarification_records + agent_run_log",
+                "status": "available", "writes_to": ["tasks", "historical_reference_links", "clarification_records"], "reads_from": ["contract_structures", "file_identities", "atomic_facts"],
+            },
+            {
+                "tool_name": "documents.fill_template",
+                "description": "模板填充(LLM, 真用 ContextPack)",
+                "when_to_use": "用户提供 docx 模板需 AI 填字段时",
+                "when_not_to_use": "粘贴生成文档(那是另一个 endpoint)",
+                "endpoint": "POST /api/v1/clients/{client_id}/documents/fill-template",
+                "input_schema": {"templatePath": "str"},
+                "output_schema": {"path": "str", "fields": "list"},
+                "example_input": {"templatePath": "/path/to/template.docx"},
+                "example_output": {"path": "...已填写_xxx.docx"},
+                "risk_level": "medium", "approval_required": True,  # 对外材料
+                "read_scope": "client_id", "write_scope": "(生成新 docx)",
+                "status": "available", "writes_to": ["filesystem"], "reads_from": ["contract_structures", "file_identities", "atomic_facts", "data_gaps", "judgment_versions"],
+            },
+            {
+                "tool_name": "text.resolve_history",
+                "description": "文本里历史指代关联到合同/承诺",
+                "when_to_use": "复盘/任务/对话含 '上次/x月份合同/补充协议' 等",
+                "when_not_to_use": "纯抽事实(用 ingest_pipeline)",
+                "endpoint": "POST /api/v1/clients/{client_id}/text/resolve-history",
+                "input_schema": {"text": "str", "source_doc_type": "review|task|chat"},
+                "output_schema": {"references_extracted": "int", "historical_links_written": "int"},
+                "example_input": {"text": "5 月签的补充协议", "source_doc_type": "review"},
+                "example_output": {"references_extracted": 2},
+                "risk_level": "low", "approval_required": False,
+                "read_scope": "client_id", "write_scope": "historical_reference_links + clarification_records",
+                "status": "available", "writes_to": ["historical_reference_links", "clarification_records"], "reads_from": ["file_identities", "contract_structures", "atomic_facts"],
+            },
+            {
+                "tool_name": "meeting_minutes.process",
+                "description": "会议纪要端到端 (atomic_facts / risks / commitments / clarifications / task_drafts)",
+                "when_to_use": "用户传一段会议纪要给 Agent",
+                "when_not_to_use": "纯文档导入(用 smart_import)",
+                "endpoint": "POST /api/v1/meeting-minutes/process",
+                "input_schema": {"client_id": "str", "minute_text": "str", "Idempotency-Key": "header"},
+                "output_schema": {"atomic_facts": "list", "risks": "list", "commitments": "list", "task_drafts": "list"},
+                "example_input": {"client_id": "client_a4d1db29a7", "minute_text": "..."},
+                "example_output": {"atomic_facts": ["..."]},
+                "risk_level": "medium", "approval_required": False,  # draft 模式; 但 task_drafts 进 approval
+                "read_scope": "client_id", "write_scope": "atomic_facts + risk_signals + commitments + clarification_records + approval_queue + agent_run_log",
+                "status": "available", "writes_to": ["atomic_facts", "risk_signals", "commitments", "clarification_records", "approval_queue", "agent_run_log"], "reads_from": [],
+            },
+            # ── missing (blocked_by_A 留下轮) ────────────────
+            {
+                "tool_name": "contracts.draft",
+                "description": "(规划) 起草合同草稿",
+                "endpoint": "POST /api/v1/contracts/draft",
+                "status": "missing", "blocked_by_A": True,
+                "risk_level": "high", "approval_required": True,
+                "when_to_use": "用户授权 Agent 起草合同时", "when_not_to_use": "对外发送合同(必须人手)",
+                "writes_to": ["v2_documents", "contract_structures (draft)"], "reads_from": [],
+                "note": "B Tool Registry v1 (5/23 19:36) 标 blocked_by_A · V3.0 P0-1",
+            },
+            {
+                "tool_name": "templates.generate",
+                "description": "(规划) 生成模板(理事会简版说明等)",
+                "endpoint": "POST /api/v1/templates/generate",
+                "status": "missing", "blocked_by_A": True,
+                "risk_level": "medium", "approval_required": True,
+                "when_to_use": "需要标准化文档时", "when_not_to_use": "已有定制模板时",
+                "writes_to": ["v2_documents"], "reads_from": [],
+                "note": "B Tool Registry v1 标 blocked_by_A · V3.0 P0-2",
+            },
+        ]
+
+        # 过滤
+        result = registry
+        if status_filter:
+            result = [t for t in result if t.get("status") == status_filter]
+        if risk_level:
+            result = [t for t in result if t.get("risk_level") == risk_level]
+
+        # 统计
+        by_status: dict = {}
+        for t in registry:
+            by_status[t.get("status", "?")] = by_status.get(t.get("status", "?"), 0) + 1
+        return {
+            "version": "v3_m2_registry_v2",
+            "total": len(registry),
+            "by_status": by_status,
+            "tools": result,
+            "schema_completeness": {
+                "all_with_when_to_use": sum(1 for t in registry if t.get("when_to_use")) == len(registry),
+                "all_with_risk_level": sum(1 for t in registry if t.get("risk_level")) == len(registry),
+                "all_with_approval_required": sum(1 for t in registry if "approval_required" in t) == len(registry),
+                "missing_with_blocked_by_A": all(t.get("blocked_by_A") for t in registry if t.get("status") == "missing"),
+            },
+        }
 
     # ──────────────────────────────────────────────────────────────────────
     # V3.0 M2 · Agent 可判接口 (顾源源 V3 收束指令 §六)
