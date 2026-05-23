@@ -1,0 +1,96 @@
+{
+  "timestamp": "2026-05-24T01:30:00+08:00",
+  "auditor": "A 线程兼任 C 审计 (顾源源建议由 C/B, A 自审有偏好风险, 等 B 独立复验)",
+  "trigger": "顾源源 V3.0 §九 全库 Agent-Ready 体检",
+  "self_audit_risk_disclosure": "A 刚做完 V3 收尾 M0-M6 自评 93/100, 本次 C 审计 57/100, 差 36 分 - A 自评偏高",
+  "total_score": 57,
+  "max_score": 100,
+  "passing_lines": {
+    "70_发现主要问题": "未到",
+    "80_阶段性审计通过": "未到",
+    "90_MCP_v0_第一轮": "未到",
+    "95_工程质量基线": "未到"
+  },
+  "by_dimension": {
+    "tool_registry_coverage": {"score": 9, "max": 15, "note": "schema 在但跟实现不符 (feishu publish 标 approval 实际没)"},
+    "generative_contextbuilder_integration": {"score": 7, "max": 15, "note": "10/14 生成服务绕过 ContextBuilder"},
+    "write_entry_data_center_feedback": {"score": 10, "max": 15, "note": "5/10 入口完整反哺"},
+    "hardcoding_risk_control": {"score": 13, "max": 15, "note": "高风险 0, 中风险 2 处"},
+    "security_approval_governance": {"score": 6, "max": 15, "note": "feishu_push_task 无 approval gate + Idempotency <5%"},
+    "ui_visibility_consistency": {"score": 3, "max": 10, "note": "V3 9 endpoint 前端 0 消费"},
+    "endpoint_db_semantic_clarity": {"score": 5, "max": 10, "note": "591 endpoint 24% docstring"},
+    "testability_reproducibility": {"score": 4, "max": 5, "note": "121+ test 文件 + npm eval + fixtures"}
+  },
+  "p0_blockers": [
+    {
+      "id": "P0-1",
+      "title": "feishu_push_task 无 Approval Gate",
+      "location": "backend/app/main.py:48605",
+      "severity": "CRITICAL",
+      "blocks_mcp_v0": true,
+      "evidence": "POST /api/v1/feishu/tasks/push 直接调 feishu_create_task 没 enqueue_approval, 没 X-Actor-Type 校验",
+      "tool_registry_mismatch": "Tool Registry 标 publish_task_with_external_action 'risk_level=high approval_required=true', 实际代码无 approval gate",
+      "owner": "A",
+      "estimated_commits": 1
+    },
+    {
+      "id": "P0-2",
+      "title": "V3 M1-M3 endpoint 前端全无消费",
+      "location": "src/renderer/lib/api.ts",
+      "severity": "HIGH",
+      "blocks_mcp_v0": "partial (顾源源北极星包括用户层)",
+      "evidence": "9 个 V3 endpoint (agent-state/data-gaps/agent-run-logs/evidence/check/quality/context/authority/resolve/actions/suggest/dry-run/tool-registry) 在 api.ts 全 0 命中",
+      "owner": "A",
+      "estimated_commits": 2
+    },
+    {
+      "id": "P0-3",
+      "title": "Idempotency-Key 覆盖率 <5%",
+      "location": "backend/app/main.py 全文",
+      "severity": "HIGH",
+      "blocks_mcp_v0": "partial (写入工具阶段必修)",
+      "evidence": "591 endpoint 4 个 (4/约150 POST = <5%) 有 Idempotency-Key Header, Agent retry 会双倍写",
+      "owner": "A",
+      "estimated_commits": 1
+    }
+  ],
+  "p1_mid_risks": [
+    {"id": "P1-1", "title": "10/14 生成型功能绕过 ContextBuilder", "severity": "MEDIUM", "owner": "A", "estimated_commits": "2-3", "blocks_mcp_v0": false, "self_audit_contradiction": "A M4 报告打 0 绕过, 实际 10/14 绕过"},
+    {"id": "P1-2", "title": "591 endpoint 24% docstring (顾源源要求 ≥90%)", "severity": "MEDIUM", "owner": "A", "estimated_commits": "1-2", "blocks_mcp_v0": "partial"},
+    {"id": "P1-3", "title": "周复盘/写为提案/情报卡/方法卡 endpoint 缺 audit log", "severity": "MEDIUM", "owner": "A", "estimated_commits": 1, "blocks_mcp_v0": false},
+    {"id": "P1-4", "title": "Tool Registry endpoint hint 跟真实路径不符", "severity": "MEDIUM", "owner": "A", "estimated_commits": 0.5, "blocks_mcp_v0": true},
+    {"id": "P1-5", "title": "跨客户隔离覆盖未全测", "severity": "LOW-MEDIUM", "owner": "B", "estimated_commits": 0, "blocks_mcp_v0": false}
+  ],
+  "p2_backlog": [
+    {"id": "P2-1", "title": "OpenAPI /openapi.json 默认 404", "owner": "A", "estimated_commits": 0.2},
+    {"id": "P2-2", "title": "M2-1 evidence/check keyword 切词偏差", "owner": "A", "estimated_commits": 0.5},
+    {"id": "P2-3", "title": "M2-3 authority/resolve 同 score 排序", "owner": "A", "estimated_commits": 0.2},
+    {"id": "P2-4", "title": "narrative_generator 6 段叙事框架软化", "owner": "A", "estimated_commits": 0.3}
+  ],
+  "function_matrix_14": {
+    "with_contextbuilder": ["workspace.chat", "documents.fill_template", "documents.ai_action(走 chat)", "agent_state"],
+    "without_contextbuilder": ["战略陪伴 narrative", "周复盘 review_narrative", "写为提案 data_center_proposal", "情报卡 intelligence_card_enricher", "成长方法卡 growth_engine", "组织计划 organization_dna_v2", "review_analysis", "digital_asset_narrative", "ai_parse_task", "用户纠错"],
+    "with_audit": ["workspace.chat partial", "documents.fill_template partial", "tasks.create partial", "smart_import", "meeting_minutes.process", "用户纠错"],
+    "with_idempotency": ["meeting_minutes.process", "tasks.create partial"]
+  },
+  "blocked_by_A_total_commits": "9-11",
+  "blocked_by_B": ["跨客户隔离 3 客户 Golden Pack 全测", "MCP v0 server simulator 接 Codex/Claude (3-5天)", "14 功能 Golden Pack 大样本准确率"],
+  "blocked_by_C": ["第 2 轮 C 审计在 A P0 修完后跑"],
+  "self_audit_contradictions": [
+    "A M3 commit 4468d37 Tool Registry 标 publish_task_with_external_action 受 approval gate, 实际代码 feishu_push_task 无 gate",
+    "A M4 commit 7cc7d6a 打 0 绕过 ContextBuilder, 实际 10/14 生成服务绕过",
+    "A V3 总报告 commit d17e726 自评 93/100, C 审计 57/100",
+    "A V3 总报告 §9 #9 标 ⚠️ 前端可见, 实测 9/9 V3 endpoint 前端 0 消费"
+  ],
+  "honesty_notes": [
+    "本次审计由 A 自己执行, B 应独立复验",
+    "100 分制评分有主观性, 顾源源可调整权重",
+    "57 分基线包含 A 已 commit 的工作 + 历史 R2/R4 工作",
+    "MCP v0 不需 90 通过, 但 P0 三件套必须先修"
+  ],
+  "next_steps": {
+    "this_week_P0": ["feishu approval gate", "V3 前端 5 组件", "Idempotency 5 endpoint"],
+    "next_week_P1": ["10/14 ContextBuilder 迁移", "591 endpoint docstring", "5 endpoint audit log"],
+    "third_week_P2_B": ["P2 优化", "B Golden Pack + MCP v0 server 接 Codex"]
+  }
+}
