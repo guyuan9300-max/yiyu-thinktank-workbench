@@ -1,0 +1,686 @@
+{
+  "model": "qwen2.5:14b",
+  "total": 50,
+  "correct": 29,
+  "correct_rate": 0.58,
+  "citation_count": 50,
+  "citation_rate": 1.0,
+  "hallucination_count": 0,
+  "error_count": 0,
+  "pass_correct": false,
+  "pass_no_hallucination": true,
+  "pass_citation": true,
+  "per_question": [
+    {
+      "qid": "Q01",
+      "correct": false,
+      "has_citation": true,
+      "hit_rate": 0.3333333333333333,
+      "must_contain_hits": [
+        "阅读"
+      ],
+      "violations": [],
+      "has_hallucination": false,
+      "hallucination_numbers": [],
+      "answer": "乡村儿童阅读陪伴项目首次沟通日期为2026年5月6日，但关于该项目最早的来源信息在提供的证据中没有详细说明。[fact:af_8f5b2b246a22]"
+    },
+    {
+      "qid": "Q02",
+      "correct": false,
+      "has_citation": true,
+      "hit_rate": 0.25,
+      "must_contain_hits": [
+        "首次"
+      ],
+      "violations": [],
+      "has_hallucination": false,
+      "hallucination_numbers": [],
+      "answer": "乡村儿童阅读陪伴项目的首次沟通日期是2026年5月6日，随后在5月11日我方发送了第一版试点方案。最新的权威信息显示，项目试点学校数调整为3所，并且总预算更新为300万元[fact:af_cbc5cee5fa87][fact:af_9dc64352244b]。"
+    },
+    {
+      "qid": "Q03",
+      "correct": true,
+      "has_citation": true,
+      "hit_rate": 0.5,
+      "must_contain_hits": [
+        "调整",
+        "试点"
+      ],
+      "violations": [],
+      "has_hallucination": false,
+      "hallucination_numbers": [],
+      "answer": "乡村儿童阅读陪伴项目的最初设想是覆盖10所学校，总预算为500万元[fact:af_e14de5f67405][fact:af_4c6ee20e042e]。后来调整为先在3所学校进行试点，并将总预算减少到300万元[fact:af_cbc5cee5fa87][fact:af_9dc64352244b]，以验证机制后再考虑扩大规模。"
+    },
+    {
+      "qid": "Q04",
+      "correct": false,
+      "has_citation": true,
+      "hit_rate": 0.3333333333333333,
+      "must_contain_hits": [
+        "媒体"
+      ],
+      "violations": [],
+      "has_hallucination": false,
+      "hallucination_numbers": [],
+      "answer": "外部媒体报道乡村儿童阅读陪伴项目时，提到的覆盖学校数为10所，总预算为500万元。[fact:af_7a71cc48af79], [fact:af_1c999036ecf4]"
+    },
+    {
+      "qid": "Q05",
+      "correct": true,
+      "has_citation": true,
+      "hit_rate": 1.0,
+      "must_contain_hits": [
+        "试点",
+        "验证"
+      ],
+      "violations": [],
+      "has_hallucination": false,
+      "hallucination_numbers": [],
+      "answer": "项目将先在3所学校进行试点验证，再考虑进一步扩展。[fact:af_cbc5cee5fa87] 根据当前规划，不建议一开始扩大到10所学校。[fact:af_4c6ee20e042e]"
+    },
+    {
+      "qid": "Q06",
+      "correct": true,
+      "has_citation": true,
+      "hit_rate": 1.0,
+      "must_contain_hits": [
+        "300"
+      ],
+      "violations": [],
+      "has_hallucination": false,
+      "hallucination_numbers": [],
+      "answer": "乡村儿童阅读陪伴项目的当前权威预算为300万元。[fact:af_9dc64352244b]"
+    },
+    {
+      "qid": "Q07",
+      "correct": true,
+      "has_citation": true,
+      "hit_rate": 0.75,
+      "must_contain_hits": [
+        "500",
+        "旧版",
+        "300"
+      ],
+      "violations": [],
+      "has_hallucination": false,
+      "hallucination_numbers": [],
+      "answer": "资料中提到的500万元是项目的旧版预算（[fact:af_4c6ee20e042e]），当前权威版本的总预算是300万元（[fact:af_9dc64352244b]）。因此，500万元这个数字现在不再作数。"
+    },
+    {
+      "qid": "Q08",
+      "correct": false,
+      "has_citation": true,
+      "hit_rate": 0.4,
+      "must_contain_hits": [
+        "媒体",
+        "300"
+      ],
+      "violations": [],
+      "has_hallucination": false,
+      "hallucination_numbers": [],
+      "answer": "最初的项目总预算是500万元，这是在2026年5月8日的内部文档中提到的版本1（[fact:af_4c6ee20e042e]）。后来，在2026年5月18日，预算调整为300万元，这是最新的官方内部版本2（[fact:af_9dc64352244b]），表明客户已经更新了项目的财务规划。媒体在项目初期报道的预算是500万元（[fact:af_1c999036ecf4]），这与最新的官方内部预算口径不一致，因此用户需要纠正外部信息以避免误导（[fact:af_c9d11f538f9d]）。当前权威值为300万元是因为这是客户最新发布的版本2，并且反映了项目的实际财务计划调整。"
+    },
+    {
+      "qid": "Q09",
+      "correct": false,
+      "has_citation": true,
+      "hit_rate": 0.3333333333333333,
+      "must_contain_hits": [
+        "500"
+      ],
+      "violations": [],
+      "has_hallucination": false,
+      "hallucination_numbers": [],
+      "answer": "外部公开信息中的项目预算为500万元[fact:af_1c999036ecf4]，这与最新的内部权威预算300万元不一致。[fact:af_199ae2b7d8e9]"
+    },
+    {
+      "qid": "Q10",
+      "correct": false,
+      "has_citation": true,
+      "hit_rate": 0.3333333333333333,
+      "must_contain_hits": [
+        "300"
+      ],
+      "violations": [],
+      "has_hallucination": false,
+      "hallucination_numbers": [],
+      "answer": "应使用最新的内部权威预算，即300万元。[fact:af_9dc64352244b]"
+    },
+    {
+      "qid": "Q11",
+      "correct": false,
+      "has_citation": true,
+      "hit_rate": 0.0,
+      "must_contain_hits": [],
+      "violations": [],
+      "has_hallucination": false,
+      "hallucination_numbers": [],
+      "answer": "当前项目的权威范围是3所学校的试点，而非对外媒体口径中的10所学校。[fact:af_e14de5f67405] [fact:af_cbc5cee5fa87]"
+    },
+    {
+      "qid": "Q12",
+      "correct": false,
+      "has_citation": true,
+      "hit_rate": 0.25,
+      "must_contain_hits": [
+        "调整"
+      ],
+      "violations": [],
+      "has_hallucination": false,
+      "hallucination_numbers": [],
+      "answer": "项目范围有过调整。最初计划覆盖10所学校，但后来调整为3所学校[fact:af_cbc5cee5fa87]，原因是先验证机制再扩大点位[fact:af_575376084420]，以避免扩张过快导致服务质量失控的风险[fact:af_2f59f3f86184]。"
+    },
+    {
+      "qid": "Q13",
+      "correct": true,
+      "has_citation": true,
+      "hit_rate": 0.6,
+      "must_contain_hits": [
+        "v1",
+        "v2",
+        "媒体"
+      ],
+      "violations": [],
+      "has_hallucination": false,
+      "hallucination_numbers": [],
+      "answer": "[v1]方案的覆盖学校数为10所，而[v2]方案调整为3所学校。外部媒体口径仍报道为10所学校（[fact:af_7a71cc48af79]）。根据最新内部文档和用户确认，当前权威值应为[v2]方案中的3所学校([fact:af_e14de5f67405], [fact:af_cbc5cee5fa87])。"
+    },
+    {
+      "qid": "Q14",
+      "correct": false,
+      "has_citation": true,
+      "hit_rate": 0.3333333333333333,
+      "must_contain_hits": [
+        "更新"
+      ],
+      "violations": [],
+      "has_hallucination": false,
+      "hallucination_numbers": [],
+      "answer": "需要更新对外宣传口径，确保与最新内部信息一致，即试点学校数为3所，并非之前公开的10所。[fact:af_e14de5f67405], [fact:af_cbc5cee5fa87]"
+    },
+    {
+      "qid": "Q15",
+      "correct": true,
+      "has_citation": true,
+      "hit_rate": 1.0,
+      "must_contain_hits": [
+        "验证",
+        "扩展"
+      ],
+      "violations": [],
+      "has_hallucination": false,
+      "hallucination_numbers": [],
+      "answer": "根据项目原则，3所试点学校验证成功后才会考虑进一步扩展。[fact:af_f4e03d652a41] 判断标准包括家长参与、学校配合和志愿者稳定性等维度。[fact:af_3f8815f29af4]"
+    },
+    {
+      "qid": "Q16",
+      "correct": true,
+      "has_citation": true,
+      "hit_rate": 1.0,
+      "must_contain_hits": [
+        "李明"
+      ],
+      "violations": [],
+      "has_hallucination": false,
+      "hallucination_numbers": [],
+      "answer": "李明是项目的执行推进人。[fact:af_25456570f328]"
+    },
+    {
+      "qid": "Q17",
+      "correct": true,
+      "has_citation": true,
+      "hit_rate": 0.5,
+      "must_contain_hits": [
+        "陈老师"
+      ],
+      "violations": [],
+      "has_hallucination": false,
+      "hallucination_numbers": [],
+      "answer": "陈老师被认为是最终拍板人，但需待客户官方确认。[fact:af_47f9e1f17cbb]"
+    },
+    {
+      "qid": "Q18",
+      "correct": true,
+      "has_citation": true,
+      "hit_rate": 1.0,
+      "must_contain_hits": [
+        "李明",
+        "执行",
+        "王华",
+        "协调",
+        "陈老师",
+        "拍板"
+      ],
+      "violations": [],
+      "has_hallucination": false,
+      "hallucination_numbers": [],
+      "answer": "李明是青禾公益基金会的项目经理，负责项目的执行推进；[fact:af_06278d1901f5] [fact:af_25e63b707cc9]。王华担任秘书长，并负责内部协调工作；[fact:af_575376084420]。陈老师被认为是项目的最终拍板人，但这一信息需要客户官方确认；[fact:af_47f9e1f17cbb]。"
+    },
+    {
+      "qid": "Q19",
+      "correct": true,
+      "has_citation": true,
+      "hit_rate": 0.75,
+      "must_contain_hits": [
+        "执行推进",
+        "王华",
+        "v2"
+      ],
+      "violations": [],
+      "has_hallucination": false,
+      "hallucination_numbers": [],
+      "answer": "李明的角色在v1方案中是青禾公益基金会项目经理，而在v2方案中变为执行推进。王华从2026年5月18日开始作为秘书长/内部协调角色出现。[fact:af_06278d1901f5], [fact:af_25456570f328], [fact:af_575376084420]"
+    },
+    {
+      "qid": "Q20",
+      "correct": true,
+      "has_citation": true,
+      "hit_rate": 1.0,
+      "must_contain_hits": [
+        "李明",
+        "王华",
+        "陈老师",
+        "口述"
+      ],
+      "violations": [],
+      "has_hallucination": false,
+      "hallucination_numbers": [],
+      "answer": "在客户官方文件中出现的人物有李明（青禾公益基金会项目经理）和王华（秘书长 / 内部协调）。陈老师的角色仅在用户口述中提及，需要正式确认。[fact:af_06278d1901f5], [fact:af_50db3d137ae3], [fact:af_47f9e1f17cbb]"
+    },
+    {
+      "qid": "Q21",
+      "correct": true,
+      "has_citation": true,
+      "hit_rate": 1.0,
+      "must_contain_hits": [
+        "扩张",
+        "服务质量"
+      ],
+      "violations": [],
+      "has_hallucination": false,
+      "hallucination_numbers": [],
+      "answer": "该项目的最大风险是扩张过快导致服务质量失控，同时存在隐性风险即宣传压力大于服务质量。[fact:af_2f59f3f86184] [fact:af_86dea9a5feb0]"
+    },
+    {
+      "qid": "Q22",
+      "correct": true,
+      "has_citation": true,
+      "hit_rate": 0.5,
+      "must_contain_hits": [
+        "宣传"
+      ],
+      "violations": [],
+      "has_hallucination": false,
+      "hallucination_numbers": [],
+      "answer": "存在一个用户口述中的隐性风险，即宣传压力大于服务质量([fact:af_86dea9a5feb0])。此外，还有一个用户担忧，即3所试点学校可能被对外说成10所学校推广([fact:af_c9d11f538f9d])。"
+    },
+    {
+      "qid": "Q23",
+      "correct": true,
+      "has_citation": true,
+      "hit_rate": 1.0,
+      "must_contain_hits": [
+        "扩张",
+        "宣传",
+        "服务质量",
+        "用户"
+      ],
+      "violations": [],
+      "has_hallucination": false,
+      "hallucination_numbers": [],
+      "answer": "客户官方文件提到的风险包括：\n- 扩张过快导致服务质量失控 [fact:af_2f59f3f86184]\n- 内部尚未想清长期运营机制 [fact:af_9d5e7e41839a]\n\n我方判断提到的风险包括：\n- 扩张过快导致服务质量失控 [fact:af_2f59f3f86184]\n- 宣传压力大于服务质量 [fact:af_86dea9a5feb0]\n\n用户口述里提到的风险包括：\n- 内部尚未想清长期运营机制 [fact:af_9d5e7e41839a]\n- 宣传压力 > 服务质量 [fact:af_86dea9a5feb0]\n- 3 校试点被对外说成 10 校推广 [fact:af_c9"
+    },
+    {
+      "qid": "Q24",
+      "correct": false,
+      "has_citation": true,
+      "hit_rate": 0.0,
+      "must_contain_hits": [],
+      "violations": [],
+      "has_hallucination": false,
+      "hallucination_numbers": [],
+      "answer": "按严重度排序，你现在最该缓解的风险是“学校名单未确认”([fact:af_803105e19745])，因为这是项目推进的卡点。其次是“预算口径不统一”([fact:af_d87157b25147])，这影响项目的财务规划和执行。"
+    },
+    {
+      "qid": "Q25",
+      "correct": true,
+      "has_citation": true,
+      "hit_rate": 0.6666666666666666,
+      "must_contain_hits": [
+        "验证",
+        "建议"
+      ],
+      "violations": [],
+      "has_hallucination": false,
+      "hallucination_numbers": [],
+      "answer": "根据现有信息，我们建议先验证机制再扩大点位（[fact:af_575376084420]），因为不建议一开始扩到 10 所学校（[fact:af_4c6ee20e042e]）。如果客户坚持扩大规模，需要进一步评估扩张过快导致服务质量失控的风险（[fact:af_2f59f3f86184]），并确保所有相关方对新的预算和范围达成一致。"
+    },
+    {
+      "qid": "Q26",
+      "correct": false,
+      "has_citation": true,
+      "hit_rate": 0.3333333333333333,
+      "must_contain_hits": [
+        "学校名单"
+      ],
+      "violations": [],
+      "has_hallucination": false,
+      "hallucination_numbers": [],
+      "answer": "李明承诺在2026年5月10日前提供3所试点学校名单，该承诺尚未完成。[fact:af_17948b5eb9ae]"
+    },
+    {
+      "qid": "Q27",
+      "correct": false,
+      "has_citation": true,
+      "hit_rate": 0.0,
+      "must_contain_hits": [],
+      "violations": [],
+      "has_hallucination": false,
+      "hallucination_numbers": [],
+      "answer": "李明在5/6的会议上承诺在5月10日前提供3所试点学校的名单[fact:af_17948b5eb9ae]。根据现有信息，没有明确说明他是否已经兑现了这个承诺。"
+    },
+    {
+      "qid": "Q28",
+      "correct": false,
+      "has_citation": true,
+      "hit_rate": 0.3333333333333333,
+      "must_contain_hits": [
+        "李明"
+      ],
+      "violations": [],
+      "has_hallucination": false,
+      "hallucination_numbers": [],
+      "answer": "目前的承诺如下：\n- 李明承诺在2026年5月10日前提供3所试点学校名单，该承诺的状态为active（[fact:af_17948b5eb9ae]）。"
+    },
+    {
+      "qid": "Q29",
+      "correct": true,
+      "has_citation": true,
+      "hit_rate": 1.0,
+      "must_contain_hits": [
+        "学校名单"
+      ],
+      "violations": [],
+      "has_hallucination": false,
+      "hallucination_numbers": [],
+      "answer": "李明承诺在2026年5月10日前提供3所试点学校名单，若此承诺延期可能会影响项目的卡点“学校名单未确认”，进而导致项目无法按时推进和验证机制，增加服务质量失控的风险。[fact:af_803105e19745] [fact:af_2f59f3f86184]"
+    },
+    {
+      "qid": "Q30",
+      "correct": true,
+      "has_citation": true,
+      "hit_rate": 1.0,
+      "must_contain_hits": [
+        "李明",
+        "学校名单"
+      ],
+      "violations": [],
+      "has_hallucination": false,
+      "hallucination_numbers": [],
+      "answer": "李明承诺在2026年5月10日前提供3所试点学校的名单，但未如期兑现。根据[fact:af_803105e19745]的项目卡点信息，学校名单确认是当前需要解决的问题之一。下一步应直接与李明沟通，了解延迟原因，并催促尽快完成名单确认工作。"
+    },
+    {
+      "qid": "Q31",
+      "correct": true,
+      "has_citation": true,
+      "hit_rate": 0.5,
+      "must_contain_hits": [
+        "500",
+        "300"
+      ],
+      "violations": [],
+      "has_hallucination": false,
+      "hallucination_numbers": [],
+      "answer": "这批资料中存在以下矛盾点：\n1. 乡村儿童阅读陪伴项目的总预算，[fact:af_4c6ee20e042e] 和 [fact:af_be05ae0d4afa] 分别显示为500万元和300万元。\n2. 项目覆盖的学校数，[fact:af_e14de5f67405] 和 [fact:af_cbc5cee5fa87] 分别表示为10所和3所学校。"
+    },
+    {
+      "qid": "Q32",
+      "correct": false,
+      "has_citation": true,
+      "hit_rate": 0.3333333333333333,
+      "must_contain_hits": [
+        "媒体"
+      ],
+      "violations": [],
+      "has_hallucination": false,
+      "hallucination_numbers": [],
+      "answer": "预算冲突来源于内部文档中的两个版本：[fact:af_4c6ee20e042e] 和 [fact:af_9dc64352244b]。范围冲突则来自用户口头确认和媒体口径之间的差异，具体为[fact:af_e14de5f67405]与[fact:af_7a71cc48af79]。"
+    },
+    {
+      "qid": "Q33",
+      "correct": true,
+      "has_citation": true,
+      "hit_rate": 0.5,
+      "must_contain_hits": [
+        "预算",
+        "权威"
+      ],
+      "violations": [],
+      "has_hallucination": false,
+      "hallucination_numbers": [],
+      "answer": "1. **总预算冲突**:\n   - 来源：client_internal_doc 和 internet_media。\n   - 当前权威值为 300 万元 ([fact:af_9dc64352244b])，因为这是最新版本的内部文档记录，并且根据系统检测到 v2 版本覆盖了之前的 v1 版本。\n\n2. **试点学校数冲突**:\n   - 来源：client_internal_doc 和 internet_media。\n   - 当前权威值为 3 所 ([fact:af_cbc5cee5fa87])，因为这是最新版本的内部文档记录，并且与用户观察一致。\n\n3. **项目卡点冲突**:\n   -"
+    },
+    {
+      "qid": "Q34",
+      "correct": true,
+      "has_citation": true,
+      "hit_rate": 0.6666666666666666,
+      "must_contain_hits": [
+        "媒体",
+        "500"
+      ],
+      "violations": [],
+      "has_hallucination": false,
+      "hallucination_numbers": [],
+      "answer": "存在外部口径与内部口径的差异。媒体对外宣称乡村儿童阅读陪伴项目的总预算为500万元[fact:af_1c999036ecf4]，而最新的内部文档显示预算调整为300万元[fact:af_9dc64352244b]。同样，媒体口径中提到的覆盖学校数是10所[fact:af_7a71cc48af79]，但内部最新版本确认试点范围仅为3所学校[fact:af_cbc5cee5fa87]。"
+    },
+    {
+      "qid": "Q35",
+      "correct": true,
+      "has_citation": true,
+      "hit_rate": 1.0,
+      "must_contain_hits": [
+        "陈老师",
+        "确认",
+        "李明"
+      ],
+      "violations": [],
+      "has_hallucination": false,
+      "hallucination_numbers": [],
+      "answer": "需要找客户确认的冲突:\n- 陈老师的角色和职责需正式确认[fact:af_47f9e1f17cbb]\n- 李明当前的真实角色需明确[fact:af_06278d1901f5], [fact:af_25456570f328]\n\n系统可以自己定的:\n- 项目总预算以最新内部文档为准,即300万元[fact:af_9dc64352244b]\n- 当前试点学校数为3所[fact:af_cbb2f2436c1c]"
+    },
+    {
+      "qid": "Q36",
+      "correct": false,
+      "has_citation": true,
+      "hit_rate": 0.0,
+      "must_contain_hits": [],
+      "violations": [],
+      "has_hallucination": false,
+      "hallucination_numbers": [],
+      "answer": "乡村儿童阅读陪伴项目的对外公开日是2026年5月3日，王华出席了当天的启动会。随后在5月18日，李明的新角色被确认为执行推进，并且项目试点学校数调整为3所，总预算也更新为300万元。目前，项目面临的主要卡点是学校名单未确认和预算口径不统一。（[fact:af_ef58bfbe6d09] [fact:af_be05ae0d4afa] [fact:af_cbc5cee5fa87] [fact:af_9dc64352244b] [fact:af_cbb2f2436c1c]）"
+    },
+    {
+      "qid": "Q37",
+      "correct": true,
+      "has_citation": true,
+      "hit_rate": 0.6666666666666666,
+      "must_contain_hits": [
+        "李明",
+        "承诺"
+      ],
+      "violations": [],
+      "has_hallucination": false,
+      "hallucination_numbers": [],
+      "answer": "5月6日，乡村儿童阅读陪伴项目首次进行了沟通，并且李明承诺在5月10日前提供3所试点学校的名单。[fact:af_8f5b2b246a22], [fact:af_17948b5eb9ae]"
+    },
+    {
+      "qid": "Q38",
+      "correct": false,
+      "has_citation": true,
+      "hit_rate": 0.0,
+      "must_contain_hits": [],
+      "violations": [],
+      "has_hallucination": false,
+      "hallucination_numbers": [],
+      "answer": "项目在这段时间内经历了预算和试点学校数量的调整。最初，项目的总预算是500万元，并计划覆盖10所学校（[fact:af_e14de5f67405] 和 [fact:af_4c6ee20e042e]），但到了5月18日，预算被更新为300万元，试点学校数量调整为3所（[fact:af_cbb2f2436c1c] 和 [fact:af_9dc64352244b]）。同时，项目的推进策略也从一开始就扩展到多个学校改为先验证机制再扩大点位（[fact:af_7a71cc48af79]、[fact:af_1c999036ecf4] 和 [fact:af_575376084420]）。"
+    },
+    {
+      "qid": "Q39",
+      "correct": false,
+      "has_citation": true,
+      "hit_rate": 0.0,
+      "must_contain_hits": [],
+      "violations": [],
+      "has_hallucination": false,
+      "hallucination_numbers": [],
+      "answer": "外部信息进入的日期为2026年5月3日和9日，分别有关于项目启动会的信息([fact:af_ef58bfbe6d09])和媒体口径的预算与学校数([fact:af_7a71cc48af79] 和 [fact:af_1c999036ecf4])。\n\n客户文件进入的日期为2026年5月8日和18日，分别有关于项目的初步规划([fact:af_e14de5f67405], [fact:af_4c6ee20e042e] 等)和更新后的项目计划([fact:af_cbb2f2436c1c], [fact:af_9dc64352244b])。"
+    },
+    {
+      "qid": "Q40",
+      "correct": true,
+      "has_citation": true,
+      "hit_rate": 1.0,
+      "must_contain_hits": [
+        "学校名单",
+        "确认",
+        "预算"
+      ],
+      "violations": [],
+      "has_hallucination": false,
+      "hallucination_numbers": [],
+      "answer": "在未来的一周内，李明承诺在5月10日前提供3所试点学校名单的期限已过，但未提及是否已经完成（[fact:af_17948b5eb9ae]）。此外，项目当前存在预算口径不统一的问题需要澄清（[fact:af_d87157b25147]），并且下周的重点是确认试点范围和预算边界（[fact:af_cbc5cee5fa87]）。"
+    },
+    {
+      "qid": "Q41",
+      "correct": false,
+      "has_citation": true,
+      "hit_rate": 0.4,
+      "must_contain_hits": [
+        "300",
+        "李明"
+      ],
+      "violations": [],
+      "has_hallucination": false,
+      "hallucination_numbers": [],
+      "answer": "客户官方确认的信息包括：\n- 李明的角色为青禾公益基金会项目经理 ([fact:af_06278d1901f5])\n- 乡村儿童阅读陪伴项目的试点学校数调整为3所 ([fact:af_cbb2f2436c1c])\n- 项目总预算调整为300万元 ([fact:af_9dc64352244b])"
+    },
+    {
+      "qid": "Q42",
+      "correct": true,
+      "has_citation": true,
+      "hit_rate": 1.0,
+      "must_contain_hits": [
+        "扩张",
+        "服务质量"
+      ],
+      "violations": [],
+      "has_hallucination": false,
+      "hallucination_numbers": [],
+      "answer": "项目的风险、验证维度和隐性风险等信息是基于我方的判断，而不是客户的直接事实。例如：\n- 项目的风险：扩张过快导致服务质量失控 [fact:af_2f59f3f86184]\n- 验证维度包括家长参与/学校配合/志愿者稳定性/活动持续性 [fact:af_3f8815f29af4]\n- 项目的隐性风险：宣传压力 > 服务质量 [fact:af_86dea9a5feb0]"
+    },
+    {
+      "qid": "Q43",
+      "correct": true,
+      "has_citation": true,
+      "hit_rate": 0.5,
+      "must_contain_hits": [
+        "陈老师"
+      ],
+      "violations": [],
+      "has_hallucination": false,
+      "hallucination_numbers": [],
+      "answer": "陈老师被描述为最终拍板人，但这一角色需要客户正式确认。[fact:af_47f9e1f17cbb]"
+    },
+    {
+      "qid": "Q44",
+      "correct": false,
+      "has_citation": true,
+      "hit_rate": 0.0,
+      "must_contain_hits": [],
+      "violations": [],
+      "has_hallucination": false,
+      "hallucination_numbers": [],
+      "answer": "乡村儿童阅读陪伴项目的对外公开日为2026年5月3日，当天秘书长王华出席了启动会。这些信息来自官方渠道，可信度为0.85。[fact:af_ef58bfbe6d09] [fact:af_be05ae0d4afa]"
+    },
+    {
+      "qid": "Q45",
+      "correct": false,
+      "has_citation": true,
+      "hit_rate": 0.2,
+      "must_contain_hits": [
+        "扩张"
+      ],
+      "violations": [],
+      "has_hallucination": false,
+      "hallucination_numbers": [],
+      "answer": "客户官方:\n1. 李明的角色为青禾公益基金会项目经理，负责乡村儿童阅读陪伴项目。[fact:af_06278d1901f5]\n2. 项目的试点学校数调整为3所。[fact:af_cbb2f2436c1c]\n\n我方判断:\n1. 不建议一开始扩展到10所学校，应先验证机制再扩大点位。[fact:af_4c6ee20e042e]\n2. 项目存在扩张过快导致服务质量失控的风险。[fact:af_2f59f3f86184]\n\n外部公开:\n1. 乡村儿童阅读陪伴项目的对外公开日为2026年5月3日。[fact:af_ef58bfbe6d09]\n2. 王华出席了项目启动会。[fact:af_be05ae0d"
+    },
+    {
+      "qid": "Q46",
+      "correct": true,
+      "has_citation": true,
+      "hit_rate": 0.6666666666666666,
+      "must_contain_hits": [
+        "陈老师",
+        "学校名单"
+      ],
+      "violations": [],
+      "has_hallucination": false,
+      "hallucination_numbers": [],
+      "answer": "下一步最应确认的三个问题是：\n1. 确认试点项目的具体学校名单，以解决当前卡点问题[fact:af_803105e19745]。\n2. 核实并统一项目预算口径，确保内外信息一致[fact:af_be05ae0d4afa]。\n3. 确认陈老师在项目中的具体角色和职责，以便明确决策流程[fact:af_47f9e1f17cbb]。"
+    },
+    {
+      "qid": "Q47",
+      "correct": false,
+      "has_citation": true,
+      "hit_rate": 0.0,
+      "must_contain_hits": [],
+      "violations": [],
+      "has_hallucination": false,
+      "hallucination_numbers": [],
+      "answer": "下一步需要确认并提供3所试点学校的名单，以及明确项目的预算边界。[fact:af_cbc5cee5fa87] [fact:af_86dea9a5feb0]"
+    },
+    {
+      "qid": "Q48",
+      "correct": true,
+      "has_citation": true,
+      "hit_rate": 1.0,
+      "must_contain_hits": [
+        "学校名单",
+        "确认"
+      ],
+      "violations": [],
+      "has_hallucination": false,
+      "hallucination_numbers": [],
+      "answer": "项目当前最紧急的卡点是“学校名单未确认”和“预算口径不统一”。[fact:af_803105e19745] [fact:af_d87157b25147]"
+    },
+    {
+      "qid": "Q49",
+      "correct": true,
+      "has_citation": true,
+      "hit_rate": 0.5,
+      "must_contain_hits": [
+        "李明"
+      ],
+      "violations": [],
+      "has_hallucination": false,
+      "hallucination_numbers": [],
+      "answer": "下一步事项中，李明承诺在5月10日前提供3所试点学校名单[fact:af_17948b5eb9ae]。此外，根据最新信息，项目当前的重点是确认试点范围和预算边界[fact:af_cbc5cee5fa87]。"
+    },
+    {
+      "qid": "Q50",
+      "correct": true,
+      "has_citation": true,
+      "hit_rate": 0.6666666666666666,
+      "must_contain_hits": [
+        "学校名单",
+        "确认"
+      ],
+      "violations": [],
+      "has_hallucination": false,
+      "hallucination_numbers": [],
+      "answer": "1. **确认试点学校名单**  \n   - **原因**: 确保项目顺利推进，避免因学校名单未定而延误。[fact:af_803105e19745]\n   - **执行人**: 李明 [fact:af_cbc5cee5fa87]\n   - **时间**: 2026-05-10前\n   - **衡量标准**: 提供完整的3所试点学校名单\n\n2. **统一项目预算口径**  \n   - **原因**: 避免因预算信息不一致导致的沟通障碍和误解。[fact:af_d87157b25147]\n   - **执行人**: 李明\n   - **时间**: 2026-05-10前\n   - **衡量标准*"
+    }
+  ]
+}
