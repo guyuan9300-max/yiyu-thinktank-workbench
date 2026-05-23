@@ -221,20 +221,22 @@ function BotMembersList({ bots, loading, onRefresh, onToggleStatus }: BotMembers
 
 // ────────────── BotMemberFormDialog ─────────────
 
-interface BotMemberFormDialogProps {
+export interface BotMemberFormDialogProps {
   defaultDepartmentId?: string;
+  defaultDepartmentName?: string;
   onClose: () => void;
-  onCreated: () => Promise<void>;
+  onCreated: () => Promise<void> | void;
 }
 
-function BotMemberFormDialog({
+export function BotMemberFormDialog({
   defaultDepartmentId,
+  defaultDepartmentName,
   onClose,
   onCreated,
 }: BotMemberFormDialogProps): JSX.Element {
   const [displayName, setDisplayName] = useState('');
   const [departmentId, setDepartmentId] = useState(defaultDepartmentId || '');
-  const [departmentName, setDepartmentName] = useState('');
+  const [departmentName, setDepartmentName] = useState(defaultDepartmentName || '');
   const [description, setDescription] = useState('');
   const [reportDeptLead, setReportDeptLead] = useState(true);
   const [reportCEO, setReportCEO] = useState(false);
