@@ -65,3 +65,4 @@ run-filter-repo-cleanup.sh
 # backend/output 是产物目录（cowork 误推过 118 个文件）
 backend/output/
 tests/reports/
+dogfood_real/

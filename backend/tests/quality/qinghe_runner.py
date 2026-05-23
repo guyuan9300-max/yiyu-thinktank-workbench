@@ -857,9 +857,10 @@ def run_full_quality_test(db_path: Path | None = None) -> dict:
     db = setup_db(db_path)
     ingest_results = ingest_all_12_data(db)
     cross_source_stats = run_cross_source_scan(db)
-    # V2.4 P0-1: atomic_facts → 4 张语义表派生
+    # V2.5 P0-1: IngestPipeline 已自动跑 derive_all + detect_all (实时 trigger).
+    # 但 12 条 datum 走完只触发 1 次 throttle, 这里再手动跑一次确保 derive 跑完.
+    # 真生产链路下, 用户每隔 30s 自然触发, 不需要手动.
     derive_result = derive_all(db, CLIENT_ID)
-    # V2.4 P0-2: 正式冲突检测 + clarification 持久化 (6 类冲突)
     conflict_result = detect_conflicts_all(db, CLIENT_ID)
     # V2.4 P0-3: 时间标准化 backfill (atomic_facts time_anchor → 中文 aliases)
     time_aliases_updated = backfill_time_aliases(db, CLIENT_ID)

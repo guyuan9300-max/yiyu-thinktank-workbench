@@ -569,7 +569,9 @@ class IngestPipeline:
     """
 
     def __init__(self, db: _DbLike, ai: Any | None = None,
-                 *, ensure_v23_schema: bool = True):
+                 *, ensure_v23_schema: bool = True,
+                 v25_auto_derive: bool = True,
+                 v25_auto_conflict: bool = True):
         """初始化.
 
         Args:
@@ -577,14 +579,58 @@ class IngestPipeline:
             ai: AI service (可选). 传了之后写完 atomic_facts 自动调 broadcast_data_changed.
                 不传 (None) 时跳过 broadcast (向后兼容旧调用方).
             ensure_v23_schema: 默认 True, 启动时确保 V2.3 阶段 1 新表已建
-                · source_registry (蓝图 § 七 第 1 层)
-                · atomic_fact_confidence_history (A 补充 1 置信度时间序列)
-                · atomic_facts.source_registry_id 列 (ALTER TABLE if not exists)
+            v25_auto_derive: V2.5 P0-1 — 写完 atomic_facts 自动派生到 4 张语义表
+                · event_line_activities / risk_signals / commitments / strategic_thought_insights
+                · 解决 B 报告 38 分 §六 修复项 1 (语义表 7 张 0 流量)
+            v25_auto_conflict: V2.5 P0-2 — 写完 atomic_facts 自动跑冲突检测 + 写 clarifications
+                · 解决 B 报告 §六 修复项 2 (clarification_records 0 行)
+                · 限流: 每个 client_id 60s 内只跑一次 (避免热写入路径慢)
         """
         self._db = db
         self._ai = ai
+        self._v25_auto_derive = v25_auto_derive
+        self._v25_auto_conflict = v25_auto_conflict
+        self._v25_last_derive_at: dict[str, float] = {}  # client_id → last unix ts
+        self._v25_throttle_seconds = 30
         if ensure_v23_schema:
             self._ensure_v23_schema()
+
+    def _v25_maybe_derive(self, client_id: str) -> None:
+        """V2.5 P0-1 + P0-2: 写完 atomic_facts 后实时派生 + 冲突检测.
+
+        限流: 同 client 30s 内只跑一次 (避免热写入路径每条 fact 都全扫).
+        失败不阻塞主流程 (写 atomic_facts 已经成功).
+        """
+        import time
+        if not client_id:
+            return
+        now_ts = time.time()
+        last = self._v25_last_derive_at.get(client_id, 0)
+        if now_ts - last < self._v25_throttle_seconds:
+            return
+        self._v25_last_derive_at[client_id] = now_ts
+
+        if self._v25_auto_derive:
+            try:
+                from app.services.atomic_fact_semantic_deriver import derive_all
+                d = derive_all(self._db, client_id)
+                logger.info(
+                    "V2.5 auto-derive client=%s: ela+%d risk+%d com+%d insight+%d",
+                    client_id, d.event_line_activities_new,
+                    d.risk_signals_new, d.commitments_new, d.strategic_insights_new,
+                )
+            except Exception as exc:
+                logger.warning("V2.5 auto-derive 失败 client=%s: %s", client_id, exc)
+        if self._v25_auto_conflict:
+            try:
+                from app.services.formal_conflict_detector import detect_all
+                c = detect_all(self._db, client_id)
+                logger.info(
+                    "V2.5 auto-conflict client=%s: contradictions+%d clarifications+%d",
+                    client_id, c.fact_contradictions_written, c.clarifications_written,
+                )
+            except Exception as exc:
+                logger.warning("V2.5 auto-conflict 失败 client=%s: %s", client_id, exc)
 
     def _ensure_v23_schema(self) -> None:
         """V2.3 阶段 1 P2: 确保 source_registry / confidence_history 表 + atomic_facts 新列."""
@@ -800,6 +846,10 @@ class IngestPipeline:
                 referenced_doc_ids=[req.source_v2_document_id] if req.source_v2_document_id else [],
                 outcome="pending",
             )
+
+        # ★ V2.5 P0-1 + P0-2 · 实时派生 + 冲突检测 (顾源源 5/23 用户感知第 1 / 第 3 价值缺口)
+        # 解决 B 报告 38 分: 语义表 7 张 0 流量 + clarification_records 0 行
+        self._v25_maybe_derive(req.client_id)
 
         # ★ M-A · broadcast 接通 (顾源源 5/22 钦定 + Karpathy §2 LLM-as-OS syslog 启用)
         # 写完 atomic_facts + event_log + ai_episode_log 之后, 触发数据中心 L1+L2 扩散.
