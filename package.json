@@ -25,6 +25,8 @@
     "test:calendar": "npm run build:main && node --test build/shared/calendar.test.js",
     "backend:test": "cd backend && uv run pytest",
     "cloud:test": "cd cloud_backend && uv run pytest",
+    "db:init:lab": "python3 scripts/init_v21_lab_schema.py",
+    "db:check:lab": "python3 scripts/init_v21_lab_schema.py --check-only",
     "start": "node scripts/open-installed-app.mjs",
     "start:raw": "node scripts/run-local-electron.mjs .",
     "install:mac-local": "npm run dist:mac-local && node scripts/install-mac-app.mjs && node scripts/open-installed-app.mjs",
