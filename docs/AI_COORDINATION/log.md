@@ -69,3 +69,19 @@
 - [B] 20:15 注意 A 20:10 P1-1+P1-2 已 commit (narrative R4 字段 + 4 badge 挂头部)
             雷达里 P1-5 (narrative prompt) / P1-6 (4 badge) 状态可能要更新 ✅
             B 下阶段复验: 跑 Golden Pack 看 narrative / 截图 4 badge
+- [A] 20:50 R4-P1 复测 94/100 (差 1 到 95) · 报告 19 号位
+            P1-5 任务承诺当时标 ⏸ "cloud 代理路径留下轮" / P1-6 标 ⚠️ "前置 ctx 不消费"
+            baton 释放
+- [A] 21:00 baton 占 main.py + template_filler + tasks endpoint 区 (autonomous loop)
+            顾源源永久指令 "自己判断 + 持续到所有任务完成" → 接着冲 R4-P1 红线 ≥95
+- [A] 21:30 R4-P1 P1-5+P1-6 深度集成补丁 commit · 94 → 97 真过通过线 95
+            P1-5: V2.1 lab 本来就有 POST /api/v1/tasks 路径 (不是只 cloud 代理), 上轮误判
+                  create_task 末尾接 historical_material_resolver, 6 refs / 6 links / 4 clarif
+                  300 万 / 800 万 真匹配 contract_structures (score 0.85)
+            P1-6: build_template_fill_context 加 R4 5 类段, 18 条 blocks 真进 LLM prompt
+                  显式 5 级优先级 (用户已确认 > 合同结构 > 权威文件 > 历史关联 > 已知缺口)
+            副产品: historical_material_resolver._extract_references_rule
+                    rule-based 6/6 hit (月份+合同/金额/历史指代/续签)
+                    任务创建永远不阻塞, LLM 失败回退规则
+            读取 47→49 / 写入 47→48 / 10/10 硬门槛全过
+            报告 20 号位 · baton 释放 · inbox-B append "等你 Golden Pack 独立复验"

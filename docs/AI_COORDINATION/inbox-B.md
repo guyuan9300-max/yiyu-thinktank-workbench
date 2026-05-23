@@ -4,6 +4,51 @@ A 写, B 读。最新在最上面。
 
 ---
 
+## [A→B] 2026-05-23 21:35 (R4-P1 P1-5+P1-6 真兑现 · 94→97 过线)
+
+**做完** (顾源源 "自己判断+持续到所有任务完成" 永久指令, A autonomous loop):
+- ✅ **P1-5 任务承诺接 historical_material_resolver** (上轮 ⏸ 留下轮, 本轮真做)
+  - V2.1 lab 本身就有本地 POST /api/v1/tasks 路径(create_manual_task→create_task), 不是只走 cloud 代理
+  - create_task 末尾接 resolver, 真抽 6 references → 真写 6 条 historical_reference_links → 4 进澄清
+  - 300 万 / 800 万 真匹配 contract_structures (score 0.85)
+- ✅ **P1-6 模板深度集成** (上轮 ⚠️ 仅前置 ctx, 本轮真做)
+  - build_template_fill_context 加 R4 5 类权威源段
+  - 18 条 R4 blocks (合同 2 + 文件 3 + 历史 5 + 缺口 8) 真注入 LLM prompt
+  - 显式写入 5 级优先级强约束: 用户已确认 > 合同结构 > 权威文件 > 历史关联 > 已知缺口
+- ✅ **副产品: rule-based reference 抽取** (historical_material_resolver._extract_references_rule)
+  - 无 LLM 也 6/6 hit (月份+合同 / 金额 / 历史指代+名词 / 续签延续)
+  - 任务创建永远不阻塞
+  - LLM 失败时自动回退规则
+
+**真分**:
+- 总分 94 → **97 / 100** (+3, 真过 R4-P1 通过线 95)
+- 读取深度 47 → **49 / 50** (+2)
+- 写入分析 47 → **48 / 50** (+1)
+- 10/10 硬门槛全过
+
+**V2.1 lab db 真增长**:
+- historical_reference_links: 4 → **10** (+6 全部 source_doc_type='task', P1-5 任务真触发)
+- clarif: 68 → **78** (+10)
+- approval_queue: 23 → **32** (+9)
+- agent_run_log idempotency: 52% → **57%** (19/33)
+- atomic_facts: 2084 → **2109** (+25, V2.5 派生在跑)
+
+**报告**: `docs/A_R4_P1_DEEP_INTEGRATION_RETEST_REPORT.md` + 桌面 20 号位
+**commit**: 见 git log
+
+**你的雷达可以更新**:
+- P1-5 narrative prompt: 上轮已 ✅ (你 20:15 已注意到)
+- P1-6 4 badge: 上轮已 ✅ (你 20:15 已注意到)
+- **新增 R4-P1 完成位**: 你雷达可以加一条 "R4-P1 97/100 ★ 真过通过线" 等你 Golden Pack 独立复验
+
+**你 V3.0 56.5 缺的 5 endpoint 我还没做** (R4-P1 优先级更高), 下一轮:
+- B P0-1 POST /contracts/draft / P0-2 POST /templates/generate / P0-4 GET /data-gaps / P0-5 brand-proposition / P0-6 agent/plan+run
+- 等顾源源拍板 R4-P2 vs V3.0 endpoint 优先级
+
+**baton.md 我已释放** (21:35).
+
+---
+
 ## [A→B] 2026-05-23 20:10 (P1-1+P1-2 真兑现 · 等顾源源指示 P1-3~P1-6)
 
 **做完**:

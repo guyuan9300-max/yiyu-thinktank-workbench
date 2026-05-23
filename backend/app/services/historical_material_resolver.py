@@ -176,15 +176,69 @@ _EXTRACT_REF_PROMPT = """你是公司大脑助手. 给你一段复盘/任务/会
 直接输出 JSON 数组."""
 
 
-def extract_references(text: str, *, use_llm: bool = True) -> list[ExtractedReference]:
-    if not use_llm or not text:
+def _extract_references_rule(text: str) -> list[ExtractedReference]:
+    """规则模式抽 references — 不调 LLM, 给 use_llm=False 的短文本场景兜底.
+
+    抽取 4 类常见模式:
+      1. 月份+合同/协议: "5 月签的补充协议" / "3月份合同"
+      2. 金额+口径: "预算 800 万改为 300 万" / "300 万版本"
+      3. 历史指代词+名词: "上次会议" / "上一份方案" / "之前的合同"
+      4. 项目/方案具名: "心盛计划" / "乡村教育帮扶项目"
+    """
+    if not text:
         return []
+    refs: list[ExtractedReference] = []
+    seen: set[str] = set()
+
+    def _push(rt: str, ref_type: str, **hints):
+        norm = rt.strip()
+        if not norm or norm in seen:
+            return
+        seen.add(norm)
+        refs.append(ExtractedReference(
+            ref_text=norm[:200], ref_type=ref_type,
+            hint_keywords=hints.get("kw") or [],
+            hint_time=hints.get("t"), hint_amount=hints.get("a"),
+            hint_party=hints.get("p"),
+        ))
+
+    # 1. 月份 + 合同/协议
+    for m in re.finditer(r"([0-9一二三四五六七八九十]{1,2})\s*月(?:份)?(?:签|订)?(?:的)?(补充协议|合同|协议|备忘录|方案)", text):
+        _push(m.group(0), "contract_reference", t=m.group(1) + "月", kw=[m.group(2)])
+
+    # 2. 金额 (300 万 / 800 万 / 1,000 万)
+    for m in re.finditer(r"([0-9,]+(?:\.[0-9]+)?\s*万元?)", text):
+        amt = m.group(1).replace(",", "").strip()
+        _push(amt, "amount_reference", a=amt)
+
+    # 3. 历史指代 + 后缀名词
+    for m in re.finditer(r"(上次|上一[版次份回]|上回|前次|之前的|曾经的?|原来的?|沿用)([一-龥A-Za-z0-9]{0,12}(?:合同|协议|方案|计划|会议|纪要|材料|文件|说明|提案|预算|口径))?", text):
+        ref_text = m.group(0)[:60]
+        target_noun = m.group(2) or ""
+        ref_type = "contract_reference" if any(k in target_noun for k in ("合同", "协议")) \
+            else ("meeting_reference" if "会议" in target_noun or "纪要" in target_noun
+                  else "fact_reference")
+        _push(ref_text, ref_type, kw=[target_noun] if target_noun else [])
+
+    # 4. 续签/延续
+    for m in re.finditer(r"(续签|延续|沿用)([一-龥A-Za-z0-9]{0,15})", text):
+        _push(m.group(0)[:50], "contract_reference", kw=[m.group(2)] if m.group(2) else [])
+
+    return refs
+
+
+def extract_references(text: str, *, use_llm: bool = True) -> list[ExtractedReference]:
+    if not text:
+        return []
+    if not use_llm:
+        return _extract_references_rule(text)
+    # LLM 优先, 失败回退规则
     prompt = _EXTRACT_REF_PROMPT.format(text=text[:4000])
     raw = _call_ollama(prompt)
     if raw.startswith("__ERROR__"):
-        return []
+        return _extract_references_rule(text)
     arr = _parse_json_arr(raw)
-    return [
+    llm_refs = [
         ExtractedReference(
             ref_text=str(x.get("ref_text", ""))[:200],
             ref_type=str(x.get("ref_type", "fact_reference")),
@@ -195,6 +249,10 @@ def extract_references(text: str, *, use_llm: bool = True) -> list[ExtractedRefe
         )
         for x in arr if x.get("ref_text")
     ]
+    # LLM + 规则合并 (规则保底)
+    if not llm_refs:
+        return _extract_references_rule(text)
+    return llm_refs
 
 
 # ─── 候选匹配 ────────────────────────────────────────

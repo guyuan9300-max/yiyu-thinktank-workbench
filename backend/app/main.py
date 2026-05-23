@@ -16337,12 +16337,113 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 + "\n".join(event_line_blocks[:8])
             )
 
-        # ---- 优先级提示给 LLM ----
-        if judgment_blocks or event_line_blocks:
+        # ---- 数据中心权威源 3：R4 公司大脑 (contract_structures / 用户确认事实 / data_gaps / files / historical) ----
+        # 顾源源 R4-P1-6 钦定: 模板字段解析顺序 = 用户权威值 → 合同结构 → 最新版本 → atomic_facts → 多候选进澄清
+        # 这里在 LLM prompt 里直接灌权威源 → LLM 看到合同 party_a / amount / 签订日期等字段可直接命中
+        r4_blocks: list[str] = []
+        # 3.1 contract_structures (最新版本权威)
+        try:
+            contract_rows = state.db.fetchall(
+                """SELECT party_a, party_b, project_name, signed_at, effective_period,
+                          amount, version
+                   FROM contract_structures WHERE client_id = ? ORDER BY signed_at DESC LIMIT 3""",
+                (client_id,),
+            )
+            for cr in contract_rows or []:
+                parts = []
+                if cr["party_a"]: parts.append(f"甲方：{cr['party_a']}")
+                if cr["party_b"]: parts.append(f"乙方：{cr['party_b']}")
+                if cr["project_name"]: parts.append(f"项目名称：{cr['project_name']}")
+                if cr["amount"]: parts.append(f"合同金额：{cr['amount']}")
+                if cr["signed_at"]: parts.append(f"签订日期：{cr['signed_at']}")
+                if cr["effective_period"]: parts.append(f"履行期：{cr['effective_period']}")
+                if cr["version"]: parts.append(f"版本：{cr['version']}")
+                if parts:
+                    r4_blocks.append("- 【合同结构】" + " / ".join(parts))
+        except Exception:
+            pass
+        # 3.2 user_confirmed atomic_facts (用户纠错过的权威值, 优先级最高)
+        try:
+            confirmed_fact_rows = state.db.fetchall(
+                """SELECT subject_text, attribute, value_text, confidence
+                   FROM atomic_facts
+                   WHERE client_id = ? AND status = 'active'
+                     AND verification_status = 'user_confirmed'
+                   ORDER BY confidence DESC LIMIT 8""",
+                (client_id,),
+            )
+            for fr in confirmed_fact_rows or []:
+                subj = str(fr["subject_text"] or "")[:60]
+                attr = str(fr["attribute"] or "")[:40]
+                val = str(fr["value_text"] or "")[:200]
+                if subj and val:
+                    r4_blocks.append(f"- 【用户已确认】{subj} 的 {attr}：{val}")
+        except Exception:
+            pass
+        # 3.3 file_identities (权威文件角色)
+        try:
+            file_rows = state.db.fetchall(
+                """SELECT file_name, file_type, file_role, version
+                   FROM file_identities WHERE client_id = ? AND is_authoritative = 1
+                   ORDER BY file_time DESC LIMIT 5""",
+                (client_id,),
+            )
+            for fl in file_rows or []:
+                name = str(fl["file_name"] or "")[:80]
+                role = str(fl["file_role"] or "")
+                ftype = str(fl["file_type"] or "")
+                ver = str(fl["version"] or "")
+                if name:
+                    r4_blocks.append(f"- 【权威文件】{name}（{ftype}/{role}{('/'+ver) if ver else ''}）")
+        except Exception:
+            pass
+        # 3.4 historical_reference_links (历史回指, 提示 LLM 别孤立解读)
+        try:
+            hist_rows = state.db.fetchall(
+                """SELECT ref_text, ref_type, target_table FROM historical_reference_links
+                   WHERE client_id = ? ORDER BY resolved_at DESC LIMIT 5""",
+                (client_id,),
+            )
+            for hr in hist_rows or []:
+                txt = str(hr["ref_text"] or "")[:100]
+                if txt:
+                    r4_blocks.append(f"- 【历史关联】曾提及「{txt}」({hr['ref_type'] or '?'} → {hr['target_table'] or '?'})")
+        except Exception:
+            pass
+        # 3.5 data_gaps (已知缺口, 命中字段直接标【待确认】别瞎编)
+        try:
+            gap_rows = state.db.fetchall(
+                """SELECT subject, gap_type, suggested_action, severity FROM data_gaps
+                   WHERE client_id = ? AND status = 'open'
+                   ORDER BY CASE severity WHEN 'high' THEN 0 WHEN 'medium' THEN 1 ELSE 2 END,
+                            detected_at DESC LIMIT 8""",
+                (client_id,),
+            )
+            for gr in gap_rows or []:
+                subj = str(gr["subject"] or "")[:80]
+                if subj:
+                    sa = str(gr["suggested_action"] or "")[:80]
+                    r4_blocks.append(
+                        f"- 【已知缺口】{subj} ({gr['gap_type'] or '?'}, {gr['severity'] or 'medium'})"
+                        + (f" → 建议: {sa}" if sa else "")
+                        + " → 命中字段一律【待确认】"
+                    )
+        except Exception:
+            pass
+        if r4_blocks:
             lines.append(
-                "字段填写优先级：① 优先采用上面两类权威源（采纳判断、事件线现状）直接得到的结论；"
-                "② 权威源里没有的细节再从下面的检索片段补；"
-                "③ 任何情况下不要凭空给出百分比 / 数字，证据里没出现的量化数据一律标'【待确认】'。"
+                "公司大脑权威源（R4 / 优先级 = 用户已确认 > 合同结构 > 权威文件 > 历史关联 > 已知缺口）：\n"
+                + "\n".join(r4_blocks[:20])
+            )
+
+        # ---- 优先级提示给 LLM ----
+        if judgment_blocks or event_line_blocks or r4_blocks:
+            lines.append(
+                "字段填写优先级：① 公司大脑权威源（用户已确认 / 合同结构 / 权威文件）直接命中字段时务必采用其原值；"
+                "② 上面的采纳判断 / 事件线现状次之；"
+                "③ 权威源里没有的细节再从下面的检索片段补；"
+                "④ 已知缺口里出现的字段一律标'【待确认】'；"
+                "⑤ 任何情况下不要凭空给出百分比 / 数字，证据里没出现的量化数据一律标'【待确认】'。"
             )
 
         dna_tool_context = build_dna_tool_context_from_workspace(
@@ -23564,6 +23665,34 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 (to_json(cloud_payload), task_id),
             )
             Thread(target=_try_cloud_sync_task, args=(task_id, cloud_payload), daemon=True).start()
+
+        # R4-P1-5 (顾源源 R4-P1 §六): 任务承诺接 historical_material_resolver
+        # 任务描述里出现 "上次/上一份/x月份合同/补充协议" 等历史指代时,
+        # 真抽 references → 写 historical_reference_links → 多候选进 clarification_records
+        # 这样用户在工作台问"这个任务跟之前哪些事相关"时,公司大脑能真答上
+        if normalized_client_id:
+            try:
+                _task_text = " ".join(filter(None, [payload.title or "", payload.desc or ""])).strip()
+                if _task_text and re.search(
+                    r"(上次|上回|上一[版次份回]|前次|之前的|曾经|x月份|[0-9一二三四五六七八九十]+月签|补充协议|续签|沿用|延续)",
+                    _task_text,
+                ):
+                    from app.services.historical_material_resolver import resolve_review_references
+                    _r = resolve_review_references(
+                        state.db,
+                        client_id=normalized_client_id,
+                        review_text=_task_text,
+                        source_doc_type="task",
+                        source_doc_id=task_id,
+                        use_llm=False,  # 任务文本通常短,规则抽就够
+                    )
+                    logger.info(
+                        "R4-P1-5 task hist resolve task=%s refs=%s links=%s clarifs=%s",
+                        task_id, _r.get("references_extracted"),
+                        _r.get("links_written"), _r.get("clarifications_written"),
+                    )
+            except Exception as _exc:
+                logger.warning("R4-P1-5 task historical resolve failed: %s", _exc)
 
         return created_task
 
