@@ -1,0 +1,293 @@
+{
+  "total_questions": 21,
+  "with_citation": 20,
+  "with_uncertainty": 7,
+  "no_hallucination": 21,
+  "type_3plus": 1,
+  "results": [
+    {
+      "qid": "S3",
+      "question": "上次我们和 CFFC 约定新疆试点资质审批是谁负责? 有没有相关合同或会议纪要支持?",
+      "client": "CFFC",
+      "answer": "根据现有 evidence，没有找到关于新疆试点资质审批负责人相关的合同或会议纪要信息。此事需进一步澄清，具体需要确认是否有相关会议记录或其他正式文件提及该事项。[timeline:ela_e62717a3ec] 上传的附件中也没有相关信息。",
+      "citation_count": 1,
+      "citation_types": [
+        "timeline"
+      ],
+      "has_hallucination": false,
+      "has_uncertainty_marker": true,
+      "elapsed_seconds": 4.28882098197937,
+      "proposed_clarifications": [
+        "根据现有 evidence，没有找到关于新疆试点资质审批负责人相关的合同或会议纪要信息。此事需进一步澄清，具体需要确认是否有相关会议记录或其他正式文件提及该事项。[timeline:ela_e62717a3ec] 上传的附件中也没有相关信息。"
+      ]
+    },
+    {
+      "qid": "Q01",
+      "question": "这份心盛计划补充协议是哪一个项目的?",
+      "client": "日慈",
+      "answer": "这份心盛计划补充协议是“心盛计划”项目的。[file:fid_22f4b5049f074039885a948f] 提供了关于该补充协议的详细信息，其类型为补充协议，项目名称明确标注为“心盛计划”。",
+      "citation_count": 1,
+      "citation_types": [
+        "file"
+      ],
+      "has_hallucination": false,
+      "has_uncertainty_marker": false,
+      "elapsed_seconds": 10.178775072097778
+    },
+    {
+      "qid": "Q02",
+      "question": "心盛计划主合同是谁和谁签的?",
+      "client": "日慈",
+      "answer": "心盛计划主合同是由日慈基金会与益语智库签订的。[contract:cs_604357d6862b4875b4e13676] 和 [contract:cs_a1312e8052f2467c8ff45de3] 提供了相关合同信息。",
+      "citation_count": 2,
+      "citation_types": [
+        "contract"
+      ],
+      "has_hallucination": false,
+      "has_uncertainty_marker": false,
+      "elapsed_seconds": 1.786877155303955
+    },
+    {
+      "qid": "Q03",
+      "question": "5/22 复盘里提到的合作,跟哪份合同有关?",
+      "client": "日慈",
+      "answer": "根据复盘纪要 [file:fid_9d020dc497f34e6284a84795]，提及的“合作”与心盛计划项目相关。这对应于合同 [contract:cs_a1312e8052f2467c8ff45de3] 和补充协议 [file:fid_22f4b5049f074039885a948f]，该合同涉及日慈基金会与益语智库之间的心理健康教育服务合作。具体细节需进一步确认以确保完全匹配会议中的讨论内容。",
+      "citation_count": 3,
+      "citation_types": [
+        "file",
+        "contract"
+      ],
+      "has_hallucination": false,
+      "has_uncertainty_marker": false,
+      "elapsed_seconds": 9.331774950027466
+    },
+    {
+      "qid": "Q04",
+      "question": "心盛计划主合同当时约定了什么?",
+      "client": "日慈",
+      "answer": "心盛计划主合同约定：日慈基金会负责执行推进，益语智库负责内部协调。[contract:cs_32e681d0c0b04af2b40b5048] 签于 2026 年 5 月 18 日。但此合同并非主要责任约定的唯一依据，还需参考更早签订的心盛计划心理健康教育服务合同 [contract:cs_604357d6862b4875b4e13676] 签于 2026 年 2 月 15 日，该合同详细规定了双方的具体责任分工。待确认具体哪份为主合同。",
+      "citation_count": 2,
+      "citation_types": [
+        "contract"
+      ],
+      "has_hallucination": false,
+      "has_uncertainty_marker": true,
+      "elapsed_seconds": 11.104265213012695
+    },
+    {
+      "qid": "Q05",
+      "question": "心盛计划主合同有没有被新版补充协议替代?",
+      "client": "日慈",
+      "answer": "心盛计划的主合同为 [contract:cs_604357d6862b4875b4e13676] 和 [contract:cs_a1312e8052f2467c8ff45de3]，而补充协议有 [file:fid_22f4b5049f074039885a948f]。目前没有证据显示主合同被新版补充协议完全替代，但补充协议可能对原合同进行了调整或增加了新的条款。具体细节需进一步确认。",
+      "citation_count": 3,
+      "citation_types": [
+        "file",
+        "contract"
+      ],
+      "has_hallucination": false,
+      "has_uncertainty_marker": false,
+      "elapsed_seconds": 8.318062782287598
+    },
+    {
+      "qid": "Q06",
+      "question": "5/30 张真给预算方案这个任务对应哪个承诺?",
+      "client": "日慈",
+      "answer": "根据现有的证据，没有直接提到“张真给预算方案”这一具体任务。因此无法确定该任务与哪个具体的承诺相匹配。需要进一步澄清以明确相关细节。[commitment:commit_a5cf900816] 张真 → 益语智库: 提供核心管理团队分工名单 是一个待确认的可能关联，但不完全符合描述的任务内容。建议查询更多具体信息来确定该任务的具体承诺。",
+      "citation_count": 1,
+      "citation_types": [
+        "commitment"
+      ],
+      "has_hallucination": false,
+      "has_uncertainty_marker": true,
+      "elapsed_seconds": 2.3306491374969482
+    },
+    {
+      "qid": "Q07",
+      "question": "心盛计划扩张风险有没有外部证据?",
+      "client": "日慈",
+      "answer": "存在一个中等严重度的风险信号表明，南沙区公益创投新增了青少年心理健康服务平台搭建方向，这与日慈现有心理服务项目赛道重合，可能存在竞品抢占市场的风险。[risk:82aff46f-03dd-4128-9de9-6d777e911067]",
+      "citation_count": 1,
+      "citation_types": [
+        "risk"
+      ],
+      "has_hallucination": false,
+      "has_uncertainty_marker": false,
+      "elapsed_seconds": 1.8486042022705078
+    },
+    {
+      "qid": "Q08",
+      "question": "上次谁答应要给试点学校名单?",
+      "client": "日慈",
+      "answer": "复盘中提到的“安心妈妈试点学校名单”，目前没有直接证据显示具体是谁承诺提供的。需要进一步澄清以确定提供试点学校名单的责任人或会议中的具体承诺内容。\n\n[clarification:clar_hrl_fad3787a9dcf452c980e]",
+      "citation_count": 1,
+      "citation_types": [
+        "clarification"
+      ],
+      "has_hallucination": false,
+      "has_uncertainty_marker": false,
+      "elapsed_seconds": 1.6117959022521973
+    },
+    {
+      "qid": "Q09",
+      "question": "心盛计划目前最大的不确定是什么?",
+      "client": "日慈",
+      "answer": "心盛计划目前最大的不确定性在于教师赋能项目设计的完整性不足，存在交付质量不符合要求的风险。[risk:286a362e-7525-4f61-a7ae-66c3d99cb96d] 标注为严重度中等。",
+      "citation_count": 1,
+      "citation_types": [
+        "risk"
+      ],
+      "has_hallucination": false,
+      "has_uncertainty_marker": false,
+      "elapsed_seconds": 7.472671031951904
+    },
+    {
+      "qid": "Q10",
+      "question": "我下周最应该问客户哪三个问题?",
+      "client": "日慈",
+      "answer": "根据现有信息，您下周可以关注以下三个关键问题：\n\n1. **关于价值观调研的进展**：[commitment:commit_d5ecf920c5] 顾源源承诺撰写价值观调研问题并组织核心团队讨论，请询问该工作的当前进度。\n   \n2. **心盛计划项目运营数据更新**：[commitment:commit_743cb99a9a] 日慈心盛项目组有承诺提供最新运营数据，您可以询问这些数据的提交情况及具体内容。\n\n3. **安心妈妈试点学校名单确认**：虽然证据中没有直接提到安心妈妈试点学校的名单，但根据复盘纪要和相关合同内容，您应该确认该名单的具体信息以确保项目的顺利推进。[clarification:clar_hrl_fad3787a9dcf452c980e] 此问题需进一步澄清。\n\n请在与客户沟通时明确这些事项的当前状态，并根据需要请求更多详细信息或更新。",
+      "citation_count": 3,
+      "citation_types": [
+        "clarification",
+        "commitment"
+      ],
+      "has_hallucination": false,
+      "has_uncertainty_marker": true,
+      "elapsed_seconds": 13.874564170837402
+    },
+    {
+      "qid": "Q11",
+      "question": "心盛计划的预算现在到底用哪个口径?",
+      "client": "日慈",
+      "answer": "根据现有文件，最新的心盛计划项目方案和补充协议为2026年5月18日版本([file:fid_550ed769fe4940beb0c9b296] 和 [file:fid_22f4b5049f074039885a948f])，但具体预算细节需参照[contract:cs_32e681d0c0b04af2b40b5048]合同中约定的金额和责任分配。然而，最终确认心盛计划的具体预算口径需要参考最新的项目预算表([file:fid_0ec67cc00e014393b6b598e8])或与日慈基金会进一步沟通以获取最准确的信息。此事需进一步澄清具体预算细节。",
+      "citation_count": 4,
+      "citation_types": [
+        "file",
+        "contract"
+      ],
+      "has_hallucination": false,
+      "has_uncertainty_marker": true,
+      "elapsed_seconds": 10.088428020477295
+    },
+    {
+      "qid": "Q12",
+      "question": "教育部那条关于校外心理服务的通知能不能作为事实?",
+      "client": "日慈",
+      "answer": "可以将教育部于2026年3月1日发布的《关于规范校外心理健康服务的通知》作为事实依据。[file:fid_656af25d80a64ef2af1f6f19]",
+      "citation_count": 1,
+      "citation_types": [
+        "file"
+      ],
+      "has_hallucination": false,
+      "has_uncertainty_marker": false,
+      "elapsed_seconds": 1.3577029705047607
+    },
+    {
+      "qid": "Q13",
+      "question": "心盛计划的对外宣传稿适用于哪个版本?",
+      "client": "日慈",
+      "answer": "根据现有证据，心盛计划有两个主要版本：v1和v2。[contract:cs_a1312e8052f2467c8ff45de3] 和 [file:fid_550ed769fe4940beb0c9b296] 分别对应心盛计划的 v1 和 v2 项目方案。对外宣传稿适用的具体版本需要进一步确认，建议查看最新的会议纪要或补充协议以确定当前使用的版本。[file:fid_22f4b5049f074039885a948f] 可能包含相关更新信息。",
+      "citation_count": 3,
+      "citation_types": [
+        "file",
+        "contract"
+      ],
+      "has_hallucination": false,
+      "has_uncertainty_marker": false,
+      "elapsed_seconds": 3.5267510414123535
+    },
+    {
+      "qid": "Q14",
+      "question": "安心妈妈试点有没有真实动作?",
+      "client": "日慈",
+      "answer": "安心妈妈项目有相关合同和附件协议，但具体试点学校名单及实际操作细节尚未明确。需进一步澄清以确认是否有真实动作进行中。\n\n[contract:cs_90cbde4fe56f44ec993690e4]\n[file:fid_0ec67cc00e014393b6b598e8]",
+      "citation_count": 2,
+      "citation_types": [
+        "file",
+        "contract"
+      ],
+      "has_hallucination": false,
+      "has_uncertainty_marker": true,
+      "elapsed_seconds": 2.1496572494506836
+    },
+    {
+      "qid": "Q15",
+      "question": "最近哪些材料改变了日慈基金会的故事卡?",
+      "client": "日慈",
+      "answer": "最近改变日慈基金会故事卡的材料包括：\n\n- [file:fid_9d020dc497f34e6284a84795] 日慈-心盛计划战略复盘会议纪要，日期为 2026 年 5 月 22 日。\n- [file:fid_c99f08207fed4eedb746c04b] CFFC-乡村教育帮扶季度复盘文件，日期为 2026 年 5 月 20 日。\n\n这些材料可能更新了项目的进展和计划。具体影响需进一步确认。",
+      "citation_count": 2,
+      "citation_types": [
+        "file"
+      ],
+      "has_hallucination": false,
+      "has_uncertainty_marker": false,
+      "elapsed_seconds": 3.8086023330688477
+    },
+    {
+      "qid": "Q16",
+      "question": "哪些事实只有用户口述,没有客户官方证据?",
+      "client": "日慈",
+      "answer": "[fact:af_3682b7c4c460] 关于教师板块的判断，即“教师心理健康是新的切入点，已做两年探索并有一定证据，将独立于心灵魔法学院去做”，此事实只有用户口述，没有客户官方证据确认。",
+      "citation_count": 1,
+      "citation_types": [
+        "fact"
+      ],
+      "has_hallucination": false,
+      "has_uncertainty_marker": false,
+      "elapsed_seconds": 8.093496084213257
+    },
+    {
+      "qid": "Q17",
+      "question": "哪些日慈的事实已经被用户纠正?",
+      "client": "日慈",
+      "answer": "根据提供的 evidence，没有明确指出任何日慈事实被用户纠正的信息。因此，无法提供具体的纠正记录。[待确认]",
+      "citation_count": 0,
+      "citation_types": [],
+      "has_hallucination": false,
+      "has_uncertainty_marker": true,
+      "elapsed_seconds": 6.771506071090698
+    },
+    {
+      "qid": "Q18",
+      "question": "心盛计划的 v1 旧材料应该降权吗?",
+      "client": "日慈",
+      "answer": "心盛计划的v1旧材料是否需要降权，需参考最新的合同和会议纪要。目前有[contract:cs_604357d6862b4875b4e13676] 和 [file:fid_550ed769fe4940beb0c9b296] 提到v2版本的项目方案，建议依据最新文件决定是否降权旧材料。具体操作需进一步确认。",
+      "citation_count": 2,
+      "citation_types": [
+        "file",
+        "contract"
+      ],
+      "has_hallucination": false,
+      "has_uncertainty_marker": false,
+      "elapsed_seconds": 2.5365638732910156
+    },
+    {
+      "qid": "Q19",
+      "question": "哪些日慈的资料缺口应该补?",
+      "client": "日慈",
+      "answer": "根据现有信息，以下几项是需要进一步澄清或补充的日慈相关资料：\n\n1. **安心妈妈试点学校名单**：复盘中提到但未见具体文件提及（[clarification:clar_hrl_fad3787a9dcf452c980e]）。\n2. **张真老师提供的核心管理团队分工名单**：承诺提供，但目前没有相关文件确认（[commitment:commit_a5cf900816]）。\n\n建议进一步核查并补充这些资料。",
+      "citation_count": 2,
+      "citation_types": [
+        "clarification",
+        "commitment"
+      ],
+      "has_hallucination": false,
+      "has_uncertainty_marker": false,
+      "elapsed_seconds": 3.1459341049194336
+    },
+    {
+      "qid": "Q20",
+      "question": "如果要给日慈写下一版方案,应该调哪些证据?",
+      "client": "日慈",
+      "answer": "为了撰写日慈的新一版项目方案，应参考以下文件和会议纪要：\n\n- [file:fid_550ed769fe4940beb0c9b296] 日慈-心盛计划项目方案_v2_20260518.docx (权威=是)\n- [meeting:fid_9d020dc497f34e6284a84795] 日慈-心盛计划战略复盘会议纪要_20260522.docx (类型=meeting_minute, 权威=是)\n- [contract:cs_a1312e8052f2467c8ff45de3] 日慈基金会↔益语智库 · 心盛计划心理健康教育服务合同 (签于 2026 年 2 月 15 日, 权威=是)\n\n此外，还需确认是否需要参考其他相关会议纪要或补充协议。",
+      "citation_count": 3,
+      "citation_types": [
+        "meeting",
+        "file",
+        "contract"
+      ],
+      "has_hallucination": false,
+      "has_uncertainty_marker": false,
+      "elapsed_seconds": 5.849031209945679
+    }
+  ]
+}
