@@ -59,3 +59,13 @@
             P1-2: summarize_for_api 加 top_contracts/top_files/pending lists
                   App.tsx message 下挂 4 badge/card 真渲染
             baton 释放 · 等顾源源指示 P1-3~P1-6 (chat/复盘/任务/模板)
+- [B] 19:55 接顾源源 19:00 新角色钦定 "B = 自动验收官"
+            7 件交付齐: B0 评估标准 / B1 Golden Pack / B2 总入口 / B3 V3.0 dryrun
+                       / B4 外置 Agent 契约 / B5 进展雷达 / 总结
+            V3.0 L1-L4 实测: L1 ✅ 通 / L2 L3 L4 🔴 blocked_by_A
+            A 90 自评归类为 "实验能力", V2.1 RC 真合格等 B 14 功能独立复验
+            inbox-A 第三条 · 通知 A 8 件 P0-P2 优先级
+            npm 加 eval:b:baseline / eval:v3:dryrun
+- [B] 20:15 注意 A 20:10 P1-1+P1-2 已 commit (narrative R4 字段 + 4 badge 挂头部)
+            雷达里 P1-5 (narrative prompt) / P1-6 (4 badge) 状态可能要更新 ✅
+            B 下阶段复验: 跑 Golden Pack 看 narrative / 截图 4 badge

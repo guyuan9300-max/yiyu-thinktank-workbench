@@ -4,6 +4,48 @@ B 写, A 读。最新在最上面。
 
 ---
 
+## [B→A] 2026-05-23 19:55 · 角色转 "自动验收官" + 7 件交付齐 + V3.0 L1-L4 通 1/4
+
+**做完** (顾源源 5/23 19:00 钦定 B 新角色):
+- B0 docs/B_AI_EVAL_STANDARD_V1.md (统一评估标准 L1/L2/L3)
+- B1 fixtures/golden/ × 7 + docs/B_AI_GOLDEN_TEST_PACK.md (固定测试样本)
+- B2 scripts/run_b_eval_baseline.py (4 模式: capability-probe / api-contract / db-diff / ui-checklist)
+- B3 scripts/run_v3_ai_driven_dryrun_eval.py (L1-L4 dry-run, blocked_by_A 不挂死)
+- B4 docs/B_AI_EXTERNAL_AGENT_DRYRUN_CONTRACT.md (6 命令外置 Agent 契约)
+- B5 docs/B_AI_PROGRESS_RADAR.md (进展雷达, 30 min 更新)
+- 总结 docs/B_AI_NEXT_STAGE_WORK_REPORT.md
+
+**V3.0 L1-L4 实测**:
+- ✅ L1 单链路通 (facts+5/risk+2/commit+2)
+- 🔴 L2 多模块 blocked_by_A (调用 1 模块, 目标 ≥4)
+- 🔴 L3 主动缺口 blocked_by_A (data-gaps endpoint 404)
+- 🔴 L4 Goal-Plan-Run blocked_by_A (3 endpoint 全缺)
+
+**你 R4 90 自评待 B 复验**: 我承诺下阶段 2-3h 跑 Golden Pack × 14 功能, 出独立分.
+当前认 A 90 = "实验能力", V2.1 RC 真合格要等 B 独立复验.
+
+**你接下来 8 件 P0-P2** (我雷达里, 推荐优先级):
+- P0-1 暴露 POST /contracts/draft (合同草稿, 顾源源样本 1 最重要)
+- P0-2 暴露 POST /templates/generate (理事会简版说明)
+- P0-3 修 strategic-cockpit/meeting-pack 403 权限 (会谈提纲)
+- P0-4 暴露 GET /clients/{id}/data-gaps + 接 DataGapCompensator (V3.0 L3 直接通)
+- P1-5 narrative_generator prompt 用 R4 字段 (R4-P0 P0-4 你自报留下轮)
+- P1-6 4 badge 挂头部 (R4-P0 前端你自报留下轮)
+- P1-7 暴露 GET /agent-run-logs
+- P2-8 Goal-Plan-Run 三件套 (V3.0 P1 大工程)
+
+**安全区 (你随便动)**: backend/main.py / backend/app/services/* / src/renderer/**
+**B 占 (你不动)**: scripts/run_b_eval_* / scripts/run_v3_* / docs/B_AI_EVAL_* / fixtures/golden/* / docs/B_AI_PROGRESS_RADAR.md
+
+**baton.md 我没占任何文件**.
+
+**npm 集成 (顾源源可一键跑)**:
+- npm run eval:b:baseline (全 4 模式)
+- npm run eval:v3:dryrun (L1-L4)
+- npm run eval:r2 / eval:v30:ai-driven (已有)
+
+---
+
 ## [B→A] 2026-05-23 18:45 · init script 已扩 4 R3 表 (R4 联动 schema fix)
 
 **做完**: commit (pending) · scripts/init_v21_lab_schema.py 加 4 张 R3 表 ensure
