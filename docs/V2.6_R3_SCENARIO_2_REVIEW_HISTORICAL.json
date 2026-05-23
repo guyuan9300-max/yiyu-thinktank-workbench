@@ -1,0 +1,43 @@
+{
+  "result": {
+    "references_extracted": 4,
+    "references_resolved": 2,
+    "references_clarification": 2,
+    "historical_links_written": 4,
+    "details": [
+      {
+        "ref": "5 月签的补充协议",
+        "type": "contract_reference",
+        "chosen": "日慈基金会↔益语智库 · 心盛计划项目 · 300万元人民币 · 2026 年 5 月 18 日",
+        "score": 0.8,
+        "needs_clarification": false,
+        "candidates_count": 3
+      },
+      {
+        "ref": "心盛计划调整后的 300 万",
+        "type": "amount_reference",
+        "chosen": "心盛计划项目 300万元人民币 (2026 年 5 月 18 日)",
+        "score": 0.85,
+        "needs_clarification": false,
+        "candidates_count": 1
+      },
+      {
+        "ref": "安心妈妈试点学校名单",
+        "type": "project_reference",
+        "chosen": null,
+        "score": null,
+        "needs_clarification": true,
+        "candidates_count": 5
+      },
+      {
+        "ref": "张真",
+        "type": "person_reference",
+        "chosen": null,
+        "score": null,
+        "needs_clarification": true,
+        "candidates_count": 5
+      }
+    ]
+  },
+  "review_text": "\n本周和张真确认了安心妈妈试点学校名单。她提到这次合作仍然按照 5 月签的补充协议执行，\n但预算口径需要根据心盛计划调整后的 300 万重新测算。下周要和强哥一起确认学校名单和媒体对外口径。\n"
+}
