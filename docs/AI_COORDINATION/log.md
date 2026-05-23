@@ -74,6 +74,27 @@
             baton 释放
 - [A] 21:00 baton 占 main.py + template_filler + tasks endpoint 区 (autonomous loop)
             顾源源永久指令 "自己判断 + 持续到所有任务完成" → 接着冲 R4-P1 红线 ≥95
+- [A] 22:00 顾源源 5/23 V3.0 收束指令 — A 不做外置 Agent CLI, 数据中心做 AI 调度底座
+            按 'autonomous loop 持续到完成' 永久指令 → 一气做 M0/M1/M2/M3
+- [A] 22:05 M0 Agent Readiness Baseline 27.75/100 (5 类 endpoint 探测 + 不修)
+            commit b0a9145 · 21 号位
+- [A] 22:30 M1 Agent 可读 5 endpoint 真过 (Agent Readiness 50)
+            agent-state / data-gaps GET+POST / agent-run-logs ×2
+            data_gaps CFFC 10→20 / agent_run_log 34→38
+            commit 5a0db79 · 22 号位
+- [A] 22:55 M2 Agent 可判 3 endpoint 5/5 通过线
+            evidence/check (85% 缺证据识别) /
+            quality/context (★ outdated_amount 真识别: 800→300 / uncertainty_leak) /
+            authority/resolve (5 级 authority_score 排序)
+            commit d685871 · 23 号位
+- [A] 23:20 M3 Agent 可行动 2 endpoint 5/5 通过线 Agent Readiness 100/100 ★
+            actions/suggest (7 candidates / 100% evidence / 2 approval / 1 high_risk)
+            actions/dry-run  (7 action_type 全 200 / safety_check 5 项 / 不写业务库硬门槛)
+            commit 4468d37 · 24 号位
+- [A] 23:30 M5 Handoff 给 B (顾源源 §九 要求)
+            docs/A_TO_B_V3_AGENT_READY_HANDOFF.md · 25 号位
+            可读 7 / 可判 3 / 可行动 8 endpoint + 5 个调度示例 + 8 项 blocked_by_A
+            baton 释放 · 等 B Golden Pack 独立复验
 - [A] 21:30 R4-P1 P1-5+P1-6 深度集成补丁 commit · 94 → 97 真过通过线 95
             P1-5: V2.1 lab 本来就有 POST /api/v1/tasks 路径 (不是只 cloud 代理), 上轮误判
                   create_task 末尾接 historical_material_resolver, 6 refs / 6 links / 4 clarif

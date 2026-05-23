@@ -4,6 +4,60 @@ A 写, B 读。最新在最上面。
 
 ---
 
+## [A→B] 2026-05-23 23:35 (V3 收束指令 4 个里程碑全完 · Agent Readiness 100/100)
+
+**收到顾源源 5/23 V3.0 收束指令** — "A 不做外置 Agent CLI, A 把数据中心做成 AI 调度底座".
+按 autonomous loop 持续到完成永久指令, 一口气做完 M0/M1/M2/M3/M5.
+
+**做完** (commit b0a9145 → 5a0db79 → d685871 → 4468d37):
+- ✅ **M0 Agent Readiness Baseline** 27.75/100 (不修只测, 21 号位)
+- ✅ **M1 Agent 可读** 50/100 — 5 个 P0 endpoint 全过:
+  - GET /clients/{id}/agent-state (9 evidence_types / 5 next_actions)
+  - GET /clients/{id}/data-gaps (severity/status 过滤)
+  - POST /clients/{id}/data-gaps/compensate (触发 pipeline + 幂等)
+  - GET /agent-run-logs (按 client/actor 过滤)
+  - GET /agent-run-logs/{run_id} (单条详情)
+- ✅ **M2 Agent 可判** 75/100 — 3 endpoint 5/5 通过线:
+  - POST /clients/{id}/evidence/check (85% 缺证据识别)
+  - POST /clients/{id}/quality/context (★★★ outdated_amount 真识别: 800万→300万)
+  - POST /clients/{id}/authority/resolve (5 级 authority_score)
+- ✅ **M3 Agent 可行动** 100/100 — 2 endpoint 5/5 通过线:
+  - POST /clients/{id}/actions/suggest (7 candidates / 100% evidence)
+  - POST /actions/dry-run (writes_no_db 硬门槛真过)
+- ✅ **M5 Handoff 给你**:
+  - docs/A_TO_B_V3_AGENT_READY_HANDOFF.md (25 号位)
+  - 可读 7 项 / 可判 3 项 / 可行动 8 项 endpoint 全清单
+  - 5 个 Agent 调度示例 (§5 可直接用)
+  - blocked_by_A 8 项 (§7 诚实)
+
+**真数据 V2.1 lab db 增长**:
+- agent_run_log: 34 → 估约 46 (M1+M3 测试登记)
+- data_gaps CFFC: 10 → 20 (M1 compensate 真新检测)
+- idempotency_keys_v25: → 23+
+
+**顾源源 §六/§七 5+5 量化目标 全过**:
+- 缺证据识别 ≥80% / 待确认混入 ≥90% / 冲突 ≥80% / 返工建议 ≥3 条 / 低可信不升权威 100% (M2)
+- ≥5 candidates / dry-run 不写库 100% / 危险动作 approval 100% / evidence ≥90% / user_visible 100% (M3)
+
+**等你做** (B 自动验收官):
+- Golden Pack 真测 M1-M3 共 10 endpoint
+- 跨客户隔离 100% 验证 (nonexistent → 404 / 真客户 → 200 独立)
+- Idempotency 真持久化验证 (同 key 重调返同 response, db 无重复)
+- 外置 Codex / Claude Code 端到端 dry-run
+
+**A 这边把"四件事"(可读/可判/可行动/可审计) 都做完了, 接力棒交给你**.
+
+**baton.md 释放** (23:35).
+
+**reports 全在产品手册**:
+- 21 V3 Baseline
+- 22 V3 M1 Agent 可读
+- 23 V3 M2 Agent 可判
+- 24 V3 M3 Agent 可行动
+- 25 A → B Handoff
+
+---
+
 ## [A→B] 2026-05-23 21:35 (R4-P1 P1-5+P1-6 真兑现 · 94→97 过线)
 
 **做完** (顾源源 "自己判断+持续到所有任务完成" 永久指令, A autonomous loop):
