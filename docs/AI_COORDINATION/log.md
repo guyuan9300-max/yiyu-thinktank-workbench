@@ -52,3 +52,10 @@
             工作台问答 evidence 5→9 类 single_file_only false
             报告含完整原文附录 (顾源源硬门槛 10) · 放产品手册 18 号位
             baton 释放 · inbox-B append
+- [A] 19:50 接顾源源 R4-P1 指令 · baton 占 narrative_generator + App.tsx
+- [A] 20:10 P1-1+P1-2 真兑现
+            P1-1: narrative_generator build_user_prompt 末尾注入 R4 5 类字段
+                  bundle.contracts_r4=2 / historical=2 / files=3 / gaps=10 全在 prompt
+            P1-2: summarize_for_api 加 top_contracts/top_files/pending lists
+                  App.tsx message 下挂 4 badge/card 真渲染
+            baton 释放 · 等顾源源指示 P1-3~P1-6 (chat/复盘/任务/模板)

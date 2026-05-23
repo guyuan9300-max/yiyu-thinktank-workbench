@@ -4,6 +4,60 @@ A 写, B 读。最新在最上面。
 
 ---
 
+## [A→B] 2026-05-23 20:10 (P1-1+P1-2 真兑现 · 等顾源源指示 P1-3~P1-6)
+
+**做完**:
+- ✅ P1-1 narrative_generator.py build_user_prompt 末尾注入 R4 字段
+  - 含 contracts/historical_links/files/data_gaps/external_evidence 5 类
+  - 强制 LLM 写 cooperation 引合同 / timeline 回指历史 / next_steps 列缺口
+  - 自验: bundle.contracts_r4=2 / historical=2 / files=3 / gaps=10 / build_user_prompt 含 R4 段 ✅
+- ✅ P1-2 summarize_for_api_response 加 4 类详情简要
+  - top_contracts: 2 条 (CFFC 300 万 + 800 万版真返回)
+  - top_files: 3 条 (合同/补协议/方案 + 角色)
+  - pending_clarifications_list: 5 条
+  - pending_approvals_list: 5 条
+- ✅ App.tsx message 渲染加 4 badge / ContractStructureCard 挂载
+
+**curl 自验**: top_contracts/top_files/pending lists 全部真返回
+
+**预测分数**:
+- 90 → 95 (顾源源 R4-P1 通过线)
+- 战略陪伴 narrative prompt 真用 R4 字段 (B 级 → A 级)
+- 4 badge 前端可见 (P0-5 升级到全可见)
+
+**baton 释放**
+
+**问题给你**:
+- P1-3 (chat 反向入库) / P1-4 (复盘历史) / P1-5 (任务承诺) / P1-6 (模板 ContextBuilder)
+  这 4 项是更大工作量 (每项 1h, 共 4h), 是 P1 的另一半
+- 顾源源说"先修最低 2 项 (90→95)" — 我先做了 P1-1+P1-2
+- 你跑复测看真分数 → 如果到 95 就停 (出报告), 没到就告诉我哪不够
+
+**baton 释放** · 你可以跑 R4 复测脚本 / 改 GOLDEN_MEETING_TEMPLATE / 等
+
+---
+
+## [A→B] 2026-05-23 19:50 (R4-P1 开工 · P1-1+P1-2 先冲 95)
+
+**收到顾源源 R4-P1 指令**:
+- 不扩新能力, 把核心链路推进到主要用户工作流
+- 6 个 P1 任务: narrative R4 / 4 badge / chat 反向 / 复盘历史 / 任务承诺 / 模板 ContextBuilder
+- 顾源源原则: '先修最低 2 项' → P1-1 + P1-2 最划算 (90→95)
+
+**A 先做 P1-1+P1-2**:
+- P1-1 修 narrative_generator.py prompt 引入 7 类 R4 字段
+- P1-2 4 badge 挂客户工作台头部 + 战略陪伴入口 + 文件列表
+
+**baton 占**:
+- backend/app/services/narrative_generator.py
+- src/renderer/App.tsx
+
+**你安全区**: scripts/* + docs/* (不动我占的 2 个文件)
+
+**完成后**: 跑复测 + 出 P1 报告, 然后决定 P1-3~P1-6 继续
+
+---
+
 ## [A→B] 2026-05-23 19:35 (R4 复测 90/100 ★ 真过 R4-P0 通过线)
 
 **做完** (顾源源 R4 修复+复测任务):

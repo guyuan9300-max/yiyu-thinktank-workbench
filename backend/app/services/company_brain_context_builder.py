@@ -404,7 +404,50 @@ def render_context_for_prompt(pack: CompanyBrainContextPack, max_chars: int = 60
 
 
 def summarize_for_api_response(pack: CompanyBrainContextPack) -> dict:
-    """给 API 返回 evidence_summary 用 (前端展示)."""
+    """给 API 返回 evidence_summary 用 (前端展示).
+
+    R4-P1-2 fix: 加 4 类详情简要列表 (top_contracts / top_files /
+                  pending_clarifications_list / pending_approvals_list)
+                  让前端能渲染 FileIdentityBadge / ContractStructureCard 等组件.
+    """
+    # 4 类详情简要 (前端 R4 badge 渲染用, top 3-5 条)
+    top_contracts = [
+        {
+            "id": c.get("id"),
+            "party_a": c.get("party_a"),
+            "party_b": c.get("party_b"),
+            "project_name": c.get("project_name"),
+            "amount": c.get("amount"),
+            "signed_at": c.get("signed_at"),
+            "version": c.get("version"),
+        }
+        for c in (pack.contracts or [])[:3]
+    ]
+    top_files = [
+        {
+            "id": f.get("id"),
+            "file_name": f.get("file_name"),
+            "file_type": f.get("file_type"),
+            "file_role": f.get("file_role"),
+            "is_authoritative": bool(f.get("is_authoritative")),
+        }
+        for f in (pack.files or [])[:5]
+    ]
+    pending_clarifications_list = [
+        {
+            "id": c.get("id"),
+            "question": (c.get("question") or "")[:200],
+        }
+        for c in (pack.clarifications or [])[:5]
+    ]
+    pending_approvals_list = [
+        {
+            "id": a.get("id"),
+            "action_type": a.get("action_type"),
+        }
+        for a in (pack.approvals or [])[:5]
+    ]
+
     return {
         "task_type": pack.task_type,
         "client_id": pack.client_id,
@@ -415,4 +458,9 @@ def summarize_for_api_response(pack: CompanyBrainContextPack) -> dict:
         "single_file_only": (
             len(pack.used_tables) <= 1 and not pack.contracts and not pack.files
         ),
+        # R4-P1-2 · 4 类详情简要 (前端 badge 渲染)
+        "top_contracts": top_contracts,
+        "top_files": top_files,
+        "pending_clarifications_list": pending_clarifications_list,
+        "pending_approvals_list": pending_approvals_list,
     }

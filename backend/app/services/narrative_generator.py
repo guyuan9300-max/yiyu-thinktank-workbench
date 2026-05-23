@@ -838,6 +838,74 @@ def build_user_prompt(bundle: ClientFactBundle) -> str:
     lines.append("    ✅ 客户专属问题示例 (保留):『X 项目实际开展几年』『Y 老师在 Z 项目的具体职务』『2024 选 X 县的依据』")
     lines.append("    底线: 公共概念走爬虫, 客户专属走澄清。")
 
+    # R4-P1-1 (顾源源 5/23 R4-P1 钦定) · 注入 R4 字段到 narrative prompt
+    # ClientFactBundle 已加 5 个 R4 字段, 这里强制 LLM 在 6 段叙事里真用上
+    _r4_contracts = getattr(bundle, "contracts_r4", []) or []
+    _r4_historical = getattr(bundle, "historical_links_r4", []) or []
+    _r4_files = getattr(bundle, "file_identities_r4", []) or []
+    _r4_gaps = getattr(bundle, "data_gaps_r4", []) or []
+    _r4_external = getattr(bundle, "external_evidence_r4", []) or []
+    if _r4_contracts or _r4_historical or _r4_files or _r4_gaps or _r4_external:
+        lines.append("\n# ⭐⭐⭐⭐⭐ R4 公司大脑 (R3 派生的 5 类新证据 — 顾源源 R4-P1 钦定必用)")
+        lines.append("**这 5 类证据是 V2.6 R3 新建的能力, 写 6 段叙事必须真用:**")
+        lines.append("  · 合同结构 (contracts) — 写 cooperation/next_steps 必须引甲乙方/金额/期限/责任")
+        lines.append("  · 文件身份 (files) — 写 timeline/business_intro 必须标 客户官方/益语产出/外部参考")
+        lines.append("  · 历史材料关联 (historical_links) — 写 timeline/next_steps 必须回指 '5 月补充协议' 等历史")
+        lines.append("  · 数据缺口 (data_gaps) — 写 cooperation/people 时必须明确'缺什么证据'")
+        lines.append("  · 外部证据 (external_evidence) — 写 business_intro 时区分 L1/L2/L3 不覆盖内部")
+        lines.append("")
+
+        if _r4_contracts:
+            lines.append("## ⭐ 合同结构 (contract_structures)")
+            for c in _r4_contracts[:8]:
+                cd = c if isinstance(c, dict) else dict(c)
+                lines.append(
+                    f"  · [contract:{cd.get('id','?')}] {cd.get('party_a','?')}↔{cd.get('party_b','?')} · "
+                    f"{cd.get('project_name','?')} · {cd.get('amount','?')} · 签于 {cd.get('signed_at','?')} · "
+                    f"v={cd.get('version','-')}"
+                )
+        if _r4_historical:
+            lines.append("\n## ⭐ 历史材料回指 (historical_reference_links)")
+            for h in _r4_historical[:10]:
+                hd = h if isinstance(h, dict) else dict(h)
+                lines.append(
+                    f"  · [hist] '{hd.get('ref_text','?')[:40]}' [{hd.get('ref_type','?')}] → "
+                    f"{hd.get('target_table','?')}/{hd.get('target_id','?')} score={hd.get('match_score',0)}"
+                )
+        if _r4_files:
+            lines.append("\n## ⭐ 文件身份 (file_identities)")
+            for f in _r4_files[:10]:
+                fd = f if isinstance(f, dict) else dict(f)
+                lines.append(
+                    f"  · [file:{fd.get('id','?')}] {fd.get('file_name','?')[:50]} · "
+                    f"{fd.get('file_type','?')} / {fd.get('file_role','?')} · "
+                    f"权威={'是' if fd.get('is_authoritative') else '否'}"
+                )
+        if _r4_gaps:
+            lines.append("\n## ⭐ 数据缺口 (data_gaps) — 必须在 narrative 里说明缺什么证据")
+            for g in _r4_gaps[:6]:
+                gd = g if isinstance(g, dict) else dict(g)
+                lines.append(
+                    f"  · [gap:{gd.get('id','?')}] {gd.get('gap_type','?')}: {gd.get('subject','')[:40]} — "
+                    f"{gd.get('suggested_action','')[:60]}"
+                )
+        if _r4_external:
+            lines.append("\n## ⭐ 外部证据 (external_evidence_cards)")
+            for e in _r4_external[:6]:
+                ed = e if isinstance(e, dict) else dict(e)
+                lines.append(
+                    f"  · [external:{ed.get('id','?')}] {ed.get('title','?')[:50]} · "
+                    f"{ed.get('source_tier','?')} · {ed.get('relation_to_internal','?')}"
+                )
+
+        lines.append("\n**R4 公司大脑用法 (顾源源 R4-P1 硬约束)**:")
+        lines.append("  1. 写 cooperation 时 — 必须引用合同结构 (party_a/party_b/amount/signed_at)")
+        lines.append("  2. 写 timeline 时 — 必须引用历史材料链接 (回指 '5 月补充协议' 等)")
+        lines.append("  3. 写 next_steps 时 — 必须列出 data_gaps 作为'下一步必须问/补' 的依据")
+        lines.append("  4. 写 business_intro 时 — 区分客户官方文件 / 我方产出 / 外部参考")
+        lines.append("  5. 不允许把外部证据 (external_evidence_cards) 当作客户权威事实")
+        lines.append("  6. 任何不确定关联必须写到 openClarifications (不要强行判断哪份合同)")
+
     return "\n".join(lines)
 
 

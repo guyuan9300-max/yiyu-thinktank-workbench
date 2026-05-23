@@ -23473,6 +23473,43 @@ export default function App() {
                                   {/* R4 P0-5 fix · 待澄清问题列表 (B 5/23 16:46 钦定) */}
                                   <ProposedClarificationsList items={((msg as unknown as { proposedClarifications?: Array<{id?:string;question?:string}> }).proposedClarifications) || []} />
 
+                                  {/* R4-P1-2 · 客户级 4 badge / card (顾源源 5/23 R4-P1 钦定 — 头部全局显示) */}
+                                  {(() => {
+                                    const cbs = ((msg as unknown as { companyBrainSummary?: Record<string, unknown> }).companyBrainSummary) || {};
+                                    const ev = ((cbs.evidence_summary as Record<string, number>) || {});
+                                    const topContracts = ((cbs.top_contracts as Array<Record<string, unknown>>) || []);
+                                    const topFiles = ((cbs.top_files as Array<Record<string, unknown>>) || []);
+                                    return (
+                                      <div className="mt-2 flex flex-col gap-2">
+                                        <div className="flex flex-wrap gap-1.5 items-center">
+                                          <PendingClarificationsBadge count={ev.clarifications_pending} />
+                                          <PendingApprovalsBadge count={ev.approvals_pending} />
+                                          {topFiles.slice(0, 3).map((f, i) => (
+                                            <FileIdentityBadge
+                                              key={String(f.id) || `f${i}`}
+                                              fileRole={f.file_role as string}
+                                              fileType={f.file_type as string}
+                                              isAuthoritative={f.is_authoritative as boolean}
+                                            />
+                                          ))}
+                                        </div>
+                                        {topContracts.slice(0, 2).map((c, i) => (
+                                          <ContractStructureCard
+                                            key={String(c.id) || `c${i}`}
+                                            contract={{
+                                              party_a: c.party_a as string,
+                                              party_b: c.party_b as string,
+                                              project_name: c.project_name as string,
+                                              amount: c.amount as string,
+                                              signed_at: c.signed_at as string,
+                                              version: c.version as string,
+                                            }}
+                                          />
+                                        ))}
+                                      </div>
+                                    );
+                                  })()}
+
                                 </div>
 
                                 {/* action bar (复制/收藏/导出/合并/采纳为判断/转任务) — 仅在
