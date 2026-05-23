@@ -2288,6 +2288,99 @@ function StreamingAnswerDocument({ text, streaming }: { text: string; streaming:
   return <AnswerDocument text={displayed} />;
 }
 
+// R4 P0-5 fix (B 5/23 16:46 钦定) · 4 个新 badge / card
+// 待澄清徽章 / 待审批徽章 / 文件身份 badge / 合同结构卡片
+
+function PendingClarificationsBadge({ count }: { count: number | undefined }) {
+  if (!count || count <= 0) return null;
+  return (
+    <span className="inline-flex items-center gap-1 rounded-md bg-amber-50 px-2 py-0.5 text-[11px] font-semibold text-amber-700 border border-amber-200">
+      ⚠️ 待澄清 {count}
+    </span>
+  );
+}
+
+function PendingApprovalsBadge({ count }: { count: number | undefined }) {
+  if (!count || count <= 0) return null;
+  return (
+    <span className="inline-flex items-center gap-1 rounded-md bg-indigo-50 px-2 py-0.5 text-[11px] font-semibold text-indigo-700 border border-indigo-200">
+      ✋ 待审批 {count}
+    </span>
+  );
+}
+
+function FileIdentityBadge({ fileRole, fileType, isAuthoritative }: {
+  fileRole?: string | null; fileType?: string | null; isAuthoritative?: boolean
+}) {
+  if (!fileRole && !fileType) return null;
+  const roleMap: Record<string, { label: string; cls: string }> = {
+    client_official: { label: '🟢 客户官方', cls: 'bg-green-50 text-green-700 border-green-200' },
+    yiyu_produced: { label: '🔵 益语产出', cls: 'bg-blue-50 text-blue-700 border-blue-200' },
+    external_reference: { label: '⚪ 外部参考', cls: 'bg-slate-50 text-slate-700 border-slate-200' },
+    policy_basis: { label: '🟣 政策', cls: 'bg-purple-50 text-purple-700 border-purple-200' },
+    collaborator_submitted: { label: '🟡 合作方', cls: 'bg-yellow-50 text-yellow-700 border-yellow-200' },
+  };
+  const r = roleMap[fileRole || ''] || { label: fileRole || fileType || '?', cls: 'bg-slate-50 text-slate-600' };
+  return (
+    <span className={`inline-flex items-center gap-1 rounded-md px-2 py-0.5 text-[11px] font-medium border ${r.cls}`}>
+      {r.label}
+      {fileType ? <span className="opacity-70">· {fileType}</span> : null}
+      {isAuthoritative ? <span>★</span> : null}
+    </span>
+  );
+}
+
+function ContractStructureCard({ contract }: {
+  contract: {
+    party_a?: string | null; party_b?: string | null; project_name?: string | null;
+    amount?: string | null; signed_at?: string | null; effective_period?: string | null;
+    version?: string | null; responsibilities?: Record<string, string> | null;
+    file_name?: string | null;
+  }
+}) {
+  if (!contract.party_a && !contract.party_b && !contract.project_name) return null;
+  return (
+    <div className="rounded-lg border border-blue-100 bg-blue-50/40 p-3 text-[12px] mt-2">
+      <div className="font-semibold text-blue-900 mb-1">
+        📜 合同结构 {contract.version ? `· ${contract.version}` : ''}
+      </div>
+      {contract.file_name ? (
+        <div className="text-blue-700 mb-1 opacity-80 truncate">{contract.file_name}</div>
+      ) : null}
+      <div className="grid grid-cols-2 gap-1 text-blue-800">
+        {contract.party_a ? <div><span className="opacity-60">甲方:</span> {contract.party_a}</div> : null}
+        {contract.party_b ? <div><span className="opacity-60">乙方:</span> {contract.party_b}</div> : null}
+        {contract.project_name ? <div className="col-span-2"><span className="opacity-60">项目:</span> {contract.project_name}</div> : null}
+        {contract.amount ? <div><span className="opacity-60">金额:</span> {contract.amount}</div> : null}
+        {contract.signed_at ? <div><span className="opacity-60">签于:</span> {contract.signed_at}</div> : null}
+        {contract.effective_period ? <div className="col-span-2"><span className="opacity-60">有效期:</span> {contract.effective_period}</div> : null}
+      </div>
+      {contract.responsibilities && Object.keys(contract.responsibilities).length > 0 ? (
+        <div className="mt-1 pt-1 border-t border-blue-100">
+          <div className="opacity-60 mb-0.5">责任分工:</div>
+          {Object.entries(contract.responsibilities).map(([p, r]) => (
+            <div key={p} className="ml-2"><span className="font-medium">{p}:</span> {String(r)}</div>
+          ))}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function ProposedClarificationsList({ items }: {
+  items: Array<{ id?: string; question?: string }>
+}) {
+  if (!items || items.length === 0) return null;
+  return (
+    <div className="mt-2 rounded-lg border border-amber-100 bg-amber-50/50 p-2 text-[11px]">
+      <div className="font-semibold text-amber-800 mb-1">⚠️ 待澄清问题 ({items.length})</div>
+      {items.slice(0, 5).map((c, i) => (
+        <div key={c.id || i} className="text-amber-700 mb-0.5">· {c.question}</div>
+      ))}
+    </div>
+  );
+}
+
 // R4 P0-5 · 公司大脑 evidence 摘要 badge (顾源源 5/23 钦定 — 让用户看见多源调用)
 function CompanyBrainSummaryBadge({ summary }: { summary: Record<string, unknown> | null | undefined }) {
   if (!summary) return null;
@@ -23377,6 +23470,8 @@ export default function App() {
 
                                   {/* R4 P0-5 · 公司大脑 evidence 摘要 (顾源源 5/23 钦定) */}
                                   <CompanyBrainSummaryBadge summary={(msg as unknown as { companyBrainSummary?: Record<string, unknown> }).companyBrainSummary} />
+                                  {/* R4 P0-5 fix · 待澄清问题列表 (B 5/23 16:46 钦定) */}
+                                  <ProposedClarificationsList items={((msg as unknown as { proposedClarifications?: Array<{id?:string;question?:string}> }).proposedClarifications) || []} />
 
                                 </div>
 

@@ -23,3 +23,9 @@
 - [B] 17:35 接顾源源新口径 · R4-P0 公司大脑用户可见化 · 通过线 ≥80
             inbox-A append 第一条 · R4-P0 范式转移 + 5 项 P0 + 安全区/占位
             R3 88.8 重测暂停 (顾源源说 R4-P0 吸收)
+- [A] 17:40 baton 占 main.py + company_brain_context_builder + App.tsx
+            出 SELF_CHECK 报告 (基线 41/100, 14 功能 1A+5B+5C+3D)
+- [A] 18:10 R4-P0 P0-2/P0-3/P0-5 commit · workspace/chat 顶层 5 字段
+            smart_import response 实质详情 / 前端 5 新组件
+            P0-4 narrative prompt 留下轮 · 4 badge 挂头部留下轮
+            baton 释放 · inbox-B append "你跑真测试"

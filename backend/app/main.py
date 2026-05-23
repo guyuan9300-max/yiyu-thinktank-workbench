@@ -28495,6 +28495,9 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 ingest_document_fn=ingest_document_knowledge,
             )
             # R4 P0-3 · 后处理: 文件身份 + 合同结构 (顾源源 5/23 R4)
+            # R4-P0-3 fix (B 5/23 16:46 钦定): response 实质返回 file_identity + contract_structure 详情
+            file_identities_detail: list[dict] = []
+            contract_structures_detail: list[dict] = []
             try:
                 from app.services.file_identity_classifier import (
                     classify_file_identity, parse_contract_structure,
@@ -28525,17 +28528,41 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                         v2_document_id=d["id"],
                     )
                     identified_files += 1
+                    file_identities_detail.append({
+                        "id": fid_id,
+                        "file_name": ident.file_name,
+                        "file_type": ident.file_type,
+                        "file_role": ident.file_role,
+                        "project_name": ident.project_name,
+                        "version": ident.version,
+                        "is_authoritative": ident.is_authoritative,
+                        "confidence": ident.confidence,
+                    })
                     # 合同类: 解析结构
                     if ident.file_type in ("contract", "supplementary_agreement"):
                         contract = parse_contract_structure(d["title"], text_excerpt, use_llm=True)
                         if contract:
-                            record_contract_structure(
+                            cs_id = record_contract_structure(
                                 state.db, contract,
                                 client_id=d.get("client_id"), file_identity_id=fid_id,
                             )
                             parsed_contracts += 1
+                            contract_structures_detail.append({
+                                "id": cs_id,
+                                "file_name": ident.file_name,
+                                "party_a": contract.party_a,
+                                "party_b": contract.party_b,
+                                "project_name": contract.project_name,
+                                "amount": contract.amount,
+                                "signed_at": contract.signed_at,
+                                "effective_period": contract.effective_period,
+                                "version": contract.version,
+                                "responsibilities": contract.responsibilities,
+                            })
                 stats["r4_file_identities_added"] = identified_files
                 stats["r4_contracts_parsed"] = parsed_contracts
+                stats["r4_file_identities"] = file_identities_detail
+                stats["r4_contract_structures"] = contract_structures_detail
             except Exception as exc:
                 logger.warning("R4 P0-3 file_identity 后处理失败 (不阻塞 commit): %s", exc)
             return {"ok": True, "stats": stats}
@@ -45849,6 +45876,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             working_document_ids=payload.workingDocumentIds,
         )
         # R4-P0-2 · 公司大脑上下文摘要 (顾源源 5/23 钦定 — 不替换旧路径, 加 evidence_summary 给前端)
+        # R4-P0-2 fix (B 5/23 16:46 钦定): response 顶层 5 字段 (不只是子字段)
         try:
             from app.services.company_brain_context_builder import (
                 build_company_brain_context, summarize_for_api_response,
@@ -45857,7 +45885,42 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 state.db, client_id=client_id, user_query=payload.prompt,
                 task_type="workbench_qa",
             )
-            record.companyBrainSummary = summarize_for_api_response(pack)
+            summary = summarize_for_api_response(pack)
+            record.companyBrainSummary = summary
+            # 顶层 5 字段 (B 5/23 16:46 钦定)
+            ev = summary.get("evidence_summary", {}) or {}
+            evidence_types = [
+                k for k in [
+                    "facts_authoritative", "contracts", "files",
+                    "historical_links", "timeline_events", "commitments",
+                    "risks", "clarifications_pending", "external_evidence",
+                    "data_gaps", "method_cards", "approvals_pending",
+                ]
+                if ev.get(k, 0) > 0
+            ]
+            record.evidenceTypes = evidence_types
+            record.usedTables = list(summary.get("used_tables") or [])
+            record.singleFileOnly = bool(summary.get("single_file_only", False))
+            # uncertainty_items: candidate_facts + pending_clarifications + data_gaps 简要
+            us = summary.get("uncertainty_summary", {}) or {}
+            uncertainty: list[dict] = []
+            if us.get("candidate_facts_count", 0) > 0:
+                uncertainty.append({"type": "candidate_facts", "count": us["candidate_facts_count"]})
+            if us.get("pending_clarifications", 0) > 0:
+                uncertainty.append({"type": "pending_clarifications", "count": us["pending_clarifications"]})
+            if us.get("data_gaps", 0) > 0:
+                uncertainty.append({"type": "data_gaps", "count": us["data_gaps"]})
+            if us.get("external_needs_confirm", 0) > 0:
+                uncertainty.append({"type": "external_needs_confirm", "count": us["external_needs_confirm"]})
+            record.uncertaintyItems = uncertainty
+            # proposed_clarifications (前 5 条简要)
+            proposed: list[dict] = []
+            for c in (pack.clarifications or [])[:5]:
+                proposed.append({
+                    "id": c.get("id"),
+                    "question": (c.get("question") or "")[:200],
+                })
+            record.proposedClarifications = proposed
         except Exception as exc:
             logger.warning("R4 companyBrainSummary 失败 (不阻塞主流程): %s", exc)
         return record

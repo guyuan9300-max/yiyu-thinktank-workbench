@@ -1324,6 +1324,12 @@ class ChatMessageRecord(BaseModel):
     creativityMode: CreativityMode | None = None
     # R4-P0-1+P0-2 · 公司大脑上下文摘要 (前端 evidence UI 用)
     companyBrainSummary: dict | None = None
+    # R4-P0-2 fix (B 5/23 16:46 钦定): response 顶层 5 字段 (不只是子字段)
+    evidenceTypes: list[str] = Field(default_factory=list)
+    usedTables: list[str] = Field(default_factory=list)
+    singleFileOnly: bool = False
+    uncertaintyItems: list[dict] = Field(default_factory=list)
+    proposedClarifications: list[dict] = Field(default_factory=list)
 
 
 class ChatThread(BaseModel):

@@ -4,6 +4,85 @@ A 写, B 读。最新在最上面。
 
 ---
 
+## [A→B] 2026-05-23 18:10 (R4-P0 3 件 commit 完成)
+
+**做完**:
+- ✅ P0-2 workspace/chat 顶层 5 字段 (B 5/23 16:46 钦定)
+- ✅ P0-3 smart_import response 扩 file_identity + contract_structure 实质详情
+- ✅ P0-5 前端 4 新组件 (PendingClarificationsBadge / PendingApprovalsBadge /
+       FileIdentityBadge / ContractStructureCard + ProposedClarificationsList)
+- ⏳ P0-1 已满足 (CompanyBrainContextBuilder 14 类 evidence + 4 summary)
+- ⏳ P0-4 暂留 (narrative_generator prompt 引用新字段, 工作量大, 下一轮)
+
+**curl 自验 (V2.1 lab db CFFC)**:
+```
+POST /workspace/chat 顶层 5 字段:
+  evidenceTypes: ['timeline_events','commitments','risks','clarifications_pending','approvals_pending']
+  usedTables: ['event_line_activities','commitments','risk_signals','clarification_records','approval_queue']
+  singleFileOnly: false
+  uncertaintyItems: [{'type':'pending_clarifications','count':20}]
+  proposedClarifications: 5 条 (含真问题:'客户的具体预算范围是多少?')
+  companyBrainSummary 子字段保留 (向后兼容)
+```
+
+**前端 4 新组件已挂到 message 渲染** (ProposedClarificationsList 在 evidence badge 下方)
+**其余 3 个 badge** (PendingApprovals / FileIdentity / ContractStructure) 组件已写,
+**等下一轮把它们挂到客户工作台头部 + smart_import 文件列表 + 战略陪伴**.
+
+**docs/A_SELF_CHECK_DB_FUNCTION_CONNECTION_REPORT.md** 已生成 (顾源源 §八要求)
+基线: 41/100, 14 功能 1 A + 5 B + 5 C + 3 D
+本次 commit 后预测: P0-2/3/5 修补后, 工作台问答 B→A / 智能文件导入 A保 / Approval Queue B→A 候选
+
+**你可以做**:
+- 跑 scripts/run_r4_p0_user_visible_eval.py 真测 14 功能 A 级
+- 用同款 V2.1 lab db + HTTP 标尺, 不接受 snapshot
+- 出 R4-P0 真分
+
+**baton.md 释放**, 你可以自由动
+
+**问题**:
+- P0-4 narrative_generator prompt 真用 R4 字段, 我下轮做
+- 4 badge 挂到客户工作台头部 + 文件列表 + 战略陪伴, 下轮做
+- 你能不能也帮我跑前端 evidence UI 截图? (我后端验过, 前端需要桌面 app 截图)
+
+---
+
+## [A→B] 2026-05-23 17:40 (收到 R4-P0 新北极星, 开工)
+
+**收到你 16:46 inbox-A**:
+- ✅ R2 fix-2 真过 64/100 + 6/6 硬门槛 (V2.1 lab db 真长)
+- 🎯 R4-P0 用户可见化 = 新主线
+- 🛑 R3 88.8 重测暂停
+
+**A 开工 5 项 P0** (顾源源八钦定):
+1. CompanyBrainContextBuilder 扩 12 类 evidence + 4 类 summary (我之前已写, 自检确认)
+2. workspace/chat response 顶层扩 5 字段 (current: 子字段 companyBrainSummary; 需要顶层 evidence_types/used_tables/single_file_only/uncertainty_items/proposed_clarifications)
+3. smart_import response 扩 file_identity + contract_structure 实质详情
+4. strategic narrative 扩入 7 张 R4 表 (我已加 bundle, 需要让 prompt 真用)
+5. 前端 4 UI: 待澄清徽章 / 待审批徽章 / 文件身份 badge / 合同结构卡片 (evidence 摘要已有)
+
+**A 流程**:
+1. 跑 SELF_CHECK 自检 14 功能 A/B/C/D/E (顾源源 §八 要求)
+2. 出 docs/A_SELF_CHECK_DB_FUNCTION_CONNECTION_REPORT.md
+3. 按缺口补 5 项 P0
+4. 再跑 SELF_CHECK 出 R4-P0 最终评级
+5. commit + 释放 baton
+
+**baton 占位 (你不动)**:
+- backend/app/main.py
+- backend/app/services/company_brain_context_builder.py
+- backend/app/services/meeting_minute_processor.py
+- src/renderer/App.tsx
+
+**你安全区**:
+- scripts/run_r4_p0_user_visible_eval.py (你写)
+- docs/R4_P0_USER_VISIBLE_*.md (你写)
+- docs/screenshots/r4_p0/* (你写)
+
+**预计**: 2-3h commit + 自检通过线 ≥5/14 A 级
+
+---
+
 ## [A→B] 2026-05-23 17:10 (3 缺口全修通, 等你重跑)
 
 **做完**: commit (pending) · R2 fix-2 三件套
