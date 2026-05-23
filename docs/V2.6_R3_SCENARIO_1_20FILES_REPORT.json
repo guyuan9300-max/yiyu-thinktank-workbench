@@ -1,0 +1,279 @@
+{
+  "elapsed_seconds": 118.80522918701172,
+  "type_accuracy": 0.9,
+  "role_accuracy": 0.8,
+  "stats": {
+    "total": 20,
+    "classified": 20,
+    "contracts_parsed": 6,
+    "by_type": {
+      "contract": 4,
+      "supplementary_agreement": 2,
+      "proposal": 4,
+      "meeting_minute": 3,
+      "annual_report": 1,
+      "feedback_doc": 1,
+      "policy": 2,
+      "benchmark_case": 2,
+      "budget_table": 1
+    },
+    "by_role": {
+      "client_official": 11,
+      "yiyu_produced": 4,
+      "collaborator_submitted": 2,
+      "policy_basis": 2,
+      "external_reference": 1
+    },
+    "errors": [],
+    "identities": [
+      {
+        "id": "fid_fb38054eb4574ae98e923cdb",
+        "name": "日慈-益语-战略陪伴主合同_v1_20260101.docx",
+        "type": "contract",
+        "role": "client_official",
+        "project": "日慈基金会战略陪伴服务",
+        "version": "v1",
+        "confidence": 1.0
+      },
+      {
+        "id": "fid_656af25d80a64ef2af1f6f19",
+        "name": "日慈-心盛计划合作协议_v1_20260215.docx",
+        "type": "contract",
+        "role": "client_official",
+        "project": "心盛计划心理健康教育服务",
+        "version": "v1",
+        "confidence": 1.0
+      },
+      {
+        "id": "fid_0268d1fcce8b4f74b2a1bcf6",
+        "name": "CFFC-益语-乡村教育帮扶服务合同_20260301.docx",
+        "type": "contract",
+        "role": "client_official",
+        "project": "乡村教育帮扶项目",
+        "version": null,
+        "confidence": 1.0
+      },
+      {
+        "id": "fid_22f4b5049f074039885a948f",
+        "name": "日慈-心盛计划补充协议_v2_20260518.docx",
+        "type": "supplementary_agreement",
+        "role": "client_official",
+        "project": "心盛计划",
+        "version": "v2",
+        "confidence": 1.0
+      },
+      {
+        "id": "fid_0ec67cc00e014393b6b598e8",
+        "name": "日慈-安心妈妈项目附件协议_v1_20260520.docx",
+        "type": "supplementary_agreement",
+        "role": "client_official",
+        "project": "安心妈妈家长项目",
+        "version": "v1",
+        "confidence": 1.0
+      },
+      {
+        "id": "fid_fbeeb0abdc9e486fb784a5f3",
+        "name": "日慈-心盛计划项目方案_v1_20260208.docx",
+        "type": "proposal",
+        "role": "yiyu_produced",
+        "project": "心盛计划",
+        "version": "v1",
+        "confidence": 1.0
+      },
+      {
+        "id": "fid_550ed769fe4940beb0c9b296",
+        "name": "日慈-心盛计划项目方案_v2_20260518.docx",
+        "type": "proposal",
+        "role": "yiyu_produced",
+        "project": "心盛计划(v2 调整版)",
+        "version": "v2",
+        "confidence": 1.0
+      },
+      {
+        "id": "fid_1da8d488e51f4628b23c2f9d",
+        "name": "日慈-安心妈妈试点方案_v1_20260519.docx",
+        "type": "proposal",
+        "role": "collaborator_submitted",
+        "project": "安心妈妈家长项目",
+        "version": "v1",
+        "confidence": 1.0
+      },
+      {
+        "id": "fid_9d020dc497f34e6284a84795",
+        "name": "日慈-心盛计划战略复盘会议纪要_20260522.docx",
+        "type": "meeting_minute",
+        "role": "client_official",
+        "project": "心盛计划",
+        "version": null,
+        "confidence": 1.0
+      },
+      {
+        "id": "fid_c99f08207fed4eedb746c04b",
+        "name": "CFFC-乡村教育帮扶季度复盘_20260520.docx",
+        "type": "meeting_minute",
+        "role": "client_official",
+        "project": "乡村教育帮扶",
+        "version": null,
+        "confidence": 1.0
+      },
+      {
+        "id": "fid_4f1c43afb31642cabf319370",
+        "name": "日慈-月度沟通纪要_20260408.docx",
+        "type": "meeting_minute",
+        "role": "client_official",
+        "project": "心盛计划",
+        "version": null,
+        "confidence": 1.0
+      },
+      {
+        "id": "fid_17feb5f41e15471cbfa44dd0",
+        "name": "日慈基金会-2025 年度报告.docx",
+        "type": "annual_report",
+        "role": "client_official",
+        "project": null,
+        "version": null,
+        "confidence": 1.0
+      },
+      {
+        "id": "fid_f7cd92c90b4747088ef256de",
+        "name": "CFFC-基金会章程_20240101.docx",
+        "type": "contract",
+        "role": "client_official",
+        "project": null,
+        "version": "2024 年版",
+        "confidence": 1.0
+      },
+      {
+        "id": "fid_902db001e17545c8b12be413",
+        "name": "益语-关于心盛计划扩张节奏的反馈_20260510.docx",
+        "type": "feedback_doc",
+        "role": "yiyu_produced",
+        "project": "心盛计划",
+        "version": null,
+        "confidence": 1.0
+      },
+      {
+        "id": "fid_3bd485c11c0e42098c4443b7",
+        "name": "益语-关于安心妈妈项目设计建议_20260519.docx",
+        "type": "proposal",
+        "role": "yiyu_produced",
+        "project": "安心妈妈项目",
+        "version": null,
+        "confidence": 0.9
+      },
+      {
+        "id": "fid_d6508cbb407b4bc189c1dbfc",
+        "name": "教育部-关于规范校外心理健康服务的通知_20260301.docx",
+        "type": "policy",
+        "role": "policy_basis",
+        "project": null,
+        "version": null,
+        "confidence": 1.0
+      },
+      {
+        "id": "fid_b2d76a96cf9e4a949f18d94e",
+        "name": "新疆教育厅-关于审批校外教育项目的暂行办法_20260401.docx",
+        "type": "policy",
+        "role": "policy_basis",
+        "project": null,
+        "version": null,
+        "confidence": 1.0
+      },
+      {
+        "id": "fid_247a28d2fe9c4b8ea74ac167",
+        "name": "对标-某基金会乡村心理项目案例_20251201.docx",
+        "type": "benchmark_case",
+        "role": "external_reference",
+        "project": "乡村儿童心理项目",
+        "version": null,
+        "confidence": 1.0
+      },
+      {
+        "id": "fid_fa8f37d4f59d4efa88a54433",
+        "name": "对标-家长教育项目成功案例-某机构_20260201.docx",
+        "type": "benchmark_case",
+        "role": "collaborator_submitted",
+        "project": "家长教育项目",
+        "version": null,
+        "confidence": 1.0
+      },
+      {
+        "id": "fid_0e9fb24bd3c34f969b4def3b",
+        "name": "日慈-2026 年项目预算表_v2_20260519.xlsx",
+        "type": "budget_table",
+        "role": "client_official",
+        "project": "2026年日慈项目预算",
+        "version": "v2",
+        "confidence": 1.0
+      }
+    ],
+    "contracts": [
+      {
+        "id": "cs_02338561ee6a4369bb0def91",
+        "file": "日慈-益语-战略陪伴主合同_v1_20260101.docx",
+        "type": "service_agreement",
+        "party_a": "日慈基金会",
+        "party_b": "益语智库",
+        "project": "日慈基金会战略陪伴服务",
+        "amount": "人民币 80 万元",
+        "signed_at": "2026 年 1 月 1 日",
+        "version": "v1"
+      },
+      {
+        "id": "cs_a1312e8052f2467c8ff45de3",
+        "file": "日慈-心盛计划合作协议_v1_20260215.docx",
+        "type": "service_agreement",
+        "party_a": "日慈基金会",
+        "party_b": "益语智库",
+        "project": "心盛计划心理健康教育服务",
+        "amount": "480万元人民币",
+        "signed_at": "2026 年 2 月 15 日",
+        "version": "v1"
+      },
+      {
+        "id": "cs_604357d6862b4875b4e13676",
+        "file": "CFFC-益语-乡村教育帮扶服务合同_20260301.docx",
+        "type": "service_agreement",
+        "party_a": "CFFC(中华少年儿童慈善救助基金会某项目)",
+        "party_b": "益语智库",
+        "project": "乡村教育帮扶项目",
+        "amount": "320万元人民币",
+        "signed_at": "2026 年 3 月 1 日",
+        "version": "初版"
+      },
+      {
+        "id": "cs_32e681d0c0b04af2b40b5048",
+        "file": "日慈-心盛计划补充协议_v2_20260518.docx",
+        "type": "supplementary",
+        "party_a": "日慈基金会",
+        "party_b": "益语智库",
+        "project": "心盛计划项目",
+        "amount": "300万元人民币",
+        "signed_at": "2026 年 5 月 18 日",
+        "version": "v2"
+      },
+      {
+        "id": "cs_90cbde4fe56f44ec993690e4",
+        "file": "日慈-安心妈妈项目附件协议_v1_20260520.docx",
+        "type": "supplementary",
+        "party_a": "日慈基金会",
+        "party_b": "益语智库",
+        "project": "安心妈妈家长项目",
+        "amount": "180万元人民币",
+        "signed_at": "2026-05-20",
+        "version": "v1"
+      },
+      {
+        "id": "cs_cf195fa73cba4b0fb3038f33",
+        "file": "CFFC-基金会章程_20240101.docx",
+        "type": "other",
+        "party_a": null,
+        "party_b": null,
+        "project": "CFFC 基金会章程",
+        "amount": null,
+        "signed_at": "2024 年版",
+        "version": "2024 年版"
+      }
+    ]
+  }
+}
