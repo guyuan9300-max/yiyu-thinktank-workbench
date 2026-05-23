@@ -1,3 +1,64 @@
+## [A→B] 2026-05-24 03:20 (V3 Final Acceptance 支撑完成 · M0-M3 全过)
+
+收到顾源源 V3 最终验收支撑指令.
+A 4 件 M 全做完, autonomous 跑完, 不扩新功能.
+
+**做完** (本份待 commit):
+- ✅ **M0** docs/A_V3_FINAL_TEST_SUPPORT_STATUS.md (桌面 36)
+       commit / db 路径 / 测试客户 / 5 endpoint / 14 项配置
+- ✅ **M1** scripts/yiyu_mcp_server.py (桌面 37, 单独报告)
+       6 类 resources + 9 tools (read/judge/dry-run, 严格不暴露 write)
+       Python 自测通过, 待 B 配 Claude Desktop 真接入
+- ✅ **M2** documents.generate 通用 + 2 兼容 endpoint (桌面 38)
+       7 document_type (contract_draft / board_brief / brand_proposal /
+                          meeting_pack / action_list / project_note / review_material)
+       9/9 通过线全过 (ContextBuilder + Idempotency + Audit + Approval + evidence_summary)
+       用户视角真测: markdown 真含 CFFC 真实数据(不是空模板)
+- ✅ **M3** docs/A_V3_FINAL_TEST_FIXTURES.md (桌面 39, 3 场景)
+       场景 1 外部体检官 / 场景 2 dry-run / 场景 3 draft-run
+       含用户视角 sanity checks (顾源源补充 lens)
+- ✅ **总报告** docs/A_V3_FINAL_ACCEPTANCE_SUPPORT_REPORT.md + .json (桌面 40)
+
+**真分**:
+- C 审计估分: 75 → 81 (+6, 本阶段微升)
+- 距 ≥90 还差 9 分 (P1 全做完基本到位)
+
+**MCP server 真活** (Python 自测):
+- list_resources() → 6 个 ✅
+- list_tools() → 9 个 ✅
+- call_tool yiyu_get_client_state CFFC → HTTP 200, 14 顶层字段
+- call_tool yiyu_check_evidence → evidence_sufficient=false 真返
+
+**documents.generate 真测** (用户视角):
+- POST documents/generate {document_type=board_brief, goal=理事会汇报}
+  → status=draft, approval_id 真返
+  → markdown 真含 CFFC 真实数据(5月补充协议/王主任/师资风险/...)
+  → 待确认项真问具体问题
+  → 用户可直接改 30 秒拿来用
+
+**等你 (B) 复验** (顾源源 §M0-M3 各通过线):
+1. 配 Claude Desktop 真接 yiyu_mcp_server.py
+   - 复制 §M1 报告中 config 到 ~/.config/claude/claude_desktop_config.json
+   - 重启 Claude Desktop
+2. 跑 3 场景 fixtures (§M3)
+3. Golden Pack × 7 复跑(用 fixtures/golden/*.txt)
+4. 出 V3 最终验收报告 (汇总 A + B 双方)
+
+**blocked_by_A 剩余** (诚实):
+- P1: 10/14 ContextBuilder 迁移 / 591 endpoint docstring / 5 endpoint audit log
+- P2: OpenAPI / keyword 切词 / authority 排序 / narrative 软化
+
+**baton 释放** (03:20).
+
+**reports**:
+- 36 V3 Final Test 状态
+- 37 MCP v0 wrapper
+- 38 Stage 2 文档工具
+- 39 Final Test fixtures
+- 40 Final Acceptance 总报告
+
+---
+
 ## [A→B] 2026-05-24 02:00 (C 审计 P0 修复完成 · 57 → 75)
 
 收到顾源源 "只修 C 审计 P0, 不扩新功能" 指令.

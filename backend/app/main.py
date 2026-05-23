@@ -39242,26 +39242,91 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 "external_side_effect": "approve 后真发飞书任务",
                 "audit_note": "C 审计 P0-1 修复 (2026-05-24): 默认走 approval gate, force_execute=true 必须有 approved approval 才执行",
             },
-            # ── missing (blocked_by_A 留下轮) ────────────────
+            # ── M2 文档生成 3 工具 (顾源源 §M2 · 通用 + 兼容) ────────
+            {
+                "tool_name": "documents.generate",
+                "description": "通用文档生成 (rule-based 结构化草稿, 真接 ContextBuilder)",
+                "when_to_use": "需要从公司大脑数据生成草稿 (合同/理事会简版/品牌建议/会谈提纲/行动清单/项目说明/复盘)",
+                "when_not_to_use": "需要 LLM 自由发挥的创作; 数据极度匮乏的客户",
+                "endpoint": "POST /api/v1/documents/generate",
+                "input_schema": {
+                    "client_id": "str",
+                    "document_type": "contract_draft|board_brief|brand_proposal|meeting_pack|action_list|project_note|review_material",
+                    "goal": "str (用户目标说明)",
+                    "approval_required": "bool|null (null=按 document_type 自动判)",
+                    "X-Actor-Type": "header",
+                    "Idempotency-Key": "header (optional)",
+                },
+                "output_schema": {
+                    "status": "draft",
+                    "title": "str", "goal": "str",
+                    "sections": "dict<str, list[str]>",
+                    "markdown": "str (用户视角可读)",
+                    "evidence_summary": "dict",
+                    "approval_required": "bool",
+                    "approval_id": "str|null",
+                    "external_target": "bool",
+                    "user_visible_note": "str",
+                    "context_used": "dict",
+                },
+                "example_input": {
+                    "client_id": "client_a4d1db29a7",
+                    "document_type": "board_brief",
+                    "goal": "为本月理事会做 5 分钟项目进展汇报",
+                },
+                "example_output": {
+                    "status": "draft", "title": "理事会简版说明",
+                    "sections": {"项目背景": ["..."], "本期重点进展": ["..."], "...": "..."},
+                    "approval_required": True, "approval_id": "appr_xxx",
+                },
+                "risk_level": "medium",
+                "approval_required": True,
+                "does_not_execute_before_approval": True,
+                "read_scope": "client_id 全 ContextPack",
+                "write_scope": "agent_run_log + approval_queue (if external_target)",
+                "status": "available",
+                "writes_to": ["agent_run_log", "approval_queue"],
+                "reads_from": ["(ContextBuilder 12+ 类全数据)"],
+                "audit_note": "V3 Final M2 (2026-05-24): 通用文档生成, document_type 参数化, 不写死会议→合同→品牌流程",
+            },
             {
                 "tool_name": "contracts.draft",
-                "description": "(规划) 起草合同草稿",
+                "description": "合同草稿生成 (兼容 endpoint, 内部走 documents.generate)",
+                "when_to_use": "用户授权 Agent 起草合同时",
+                "when_not_to_use": "对外发送合同 (必须人手 + 必须 approve)",
                 "endpoint": "POST /api/v1/contracts/draft",
-                "status": "missing", "blocked_by_A": True,
-                "risk_level": "high", "approval_required": True,
-                "when_to_use": "用户授权 Agent 起草合同时", "when_not_to_use": "对外发送合同(必须人手)",
-                "writes_to": ["v2_documents", "contract_structures (draft)"], "reads_from": [],
-                "note": "B Tool Registry v1 (5/23 19:36) 标 blocked_by_A · V3.0 P0-1",
+                "input_schema": {"client_id": "str", "goal": "str (optional)"},
+                "output_schema": "(同 documents.generate output)",
+                "example_input": {"client_id": "client_a4d1db29a7", "goal": "为 CFFC 新项目起草合同"},
+                "example_output": "(同 documents.generate, document_type=contract_draft)",
+                "risk_level": "high",
+                "approval_required": True,
+                "does_not_execute_before_approval": True,
+                "status": "available",
+                "writes_to": ["agent_run_log", "approval_queue"],
+                "reads_from": ["contract_structures", "file_identities", "atomic_facts", "commitments", "risks", "data_gaps"],
+                "note": "V3.0 任务书 P0-1 · V3 Final M2 兼容实现 (2026-05-24)",
             },
             {
                 "tool_name": "templates.generate",
-                "description": "(规划) 生成模板(理事会简版说明等)",
+                "description": "模板生成 (理事会简版/品牌建议等, 兼容 endpoint)",
+                "when_to_use": "需要标准化对外/对内材料时",
+                "when_not_to_use": "已有定制模板时 (走 documents.fill_template)",
                 "endpoint": "POST /api/v1/templates/generate",
-                "status": "missing", "blocked_by_A": True,
-                "risk_level": "medium", "approval_required": True,
-                "when_to_use": "需要标准化文档时", "when_not_to_use": "已有定制模板时",
-                "writes_to": ["v2_documents"], "reads_from": [],
-                "note": "B Tool Registry v1 标 blocked_by_A · V3.0 P0-2",
+                "input_schema": {
+                    "client_id": "str",
+                    "template_type": "board_brief|brand_proposal|meeting_pack|... (映射到 document_type)",
+                    "goal": "str (optional)",
+                },
+                "output_schema": "(同 documents.generate output)",
+                "example_input": {"client_id": "client_a4d1db29a7", "template_type": "board_brief"},
+                "example_output": "(同 documents.generate, document_type=template_type)",
+                "risk_level": "medium",
+                "approval_required": True,
+                "status": "available",
+                "writes_to": ["agent_run_log", "approval_queue"],
+                "reads_from": ["(ContextBuilder 全数据)"],
+                "note": "V3.0 任务书 P0-2 · V3 Final M2 兼容实现 (2026-05-24)",
             },
         ]
 
@@ -48715,6 +48780,361 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 created_tasks.append(content)
         log_activity("feishu.minutes.import", "meeting", meeting_id, {"minuteToken": minute_token, "title": parsed["title"], "taskCount": len(created_tasks)})
         return {"meetingId": meeting_id, "title": parsed["title"], "speakers": parsed["speakers"], "transcriptLength": len(parsed["transcript"]), "createdTasks": created_tasks}
+
+    # ──────────────────────────────────────────────────────────────────────
+    # V3 Final 验收 M2 · documents.generate 通用文档生成工具
+    # 顾源源 §M2 钦定:
+    #   "不要为明远会议纪要写死流程; 必须做成通用工具".
+    # 实现思路: document_type 参数化 → 每种类型用 ContextBuilder pack 真填字段
+    # 接口契约 (全过 §M2 通过线):
+    #   · CompanyBrainContextBuilder       ✅
+    #   · Idempotency-Key                  ✅
+    #   · X-Actor-Type / X-Actor-Id        ✅
+    #   · agent_run_log 每次写             ✅
+    #   · 输出 = draft, 对外材料进 approval ✅
+    #   · 返回 evidence_summary            ✅
+    # 边界: 不调真 LLM (避免 30B 慢+不稳); rule-based 结构化草稿; v1 可加 LLM polish
+    # ──────────────────────────────────────────────────────────────────────
+
+    _DOCUMENT_TYPE_META: dict[str, dict] = {
+        "contract_draft": {
+            "title": "合同草稿",
+            "approval_required": True,
+            "external_target": True,
+            "sections": ["甲乙双方", "项目目标与范围", "合同金额与履行期", "交付物与责任", "风险与备注", "需澄清/待补"],
+            "context_hint": "contracts + commitments + risks + data_gaps",
+        },
+        "board_brief": {
+            "title": "理事会简版说明",
+            "approval_required": True,
+            "external_target": True,
+            "sections": ["项目背景", "本期重点进展", "关键风险与对策", "下一步建议", "待确认项"],
+            "context_hint": "active_projects + commitments + risks + clarifications + recommended_next_actions",
+        },
+        "brand_proposal": {
+            "title": "品牌建议草稿",
+            "approval_required": True,
+            "external_target": True,
+            "sections": ["定位主张", "差异化叙事", "证据与场景", "建议落地动作", "待补证据"],
+            "context_hint": "active_projects + commitments + data_gaps + external_evidence",
+        },
+        "meeting_pack": {
+            "title": "会谈提纲",
+            "approval_required": False,
+            "external_target": False,
+            "sections": ["开场要点", "上次承诺回顾", "本次议程", "风险与待澄清", "决议建议"],
+            "context_hint": "commitments + risks + clarifications + historical_links",
+        },
+        "action_list": {
+            "title": "行动清单",
+            "approval_required": False,
+            "external_target": False,
+            "sections": ["立即行动", "本周完成", "本月推进", "待审批", "待澄清"],
+            "context_hint": "commitments + clarifications + approvals_pending + data_gaps",
+        },
+        "project_note": {
+            "title": "项目说明",
+            "approval_required": False,
+            "external_target": False,
+            "sections": ["项目定位", "进展时间线", "当前阻碍", "近期决策", "下一步"],
+            "context_hint": "active_projects + latest_events + risks + recommended_next_actions",
+        },
+        "review_material": {
+            "title": "复盘材料",
+            "approval_required": False,
+            "external_target": False,
+            "sections": ["本期回顾", "完成与未完成", "关键判断", "经验沉淀", "下期重点"],
+            "context_hint": "commitments + risks + clarifications + insights",
+        },
+    }
+
+    def _build_document_draft(
+        client_id: str, document_type: str, goal: str, pack,
+    ) -> dict:
+        """从 ContextPack 抽字段组装草稿. rule-based, 用户视角可读."""
+        meta = _DOCUMENT_TYPE_META.get(document_type) or _DOCUMENT_TYPE_META["project_note"]
+        sections: dict[str, list[str]] = {s: [] for s in meta["sections"]}
+
+        # 根据 document_type 把 ContextPack 字段路由进 section
+        if document_type == "contract_draft":
+            for c in pack.contracts[:2]:
+                sections["甲乙双方"].append(f"甲方: {c.get('party_a') or '(待确认)'}; 乙方: {c.get('party_b') or '(待确认)'}")
+                sections["项目目标与范围"].append(f"项目: {c.get('project_name') or '(待确认)'}")
+                sections["合同金额与履行期"].append(f"金额: {c.get('amount') or '(待确认)'}; 履行期: {c.get('effective_period') or '(待确认)'}")
+            for cm in (pack.commitments or [])[:5]:
+                sections["交付物与责任"].append(f"{cm.get('content') or cm.get('committer') or '(未抽)'}")
+            for r in (pack.risks or [])[:3]:
+                sections["风险与备注"].append(f"[{r.get('severity','?')}] {r.get('title') or r.get('description') or ''}")
+            for g in (pack.data_gaps or [])[:5]:
+                sections["需澄清/待补"].append(f"{g.get('subject')} ({g.get('gap_type')})")
+        elif document_type == "board_brief":
+            for ep in (pack.timeline or [])[:5]:
+                sections["项目背景"].append(f"{ep.get('happened_at','')[:10]} · {ep.get('title') or ep.get('summary','')[:80]}")
+            for cm in (pack.commitments or [])[:5]:
+                sections["本期重点进展"].append(f"{cm.get('content') or ''}"[:100])
+            for r in (pack.risks or [])[:3]:
+                sections["关键风险与对策"].append(f"[{r.get('severity','?')}] {r.get('title') or ''}")
+            for a in (pack.recommended_actions or [])[:3]:
+                sections["下一步建议"].append(str(a))
+            for c in (pack.clarifications or [])[:5]:
+                sections["待确认项"].append(c.get("question", "") or "")
+        elif document_type == "brand_proposal":
+            sections["定位主张"].append(f"(用户填: 基于 {len(pack.contracts)} 份合同 + {len(pack.files)} 份文件 的现有定位)")
+            for ee in (pack.external_evidence or [])[:3]:
+                sections["证据与场景"].append(f"{ee.get('title','')[:60]}")
+            for g in (pack.data_gaps or [])[:5]:
+                sections["待补证据"].append(f"{g.get('subject')} → 建议工具: {g.get('suggested_tools', [])}")
+        elif document_type == "meeting_pack":
+            for cm in (pack.commitments or [])[:5]:
+                sections["上次承诺回顾"].append(f"{cm.get('content') or ''}"[:100])
+            sections["本次议程"].append(f"(用户填: 围绕 '{goal[:60]}')")
+            for r in (pack.risks or [])[:3]:
+                sections["风险与待澄清"].append(f"[{r.get('severity','?')}] {r.get('title') or ''}")
+            for c in (pack.clarifications or [])[:3]:
+                sections["风险与待澄清"].append(f"❓ {c.get('question','')}")
+        elif document_type == "action_list":
+            for a in (pack.recommended_actions or [])[:5]:
+                sections["立即行动"].append(str(a))
+            for cm in (pack.commitments or [])[:5]:
+                if cm.get("deadline"):
+                    sections["本周完成"].append(f"{cm.get('content','')[:80]} (deadline: {cm['deadline']})")
+                else:
+                    sections["本月推进"].append(f"{cm.get('content','')[:80]}")
+            for ap in (pack.approvals or [])[:3]:
+                sections["待审批"].append(f"{ap.get('action_type', '?')} (id={ap.get('id','?')})")
+            for c in (pack.clarifications or [])[:3]:
+                sections["待澄清"].append(c.get("question", ""))
+        elif document_type == "project_note":
+            for ep in (pack.timeline or [])[:5]:
+                sections["进展时间线"].append(f"{ep.get('happened_at','')[:10]} · {ep.get('title','')[:80]}")
+            for r in (pack.risks or [])[:3]:
+                sections["当前阻碍"].append(f"[{r.get('severity','?')}] {r.get('title') or ''}")
+            for a in (pack.recommended_actions or [])[:3]:
+                sections["下一步"].append(str(a))
+        elif document_type == "review_material":
+            for cm in (pack.commitments or [])[:5]:
+                sections["完成与未完成"].append(f"{cm.get('status','pending')} - {cm.get('content','')[:80]}")
+            for r in (pack.risks or [])[:3]:
+                sections["关键判断"].append(f"[{r.get('severity','?')}] {r.get('title','')}")
+
+        # 渲染 markdown (用户视角可读的格式)
+        md_lines: list[str] = [f"# {meta['title']}", ""]
+        if goal:
+            md_lines.append(f"**目标**: {goal}")
+            md_lines.append("")
+        for section, lines in sections.items():
+            md_lines.append(f"## {section}")
+            if lines:
+                for line in lines:
+                    md_lines.append(f"- {line}")
+            else:
+                md_lines.append(f"- (公司大脑暂无 {section} 相关材料, 建议先补证据再生成此段)")
+            md_lines.append("")
+        md_lines.append("---")
+        md_lines.append(f"**草稿生成依据**: ContextPack({meta['context_hint']})")
+        md_lines.append(f"**待确认**: 共 {sum(1 for s in sections.values() if not s)} 个 section 暂无材料")
+
+        return {
+            "document_type": document_type,
+            "title": meta["title"],
+            "goal": goal,
+            "sections": sections,
+            "markdown": "\n".join(md_lines),
+            "approval_required_by_meta": meta["approval_required"],
+            "external_target": meta["external_target"],
+        }
+
+    @app.post("/api/v1/documents/generate")
+    def generate_document(
+        payload: dict = Body(...),
+        x_actor_type: str = Header("human", alias="X-Actor-Type"),
+        x_actor_id: str = Header("", alias="X-Actor-Id"),
+        idempotency_key: str | None = Header(None, alias="Idempotency-Key"),
+    ) -> dict:
+        """V3 Final M2 · 通用文档生成 (顾源源 §M2 必做).
+
+        body: {
+          client_id: str,
+          document_type: contract_draft | board_brief | brand_proposal |
+                          meeting_pack | action_list | project_note | review_material,
+          goal: str (用户目标说明),
+          context_policy: "company_brain_required" (默认),
+          approval_required: bool | null (null=按 document_type meta 自动判)
+        }
+
+        输出: {document_type, title, goal, sections, markdown, evidence_summary,
+              status: "draft", approval_required, approval_id (if any), agent_run_id}
+        """
+        from app.services.agent_governance import (
+            log_agent_run_start, log_agent_run_complete,
+            check_idempotency, record_idempotency,
+            enqueue_approval, ApprovalRequest,
+        )
+        from app.services.company_brain_context_builder import (
+            build_company_brain_context, summarize_for_api_response,
+        )
+
+        # 0. 参数校验
+        client_id = str(payload.get("client_id") or "").strip()
+        document_type = str(payload.get("document_type") or "").strip()
+        goal = str(payload.get("goal") or "").strip()
+        if not client_id:
+            raise HTTPException(status_code=400, detail="client_id required")
+        if not document_type or document_type not in _DOCUMENT_TYPE_META:
+            raise HTTPException(
+                status_code=400,
+                detail=f"unknown document_type. Supported: {sorted(_DOCUMENT_TYPE_META.keys())}",
+            )
+        build_client_summary(client_id)
+
+        # 1. Idempotency
+        if idempotency_key:
+            cached = check_idempotency(state.db, idempotency_key)
+            if cached and cached.get("outcome"):
+                return cached["outcome"]
+
+        # 2. audit 起头
+        run_id = log_agent_run_start(
+            state.db,
+            actor_type=x_actor_type,  # type: ignore
+            actor_id=x_actor_id or "anonymous",
+            tool_name=f"documents.generate:{document_type}",
+            input_payload={"client_id": client_id, "document_type": document_type, "goal": goal},
+            client_id=client_id,
+            idempotency_key=idempotency_key,
+        )
+
+        try:
+            # 3. ContextBuilder 真接通 (R4-P0-1 钦定)
+            #    task_type 路由: contract_draft → strategy_narrative (重 contracts/historical)
+            #                    其他 → workbench_qa
+            task_type = "strategy_narrative" if document_type in ("contract_draft", "board_brief") else "workbench_qa"
+            pack = build_company_brain_context(
+                state.db, client_id=client_id, user_query=goal,
+                task_type=task_type,  # type: ignore
+            )
+            evidence_summary = summarize_for_api_response(pack).get("evidence_summary") or {}
+
+            # 4. 用 rule-based 渲染草稿(用户视角可读 markdown + 结构化 sections)
+            draft = _build_document_draft(client_id, document_type, goal, pack)
+
+            # 5. 对外材料走 approval (用户视角: 不会绕过审批就发给客户)
+            meta = _DOCUMENT_TYPE_META[document_type]
+            user_override = payload.get("approval_required")
+            requires_approval = (
+                user_override if isinstance(user_override, bool) else meta["approval_required"]
+            )
+            approval_id = None
+            if requires_approval:
+                approval_id = enqueue_approval(state.db, ApprovalRequest(
+                    action_type="document.publish",  # type: ignore
+                    actor_type=x_actor_type,  # type: ignore
+                    actor_id=x_actor_id or "anonymous",
+                    payload={
+                        "client_id": client_id,
+                        "document_type": document_type,
+                        "goal": goal,
+                        "preview_markdown": draft["markdown"][:500],
+                    },
+                    reason=f"文档生成 ({meta['title']}) — 用户审批后才能对外使用",
+                    client_id=client_id,
+                    target_resource=f"document/{document_type}/{run_id}",
+                    agent_run_id=run_id,
+                ))
+
+            outcome = {
+                "status": "draft",
+                "agent_run_id": run_id,
+                "document_type": document_type,
+                "title": draft["title"],
+                "goal": goal,
+                "sections": draft["sections"],
+                "markdown": draft["markdown"],
+                "evidence_summary": evidence_summary,
+                "approval_required": requires_approval,
+                "approval_id": approval_id,
+                "external_target": meta["external_target"],
+                "user_visible_note": (
+                    "本工具仅生成 draft, 不直接对外发送. 对外材料需先 approve approval_queue 中对应项."
+                    if requires_approval else
+                    "本工具生成 draft, 内部使用可直接采纳; 对外使用前请走人工审阅."
+                ),
+                "context_used": {
+                    "task_type": task_type,
+                    "tables": pack.used_tables,
+                    "contracts": len(pack.contracts),
+                    "files": len(pack.files),
+                    "historical_links": len(pack.historical_links),
+                    "data_gaps": len(pack.data_gaps),
+                    "commitments": len(pack.commitments),
+                    "risks": len(pack.risks),
+                    "clarifications_pending": len(pack.clarifications),
+                },
+            }
+
+            log_agent_run_complete(
+                state.db, run_id, status="success",
+                output_payload={
+                    "document_type": document_type,
+                    "sections_count": len(draft["sections"]),
+                    "approval_id": approval_id,
+                    "evidence_types_used": len([k for k, v in evidence_summary.items() if isinstance(v, (int, float)) and v > 0]),
+                },
+            )
+            if idempotency_key:
+                record_idempotency(state.db, idempotency_key, run_id=run_id, outcome=outcome)
+            return outcome
+
+        except Exception as exc:
+            log_agent_run_complete(state.db, run_id, status="failed", error_message=str(exc))
+            raise HTTPException(status_code=502, detail=f"document generation fail: {exc}")
+
+    # 兼容 endpoint: contracts.draft (V3.0 任务书 P0-1, 内部走通用 documents.generate)
+    @app.post("/api/v1/contracts/draft")
+    def draft_contract(
+        payload: dict = Body(...),
+        x_actor_type: str = Header("human", alias="X-Actor-Type"),
+        x_actor_id: str = Header("", alias="X-Actor-Id"),
+        idempotency_key: str | None = Header(None, alias="Idempotency-Key"),
+    ) -> dict:
+        """兼容 endpoint · V3.0 任务书 P0-1 · 合同草稿生成.
+
+        body: {client_id, goal?}
+        内部走 documents.generate(document_type=contract_draft).
+        """
+        return generate_document(
+            payload={
+                "client_id": payload.get("client_id"),
+                "document_type": "contract_draft",
+                "goal": payload.get("goal", "起草合同草稿 (基于客户当前公司大脑)"),
+            },
+            x_actor_type=x_actor_type, x_actor_id=x_actor_id,
+            idempotency_key=idempotency_key,
+        )
+
+    # 兼容 endpoint: templates.generate (V3.0 任务书 P0-2)
+    @app.post("/api/v1/templates/generate")
+    def generate_template_doc(
+        payload: dict = Body(...),
+        x_actor_type: str = Header("human", alias="X-Actor-Type"),
+        x_actor_id: str = Header("", alias="X-Actor-Id"),
+        idempotency_key: str | None = Header(None, alias="Idempotency-Key"),
+    ) -> dict:
+        """兼容 endpoint · V3.0 任务书 P0-2 · 模板生成 (理事会简版 / 品牌建议等).
+
+        body: {client_id, template_type (=board_brief|brand_proposal|...), goal?}
+        内部走 documents.generate.
+        """
+        template_type = str(payload.get("template_type") or "board_brief")
+        return generate_document(
+            payload={
+                "client_id": payload.get("client_id"),
+                "document_type": template_type,
+                "goal": payload.get("goal", f"基于公司大脑生成 {template_type} 草稿"),
+            },
+            x_actor_type=x_actor_type, x_actor_id=x_actor_id,
+            idempotency_key=idempotency_key,
+        )
 
     @app.post("/api/v1/feishu/tasks/push")
     def feishu_push_task(

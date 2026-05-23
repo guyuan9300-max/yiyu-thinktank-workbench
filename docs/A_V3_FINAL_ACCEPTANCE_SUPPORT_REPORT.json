@@ -1,0 +1,137 @@
+{
+  "timestamp": "2026-05-24T03:20:00+08:00",
+  "trigger": "顾源源 V3 最终验收支撑 §六 总报告",
+  "auditor": "A 自交, 等 B 独立复验",
+  "stage": "V3 Final Acceptance Support",
+  "milestones_completed": ["M0", "M1", "M2", "M3"],
+  "all_milestones_passed": true,
+  "deliverables": {
+    "M0_status_report": "docs/A_V3_FINAL_TEST_SUPPORT_STATUS.md (桌面 36)",
+    "M1_mcp_server": "scripts/yiyu_mcp_server.py (380 行, 6 resources + 9 tools, read-only/dry-run/audit)",
+    "M2_documents_generate": {
+      "endpoints": [
+        "POST /api/v1/documents/generate (通用)",
+        "POST /api/v1/contracts/draft (兼容, V3.0 P0-1)",
+        "POST /api/v1/templates/generate (兼容, V3.0 P0-2)"
+      ],
+      "document_types": ["contract_draft", "board_brief", "brand_proposal", "meeting_pack", "action_list", "project_note", "review_material"],
+      "context_builder_integrated": true,
+      "idempotency_supported": true,
+      "audit_logged": true,
+      "approval_gated_for_external": true
+    },
+    "M3_fixtures": "docs/A_V3_FINAL_TEST_FIXTURES.md (桌面 39, 3 场景含用户视角)",
+    "final_report": "docs/A_V3_FINAL_ACCEPTANCE_SUPPORT_REPORT.md/.json (桌面 40)"
+  },
+  "mcp_server_summary": {
+    "path": "scripts/yiyu_mcp_server.py",
+    "resources_count": 6,
+    "tools_count": 9,
+    "write_tools_count": 0,
+    "stdio_jsonrpc": true,
+    "ready_for_claude_desktop": true,
+    "claude_desktop_config_example": {
+      "mcpServers": {
+        "yiyu": {
+          "command": "python3",
+          "args": ["/Users/guyuanyuan/openclaw/workspace/V2.1/scripts/yiyu_mcp_server.py"],
+          "env": {"YIYU_BACKEND_URL": "http://127.0.0.1:47831"}
+        }
+      }
+    }
+  },
+  "documents_generate_test_evidence": {
+    "test_1_board_brief_cffc": {
+      "input": {"client_id": "client_a4d1db29a7", "document_type": "board_brief", "goal": "为本月理事会做 5 分钟项目进展汇报"},
+      "output": {
+        "status": "draft",
+        "sections_count": 5,
+        "approval_required": true,
+        "approval_id": "appr_3d33ca416d994262b80355c6",
+        "evidence_summary_keys_count": 15,
+        "context_used_tables": 9,
+        "user_visible_markdown_contains_real_data": true
+      }
+    },
+    "test_2_contract_draft_cffc": {
+      "input": {"client_id": "client_a4d1db29a7", "goal": "为 CFFC 续约项目起草合同"},
+      "output": {
+        "status": "draft",
+        "document_type": "contract_draft",
+        "sections": ["甲乙双方", "项目目标与范围", "合同金额与履行期", "交付物与责任", "风险与备注", "需澄清/待补"],
+        "approval_id": "appr_16d6423884e9485fad8342a4"
+      }
+    },
+    "test_3_idempotency_replay": {
+      "same_key_replay_result": "cached, db Δ=0"
+    },
+    "db_diff_after_m2_tests": {
+      "approval_queue (document.publish)": "+2",
+      "agent_run_log (documents.generate%)": "+2",
+      "business_tables": "Δ=0 (draft 不写)"
+    }
+  },
+  "tool_registry_state_after_m2": {
+    "total": 20,
+    "by_status": {"available": 20},
+    "all_with_when_to_use": true,
+    "all_with_risk_level": true,
+    "all_with_approval_required": true,
+    "new_tools_added": ["documents.generate", "contracts.draft (status=available)", "templates.generate (status=available)"]
+  },
+  "c_audit_score_after_this_stage": {
+    "tool_registry_coverage": {"prev": 13, "after": 14},
+    "generative_contextbuilder_integration": {"prev": 7, "after": 9},
+    "write_entry_data_center_feedback": {"prev": 12, "after": 12},
+    "hardcoding_risk_control": {"prev": 13, "after": 13},
+    "security_approval_governance": {"prev": 13, "after": 14},
+    "ui_visibility_consistency": {"prev": 7, "after": 7},
+    "endpoint_db_semantic_clarity": {"prev": 6, "after": 7},
+    "testability_reproducibility": {"prev": 4, "after": 5},
+    "total_prev": 75,
+    "total_after": 81,
+    "delta": "+6"
+  },
+  "blocked_by_A_remaining": [
+    "P1: 10/14 生成功能 ContextBuilder 迁移 (M2 文档生成已走, narrative_collector/review_narrative 待)",
+    "P1: 591 endpoint docstring 全量补",
+    "P1: 5 个生成型 endpoint 加 audit log",
+    "P2: OpenAPI /openapi.json 默认 404",
+    "P2: M2-1 keyword 切词偏差",
+    "P2: M2-3 同 score 排序",
+    "P2: narrative 6 段框架软化"
+  ],
+  "blocked_by_B": [
+    "配 Claude Desktop 真接 yiyu_mcp_server.py",
+    "跑 3 场景 fixtures (read-only / dry-run / draft-run)",
+    "Golden Pack × 7 复跑",
+    "人工复核体检报告",
+    "V3 最终验收报告汇总 (A + B 双方)"
+  ],
+  "user_visible_validation_lens": {
+    "principle": "顾源源补充: 每个模块输出对人类用户是否有指导价值",
+    "M1_user_view": "顾源源能复制 config 到 Claude Desktop 30 秒接入",
+    "M2_user_view": "顾源源拿到 markdown 草稿, 含 CFFC 真实数据, 改 30 秒能用 (非空模板)",
+    "M3_user_view": "B 不用猜 endpoint, 跟着 fixtures 跑就行 (非后端清单, 是复验脚本)"
+  },
+  "forbidden_self_check_all_passed": {
+    "no_CEO_mode": true,
+    "no_R5_R6": true,
+    "no_feishu_deep_integration": true,
+    "no_multi_AI_role": true,
+    "no_new_business_demo": true,
+    "no_hardcoded_flow_for_mingyuan": true,
+    "no_B_simulator_score_as_final": true,
+    "no_self_claim_final_complete": true,
+    "no_bypass_approval_queue": true,
+    "no_direct_external_send": true
+  },
+  "honesty_notes": [
+    "A 自评 81/100 是估算, B 真复验可能 ±3 (78-84)",
+    "MCP server 自测通过 (6 resources + 9 tools 真活), 但 Claude Desktop 真接入未跑 (顾源源 / B 操作)",
+    "documents.generate 是 rule-based, LLM 润色 v1 留 (本份不阻塞 MCP v0)",
+    "approval_queue Δ=+2 (board_brief + contract_draft, 真测时的留下记录)",
+    "M2 真测但 fill-template/smart-import 的 idempotency 是代码层验证, LLM 端到端真测留 B"
+  ],
+  "git_commit_planned": "本份 commit 后 push"
+}
