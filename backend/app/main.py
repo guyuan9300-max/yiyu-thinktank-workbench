@@ -48815,6 +48815,195 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         return {"meetingId": meeting_id, "title": parsed["title"], "speakers": parsed["speakers"], "transcriptLength": len(parsed["transcript"]), "createdTasks": created_tasks}
 
     # ──────────────────────────────────────────────────────────────────────
+    # V3 大任务 · 组织搭建中心机器人同事 (顾源源 5/24 §1-§15)
+    # 8 endpoint + 4 表 + 6 验收场景
+    # ──────────────────────────────────────────────────────────────────────
+
+    @app.post("/api/v1/org/bots")
+    def create_org_bot(
+        payload: dict = Body(...),
+        x_actor_id: str = Header("", alias="X-Actor-Id"),
+    ) -> dict:
+        """创建机器人同事 (顾源源 §11 场景 1).
+
+        body: {display_name, handle?, actor_id?, department_id?, department_name?,
+               description?, status?, report_to_department_lead?, report_to_ceo?,
+               department_leader_user_ids?, ceo_user_ids?, enabled_capabilities?}
+        """
+        from app.services.bot_members import create_bot_member
+        try:
+            bot = create_bot_member(
+                state.db,
+                display_name=str(payload.get("display_name") or "").strip(),
+                handle=payload.get("handle"),
+                actor_id=payload.get("actor_id"),
+                department_id=payload.get("department_id"),
+                department_name=payload.get("department_name", ""),
+                description=payload.get("description", ""),
+                status=payload.get("status", "active"),
+                organization_id=payload.get("organization_id", ""),
+                created_by_user_id=x_actor_id or payload.get("created_by_user_id", ""),
+                report_to_department_lead=bool(payload.get("report_to_department_lead", True)),
+                report_to_ceo=bool(payload.get("report_to_ceo", False)),
+                department_leader_user_ids=payload.get("department_leader_user_ids"),
+                ceo_user_ids=payload.get("ceo_user_ids"),
+                enabled_capabilities=payload.get("enabled_capabilities") or [],
+            )
+            return bot
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+
+    @app.get("/api/v1/org/bots")
+    def list_org_bots(status: str | None = None) -> dict:
+        from app.services.bot_members import list_bot_members
+        bots = list_bot_members(state.db, status=status)
+        return {"total": len(bots), "items": bots}
+
+    @app.get("/api/v1/org/bots/resolve")
+    def resolve_org_bot(handle: str = "") -> dict:
+        """顾源源 §8.1 · 给 B 线程 @庆华 解析机器人."""
+        from app.services.bot_members import resolve_bot_by_handle
+        bot = resolve_bot_by_handle(state.db, handle)
+        if not bot:
+            raise HTTPException(status_code=404, detail=f"bot not found by handle: {handle}")
+        # 提取 reporting_approvers 给 B 用
+        rep = bot.get("reporting") or {}
+        approvers = []
+        for uid in rep.get("department_leader_user_ids") or []:
+            approvers.append({"user_id": uid, "role": "department_lead"})
+        for uid in rep.get("ceo_user_ids") or []:
+            approvers.append({"user_id": uid, "role": "CEO"})
+        enabled = [c["capability_key"] for c in bot.get("capabilities") or [] if c.get("enabled")]
+        return {
+            "bot_member_id": bot["id"],
+            "display_name": bot["display_name"],
+            "handle": bot["handle"],
+            "actor_type": bot["actor_type"],
+            "actor_id": bot["actor_id"],
+            "department_id": bot.get("department_id"),
+            "department_name": bot.get("department_name") or "",
+            "reporting_approvers": approvers,
+            "enabled_capabilities": enabled,
+            "status": bot["status"],
+        }
+
+    @app.get("/api/v1/org/bots/{bot_member_id}")
+    def get_org_bot(bot_member_id: str) -> dict:
+        from app.services.bot_members import get_bot_member
+        bot = get_bot_member(state.db, bot_member_id)
+        if not bot:
+            raise HTTPException(status_code=404, detail="bot not found")
+        return bot
+
+    @app.patch("/api/v1/org/bots/{bot_member_id}")
+    def update_org_bot(bot_member_id: str, payload: dict = Body(...)) -> dict:
+        from app.services.bot_members import update_bot_member
+        bot = update_bot_member(
+            state.db, bot_member_id,
+            display_name=payload.get("display_name"),
+            department_id=payload.get("department_id"),
+            department_name=payload.get("department_name"),
+            description=payload.get("description"),
+            status=payload.get("status"),
+            report_to_department_lead=payload.get("report_to_department_lead"),
+            report_to_ceo=payload.get("report_to_ceo"),
+            department_leader_user_ids=payload.get("department_leader_user_ids"),
+            ceo_user_ids=payload.get("ceo_user_ids"),
+            enabled_capabilities=payload.get("enabled_capabilities"),
+        )
+        if not bot:
+            raise HTTPException(status_code=404, detail="bot not found")
+        return bot
+
+    @app.get("/api/v1/org/bots/{bot_member_id}/permissions")
+    def get_org_bot_permissions(bot_member_id: str) -> dict:
+        """顾源源 §8.2 · 给 B 线程查询机器人权限."""
+        from app.services.bot_members import get_bot_permissions
+        result = get_bot_permissions(state.db, bot_member_id)
+        if "error" in result:
+            raise HTTPException(status_code=404, detail=result["error"])
+        return result
+
+    @app.post("/api/v1/org/bots/{bot_member_id}/task-plans")
+    def create_bot_task_plan(
+        bot_member_id: str,
+        payload: dict = Body(...),
+        x_actor_id: str = Header("", alias="X-Actor-Id"),
+    ) -> dict:
+        """顾源源 §8.3 / §8.4 · 创建机器人 AI 任务计划 (含 inline_authorization 支持).
+
+        body: {plan_title, plan_text?, client_id?, event_line_id?, task_id?,
+               required_modules?, steps?, expected_outputs?, write_actions?,
+               approval_required?, approval_mode?,
+               inline_authorization?, inline_authorization_text?,
+               human_initiator_id?, action_capability?}
+        """
+        from app.services.bot_members import create_ai_task_plan
+        try:
+            result = create_ai_task_plan(
+                state.db,
+                bot_member_id=bot_member_id,
+                plan_title=str(payload.get("plan_title") or payload.get("task_title") or "").strip(),
+                plan_text=str(payload.get("plan_text") or ""),
+                client_id=payload.get("client_id"),
+                event_line_id=payload.get("event_line_id"),
+                task_id=payload.get("task_id"),
+                required_modules=payload.get("required_modules"),
+                steps=payload.get("steps"),
+                expected_outputs=payload.get("expected_outputs"),
+                write_actions=payload.get("write_actions"),
+                approval_required=bool(payload.get("approval_required", True)),
+                inline_authorization=bool(payload.get("inline_authorization", False)),
+                inline_authorization_text=str(payload.get("inline_authorization_text", "")),
+                human_initiator_id=payload.get("human_initiator_id") or x_actor_id,
+                action_capability=payload.get("action_capability"),
+            )
+            return result
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+
+    @app.get("/api/v1/org/bots/{bot_member_id}/task-plans")
+    def list_bot_task_plans_endpoint(
+        bot_member_id: str,
+        status: str | None = None,
+        limit: int = 50,
+    ) -> dict:
+        from app.services.bot_members import list_ai_task_plans
+        items = list_ai_task_plans(state.db, bot_member_id=bot_member_id, status=status, limit=limit)
+        return {"bot_member_id": bot_member_id, "total": len(items), "items": items}
+
+    @app.post("/api/v1/org/bots/task-plans/{ai_task_plan_id}/decide")
+    def decide_bot_task_plan(
+        ai_task_plan_id: str,
+        payload: dict = Body(...),
+        x_actor_id: str = Header("", alias="X-Actor-Id"),
+    ) -> dict:
+        """顾源源 §6.2 · 主管对 AI 计划 approve/reject/revise.
+
+        body: {decision: 'approve'|'reject'|'revise',
+               decided_by: str (= user_id),
+               feedback?: str,
+               modified_plan?: {plan_text?, plan_title?, steps?, expected_outputs?}}
+        """
+        from app.services.bot_members import decide_ai_task_plan
+        decision = str(payload.get("decision") or "").strip()
+        if decision not in ("approve", "reject", "revise"):
+            raise HTTPException(status_code=400, detail="decision must be approve|reject|revise")
+        try:
+            result = decide_ai_task_plan(
+                state.db, ai_task_plan_id,
+                decision=decision,  # type: ignore
+                decided_by=str(payload.get("decided_by") or x_actor_id or "").strip(),
+                feedback=str(payload.get("feedback") or ""),
+                modified_plan=payload.get("modified_plan"),
+            )
+            if not result:
+                raise HTTPException(status_code=404, detail="ai_task_plan not found")
+            return result
+        except ValueError as exc:
+            raise HTTPException(status_code=403, detail=str(exc))
+
+    # ──────────────────────────────────────────────────────────────────────
     # V3 Final 验收 M2 · documents.generate 通用文档生成工具
     # 顾源源 §M2 钦定:
     #   "不要为明远会议纪要写死流程; 必须做成通用工具".

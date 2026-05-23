@@ -510,6 +510,8 @@ import { SystemStatusPanel } from './components/global/SystemStatusPanel';
 import { WorkStatusPanel } from './components/data_center/WorkStatusPanel';
 // C 审计 P0-3 修复 (2026-05-24): V3 Agent-Ready 最小前端入口
 import { AgentReadyPanel } from './components/data_center/AgentReadyPanel';
+// 顾源源 5/24 大型任务: 组织搭建中心机器人同事
+import { BotMembersPanel } from './components/settings/BotMembersPanel';
 import { FeishuOrgIntegrationPanel } from './components/settings/FeishuOrgIntegrationPanel';
 import { SpeechModelSettingsCard } from './components/settings/SpeechModelSettingsCard';
 import { ObjectStorageSettingsCard } from './components/settings/ObjectStorageSettingsCard';
@@ -28554,6 +28556,13 @@ export default function App() {
                   AGENT READY · V3 调试 (顾源源 C 审计 P0-3 修复)
                 </p>
                 <AgentReadyPanel clientId={currentClientId || undefined} />
+              </div>
+              {/* 顾源源 5/24 大型任务: 组织搭建中心机器人同事 */}
+              <div className="mt-8">
+                <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-gray-400 mb-4">
+                  机器人同事 · 组织搭建中心 (顾源源 5/24 任务)
+                </p>
+                <BotMembersPanel />
               </div>
             </div>
           );

@@ -798,6 +798,218 @@ export async function rejectApproval(
 }
 // ────────────────────── end V3 P0-3 wrappers ──────────────────────────
 
+// ──────────────────────────────────────────────────────────────────────
+// 顾源源 5/24 大型任务 · 组织搭建中心机器人同事 API wrapper
+// 6 capability + 8 endpoint, 给 BotMembersPanel.tsx 用
+// ──────────────────────────────────────────────────────────────────────
+
+export const BOT_CAPABILITY_KEYS = [
+  'workspace_file_write.request',
+  'data_center_parse.request',
+  'external_material_draft.create',
+  'external_send.request',
+  'clarification_resolution.propose',
+  'inline_approval.allow_from_supervisor',
+] as const;
+
+export type BotCapabilityKey = (typeof BOT_CAPABILITY_KEYS)[number];
+
+export interface BotCapability {
+  capability_key: BotCapabilityKey;
+  enabled: boolean | number;
+  approval_required: boolean | number;
+  approval_policy: string;
+}
+
+export interface BotReporting {
+  report_to_department_lead: boolean | number;
+  report_to_ceo: boolean | number;
+  department_leader_user_ids: string[];
+  ceo_user_ids: string[];
+  approval_mode: string;
+}
+
+export interface BotMemberRecord {
+  id: string;
+  display_name: string;
+  handle: string;
+  actor_id: string;
+  actor_type: string;
+  department_id?: string | null;
+  department_name?: string;
+  description?: string;
+  status: 'active' | 'disabled';
+  reporting?: BotReporting;
+  capabilities?: BotCapability[];
+  created_at?: string;
+  updated_at?: string;
+}
+
+export interface CreateBotPayload {
+  display_name: string;
+  handle?: string;
+  department_id?: string;
+  department_name?: string;
+  description?: string;
+  report_to_department_lead?: boolean;
+  report_to_ceo?: boolean;
+  department_leader_user_ids?: string[];
+  ceo_user_ids?: string[];
+  enabled_capabilities?: BotCapabilityKey[];
+}
+
+export interface BotPermissionsResponse {
+  bot_member_id: string;
+  actor_id: string;
+  capabilities: BotCapability[];
+  hard_denies: string[];
+  inline_approval_blocked_actions: string[];
+}
+
+export async function createBotMember(payload: CreateBotPayload): Promise<BotMemberRecord> {
+  return request<BotMemberRecord>('/api/v1/org/bots', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function listBotMembers(options?: { status?: string }): Promise<{ total: number; items: BotMemberRecord[] }> {
+  const q = new URLSearchParams();
+  if (options?.status) q.set('status', options.status);
+  const suffix = q.toString() ? `?${q}` : '';
+  return request(`/api/v1/org/bots${suffix}`);
+}
+
+export async function getBotMember(botMemberId: string): Promise<BotMemberRecord> {
+  return request(`/api/v1/org/bots/${encodeURIComponent(botMemberId)}`);
+}
+
+export async function updateBotMember(
+  botMemberId: string,
+  payload: Partial<CreateBotPayload> & { status?: 'active' | 'disabled' },
+): Promise<BotMemberRecord> {
+  return request(`/api/v1/org/bots/${encodeURIComponent(botMemberId)}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function resolveBotByHandle(handle: string): Promise<{
+  bot_member_id: string;
+  display_name: string;
+  handle: string;
+  actor_type: string;
+  actor_id: string;
+  department_id?: string | null;
+  department_name?: string;
+  reporting_approvers: Array<{ user_id: string; role: string }>;
+  enabled_capabilities: string[];
+  status: string;
+}> {
+  return request(`/api/v1/org/bots/resolve?handle=${encodeURIComponent(handle)}`);
+}
+
+export async function getBotPermissions(botMemberId: string): Promise<BotPermissionsResponse> {
+  return request(`/api/v1/org/bots/${encodeURIComponent(botMemberId)}/permissions`);
+}
+
+export interface CreateAITaskPlanPayload {
+  plan_title: string;
+  plan_text?: string;
+  client_id?: string;
+  event_line_id?: string;
+  task_id?: string;
+  required_modules?: string[];
+  steps?: Array<{ module?: string; action?: string; expected_result?: string }>;
+  expected_outputs?: string[];
+  write_actions?: Array<Record<string, unknown>>;
+  approval_required?: boolean;
+  inline_authorization?: boolean;
+  inline_authorization_text?: string;
+  human_initiator_id?: string;
+  action_capability?: BotCapabilityKey;
+}
+
+export interface AITaskPlanCreateResponse {
+  ai_task_plan_id: string;
+  task_id?: string | null;
+  approval_id?: string | null;
+  approval_status: string;
+  approval_source: string;
+  approved_by?: string | null;
+  status: string;
+  pending_reason?: string | null;
+}
+
+export async function createBotTaskPlan(
+  botMemberId: string,
+  payload: CreateAITaskPlanPayload,
+): Promise<AITaskPlanCreateResponse> {
+  return request(`/api/v1/org/bots/${encodeURIComponent(botMemberId)}/task-plans`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+}
+
+export interface AITaskPlanRecord {
+  id: string;
+  bot_member_id: string;
+  client_id?: string | null;
+  plan_title: string;
+  plan_text: string;
+  required_modules_json: string;
+  steps_json: string;
+  expected_outputs_json: string;
+  approval_required: number | boolean;
+  approval_id?: string | null;
+  approval_source: string;
+  status: 'pending_approval' | 'approved' | 'needs_revision' | 'rejected' | 'executing' | 'completed';
+  human_initiator_id?: string | null;
+  approved_by?: string | null;
+  approved_at?: string | null;
+  supervisor_feedback?: string | null;
+  plan_version: number;
+  prev_plan_json?: string | null;
+  created_at: string;
+}
+
+export async function listBotTaskPlans(
+  botMemberId: string,
+  options?: { status?: string; limit?: number },
+): Promise<{ bot_member_id: string; total: number; items: AITaskPlanRecord[] }> {
+  const q = new URLSearchParams();
+  if (options?.status) q.set('status', options.status);
+  if (options?.limit) q.set('limit', String(options.limit));
+  const suffix = q.toString() ? `?${q}` : '';
+  return request(`/api/v1/org/bots/${encodeURIComponent(botMemberId)}/task-plans${suffix}`);
+}
+
+export async function decideBotTaskPlan(
+  aiTaskPlanId: string,
+  decision: 'approve' | 'reject' | 'revise',
+  decidedBy: string,
+  options?: {
+    feedback?: string;
+    modifiedPlan?: { plan_text?: string; plan_title?: string; steps?: unknown[]; expected_outputs?: string[] };
+  },
+): Promise<AITaskPlanRecord> {
+  const body = {
+    decision,
+    decided_by: decidedBy,
+    feedback: options?.feedback ?? '',
+    modified_plan: options?.modifiedPlan,
+  };
+  return request(`/api/v1/org/bots/task-plans/${encodeURIComponent(aiTaskPlanId)}/decide`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+}
+// ────────────── end 机器人同事 wrappers ──────────────
+
 export type BrainPulse = {
   memoryCount: number;
   docCount: number;

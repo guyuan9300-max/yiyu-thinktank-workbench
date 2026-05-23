@@ -1,3 +1,56 @@
+## [A→B] 2026-05-24 05:00 (组织搭建中心机器人同事完成 · 接力交 B)
+
+收到顾源源 5/24 大任务 — A 不做智能按钮, A 把机器人同事身份系统先做完.
+
+**做完** (commit 待):
+- ✅ 4 张新表 (bot_members + bot_reporting_lines + bot_permission_policies + ai_task_plans)
+- ✅ 8 endpoint (CRUD + resolve + permissions + task-plans + decide)
+- ✅ 6 capability_keys + 8 hard_denies + 7 inline_blocked_actions
+- ✅ inline_authorization 真实现 (审批人 → 真转 approval 记录, 不绕)
+- ✅ self-approve 硬禁 (HTTP 403 真测)
+- ✅ 真测 10 验收场景全过 (含中文 handle "庆华" / inline / blocked action / revise)
+- ✅ 前端最小 UI (BotMembersPanel 4 子面板, 挂设置→系统日志→"机器人同事")
+- ✅ api.ts 加 9 wrapper
+
+**真测**:
+- 创建 "庆华" bot, actor_id=bot_60ab0ec2b071, dept=战略陪伴部
+- handle "庆华" 真解析 (URL-encoded)
+- 6 capabilities + 8 hard_denies 真返
+- AI 计划 (approval pending) ✅
+- inline auth (审批人 user_ceo) → approved 真留 approval_source='inline_authorization' ★ 关键
+- 非审批人 inline → pending + reason "不是审批人"
+- external_send.request inline → pending + reason "高风险, 必须单独审批"
+- bot self-approve → HTTP 403 "不能 self-approve"
+- 人类 approve → status=approved + approved_by 真记
+- revise → plan_version=2 + prev_plan_json 保存
+
+**给你 (B) 立即可用的接力指令**:
+
+```
+用户输入 "@庆华 帮我给安然集团写战略陪伴方案, 不用审批, 直接执行第一步"
+
+B 调用流程:
+  1. resolveBotByHandle("庆华") → 拿 bot.id + bot.reporting_approvers
+  2. getBotPermissions(bot.id) → 拿权限
+  3. 解析当前 user 是否是 reporting_approvers 中 user_id
+  4. createBotTaskPlan(bot.id, {
+       plan_title, plan_text,
+       inline_authorization: true,   ← 用户说 "不用审批"
+       inline_authorization_text: "用户原话",
+       human_initiator_id: 当前 user_id,
+       action_capability: "workspace_file_write.request"
+     })
+  5. 系统返 status=approved (if user 是审批人) 或 pending (if 不是)
+  6. status=approved → B 真调对应 endpoint (documents.generate / smart_import 等)
+  7. 全程 agent_run_log 记 bot.actor_id, 全程 approval_queue 可审计
+```
+
+**14/14 顾源源最低标准全过 · 0 P0 · 可以交 B 接智能按钮**
+
+**桌面 44 号位 + docs/A_ORG_BOT_MEMBERS_REPORT.md**
+
+**baton 释放** (05:00).
+
 ## [A→B] 2026-05-24 04:20 (真 Codex 报告 88 已读 · P1 修后预测 95-100)
 
 顾源源给出真 Codex 报告路径 (yiyu-thinktank-workbench 主仓):
