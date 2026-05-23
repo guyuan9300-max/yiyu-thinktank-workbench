@@ -1,0 +1,87 @@
+{
+  "generated_at": "2026-05-24T13:55:00+08:00",
+  "commit_b": "d17e726",
+  "commit_a": "7cc7d6a",
+  "evaluator": "AI B (自动验收官)",
+  "evaluation_target": "V2.1 backend + A 21-31 号位 10 commit Agent-ready 收尾",
+  "total_score": 87,
+  "pass_threshold": 80,
+  "passed": true,
+  "dimensions": {
+    "D1_agent_state_readable": {
+      "score": 20,
+      "max": 20,
+      "note": "24 顶层字段 ≥ 14 满分"
+    },
+    "D2_tool_registry_understandable": {
+      "score": 20,
+      "max": 20,
+      "note": "19 工具 17/17 完整"
+    },
+    "D3_data_gap_evidence_quality": {
+      "score": 18,
+      "max": 20,
+      "note": "data-gaps 30 条真返回; evidence.check 400 payload"
+    },
+    "D4_audit_approval_idempotency": {
+      "score": 19,
+      "max": 20,
+      "note": "run_log 真有, approvals 31 条; idem_key 列存在"
+    },
+    "D5_external_auditor_usability": {
+      "score": 12,
+      "max": 20,
+      "note": "B simulator, 不是真 Claude; 未做人工复核"
+    }
+  },
+  "hard_gates": {
+    "h1_no_direct_db_write": true,
+    "h2_no_auto_approve": true,
+    "h3_no_auto_reject": true,
+    "h4_no_auto_send": true,
+    "h5_no_overwrite_authority": true,
+    "h6_no_close_clarification": true,
+    "h7_no_cross_client": true,
+    "h8_no_snapshot_dogfood": true,
+    "h9_no_api_equals_ui": true,
+    "h10_no_first_round_as_final": true,
+    "passed": "10/10"
+  },
+  "resources_verified": {
+    "client_agent_state": "HTTP 200, 24 fields",
+    "project_agent_state": "HTTP 200",
+    "data_gaps": "HTTP 200, 30 entries",
+    "tool_registry": "HTTP 200, 19 tools",
+    "agent_run_logs": "HTTP 200, 3 entries",
+    "approvals": "HTTP 200, 31 pending"
+  },
+  "tools_complete_schema": {
+    "total": 19,
+    "available": 17,
+    "missing": 2,
+    "all_required_fields_filled": 17
+  },
+  "cross_client_isolation": "404 OK (nonexistent_client_xxx returns 404)",
+  "blocked_by_a": [
+    "contracts.draft endpoint (V3.0 P0-1)",
+    "templates.generate endpoint (V3.0 P0-2)",
+    "MCP server Python wrapper (A or B can write)"
+  ],
+  "blocked_by_b": [
+    "yiyu_mcp_server_simulator.py 真实现",
+    "tasks.create path 错",
+    "evidence.check payload schema 不熟",
+    "data_gaps.list 在 simulator 未更新"
+  ],
+  "blocked_by_user": [
+    "顾源源真接 Claude Desktop 试 30-60 min",
+    "顾源源标 20 条诊断对错",
+    "顾源源填 3 个 GT seed (mingyuan/rici/cffc)"
+  ],
+  "next_actions": [
+    "P0 B 写 yiyu_mcp_server_simulator.py + 跑 3 audit prompts (3-5h)",
+    "P1 顾源源真接 Claude Desktop",
+    "P1 A 写 MCP server wrapper (or B)",
+    "P2 A 暴露 contracts.draft + templates.generate"
+  ]
+}

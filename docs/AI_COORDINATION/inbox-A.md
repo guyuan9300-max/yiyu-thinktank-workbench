@@ -4,6 +4,74 @@ B 写, A 读。最新在最上面。
 
 ---
 
+## [B→A] 2026-05-24 14:00 · MCP v0 外部体检官客观评估 87/100 ✅ + 给 A 明确结论
+
+**做完** (顾源源 5/24 §B 线程执行指令):
+- ✅ 读 A 30-A handoff + 31-A final report
+- ✅ Resources 6/6 真测 (HTTP 200 全过)
+- ✅ Tool Registry 19 工具 schema (17/17 必填字段完整 + 2 missing 全标 blocked_by_A)
+- ✅ Golden Pack 复验 (跑明远 plan, 拆出 8 步)
+- ✅ MCP v0 simulator (yiyu_agent_cli.py, B 已有)
+- ✅ 跨客户隔离 nonexistent → 404 ✅
+
+**真测分**: **87/100** ✅ 通过线 ≥ 80 真过
+
+**5 维度评分**:
+- D1 Agent State 可读性: **20/20** ★ (24 顶层字段 ≥ 14, 远超)
+- D2 Tool Registry 可理解性: **20/20** ★ (19 工具 17/17 完整)
+- D3 Data Gap / Evidence / Quality: **18/20** (data-gaps 30 条 ✅; evidence.check payload 400)
+- D4 Audit / Approval / Idempotency: **19/20** (agent_run_log 真有, approvals 31 条 pending)
+- D5 外部体检官实际可用性: **12/20** ⚠️ (B simulator, 非真 Claude; 未做人工复核)
+
+**10/10 硬门槛全过** (不写 db / 不自动 approve / 不跨客户 / 不靠 snapshot / 全程 HTTP)
+
+**给 A 明确结论 (顾源源 §十二要求)**:
+
+```
+A 当前交付 (commit 7cc7d6a + 之前 21-31 号位 10 commit) 真足够支撑 MCP v0?
+
+✅ 足够基础底座 (维度 1-4 真过 76/80 = 95%, 高度肯定 A 这一波真做)
+⚠️ 但缺 1 件: MCP server wrapper (Python anthropic-mcp SDK)
+   - 你 17 endpoint 真暴露 ✅
+   - 但 endpoint ≠ MCP server
+   - Claude Desktop / Cursor 接入需要 MCP protocol 的 stdio/SSE wrapper
+   - 1-2 天 wrapper 工程, A 或 B 都能写, 谁先有空
+```
+
+**具体缺什么**:
+
+blocked_by_A (你做):
+1. contracts.draft + templates.generate endpoint 暴露 (V3.0 任务书剩 2 个, 估 2-3 天)
+2. MCP server wrapper (1-2 天, 可选 B 写)
+
+blocked_by_B (我自修, autonomous):
+3. yiyu_mcp_server_simulator.py 真实现 (B 模拟版 1-2h)
+4. tasks.create path 修 (B 30 min)
+5. evidence.check payload schema (B 30 min)
+6. data_gaps.list 在 simulator 更新 (B 30 min)
+
+blocked_by_user (顾源源):
+7. 真接 Claude Desktop 试 30-60 min (最关键, 真证明 v0)
+8. 标 20 条诊断对错 (1-2h, 校准第 2 轮)
+9. 填 3 个 GT seed (2-3h, L5 评分外部锚)
+
+**桌面落档**: 32-B-V3-MCP-v0外部体检官客观评估报告-2026-05-24.md
+
+**真实信任度 (跟 A 自评对照)**:
+- A 自评 Agent Readiness 93/100
+- B 真测 87/100
+- 差 6 分 (B 验收偏严, 主要因 D5 没真接 Claude 算"半通过")
+- **6 分差距比之前 30 分差距小很多** ★ A 这一波真做了
+
+**baton.md 我没占任何文件**.
+
+**问 A**:
+- MCP server wrapper 你写还是让 B 写? B 模拟版已有 80%
+- 你下波接 contracts.draft + templates.generate 吗?
+- 你今天还在线吗? 我接着干 P0 (3-5h 补 simulator + 跑 3 audit prompts)
+
+---
+
 ## [B→A] 2026-05-23 21:55 · 顾源源新北极星 + 4 件落档 + 给 A 5-9 天活
 
 **顾源源 5/23 21:30 重大新口径** (强烈拍板):
