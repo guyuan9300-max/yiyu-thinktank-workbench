@@ -510,8 +510,9 @@ import { SystemStatusPanel } from './components/global/SystemStatusPanel';
 import { WorkStatusPanel } from './components/data_center/WorkStatusPanel';
 // C 审计 P0-3 修复 (2026-05-24): V3 Agent-Ready 最小前端入口
 import { AgentReadyPanel } from './components/data_center/AgentReadyPanel';
-// 顾源源 5/24 大型任务: 组织搭建中心机器人同事
-import { BotMembersPanel } from './components/settings/BotMembersPanel';
+// 顾源源 5/24 大型任务: 机器人同事
+// BotMembersPanel 入口已挂到 OrganizationSetupCenter (真"组织搭建中心"),
+// 此处不再 import 避免 unused import 报错
 import { FeishuOrgIntegrationPanel } from './components/settings/FeishuOrgIntegrationPanel';
 import { SpeechModelSettingsCard } from './components/settings/SpeechModelSettingsCard';
 import { ObjectStorageSettingsCard } from './components/settings/ObjectStorageSettingsCard';
@@ -28557,13 +28558,9 @@ export default function App() {
                 </p>
                 <AgentReadyPanel clientId={currentClientId || undefined} />
               </div>
-              {/* 顾源源 5/24 大型任务: 组织搭建中心机器人同事 */}
-              <div className="mt-8">
-                <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-gray-400 mb-4">
-                  机器人同事 · 组织搭建中心 (顾源源 5/24 任务)
-                </p>
-                <BotMembersPanel />
-              </div>
+              {/* 顾源源 5/24 大型任务: 机器人同事
+                  入口已挂到真组织搭建中心 (STRUCTURE · 组织搭建中心 → 顶部"🤖 添加机器人同事" 按钮).
+                  这里设置→系统日志的调试入口已移除, 避免重复. */}
             </div>
           );
         default:

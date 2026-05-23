@@ -13,6 +13,8 @@ import type {
   OrgRoleTemplateSettings,
 } from '../../../shared/types';
 import { buildDepartmentInviteCode } from '../../../shared/departmentInvite';
+// 顾源源 5/24: 机器人同事 panel
+import { BotMembersPanel } from './BotMembersPanel';
 import { isAssignableOrganizationEmployee, isLegacyOrganizationPersonName } from '../../lib/organizationEmployeeFilters';
 
 type LinkedSection = 'tasks' | 'handbook';
@@ -474,6 +476,8 @@ export function OrganizationSetupCenter({
 
   const initialInputDrafts = getInputDrafts?.() || {};
   const [activeView, setActiveView] = useState<ActiveView>('tree');
+  // 顾源源 5/24: 添加机器人同事入口
+  const [showBotPanel, setShowBotPanel] = useState(false);
   const [editingNodeId, setEditingNodeId] = useState<string | null>(initialInputDrafts.editingNodeId || null);
   const [editingField, setEditingField] = useState<EditableField | null>((initialInputDrafts.editingField as EditableField | null) || null);
   const [editingText, setEditingText] = useState(initialInputDrafts.editingText || '');
@@ -1454,6 +1458,17 @@ export function OrganizationSetupCenter({
                 </button>
               )
             ) : null}
+            {/* 顾源源 5/24: 添加机器人同事入口 — 跟"添加员工/邀请码"同级 */}
+            {activeView === 'tree' ? (
+              <button
+                type="button"
+                onClick={() => setShowBotPanel(true)}
+                className="inline-flex items-center gap-2 rounded-full border border-purple-200 bg-purple-50 px-5 py-3 text-[13px] font-bold text-purple-700 transition hover:border-purple-300 hover:bg-purple-100"
+                title="为部门添加 AI 机器人同事(独立 actor_id, 受审批控制)"
+              >
+                🤖 添加机器人同事
+              </button>
+            ) : null}
             {activeView === 'tree' ? (
               <button
                 type="button"
@@ -1825,6 +1840,30 @@ export function OrganizationSetupCenter({
             </div>
           )}
         </div>
+
+        {/* 顾源源 5/24: 机器人同事 panel (从顶部"添加机器人同事" 按钮触发) */}
+        {showBotPanel ? (
+          <div className="border-t border-gray-100 bg-white px-8 py-6">
+            <div className="mb-3 flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <span className="rounded bg-purple-100 px-2 py-0.5 text-[12px] font-medium text-purple-700">
+                  🤖 机器人同事
+                </span>
+                <span className="text-[12px] text-gray-500">
+                  AI 同事独立 actor_id, 进 agent_run_log, 受 approval queue 约束
+                </span>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowBotPanel(false)}
+                className="rounded-full border border-gray-200 px-3 py-1 text-[12px] text-gray-500 hover:bg-gray-50"
+              >
+                收起
+              </button>
+            </div>
+            <BotMembersPanel />
+          </div>
+        ) : null}
       </div>
     </div>
   );
