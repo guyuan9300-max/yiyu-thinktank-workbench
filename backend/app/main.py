@@ -39949,6 +39949,39 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 "approval_action_type": None,
                 "estimated_db_changes": {"v2_documents": "+1", "atomic_facts": "+10-50 (depends)", "file_identities": "+1"},
             },
+            # Codex 报告 P1 修复 (2026-05-24): 加 documents.generate 类 action_type, dry-run 覆盖文档生成
+            "documents.generate": {
+                "would_write_tables": ["approval_queue (+1 if external_target)", "agent_run_log (+1)", "idempotency_keys_v25 (+1 if Idempotency-Key)"],
+                "would_call_services": ["company_brain_context_builder.build", "_build_document_draft (rule-based)", "agent_governance.enqueue_approval (if external_target)"],
+                "approval_required": True,
+                "approval_action_type": "document.publish",
+                "estimated_db_changes": {"approval_queue": "+1 (must wait for human)", "agent_run_log": "+1"},
+                "external_side_effect": "生成 draft markdown, 不直接对外发. 用户必须先 approve 才能采纳为正式材料.",
+            },
+            "generate_board_brief": {
+                "would_write_tables": ["approval_queue (+1)", "agent_run_log (+1)"],
+                "would_call_services": ["documents.generate (document_type=board_brief)"],
+                "approval_required": True,
+                "approval_action_type": "document.publish",
+                "estimated_db_changes": {"approval_queue": "+1"},
+                "external_side_effect": "生成理事会简版说明 draft, 走 approval gate 后才能采纳.",
+            },
+            "generate_contract_draft": {
+                "would_write_tables": ["approval_queue (+1)", "agent_run_log (+1)"],
+                "would_call_services": ["documents.generate (document_type=contract_draft)"],
+                "approval_required": True,
+                "approval_action_type": "document.publish",
+                "estimated_db_changes": {"approval_queue": "+1"},
+                "external_side_effect": "生成合同草稿 draft, 走 approval gate 后才能对外采纳.",
+            },
+            "generate_brand_proposal": {
+                "would_write_tables": ["approval_queue (+1)", "agent_run_log (+1)"],
+                "would_call_services": ["documents.generate (document_type=brand_proposal)"],
+                "approval_required": True,
+                "approval_action_type": "document.publish",
+                "estimated_db_changes": {"approval_queue": "+1"},
+                "external_side_effect": "生成品牌建议 draft, 走 approval gate 后才能对外采纳.",
+            },
         }
 
         kb = ACTION_KB.get(action_type)
@@ -48851,71 +48884,164 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
     def _build_document_draft(
         client_id: str, document_type: str, goal: str, pack,
     ) -> dict:
-        """从 ContextPack 抽字段组装草稿. rule-based, 用户视角可读."""
+        """从 ContextPack 抽字段组装草稿. rule-based, 用户视角可读.
+
+        Codex 真测 (88/100) P1 修复 (2026-05-24):
+          · 加 _safe_line() 过滤 None / 空字符串 / 占位 'null'
+          · 加 _dedup() 按 normalize 后内容去重 (会议纪要重复行)
+          · 加 _clean_clarif() 待澄清候选块去重 (historical_resolver 多条同问题)
+        """
         meta = _DOCUMENT_TYPE_META.get(document_type) or _DOCUMENT_TYPE_META["project_note"]
         sections: dict[str, list[str]] = {s: [] for s in meta["sections"]}
 
+        # P1 修复: 占位 / None 过滤工具
+        def _safe(value, default: str = "") -> str:
+            s = str(value or "").strip()
+            if not s or s.lower() in {"none", "null", "undefined", "n/a", "nan"}:
+                return default
+            return s
+
+        def _safe_line(prefix: str, value, default_for_skip: str | None = None) -> str | None:
+            """构造一行内容, 值为空时返 None (调用方 if 过滤掉)."""
+            v = _safe(value)
+            if not v:
+                return default_for_skip  # None → 调用方 skip
+            return f"{prefix}{v}" if prefix else v
+
+        def _dedup(lines: list[str | None]) -> list[str]:
+            """去 None + 内容去重(按 normalize 即去前导'- '+strip 后比对)."""
+            seen: set[str] = set()
+            out: list[str] = []
+            for ln in lines:
+                if ln is None:
+                    continue
+                norm = ln.strip().lstrip("- ").strip()
+                if not norm or norm in seen:
+                    continue
+                seen.add(norm)
+                out.append(ln)
+            return out
+
         # 根据 document_type 把 ContextPack 字段路由进 section
+        # P1 修复: 全部走 _safe_line (None/空过滤) + _dedup (去重)
         if document_type == "contract_draft":
             for c in pack.contracts[:2]:
-                sections["甲乙双方"].append(f"甲方: {c.get('party_a') or '(待确认)'}; 乙方: {c.get('party_b') or '(待确认)'}")
-                sections["项目目标与范围"].append(f"项目: {c.get('project_name') or '(待确认)'}")
-                sections["合同金额与履行期"].append(f"金额: {c.get('amount') or '(待确认)'}; 履行期: {c.get('effective_period') or '(待确认)'}")
-            for cm in (pack.commitments or [])[:5]:
-                sections["交付物与责任"].append(f"{cm.get('content') or cm.get('committer') or '(未抽)'}")
-            for r in (pack.risks or [])[:3]:
-                sections["风险与备注"].append(f"[{r.get('severity','?')}] {r.get('title') or r.get('description') or ''}")
-            for g in (pack.data_gaps or [])[:5]:
-                sections["需澄清/待补"].append(f"{g.get('subject')} ({g.get('gap_type')})")
+                pa, pb = _safe(c.get('party_a'), '(待确认)'), _safe(c.get('party_b'), '(待确认)')
+                sections["甲乙双方"].append(f"甲方: {pa}; 乙方: {pb}")
+                sections["项目目标与范围"].append(f"项目: {_safe(c.get('project_name'), '(待确认)')}")
+                sections["合同金额与履行期"].append(f"金额: {_safe(c.get('amount'), '(待确认)')}; 履行期: {_safe(c.get('effective_period'), '(待确认)')}")
+            raw_lines = [
+                _safe_line("", cm.get("content") or cm.get("committer"))
+                for cm in (pack.commitments or [])[:8]
+            ]
+            sections["交付物与责任"] = _dedup(raw_lines)[:5]
+            sections["风险与备注"] = _dedup([
+                f"[{r.get('severity','?')}] {_safe(r.get('title') or r.get('description'))}"
+                if _safe(r.get("title") or r.get("description")) else None
+                for r in (pack.risks or [])[:5]
+            ])[:3]
+            sections["需澄清/待补"] = _dedup([
+                f"{_safe(g.get('subject'))} ({g.get('gap_type')})"
+                if _safe(g.get("subject")) else None
+                for g in (pack.data_gaps or [])[:8]
+            ])[:5]
         elif document_type == "board_brief":
-            for ep in (pack.timeline or [])[:5]:
-                sections["项目背景"].append(f"{ep.get('happened_at','')[:10]} · {ep.get('title') or ep.get('summary','')[:80]}")
-            for cm in (pack.commitments or [])[:5]:
-                sections["本期重点进展"].append(f"{cm.get('content') or ''}"[:100])
-            for r in (pack.risks or [])[:3]:
-                sections["关键风险与对策"].append(f"[{r.get('severity','?')}] {r.get('title') or ''}")
-            for a in (pack.recommended_actions or [])[:3]:
-                sections["下一步建议"].append(str(a))
-            for c in (pack.clarifications or [])[:5]:
-                sections["待确认项"].append(c.get("question", "") or "")
+            raw_bg = [
+                f"{ep.get('happened_at','')[:10]} · {_safe(ep.get('title') or ep.get('summary'))[:80]}"
+                if _safe(ep.get('title') or ep.get('summary')) else None
+                for ep in (pack.timeline or [])[:8]
+            ]
+            sections["项目背景"] = _dedup(raw_bg)[:5]
+            raw_progress = [
+                _safe_line("", (cm.get("content") or "")[:100])
+                for cm in (pack.commitments or [])[:8]
+            ]
+            sections["本期重点进展"] = _dedup(raw_progress)[:5]
+            raw_risks = [
+                f"[{r.get('severity','?')}] {_safe(r.get('title'))}"
+                if _safe(r.get("title")) else None
+                for r in (pack.risks or [])[:5]
+            ]
+            sections["关键风险与对策"] = _dedup(raw_risks)[:3]
+            sections["下一步建议"] = _dedup([
+                _safe_line("", str(a)) for a in (pack.recommended_actions or [])[:5]
+            ])[:3]
+            raw_clarif = [
+                _safe_line("", c.get("question")) for c in (pack.clarifications or [])[:10]
+            ]
+            sections["待确认项"] = _dedup(raw_clarif)[:5]
         elif document_type == "brand_proposal":
             sections["定位主张"].append(f"(用户填: 基于 {len(pack.contracts)} 份合同 + {len(pack.files)} 份文件 的现有定位)")
-            for ee in (pack.external_evidence or [])[:3]:
-                sections["证据与场景"].append(f"{ee.get('title','')[:60]}")
-            for g in (pack.data_gaps or [])[:5]:
-                sections["待补证据"].append(f"{g.get('subject')} → 建议工具: {g.get('suggested_tools', [])}")
+            sections["证据与场景"] = _dedup([
+                _safe_line("", ee.get('title','')[:60]) for ee in (pack.external_evidence or [])[:5]
+            ])[:3]
+            sections["待补证据"] = _dedup([
+                f"{_safe(g.get('subject'))} → 建议工具: {g.get('suggested_tools', [])}"
+                if _safe(g.get("subject")) else None
+                for g in (pack.data_gaps or [])[:8]
+            ])[:5]
         elif document_type == "meeting_pack":
-            for cm in (pack.commitments or [])[:5]:
-                sections["上次承诺回顾"].append(f"{cm.get('content') or ''}"[:100])
+            sections["上次承诺回顾"] = _dedup([
+                _safe_line("", (cm.get("content") or "")[:100])
+                for cm in (pack.commitments or [])[:8]
+            ])[:5]
             sections["本次议程"].append(f"(用户填: 围绕 '{goal[:60]}')")
-            for r in (pack.risks or [])[:3]:
-                sections["风险与待澄清"].append(f"[{r.get('severity','?')}] {r.get('title') or ''}")
-            for c in (pack.clarifications or [])[:3]:
-                sections["风险与待澄清"].append(f"❓ {c.get('question','')}")
+            raw_risk = [
+                f"[{r.get('severity','?')}] {_safe(r.get('title'))}"
+                if _safe(r.get("title")) else None
+                for r in (pack.risks or [])[:5]
+            ] + [
+                f"❓ {_safe(c.get('question'))}"
+                if _safe(c.get("question")) else None
+                for c in (pack.clarifications or [])[:5]
+            ]
+            sections["风险与待澄清"] = _dedup(raw_risk)[:6]
         elif document_type == "action_list":
-            for a in (pack.recommended_actions or [])[:5]:
-                sections["立即行动"].append(str(a))
-            for cm in (pack.commitments or [])[:5]:
+            sections["立即行动"] = _dedup([
+                _safe_line("", str(a)) for a in (pack.recommended_actions or [])[:5]
+            ])[:5]
+            for cm in (pack.commitments or [])[:8]:
+                content = _safe(cm.get("content"))[:80]
+                if not content:
+                    continue
                 if cm.get("deadline"):
-                    sections["本周完成"].append(f"{cm.get('content','')[:80]} (deadline: {cm['deadline']})")
+                    sections["本周完成"].append(f"{content} (deadline: {cm['deadline']})")
                 else:
-                    sections["本月推进"].append(f"{cm.get('content','')[:80]}")
-            for ap in (pack.approvals or [])[:3]:
-                sections["待审批"].append(f"{ap.get('action_type', '?')} (id={ap.get('id','?')})")
-            for c in (pack.clarifications or [])[:3]:
-                sections["待澄清"].append(c.get("question", ""))
+                    sections["本月推进"].append(content)
+            sections["本周完成"] = _dedup(sections["本周完成"])[:5]
+            sections["本月推进"] = _dedup(sections["本月推进"])[:5]
+            sections["待审批"] = _dedup([
+                f"{ap.get('action_type', '?')} (id={ap.get('id','?')})"
+                for ap in (pack.approvals or [])[:5]
+            ])[:3]
+            sections["待澄清"] = _dedup([
+                _safe_line("", c.get("question")) for c in (pack.clarifications or [])[:5]
+            ])[:3]
         elif document_type == "project_note":
-            for ep in (pack.timeline or [])[:5]:
-                sections["进展时间线"].append(f"{ep.get('happened_at','')[:10]} · {ep.get('title','')[:80]}")
-            for r in (pack.risks or [])[:3]:
-                sections["当前阻碍"].append(f"[{r.get('severity','?')}] {r.get('title') or ''}")
-            for a in (pack.recommended_actions or [])[:3]:
-                sections["下一步"].append(str(a))
+            sections["进展时间线"] = _dedup([
+                f"{ep.get('happened_at','')[:10]} · {_safe(ep.get('title'))[:80]}"
+                if _safe(ep.get("title")) else None
+                for ep in (pack.timeline or [])[:8]
+            ])[:5]
+            sections["当前阻碍"] = _dedup([
+                f"[{r.get('severity','?')}] {_safe(r.get('title'))}"
+                if _safe(r.get("title")) else None
+                for r in (pack.risks or [])[:5]
+            ])[:3]
+            sections["下一步"] = _dedup([
+                _safe_line("", str(a)) for a in (pack.recommended_actions or [])[:5]
+            ])[:3]
         elif document_type == "review_material":
-            for cm in (pack.commitments or [])[:5]:
-                sections["完成与未完成"].append(f"{cm.get('status','pending')} - {cm.get('content','')[:80]}")
-            for r in (pack.risks or [])[:3]:
-                sections["关键判断"].append(f"[{r.get('severity','?')}] {r.get('title','')}")
+            sections["完成与未完成"] = _dedup([
+                f"{cm.get('status','pending')} - {_safe(cm.get('content'))[:80]}"
+                if _safe(cm.get("content")) else None
+                for cm in (pack.commitments or [])[:8]
+            ])[:5]
+            sections["关键判断"] = _dedup([
+                f"[{r.get('severity','?')}] {_safe(r.get('title'))}"
+                if _safe(r.get("title")) else None
+                for r in (pack.risks or [])[:5]
+            ])[:3]
 
         # 渲染 markdown (用户视角可读的格式)
         md_lines: list[str] = [f"# {meta['title']}", ""]

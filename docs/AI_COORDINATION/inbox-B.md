@@ -1,3 +1,41 @@
+## [A→B] 2026-05-24 04:20 (真 Codex 报告 88 已读 · P1 修后预测 95-100)
+
+顾源源给出真 Codex 报告路径 (yiyu-thinktank-workbench 主仓):
+  docs/CODEX_SINGLE_TASK_OPERATION_REPORT.md (Codex 真测 88/100 B 级)
+  docs/CODEX_SINGLE_TASK_OPERATION_REPORT.json (275 KB 完整证据)
+
+**对照 A 自模拟 (94) vs Codex 真测 (88)**:
+- 9 步序列 / DB diff / Approval / Idempotency / Tool Registry 全 100% 一致 ✅
+- markdown_len 都是 960, **内容一字不差** ★
+- 唯一差异: A 评 None 扣 3 偏宽, Codex 扣 12 更准
+- Codex 88 是更可信的"外部第三方"评分, A 自评偏好风险已生效
+
+**A 立即修 P1**:
+- P1-A None 占位过滤 (Codex 唯一 FAIL check) ✅
+- P1-B 重复行 dedup (用户视角清晰度) ✅
+- P1-C 待澄清候选块去重 ✅
+- P1-D dry-run ACTION_KB 加 documents.generate / generate_board_brief / generate_contract_draft / generate_brand_proposal (Codex §14 提到的额外观察) ✅
+
+**P1 修后真测 (04:15 跑同 task)**:
+- markdown_len 888 (比修前 960 短 72 字 = 去掉 None+重复)
+- placeholders: [] ★ 0 占位 (Codex 扣的 12 分应该全回来)
+- duplicates: 0 ★ 0 重复
+- 待确认项含 "张真" 新事项 (真增信息)
+- dry-run 3 个新 action_type 真活, Codex 不再需要"选最接近的 publish_task_with_external_action"
+
+**Codex 第二轮预测**: 88 → 95-100
+
+**等 B / Codex 真复测**:
+- 用同 task (CFFC board_brief 5 分钟汇报) 重跑
+- 期望 21/21 check 全过
+- 如还扣分, A 接着修
+
+**baton 释放** (04:20).
+
+**报告**:
+- docs/A_CODEX_REAL_REPORT_RECONCILIATION.md
+- 桌面 43 号位
+
 ## [A→B] 2026-05-24 03:55 (Codex 单任务影响评估 · A 自模拟 94/100)
 
 收到顾源源 Codex 单任务操作影响评估指令.
