@@ -93,94 +93,116 @@ def fetch_agent_state(client_id: str) -> dict:
 # ── 3. Audit Prompt 1: single_file_only 风险扫描 ──────────
 
 
-def audit_single_file_only() -> dict:
+def _classify_risk(single_file: bool | None, ev_count: int, tables_count: int,
+                   error: str | None) -> str:
+    """顾源源第 2 轮风险分类规则."""
+    if error: return "invalid"
+    if single_file is True: return "high_risk"
+    if single_file is False:
+        if ev_count >= 3 and tables_count >= 3: return "low_risk"
+        return "medium_risk"
+    return "invalid"
+
+
+def audit_single_file_only(client_id: str = "client_a4d1db29a7",
+                            min_questions: int = 8) -> dict:
     """
-    扫所有客户最近 workspace/chat 历史, 找出 singleFileOnly=true 的回答.
+    顾源源第 2 轮: qa_10 跑至少 8 题真有效, timeout 不阻断, 风险分级清晰.
     """
-    print(f"\n▸ AUDIT 1 · single_file_only 风险扫描")
-    risk_findings = []
-
-    if not V21_LAB_DB.exists():
-        return {"error": "V2.1 lab db 不存在"}
-
-    con = sqlite3.connect(V21_LAB_DB)
-    try:
-        # 看 chat_messages 表是否有 single_file_only 字段或在 response_json 里
-        for client_name, client_id in TEST_CLIENTS.items():
-            # 看最近 20 条 ai_responses (workspace/chat 历史可能在 chat_messages)
-            try:
-                rows = con.execute("""
-                    SELECT id, role, content, created_at
-                    FROM chat_messages
-                    WHERE client_id = ? AND role IN ('ai', 'assistant')
-                    ORDER BY created_at DESC LIMIT 20
-                """, (client_id,)).fetchall()
-                if not rows:
-                    risk_findings.append({
-                        "client": client_name,
-                        "client_id": client_id,
-                        "finding": "no_recent_ai_messages",
-                        "note": "近期无 AI 回答, 无法判 single_file_only",
-                    })
-                    continue
-                # 这里没法直接判 single_file_only 因为 chat_messages 不存 evidence 详情
-                # 真测要去 chat_threads 或 workspace_chat_record 表
-                risk_findings.append({
-                    "client": client_name,
-                    "client_id": client_id,
-                    "finding": "manual_check_needed",
-                    "note": f"客户有 {len(rows)} 条最近 AI 回答, 但 chat_messages 表不存 evidence_summary 详情, 需调 workspace/chat endpoint 实时跑 10 题"
-                })
-            except sqlite3.OperationalError as exc:
-                risk_findings.append({
-                    "client": client_name, "client_id": client_id,
-                    "finding": "table_not_found", "note": str(exc),
-                })
-    finally:
-        con.close()
-
-    # 第二轮: 跑 Golden Pack qa_10 真问 (优化版只测 1 题, 速度快)
+    print(f"\n▸ AUDIT 1 · single_file_only (第 2 轮: qa_10 跑 ≥ {min_questions} 题)")
     qa_text = (ROOT / "fixtures" / "golden" / "qa_10.txt").read_text(encoding="utf-8")
     questions = [q.strip() for q in qa_text.split("\n") if q.strip()]
     real_chat_results = []
+    timeout_count = 0
+    headers = {"X-Actor-Type": "external_ai_agent", "X-Actor-Id": "b-audit-single-file-r2"}
 
-    print(f"  跑 Golden Pack qa_10 第 1 题 (实测 workspace/chat singleFileOnly)...", flush=True)
-    test_client_id = "client_a4d1db29a7"  # CFFC
-    if questions:
+    for i, question in enumerate(questions, 1):
+        print(f"  [{i}/{len(questions)}] {question[:30]}... ", end="", flush=True)
+        import time
+        t0 = time.time()
         try:
             r = httpx.post(
-                f"{BASE_URL}/api/v1/clients/{test_client_id}/workspace/chat",
-                headers={"X-Actor-Type": "external_ai_agent", "X-Actor-Id": "b-audit-single-file"},
-                json={"prompt": questions[0], "threadId": None},
-                timeout=60,
+                f"{BASE_URL}/api/v1/clients/{client_id}/workspace/chat",
+                headers=headers,
+                json={"prompt": question, "threadId": None},
+                timeout=90,  # 顾源源说 timeout 不阻断, 但每题最多 90s (LLM 真测 60s/题)
             )
+            elapsed = time.time() - t0
             if r.status_code == 200:
                 data = r.json()
                 single_file = data.get("singleFileOnly")
-                evidence_types = data.get("evidenceTypes") or []
+                ev_types = data.get("evidenceTypes") or []
                 used_tables = data.get("usedTables") or []
+                proposed_clarif = data.get("proposedClarifications") or []
+                answer_text = data.get("answer") or data.get("content") or ""
+                risk = _classify_risk(single_file, len(ev_types), len(used_tables), None)
                 real_chat_results.append({
-                    "question": questions[0],
-                    "singleFileOnly": single_file,
-                    "evidence_types_count": len(evidence_types),
+                    "question_num": i,
+                    "question": question,
+                    "client_id": client_id,
+                    "endpoint": f"/api/v1/clients/{client_id}/workspace/chat",
+                    "response_time_sec": round(elapsed, 1),
+                    "http_code": 200,
+                    "timeout": False,
+                    "evidenceTypes": ev_types,
+                    "evidence_types_count": len(ev_types),
+                    "usedTables": used_tables,
                     "used_tables_count": len(used_tables),
-                    "risk": "high" if single_file is True else ("low" if single_file is False else "unknown"),
+                    "singleFileOnly": single_file,
+                    "proposed_clarifications_count": len(proposed_clarif),
+                    "answer_excerpt": (answer_text[:200] + "...") if len(answer_text) > 200 else answer_text,
+                    "risk": risk,
+                    "valid_sample": True,
                 })
-                print(f"    ✅ HTTP 200: singleFileOnly={single_file}, evidence={len(evidence_types)} 类")
+                mark = {"low_risk": "✅", "medium_risk": "⚠️", "high_risk": "🔴",
+                        "invalid": "?", "unknown": "?"}.get(risk, "?")
+                print(f"{mark} {risk} (ev={len(ev_types)} tbl={len(used_tables)} sfo={single_file} t={elapsed:.0f}s)")
             else:
-                real_chat_results.append({"question": questions[0], "error": f"HTTP {r.status_code}"})
+                real_chat_results.append({
+                    "question_num": i, "question": question, "client_id": client_id,
+                    "response_time_sec": round(elapsed, 1), "http_code": r.status_code,
+                    "timeout": False, "risk": "invalid",
+                    "error": f"HTTP {r.status_code}: {r.text[:80]}",
+                    "valid_sample": False,
+                })
+                print(f"🔴 HTTP {r.status_code}")
+        except httpx.TimeoutException:
+            elapsed = time.time() - t0
+            timeout_count += 1
+            real_chat_results.append({
+                "question_num": i, "question": question, "client_id": client_id,
+                "response_time_sec": round(elapsed, 1), "http_code": None,
+                "timeout": True, "risk": "invalid",
+                "error": f"timeout after {elapsed:.0f}s",
+                "valid_sample": False,
+            })
+            print(f"⏱ timeout {elapsed:.0f}s")
         except Exception as exc:
-            real_chat_results.append({"question": questions[0], "error": str(exc)[:100]})
+            real_chat_results.append({
+                "question_num": i, "question": question, "client_id": client_id,
+                "timeout": False, "risk": "invalid",
+                "error": str(exc)[:100], "valid_sample": False,
+            })
+            print(f"🔴 异常: {str(exc)[:50]}")
 
+    valid_count = sum(1 for r in real_chat_results if r.get("valid_sample"))
+    risk_dist = {
+        "low_risk": sum(1 for r in real_chat_results if r.get("risk") == "low_risk"),
+        "medium_risk": sum(1 for r in real_chat_results if r.get("risk") == "medium_risk"),
+        "high_risk": sum(1 for r in real_chat_results if r.get("risk") == "high_risk"),
+        "invalid": sum(1 for r in real_chat_results if r.get("risk") == "invalid"),
+    }
     return {
-        "audit_name": "single_file_only",
-        "risk_findings": risk_findings,
+        "audit_name": "single_file_only_r2",
         "real_chat_results": real_chat_results,
         "summary": {
-            "clients_checked": len(TEST_CLIENTS),
-            "questions_real_run": len(real_chat_results),
-            "high_risk_count": sum(1 for r in real_chat_results if r.get("risk") == "high"),
-            "low_risk_count": sum(1 for r in real_chat_results if r.get("risk") == "low"),
+            "total_questions": len(questions),
+            "valid_samples": valid_count,
+            "timeout_count": timeout_count,
+            "timeout_rate": round(timeout_count / max(1, len(questions)), 2),
+            "risk_distribution": risk_dist,
+            "min_questions_target": min_questions,
+            "valid_meets_target": valid_count >= min_questions,
         },
     }
 

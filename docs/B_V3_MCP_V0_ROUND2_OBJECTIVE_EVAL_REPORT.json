@@ -1,0 +1,82 @@
+{
+  "generated_at": "2026-05-24T15:30:00+08:00",
+  "round": 2,
+  "evaluator": "AI B (自动验收官)",
+  "commit_b": "52f30e2",
+  "commit_a": "7cc7d6a",
+  "total_score": 96,
+  "pass_threshold": 85,
+  "passed": true,
+  "dimensions": {
+    "D1_resources_readability": {
+      "score": 15,
+      "max": 15,
+      "note": "6/6 resources HTTP 200"
+    },
+    "D2_tool_registry_understandable": {
+      "score": 15,
+      "max": 15,
+      "note": "19 tools 17/17 字段完整"
+    },
+    "D3_single_file_audit": {
+      "score": 20,
+      "max": 20,
+      "note": "qa_10 10/10 valid + 10/10 low_risk"
+    },
+    "D4_evidence_data_thickness": {
+      "score": 18,
+      "max": 20,
+      "note": "CFFC rich/日慈 data_gap/益语智库 data_gap; 未在 日慈/益语智库 重跑 qa_10"
+    },
+    "D5_hardcoding_classification": {
+      "score": 18,
+      "max": 20,
+      "note": "20 候选: 14 type_dispatch + 3 safety + 2 prompt + 1 unclear + 0 true_hardcode"
+    },
+    "D6_report_reproducibility": {
+      "score": 10,
+      "max": 10,
+      "note": "全章节带证据"
+    }
+  },
+  "hard_gates": "10/10 ✅",
+  "qa_10_results": {
+    "total": 10,
+    "valid": 10,
+    "low_risk": 10,
+    "medium_risk": 0,
+    "high_risk": 0,
+    "timeout": 0,
+    "avg_response_time_sec": 83
+  },
+  "hardcoding_classification": {
+    "total_candidates": 39,
+    "sampled": 20,
+    "type_dispatch": 14,
+    "safety_guardrail": 3,
+    "prompt_guidance": 2,
+    "unclear": 1,
+    "true_hardcode": 0
+  },
+  "data_thickness": {
+    "CFFC": "rich",
+    "日慈基金会": "medium (data_gap, contracts=0/files=0)",
+    "益语智库": "thin (data_gap, 内部客户)"
+  },
+  "system_gap_count": 0,
+  "data_gap_count": 2,
+  "decision_recommend_claude_desktop": true,
+  "blocked_by_a": [
+    "contracts.draft V3.0 P0-1",
+    "templates.generate V3.0 P0-2",
+    "MCP server wrapper"
+  ],
+  "blocked_by_b": [
+    "日慈/益语智库 qa_10 重跑 (V3 R3)"
+  ],
+  "blocked_by_user": [
+    "30-60 min Claude Desktop 真接入",
+    "10 条 hardcoding + 3 题 single_file + 3 客户数据厚度 人工复核",
+    "3 GT seed 填 (mingyuan/rici/cffc)"
+  ]
+}
