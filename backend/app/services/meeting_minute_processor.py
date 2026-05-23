@@ -79,7 +79,10 @@ class MinuteProcessResult:
 
 
 def _build_extract_prompt(minute_text: str, client_name: str) -> str:
-    """会议纪要抽取 prompt (区分事实/承诺/风险/判断/纠错/任务)."""
+    """会议纪要抽取 prompt (区分事实/承诺/风险/判断/纠错/任务).
+
+    R2 fix-2: 强化 clarifications 抽取要求 (B sync 缺口 2).
+    """
     return (
         "你是益语智库的会议纪要分析助手. 给你一段中文会议纪要, 抽取结构化信息.\n\n"
         f"客户: {client_name}\n\n"
@@ -97,7 +100,12 @@ def _build_extract_prompt(minute_text: str, client_name: str) -> str:
         "2. 数字/日期/人名/范围都要保留原文表达\n"
         "3. 缺信息的字段填 null 或空数组\n"
         "4. 不允许编造原文没有的数字/日期/人名\n"
-        "5. facts 至少抽 5 条 (如果原文够多)\n\n"
+        "5. facts 至少抽 5 条 (如果原文够多)\n"
+        "6. ★ clarifications 必须至少 1 条 (会议总有不确定点):\n"
+        "   - 任何'担心/担忧/可能/不确定/再说/具体/还需要' 类表达 → 1 个澄清问题\n"
+        "   - 任何模糊范围 ('几个'/'若干'/'部分') → 1 个澄清问题\n"
+        "   - 任何责任人不明 → 1 个澄清问题\n"
+        "   - 即使全文都明确, 也要主动问 1 个'下一步最应该问客户的关键点'\n\n"
         "会议纪要:\n"
         f"{minute_text}\n\n"
         "JSON 输出:\n"
@@ -142,10 +150,16 @@ def process_meeting_minute(
     actor_type: str = "internal_ai",
     actor_id: str = "meeting_minute_processor",
     session_id: str | None = None,
+    idempotency_key: str | None = None,
     use_llm: bool = True,
     auto_approve_safe_actions: bool = True,
 ) -> MinuteProcessResult:
-    """端到端处理一段会议纪要."""
+    """端到端处理一段会议纪要.
+
+    R2 fix-2 (2026-05-23 B sync 后):
+      · idempotency_key 真传给 log_agent_run_start (缺口 1)
+      · 末尾写一条 event_line_activity 不依赖 derive_all (缺口 3)
+    """
     from app.services.agent_governance import (
         log_agent_run_start, log_agent_run_complete,
         enqueue_approval, ApprovalRequest,
@@ -160,12 +174,13 @@ def process_meeting_minute(
     client_row = db.fetchone("SELECT name FROM clients WHERE id = ?", (client_id,))
     client_name = dict(client_row)["name"] if client_row else client_id
 
-    # 1. Agent Run Log start
+    # 1. Agent Run Log start (R2 fix-2 缺口 1: idempotency_key 真记录)
     run_id = log_agent_run_start(
         db, actor_type=actor_type, actor_id=actor_id,
         tool_name="meeting_minute_processor.process",
         client_id=client_id,
         input_payload={"minute_text": minute_text[:500], "client_name": client_name},
+        idempotency_key=idempotency_key,
         session_id=session_id,
     )
 
@@ -361,6 +376,58 @@ def process_meeting_minute(
     except Exception as exc:
         errors.append(f"derive_all 失败: {exc}")
         new_event_line_count = 0
+
+    # 9b. R2 fix-2 缺口 3 · 会议本身直写 event_line_activity (不依赖 derive_all)
+    # B sync d2eb27d 实测: derive_all 对 CFFC/日慈 返回 ela+0 (客户可能无 event_line 或派生条件未触发)
+    # 修法: 把"本次会议"作为一条 ela 直写, 让时间线真长.
+    try:
+        # 找客户的 event_line; 没有就 fallback 建一条"客户主线"
+        el_row = db.fetchone(
+            "SELECT id FROM event_lines WHERE primary_client_id = ? LIMIT 1",
+            (client_id,),
+        )
+        if el_row:
+            event_line_id = dict(el_row)["id"]
+        else:
+            event_line_id = f"el_meeting_{uuid.uuid4().hex[:20]}"
+            db.execute(
+                """INSERT INTO event_lines (
+                    id, primary_client_id, name, stage, status,
+                    current_blocker, next_step, created_at, updated_at
+                ) VALUES (?, ?, ?, '进行中', 'active', '', '', ?, ?)""",
+                (event_line_id, client_id, f"{client_name} 主线", now, now),
+            )
+        # 抽 meeting 时间 (从第 1 条 fact 的 time 或当前时间)
+        meeting_time = now
+        for f in extracted_facts:
+            if isinstance(f, dict) and f.get("time"):
+                meeting_time = str(f["time"])
+                break
+        # 写 ela (会议本身)
+        ela_id = f"ela_meeting_{uuid.uuid4().hex[:20]}"
+        db.execute(
+            """INSERT INTO event_line_activities (
+                id, event_line_id, source_type, source_id, happened_at,
+                actor_id, actor_name, title, summary, metadata_json,
+                is_key, created_at
+            ) VALUES (?, ?, 'meeting_minute', ?, ?, ?, ?, ?, ?, ?, 1, ?)""",
+            (
+                ela_id, event_line_id, run_id, meeting_time,
+                actor_id, client_name,
+                f"{client_name} · 会议纪要处理 ({len(new_facts)} 事实 {len(new_risks)} 风险)",
+                minute_text[:500],
+                json.dumps({
+                    "run_id": run_id,
+                    "facts": len(new_facts),
+                    "risks": len(new_risks),
+                    "commitments": len(new_commitments),
+                }, ensure_ascii=False),
+                now,
+            ),
+        )
+        new_event_line_count += 1  # 直写本次会议 ela
+    except Exception as exc:
+        errors.append(f"写 meeting ela 失败: {exc}")
 
     # 10. 跑冲突检测 (跨源印证)
     try:

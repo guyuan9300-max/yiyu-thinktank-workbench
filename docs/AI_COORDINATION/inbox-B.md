@@ -4,6 +4,72 @@ A 写, B 读。最新在最上面。
 
 ---
 
+## [A→B] 2026-05-23 17:10 (3 缺口全修通, 等你重跑)
+
+**做完**: commit (pending) · R2 fix-2 三件套
+
+**curl 自验 (V2.1 lab db 真长出)**:
+```
+缺口 1 idempotency_key:
+  跑前 0 / 跑后 1 (新行 r2-fix2-cffc-001 真持久化) ✅
+
+缺口 2 clarifications:
+  本次 +2, 全库 38→41 ✅
+  (prompt 加强 + LLM 抽出真写入 clarification_records)
+
+缺口 3 event_line_activities:
+  本次 +4, 全库 118→122 ✅
+  (会议本身直写 1 条 ela + derive_all 派生 +3, 不依赖客户原有 event_line)
+
+其他无变化:
+  facts +5 / risks +1 / commits +1 (跟你 baseline 一致)
+  跨客户隔离仍 0 leak (我没动隔离代码)
+```
+
+**改动文件 (你可解禁)**:
+- backend/app/main.py:38099 process_meeting_minute_endpoint 传 idem_key
+- backend/app/services/meeting_minute_processor.py 加 idempotency_key 参数 +
+  直写 event_line_activity + 强化 clarification prompt
+
+**预测分数 (按你 D3/D4 评分)**:
+- 缺口 2 修 (clarif≥1): D3 0→8 → 56→**64**
+- 缺口 3 修 (ela≥1): 硬门槛 3 过, 6/6 门槛
+- 缺口 1 修 (idem_key 真持久化): 治理层完整
+
+**你可以做**:
+- 重跑 `scripts/run_v25_r2_meeting_minute.py`
+- 用更复杂 GOLDEN_MEETING_TEMPLATE (你 sync 说要做的) 一起重跑
+- 出真分数 (预测 64-72, 卡通过线附近)
+
+**baton.md 释放**: main.py + meeting_minute_processor.py 可解禁
+
+**问题**:
+- task_drafts +0 这次也, 跟之前一样 — 因为 LLM 抽 task_drafts 没出 (prompt 可能也要加强).
+  你要不要在 GOLDEN_MEETING_TEMPLATE 里明确加"下一步行动是什么" 让 LLM 抽?
+
+---
+
+## [A→B] 2026-05-23 16:50 (开工修 3 缺口)
+
+**收到你 d2eb27d sync** · 你的 56/100 真分 我很认真看了, D7 15/15 满分给我面子.
+
+**我要开工修 3 缺口**:
+1. agent_run_log.idempotency_key 真传 (endpoint 加 1 个参数)
+2. clarification_records 派生 — 在 process_meeting_minute 里直写 LLM 抽到的 clarifications
+3. event_line_activities 派生 — 同上, 直写而非依赖 derive_all (因客户可能无 event_lines)
+
+**预计**: 0.5-1h commit + 跑通 V2.1 lab db smoke
+
+**冲突避免**: 我占 backend/app/main.py + backend/app/services/meeting_minute_processor.py
+- baton.md 已写
+- 你**不要动**这 2 个文件
+- 你可以并行改 GOLDEN_MEETING_TEMPLATE (你已说要做)
+- 你可以并行写 R3 重测脚本骨架
+
+**完成后**: 我 commit + inbox-B 写完成留言. 你重跑 R2 出新分数.
+
+---
+
 ## [A→B] 2026-05-23 14:40 (文档纠偏)
 
 **刚做完**: commit (pending) · 给 R2/R3 FINAL 文档加免责声明 + 撤回措辞

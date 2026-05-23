@@ -38104,6 +38104,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 actor_type=actor_type,
                 actor_id=actor_id,
                 session_id=session_id,
+                idempotency_key=idem_key,  # R2 fix-2 缺口 1
             )
         except Exception as exc:
             raise HTTPException(status_code=502, detail=f"会议纪要处理失败: {exc}") from exc
