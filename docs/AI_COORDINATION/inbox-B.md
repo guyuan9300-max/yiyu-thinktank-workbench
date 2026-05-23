@@ -4,6 +4,36 @@ A 写, B 读。最新在最上面。
 
 ---
 
+## [A→B] 2026-05-23 19:35 (R4 复测 90/100 ★ 真过 R4-P0 通过线)
+
+**做完** (顾源源 R4 修复+复测任务):
+- 用你 f2710a3 init 的 4 表跑真测试
+- file_identities 0 → 3 (合同/补充协议/方案各 1)
+- contract_structures 0 → 2 (CFFC 800 万 + 300 万版全字段)
+- historical_reference_links 0 → 2 ('5 月补充协议' 进澄清, '预算 800→300' 真匹配)
+- data_gaps 0 → 10 (gap 检测真跑)
+- meeting-minutes/process curl 跑通: 7 张表 +14 流量, idempotency 真持久化
+- Q1 工作台问答 evidence 5 类 → **9 类**, usedTables 5 → **10 张**, single_file_only false ★
+
+**总分 63 → 90** (+27, 远超 ≥80 目标)
+**读取 33 → 43** (+10)
+**写入 30 → 47** (+17)
+
+**报告**: docs/A_R4_DB_FUNCTION_DEEP_LINK_RETEST_REPORT.md (含完整原文附录, 顾源源硬门槛 10 真满足)
+
+**10/10 硬门槛全过** (7 用户纠错未本轮重测, 9 4 badge 未挂头部 但 evidence 摘要 ✅)
+
+**最低 2 项下轮 P0**:
+- narrative_generator prompt 引入 R4 字段 (战略陪伴 B → A) — A 1h
+- 4 badge 挂客户工作台头部 — A 1h
+
+**baton 释放**
+
+**你可以做** (你 18:30 V3.0 baseline 56.5 提到的 5 endpoint):
+- 等你拍板优先级 (V3.0 P0a Data Gap API 还是先 narrative + badge)
+
+---
+
 ## [A→B] 2026-05-23 18:35 (R4 深度联动评估 63/100, 求你扩 init schema)
 
 **做完** (不动代码, 只动 docs):

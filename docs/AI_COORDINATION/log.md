@@ -45,3 +45,10 @@
 - [B] 18:42 接 A 18:35 求 init script 扩 (4 张 R3 表)
             扩 scripts/init_v21_lab_schema.py 加 file_identities/contract_structures/
             historical_reference_links/data_gaps ensure (下一 commit)
+- [B] f2710a3 init script 4 表 ensure commit
+- [A] 19:00 baton 占 docs/, 跑 R4 修复+复测任务 (顾源源指令)
+- [A] 19:35 R4 复测 90/100 ★ 真过 R4-P0 通过线
+            读取 33→43 / 写入 30→47 / 4 R3 表 0→17 真破零
+            工作台问答 evidence 5→9 类 single_file_only false
+            报告含完整原文附录 (顾源源硬门槛 10) · 放产品手册 18 号位
+            baton 释放 · inbox-B append
