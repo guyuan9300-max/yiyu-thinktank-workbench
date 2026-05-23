@@ -55,6 +55,11 @@ class ClassifyResult:
     extracted_subjects: list[str] = field(default_factory=list)
     extracted_numbers: list[str] = field(default_factory=list)
     matched_pattern: str = ""
+    # V3 收尾 M5 升级 (顾源源 §M5 §4 必做):
+    extracted_persons: list[str] = field(default_factory=list)
+    history_refs: list[dict] = field(default_factory=list)     # [{ref_text, ref_type}, ...]
+    triggers_clarification: bool = False
+    clarification_reason: str = ""
 
 
 # ─── 分类规则 ─────────────────────────────────────────
@@ -101,8 +106,57 @@ _FACTUAL_PATTERNS = [
 ]
 
 
+def _extract_persons(text: str) -> list[str]:
+    """V3 收尾 M5 · 抽人物 (中文姓名 + 角色)."""
+    persons: list[str] = []
+    seen: set[str] = set()
+    # 角色 (含姓): 王主任 / 张总 / 李秘书长 / 强哥 / 高老师
+    for m in re.finditer(r"([一-龥]{1,2})(主任|总|秘书长|理事长|总经理|项目经理|执行人|负责人|老师|哥|姐|教练|经理)", text):
+        p = m.group(0)
+        if p not in seen:
+            seen.add(p); persons.append(p)
+    # 全名: 2-3 字中文 + 后接动词(说/承诺/确认/...)
+    for m in re.finditer(r"([一-龥]{2,3})(?=\s*[说承诺确认表示提出反馈])", text):
+        p = m.group(1)
+        if 2 <= len(p) <= 3 and p not in seen and p not in {"我们", "他们", "你们", "客户", "用户"}:
+            seen.add(p); persons.append(p)
+    return persons[:8]
+
+
+def _extract_history_refs(text: str) -> list[dict]:
+    """V3 收尾 M5 · 抽历史指代 (复用 historical_material_resolver 的 rule 抽取)."""
+    refs: list[dict] = []
+    seen: set[str] = set()
+    # 月份+合同/协议
+    for m in re.finditer(r"([0-9一二三四五六七八九十]{1,2})\s*月(?:份)?(?:签|订)?(?:的)?(补充协议|合同|协议|备忘录|方案)", text):
+        rt = m.group(0).strip()
+        if rt not in seen:
+            seen.add(rt); refs.append({"ref_text": rt[:80], "ref_type": "contract_reference"})
+    # 历史指代+名词
+    for m in re.finditer(r"(上次|上一[版次份回]|上回|前次|之前的|曾经的?|原来的?|沿用)([一-龥]{0,12}(?:合同|协议|方案|计划|会议|纪要|材料|文件|说明))?", text):
+        rt = m.group(0)[:60]
+        if rt not in seen:
+            seen.add(rt); refs.append({"ref_text": rt, "ref_type": "contract_reference" if "合同" in rt or "协议" in rt else "fact_reference"})
+    # 续签/延续
+    for m in re.finditer(r"(续签|延续|沿用)([一-龥]{0,12})", text):
+        rt = m.group(0)[:50]
+        if rt not in seen:
+            seen.add(rt); refs.append({"ref_text": rt, "ref_type": "contract_reference"})
+    return refs[:5]
+
+
+_UNCERTAINTY_PATTERNS = [
+    "不太清楚", "不知道", "不确定", "可能要确认", "需要核实",
+    "好像", "印象中", "记不清", "稍后确认", "回头查一下",
+    "暂时不能确定", "得问问", "还要核对",
+]
+
+
 def classify_message(content: str) -> ClassifyResult:
-    """规则分类 user 消息意图."""
+    """规则分类 user 消息意图.
+
+    V3 收尾 M5 升级: 加 _extract_persons / _extract_history_refs / triggers_clarification.
+    """
     text = (content or "").strip()
     if not text:
         return ClassifyResult(intent="chitchat", confidence=1.0)
@@ -113,12 +167,26 @@ def classify_message(content: str) -> ClassifyResult:
     numbers = re.findall(r"\d+\s*(?:万|千|百|所|个|条|份|位|月|日|年)", text)
     has_factual_pattern = any(re.search(p, text) for p in _FACTUAL_PATTERNS)
 
+    # V3 收尾 M5: 人物 / 历史指代 / 待澄清触发 (所有 intent 都抽)
+    persons = _extract_persons(text)
+    history_refs = _extract_history_refs(text)
+    triggers_clarification = any(p in text for p in _UNCERTAINTY_PATTERNS)
+    clarification_reason = ""
+    if triggers_clarification:
+        for p in _UNCERTAINTY_PATTERNS:
+            if p in text:
+                clarification_reason = f"用户表达不确定: '{p}'"
+                break
+
     # 1. 纠错(优先级最高,因为"实际是"很明确)
     for kw in _CORRECTION_PATTERNS:
         if kw in text:
             return ClassifyResult(
                 intent="correction", confidence=0.9,
                 extracted_numbers=numbers, matched_pattern=kw,
+                extracted_persons=persons, history_refs=history_refs,
+                triggers_clarification=triggers_clarification,
+                clarification_reason=clarification_reason,
             )
 
     # 2. 问题 (问号、请求语)
@@ -127,7 +195,12 @@ def classify_message(content: str) -> ClassifyResult:
         or any(text.startswith(h) for h in _QUESTION_HEADS)
     )
     if is_question:
-        return ClassifyResult(intent="question", confidence=0.85)
+        return ClassifyResult(
+            intent="question", confidence=0.85,
+            extracted_persons=persons, history_refs=history_refs,
+            triggers_clarification=triggers_clarification,
+            clarification_reason=clarification_reason,
+        )
 
     # 3. 承诺
     for kw in _COMMITMENT_PATTERNS:
@@ -135,6 +208,9 @@ def classify_message(content: str) -> ClassifyResult:
             return ClassifyResult(
                 intent="commitment", confidence=0.85,
                 extracted_numbers=numbers, matched_pattern=kw,
+                extracted_persons=persons, history_refs=history_refs,
+                triggers_clarification=triggers_clarification,
+                clarification_reason=clarification_reason,
             )
 
     # 4. 风险
@@ -143,6 +219,9 @@ def classify_message(content: str) -> ClassifyResult:
             return ClassifyResult(
                 intent="risk", confidence=0.85,
                 extracted_numbers=numbers, matched_pattern=kw,
+                extracted_persons=persons, history_refs=history_refs,
+                triggers_clarification=triggers_clarification,
+                clarification_reason=clarification_reason,
             )
 
     # 5. 用户判断
@@ -151,17 +230,28 @@ def classify_message(content: str) -> ClassifyResult:
             return ClassifyResult(
                 intent="judgment", confidence=0.8,
                 extracted_numbers=numbers, matched_pattern=kw,
+                extracted_persons=persons, history_refs=history_refs,
+                triggers_clarification=triggers_clarification,
+                clarification_reason=clarification_reason,
             )
 
-    # 6. 事实陈述 (含数字/角色)
-    if has_factual_pattern or numbers:
+    # 6. 事实陈述 (含数字/角色/人物/历史)
+    if has_factual_pattern or numbers or persons or history_refs:
         return ClassifyResult(
             intent="factual_assertion", confidence=0.7,
-            extracted_numbers=numbers, matched_pattern="numeric/role",
+            extracted_numbers=numbers, matched_pattern="numeric/role/person/history",
+            extracted_persons=persons, history_refs=history_refs,
+            triggers_clarification=triggers_clarification,
+            clarification_reason=clarification_reason,
         )
 
     # 7. 其它视为 chitchat (默认跳过)
-    return ClassifyResult(intent="chitchat", confidence=0.6)
+    return ClassifyResult(
+        intent="chitchat", confidence=0.6,
+        extracted_persons=persons, history_refs=history_refs,
+        triggers_clarification=triggers_clarification,
+        clarification_reason=clarification_reason,
+    )
 
 
 # ─── 入库 ─────────────────────────────────────────────
@@ -223,9 +313,54 @@ def ingest_chat_message(
     message_id: str, content: str,
     user_id: str = "workbench_user",
 ) -> tuple[ClassifyResult, dict]:
-    """处理 1 条 user chat_message, 返回 (分类结果, action 摘要)."""
+    """处理 1 条 user chat_message, 返回 (分类结果, action 摘要).
+
+    V3 收尾 M5 升级: 任何 intent 都尝试抽历史指代 / 写人物到 entities /
+    触发 clarification 当 triggers_clarification=true.
+    """
     cls = classify_message(content)
-    action = {"intent": cls.intent, "written_fact_ids": []}
+    action = {
+        "intent": cls.intent, "written_fact_ids": [],
+        "persons_extracted": cls.extracted_persons,
+        "history_refs_extracted": cls.history_refs,
+        "triggers_clarification": cls.triggers_clarification,
+    }
+
+    # V3 收尾 M5: 即使 intent=question/chitchat 也抽历史指代到 historical_reference_links
+    if cls.history_refs:
+        try:
+            from app.services.historical_material_resolver import resolve_review_references
+            text_for_resolve = " ".join(h["ref_text"] for h in cls.history_refs)
+            r = resolve_review_references(
+                db, client_id=client_id, review_text=content[:2000],
+                source_doc_type="chat", source_doc_id=message_id, use_llm=False,
+            )
+            action["historical_links_written"] = r.get("historical_links_written", 0)
+            action["clarifications_from_history"] = r.get("references_clarification", 0)
+        except Exception as exc:
+            action["history_resolve_error"] = str(exc)
+
+    # V3 收尾 M5: 触发 clarification 当 triggers_clarification 且 intent in (factual/judgment/commitment)
+    if cls.triggers_clarification and cls.intent in ("factual_assertion", "judgment", "commitment"):
+        try:
+            now = _now_iso()
+            clar_id = f"clar_chat_{uuid.uuid4().hex[:20]}"
+            db.execute(
+                """INSERT INTO clarification_records (
+                    id, scope_type, scope_id, slot_key, question, status,
+                    write_scope_json, resolved_fact_ids_json, reusable,
+                    created_at, updated_at
+                ) VALUES (?, 'client', ?, ?, ?, 'pending', '{}', '[]', 0, ?, ?)""",
+                (
+                    clar_id, client_id,
+                    f"chat_uncertainty/{message_id[:8]}",
+                    f"{cls.clarification_reason}: {content[:120]}",
+                    now, now,
+                ),
+            )
+            action["clarification_id"] = clar_id
+        except Exception as exc:
+            action["clarification_error"] = str(exc)
 
     if cls.intent in ("question", "chitchat"):
         return cls, action
