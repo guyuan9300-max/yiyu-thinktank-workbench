@@ -1,0 +1,176 @@
+{
+  "data_gaps_total": 16,
+  "eec_total": 2,
+  "per_client": {
+    "日慈基金会": {
+      "gaps_detected": 10,
+      "gap_ids": [
+        "gap_5a6d250258d1432d9899a724",
+        "gap_49255a678f5c4d3d858630ce",
+        "gap_3cfb046184024d30b02df78e",
+        "gap_61dd833efef0452c9061f42d",
+        "gap_d389887a8cca4204a96f9e8d",
+        "gap_5dbec74bd23242bc99b2fca3",
+        "gap_d30d8873688c4370b1bbc43a",
+        "gap_92fcfe791f024cbdb25c804a",
+        "gap_4b25e3ee9eab45bea246013b",
+        "gap_fe95db7cc3f547719c02fc51"
+      ],
+      "gap_details": [
+        {
+          "type": "no_external_evidence",
+          "subject": "CEO",
+          "internal": null,
+          "external": null,
+          "action": "检索外部官网/媒体确认 CEO 的对外口径"
+        },
+        {
+          "type": "no_external_evidence",
+          "subject": "CEO/秘书长",
+          "internal": null,
+          "external": null,
+          "action": "检索外部官网/媒体确认 CEO/秘书长 的对外口径"
+        },
+        {
+          "type": "no_external_evidence",
+          "subject": "上会议题形成决定或明确owner的比例",
+          "internal": null,
+          "external": null,
+          "action": "检索外部官网/媒体确认 上会议题形成决定或明确owner的比例 的对外口径"
+        },
+        {
+          "type": "no_external_evidence",
+          "subject": "任务按期完成率",
+          "internal": null,
+          "external": null,
+          "action": "检索外部官网/媒体确认 任务按期完成率 的对外口径"
+        },
+        {
+          "type": "no_external_evidence",
+          "subject": "会前材料准时率",
+          "internal": null,
+          "external": null,
+          "action": "检索外部官网/媒体确认 会前材料准时率 的对外口径"
+        },
+        {
+          "type": "no_external_evidence",
+          "subject": "会后24小时内任务落账率",
+          "internal": null,
+          "external": null,
+          "action": "检索外部官网/媒体确认 会后24小时内任务落账率 的对外口径"
+        },
+        {
+          "type": "no_external_evidence",
+          "subject": "会总部",
+          "internal": null,
+          "external": null,
+          "action": "检索外部官网/媒体确认 会总部 的对外口径"
+        },
+        {
+          "type": "no_external_evidence",
+          "subject": "会议",
+          "internal": null,
+          "external": null,
+          "action": "检索外部官网/媒体确认 会议 的对外口径"
+        },
+        {
+          "type": "no_external_evidence",
+          "subject": "会议总台账",
+          "internal": null,
+          "external": null,
+          "action": "检索外部官网/媒体确认 会议总台账 的对外口径"
+        },
+        {
+          "type": "no_external_evidence",
+          "subject": "兴盛与心理魔法学院",
+          "internal": null,
+          "external": null,
+          "action": "检索外部官网/媒体确认 兴盛与心理魔法学院 的对外口径"
+        }
+      ],
+      "external_harvest": {
+        "items_found": 2,
+        "cards_written": 2,
+        "keywords": [
+          "日慈基金会"
+        ]
+      }
+    },
+    "CFFC": {
+      "gaps_detected": 5,
+      "gap_ids": [
+        "gap_98f1a8ab92de4359996c392b",
+        "gap_4edde051eb50477588d77cad",
+        "gap_b65f14f2c00f4ddd986de25a",
+        "gap_c1dc2ba389e24549b3bf6f13",
+        "gap_5208f736fb794c0b9c346899"
+      ],
+      "gap_details": [
+        {
+          "type": "no_external_evidence",
+          "subject": "人家就是个摆",
+          "internal": null,
+          "external": null,
+          "action": "检索外部官网/媒体确认 人家就是个摆 的对外口径"
+        },
+        {
+          "type": "no_external_evidence",
+          "subject": "合规工作应定",
+          "internal": null,
+          "external": null,
+          "action": "检索外部官网/媒体确认 合规工作应定 的对外口径"
+        },
+        {
+          "type": "no_external_evidence",
+          "subject": "基金会",
+          "internal": null,
+          "external": null,
+          "action": "检索外部官网/媒体确认 基金会 的对外口径"
+        },
+        {
+          "type": "no_external_evidence",
+          "subject": "洪湖进化能力建",
+          "internal": null,
+          "external": null,
+          "action": "检索外部官网/媒体确认 洪湖进化能力建 的对外口径"
+        },
+        {
+          "type": "no_external_evidence",
+          "subject": "近一半的机构",
+          "internal": null,
+          "external": null,
+          "action": "检索外部官网/媒体确认 近一半的机构 的对外口径"
+        }
+      ],
+      "external_harvest": {
+        "items_found": 0,
+        "cards_written": 0,
+        "keywords": [
+          "CFFC"
+        ]
+      }
+    },
+    "善加基金会": {
+      "gaps_detected": 1,
+      "gap_ids": [
+        "gap_2c47926d23914a2dafff5e42"
+      ],
+      "gap_details": [
+        {
+          "type": "no_external_evidence",
+          "subject": "善加基金会",
+          "internal": null,
+          "external": null,
+          "action": "检索外部官网/媒体确认 善加基金会 的对外口径"
+        }
+      ],
+      "external_harvest": {
+        "items_found": 0,
+        "cards_written": 0,
+        "keywords": [
+          "善加基金会"
+        ]
+      }
+    }
+  }
+}
