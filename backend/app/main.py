@@ -38962,6 +38962,327 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             },
         }
 
+    # ──────────────────────────────────────────────────────────────────────
+    # V3.0 M3 · Agent 可行动接口 (顾源源 V3 收束指令 §七)
+    # 让数据中心能把"状态和判断"转成可操作候选动作, 但不越权执行:
+    #   1. POST /clients/{id}/actions/suggest   — action_candidate_engine
+    #   2. POST /actions/dry-run                — 不写库的预演
+    # 危险动作必须 approval_required + 必须走 Approval Queue
+    # ──────────────────────────────────────────────────────────────────────
+
+    @app.post("/api/v1/clients/{client_id}/actions/suggest")
+    def suggest_client_actions(
+        client_id: str,
+        payload: dict = Body(default_factory=dict),
+        x_actor_type: str = Header("external_ai_agent", alias="X-Actor-Type"),
+        x_actor_id: str = Header("", alias="X-Actor-Id"),
+    ) -> dict:
+        """V3.0 M3-1 · 基于当前客户状态, 给 Agent 一组可执行候选动作.
+
+        返回 ≥5 candidates, 每条含:
+          · type / reason / risk_level / approval_required / evidence (≥1 张表) /
+            endpoint_hint / dry_run_endpoint / user_visible_result
+        """
+        build_client_summary(client_id)
+        # 复用 ContextBuilder 抓状态
+        from app.services.company_brain_context_builder import build_company_brain_context
+        pack = build_company_brain_context(state.db, client_id=client_id, task_type="workbench_qa")
+        ev = pack.evidence_summary
+
+        actions: list[dict] = []
+
+        def _act(*, type_, reason, risk, approval, evidence_tables, endpoint, dry_endpoint, user_result, payload_hint=None):
+            return {
+                "type": type_,
+                "reason": reason,
+                "risk_level": risk,
+                "approval_required": approval,
+                "evidence": {
+                    "tables": evidence_tables,
+                    "counts": {t: int(ev.get(_evidence_key(t), 0) or 0) for t in evidence_tables},
+                },
+                "endpoint_hint": endpoint,
+                "dry_run_endpoint": dry_endpoint,
+                "user_visible_result": user_result,
+                "payload_hint": payload_hint or {},
+            }
+
+        def _evidence_key(table: str) -> str:
+            mapping = {
+                "clarification_records": "clarifications_pending",
+                "approval_queue": "approvals_pending",
+                "data_gaps": "data_gaps",
+                "risk_signals": "risks",
+                "commitments": "commitments",
+                "atomic_facts": "facts_authoritative",
+                "contract_structures": "contracts",
+                "file_identities": "files",
+                "historical_reference_links": "historical_links",
+                "event_line_activities": "timeline_events",
+                "external_evidence_cards": "external_evidence",
+            }
+            return mapping.get(table, table)
+
+        # 1. resolve_clarification (低风险)
+        if (ev.get("clarifications_pending") or 0) > 0:
+            actions.append(_act(
+                type_="resolve_clarification",
+                reason=f"{ev['clarifications_pending']} 条待澄清需用户判断",
+                risk="low", approval=False,
+                evidence_tables=["clarification_records"],
+                endpoint=f"GET /api/v1/clients/{client_id}/clarifications",
+                dry_endpoint=f"POST /api/v1/actions/dry-run",
+                user_result="待澄清面板会列出问题, 用户回答后写权威值",
+            ))
+        # 2. compensate_data_gap (低风险)
+        if (ev.get("data_gaps") or 0) > 0:
+            actions.append(_act(
+                type_="compensate_data_gap",
+                reason=f"{ev['data_gaps']} 个数据缺口未补",
+                risk="low", approval=False,
+                evidence_tables=["data_gaps"],
+                endpoint=f"POST /api/v1/clients/{client_id}/data-gaps/compensate",
+                dry_endpoint=f"POST /api/v1/actions/dry-run",
+                user_result="工作台会出现新的 external_evidence 卡片让用户审阅",
+                payload_hint={"client_id": client_id},
+            ))
+        # 3. review_approval (中风险)
+        if (ev.get("approvals_pending") or 0) > 0:
+            actions.append(_act(
+                type_="review_approval",
+                reason=f"{ev['approvals_pending']} 条审批待决",
+                risk="medium", approval=False,
+                evidence_tables=["approval_queue"],
+                endpoint=f"GET /api/v1/approvals?client_id={client_id}",
+                dry_endpoint=f"POST /api/v1/actions/dry-run",
+                user_result="审批面板会出现 pending 项",
+            ))
+        # 4. create_task_draft (中风险, 需 approval)
+        if (ev.get("commitments") or 0) >= 1 or (ev.get("risks") or 0) >= 1:
+            actions.append(_act(
+                type_="create_task_draft",
+                reason="承诺或风险已登记, Agent 可起草后续任务",
+                risk="medium", approval=True,
+                evidence_tables=["commitments", "risk_signals"],
+                endpoint=f"POST /api/v1/tasks (with X-Actor-Type and Idempotency-Key)",
+                dry_endpoint=f"POST /api/v1/actions/dry-run",
+                user_result="任务面板出现 status=todo 的 AI 起草任务, 用户确认后发布",
+                payload_hint={"clientId": client_id, "scopeMode": "COLLAB_SHARED", "listId": "list-1"},
+            ))
+        # 5. refresh_strategy_narrative (低风险)
+        if (ev.get("risks") or 0) >= 3 or (ev.get("commitments") or 0) >= 5:
+            actions.append(_act(
+                type_="refresh_strategy_narrative",
+                reason=f"风险 {ev.get('risks',0)} 条 + 承诺 {ev.get('commitments',0)} 条, 战略叙事可刷新",
+                risk="low", approval=False,
+                evidence_tables=["risk_signals", "commitments", "event_line_activities"],
+                endpoint=f"POST /api/v1/clients/{client_id}/narratives/refresh",
+                dry_endpoint=f"POST /api/v1/actions/dry-run",
+                user_result="战略陪伴 6 段叙事会重新生成, 在战略陪伴面板可见",
+            ))
+        # 6. ingest_historical_resolve (低风险)
+        if (ev.get("clarifications_pending") or 0) > 0 or (ev.get("historical_links") or 0) >= 3:
+            actions.append(_act(
+                type_="resolve_historical_references",
+                reason="文本里历史指代已累积, 可批量回指",
+                risk="low", approval=False,
+                evidence_tables=["historical_reference_links"],
+                endpoint=f"POST /api/v1/clients/{client_id}/text/resolve-history",
+                dry_endpoint=f"POST /api/v1/actions/dry-run",
+                user_result="历史关联面板更新, 多候选进澄清",
+                payload_hint={"text": "...", "source_doc_type": "review|task|chat"},
+            ))
+        # 7. publish_task_after_review (高风险, 强制 approval)
+        actions.append(_act(
+            type_="publish_task_with_external_action",
+            reason="任何对外发送(微信/邮件/飞书) 都是高风险动作",
+            risk="high", approval=True,
+            evidence_tables=["approval_queue"],
+            endpoint=f"POST /api/v1/feishu/tasks/push (受 approval gate)",
+            dry_endpoint=f"POST /api/v1/actions/dry-run",
+            user_result="审批通过前不发, 通过后用户在飞书收到任务",
+        ))
+
+        # 数据较薄时兜底建议
+        if not actions:
+            actions.append(_act(
+                type_="ingest_new_material",
+                reason="客户上下文较薄, 建议导入更多材料丰富公司大脑",
+                risk="low", approval=False,
+                evidence_tables=["file_identities", "atomic_facts"],
+                endpoint=f"POST /api/v1/clients/{client_id}/documents/smart-import",
+                dry_endpoint=f"POST /api/v1/actions/dry-run",
+                user_result="客户工作区会出现新文件 + 自动抽取 atomic_facts",
+            ))
+
+        # 排序: high-priority + low-risk 优先 (用户最该先看)
+        priority_order = ["resolve_clarification", "compensate_data_gap", "review_approval",
+                          "create_task_draft", "refresh_strategy_narrative",
+                          "resolve_historical_references", "publish_task_with_external_action",
+                          "ingest_new_material"]
+        actions.sort(key=lambda a: priority_order.index(a["type"]) if a["type"] in priority_order else 99)
+
+        # 审计
+        try:
+            from app.services.agent_governance import log_agent_run_start, log_agent_run_complete
+            run_id = log_agent_run_start(
+                state.db,
+                actor_type=x_actor_type,  # type: ignore
+                actor_id=x_actor_id or "anonymous",
+                tool_name="actions-suggest",
+                input_payload={"client_id": client_id},
+                client_id=client_id,
+            )
+            log_agent_run_complete(state.db, run_id, status="success",
+                                   output_payload={"candidate_count": len(actions)})
+        except Exception:
+            pass
+
+        return {
+            "client_id": client_id,
+            "total": len(actions),
+            "actions": actions,
+            "approval_required_count": sum(1 for a in actions if a["approval_required"]),
+            "high_risk_count": sum(1 for a in actions if a["risk_level"] == "high"),
+            "evidence_coverage": {
+                "actions_with_evidence": sum(1 for a in actions if a["evidence"]["tables"]),
+                "total": len(actions),
+                "percent": f"{100 * sum(1 for a in actions if a['evidence']['tables']) // max(1,len(actions))}%",
+            },
+        }
+
+    @app.post("/api/v1/actions/dry-run")
+    def dry_run_action(
+        payload: dict = Body(...),
+        x_actor_type: str = Header("external_ai_agent", alias="X-Actor-Type"),
+        x_actor_id: str = Header("", alias="X-Actor-Id"),
+    ) -> dict:
+        """V3.0 M3-2 · Agent dry-run 预演 — 告诉 Agent 如果执行会改哪些表 / 需要哪些审批.
+
+        body: {action_type: str, client_id?: str, payload: dict}
+        返回:
+          · would_write_tables: 会改的表
+          · would_call_services: 会调的 service
+          · approval_required: bool
+          · approval_action_type: 如果需要审批, 哪种
+          · estimated_db_changes: dict (表 → delta 估算)
+          · safety_check: 各项安全门槛是否过
+        硬约束: 本 endpoint 自身绝对不写任何业务库.
+        """
+        action_type = str(payload.get("action_type") or "").strip()
+        client_id = payload.get("client_id")
+        inner_payload = payload.get("payload") or {}
+        if not action_type:
+            raise HTTPException(status_code=400, detail="action_type required")
+
+        # M3 dry-run 知识库 (硬编码各 action 的元数据)
+        ACTION_KB: dict[str, dict] = {
+            "resolve_clarification": {
+                "would_write_tables": ["clarification_records (status→resolved)", "atomic_facts (verification_status→user_confirmed)"],
+                "would_call_services": ["clarification_record_writer.confirm_clarification"],
+                "approval_required": False,
+                "approval_action_type": None,
+                "estimated_db_changes": {"clarification_records": "-1 pending", "atomic_facts": "+1 user_confirmed"},
+            },
+            "compensate_data_gap": {
+                "would_write_tables": ["data_gaps (+detected)", "external_evidence_cards (+harvested)", "agent_run_log (+1)"],
+                "would_call_services": ["data_gap_compensator.run_data_gap_pipeline"],
+                "approval_required": False,
+                "approval_action_type": None,
+                "estimated_db_changes": {"data_gaps": "+N (detect)", "external_evidence_cards": "+N (harvest)", "agent_run_log": "+1"},
+            },
+            "review_approval": {
+                "would_write_tables": ["approval_queue (status→approved|rejected)", "agent_run_log (+1)"],
+                "would_call_services": ["agent_governance.decide_approval"],
+                "approval_required": False,
+                "approval_action_type": None,
+                "estimated_db_changes": {"approval_queue": "-1 pending"},
+            },
+            "create_task_draft": {
+                "would_write_tables": ["tasks (+1)", "historical_reference_links (+N if 含历史指代)", "clarification_records (+N if 多候选)", "agent_run_log (+1)"],
+                "would_call_services": ["create_task", "historical_material_resolver.resolve_review_references"],
+                "approval_required": True,
+                "approval_action_type": "task.publish",
+                "estimated_db_changes": {"tasks": "+1", "historical_reference_links": "+0-6", "clarification_records": "+0-4", "approval_queue": "+1 if publish"},
+            },
+            "refresh_strategy_narrative": {
+                "would_write_tables": ["strategic_thought_insights (+N)", "agent_run_log (+1)"],
+                "would_call_services": ["narrative_generator.refresh", "company_brain_context_builder.build (strategy_narrative)"],
+                "approval_required": False,
+                "approval_action_type": None,
+                "estimated_db_changes": {"strategic_thought_insights": "+6 (六段叙事)"},
+            },
+            "resolve_historical_references": {
+                "would_write_tables": ["historical_reference_links (+N)", "clarification_records (+N if 多候选)", "agent_run_log (+1)"],
+                "would_call_services": ["historical_material_resolver.resolve_review_references"],
+                "approval_required": False,
+                "approval_action_type": None,
+                "estimated_db_changes": {"historical_reference_links": "+1-6", "clarification_records": "+0-4"},
+            },
+            "publish_task_with_external_action": {
+                "would_write_tables": ["approval_queue (+1 pending)", "agent_run_log (+1)"],
+                "would_call_services": ["agent_governance.enqueue_approval (REQUIRED before push)"],
+                "approval_required": True,
+                "approval_action_type": "external.publish",
+                "estimated_db_changes": {"approval_queue": "+1 (must wait for human)"},
+                "external_side_effect": "WeChat / Email / Feishu push — strictly behind approval",
+            },
+            "ingest_new_material": {
+                "would_write_tables": ["v2_documents (+1)", "atomic_facts (+N from extraction)", "file_identities (+1)", "contract_structures (+1 if contract)", "agent_run_log (+1)"],
+                "would_call_services": ["smart_import.run_pipeline", "file_identity_classifier", "contract_structure_parser"],
+                "approval_required": False,
+                "approval_action_type": None,
+                "estimated_db_changes": {"v2_documents": "+1", "atomic_facts": "+10-50 (depends)", "file_identities": "+1"},
+            },
+        }
+
+        kb = ACTION_KB.get(action_type)
+        if not kb:
+            raise HTTPException(
+                status_code=400,
+                detail=f"unknown action_type '{action_type}'. Supported: {sorted(ACTION_KB.keys())}",
+            )
+
+        # Safety check (硬门槛 dry-run)
+        safety_check = {
+            "writes_no_db": True,  # 本 endpoint 自身不写库 (HARD)
+            "approval_enforced_if_required": True,  # 真执行路径走 enqueue_approval
+            "actor_audited": bool(x_actor_type),
+            "client_scoped": (client_id is not None) if action_type not in ("review_approval",) else True,
+            "rollback_safe": kb.get("approval_required") or action_type in ("compensate_data_gap", "resolve_historical_references"),
+        }
+
+        # 审计 (本 dry-run 自己也是 agent_run, 标 dry_run=1)
+        try:
+            from app.services.agent_governance import log_agent_run_start, log_agent_run_complete
+            run_id = log_agent_run_start(
+                state.db,
+                actor_type=x_actor_type,  # type: ignore
+                actor_id=x_actor_id or "anonymous",
+                tool_name=f"actions-dry-run:{action_type}",
+                input_payload={"client_id": client_id, "action_type": action_type, "inner_payload": inner_payload},
+                client_id=client_id,
+            )
+            log_agent_run_complete(state.db, run_id, status="success",
+                                   output_payload={"would_write_tables_count": len(kb["would_write_tables"])})
+        except Exception:
+            pass
+
+        return {
+            "action_type": action_type,
+            "client_id": client_id,
+            "inner_payload_received": inner_payload,
+            "would_write_tables": kb["would_write_tables"],
+            "would_call_services": kb["would_call_services"],
+            "approval_required": kb["approval_required"],
+            "approval_action_type": kb["approval_action_type"],
+            "estimated_db_changes": kb["estimated_db_changes"],
+            "external_side_effect": kb.get("external_side_effect"),
+            "safety_check": safety_check,
+            "dry_run_safe": all(safety_check.values()),
+            "note": "本 endpoint 自身绝对不写业务库. 真执行需走对应 endpoint_hint.",
+        }
+
     @app.post("/api/v1/clients/{client_id}/authority/resolve")
     def resolve_client_authority(
         client_id: str,
