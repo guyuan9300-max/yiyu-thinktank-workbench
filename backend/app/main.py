@@ -3020,6 +3020,48 @@ def init_database_with_migration_guard(data_dir: Path) -> tuple[Database, Path |
         raise
 
 
+# V2.5 R2 fix · 模块级 Pydantic 类 (FastAPI 闭包内 ForwardRef 解析失败)
+class _MeetingMinuteProcessRequest(BaseModel):
+    client_id: str
+    meeting_text: str
+    mode: str = "draft"
+
+
+class _MeetingMinuteProcessResponse(BaseModel):
+    run_id: str
+    client_id: str
+    atomic_facts_added: int
+    risks_added: int
+    commitments_added: int
+    insights_added: int
+    clarifications_added: int
+    task_drafts_added: int
+    event_line_activities_added: int
+    approval_queue_ids: list[str]
+    elapsed_seconds: float
+    errors: list[str]
+    idempotency_replayed: bool = False
+
+
+class _ApprovalRowR2(BaseModel):
+    id: str
+    client_id: str | None = None
+    action_type: str
+    actor_type: str
+    actor_id: str
+    target_resource: str | None = None
+    payload: dict
+    reason: str
+    status: str
+    agent_run_id: str | None = None
+    created_at: str
+
+
+class _ApprovalDecisionBodyR2(BaseModel):
+    decided_by: str
+    note: str = ""
+
+
 def create_app(data_dir: Path | None = None) -> FastAPI:
     resolved_data_dir = data_dir or Path(
         os.getenv("YIYU_WORKBENCH_DATA_DIR") or (Path.home() / "Library" / "Application Support" / "YiyuThinkTankWorkbench2")
@@ -38020,6 +38062,142 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             return approval
         except ValueError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    # ─── V2.5 R2 fix · 暴露 4 个 HTTP endpoint (B sync 钦定) ───────────────────
+    # 顾源源 5/23 拍板: R4 P0 不替代 R2 endpoint 暴露.
+    # 走 V2.5 R2-A/R2-B 服务 (agent_governance / meeting_minute_processor).
+    # Pydantic 类在模块顶层 (FastAPI 闭包内 ForwardRef 解析失败).
+
+    @app.post("/api/v1/meeting-minutes/process", response_model=_MeetingMinuteProcessResponse)
+    def process_meeting_minute_endpoint(
+        request: Request,
+        payload: _MeetingMinuteProcessRequest = Body(...),
+    ) -> _MeetingMinuteProcessResponse:
+        """会议纪要处理端到端 (V2.5 R2-B).
+
+        Headers:
+          X-Actor-Type:   internal_ai | external_agent | user | system
+          X-Actor-Id:     调用方标识
+          X-Agent-Run-Id: 关联 run id (可选, session 用)
+          Idempotency-Key: 重复跑去重 (顾源源硬门槛 5)
+        """
+        from app.services.meeting_minute_processor import process_meeting_minute
+        from app.services.agent_governance import check_idempotency, record_idempotency
+
+        actor_type = request.headers.get("X-Actor-Type", "internal_ai")
+        actor_id = request.headers.get("X-Actor-Id", "api_caller")
+        session_id = request.headers.get("X-Agent-Run-Id")
+        idem_key = request.headers.get("Idempotency-Key")
+
+        if idem_key:
+            existing = check_idempotency(state.db, idem_key)
+            if existing and existing.get("outcome"):
+                outcome = existing["outcome"]
+                outcome["idempotency_replayed"] = True
+                return _MeetingMinuteProcessResponse(**outcome)
+
+        try:
+            result = process_meeting_minute(
+                state.db,
+                client_id=payload.client_id,
+                minute_text=payload.meeting_text,
+                actor_type=actor_type,
+                actor_id=actor_id,
+                session_id=session_id,
+            )
+        except Exception as exc:
+            raise HTTPException(status_code=502, detail=f"会议纪要处理失败: {exc}") from exc
+
+        response = _MeetingMinuteProcessResponse(
+            run_id=result.run_id,
+            client_id=result.client_id,
+            atomic_facts_added=len(result.new_facts),
+            risks_added=len(result.new_risks),
+            commitments_added=len(result.new_commitments),
+            insights_added=len(result.new_insights),
+            clarifications_added=len(result.new_clarifications),
+            task_drafts_added=len(result.new_task_drafts),
+            event_line_activities_added=result.new_event_line_count,
+            approval_queue_ids=result.approval_queue_ids,
+            elapsed_seconds=result.elapsed_seconds,
+            errors=result.errors[:5],
+        )
+
+        if idem_key:
+            record_idempotency(
+                state.db, idem_key,
+                run_id=result.run_id,
+                outcome=response.model_dump(),
+            )
+        return response
+
+    @app.get("/api/v1/approvals", response_model=list[_ApprovalRowR2])
+    def list_approvals_endpoint(
+        client_id: str | None = None, limit: int = 50,
+    ) -> list[_ApprovalRowR2]:
+        """V2.5 R2-A · 列待审批 (approval_queue 表)."""
+        from app.services.agent_governance import list_pending_approvals
+        rows = list_pending_approvals(state.db, client_id=client_id, limit=limit)
+        result = []
+        for r in rows:
+            try:
+                payload_dict = json.loads(r.get("payload_json") or "{}")
+            except Exception:
+                payload_dict = {}
+            result.append(_ApprovalRowR2(
+                id=r["id"],
+                client_id=r.get("client_id"),
+                action_type=r["action_type"],
+                actor_type=r["actor_type"],
+                actor_id=r["actor_id"],
+                target_resource=r.get("target_resource"),
+                payload=payload_dict,
+                reason=r.get("reason", ""),
+                status=r["status"],
+                agent_run_id=r.get("agent_run_id"),
+                created_at=r["created_at"],
+            ))
+        return result
+
+    @app.post("/api/v1/approvals/{approval_id}/approve")
+    def approve_endpoint_r2(
+        approval_id: str,
+        payload: _ApprovalDecisionBodyR2 = Body(...),
+    ) -> dict:
+        """V2.5 R2-A · 用户审批通过."""
+        from app.services.agent_governance import decide_approval as gov_decide
+        ok = gov_decide(
+            state.db, approval_id,
+            decision="approved",
+            decided_by=payload.decided_by,
+            decision_note=payload.note,
+        )
+        if not ok:
+            raise HTTPException(
+                status_code=404, detail="approval not found or not pending",
+            )
+        return {"id": approval_id, "status": "approved",
+                "decided_by": payload.decided_by}
+
+    @app.post("/api/v1/approvals/{approval_id}/reject")
+    def reject_endpoint_r2(
+        approval_id: str,
+        payload: _ApprovalDecisionBodyR2 = Body(...),
+    ) -> dict:
+        """V2.5 R2-A · 用户审批拒绝."""
+        from app.services.agent_governance import decide_approval as gov_decide
+        ok = gov_decide(
+            state.db, approval_id,
+            decision="rejected",
+            decided_by=payload.decided_by,
+            decision_note=payload.note,
+        )
+        if not ok:
+            raise HTTPException(
+                status_code=404, detail="approval not found or not pending",
+            )
+        return {"id": approval_id, "status": "rejected",
+                "decided_by": payload.decided_by}
 
     @app.get("/api/v1/clients/{client_id}/judgments", response_model=list[JudgmentVersionRecord])
     def get_client_judgments(client_id: str) -> list[JudgmentVersionRecord]:
