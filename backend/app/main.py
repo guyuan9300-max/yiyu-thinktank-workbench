@@ -38391,6 +38391,255 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         return {"id": approval_id, "status": "rejected",
                 "decided_by": payload.decided_by}
 
+    # ──────────────────────────────────────────────────────────────────────
+    # V3.0 M1 · Agent 可读接口 (顾源源 5/23 V3 收束指令)
+    # 把数据中心做成 "AI 可稳定调用的公司大脑底座":
+    #   1. GET /clients/{id}/agent-state         — 一次拿完整快照
+    #   2. GET /clients/{id}/data-gaps            — Agent 读已知缺口
+    #   3. POST /clients/{id}/data-gaps/compensate — Agent 触发补证
+    #   4. GET /agent-run-logs[?client_id=&actor_type=&limit=] — Agent 看调用历史
+    #   5. GET /agent-run-logs/{run_id}            — 单条详情
+    # 跨客户隔离 / JSON schema / 不绕 Approval Queue / 审计 actor_type
+    # ──────────────────────────────────────────────────────────────────────
+
+    @app.get("/api/v1/clients/{client_id}/agent-state")
+    def get_client_agent_state(
+        client_id: str,
+        task_type: str = "workbench_qa",
+        x_actor_type: str = Header("external_ai_agent", alias="X-Actor-Type"),
+        x_actor_id: str = Header("", alias="X-Actor-Id"),
+    ) -> dict:
+        """V3.0 M1-1 · 公司状态快照 — 一次拿完整客户公司大脑视图.
+
+        Agent 调度入口: 客户基本信息 + 当前合同 + 文件 + 时间线 + 承诺 + 风险
+        + 待澄清 + 待审批 + 数据缺口 + recommended_next_actions
+
+        跨客户硬隔离: 必须传 client_id, 不存在则 404.
+        """
+        # 客户存在性校验 (跨客户隔离硬门槛)
+        build_client_summary(client_id)
+        from app.services.company_brain_context_builder import (
+            build_company_brain_context, summarize_for_api_response,
+        )
+        try:
+            pack = build_company_brain_context(
+                state.db, client_id=client_id, task_type=task_type,  # type: ignore
+            )
+        except Exception as exc:
+            raise HTTPException(status_code=502, detail=f"agent-state build fail: {exc}")
+        snapshot = summarize_for_api_response(pack)
+
+        # M1-1 加 recommended_next_actions (Agent 调度必要字段)
+        # 基于 evidence_summary 自动生成 ≥5 条建议
+        actions: list[dict] = []
+        ev = snapshot.get("evidence_summary") or {}
+        if (ev.get("clarifications_pending") or 0) > 0:
+            actions.append({
+                "type": "resolve_clarification",
+                "reason": f"{ev['clarifications_pending']} 条待澄清未处理",
+                "risk_level": "low",
+                "approval_required": False,
+                "evidence_table": "clarification_records",
+            })
+        if (ev.get("approvals_pending") or 0) > 0:
+            actions.append({
+                "type": "review_approval",
+                "reason": f"{ev['approvals_pending']} 条审批待决",
+                "risk_level": "medium",
+                "approval_required": False,
+                "evidence_table": "approval_queue",
+            })
+        if (ev.get("data_gaps") or 0) > 0:
+            actions.append({
+                "type": "compensate_data_gap",
+                "reason": f"{ev['data_gaps']} 个数据缺口未补",
+                "risk_level": "low",
+                "approval_required": False,
+                "evidence_table": "data_gaps",
+                "endpoint_hint": f"POST /api/v1/clients/{client_id}/data-gaps/compensate",
+            })
+        if (ev.get("risks") or 0) >= 3:
+            actions.append({
+                "type": "refresh_strategy_narrative",
+                "reason": f"{ev['risks']} 条风险信号已累积, 建议刷新战略叙事",
+                "risk_level": "low",
+                "approval_required": False,
+                "evidence_table": "risk_signals",
+            })
+        if (ev.get("commitments") or 0) >= 5:
+            actions.append({
+                "type": "review_commitments",
+                "reason": f"{ev['commitments']} 条承诺已登记, 建议复盘进度",
+                "risk_level": "low",
+                "approval_required": False,
+                "evidence_table": "commitments",
+            })
+        if not actions:
+            actions.append({
+                "type": "ingest_new_material",
+                "reason": "客户上下文较薄, 建议导入更多材料丰富公司大脑",
+                "risk_level": "low",
+                "approval_required": False,
+                "evidence_table": "v2_documents",
+            })
+        snapshot["recommended_next_actions"] = actions
+
+        # 审计 (V3 Agent 调度入口必登记)
+        try:
+            from app.services.agent_governance import log_agent_run_start, log_agent_run_complete
+            run_id = log_agent_run_start(
+                state.db,
+                actor_type=x_actor_type,  # type: ignore
+                actor_id=x_actor_id or "anonymous",
+                tool_name="agent-state",
+                input_payload={"client_id": client_id, "task_type": task_type},
+                client_id=client_id,
+            )
+            log_agent_run_complete(
+                state.db, run_id, status="success",
+                output_payload={"evidence_types": len(snapshot.get("evidence_types") or []),
+                                "used_tables": len(snapshot.get("used_tables") or [])},
+            )
+        except Exception as _exc:
+            logger.warning("agent-state audit log fail: %s", _exc)
+
+        return snapshot
+
+    @app.get("/api/v1/clients/{client_id}/data-gaps")
+    def get_client_data_gaps(
+        client_id: str,
+        status_filter: str = "open",
+        severity: str | None = None,
+        limit: int = 50,
+    ) -> dict:
+        """V3.0 M1-2 · Agent 读已知数据缺口.
+
+        Query: status (open/resolved/all) · severity (high/medium/low) · limit
+        Response: {client_id, total, items: [{id, gap_type, subject, ...}]}
+        """
+        build_client_summary(client_id)
+        clauses = ["client_id = ?"]
+        params: list = [client_id]
+        if status_filter and status_filter != "all":
+            clauses.append("status = ?"); params.append(status_filter)
+        if severity:
+            clauses.append("severity = ?"); params.append(severity)
+        where = " WHERE " + " AND ".join(clauses)
+        rows = state.db.fetchall(
+            f"""SELECT id, gap_type, subject, internal_value, external_value,
+                       severity, suggested_action, status, detected_at,
+                       related_fact_ids_json
+                FROM data_gaps {where}
+                ORDER BY CASE severity WHEN 'high' THEN 0 WHEN 'medium' THEN 1 ELSE 2 END,
+                         detected_at DESC LIMIT ?""",
+            tuple(params + [limit]),
+        )
+        items = []
+        for r in rows or []:
+            d = dict(r)
+            try:
+                d["related_fact_ids"] = json.loads(d.pop("related_fact_ids_json") or "[]")
+            except Exception:
+                d["related_fact_ids"] = []
+            items.append(d)
+        return {
+            "client_id": client_id,
+            "filter": {"status": status_filter, "severity": severity, "limit": limit},
+            "total": len(items),
+            "items": items,
+        }
+
+    @app.post("/api/v1/clients/{client_id}/data-gaps/compensate")
+    def compensate_client_data_gaps(
+        client_id: str,
+        x_actor_type: str = Header("external_ai_agent", alias="X-Actor-Type"),
+        x_actor_id: str = Header("", alias="X-Actor-Id"),
+        idempotency_key: str | None = Header(None, alias="Idempotency-Key"),
+    ) -> dict:
+        """V3.0 M1-3 · Agent 触发 data_gap 补证 pipeline.
+
+        调 data_gap_compensator.run_data_gap_pipeline:
+          1. detect_data_gaps (rule-based)
+          2. persist_data_gap
+          3. harvest_intelligence_for_client (外部补证 → external_evidence_cards)
+        """
+        build_client_summary(client_id)
+        from app.services.data_gap_compensator import run_data_gap_pipeline
+        from app.services.agent_governance import (
+            log_agent_run_start, log_agent_run_complete,
+            check_idempotency, record_idempotency,
+        )
+        # 幂等
+        if idempotency_key:
+            cached = check_idempotency(state.db, idempotency_key)
+            if cached and cached.get("outcome"):
+                return cached["outcome"]
+        run_id = log_agent_run_start(
+            state.db,
+            actor_type=x_actor_type,  # type: ignore
+            actor_id=x_actor_id or "anonymous",
+            tool_name="data-gap-compensate",
+            input_payload={"client_id": client_id},
+            client_id=client_id,
+            idempotency_key=idempotency_key,
+        )
+        try:
+            result = run_data_gap_pipeline(state.db, client_id)
+            result["agent_run_id"] = run_id
+            log_agent_run_complete(
+                state.db, run_id, status="success",
+                output_payload={"gaps_detected": result.get("gaps_detected"),
+                                "external_evidence_written": (result.get("external_harvest") or {}).get("external_evidence_written", 0)},
+            )
+            if idempotency_key:
+                record_idempotency(state.db, idempotency_key, run_id=run_id, outcome=result)
+            return result
+        except Exception as exc:
+            log_agent_run_complete(state.db, run_id, status="failed", error_message=str(exc))
+            raise HTTPException(status_code=502, detail=f"compensate fail: {exc}")
+
+    @app.get("/api/v1/agent-run-logs")
+    def list_agent_run_logs(
+        client_id: str | None = None,
+        actor_type: str | None = None,
+        limit: int = 50,
+    ) -> dict:
+        """V3.0 M1-4 · Agent 查询自己跑过什么 (agent_run_log 表).
+
+        agent_run_log != runtime_run_logs (后者是 analysis center 的, 不是 R2 的).
+        支持 client_id / actor_type / limit 过滤.
+        """
+        from app.services.agent_governance import list_recent_agent_runs
+        rows = list_recent_agent_runs(
+            state.db, client_id=client_id,
+            actor_type=actor_type,  # type: ignore
+            limit=max(1, min(limit, 200)),
+        )
+        # 清洗大字段
+        items = []
+        for r in rows:
+            d = dict(r)
+            for k in ("input_json", "output_json", "metadata_json"):
+                v = d.get(k)
+                if isinstance(v, str) and len(v) > 1000:
+                    d[k] = v[:1000] + "...[truncated]"
+            items.append(d)
+        return {
+            "filter": {"client_id": client_id, "actor_type": actor_type, "limit": limit},
+            "total": len(items),
+            "items": items,
+        }
+
+    @app.get("/api/v1/agent-run-logs/{run_id}")
+    def get_agent_run_log(run_id: str) -> dict:
+        """V3.0 M1-5 · 单条 agent run 详情."""
+        row = state.db.fetchone(
+            "SELECT * FROM agent_run_log WHERE id = ?", (run_id,),
+        )
+        if not row:
+            raise HTTPException(status_code=404, detail="agent_run_log not found")
+        return dict(row)
+
     @app.get("/api/v1/clients/{client_id}/judgments", response_model=list[JudgmentVersionRecord])
     def get_client_judgments(client_id: str) -> list[JudgmentVersionRecord]:
         build_client_summary(client_id)
