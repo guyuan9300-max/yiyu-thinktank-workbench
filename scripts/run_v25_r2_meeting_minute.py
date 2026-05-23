@@ -112,21 +112,53 @@ def _now_filename() -> str:
     return datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
 
 
+# Per-table client filter SQL clause (V2.1 lab db 真实 schema)
+# 缺省: client_id = ?  (大部分表)
+# 例外: clarification_records 用 scope_type='client' AND scope_id = ?
+#       event_line_activities 通过 event_line_id JOIN event_lines
+#       idempotency_keys_v25 没 client 字段, 走全表 fallback
+TABLE_CLIENT_FILTERS: dict[str, str | None] = {
+    "atomic_facts": "client_id = ?",
+    "atomic_fact_confidence_history": None,  # fact-level, 无 client 列
+    "approval_queue": "client_id = ?",
+    "agent_run_log": "client_id = ?",
+    "idempotency_keys_v25": None,  # key-level
+    "source_registry": "client_id = ?",
+    "event_line_activities": (
+        "event_line_id IN (SELECT id FROM event_lines WHERE primary_client_id = ?)"
+    ),
+    "risk_signals": "client_id = ?",
+    "commitments": "client_id = ?",
+    "clarification_records": "scope_type='client' AND scope_id = ?",
+    "strategic_thought_insights": "client_id = ?",
+}
+
+
 def snapshot_tables(conn: sqlite3.Connection, client_id: str) -> dict:
     """采集 11 张关键表的全量行数 + 客户特定行数."""
     snap: dict = {}
     for t in CRITICAL_TABLES:
         try:
             total = conn.execute(f'SELECT COUNT(*) FROM "{t}"').fetchone()[0]
-            try:
-                client_n = conn.execute(
-                    f'SELECT COUNT(*) FROM "{t}" WHERE client_id = ?', (client_id,)
-                ).fetchone()[0]
-            except sqlite3.OperationalError:
-                client_n = None
-            snap[t] = {"total": total, "client": client_n, "exists": True}
         except sqlite3.OperationalError as exc:
             snap[t] = {"total": 0, "client": 0, "exists": False, "error": str(exc)}
+            continue
+        filter_clause = TABLE_CLIENT_FILTERS.get(t, "client_id = ?")
+        if filter_clause is None:
+            client_n = total  # fallback: 全表当 client 数 (无 client 维度)
+        else:
+            try:
+                client_n = conn.execute(
+                    f'SELECT COUNT(*) FROM "{t}" WHERE {filter_clause}', (client_id,)
+                ).fetchone()[0]
+            except sqlite3.OperationalError as exc:
+                client_n = None
+                snap[t] = {
+                    "total": total, "client": None,
+                    "exists": True, "filter_error": str(exc),
+                }
+                continue
+        snap[t] = {"total": total, "client": client_n, "exists": True}
     return snap
 
 

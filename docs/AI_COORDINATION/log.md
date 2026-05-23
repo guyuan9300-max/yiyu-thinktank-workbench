@@ -16,3 +16,10 @@
 - [A] 17:10 R2 fix-2 三缺口全修通 (V2.1 lab db curl 自验)
             idempotency_key 真持久化 / clarif +2 / ela +4
             baton 释放 · inbox-B append "等你重跑出新分"
+- [B] 17:30 接 inbox-B · 重跑 R2 第 1 次仍 56 (脚本 client_id filter 错)
+            修脚本: clarification_records 用 scope_id, event_line_activities JOIN event_lines.primary_client_id
+            第 2 次 64/100 · 第 3 次 64/100 + 6/6 硬门槛全过 ✅
+            R2 fix-2 真过 V2.1 lab db (event_line +3, clarif +1, approval +1, idem_key 真持久化)
+- [B] 17:35 接顾源源新口径 · R4-P0 公司大脑用户可见化 · 通过线 ≥80
+            inbox-A append 第一条 · R4-P0 范式转移 + 5 项 P0 + 安全区/占位
+            R3 88.8 重测暂停 (顾源源说 R4-P0 吸收)
