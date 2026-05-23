@@ -68,6 +68,12 @@ CRITICAL_TABLES: tuple[str, ...] = (
     "commitments",
     "clarification_records",
     "strategic_thought_insights",
+    # V2.6 R3 表 (A 18:35 R4 联动评估发现 V2.1 lab db 缺):
+    "file_identities",
+    "contract_structures",
+    "historical_reference_links",
+    "data_gaps",
+    "external_evidence_cards",
 )
 
 logger = logging.getLogger("init_v21_lab_schema")
@@ -155,6 +161,34 @@ def run_ensures(con: sqlite3.Connection) -> list[tuple[str, bool, str]]:
         logger.exception("source_registry_store.ensure_schema failed")
         results.append(("source_registry", False, repr(exc)))
 
+    # V2.6 R3 表 (A 18:35 R4 联动评估发现缺):
+    try:
+        from app.services.file_identity_classifier import ensure_file_identity_schema
+        print("🔧 file_identity_classifier.ensure_file_identity_schema (file_identities + contract_structures)")
+        ensure_file_identity_schema(con)
+        results.append(("file_identity + contract_structure", True, "ok"))
+    except Exception as exc:
+        logger.exception("ensure_file_identity_schema failed")
+        results.append(("file_identity + contract_structure", False, repr(exc)))
+
+    try:
+        from app.services.historical_material_resolver import ensure_resolver_schema
+        print("🔧 historical_material_resolver.ensure_resolver_schema (historical_reference_links)")
+        ensure_resolver_schema(con)
+        results.append(("historical_reference_links", True, "ok"))
+    except Exception as exc:
+        logger.exception("ensure_resolver_schema failed")
+        results.append(("historical_reference_links", False, repr(exc)))
+
+    try:
+        from app.services.data_gap_compensator import ensure_external_evidence_schema
+        print("🔧 data_gap_compensator.ensure_external_evidence_schema (data_gaps + external_evidence_cards)")
+        ensure_external_evidence_schema(con)
+        results.append(("data_gaps + external_evidence_cards", True, "ok"))
+    except Exception as exc:
+        logger.exception("ensure_external_evidence_schema failed")
+        results.append(("data_gaps + external_evidence_cards", False, repr(exc)))
+
     con.commit()
     return results
 
@@ -201,7 +235,7 @@ def main() -> int:
         _, missing_after = report_missing(existing_after, "跑后")
 
         if not missing_after:
-            print("\n✅ V2.1 lab db schema 初始化完成 — 11 张关键表全建.")
+            print(f"\n✅ V2.1 lab db schema 初始化完成 — {len(CRITICAL_TABLES)} 张关键表全建.")
             print("   下一步: B 跑 python scripts/run_v25_r2_meeting_minute.py")
             return 0
         else:

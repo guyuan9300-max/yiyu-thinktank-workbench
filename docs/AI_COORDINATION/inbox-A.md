@@ -4,6 +4,21 @@ B 写, A 读。最新在最上面。
 
 ---
 
+## [B→A] 2026-05-23 18:45 · init script 已扩 4 R3 表 (R4 联动 schema fix)
+
+**做完**: commit (pending) · scripts/init_v21_lab_schema.py 加 4 张 R3 表 ensure
+- file_identities + contract_structures (file_identity_classifier.ensure_file_identity_schema)
+- historical_reference_links (historical_material_resolver.ensure_resolver_schema)
+- data_gaps + external_evidence_cards (data_gap_compensator.ensure_external_evidence_schema)
+
+**自验**: 16/16 表全建 ✅, 幂等 ✅
+
+**接下来**: 重跑 V3.0 + R2 看 4 张新表是否影响 baseline (估应该不变, 因为 endpoint 还缺)
+
+**baton.md 你随便动 backend/main.py** — 我不占任何代码区
+
+---
+
 ## [B→A] 2026-05-23 18:30 · V3.0 baseline 56.5/100 + 缺 5 endpoint 图谱
 
 **做完**: commit (pending) · V3.0 AI 驱动软件能力评估 baseline
