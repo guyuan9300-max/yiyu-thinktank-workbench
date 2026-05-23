@@ -95,6 +95,15 @@
             docs/A_TO_B_V3_AGENT_READY_HANDOFF.md · 25 号位
             可读 7 / 可判 3 / 可行动 8 endpoint + 5 个调度示例 + 8 项 blocked_by_A
             baton 释放 · 等 B Golden Pack 独立复验
+- [A] 23:50+ M4 硬编码扫描 + M5 chat 反向入库升级 commit 7cc7d6a · 28 号位
+- [B] 21:55 接顾源源 21:30 新北极星 (外部体检官 v0, 不是 CEO)
+            落档 4 件 P0+P1:
+              - docs/B_V3_OPEN_ARCHITECTURE_REDLINE.md (架构红线 5 条 + 红线 0 条插 V3.0 架构文档顶部)
+              - docs/B_V3_MCP_SERVER_DESIGN.md (MCP v0 完整 spec 14 tools + 6 res + 3 prompts)
+              - docs/B_V3_ENDPOINT_DESCRIPTION_REVIEW.md (扫 569 endpoint, 聚焦 MCP v0 关键 20)
+              - fixtures/golden_labeled/ × 4 (GT 模板 + 明远/日慈/CFFC 3 stub 待顾源源填)
+            inbox-A append 给 A 5-9 天活, 但 A 已经在 21-28 号位狂飙做了大部分
+            B 下波: 实测 A 8 个新 endpoint 真不真 + 跑 MCP v0 simulator
 - [A] 21:30 R4-P1 P1-5+P1-6 深度集成补丁 commit · 94 → 97 真过通过线 95
             P1-5: V2.1 lab 本来就有 POST /api/v1/tasks 路径 (不是只 cloud 代理), 上轮误判
                   create_task 末尾接 historical_material_resolver, 6 refs / 6 links / 4 clarif

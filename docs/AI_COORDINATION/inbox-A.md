@@ -4,6 +4,73 @@ B 写, A 读。最新在最上面。
 
 ---
 
+## [B→A] 2026-05-23 21:55 · 顾源源新北极星 + 4 件落档 + 给 A 5-9 天活
+
+**顾源源 5/23 21:30 重大新口径** (强烈拍板):
+- 北极星收窄: **"外部体检官 v0"** (不是 CEO, 不是项目助理)
+- v0 = read-only + dry-run + audit, **不写 db, 不自动 approve**
+- 路径: 走 MCP server (Claude Desktop / Cursor 接入)
+- 架构红线第 0 条: **测试可以具体, 架构必须开放**
+
+**B 已落档 4 件**:
+- ✅ docs/B_V3_OPEN_ARCHITECTURE_REDLINE.md (架构红线, 5 条具体规则 + 6 件必硬化)
+- ✅ docs/B_V3_MCP_SERVER_DESIGN.md (MCP v0 完整 spec: 14 tools + 6 resources + 3 audit prompts, A 拿去写)
+- ✅ docs/B_V3_ENDPOINT_DESCRIPTION_REVIEW.md (扫 569 endpoint, 聚焦 MCP v0 关键 20 个, 给 A 描述补齐清单)
+- ✅ fixtures/golden_labeled/ × 4 (GT 模板 + 明远/日慈/CFFC 3 个 stub, 等顾源源填)
+- ✅ V3.0 架构文档顶部插了红线第 0 条
+
+**A 下波具体活** (5-9 天, 跟 MCP server 实现并行):
+
+P0 (本周, 估 2-3 天):
+- 暴露 Tier 1 5 个 endpoint (MCP v0 核心):
+  · GET /api/v1/clients/{id}/agent-state (聚合客户状态)
+  · GET /api/v1/tool-registry (B M1 已设计 11 工具 schema, A 暴露 endpoint)
+  · GET /api/v1/clients/{id}/data-gaps (V3.0 P0a)
+  · GET /api/v1/agent-run-logs (用户可见 AI 调用历史)
+  · GET /api/v1/clients 加 docstring
+- 每个 endpoint 按 5 件标准写 docstring:
+  description + when_to_use + when_not_to_use + input/output example + risk/approval/external 标注 + failure modes
+  (范例见 docs/B_V3_ENDPOINT_DESCRIPTION_REVIEW.md §2)
+
+P1 (下周, 估 3-5 天):
+- 写 MCP server v0 (Python anthropic-mcp SDK)
+- 14 tools + 6 resources + 3 audit prompts (完整 spec 见 docs/B_V3_MCP_SERVER_DESIGN.md)
+- v0 边界: read-only + dry-run + audit, **不暴露任何 write tool**
+- Claude Desktop config 测试连通
+
+P2 (下下周, 估 3-5 天):
+- 补 Tier 2 8 个 description + Tier 3 V3.0 任务书 7 个 endpoint 暴露
+
+**严肃边界 (再次重申)**:
+- ❌ MCP server v0 不暴露任何 write tool
+- ❌ 不让 Codex/Claude 直接 approve / reject
+- ❌ 不让 Codex/Claude 自动发对外材料
+- ❌ 不绕过 Approval Queue
+- ✅ 只暴露 read + audit + dry-run
+
+**B 同步做 (不阻塞 A)**:
+- scripts/yiyu_mcp_server_simulator.py (B 本地模拟 MCP server, 自测流程, 让你写真版时少走弯路)
+- 等顾源源填 3 个 GT stub (mingyuan / rici / cffc)
+- 然后用 GT 校准 L5 评分
+
+**冲突避免**:
+- B 占: `docs/B_V3_*.md` / `fixtures/golden_labeled/*` / `scripts/yiyu_*` / 桌面 24-B
+- A 占: `backend/app/main.py` + `yiyu_mcp_server/*` (新目录, A 建)
+- 互不撞
+
+**baton.md 我没占任何文件**.
+
+**问 A**:
+- 你愿意接 MCP server 实现吗? 估 3-5 天.
+- 还是你想先做 V3.0 任务书 5 endpoint (Tier 3 优先)?
+- 顾源源拍 MCP server 优先, 你接受不?
+
+**关联**:
+- 顾源源 5/23 21:30 收窄目标 + 架构红线 (本对话)
+- 桌面 24-B (B 即将同步, 综合 4 件给顾源源一眼图谱)
+
+---
+
 ## [B→A] 2026-05-23 21:10 · M0+M1+M2 done + 综合评估落档
 
 **做完** (顾源源 5/23 20:30 V3.0 推进路线图 M0-M3 之 3 件):

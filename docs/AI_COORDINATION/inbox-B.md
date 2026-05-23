@@ -1,3 +1,57 @@
+## [A→B] 2026-05-24 01:05 (V3 收尾 7 个里程碑全过 · 总报告 31 号位)
+
+**收到顾源源 V3.0 Agent-Ready 数据中心收尾任务** (新 7 里程碑 M0-M6 + 总报告).
+按 autonomous loop 持续到完成永久指令, 一气做完.
+
+**做完** (commit 10b6f6e + 7cc7d6a + 下一 commit):
+- ✅ **M0** 新基线 50/100 (按顾源源新 7 维度评分, 不改只测) → 26 号位
+- ✅ **M1** client + project agent-state · 14 顶层独立字段全展平
+       新加 GET /api/v1/projects/{project_id}/agent-state
+- ✅ **M2** Tool Registry endpoint: GET /api/v1/tool-registry
+       17 available + 2 missing blocked_by_A
+       每工具含 when_to_use/when_not_to_use/risk_level/approval_required/input_schema/output_schema/example_input/example_output/read_scope/write_scope
+- ✅ **M3** data-gaps 10/10 字段全命中 (顾源源 §M3 必返)
+       suggested_tools 真按 gap_type 路由 + suggested_clarification + priority
+- ✅ **M4** 硬编码风险扫描: 0 高风险 ★ → 27 号位
+       中风险 2 处 (narrative 6 段 + ai prompt 话术) 列 P2 修复路径
+- ✅ **M5** R4-P1 剩余 4 项: 粘贴 C→B+ / chat C+→B+ → 28 号位
+       chat ingester 真升级: extracted_persons + history_refs + triggers_clarification
+       真测 chat-historical: 0→3 / chat-clarif: 0→1
+- ✅ **M6** MCP-Ready Handoff: 17 表业务含义文档化 + 6 resources + 17 tools → 30 号位
+- ✅ **总报告** 顾源源 §九 10 个问题真回答 + .json → 31 号位
+
+**最终分**:
+- Agent Readiness Index: **~93/100** (顾源源通过线 ≥90 ✅)
+- 顾源源 §六 通过标准 10 项: **9/10 ✅** + 1 ⚠️ (OpenAPI 默认 404 留 P2)
+
+**关键 V2.1 lab db 真增长**:
+- data_gaps: 10 → 20 (M1 compensate 真触发)
+- historical_reference_links: 4 → 13+ (M5 chat 升级 +3)
+- clarification_records: 68 → 79+ (M5 chat_uncertainty +1)
+- agent_run_log: 34 → ~50+ (M1+M3+M5 audit 真登记)
+
+**等你做** (顾源源 §M6 § Lv1-Lv3):
+- Lv1 跑 Golden Pack × 7 真复验 17 工具 + 6 resources
+- Lv2 M3 endpoint 前端组件 (硬门槛 9: 前端不可见不算)
+- Lv3 Codex / Claude Code 接 MCP server 端到端 dry-run
+- Idempotency 真持久化 + 跨客户隔离 100% 真测
+
+**blocked_by_A 剩余 8 项** (§31 号位 §8 诚实):
+- P0: contracts.draft / templates.generate / 前端组件 / LLM 端到端 fill (4 commits)
+- P1: task→commitment 自动转换 / 模板多候选自动 clarif (1.5 commit)
+- P2: keyword 切词 / authority 同 score 排序 / OpenAPI 默认 (1 commit)
+
+**A 这边把"数据中心收尾成强模型能读懂的公司大脑底座" 真做完**.
+
+**baton.md 释放** (01:05).
+
+**reports 全在产品手册** (26-31 号位):
+- 26 V3 收尾 M0 重基线
+- 27 V3 收尾 M4 硬编码扫描
+- 28 V3 收尾 M5 R4-P1 剩余收尾
+- 30 A → B MCP-Ready Handoff
+- 31 V3 Agent-Ready 数据中心最终总报告
+
 # inbox-B · A → B 留言
 
 A 写, B 读。最新在最上面。
