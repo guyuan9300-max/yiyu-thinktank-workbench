@@ -1,0 +1,68 @@
+{
+  "total_score": 88.8,
+  "r3_pass_line": 80,
+  "r3_passed": true,
+  "hardgates_passed": 7,
+  "hardgates_total": 8,
+  "scores": {
+    "1_信息身份识别": {
+      "score": 12.750000000000002,
+      "max": 15,
+      "detail": "类型 90% + 角色 80%"
+    },
+    "2_关系归属判断": {
+      "score": 11.25,
+      "max": 15,
+      "detail": "hist_links 2/4"
+    },
+    "3_历史记忆调取": {
+      "score": 14.25,
+      "max": 15,
+      "detail": "M2 复盘+M3 QA 引用 95%"
+    },
+    "4_合同与承诺理解": {
+      "score": 15.0,
+      "max": 15,
+      "detail": "contracts 6/6"
+    },
+    "5_缺口与矛盾澄清": {
+      "score": 15,
+      "max": 15,
+      "detail": "contra 99 / clar 51 / gaps 16"
+    },
+    "6_跨板块反向入库": {
+      "score": 5.555555555555555,
+      "max": 10,
+      "detail": "5/9 板块接通"
+    },
+    "7_行动转化能力": {
+      "score": 10,
+      "max": 10,
+      "detail": "run_log 1 / approval 2"
+    },
+    "8_安全与隔离": {
+      "score": 5,
+      "max": 5,
+      "detail": "V2.5 R2-D 0 leak"
+    }
+  },
+  "stats": {
+    "file_identities": 20,
+    "contract_structures": 6,
+    "historical_reference_links": 4,
+    "historical_resolved": 2,
+    "historical_needs_clar": 2,
+    "data_gaps": 16,
+    "external_evidence_cards": 2,
+    "clarification_records": 51,
+    "fact_contradictions": 99,
+    "event_line_activities": 411,
+    "risk_signals": 42,
+    "commitments": 120,
+    "strategic_insights": 20,
+    "agent_run_log": 1,
+    "approval_queue": 2,
+    "atomic_facts": 1739,
+    "ch_user_correct": 0
+  }
+}
