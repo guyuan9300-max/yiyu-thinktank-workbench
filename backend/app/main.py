@@ -38640,6 +38640,458 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             raise HTTPException(status_code=404, detail="agent_run_log not found")
         return dict(row)
 
+    # ──────────────────────────────────────────────────────────────────────
+    # V3.0 M2 · Agent 可判接口 (顾源源 V3 收束指令 §六)
+    # 让 AI 不只读数据, 还能判断:
+    #   1. POST /clients/{id}/evidence/check       — 给目标/草稿, 判证据充分性
+    #   2. POST /clients/{id}/quality/context       — 给输出, 评质量风险
+    #   3. POST /clients/{id}/authority/resolve     — 多口径权威判定
+    # rule-based, 不靠 LLM, 复用 ContextBuilder + atomic_facts + judgment_versions
+    # ──────────────────────────────────────────────────────────────────────
+
+    @app.post("/api/v1/clients/{client_id}/evidence/check")
+    def check_client_evidence(
+        client_id: str,
+        payload: dict = Body(...),
+    ) -> dict:
+        """V3.0 M2-1 · 给一个目标 / 输出草稿, 判证据充分性.
+
+        body: {text: str, target_kind: 'goal'|'draft'|'answer'|'plan'}
+        返回:
+          · evidence_sufficient: true/false
+          · matched_facts: 与文本匹配的 atomic_facts
+          · matched_contracts / matched_files
+          · missing_evidence: 文本里出现但找不到来源的引用
+          · weak_evidence: 找到但 confidence < 0.6 的引用
+          · conflicting_evidence: 同一 subject+attr 有不同 value_text
+          · proposed_clarifications: 给 Agent 的建议澄清问题
+        """
+        build_client_summary(client_id)
+        text = str(payload.get("text") or "").strip()
+        if not text:
+            raise HTTPException(status_code=400, detail="text required")
+        target_kind = str(payload.get("target_kind") or "draft")
+
+        # 1. 抽 text 里的关键名词(中文 2-6 字)
+        keywords = list(dict.fromkeys(re.findall(r"[一-龥]{2,6}", text)))[:15]
+
+        # 2. 抽金额 / 时间 / 人物
+        amounts = re.findall(r"[0-9,]+(?:\.[0-9]+)?\s*万元?", text)
+        dates = re.findall(r"[0-9]{4}\s*[年-]\s*[0-9]{1,2}\s*[月-]?\s*[0-9]{0,2}日?", text)
+
+        matched_facts: list[dict] = []
+        weak_evidence: list[dict] = []
+        for kw in keywords[:8]:
+            rows = state.db.fetchall(
+                """SELECT id, subject_text, attribute, value_text, confidence,
+                          verification_status, source_type
+                   FROM atomic_facts
+                   WHERE client_id = ? AND status = 'active'
+                     AND (subject_text LIKE ? OR value_text LIKE ?)
+                   ORDER BY confidence DESC LIMIT 3""",
+                (client_id, f"%{kw}%", f"%{kw}%"),
+            )
+            for r in rows or []:
+                d = dict(r); d["matched_keyword"] = kw
+                if (d.get("confidence") or 0) >= 0.7 or d.get("verification_status") == "user_confirmed":
+                    matched_facts.append(d)
+                else:
+                    weak_evidence.append(d)
+
+        # 3. 合同匹配
+        matched_contracts: list[dict] = []
+        for amt in amounts[:5]:
+            rows = state.db.fetchall(
+                """SELECT id, party_a, party_b, project_name, amount, signed_at, version
+                   FROM contract_structures WHERE client_id = ?
+                     AND amount LIKE ?""",
+                (client_id, f"%{amt[:5]}%"),
+            )
+            for r in rows or []:
+                d = dict(r); d["matched_amount"] = amt
+                matched_contracts.append(d)
+
+        # 4. 文件匹配
+        matched_files: list[dict] = []
+        for kw in keywords[:8]:
+            rows = state.db.fetchall(
+                """SELECT id, file_name, file_type, file_role, version
+                   FROM file_identities WHERE client_id = ?
+                     AND (file_name LIKE ? OR project_name LIKE ?)
+                   ORDER BY file_time DESC LIMIT 2""",
+                (client_id, f"%{kw}%", f"%{kw}%"),
+            )
+            for r in rows or []:
+                d = dict(r); d["matched_keyword"] = kw
+                matched_files.append(d)
+
+        # 5. missing_evidence: 文本里的关键名词在 db 完全找不到
+        all_matched_kws = set()
+        for f in matched_facts: all_matched_kws.add(f.get("matched_keyword"))
+        for f in weak_evidence: all_matched_kws.add(f.get("matched_keyword"))
+        for f in matched_files: all_matched_kws.add(f.get("matched_keyword"))
+        missing_evidence = [
+            {"keyword": kw, "reason": "no_match_in_facts_or_files"}
+            for kw in keywords[:8] if kw not in all_matched_kws
+        ]
+
+        # 6. conflicting_evidence: 同 subject+attr 多个不同 value
+        conflict_rows = state.db.fetchall(
+            """SELECT subject_text, attribute, COUNT(DISTINCT value_text) AS cnt,
+                      GROUP_CONCAT(value_text, ' | ') AS values_seen
+               FROM atomic_facts
+               WHERE client_id = ? AND status = 'active'
+               GROUP BY subject_text, attribute
+               HAVING cnt >= 2 LIMIT 10""",
+            (client_id,),
+        )
+        all_conflicts = [
+            {"subject": dict(r)["subject_text"], "attribute": dict(r)["attribute"],
+             "value_count": dict(r)["cnt"], "values_seen": (dict(r)["values_seen"] or "")[:300]}
+            for r in conflict_rows or []
+        ]
+        # 跟 text 相关的 conflict
+        conflicting_evidence = [
+            c for c in all_conflicts
+            if any(kw in c["subject"] for kw in keywords[:8])
+        ][:5]
+
+        # 7. proposed_clarifications: 给 Agent 的建议问题
+        proposed_clarifications: list[dict] = []
+        for me in missing_evidence[:3]:
+            proposed_clarifications.append({
+                "question": f"请确认\"{me['keyword']}\"的具体所指 / 出处",
+                "reason": "在 atomic_facts / file_identities 中找不到匹配",
+            })
+        for c in conflicting_evidence[:3]:
+            proposed_clarifications.append({
+                "question": f"\"{c['subject']}\"的{c['attribute']}有 {c['value_count']} 个版本 ({c['values_seen'][:80]}...), 请明确权威值",
+                "reason": "atomic_facts 同 subject+attribute 多 value 冲突",
+            })
+
+        # 8. evidence_sufficient 判断
+        sufficient = (
+            len(missing_evidence) == 0
+            and len(conflicting_evidence) == 0
+            and (len(matched_facts) + len(matched_contracts) + len(matched_files)) >= 1
+        )
+
+        return {
+            "client_id": client_id,
+            "target_kind": target_kind,
+            "text_length": len(text),
+            "keywords_extracted": keywords,
+            "amounts_extracted": amounts,
+            "dates_extracted": dates,
+            "evidence_sufficient": sufficient,
+            "matched_facts": matched_facts[:10],
+            "matched_contracts": matched_contracts[:5],
+            "matched_files": matched_files[:10],
+            "weak_evidence": weak_evidence[:10],
+            "missing_evidence": missing_evidence,
+            "conflicting_evidence": conflicting_evidence,
+            "proposed_clarifications": proposed_clarifications,
+            "summary": {
+                "match_count": len(matched_facts) + len(matched_contracts) + len(matched_files),
+                "weak_count": len(weak_evidence),
+                "missing_count": len(missing_evidence),
+                "conflict_count": len(conflicting_evidence),
+                "clarification_count": len(proposed_clarifications),
+            },
+        }
+
+    @app.post("/api/v1/clients/{client_id}/quality/context")
+    def get_client_quality_context(
+        client_id: str,
+        payload: dict = Body(...),
+    ) -> dict:
+        """V3.0 M2-2 · 给一段输出 (合同草稿/方案/回答), 评质量风险.
+
+        body: {text: str, output_kind: 'contract_draft'|'proposal'|'answer'|'report'}
+        返回:
+          · relevant_contracts / authoritative_facts / risks / clarifications / missing_fields
+          · quality_risks: 质量风险列表 (凭空数字/待确认混已确认/旧口径/外部低可信...)
+          · rework_suggestions: 返工建议
+        """
+        build_client_summary(client_id)
+        text = str(payload.get("text") or "").strip()
+        if not text:
+            raise HTTPException(status_code=400, detail="text required")
+        output_kind = str(payload.get("output_kind") or "draft")
+
+        keywords = list(dict.fromkeys(re.findall(r"[一-龥]{2,6}", text)))[:15]
+        amounts = re.findall(r"[0-9,]+(?:\.[0-9]+)?\s*万元?", text)
+        percentages = re.findall(r"[0-9]+(?:\.[0-9]+)?\s*%", text)
+
+        # 1. 关联合同
+        relevant_contracts = []
+        for amt in amounts[:5]:
+            rows = state.db.fetchall(
+                """SELECT id, party_a, party_b, project_name, amount, version, signed_at
+                   FROM contract_structures WHERE client_id = ? AND amount LIKE ?""",
+                (client_id, f"%{amt[:5]}%"),
+            )
+            relevant_contracts.extend([dict(r) for r in rows or []])
+
+        # 2. 权威 facts (user_confirmed 或 confidence ≥ 0.85)
+        authoritative_rows = state.db.fetchall(
+            """SELECT subject_text, attribute, value_text, confidence, verification_status
+               FROM atomic_facts WHERE client_id = ? AND status = 'active'
+                 AND (verification_status = 'user_confirmed' OR confidence >= 0.85)
+               ORDER BY confidence DESC LIMIT 10""",
+            (client_id,),
+        )
+        authoritative_facts = [dict(r) for r in authoritative_rows or []]
+
+        # 3. 关联风险 (schema: signal_kind / title / description / severity / status='active')
+        risk_rows = state.db.fetchall(
+            """SELECT id, signal_kind, title, description, severity, status
+               FROM risk_signals WHERE client_id = ? AND status='active'
+               ORDER BY CASE severity WHEN 'high' THEN 0 WHEN 'medium' THEN 1 ELSE 2 END
+               LIMIT 5""",
+            (client_id,),
+        )
+        risks = [dict(r) for r in risk_rows or []]
+
+        # 4. 关联待澄清
+        clarif_rows = state.db.fetchall(
+            """SELECT id, slot_key, question FROM clarification_records
+               WHERE scope_id = ? AND status = 'pending' LIMIT 5""",
+            (client_id,),
+        )
+        clarifications = [dict(r) for r in clarif_rows or []]
+
+        # 5. 关联 data_gaps (missing fields)
+        gap_rows = state.db.fetchall(
+            """SELECT subject, gap_type, severity, suggested_action FROM data_gaps
+               WHERE client_id = ? AND status = 'open'
+               ORDER BY CASE severity WHEN 'high' THEN 0 WHEN 'medium' THEN 1 ELSE 2 END
+               LIMIT 8""",
+            (client_id,),
+        )
+        missing_fields = [dict(r) for r in gap_rows or []]
+
+        # 6. quality_risks 规则检测
+        quality_risks: list[dict] = []
+
+        # 风险 a: 凭空百分比 / 数字 (text 里有但 db 完全无对应)
+        for pct in percentages[:5]:
+            cnt = state.db.fetchone(
+                """SELECT COUNT(*) c FROM atomic_facts WHERE client_id=? AND value_text LIKE ?""",
+                (client_id, f"%{pct}%"),
+            )
+            if not cnt or cnt["c"] == 0:
+                quality_risks.append({
+                    "type": "fabricated_number",
+                    "evidence_text": pct,
+                    "severity": "high",
+                    "description": f"输出含\"{pct}\"但 atomic_facts 找不到来源",
+                })
+
+        # 风险 b: "待确认"/"暂未确定" 混入输出 (LLM 经常自动填【待确认】然后又写正文)
+        if re.search(r"待确认|暂未确定|尚未明确", text):
+            quality_risks.append({
+                "type": "uncertainty_leak",
+                "severity": "medium",
+                "description": "输出文本含'待确认'类标记, 但应该走 clarification_records 而非直接出文档",
+            })
+
+        # 风险 c: 金额跟最新合同不匹配
+        for amt in amounts[:3]:
+            # 查最新合同的 amount
+            latest = state.db.fetchone(
+                """SELECT amount, signed_at FROM contract_structures
+                   WHERE client_id = ? ORDER BY signed_at DESC LIMIT 1""",
+                (client_id,),
+            )
+            if latest and latest["amount"]:
+                latest_amt = str(latest["amount"])
+                if amt[:5] not in latest_amt and latest_amt[:5] not in amt:
+                    quality_risks.append({
+                        "type": "outdated_amount",
+                        "severity": "high",
+                        "description": f"输出含金额\"{amt}\", 但最新合同金额是\"{latest_amt}\"({latest['signed_at']})",
+                    })
+                    break
+
+        # 风险 d: 外部低可信信息出现在权威位置 (schema: source_tier / related_scope_id)
+        for kw in keywords[:8]:
+            eec = state.db.fetchone(
+                """SELECT COUNT(*) c FROM external_evidence_cards
+                   WHERE related_scope_id=? AND title LIKE ? AND source_tier IN ('low','unknown')""",
+                (client_id, f"%{kw}%"),
+            )
+            if eec and eec["c"] > 0:
+                quality_risks.append({
+                    "type": "low_credibility_external_used",
+                    "severity": "medium",
+                    "description": f"\"{kw}\"在 external_evidence_cards 标 low/unknown source_tier, 不应作为权威依据",
+                })
+
+        # 7. rework_suggestions
+        rework_suggestions: list[str] = []
+        for qr in quality_risks[:3]:
+            rework_suggestions.append(f"[{qr['severity']}] {qr['type']}: {qr['description']}")
+        if missing_fields:
+            rework_suggestions.append(
+                f"补 {len(missing_fields)} 个 data_gap 字段(高优先级: "
+                + ', '.join([g['subject'] for g in missing_fields if g['severity']=='high'][:3])
+                + ") 后再交付"
+            )
+        if clarifications:
+            rework_suggestions.append(
+                f"先处理 {len(clarifications)} 条 pending clarification 再交付"
+            )
+
+        return {
+            "client_id": client_id,
+            "output_kind": output_kind,
+            "text_length": len(text),
+            "relevant_contracts": relevant_contracts[:3],
+            "authoritative_facts": authoritative_facts,
+            "risks": risks,
+            "clarifications": clarifications,
+            "missing_fields": missing_fields,
+            "quality_risks": quality_risks,
+            "rework_suggestions": rework_suggestions,
+            "summary": {
+                "quality_risk_count": len(quality_risks),
+                "missing_field_count": len(missing_fields),
+                "pending_clarif_count": len(clarifications),
+                "rework_suggestion_count": len(rework_suggestions),
+            },
+        }
+
+    @app.post("/api/v1/clients/{client_id}/authority/resolve")
+    def resolve_client_authority(
+        client_id: str,
+        payload: dict = Body(...),
+    ) -> dict:
+        """V3.0 M2-3 · 多口径权威判定.
+
+        body: {subject: str, attribute: str}
+        返回所有候选 value + 推荐权威值 + 理由(基于以下优先级):
+          1. judgment_versions confirmed > authority_level='primary'
+          2. atomic_facts verification_status='user_confirmed'
+          3. atomic_facts confidence >= 0.85
+          4. 最新 contract_structures (按 signed_at DESC)
+          5. atomic_facts 最新 (updated_at DESC)
+        """
+        build_client_summary(client_id)
+        subject = str(payload.get("subject") or "").strip()
+        attribute = str(payload.get("attribute") or "").strip()
+        if not subject:
+            raise HTTPException(status_code=400, detail="subject required")
+
+        candidates: list[dict] = []
+
+        # 1. judgment_versions confirmed
+        rows = state.db.fetchall(
+            """SELECT id, topic, summary, authority_level, confidence, status, version, updated_at
+               FROM judgment_versions
+               WHERE client_id = ? AND topic LIKE ? AND status = 'confirmed'
+               ORDER BY authority_level DESC, version DESC LIMIT 5""",
+            (client_id, f"%{subject}%"),
+        )
+        for r in rows or []:
+            d = dict(r); d["source"] = "judgment_versions"
+            d["authority_score"] = 100 if d.get("authority_level") == "primary" else 80
+            candidates.append(d)
+
+        # 2. atomic_facts user_confirmed
+        rows = state.db.fetchall(
+            """SELECT id, subject_text, attribute, value_text, confidence,
+                      verification_status, source_type, time_anchor, updated_at
+               FROM atomic_facts
+               WHERE client_id = ? AND status = 'active'
+                 AND verification_status = 'user_confirmed'
+                 AND subject_text LIKE ?
+                 {attr_clause}
+               ORDER BY confidence DESC LIMIT 5""".format(
+                attr_clause=("AND attribute LIKE ?" if attribute else ""),
+            ),
+            tuple([client_id, f"%{subject}%"] + ([f"%{attribute}%"] if attribute else [])),
+        )
+        for r in rows or []:
+            d = dict(r); d["source"] = "atomic_facts/user_confirmed"
+            d["authority_score"] = 90
+            candidates.append(d)
+
+        # 3. atomic_facts high confidence
+        rows = state.db.fetchall(
+            """SELECT id, subject_text, attribute, value_text, confidence,
+                      verification_status, source_type, time_anchor, updated_at
+               FROM atomic_facts
+               WHERE client_id = ? AND status = 'active'
+                 AND confidence >= 0.85
+                 AND verification_status != 'user_confirmed'
+                 AND subject_text LIKE ?
+                 {attr_clause}
+               ORDER BY confidence DESC LIMIT 5""".format(
+                attr_clause=("AND attribute LIKE ?" if attribute else ""),
+            ),
+            tuple([client_id, f"%{subject}%"] + ([f"%{attribute}%"] if attribute else [])),
+        )
+        for r in rows or []:
+            d = dict(r); d["source"] = "atomic_facts/high_confidence"
+            d["authority_score"] = 70
+            candidates.append(d)
+
+        # 4. contract_structures (按 attribute 抓 amount/party/project_name)
+        if attribute and any(k in attribute for k in ("金额", "amount", "甲方", "乙方", "项目")):
+            rows = state.db.fetchall(
+                """SELECT id, party_a, party_b, project_name, amount, signed_at, version
+                   FROM contract_structures WHERE client_id = ? AND project_name LIKE ?
+                   ORDER BY signed_at DESC LIMIT 3""",
+                (client_id, f"%{subject}%"),
+            )
+            for r in rows or []:
+                d = dict(r); d["source"] = "contract_structures"
+                d["authority_score"] = 85
+                candidates.append(d)
+
+        # 5. 任意 confidence atomic_facts (最新)
+        rows = state.db.fetchall(
+            """SELECT id, subject_text, attribute, value_text, confidence,
+                      verification_status, time_anchor, updated_at
+               FROM atomic_facts
+               WHERE client_id = ? AND status = 'active'
+                 AND confidence < 0.85
+                 AND subject_text LIKE ?
+                 {attr_clause}
+               ORDER BY updated_at DESC LIMIT 3""".format(
+                attr_clause=("AND attribute LIKE ?" if attribute else ""),
+            ),
+            tuple([client_id, f"%{subject}%"] + ([f"%{attribute}%"] if attribute else [])),
+        )
+        for r in rows or []:
+            d = dict(r); d["source"] = "atomic_facts/low_confidence"
+            d["authority_score"] = int(50 * (d.get("confidence") or 0.3))
+            candidates.append(d)
+
+        # 推荐: authority_score 最高
+        recommended = max(candidates, key=lambda c: c.get("authority_score", 0)) if candidates else None
+
+        return {
+            "client_id": client_id,
+            "subject": subject,
+            "attribute": attribute,
+            "total_candidates": len(candidates),
+            "candidates": candidates,
+            "recommended": recommended,
+            "recommended_reason": (
+                f"基于 {recommended['source']} 优先级最高 (authority_score={recommended['authority_score']})"
+                if recommended else "无候选 — 数据中心未记录"
+            ),
+            "priority_order": [
+                "judgment_versions/confirmed/primary (100)",
+                "atomic_facts/user_confirmed (90)",
+                "contract_structures (85, 仅合同字段)",
+                "atomic_facts/high_confidence (70)",
+                "atomic_facts/low_confidence (15-42)",
+            ],
+        }
+
     @app.get("/api/v1/clients/{client_id}/judgments", response_model=list[JudgmentVersionRecord])
     def get_client_judgments(client_id: str) -> list[JudgmentVersionRecord]:
         build_client_summary(client_id)
