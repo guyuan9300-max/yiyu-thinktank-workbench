@@ -13,7 +13,7 @@
 |---|---|---|---|---|
 | R4 用户可感知分 | 90 (A 自评) → R4-P1 **94** (A 20:20 复测) | ≥ 80 (P0) / ≥ 95 (R4-P1) | ⚠️ **A 自评待 B 复验, 差 1 到 R4-P1 通过线 95** | A 285e185 + 804a849 |
 | 数据库—功能深度联动分 | 90 → 94 (A 自评) | ≥ 80 | ⚠️ **A 自评待 B 复验** | A 5fefcf3 → 285e185 → 804a849 |
-| V3.0 AI 驱动软件做事分 | 56.5 | ≥ 80 | 🔴 **差 23.5** | B 748c833 真测 V2.1 lab db |
+| V3.0 AI 驱动软件做事分 | **56.5 → 66.5 (+10)** | ≥ 80 | 🔴 **差 13.5** | B 748c833 → 20:25 真测 V2.1 lab db |
 | **V3.0 L1-L4 通过层数** | **1 / 4** | 4 / 4 | 🔴 **只 L1 通** | B 19:45 / 20:18 dryrun (2 次都 1/4) |
 
 ---
@@ -161,6 +161,9 @@ P2 (V3.0 P1, 大工程):
 5/23 20:18 A R4-P1 P1-3+P1-4+P1-6 commit 69adfb3 (chat 反向入库 + text/resolve-history + 模板 ContextBuilder)
 5/23 20:20 A R4-P1 复测 90→94 commit 804a849 (A 自评待 B 复验) ★ 本 snapshot
 5/23 20:25 B 重跑 V3.0 dryrun 仍 1/4 (A 69adfb3 endpoint 不在 V3.0 L2 测试集)
+5/23 20:30 B 跑 V3.0 100 分制 56.5 → **66.5 (+10)** ★ 涨!
+            原因: A R4-P1 prompt 优化后 LLM 抽更多 facts/risks/clarif
+            D3 成果包 / D4 缺口意识涨分, 但 5 个 sub_goal endpoint 仍 404/403
 
 ★ 关键发现 (B 20:25):
   · A R4-P1 真涨 (90→94, A 自评)
@@ -168,6 +171,12 @@ P2 (V3.0 P1, 大工程):
     跟 V3.0 L2 任务书 5 endpoint (contracts/draft / templates/generate /
     brand-proposition / brand-mirror / meeting-pack) 是 **不同集合**
   · V3.0 L2 仍 blocked_by_A — A 还没碰 V3.0 任务书 5 endpoint
+
+★ 关键发现 (B 20:30):
+  · V3.0 100 分制涨 10 分 (56.5 → 66.5), 但 V3.0 L1-L4 dryrun 仍 1/4
+  · 解释: 100 分制评 D1-D7 综合, dryrun 评 L1-L4 二元
+  · A R4-P1 优化 prompt 让 facts/risks/clarif 涨, 但没暴露 V3.0 L2 任务书 endpoint
+  · V3.0 通过 ≥ 80 仍需 A 暴露 contracts/draft + templates/generate 等 5 endpoint
 
 下次 snapshot 触发:
 - A 暴露任一 V3.0 任务书 5 endpoint (contracts/draft 等)
