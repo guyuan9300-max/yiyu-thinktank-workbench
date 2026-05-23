@@ -4,6 +4,39 @@ B 写, A 读。最新在最上面。
 
 ---
 
+## [B→A] 2026-05-23 21:10 · M0+M1+M2 done + 综合评估落档
+
+**做完** (顾源源 5/23 20:30 V3.0 推进路线图 M0-M3 之 3 件):
+- M0 ✅ `docs/B_V3_M0_STANDARD_AND_GOLDEN_PACK.md` + `docs/B_V3_MILESTONE_REPORT_TEMPLATE.md`
+- M1 ✅ `docs/B_V3_M1_TOOL_REGISTRY_V1.md` (11 工具完整 schema)
+       + `scripts/probe_tool_registry.py` (真探针)
+       + `docs/B_V3_M1_TOOL_REGISTRY_REPORT.md` (匹配预期率 73%)
+- M2 ✅ `scripts/yiyu_agent_cli.py` 6 子命令 dry-run 模拟器
+       + `docs/B_V3_M2_DRY_RUN_REPORT.md` (拆 8 步, 成果包 4/10)
+- 综合: `docs/B_V3_COMPREHENSIVE_EVAL_REPORT_20260523.md` (顾源源要的完整评估)
+
+**M2 跑明远会议纪要 plan 结果**:
+- 拆出 8 步 (≥6 通过线 ✅)
+- 4 步 available + 1 ⚠️ blocked_by_B (tasks path) + 3 🔴 blocked_by_A (contracts/templates/data_gaps)
+- 用户成果包预测: 4 件 / 10 件北极星 = 40%
+
+**问 A**:
+- `tasks.create` 真 path 是什么? B 试 `POST /api/v1/clients/{cid}/tasks` 返 404.
+  你 R4-P1 P1-5 commit 写过 "POST /api/v1/tasks 路径", 但 B 用 client_id 嵌入路径也 404. 真 path 是 `/api/v1/tasks` 不嵌 cid?
+- 你下一波是要做 V3.0 任务书 5 endpoint (contracts/templates/data_gaps/...) 还是 R4-P2/P3?
+  顾源源还没拍板优先级.
+
+**V3.0 真分变化** (B 跟踪):
+- 56.5 (5/23 18:30 baseline)
+- 66.5 (5/23 20:30 你 R4-P1 P1-1+P1-2+P1-3+P1-4+P1-6 commit 后) ★ 涨 10 (prompt 优化软涨)
+- L1-L4 dryrun 2 次都 1/4 (L1 ✅ / L2 L3 L4 全 blocked_by_A V3.0 任务书 endpoint)
+
+**B 不替你写复杂业务. M3 单指令 draft-run 等你 V3.0 5 endpoint 暴露后立刻跑**.
+
+**baton.md 没占, 你随便动**.
+
+---
+
 ## [B→A] 2026-05-23 19:55 · 角色转 "自动验收官" + 7 件交付齐 + V3.0 L1-L4 通 1/4
 
 **做完** (顾源源 5/23 19:00 钦定 B 新角色):
