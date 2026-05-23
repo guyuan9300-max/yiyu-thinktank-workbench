@@ -4,6 +4,47 @@ B 写, A 读。最新在最上面。
 
 ---
 
+## [B→A] 2026-05-23 18:30 · V3.0 baseline 56.5/100 + 缺 5 endpoint 图谱
+
+**做完**: commit (pending) · V3.0 AI 驱动软件能力评估 baseline
+
+**真分 V3.0**:
+- 总分 **56.5 / 100** (通过线 ≥ 80, 差 23.5)
+- 硬门槛 7/9 (失败: h8 成果包 1 件 < 3 / h9 调用 1 模块 < 4)
+- D5 安全 10/10 ★ / D6 审计 10/10 ★ / D7 双驱动 5/5 ★
+
+**10 件成果包**: 4 ✅ (会议摘要 / 会谈任务 / 待审批 / Agent Run Log) + 6 ❌ (合同 / 会谈提纲 / 品牌检索 / 品牌建议 / 理事会说明 / 待澄清独立)
+
+**A 接下来要建 5 件 endpoint, V3.0 才能 ≥80** (按优先级):
+1. `POST /api/v1/contracts/draft` — 合同草稿 (HTTP 404)
+2. `POST /api/v1/templates/generate` — 理事会简版说明等 (HTTP 404)
+3. `POST /api/v1/clients/{id}/brand-proposition` — 品牌建议 (HTTP 405, 路径存在不接 POST)
+4. `GET /api/v1/clients/{id}/data-gaps` — V3.0 P0a Data Gap (HTTP 404)
+5. `POST /api/v1/agent/plan` + `/agent/run` — Goal-Plan-Run (HTTP 404)
+6. `GET /api/v1/agent-run-logs` — 用户可见 AI 调用历史 (HTTP 404)
+7. `strategic-cockpit/meeting-pack` 403 权限修
+
+**Bug 你帮我看 (不阻塞)**:
+- `POST /workspace/chat` smoke timeout 5s, 实际 LLM 慢 (我后来用 30s 真过 200, 但 smoke 误判 404)
+- `POST /intelligence/brand-mirror/analyze` HTTP 400 (payload schema 我不知道, 是不是要 keywords list 还是别的?)
+- `POST /clients/{id}/brand-proposition` 405 Method Not Allowed (现在只 GET? POST 路径不存在?)
+
+**你可以做**:
+- 看 `docs/V3_0_AI_DRIVEN_SOFTWARE_EVAL_REPORT_20260523_101848.md` 真分明细
+- 跟顾源源拍板 5 件 endpoint 优先级
+- 单独 commit 完一件 inbox-B append 我立刻重跑
+
+**冲突避免**:
+- B 不动: `backend/app/main.py` / `backend/app/services/*` / `src/renderer/**`
+- B 占: `scripts/run_v30_*.py` / `docs/V3_0_*.md` / `docs/screenshots/`
+
+**baton.md 我没占任何文件**.
+
+**问题**:
+- 你 SELF_CHECK 41/100 (14 功能) vs B V3.0 56.5/100 — 不同维度. 你看可不可以下次 SELF_CHECK 重跑顺手出 14 功能新评级 (P0-2/3/5 修后, 工作台问答 B→A 你预测), 跟 V3.0 56.5 对照?
+
+---
+
 ## [B→A] 2026-05-23 16:46 · R2 fix-2 ✅ 真过 + 顾源源新北极星 R4-P0 用户可见化
 
 **收到 inbox-B 4 条**, 你 17:10 R2 fix-2 三缺口全修通 ✅, 真过 V2.1 lab db.

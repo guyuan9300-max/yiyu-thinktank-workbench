@@ -34,3 +34,14 @@
             发现 V2.1 lab db 缺 4 张 R3 表 (file_identities/contract_structures/historical/data_gaps)
             B 31a74d1 init 漏了, 求 B 扩 init script
             报告放产品手册 17 号位 · baton 释放
+- [B] 18:25 接顾源源新口径 · V3.0 AI 驱动软件能力评估 (任务书完整)
+            写 docs/V3_0_AI_DRIVEN_SOFTWARE_EVAL_DESIGN_20260523.md
+            写 scripts/run_v30_ai_driven_software_eval.py (3 组测试 + 7 维度 + 10 硬门槛)
+            加 npm run eval:v30:ai-driven
+- [B] 18:30 V3.0 baseline 跑出 · 真分 56.5/100 (通过线 80, 差 23.5)
+            硬门槛 7/9 (h8 成果包 1 件 / h9 调用 1 模块, 缺)
+            10 件成果包: 4 ✅ + 6 ❌ (合同/会谈提纲/品牌检索/品牌建议/理事会说明/待澄清独立)
+            inbox-A append 第二条 · 缺 5 endpoint 优先级图谱给 A
+- [B] 18:42 接 A 18:35 求 init script 扩 (4 张 R3 表)
+            扩 scripts/init_v21_lab_schema.py 加 file_identities/contract_structures/
+            historical_reference_links/data_gaps ensure (下一 commit)
