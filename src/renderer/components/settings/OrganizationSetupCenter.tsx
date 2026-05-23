@@ -1745,7 +1745,7 @@ export function OrganizationSetupCenter({
                                   </button>
                                 )}
 
-                                {/* 持岗人（下拉选员工） */}
+                                {/* 持岗人（下拉选员工 + 机器人同事） */}
                                 <div className="mt-1.5 flex items-center justify-center gap-1">
                                   {canModify ? (
                                     <LeaderPicker
@@ -1757,6 +1757,7 @@ export function OrganizationSetupCenter({
                                       onSelect={(employee) => handleSelectRoleHolder(role.id, employee)}
                                       placeholder="选员工"
                                       compact
+                                      onAddBotMember={() => setBotDialogDept({ id: department.id, name: department.name })}
                                     />
                                   ) : (
                                     <span className="text-[11px] text-gray-500">
@@ -1769,26 +1770,15 @@ export function OrganizationSetupCenter({
                           })}
 
                           {canModify ? (
-                            <>
-                              <button
-                                id={`add-btn-${department.id}`}
-                                type="button"
-                                onClick={() => handleAddRole(department.id)}
-                                className="z-10 inline-flex min-w-[120px] items-center justify-center gap-1 rounded-xl border border-dashed border-gray-200 bg-white/70 px-3 py-2 text-[12px] text-gray-400 transition hover:border-[#5B7BFE]/40 hover:bg-[#5B7BFE]/5"
-                              >
-                                <Plus size={12} />
-                                添加岗位
-                              </button>
-                              {/* 顾源源 5/24: 添加机器人同事按钮, 跟添加岗位平级 */}
-                              <button
-                                type="button"
-                                onClick={() => setBotDialogDept({ id: department.id, name: department.name })}
-                                className="z-10 inline-flex min-w-[140px] items-center justify-center gap-1 rounded-xl border border-dashed border-purple-200 bg-purple-50/40 px-3 py-2 text-[12px] text-purple-600 transition hover:border-purple-400 hover:bg-purple-50"
-                                title="为此部门添加机器人同事(独立 actor_id, 受审批控制)"
-                              >
-                                🤖 添加机器人同事
-                              </button>
-                            </>
+                            <button
+                              id={`add-btn-${department.id}`}
+                              type="button"
+                              onClick={() => handleAddRole(department.id)}
+                              className="z-10 inline-flex min-w-[120px] items-center justify-center gap-1 rounded-xl border border-dashed border-gray-200 bg-white/70 px-3 py-2 text-[12px] text-gray-400 transition hover:border-[#5B7BFE]/40 hover:bg-[#5B7BFE]/5"
+                            >
+                              <Plus size={12} />
+                              添加岗位
+                            </button>
                           ) : null}
                         </div>
                       </div>
@@ -2005,6 +1995,8 @@ type LeaderPickerProps = {
   placeholder?: string;
   compact?: boolean;
   disabled?: boolean;
+  /** 顾源源 5/24: 当下拉允许添加机器人同事时, 提供该回调 → 底部出现 "添加机器人同事" 行. */
+  onAddBotMember?: () => void;
 };
 
 function LeaderPicker({
@@ -2014,6 +2006,7 @@ function LeaderPicker({
   placeholder = '选择负责人',
   compact = false,
   disabled = false,
+  onAddBotMember,
 }: LeaderPickerProps) {
   const [open, setOpen] = useState(false);
   const [search, setSearch] = useState('');
@@ -2176,6 +2169,26 @@ function LeaderPicker({
                       </button>
                     ))
                   )}
+                  {/* 顾源源 5/24: 下拉底部加 "添加机器人同事" 行 — 跟人类同事并列在同一序列里.
+                       样式跟"清空"完全一致(灰色+左对齐+小字), 不用 emoji, 不堆视觉. */}
+                  {onAddBotMember ? (
+                    <>
+                      <div className="my-1 border-t border-gray-100" />
+                      <button
+                        type="button"
+                        onClick={() => {
+                          close();
+                          onAddBotMember();
+                        }}
+                        className="w-full rounded-lg px-2 py-1.5 text-left text-[11px] font-medium text-[#4A63CF] transition hover:bg-[#EEF3FF]"
+                      >
+                        添加机器人同事
+                        <span className="ml-1 text-[10px] font-normal text-gray-400">
+                          创建一个 AI 同事并指派到此岗位
+                        </span>
+                      </button>
+                    </>
+                  ) : null}
                 </div>
               </div>
             </>,

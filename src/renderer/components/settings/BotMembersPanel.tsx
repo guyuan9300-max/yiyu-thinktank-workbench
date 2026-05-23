@@ -9,6 +9,7 @@
  * 最低工程标准: 可打开 / 可看见 / 可刷新 / 可处理.
  */
 import { useCallback, useEffect, useMemo, useState } from 'react';
+import { X } from 'lucide-react';
 import {
   BOT_CAPABILITY_KEYS,
   createBotMember,
@@ -80,7 +81,7 @@ export function BotMembersPanel({ defaultDepartmentId }: BotMembersPanelProps = 
     <div className="flex flex-col gap-3 rounded-lg border border-gray-200 bg-white p-4 shadow-sm">
       <div className="flex items-center justify-between">
         <h3 className="text-sm font-medium text-gray-700">
-          🤖 机器人同事 (顾源源 5/24 大任务)
+          机器人同事 / AI Member
         </h3>
         <div className="flex items-center gap-2 text-xs">
           <button
@@ -281,120 +282,144 @@ export function BotMemberFormDialog({
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
-      <div className="max-h-[90vh] w-full max-w-2xl overflow-y-auto rounded-lg bg-white p-6 shadow-xl">
-        <div className="mb-4 flex items-start justify-between">
+    <div className="fixed inset-0 z-[120] flex items-center justify-center bg-gray-900/30 p-4 backdrop-blur-sm">
+      <div className="max-h-[90vh] w-full max-w-[640px] overflow-y-auto rounded-3xl bg-white shadow-2xl ring-1 ring-black/5">
+        {/* Header */}
+        <div className="flex items-start justify-between border-b border-gray-100 px-8 py-6">
           <div>
-            <h3 className="text-base font-medium text-gray-800">添加机器人同事</h3>
-            <p className="mt-1 text-xs text-gray-500">
-              机器人同事会以独立身份执行任务、发起审批、留下运行日志。它不能自己审批自己。
+            <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-gray-400">
+              ADD MEMBER · 添加机器人同事
+            </p>
+            <h3 className="mt-2 text-[18px] font-bold text-gray-900">添加机器人同事</h3>
+            <p className="mt-1.5 text-[12px] text-gray-500">
+              机器人同事拥有独立身份, 进入运行日志和审批队列, 不能自己审批自己。
             </p>
           </div>
-          <button onClick={onClose} className="rounded px-2 py-1 text-gray-500 hover:bg-gray-100">
-            ✕
+          <button
+            type="button"
+            onClick={onClose}
+            className="inline-flex h-9 w-9 items-center justify-center rounded-full text-gray-400 transition hover:bg-gray-100 hover:text-gray-700"
+          >
+            <X size={16} />
           </button>
         </div>
 
-        {error && <div className="mb-3 rounded bg-red-50 p-2 text-xs text-red-700">{error}</div>}
+        {error && (
+          <div className="mx-8 mt-5 rounded-xl border border-rose-100 bg-rose-50 px-4 py-2.5 text-[12px] text-rose-700">
+            {error}
+          </div>
+        )}
 
-        <div className="space-y-4 text-xs">
+        <div className="space-y-7 px-8 py-6 text-[13px]">
           {/* 基础信息 */}
           <section>
-            <h4 className="mb-2 text-xs font-medium uppercase tracking-wide text-gray-500">基础信息</h4>
-            <Field label="机器人名称 *" hint="例: 庆华、蔚来、研究员、品牌顾问 AI">
+            <p className="mb-3 text-[10px] font-bold uppercase tracking-[0.18em] text-gray-400">基础信息</p>
+            <Field label="姓名" required hint="例: 庆华、蔚来、研究员、品牌顾问">
               <input
                 value={displayName}
                 onChange={(e) => setDisplayName(e.target.value)}
                 placeholder="庆华"
-                className="w-full rounded border border-gray-300 px-2 py-1"
+                className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2.5 text-[13px] text-gray-800 outline-none transition placeholder:text-gray-300 focus:border-[#5B7BFE] focus:ring-2 focus:ring-[#5B7BFE]/15"
               />
             </Field>
-            <div className="grid grid-cols-2 gap-3">
-              <Field label="所属部门 ID">
-                <input
-                  value={departmentId}
-                  onChange={(e) => setDepartmentId(e.target.value)}
-                  placeholder="dept_strategy"
-                  className="w-full rounded border border-gray-300 px-2 py-1"
-                />
-              </Field>
-              <Field label="部门名称">
+            <div className="grid grid-cols-2 gap-4">
+              <Field label="所属部门">
                 <input
                   value={departmentName}
                   onChange={(e) => setDepartmentName(e.target.value)}
                   placeholder="战略陪伴部"
-                  className="w-full rounded border border-gray-300 px-2 py-1"
+                  className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2.5 text-[13px] text-gray-800 outline-none transition placeholder:text-gray-300 focus:border-[#5B7BFE] focus:ring-2 focus:ring-[#5B7BFE]/15"
+                />
+              </Field>
+              <Field label="部门 ID">
+                <input
+                  value={departmentId}
+                  onChange={(e) => setDepartmentId(e.target.value)}
+                  placeholder="dept_strategy"
+                  className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2.5 text-[13px] font-mono text-gray-600 outline-none transition placeholder:text-gray-300 focus:border-[#5B7BFE] focus:ring-2 focus:ring-[#5B7BFE]/15"
                 />
               </Field>
             </div>
-            <Field label="机器人职责描述">
+            <Field label="职责描述" hint="可选">
               <textarea
                 value={description}
                 onChange={(e) => setDescription(e.target.value)}
-                placeholder="负责战略陪伴资料整理、报告草稿生成..."
+                placeholder="负责战略陪伴资料整理、报告草稿生成、任务复盘"
                 rows={2}
-                className="w-full rounded border border-gray-300 px-2 py-1"
+                className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2.5 text-[13px] text-gray-800 outline-none transition placeholder:text-gray-300 focus:border-[#5B7BFE] focus:ring-2 focus:ring-[#5B7BFE]/15"
               />
             </Field>
           </section>
 
           {/* 汇报线 */}
           <section>
-            <h4 className="mb-1 text-xs font-medium uppercase tracking-wide text-gray-500">汇报与审批人</h4>
-            <p className="mb-2 text-gray-500">
-              机器人同事的汇报对象也是它的工作审批人。任一人批准即视为本次审批通过。
+            <p className="mb-1 text-[10px] font-bold uppercase tracking-[0.18em] text-gray-400">汇报与审批人</p>
+            <p className="mb-3 text-[12px] text-gray-500">
+              汇报对象同时是它的工作审批人, 任一人批准即视为通过。
             </p>
-            <label className="flex items-center gap-2">
-              <input
-                type="checkbox"
-                checked={reportDeptLead}
-                onChange={(e) => setReportDeptLead(e.target.checked)}
-              />
-              <span>汇报给本部门领导</span>
-            </label>
-            <label className="mt-1 flex items-center gap-2">
-              <input
-                type="checkbox"
-                checked={reportCEO}
-                onChange={(e) => setReportCEO(e.target.checked)}
-              />
-              <span>汇报给 CEO</span>
-            </label>
-            <Field label="部门领导 user_id (逗号分隔)">
-              <input
-                value={deptLeaderIds}
-                onChange={(e) => setDeptLeaderIds(e.target.value)}
-                placeholder="user_dept_lead"
-                className="w-full rounded border border-gray-300 px-2 py-1"
-              />
-            </Field>
-            <Field label="CEO user_id (逗号分隔)">
-              <input
-                value={ceoIds}
-                onChange={(e) => setCeoIds(e.target.value)}
-                placeholder="user_ceo"
-                className="w-full rounded border border-gray-300 px-2 py-1"
-              />
-            </Field>
+            <div className="space-y-2">
+              <label className="flex cursor-pointer items-center gap-2.5 rounded-xl border border-gray-100 bg-gray-50/60 px-3 py-2.5 transition hover:border-gray-200 hover:bg-gray-50">
+                <input
+                  type="checkbox"
+                  checked={reportDeptLead}
+                  onChange={(e) => setReportDeptLead(e.target.checked)}
+                  className="h-4 w-4 rounded border-gray-300 text-[#5B7BFE] focus:ring-[#5B7BFE]"
+                />
+                <span className="text-[13px] text-gray-700">汇报给本部门领导</span>
+              </label>
+              <label className="flex cursor-pointer items-center gap-2.5 rounded-xl border border-gray-100 bg-gray-50/60 px-3 py-2.5 transition hover:border-gray-200 hover:bg-gray-50">
+                <input
+                  type="checkbox"
+                  checked={reportCEO}
+                  onChange={(e) => setReportCEO(e.target.checked)}
+                  className="h-4 w-4 rounded border-gray-300 text-[#5B7BFE] focus:ring-[#5B7BFE]"
+                />
+                <span className="text-[13px] text-gray-700">汇报给 CEO</span>
+              </label>
+            </div>
+            <div className="mt-3 grid grid-cols-2 gap-4">
+              <Field label="部门领导 user_id" hint="多个逗号分隔">
+                <input
+                  value={deptLeaderIds}
+                  onChange={(e) => setDeptLeaderIds(e.target.value)}
+                  placeholder="user_dept_lead"
+                  disabled={!reportDeptLead}
+                  className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2.5 text-[13px] font-mono text-gray-600 outline-none transition placeholder:text-gray-300 focus:border-[#5B7BFE] focus:ring-2 focus:ring-[#5B7BFE]/15 disabled:bg-gray-50 disabled:opacity-50"
+                />
+              </Field>
+              <Field label="CEO user_id" hint="多个逗号分隔">
+                <input
+                  value={ceoIds}
+                  onChange={(e) => setCeoIds(e.target.value)}
+                  placeholder="user_ceo"
+                  disabled={!reportCEO}
+                  className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2.5 text-[13px] font-mono text-gray-600 outline-none transition placeholder:text-gray-300 focus:border-[#5B7BFE] focus:ring-2 focus:ring-[#5B7BFE]/15 disabled:bg-gray-50 disabled:opacity-50"
+                />
+              </Field>
+            </div>
           </section>
 
           {/* 权限 */}
           <section>
-            <h4 className="mb-1 text-xs font-medium uppercase tracking-wide text-gray-500">需要审批的能力</h4>
-            <p className="mb-2 text-gray-500">
-              下面只设置那些涉及正式写入、数据中心解析或对外影响的能力。基础读取/草稿/任务/复盘等默认允许,不在此展示。
+            <p className="mb-1 text-[10px] font-bold uppercase tracking-[0.18em] text-gray-400">能力授权</p>
+            <p className="mb-3 text-[12px] text-gray-500">
+              只列涉及正式写入、数据中心解析或对外影响的能力。读取被授权资料、创建自己的任务、写复盘、生成草稿等默认允许。
             </p>
             <div className="flex flex-col gap-2">
               {BOT_CAPABILITY_KEYS.map((cap) => (
                 <label
                   key={cap}
-                  className="flex cursor-pointer items-start gap-2 rounded border border-gray-100 p-2 hover:bg-gray-50"
+                  className={`flex cursor-pointer items-start gap-3 rounded-xl border px-3.5 py-3 transition ${
+                    enabledCaps.has(cap)
+                      ? 'border-[#5B7BFE]/30 bg-[#5B7BFE]/5'
+                      : 'border-gray-100 bg-white hover:border-gray-200 hover:bg-gray-50/60'
+                  }`}
                 >
                   <input
                     type="checkbox"
                     checked={enabledCaps.has(cap)}
                     onChange={() => toggleCap(cap)}
-                    className="mt-0.5"
+                    className="mt-0.5 h-4 w-4 rounded border-gray-300 text-[#5B7BFE] focus:ring-[#5B7BFE]"
                   />
                   <div className="flex-1">
                     <div className="font-medium">{CAPABILITY_LABELS[cap].label}</div>
@@ -406,20 +431,23 @@ export function BotMemberFormDialog({
           </section>
         </div>
 
-        <div className="mt-5 flex justify-end gap-2">
+        {/* Footer */}
+        <div className="flex items-center justify-end gap-3 border-t border-gray-100 bg-gray-50/60 px-8 py-4">
           <button
+            type="button"
             onClick={onClose}
             disabled={busy}
-            className="rounded border border-gray-300 px-4 py-1.5 text-gray-700 hover:bg-gray-50 disabled:opacity-50"
+            className="inline-flex items-center gap-2 rounded-full border border-gray-200 bg-white px-5 py-2.5 text-[13px] font-bold text-gray-600 transition hover:border-gray-300 hover:bg-gray-50 disabled:opacity-50"
           >
             取消
           </button>
           <button
+            type="button"
             onClick={() => void submit()}
             disabled={busy}
-            className="rounded bg-blue-600 px-4 py-1.5 text-white hover:bg-blue-700 disabled:opacity-50"
+            className="inline-flex items-center gap-2 rounded-full bg-[#5B7BFE] px-6 py-2.5 text-[13px] font-bold text-white shadow-[0_12px_30px_rgba(91,123,254,0.25)] transition hover:bg-[#4A63CF] disabled:cursor-not-allowed disabled:opacity-60"
           >
-            {busy ? '创建中...' : '创建机器人同事'}
+            {busy ? '创建中…' : '创建机器人同事'}
           </button>
         </div>
       </div>
@@ -427,14 +455,15 @@ export function BotMemberFormDialog({
   );
 }
 
-function Field({ label, hint, children }: { label: string; hint?: string; children: React.ReactNode }): JSX.Element {
+function Field({ label, hint, required, children }: { label: string; hint?: string; required?: boolean; children: React.ReactNode }): JSX.Element {
   return (
-    <div className="mt-2">
-      <label className="block text-xs text-gray-600">
-        {label}
-        {hint && <span className="ml-1 text-gray-400">— {hint}</span>}
+    <div className="mt-3 first:mt-0">
+      <label className="mb-1.5 flex items-baseline gap-1.5 text-[12px] font-medium text-gray-700">
+        <span>{label}</span>
+        {required ? <span className="text-rose-400">*</span> : null}
+        {hint ? <span className="text-[11px] font-normal text-gray-400">{hint}</span> : null}
       </label>
-      <div className="mt-0.5">{children}</div>
+      <div>{children}</div>
     </div>
   );
 }
