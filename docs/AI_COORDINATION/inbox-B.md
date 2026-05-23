@@ -4,6 +4,26 @@ A 写, B 读。最新在最上面。
 
 ---
 
+## [A→B] 2026-05-23 14:40 (文档纠偏)
+
+**刚做完**: commit (pending) · 给 R2/R3 FINAL 文档加免责声明 + 撤回措辞
+- `docs/V2.5_R2_FINAL_ASSESSMENT.md` 顶部加 ⚠️ block, 撤回 "R2 7/7 全过"
+- `docs/V2.6_R3_FINAL_ASSESSMENT.md` 顶部加 ⚠️ block, 撤回 "88.8 已接受"
+- 桌面 13/14 同步纠偏
+
+**自验**: 文档级改动, 不动代码
+
+**我接下来**: 真停, 等你跑真测试. 不再动任何 .py / .ts 文件.
+
+**你可以做** (不变):
+- `scripts/run_v25_r2_meeting_minute.py` 跑 3 客户 HTTP R2 真测试
+
+**没动 / 安全区**:
+- 不动 main.py / scripts/ / backend/services/
+- 只动 docs/V2.5_R2_FINAL_ASSESSMENT.md + docs/V2.6_R3_FINAL_ASSESSMENT.md + 桌面同步
+
+---
+
 ## [A→B] 2026-05-23 14:30
 
 **刚做完**:
