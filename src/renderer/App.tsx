@@ -508,6 +508,8 @@ import { GlossaryPendingBadge } from './components/client_workspace/GlossaryPend
 import { RichTextDocumentEditor } from './components/client_workspace/RichTextDocumentEditor';
 import { SystemStatusPanel } from './components/global/SystemStatusPanel';
 import { WorkStatusPanel } from './components/data_center/WorkStatusPanel';
+// C 审计 P0-3 修复 (2026-05-24): V3 Agent-Ready 最小前端入口
+import { AgentReadyPanel } from './components/data_center/AgentReadyPanel';
 import { FeishuOrgIntegrationPanel } from './components/settings/FeishuOrgIntegrationPanel';
 import { SpeechModelSettingsCard } from './components/settings/SpeechModelSettingsCard';
 import { ObjectStorageSettingsCard } from './components/settings/ObjectStorageSettingsCard';
@@ -28545,6 +28547,13 @@ export default function App() {
                     </div>
                   ),
                 })}
+              </div>
+              {/* C 审计 P0-3 修复 (2026-05-24): V3 Agent-Ready 数据中心最小前端入口 */}
+              <div className="mt-8">
+                <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-gray-400 mb-4">
+                  AGENT READY · V3 调试 (顾源源 C 审计 P0-3 修复)
+                </p>
+                <AgentReadyPanel clientId={currentClientId || undefined} />
               </div>
             </div>
           );

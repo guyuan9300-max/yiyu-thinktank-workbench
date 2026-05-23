@@ -609,6 +609,195 @@ export async function getHealth() {
   return request<HealthResponse>('/api/v1/system/health');
 }
 
+// ──────────────────────────────────────────────────────────────────────
+// C 审计 P0-3 修复 (2026-05-24) · V3 Agent-Ready endpoint 前端 wrapper
+// 让 src/renderer 真消费 V3 M1-M3 endpoint, 满足顾源源硬门槛 9 "前端不可见不算"
+// ──────────────────────────────────────────────────────────────────────
+
+export interface AgentStateResponse {
+  client_id: string;
+  client_profile?: Record<string, unknown>;
+  active_projects?: Array<Record<string, unknown>>;
+  latest_events?: Array<Record<string, unknown>>;
+  file_identities?: Array<Record<string, unknown>>;
+  contract_structures?: Array<Record<string, unknown>>;
+  historical_reference_links?: Array<Record<string, unknown>>;
+  commitments?: Array<Record<string, unknown>>;
+  risk_signals?: Array<Record<string, unknown>>;
+  clarifications?: Array<Record<string, unknown>>;
+  approval_queue?: Array<Record<string, unknown>>;
+  data_gaps?: Array<Record<string, unknown>>;
+  agent_run_logs?: Array<Record<string, unknown>>;
+  recommended_next_actions?: Array<{
+    type: string;
+    reason: string;
+    risk_level?: string;
+    approval_required?: boolean;
+    evidence_table?: string;
+    endpoint_hint?: string;
+  }>;
+  evidence_summary?: Record<string, number>;
+  used_tables?: string[];
+}
+
+export async function getClientAgentState(clientId: string): Promise<AgentStateResponse> {
+  return request<AgentStateResponse>(`/api/v1/clients/${encodeURIComponent(clientId)}/agent-state`);
+}
+
+export interface DataGapItem {
+  gap_id: string;
+  gap_type: string;
+  subject?: string;
+  description?: string;
+  missing_evidence?: string[];
+  suggested_tools?: string[];
+  suggested_clarification?: string;
+  priority?: 'high' | 'medium' | 'low';
+  severity?: string;
+  status?: string;
+  approval_required?: boolean;
+}
+
+export interface DataGapsResponse {
+  client_id: string;
+  total: number;
+  items: DataGapItem[];
+  schema_version?: string;
+}
+
+export async function getClientDataGaps(
+  clientId: string,
+  options?: { status?: string; severity?: string; limit?: number },
+): Promise<DataGapsResponse> {
+  const q = new URLSearchParams();
+  if (options?.status) q.set('status_filter', options.status);
+  if (options?.severity) q.set('severity', options.severity);
+  if (options?.limit) q.set('limit', String(options.limit));
+  const suffix = q.toString() ? `?${q}` : '';
+  return request<DataGapsResponse>(
+    `/api/v1/clients/${encodeURIComponent(clientId)}/data-gaps${suffix}`,
+  );
+}
+
+export interface AgentRunLogItem {
+  id: string;
+  tool_name?: string;
+  actor_type?: string;
+  actor_id?: string;
+  client_id?: string | null;
+  status?: string;
+  triggered_at?: string;
+  duration_ms?: number | null;
+  idempotency_key?: string | null;
+  input_json?: string;
+  output_json?: string;
+  error_message?: string | null;
+}
+
+export interface AgentRunLogsResponse {
+  filter: { client_id?: string | null; actor_type?: string | null; limit: number };
+  total: number;
+  items: AgentRunLogItem[];
+}
+
+export async function listAgentRunLogs(options?: {
+  clientId?: string;
+  actorType?: string;
+  limit?: number;
+}): Promise<AgentRunLogsResponse> {
+  const q = new URLSearchParams();
+  if (options?.clientId) q.set('client_id', options.clientId);
+  if (options?.actorType) q.set('actor_type', options.actorType);
+  if (options?.limit) q.set('limit', String(options.limit));
+  const suffix = q.toString() ? `?${q}` : '';
+  return request<AgentRunLogsResponse>(`/api/v1/agent-run-logs${suffix}`);
+}
+
+export interface ToolRegistryEntry {
+  tool_name: string;
+  description?: string;
+  endpoint?: string;
+  when_to_use?: string;
+  when_not_to_use?: string;
+  risk_level?: 'low' | 'medium' | 'high';
+  approval_required?: boolean;
+  status?: 'available' | 'partial' | 'missing';
+  blocked_by_A?: boolean;
+  read_scope?: string;
+  write_scope?: string;
+  external_side_effect?: string;
+  audit_note?: string;
+}
+
+export interface ToolRegistryResponse {
+  version: string;
+  total: number;
+  by_status: Record<string, number>;
+  tools: ToolRegistryEntry[];
+  schema_completeness?: Record<string, boolean>;
+}
+
+export async function getToolRegistry(options?: {
+  statusFilter?: string;
+  riskLevel?: string;
+}): Promise<ToolRegistryResponse> {
+  const q = new URLSearchParams();
+  if (options?.statusFilter) q.set('status_filter', options.statusFilter);
+  if (options?.riskLevel) q.set('risk_level', options.riskLevel);
+  const suffix = q.toString() ? `?${q}` : '';
+  return request<ToolRegistryResponse>(`/api/v1/tool-registry${suffix}`);
+}
+
+export interface ApprovalRow {
+  id: string;
+  client_id?: string | null;
+  action_type: string;
+  actor_type: string;
+  actor_id: string;
+  target_resource?: string | null;
+  payload?: Record<string, unknown>;
+  reason?: string;
+  status: string;
+  agent_run_id?: string | null;
+  created_at: string;
+}
+
+export async function listApprovals(options?: {
+  clientId?: string;
+  limit?: number;
+}): Promise<ApprovalRow[]> {
+  const q = new URLSearchParams();
+  if (options?.clientId) q.set('client_id', options.clientId);
+  if (options?.limit) q.set('limit', String(options.limit));
+  const suffix = q.toString() ? `?${q}` : '';
+  return request<ApprovalRow[]>(`/api/v1/approvals${suffix}`);
+}
+
+export async function approveApproval(
+  approvalId: string,
+  decidedBy: string,
+  note?: string,
+): Promise<{ id: string; status: string; decided_by: string }> {
+  return request(`/api/v1/approvals/${encodeURIComponent(approvalId)}/approve`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ decided_by: decidedBy, note: note ?? '' }),
+  });
+}
+
+export async function rejectApproval(
+  approvalId: string,
+  decidedBy: string,
+  note?: string,
+): Promise<{ id: string; status: string; decided_by: string }> {
+  return request(`/api/v1/approvals/${encodeURIComponent(approvalId)}/reject`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ decided_by: decidedBy, note: note ?? '' }),
+  });
+}
+// ────────────────────── end V3 P0-3 wrappers ──────────────────────────
+
 export type BrainPulse = {
   memoryCount: number;
   docCount: number;

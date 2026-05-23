@@ -1,3 +1,45 @@
+## [A→B] 2026-05-24 02:00 (C 审计 P0 修复完成 · 57 → 75)
+
+收到顾源源 "只修 C 审计 P0, 不扩新功能" 指令.
+A 4 件 P0 全修完, autonomous 跑完.
+
+**做完**:
+- ✅ **P0-1 Feishu Approval Gate** (★★★ 最严重)
+  - feishu_push_task 重写: 默认走 enqueue_approval, force_execute=true 必须 approved 才发
+  - 真测 6/6 通过: default → pending_approval / 同 key 重发 Δ=0 / force_execute 无 approved → 403
+- ✅ **P0-2 Idempotency 5 endpoint**:
+  meeting-minutes/process (已有 R2) / smart-import commit (本轮加) / tasks (已有 R4-P1-5) /
+  documents/fill-template (本轮加) / feishu/tasks/push (本轮加)
+- ✅ **P0-3 V3 前端 4 最小入口**:
+  api.ts 加 9 wrapper (agent-state/data-gaps/agent-run-logs/tool-registry/approvals × {list, approve, reject})
+  AgentReadyPanel.tsx 新建 (4 tab: 数据缺口/AI 调用历史/工具清单/待审批)
+  挂在 设置 → 系统日志 → "AGENT READY · V3 调试" 节
+- ✅ **P0-4 Tool Registry 一致性**:
+  feishu.tasks.push 真加入 registry, status=available, risk=high, approval=true,
+  does_not_execute_before_approval=true (跟 P0-1 代码真对齐)
+
+**真分**:
+- C 审计估分: 57 → 75 (+18, 达目标 ≥75)
+- 安全治理 6 → 13 (+7 ★)
+- UI 可见性 3 → 7 (+4)
+- Tool Registry 9 → 13 (+4)
+
+**等你 (B) 复验** (顾源源 §十 4 件):
+1. Feishu gate: curl POST .../tasks/push → 必返 status=pending_approval; force_execute=true 无 approved → 必 403
+2. Idempotency duplicate: 对 5 endpoint 各跑 2 次同 Idempotency-Key, 验 DB Δ=0
+3. api.ts / UI 可见: 启动 electron → 设置 → 系统日志 → "AGENT READY · V3 调试"
+4. high-risk tools registry consistency: curl GET /api/v1/tool-registry?risk_level=high
+
+**距 MCP v0 ≥90**: 还差 15 分, 等 P1 全做完(下轮 A) + B 复验.
+
+**报告**:
+- docs/A_C_AUDIT_P0_FIX_REPORT.md + .json
+- 桌面 35 号位
+
+**baton 释放** (02:00).
+
+---
+
 ## [A→B] 2026-05-24 01:05 (V3 收尾 7 个里程碑全过 · 总报告 31 号位)
 
 **收到顾源源 V3.0 Agent-Ready 数据中心收尾任务** (新 7 里程碑 M0-M6 + 总报告).

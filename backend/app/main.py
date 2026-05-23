@@ -28608,14 +28608,43 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
 
     @app.post("/api/v1/smart-import/sessions/{session_id}/commit")
-    def smart_import_commit_session(session_id: str) -> dict:
+    def smart_import_commit_session(
+        session_id: str,
+        x_actor_type: str = Header("human", alias="X-Actor-Type"),
+        x_actor_id: str = Header("", alias="X-Actor-Id"),
+        idempotency_key: str | None = Header(None, alias="Idempotency-Key"),
+    ) -> dict:
         """把 session 的 LLM 解析结果一次性写入数据中心 (entities/atomic_facts/
         commitments/risks/events/documents). 之后 session status='imported'.
 
         R4 P0-3 · 顾源源 5/23 钦定: commit 后跑文件身份识别 + 合同结构解析.
+        C 审计 P0-2 修复: 加 Idempotency-Key + audit
         """
         from app.services import smart_file_import as sfi
         from app.services.knowledge_v2 import ingest_document_knowledge
+        # P0-2 Idempotency
+        from app.services.agent_governance import (
+            log_agent_run_start, log_agent_run_complete,
+            check_idempotency, record_idempotency,
+        )
+        if idempotency_key:
+            cached = check_idempotency(state.db, idempotency_key)
+            if cached and cached.get("outcome"):
+                return cached["outcome"]
+        # session 关联 client_id
+        session_row = state.db.fetchone(
+            "SELECT client_id FROM smart_import_sessions WHERE id = ?", (session_id,),
+        )
+        client_id_for_audit = str(session_row["client_id"]) if session_row and session_row["client_id"] else None
+        run_id = log_agent_run_start(
+            state.db,
+            actor_type=x_actor_type,  # type: ignore
+            actor_id=x_actor_id or "anonymous",
+            tool_name="smart_import.commit",
+            input_payload={"session_id": session_id},
+            client_id=client_id_for_audit,
+            idempotency_key=idempotency_key,
+        )
         try:
             stats = sfi.commit_session(
                 state.db, state.ai,
@@ -28694,10 +28723,20 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 stats["r4_contract_structures"] = contract_structures_detail
             except Exception as exc:
                 logger.warning("R4 P0-3 file_identity 后处理失败 (不阻塞 commit): %s", exc)
-            return {"ok": True, "stats": stats}
+            outcome = {"ok": True, "stats": stats, "agent_run_id": run_id}
+            log_agent_run_complete(
+                state.db, run_id, status="success",
+                output_payload={"facts_added": stats.get("facts_added", 0),
+                                "documents_added": stats.get("documents_added", 0)},
+            )
+            if idempotency_key:
+                record_idempotency(state.db, idempotency_key, run_id=run_id, outcome=outcome)
+            return outcome
         except ValueError as exc:
+            log_agent_run_complete(state.db, run_id, status="failed", error_message=str(exc))
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         except Exception as exc:
+            log_agent_run_complete(state.db, run_id, status="failed", error_message=str(exc))
             raise HTTPException(status_code=502, detail=f"commit 失败: {exc}") from exc
 
     @app.post("/api/v1/clients/{client_id}/glossary-attributes/auto-verify")
@@ -39166,6 +39205,43 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 "read_scope": "client_id", "write_scope": "atomic_facts + risk_signals + commitments + clarification_records + approval_queue + agent_run_log",
                 "status": "available", "writes_to": ["atomic_facts", "risk_signals", "commitments", "clarification_records", "approval_queue", "agent_run_log"], "reads_from": [],
             },
+            # ── 飞书对外推送 (C 审计 P0-1 后真受 approval gate) ─────
+            {
+                "tool_name": "feishu.tasks.push",
+                "description": "推送任务到飞书 (对外发送, 受 Approval Gate 保护)",
+                "when_to_use": "用户授权 Agent 把任务发到飞书时; 已有 task_id",
+                "when_not_to_use": "未经用户审批; Agent 自己起草未确认的任务",
+                "endpoint": "POST /api/v1/feishu/tasks/push?task_id={id}",
+                "input_schema": {
+                    "task_id": "str (query)",
+                    "force_execute": "bool (query, default false) - true 时校验 approval=approved 才真发",
+                    "X-Actor-Type": "header (default 'human')",
+                    "X-Actor-Id": "header",
+                    "Idempotency-Key": "header (optional)",
+                },
+                "output_schema": {
+                    "default(force_execute=false)": {"status": "pending_approval", "approval_id": "str",
+                                                     "execute_after_approve": "url hint"},
+                    "force_execute=true": {"status": "executed", "feishuGuid": "str", "approval_id": "str"},
+                },
+                "example_input": {"task_id": "task_xxx", "force_execute": False},
+                "example_output_pending": {"status": "pending_approval",
+                                            "approval_id": "appr_xxx",
+                                            "execute_after_approve": "POST /api/v1/feishu/tasks/push?task_id=task_xxx&force_execute=true"},
+                "example_output_executed": {"status": "executed",
+                                             "feishuGuid": "guid_xxx",
+                                             "approval_id": "appr_xxx"},
+                "risk_level": "high",
+                "approval_required": True,
+                "does_not_execute_before_approval": True,  # P0-1 真实现
+                "read_scope": "task by id",
+                "write_scope": "approval_queue + agent_run_log + (approve 后) settings(feishu_task_link)",
+                "status": "available",
+                "writes_to": ["approval_queue", "agent_run_log", "settings"],
+                "reads_from": ["tasks", "approval_queue (校验)"],
+                "external_side_effect": "approve 后真发飞书任务",
+                "audit_note": "C 审计 P0-1 修复 (2026-05-24): 默认走 approval gate, force_execute=true 必须有 approved approval 才执行",
+            },
             # ── missing (blocked_by_A 留下轮) ────────────────
             {
                 "tool_name": "contracts.draft",
@@ -39666,14 +39742,15 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 payload_hint={"text": "...", "source_doc_type": "review|task|chat"},
             ))
         # 7. publish_task_after_review (高风险, 强制 approval)
+        # C 审计 P0-1 修复后: feishu/tasks/push 真受 approval gate (代码层)
         actions.append(_act(
             type_="publish_task_with_external_action",
             reason="任何对外发送(微信/邮件/飞书) 都是高风险动作",
             risk="high", approval=True,
             evidence_tables=["approval_queue"],
-            endpoint=f"POST /api/v1/feishu/tasks/push (受 approval gate)",
+            endpoint=f"POST /api/v1/feishu/tasks/push?task_id=... (真受 approval gate, C P0-1 修复)",
             dry_endpoint=f"POST /api/v1/actions/dry-run",
-            user_result="审批通过前不发, 通过后用户在飞书收到任务",
+            user_result="审批通过前不发, force_execute=true 必须有 approved approval, 通过后真发飞书",
         ))
 
         # 数据较薄时兜底建议
@@ -48263,16 +48340,38 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         return fetch_link_material_import_run(client_id, run_id)
 
     @app.post("/api/v1/clients/{client_id}/documents/fill-template", response_model=ClientTemplateFillResponse)
-    def fill_client_template(client_id: str, payload: ClientTemplateFillPayload) -> ClientTemplateFillResponse:
+    def fill_client_template(
+        client_id: str, payload: ClientTemplateFillPayload,
+        x_actor_type: str = Header("human", alias="X-Actor-Type"),
+        x_actor_id: str = Header("", alias="X-Actor-Id"),
+        idempotency_key: str | None = Header(None, alias="Idempotency-Key"),
+    ) -> ClientTemplateFillResponse:
         # R4-P1-6 (顾源源 R4-P1): 模板填充前置 CompanyBrainContextBuilder
-        # 让模板字段解析顺序为: 用户权威值 → 合同结构 → 最新版本 → atomic_facts → 多候选进澄清
-        # 这里前置调一次 build, 把上下文塞到 fill_client_template_docx 的上下文中
+        # C 审计 P0-2 修复: 加 Idempotency-Key + audit
         build_client_summary(client_id)
+
+        # P0-2: Idempotency
+        from app.services.agent_governance import (
+            log_agent_run_start, log_agent_run_complete,
+            check_idempotency, record_idempotency,
+        )
+        if idempotency_key:
+            cached = check_idempotency(state.db, idempotency_key)
+            if cached and cached.get("outcome"):
+                return ClientTemplateFillResponse(**cached["outcome"])
+
+        run_id = log_agent_run_start(
+            state.db,
+            actor_type=x_actor_type,  # type: ignore
+            actor_id=x_actor_id or "anonymous",
+            tool_name="documents.fill_template",
+            input_payload={"client_id": client_id, "templatePath": payload.templatePath},
+            client_id=client_id,
+            idempotency_key=idempotency_key,
+        )
+
         try:
             from app.services.company_brain_context_builder import build_company_brain_context
-            # 前置构建公司大脑上下文 (template_fill task_type)
-            # 实际 fill 逻辑还是走旧 fill_client_template_docx, 但 db 已经有最新派生数据
-            # (后续 P2 把 ContextPack 真传给 template fill engine)
             _pack = build_company_brain_context(
                 state.db, client_id=client_id,
                 task_type="template_fill",
@@ -48283,7 +48382,22 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             )
         except Exception as exc:
             logger.warning("R4-P1-6 template_fill ContextBuilder 前置失败: %s", exc)
-        return fill_client_template_docx(client_id, payload.templatePath)
+
+        try:
+            result = fill_client_template_docx(client_id, payload.templatePath)
+            log_agent_run_complete(
+                state.db, run_id, status="success",
+                output_payload={"fieldCount": result.fieldCount, "filledCount": result.filledCount},
+            )
+            if idempotency_key:
+                record_idempotency(
+                    state.db, idempotency_key, run_id=run_id,
+                    outcome=result.model_dump(mode="json"),
+                )
+            return result
+        except Exception as exc:
+            log_agent_run_complete(state.db, run_id, status="failed", error_message=str(exc))
+            raise
 
     @app.post("/api/v1/clients/{client_id}/documents/fill-template/start", response_model=ClientTemplateFillRunRecord)
     def start_client_template_fill(client_id: str, payload: ClientTemplateFillPayload) -> ClientTemplateFillRunRecord:
@@ -48603,15 +48717,125 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         return {"meetingId": meeting_id, "title": parsed["title"], "speakers": parsed["speakers"], "transcriptLength": len(parsed["transcript"]), "createdTasks": created_tasks}
 
     @app.post("/api/v1/feishu/tasks/push")
-    def feishu_push_task(task_id: str = "") -> dict:
-        sync = _get_feishu_sync()
-        if not sync.is_configured():
-            raise HTTPException(status_code=400, detail="飞书应用未配置，请先设置 App ID 和 App Secret")
-        token = sync.get_tenant_token()
+    def feishu_push_task(
+        task_id: str = "",
+        force_execute: bool = False,
+        x_actor_type: str = Header("human", alias="X-Actor-Type"),
+        x_actor_id: str = Header("", alias="X-Actor-Id"),
+        idempotency_key: str | None = Header(None, alias="Idempotency-Key"),
+    ) -> dict:
+        """C 审计 P0-1 修复 — Feishu 推送默认走 Approval Gate.
+
+        默认行为已变更 — 直接调用不再立即推送飞书. 必须走 Approval Queue:
+          1. 第一次调用 (force_execute=false): 写 approval_queue (status='pending'),
+             返回 approval_id, 不真发飞书.
+          2. 用户在前端 approve 该 approval_queue 项后,
+             外置 Agent 或前端调本 endpoint 加 force_execute=true,
+             代码会校验 approval 必须为 approved 才真发.
+          3. 全程 X-Actor-Type / X-Actor-Id 必登 agent_run_log,
+             支持 Idempotency-Key.
+
+        风险等级: high (对外发送)
+        Tool Registry 标 approval_required=true · 本修复后真生效.
+        """
+        from app.services.agent_governance import (
+            log_agent_run_start, log_agent_run_complete,
+            check_idempotency, record_idempotency,
+            enqueue_approval, ApprovalRequest,
+        )
+
+        # 0. Idempotency: 同 key 重复返回上次 outcome
+        if idempotency_key:
+            cached = check_idempotency(state.db, idempotency_key)
+            if cached and cached.get("outcome"):
+                return cached["outcome"]
+
+        # 默认路径(入 approval)不需要飞书配置, 只有 force_execute=true 真发时才检查
         row = state.db.fetchone("SELECT * FROM tasks WHERE id = ?", (task_id,))
         if not row:
             raise HTTPException(status_code=404, detail="任务不存在")
         title = str(row["title"] or "")
+        client_id_v = str(row["client_id"]) if row["client_id"] else None
+        # actor_type 必须有, 不能静默缺失 (顾源源 §四 P0-1 §2 钦定)
+        actor_type_used = x_actor_type or "human"
+        actor_id_used = x_actor_id or ("external_agent" if actor_type_used != "human" else "anonymous")
+
+        # 1. audit 起头
+        run_id = log_agent_run_start(
+            state.db,
+            actor_type=actor_type_used,  # type: ignore
+            actor_id=actor_id_used,
+            tool_name="feishu.tasks.push",
+            input_payload={"task_id": task_id, "force_execute": force_execute,
+                           "title": title, "client_id": client_id_v},
+            client_id=client_id_v,
+            idempotency_key=idempotency_key,
+        )
+
+        # 2. 默认走 approval gate (force_execute=false)
+        if not force_execute:
+            try:
+                appr_id = enqueue_approval(state.db, ApprovalRequest(
+                    action_type="task.publish",  # type: ignore
+                    actor_type=actor_type_used,  # type: ignore
+                    actor_id=actor_id_used,
+                    payload={"task_id": task_id, "title": title,
+                             "tool": "feishu.tasks.push",
+                             "external_target": "feishu"},
+                    reason="飞书任务推送 (对外发送, 高风险)",
+                    client_id=client_id_v,
+                    target_resource=f"task/{task_id}",
+                    agent_run_id=run_id,
+                ))
+                outcome = {
+                    "taskId": task_id,
+                    "title": title,
+                    "approval_id": appr_id,
+                    "status": "pending_approval",
+                    "feishuGuid": None,
+                    "message": "推送已进入 approval queue, 等待用户在审批面板 approve 后才真发飞书.",
+                    "agent_run_id": run_id,
+                    "execute_after_approve": f"POST /api/v1/feishu/tasks/push?task_id={task_id}&force_execute=true",
+                }
+                log_agent_run_complete(
+                    state.db, run_id, status="success",
+                    output_payload={"approval_id": appr_id, "pending": True},
+                )
+                if idempotency_key:
+                    record_idempotency(state.db, idempotency_key, run_id=run_id, outcome=outcome)
+                return outcome
+            except Exception as exc:
+                log_agent_run_complete(state.db, run_id, status="failed", error_message=str(exc))
+                raise HTTPException(status_code=502, detail=f"enqueue approval fail: {exc}")
+
+        # 3. force_execute=true: 必须验证已 approved (防 Agent 自己绕)
+        appr_row = state.db.fetchone(
+            """SELECT id, status, decided_by FROM approval_queue
+               WHERE target_resource = ?
+                 AND action_type = 'task.publish'
+                 AND status = 'approved'
+               ORDER BY created_at DESC LIMIT 1""",
+            (f"task/{task_id}",),
+        )
+        if not appr_row:
+            log_agent_run_complete(
+                state.db, run_id, status="failed",
+                error_message="force_execute=true 但无 approved approval",
+            )
+            raise HTTPException(
+                status_code=403,
+                detail="高风险动作必须先走审批. 请先调 force_execute=false 拿 approval_id, 由用户 approve 后再调.",
+            )
+
+        # 4. 真发飞书 (受 approval gate 保护) — 此时才需要飞书配置
+        sync = _get_feishu_sync()
+        if not sync.is_configured():
+            log_agent_run_complete(
+                state.db, run_id, status="failed",
+                error_message="飞书应用未配置 (但 approval 已 approved, 配置后即可推送)",
+            )
+            raise HTTPException(status_code=400, detail="飞书应用未配置，请先设置 App ID 和 App Secret")
+        token = sync.get_tenant_token()
         due_date = str(row["due_date"] or "")
         due_ts = None
         if due_date:
@@ -48625,8 +48849,22 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         if feishu_guid:
             state.db.execute("INSERT OR REPLACE INTO settings(key,value) VALUES(?,?)", (f"feishu_task_link:{task_id}", feishu_guid))
             state.db.execute("INSERT OR REPLACE INTO settings(key,value) VALUES(?,?)", (f"feishu_task_reverse:{feishu_guid}", task_id))
-        log_activity("feishu.task.push", "task", task_id, {"feishuGuid": feishu_guid})
-        return {"taskId": task_id, "feishuGuid": feishu_guid, "title": title}
+        log_activity("feishu.task.push", "task", task_id, {"feishuGuid": feishu_guid, "approvalId": appr_row["id"]})
+        outcome = {
+            "taskId": task_id,
+            "feishuGuid": feishu_guid,
+            "title": title,
+            "status": "executed",
+            "approval_id": appr_row["id"],
+            "agent_run_id": run_id,
+        }
+        log_agent_run_complete(
+            state.db, run_id, status="success",
+            output_payload={"feishu_guid": feishu_guid, "approval_id": appr_row["id"]},
+        )
+        if idempotency_key:
+            record_idempotency(state.db, idempotency_key, run_id=run_id, outcome=outcome)
+        return outcome
 
     @app.post("/api/v1/feishu/notify/weekly-review")
     def feishu_notify_weekly_review(week_label: str = "") -> dict:
