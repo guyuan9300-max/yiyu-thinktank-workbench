@@ -1,0 +1,113 @@
+{
+  "model": "qwen2.5:14b",
+  "datum_count": 12,
+  "fact_recall_rate": 0.5454545454545454,
+  "fact_recall_count": "18/33",
+  "entity_recall_rate": 0.4166666666666667,
+  "entity_recall_count": "15/36",
+  "hallucination_rate": 0.0,
+  "hallucination_count": 0,
+  "pass_entity_recall": false,
+  "pass_fact_recall": false,
+  "pass_hallucination": true,
+  "overall_pass": false,
+  "errors": [],
+  "per_datum": [
+    {
+      "datum_id": "A1_meeting_5_6",
+      "extracted_count": 4,
+      "fact_recall": "3/3",
+      "hallucination": 0,
+      "elapsed_seconds": 4.7,
+      "error": null
+    },
+    {
+      "datum_id": "A2_send_v1_5_11",
+      "extracted_count": 3,
+      "fact_recall": "2/2",
+      "hallucination": 0,
+      "elapsed_seconds": 3.2,
+      "error": null
+    },
+    {
+      "datum_id": "A3_weekly_review",
+      "extracted_count": 4,
+      "fact_recall": "3/3",
+      "hallucination": 0,
+      "elapsed_seconds": 3.5,
+      "error": null
+    },
+    {
+      "datum_id": "B4_v1_5_8",
+      "extracted_count": 3,
+      "fact_recall": "0/3",
+      "hallucination": 0,
+      "elapsed_seconds": 2.6,
+      "error": null
+    },
+    {
+      "datum_id": "B5_v2_5_18",
+      "extracted_count": 4,
+      "fact_recall": "2/4",
+      "hallucination": 0,
+      "elapsed_seconds": 3.5,
+      "error": null
+    },
+    {
+      "datum_id": "B6_our_feedback_5_20",
+      "extracted_count": 3,
+      "fact_recall": "2/3",
+      "hallucination": 0,
+      "elapsed_seconds": 3.6,
+      "error": null
+    },
+    {
+      "datum_id": "C7_official_site_5_3",
+      "extracted_count": 4,
+      "fact_recall": "1/2",
+      "hallucination": 0,
+      "elapsed_seconds": 4.0,
+      "error": null
+    },
+    {
+      "datum_id": "C8_media_5_9",
+      "extracted_count": 4,
+      "fact_recall": "0/2",
+      "hallucination": 0,
+      "elapsed_seconds": 3.6,
+      "error": null
+    },
+    {
+      "datum_id": "D9_background",
+      "extracted_count": 5,
+      "fact_recall": "3/4",
+      "hallucination": 0,
+      "elapsed_seconds": 5.0,
+      "error": null
+    },
+    {
+      "datum_id": "D10_hidden_risk",
+      "extracted_count": 3,
+      "fact_recall": "1/2",
+      "hallucination": 0,
+      "elapsed_seconds": 3.1,
+      "error": null
+    },
+    {
+      "datum_id": "D11_correction",
+      "extracted_count": 3,
+      "fact_recall": "0/3",
+      "hallucination": 0,
+      "elapsed_seconds": 2.7,
+      "error": null
+    },
+    {
+      "datum_id": "E12_method_card",
+      "extracted_count": 2,
+      "fact_recall": "1/2",
+      "hallucination": 0,
+      "elapsed_seconds": 2.6,
+      "error": null
+    }
+  ]
+}
