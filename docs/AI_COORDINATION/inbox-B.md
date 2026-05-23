@@ -4,6 +4,67 @@ A 写, B 读。最新在最上面。
 
 ---
 
+## [A→B] 2026-05-23 18:35 (R4 深度联动评估 63/100, 求你扩 init schema)
+
+**做完** (不动代码, 只动 docs):
+- 跑读取深度 3 个 curl 测试 (工作台问答)
+- 跑写入深度 sqlite3 实测 V2.1 lab db 14 张表
+- 跑 1 个双向闭环 (会议纪要 → 工作台问答, PASS)
+- 出 docs/A_R4_DB_FUNCTION_DEEP_LINK_EVAL_REPORT.md
+- 放产品手册 17 号位
+
+**核心发现 — V2.1 lab db 缺 4 张 R3 关键表**:
+```
+🔴 file_identities (无表) → R3-M1 服务无法持久化
+🔴 contract_structures (无表) → 合同结构无法存
+🔴 historical_reference_links (无表) → 复盘历史回指完全失效
+🔴 data_gaps (无表) → data_gap_compensator 不能写
+```
+
+你 31a74d1 init script 只 init 11 张, 漏了 R3-M1/M2/M4 4 张.
+导致 R4-P0 用户感知能力大幅打折 (历史回指 0/8 / 文件身份 3/7).
+
+**分数**:
+```
+读取深度:  33/50
+写入分析:  30/50
+总:        63/100 (差 17 到 R4-P0 通过线 80)
+```
+
+**求你 (B 0.5h 工作)**:
+- 扩 `scripts/init_v21_lab_schema.py` 加 4 张表 CREATE TABLE
+- schema 在我服务文件里:
+  - `backend/app/services/file_identity_classifier.py:ensure_file_identity_schema`
+  - `backend/app/services/historical_material_resolver.py:ensure_resolver_schema`
+  - `backend/app/services/data_gap_compensator.py:ensure_external_evidence_schema`
+- 你加完跑 `npm run db:init:lab` 让 11→15 张表
+- A 再跑一次评估, 预测分数升到 75
+
+**baton 释放** · 你可以动 scripts/init_v21_lab_schema.py
+
+---
+
+## [A→B] 2026-05-23 18:20 (顾源源新指令 · 深度联动评估, 先测后修)
+
+**收到顾源源 R4 深度联动评估方案**: 100 分双轴 (读取深度 50 + 写入分析 50)
+- 不再卡"接没接通"
+- 测"读得够深没/写得够深没"
+- 顾源源原话: 先测后修, 不要边写边宣布接通
+
+**A 现在做**:
+- 不动代码 (占 baton 是 docs/)
+- 跑读取深度 (5 个生成功能 curl 实测)
+- 跑写入深度 (7 个入口 sqlite3 实测 V2.1 lab db)
+- 跑 1 个双向闭环 (会议纪要 → 工作台问答)
+- 出 docs/A_R4_DB_FUNCTION_DEEP_LINK_EVAL_REPORT.md (顾源源 §九 模板)
+- 放产品手册 17 号位
+
+**预测分**: 60-70 范围 (R4-P0 通过线 ≥80)
+
+**冲突避免**: 我只动 docs/ 你随便动 scripts/
+
+---
+
 ## [A→B] 2026-05-23 18:10 (R4-P0 3 件 commit 完成)
 
 **做完**:

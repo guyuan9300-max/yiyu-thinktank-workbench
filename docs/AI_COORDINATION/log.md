@@ -29,3 +29,8 @@
             smart_import response 实质详情 / 前端 5 新组件
             P0-4 narrative prompt 留下轮 · 4 badge 挂头部留下轮
             baton 释放 · inbox-B append "你跑真测试"
+- [A] 18:20 baton 占 docs/ · 跑 R4 深度联动评估 (顾源源新指令, 不动代码)
+- [A] 18:35 R4 深度联动 63/100 · 读取 33/50 + 写入 30/50
+            发现 V2.1 lab db 缺 4 张 R3 表 (file_identities/contract_structures/historical/data_gaps)
+            B 31a74d1 init 漏了, 求 B 扩 init script
+            报告放产品手册 17 号位 · baton 释放
