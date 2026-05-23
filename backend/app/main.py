@@ -28439,7 +28439,10 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
     @app.post("/api/v1/smart-import/sessions/{session_id}/commit")
     def smart_import_commit_session(session_id: str) -> dict:
         """把 session 的 LLM 解析结果一次性写入数据中心 (entities/atomic_facts/
-        commitments/risks/events/documents). 之后 session status='imported'."""
+        commitments/risks/events/documents). 之后 session status='imported'.
+
+        R4 P0-3 · 顾源源 5/23 钦定: commit 后跑文件身份识别 + 合同结构解析.
+        """
         from app.services import smart_file_import as sfi
         from app.services.knowledge_v2 import ingest_document_knowledge
         try:
@@ -28449,6 +28452,50 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 data_dir=state.data_dir,
                 ingest_document_fn=ingest_document_knowledge,
             )
+            # R4 P0-3 · 后处理: 文件身份 + 合同结构 (顾源源 5/23 R4)
+            try:
+                from app.services.file_identity_classifier import (
+                    classify_file_identity, parse_contract_structure,
+                    record_file_identity, record_contract_structure,
+                    ensure_file_identity_schema,
+                )
+                ensure_file_identity_schema(state.db)
+                # 拉本 session 刚导入的 v2_documents
+                doc_rows = state.db.fetchall(
+                    """SELECT vd.id, vd.title, vd.client_id, vc.content
+                       FROM v2_documents vd
+                       LEFT JOIN v2_chunks vc ON vc.v2_document_id = vd.id
+                       WHERE vd.import_session_id = ?
+                       ORDER BY vc.chunk_index LIMIT 50""",
+                    (session_id,),
+                )
+                identified_files = 0
+                parsed_contracts = 0
+                for row in doc_rows:
+                    d = dict(row)
+                    if not d.get("title"):
+                        continue
+                    text_excerpt = (d.get("content") or "")[:3000]
+                    ident = classify_file_identity(d["title"], text_excerpt, use_llm=True)
+                    fid_id = record_file_identity(
+                        state.db, ident,
+                        client_id=d.get("client_id"),
+                        v2_document_id=d["id"],
+                    )
+                    identified_files += 1
+                    # 合同类: 解析结构
+                    if ident.file_type in ("contract", "supplementary_agreement"):
+                        contract = parse_contract_structure(d["title"], text_excerpt, use_llm=True)
+                        if contract:
+                            record_contract_structure(
+                                state.db, contract,
+                                client_id=d.get("client_id"), file_identity_id=fid_id,
+                            )
+                            parsed_contracts += 1
+                stats["r4_file_identities_added"] = identified_files
+                stats["r4_contracts_parsed"] = parsed_contracts
+            except Exception as exc:
+                logger.warning("R4 P0-3 file_identity 后处理失败 (不阻塞 commit): %s", exc)
             return {"ok": True, "stats": stats}
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -45613,7 +45660,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         thread_id = ensure_chat_thread(client_id, payload.threadId, payload.prompt, timestamp)
         insert_user_chat_message(thread_id, payload.prompt, timestamp)
         assistant_id = insert_loading_assistant_message(thread_id, {}, timestamp)
-        return resolve_chat_answer(
+        record = resolve_chat_answer(
             client_id,
             thread_id,
             payload.prompt,
@@ -45622,6 +45669,19 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             perf_counter(),
             working_document_ids=payload.workingDocumentIds,
         )
+        # R4-P0-2 · 公司大脑上下文摘要 (顾源源 5/23 钦定 — 不替换旧路径, 加 evidence_summary 给前端)
+        try:
+            from app.services.company_brain_context_builder import (
+                build_company_brain_context, summarize_for_api_response,
+            )
+            pack = build_company_brain_context(
+                state.db, client_id=client_id, user_query=payload.prompt,
+                task_type="workbench_qa",
+            )
+            record.companyBrainSummary = summarize_for_api_response(pack)
+        except Exception as exc:
+            logger.warning("R4 companyBrainSummary 失败 (不阻塞主流程): %s", exc)
+        return record
 
     def _fallback_memory_title(content: str) -> str:
         """LLM 失败时的兜底：取 content 第一行非空文本前 10 字，去掉 markdown 标记。"""

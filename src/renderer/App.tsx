@@ -2288,6 +2288,45 @@ function StreamingAnswerDocument({ text, streaming }: { text: string; streaming:
   return <AnswerDocument text={displayed} />;
 }
 
+// R4 P0-5 · 公司大脑 evidence 摘要 badge (顾源源 5/23 钦定 — 让用户看见多源调用)
+function CompanyBrainSummaryBadge({ summary }: { summary: Record<string, unknown> | null | undefined }) {
+  if (!summary) return null;
+  const ev = ((summary.evidence_summary as Record<string, number>) || {});
+  const us = ((summary.uncertainty_summary as Record<string, number>) || {});
+  const tablesUsed = ((summary.used_tables as unknown[]) || []).length;
+  const types = ev.evidence_types_count || 0;
+  const singleFile = Boolean(summary.single_file_only);
+
+  const items: string[] = [];
+  if (ev.facts_authoritative) items.push(`权威事实 ${ev.facts_authoritative}`);
+  if (ev.contracts) items.push(`合同 ${ev.contracts}`);
+  if (ev.files) items.push(`文件 ${ev.files}`);
+  if (ev.historical_links) items.push(`历史关联 ${ev.historical_links}`);
+  if (ev.timeline_events) items.push(`时间线 ${ev.timeline_events}`);
+  if (ev.commitments) items.push(`承诺 ${ev.commitments}`);
+  if (ev.risks) items.push(`风险 ${ev.risks}`);
+  if (ev.clarifications_pending) items.push(`待澄清 ${ev.clarifications_pending}`);
+  if (ev.external_evidence) items.push(`外部证据 ${ev.external_evidence}`);
+  if (ev.data_gaps) items.push(`数据缺口 ${ev.data_gaps}`);
+
+  return (
+    <div className="mt-3 rounded-lg border border-blue-100 bg-blue-50/60 px-3 py-2 text-[11px] text-blue-700">
+      <div className="font-semibold mb-1 flex items-center gap-2">
+        <span>📊 公司大脑 · 调用 {types} 类 evidence · {tablesUsed} 张语义表</span>
+        {singleFile ? <span className="text-amber-700">⚠️ single_file_only</span> : null}
+      </div>
+      {items.length > 0 ? (
+        <div className="opacity-80 leading-relaxed">{items.join(' · ')}</div>
+      ) : null}
+      {us.pending_clarifications && us.pending_clarifications > 0 ? (
+        <div className="mt-1 text-amber-700">
+          ⚠️ {us.pending_clarifications} 待澄清{us.data_gaps ? ` · ${us.data_gaps} 数据缺口` : ''}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 function WorkTracePanel({
   question,
   retrievalSummary,
@@ -23335,6 +23374,9 @@ export default function App() {
                                       <AnswerDocument text={cleanChatOutput(msg.content)} />
                                     </div>
                                   )}
+
+                                  {/* R4 P0-5 · 公司大脑 evidence 摘要 (顾源源 5/23 钦定) */}
+                                  <CompanyBrainSummaryBadge summary={(msg as unknown as { companyBrainSummary?: Record<string, unknown> }).companyBrainSummary} />
 
                                 </div>
 

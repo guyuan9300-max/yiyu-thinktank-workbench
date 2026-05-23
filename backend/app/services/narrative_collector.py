@@ -277,6 +277,13 @@ class ClientFactBundle:
     # Phase A · 6 维 chunks 原文摘要 (key=dimension, value=list of DimensionChunk)
     dimension_chunks: dict[str, list[DimensionChunk]] = field(default_factory=dict)
 
+    # R4 P0-4 · 顾源源 5/23 钦定: 战略陪伴 6 段叙事必须读 R3 新表
+    contracts_r4: list[dict] = field(default_factory=list)            # contract_structures
+    historical_links_r4: list[dict] = field(default_factory=list)     # historical_reference_links
+    file_identities_r4: list[dict] = field(default_factory=list)      # file_identities
+    data_gaps_r4: list[dict] = field(default_factory=list)            # data_gaps
+    external_evidence_r4: list[dict] = field(default_factory=list)    # external_evidence_cards
+
     def is_thin(self) -> bool:
         return (
             not self.persons
@@ -376,6 +383,41 @@ def collect_client_fact_bundle(
         evidence_quality=_assess_evidence_quality(db, client_id),
     )
 
+    # R4 P0-4 · 顾源源 5/23 钦定: 战略陪伴 6 段叙事必须读 R3 新表
+    # 加 contracts / historical_links / file_identities / data_gaps / external_evidence
+    def _safe_fetch(sql: str, params: tuple = ()) -> list[dict]:
+        try:
+            return [dict(r) for r in db.fetchall(sql, params)]
+        except Exception:
+            return []
+
+    contracts_r4 = _safe_fetch(
+        """SELECT id, party_a, party_b, project_name, signed_at, effective_period,
+                  amount, deliverables_json, responsibilities_json, version
+           FROM contract_structures WHERE client_id = ?""", (client_id,),
+    )
+    historical_links_r4 = _safe_fetch(
+        """SELECT ref_text, ref_type, target_table, target_id, match_score, source_doc_type
+           FROM historical_reference_links WHERE client_id = ?
+           ORDER BY resolved_at DESC LIMIT 30""", (client_id,),
+    )
+    file_identities_r4 = _safe_fetch(
+        """SELECT id, file_name, file_type, file_role, project_name, version, file_time,
+                  main_subject, is_authoritative
+           FROM file_identities WHERE client_id = ?
+           ORDER BY file_time DESC LIMIT 30""", (client_id,),
+    )
+    data_gaps_r4 = _safe_fetch(
+        """SELECT id, gap_type, subject, internal_value, external_value, suggested_action
+           FROM data_gaps WHERE client_id = ? AND status = 'open'
+           ORDER BY detected_at DESC LIMIT 15""", (client_id,),
+    )
+    external_evidence_r4 = _safe_fetch(
+        """SELECT id, title, summary, source_tier, relation_to_internal, confidence
+           FROM external_evidence_cards WHERE client_id = ? AND status = 'active'
+           ORDER BY created_at DESC LIMIT 15""", (client_id,),
+    )
+
     return ClientFactBundle(
         client_id=str(client_row["id"]),
         client_name=str(client_row["name"] or ""),
@@ -398,6 +440,12 @@ def collect_client_fact_bundle(
         commitments=commitments,
         glossary_attributes=glossary_attributes,
         dimension_chunks=dim_chunks,
+        # R4 P0-4
+        contracts_r4=contracts_r4,
+        historical_links_r4=historical_links_r4,
+        file_identities_r4=file_identities_r4,
+        data_gaps_r4=data_gaps_r4,
+        external_evidence_r4=external_evidence_r4,
     )
 
 

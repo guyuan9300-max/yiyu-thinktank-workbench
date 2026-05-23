@@ -1322,6 +1322,8 @@ class ChatMessageRecord(BaseModel):
     deepThinkingRequested: bool = False
     activeSkillId: str | None = None
     creativityMode: CreativityMode | None = None
+    # R4-P0-1+P0-2 · 公司大脑上下文摘要 (前端 evidence UI 用)
+    companyBrainSummary: dict | None = None
 
 
 class ChatThread(BaseModel):
