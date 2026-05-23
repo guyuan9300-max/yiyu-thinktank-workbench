@@ -40,7 +40,7 @@ TaskType = Literal[
 ]
 
 
-@dataclass(frozen=True)
+@dataclass
 class CompanyBrainContextPack:
     """统一公司大脑上下文 — 12 类 evidence + 4 类 summary."""
     # 12 类 evidence (顾源源 R4 §七 设计)
