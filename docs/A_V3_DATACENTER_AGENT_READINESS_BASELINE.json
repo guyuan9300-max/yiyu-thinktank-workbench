@@ -1,0 +1,142 @@
+{
+  "timestamp": "2026-05-23T22:00:00+08:00",
+  "test_client": "client_a4d1db29a7",
+  "client_name": "CFFC",
+  "rule": "M0 不修复, 只测",
+  "scores": {
+    "agent_readiness_index": 27.75,
+    "underlying_capability_index": 52.5,
+    "breakdown": {
+      "m1_agent_readable": {"max": 25, "score": 3, "endpoint_hit_rate": "1/9"},
+      "m2_agent_judgeable": {"max": 25, "score": 0, "endpoint_hit_rate": "0/3"},
+      "m3_agent_actionable": {"max": 25, "score": 0, "endpoint_hit_rate": "0/3"},
+      "m4_task_template_low_score": {"max": 25, "score": 25, "status": "r4_p1_completed"}
+    }
+  },
+  "m0_tests": {
+    "test_1_client_state_snapshot": {
+      "dedicated_endpoint_hit_rate": "0/5",
+      "endpoints_tested": [
+        {"path": "/api/v1/clients/{id}/agent-state", "method": "GET", "status": 404},
+        {"path": "/api/v1/clients/{id}/state", "method": "GET", "status": 404},
+        {"path": "/api/v1/clients/{id}/snapshot", "method": "GET", "status": 404},
+        {"path": "/api/v1/clients/{id}/company-brain", "method": "GET", "status": 404},
+        {"path": "/api/v1/clients/{id}/workspace/state", "method": "GET", "status": 404}
+      ],
+      "workaround_via_workspace_chat": {
+        "evidence_types_count": 8,
+        "used_tables_count": 9,
+        "top_contracts": 2,
+        "top_files": 3,
+        "pending_clarifications": 5,
+        "pending_approvals": 5,
+        "single_file_only": false,
+        "recommended_next_actions": null
+      },
+      "score": "8/10"
+    },
+    "test_2_data_gaps_callable": {
+      "endpoints_tested": [
+        {"path": "/api/v1/clients/{id}/data-gaps", "method": "GET", "status": 404},
+        {"path": "/api/v1/clients/{id}/data-gaps/compensate", "method": "POST", "status": 404}
+      ],
+      "db_data_present": {"total": 10, "open": 10, "high_severity": 0},
+      "blocked_by_A": "data_gap_endpoint_missing",
+      "score": "1/4"
+    },
+    "test_3_action_candidates": {
+      "endpoints_tested": [
+        {"path": "/api/v1/clients/{id}/actions/suggest", "status": 404},
+        {"path": "/api/v1/clients/{id}/recommendations", "status": 404},
+        {"path": "/api/v1/clients/{id}/next-actions", "status": 404},
+        {"path": "/api/v1/actions/dry-run", "status": 404}
+      ],
+      "blocked_by_A": "action_candidate_engine_missing",
+      "score": "0/5"
+    },
+    "test_4_quality_evaluation": {
+      "endpoints_tested": [
+        {"path": "/api/v1/clients/{id}/evidence/check", "status": 404},
+        {"path": "/api/v1/clients/{id}/quality/context", "status": 404},
+        {"path": "/api/v1/clients/{id}/authority/resolve", "status": 404}
+      ],
+      "blocked_by_A": "quality_context_builder_missing",
+      "score": "0/6"
+    },
+    "test_5_task_and_template_low_score": {
+      "task_commitment_history": {
+        "r4_p1_p1_5_status": "completed",
+        "evidence": {
+          "task_id": "task_d1be025ea7",
+          "historical_links_written": 6,
+          "clarif_written": 4,
+          "contract_matched": ["cs_439dd08ca04b45af87dd1b6d (300万)", "cs_e539661e89ff49eeb2ca214a (800万)"]
+        },
+        "score": "4/5"
+      },
+      "template_uses_context_pack": {
+        "r4_p1_p1_6_status": "completed",
+        "evidence": {
+          "r4_blocks_in_prompt": 18,
+          "categories": "contracts=2, files=3, historical=5, gaps=8",
+          "priority_order_stated": "用户已确认 > 合同结构 > 权威文件 > 历史关联 > 已知缺口"
+        },
+        "score": "4/5"
+      }
+    },
+    "test_extra_logs_approvals": {
+      "agent_run_logs_endpoints_404": 2,
+      "approvals_get_200": true,
+      "approvals_decision_endpoint_status": "405/404 (POST method 不匹配)",
+      "db_state": {
+        "agent_run_log_total": 34,
+        "idempotency_key_coverage": "57% (19/33 v2_2)",
+        "approval_queue_total": 32
+      }
+    }
+  },
+  "db_inventory_for_client": {
+    "client_id": "client_a4d1db29a7",
+    "atomic_facts": 924,
+    "contract_structures": 2,
+    "file_identities": 3,
+    "historical_reference_links": 10,
+    "event_lines": 3,
+    "event_line_activities": 32,
+    "commitments": 16,
+    "risk_signals": 18,
+    "clarification_records": 48,
+    "approval_queue_all_clients": 32,
+    "agent_run_log_all_clients": 34,
+    "strategic_thought_insights": 16,
+    "data_gaps": 10,
+    "external_evidence_cards": 0,
+    "judgment_versions_confirmed": 0,
+    "tasks": 5
+  },
+  "missing_endpoints_priority": [
+    {"#": 1, "priority": "P0", "path": "GET /api/v1/clients/{id}/agent-state", "purpose": "一次拿完整快照"},
+    {"#": 2, "priority": "P0", "path": "GET /api/v1/clients/{id}/data-gaps", "purpose": "Agent 读已知缺口"},
+    {"#": 3, "priority": "P0", "path": "POST /api/v1/clients/{id}/data-gaps/compensate", "purpose": "Agent 补证"},
+    {"#": 4, "priority": "P0", "path": "GET /api/v1/agent-run-logs + /{run_id}", "purpose": "Agent 看历史调用"},
+    {"#": 5, "priority": "P0", "path": "POST /api/v1/approvals/{id}/decision", "purpose": "approve/reject"},
+    {"#": 6, "priority": "P1", "path": "POST /api/v1/clients/{id}/actions/suggest", "purpose": "action_candidate_engine"},
+    {"#": 7, "priority": "P1", "path": "POST /api/v1/actions/dry-run", "purpose": "Agent 预演不写库"},
+    {"#": 8, "priority": "P1", "path": "POST /api/v1/clients/{id}/evidence/check", "purpose": "Agent 自检证据充分性"},
+    {"#": 9, "priority": "P1", "path": "POST /api/v1/clients/{id}/quality/context", "purpose": "Agent 评成果质量"},
+    {"#": 10, "priority": "P2", "path": "POST /api/v1/clients/{id}/authority/resolve", "purpose": "多口径权威判定"},
+    {"#": 11, "priority": "P1", "path": "workspace/chat companyBrainSummary 加 recommended_next_actions", "purpose": "下一步建议"}
+  ],
+  "next_milestone_m1": {
+    "target_score": "5/5 HTTP 可调 + 跨客户 scope + JSON schema",
+    "endpoints_to_add": 5,
+    "estimated_commits": 1
+  },
+  "honesty_notes": [
+    "本 M0 只测 CFFC 一个客户, 其它 2 个客户未跑",
+    "workspace/chat 用 prompt 字段, 不是 message",
+    "approval 32 条中 27 条来自 B AI V3.0 测试 (actor_type=external_ai_agent)",
+    "agent_run_log 34 条 idempotency 19 条全是历史数据",
+    "recommended_actions 字段定义在 ContextPack 但永远 null"
+  ]
+}
