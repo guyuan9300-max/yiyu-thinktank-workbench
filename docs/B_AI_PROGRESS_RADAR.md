@@ -1,8 +1,9 @@
 # B AI 进展雷达 · 持续追踪 (顾源源 5/23 钦定)
 
 > **作用**: 每次 A 或 B 有新 commit, B 在 30 分钟内更新一次. 给顾源源一眼图谱.
-> **当前 snapshot**: 2026-05-23 19:50 (commit `efd6870` 基线)
-> **下次更新触发**: A 暴露任一新 endpoint / B 完成新评估
+> **当前 snapshot**: 2026-05-23 20:20 (commit `804a849`)
+> **上次 snapshot**: 19:50 (commit `efd6870`, B 7 件交付齐)
+> **下次更新触发**: A 暴露任一 V3.0 任务书 5 endpoint / B 完成 Golden Pack × 14 复验
 
 ---
 
@@ -10,10 +11,10 @@
 
 | 指标 | 当前 | 目标 | 状态 | 数据来源 |
 |---|---|---|---|---|
-| R4 用户可感知分 | 90 (A 自评) | ≥ 80 | ⚠️ **A 自评待 B 复验** | A 285e185 复测报告 |
-| 数据库—功能深度联动分 | 90 (A 自评) | ≥ 80 | ⚠️ **A 自评待 B 复验** | A 5fefcf3 → 285e185 复测 |
+| R4 用户可感知分 | 90 (A 自评) → R4-P1 **94** (A 20:20 复测) | ≥ 80 (P0) / ≥ 95 (R4-P1) | ⚠️ **A 自评待 B 复验, 差 1 到 R4-P1 通过线 95** | A 285e185 + 804a849 |
+| 数据库—功能深度联动分 | 90 → 94 (A 自评) | ≥ 80 | ⚠️ **A 自评待 B 复验** | A 5fefcf3 → 285e185 → 804a849 |
 | V3.0 AI 驱动软件做事分 | 56.5 | ≥ 80 | 🔴 **差 23.5** | B 748c833 真测 V2.1 lab db |
-| **V3.0 L1-L4 通过层数** | **1 / 4** | 4 / 4 | 🔴 **只 L1 通** | B 19:45 dry-run |
+| **V3.0 L1-L4 通过层数** | **1 / 4** | 4 / 4 | 🔴 **只 L1 通** | B 19:45 / 20:18 dryrun (2 次都 1/4) |
 
 ---
 
@@ -155,10 +156,21 @@ P2 (V3.0 P1, 大工程):
 5/23 18:42 B init 16/16 (4 R3 表全建)
 5/23 19:35 A R4 复测 90/100 ★ (A 自评待 B 复验)
 5/23 19:30 顾源源新角色钦定: B = 自动验收官
-5/23 19:50 B 7 件交付完成 (B0-B5 + 总结) ★ 本 snapshot
+5/23 19:50 B 7 件交付完成 (B0-B5 + 总结) commit ea481ce
+5/23 20:10 A R4-P1 P1-1+P1-2 commit efd6870 (narrative R4 + 4 badge 挂)
+5/23 20:18 A R4-P1 P1-3+P1-4+P1-6 commit 69adfb3 (chat 反向入库 + text/resolve-history + 模板 ContextBuilder)
+5/23 20:20 A R4-P1 复测 90→94 commit 804a849 (A 自评待 B 复验) ★ 本 snapshot
+5/23 20:25 B 重跑 V3.0 dryrun 仍 1/4 (A 69adfb3 endpoint 不在 V3.0 L2 测试集)
+
+★ 关键发现 (B 20:25):
+  · A R4-P1 真涨 (90→94, A 自评)
+  · 但 R4-P1 改的 endpoint (text/resolve-history, fill-template, send_chat 内部反向入库)
+    跟 V3.0 L2 任务书 5 endpoint (contracts/draft / templates/generate /
+    brand-proposition / brand-mirror / meeting-pack) 是 **不同集合**
+  · V3.0 L2 仍 blocked_by_A — A 还没碰 V3.0 任务书 5 endpoint
 
 下次 snapshot 触发:
-- A 暴露任一 P0 endpoint
+- A 暴露任一 V3.0 任务书 5 endpoint (contracts/draft 等)
 - B 跑 14 功能独立 Golden Pack 复验
 - 顾源源截图 L3 verify 4 项
 ```
