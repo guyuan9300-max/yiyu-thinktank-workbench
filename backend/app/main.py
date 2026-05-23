@@ -38207,6 +38207,41 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         return {"id": approval_id, "status": "approved",
                 "decided_by": payload.decided_by}
 
+    # R4-P1-4+P1-5 · 通用历史回指 endpoint (顾源源 R4-P1)
+    # 任何复盘/任务/对话都能调: 从文本里抽历史引用 (合同/承诺/金额/人物)
+    # 找候选 + 多候选进澄清 + 写 historical_reference_links
+    @app.post("/api/v1/clients/{client_id}/text/resolve-history")
+    def resolve_history_endpoint(
+        client_id: str,
+        payload: dict = Body(...),
+    ) -> dict:
+        """R4-P1-4 周复盘 / R4-P1-5 任务: 文本里的历史引用真关联到合同/承诺.
+
+        body: {text: str, source_doc_type: 'review'|'task'|'chat', source_doc_id?: str}
+        返回: {references_extracted, references_resolved, references_clarification,
+              historical_links_written, details: [...]}
+        """
+        from app.services.historical_material_resolver import resolve_review_references
+        text = str(payload.get("text") or "").strip()
+        if not text:
+            raise HTTPException(status_code=400, detail="text required")
+        source_doc_type = str(payload.get("source_doc_type") or "review")
+        source_doc_id = payload.get("source_doc_id")
+        try:
+            result = resolve_review_references(
+                state.db,
+                client_id=client_id,
+                review_text=text[:5000],
+                source_doc_id=source_doc_id,
+                source_doc_type=source_doc_type,
+                use_llm=True,
+            )
+            return result
+        except Exception as exc:
+            raise HTTPException(
+                status_code=502, detail=f"historical resolve 失败: {exc}",
+            ) from exc
+
     @app.post("/api/v1/approvals/{approval_id}/reject")
     def reject_endpoint_r2(
         approval_id: str,
@@ -45864,7 +45899,19 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             raise HTTPException(status_code=409, detail=ai_unavailable_detail)
         timestamp = now_iso()
         thread_id = ensure_chat_thread(client_id, payload.threadId, payload.prompt, timestamp)
-        insert_user_chat_message(thread_id, payload.prompt, timestamp)
+        user_msg_id = insert_user_chat_message(thread_id, payload.prompt, timestamp)
+        # R4-P1-3 (顾源源 5/23 R4-P1 钦定): chat 反向入库
+        # 用户的"陈述/纠错/承诺/风险/判断" 类消息要进 atomic_facts/commitments/risks 等
+        # 普通提问不强行入库 (chat_message_reverse_ingester 自带 question/chitchat 跳过)
+        try:
+            from app.services.chat_message_reverse_ingester import ingest_chat_message
+            ingest_chat_message(
+                state.db, client_id=client_id,
+                message_id=str(user_msg_id) if user_msg_id else f"msg_{timestamp}",
+                content=payload.prompt, user_id="workbench_user",
+            )
+        except Exception as exc:
+            logger.warning("R4-P1-3 chat 反向入库失败 (不阻塞主流程): %s", exc)
         assistant_id = insert_loading_assistant_message(thread_id, {}, timestamp)
         record = resolve_chat_answer(
             client_id,
@@ -46493,7 +46540,25 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
 
     @app.post("/api/v1/clients/{client_id}/documents/fill-template", response_model=ClientTemplateFillResponse)
     def fill_client_template(client_id: str, payload: ClientTemplateFillPayload) -> ClientTemplateFillResponse:
+        # R4-P1-6 (顾源源 R4-P1): 模板填充前置 CompanyBrainContextBuilder
+        # 让模板字段解析顺序为: 用户权威值 → 合同结构 → 最新版本 → atomic_facts → 多候选进澄清
+        # 这里前置调一次 build, 把上下文塞到 fill_client_template_docx 的上下文中
         build_client_summary(client_id)
+        try:
+            from app.services.company_brain_context_builder import build_company_brain_context
+            # 前置构建公司大脑上下文 (template_fill task_type)
+            # 实际 fill 逻辑还是走旧 fill_client_template_docx, 但 db 已经有最新派生数据
+            # (后续 P2 把 ContextPack 真传给 template fill engine)
+            _pack = build_company_brain_context(
+                state.db, client_id=client_id,
+                task_type="template_fill",
+            )
+            logger.info(
+                "R4-P1-6 template_fill pre-built ctx: %s tables, %s contracts, %s files",
+                len(_pack.used_tables), len(_pack.contracts), len(_pack.files),
+            )
+        except Exception as exc:
+            logger.warning("R4-P1-6 template_fill ContextBuilder 前置失败: %s", exc)
         return fill_client_template_docx(client_id, payload.templatePath)
 
     @app.post("/api/v1/clients/{client_id}/documents/fill-template/start", response_model=ClientTemplateFillRunRecord)
