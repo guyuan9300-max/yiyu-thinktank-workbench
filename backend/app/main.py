@@ -30387,6 +30387,35 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             pass
         return []
 
+    # 顾源源 5/24 V2.1 lab: orgModel role.holderBotId 本地 sidecar 持久化.
+    # 云端 (火山云) 现版本不识别 holderBotId 字段, Pydantic 默认 ignore extra → 持久化丢失.
+    # 在本地 settings 表里存一份 {role_id: bot_id} 映射, 读取 cloud 后 re-inject.
+    _ROLE_HOLDER_BOT_SIDECAR_KEY = "v21lab.org_role_holder_bots"
+
+    def _load_role_holder_bot_sidecar() -> dict[str, str]:
+        row = state.db.fetchone(
+            "SELECT value FROM settings WHERE key = ?", (_ROLE_HOLDER_BOT_SIDECAR_KEY,)
+        )
+        if not row:
+            return {}
+        raw = row["value"]
+        try:
+            data = json.loads(raw) if isinstance(raw, str) and raw else {}
+        except (TypeError, ValueError):
+            return {}
+        if not isinstance(data, dict):
+            return {}
+        # 只保留 str→str 形式; null/空 视为未设置
+        return {str(k): str(v) for k, v in data.items() if v}
+
+    def _save_role_holder_bot_sidecar(mapping: dict[str, str | None]) -> None:
+        # mapping 里值为 None/空 表示清除; 写库前过滤
+        cleaned = {str(k): str(v) for k, v in mapping.items() if v}
+        state.db.execute(
+            "INSERT OR REPLACE INTO settings(key, value) VALUES(?, ?)",
+            (_ROLE_HOLDER_BOT_SIDECAR_KEY, json.dumps(cleaned, ensure_ascii=False)),
+        )
+
     @app.get("/api/v1/settings/org-model/profile", response_model=OrgModelProfileRecord)
     def read_org_model_profile() -> OrgModelProfileRecord:
         def empty_org_model_profile() -> OrgModelProfileRecord:
@@ -30403,9 +30432,19 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             return empty_org_model_profile()
         try:
             payload = cloud_request("GET", "/api/v1/settings/org-model/profile")
-            if isinstance(payload, dict):
-                return OrgModelProfileRecord(**payload)
-            raise HTTPException(status_code=502, detail="云端组织设置读取失败：Invalid org model payload")
+            if not isinstance(payload, dict):
+                raise HTTPException(status_code=502, detail="云端组织设置读取失败：Invalid org model payload")
+            # 顾源源 5/24: 从本地 sidecar 把 holderBotId 注回 roles
+            sidecar = _load_role_holder_bot_sidecar()
+            if sidecar:
+                roles = payload.get("roles")
+                if isinstance(roles, list):
+                    for role in roles:
+                        if isinstance(role, dict):
+                            role_id = role.get("id")
+                            if role_id and sidecar.get(str(role_id)):
+                                role["holderBotId"] = sidecar[str(role_id)]
+            return OrgModelProfileRecord(**payload)
         except HTTPException as exc:
             status_code = exc.status_code if exc.status_code in (401, 403) else 502
             raise HTTPException(status_code=status_code, detail=f"云端组织设置读取失败：{exc.detail}") from exc
@@ -30414,6 +30453,16 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
 
     @app.post("/api/v1/settings/org-model/profile", response_model=OrgModelProfileRecord)
     def update_org_model_profile(payload: OrgModelProfileRecord) -> OrgModelProfileRecord:
+        # 顾源源 5/24: 提交前从 payload 抽出 role.holderBotId 写本地 sidecar (cloud 会忽略它)
+        try:
+            mapping: dict[str, str | None] = {}
+            for role in payload.roles or []:
+                holder_bot_id = getattr(role, "holderBotId", None)
+                if role.id:
+                    mapping[str(role.id)] = holder_bot_id
+            _save_role_holder_bot_sidecar(mapping)
+        except Exception as exc:  # noqa: BLE001 — sidecar 写失败不阻塞主流程
+            logger.warning("Failed to save role holder bot sidecar: %s", exc)
         try:
             response = cloud_request("POST", "/api/v1/settings/org-model/profile", json_body=payload.model_dump())
         except HTTPException as exc:
@@ -30423,6 +30472,16 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             raise HTTPException(status_code=502, detail=f"云端组织设置保存失败：{exc}") from exc
         if not isinstance(response, dict):
             raise HTTPException(status_code=502, detail="Invalid org model payload")
+        # 同样: 回填 holderBotId, 让前端拿到的 response 完整
+        sidecar = _load_role_holder_bot_sidecar()
+        if sidecar:
+            roles = response.get("roles")
+            if isinstance(roles, list):
+                for role in roles:
+                    if isinstance(role, dict):
+                        role_id = role.get("id")
+                        if role_id and sidecar.get(str(role_id)):
+                            role["holderBotId"] = sidecar[str(role_id)]
         return OrgModelProfileRecord(**response)
 
     @app.post("/api/v1/settings/org-model/intro-document", response_model=OrgIntroDocumentRecord)

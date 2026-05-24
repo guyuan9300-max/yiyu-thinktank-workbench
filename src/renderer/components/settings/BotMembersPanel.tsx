@@ -8,13 +8,14 @@
  *
  * 最低工程标准: 可打开 / 可看见 / 可刷新 / 可处理.
  */
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { X } from 'lucide-react';
 import {
   BOT_CAPABILITY_KEYS,
   createBotMember,
   listBotMembers,
   updateBotMember,
+  rotateBotToken,
   listBotTaskPlans,
   decideBotTaskPlan,
   type BotCapabilityKey,
@@ -229,6 +230,14 @@ export interface DepartmentChoice {
 }
 
 export interface BotMemberFormDialogProps {
+  /**
+   * 顾源源 5/24 V2.1 lab M5:
+   *   - 'create' (默认): 创建一个新 bot, 提交后展示一次性 token
+   *   - 'edit'        : 编辑已有 bot, 不展示 token (token 由独立的 BotRotateTokenDialog 处理)
+   */
+  mode?: 'create' | 'edit';
+  /** edit 模式下必填: 现有 bot record */
+  existingBot?: BotMemberRecord;
   defaultDepartmentId?: string;
   defaultDepartmentName?: string;
   /** 顾源源 P1 修: 部门必须下拉, 不允许手填 */
@@ -241,6 +250,8 @@ export interface BotMemberFormDialogProps {
 }
 
 export function BotMemberFormDialog({
+  mode = 'create',
+  existingBot,
   defaultDepartmentId,
   defaultDepartmentName,
   departments,
@@ -249,29 +260,54 @@ export function BotMemberFormDialog({
   onClose,
   onCreated,
 }: BotMemberFormDialogProps): JSX.Element {
-  const [displayName, setDisplayName] = useState('');
+  const isEdit = mode === 'edit' && !!existingBot;
+  const [displayName, setDisplayName] = useState(isEdit ? existingBot!.display_name : '');
   // 部门改下拉 — 找当前选中的 dept 对象
   const initialDept = useMemo(() => {
     const list = departments || [];
+    if (isEdit && existingBot) {
+      const matched = list.find((d) => d.id === existingBot.department_id);
+      if (matched) return matched;
+      if (existingBot.department_id) {
+        return { id: existingBot.department_id, name: existingBot.department_name || existingBot.department_id };
+      }
+      return null;
+    }
     return (
       list.find((d) => d.id === defaultDepartmentId) ||
       (defaultDepartmentId && defaultDepartmentName
         ? { id: defaultDepartmentId, name: defaultDepartmentName }
         : null)
     );
-  }, [defaultDepartmentId, defaultDepartmentName, departments]);
+  }, [defaultDepartmentId, defaultDepartmentName, departments, isEdit, existingBot]);
   const [selectedDept, setSelectedDept] = useState<DepartmentChoice | null>(initialDept || null);
-  const [description, setDescription] = useState('');
+  const [description, setDescription] = useState(isEdit ? existingBot!.description || '' : '');
   // 3 平权汇报线: 创建人 / 本部门领导 / CEO
-  const [reportCreator, setReportCreator] = useState(true);
-  const [reportDeptLead, setReportDeptLead] = useState(false);
-  const [reportCEO, setReportCEO] = useState(false);
-  const [enabledCaps, setEnabledCaps] = useState<Set<BotCapabilityKey>>(new Set());
+  const [reportCreator, setReportCreator] = useState(
+    isEdit ? !!existingBot!.reporting?.report_to_creator : true,
+  );
+  const [reportDeptLead, setReportDeptLead] = useState(
+    isEdit ? !!existingBot!.reporting?.report_to_department_lead : false,
+  );
+  const [reportCEO, setReportCEO] = useState(
+    isEdit ? !!existingBot!.reporting?.report_to_ceo : false,
+  );
+  const [enabledCaps, setEnabledCaps] = useState<Set<BotCapabilityKey>>(() => {
+    if (isEdit && existingBot?.capabilities) {
+      return new Set(
+        existingBot.capabilities
+          .filter((c) => c.enabled)
+          .map((c) => c.capability_key as BotCapabilityKey),
+      );
+    }
+    return new Set();
+  });
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  // 顾源源 5/24: 创建成功后展示一次性身份启动密钥
+  // 顾源源 5/24: 创建成功后展示一次性身份启动密钥 (edit 模式下永不进入此状态)
   const [createdToken, setCreatedToken] = useState<{ actor_id: string; token: string; bot_id: string; display_name: string } | null>(null);
-  const [copyHint, setCopyHint] = useState(false);
+  const [copyHint, setCopyHint] = useState<'ok' | 'manual' | null>(null);
+  const tokenRef = useRef<HTMLTextAreaElement | null>(null);
 
   const toggleCap = (cap: BotCapabilityKey) => {
     const next = new Set(enabledCaps);
@@ -296,30 +332,45 @@ export function BotMemberFormDialog({
     setBusy(true);
     setError(null);
     try {
-      const created = await createBotMember({
-        display_name: displayName.trim(),
-        department_id: selectedDept.id,
-        department_name: selectedDept.name,
-        description: description.trim() || undefined,
-        created_by_user_id: currentUserId || undefined,
-        report_to_creator: reportCreator,
-        report_to_department_lead: reportDeptLead,
-        report_to_ceo: reportCEO,
-        // 不传 department_leader_user_ids / ceo_user_ids
-        // 后端从 mirror_departments / mirror_users 动态 resolve
-        enabled_capabilities: Array.from(enabledCaps),
-      });
-      // 顾源源 5/24: 后端返了一次性 token_plain, 必须展示给用户复制
-      // 用户关闭密钥框后才视为完成创建
-      if (created.token_plain && created.actor_id) {
-        setCreatedToken({
-          actor_id: created.actor_id,
-          token: created.token_plain,
-          bot_id: created.id,
-          display_name: created.display_name,
+      if (isEdit && existingBot) {
+        // M5 edit 模式: PATCH /api/v1/org/bots/{id}, 不返 token
+        await updateBotMember(existingBot.id, {
+          display_name: displayName.trim(),
+          department_id: selectedDept.id,
+          department_name: selectedDept.name,
+          description: description.trim() || undefined,
+          report_to_creator: reportCreator,
+          report_to_department_lead: reportDeptLead,
+          report_to_ceo: reportCEO,
+          enabled_capabilities: Array.from(enabledCaps),
         });
-      } else {
         await onCreated();
+      } else {
+        const created = await createBotMember({
+          display_name: displayName.trim(),
+          department_id: selectedDept.id,
+          department_name: selectedDept.name,
+          description: description.trim() || undefined,
+          created_by_user_id: currentUserId || undefined,
+          report_to_creator: reportCreator,
+          report_to_department_lead: reportDeptLead,
+          report_to_ceo: reportCEO,
+          // 不传 department_leader_user_ids / ceo_user_ids
+          // 后端从 mirror_departments / mirror_users 动态 resolve
+          enabled_capabilities: Array.from(enabledCaps),
+        });
+        // 顾源源 5/24: 后端返了一次性 token_plain, 必须展示给用户复制
+        // 用户关闭密钥框后才视为完成创建
+        if (created.token_plain && created.actor_id) {
+          setCreatedToken({
+            actor_id: created.actor_id,
+            token: created.token_plain,
+            bot_id: created.id,
+            display_name: created.display_name,
+          });
+        } else {
+          await onCreated();
+        }
       }
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : String(err));
@@ -328,14 +379,52 @@ export function BotMemberFormDialog({
     }
   };
 
+  /**
+   * 顾源源 5/24 V2.1 lab M5: 复制 token 加 fallback —
+   *   1. navigator.clipboard.writeText (现代浏览器/Electron 推荐路径)
+   *   2. document.execCommand('copy') (老 path, Electron 部分场景仍有效)
+   *   3. 两步都失败 → 自动 select textarea + 提示用户手动 Cmd+C
+   * 真透出错误: console.error + UI 显示 'manual' 提示态.
+   */
   const copyToken = useCallback(async () => {
     if (!createdToken) return;
+    const text = createdToken.token;
+    let copied = false;
     try {
-      await navigator.clipboard.writeText(createdToken.token);
-      setCopyHint(true);
-      setTimeout(() => setCopyHint(false), 1800);
-    } catch {
-      setCopyHint(false);
+      if (navigator.clipboard && typeof navigator.clipboard.writeText === 'function') {
+        await navigator.clipboard.writeText(text);
+        copied = true;
+      }
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.error('[BotMemberFormDialog] navigator.clipboard.writeText failed:', err);
+    }
+    if (!copied) {
+      try {
+        const node = tokenRef.current;
+        if (node) {
+          node.focus();
+          node.select();
+          const ok = document.execCommand('copy');
+          if (ok) copied = true;
+        }
+      } catch (err) {
+        // eslint-disable-next-line no-console
+        console.error('[BotMemberFormDialog] execCommand copy fallback failed:', err);
+      }
+    }
+    if (copied) {
+      setCopyHint('ok');
+      setTimeout(() => setCopyHint(null), 1800);
+    } else {
+      // 自动 select 让用户能直接 Cmd+C
+      try {
+        tokenRef.current?.focus();
+        tokenRef.current?.select();
+      } catch {
+        /* ignore */
+      }
+      setCopyHint('manual');
     }
   }, [createdToken]);
 
@@ -368,18 +457,30 @@ export function BotMemberFormDialog({
             <p className="mt-4 mb-1 text-[10px] font-bold uppercase tracking-[0.18em] text-gray-400">
               X-Bot-Token (32 字符)
             </p>
-            <div className="flex items-center gap-2">
-              <code className="flex-1 rounded-xl border border-[#5B7BFE]/30 bg-[#5B7BFE]/5 px-3 py-2.5 font-mono text-[13px] text-gray-800 break-all">
-                {createdToken.token}
-              </code>
+            {/* M5: 改用 textarea (而非 code) — 让用户能手选 Cmd+C, 字体 font-mono + user-select: text */}
+            <div className="flex items-start gap-2">
+              <textarea
+                ref={tokenRef}
+                readOnly
+                value={createdToken.token}
+                rows={2}
+                onFocus={(e) => e.currentTarget.select()}
+                style={{ userSelect: 'text', WebkitUserSelect: 'text' }}
+                className="flex-1 resize-none rounded-xl border border-[#5B7BFE]/30 bg-[#5B7BFE]/5 px-3 py-2.5 font-mono text-[13px] text-gray-800 break-all outline-none focus:border-[#5B7BFE] focus:ring-2 focus:ring-[#5B7BFE]/15"
+              />
               <button
                 type="button"
                 onClick={() => void copyToken()}
                 className="inline-flex shrink-0 items-center gap-2 rounded-full bg-[#5B7BFE] px-4 py-2.5 text-[13px] font-bold text-white shadow-[0_8px_20px_rgba(91,123,254,0.25)] transition hover:bg-[#4A63CF]"
               >
-                {copyHint ? '已复制' : '复制'}
+                {copyHint === 'ok' ? '已复制' : '复制'}
               </button>
             </div>
+            {copyHint === 'manual' ? (
+              <p className="mt-2 text-[12px] font-medium text-rose-600">
+                自动复制失败, 已自动选中文本框, 请直接按 Cmd+C 手动复制.
+              </p>
+            ) : null}
 
             <div className="mt-5 rounded-xl border border-gray-100 bg-gray-50/70 px-4 py-3 text-[12px] leading-relaxed text-gray-600">
               <p className="font-medium text-gray-700">外部 AI 调用示例:</p>
@@ -417,11 +518,15 @@ export function BotMemberFormDialog({
         <div className="flex items-start justify-between border-b border-gray-100 px-8 py-6">
           <div>
             <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-gray-400">
-              ADD MEMBER · 添加机器人同事
+              {isEdit ? 'EDIT MEMBER · 编辑机器人同事' : 'ADD MEMBER · 添加机器人同事'}
             </p>
-            <h3 className="mt-2 text-[18px] font-bold text-gray-900">添加机器人同事</h3>
+            <h3 className="mt-2 text-[18px] font-bold text-gray-900">
+              {isEdit ? `编辑「${existingBot!.display_name}」` : '添加机器人同事'}
+            </h3>
             <p className="mt-1.5 text-[12px] text-gray-500">
-              机器人同事拥有独立身份, 进入运行日志和审批队列, 不能自己审批自己。
+              {isEdit
+                ? '编辑机器人的姓名、描述、部门、汇报对象和能力授权。启动密钥不在此处修改,请用"重置密钥"。'
+                : '机器人同事拥有独立身份, 进入运行日志和审批队列, 不能自己审批自己。'}
             </p>
           </div>
           <button
@@ -581,7 +686,203 @@ export function BotMemberFormDialog({
             disabled={busy}
             className="inline-flex items-center gap-2 rounded-full bg-[#5B7BFE] px-6 py-2.5 text-[13px] font-bold text-white shadow-[0_12px_30px_rgba(91,123,254,0.25)] transition hover:bg-[#4A63CF] disabled:cursor-not-allowed disabled:opacity-60"
           >
-            {busy ? '创建中…' : '创建机器人同事'}
+            {busy ? (isEdit ? '保存中…' : '创建中…') : isEdit ? '保存修改' : '创建机器人同事'}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ────────────── BotRotateTokenDialog ─────────────
+// 顾源源 5/24 V2.1 lab M5: 独立的"重置启动密钥"弹窗.
+// 触发 rotateBotToken → 新 token 明文必须复制后才能关 (跟创建后 token 弹窗同款)
+// 加复制 fallback (execCommand → 手选 Cmd+C).
+export interface BotRotateTokenDialogProps {
+  bot: BotMemberRecord;
+  onClose: () => void;
+  onRotated: () => Promise<void> | void;
+}
+
+export function BotRotateTokenDialog({ bot, onClose, onRotated }: BotRotateTokenDialogProps): JSX.Element {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [newToken, setNewToken] = useState<{ actor_id: string; token: string; display_name: string } | null>(null);
+  const [copyHint, setCopyHint] = useState<'ok' | 'manual' | null>(null);
+  const tokenRef = useRef<HTMLTextAreaElement | null>(null);
+
+  const rotate = useCallback(async () => {
+    setBusy(true);
+    setError(null);
+    try {
+      const result = await rotateBotToken(bot.id);
+      if (!result.token_plain || !result.actor_id) {
+        throw new Error('后端未返回新 token, 请联系开发排查');
+      }
+      setNewToken({
+        actor_id: result.actor_id,
+        token: result.token_plain,
+        display_name: result.display_name,
+      });
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(false);
+    }
+  }, [bot.id]);
+
+  const copyToken = useCallback(async () => {
+    if (!newToken) return;
+    const text = newToken.token;
+    let copied = false;
+    try {
+      if (navigator.clipboard && typeof navigator.clipboard.writeText === 'function') {
+        await navigator.clipboard.writeText(text);
+        copied = true;
+      }
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.error('[BotRotateTokenDialog] navigator.clipboard.writeText failed:', err);
+    }
+    if (!copied) {
+      try {
+        const node = tokenRef.current;
+        if (node) {
+          node.focus();
+          node.select();
+          const ok = document.execCommand('copy');
+          if (ok) copied = true;
+        }
+      } catch (err) {
+        // eslint-disable-next-line no-console
+        console.error('[BotRotateTokenDialog] execCommand copy fallback failed:', err);
+      }
+    }
+    if (copied) {
+      setCopyHint('ok');
+      setTimeout(() => setCopyHint(null), 1800);
+    } else {
+      try {
+        tokenRef.current?.focus();
+        tokenRef.current?.select();
+      } catch {
+        /* ignore */
+      }
+      setCopyHint('manual');
+    }
+  }, [newToken]);
+
+  // 已经返回新 token → 展示密钥框 (必须复制保存才能关)
+  if (newToken) {
+    return (
+      <div className="fixed inset-0 z-[120] flex items-center justify-center bg-gray-900/30 p-4 backdrop-blur-sm">
+        <div className="w-full max-w-[560px] rounded-3xl bg-white shadow-2xl ring-1 ring-black/5">
+          <div className="border-b border-gray-100 px-8 py-6">
+            <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-gray-400">
+              ROTATE TOKEN · 重置启动密钥
+            </p>
+            <h3 className="mt-2 text-[18px] font-bold text-gray-900">
+              「{newToken.display_name}」的新启动密钥
+            </h3>
+            <p className="mt-1.5 text-[12px] text-gray-500">
+              旧密钥已立即作废, 外部 AI 必须改用此新密钥才能继续以本机器人身份调用系统.
+              本新密钥<span className="font-medium text-rose-600">只显示这一次</span>,
+              关闭窗口后无法再读取.
+            </p>
+          </div>
+          <div className="px-8 py-6 text-[13px]">
+            <p className="mb-1 text-[10px] font-bold uppercase tracking-[0.18em] text-gray-400">Actor ID</p>
+            <code className="block rounded-xl border border-gray-200 bg-gray-50 px-3 py-2.5 font-mono text-[13px] text-gray-700">
+              {newToken.actor_id}
+            </code>
+            <p className="mt-4 mb-1 text-[10px] font-bold uppercase tracking-[0.18em] text-gray-400">
+              X-Bot-Token (新 32 字符)
+            </p>
+            <div className="flex items-start gap-2">
+              <textarea
+                ref={tokenRef}
+                readOnly
+                value={newToken.token}
+                rows={2}
+                onFocus={(e) => e.currentTarget.select()}
+                style={{ userSelect: 'text', WebkitUserSelect: 'text' }}
+                className="flex-1 resize-none rounded-xl border border-[#5B7BFE]/30 bg-[#5B7BFE]/5 px-3 py-2.5 font-mono text-[13px] text-gray-800 break-all outline-none focus:border-[#5B7BFE] focus:ring-2 focus:ring-[#5B7BFE]/15"
+              />
+              <button
+                type="button"
+                onClick={() => void copyToken()}
+                className="inline-flex shrink-0 items-center gap-2 rounded-full bg-[#5B7BFE] px-4 py-2.5 text-[13px] font-bold text-white shadow-[0_8px_20px_rgba(91,123,254,0.25)] transition hover:bg-[#4A63CF]"
+              >
+                {copyHint === 'ok' ? '已复制' : '复制'}
+              </button>
+            </div>
+            {copyHint === 'manual' ? (
+              <p className="mt-2 text-[12px] font-medium text-rose-600">
+                自动复制失败, 已自动选中文本框, 请直接按 Cmd+C 手动复制.
+              </p>
+            ) : null}
+          </div>
+          <div className="flex items-center justify-between border-t border-gray-100 bg-gray-50/60 px-8 py-4 text-[12px]">
+            <span className="text-gray-500">关闭后无法再次查看, 只能再次重置.</span>
+            <button
+              type="button"
+              onClick={() => void onRotated()}
+              className="inline-flex items-center gap-2 rounded-full bg-gray-900 px-6 py-2.5 text-[13px] font-bold text-white transition hover:bg-gray-700"
+            >
+              我已复制保存, 关闭
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  // 还没 rotate → 展示确认窗
+  return (
+    <div className="fixed inset-0 z-[120] flex items-center justify-center bg-gray-900/30 p-4 backdrop-blur-sm">
+      <div className="w-full max-w-[480px] rounded-3xl bg-white shadow-2xl ring-1 ring-black/5">
+        <div className="flex items-start justify-between border-b border-gray-100 px-8 py-6">
+          <div>
+            <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-gray-400">
+              ROTATE TOKEN · 重置启动密钥
+            </p>
+            <h3 className="mt-2 text-[18px] font-bold text-gray-900">
+              确认重置「{bot.display_name}」的启动密钥?
+            </h3>
+            <p className="mt-1.5 text-[12px] text-gray-500">
+              重置后<span className="font-medium text-rose-600">旧密钥立即作废</span>, 所有外部 AI 调用都会被拒,
+              直到换上新密钥. 新密钥只显示这一次.
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={onClose}
+            className="inline-flex h-9 w-9 items-center justify-center rounded-full text-gray-400 transition hover:bg-gray-100 hover:text-gray-700"
+          >
+            <X size={16} />
+          </button>
+        </div>
+        {error ? (
+          <div className="mx-8 mt-5 rounded-xl border border-rose-100 bg-rose-50 px-4 py-2.5 text-[12px] text-rose-700">
+            {error}
+          </div>
+        ) : null}
+        <div className="flex items-center justify-end gap-3 border-t border-gray-100 bg-gray-50/60 px-8 py-4">
+          <button
+            type="button"
+            onClick={onClose}
+            disabled={busy}
+            className="inline-flex items-center gap-2 rounded-full border border-gray-200 bg-white px-5 py-2.5 text-[13px] font-bold text-gray-600 transition hover:border-gray-300 hover:bg-gray-50 disabled:opacity-50"
+          >
+            取消
+          </button>
+          <button
+            type="button"
+            onClick={() => void rotate()}
+            disabled={busy}
+            className="inline-flex items-center gap-2 rounded-full bg-[#5B7BFE] px-6 py-2.5 text-[13px] font-bold text-white shadow-[0_12px_30px_rgba(91,123,254,0.25)] transition hover:bg-[#4A63CF] disabled:cursor-not-allowed disabled:opacity-60"
+          >
+            {busy ? '重置中…' : '确认重置, 生成新密钥'}
           </button>
         </div>
       </div>

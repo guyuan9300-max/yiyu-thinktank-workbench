@@ -412,6 +412,8 @@ class OrgRoleTemplateRecord(BaseModel):
     canChangeDeadline: bool = False
     sortOrder: int = 0
     active: bool = True
+    # 顾源源 5/24 V2.1 lab: 持岗人为机器人同事时填 bot_member.id; 旧数据无该字段, 按 null 处理.
+    holderBotId: str | None = None
     updatedAt: str
 
 

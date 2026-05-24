@@ -14,7 +14,8 @@ import type {
 } from '../../../shared/types';
 import { buildDepartmentInviteCode } from '../../../shared/departmentInvite';
 // 顾源源 5/24: 机器人同事 — 直接复用弹窗组件, 不挂底部抽屉
-import { BotMemberFormDialog } from './BotMembersPanel';
+import { BotMemberFormDialog, BotRotateTokenDialog } from './BotMembersPanel';
+import { listBotMembers, type BotMemberRecord } from '../../lib/api';
 import { isAssignableOrganizationEmployee, isLegacyOrganizationPersonName } from '../../lib/organizationEmployeeFilters';
 
 type LinkedSection = 'tasks' | 'handbook';
@@ -483,6 +484,45 @@ export function OrganizationSetupCenter({
   const [activeView, setActiveView] = useState<ActiveView>('tree');
   // 顾源源 5/24: 添加机器人同事弹窗 (按部门触发, 记录该按钮属于哪个部门)
   const [botDialogDept, setBotDialogDept] = useState<{ id: string; name: string } | null>(null);
+  // 顾源源 5/24 M1: 机器人同事数据源 — 全组织 active bot 一次拉, LeaderPicker 按部门过滤展示
+  const [botMembers, setBotMembers] = useState<BotMemberRecord[]>([]);
+  // M5: 编辑模式弹窗 (mode=edit) — 跟创建模式复用 BotMemberFormDialog
+  const [botEditDialog, setBotEditDialog] = useState<BotMemberRecord | null>(null);
+  // M5: 重置密钥弹窗 — 独立组件 BotRotateTokenDialog
+  const [botRotateDialog, setBotRotateDialog] = useState<BotMemberRecord | null>(null);
+
+  const reloadBotMembers = useCallback(async () => {
+    try {
+      const resp = await listBotMembers({ status: 'active' });
+      setBotMembers(resp.items);
+    } catch (err) {
+      // 拉失败不阻塞页面; 控制台留痕便于排查
+      // eslint-disable-next-line no-console
+      console.error('[OrganizationSetupCenter] listBotMembers failed:', err);
+    }
+  }, []);
+
+  useEffect(() => {
+    void reloadBotMembers();
+  }, [reloadBotMembers]);
+
+  // 按 department_id 索引, LeaderPicker 按部门过滤
+  const botMembersByDepartmentId = useMemo(() => {
+    const mapping = new Map<string, BotMemberRecord[]>();
+    botMembers.forEach((bot) => {
+      if (!bot.department_id) return;
+      const list = mapping.get(bot.department_id) || [];
+      list.push(bot);
+      mapping.set(bot.department_id, list);
+    });
+    return mapping;
+  }, [botMembers]);
+  // 全表反查 (持岗人按 holderBotId 拿 bot record)
+  const botMemberById = useMemo(() => {
+    const mapping = new Map<string, BotMemberRecord>();
+    botMembers.forEach((bot) => mapping.set(bot.id, bot));
+    return mapping;
+  }, [botMembers]);
   const [editingNodeId, setEditingNodeId] = useState<string | null>(initialInputDrafts.editingNodeId || null);
   const [editingField, setEditingField] = useState<EditableField | null>((initialInputDrafts.editingField as EditableField | null) || null);
   const [editingText, setEditingText] = useState(initialInputDrafts.editingText || '');
@@ -765,6 +805,7 @@ export function OrganizationSetupCenter({
   // 通过下拉选择岗位持岗人：更新 bindings (userId.primaryRoleId = roleId)
   // 一个员工同时只能有一个 primaryRoleId；若选的员工已经占别的岗位，会被搬过来；
   // 若该岗位本来有人，那个人的 primaryRoleId 会被置空。
+  // 顾源源 5/24 M3: 选员工时同时清掉 role.holderBotId (员工/机器人持岗人互斥)
   const handleSelectRoleHolder = useCallback((roleId: string, employee: EmployeeRecord | null) => {
     if (!canEdit) return;
     const timestamp = new Date().toISOString();
@@ -772,8 +813,6 @@ export function OrganizationSetupCenter({
 
     // 1. 找到当前占该岗位的员工 binding
     const currentHolder = value.bindings.find((b) => b.primaryRoleId === roleId);
-    // No-op：当前持岗人就是目标
-    if ((currentHolder?.userId ?? null) === targetUserId) return;
 
     // 2. 找到目标员工的现有 binding（如果有）
     const targetExistingBinding = targetUserId
@@ -783,6 +822,9 @@ export function OrganizationSetupCenter({
     // 3. 从该岗位查 departmentId（用作新 binding 的 default departmentId）
     const role = value.roles.find((r) => r.id === roleId);
     const inferredDepartmentId = role?.departmentId ?? null;
+    const hadBotHolder = !!(role && role.holderBotId);
+    // No-op: 当前员工持岗人就是目标 且 没有 bot 持岗人 → 跳过
+    if (!hadBotHolder && (currentHolder?.userId ?? null) === targetUserId) return;
 
     let nextBindings = value.bindings.map((b) => {
       // 清空 current holder 的 primaryRoleId（如果要换人/清空）
@@ -822,8 +864,49 @@ export function OrganizationSetupCenter({
       ];
     }
 
+    // M3: 同时清空 role.holderBotId (员工/机器人持岗人互斥)
+    const nextRoles = hadBotHolder
+      ? value.roles.map((r) =>
+          r.id === roleId ? { ...r, holderBotId: null, updatedAt: timestamp } : r,
+        )
+      : value.roles;
+
     onChange({
       ...value,
+      bindings: nextBindings,
+      roles: nextRoles,
+      updatedAt: timestamp,
+    });
+  }, [canEdit, onChange, value]);
+
+  // 顾源源 5/24 M3: 选机器人同事作为持岗人
+  // 写 role.holderBotId, 同时清掉该岗位现有的员工 binding.primaryRoleId
+  const handleSelectRoleHolderBot = useCallback((roleId: string, bot: BotMemberRecord | null) => {
+    if (!canEdit) return;
+    const timestamp = new Date().toISOString();
+    const targetBotId = bot?.id ?? null;
+
+    const role = value.roles.find((r) => r.id === roleId);
+    if (!role) return;
+    if ((role.holderBotId ?? null) === targetBotId) return;
+
+    // 清掉现有的员工 binding (如果有), 让该岗位由机器人独占
+    const currentHolder = value.bindings.find((b) => b.primaryRoleId === roleId);
+    const nextBindings = currentHolder
+      ? value.bindings.map((b) =>
+          b.userId === currentHolder.userId
+            ? { ...b, primaryRoleId: null, updatedAt: timestamp }
+            : b,
+        )
+      : value.bindings;
+
+    const nextRoles = value.roles.map((r) =>
+      r.id === roleId ? { ...r, holderBotId: targetBotId, updatedAt: timestamp } : r,
+    );
+
+    onChange({
+      ...value,
+      roles: nextRoles,
       bindings: nextBindings,
       updatedAt: timestamp,
     });
@@ -1695,11 +1778,17 @@ export function OrganizationSetupCenter({
                             const roleCardDirty = isEditingRoleName
                               && editingText.trim().length > 0
                               && editingText.trim() !== role.name;
-                            // 通过 bindings 反查持岗人
-                            const holderBinding = value.bindings.find((b) => b.primaryRoleId === role.id);
+                            // 顾源源 5/24 M4: 持岗人解析 — 机器人优先, 否则反查 bindings
+                            const roleSettings = value.roles.find((r) => r.id === role.id);
+                            const holderBotId = roleSettings?.holderBotId ?? null;
+                            const holderBot = holderBotId ? botMemberById.get(holderBotId) ?? null : null;
+                            const holderBinding = holderBot
+                              ? null
+                              : value.bindings.find((b) => b.primaryRoleId === role.id);
                             const holderEmployee = holderBinding
                               ? employees.find((e) => e.id === holderBinding.userId) ?? null
                               : null;
+                            const deptBots = botMembersByDepartmentId.get(department.id) || [];
                             return (
                               <div
                                 id={`node-${role.id}`}
@@ -1751,24 +1840,69 @@ export function OrganizationSetupCenter({
                                 )}
 
                                 {/* 持岗人（下拉选员工 + 机器人同事） */}
-                                <div className="mt-1.5 flex items-center justify-center gap-1">
+                                <div className="mt-1.5 flex flex-col items-center gap-1">
                                   {canModify ? (
                                     <LeaderPicker
                                       value={{
-                                        userId: holderEmployee?.id ?? null,
-                                        displayName: holderEmployee?.fullName ?? '',
+                                        userId: holderBot
+                                          ? holderBot.id
+                                          : holderEmployee?.id ?? null,
+                                        displayName: holderBot
+                                          ? holderBot.display_name
+                                          : holderEmployee?.fullName ?? '',
+                                        isBot: !!holderBot,
                                       }}
                                       employees={employees}
+                                      botMembers={deptBots}
                                       onSelect={(employee) => handleSelectRoleHolder(role.id, employee)}
+                                      onSelectBot={(bot) => handleSelectRoleHolderBot(role.id, bot)}
                                       placeholder="选员工"
                                       compact
                                       onAddBotMember={() => setBotDialogDept({ id: department.id, name: department.name })}
                                     />
+                                  ) : holderBot ? (
+                                    <span className="inline-flex items-center gap-1 text-[11px] font-medium text-[#4A63CF]">
+                                      <span className="inline-flex shrink-0 items-center rounded-full bg-[#5B7BFE] px-1.5 py-[1px] text-[9px] font-bold tracking-wide text-white">
+                                        AI
+                                      </span>
+                                      {holderBot.display_name}
+                                    </span>
                                   ) : (
                                     <span className="text-[11px] text-gray-500">
                                       {holderEmployee?.fullName || '待指派'}
                                     </span>
                                   )}
+                                  {/* M4: 机器人持岗人 hover 时显示编辑/重置密钥/解除指派 (ghost button 风格) */}
+                                  {canModify && holderBot ? (
+                                    <div className="flex items-center gap-0.5 opacity-0 transition-opacity group-hover:opacity-100">
+                                      <button
+                                        type="button"
+                                        onClick={() => setBotEditDialog(holderBot)}
+                                        className="rounded-full px-1.5 py-0.5 text-[10px] text-gray-500 transition hover:bg-[#EEF3FF] hover:text-[#4A63CF]"
+                                        title={`编辑 ${holderBot.display_name}`}
+                                      >
+                                        编辑
+                                      </button>
+                                      <span className="text-gray-300" aria-hidden>·</span>
+                                      <button
+                                        type="button"
+                                        onClick={() => setBotRotateDialog(holderBot)}
+                                        className="rounded-full px-1.5 py-0.5 text-[10px] text-gray-500 transition hover:bg-[#EEF3FF] hover:text-[#4A63CF]"
+                                        title="重置启动密钥 (旧的立即作废)"
+                                      >
+                                        重置密钥
+                                      </button>
+                                      <span className="text-gray-300" aria-hidden>·</span>
+                                      <button
+                                        type="button"
+                                        onClick={() => handleSelectRoleHolderBot(role.id, null)}
+                                        className="rounded-full px-1.5 py-0.5 text-[10px] text-gray-500 transition hover:bg-rose-50 hover:text-rose-500"
+                                        title="解除该岗位的机器人持岗人"
+                                      >
+                                        解除指派
+                                      </button>
+                                    </div>
+                                  ) : null}
                                 </div>
                               </div>
                             );
@@ -1842,6 +1976,7 @@ export function OrganizationSetupCenter({
       {/* 顾源源 5/24: 添加机器人同事弹窗 (从每个部门"选员工"下拉里点 → 入口触发) */}
       {botDialogDept ? (
         <BotMemberFormDialog
+          mode="create"
           defaultDepartmentId={botDialogDept.id}
           defaultDepartmentName={botDialogDept.name}
           departments={value.departments
@@ -1850,9 +1985,43 @@ export function OrganizationSetupCenter({
           currentUserId={currentUserId}
           currentUserName={currentUserName}
           onClose={() => setBotDialogDept(null)}
-          onCreated={() => {
+          onCreated={async () => {
+            const justAddedDeptName = botDialogDept.name;
             setBotDialogDept(null);
-            showToast(`已为「${botDialogDept.name}」添加机器人同事`);
+            await reloadBotMembers();
+            showToast(`已为「${justAddedDeptName}」添加机器人同事`);
+          }}
+        />
+      ) : null}
+      {/* M5: 编辑机器人同事弹窗 (mode=edit) */}
+      {botEditDialog ? (
+        <BotMemberFormDialog
+          mode="edit"
+          existingBot={botEditDialog}
+          departments={value.departments
+            .filter((d) => d.active !== false)
+            .map((d) => ({ id: d.id, name: d.name, color: d.color }))}
+          currentUserId={currentUserId}
+          currentUserName={currentUserName}
+          onClose={() => setBotEditDialog(null)}
+          onCreated={async () => {
+            const name = botEditDialog.display_name;
+            setBotEditDialog(null);
+            await reloadBotMembers();
+            showToast(`已更新「${name}」`);
+          }}
+        />
+      ) : null}
+      {/* M5: 重置启动密钥弹窗 (独立组件, 必须复制后才能关) */}
+      {botRotateDialog ? (
+        <BotRotateTokenDialog
+          bot={botRotateDialog}
+          onClose={() => setBotRotateDialog(null)}
+          onRotated={async () => {
+            const name = botRotateDialog.display_name;
+            setBotRotateDialog(null);
+            await reloadBotMembers();
+            showToast(`「${name}」的启动密钥已重置`);
           }}
         />
       ) : null}
@@ -1999,7 +2168,7 @@ function InviteCard({
 
 
 type LeaderPickerProps = {
-  value: { userId: string | null; displayName: string };
+  value: { userId: string | null; displayName: string; isBot?: boolean };
   employees: EmployeeRecord[];
   onSelect: (employee: EmployeeRecord | null) => void;
   placeholder?: string;
@@ -2007,6 +2176,10 @@ type LeaderPickerProps = {
   disabled?: boolean;
   /** 顾源源 5/24: 当下拉允许添加机器人同事时, 提供该回调 → 底部出现 "添加机器人同事" 行. */
   onAddBotMember?: () => void;
+  /** 顾源源 5/24 M2: 机器人同事候选列表 (调用方按部门过滤后传入). 非空时下拉员工区下方加 "机器人同事" 区. */
+  botMembers?: BotMemberRecord[];
+  /** M2: 选机器人同事的回调; 跟 onSelect(employee) 互斥 */
+  onSelectBot?: (bot: BotMemberRecord) => void;
 };
 
 function LeaderPicker({
@@ -2017,6 +2190,8 @@ function LeaderPicker({
   compact = false,
   disabled = false,
   onAddBotMember,
+  botMembers,
+  onSelectBot,
 }: LeaderPickerProps) {
   const [open, setOpen] = useState(false);
   const [search, setSearch] = useState('');
@@ -2104,7 +2279,29 @@ function LeaderPicker({
     [close, onSelect],
   );
 
+  // M2: 机器人同事点击 → 走 onSelectBot 通道
+  const handleSelectBot = useCallback(
+    (bot: BotMemberRecord) => {
+      if (onSelectBot) onSelectBot(bot);
+      close();
+    },
+    [close, onSelectBot],
+  );
+
+  // 机器人同事按搜索词过滤
+  const filteredBots = useMemo(() => {
+    if (!botMembers || botMembers.length === 0) return [];
+    const needle = search.trim().toLowerCase();
+    if (!needle) return botMembers;
+    return botMembers.filter(
+      (b) =>
+        b.display_name.toLowerCase().includes(needle)
+        || (b.handle || '').toLowerCase().includes(needle),
+    );
+  }, [botMembers, search]);
+
   const displayLabel = value.displayName?.trim() || '';
+  const displayIsBot = !!value.isBot;
 
   return (
     <>
@@ -2119,7 +2316,22 @@ function LeaderPicker({
             : 'inline-flex min-w-[160px] items-center gap-1 rounded-full border border-[#DCE4FF] bg-white px-3 py-1.5 text-[11px] font-medium text-gray-700 outline-none transition hover:border-[#5B7BFE] disabled:cursor-not-allowed disabled:opacity-50'
         }
       >
-        <span className={displayLabel ? '' : 'text-gray-300'}>{displayLabel || placeholder}</span>
+        {displayIsBot && displayLabel ? (
+          <span className="inline-flex shrink-0 items-center rounded-full bg-[#5B7BFE] px-1.5 py-[1px] text-[9px] font-bold tracking-wide text-white">
+            AI
+          </span>
+        ) : null}
+        <span
+          className={
+            displayLabel
+              ? displayIsBot
+                ? 'text-[#4A63CF]'
+                : ''
+              : 'text-gray-300'
+          }
+        >
+          {displayLabel || placeholder}
+        </span>
         <ChevronDown size={10} className="ml-auto opacity-60" />
       </button>
       {open && position
@@ -2164,7 +2376,7 @@ function LeaderPicker({
                         type="button"
                         onClick={() => handleSelect(e)}
                         className={`w-full rounded-lg px-2 py-1.5 text-left text-[11px] transition hover:bg-[#EEF3FF] ${
-                          e.id === value.userId ? 'bg-[#EEF3FF] font-bold text-[#4A63CF]' : 'text-gray-700'
+                          !displayIsBot && e.id === value.userId ? 'bg-[#EEF3FF] font-bold text-[#4A63CF]' : 'text-gray-700'
                         }`}
                       >
                         <div className="flex items-center gap-1.5">
@@ -2179,6 +2391,43 @@ function LeaderPicker({
                       </button>
                     ))
                   )}
+                  {/* 顾源源 5/24 M2: 机器人同事区 — 员工列表下方独立分组, uppercase 小标题, 每项前 [AI] 角标. */}
+                  {botMembers && botMembers.length > 0 && onSelectBot ? (
+                    <>
+                      <div className="my-1 border-t border-gray-100" />
+                      <p className="px-2 pb-1 pt-0.5 text-[9px] font-bold uppercase tracking-[0.18em] text-gray-400">
+                        机器人同事 · BOT MEMBERS
+                      </p>
+                      {filteredBots.length === 0 ? (
+                        <p className="px-2 py-1.5 text-[10px] text-gray-400">
+                          无匹配的机器人同事
+                        </p>
+                      ) : (
+                        filteredBots.map((bot) => (
+                          <button
+                            key={bot.id}
+                            type="button"
+                            onClick={() => handleSelectBot(bot)}
+                            className={`w-full rounded-lg px-2 py-1.5 text-left text-[11px] transition hover:bg-[#EEF3FF] ${
+                              displayIsBot && bot.id === value.userId
+                                ? 'bg-[#EEF3FF] font-bold text-[#4A63CF]'
+                                : 'text-gray-700'
+                            }`}
+                          >
+                            <div className="flex items-center gap-1.5">
+                              <span className="inline-flex shrink-0 items-center rounded-full bg-[#5B7BFE] px-1.5 py-[1px] text-[9px] font-bold tracking-wide text-white">
+                                AI
+                              </span>
+                              <span>{bot.display_name}</span>
+                            </div>
+                            {bot.description ? (
+                              <div className="ml-7 text-[10px] text-gray-400 truncate">{bot.description}</div>
+                            ) : null}
+                          </button>
+                        ))
+                      )}
+                    </>
+                  ) : null}
                   {/* 顾源源 5/24: 下拉底部加 "添加机器人同事" 行 — 跟人类同事并列在同一序列里.
                        样式跟"清空"完全一致(灰色+左对齐+小字), 不用 emoji, 不堆视觉. */}
                   {onAddBotMember ? (

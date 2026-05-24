@@ -333,6 +333,12 @@ export interface OrgRoleTemplateSettings {
   canChangeDeadline: boolean;
   sortOrder: number;
   active: boolean;
+  /**
+   * 顾源源 5/24 V2.1 lab: 若为非空, 表示该岗位的持岗人是某个机器人同事 (bot_member.id).
+   * 与员工持岗人 (通过 bindings.primaryRoleId 反查) 互斥: 任一被设置时另一方应为空.
+   * 旧数据无该字段, 加载时按 null 处理, 0 风险向后兼容.
+   */
+  holderBotId?: string | null;
   updatedAt: string;
 }
 
