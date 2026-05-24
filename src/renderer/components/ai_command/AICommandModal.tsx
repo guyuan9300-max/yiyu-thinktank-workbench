@@ -23,8 +23,10 @@ import {
   resolveBotByHandle,
   getBotPermissions,
   createBotTaskPlan,
+  listBotMembers,
   type TaskAiParseResult,
   type BotPermissionsResponse,
+  type BotMemberRecord,
 } from '../../lib/api';
 
 // A 写的 resolveBotByHandle 返回类型 (inline, 避免 import 错)
@@ -63,7 +65,22 @@ export function AICommandModal({
   const [bot, setBot] = useState<BotResolveResult | null>(null);
   const [permissions, setPermissions] = useState<BotPermissionsResponse | null>(null);
   const [submitResult, setSubmitResult] = useState<{ task_id: string; ai_task_plan_id: string; status: string } | null>(null);
+  const [availableBots, setAvailableBots] = useState<BotMemberRecord[]>([]);
+  const [showBotDropdown, setShowBotDropdown] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
+
+  // ★ open 时拉 active 机器人列表 (顾源源 5/24: @ 下拉支持)
+  useEffect(() => {
+    if (!open) return;
+    let cancelled = false;
+    void listBotMembers({ status: 'active' }).then((data) => {
+      if (cancelled) return;
+      setAvailableBots(data.items || []);
+    }).catch(() => {
+      // 拉失败不阻塞 modal, 用户仍能手动输 @庆华
+    });
+    return () => { cancelled = true; };
+  }, [open]);
 
   useEffect(() => {
     if (open) {
@@ -106,6 +123,29 @@ export function AICommandModal({
   }, [parsed]);
 
   if (!open) return null;
+
+  // ── 选 AI 同事: 自动 prepend "@<handle> " 到 textarea start (顾源源 5/24) ──
+  const handleSelectBot = (bot: BotMemberRecord) => {
+    const mention = `@${bot.handle} `;
+    setText((prev) => {
+      // 如果开头已经是 @xxx (任何 @), 替换它; 否则 prepend
+      const reMention = /^@[^\s]+\s*/;
+      if (reMention.test(prev)) {
+        return prev.replace(reMention, mention);
+      }
+      return mention + prev;
+    });
+    setShowBotDropdown(false);
+    setMode('ai_command');
+    // focus 回输入框, 光标到末尾
+    window.setTimeout(() => {
+      const ta = textareaRef.current;
+      if (ta) {
+        ta.focus();
+        ta.selectionStart = ta.selectionEnd = ta.value.length;
+      }
+    }, 30);
+  };
 
   // ── 主动作 1: 解析 + 走对应链路 ──────────────
 
@@ -281,6 +321,49 @@ export function AICommandModal({
                 {mode === 'ai_command' ? '复杂任务 → AI 拆解+审批' : '一句话 → 直接建任务'}
               </span>
             </div>
+
+            {/* AI 同事下拉选择 (顾源源 5/24): 只在 ai_command mode 显示 */}
+            {mode === 'ai_command' && (
+              <div className="relative">
+                <button
+                  type="button"
+                  onClick={() => setShowBotDropdown((v) => !v)}
+                  className="inline-flex items-center gap-1.5 px-3 py-1.5 text-[11.5px] font-medium text-[#3B5BCF] bg-[#5B7BFE]/10 hover:bg-[#5B7BFE]/15 rounded-md transition-colors"
+                >
+                  <Bot size={12} />
+                  {availableBots.length > 0
+                    ? '选 AI 同事 (@)'
+                    : `加载中… (无可用 AI 同事请先在组织搭建中心添加)`}
+                  <span className="text-[10px] text-gray-400">▾</span>
+                </button>
+                {showBotDropdown && availableBots.length > 0 && (
+                  <div className="absolute left-0 top-full mt-1 z-10 w-[280px] bg-white rounded-lg shadow-lg ring-1 ring-gray-200 ring-inset overflow-hidden">
+                    {availableBots.map((b) => (
+                      <button
+                        key={b.id}
+                        type="button"
+                        onClick={() => handleSelectBot(b)}
+                        className="w-full text-left px-3 py-2 hover:bg-gray-50 transition-colors border-b border-gray-100 last:border-b-0"
+                      >
+                        <div className="flex items-center gap-2 text-[12.5px] font-medium text-gray-900">
+                          <Bot size={11} className="text-[#5B7BFE]" />
+                          @{b.handle}
+                          <span className="text-[10px] text-gray-400 ml-auto">{b.actor_type}</span>
+                        </div>
+                        <div className="mt-0.5 text-[10.5px] text-gray-500">
+                          {b.department_name || '未分配部门'} · {b.description?.slice(0, 30) || '无描述'}
+                        </div>
+                      </button>
+                    ))}
+                  </div>
+                )}
+                {availableBots.length === 0 && (
+                  <span className="ml-2 text-[10.5px] text-amber-600">
+                    (你也可以手动输 @庆华)
+                  </span>
+                )}
+              </div>
+            )}
 
             <textarea
               ref={textareaRef}
