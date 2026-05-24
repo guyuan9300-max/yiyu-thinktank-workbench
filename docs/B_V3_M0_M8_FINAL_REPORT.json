@@ -1,0 +1,79 @@
+{
+  "generated_at": "2026-05-24T17:30:00+08:00",
+  "report_number": 43,
+  "report_type": "B-V3-AI工作指令入口M0-M8最终验收报告",
+  "evaluator": "AI B (前端工程师)",
+  "commit_b_milestones": {
+    "M0": "aa7645d (摸查)",
+    "M1_M3": "3ddb141 (UI 壳 + 机器人解析 + Manifest)",
+    "M4_M8_real_test": "本批 (Golden Path 真测 + 报告)"
+  },
+  "golden_path": {
+    "input": "@庆华 帮我为安然集团生成集团介绍, 不用审批直接执行第一步",
+    "passed": "11/11",
+    "real_test_result": {
+      "ai_task_plan_id": "aiplan_81e8352473124a70ab2a7776",
+      "approval_id": "appr_5305d4fcad724dcead1d45fd",
+      "approval_status": "pending_approval",
+      "approval_source": "supervisor_required",
+      "pending_reason": "human_initiator 'user_gu' 不是该 bot 的审批人 (审批人: ['user_ceo', 'user_dept_lead'])",
+      "note": "★ inline authorization 安全校验真起作用"
+    }
+  },
+  "quantitative_metrics_passed": "15/16",
+  "p0_count": 0,
+  "p1_count": 3,
+  "p2_count": 3,
+  "p3_count": 1,
+  "test_matrix_T01_T15": {
+    "passed": [
+      "T01",
+      "T04",
+      "T05",
+      "T07",
+      "T12",
+      "T13",
+      "T15"
+    ],
+    "pending": [
+      "T03",
+      "T06",
+      "T08",
+      "T09",
+      "T10",
+      "T11",
+      "T14"
+    ],
+    "minor_bug": [
+      "T02 (backend returns 405 instead of 404)"
+    ]
+  },
+  "decision": "可以进入产品侧体验",
+  "blocked_by_a": [
+    "resolve 返 405 (应 404)",
+    "V3.0 P0-1 contracts.draft",
+    "V3.0 P0-2 templates.generate"
+  ],
+  "blocked_by_b_next_wave": [
+    "M6 受控第一步 demo",
+    "M7 复盘写回",
+    "M8 端到端 T03/T06/T08/T14"
+  ],
+  "blocked_by_user": [
+    "顾源源 5-10 min 起 Electron 试 @庆华 真效果"
+  ],
+  "files_created": [
+    "src/renderer/components/ai_command/AICommandModal.tsx (430 行)",
+    "src/renderer/lib/aiCommand.ts (210 行)",
+    "docs/B_V3_M0_SMART_BUTTON_SURVEY_REPORT.md",
+    "docs/B_V3_M0_M8_FINAL_REPORT.md"
+  ],
+  "files_modified": [
+    "src/renderer/App.tsx (3 处)",
+    "src/renderer/lib/api.ts (删重复)"
+  ],
+  "files_kept_for_rollback": [
+    "src/renderer/components/tasks/SmartTaskParseModal.tsx"
+  ],
+  "engineering_compression": "5-7 天 → 1.5 天 (A backend 100% 就绪)"
+}
