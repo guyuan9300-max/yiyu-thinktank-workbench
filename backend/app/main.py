@@ -48842,8 +48842,9 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 description=payload.get("description", ""),
                 status=payload.get("status", "active"),
                 organization_id=payload.get("organization_id", ""),
-                created_by_user_id=x_actor_id or payload.get("created_by_user_id", ""),
-                report_to_department_lead=bool(payload.get("report_to_department_lead", True)),
+                created_by_user_id=payload.get("created_by_user_id") or x_actor_id or "",
+                report_to_creator=bool(payload.get("report_to_creator", True)),
+                report_to_department_lead=bool(payload.get("report_to_department_lead", False)),
                 report_to_ceo=bool(payload.get("report_to_ceo", False)),
                 department_leader_user_ids=payload.get("department_leader_user_ids"),
                 ceo_user_ids=payload.get("ceo_user_ids"),
@@ -48866,13 +48867,9 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         bot = resolve_bot_by_handle(state.db, handle)
         if not bot:
             raise HTTPException(status_code=404, detail=f"bot not found by handle: {handle}")
-        # 提取 reporting_approvers 给 B 用
-        rep = bot.get("reporting") or {}
-        approvers = []
-        for uid in rep.get("department_leader_user_ids") or []:
-            approvers.append({"user_id": uid, "role": "department_lead"})
-        for uid in rep.get("ceo_user_ids") or []:
-            approvers.append({"user_id": uid, "role": "CEO"})
+        # 顾源源 P1 修: 3 类 approvers 动态 resolve (创建人 / 部门领导 / CEO)
+        resolved = bot.get("resolved_approvers") or {}
+        approvers = resolved.get("approver_details") or []
         enabled = [c["capability_key"] for c in bot.get("capabilities") or [] if c.get("enabled")]
         return {
             "bot_member_id": bot["id"],
@@ -48883,6 +48880,11 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             "department_id": bot.get("department_id"),
             "department_name": bot.get("department_name") or "",
             "reporting_approvers": approvers,
+            "reporting_flags": {
+                "report_to_creator": bool((bot.get("reporting") or {}).get("report_to_creator")),
+                "report_to_department_lead": bool((bot.get("reporting") or {}).get("report_to_department_lead")),
+                "report_to_ceo": bool((bot.get("reporting") or {}).get("report_to_ceo")),
+            },
             "enabled_capabilities": enabled,
             "status": bot["status"],
         }
@@ -48905,6 +48907,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             department_name=payload.get("department_name"),
             description=payload.get("description"),
             status=payload.get("status"),
+            report_to_creator=payload.get("report_to_creator"),
             report_to_department_lead=payload.get("report_to_department_lead"),
             report_to_ceo=payload.get("report_to_ceo"),
             department_leader_user_ids=payload.get("department_leader_user_ids"),

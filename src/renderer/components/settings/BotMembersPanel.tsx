@@ -222,9 +222,20 @@ function BotMembersList({ bots, loading, onRefresh, onToggleStatus }: BotMembers
 
 // ────────────── BotMemberFormDialog ─────────────
 
+export interface DepartmentChoice {
+  id: string;
+  name: string;
+  color?: string;
+}
+
 export interface BotMemberFormDialogProps {
   defaultDepartmentId?: string;
   defaultDepartmentName?: string;
+  /** 顾源源 P1 修: 部门必须下拉, 不允许手填 */
+  departments?: DepartmentChoice[];
+  /** 顾源源 P1 修: 创建人 user_id (汇报给创建人时用) */
+  currentUserId?: string;
+  currentUserName?: string;
   onClose: () => void;
   onCreated: () => Promise<void> | void;
 }
@@ -232,17 +243,29 @@ export interface BotMemberFormDialogProps {
 export function BotMemberFormDialog({
   defaultDepartmentId,
   defaultDepartmentName,
+  departments,
+  currentUserId,
+  currentUserName,
   onClose,
   onCreated,
 }: BotMemberFormDialogProps): JSX.Element {
   const [displayName, setDisplayName] = useState('');
-  const [departmentId, setDepartmentId] = useState(defaultDepartmentId || '');
-  const [departmentName, setDepartmentName] = useState(defaultDepartmentName || '');
+  // 部门改下拉 — 找当前选中的 dept 对象
+  const initialDept = useMemo(() => {
+    const list = departments || [];
+    return (
+      list.find((d) => d.id === defaultDepartmentId) ||
+      (defaultDepartmentId && defaultDepartmentName
+        ? { id: defaultDepartmentId, name: defaultDepartmentName }
+        : null)
+    );
+  }, [defaultDepartmentId, defaultDepartmentName, departments]);
+  const [selectedDept, setSelectedDept] = useState<DepartmentChoice | null>(initialDept || null);
   const [description, setDescription] = useState('');
-  const [reportDeptLead, setReportDeptLead] = useState(true);
+  // 3 平权汇报线: 创建人 / 本部门领导 / CEO
+  const [reportCreator, setReportCreator] = useState(true);
+  const [reportDeptLead, setReportDeptLead] = useState(false);
   const [reportCEO, setReportCEO] = useState(false);
-  const [deptLeaderIds, setDeptLeaderIds] = useState('');
-  const [ceoIds, setCeoIds] = useState('');
   const [enabledCaps, setEnabledCaps] = useState<Set<BotCapabilityKey>>(new Set());
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -259,18 +282,28 @@ export function BotMemberFormDialog({
       setError('请填机器人名称');
       return;
     }
+    if (!selectedDept) {
+      setError('请选择所属部门');
+      return;
+    }
+    if (!reportCreator && !reportDeptLead && !reportCEO) {
+      setError('至少选择一类汇报对象 (创建人 / 本部门领导 / CEO)');
+      return;
+    }
     setBusy(true);
     setError(null);
     try {
       await createBotMember({
         display_name: displayName.trim(),
-        department_id: departmentId.trim() || undefined,
-        department_name: departmentName.trim() || undefined,
+        department_id: selectedDept.id,
+        department_name: selectedDept.name,
         description: description.trim() || undefined,
+        created_by_user_id: currentUserId || undefined,
+        report_to_creator: reportCreator,
         report_to_department_lead: reportDeptLead,
         report_to_ceo: reportCEO,
-        department_leader_user_ids: deptLeaderIds.split(',').map((s) => s.trim()).filter(Boolean),
-        ceo_user_ids: ceoIds.split(',').map((s) => s.trim()).filter(Boolean),
+        // 不传 department_leader_user_ids / ceo_user_ids
+        // 后端从 mirror_departments / mirror_users 动态 resolve
         enabled_capabilities: Array.from(enabledCaps),
       });
       await onCreated();
@@ -322,24 +355,27 @@ export function BotMemberFormDialog({
                 className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2.5 text-[13px] text-gray-800 outline-none transition placeholder:text-gray-300 focus:border-[#5B7BFE] focus:ring-2 focus:ring-[#5B7BFE]/15"
               />
             </Field>
-            <div className="grid grid-cols-2 gap-4">
-              <Field label="所属部门">
-                <input
-                  value={departmentName}
-                  onChange={(e) => setDepartmentName(e.target.value)}
-                  placeholder="战略陪伴部"
-                  className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2.5 text-[13px] text-gray-800 outline-none transition placeholder:text-gray-300 focus:border-[#5B7BFE] focus:ring-2 focus:ring-[#5B7BFE]/15"
-                />
-              </Field>
-              <Field label="部门 ID">
-                <input
-                  value={departmentId}
-                  onChange={(e) => setDepartmentId(e.target.value)}
-                  placeholder="dept_strategy"
-                  className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2.5 text-[13px] font-mono text-gray-600 outline-none transition placeholder:text-gray-300 focus:border-[#5B7BFE] focus:ring-2 focus:ring-[#5B7BFE]/15"
-                />
-              </Field>
-            </div>
+            {/* 部门 — 下拉, 从真组织部门列表选, 不允许手填(避免 ID 对不上) */}
+            <Field label="所属部门" required hint={departments && departments.length === 0 ? '（当前组织无部门, 请先到组织搭建中心添加部门）' : undefined}>
+              <select
+                value={selectedDept?.id || ''}
+                onChange={(e) => {
+                  const dept = (departments || []).find((d) => d.id === e.target.value);
+                  setSelectedDept(dept || null);
+                }}
+                className="w-full appearance-none rounded-xl border border-gray-200 bg-white px-3 py-2.5 text-[13px] text-gray-800 outline-none transition focus:border-[#5B7BFE] focus:ring-2 focus:ring-[#5B7BFE]/15"
+              >
+                <option value="">请选择部门…</option>
+                {(departments || []).map((d) => (
+                  <option key={d.id} value={d.id}>
+                    {d.name}
+                  </option>
+                ))}
+                {selectedDept && !(departments || []).find((d) => d.id === selectedDept.id) ? (
+                  <option value={selectedDept.id}>{selectedDept.name}（已选）</option>
+                ) : null}
+              </select>
+            </Field>
             <Field label="职责描述" hint="可选">
               <textarea
                 value={description}
@@ -351,13 +387,27 @@ export function BotMemberFormDialog({
             </Field>
           </section>
 
-          {/* 汇报线 */}
+          {/* 汇报线 — 3 类平权, 任一勾选 → 同时通知/审批; user_id 系统自动 resolve */}
           <section>
             <p className="mb-1 text-[10px] font-bold uppercase tracking-[0.18em] text-gray-400">汇报与审批人</p>
             <p className="mb-3 text-[12px] text-gray-500">
-              汇报对象同时是它的工作审批人, 任一人批准即视为通过。
+              勾选的对象同时是该机器人的审批人, 任一人批准即视为通过。系统自动从组织信息读取对应的人, 无需手填 ID。
             </p>
             <div className="space-y-2">
+              <label className="flex cursor-pointer items-center gap-2.5 rounded-xl border border-gray-100 bg-gray-50/60 px-3 py-2.5 transition hover:border-gray-200 hover:bg-gray-50">
+                <input
+                  type="checkbox"
+                  checked={reportCreator}
+                  onChange={(e) => setReportCreator(e.target.checked)}
+                  className="h-4 w-4 rounded border-gray-300 text-[#5B7BFE] focus:ring-[#5B7BFE]"
+                />
+                <span className="text-[13px] text-gray-700">
+                  汇报给创建人
+                  {currentUserName ? (
+                    <span className="ml-1.5 text-[12px] text-gray-400">（{currentUserName}）</span>
+                  ) : null}
+                </span>
+              </label>
               <label className="flex cursor-pointer items-center gap-2.5 rounded-xl border border-gray-100 bg-gray-50/60 px-3 py-2.5 transition hover:border-gray-200 hover:bg-gray-50">
                 <input
                   type="checkbox"
@@ -365,7 +415,12 @@ export function BotMemberFormDialog({
                   onChange={(e) => setReportDeptLead(e.target.checked)}
                   className="h-4 w-4 rounded border-gray-300 text-[#5B7BFE] focus:ring-[#5B7BFE]"
                 />
-                <span className="text-[13px] text-gray-700">汇报给本部门领导</span>
+                <span className="text-[13px] text-gray-700">
+                  汇报给本部门领导
+                  {selectedDept ? (
+                    <span className="ml-1.5 text-[12px] text-gray-400">（自动取「{selectedDept.name}」当前领导）</span>
+                  ) : null}
+                </span>
               </label>
               <label className="flex cursor-pointer items-center gap-2.5 rounded-xl border border-gray-100 bg-gray-50/60 px-3 py-2.5 transition hover:border-gray-200 hover:bg-gray-50">
                 <input
@@ -374,28 +429,11 @@ export function BotMemberFormDialog({
                   onChange={(e) => setReportCEO(e.target.checked)}
                   className="h-4 w-4 rounded border-gray-300 text-[#5B7BFE] focus:ring-[#5B7BFE]"
                 />
-                <span className="text-[13px] text-gray-700">汇报给 CEO</span>
+                <span className="text-[13px] text-gray-700">
+                  汇报给 CEO
+                  <span className="ml-1.5 text-[12px] text-gray-400">（自动取组织 CEO / admin）</span>
+                </span>
               </label>
-            </div>
-            <div className="mt-3 grid grid-cols-2 gap-4">
-              <Field label="部门领导 user_id" hint="多个逗号分隔">
-                <input
-                  value={deptLeaderIds}
-                  onChange={(e) => setDeptLeaderIds(e.target.value)}
-                  placeholder="user_dept_lead"
-                  disabled={!reportDeptLead}
-                  className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2.5 text-[13px] font-mono text-gray-600 outline-none transition placeholder:text-gray-300 focus:border-[#5B7BFE] focus:ring-2 focus:ring-[#5B7BFE]/15 disabled:bg-gray-50 disabled:opacity-50"
-                />
-              </Field>
-              <Field label="CEO user_id" hint="多个逗号分隔">
-                <input
-                  value={ceoIds}
-                  onChange={(e) => setCeoIds(e.target.value)}
-                  placeholder="user_ceo"
-                  disabled={!reportCEO}
-                  className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2.5 text-[13px] font-mono text-gray-600 outline-none transition placeholder:text-gray-300 focus:border-[#5B7BFE] focus:ring-2 focus:ring-[#5B7BFE]/15 disabled:bg-gray-50 disabled:opacity-50"
-                />
-              </Field>
             </div>
           </section>
 

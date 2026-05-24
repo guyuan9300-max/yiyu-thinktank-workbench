@@ -822,6 +822,7 @@ export interface BotCapability {
 }
 
 export interface BotReporting {
+  report_to_creator: boolean | number;
   report_to_department_lead: boolean | number;
   report_to_ceo: boolean | number;
   department_leader_user_ids: string[];
@@ -851,6 +852,8 @@ export interface CreateBotPayload {
   department_id?: string;
   department_name?: string;
   description?: string;
+  created_by_user_id?: string;
+  report_to_creator?: boolean;
   report_to_department_lead?: boolean;
   report_to_ceo?: boolean;
   department_leader_user_ids?: string[];

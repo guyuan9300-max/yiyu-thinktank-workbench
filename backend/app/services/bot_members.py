@@ -107,6 +107,7 @@ def ensure_bot_schema(db: _DbLike) -> None:
         """CREATE TABLE IF NOT EXISTS bot_reporting_lines (
             id TEXT PRIMARY KEY,
             bot_member_id TEXT NOT NULL,
+            report_to_creator INTEGER NOT NULL DEFAULT 0,
             report_to_department_lead INTEGER NOT NULL DEFAULT 0,
             report_to_ceo INTEGER NOT NULL DEFAULT 0,
             department_leader_user_ids TEXT NOT NULL DEFAULT '[]',
@@ -117,6 +118,8 @@ def ensure_bot_schema(db: _DbLike) -> None:
         )""",
         """CREATE INDEX IF NOT EXISTS idx_bot_reporting_member
            ON bot_reporting_lines(bot_member_id)""",
+        # P1 migration: 已有 bot_reporting_lines 表加 report_to_creator 列(顾源源 5/24)
+        """ALTER TABLE bot_reporting_lines ADD COLUMN report_to_creator INTEGER NOT NULL DEFAULT 0""",
         """CREATE TABLE IF NOT EXISTS bot_permission_policies (
             id TEXT PRIMARY KEY,
             bot_member_id TEXT NOT NULL,
@@ -201,6 +204,7 @@ def create_bot_member(
     status: str = "active",
     organization_id: str = "",
     created_by_user_id: str = "",
+    report_to_creator: bool = True,
     report_to_department_lead: bool = True,
     report_to_ceo: bool = False,
     department_leader_user_ids: list[str] | None = None,
@@ -234,15 +238,17 @@ def create_bot_member(
          created_by_user_id, now, now),
     )
 
-    # 汇报线
+    # 汇报线 (3 类平权: 创建人 / 部门领导 / CEO)
     rep_id = _new_id("botrep")
     db.execute(
         """INSERT INTO bot_reporting_lines (
-            id, bot_member_id, report_to_department_lead, report_to_ceo,
+            id, bot_member_id, report_to_creator,
+            report_to_department_lead, report_to_ceo,
             department_leader_user_ids, ceo_user_ids, approval_mode,
             created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, 'any_one', ?, ?)""",
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, 'any_one', ?, ?)""",
         (rep_id, bot_id,
+         1 if report_to_creator else 0,
          1 if report_to_department_lead else 0,
          1 if report_to_ceo else 0,
          json.dumps(department_leader_user_ids or [], ensure_ascii=False),
@@ -268,8 +274,107 @@ def create_bot_member(
     return get_bot_member(db, bot_id)
 
 
+def _resolve_dept_leader_user_id(db: _DbLike, department_id: str | None) -> str | None:
+    """从 mirror_departments 拿当前部门 leader 的 user_id (随 leader 变更自动更新)."""
+    if not department_id:
+        return None
+    try:
+        row = db.fetchone(
+            "SELECT leader_user_id FROM mirror_departments WHERE id = ?",
+            (department_id,),
+        )
+        if row and row["leader_user_id"]:
+            return str(row["leader_user_id"])
+    except Exception:
+        pass
+    return None
+
+
+def _resolve_ceo_user_ids(db: _DbLike, organization_id: str | None = None) -> list[str]:
+    """从 mirror_users 找 primary_role='admin' 的 user_id 当 CEO 候选."""
+    ids: list[str] = []
+    try:
+        if organization_id:
+            rows = db.fetchall(
+                """SELECT id FROM mirror_users
+                   WHERE organization_id = ? AND primary_role = 'admin'
+                     AND account_status = 'approved'""",
+                (organization_id,),
+            )
+        else:
+            rows = db.fetchall(
+                """SELECT id FROM mirror_users
+                   WHERE primary_role = 'admin' AND account_status = 'approved'""",
+            )
+        ids = [str(dict(r)["id"]) for r in rows or []]
+    except Exception:
+        pass
+    return ids
+
+
+def resolve_bot_approvers(db: _DbLike, bot: dict) -> dict:
+    """动态算 bot 的 3 类 approvers (创建人 / 部门领导 / CEO).
+
+    每类来源:
+      · 创建人: bot_members.created_by_user_id (创建时前端传, 一般是当前 session user)
+      · 部门领导: 实时查 mirror_departments.leader_user_id (随组织变更自动跟)
+      · CEO: 实时查 mirror_users.primary_role='admin' (随 admin 任命变更跟)
+
+    回退:
+      若 mirror 表暂无数据 (V2.1 lab dogfood 阶段), 字段为空 list; 但 reporting flag 仍真.
+    """
+    rep = bot.get("reporting") or {}
+    result = {
+        "creator_user_id": None,
+        "department_leader_user_id": None,
+        "ceo_user_ids": [],
+        "all_approver_user_ids": [],
+        "approver_details": [],
+    }
+    seen: set[str] = set()
+    approvers: list[dict] = []
+
+    # 1. 创建人
+    if rep.get("report_to_creator"):
+        creator = bot.get("created_by_user_id") or ""
+        if creator:
+            result["creator_user_id"] = creator
+            if creator not in seen:
+                seen.add(creator)
+                approvers.append({"user_id": creator, "role": "creator"})
+
+    # 2. 部门领导
+    if rep.get("report_to_department_lead"):
+        # 优先用显式存的 (用户手动覆盖的); 否则自动 resolve
+        explicit = rep.get("department_leader_user_ids") or []
+        if explicit:
+            for uid in explicit:
+                if uid and uid not in seen:
+                    seen.add(uid); approvers.append({"user_id": uid, "role": "department_lead"})
+            result["department_leader_user_id"] = explicit[0]
+        else:
+            uid = _resolve_dept_leader_user_id(db, bot.get("department_id"))
+            if uid:
+                result["department_leader_user_id"] = uid
+                if uid not in seen:
+                    seen.add(uid); approvers.append({"user_id": uid, "role": "department_lead"})
+
+    # 3. CEO
+    if rep.get("report_to_ceo"):
+        explicit_ceo = rep.get("ceo_user_ids") or []
+        ceo_ids = explicit_ceo if explicit_ceo else _resolve_ceo_user_ids(db, bot.get("organization_id"))
+        for uid in ceo_ids:
+            if uid and uid not in seen:
+                seen.add(uid); approvers.append({"user_id": uid, "role": "CEO"})
+        result["ceo_user_ids"] = list(ceo_ids)
+
+    result["all_approver_user_ids"] = [a["user_id"] for a in approvers]
+    result["approver_details"] = approvers
+    return result
+
+
 def get_bot_member(db: _DbLike, bot_member_id: str) -> dict | None:
-    """拿机器人完整信息 (含汇报线 + 权限策略)."""
+    """拿机器人完整信息 (含汇报线 + 权限策略 + 动态 resolved approvers)."""
     row = db.fetchone(
         "SELECT * FROM bot_members WHERE id = ?", (bot_member_id,),
     )
@@ -293,6 +398,8 @@ def get_bot_member(db: _DbLike, bot_member_id: str) -> dict | None:
         (bot_member_id,),
     )
     d["capabilities"] = [dict(r) for r in perm_rows or []]
+    # 动态 resolved approvers (3 类平权)
+    d["resolved_approvers"] = resolve_bot_approvers(db, d)
     return d
 
 
@@ -332,6 +439,7 @@ def update_bot_member(
     department_name: str | None = None,
     description: str | None = None,
     status: str | None = None,
+    report_to_creator: bool | None = None,
     report_to_department_lead: bool | None = None,
     report_to_ceo: bool | None = None,
     department_leader_user_ids: list[str] | None = None,
@@ -363,6 +471,9 @@ def update_bot_member(
 
     # 汇报线更新
     rep_sets, rep_params = [], []
+    if report_to_creator is not None:
+        rep_sets.append("report_to_creator = ?")
+        rep_params.append(1 if report_to_creator else 0)
     if report_to_department_lead is not None:
         rep_sets.append("report_to_department_lead = ?")
         rep_params.append(1 if report_to_department_lead else 0)
@@ -449,19 +560,15 @@ def can_inline_authorize(
     if action_capability and action_capability in INLINE_APPROVAL_BLOCKED_ACTIONS:
         return False, f"action '{action_capability}' 属于高风险, 必须单独审批 (不能 inline)"
 
-    # 3. human_initiator 必须在 reporting approvers
-    rep = bot.get("reporting") or {}
-    approvers = set()
-    if rep.get("report_to_department_lead"):
-        approvers.update(rep.get("department_leader_user_ids") or [])
-    if rep.get("report_to_ceo"):
-        approvers.update(rep.get("ceo_user_ids") or [])
+    # 3. human_initiator 必须在 resolved_approvers 中 (3 类平权: 创建人/部门领导/CEO)
+    resolved = bot.get("resolved_approvers") or resolve_bot_approvers(db, bot)
+    approvers = set(resolved.get("all_approver_user_ids") or [])
 
     if not approvers:
         return False, "bot 未配置任何审批人 (汇报线为空)"
 
     if human_initiator_id not in approvers:
-        return False, f"human_initiator '{human_initiator_id}' 不是该 bot 的审批人"
+        return False, f"human_initiator '{human_initiator_id}' 不是该 bot 的审批人 (审批人: {sorted(approvers)})"
 
     # 4. 禁止 bot 自审批 (虽然 inline 是 human 授权, 但仍要校验 initiator != bot.actor_id)
     if human_initiator_id == bot.get("actor_id"):

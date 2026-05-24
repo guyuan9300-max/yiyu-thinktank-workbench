@@ -28378,6 +28378,8 @@ export default function App() {
                 isSaving={isSavingOrgModel}
                 activeWeekLabel={currentWeekLabel()}
                 initialAdvancedTab={initialAdvancedTab}
+                currentUserId={currentSessionUser?.id || undefined}
+                currentUserName={currentSessionUser?.fullName || undefined}
                 onChange={handleChangeOrgModelDraft}
                 getInputDrafts={getOrgSetupInputDrafts}
                 setInputDrafts={setOrgSetupInputDrafts}

@@ -27,6 +27,9 @@ type Props = {
   isSaving?: boolean;
   activeWeekLabel: string;
   initialAdvancedTab?: string | null;
+  /** 顾源源 5/24 P1: 当前登录用户 — 创建机器人时作为 created_by + creator 审批人 */
+  currentUserId?: string;
+  currentUserName?: string;
   onChange: (next: OrgModelSettings) => void;
   onSave: (next?: OrgModelSettings) => Promise<boolean | void> | boolean | void;
   getInputDrafts?: () => OrganizationSetupInputDraftState;
@@ -466,6 +469,8 @@ export function OrganizationSetupCenter({
   employees,
   canEdit,
   isSaving = false,
+  currentUserId,
+  currentUserName,
   onChange,
   onSave,
   getInputDrafts,
@@ -1834,11 +1839,16 @@ export function OrganizationSetupCenter({
 
       </div>
 
-      {/* 顾源源 5/24: 添加机器人同事弹窗 (从每个部门"添加机器人同事" 按钮触发) */}
+      {/* 顾源源 5/24: 添加机器人同事弹窗 (从每个部门"选员工"下拉里点 → 入口触发) */}
       {botDialogDept ? (
         <BotMemberFormDialog
           defaultDepartmentId={botDialogDept.id}
           defaultDepartmentName={botDialogDept.name}
+          departments={value.departments
+            .filter((d) => d.active !== false)
+            .map((d) => ({ id: d.id, name: d.name, color: d.color }))}
+          currentUserId={currentUserId}
+          currentUserName={currentUserName}
           onClose={() => setBotDialogDept(null)}
           onCreated={() => {
             setBotDialogDept(null);
