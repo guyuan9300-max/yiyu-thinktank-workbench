@@ -1,0 +1,84 @@
+{
+  "generated_at": "2026-05-24T18:00:00+08:00",
+  "report_number": 44,
+  "critical_correction": {
+    "previous_misjudgment": "32-B/34-B/43-B 都说 contracts.draft/templates.generate/brand-proposition blocked_by_A",
+    "actual_truth": "A 用 /actions/dry-run + 12 action_type 分发架构, 不是单独 endpoint",
+    "corrected_v3_score": "96 → 98/100"
+  },
+  "m6_actions_dry_run": {
+    "supported_action_types": 12,
+    "truly_available": [
+      "compensate_data_gap",
+      "create_task_draft",
+      "documents.generate",
+      "generate_board_brief",
+      "generate_brand_proposal",
+      "generate_contract_draft",
+      "ingest_new_material",
+      "publish_task_with_external_action",
+      "refresh_strategy_narrative",
+      "resolve_clarification",
+      "resolve_historical_references",
+      "review_approval"
+    ],
+    "real_test_safety_check": "5/5 ✅ (writes_no_db / approval_enforced / actor_audited / client_scoped / rollback_safe)",
+    "dry_run_safe": true
+  },
+  "m8_t06_inline_auth_real": {
+    "human_initiator_id": "user_ceo",
+    "is_approver": true,
+    "response_approval_status": "approved",
+    "response_approval_source": "inline_authorization",
+    "response_approved_by": "user_ceo",
+    "verdict": "★ inline auth 真过, can_inline_authorize 真校验"
+  },
+  "m8_t07_non_approver": {
+    "human_initiator_id": "user_gu",
+    "is_approver": false,
+    "response_approval_status": "pending_approval",
+    "response_pending_reason": "不是审批人",
+    "verdict": "★ 安全校验真守"
+  },
+  "m8_t08_capability_check": {
+    "tested_capability": "external_send.request",
+    "bot_has_it": false,
+    "create_response": "HTTP 200 + pending_approval",
+    "verdict": "⚠️ P2: create 阶段未校验 capability (校验在 execute 阶段)",
+    "recommendation": "A 加前置校验 if action_capability not in bot.enabled_capabilities raise 403"
+  },
+  "m7_review_field_review": {
+    "ai_task_plans_table_has_supervisor_feedback": true,
+    "has_bot_self_review": false,
+    "short_term": "复用 supervisor_feedback 字段, 前缀标 [bot_review]",
+    "mid_term": "A 加 bot_self_review 独立字段 + POST /task-plans/{id}/bot-review endpoint"
+  },
+  "test_matrix_T01_T15_after_this_batch": {
+    "passed": [
+      "T01",
+      "T04",
+      "T05",
+      "T06",
+      "T07",
+      "T09",
+      "T10",
+      "T12",
+      "T13",
+      "T15"
+    ],
+    "pending": [
+      "T03",
+      "T11",
+      "T14"
+    ],
+    "minor_p2": [
+      "T02 (405 vs 404)",
+      "T08 (create 阶段未校验)"
+    ]
+  },
+  "p0": 0,
+  "p1": 1,
+  "p2": 4,
+  "p3": 1,
+  "decision": "✅ 可进入产品侧体验; M6 UI 集成 + GUI e2e 下波 1 天"
+}
