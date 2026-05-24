@@ -95,6 +95,16 @@ export function AICommandModal({
 
   const backdropHandlers = useBackdropClickClose(onClose, stage === 'input');
 
+  // ★ useMemo 必须在 if (!open) return null 之前 — React Hooks Rule:
+  // 所有 hooks 每次 render 必须按相同顺序调用. 早期 return 后的 hook
+  // 会导致 "Rendered more hooks than during the previous render".
+  const recommendedModules = useMemo(() => {
+    if (!parsed) return [];
+    return recommendModulesForIntent(parsed.intent).map((k) =>
+      MODULE_CAPABILITY_MANIFEST_V1.find((m) => m.moduleKey === k),
+    ).filter(Boolean);
+  }, [parsed]);
+
   if (!open) return null;
 
   // ── 主动作 1: 解析 + 走对应链路 ──────────────
@@ -206,13 +216,7 @@ export function AICommandModal({
   };
 
   // ── 渲染 ──────────────
-
-  const recommendedModules = useMemo(() => {
-    if (!parsed) return [];
-    return recommendModulesForIntent(parsed.intent).map((k) =>
-      MODULE_CAPABILITY_MANIFEST_V1.find((m) => m.moduleKey === k),
-    ).filter(Boolean);
-  }, [parsed]);
+  // (recommendedModules useMemo 已上移到 if (!open) 之前, 避免 Hooks Rule 违反)
 
   return (
     <div
