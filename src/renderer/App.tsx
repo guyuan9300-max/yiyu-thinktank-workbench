@@ -480,6 +480,7 @@ import AIReportGeneratorModal from './components/reports/AIReportGeneratorModal'
 import { TaskTemplateEditorModal } from './components/tasks/TaskTemplateEditorModal';
 import type { TemplateData } from './components/tasks/TaskTemplateEditorModal';
 import { SmartTaskParseModal } from './components/tasks/SmartTaskParseModal';
+import { AICommandModal } from './components/ai_command/AICommandModal';
 import { SmartFileImportModal } from './components/smart_file_import/SmartFileImportModal';
 import type { TaskAiParseResult } from './lib/api';
 import { SystemLogPanel } from './components/settings/SystemLogPanel';
@@ -14819,12 +14820,12 @@ export default function App() {
             <span className="w-px bg-white/25" aria-hidden />
             <button
               type="button"
-              title="智能新建任务 — 粘贴一段文字,AI 拆成结构化字段"
+              title="AI 工作指令 — 快速建任务, 或 @AI 同事让它帮你推进复杂工作"
               className="inline-flex items-center gap-1.5 px-4 text-[12.5px] font-medium hover:bg-[#4A63CF] transition-colors"
               onClick={() => setIsSmartParseModalOpen(true)}
             >
               <Sparkles size={14} strokeWidth={2.2} />
-              智能
+              AI
             </button>
           </div>
         </div>
@@ -17666,10 +17667,14 @@ export default function App() {
           />
         )}
 
-        <SmartTaskParseModal
+        {/* AICommandModal 替换 SmartTaskParseModal (顾源源 5/24 §M1).
+            SmartTaskParseModal 文件保留 (顾源源 §6 "原智能建任务必须保留"), 可随时回滚.
+            AICommandModal 内置 2 mode: quick_task 走原 aiParseTask, ai_command 走新 bot 链路. */}
+        <AICommandModal
           open={isSmartParseModalOpen}
           onClose={() => setIsSmartParseModalOpen(false)}
-          onParsed={handleSmartParseResult}
+          onQuickTaskParsed={handleSmartParseResult}
+          knownClientNames={clients.map((c) => c.name).filter(Boolean) as string[]}
         />
 
 

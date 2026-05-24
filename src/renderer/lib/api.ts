@@ -6262,3 +6262,6 @@ export async function commitSmartImportSession(sessionId: string): Promise<{ ok:
     { method: 'POST' },
   );
 }
+
+// ── AI 工作指令 (顾源源 5/24 §4): 复用 A 已写的 resolveBotByHandle /
+//    getBotPermissions / createBotTaskPlan 等 (api.ts ~900-1010 行) ──
