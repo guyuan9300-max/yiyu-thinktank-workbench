@@ -38845,8 +38845,12 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         client_id: str,
         x_actor_type: str = Header("external_ai_agent", alias="X-Actor-Type"),
         x_actor_id: str = Header("", alias="X-Actor-Id"),
+        x_bot_token: str | None = Header(None, alias="X-Bot-Token"),
         idempotency_key: str | None = Header(None, alias="Idempotency-Key"),
     ) -> dict:
+        # 顾源源 5/24 守门: AI 必须以机器人身份调 (会写 data_gaps + external_evidence_cards)
+        _verify_bot_actor_or_403(x_actor_type, x_actor_id, x_bot_token,
+                                  allow_human=True, action_label="data-gaps.compensate")
         """V3.0 M1-3 · Agent 触发 data_gap 补证 pipeline.
 
         调 data_gap_compensator.run_data_gap_pipeline:
@@ -48819,6 +48823,42 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
     # 8 endpoint + 4 表 + 6 验收场景
     # ──────────────────────────────────────────────────────────────────────
 
+    def _verify_bot_actor_or_403(
+        x_actor_type: str, x_actor_id: str, x_bot_token: str | None,
+        *, allow_human: bool = True, action_label: str = "",
+    ) -> None:
+        """守门: 任何写类 endpoint 在执行前调.
+
+        规则:
+          · human / system 类 actor (顾源源真用户在前端操作): allow_human=True 时放行
+          · external_ai_agent / internal_ai_agent 类: 必须传 X-Bot-Token 且 token 校验通过
+                                                       才能以 X-Actor-Id 身份写入
+        失败 → HTTP 401.
+        """
+        # 真人调用 / 系统内部, 不强制 token (前端已有 session/login 验证)
+        actor_type = (x_actor_type or "").strip().lower()
+        is_bot_actor = (
+            actor_type in {"external_ai_agent", "internal_ai_agent", "bot_agent", "external_agent"}
+            or (x_actor_id or "").startswith("bot_")
+        )
+        if not is_bot_actor:
+            if allow_human:
+                return
+            raise HTTPException(status_code=401, detail=f"{action_label or 'this action'} requires bot identity (X-Actor-Type=external_ai_agent)")
+        # 是 bot 类调用 → 必须有 token
+        if not x_bot_token:
+            raise HTTPException(
+                status_code=401,
+                detail=f"AI 必须以机器人身份调用: 缺 X-Bot-Token Header (匿名 AI 禁止写入)",
+            )
+        from app.services.bot_members import verify_bot_token
+        bot = verify_bot_token(state.db, x_actor_id, x_bot_token)
+        if not bot:
+            raise HTTPException(
+                status_code=401,
+                detail=f"机器人身份校验失败: actor_id 或 X-Bot-Token 不正确, 或机器人未设密钥/已禁用",
+            )
+
     @app.post("/api/v1/org/bots")
     def create_org_bot(
         payload: dict = Body(...),
@@ -48849,10 +48889,23 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 department_leader_user_ids=payload.get("department_leader_user_ids"),
                 ceo_user_ids=payload.get("ceo_user_ids"),
                 enabled_capabilities=payload.get("enabled_capabilities") or [],
+                token_plain=payload.get("token_plain"),  # None → 自动生成 32 字符 token
             )
-            return bot
+            return bot  # 含 token_plain (明文, 只在创建返回里出现一次)
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc))
+
+    @app.post("/api/v1/org/bots/{bot_member_id}/rotate-token")
+    def rotate_org_bot_token(bot_member_id: str, payload: dict = Body(default_factory=dict)) -> dict:
+        """重置机器人身份启动密钥. 旧密钥立即作废, 新密钥明文随返一次.
+
+        body (可选): {new_token: str} — 不传则自动生成 32 字符 URL-safe token
+        """
+        from app.services.bot_members import rotate_bot_token
+        result = rotate_bot_token(state.db, bot_member_id, new_token=payload.get("new_token"))
+        if not result:
+            raise HTTPException(status_code=404, detail="bot not found")
+        return result  # 含 token_plain (明文, 只在 rotate 返回里出现一次)
 
     @app.get("/api/v1/org/bots")
     def list_org_bots(status: str | None = None) -> dict:
@@ -48931,8 +48984,13 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
     def create_bot_task_plan(
         bot_member_id: str,
         payload: dict = Body(...),
+        x_actor_type: str = Header("human", alias="X-Actor-Type"),
         x_actor_id: str = Header("", alias="X-Actor-Id"),
+        x_bot_token: str | None = Header(None, alias="X-Bot-Token"),
     ) -> dict:
+        # 顾源源 5/24 守门: AI 必须以机器人身份调 (建立 AI 任务计划本身就是机器人发起动作)
+        _verify_bot_actor_or_403(x_actor_type, x_actor_id, x_bot_token,
+                                  allow_human=True, action_label="bot.task-plans.create")
         """顾源源 §8.3 / §8.4 · 创建机器人 AI 任务计划 (含 inline_authorization 支持).
 
         body: {plan_title, plan_text?, client_id?, event_line_id?, task_id?,
@@ -49267,8 +49325,12 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         payload: dict = Body(...),
         x_actor_type: str = Header("human", alias="X-Actor-Type"),
         x_actor_id: str = Header("", alias="X-Actor-Id"),
+        x_bot_token: str | None = Header(None, alias="X-Bot-Token"),
         idempotency_key: str | None = Header(None, alias="Idempotency-Key"),
     ) -> dict:
+        # 顾源源 5/24 守门: AI 必须以机器人身份 + 有效 token 才能写文档
+        _verify_bot_actor_or_403(x_actor_type, x_actor_id, x_bot_token,
+                                  allow_human=True, action_label="documents.generate")
         """V3 Final M2 · 通用文档生成 (顾源源 §M2 必做).
 
         body: {
@@ -49460,8 +49522,12 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         force_execute: bool = False,
         x_actor_type: str = Header("human", alias="X-Actor-Type"),
         x_actor_id: str = Header("", alias="X-Actor-Id"),
+        x_bot_token: str | None = Header(None, alias="X-Bot-Token"),
         idempotency_key: str | None = Header(None, alias="Idempotency-Key"),
     ) -> dict:
+        # 顾源源 5/24 守门: AI 必须以机器人身份调 (对外发送是高风险)
+        _verify_bot_actor_or_403(x_actor_type, x_actor_id, x_bot_token,
+                                  allow_human=True, action_label="feishu.tasks.push")
         """C 审计 P0-1 修复 — Feishu 推送默认走 Approval Gate.
 
         默认行为已变更 — 直接调用不再立即推送飞书. 必须走 Approval Queue:

@@ -28,9 +28,12 @@
 """
 from __future__ import annotations
 
+import hashlib
+import hmac
 import json
 import logging
 import re
+import secrets
 import uuid
 from datetime import datetime, timezone
 from typing import Any, Literal, Protocol
@@ -99,11 +102,20 @@ def ensure_bot_schema(db: _DbLike) -> None:
             description TEXT NOT NULL DEFAULT '',
             status TEXT NOT NULL DEFAULT 'active',
             created_by_user_id TEXT NOT NULL DEFAULT '',
+            token_hash TEXT NOT NULL DEFAULT '',
+            token_salt TEXT NOT NULL DEFAULT '',
+            token_prefix TEXT NOT NULL DEFAULT '',
+            token_rotated_at TEXT,
             created_at TEXT NOT NULL,
             updated_at TEXT NOT NULL
         )""",
         """CREATE INDEX IF NOT EXISTS idx_bot_members_status
            ON bot_members(status, department_id)""",
+        # P2 migration (顾源源 5/24 身份启动密钥): 旧表加 token 字段
+        """ALTER TABLE bot_members ADD COLUMN token_hash TEXT NOT NULL DEFAULT ''""",
+        """ALTER TABLE bot_members ADD COLUMN token_salt TEXT NOT NULL DEFAULT ''""",
+        """ALTER TABLE bot_members ADD COLUMN token_prefix TEXT NOT NULL DEFAULT ''""",
+        """ALTER TABLE bot_members ADD COLUMN token_rotated_at TEXT""",
         """CREATE TABLE IF NOT EXISTS bot_reporting_lines (
             id TEXT PRIMARY KEY,
             bot_member_id TEXT NOT NULL,
@@ -172,6 +184,62 @@ def ensure_bot_schema(db: _DbLike) -> None:
             logger.warning("ensure_bot_schema failed for stmt: %s", exc)
 
 
+def _generate_bot_token() -> str:
+    """生成 32 字符 URL-safe token (类 GitHub PAT). 明文只返回一次, 立即 hash 存."""
+    return secrets.token_urlsafe(24)  # 24 字节 = 约 32 字符 base64
+
+
+def _hash_bot_token(token: str, salt: str) -> str:
+    """sha256(token + salt). 用 hmac 防长度扩展; salt 每个 bot 唯一."""
+    return hmac.new(salt.encode("utf-8"), token.encode("utf-8"), hashlib.sha256).hexdigest()
+
+
+def _set_bot_token(db: _DbLike, bot_id: str, token_plain: str) -> dict:
+    """把明文 token 算 hash 写入 db, 返 {prefix, rotated_at} 便于 audit."""
+    salt = secrets.token_hex(16)
+    token_hash = _hash_bot_token(token_plain, salt)
+    prefix = token_plain[:8]
+    now = _now_iso()
+    db.execute(
+        """UPDATE bot_members
+           SET token_hash = ?, token_salt = ?, token_prefix = ?,
+               token_rotated_at = ?, updated_at = ?
+           WHERE id = ?""",
+        (token_hash, salt, prefix, now, now, bot_id),
+    )
+    return {"token_prefix": prefix, "token_rotated_at": now}
+
+
+def verify_bot_token(db: _DbLike, actor_id: str, token: str) -> dict | None:
+    """校验 (actor_id, token) — 通过返 bot dict, 不通过返 None.
+
+    用于守门: 任何写类 endpoint 在执行前先验证, 防匿名 AI 写入.
+
+    硬规则:
+      · actor_id 必须存在 + bot 必须 active
+      · token sha256 必须 match bot.token_hash
+      · bot 必须真有 token (token_hash 非空; 没设密码的 bot 拒绝外部 AI 调用)
+    """
+    if not actor_id or not token:
+        return None
+    row = db.fetchone(
+        "SELECT * FROM bot_members WHERE actor_id = ?", (actor_id,),
+    )
+    if not row:
+        return None
+    b = dict(row)
+    if b.get("status") != "active":
+        return None
+    if not b.get("token_hash"):
+        return None  # 没设密码的 bot 不允许外部 AI 以它身份操作
+    salt = b.get("token_salt") or ""
+    expected = b.get("token_hash") or ""
+    computed = _hash_bot_token(token, salt)
+    if not hmac.compare_digest(computed, expected):
+        return None
+    return b
+
+
 def _slugify_handle(name: str) -> str:
     """中文 handle 保留, 英文 lowercase, 去空格."""
     name = name.strip()
@@ -210,6 +278,9 @@ def create_bot_member(
     department_leader_user_ids: list[str] | None = None,
     ceo_user_ids: list[str] | None = None,
     enabled_capabilities: list[str] | None = None,
+    # 顾源源 5/24: 身份启动密钥. None 时自动生成 32 字符 URL-safe token.
+    # 创建时明文随返 1 次 (token_plain), db 只存 hash.
+    token_plain: str | None = None,
 ) -> dict:
     """创建机器人同事 + 默认汇报线 + 默认权限策略."""
     ensure_bot_schema(db)
@@ -271,7 +342,30 @@ def create_bot_member(
              approval_required, now, now),
         )
 
-    return get_bot_member(db, bot_id)
+    # 身份启动密钥 (顾源源 5/24): 必生成, 明文随返一次, db 只存 hash
+    if not token_plain:
+        token_plain = _generate_bot_token()
+    _set_bot_token(db, bot_id, token_plain)
+
+    result = get_bot_member(db, bot_id) or {}
+    # 明文 token 只在创建返回里出现一次, get_bot_member 后续永远不返
+    result["token_plain"] = token_plain
+    return result
+
+
+def rotate_bot_token(db: _DbLike, bot_member_id: str, new_token: str | None = None) -> dict | None:
+    """重置机器人身份启动密钥. 旧密钥立即作废, 新密钥明文随返一次."""
+    bot = get_bot_member(db, bot_member_id)
+    if not bot:
+        return None
+    if not new_token:
+        new_token = _generate_bot_token()
+    info = _set_bot_token(db, bot_member_id, new_token)
+    updated = get_bot_member(db, bot_member_id) or {}
+    updated["token_plain"] = new_token
+    updated["token_prefix"] = info["token_prefix"]
+    updated["token_rotated_at"] = info["token_rotated_at"]
+    return updated
 
 
 def _resolve_dept_leader_user_id(db: _DbLike, department_id: str | None) -> str | None:
@@ -374,13 +468,20 @@ def resolve_bot_approvers(db: _DbLike, bot: dict) -> dict:
 
 
 def get_bot_member(db: _DbLike, bot_member_id: str) -> dict | None:
-    """拿机器人完整信息 (含汇报线 + 权限策略 + 动态 resolved approvers)."""
+    """拿机器人完整信息 (含汇报线 + 权限策略 + 动态 resolved approvers).
+
+    安全: token_hash / token_salt 永不外返, 只返 token_prefix + token_rotated_at + has_token.
+    """
     row = db.fetchone(
         "SELECT * FROM bot_members WHERE id = ?", (bot_member_id,),
     )
     if not row:
         return None
     d = dict(row)
+    # 顾源源 5/24 安全: 去掉 hash/salt 防泄露; 留 prefix + rotated_at + has_token bool 给前端展示
+    d["has_token"] = bool(d.get("token_hash"))
+    d.pop("token_hash", None)
+    d.pop("token_salt", None)
     rep_row = db.fetchone(
         "SELECT * FROM bot_reporting_lines WHERE bot_member_id = ?",
         (bot_member_id,),

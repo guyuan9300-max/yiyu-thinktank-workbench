@@ -842,6 +842,12 @@ export interface BotMemberRecord {
   status: 'active' | 'disabled';
   reporting?: BotReporting;
   capabilities?: BotCapability[];
+  /** 顾源源 5/24: 身份启动密钥相关 (db 只存 hash, 这里只暴露 prefix 等 metadata) */
+  token_prefix?: string;
+  token_rotated_at?: string | null;
+  has_token?: boolean;
+  /** 仅创建/重置时返一次的明文 token, 关闭弹窗后丢弃, db 永远不再可读 */
+  token_plain?: string;
   created_at?: string;
   updated_at?: string;
 }
@@ -875,6 +881,24 @@ export async function createBotMember(payload: CreateBotPayload): Promise<BotMem
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(payload),
   });
+}
+
+/**
+ * 重置机器人身份启动密钥. 旧 token 立即作废, 新 token 明文随返一次.
+ * 调用方必须立即把 result.token_plain 展示给用户复制保存, 之后 db 不再可读.
+ */
+export async function rotateBotToken(
+  botMemberId: string,
+  newToken?: string,
+): Promise<BotMemberRecord> {
+  return request<BotMemberRecord>(
+    `/api/v1/org/bots/${encodeURIComponent(botMemberId)}/rotate-token`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(newToken ? { new_token: newToken } : {}),
+    },
+  );
 }
 
 export async function listBotMembers(options?: { status?: string }): Promise<{ total: number; items: BotMemberRecord[] }> {

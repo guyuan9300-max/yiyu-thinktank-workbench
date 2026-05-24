@@ -269,6 +269,9 @@ export function BotMemberFormDialog({
   const [enabledCaps, setEnabledCaps] = useState<Set<BotCapabilityKey>>(new Set());
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // 顾源源 5/24: 创建成功后展示一次性身份启动密钥
+  const [createdToken, setCreatedToken] = useState<{ actor_id: string; token: string; bot_id: string; display_name: string } | null>(null);
+  const [copyHint, setCopyHint] = useState(false);
 
   const toggleCap = (cap: BotCapabilityKey) => {
     const next = new Set(enabledCaps);
@@ -293,7 +296,7 @@ export function BotMemberFormDialog({
     setBusy(true);
     setError(null);
     try {
-      await createBotMember({
+      const created = await createBotMember({
         display_name: displayName.trim(),
         department_id: selectedDept.id,
         department_name: selectedDept.name,
@@ -306,13 +309,106 @@ export function BotMemberFormDialog({
         // 后端从 mirror_departments / mirror_users 动态 resolve
         enabled_capabilities: Array.from(enabledCaps),
       });
-      await onCreated();
+      // 顾源源 5/24: 后端返了一次性 token_plain, 必须展示给用户复制
+      // 用户关闭密钥框后才视为完成创建
+      if (created.token_plain && created.actor_id) {
+        setCreatedToken({
+          actor_id: created.actor_id,
+          token: created.token_plain,
+          bot_id: created.id,
+          display_name: created.display_name,
+        });
+      } else {
+        await onCreated();
+      }
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
       setBusy(false);
     }
   };
+
+  const copyToken = useCallback(async () => {
+    if (!createdToken) return;
+    try {
+      await navigator.clipboard.writeText(createdToken.token);
+      setCopyHint(true);
+      setTimeout(() => setCopyHint(false), 1800);
+    } catch {
+      setCopyHint(false);
+    }
+  }, [createdToken]);
+
+  // 顾源源 5/24: 创建成功后, 优先展示一次性身份启动密钥 (用户必须复制保存才能关)
+  if (createdToken) {
+    return (
+      <div className="fixed inset-0 z-[120] flex items-center justify-center bg-gray-900/30 p-4 backdrop-blur-sm">
+        <div className="w-full max-w-[560px] rounded-3xl bg-white shadow-2xl ring-1 ring-black/5">
+          <div className="border-b border-gray-100 px-8 py-6">
+            <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-gray-400">
+              IDENTITY TOKEN · 身份启动密钥
+            </p>
+            <h3 className="mt-2 text-[18px] font-bold text-gray-900">
+              请立即复制保存「{createdToken.display_name}」的启动密钥
+            </h3>
+            <p className="mt-1.5 text-[12px] text-gray-500">
+              本密钥<span className="font-medium text-rose-600">只显示这一次</span>。Codex / Claude /
+              Cursor 等外部 AI 必须用它(配合 actor_id)以本机器人身份调用系统, 否则一律拒绝写入。
+              密钥已经加密哈希存到数据库, 关闭窗口后任何人都无法再读取原文,
+              丢了只能重置(旧的立即作废)。
+            </p>
+          </div>
+
+          <div className="px-8 py-6 text-[13px]">
+            <p className="mb-1 text-[10px] font-bold uppercase tracking-[0.18em] text-gray-400">Actor ID</p>
+            <code className="block rounded-xl border border-gray-200 bg-gray-50 px-3 py-2.5 font-mono text-[13px] text-gray-700">
+              {createdToken.actor_id}
+            </code>
+
+            <p className="mt-4 mb-1 text-[10px] font-bold uppercase tracking-[0.18em] text-gray-400">
+              X-Bot-Token (32 字符)
+            </p>
+            <div className="flex items-center gap-2">
+              <code className="flex-1 rounded-xl border border-[#5B7BFE]/30 bg-[#5B7BFE]/5 px-3 py-2.5 font-mono text-[13px] text-gray-800 break-all">
+                {createdToken.token}
+              </code>
+              <button
+                type="button"
+                onClick={() => void copyToken()}
+                className="inline-flex shrink-0 items-center gap-2 rounded-full bg-[#5B7BFE] px-4 py-2.5 text-[13px] font-bold text-white shadow-[0_8px_20px_rgba(91,123,254,0.25)] transition hover:bg-[#4A63CF]"
+              >
+                {copyHint ? '已复制' : '复制'}
+              </button>
+            </div>
+
+            <div className="mt-5 rounded-xl border border-gray-100 bg-gray-50/70 px-4 py-3 text-[12px] leading-relaxed text-gray-600">
+              <p className="font-medium text-gray-700">外部 AI 调用示例:</p>
+              <pre className="mt-1.5 overflow-x-auto text-[11px] text-gray-600">{`curl -X POST http://127.0.0.1:47831/api/v1/documents/generate \\
+  -H "X-Actor-Type: external_ai_agent" \\
+  -H "X-Actor-Id: ${createdToken.actor_id}" \\
+  -H "X-Bot-Token: <这串密钥>" \\
+  -H "Content-Type: application/json" \\
+  -d '{"client_id":"...", "document_type":"meeting_pack", "goal":"..."}'`}</pre>
+            </div>
+          </div>
+
+          <div className="flex items-center justify-between border-t border-gray-100 bg-gray-50/60 px-8 py-4 text-[12px]">
+            <span className="text-gray-500">关闭后无法再次查看,只能重置。</span>
+            <button
+              type="button"
+              onClick={() => {
+                setCreatedToken(null);
+                void onCreated();
+              }}
+              className="inline-flex items-center gap-2 rounded-full bg-gray-900 px-6 py-2.5 text-[13px] font-bold text-white transition hover:bg-gray-700"
+            >
+              我已复制保存,关闭
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="fixed inset-0 z-[120] flex items-center justify-center bg-gray-900/30 p-4 backdrop-blur-sm">
