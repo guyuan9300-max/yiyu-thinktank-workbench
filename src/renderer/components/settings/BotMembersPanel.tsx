@@ -13,6 +13,7 @@ import { X } from 'lucide-react';
 import {
   BOT_CAPABILITY_KEYS,
   createBotMember,
+  getBotMember,
   listBotMembers,
   updateBotMember,
   rotateBotToken,
@@ -308,6 +309,11 @@ export function BotMemberFormDialog({
   const [createdToken, setCreatedToken] = useState<{ actor_id: string; token: string; bot_id: string; display_name: string } | null>(null);
   const [copyHint, setCopyHint] = useState<'ok' | 'manual' | null>(null);
   const tokenRef = useRef<HTMLTextAreaElement | null>(null);
+  // M6.2: edit 模式下"密钥管理"区点"重置密钥"会嵌套打开一个 BotRotateTokenDialog (autoStart=true).
+  //   旁挂在编辑弹窗里, 关掉后回到编辑弹窗继续改其它字段, 不打断当前编辑流.
+  //   重置成功后我们更新本地 existingBot 的 token_prefix/token_rotated_at 显示 (用一个 overlay state).
+  const [rotateOverlay, setRotateOverlay] = useState<BotMemberRecord | null>(null);
+  const [tokenInfoOverride, setTokenInfoOverride] = useState<{ token_prefix?: string; token_rotated_at?: string } | null>(null);
 
   const toggleCap = (cap: BotCapabilityKey) => {
     const next = new Set(enabledCaps);
@@ -668,7 +674,79 @@ export function BotMemberFormDialog({
               ))}
             </div>
           </section>
+
+          {/* 密钥管理 — 仅 edit 模式. 顾源源 5/24 V2.1 lab M6.2:
+              岗位卡 hover 把"重置密钥"按钮下线了, 入口集中到这里.
+              db 只存 token hash, 这里只显示前缀+上次重置时间; 重置按钮直接打开 RotateTokenDialog (autoStart=true). */}
+          {isEdit && existingBot ? (
+            <section>
+              <p className="mb-1 text-[10px] font-bold uppercase tracking-[0.18em] text-gray-400">
+                KEY MANAGEMENT · 密钥管理
+              </p>
+              <p className="mb-3 text-[12px] text-gray-500">
+                启动密钥只在创建/重置时显示一次, 之后系统只保留哈希。如果丢失或泄露请重置, 旧密钥会立刻作废。
+              </p>
+              <div className="rounded-2xl border border-gray-100 bg-gray-50/60 px-4 py-3">
+                <div className="flex items-center justify-between gap-3">
+                  <div className="min-w-0 flex-1">
+                    <div className="flex items-center gap-2 font-mono text-[13px] text-gray-700">
+                      <span className="rounded-md bg-white px-2 py-0.5 ring-1 ring-gray-200">
+                        {tokenInfoOverride?.token_prefix || existingBot.token_prefix || '????????'}
+                      </span>
+                      <span className="text-gray-400">•••••</span>
+                    </div>
+                    <div className="mt-1.5 text-[11px] text-gray-500">
+                      上次重置:
+                      {(() => {
+                        const ts = tokenInfoOverride?.token_rotated_at || existingBot.token_rotated_at;
+                        if (!ts) return <span className="ml-1 text-gray-400">从未重置 (使用创建时的密钥)</span>;
+                        try {
+                          return <span className="ml-1 text-gray-700">{new Date(ts).toLocaleString()}</span>;
+                        } catch {
+                          return <span className="ml-1 text-gray-700">{ts}</span>;
+                        }
+                      })()}
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setRotateOverlay(existingBot)}
+                    className="inline-flex shrink-0 items-center gap-1.5 rounded-full border border-[#5B7BFE]/40 bg-white px-4 py-2 text-[12px] font-semibold text-[#4A63CF] transition hover:border-[#5B7BFE] hover:bg-[#5B7BFE]/5"
+                  >
+                    重置密钥
+                  </button>
+                </div>
+                <p className="mt-2.5 text-[11px] text-gray-400">
+                  重置后旧密钥立刻失效, 请通知正在使用此机器人的 Codex / Claude 重新粘贴。
+                </p>
+              </div>
+            </section>
+          ) : null}
         </div>
+
+        {/* M6.2: edit 模式下"重置密钥"嵌套打开 BotRotateTokenDialog (autoStart=true, autoCopy=false).
+            autoCopy=false 是因为用户从编辑里点的重置, 通常希望看到新 token 明文做一次确认再复制. */}
+        {rotateOverlay ? (
+          <BotRotateTokenDialog
+            bot={rotateOverlay}
+            autoStart
+            onClose={() => setRotateOverlay(null)}
+            onRotated={async () => {
+              // M6.2: 重置成功后局部刷新 token_prefix/token_rotated_at 显示, 同时通知外面 reload.
+              try {
+                const detail = await getBotMember(rotateOverlay.id);
+                setTokenInfoOverride({
+                  token_prefix: detail.token_prefix || undefined,
+                  token_rotated_at: detail.token_rotated_at || undefined,
+                });
+              } catch {
+                /* 忽略, 外面 reload 后下次打开会拿到最新值 */
+              }
+              setRotateOverlay(null);
+              // 不关编辑弹窗, 用户应当继续编辑/或自行关闭
+            }}
+          />
+        ) : null}
 
         {/* Footer */}
         <div className="flex items-center justify-end gap-3 border-t border-gray-100 bg-gray-50/60 px-8 py-4">
@@ -702,9 +780,30 @@ export interface BotRotateTokenDialogProps {
   bot: BotMemberRecord;
   onClose: () => void;
   onRotated: () => Promise<void> | void;
+  /**
+   * 顾源源 5/24 V2.1 lab M6.1:
+   *   true → 弹窗一打开就直接调 rotate, 跳过"取消/确认重置"那个中间步.
+   *   场景: 岗位卡 hover 的"复制密钥"按钮已经在外面做过一次确认 modal,
+   *         点确认后不该再让用户确认第二遍.
+   *   默认 false (保留 M5 旧行为).
+   */
+  autoStart?: boolean;
+  /**
+   * 顾源源 5/24 V2.1 lab M6.1:
+   *   true → rotate 成功拿到新 token 后, 自动调一次 copyToken() 把新密钥送进剪贴板.
+   *   配合 autoStart, 实现"点击 → 看一眼 → 已自动复制" 的零步操作.
+   *   默认 false (用户必须手点复制).
+   */
+  autoCopy?: boolean;
 }
 
-export function BotRotateTokenDialog({ bot, onClose, onRotated }: BotRotateTokenDialogProps): JSX.Element {
+export function BotRotateTokenDialog({
+  bot,
+  onClose,
+  onRotated,
+  autoStart = false,
+  autoCopy = false,
+}: BotRotateTokenDialogProps): JSX.Element {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [newToken, setNewToken] = useState<{ actor_id: string; token: string; display_name: string } | null>(null);
@@ -771,6 +870,27 @@ export function BotRotateTokenDialog({ bot, onClose, onRotated }: BotRotateToken
       setCopyHint('manual');
     }
   }, [newToken]);
+
+  // M6.1: autoStart → 弹窗一挂载就立刻 rotate, 跳过"确认重置"中间步.
+  // 用一个 ref 锁防止 React StrictMode 双调用真发两次 rotate (会让旧 token 立刻作废两次).
+  const autoStartedRef = useRef(false);
+  useEffect(() => {
+    if (!autoStart) return;
+    if (autoStartedRef.current) return;
+    autoStartedRef.current = true;
+    void rotate();
+  }, [autoStart, rotate]);
+
+  // M6.1: autoCopy → 拿到新 token 后立刻送一次剪贴板, 不等用户点"复制".
+  // 跟 autoStart 一样上 ref 锁, 防止 newToken 触发的二次 effect 重复复制.
+  const autoCopiedRef = useRef(false);
+  useEffect(() => {
+    if (!autoCopy) return;
+    if (!newToken) return;
+    if (autoCopiedRef.current) return;
+    autoCopiedRef.current = true;
+    void copyToken();
+  }, [autoCopy, newToken, copyToken]);
 
   // 已经返回新 token → 展示密钥框 (必须复制保存才能关)
   if (newToken) {

@@ -488,8 +488,17 @@ export function OrganizationSetupCenter({
   const [botMembers, setBotMembers] = useState<BotMemberRecord[]>([]);
   // M5: 编辑模式弹窗 (mode=edit) — 跟创建模式复用 BotMemberFormDialog
   const [botEditDialog, setBotEditDialog] = useState<BotMemberRecord | null>(null);
-  // M5: 重置密钥弹窗 — 独立组件 BotRotateTokenDialog
-  const [botRotateDialog, setBotRotateDialog] = useState<BotMemberRecord | null>(null);
+  // M5/M6.1: 重置密钥弹窗 — 独立组件 BotRotateTokenDialog.
+  //   两个入口:
+  //     (a) 编辑弹窗内"密钥管理"区点"重置密钥"     → { bot, autoCopy: false }
+  //     (b) 岗位卡 hover "复制密钥" confirm 后    → { bot, autoCopy: true }
+  //   autoStart 在 dialog 侧永远 true (用户已经在外面确认过, 不再二次确认).
+  const [botRotateDialog, setBotRotateDialog] = useState<{ bot: BotMemberRecord; autoCopy: boolean } | null>(null);
+  // M6.1: 岗位卡 hover "复制密钥" 按钮的轻确认 modal —
+  //   db 只存 token hash, 物理上没法读旧 plain, 所以必须明确告知用户:
+  //   "复制" 实际是 "重置 + 显示新的 + 自动复制", 旧 token 立刻作废.
+  //   inline 在本文件里 (不另开 Modal 文件), 用 useState 控制显隐.
+  const [botCopyConfirm, setBotCopyConfirm] = useState<BotMemberRecord | null>(null);
 
   const reloadBotMembers = useCallback(async () => {
     try {
@@ -1872,31 +1881,32 @@ export function OrganizationSetupCenter({
                                       {holderEmployee?.fullName || '待指派'}
                                     </span>
                                   )}
-                                  {/* M4: 机器人持岗人 hover 时显示编辑/重置密钥/解除指派 (ghost button 风格) */}
+                                  {/* M6.1: 机器人持岗人 hover 3 按钮 — 顺序: 复制密钥 / 编辑 / 解除指派.
+                                      复制密钥 = 蓝色主行动 (#5B7BFE), 物理上是"重置 + 自动复制"(db 只存 hash, 读不到旧 plain).
+                                      编辑    = 中性灰. 重置密钥按钮已迁入编辑弹窗里的"密钥管理" section.
+                                      解除指派 = 灰边 hover 红. */}
                                   {canModify && holderBot ? (
-                                    <div className="flex items-center gap-0.5 opacity-0 transition-opacity group-hover:opacity-100">
+                                    <div className="flex items-center gap-1 opacity-0 transition-opacity group-hover:opacity-100">
+                                      <button
+                                        type="button"
+                                        onClick={() => setBotCopyConfirm(holderBot)}
+                                        className="rounded-full bg-[#5B7BFE] px-2 py-0.5 text-[10px] font-semibold text-white shadow-[0_2px_6px_rgba(91,123,254,0.25)] transition hover:bg-[#4A63CF]"
+                                        title={`复制 ${holderBot.display_name} 的启动密钥 (会重置并自动复制新密钥)`}
+                                      >
+                                        复制密钥
+                                      </button>
                                       <button
                                         type="button"
                                         onClick={() => setBotEditDialog(holderBot)}
-                                        className="rounded-full px-1.5 py-0.5 text-[10px] text-gray-500 transition hover:bg-[#EEF3FF] hover:text-[#4A63CF]"
+                                        className="rounded-full px-1.5 py-0.5 text-[10px] text-gray-500 transition hover:bg-gray-100 hover:text-gray-700"
                                         title={`编辑 ${holderBot.display_name}`}
                                       >
                                         编辑
                                       </button>
-                                      <span className="text-gray-300" aria-hidden>·</span>
-                                      <button
-                                        type="button"
-                                        onClick={() => setBotRotateDialog(holderBot)}
-                                        className="rounded-full px-1.5 py-0.5 text-[10px] text-gray-500 transition hover:bg-[#EEF3FF] hover:text-[#4A63CF]"
-                                        title="重置启动密钥 (旧的立即作废)"
-                                      >
-                                        重置密钥
-                                      </button>
-                                      <span className="text-gray-300" aria-hidden>·</span>
                                       <button
                                         type="button"
                                         onClick={() => handleSelectRoleHolderBot(role.id, null)}
-                                        className="rounded-full px-1.5 py-0.5 text-[10px] text-gray-500 transition hover:bg-rose-50 hover:text-rose-500"
+                                        className="rounded-full border border-gray-200 px-1.5 py-0.5 text-[10px] text-gray-500 transition hover:border-rose-200 hover:bg-rose-50 hover:text-rose-500"
                                         title="解除该岗位的机器人持岗人"
                                       >
                                         解除指派
@@ -2012,18 +2022,73 @@ export function OrganizationSetupCenter({
           }}
         />
       ) : null}
-      {/* M5: 重置启动密钥弹窗 (独立组件, 必须复制后才能关) */}
+      {/* M5/M6.1: 重置启动密钥弹窗 (独立组件, 必须复制后才能关).
+          M6.1 之后这个弹窗有两个入口:
+            (a) 编辑弹窗里的"重置密钥"按钮 → autoStart=true, autoCopy=false (用户主动重置, 由编辑里触发, 手动点复制)
+            (b) 岗位卡"复制密钥" confirm modal 确认 → autoStart=true, autoCopy=true (流程零步, 直接送剪贴板)
+          状态形态用 union 区分两种入口, 复用同一个 dialog 组件. */}
       {botRotateDialog ? (
         <BotRotateTokenDialog
-          bot={botRotateDialog}
+          bot={botRotateDialog.bot}
+          autoStart
+          autoCopy={botRotateDialog.autoCopy}
           onClose={() => setBotRotateDialog(null)}
           onRotated={async () => {
-            const name = botRotateDialog.display_name;
+            const name = botRotateDialog.bot.display_name;
+            const wasAutoCopy = botRotateDialog.autoCopy;
             setBotRotateDialog(null);
             await reloadBotMembers();
-            showToast(`「${name}」的启动密钥已重置`);
+            showToast(
+              wasAutoCopy
+                ? `已重置「${name}」启动密钥并自动复制到剪贴板`
+                : `「${name}」的启动密钥已重置`,
+            );
           }}
         />
+      ) : null}
+      {/* M6.1: 岗位卡"复制密钥" inline 轻确认 modal —
+          db 只存 hash, 所以这里必须告诉用户"复制 = 重置 + 复制新", 旧密钥立即作废.
+          用户点 [重置并复制] 后, 把这个 confirm 关掉, 同时打开 BotRotateTokenDialog (autoStart+autoCopy). */}
+      {botCopyConfirm ? (
+        <div className="fixed inset-0 z-[125] flex items-center justify-center bg-gray-900/30 p-4 backdrop-blur-sm">
+          <div className="w-full max-w-[480px] rounded-3xl bg-white shadow-2xl ring-1 ring-black/5">
+            <div className="border-b border-gray-100 px-8 py-6">
+              <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-gray-400">
+                COPY TOKEN · 复制启动密钥
+              </p>
+              <h3 className="mt-2 text-[18px] font-bold text-gray-900">
+                复制「{botCopyConfirm.display_name}」的启动密钥
+              </h3>
+              <p className="mt-2 text-[12px] leading-relaxed text-gray-500">
+                启动密钥设计为<span className="font-medium text-gray-700">不可重复读取</span>,
+                数据库里只存哈希。点击 <span className="font-medium text-[#4A63CF]">重置并复制</span>{' '}
+                会立即生成一把新密钥并自动送进剪贴板,
+                <span className="font-medium text-rose-600">旧密钥立刻作废</span>,
+                当前正在用旧密钥的 Codex / Claude 需要重新粘贴。
+              </p>
+            </div>
+            <div className="flex items-center justify-end gap-3 border-t border-gray-100 bg-gray-50/60 px-8 py-4">
+              <button
+                type="button"
+                onClick={() => setBotCopyConfirm(null)}
+                className="inline-flex items-center gap-2 rounded-full border border-gray-200 bg-white px-5 py-2.5 text-[13px] font-bold text-gray-600 transition hover:border-gray-300 hover:bg-gray-50"
+              >
+                取消
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  const bot = botCopyConfirm;
+                  setBotCopyConfirm(null);
+                  setBotRotateDialog({ bot, autoCopy: true });
+                }}
+                className="inline-flex items-center gap-2 rounded-full bg-[#5B7BFE] px-6 py-2.5 text-[13px] font-bold text-white shadow-[0_12px_30px_rgba(91,123,254,0.25)] transition hover:bg-[#4A63CF]"
+              >
+                重置并复制
+              </button>
+            </div>
+          </div>
+        </div>
       ) : null}
     </div>
   );
