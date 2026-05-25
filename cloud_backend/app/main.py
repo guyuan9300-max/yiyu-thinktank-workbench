@@ -11698,6 +11698,26 @@ def create_app() -> FastAPI:
         )
         if existing:
             return _client_record_full(state, existing)
+
+        # [B] 5/25 PM (顾源源真用反馈: 同事同步后看到 2 个益语智库 / 2 个日慈)
+        # 真因: 顾源源本地建的 client (id=client_53d82aa249) 跟同事本地建的 (id 不同, name 相同)
+        #       push 上来都是新 id → 云端产生 2 条同名 client.
+        # 修法: 加 name dedup — 同一 org 内同名 client 视为重复, 复用现有 id.
+        # 注: 兼容老 schema (无 frozen_at 字段) — Codex 5/25 反馈线上 schema 无此字段
+        name_normalized = (payload.name or "").strip()
+        if name_normalized:
+            existing_by_name = state.db.fetchone(
+                """SELECT * FROM clients
+                   WHERE organization_id = ?
+                     AND name = ?
+                   LIMIT 1""",
+                (current_user.organizationId, name_normalized),
+            )
+            if existing_by_name:
+                # 同名 client 已存在, 直接返复用 (不再 INSERT 新条目)
+                # 注: id 可能跟 payload.id 不同, local 端拉回云数据时会同步成云端 id
+                return _client_record_full(state, existing_by_name)
+
         state.db.execute(
             """
             INSERT INTO clients(id, organization_id, creator_id, name, alias, type, domain, intro, stage, color,
