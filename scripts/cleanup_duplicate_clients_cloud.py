@@ -29,16 +29,31 @@ import sys
 from pathlib import Path
 
 
+def _has_column(conn, table: str, column: str) -> bool:
+    """sqlite pragma 查表里是否真有这个字段 (兼容老 schema)."""
+    try:
+        rows = conn.execute(f"PRAGMA table_info({table})").fetchall()
+        return any(str(r[1]) == column for r in rows)
+    except Exception:
+        return False
+
+
 def find_duplicate_groups(conn) -> list[dict]:
-    """找同 org 同名的 client 重复组. 返 [{org_id, name, ids: [...]}]"""
+    """找同 org 同名的 client 重复组. 返 [{org_id, name, ids: [...]}]
+
+    顾源源 5/25 PM (Codex 反馈): 线上 clients 表没 frozen_at 字段.
+    兼容: 自动检测字段存在与否, 没有就跳过 frozen 过滤.
+    """
+    has_frozen = _has_column(conn, "clients", "frozen_at")
+    extra_where = "AND COALESCE(frozen_at, '') = ''" if has_frozen else ""
     rows = conn.execute(
-        """SELECT organization_id, name, GROUP_CONCAT(id, '|') AS ids, COUNT(*) AS n
-           FROM clients
-           WHERE COALESCE(frozen_at, '') = ''
-             AND name IS NOT NULL AND TRIM(name) != ''
-           GROUP BY organization_id, name
-           HAVING n > 1
-           ORDER BY n DESC, organization_id, name"""
+        f"""SELECT organization_id, name, GROUP_CONCAT(id, '|') AS ids, COUNT(*) AS n
+            FROM clients
+            WHERE name IS NOT NULL AND TRIM(name) != ''
+              {extra_where}
+            GROUP BY organization_id, name
+            HAVING n > 1
+            ORDER BY n DESC, organization_id, name"""
     ).fetchall()
     out = []
     for row in rows:
