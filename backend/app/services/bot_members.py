@@ -56,6 +56,17 @@ CAPABILITY_KEYS = [
     "inline_approval.allow_from_supervisor",
 ]
 
+# M8 (A, 2026-05-25): 默认 enabled 真口径 — 顾源源 5/24 真用反馈.
+# 低风险动作默认开 (建 bot 即可用), 高风险动作默认关 (改 UI 再开).
+# external_send.request / clarification_resolution.propose 默认关 (高风险, 需人显式赋能).
+# inline_approval.allow_from_supervisor 默认开 (顾源源 5/24: "审批 = 确认流程, 提交那一刻就是审批本身").
+DEFAULT_ENABLED_CAPABILITIES: set[str] = {
+    "workspace_file_write.request",
+    "data_center_parse.request",
+    "external_material_draft.create",
+    "inline_approval.allow_from_supervisor",
+}
+
 HARD_DENIES = [
     "self_approve",
     "delete_client_materials",
@@ -298,49 +309,83 @@ def create_bot_member(
 
     bot_id = _new_id("botmem")
     now = _now_iso()
-    db.execute(
-        """INSERT INTO bot_members (
-            id, organization_id, display_name, handle, actor_id, actor_type,
-            department_id, department_name, description, status,
-            created_by_user_id, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, 'internal_ai_agent', ?, ?, ?, ?, ?, ?, ?)""",
-        (bot_id, organization_id, display_name, handle, actor_id,
-         department_id, department_name, description, status,
-         created_by_user_id, now, now),
-    )
 
-    # 汇报线 (3 类平权: 创建人 / 部门领导 / CEO)
-    rep_id = _new_id("botrep")
-    db.execute(
-        """INSERT INTO bot_reporting_lines (
-            id, bot_member_id, report_to_creator,
-            report_to_department_lead, report_to_ceo,
-            department_leader_user_ids, ceo_user_ids, approval_mode,
-            created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, 'any_one', ?, ?)""",
-        (rep_id, bot_id,
-         1 if report_to_creator else 0,
-         1 if report_to_department_lead else 0,
-         1 if report_to_ceo else 0,
-         json.dumps(department_leader_user_ids or [], ensure_ascii=False),
-         json.dumps(ceo_user_ids or [], ensure_ascii=False),
-         now, now),
-    )
+    # M8 (A, 2026-05-25): mirror_users 真解析 — 不再让 reporting_lines 空着.
+    #   · creator: 已在 created_by_user_id, _resolve_creator_user_ids 兜一手
+    #   · department_leader: 没显式传时, 走 mirror_departments.leader_user_id
+    #   · CEO: 没显式传时, 走 mirror_users.primary_role='admin'
+    # 这一步幂等, 失败回退到空 list, 不阻塞 bot 创建.
+    resolved_dept_leaders = list(department_leader_user_ids or [])
+    if not resolved_dept_leaders:
+        _uid = _resolve_dept_leader_user_id(db, department_id)
+        if _uid:
+            resolved_dept_leaders = [_uid]
+    resolved_ceo_ids = list(ceo_user_ids or [])
+    if not resolved_ceo_ids:
+        resolved_ceo_ids = _resolve_ceo_user_ids(db, organization_id)
 
-    # 权限策略 (所有 capability 默认 enabled=0, 用户开关后改)
-    enabled_set = set(enabled_capabilities or [])
-    for cap in CAPABILITY_KEYS:
-        pid = _new_id("botperm")
-        # inline_approval.allow_from_supervisor: approval_required=False (它本身是 meta 开关)
-        approval_required = 0 if cap == "inline_approval.allow_from_supervisor" else 1
-        db.execute(
-            """INSERT INTO bot_permission_policies (
-                id, bot_member_id, capability_key, enabled, approval_required,
-                approval_policy, created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, 'supervisor_required', ?, ?)""",
-            (pid, bot_id, cap, 1 if cap in enabled_set else 0,
-             approval_required, now, now),
+    # 默认 enabled (顾源源 5/24 真口径): 显式传则按显式, 否则用 DEFAULT_ENABLED_CAPABILITIES.
+    if enabled_capabilities is not None:
+        enabled_set = set(enabled_capabilities)
+    else:
+        enabled_set = set(DEFAULT_ENABLED_CAPABILITIES)
+
+    # M8 (A, 2026-05-25): 同事务包 — bot_members / reporting_lines / permission_policies
+    # 三表必须一起建, 失败回滚不留半个. 用 db.run_in_transaction 保证.
+    def _do_init(conn):
+        # 1. bot_members
+        conn.execute(
+            """INSERT INTO bot_members (
+                id, organization_id, display_name, handle, actor_id, actor_type,
+                department_id, department_name, description, status,
+                created_by_user_id, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, 'internal_ai_agent', ?, ?, ?, ?, ?, ?, ?)""",
+            (bot_id, organization_id, display_name, handle, actor_id,
+             department_id, department_name, description, status,
+             created_by_user_id, now, now),
         )
+
+        # 2. 汇报线 (3 类平权: 创建人 / 部门领导 / CEO)
+        rep_id = _new_id("botrep")
+        conn.execute(
+            """INSERT INTO bot_reporting_lines (
+                id, bot_member_id, report_to_creator,
+                report_to_department_lead, report_to_ceo,
+                department_leader_user_ids, ceo_user_ids, approval_mode,
+                created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, 'any_one', ?, ?)""",
+            (rep_id, bot_id,
+             1 if report_to_creator else 0,
+             1 if report_to_department_lead else 0,
+             1 if report_to_ceo else 0,
+             json.dumps(resolved_dept_leaders, ensure_ascii=False),
+             json.dumps(resolved_ceo_ids, ensure_ascii=False),
+             now, now),
+        )
+
+        # 3. 权限策略 (按 DEFAULT_ENABLED_CAPABILITIES 默认开 4 项)
+        for cap in CAPABILITY_KEYS:
+            pid = _new_id("botperm")
+            # inline_approval.allow_from_supervisor: approval_required=False (它本身是 meta 开关)
+            approval_required = 0 if cap == "inline_approval.allow_from_supervisor" else 1
+            conn.execute(
+                """INSERT INTO bot_permission_policies (
+                    id, bot_member_id, capability_key, enabled, approval_required,
+                    approval_policy, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, 'supervisor_required', ?, ?)""",
+                (pid, bot_id, cap, 1 if cap in enabled_set else 0,
+                 approval_required, now, now),
+            )
+
+    # 用 db wrapper 的 run_in_transaction (sqlite3 IMMEDIATE), 失败整批回滚
+    if hasattr(db, "run_in_transaction"):
+        db.run_in_transaction(_do_init)
+    else:
+        # 测试/protocol 兜底: 没事务 wrapper 时直接顺序执行
+        class _Adapter:
+            def execute(self, sql, params=()):  # noqa: ANN001
+                db.execute(sql, params)
+        _do_init(_Adapter())
 
     # 身份启动密钥 (顾源源 5/24): 必生成, 明文随返一次, db 只存 hash
     if not token_plain:
@@ -351,6 +396,95 @@ def create_bot_member(
     # 明文 token 只在创建返回里出现一次, get_bot_member 后续永远不返
     result["token_plain"] = token_plain
     return result
+
+
+def backfill_bot_init(db: _DbLike, *, bot_member_id: str | None = None) -> dict:
+    """M8 (A, 2026-05-25) · 给旧 bot 补 reporting_lines + permission_policies.
+
+    idempotent:
+      · 已有 reporting_lines / permission_policies 的 bot 跳过 (用 INSERT OR IGNORE 不再写)
+      · capability 维度 idempotent: 缺哪个补哪个, 已存在的不动 enabled (尊重用户已配置)
+
+    bot_member_id=None: 扫所有 bot
+    bot_member_id=specific: 只补这一个
+    """
+    ensure_bot_schema(db)
+    out = {
+        "scanned": 0, "reporting_added": 0, "permissions_added": 0,
+        "bots": [],
+    }
+
+    if bot_member_id:
+        bot_rows = db.fetchall("SELECT * FROM bot_members WHERE id = ?", (bot_member_id,))
+    else:
+        bot_rows = db.fetchall("SELECT * FROM bot_members")
+
+    now = _now_iso()
+    for row in bot_rows or []:
+        b = dict(row)
+        bid = b["id"]
+        out["scanned"] += 1
+        rep_added = 0
+        cap_added = 0
+
+        # reporting_lines: 缺则补一条默认 (3 类全开 + 真 resolve mirror)
+        rep = db.fetchone(
+            "SELECT id FROM bot_reporting_lines WHERE bot_member_id = ?", (bid,),
+        )
+        if not rep:
+            dept_leaders = []
+            uid = _resolve_dept_leader_user_id(db, b.get("department_id"))
+            if uid:
+                dept_leaders = [uid]
+            ceo_ids = _resolve_ceo_user_ids(db, b.get("organization_id"))
+            rep_id = _new_id("botrep")
+            db.execute(
+                """INSERT INTO bot_reporting_lines (
+                    id, bot_member_id, report_to_creator,
+                    report_to_department_lead, report_to_ceo,
+                    department_leader_user_ids, ceo_user_ids, approval_mode,
+                    created_at, updated_at
+                ) VALUES (?, ?, 1, 1, 0, ?, ?, 'any_one', ?, ?)""",
+                (rep_id, bid,
+                 json.dumps(dept_leaders, ensure_ascii=False),
+                 json.dumps(ceo_ids, ensure_ascii=False),
+                 now, now),
+            )
+            rep_added = 1
+            out["reporting_added"] += 1
+
+        # permission_policies: 缺哪个 cap 补哪个 (用 DEFAULT_ENABLED 真口径)
+        existing_caps = {
+            dict(r)["capability_key"]
+            for r in db.fetchall(
+                "SELECT capability_key FROM bot_permission_policies WHERE bot_member_id = ?",
+                (bid,),
+            ) or []
+        }
+        for cap in CAPABILITY_KEYS:
+            if cap in existing_caps:
+                continue
+            pid = _new_id("botperm")
+            approval_required = 0 if cap == "inline_approval.allow_from_supervisor" else 1
+            enabled_default = 1 if cap in DEFAULT_ENABLED_CAPABILITIES else 0
+            db.execute(
+                """INSERT INTO bot_permission_policies (
+                    id, bot_member_id, capability_key, enabled, approval_required,
+                    approval_policy, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, 'supervisor_required', ?, ?)""",
+                (pid, bid, cap, enabled_default, approval_required, now, now),
+            )
+            cap_added += 1
+            out["permissions_added"] += 1
+
+        out["bots"].append({
+            "bot_member_id": bid,
+            "display_name": b.get("display_name"),
+            "reporting_added": rep_added,
+            "capabilities_added": cap_added,
+        })
+
+    return out
 
 
 def rotate_bot_token(db: _DbLike, bot_member_id: str, new_token: str | None = None) -> dict | None:

@@ -48947,7 +48947,9 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 report_to_ceo=bool(payload.get("report_to_ceo", False)),
                 department_leader_user_ids=payload.get("department_leader_user_ids"),
                 ceo_user_ids=payload.get("ceo_user_ids"),
-                enabled_capabilities=payload.get("enabled_capabilities") or [],
+                # M8 (A, 2026-05-25): 不传 enabled_capabilities → 走 DEFAULT_ENABLED_CAPABILITIES
+                # (低风险 4 项默认开). 显式传 [] 才是"全部关".
+                enabled_capabilities=payload.get("enabled_capabilities"),
                 token_plain=payload.get("token_plain"),  # None → 自动生成 32 字符 token
             )
             return bot  # 含 token_plain (明文, 只在创建返回里出现一次)
