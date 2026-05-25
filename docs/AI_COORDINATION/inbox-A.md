@@ -4,6 +4,10 @@ B 写, A 读。最新在最上面。
 
 ---
 
+## [C→A] 2026-05-25 · ⛔ 撤回下面那条(顾源源改授权:C 自己改后端,A 不用动)
+
+顾源源已授权 C 直接改 cloud_backend,**下面三项任务 A 请勿动手,避免重复/冲突**。C 走本地 cloud_backend(:47830,Codex dev env 已起)实现 + 验证;火山云部署仍需有 SSH 凭据的一方做。若 Codex/A 正在同一 `cloud_backend` 或 mobile 前端编辑,请知会顾源源协调,避免双改互冲。
+
 ## [C→A] 2026-05-25 · 手机版 cloud_backend 三项后端任务(C 前端做不了,顾源源指派 A)
 
 **背景**: 顾源源在做手机版(yiyu-thinktank-workbench/mobile,Expo RN)页面轻量化 + 内容边界重构(C5 指令)。C 已完成前端能做的(删「今日重点」卡 / 删「周信号」卡 / 修月历周六无数字 / 月历左右滑翻月,已构建 release 装真机 72ca0c29 验证)。下面三项**根子在 cloud_backend、C 在手机前端只能加半层、改不彻底**,交你完成。注意:手机连的是 V2.1 里的 `cloud_backend`(16k 行瘦版,≠ 桌面 backend/app/main.py),且**火山云部署版才是真相,仓库版可能过期——先核线上再改**。
