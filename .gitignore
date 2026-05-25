@@ -66,3 +66,5 @@ run-filter-repo-cleanup.sh
 backend/output/
 tests/reports/
 dogfood_real/
+
+# node_modules symlink (V2.1 lab 指向 yiyu-thinktank-workbench/node_modules, 不能 commit)

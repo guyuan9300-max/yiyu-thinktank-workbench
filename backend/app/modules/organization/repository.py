@@ -101,10 +101,12 @@ class OrganizationDirectory:
     # ─────────────────────────────────────────────────────────────────────
 
     def get_user_by_id(self, user_id: str) -> User | None:
+        # [B] 5/25 PM (顾源源 path C): 用 org_members_v 让人 + bot 统一可查.
+        # 前端可能传 bot actor_id (bot_60ab0ec2b071) 查"成员资料", view 也命中.
         if not user_id:
             return None
         row = self._db.fetchone(
-            "SELECT * FROM mirror_users WHERE id = ?", (user_id,)
+            "SELECT * FROM org_members_v WHERE id = ?", (user_id,)
         )
         return _row_to_user(row) if row else None
 
@@ -115,6 +117,8 @@ class OrganizationDirectory:
         department_id: str | None = None,
         account_status: str | None = "approved",
     ) -> list[User]:
+        # [B] 5/25 PM (顾源源 path C): 列组织成员 → 走 view (含 bot).
+        # 战略发展部部门复盘看的成员名单从这里来 — 机器人庆华会被列入.
         clauses = []
         params: list[Any] = []
         if organization_id:
@@ -128,13 +132,13 @@ class OrganizationDirectory:
             params.append(account_status)
         where = (" WHERE " + " AND ".join(clauses)) if clauses else ""
         rows = self._db.fetchall(
-            f"SELECT * FROM mirror_users{where} ORDER BY full_name",
+            f"SELECT * FROM org_members_v{where} ORDER BY full_name",
             tuple(params),
         )
         return [_row_to_user(r) for r in rows]
 
     def list_department_leaders(self, organization_id: str | None = None) -> list[User]:
-        """所有"部门负责人"角色的人 + CEO(管理员级别)"""
+        """所有"部门负责人"角色的人 + CEO(管理员级别). bot 不能当部门负责人, 用 mirror_users."""
         if organization_id:
             rows = self._db.fetchall(
                 """
@@ -162,12 +166,17 @@ class OrganizationDirectory:
     # ─────────────────────────────────────────────────────────────────────
 
     def list_users_visible_for_client(self, client_id: str) -> list[User]:
-        """某个客户的所有"项目同事"(可见者)"""
+        """某个客户的所有"项目同事"(可见者).
+
+        [B] 5/25 PM (path C): 客户协同视图改 view, 让 bot 也能在协同名单显示.
+        但 mirror_client_related_users 表只存 user 关联, bot 不在 JOIN 命中,
+        除非有专门 bot ↔ client 关联表 (P1).
+        """
         if not client_id:
             return []
         rows = self._db.fetchall(
             """
-            SELECT u.* FROM mirror_users u
+            SELECT u.* FROM org_members_v u
             JOIN mirror_client_related_users cru ON cru.user_id = u.id
             WHERE cru.client_id = ?
               AND u.account_status = 'approved'

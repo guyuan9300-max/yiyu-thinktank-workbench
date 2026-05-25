@@ -110,7 +110,9 @@ src/renderer/components/ai_command/AICommandModal.tsx | 354 ++++++++++++-----
 ```
 
 ## commit
-见本 commit hash (执行 git log 后补).
+`92ee93d` — feat(v2.1-lab ai-command M7): @mention inline picker (微信群体验)
+分支: `v2.2-arch-v2`
+父: `0afda13` (M6)
 
 ---
 

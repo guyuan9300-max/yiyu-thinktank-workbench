@@ -466,7 +466,9 @@ import {
   labelDataCenterEvidenceQuality,
   getWorkspaceDataCenterReadiness,
   retryKnowledgeParseFailures,
+  getBotTaskPlanProgress,
 } from './lib/api';
+import type { PlanProgressRecord } from './lib/api';
 import { getClientDnaPromptTemplate } from './lib/clientDnaPromptTemplates';
 import { reportClientError } from './lib/clientErrorReport';
 import { appPrompt } from './lib/appPrompt';
@@ -481,6 +483,7 @@ import { TaskTemplateEditorModal } from './components/tasks/TaskTemplateEditorMo
 import type { TemplateData } from './components/tasks/TaskTemplateEditorModal';
 import { SmartTaskParseModal } from './components/tasks/SmartTaskParseModal';
 import { AICommandModal } from './components/ai_command/AICommandModal';
+import { AiDelegationsCard } from './components/ai_command/AiDelegationsCard';
 import { SmartFileImportModal } from './components/smart_file_import/SmartFileImportModal';
 import type { TaskAiParseResult } from './lib/api';
 import { SystemLogPanel } from './components/settings/SystemLogPanel';
@@ -2296,6 +2299,115 @@ function StreamingAnswerDocument({ text, streaming }: { text: string; streaming:
 
 // R4 P0-5 fix (B 5/23 16:46 钦定) · 4 个新 badge / card
 // 待澄清徽章 / 待审批徽章 / 文件身份 badge / 合同结构卡片
+
+/**
+ * 顾源源 5/25 真用反馈: AI 同事执行进度从 modal 抬到 sidebar 系统状态正上方.
+ * 进度条 + 灰色小字"庆华正在做: ...". 完成 (success/failed/partial) 后保留 30s 再 fade.
+ * 自身轮询 getBotTaskPlanProgress, 终态自动停, 不阻塞用户.
+ */
+function PlanProgressMini({
+  planId,
+  botName,
+  onDismiss,
+}: {
+  planId: string;
+  botName: string;
+  onDismiss: () => void;
+}) {
+  const [progress, setProgress] = useState<PlanProgressRecord | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    let timer: number | null = null;
+    let fadeTimer: number | null = null;
+
+    const isTerminal = (s: string) => s === 'success' || s === 'failed' || s === 'partial';
+
+    const tick = async () => {
+      if (cancelled) return;
+      try {
+        const r = await getBotTaskPlanProgress(planId);
+        if (cancelled) return;
+        setProgress(r);
+        setError(null);
+        if (isTerminal(r.execution_status)) {
+          // 完成后保留 30s 让用户看到, 然后自动 fade
+          fadeTimer = window.setTimeout(() => {
+            if (!cancelled) onDismiss();
+          }, 30_000);
+          return;
+        }
+      } catch (e) {
+        if (!cancelled) setError(e instanceof Error ? e.message : '查询进度失败');
+      }
+      timer = window.setTimeout(tick, 2000);
+    };
+    void tick();
+
+    return () => {
+      cancelled = true;
+      if (timer) window.clearTimeout(timer);
+      if (fadeTimer) window.clearTimeout(fadeTimer);
+    };
+  }, [planId, onDismiss]);
+
+  const exec = progress?.execution_status;
+  const pct = progress?.progress.percent ?? 0;
+  const completed = progress?.progress.completed ?? 0;
+  const total = progress?.progress.total ?? 0;
+  const current = progress?.progress.current || '准备中';
+
+  const isSuccess = exec === 'success';
+  const isFailed = exec === 'failed' || exec === 'partial';
+  const isRunning = exec === 'running' || exec === 'pending_execute' || exec === 'not_started' || !exec;
+
+  const barColor = isSuccess
+    ? 'bg-emerald-500'
+    : isFailed
+      ? 'bg-amber-500'
+      : 'bg-[#5B7BFE]';
+  const statusLabel = isSuccess
+    ? `✓ ${botName} 完成`
+    : isFailed
+      ? `${exec === 'partial' ? '⚠' : '✗'} ${botName} ${exec === 'partial' ? '部分完成' : '失败'}`
+      : `${botName} 正在执行`;
+
+  return (
+    <div className="mx-2 mb-2 rounded-lg border border-gray-200 bg-white px-2.5 py-2 shadow-sm">
+      <div className="flex items-center justify-between gap-1 mb-1">
+        <div className="text-[10.5px] font-medium text-gray-700 truncate">{statusLabel}</div>
+        <button
+          type="button"
+          onClick={onDismiss}
+          className="shrink-0 text-[9px] text-gray-400 hover:text-gray-700 px-1"
+          title="关闭进度提示 (任务继续执行)"
+        >
+          ✕
+        </button>
+      </div>
+      {/* 进度条 */}
+      <div className="h-1 w-full rounded-full bg-gray-100 overflow-hidden">
+        <div
+          className={`h-full ${barColor} transition-all duration-300`}
+          style={{ width: `${Math.max(0, Math.min(100, pct))}%` }}
+        />
+      </div>
+      {/* 灰色小字 — 正在做什么 + 第几步 */}
+      <div className="mt-1 flex items-center gap-1.5 text-[9.5px] text-gray-500 leading-tight">
+        <span className="font-mono text-gray-400">{completed}/{total}</span>
+        <span className="truncate">
+          {isRunning ? `正在: ${current}` : isSuccess ? '全部完成, 30s 后收起' : `${current} · 见详情`}
+        </span>
+      </div>
+      {error && (
+        <div className="mt-1 text-[9.5px] text-red-600 truncate" title={error}>
+          ⚠ {error}
+        </div>
+      )}
+    </div>
+  );
+}
 
 function PendingClarificationsBadge({ count }: { count: number | undefined }) {
   if (!count || count <= 0) return null;
@@ -7031,6 +7143,10 @@ export default function App() {
     if (typeof window === 'undefined') return false;
     return window.localStorage.getItem('yiyu-sidebar-collapsed') === '1';
   });
+  // 顾源源 5/25 真用反馈: AI 同事执行进度从 modal 抬到 sidebar 系统状态上方,
+  // modal 提交后自动 close, 用户能继续做别的事. 这个 state 在 App 顶层
+  // (跟 sidebar 同 scope) — 子层的 AICommandModal 通过 props 注入 setter.
+  const [activePlanRun, setActivePlanRun] = useState<{ planId: string; botName: string } | null>(null);
   const [collabRepoPath, setCollabRepoPath] = useState<string | null>(() => {
     if (typeof window === 'undefined') return null;
     return normalizeInitialCollabRepoPath(window.localStorage.getItem(COLLAB_REPO_PATH_STORAGE_KEY));
@@ -16815,6 +16931,10 @@ export default function App() {
                     </div>
                   </section>
 
+                  {/* [B] 5/25 PM (path C 已撤, 顾源源洞察 path D):
+                       AI 跟人一体走同一套接口, 不再加独立"AI 委托" 区块.
+                       庆华建的任务/复盘自动出现在下面"重点主线"里 (跟人做的混在一起). */}
+
                   {/* 重点主线 */}
                   {activeWeeklyOverview.mainlines.length > 0 && (
                     <section>
@@ -17675,6 +17795,11 @@ export default function App() {
           onClose={() => setIsSmartParseModalOpen(false)}
           onQuickTaskParsed={handleSmartParseResult}
           knownClientNames={clients.map((c) => c.name).filter(Boolean) as string[]}
+          clientsForResolve={clients
+            .filter((c) => c.id && c.name)
+            .map((c) => ({ id: c.id, name: c.name }))}
+          currentUserId={currentSessionUser?.id || undefined}
+          onPlanStarted={(info) => setActivePlanRun(info)}
         />
 
 
@@ -23967,9 +24092,6 @@ export default function App() {
 	                        />
 	                      </span>
 	                    </button>
-	                    {deepThinking && (
-	                      <span className="text-[10px] font-medium text-slate-400">先出大纲再分段写，约 1–3 分钟</span>
-	                    )}
 	                    {/* R7: 创意度三档上拉菜单（跟写作风格按钮同形态） */}
 	                    <div className="relative">
 	                      <button
@@ -29144,10 +29266,17 @@ export default function App() {
 
         </div>
 
-        {/* P10 v2：系统状态 panel —— 在系统设置上方独立成块
-              展开态：list（数据中心 / 大模型），点击跳设置
-              收起态：纵向 mini 圆点列，hover tooltip 显示状态 */}
+        {/* 顾源源 5/25 真用反馈: AI 同事执行进度条挂在系统状态正上方,
+            灰色小字显示"正在做什么 / 第几步". 完成后保留 30s 再 fade.
+            modal 提交后已自动 close, 不挡用户. */}
         <div className="mt-auto">
+          {activePlanRun && !isSidebarCollapsed && (
+            <PlanProgressMini
+              planId={activePlanRun.planId}
+              botName={activePlanRun.botName}
+              onDismiss={() => setActivePlanRun(null)}
+            />
+          )}
           <SystemStatusPanel
             health={health}
             backendOnline={!backendCompatibilityError && Boolean(health)}

@@ -187,6 +187,63 @@ def ensure_bot_schema(db: _DbLike) -> None:
            ON ai_task_plans(bot_member_id, status)""",
         """CREATE INDEX IF NOT EXISTS idx_ai_plans_task
            ON ai_task_plans(task_id)""",
+        # [B] 5/25 PM (顾源源 path C) · org_members_v: 人 + bot 统一视图,
+        # 字段名跟 mirror_users 完全一致, 让复盘/组织聚合 SQL 改成 view 就行,
+        # 不动业务逻辑. is_bot 字段供前端按需要区分.
+        # 注: bot_members.py 自己查 dept_leader/CEO (找审批人) 仍用 mirror_users,
+        # 不应把 bot 也当审批人.
+        # DROP+CREATE 保证升级时 view 定义最新.
+        """DROP VIEW IF EXISTS org_members_v""",
+        """CREATE VIEW org_members_v AS
+            SELECT
+                id,
+                organization_id,
+                department_id,
+                full_name,
+                email,
+                primary_role,
+                account_status,
+                membership_status,
+                is_department_lead,
+                is_manager,
+                manager_user_id,
+                task_edit_scope,
+                can_approve_tasks,
+                can_reassign_tasks,
+                can_change_deadline,
+                project_role_labels_json,
+                avatar_url,
+                cloud_updated_at,
+                synced_from_cloud_at,
+                0 AS is_bot
+            FROM mirror_users
+            WHERE account_status = 'approved'
+
+            UNION ALL
+
+            SELECT
+                actor_id    AS id,
+                organization_id,
+                department_id,
+                display_name AS full_name,
+                ''          AS email,
+                'ai_agent'  AS primary_role,
+                'approved'  AS account_status,
+                'active'    AS membership_status,
+                0           AS is_department_lead,
+                0           AS is_manager,
+                NULL        AS manager_user_id,
+                'self'      AS task_edit_scope,
+                0           AS can_approve_tasks,
+                0           AS can_reassign_tasks,
+                0           AS can_change_deadline,
+                '[]'        AS project_role_labels_json,
+                ''          AS avatar_url,
+                ''          AS cloud_updated_at,
+                created_at  AS synced_from_cloud_at,
+                1           AS is_bot
+            FROM bot_members
+            WHERE status = 'active'""",
     ]
     for sql in statements:
         try:

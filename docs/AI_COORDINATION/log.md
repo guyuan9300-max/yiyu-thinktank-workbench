@@ -120,3 +120,16 @@
             P0=/consultation/chat 项目边界闸门 out_of_scope(当前火锅/CFFC 仍被答 grounded)
             + 任务归属冲突回传(标题日慈 vs 绑定益语智库) + 手机成长数值 endpoint
             C 前端并行做 M3-M7,做完一次性装机;cloud_backend 交 A,火山云线上为准
+
+- [D] 10:03 上线 + 任务领取: 官网"开源工作台"介绍页质感升级(顾源源指派)
+            主战场在独立仓库 ~/openclaw/workspace/yiyu-think-tank-website,不碰 V2.1 monolith,无需占 baton
+            实改文件 OpenSourceWorkbenchClassicPage.tsx(官网 ?page=open-source-workbench 实际渲染的 classic 页)
+            方向已与顾源源确认: Quiet Luxury 精致编辑感(暖象牙白+近黑墨+思源宋体大标题+紫靛精准点缀+多层柔投影)
+            本轮只做视觉/结构,不抢跑内容真实性(2.1 真截图/模块真相表/对外数字待 A+顾源源口径)
+- [E] 10:02 上线 · 读完 README + inbox-E(空) + baton + log + git log 48h
+            已扫 V2.1 全仓代码结构 (185 路由 / 206 service / 187 表 / 69 前端组件 / 3.0 预留信号已落地)
+            baton 现状: B 占 AICommandModal bot_resolved overlay + aiCommand.ts; main.py 空闲
+            待顾源源派任务, 暂不占 baton
+- [E] 10:08 任务领取(顾源源): DMG 打包前完整源码排查 → 只读审计, 出"还差什么"清单, 不改代码不占 baton
+            进行中: typecheck:renderer 已过(0 err), npm run build 跑着, 3 路并行审计(打包脚本链/后端拉起+原生依赖/身份+密钥+发布冲突)
+            初步: .env.release 缺(V2.1 根只有 example) / 工作树脏(App.tsx+AICommandModal+aiCommand B在改) / appId+publish 沿用生产身份(待查是否撞车)

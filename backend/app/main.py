@@ -3162,6 +3162,22 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
     app = FastAPI(title=APP_NAME, version=APP_VERSION)
     app.state.app_state = state
 
+    # [B] 2026-05-25 PM · 注入 AIService 到 plan_executor (顾源源拍板"真接 LLM").
+    # plan_executor 的 _handler_documents_generate 用这个调 LLM 生成 markdown.
+    # 不传则 fallback 写 stub (不崩, 但顾源源能看到 "no_ai_service" 错误).
+    from app.services.plan_executor import set_ai_service as _pe_set_ai_service
+    _pe_set_ai_service(state.ai)
+
+    # [B] 5/25 PM (顾源源 path C) · 启动时确保 org_members_v view 真创建.
+    # view 定义: 人 (mirror_users) + bot (bot_members) 统一视图,
+    # 供组织复盘/部门聚合/客户协同视图统一拉成员名单 (含 bot 庆华).
+    try:
+        from app.services.bot_members import ensure_bot_schema as _ensure_bot_schema
+        _ensure_bot_schema(state.db)
+    except Exception as _e:  # noqa: BLE001
+        import logging as _logging
+        _logging.getLogger(__name__).warning("ensure_bot_schema on startup failed: %s", _e)
+
     # [DEPRECATED 2026-05-22 · 新计划阶段 0] V2.1 8 段 endpoint 已废弃.
     # 跟产品手册 §03 钦定 6 段 (essence/cooperation/business_intro/people/
     # timeline/next_steps) 冲突, 新计划走主仓库 narrative_generator.
@@ -17155,7 +17171,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             # judgment_doc / calendar_doc / internet_fact_card / internet_source_doc /
             # wechat_article_excerpt / project_enrichment_doc / ...) 通过其他入口访问。
             # 与前端引证 tab 的过滤规则保持一致 (App.tsx 中 userFacingEvidence)。
-            for row in state.db.fetchall("SELECT * FROM documents WHERE client_id = ? AND content_domain = 'work' AND (canonical_kind = 'raw_file' OR canonical_kind IS NULL OR canonical_kind = '') ORDER BY created_at DESC LIMIT ?", (client_id, document_limit))
+            for row in state.db.fetchall("SELECT * FROM documents WHERE client_id = ? AND content_domain = 'work' AND (canonical_kind = 'raw_file' OR canonical_kind = 'ai_draft' OR canonical_kind IS NULL OR canonical_kind = '') ORDER BY created_at DESC LIMIT ?", (client_id, document_limit))
         ]
         def _coerce_import_mode(raw: str) -> str:
             # ImportRecord.mode 现在只接 'folder' / 'file'；老数据/异步流程可能塞过
@@ -28633,7 +28649,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 return cached["outcome"]
         # session 关联 client_id
         session_row = state.db.fetchone(
-            "SELECT client_id FROM smart_import_sessions WHERE id = ?", (session_id,),
+            "SELECT client_id FROM import_story_sessions WHERE id = ?", (session_id,),
         )
         client_id_for_audit = str(session_row["client_id"]) if session_row and session_row["client_id"] else None
         run_id = log_agent_run_start(
@@ -50791,6 +50807,239 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 status=200, response_body=_result.model_dump(mode="json"),
             )
         return _result
+
+    @app.get("/api/v1/local/users/{user_id}/ai-delegations")
+    def get_user_ai_delegations(user_id: str, week: str | None = None) -> dict:
+        """[B] 5/25 PM (顾源源 path C) · 用户视角: 本周布置给 AI 的所有任务 + 完成情况.
+
+        返回结构:
+          { plans: [{plan_id, plan_title, bot_id, bot_name, status, exec_status,
+                     created_at, subtask_count, success_count, failed_count, summary}],
+            summary: { total_plans, approved, executing, completed, failed },
+            ai_collaboration_score: float 0-1 (本周 AI 同事完成的任务占总任务的比例) }
+        """
+        from datetime import datetime, timedelta
+        # week 格式: '2026-W22' / '2026-05-25' (week 起始日)
+        if week:
+            try:
+                # 支持 ISO week 或具体日期
+                if '-W' in week:
+                    year, w = week.split('-W')
+                    week_start = datetime.fromisocalendar(int(year), int(w), 1)
+                else:
+                    week_start = datetime.fromisoformat(week)
+            except Exception:
+                week_start = datetime.now() - timedelta(days=datetime.now().weekday())
+        else:
+            now = datetime.now()
+            week_start = now - timedelta(days=now.weekday())
+        week_end = week_start + timedelta(days=7)
+        week_start_s = week_start.strftime("%Y-%m-%dT00:00:00")
+        week_end_s = week_end.strftime("%Y-%m-%dT00:00:00")
+
+        # 拉本周该用户作为 human_initiator 的 plans
+        rows = state.db.fetchall(
+            """SELECT p.id, p.plan_title, p.bot_member_id, p.status, p.execution_status,
+                      p.created_at, p.execution_summary_json, p.client_id,
+                      b.display_name AS bot_name
+               FROM ai_task_plans p
+               LEFT JOIN bot_members b ON b.id = p.bot_member_id
+               WHERE p.human_initiator_id = ?
+                 AND p.created_at >= ? AND p.created_at < ?
+               ORDER BY p.created_at DESC""",
+            (user_id, week_start_s, week_end_s),
+        )
+        plans: list[dict] = []
+        approved_n = exec_n = success_n = failed_n = 0
+        for r in rows:
+            d = dict(r)
+            exec_summary = {}
+            try:
+                exec_summary = json.loads(d.get("execution_summary_json") or "{}")
+            except Exception:
+                pass
+            sub_total = int(exec_summary.get("total_count") or 0)
+            sub_success = int(exec_summary.get("success_count") or 0)
+            sub_failed = max(0, sub_total - sub_success)
+            exec_status = (d.get("execution_status") or "not_started").strip()
+            plans.append({
+                "plan_id": d["id"],
+                "plan_title": d.get("plan_title") or "",
+                "bot_id": d.get("bot_member_id") or "",
+                "bot_name": d.get("bot_name") or "",
+                "client_id": d.get("client_id") or "",
+                "status": d.get("status") or "",
+                "execution_status": exec_status,
+                "created_at": d.get("created_at") or "",
+                "subtask_count": sub_total,
+                "success_count": sub_success,
+                "failed_count": sub_failed,
+                "summary": exec_summary.get("subtasks", [])[:3] if isinstance(exec_summary.get("subtasks"), list) else [],
+            })
+            if d.get("status") == "approved":
+                approved_n += 1
+            if exec_status == "running":
+                exec_n += 1
+            if exec_status == "success":
+                success_n += 1
+            if exec_status == "failed":
+                failed_n += 1
+
+        # 本周用户自己直接做的任务数 (作为 owner + manual)
+        user_tasks_n = int(state.db.scalar(
+            """SELECT COUNT(*) FROM tasks
+               WHERE owner_id = ? AND source_type='manual'
+                 AND created_at >= ? AND created_at < ?""",
+            (user_id, week_start_s, week_end_s),
+        ) or 0)
+        # AI 协同指数: AI 完成数 / (AI 完成数 + 用户手动任务数)
+        ai_score = (success_n / (success_n + user_tasks_n)) if (success_n + user_tasks_n) > 0 else 0.0
+
+        return {
+            "user_id": user_id,
+            "week_start": week_start_s,
+            "week_end": week_end_s,
+            "plans": plans,
+            "summary": {
+                "total_plans": len(plans),
+                "approved": approved_n,
+                "executing": exec_n,
+                "completed": success_n,
+                "failed": failed_n,
+            },
+            "ai_collaboration_score": round(ai_score, 3),
+            "user_manual_tasks": user_tasks_n,
+        }
+
+    @app.get("/api/v1/local/bot-members/{bot_id}/weekly-summary")
+    def get_bot_weekly_summary(bot_id: str, week: str | None = None) -> dict:
+        """[B] 5/25 PM (顾源源 path C) · 机器人视角: 本周接的指令 + 真做了什么.
+
+        返回结构:
+          { bot: {id, display_name, department_name, actor_id},
+            plans_received: [{plan_id, plan_title, human_initiator, ...}],
+            actions_summary: {documents.generate: N, tasks.create: M, ...},
+            total_actions: N,
+            success_rate: float,
+            avg_duration_ms: int }
+        """
+        from datetime import datetime, timedelta
+        if week:
+            try:
+                if '-W' in week:
+                    year, w = week.split('-W')
+                    week_start = datetime.fromisocalendar(int(year), int(w), 1)
+                else:
+                    week_start = datetime.fromisoformat(week)
+            except Exception:
+                week_start = datetime.now() - timedelta(days=datetime.now().weekday())
+        else:
+            now = datetime.now()
+            week_start = now - timedelta(days=now.weekday())
+        week_end = week_start + timedelta(days=7)
+        week_start_s = week_start.strftime("%Y-%m-%dT00:00:00")
+        week_end_s = week_end.strftime("%Y-%m-%dT00:00:00")
+
+        bot_row = state.db.fetchone(
+            """SELECT id, display_name, department_id, department_name, actor_id
+               FROM bot_members WHERE id = ? OR actor_id = ?""",
+            (bot_id, bot_id),
+        )
+        if not bot_row:
+            raise HTTPException(status_code=404, detail=f"bot not found: {bot_id}")
+        bot = dict(bot_row)
+        actor_id = bot.get("actor_id") or ""
+
+        # 本周接的 plans
+        plan_rows = state.db.fetchall(
+            """SELECT id, plan_title, human_initiator_id, status, execution_status,
+                      created_at, execution_summary_json, client_id
+               FROM ai_task_plans
+               WHERE bot_member_id = ? AND created_at >= ? AND created_at < ?
+               ORDER BY created_at DESC""",
+            (bot["id"], week_start_s, week_end_s),
+        )
+        plans_received = []
+        for r in plan_rows:
+            d = dict(r)
+            exec_summary = {}
+            try:
+                exec_summary = json.loads(d.get("execution_summary_json") or "{}")
+            except Exception:
+                pass
+            plans_received.append({
+                "plan_id": d["id"],
+                "plan_title": d.get("plan_title") or "",
+                "human_initiator": d.get("human_initiator_id") or "",
+                "status": d.get("status") or "",
+                "execution_status": d.get("execution_status") or "not_started",
+                "client_id": d.get("client_id") or "",
+                "created_at": d.get("created_at") or "",
+                "subtask_count": int(exec_summary.get("total_count") or 0),
+                "success_count": int(exec_summary.get("success_count") or 0),
+            })
+
+        # 本周 agent_run_log 真动作
+        action_rows = state.db.fetchall(
+            """SELECT tool_name, status, duration_ms FROM agent_run_log
+               WHERE actor_id = ? AND triggered_at >= ? AND triggered_at < ?""",
+            (actor_id, week_start_s, week_end_s),
+        )
+        actions_summary: dict[str, int] = {}
+        success_n = 0
+        failed_n = 0
+        total_duration_ms = 0
+        for r in action_rows:
+            d = dict(r)
+            tool = d.get("tool_name") or "unknown"
+            actions_summary[tool] = actions_summary.get(tool, 0) + 1
+            if d.get("status") == "success":
+                success_n += 1
+            elif d.get("status") == "failed":
+                failed_n += 1
+            if d.get("duration_ms"):
+                total_duration_ms += int(d.get("duration_ms") or 0)
+        total_actions = len(action_rows)
+        success_rate = (success_n / total_actions) if total_actions > 0 else 0.0
+        avg_duration_ms = (total_duration_ms // total_actions) if total_actions > 0 else 0
+
+        return {
+            "bot": {
+                "id": bot["id"],
+                "actor_id": actor_id,
+                "display_name": bot.get("display_name") or "",
+                "department_id": bot.get("department_id") or "",
+                "department_name": bot.get("department_name") or "",
+            },
+            "week_start": week_start_s,
+            "week_end": week_end_s,
+            "plans_received": plans_received,
+            "actions_summary": actions_summary,
+            "total_actions": total_actions,
+            "success_count": success_n,
+            "failed_count": failed_n,
+            "success_rate": round(success_rate, 3),
+            "avg_duration_ms": avg_duration_ms,
+        }
+
+    @app.post("/api/v1/ai-command/parse-steps")
+    def ai_command_parse_steps(payload: dict) -> dict:
+        """[B] 2026-05-25 PM · LLM 真解析自然口语指令 → step 三段式 list.
+
+        顾源源 5/25 真用反馈: 客户用真口语写指令 (首先/然后/第N个/呢/嘛/啊),
+        regex 拆 step 跟不上. 这个 endpoint 调豆包真解析.
+
+        请求: {"text": "用户原指令"}
+        响应: {"steps": [{index, action, basis, deliverable}], "fallback_reason"?}
+        """
+        from app.services.plan_executor import parse_steps_with_llm
+        text = (payload.get("text") or "").strip()
+        if not text:
+            raise HTTPException(status_code=400, detail="text 不能为空")
+        if len(text) > 6000:
+            raise HTTPException(status_code=400, detail="text 太长 (>6000), 请精简")
+        today = datetime.now().strftime("%Y年%m月%d日")
+        return parse_steps_with_llm(text, today)
 
     @app.post("/api/v1/tasks/ai-parse", response_model=TaskAiParseResult)
     def ai_parse_task(payload: TaskAiParsePayload) -> TaskAiParseResult:

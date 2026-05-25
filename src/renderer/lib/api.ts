@@ -1069,6 +1069,100 @@ export interface PlanProgressRecord {
   errors: Array<{ index: number; tool: string; error: string }>;
 }
 
+export interface AiCommandParsedStep {
+  index: number;
+  action: string;
+  basis: string;
+  deliverable: string;
+}
+
+export interface AiCommandParseStepsResponse {
+  steps: AiCommandParsedStep[];
+  model_used?: string;
+  fallback_reason?: string;
+}
+
+/**
+ * [B] 2026-05-25 PM · LLM 真解析自然口语指令 → step 三段式 list.
+ * 优先本地 qwen2.5:7b (4-5s), 失败 fallback 豆包 (2-3s).
+ */
+export async function aiCommandParseSteps(text: string): Promise<AiCommandParseStepsResponse> {
+  return request<AiCommandParseStepsResponse>('/api/v1/ai-command/parse-steps', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ text }),
+  });
+}
+
+// [B] 5/25 PM (顾源源 path C) · 双重归属复盘 · 2 个 endpoint
+export interface UserAiDelegationsResponse {
+  user_id: string;
+  week_start: string;
+  week_end: string;
+  plans: Array<{
+    plan_id: string;
+    plan_title: string;
+    bot_id: string;
+    bot_name: string;
+    client_id: string;
+    status: string;
+    execution_status: string;
+    created_at: string;
+    subtask_count: number;
+    success_count: number;
+    failed_count: number;
+    summary: unknown[];
+  }>;
+  summary: {
+    total_plans: number;
+    approved: number;
+    executing: number;
+    completed: number;
+    failed: number;
+  };
+  ai_collaboration_score: number;
+  user_manual_tasks: number;
+}
+
+export interface BotWeeklySummaryResponse {
+  bot: {
+    id: string;
+    actor_id: string;
+    display_name: string;
+    department_id: string;
+    department_name: string;
+  };
+  week_start: string;
+  week_end: string;
+  plans_received: Array<{
+    plan_id: string;
+    plan_title: string;
+    human_initiator: string;
+    status: string;
+    execution_status: string;
+    client_id: string;
+    created_at: string;
+    subtask_count: number;
+    success_count: number;
+  }>;
+  actions_summary: Record<string, number>;
+  total_actions: number;
+  success_count: number;
+  failed_count: number;
+  success_rate: number;
+  avg_duration_ms: number;
+}
+
+export async function getUserAiDelegations(userId: string, week?: string): Promise<UserAiDelegationsResponse> {
+  const q = week ? `?week=${encodeURIComponent(week)}` : '';
+  return request<UserAiDelegationsResponse>(`/api/v1/local/users/${encodeURIComponent(userId)}/ai-delegations${q}`);
+}
+
+export async function getBotWeeklySummary(botId: string, week?: string): Promise<BotWeeklySummaryResponse> {
+  const q = week ? `?week=${encodeURIComponent(week)}` : '';
+  return request<BotWeeklySummaryResponse>(`/api/v1/local/bot-members/${encodeURIComponent(botId)}/weekly-summary${q}`);
+}
+
 export async function getBotTaskPlanProgress(planId: string): Promise<PlanProgressRecord> {
   return request<PlanProgressRecord>(
     `/api/v1/org/bots/task-plans/${encodeURIComponent(planId)}/progress`,

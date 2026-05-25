@@ -3,7 +3,7 @@
 **日期**: 2026-05-24
 **分支**: v2.2-arch-v2
 **上一基线 commit**: 783369a (M1-M5 端到端通)
-**本次 commit**: (待 commit 后填回)
+**本次 commit**: `0afda13` feat(v2.1-lab bot-hover-buttons M6): 岗位卡 hover 3 按钮重排 + 复制密钥即时可用
 **变更范围**: 仅前端 (UI + state), 后端零改动
 
 ---
@@ -178,4 +178,10 @@ src/renderer/components/settings/OrganizationSetupCenter.tsx | 103 +++++++++++++
 
 ## 9. commit hash
 
-(待写报告后 commit, 然后 git log -1 把 hash 填回此处)
+```
+0afda13 feat(v2.1-lab bot-hover-buttons M6): 岗位卡 hover 3 按钮重排 + 复制密钥即时可用
+ 3 files changed, 386 insertions(+), 20 deletions(-)
+ create mode 100644 docs/A_M6_BOT_HOVER_BUTTONS_REPORT.md
+```
+
+(报告本身的 hash 回填属于第二次 commit 范畴, 不再单独 commit 以免污染历史; 下次 M7 自然带上.)

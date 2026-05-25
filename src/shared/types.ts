@@ -20,7 +20,9 @@ export type AiModelProfileKey = 'online_primary' | 'local_text_deep' | 'local_vi
 export type AiModelCapability = 'online_primary' | 'deep_analysis' | 'vision_ocr' | 'fast_structured';
 export type AccountStatus = 'pending' | 'approved' | 'rejected' | 'disabled';
 export type MembershipStatus = 'none' | 'pending' | 'approved' | 'rejected';
-export type EmployeeRole = 'admin' | 'employee';
+// [B] 5/25 PM (顾源源 path C): 加 'ai_agent' 让真 bot 同事 (庆华等) 能作为组织成员存在.
+// 跟 admin/employee 一样平权, 但 isLegacyOrganizationEmployee 永远放行.
+export type EmployeeRole = 'admin' | 'employee' | 'ai_agent';
 export type CollaboratorInboxStatus = 'pending' | 'accepted' | 'returned';
 export type OrgRoleLevel = 'employee' | 'supervisor' | 'department_lead' | 'organization_lead';
 export type OrgReportingLineType = 'business' | 'administrative';

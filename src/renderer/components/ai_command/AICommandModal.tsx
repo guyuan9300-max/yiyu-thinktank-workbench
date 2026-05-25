@@ -24,7 +24,9 @@ import {
   getBotPermissions,
   createBotTaskPlan,
   listBotMembers,
+  listBotTaskPlans,
   getBotTaskPlanProgress,
+  aiCommandParseSteps,
   type TaskAiParseResult,
   type BotPermissionsResponse,
   type BotMemberRecord,
@@ -54,6 +56,11 @@ type AICommandModalProps = {
   clientsForResolve?: Array<{ id: string; name: string }>;
   /** 当前登录用户 id, 用于 inline_authorization 时作为 human_initiator (审批人本人). */
   currentUserId?: string;
+  /**
+   * 顾源源 5/25 真用反馈: plan inline approved 进 submitted 时, 立刻把 planId 抬到 App level,
+   * 由 sidebar 系统状态那块的 PlanProgressMini 接管轮询, modal 自动关闭, 用户能继续做别的事.
+   */
+  onPlanStarted?: (info: { planId: string; botName: string }) => void;
 };
 
 type Stage = 'input' | 'parsing' | 'bot_resolved' | 'plan_preview' | 'submitting' | 'submitted' | 'error';
@@ -66,6 +73,7 @@ export function AICommandModal({
   defaultClientId,
   clientsForResolve = [],
   currentUserId,
+  onPlanStarted,
 }: AICommandModalProps) {
   const [text, setText] = useState('');
   const [stage, setStage] = useState<Stage>('input');
@@ -75,6 +83,9 @@ export function AICommandModal({
   const [bot, setBot] = useState<BotResolveResult | null>(null);
   const [permissions, setPermissions] = useState<BotPermissionsResponse | null>(null);
   const [submitResult, setSubmitResult] = useState<{ task_id: string; ai_task_plan_id: string; status: string } | null>(null);
+  // 顾源源 5/25 安全边界: 每个任务以客户隔离, 必须强制有客户.
+  // 自动识别 → 可改 → 没识别就强制选 → 没选不让提交.
+  const [chosenClientId, setChosenClientId] = useState<string | null>(null);
   const [availableBots, setAvailableBots] = useState<BotMemberRecord[]>([]);
   // M10 (A, 2026-05-25) · plan 执行进度轮询 (2s)
   const [planProgress, setPlanProgress] = useState<PlanProgressRecord | null>(null);
@@ -117,6 +128,7 @@ export function AICommandModal({
       setBot(null);
       setPermissions(null);
       setSubmitResult(null);
+      setChosenClientId(null);
       setPlanProgress(null);
       setProgressError(null);
     }
@@ -190,6 +202,18 @@ export function AICommandModal({
       MODULE_CAPABILITY_MANIFEST_V1.find((m) => m.moduleKey === k),
     ).filter(Boolean);
   }, [parsed]);
+
+  // parsed 出来时自动同步 chosenClientId: 优先解析到的 client_name → 反查 id;
+  // 否则 fallback 到 defaultClientId (从客户详情触发时上下文带的).
+  // 用户在 bot_resolved UI dropdown 改 → 覆盖.
+  useEffect(() => {
+    if (!parsed) return;
+    const autoId =
+      (parsed.client_name && clientsForResolve.find((c) => c.name === parsed.client_name)?.id) ||
+      defaultClientId ||
+      null;
+    setChosenClientId(autoId);
+  }, [parsed, clientsForResolve, defaultClientId]);
 
   if (!open) return null;
 
@@ -345,8 +369,18 @@ export function AICommandModal({
     const parsed = parseSmartCommand(trimmed, knownClientNames);
     setParsed(parsed);
 
-    // 用户手动指定 mode 优先, 否则用 parsed.mode
-    const finalMode = mode === 'quick_task' ? 'quick_task' : parsed.mode;
+    // 顾源源 5/25 真用 bug: toggle=quick_task 但用户输入带 @机器人时, 强制 quick_task,
+    // 导致 5 份文档复杂指令被当成 quick_task → 打开普通新建任务弹窗. 反直觉.
+    // 修法: 输入带 @机器人 = 用户意图明确, 任何 toggle 都强制 ai_command.
+    // 只有"完全没 @ 谁" 时, toggle 才生效.
+    const finalMode: AICommandMode =
+      parsed.bot_handle
+        ? 'ai_command'
+        : mode === 'quick_task'
+          ? 'quick_task'
+          : parsed.mode;
+    // toggle 跟实际路由不一致时, 同步回 UI (让用户知道走了哪条)
+    if (finalMode !== mode) setMode(finalMode);
 
     if (finalMode === 'quick_task') {
       // Quick Task 链路: 直接调原 ai-parse, 跟旧 SmartTaskParseModal 一致
@@ -373,10 +407,33 @@ export function AICommandModal({
 
     setStage('parsing');
     try {
-      const botData = await resolveBotByHandle(parsed.bot_handle);
+      // 顾源源 5/25 PM 真用反馈: regex 解析跟不上自然口语, 必须 LLM 真解析.
+      // 并行调 3 个: resolveBotByHandle / getBotPermissions / aiCommandParseSteps (本地 qwen2.5:7b).
+      // LLM 解析 ~5s, bot resolve <1s, 总耗时 ≈ 5s (并行).
+      const [botData, llmStepsResult] = await Promise.all([
+        resolveBotByHandle(parsed.bot_handle),
+        aiCommandParseSteps(trimmed).catch((err) => {
+          // LLM 解析失败不阻塞 — 退回 regex steps (parsed.steps 已经有)
+          // eslint-disable-next-line no-console
+          console.warn('aiCommandParseSteps failed, fallback to regex steps:', err);
+          return { steps: [] as ParsedSmartCommand['steps'], fallback_reason: 'request_failed' };
+        }),
+      ]);
       setBot(botData);
       const permData = await getBotPermissions(botData.bot_member_id);
       setPermissions(permData);
+
+      // LLM 真解析的 steps 覆盖 regex 拆的 (LLM 准得多). 失败时保留 regex steps.
+      if (llmStepsResult.steps && llmStepsResult.steps.length > 0) {
+        const llmSteps = llmStepsResult.steps.map((s) => ({
+          index: s.index,
+          raw_text: '',  // LLM 路径不保留原片段, 后续如要原文可加
+          action: s.action || '',
+          basis: s.basis || '',
+          deliverable: s.deliverable || '',
+        }));
+        setParsed({ ...parsed, steps: llmSteps });
+      }
       setStage('bot_resolved');
     } catch (e) {
       const detail = e instanceof Error ? e.message : '解析失败';
@@ -395,6 +452,30 @@ export function AICommandModal({
 
   const handleSubmitPlan = async () => {
     if (!bot || !parsed) return;
+
+    // 顾源源 5/25 P0-6 真用 bug: 同一指令跑了 3 轮 = 15 份文档. 提交前查 in-flight,
+    // 防重复触发. backend approved + running 状态的 plan 也会被检测.
+    try {
+      const inflightCheck = await listBotTaskPlans(bot.bot_member_id, { status: 'approved', limit: 5 });
+      const running = (inflightCheck.items || []).filter((p) => {
+        const exec = (p as { execution_status?: string }).execution_status;
+        return exec === 'running' || exec === 'pending_execute' || exec === 'not_started';
+      });
+      if (running.length > 0) {
+        const r = running[0];
+        const confirmMsg =
+          `${bot.display_name} 已经有 ${running.length} 个任务正在执行 (最新: "${r.plan_title?.slice(0, 30) || r.id}").\n\n` +
+          `如果你确认要再触发一次新计划, 会同时产生新文档/任务. 通常应该等当前任务跑完再说.\n\n` +
+          `继续提交吗?`;
+        if (typeof window !== 'undefined' && !window.confirm(confirmMsg)) {
+          setErrorMessage('已取消 — 等当前任务跑完再发 (sidebar 左下角进度条可以看到状态)');
+          return;
+        }
+      }
+    } catch {
+      // 查 in-flight 失败不阻塞 — 让用户继续提交 (避免误伤)
+    }
+
     setStage('submitting');
     try {
       // 推荐模块 (基于 intent)
@@ -410,19 +491,48 @@ export function AICommandModal({
       // 用户点"我审批通过"那一刻, 就是他作为审批人在 inline auth.
       // 所以总是传 inline_authorization=true + human_initiator_id (= 当前 user).
       // backend 会校验 user 是否是 bot 审批人, 通过则直接 approved, 不通过仍 pending.
-      // 反查 client_id: 优先用 parsed.client_name 命中 clientsForResolve, 否则用 defaultClientId.
-      // 顾源源 5/24 反馈: 真用指令带"安然集团", AICommandModal 之前没接 clientsForResolve,
-      // → plan.client_id=空 → 庆华 (M7 接好后) 也不知道该写哪个客户工作台.
-      const resolvedClientId =
-        (parsed.client_name && clientsForResolve.find((c) => c.name === parsed.client_name)?.id) ||
-        defaultClientId;
+      // 顾源源 5/25 安全边界: 每个任务以客户隔离, 没客户禁止提交 (防跨客户污染).
+      // chosenClientId 由 useEffect 自动同步 (parsed.client_name → 反查), 用户也可在 UI 改.
+      const resolvedClientId = chosenClientId || defaultClientId || null;
+      if (!resolvedClientId) {
+        setErrorMessage('必须选关联客户 — 任务以客户隔离, 不选会导致跨客户污染. 在下方"关联客户"下拉选一个.');
+        setStage('plan_preview');
+        return;
+      }
+
+      // 顾源源 5/25 真用 bug fix: plan_executor 拿 steps:[] → total=0 → failed.
+      // 把 parsed.steps (前端三段式) 转成 backend steps_json 格式, A 的 _step_to_subtask
+      // 会从 module/action 推 tool (documents.generate / tasks.create / smart_import).
+      // A 的推法用英文关键词 (document/draft/generate/task/import) — 中文 action 不命中,
+      // 所以这里前端先把 module 推成英文关键词.
+      const backendSteps = parsed.steps.map((s) => {
+        const a = s.action || '';
+        let module = 'noop';
+        // 写一份/拟一份/起草/草案/档案/报告/分析/提案/协议 → documents.generate
+        if (/(?:写一份|拟一份|起草|草案|档案|报告|分析|提案|协议|介绍|背景|画像|盘点)/.test(a)) {
+          module = 'documents.generate';
+        }
+        // 建一个任务/会议/事项/提醒/日程 → tasks.create
+        else if (/(?:建一个|给我建|建立?)(?:任务|会议|事项|提醒|日程)/.test(a)) {
+          module = 'tasks.create';
+        }
+        // 导入/接入/同步资料 → smart_import
+        else if (/(?:导入|接入|同步|抓取).{0,10}(?:资料|文件|材料)/.test(a)) {
+          module = 'smart_import';
+        }
+        return {
+          module,
+          action: s.action,
+          expected_result: s.deliverable || s.raw_text.slice(0, 100),
+        };
+      });
 
       const result = await createBotTaskPlan(bot.bot_member_id, {
         plan_title: planTitle,
         plan_text: text,
         client_id: resolvedClientId,
         required_modules: moduleNames,
-        steps: [],
+        steps: backendSteps,
         expected_outputs: parsed.requested_outputs,
         approval_required: true,
         inline_authorization: true,
@@ -430,12 +540,25 @@ export function AICommandModal({
           parsed.inline_authorization_text || `${bot.display_name} 由我本人 (审批人) 当场确认执行`,
         human_initiator_id: currentUserId || 'user_guyuan',
       });
+      const submitStatus = result.approval_status || result.status || 'pending_approval';
       setSubmitResult({
         task_id: result.task_id || '',
         ai_task_plan_id: result.ai_task_plan_id,
-        status: result.approval_status || result.status || 'pending_approval',
+        status: submitStatus,
       });
       setStage('submitted');
+
+      // 顾源源 5/25 真用反馈: approved 路径下, 立刻把 planId 抬到 App,
+      // sidebar 的 PlanProgressMini 接管轮询. modal 自动 close, 用户能继续做事.
+      // pending 路径 (你不在审批人列表) modal 留着让你看, 不自动关.
+      if (submitStatus === 'approved' && onPlanStarted) {
+        onPlanStarted({
+          planId: result.ai_task_plan_id,
+          botName: bot.display_name,
+        });
+        // 给个 600ms 让用户看到"已确认" 视觉反馈再关
+        window.setTimeout(() => onClose(), 600);
+      }
     } catch (e) {
       const detail = e instanceof Error ? e.message : '提交失败';
       setErrorMessage(detail);
@@ -574,47 +697,147 @@ export function AICommandModal({
           </div>
         )}
 
-        {/* Stage: parsing — 解析中 */}
+        {/* Stage: parsing — LLM 真解析中 (顾源源 5/25 PM: 本地 qwen2.5:7b ~5s) */}
         {stage === 'parsing' && (
           <div className="px-6 py-12 flex flex-col items-center gap-3">
             <Loader2 size={28} className="text-[#5B7BFE] animate-spin" />
-            <div className="text-[13px] text-gray-600">正在解析指令...</div>
-            {parsed?.bot_handle && (
-              <div className="text-[11px] text-gray-400">@{parsed.bot_handle} · {parsed.intent}</div>
-            )}
+            <div className="text-[13px] text-gray-700 font-medium">
+              {parsed?.bot_handle
+                ? `${parsed.bot_handle} 正在理解你的指令...`
+                : '正在解析指令...'}
+            </div>
+            <div className="text-[11px] text-gray-400">
+              本地模型 (qwen2.5:7b) 真解析, 4-6 秒
+              {parsed?.bot_handle && ` · @${parsed.bot_handle}`}
+            </div>
           </div>
         )}
 
-        {/* Stage: bot_resolved — 显示 bot card + 进入计划按钮 */}
+        {/* Stage: bot_resolved — 顾源源 5/25 真用反馈重排:
+              · 庆华信息卡 → 右上角小卡 (collapsed)
+              · 主区显示 step list, 每步三段式 (做什么/基于什么/交付什么)
+              · 用户一眼看出 AI 是否理解任务, 而不是再读一遍自己的原话 */}
         {stage === 'bot_resolved' && bot && parsed && (
           <div className="px-6 py-4 space-y-3">
-            <div className="rounded-lg border border-[#5B7BFE]/20 bg-gradient-to-br from-[#5B7BFE]/5 to-transparent p-4">
-              <div className="flex items-center gap-2">
-                <Bot size={16} className="text-[#5B7BFE]" />
-                <span className="text-[14px] font-medium text-gray-900">{bot.display_name}</span>
-                <span className="text-[10px] text-gray-400 ml-1">· AI 同事</span>
+            {/* Header row: 左 "我理解的任务" 标题 + 右上角庆华小卡 */}
+            <div className="flex items-start justify-between gap-3">
+              <div className="flex-1 min-w-0">
+                <div className="text-[13px] font-medium text-gray-900">我理解的任务</div>
+                <div className="mt-0.5 text-[10.5px] text-gray-500">
+                  {parsed.steps.length > 0
+                    ? `共 ${parsed.steps.length} 步, 请逐步核对庆华是否理解准确`
+                    : '没识别出明确步骤, 退回显示原文 (庆华可能误解任务结构)'}
+                </div>
               </div>
-              <div className="mt-1 text-[11.5px] text-gray-600">
-                {bot.department_name || '未分配部门'} · actor_id=<code className="text-[10px] bg-gray-100 px-1 rounded">{bot.actor_id}</code>
-              </div>
-              <div className="mt-2 text-[11px] text-gray-500">
-                汇报给: {bot.reporting_approvers.map((a) => a.role).join(' / ')}
-              </div>
-              <div className="mt-2 flex flex-wrap gap-1">
-                {bot.enabled_capabilities.map((cap) => (
-                  <span key={cap} className="text-[9.5px] px-1.5 py-0.5 bg-[#5B7BFE]/10 text-[#3B5BCF] rounded">{cap}</span>
-                ))}
+              <div className="shrink-0 rounded-lg border border-[#5B7BFE]/30 bg-gradient-to-br from-[#5B7BFE]/5 to-transparent px-3 py-2 text-right max-w-[200px]">
+                <div className="flex items-center justify-end gap-1.5">
+                  <Bot size={12} className="text-[#5B7BFE]" />
+                  <span className="text-[12px] font-medium text-gray-900">{bot.display_name}</span>
+                </div>
+                <div className="mt-0.5 text-[10px] text-gray-600">
+                  AI 同事 · {bot.department_name || '未分配'}
+                </div>
+                <div className="mt-0.5 text-[9.5px] text-gray-500">
+                  汇报: {bot.reporting_approvers.map((a) => a.role).join(' / ') || '无'}
+                </div>
+                <div className="mt-1 text-[9px] text-gray-400 truncate">
+                  {bot.enabled_capabilities.length} 项能力
+                </div>
               </div>
             </div>
 
-            <div className="rounded-md bg-gray-50 px-3 py-2 text-[11.5px] text-gray-700">
-              <div className="font-medium mb-1">我理解的任务</div>
-              <div className="text-gray-600">{parsed.original_text.slice(0, 200)}{parsed.original_text.length > 200 ? '...' : ''}</div>
-              <div className="mt-2 text-[10.5px] text-gray-500">
-                Intent: <code className="bg-white px-1 rounded">{parsed.intent}</code>
-                {parsed.inline_authorization_detected && (
-                  <span className="ml-2 text-amber-600">★ 检测到指令内授权: "{parsed.inline_authorization_text}"</span>
-                )}
+            {/* Step list — 三段式 */}
+            {parsed.steps.length > 0 ? (
+              <div className="space-y-2">
+                {parsed.steps.map((step) => (
+                  <div
+                    key={step.index}
+                    className="rounded-lg border border-gray-200 hover:border-[#5B7BFE]/40 transition-colors overflow-hidden"
+                  >
+                    {/* Step header */}
+                    <div className="px-3 py-1.5 bg-gray-50 border-b border-gray-100 flex items-center gap-2">
+                      <span className="inline-flex items-center justify-center w-5 h-5 rounded-full bg-[#5B7BFE] text-white text-[10.5px] font-medium">
+                        {step.index}
+                      </span>
+                      <span className="text-[10.5px] text-gray-500 uppercase tracking-wider">Step</span>
+                    </div>
+                    {/* 三段式 */}
+                    <div className="px-3 py-2 space-y-1.5">
+                      <div className="flex gap-2">
+                        <span className="shrink-0 inline-flex items-center justify-center w-14 text-[10px] font-medium text-emerald-700 bg-emerald-50 rounded px-1.5 py-0.5">
+                          做什么
+                        </span>
+                        <span className="text-[12px] text-gray-800 leading-relaxed">
+                          {step.action || <span className="text-gray-400 italic">(未识别 — 庆华可能误解)</span>}
+                        </span>
+                      </div>
+                      <div className="flex gap-2">
+                        <span className="shrink-0 inline-flex items-center justify-center w-14 text-[10px] font-medium text-indigo-700 bg-indigo-50 rounded px-1.5 py-0.5">
+                          基于
+                        </span>
+                        <span className="text-[11.5px] text-gray-700 leading-relaxed">
+                          {step.basis || <span className="text-gray-400 italic">(未识别 — 没有显式输入/参考)</span>}
+                        </span>
+                      </div>
+                      <div className="flex gap-2">
+                        <span className="shrink-0 inline-flex items-center justify-center w-14 text-[10px] font-medium text-amber-700 bg-amber-50 rounded px-1.5 py-0.5">
+                          交付
+                        </span>
+                        <span className="text-[11.5px] text-gray-700 leading-relaxed">
+                          {step.deliverable || <span className="text-gray-400 italic">(未识别 — 没说篇幅/落点)</span>}
+                        </span>
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <div className="rounded-md bg-gray-50 px-3 py-2 text-[11.5px] text-gray-600 leading-relaxed">
+                {parsed.original_text.slice(0, 280)}
+                {parsed.original_text.length > 280 ? '...' : ''}
+              </div>
+            )}
+
+            {/* meta row: intent + 参考客户 + inline auth */}
+            <div className="flex items-center gap-3 text-[10.5px] text-gray-500 pt-1 flex-wrap">
+              <span>
+                Intent: <code className="bg-gray-100 px-1 rounded text-[10px]">{parsed.intent}</code>
+              </span>
+              {parsed.client_references.length > 0 && (
+                <span title="这些客户出现在你指令里, 但被识别为参考样本 (合同/方法论来源), 不是主客户">
+                  参考样本: <span className="text-gray-600">{parsed.client_references.join(', ')}</span>
+                </span>
+              )}
+              {parsed.inline_authorization_detected && (
+                <span className="text-amber-600">★ 指令内授权: "{parsed.inline_authorization_text}"</span>
+              )}
+            </div>
+
+            {/* 顾源源 5/25 安全边界: 关联客户必选 (任务以客户隔离, 没客户=跨污染). */}
+            <div className="rounded-lg border border-amber-200 bg-amber-50/40 px-3 py-2.5">
+              <div className="flex items-center justify-between gap-2 mb-1.5">
+                <div className="flex items-center gap-1.5">
+                  <span className="text-[11.5px] font-medium text-gray-800">关联客户</span>
+                  <span className="text-[9.5px] text-red-600 font-medium">* 必选</span>
+                </div>
+                <span className="text-[9.5px] text-gray-500">
+                  {parsed.client_name
+                    ? `自动识别: ${parsed.client_name}${parsed.client_references.length > 0 ? ' (已排除参考样本)' : ''}`
+                    : '没自动识别到, 必须手动选'}
+                </span>
+              </div>
+              <select
+                value={chosenClientId || ''}
+                onChange={(e) => setChosenClientId(e.target.value || null)}
+                className="w-full px-2.5 py-1.5 text-[12px] text-gray-900 bg-white border border-gray-300 rounded-md outline-none focus:border-[#5B7BFE] focus:ring-2 focus:ring-[#5B7BFE]/15"
+              >
+                <option value="">— 选客户 (任务将归属到这个客户的工作台) —</option>
+                {clientsForResolve.map((c) => (
+                  <option key={c.id} value={c.id}>{c.name}</option>
+                ))}
+              </select>
+              <div className="mt-1 text-[10px] text-gray-600 leading-snug">
+                每个任务以客户隔离: 文档写入这个客户的工作台 · agent_run_log 用这个 client_id · 跨客户引用要单独授权.
               </div>
             </div>
 
@@ -629,13 +852,25 @@ export function AICommandModal({
               <button type="button" onClick={handleSwitchToQuickTask} className="text-[11px] text-gray-500 hover:text-gray-700">
                 作为普通任务创建
               </button>
-              <button
-                type="button"
-                onClick={handleEnterPlan}
-                className="inline-flex items-center gap-1.5 px-4 py-1.5 text-[12.5px] font-medium text-white bg-[#5B7BFE] hover:bg-[#4A63CF] rounded-lg transition-colors"
-              >
-                查看执行计划 <ChevronRight size={13} />
-              </button>
+              <div className="flex items-center gap-3">
+                <button
+                  type="button"
+                  onClick={handleEnterPlan}
+                  className="text-[10.5px] text-gray-500 hover:text-gray-700 underline-offset-2 hover:underline"
+                  title="查看推荐模块和能力边界 (可选)"
+                >
+                  查看模块/能力详情
+                </button>
+                {/* 顾源源 5/25 真用反馈: 这页已经清楚, 直接确认执行, 不再多一步 plan_preview */}
+                <button
+                  type="button"
+                  onClick={handleSubmitPlan}
+                  className="inline-flex items-center gap-1.5 px-4 py-1.5 text-[12.5px] font-medium text-white bg-[#5B7BFE] hover:bg-[#4A63CF] rounded-lg transition-colors"
+                  title="点击 = 我作为审批人当场确认这个流程, 庆华立刻开始执行"
+                >
+                  <CheckCircle2 size={13} /> 确认执行 — 我审批通过
+                </button>
+              </div>
             </div>
           </div>
         )}
@@ -674,15 +909,26 @@ export function AICommandModal({
               </div>
             )}
 
-            {/* 当前限制 */}
-            <div className="rounded-md bg-amber-50 border border-amber-100 px-3 py-2 text-[11px] text-amber-800">
-              <div className="font-medium mb-0.5">当前限制</div>
-              <ul className="list-disc list-inside space-y-0.5">
-                <li>合同草稿 / 模板生成 endpoint 未暴露 (V3.0 P0-1/P0-2 blocked_by_A)</li>
-                <li>写入客户工作台正式文件需经审批 (不直写)</li>
-                <li>触发数据中心解析需经审批</li>
-                <li>AI 生成内容不会自动标为客户官方资料</li>
-              </ul>
+            {/* 当前能力/限制 — A 5/25 完 M9 plan_executor 后真实状态 (不再硬编码 blocked_by_A). */}
+            <div className="grid grid-cols-2 gap-2">
+              <div className="rounded-md bg-emerald-50 border border-emerald-100 px-3 py-2 text-[11px] text-emerald-800">
+                <div className="font-medium mb-0.5">已接好</div>
+                <ul className="list-disc list-inside space-y-0.5 text-emerald-700">
+                  <li>tasks.create (建任务/日程)</li>
+                  <li>documents.generate (准备文档草稿上下文 — 真查数据中心)</li>
+                  <li>inline 审批 (你本人提交即通过)</li>
+                  <li>agent_run_log 全程留痕</li>
+                </ul>
+              </div>
+              <div className="rounded-md bg-amber-50 border border-amber-100 px-3 py-2 text-[11px] text-amber-800">
+                <div className="font-medium mb-0.5">未接 / 有限制</div>
+                <ul className="list-disc list-inside space-y-0.5 text-amber-700">
+                  <li>documents.generate 只组上下文, 不真出 markdown (A P2)</li>
+                  <li>合同草稿 endpoint 单独走 contract_drafts 链路</li>
+                  <li>历史合同 / 方法论 注入 (待 P1)</li>
+                  <li>AI 输出不自动标"客户官方资料"</li>
+                </ul>
+              </div>
             </div>
 
             {/* inline authorization 提示 */}
