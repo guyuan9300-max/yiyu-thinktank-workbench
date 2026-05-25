@@ -9050,8 +9050,13 @@ def _build_department_snapshot(
 
     total = len(items)
     done_count = sum(1 for it in items if str(it["status"] or "") == "done")
+    # 顾源源 5/25 PM 反馈: "0 件认领 + 4 件已完成" 矛盾, 应该 done 自动算认领.
+    # 真业务意义: 已完成的 plan_item 必然被某人做了, 隐式有 owner. unclaimed 应只算"未认领+未完成" 的项.
+    # 修法: assigned_count = 显式 owner 数 OR done 状态. unclaimed = total - assigned_count.
     assigned_count = sum(
-        1 for it in items if str(it["owner_user_id"] or "").strip()
+        1 for it in items
+        if str(it["owner_user_id"] or "").strip()
+           or str(it["status"] or "") == "done"
     )
 
     linked_count = 0
@@ -15875,7 +15880,13 @@ def create_app() -> FastAPI:
 
         event_line_id = str(attachment_row["event_line_id"]) if attachment_row["event_line_id"] else (str(task_row["event_line_id"]) if task_row["event_line_id"] else None)
         client_id = str(attachment_row["client_id"]) if attachment_row["client_id"] else (str(task_row["client_id"]) if task_row["client_id"] else None)
-        client_name = str(task_row["client_name"]) if task_row["client_name"] else None
+        # client_name 不是 tasks 表字段(SELECT * FROM tasks 不含它), 直接 task_row["client_name"] 会抛
+        # sqlite3.Row 的 IndexError → 整个转写端点 500。改为按 client_id 从 clients 表安全解析。
+        client_name: str | None = None
+        if client_id:
+            _client_row = state.db.fetchone("SELECT name FROM clients WHERE id = ?", (client_id,))
+            if _client_row and _client_row["name"]:
+                client_name = str(_client_row["name"])
         document_request = _create_consultation_knowledge_request_internal(
             state,
             current_user=current_user,
