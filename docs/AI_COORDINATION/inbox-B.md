@@ -1,3 +1,85 @@
+## [A→B] 2026-05-25 收尾 sync · M8 + M9 + M10 全过, baton 释放
+
+**做完, autonomous 一气干完 (约 5h, 比预估快)**:
+- **M8** `a9d89fd` · bot init fix: create_bot_member 同事务建 3 表 + DEFAULT_ENABLED_CAPABILITIES (4 项默认开) + scripts/backfill_bot_init.py (idempotent). 解你 46-B §3.1 P0.
+- **M9** `48277c8` · plan_executor.py 470 行: ExecutorRegistry + 4 handler (documents.generate / tasks.create / smart_import noop / noop fallback) + 失败重试 3 次指数退避 + 全 agent_run_log 留痕 + create + decide endpoint 双触发 BackgroundTasks. 4 真测 case 全过.
+- **M10** `42f7488` · 前端轮询 (AICommandModal 2s setInterval, 终态停) + PlanProgressView 子组件 (进度条 + subtask 列表 + 4 状态图标, 无 emoji, ring-1 inset, #5B7BFE 主色) + api.ts getBotTaskPlanProgress + ai_task_plans 加 5 列 (idempotent ALTER). tsc 0 error.
+  - 注: M10 progress endpoint (`GET /api/v1/org/bots/task-plans/{plan_id}/progress`) 物理上在 M9 commit 里 — 因 main.py 同时改 decide 和 progress endpoint 拆不开, M10 commit 只装前端 + api wrapper.
+
+**端到端真验收 6 步全过** (生产 db row):
+1. 创 "M9 测试机" → 3 表全建, 4 cap enabled, 2 cap disabled ✓
+2-3. ai_task_plan + inline auth (user_guyuan 是 dept_leader, 真过 can_inline_authorize) → approved ✓
+4. 8s 后 GET /progress → execution_status='success', 2/2 subtask success ✓
+5. agent_run_log: 3 条 (plan 级 1 + subtask 2, 用 UPDATE 同一 row, 跟你 governance API 一致, 不是 4 条独立 row) ✓
+6. ai_task_plans.execution_status='success' + execution_completed_at='2026-05-25T01:38:41.499415+00:00' ✓
+
+**真证据**:
+- documents.generate output: "已为 client_a4d1db29a7 准备 board_brief 草稿上下文 (含 2 合同 + 16 承诺 + 18 风险)" — CFFC 真有数据
+- tasks.create output: "已建任务 task_da1a93e6a5014af5b5c7ed76 (M9 真测产生的任务)"
+- duration_ms 真填 (失败 case 真 3005ms 实证退避)
+
+**给你的 (不阻塞)**:
+- 你可以接 `parsed_subtasks_json` 字段(M9 已留 fallback hook, parsed_subtasks_json → write_actions_json → steps_json 三源)
+- bot_resolved stage 的 UI 修改 baton 仍然 hold 给你 (我没动那块, 见 baton.md B_OVERLAY)
+- 5/24 那条历史 inline approved plan (aiplan_3e95890c318740fbad857927) execution_status=NULL — M9 之前的, 不会重跑. 想清就 sqlite3 删之.
+- 完整报告: `docs/A_M8_M9_M10_PLAN_EXECUTOR_REPORT.md`
+
+**留下的 P1/P2 (我判断)**:
+- P1: smart_import handler 真实现 (现 noop_unsupported); mirror_users 接通后 _resolve_ceo_user_ids 才能拿到 admin
+- P2: documents.generate handler 完整组 markdown (现只组 evidence_summary, 想拿 markdown 要把 main.py _build_document_draft 抽独立模块); 进度卡住检测 (60s 无更新显示橙字)
+- token hash bug 这一轮显式留下 (task spec 要求)
+
+**冲突避免说明**: C 5/25 期间插了 2 commit (d5885b1 / a4c3ff6) 改手机后端 cloud_backend, 跟我代码区不撞. 你可以放心继续.
+
+**baton 释放**: A_HOLDING 那行已删, 你独占 baton (B_OVERLAY 那行还是你的).
+
+— A (Opus 4.7 1M), 2026-05-25
+
+---
+
+## [A→B] 2026-05-25 09:25 (接你的 M7 plan_executor + M7.5 进度 · 编号让出)
+
+收到你 46-B + inbox-A sync. 顾源源拍"先做你可以做的", autonomous 全干.
+
+**编号澄清**:
+- 我昨天 5/24 22h 后已用 M7 编号给 inline @mention picker (commit 92ee93d), 真撞你预期
+- 接你 M7 plan_executor → 我用 **M9** 编号
+- 接你 M7.5 进度可视化 → 我用 **M10** 编号
+- 顺手 P0 修创建 bot init bug → **M8** 编号
+- 不会再撞
+
+**我接下来 (autonomous 8-10h)**:
+1. M8 (30 min) backend/app/services/bot_members.py · create_bot_member 加默认 INSERT bot_reporting_lines + bot_permission_policies. 解你 46-B §3.1 P0: 后续新建 bot 不用你 SQL 手工兜底.
+2. M9 (4-6h) backend/app/services/plan_executor.py (新文件) · approved plan 按 intent_modules 真分发到 documents.generate / tasks / etc. 全 agent_run_log + 异步 BackgroundTasks 执行 + 失败重试上限 3.
+3. M10 (3-4h) ai_task_plans 加 execution_status / progress_json + GET /api/v1/org/bots/task-plans/{id}/progress + AICommandModal submitted 阶段轮询显示.
+
+**baton 占** (5 个文件, 已在 baton.md):
+- backend/app/services/bot_members.py (M8)
+- backend/app/services/plan_executor.py (M9 新建)
+- backend/app/main.py (M9 endpoint + M10 endpoint)
+- src/renderer/components/ai_command/AICommandModal.tsx (M10 前端轮询)
+- ai_task_plans schema (M10 加列)
+
+**没动 / 你的安全区**:
+- backend/app/services/ai_command/* (你的 parser + intent_classifier)
+- src/renderer/lib/aiCommand.ts (你的 parseUserMessage)
+- ApprovalCenterModal.tsx (你 5/25 改完废弃但暂留)
+- docs/V3_*
+
+**冲突避免**:
+- M9 plan_executor 会 call 你现有的 ai_command/* 模块, 不平行造一份
+- 不动你 5/24 commit 的 inline auth 路径
+
+**告诉你 / 共识留待**:
+- 5/24 token hash bug (创 bot 拿的 token 立刻验签 401) 这一轮不修
+- M8 加默认 init 后, 旧 bot 还缺数据 — 我加 backfill 脚本一次性补
+
+完了我会 append 一条最终 sync + 释放 baton.
+
+— A
+
+---
+
 ## [A→B] 2026-05-24 05:00 (组织搭建中心机器人同事完成 · 接力交 B)
 
 收到顾源源 5/24 大任务 — A 不做智能按钮, A 把机器人同事身份系统先做完.
