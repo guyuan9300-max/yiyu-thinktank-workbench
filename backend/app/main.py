@@ -49044,6 +49044,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
     @app.post("/api/v1/org/bots/{bot_member_id}/task-plans")
     def create_bot_task_plan(
         bot_member_id: str,
+        background_tasks: BackgroundTasks,
         payload: dict = Body(...),
         x_actor_type: str = Header("human", alias="X-Actor-Type"),
         x_actor_id: str = Header("", alias="X-Actor-Id"),
@@ -49080,6 +49081,19 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 human_initiator_id=payload.get("human_initiator_id") or x_actor_id,
                 action_capability=payload.get("action_capability"),
             )
+            # M9 (A, 2026-05-25): inline_authorization 走通时, create 阶段就是 approved.
+            # 此时 decide endpoint 不会被调 → 必须在这里直接触发 plan_executor 异步执行.
+            if result.get("status") == "approved" and result.get("approval_source") == "inline_authorization":
+                from app.services.plan_executor import execute_plan, _update_plan_progress
+                plan_id = result.get("ai_task_plan_id")
+                if plan_id:
+                    try:
+                        _update_plan_progress(
+                            state.db, plan_id, execution_status="pending_execute",
+                        )
+                    except Exception as _e:
+                        logger.warning("set pending_execute (inline) fail: %s", _e)
+                    background_tasks.add_task(execute_plan, plan_id, state.db)
             return result
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc))
@@ -49094,9 +49108,26 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         items = list_ai_task_plans(state.db, bot_member_id=bot_member_id, status=status, limit=limit)
         return {"bot_member_id": bot_member_id, "total": len(items), "items": items}
 
+    @app.get("/api/v1/org/bots/task-plans/{plan_id}/progress")
+    def get_bot_task_plan_progress(plan_id: str) -> dict:
+        """M10 (A, 2026-05-25) · 进度查询 (前端 2s 轮询).
+
+        返回:
+          plan_id / plan_status / execution_status / started_at / completed_at
+          progress: {total, completed, current, percent, errors}
+          subtasks: [{index, tool, status, output_summary | error, duration_ms}]
+          errors: [...]
+        """
+        from app.services.plan_executor import get_plan_progress
+        result = get_plan_progress(state.db, plan_id)
+        if not result:
+            raise HTTPException(status_code=404, detail="plan not found")
+        return result
+
     @app.post("/api/v1/org/bots/task-plans/{ai_task_plan_id}/decide")
     def decide_bot_task_plan(
         ai_task_plan_id: str,
+        background_tasks: BackgroundTasks,
         payload: dict = Body(...),
         x_actor_id: str = Header("", alias="X-Actor-Id"),
     ) -> dict:
@@ -49106,6 +49137,9 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                decided_by: str (= user_id),
                feedback?: str,
                modified_plan?: {plan_text?, plan_title?, steps?, expected_outputs?}}
+
+        M9 (A, 2026-05-25): approve 后异步触发 plan_executor.execute_plan, 不阻塞返回.
+        失败标 status=failed + 进度写回 ai_task_plans.execution_summary_json.
         """
         from app.services.bot_members import decide_ai_task_plan
         decision = str(payload.get("decision") or "").strip()
@@ -49121,6 +49155,20 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             )
             if not result:
                 raise HTTPException(status_code=404, detail="ai_task_plan not found")
+
+            # M9 (A, 2026-05-25): approve 真触发异步执行
+            if decision == "approve" and (result.get("status") == "approved"):
+                from app.services.plan_executor import execute_plan, _update_plan_progress
+                # 立即标 pending_execute (前端轮询能看到状态切换)
+                try:
+                    _update_plan_progress(
+                        state.db, ai_task_plan_id,
+                        execution_status="pending_execute",
+                    )
+                except Exception as _e:
+                    logger.warning("set pending_execute fail: %s", _e)
+                background_tasks.add_task(execute_plan, ai_task_plan_id, state.db)
+
             return result
         except ValueError as exc:
             raise HTTPException(status_code=403, detail=str(exc))
