@@ -24,9 +24,11 @@ import {
   getBotPermissions,
   createBotTaskPlan,
   listBotMembers,
+  getBotTaskPlanProgress,
   type TaskAiParseResult,
   type BotPermissionsResponse,
   type BotMemberRecord,
+  type PlanProgressRecord,
 } from '../../lib/api';
 
 // A 写的 resolveBotByHandle 返回类型 (inline, 避免 import 错)
@@ -74,6 +76,10 @@ export function AICommandModal({
   const [permissions, setPermissions] = useState<BotPermissionsResponse | null>(null);
   const [submitResult, setSubmitResult] = useState<{ task_id: string; ai_task_plan_id: string; status: string } | null>(null);
   const [availableBots, setAvailableBots] = useState<BotMemberRecord[]>([]);
+  // M10 (A, 2026-05-25) · plan 执行进度轮询 (2s)
+  const [planProgress, setPlanProgress] = useState<PlanProgressRecord | null>(null);
+  const [progressError, setProgressError] = useState<string | null>(null);
+  const progressTimerRef = useRef<number | null>(null);
   // ── M7: inline @mention picker 状态 (顾源源 5/25: 微信群那种弹窗) ──
   // mentionState: 仅当 textarea 当前 cursor 紧跟在 @<query> 后才 open.
   //   - atPos: '@' 在 text 里的下标
@@ -111,8 +117,56 @@ export function AICommandModal({
       setBot(null);
       setPermissions(null);
       setSubmitResult(null);
+      setPlanProgress(null);
+      setProgressError(null);
     }
   }, [open]);
+
+  // M10 · 进度轮询: submitted + approved 时, 每 2s GET 一次, 终态停止
+  useEffect(() => {
+    const planId = submitResult?.ai_task_plan_id;
+    const isApproved = submitResult?.status === 'approved';
+    if (stage !== 'submitted' || !planId || !isApproved) {
+      return;
+    }
+    let cancelled = false;
+    setPlanProgress(null);
+    setProgressError(null);
+    const tick = async () => {
+      if (cancelled) return;
+      try {
+        const result = await getBotTaskPlanProgress(planId);
+        if (cancelled) return;
+        setPlanProgress(result);
+        // 终态停轮询
+        if (
+          result.execution_status === 'success' ||
+          result.execution_status === 'failed' ||
+          result.execution_status === 'partial'
+        ) {
+          if (progressTimerRef.current !== null) {
+            window.clearInterval(progressTimerRef.current);
+            progressTimerRef.current = null;
+          }
+        }
+      } catch (err: unknown) {
+        if (cancelled) return;
+        const msg = err instanceof Error ? err.message : '进度查询失败';
+        setProgressError(msg);
+      }
+    };
+    void tick(); // 立即拉一次, 不等 2s
+    progressTimerRef.current = window.setInterval(() => {
+      void tick();
+    }, 2000);
+    return () => {
+      cancelled = true;
+      if (progressTimerRef.current !== null) {
+        window.clearInterval(progressTimerRef.current);
+        progressTimerRef.current = null;
+      }
+    };
+  }, [stage, submitResult?.ai_task_plan_id, submitResult?.status]);
 
   useEffect(() => {
     if (!open) return;
@@ -682,6 +736,7 @@ export function AICommandModal({
         )}
 
         {/* Stage: submitted - 顾源源 5/24 真用反馈: "确认这个流程 = 审批本身; 任务结束要类似邮件通知" */}
+        {/* M10 (A, 2026-05-25) · approved 路径加进度轮询展示 */}
         {stage === 'submitted' && submitResult && (
           <div className="px-6 py-6 space-y-3">
             {submitResult.status === 'approved' ? (
@@ -689,10 +744,11 @@ export function AICommandModal({
                 <div className="flex items-center gap-2 text-[14px] font-medium text-emerald-700">
                   <CheckCircle2 size={18} /> 你已确认 — {bot?.display_name} 开始执行
                 </div>
-                <div className="rounded-md bg-emerald-50 border border-emerald-100 px-3 py-2.5 text-[11.5px] text-emerald-800 leading-relaxed">
-                  inline 授权已生效. {bot?.display_name} 现在按你确认的流程在跑,
-                  任务完成后会写回任务卡 + 客户工作台, 并在收件箱给你发完成通知 (像邮件那样).
-                </div>
+                <PlanProgressView
+                  progress={planProgress}
+                  error={progressError}
+                  botName={bot?.display_name || '机器人'}
+                />
               </>
             ) : (
               <>
@@ -736,6 +792,141 @@ export function AICommandModal({
           </div>
         )}
       </div>
+    </div>
+  );
+}
+
+// ── M10 (A, 2026-05-25) · plan 执行进度展示 (顾源源 5/24: "复杂任务 5-30 min 必须看得到进度") ──
+type PlanProgressViewProps = {
+  progress: PlanProgressRecord | null;
+  error: string | null;
+  botName: string;
+};
+
+function PlanProgressView({ progress, error, botName }: PlanProgressViewProps) {
+  if (error) {
+    return (
+      <div className="rounded-md bg-red-50 border border-red-100 px-3 py-2 text-[11.5px] text-red-700 leading-relaxed">
+        进度查询失败: {error}
+      </div>
+    );
+  }
+  if (!progress) {
+    return (
+      <div className="rounded-md bg-emerald-50 border border-emerald-100 px-3 py-2.5 text-[11.5px] text-emerald-800 leading-relaxed flex items-center gap-2">
+        <Loader2 size={12} className="animate-spin" />
+        <span>正在准备执行... {botName} 已收到指令</span>
+      </div>
+    );
+  }
+
+  const exec = progress.execution_status;
+  const pct = Math.max(0, Math.min(100, progress.progress?.percent ?? 0));
+  const total = progress.progress?.total ?? 0;
+  const completed = progress.progress?.completed ?? 0;
+  const current = progress.progress?.current || '';
+  const subtasks = progress.subtasks || [];
+
+  let headerEl: React.ReactNode = null;
+  if (exec === 'not_started' || exec === 'pending_execute') {
+    headerEl = (
+      <div className="text-[11.5px] text-emerald-800 flex items-center gap-2">
+        <Loader2 size={12} className="animate-spin" />
+        <span>等待执行... {botName} 已接收, 即将开跑</span>
+      </div>
+    );
+  } else if (exec === 'running') {
+    headerEl = (
+      <div className="text-[11.5px] text-emerald-800 flex items-center gap-2">
+        <Loader2 size={12} className="animate-spin" />
+        <span>{current || '正在执行'} ({completed}/{total})</span>
+      </div>
+    );
+  } else if (exec === 'success') {
+    headerEl = (
+      <div className="text-[11.5px] text-emerald-800 flex items-center gap-2">
+        <CheckCircle2 size={12} />
+        <span>已完成 ({completed}/{total} 个子任务)</span>
+      </div>
+    );
+  } else if (exec === 'partial') {
+    headerEl = (
+      <div className="text-[11.5px] text-amber-700 flex items-center gap-2">
+        <AlertCircle size={12} />
+        <span>部分完成 ({completed}/{total} 成功, {(progress.errors || []).length} 失败)</span>
+      </div>
+    );
+  } else if (exec === 'failed') {
+    headerEl = (
+      <div className="text-[11.5px] text-red-700 flex items-center gap-2">
+        <AlertCircle size={12} />
+        <span>执行失败 (0/{total} 成功)</span>
+      </div>
+    );
+  }
+
+  const barColor =
+    exec === 'success' ? 'bg-emerald-500'
+    : exec === 'failed' ? 'bg-red-400'
+    : exec === 'partial' ? 'bg-amber-400'
+    : 'bg-[#5B7BFE]';
+
+  return (
+    <div className="space-y-2">
+      <div className="rounded-md bg-emerald-50 border border-emerald-100 px-3 py-2.5 space-y-2">
+        {headerEl}
+        {total > 0 && (
+          <div className="w-full h-1 bg-emerald-100 rounded-full overflow-hidden ring-1 ring-inset ring-emerald-200/50">
+            <div
+              className={`h-full ${barColor} transition-all duration-300`}
+              style={{ width: `${pct}%` }}
+            />
+          </div>
+        )}
+        <div className="text-[10px] text-emerald-700/80">{pct}%</div>
+      </div>
+
+      {subtasks.length > 0 && (
+        <div className="rounded-md bg-white border border-gray-200 ring-1 ring-inset ring-gray-100 divide-y divide-gray-100">
+          {subtasks.map((st) => {
+            const iconColor =
+              st.status === 'success' ? 'text-emerald-600'
+              : st.status === 'failed' ? 'text-red-500'
+              : st.status === 'running' ? 'text-[#5B7BFE]'
+              : 'text-gray-400';
+            const iconEl =
+              st.status === 'success' ? <CheckCircle2 size={11} className={iconColor} />
+              : st.status === 'failed' ? <AlertCircle size={11} className={iconColor} />
+              : st.status === 'running' ? <Loader2 size={11} className={`${iconColor} animate-spin`} />
+              : <ChevronRight size={11} className={iconColor} />;
+            return (
+              <div key={st.index} className="px-3 py-1.5 flex items-start gap-2 text-[11px]">
+                <div className="mt-0.5">{iconEl}</div>
+                <div className="flex-1 min-w-0">
+                  <div className="text-gray-700 font-medium truncate">
+                    <span className="text-gray-400 mr-1">#{st.index + 1}</span>{st.tool}
+                  </div>
+                  {st.output_summary && (
+                    <div className="text-[10.5px] text-gray-500 mt-0.5 leading-relaxed break-words">
+                      {st.output_summary}
+                    </div>
+                  )}
+                  {st.error && (
+                    <div className="text-[10.5px] text-red-600 mt-0.5 leading-relaxed break-words">
+                      错误: {st.error}
+                    </div>
+                  )}
+                </div>
+                {typeof st.duration_ms === 'number' && (
+                  <div className="text-[9.5px] text-gray-400 shrink-0 mt-0.5 tabular-nums">
+                    {st.duration_ms}ms
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      )}
     </div>
   );
 }

@@ -1035,6 +1035,45 @@ export async function decideBotTaskPlan(
     body: JSON.stringify(body),
   });
 }
+
+// M10 (A, 2026-05-25) · plan 进度可视化
+export interface PlanProgressSubtask {
+  index: number;
+  tool: string;
+  status: 'pending' | 'running' | 'success' | 'failed';
+  output_summary?: string;
+  error?: string;
+  duration_ms?: number;
+}
+
+export interface PlanProgressRecord {
+  plan_id: string;
+  plan_status: string;
+  execution_status:
+    | 'not_started'
+    | 'pending_execute'
+    | 'running'
+    | 'success'
+    | 'failed'
+    | 'partial';
+  started_at: string | null;
+  completed_at: string | null;
+  progress: {
+    total: number;
+    completed: number;
+    current: string;
+    percent: number;
+    errors: Array<{ index: number; tool: string; error: string }>;
+  };
+  subtasks: PlanProgressSubtask[];
+  errors: Array<{ index: number; tool: string; error: string }>;
+}
+
+export async function getBotTaskPlanProgress(planId: string): Promise<PlanProgressRecord> {
+  return request<PlanProgressRecord>(
+    `/api/v1/org/bots/task-plans/${encodeURIComponent(planId)}/progress`,
+  );
+}
 // ────────────── end 机器人同事 wrappers ──────────────
 
 export type BrainPulse = {
