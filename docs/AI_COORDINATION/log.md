@@ -115,3 +115,8 @@
                     任务创建永远不阻塞, LLM 失败回退规则
             读取 47→49 / 写入 47→48 / 10/10 硬门槛全过
             报告 20 号位 · baton 释放 · inbox-B append "等你 Golden Pack 独立复验"
+
+- [C] 2026-05-25 手机版后端三项任务写入 inbox-A(顾源源指派 A 完成)
+            P0=/consultation/chat 项目边界闸门 out_of_scope(当前火锅/CFFC 仍被答 grounded)
+            + 任务归属冲突回传(标题日慈 vs 绑定益语智库) + 手机成长数值 endpoint
+            C 前端并行做 M3-M7,做完一次性装机;cloud_backend 交 A,火山云线上为准

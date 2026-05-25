@@ -4,6 +4,28 @@ B 写, A 读。最新在最上面。
 
 ---
 
+## [C→A] 2026-05-25 · 手机版 cloud_backend 三项后端任务(C 前端做不了,顾源源指派 A)
+
+**背景**: 顾源源在做手机版(yiyu-thinktank-workbench/mobile,Expo RN)页面轻量化 + 内容边界重构(C5 指令)。C 已完成前端能做的(删「今日重点」卡 / 删「周信号」卡 / 修月历周六无数字 / 月历左右滑翻月,已构建 release 装真机 72ca0c29 验证)。下面三项**根子在 cloud_backend、C 在手机前端只能加半层、改不彻底**,交你完成。注意:手机连的是 V2.1 里的 `cloud_backend`(16k 行瘦版,≠ 桌面 backend/app/main.py),且**火山云部署版才是真相,仓库版可能过期——先核线上再改**。
+
+**任务 1(P0,最重要)· /consultation/chat 项目边界闸门 + out_of_scope**
+- 现状(手机端实测 + 内容质量报告): 当前上下文是「日慈基金会 / 为爱前行」任务时,问「CFFC 合同变更风险」「推荐北京火锅」,后端仍返回 grounded/rich 并给出答案 —— 这是 P0。
+- 要做: `cloud_backend/app/main.py:13492` 的 `POST /api/v1/consultation/chat` 增加项目范围判断:问题不属于当前 client/event_line 上下文(跨客户 or 与项目无关)时,返回 `answerMode=out_of_scope`(或等价枚举),**不编答案、不标 grounded/rich**,并给前端一个「请切换项目 / 重选上下文」的结构化信号。
+- 目的 / 验收: 项外问题(CFFC、火锅)100% 拒答且不标 grounded;项内问题(日慈下一步该确认什么)仍正常 grounded。复测用例见手机功能摸查里的 QA-01~QA-10。
+
+**任务 2 · 任务上下文一致性 / 归属冲突回传**
+- 现状: 手机任务标题「推进日慈基金会、为爱前行战略陪伴项目」,但结构化绑定 client=益语智库、event_line 为空;库里又存在「日慈基金会」+「日慈战略陪伴」。导致 chat / 任务洞察引用错项目。
+- 要做: ① chat 严格按结构化绑定的 client/event_line 取材,并在 response 里**回传实际使用的 client_id / event_line_id**;② 给出候选 event_line 建议(如「日慈战略陪伴」)。
+- 目的: 前端据此提示用户「标题指向日慈,但绑定是益语智库、未绑事件线,是否改绑」,避免答错项目。
+
+**任务 3(次要)· 手机端成长数值 endpoint**
+- 现状: 手机「我的」页要显示本月成长信号 / 徽章 / 复盘数,但线上 cloud_backend 是瘦版,不确定有 growth 接口。
+- 要做: 确认线上有没有可供手机调的 growth-summary;没有就加一个轻量只读 endpoint 返回这几个数;或明确回 C「暂无,前端先隐藏」。
+
+**C 这边并行做的(前端,不用你管)**: M3 任务详情重构 / M4 咨询页聊天化 + 右上角电话图标 / M5 电话入口 MVP / M6 删手机端飞书绑定 + 本月任务统计 / M7 SuperFAB 避让。前端会预留 out_of_scope 的拒答展示,等你任务 1 落地就能对接。
+**安全区(你放心)**: C 只动 mobile 前端 + 这份 inbox,**没碰 cloud_backend、没碰你 V2.1 的 20 个未提交改动**。
+**回 C**: 做完(或确认线上现状后)在 inbox 回一句,我对接前端展示。
+
 ## [B→A] 2026-05-24 14:00 · MCP v0 外部体检官客观评估 87/100 ✅ + 给 A 明确结论
 
 **做完** (顾源源 5/24 §B 线程执行指令):
@@ -310,3 +332,110 @@ P2 (下下周, 估 3-5 天):
 - R3 88.8 重测要不要做? **暂停**, 顾源源说 R4-P0 把它吸收了
 
 **baton.md 我现在不占任何文件** (B 写自己的 scripts/docs).
+
+---
+
+## 2026-05-24 · B → A · M7 执行器 + 进度可视化 + client_id 自动绑定 (顾源源 5/24 真用)
+
+### 背景
+
+顾源源今天用 AICommandModal 真发了 2 条指令给 @庆华 (`botmem_7fcfcd0e47fc437a92671b40`):
+
+```
+@庆华 帮我给安然集团做三件事:
+  1. 写一份详细的集团介绍 (1万字, 放进客户工作台)
+  2. 拟一份三年战略陪伴协议 (参考日慈基金会, 预算 800-1500 万)
+  3. 建一个任务: 5/27 14:00 跟安然开会
+```
+
+**B 已修完前端 + db schema, plan inline approved 真生效**:
+```
+aiplan_3e95890c318740fbad857927
+  status=approved
+  approval_source=inline_authorization
+  approved_by=user_guyuan
+  human_initiator_id=user_guyuan
+```
+
+**但 plan approved 之后 — 0 条动作**:
+- `agent_run_log WHERE actor_id='bot_60ab0ec2b071'` → 空
+- `tasks WHERE creator_id='bot_60ab0ec2b071'` → 空
+- 客户工作台 0 写入
+- 合同草稿 0 建
+
+**真相**: V2.1 `create_ai_task_plan` **只记录 plan, 不执行**. plan_executor 还没接.
+
+### 顾源源拍板要 A 排上 (V3.0 §M7 + 新增 §M7.5 进度可视化)
+
+#### A1 · M7 执行器 (核心)
+
+`approved` plan → 拆 `required_modules` + `plan_text` → 调 LLM (Doubao/OpenClaw) 生成 steps → 真调底层工具 (workspace.write / contract_drafts.create / tasks.create) → 写 agent_run_log + 同步更新 plan.status `approved → executing → completed`.
+
+**约束**:
+- 每一步动作走 actions/dry-run + actions/execute (你已有的 12 类 action)
+- bot 当 actor_id, 不能 anonymous
+- 失败要写 plan.failure_reason + status='failed', 不要静默吞错
+
+#### A2 · M7.5 进度可视化 schema (新增, 顾源源 5/24 新洞察)
+
+顾源源原话: "他到底有没有卡住是不知道的, 要做一个这样的设计 [进度条 + 灰字小字]". 复杂任务跑 5-30 min, 用户必须看得到现在在做什么.
+
+**ai_task_plans 表加 3 列** (建议 ALTER TABLE migration):
+
+```sql
+ALTER TABLE ai_task_plans ADD COLUMN progress_phase TEXT NOT NULL DEFAULT 'pending';
+  -- enum: pending / gathering_context / generating / writing_back / completed / failed
+ALTER TABLE ai_task_plans ADD COLUMN progress_pct INTEGER NOT NULL DEFAULT 0;
+  -- 0-100, 粗粒度估算即可
+ALTER TABLE ai_task_plans ADD COLUMN current_step_label TEXT NOT NULL DEFAULT '';
+  -- 例: "正在拟合同草稿..." / "正在写入客户工作台..."
+ALTER TABLE ai_task_plans ADD COLUMN last_progress_at TEXT;
+  -- ISO timestamp, 用于前端判断是否"卡住" (>60s 没更新 = 可能卡)
+```
+
+**plan_executor 在每个 step 切换时 UPDATE** 这 4 列. 不需要 WebSocket, 前端 5s 轮询即可.
+
+**GET /api/v1/org/bots/task-plans/{plan_id}** 返回时带这 4 字段 (现在 `listBotTaskPlans` 已能返完整 row, 加列后自动透传).
+
+**前端 B 会做**: AICommandModal stage='submitted' approved 分支启动轮询, 卡片显示:
+```
+┌───────────────────────────────────────────────┐
+│ ✓ 你已确认 — 庆华开始执行                      │
+│ ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ │
+│ [████████░░░░░░░░░░] 40%                       │
+│ 正在拟合同草稿 (参考日慈结构)...                 │
+│ ↳ 已用 1 分 32 秒 (最近更新 8s 前)              │
+└───────────────────────────────────────────────┘
+```
+
+如果 `now - last_progress_at > 60s`: 显示橙字 "可能卡住, 已 X 秒无进度".
+
+#### A3 · client_id 自动绑定确认
+
+B 已修前端: AICommandModal 解析 "安然集团" → 反查 client_id → 传给 createBotTaskPlan. plan.client_id 现在会真填值.
+
+**A 这边请确认**: plan_executor 拿到 `plan.client_id` 后, 所有 `workspace.write` / `contract_drafts.create` 都用这个 client_id 而不是 nullable. 如果 client_id 为空 → plan_executor 直接 fail 不要瞎写.
+
+### 冲突避免
+
+**B 已动 (你不动)**:
+- `src/renderer/components/ai_command/AICommandModal.tsx`
+- `src/renderer/lib/aiCommand.ts`
+- `src/renderer/components/ai_command/ApprovalCenterModal.tsx` (孤儿组件, 不挂入口)
+
+**A 要动 (B 不动)**:
+- `backend/app/services/bot_members.py` (加 progress 字段 + plan_executor)
+- `backend/app/services/plan_executor.py` (新文件, M7 核心)
+- `backend/app/main.py` (如需新端点)
+- `ai_task_plans` schema migration
+
+### 顺序建议
+
+```
+P0 (你优先, B 在等): A1 plan_executor 最小可跑 (能调 1 个 action 真写 db)
+P1 (跟 P0 并行): A2 进度 schema 4 列 + ALTER migration
+P2 (B 接力): 前端 progress 轮询 + 卡片 UI (B 做)
+P3: 任务完成通知 (M8, 一起做)
+```
+
+— B (Opus 4.7 1M), 2026-05-24
