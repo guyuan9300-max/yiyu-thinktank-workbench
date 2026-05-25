@@ -881,7 +881,7 @@ class ConsultationMissingContextRecord(BaseModel):
 class ConsultationChatResponse(BaseModel):
     reply: str
     model: str | None = None
-    answerMode: Literal["grounded", "limited_context", "missing_context", "error"] | None = None
+    answerMode: Literal["grounded", "limited_context", "missing_context", "out_of_scope", "error"] | None = None
     contextQuality: ConsultationContextQualityRecord | None = None
     evidence: list[ConsultationEvidenceRecord] = Field(default_factory=list)
     missingContext: list[ConsultationMissingContextRecord] = Field(default_factory=list)

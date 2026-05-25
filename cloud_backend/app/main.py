@@ -12436,6 +12436,45 @@ def _sync_qwen_chat(api_key: str, payload: dict, timeout: object) -> str:
     return text.strip()
 
 
+def _classify_consultation_out_of_scope(
+    api_key: str, model_name: str, message: str, client_name: str
+) -> bool:
+    """项目边界轻量判定：用户问题是否跑出当前客户/项目范围。
+
+    返回 True = out-of-scope（应拒答）。任何异常或空输入一律 fail-open 返回 False
+    （即不拦截、按正常流程作答），确保该闸门绝不影响正常问答主流程。
+    """
+    if not api_key or not message.strip() or not client_name:
+        return False
+    import httpx
+
+    prompt = (
+        f"当前咨询锁定的客户/项目是「{client_name}」。\n"
+        f"用户问题：「{message.strip()}」\n\n"
+        "请判断这个问题是否属于当前客户/项目的咨询范围：\n"
+        "- 如果问的明显是【另一个客户/机构】（出现与当前客户不同的机构名），"
+        "或与项目工作无关的闲聊（美食、餐厅、天气、旅游、娱乐、八卦等），回答 OUT\n"
+        "- 如果是关于当前客户/项目的推进、风险、下一步、资料、人物、承诺、状态，"
+        "或泛泛的工作方法问题，回答 IN\n"
+        "只输出一个词：IN 或 OUT。"
+    )
+    payload = {
+        "model": model_name,
+        "messages": [{"role": "user", "content": prompt}],
+        "temperature": 0.0,
+        "top_p": 0.5,
+        "max_tokens": 16,
+        "stream": False,
+        "enable_thinking": False,
+    }
+    timeout = httpx.Timeout(timeout=None, connect=6.0, read=12.0, write=6.0, pool=6.0)
+    try:
+        verdict = _sync_qwen_chat(api_key, payload, timeout) or ""
+        return verdict.strip().upper().startswith("OUT")
+    except Exception:
+        return False
+
+
 def _generate_recording_summary(
     *,
     transcript: str,
@@ -17108,7 +17147,7 @@ def create_app() -> FastAPI:
         else:
             context_level = "thin"
 
-        answer_mode: Literal["grounded", "limited_context", "missing_context", "error"]
+        answer_mode: Literal["grounded", "limited_context", "missing_context", "out_of_scope", "error"]
         if context_level == "none":
             answer_mode = "missing_context"
         elif context_level == "thin":
@@ -17117,6 +17156,21 @@ def create_app() -> FastAPI:
             answer_mode = "grounded"
 
         model_name = os.getenv("YIYU_CONSULTATION_CHAT_MODEL", os.getenv("YIYU_SMART_INPUT_MODEL", DEFAULT_QWEN_MODEL))
+
+        # 项目边界闸门(P0): 有客户上下文、但问题跑题(问别的客户/与项目无关闲聊)→ out_of_scope,
+        # 直接拒答、不调主 LLM 编答案、不标 grounded/rich。分类调用 fail-open(异常→正常作答)。
+        out_of_scope_reply: str | None = None
+        if answer_mode in ("grounded", "limited_context") and resolved_client_name:
+            if await asyncio.to_thread(
+                _classify_consultation_out_of_scope,
+                api_key, model_name, normalized_message, resolved_client_name,
+            ):
+                answer_mode = "out_of_scope"
+                out_of_scope_reply = (
+                    f"这个问题看起来不在当前「{resolved_client_name}」项目的范围内。"
+                    "咨询助手只基于当前选定的客户 / 事件线来回答，不会跨项目、也不答与工作无关的问题。\n\n"
+                    "如果你想问的是别的客户或别的主题，请先在上方切换到对应的客户 / 项目，再问一次。"
+                )
 
         import httpx
         terse_request = "只回答" in payload.message or len(normalized_message) <= 40
@@ -17133,7 +17187,12 @@ def create_app() -> FastAPI:
         known_facts_text = "\n".join(context_parts) if context_parts else "当前没有已知事实。"
         missing_sources_text = "\n".join(f"- {item.message}" for item in missing_context) or "- 当前没有额外缺口。"
 
-        if answer_mode == "missing_context":
+        if answer_mode == "out_of_scope":
+            response = out_of_scope_reply or (
+                "这个问题不在当前项目范围内，请先切换到对应的客户 / 事件线后再问。"
+            )
+            evidence = []
+        elif answer_mode == "missing_context":
             response = (
                 "当前还没有锁定足够的客户、事件线或任务上下文。\n\n"
                 "已知：只有你刚刚输入的问题本身。\n\n"
@@ -17229,7 +17288,7 @@ def create_app() -> FastAPI:
             if knowledge_context:
                 system_prompt += knowledge_context
             user_prompt = normalized_message
-        if answer_mode != "missing_context":
+        if answer_mode not in ("missing_context", "out_of_scope"):
             chat_payload = {
                 "model": model_name,
                 "messages": [
@@ -17326,7 +17385,7 @@ def create_app() -> FastAPI:
                 )
             except Exception as ingest_err:
                 logger.warning("Knowledge ingest failed: %s", ingest_err)
-        if answer_mode != "missing_context":
+        if answer_mode not in ("missing_context", "out_of_scope"):
             asyncio.create_task(_ingest_bg())
 
         return ConsultationChatResponse(

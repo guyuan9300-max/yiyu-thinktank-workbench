@@ -254,3 +254,53 @@ def test_chat_folds_understanding_into_context_and_evidence(tmp_path: Path, monk
     assert "understanding" in available
     assert "理解快照" in str(captured["systemPrompt"])
     assert "示例公司" in str(captured["systemPrompt"])
+
+
+def test_chat_out_of_scope_question_is_refused(tmp_path: Path, monkeypatch) -> None:
+    """项目边界闸门: 在某客户上下文下问跑题问题 → out_of_scope 拒答, 不编答案/不标 grounded。"""
+    _set_seed_env(tmp_path, monkeypatch)
+    monkeypatch.setenv("ARK_API_KEY", "test-key")
+
+    def fake_qwen_chat(api_key, chat_payload, timeout):  # noqa: ANN001
+        # 模拟分类器判定 OUT; 若闸门生效, 主答案调用不应发生(out_of_scope 短路)
+        return "OUT"
+
+    monkeypatch.setattr(cloud_main, "_sync_qwen_chat", fake_qwen_chat)
+    app = create_app()
+    client_id, client_name = _insert_empty_client(app)
+    client = TestClient(app)
+    headers = _auth_headers(client)
+
+    response = client.post(
+        "/api/v1/consultation/chat",
+        json={"message": "推荐北京火锅", "clientId": client_id, "clientName": client_name},
+        headers=headers,
+    )
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["answerMode"] == "out_of_scope"
+    assert body["evidence"] == []
+    assert client_name in body["reply"]
+
+
+def test_chat_in_scope_question_not_gated(tmp_path: Path, monkeypatch) -> None:
+    """分类器判 IN 时, 闸门不拦截, 仍按原 limited/grounded 正常作答。"""
+    _set_seed_env(tmp_path, monkeypatch)
+    monkeypatch.setenv("ARK_API_KEY", "test-key")
+
+    def fake_qwen_chat(api_key, chat_payload, timeout):  # noqa: ANN001
+        return "IN"
+
+    monkeypatch.setattr(cloud_main, "_sync_qwen_chat", fake_qwen_chat)
+    app = create_app()
+    client_id, client_name = _insert_empty_client(app)
+    client = TestClient(app)
+    headers = _auth_headers(client)
+
+    response = client.post(
+        "/api/v1/consultation/chat",
+        json={"message": "这个客户下一步该确认什么", "clientId": client_id, "clientName": client_name},
+        headers=headers,
+    )
+    assert response.status_code == 200, response.text
+    assert response.json()["answerMode"] != "out_of_scope"
