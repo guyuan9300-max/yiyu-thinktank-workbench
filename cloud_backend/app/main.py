@@ -9507,35 +9507,61 @@ def _executive_health_indicators(
     if not plan_items_total:
         m_accent = "neutral"
 
-    # 4. 业务活跃 — 本周有任务推进的 client 数 / 总 active client
-    # Only count clients that are currently in the clients table to avoid stale client_id refs
-    active_clients = int(
+    # 4. AI 协同指数 — 本周 AI 同事完成的 task 数 / 本周已完成 task 总数
+    # 顾源源 5/25 PM 拍板: 替换"业务活跃"指标. 真因 — client 表分类不稳, 而 AI vs 人完成 task
+    # 是机器事实 (owner_id 是 bot_actor / source_type='ai_plan_executor'), 完全确定.
+    ai_done_this_week = int(
         state.db.scalar(
             """
-            SELECT COUNT(DISTINCT t.client_id)
-            FROM tasks t
-            JOIN clients c ON c.id = t.client_id AND c.organization_id = t.organization_id
-            WHERE t.organization_id=?
-              AND t.client_id IS NOT NULL AND t.client_id != ''
-              AND date(t.updated_at) BETWEEN ? AND ?
+            SELECT COUNT(*) FROM tasks
+            WHERE organization_id=?
+              AND progress_status='done'
+              AND date(COALESCE(completed_at, updated_at)) BETWEEN ? AND ?
+              AND (
+                source_type='ai_plan_executor'
+                OR owner_id LIKE 'bot\\_%' ESCAPE '\\'
+                OR creator_id LIKE 'bot\\_%' ESCAPE '\\'
+              )
             """,
             (organization_id, week_start.isoformat(), week_end.isoformat()),
         )
         or 0
     )
-    total_clients = int(
+    total_done_this_week = this_throughput  # 已经在上面算出: 本周全部完成 task 数
+    ai_done_last_week = int(
         state.db.scalar(
-            "SELECT COUNT(*) FROM clients WHERE organization_id=?",
-            (organization_id,),
+            """
+            SELECT COUNT(*) FROM tasks
+            WHERE organization_id=?
+              AND progress_status='done'
+              AND date(COALESCE(completed_at, updated_at)) BETWEEN ? AND ?
+              AND (
+                source_type='ai_plan_executor'
+                OR owner_id LIKE 'bot\\_%' ESCAPE '\\'
+                OR creator_id LIKE 'bot\\_%' ESCAPE '\\'
+              )
+            """,
+            (organization_id, last_week_start.isoformat(), last_week_end.isoformat()),
         )
         or 0
     )
-    c_value = f"{active_clients}/{total_clients}" if total_clients else f"{active_clients}"
-    if total_clients:
-        ratio = active_clients / total_clients
-        c_accent = "success" if ratio >= 0.5 else ("warning" if ratio >= 0.2 else "danger")
+
+    ai_value = f"{ai_done_this_week}/{total_done_this_week}" if total_done_this_week else "0"
+    if total_done_this_week:
+        ratio = ai_done_this_week / total_done_this_week
+        ai_accent = "success" if ratio >= 0.3 else ("warning" if ratio >= 0.1 else "danger")
+        ai_helper = f"AI 同事完成 {ai_done_this_week} / 本周共完成 {total_done_this_week}"
     else:
-        c_accent = "neutral"
+        ai_accent = "neutral"
+        ai_helper = "本周尚无任务完成"
+    # delta vs 上周 AI 完成数 (绝对值差)
+    ai_delta_n = ai_done_this_week - ai_done_last_week
+    if ai_done_last_week > 0:
+        ai_delta_text = f"vs 上周 {'+' if ai_delta_n >= 0 else ''}{ai_delta_n} 项"
+    elif ai_done_this_week > 0:
+        ai_delta_text = "首周接入 AI"
+    else:
+        ai_delta_text = None
 
     return [
         ExecutiveHealthIndicator(
@@ -9569,14 +9595,14 @@ def _executive_health_indicators(
             helperText=m_helper,
         ),
         ExecutiveHealthIndicator(
-            key="active_clients",
-            label="业务活跃",
-            valueText=c_value,
+            key="ai_collaboration",
+            label="AI 协同",
+            valueText=ai_value,
             unitText=None,
-            deltaText=None,
-            trendDirection="flat",
-            accent=c_accent,
-            helperText="本周有推进的客户 / 全部活跃客户" if total_clients else "尚无活跃客户",
+            deltaText=ai_delta_text,
+            trendDirection="up" if ai_delta_n > 0 else ("down" if ai_delta_n < 0 else "flat"),
+            accent=ai_accent,
+            helperText=ai_helper,
         ),
     ]
 
