@@ -292,6 +292,7 @@ import {
   retryEventLineSync,
   getTaskPlanLink,
   patchTaskPlanLink,
+  predictPlanLinkFromText,
   closeEventLine,
   reopenEventLine,
   previewEventLineMerge,
@@ -13739,6 +13740,70 @@ export default function App() {
       // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [pendingPlanItemAction]);
 
+    // [B] 5/26 · 新建任务时 qwen2.5:7b 闪电预测 plan item (debounce 800ms).
+    // 顾源源 5/26 拍板: 识别不上就不挂, 不做兜底; 用户手动选过 (manager/none) 永不覆盖.
+    // 注意: deps 不含 planLinkSource, 否则 effect 把 source 改成 'ai' 又触发自己, 死循环.
+    //       source guard 走 setState 的 prev 闭包, 用真最新 state 比对.
+    useEffect(() => {
+      if (editingTask.id) return;
+      if (isEditingTaskPersonal) return;
+      const title = editingTask.title.trim();
+      if (!title) return;
+      const deptId = editingTask.planLinkDepartmentId;
+      if (!deptId) return;
+      const periodKey = editingTask.planLinkPeriodKey;
+      const matchingPlans = (orgModelState.departmentPlans || []).filter(
+        (p) => p.departmentId === deptId && (p.weekLabel || '').trim() === periodKey,
+      );
+      const planItems = matchingPlans.flatMap((p) => p.items || []);
+      if (planItems.length === 0) return;
+
+      const handle = window.setTimeout(async () => {
+        try {
+          const result = await predictPlanLinkFromText({
+            title,
+            description: editingTask.desc || '',
+            planItems: planItems.map((it) => ({
+              id: it.id,
+              title: it.title || '',
+              statement: it.statement || '',
+            })),
+          });
+          if (!result.planItemId) return;
+          const picked = planItems.find((it) => it.id === result.planItemId);
+          if (!picked) return;
+          setEditingTask((prev) => {
+            if (prev.id) return prev;
+            if (prev.planLinkSource === 'manager' || prev.planLinkSource === 'none') return prev;
+            if (prev.planLinkDepartmentId !== deptId || prev.planLinkPeriodKey !== periodKey) return prev;
+            // 已经推荐过同一个 id 且 source 已经 ai → 完全相同, 不 set 引用避免 re-render 循环
+            if (prev.planLinkPlanItemId === result.planItemId && prev.planLinkSource === 'ai') return prev;
+            return {
+              ...prev,
+              planLinkPlanItemId: result.planItemId!,
+              planLinkSource: 'ai',
+              planLinkConfidence: result.confidence,
+              planLinkReason: `AI 推荐 (置信度 ${Math.round(result.confidence * 100)}%)：${picked.title}。可手动改。`,
+            };
+          });
+        } catch {
+          // 静默: LLM 不可用或网络异常时不挂, 不弹错
+        }
+      }, 800);
+
+      return () => window.clearTimeout(handle);
+      // 故意不依赖 planLinkSource — 见上方注释
+      // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [
+      editingTask.id,
+      editingTask.title,
+      editingTask.desc,
+      editingTask.planLinkDepartmentId,
+      editingTask.planLinkPeriodKey,
+      isEditingTaskPersonal,
+      orgModelState.departmentPlans,
+    ]);
+
 	    useEffect(() => {
 	      const openDraftFromStrategic = (payload: StrategicTaskDraftRequest) => {
 	        const descParts = [`【系统建议 · ${payload.thoughtLine}】\n${payload.suggestion}`];
@@ -18770,6 +18835,113 @@ export default function App() {
                     </TaskPropertyRow>
                   </div>
 
+                  <div className="border-b border-gray-100 p-5">
+                    <div className="mb-2 flex items-center justify-between">
+                      <h3 className="text-xs font-semibold uppercase tracking-wider text-gray-400">任务归属</h3>
+                    </div>
+
+                    <div className="space-y-3">
+                      <TaskPropertyRow icon={<Briefcase size={16} />} label="组织/项目">
+                        <select
+                          value={editingTask.clientId}
+                          onChange={(event) => {
+                            const selectedId = event.target.value;
+                            setEditingTask((prev) => ({
+                              ...prev,
+                              clientId: selectedId,
+                              clientTouched: true,
+                              clientConfidence: selectedId ? 'manual' : 'none',
+                              clientReason: selectedId
+                                ? `已挂到客户/项目：${taskClientOptions.find((item) => item.id === selectedId)?.name || '已选择客户'}。`
+                                : organizationTaskAutoReason,
+                              eventLineId: '',
+                              eventLineTouched: true,
+                              eventLineReason: selectedId
+                                ? '请选择事件线，让后续复盘更连贯。'
+                                : '可选：把任务挂到一条持续推进的事件线上，后续复盘会按事件线聚合。',
+                              projectModuleId: '',
+                              projectModuleTouched: true,
+                              projectModuleReason: selectedId
+                                ? '请选择任务模块，帮助后续复盘落到项目结构。'
+                                : '可选：把任务挂到项目下的具体任务模块。',
+                              projectFlowId: '',
+                              projectFlowTouched: true,
+                              projectFlowReason: selectedId
+                                ? '请选择标准流程，让复盘更贴近业务动作。'
+                                : '可选：把任务进一步挂到标准流程，后续复盘和日历会更贴近业务动作。',
+                            }));
+                          }}
+                          disabled={isEditingTaskPersonal}
+                          className="w-full rounded border border-gray-200 bg-white px-2 py-1.5 text-sm text-gray-700 disabled:cursor-not-allowed disabled:bg-gray-100 disabled:text-gray-400"
+                        >
+                          <option value="">
+                            {isEditingTaskPersonal ? '个人日程' : '请选择项目'}
+                          </option>
+                          {taskClientOptions.map((client) => (
+                            <option key={client.id} value={client.id}>
+                              {client.name}
+                            </option>
+                          ))}
+                        </select>
+                      </TaskPropertyRow>
+
+                      <TaskPropertyRow icon={<GitCommit size={16} />} label="事件线">
+                        <div className="w-full space-y-1.5">
+                          <select
+                            value={editingTask.eventLineId}
+                            onChange={(event) =>
+                              setEditingTask((prev) => ({
+                                ...prev,
+                                eventLineId: event.target.value,
+                                eventLineTouched: true,
+                                eventLineReason: event.target.value
+                                  ? `已关联事件线：${taskEventLineOptions.find((item) => item.id === event.target.value)?.name || '已选择事件线'}。`
+                                  : (prev.clientId ? '请选择事件线，让复盘更连贯。' : '可选：把任务挂到一条持续推进的事件线上，后续复盘会按事件线聚合。'),
+                              }))
+                            }
+                            disabled={isEditingTaskPersonal}
+                            className="w-full rounded border border-gray-200 bg-white px-2 py-1.5 text-sm text-gray-700 disabled:cursor-not-allowed disabled:bg-gray-100 disabled:text-gray-400"
+                          >
+                            <option value="">
+                              {isEditingTaskPersonal ? '个人日程不进入事件线' : '可选：加入事件线'}
+                            </option>
+                            {taskEventLineOptions.map((line) => (
+                              <option key={line.id} value={line.id}>
+                                {line.name}
+                              </option>
+                            ))}
+                          </select>
+                          <div className="flex items-center gap-1.5">
+                            <button
+                              type="button"
+                              onClick={handleEditEventLineFromTask}
+                              disabled={!editingTask.eventLineId || isEditingTaskPersonal}
+                              className="rounded border border-gray-200 px-1.5 py-0.5 text-[10px] font-medium text-gray-500 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-40"
+                            >
+                              编辑
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => void handleDeleteEventLineFromTask()}
+                              disabled={!editingTask.eventLineId || isEditingTaskPersonal || isDeletingEventLine}
+                              className="rounded border border-gray-200 px-1.5 py-0.5 text-[10px] font-medium text-rose-500 hover:bg-rose-50 disabled:cursor-not-allowed disabled:opacity-40"
+                            >
+                              {isDeletingEventLine ? '...' : (selectedEventLineSummary?.visibilityScope === 'private' ? '删除' : '结束')}
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => void handleCreateEventLineFromTask()}
+                              disabled={isEditingTaskPersonal || isCreatingEventLine}
+                              className="rounded border border-gray-200 px-1.5 py-0.5 text-[10px] font-medium text-gray-500 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-40"
+                            >
+                              新建
+                            </button>
+                          </div>
+                        </div>
+                      </TaskPropertyRow>
+                    </div>
+                  </div>
+
                   {(() => {
                     if (isEditingTaskPersonal) return null;
                     const periodKey = editingTask.planLinkPeriodKey;
@@ -18885,113 +19057,6 @@ export default function App() {
                       </div>
                     );
                   })()}
-
-                  <div className="border-b border-gray-100 p-5">
-                    <div className="mb-2 flex items-center justify-between">
-                      <h3 className="text-xs font-semibold uppercase tracking-wider text-gray-400">上下文堆栈</h3>
-                    </div>
-
-                    <div className="space-y-3">
-                      <TaskPropertyRow icon={<Briefcase size={16} />} label="组织/项目">
-                        <select
-                          value={editingTask.clientId}
-                          onChange={(event) => {
-                            const selectedId = event.target.value;
-                            setEditingTask((prev) => ({
-                              ...prev,
-                              clientId: selectedId,
-                              clientTouched: true,
-                              clientConfidence: selectedId ? 'manual' : 'none',
-                              clientReason: selectedId
-                                ? `已挂到客户/项目：${taskClientOptions.find((item) => item.id === selectedId)?.name || '已选择客户'}。`
-                                : organizationTaskAutoReason,
-                              eventLineId: '',
-                              eventLineTouched: true,
-                              eventLineReason: selectedId
-                                ? '请选择事件线，让后续复盘更连贯。'
-                                : '可选：把任务挂到一条持续推进的事件线上，后续复盘会按事件线聚合。',
-                              projectModuleId: '',
-                              projectModuleTouched: true,
-                              projectModuleReason: selectedId
-                                ? '请选择任务模块，帮助后续复盘落到项目结构。'
-                                : '可选：把任务挂到项目下的具体任务模块。',
-                              projectFlowId: '',
-                              projectFlowTouched: true,
-                              projectFlowReason: selectedId
-                                ? '请选择标准流程，让复盘更贴近业务动作。'
-                                : '可选：把任务进一步挂到标准流程，后续复盘和日历会更贴近业务动作。',
-                            }));
-                          }}
-                          disabled={isEditingTaskPersonal}
-                          className="w-full rounded border border-gray-200 bg-white px-2 py-1.5 text-sm text-gray-700 disabled:cursor-not-allowed disabled:bg-gray-100 disabled:text-gray-400"
-                        >
-                          <option value="">
-                            {isEditingTaskPersonal ? '个人日程' : '请选择项目'}
-                          </option>
-                          {taskClientOptions.map((client) => (
-                            <option key={client.id} value={client.id}>
-                              {client.name}
-                            </option>
-                          ))}
-                        </select>
-                      </TaskPropertyRow>
-
-                      <TaskPropertyRow icon={<GitCommit size={16} />} label="事件线">
-                        <div className="w-full space-y-1.5">
-                          <select
-                            value={editingTask.eventLineId}
-                            onChange={(event) =>
-                              setEditingTask((prev) => ({
-                                ...prev,
-                                eventLineId: event.target.value,
-                                eventLineTouched: true,
-                                eventLineReason: event.target.value
-                                  ? `已关联事件线：${taskEventLineOptions.find((item) => item.id === event.target.value)?.name || '已选择事件线'}。`
-                                  : (prev.clientId ? '请选择事件线，让复盘更连贯。' : '可选：把任务挂到一条持续推进的事件线上，后续复盘会按事件线聚合。'),
-                              }))
-                            }
-                            disabled={isEditingTaskPersonal}
-                            className="w-full rounded border border-gray-200 bg-white px-2 py-1.5 text-sm text-gray-700 disabled:cursor-not-allowed disabled:bg-gray-100 disabled:text-gray-400"
-                          >
-                            <option value="">
-                              {isEditingTaskPersonal ? '个人日程不进入事件线' : '可选：加入事件线'}
-                            </option>
-                            {taskEventLineOptions.map((line) => (
-                              <option key={line.id} value={line.id}>
-                                {line.name}
-                              </option>
-                            ))}
-                          </select>
-                          <div className="flex items-center gap-1.5">
-                            <button
-                              type="button"
-                              onClick={handleEditEventLineFromTask}
-                              disabled={!editingTask.eventLineId || isEditingTaskPersonal}
-                              className="rounded border border-gray-200 px-1.5 py-0.5 text-[10px] font-medium text-gray-500 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-40"
-                            >
-                              编辑
-                            </button>
-                            <button
-                              type="button"
-                              onClick={() => void handleDeleteEventLineFromTask()}
-                              disabled={!editingTask.eventLineId || isEditingTaskPersonal || isDeletingEventLine}
-                              className="rounded border border-gray-200 px-1.5 py-0.5 text-[10px] font-medium text-rose-500 hover:bg-rose-50 disabled:cursor-not-allowed disabled:opacity-40"
-                            >
-                              {isDeletingEventLine ? '...' : (selectedEventLineSummary?.visibilityScope === 'private' ? '删除' : '结束')}
-                            </button>
-                            <button
-                              type="button"
-                              onClick={() => void handleCreateEventLineFromTask()}
-                              disabled={isEditingTaskPersonal || isCreatingEventLine}
-                              className="rounded border border-gray-200 px-1.5 py-0.5 text-[10px] font-medium text-gray-500 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-40"
-                            >
-                              新建
-                            </button>
-                          </div>
-                        </div>
-                      </TaskPropertyRow>
-                    </div>
-                  </div>
 
                   <div className="border-b border-gray-100 p-5">
                     <div className="mb-2 flex items-center justify-between">
@@ -22424,7 +22489,20 @@ export default function App() {
         const result = await exportAnswer(currentClientId, messageId);
         await refreshWorkspace(currentClientId);
         const opened = await openPathBridge(result.path).catch(() => false);
-        flash('success', opened ? `已生成、归档并打开 Word 文件：${result.fileName}` : `已生成并归档 Word 文件：${result.fileName}`);
+        // 顾源源 5/26: 真按文件后缀 (.xlsx vs .docx) 显示格式名 + openPath 失败时 fallback 到 Finder 高亮
+        const isXlsx = result.fileName.toLowerCase().endsWith('.xlsx');
+        const formatLabel = isXlsx ? 'Excel' : 'Word';
+        if (opened) {
+          flash('success', `已生成、归档并打开 ${formatLabel} 文件：${result.fileName}`);
+        } else {
+          const revealed = await revealInFinderBridge(result.path).catch(() => false);
+          flash(
+            'success',
+            revealed
+              ? `已生成 ${formatLabel} 文件：${result.fileName}（Finder 已高亮，右侧文件栏也可见）`
+              : `已生成 ${formatLabel} 文件：${result.fileName}（在右侧文件栏可点开）`,
+          );
+        }
       } catch (error) {
         flash('error', error instanceof Error ? error.message : '导出文件失败');
       } finally {
@@ -22551,12 +22629,19 @@ export default function App() {
         await refreshWorkspace(currentClientId);
         const opened = await openPathBridge(result.path).catch(() => false);
         const count = currentExportBag.length;
-        flash(
-          'success',
-          opened
-            ? `已合并 ${count} 段对话为文档:${result.fileName}`
-            : `已合并 ${count} 段对话并归档:${result.fileName}`,
-        );
+        const isXlsx = result.fileName.toLowerCase().endsWith('.xlsx');
+        const formatLabel = isXlsx ? 'Excel' : 'Word';
+        if (opened) {
+          flash('success', `已合并 ${count} 段对话为 ${formatLabel} 文件并打开:${result.fileName}`);
+        } else {
+          const revealed = await revealInFinderBridge(result.path).catch(() => false);
+          flash(
+            'success',
+            revealed
+              ? `已合并 ${count} 段对话为 ${formatLabel} 文件:${result.fileName}（Finder 已高亮）`
+              : `已合并 ${count} 段对话为 ${formatLabel} 文件并归档:${result.fileName}（右侧文件栏可见）`,
+          );
+        }
         clearExportBag();
       } catch (error) {
         const detail = error instanceof Error ? error.message : '合并导出失败';
@@ -25291,7 +25376,8 @@ export default function App() {
                       const AI_GENERATED_DOC_SOURCES = new Set<string>([
                         'workspace_native',
                         'answer_memory_doc',
-                        'answer_export_doc',
+                        // 顾源源 5/26: 'answer_export_doc' 真不算系统过程 — 用户主动点"导出文件"产出的真成品文件,
+                        // 应该在右侧文件栏真显示, 不再过滤
                         'consultation_knowledge_memory',
                         'auto_repair',
                         'internet_enrichment',
