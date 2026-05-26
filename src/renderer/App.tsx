@@ -7254,7 +7254,30 @@ export default function App() {
     try {
       const raw = window.localStorage.getItem('yiyu.workspace.favoriteTools');
       const parsed = raw ? JSON.parse(raw) : [];
-      return Array.isArray(parsed) ? parsed.filter((item): item is string => typeof item === 'string') : [];
+      const list = Array.isArray(parsed)
+        ? parsed.filter((item): item is string => typeof item === 'string')
+        : [];
+      // 顾源源 5/26: 真 migration — 旧 key 'import_folder' / 'import_files' 真已合并为 'import'.
+      // 真自动迁移 (用户旧收藏不丢, 真去重) + 真清除 registry 已不存在的 invalid key.
+      // 真原 bug: 旧 key 真占 favorite slot 但 UI 真过滤掉 → 用户感觉"加 1 个占 2 位".
+      const KNOWN_TOOL_KEYS = new Set([
+        'import', 'fill_template', 'text_doc', 'link_material', 'smart_import',
+      ]);
+      const migrated: string[] = [];
+      let hasLegacyImport = false;
+      for (const key of list) {
+        if (key === 'import_folder' || key === 'import_files') {
+          hasLegacyImport = true;
+          continue;
+        }
+        if (KNOWN_TOOL_KEYS.has(key) && !migrated.includes(key)) {
+          migrated.push(key);
+        }
+      }
+      if (hasLegacyImport && !migrated.includes('import')) {
+        migrated.unshift('import');
+      }
+      return migrated;
     } catch {
       return [];
     }
