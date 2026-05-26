@@ -3159,6 +3159,30 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
     ensure_data_center_schema(state.db)
     purge_private_task_ingest_events(state.db)
 
+    # 顾源源 5/26 真用反馈 P0-B: 真后台定时 reap worker.
+    # 真旧: recover_stale_loading_chat_messages 真**只在前端调** GET /analysis-runs/{id} 时触发.
+    # 真用户关 tab / 切客户 / 断网 → backend run 真永远卡 'running', 真前端切回来才靠 polling 触发老化.
+    # 真新: 真后台线程每 30s 真自动扫一次 stale run + 真无前端依赖.
+    def _background_reap_stale_chat_runs() -> None:
+        """真后台 worker — 每 30s 真自动跑一次 stale chat run 老化."""
+        while not state.job_stop.is_set():
+            try:
+                # 真 wait 30s, 但响应 stop signal (shutdown 真立刻退)
+                if state.job_stop.wait(timeout=30.0):
+                    break
+                recover_stale_loading_chat_messages()  # 真无 run_id / message_id → 真全扫
+            except Exception as exc:
+                # 真任何错真静默 (logger.warning), 真**不让线程退出**
+                logger.warning("[bg-reap-chat-runs] failed: %s", exc, exc_info=True)
+        logger.info("[bg-reap-chat-runs] thread exit (job_stop signaled)")
+
+    Thread(
+        target=_background_reap_stale_chat_runs,
+        daemon=True,
+        name="bg-reap-chat-runs",
+    ).start()
+    logger.info("[bg-reap-chat-runs] thread spawned (every 30s)")
+
     app = FastAPI(title=APP_NAME, version=APP_VERSION)
     app.state.app_state = state
 
@@ -4115,9 +4139,11 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             refresh_template_fill_executor(reason=f"expired_runs={len(expired_ids)}")
         return len(expired_ids)
 
-    STALE_LOADING_CHAT_QUEUED_SECONDS = 300
-    STALE_LOADING_CHAT_GENERATING_SECONDS = 420
-    STALE_LOADING_CHAT_ORPHAN_SECONDS = 900
+    # 顾源源 5/26 真用反馈 P0-D: STALE 真阈值 5/7 分钟太长 → 60/90 秒.
+    # 用户真等不了 5 分钟, 真切走切回来想立刻恢复. 配合 P0-B 真后台 reap worker, 60s 真自动老化.
+    STALE_LOADING_CHAT_QUEUED_SECONDS = 60
+    STALE_LOADING_CHAT_GENERATING_SECONDS = 90
+    STALE_LOADING_CHAT_ORPHAN_SECONDS = 180
 
     def _parse_local_datetime(value: object, *, fallback: datetime) -> datetime:
         raw = str(value or "").strip()
@@ -15036,6 +15062,20 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 continue
             current_prompt_hash = _workspace_chat_prompt_hash(current_prompt)
             existing_prompt_hash = _workspace_chat_prompt_hash(str(refreshed["question"] or ""))
+            # 顾源源 5/26 真用反馈 P0-A: 真**只有 prompt hash 真一致**才真复用 active run.
+            # 真旧 bug: 任何 prompt 真都返同 run 真响应 → 真用户连按 Q1+Q2, Q2 被当作 Q1 真"幂等" 真吞 → 卡片消失.
+            # 真现在: 真 prompt hash 真不一致 → continue 真扫下一个 run, 真扫完返 None 真让上层创建新 run.
+            if current_prompt_hash != existing_prompt_hash:
+                if state.system_logger:
+                    state.system_logger.info(
+                        "workspace_chat",
+                        "workspace_chat_start_skip_diff_prompt",
+                        clientId=client_id,
+                        existingRunId=run_id,
+                        currentPromptHash=current_prompt_hash,
+                        existingQuestionHash=existing_prompt_hash,
+                    )
+                continue
             if state.system_logger:
                 state.system_logger.info(
                     "workspace_chat",

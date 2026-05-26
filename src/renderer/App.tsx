@@ -20288,6 +20288,8 @@ export default function App() {
   const composerTextareaRef = useRef<HTMLTextAreaElement | null>(null);
   const analysisRunPollTimerRef = useRef<number | null>(null);
   const activePollingRunIdRef = useRef<string | null>(null);
+  // 顾源源 5/26 真用反馈 P0-C: pollRun 真连续失败计数. 3 次失败后真清 polling + mark failed.
+  const pollRunFailureCountRef = useRef<number>(0);
   const lastAutoScrolledMessageIdRef = useRef<string | null>(null);
   const lastThinkingPanelVisibleRef = useRef(false);
   const setupModeClientIdRef = useRef<string | null>(null);
@@ -20582,20 +20584,37 @@ export default function App() {
 	            }
 	          })
           .catch((error: unknown) => {
-            // 之前是 silent 吞错——后端 404（run id 已被清 / 从未存在）时定时器永不停，
-            // 导致 hasPendingAnalysisRun 卡 true、发送按钮一直处于"停止"态、新问题发不出去。
-            // 识别 404 / "not found" → 立即清掉 polling 和 active run state。
+            // 顾源源 5/26 真用反馈 P0-C: 真旧版只识别 404 → silent 吞别的 (网络抖动 / 500 / JSON parse)
+            // → setInterval 真还在转但 React state 永不更新 → hasPendingAnalysisRun 卡 true → 用户感"切走切回来才继续".
+            // 真新: 任何 error 真累计 retry, 真 3 次仍失败 → mark failed + 清 polling, 真不再 silent.
             const message = error instanceof Error ? error.message : String(error);
             const isNotFound = /\b404\b|not.?found|找不到/i.test(message);
             if (isNotFound) {
+              // 404: backend 真不知道 run id → 真直接清, 不重试
               clearAnalysisRunPollTimer();
               setClientActiveRun(clientId, null);
               setClientPendingQuestion(clientId, null);
               setThreadOptimisticMessages(CLIENT_CHAT_DRAFT_THREAD_ID, []);
+              pollRunFailureCountRef.current = 0;
+              return;
+            }
+            // 其它 error: 累计 3 次后清
+            pollRunFailureCountRef.current = (pollRunFailureCountRef.current || 0) + 1;
+            console.warn(
+              `[pollRun] error (count=${pollRunFailureCountRef.current}/3) runId=${runId}: ${message}`,
+            );
+            if (pollRunFailureCountRef.current >= 3) {
+              console.error(`[pollRun] 真已连续 3 次失败 — 清 polling + mark run failed`);
+              clearAnalysisRunPollTimer();
+              setClientActiveRun(clientId, null);
+              setClientPendingQuestion(clientId, null);
+              setThreadOptimisticMessages(CLIENT_CHAT_DRAFT_THREAD_ID, []);
+              pollRunFailureCountRef.current = 0;
             }
           });
       };
       pollRun();
+      pollRunFailureCountRef.current = 0;  // 真每次重新启 polling 真清 counter
       analysisRunPollTimerRef.current = window.setInterval(pollRun, 1200);
     };
 
@@ -21080,6 +21099,23 @@ export default function App() {
       if (activePollingRunIdRef.current !== activeAnalysisRun.id) {
         beginAnalysisRunPolling(activeAnalysisRun.id, currentClientId);
       }
+    }, [currentClientId, activeAnalysisRun?.id, hasPendingAnalysisRun]);
+
+    // 顾源源 5/26 真用反馈 P0-E: visibilitychange 监听 — tab 真重新可见时强制重启 polling.
+    // 真旧问题: Electron 后台 setInterval 真被节流 (Chrome 行为), 或者用户切走真久后切回,
+    // polling 真停滞 → hasPendingAnalysisRun 卡 true.
+    // 真新: 真 visibilitychange='visible' 时, 真如果有 pending run 真清旧 timer + 重启 polling.
+    useEffect(() => {
+      const handleVisibilityChange = () => {
+        if (document.visibilityState !== 'visible') return;
+        if (!currentClientId || !hasPendingAnalysisRun || !activeAnalysisRun) return;
+        // 真 tab 真重新可见 → 真清旧 timer + 重启 polling (即便 activePollingRunIdRef 还 match)
+        // 真这样 pollRun 真立刻同步执行一次拿最新状态, 不等 1.2s setInterval
+        clearAnalysisRunPollTimer();
+        beginAnalysisRunPolling(activeAnalysisRun.id, currentClientId);
+      };
+      document.addEventListener('visibilitychange', handleVisibilityChange);
+      return () => document.removeEventListener('visibilitychange', handleVisibilityChange);
     }, [currentClientId, activeAnalysisRun?.id, hasPendingAnalysisRun]);
 
     useEffect(() => {
@@ -24214,23 +24250,24 @@ export default function App() {
                 </div>
               )}
               {currentQueue.length > 0 && (
-                <div className="mb-3 rounded-2xl border border-amber-200 bg-amber-50/80 px-4 py-2.5">
-                  <div className="flex items-center gap-2 text-[12px] font-bold text-amber-900">
-                    <Sparkles size={14} className="text-amber-600" />
+                <div className="mb-3 rounded-2xl bg-[#5B7BFE]/5 px-4 py-2.5 ring-1 ring-inset ring-[#5B7BFE]/25">
+                  {/* 顾源源 5/26: 排队卡片真用主站 #5B7BFE 蓝色系, 真不再 amber 黄违和 */}
+                  <div className="flex items-center gap-2 text-[12px] font-medium text-[#3652c9]">
+                    <Sparkles size={14} className="text-[#5B7BFE]" />
                     排队中 {currentQueue.length}/{QUESTION_QUEUE_MAX} 题，前一题答完会自动提问
                   </div>
                   <div className="mt-2 flex flex-col gap-1.5">
                     {currentQueue.map((question, index) => (
                       <div
                         key={`${index}_${question.slice(0, 24)}`}
-                        className="flex items-start gap-2 rounded-xl bg-white/70 px-2.5 py-1.5 text-[11.5px] leading-relaxed text-amber-900 shadow-[inset_0_0_0_1px_rgba(217,119,6,0.15)]"
+                        className="flex items-start gap-2 rounded-xl bg-white/80 px-2.5 py-1.5 text-[11.5px] leading-relaxed text-[#3652c9] ring-1 ring-inset ring-[#5B7BFE]/15"
                       >
-                        <span className="shrink-0 rounded-md bg-amber-200/70 px-1.5 py-0.5 text-[10px] font-bold text-amber-800">#{index + 1}</span>
+                        <span className="shrink-0 rounded-md bg-[#5B7BFE]/15 px-1.5 py-0.5 text-[10px] font-bold text-[#3652c9]">#{index + 1}</span>
                         <span className="line-clamp-2 flex-1">{question}</span>
                         <button
                           type="button"
                           onClick={() => removeQueueItem(index)}
-                          className="shrink-0 rounded-md p-0.5 text-amber-500 transition hover:bg-amber-200/40 hover:text-amber-800"
+                          className="shrink-0 rounded-md p-0.5 text-[#5B7BFE]/60 transition hover:bg-[#5B7BFE]/10 hover:text-[#3652c9]"
                           title="从队列移除"
                           aria-label="从队列移除"
                         >
