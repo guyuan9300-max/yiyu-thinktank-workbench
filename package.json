@@ -136,7 +136,6 @@
   },
   "dependencies": {
     "@mdxeditor/editor": "^4.0.0",
-    "@rollup/rollup-linux-arm64-gnu": "^4.60.1",
     "electron-updater": "^6.8.3",
     "lucide-react": "^0.511.0",
     "qrcode": "^1.5.4",

@@ -52395,22 +52395,21 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             taskTitle=payload.taskTitle,
         )
 
-    @app.post("/api/v1/tasks/{task_id}/confirm", response_model=TaskRecord)
-    def confirm_task(task_id: str) -> TaskRecord:
-        session_user = get_cached_session_user()
-        if get_cloud_token():
-            try:
-                user = require_session_user()
-                session_user = user
-                response = cloud_request("POST", f"/api/v1/tasks/{task_id}/collaborators/{user.id}/accept")
-                if isinstance(response, dict):
-                    log_activity("task.confirm", "task", task_id, {"userId": user.id})
-                    _upsert_cloud_task_shadow_local(response)
-                    return build_cloud_task(response, {})
-            except Exception:
-                pass  # cloud down — confirm locally
+    def _resolve_task_cloud_ref(task_id: str) -> tuple[str, str, bool]:
+        row = state.db.fetchone(
+            "SELECT id, cloud_id, sync_status FROM tasks WHERE id = ? OR cloud_id = ?",
+            (task_id, task_id),
+        )
+        if not row:
+            return task_id, task_id, bool(get_cloud_token())
+        local_task_id = str(row["id"])
+        cloud_task_id = str(row["cloud_id"] or task_id).strip() or task_id
+        sync_status = str(row["sync_status"] or "").strip().lower()
+        return local_task_id, cloud_task_id, bool(cloud_task_id and (row["cloud_id"] or sync_status == "synced"))
+
+    def _mark_task_confirmed_locally(task_id: str, user_id: str | None) -> TaskRecord:
         timestamp = now_iso()
-        _mark_task_collaborator_handled(task_id, session_user.id if session_user else None, "accepted")
+        _mark_task_collaborator_handled(task_id, user_id, "accepted")
         state.db.execute(
             """
             UPDATE tasks
@@ -52428,8 +52427,35 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             """,
             (timestamp, task_id),
         )
-        log_activity("task.confirm", "task", task_id, {"userId": session_user.id if session_user else None})
         return fetch_tasks("t.id = ?", (task_id,))[0]
+
+    @app.post("/api/v1/tasks/{task_id}/confirm", response_model=TaskRecord)
+    def confirm_task(task_id: str) -> TaskRecord:
+        session_user = get_cached_session_user()
+        local_task_id, cloud_task_id, is_cloud_backed_task = _resolve_task_cloud_ref(task_id)
+        if get_cloud_token():
+            try:
+                user = require_session_user()
+                session_user = user
+                response = cloud_request("POST", f"/api/v1/tasks/{cloud_task_id}/collaborators/{user.id}/accept")
+                if isinstance(response, dict):
+                    log_activity("task.confirm", "task", local_task_id, {"userId": user.id})
+                    synced_task_id = _upsert_cloud_task_shadow_local(response) or local_task_id
+                    # Even when cloud upsert skips stale payloads to protect local edits,
+                    # the accept result itself is authoritative and must be reflected
+                    # locally or the next task-board refresh will show the item in inbox again.
+                    return _mark_task_confirmed_locally(synced_task_id, user.id)
+                if is_cloud_backed_task:
+                    raise HTTPException(status_code=502, detail="云端协作确认返回了无效任务数据")
+            except Exception as error:
+                if is_cloud_backed_task:
+                    detail = getattr(error, "detail", None) or str(error) or "未知错误"
+                    status_code = int(getattr(error, "status_code", 502) or 502)
+                    raise HTTPException(status_code=status_code, detail=f"云端协作确认失败：{detail}") from error
+                # Local-only tasks can still be accepted without cloud.
+                pass
+        log_activity("task.confirm", "task", local_task_id, {"userId": session_user.id if session_user else None})
+        return _mark_task_confirmed_locally(local_task_id, session_user.id if session_user else None)
 
     @app.post("/api/v1/tasks/{task_id}/reject", response_model=TaskRecord)
     def reject_task(task_id: str, payload: TaskRejectPayload) -> TaskRecord:
