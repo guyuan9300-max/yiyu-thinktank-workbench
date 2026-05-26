@@ -19,6 +19,9 @@ class MarkdownTable:
     headers: list[str]
     rows: list[list[str]]
     """每行的真单元格内容 (可能含 markdown 内联标记如 **加粗**)。"""
+    heading_above: str = ""
+    """真表格上方最近的 markdown 标题 (# / ## / ###), 用作 xlsx sheet 名。
+    空 = 没找到上方标题, fallback 用'表格N'命名。"""
 
 
 # 真表格行: 以 | 起头, 以 | 结尾 (允许周围空格), 中间至少一个 |
@@ -38,17 +41,60 @@ def _split_table_cells(line: str) -> list[str]:
     return [cell.strip() for cell in stripped.split("|")]
 
 
+# 真识别 markdown 标题行 (# / ## / ### / #### / #####)
+_HEADING_RE = re.compile(r"^\s*(#{1,5})\s+(.+?)\s*$")
+
+
+def _find_heading_above(lines: list[str], table_start_idx: int) -> str:
+    """真从 table_start_idx 往回找最近的 markdown 标题, 跳过空行 + 普通段落。
+
+    真规则: 真到上一个表格之前 OR 真扫超过 20 行就停 (避免拿太远的标题).
+    """
+    n_back = 0
+    for idx in range(table_start_idx - 1, -1, -1):
+        line = lines[idx]
+        if _TABLE_ROW_RE.match(line) or _TABLE_SEP_RE.match(line):
+            # 真碰到上一个表格 → 停 (它的 heading 不属于本表格)
+            return ""
+        match = _HEADING_RE.match(line)
+        if match:
+            return _strip_heading_marker(match.group(2))
+        n_back += 1
+        if n_back > 20:
+            return ""
+    return ""
+
+
+# 真去掉中文标题的"序号"前缀 (一、 / 二、 / 1. / 2.) 真给 sheet name 更干净
+_HEADING_NUMBER_PREFIX_RE = re.compile(
+    r"^(?:[一二三四五六七八九十百零]+、|[0-9]+[.、]|[Ⅰ-ⅿ]+\.?|[（(][0-9一二三四五六七八九十]+[）)])\s*"
+)
+
+
+def _strip_heading_marker(heading_text: str) -> str:
+    """清理 heading 真用作 sheet name:
+      · 去掉序号前缀 (一、 / 二、 / 1. / 等)
+      · 真 strip 内联 markdown (**xx**)
+      · 真去 evidence badge token [📚...] / [⚠️...]
+    """
+    text = heading_text.strip()
+    # 真去序号前缀
+    cleaned = _HEADING_NUMBER_PREFIX_RE.sub("", text).strip()
+    # 真去内联 markdown 装饰
+    cleaned = markdown_inline_to_plain(cleaned)
+    return cleaned or text  # 真不空时返清理版
+
+
 def parse_markdown_tables(markdown_text: str) -> list[MarkdownTable]:
-    """扫真 markdown 文本, 提取所有真表格。
+    """扫真 markdown 文本, 提取所有真表格 (含上方最近标题真用作 sheet name)。
 
     真识别 pattern:
+      ## 机构基础信息表
       | a | b |
       |---|---|
       | 1 | 2 |
-      | 3 | 4 |
 
-    返回:
-      [MarkdownTable(headers=['a','b'], rows=[['1','2'], ['3','4']]), ...]
+    返回 MarkdownTable 列表, heading_above 真带最近 H 标题文本。
     """
     tables: list[MarkdownTable] = []
     lines = markdown_text.split("\n")
@@ -68,6 +114,8 @@ def parse_markdown_tables(markdown_text: str) -> list[MarkdownTable]:
         if not headers:
             i += 1
             continue
+        # 真找上方最近 heading
+        heading_above = _find_heading_above(lines, i)
         # 真收集 body rows
         rows: list[list[str]] = []
         j = i + 2  # 跳过 separator
@@ -80,7 +128,7 @@ def parse_markdown_tables(markdown_text: str) -> list[MarkdownTable]:
                 cells = cells[: len(headers)]
             rows.append(cells)
             j += 1
-        tables.append(MarkdownTable(headers=headers, rows=rows))
+        tables.append(MarkdownTable(headers=headers, rows=rows, heading_above=heading_above))
         i = j  # 真跳到表格之后继续扫
     return tables
 
@@ -169,20 +217,32 @@ _INLINE_ITALIC_RE = re.compile(r"(?<!\*)\*([^\*]+?)\*(?!\*)")
 _INLINE_CODE_RE = re.compile(r"`([^`]+)`")
 _INLINE_LINK_RE = re.compile(r"\[([^\]]+)\]\(([^\)]+)\)")
 
+# 顾源源 5/26 真用反馈: chat 答案里 [📚 xxx] / [⚠️ 引用失效: xxx] 真 evidence badge token
+# 是 chat UI 渲染角标用的, 真不该出现在 Excel cell. 真 strip 掉.
+# 真示例:
+#   "广东省日慈公益基金会 [📚 日慈基金会.基金会全称]"  →  "广东省日慈公益基金会"
+#   "地方性非公募基金会 [⚠️ 引用失效：「...」不在字典 verified 列表，请...]"  →  "地方性非公募基金会"
+_EVIDENCE_BADGE_RE = re.compile(r"\s*\[(?:📚|⚠️|⚠|✓|❌|🔗|🔍)[^\]]*\]\s*")
+
 
 def markdown_inline_to_plain(text: str) -> str:
-    """真去掉 markdown 内联装饰, 返纯文本 (供 xlsx cell 用)。
+    """真去掉 markdown 内联装饰 + evidence badge token, 返纯文本 (供 xlsx cell 用)。
 
     · **加粗** → 加粗
     · *斜体* → 斜体
     · `code` → code
     · [文字](url) → 文字 (url)  (真保留 url 在括号里, 用户能看到)
+    · [📚 xxx] / [⚠️ xxx]  → 真去掉 (evidence badge, 软件 UI 角标真不进 Excel)
     """
     if not text:
         return ""
     out = text
+    # 真先 strip evidence badge (在 link 之前, 因为 [📚 ...] 也是 [...] 模式)
+    out = _EVIDENCE_BADGE_RE.sub("", out)
     out = _INLINE_LINK_RE.sub(lambda m: f"{m.group(1)} ({m.group(2)})", out)
     out = _INLINE_BOLD_RE.sub(r"\1", out)
     out = _INLINE_ITALIC_RE.sub(r"\1", out)
     out = _INLINE_CODE_RE.sub(r"\1", out)
+    # 真 strip 多余空格 (badge 真去掉后可能留双空格)
+    out = re.sub(r"  +", " ", out).strip()
     return out
