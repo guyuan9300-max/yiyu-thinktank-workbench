@@ -4806,6 +4806,43 @@ export interface FeishuDeliveryProfilePayload {
   mobile?: string | null;
 }
 
+export type FeishuSyncStatus =
+  | 'idle'
+  | 'not_configured'
+  | 'skipped'
+  | 'time_invalid'
+  | 'queued'
+  | 'syncing'
+  | 'synced'
+  | 'failed';
+
+export interface FeishuSyncStatusRecord {
+  localType: string;
+  localId: string;
+  remoteType: string;
+  remoteId?: string | null;
+  remoteUrl?: string | null;
+  status: FeishuSyncStatus;
+  message: string;
+  lastSyncedAt?: string | null;
+  updatedAt: string;
+  details: Record<string, unknown>;
+}
+
+export interface FeishuTaskCalendarSyncPayload {
+  notify?: boolean;
+}
+
+export interface FeishuDocumentSyncPayload {
+  localType?: string;
+  localId: string;
+  title: string;
+  content: string;
+  clientId?: string | null;
+  triggerSource?: string;
+  notifyOnCreate?: boolean;
+}
+
 export interface FeishuMemberAuthorization {
   linked: boolean;
   readyForAuthorization: boolean;

@@ -120,6 +120,7 @@ import type {
   FeishuMemberAuthorizationStartResult,
   FeishuBotSettings,
   FeishuBotSettingsPayload,
+  FeishuSyncStatusRecord,
   OrgFeishuIntegration,
   OrgFeishuIntegrationPayload,
   FeishuUserBinding,
@@ -325,6 +326,7 @@ import {
   getFeishuDeliveryProfile,
   getFeishuMemberAuthorization,
   getFeishuBotSettings,
+  getFeishuSyncStatus,
   getOrgFeishuIntegration,
   getOrgMembershipSummary,
   getFeishuUserBinding,
@@ -7680,6 +7682,14 @@ export default function App() {
     && (
       isYiyuOfficialOrganizationName(orgMembershipState.organizationName)
       || isYiyuOfficialOrganizationName(orgModelState.organization.name)
+    ),
+  );
+  const canShowMaintenanceSyncPanel = Boolean(
+    isYiyuOfficialCloudSession
+    || (
+      canUseCollabSync
+      && maintenanceModeStatus?.available
+      && (maintenanceModeStatus.canEnter || maintenanceModeStatus.active)
     ),
   );
   const currentMembershipStatus = getEffectiveMembershipStatus(authState);
@@ -19756,6 +19766,49 @@ export default function App() {
       });
     };
     const [filesTabSearchInput, setFilesTabSearchInput] = useState('');
+    const [feishuDocumentSyncStatusById, setFeishuDocumentSyncStatusById] = useState<Record<string, FeishuSyncStatusRecord | null>>({});
+    const visibleFeishuDocumentIdsKey = useMemo(() => {
+      if (workspaceRightTab !== 'files') return '';
+      return (workspace?.documents || [])
+        .filter((doc) => Boolean(doc.id))
+        .slice(0, 40)
+        .map((doc) => doc.id)
+        .join('|');
+    }, [workspaceRightTab, workspace?.documents]);
+    useEffect(() => {
+      if (!visibleFeishuDocumentIdsKey) return undefined;
+      let cancelled = false;
+      const documentIds = visibleFeishuDocumentIdsKey.split('|').filter(Boolean);
+      const missingIds = documentIds.filter((id) => !(id in feishuDocumentSyncStatusById));
+      if (missingIds.length === 0) return undefined;
+      void Promise.allSettled(
+        missingIds.map(async (documentId) => {
+          try {
+            const record = await getFeishuSyncStatus({
+              localType: 'document',
+              localId: documentId,
+              remoteType: 'docx_document',
+            });
+            return { documentId, record };
+          } catch {
+            return { documentId, record: null };
+          }
+        }),
+      ).then((results) => {
+        if (cancelled) return;
+        setFeishuDocumentSyncStatusById((prev) => {
+          const next = { ...prev };
+          for (const result of results) {
+            if (result.status !== 'fulfilled') continue;
+            next[result.value.documentId] = result.value.record;
+          }
+          return next;
+        });
+      });
+      return () => {
+        cancelled = true;
+      };
+    }, [visibleFeishuDocumentIdsKey, feishuDocumentSyncStatusById]);
     const [filesTabSearchResult, setFilesTabSearchResult] = useState<KnowledgeSearchResult | null>(null);
     const [isFilesTabSearching, setIsFilesTabSearching] = useState(false);
     const [isLinkMaterialInlineExpanded, setIsLinkMaterialInlineExpanded] = useState(false);
@@ -25199,6 +25252,16 @@ export default function App() {
                 const isReferenced = Boolean(
                   documentId && activeWorkingDocuments.some((doc) => doc.documentId === documentId),
                 );
+                const feishuSyncStatus = documentId ? feishuDocumentSyncStatusById[documentId] : null;
+                const feishuSyncLabel = (() => {
+                  if (!feishuSyncStatus) return '';
+                  if (feishuSyncStatus.status === 'synced') return '已同步飞书文档';
+                  if (feishuSyncStatus.status === 'queued' || feishuSyncStatus.status === 'syncing') return '飞书同步排队中';
+                  if (feishuSyncStatus.status === 'failed') return '飞书同步失败';
+                  if (feishuSyncStatus.status === 'not_configured') return '未配置飞书同步';
+                  if (feishuSyncStatus.status === 'skipped') return '未同步飞书文档';
+                  return '';
+                })();
                 return (
                   <div key={key} className="bg-white border border-gray-200 rounded-xl overflow-hidden hover:shadow-sm transition-shadow">
                     <div className="flex items-start gap-3 px-3 pt-2.5 pb-1.5">
@@ -25207,6 +25270,22 @@ export default function App() {
                         {fileLabel}
                       </p>
                     </div>
+                    {feishuSyncLabel && (
+                      <div className="mx-3 mb-1 flex items-center gap-1.5 rounded-lg bg-slate-50 px-2 py-1 text-[10px] font-bold text-slate-500">
+                        <Radio size={11} className={feishuSyncStatus?.status === 'synced' ? 'text-emerald-500' : 'text-slate-400'} />
+                        <span className="truncate">{feishuSyncLabel}</span>
+                        {feishuSyncStatus?.remoteUrl && (
+                          <button
+                            type="button"
+                            className="ml-auto shrink-0 text-[#5B7BFE] hover:text-[#3653D6]"
+                            title="打开飞书文档"
+                            onClick={() => void window.yiyuWorkbench.openExternalUrl(feishuSyncStatus.remoteUrl || '')}
+                          >
+                            <ExternalLink size={12} />
+                          </button>
+                        )}
+                      </div>
+                    )}
                     <div className="flex items-center gap-1 px-3 pt-1.5 pb-2.5">
                       <button
                         type="button"
@@ -28701,7 +28780,7 @@ export default function App() {
 
               {/* 4 段 Foldable: 推送同步 / 运行日志 / 备份 / 最近操作 */}
               <div>
-                {isYiyuOfficialCloudSession && renderFoldable({
+                {canShowMaintenanceSyncPanel && renderFoldable({
                   key: 'sync',
                   eyebrow: 'SYNC · 内部同步',
                   title: '维护模式开关 · GitHub main 协作',

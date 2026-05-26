@@ -1229,6 +1229,48 @@ class Database:
                 CREATE INDEX IF NOT EXISTS idx_org_feishu_notifications_dedupe
                     ON org_feishu_notifications(dedupe_key, recipient_user_id, updated_at DESC);
 
+                CREATE TABLE IF NOT EXISTS org_feishu_sync_mappings (
+                    id TEXT PRIMARY KEY,
+                    organization_id TEXT NOT NULL,
+                    local_type TEXT NOT NULL,
+                    local_id TEXT NOT NULL,
+                    remote_type TEXT NOT NULL,
+                    remote_id TEXT NOT NULL DEFAULT '',
+                    remote_url TEXT NOT NULL DEFAULT '',
+                    sync_status TEXT NOT NULL DEFAULT 'idle',
+                    sync_message TEXT NOT NULL DEFAULT '',
+                    metadata_json TEXT NOT NULL DEFAULT '{}',
+                    last_synced_at TEXT,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    UNIQUE(organization_id, local_type, local_id, remote_type),
+                    FOREIGN KEY(organization_id) REFERENCES organizations(id) ON DELETE CASCADE
+                );
+                CREATE INDEX IF NOT EXISTS idx_org_feishu_sync_mappings_local
+                    ON org_feishu_sync_mappings(organization_id, local_type, local_id, remote_type);
+                CREATE INDEX IF NOT EXISTS idx_org_feishu_sync_mappings_status
+                    ON org_feishu_sync_mappings(organization_id, sync_status, updated_at DESC);
+
+                CREATE TABLE IF NOT EXISTS org_feishu_sync_outbox (
+                    id TEXT PRIMARY KEY,
+                    organization_id TEXT NOT NULL,
+                    local_type TEXT NOT NULL,
+                    local_id TEXT NOT NULL,
+                    remote_type TEXT NOT NULL,
+                    action TEXT NOT NULL,
+                    payload_json TEXT NOT NULL DEFAULT '{}',
+                    sync_status TEXT NOT NULL DEFAULT 'queued',
+                    attempt_count INTEGER NOT NULL DEFAULT 0,
+                    last_error TEXT NOT NULL DEFAULT '',
+                    due_at TEXT,
+                    processed_at TEXT,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    FOREIGN KEY(organization_id) REFERENCES organizations(id) ON DELETE CASCADE
+                );
+                CREATE INDEX IF NOT EXISTS idx_org_feishu_sync_outbox_due
+                    ON org_feishu_sync_outbox(organization_id, sync_status, due_at, updated_at DESC);
+
                 CREATE TABLE IF NOT EXISTS org_feishu_query_logs (
                     id TEXT PRIMARY KEY,
                     organization_id TEXT NOT NULL,

@@ -8018,6 +8018,30 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             return {}
         return response.json()
 
+    def _auto_sync_document_to_feishu_docx(
+        *,
+        document_id: str,
+        title: str,
+        content: str,
+        client_id: str,
+        trigger_source: str,
+    ) -> None:
+        if not get_cloud_token() and not get_cloud_refresh_token():
+            return
+        body = {
+            "localType": "document",
+            "localId": document_id,
+            "title": title,
+            "content": content,
+            "clientId": client_id,
+            "triggerSource": trigger_source,
+            "notifyOnCreate": trigger_source == "document_created",
+        }
+        try:
+            cloud_request("POST", "/api/v1/feishu-sync/documents", json_body=body, timeout=30.0)
+        except Exception as exc:
+            logger.warning("feishu.docx.auto_sync_failed: %s", exc)
+
     def _inactive_maintenance_status(reason: str) -> MaintenanceModeStatusRecord:
         session_user = get_cached_session_user()
         return MaintenanceModeStatusRecord(
@@ -15632,6 +15656,13 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 "path": str(target_path),
             },
         )
+        _auto_sync_document_to_feishu_docx(
+            document_id=document_id,
+            title=resolved_title,
+            content=normalized_content,
+            client_id=client_id,
+            trigger_source="document_created",
+        )
         document_row = state.db.fetchone("SELECT path FROM documents WHERE id = ?", (document_id,))
         resolved_path = str(document_row["path"]) if document_row and document_row["path"] else str(target_path)
         return ClientTextDocumentResponse(
@@ -15747,6 +15778,13 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 "runId": run_id,
                 "refreshEventId": str(refresh_event.id or ""),
             },
+        )
+        _auto_sync_document_to_feishu_docx(
+            document_id=document_id,
+            title=resolved_title,
+            content=normalized_content,
+            client_id=client_id,
+            trigger_source="link_material_document_created",
         )
         return ClientTextDocumentResponse(
             clientId=client_id,
@@ -15881,6 +15919,13 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 "runId": run_id,
                 "refreshEventId": str(refresh_event.id or ""),
             },
+        )
+        _auto_sync_document_to_feishu_docx(
+            document_id=document_id,
+            title=resolved_title,
+            content=polished_body or normalized_content,
+            client_id=client_id,
+            trigger_source="link_material_document_created",
         )
         return ClientTextDocumentResponse(
             clientId=client_id,
@@ -30179,6 +30224,52 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         if not isinstance(payload, dict):
             raise HTTPException(status_code=502, detail="Invalid feishu authorization payload")
         return FeishuMemberAuthorizationRecord(**payload)
+
+    @app.get("/api/v1/feishu-sync/status")
+    def get_feishu_sync_status(
+        localType: str = Query(...),
+        localId: str = Query(...),
+        remoteType: str = Query("calendar_event"),
+    ) -> object:
+        if not get_cloud_token() and not get_cloud_refresh_token():
+            raise HTTPException(status_code=400, detail="连接云端并加入组织后，才能查看飞书同步状态。")
+        params = [
+            f"localType={quote(localType)}",
+            f"localId={quote(localId)}",
+            f"remoteType={quote(remoteType)}",
+        ]
+        response = cloud_request("GET", f"/api/v1/feishu-sync/status?{'&'.join(params)}", timeout=8.0)
+        if not isinstance(response, dict):
+            raise HTTPException(status_code=502, detail="Invalid feishu sync status payload")
+        return response
+
+    @app.post("/api/v1/feishu-sync/calendar/tasks/{task_id}")
+    def sync_task_to_feishu_calendar(task_id: str, payload: dict = Body(default_factory=dict)) -> object:
+        if not get_cloud_token() and not get_cloud_refresh_token():
+            raise HTTPException(status_code=400, detail="连接云端并加入组织后，才能同步飞书日历。")
+        response = cloud_request(
+            "POST",
+            f"/api/v1/feishu-sync/calendar/tasks/{quote(task_id)}",
+            json_body=payload or {},
+            timeout=24.0,
+        )
+        if not isinstance(response, dict):
+            raise HTTPException(status_code=502, detail="Invalid feishu calendar sync payload")
+        return response
+
+    @app.post("/api/v1/feishu-sync/documents")
+    def sync_document_to_feishu_docx(payload: dict = Body(default_factory=dict)) -> object:
+        if not get_cloud_token() and not get_cloud_refresh_token():
+            raise HTTPException(status_code=400, detail="连接云端并加入组织后，才能同步飞书文档。")
+        response = cloud_request(
+            "POST",
+            "/api/v1/feishu-sync/documents",
+            json_body=payload or {},
+            timeout=30.0,
+        )
+        if not isinstance(response, dict):
+            raise HTTPException(status_code=502, detail="Invalid feishu document sync payload")
+        return response
 
     @app.get("/api/v1/auth/department-options", response_model=list[DepartmentOptionRecord])
     def auth_department_options(
@@ -48204,6 +48295,19 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             deduped_ids.append(mid)
         messages = [fetch_chat_message_for_client(client_id, mid) for mid in deduped_ids]
         exported = create_answer_export_document(client_id, messages)
+        exported_markdown = "\n\n".join(
+            f"## {'用户提问' if message.role == 'user' else 'AI 回答'}\n\n{message.content}"
+            for message in messages
+            if str(message.content or "").strip()
+        ).strip()
+        if exported_markdown:
+            _auto_sync_document_to_feishu_docx(
+                document_id=exported.documentId,
+                title=exported.title,
+                content=exported_markdown,
+                client_id=client_id,
+                trigger_source="answer_export_document_created",
+            )
         log_activity(
             "knowledge.export_answer",
             "document",
@@ -48255,6 +48359,13 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             "document",
             document_id,
             {"clientId": str(row["client_id"]), "title": new_title, "path": str(existing_path)},
+        )
+        _auto_sync_document_to_feishu_docx(
+            document_id=document_id,
+            title=new_title,
+            content=normalized_content,
+            client_id=str(row["client_id"]),
+            trigger_source="document_updated",
         )
         return ClientTextDocumentResponse(
             clientId=str(row["client_id"]),

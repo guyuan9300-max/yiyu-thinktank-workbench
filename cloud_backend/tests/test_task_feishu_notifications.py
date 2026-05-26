@@ -9,6 +9,7 @@ sys.path.append(str(Path(__file__).resolve().parents[1]))
 
 import app.main as cloud_main  # noqa: E402
 from app.main import create_app, now_iso  # noqa: E402
+from app.security import hash_password  # noqa: E402
 
 
 def make_client(tmp_path, monkeypatch) -> TestClient:
@@ -49,10 +50,25 @@ def seed_member_mobile(client: TestClient, user_id: str, mobile: str) -> None:
     )
 
 
+def ensure_member(client: TestClient, *, user_id: str, organization_id: str, full_name: str, email: str) -> None:
+    client.app.state.app_state.db.execute(
+        """
+        INSERT INTO employee_accounts(
+            id, organization_id, email, full_name, password_hash, primary_role,
+            account_status, membership_status, approved_at, recent_mentions_json,
+            created_at, updated_at
+        ) VALUES(?, ?, ?, ?, ?, 'employee', 'approved', 'approved', ?, '[]', ?, ?)
+        ON CONFLICT(id) DO NOTHING
+        """,
+        (user_id, organization_id, email, full_name, hash_password("Simulate123!"), now_iso(), now_iso(), now_iso()),
+    )
+
+
 def test_create_task_sends_card_notifications_to_phone_matched_owner_and_collaborators(tmp_path, monkeypatch):
     client = make_client(tmp_path, monkeypatch)
     admin_headers, admin_user = auth_headers(client, "admin@yiyu-system.com", "Admin123!")
     org_id = save_org_feishu_integration(client, admin_headers, monkeypatch)
+    ensure_member(client, user_id="user_qinghua", organization_id=org_id, full_name="庆华", email="qinghua@yiyu-system.com")
     seed_member_mobile(client, admin_user["id"], "13800138000")
     seed_member_mobile(client, "user_qinghua", "13900139000")
 
@@ -193,7 +209,9 @@ def test_title_only_update_is_queued_then_sent_as_content_notification(tmp_path,
 def test_key_field_changes_send_immediately_and_missing_mobile_recipients_are_skipped(tmp_path, monkeypatch):
     client = make_client(tmp_path, monkeypatch)
     admin_headers, admin_user = auth_headers(client, "admin@yiyu-system.com", "Admin123!")
-    save_org_feishu_integration(client, admin_headers, monkeypatch)
+    org_id = save_org_feishu_integration(client, admin_headers, monkeypatch)
+    ensure_member(client, user_id="user_qinghua", organization_id=org_id, full_name="庆华", email="qinghua@yiyu-system.com")
+    ensure_member(client, user_id="user_jianing", organization_id=org_id, full_name="嘉宁", email="jianing@yiyu-system.com")
     seed_member_mobile(client, admin_user["id"], "13800138000")
     seed_member_mobile(client, "user_qinghua", "13900139000")
 
@@ -239,7 +257,7 @@ def test_key_field_changes_send_immediately_and_missing_mobile_recipients_are_sk
     updated = client.patch(
         f"/api/v1/tasks/{task_id}",
         json={
-            "dueDate": "2026-04-11T14:30",
+            "deadlineAt": "2026-04-11T14:30",
             "ownerId": "user_qinghua",
             "collaboratorIds": ["user_qinghua", "user_jianing"],
         },
@@ -259,7 +277,7 @@ def test_key_field_changes_send_immediately_and_missing_mobile_recipients_are_sk
     status_by_user = {str(row["recipient_user_id"]): str(row["delivery_status"]) for row in rows}
     assert status_by_user == {"user_jianing": "skipped_unbound", "user_qinghua": "sent"}
     assert any("成员尚未填写飞书手机号" in str(row["delivery_message"]) for row in rows if str(row["recipient_user_id"]) == "user_jianing")
-    assert all("dueDate" in str(row["changed_fields_json"]) for row in rows)
+    assert all("deadlineAt" in str(row["changed_fields_json"]) for row in rows)
     assert all("ownerId" in str(row["changed_fields_json"]) for row in rows)
     assert all("collaboratorIds" in str(row["changed_fields_json"]) for row in rows)
 

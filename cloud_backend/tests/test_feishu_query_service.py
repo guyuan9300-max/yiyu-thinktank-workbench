@@ -11,6 +11,7 @@ sys.path.append(str(Path(__file__).resolve().parents[1]))
 
 import app.main as cloud_main  # noqa: E402
 from app.main import create_app  # noqa: E402
+from app.security import hash_password  # noqa: E402
 
 
 def make_client(tmp_path, monkeypatch) -> TestClient:
@@ -28,6 +29,20 @@ def auth_headers(client: TestClient, email: str, password: str) -> tuple[dict[st
     assert response.status_code == 200, response.text
     payload = response.json()
     return {"Authorization": f"Bearer {payload['accessToken']}"}, payload["user"]
+
+
+def ensure_member(client: TestClient, *, user_id: str, organization_id: str, full_name: str, email: str) -> None:
+    client.app.state.app_state.db.execute(
+        """
+        INSERT INTO employee_accounts(
+            id, organization_id, email, full_name, password_hash, primary_role,
+            account_status, membership_status, approved_at, recent_mentions_json,
+            created_at, updated_at
+        ) VALUES(?, ?, ?, ?, ?, 'employee', 'approved', 'approved', ?, '[]', ?, ?)
+        ON CONFLICT(id) DO NOTHING
+        """,
+        (user_id, organization_id, email, full_name, hash_password("Simulate123!"), datetime.now().isoformat(), datetime.now().isoformat(), datetime.now().isoformat()),
+    )
 
 
 def save_org_feishu_integration(client: TestClient, headers: dict[str, str], monkeypatch) -> str:
@@ -393,6 +408,8 @@ def test_weekly_review_and_event_line_queries_return_personal_summaries(tmp_path
 def test_model_parse_can_filter_tasks_by_collaboration_partner(tmp_path, monkeypatch):
     client = make_client(tmp_path, monkeypatch)
     headers, admin_user = auth_headers(client, "admin@yiyu-system.com", "Admin123!")
+    ensure_member(client, user_id="user_qinghua", organization_id=admin_user["organizationId"], full_name="庆华", email="qinghua@yiyu-system.com")
+    ensure_member(client, user_id="user_jianing", organization_id=admin_user["organizationId"], full_name="佳宁", email="jianing@yiyu-system.com")
     _, qinghua_user = auth_headers(client, "qinghua@yiyu-system.com", "Simulate123!")
     _, jianing_user = auth_headers(client, "jianing@yiyu-system.com", "Simulate123!")
     organization_id = save_org_feishu_integration(client, headers, monkeypatch)

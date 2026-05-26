@@ -69,8 +69,11 @@ import type {
   FeishuBotSettingsPayload,
   FeishuDeliveryProfile,
   FeishuDeliveryProfilePayload,
+  FeishuDocumentSyncPayload,
   FeishuMemberAuthorization,
   FeishuMemberAuthorizationStartResult,
+  FeishuSyncStatusRecord,
+  FeishuTaskCalendarSyncPayload,
   FeishuUserBinding,
   FeishuUserBindingStartResult,
   EmployeeRolePayload,
@@ -2139,6 +2142,29 @@ export async function getFeishuDeliveryProfile() {
 
 export async function saveFeishuDeliveryProfile(payload: FeishuDeliveryProfilePayload) {
   return request<FeishuDeliveryProfile>('/api/v1/me/feishu-delivery-profile', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function getFeishuSyncStatus(params: { localType: string; localId: string; remoteType?: string }) {
+  const search = new URLSearchParams({
+    localType: params.localType,
+    localId: params.localId,
+    remoteType: params.remoteType || 'calendar_event',
+  });
+  return request<FeishuSyncStatusRecord>(`/api/v1/feishu-sync/status?${search.toString()}`);
+}
+
+export async function syncTaskToFeishuCalendar(taskId: string, payload: FeishuTaskCalendarSyncPayload = {}) {
+  return request<FeishuSyncStatusRecord>(`/api/v1/feishu-sync/calendar/tasks/${encodeURIComponent(taskId)}`, {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function syncDocumentToFeishuDocx(payload: FeishuDocumentSyncPayload) {
+  return request<FeishuSyncStatusRecord>('/api/v1/feishu-sync/documents', {
     method: 'POST',
     body: JSON.stringify(payload),
   });

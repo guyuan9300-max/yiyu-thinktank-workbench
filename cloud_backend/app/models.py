@@ -244,6 +244,45 @@ class FeishuNotificationDispatchRecord(BaseModel):
     sentAt: str | None = None
 
 
+FeishuSyncStatus = Literal[
+    "idle",
+    "not_configured",
+    "skipped",
+    "time_invalid",
+    "queued",
+    "syncing",
+    "synced",
+    "failed",
+]
+
+
+class FeishuSyncStatusRecord(BaseModel):
+    localType: str
+    localId: str
+    remoteType: str
+    remoteId: str | None = None
+    remoteUrl: str | None = None
+    status: FeishuSyncStatus = "idle"
+    message: str = ""
+    lastSyncedAt: str | None = None
+    updatedAt: str
+    details: dict[str, object] = Field(default_factory=dict)
+
+
+class FeishuTaskCalendarSyncPayload(BaseModel):
+    notify: bool = False
+
+
+class FeishuDocumentSyncPayload(BaseModel):
+    localType: str = "document"
+    localId: str
+    title: str
+    content: str
+    clientId: str | None = None
+    triggerSource: str = "document_saved"
+    notifyOnCreate: bool = False
+
+
 class RolePayload(BaseModel):
     role: PrimaryRole
 
