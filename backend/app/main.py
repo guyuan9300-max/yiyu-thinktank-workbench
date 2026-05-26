@@ -58492,6 +58492,49 @@ def backfill_local_task_tag_ids(state: AppState) -> None:
     )
 
 
+def _repair_ai_config_consistency(state: AppState) -> None:
+    """顾源源 5/26 真修真分裂 bug:
+    主仓 db 真出现 ai_provider='openclaw' 但 ai_provider_label='豆包 Seed 2.0 Pro' 真矛盾.
+    真按 ai_provider 真路由值真修正 ai_provider_label + ai_base_url 真一致.
+
+    真不动 ai_model (它真可能是用户自定义 model id, 真不该兜底覆盖).
+    真无破坏: 真已经一致的 db 真无操作.
+    """
+    from app.services.ai import PROVIDER_LABELS, OPENCLAW_PROVIDER
+
+    current_provider = (state.db.get_setting("ai_provider", "") or "").strip()
+    current_label = (state.db.get_setting("ai_provider_label", "") or "").strip()
+    current_base_url = (state.db.get_setting("ai_base_url", "") or "").strip()
+
+    # 真各 provider 真期望 label + baseUrl
+    EXPECTED_LABEL = {
+        OPENCLAW_PROVIDER: PROVIDER_LABELS.get(OPENCLAW_PROVIDER, "GPT 5.4"),
+        "mock": PROVIDER_LABELS.get("mock", "本地 Mock"),
+    }
+    # 真 doubao/qwen 真用 model id 推断, 真不强制 label 真硬一致 (因为 openai_compatible 是泛接入)
+    # 真 openclaw / mock 真路由真有强语义, 真必须 label 一致.
+    EXPECTED_BASE_URL = {
+        OPENCLAW_PROVIDER: "",  # 真 OpenClaw 真本机 CLI, 真无 base_url
+    }
+
+    if current_provider in EXPECTED_LABEL:
+        expected_label = EXPECTED_LABEL[current_provider]
+        if current_label != expected_label:
+            logger.warning(
+                "[ai-config-repair] provider=%s label 真矛盾: '%s' → '%s' (按 provider 真硬正)",
+                current_provider, current_label, expected_label,
+            )
+            state.db.set_setting("ai_provider_label", expected_label)
+    if current_provider in EXPECTED_BASE_URL:
+        expected_url = EXPECTED_BASE_URL[current_provider]
+        if current_base_url != expected_url:
+            logger.warning(
+                "[ai-config-repair] provider=%s base_url 真矛盾: '%s' → '%s' (按 provider 真硬正)",
+                current_provider, current_base_url, expected_url,
+            )
+            state.db.set_setting("ai_base_url", expected_url)
+
+
 def seed_defaults(state: AppState) -> None:
     timestamp = now_iso()
     state.db.set_setting("folders_root_label", state.db.get_setting("folders_root_label", "桌面客户资料"))
@@ -58499,6 +58542,8 @@ def seed_defaults(state: AppState) -> None:
     state.db.set_setting("ai_provider_label", state.db.get_setting("ai_provider_label", DEFAULT_OPENAI_COMPATIBLE_LABEL))
     state.db.set_setting("ai_base_url", state.db.get_setting("ai_base_url", DEFAULT_OPENAI_COMPATIBLE_BASE_URL))
     state.db.set_setting("ai_model", state.db.get_setting("ai_model", DEFAULT_MODEL))
+    # 顾源源 5/26: 真修历史 db 真"provider 真路由值 vs label 真分裂" 真启动 migration
+    _repair_ai_config_consistency(state)
     state.db.set_setting("demo_data_loaded", state.db.get_setting("demo_data_loaded", "0"))
     state.db.set_setting(
         "workspace_chat_data_center_primary",

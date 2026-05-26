@@ -1523,14 +1523,34 @@ function resolveAiConfigPresetKey(draft: {
 }
 
 function aiModelDisplayLabel(provider?: AiProvider | string | null, model?: string | null, providerLabel?: string | null) {
+  // 顾源源 5/26 真用反馈: 主仓 db 真出现 ai_provider='openclaw' 但 ai_provider_label='豆包 Seed 2.0 Pro' 真矛盾,
+  // 真用户看到"豆包"但后端真走 OpenClaw GPT-5.4. 真"显示 X 用 Y" 真信任崩.
+  //
+  // 真修法: 真按 provider (路由真值) 真硬编算 label, 真**忽略 db.providerLabel** (它真可能 stale).
+  // db.providerLabel 真降级成 advisory (用户自定义 alias), 真不再作为权威显示源.
+  // → 真用户永远看到的 = 真实路由, 真切模型不再撞"label 跟 provider 真不一致".
   const providerValue = String(provider || '').trim() as AiProvider | '';
   const modelValue = String(model || '').trim();
   const labelValue = String(providerLabel || '').trim();
+  // 真按 provider 真路由值优先返 hardcoded display name
   if (providerValue === 'mock') return providerDisplayNames.mock;
+  if (providerValue === 'openclaw') return providerDisplayNames.openclaw;
+  if (providerValue === 'doubao') {
+    return (!modelValue || modelValue === providerDefaultModels.doubao)
+      ? providerDisplayNames.doubao
+      : `${providerDisplayNames.doubao} · ${modelValue}`;
+  }
+  if (providerValue === 'qwen') {
+    return (!modelValue || modelValue === providerDefaultModels.qwen)
+      ? providerDisplayNames.qwen
+      : `${providerDisplayNames.qwen} · ${modelValue}`;
+  }
+  // openai_compatible 真没固定路由, label 真用 model 优先 (provider 真自定义) — 真 fallback labelValue 作 alias
+  if (providerValue === 'openai_compatible') {
+    return modelValue || labelValue || providerDisplayNames.openai_compatible;
+  }
+  // 真未知 provider — fallback label 或 model
   if (labelValue) return labelValue;
-  if (providerValue === 'openai_compatible') return modelValue || providerDisplayNames.openai_compatible;
-  if (providerValue === 'doubao' && (!modelValue || modelValue === providerDefaultModels.doubao)) return providerDisplayNames.doubao;
-  if (providerValue === 'qwen' && (!modelValue || modelValue === providerDefaultModels.qwen)) return providerDisplayNames.qwen;
   if (modelValue) return modelValue;
   return providerValue && providerValue in providerDisplayNames
     ? providerDisplayNames[providerValue as keyof typeof providerDisplayNames]
