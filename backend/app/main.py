@@ -15274,9 +15274,27 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
 
         stem = safe_filename(doc_title[:24] or "ai_answer")
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        target_path = target_dir / f"{timestamp}_{stem}.docx"
 
+        # 顾源源 5/26: 真自动识别导出格式
+        # · 主要是表格 + 标题 (非表格纯文字 < 200 字)  → xlsx (Excel 真能继续操作)
+        # · 有大段文字 (≥ 200 字) 或者无表格            → docx (Word, 但表格也真画出来)
+        from app.services.markdown_table import detect_export_format
+
+        export_format = detect_export_format(markdown_body)
+
+        if export_format == "xlsx":
+            from app.services.markdown_to_xlsx import render_markdown_to_xlsx_bytes
+
+            target_path = target_dir / f"{timestamp}_{stem}.xlsx"
+            xlsx_bytes = render_markdown_to_xlsx_bytes(
+                markdown_body, document_title=doc_title
+            )
+            target_path.write_bytes(xlsx_bytes)
+            return target_path
+
+        target_path = target_dir / f"{timestamp}_{stem}.docx"
         # 复用 link_material 那条统一的 markdown→docx 渲染（黑体、字号、加粗等格式都已锁定）。
+        # 顾源源 5/26: 该渲染器已加 markdown table 真支持 → docx 真画表格 (不再 ASCII 丑文本)
         render_polished_markdown_to_docx(
             title=doc_title,
             source_url="",
@@ -15290,12 +15308,17 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
     ) -> ClientTextDocumentResponse:
         target_path = export_answer_to_docx(client_id, messages)
         excerpt = messages[0].content if messages else ""
-        title = "战略陪伴沉淀" if len(messages) == 1 else f"战略陪伴沉淀（{len(messages)} 段）"
+        # 顾源源 5/26: 真按真文件后缀决定 kind (smart 导出可能产 xlsx)
+        kind = "xlsx" if target_path.suffix.lower() == ".xlsx" else "docx"
+        # 真 title 提示导出格式 (Excel 用户能一眼看出来)
+        format_label = " · 表格" if kind == "xlsx" else ""
+        base_title = "战略陪伴沉淀" if len(messages) == 1 else f"战略陪伴沉淀（{len(messages)} 段）"
+        title = f"{base_title}{format_label}"
         return register_generated_workspace_document(
             client_id,
             target_path=target_path,
             title=title,
-            kind="docx",
+            kind=kind,
             source="answer_export_doc",
             excerpt=excerpt,
         )
