@@ -649,6 +649,9 @@ def _process_document_card_task(db: Database, ai_service: Any, task: dict[str, o
     #   - advanced + 线上优先/自动: online_primary 主模型优先, 本地兜底
     #   - advanced + 本地优先/仅本地: 才用本地 qwen3-vl:32b (local_text_deep)
     # 不强制本地——本地仅在用户显式选"本地优先"时才跑。
+    # 注意(已知/全 app 一致): 当 current_provider=="openclaw" 时, _qwen_generate 会在 task_kind
+    # 路由之前短路走 openclaw CLI, 此时 task_kind 不生效(深读跟着主模型走 openclaw)。这不是 bug,
+    # 是 openclaw 这个 provider 的既有行为; 真要本地路由需主模型非 openclaw + 选本地优先。
     _raw = ai_service._qwen_generate(  # noqa: SLF001 — 复用现有生成入口, 走标准 mode 路由
         prompt,
         "你是数据中心后台优化引擎，负责生成可复用的文件理解资产。只输出 JSON。",

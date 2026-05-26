@@ -240,7 +240,12 @@ def route_document_for_local_inference(
             except Exception as exc:  # noqa: BLE001
                 logger.warning("router: %s OCR 入队失败 doc=%s: %s", kind, v2_document_id, exc)
 
-    db.conn.commit()
+    # 深读入队走 db.execute（已逐条在锁内提交）。pptx 的 _enqueue_visual_ocr 走 db.conn.execute
+    # 原始写（未提交），仅当它真入了队才需在此 commit；加锁避免与其它共享 conn 的后台线程
+    # （knowledge/analysis/deep-read worker）的提交竞争（HIGH 修复：原来裸 db.conn.commit() 绕过锁）。
+    if ocr_enqueued:
+        with db._lock:
+            db.conn.commit()
     return {
         "enqueued": card_enqueued + ocr_enqueued,
         "documentCard": card_enqueued,

@@ -1559,6 +1559,7 @@ class AppState:
     job_thread: Thread | None = None
     analysis_job_thread: Thread | None = None
     deep_read_thread: Thread | None = None
+    deep_read_stop: Event | None = None
     topic_insight_executor: ThreadPoolExecutor | None = None
     chat_answer_executor: ThreadPoolExecutor | None = None
     template_fill_executor: ThreadPoolExecutor | None = None
@@ -3521,6 +3522,28 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         except Exception as exc:  # noqa: BLE001
             logger.warning("[startup] internet pdf ocr worker init failed: %s", exc)
 
+        # 深读调度线程 (W2)：常驻消费 local_model_tasks 队列 (document_card / path_optimization)。
+        # 自身受 settings.local_model_optimization 节流——enabled/paused/dailyWindows/governor，
+        # 默认 enabled=False 即"起线程但不跑"，零成本；用户在设置里开启 + 配窗口后才真正消化队列。
+        # 每个任务用哪个模型由 _process_document_card_task 的 task_kind="deep_analysis" 按用户
+        # 的模型设置决定 (主模型优先，本地仅本地优先时)，不在此处强制。
+        # 用独立 stop event（不与 job_stop 共享），且在 early-return 守卫之前启动——保证热重载
+        # (knowledge/analysis 仍存活会触发下方 early-return) 时深读线程也照样被拉起，不被跳过。
+        try:
+            if state.deep_read_stop is None:
+                state.deep_read_stop = Event()
+            if not (state.deep_read_thread and state.deep_read_thread.is_alive()):
+                state.deep_read_stop.clear()
+                _deep_stop = state.deep_read_stop
+                state.deep_read_thread = Thread(
+                    target=lambda: local_model_optimizer_worker_loop(state.db, state.ai, _deep_stop),
+                    name="deep-read-worker",
+                    daemon=True,
+                )
+                state.deep_read_thread.start()
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("[startup] deep-read worker init failed: %s", exc)
+
         if state.job_thread and state.job_thread.is_alive():
             if state.analysis_job_thread and state.analysis_job_thread.is_alive():
                 return
@@ -3635,18 +3658,6 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         state.job_thread.start()
         state.analysis_job_thread = Thread(target=analysis_job_worker_loop, name="analysis-job-worker", daemon=True)
         state.analysis_job_thread.start()
-        # 深读调度线程 (W2)：常驻消费 local_model_tasks 队列 (document_card / path_optimization)。
-        # 自身受 settings.local_model_optimization 节流——enabled/paused/dailyWindows/governor，
-        # 默认 enabled=False 即"起线程但不跑"，零成本；用户在设置里开启 + 配窗口后才真正消化队列。
-        # 每个任务用哪个模型由 _process_document_card_task 的 task_kind="deep_analysis" 按用户
-        # 的模型设置决定 (主模型优先，本地仅本地优先时)，不在此处强制。复用 job_stop 统一收口。
-        if not (state.deep_read_thread and state.deep_read_thread.is_alive()):
-            state.deep_read_thread = Thread(
-                target=lambda: local_model_optimizer_worker_loop(state.db, state.ai, state.job_stop),
-                name="deep-read-worker",
-                daemon=True,
-            )
-            state.deep_read_thread.start()
         # Probe cloud backend connectivity at startup — clear circuit breaker if reachable
         if state.cloud_api_url and get_cloud_token():
             def _probe_cloud():
@@ -3665,6 +3676,8 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             state.job_thread.join(timeout=1.5)
         if state.analysis_job_thread and state.analysis_job_thread.is_alive():
             state.analysis_job_thread.join(timeout=1.5)
+        if state.deep_read_stop:
+            state.deep_read_stop.set()
         if state.deep_read_thread and state.deep_read_thread.is_alive():
             state.deep_read_thread.join(timeout=1.5)
         if state.topic_insight_executor:
