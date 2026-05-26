@@ -2937,6 +2937,53 @@ class Database:
                 CREATE INDEX IF NOT EXISTS idx_local_model_tasks_client
                     ON local_model_tasks(client_id, status);
 
+                -- 深读地基(M2): 每份文档的深读全过程状态, 可追踪/可重试/可审计/可自愈。
+                -- 客户无关的统一状态表; status 区分各 processing stage; content_hash 变→标 outdated。
+                CREATE TABLE IF NOT EXISTS document_deep_read_states (
+                    id TEXT PRIMARY KEY,
+                    org_id TEXT NOT NULL DEFAULT '',
+                    client_id TEXT NOT NULL DEFAULT '',
+                    document_id TEXT NOT NULL,
+                    document_source_table TEXT NOT NULL DEFAULT 'v2_documents',
+                    content_hash TEXT NOT NULL DEFAULT '',
+                    file_size INTEGER NOT NULL DEFAULT 0,
+                    mime_type TEXT NOT NULL DEFAULT '',
+                    -- 各阶段状态: pending/running/success/skipped/failed
+                    instant_summary_status TEXT NOT NULL DEFAULT 'pending',
+                    surrogate_status TEXT NOT NULL DEFAULT 'pending',
+                    fact_extract_status TEXT NOT NULL DEFAULT 'pending',
+                    entity_extract_status TEXT NOT NULL DEFAULT 'pending',
+                    commitment_extract_status TEXT NOT NULL DEFAULT 'pending',
+                    risk_extract_status TEXT NOT NULL DEFAULT 'pending',
+                    file_identity_status TEXT NOT NULL DEFAULT 'pending',
+                    contract_structure_status TEXT NOT NULL DEFAULT 'pending',
+                    semantic_index_status TEXT NOT NULL DEFAULT 'pending',
+                    qdrant_collection TEXT NOT NULL DEFAULT '',
+                    embedding_model TEXT NOT NULL DEFAULT '',
+                    embedding_signature TEXT NOT NULL DEFAULT '',
+                    surrogate_id TEXT NOT NULL DEFAULT '',
+                    -- 总状态: pending/running/success/partial_success/failed/retry_scheduled/dead_letter/skipped/outdated
+                    status TEXT NOT NULL DEFAULT 'pending',
+                    priority INTEGER NOT NULL DEFAULT 1,
+                    retry_count INTEGER NOT NULL DEFAULT 0,
+                    max_retries INTEGER NOT NULL DEFAULT 3,
+                    last_error TEXT,
+                    last_error_at TEXT,
+                    next_retry_at TEXT,
+                    locked_by TEXT,
+                    locked_at TEXT,
+                    last_processed_at TEXT,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    UNIQUE(document_source_table, document_id)
+                );
+                CREATE INDEX IF NOT EXISTS idx_deep_read_status
+                    ON document_deep_read_states(status, priority DESC, created_at ASC);
+                CREATE INDEX IF NOT EXISTS idx_deep_read_client
+                    ON document_deep_read_states(client_id, status);
+                CREATE INDEX IF NOT EXISTS idx_deep_read_retry
+                    ON document_deep_read_states(status, next_retry_at);
+
                 -- 迭代 7：客户私有术语库
                 -- term: 原始术语；normalized_term: 归一化（用于 dedup + 查找）
                 -- definition: 术语含义解释；aliases: 别名列表（用于检索时召回）
