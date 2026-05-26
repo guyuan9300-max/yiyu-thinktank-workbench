@@ -620,18 +620,42 @@ def _path_prompt(context: dict[str, object]) -> str:
     )
 
 
+# document_card 的 JSON 输出 schema (M1 修复用, 匹配下方 payload.get 读取的字段)
+_DOCUMENT_CARD_SCHEMA = {
+    "type": "OBJECT",
+    "properties": {
+        "title": {"type": "STRING"},
+        "summary": {"type": "STRING"},
+        "purpose": {"type": "STRING"},
+        "audience": {"type": "STRING"},
+        "project_context": {"type": "STRING"},
+        "key_topics": {"type": "ARRAY", "items": {"type": "STRING"}},
+        "good_questions": {"type": "ARRAY", "items": {"type": "STRING"}},
+        "keywords": {"type": "ARRAY", "items": {"type": "STRING"}},
+        "risk_notes": {"type": "STRING"},
+    },
+    "required": ["title", "summary"],
+}
+
+
 def _process_document_card_task(db: Database, ai_service: Any, task: dict[str, object]) -> dict[str, object]:
     knowledge_document_id = str(task.get("knowledge_document_id") or "").strip()
     context = _load_document_context(db, knowledge_document_id)
     prompt = _card_prompt(context)
-    payload = ai_service.generate_local_model_json(
-        profile_key=str(task.get("model_profile_id") or DEFAULT_PROFILE_ID),
-        model_name=str(task.get("model_name") or ""),
-        system_prompt="你是数据中心后台优化引擎，负责生成可复用的文件理解资产。只输出 JSON。",
-        user_prompt=prompt,
+    # M1 修复: `generate_local_model_json` 从未在 AiService 实现(全仓无定义)→ 历史上每个
+    # document_card 任务都 AttributeError 失败 → 队列卡死 → 无 document_cards → 深读地基全断。
+    # 改用真实存在的 _qwen_generate(本地 qwen, 返回 JSON dict)。
+    _raw = ai_service._qwen_generate(  # noqa: SLF001 — 复用现有本地生成入口
+        prompt,
+        "你是数据中心后台优化引擎，负责生成可复用的文件理解资产。只输出 JSON。",
+        _DOCUMENT_CARD_SCHEMA,
         timeout_seconds=900,
         max_tokens=1800,
+        temperature=0.3,
     )
+    payload = _raw if isinstance(_raw, dict) else {}
+    if not payload:
+        raise RuntimeError("document_card LLM 返回非 JSON / 空")
     now = _now_iso()
     title = str(payload.get("title") or context.get("document_title") or context.get("file_name") or "未命名文件").strip()
     summary = str(payload.get("summary") or "").strip()
