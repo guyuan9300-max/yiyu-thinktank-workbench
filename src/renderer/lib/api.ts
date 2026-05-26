@@ -2913,6 +2913,10 @@ export type NarrativeDimensionRecord = {
   references: NarrativeReference[];
   dataLayerGap: string;
   openClarifications: string[];
+  // M2 取材来源可见 (后端 narrative_generator emit; 云端 schema 透传后生效, 缺省安全降级)
+  retrievalMode?: 'semantic' | 'semantic+fallback' | 'fallback_only' | 'legacy_or_empty' | 'legacy_like_only';
+  fallbackUsed?: boolean;
+  reindexRequired?: boolean;
 };
 
 export type NarrativeContributor = {

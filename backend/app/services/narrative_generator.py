@@ -1082,6 +1082,24 @@ def generate_narrative_dimensions(
         return _all_stub("LLM 返回不是 dict"), 0.0, "stub"
 
     dims = {d: _validate_dim(result.get(d), d) for d in DIMENSIONS}
+    # M2: 给每段附取材来源元数据 (retrievalMode / fallbackUsed / reindexRequired),
+    # 供前端展示"语义 / 兜底 / 旧路径"+ reindex 提示。来源 = 本段 chunk 的 retrieval_path 统计。
+    # 注: 这些字段进 ingest payload; 能否回传前端取决于云端 narrative schema (cloud-ingest fallback 路径直接带回)。
+    try:
+        dim_chunks = getattr(bundle, "dimension_chunks", {}) or {}
+        for d in DIMENSIONS:
+            if not isinstance(dims.get(d), dict):
+                continue
+            chunks = dim_chunks.get(d, [])
+            sem = sum(1 for c in chunks if getattr(c, "retrieval_path", "") == "semantic")
+            fb = sum(1 for c in chunks if getattr(c, "retrieval_path", "") == "like_fallback")
+            mode = ("semantic+fallback" if sem and fb else "semantic" if sem
+                    else "fallback_only" if fb else "legacy_or_empty")
+            dims[d]["retrievalMode"] = mode
+            dims[d]["fallbackUsed"] = bool(fb and not sem)
+            dims[d]["reindexRequired"] = bool(fb and not sem and chunks)
+    except Exception:  # noqa: BLE001 — 元数据附加失败不阻塞叙事
+        pass
     try:
         overall = float(result.get("overallConfidence") or 0.0)
     except (TypeError, ValueError):

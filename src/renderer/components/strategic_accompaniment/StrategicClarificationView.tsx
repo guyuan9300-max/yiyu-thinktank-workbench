@@ -1041,6 +1041,31 @@ function NarrativeDimensionCard({
             <CIcon size={11} />
             <span className="text-[10px] font-bold">{confidenceMeta.label}</span>
           </div>
+          {/* M2 取材来源标记: 让用户看到本段是语义检索还是关键词兜底 (无数据时不渲染) */}
+          {dim.retrievalMode && (
+            <span
+              className={`inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-medium ${
+                dim.retrievalMode === 'semantic'
+                  ? 'bg-blue-50 text-blue-600'
+                  : dim.fallbackUsed || dim.retrievalMode === 'fallback_only' || dim.retrievalMode === 'legacy_like_only'
+                    ? 'bg-amber-50 text-amber-600'
+                    : 'bg-slate-100 text-slate-500'
+              }`}
+              title={dim.reindexRequired
+                ? '本段主要靠关键词兜底召回，建议为该客户补跑语义索引以提升质量'
+                : '本段资料的取材路径'}
+            >
+              {dim.retrievalMode === 'semantic'
+                ? '语义检索'
+                : dim.retrievalMode === 'semantic+fallback'
+                  ? '语义+兜底'
+                  : dim.retrievalMode === 'fallback_only'
+                    ? '关键词兜底'
+                    : dim.retrievalMode === 'legacy_like_only'
+                      ? '旧路径'
+                      : '取材'}
+            </span>
+          )}
           <button
             type="button"
             onClick={handleUploadClick}

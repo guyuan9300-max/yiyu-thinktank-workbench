@@ -87,6 +87,10 @@ class DimensionRetrieval:
     coverage: float = 0.0             # 来自 retrieve_knowledge_bundle.coverage
     source_breakdown: dict[str, int] = field(default_factory=dict)
     warnings: list[str] = field(default_factory=list)
+    # M1 回滚开关可观测: semantic | semantic+fallback | fallback_only | legacy_like_only
+    retrieval_mode: str = ""
+    semantic_enabled: bool = True
+    fallback_reason: str = ""
 
 
 # LIKE 兜底回调签名: (db, client_id, keywords, limit, viewer_user_id) -> [(matched_term, doc_title, excerpt), ...]
@@ -108,6 +112,14 @@ def data_dir_for(db: Database) -> Path | None:
         return Path(raw).parent
     except (TypeError, ValueError):
         return None
+
+
+def semantic_retrieval_enabled() -> bool:
+    """M1 回滚开关。STRATEGIC_NARRATIVE_SEMANTIC_RETRIEVAL_ENABLED=0/false/no/off → 关。
+    默认开 (dev/lab); 生产打包可由环境关闭, 关闭后只走 LIKE, 不依赖 Qdrant/embedding。"""
+    import os
+    v = os.environ.get("STRATEGIC_NARRATIVE_SEMANTIC_RETRIEVAL_ENABLED", "").strip().lower()
+    return v not in ("0", "false", "no", "off")
 
 
 def _semantic_chunks(
@@ -218,19 +230,27 @@ def retrieve_dimension(
     like_keywords: tuple[str, ...] = (),
     like_fallback_fn: LikeFallbackFn | None = None,
     data_dir: Path | None = None,
+    semantic_enabled: bool | None = None,
 ) -> DimensionRetrieval:
     """单维度统一取材: 语义优先, 覆盖率低或失败时 LIKE 补面。
 
     - query 缺省用 DIMENSION_SEMANTIC_QUERIES[dimension]。
     - like_keywords / like_fallback_fn 来自调用方 (narrative_collector), 用于兜底。
     - data_dir 缺省从 db 推导 (避免改 main.py)。
+    - semantic_enabled 缺省读环境开关 (M1 回滚): 关闭则只走 LIKE, 不碰 Qdrant/embedding。
     """
     sem_query = (query or DIMENSION_SEMANTIC_QUERIES.get(dimension) or dimension).strip()
+    enabled = semantic_retrieval_enabled() if semantic_enabled is None else semantic_enabled
     result = DimensionRetrieval(dimension=dimension, semantic_query=sem_query)
+    result.semantic_enabled = enabled
 
     dd = data_dir or data_dir_for(db)
     semantic: list[RetrievedChunk] = []
-    if dd is None:
+    if not enabled:
+        result.fallback_reason = "semantic_disabled_by_flag"
+        result.warnings.append("语义检索开关关闭 (回滚态), 只走 LIKE")
+    elif dd is None:
+        result.fallback_reason = "data_dir_unresolved"
         result.warnings.append("data_dir 推导失败, 跳过语义检索直接 LIKE 兜底")
     else:
         semantic, coverage, failure = _semantic_chunks(
@@ -238,6 +258,7 @@ def retrieve_dimension(
         )
         result.coverage = coverage
         if failure:
+            result.fallback_reason = failure
             result.warnings.append(f"语义检索降级: {failure}")
 
     # 兜底条件: 语义为空 / 覆盖率过低 / data_dir 失败。
@@ -258,10 +279,19 @@ def retrieve_dimension(
     result.chunks = merged[:top_k]
     result.candidate_count = len(semantic) + len(like)
     result.fallback_used = bool(like)
-    result.source_breakdown = {
-        "semantic": sum(1 for c in result.chunks if c.retrieval_path == "semantic"),
-        "like_fallback": sum(1 for c in result.chunks if c.retrieval_path == "like_fallback"),
-    }
+    sem_n = sum(1 for c in result.chunks if c.retrieval_path == "semantic")
+    fb_n = sum(1 for c in result.chunks if c.retrieval_path == "like_fallback")
+    result.source_breakdown = {"semantic": sem_n, "like_fallback": fb_n}
+    if not enabled:
+        result.retrieval_mode = "legacy_like_only"
+    elif sem_n and fb_n:
+        result.retrieval_mode = "semantic+fallback"
+    elif sem_n:
+        result.retrieval_mode = "semantic"
+    elif fb_n:
+        result.retrieval_mode = "fallback_only"
+    else:
+        result.retrieval_mode = "empty"
     if not result.chunks:
         result.warnings.append("语义 + LIKE 均无召回 (该客户该维度可能无相关资料或未索引)")
     return result

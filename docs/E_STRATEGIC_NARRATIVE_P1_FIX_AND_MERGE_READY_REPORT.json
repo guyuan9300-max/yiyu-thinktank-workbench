@@ -1,0 +1,43 @@
+{
+  "round": "P1_fix_and_merge_ready",
+  "date": "2026-05-26",
+  "branch": "feat/strategic-narrative-semantic-retrieval",
+  "verdict": "B — P1 基本修复, 先合 integration + live 验证后再 main",
+  "score_estimate": 86,
+  "p0_count": 0,
+  "M1_rollback_switch": {
+    "status": "done_verified",
+    "flag": "STRATEGIC_NARRATIVE_SEMANTIC_RETRIEVAL_ENABLED",
+    "default": true,
+    "tested": {"on": {"retrieval_mode": "semantic", "chunks": 20},
+               "off": {"retrieval_mode": "legacy_like_only", "chunks": 20, "crash": false, "reason": "semantic_disabled_by_flag"}}
+  },
+  "M2_frontend_source_visibility": {
+    "backend_emit": "done (narrative_generator emits retrievalMode/fallbackUsed/reindexRequired per dim)",
+    "frontend_type": "done (NarrativeDimensionRecord optional fields)",
+    "frontend_ui": "done (StrategicClarificationView lightweight conditional tag)",
+    "blocked_by": ["cloud narrative ingest schema 透传 (C 线程)", "live 合并重启 (顾源源)"],
+    "tsc_verified_in_worktree": false
+  },
+  "M3_index_health": {
+    "CFFC": {"docs": 185, "chunks": 3861, "facts": 883, "surrogate": 157, "grade": "semantic-rich", "reindex": false},
+    "日慈基金会": {"docs": 234, "chunks": 2916, "facts": 1014, "surrogate": 0, "grade": "fallback-rich", "reindex": true},
+    "益语智库": {"docs": 135, "chunks": 666, "facts": 97, "surrogate": 0, "grade": "data-thin", "reindex": "optional"},
+    "reindex_mechanism": "重跑 ingest_pipeline/knowledge_v2 建 surrogate+master_index+Qdrant; 不动原始 v2_documents/atomic_facts; 复测跑 run_depth_stress_test.py"
+  },
+  "M4_main_py_merge": {
+    "e_changed_lines": "1 (main.py:28150 /next-steps days=30->3650,max_items=30->60)",
+    "b_changed_lines_on_main": "none (cc84975..main 对 main.py 为空)",
+    "conflict": false,
+    "merge_risk": "low"
+  },
+  "M5_live_test": {"status": "not_done_production_gated", "reason": "需合并+重启 live 后端(动产线)+regenerate 写云/库; 交顾源源"},
+  "M6_post_merge_regression": {"status": "pending_after_merge", "harness": "scripts/run_depth_stress_test.py"},
+  "P1": [
+    "云端 narrative ingest schema 透传 retrievalMode (C 线程)",
+    "合并+重启 live 真机验证 (顾源源/产线)",
+    "日慈等 surrogate=0 客户 re-index",
+    "前端合并环境补跑 tsc",
+    "collect_client_fact_bundle caps 放开对其它调用方 prompt 体积影响 (A/B 评估)"
+  ]
+}
