@@ -68,3 +68,4 @@ tests/reports/
 dogfood_real/
 
 # node_modules symlink (V2.1 lab 指向 yiyu-thinktank-workbench/node_modules, 不能 commit)
+docs/E_M6_BEFORE_AFTER_RAW.json

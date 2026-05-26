@@ -185,6 +185,11 @@ class DimensionChunk:
     matched_term: str       # 匹配的主题词 (例: '心盛计划' 或 '战略陪伴')
     doc_title: str          # 来源文档标题
     excerpt: str            # 摘要 (≤500 字)
+    # M1/M2 取材升级新增 (默认值兼容旧构造): 来源标注 + 检索路径
+    score: float = 0.0              # 语义相关度分 (LIKE/结构化源为 0)
+    source_doc_id: str = ""         # knowledge_document_id / v2_document_id
+    source_path: str = ""           # 原文路径
+    retrieval_path: str = ""        # 'semantic' | 'like_fallback' | '' (结构化源)
 
 
 @dataclass(frozen=True)
@@ -335,14 +340,14 @@ def collect_client_fact_bundle(
     client_id: str,
     *,
     viewer_user_id: str = "",
-    person_limit: int = 30,
-    time_anchor_limit: int = 15,
-    money_anchor_limit: int = 10,
-    atomic_fact_limit: int = 60,
-    event_line_limit: int = 12,
-    activity_limit: int = 40,
-    task_limit: int = 30,
-    document_limit: int = 25,
+    person_limit: int = 60,
+    time_anchor_limit: int = 30,
+    money_anchor_limit: int = 20,
+    atomic_fact_limit: int = 200,
+    event_line_limit: int = 24,
+    activity_limit: int = 80,
+    task_limit: int = 50,
+    document_limit: int = 60,
 ) -> ClientFactBundle:
     """从本地数据中心一次性收齐所有预制菜.
 
@@ -734,32 +739,72 @@ def _collect_dimension_chunks(
     db: Database, client_id: str, glossary: list[GlossaryTerm],
     viewer_user_id: str = "",
 ) -> dict[str, list[DimensionChunk]]:
-    """对每个 dimension 按主题词搜 chunks, 返回 dimension → list[DimensionChunk].
+    """对每个 dimension 取相关 chunks → dimension → list[DimensionChunk].
 
-    business_intro 特殊处理: 主题词 = 字典里 category='项目' 的 term, 每个项目搜 1 chunk.
-    其他 dimension 用固定的关键词集合.
+    M1/M2 升级: 文档原文取材从「固定关键词 LIKE + 每段 2 chunk」改为
+    「语义检索 (knowledge_base.retrieve_knowledge_bundle, 按 client 隔离) 优先 +
+    LIKE (_retrieve_top_chunks) 兜底」。语义意图见
+    strategic_narrative_semantic_retriever.DIMENSION_SEMANTIC_QUERIES。
+    business_intro 额外保留 per-project 结构化源 (tasks/复盘/会议);
+    全项目覆盖 (去 project_terms[:6]) 留 M3。
     """
+    from app.services import strategic_narrative_semantic_retriever as snr
+
+    def _map(retr) -> list[DimensionChunk]:
+        return [
+            DimensionChunk(
+                dimension=c.dimension, matched_term=c.matched_term,
+                doc_title=c.doc_title, excerpt=c.excerpt,
+                score=c.score, source_doc_id=c.source_doc_id,
+                source_path=c.source_path, retrieval_path=c.retrieval_path,
+            )
+            for c in retr.chunks
+        ]
+
     result: dict[str, list[DimensionChunk]] = {}
 
-    # business_intro: 全数据源 union (文档 + tasks + 复盘 + 会议 transcript)
-    # 每个项目从 4 个源拉信息, 让 LLM 看全貌, 在生成同时发现矛盾
-    project_terms = [g.canonical_name for g in glossary if g.category in ("项目", "项目名")]
-    bi_list: list[DimensionChunk] = []
-    for term in project_terms[:6]:
-        # 源 1: v2_chunks 文档 (top 2, 多文档), 按 viewer 过滤防同事文件污染
-        chunks = _retrieve_top_chunks(
-            db, client_id, (term,),
-            limit=2, excerpt_len=300, max_per_doc=1,
+    # --- essence/cooperation/people/timeline/next_steps: 语义优先 + LIKE 兜底 ---
+    for dim, kws in _DIMENSION_BASE_KEYWORDS.items():
+        retr = snr.retrieve_dimension(
+            db, client_id, dim,
+            like_keywords=kws, like_fallback_fn=_retrieve_top_chunks,
             viewer_user_id=viewer_user_id,
         )
-        for matched_term, doc_title, excerpt in chunks:
+        result[dim] = _map(retr)
+
+    # --- business_intro: 语义总览 (文档 chunk) + per-project 结构化源 ---
+    # 文档 chunk 由语义检索统一负责 (替代原 per-project 的 LIKE 源 1);
+    # tasks / 复盘 / 会议 这类结构化源仍按项目名抓 (语义层覆盖不到的口语化记录)。
+    bi_retr = snr.retrieve_dimension(
+        db, client_id, "business_intro",
+        like_keywords=("项目", "业务", "服务", "方案"),
+        like_fallback_fn=_retrieve_top_chunks,
+        viewer_user_id=viewer_user_id,
+    )
+    bi_list: list[DimensionChunk] = _map(bi_retr)
+
+    project_terms = [g.canonical_name for g in glossary if g.category in ("项目", "项目名")]
+    # M3: 全项目覆盖 (去 [:6]) + 每项目语义召回; 预算公平分配, 保证每个项目都进叙事。
+    _bi_seen_terms: set[str] = set()
+    _per_project_k = max(1, min(3, 60 // max(1, len(project_terms))))
+    for term in project_terms:
+        # per-project 语义召回 (用项目名做 query, 比纯 LIKE 更准)
+        proj_retr = snr.retrieve_dimension(
+            db, client_id, "business_intro",
+            query=f"{term} 这个项目或业务的服务对象、方法、规模、所处阶段、信息来源和当前进展是什么？",
+            top_k=_per_project_k,
+            like_keywords=(term,), like_fallback_fn=_retrieve_top_chunks,
+            viewer_user_id=viewer_user_id,
+        )
+        for pc in proj_retr.chunks:
+            _bi_seen_terms.add(term)
             bi_list.append(DimensionChunk(
-                dimension="business_intro",
-                matched_term=matched_term,
-                doc_title=doc_title,
-                excerpt=excerpt,
+                dimension="business_intro", matched_term=term,
+                doc_title=pc.doc_title, excerpt=pc.excerpt, score=pc.score,
+                source_doc_id=pc.source_doc_id, source_path=pc.source_path,
+                retrieval_path=pc.retrieval_path,
             ))
-        # 源 2: tasks (title + description 含项目名, 体现"日常任务里的项目澄清")
+        # 源: tasks (title + description 含项目名, 体现"日常任务里的项目澄清")
         try:
             task_rows = db.fetchall(
                 """SELECT title, description, owner_name, progress_status FROM tasks
@@ -824,23 +869,16 @@ def _collect_dimension_chunks(
                     ))
         except Exception:
             pass
+    # M3: 没拿到任何料的项目留占位, 保证全部项目都出现在叙事里 (不让它消失)
+    for term in project_terms:
+        if not any(d.matched_term == term for d in bi_list):
+            bi_list.append(DimensionChunk(
+                dimension="business_intro", matched_term=term,
+                doc_title=f"项目 · {term}",
+                excerpt=f"项目「{term}」: 数据中心暂未检索到详细资料 (服务对象/方法/规模/阶段/来源待补充)。",
+                retrieval_path="",
+            ))
     result["business_intro"] = bi_list
-
-    # 其他 5 维度: 用固定关键词, 同样按 viewer 过滤
-    for dim, kws in _DIMENSION_BASE_KEYWORDS.items():
-        chunks = _retrieve_top_chunks(
-            db, client_id, kws, limit=2, excerpt_len=400,
-            viewer_user_id=viewer_user_id,
-        )
-        result[dim] = [
-            DimensionChunk(
-                dimension=dim,
-                matched_term=mt,
-                doc_title=dt,
-                excerpt=ex,
-            )
-            for mt, dt, ex in chunks
-        ]
     return result
 
 
@@ -1159,7 +1197,7 @@ def _collect_documents(db: Database, client_id: str, limit: int) -> tuple[list[D
         DocumentSummaryFact(
             id=str(r["id"]),
             title=str(r["file_name"] or "").strip(),
-            summary=str(r["preview_text"] or "").strip()[:240],
+            summary=str(r["preview_text"] or "").strip()[:600],  # M5: 240→600
             ingested_at=str(r["imported_at"] or ""),
             doc_kind=str(r["kind"] or ""),
         )

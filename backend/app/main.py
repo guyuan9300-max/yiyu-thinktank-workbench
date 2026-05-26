@@ -28147,7 +28147,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
 
         # 源 1: regex 会议纪要 high 置信
         meeting_items = extract_recent_client_actions(
-            state.db.conn, client_id, days=30, max_items=30, exclude_consumed=True,
+            state.db.conn, client_id, days=3650, max_items=60, exclude_consumed=True,  # M4: 去 30 天硬窗口 (31 天前纪要待办原先永久取不到)
         )
         for it in meeting_items:
             if it.confidence != "high":

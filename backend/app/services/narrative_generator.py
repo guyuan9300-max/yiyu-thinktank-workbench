@@ -498,7 +498,7 @@ def _format_atomic_facts(grouped: dict[str, list[AtomicFactRow]]) -> str:
     lines = []
     for attr, facts in grouped.items():
         lines.append(f"  [{attr}] {len(facts)} 条:")
-        for f in facts[:6]:
+        for f in facts[:12]:  # M5: 6→12, 配合 collector atomic_fact_limit 放开
             subj = f.subject[:50]
             val = f.value[:80]
             lines.append(f"    - {subj} = {val}  (factId={f.id}, conf={f.confidence:.2f})")
@@ -531,7 +531,7 @@ def _format_activities(activities: list[ActivityFact]) -> str:
     return "\n".join(
         f"  · {a.happened_at[:10]} | [{a.event_line_name}] {a.title[:40]} (actId={a.id})"
         f"\n      {a.summary[:120]}"
-        for a in activities[:15]
+        for a in activities[:30]  # M5: 15→30
     )
 
 
@@ -539,7 +539,7 @@ def _format_tasks(tasks: list[TaskFact]) -> str:
     if not tasks:
         return "  无任务"
     parts = []
-    for t in tasks[:15]:
+    for t in tasks[:30]:  # M5: 15→30
         bits = [f"  · taskId={t.id} | {t.title[:50]} [{t.progress_status}] owner={t.owner_name}"]
         if t.deadline_at:
             bits.append(f"    deadline: {t.deadline_at[:10]}")
@@ -658,18 +658,32 @@ def build_user_prompt(bundle: ClientFactBundle) -> str:
             "timeline": "Layer 5 timeline (时间线)",
             "next_steps": "Layer 6 next_steps (本阶段战略思路)",
         }
+        # M5: 每维度 chunk 改 token 预算驱动 (替代固定 chunks[:6])。
+        # 列表已按语义相关度排序 (semantic 在前), 保证至少 _MIN_CHUNKS 段, 之后按字符预算填。
+        _dim_char_budget = {
+            "essence": 2400, "cooperation": 2800, "business_intro": 5000,
+            "people": 2400, "timeline": 2800, "next_steps": 2800,
+        }
+        _MIN_CHUNKS = 8
         for dim_key, label in dim_label.items():
             chunks = bundle.dimension_chunks.get(dim_key, [])
             if not chunks:
                 continue
             lines.append(f"\n## {label}")
-            for c in chunks[:6]:  # 每个 dimension 最多 6 个 chunks
+            budget = _dim_char_budget.get(dim_key, 2800)
+            used = 0
+            shown = 0
+            for c in chunks:
+                excerpt = c.excerpt.replace("\n", " ").strip()[:600]
+                if shown >= _MIN_CHUNKS and used + len(excerpt) > budget:
+                    break
                 src = f"《{c.doc_title}》" if c.doc_title else "(无源)"
                 tag = f"[匹配:{c.matched_term}]" if c.matched_term else ""
-                lines.append(f"  · {tag} 来自 {src}:")
-                # 缩进引用原文, 限制行数
-                excerpt = c.excerpt.replace("\n", " ").strip()[:480]
+                path_tag = f"[{c.retrieval_path}]" if getattr(c, "retrieval_path", "") else ""
+                lines.append(f"  · {tag}{path_tag} 来自 {src}:")
                 lines.append(f"    \"{excerpt}\"")
+                used += len(excerpt)
+                shown += 1
         lines.append("")
 
     # v1.5 · 项目画像 — 字典 term 间关联关系 (P0 核心)

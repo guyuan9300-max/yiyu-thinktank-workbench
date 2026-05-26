@@ -156,7 +156,36 @@ def collect_all_todos(db: Any, client_id: str) -> list[UnifiedTodo]:
     except Exception:
         pass
 
-    # 机制化 dedup: 同一件事跨 3 源出现 → 合并, 优先级 task > commitment > meeting_action
+    # 源 4 · event_lines.next_step (主线衍生待办 — M4 新增, 原先漏掉)
+    # 注意: event_lines 用 primary_client_id (不是 client_id), 排除已关闭主线。
+    try:
+        rows = db.fetchall(
+            """SELECT id, name, next_step, owner_name
+               FROM event_lines
+               WHERE primary_client_id=?
+                 AND next_step IS NOT NULL AND TRIM(next_step) != ''
+                 AND COALESCE(status,'') != 'closed'
+                 AND closed_at IS NULL""",
+            (client_id,),
+        )
+        for r in rows:
+            step = str(r["next_step"] or "").strip()
+            out.append(UnifiedTodo(
+                id=f"eventline:{r['id']}",
+                source="event_line",
+                title=f"[主线:{r['name']}] {step[:160]}",
+                owner=str(r["owner_name"] or ""),
+                due_date="",
+                status="pending",
+                direction="内部",
+                related_to=f"事件线: {r['name']}",
+                raw_id=str(r["id"]),
+                severity="medium",
+            ))
+    except Exception:
+        pass
+
+    # 机制化 dedup: 同一件事跨多源出现 → 合并, 优先级 task > commitment > meeting_action
     out = _dedupe_todos(out)
 
     # 排序: severity (high > medium > low) → due_date 升序 (近的在前)

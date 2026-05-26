@@ -301,6 +301,56 @@ def _fetch_upcoming_todos(
             )
         )
 
+    # M4: 补 tasks 之外的源 (原 pulse 只读 tasks, 漏 commitments / 会议待办 / 主线衍生待办)
+    try:
+        for row in db.execute(
+            """SELECT id, committer, recipient, content, deadline FROM commitments
+               WHERE client_id=? AND COALESCE(status,'pending') NOT IN ('fulfilled','cancelled','done')""",
+            (client_id,),
+        ).fetchall():
+            due_iso, days, urgency = _compute_urgency(row["deadline"] or "", today)
+            todos.append(PulseTodo(
+                title=f"承诺: {row['committer']}→{row['recipient']}: {str(row['content'] or '')[:80]}"[:120],
+                due_date=due_iso, days_until_due=days, urgency=urgency,
+                source_task_id=f"commit:{row['id']}", event_line_id=None, event_line_name="",
+            ))
+    except sqlite3.Error:
+        pass
+    try:
+        for row in db.execute(
+            """SELECT ai.id, ai.title, ai.due_date, m.title AS meeting_title
+               FROM action_items ai JOIN meetings m ON m.id=ai.meeting_id
+               WHERE m.client_id=?
+                 AND (ai.publish_status IS NULL OR ai.publish_status NOT IN ('completed','dismissed'))
+                 AND ai.title NOT LIKE '%补齐%' AND ai.title NOT LIKE '%占位%'""",
+            (client_id,),
+        ).fetchall():
+            due_iso, days, urgency = _compute_urgency(row["due_date"] or "", today)
+            todos.append(PulseTodo(
+                title=f"会议待办: {str(row['title'] or '')[:90]}"[:120],
+                due_date=due_iso, days_until_due=days, urgency=urgency,
+                source_task_id=f"action:{row['id']}", event_line_id=None,
+                event_line_name=str(row["meeting_title"] or ""),
+            ))
+    except sqlite3.Error:
+        pass
+    try:
+        for row in db.execute(
+            """SELECT id, name, next_step FROM event_lines
+               WHERE primary_client_id=? AND next_step IS NOT NULL AND TRIM(next_step)!=''
+                 AND COALESCE(status,'')!='closed' AND closed_at IS NULL""",
+            (client_id,),
+        ).fetchall():
+            due_iso, days, urgency = _compute_urgency("", today)
+            todos.append(PulseTodo(
+                title=f"[主线:{row['name']}] {str(row['next_step'] or '').strip()[:90]}"[:120],
+                due_date=due_iso, days_until_due=days, urgency=urgency,
+                source_task_id=f"eventline:{row['id']}", event_line_id=str(row["id"]),
+                event_line_name=str(row["name"] or ""),
+            ))
+    except sqlite3.Error:
+        pass
+
     # 按紧迫度排序; 同档内按 days_until_due 升序
     rank = {"overdue": 0, "today": 1, "this_week": 2, "later": 3}
     todos.sort(
@@ -309,7 +359,7 @@ def _fetch_upcoming_todos(
             t.days_until_due if t.days_until_due is not None else 9999,
         )
     )
-    return todos[:6]
+    return todos[:12]  # M4: 6→12, 容纳新增的 commitments/会议待办/主线衍生
 
 
 def _compute_urgency(
