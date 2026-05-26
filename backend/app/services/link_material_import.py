@@ -650,14 +650,67 @@ def render_polished_markdown_to_docx(
     sanitized = _clean_markdown_artifacts_for_docx(markdown_body.replace("\r\n", "\n"))
     # 按段落分割：一个或多个空行 = 段落分界
     blocks = re.split(r"\n\s*\n", sanitized)
+    # 顾源源 5/26: 真 markdown 表格识别 (block 全是 |...| 行 + 含 separator → 画 docx 表格)
+    from app.services.markdown_table import (
+        _TABLE_ROW_RE as _MD_TABLE_ROW_RE,
+        _TABLE_SEP_RE as _MD_TABLE_SEP_RE,
+        _split_table_cells,
+    )
+
     for raw_block in blocks:
         block = raw_block.strip()
         if not block:
             continue
-        # 一个 block 内的多行可能是：连续段落文本 / 列表 / 一个标题
+        # 一个 block 内的多行可能是：连续段落文本 / 列表 / 一个标题 / 真表格
         block_lines = [line for line in (ln.rstrip() for ln in block.split("\n")) if line.strip()]
         if not block_lines:
             continue
+        # 真表格识别 (第 1 行 row + 第 2 行 separator + 后续 row)
+        is_table_block = (
+            len(block_lines) >= 2
+            and _MD_TABLE_ROW_RE.match(block_lines[0])
+            and _MD_TABLE_SEP_RE.match(block_lines[1])
+        )
+        if is_table_block:
+            headers = _split_table_cells(block_lines[0])
+            rows: list[list[str]] = []
+            for ln in block_lines[2:]:
+                if not _MD_TABLE_ROW_RE.match(ln):
+                    break
+                cells = _split_table_cells(ln)
+                if len(cells) < len(headers):
+                    cells = cells + [""] * (len(headers) - len(cells))
+                elif len(cells) > len(headers):
+                    cells = cells[: len(headers)]
+                rows.append(cells)
+            if headers:
+                n_cols = len(headers)
+                table = doc.add_table(rows=1 + len(rows), cols=n_cols)
+                try:
+                    table.style = "Light Grid Accent 1"
+                except Exception:
+                    pass
+                # 真写 header (加粗)
+                for col_idx, header in enumerate(headers):
+                    cell = table.rows[0].cells[col_idx]
+                    cell.text = ""
+                    para = cell.paragraphs[0]
+                    _render_inline_markdown_to_runs(para, header)
+                    for run in para.runs:
+                        run.bold = True
+                        _force_run_font(run)
+                # 真写 body
+                for r_idx, row in enumerate(rows):
+                    for c_idx, cell_value in enumerate(row):
+                        if c_idx >= n_cols:
+                            break
+                        cell = table.rows[r_idx + 1].cells[c_idx]
+                        cell.text = ""
+                        para = cell.paragraphs[0]
+                        _render_inline_markdown_to_runs(para, cell_value)
+                        for run in para.runs:
+                            _force_run_font(run)
+                continue
         # 判断整个 block 是不是列表（每行都以 - / * / 数字. 开头）
         is_list_block = all(_LIST_ITEM_RE.match(ln.strip()) for ln in block_lines)
         if is_list_block:

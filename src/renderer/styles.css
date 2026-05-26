@@ -322,3 +322,10 @@ textarea {
   20% { opacity: 1; transform: translateY(0); }
   100% { opacity: 1; transform: translateY(0); }
 }
+
+/* 工作台文档编辑器 (RichTextDocumentEditor / MDXEditor) placeholder 调浅
+   顾源源 5/26: 颜色太深, 大家下意识要删. 它是提醒不是命令, 浅灰即可.
+   用 attribute selector 真稳 (跨 MDXEditor 版本 hash 变化也命中). */
+.mdx-placeholder-light [class*='_placeholder_'] {
+  color: rgb(209 213 219) !important;
+}
