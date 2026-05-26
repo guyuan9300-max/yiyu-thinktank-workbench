@@ -4069,10 +4069,40 @@ function formatTaskDuePickerSummaryLabel(datePart?: string | null, timePart?: st
   const startLabel = formatTaskDuePickerDateLabel(datePart);
   if (startLabel === '选择日期') return startLabel;
   const time = (timePart || '').trim();
-  if (time) return `${startLabel} ${time}`;
+  const duration = Math.max(0, durationMinutes ?? 0);
+  if (time) {
+    // 5/26 修: 有 time 时也要算 endTime, 显示完整时间段 "今天 08:00-11:00"
+    // 之前只显示 "今天 08:00", 拖选完用户看不到时间段
+    if (duration > 0) {
+      const [h, m] = time.split(':').map(Number);
+      if (Number.isFinite(h) && Number.isFinite(m)) {
+        const startMins = h * 60 + m;
+        const endMins = startMins + duration;
+        if (endMins < 24 * 60) {
+          const endH = Math.floor(endMins / 60);
+          const endM = endMins % 60;
+          const endTime = `${String(endH).padStart(2, '0')}:${String(endM).padStart(2, '0')}`;
+          return `${startLabel} ${time}-${endTime}`;
+        }
+        // 跨天时显示截止那天 + 时间
+        const parsedDate = parseTaskDateValue(datePart);
+        if (parsedDate) {
+          const totalMins = startMins + duration;
+          const dayDelta = Math.floor(totalMins / (24 * 60));
+          const endDate = new Date(parsedDate.getFullYear(), parsedDate.getMonth(), parsedDate.getDate() + dayDelta);
+          const endMinOfDay = totalMins % (24 * 60);
+          const endH = Math.floor(endMinOfDay / 60);
+          const endM = endMinOfDay % 60;
+          const endTime = `${String(endH).padStart(2, '0')}:${String(endM).padStart(2, '0')}`;
+          return `${startLabel} ${time} → ${formatTaskDuePickerDateLabel(formatDateOnlyValue(endDate))} ${endTime}`;
+        }
+      }
+    }
+    return `${startLabel} ${time}`;
+  }
   const parsedDate = parseTaskDateValue(datePart);
   if (!parsedDate) return startLabel;
-  const spanDays = taskCalendarSpanDays(durationMinutes);
+  const spanDays = taskCalendarSpanDays(duration);
   if (spanDays <= 1) return startLabel;
   const endDate = new Date(parsedDate.getFullYear(), parsedDate.getMonth(), parsedDate.getDate() + spanDays - 1);
   return `${startLabel} - ${formatTaskDuePickerDateLabel(formatDateOnlyValue(endDate))}`;
@@ -5967,7 +5997,9 @@ function buildWeeklyOverviewModel(rows: ReviewTaskRow[], scope: 'work' | 'person
       if (right.score !== left.score) return right.score - left.score;
       return right.taskCount - left.taskCount;
     });
-  const mainlines = groups.slice(0, 3).map(({ score, ...line }) => line);
+  // 5/26 改: 顾源源反馈"一个月当中重点不止 3 个". 放宽到 6 条上限.
+  // 仍按 scoreWeeklyOverviewGroup 排序, 重要性低的不进列表
+  const mainlines = groups.slice(0, 6).map(({ score, ...line }) => line);
   const mainlineNames = joinWeeklyOverviewItems(mainlines.map((line) => line.title), 3);
   const incompleteNames = joinWeeklyOverviewItems(mainlines.filter((line) => line.pendingCount > 0).map((line) => line.title), 2);
   const scopeLabel = scope === 'work' ? '组织重点' : '成长重点';
@@ -6006,7 +6038,7 @@ function buildWeeklyOverviewModelFromBackendCards(cards: WeeklyMainlineCards | n
       };
     })
     .filter((line): line is WeeklyOverviewLine => Boolean(line))
-    .slice(0, 3);
+    .slice(0, 6);  // 5/26 改: 3 → 6, 跟 buildWeeklyOverview 一致
   if (!summaryText || mainlines.length === 0) return fallback;
   return {
     ...fallback,
@@ -12001,11 +12033,28 @@ export default function App() {
       editingTask.dueTime,
       editingTask.durationMinutes,
     );
-    const duePickerDurationLabel = editingTask.dueTime
-      ? editingTask.dueTime
-      : taskCalendarSpanDays(editingTask.durationMinutes) > 1
+    // 5/26 修: 有 dueTime 时显示完整时间段 "08:00-11:00", 不只显示开始时间
+    const duePickerDurationLabel = (() => {
+      if (editingTask.dueTime) {
+        const duration = Math.max(0, editingTask.durationMinutes || 0);
+        if (duration > 0) {
+          const [h, m] = editingTask.dueTime.split(':').map(Number);
+          if (Number.isFinite(h) && Number.isFinite(m)) {
+            const startMins = h * 60 + m;
+            const endMins = startMins + duration;
+            if (endMins < 24 * 60) {
+              const endH = Math.floor(endMins / 60);
+              const endM = endMins % 60;
+              return `${editingTask.dueTime}-${String(endH).padStart(2, '0')}:${String(endM).padStart(2, '0')}`;
+            }
+          }
+        }
+        return editingTask.dueTime;
+      }
+      return taskCalendarSpanDays(editingTask.durationMinutes) > 1
         ? `连续 ${taskCalendarSpanDays(editingTask.durationMinutes)} 天`
         : '--:--';
+    })();
     const duePickerCalendarCells = useMemo(() => buildCalendarCells(duePickerMonth), [duePickerMonth]);
 
     useEffect(() => {
@@ -24741,15 +24790,11 @@ export default function App() {
                         onClick: () => void;
                         disabled: boolean;
                       }> = {
-                        import_folder: {
-                          icon: <FolderOpen size={18} />,
-                          title: '导入文件夹',
-                          onClick: () => void handleSelectImportFolder(),
-                          disabled: isBackendBlocked,
-                        },
-                        import_files: {
+                        // 顾源源 5/26: 真合并 "导入文件" + "导入文件夹" 为 1 个 "导入" 按钮 (方案 A).
+                        // 点击真弹文件选择器, 拖入时真自动识别 file/folder (现有 drop zone 真覆盖).
+                        import: {
                           icon: <UploadCloud size={18} />,
-                          title: '导入文件',
+                          title: '导入 · 点击选文件，或直接拖入文件/文件夹',
                           onClick: () => void handleSelectImportFiles(),
                           disabled: isBackendBlocked,
                         },
@@ -25073,9 +25118,9 @@ export default function App() {
               </h3>
 
               <div
-                className={`rounded-[24px] border p-4 transition-colors cursor-pointer group mb-4 xl:mb-5 ${
+                className={`relative rounded-[24px] border p-4 transition-colors cursor-pointer group mb-4 xl:mb-5 ${
                   clientImportDropZone === 'buffer'
-                    ? 'border-[#5B7BFE] bg-blue-50/70'
+                    ? 'border-[#5B7BFE] bg-blue-50/70 ring-4 ring-blue-500/10'
                     : 'border-gray-200 bg-gray-50/70 hover:border-[#C7D5FF] hover:bg-gray-50'
                 }`}
                 onDragEnter={handleClientImportDragEnter('buffer')}
@@ -25083,14 +25128,25 @@ export default function App() {
                 onDragLeave={handleClientImportDragLeave('buffer')}
                 onDrop={handleClientImportDrop('buffer')}
               >
+                {/* 顾源源 5/26: 拖入时显示醒目"+"提示, 跟 composer drop zone 一致 */}
+                {clientImportDropZone === 'buffer' && (
+                  <div className="pointer-events-none absolute inset-1 z-10 flex items-center justify-center rounded-[20px] border-2 border-dashed border-[#5B7BFE] bg-white/92 backdrop-blur-sm">
+                    <div className="text-center px-6">
+                      <div className="mx-auto mb-2 flex h-12 w-12 items-center justify-center rounded-full bg-[#5B7BFE] text-white shadow-[0_8px_20px_rgba(91,123,254,0.3)]">
+                        <Plus size={28} strokeWidth={2.6} />
+                      </div>
+                      <p className="text-[13px] font-bold text-[#3652c9]">松手即可导入</p>
+                      <p className="mt-1 text-[11px] text-[#5c6fb8]">文件 / 文件夹都行，10 个 20 个一起拖也可以</p>
+                    </div>
+                  </div>
+                )}
                 {(() => {
                   return (
                     <>
                       <div className="grid grid-cols-3 gap-3">
-                        {/* 工具页 6 个工具：每个 hover 出 ☆ 收藏按钮，点击加入/移出快捷工具区 */}
+                        {/* 工具页 5 个工具 (顾源源 5/26: 合并文件 + 文件夹 → 1 个"导入"): 每个 hover 出 ☆ 收藏按钮 */}
                         {([
-                          { key: 'import_folder', icon: <FolderOpen size={23} />, title: '导入文件夹', onClick: () => void handleSelectImportFolder(), disabled: isBackendBlocked },
-                          { key: 'import_files', icon: <UploadCloud size={23} />, title: '导入文件', onClick: () => void handleSelectImportFiles(), disabled: isBackendBlocked },
+                          { key: 'import', icon: <UploadCloud size={23} />, title: '导入 · 点击选文件，或直接拖入文件/文件夹', onClick: () => void handleSelectImportFiles(), disabled: isBackendBlocked },
                           { key: 'fill_template', icon: <LayoutTemplate size={23} />, title: '填写模板', onClick: () => void handleFillTemplate(), disabled: isBackendBlocked || isTemplateFilling },
                           { key: 'text_doc', icon: <PenTool size={23} />, title: '智能编辑', onClick: openClientTextDocumentOverlay, disabled: isBackendBlocked },
                           { key: 'link_material', icon: <Link2 size={23} />, title: '链接转资料', onClick: openClientLinkMaterialOverlay, disabled: isBackendBlocked },
