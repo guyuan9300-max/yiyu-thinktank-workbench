@@ -394,7 +394,22 @@ export function BotMemberFormDialog({
    */
   const copyToken = useCallback(async () => {
     if (!createdToken) return;
-    const text = createdToken.token;
+    // 顾源源 5/26 真用反馈: 真旧版只复制 token plain, 用户真容易把 actor_id 跟 bot.id 搞混 → 401.
+    // 真新: 真复制**完整配置块** (含 actor_id + token + endpoint 真示例), 真用户拿来即用真不混淆.
+    const text = `# 益语智库 · 机器人「${createdToken.display_name}」身份启动密钥
+# 关闭窗口后无法再次查看, 丢了只能重置.
+
+X-Actor-Type: external_ai_agent
+X-Actor-Id: ${createdToken.actor_id}
+X-Bot-Token: ${createdToken.token}
+
+# 真使用示例 (复制到 terminal 调任意守门 endpoint):
+curl -X POST http://127.0.0.1:47831/api/v1/documents/generate \\
+  -H "X-Actor-Type: external_ai_agent" \\
+  -H "X-Actor-Id: ${createdToken.actor_id}" \\
+  -H "X-Bot-Token: ${createdToken.token}" \\
+  -H "Content-Type: application/json" \\
+  -d '{"client_id":"...", "document_type":"meeting_pack", "goal":"..."}'`;
     let copied = false;
     try {
       if (navigator.clipboard && typeof navigator.clipboard.writeText === 'function') {

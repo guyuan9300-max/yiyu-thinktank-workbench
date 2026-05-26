@@ -518,6 +518,10 @@ import { WorkStatusPanel } from './components/data_center/WorkStatusPanel';
 // C 审计 P0-3 修复 (2026-05-24): V3 Agent-Ready 最小前端入口
 import { AgentReadyPanel } from './components/data_center/AgentReadyPanel';
 // 顾源源 5/24 大型任务: 机器人同事
+import { BotMembersPanel } from './components/settings/BotMembersPanel';
+// 顾源源 5/24 真原意已是挂到 OrganizationSetupCenter, 但 5/26 真扫发现真死挂 (grep 0 命中).
+// 真现修: 真挂在 OrganizationSetupCenter 真下方, 真同样在 isCloud 真分支真显示
+// 旧注释保留作历史:
 // BotMembersPanel 入口已挂到 OrganizationSetupCenter (真"组织搭建中心"),
 // 此处不再 import 避免 unused import 报错
 import { FeishuOrgIntegrationPanel } from './components/settings/FeishuOrgIntegrationPanel';
@@ -28919,6 +28923,14 @@ export default function App() {
                 defaultOpen: pendingReviewCount > 0,
                 children: <EmployeeReviewPanel />,
               })}
+            </div>
+          )}
+
+          {/* 顾源源 5/26 真修 P0-1 (5/24 审计真发现死挂): BotMembersPanel 真主面板真挂上, 真用户加完机器人能看到列表/启停/重置密钥/AI 计划审批 */}
+          {isCloud && (
+            <div className="mt-8">
+              <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-gray-400 mb-4">BOT MEMBERS · 机器人成员管理</p>
+              <BotMembersPanel />
             </div>
           )}
 
