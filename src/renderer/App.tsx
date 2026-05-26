@@ -19909,7 +19909,7 @@ export default function App() {
       ? workspaceClientUiState.importDropZoneByClient[currentClientId] || null
       : null;
     const setClientImportDropZone = (
-      nextValue: 'buffer' | 'composer' | null | ((previous: 'buffer' | 'composer' | null) => 'buffer' | 'composer' | null),
+      nextValue: 'buffer' | 'composer' | 'favorites' | null | ((previous: 'buffer' | 'composer' | 'favorites' | null) => 'buffer' | 'composer' | 'favorites' | null),
     ) => {
       if (!currentClientId) return;
       const previous = workspaceClientUiState.importDropZoneByClient[currentClientId] || null;
@@ -20133,7 +20133,7 @@ export default function App() {
   const lastAutoScrolledMessageIdRef = useRef<string | null>(null);
   const lastThinkingPanelVisibleRef = useRef(false);
   const setupModeClientIdRef = useRef<string | null>(null);
-  const clientImportDropDepthRef = useRef<{ buffer: number; composer: number }>({ buffer: 0, composer: 0 });
+  const clientImportDropDepthRef = useRef<{ buffer: number; composer: number; favorites: number }>({ buffer: 0, composer: 0, favorites: 0 });
 
   // 豆包式「深度思考」开关：开启后下一条消息走 multipass（4 段大纲生成），耗时但更深度；关闭走单次 LLM
   const [deepThinking, setDeepThinking] = useState<boolean>(() => {
@@ -20457,6 +20457,7 @@ export default function App() {
       setTemplateFillDialog(null);
       clientImportDropDepthRef.current.buffer = 0;
       clientImportDropDepthRef.current.composer = 0;
+      clientImportDropDepthRef.current.favorites = 0;
       workspaceStartMessageAbortControllerRef.current?.abort();
       workspaceStartMessageAbortControllerRef.current = null;
       lastAutoScrolledMessageIdRef.current = null;
@@ -22195,7 +22196,7 @@ export default function App() {
       await handleImport('file', paths, options);
     };
 
-    const resetClientImportDropZone = (zone?: 'buffer' | 'composer') => {
+    const resetClientImportDropZone = (zone?: 'buffer' | 'composer' | 'favorites') => {
       if (zone) {
         clientImportDropDepthRef.current[zone] = 0;
         setClientImportDropZone((prev) => (prev === zone ? null : prev));
@@ -22203,11 +22204,12 @@ export default function App() {
       }
       clientImportDropDepthRef.current.buffer = 0;
       clientImportDropDepthRef.current.composer = 0;
+      clientImportDropDepthRef.current.favorites = 0;
       setClientImportDropZone(null);
     };
 
     const handleClientImportDragEnter =
-      (zone: 'buffer' | 'composer') => (event: React.DragEvent<HTMLDivElement>) => {
+      (zone: 'buffer' | 'composer' | 'favorites') => (event: React.DragEvent<HTMLDivElement>) => {
         if (!currentClientId || isBackendBlocked || !hasFileDragData(event.dataTransfer)) return;
         event.preventDefault();
         event.stopPropagation();
@@ -22216,7 +22218,7 @@ export default function App() {
       };
 
     const handleClientImportDragOver =
-      (zone: 'buffer' | 'composer') => (event: React.DragEvent<HTMLDivElement>) => {
+      (zone: 'buffer' | 'composer' | 'favorites') => (event: React.DragEvent<HTMLDivElement>) => {
         if (!currentClientId || isBackendBlocked || !hasFileDragData(event.dataTransfer)) return;
         event.preventDefault();
         event.stopPropagation();
@@ -22227,7 +22229,7 @@ export default function App() {
       };
 
     const handleClientImportDragLeave =
-      (zone: 'buffer' | 'composer') => (event: React.DragEvent<HTMLDivElement>) => {
+      (zone: 'buffer' | 'composer' | 'favorites') => (event: React.DragEvent<HTMLDivElement>) => {
         if (!hasFileDragData(event.dataTransfer)) return;
         event.preventDefault();
         event.stopPropagation();
@@ -22238,7 +22240,7 @@ export default function App() {
       };
 
     const handleClientImportDrop =
-      (zone: 'buffer' | 'composer') => (event: React.DragEvent<HTMLDivElement>) => {
+      (zone: 'buffer' | 'composer' | 'favorites') => (event: React.DragEvent<HTMLDivElement>) => {
         if (!currentClientId || isBackendBlocked || !hasFileDragData(event.dataTransfer)) return;
         event.preventDefault();
         event.stopPropagation();
@@ -24787,7 +24789,29 @@ export default function App() {
           </div>
 
           <div className="w-[260px] xl:w-[320px] bg-white border-l border-gray-100 flex flex-col h-full shrink-0 z-10 shadow-[-2px_0_10px_rgba(0,0,0,0.02)]">
-            <div className="shrink-0 border-b border-gray-100 bg-white px-3 pt-3 pb-2">
+            <div
+              className={`relative shrink-0 border-b border-gray-100 px-3 pt-3 pb-2 transition-colors ${
+                clientImportDropZone === 'favorites'
+                  ? 'bg-blue-50/70 ring-4 ring-blue-500/10'
+                  : 'bg-white'
+              }`}
+              onDragEnter={handleClientImportDragEnter('favorites')}
+              onDragOver={handleClientImportDragOver('favorites')}
+              onDragLeave={handleClientImportDragLeave('favorites')}
+              onDrop={handleClientImportDrop('favorites')}
+            >
+              {/* 顾源源 5/26: 快捷工具区也接受文件/文件夹拖入 (跟 buffer 一致) */}
+              {clientImportDropZone === 'favorites' && (
+                <div className="pointer-events-none absolute inset-1 z-10 flex items-center justify-center rounded-[16px] border-2 border-dashed border-[#5B7BFE] bg-white/92 backdrop-blur-sm">
+                  <div className="text-center px-4">
+                    <div className="mx-auto mb-2 flex h-10 w-10 items-center justify-center rounded-full bg-[#5B7BFE] text-white shadow-[0_8px_20px_rgba(91,123,254,0.3)]">
+                      <Plus size={22} strokeWidth={2.6} />
+                    </div>
+                    <p className="text-[12px] font-bold text-[#3652c9]">松手即可导入</p>
+                    <p className="mt-0.5 text-[10px] text-[#5c6fb8]">文件/文件夹都行</p>
+                  </div>
+                </div>
+              )}
               <div className="flex items-center justify-between gap-3">
                 <h3 className="text-[11px] font-bold tracking-[0.18em] text-gray-400">快捷工具</h3>
                 <button
