@@ -1051,6 +1051,7 @@ from app.services.data_center_access import DataCenterAccessContext
 from app.services.local_model_optimizer import (
     enqueue_local_model_optimization_tasks,
     get_local_model_optimization_stats,
+    local_model_optimizer_worker_loop,
     retry_failed_local_model_optimization_tasks,
 )
 from app.services.internet_crawler import run_internet_enrichment
@@ -1557,6 +1558,7 @@ class AppState:
     job_stop: Event
     job_thread: Thread | None = None
     analysis_job_thread: Thread | None = None
+    deep_read_thread: Thread | None = None
     topic_insight_executor: ThreadPoolExecutor | None = None
     chat_answer_executor: ThreadPoolExecutor | None = None
     template_fill_executor: ThreadPoolExecutor | None = None
@@ -3633,6 +3635,18 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         state.job_thread.start()
         state.analysis_job_thread = Thread(target=analysis_job_worker_loop, name="analysis-job-worker", daemon=True)
         state.analysis_job_thread.start()
+        # 深读调度线程 (W2)：常驻消费 local_model_tasks 队列 (document_card / path_optimization)。
+        # 自身受 settings.local_model_optimization 节流——enabled/paused/dailyWindows/governor，
+        # 默认 enabled=False 即"起线程但不跑"，零成本；用户在设置里开启 + 配窗口后才真正消化队列。
+        # 每个任务用哪个模型由 _process_document_card_task 的 task_kind="deep_analysis" 按用户
+        # 的模型设置决定 (主模型优先，本地仅本地优先时)，不在此处强制。复用 job_stop 统一收口。
+        if not (state.deep_read_thread and state.deep_read_thread.is_alive()):
+            state.deep_read_thread = Thread(
+                target=lambda: local_model_optimizer_worker_loop(state.db, state.ai, state.job_stop),
+                name="deep-read-worker",
+                daemon=True,
+            )
+            state.deep_read_thread.start()
         # Probe cloud backend connectivity at startup — clear circuit breaker if reachable
         if state.cloud_api_url and get_cloud_token():
             def _probe_cloud():
@@ -3651,6 +3665,8 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             state.job_thread.join(timeout=1.5)
         if state.analysis_job_thread and state.analysis_job_thread.is_alive():
             state.analysis_job_thread.join(timeout=1.5)
+        if state.deep_read_thread and state.deep_read_thread.is_alive():
+            state.deep_read_thread.join(timeout=1.5)
         if state.topic_insight_executor:
             state.topic_insight_executor.shutdown(wait=False, cancel_futures=False)
         if state.chat_answer_executor:
@@ -36035,7 +36051,8 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
     def run_local_ai_now(force: bool = False) -> dict[str, object]:
         """强制触发一次队列调度。force=True 时绕开 window/governor 直接跑一条。
 
-        正常情况下后台 worker 每 60s 自动触发；这个端点是给用户 "立刻跑一条" 用的。
+        常驻 deep-read-worker 线程（W2）已在后台按 enabled/窗口/governor 节流自动消化；
+        这个端点是给用户"立刻跑一条"（不等窗口）用的按钮。
         """
         from app.services.local_model_optimizer import run_due_local_model_tasks
         result = run_due_local_model_tasks(
@@ -36045,6 +36062,85 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             force=bool(force),
         )
         return result
+
+    @app.post("/api/v1/local-ai/backfill")
+    def backfill_local_ai_enqueue(client_id: str | None = None) -> dict[str, object]:
+        """W3b · 存量自愈：把（全库或指定客户的）历史文档批量入队深读任务。
+
+        client_id 省略 → 全库所有客户（含历史 841 篇）。幂等（INSERT OR IGNORE +
+        input_hash），重复调用不会重复入队。**只入队，不在此跑**——由 deep-read-worker
+        按 enabled/窗口/governor 节流消化。给"一键补齐存量深读"按钮用。
+        """
+        result = enqueue_local_model_optimization_tasks(
+            state.db,
+            client_id=(client_id or None),
+        )
+        return {"scope": client_id or "ALL_CLIENTS", **result}
+
+    @app.get("/api/v1/local-ai/settings")
+    def get_local_ai_settings() -> dict[str, object]:
+        """W4 · 读深读队列设置（enabled / paused / dailyWindows / governor 等）。"""
+        from app.services.local_model_optimizer import get_local_model_optimization_settings
+        return get_local_model_optimization_settings(state.db)
+
+    @app.put("/api/v1/local-ai/settings")
+    def update_local_ai_settings(payload: dict[str, object]) -> dict[str, object]:
+        """W4 · 写深读队列设置。deep-read-worker 下个轮询周期即生效（每次读 DB）。
+
+        典型用法：开启 enabled、解除 paused、配 dailyWindows（如夜间 22:00-08:00）。
+        用哪个模型不在这里设——深读按用户的全局模型设置路由（主模型优先，本地仅
+        在用户选"本地优先"时才用），见 _process_document_card_task 的 task_kind。
+        入参经 normalize_local_model_optimization_settings 校验，未知字段被丢弃。
+        """
+        from app.services.local_model_optimizer import save_local_model_optimization_settings
+        return save_local_model_optimization_settings(state.db, payload)
+
+    @app.get("/api/v1/local-ai/coverage")
+    def get_local_ai_coverage(client_id: str | None = None) -> dict[str, object]:
+        """W4 · 深读覆盖率：每个客户有多少文档已生成 document_card（深读地基资产）。
+
+        用来肉眼确认深读是否真覆盖全客户，而不只 CFFC。client_id 省略 → 全客户。
+        """
+        params: list[object] = []
+        client_clause = ""
+        if client_id:
+            client_clause = "WHERE kd.client_id = ?"
+            params.append(client_id)
+        rows = state.db.fetchall(
+            f"""
+            SELECT kd.client_id AS client_id,
+                   COUNT(DISTINCT kd.id) AS documents,
+                   COUNT(DISTINCT dc.knowledge_document_id) AS deep_read
+            FROM knowledge_documents kd
+            LEFT JOIN document_cards dc ON dc.knowledge_document_id = kd.id
+            {client_clause}
+            GROUP BY kd.client_id
+            ORDER BY documents DESC
+            """,
+            tuple(params),
+        )
+        per_client: list[dict[str, object]] = []
+        total_docs = 0
+        total_deep = 0
+        for r in rows:
+            docs = int(r["documents"] or 0)
+            deep = int(r["deep_read"] or 0)
+            total_docs += docs
+            total_deep += deep
+            per_client.append(
+                {
+                    "clientId": str(r["client_id"] or ""),
+                    "documents": docs,
+                    "deepRead": deep,
+                    "coverage": round(deep / docs, 3) if docs else 0.0,
+                }
+            )
+        return {
+            "perClient": per_client,
+            "totalDocuments": total_docs,
+            "totalDeepRead": total_deep,
+            "overallCoverage": round(total_deep / total_docs, 3) if total_docs else 0.0,
+        }
 
     @app.get(
         "/api/v1/local-asr/diarization/status",

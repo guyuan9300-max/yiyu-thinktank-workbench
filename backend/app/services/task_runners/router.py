@@ -1,13 +1,15 @@
-"""文档导入后的本地推理任务派发（Phase 2）。
+"""文档导入后的本地推理任务派发（Phase 2 + W3a）。
 
-`route_document_for_local_inference(db, v2_document_id)` 根据文档 kind 决定
-要入队哪些本地推理任务。当前实现：
+`route_document_for_local_inference(db, v2_document_id)` 在导入时入队两类任务：
 
-- pptx：每 slide 一条 visual_ocr task（Phase 1 已支持）
-- pdf / xlsx 内嵌图 / docx 内嵌图 / 图片文件：留 hook 但暂不入队（runner Phase 1 只支持 pptx_slide_images，等扩展 source_kind 后开）
+- **深读（所有 kind 统一）**：每篇文档入 `document_card_generation`（+ 可选 path_optimization）。
+  这是深读地基的"导入即触发"入口——新客户、用户未来上传的资料由构造自动获得深读，
+  不靠人手动补。受 settings.local_model_optimization 的 autoEnqueue* 开关 gate。
+- **视觉 OCR（kind 专属）**：pptx 每 slide 一条 visual_ocr task（其他 kind 暂 no-op，等 runner 扩展）。
 
 由 `knowledge_v2.ingest_document_knowledge` 末尾调用。**不阻塞主流程**——
 任何异常都吞掉只打日志，不让一个 router 故障拖累整个导入。
+**只入队，不在此跑**：实际消化由 deep-read-worker 线程按 enabled/窗口/governor 节流。
 
 幂等：UNIQUE(task_type, knowledge_document_id, input_hash) 保证多次调用不重复入队。
 """
@@ -150,7 +152,46 @@ def _route_pptx(db: Database, doc_row: dict, source_path: Path) -> int:
     return enqueued
 
 
-# 路由表：文档 kind → 派发函数。其他 kind 暂时 no-op（等 Phase 5 runner 扩展）
+def _enqueue_deep_read(db: Database, doc_row: dict) -> int:
+    """W3a · 导入即入队深读任务（客户无关，覆盖所有 kind）。
+
+    每篇导入文档都入 `document_card_generation`（深读地基所需）+ 可选 path_optimization，
+    使新客户/用户未来上传的资料由构造自动获得深读，不靠人手动补。
+    受 `settings.local_model_optimization` gate：autoEnqueueDocumentCards /
+    autoEnqueuePathOptimization 关时不入对应类型。只入队，不在此跑——实际消化由
+    deep-read-worker 线程按 enabled/窗口/governor 节流（默认 enabled=False，零成本）。
+    幂等由 enqueue 函数的 INSERT OR IGNORE + input_hash 保证。
+    """
+    from app.services.local_model_optimizer import (  # noqa: PLC0415
+        TASK_TYPE_DOCUMENT_CARD,
+        TASK_TYPE_PATH_OPTIMIZATION,
+        enqueue_local_model_optimization_tasks,
+        get_local_model_optimization_settings,
+    )
+
+    settings = get_local_model_optimization_settings(db)
+    task_types: list[str] = []
+    if bool(settings.get("autoEnqueueDocumentCards", True)):
+        task_types.append(TASK_TYPE_DOCUMENT_CARD)
+    if bool(settings.get("autoEnqueuePathOptimization", True)):
+        task_types.append(TASK_TYPE_PATH_OPTIMIZATION)
+    if not task_types:
+        return 0
+
+    knowledge_doc_id = _resolve_knowledge_document_id(db, doc_row)
+    if not knowledge_doc_id:
+        return 0
+
+    result = enqueue_local_model_optimization_tasks(
+        db,
+        document_ids=[knowledge_doc_id],
+        task_types=task_types,
+    )
+    return int(result.get("created", 0) or 0)
+
+
+# 路由表：文档 kind → 视觉 OCR 派发函数（仅 pptx 需要 per-slide OCR）。
+# 注意：document_card 深读对所有 kind 统一入队，不走此表（见 _enqueue_deep_read）。
 _ROUTERS = {
     "pptx": _route_pptx,
 }
@@ -160,10 +201,10 @@ def route_document_for_local_inference(
     db: Database,
     v2_document_id: str,
 ) -> dict[str, int]:
-    """文档导入后调用。根据 kind 决定派发哪些本地推理任务。
+    """文档导入后调用。统一入深读任务（所有 kind）+ kind 专属 OCR（pptx）。
 
     Returns:
-        dict 含 enqueued_count + per_runner 细分，给日志/前端用。
+        dict 含 enqueued 总数 + documentCard / visualOcr 细分，给日志/前端用。
     """
     if not v2_document_id:
         return {"enqueued": 0, "skipped_reason": "no v2_document_id"}
@@ -178,18 +219,34 @@ def route_document_for_local_inference(
     if not row:
         return {"enqueued": 0, "skipped_reason": "v2_document not found"}
 
+    doc_dict = dict(row)
     kind = str(row["kind"] or "").lower()
+
+    # W3a：所有 kind 统一入深读（document_card）。任何异常吞掉，不拖累导入主流程。
+    card_enqueued = 0
+    try:
+        card_enqueued = _enqueue_deep_read(db, doc_dict)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("router: 深读入队失败 doc=%s: %s", v2_document_id, exc)
+
+    # kind 专属：pptx 每 slide 一条 visual_ocr（其他 kind 暂 no-op，等 runner 扩展）
+    ocr_enqueued = 0
     router_fn = _ROUTERS.get(kind)
-    if router_fn is None:
-        return {"enqueued": 0, "skipped_reason": f"no router for kind={kind}"}
+    if router_fn is not None:
+        source_path = _resolve_source_path(doc_dict)
+        if source_path is not None:
+            try:
+                ocr_enqueued = router_fn(db, doc_dict, source_path)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("router: %s OCR 入队失败 doc=%s: %s", kind, v2_document_id, exc)
 
-    source_path = _resolve_source_path(dict(row))
-    if source_path is None:
-        return {"enqueued": 0, "skipped_reason": "source file not on disk"}
-
-    enqueued = router_fn(db, dict(row), source_path)
     db.conn.commit()
-    return {"enqueued": enqueued, "kind": kind, "source": str(source_path)}
+    return {
+        "enqueued": card_enqueued + ocr_enqueued,
+        "documentCard": card_enqueued,
+        "visualOcr": ocr_enqueued,
+        "kind": kind,
+    }
 
 
 __all__ = ["route_document_for_local_inference"]

@@ -644,14 +644,19 @@ def _process_document_card_task(db: Database, ai_service: Any, task: dict[str, o
     prompt = _card_prompt(context)
     # M1 修复: `generate_local_model_json` 从未在 AiService 实现(全仓无定义)→ 历史上每个
     # document_card 任务都 AttributeError 失败 → 队列卡死 → 无 document_cards → 深读地基全断。
-    # 改用真实存在的 _qwen_generate(本地 qwen, 返回 JSON dict)。
-    _raw = ai_service._qwen_generate(  # noqa: SLF001 — 复用现有本地生成入口
+    # 改用真实存在的 _qwen_generate, 并传 task_kind="deep_analysis", 让深读尊重用户的模型设置:
+    #   - advanced routing 关(多数用户, 含跑不动本地的): 用主模型(current_provider)
+    #   - advanced + 线上优先/自动: online_primary 主模型优先, 本地兜底
+    #   - advanced + 本地优先/仅本地: 才用本地 qwen3-vl:32b (local_text_deep)
+    # 不强制本地——本地仅在用户显式选"本地优先"时才跑。
+    _raw = ai_service._qwen_generate(  # noqa: SLF001 — 复用现有生成入口, 走标准 mode 路由
         prompt,
         "你是数据中心后台优化引擎，负责生成可复用的文件理解资产。只输出 JSON。",
         _DOCUMENT_CARD_SCHEMA,
         timeout_seconds=900,
         max_tokens=1800,
         temperature=0.3,
+        task_kind="deep_analysis",
     )
     payload = _raw if isinstance(_raw, dict) else {}
     if not payload:
