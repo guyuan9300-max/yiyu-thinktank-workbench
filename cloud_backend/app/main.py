@@ -191,6 +191,10 @@ from app.models import (
     NarrativeClarificationsResponse,
     NarrativeIngestPayload,
     NarrativeRegeneratePayload,
+    ExpWallQuoteUpsertPayload,
+    ExpWallQuoteRecord,
+    ExpWallReactionPayload,
+    ExpWallSyncResponse,
 )
 from app.smart_input import build_smart_task_draft, transcribe_audio_with_doubao
 from app.bootstrap_security import DEFAULT_BOOTSTRAP_ADMIN_EMAIL, ensure_cloud_secret, resolve_seed_users
@@ -17424,6 +17428,179 @@ def create_app() -> FastAPI:
                 payload=payload,
             )
         return _dashboard_for_user(state, current_user, payload.weekLabel)
+
+    # ────────────────────────────────────────────────────────────────
+    # 组织经验墙云端同步 (顾源源 5/27 方案 A · 组织级同事互看)
+    # ────────────────────────────────────────────────────────────────
+
+    def _exp_wall_quote_record_from_row(state: AppState, row) -> ExpWallQuoteRecord:
+        author_full_name = ""
+        if row["author_user_id"]:
+            author_row = state.db.fetchone(
+                "SELECT full_name FROM employee_accounts WHERE id = ?",
+                (str(row["author_user_id"]),),
+            )
+            if author_row:
+                author_full_name = str(author_row["full_name"] or "")
+        return ExpWallQuoteRecord(
+            id=str(row["id"]),
+            organizationId=str(row["organization_id"]),
+            authorUserId=str(row["author_user_id"]),
+            authorDisplayName=author_full_name,
+            authorAvatarUrl="",  # employee_accounts 无 avatar 字段, 前端用首字符兜底
+            quoteText=str(row["quote_text"]),
+            sourceExcerpt=str(row["source_excerpt"] or ""),
+            sourceType=str(row["source_type"]),
+            sourceObjectId=str(row["source_object_id"] or ""),
+            category=str(row["category"] or "方法论"),
+            status=str(row["status"] or "active"),
+            deletedByUserId=str(row["deleted_by_user_id"]) if row["deleted_by_user_id"] else None,
+            deletedAt=str(row["deleted_at"]) if row["deleted_at"] else None,
+            likeCount=int(row["like_count"] or 0),
+            saveCount=int(row["save_count"] or 0),
+            contributionScore=float(row["contribution_score"] or 0),
+            hotScore=float(row["hot_score"] or 0),
+            extractedAt=str(row["extracted_at"]),
+            createdAt=str(row["created_at"]),
+            updatedAt=str(row["updated_at"]),
+        )
+
+    @app.post("/api/v1/exp-wall/quotes", response_model=ExpWallQuoteRecord)
+    def upsert_exp_wall_quote(
+        payload: ExpWallQuoteUpsertPayload,
+        current_user: SessionUser = Depends(lambda authorization=Header(default=None): _require_auth(app, authorization)),
+    ) -> ExpWallQuoteRecord:
+        """本地 backend push 金句到云端. 幂等 upsert · 组织内 id 全局唯一.
+
+        ON CONFLICT 用 ON CONFLICT DO UPDATE — 后写覆盖前写 (按 updated_at 排序,
+        前端只展示 status='active' 真有效金句)."""
+        if payload.authorUserId != current_user.id:
+            # 防 push 别人金句假冒
+            raise HTTPException(status_code=403, detail="作者必须是当前登录用户")
+        state.db.execute(
+            """
+            INSERT INTO cloud_exp_wall_quotes(
+                id, organization_id, author_user_id, quote_text, source_excerpt,
+                source_type, source_object_id, category, status,
+                deleted_by_user_id, deleted_at,
+                like_count, save_count, contribution_score, hot_score,
+                extracted_at, created_at, updated_at
+            ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET
+                quote_text = excluded.quote_text,
+                source_excerpt = excluded.source_excerpt,
+                category = excluded.category,
+                status = excluded.status,
+                deleted_by_user_id = excluded.deleted_by_user_id,
+                deleted_at = excluded.deleted_at,
+                like_count = excluded.like_count,
+                save_count = excluded.save_count,
+                contribution_score = excluded.contribution_score,
+                hot_score = excluded.hot_score,
+                updated_at = excluded.updated_at
+            """,
+            (
+                payload.id, current_user.organizationId, payload.authorUserId,
+                payload.quoteText, payload.sourceExcerpt,
+                payload.sourceType, payload.sourceObjectId, payload.category, payload.status,
+                payload.deletedByUserId, payload.deletedAt,
+                payload.likeCount, payload.saveCount, payload.contributionScore, payload.hotScore,
+                payload.extractedAt, payload.createdAt, payload.updatedAt,
+            ),
+        )
+        row = state.db.fetchone(
+            "SELECT * FROM cloud_exp_wall_quotes WHERE id = ? AND organization_id = ?",
+            (payload.id, current_user.organizationId),
+        )
+        if not row:
+            raise HTTPException(status_code=500, detail="upsert failed")
+        return _exp_wall_quote_record_from_row(state, row)
+
+    @app.get("/api/v1/exp-wall/quotes", response_model=ExpWallSyncResponse)
+    def list_exp_wall_quotes(
+        since: str = Query(default=""),
+        current_user: SessionUser = Depends(lambda authorization=Header(default=None): _require_auth(app, authorization)),
+    ) -> ExpWallSyncResponse:
+        """本地 backend 增量拉云端金句 (since=上次 serverTimestamp).
+
+        组织内可见: 同组织真所有同事真金句 (含已删除真 status='deleted' 标记,
+        本地拿到后真覆盖自己真 row, 真同步删除状态)."""
+        if since:
+            rows = state.db.fetchall(
+                "SELECT * FROM cloud_exp_wall_quotes WHERE organization_id = ? AND updated_at > ? ORDER BY updated_at ASC",
+                (current_user.organizationId, since),
+            )
+        else:
+            rows = state.db.fetchall(
+                "SELECT * FROM cloud_exp_wall_quotes WHERE organization_id = ? ORDER BY updated_at ASC",
+                (current_user.organizationId,),
+            )
+        quotes = [_exp_wall_quote_record_from_row(state, row) for row in rows]
+        return ExpWallSyncResponse(quotes=quotes, serverTimestamp=now_iso())
+
+    @app.post("/api/v1/exp-wall/reactions", status_code=204)
+    def upsert_exp_wall_reaction(
+        payload: ExpWallReactionPayload,
+        current_user: SessionUser = Depends(lambda authorization=Header(default=None): _require_auth(app, authorization)),
+    ) -> None:
+        """本地 backend push 一条 reaction (like/save) 到云端.
+
+        UNIQUE(quote_id, user_id, reaction_type) — 重复推送幂等, 不报错.
+        push 后真触发 like_count/save_count 重算 (云端权威值)."""
+        if payload.userId != current_user.id:
+            raise HTTPException(status_code=403, detail="只能 push 自己的 reaction")
+        quote_row = state.db.fetchone(
+            "SELECT * FROM cloud_exp_wall_quotes WHERE id = ? AND organization_id = ?",
+            (payload.quoteId, current_user.organizationId),
+        )
+        if not quote_row:
+            raise HTTPException(status_code=404, detail="quote not found")
+        state.db.execute(
+            """
+            INSERT OR IGNORE INTO cloud_exp_wall_reactions(
+                id, quote_id, user_id, reaction_type, created_at, organization_id
+            ) VALUES(?, ?, ?, ?, ?, ?)
+            """,
+            (payload.id, payload.quoteId, payload.userId, payload.reactionType,
+             payload.createdAt, current_user.organizationId),
+        )
+        # 真重算计数 (云端权威值)
+        like_count = state.db.fetchone(
+            "SELECT COUNT(*) AS c FROM cloud_exp_wall_reactions WHERE quote_id = ? AND reaction_type = 'like'",
+            (payload.quoteId,),
+        )["c"]
+        save_count = state.db.fetchone(
+            "SELECT COUNT(*) AS c FROM cloud_exp_wall_reactions WHERE quote_id = ? AND reaction_type = 'save'",
+            (payload.quoteId,),
+        )["c"]
+        state.db.execute(
+            "UPDATE cloud_exp_wall_quotes SET like_count = ?, save_count = ?, updated_at = ? WHERE id = ?",
+            (like_count, save_count, now_iso(), payload.quoteId),
+        )
+
+    @app.delete("/api/v1/exp-wall/reactions/{quote_id}/{reaction_type}", status_code=204)
+    def delete_exp_wall_reaction(
+        quote_id: str,
+        reaction_type: Literal["like", "save"],
+        current_user: SessionUser = Depends(lambda authorization=Header(default=None): _require_auth(app, authorization)),
+    ) -> None:
+        """本地 backend push 取消 reaction. 真权威值重算同 POST."""
+        state.db.execute(
+            "DELETE FROM cloud_exp_wall_reactions WHERE quote_id = ? AND user_id = ? AND reaction_type = ?",
+            (quote_id, current_user.id, reaction_type),
+        )
+        like_count = state.db.fetchone(
+            "SELECT COUNT(*) AS c FROM cloud_exp_wall_reactions WHERE quote_id = ? AND reaction_type = 'like'",
+            (quote_id,),
+        )["c"]
+        save_count = state.db.fetchone(
+            "SELECT COUNT(*) AS c FROM cloud_exp_wall_reactions WHERE quote_id = ? AND reaction_type = 'save'",
+            (quote_id,),
+        )["c"]
+        state.db.execute(
+            "UPDATE cloud_exp_wall_quotes SET like_count = ?, save_count = ?, updated_at = ? WHERE id = ?",
+            (like_count, save_count, now_iso(), quote_id),
+        )
 
     return app
 

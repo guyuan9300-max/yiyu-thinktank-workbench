@@ -3183,6 +3183,53 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
     ).start()
     logger.info("[bg-reap-chat-runs] thread spawned (every 30s)")
 
+    # ── 组织经验墙云端同步 worker (顾源源 5/27 方案 A) ──
+    # 每 300s (5 min) 真跑一次: (1) push 本地 pending quotes/reactions, (2) pull 云端增量
+    # 真依赖: cloud_api_url 真配齐 + cloud_token 真登录态. 真没登就静默跳过.
+    def _background_sync_exp_wall() -> None:
+        """真后台 worker — 真每 5 min push pending + pull 云端增量."""
+        from app.services import exp_wall_service as _ew
+        import httpx as _httpx
+        first_run_delay = 60.0  # 真启动后 60s 才跑第一轮 (让 cloud session 真稳)
+        if state.job_stop.wait(timeout=first_run_delay):
+            return
+        while not state.job_stop.is_set():
+            try:
+                base_url = (state.cloud_api_url or "").strip().rstrip("/")
+                token = get_cloud_token()
+                if not base_url or not token:
+                    # 真没登 / 真没配地址 — 真静默, 真下个 tick 再试
+                    if state.job_stop.wait(timeout=300.0):
+                        break
+                    continue
+                with _httpx.Client(timeout=20.0) as client:
+                    push_q = _ew.push_pending_quotes_to_cloud(
+                        state.db, cloud_base_url=base_url, cloud_token=token, httpx_client=client,
+                    )
+                    push_r = _ew.push_pending_reactions_to_cloud(
+                        state.db, cloud_base_url=base_url, cloud_token=token, httpx_client=client,
+                    )
+                    pull = _ew.pull_quotes_from_cloud(
+                        state.db, cloud_base_url=base_url, cloud_token=token, httpx_client=client,
+                    )
+                if push_q["pushed"] or push_q["failed"] or push_r["pushed"] or push_r["failed"] or pull["merged"]:
+                    logger.info(
+                        "[bg-exp-wall-sync] push_quotes=%s push_reactions=%s pull=%s",
+                        push_q, push_r, pull,
+                    )
+            except Exception as exc:
+                logger.warning("[bg-exp-wall-sync] failed: %s", exc, exc_info=True)
+            if state.job_stop.wait(timeout=300.0):  # 5 min
+                break
+        logger.info("[bg-exp-wall-sync] thread exit (job_stop signaled)")
+
+    Thread(
+        target=_background_sync_exp_wall,
+        daemon=True,
+        name="bg-exp-wall-sync",
+    ).start()
+    logger.info("[bg-exp-wall-sync] thread spawned (every 5 min)")
+
     app = FastAPI(title=APP_NAME, version=APP_VERSION)
     app.state.app_state = state
 

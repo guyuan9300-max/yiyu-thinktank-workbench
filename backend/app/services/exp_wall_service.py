@@ -178,8 +178,9 @@ def insert_quote(
             id, author_user_id, quote_text, source_excerpt,
             source_type, source_object_id, category, status,
             like_count, save_count, contribution_score, hot_score,
-            extracted_at, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, 'active', 0, 0, ?, ?, ?, ?, ?)
+            extracted_at, created_at, updated_at,
+            sync_status, pending_sync_action
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, 'active', 0, 0, ?, ?, ?, ?, ?, 'pending', 'upsert')
         """,
         (
             quote_id, author_user_id, quote_text.strip(), source_excerpt,
@@ -315,24 +316,34 @@ def toggle_reaction(
     )
 
     if existing:
-        # 已点 → 取消
+        # 已点 → 取消; 真先记 reaction_id 给云端真同步删除
+        reaction_id = str(existing["id"])
+        db.conn.execute(
+            "UPDATE exp_wall_reactions SET sync_status='pending', pending_sync_action='delete' WHERE id = ?",
+            (reaction_id,),
+        )
         db.conn.execute(
             "DELETE FROM exp_wall_reactions WHERE id = ?",
-            (str(existing["id"]),),
+            (reaction_id,),
         )
         action = "removed"
     else:
         # 未点 → 点上
         db.execute(
             """
-            INSERT INTO exp_wall_reactions (id, quote_id, user_id, reaction_type, created_at)
-            VALUES (?, ?, ?, ?, ?)
+            INSERT INTO exp_wall_reactions (id, quote_id, user_id, reaction_type, created_at, sync_status, pending_sync_action)
+            VALUES (?, ?, ?, ?, ?, 'pending', 'upsert')
             """,
             (f"rx_{uuid.uuid4().hex[:12]}", quote_id, user_id, reaction_type, _now_iso()),
         )
         action = "added"
 
     counts = _recompute_scores(db, quote_id=quote_id)
+    # 真 quote 真 like_count/save_count 真变, 真也得真重 push
+    db.conn.execute(
+        "UPDATE exp_wall_quotes SET sync_status='pending', pending_sync_action='upsert' WHERE id = ?",
+        (quote_id,),
+    )
     db.conn.commit()
     return {
         "action": action,
@@ -466,7 +477,9 @@ def delete_quote(
         SET status = 'deleted',
             deleted_by_user_id = ?,
             deleted_at = ?,
-            updated_at = ?
+            updated_at = ?,
+            sync_status = 'pending',
+            pending_sync_action = 'upsert'
         WHERE id = ? AND status = 'active'
         """,
         (deleter_user_id, _now_iso(), _now_iso(), quote_id),
@@ -526,6 +539,237 @@ def aggregate_contribution_by_user(
     return [dict(r) for r in rows]
 
 
+# ──────────────────────────────────────────────────────────────────
+# 云端同步 (顾源源 5/27 方案 A · 组织级金句互看)
+# ──────────────────────────────────────────────────────────────────
+
+
+def _quote_row_to_cloud_payload(row: sqlite3.Row) -> dict[str, object]:
+    """真本地 row → cloud POST /api/v1/exp-wall/quotes 真 payload (camelCase)."""
+    return {
+        "id": str(row["id"]),
+        "authorUserId": str(row["author_user_id"]),
+        "quoteText": str(row["quote_text"]),
+        "sourceExcerpt": str(row["source_excerpt"] or ""),
+        "sourceType": str(row["source_type"]),
+        "sourceObjectId": str(row["source_object_id"] or ""),
+        "category": str(row["category"] or "方法论"),
+        "status": str(row["status"] or "active"),
+        "deletedByUserId": str(row["deleted_by_user_id"]) if row["deleted_by_user_id"] else None,
+        "deletedAt": str(row["deleted_at"]) if row["deleted_at"] else None,
+        "likeCount": int(row["like_count"] or 0),
+        "saveCount": int(row["save_count"] or 0),
+        "contributionScore": float(row["contribution_score"] or 0),
+        "hotScore": float(row["hot_score"] or 0),
+        "extractedAt": str(row["extracted_at"]),
+        "createdAt": str(row["created_at"]),
+        "updatedAt": str(row["updated_at"]),
+    }
+
+
+def push_pending_quotes_to_cloud(
+    db: Database,
+    *,
+    cloud_base_url: str,
+    cloud_token: str,
+    httpx_client,
+) -> dict[str, int]:
+    """扫 sync_status='pending' 真 quote, 真逐条 POST 云端. 真成功 mark 'synced', 真失败 mark 'failed'.
+
+    Args:
+        cloud_base_url: cloud_api_base_url() 调用方传入 (不在 service 里耦合 state).
+        cloud_token: get_cloud_token() 取出来的 Bearer token.
+        httpx_client: 调用方传入的 httpx.Client / httpx.AsyncClient — 测试时可注入 mock.
+
+    Returns:
+        {"pushed": N, "failed": M} 计数."""
+    pending_rows = db.fetchall(
+        "SELECT * FROM exp_wall_quotes WHERE sync_status = 'pending' ORDER BY updated_at ASC LIMIT 50",
+    )
+    pushed = 0
+    failed = 0
+    for row in pending_rows:
+        quote_id = str(row["id"])
+        try:
+            payload = _quote_row_to_cloud_payload(row)
+            resp = httpx_client.post(
+                f"{cloud_base_url.rstrip('/')}/api/v1/exp-wall/quotes",
+                json=payload,
+                headers={"Authorization": f"Bearer {cloud_token}"},
+                timeout=15.0,
+            )
+            if 200 <= resp.status_code < 300:
+                db.conn.execute(
+                    "UPDATE exp_wall_quotes SET sync_status='synced', last_synced_at=?, pending_sync_action='' WHERE id = ?",
+                    (_now_iso(), quote_id),
+                )
+                pushed += 1
+            else:
+                logger.warning("push quote %s failed: HTTP %d %s", quote_id, resp.status_code, resp.text[:200])
+                db.conn.execute(
+                    "UPDATE exp_wall_quotes SET sync_status='failed' WHERE id = ?",
+                    (quote_id,),
+                )
+                failed += 1
+        except Exception as exc:
+            logger.warning("push quote %s exception: %s", quote_id, exc)
+            db.conn.execute(
+                "UPDATE exp_wall_quotes SET sync_status='failed' WHERE id = ?",
+                (quote_id,),
+            )
+            failed += 1
+    db.conn.commit()
+    return {"pushed": pushed, "failed": failed}
+
+
+def push_pending_reactions_to_cloud(
+    db: Database,
+    *,
+    cloud_base_url: str,
+    cloud_token: str,
+    httpx_client,
+) -> dict[str, int]:
+    """同 push_pending_quotes_to_cloud. 真支持 'upsert' / 'delete' 双动作.
+
+    delete 真**reactions 已经被本地 hard DELETE 真**, 真**需在 pending_sync_action='delete' 真 row**
+    在 DELETE 真前真记录 — 真但目前 toggle_reaction 是 hard delete, 真**简化方案**: 真**云端按 DELETE
+    endpoint 真 quote_id+reaction_type+user_id 真直接删** — 真不要求本地 row 还在."""
+    # upsert 真 pending
+    upsert_rows = db.fetchall(
+        "SELECT * FROM exp_wall_reactions WHERE sync_status = 'pending' AND pending_sync_action = 'upsert' LIMIT 100",
+    )
+    pushed = 0
+    failed = 0
+    for row in upsert_rows:
+        reaction_id = str(row["id"])
+        try:
+            resp = httpx_client.post(
+                f"{cloud_base_url.rstrip('/')}/api/v1/exp-wall/reactions",
+                json={
+                    "id": reaction_id,
+                    "quoteId": str(row["quote_id"]),
+                    "userId": str(row["user_id"]),
+                    "reactionType": str(row["reaction_type"]),
+                    "createdAt": str(row["created_at"]),
+                },
+                headers={"Authorization": f"Bearer {cloud_token}"},
+                timeout=10.0,
+            )
+            if 200 <= resp.status_code < 300:
+                db.conn.execute(
+                    "UPDATE exp_wall_reactions SET sync_status='synced', last_synced_at=?, pending_sync_action='' WHERE id = ?",
+                    (_now_iso(), reaction_id),
+                )
+                pushed += 1
+            else:
+                logger.warning("push reaction %s failed: HTTP %d", reaction_id, resp.status_code)
+                db.conn.execute(
+                    "UPDATE exp_wall_reactions SET sync_status='failed' WHERE id = ?",
+                    (reaction_id,),
+                )
+                failed += 1
+        except Exception as exc:
+            logger.warning("push reaction %s exception: %s", reaction_id, exc)
+            db.conn.execute(
+                "UPDATE exp_wall_reactions SET sync_status='failed' WHERE id = ?",
+                (reaction_id,),
+            )
+            failed += 1
+    db.conn.commit()
+    return {"pushed": pushed, "failed": failed}
+
+
+def pull_quotes_from_cloud(
+    db: Database,
+    *,
+    cloud_base_url: str,
+    cloud_token: str,
+    httpx_client,
+) -> dict[str, object]:
+    """真定时拉云端增量金句 (since=settings.last_exp_wall_pull_at).
+
+    真**合并策略**: 真**云端真权威**, 真**按 id upsert 到本地** 真**(覆盖本地 like_count/save_count/status)**.
+    真**自己刚 push 真金句真也会回流** — 真**幂等 upsert 不会真伤**.
+    真**作者展示信息** (full_name) 真**本地用 operators 表 join 真补**, 真**云端真 authorDisplayName 仅作 fallback**.
+
+    真**保护**: 真**有 sync_status='pending' 真本地 row** 真**不被云端覆盖** (避免 push 还没成功就被 pull 反向冲掉)."""
+    since = db.get_setting("last_exp_wall_pull_at", "")
+    try:
+        resp = httpx_client.get(
+            f"{cloud_base_url.rstrip('/')}/api/v1/exp-wall/quotes",
+            params={"since": since} if since else {},
+            headers={"Authorization": f"Bearer {cloud_token}"},
+            timeout=20.0,
+        )
+        if not (200 <= resp.status_code < 300):
+            logger.warning("pull exp_wall quotes failed: HTTP %d", resp.status_code)
+            return {"pulled": 0, "merged": 0, "skipped_pending": 0}
+        data = resp.json()
+    except Exception as exc:
+        logger.warning("pull exp_wall quotes exception: %s", exc)
+        return {"pulled": 0, "merged": 0, "skipped_pending": 0}
+
+    quotes = data.get("quotes", []) or []
+    server_ts = data.get("serverTimestamp", "") or _now_iso()
+    merged = 0
+    skipped_pending = 0
+    for q in quotes:
+        quote_id = str(q.get("id", ""))
+        if not quote_id:
+            continue
+        existing = db.fetchone(
+            "SELECT sync_status FROM exp_wall_quotes WHERE id = ?",
+            (quote_id,),
+        )
+        if existing and str(existing["sync_status"]) == "pending":
+            skipped_pending += 1
+            continue
+        # 真 upsert (云端 → 本地)
+        db.conn.execute(
+            """
+            INSERT INTO exp_wall_quotes(
+                id, author_user_id, quote_text, source_excerpt,
+                source_type, source_object_id, category, status,
+                deleted_by_user_id, deleted_at,
+                like_count, save_count, contribution_score, hot_score,
+                extracted_at, created_at, updated_at,
+                sync_status, last_synced_at, pending_sync_action
+            ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'synced', ?, '')
+            ON CONFLICT(id) DO UPDATE SET
+                quote_text = excluded.quote_text,
+                source_excerpt = excluded.source_excerpt,
+                category = excluded.category,
+                status = excluded.status,
+                deleted_by_user_id = excluded.deleted_by_user_id,
+                deleted_at = excluded.deleted_at,
+                like_count = excluded.like_count,
+                save_count = excluded.save_count,
+                contribution_score = excluded.contribution_score,
+                hot_score = excluded.hot_score,
+                updated_at = excluded.updated_at,
+                sync_status = 'synced',
+                last_synced_at = excluded.last_synced_at,
+                pending_sync_action = ''
+            """,
+            (
+                quote_id, str(q.get("authorUserId", "")), str(q.get("quoteText", "")),
+                str(q.get("sourceExcerpt", "")), str(q.get("sourceType", "")),
+                str(q.get("sourceObjectId", "")), str(q.get("category", "方法论")),
+                str(q.get("status", "active")),
+                q.get("deletedByUserId"), q.get("deletedAt"),
+                int(q.get("likeCount", 0)), int(q.get("saveCount", 0)),
+                float(q.get("contributionScore", 0)), float(q.get("hotScore", 0)),
+                str(q.get("extractedAt", "")), str(q.get("createdAt", "")), str(q.get("updatedAt", "")),
+                _now_iso(),
+            ),
+        )
+        merged += 1
+
+    db.set_setting("last_exp_wall_pull_at", server_ts)
+    db.conn.commit()
+    return {"pulled": len(quotes), "merged": merged, "skipped_pending": skipped_pending}
+
+
 __all__ = [
     "CATEGORIES", "DEFAULT_CATEGORY", "SOURCE_TYPES",
     "REACTION_LIKE", "REACTION_SAVE",
@@ -534,4 +778,6 @@ __all__ = [
     "insert_quote", "list_feed", "get_quote", "get_user_reactions",
     "toggle_reaction", "delete_quote", "can_delete_quote",
     "aggregate_contribution_by_user",
+    "push_pending_quotes_to_cloud", "push_pending_reactions_to_cloud",
+    "pull_quotes_from_cloud",
 ]

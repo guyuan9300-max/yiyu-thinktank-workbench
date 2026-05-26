@@ -1538,6 +1538,56 @@ class Database:
                 """
             )
 
+            # ── 组织经验墙云端同步表 (顾源源 5/27 方案 A) ──
+            # 设计原则: 组织级金句墙, 同事互看, "卷" 起来
+            # 数据流: 本地 exp_wall_quotes / exp_wall_reactions → push 到云端
+            #         其他同事的本地 → 定时 pull 云端增量 → 合并
+            self.conn.executescript(
+                """
+                CREATE TABLE IF NOT EXISTS cloud_exp_wall_quotes (
+                    id TEXT PRIMARY KEY,
+                    organization_id TEXT NOT NULL,
+                    author_user_id TEXT NOT NULL,
+                    quote_text TEXT NOT NULL,
+                    source_excerpt TEXT NOT NULL DEFAULT '',
+                    source_type TEXT NOT NULL,
+                    source_object_id TEXT NOT NULL DEFAULT '',
+                    category TEXT NOT NULL DEFAULT '方法论',
+                    status TEXT NOT NULL DEFAULT 'active',
+                    deleted_by_user_id TEXT,
+                    deleted_at TEXT,
+                    like_count INTEGER NOT NULL DEFAULT 0,
+                    save_count INTEGER NOT NULL DEFAULT 0,
+                    contribution_score REAL NOT NULL DEFAULT 0,
+                    hot_score REAL NOT NULL DEFAULT 0,
+                    extracted_at TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    FOREIGN KEY(organization_id) REFERENCES organizations(id) ON DELETE CASCADE,
+                    FOREIGN KEY(author_user_id) REFERENCES employee_accounts(id) ON DELETE CASCADE
+                );
+                CREATE INDEX IF NOT EXISTS idx_cloud_exp_wall_quotes_org_updated
+                    ON cloud_exp_wall_quotes(organization_id, updated_at DESC);
+                CREATE INDEX IF NOT EXISTS idx_cloud_exp_wall_quotes_org_status_hot
+                    ON cloud_exp_wall_quotes(organization_id, status, hot_score DESC);
+
+                CREATE TABLE IF NOT EXISTS cloud_exp_wall_reactions (
+                    id TEXT PRIMARY KEY,
+                    quote_id TEXT NOT NULL,
+                    user_id TEXT NOT NULL,
+                    reaction_type TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    organization_id TEXT NOT NULL,
+                    UNIQUE(quote_id, user_id, reaction_type),
+                    FOREIGN KEY(quote_id) REFERENCES cloud_exp_wall_quotes(id) ON DELETE CASCADE,
+                    FOREIGN KEY(user_id) REFERENCES employee_accounts(id) ON DELETE CASCADE,
+                    FOREIGN KEY(organization_id) REFERENCES organizations(id) ON DELETE CASCADE
+                );
+                CREATE INDEX IF NOT EXISTS idx_cloud_exp_wall_reactions_quote
+                    ON cloud_exp_wall_reactions(quote_id, reaction_type);
+                """
+            )
+
             self.conn.commit()
 
     def _table_columns(self, table_name: str) -> set[str]:

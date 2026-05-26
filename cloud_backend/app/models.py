@@ -2148,3 +2148,68 @@ class NarrativeIngestPayload(BaseModel):
     # v1.0 新增: 客户基本信息, 让 cloud /ingest 在 client_id 不存在时自动创建
     clientName: str = ""
     clientAlias: str = ""
+
+
+# ──────────────────────────────────────────────────────────────────
+# 组织经验墙 (顾源源 5/27 方案 A · 云端同步)
+# ──────────────────────────────────────────────────────────────────
+
+
+class ExpWallQuoteUpsertPayload(BaseModel):
+    """本地 push 一条金句 (含 reactions count) 到云端."""
+    id: str
+    authorUserId: str
+    quoteText: str
+    sourceExcerpt: str = ""
+    sourceType: str
+    sourceObjectId: str = ""
+    category: str = "方法论"
+    status: str = "active"
+    deletedByUserId: str | None = None
+    deletedAt: str | None = None
+    likeCount: int = 0
+    saveCount: int = 0
+    contributionScore: float = 0.0
+    hotScore: float = 0.0
+    extractedAt: str
+    createdAt: str
+    updatedAt: str
+
+
+class ExpWallQuoteRecord(BaseModel):
+    """云端返回的金句记录 (含作者头像/名字, 给前端 GrowthCenterView 直接渲染)."""
+    id: str
+    organizationId: str
+    authorUserId: str
+    authorDisplayName: str = ""
+    authorAvatarUrl: str = ""
+    quoteText: str
+    sourceExcerpt: str = ""
+    sourceType: str
+    sourceObjectId: str = ""
+    category: str = "方法论"
+    status: str = "active"
+    deletedByUserId: str | None = None
+    deletedAt: str | None = None
+    likeCount: int = 0
+    saveCount: int = 0
+    contributionScore: float = 0.0
+    hotScore: float = 0.0
+    extractedAt: str
+    createdAt: str
+    updatedAt: str
+
+
+class ExpWallReactionPayload(BaseModel):
+    """本地 push 一条 reaction 到云端 (idempotent · UNIQUE(quote_id,user_id,type))."""
+    id: str
+    quoteId: str
+    userId: str
+    reactionType: Literal["like", "save"]
+    createdAt: str
+
+
+class ExpWallSyncResponse(BaseModel):
+    """云端拉取响应: 增量金句 (合并 reactions 已聚合到 like_count/save_count)."""
+    quotes: list[ExpWallQuoteRecord] = Field(default_factory=list)
+    serverTimestamp: str
