@@ -9050,8 +9050,13 @@ def _build_department_snapshot(
 
     total = len(items)
     done_count = sum(1 for it in items if str(it["status"] or "") == "done")
+    # 顾源源 5/25 PM 反馈: "0 件认领 + 4 件已完成" 矛盾, 应该 done 自动算认领.
+    # 真业务意义: 已完成的 plan_item 必然被某人做了, 隐式有 owner. unclaimed 应只算"未认领+未完成" 的项.
+    # 修法: assigned_count = 显式 owner 数 OR done 状态. unclaimed = total - assigned_count.
     assigned_count = sum(
-        1 for it in items if str(it["owner_user_id"] or "").strip()
+        1 for it in items
+        if str(it["owner_user_id"] or "").strip()
+           or str(it["status"] or "") == "done"
     )
 
     linked_count = 0
@@ -9507,35 +9512,61 @@ def _executive_health_indicators(
     if not plan_items_total:
         m_accent = "neutral"
 
-    # 4. 业务活跃 — 本周有任务推进的 client 数 / 总 active client
-    # Only count clients that are currently in the clients table to avoid stale client_id refs
-    active_clients = int(
+    # 4. AI 协同指数 — 本周 AI 同事完成的 task 数 / 本周已完成 task 总数
+    # 顾源源 5/25 PM 拍板: 替换"业务活跃"指标. 真因 — client 表分类不稳, 而 AI vs 人完成 task
+    # 是机器事实 (owner_id 是 bot_actor / source_type='ai_plan_executor'), 完全确定.
+    ai_done_this_week = int(
         state.db.scalar(
             """
-            SELECT COUNT(DISTINCT t.client_id)
-            FROM tasks t
-            JOIN clients c ON c.id = t.client_id AND c.organization_id = t.organization_id
-            WHERE t.organization_id=?
-              AND t.client_id IS NOT NULL AND t.client_id != ''
-              AND date(t.updated_at) BETWEEN ? AND ?
+            SELECT COUNT(*) FROM tasks
+            WHERE organization_id=?
+              AND progress_status='done'
+              AND date(COALESCE(completed_at, updated_at)) BETWEEN ? AND ?
+              AND (
+                source_type='ai_plan_executor'
+                OR owner_id LIKE 'bot\\_%' ESCAPE '\\'
+                OR creator_id LIKE 'bot\\_%' ESCAPE '\\'
+              )
             """,
             (organization_id, week_start.isoformat(), week_end.isoformat()),
         )
         or 0
     )
-    total_clients = int(
+    total_done_this_week = this_throughput  # 已经在上面算出: 本周全部完成 task 数
+    ai_done_last_week = int(
         state.db.scalar(
-            "SELECT COUNT(*) FROM clients WHERE organization_id=?",
-            (organization_id,),
+            """
+            SELECT COUNT(*) FROM tasks
+            WHERE organization_id=?
+              AND progress_status='done'
+              AND date(COALESCE(completed_at, updated_at)) BETWEEN ? AND ?
+              AND (
+                source_type='ai_plan_executor'
+                OR owner_id LIKE 'bot\\_%' ESCAPE '\\'
+                OR creator_id LIKE 'bot\\_%' ESCAPE '\\'
+              )
+            """,
+            (organization_id, last_week_start.isoformat(), last_week_end.isoformat()),
         )
         or 0
     )
-    c_value = f"{active_clients}/{total_clients}" if total_clients else f"{active_clients}"
-    if total_clients:
-        ratio = active_clients / total_clients
-        c_accent = "success" if ratio >= 0.5 else ("warning" if ratio >= 0.2 else "danger")
+
+    ai_value = f"{ai_done_this_week}/{total_done_this_week}" if total_done_this_week else "0"
+    if total_done_this_week:
+        ratio = ai_done_this_week / total_done_this_week
+        ai_accent = "success" if ratio >= 0.3 else ("warning" if ratio >= 0.1 else "danger")
+        ai_helper = f"AI 同事完成 {ai_done_this_week} / 本周共完成 {total_done_this_week}"
     else:
-        c_accent = "neutral"
+        ai_accent = "neutral"
+        ai_helper = "本周尚无任务完成"
+    # delta vs 上周 AI 完成数 (绝对值差)
+    ai_delta_n = ai_done_this_week - ai_done_last_week
+    if ai_done_last_week > 0:
+        ai_delta_text = f"vs 上周 {'+' if ai_delta_n >= 0 else ''}{ai_delta_n} 项"
+    elif ai_done_this_week > 0:
+        ai_delta_text = "首周接入 AI"
+    else:
+        ai_delta_text = None
 
     return [
         ExecutiveHealthIndicator(
@@ -9569,14 +9600,14 @@ def _executive_health_indicators(
             helperText=m_helper,
         ),
         ExecutiveHealthIndicator(
-            key="active_clients",
-            label="业务活跃",
-            valueText=c_value,
+            key="ai_collaboration",
+            label="AI 协同",
+            valueText=ai_value,
             unitText=None,
-            deltaText=None,
-            trendDirection="flat",
-            accent=c_accent,
-            helperText="本周有推进的客户 / 全部活跃客户" if total_clients else "尚无活跃客户",
+            deltaText=ai_delta_text,
+            trendDirection="up" if ai_delta_n > 0 else ("down" if ai_delta_n < 0 else "flat"),
+            accent=ai_accent,
+            helperText=ai_helper,
         ),
     ]
 
@@ -11667,6 +11698,26 @@ def create_app() -> FastAPI:
         )
         if existing:
             return _client_record_full(state, existing)
+
+        # [B] 5/25 PM (顾源源真用反馈: 同事同步后看到 2 个益语智库 / 2 个日慈)
+        # 真因: 顾源源本地建的 client (id=client_53d82aa249) 跟同事本地建的 (id 不同, name 相同)
+        #       push 上来都是新 id → 云端产生 2 条同名 client.
+        # 修法: 加 name dedup — 同一 org 内同名 client 视为重复, 复用现有 id.
+        # 注: 兼容老 schema (无 frozen_at 字段) — Codex 5/25 反馈线上 schema 无此字段
+        name_normalized = (payload.name or "").strip()
+        if name_normalized:
+            existing_by_name = state.db.fetchone(
+                """SELECT * FROM clients
+                   WHERE organization_id = ?
+                     AND name = ?
+                   LIMIT 1""",
+                (current_user.organizationId, name_normalized),
+            )
+            if existing_by_name:
+                # 同名 client 已存在, 直接返复用 (不再 INSERT 新条目)
+                # 注: id 可能跟 payload.id 不同, local 端拉回云数据时会同步成云端 id
+                return _client_record_full(state, existing_by_name)
+
         state.db.execute(
             """
             INSERT INTO clients(id, organization_id, creator_id, name, alias, type, domain, intro, stage, color,
@@ -15849,7 +15900,13 @@ def create_app() -> FastAPI:
 
         event_line_id = str(attachment_row["event_line_id"]) if attachment_row["event_line_id"] else (str(task_row["event_line_id"]) if task_row["event_line_id"] else None)
         client_id = str(attachment_row["client_id"]) if attachment_row["client_id"] else (str(task_row["client_id"]) if task_row["client_id"] else None)
-        client_name = str(task_row["client_name"]) if task_row["client_name"] else None
+        # client_name 不是 tasks 表字段(SELECT * FROM tasks 不含它), 直接 task_row["client_name"] 会抛
+        # sqlite3.Row 的 IndexError → 整个转写端点 500。改为按 client_id 从 clients 表安全解析。
+        client_name: str | None = None
+        if client_id:
+            _client_row = state.db.fetchone("SELECT name FROM clients WHERE id = ?", (client_id,))
+            if _client_row and _client_row["name"]:
+                client_name = str(_client_row["name"])
         document_request = _create_consultation_knowledge_request_internal(
             state,
             current_user=current_user,

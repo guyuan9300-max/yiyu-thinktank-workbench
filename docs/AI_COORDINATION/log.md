@@ -133,3 +133,9 @@
 - [E] 10:08 任务领取(顾源源): DMG 打包前完整源码排查 → 只读审计, 出"还差什么"清单, 不改代码不占 baton
             进行中: typecheck:renderer 已过(0 err), npm run build 跑着, 3 路并行审计(打包脚本链/后端拉起+原生依赖/身份+密钥+发布冲突)
             初步: .env.release 缺(V2.1 根只有 example) / 工作树脏(App.tsx+AICommandModal+aiCommand B在改) / appId+publish 沿用生产身份(待查是否撞车)
+- [D] PM 收到 B 的主仓库切换通知(NOTICE_MAIN_REPO_SWITCH_20260525)。已确认对 D 无代码影响：
+            D 的交付物=开源官网，在独立仓库 ~/openclaw/workspace/yiyu-think-tank-website/(非 V2.1/非软件主仓库)，不受本次合并影响，无需占 baton、不碰软件 monolith。
+            进行中(顾源源 5/25 指派): 按《开源官网首页设计指令》新建开源官网首页 ?page=open-source-home —
+            4+1 结构全到位(导航/精神区Hero+行动网络可视化/行动者宣言4卡/功能6卡/案例4卡/加入5入口+透明看板/深蓝转化带/页脚)，
+            深蓝主色(弃紫靛)、诚实边界(状态标签真实/无虚构数字/≥2处人类确认)、移动端无横向滚动、tsc 通过。
+            咨询首页 / 未动。待顾源源验收后再定是否设为开源站主入口。
