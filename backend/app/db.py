@@ -4515,6 +4515,12 @@ class Database:
             self._ensure_column("exp_wall_reactions", "last_synced_at", "TEXT NOT NULL DEFAULT ''")
             self._ensure_column("exp_wall_reactions", "pending_sync_action", "TEXT NOT NULL DEFAULT ''")
 
+            # 真 handbook_entries 真**才是前端真用真"经验墙"** (顾源源 5/27)
+            # 真同 sync 状态机模式 (local/pending/synced/failed + upsert/delete)
+            self._ensure_column("handbook_entries", "sync_status", "TEXT NOT NULL DEFAULT 'local'")
+            self._ensure_column("handbook_entries", "last_synced_at", "TEXT NOT NULL DEFAULT ''")
+            self._ensure_column("handbook_entries", "pending_sync_action", "TEXT NOT NULL DEFAULT ''")
+
             # event_line_delete_tombstones 表早就有了，但缺一列 merged_to_id —
             # 合并事件线时记录"源被合并到了哪条目标 event_line"。
             # 之后云端 pull 拉回 tasks 时，如果发现 task.eventLineId 命中了

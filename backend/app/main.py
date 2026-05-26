@@ -3184,11 +3184,16 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
     logger.info("[bg-reap-chat-runs] thread spawned (every 30s)")
 
     # ── 组织经验墙云端同步 worker (顾源源 5/27 方案 A) ──
-    # 每 300s (5 min) 真跑一次: (1) push 本地 pending quotes/reactions, (2) pull 云端增量
+    # 每 300s (5 min) 真跑一次:
+    #   (1) push 本地 pending exp_wall_quotes / exp_wall_reactions (P1 备用基础设施)
+    #   (2) pull 云端 exp_wall 增量
+    #   (3) push 本地 pending handbook_entries (前端真当前真用真**经验墙**)
+    #   (4) pull 云端 handbook_entries 增量 (同事真 entry 真合并进来)
     # 真依赖: cloud_api_url 真配齐 + cloud_token 真登录态. 真没登就静默跳过.
     def _background_sync_exp_wall() -> None:
-        """真后台 worker — 真每 5 min push pending + pull 云端增量."""
+        """真后台 worker — 真每 5 min push pending + pull 云端增量 (exp_wall + handbook)."""
         from app.services import exp_wall_service as _ew
+        from app.services import handbook_sync as _hb
         import httpx as _httpx
         first_run_delay = 60.0  # 真启动后 60s 才跑第一轮 (让 cloud session 真稳)
         if state.job_stop.wait(timeout=first_run_delay):
@@ -3209,13 +3214,23 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                     push_r = _ew.push_pending_reactions_to_cloud(
                         state.db, cloud_base_url=base_url, cloud_token=token, httpx_client=client,
                     )
-                    pull = _ew.pull_quotes_from_cloud(
+                    pull_q = _ew.pull_quotes_from_cloud(
                         state.db, cloud_base_url=base_url, cloud_token=token, httpx_client=client,
                     )
-                if push_q["pushed"] or push_q["failed"] or push_r["pushed"] or push_r["failed"] or pull["merged"]:
+                    push_h = _hb.push_pending_entries_to_cloud(
+                        state.db, cloud_base_url=base_url, cloud_token=token, httpx_client=client,
+                    )
+                    pull_h = _hb.pull_entries_from_cloud(
+                        state.db, cloud_base_url=base_url, cloud_token=token, httpx_client=client,
+                    )
+                changes = (
+                    push_q["pushed"] or push_q["failed"] or push_r["pushed"] or push_r["failed"]
+                    or pull_q["merged"] or push_h["pushed"] or push_h["failed"] or pull_h["merged"]
+                )
+                if changes:
                     logger.info(
-                        "[bg-exp-wall-sync] push_quotes=%s push_reactions=%s pull=%s",
-                        push_q, push_r, pull,
+                        "[bg-exp-wall-sync] exp_q=%s exp_r=%s exp_pull=%s hb_push=%s hb_pull=%s",
+                        push_q, push_r, pull_q, push_h, pull_h,
                     )
             except Exception as exc:
                 logger.warning("[bg-exp-wall-sync] failed: %s", exc, exc_info=True)
@@ -55125,6 +55140,12 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         )
         row = state.db.fetchone("SELECT * FROM handbook_entries WHERE id = ?", (entry_id,))
         assert row is not None
+        # 真 mark pending → 真**真后台 worker 真**5 min 内推送云端 (顾源源 5/27 经验墙真组织级)
+        from app.services.handbook_sync import mark_entry_pending as _mark_handbook_pending
+        try:
+            _mark_handbook_pending(state.db, entry_id)
+        except Exception as exc:
+            logger.warning("mark handbook entry pending failed: %s", exc)
         return build_handbook_entry_record(row)
 
     @app.get("/api/v1/handbook", response_model=HandbookResponse)

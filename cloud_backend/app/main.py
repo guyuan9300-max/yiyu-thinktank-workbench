@@ -195,6 +195,9 @@ from app.models import (
     ExpWallQuoteRecord,
     ExpWallReactionPayload,
     ExpWallSyncResponse,
+    HandbookEntryUpsertPayload,
+    HandbookEntryRecord as CloudHandbookEntryRecord,
+    HandbookSyncResponse,
 )
 from app.smart_input import build_smart_task_draft, transcribe_audio_with_doubao
 from app.bootstrap_security import DEFAULT_BOOTSTRAP_ADMIN_EMAIL, ensure_cloud_secret, resolve_seed_users
@@ -17577,6 +17580,119 @@ def create_app() -> FastAPI:
             "UPDATE cloud_exp_wall_quotes SET like_count = ?, save_count = ?, updated_at = ? WHERE id = ?",
             (like_count, save_count, now_iso(), payload.quoteId),
         )
+
+    # ────────────────────────────────────────────────────────────────
+    # 经验手册条目云端同步 (前端 ExperienceWallTab 真直接渲染真表)
+    # ────────────────────────────────────────────────────────────────
+
+    def _handbook_entry_record_from_row(row) -> CloudHandbookEntryRecord:
+        return CloudHandbookEntryRecord(
+            id=str(row["id"]),
+            organizationId=str(row["organization_id"]),
+            title=str(row["title"]),
+            summary=str(row["summary"]),
+            tagsJson=str(row["tags_json"] or "[]"),
+            sourceType=str(row["source_type"]),
+            clientId=str(row["client_id"]) if row["client_id"] else None,
+            sourceObjectType=str(row["source_object_type"]) if row["source_object_type"] else None,
+            sourceObjectId=str(row["source_object_id"]) if row["source_object_id"] else None,
+            sourceTitle=str(row["source_title"]) if row["source_title"] else None,
+            eventLineId=str(row["event_line_id"]) if row["event_line_id"] else None,
+            eventLineName=str(row["event_line_name"]) if row["event_line_name"] else None,
+            projectModuleId=str(row["project_module_id"]) if row["project_module_id"] else None,
+            projectModuleName=str(row["project_module_name"]) if row["project_module_name"] else None,
+            projectFlowId=str(row["project_flow_id"]) if row["project_flow_id"] else None,
+            projectFlowName=str(row["project_flow_name"]) if row["project_flow_name"] else None,
+            projectStage=str(row["project_stage"]) if row["project_stage"] else None,
+            businessCategory=str(row["business_category"]) if row["business_category"] else None,
+            abilityKeysJson=str(row["ability_keys_json"] or "[]"),
+            evidenceRefsJson=str(row["evidence_refs_json"] or "[]"),
+            contextSummary=str(row["context_summary"] or ""),
+            reuseCount=int(row["reuse_count"] or 0),
+            lastReusedAt=str(row["last_reused_at"]) if row["last_reused_at"] else None,
+            authorUserId=str(row["author_user_id"]),
+            authorUserName=str(row["author_user_name"] or ""),
+            status=str(row["status"] or "active"),
+            deletedByUserId=str(row["deleted_by_user_id"]) if row["deleted_by_user_id"] else None,
+            deletedAt=str(row["deleted_at"]) if row["deleted_at"] else None,
+            createdAt=str(row["created_at"]),
+            updatedAt=str(row["updated_at"]),
+        )
+
+    @app.post("/api/v1/handbook/entries/sync", response_model=CloudHandbookEntryRecord)
+    def upsert_handbook_entry_sync(
+        payload: HandbookEntryUpsertPayload,
+        current_user: SessionUser = Depends(lambda authorization=Header(default=None): _require_auth(app, authorization)),
+    ) -> CloudHandbookEntryRecord:
+        """本地 backend push handbook entry 到云端. 幂等 upsert · id 全局唯一.
+
+        路径用 /entries/sync 真避免跟现有 /handbook 真混淆 (现有 /handbook 是本地 local-only)."""
+        if payload.authorUserId != current_user.id:
+            raise HTTPException(status_code=403, detail="作者必须是当前登录用户")
+        updated_at = payload.updatedAt or now_iso()
+        state.db.execute(
+            """
+            INSERT INTO cloud_handbook_entries(
+                id, organization_id, title, summary, tags_json,
+                source_type, client_id, source_object_type, source_object_id, source_title,
+                event_line_id, event_line_name, project_module_id, project_module_name,
+                project_flow_id, project_flow_name, project_stage, business_category,
+                ability_keys_json, evidence_refs_json, context_summary,
+                reuse_count, last_reused_at,
+                author_user_id, author_user_name, status,
+                deleted_by_user_id, deleted_at, created_at, updated_at
+            ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET
+                title = excluded.title,
+                summary = excluded.summary,
+                tags_json = excluded.tags_json,
+                ability_keys_json = excluded.ability_keys_json,
+                evidence_refs_json = excluded.evidence_refs_json,
+                context_summary = excluded.context_summary,
+                reuse_count = excluded.reuse_count,
+                last_reused_at = excluded.last_reused_at,
+                status = excluded.status,
+                deleted_by_user_id = excluded.deleted_by_user_id,
+                deleted_at = excluded.deleted_at,
+                updated_at = excluded.updated_at
+            """,
+            (
+                payload.id, current_user.organizationId, payload.title, payload.summary, payload.tagsJson,
+                payload.sourceType, payload.clientId, payload.sourceObjectType, payload.sourceObjectId, payload.sourceTitle,
+                payload.eventLineId, payload.eventLineName, payload.projectModuleId, payload.projectModuleName,
+                payload.projectFlowId, payload.projectFlowName, payload.projectStage, payload.businessCategory,
+                payload.abilityKeysJson, payload.evidenceRefsJson, payload.contextSummary,
+                payload.reuseCount, payload.lastReusedAt,
+                payload.authorUserId, payload.authorUserName, payload.status,
+                payload.deletedByUserId, payload.deletedAt, payload.createdAt, updated_at,
+            ),
+        )
+        row = state.db.fetchone(
+            "SELECT * FROM cloud_handbook_entries WHERE id = ? AND organization_id = ?",
+            (payload.id, current_user.organizationId),
+        )
+        if not row:
+            raise HTTPException(status_code=500, detail="upsert failed")
+        return _handbook_entry_record_from_row(row)
+
+    @app.get("/api/v1/handbook/entries/sync", response_model=HandbookSyncResponse)
+    def list_handbook_entries_sync(
+        since: str = Query(default=""),
+        current_user: SessionUser = Depends(lambda authorization=Header(default=None): _require_auth(app, authorization)),
+    ) -> HandbookSyncResponse:
+        """本地 backend 增量拉云端 handbook entries (含同事真 entry)."""
+        if since:
+            rows = state.db.fetchall(
+                "SELECT * FROM cloud_handbook_entries WHERE organization_id = ? AND updated_at > ? ORDER BY updated_at ASC",
+                (current_user.organizationId, since),
+            )
+        else:
+            rows = state.db.fetchall(
+                "SELECT * FROM cloud_handbook_entries WHERE organization_id = ? ORDER BY updated_at ASC",
+                (current_user.organizationId,),
+            )
+        entries = [_handbook_entry_record_from_row(row) for row in rows]
+        return HandbookSyncResponse(entries=entries, serverTimestamp=now_iso())
 
     @app.delete("/api/v1/exp-wall/reactions/{quote_id}/{reaction_type}", status_code=204)
     def delete_exp_wall_reaction(

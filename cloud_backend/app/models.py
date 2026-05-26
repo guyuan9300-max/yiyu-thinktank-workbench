@@ -2213,3 +2213,81 @@ class ExpWallSyncResponse(BaseModel):
     """云端拉取响应: 增量金句 (合并 reactions 已聚合到 like_count/save_count)."""
     quotes: list[ExpWallQuoteRecord] = Field(default_factory=list)
     serverTimestamp: str
+
+
+# ──────────────────────────────────────────────────────────────────
+# 经验手册条目 (handbook_entries 真前端真当前真用真**经验墙真数据源**)
+# ──────────────────────────────────────────────────────────────────
+
+
+class HandbookEntryUpsertPayload(BaseModel):
+    """本地 push 一条 handbook entry 到云端 (含软删除)."""
+    id: str
+    title: str
+    summary: str
+    tagsJson: str = "[]"
+    sourceType: str
+    clientId: str | None = None
+    sourceObjectType: str | None = None
+    sourceObjectId: str | None = None
+    sourceTitle: str | None = None
+    eventLineId: str | None = None
+    eventLineName: str | None = None
+    projectModuleId: str | None = None
+    projectModuleName: str | None = None
+    projectFlowId: str | None = None
+    projectFlowName: str | None = None
+    projectStage: str | None = None
+    businessCategory: str | None = None
+    abilityKeysJson: str = "[]"
+    evidenceRefsJson: str = "[]"
+    contextSummary: str = ""
+    reuseCount: int = 0
+    lastReusedAt: str | None = None
+    authorUserId: str
+    authorUserName: str = ""
+    status: str = "active"
+    deletedByUserId: str | None = None
+    deletedAt: str | None = None
+    createdAt: str
+    updatedAt: str = ""
+
+
+class HandbookEntryRecord(BaseModel):
+    """云端返回的 handbook entry (跟本地真前端 type 真完全对齐)."""
+    id: str
+    organizationId: str
+    title: str
+    summary: str
+    tagsJson: str = "[]"
+    sourceType: str
+    clientId: str | None = None
+    sourceObjectType: str | None = None
+    sourceObjectId: str | None = None
+    sourceTitle: str | None = None
+    eventLineId: str | None = None
+    eventLineName: str | None = None
+    projectModuleId: str | None = None
+    projectModuleName: str | None = None
+    projectFlowId: str | None = None
+    projectFlowName: str | None = None
+    projectStage: str | None = None
+    businessCategory: str | None = None
+    abilityKeysJson: str = "[]"
+    evidenceRefsJson: str = "[]"
+    contextSummary: str = ""
+    reuseCount: int = 0
+    lastReusedAt: str | None = None
+    authorUserId: str
+    authorUserName: str = ""
+    status: str = "active"
+    deletedByUserId: str | None = None
+    deletedAt: str | None = None
+    createdAt: str
+    updatedAt: str
+
+
+class HandbookSyncResponse(BaseModel):
+    """云端拉取响应 (增量 entries + 服务端时间戳)."""
+    entries: list[HandbookEntryRecord] = Field(default_factory=list)
+    serverTimestamp: str

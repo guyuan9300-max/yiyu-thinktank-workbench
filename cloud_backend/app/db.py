@@ -1588,6 +1588,50 @@ class Database:
                 """
             )
 
+            # ── 经验手册条目云端同步 (顾源源 5/27 · handbook_entries 真是前端经验墙真当前真数据源)
+            self.conn.executescript(
+                """
+                CREATE TABLE IF NOT EXISTS cloud_handbook_entries (
+                    id TEXT PRIMARY KEY,
+                    organization_id TEXT NOT NULL,
+                    title TEXT NOT NULL,
+                    summary TEXT NOT NULL,
+                    tags_json TEXT NOT NULL DEFAULT '[]',
+                    source_type TEXT NOT NULL,
+                    client_id TEXT,
+                    source_object_type TEXT,
+                    source_object_id TEXT,
+                    source_title TEXT,
+                    event_line_id TEXT,
+                    event_line_name TEXT,
+                    project_module_id TEXT,
+                    project_module_name TEXT,
+                    project_flow_id TEXT,
+                    project_flow_name TEXT,
+                    project_stage TEXT,
+                    business_category TEXT,
+                    ability_keys_json TEXT NOT NULL DEFAULT '[]',
+                    evidence_refs_json TEXT NOT NULL DEFAULT '[]',
+                    context_summary TEXT NOT NULL DEFAULT '',
+                    reuse_count INTEGER NOT NULL DEFAULT 0,
+                    last_reused_at TEXT,
+                    author_user_id TEXT NOT NULL,
+                    author_user_name TEXT NOT NULL DEFAULT '',
+                    status TEXT NOT NULL DEFAULT 'active',
+                    deleted_by_user_id TEXT,
+                    deleted_at TEXT,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    FOREIGN KEY(organization_id) REFERENCES organizations(id) ON DELETE CASCADE,
+                    FOREIGN KEY(author_user_id) REFERENCES employee_accounts(id) ON DELETE CASCADE
+                );
+                CREATE INDEX IF NOT EXISTS idx_cloud_handbook_entries_org_updated
+                    ON cloud_handbook_entries(organization_id, updated_at DESC);
+                CREATE INDEX IF NOT EXISTS idx_cloud_handbook_entries_org_status
+                    ON cloud_handbook_entries(organization_id, status, created_at DESC);
+                """
+            )
+
             self.conn.commit()
 
     def _table_columns(self, table_name: str) -> set[str]:
