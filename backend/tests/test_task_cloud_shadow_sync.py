@@ -101,6 +101,8 @@ def seed_task_with_collaborator(
     status: str = "inbox",
     progress_status: str = "todo",
     collaborator_status: str = "pending",
+    sync_status: str = "local",
+    cloud_id: str | None = None,
 ) -> None:
     db = client.app.state.app_state.db
     seed_task_list(client)
@@ -108,10 +110,10 @@ def seed_task_with_collaborator(
         """
         INSERT INTO tasks(
             id, title, description, status, progress_status, priority, list_id, owner_name,
-            ddl, source_type, tags_json, tag_ids_json, created_at, updated_at
-        ) VALUES(?, ?, ?, ?, ?, 'normal', 'list-0', '顾源源', '待确认', 'manual', '[]', '[]', '2026-04-27T09:00:00', '2026-04-27T09:00:00')
+            ddl, source_type, tags_json, tag_ids_json, sync_status, cloud_id, created_at, updated_at
+        ) VALUES(?, ?, ?, ?, ?, 'normal', 'list-0', '顾源源', '待确认', 'manual', '[]', '[]', ?, ?, '2026-04-27T09:00:00', '2026-04-27T09:00:00')
         """,
-        (task_id, "协作任务", "需要协作者确认", status, progress_status),
+        (task_id, "协作任务", "需要协作者确认", status, progress_status, sync_status, cloud_id),
     )
     db.execute(
         """
@@ -537,6 +539,120 @@ def test_confirm_and_reject_fallback_update_collaborator_rows(tmp_path: Path, mo
     assert reject_row["inbox_status"] == "returned"
     assert reject_row["return_reason"] == "边界不清楚"
     assert reject_row["handled_at"]
+
+
+def test_cloud_backed_confirm_does_not_fake_success_when_cloud_fails(tmp_path: Path, monkeypatch):
+    client = make_client(tmp_path)
+    seed_cloud_session(client)
+    seed_task_with_collaborator(
+        client,
+        task_id="task_cloud_confirm",
+        status="inbox",
+        progress_status="todo",
+        sync_status="synced",
+        cloud_id="cloud_task_confirm",
+    )
+
+    def unavailable_cloud(method: str, url: str, **kwargs):
+        return httpx.Response(503, json={"detail": "cloud unavailable"})
+
+    monkeypatch.setattr(app_main.httpx, "request", unavailable_cloud)
+
+    confirmed = client.post("/api/v1/tasks/task_cloud_confirm/confirm")
+    assert confirmed.status_code == 503, confirmed.text
+    assert "云端协作确认失败" in confirmed.text
+    row = client.app.state.app_state.db.fetchone(
+        """
+        SELECT t.status, tc.inbox_status
+        FROM tasks t
+        JOIN task_collaborators tc ON tc.task_id = t.id
+        WHERE t.id = ? AND tc.user_id = ?
+        """,
+        ("task_cloud_confirm", "user_guyuan"),
+    )
+    assert row["status"] == "inbox"
+    assert row["inbox_status"] == "pending"
+
+
+def test_cloud_confirm_success_updates_local_inbox_state_even_when_shadow_upsert_skips(tmp_path: Path, monkeypatch):
+    client = make_client(tmp_path)
+    seed_cloud_session(client)
+    seed_task_with_collaborator(
+        client,
+        task_id="task_cloud_pending_local",
+        status="inbox",
+        progress_status="todo",
+        sync_status="pending",
+        cloud_id="cloud_task_pending_local",
+    )
+
+    def cloud_accept(method: str, url: str, **kwargs):
+        if method == "GET" and url.endswith("/api/v1/auth/me"):
+            return httpx.Response(
+                200,
+                json={
+                    "id": "user_guyuan",
+                    "organizationId": "org_1",
+                    "email": "guyuanyuan@example.com",
+                    "fullName": "顾源源",
+                    "primaryRole": "admin",
+                    "accountStatus": "approved",
+                },
+            )
+        assert method == "POST"
+        assert url.endswith("/api/v1/tasks/cloud_task_pending_local/collaborators/user_guyuan/accept")
+        return httpx.Response(
+            200,
+            json={
+                "id": "cloud_task_pending_local",
+                "organizationId": "org_1",
+                "title": "协作任务",
+                "description": "需要协作者确认",
+                "priority": "normal",
+                "listId": "list-0",
+                "listName": "收件箱",
+                "listColor": "#5B7BFE",
+                "creatorId": "user_guyuan",
+                "ownerId": "user_guyuan",
+                "ownerName": "顾源源",
+                "progressStatus": "todo",
+                "scopeMode": "COLLAB_SHARED",
+                "sourceType": "manual",
+                "durationMinutes": 60,
+                "viewerInboxStatus": "accepted",
+                "collaborators": [
+                    {
+                        "userId": "user_guyuan",
+                        "fullName": "顾源源",
+                        "email": "guyuanyuan@example.com",
+                        "orderIndex": 0,
+                        "isOwner": False,
+                        "inboxStatus": "accepted",
+                        "handledAt": "2026-04-27T09:01:00",
+                    }
+                ],
+                "createdAt": "2026-04-27T09:00:00",
+                "updatedAt": "2026-04-27T09:01:00",
+            },
+        )
+
+    monkeypatch.setattr(app_main.httpx, "request", cloud_accept)
+
+    confirmed = client.post("/api/v1/tasks/task_cloud_pending_local/confirm")
+    assert confirmed.status_code == 200, confirmed.text
+    assert confirmed.json()["status"] == "todo"
+    assert confirmed.json()["viewerInboxStatus"] == "accepted"
+    row = client.app.state.app_state.db.fetchone(
+        """
+        SELECT t.status, tc.inbox_status
+        FROM tasks t
+        JOIN task_collaborators tc ON tc.task_id = t.id
+        WHERE t.id = ? AND tc.user_id = ?
+        """,
+        ("task_cloud_pending_local", "user_guyuan"),
+    )
+    assert row["status"] == "todo"
+    assert row["inbox_status"] == "accepted"
 
 
 def test_completed_tasks_repair_pending_collaborators_on_list(tmp_path: Path):

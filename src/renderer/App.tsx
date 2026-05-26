@@ -1822,6 +1822,64 @@ const DEFAULT_LOCAL_INPUT_MEMORY: LocalInputMemory = {
   },
 };
 
+type AuthShellMode = 'login' | 'register';
+type AuthShellRegisterStep = 1 | 2;
+
+interface AuthShellFormState {
+  email: string;
+  identifier: string;
+  phone: string;
+  fullName: string;
+  password: string;
+  confirmPassword: string;
+  inviteCode: string;
+  departmentId: string;
+  jobTitle: string;
+  managerName: string;
+  currentFocus: string;
+}
+
+interface AuthShellInviteStatus {
+  code: string;
+  loading: boolean;
+  valid: boolean | null;
+  message: string;
+}
+
+const EMPTY_AUTH_SHELL_INVITE_STATUS: AuthShellInviteStatus = {
+  code: '',
+  loading: false,
+  valid: null,
+  message: '',
+};
+
+function createAuthShellForm(email = '', fullName = '', password = ''): AuthShellFormState {
+  return {
+    email,
+    identifier: email,
+    phone: '',
+    fullName,
+    password,
+    confirmPassword: password,
+    inviteCode: '',
+    departmentId: '',
+    jobTitle: '',
+    managerName: '',
+    currentFocus: '',
+  };
+}
+
+function pickDefaultRememberedCloudAuthAccount(memory: LocalInputMemory) {
+  const rememberedAccounts = memory.cloudAuth.accounts;
+  return (
+    (memory.cloudAuth.lastEmail
+      ? rememberedAccounts.find((account) => (account.identifier || account.email) === memory.cloudAuth.lastEmail)
+      : null)
+    || rememberedAccounts[0]
+    || null
+  );
+}
+
 // 取消"本机模式": 启动默认为未登录 — 不再用 'local-device-user' 当 placeholder.
 // 启动时显示登录页 (loading 期间), /auth/me 加载完后:
 //   - authenticated=true → 进工作台
@@ -7657,6 +7715,16 @@ export default function App() {
     message: '',
   });
   const [localInputMemoryState, setLocalInputMemoryState] = useState<LocalInputMemory>(DEFAULT_LOCAL_INPUT_MEMORY);
+  const [authShellMode, setAuthShellMode] = useState<AuthShellMode>('login');
+  const [authShellRegisterStep, setAuthShellRegisterStep] = useState<AuthShellRegisterStep>(1);
+  const [authShellForm, setAuthShellForm] = useState<AuthShellFormState>(() => createAuthShellForm());
+  const authShellFormTouchedRef = useRef(false);
+  const [authShellInviteStatus, setAuthShellInviteStatus] = useState<AuthShellInviteStatus>(EMPTY_AUTH_SHELL_INVITE_STATUS);
+  const [authShellRememberMe, setAuthShellRememberMe] = useState(true);
+  const [authShellRememberInputs, setAuthShellRememberInputs] = useState(DEFAULT_LOCAL_INPUT_MEMORY.cloudAuth.rememberInputs);
+  const [authShellShowPassword, setAuthShellShowPassword] = useState(false);
+  const [authShellSubmitting, setAuthShellSubmitting] = useState(false);
+  const [authShellMessage, setAuthShellMessage] = useState('');
   const [draft, setDraft] = useState<{
     currentOperatorId: string;
     cloudApiUrl: string;
@@ -7702,6 +7770,82 @@ export default function App() {
   const [objectStorageSettingsState, setObjectStorageSettingsState] = useState<ObjectStorageSettings | null>(null);
   const [isSavingObjectStorageSettings, setIsSavingObjectStorageSettings] = useState(false);
   const orgSetupInputDraftsRef = useRef<OrganizationSetupInputDraftState>({});
+  const setAuthShellFormFromUser = useCallback((next: React.SetStateAction<AuthShellFormState>) => {
+    authShellFormTouchedRef.current = true;
+    setAuthShellForm(next);
+  }, []);
+
+  useEffect(() => {
+    setAuthShellRememberInputs(localInputMemoryState.cloudAuth.rememberInputs);
+    if (authShellFormTouchedRef.current) return;
+    const defaultRememberedAccount = pickDefaultRememberedCloudAuthAccount(localInputMemoryState);
+    setAuthShellForm(createAuthShellForm(
+      defaultRememberedAccount?.identifier || defaultRememberedAccount?.email || '',
+      defaultRememberedAccount?.fullName || '',
+      defaultRememberedAccount?.password || '',
+    ));
+  }, [localInputMemoryState]);
+
+  useEffect(() => {
+    if (authState.message) {
+      setAuthShellMessage(authState.message);
+    }
+  }, [authState.message]);
+
+  useEffect(() => {
+    if (authShellMode !== 'register') return undefined;
+    const code = normalizeDepartmentInviteInput(authShellForm.inviteCode);
+    if (!code) {
+      setAuthShellInviteStatus(EMPTY_AUTH_SHELL_INVITE_STATUS);
+      return undefined;
+    }
+    let cancelled = false;
+    setAuthShellInviteStatus({ code, loading: true, valid: null, message: '正在识别邀请码...' });
+    const timer = window.setTimeout(() => {
+      void resolveInviteCode(code)
+        .then((result) => {
+          if (cancelled) return;
+          setAuthShellInviteStatus({
+            code,
+            loading: false,
+            valid: result.valid,
+            message: result.message || (result.valid ? '邀请码已识别' : '邀请码无效'),
+          });
+          if (result.valid && result.departmentId) {
+            setAuthShellForm((prev) => normalizeDepartmentInviteInput(prev.inviteCode) === code ? { ...prev, departmentId: result.departmentId || prev.departmentId } : prev);
+          }
+          if (result.valid && result.organizationId) {
+            void loadDepartmentOptionsBlock(result.organizationId).catch(() => undefined);
+          }
+        })
+        .catch((error) => {
+          if (cancelled) return;
+          setAuthShellInviteStatus({
+            code,
+            loading: false,
+            valid: false,
+            message: error instanceof Error ? error.message : '邀请码识别失败',
+          });
+        });
+    }, 400);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [authShellForm.inviteCode, authShellMode]);
+
+  useEffect(() => {
+    if (!authState.authenticated) return;
+    authShellFormTouchedRef.current = false;
+    setAuthShellMode('login');
+    setAuthShellRegisterStep(1);
+    setAuthShellForm(createAuthShellForm());
+    setAuthShellInviteStatus(EMPTY_AUTH_SHELL_INVITE_STATUS);
+    setAuthShellRememberMe(true);
+    setAuthShellSubmitting(false);
+    setAuthShellMessage('');
+  }, [authState.authenticated]);
+
   const [profileDraft, setProfileDraft] = useState<UpdateProfilePayload>({
     fullName: currentSessionUser?.fullName || '',
     email: currentSessionUser?.email || '',
@@ -8105,6 +8249,32 @@ export default function App() {
     if (!currentBanner || currentBanner.type !== 'error' || !currentBanner.text.includes('无法连接本地服务')) return;
     clearGlobalBanner();
   };
+
+  useEffect(() => {
+    if (!authShellMessage.includes('无法连接本地服务')) return undefined;
+    let cancelled = false;
+    const tryRecover = async () => {
+      try {
+        const response = await probeLocalBackendHealth(900);
+        if (cancelled) return;
+        setHealth(response);
+        backendReadyRef.current = true;
+        clearLocalServiceStartupBanner();
+        setAuthShellMessage('');
+        await loadAll(undefined, { allowStartupRetry: false });
+      } catch {
+        // 后端还没起来时保持静默轮询，避免持续打扰用户
+      }
+    };
+    void tryRecover();
+    const timer = window.setInterval(() => {
+      void tryRecover();
+    }, 1500);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [authShellMessage]);
 
   useEffect(() => {
     if (health?.backend === 'online') {
@@ -9703,41 +9873,18 @@ export default function App() {
     { id: 'growth_handbook' as const, label: '成长中心', icon: BookOpen },
   ];
 
-  const AuthShell = () => {
+  const renderAuthShell = () => {
     const rememberedAccounts = localInputMemoryState.cloudAuth.accounts;
-    const defaultRememberedAccount =
-      (localInputMemoryState.cloudAuth.lastEmail
-        ? rememberedAccounts.find((account) => (account.identifier || account.email) === localInputMemoryState.cloudAuth.lastEmail)
-        : null)
-      || rememberedAccounts[0]
-      || null;
-    const createEmptyForm = (email = '', fullName = '', password = '') => ({
-      email,
-      identifier: email,
-      phone: '',
-      fullName,
-      password,
-      confirmPassword: password,
-      inviteCode: '',
-      departmentId: '',
-      jobTitle: '',
-      managerName: '',
-      currentFocus: '',
-    });
-    const [mode, setMode] = useState<'login' | 'register'>('login');
-    const [registerStep, setRegisterStep] = useState<1 | 2>(1);
-    const [form, setForm] = useState(() => createEmptyForm(defaultRememberedAccount?.identifier || defaultRememberedAccount?.email || '', defaultRememberedAccount?.fullName || '', defaultRememberedAccount?.password || ''));
-    const [inviteStatus, setInviteStatus] = useState<{ code: string; loading: boolean; valid: boolean | null; message: string }>({
-      code: '',
-      loading: false,
-      valid: null,
-      message: '',
-    });
-    const [rememberMe, setRememberMe] = useState(true);
-    const [rememberInputs, setRememberInputs] = useState(localInputMemoryState.cloudAuth.rememberInputs);
-    const [showPassword, setShowPassword] = useState(false);
-    const [submitting, setSubmitting] = useState(false);
-    const [message, setMessage] = useState(authState.message || '');
+    const mode = authShellMode;
+    const registerStep = authShellRegisterStep;
+    const form = authShellForm;
+    const inviteStatus = authShellInviteStatus;
+    const rememberMe = authShellRememberMe;
+    const rememberInputs = authShellRememberInputs;
+    const showPassword = authShellShowPassword;
+    const submitting = authShellSubmitting;
+    const message = authShellMessage;
+    const setForm = setAuthShellFormFromUser;
     const registerAccountValid =
       Boolean(form.fullName.trim())
       && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(form.email)
@@ -9746,20 +9893,20 @@ export default function App() {
     const registerValid = registerAccountValid && (!form.inviteCode.trim() || inviteStatus.valid !== false);
 
     const switchMode = (nextMode: 'login' | 'register') => {
-      setMode(nextMode);
-      setMessage('');
-      setRegisterStep(1);
-      setInviteStatus({ code: '', loading: false, valid: null, message: '' });
+      setAuthShellMode(nextMode);
+      setAuthShellMessage('');
+      setAuthShellRegisterStep(1);
+      setAuthShellInviteStatus(EMPTY_AUTH_SHELL_INVITE_STATUS);
       if (nextMode === 'register') {
-        setForm(createEmptyForm(form.email, form.fullName, form.password));
+        setForm(createAuthShellForm(form.email, form.fullName, form.password));
         return;
       }
-      setRememberMe(true);
+      setAuthShellRememberMe(true);
       setForm((prev) => ({ ...prev, password: '' }));
     };
 
     const handleSubmit = async () => {
-      setSubmitting(true);
+      setAuthShellSubmitting(true);
       try {
         if (mode === 'register') {
           const response = await register({
@@ -9792,79 +9939,11 @@ export default function App() {
         }
         await loadAll();
       } catch (error) {
-        setMessage(error instanceof Error ? error.message : '提交失败');
+        setAuthShellMessage(error instanceof Error ? error.message : '提交失败');
       } finally {
-        setSubmitting(false);
+        setAuthShellSubmitting(false);
       }
     };
-
-    useEffect(() => {
-      if (mode !== 'register') return undefined;
-      const code = normalizeDepartmentInviteInput(form.inviteCode);
-      if (!code) {
-        setInviteStatus({ code: '', loading: false, valid: null, message: '' });
-        return undefined;
-      }
-      let cancelled = false;
-      setInviteStatus({ code, loading: true, valid: null, message: '正在识别邀请码...' });
-      const timer = window.setTimeout(() => {
-        void resolveInviteCode(code)
-          .then((result) => {
-            if (cancelled) return;
-            setInviteStatus({
-              code,
-              loading: false,
-              valid: result.valid,
-              message: result.message || (result.valid ? '邀请码已识别' : '邀请码无效'),
-            });
-            if (result.valid && result.departmentId) {
-              setForm((prev) => normalizeDepartmentInviteInput(prev.inviteCode) === code ? { ...prev, departmentId: result.departmentId || prev.departmentId } : prev);
-            }
-            if (result.valid && result.organizationId) {
-              void loadDepartmentOptionsBlock(result.organizationId).catch(() => undefined);
-            }
-          })
-          .catch((error) => {
-            if (cancelled) return;
-            setInviteStatus({
-              code,
-              loading: false,
-              valid: false,
-              message: error instanceof Error ? error.message : '邀请码识别失败',
-            });
-          });
-      }, 400);
-      return () => {
-        cancelled = true;
-        window.clearTimeout(timer);
-      };
-    }, [form.inviteCode, mode]);
-
-    useEffect(() => {
-      if (!message.includes('无法连接本地服务')) return;
-      let cancelled = false;
-      const tryRecover = async () => {
-        try {
-          const response = await probeLocalBackendHealth(900);
-          if (cancelled) return;
-          setHealth(response);
-          backendReadyRef.current = true;
-          clearLocalServiceStartupBanner();
-          setMessage('');
-          await loadAll(undefined, { allowStartupRetry: false });
-        } catch {
-          // 后端还没起来时保持静默轮询，避免持续打扰用户
-        }
-      };
-      void tryRecover();
-      const timer = window.setInterval(() => {
-        void tryRecover();
-      }, 1500);
-      return () => {
-        cancelled = true;
-        window.clearInterval(timer);
-      };
-    }, [message]);
 
     // 重写后的极简登录页 (单栏居中 Notion/Linear 风):
     //   - 删左侧引导栏 + 3 个白色卡片 + 长文案 (用户每次登录看一次是噪声)
@@ -9913,7 +9992,7 @@ export default function App() {
                     value={form.identifier || form.email}
                     onChange={(event) => {
                       const selected = rememberedAccounts.find((account) => (account.identifier || account.email) === event.target.value);
-                      setForm(createEmptyForm(selected?.identifier || selected?.email || event.target.value, selected?.fullName || '', selected?.password || ''));
+                      setForm(createAuthShellForm(selected?.identifier || selected?.email || event.target.value, selected?.fullName || '', selected?.password || ''));
                     }}
                     className="w-full bg-white border border-gray-200 rounded-xl px-3.5 py-3 text-[14px] text-gray-900 outline-none focus:border-[#5B7BFE] transition-colors"
                   >
@@ -9944,7 +10023,7 @@ export default function App() {
                   />
                   <button
                     type="button"
-                    onClick={() => setShowPassword((s) => !s)}
+                    onClick={() => setAuthShellShowPassword((s) => !s)}
                     className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600 p-1 transition-colors"
                     tabIndex={-1}
                     aria-label={showPassword ? '隐藏密码' : '显示密码'}
@@ -9953,7 +10032,7 @@ export default function App() {
                   </button>
                 </div>
                 <label className="flex items-center gap-2 px-1 pt-1 text-[12px] text-gray-500 cursor-pointer">
-                  <input type="checkbox" checked={rememberMe} onChange={(event) => setRememberMe(event.target.checked)} className="rounded" />
+                  <input type="checkbox" checked={rememberMe} onChange={(event) => setAuthShellRememberMe(event.target.checked)} className="rounded" />
                   在本设备保持登录
                 </label>
               </>
@@ -9968,7 +10047,7 @@ export default function App() {
                 <div className="flex items-center gap-6 border-b border-gray-100 pb-px">
                   <button
                     type="button"
-                    onClick={() => setRegisterStep(1)}
+                    onClick={() => setAuthShellRegisterStep(1)}
                     className={`relative pb-2.5 text-[12px] font-medium transition-colors ${
                       registerStep === 1 ? 'text-gray-900' : 'text-gray-400 hover:text-gray-600'
                     }`}
@@ -9979,7 +10058,7 @@ export default function App() {
                   </button>
                   <button
                     type="button"
-                    onClick={() => registerAccountValid && setRegisterStep(2)}
+                    onClick={() => registerAccountValid && setAuthShellRegisterStep(2)}
                     disabled={!registerAccountValid}
                     className={`relative pb-2.5 text-[12px] font-medium transition-colors ${
                       registerStep === 2 ? 'text-gray-900' : 'text-gray-400 hover:text-gray-600'
@@ -10000,7 +10079,7 @@ export default function App() {
                     <input value={form.phone} onChange={(event) => setForm((prev) => ({ ...prev, phone: event.target.value }))} placeholder="登录手机号 (可选)" className="w-full bg-white border border-gray-200 rounded-xl px-3.5 py-3 text-[14px] text-gray-900 outline-none focus:border-[#5B7BFE] transition-colors" />
                     <div className="relative">
                       <input type={showPassword ? 'text' : 'password'} value={form.password} onChange={(event) => setForm((prev) => ({ ...prev, password: event.target.value }))} placeholder="密码 (至少 8 位)" className="w-full bg-white border border-gray-200 rounded-xl px-3.5 py-3 pr-11 text-[14px] text-gray-900 outline-none focus:border-[#5B7BFE] transition-colors" />
-                      <button type="button" onClick={() => setShowPassword((s) => !s)} className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600 p-1 transition-colors" tabIndex={-1} aria-label={showPassword ? '隐藏密码' : '显示密码'}>
+                      <button type="button" onClick={() => setAuthShellShowPassword((s) => !s)} className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600 p-1 transition-colors" tabIndex={-1} aria-label={showPassword ? '隐藏密码' : '显示密码'}>
                         {showPassword ? <EyeOff size={16} /> : <Eye size={16} />}
                       </button>
                       {form.password && form.password.length < 8 && <p className="text-[11px] text-rose-500 mt-1.5 px-1">密码至少需要 8 位</p>}
@@ -10060,7 +10139,7 @@ export default function App() {
               <Button
                 primary
                 className="w-full py-3 text-[14px] mt-2"
-                onClick={() => setRegisterStep(2)}
+                onClick={() => setAuthShellRegisterStep(2)}
                 disabled={!registerAccountValid}
               >
                 下一步
@@ -14512,7 +14591,14 @@ export default function App() {
       if (taskIds.length === 0) return;
       setTransitioningInboxTaskIds((prev) => Array.from(new Set([...prev, ...taskIds])));
       setSelectedInboxIds((prev) => prev.filter((id) => !taskIds.includes(id)));
-      const results = await Promise.allSettled(taskIds.map((id) => confirmTask(id)));
+      const results: Array<PromiseSettledResult<Task>> = [];
+      for (const id of taskIds) {
+        try {
+          results.push({ status: 'fulfilled', value: await confirmTask(id) });
+        } catch (error) {
+          results.push({ status: 'rejected', reason: error });
+        }
+      }
       const failedIds = results.flatMap((result, index) => (result.status === 'rejected' ? [taskIds[index]] : []));
       const succeededIds = taskIds.filter((id) => !failedIds.includes(id));
       if (failedIds.length > 0) {
@@ -29079,7 +29165,7 @@ export default function App() {
   }
 
   if (!authState.authenticated || !currentSessionUser) {
-    return <AuthShell />;
+    return renderAuthShell();
   }
 
   if (shouldShowIdentityGate) {
