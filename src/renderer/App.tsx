@@ -6554,12 +6554,12 @@ function ClientEditorModal({
               </div>
             </div>
 
-            {/* 编辑态扩展字段：相关同事 + 参与数据中心计算
-                  本期仅 UI 跑通，保存时写 localStorage 暂存，不入 backend DB。
-                  下版接通数据中心后迁移到 clients 表。 */}
-            {editingClientId && (
-              <div className="border-t border-gray-100 pt-5 space-y-4">
-                <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-gray-400">PEOPLE & SCOPE · 协作与范围</p>
+            {/* 顾源源 5/26: 新建模式真也显示这两个字段 (本来只有编辑模式才显示, 用户要二次点编辑才能改).
+                  · backend 真已接受 relatedUserIds + isDataCenterIncluded (submit payload line 8793-8794)
+                  · createClient 真直接收, 不再走 localStorage 暂存
+                  · 真删 `{editingClientId && (` 包裹, 真让新建/编辑共用一套字段 */}
+            <div className="border-t border-gray-100 pt-5 space-y-4">
+              <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-gray-400">PEOPLE & SCOPE · 协作与范围</p>
 
                 {/* 相关同事 多选下拉 — 复用任务编辑器协作者样式 */}
                 <div>
@@ -6683,8 +6683,7 @@ function ClientEditorModal({
                     />
                   </span>
                 </button>
-              </div>
-            )}
+            </div>
 
             {/* 创建说明 — 只在新建时显示 */}
             {!editingClientId && (
