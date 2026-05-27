@@ -6205,6 +6205,66 @@ export async function runLocalAiNow(force = false): Promise<LocalAiRunNowRespons
   );
 }
 
+// ── 深度解析(深读)设置 / 覆盖率 / 存量补齐 ────────────────────────
+export type LocalAiOptimizationSettings = {
+  enabled: boolean;
+  paused: boolean;
+  manualActive: boolean;
+  parseModelMode: 'online' | 'local';
+  dailyWindows: { start: string; end: string }[];
+  autoEnqueueDocumentCards: boolean;
+  requireACPower: boolean;
+  minIdleSeconds: number;
+  [key: string]: unknown;
+};
+
+export type LocalAiClientCoverage = {
+  clientId: string;
+  documents: number;
+  deepRead: number;
+  coverage: number;
+};
+
+export type LocalAiCoverageResponse = {
+  perClient: LocalAiClientCoverage[];
+  totalDocuments: number;
+  totalDeepRead: number;
+  overallCoverage: number;
+};
+
+export type LocalAiBackfillResponse = {
+  scope: string;
+  created: number;
+  attempted: number;
+  documents: number;
+  taskTypes: string[];
+};
+
+export async function getLocalAiSettings(): Promise<LocalAiOptimizationSettings> {
+  return request<LocalAiOptimizationSettings>('/api/v1/local-ai/settings');
+}
+
+/** patch 语义：后端会 merge 到当前设置，只传要改的字段即可。 */
+export async function updateLocalAiSettings(
+  patch: Partial<LocalAiOptimizationSettings>,
+): Promise<LocalAiOptimizationSettings> {
+  return request<LocalAiOptimizationSettings>('/api/v1/local-ai/settings', {
+    method: 'PUT',
+    body: JSON.stringify(patch),
+  });
+}
+
+export async function getLocalAiCoverage(clientId?: string): Promise<LocalAiCoverageResponse> {
+  const qs = clientId ? `?client_id=${encodeURIComponent(clientId)}` : '';
+  return request<LocalAiCoverageResponse>(`/api/v1/local-ai/coverage${qs}`);
+}
+
+/** 存量补齐：clientId 省略=全库。只入队，不在此跑。 */
+export async function backfillLocalAi(clientId?: string): Promise<LocalAiBackfillResponse> {
+  const qs = clientId ? `?client_id=${encodeURIComponent(clientId)}` : '';
+  return request<LocalAiBackfillResponse>(`/api/v1/local-ai/backfill${qs}`, { method: 'POST' });
+}
+
 // ============================================================
 // P15 · 智能文件导入 (Smart File Import / 故事线导入)
 // ============================================================

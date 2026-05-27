@@ -43,6 +43,10 @@ DEFAULT_SETTINGS: dict[str, object] = {
     "paused": False,
     "autoEnqueueDocumentCards": True,
     "autoEnqueuePathOptimization": True,
+    # W: 手动直跑——"现在开始解析"按钮置 True，worker 即绕夜间窗口/governor 立刻跑；"停止"置 False。
+    "manualActive": False,
+    # W: 解析用模型——"online"=跟主模型(默认,快,按量计费) / "local"=强制本地 qwen3-vl:32b(免费,占本机)。
+    "parseModelMode": "online",
     # Phase 0：硬件门控阈值（Governor 用）
     "maxThermalState": 3,               # SoC 温度档位 0-5；>= 此值暂停
     "minIdleSeconds": 0,                # 用户连续无输入 >= 此秒数才能跑；0=不强制
@@ -151,6 +155,9 @@ def normalize_local_model_optimization_settings(value: object | None) -> dict[st
     settings["paused"] = bool(settings.get("paused"))
     settings["autoEnqueueDocumentCards"] = bool(settings.get("autoEnqueueDocumentCards", True))
     settings["autoEnqueuePathOptimization"] = bool(settings.get("autoEnqueuePathOptimization", True))
+    settings["manualActive"] = bool(settings.get("manualActive"))
+    _parse_mode = str(settings.get("parseModelMode") or "online").strip().lower()
+    settings["parseModelMode"] = _parse_mode if _parse_mode in {"online", "local"} else "online"
     settings["modelProfileId"] = str(settings.get("modelProfileId") or DEFAULT_PROFILE_ID).strip() or DEFAULT_PROFILE_ID
     settings["modelName"] = str(settings.get("modelName") or "").strip()
     # Phase 0：硬件门控阈值（Governor 用）。clip 到合理范围，防 UI 写入异常值
@@ -652,6 +659,12 @@ def _process_document_card_task(db: Database, ai_service: Any, task: dict[str, o
     # 注意(已知/全 app 一致): 当 current_provider=="openclaw" 时, _qwen_generate 会在 task_kind
     # 路由之前短路走 openclaw CLI, 此时 task_kind 不生效(深读跟着主模型走 openclaw)。这不是 bug,
     # 是 openclaw 这个 provider 的既有行为; 真要本地路由需主模型非 openclaw + 选本地优先。
+    # parseModelMode：用户在解析卡选的"解析用模型"。local→强制本地 qwen3-vl:32b(deep_read_local=True)；
+    # online(默认)→跟主模型走标准 deep_analysis 路由(主模型优先, openclaw 则走 openclaw)。
+    try:
+        _parse_local = get_local_model_optimization_settings(db).get("parseModelMode") == "local"
+    except Exception:
+        _parse_local = False
     _raw = ai_service._qwen_generate(  # noqa: SLF001 — 复用现有生成入口, 走标准 mode 路由
         prompt,
         "你是数据中心后台优化引擎，负责生成可复用的文件理解资产。只输出 JSON。",
@@ -660,6 +673,7 @@ def _process_document_card_task(db: Database, ai_service: Any, task: dict[str, o
         max_tokens=1800,
         temperature=0.3,
         task_kind="deep_analysis",
+        deep_read_local=_parse_local,
     )
     payload = _raw if isinstance(_raw, dict) else {}
     if not payload:
@@ -973,8 +987,15 @@ def local_model_optimizer_worker_loop(
     except Exception:
         pass
     while not stop_event.is_set():
+        # manualActive=「现在开始解析」：force=True 绕夜间窗口/enabled/paused 立刻跑，并把轮询压到 5s
+        # 让它快速排空；关闭(「停止」)后回到受 enabled/窗口/governor 约束的常规节流。
+        manual = False
         try:
-            run_due_local_model_tasks(db, ai_service)
+            manual = bool(get_local_model_optimization_settings(db).get("manualActive"))
+        except Exception:
+            manual = False
+        try:
+            run_due_local_model_tasks(db, ai_service, force=manual)
         except Exception:
             pass
-        stop_event.wait(max(5.0, float(poll_seconds)))
+        stop_event.wait(5.0 if manual else max(5.0, float(poll_seconds)))

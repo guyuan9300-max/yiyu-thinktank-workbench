@@ -7,6 +7,13 @@ commit 完删自己的占位行。
 
 ---
 
+E_HOLDING src/renderer/App.tsx (仅 2 处增量, since 2026-05-27) — feat/deep-read-foundation
+  · 深度解析卡 UI。两处都是新增/局部替换, 不碰 A/B 区:
+  · ① renderOverviewSection 的 renderFoldable 列表: storage 卡(~28263)和 feishu 卡(~28265)之间插一张 DeepReadSettingsCard(同 renderFoldable 风格)
+  · ② 工作台资料状态条(~25068-25100): 中间的「OCR 识别率」span 换成 <DeepReadRateBadge>(点击跳 settings/overview)
+  · 新增组件 DeepReadSettingsCard.tsx / DeepReadRateBadge.tsx (data_center/ 与 client_workspace/), 不与 A/B 重叠
+  · 合并时这两处取 E 版即可; 其余 App.tsx 区 A/B 优先
+
 B_OVERLAY src/renderer/components/ai_command/AICommandModal.tsx (bot_resolved stage UI only) + src/renderer/lib/aiCommand.ts (since 2026-05-25 PM)
   · 顾源源真用反馈: "我理解的任务"卡片要可验证 — 庆华信息挤右上角,
     主区 step list 三段式 (做什么/基于什么/交付什么)

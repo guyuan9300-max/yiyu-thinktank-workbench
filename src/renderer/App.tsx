@@ -511,6 +511,8 @@ import { FileSearchResultPanel } from './components/data_center/FileSearchResult
 import { ContradictionAlertPanel } from './components/client_workspace/ContradictionAlertPanel';
 import { GlossaryDriftAlertPanel } from './components/client_workspace/GlossaryDriftAlertPanel';
 import { GlossaryPendingBadge } from './components/client_workspace/GlossaryPendingBadge';
+import { DeepReadRateBadge } from './components/client_workspace/DeepReadRateBadge';
+import { DeepReadSettingsCard } from './components/data_center/DeepReadSettingsCard';
 import { RichTextDocumentEditor } from './components/client_workspace/RichTextDocumentEditor';
 import { SystemStatusPanel } from './components/global/SystemStatusPanel';
 import { WorkStatusPanel } from './components/data_center/WorkStatusPanel';
@@ -25067,30 +25069,29 @@ export default function App() {
             {/* 资料状态摘要(挪到 Tab bar 上方更显眼):份数 / OCR / 待清单 */}
             <div className="flex items-center justify-between gap-3 border-b border-gray-100 bg-gray-50/40 px-4 py-1.5 text-[10px] leading-4 text-gray-400 shrink-0">
               <span>{knowledgeStatus?.totalDocuments || 0} 份文件</span>
-              {(() => {
-                const rate = typeof knowledgeStatus?.ocrReadyRate === 'number' ? knowledgeStatus.ocrReadyRate : null;
-                const needsFix = rate !== null && rate < 100;
-                return (
-                  <span
-                    className="inline-flex items-center gap-1"
-                    title="OCR 识别率 = ready × 100% + partial × 70%（按 R13 完整扫描度加权）"
+              {/* 「OCR 识别率」改为「解析率」(深读覆盖率)：点击进系统设置的深度解析卡，不直接跑(避免偷偷占资源把软件卡住)。
+                  OCR 不完整时仍保留一键修复小图标(深读前建议先修 OCR)。 */}
+              <span className="inline-flex items-center gap-1">
+                <DeepReadRateBadge
+                  clientId={currentClientId ?? null}
+                  onNavigate={() => {
+                    setActiveTab('settings');
+                    setSettingsSection('overview');
+                  }}
+                />
+                {typeof knowledgeStatus?.ocrReadyRate === 'number' && knowledgeStatus.ocrReadyRate < 100 && (
+                  <button
+                    type="button"
+                    disabled={ocrFixing}
+                    onClick={() => void handleOcrFix()}
+                    className="ml-0.5 inline-flex items-center text-amber-600 hover:text-amber-700 disabled:opacity-40 disabled:cursor-wait disabled:text-amber-500 transition-colors"
+                    title={ocrFixing ? '正在重新识别 OCR…' : `OCR 识别率 ${knowledgeStatus.ocrReadyRate.toFixed(0)}% · 一键修复不完整的 OCR(深读前建议先修)`}
+                    aria-label="一键修复 OCR"
                   >
-                    OCR 识别率 {rate !== null ? `${rate.toFixed(1)}%` : '—'}
-                    {needsFix && (
-                      <button
-                        type="button"
-                        disabled={ocrFixing}
-                        onClick={() => void handleOcrFix()}
-                        className="ml-1 inline-flex items-center text-amber-600 hover:text-amber-700 disabled:opacity-40 disabled:cursor-wait disabled:text-amber-500 transition-colors"
-                        title={ocrFixing ? '正在重新识别 OCR…' : '一键修复 · 重新识别所有 OCR 不完整的文件(高 DPI + 双 prompt 模式)'}
-                        aria-label="一键修复 OCR"
-                      >
-                        <RotateCcw size={11} strokeWidth={2.25} className={ocrFixing ? 'animate-spin' : ''} />
-                      </button>
-                    )}
-                  </span>
-                );
-              })()}
+                    <RotateCcw size={11} strokeWidth={2.25} className={ocrFixing ? 'animate-spin' : ''} />
+                  </button>
+                )}
+              </span>
               {currentClientId && (
                 <GlossaryPendingBadge
                   clientId={currentClientId}
@@ -28258,6 +28259,21 @@ export default function App() {
                   isSaving={isSavingObjectStorageSettings}
                   onSave={handleSaveObjectStorageSettings}
                   onTest={handleTestObjectStorageSettings}
+                />
+              ),
+            })}
+
+            {renderFoldable({
+              key: 'deep_read',
+              eyebrow: 'DEEP READ · 深度解析',
+              title: '深度解析 · 公司大脑深读',
+              helper: '把客户资料深读成可检索的理解资产。占用内存/算力，建议空闲/夜间自动进行；也可立刻手动解析。',
+              tint: true,
+              children: (
+                <DeepReadSettingsCard
+                  clientId={currentClientId ?? null}
+                  canEdit={canManageSensitiveSettings}
+                  onFlash={flash}
                 />
               ),
             })}

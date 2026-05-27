@@ -36103,10 +36103,17 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         典型用法：开启 enabled、解除 paused、配 dailyWindows（如夜间 22:00-08:00）。
         用哪个模型不在这里设——深读按用户的全局模型设置路由（主模型优先，本地仅
         在用户选"本地优先"时才用），见 _process_document_card_task 的 task_kind。
-        入参经 normalize_local_model_optimization_settings 校验，未知字段被丢弃。
+        入参为 patch（部分字段即可）：先读当前设置再 merge，避免部分写入把其它字段
+        重置成默认（normalize 是 dict(DEFAULT)+raw，直接传 patch 会丢字段）。
         """
-        from app.services.local_model_optimizer import save_local_model_optimization_settings
-        return save_local_model_optimization_settings(state.db, payload)
+        from app.services.local_model_optimizer import (
+            get_local_model_optimization_settings,
+            save_local_model_optimization_settings,
+        )
+        current = get_local_model_optimization_settings(state.db)
+        if isinstance(payload, dict):
+            current.update(payload)
+        return save_local_model_optimization_settings(state.db, current)
 
     @app.get("/api/v1/local-ai/coverage")
     def get_local_ai_coverage(client_id: str | None = None) -> dict[str, object]:

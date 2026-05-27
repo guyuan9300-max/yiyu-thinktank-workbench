@@ -524,6 +524,30 @@ class AiService:
             is_local=bool(normalized.get("isLocal")) or self._is_local_base_url(base_url),
         )
 
+    def _resolve_deep_read_local_candidate(self) -> "AiResolvedProfile | None":
+        """深度解析「本地」档：直接构造 local_text_deep 解析 profile（qwen3-vl:32b），
+        忽略 advanced-routing 的 enabled 门——用户在解析卡里显式选「本地」本身就是启用信号，
+        不要求他再去高级路由里把 profile enable。无 baseUrl/model 时返回 None（调用方回退主模型）。"""
+        cfg = self.current_ai_model_profiles().get("local_text_deep") or {}
+        normalized = self._normalize_profile_config("local_text_deep", cfg)
+        base_url = str(normalized.get("baseUrl") or "")
+        model = str(normalized.get("model") or "")
+        if not base_url or not model:
+            return None
+        store = self._store_for(self._profile_store_key("local_text_deep"))
+        return AiResolvedProfile(
+            profile_key="local_text_deep",
+            provider=str(normalized.get("provider") or OPENAI_COMPATIBLE_PROVIDER),
+            provider_label=str(normalized.get("providerLabel") or ""),
+            base_url=base_url,
+            model=model,
+            api_key=store.get_api_key() if store else "",
+            credential_source=store.get_source_label() if store else "local",
+            fingerprint=store.get_api_key_fingerprint() if store else None,
+            capability="deep_analysis",
+            is_local=bool(normalized.get("isLocal")) or self._is_local_base_url(base_url),
+        )
+
     def _profile_is_usable(self, profile: AiResolvedProfile) -> bool:
         if profile.provider == MOCK_PROVIDER:
             return True
@@ -4885,9 +4909,11 @@ class AiService:
         provider_override: str | None = None,
         model_override: str | None = None,
         task_kind: str = "default",
+        deep_read_local: bool = False,
     ) -> object:
         active_provider = provider_override or self.current_provider()
-        if active_provider == OPENCLAW_PROVIDER:
+        # deep_read_local：深度解析选了「本地」档——绕过 openclaw 短路，强制走本地 qwen3-vl:32b。
+        if active_provider == OPENCLAW_PROVIDER and not deep_read_local:
             # Tier1 优化:openclaw 走 CLI 子进程 + 共享 session 文件,锁竞争是已知
             # 结构性问题(详见 docs/CODEMAPS 或排查日志)。在外层包一层短退避重试,
             # 把"必失败"压缩成"偶尔多等几秒",对普通用户的瞬时错误也一并兜底。
@@ -4910,11 +4936,16 @@ class AiService:
             )
         from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeout
 
-        candidates = self._resolve_llm_candidates(
-            task_kind=effective_task_kind,
-            provider_override=provider_override,
-            model_override=model_override,
-        )
+        if deep_read_local:
+            _local = self._resolve_deep_read_local_candidate()
+            # 本地 profile 配好就只用它；没配(无 baseUrl/model)则回退正常解析，不让解析失败。
+            candidates = [_local] if _local else self._resolve_llm_candidates(task_kind=effective_task_kind)
+        else:
+            candidates = self._resolve_llm_candidates(
+                task_kind=effective_task_kind,
+                provider_override=provider_override,
+                model_override=model_override,
+            )
         errors: list[str] = []
         hard_limit = timeout_seconds + HTTP_TIMEOUT_GRACE_SECONDS
         for profile in candidates:
