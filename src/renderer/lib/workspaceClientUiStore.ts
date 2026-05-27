@@ -28,7 +28,7 @@ export type WorkspaceRightPanelEvidenceSnapshot = {
 
 export type WorkspaceRightTabKey = 'overview' | 'files' | 'memory' | 'proposals' | 'tools';
 export type WorkspaceSurfaceMode = 'setup' | 'workspace';
-export type WorkspaceImportDropZone = 'buffer' | 'composer' | null;
+export type WorkspaceImportDropZone = 'buffer' | 'composer' | 'favorites' | null;
 export type WorkspaceAnswerActionName =
   | 'vectorize'
   | 'cancel-vectorize'

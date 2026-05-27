@@ -2087,12 +2087,23 @@ def ingest_document_knowledge(
     force_ocr: bool = False,
     ocr_progress_callback: Callable[[dict[str, object]], None] | None = None,
 ) -> dict[str, Any]:
+    # 顾源源 5/26: AI 主动生成的成品文档 (导出答案 / 答案备忘 / 咨询沉淀 / 模板填写) 真不参与
+    # 早期 family_id dedup — 用户每次点"导出"真期望拿到新文件, 即便标题相同 (问答历史可能更新).
+    # 真bug 5/26: 导出 xlsx 真被同标题的旧 docx dedup 扔进 .trash + 删 db row, 用户感知"自动打开/右侧文件栏都没".
+    _SKIP_FAMILY_DEDUP_SOURCES = {
+        "answer_export_doc",
+        "answer_memory_doc",
+        "consultation_knowledge_memory",
+        "template_fill",
+    }
+    skip_family_dedup = source in _SKIP_FAMILY_DEDUP_SOURCES
+
     # 早期 family_id dedup：title 经 _normalized_family_stem 后能识别 xxx(1)/副本xxx/xxx_1 等语义重复。
     # 已存在同 family 的 raw_file → 当前文件直接进垃圾桶，跳过 ingest，调用方插入的 documents 行也删掉。
     candidate_family_id = derive_document_family_id(
         title=title, content_hash="", origin_type="file_import", origin_id=document_id,
     )
-    if candidate_family_id and ":" in candidate_family_id:
+    if not skip_family_dedup and candidate_family_id and ":" in candidate_family_id:
         stem_part = candidate_family_id.split(":", 1)[1].strip()
         if stem_part and stem_part != "unknown" and len(stem_part) >= 3:
             existing = db.fetchone(

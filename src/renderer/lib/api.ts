@@ -5026,6 +5026,26 @@ export async function recomputeTaskPlanLink(taskId: string) {
   });
 }
 
+// [B] 2026-05-26 · 新建任务时, qwen2.5:7b 闪电预测 plan item.
+// 顾源源 5/26 拍板: 7B 模型秒级识别 + 识别不了不挂 (不做 keyword 兜底).
+export interface PlanLinkPredictRequest {
+  title: string;
+  description: string;
+  planItems: Array<{ id: string; title: string; statement?: string }>;
+}
+export interface PlanLinkPredictResponse {
+  planItemId: string | null;
+  confidence: number;
+  model: string;
+  reason: string;
+}
+export async function predictPlanLinkFromText(payload: PlanLinkPredictRequest): Promise<PlanLinkPredictResponse> {
+  return request<PlanLinkPredictResponse>('/api/v1/plan-link/predict-from-text', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+}
+
 export async function getTasksForPlanItem(itemId: string) {
   return request<Task[]>(`/api/v1/org-model/plan-items/${itemId}/tasks`);
 }

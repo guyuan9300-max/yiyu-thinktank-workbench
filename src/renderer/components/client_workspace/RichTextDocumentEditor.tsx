@@ -199,7 +199,7 @@ export const RichTextDocumentEditor = React.forwardRef<MDXEditorMethods, RichTex
 
     return (
       <div
-        className={`transition ${THEME_WRAPPER_CLASS[theme]}`}
+        className={`mdx-placeholder-light transition ${THEME_WRAPPER_CLASS[theme]}`}
         style={{ minHeight }}
       >
         <MDXEditor

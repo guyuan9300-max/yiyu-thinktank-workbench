@@ -293,6 +293,7 @@ import {
   retryEventLineSync,
   getTaskPlanLink,
   patchTaskPlanLink,
+  predictPlanLinkFromText,
   closeEventLine,
   reopenEventLine,
   previewEventLineMerge,
@@ -519,6 +520,10 @@ import { WorkStatusPanel } from './components/data_center/WorkStatusPanel';
 // C 审计 P0-3 修复 (2026-05-24): V3 Agent-Ready 最小前端入口
 import { AgentReadyPanel } from './components/data_center/AgentReadyPanel';
 // 顾源源 5/24 大型任务: 机器人同事
+import { BotMembersPanel } from './components/settings/BotMembersPanel';
+// 顾源源 5/24 真原意已是挂到 OrganizationSetupCenter, 但 5/26 真扫发现真死挂 (grep 0 命中).
+// 真现修: 真挂在 OrganizationSetupCenter 真下方, 真同样在 isCloud 真分支真显示
+// 旧注释保留作历史:
 // BotMembersPanel 入口已挂到 OrganizationSetupCenter (真"组织搭建中心"),
 // 此处不再 import 避免 unused import 报错
 import { FeishuOrgIntegrationPanel } from './components/settings/FeishuOrgIntegrationPanel';
@@ -1524,14 +1529,34 @@ function resolveAiConfigPresetKey(draft: {
 }
 
 function aiModelDisplayLabel(provider?: AiProvider | string | null, model?: string | null, providerLabel?: string | null) {
+  // 顾源源 5/26 真用反馈: 主仓 db 真出现 ai_provider='openclaw' 但 ai_provider_label='豆包 Seed 2.0 Pro' 真矛盾,
+  // 真用户看到"豆包"但后端真走 OpenClaw GPT-5.4. 真"显示 X 用 Y" 真信任崩.
+  //
+  // 真修法: 真按 provider (路由真值) 真硬编算 label, 真**忽略 db.providerLabel** (它真可能 stale).
+  // db.providerLabel 真降级成 advisory (用户自定义 alias), 真不再作为权威显示源.
+  // → 真用户永远看到的 = 真实路由, 真切模型不再撞"label 跟 provider 真不一致".
   const providerValue = String(provider || '').trim() as AiProvider | '';
   const modelValue = String(model || '').trim();
   const labelValue = String(providerLabel || '').trim();
+  // 真按 provider 真路由值优先返 hardcoded display name
   if (providerValue === 'mock') return providerDisplayNames.mock;
+  if (providerValue === 'openclaw') return providerDisplayNames.openclaw;
+  if (providerValue === 'doubao') {
+    return (!modelValue || modelValue === providerDefaultModels.doubao)
+      ? providerDisplayNames.doubao
+      : `${providerDisplayNames.doubao} · ${modelValue}`;
+  }
+  if (providerValue === 'qwen') {
+    return (!modelValue || modelValue === providerDefaultModels.qwen)
+      ? providerDisplayNames.qwen
+      : `${providerDisplayNames.qwen} · ${modelValue}`;
+  }
+  // openai_compatible 真没固定路由, label 真用 model 优先 (provider 真自定义) — 真 fallback labelValue 作 alias
+  if (providerValue === 'openai_compatible') {
+    return modelValue || labelValue || providerDisplayNames.openai_compatible;
+  }
+  // 真未知 provider — fallback label 或 model
   if (labelValue) return labelValue;
-  if (providerValue === 'openai_compatible') return modelValue || providerDisplayNames.openai_compatible;
-  if (providerValue === 'doubao' && (!modelValue || modelValue === providerDefaultModels.doubao)) return providerDisplayNames.doubao;
-  if (providerValue === 'qwen' && (!modelValue || modelValue === providerDefaultModels.qwen)) return providerDisplayNames.qwen;
   if (modelValue) return modelValue;
   return providerValue && providerValue in providerDisplayNames
     ? providerDisplayNames[providerValue as keyof typeof providerDisplayNames]
@@ -4130,10 +4155,40 @@ function formatTaskDuePickerSummaryLabel(datePart?: string | null, timePart?: st
   const startLabel = formatTaskDuePickerDateLabel(datePart);
   if (startLabel === '选择日期') return startLabel;
   const time = (timePart || '').trim();
-  if (time) return `${startLabel} ${time}`;
+  const duration = Math.max(0, durationMinutes ?? 0);
+  if (time) {
+    // 5/26 修: 有 time 时也要算 endTime, 显示完整时间段 "今天 08:00-11:00"
+    // 之前只显示 "今天 08:00", 拖选完用户看不到时间段
+    if (duration > 0) {
+      const [h, m] = time.split(':').map(Number);
+      if (Number.isFinite(h) && Number.isFinite(m)) {
+        const startMins = h * 60 + m;
+        const endMins = startMins + duration;
+        if (endMins < 24 * 60) {
+          const endH = Math.floor(endMins / 60);
+          const endM = endMins % 60;
+          const endTime = `${String(endH).padStart(2, '0')}:${String(endM).padStart(2, '0')}`;
+          return `${startLabel} ${time}-${endTime}`;
+        }
+        // 跨天时显示截止那天 + 时间
+        const parsedDate = parseTaskDateValue(datePart);
+        if (parsedDate) {
+          const totalMins = startMins + duration;
+          const dayDelta = Math.floor(totalMins / (24 * 60));
+          const endDate = new Date(parsedDate.getFullYear(), parsedDate.getMonth(), parsedDate.getDate() + dayDelta);
+          const endMinOfDay = totalMins % (24 * 60);
+          const endH = Math.floor(endMinOfDay / 60);
+          const endM = endMinOfDay % 60;
+          const endTime = `${String(endH).padStart(2, '0')}:${String(endM).padStart(2, '0')}`;
+          return `${startLabel} ${time} → ${formatTaskDuePickerDateLabel(formatDateOnlyValue(endDate))} ${endTime}`;
+        }
+      }
+    }
+    return `${startLabel} ${time}`;
+  }
   const parsedDate = parseTaskDateValue(datePart);
   if (!parsedDate) return startLabel;
-  const spanDays = taskCalendarSpanDays(durationMinutes);
+  const spanDays = taskCalendarSpanDays(duration);
   if (spanDays <= 1) return startLabel;
   const endDate = new Date(parsedDate.getFullYear(), parsedDate.getMonth(), parsedDate.getDate() + spanDays - 1);
   return `${startLabel} - ${formatTaskDuePickerDateLabel(formatDateOnlyValue(endDate))}`;
@@ -6028,7 +6083,9 @@ function buildWeeklyOverviewModel(rows: ReviewTaskRow[], scope: 'work' | 'person
       if (right.score !== left.score) return right.score - left.score;
       return right.taskCount - left.taskCount;
     });
-  const mainlines = groups.slice(0, 3).map(({ score, ...line }) => line);
+  // 5/26 改: 顾源源反馈"一个月当中重点不止 3 个". 放宽到 6 条上限.
+  // 仍按 scoreWeeklyOverviewGroup 排序, 重要性低的不进列表
+  const mainlines = groups.slice(0, 6).map(({ score, ...line }) => line);
   const mainlineNames = joinWeeklyOverviewItems(mainlines.map((line) => line.title), 3);
   const incompleteNames = joinWeeklyOverviewItems(mainlines.filter((line) => line.pendingCount > 0).map((line) => line.title), 2);
   const scopeLabel = scope === 'work' ? '组织重点' : '成长重点';
@@ -6067,7 +6124,7 @@ function buildWeeklyOverviewModelFromBackendCards(cards: WeeklyMainlineCards | n
       };
     })
     .filter((line): line is WeeklyOverviewLine => Boolean(line))
-    .slice(0, 3);
+    .slice(0, 6);  // 5/26 改: 3 → 6, 跟 buildWeeklyOverview 一致
   if (!summaryText || mainlines.length === 0) return fallback;
   return {
     ...fallback,
@@ -6583,12 +6640,12 @@ function ClientEditorModal({
               </div>
             </div>
 
-            {/* 编辑态扩展字段：相关同事 + 参与数据中心计算
-                  本期仅 UI 跑通，保存时写 localStorage 暂存，不入 backend DB。
-                  下版接通数据中心后迁移到 clients 表。 */}
-            {editingClientId && (
-              <div className="border-t border-gray-100 pt-5 space-y-4">
-                <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-gray-400">PEOPLE & SCOPE · 协作与范围</p>
+            {/* 顾源源 5/26: 新建模式真也显示这两个字段 (本来只有编辑模式才显示, 用户要二次点编辑才能改).
+                  · backend 真已接受 relatedUserIds + isDataCenterIncluded (submit payload line 8793-8794)
+                  · createClient 真直接收, 不再走 localStorage 暂存
+                  · 真删 `{editingClientId && (` 包裹, 真让新建/编辑共用一套字段 */}
+            <div className="border-t border-gray-100 pt-5 space-y-4">
+              <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-gray-400">PEOPLE & SCOPE · 协作与范围</p>
 
                 {/* 相关同事 多选下拉 — 复用任务编辑器协作者样式 */}
                 <div>
@@ -6712,8 +6769,7 @@ function ClientEditorModal({
                     />
                   </span>
                 </button>
-              </div>
-            )}
+            </div>
 
             {/* 创建说明 — 只在新建时显示 */}
             {!editingClientId && (
@@ -7283,7 +7339,30 @@ export default function App() {
     try {
       const raw = window.localStorage.getItem('yiyu.workspace.favoriteTools');
       const parsed = raw ? JSON.parse(raw) : [];
-      return Array.isArray(parsed) ? parsed.filter((item): item is string => typeof item === 'string') : [];
+      const list = Array.isArray(parsed)
+        ? parsed.filter((item): item is string => typeof item === 'string')
+        : [];
+      // 顾源源 5/26: 真 migration — 旧 key 'import_folder' / 'import_files' 真已合并为 'import'.
+      // 真自动迁移 (用户旧收藏不丢, 真去重) + 真清除 registry 已不存在的 invalid key.
+      // 真原 bug: 旧 key 真占 favorite slot 但 UI 真过滤掉 → 用户感觉"加 1 个占 2 位".
+      const KNOWN_TOOL_KEYS = new Set([
+        'import', 'fill_template', 'text_doc', 'link_material', 'smart_import',
+      ]);
+      const migrated: string[] = [];
+      let hasLegacyImport = false;
+      for (const key of list) {
+        if (key === 'import_folder' || key === 'import_files') {
+          hasLegacyImport = true;
+          continue;
+        }
+        if (KNOWN_TOOL_KEYS.has(key) && !migrated.includes(key)) {
+          migrated.push(key);
+        }
+      }
+      if (hasLegacyImport && !migrated.includes('import')) {
+        migrated.unshift('import');
+      }
+      return migrated;
     } catch {
       return [];
     }
@@ -12091,11 +12170,28 @@ export default function App() {
       editingTask.dueTime,
       editingTask.durationMinutes,
     );
-    const duePickerDurationLabel = editingTask.dueTime
-      ? editingTask.dueTime
-      : taskCalendarSpanDays(editingTask.durationMinutes) > 1
+    // 5/26 修: 有 dueTime 时显示完整时间段 "08:00-11:00", 不只显示开始时间
+    const duePickerDurationLabel = (() => {
+      if (editingTask.dueTime) {
+        const duration = Math.max(0, editingTask.durationMinutes || 0);
+        if (duration > 0) {
+          const [h, m] = editingTask.dueTime.split(':').map(Number);
+          if (Number.isFinite(h) && Number.isFinite(m)) {
+            const startMins = h * 60 + m;
+            const endMins = startMins + duration;
+            if (endMins < 24 * 60) {
+              const endH = Math.floor(endMins / 60);
+              const endM = endMins % 60;
+              return `${editingTask.dueTime}-${String(endH).padStart(2, '0')}:${String(endM).padStart(2, '0')}`;
+            }
+          }
+        }
+        return editingTask.dueTime;
+      }
+      return taskCalendarSpanDays(editingTask.durationMinutes) > 1
         ? `连续 ${taskCalendarSpanDays(editingTask.durationMinutes)} 天`
         : '--:--';
+    })();
     const duePickerCalendarCells = useMemo(() => buildCalendarCells(duePickerMonth), [duePickerMonth]);
 
     useEffect(() => {
@@ -13829,6 +13925,70 @@ export default function App() {
       }
       // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [pendingPlanItemAction]);
+
+    // [B] 5/26 · 新建任务时 qwen2.5:7b 闪电预测 plan item (debounce 800ms).
+    // 顾源源 5/26 拍板: 识别不上就不挂, 不做兜底; 用户手动选过 (manager/none) 永不覆盖.
+    // 注意: deps 不含 planLinkSource, 否则 effect 把 source 改成 'ai' 又触发自己, 死循环.
+    //       source guard 走 setState 的 prev 闭包, 用真最新 state 比对.
+    useEffect(() => {
+      if (editingTask.id) return;
+      if (isEditingTaskPersonal) return;
+      const title = editingTask.title.trim();
+      if (!title) return;
+      const deptId = editingTask.planLinkDepartmentId;
+      if (!deptId) return;
+      const periodKey = editingTask.planLinkPeriodKey;
+      const matchingPlans = (orgModelState.departmentPlans || []).filter(
+        (p) => p.departmentId === deptId && (p.weekLabel || '').trim() === periodKey,
+      );
+      const planItems = matchingPlans.flatMap((p) => p.items || []);
+      if (planItems.length === 0) return;
+
+      const handle = window.setTimeout(async () => {
+        try {
+          const result = await predictPlanLinkFromText({
+            title,
+            description: editingTask.desc || '',
+            planItems: planItems.map((it) => ({
+              id: it.id,
+              title: it.title || '',
+              statement: it.statement || '',
+            })),
+          });
+          if (!result.planItemId) return;
+          const picked = planItems.find((it) => it.id === result.planItemId);
+          if (!picked) return;
+          setEditingTask((prev) => {
+            if (prev.id) return prev;
+            if (prev.planLinkSource === 'manager' || prev.planLinkSource === 'none') return prev;
+            if (prev.planLinkDepartmentId !== deptId || prev.planLinkPeriodKey !== periodKey) return prev;
+            // 已经推荐过同一个 id 且 source 已经 ai → 完全相同, 不 set 引用避免 re-render 循环
+            if (prev.planLinkPlanItemId === result.planItemId && prev.planLinkSource === 'ai') return prev;
+            return {
+              ...prev,
+              planLinkPlanItemId: result.planItemId!,
+              planLinkSource: 'ai',
+              planLinkConfidence: result.confidence,
+              planLinkReason: `AI 推荐 (置信度 ${Math.round(result.confidence * 100)}%)：${picked.title}。可手动改。`,
+            };
+          });
+        } catch {
+          // 静默: LLM 不可用或网络异常时不挂, 不弹错
+        }
+      }, 800);
+
+      return () => window.clearTimeout(handle);
+      // 故意不依赖 planLinkSource — 见上方注释
+      // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [
+      editingTask.id,
+      editingTask.title,
+      editingTask.desc,
+      editingTask.planLinkDepartmentId,
+      editingTask.planLinkPeriodKey,
+      isEditingTaskPersonal,
+      orgModelState.departmentPlans,
+    ]);
 
 	    useEffect(() => {
 	      const openDraftFromStrategic = (payload: StrategicTaskDraftRequest) => {
@@ -18868,6 +19028,113 @@ export default function App() {
                     </TaskPropertyRow>
                   </div>
 
+                  <div className="border-b border-gray-100 p-5">
+                    <div className="mb-2 flex items-center justify-between">
+                      <h3 className="text-xs font-semibold uppercase tracking-wider text-gray-400">任务归属</h3>
+                    </div>
+
+                    <div className="space-y-3">
+                      <TaskPropertyRow icon={<Briefcase size={16} />} label="组织/项目">
+                        <select
+                          value={editingTask.clientId}
+                          onChange={(event) => {
+                            const selectedId = event.target.value;
+                            setEditingTask((prev) => ({
+                              ...prev,
+                              clientId: selectedId,
+                              clientTouched: true,
+                              clientConfidence: selectedId ? 'manual' : 'none',
+                              clientReason: selectedId
+                                ? `已挂到客户/项目：${taskClientOptions.find((item) => item.id === selectedId)?.name || '已选择客户'}。`
+                                : organizationTaskAutoReason,
+                              eventLineId: '',
+                              eventLineTouched: true,
+                              eventLineReason: selectedId
+                                ? '请选择事件线，让后续复盘更连贯。'
+                                : '可选：把任务挂到一条持续推进的事件线上，后续复盘会按事件线聚合。',
+                              projectModuleId: '',
+                              projectModuleTouched: true,
+                              projectModuleReason: selectedId
+                                ? '请选择任务模块，帮助后续复盘落到项目结构。'
+                                : '可选：把任务挂到项目下的具体任务模块。',
+                              projectFlowId: '',
+                              projectFlowTouched: true,
+                              projectFlowReason: selectedId
+                                ? '请选择标准流程，让复盘更贴近业务动作。'
+                                : '可选：把任务进一步挂到标准流程，后续复盘和日历会更贴近业务动作。',
+                            }));
+                          }}
+                          disabled={isEditingTaskPersonal}
+                          className="w-full rounded border border-gray-200 bg-white px-2 py-1.5 text-sm text-gray-700 disabled:cursor-not-allowed disabled:bg-gray-100 disabled:text-gray-400"
+                        >
+                          <option value="">
+                            {isEditingTaskPersonal ? '个人日程' : '请选择项目'}
+                          </option>
+                          {taskClientOptions.map((client) => (
+                            <option key={client.id} value={client.id}>
+                              {client.name}
+                            </option>
+                          ))}
+                        </select>
+                      </TaskPropertyRow>
+
+                      <TaskPropertyRow icon={<GitCommit size={16} />} label="事件线">
+                        <div className="w-full space-y-1.5">
+                          <select
+                            value={editingTask.eventLineId}
+                            onChange={(event) =>
+                              setEditingTask((prev) => ({
+                                ...prev,
+                                eventLineId: event.target.value,
+                                eventLineTouched: true,
+                                eventLineReason: event.target.value
+                                  ? `已关联事件线：${taskEventLineOptions.find((item) => item.id === event.target.value)?.name || '已选择事件线'}。`
+                                  : (prev.clientId ? '请选择事件线，让复盘更连贯。' : '可选：把任务挂到一条持续推进的事件线上，后续复盘会按事件线聚合。'),
+                              }))
+                            }
+                            disabled={isEditingTaskPersonal}
+                            className="w-full rounded border border-gray-200 bg-white px-2 py-1.5 text-sm text-gray-700 disabled:cursor-not-allowed disabled:bg-gray-100 disabled:text-gray-400"
+                          >
+                            <option value="">
+                              {isEditingTaskPersonal ? '个人日程不进入事件线' : '可选：加入事件线'}
+                            </option>
+                            {taskEventLineOptions.map((line) => (
+                              <option key={line.id} value={line.id}>
+                                {line.name}
+                              </option>
+                            ))}
+                          </select>
+                          <div className="flex items-center gap-1.5">
+                            <button
+                              type="button"
+                              onClick={handleEditEventLineFromTask}
+                              disabled={!editingTask.eventLineId || isEditingTaskPersonal}
+                              className="rounded border border-gray-200 px-1.5 py-0.5 text-[10px] font-medium text-gray-500 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-40"
+                            >
+                              编辑
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => void handleDeleteEventLineFromTask()}
+                              disabled={!editingTask.eventLineId || isEditingTaskPersonal || isDeletingEventLine}
+                              className="rounded border border-gray-200 px-1.5 py-0.5 text-[10px] font-medium text-rose-500 hover:bg-rose-50 disabled:cursor-not-allowed disabled:opacity-40"
+                            >
+                              {isDeletingEventLine ? '...' : (selectedEventLineSummary?.visibilityScope === 'private' ? '删除' : '结束')}
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => void handleCreateEventLineFromTask()}
+                              disabled={isEditingTaskPersonal || isCreatingEventLine}
+                              className="rounded border border-gray-200 px-1.5 py-0.5 text-[10px] font-medium text-gray-500 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-40"
+                            >
+                              新建
+                            </button>
+                          </div>
+                        </div>
+                      </TaskPropertyRow>
+                    </div>
+                  </div>
+
                   {(() => {
                     if (isEditingTaskPersonal) return null;
                     const periodKey = editingTask.planLinkPeriodKey;
@@ -18983,113 +19250,6 @@ export default function App() {
                       </div>
                     );
                   })()}
-
-                  <div className="border-b border-gray-100 p-5">
-                    <div className="mb-2 flex items-center justify-between">
-                      <h3 className="text-xs font-semibold uppercase tracking-wider text-gray-400">上下文堆栈</h3>
-                    </div>
-
-                    <div className="space-y-3">
-                      <TaskPropertyRow icon={<Briefcase size={16} />} label="组织/项目">
-                        <select
-                          value={editingTask.clientId}
-                          onChange={(event) => {
-                            const selectedId = event.target.value;
-                            setEditingTask((prev) => ({
-                              ...prev,
-                              clientId: selectedId,
-                              clientTouched: true,
-                              clientConfidence: selectedId ? 'manual' : 'none',
-                              clientReason: selectedId
-                                ? `已挂到客户/项目：${taskClientOptions.find((item) => item.id === selectedId)?.name || '已选择客户'}。`
-                                : organizationTaskAutoReason,
-                              eventLineId: '',
-                              eventLineTouched: true,
-                              eventLineReason: selectedId
-                                ? '请选择事件线，让后续复盘更连贯。'
-                                : '可选：把任务挂到一条持续推进的事件线上，后续复盘会按事件线聚合。',
-                              projectModuleId: '',
-                              projectModuleTouched: true,
-                              projectModuleReason: selectedId
-                                ? '请选择任务模块，帮助后续复盘落到项目结构。'
-                                : '可选：把任务挂到项目下的具体任务模块。',
-                              projectFlowId: '',
-                              projectFlowTouched: true,
-                              projectFlowReason: selectedId
-                                ? '请选择标准流程，让复盘更贴近业务动作。'
-                                : '可选：把任务进一步挂到标准流程，后续复盘和日历会更贴近业务动作。',
-                            }));
-                          }}
-                          disabled={isEditingTaskPersonal}
-                          className="w-full rounded border border-gray-200 bg-white px-2 py-1.5 text-sm text-gray-700 disabled:cursor-not-allowed disabled:bg-gray-100 disabled:text-gray-400"
-                        >
-                          <option value="">
-                            {isEditingTaskPersonal ? '个人日程' : '请选择项目'}
-                          </option>
-                          {taskClientOptions.map((client) => (
-                            <option key={client.id} value={client.id}>
-                              {client.name}
-                            </option>
-                          ))}
-                        </select>
-                      </TaskPropertyRow>
-
-                      <TaskPropertyRow icon={<GitCommit size={16} />} label="事件线">
-                        <div className="w-full space-y-1.5">
-                          <select
-                            value={editingTask.eventLineId}
-                            onChange={(event) =>
-                              setEditingTask((prev) => ({
-                                ...prev,
-                                eventLineId: event.target.value,
-                                eventLineTouched: true,
-                                eventLineReason: event.target.value
-                                  ? `已关联事件线：${taskEventLineOptions.find((item) => item.id === event.target.value)?.name || '已选择事件线'}。`
-                                  : (prev.clientId ? '请选择事件线，让复盘更连贯。' : '可选：把任务挂到一条持续推进的事件线上，后续复盘会按事件线聚合。'),
-                              }))
-                            }
-                            disabled={isEditingTaskPersonal}
-                            className="w-full rounded border border-gray-200 bg-white px-2 py-1.5 text-sm text-gray-700 disabled:cursor-not-allowed disabled:bg-gray-100 disabled:text-gray-400"
-                          >
-                            <option value="">
-                              {isEditingTaskPersonal ? '个人日程不进入事件线' : '可选：加入事件线'}
-                            </option>
-                            {taskEventLineOptions.map((line) => (
-                              <option key={line.id} value={line.id}>
-                                {line.name}
-                              </option>
-                            ))}
-                          </select>
-                          <div className="flex items-center gap-1.5">
-                            <button
-                              type="button"
-                              onClick={handleEditEventLineFromTask}
-                              disabled={!editingTask.eventLineId || isEditingTaskPersonal}
-                              className="rounded border border-gray-200 px-1.5 py-0.5 text-[10px] font-medium text-gray-500 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-40"
-                            >
-                              编辑
-                            </button>
-                            <button
-                              type="button"
-                              onClick={() => void handleDeleteEventLineFromTask()}
-                              disabled={!editingTask.eventLineId || isEditingTaskPersonal || isDeletingEventLine}
-                              className="rounded border border-gray-200 px-1.5 py-0.5 text-[10px] font-medium text-rose-500 hover:bg-rose-50 disabled:cursor-not-allowed disabled:opacity-40"
-                            >
-                              {isDeletingEventLine ? '...' : (selectedEventLineSummary?.visibilityScope === 'private' ? '删除' : '结束')}
-                            </button>
-                            <button
-                              type="button"
-                              onClick={() => void handleCreateEventLineFromTask()}
-                              disabled={isEditingTaskPersonal || isCreatingEventLine}
-                              className="rounded border border-gray-200 px-1.5 py-0.5 text-[10px] font-medium text-gray-500 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-40"
-                            >
-                              新建
-                            </button>
-                          </div>
-                        </div>
-                      </TaskPropertyRow>
-                    </div>
-                  </div>
 
                   <div className="border-b border-gray-100 p-5">
                     <div className="mb-2 flex items-center justify-between">
@@ -19913,7 +20073,7 @@ export default function App() {
       ? workspaceClientUiState.importDropZoneByClient[currentClientId] || null
       : null;
     const setClientImportDropZone = (
-      nextValue: 'buffer' | 'composer' | null | ((previous: 'buffer' | 'composer' | null) => 'buffer' | 'composer' | null),
+      nextValue: 'buffer' | 'composer' | 'favorites' | null | ((previous: 'buffer' | 'composer' | 'favorites' | null) => 'buffer' | 'composer' | 'favorites' | null),
     ) => {
       if (!currentClientId) return;
       const previous = workspaceClientUiState.importDropZoneByClient[currentClientId] || null;
@@ -20134,10 +20294,12 @@ export default function App() {
   const composerTextareaRef = useRef<HTMLTextAreaElement | null>(null);
   const analysisRunPollTimerRef = useRef<number | null>(null);
   const activePollingRunIdRef = useRef<string | null>(null);
+  // 顾源源 5/26 真用反馈 P0-C: pollRun 真连续失败计数. 3 次失败后真清 polling + mark failed.
+  const pollRunFailureCountRef = useRef<number>(0);
   const lastAutoScrolledMessageIdRef = useRef<string | null>(null);
   const lastThinkingPanelVisibleRef = useRef(false);
   const setupModeClientIdRef = useRef<string | null>(null);
-  const clientImportDropDepthRef = useRef<{ buffer: number; composer: number }>({ buffer: 0, composer: 0 });
+  const clientImportDropDepthRef = useRef<{ buffer: number; composer: number; favorites: number }>({ buffer: 0, composer: 0, favorites: 0 });
 
   // 豆包式「深度思考」开关：开启后下一条消息走 multipass（4 段大纲生成），耗时但更深度；关闭走单次 LLM
   const [deepThinking, setDeepThinking] = useState<boolean>(() => {
@@ -20428,20 +20590,37 @@ export default function App() {
 	            }
 	          })
           .catch((error: unknown) => {
-            // 之前是 silent 吞错——后端 404（run id 已被清 / 从未存在）时定时器永不停，
-            // 导致 hasPendingAnalysisRun 卡 true、发送按钮一直处于"停止"态、新问题发不出去。
-            // 识别 404 / "not found" → 立即清掉 polling 和 active run state。
+            // 顾源源 5/26 真用反馈 P0-C: 真旧版只识别 404 → silent 吞别的 (网络抖动 / 500 / JSON parse)
+            // → setInterval 真还在转但 React state 永不更新 → hasPendingAnalysisRun 卡 true → 用户感"切走切回来才继续".
+            // 真新: 任何 error 真累计 retry, 真 3 次仍失败 → mark failed + 清 polling, 真不再 silent.
             const message = error instanceof Error ? error.message : String(error);
             const isNotFound = /\b404\b|not.?found|找不到/i.test(message);
             if (isNotFound) {
+              // 404: backend 真不知道 run id → 真直接清, 不重试
               clearAnalysisRunPollTimer();
               setClientActiveRun(clientId, null);
               setClientPendingQuestion(clientId, null);
               setThreadOptimisticMessages(CLIENT_CHAT_DRAFT_THREAD_ID, []);
+              pollRunFailureCountRef.current = 0;
+              return;
+            }
+            // 其它 error: 累计 3 次后清
+            pollRunFailureCountRef.current = (pollRunFailureCountRef.current || 0) + 1;
+            console.warn(
+              `[pollRun] error (count=${pollRunFailureCountRef.current}/3) runId=${runId}: ${message}`,
+            );
+            if (pollRunFailureCountRef.current >= 3) {
+              console.error(`[pollRun] 真已连续 3 次失败 — 清 polling + mark run failed`);
+              clearAnalysisRunPollTimer();
+              setClientActiveRun(clientId, null);
+              setClientPendingQuestion(clientId, null);
+              setThreadOptimisticMessages(CLIENT_CHAT_DRAFT_THREAD_ID, []);
+              pollRunFailureCountRef.current = 0;
             }
           });
       };
       pollRun();
+      pollRunFailureCountRef.current = 0;  // 真每次重新启 polling 真清 counter
       analysisRunPollTimerRef.current = window.setInterval(pollRun, 1200);
     };
 
@@ -20461,6 +20640,7 @@ export default function App() {
       setTemplateFillDialog(null);
       clientImportDropDepthRef.current.buffer = 0;
       clientImportDropDepthRef.current.composer = 0;
+      clientImportDropDepthRef.current.favorites = 0;
       workspaceStartMessageAbortControllerRef.current?.abort();
       workspaceStartMessageAbortControllerRef.current = null;
       lastAutoScrolledMessageIdRef.current = null;
@@ -20925,6 +21105,23 @@ export default function App() {
       if (activePollingRunIdRef.current !== activeAnalysisRun.id) {
         beginAnalysisRunPolling(activeAnalysisRun.id, currentClientId);
       }
+    }, [currentClientId, activeAnalysisRun?.id, hasPendingAnalysisRun]);
+
+    // 顾源源 5/26 真用反馈 P0-E: visibilitychange 监听 — tab 真重新可见时强制重启 polling.
+    // 真旧问题: Electron 后台 setInterval 真被节流 (Chrome 行为), 或者用户切走真久后切回,
+    // polling 真停滞 → hasPendingAnalysisRun 卡 true.
+    // 真新: 真 visibilitychange='visible' 时, 真如果有 pending run 真清旧 timer + 重启 polling.
+    useEffect(() => {
+      const handleVisibilityChange = () => {
+        if (document.visibilityState !== 'visible') return;
+        if (!currentClientId || !hasPendingAnalysisRun || !activeAnalysisRun) return;
+        // 真 tab 真重新可见 → 真清旧 timer + 重启 polling (即便 activePollingRunIdRef 还 match)
+        // 真这样 pollRun 真立刻同步执行一次拿最新状态, 不等 1.2s setInterval
+        clearAnalysisRunPollTimer();
+        beginAnalysisRunPolling(activeAnalysisRun.id, currentClientId);
+      };
+      document.addEventListener('visibilitychange', handleVisibilityChange);
+      return () => document.removeEventListener('visibilitychange', handleVisibilityChange);
     }, [currentClientId, activeAnalysisRun?.id, hasPendingAnalysisRun]);
 
     useEffect(() => {
@@ -22199,7 +22396,7 @@ export default function App() {
       await handleImport('file', paths, options);
     };
 
-    const resetClientImportDropZone = (zone?: 'buffer' | 'composer') => {
+    const resetClientImportDropZone = (zone?: 'buffer' | 'composer' | 'favorites') => {
       if (zone) {
         clientImportDropDepthRef.current[zone] = 0;
         setClientImportDropZone((prev) => (prev === zone ? null : prev));
@@ -22207,11 +22404,12 @@ export default function App() {
       }
       clientImportDropDepthRef.current.buffer = 0;
       clientImportDropDepthRef.current.composer = 0;
+      clientImportDropDepthRef.current.favorites = 0;
       setClientImportDropZone(null);
     };
 
     const handleClientImportDragEnter =
-      (zone: 'buffer' | 'composer') => (event: React.DragEvent<HTMLDivElement>) => {
+      (zone: 'buffer' | 'composer' | 'favorites') => (event: React.DragEvent<HTMLDivElement>) => {
         if (!currentClientId || isBackendBlocked || !hasFileDragData(event.dataTransfer)) return;
         event.preventDefault();
         event.stopPropagation();
@@ -22220,7 +22418,7 @@ export default function App() {
       };
 
     const handleClientImportDragOver =
-      (zone: 'buffer' | 'composer') => (event: React.DragEvent<HTMLDivElement>) => {
+      (zone: 'buffer' | 'composer' | 'favorites') => (event: React.DragEvent<HTMLDivElement>) => {
         if (!currentClientId || isBackendBlocked || !hasFileDragData(event.dataTransfer)) return;
         event.preventDefault();
         event.stopPropagation();
@@ -22231,7 +22429,7 @@ export default function App() {
       };
 
     const handleClientImportDragLeave =
-      (zone: 'buffer' | 'composer') => (event: React.DragEvent<HTMLDivElement>) => {
+      (zone: 'buffer' | 'composer' | 'favorites') => (event: React.DragEvent<HTMLDivElement>) => {
         if (!hasFileDragData(event.dataTransfer)) return;
         event.preventDefault();
         event.stopPropagation();
@@ -22242,7 +22440,7 @@ export default function App() {
       };
 
     const handleClientImportDrop =
-      (zone: 'buffer' | 'composer') => (event: React.DragEvent<HTMLDivElement>) => {
+      (zone: 'buffer' | 'composer' | 'favorites') => (event: React.DragEvent<HTMLDivElement>) => {
         if (!currentClientId || isBackendBlocked || !hasFileDragData(event.dataTransfer)) return;
         event.preventDefault();
         event.stopPropagation();
@@ -22565,7 +22763,20 @@ export default function App() {
         const result = await exportAnswer(currentClientId, messageId);
         await refreshWorkspace(currentClientId);
         const opened = await openPathBridge(result.path).catch(() => false);
-        flash('success', opened ? `已生成、归档并打开 Word 文件：${result.fileName}` : `已生成并归档 Word 文件：${result.fileName}`);
+        // 顾源源 5/26: 真按文件后缀 (.xlsx vs .docx) 显示格式名 + openPath 失败时 fallback 到 Finder 高亮
+        const isXlsx = result.fileName.toLowerCase().endsWith('.xlsx');
+        const formatLabel = isXlsx ? 'Excel' : 'Word';
+        if (opened) {
+          flash('success', `已生成、归档并打开 ${formatLabel} 文件：${result.fileName}`);
+        } else {
+          const revealed = await revealInFinderBridge(result.path).catch(() => false);
+          flash(
+            'success',
+            revealed
+              ? `已生成 ${formatLabel} 文件：${result.fileName}（Finder 已高亮，右侧文件栏也可见）`
+              : `已生成 ${formatLabel} 文件：${result.fileName}（在右侧文件栏可点开）`,
+          );
+        }
       } catch (error) {
         flash('error', error instanceof Error ? error.message : '导出文件失败');
       } finally {
@@ -22692,12 +22903,19 @@ export default function App() {
         await refreshWorkspace(currentClientId);
         const opened = await openPathBridge(result.path).catch(() => false);
         const count = currentExportBag.length;
-        flash(
-          'success',
-          opened
-            ? `已合并 ${count} 段对话为文档:${result.fileName}`
-            : `已合并 ${count} 段对话并归档:${result.fileName}`,
-        );
+        const isXlsx = result.fileName.toLowerCase().endsWith('.xlsx');
+        const formatLabel = isXlsx ? 'Excel' : 'Word';
+        if (opened) {
+          flash('success', `已合并 ${count} 段对话为 ${formatLabel} 文件并打开:${result.fileName}`);
+        } else {
+          const revealed = await revealInFinderBridge(result.path).catch(() => false);
+          flash(
+            'success',
+            revealed
+              ? `已合并 ${count} 段对话为 ${formatLabel} 文件:${result.fileName}（Finder 已高亮）`
+              : `已合并 ${count} 段对话为 ${formatLabel} 文件并归档:${result.fileName}（右侧文件栏可见）`,
+          );
+        }
         clearExportBag();
       } catch (error) {
         const detail = error instanceof Error ? error.message : '合并导出失败';
@@ -24038,23 +24256,24 @@ export default function App() {
                 </div>
               )}
               {currentQueue.length > 0 && (
-                <div className="mb-3 rounded-2xl border border-amber-200 bg-amber-50/80 px-4 py-2.5">
-                  <div className="flex items-center gap-2 text-[12px] font-bold text-amber-900">
-                    <Sparkles size={14} className="text-amber-600" />
+                <div className="mb-3 rounded-2xl bg-[#5B7BFE]/5 px-4 py-2.5 ring-1 ring-inset ring-[#5B7BFE]/25">
+                  {/* 顾源源 5/26: 排队卡片真用主站 #5B7BFE 蓝色系, 真不再 amber 黄违和 */}
+                  <div className="flex items-center gap-2 text-[12px] font-medium text-[#3652c9]">
+                    <Sparkles size={14} className="text-[#5B7BFE]" />
                     排队中 {currentQueue.length}/{QUESTION_QUEUE_MAX} 题，前一题答完会自动提问
                   </div>
                   <div className="mt-2 flex flex-col gap-1.5">
                     {currentQueue.map((question, index) => (
                       <div
                         key={`${index}_${question.slice(0, 24)}`}
-                        className="flex items-start gap-2 rounded-xl bg-white/70 px-2.5 py-1.5 text-[11.5px] leading-relaxed text-amber-900 shadow-[inset_0_0_0_1px_rgba(217,119,6,0.15)]"
+                        className="flex items-start gap-2 rounded-xl bg-white/80 px-2.5 py-1.5 text-[11.5px] leading-relaxed text-[#3652c9] ring-1 ring-inset ring-[#5B7BFE]/15"
                       >
-                        <span className="shrink-0 rounded-md bg-amber-200/70 px-1.5 py-0.5 text-[10px] font-bold text-amber-800">#{index + 1}</span>
+                        <span className="shrink-0 rounded-md bg-[#5B7BFE]/15 px-1.5 py-0.5 text-[10px] font-bold text-[#3652c9]">#{index + 1}</span>
                         <span className="line-clamp-2 flex-1">{question}</span>
                         <button
                           type="button"
                           onClick={() => removeQueueItem(index)}
-                          className="shrink-0 rounded-md p-0.5 text-amber-500 transition hover:bg-amber-200/40 hover:text-amber-800"
+                          className="shrink-0 rounded-md p-0.5 text-[#5B7BFE]/60 transition hover:bg-[#5B7BFE]/10 hover:text-[#3652c9]"
                           title="从队列移除"
                           aria-label="从队列移除"
                         >
@@ -24771,7 +24990,29 @@ export default function App() {
           </div>
 
           <div className="w-[260px] xl:w-[320px] bg-white border-l border-gray-100 flex flex-col h-full shrink-0 z-10 shadow-[-2px_0_10px_rgba(0,0,0,0.02)]">
-            <div className="shrink-0 border-b border-gray-100 bg-white px-3 pt-3 pb-2">
+            <div
+              className={`relative shrink-0 border-b border-gray-100 px-3 pt-3 pb-2 transition-colors ${
+                clientImportDropZone === 'favorites'
+                  ? 'bg-blue-50/70 ring-4 ring-blue-500/10'
+                  : 'bg-white'
+              }`}
+              onDragEnter={handleClientImportDragEnter('favorites')}
+              onDragOver={handleClientImportDragOver('favorites')}
+              onDragLeave={handleClientImportDragLeave('favorites')}
+              onDrop={handleClientImportDrop('favorites')}
+            >
+              {/* 顾源源 5/26: 快捷工具区也接受文件/文件夹拖入 (跟 buffer 一致) */}
+              {clientImportDropZone === 'favorites' && (
+                <div className="pointer-events-none absolute inset-1 z-10 flex items-center justify-center rounded-[16px] border-2 border-dashed border-[#5B7BFE] bg-white/92 backdrop-blur-sm">
+                  <div className="text-center px-4">
+                    <div className="mx-auto mb-2 flex h-10 w-10 items-center justify-center rounded-full bg-[#5B7BFE] text-white shadow-[0_8px_20px_rgba(91,123,254,0.3)]">
+                      <Plus size={22} strokeWidth={2.6} />
+                    </div>
+                    <p className="text-[12px] font-bold text-[#3652c9]">松手即可导入</p>
+                    <p className="mt-0.5 text-[10px] text-[#5c6fb8]">文件/文件夹都行</p>
+                  </div>
+                </div>
+              )}
               <div className="flex items-center justify-between gap-3">
                 <h3 className="text-[11px] font-bold tracking-[0.18em] text-gray-400">快捷工具</h3>
                 <button
@@ -24797,15 +25038,11 @@ export default function App() {
                         onClick: () => void;
                         disabled: boolean;
                       }> = {
-                        import_folder: {
-                          icon: <FolderOpen size={18} />,
-                          title: '导入文件夹',
-                          onClick: () => void handleSelectImportFolder(),
-                          disabled: isBackendBlocked,
-                        },
-                        import_files: {
+                        // 顾源源 5/26: 真合并 "导入文件" + "导入文件夹" 为 1 个 "导入" 按钮 (方案 A).
+                        // 点击真弹文件选择器, 拖入时真自动识别 file/folder (现有 drop zone 真覆盖).
+                        import: {
                           icon: <UploadCloud size={18} />,
-                          title: '导入文件',
+                          title: '导入 · 点击选文件，或直接拖入文件/文件夹',
                           onClick: () => void handleSelectImportFiles(),
                           disabled: isBackendBlocked,
                         },
@@ -25128,9 +25365,9 @@ export default function App() {
               </h3>
 
               <div
-                className={`rounded-[24px] border p-4 transition-colors cursor-pointer group mb-4 xl:mb-5 ${
+                className={`relative rounded-[24px] border p-4 transition-colors cursor-pointer group mb-4 xl:mb-5 ${
                   clientImportDropZone === 'buffer'
-                    ? 'border-[#5B7BFE] bg-blue-50/70'
+                    ? 'border-[#5B7BFE] bg-blue-50/70 ring-4 ring-blue-500/10'
                     : 'border-gray-200 bg-gray-50/70 hover:border-[#C7D5FF] hover:bg-gray-50'
                 }`}
                 onDragEnter={handleClientImportDragEnter('buffer')}
@@ -25138,14 +25375,25 @@ export default function App() {
                 onDragLeave={handleClientImportDragLeave('buffer')}
                 onDrop={handleClientImportDrop('buffer')}
               >
+                {/* 顾源源 5/26: 拖入时显示醒目"+"提示, 跟 composer drop zone 一致 */}
+                {clientImportDropZone === 'buffer' && (
+                  <div className="pointer-events-none absolute inset-1 z-10 flex items-center justify-center rounded-[20px] border-2 border-dashed border-[#5B7BFE] bg-white/92 backdrop-blur-sm">
+                    <div className="text-center px-6">
+                      <div className="mx-auto mb-2 flex h-12 w-12 items-center justify-center rounded-full bg-[#5B7BFE] text-white shadow-[0_8px_20px_rgba(91,123,254,0.3)]">
+                        <Plus size={28} strokeWidth={2.6} />
+                      </div>
+                      <p className="text-[13px] font-bold text-[#3652c9]">松手即可导入</p>
+                      <p className="mt-1 text-[11px] text-[#5c6fb8]">文件 / 文件夹都行，10 个 20 个一起拖也可以</p>
+                    </div>
+                  </div>
+                )}
                 {(() => {
                   return (
                     <>
                       <div className="grid grid-cols-3 gap-3">
-                        {/* 工具页 6 个工具：每个 hover 出 ☆ 收藏按钮，点击加入/移出快捷工具区 */}
+                        {/* 工具页 5 个工具 (顾源源 5/26: 合并文件 + 文件夹 → 1 个"导入"): 每个 hover 出 ☆ 收藏按钮 */}
                         {([
-                          { key: 'import_folder', icon: <FolderOpen size={23} />, title: '导入文件夹', onClick: () => void handleSelectImportFolder(), disabled: isBackendBlocked },
-                          { key: 'import_files', icon: <UploadCloud size={23} />, title: '导入文件', onClick: () => void handleSelectImportFiles(), disabled: isBackendBlocked },
+                          { key: 'import', icon: <UploadCloud size={23} />, title: '导入 · 点击选文件，或直接拖入文件/文件夹', onClick: () => void handleSelectImportFiles(), disabled: isBackendBlocked },
                           { key: 'fill_template', icon: <LayoutTemplate size={23} />, title: '填写模板', onClick: () => void handleFillTemplate(), disabled: isBackendBlocked || isTemplateFilling },
                           { key: 'text_doc', icon: <PenTool size={23} />, title: '智能编辑', onClick: openClientTextDocumentOverlay, disabled: isBackendBlocked },
                           { key: 'link_material', icon: <Link2 size={23} />, title: '链接转资料', onClick: openClientLinkMaterialOverlay, disabled: isBackendBlocked },
@@ -25457,7 +25705,8 @@ export default function App() {
                       const AI_GENERATED_DOC_SOURCES = new Set<string>([
                         'workspace_native',
                         'answer_memory_doc',
-                        'answer_export_doc',
+                        // 顾源源 5/26: 'answer_export_doc' 真不算系统过程 — 用户主动点"导出文件"产出的真成品文件,
+                        // 应该在右侧文件栏真显示, 不再过滤
                         'consultation_knowledge_memory',
                         'auto_repair',
                         'internet_enrichment',
@@ -28690,6 +28939,14 @@ export default function App() {
                 defaultOpen: pendingReviewCount > 0,
                 children: <EmployeeReviewPanel />,
               })}
+            </div>
+          )}
+
+          {/* 顾源源 5/26 真修 P0-1 (5/24 审计真发现死挂): BotMembersPanel 真主面板真挂上, 真用户加完机器人能看到列表/启停/重置密钥/AI 计划审批 */}
+          {isCloud && (
+            <div className="mt-8">
+              <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-gray-400 mb-4">BOT MEMBERS · 机器人成员管理</p>
+              <BotMembersPanel />
             </div>
           )}
 
