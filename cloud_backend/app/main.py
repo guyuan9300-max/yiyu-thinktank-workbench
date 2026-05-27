@@ -228,6 +228,19 @@ TASK_FEISHU_CALENDAR_SYNC_FIELDS: tuple[str, ...] = (
     "scheduledEndAt",
     "durationMinutes",
 )
+TASK_FEISHU_TASK_SYNC_FIELDS: tuple[str, ...] = (
+    "title",
+    "description",
+    "startDate",
+    "dueDate",
+    "deadlineAt",
+    "scheduledStartAt",
+    "scheduledEndAt",
+    "durationMinutes",
+    "ownerId",
+    "collaboratorIds",
+    "progressStatus",
+)
 FEISHU_QUERY_REPLY_LIMIT = 5
 FEISHU_QUERY_HELP_TEXT = (
     "当前支持这些问法：\n"
@@ -4650,6 +4663,11 @@ def _feishu_timestamp(dt: datetime) -> str:
     return str(int(resolved.timestamp()))
 
 
+def _feishu_timestamp_ms(dt: datetime) -> int:
+    resolved = dt if dt.tzinfo else dt.replace(tzinfo=FEISHU_SYNC_TZ)
+    return int(resolved.timestamp() * 1000)
+
+
 def _task_calendar_window(row) -> tuple[str, str, str, dict[str, object]]:
     duration = max(15, int(row["duration_minutes"] or 60))
     title = str(row["title"] or "").strip() or "未命名任务"
@@ -4857,6 +4875,27 @@ def _feishu_api_post(*, tenant_access_token: str, path: str, body: dict[str, obj
     return payload
 
 
+def _feishu_api_post_multipart(
+    *,
+    tenant_access_token: str,
+    path: str,
+    data: dict[str, object],
+    files: dict[str, tuple[str, bytes, str]],
+) -> dict:
+    import httpx
+
+    with httpx.Client(timeout=httpx.Timeout(30.0, connect=5.0)) as client:
+        response = client.post(
+            f"https://open.feishu.cn/open-apis{path}",
+            headers={"Authorization": f"Bearer {tenant_access_token}"},
+            data={key: str(value) for key, value in data.items()},
+            files=files,
+        )
+    payload = _feishu_parse_response_json(response)
+    _raise_for_feishu_api_error(payload, f"飞书 multipart POST {path} 失败。")
+    return payload
+
+
 def _feishu_api_patch(*, tenant_access_token: str, path: str, body: dict[str, object]) -> dict:
     import httpx
 
@@ -4893,6 +4932,37 @@ def _feishu_api_delete(*, tenant_access_token: str, path: str) -> dict:
             f"https://open.feishu.cn/open-apis{path}",
             headers={"Authorization": f"Bearer {tenant_access_token}"},
         )
+    try:
+        payload = _feishu_parse_response_json(response)
+    except HTTPException:
+        if 200 <= int(getattr(response, "status_code", 0) or 0) < 300:
+            logger.warning(
+                "feishu.delete.non_json_success",
+                extra={"path": path, "status_code": getattr(response, "status_code", None)},
+            )
+            return {"code": 0, "data": {}}
+        raise
+    _raise_for_feishu_api_error(payload, f"飞书 DELETE {path} 失败。")
+    return payload
+
+
+def _feishu_api_delete_with_body(
+    *,
+    tenant_access_token: str,
+    path: str,
+    body: dict[str, object],
+    params: dict[str, object] | None = None,
+) -> dict:
+    import httpx
+
+    with httpx.Client(timeout=httpx.Timeout(20.0, connect=5.0)) as client:
+        response = client.request(
+            "DELETE",
+            f"https://open.feishu.cn/open-apis{path}",
+            headers={"Authorization": f"Bearer {tenant_access_token}", "Content-Type": "application/json"},
+            params=params or {},
+            json=body,
+        )
     payload = _feishu_parse_response_json(response)
     _raise_for_feishu_api_error(payload, f"飞书 DELETE {path} 失败。")
     return payload
@@ -4911,6 +4981,340 @@ def _feishu_calendar_event_id(payload: dict | None) -> str | None:
     if payload.get("event_id"):
         return str(payload["event_id"])
     return None
+
+
+def _feishu_calendar_attendee_user_ids(payload: dict | None) -> set[str]:
+    if not isinstance(payload, dict):
+        return set()
+    data = payload.get("data")
+    items: object = []
+    if isinstance(data, dict):
+        items = data.get("items") or []
+    if not isinstance(items, list):
+        return set()
+    user_ids: set[str] = set()
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        user_id = str(item.get("user_id") or "").strip()
+        if user_id:
+            user_ids.add(user_id)
+    return user_ids
+
+
+def _feishu_list_calendar_event_attendees(
+    *,
+    tenant_access_token: str,
+    calendar_id: str,
+    event_id: str,
+) -> dict:
+    return _feishu_api_get(
+        tenant_access_token=tenant_access_token,
+        path=f"/calendar/v4/calendars/{calendar_id}/events/{event_id}/attendees",
+        params={"user_id_type": "open_id", "page_size": 100},
+    )
+
+
+def _feishu_create_calendar_event_attendees(
+    *,
+    tenant_access_token: str,
+    calendar_id: str,
+    event_id: str,
+    open_ids: list[str],
+    need_notification: bool = False,
+) -> dict:
+    attendees = [{"type": "user", "user_id": open_id} for open_id in open_ids if open_id]
+    if not attendees:
+        return {"code": 0, "data": {"items": []}}
+    return _feishu_api_post(
+        tenant_access_token=tenant_access_token,
+        path=f"/calendar/v4/calendars/{calendar_id}/events/{event_id}/attendees?user_id_type=open_id",
+        body={
+            "attendees": attendees,
+            "need_notification": bool(need_notification),
+            "add_operator_to_attendee": True,
+        },
+    )
+
+
+def _task_feishu_calendar_attendee_open_ids(
+    state: AppState,
+    *,
+    task_row,
+    current_user: SessionUser,
+    tenant_access_token: str,
+) -> tuple[list[str], dict[str, object]]:
+    candidate_user_ids: list[str] = []
+    for candidate in [
+        str(task_row["creator_id"]) if task_row["creator_id"] else "",
+        str(task_row["owner_id"]) if task_row["owner_id"] else "",
+        *_task_collaborator_ids(state, str(task_row["id"])),
+        current_user.id,
+    ]:
+        candidate = str(candidate or "").strip()
+        if candidate and candidate not in candidate_user_ids:
+            candidate_user_ids.append(candidate)
+
+    open_ids: list[str] = []
+    missing_user_ids: list[str] = []
+    failed_user_ids: list[str] = []
+    for user_id in candidate_user_ids:
+        receive_id, match_status, _ = _resolve_feishu_delivery_target(
+            state,
+            organization_id=current_user.organizationId,
+            user_id=user_id,
+            tenant_access_token=tenant_access_token,
+        )
+        if receive_id and receive_id not in open_ids:
+            open_ids.append(receive_id)
+        elif match_status == "failed":
+            failed_user_ids.append(user_id)
+        else:
+            missing_user_ids.append(user_id)
+    return open_ids, {
+        "attendeeCandidateUserCount": len(candidate_user_ids),
+        "attendeeOpenIdCount": len(open_ids),
+        "attendeeMissingUserCount": len(missing_user_ids),
+        "attendeeFailedUserCount": len(failed_user_ids),
+    }
+
+
+def _ensure_task_feishu_calendar_attendees(
+    state: AppState,
+    *,
+    tenant_access_token: str,
+    calendar_id: str,
+    event_id: str,
+    task_row,
+    current_user: SessionUser,
+    need_notification: bool,
+) -> dict[str, object]:
+    open_ids, attendee_metadata = _task_feishu_calendar_attendee_open_ids(
+        state,
+        task_row=task_row,
+        current_user=current_user,
+        tenant_access_token=tenant_access_token,
+    )
+    if not open_ids:
+        return {**attendee_metadata, "attendeeSyncStatus": "no_matched_user"}
+    existing_payload = _feishu_list_calendar_event_attendees(
+        tenant_access_token=tenant_access_token,
+        calendar_id=calendar_id,
+        event_id=event_id,
+    )
+    existing_open_ids = _feishu_calendar_attendee_user_ids(existing_payload)
+    missing_open_ids = [open_id for open_id in open_ids if open_id not in existing_open_ids]
+    if missing_open_ids:
+        _feishu_create_calendar_event_attendees(
+            tenant_access_token=tenant_access_token,
+            calendar_id=calendar_id,
+            event_id=event_id,
+            open_ids=missing_open_ids,
+            need_notification=need_notification,
+        )
+    return {
+        **attendee_metadata,
+        "attendeeSyncStatus": "synced",
+        "attendeeAddedCount": len(missing_open_ids),
+        "attendeeExistingCount": len(existing_open_ids.intersection(open_ids)),
+    }
+
+
+def _feishu_task_remote_id(payload: dict | None) -> str | None:
+    if not isinstance(payload, dict):
+        return None
+    data = payload.get("data")
+    task = data.get("task") if isinstance(data, dict) else None
+    if isinstance(task, dict):
+        for key in ("guid", "task_guid", "task_id"):
+            if task.get(key):
+                return str(task[key])
+    for key in ("guid", "task_guid", "task_id"):
+        if payload.get(key):
+            return str(payload[key])
+    return None
+
+
+def _feishu_task_remote_url(payload: dict | None) -> str | None:
+    if not isinstance(payload, dict):
+        return None
+    data = payload.get("data")
+    task = data.get("task") if isinstance(data, dict) else None
+    if isinstance(task, dict) and task.get("url"):
+        return str(task["url"])
+    if payload.get("url"):
+        return str(payload["url"])
+    return None
+
+
+def _task_feishu_task_member_open_ids(
+    state: AppState,
+    *,
+    task_row,
+    current_user: SessionUser,
+    tenant_access_token: str,
+) -> tuple[list[dict[str, str]], dict[str, object]]:
+    creator_id = str(task_row["creator_id"]) if task_row["creator_id"] else ""
+    owner_id = str(task_row["owner_id"]) if task_row["owner_id"] else ""
+    collaborator_ids = _task_collaborator_ids(state, str(task_row["id"]))
+    desired_roles: list[tuple[str, str]] = []
+    assignee_user_ids = list(dict.fromkeys([item for item in [owner_id, *collaborator_ids] if item]))
+    if not assignee_user_ids:
+        assignee_user_ids = list(dict.fromkeys([item for item in [current_user.id, creator_id] if item]))
+    for user_id in assignee_user_ids:
+        desired_roles.append((user_id, "assignee"))
+    for user_id in [creator_id, current_user.id]:
+        user_id = str(user_id or "").strip()
+        if user_id and user_id not in assignee_user_ids:
+            desired_roles.append((user_id, "follower"))
+
+    members: list[dict[str, str]] = []
+    seen_open_ids: set[str] = set()
+    missing_user_ids: list[str] = []
+    failed_user_ids: list[str] = []
+    for user_id, role in desired_roles:
+        receive_id, match_status, _ = _resolve_feishu_delivery_target(
+            state,
+            organization_id=current_user.organizationId,
+            user_id=user_id,
+            tenant_access_token=tenant_access_token,
+        )
+        if receive_id and receive_id not in seen_open_ids:
+            seen_open_ids.add(receive_id)
+            members.append({"id": receive_id, "type": "user", "role": role})
+        elif match_status == "failed":
+            failed_user_ids.append(user_id)
+        else:
+            missing_user_ids.append(user_id)
+    return members, {
+        "taskMemberCandidateUserCount": len(desired_roles),
+        "taskMemberOpenIdCount": len(members),
+        "taskMemberMissingUserCount": len(missing_user_ids),
+        "taskMemberFailedUserCount": len(failed_user_ids),
+    }
+
+
+def _feishu_task_time_parts(row) -> tuple[dict[str, object] | None, dict[str, object] | None, dict[str, object]]:
+    details: dict[str, object] = {}
+    scheduled_start, scheduled_start_date_only = _parse_feishu_sync_datetime(str(row["scheduled_start_at"]) if row["scheduled_start_at"] else None)
+    scheduled_end, scheduled_end_date_only = _parse_feishu_sync_datetime(str(row["scheduled_end_at"]) if row["scheduled_end_at"] else None)
+    deadline, deadline_date_only = _parse_feishu_sync_datetime(str(row["deadline_at"]) if row["deadline_at"] else None)
+    due_date, due_date_only = _parse_feishu_sync_datetime(str(row["due_date"]) if row["due_date"] else None)
+    start_date, start_date_only = _parse_feishu_sync_datetime(str(row["start_date"]) if row["start_date"] else None)
+
+    start: dict[str, object] | None = None
+    due: dict[str, object] | None = None
+    if scheduled_start:
+        start = {"timestamp": _feishu_timestamp_ms(scheduled_start), "is_all_day": bool(scheduled_start_date_only)}
+        details["startAt"] = scheduled_start.isoformat()
+    elif start_date:
+        start = {"timestamp": _feishu_timestamp_ms(start_date), "is_all_day": bool(start_date_only)}
+        details["startAt"] = start_date.isoformat()
+
+    if scheduled_end:
+        due = {"timestamp": _feishu_timestamp_ms(scheduled_end), "is_all_day": bool(scheduled_end_date_only)}
+        details["dueAt"] = scheduled_end.isoformat()
+    elif deadline:
+        due = {"timestamp": _feishu_timestamp_ms(deadline), "is_all_day": bool(deadline_date_only)}
+        details["dueAt"] = deadline.isoformat()
+    elif due_date:
+        due = {"timestamp": _feishu_timestamp_ms(due_date), "is_all_day": True if due_date_only else False}
+        details["dueAt"] = due_date.isoformat()
+    elif scheduled_start and not scheduled_start_date_only:
+        duration = max(15, int(row["duration_minutes"] or 60))
+        inferred_due = scheduled_start + timedelta(minutes=duration)
+        due = {"timestamp": _feishu_timestamp_ms(inferred_due), "is_all_day": False}
+        details["dueAt"] = inferred_due.isoformat()
+
+    if start and due and not start.get("is_all_day") and not due.get("is_all_day") and int(due["timestamp"]) < int(start["timestamp"]):
+        due = dict(start)
+        details["dueAt"] = details.get("startAt", "")
+    return start, due, details
+
+
+def _feishu_task_body(
+    state: AppState,
+    *,
+    task_row,
+    current_user: SessionUser,
+    tenant_access_token: str,
+    include_immutable: bool,
+) -> tuple[dict[str, object], dict[str, object]]:
+    members, member_metadata = _task_feishu_task_member_open_ids(
+        state,
+        task_row=task_row,
+        current_user=current_user,
+        tenant_access_token=tenant_access_token,
+    )
+    title = str(task_row["title"] or "").strip() or "未命名任务"
+    description = str(task_row["description"] or "").strip()
+    start, due, time_metadata = _feishu_task_time_parts(task_row)
+    body: dict[str, object] = {
+        "summary": title[:3000],
+        "description": description[:3000],
+        "members": members,
+        "extra": to_json({"source": "yiyu-workbench", "taskId": str(task_row["id"])}),
+        "completed_at": _feishu_timestamp_ms(datetime.now(tz=FEISHU_SYNC_TZ)) if str(task_row["progress_status"] or "") == "done" else 0,
+    }
+    if start:
+        body["start"] = start
+    if due:
+        body["due"] = due
+    if include_immutable:
+        body["client_token"] = f"yiyu-task-{task_row['id']}"
+    return body, {**member_metadata, **time_metadata, "taskMemberSyncStatus": "synced" if members else "no_matched_user"}
+
+
+def _feishu_create_task(
+    *,
+    tenant_access_token: str,
+    body: dict[str, object],
+) -> dict:
+    return _feishu_api_post(
+        tenant_access_token=tenant_access_token,
+        path="/task/v2/tasks?user_id_type=open_id",
+        body=body,
+    )
+
+
+def _feishu_update_task(
+    *,
+    tenant_access_token: str,
+    task_guid: str,
+    body: dict[str, object],
+    update_fields: list[str],
+) -> dict:
+    return _feishu_api_patch(
+        tenant_access_token=tenant_access_token,
+        path=f"/task/v2/tasks/{task_guid}?user_id_type=open_id",
+        body={"task": body, "update_fields": update_fields},
+    )
+
+
+def _feishu_add_task_members(
+    *,
+    tenant_access_token: str,
+    task_guid: str,
+    members: list[dict[str, str]],
+) -> dict:
+    if not members:
+        return {"code": 0, "data": {}}
+    return _feishu_api_post(
+        tenant_access_token=tenant_access_token,
+        path=f"/task/v2/tasks/{task_guid}/add_members?user_id_type=open_id",
+        body={"members": members, "client_token": f"yiyu-task-members-{task_guid}-{int(datetime.now(tz=FEISHU_SYNC_TZ).timestamp())}"},
+    )
+
+
+def _feishu_delete_task(
+    *,
+    tenant_access_token: str,
+    task_guid: str,
+) -> dict:
+    return _feishu_api_delete(
+        tenant_access_token=tenant_access_token,
+        path=f"/task/v2/tasks/{task_guid}",
+    )
 
 
 def _feishu_calendar_event_body(row, window: dict[str, object], *, mode: str) -> dict[str, object]:
@@ -4989,6 +5393,111 @@ def _feishu_create_docx_document(*, tenant_access_token: str, title: str) -> dic
     )
 
 
+def _feishu_current_user_open_id(state: AppState, *, current_user: SessionUser) -> str:
+    target = state.db.fetchone(
+        """
+        SELECT receive_id
+        FROM org_feishu_delivery_targets
+        WHERE organization_id = ? AND user_id = ? AND match_status = 'matched'
+          AND receive_id_type = 'open_id' AND receive_id IS NOT NULL
+        """,
+        (current_user.organizationId, current_user.id),
+    )
+    return str(target["receive_id"] or "").strip() if target and target["receive_id"] else ""
+
+
+def _feishu_set_docx_org_editable(*, tenant_access_token: str, document_id: str) -> dict:
+    return _feishu_api_patch(
+        tenant_access_token=tenant_access_token,
+        path=f"/drive/v1/permissions/{document_id}/public?type=docx",
+        body={
+            "link_share_entity": "tenant_editable",
+            "external_access_entity": "closed",
+        },
+    )
+
+
+def _feishu_add_docx_member_permission(
+    *,
+    tenant_access_token: str,
+    document_id: str,
+    open_id: str,
+    perm: str = "full_access",
+) -> dict:
+    return _feishu_api_post(
+        tenant_access_token=tenant_access_token,
+        path=f"/drive/v1/permissions/{document_id}/members?type=docx&need_notification=false",
+        body={
+            "member_type": "openid",
+            "member_id": open_id,
+            "perm": perm,
+        },
+    )
+
+
+def _feishu_transfer_docx_owner(*, tenant_access_token: str, document_id: str, open_id: str) -> dict:
+    return _feishu_api_post(
+        tenant_access_token=tenant_access_token,
+        path=f"/drive/v1/permissions/{document_id}/members/transfer_owner?type=docx",
+        body={
+            "member_type": "openid",
+            "member_id": open_id,
+        },
+    )
+
+
+def _ensure_feishu_docx_default_permissions(
+    state: AppState,
+    *,
+    tenant_access_token: str,
+    document_id: str,
+    current_user: SessionUser,
+) -> dict[str, object]:
+    metadata: dict[str, object] = {
+        "docxOrgEditableStatus": "pending",
+        "docxCreatorOwnerStatus": "pending",
+    }
+    try:
+        _feishu_set_docx_org_editable(tenant_access_token=tenant_access_token, document_id=document_id)
+        metadata["docxOrgEditableStatus"] = "synced"
+    except Exception as exc:
+        metadata["docxOrgEditableStatus"] = "failed"
+        metadata["docxOrgEditableError"] = str(exc)[:240]
+        logger.exception("feishu.docx.org_editable_failed", extra={"document_id": document_id})
+
+    open_id = _feishu_current_user_open_id(state, current_user=current_user)
+    metadata["docxCreatorOpenIdMatched"] = bool(open_id)
+    if not open_id:
+        metadata["docxCreatorOwnerStatus"] = "no_matched_open_id"
+        return metadata
+
+    try:
+        _feishu_add_docx_member_permission(
+            tenant_access_token=tenant_access_token,
+            document_id=document_id,
+            open_id=open_id,
+            perm="full_access",
+        )
+        metadata["docxCreatorPermissionStatus"] = "full_access"
+    except Exception as exc:
+        metadata["docxCreatorPermissionStatus"] = "failed"
+        metadata["docxCreatorPermissionError"] = str(exc)[:240]
+        logger.exception("feishu.docx.creator_permission_failed", extra={"document_id": document_id})
+
+    try:
+        _feishu_transfer_docx_owner(
+            tenant_access_token=tenant_access_token,
+            document_id=document_id,
+            open_id=open_id,
+        )
+        metadata["docxCreatorOwnerStatus"] = "transferred"
+    except Exception as exc:
+        metadata["docxCreatorOwnerStatus"] = "permission_only"
+        metadata["docxCreatorOwnerError"] = str(exc)[:240]
+        logger.warning("feishu.docx.owner_transfer_failed: %s", exc)
+    return metadata
+
+
 def _basic_feishu_text_blocks(markdown: str) -> list[dict[str, object]]:
     lines = [line.rstrip() for line in str(markdown or "").replace("\r\n", "\n").splitlines()]
     blocks: list[dict[str, object]] = []
@@ -5046,7 +5555,107 @@ def _basic_feishu_text_blocks(markdown: str) -> list[dict[str, object]]:
     return blocks[:80]
 
 
+_DATA_IMAGE_MARKDOWN_RE = re.compile(
+    r"!\[([^\]]{0,120})\]\(\s*(data:image/([a-zA-Z0-9.+-]+);base64,([^) \t\r\n]+))(?:\s+\"[^\"]*\")?\s*\)",
+    re.IGNORECASE,
+)
+_DATA_IMAGE_HTML_RE = re.compile(
+    r"<img\b[^>]*\bsrc=[\"'](data:image/([a-zA-Z0-9.+-]+);base64,([^\"']+))[\"'][^>]*>",
+    re.IGNORECASE,
+)
+_DATA_IMAGE_BARE_RE = re.compile(
+    r"data:image/([a-zA-Z0-9.+-]+);base64,([A-Za-z0-9+/=_-]{80,})",
+    re.IGNORECASE,
+)
+_DATA_IMAGE_ANY_RE = re.compile(
+    "|".join(
+        [
+            _DATA_IMAGE_MARKDOWN_RE.pattern,
+            _DATA_IMAGE_HTML_RE.pattern,
+            _DATA_IMAGE_BARE_RE.pattern,
+        ]
+    ),
+    re.IGNORECASE,
+)
+
+
+def _decode_data_image_uri(mime_subtype: str, encoded: str) -> tuple[str, bytes] | None:
+    import base64
+
+    mime = f"image/{str(mime_subtype or 'png').lower()}"
+    data = re.sub(r"\s+", "", str(encoded or ""))
+    if not data:
+        return None
+    try:
+        padding = "=" * (-len(data) % 4)
+        return mime, base64.b64decode(data + padding, validate=False)
+    except Exception:
+        return None
+
+
+def _split_markdown_inline_data_images(markdown: str) -> list[dict[str, object]]:
+    content = str(markdown or "")
+    segments: list[dict[str, object]] = []
+    cursor = 0
+    for match in _DATA_IMAGE_ANY_RE.finditer(content):
+        if match.start() > cursor:
+            segments.append({"type": "text", "content": content[cursor:match.start()]})
+        alt = ""
+        mime_subtype = ""
+        encoded = ""
+        if match.group(1) is not None and match.group(3) is not None and match.group(4) is not None:
+            alt = re.sub(r"\s+", " ", match.group(1) or "").strip()
+            mime_subtype = match.group(3)
+            encoded = match.group(4)
+        elif match.group(6) is not None and match.group(7) is not None:
+            mime_subtype = match.group(6)
+            encoded = match.group(7)
+        elif match.group(8) is not None and match.group(9) is not None:
+            mime_subtype = match.group(8)
+            encoded = match.group(9)
+        decoded = _decode_data_image_uri(mime_subtype, encoded)
+        if decoded:
+            mime, image_bytes = decoded
+            segments.append({"type": "image", "mime": mime, "bytes": image_bytes, "alt": alt})
+        else:
+            segments.append({"type": "image_placeholder", "alt": alt})
+        cursor = match.end()
+    if cursor < len(content):
+        segments.append({"type": "text", "content": content[cursor:]})
+    return segments or [{"type": "text", "content": content}]
+
+
+def _sanitize_feishu_docx_markdown(markdown: str) -> tuple[str, int]:
+    """Remove inline base64 images before Feishu markdown conversion.
+
+    Feishu's markdown converter can treat data URI images as normal text. A
+    single inline image can therefore turn into tens of thousands of base64
+    characters in the generated cloud doc. Keep the document readable and record
+    how many inline images were omitted.
+    """
+    content = str(markdown or "")
+    omitted = 0
+
+    def replace_markdown_image(match: re.Match[str]) -> str:
+        nonlocal omitted
+        omitted += 1
+        alt = re.sub(r"\s+", " ", match.group(1) or "").strip()
+        return f"（图片已省略{f'：{alt}' if alt else ''}）"
+
+    content = _DATA_IMAGE_MARKDOWN_RE.sub(replace_markdown_image, content)
+
+    def replace_generic_image(_match: re.Match[str]) -> str:
+        nonlocal omitted
+        omitted += 1
+        return "（图片已省略）"
+
+    content = _DATA_IMAGE_HTML_RE.sub(replace_generic_image, content)
+    content = _DATA_IMAGE_BARE_RE.sub(replace_generic_image, content)
+    return content, omitted
+
+
 def _feishu_convert_markdown_to_blocks(*, tenant_access_token: str, markdown: str) -> list[dict[str, object]]:
+    markdown, _omitted_inline_images = _sanitize_feishu_docx_markdown(markdown)
     try:
         payload = _feishu_api_post(
             tenant_access_token=tenant_access_token,
@@ -5066,6 +5675,71 @@ def _feishu_convert_markdown_to_blocks(*, tenant_access_token: str, markdown: st
     return _basic_feishu_text_blocks(markdown)
 
 
+def _feishu_upload_docx_image_media(
+    *,
+    tenant_access_token: str,
+    document_id: str,
+    image_block_id: str,
+    image_bytes: bytes,
+    mime: str,
+    alt: str = "",
+) -> dict:
+    ext_map = {
+        "image/jpeg": ".jpg",
+        "image/jpg": ".jpg",
+        "image/png": ".png",
+        "image/webp": ".webp",
+        "image/gif": ".gif",
+    }
+    safe_alt = re.sub(r"[^A-Za-z0-9\u4e00-\u9fff_-]+", "_", str(alt or "image")).strip("_")[:40] or "image"
+    filename = f"{safe_alt}{ext_map.get(str(mime).lower(), '.png')}"
+    return _feishu_api_post_multipart(
+        tenant_access_token=tenant_access_token,
+        path="/drive/v1/medias/upload_all",
+        data={
+            "file_name": filename,
+            "parent_type": "docx_image",
+            "parent_node": image_block_id,
+            "size": len(image_bytes),
+            "extra": to_json({"drive_route_token": document_id}),
+        },
+        files={"file": (filename, image_bytes, mime or "image/png")},
+    )
+
+
+def _feishu_media_file_token(payload: dict | None) -> str | None:
+    if not isinstance(payload, dict):
+        return None
+    data = payload.get("data")
+    if isinstance(data, dict):
+        for key in ("file_token", "fileToken", "token"):
+            if data.get(key):
+                return str(data[key])
+        file = data.get("file")
+        if isinstance(file, dict):
+            for key in ("file_token", "fileToken", "token"):
+                if file.get(key):
+                    return str(file[key])
+    for key in ("file_token", "fileToken", "token"):
+        if payload.get(key):
+            return str(payload[key])
+    return None
+
+
+def _feishu_set_docx_image_token(
+    *,
+    tenant_access_token: str,
+    document_id: str,
+    image_block_id: str,
+    file_token: str,
+) -> dict:
+    return _feishu_api_patch(
+        tenant_access_token=tenant_access_token,
+        path=f"/docx/v1/documents/{document_id}/blocks/{image_block_id}",
+        body={"replace_image": {"token": file_token}},
+    )
+
+
 def _feishu_append_docx_blocks(*, tenant_access_token: str, document_id: str, blocks: list[dict[str, object]]) -> dict:
     if not blocks:
         blocks = _basic_feishu_text_blocks("（空文档）")
@@ -5074,6 +5748,156 @@ def _feishu_append_docx_blocks(*, tenant_access_token: str, document_id: str, bl
         path=f"/docx/v1/documents/{document_id}/blocks/{document_id}/children",
         body={"children": blocks[:80]},
     )
+
+
+def _feishu_append_text_blocks_with_limit(
+    *,
+    tenant_access_token: str,
+    document_id: str,
+    blocks: list[dict[str, object]],
+    remaining_blocks: int,
+) -> int:
+    if remaining_blocks <= 0:
+        return 0
+    usable_blocks = [item for item in blocks if isinstance(item, dict)][:remaining_blocks]
+    if not usable_blocks:
+        return 0
+    _feishu_append_docx_blocks(
+        tenant_access_token=tenant_access_token,
+        document_id=document_id,
+        blocks=usable_blocks,
+    )
+    return len(usable_blocks)
+
+
+def _feishu_append_placeholder_block(
+    *,
+    tenant_access_token: str,
+    document_id: str,
+    text: str,
+    remaining_blocks: int,
+) -> int:
+    if remaining_blocks <= 0:
+        return 0
+    return _feishu_append_text_blocks_with_limit(
+        tenant_access_token=tenant_access_token,
+        document_id=document_id,
+        blocks=_basic_feishu_text_blocks(text),
+        remaining_blocks=remaining_blocks,
+    )
+
+
+def _feishu_append_docx_markdown_content(
+    *,
+    tenant_access_token: str,
+    document_id: str,
+    markdown: str,
+) -> dict[str, object]:
+    segments = _split_markdown_inline_data_images(markdown)
+    metadata: dict[str, object] = {
+        "blockCount": 0,
+        "inlineImageDetectedCount": sum(1 for item in segments if item.get("type") in {"image", "image_placeholder"}),
+        "inlineImageUploadedCount": 0,
+        "inlineImageOmittedCount": 0,
+        "inlineImageFailedCount": 0,
+    }
+    remaining_blocks = 80
+    max_inline_images = 20
+    for segment in segments:
+        if remaining_blocks <= 0:
+            break
+        segment_type = segment.get("type")
+        if segment_type == "text":
+            text = str(segment.get("content") or "")
+            if not text.strip():
+                continue
+            appended = _feishu_append_text_blocks_with_limit(
+                tenant_access_token=tenant_access_token,
+                document_id=document_id,
+                blocks=_feishu_convert_markdown_to_blocks(tenant_access_token=tenant_access_token, markdown=text),
+                remaining_blocks=remaining_blocks,
+            )
+            remaining_blocks -= appended
+            metadata["blockCount"] = int(metadata["blockCount"]) + appended
+            continue
+        alt = str(segment.get("alt") or "").strip()
+        placeholder = f"（图片暂未同步{f'：{alt}' if alt else ''}）"
+        if segment_type != "image":
+            appended = _feishu_append_placeholder_block(
+                tenant_access_token=tenant_access_token,
+                document_id=document_id,
+                text=placeholder,
+                remaining_blocks=remaining_blocks,
+            )
+            remaining_blocks -= appended
+            metadata["blockCount"] = int(metadata["blockCount"]) + appended
+            metadata["inlineImageOmittedCount"] = int(metadata["inlineImageOmittedCount"]) + 1
+            continue
+        if int(metadata["inlineImageUploadedCount"]) >= max_inline_images:
+            appended = _feishu_append_placeholder_block(
+                tenant_access_token=tenant_access_token,
+                document_id=document_id,
+                text=placeholder,
+                remaining_blocks=remaining_blocks,
+            )
+            remaining_blocks -= appended
+            metadata["blockCount"] = int(metadata["blockCount"]) + appended
+            metadata["inlineImageOmittedCount"] = int(metadata["inlineImageOmittedCount"]) + 1
+            continue
+        image_bytes = segment.get("bytes")
+        if not isinstance(image_bytes, (bytes, bytearray)) or not image_bytes:
+            metadata["inlineImageOmittedCount"] = int(metadata["inlineImageOmittedCount"]) + 1
+            continue
+        try:
+            created = _feishu_append_docx_blocks(
+                tenant_access_token=tenant_access_token,
+                document_id=document_id,
+                blocks=[{"block_type": 27, "image": {}}],
+            )
+            block_ids = [item for item in _feishu_docx_block_ids_from_payload(created) if item and item != document_id]
+            image_block_id = block_ids[0] if block_ids else ""
+            if not image_block_id:
+                raise RuntimeError("飞书未返回图片块 ID")
+            upload_payload = _feishu_upload_docx_image_media(
+                tenant_access_token=tenant_access_token,
+                document_id=document_id,
+                image_block_id=image_block_id,
+                image_bytes=bytes(image_bytes),
+                mime=str(segment.get("mime") or "image/png"),
+                alt=alt,
+            )
+            file_token = _feishu_media_file_token(upload_payload)
+            if not file_token:
+                raise RuntimeError("飞书图片上传成功但缺少 file_token")
+            _feishu_set_docx_image_token(
+                tenant_access_token=tenant_access_token,
+                document_id=document_id,
+                image_block_id=image_block_id,
+                file_token=file_token,
+            )
+            metadata["inlineImageUploadedCount"] = int(metadata["inlineImageUploadedCount"]) + 1
+            metadata["blockCount"] = int(metadata["blockCount"]) + 1
+            remaining_blocks -= 1
+        except Exception as exc:
+            metadata["inlineImageFailedCount"] = int(metadata["inlineImageFailedCount"]) + 1
+            metadata["lastInlineImageError"] = str(exc)[:240]
+            logger.warning("feishu.docx.inline_image_sync_failed: %s", exc)
+            appended = _feishu_append_placeholder_block(
+                tenant_access_token=tenant_access_token,
+                document_id=document_id,
+                text=placeholder,
+                remaining_blocks=remaining_blocks,
+            )
+            remaining_blocks -= appended
+            metadata["blockCount"] = int(metadata["blockCount"]) + appended
+    if int(metadata["blockCount"]) <= 0:
+        _feishu_append_docx_blocks(
+            tenant_access_token=tenant_access_token,
+            document_id=document_id,
+            blocks=_basic_feishu_text_blocks("（空文档）"),
+        )
+        metadata["blockCount"] = 1
+    return metadata
 
 
 def _feishu_docx_block_ids_from_payload(payload: dict | None) -> list[str]:
@@ -5096,17 +5920,40 @@ def _feishu_docx_block_ids_from_payload(payload: dict | None) -> list[str]:
     return block_ids
 
 
+def _feishu_docx_root_children_from_payload(payload: dict | None, *, document_id: str) -> list[str]:
+    if not isinstance(payload, dict):
+        return []
+    data = payload.get("data")
+    items = data.get("items") if isinstance(data, dict) else None
+    if not isinstance(items, list):
+        return []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        block_id = item.get("block_id") or item.get("blockId") or item.get("id")
+        if str(block_id or "") != document_id:
+            continue
+        children = item.get("children")
+        if not isinstance(children, list):
+            return []
+        return [str(child) for child in children if child]
+    return []
+
+
 def _feishu_clear_docx_document(*, tenant_access_token: str, document_id: str) -> None:
     payload = _feishu_api_get(
         tenant_access_token=tenant_access_token,
         path=f"/docx/v1/documents/{document_id}/blocks",
     )
-    block_ids = [item for item in _feishu_docx_block_ids_from_payload(payload) if item and item != document_id]
-    for block_id in reversed(block_ids[:120]):
-        _feishu_api_delete(
-            tenant_access_token=tenant_access_token,
-            path=f"/docx/v1/documents/{document_id}/blocks/{block_id}",
-        )
+    child_ids = _feishu_docx_root_children_from_payload(payload, document_id=document_id)
+    if not child_ids:
+        return
+    _feishu_api_delete_with_body(
+        tenant_access_token=tenant_access_token,
+        path=f"/docx/v1/documents/{document_id}/blocks/{document_id}/children/batch_delete",
+        params={"document_revision_id": -1, "client_token": str(uuid4())},
+        body={"start_index": 0, "end_index": len(child_ids)},
+    )
 
 
 def _notify_feishu_docx_created_to_current_user(
@@ -5157,7 +6004,11 @@ def _sync_document_to_feishu_docx_record(
         "clientId": payload.clientId or "",
         "triggerSource": payload.triggerSource or "document_saved",
         "contentLength": len(content),
+        "title": title,
     }
+    trigger_source = str(payload.triggerSource or "").strip()
+    notify_on_create = bool(payload.notifyOnCreate) or trigger_source == "document_created" or trigger_source.endswith("_document_created")
+    metadata["notifyOnCreate"] = notify_on_create
     if not content:
         row = _upsert_feishu_sync_mapping(
             state,
@@ -5199,18 +6050,66 @@ def _sync_document_to_feishu_docx_record(
         if document_id:
             try:
                 _feishu_clear_docx_document(tenant_access_token=tenant_access_token, document_id=document_id)
-            except Exception:
-                logger.exception("feishu.docx.clear_failed_create_replacement", extra={"document_id": document_id})
-                document_id = ""
-                action = "replace"
+            except Exception as exc:
+                logger.exception("feishu.docx.clear_failed_preserve_mapping", extra={"document_id": document_id})
+                error_message = str(exc.detail) if isinstance(exc, HTTPException) else str(exc)
+                failed_metadata = {
+                    **metadata,
+                    "action": "update_failed_clear",
+                    "preservedRemoteId": document_id,
+                    "preservedRemoteUrl": f"https://feishu.cn/docx/{document_id}",
+                }
+                if queue_on_failure:
+                    _queue_feishu_sync_outbox(
+                        state,
+                        organization_id=current_user.organizationId,
+                        local_type=local_type,
+                        local_id=payload.localId,
+                        remote_type=remote_type,
+                        action="retry_docx_sync",
+                        payload={
+                            "title": title,
+                            "content": content[:120000],
+                            "clientId": payload.clientId or "",
+                            "triggerSource": payload.triggerSource or "document_saved",
+                            "remoteId": document_id,
+                            "requestedByUserId": current_user.id,
+                        },
+                        status_value="failed",
+                        last_error=error_message,
+                    )
+                row = _upsert_feishu_sync_mapping(
+                    state,
+                    organization_id=current_user.organizationId,
+                    local_type=local_type,
+                    local_id=payload.localId,
+                    remote_type=remote_type,
+                    status_value="failed",
+                    message=error_message or "清空原飞书文档失败，已保留原文档映射，未创建新文档。",
+                    remote_id=document_id,
+                    remote_url=f"https://feishu.cn/docx/{document_id}",
+                    metadata=failed_metadata,
+                )
+                return _feishu_sync_status_record(row, local_type=local_type, local_id=payload.localId, remote_type=remote_type)
         if not document_id:
             document_payload = _feishu_create_docx_document(tenant_access_token=tenant_access_token, title=title)
             document_id = _feishu_docx_document_id(document_payload) or ""
             if not document_id:
                 raise HTTPException(status_code=502, detail="飞书文档返回成功但缺少 document_id，无法建立同步映射。")
-        blocks = _feishu_convert_markdown_to_blocks(tenant_access_token=tenant_access_token, markdown=content)
-        _feishu_append_docx_blocks(tenant_access_token=tenant_access_token, document_id=document_id, blocks=blocks)
-        if payload.notifyOnCreate and action == "create":
+        append_metadata = _feishu_append_docx_markdown_content(
+            tenant_access_token=tenant_access_token,
+            document_id=document_id,
+            markdown=content,
+        )
+        permission_metadata: dict[str, object] = {"docxPermissionSyncSkipped": action == "update"}
+        if action != "update":
+            permission_metadata = _ensure_feishu_docx_default_permissions(
+                state,
+                tenant_access_token=tenant_access_token,
+                document_id=document_id,
+                current_user=current_user,
+            )
+        if notify_on_create and action == "create":
             _notify_feishu_docx_created_to_current_user(
                 state,
                 tenant_access_token=tenant_access_token,
@@ -5233,6 +6132,7 @@ def _sync_document_to_feishu_docx_record(
                     "content": content[:120000],
                     "clientId": payload.clientId or "",
                     "triggerSource": payload.triggerSource or "document_saved",
+                    "requestedByUserId": current_user.id,
                 },
                 status_value="failed",
                 last_error=error_message,
@@ -5259,7 +6159,7 @@ def _sync_document_to_feishu_docx_record(
         message="已同步到飞书文档。",
         remote_id=document_id,
         remote_url=f"https://feishu.cn/docx/{document_id}",
-        metadata={**metadata, "action": action, "blockCount": len(blocks)},
+        metadata={**metadata, **append_metadata, **permission_metadata, "action": action, "titleSyncStatus": "not_supported"},
         last_synced_at=now_iso(),
     )
     return _feishu_sync_status_record(row, local_type=local_type, local_id=payload.localId, remote_type=remote_type)
@@ -5275,6 +6175,226 @@ def _feishu_calendar_mapping_row(state: AppState, *, organization_id: str, task_
     )
 
 
+def _feishu_task_mapping_row(state: AppState, *, organization_id: str, task_id: str):
+    return state.db.fetchone(
+        """
+        SELECT * FROM org_feishu_sync_mappings
+        WHERE organization_id = ? AND local_type = 'task' AND local_id = ? AND remote_type = 'feishu_task'
+        """,
+        (organization_id, task_id),
+    )
+
+
+def _retire_task_feishu_calendar_event(
+    state: AppState,
+    *,
+    task_row,
+    current_user: SessionUser,
+    tenant_access_token: str | None = None,
+    trigger_source: str = "task_center_sync",
+) -> dict[str, object]:
+    task_id = str(task_row["id"])
+    existing = _feishu_calendar_mapping_row(state, organization_id=current_user.organizationId, task_id=task_id)
+    deleted_remote_id = ""
+    delete_status = "none"
+    delete_message = "任务已改为同步到飞书任务中心，不再额外创建飞书日程。"
+    if existing and existing["remote_id"]:
+        access_token = tenant_access_token
+        if not access_token:
+            tenant_access = _resolve_org_feishu_tenant_access_token(state, organization_id=current_user.organizationId)
+            access_token = tenant_access[1] if tenant_access else None
+        if access_token:
+            try:
+                _feishu_delete_calendar_event(
+                    tenant_access_token=access_token,
+                    calendar_id=FEISHU_DEFAULT_CALENDAR_ID,
+                    event_id=str(existing["remote_id"]),
+                )
+                deleted_remote_id = str(existing["remote_id"])
+                delete_status = "deleted"
+                delete_message = "已清理旧飞书日历事件；任务时间只保留飞书任务中心这一条。"
+            except Exception as exc:
+                logger.exception("feishu.calendar.retire_failed", extra={"task_id": task_id})
+                delete_status = "failed"
+                delete_message = str(exc.detail) if isinstance(exc, HTTPException) else str(exc)
+        else:
+            delete_status = "no_token"
+            delete_message = "组织尚未配置可用的飞书应用，暂不能清理旧飞书日程。"
+    row = _upsert_feishu_sync_mapping(
+        state,
+        organization_id=current_user.organizationId,
+        local_type="task",
+        local_id=task_id,
+        remote_type="calendar_event",
+        status_value="skipped" if delete_status != "failed" else "failed",
+        message=delete_message,
+        clear_remote_id=delete_status == "deleted",
+        clear_remote_url=delete_status == "deleted",
+        metadata={
+            "triggerSource": trigger_source,
+            "calendarSyncRetired": True,
+            "deleteStatus": delete_status,
+            "deletedRemoteId": deleted_remote_id,
+        },
+        last_synced_at=now_iso() if delete_status == "deleted" else None,
+    )
+    return {
+        "calendarEventRetired": True,
+        "calendarEventDeleteStatus": delete_status,
+        "calendarEventDeletedRemoteId": deleted_remote_id,
+        "calendarEventStatus": str(row["sync_status"]) if row else "",
+    }
+
+
+def _sync_task_to_feishu_task_record(
+    state: AppState,
+    *,
+    task_row,
+    current_user: SessionUser,
+    trigger_source: str = "manual",
+    queue_on_failure: bool = True,
+) -> FeishuSyncStatusRecord:
+    task_id = str(task_row["id"])
+    metadata: dict[str, object] = {
+        "triggerSource": trigger_source,
+        "title": str(task_row["title"] or "").strip() or "未命名任务",
+    }
+    tenant_access = _resolve_org_feishu_tenant_access_token(state, organization_id=current_user.organizationId)
+    if not tenant_access:
+        row = _upsert_feishu_sync_mapping(
+            state,
+            organization_id=current_user.organizationId,
+            local_type="task",
+            local_id=task_id,
+            remote_type="feishu_task",
+            status_value="not_configured",
+            message="组织尚未配置可用的飞书应用，暂不能同步任务中心。",
+            metadata=metadata,
+        )
+        return _feishu_sync_status_record(row, local_type="task", local_id=task_id, remote_type="feishu_task")
+    _, tenant_access_token = tenant_access
+
+    existing = _feishu_task_mapping_row(state, organization_id=current_user.organizationId, task_id=task_id)
+    try:
+        if existing and existing["remote_id"]:
+            body, task_metadata = _feishu_task_body(
+                state,
+                task_row=task_row,
+                current_user=current_user,
+                tenant_access_token=tenant_access_token,
+                include_immutable=False,
+            )
+            if task_metadata.get("taskMemberSyncStatus") == "no_matched_user":
+                raise HTTPException(status_code=400, detail="未匹配到任务成员的飞书账号，暂不能同步到飞书任务中心。")
+            # 飞书 Task v2 的 PATCH 不接受 members；成员变更需要单独的 members API。
+            # 这里先保证任务主体信息、时间和完成状态稳定更新，避免二次同步失败。
+            update_body = dict(body)
+            update_body.pop("members", None)
+            update_fields = [
+                field
+                for field in ("summary", "description", "start", "due", "completed_at", "extra")
+                if field in update_body
+            ]
+            api_payload = _feishu_update_task(
+                tenant_access_token=tenant_access_token,
+                task_guid=str(existing["remote_id"]),
+                body=update_body,
+                update_fields=update_fields,
+            )
+            member_patch_status = "not_needed"
+            member_patch_error = ""
+            try:
+                _feishu_add_task_members(
+                    tenant_access_token=tenant_access_token,
+                    task_guid=str(existing["remote_id"]),
+                    members=[item for item in body.get("members", []) if isinstance(item, dict)],
+                )
+                member_patch_status = "synced"
+            except Exception as exc:
+                member_patch_status = "failed"
+                member_patch_error = str(exc.detail) if isinstance(exc, HTTPException) else str(exc)
+                logger.warning("feishu.task.add_members_failed: %s", member_patch_error, extra={"task_id": task_id})
+            remote_id = str(existing["remote_id"])
+            remote_url = str(existing["remote_url"] or "") or _feishu_task_remote_url(api_payload) or None
+            action = "update"
+        else:
+            body, task_metadata = _feishu_task_body(
+                state,
+                task_row=task_row,
+                current_user=current_user,
+                tenant_access_token=tenant_access_token,
+                include_immutable=True,
+            )
+            if task_metadata.get("taskMemberSyncStatus") == "no_matched_user":
+                raise HTTPException(status_code=400, detail="未匹配到任务成员的飞书账号，暂不能同步到飞书任务中心。")
+            api_payload = _feishu_create_task(
+                tenant_access_token=tenant_access_token,
+                body=body,
+            )
+            remote_id = _feishu_task_remote_id(api_payload) or ""
+            remote_url = _feishu_task_remote_url(api_payload)
+            action = "create"
+        if not remote_id:
+            raise HTTPException(status_code=502, detail="飞书任务返回成功但缺少 guid，无法建立后续更新映射。")
+        if action == "create":
+            member_patch_status = "created_with_members"
+            member_patch_error = ""
+    except Exception as exc:
+        error_message = str(exc.detail) if isinstance(exc, HTTPException) else str(exc)
+        if queue_on_failure:
+            _queue_feishu_sync_outbox(
+                state,
+                organization_id=current_user.organizationId,
+                local_type="task",
+                local_id=task_id,
+                remote_type="feishu_task",
+                action="retry_task_sync",
+                payload={"triggerSource": trigger_source},
+                status_value="failed",
+                last_error=error_message,
+            )
+        row = _upsert_feishu_sync_mapping(
+            state,
+            organization_id=current_user.organizationId,
+            local_type="task",
+            local_id=task_id,
+            remote_type="feishu_task",
+            status_value="failed",
+            message=error_message or "同步飞书任务中心失败。",
+            metadata=metadata,
+        )
+        return _feishu_sync_status_record(row, local_type="task", local_id=task_id, remote_type="feishu_task")
+
+    calendar_retire_metadata = _retire_task_feishu_calendar_event(
+        state,
+        task_row=task_row,
+        current_user=current_user,
+        tenant_access_token=tenant_access_token,
+        trigger_source=f"{trigger_source}:task_center_primary",
+    )
+    row = _upsert_feishu_sync_mapping(
+        state,
+        organization_id=current_user.organizationId,
+        local_type="task",
+        local_id=task_id,
+        remote_type="feishu_task",
+        status_value="synced",
+        message="已同步到飞书任务中心。",
+        remote_id=remote_id,
+        remote_url=remote_url,
+        metadata={
+            **metadata,
+            **task_metadata,
+            "action": action,
+            "taskMemberPatchStatus": member_patch_status,
+            "taskMemberPatchError": member_patch_error,
+            **calendar_retire_metadata,
+        },
+        last_synced_at=now_iso(),
+    )
+    return _feishu_sync_status_record(row, local_type="task", local_id=task_id, remote_type="feishu_task")
+
+
 def _sync_task_to_feishu_calendar_record(
     state: AppState,
     *,
@@ -5285,122 +6405,13 @@ def _sync_task_to_feishu_calendar_record(
     queue_on_failure: bool = True,
 ) -> FeishuSyncStatusRecord:
     task_id = str(task_row["id"])
-    calendar_status, calendar_message, calendar_mode, window = _task_calendar_window(task_row)
-    metadata = {"calendarMode": calendar_mode, "triggerSource": trigger_source, **window}
-    if calendar_status != "ready":
-        existing = _feishu_calendar_mapping_row(state, organization_id=current_user.organizationId, task_id=task_id)
-        deleted_remote_id = None
-        tenant_access_for_delete = (
-            _resolve_org_feishu_tenant_access_token(state, organization_id=current_user.organizationId)
-            if existing and existing["remote_id"]
-            else None
-        )
-        if existing and existing["remote_id"] and tenant_access_for_delete:
-            try:
-                _, tenant_access_token = tenant_access_for_delete
-                _feishu_delete_calendar_event(
-                    tenant_access_token=tenant_access_token,
-                    calendar_id=FEISHU_DEFAULT_CALENDAR_ID,
-                    event_id=str(existing["remote_id"]),
-                )
-                deleted_remote_id = str(existing["remote_id"])
-            except Exception:
-                logger.exception("feishu.calendar.delete_on_unscheduled_failed", extra={"task_id": task_id})
-        row = _upsert_feishu_sync_mapping(
-            state,
-            organization_id=current_user.organizationId,
-            local_type="task",
-            local_id=task_id,
-            remote_type="calendar_event",
-            status_value=calendar_status,
-            message=calendar_message,
-            clear_remote_id=bool(deleted_remote_id),
-            clear_remote_url=bool(deleted_remote_id),
-            metadata={**metadata, "deletedRemoteId": deleted_remote_id or ""},
-        )
-        return _feishu_sync_status_record(row, local_type="task", local_id=task_id, remote_type="calendar_event")
-
-    tenant_access = _resolve_org_feishu_tenant_access_token(state, organization_id=current_user.organizationId)
-    if not tenant_access:
-        row = _upsert_feishu_sync_mapping(
-            state,
-            organization_id=current_user.organizationId,
-            local_type="task",
-            local_id=task_id,
-            remote_type="calendar_event",
-            status_value="not_configured",
-            message="组织尚未配置可用的飞书应用，暂不能同步日历。",
-            metadata=metadata,
-        )
-        return _feishu_sync_status_record(row, local_type="task", local_id=task_id, remote_type="calendar_event")
-    _, tenant_access_token = tenant_access
-
-    existing = _feishu_calendar_mapping_row(state, organization_id=current_user.organizationId, task_id=task_id)
-    body = _feishu_calendar_event_body(task_row, window, mode=calendar_mode)
-    try:
-        if existing and existing["remote_id"]:
-            api_payload = _feishu_update_calendar_event(
-                tenant_access_token=tenant_access_token,
-                calendar_id=FEISHU_DEFAULT_CALENDAR_ID,
-                event_id=str(existing["remote_id"]),
-                body=body,
-            )
-            remote_id = str(existing["remote_id"])
-            action = "update"
-        else:
-            api_payload = _feishu_create_calendar_event(
-                tenant_access_token=tenant_access_token,
-                calendar_id=FEISHU_DEFAULT_CALENDAR_ID,
-                body=body,
-            )
-            remote_id = _feishu_calendar_event_id(api_payload) or ""
-            action = "create"
-        if not remote_id:
-            raise HTTPException(status_code=502, detail="飞书日历返回成功但缺少 event_id，无法建立后续更新映射。")
-    except Exception as exc:
-        error_message = str(exc.detail) if isinstance(exc, HTTPException) else str(exc)
-        if queue_on_failure:
-            _queue_feishu_sync_outbox(
-                state,
-                organization_id=current_user.organizationId,
-                local_type="task",
-                local_id=task_id,
-                remote_type="calendar_event",
-                action="retry_calendar_sync",
-                payload={
-                    "calendarMode": calendar_mode,
-                    "window": window,
-                    "notify": bool(payload.notify) if payload else False,
-                    "triggerSource": trigger_source,
-                },
-                status_value="failed",
-                last_error=error_message,
-            )
-        row = _upsert_feishu_sync_mapping(
-            state,
-            organization_id=current_user.organizationId,
-            local_type="task",
-            local_id=task_id,
-            remote_type="calendar_event",
-            status_value="failed",
-            message=error_message or "同步飞书日历失败。",
-            metadata=metadata,
-        )
-        return _feishu_sync_status_record(row, local_type="task", local_id=task_id, remote_type="calendar_event")
-
-    synced_at = now_iso()
-    row = _upsert_feishu_sync_mapping(
+    _retire_task_feishu_calendar_event(
         state,
-        organization_id=current_user.organizationId,
-        local_type="task",
-        local_id=task_id,
-        remote_type="calendar_event",
-        status_value="synced",
-        message="已同步到飞书日历。",
-        remote_id=remote_id,
-        metadata={**metadata, "action": action},
-        last_synced_at=synced_at,
+        task_row=task_row,
+        current_user=current_user,
+        trigger_source=f"{trigger_source}:calendar_route_retired",
     )
+    row = _feishu_calendar_mapping_row(state, organization_id=current_user.organizationId, task_id=task_id)
     return _feishu_sync_status_record(row, local_type="task", local_id=task_id, remote_type="calendar_event")
 
 
@@ -5433,6 +6444,77 @@ def _auto_sync_task_feishu_calendar(
         logger.exception("feishu.calendar.auto_sync_failed", extra={"task_id": task_id, "trigger_source": trigger_source})
 
 
+def _auto_sync_task_feishu_task(
+    state: AppState,
+    *,
+    task_row,
+    current_user: SessionUser,
+    changed_fields: list[str] | None = None,
+    trigger_source: str = "task_saved",
+) -> None:
+    task_id = str(task_row["id"])
+    existing = _feishu_task_mapping_row(state, organization_id=current_user.organizationId, task_id=task_id)
+    if changed_fields is not None:
+        changed = {field for field in changed_fields if field}
+        if not existing and not changed.intersection(TASK_FEISHU_TASK_SYNC_FIELDS):
+            return
+    try:
+        _sync_task_to_feishu_task_record(
+            state,
+            task_row=task_row,
+            current_user=current_user,
+            trigger_source=trigger_source,
+        )
+    except Exception:
+        logger.exception("feishu.task.auto_sync_failed", extra={"task_id": task_id, "trigger_source": trigger_source})
+
+
+def _delete_feishu_task_sync_mappings_for_deleted_task(
+    state: AppState,
+    *,
+    task_row,
+    current_user: SessionUser,
+) -> None:
+    tenant_access = _resolve_org_feishu_tenant_access_token(state, organization_id=current_user.organizationId)
+    if not tenant_access:
+        return
+    _, tenant_access_token = tenant_access
+    task_id = str(task_row["id"])
+    for remote_type, delete_fn in [
+        ("calendar_event", lambda remote_id: _feishu_delete_calendar_event(tenant_access_token=tenant_access_token, calendar_id=FEISHU_DEFAULT_CALENDAR_ID, event_id=remote_id)),
+        ("feishu_task", lambda remote_id: _feishu_delete_task(tenant_access_token=tenant_access_token, task_guid=remote_id)),
+    ]:
+        existing = state.db.fetchone(
+            """
+            SELECT * FROM org_feishu_sync_mappings
+            WHERE organization_id = ? AND local_type = 'task' AND local_id = ? AND remote_type = ?
+            """,
+            (current_user.organizationId, task_id, remote_type),
+        )
+        if not existing or not existing["remote_id"]:
+            continue
+        try:
+            delete_fn(str(existing["remote_id"]))
+            status_value = "skipped"
+            message = "益语任务已删除，已同步删除飞书侧记录。"
+        except Exception as exc:
+            logger.exception("feishu.task.delete_remote_failed", extra={"task_id": task_id, "remote_type": remote_type})
+            status_value = "failed"
+            message = str(exc.detail) if isinstance(exc, HTTPException) else str(exc)
+        _upsert_feishu_sync_mapping(
+            state,
+            organization_id=current_user.organizationId,
+            local_type="task",
+            local_id=task_id,
+            remote_type=remote_type,
+            status_value=status_value,
+            message=message,
+            clear_remote_id=status_value == "skipped",
+            clear_remote_url=status_value == "skipped",
+            metadata={"triggerSource": "task_deleted", "deletedRemoteId": str(existing["remote_id"])},
+        )
+
+
 def _feishu_sync_actor_for_org(state: AppState, organization_id: str) -> SessionUser | None:
     row = state.db.fetchone(
         """
@@ -5444,6 +6526,22 @@ def _feishu_sync_actor_for_org(state: AppState, organization_id: str) -> Session
         LIMIT 1
         """,
         (organization_id,),
+    )
+    return _row_user(state, row) if row else None
+
+
+def _feishu_sync_actor_by_user_id(state: AppState, *, organization_id: str, user_id: str | None) -> SessionUser | None:
+    normalized_user_id = str(user_id or "").strip()
+    if not normalized_user_id:
+        return None
+    row = state.db.fetchone(
+        """
+        SELECT * FROM employee_accounts
+        WHERE id = ? AND organization_id = ?
+          AND account_status = 'approved'
+          AND (membership_status IS NULL OR membership_status = '' OR membership_status = 'approved')
+        """,
+        (normalized_user_id, organization_id),
     )
     return _row_user(state, row) if row else None
 
@@ -5507,6 +6605,13 @@ def _process_feishu_sync_outbox_once(state: AppState, *, limit: int = 10) -> int
             payload = from_json(row["payload_json"], {}) if row["payload_json"] else {}
             if not isinstance(payload, dict):
                 payload = {}
+            requested_actor = _feishu_sync_actor_by_user_id(
+                state,
+                organization_id=str(row["organization_id"]),
+                user_id=str(payload.get("requestedByUserId") or ""),
+            )
+            if requested_actor is not None:
+                actor = requested_actor
             if action == "retry_docx_sync":
                 record = _sync_document_to_feishu_docx_record(
                     state,
@@ -5529,6 +6634,15 @@ def _process_feishu_sync_outbox_once(state: AppState, *, limit: int = 10) -> int
                     current_user=actor,
                     payload=FeishuTaskCalendarSyncPayload(notify=False),
                     trigger_source="retry_calendar_sync",
+                    queue_on_failure=False,
+                )
+            elif action == "retry_task_sync":
+                task_row = _task_row_or_404(state, str(row["local_id"]))
+                record = _sync_task_to_feishu_task_record(
+                    state,
+                    task_row=task_row,
+                    current_user=actor,
+                    trigger_source="retry_task_sync",
                     queue_on_failure=False,
                 )
             else:
@@ -12157,6 +13271,27 @@ def create_app() -> FastAPI:
             trigger_source="manual",
         )
 
+    @app.post("/api/v1/feishu-sync/tasks/{task_id}", response_model=FeishuSyncStatusRecord)
+    def sync_task_to_feishu_task_center(
+        task_id: str,
+        current_user: SessionUser = Depends(lambda authorization=Header(default=None): _require_auth(app, authorization)),
+    ) -> FeishuSyncStatusRecord:
+        task_row = _task_row_or_404(state, task_id)
+        if str(task_row["organization_id"]) != current_user.organizationId:
+            raise HTTPException(status_code=404, detail="Task not found")
+        if current_user.primaryRole != "admin":
+            owner_id = str(task_row["owner_id"]) if task_row["owner_id"] else None
+            creator_id = str(task_row["creator_id"])
+            collaborator_ids = set(_task_collaborator_ids(state, task_id))
+            if current_user.id not in collaborator_ids and current_user.id != owner_id and current_user.id != creator_id:
+                raise HTTPException(status_code=404, detail="Task not found")
+        return _sync_task_to_feishu_task_record(
+            state,
+            task_row=task_row,
+            current_user=current_user,
+            trigger_source="manual",
+        )
+
     @app.post("/api/v1/feishu-sync/documents", response_model=FeishuSyncStatusRecord)
     def sync_document_to_feishu_docx(
         payload: FeishuDocumentSyncPayload,
@@ -16561,6 +17696,13 @@ def create_app() -> FastAPI:
             changed_fields=None,
             trigger_source="task_created",
         )
+        _auto_sync_task_feishu_task(
+            state,
+            task_row=task_row,
+            current_user=current_user,
+            changed_fields=None,
+            trigger_source="task_created",
+        )
         if owner_id:
             _notify_task_feishu_recipients(
                 state,
@@ -16806,12 +17948,21 @@ def create_app() -> FastAPI:
             changed_fields.append("scheduledEndAt")
         if payload.durationMinutes is not None and int(merged["duration_minutes"] or 60) != previous_duration_minutes:
             changed_fields.append("durationMinutes")
+        if status_changed:
+            changed_fields.append("progressStatus")
         if next_owner_id != previous_owner_id:
             changed_fields.append("ownerId")
         if payload.collaboratorIds is not None:
             if {item for item in next_collaborator_ids if item} != {item for item in existing_collaborator_ids if item}:
                 changed_fields.append("collaboratorIds")
         _auto_sync_task_feishu_calendar(
+            state,
+            task_row=updated_row,
+            current_user=current_user,
+            changed_fields=changed_fields,
+            trigger_source="task_updated",
+        )
+        _auto_sync_task_feishu_task(
             state,
             task_row=updated_row,
             current_user=current_user,
@@ -16839,6 +17990,7 @@ def create_app() -> FastAPI:
         due_date_changed = False
         owner_changed = False
         _assert_task_edit_permission(state, current_user, row, content_changed, due_date_changed, owner_changed)
+        _delete_feishu_task_sync_mappings_for_deleted_task(state, task_row=row, current_user=current_user)
         state.db.execute("DELETE FROM event_line_activities WHERE source_type = 'task_activity' AND source_id = ?", (task_id,))
         state.db.execute("DELETE FROM tasks WHERE id = ?", (task_id,))
         return {"deleted": True}
