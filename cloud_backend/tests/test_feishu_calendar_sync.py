@@ -148,6 +148,7 @@ def test_sync_document_creates_feishu_docx_and_writes_blocks(tmp_path, monkeypat
     assert created_titles == ["项目会议纪要"]
     assert appended_blocks and appended_blocks[0][0]["block_type"] == 3
     assert sent_messages and "项目会议纪要" in sent_messages[0]
+    assert "https://feishu.cn/docx/docx_demo_1" in sent_messages[0]
 
 
 def test_sync_document_records_not_configured_without_feishu_credentials(tmp_path, monkeypatch):
