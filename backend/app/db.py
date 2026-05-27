@@ -4521,6 +4521,22 @@ class Database:
             self._ensure_column("handbook_entries", "last_synced_at", "TEXT NOT NULL DEFAULT ''")
             self._ensure_column("handbook_entries", "pending_sync_action", "TEXT NOT NULL DEFAULT ''")
 
+            # 真 成长积分云端同步字段 (顾源源 5/27 阶段 1 · "卷"机制核心)
+            # 真同步: signal_events (信号源) + evidence_records (证据/积分) + validation_events (验证)
+            # 真不同步: ability_profiles (seed) / capture_states (派生) / weekly_snapshot (派生)
+            self._ensure_column("growth_signal_events", "sync_status", "TEXT NOT NULL DEFAULT 'local'")
+            self._ensure_column("growth_signal_events", "last_synced_at", "TEXT NOT NULL DEFAULT ''")
+            self._ensure_column("growth_signal_events", "pending_sync_action", "TEXT NOT NULL DEFAULT ''")
+            self._ensure_column("growth_signal_events", "updated_at", "TEXT NOT NULL DEFAULT ''")
+            self._ensure_column("growth_evidence_records", "sync_status", "TEXT NOT NULL DEFAULT 'local'")
+            self._ensure_column("growth_evidence_records", "last_synced_at", "TEXT NOT NULL DEFAULT ''")
+            self._ensure_column("growth_evidence_records", "pending_sync_action", "TEXT NOT NULL DEFAULT ''")
+            self._ensure_column("growth_evidence_records", "updated_at", "TEXT NOT NULL DEFAULT ''")
+            self._ensure_column("growth_validation_events", "sync_status", "TEXT NOT NULL DEFAULT 'local'")
+            self._ensure_column("growth_validation_events", "last_synced_at", "TEXT NOT NULL DEFAULT ''")
+            self._ensure_column("growth_validation_events", "pending_sync_action", "TEXT NOT NULL DEFAULT ''")
+            self._ensure_column("growth_validation_events", "updated_at", "TEXT NOT NULL DEFAULT ''")
+
             # event_line_delete_tombstones 表早就有了，但缺一列 merged_to_id —
             # 合并事件线时记录"源被合并到了哪条目标 event_line"。
             # 之后云端 pull 拉回 tasks 时，如果发现 task.eventLineId 命中了

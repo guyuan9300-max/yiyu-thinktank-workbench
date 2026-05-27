@@ -1632,6 +1632,89 @@ class Database:
                 """
             )
 
+            # ── 成长积分云端同步 (顾源源 5/27 阶段 1) ──
+            # 同事真互看积分 → "卷" 机制生效
+            # 3 表: signal_events (信号) + evidence_records (证据/积分) + validation_events (验证)
+            # 派生表 (capture_states + weekly_snapshot) 真本地重算, 真不上云
+            self.conn.executescript(
+                """
+                CREATE TABLE IF NOT EXISTS cloud_growth_signal_events (
+                    id TEXT PRIMARY KEY,
+                    organization_id TEXT NOT NULL,
+                    user_id TEXT NOT NULL,
+                    user_name TEXT NOT NULL DEFAULT '',
+                    source_type TEXT NOT NULL,
+                    source_id TEXT NOT NULL,
+                    review_id TEXT,
+                    task_id TEXT,
+                    week_label TEXT NOT NULL DEFAULT '',
+                    raw_text TEXT NOT NULL DEFAULT '',
+                    context_json TEXT NOT NULL DEFAULT '{}',
+                    dedupe_key TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    UNIQUE(organization_id, dedupe_key),
+                    FOREIGN KEY(organization_id) REFERENCES organizations(id) ON DELETE CASCADE,
+                    FOREIGN KEY(user_id) REFERENCES employee_accounts(id) ON DELETE CASCADE
+                );
+                CREATE INDEX IF NOT EXISTS idx_cloud_growth_signal_org_updated
+                    ON cloud_growth_signal_events(organization_id, updated_at DESC);
+                CREATE INDEX IF NOT EXISTS idx_cloud_growth_signal_user_created
+                    ON cloud_growth_signal_events(organization_id, user_id, created_at DESC);
+
+                CREATE TABLE IF NOT EXISTS cloud_growth_evidence_records (
+                    id TEXT PRIMARY KEY,
+                    organization_id TEXT NOT NULL,
+                    signal_id TEXT NOT NULL,
+                    user_id TEXT NOT NULL,
+                    user_name TEXT NOT NULL DEFAULT '',
+                    ability_key TEXT NOT NULL,
+                    evidence_type TEXT NOT NULL,
+                    level TEXT NOT NULL,
+                    confidence TEXT NOT NULL DEFAULT 'medium',
+                    reason TEXT NOT NULL DEFAULT '',
+                    review_id TEXT,
+                    task_id TEXT,
+                    handbook_entry_id TEXT,
+                    metadata_json TEXT NOT NULL DEFAULT '{}',
+                    contribution_tags_json TEXT NOT NULL DEFAULT '[]',
+                    org_contribution_score INTEGER NOT NULL DEFAULT 0,
+                    suggested_premium_rate REAL NOT NULL DEFAULT 0,
+                    validation_state TEXT NOT NULL DEFAULT 'candidate',
+                    ai_reason TEXT NOT NULL DEFAULT '',
+                    ai_confidence REAL NOT NULL DEFAULT 0,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    FOREIGN KEY(organization_id) REFERENCES organizations(id) ON DELETE CASCADE,
+                    FOREIGN KEY(signal_id) REFERENCES cloud_growth_signal_events(id) ON DELETE CASCADE,
+                    FOREIGN KEY(user_id) REFERENCES employee_accounts(id) ON DELETE CASCADE
+                );
+                CREATE INDEX IF NOT EXISTS idx_cloud_growth_evidence_org_updated
+                    ON cloud_growth_evidence_records(organization_id, updated_at DESC);
+                CREATE INDEX IF NOT EXISTS idx_cloud_growth_evidence_user_ability
+                    ON cloud_growth_evidence_records(organization_id, user_id, ability_key, created_at DESC);
+
+                CREATE TABLE IF NOT EXISTS cloud_growth_validation_events (
+                    id TEXT PRIMARY KEY,
+                    organization_id TEXT NOT NULL,
+                    user_id TEXT NOT NULL,
+                    evidence_id TEXT NOT NULL,
+                    event_type TEXT NOT NULL,
+                    actor_id TEXT NOT NULL DEFAULT '',
+                    actor_name TEXT NOT NULL DEFAULT '',
+                    source_type TEXT NOT NULL DEFAULT '',
+                    source_id TEXT,
+                    detail_json TEXT NOT NULL DEFAULT '{}',
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    FOREIGN KEY(organization_id) REFERENCES organizations(id) ON DELETE CASCADE,
+                    FOREIGN KEY(evidence_id) REFERENCES cloud_growth_evidence_records(id) ON DELETE CASCADE
+                );
+                CREATE INDEX IF NOT EXISTS idx_cloud_growth_validation_org_updated
+                    ON cloud_growth_validation_events(organization_id, updated_at DESC);
+                """
+            )
+
             self.conn.commit()
 
     def _table_columns(self, table_name: str) -> set[str]:

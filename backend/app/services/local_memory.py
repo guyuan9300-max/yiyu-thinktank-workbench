@@ -323,6 +323,13 @@ def save_pending_quotes(
                 VALUES(?, ?, ?, 'open', ?, ?, ?)""",
                 (f"gc_{_uuid4().hex[:10]}", user_id, sig_id, f"AI从{source}中提炼", now, now),
             )
+            # 真5/27 阶段 1 · mark signal pending → 后台 worker push 云端
+            try:
+                from app.services.growth_sync import mark_signal_pending
+                mark_signal_pending(db, sig_id)
+            except Exception as _exc:
+                import logging
+                logging.getLogger(__name__).warning("mark signal pending (local_memory) failed: %s", _exc)
             saved += 1
         except Exception:
             pass

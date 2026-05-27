@@ -1143,6 +1143,14 @@ def _award_badge_xp(
             created_at,
         ),
     )
+    # 真5/27 阶段 1 · mark pending → 真后台 worker 真push 云端 ("卷"机制核心)
+    try:
+        from app.services.growth_sync import mark_signal_pending, mark_evidence_pending
+        mark_signal_pending(db, signal_id)
+        mark_evidence_pending(db, evidence_id)
+    except Exception as _exc:
+        import logging
+        logging.getLogger(__name__).warning("mark growth pending (badge unlock) failed: %s", _exc)
 
 
 def _sync_badge_unlocks(db: Database, *, user_id: str, user_name: str, badges: list[BadgeProgressRecord]) -> None:

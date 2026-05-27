@@ -3114,6 +3114,13 @@ def _insert_signal(
             created_at,
         ),
     )
+    # 真5/27 阶段 1 · mark pending → 真后台 worker 真push 云端
+    try:
+        from app.services.growth_sync import mark_signal_pending
+        mark_signal_pending(db, signal_id)
+    except Exception as _exc:
+        import logging
+        logging.getLogger(__name__).warning("mark signal pending failed: %s", _exc)
     return signal_id
 
 
@@ -3307,6 +3314,13 @@ def _insert_evidence_and_xp(
             created_at,
         ),
     )
+    # 真5/27 阶段 1 · mark evidence pending → 后台 worker push 云端
+    try:
+        from app.services.growth_sync import mark_evidence_pending
+        mark_evidence_pending(db, evidence_id)
+    except Exception as _exc:
+        import logging
+        logging.getLogger(__name__).warning("mark evidence pending failed: %s", _exc)
     return evidence_id, total_xp, validation_state
 
 
@@ -3333,6 +3347,7 @@ def _record_validation_event(
     )
     if existing:
         return False
+    event_id = _new_id("gve")
     db.execute(
         """
         INSERT INTO growth_validation_events(
@@ -3340,7 +3355,7 @@ def _record_validation_event(
         ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
-            _new_id("gve"),
+            event_id,
             user_id,
             evidence_id,
             event_type,
@@ -3352,6 +3367,13 @@ def _record_validation_event(
             created_at,
         ),
     )
+    # 真5/27 阶段 1 · mark validation event pending → 后台 worker push 云端
+    try:
+        from app.services.growth_sync import mark_validation_event_pending
+        mark_validation_event_pending(db, event_id)
+    except Exception as _exc:
+        import logging
+        logging.getLogger(__name__).warning("mark validation event pending failed: %s", _exc)
     return True
 
 

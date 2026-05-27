@@ -2291,3 +2291,135 @@ class HandbookSyncResponse(BaseModel):
     """云端拉取响应 (增量 entries + 服务端时间戳)."""
     entries: list[HandbookEntryRecord] = Field(default_factory=list)
     serverTimestamp: str
+
+
+# ──────────────────────────────────────────────────────────────────
+# 成长积分云端同步 (顾源源 5/27 阶段 1 · "卷"机制核心)
+# ──────────────────────────────────────────────────────────────────
+
+
+class GrowthSignalUpsertPayload(BaseModel):
+    """本地 push 一条 signal 事件."""
+    id: str
+    userId: str
+    userName: str = ""
+    sourceType: str
+    sourceId: str
+    reviewId: str | None = None
+    taskId: str | None = None
+    weekLabel: str = ""
+    rawText: str = ""
+    contextJson: str = "{}"
+    dedupeKey: str
+    createdAt: str
+    updatedAt: str = ""
+
+
+class GrowthSignalRecord(BaseModel):
+    id: str
+    organizationId: str
+    userId: str
+    userName: str = ""
+    sourceType: str
+    sourceId: str
+    reviewId: str | None = None
+    taskId: str | None = None
+    weekLabel: str = ""
+    rawText: str = ""
+    contextJson: str = "{}"
+    dedupeKey: str
+    createdAt: str
+    updatedAt: str
+
+
+class GrowthEvidenceUpsertPayload(BaseModel):
+    id: str
+    signalId: str
+    userId: str
+    userName: str = ""
+    abilityKey: str
+    evidenceType: str
+    level: str
+    confidence: str = "medium"
+    reason: str = ""
+    reviewId: str | None = None
+    taskId: str | None = None
+    handbookEntryId: str | None = None
+    metadataJson: str = "{}"
+    contributionTagsJson: str = "[]"
+    orgContributionScore: int = 0
+    suggestedPremiumRate: float = 0.0
+    validationState: str = "candidate"
+    aiReason: str = ""
+    aiConfidence: float = 0.0
+    createdAt: str
+    updatedAt: str = ""
+
+
+class GrowthEvidenceRecord(BaseModel):
+    id: str
+    organizationId: str
+    signalId: str
+    userId: str
+    userName: str = ""
+    abilityKey: str
+    evidenceType: str
+    level: str
+    confidence: str = "medium"
+    reason: str = ""
+    reviewId: str | None = None
+    taskId: str | None = None
+    handbookEntryId: str | None = None
+    metadataJson: str = "{}"
+    contributionTagsJson: str = "[]"
+    orgContributionScore: int = 0
+    suggestedPremiumRate: float = 0.0
+    validationState: str = "candidate"
+    aiReason: str = ""
+    aiConfidence: float = 0.0
+    createdAt: str
+    updatedAt: str
+
+
+class GrowthValidationEventUpsertPayload(BaseModel):
+    id: str
+    userId: str
+    evidenceId: str
+    eventType: str
+    actorId: str = ""
+    actorName: str = ""
+    sourceType: str = ""
+    sourceId: str | None = None
+    detailJson: str = "{}"
+    createdAt: str
+    updatedAt: str = ""
+
+
+class GrowthValidationEventRecord(BaseModel):
+    id: str
+    organizationId: str
+    userId: str
+    evidenceId: str
+    eventType: str
+    actorId: str = ""
+    actorName: str = ""
+    sourceType: str = ""
+    sourceId: str | None = None
+    detailJson: str = "{}"
+    createdAt: str
+    updatedAt: str
+
+
+class GrowthSignalSyncResponse(BaseModel):
+    signals: list[GrowthSignalRecord] = Field(default_factory=list)
+    serverTimestamp: str
+
+
+class GrowthEvidenceSyncResponse(BaseModel):
+    evidence: list[GrowthEvidenceRecord] = Field(default_factory=list)
+    serverTimestamp: str
+
+
+class GrowthValidationEventSyncResponse(BaseModel):
+    events: list[GrowthValidationEventRecord] = Field(default_factory=list)
+    serverTimestamp: str

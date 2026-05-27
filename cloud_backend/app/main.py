@@ -198,6 +198,15 @@ from app.models import (
     HandbookEntryUpsertPayload,
     HandbookEntryRecord as CloudHandbookEntryRecord,
     HandbookSyncResponse,
+    GrowthSignalUpsertPayload,
+    GrowthSignalRecord,
+    GrowthEvidenceUpsertPayload,
+    GrowthEvidenceRecord,
+    GrowthValidationEventUpsertPayload,
+    GrowthValidationEventRecord,
+    GrowthSignalSyncResponse,
+    GrowthEvidenceSyncResponse,
+    GrowthValidationEventSyncResponse,
 )
 from app.smart_input import build_smart_task_draft, transcribe_audio_with_doubao
 from app.bootstrap_security import DEFAULT_BOOTSTRAP_ADMIN_EMAIL, ensure_cloud_secret, resolve_seed_users
@@ -17693,6 +17702,255 @@ def create_app() -> FastAPI:
             )
         entries = [_handbook_entry_record_from_row(row) for row in rows]
         return HandbookSyncResponse(entries=entries, serverTimestamp=now_iso())
+
+    # ────────────────────────────────────────────────────────────────
+    # 成长积分云端同步 (阶段 1 · "卷"机制核心 · 同事互看积分)
+    # ────────────────────────────────────────────────────────────────
+
+    def _growth_signal_record_from_row(row) -> GrowthSignalRecord:
+        return GrowthSignalRecord(
+            id=str(row["id"]),
+            organizationId=str(row["organization_id"]),
+            userId=str(row["user_id"]),
+            userName=str(row["user_name"] or ""),
+            sourceType=str(row["source_type"]),
+            sourceId=str(row["source_id"]),
+            reviewId=str(row["review_id"]) if row["review_id"] else None,
+            taskId=str(row["task_id"]) if row["task_id"] else None,
+            weekLabel=str(row["week_label"] or ""),
+            rawText=str(row["raw_text"] or ""),
+            contextJson=str(row["context_json"] or "{}"),
+            dedupeKey=str(row["dedupe_key"]),
+            createdAt=str(row["created_at"]),
+            updatedAt=str(row["updated_at"]),
+        )
+
+    def _growth_evidence_record_from_row(row) -> GrowthEvidenceRecord:
+        return GrowthEvidenceRecord(
+            id=str(row["id"]),
+            organizationId=str(row["organization_id"]),
+            signalId=str(row["signal_id"]),
+            userId=str(row["user_id"]),
+            userName=str(row["user_name"] or ""),
+            abilityKey=str(row["ability_key"]),
+            evidenceType=str(row["evidence_type"]),
+            level=str(row["level"]),
+            confidence=str(row["confidence"] or "medium"),
+            reason=str(row["reason"] or ""),
+            reviewId=str(row["review_id"]) if row["review_id"] else None,
+            taskId=str(row["task_id"]) if row["task_id"] else None,
+            handbookEntryId=str(row["handbook_entry_id"]) if row["handbook_entry_id"] else None,
+            metadataJson=str(row["metadata_json"] or "{}"),
+            contributionTagsJson=str(row["contribution_tags_json"] or "[]"),
+            orgContributionScore=int(row["org_contribution_score"] or 0),
+            suggestedPremiumRate=float(row["suggested_premium_rate"] or 0),
+            validationState=str(row["validation_state"] or "candidate"),
+            aiReason=str(row["ai_reason"] or ""),
+            aiConfidence=float(row["ai_confidence"] or 0),
+            createdAt=str(row["created_at"]),
+            updatedAt=str(row["updated_at"]),
+        )
+
+    def _growth_validation_event_record_from_row(row) -> GrowthValidationEventRecord:
+        return GrowthValidationEventRecord(
+            id=str(row["id"]),
+            organizationId=str(row["organization_id"]),
+            userId=str(row["user_id"]),
+            evidenceId=str(row["evidence_id"]),
+            eventType=str(row["event_type"]),
+            actorId=str(row["actor_id"] or ""),
+            actorName=str(row["actor_name"] or ""),
+            sourceType=str(row["source_type"] or ""),
+            sourceId=str(row["source_id"]) if row["source_id"] else None,
+            detailJson=str(row["detail_json"] or "{}"),
+            createdAt=str(row["created_at"]),
+            updatedAt=str(row["updated_at"]),
+        )
+
+    @app.post("/api/v1/growth/sync/signals", response_model=GrowthSignalRecord)
+    def upsert_growth_signal(
+        payload: GrowthSignalUpsertPayload,
+        current_user: SessionUser = Depends(lambda authorization=Header(default=None): _require_auth(app, authorization)),
+    ) -> GrowthSignalRecord:
+        if payload.userId != current_user.id:
+            raise HTTPException(status_code=403, detail="只能 push 自己的 signal")
+        updated_at = payload.updatedAt or now_iso()
+        state.db.execute(
+            """
+            INSERT INTO cloud_growth_signal_events(
+                id, organization_id, user_id, user_name,
+                source_type, source_id, review_id, task_id, week_label,
+                raw_text, context_json, dedupe_key, created_at, updated_at
+            ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET
+                raw_text = excluded.raw_text,
+                context_json = excluded.context_json,
+                week_label = excluded.week_label,
+                review_id = excluded.review_id,
+                task_id = excluded.task_id,
+                updated_at = excluded.updated_at
+            """,
+            (
+                payload.id, current_user.organizationId, payload.userId, payload.userName,
+                payload.sourceType, payload.sourceId, payload.reviewId, payload.taskId, payload.weekLabel,
+                payload.rawText, payload.contextJson, payload.dedupeKey, payload.createdAt, updated_at,
+            ),
+        )
+        row = state.db.fetchone(
+            "SELECT * FROM cloud_growth_signal_events WHERE id = ? AND organization_id = ?",
+            (payload.id, current_user.organizationId),
+        )
+        if not row:
+            raise HTTPException(status_code=500, detail="upsert failed")
+        return _growth_signal_record_from_row(row)
+
+    @app.get("/api/v1/growth/sync/signals", response_model=GrowthSignalSyncResponse)
+    def list_growth_signals(
+        since: str = Query(default=""),
+        current_user: SessionUser = Depends(lambda authorization=Header(default=None): _require_auth(app, authorization)),
+    ) -> GrowthSignalSyncResponse:
+        if since:
+            rows = state.db.fetchall(
+                "SELECT * FROM cloud_growth_signal_events WHERE organization_id = ? AND updated_at > ? ORDER BY updated_at ASC",
+                (current_user.organizationId, since),
+            )
+        else:
+            rows = state.db.fetchall(
+                "SELECT * FROM cloud_growth_signal_events WHERE organization_id = ? ORDER BY updated_at ASC",
+                (current_user.organizationId,),
+            )
+        signals = [_growth_signal_record_from_row(row) for row in rows]
+        return GrowthSignalSyncResponse(signals=signals, serverTimestamp=now_iso())
+
+    @app.post("/api/v1/growth/sync/evidence", response_model=GrowthEvidenceRecord)
+    def upsert_growth_evidence(
+        payload: GrowthEvidenceUpsertPayload,
+        current_user: SessionUser = Depends(lambda authorization=Header(default=None): _require_auth(app, authorization)),
+    ) -> GrowthEvidenceRecord:
+        if payload.userId != current_user.id:
+            raise HTTPException(status_code=403, detail="只能 push 自己的 evidence")
+        # 真 signal_id 必须先存在
+        signal_row = state.db.fetchone(
+            "SELECT id FROM cloud_growth_signal_events WHERE id = ? AND organization_id = ?",
+            (payload.signalId, current_user.organizationId),
+        )
+        if not signal_row:
+            raise HTTPException(status_code=400, detail=f"signal {payload.signalId} not found in cloud — push signal first")
+        updated_at = payload.updatedAt or now_iso()
+        state.db.execute(
+            """
+            INSERT INTO cloud_growth_evidence_records(
+                id, organization_id, signal_id, user_id, user_name,
+                ability_key, evidence_type, level, confidence, reason,
+                review_id, task_id, handbook_entry_id, metadata_json, contribution_tags_json,
+                org_contribution_score, suggested_premium_rate, validation_state,
+                ai_reason, ai_confidence, created_at, updated_at
+            ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET
+                level = excluded.level,
+                confidence = excluded.confidence,
+                reason = excluded.reason,
+                metadata_json = excluded.metadata_json,
+                contribution_tags_json = excluded.contribution_tags_json,
+                org_contribution_score = excluded.org_contribution_score,
+                suggested_premium_rate = excluded.suggested_premium_rate,
+                validation_state = excluded.validation_state,
+                ai_reason = excluded.ai_reason,
+                ai_confidence = excluded.ai_confidence,
+                updated_at = excluded.updated_at
+            """,
+            (
+                payload.id, current_user.organizationId, payload.signalId, payload.userId, payload.userName,
+                payload.abilityKey, payload.evidenceType, payload.level, payload.confidence, payload.reason,
+                payload.reviewId, payload.taskId, payload.handbookEntryId, payload.metadataJson, payload.contributionTagsJson,
+                payload.orgContributionScore, payload.suggestedPremiumRate, payload.validationState,
+                payload.aiReason, payload.aiConfidence, payload.createdAt, updated_at,
+            ),
+        )
+        row = state.db.fetchone(
+            "SELECT * FROM cloud_growth_evidence_records WHERE id = ? AND organization_id = ?",
+            (payload.id, current_user.organizationId),
+        )
+        if not row:
+            raise HTTPException(status_code=500, detail="upsert failed")
+        return _growth_evidence_record_from_row(row)
+
+    @app.get("/api/v1/growth/sync/evidence", response_model=GrowthEvidenceSyncResponse)
+    def list_growth_evidence(
+        since: str = Query(default=""),
+        current_user: SessionUser = Depends(lambda authorization=Header(default=None): _require_auth(app, authorization)),
+    ) -> GrowthEvidenceSyncResponse:
+        if since:
+            rows = state.db.fetchall(
+                "SELECT * FROM cloud_growth_evidence_records WHERE organization_id = ? AND updated_at > ? ORDER BY updated_at ASC",
+                (current_user.organizationId, since),
+            )
+        else:
+            rows = state.db.fetchall(
+                "SELECT * FROM cloud_growth_evidence_records WHERE organization_id = ? ORDER BY updated_at ASC",
+                (current_user.organizationId,),
+            )
+        evidence = [_growth_evidence_record_from_row(row) for row in rows]
+        return GrowthEvidenceSyncResponse(evidence=evidence, serverTimestamp=now_iso())
+
+    @app.post("/api/v1/growth/sync/validation-events", response_model=GrowthValidationEventRecord)
+    def upsert_growth_validation_event(
+        payload: GrowthValidationEventUpsertPayload,
+        current_user: SessionUser = Depends(lambda authorization=Header(default=None): _require_auth(app, authorization)),
+    ) -> GrowthValidationEventRecord:
+        # 真 validation event 真 actor 可能不是 user 本人 (admin/leader 验证别人证据), 真不限制 userId == current_user.id
+        evidence_row = state.db.fetchone(
+            "SELECT id FROM cloud_growth_evidence_records WHERE id = ? AND organization_id = ?",
+            (payload.evidenceId, current_user.organizationId),
+        )
+        if not evidence_row:
+            raise HTTPException(status_code=400, detail=f"evidence {payload.evidenceId} not found in cloud")
+        updated_at = payload.updatedAt or now_iso()
+        state.db.execute(
+            """
+            INSERT INTO cloud_growth_validation_events(
+                id, organization_id, user_id, evidence_id, event_type,
+                actor_id, actor_name, source_type, source_id, detail_json,
+                created_at, updated_at
+            ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET
+                event_type = excluded.event_type,
+                actor_id = excluded.actor_id,
+                actor_name = excluded.actor_name,
+                detail_json = excluded.detail_json,
+                updated_at = excluded.updated_at
+            """,
+            (
+                payload.id, current_user.organizationId, payload.userId, payload.evidenceId, payload.eventType,
+                payload.actorId, payload.actorName, payload.sourceType, payload.sourceId, payload.detailJson,
+                payload.createdAt, updated_at,
+            ),
+        )
+        row = state.db.fetchone(
+            "SELECT * FROM cloud_growth_validation_events WHERE id = ? AND organization_id = ?",
+            (payload.id, current_user.organizationId),
+        )
+        if not row:
+            raise HTTPException(status_code=500, detail="upsert failed")
+        return _growth_validation_event_record_from_row(row)
+
+    @app.get("/api/v1/growth/sync/validation-events", response_model=GrowthValidationEventSyncResponse)
+    def list_growth_validation_events(
+        since: str = Query(default=""),
+        current_user: SessionUser = Depends(lambda authorization=Header(default=None): _require_auth(app, authorization)),
+    ) -> GrowthValidationEventSyncResponse:
+        if since:
+            rows = state.db.fetchall(
+                "SELECT * FROM cloud_growth_validation_events WHERE organization_id = ? AND updated_at > ? ORDER BY updated_at ASC",
+                (current_user.organizationId, since),
+            )
+        else:
+            rows = state.db.fetchall(
+                "SELECT * FROM cloud_growth_validation_events WHERE organization_id = ? ORDER BY updated_at ASC",
+                (current_user.organizationId,),
+            )
+        events = [_growth_validation_event_record_from_row(row) for row in rows]
+        return GrowthValidationEventSyncResponse(events=events, serverTimestamp=now_iso())
 
     @app.delete("/api/v1/exp-wall/reactions/{quote_id}/{reaction_type}", status_code=204)
     def delete_exp_wall_reaction(
