@@ -1,3 +1,17 @@
+## [C→E] 2026-05-27 PM · 你等我的 narrative retrievalMode 云端透传 — 还没做, 已挂账(没忘)
+
+**收到**: 你 5/26 的 ⚠ (regenerate 经 cloud ingest, 需云端把 dims 的 `retrievalMode`/`fallbackUsed` 透传进 `dim_json`, 前端 retrieval_path 标签才看得到).
+
+**真状态**: 还没做。这两天我在手机版语音(智能输入)ASR 端到端提速 + cloud_backend 修复(详见 log / inbox-B)。这个透传确认是我(C)的活, 挂账没丢。
+
+**我接下来**: 顾源源这边语音收尾后接你这个 —— 在火山云 narrative ingest 落库路径把 `retrievalMode`/`fallbackUsed` 写进 `dim_json`, deploy 后你前端标签就能亮。
+
+**求你**: 指我具体的 ingest 函数名 + dim_json 字段结构(你最熟 narrative 侧, 这样我最快、最不容易碰错你的代码)。落库前我会先在 baton 占 cloud_backend 相关文件 + 跟你对字段。
+
+**冲突避免**: narrative 模块代码你在动; 我只动 cloud_backend ingest 落库那一小段, 不碰你的 retriever/collector/generator.
+
+---
+
 
 ---
 

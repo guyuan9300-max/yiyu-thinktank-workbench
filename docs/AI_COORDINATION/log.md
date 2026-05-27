@@ -174,3 +174,29 @@
             日慈 re-index 尝试: reindex_client_vector 跑通(master 117→Qdrant)但查询仍 sem=0
             根因=查询时 embedding 签名/collection 解析不匹配(深层内部, 非内容缺失); 日慈仍优雅回退 LIKE 无 regression
             完整日慈语义=更深索引工程(后续数据工程项, 已诚实标 52-E §16); cloud retrievalMode 透传交 C/火山云核对 dim_json
+
+- [B] 2026-05-27 PM V2.3 团队共享真上线 (Step 0-5 全 done)
+            历史 org_id 迁移 3030 条 / source_registry backfill 1015 条 / cloud team_documents 1014 条 / UI 团队同步面板真挂上
+            commit pending (主仓库未 commit 改动很多: backend/app/services/knowledge_v2.py + main.py + services/team_sync_executor.py
+            + scripts/migrate_v23_*.py + src/renderer/components/settings/TeamSyncPanel.tsx + lib/api.ts + App.tsx).
+            备份: /tmp/app.db.bak-v23-step{0,2,25}-* 本地 / cloud-before-team-sync-20260527-201415.db 云端
+            报告: docs/B_V2_3_STEP0_2_OBJECTIVE_TEST_REPORT.md
+            ★ 给所有人: 顾源源给 A/B/C/D/E 5 个 AI 分别发了"用共享文档协作"的统一指令, 后续大家先读 README + inbox-X + baton + log 再开工
+            ★ baton.md 已清空 (B 之前的占位都 commit 完了, 不再占)
+- [A] 2026-05-27 20:51 上线 · A 线程继任者接管 (原 A 终端崩溃, E 整理交接指令)
+            读完 README + inbox-A + baton(空) + log + git log 48h; A 历史工作 (M8/M9/M10 plan_executor + MCP server v0 + path C/D) 全已合 main, 工作树无 A 的未提交活
+            已对照代码排查 A 未完成项: smart_import handler 仍占位(plan_executor.py:1572) / 模板填充 LLM 端到端未实测 / 进度卡住检测未做 / 完成通知通道未接 / MCP evidence.check 400
+            顺手修 README "AI 分工概览" A 行主仓库路径 (V2.1 退役 → 主仓库)
+            待顾源源派任务; 暂不占 baton
+- [C] 2026-05-27 PM 手机版语音(智能输入)端到端提速 + cloud_backend 修复 (火山云已部署+验证)
+            根因排查: 智能输入"录音已保存/本地+云端都没成功"+慢, 共 4 个真问题全修:
+              1) 前端超时 12s < 服务端~20s → 必被 abort (mobile/lib/api.ts SMART_TASK_DRAFT_TIMEOUT_MS 12000→45000; mobile 独立 git)
+              2) 服务端 intent 未归一: AI 返回 'create_schedule'/'安排会议' 不在 SmartInputIntent Literal → Pydantic 500 (smart_input.py _canonical_intent)
+              3) ASR 文件版异步轮询~18s → 接豆包大模型流式 ASR(WebSocket sauc.duration)+ ffmpeg 转码 m4a→16k pcm, ~3s
+              4) AI 解析 doubao-seed-1.6 推理模型: enable_thinking:false 这参数名 ARK 不认 → 思考~18s ReadTimeout; 改 thinking:{type:disabled} ~3s
+            端到端: ~20s(规则兜底 conf0.42) → ~6.5s(真 AI conf0.84, 标题规范 组织|事件线|动作). 无 schema 改动, 没碰 cloud.db.
+            ★ git/部署真状态: smart_input.py 全部改动已进 HEAD 4e2f46f + 推 origin(auto-sync 替我提交, 0 ahead). 但 cloud_backend/app/main.py
+              的"流式端点接线"只在火山云线上(我 scp), 仓库 main.py 没有(origin-merge 没保留 + 仓库基线含 FeishuDocumentSyncPayload 与线上不一致).
+              → 谁都别用仓库版 main.py 全量 rsync 重部署 cloud_backend, 否则线上流式端点被冲掉退回文件ASR(~20s). main.py 精确 diff 已留 inbox-B 待 B 并入.
+            ★ 火山云 infra: 已 apt install ffmpeg(流式转码依赖); 备份 smart_input.py.bak*/main.py.bak* 在 /opt/yiyu/cloud-backend/app/
+            欠 E: narrative ingest 透传 retrievalMode/fallbackUsed 还没做(见 inbox-E). 没占 baton(改动已落, main.py 并入交 B).

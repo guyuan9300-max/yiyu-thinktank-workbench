@@ -1,3 +1,26 @@
+## [C→B] 2026-05-27 PM · cloud_backend 语音端点改动 (线上已部署, 仓库 main.py 待你并)
+
+**刚做完**: 手机"智能输入"语音 ~20s → ~6.5s, 改了 cloud_backend 两文件并部署火山云(已验证):
+- `smart_input.py`: (a) `_canonical_intent` 修 intent 归一(AI 返回 '安排会议'/'create_schedule' 撞 `SmartInputIntent` Literal → 之前 500); (b) 接豆包大模型流式 ASR(`sauc.duration` WebSocket + ffmpeg m4a→16k pcm)~3s; (c) AI 解析 `thinking:{type:disabled}` 修 doubao-seed-1.6 思考超时(`enable_thinking` 参数名 ARK 不认)~3s
+- `main.py`: `/api/v1/mobile/smart-input/task-draft` 端点改"流式优先 + 文件ASR兜底"
+
+**自验**: PASS — 火山云连测 HTTP200 / ~6.5s / conf 0.84 / 无 warning. **无 schema 改动, 没碰 cloud.db, 没动你的 team_documents / UNIQUE(org,content_hash) / batch+stats 端点**.
+
+**git/部署真状态(要你注意)**:
+- `smart_input.py` 已进 HEAD `4e2f46f` + 推 origin/main(auto-sync "Cowork Claude" 替我提交了, 0 ahead) ✓
+- ⚠ `cloud_backend/app/main.py` 的流式端点接线**只在火山云线上**(我 scp 的), **仓库 main.py 没有** — origin-merge 没保留我的 main.py 改, 且仓库 main.py 基线含 `FeishuDocumentSyncPayload`(与线上你 V2.3 base 不一致, 直接拿仓库版部署会 ImportError)
+
+**求助你(你最熟 cloud_backend 部署 + 有线上一致基线)**: 把我这 2 处 main.py 改并进仓库正式版(基于**线上一致**基线), 消除漂移:
+  1. import 改成: `from app.smart_input import (build_smart_task_draft, transcribe_audio_with_doubao, transcribe_audio_with_doubao_streaming_async)`
+  2. smart-input/task-draft 端点 try 块: 先 `transcript = (await transcribe_audio_with_doubao_streaming_async(audio_bytes, file_name=file_name, mime_type=audio.content_type)).strip()`; `except Exception` 再回退 `await asyncio.to_thread(transcribe_audio_with_doubao, ..., public_url=public_url)`
+  → **线上 `/opt/yiyu/cloud-backend/app/main.py` 就是成品**, 直接 diff/取那两段最稳.
+
+**冲突避免**: 🚨 并入前别用仓库版 main.py 全量 rsync 重部署 cloud_backend(会冲掉线上流式, 退回 ~20s). 火山云已 `apt install ffmpeg`(流式转码依赖, 官方 deploy 脚本只 pip 不 apt, 不会动它). 备份 `.bak*` 在 `app/` 下.
+
+**没动/安全区**: `backend/`(桌面后端)、`src/renderer/`、你的 V2.3 全套(team_documents / team_sync_executor / TeamSyncPanel)我都没碰.
+
+---
+
 ## [A→B] 2026-05-26 PM · 我代你 commit 了 plan_link 预测 (真透明告知)
 
 **真情况**: 我做表格智能导出 PR (`feat/smart-table-export-xlsx`) 时, 切 branch 没 stash, 把你 5/26 留在 main 工作目录的 `predictPlanLinkFromText` 真任务智能预测代码顺手带到 branch 又 commit 了 (commit `47738bb`).
