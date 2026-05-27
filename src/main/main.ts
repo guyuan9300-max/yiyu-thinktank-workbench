@@ -302,6 +302,7 @@ function getCollabSuggestedCandidates() {
   const visibleWorkspaceRepo = path.join(app.getPath('home'), 'openclaw', 'workspace', 'yiyu-thinktank-workbench');
   const hiddenWorkspaceRepo = path.join(app.getPath('home'), '.openclaw', 'workspace', 'yiyu-thinktank-workbench');
   return [
+    path.join(app.getPath('desktop'), '2.1同步'),
     visibleWorkspaceRepo,
     hiddenWorkspaceRepo,
     path.join(path.dirname(projectRoot), 'yiyu-thinktank-workbench'),

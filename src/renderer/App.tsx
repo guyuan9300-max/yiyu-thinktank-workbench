@@ -448,6 +448,7 @@ import {
   vectorizeAnswer,
   cancelVectorizeAnswer,
   getDocumentText,
+  updateDocumentContent,
   exportAnswer,
   executeProposal,
   startClientTemplateFill,
@@ -1603,6 +1604,10 @@ const COLLAB_REPO_PATH_STORAGE_KEY = 'yiyu-collab-repo-path';
 const EVENT_LINE_PROJECT_FILTER_STORAGE_KEY = 'yiyu-event-line-project-filter';
 const COLLAB_PRIMARY_REPO_NAME = 'yiyu-thinktank-workbench';
 const COLLAB_LEGACY_REPO_NAME = 'yiyu-thinktank-workbench-main-sync';
+const COLLAB_LOCAL_LEGACY_REPO_NAMES = new Set([
+  COLLAB_LEGACY_REPO_NAME,
+  'yiyu-thinktank-workbench-2.0-collab',
+]);
 const COLLAB_VISIBLE_WORKSPACE_SEGMENT = '/openclaw/workspace';
 const COLLAB_HIDDEN_WORKSPACE_SEGMENT = '/.openclaw/workspace';
 
@@ -1615,6 +1620,10 @@ function normalizeInitialCollabRepoPath(storedPath: string | null) {
   let normalized = normalizeCollabRepoPathValue(storedPath);
   if (normalized.includes(COLLAB_HIDDEN_WORKSPACE_SEGMENT)) {
     normalized = normalized.replace(COLLAB_HIDDEN_WORKSPACE_SEGMENT, COLLAB_VISIBLE_WORKSPACE_SEGMENT);
+  }
+  const repoName = normalized.split('/').filter(Boolean).at(-1);
+  if (repoName && COLLAB_LOCAL_LEGACY_REPO_NAMES.has(repoName)) {
+    return null;
   }
   if (normalized.endsWith(`/${COLLAB_LEGACY_REPO_NAME}`)) {
     return normalized.slice(0, -COLLAB_LEGACY_REPO_NAME.length) + COLLAB_PRIMARY_REPO_NAME;
@@ -7319,6 +7328,7 @@ export default function App() {
     title: string;
     content: string;
     titleEdited: boolean;
+    sourceDocumentId?: string;
     enableDraftPersist?: boolean;
     recoveredFromDraft?: boolean;
   } | null>(null);
@@ -24772,23 +24782,34 @@ export default function App() {
                           return;
                         }
                         try {
-                          const result = await createClientTextDocument(currentClientId, {
-                            title: clientWorkspaceInlineEditor.title.trim() || null,
-                            content,
-                          });
-                          flash('success', `已保存到项目文档库：${result.fileName}`);
+                          const sourceDocumentId = clientWorkspaceInlineEditor.sourceDocumentId?.trim();
+                          const result = sourceDocumentId
+                            ? await updateDocumentContent(sourceDocumentId, {
+                                title: clientWorkspaceInlineEditor.title.trim() || null,
+                                content,
+                              })
+                            : await createClientTextDocument(currentClientId, {
+                                title: clientWorkspaceInlineEditor.title.trim() || null,
+                                content,
+                              });
+                          flash(
+                            'success',
+                            sourceDocumentId
+                              ? `已保存修改：${result.fileName}`
+                              : `已保存到项目文档库：${result.fileName}`,
+                          );
                           // 已正式 promote 成文档,草稿不需要了
                           clearInlineEditorDraft(currentClientId);
                           setClientWorkspaceInlineEditor(null);
                           setIsInlineEditorFullscreen(false);
-                          await refreshWorkspace(currentClientId).catch(() => undefined);
+                          await refreshWorkspace(result.clientId || currentClientId).catch(() => undefined);
                         } catch (error) {
                           flash('error', error instanceof Error ? error.message : '保存失败');
                         }
                       }}
                       className="rounded-md bg-[#5B7BFE] text-white px-3 py-1.5 text-[12px] font-bold hover:bg-[#4a6ae8] transition-colors"
                     >
-                      保存到项目文档库
+                      {clientWorkspaceInlineEditor.sourceDocumentId ? '保存修改' : '保存到项目文档库'}
                     </button>
                   </div>
                 </div>
@@ -24871,11 +24892,17 @@ export default function App() {
                             return;
                           }
                           try {
-                            const result = await createClientTextDocument(targetClientId, {
-                              title: clientWorkspaceInlineEditor?.title.trim() || null,
-                              content,
-                            });
-                            flash('success', `已导出 docx：${result.fileName}`);
+                            const sourceDocumentId = clientWorkspaceInlineEditor?.sourceDocumentId?.trim();
+                            const result = sourceDocumentId
+                              ? await updateDocumentContent(sourceDocumentId, {
+                                  title: clientWorkspaceInlineEditor?.title.trim() || null,
+                                  content,
+                                })
+                              : await createClientTextDocument(targetClientId, {
+                                  title: clientWorkspaceInlineEditor?.title.trim() || null,
+                                  content,
+                                });
+                            flash('success', sourceDocumentId ? `已保存修改：${result.fileName}` : `已导出 docx：${result.fileName}`);
                             await refreshWorkspace(targetClientId).catch(() => undefined);
                             try {
                               await revealInFinderBridge(result.path);
@@ -25589,6 +25616,7 @@ export default function App() {
                                   title: result.title || fileLabel,
                                   content: result.content || '',
                                   titleEdited: true,
+                                  sourceDocumentId: result.documentId || documentId,
                                 });
                               } catch (error) {
                                 flash('error', error instanceof Error ? `打开失败：${error.message}` : '打开失败');

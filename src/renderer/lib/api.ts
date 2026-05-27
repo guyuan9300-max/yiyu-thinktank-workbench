@@ -4146,7 +4146,7 @@ export async function cancelVectorizeAnswer(clientId: string, messageId: string)
 }
 
 export async function getDocumentText(documentId: string) {
-  return request<{ content: string; kind: string; title: string }>(
+  return request<{ documentId?: string; content: string; kind: string; title: string }>(
     `/api/v1/documents/${encodeURIComponent(documentId)}/text`,
   );
 }

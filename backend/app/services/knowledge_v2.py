@@ -2094,6 +2094,8 @@ def ingest_document_knowledge(
         "answer_export_doc",
         "answer_memory_doc",
         "consultation_knowledge_memory",
+        "event_line_report_doc",
+        "ai_report_doc",
         "template_fill",
     }
     skip_family_dedup = source in _SKIP_FAMILY_DEDUP_SOURCES
