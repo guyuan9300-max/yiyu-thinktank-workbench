@@ -3535,6 +3535,8 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
 
     @app.on_event("startup")
     def _startup_worker() -> None:
+        # 先恢复维护模式("推送同步")状态,扛过 --reload 热重启(放在所有早退分支之前)。
+        _restore_maintenance_state()
         if os.getenv("YIYU_DISABLE_STARTUP_WORKERS", "0") == "1":
             return
         # 互联网 PDF OCR 后台 worker · 单独启动 (不依赖其他 worker 状态)
@@ -4588,6 +4590,9 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 # 都因一个 .docx 改名自旧 .doc 抛 BadZipFile，291 个白名单文件 0 入库。
                 try:
                     excerpt = build_excerpt(path)
+                    # V2.3 Step 1 · 取 team context (org_id/owner/dept), 让 raw_file 接 source_registry
+                    from app.services.knowledge_v2 import _resolve_team_context_for_async_worker
+                    _team_ctx = _resolve_team_context_for_async_worker(state.db)
                     prepared = ingest_document_knowledge(
                         state.db,
                         data_dir=state.data_dir,
@@ -4602,6 +4607,12 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                         fallback_excerpt=excerpt,
                         created_at=str(item.get("createdAt", now_iso())),
                         ai_service=state.ai,
+                        organization_id=_team_ctx.get("organization_id", ""),
+                        owner_user_id=_team_ctx.get("owner_user_id", ""),
+                        department_id=_team_ctx.get("department_id", ""),
+                        visibility_scope=_team_ctx.get("visibility_scope", "project_public"),
+                        # V2.3 PULL · 传 cloud_request 闭包让 ingest 在 OCR 前查云端复用
+                        cloud_request=cloud_request,
                     )
                     # 迭代 2 F3：回写版本链元数据。
                     # ingest 已创建/更新了 knowledge_documents 行（按 document_id 查），
@@ -5021,6 +5032,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             state.maintenance_mode_active = False
             state.maintenance_mode_user_id = ""
             state.maintenance_mode_entered_at = ""
+        _persist_maintenance_state(False, "", "")
 
     def get_cached_session_user() -> SessionUserRecord | None:
         raw = state.db.get_setting("cloud_session_user", "")
@@ -8096,6 +8108,41 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             cloud_request("POST", "/api/v1/feishu-sync/documents", json_body=body, timeout=30.0)
         except Exception as exc:
             logger.warning("feishu.docx.auto_sync_failed: %s", exc)
+
+    # ── 维护模式("推送同步")状态持久化 ──────────────────────────────
+    # 病根:维护模式开关原本只存在 AppState in-memory flag,uvicorn --reload 一热重启就清零。
+    # 用户开了"推送同步"后,只要 backend reload(改任一 .py / 多 AI 并行改后端)就被悄悄关掉,
+    # 再点预览/同步 main 就报"请先打开推送同步"。把状态写进 settings 表,startup 时恢复。
+    _MAINT_KEY_ACTIVE = "maintenance_mode.active"
+    _MAINT_KEY_USER = "maintenance_mode.user_id"
+    _MAINT_KEY_AT = "maintenance_mode.entered_at"
+
+    def _persist_maintenance_state(active: bool, user_id: str, entered_at: str) -> None:
+        try:
+            state.db.set_setting(_MAINT_KEY_ACTIVE, "1" if active else "0")
+            state.db.set_setting(_MAINT_KEY_USER, user_id or "")
+            state.db.set_setting(_MAINT_KEY_AT, entered_at or "")
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("[maintenance] persist state failed: %s", exc)
+
+    def _restore_maintenance_state() -> None:
+        # startup 调用一次:把上次持久化的开启状态读回 in-memory flag。
+        # 只恢复 flag;是否真 active 仍由 _cloud_maintenance_status 的 user_match 实时判定,
+        # 所以即使残留 true,非持有人也算不出 active,安全。
+        try:
+            if state.db.get_setting(_MAINT_KEY_ACTIVE, "0") != "1":
+                return
+            with state.maintenance_mode_lock:
+                state.maintenance_mode_active = True
+                state.maintenance_mode_user_id = state.db.get_setting(_MAINT_KEY_USER, "")
+                state.maintenance_mode_entered_at = state.db.get_setting(_MAINT_KEY_AT, "")
+            logger.info(
+                "[maintenance] restored push-sync state from settings (user=%s, at=%s)",
+                state.maintenance_mode_user_id,
+                state.maintenance_mode_entered_at,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("[maintenance] restore state failed: %s", exc)
 
     def _inactive_maintenance_status(reason: str) -> MaintenanceModeStatusRecord:
         session_user = get_cached_session_user()
@@ -28286,15 +28333,14 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         meeting_items = extract_recent_client_actions(
             state.db.conn, client_id, days=3650, max_items=60, exclude_consumed=True,  # M4: 去 30 天硬窗口 (31 天前纪要待办原先永久取不到)
         )
+        medium_items: list[dict[str, Any]] = []
         for it in meeting_items:
-            if it.confidence != "high":
-                continue
             normed_actor = _norm_actor(it.actor)
             fp = make_fingerprint(normed_actor, it.text)
             if fp in consumed or fp in seen_fp:
                 continue
             seen_fp.add(fp)
-            items.append({
+            rec = {
                 "fingerprint": fp,
                 "kind": "meeting",
                 "actor": normed_actor or it.actor,
@@ -28302,7 +28348,12 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 "dueDate": "",
                 "severity": "medium",
                 "rawId": "",
-            })
+            }
+            # high → 进对账主流程; medium → 单独 needs_review(不再全丢, 但不进主列表)
+            if it.confidence == "high":
+                items.append(rec)
+            else:
+                medium_items.append(rec)
 
         # 源 2/3: unified todos (commitments + tasks + action_items)
         try:
@@ -28337,30 +28388,55 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         except Exception:
             pass
 
-        sev_order = {"high": 0, "medium": 1, "low": 2}
-        kind_order = {"meeting": 0, "commitment": 1, "task": 2, "meeting_action": 3}
-        items.sort(key=lambda x: (
-            0 if x["dueDate"] else 1,
-            sev_order.get(x["severity"], 9),
-            kind_order.get(x["kind"], 9),
-        ))
+        # 行动闭环对账(质量门 + 主体归一/方向 + 语义去重 + 与现有任务反向比对 + 分层)。
+        # items 此时是"原始候选";reconcile 清洗后 items=candidate_next_steps(干净主列表),
+        # 并附 possibleDuplicates / needsReview / matched/invalid 计数。客户无关。
+        from app.services.next_step_reconciler import reconcile as _reconcile_next_steps
+        try:
+            client_row = state.db.fetchone("SELECT name FROM clients WHERE id=?", (client_id,))
+            client_name = str(client_row["name"]) if client_row else ""
+            task_rows = state.db.fetchall(
+                "SELECT title FROM tasks WHERE client_id=? AND COALESCE(progress_status,'') != 'done'",
+                (client_id,),
+            )
+            task_titles = [str(r["title"] or "") for r in task_rows]
+            reconciled = _reconcile_next_steps(
+                items,
+                existing_task_titles=task_titles,
+                client_name=client_name,
+                medium_candidates=medium_items,
+            )
+            clean_items = reconciled["candidate_next_steps"]
+        except Exception:
+            logger.exception("[next-steps] reconcile failed, fallback to raw union")
+            # 兜底:对账失败不让"下一步"整块挂掉,退回原始 union(旧排序)
+            sev_order = {"high": 0, "medium": 1, "low": 2}
+            kind_order = {"meeting": 0, "commitment": 1, "task": 2, "meeting_action": 3}
+            items.sort(key=lambda x: (0 if x["dueDate"] else 1, sev_order.get(x["severity"], 9), kind_order.get(x["kind"], 9)))
+            clean_items = items
+            reconciled = {"possible_duplicates": [], "needs_review": [], "matched_existing_count": 0, "invalid_filtered_count": 0, "debug_summary": {}}
 
-        # 后台异步预生成 LLM 背景说明, 写入 cache → 用户点 → 时瞬时返回
-        # 至多 3 线程并发, 失败 silent, 不阻塞当前请求
-        if items:
+        # 后台异步预生成 LLM 背景说明(只对干净主列表), 失败 silent, 不阻塞当前请求
+        if clean_items:
             import threading
             threading.Thread(
                 target=_prefetch_next_step_backgrounds,
-                args=(client_id, list(items)),
+                args=(client_id, list(clean_items)),
                 daemon=True,
                 name=f"prefetch-bg-{client_id[:12]}",
             ).start()
 
         return {
             "clientId": client_id,
-            "items": items,
-            "total": len(items),
+            "items": clean_items,  # 向后兼容: 前端读 items, 现在是清洗后的干净候选
+            "total": len(clean_items),
             "consumedCount": len(consumed),
+            # 分层附加(前端可选用; 不读也不影响)
+            "possibleDuplicates": reconciled.get("possible_duplicates", []),
+            "needsReview": reconciled.get("needs_review", []),
+            "matchedExistingCount": reconciled.get("matched_existing_count", 0),
+            "invalidFilteredCount": reconciled.get("invalid_filtered_count", 0),
+            "debugSummary": reconciled.get("debug_summary", {}),
         }
 
     # ───────────────────────────────────────────────────────────────────
@@ -35209,6 +35285,40 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             raise HTTPException(status_code=502, detail="Invalid task plan link payload")
         return TaskPlanLinkRecord(**response)
 
+    @app.post("/api/v1/plan-link/predict-from-text")
+    def predict_plan_link_from_text(payload: dict = Body(...)) -> dict:
+        """[B] 2026-05-26 · 新建任务时, qwen2.5:7b 闪电预测 plan item.
+
+        body:
+          title: str
+          description: str
+          planItems: [{id, title, statement?}]   ← frontend 直接传, 不走 cloud
+
+        return:
+          {planItemId: str|None, confidence: 0-1, model: str, reason: str}
+
+        识别不上就返 planItemId=null, 不做兜底.
+        """
+        from app.services.plan_link_predictor import predict_plan_item
+        title = str(payload.get("title") or "")
+        desc = str(payload.get("description") or "")
+        items = payload.get("planItems") or []
+        if not isinstance(items, list):
+            raise HTTPException(status_code=400, detail="planItems 必须是数组")
+        safe_items: list[dict] = []
+        for it in items:
+            if not isinstance(it, dict):
+                continue
+            item_id = str(it.get("id") or "").strip()
+            if not item_id:
+                continue
+            safe_items.append({
+                "id": item_id,
+                "title": str(it.get("title") or ""),
+                "statement": str(it.get("statement") or ""),
+            })
+        return predict_plan_item(title, desc, safe_items)
+
     @app.get("/api/v1/org-model/plan-items/{item_id}/tasks")
     def list_tasks_for_plan_item(item_id: str) -> list:
         """透传 cloud 返回的任务列表，不做 response_model 校验。
@@ -35377,6 +35487,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             state.maintenance_mode_active = True
             state.maintenance_mode_user_id = cloud_status.userId or ""
             state.maintenance_mode_entered_at = now_iso()
+        _persist_maintenance_state(True, state.maintenance_mode_user_id, state.maintenance_mode_entered_at)
         log_activity("maintenance.enter", "maintenance_mode", cloud_status.userId or "current", {"organizationId": cloud_status.organizationId})
         return cloud_status.model_copy(update={"active": True})
 
@@ -35388,6 +35499,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             state.maintenance_mode_active = False
             state.maintenance_mode_user_id = ""
             state.maintenance_mode_entered_at = ""
+        _persist_maintenance_state(False, "", "")
         try:
             cloud_status = _coerce_maintenance_status(cloud_request("POST", "/api/v1/maintenance-mode/exit", timeout=6.0), active=False)
         except HTTPException:
@@ -36127,8 +36239,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
     def run_local_ai_now(force: bool = False) -> dict[str, object]:
         """强制触发一次队列调度。force=True 时绕开 window/governor 直接跑一条。
 
-        常驻 deep-read-worker 线程（W2）已在后台按 enabled/窗口/governor 节流自动消化；
-        这个端点是给用户"立刻跑一条"（不等窗口）用的按钮。
+        正常情况下后台 worker 每 60s 自动触发；这个端点是给用户 "立刻跑一条" 用的。
         """
         from app.services.local_model_optimizer import run_due_local_model_tasks
         result = run_due_local_model_tasks(
@@ -43783,6 +43894,31 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         limit: int = Query(default=100, ge=1, le=500),
     ) -> dict[str, object]:
         return build_data_center_sync_preview(state.db, limit=limit)
+
+    # V2.3 Step 3 · team sync executor 接口
+    # 设计为手动触发模式 (不开后台 thread), user 在 UI / curl 主动调用
+    @app.post("/api/v1/data-center/team-sync/enqueue-all")
+    def post_team_sync_enqueue_all() -> dict[str, object]:
+        """一次性把所有 source_registry 但未在 team_sync_state 的项标 'pending'."""
+        from app.services.team_sync_executor import enqueue_all_unsynced
+        return enqueue_all_unsynced(state.db)
+
+    @app.post("/api/v1/data-center/team-sync/run-once")
+    def post_team_sync_run_once(
+        batch_size: int = Query(default=50, ge=1, le=200),
+        dry_run: bool = Query(default=False),
+    ) -> dict[str, object]:
+        """跑一次 sync — 扫 pending 批 POST 云端."""
+        from app.services.team_sync_executor import run_team_sync_once
+        return run_team_sync_once(
+            state.db, cloud_request, batch_size=batch_size, dry_run=dry_run,
+        )
+
+    @app.get("/api/v1/data-center/team-sync/stats")
+    def get_team_sync_stats() -> dict[str, int]:
+        """统计当前 team sync 状态."""
+        from app.services.team_sync_executor import get_sync_stats
+        return get_sync_stats(state.db)
 
     @app.post(
         "/api/v1/data-center/kernel-primary-rollout/start",

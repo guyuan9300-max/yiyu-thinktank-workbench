@@ -173,7 +173,7 @@ def _enqueue_deep_read(db: Database, doc_row: dict) -> int:
     task_types: list[str] = []
     if bool(settings.get("autoEnqueueDocumentCards", True)):
         task_types.append(TASK_TYPE_DOCUMENT_CARD)
-    if bool(settings.get("autoEnqueuePathOptimization", True)):
+    if bool(settings.get("autoEnqueuePathOptimization", False)):
         task_types.append(TASK_TYPE_PATH_OPTIMIZATION)
     if not task_types:
         return 0

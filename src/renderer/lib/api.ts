@@ -2317,6 +2317,42 @@ export async function getClients() {
   return clients.filter((client) => client.alias !== 'workspace-smoke' && client.name !== '安装态冒烟客户');
 }
 
+// V2.3 Step 5 · team sync UI api（从主仓库 origin/main 同步补回:本 worktree 落后 V2.3,
+// TeamSyncPanel.tsx 引用了这 3 个导出但 api.ts 缺失 → 整个 renderer 模块加载失败白屏）
+export interface TeamSyncStats {
+  pending: number;
+  synced: number;
+  failed: number;
+  total: number;
+}
+
+export interface TeamSyncRunResult {
+  status: string;
+  count: number;
+  accepted?: number;
+  duplicates?: number;
+  rejected?: number;
+  error?: string;
+}
+
+export async function getTeamSyncStats(): Promise<TeamSyncStats> {
+  return request<TeamSyncStats>('/api/v1/data-center/team-sync/stats');
+}
+
+export async function enqueueTeamSyncAll(): Promise<{ inserted: number; total_scanned: number }> {
+  return request<{ inserted: number; total_scanned: number }>(
+    '/api/v1/data-center/team-sync/enqueue-all',
+    { method: 'POST' },
+  );
+}
+
+export async function runTeamSyncOnce(batchSize = 50): Promise<TeamSyncRunResult> {
+  return request<TeamSyncRunResult>(
+    `/api/v1/data-center/team-sync/run-once?batch_size=${batchSize}`,
+    { method: 'POST' },
+  );
+}
+
 export async function createClient(payload: ClientMutationPayload) {
   return request<ClientSummary>('/api/v1/clients', {
     method: 'POST',

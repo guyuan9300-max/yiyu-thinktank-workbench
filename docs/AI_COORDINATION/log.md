@@ -139,3 +139,21 @@
             4+1 结构全到位(导航/精神区Hero+行动网络可视化/行动者宣言4卡/功能6卡/案例4卡/加入5入口+透明看板/深蓝转化带/页脚)，
             深蓝主色(弃紫靛)、诚实边界(状态标签真实/无虚构数字/≥2处人类确认)、移动端无横向滚动、tsc 通过。
             咨询首页 / 未动。待顾源源验收后再定是否设为开源站主入口。
+- [E] 2026-05-27 深读全链路实测(汇丰6篇/士平,豆包)+ M0 诊断固化。报告 docs/E_DOC_ENRICHMENT_M0_OLD_PIPELINE_DIAGNOSIS.md(+json)。
+            ★ 旧 deep-read 链路多层断裂(实测): card-gen 任务 attempts=0 从未处理(钉死不可用 local_text_deep profile)/ 切豆包全局无效(per-task profile 路由)/ /local-ai settings|coverage|backfill 404 / document_cards 多数客户=0 / hydrate 无原料空转 / Qdrant 零贡献(见61-E)。
+            ★ 汇丰全链路跑 30min 产出 0(cards 0→0, surrogate 0→0, coverage 0→0)。CFFC 能用是历史遗产(157 doc_cards+surrogate)。
+            ★ 方向(顾源源拍板): 停止修旧 pipeline/Qdrant 当主线; 新建 DocumentEnrichmentService: v2_documents.markdown_content→豆包富化→写厚 knowledge_master_index.searchable_text(+surrogate)→喂现有 surrogate/lexical+v2_documents 检索。旧管线(local_text_deep/document_cards/Qdrant)降级技术债。
+            ★ 给所有人: 别再建议"全客户 Qdrant reindex"或"切模型等 worker"——无效, 已实测。
+            进行中: M0 done; 下一步 M1 建 DocumentEnrichmentService + M3 汇丰1篇 PoC(复用 ai_service.generate_memory_surrogate/enrich_retrieval_summary, 走豆包)。
+- [E] 2026-05-27 深读三态取证(HEAD/工作树/runtime)完成。报告 docs/E_DEEP_READ_WORKTREE_CLOBBER_AUDIT_REPORT.md(+json)+桌面63-E。
+            ★ 裁决 A:深读不是设计坏,是工作树 main.py 被多AI跨worktree覆盖——丢了 E 已提交的 W2 deep-read-worker 线程 + W4 /local-ai/settings|coverage|backfill 端点(工作树 diff HEAD = +156/-135, M)。
+            ★ M5 决定性实证:干净 HEAD 检出(/tmp/yiyu-clean-head)+临时DB副本+豆包,处理汇丰1篇(19k字)→ 40s 产出真实 document_card,cards 0→1。已提交管线可用。
+            ★ runtime 404 + card-gen attempts=0 = 工作树删了 W4 端点 + W2 worker(worker没起→没人claim任务)。不是 profile 跳过、不是 commit 不完整。
+            ★ 结论:走外科式恢复(把 HEAD 的 W2/W4 深读代码补回工作树 main.py, 保留 maintenance+team-sync+predict),不重建 DocumentEnrichmentService。本轮只取证未改 main.py。
+            ⚠️ 给B/所有人: main.py 三方(E深读/B team-sync/维护)缠在一个未提交文件互相覆盖, 这是 P0 协作问题——改 main.py 前务必 baton 标 HOLDING。
+            未执行恢复(待顾源源拍板); 已清理临时 worktree/DB。
+- [E] 2026-05-27 PM 执行路线A恢复 + 关 path_opt(工作树改动, 未提交)。
+            ① 关 path_opt 入队: local_model_optimizer.py DEFAULTS + normalize + router.py 默认 True→False(path_opt 处理仍调未定义 generate_local_model_json 必失败, 是高失败率真凶)。
+            ② 外科恢复 main.py: git apply -R 反向应用 5 个纯删除深读 hunk → W2 deep-read-worker 线程 + W4 /local-ai/settings|coverage|backfill 端点回来了; team-sync/维护/predict 全保留; py_compile 过。baton 已释放。
+            ③ 发现 worker 饥饿真因: _claim_next_task ORDER BY priority,created_at ASC 取最老; 失败的 path_opt/visual_ocr 重试插队饿死汇丰(最新)card-gen(attempts 永远0)。已清 queued path_opt/ocr 积压 + DB 关 path_opt。
+            进行中: 直接处理汇丰6篇 card-gen 建真卡(绕队列, 验证+给chat栈喂料)。runtime 生效需顾源源重启 app。

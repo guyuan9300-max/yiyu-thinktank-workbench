@@ -448,6 +448,7 @@ import {
   vectorizeAnswer,
   cancelVectorizeAnswer,
   getDocumentText,
+  updateDocumentContent,
   exportAnswer,
   executeProposal,
   startClientTemplateFill,
@@ -491,6 +492,7 @@ import { SmartFileImportModal } from './components/smart_file_import/SmartFileIm
 import type { TaskAiParseResult } from './lib/api';
 import { SystemLogPanel } from './components/settings/SystemLogPanel';
 import { MaintenanceSyncPanel } from './components/settings/MaintenanceSyncPanel';
+import { TeamSyncPanel } from './components/settings/TeamSyncPanel';
 import { StrategicBrainView, type ThoughtTaskPayload, DuplicateDocumentsSection } from './components/strategic_accompaniment/StrategicBrainView';
 import { TopicsManagementView } from './components/topics/TopicsManagementView';
 import { IntelligenceStationView } from './components/intelligence/IntelligenceStationView';
@@ -512,8 +514,6 @@ import { FileSearchResultPanel } from './components/data_center/FileSearchResult
 import { ContradictionAlertPanel } from './components/client_workspace/ContradictionAlertPanel';
 import { GlossaryDriftAlertPanel } from './components/client_workspace/GlossaryDriftAlertPanel';
 import { GlossaryPendingBadge } from './components/client_workspace/GlossaryPendingBadge';
-import { DeepReadRateBadge } from './components/client_workspace/DeepReadRateBadge';
-import { DeepReadSettingsCard } from './components/data_center/DeepReadSettingsCard';
 import { RichTextDocumentEditor } from './components/client_workspace/RichTextDocumentEditor';
 import { SystemStatusPanel } from './components/global/SystemStatusPanel';
 import { WorkStatusPanel } from './components/data_center/WorkStatusPanel';
@@ -531,6 +531,7 @@ import { SpeechModelSettingsCard } from './components/settings/SpeechModelSettin
 import { ObjectStorageSettingsCard } from './components/settings/ObjectStorageSettingsCard';
 import { LocalAsrModelPanel } from './components/settings/LocalAsrModelPanel';
 import { OllamaQuickPullPanel } from './components/settings/OllamaQuickPullPanel';
+import { DeepReadSettingsCard } from './components/data_center/DeepReadSettingsCard';
 import { PlanWorkshopView } from './components/plan_workshop/PlanWorkshopView';
 
 // 组织设置子 tab 标识。来自已废弃的 OrganizationModelSettingsPanel,
@@ -1605,6 +1606,10 @@ const COLLAB_REPO_PATH_STORAGE_KEY = 'yiyu-collab-repo-path';
 const EVENT_LINE_PROJECT_FILTER_STORAGE_KEY = 'yiyu-event-line-project-filter';
 const COLLAB_PRIMARY_REPO_NAME = 'yiyu-thinktank-workbench';
 const COLLAB_LEGACY_REPO_NAME = 'yiyu-thinktank-workbench-main-sync';
+const COLLAB_LOCAL_LEGACY_REPO_NAMES = new Set([
+  COLLAB_LEGACY_REPO_NAME,
+  'yiyu-thinktank-workbench-2.0-collab',
+]);
 const COLLAB_VISIBLE_WORKSPACE_SEGMENT = '/openclaw/workspace';
 const COLLAB_HIDDEN_WORKSPACE_SEGMENT = '/.openclaw/workspace';
 
@@ -1617,6 +1622,10 @@ function normalizeInitialCollabRepoPath(storedPath: string | null) {
   let normalized = normalizeCollabRepoPathValue(storedPath);
   if (normalized.includes(COLLAB_HIDDEN_WORKSPACE_SEGMENT)) {
     normalized = normalized.replace(COLLAB_HIDDEN_WORKSPACE_SEGMENT, COLLAB_VISIBLE_WORKSPACE_SEGMENT);
+  }
+  const repoName = normalized.split('/').filter(Boolean).at(-1);
+  if (repoName && COLLAB_LOCAL_LEGACY_REPO_NAMES.has(repoName)) {
+    return null;
   }
   if (normalized.endsWith(`/${COLLAB_LEGACY_REPO_NAME}`)) {
     return normalized.slice(0, -COLLAB_LEGACY_REPO_NAME.length) + COLLAB_PRIMARY_REPO_NAME;
@@ -7321,6 +7330,7 @@ export default function App() {
     title: string;
     content: string;
     titleEdited: boolean;
+    sourceDocumentId?: string;
     enableDraftPersist?: boolean;
     recoveredFromDraft?: boolean;
   } | null>(null);
@@ -24774,23 +24784,34 @@ export default function App() {
                           return;
                         }
                         try {
-                          const result = await createClientTextDocument(currentClientId, {
-                            title: clientWorkspaceInlineEditor.title.trim() || null,
-                            content,
-                          });
-                          flash('success', `已保存到项目文档库：${result.fileName}`);
+                          const sourceDocumentId = clientWorkspaceInlineEditor.sourceDocumentId?.trim();
+                          const result = sourceDocumentId
+                            ? await updateDocumentContent(sourceDocumentId, {
+                                title: clientWorkspaceInlineEditor.title.trim() || null,
+                                content,
+                              })
+                            : await createClientTextDocument(currentClientId, {
+                                title: clientWorkspaceInlineEditor.title.trim() || null,
+                                content,
+                              });
+                          flash(
+                            'success',
+                            sourceDocumentId
+                              ? `已保存修改：${result.fileName}`
+                              : `已保存到项目文档库：${result.fileName}`,
+                          );
                           // 已正式 promote 成文档,草稿不需要了
                           clearInlineEditorDraft(currentClientId);
                           setClientWorkspaceInlineEditor(null);
                           setIsInlineEditorFullscreen(false);
-                          await refreshWorkspace(currentClientId).catch(() => undefined);
+                          await refreshWorkspace(result.clientId || currentClientId).catch(() => undefined);
                         } catch (error) {
                           flash('error', error instanceof Error ? error.message : '保存失败');
                         }
                       }}
                       className="rounded-md bg-[#5B7BFE] text-white px-3 py-1.5 text-[12px] font-bold hover:bg-[#4a6ae8] transition-colors"
                     >
-                      保存到项目文档库
+                      {clientWorkspaceInlineEditor.sourceDocumentId ? '保存修改' : '保存到项目文档库'}
                     </button>
                   </div>
                 </div>
@@ -24873,11 +24894,17 @@ export default function App() {
                             return;
                           }
                           try {
-                            const result = await createClientTextDocument(targetClientId, {
-                              title: clientWorkspaceInlineEditor?.title.trim() || null,
-                              content,
-                            });
-                            flash('success', `已导出 docx：${result.fileName}`);
+                            const sourceDocumentId = clientWorkspaceInlineEditor?.sourceDocumentId?.trim();
+                            const result = sourceDocumentId
+                              ? await updateDocumentContent(sourceDocumentId, {
+                                  title: clientWorkspaceInlineEditor?.title.trim() || null,
+                                  content,
+                                })
+                              : await createClientTextDocument(targetClientId, {
+                                  title: clientWorkspaceInlineEditor?.title.trim() || null,
+                                  content,
+                                });
+                            flash('success', sourceDocumentId ? `已保存修改：${result.fileName}` : `已导出 docx：${result.fileName}`);
                             await refreshWorkspace(targetClientId).catch(() => undefined);
                             try {
                               await revealInFinderBridge(result.path);
@@ -25306,29 +25333,30 @@ export default function App() {
             {/* 资料状态摘要(挪到 Tab bar 上方更显眼):份数 / OCR / 待清单 */}
             <div className="flex items-center justify-between gap-3 border-b border-gray-100 bg-gray-50/40 px-4 py-1.5 text-[10px] leading-4 text-gray-400 shrink-0">
               <span>{knowledgeStatus?.totalDocuments || 0} 份文件</span>
-              {/* 「OCR 识别率」改为「解析率」(深读覆盖率)：点击进系统设置的深度解析卡，不直接跑(避免偷偷占资源把软件卡住)。
-                  OCR 不完整时仍保留一键修复小图标(深读前建议先修 OCR)。 */}
-              <span className="inline-flex items-center gap-1">
-                <DeepReadRateBadge
-                  clientId={currentClientId ?? null}
-                  onNavigate={() => {
-                    setActiveTab('settings');
-                    setSettingsSection('overview');
-                  }}
-                />
-                {typeof knowledgeStatus?.ocrReadyRate === 'number' && knowledgeStatus.ocrReadyRate < 100 && (
-                  <button
-                    type="button"
-                    disabled={ocrFixing}
-                    onClick={() => void handleOcrFix()}
-                    className="ml-0.5 inline-flex items-center text-amber-600 hover:text-amber-700 disabled:opacity-40 disabled:cursor-wait disabled:text-amber-500 transition-colors"
-                    title={ocrFixing ? '正在重新识别 OCR…' : `OCR 识别率 ${knowledgeStatus.ocrReadyRate.toFixed(0)}% · 一键修复不完整的 OCR(深读前建议先修)`}
-                    aria-label="一键修复 OCR"
+              {(() => {
+                const rate = typeof knowledgeStatus?.ocrReadyRate === 'number' ? knowledgeStatus.ocrReadyRate : null;
+                const needsFix = rate !== null && rate < 100;
+                return (
+                  <span
+                    className="inline-flex items-center gap-1"
+                    title="OCR 识别率 = ready × 100% + partial × 70%（按 R13 完整扫描度加权）"
                   >
-                    <RotateCcw size={11} strokeWidth={2.25} className={ocrFixing ? 'animate-spin' : ''} />
-                  </button>
-                )}
-              </span>
+                    OCR 识别率 {rate !== null ? `${rate.toFixed(1)}%` : '—'}
+                    {needsFix && (
+                      <button
+                        type="button"
+                        disabled={ocrFixing}
+                        onClick={() => void handleOcrFix()}
+                        className="ml-1 inline-flex items-center text-amber-600 hover:text-amber-700 disabled:opacity-40 disabled:cursor-wait disabled:text-amber-500 transition-colors"
+                        title={ocrFixing ? '正在重新识别 OCR…' : '一键修复 · 重新识别所有 OCR 不完整的文件(高 DPI + 双 prompt 模式)'}
+                        aria-label="一键修复 OCR"
+                      >
+                        <RotateCcw size={11} strokeWidth={2.25} className={ocrFixing ? 'animate-spin' : ''} />
+                      </button>
+                    )}
+                  </span>
+                );
+              })()}
               {currentClientId && (
                 <GlossaryPendingBadge
                   clientId={currentClientId}
@@ -25590,6 +25618,7 @@ export default function App() {
                                   title: result.title || fileLabel,
                                   content: result.content || '',
                                   titleEdited: true,
+                                  sourceDocumentId: result.documentId || documentId,
                                 });
                               } catch (error) {
                                 flash('error', error instanceof Error ? `打开失败：${error.message}` : '打开失败');
@@ -28493,6 +28522,20 @@ export default function App() {
             })}
 
             {renderFoldable({
+              key: 'deep_read',
+              eyebrow: 'DEEP READ · 后台深度',
+              title: '后台深度解析',
+              helper: '本地大模型在后台为客户文档建饱满 surrogate（深度索引），提升问答与战略陪伴的语义召回。可设自动（夜间/插电/空闲）或手动直跑。',
+              children: (
+                <DeepReadSettingsCard
+                  clientId={null}
+                  canEdit={canManageSensitiveSettings}
+                  onFlash={flash}
+                />
+              ),
+            })}
+
+            {renderFoldable({
               key: 'storage',
               eyebrow: 'STORAGE · 对象存储',
               title: '音频与附件托管',
@@ -28508,21 +28551,6 @@ export default function App() {
                   isSaving={isSavingObjectStorageSettings}
                   onSave={handleSaveObjectStorageSettings}
                   onTest={handleTestObjectStorageSettings}
-                />
-              ),
-            })}
-
-            {renderFoldable({
-              key: 'deep_read',
-              eyebrow: 'DEEP READ · 深度解析',
-              title: '深度解析 · 公司大脑深读',
-              helper: '把客户资料深读成可检索的理解资产。占用内存/算力，建议空闲/夜间自动进行；也可立刻手动解析。',
-              tint: true,
-              children: (
-                <DeepReadSettingsCard
-                  clientId={currentClientId ?? null}
-                  canEdit={canManageSensitiveSettings}
-                  onFlash={flash}
                 />
               ),
             })}
@@ -29080,6 +29108,15 @@ export default function App() {
                       }}
                     />
                   ),
+                })}
+                {/* V2.3 Step 5 · 团队同步状态面板 */}
+                {renderFoldable({
+                  key: 'team-sync',
+                  eyebrow: 'TEAM · 团队同步',
+                  title: '本地 → 云端同步状态',
+                  helper: '本地解析的文档同步到云端 team_documents, 让团队其他成员可以按 content_hash 复用同份解析结果。',
+                  tint: true,
+                  children: <TeamSyncPanel flash={flash} />,
                 })}
                 {renderFoldable({
                   key: 'runtime-logs',

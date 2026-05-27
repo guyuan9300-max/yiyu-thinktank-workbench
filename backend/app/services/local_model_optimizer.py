@@ -42,7 +42,9 @@ DEFAULT_SETTINGS: dict[str, object] = {
     "concurrency": 1,
     "paused": False,
     "autoEnqueueDocumentCards": True,
-    "autoEnqueuePathOptimization": True,
+    # E 2026-05-27: path_optimization 处理仍调未定义的 generate_local_model_json → 必失败(高失败率真凶)。
+    # card-gen 才是深读地基; 关掉 path_opt 入队止血。要恢复需先修 _process_path_optimization_task。
+    "autoEnqueuePathOptimization": False,
     # W: 手动直跑——"现在开始解析"按钮置 True，worker 即绕夜间窗口/governor 立刻跑；"停止"置 False。
     "manualActive": False,
     # W: 解析用模型——"online"=跟主模型(默认,快,按量计费) / "local"=强制本地 qwen3-vl:32b(免费,占本机)。
@@ -154,7 +156,7 @@ def normalize_local_model_optimization_settings(value: object | None) -> dict[st
     settings["enabled"] = bool(settings.get("enabled"))
     settings["paused"] = bool(settings.get("paused"))
     settings["autoEnqueueDocumentCards"] = bool(settings.get("autoEnqueueDocumentCards", True))
-    settings["autoEnqueuePathOptimization"] = bool(settings.get("autoEnqueuePathOptimization", True))
+    settings["autoEnqueuePathOptimization"] = bool(settings.get("autoEnqueuePathOptimization", False))
     settings["manualActive"] = bool(settings.get("manualActive"))
     _parse_mode = str(settings.get("parseModelMode") or "online").strip().lower()
     settings["parseModelMode"] = _parse_mode if _parse_mode in {"online", "local"} else "online"
@@ -507,7 +509,9 @@ def _claim_next_task(db: Database, worker_id: str) -> dict[str, object] | None:
             SELECT *
             FROM local_model_tasks
             WHERE status = 'queued'
-            ORDER BY priority ASC, created_at ASC
+            -- E 2026-05-27 修饥饿: attempts ASC 优先 —— 没试过的(attempts=0)先claim,
+            -- 失败重试(attempts>0)自动沉到队尾, 新任务永不被反复失败的老任务插队饿死。
+            ORDER BY attempts ASC, priority ASC, created_at ASC
             LIMIT 1
             """
         ).fetchone()

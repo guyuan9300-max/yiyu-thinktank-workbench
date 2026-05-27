@@ -1,0 +1,12 @@
+{
+  "date":"2026-05-27","verdict":"A_worktree_pollution_surgical_restore",
+  "three_state":{"HEAD":{"local_ai_endpoints":4,"w2_worker_refs":12,"cardgen_fix":true},
+    "worktree":{"local_ai_endpoints":0,"w2_worker":false,"diff_vs_head":"+156 -135","status":"M"},
+    "runtime":{"local_ai_settings":"404(historical log)","cardgen_attempts":0}},
+  "worktree_diff_classes":{"A_lost_from_E":["W2 deep-read-worker thread","/local-ai/settings","/local-ai/coverage","/local-ai/backfill","worker_loop import"],
+    "B_keep":["maintenance persist","team-sync endpoints","predict_plan_link_from_text"]},
+  "m4_cardgen_attempts0_cause":"B_worker_not_started(W2 thread deleted from worktree main.py)",
+  "m5_clean_head_test":{"env":"/tmp/yiyu-clean-head HEAD + temp DB + doubao","doc":"汇丰超级平台建设计划书 19178字",
+    "elapsed_sec":40.0,"document_cards":"0->1","card_quality":"real summary, not garbage","head_pipeline_usable":true},
+  "answers":{"A_is_pollution":true,"B_head_usable":true,"C_runtime_cause":"worktree deleted W2 worker + W4 endpoints","D_recommend_restore":true,"E_need_new_service":false}
+}
