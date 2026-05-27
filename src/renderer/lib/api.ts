@@ -3135,19 +3135,30 @@ export async function getMeetingActionItems(clientId: string): Promise<MeetingAc
 
 export type NextStepItem = {
   fingerprint: string;
-  kind: 'meeting' | 'commitment' | 'task' | 'meeting_action';
+  kind: 'meeting' | 'commitment' | 'task' | 'meeting_action' | 'event_line';
   actor: string;
   text: string;
   dueDate: string;
   severity: 'high' | 'medium' | 'low';
   rawId: string;
+  // 行动闭环对账附加字段(后端 next_step_reconciler 产出,旧前端可忽略)
+  ownerSide?: 'us' | 'client' | 'both' | 'unknown';
+  actionDirection?: 'do' | 'follow_up' | 'wait_for' | 'confirm' | 'unknown';
+  mergedCount?: number;       // 合并了几条改写重复
+  matchedTaskTitle?: string;  // 命中的已有任务
 };
 
 export type NextStepsResponse = {
   clientId: string;
-  items: NextStepItem[];
+  items: NextStepItem[];                // 清洗后的干净主候选(candidate_next_steps)
   total: number;
   consumedCount: number;
+  // 分层附加(可选):前端不读也不影响
+  possibleDuplicates?: NextStepItem[];
+  needsReview?: NextStepItem[];
+  matchedExistingCount?: number;
+  invalidFilteredCount?: number;
+  debugSummary?: Record<string, number>;
 };
 
 export async function getNextSteps(clientId: string): Promise<NextStepsResponse> {
