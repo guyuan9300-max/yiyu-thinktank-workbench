@@ -4774,10 +4774,16 @@ class AiService:
         cli_timeout = max(30, int(timeout_seconds))
         wall_timeout = cli_timeout + OPENCLAW_STARTUP_OVERHEAD_SECONDS
 
+        # 5/27 修: openclaw 2026.5.22 升级后, 走 gateway 会 50s 超时再 fallback 到 embedded,
+        # 总耗时 > backend 75s 硬超时. 直接用 --local (embedded) 跳过 gateway 等待.
+        # 同时把 user 在 UI 切的 model 显式传给 openclaw (之前依赖 agent default, 切换没生效).
+        configured_model = (self.current_model() or "").strip() or OPENCLAW_DEFAULT_MODEL
         cmd = [
             cli_path,
             "agent",
+            "--local",
             "--agent", agent_id,
+            "--model", configured_model,
             "--message", full_message,
             "--json",
             "--timeout", str(cli_timeout),

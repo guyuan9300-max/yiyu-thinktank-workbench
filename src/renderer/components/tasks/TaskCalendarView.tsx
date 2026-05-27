@@ -371,20 +371,40 @@ export function TaskCalendarView({
   const [draggingTaskId, setDraggingTaskId] = useState<string | null>(null);
   const [dragTargetDay, setDragTargetDay] = useState<number | null>(null);
   const [dragTargetMinute, setDragTargetMinute] = useState<number | null>(null);
+  // 5/26 加: +N 聚合 popover 展开. 同时段超过 3 个任务时, 点 +N 弹出 dropdown 列出隐藏任务
+  // 之前只 toast 一行不能点单个, 现在点这个 popover 里的每个任务可直接打开 editor
+  const [expandedAggregateKey, setExpandedAggregateKey] = useState<string | null>(null);
+  useEffect(() => {
+    if (!expandedAggregateKey) return;
+    const handleOutsideClick = (event: MouseEvent) => {
+      const target = event.target as HTMLElement | null;
+      if (!target) return;
+      if (target.closest('[data-aggregate-popover]')) return;
+      if (target.closest('[data-aggregate-trigger]')) return;
+      setExpandedAggregateKey(null);
+    };
+    window.addEventListener('mousedown', handleOutsideClick);
+    return () => window.removeEventListener('mousedown', handleOutsideClick);
+  }, [expandedAggregateKey]);
   const [expandedCalendarDays, setExpandedCalendarDays] = useState<Set<string>>(new Set());
   const dragDropHandledRef = useRef(false);
   const [resizingTaskId, setResizingTaskId] = useState<string | null>(null);
   const [resizePreviewMinutes, setResizePreviewMinutes] = useState<number | null>(null);
+  // 5/26 加 ⑨: 顶部 resize 改 startMinute, preview 需要显示新 start
+  const [resizePreviewStartMinute, setResizePreviewStartMinute] = useState<number | null>(null);
   const [weekCreateSelection, setWeekCreateSelection] = useState<WeekCreateSelection | null>(null);
   const [visibleWeekPageIndex, setVisibleWeekPageIndex] = useState(1);
   const [isWeekPaging, setIsWeekPaging] = useState(false);
   const resizePreviewRef = useRef<number | null>(null);
-  const resizeDraftRef = useRef<{ taskId: string; startY: number; startMinute: number; baseDuration: number } | null>(null);
+  // 5/26 ⑨: top resize 时, mouseUp 用 ref 读最新 startMinute (state 会有 stale closure)
+  const resizePreviewStartMinuteRef = useRef<number | null>(null);
+  const resizeDraftRef = useRef<{ taskId: string; startY: number; startMinute: number; baseDuration: number; mode: 'top' | 'bottom'; dayDate?: Date } | null>(null);
   // 鼠标进入 resize handle 时,提前把任务卡的 draggable 改成 false。
   // 这是关键 — isResizing state 在 mousedown 后才更新,但 React re-render 跟不上 native dragstart,
   // 所以必须在 mouseenter handle 时就提前禁用 drag,让 mousedown 直接进入 resize 模式而不是 drag。
   const [resizeHoverTaskId, setResizeHoverTaskId] = useState<string | null>(null);
-  // now indicator:当前时间在一天里的分钟数,每分钟更新一次
+  // now indicator:当前时间在一天里的分钟数. 5/26 把 60s→15s, 避免长时间累积漂移
+  // 15px/min slot 高度下 60s 误差 ≈ 14px 跳一下,15s 误差 ≈ 3.5px 顺滑
   const [currentMinuteOfDay, setCurrentMinuteOfDay] = useState<number>(() => {
     const now = new Date();
     return now.getHours() * 60 + now.getMinutes();
@@ -394,20 +414,9 @@ export function TaskCalendarView({
       const now = new Date();
       setCurrentMinuteOfDay(now.getHours() * 60 + now.getMinutes());
     };
-    // 先对齐到下一个分钟边界,再每 60s tick 一次
-    const msToNextMinute = 60000 - (Date.now() % 60000);
-    const initialTimer = window.setTimeout(() => {
-      tick();
-      const interval = window.setInterval(tick, 60000);
-      (window as unknown as { __taskCalendarNowInterval?: number }).__taskCalendarNowInterval = interval;
-    }, msToNextMinute);
-    return () => {
-      window.clearTimeout(initialTimer);
-      const stored = (window as unknown as { __taskCalendarNowInterval?: number }).__taskCalendarNowInterval;
-      if (stored) {
-        window.clearInterval(stored);
-      }
-    };
+    // 15s 一次. 没必要对齐分钟边界 — 用户主观感受是平滑就够
+    const interval = window.setInterval(tick, 15000);
+    return () => window.clearInterval(interval);
   }, []);
   const weekCreateDraftRef = useRef<{
     dayKey: number;
@@ -645,58 +654,84 @@ export function TaskCalendarView({
       if (!draft) return;
       const deltaY = event.clientY - draft.startY;
       const deltaSlots = Math.round(deltaY / DAY_TIMELINE_SLOT_HEIGHT);
-      const maxDuration = Math.max(DAY_TIMELINE_SLOT_MINUTES, 24 * 60 - draft.startMinute);
-      const nextDuration = Math.max(
-        DAY_TIMELINE_SLOT_MINUTES,
-        Math.min(maxDuration, draft.baseDuration + deltaSlots * DAY_TIMELINE_SLOT_MINUTES),
-      );
-      resizePreviewRef.current = nextDuration;
-      setResizePreviewMinutes(nextDuration);
       document.body.style.cursor = 'ns-resize';
       document.body.style.userSelect = 'none';
+      if (draft.mode === 'top') {
+        // 5/26 ⑨: 顶部 resize — 改 startMinute. deltaY > 0 → start 向后移(任务变短)
+        //                          deltaY < 0 → start 向前移(任务变长, 占用更早的时间)
+        const baseEnd = draft.startMinute + draft.baseDuration;
+        const nextStart = Math.max(0, Math.min(baseEnd - DAY_TIMELINE_SLOT_MINUTES, draft.startMinute + deltaSlots * DAY_TIMELINE_SLOT_MINUTES));
+        const nextDuration = baseEnd - nextStart;
+        resizePreviewRef.current = nextDuration;
+        resizePreviewStartMinuteRef.current = nextStart;
+        setResizePreviewMinutes(nextDuration);
+        setResizePreviewStartMinute(nextStart);
+      } else {
+        const maxDuration = Math.max(DAY_TIMELINE_SLOT_MINUTES, 24 * 60 - draft.startMinute);
+        const nextDuration = Math.max(
+          DAY_TIMELINE_SLOT_MINUTES,
+          Math.min(maxDuration, draft.baseDuration + deltaSlots * DAY_TIMELINE_SLOT_MINUTES),
+        );
+        resizePreviewRef.current = nextDuration;
+        setResizePreviewMinutes(nextDuration);
+      }
     };
 
     const handleMouseUp = () => {
       const draft = resizeDraftRef.current;
       const task = weekTimedTasks.find((item) => item.task.id === draft?.taskId)?.task;
       const nextDuration = resizePreviewRef.current ?? draft?.baseDuration ?? null;
+      const nextStartMinute = draft?.mode === 'top' ? resizePreviewStartMinuteRef.current : null;
       resizeDraftRef.current = null;
       document.body.style.cursor = '';
       document.body.style.userSelect = '';
+      // 5/26 修: resize 期间如果用户曾经 dragOver 过别的 slot, 拖拽预览框 state 不会自动清,
+      // 会留个蓝边方块在屏幕上. 这里 resize 结束顺手清掉
+      setDragTargetDay(null);
+      setDragTargetMinute(null);
 
-      // Optimistic update:不立即清 resizingTaskId / resizePreviewMinutes,
-      // 让 UI 保持拖动后的新高度,等 API + reload 完成后再清掉 preview。
-      // 这样用户松手瞬间看到的高度就是新高度,不会"回退一闪后再变高"。
-      if (task && nextDuration && draft && nextDuration !== draft.baseDuration) {
+      const clearPreview = () => {
+        resizePreviewRef.current = null;
+        resizePreviewStartMinuteRef.current = null;
+        setResizingTaskId(null);
+        setResizePreviewMinutes(null);
+        setResizePreviewStartMinute(null);
+        setResizeHoverTaskId(null);
+      };
+
+      // 5/26 ⑨: 顶部 resize 改 startDate + duration. 其他模式只改 duration.
+      const changed = !!(task && draft && nextDuration && (
+        nextDuration !== draft.baseDuration ||
+        (draft.mode === 'top' && nextStartMinute !== null && nextStartMinute !== draft.startMinute)
+      ));
+
+      if (changed && task && draft && nextDuration) {
         if (isLocalDraftTaskId(task.id)) {
-          resizePreviewRef.current = null;
-          setResizingTaskId(null);
-          setResizePreviewMinutes(null);
-          setResizeHoverTaskId(null);
+          clearPreview();
           onCalendarNotice?.('info', LOCAL_DRAFT_NOTICE);
           return;
         }
         // 注意:这里 await 期间 isResizing 仍为 true,
-        // 任务卡 height 由 effectiveDuration = resizePreviewMinutes || durationMinutes 决定
-        // 因此一直保持 preview 高度,直到 API 完成 + 新 task data 到位
+        // 任务卡 height/top 由 effectiveDuration / effectiveStart 决定
         void (async () => {
           try {
-            await onUpdateTaskDuration(task, nextDuration);
+            if (draft.mode === 'top' && draft.dayDate && nextStartMinute !== null) {
+              const newDueDate = combineDateAndTime(draft.dayDate, nextStartMinute);
+              await Promise.all([
+                onRescheduleTask(task, newDueDate, { preserveCalendarViewport: true }),
+                onUpdateTaskDuration(task, nextDuration),
+              ]);
+            } else {
+              await onUpdateTaskDuration(task, nextDuration);
+            }
           } catch {
-            // 失败时回滚到原 duration,UI 跳回原高度(由父组件 loadTaskBlock 或 catch 提示处理)
+            // 回滚由父组件 loadTaskBlock 或 catch 提示处理
           } finally {
-            resizePreviewRef.current = null;
-            setResizingTaskId(null);
-            setResizePreviewMinutes(null);
-            setResizeHoverTaskId(null);
+            clearPreview();
           }
         })();
       } else {
-        // 没有变化(或没有 nextDuration),直接清
-        resizePreviewRef.current = null;
-        setResizingTaskId(null);
-        setResizePreviewMinutes(null);
-        setResizeHoverTaskId(null);
+        clearPreview();
       }
     };
 
@@ -708,7 +743,7 @@ export function TaskCalendarView({
       document.body.style.cursor = '';
       document.body.style.userSelect = '';
     };
-  }, [onCalendarNotice, onUpdateTaskDuration, resizingTaskId, weekTimedTasks]);
+  }, [onCalendarNotice, onUpdateTaskDuration, onRescheduleTask, resizingTaskId, weekTimedTasks]);
 
   const cleanupWeekCreateInteraction = useCallback(() => {
     weekCreateCleanupRef.current?.();
@@ -871,6 +906,7 @@ export function TaskCalendarView({
     startMinute: number,
     baseDuration: number,
     event: React.MouseEvent,
+    options?: { mode?: 'top' | 'bottom'; dayDate?: Date },
   ) => {
     event.preventDefault();
     event.stopPropagation();
@@ -878,15 +914,20 @@ export function TaskCalendarView({
       onCalendarNotice?.('info', LOCAL_DRAFT_NOTICE);
       return;
     }
+    const mode = options?.mode || 'bottom';
     resizeDraftRef.current = {
       taskId,
       startY: event.clientY,
       startMinute,
       baseDuration,
+      mode,
+      dayDate: options?.dayDate,
     };
     resizePreviewRef.current = baseDuration;
+    resizePreviewStartMinuteRef.current = mode === 'top' ? startMinute : null;
     setResizingTaskId(taskId);
     setResizePreviewMinutes(baseDuration);
+    setResizePreviewStartMinute(mode === 'top' ? startMinute : null);
   };
 
   const handleStartWeekCreateSelection = (
@@ -894,10 +935,17 @@ export function TaskCalendarView({
     column: HTMLDivElement,
     event: React.MouseEvent<HTMLDivElement>,
   ) => {
+    if (event.button !== 0) return; // 只左键
     if (draggingTaskId || resizingTaskId) return;
+    // 5/26 接通: 点击源如果是任务卡 / +N chip / popover, 跳过, 让原 handler 接
+    const target = event.target as HTMLElement | null;
+    if (target?.closest('[data-task-card="true"]')) return;
+    if (target?.closest('[data-aggregate-trigger="true"]')) return;
+    if (target?.closest('[data-aggregate-popover="true"]')) return;
     event.preventDefault();
     event.stopPropagation();
     const anchorMinute = minuteOfDayFromClientPosition(column, event.clientY);
+    const anchorClientY = event.clientY;
     const dayKey = day.getTime();
     cleanupWeekCreateInteraction();
     const initialSelection = {
@@ -917,9 +965,16 @@ export function TaskCalendarView({
     document.body.style.cursor = 'ns-resize';
     document.body.style.userSelect = 'none';
 
+    // 5/26: moved 标志 — 鼠标真有纵向移动 > 4px 才算"拖选". 移动很小算单击, 交给 onClick 走默认 60min.
+    // 这跟 Google Calendar/Outlook 的标准行为一致.
+    let hasMoved = false;
+    const MOVE_THRESHOLD = 4;
+
     const updateSelectionFromPointer = (clientY: number) => {
       const draft = weekCreateDraftRef.current;
       if (!draft) return;
+      // 锁列 — 行业标准: mouseMove 不跟随 cursor 横移列, column 锁死在 mouseDown 那一天.
+      // 鼠标垂直坐标用 draft.column 算 minute, 超出列边界(列顶/列底) clamp 到 0/24:00.
       const currentMinute = minuteOfDayFromClientPosition(draft.column, clientY);
       const nextRange = buildSelectionRange(draft.anchorMinute, currentMinute);
       const nextSelection = {
@@ -933,15 +988,32 @@ export function TaskCalendarView({
     };
 
     const handleWindowMouseMove = (moveEvent: MouseEvent) => {
-      updateSelectionFromPointer(moveEvent.clientY);
+      if (!hasMoved && Math.abs(moveEvent.clientY - anchorClientY) > MOVE_THRESHOLD) {
+        hasMoved = true;
+      }
+      if (hasMoved) updateSelectionFromPointer(moveEvent.clientY);
+    };
+
+    const handleWindowKeyDown = (keyEvent: KeyboardEvent) => {
+      // Esc 取消拖选 (行业标准)
+      if (keyEvent.key === 'Escape') {
+        cleanupWeekCreateInteraction();
+        setWeekCreateSelection(null);
+        hasMoved = false;
+      }
     };
 
     const handleWindowMouseUp = () => {
       const draft = weekCreateDraftRef.current;
       const selection = weekCreateSelectionRef.current;
+      const moved = hasMoved;
       cleanupWeekCreateInteraction();
       setWeekCreateSelection(null);
       if (!draft || !selection) return;
+      // 没真拖动 → 当作单击, 不在这里 openTaskEditor (让外层 onClick 走 handleCreateTaskFromWeekSlot 默认 60min)
+      if (!moved) return;
+      // 防止 mouseUp 后 chrome 自动派发 click 触发 handleCreateTaskFromWeekSlot 双开 editor
+      justDroppedAtRef.current = Date.now();
       const durationMinutes = Math.max(DAY_TIMELINE_SLOT_MINUTES, selection.endMinute - selection.startMinute);
       const dueDate = combineDateAndTime(draft.dayDate, selection.startMinute);
       window.requestAnimationFrame(() => {
@@ -952,9 +1024,11 @@ export function TaskCalendarView({
 
     window.addEventListener('mousemove', handleWindowMouseMove);
     window.addEventListener('mouseup', handleWindowMouseUp);
+    window.addEventListener('keydown', handleWindowKeyDown);
     weekCreateCleanupRef.current = () => {
       window.removeEventListener('mousemove', handleWindowMouseMove);
       window.removeEventListener('mouseup', handleWindowMouseUp);
+      window.removeEventListener('keydown', handleWindowKeyDown);
     };
   };
 
@@ -1075,7 +1149,14 @@ export function TaskCalendarView({
     // 如果状态没真的变化就不要触发整组件重渲染（这是滑动卡顿的主因）。
     setIsWeekPaging((prev) => (prev ? prev : true));
     const pageIndex = Math.max(0, Math.min(2, Math.round(pager.scrollLeft / pager.clientWidth)));
-    setVisibleWeekPageIndex((prev) => (prev === pageIndex ? prev : pageIndex));
+    setVisibleWeekPageIndex((prev) => {
+      if (prev === pageIndex) return prev;
+      // 5/26 修: 跨页时 dragTargetDay 还是上一页某天的 timestamp, 拖拽预览框会画到错位置.
+      // 翻页清掉 preview state, 用户在新一页 dragOver 时会重新设
+      setDragTargetDay(null);
+      setDragTargetMinute(null);
+      return pageIndex;
+    });
     if (weekPagerIdleTimerRef.current) {
       window.clearTimeout(weekPagerIdleTimerRef.current);
     }
@@ -1310,13 +1391,27 @@ export function TaskCalendarView({
                             )}
                           </div>
 
-                          <div className="mt-2.5 flex min-h-0 flex-1 flex-col gap-1">
+                          <div className={`mt-2.5 flex min-h-0 flex-1 flex-col gap-1 ${
+                            expandedCalendarDays.has(formatDateInputValue(cellDate))
+                              ? 'max-h-[260px] overflow-y-auto pr-0.5'
+                              : ''
+                          }`}>
+                            {/* 5/26: 展开时给个 max-h + 内部 scroll, 防止把整行 row 撑高搞乱 month grid. */}
                             {dayTasks.slice(0, expandedCalendarDays.has(formatDateInputValue(cellDate)) ? dayTasks.length : 4).map((task) => {
                               const timedSegment = buildTaskDayTimedSegment(task, cellDate);
                               const timePrefix = timedSegment && hasTaskExplicitTime(task)
                                 ? `${formatMinuteOfDay(timedSegment.startMinute)} `
                                 : '';
                               const isTaskLocalDraft = isLocalDraftTaskId(task.id);
+                              // 5/26 ⑯: 跨天任务首尾箭头标识. 看 task 的整段 range 跨不跨天.
+                              const taskRange = resolveTaskDateTimeRange(task);
+                              const taskStartDay = startOfDayValue(taskRange.startDateTime);
+                              const taskEndDay = startOfDayValue(addDays(taskRange.endDateTime, taskRange.endDateTime.getTime() === startOfDayValue(taskRange.endDateTime).getTime() ? -1 : 0));
+                              const cellDayValue = startOfDayValue(cellDate);
+                              const isMultiDay = taskStartDay.getTime() !== taskEndDay.getTime();
+                              const isFirstDay = isMultiDay && cellDayValue.getTime() === taskStartDay.getTime();
+                              const isLastDay = isMultiDay && cellDayValue.getTime() === taskEndDay.getTime();
+                              const isMiddleDay = isMultiDay && !isFirstDay && !isLastDay;
                               return (
                                 <div
                                   key={task.id}
@@ -1344,9 +1439,13 @@ export function TaskCalendarView({
                                     }
                                     dragDropHandledRef.current = false;
                                   }}
-                                  className={`group relative block max-w-full rounded-lg border px-2 py-1 text-[11px] font-semibold text-left leading-4 ${isTaskLocalDraft ? 'cursor-default' : 'cursor-grab active:cursor-grabbing'} ${
-                                    task.status === 'done' ? '' : 'shadow-[0_1px_2px_rgba(15,23,42,0.04)]'
-                                  } ${draggingTaskId === task.id ? 'opacity-50' : ''}`}
+                                  className={`group relative block max-w-full rounded-md border pl-2 pr-1 py-0.5 text-[11px] font-semibold text-left leading-[1.35] ${isTaskLocalDraft ? 'cursor-default' : 'cursor-grab active:cursor-grabbing'} ${
+                                    task.status === 'done' ? 'line-through' : 'shadow-[0_1px_2px_rgba(15,23,42,0.04)]'
+                                  } ${draggingTaskId === task.id ? 'opacity-50' : ''} ${
+                                    isTaskOverdue(task, today) && task.status !== 'done' ? 'ring-1 ring-rose-400' : ''
+                                  } ${
+                                    task.priority === 'high' && task.status !== 'done' ? 'border-l-[3px]' : ''
+                                  }`}
                                   style={calendarChipStyle(task, clientColorById)}
                                   title={`${timePrefix}${task.title}${taskOrgSummary(task) ? ` · ${taskOrgSummary(task)}` : ''}`}
                                   onClick={(event) => {
@@ -1394,7 +1493,16 @@ export function TaskCalendarView({
                                   >
                                     <Pencil size={9} strokeWidth={2.5} />
                                   </button>
-                                  <span className="block overflow-hidden whitespace-nowrap pl-5 pr-1">{timePrefix}{task.title}</span>
+                                  <span className="flex items-center gap-0.5 overflow-hidden whitespace-nowrap pl-5 pr-1">
+                                    {/* 5/26 ⑯: 跨天任务首尾箭头 — 用户能立刻识别"这个任务是跨多天的, 这是端点之一" */}
+                                    {(isLastDay || isMiddleDay) && (
+                                      <ChevronLeft size={9} strokeWidth={2.5} className="shrink-0 opacity-70" aria-hidden="true" />
+                                    )}
+                                    <span className="overflow-hidden whitespace-nowrap text-ellipsis flex-1 min-w-0">{timePrefix}{task.title}</span>
+                                    {(isFirstDay || isMiddleDay) && (
+                                      <ChevronRight size={9} strokeWidth={2.5} className="shrink-0 opacity-70" aria-hidden="true" />
+                                    )}
+                                  </span>
                                 </div>
                               );
                             })}
@@ -1539,70 +1647,102 @@ export function TaskCalendarView({
                         </div>
                         {page.days.map((day, dayIndex) => {
                           const items = page.unscheduledByDay[dayIndex] || [];
+                          // 5/26 修: 之前不限条数, 4+ 条时 flex-shrink 把高度均匀压扁, 文字看着挤.
+                          // 改成最多 3 条 + 第 4 条起聚合 "+N", 点 +N 展开列下方显示剩余的 (复用 expandedAggregateKey).
+                          const UNSCHED_MAX = 3;
+                          const visibleItems = items.slice(0, UNSCHED_MAX);
+                          const hiddenItems = items.slice(UNSCHED_MAX);
+                          const unschedAggregateKey = `unsched-${page.key}-${dayIndex}`;
+                          const isUnschedExpanded = expandedAggregateKey === unschedAggregateKey;
+                          const renderItems = isUnschedExpanded ? items : visibleItems;
+                          const renderTaskCard = (task: Task) => {
+                            const isTaskLocalDraft = isLocalDraftTaskId(task.id);
+                            const isDone = task.status === 'done';
+                            return (
+                              <div
+                                key={`${page.key}-unsched-${day.toISOString()}-${task.id}`}
+                                role="button"
+                                tabIndex={0}
+                                draggable={!isTaskLocalDraft}
+                                onDragStart={(event) => {
+                                  if (isTaskLocalDraft) {
+                                    event.preventDefault();
+                                    onCalendarNotice?.('info', LOCAL_DRAFT_NOTICE);
+                                    return;
+                                  }
+                                  event.dataTransfer.effectAllowed = 'move';
+                                  event.dataTransfer.setData('text/plain', task.id);
+                                  try {
+                                    // 5/26 改: 之前用 1×1 transparent ghost, 拖动看不见自己抓的是什么.
+                                    // 改成 clone 真 chip 当 ghost — 半透明 + 微旋转 (跟滴答/Google 一致)
+                                    const sourceEl = event.currentTarget as HTMLElement;
+                                    const ghostEl = sourceEl.cloneNode(true) as HTMLElement;
+                                    const rect = sourceEl.getBoundingClientRect();
+                                    ghostEl.style.cssText = `position:fixed; top:-9999px; left:-9999px; width:${rect.width}px; opacity:0.85; transform:rotate(-1.5deg); box-shadow:0 8px 16px rgba(15,23,42,0.18); pointer-events:none; z-index:9999;`;
+                                    document.body.appendChild(ghostEl);
+                                    const offsetX = Math.min(rect.width / 2, 80);
+                                    const offsetY = Math.min(rect.height / 2, 12);
+                                    event.dataTransfer.setDragImage(ghostEl, offsetX, offsetY);
+                                    window.setTimeout(() => {
+                                      try { document.body.removeChild(ghostEl); } catch { /* ignore */ }
+                                    }, 0);
+                                  } catch {
+                                    // ignore
+                                  }
+                                  dragDropHandledRef.current = false;
+                                  setDraggingTaskId(task.id);
+                                }}
+                                onDragEnd={() => {
+                                  if (!dragDropHandledRef.current) {
+                                    setDraggingTaskId(null);
+                                    setDragTargetDay(null);
+                                    setDragTargetMinute(null);
+                                  }
+                                  dragDropHandledRef.current = false;
+                                }}
+                                onClick={(event) => {
+                                  event.stopPropagation();
+                                  onOpenTaskEditor(task);
+                                }}
+                                onKeyDown={(event) => {
+                                  if (event.key === 'Enter' || event.key === ' ') {
+                                    event.preventDefault();
+                                    onOpenTaskEditor(task);
+                                  }
+                                }}
+                                className={`shrink-0 rounded-lg border px-2 py-1 text-[11px] font-semibold leading-4 line-clamp-1 transition ${isTaskLocalDraft ? 'cursor-default opacity-60' : 'cursor-grab active:cursor-grabbing hover:shadow-sm'} ${isDone ? 'border-slate-200 bg-slate-50 text-slate-400 line-through' : 'border-amber-200 bg-white text-amber-900 hover:border-amber-300'} ${draggingTaskId === task.id ? 'opacity-50' : ''}`}
+                                title={`未安排时间：${task.title}\n— 拖到下方时间格即可分配时间\n— 点击进入编辑器`}
+                                aria-label={`未安排任务 ${task.title}：拖到时间格分配时间，或点击编辑`}
+                              >
+                                {task.title}
+                              </div>
+                            );
+                          };
                           return (
                             <div
                               key={`${page.key}-unsched-${day.toISOString()}`}
-                              className="flex flex-col gap-1 border-l border-gray-100 px-1.5 py-1.5 min-h-[28px] max-h-[88px] overflow-y-auto"
+                              className={`flex flex-col gap-1 border-l border-gray-100 px-1.5 py-1.5 min-h-[28px] ${isUnschedExpanded ? 'max-h-[280px] overflow-y-auto' : 'max-h-[88px] overflow-hidden'}`}
                             >
-                              {items.map((task) => {
-                                const isTaskLocalDraft = isLocalDraftTaskId(task.id);
-                                const isDone = task.status === 'done';
-                                return (
-                                  <div
-                                    key={`${page.key}-unsched-${day.toISOString()}-${task.id}`}
-                                    role="button"
-                                    tabIndex={0}
-                                    draggable={!isTaskLocalDraft}
-                                    onDragStart={(event) => {
-                                      if (isTaskLocalDraft) {
-                                        event.preventDefault();
-                                        onCalendarNotice?.('info', LOCAL_DRAFT_NOTICE);
-                                        return;
-                                      }
-                                      event.dataTransfer.effectAllowed = 'move';
-                                      event.dataTransfer.setData('text/plain', task.id);
-                                      // 隐藏默认 drag ghost。Electron/Chromium 需要"真实 DOM 元素"才生效,
-                                      // 用 detached Image 在某些版本不 work,会 fallback 到默认 ghost icon。
-                                      try {
-                                        const ghostEl = document.createElement('div');
-                                        ghostEl.style.cssText = 'position:fixed;top:-9999px;left:-9999px;width:1px;height:1px;opacity:0;pointer-events:none;';
-                                        document.body.appendChild(ghostEl);
-                                        event.dataTransfer.setDragImage(ghostEl, 0, 0);
-                                        window.setTimeout(() => {
-                                          try { document.body.removeChild(ghostEl); } catch { /* ignore */ }
-                                        }, 0);
-                                      } catch {
-                                        // ignore
-                                      }
-                                      dragDropHandledRef.current = false;
-                                      setDraggingTaskId(task.id);
-                                    }}
-                                    onDragEnd={() => {
-                                      if (!dragDropHandledRef.current) {
-                                        setDraggingTaskId(null);
-                                        setDragTargetDay(null);
-                                        setDragTargetMinute(null);
-                                      }
-                                      dragDropHandledRef.current = false;
-                                    }}
-                                    onClick={(event) => {
-                                      event.stopPropagation();
-                                      onOpenTaskEditor(task);
-                                    }}
-                                    onKeyDown={(event) => {
-                                      if (event.key === 'Enter' || event.key === ' ') {
-                                        event.preventDefault();
-                                        onOpenTaskEditor(task);
-                                      }
-                                    }}
-                                    className={`rounded-lg border px-2 py-1 text-[11px] font-semibold leading-4 line-clamp-1 transition ${isTaskLocalDraft ? 'cursor-default opacity-60' : 'cursor-grab active:cursor-grabbing hover:shadow-sm'} ${isDone ? 'border-slate-200 bg-slate-50 text-slate-400 line-through' : 'border-amber-200 bg-white text-amber-900 hover:border-amber-300'} ${draggingTaskId === task.id ? 'opacity-50' : ''}`}
-                                    title={`未安排时间：${task.title}\n— 拖到下方时间格即可分配时间\n— 点击进入编辑器`}
-                                    aria-label={`未安排任务 ${task.title}：拖到时间格分配时间，或点击编辑`}
-                                  >
-                                    {task.title}
-                                  </div>
-                                );
-                              })}
+                              {renderItems.map((task) => renderTaskCard(task))}
+                              {hiddenItems.length > 0 && (
+                                <button
+                                  type="button"
+                                  data-aggregate-trigger="true"
+                                  onClick={(event) => {
+                                    event.stopPropagation();
+                                    setExpandedAggregateKey((prev) => (prev === unschedAggregateKey ? null : unschedAggregateKey));
+                                  }}
+                                  className={`shrink-0 rounded-lg border border-dashed px-2 py-1 text-[10px] font-semibold leading-4 transition ${
+                                    isUnschedExpanded
+                                      ? 'border-amber-400 bg-amber-100 text-amber-800 hover:bg-amber-200'
+                                      : 'border-amber-300 bg-amber-50/50 text-amber-700 hover:bg-amber-100 hover:border-amber-400'
+                                  }`}
+                                  aria-expanded={isUnschedExpanded}
+                                  aria-label={isUnschedExpanded ? '收起未安排任务' : `还有 ${hiddenItems.length} 条未安排任务,点开查看`}
+                                >
+                                  {isUnschedExpanded ? '收起' : `+${hiddenItems.length} 条`}
+                                </button>
+                              )}
                             </div>
                           );
                         })}
@@ -1638,7 +1778,38 @@ export function TaskCalendarView({
                             className="relative border-r last:border-r-0 border-gray-100"
                             style={{ height: `${timelineSlotMinutes.length * DAY_TIMELINE_SLOT_HEIGHT}px` }}
                             data-week-day-key={day.getTime()}
+                            onMouseDown={(event) => {
+                              // 5/26 接通: 行业标准的"拖选时段"手势.
+                              // mouseDown 启动 selection, 内部用 hasMoved threshold 区分单击/拖选,
+                              // 单击交给 slot 的 onClick 走默认 60min, 真拖选 (>4px) 才创建自定义 duration.
+                              handleStartWeekCreateSelection(day, event.currentTarget as HTMLDivElement, event);
+                            }}
                           >
+                            {/* 5/26: 拖选高亮预览框 — 行业标准 (Google/Outlook), 蓝色半透明矩形 + 上下浮动时间标签 */}
+                            {weekCreateSelection && weekCreateSelection.dayKey === day.getTime() && (() => {
+                              const sel = weekCreateSelection;
+                              const top = (sel.startMinute / DAY_TIMELINE_SLOT_MINUTES) * DAY_TIMELINE_SLOT_HEIGHT;
+                              const height = Math.max(
+                                DAY_TIMELINE_SLOT_HEIGHT,
+                                ((sel.endMinute - sel.startMinute) / DAY_TIMELINE_SLOT_MINUTES) * DAY_TIMELINE_SLOT_HEIGHT,
+                              );
+                              const startLabel = formatMinuteOfDay(sel.startMinute);
+                              const endLabel = formatMinuteOfDay(sel.endMinute);
+                              return (
+                                <div
+                                  className="pointer-events-none absolute inset-x-1 z-[65] rounded-md border-2 border-[#5B7BFE] bg-[#5B7BFE]/15"
+                                  style={{ top: `${top}px`, height: `${height}px` }}
+                                  aria-hidden="true"
+                                >
+                                  <span className="absolute -top-[18px] left-1 inline-block rounded bg-[#5B7BFE] px-1.5 py-[1px] text-[10px] font-semibold text-white tabular-nums leading-none">
+                                    {startLabel}
+                                  </span>
+                                  <span className="absolute -bottom-[18px] right-1 inline-block rounded bg-[#5B7BFE] px-1.5 py-[1px] text-[10px] font-semibold text-white tabular-nums leading-none">
+                                    {endLabel}
+                                  </span>
+                                </div>
+                              );
+                            })()}
                             {hourLineMinutes.map((minute) => (
                               <div
                                 key={`${page.key}-hour-line-${day.toISOString()}-${minute}`}
@@ -1744,39 +1915,87 @@ export function TaskCalendarView({
                                   ? `还有 ${displayItem.hiddenItems.length} 条重叠任务：${displayItem.summary}`
                                   : `还有 ${displayItem.hiddenItems.length} 条重叠任务`;
                                 // 聚合 chip:不占大块面积,变成贴在最后一个任务卡右上角的 22×22 圆形 +N。
+                                // 5/26 改: 点 +N 不再只 toast, 改为弹 popover 列出隐藏任务, 每个可点开 editor
+                                const isExpanded = expandedAggregateKey === displayItem.key;
                                 return (
-                                  <button
-                                    key={displayItem.key}
-                                    type="button"
-                                    className="absolute inline-flex items-center justify-center rounded-full border border-[#5B7BFE]/30 bg-white text-[10px] font-bold text-[#5B7BFE] shadow-[0_2px_6px_rgba(91,123,254,0.15)] transition-colors duration-150 hover:bg-[#5B7BFE] hover:text-white hover:border-[#5B7BFE]"
-                                    style={{
-                                      top: `${top + 4}px`,
-                                      left: `calc(${left} + ${width} - 26px)`,
-                                      width: 22,
-                                      height: 22,
-                                      zIndex: 51,
-                                    }}
-                                    onMouseDown={(event) => {
-                                      event.stopPropagation();
-                                    }}
-                                    onClick={(event) => {
-                                      event.stopPropagation();
-                                      onCalendarNotice?.('info', aggregateTitle);
-                                    }}
-                                    title={aggregateTitle}
-                                    aria-label={aggregateTitle}
-                                  >
-                                    +{displayItem.hiddenItems.length}
-                                  </button>
+                                  <React.Fragment key={displayItem.key}>
+                                    <button
+                                      type="button"
+                                      data-aggregate-trigger="true"
+                                      className={`absolute inline-flex items-center justify-center rounded-full border text-[10px] font-bold shadow-[0_2px_6px_rgba(91,123,254,0.15)] transition-colors duration-150 ${
+                                        isExpanded
+                                          ? 'border-[#5B7BFE] bg-[#5B7BFE] text-white'
+                                          : 'border-[#5B7BFE]/30 bg-white text-[#5B7BFE] hover:bg-[#5B7BFE] hover:text-white hover:border-[#5B7BFE]'
+                                      }`}
+                                      style={{
+                                        top: `${top + 4}px`,
+                                        left: `calc(${left} + ${width} - 26px)`,
+                                        width: 22,
+                                        height: 22,
+                                        zIndex: isExpanded ? 70 : 51,
+                                      }}
+                                      onMouseDown={(event) => {
+                                        event.stopPropagation();
+                                      }}
+                                      onClick={(event) => {
+                                        event.stopPropagation();
+                                        setExpandedAggregateKey((prev) => (prev === displayItem.key ? null : displayItem.key));
+                                      }}
+                                      title={aggregateTitle}
+                                      aria-label={aggregateTitle}
+                                      aria-expanded={isExpanded}
+                                    >
+                                      +{displayItem.hiddenItems.length}
+                                    </button>
+                                    {isExpanded && (
+                                      <div
+                                        data-aggregate-popover="true"
+                                        className="absolute rounded-md border border-gray-200 bg-white shadow-lg overflow-hidden"
+                                        style={{
+                                          top: `${top + 30}px`,
+                                          left: `calc(${left} + ${width} - 220px)`,
+                                          width: 216,
+                                          zIndex: 80,
+                                          maxHeight: 240,
+                                          overflowY: 'auto',
+                                        }}
+                                        onMouseDown={(event) => event.stopPropagation()}
+                                      >
+                                        <div className="px-2 py-1.5 border-b border-gray-100 bg-gray-50 text-[10px] text-gray-500 font-medium">
+                                          重叠 {displayItem.hiddenItems.length + 1} 条任务
+                                        </div>
+                                        {displayItem.hiddenItems.map((hiddenItem) => (
+                                          <button
+                                            key={hiddenItem.task.id}
+                                            type="button"
+                                            className="w-full text-left px-2 py-1.5 hover:bg-[#5B7BFE]/8 border-b border-gray-50 last:border-0"
+                                            onClick={(event) => {
+                                              event.stopPropagation();
+                                              setExpandedAggregateKey(null);
+                                              onOpenTaskEditor(hiddenItem.task);
+                                            }}
+                                          >
+                                            <div className="text-[10px] text-gray-400 tabular-nums">{hiddenItem.timeLabel}</div>
+                                            <div className={`text-[12px] leading-[1.3] line-clamp-2 ${hiddenItem.task.status === 'done' ? 'text-gray-400 line-through' : 'text-gray-700 font-medium'}`}>
+                                              {hiddenItem.task.title}
+                                            </div>
+                                          </button>
+                                        ))}
+                                      </div>
+                                    )}
+                                  </React.Fragment>
                                 );
                               }
 
                               const { task, startMinute, durationMinutes } = displayItem.taskItem;
-                              const effectiveDuration = resizingTaskId === task.id && resizePreviewMinutes ? resizePreviewMinutes : durationMinutes;
-                              const effectiveEndMinute = Math.min(startMinute + effectiveDuration, 24 * 60);
-                              const effectiveTimeLabel = `${formatMinuteOfDay(startMinute)}-${formatMinuteOfDay(effectiveEndMinute)}`;
-                              const top = (startMinute / DAY_TIMELINE_SLOT_MINUTES) * DAY_TIMELINE_SLOT_HEIGHT;
-                              const height = Math.max(40, ((effectiveEndMinute - startMinute) / DAY_TIMELINE_SLOT_MINUTES) * DAY_TIMELINE_SLOT_HEIGHT - 4);
+                              const isResizingThis = resizingTaskId === task.id;
+                              const effectiveDuration = isResizingThis && resizePreviewMinutes ? resizePreviewMinutes : durationMinutes;
+                              // 5/26 ⑨: 顶部 resize 改 startMinute, effectiveStart 用 preview
+                              const effectiveStart = isResizingThis && resizePreviewStartMinute !== null ? resizePreviewStartMinute : startMinute;
+                              const effectiveEndMinute = Math.min(effectiveStart + effectiveDuration, 24 * 60);
+                              const effectiveTimeLabel = `${formatMinuteOfDay(effectiveStart)}-${formatMinuteOfDay(effectiveEndMinute)}`;
+                              const top = (effectiveStart / DAY_TIMELINE_SLOT_MINUTES) * DAY_TIMELINE_SLOT_HEIGHT;
+                              const height = Math.max(40, ((effectiveEndMinute - effectiveStart) / DAY_TIMELINE_SLOT_MINUTES) * DAY_TIMELINE_SLOT_HEIGHT - 4);
                               const chipStyle = calendarChipStyle(task, clientColorById);
                               const isResizing = resizingTaskId === task.id;
                               const isTaskLocalDraft = isLocalDraftTaskId(task.id);
@@ -1801,12 +2020,16 @@ export function TaskCalendarView({
                                     }
                                     event.dataTransfer.effectAllowed = 'move';
                                     event.dataTransfer.setData('text/plain', task.id);
-                                    // 隐藏默认 drag ghost。Electron/Chromium 需要"真实 DOM 元素"才生效。
+                                    // 5/26 改: clone 真 chip 当 ghost, 跟月视图一致
                                     try {
-                                      const ghostEl = document.createElement('div');
-                                      ghostEl.style.cssText = 'position:fixed;top:-9999px;left:-9999px;width:1px;height:1px;opacity:0;pointer-events:none;';
+                                      const sourceEl = event.currentTarget as HTMLElement;
+                                      const ghostEl = sourceEl.cloneNode(true) as HTMLElement;
+                                      const rect = sourceEl.getBoundingClientRect();
+                                      ghostEl.style.cssText = `position:fixed; top:-9999px; left:-9999px; width:${rect.width}px; opacity:0.85; transform:rotate(-1.5deg); box-shadow:0 8px 16px rgba(15,23,42,0.18); pointer-events:none; z-index:9999;`;
                                       document.body.appendChild(ghostEl);
-                                      event.dataTransfer.setDragImage(ghostEl, 0, 0);
+                                      const offsetX = Math.min(rect.width / 2, 80);
+                                      const offsetY = Math.min(rect.height / 2, 12);
+                                      event.dataTransfer.setDragImage(ghostEl, offsetX, offsetY);
                                       window.setTimeout(() => {
                                         try { document.body.removeChild(ghostEl); } catch { /* ignore */ }
                                       }, 0);
@@ -1838,7 +2061,15 @@ export function TaskCalendarView({
                                   onMouseDown={(event) => {
                                     event.stopPropagation();
                                   }}
-                                  onClick={(event) => handleWeekTaskSelect(event)}
+                                  onClick={(event) => {
+                                    // 5/26 修: 之前 onClick 调 handleWeekTaskSelect (空函数),
+                                    // 点任务卡身体没反应; 月视图直接点卡能开, 周视图退化.
+                                    // 改为点身体直接打开 task editor (跟月视图一致)
+                                    event.preventDefault();
+                                    event.stopPropagation();
+                                    if (draggingTaskId === task.id || resizingTaskId === task.id) return;
+                                    onOpenTaskEditor(task);
+                                  }}
                                   title={`${effectiveTimeLabel} ${task.title}`}
                                   aria-label={`${effectiveTimeLabel} ${task.title}`}
                                 >
@@ -1883,6 +2114,46 @@ export function TaskCalendarView({
                                     >
                                       <Pencil size={9} strokeWidth={2.5} />
                                     </button>
+                                  </div>
+                                  {/* 5/26 ⑨: 顶部 resize 区 (新增) — 拖顶部改 startMinute, end 不变 */}
+                                  <div
+                                    draggable={false}
+                                    className={`absolute inset-x-0 top-0 h-[8px] ${isTaskLocalDraft ? 'cursor-default' : 'cursor-ns-resize'} group/resizetop`}
+                                    onMouseEnter={() => {
+                                      if (isTaskLocalDraft) return;
+                                      setResizeHoverTaskId(task.id);
+                                    }}
+                                    onMouseLeave={() => {
+                                      if (!resizeDraftRef.current) setResizeHoverTaskId(null);
+                                    }}
+                                    onMouseDown={(event) => {
+                                      if (isTaskLocalDraft) {
+                                        event.preventDefault();
+                                        event.stopPropagation();
+                                        onCalendarNotice?.('info', LOCAL_DRAFT_NOTICE);
+                                        return;
+                                      }
+                                      handleStartWeekTaskResize(task.id, startMinute, durationMinutes, event, {
+                                        mode: 'top',
+                                        dayDate: displayItem.taskItem.dayDate,
+                                      });
+                                    }}
+                                    onDragStart={(event) => {
+                                      event.preventDefault();
+                                      event.stopPropagation();
+                                    }}
+                                    onClick={(event) => {
+                                      event.preventDefault();
+                                      event.stopPropagation();
+                                    }}
+                                    title={isTaskLocalDraft ? LOCAL_DRAFT_NOTICE : '拖动调整开始时间'}
+                                  >
+                                    <span
+                                      className={`pointer-events-none absolute inset-x-2 top-[2px] h-[2px] rounded-full transition-opacity ${
+                                        isResizing ? 'opacity-100' : 'opacity-0 group-hover:opacity-60 group-hover/resizetop:opacity-100'
+                                      }`}
+                                      style={{ backgroundColor: chipStyle.color }}
+                                    />
                                   </div>
                                   {/* 底部 resize 区:8px 高的透明 hover 区(够大易点),内嵌 2px 实色细线(只在 hover/resize 时可见)。
                                       mouseEnter 时把整张卡的 draggable 提前禁掉,这样 mousedown 不会被 HTML5 drag 抢走。 */}

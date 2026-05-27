@@ -237,7 +237,7 @@ WEEKLY_MAINLINE_SYSTEM_INSTRUCTION = """\
 
 输出目标：
 1. 生成一个本周总览 summaryText。
-2. 选择最多 3 条重点主线，每条只写两个段落：progressText（本周推进）和 nextGoalText（下一步目标）。
+2. 选择最多 6 条重点主线（按重要性排序，常见 3-5 条；真有更多独立主线再多放，宁可少不可凑数），每条只写两个段落：progressText（本周推进）和 nextGoalText（下一步目标）。
 
 写作规则：
 - progressText 写 2-4 句，必须说明：做了什么、推进到什么阶段、这件事对业务/交付/合作有什么意义。
@@ -271,7 +271,7 @@ WEEKLY_MAINLINE_RESPONSE_SCHEMA = {
                 },
                 "required": ["title", "taskCount", "completedCount", "pendingCount", "progressText", "nextGoalText"],
             },
-            "description": "最多3条重点主线",
+            "description": "最多6条重点主线（按重要性排序，宁可少不凑数）",
         },
     },
     "required": ["summaryText", "mainlines"],

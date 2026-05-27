@@ -139,3 +139,38 @@
             4+1 结构全到位(导航/精神区Hero+行动网络可视化/行动者宣言4卡/功能6卡/案例4卡/加入5入口+透明看板/深蓝转化带/页脚)，
             深蓝主色(弃紫靛)、诚实边界(状态标签真实/无虚构数字/≥2处人类确认)、移动端无横向滚动、tsc 通过。
             咨询首页 / 未动。待顾源源验收后再定是否设为开源站主入口。
+- [E] 2026-05-25 PM 任务领取(顾源源): 战略陪伴语义检索取材层重建 (M0-M6 + 三报告 + 桌面 50-E)
+            隔离 worktree feat/strategic-narrative-semantic-retrieval; 复用 knowledge_base.retrieve_knowledge_bundle 接语义检索, 不重造
+            M0 基线复现已出 docs/E_STRATEGIC_NARRATIVE_M0_BASELINE_REPRO_REPORT.md (CFFC essence 1589池/取2, facts 883/取60 等坐实)
+            M4 需 main.py(B占)+pulse.py, 排最后/等 B 释放; M1-M3/M5 不撞任何人
+- [E] 2026-05-26 M1+M2 完成, 顾源源指示停在 M2 等 review
+            M1: 新建 strategic_narrative_semantic_retriever.py (语义优先 retrieve_knowledge_bundle + LIKE 回调兜底 + 来源标注, data_dir 从 db 推导不碰 main.py)
+            M2: 重写 narrative_collector._collect_dimension_chunks, 6 维语义 query, 输出类型不变 generator 零改动; py_compile 通过
+            发现: 语义层 populated 不均 (CFFC 158 surrogate健康 / 日慈 2 文件几乎空 → 走 FTS/LIKE 兜底), 吃满红利需 re-index
+            未做(后续): M3 全项目去[:6] / M4 next_steps(等B释放main.py) / M5 token budget / M6 真before-after
+            baton 继续持有 narrative_collector/generator+新文件; 改动未commit在隔离worktree待review
+- [E] 2026-05-26 战略陪伴取材层重建 M0-M6 完成 + 检测通过(92/100), commit 3d24ea2 (feature 分支, 未合 main)
+            语义优先+LIKE兜底+全项目覆盖+全源next_steps+token预算+来源标注; 真跑 qwen2.5:7b before/after
+            实测: 输入 2→18-20 chunk; business_intro 6→11(CFFC)/10(日慈) 全覆盖; CFFC business_intro LLM 41→234字
+            报告: 桌面 50-E + docs/E_STRATEGIC_NARRATIVE_*_REPORT.md; baton 已释放
+            待办: 日慈类客户需 re-index 才吃满语义; main.py /next-steps 一行改动待与 B 协调合并
+- [E] 2026-05-26 战略陪伴数据库读取深度强测试 M0-M10 完成, commit 00e0efb (feature 分支)
+            3客户健康度(CFFC semantic-rich/日慈 reindex_required/益语 data-thin) + 真跑 qwen2.5:7b 六段 before/after
+            评分 84/100 → 结论 B(基本通过,无P0,先修P1再合main); 报告 桌面51-E + docs/E_STRATEGIC_COMPANION_DEPTH_TEST_REPORT.md
+            P1: 前端 retrieval_path 不可见 / 日慈类客户需re-index / live页面待合并重启 / 缺回滚开关
+- [E] 2026-05-26 战略陪伴 P1 收口 commit 45d0a21 (feature 分支)
+            M1 回滚开关 STRATEGIC_NARRATIVE_SEMANTIC_RETRIEVAL_ENABLED 完成+验证(ON=semantic/OFF=legacy_like_only不崩)
+            M2 后端emit retrievalMode+前端轻量标签就绪; 完整可见待【C 云端 narrative schema 透传】
+            M3 三客户健康度+reindex方案(日慈reindex_required); M4 main.py 1行零冲突可合
+            结论 B: 先合 integration+重启 live 验证后再 main(产线门,待顾源源); 报告 桌面52-E
+            ⚠️ 给C: regenerate 经 cloud ingest, 需云端透传 dims 的 retrievalMode/fallbackUsed 字段前端才看得到
+- [E] 2026-05-26 ★ 战略陪伴语义检索取材层重建 已合并 origin/main (56a2223), 顾源源授权直接合不等A/B
+            合 origin/main 时 merge 了 df5e117(他人2 commit), main.py 自动合并无冲突(我只/next-steps 1行, 区域不重叠)
+            build 全过; feat 分支也已推 origin
+            ⚠️ 给所有人: origin/main 已更新, pull 前先 commit 你的本地未提交改动(B 主树有 main.py/App.tsx/api.ts 未提交, pull 会要求先处理)
+            live 桌面 app 需 顾源源 pull+重启 app 才生效(运行中的 app 仍是启动时旧代码)
+            待做(非阻塞): 日慈 re-index(建议 app 重启后再做) / 云端 narrative ingest 透传 retrievalMode(火山云 deploy) / 前端合并环境跑 tsc(我已跑过 typecheck:renderer 通过)
+- [E] 2026-05-26 PM 全面执行(顾源源授权直接合): 取材层已上 origin/main 56a2223(见上条)
+            日慈 re-index 尝试: reindex_client_vector 跑通(master 117→Qdrant)但查询仍 sem=0
+            根因=查询时 embedding 签名/collection 解析不匹配(深层内部, 非内容缺失); 日慈仍优雅回退 LIKE 无 regression
+            完整日慈语义=更深索引工程(后续数据工程项, 已诚实标 52-E §16); cloud retrievalMode 透传交 C/火山云核对 dim_json

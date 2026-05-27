@@ -186,6 +186,10 @@ export function shortAiModelLabel(
     if (m.includes('plus')) return '通义 Plus';
     return '通义';
   }
+  // 5/27 加: 区分 GPT 5.5 / 5.4, 之前只看 provider=openclaw 一律返 5.4
+  if (m.includes('gpt-5.5') || m.includes('gpt5.5')) {
+    return 'GPT 5.5';
+  }
   if (p.includes('openclaw') || m.includes('gpt-5.4') || m.includes('gpt5.4')) {
     return 'GPT 5.4';
   }

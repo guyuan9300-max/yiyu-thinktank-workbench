@@ -87,24 +87,39 @@ def find_related_tables(conn) -> list[str]:
 
 def merge_duplicate(conn, keep_id: str, drop_ids: list[str],
                      related_tables: list[str], apply: bool) -> dict:
-    """把 drop_ids 关联的资源迁到 keep_id, 然后删 drop_ids 行. 返统计."""
-    stats = {"tables_updated": 0, "rows_moved": 0, "clients_deleted": 0}
+    """把 drop_ids 关联的资源迁到 keep_id, 然后删 drop_ids 行.
+
+    [B] 5/25 PM 真用 bug fix: 某些表有 UNIQUE(client_id, X) 约束, 直接 UPDATE 会撞.
+    修法: 用 UPDATE OR IGNORE (sqlite 支持) + 然后 DELETE 没合并成功的源行.
+    保留 keep_id 那边的版本 (dest 已有, 信息更新), drop 那边重复版本作废.
+    """
+    stats = {"tables_updated": 0, "rows_moved": 0, "rows_dropped_conflict": 0, "clients_deleted": 0}
 
     for table in related_tables:
-        # 查表里有多少行用 drop_ids
         placeholders = ",".join("?" * len(drop_ids))
         count_sql = f"SELECT COUNT(*) FROM {table} WHERE client_id IN ({placeholders})"
         try:
             cnt = conn.execute(count_sql, drop_ids).fetchone()[0]
         except sqlite3.OperationalError:
-            continue  # 这个表实际没 client_id 列 (虽然 schema LIKE 命中了)
+            continue
         if cnt == 0:
             continue
         stats["tables_updated"] += 1
-        stats["rows_moved"] += cnt
         if apply:
-            update_sql = f"UPDATE {table} SET client_id = ? WHERE client_id IN ({placeholders})"
+            # 步骤 1: UPDATE OR IGNORE — 冲突的行不动 (但 sqlite IGNORE 不会真静默, 我们用 try)
+            # 用 OR IGNORE 让 UNIQUE 冲突自动跳过, 而不是抛错
+            update_sql = f"UPDATE OR IGNORE {table} SET client_id = ? WHERE client_id IN ({placeholders})"
             conn.execute(update_sql, [keep_id, *drop_ids])
+            # 步骤 2: 上面 IGNORE 没成功更新的行 (因为 UNIQUE 冲突), 直接 DELETE
+            # — 这些行的 client_id 还是旧 drop_id, 后面 DELETE clients 时会变孤儿
+            cleanup_sql = f"DELETE FROM {table} WHERE client_id IN ({placeholders})"
+            cur = conn.execute(cleanup_sql, drop_ids)
+            dropped = cur.rowcount
+            moved = cnt - dropped
+            stats["rows_moved"] += moved
+            stats["rows_dropped_conflict"] += dropped
+        else:
+            stats["rows_moved"] += cnt  # dry-run 假定全成功
 
     # 删 drop_ids 行
     for did in drop_ids:
@@ -140,7 +155,7 @@ def main() -> int:
         print(f"  · {t}")
     print()
 
-    total_stats = {"tables_updated": 0, "rows_moved": 0, "clients_deleted": 0}
+    total_stats = {"tables_updated": 0, "rows_moved": 0, "rows_dropped_conflict": 0, "clients_deleted": 0}
 
     for g in groups:
         keep = g["details"][0]

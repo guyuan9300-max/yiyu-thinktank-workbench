@@ -1,0 +1,170 @@
+{
+  "report_meta": {
+    "author": "B (Opus 4.7 1M)",
+    "test_time": "2026-05-27T19:55:00+08:00",
+    "report_version": "v1",
+    "north_star": "确认本地新旧文档都具备组织归属、来源登记、去重保护，能够作为后续本地→云端同步的可信数据基础"
+  },
+  "score": {
+    "total": 89,
+    "max": 100,
+    "verdict": "基本可用. 需修 P0+P1 后再进入 Step 3.",
+    "breakdown": {
+      "step0_historical_migration": {"score": 19, "max": 20, "note": "documents 100% 通过, v2_documents 3 行 race 残留"},
+      "step1_new_import_team_context": {"score": 21, "max": 25, "note": "raw_file 验证通过, 但历史 1020 条无 source_registry"},
+      "step2_dedup_orphan_cleanup": {"score": 24, "max": 25, "note": "UNIQUE INDEX 真生效, 0 孤儿, dedup 早返回 worker 串行测试不全"},
+      "compatibility_exception_path": {"score": 9, "max": 10, "note": "14 处调用方兼容, worktree 部署问题不计入"},
+      "step3_sync_readiness": {"score": 6, "max": 10, "note": "字段就位但 source_registry backfill 缺失"},
+      "report_reproducibility": {"score": 10, "max": 10, "note": "SQL/curl/hash 全留"}
+    }
+  },
+  "environment": {
+    "git_branch": "main",
+    "git_commit": "888998b",
+    "app_db_path": "/Users/guyuanyuan/Library/Application Support/YiyuThinkTankWorkbench2_V21Lab/app.db",
+    "backups": {
+      "step0": "/tmp/app.db.bak-v23-step0-190640",
+      "step2": "/tmp/app.db.bak-v23-step2-190807"
+    },
+    "backend_running": true,
+    "backend_pid_at_test_start": 12253,
+    "uncommitted_files": [
+      "backend/app/services/knowledge_v2.py",
+      "backend/app/main.py",
+      "scripts/migrate_v23_org_id_backfill.py",
+      "scripts/migrate_v23_dedup_v2_documents.py"
+    ]
+  },
+  "data_state_post_test": {
+    "v2_documents": {
+      "total": 1022,
+      "missing_org": 3,
+      "missing_owner": 3,
+      "missing_dept": 3,
+      "missing_scope": 0,
+      "missing_hash": 0,
+      "duplicate_client_hash_groups": 0,
+      "with_source_registry_pct": 0.2
+    },
+    "documents": {
+      "total": 1979,
+      "missing_org": 0,
+      "missing_owner": 0,
+      "missing_dept": 0,
+      "missing_scope": 0
+    },
+    "knowledge_documents": {
+      "total": 610,
+      "has_team_fields": false,
+      "note": "完全没 org/owner 字段, 双轨制问题"
+    },
+    "source_registry": {
+      "total": 5,
+      "file_import": 2,
+      "llm_extracted": 3,
+      "vs_v2_documents_coverage": "0.2%"
+    },
+    "orphans": {
+      "v2_chunks": 0,
+      "v2_sections": 0
+    },
+    "unique_index": {
+      "name": "uniq_v2_documents_client_hash",
+      "fields": ["client_id", "content_hash"],
+      "partial_where": "content_hash != ''",
+      "exists": true
+    },
+    "v2_documents_post_19_00_count": 44
+  },
+  "p0_blocking_step3": [
+    {
+      "id": "P0-1",
+      "issue": "历史 1020 v2_documents 没 source_registry 登记 (99.8%)",
+      "impact": "Step 3 sync 漏 99% 历史数据",
+      "fix": "写 backfill 脚本回写 source_registry",
+      "effort_days": 0.5
+    },
+    {
+      "id": "P0-2",
+      "issue": "Electron 启动 backend 时 reload-dir 用 worktree 而非主仓库",
+      "impact": "代码改动不生效, 测试无效",
+      "fix": "固定启动 reload-dir 到主仓库; 清理过期 worktree",
+      "effort_days": 0.5
+    }
+  ],
+  "p1_step3_pre_recommended": [
+    {
+      "id": "P1-1",
+      "issue": "source_registry.content_hash 是双重 hash + 截断",
+      "fix": "register_source 直接存 raw SHA-256",
+      "effort_days": 0.25
+    },
+    {
+      "id": "P1-2",
+      "issue": "upsert_canonical fallback race condition (3 行残留)",
+      "fix": "加 transaction 或 trigger",
+      "effort_days": 0.5
+    },
+    {
+      "id": "P1-3",
+      "issue": "API duplicate 计数不反映 ingest 层 dedup",
+      "fix": "API 检查 prepared.dedup_skipped",
+      "effort_days": 0.25
+    },
+    {
+      "id": "P1-4",
+      "issue": "knowledge_documents (610 条) 没 org/owner 字段",
+      "fix": "迁移到 v2 / 加字段 / 声明 legacy",
+      "effort_days": 1.0
+    },
+    {
+      "id": "P1-5",
+      "issue": "data_center_sync_outbox 0 条 (没人入队)",
+      "fix": "源 source_registry 事件链接到 outbox",
+      "effort_days": 0.5
+    }
+  ],
+  "p2_future_optimizations": [
+    "前端已复用提示",
+    "source_registry 管理页",
+    "文件重复关系展示",
+    "手动合并重复文件",
+    "source_registry 健康仪表盘"
+  ],
+  "key_questions_answered": {
+    "step0_truly_done": "部分 (3 行 race 残留)",
+    "step1_truly_done": "raw_file 是, task/meeting/weekly_review 经 upsert 路径需补",
+    "step2_truly_done": "是 (UNIQUE + 清理 + 0 孤儿)",
+    "new_files_100pct_team_fields": "raw_file 路径 100%, upsert 路径有 race",
+    "new_files_100pct_source_registry": "raw_file 路径 100%, upsert 路径未接",
+    "same_client_same_hash_not_duplicate": "是",
+    "cross_client_same_hash_allowed": "是",
+    "historical_duplicates_cleaned": "是 (26 组 → 0)",
+    "orphans_zero": "是",
+    "legacy_ingest_compatible": "是",
+    "step3_recommended_now": "不建议. 先做 P0-1 + P0-2 + Step 1.5 (~1.5 天)"
+  },
+  "recommended_next_path": [
+    {"step": "Step 0.5", "name": "部署稳定", "effort_days": 0.5, "blocks": "Step 3"},
+    {"step": "Step 1.5", "name": "upsert_canonical 接 source_registry", "effort_days": 0.5, "blocks": "Step 3"},
+    {"step": "Step 2.5", "name": "source_registry 历史 backfill", "effort_days": 0.5, "blocks": "Step 3"},
+    {"step": "Step 3", "name": "本地 sync executor", "effort_days": "2-3 天", "depends_on": "P0+1.5+2.5"},
+    {"step": "Step 4", "name": "cloud_backend 接收 API", "effort_days": "3-4 天"},
+    {"step": "Step 5", "name": "双向 sync + UI 复用提示", "effort_days": "3-4 天"}
+  ],
+  "test_artifacts": {
+    "files": [
+      {"path": "/tmp/v23-test/test_v23_unique_A.md", "sha256": "fc6740e7fa74ee2ccf7c8bc1d592cd1ee4a6af4e5d7783667dbafd2cfb9d0612"},
+      {"path": "/tmp/v23-test/test_v23_unique_B.md", "sha256": "b4aef71228ca4df3adf76032fd67476d9041f4e8600adb89209a324f7860fbc7"},
+      {"path": "/tmp/v23-test/test_v23_unique_C.md", "sha256": "1fa9ac78afda96ebb5e83f62163d2e02c0cfca5876e6050f07cfc462258dcd29"},
+      {"path": "/tmp/v23-test/test_v23_unique_E.md", "sha256": "f4b220d51c189bf7caf5da93a547bd2d2307a299f94d824f45c5be84768dd1f8"}
+    ],
+    "imports_tested": [
+      "imp_f1c502f3b4 (前 worktree 切换, 失败)",
+      "imp_9f495dba95 (前 worktree 切换, 失败)",
+      "imp_5eaa9716f5 (前 worktree 切换, 失败)",
+      "imp_8372446c44 (worktree sync 后, 通过 ✓)",
+      "imp_88b67d95f9 / imp_04885fc749 / imp_7359a3ec44 (M4 dedup, worker 串行未完整)"
+    ]
+  }
+}

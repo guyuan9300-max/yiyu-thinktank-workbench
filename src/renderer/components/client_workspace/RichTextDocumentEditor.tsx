@@ -344,17 +344,71 @@ function RibbonToolbar({
   // 自动从 DOM selection 同步，然后 editor.insertMarkdown() 就能精确替换选区。
   const capturedRangeRef = useRef<Range | null>(null);
 
+  // 蓝色选区高亮叠层的矩形(viewport 坐标)。AI popover 打开期间,把"将被替换/参考的
+  // 选区"用蓝框画出来——原生 selection 在 popover textarea autoFocus 后会消失,用 overlay 还原视觉。
+  const [aiSelectionRects, setAiSelectionRects] = useState<DOMRect[]>([]);
+
+  // P14b-fix：持续记录"最后一次编辑器内的非空选区"。
+  // 病根:从编辑器外部触发 AI(右侧文件列表 ← 箭头引用文件)时,那一下点击发生在
+  // contentEditable 外,浏览器已把 window selection 清空;随后 openAiPrompt 再抓就抓到空,
+  // selectionText='' → 后端只能判 cursor_insert(光标插入而非替换选区)。
+  // 有了这个 ref,captureCurrentSelection 在当前选区为空时回退到它,拿回真正要替换的那段。
+  const lastSelectionRef = useRef<{ range: Range; text: string } | null>(null);
+  useEffect(() => {
+    const onSelChange = () => {
+      const sel = window.getSelection();
+      if (!sel || sel.rangeCount === 0) return;
+      const anchor = sel.anchorNode;
+      const el = anchor
+        ? anchor.nodeType === 1
+          ? (anchor as Element)
+          : anchor.parentElement
+        : null;
+      const insideEditor = !!(el && typeof el.closest === 'function' && el.closest('[contenteditable="true"]'));
+      if (sel.isCollapsed) {
+        // 用户在编辑器内主动放光标 = 放弃选区 → 清记忆,避免后续误替换旧选区。
+        // (在编辑器外点击导致的折叠不在此列:insideEditor=false 时不动 ref。)
+        if (insideEditor) lastSelectionRef.current = null;
+        return;
+      }
+      if (!insideEditor) return;
+      const text = sel.toString().trim();
+      if (!text) return;
+      lastSelectionRef.current = { range: sel.getRangeAt(0).cloneRange(), text };
+    };
+    document.addEventListener('selectionchange', onSelChange);
+    return () => document.removeEventListener('selectionchange', onSelChange);
+  }, []);
+
   const captureCurrentSelection = (): { text: string; range: Range | null; rect: DOMRect | null } => {
     try {
       const sel = window.getSelection();
-      if (!sel || sel.rangeCount === 0) return { text: '', range: null, rect: null };
-      // collapsed = 只有光标无选区。也要 capture(用于 cursor_insert 场景在光标处插入新内容)。
-      // cloneRange():Range 是 mutable 的,sel 后续改了会污染我们的快照。
-      const range = sel.getRangeAt(0).cloneRange();
-      const text = sel.isCollapsed ? '' : sel.toString().trim();
-      // 拿 caret/选区 viewport 坐标,popover 跟这个位置浮出(WPS 风)
-      const rect = range.getBoundingClientRect();
-      return { text, range, rect };
+      // Case A:当前确实有非空选区 → 直接用(右键 / AI tab 按钮等编辑器内触发)。
+      if (sel && sel.rangeCount > 0 && !sel.isCollapsed) {
+        const text = sel.toString().trim();
+        if (text) {
+          const range = sel.getRangeAt(0).cloneRange();
+          return { text, range, rect: range.getBoundingClientRect() };
+        }
+      }
+      // Case B:当前选区为空,但最近在编辑器里框选过 → 回退到那次选区。
+      // 专治"右侧文件 ← 箭头引用文件触发 AI":点击在编辑器外,window selection 已被清空,
+      // 这里靠 lastSelectionRef 拿回真正要替换的那段(只在 DOM 节点仍在场时才用)。
+      const last = lastSelectionRef.current;
+      if (
+        last &&
+        document.contains(last.range.startContainer) &&
+        document.contains(last.range.endContainer)
+      ) {
+        const range = last.range.cloneRange();
+        return { text: last.text, range, rect: range.getBoundingClientRect() };
+      }
+      // Case C:真·纯光标(无选区也无记忆)→ 还原折叠 Range 给 cursor_insert 用。
+      if (sel && sel.rangeCount > 0) {
+        const range = sel.getRangeAt(0).cloneRange();
+        return { text: '', range, rect: range.getBoundingClientRect() };
+      }
+      return { text: '', range: null, rect: null };
     } catch {
       return { text: '', range: null, rect: null };
     }
@@ -389,6 +443,8 @@ function RibbonToolbar({
     const { text, range, rect } = captureCurrentSelection();
     setCapturedSelection(text);
     capturedRangeRef.current = range;
+    // 画蓝色选区高亮(仅当真有选区;纯光标 cursor_insert 场景不画)
+    setAiSelectionRects(text && range ? Array.from(range.getClientRects()) : []);
     let anchor: { top: number; left: number };
     if (anchorOverride) {
       anchor = computePopoverAnchor(anchorOverride);
@@ -458,6 +514,26 @@ function RibbonToolbar({
     }
   }, [triggerOpenAiPromptKey]);
 
+  // popover 打开期间,滚动 / resize 时重算蓝色选区框坐标,保持和文字对齐。
+  useEffect(() => {
+    if (!aiPrompt) return;
+    const recompute = () => {
+      const range = capturedRangeRef.current;
+      if (!range || !document.contains(range.startContainer)) {
+        setAiSelectionRects([]);
+        return;
+      }
+      const rects = Array.from(range.getClientRects());
+      if (rects.length > 0) setAiSelectionRects(rects);
+    };
+    window.addEventListener('scroll', recompute, true);
+    window.addEventListener('resize', recompute);
+    return () => {
+      window.removeEventListener('scroll', recompute, true);
+      window.removeEventListener('resize', recompute);
+    };
+  }, [aiPrompt]);
+
   // P14a-fix：把 capturedRangeRef 里的 DOM Range 还原回 window selection，
   // 让 editor 重新拿到这段选区。返回 true 表示还原成功。
   // 失败情况：Range 引用的 DOM 节点已被卸载/重渲染（极少数，比如 AI 调用期间
@@ -507,6 +583,7 @@ function RibbonToolbar({
     setAiPrompt(null);
     setCapturedSelection('');
     setPopoverAnchor(null);
+    setAiSelectionRects([]);
     capturedRangeRef.current = null;
     setAiInFlight({ startedAt: Date.now(), action: snapshot.action });
     try {
@@ -674,10 +751,24 @@ function RibbonToolbar({
             setAiPrompt(null);
             setCapturedSelection('');
             setPopoverAnchor(null);
+            setAiSelectionRects([]);
           }}
           onSubmit={submitAiPrompt}
         />
       )}
+
+      {/* 蓝色选区高亮:AI popover 打开期间标出"将被替换/参考的选区"。
+          - 用 capturedRange 的 viewport 矩形(fixed 定位),不动文档内容,绝对安全。
+          - pointer-events-none 不挡点击;z-40 在 popover(z-50)之下、内容之上。
+          这样从右键 / AI tab / 右侧 ← 箭头任意入口触发,选中那段都保持蓝色,最后被结果替换。 */}
+      {aiPrompt && aiSelectionRects.map((r, i) => (
+        <div
+          key={i}
+          aria-hidden="true"
+          className="pointer-events-none fixed z-40 rounded-[2px] bg-[#5B7BFE]/25 ring-1 ring-[#5B7BFE]/45"
+          style={{ top: r.top, left: r.left, width: r.width, height: r.height }}
+        />
+      ))}
     </>
   );
 }

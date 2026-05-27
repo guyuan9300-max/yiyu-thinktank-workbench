@@ -1,8 +1,13 @@
 from __future__ import annotations
 
+import asyncio
+import gzip
 import json
 import os
 import re
+import struct
+import subprocess
+import tempfile
 import time
 from datetime import date, datetime, timedelta
 from pathlib import Path
@@ -10,8 +15,21 @@ from typing import Any, Sequence
 from uuid import uuid4
 
 import httpx
+import websockets
 
-from app.models import EventLineRecord, SmartTaskDraftRecord, SmartTaskDraftResponse
+from app.models import EventLineRecord, SmartInputIntent, SmartTaskDraftRecord, SmartTaskDraftResponse
+
+
+# AI 自由返回的 intent 收敛到模型允许的字面量,避免 'create_schedule' 之类未知值
+# 触发 SmartTaskDraftResponse 的 Pydantic 校验 → 500。
+def _canonical_intent(raw: Any) -> SmartInputIntent:
+    value = str(raw or "").strip().lower()
+    if value in {"record_note", "note", "memo", "record", "minutes", "纪要", "记录"}:
+        return "record_note"
+    if value == "unknown":
+        return "unknown"
+    # task_schedule / create_schedule / schedule / task / new_task 等排程类一律归一
+    return "task_schedule"
 
 
 # ─── LLM provider: Volcengine Ark (火山方舟) ───────────────────────
@@ -24,6 +42,17 @@ DEFAULT_QWEN_MODEL = DEFAULT_LLM_MODEL
 DOUBAO_STANDARD_SUBMIT_URL = "https://openspeech.bytedance.com/api/v3/auc/bigmodel/submit"
 DOUBAO_STANDARD_QUERY_URL = "https://openspeech.bytedance.com/api/v3/auc/bigmodel/query"
 DOUBAO_STANDARD_RESOURCE_ID = "volc.seedasr.auc"
+
+# 大模型流式语音识别(WebSocket):说完 ~2-3 秒出字,远快于文件 ASR 的异步轮询(~20s)。
+DOUBAO_STREAM_URL = "wss://openspeech.bytedance.com/api/v3/sauc/bigmodel"
+DOUBAO_STREAM_RESOURCE_ID = "volc.bigasr.sauc.duration"
+# 火山流式二进制协议常量(v3)
+_PROTO_VER, _HEADER_SIZE = 0b0001, 0b0001
+_MT_CLIENT_FULL, _MT_CLIENT_AUDIO = 0b0001, 0b0010
+_MT_SERVER_FULL, _MT_SERVER_ERROR = 0b1001, 0b1111
+_FLAG_POS_SEQ, _FLAG_NEG_WITH_SEQ = 0b0001, 0b0011
+_SER_JSON, _SER_RAW, _COMP_GZIP = 0b0001, 0b0000, 0b0001
+_STREAM_OVERALL_TIMEOUT_S = 30.0
 DOUBAO_STANDARD_EXTENSIONS = {
     "pcm",
     "opus",
@@ -700,6 +729,150 @@ def transcribe_audio_with_doubao(
         raise RuntimeError("豆包标准版转写超时，请稍后重试。")
 
 
+# ─── 大模型流式 ASR(WebSocket，~2-3s 出字) ──────────────────────
+def _stream_msg(mtype: int, flags: int, ser: int, comp: int, seq: int, payload: bytes) -> bytes:
+    head = bytes([
+        (_PROTO_VER << 4) | _HEADER_SIZE,
+        (mtype << 4) | flags,
+        (ser << 4) | comp,
+        0,
+    ])
+    return head + struct.pack(">i", seq) + struct.pack(">I", len(payload)) + payload
+
+
+def _transcode_to_pcm16k(audio_bytes: bytes, extension: str) -> bytes:
+    """任意输入音频(m4a/mp3/wav…)→ 16kHz 单声道 16bit PCM。
+    m4a(MP4)需可 seek 的输入,故写临时文件而非走 stdin 管道。"""
+    suffix = f".{extension.lstrip('.')}" if extension else ""
+    with tempfile.NamedTemporaryFile(suffix=suffix, delete=True) as tf:
+        tf.write(audio_bytes)
+        tf.flush()
+        proc = subprocess.run(
+            ["ffmpeg", "-nostdin", "-i", tf.name, "-ar", "16000", "-ac", "1", "-f", "s16le", "pipe:1"],
+            capture_output=True,
+            timeout=30,
+        )
+    if proc.returncode != 0 or not proc.stdout:
+        tail = proc.stderr.decode("utf-8", "ignore")[-200:]
+        raise RuntimeError(f"音频转码失败：{tail}")
+    return proc.stdout
+
+
+def _parse_stream_response(data: bytes) -> dict[str, Any]:
+    mtype = data[1] >> 4
+    flags = data[1] & 0x0F
+    comp = data[2] & 0x0F
+    body = data[4:]
+    if flags & 0b0011:  # 带 sequence(正或负)
+        body = body[4:]
+    if mtype == _MT_SERVER_ERROR:
+        code = struct.unpack(">I", body[:4])[0]
+        size = struct.unpack(">I", body[4:8])[0]
+        pl = body[8:8 + size]
+        if comp == _COMP_GZIP and pl:
+            pl = gzip.decompress(pl)
+        return {"error": True, "code": code, "msg": pl.decode("utf-8", "ignore")}
+    size = struct.unpack(">I", body[:4])[0]
+    pl = body[4:4 + size]
+    if comp == _COMP_GZIP and pl:
+        pl = gzip.decompress(pl)
+    try:
+        return {"error": False, "payload": json.loads(pl.decode("utf-8")) if pl else {}}
+    except Exception:
+        return {"error": False, "payload": {}}
+
+
+def _extract_stream_text(payload: dict[str, Any]) -> str:
+    result = payload.get("result")
+    if isinstance(result, dict):
+        return str(result.get("text") or "").strip()
+    if isinstance(result, list) and result and isinstance(result[0], dict):
+        return str(result[0].get("text") or "").strip()
+    return ""
+
+
+async def _doubao_stream_recognize(pcm: bytes, app_id: str, access_token: str) -> str:
+    headers = {
+        "X-Api-App-Key": app_id,
+        "X-Api-Access-Key": access_token,
+        "X-Api-Resource-Id": DOUBAO_STREAM_RESOURCE_ID,
+        "X-Api-Connect-Id": str(uuid4()),
+        "X-Api-Request-Id": str(uuid4()),
+    }
+    config = {
+        "user": {"uid": "yiyu-mobile"},
+        "audio": {"format": "pcm", "rate": 16000, "bits": 16, "channel": 1},
+        "request": {"model_name": "bigmodel", "enable_itn": True, "enable_punc": True, "enable_ddc": True},
+    }
+    final_text = ""
+    async with websockets.connect(
+        DOUBAO_STREAM_URL, additional_headers=headers, max_size=16 * 1024 * 1024
+    ) as ws:
+        cfg_payload = gzip.compress(json.dumps(config).encode())
+        await ws.send(_stream_msg(_MT_CLIENT_FULL, _FLAG_POS_SEQ, _SER_JSON, _COMP_GZIP, 1, cfg_payload))
+        await asyncio.wait_for(ws.recv(), timeout=10)  # 配置确认
+
+        chunk_size = 16000  # ~0.5s 的 16kHz/16bit/单声道 PCM
+        chunks = [pcm[i:i + chunk_size] for i in range(0, len(pcm), chunk_size)] or [b""]
+        for index, chunk in enumerate(chunks):
+            is_last = index == len(chunks) - 1
+            seq = index + 2
+            flags = _FLAG_NEG_WITH_SEQ if is_last else _FLAG_POS_SEQ
+            await ws.send(
+                _stream_msg(_MT_CLIENT_AUDIO, flags, _SER_RAW, _COMP_GZIP, -seq if is_last else seq, gzip.compress(chunk))
+            )
+
+        while True:
+            try:
+                message = await asyncio.wait_for(ws.recv(), timeout=15)
+            except (asyncio.TimeoutError, websockets.ConnectionClosed):
+                break
+            parsed = _parse_stream_response(message)
+            if parsed.get("error"):
+                raise RuntimeError(f"豆包流式识别失败：{parsed.get('code')} {parsed.get('msg', '')}".strip())
+            text = _extract_stream_text(parsed.get("payload", {}))
+            if text:
+                final_text = text
+    return final_text.strip()
+
+
+async def transcribe_audio_with_doubao_streaming_async(
+    audio_bytes: bytes,
+    *,
+    file_name: str | None = None,
+    mime_type: str | None = None,
+) -> str:
+    """FastAPI 端点用这个:直接在 uvicorn 的事件循环上跑 WebSocket(不要在
+    asyncio.to_thread 里再 asyncio.run —— uvloop 下会报错)。只把阻塞的 ffmpeg 转码丢线程。"""
+    app_id, access_token = _doubao_stream_asr_credentials()
+    if not app_id or not access_token:
+        raise RuntimeError("豆包流式 ASR 未配置 appid 或 access token。")
+    if not audio_bytes:
+        raise RuntimeError("录音内容为空，无法转写。")
+    extension = _infer_extension(file_name, mime_type)
+    pcm = await asyncio.to_thread(_transcode_to_pcm16k, audio_bytes, extension)
+    if not pcm:
+        raise RuntimeError("音频转码后为空。")
+    transcript = await asyncio.wait_for(
+        _doubao_stream_recognize(pcm, app_id, access_token), timeout=_STREAM_OVERALL_TIMEOUT_S
+    )
+    if not transcript:
+        raise RuntimeError("豆包流式识别未返回有效文本。")
+    return transcript
+
+
+def transcribe_audio_with_doubao_streaming(
+    audio_bytes: bytes,
+    *,
+    file_name: str | None = None,
+    mime_type: str | None = None,
+) -> str:
+    """同步封装(独立脚本/无事件循环时用)。"""
+    return asyncio.run(
+        transcribe_audio_with_doubao_streaming_async(audio_bytes, file_name=file_name, mime_type=mime_type)
+    )
+
+
 def _qwen_extract(transcript: str, reference_date: date) -> dict[str, Any] | None:
     api_key = _qwen_api_key()
     if not api_key:
@@ -757,9 +930,11 @@ def _qwen_extract(transcript: str, reference_date: date) -> dict[str, Any] | Non
         "top_p": 0.85,
         "max_tokens": 1200,
         "stream": False,
-        "enable_thinking": False,
+        # doubao-seed-1.6 是推理模型:必须用 thinking.disabled 关掉思考链,否则复杂抽取
+        # prompt 要"想" ~20s 直接 ReadTimeout。注意 ARK 不认 enable_thinking 这个参数名。
+        "thinking": {"type": "disabled"},
     }
-    timeout = httpx.Timeout(timeout=None, connect=8.0, read=18.0, write=18.0, pool=8.0)
+    timeout = httpx.Timeout(timeout=None, connect=8.0, read=12.0, write=12.0, pool=8.0)
     with httpx.Client(timeout=timeout) as client:
         response = client.post(
             f"{ARK_BASE_URL}/chat/completions",
@@ -929,7 +1104,7 @@ def build_smart_task_draft(
 
     return SmartTaskDraftResponse(
         transcript=transcript.strip(),
-        intent=str(parsed.get("intent") or "task_schedule"),
+        intent=_canonical_intent(parsed.get("intent")),
         draft=draft,
         warnings=warnings,
         confidence=confidence,

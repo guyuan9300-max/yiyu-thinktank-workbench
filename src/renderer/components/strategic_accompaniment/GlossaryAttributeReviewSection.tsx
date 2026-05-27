@@ -1,22 +1,37 @@
 /**
- * M1 · 字典属性审核 (放在事实澄清面板下方)
+ * M1 · 事实澄清面板 (战略陪伴 → 客户档案 底部)
  *
  * 业务目标:
  *  - 用户能看到 AI 抽出的 pending candidate
- *  - 一键 verify / 拒绝 / 批量
+ *  - 一键 verify / 拒绝 / 澄清 / 批量
  *  - 验过的进入字典权威值, chat / narrative 自动消费
- *  - 这是 "学霸笔记本" 的写入入口
+ *
+ * 设计准则 (5/27 重设计):
+ *  - 跟"重点主线 / 任务归属"统一: 细体大字标题 + 中性灰骨架 + 单一蓝紫强调色
+ *  - 不用 emoji, 全 lucide-react icons
+ *  - 按钮 ghost / outline 风格, 不用实色填充
+ *  - chip / pill 统一 text-[10px] font-medium rounded-full
  */
-import { useEffect, useState } from 'react';
+import { useEffect, useState, type ComponentType } from 'react';
 import {
-  BookOpen,
+  CircleDollarSign,
+  CalendarDays,
+  User,
+  MapPin,
+  Hash,
+  Star,
+  Tag,
+  FileText,
   Check,
   X,
   Loader2,
   ChevronDown,
   ChevronRight,
   Pencil,
-  CalendarDays,
+  Zap,
+  Clock,
+  Link2,
+  Inbox,
 } from 'lucide-react';
 import {
   listGlossaryAttributes,
@@ -32,14 +47,24 @@ interface GlossaryAttributeReviewSectionProps {
   flash?: (kind: 'success' | 'error', message: string) => void;
 }
 
-const CATEGORY_LABEL: Record<string, { label: string; emoji: string }> = {
-  amount: { label: '金额', emoji: '💰' },
-  date: { label: '日期', emoji: '📅' },
-  person: { label: '人物', emoji: '👤' },
-  location: { label: '地点', emoji: '📍' },
-  count: { label: '数量', emoji: '🔢' },
-  rating: { label: '评级', emoji: '⭐' },
-  text: { label: '业务术语', emoji: '📁' },
+// 替换原 emoji 为 lucide icon component. 跟整个 codebase icon 风格统一.
+type IconType = ComponentType<{ size?: number | string; className?: string; strokeWidth?: number }>;
+const CATEGORY_META: Record<string, { label: string; Icon: IconType }> = {
+  amount: { label: '金额', Icon: CircleDollarSign },
+  date: { label: '日期', Icon: CalendarDays },
+  person: { label: '人物', Icon: User },
+  location: { label: '地点', Icon: MapPin },
+  count: { label: '数量', Icon: Hash },
+  rating: { label: '评级', Icon: Star },
+  text: { label: '业务术语', Icon: Tag },
+};
+
+const SOURCE_META: Record<string, string> = {
+  ai_inferred: '资料抽取',
+  auto_resolved_clarification: '澄清回填',
+  internet_ocr: '互联网整理',
+  drift_alert: '冲突提示',
+  user_input: '用户填写',
 };
 
 export function GlossaryAttributeReviewSection({
@@ -80,7 +105,7 @@ export function GlossaryAttributeReviewSection({
     try {
       if (action === 'verify') {
         await verifyGlossaryAttribute(clientId, attrId, clarifyPayload ?? {});
-        flash?.('success', clarifyPayload ? '已澄清并采纳,进入客户档案权威值' : '已采纳,进入客户档案权威值');
+        flash?.('success', clarifyPayload ? '已澄清并采纳，进入客户档案权威值' : '已采纳，进入客户档案权威值');
       } else {
         await rejectGlossaryAttribute(clientId, attrId);
         flash?.('success', '已拒绝');
@@ -101,34 +126,24 @@ export function GlossaryAttributeReviewSection({
   const batchVerifyCategory = async (cat: string) => {
     const targets = attrs.filter((a) => a.value_category === cat);
     if (targets.length === 0) return;
-    if (!confirm(`将批量采纳 ${targets.length} 条 ${CATEGORY_LABEL[cat]?.label || cat} 类候选?`)) return;
+    if (!confirm(`将批量采纳 ${targets.length} 条「${CATEGORY_META[cat]?.label || cat}」类候选?`)) return;
     for (const a of targets) {
       await mark(a.id, 'verify');
     }
   };
 
-  // F 任务: 一键批量采纳高置信度 (≥0.9) 的所有 pending. 这是最高 ROI 的批审入口.
-  // 实测 Stage 1+3 和 互联网 OCR 抽出的 attributes 大部分 conf=0.95-1.0, 用户可一键搞定.
+  const highConfidenceCount = attrs.filter((a) => (a.confidence ?? 0) >= 0.9).length;
   const batchVerifyHighConfidence = async () => {
     const targets = attrs.filter((a) => (a.confidence ?? 0) >= 0.9);
     if (targets.length === 0) {
-      flash?.('error', '没有高置信度 (≥0.9) 的待审条目');
+      flash?.('error', '没有高置信度（≥90%）的待审条目');
       return;
     }
-    if (!confirm(`将批量采纳 ${targets.length} 条高置信度 (≥0.9) 候选 (剩余 ${attrs.length - targets.length} 条低置信度需要单独审)?`)) return;
+    if (!confirm(`将批量采纳 ${targets.length} 条高置信度候选（剩余 ${attrs.length - targets.length} 条需要逐条审）?`)) return;
     for (const a of targets) {
       await mark(a.id, 'verify');
     }
-    flash?.('success', `已采纳 ${targets.length} 条高置信度候选进字典 verified`);
-  };
-
-  // 按来源源类型分桶 (供 UI 显示标签)
-  const SOURCE_LABEL: Record<string, { label: string; color: string }> = {
-    ai_inferred: { label: 'Stage 3 抽', color: 'bg-blue-50 text-blue-700' },
-    auto_resolved_clarification: { label: '澄清自动答', color: 'bg-violet-50 text-violet-700' },
-    internet_ocr: { label: '互联网 OCR', color: 'bg-emerald-50 text-emerald-700' },
-    drift_alert: { label: '冲突告警', color: 'bg-orange-50 text-orange-700' },
-    user_input: { label: '用户填写', color: 'bg-slate-50 text-slate-600' },
+    flash?.('success', `已采纳 ${targets.length} 条进入客户档案`);
   };
 
   if (!showSection) {
@@ -136,69 +151,90 @@ export function GlossaryAttributeReviewSection({
       <button
         type="button"
         onClick={() => setShowSection(true)}
-        className="text-[12px] text-slate-500 hover:text-slate-700 mt-4 flex items-center gap-1"
+        className="mt-6 inline-flex items-center gap-1.5 text-[12px] font-medium text-gray-500 hover:text-gray-900 transition-colors"
       >
-        <BookOpen size={13} />
-        展开事实澄清 ({attrs.length})
+        <ChevronRight size={13} strokeWidth={2} />
+        展开事实澄清
+        <span className="tabular-nums text-gray-400">· {attrs.length}</span>
       </button>
     );
   }
 
-  // 按 category 分组
+  // 按 category 分组, 组内按 confidence 倒序
   const byCategory = new Map<string, GlossaryAttributeRecord[]>();
   for (const a of attrs) {
     const cat = a.value_category || 'text';
     if (!byCategory.has(cat)) byCategory.set(cat, []);
     byCategory.get(cat)!.push(a);
   }
-  // F: 组内按 confidence 倒序 — 让用户先看到最该批的高 conf 条目
   for (const [, group] of byCategory) {
     group.sort((x, y) => (y.confidence ?? 0) - (x.confidence ?? 0));
   }
   const categoryOrder = ['amount', 'date', 'person', 'location', 'count', 'rating', 'text'];
 
   return (
-    <section className="mt-5 rounded-2xl border border-blue-100 bg-blue-50/30 px-4 py-3">
-      <header className="flex items-center justify-between gap-3 mb-3">
-        <div className="flex items-center gap-2 flex-wrap">
-          <BookOpen size={14} className="text-blue-600" />
-          <h3 className="text-[13px] font-bold text-blue-800">事实澄清</h3>
-          <span className="text-[11px] text-blue-600 bg-blue-100 rounded-full px-2 py-0.5 font-semibold">
-            {attrs.length} 条
+    <section className="mt-8">
+      {/* Header: 大号细字标题 + 极简副 label + 右上角统计 */}
+      <header className="mb-6 flex items-end justify-between gap-6">
+        <div>
+          <h3 className="text-[20px] font-light tracking-tight text-gray-900">事实澄清</h3>
+          <p className="mt-1 text-[12px] text-gray-400 leading-relaxed">
+            AI 替你抽出待确认事实 · 一键审过后进入客户档案权威值，后续问答与报告自动引用
+          </p>
+        </div>
+        <div className="flex shrink-0 items-center gap-4 tabular-nums">
+          <span className="inline-flex items-baseline gap-1 text-[11px] text-gray-400">
+            <span className="text-[15px] font-semibold text-gray-900">{attrs.length}</span>
+            待审
           </span>
           {attrs.length > 0 && (
-            <button
-              type="button"
-              onClick={() => void batchVerifyHighConfidence()}
-              title="一键采纳所有 confidence ≥ 0.9 的候选 (高 ROI 路径)"
-              className="text-[11px] font-bold text-emerald-700 bg-emerald-100 hover:bg-emerald-200 rounded-full px-2.5 py-0.5"
-            >
-              ⚡ 一键采纳高置信度 ({attrs.filter(a => (a.confidence ?? 0) >= 0.9).length})
-            </button>
+            <>
+              <span className="text-gray-200">·</span>
+              <span className="inline-flex items-baseline gap-1 text-[11px] text-gray-400">
+                <span className="text-[15px] font-semibold text-[#5B7BFE]">{highConfidenceCount}</span>
+                高置信
+              </span>
+            </>
           )}
-          <span className="text-[11px] text-slate-500">
-            AI 替你整理 · 一键审核后进客户档案,以后问答/报告里 AI 都会引用
-          </span>
+          <button
+            type="button"
+            onClick={() => setShowSection(false)}
+            className="ml-2 text-[11px] font-medium text-gray-400 hover:text-gray-700 transition-colors"
+          >
+            收起
+          </button>
         </div>
-        <button
-          type="button"
-          onClick={() => setShowSection(false)}
-          className="text-[11px] text-slate-400 hover:text-slate-600"
-        >
-          收起
-        </button>
       </header>
 
+      {/* 一键采纳条 (高置信度) — 不挤在 header, 单独一行更显眼 */}
+      {!loading && highConfidenceCount > 0 && (
+        <button
+          type="button"
+          onClick={() => void batchVerifyHighConfidence()}
+          className="group mb-3 inline-flex items-center gap-2 rounded-md border border-[#5B7BFE]/30 bg-[#5B7BFE]/5 px-3 py-1.5 text-[12px] font-medium text-[#5B7BFE] transition-colors hover:bg-[#5B7BFE]/10 hover:border-[#5B7BFE]/50"
+        >
+          <Zap size={13} strokeWidth={2} />
+          <span>一键采纳全部高置信度</span>
+          <span className="rounded-full bg-white px-1.5 py-px text-[10px] font-semibold tabular-nums">
+            {highConfidenceCount}
+          </span>
+        </button>
+      )}
+
       {loading && (
-        <div className="text-[12px] text-slate-500 py-3 flex items-center gap-2">
+        <div className="flex items-center gap-2 py-4 text-[12px] text-gray-400">
           <Loader2 size={13} className="animate-spin" />
-          加载中...
+          <span>正在加载待审事实…</span>
         </div>
       )}
 
       {!loading && attrs.length === 0 && (
-        <div className="text-[12px] text-slate-500 py-3">
-          没有待审候选。AI 抽取出新 candidate 后会自动出现这里。
+        <div className="flex flex-col items-center gap-2 py-10 text-center">
+          <Inbox size={22} className="text-gray-300" strokeWidth={1.5} />
+          <p className="text-[13px] font-medium text-gray-500">暂无待审事实</p>
+          <p className="text-[11px] text-gray-400 max-w-[280px] leading-relaxed">
+            导入新资料或 AI 抽取出新候选后会自动出现在这里
+          </p>
         </div>
       )}
 
@@ -215,100 +251,110 @@ export function GlossaryAttributeReviewSection({
       )}
 
       {!loading && attrs.length > 0 && (
-        <div className="space-y-3">
+        <div className="space-y-2">
           {categoryOrder.map((cat) => {
             const group = byCategory.get(cat);
             if (!group || group.length === 0) return null;
-            const meta = CATEGORY_LABEL[cat] || { label: cat, emoji: '📋' };
+            const meta = CATEGORY_META[cat] || { label: cat, Icon: Tag };
+            const Icon = meta.Icon;
             const isExpanded = expanded.has(cat);
             return (
-              <div key={cat} className="rounded-lg bg-white border border-slate-100">
-                <button
-                  type="button"
-                  onClick={() =>
-                    setExpanded((s) => {
-                      const ns = new Set(s);
-                      if (ns.has(cat)) ns.delete(cat);
-                      else ns.add(cat);
-                      return ns;
-                    })
-                  }
-                  className="w-full flex items-center justify-between gap-2 px-3 py-2 text-left hover:bg-slate-50"
-                >
-                  <div className="flex items-center gap-2">
-                    {isExpanded ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
-                    <span className="text-[12px] font-bold text-slate-700">
-                      {meta.emoji} {meta.label}
+              <div key={cat} className="rounded-lg border border-gray-100 bg-white overflow-hidden">
+                {/* 分组 header: 细线 hover 灰底, 右侧"全部采纳"ghost 按钮 */}
+                <div className="flex items-stretch justify-between">
+                  <button
+                    type="button"
+                    onClick={() =>
+                      setExpanded((s) => {
+                        const ns = new Set(s);
+                        if (ns.has(cat)) ns.delete(cat);
+                        else ns.add(cat);
+                        return ns;
+                      })
+                    }
+                    className="flex flex-1 items-center gap-2.5 px-4 py-2.5 text-left transition-colors hover:bg-gray-50"
+                  >
+                    <span className="flex h-4 w-4 items-center justify-center text-gray-400">
+                      {isExpanded ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
                     </span>
-                    <span className="text-[11px] text-slate-500">({group.length})</span>
-                  </div>
+                    <Icon size={14} className="text-gray-500" strokeWidth={1.8} />
+                    <span className="text-[13px] font-medium text-gray-800">{meta.label}</span>
+                    <span className="tabular-nums text-[11px] text-gray-400">{group.length}</span>
+                  </button>
                   <button
                     type="button"
                     onClick={(e) => {
                       e.stopPropagation();
                       void batchVerifyCategory(cat);
                     }}
-                    className="text-[10px] font-semibold text-emerald-700 bg-emerald-50 hover:bg-emerald-100 rounded-full px-2 py-0.5"
+                    className="border-l border-gray-100 px-3 text-[11px] font-medium text-gray-500 transition-colors hover:bg-gray-50 hover:text-emerald-700"
                   >
                     全部采纳
                   </button>
-                </button>
+                </div>
+
                 {isExpanded && (
-                  <ul className="border-t border-slate-100 divide-y divide-slate-100">
+                  <ul className="border-t border-gray-100 divide-y divide-gray-100">
                     {group.map((a) => {
                       const inAction = acting.has(a.id);
                       const isDateItem = a.value_category === 'date';
                       const verifyLabel = isDateItem ? '已完成' : '采纳';
                       const verifyTitle = isDateItem
-                        ? '此 deadline 已完成 (不必填具体日期)'
-                        : '原文正确, 直接采纳进字典';
+                        ? '此 deadline 已完成（不必填具体日期）'
+                        : '原文正确，直接采纳进客户档案';
                       const rejectLabel = isDateItem ? '取消' : '拒绝';
                       const rejectTitle = isDateItem
-                        ? '此任务/deadline 已取消, 不再追踪'
-                        : '拒绝 (这条不该进字典)';
+                        ? '此任务/deadline 已取消，不再追踪'
+                        : '拒绝（这条不该进客户档案）';
+                      const sourceLabel = a.source_type ? SOURCE_META[a.source_type] : null;
+                      const confidence = typeof a.confidence === 'number' ? a.confidence : null;
+                      const confidenceTone = confidence === null
+                        ? null
+                        : confidence >= 0.9
+                          ? 'text-emerald-700 border-emerald-200 bg-emerald-50/60'
+                          : confidence >= 0.7
+                            ? 'text-amber-700 border-amber-200 bg-amber-50/60'
+                            : 'text-gray-500 border-gray-200 bg-gray-50';
                       return (
-                        <li key={a.id} className="px-3 py-2.5 text-[12px]">
-                          <div className="flex items-start justify-between gap-3">
+                        <li key={a.id} className="px-4 py-3">
+                          <div className="flex items-start justify-between gap-4">
                             <div className="min-w-0 flex-1">
-                              <div className="font-semibold text-slate-800 flex items-center gap-1.5 flex-wrap">
-                                <span>{a.term} <span className="text-slate-400 font-normal">·</span>{' '}
-                                {a.attribute_name}</span>
-                                {/* F: source 标签 让用户快速判断来源是否值得 verify */}
-                                {a.source_type && SOURCE_LABEL[a.source_type] && (
-                                  <span className={`text-[9px] font-bold rounded-full px-1.5 py-0.5 ${SOURCE_LABEL[a.source_type].color}`}>
-                                    {SOURCE_LABEL[a.source_type].label}
+                              <div className="flex items-center gap-2 flex-wrap">
+                                <span className="text-[13px] font-medium text-gray-900 truncate">
+                                  {a.term}
+                                  <span className="mx-1 text-gray-300">·</span>
+                                  <span className="text-gray-600">{a.attribute_name}</span>
+                                </span>
+                                {sourceLabel && (
+                                  <span className="rounded-full border border-gray-200 px-1.5 py-px text-[10px] font-medium text-gray-500">
+                                    {sourceLabel}
                                   </span>
                                 )}
-                                {/* F: confidence 标签 高 conf 用绿色显眼 */}
-                                {typeof a.confidence === 'number' && (
-                                  <span className={`text-[9px] font-bold rounded-full px-1.5 py-0.5 ${
-                                    a.confidence >= 0.9
-                                      ? 'bg-emerald-50 text-emerald-700'
-                                      : a.confidence >= 0.7
-                                      ? 'bg-amber-50 text-amber-700'
-                                      : 'bg-slate-100 text-slate-500'
-                                  }`}>
-                                    conf {(a.confidence * 100).toFixed(0)}%
+                                {confidence !== null && (
+                                  <span className={`rounded-full border px-1.5 py-px text-[10px] font-medium tabular-nums ${confidenceTone}`}>
+                                    {Math.round(confidence * 100)}%
                                   </span>
                                 )}
                               </div>
-                              <div className="mt-1 text-slate-700">
-                                = {a.value_text}
+                              <div className="mt-1.5 flex items-baseline gap-1.5 text-[13px] text-gray-700">
+                                <span className="text-gray-300">=</span>
+                                <span>{a.value_text}</span>
                                 {a.value_unit && (
-                                  <span className="text-slate-400 ml-1">{a.value_unit}</span>
+                                  <span className="text-[12px] text-gray-400">{a.value_unit}</span>
                                 )}
                               </div>
                               {(a.scope || a.as_of_date) && (
-                                <div className="mt-1 text-[10px] text-slate-500">
-                                  {a.scope && <>scope: {a.scope}</>}
-                                  {a.scope && a.as_of_date && ' · '}
-                                  {a.as_of_date && <>截至 {a.as_of_date}</>}
+                                <div className="mt-1 flex items-center gap-2 text-[11px] text-gray-400">
+                                  {a.scope && <span>口径：{a.scope}</span>}
+                                  {a.scope && a.as_of_date && <span className="text-gray-200">·</span>}
+                                  {a.as_of_date && <span>截至 {a.as_of_date}</span>}
                                 </div>
                               )}
                               {a.source_evidence && (
-                                <div className="mt-1 text-[10px] text-slate-500 italic line-clamp-2">
-                                  证据: {a.source_evidence}
-                                </div>
+                                <p className="mt-1.5 line-clamp-2 text-[11px] leading-relaxed text-gray-500">
+                                  <span className="text-gray-400">证据：</span>
+                                  {a.source_evidence}
+                                </p>
                               )}
                               {a.source_doc_path && (
                                 <button
@@ -318,25 +364,26 @@ export function GlossaryAttributeReviewSection({
                                       void window.yiyuWorkbench.openPath(a.source_doc_path).catch(() => undefined);
                                     }
                                   }}
-                                  className="mt-1 inline-flex items-center gap-1 text-[10px] text-blue-600 hover:text-blue-800 hover:underline"
+                                  className="mt-1.5 inline-flex items-center gap-1 text-[11px] text-[#5B7BFE] hover:text-[#3a5cf0] transition-colors"
                                   title={`点击打开来源：${a.source_doc_title || a.source_doc_path}`}
                                 >
-                                  📄 {a.source_doc_title || '打开来源文档'}
+                                  <Link2 size={11} strokeWidth={1.8} />
+                                  {a.source_doc_title || '打开来源文档'}
                                 </button>
                               )}
                             </div>
-                            <div className="flex items-center gap-1.5 shrink-0">
+                            <div className="flex shrink-0 items-center gap-1">
                               <button
                                 type="button"
                                 onClick={() => mark(a.id, 'verify')}
                                 disabled={inAction}
-                                className="inline-flex items-center gap-1 rounded-md bg-emerald-600 text-white px-2 py-1 text-[10px] font-bold hover:bg-emerald-700 disabled:opacity-50"
                                 title={verifyTitle}
+                                className="inline-flex items-center gap-1 rounded-md border border-emerald-200 bg-emerald-50/60 px-2.5 py-1 text-[11px] font-medium text-emerald-700 transition-colors hover:bg-emerald-100 disabled:opacity-50"
                               >
                                 {inAction ? (
                                   <Loader2 size={11} className="animate-spin" />
                                 ) : (
-                                  <Check size={11} />
+                                  <Check size={11} strokeWidth={2} />
                                 )}
                                 {verifyLabel}
                               </button>
@@ -344,20 +391,20 @@ export function GlossaryAttributeReviewSection({
                                 type="button"
                                 onClick={() => setEditingAttr(a)}
                                 disabled={inAction}
-                                className="inline-flex items-center gap-1 rounded-md bg-amber-100 text-amber-800 px-2 py-1 text-[10px] font-bold hover:bg-amber-200 disabled:opacity-50"
                                 title="修正/补充后采纳"
+                                className="inline-flex items-center gap-1 rounded-md border border-gray-200 bg-white px-2.5 py-1 text-[11px] font-medium text-gray-600 transition-colors hover:border-[#5B7BFE]/40 hover:text-[#5B7BFE] disabled:opacity-50"
                               >
-                                <Pencil size={11} />
+                                <Pencil size={11} strokeWidth={1.8} />
                                 澄清
                               </button>
                               <button
                                 type="button"
                                 onClick={() => mark(a.id, 'reject')}
                                 disabled={inAction}
-                                className="inline-flex items-center gap-1 rounded-md bg-slate-200 text-slate-700 px-2 py-1 text-[10px] font-bold hover:bg-slate-300 disabled:opacity-50"
                                 title={rejectTitle}
+                                className="inline-flex items-center gap-1 rounded-md border border-gray-200 bg-white px-2.5 py-1 text-[11px] font-medium text-gray-500 transition-colors hover:border-rose-200 hover:bg-rose-50 hover:text-rose-700 disabled:opacity-50"
                               >
-                                <X size={11} />
+                                <X size={11} strokeWidth={2} />
                                 {rejectLabel}
                               </button>
                             </div>
@@ -405,71 +452,72 @@ function ClarifyEditModal({ attr, onClose, onConfirm }: ClarifyEditModalProps) {
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/40">
-      <div className="bg-white rounded-2xl shadow-xl w-[480px] max-w-[92vw] p-5">
-        <div className="flex items-center gap-2 mb-4">
-          <Pencil size={14} className="text-amber-600" />
-          <h3 className="text-[14px] font-bold text-slate-800">澄清: {attr.term}</h3>
-        </div>
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-gray-900/40 backdrop-blur-sm">
+      <div className="w-[500px] max-w-[92vw] rounded-2xl border border-gray-100 bg-white shadow-2xl">
+        <header className="flex items-center gap-2 border-b border-gray-100 px-6 py-4">
+          <Pencil size={14} className="text-[#5B7BFE]" strokeWidth={1.8} />
+          <h3 className="text-[15px] font-medium text-gray-900">澄清</h3>
+          <span className="text-gray-300">·</span>
+          <span className="text-[13px] text-gray-600">{attr.term}</span>
+        </header>
 
-        <div className="space-y-3 text-[12px]">
+        <div className="space-y-4 px-6 py-5 text-[12px]">
           <div>
-            <label className="block text-slate-500 mb-1">属性名</label>
+            <label className="mb-1.5 block text-[10px] font-bold uppercase tracking-[0.18em] text-gray-400">属性名</label>
             <input
               type="text"
               value={attributeName}
               onChange={(e) => setAttributeName(e.target.value)}
-              className="w-full border border-slate-200 rounded-md px-2.5 py-1.5 text-[12px]"
-              placeholder="例: 总部位置 / 2023年度支出"
+              className="w-full rounded-md border border-gray-200 px-3 py-2 text-[13px] text-gray-800 focus:border-[#5B7BFE] focus:outline-none focus:ring-1 focus:ring-[#5B7BFE]/20"
+              placeholder="例：总部位置 / 2023年度支出"
             />
           </div>
 
           <div>
-            <label className="block text-slate-500 mb-1">
+            <label className="mb-1.5 block text-[10px] font-bold uppercase tracking-[0.18em] text-gray-400">
               {isDate ? '日期' : isAmount ? '金额' : isCount ? '数量' : '权威值'}
             </label>
             {isDate ? (
-              <div className="space-y-2">
+              <div className="space-y-2.5">
                 <div className="flex items-center gap-2">
-                  <CalendarDays size={14} className="text-slate-400" />
+                  <CalendarDays size={14} className="text-gray-400" strokeWidth={1.8} />
                   <input
                     type="date"
                     value={valueText.includes('-') ? valueText.slice(0, 10) : ''}
                     onChange={(e) => setValueText(e.target.value)}
-                    className="border border-slate-200 rounded-md px-2.5 py-1.5 text-[12px]"
+                    className="rounded-md border border-gray-200 px-3 py-1.5 text-[13px] text-gray-800 focus:border-[#5B7BFE] focus:outline-none focus:ring-1 focus:ring-[#5B7BFE]/20"
                   />
-                  <span className="text-slate-400 text-[11px]">或自由输入:</span>
+                  <span className="text-[11px] text-gray-400">或自由输入：</span>
                   <input
                     type="text"
                     value={valueText}
                     onChange={(e) => setValueText(e.target.value)}
-                    className="flex-1 border border-slate-200 rounded-md px-2.5 py-1.5 text-[12px]"
-                    placeholder="例: 2014 年 / 2026-03-30"
+                    className="flex-1 rounded-md border border-gray-200 px-3 py-1.5 text-[13px] text-gray-800 focus:border-[#5B7BFE] focus:outline-none focus:ring-1 focus:ring-[#5B7BFE]/20"
+                    placeholder="例：2014 年 / 2026-03-30"
                   />
                 </div>
-                {/* 快捷标记: 没具体 deadline 但状态明确的场景 */}
                 <div className="flex items-center gap-2 text-[11px]">
-                  <span className="text-slate-400">快捷标记:</span>
+                  <span className="text-gray-400">快捷标记：</span>
                   <button
                     type="button"
                     onClick={() => setValueText('已完成')}
-                    className="inline-flex items-center gap-1 rounded-md bg-emerald-50 text-emerald-700 px-2 py-0.5 hover:bg-emerald-100 font-semibold"
+                    className="inline-flex items-center gap-1 rounded-md border border-emerald-200 bg-emerald-50/60 px-2 py-0.5 font-medium text-emerald-700 hover:bg-emerald-100 transition-colors"
                   >
-                    <Check size={11} /> 已完成
+                    <Check size={11} strokeWidth={2} />已完成
                   </button>
                   <button
                     type="button"
                     onClick={() => setValueText('进行中')}
-                    className="inline-flex items-center gap-1 rounded-md bg-amber-50 text-amber-700 px-2 py-0.5 hover:bg-amber-100 font-semibold"
+                    className="inline-flex items-center gap-1 rounded-md border border-amber-200 bg-amber-50/60 px-2 py-0.5 font-medium text-amber-700 hover:bg-amber-100 transition-colors"
                   >
-                    ⏳ 进行中
+                    <Clock size={11} strokeWidth={1.8} />进行中
                   </button>
                   <button
                     type="button"
                     onClick={() => setValueText('暂无 deadline')}
-                    className="inline-flex items-center gap-1 rounded-md bg-slate-100 text-slate-600 px-2 py-0.5 hover:bg-slate-200 font-semibold"
+                    className="inline-flex items-center gap-1 rounded-md border border-gray-200 bg-white px-2 py-0.5 font-medium text-gray-500 hover:bg-gray-50 transition-colors"
                   >
-                    — 暂无 deadline
+                    <FileText size={11} strokeWidth={1.8} />暂无
                   </button>
                 </div>
               </div>
@@ -478,7 +526,7 @@ function ClarifyEditModal({ attr, onClose, onConfirm }: ClarifyEditModalProps) {
                 value={valueText}
                 onChange={(e) => setValueText(e.target.value)}
                 rows={2}
-                className="w-full border border-slate-200 rounded-md px-2.5 py-1.5 text-[12px]"
+                className="w-full rounded-md border border-gray-200 px-3 py-2 text-[13px] text-gray-800 focus:border-[#5B7BFE] focus:outline-none focus:ring-1 focus:ring-[#5B7BFE]/20"
                 placeholder="填入权威值"
               />
             )}
@@ -486,56 +534,57 @@ function ClarifyEditModal({ attr, onClose, onConfirm }: ClarifyEditModalProps) {
 
           {(isAmount || isCount) && (
             <div>
-              <label className="block text-slate-500 mb-1">单位</label>
+              <label className="mb-1.5 block text-[10px] font-bold uppercase tracking-[0.18em] text-gray-400">单位</label>
               <input
                 type="text"
                 value={valueUnit}
                 onChange={(e) => setValueUnit(e.target.value)}
-                className="w-full border border-slate-200 rounded-md px-2.5 py-1.5 text-[12px]"
-                placeholder="例: 元 / 人 / 省"
+                className="w-full rounded-md border border-gray-200 px-3 py-2 text-[13px] text-gray-800 focus:border-[#5B7BFE] focus:outline-none focus:ring-1 focus:ring-[#5B7BFE]/20"
+                placeholder="例：元 / 人 / 省"
               />
             </div>
           )}
 
           <div className="grid grid-cols-2 gap-3">
             <div>
-              <label className="block text-slate-500 mb-1">scope (口径)</label>
+              <label className="mb-1.5 block text-[10px] font-bold uppercase tracking-[0.18em] text-gray-400">口径</label>
               <input
                 type="text"
                 value={scope}
                 onChange={(e) => setScope(e.target.value)}
-                className="w-full border border-slate-200 rounded-md px-2.5 py-1.5 text-[12px]"
+                className="w-full rounded-md border border-gray-200 px-3 py-2 text-[13px] text-gray-800 focus:border-[#5B7BFE] focus:outline-none focus:ring-1 focus:ring-[#5B7BFE]/20"
                 placeholder="机构当前 / 项目累计 / 现任"
               />
             </div>
             <div>
-              <label className="block text-slate-500 mb-1">截至日期 (可选)</label>
+              <label className="mb-1.5 block text-[10px] font-bold uppercase tracking-[0.18em] text-gray-400">截至日期（可选）</label>
               <input
                 type="date"
                 value={asOfDate.slice(0, 10)}
                 onChange={(e) => setAsOfDate(e.target.value)}
-                className="w-full border border-slate-200 rounded-md px-2.5 py-1.5 text-[12px]"
+                className="w-full rounded-md border border-gray-200 px-3 py-2 text-[13px] text-gray-800 focus:border-[#5B7BFE] focus:outline-none focus:ring-1 focus:ring-[#5B7BFE]/20"
               />
             </div>
           </div>
         </div>
 
-        <div className="flex justify-end gap-2 mt-5">
+        <footer className="flex justify-end gap-2 border-t border-gray-100 px-6 py-3">
           <button
             type="button"
             onClick={onClose}
-            className="rounded-md bg-slate-100 text-slate-600 px-3 py-1.5 text-[12px] font-semibold hover:bg-slate-200"
+            className="rounded-md border border-gray-200 bg-white px-3 py-1.5 text-[12px] font-medium text-gray-600 transition-colors hover:bg-gray-50"
           >
             取消
           </button>
           <button
             type="button"
             onClick={handleSave}
-            className="rounded-md bg-emerald-600 text-white px-3 py-1.5 text-[12px] font-bold hover:bg-emerald-700"
+            className="inline-flex items-center gap-1.5 rounded-md border border-emerald-200 bg-emerald-50 px-3 py-1.5 text-[12px] font-medium text-emerald-700 transition-colors hover:bg-emerald-100"
           >
+            <Check size={12} strokeWidth={2} />
             保存并采纳
           </button>
-        </div>
+        </footer>
       </div>
     </div>
   );
