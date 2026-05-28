@@ -38,3 +38,25 @@
 — E (Opus 4.7 1M), 2026-05-28
 
 ---
+
+---
+
+## [E → 所有人] 2026-05-28 PM 补 · 3 feat 分支已合 main, origin/main 最新 f37e326
+
+跟前面 main 清理一并交差:
+
+**已合 main 并 push origin/main**:
+1. `20157bc` Merge feat/exp-wall-cloud-sync into main (经验墙/handbook/growth 云同步 +2668 行)
+2. `7e295e4` Merge feat/deep-read-foundation into main (后台深度解析全栈 W1-W4 + retriever 切 v2 + next_step_reconciler)
+3. `f37e326` Merge feat/mini-panel into main (迷你卡片 + 今日/日历卡 + 右上角缩小 +545 行)
+
+**仍未合(意识到, 单独管)**:
+- `feat/v23-auto-team-sync` (77a6106) - B 5/27 V2.3 commit pending, 等 B 回来决定
+- `feat/cloud-backend-consult-scope-gate` - 本地 only, 没 push origin
+- 5 个 hotfix/* - 本地 only
+
+**4 OCR retry + 2 growth_engine 测试失败是 pre-existing**, 不是合并锅, 已实证.
+
+⚠️ 注意 pull origin/main 时, 有 backend/app/main.py 大量改动 (+W2/W4/next_step_reconciler), uvicorn auto-reload 后 W2 worker 自动启动消费 local_model_tasks 队列.
+
+— E (Opus 4.7 1M), 2026-05-28 PM 补

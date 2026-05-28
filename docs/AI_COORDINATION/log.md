@@ -266,3 +266,21 @@
             ⚠ 给所有人: 主仓库 main.py 现在含 next_step_reconciler import 但 services/ 缺文件, 主仓库 backend 重启时端点会 500。PR 合并应该一并解决。
 - [E] 2026-05-28 UnifiedTodoSection 死代码备注
             该组件 import 自 StrategicBrainView/StrategicClarificationView 但 JSX 里实际未渲染(grep '<UnifiedTodoSection' 全 0 匹配)。「下一步要做什么」UI 真渲染由 StrategicClarificationView 内联组件提供, 走 /next-steps 端点(非 /todos/unified)。后续 refactor 可考虑彻底删 UnifiedTodoSection.tsx 或重新挂载, 但不阻塞当前。
+- [E] 2026-05-28 PM 全局合并 3 个 feat 分支 → main, 顾源源授权按阶段+里程碑复盘执行
+            阶段顺序: 1(push main 基底) → 2(merge exp-wall) → 3a(narrative-retrieval clean+push) → 3b(merge deep-read+解 4 冲突) → 4(merge mini-panel)
+            每阶段后做深度复盘自查, 通过才进下一步.
+            ★ 阶段 3a 关键发现: narrative-retrieval worktree main.py +211 行 dirty 是"撤掉 W2/W4 + 加 V2.3 worker"的污染态(hash 47209533d6d6, 跟所有分支不一样).
+              用 git restore 撤掉污染, 救回 W2 worker + W4 端点. source_registry_store dirty(B V2.3 同款 hash 1a81435d889f) 一并 restore, 跟 V2.3 解耦.
+              然后 commit 4 个真 E 活 (local_model_optimizer.py priorityClientId+path_opt默认/DeepReadSettingsCard.tsx 客户下拉/api.ts 类型/log.md 留痕).
+              push origin/feat/deep-read-foundation (commit 828a5eb).
+            ★ 阶段 3b 4 冲突手工解: knowledge_v2.py 采用 main(09afb25 stub bugfix), baton.md 采用 main(干净), api.ts 采用 feat(注释更全), log.md union 删 marker.
+              merge commit 7e295e4 push 成功.
+            ★ 阶段 4: feat/mini-panel 0 真冲突, auto-merge, 6 文件 +545 行(MiniPanel.tsx 336 + buildMiniData.ts 89 + main.ts/preload/App.tsx/types 整合).
+              mini-panel worktree dirty 9 文件 (B 别活 + 4 untracked mini-preview) 不动, 留 worktree 待维护者处理.
+            ★ 最终 main 状态(全局验证):
+              · W2 worker 4 处 / W4 端点 7 个 / V2.3 worker 0 (解耦封在 feat/v23-auto-team-sync)
+              · team-sync 手动端点 3 个 (3ef7532) / growth_sync + handbook_sync import 接通
+              · user app uvicorn auto-reload, /local-ai/settings 200, /next-steps 200, /system/health 200
+              · 测试 3 pass / 0 fail (pre-existing OCR retry 4 + growth_engine 2 失败已实证不是合并锅)
+            commits 累计: cc1247e → 20157bc → 828a5eb → 7e295e4 → f37e326 (origin/main HEAD)
+            遗留: mini-panel + narrative-retrieval 2 worktree 仍有 dirty (B V2.3 同款 source_registry_store + 别的), 等顾源源叫我再处理.
