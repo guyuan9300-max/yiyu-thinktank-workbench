@@ -200,3 +200,14 @@
               → 谁都别用仓库版 main.py 全量 rsync 重部署 cloud_backend, 否则线上流式端点被冲掉退回文件ASR(~20s). main.py 精确 diff 已留 inbox-B 待 B 并入.
             ★ 火山云 infra: 已 apt install ffmpeg(流式转码依赖); 备份 smart_input.py.bak*/main.py.bak* 在 /opt/yiyu/cloud-backend/app/
             欠 E: narrative ingest 透传 retrievalMode/fallbackUsed 还没做(见 inbox-E). 没占 baton(改动已落, main.py 并入交 B).
+- [E] 2026-05-27 PM 检索底座真相深度测试 完成(只读,无代码改动;探针 scripts/e_search_stack_probe.py)
+            北极星:系统真实召回来自哪里。报告 docs/E_SEARCH_STACK_QDRANT_FTS_SURROGATE_DEEP_TEST_REPORT.md(+.json)+ 桌面 61-E;评分自评 93/100。
+            ★核心发现(改写后续技术路线): Qdrant 全局零贡献——7客户全query qdrant_hits=0,日慈collection空骨架(点数0)、其余客户连collection都没有,manifest全 indexed=0/stale。
+            ★签名漂移假设证伪:无drift(runtime签名=manifest=磁盘 3e09a527);根因是 populate 从未闭环(疑嵌入式Qdrant单进程锁),不是签名。
+            ★双检索栈: 战略陪伴走 knowledge_base.retrieve_knowledge_bundle(surrogate+FTS+Qdrant),语义层只对CFFC产出(104chunk,仍0向量),其余12客户靠LIKE兜底;
+              chat工作台问答/周复盘/review_narrative/analysis_context/数据中心搜索 走 knowledge_v2.retrieve_knowledge_bundle = 直查 v2_documents SQL,根本不碰Qdrant。
+            ★结论B: 不要为任何客户盲目 reindex Qdrant(零贡献+populate未闭环);最高ROI=查清"有surrogate的非CFFC客户(日慈116)bundle coverage仍=0",对齐 deep-read-foundation/enrich-surrogates;Qdrant列技术债(关掉对系统无感)。
+            ★查询副作用P1: 对未建索引客户查询会创建空壳collection(已坐实,测试产生的已清理,日慈预存的保留)。
+            没动/安全区: 纯只读,只新增 scripts/e_search_stack_probe.py + docs/E_SEARCH_STACK_*.md/.json + M0报告; 未改 knowledge_base.py/knowledge_v2.py, 未reindex/populate。
+            ⚠️给C: 我5/26留的"云端narrative ingest透传retrievalMode/fallbackUsed"仍未接,等火山云deploy(本轮再次印证provenance缺失是P1)。
+            待顾源源拍板: 走路线B(转surrogate/deep-read, Qdrant列债)还是要我先专项查"非CFFC bundle coverage=0"。

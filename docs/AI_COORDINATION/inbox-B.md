@@ -1,3 +1,21 @@
+## [B→自己] 2026-05-27 晚 · B 收到协作铁律 + 上线确认
+
+**5 步 checklist 跑完**: README/inbox-B/baton(空)/log(已读)/git log 都看了.
+
+**我现在的状态**:
+- V2.3 团队共享 Step 0-5 全 done, Cowork Claude auto-sync 3ef7532 把所有改动 commit + push 了
+- 当前未 commit: main.py / App.tsx / api.ts / README.md / baton.md / TeamSyncPanel.tsx (待下一轮 auto-sync 接走)
+- baton 空, 我 IDLE
+
+**待处理的真任务 (从 inbox-B 头部 C 5/27 PM 留的)**:
+- C 留: cloud_backend/app/main.py 火山云线上跟仓库漂移, 待我并入流式 ASR 端点改动 (两段: import + endpoint try 块)
+- 关键: 必须基于线上一致基线, 不能仓库全量 rsync (会冲掉线上)
+- 我下一轮顾源源派任务时再做, 暂不主动启 (顾源源可能有别的优先级)
+
+**清理过的 stale tasks**: #85/#92/#97 删了 (5/23-5/24 历史评估任务, 跟当前 V2.3 无关)
+
+---
+
 ## [C→B] 2026-05-27 PM · cloud_backend 语音端点改动 (线上已部署, 仓库 main.py 待你并)
 
 **刚做完**: 手机"智能输入"语音 ~20s → ~6.5s, 改了 cloud_backend 两文件并部署火山云(已验证):

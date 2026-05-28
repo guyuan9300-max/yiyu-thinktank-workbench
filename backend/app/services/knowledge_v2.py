@@ -78,6 +78,52 @@ HUMAN_VISIBLE_CATEGORIES = LEGACY_FIXED_CATEGORIES  # kept for backward compat; 
 EVIDENCE_CATEGORIES = [category for category in [*LEGACY_FIXED_CATEGORIES, *SYSTEM_FOLDER_CATEGORIES] if category != "战略陪伴"]
 DEFAULT_INBOX_LABEL = "收件箱"
 WORKSPACE_BACKFILL_EXTENSIONS = {".pdf", ".docx", ".md", ".txt", ".pptx", ".xlsx", ".json", ".csv", *IMAGE_EXTENSIONS}
+
+
+# V2.3 Step 1 · 单组织临时方案 — 解析 team context (org_id / owner / dept)
+# 用法: process_knowledge_job 等异步 worker 没有 user session, 用本函数取默认上下文.
+# 多组织上线后改成 user_id 反查路径.
+def _resolve_team_context_for_async_worker(db: Any) -> dict[str, str]:
+    """从 mirror_organizations + org_members_v 取默认 team context.
+
+    返:
+      {organization_id, owner_user_id, department_id, visibility_scope}
+      表不存在 / 空时返 {} (调用方就退化成单机模式, 不接 source_registry)
+    """
+    try:
+        org_row = db.fetchone("SELECT id FROM mirror_organizations LIMIT 1")
+        if not org_row:
+            return {}
+        org_id = str(org_row["id"] if hasattr(org_row, "keys") else org_row[0])
+        if not org_id:
+            return {}
+        # 跳过系统账号 (user_admin / @yiyu-system.com), 取真人 admin
+        admin_row = db.fetchone(
+            """
+            SELECT id, department_id FROM org_members_v
+            WHERE primary_role = 'admin'
+              AND organization_id = ?
+              AND account_status = 'approved'
+              AND is_bot = 0
+              AND id NOT LIKE 'user_admin%'
+              AND (email IS NULL OR email NOT LIKE '%@yiyu-system.com')
+            ORDER BY id LIMIT 1
+            """,
+            (org_id,),
+        )
+        if admin_row:
+            owner_id = str(admin_row["id"] if hasattr(admin_row, "keys") else admin_row[0])
+            dept_id = str((admin_row["department_id"] if hasattr(admin_row, "keys") else admin_row[1]) or "")
+            return {
+                "organization_id": org_id,
+                "owner_user_id": owner_id,
+                "department_id": dept_id,
+                "visibility_scope": "project_public",
+            }
+        return {"organization_id": org_id, "visibility_scope": "project_public"}
+    except Exception as exc:
+        logger.warning("V2.3 _resolve_team_context_for_async_worker failed (fallback empty): %s", exc)
+        return {}
 QUERY_STOPWORDS = {
     "请",
     "一下",
@@ -2086,6 +2132,17 @@ def ingest_document_knowledge(
     ocr_continue_to_end: bool = False,
     force_ocr: bool = False,
     ocr_progress_callback: Callable[[dict[str, object]], None] | None = None,
+    # V2.3 Step 1 新增: 团队共享所需的 4 个权限字段 (默认空, 老调用方不破坏).
+    # 传了非空 organization_id 才会接 source_registry + data_center_sync_outbox 入队.
+    organization_id: str = "",
+    owner_user_id: str = "",
+    department_id: str = "",
+    visibility_scope: str = "project_public",
+    # V2.3 PULL 新增: 云端复用 callback. 传了才查云端命中则跳 OCR + LLM.
+    # 签名: cloud_request(method: str, path: str, *, json_body=None, timeout=3.0) -> object
+    # 调用方 (main.py:process_knowledge_job) 把 cloud_request 闭包传进来,
+    # knowledge_v2 不依赖 main.py (干净分层).
+    cloud_request: Any | None = None,
 ) -> dict[str, Any]:
     # 顾源源 5/26: AI 主动生成的成品文档 (导出答案 / 答案备忘 / 咨询沉淀 / 模板填写) 真不参与
     # 早期 family_id dedup — 用户每次点"导出"真期望拿到新文件, 即便标题相同 (问答历史可能更新).
@@ -2094,8 +2151,6 @@ def ingest_document_knowledge(
         "answer_export_doc",
         "answer_memory_doc",
         "consultation_knowledge_memory",
-        "event_line_report_doc",
-        "ai_report_doc",
         "template_fill",
     }
     skip_family_dedup = source in _SKIP_FAMILY_DEDUP_SOURCES
@@ -2146,19 +2201,54 @@ def ingest_document_knowledge(
                     "dedup_kept_document_id": str(existing["id"]),
                 }
 
-    extracted = extract_document_with_metadata(
-        source_path,
-        title=title,
-        ai_service=ai_service,
-        ocr_start_page=ocr_start_page,
-        ocr_max_pages=ocr_max_pages,
-        ocr_batch_size=ocr_batch_size,
-        ocr_continue_to_end=ocr_continue_to_end,
-        force_ocr=force_ocr,
-        ocr_progress_callback=ocr_progress_callback,
-    )
-    text, sections = extracted.text, extracted.sections
-    extraction_metadata = extracted.metadata
+    # ★ V2.3 PULL · 云端复用检查 (在 OCR + LLM 之前)
+    # 算文件 binary SHA-256 → 查云端 team_documents → 命中直接用 cloud markdown 重建 sections, 跳过 OCR/LLM 30-60s
+    # 任何失败 (网络/超时/未命中/没传 cloud_request) 都静默走原 extract 流程
+    cloud_reuse_hit = False
+    cloud_reuse_doc: dict[str, Any] | None = None
+    file_bytes_hash = ""
+    if organization_id and cloud_request is not None and not skip_family_dedup:
+        file_bytes_hash = hash_file_bytes(source_path) or ""
+        if file_bytes_hash:
+            try:
+                cloud_reuse_doc = cloud_request(
+                    "GET",
+                    f"/api/v1/data-center/items/by-hash?org_id={organization_id}&file_content_hash={file_bytes_hash}",
+                    timeout=2.5,
+                )
+            except Exception as exc:
+                # 静默降级: 云端不可用 / 超时 / 404 / 鉴权失败都走本地 OCR
+                logger.info(
+                    "v2 cloud reuse check failed (fallback to OCR) · client=%s hash=%s: %s",
+                    client_id, file_bytes_hash[:12], type(exc).__name__,
+                )
+                cloud_reuse_doc = None
+    if isinstance(cloud_reuse_doc, dict) and cloud_reuse_doc.get("markdownContent"):
+        # 云端命中 — 直接用云端 markdown 重建 sections
+        cloud_md = str(cloud_reuse_doc.get("markdownContent") or "")
+        text = cloud_md
+        sections = _canonical_sections(cloud_md)
+        extraction_metadata = ExtractionMetadata(parse_status="ready")
+        cloud_reuse_hit = True
+        logger.info(
+            "✓ v2 cloud reuse HIT · client=%s hash=%s file_name=%s md_len=%d sections=%d (skipped OCR/LLM)",
+            client_id, file_bytes_hash[:12], title, len(cloud_md), len(sections),
+        )
+    else:
+        # 没命中 — 走原 extract 流程
+        extracted = extract_document_with_metadata(
+            source_path,
+            title=title,
+            ai_service=ai_service,
+            ocr_start_page=ocr_start_page,
+            ocr_max_pages=ocr_max_pages,
+            ocr_batch_size=ocr_batch_size,
+            ocr_continue_to_end=ocr_continue_to_end,
+            force_ocr=force_ocr,
+            ocr_progress_callback=ocr_progress_callback,
+        )
+        text, sections = extracted.text, extracted.sections
+        extraction_metadata = extracted.metadata
     preview_text = build_excerpt(text or fallback_excerpt, title)
     primary_category, secondary_category, confidence = detect_category(title, text or preview_text)
     material_layer, primary_category, secondary_category, confidence = detect_material_profile(
@@ -2191,6 +2281,67 @@ def ingest_document_knowledge(
     )
     v2_document_id = f"v2doc_{document_id}"
     content_hash = _content_hash(text or preview_text or title, source_path)
+
+    # ★ V2.3 Step 2 · content_hash dedup gate (跨 v2_document_id 同内容判重)
+    # 如果当前 client 已有相同 SHA-256 内容的 v2_doc, 复用它不再 INSERT.
+    # 这是 UNIQUE INDEX uniq_v2_documents_client_hash 配套的应用层早返回, 让重复导入
+    # 立刻命中 "已存在" 而不是触发 IntegrityError.
+    # 触发场景:
+    #   · 用户多次导入同份 PDF
+    #   · 系统反复 regenerate 同份 client_overview / 跨 sync 收到同 hash
+    if content_hash and not skip_family_dedup:
+        existing_hash_v2 = db.fetchone(
+            """
+            SELECT id, document_id, file_name FROM v2_documents
+            WHERE client_id = ? AND content_hash = ? AND id != ?
+            ORDER BY imported_at ASC LIMIT 1
+            """,
+            (client_id, content_hash, v2_document_id),
+        )
+        if existing_hash_v2:
+            kept_v2_id = str(existing_hash_v2["id"])
+            kept_doc_id = str(existing_hash_v2["document_id"])
+            kept_name = str(existing_hash_v2["file_name"] or title)
+            logger.info(
+                "v2_documents content_hash dedup hit · client=%s hash=%s reuse=%s "
+                "skip new v2_doc=%s",
+                client_id, content_hash[:12], kept_v2_id, v2_document_id,
+            )
+            # 当前 document 行已 INSERT 到 documents 表, 但 v2_doc 不再新建 → 清理 documents 行,
+            # 避免一个 doc row 没有对应 v2_doc.
+            from app.services import trash_can as _trash_can
+            try:
+                _trash_can.trash_file(
+                    db, data_dir,
+                    source_path=source_path,
+                    client_id=client_id,
+                    original_document_id=document_id,
+                    original_title=title,
+                    reason="dedup_content_hash",
+                )
+            except Exception:
+                logger.warning("trash_file dedup failed (continue)", exc_info=True)
+            db.execute("DELETE FROM documents WHERE id = ?", (document_id,))
+            # 返回 dedup 信号, 跟 family_id dedup 同格式让上游统一处理
+            return {
+                "knowledge_document_id": "",
+                "legacy_knowledge_document_id": "",
+                "title": kept_name,
+                "current_human_path": "",
+                "compat_card_path": "",
+                "markdown_path": "",
+                "primary_category": UNIFIED_FOLDER_LABEL,
+                "secondary_category": "",
+                "short_summary": "",
+                "summary": "",
+                "classification_confidence": 1.0,
+                "material_layer": "",
+                "needs_review": False,
+                "dedup_skipped": True,
+                "dedup_kept_document_id": kept_doc_id,
+                "dedup_reason": "content_hash",
+            }
+
     document_family_id = derive_document_family_id(
         title=title,
         content_hash=content_hash,
@@ -2286,6 +2437,50 @@ def ingest_document_knowledge(
         "UPDATE v2_documents SET markdown_content = ? WHERE id = ?",
         (markdown_content if parse_status in SEARCHABLE_PARSE_STATUSES else "", v2_document_id),
     )
+
+    # V2.3 Step 1 · 补充 organization/owner/department/visibility 字段 (团队共享必填)
+    # INSERT 语句的 24 字段没含这些, 是 _ensure_column 后续加的. 这里用 UPDATE 补.
+    # 仅当 organization_id 非空才更新 (老调用方不传 → 不破坏默认行为)
+    if organization_id:
+        import json as _json
+        dept_ids_json = _json.dumps([department_id]) if department_id else "[]"
+        db.execute(
+            """
+            UPDATE v2_documents
+            SET organization_id = ?, owner_user_id = ?, department_id = ?,
+                department_ids_json = ?, visibility_scope = ?
+            WHERE id = ?
+            """,
+            (
+                organization_id, owner_user_id or "", department_id or "",
+                dept_ids_json, visibility_scope or "project_public",
+                v2_document_id,
+            ),
+        )
+
+        # V2.3 Step 1 · 接 source_registry — 让 raw_file 也参与统一来源登记
+        # 不接 outbox enqueue (那是 data_center_ingest 的事, 等 Step 3 接通)
+        try:
+            from app.services.source_registry_store import register_source
+            register_source(
+                db,
+                source_type="file_import",
+                source_channel="local_workspace",
+                source_owner=owner_user_id or None,
+                client_id=client_id,
+                user_id=owner_user_id or None,
+                org_id=organization_id,
+                visibility_scope=visibility_scope or "org",
+                content=content_hash,  # SHA-256 hex, 当 dedup key
+                source_role="file",
+                raw_reference=v2_document_id,
+                strict_4_required=False,  # 软校验 (向后兼容)
+            )
+        except Exception as exc:
+            logger.warning(
+                "V2.3 register_source failed for v2_doc=%s (continue): %s",
+                v2_document_id, exc,
+            )
 
     db.execute(
         """
@@ -3125,6 +3320,18 @@ def upsert_canonical_text_document(
     cleaned_text = _clean_ingested_text(text)
     if not cleaned_text:
         return None
+
+    # V2.3 Step 1 后修 · 调用方没传 team context 时 fallback resolve
+    # 修补 task_doc / meeting_doc / weekly_review_doc 等 canonical 路径
+    # (它们都走这个 upsert, 历史上调用方不传 4 个团队字段)
+    if not organization_id:
+        _ctx = _resolve_team_context_for_async_worker(db)
+        organization_id = _ctx.get("organization_id", "") or organization_id
+        if not owner_user_id:
+            owner_user_id = _ctx.get("owner_user_id", "") or owner_user_id
+        if not department_id and not department_ids:
+            department_id = _ctx.get("department_id", "") or department_id
+
     department_ids_json = to_json(list(normalize_department_ids(department_ids or department_id)))
     document_id = _stable_canonical_document_id(client_id, origin_type, origin_id)
     v2_document_id = f"v2doc_{document_id}"
@@ -3258,7 +3465,22 @@ def upsert_canonical_text_document(
         created_at,
         updated_at,
     )
-    if db.fetchone("SELECT id FROM v2_documents WHERE id = ?", (v2_document_id,)) is None:
+    # V2.3 Step 2 UNIQUE INDEX (client_id, content_hash) 落地后, 按 id 查不到不代表能 INSERT —
+    # 同一文件可能因 document_id 派生路径变化导致 v2_document_id 不同但 (client_id, content_hash) 已存在.
+    # 这里在 INSERT 前再按 UNIQUE 列查一次, 命中冲突就重用现存 id 走 UPDATE 分支, 避免 IntegrityError.
+    existing_row = db.fetchone("SELECT id FROM v2_documents WHERE id = ?", (v2_document_id,))
+    if existing_row is None:
+        conflict_row = db.fetchone(
+            "SELECT id FROM v2_documents WHERE client_id = ? AND content_hash = ? LIMIT 1",
+            (client_id, content_hash),
+        )
+        if conflict_row is not None:
+            v2_document_id = str(conflict_row["id"])
+            existing_row = conflict_row
+            # 重用了别的 v2_document_id, 但上面 _remove_existing_v2_rows 用的是老 id,
+            # 现在要按新 id 再清一次 sections/chunks, 否则下面 INSERT v2_sections 会撞 UNIQUE.
+            _remove_existing_v2_rows(db, v2_document_id)
+    if existing_row is None:
         db.execute(
             """
             INSERT INTO v2_documents(
@@ -3342,6 +3564,52 @@ def upsert_canonical_text_document(
         """,
         (len(sections), chunk_count, updated_at, v2_document_id),
     )
+
+    # V2.3 Step 1.5 · 让 upsert_canonical_text_document 也接 source_registry
+    # 跟 ingest_document_knowledge 对齐 — 让 task_doc / meeting_doc / weekly_review_doc / judgment_doc 等
+    # canonical 文档也参与统一来源登记, Step 3 sync executor 才能按 source_registry 扫描
+    if organization_id:
+        try:
+            from app.services.source_registry_store import register_source
+            # origin_type → source_type 映射 (跟 V2.3 蓝图对齐)
+            _SOURCE_TYPE_MAP = {
+                "file_import": "file_import",          # raw 文件 (其实走 ingest_document_knowledge)
+                "task": "task_review",                 # 任务文档
+                "meeting": "task_review",              # 会议纪要
+                "weekly_review": "task_review",        # 周复盘
+                "weekly_review_entry": "task_review",  # 周复盘单条
+                "judgment_version": "ai_inference",    # 判断版本 (用户判断)
+                "internet_source": "internet_crawl",   # 互联网原文
+                "internet_fact_card": "internet_crawl",
+                "internet_enrichment": "internet_crawl",
+                "wechat_sogou_search": "internet_crawl",
+                "event_line": "task_review",
+                "event_line_manual_update": "task_review",
+                "calendar_rollup": "task_review",
+                "project_module": "task_review",
+                "video_transcript": "file_import",
+            }
+            sr_source_type = _SOURCE_TYPE_MAP.get(origin_type, "ai_inference")
+            register_source(
+                db,
+                source_type=sr_source_type,
+                source_channel=f"canonical_{canonical_kind}",
+                source_owner=owner_user_id or None,
+                client_id=client_id,
+                user_id=owner_user_id or None,
+                org_id=organization_id,
+                visibility_scope=visibility_scope or "org",
+                content=content_hash,  # SHA-256 hex 作 content key
+                source_role="generated",
+                raw_reference=v2_document_id,
+                strict_4_required=False,
+            )
+        except Exception as exc:
+            logger.warning(
+                "V2.3 upsert_canonical register_source failed for v2_doc=%s (continue): %s",
+                v2_document_id, exc,
+            )
+
     return {
         "documentId": document_id,
         "v2DocumentId": v2_document_id,

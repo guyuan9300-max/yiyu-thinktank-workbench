@@ -2317,6 +2317,41 @@ export async function getClients() {
   return clients.filter((client) => client.alias !== 'workspace-smoke' && client.name !== '安装态冒烟客户');
 }
 
+// V2.3 Step 5 · team sync UI api
+export interface TeamSyncStats {
+  pending: number;
+  synced: number;
+  failed: number;
+  total: number;
+}
+
+export interface TeamSyncRunResult {
+  status: string;
+  count: number;
+  accepted?: number;
+  duplicates?: number;
+  rejected?: number;
+  error?: string;
+}
+
+export async function getTeamSyncStats(): Promise<TeamSyncStats> {
+  return request<TeamSyncStats>('/api/v1/data-center/team-sync/stats');
+}
+
+export async function enqueueTeamSyncAll(): Promise<{ inserted: number; total_scanned: number }> {
+  return request<{ inserted: number; total_scanned: number }>(
+    '/api/v1/data-center/team-sync/enqueue-all',
+    { method: 'POST' },
+  );
+}
+
+export async function runTeamSyncOnce(batchSize = 50): Promise<TeamSyncRunResult> {
+  return request<TeamSyncRunResult>(
+    `/api/v1/data-center/team-sync/run-once?batch_size=${batchSize}`,
+    { method: 'POST' },
+  );
+}
+
 export async function createClient(payload: ClientMutationPayload) {
   return request<ClientSummary>('/api/v1/clients', {
     method: 'POST',

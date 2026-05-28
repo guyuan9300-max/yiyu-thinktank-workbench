@@ -10,7 +10,7 @@
 
 | AI | 主战场 | 主仓库 |
 |---|---|---|
-| A | V2.1 lab 后端 (FastAPI :47831) + Electron 前端 (TS/React) | /Users/guyuanyuan/openclaw/workspace/V2.1 |
+| A | V2.1 lab 后端 (FastAPI :47831) + Electron 前端 (TS/React) | /Users/guyuanyuan/openclaw/workspace/yiyu-thinktank-workbench |
 | B | V3 智能体能力 / MCP / AICommandModal AI 链路 | 同上 |
 | C | 手机版 (Expo RN) + cloud_backend (FastAPI :47830, 火山云线上) | ~/openclaw/workspace/yiyu-thinktank-workbench/mobile/ + V2.1/cloud_backend/ |
 | D | 官网 / 开源工作台介绍页 (web UI/质感) | ~/openclaw/workspace/yiyu-think-tank-website |

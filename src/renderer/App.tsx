@@ -492,6 +492,7 @@ import { SmartFileImportModal } from './components/smart_file_import/SmartFileIm
 import type { TaskAiParseResult } from './lib/api';
 import { SystemLogPanel } from './components/settings/SystemLogPanel';
 import { MaintenanceSyncPanel } from './components/settings/MaintenanceSyncPanel';
+import { TeamSyncPanel } from './components/settings/TeamSyncPanel';
 import { StrategicBrainView, type ThoughtTaskPayload, DuplicateDocumentsSection } from './components/strategic_accompaniment/StrategicBrainView';
 import { TopicsManagementView } from './components/topics/TopicsManagementView';
 import { IntelligenceStationView } from './components/intelligence/IntelligenceStationView';
@@ -29092,6 +29093,15 @@ export default function App() {
                       }}
                     />
                   ),
+                })}
+                {/* V2.3 Step 5 · 团队同步状态面板 */}
+                {renderFoldable({
+                  key: 'team-sync',
+                  eyebrow: 'TEAM · 团队同步',
+                  title: '本地 → 云端同步状态',
+                  helper: '本地解析的文档同步到云端 team_documents, 让团队其他成员可以按 content_hash 复用同份解析结果。',
+                  tint: true,
+                  children: <TeamSyncPanel flash={flash} />,
                 })}
                 {renderFoldable({
                   key: 'runtime-logs',

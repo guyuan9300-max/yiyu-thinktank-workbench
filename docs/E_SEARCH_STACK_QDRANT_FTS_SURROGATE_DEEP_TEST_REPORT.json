@@ -1,0 +1,625 @@
+{
+  "clients": {
+    "CFFC": {
+      "client_id": "client_a4d1db29a7",
+      "runtime_signature": "local_fastembed:legacy_fastembed_256:BAAI/bge-small-zh-v1.5:256:projection",
+      "runtime_master_active": "master_index_client_a4d1db29a7_3e09a527",
+      "runtime_master_legacy": "master_index_client_a4d1db29a7",
+      "disk_collections": [],
+      "runtime_active_exists": false,
+      "manifest_rows": [
+        {
+          "sig": "local_fastembed:legacy_fastembed_256:BAAI/bge-small-zh-v1.5:256:projection",
+          "active": "master_index_client_a4d1db29a7_3e09a527",
+          "status": "stale",
+          "master_indexed": 0,
+          "chunk_indexed": 0,
+          "updated_at": "2026-05-25T17:24:55"
+        }
+      ],
+      "manifest_active": "master_index_client_a4d1db29a7_3e09a527",
+      "signature_drift": false,
+      "point_counts": {},
+      "payload_sample": null,
+      "surrogate_count": 159,
+      "master_index_count": 162,
+      "deep_read_done": 118
+    },
+    "日慈": {
+      "client_id": "client_284afd836e",
+      "runtime_signature": "local_fastembed:legacy_fastembed_256:BAAI/bge-small-zh-v1.5:256:projection",
+      "runtime_master_active": "master_index_client_284afd836e_3e09a527",
+      "runtime_master_legacy": "master_index_client_284afd836e",
+      "disk_collections": [
+        "master_index_client_284afd836e",
+        "master_index_client_284afd836e_3e09a527",
+        "raw_chunk_client_284afd836e",
+        "raw_chunk_client_284afd836e_3e09a527"
+      ],
+      "runtime_active_exists": true,
+      "manifest_rows": [
+        {
+          "sig": "local_fastembed:legacy_fastembed_256:BAAI/bge-small-zh-v1.5:256:projection",
+          "active": "master_index_client_284afd836e_3e09a527",
+          "status": "stale",
+          "master_indexed": 0,
+          "chunk_indexed": 0,
+          "updated_at": "2026-05-27T19:12:38"
+        },
+        {
+          "sig": "local_fastembed:BAAI/bge-small-zh-v1.5:256",
+          "active": "master_index_client_284afd836e_dd89896b",
+          "status": "building",
+          "master_indexed": 0,
+          "chunk_indexed": 0,
+          "updated_at": "2026-04-21T22:24:29"
+        }
+      ],
+      "manifest_active": "master_index_client_284afd836e_3e09a527",
+      "signature_drift": false,
+      "point_counts": {
+        "master_index_client_284afd836e": 0,
+        "master_index_client_284afd836e_3e09a527": 0,
+        "raw_chunk_client_284afd836e": 0,
+        "raw_chunk_client_284afd836e_3e09a527": 0
+      },
+      "payload_sample": null,
+      "surrogate_count": 116,
+      "master_index_count": 121,
+      "deep_read_done": 34
+    },
+    "士平": {
+      "client_id": "client_55f5a8c847",
+      "runtime_signature": "local_fastembed:legacy_fastembed_256:BAAI/bge-small-zh-v1.5:256:projection",
+      "runtime_master_active": "master_index_client_55f5a8c847_3e09a527",
+      "runtime_master_legacy": "master_index_client_55f5a8c847",
+      "disk_collections": [],
+      "runtime_active_exists": false,
+      "manifest_rows": [
+        {
+          "sig": "local_fastembed:legacy_fastembed_256:BAAI/bge-small-zh-v1.5:256:projection",
+          "active": "master_index_client_55f5a8c847_3e09a527",
+          "status": "stale",
+          "master_indexed": 0,
+          "chunk_indexed": 0,
+          "updated_at": "2026-05-25T21:09:56"
+        }
+      ],
+      "manifest_active": "master_index_client_55f5a8c847_3e09a527",
+      "signature_drift": false,
+      "point_counts": {},
+      "payload_sample": null,
+      "surrogate_count": 14,
+      "master_index_count": 14,
+      "deep_read_done": 0
+    },
+    "益语智库": {
+      "client_id": "client_53d82aa249",
+      "runtime_signature": "local_fastembed:legacy_fastembed_256:BAAI/bge-small-zh-v1.5:256:projection",
+      "runtime_master_active": "master_index_client_53d82aa249_3e09a527",
+      "runtime_master_legacy": "master_index_client_53d82aa249",
+      "disk_collections": [],
+      "runtime_active_exists": false,
+      "manifest_rows": [
+        {
+          "sig": "local_fastembed:legacy_fastembed_256:BAAI/bge-small-zh-v1.5:256:projection",
+          "active": "master_index_client_53d82aa249_3e09a527",
+          "status": "stale",
+          "master_indexed": 0,
+          "chunk_indexed": 0,
+          "updated_at": "2026-05-27T20:38:53"
+        }
+      ],
+      "manifest_active": "master_index_client_53d82aa249_3e09a527",
+      "signature_drift": false,
+      "point_counts": {},
+      "payload_sample": null,
+      "surrogate_count": 19,
+      "master_index_count": 21,
+      "deep_read_done": 12
+    },
+    "善加": {
+      "client_id": "client_256d89c5ef",
+      "runtime_signature": "local_fastembed:legacy_fastembed_256:BAAI/bge-small-zh-v1.5:256:projection",
+      "runtime_master_active": "master_index_client_256d89c5ef_3e09a527",
+      "runtime_master_legacy": "master_index_client_256d89c5ef",
+      "disk_collections": [],
+      "runtime_active_exists": false,
+      "manifest_rows": [
+        {
+          "sig": "local_fastembed:legacy_fastembed_256:BAAI/bge-small-zh-v1.5:256:projection",
+          "active": "master_index_client_256d89c5ef_3e09a527",
+          "status": "stale",
+          "master_indexed": 0,
+          "chunk_indexed": 0,
+          "updated_at": "2026-05-27T09:45:06"
+        }
+      ],
+      "manifest_active": "master_index_client_256d89c5ef_3e09a527",
+      "signature_drift": false,
+      "point_counts": {},
+      "payload_sample": null,
+      "surrogate_count": 44,
+      "master_index_count": 44,
+      "deep_read_done": 0
+    },
+    "为爱黔行": {
+      "client_id": "client_85d5c52575",
+      "runtime_signature": "local_fastembed:legacy_fastembed_256:BAAI/bge-small-zh-v1.5:256:projection",
+      "runtime_master_active": "master_index_client_85d5c52575_3e09a527",
+      "runtime_master_legacy": "master_index_client_85d5c52575",
+      "disk_collections": [],
+      "runtime_active_exists": false,
+      "manifest_rows": [
+        {
+          "sig": "local_fastembed:legacy_fastembed_256:BAAI/bge-small-zh-v1.5:256:projection",
+          "active": "master_index_client_85d5c52575_3e09a527",
+          "status": "stale",
+          "master_indexed": 0,
+          "chunk_indexed": 0,
+          "updated_at": "2026-05-27T20:38:53"
+        },
+        {
+          "sig": "local_fastembed:BAAI/bge-small-zh-v1.5:256",
+          "active": "master_index_client_cffc_dd89896b",
+          "status": "stale",
+          "master_indexed": 0,
+          "chunk_indexed": 0,
+          "updated_at": "2026-04-21T22:23:07"
+        }
+      ],
+      "manifest_active": "master_index_client_85d5c52575_3e09a527",
+      "signature_drift": false,
+      "point_counts": {},
+      "payload_sample": null,
+      "surrogate_count": 70,
+      "master_index_count": 70,
+      "deep_read_done": 0
+    },
+    "云南儿童": {
+      "client_id": "client_bda0f1d379",
+      "runtime_signature": "local_fastembed:legacy_fastembed_256:BAAI/bge-small-zh-v1.5:256:projection",
+      "runtime_master_active": "master_index_client_bda0f1d379_3e09a527",
+      "runtime_master_legacy": "master_index_client_bda0f1d379",
+      "disk_collections": [],
+      "runtime_active_exists": false,
+      "manifest_rows": [
+        {
+          "sig": "local_fastembed:legacy_fastembed_256:BAAI/bge-small-zh-v1.5:256:projection",
+          "active": "master_index_client_bda0f1d379_3e09a527",
+          "status": "stale",
+          "master_indexed": 0,
+          "chunk_indexed": 0,
+          "updated_at": "2026-05-23T09:49:42"
+        }
+      ],
+      "manifest_active": "master_index_client_bda0f1d379_3e09a527",
+      "signature_drift": false,
+      "point_counts": {},
+      "payload_sample": null,
+      "surrogate_count": 82,
+      "master_index_count": 82,
+      "deep_read_done": 3
+    }
+  },
+  "m3_side_effect": {
+    "fake_client": "client_PROBEZZZ999",
+    "qdrant_hits": 0,
+    "new_collections_created": [
+      "master_index_client_PROBEZZZ999_3e09a527",
+      "raw_chunk_client_PROBEZZZ999_3e09a527"
+    ],
+    "new_collection_point_counts": {
+      "master_index_client_PROBEZZZ999_3e09a527": 0,
+      "raw_chunk_client_PROBEZZZ999_3e09a527": 0
+    }
+  },
+  "m4": {
+    "CFFC": [
+      {
+        "query": "组织介绍",
+        "fts_hits": 0,
+        "qdrant_hits": 0,
+        "bundle_count": 19,
+        "dominant": "lexical/surrogate"
+      },
+      {
+        "query": "合作关系",
+        "fts_hits": 0,
+        "qdrant_hits": 0,
+        "bundle_count": 1,
+        "dominant": "lexical/surrogate"
+      },
+      {
+        "query": "业务项目",
+        "fts_hits": 0,
+        "qdrant_hits": 0,
+        "bundle_count": 22,
+        "dominant": "lexical/surrogate"
+      },
+      {
+        "query": "关键人物",
+        "fts_hits": 0,
+        "qdrant_hits": 0,
+        "bundle_count": 0,
+        "dominant": "none"
+      },
+      {
+        "query": "时间线",
+        "fts_hits": 0,
+        "qdrant_hits": 0,
+        "bundle_count": 0,
+        "dominant": "none"
+      },
+      {
+        "query": "下一步",
+        "fts_hits": 0,
+        "qdrant_hits": 0,
+        "bundle_count": 0,
+        "dominant": "none"
+      },
+      {
+        "query": "合同协议",
+        "fts_hits": 0,
+        "qdrant_hits": 0,
+        "bundle_count": 0,
+        "dominant": "none"
+      },
+      {
+        "query": "风险与待澄清",
+        "fts_hits": 4,
+        "qdrant_hits": 0,
+        "bundle_count": 12,
+        "dominant": "fts"
+      }
+    ],
+    "日慈": [
+      {
+        "query": "组织介绍",
+        "fts_hits": 0,
+        "qdrant_hits": 0,
+        "bundle_count": 0,
+        "dominant": "none"
+      },
+      {
+        "query": "合作关系",
+        "fts_hits": 0,
+        "qdrant_hits": 0,
+        "bundle_count": 0,
+        "dominant": "none"
+      },
+      {
+        "query": "业务项目",
+        "fts_hits": 0,
+        "qdrant_hits": 0,
+        "bundle_count": 0,
+        "dominant": "none"
+      },
+      {
+        "query": "关键人物",
+        "fts_hits": 0,
+        "qdrant_hits": 0,
+        "bundle_count": 0,
+        "dominant": "none"
+      },
+      {
+        "query": "时间线",
+        "fts_hits": 0,
+        "qdrant_hits": 0,
+        "bundle_count": 0,
+        "dominant": "none"
+      },
+      {
+        "query": "下一步",
+        "fts_hits": 0,
+        "qdrant_hits": 0,
+        "bundle_count": 0,
+        "dominant": "none"
+      },
+      {
+        "query": "合同协议",
+        "fts_hits": 0,
+        "qdrant_hits": 0,
+        "bundle_count": 0,
+        "dominant": "none"
+      },
+      {
+        "query": "风险与待澄清",
+        "fts_hits": 0,
+        "qdrant_hits": 0,
+        "bundle_count": 0,
+        "dominant": "none"
+      }
+    ],
+    "士平": [
+      {
+        "query": "组织介绍",
+        "fts_hits": 0,
+        "qdrant_hits": 0,
+        "bundle_count": 0,
+        "dominant": "none"
+      },
+      {
+        "query": "合作关系",
+        "fts_hits": 0,
+        "qdrant_hits": 0,
+        "bundle_count": 0,
+        "dominant": "none"
+      },
+      {
+        "query": "业务项目",
+        "fts_hits": 0,
+        "qdrant_hits": 0,
+        "bundle_count": 0,
+        "dominant": "none"
+      },
+      {
+        "query": "关键人物",
+        "fts_hits": 0,
+        "qdrant_hits": 0,
+        "bundle_count": 0,
+        "dominant": "none"
+      },
+      {
+        "query": "时间线",
+        "fts_hits": 0,
+        "qdrant_hits": 0,
+        "bundle_count": 0,
+        "dominant": "none"
+      },
+      {
+        "query": "下一步",
+        "fts_hits": 0,
+        "qdrant_hits": 0,
+        "bundle_count": 0,
+        "dominant": "none"
+      },
+      {
+        "query": "合同协议",
+        "fts_hits": 0,
+        "qdrant_hits": 0,
+        "bundle_count": 0,
+        "dominant": "none"
+      },
+      {
+        "query": "风险与待澄清",
+        "fts_hits": 0,
+        "qdrant_hits": 0,
+        "bundle_count": 0,
+        "dominant": "none"
+      }
+    ],
+    "益语智库": [
+      {
+        "query": "组织介绍",
+        "fts_hits": 0,
+        "qdrant_hits": 0,
+        "bundle_count": 0,
+        "dominant": "none"
+      },
+      {
+        "query": "合作关系",
+        "fts_hits": 0,
+        "qdrant_hits": 0,
+        "bundle_count": 0,
+        "dominant": "none"
+      },
+      {
+        "query": "业务项目",
+        "fts_hits": 0,
+        "qdrant_hits": 0,
+        "bundle_count": 0,
+        "dominant": "none"
+      },
+      {
+        "query": "关键人物",
+        "fts_hits": 0,
+        "qdrant_hits": 0,
+        "bundle_count": 0,
+        "dominant": "none"
+      },
+      {
+        "query": "时间线",
+        "fts_hits": 0,
+        "qdrant_hits": 0,
+        "bundle_count": 0,
+        "dominant": "none"
+      },
+      {
+        "query": "下一步",
+        "fts_hits": 0,
+        "qdrant_hits": 0,
+        "bundle_count": 0,
+        "dominant": "none"
+      },
+      {
+        "query": "合同协议",
+        "fts_hits": 0,
+        "qdrant_hits": 0,
+        "bundle_count": 0,
+        "dominant": "none"
+      },
+      {
+        "query": "风险与待澄清",
+        "fts_hits": 0,
+        "qdrant_hits": 0,
+        "bundle_count": 0,
+        "dominant": "none"
+      }
+    ],
+    "善加": [
+      {
+        "query": "组织介绍",
+        "fts_hits": 0,
+        "qdrant_hits": 0,
+        "bundle_count": 0,
+        "dominant": "none"
+      },
+      {
+        "query": "合作关系",
+        "fts_hits": 0,
+        "qdrant_hits": 0,
+        "bundle_count": 0,
+        "dominant": "none"
+      },
+      {
+        "query": "业务项目",
+        "fts_hits": 0,
+        "qdrant_hits": 0,
+        "bundle_count": 0,
+        "dominant": "none"
+      },
+      {
+        "query": "关键人物",
+        "fts_hits": 0,
+        "qdrant_hits": 0,
+        "bundle_count": 0,
+        "dominant": "none"
+      },
+      {
+        "query": "时间线",
+        "fts_hits": 0,
+        "qdrant_hits": 0,
+        "bundle_count": 0,
+        "dominant": "none"
+      },
+      {
+        "query": "下一步",
+        "fts_hits": 0,
+        "qdrant_hits": 0,
+        "bundle_count": 0,
+        "dominant": "none"
+      },
+      {
+        "query": "合同协议",
+        "fts_hits": 0,
+        "qdrant_hits": 0,
+        "bundle_count": 0,
+        "dominant": "none"
+      },
+      {
+        "query": "风险与待澄清",
+        "fts_hits": 0,
+        "qdrant_hits": 0,
+        "bundle_count": 0,
+        "dominant": "none"
+      }
+    ],
+    "为爱黔行": [
+      {
+        "query": "组织介绍",
+        "fts_hits": 0,
+        "qdrant_hits": 0,
+        "bundle_count": 0,
+        "dominant": "none"
+      },
+      {
+        "query": "合作关系",
+        "fts_hits": 0,
+        "qdrant_hits": 0,
+        "bundle_count": 0,
+        "dominant": "none"
+      },
+      {
+        "query": "业务项目",
+        "fts_hits": 0,
+        "qdrant_hits": 0,
+        "bundle_count": 0,
+        "dominant": "none"
+      },
+      {
+        "query": "关键人物",
+        "fts_hits": 0,
+        "qdrant_hits": 0,
+        "bundle_count": 0,
+        "dominant": "none"
+      },
+      {
+        "query": "时间线",
+        "fts_hits": 0,
+        "qdrant_hits": 0,
+        "bundle_count": 0,
+        "dominant": "none"
+      },
+      {
+        "query": "下一步",
+        "fts_hits": 0,
+        "qdrant_hits": 0,
+        "bundle_count": 0,
+        "dominant": "none"
+      },
+      {
+        "query": "合同协议",
+        "fts_hits": 0,
+        "qdrant_hits": 0,
+        "bundle_count": 0,
+        "dominant": "none"
+      },
+      {
+        "query": "风险与待澄清",
+        "fts_hits": 0,
+        "qdrant_hits": 0,
+        "bundle_count": 0,
+        "dominant": "none"
+      }
+    ],
+    "云南儿童": [
+      {
+        "query": "组织介绍",
+        "fts_hits": 0,
+        "qdrant_hits": 0,
+        "bundle_count": 0,
+        "dominant": "none"
+      },
+      {
+        "query": "合作关系",
+        "fts_hits": 0,
+        "qdrant_hits": 0,
+        "bundle_count": 0,
+        "dominant": "none"
+      },
+      {
+        "query": "业务项目",
+        "fts_hits": 0,
+        "qdrant_hits": 0,
+        "bundle_count": 0,
+        "dominant": "none"
+      },
+      {
+        "query": "关键人物",
+        "fts_hits": 0,
+        "qdrant_hits": 0,
+        "bundle_count": 0,
+        "dominant": "none"
+      },
+      {
+        "query": "时间线",
+        "fts_hits": 0,
+        "qdrant_hits": 0,
+        "bundle_count": 0,
+        "dominant": "none"
+      },
+      {
+        "query": "下一步",
+        "fts_hits": 0,
+        "qdrant_hits": 0,
+        "bundle_count": 0,
+        "dominant": "none"
+      },
+      {
+        "query": "合同协议",
+        "fts_hits": 0,
+        "qdrant_hits": 0,
+        "bundle_count": 0,
+        "dominant": "none"
+      },
+      {
+        "query": "风险与待澄清",
+        "fts_hits": 0,
+        "qdrant_hits": 0,
+        "bundle_count": 0,
+        "dominant": "none"
+      }
+    ]
+  }
+}

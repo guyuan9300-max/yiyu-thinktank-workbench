@@ -3532,6 +3532,8 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
 
     @app.on_event("startup")
     def _startup_worker() -> None:
+        # 先恢复维护模式("推送同步")状态,扛过 --reload 热重启(放在所有早退分支之前)。
+        _restore_maintenance_state()
         if os.getenv("YIYU_DISABLE_STARTUP_WORKERS", "0") == "1":
             return
         # 互联网 PDF OCR 后台 worker · 单独启动 (不依赖其他 worker 状态)
@@ -4559,6 +4561,9 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 # 都因一个 .docx 改名自旧 .doc 抛 BadZipFile，291 个白名单文件 0 入库。
                 try:
                     excerpt = build_excerpt(path)
+                    # V2.3 Step 1 · 取 team context (org_id/owner/dept), 让 raw_file 接 source_registry
+                    from app.services.knowledge_v2 import _resolve_team_context_for_async_worker
+                    _team_ctx = _resolve_team_context_for_async_worker(state.db)
                     prepared = ingest_document_knowledge(
                         state.db,
                         data_dir=state.data_dir,
@@ -4573,6 +4578,12 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                         fallback_excerpt=excerpt,
                         created_at=str(item.get("createdAt", now_iso())),
                         ai_service=state.ai,
+                        organization_id=_team_ctx.get("organization_id", ""),
+                        owner_user_id=_team_ctx.get("owner_user_id", ""),
+                        department_id=_team_ctx.get("department_id", ""),
+                        visibility_scope=_team_ctx.get("visibility_scope", "project_public"),
+                        # V2.3 PULL · 传 cloud_request 闭包让 ingest 在 OCR 前查云端复用
+                        cloud_request=cloud_request,
                     )
                     # 迭代 2 F3：回写版本链元数据。
                     # ingest 已创建/更新了 knowledge_documents 行（按 document_id 查），
@@ -4992,6 +5003,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             state.maintenance_mode_active = False
             state.maintenance_mode_user_id = ""
             state.maintenance_mode_entered_at = ""
+        _persist_maintenance_state(False, "", "")
 
     def get_cached_session_user() -> SessionUserRecord | None:
         raw = state.db.get_setting("cloud_session_user", "")
@@ -8054,8 +8066,6 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
     ) -> None:
         if not get_cloud_token() and not get_cloud_refresh_token():
             return
-        normalized_trigger = str(trigger_source or "").strip()
-        notify_on_create = normalized_trigger == "document_created" or normalized_trigger.endswith("_document_created")
         body = {
             "localType": "document",
             "localId": document_id,
@@ -8063,134 +8073,47 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             "content": content,
             "clientId": client_id,
             "triggerSource": trigger_source,
-            "notifyOnCreate": notify_on_create,
+            "notifyOnCreate": trigger_source == "document_created",
         }
         try:
             cloud_request("POST", "/api/v1/feishu-sync/documents", json_body=body, timeout=30.0)
         except Exception as exc:
             logger.warning("feishu.docx.auto_sync_failed: %s", exc)
 
-    def _generated_delivery_document_id(prefix: str, raw_id: str) -> str:
-        normalized = re.sub(r"[^A-Za-z0-9_-]+", "_", str(raw_id or "").strip()).strip("_")
-        if normalized:
-            return f"doc_{prefix}_{normalized[:96]}"
-        digest = hashlib.sha256(f"{prefix}:{raw_id}".encode("utf-8")).hexdigest()[:20]
-        return f"doc_{prefix}_{digest}"
+    # ── 维护模式("推送同步")状态持久化 ──────────────────────────────
+    # 病根:维护模式开关原本只存在 AppState in-memory flag,uvicorn --reload 一热重启就清零。
+    # 用户开了"推送同步"后,只要 backend reload(改任一 .py / 多 AI 并行改后端)就被悄悄关掉,
+    # 再点预览/同步 main 就报"请先打开推送同步"。把状态写进 settings 表,startup 时恢复。
+    _MAINT_KEY_ACTIVE = "maintenance_mode.active"
+    _MAINT_KEY_USER = "maintenance_mode.user_id"
+    _MAINT_KEY_AT = "maintenance_mode.entered_at"
 
-    def _register_generated_delivery_document(
-        *,
-        client_id: str,
-        document_id: str,
-        title: str,
-        source_path: Path,
-        markdown_content: str,
-        source: str,
-        trigger_source: str,
-        tags: list[str] | None = None,
-    ) -> None:
-        normalized_client_id = str(client_id or "").strip()
-        if not normalized_client_id:
-            return
-        resolved_title = " ".join(str(title or "").split()).strip() or source_path.stem or "交付文档"
-        normalized_content = str(markdown_content or "").replace("\r\n", "\n").strip()
-        if not normalized_content:
-            normalized_content = f"# {resolved_title}\n\n该交付文档已在软件中生成。"
-
-        ensure_standard_client_folders(normalized_client_id)
-        folders = ensure_client_workspace(state.data_dir, normalized_client_id)
-        target_dir = folders.get(UNIFIED_FOLDER_LABEL) or next(iter(folders.values()), state.data_dir / "client_workspace" / normalized_client_id / UNIFIED_FOLDER_LABEL)
-        target_dir.mkdir(parents=True, exist_ok=True)
-        safe_stem = safe_filename(resolved_title) or "交付文档"
-        suffix = source_path.suffix if source_path.suffix else ".docx"
-        target_path = target_dir / f"{safe_stem}{suffix}"
-        existing_row = state.db.fetchone("SELECT path FROM documents WHERE id = ?", (document_id,))
-        if existing_row and existing_row["path"]:
-            target_path = Path(str(existing_row["path"]))
-            target_path.parent.mkdir(parents=True, exist_ok=True)
-        elif target_path.exists():
-            target_path = target_dir / f"{safe_stem}_{document_id[-8:]}{suffix}"
+    def _persist_maintenance_state(active: bool, user_id: str, entered_at: str) -> None:
         try:
-            if source_path.resolve() != target_path.resolve():
-                shutil.copy2(source_path, target_path)
-        except Exception:
-            logger.warning("generated document copy failed: %s -> %s", source_path, target_path, exc_info=True)
-            target_path = source_path
+            state.db.set_setting(_MAINT_KEY_ACTIVE, "1" if active else "0")
+            state.db.set_setting(_MAINT_KEY_USER, user_id or "")
+            state.db.set_setting(_MAINT_KEY_AT, entered_at or "")
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("[maintenance] persist state failed: %s", exc)
 
-        timestamp_iso = now_iso()
-        folder_row = state.db.fetchone(
-            "SELECT id FROM client_folders WHERE client_id = ? AND label = ?",
-            (normalized_client_id, UNIFIED_FOLDER_LABEL),
-        )
-        excerpt = normalize_markdown_text(normalized_content)[:180] or f"{resolved_title} 已作为交付文档进入资料库。"
-        resolved_tags = tags or ["generated_delivery", source, "docx"]
-        if existing_row:
-            state.db.execute(
-                """
-                UPDATE documents
-                SET client_id = ?, folder_id = ?, title = ?, path = ?,
-                    original_source_path = ?, kind = ?, source = ?, excerpt = ?,
-                    tags_json = ?, created_at = ?
-                WHERE id = ?
-                """,
-                (
-                    normalized_client_id,
-                    str(folder_row["id"]) if folder_row else None,
-                    resolved_title,
-                    str(target_path),
-                    str(target_path),
-                    target_path.suffix.lstrip(".").lower() or "docx",
-                    source,
-                    excerpt,
-                    to_json(resolved_tags),
-                    timestamp_iso,
-                    document_id,
-                ),
-            )
-        else:
-            state.db.execute(
-                """
-                INSERT INTO documents(id, client_id, folder_id, title, path, original_source_path, kind, source, excerpt, tags_json, created_at)
-                VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    document_id,
-                    normalized_client_id,
-                    str(folder_row["id"]) if folder_row else None,
-                    resolved_title,
-                    str(target_path),
-                    str(target_path),
-                    target_path.suffix.lstrip(".").lower() or "docx",
-                    source,
-                    excerpt,
-                    to_json(resolved_tags),
-                    timestamp_iso,
-                ),
-            )
+    def _restore_maintenance_state() -> None:
+        # startup 调用一次:把上次持久化的开启状态读回 in-memory flag。
+        # 只恢复 flag;是否真 active 仍由 _cloud_maintenance_status 的 user_match 实时判定,
+        # 所以即使残留 true,非持有人也算不出 active,安全。
         try:
-            ingest_document_knowledge(
-                state.db,
-                data_dir=state.data_dir,
-                client_id=normalized_client_id,
-                import_id=None,
-                document_id=document_id,
-                source_path=target_path,
-                original_source_path=target_path,
-                title=resolved_title,
-                kind=target_path.suffix.lstrip(".").lower() or "docx",
-                source=source,
-                fallback_excerpt=excerpt,
-                created_at=timestamp_iso,
-                ai_service=None,
+            if state.db.get_setting(_MAINT_KEY_ACTIVE, "0") != "1":
+                return
+            with state.maintenance_mode_lock:
+                state.maintenance_mode_active = True
+                state.maintenance_mode_user_id = state.db.get_setting(_MAINT_KEY_USER, "")
+                state.maintenance_mode_entered_at = state.db.get_setting(_MAINT_KEY_AT, "")
+            logger.info(
+                "[maintenance] restored push-sync state from settings (user=%s, at=%s)",
+                state.maintenance_mode_user_id,
+                state.maintenance_mode_entered_at,
             )
-        except Exception:
-            logger.warning("generated document knowledge ingest failed: %s", document_id, exc_info=True)
-        _auto_sync_document_to_feishu_docx(
-            document_id=document_id,
-            title=resolved_title,
-            content=normalized_content,
-            client_id=normalized_client_id,
-            trigger_source=trigger_source,
-        )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("[maintenance] restore state failed: %s", exc)
 
     def _inactive_maintenance_status(reason: str) -> MaintenanceModeStatusRecord:
         session_user = get_cached_session_user()
@@ -15357,8 +15280,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         )
         document_id = new_id("doc")
         timestamp_iso = now_iso()
-        display_title = normalize_client_document_title(title) or normalize_client_document_title(target_path.stem) or "交付文档"
-        normalized_excerpt = (excerpt or "").strip()[:140] or f"{display_title} 已加入当前项目文档库。"
+        normalized_excerpt = (excerpt or "").strip()[:140] or f"{title} 已加入当前项目文档库。"
         state.db.execute(
             """
             INSERT INTO documents(id, client_id, folder_id, title, path, original_source_path, kind, source, excerpt, tags_json, created_at)
@@ -15368,7 +15290,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 document_id,
                 client_id,
                 str(folder_row["id"]) if folder_row else None,
-                display_title,
+                target_path.name,
                 str(target_path),
                 str(target_path),
                 kind,
@@ -15386,7 +15308,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             document_id=document_id,
             source_path=target_path,
             original_source_path=target_path,
-            title=display_title,
+            title=target_path.name,
             kind=kind,
             source=source,
             fallback_excerpt=normalized_excerpt,
@@ -15398,7 +15320,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         return ClientTextDocumentResponse(
             clientId=client_id,
             documentId=document_id,
-            title=display_title,
+            title=title,
             fileName=Path(resolved_path).name,
             path=resolved_path,
         )
@@ -15763,46 +15685,6 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             return candidate[:28]
         return normalized[:28]
 
-    def normalize_client_document_title(value: str | None) -> str:
-        """Keep user-facing document titles separate from generated filenames.
-
-        Manual/docx exports are stored as files like 20260527_162241_标题.docx.
-        Those timestamps are useful for filesystem uniqueness, but should never
-        round-trip into the editor title or future Feishu document title.
-        """
-
-        text = str(value or "").strip()
-        if not text:
-            return ""
-        text = text.replace("\\_", "_").replace("\\-", "-")
-        text = text.replace("\\", "/").rsplit("/", 1)[-1]
-        text = re.sub(r"\.(docx?|md|txt)$", "", text, flags=re.IGNORECASE).strip()
-        previous = None
-        while previous != text:
-            previous = text
-            text = re.sub(r"^\d{8}[_-]\d{6}[_-]+", "", text).strip()
-        return text.strip(" _-") or str(value or "").strip()
-
-    def strip_leading_duplicate_document_title(content: str, title: str) -> str:
-        normalized_content = str(content or "").replace("\r\n", "\n").strip()
-        normalized_title = normalize_client_document_title(title)
-        if not normalized_content or not normalized_title:
-            return normalized_content
-        lines = normalized_content.splitlines()
-        first_idx = next((idx for idx, line in enumerate(lines) if line.strip()), None)
-        if first_idx is None:
-            return normalized_content
-        first_line = lines[first_idx].strip()
-        first_line_clean = re.sub(r"^#{1,6}\s+", "", first_line).strip()
-        first_line_unescaped = first_line_clean.replace("\\_", "_").replace("\\-", "-").strip()
-        generated_title_line = re.match(r"^\d{8}[_-]\d{6}[_-]+", first_line_unescaped) is not None
-        if normalize_client_document_title(first_line_clean) != normalized_title and not generated_title_line:
-            return normalized_content
-        remaining = lines[:first_idx] + lines[first_idx + 1 :]
-        while remaining and not remaining[0].strip():
-            remaining.pop(0)
-        return "\n".join(remaining).strip()
-
     def create_client_text_document(client_id: str, payload: ClientTextDocumentPayload) -> ClientTextDocumentResponse:
         client = build_client_summary(client_id)
         ensure_standard_client_folders(client_id)
@@ -15814,8 +15696,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         if not normalized_content:
             raise HTTPException(status_code=400, detail="请先粘贴文档内容。")
 
-        resolved_title = normalize_client_document_title(payload.title) or infer_text_document_title(normalized_content)
-        normalized_content = strip_leading_duplicate_document_title(normalized_content, resolved_title)
+        resolved_title = str(payload.title or "").strip() or infer_text_document_title(normalized_content)
         safe_stem = safe_filename(resolved_title or "新增文档")
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         target_path = target_dir / f"{timestamp}_{safe_stem}.docx"
@@ -15849,7 +15730,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 document_id,
                 client_id,
                 str(folder_row["id"]) if folder_row else None,
-                resolved_title,
+                target_path.name,
                 str(target_path),
                 str(target_path),
                 "docx",
@@ -15867,7 +15748,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             document_id=document_id,
             source_path=target_path,
             original_source_path=target_path,
-            title=resolved_title,
+            title=target_path.name,
             kind="docx",
             source="manual_text_doc",
             fallback_excerpt=excerpt,
@@ -15921,7 +15802,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         if not normalized_content:
             raise HTTPException(status_code=400, detail="链接转资料没有生成可入库正文。")
 
-        resolved_title = normalize_client_document_title(title) or infer_text_document_title(normalized_content)
+        resolved_title = str(title or "").strip() or infer_text_document_title(normalized_content)
         safe_stem = safe_filename(resolved_title or "链接转资料")
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         target_path = target_dir / f"{timestamp}_{safe_stem}.md"
@@ -15952,7 +15833,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 document_id,
                 client_id,
                 str(folder_row["id"]) if folder_row else None,
-                resolved_title,
+                target_path.name,
                 str(target_path),
                 str(target_path),
                 "md",
@@ -15970,7 +15851,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             document_id=document_id,
             source_path=target_path,
             original_source_path=target_path,
-            title=resolved_title,
+            title=target_path.name,
             kind="md",
             source="video_transcript",
             fallback_excerpt=excerpt,
@@ -16044,7 +15925,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         normalized_content = str(markdown_content or "").replace("\r\n", "\n").strip()
         if not normalized_content:
             raise HTTPException(status_code=400, detail="链接转资料没有生成可入库正文。")
-        resolved_title = normalize_client_document_title(title) or infer_text_document_title(normalized_content)
+        resolved_title = str(title or "").strip() or infer_text_document_title(normalized_content)
         safe_stem = safe_filename(resolved_title or "链接转资料")
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         target_docx = target_dir / f"{timestamp}_{safe_stem}.docx"
@@ -16092,7 +15973,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 document_id,
                 client_id,
                 str(folder_row["id"]) if folder_row else None,
-                resolved_title,
+                target_docx.name,
                 str(target_docx),
                 str(target_docx),
                 "docx",
@@ -16110,7 +15991,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             document_id=document_id,
             source_path=target_docx,
             original_source_path=target_docx,
-            title=resolved_title,
+            title=target_docx.name,
             kind="docx",
             source="video_transcript",
             fallback_excerpt=excerpt,
@@ -28423,15 +28304,14 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         meeting_items = extract_recent_client_actions(
             state.db.conn, client_id, days=3650, max_items=60, exclude_consumed=True,  # M4: 去 30 天硬窗口 (31 天前纪要待办原先永久取不到)
         )
+        medium_items: list[dict[str, Any]] = []
         for it in meeting_items:
-            if it.confidence != "high":
-                continue
             normed_actor = _norm_actor(it.actor)
             fp = make_fingerprint(normed_actor, it.text)
             if fp in consumed or fp in seen_fp:
                 continue
             seen_fp.add(fp)
-            items.append({
+            rec = {
                 "fingerprint": fp,
                 "kind": "meeting",
                 "actor": normed_actor or it.actor,
@@ -28439,7 +28319,12 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 "dueDate": "",
                 "severity": "medium",
                 "rawId": "",
-            })
+            }
+            # high → 进对账主流程; medium → 单独 needs_review(不再全丢, 但不进主列表)
+            if it.confidence == "high":
+                items.append(rec)
+            else:
+                medium_items.append(rec)
 
         # 源 2/3: unified todos (commitments + tasks + action_items)
         try:
@@ -28474,30 +28359,55 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         except Exception:
             pass
 
-        sev_order = {"high": 0, "medium": 1, "low": 2}
-        kind_order = {"meeting": 0, "commitment": 1, "task": 2, "meeting_action": 3}
-        items.sort(key=lambda x: (
-            0 if x["dueDate"] else 1,
-            sev_order.get(x["severity"], 9),
-            kind_order.get(x["kind"], 9),
-        ))
+        # 行动闭环对账(质量门 + 主体归一/方向 + 语义去重 + 与现有任务反向比对 + 分层)。
+        # items 此时是"原始候选";reconcile 清洗后 items=candidate_next_steps(干净主列表),
+        # 并附 possibleDuplicates / needsReview / matched/invalid 计数。客户无关。
+        from app.services.next_step_reconciler import reconcile as _reconcile_next_steps
+        try:
+            client_row = state.db.fetchone("SELECT name FROM clients WHERE id=?", (client_id,))
+            client_name = str(client_row["name"]) if client_row else ""
+            task_rows = state.db.fetchall(
+                "SELECT title FROM tasks WHERE client_id=? AND COALESCE(progress_status,'') != 'done'",
+                (client_id,),
+            )
+            task_titles = [str(r["title"] or "") for r in task_rows]
+            reconciled = _reconcile_next_steps(
+                items,
+                existing_task_titles=task_titles,
+                client_name=client_name,
+                medium_candidates=medium_items,
+            )
+            clean_items = reconciled["candidate_next_steps"]
+        except Exception:
+            logger.exception("[next-steps] reconcile failed, fallback to raw union")
+            # 兜底:对账失败不让"下一步"整块挂掉,退回原始 union(旧排序)
+            sev_order = {"high": 0, "medium": 1, "low": 2}
+            kind_order = {"meeting": 0, "commitment": 1, "task": 2, "meeting_action": 3}
+            items.sort(key=lambda x: (0 if x["dueDate"] else 1, sev_order.get(x["severity"], 9), kind_order.get(x["kind"], 9)))
+            clean_items = items
+            reconciled = {"possible_duplicates": [], "needs_review": [], "matched_existing_count": 0, "invalid_filtered_count": 0, "debug_summary": {}}
 
-        # 后台异步预生成 LLM 背景说明, 写入 cache → 用户点 → 时瞬时返回
-        # 至多 3 线程并发, 失败 silent, 不阻塞当前请求
-        if items:
+        # 后台异步预生成 LLM 背景说明(只对干净主列表), 失败 silent, 不阻塞当前请求
+        if clean_items:
             import threading
             threading.Thread(
                 target=_prefetch_next_step_backgrounds,
-                args=(client_id, list(items)),
+                args=(client_id, list(clean_items)),
                 daemon=True,
                 name=f"prefetch-bg-{client_id[:12]}",
             ).start()
 
         return {
             "clientId": client_id,
-            "items": items,
-            "total": len(items),
+            "items": clean_items,  # 向后兼容: 前端读 items, 现在是清洗后的干净候选
+            "total": len(clean_items),
             "consumedCount": len(consumed),
+            # 分层附加(前端可选用; 不读也不影响)
+            "possibleDuplicates": reconciled.get("possible_duplicates", []),
+            "needsReview": reconciled.get("needs_review", []),
+            "matchedExistingCount": reconciled.get("matched_existing_count", 0),
+            "invalidFilteredCount": reconciled.get("invalid_filtered_count", 0),
+            "debugSummary": reconciled.get("debug_summary", {}),
         }
 
     # ───────────────────────────────────────────────────────────────────
@@ -30484,19 +30394,6 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         )
         if not isinstance(response, dict):
             raise HTTPException(status_code=502, detail="Invalid feishu calendar sync payload")
-        return response
-
-    @app.post("/api/v1/feishu-sync/tasks/{task_id}")
-    def sync_task_to_feishu_task_center(task_id: str) -> object:
-        if not get_cloud_token() and not get_cloud_refresh_token():
-            raise HTTPException(status_code=400, detail="连接云端并加入组织后，才能同步飞书任务。")
-        response = cloud_request(
-            "POST",
-            f"/api/v1/feishu-sync/tasks/{quote(task_id)}",
-            timeout=30.0,
-        )
-        if not isinstance(response, dict):
-            raise HTTPException(status_code=502, detail="Invalid feishu task sync payload")
         return response
 
     @app.post("/api/v1/feishu-sync/documents")
@@ -34506,71 +34403,6 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         os.makedirs(tmp_dir, exist_ok=True)
         tmp_path = os.path.join(tmp_dir, safe_name)
         doc.save(tmp_path)
-        try:
-            resolved_client_id = str(el_row["primary_client_id"] or "").strip() if el_row else ""
-            if not resolved_client_id:
-                task_client_row = state.db.fetchone(
-                    """
-                    SELECT client_id FROM tasks
-                    WHERE event_line_id = ? AND COALESCE(client_id, '') != ''
-                    ORDER BY updated_at DESC LIMIT 1
-                    """,
-                    (event_line_id,),
-                )
-                resolved_client_id = str(task_client_row["client_id"] or "").strip() if task_client_row else ""
-            if resolved_client_id:
-                markdown_lines = [
-                    f"# {event_line_name}",
-                    "",
-                    f"- 客户/项目：{client_name or '未标注'}",
-                    f"- 事件线类型：{kind_label}",
-                    f"- 当前状态：{status_label}",
-                    f"- 时间范围：{review_window}",
-                    f"- 导出时间：{snapshot_at[:16].replace('T', ' ')}",
-                    "",
-                    "## 核心判断",
-                    core_judgment or summary,
-                ]
-                if core_judgment_note:
-                    markdown_lines.extend(["", core_judgment_note])
-                if summary:
-                    markdown_lines.extend(["", "## 摘要", summary])
-                if sorted_timeline_nodes:
-                    markdown_lines.extend(["", "## 关键时间线"])
-                    for index, node in enumerate(sorted_timeline_nodes[:20], start=1):
-                        node_title = _clean_text(node.get("title")) or f"节点 {index}"
-                        node_time = str(node.get("time") or "")[:16].replace("T", " ")
-                        node_summary = _clean_text(node.get("summary"))
-                        markdown_lines.append(f"- {node_time}｜{node_title}")
-                        if node_summary:
-                            markdown_lines.append(f"  - {node_summary}")
-                elif milestone_source:
-                    markdown_lines.extend(["", "## 关键活动"])
-                    for item in milestone_source[-20:]:
-                        happened_at = str(item.get("happenedAt") or "")[:16].replace("T", " ")
-                        item_title = _activity_title(item)
-                        item_summary = _activity_summary(item)
-                        markdown_lines.append(f"- {happened_at}｜{item_title}")
-                        if item_summary:
-                            markdown_lines.append(f"  - {item_summary}")
-                if tasks:
-                    markdown_lines.extend(["", "## 关联任务"])
-                    for task in tasks[:20]:
-                        task_title = _clean_text(task.get("title") or "未命名任务")
-                        task_status = _clean_text(task.get("status") or "")
-                        markdown_lines.append(f"- {task_title}" + (f"（{task_status}）" if task_status else ""))
-                _register_generated_delivery_document(
-                    client_id=resolved_client_id,
-                    document_id=_generated_delivery_document_id("event_line_report", event_line_id),
-                    title=f"{event_line_name}_事件线汇报",
-                    source_path=Path(tmp_path),
-                    markdown_content="\n".join(markdown_lines),
-                    source="event_line_report_doc",
-                    trigger_source="event_line_report_document_created",
-                    tags=["generated_delivery", "event_line_report", "docx", event_line_id],
-                )
-        except Exception:
-            logger.warning("event line report delivery sync failed: %s", event_line_id, exc_info=True)
         return {"filePath": tmp_path, "fileName": safe_name}
 
     @app.patch("/api/v1/event-lines/{event_line_id}", response_model=EventLineRecord)
@@ -35424,6 +35256,40 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             raise HTTPException(status_code=502, detail="Invalid task plan link payload")
         return TaskPlanLinkRecord(**response)
 
+    @app.post("/api/v1/plan-link/predict-from-text")
+    def predict_plan_link_from_text(payload: dict = Body(...)) -> dict:
+        """[B] 2026-05-26 · 新建任务时, qwen2.5:7b 闪电预测 plan item.
+
+        body:
+          title: str
+          description: str
+          planItems: [{id, title, statement?}]   ← frontend 直接传, 不走 cloud
+
+        return:
+          {planItemId: str|None, confidence: 0-1, model: str, reason: str}
+
+        识别不上就返 planItemId=null, 不做兜底.
+        """
+        from app.services.plan_link_predictor import predict_plan_item
+        title = str(payload.get("title") or "")
+        desc = str(payload.get("description") or "")
+        items = payload.get("planItems") or []
+        if not isinstance(items, list):
+            raise HTTPException(status_code=400, detail="planItems 必须是数组")
+        safe_items: list[dict] = []
+        for it in items:
+            if not isinstance(it, dict):
+                continue
+            item_id = str(it.get("id") or "").strip()
+            if not item_id:
+                continue
+            safe_items.append({
+                "id": item_id,
+                "title": str(it.get("title") or ""),
+                "statement": str(it.get("statement") or ""),
+            })
+        return predict_plan_item(title, desc, safe_items)
+
     @app.get("/api/v1/org-model/plan-items/{item_id}/tasks")
     def list_tasks_for_plan_item(item_id: str) -> list:
         """透传 cloud 返回的任务列表，不做 response_model 校验。
@@ -35592,6 +35458,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             state.maintenance_mode_active = True
             state.maintenance_mode_user_id = cloud_status.userId or ""
             state.maintenance_mode_entered_at = now_iso()
+        _persist_maintenance_state(True, state.maintenance_mode_user_id, state.maintenance_mode_entered_at)
         log_activity("maintenance.enter", "maintenance_mode", cloud_status.userId or "current", {"organizationId": cloud_status.organizationId})
         return cloud_status.model_copy(update={"active": True})
 
@@ -35603,6 +35470,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             state.maintenance_mode_active = False
             state.maintenance_mode_user_id = ""
             state.maintenance_mode_entered_at = ""
+        _persist_maintenance_state(False, "", "")
         try:
             cloud_status = _coerce_maintenance_status(cloud_request("POST", "/api/v1/maintenance-mode/exit", timeout=6.0), active=False)
         except HTTPException:
@@ -43912,6 +43780,31 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
     ) -> dict[str, object]:
         return build_data_center_sync_preview(state.db, limit=limit)
 
+    # V2.3 Step 3 · team sync executor 接口
+    # 设计为手动触发模式 (不开后台 thread), user 在 UI / curl 主动调用
+    @app.post("/api/v1/data-center/team-sync/enqueue-all")
+    def post_team_sync_enqueue_all() -> dict[str, object]:
+        """一次性把所有 source_registry 但未在 team_sync_state 的项标 'pending'."""
+        from app.services.team_sync_executor import enqueue_all_unsynced
+        return enqueue_all_unsynced(state.db)
+
+    @app.post("/api/v1/data-center/team-sync/run-once")
+    def post_team_sync_run_once(
+        batch_size: int = Query(default=50, ge=1, le=200),
+        dry_run: bool = Query(default=False),
+    ) -> dict[str, object]:
+        """跑一次 sync — 扫 pending 批 POST 云端."""
+        from app.services.team_sync_executor import run_team_sync_once
+        return run_team_sync_once(
+            state.db, cloud_request, batch_size=batch_size, dry_run=dry_run,
+        )
+
+    @app.get("/api/v1/data-center/team-sync/stats")
+    def get_team_sync_stats() -> dict[str, int]:
+        """统计当前 team sync 状态."""
+        from app.services.team_sync_executor import get_sync_stats
+        return get_sync_stats(state.db)
+
     @app.post(
         "/api/v1/data-center/kernel-primary-rollout/start",
         response_model=KernelPrimaryRolloutRunRecord,
@@ -48482,7 +48375,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         - .md/.txt：直接读文件
         - 其他类型暂不支持
         """
-        row = state.db.fetchone("SELECT id, title, path, kind FROM documents WHERE id = ?", (document_id,))
+        row = state.db.fetchone("SELECT path, kind FROM documents WHERE id = ?", (document_id,))
         if not row:
             raise HTTPException(status_code=404, detail="找不到这份文档")
         path = Path(str(row["path"] or ""))
@@ -48492,7 +48385,6 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         if not path.exists():
             raise HTTPException(status_code=404, detail="原文件不存在或已被移走")
         suffix = path.suffix.lower()
-        display_title = normalize_client_document_title(row["title"]) or normalize_client_document_title(path.stem)
         if kind in ("docx", "doc") or suffix in (".docx", ".doc"):
             from app.services.knowledge_v2 import _read_docx_text
             try:
@@ -48513,14 +48405,11 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 content = "\n".join(lines).strip()
             else:
                 content = ""
-            content = strip_leading_duplicate_document_title(content, display_title)
-            return {"documentId": document_id, "content": content, "kind": "docx", "title": display_title}
+            return {"content": content, "kind": "docx", "title": path.stem}
         if kind == "md" or suffix == ".md":
-            content = strip_leading_duplicate_document_title(path.read_text(encoding="utf-8"), display_title)
-            return {"documentId": document_id, "content": content, "kind": "md", "title": display_title}
+            return {"content": path.read_text(encoding="utf-8"), "kind": "md", "title": path.stem}
         if suffix == ".txt":
-            content = strip_leading_duplicate_document_title(path.read_text(encoding="utf-8"), display_title)
-            return {"documentId": document_id, "content": content, "kind": "txt", "title": display_title}
+            return {"content": path.read_text(encoding="utf-8"), "kind": "txt", "title": path.stem}
         raise HTTPException(status_code=415, detail=f"暂不支持读取 {kind or suffix} 类型的文档")
 
     @app.post("/api/v1/clients/{client_id}/knowledge/enrich-surrogates")
@@ -48649,12 +48538,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         if not normalized_content:
             raise HTTPException(status_code=400, detail="请先粘贴文档内容。")
         # title 可改,但不强制 — 仅在用户显式传入且非空时覆盖,否则保留原 title
-        new_title = (
-            normalize_client_document_title(payload.title)
-            or normalize_client_document_title(row["title"])
-            or normalize_client_document_title(existing_path.stem)
-        )
-        normalized_content = strip_leading_duplicate_document_title(normalized_content, new_title)
+        new_title = str(payload.title or "").strip() or str(row["title"] or "")
 
         # 直接覆盖原 docx 文件(不变 path,不变 document_id,不重新走 dedup)
         render_polished_markdown_to_docx(
@@ -56029,15 +55913,6 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 status_code=500, detail=f"渲染失败：{exc}"
             )
 
-        if docx_path is not None and docx_path.exists() and (md_path is None or not md_path.exists()):
-            try:
-                md_path = render_report_artifact_to_markdown(
-                    artifact, target_dir / f"{safe_stem}.md",
-                    client_name=client_name,
-                )
-            except Exception:
-                logger.warning("report markdown companion render failed: %s", report_run_id, exc_info=True)
-
         now_ts = datetime.utcnow().isoformat(timespec="seconds") + "Z"
         state.db.execute(
             "UPDATE report_runs SET docx_path=?, pdf_path=?, md_path=?, "
@@ -56050,39 +55925,6 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 report_run_id,
             ),
         )
-        if docx_path is not None and docx_path.exists():
-            try:
-                markdown_content = ""
-                if md_path is not None and md_path.exists():
-                    markdown_content = md_path.read_text(encoding="utf-8", errors="ignore")
-                if not markdown_content.strip():
-                    markdown_content = "\n\n".join(
-                        [
-                            f"# {blueprint.title}",
-                            blueprint.subtitle or blueprint.inferred_theme or "",
-                            *[
-                                f"## {section.plan.title}\n{section.markdown}"
-                                for section in section_contents
-                            ],
-                        ]
-                    )
-                _register_generated_delivery_document(
-                    client_id=str(run_row["client_id"]),
-                    document_id=_generated_delivery_document_id("ai_report", report_run_id),
-                    title=blueprint.title,
-                    source_path=docx_path,
-                    markdown_content=markdown_content,
-                    source="ai_report_doc",
-                    trigger_source="ai_report_document_created",
-                    tags=[
-                        "generated_delivery",
-                        "ai_report",
-                        "event_line_report" if run_row["event_line_id"] else "client_report",
-                        "docx",
-                    ],
-                )
-            except Exception:
-                logger.warning("ai report delivery sync failed: %s", report_run_id, exc_info=True)
 
         return get_report_run(report_run_id)
 
