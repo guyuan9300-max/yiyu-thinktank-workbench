@@ -191,6 +191,22 @@ from app.models import (
     NarrativeClarificationsResponse,
     NarrativeIngestPayload,
     NarrativeRegeneratePayload,
+    ExpWallQuoteUpsertPayload,
+    ExpWallQuoteRecord,
+    ExpWallReactionPayload,
+    ExpWallSyncResponse,
+    HandbookEntryUpsertPayload,
+    HandbookEntryRecord as CloudHandbookEntryRecord,
+    HandbookSyncResponse,
+    GrowthSignalUpsertPayload,
+    GrowthSignalRecord,
+    GrowthEvidenceUpsertPayload,
+    GrowthEvidenceRecord,
+    GrowthValidationEventUpsertPayload,
+    GrowthValidationEventRecord,
+    GrowthSignalSyncResponse,
+    GrowthEvidenceSyncResponse,
+    GrowthValidationEventSyncResponse,
 )
 from app.smart_input import build_smart_task_draft, transcribe_audio_with_doubao
 from app.bootstrap_security import DEFAULT_BOOTSTRAP_ADMIN_EMAIL, ensure_cloud_secret, resolve_seed_users
@@ -18576,6 +18592,541 @@ def create_app() -> FastAPI:
                 payload=payload,
             )
         return _dashboard_for_user(state, current_user, payload.weekLabel)
+
+    # ────────────────────────────────────────────────────────────────
+    # 组织经验墙云端同步 (顾源源 5/27 方案 A · 组织级同事互看)
+    # ────────────────────────────────────────────────────────────────
+
+    def _exp_wall_quote_record_from_row(state: AppState, row) -> ExpWallQuoteRecord:
+        author_full_name = ""
+        if row["author_user_id"]:
+            author_row = state.db.fetchone(
+                "SELECT full_name FROM employee_accounts WHERE id = ?",
+                (str(row["author_user_id"]),),
+            )
+            if author_row:
+                author_full_name = str(author_row["full_name"] or "")
+        return ExpWallQuoteRecord(
+            id=str(row["id"]),
+            organizationId=str(row["organization_id"]),
+            authorUserId=str(row["author_user_id"]),
+            authorDisplayName=author_full_name,
+            authorAvatarUrl="",  # employee_accounts 无 avatar 字段, 前端用首字符兜底
+            quoteText=str(row["quote_text"]),
+            sourceExcerpt=str(row["source_excerpt"] or ""),
+            sourceType=str(row["source_type"]),
+            sourceObjectId=str(row["source_object_id"] or ""),
+            category=str(row["category"] or "方法论"),
+            status=str(row["status"] or "active"),
+            deletedByUserId=str(row["deleted_by_user_id"]) if row["deleted_by_user_id"] else None,
+            deletedAt=str(row["deleted_at"]) if row["deleted_at"] else None,
+            likeCount=int(row["like_count"] or 0),
+            saveCount=int(row["save_count"] or 0),
+            contributionScore=float(row["contribution_score"] or 0),
+            hotScore=float(row["hot_score"] or 0),
+            extractedAt=str(row["extracted_at"]),
+            createdAt=str(row["created_at"]),
+            updatedAt=str(row["updated_at"]),
+        )
+
+    @app.post("/api/v1/exp-wall/quotes", response_model=ExpWallQuoteRecord)
+    def upsert_exp_wall_quote(
+        payload: ExpWallQuoteUpsertPayload,
+        current_user: SessionUser = Depends(lambda authorization=Header(default=None): _require_auth(app, authorization)),
+    ) -> ExpWallQuoteRecord:
+        """本地 backend push 金句到云端. 幂等 upsert · 组织内 id 全局唯一.
+
+        ON CONFLICT 用 ON CONFLICT DO UPDATE — 后写覆盖前写 (按 updated_at 排序,
+        前端只展示 status='active' 真有效金句)."""
+        if payload.authorUserId != current_user.id:
+            # 防 push 别人金句假冒
+            raise HTTPException(status_code=403, detail="作者必须是当前登录用户")
+        state.db.execute(
+            """
+            INSERT INTO cloud_exp_wall_quotes(
+                id, organization_id, author_user_id, quote_text, source_excerpt,
+                source_type, source_object_id, category, status,
+                deleted_by_user_id, deleted_at,
+                like_count, save_count, contribution_score, hot_score,
+                extracted_at, created_at, updated_at
+            ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET
+                quote_text = excluded.quote_text,
+                source_excerpt = excluded.source_excerpt,
+                category = excluded.category,
+                status = excluded.status,
+                deleted_by_user_id = excluded.deleted_by_user_id,
+                deleted_at = excluded.deleted_at,
+                like_count = excluded.like_count,
+                save_count = excluded.save_count,
+                contribution_score = excluded.contribution_score,
+                hot_score = excluded.hot_score,
+                updated_at = excluded.updated_at
+            """,
+            (
+                payload.id, current_user.organizationId, payload.authorUserId,
+                payload.quoteText, payload.sourceExcerpt,
+                payload.sourceType, payload.sourceObjectId, payload.category, payload.status,
+                payload.deletedByUserId, payload.deletedAt,
+                payload.likeCount, payload.saveCount, payload.contributionScore, payload.hotScore,
+                payload.extractedAt, payload.createdAt, payload.updatedAt,
+            ),
+        )
+        row = state.db.fetchone(
+            "SELECT * FROM cloud_exp_wall_quotes WHERE id = ? AND organization_id = ?",
+            (payload.id, current_user.organizationId),
+        )
+        if not row:
+            raise HTTPException(status_code=500, detail="upsert failed")
+        return _exp_wall_quote_record_from_row(state, row)
+
+    @app.get("/api/v1/exp-wall/quotes", response_model=ExpWallSyncResponse)
+    def list_exp_wall_quotes(
+        since: str = Query(default=""),
+        current_user: SessionUser = Depends(lambda authorization=Header(default=None): _require_auth(app, authorization)),
+    ) -> ExpWallSyncResponse:
+        """本地 backend 增量拉云端金句 (since=上次 serverTimestamp).
+
+        组织内可见: 同组织真所有同事真金句 (含已删除真 status='deleted' 标记,
+        本地拿到后真覆盖自己真 row, 真同步删除状态)."""
+        if since:
+            rows = state.db.fetchall(
+                "SELECT * FROM cloud_exp_wall_quotes WHERE organization_id = ? AND updated_at > ? ORDER BY updated_at ASC",
+                (current_user.organizationId, since),
+            )
+        else:
+            rows = state.db.fetchall(
+                "SELECT * FROM cloud_exp_wall_quotes WHERE organization_id = ? ORDER BY updated_at ASC",
+                (current_user.organizationId,),
+            )
+        quotes = [_exp_wall_quote_record_from_row(state, row) for row in rows]
+        return ExpWallSyncResponse(quotes=quotes, serverTimestamp=now_iso())
+
+    @app.post("/api/v1/exp-wall/reactions", status_code=204)
+    def upsert_exp_wall_reaction(
+        payload: ExpWallReactionPayload,
+        current_user: SessionUser = Depends(lambda authorization=Header(default=None): _require_auth(app, authorization)),
+    ) -> None:
+        """本地 backend push 一条 reaction (like/save) 到云端.
+
+        UNIQUE(quote_id, user_id, reaction_type) — 重复推送幂等, 不报错.
+        push 后真触发 like_count/save_count 重算 (云端权威值)."""
+        if payload.userId != current_user.id:
+            raise HTTPException(status_code=403, detail="只能 push 自己的 reaction")
+        quote_row = state.db.fetchone(
+            "SELECT * FROM cloud_exp_wall_quotes WHERE id = ? AND organization_id = ?",
+            (payload.quoteId, current_user.organizationId),
+        )
+        if not quote_row:
+            raise HTTPException(status_code=404, detail="quote not found")
+        state.db.execute(
+            """
+            INSERT OR IGNORE INTO cloud_exp_wall_reactions(
+                id, quote_id, user_id, reaction_type, created_at, organization_id
+            ) VALUES(?, ?, ?, ?, ?, ?)
+            """,
+            (payload.id, payload.quoteId, payload.userId, payload.reactionType,
+             payload.createdAt, current_user.organizationId),
+        )
+        # 真重算计数 (云端权威值)
+        like_count = state.db.fetchone(
+            "SELECT COUNT(*) AS c FROM cloud_exp_wall_reactions WHERE quote_id = ? AND reaction_type = 'like'",
+            (payload.quoteId,),
+        )["c"]
+        save_count = state.db.fetchone(
+            "SELECT COUNT(*) AS c FROM cloud_exp_wall_reactions WHERE quote_id = ? AND reaction_type = 'save'",
+            (payload.quoteId,),
+        )["c"]
+        state.db.execute(
+            "UPDATE cloud_exp_wall_quotes SET like_count = ?, save_count = ?, updated_at = ? WHERE id = ?",
+            (like_count, save_count, now_iso(), payload.quoteId),
+        )
+
+    # ────────────────────────────────────────────────────────────────
+    # 经验手册条目云端同步 (前端 ExperienceWallTab 真直接渲染真表)
+    # ────────────────────────────────────────────────────────────────
+
+    def _handbook_entry_record_from_row(row) -> CloudHandbookEntryRecord:
+        return CloudHandbookEntryRecord(
+            id=str(row["id"]),
+            organizationId=str(row["organization_id"]),
+            title=str(row["title"]),
+            summary=str(row["summary"]),
+            tagsJson=str(row["tags_json"] or "[]"),
+            sourceType=str(row["source_type"]),
+            clientId=str(row["client_id"]) if row["client_id"] else None,
+            sourceObjectType=str(row["source_object_type"]) if row["source_object_type"] else None,
+            sourceObjectId=str(row["source_object_id"]) if row["source_object_id"] else None,
+            sourceTitle=str(row["source_title"]) if row["source_title"] else None,
+            eventLineId=str(row["event_line_id"]) if row["event_line_id"] else None,
+            eventLineName=str(row["event_line_name"]) if row["event_line_name"] else None,
+            projectModuleId=str(row["project_module_id"]) if row["project_module_id"] else None,
+            projectModuleName=str(row["project_module_name"]) if row["project_module_name"] else None,
+            projectFlowId=str(row["project_flow_id"]) if row["project_flow_id"] else None,
+            projectFlowName=str(row["project_flow_name"]) if row["project_flow_name"] else None,
+            projectStage=str(row["project_stage"]) if row["project_stage"] else None,
+            businessCategory=str(row["business_category"]) if row["business_category"] else None,
+            abilityKeysJson=str(row["ability_keys_json"] or "[]"),
+            evidenceRefsJson=str(row["evidence_refs_json"] or "[]"),
+            contextSummary=str(row["context_summary"] or ""),
+            reuseCount=int(row["reuse_count"] or 0),
+            lastReusedAt=str(row["last_reused_at"]) if row["last_reused_at"] else None,
+            authorUserId=str(row["author_user_id"]),
+            authorUserName=str(row["author_user_name"] or ""),
+            status=str(row["status"] or "active"),
+            deletedByUserId=str(row["deleted_by_user_id"]) if row["deleted_by_user_id"] else None,
+            deletedAt=str(row["deleted_at"]) if row["deleted_at"] else None,
+            createdAt=str(row["created_at"]),
+            updatedAt=str(row["updated_at"]),
+        )
+
+    @app.post("/api/v1/handbook/entries/sync", response_model=CloudHandbookEntryRecord)
+    def upsert_handbook_entry_sync(
+        payload: HandbookEntryUpsertPayload,
+        current_user: SessionUser = Depends(lambda authorization=Header(default=None): _require_auth(app, authorization)),
+    ) -> CloudHandbookEntryRecord:
+        """本地 backend push handbook entry 到云端. 幂等 upsert · id 全局唯一.
+
+        路径用 /entries/sync 真避免跟现有 /handbook 真混淆 (现有 /handbook 是本地 local-only)."""
+        if payload.authorUserId != current_user.id:
+            raise HTTPException(status_code=403, detail="作者必须是当前登录用户")
+        updated_at = payload.updatedAt or now_iso()
+        state.db.execute(
+            """
+            INSERT INTO cloud_handbook_entries(
+                id, organization_id, title, summary, tags_json,
+                source_type, client_id, source_object_type, source_object_id, source_title,
+                event_line_id, event_line_name, project_module_id, project_module_name,
+                project_flow_id, project_flow_name, project_stage, business_category,
+                ability_keys_json, evidence_refs_json, context_summary,
+                reuse_count, last_reused_at,
+                author_user_id, author_user_name, status,
+                deleted_by_user_id, deleted_at, created_at, updated_at
+            ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET
+                title = excluded.title,
+                summary = excluded.summary,
+                tags_json = excluded.tags_json,
+                ability_keys_json = excluded.ability_keys_json,
+                evidence_refs_json = excluded.evidence_refs_json,
+                context_summary = excluded.context_summary,
+                reuse_count = excluded.reuse_count,
+                last_reused_at = excluded.last_reused_at,
+                status = excluded.status,
+                deleted_by_user_id = excluded.deleted_by_user_id,
+                deleted_at = excluded.deleted_at,
+                updated_at = excluded.updated_at
+            """,
+            (
+                payload.id, current_user.organizationId, payload.title, payload.summary, payload.tagsJson,
+                payload.sourceType, payload.clientId, payload.sourceObjectType, payload.sourceObjectId, payload.sourceTitle,
+                payload.eventLineId, payload.eventLineName, payload.projectModuleId, payload.projectModuleName,
+                payload.projectFlowId, payload.projectFlowName, payload.projectStage, payload.businessCategory,
+                payload.abilityKeysJson, payload.evidenceRefsJson, payload.contextSummary,
+                payload.reuseCount, payload.lastReusedAt,
+                payload.authorUserId, payload.authorUserName, payload.status,
+                payload.deletedByUserId, payload.deletedAt, payload.createdAt, updated_at,
+            ),
+        )
+        row = state.db.fetchone(
+            "SELECT * FROM cloud_handbook_entries WHERE id = ? AND organization_id = ?",
+            (payload.id, current_user.organizationId),
+        )
+        if not row:
+            raise HTTPException(status_code=500, detail="upsert failed")
+        return _handbook_entry_record_from_row(row)
+
+    @app.get("/api/v1/handbook/entries/sync", response_model=HandbookSyncResponse)
+    def list_handbook_entries_sync(
+        since: str = Query(default=""),
+        current_user: SessionUser = Depends(lambda authorization=Header(default=None): _require_auth(app, authorization)),
+    ) -> HandbookSyncResponse:
+        """本地 backend 增量拉云端 handbook entries (含同事真 entry)."""
+        if since:
+            rows = state.db.fetchall(
+                "SELECT * FROM cloud_handbook_entries WHERE organization_id = ? AND updated_at > ? ORDER BY updated_at ASC",
+                (current_user.organizationId, since),
+            )
+        else:
+            rows = state.db.fetchall(
+                "SELECT * FROM cloud_handbook_entries WHERE organization_id = ? ORDER BY updated_at ASC",
+                (current_user.organizationId,),
+            )
+        entries = [_handbook_entry_record_from_row(row) for row in rows]
+        return HandbookSyncResponse(entries=entries, serverTimestamp=now_iso())
+
+    # ────────────────────────────────────────────────────────────────
+    # 成长积分云端同步 (阶段 1 · "卷"机制核心 · 同事互看积分)
+    # ────────────────────────────────────────────────────────────────
+
+    def _growth_signal_record_from_row(row) -> GrowthSignalRecord:
+        return GrowthSignalRecord(
+            id=str(row["id"]),
+            organizationId=str(row["organization_id"]),
+            userId=str(row["user_id"]),
+            userName=str(row["user_name"] or ""),
+            sourceType=str(row["source_type"]),
+            sourceId=str(row["source_id"]),
+            reviewId=str(row["review_id"]) if row["review_id"] else None,
+            taskId=str(row["task_id"]) if row["task_id"] else None,
+            weekLabel=str(row["week_label"] or ""),
+            rawText=str(row["raw_text"] or ""),
+            contextJson=str(row["context_json"] or "{}"),
+            dedupeKey=str(row["dedupe_key"]),
+            createdAt=str(row["created_at"]),
+            updatedAt=str(row["updated_at"]),
+        )
+
+    def _growth_evidence_record_from_row(row) -> GrowthEvidenceRecord:
+        return GrowthEvidenceRecord(
+            id=str(row["id"]),
+            organizationId=str(row["organization_id"]),
+            signalId=str(row["signal_id"]),
+            userId=str(row["user_id"]),
+            userName=str(row["user_name"] or ""),
+            abilityKey=str(row["ability_key"]),
+            evidenceType=str(row["evidence_type"]),
+            level=str(row["level"]),
+            confidence=str(row["confidence"] or "medium"),
+            reason=str(row["reason"] or ""),
+            reviewId=str(row["review_id"]) if row["review_id"] else None,
+            taskId=str(row["task_id"]) if row["task_id"] else None,
+            handbookEntryId=str(row["handbook_entry_id"]) if row["handbook_entry_id"] else None,
+            metadataJson=str(row["metadata_json"] or "{}"),
+            contributionTagsJson=str(row["contribution_tags_json"] or "[]"),
+            orgContributionScore=int(row["org_contribution_score"] or 0),
+            suggestedPremiumRate=float(row["suggested_premium_rate"] or 0),
+            validationState=str(row["validation_state"] or "candidate"),
+            aiReason=str(row["ai_reason"] or ""),
+            aiConfidence=float(row["ai_confidence"] or 0),
+            createdAt=str(row["created_at"]),
+            updatedAt=str(row["updated_at"]),
+        )
+
+    def _growth_validation_event_record_from_row(row) -> GrowthValidationEventRecord:
+        return GrowthValidationEventRecord(
+            id=str(row["id"]),
+            organizationId=str(row["organization_id"]),
+            userId=str(row["user_id"]),
+            evidenceId=str(row["evidence_id"]),
+            eventType=str(row["event_type"]),
+            actorId=str(row["actor_id"] or ""),
+            actorName=str(row["actor_name"] or ""),
+            sourceType=str(row["source_type"] or ""),
+            sourceId=str(row["source_id"]) if row["source_id"] else None,
+            detailJson=str(row["detail_json"] or "{}"),
+            createdAt=str(row["created_at"]),
+            updatedAt=str(row["updated_at"]),
+        )
+
+    @app.post("/api/v1/growth/sync/signals", response_model=GrowthSignalRecord)
+    def upsert_growth_signal(
+        payload: GrowthSignalUpsertPayload,
+        current_user: SessionUser = Depends(lambda authorization=Header(default=None): _require_auth(app, authorization)),
+    ) -> GrowthSignalRecord:
+        if payload.userId != current_user.id:
+            raise HTTPException(status_code=403, detail="只能 push 自己的 signal")
+        updated_at = payload.updatedAt or now_iso()
+        state.db.execute(
+            """
+            INSERT INTO cloud_growth_signal_events(
+                id, organization_id, user_id, user_name,
+                source_type, source_id, review_id, task_id, week_label,
+                raw_text, context_json, dedupe_key, created_at, updated_at
+            ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET
+                raw_text = excluded.raw_text,
+                context_json = excluded.context_json,
+                week_label = excluded.week_label,
+                review_id = excluded.review_id,
+                task_id = excluded.task_id,
+                updated_at = excluded.updated_at
+            """,
+            (
+                payload.id, current_user.organizationId, payload.userId, payload.userName,
+                payload.sourceType, payload.sourceId, payload.reviewId, payload.taskId, payload.weekLabel,
+                payload.rawText, payload.contextJson, payload.dedupeKey, payload.createdAt, updated_at,
+            ),
+        )
+        row = state.db.fetchone(
+            "SELECT * FROM cloud_growth_signal_events WHERE id = ? AND organization_id = ?",
+            (payload.id, current_user.organizationId),
+        )
+        if not row:
+            raise HTTPException(status_code=500, detail="upsert failed")
+        return _growth_signal_record_from_row(row)
+
+    @app.get("/api/v1/growth/sync/signals", response_model=GrowthSignalSyncResponse)
+    def list_growth_signals(
+        since: str = Query(default=""),
+        current_user: SessionUser = Depends(lambda authorization=Header(default=None): _require_auth(app, authorization)),
+    ) -> GrowthSignalSyncResponse:
+        if since:
+            rows = state.db.fetchall(
+                "SELECT * FROM cloud_growth_signal_events WHERE organization_id = ? AND updated_at > ? ORDER BY updated_at ASC",
+                (current_user.organizationId, since),
+            )
+        else:
+            rows = state.db.fetchall(
+                "SELECT * FROM cloud_growth_signal_events WHERE organization_id = ? ORDER BY updated_at ASC",
+                (current_user.organizationId,),
+            )
+        signals = [_growth_signal_record_from_row(row) for row in rows]
+        return GrowthSignalSyncResponse(signals=signals, serverTimestamp=now_iso())
+
+    @app.post("/api/v1/growth/sync/evidence", response_model=GrowthEvidenceRecord)
+    def upsert_growth_evidence(
+        payload: GrowthEvidenceUpsertPayload,
+        current_user: SessionUser = Depends(lambda authorization=Header(default=None): _require_auth(app, authorization)),
+    ) -> GrowthEvidenceRecord:
+        if payload.userId != current_user.id:
+            raise HTTPException(status_code=403, detail="只能 push 自己的 evidence")
+        # 真 signal_id 必须先存在
+        signal_row = state.db.fetchone(
+            "SELECT id FROM cloud_growth_signal_events WHERE id = ? AND organization_id = ?",
+            (payload.signalId, current_user.organizationId),
+        )
+        if not signal_row:
+            raise HTTPException(status_code=400, detail=f"signal {payload.signalId} not found in cloud — push signal first")
+        updated_at = payload.updatedAt or now_iso()
+        state.db.execute(
+            """
+            INSERT INTO cloud_growth_evidence_records(
+                id, organization_id, signal_id, user_id, user_name,
+                ability_key, evidence_type, level, confidence, reason,
+                review_id, task_id, handbook_entry_id, metadata_json, contribution_tags_json,
+                org_contribution_score, suggested_premium_rate, validation_state,
+                ai_reason, ai_confidence, created_at, updated_at
+            ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET
+                level = excluded.level,
+                confidence = excluded.confidence,
+                reason = excluded.reason,
+                metadata_json = excluded.metadata_json,
+                contribution_tags_json = excluded.contribution_tags_json,
+                org_contribution_score = excluded.org_contribution_score,
+                suggested_premium_rate = excluded.suggested_premium_rate,
+                validation_state = excluded.validation_state,
+                ai_reason = excluded.ai_reason,
+                ai_confidence = excluded.ai_confidence,
+                updated_at = excluded.updated_at
+            """,
+            (
+                payload.id, current_user.organizationId, payload.signalId, payload.userId, payload.userName,
+                payload.abilityKey, payload.evidenceType, payload.level, payload.confidence, payload.reason,
+                payload.reviewId, payload.taskId, payload.handbookEntryId, payload.metadataJson, payload.contributionTagsJson,
+                payload.orgContributionScore, payload.suggestedPremiumRate, payload.validationState,
+                payload.aiReason, payload.aiConfidence, payload.createdAt, updated_at,
+            ),
+        )
+        row = state.db.fetchone(
+            "SELECT * FROM cloud_growth_evidence_records WHERE id = ? AND organization_id = ?",
+            (payload.id, current_user.organizationId),
+        )
+        if not row:
+            raise HTTPException(status_code=500, detail="upsert failed")
+        return _growth_evidence_record_from_row(row)
+
+    @app.get("/api/v1/growth/sync/evidence", response_model=GrowthEvidenceSyncResponse)
+    def list_growth_evidence(
+        since: str = Query(default=""),
+        current_user: SessionUser = Depends(lambda authorization=Header(default=None): _require_auth(app, authorization)),
+    ) -> GrowthEvidenceSyncResponse:
+        if since:
+            rows = state.db.fetchall(
+                "SELECT * FROM cloud_growth_evidence_records WHERE organization_id = ? AND updated_at > ? ORDER BY updated_at ASC",
+                (current_user.organizationId, since),
+            )
+        else:
+            rows = state.db.fetchall(
+                "SELECT * FROM cloud_growth_evidence_records WHERE organization_id = ? ORDER BY updated_at ASC",
+                (current_user.organizationId,),
+            )
+        evidence = [_growth_evidence_record_from_row(row) for row in rows]
+        return GrowthEvidenceSyncResponse(evidence=evidence, serverTimestamp=now_iso())
+
+    @app.post("/api/v1/growth/sync/validation-events", response_model=GrowthValidationEventRecord)
+    def upsert_growth_validation_event(
+        payload: GrowthValidationEventUpsertPayload,
+        current_user: SessionUser = Depends(lambda authorization=Header(default=None): _require_auth(app, authorization)),
+    ) -> GrowthValidationEventRecord:
+        # 真 validation event 真 actor 可能不是 user 本人 (admin/leader 验证别人证据), 真不限制 userId == current_user.id
+        evidence_row = state.db.fetchone(
+            "SELECT id FROM cloud_growth_evidence_records WHERE id = ? AND organization_id = ?",
+            (payload.evidenceId, current_user.organizationId),
+        )
+        if not evidence_row:
+            raise HTTPException(status_code=400, detail=f"evidence {payload.evidenceId} not found in cloud")
+        updated_at = payload.updatedAt or now_iso()
+        state.db.execute(
+            """
+            INSERT INTO cloud_growth_validation_events(
+                id, organization_id, user_id, evidence_id, event_type,
+                actor_id, actor_name, source_type, source_id, detail_json,
+                created_at, updated_at
+            ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET
+                event_type = excluded.event_type,
+                actor_id = excluded.actor_id,
+                actor_name = excluded.actor_name,
+                detail_json = excluded.detail_json,
+                updated_at = excluded.updated_at
+            """,
+            (
+                payload.id, current_user.organizationId, payload.userId, payload.evidenceId, payload.eventType,
+                payload.actorId, payload.actorName, payload.sourceType, payload.sourceId, payload.detailJson,
+                payload.createdAt, updated_at,
+            ),
+        )
+        row = state.db.fetchone(
+            "SELECT * FROM cloud_growth_validation_events WHERE id = ? AND organization_id = ?",
+            (payload.id, current_user.organizationId),
+        )
+        if not row:
+            raise HTTPException(status_code=500, detail="upsert failed")
+        return _growth_validation_event_record_from_row(row)
+
+    @app.get("/api/v1/growth/sync/validation-events", response_model=GrowthValidationEventSyncResponse)
+    def list_growth_validation_events(
+        since: str = Query(default=""),
+        current_user: SessionUser = Depends(lambda authorization=Header(default=None): _require_auth(app, authorization)),
+    ) -> GrowthValidationEventSyncResponse:
+        if since:
+            rows = state.db.fetchall(
+                "SELECT * FROM cloud_growth_validation_events WHERE organization_id = ? AND updated_at > ? ORDER BY updated_at ASC",
+                (current_user.organizationId, since),
+            )
+        else:
+            rows = state.db.fetchall(
+                "SELECT * FROM cloud_growth_validation_events WHERE organization_id = ? ORDER BY updated_at ASC",
+                (current_user.organizationId,),
+            )
+        events = [_growth_validation_event_record_from_row(row) for row in rows]
+        return GrowthValidationEventSyncResponse(events=events, serverTimestamp=now_iso())
+
+    @app.delete("/api/v1/exp-wall/reactions/{quote_id}/{reaction_type}", status_code=204)
+    def delete_exp_wall_reaction(
+        quote_id: str,
+        reaction_type: Literal["like", "save"],
+        current_user: SessionUser = Depends(lambda authorization=Header(default=None): _require_auth(app, authorization)),
+    ) -> None:
+        """本地 backend push 取消 reaction. 真权威值重算同 POST."""
+        state.db.execute(
+            "DELETE FROM cloud_exp_wall_reactions WHERE quote_id = ? AND user_id = ? AND reaction_type = ?",
+            (quote_id, current_user.id, reaction_type),
+        )
+        like_count = state.db.fetchone(
+            "SELECT COUNT(*) AS c FROM cloud_exp_wall_reactions WHERE quote_id = ? AND reaction_type = 'like'",
+            (quote_id,),
+        )["c"]
+        save_count = state.db.fetchone(
+            "SELECT COUNT(*) AS c FROM cloud_exp_wall_reactions WHERE quote_id = ? AND reaction_type = 'save'",
+            (quote_id,),
+        )["c"]
+        state.db.execute(
+            "UPDATE cloud_exp_wall_quotes SET like_count = ?, save_count = ?, updated_at = ? WHERE id = ?",
+            (like_count, save_count, now_iso(), quote_id),
+        )
 
     return app
 

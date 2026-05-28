@@ -2148,3 +2148,278 @@ class NarrativeIngestPayload(BaseModel):
     # v1.0 新增: 客户基本信息, 让 cloud /ingest 在 client_id 不存在时自动创建
     clientName: str = ""
     clientAlias: str = ""
+
+
+# ──────────────────────────────────────────────────────────────────
+# 组织经验墙 (顾源源 5/27 方案 A · 云端同步)
+# ──────────────────────────────────────────────────────────────────
+
+
+class ExpWallQuoteUpsertPayload(BaseModel):
+    """本地 push 一条金句 (含 reactions count) 到云端."""
+    id: str
+    authorUserId: str
+    quoteText: str
+    sourceExcerpt: str = ""
+    sourceType: str
+    sourceObjectId: str = ""
+    category: str = "方法论"
+    status: str = "active"
+    deletedByUserId: str | None = None
+    deletedAt: str | None = None
+    likeCount: int = 0
+    saveCount: int = 0
+    contributionScore: float = 0.0
+    hotScore: float = 0.0
+    extractedAt: str
+    createdAt: str
+    updatedAt: str
+
+
+class ExpWallQuoteRecord(BaseModel):
+    """云端返回的金句记录 (含作者头像/名字, 给前端 GrowthCenterView 直接渲染)."""
+    id: str
+    organizationId: str
+    authorUserId: str
+    authorDisplayName: str = ""
+    authorAvatarUrl: str = ""
+    quoteText: str
+    sourceExcerpt: str = ""
+    sourceType: str
+    sourceObjectId: str = ""
+    category: str = "方法论"
+    status: str = "active"
+    deletedByUserId: str | None = None
+    deletedAt: str | None = None
+    likeCount: int = 0
+    saveCount: int = 0
+    contributionScore: float = 0.0
+    hotScore: float = 0.0
+    extractedAt: str
+    createdAt: str
+    updatedAt: str
+
+
+class ExpWallReactionPayload(BaseModel):
+    """本地 push 一条 reaction 到云端 (idempotent · UNIQUE(quote_id,user_id,type))."""
+    id: str
+    quoteId: str
+    userId: str
+    reactionType: Literal["like", "save"]
+    createdAt: str
+
+
+class ExpWallSyncResponse(BaseModel):
+    """云端拉取响应: 增量金句 (合并 reactions 已聚合到 like_count/save_count)."""
+    quotes: list[ExpWallQuoteRecord] = Field(default_factory=list)
+    serverTimestamp: str
+
+
+# ──────────────────────────────────────────────────────────────────
+# 经验手册条目 (handbook_entries 真前端真当前真用真**经验墙真数据源**)
+# ──────────────────────────────────────────────────────────────────
+
+
+class HandbookEntryUpsertPayload(BaseModel):
+    """本地 push 一条 handbook entry 到云端 (含软删除)."""
+    id: str
+    title: str
+    summary: str
+    tagsJson: str = "[]"
+    sourceType: str
+    clientId: str | None = None
+    sourceObjectType: str | None = None
+    sourceObjectId: str | None = None
+    sourceTitle: str | None = None
+    eventLineId: str | None = None
+    eventLineName: str | None = None
+    projectModuleId: str | None = None
+    projectModuleName: str | None = None
+    projectFlowId: str | None = None
+    projectFlowName: str | None = None
+    projectStage: str | None = None
+    businessCategory: str | None = None
+    abilityKeysJson: str = "[]"
+    evidenceRefsJson: str = "[]"
+    contextSummary: str = ""
+    reuseCount: int = 0
+    lastReusedAt: str | None = None
+    authorUserId: str
+    authorUserName: str = ""
+    status: str = "active"
+    deletedByUserId: str | None = None
+    deletedAt: str | None = None
+    createdAt: str
+    updatedAt: str = ""
+
+
+class HandbookEntryRecord(BaseModel):
+    """云端返回的 handbook entry (跟本地真前端 type 真完全对齐)."""
+    id: str
+    organizationId: str
+    title: str
+    summary: str
+    tagsJson: str = "[]"
+    sourceType: str
+    clientId: str | None = None
+    sourceObjectType: str | None = None
+    sourceObjectId: str | None = None
+    sourceTitle: str | None = None
+    eventLineId: str | None = None
+    eventLineName: str | None = None
+    projectModuleId: str | None = None
+    projectModuleName: str | None = None
+    projectFlowId: str | None = None
+    projectFlowName: str | None = None
+    projectStage: str | None = None
+    businessCategory: str | None = None
+    abilityKeysJson: str = "[]"
+    evidenceRefsJson: str = "[]"
+    contextSummary: str = ""
+    reuseCount: int = 0
+    lastReusedAt: str | None = None
+    authorUserId: str
+    authorUserName: str = ""
+    status: str = "active"
+    deletedByUserId: str | None = None
+    deletedAt: str | None = None
+    createdAt: str
+    updatedAt: str
+
+
+class HandbookSyncResponse(BaseModel):
+    """云端拉取响应 (增量 entries + 服务端时间戳)."""
+    entries: list[HandbookEntryRecord] = Field(default_factory=list)
+    serverTimestamp: str
+
+
+# ──────────────────────────────────────────────────────────────────
+# 成长积分云端同步 (顾源源 5/27 阶段 1 · "卷"机制核心)
+# ──────────────────────────────────────────────────────────────────
+
+
+class GrowthSignalUpsertPayload(BaseModel):
+    """本地 push 一条 signal 事件."""
+    id: str
+    userId: str
+    userName: str = ""
+    sourceType: str
+    sourceId: str
+    reviewId: str | None = None
+    taskId: str | None = None
+    weekLabel: str = ""
+    rawText: str = ""
+    contextJson: str = "{}"
+    dedupeKey: str
+    createdAt: str
+    updatedAt: str = ""
+
+
+class GrowthSignalRecord(BaseModel):
+    id: str
+    organizationId: str
+    userId: str
+    userName: str = ""
+    sourceType: str
+    sourceId: str
+    reviewId: str | None = None
+    taskId: str | None = None
+    weekLabel: str = ""
+    rawText: str = ""
+    contextJson: str = "{}"
+    dedupeKey: str
+    createdAt: str
+    updatedAt: str
+
+
+class GrowthEvidenceUpsertPayload(BaseModel):
+    id: str
+    signalId: str
+    userId: str
+    userName: str = ""
+    abilityKey: str
+    evidenceType: str
+    level: str
+    confidence: str = "medium"
+    reason: str = ""
+    reviewId: str | None = None
+    taskId: str | None = None
+    handbookEntryId: str | None = None
+    metadataJson: str = "{}"
+    contributionTagsJson: str = "[]"
+    orgContributionScore: int = 0
+    suggestedPremiumRate: float = 0.0
+    validationState: str = "candidate"
+    aiReason: str = ""
+    aiConfidence: float = 0.0
+    createdAt: str
+    updatedAt: str = ""
+
+
+class GrowthEvidenceRecord(BaseModel):
+    id: str
+    organizationId: str
+    signalId: str
+    userId: str
+    userName: str = ""
+    abilityKey: str
+    evidenceType: str
+    level: str
+    confidence: str = "medium"
+    reason: str = ""
+    reviewId: str | None = None
+    taskId: str | None = None
+    handbookEntryId: str | None = None
+    metadataJson: str = "{}"
+    contributionTagsJson: str = "[]"
+    orgContributionScore: int = 0
+    suggestedPremiumRate: float = 0.0
+    validationState: str = "candidate"
+    aiReason: str = ""
+    aiConfidence: float = 0.0
+    createdAt: str
+    updatedAt: str
+
+
+class GrowthValidationEventUpsertPayload(BaseModel):
+    id: str
+    userId: str
+    evidenceId: str
+    eventType: str
+    actorId: str = ""
+    actorName: str = ""
+    sourceType: str = ""
+    sourceId: str | None = None
+    detailJson: str = "{}"
+    createdAt: str
+    updatedAt: str = ""
+
+
+class GrowthValidationEventRecord(BaseModel):
+    id: str
+    organizationId: str
+    userId: str
+    evidenceId: str
+    eventType: str
+    actorId: str = ""
+    actorName: str = ""
+    sourceType: str = ""
+    sourceId: str | None = None
+    detailJson: str = "{}"
+    createdAt: str
+    updatedAt: str
+
+
+class GrowthSignalSyncResponse(BaseModel):
+    signals: list[GrowthSignalRecord] = Field(default_factory=list)
+    serverTimestamp: str
+
+
+class GrowthEvidenceSyncResponse(BaseModel):
+    evidence: list[GrowthEvidenceRecord] = Field(default_factory=list)
+    serverTimestamp: str
+
+
+class GrowthValidationEventSyncResponse(BaseModel):
+    events: list[GrowthValidationEventRecord] = Field(default_factory=list)
+    serverTimestamp: str

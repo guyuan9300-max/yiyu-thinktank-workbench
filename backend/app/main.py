@@ -3183,6 +3183,101 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
     ).start()
     logger.info("[bg-reap-chat-runs] thread spawned (every 30s)")
 
+    # ── 组织级云端同步 worker (顾源源 5/27 方案 A + 阶段 1+2) ──
+    # 每 300s (5 min) 真跑一次:
+    #   (1) push exp_wall_quotes / exp_wall_reactions (P1 备用)
+    #   (2) pull exp_wall 增量
+    #   (3) push handbook_entries (前端经验墙真当前真用真)
+    #   (4) pull handbook_entries 增量
+    #   (5) push growth signal/evidence/validation (阶段 1 · "卷"机制)
+    #   (6) pull growth 增量 + rebuild capture_states / weekly_snapshots (阶段 2 · 派生重算)
+    # 真依赖: cloud_api_url + cloud_token. 真没登就静默跳过.
+    def _background_sync_exp_wall() -> None:
+        """真后台 worker — 5 min push+pull (exp_wall + handbook + growth)."""
+        from app.services import exp_wall_service as _ew
+        from app.services import handbook_sync as _hb
+        from app.services import growth_sync as _gs
+        import httpx as _httpx
+        first_run_delay = 60.0
+        if state.job_stop.wait(timeout=first_run_delay):
+            return
+        while not state.job_stop.is_set():
+            try:
+                base_url = (state.cloud_api_url or "").strip().rstrip("/")
+                token = get_cloud_token()
+                if not base_url or not token:
+                    if state.job_stop.wait(timeout=300.0):
+                        break
+                    continue
+                with _httpx.Client(timeout=20.0) as client:
+                    # exp_wall (P1 备用)
+                    push_q = _ew.push_pending_quotes_to_cloud(
+                        state.db, cloud_base_url=base_url, cloud_token=token, httpx_client=client,
+                    )
+                    push_r = _ew.push_pending_reactions_to_cloud(
+                        state.db, cloud_base_url=base_url, cloud_token=token, httpx_client=client,
+                    )
+                    pull_q = _ew.pull_quotes_from_cloud(
+                        state.db, cloud_base_url=base_url, cloud_token=token, httpx_client=client,
+                    )
+                    # handbook (前端经验墙真当前真用真)
+                    push_h = _hb.push_pending_entries_to_cloud(
+                        state.db, cloud_base_url=base_url, cloud_token=token, httpx_client=client,
+                    )
+                    pull_h = _hb.pull_entries_from_cloud(
+                        state.db, cloud_base_url=base_url, cloud_token=token, httpx_client=client,
+                    )
+                    # 真growth (阶段 1) · 真**push 顺序 真要紧** — signal 先 push, evidence 后 push (FK 真依赖)
+                    push_gs = _gs.push_pending_signals_to_cloud(
+                        state.db, cloud_base_url=base_url, cloud_token=token, httpx_client=client,
+                    )
+                    push_ge = _gs.push_pending_evidence_to_cloud(
+                        state.db, cloud_base_url=base_url, cloud_token=token, httpx_client=client,
+                    )
+                    push_gv = _gs.push_pending_validation_events_to_cloud(
+                        state.db, cloud_base_url=base_url, cloud_token=token, httpx_client=client,
+                    )
+                    pull_gs = _gs.pull_signals_from_cloud(
+                        state.db, cloud_base_url=base_url, cloud_token=token, httpx_client=client,
+                    )
+                    pull_ge = _gs.pull_evidence_from_cloud(
+                        state.db, cloud_base_url=base_url, cloud_token=token, httpx_client=client,
+                    )
+                    pull_gv = _gs.pull_validation_events_from_cloud(
+                        state.db, cloud_base_url=base_url, cloud_token=token, httpx_client=client,
+                    )
+                # 真阶段 2 · 派生重算 (无网络真**本地真跑**, 真在 with 真之外)
+                if pull_gs["merged"] or pull_ge["merged"]:
+                    try:
+                        _gs.rebuild_capture_states_from_signals(state.db)
+                        _gs.rebuild_weekly_snapshots_from_evidence(state.db)
+                    except Exception as exc:
+                        logger.warning("[bg-sync] growth rebuild failed: %s", exc)
+                changes = (
+                    push_q["pushed"] or push_q["failed"] or push_r["pushed"] or push_r["failed"]
+                    or pull_q["merged"] or push_h["pushed"] or push_h["failed"] or pull_h["merged"]
+                    or push_gs["pushed"] or push_ge["pushed"] or push_gv["pushed"]
+                    or pull_gs["merged"] or pull_ge["merged"] or pull_gv["merged"]
+                )
+                if changes:
+                    logger.info(
+                        "[bg-sync] exp_q=%s exp_r=%s exp_pull=%s hb_push=%s hb_pull=%s growth_push=(s:%s e:%s v:%s) growth_pull=(s:%s e:%s v:%s)",
+                        push_q, push_r, pull_q, push_h, pull_h,
+                        push_gs, push_ge, push_gv, pull_gs, pull_ge, pull_gv,
+                    )
+            except Exception as exc:
+                logger.warning("[bg-sync] failed: %s", exc, exc_info=True)
+            if state.job_stop.wait(timeout=300.0):
+                break
+        logger.info("[bg-sync] thread exit (job_stop signaled)")
+
+    Thread(
+        target=_background_sync_exp_wall,
+        daemon=True,
+        name="bg-exp-wall-sync",
+    ).start()
+    logger.info("[bg-exp-wall-sync] thread spawned (every 5 min)")
+
     app = FastAPI(title=APP_NAME, version=APP_VERSION)
     app.state.app_state = state
 
@@ -55215,6 +55310,12 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         )
         row = state.db.fetchone("SELECT * FROM handbook_entries WHERE id = ?", (entry_id,))
         assert row is not None
+        # 真 mark pending → 真**真后台 worker 真**5 min 内推送云端 (顾源源 5/27 经验墙真组织级)
+        from app.services.handbook_sync import mark_entry_pending as _mark_handbook_pending
+        try:
+            _mark_handbook_pending(state.db, entry_id)
+        except Exception as exc:
+            logger.warning("mark handbook entry pending failed: %s", exc)
         return build_handbook_entry_record(row)
 
     @app.get("/api/v1/handbook", response_model=HandbookResponse)
