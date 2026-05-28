@@ -4,11 +4,16 @@
 现状 narrative 取材走 SQL `content LIKE '%kw%'` + 每维度只取 2 chunk, 覆盖率 0.1%-0.4%,
 完全不用已建好的 Qdrant 语义检索。本服务把取材统一为:
 
-    dimension 语义意图 → knowledge_base.retrieve_knowledge_bundle (FTS + Qdrant, client 隔离)
+    dimension 语义意图 → knowledge_v2.retrieve_knowledge_bundle (v2 文档级检索, client 隔离)
     → top-K 最相关 chunk + 来源标注 → 不行才 LIKE 兜底
 
 设计约束:
-- 不重造向量检索, 复用 knowledge_base.retrieve_knowledge_bundle。
+- 不重造向量检索, 复用 knowledge_v2.retrieve_knowledge_bundle。
+  (历史 5/28: 原走 knowledge_base 版, 但其 citation grounding 需要 document_chunks;
+   而 v2 ingest 经 _sync_legacy_knowledge_document 只建 knowledge_documents 占位,
+   不建 document_chunks → 除 CFFC 早期 v1 ingest 外, 所有客户 coverage=0、citations=0,
+   失败原因 no_grounded_citations。切到 v2 版后走 v2_sections + preview_text 做 excerpt,
+   不再依赖 document_chunks; 实测日慈 6 维度 coverage 0.55-0.70、cits 131、CFFC 持平 v1。)
 - 保留 LIKE fallback (通过回调注入, 避免与 narrative_collector 循环 import)。
 - 强制 client_id 隔离 (retrieve_knowledge_bundle 内部 WHERE client_id=?; LIKE 回调同样带 client)。
 - 每段 fallback_used / source_breakdown / warnings 可追踪。
@@ -131,13 +136,13 @@ def _semantic_chunks(
     *,
     top_k: int,
 ) -> tuple[list[RetrievedChunk], float, str | None]:
-    """走 knowledge_base.retrieve_knowledge_bundle 取语义最相关 chunk。
+    """走 knowledge_v2.retrieve_knowledge_bundle 取语义最相关 chunk(5/28 切;见模块 docstring)。
 
     返回 (chunks, coverage, failure_reason)。任何异常都降级为空 + 原因, 由上层兜底。
     """
     try:
         # 延迟 import: 避免模块级循环依赖, 也让无 qdrant 环境不在 import 期炸。
-        from app.services.knowledge_base import retrieve_knowledge_bundle
+        from app.services.knowledge_v2 import retrieve_knowledge_bundle
     except Exception as exc:  # pragma: no cover - 环境缺失
         return [], 0.0, f"import_failed: {exc}"
 

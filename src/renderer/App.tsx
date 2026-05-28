@@ -531,6 +531,7 @@ import { SpeechModelSettingsCard } from './components/settings/SpeechModelSettin
 import { ObjectStorageSettingsCard } from './components/settings/ObjectStorageSettingsCard';
 import { LocalAsrModelPanel } from './components/settings/LocalAsrModelPanel';
 import { OllamaQuickPullPanel } from './components/settings/OllamaQuickPullPanel';
+import { DeepReadSettingsCard } from './components/data_center/DeepReadSettingsCard';
 import { PlanWorkshopView } from './components/plan_workshop/PlanWorkshopView';
 
 // 组织设置子 tab 标识。来自已废弃的 OrganizationModelSettingsPanel,
@@ -28516,6 +28517,20 @@ export default function App() {
                   isSaving={isSavingSpeechModelSettings}
                   onSave={handleSaveSpeechModelSettings}
                   onTest={handleTestSpeechModelSettings}
+                />
+              ),
+            })}
+
+            {renderFoldable({
+              key: 'deep_read',
+              eyebrow: 'DEEP READ · 后台深度',
+              title: '后台深度解析',
+              helper: '本地大模型在后台为客户文档建饱满 surrogate（深度索引），提升问答与战略陪伴的语义召回。可设自动（夜间/插电/空闲）或手动直跑。',
+              children: (
+                <DeepReadSettingsCard
+                  clientId={null}
+                  canEdit={canManageSensitiveSettings}
+                  onFlash={flash}
                 />
               ),
             })}

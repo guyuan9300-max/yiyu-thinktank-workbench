@@ -42,7 +42,15 @@ DEFAULT_SETTINGS: dict[str, object] = {
     "concurrency": 1,
     "paused": False,
     "autoEnqueueDocumentCards": True,
-    "autoEnqueuePathOptimization": True,
+    # E 2026-05-27: path_optimization 处理仍调未定义的 generate_local_model_json → 必失败(高失败率真凶)。
+    # card-gen 才是深读地基; 关掉 path_opt 入队止血。要恢复需先修 _process_path_optimization_task。
+    "autoEnqueuePathOptimization": False,
+    # W: 手动直跑——"现在开始解析"按钮置 True，worker 即绕夜间窗口/governor 立刻跑；"停止"置 False。
+    "manualActive": False,
+    # W: 解析用模型——"online"=跟主模型(默认,快,按量计费) / "local"=强制本地 qwen3-vl:32b(免费,占本机)。
+    "parseModelMode": "online",
+    # E: 客户优先——设某 client_id 则该客户的任务先 claim(下拉菜单选);None=全量 FIFO。每次只一个。
+    "priorityClientId": None,
     # Phase 0：硬件门控阈值（Governor 用）
     "maxThermalState": 3,               # SoC 温度档位 0-5；>= 此值暂停
     "minIdleSeconds": 0,                # 用户连续无输入 >= 此秒数才能跑；0=不强制
@@ -150,7 +158,11 @@ def normalize_local_model_optimization_settings(value: object | None) -> dict[st
     settings["enabled"] = bool(settings.get("enabled"))
     settings["paused"] = bool(settings.get("paused"))
     settings["autoEnqueueDocumentCards"] = bool(settings.get("autoEnqueueDocumentCards", True))
-    settings["autoEnqueuePathOptimization"] = bool(settings.get("autoEnqueuePathOptimization", True))
+    settings["autoEnqueuePathOptimization"] = bool(settings.get("autoEnqueuePathOptimization", False))
+    settings["manualActive"] = bool(settings.get("manualActive"))
+    _parse_mode = str(settings.get("parseModelMode") or "online").strip().lower()
+    settings["parseModelMode"] = _parse_mode if _parse_mode in {"online", "local"} else "online"
+    settings["priorityClientId"] = (str(settings.get("priorityClientId") or "").strip() or None)
     settings["modelProfileId"] = str(settings.get("modelProfileId") or DEFAULT_PROFILE_ID).strip() or DEFAULT_PROFILE_ID
     settings["modelName"] = str(settings.get("modelName") or "").strip()
     # Phase 0：硬件门控阈值（Governor 用）。clip 到合理范围，防 UI 写入异常值
@@ -393,9 +405,12 @@ def enqueue_local_model_optimization_tasks(
     model_name: str = "",
     priority: int = 100,
 ) -> dict[str, object]:
-    clean_task_types = [item for item in (task_types or [TASK_TYPE_DOCUMENT_CARD, TASK_TYPE_PATH_OPTIMIZATION]) if item in TASK_TYPES]
+    # E 2026-05-27: 默认只入 card-gen。path_opt 处理仍调未定义的 generate_local_model_json 必失败,
+    # 且 /local-ai/backfill 等不传 task_types 的调用方会被默认带上 path_opt → 凭空塞一堆废任务。
+    # 要 path_opt 必须显式传(且先修 _process_path_optimization_task)。
+    clean_task_types = [item for item in (task_types or [TASK_TYPE_DOCUMENT_CARD]) if item in TASK_TYPES]
     if not clean_task_types:
-        clean_task_types = [TASK_TYPE_DOCUMENT_CARD, TASK_TYPE_PATH_OPTIMIZATION]
+        clean_task_types = [TASK_TYPE_DOCUMENT_CARD]
     rows = _document_rows_for_enqueue(db, client_id=client_id, document_ids=document_ids)
     created = 0
     attempted = 0
@@ -493,16 +508,19 @@ def requeue_interrupted_local_model_tasks(db: Database) -> int:
     return int(db.run_in_transaction(_update))
 
 
-def _claim_next_task(db: Database, worker_id: str) -> dict[str, object] | None:
+def _claim_next_task(db: Database, worker_id: str, priority_client_id: str = "") -> dict[str, object] | None:
     def _claim(conn) -> dict[str, object] | None:
         row = conn.execute(
             """
             SELECT *
             FROM local_model_tasks
             WHERE status = 'queued'
-            ORDER BY priority ASC, created_at ASC
+            -- E: 客户优先(下拉菜单选某客户)→ 该客户任务先 claim; 传空串=不影响。
+            -- 然后修饥饿: attempts ASC 优先(没试过的先), 失败重试(attempts>0)沉队尾, priority/created_at 兜底。
+            ORDER BY CASE WHEN client_id = ? THEN 0 ELSE 1 END, attempts ASC, priority ASC, created_at ASC
             LIMIT 1
-            """
+            """,
+            (priority_client_id,),
         ).fetchone()
         if row is None:
             return None
@@ -620,18 +638,57 @@ def _path_prompt(context: dict[str, object]) -> str:
     )
 
 
+# document_card 的 JSON 输出 schema (M1 修复用, 匹配下方 payload.get 读取的字段)
+_DOCUMENT_CARD_SCHEMA = {
+    "type": "OBJECT",
+    "properties": {
+        "title": {"type": "STRING"},
+        "summary": {"type": "STRING"},
+        "purpose": {"type": "STRING"},
+        "audience": {"type": "STRING"},
+        "project_context": {"type": "STRING"},
+        "key_topics": {"type": "ARRAY", "items": {"type": "STRING"}},
+        "good_questions": {"type": "ARRAY", "items": {"type": "STRING"}},
+        "keywords": {"type": "ARRAY", "items": {"type": "STRING"}},
+        "risk_notes": {"type": "STRING"},
+    },
+    "required": ["title", "summary"],
+}
+
+
 def _process_document_card_task(db: Database, ai_service: Any, task: dict[str, object]) -> dict[str, object]:
     knowledge_document_id = str(task.get("knowledge_document_id") or "").strip()
     context = _load_document_context(db, knowledge_document_id)
     prompt = _card_prompt(context)
-    payload = ai_service.generate_local_model_json(
-        profile_key=str(task.get("model_profile_id") or DEFAULT_PROFILE_ID),
-        model_name=str(task.get("model_name") or ""),
-        system_prompt="你是数据中心后台优化引擎，负责生成可复用的文件理解资产。只输出 JSON。",
-        user_prompt=prompt,
+    # M1 修复: `generate_local_model_json` 从未在 AiService 实现(全仓无定义)→ 历史上每个
+    # document_card 任务都 AttributeError 失败 → 队列卡死 → 无 document_cards → 深读地基全断。
+    # 改用真实存在的 _qwen_generate, 并传 task_kind="deep_analysis", 让深读尊重用户的模型设置:
+    #   - advanced routing 关(多数用户, 含跑不动本地的): 用主模型(current_provider)
+    #   - advanced + 线上优先/自动: online_primary 主模型优先, 本地兜底
+    #   - advanced + 本地优先/仅本地: 才用本地 qwen3-vl:32b (local_text_deep)
+    # 不强制本地——本地仅在用户显式选"本地优先"时才跑。
+    # 注意(已知/全 app 一致): 当 current_provider=="openclaw" 时, _qwen_generate 会在 task_kind
+    # 路由之前短路走 openclaw CLI, 此时 task_kind 不生效(深读跟着主模型走 openclaw)。这不是 bug,
+    # 是 openclaw 这个 provider 的既有行为; 真要本地路由需主模型非 openclaw + 选本地优先。
+    # parseModelMode：用户在解析卡选的"解析用模型"。local→强制本地 qwen3-vl:32b(deep_read_local=True)；
+    # online(默认)→跟主模型走标准 deep_analysis 路由(主模型优先, openclaw 则走 openclaw)。
+    try:
+        _parse_local = get_local_model_optimization_settings(db).get("parseModelMode") == "local"
+    except Exception:
+        _parse_local = False
+    _raw = ai_service._qwen_generate(  # noqa: SLF001 — 复用现有生成入口, 走标准 mode 路由
+        prompt,
+        "你是数据中心后台优化引擎，负责生成可复用的文件理解资产。只输出 JSON。",
+        _DOCUMENT_CARD_SCHEMA,
         timeout_seconds=900,
         max_tokens=1800,
+        temperature=0.3,
+        task_kind="deep_analysis",
+        deep_read_local=_parse_local,
     )
+    payload = _raw if isinstance(_raw, dict) else {}
+    if not payload:
+        raise RuntimeError("document_card LLM 返回非 JSON / 空")
     now = _now_iso()
     title = str(payload.get("title") or context.get("document_title") or context.get("file_name") or "未命名文件").strip()
     summary = str(payload.get("summary") or "").strip()
@@ -888,7 +945,7 @@ def run_due_local_model_tasks(
     failed = 0
     skipped = 0
     for iteration in range(limit):
-        task = _claim_next_task(db, resolved_worker)
+        task = _claim_next_task(db, resolved_worker, str(normalized.get("priorityClientId") or ""))
         if task is None:
             break
         try:
@@ -941,8 +998,15 @@ def local_model_optimizer_worker_loop(
     except Exception:
         pass
     while not stop_event.is_set():
+        # manualActive=「现在开始解析」：force=True 绕夜间窗口/enabled/paused 立刻跑，并把轮询压到 5s
+        # 让它快速排空；关闭(「停止」)后回到受 enabled/窗口/governor 约束的常规节流。
+        manual = False
         try:
-            run_due_local_model_tasks(db, ai_service)
+            manual = bool(get_local_model_optimization_settings(db).get("manualActive"))
+        except Exception:
+            manual = False
+        try:
+            run_due_local_model_tasks(db, ai_service, force=manual)
         except Exception:
             pass
-        stop_event.wait(max(5.0, float(poll_seconds)))
+        stop_event.wait(5.0 if manual else max(5.0, float(poll_seconds)))

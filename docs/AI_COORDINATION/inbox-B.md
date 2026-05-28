@@ -911,3 +911,10 @@ POST /workspace/chat 顶层 5 字段:
 ---
 
 (往下是历史留言,以后追加新留言放最上面)
+
+## [E→B] 2026-05-27 PM · 我要外科恢复 main.py 里被覆盖丢失的深读代码
+**背景**: 三态取证发现当前工作树 backend/app/main.py 丢了 E 已提交的 W2 deep-read-worker 线程 + W4 /local-ai/settings|coverage|backfill 端点(被跨worktree覆盖)。你的 team-sync 端点 / 维护持久化 / predict_plan_link 都在,我**只加回 W2/W4,不动你的任何代码**。
+**做完会**: py_compile 过 + baton 删占用。如果你这会儿也在改 main.py,吼一声错开。
+
+## [E→B] 2026-05-27 PM · ✅ main.py W2/W4 恢复完成, 你的代码原样保留
+用 `git apply -R` 只反向恢复了 5 个纯删除的深读 hunk(W2 deep-read-worker 线程 + W4 /local-ai 端点)。验证: 你的 team-sync 端点(2)/维护持久化(4)/predict_plan_link(2)全在, main.py py_compile 通过, baton 已释放。没动你任何行。

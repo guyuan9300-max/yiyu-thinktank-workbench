@@ -1216,6 +1216,7 @@ const KIND_META: Record<NextStepItem['kind'], { label: string; bg: string; text:
   commitment:      { label: '承诺',   bg: 'bg-blue-100',    text: 'text-blue-700' },
   task:            { label: '任务',   bg: 'bg-amber-100',   text: 'text-amber-700' },
   meeting_action:  { label: '会议待办', bg: 'bg-emerald-100', text: 'text-emerald-700' },
+  event_line:      { label: '主线',   bg: 'bg-violet-100',  text: 'text-violet-700' },
 };
 
 function MeetingActionItemsCard({
@@ -1394,11 +1395,26 @@ function ActionRow({
   const meta = KIND_META[item.kind] ?? KIND_META.meeting;
   return (
     <div className="rounded-xl border border-slate-100 bg-white px-3 py-2.5 hover:border-slate-200 transition-colors">
-      {/* 第一行: 左 kind chip + 右 三按钮 */}
+      {/* 第一行: 左 kind chip + 行动方向 + 右 三按钮 */}
       <div className="flex items-center justify-between gap-2 mb-1.5">
-        <span className={`text-[10px] font-bold ${meta.text} ${meta.bg} rounded px-1.5 py-0.5`}>
-          {meta.label}
-        </span>
+        <div className="flex items-center gap-1 min-w-0">
+          <span className={`text-[10px] font-bold ${meta.text} ${meta.bg} rounded px-1.5 py-0.5 shrink-0`}>
+            {meta.label}
+          </span>
+          {(() => {
+            const dirMeta: Record<string, { label: string; cls: string }> = {
+              do: { label: '我方做', cls: 'text-indigo-700 bg-indigo-50' },
+              follow_up: { label: '催客户', cls: 'text-amber-700 bg-amber-50' },
+              wait_for: { label: '等客户给', cls: 'text-amber-700 bg-amber-50' },
+              confirm: { label: '双方确认', cls: 'text-violet-700 bg-violet-50' },
+            };
+            const d = item.actionDirection ? dirMeta[item.actionDirection] : undefined;
+            return d ? <span className={`text-[10px] font-bold ${d.cls} rounded px-1.5 py-0.5 shrink-0`}>{d.label}</span> : null;
+          })()}
+          {item.mergedCount ? (
+            <span className="text-[10px] text-slate-400 shrink-0" title={`合并了 ${item.mergedCount} 条改写重复`}>·合并{item.mergedCount}</span>
+          ) : null}
+        </div>
         <div className="flex items-center gap-1">
           {onPromote && (
             <button

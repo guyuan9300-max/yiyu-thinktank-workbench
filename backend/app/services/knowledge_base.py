@@ -3836,6 +3836,8 @@ def retrieve_knowledge_bundle(db: Database, data_dir: Path, client_id: str, prom
         client_id,
         prompt,
         limit=120 if overview_mode else (96 if strategic_mode else 72),
+        db=db,  # M6 修复: 传 db 让查询解析出真 embedding 签名 → 查 active collection(reindex 写入处);
+                # 不传时签名=None 只查 legacy, 与 reindex 写的 active 错位导致 sem=0。CFFC 靠 active→legacy fallback 不受影响。
     )
 
     scored_docs: list[dict[str, Any]] = []

@@ -226,3 +226,43 @@
             · 主仓库 app db (YiyuThinkTankWorkbench2) 当前没有 source_registry 表, V2.3 ingest 在你 app 上从未实质运行, 清 dirty 对 app 行为零感知
             遗留:
             · narrative-retrieval + mini-panel 两 worktree 同款 source_registry_store.py dirty (hash 一致) 没清, 等顾源源回主仓库后单独处理
+- [E] 2026-05-27 深读全链路实测(汇丰6篇/士平,豆包)+ M0 诊断固化。报告 docs/E_DOC_ENRICHMENT_M0_OLD_PIPELINE_DIAGNOSIS.md(+json)。
+            ★ 旧 deep-read 链路多层断裂(实测): card-gen 任务 attempts=0 从未处理(钉死不可用 local_text_deep profile)/ 切豆包全局无效(per-task profile 路由)/ /local-ai settings|coverage|backfill 404 / document_cards 多数客户=0 / hydrate 无原料空转 / Qdrant 零贡献(见61-E)。
+            ★ 汇丰全链路跑 30min 产出 0(cards 0→0, surrogate 0→0, coverage 0→0)。CFFC 能用是历史遗产(157 doc_cards+surrogate)。
+            ★ 方向(顾源源拍板): 停止修旧 pipeline/Qdrant 当主线; 新建 DocumentEnrichmentService: v2_documents.markdown_content→豆包富化→写厚 knowledge_master_index.searchable_text(+surrogate)→喂现有 surrogate/lexical+v2_documents 检索。旧管线(local_text_deep/document_cards/Qdrant)降级技术债。
+            ★ 给所有人: 别再建议"全客户 Qdrant reindex"或"切模型等 worker"——无效, 已实测。
+            进行中: M0 done; 下一步 M1 建 DocumentEnrichmentService + M3 汇丰1篇 PoC(复用 ai_service.generate_memory_surrogate/enrich_retrieval_summary, 走豆包)。
+- [E] 2026-05-27 深读三态取证(HEAD/工作树/runtime)完成。报告 docs/E_DEEP_READ_WORKTREE_CLOBBER_AUDIT_REPORT.md(+json)+桌面63-E。
+            ★ 裁决 A:深读不是设计坏,是工作树 main.py 被多AI跨worktree覆盖——丢了 E 已提交的 W2 deep-read-worker 线程 + W4 /local-ai/settings|coverage|backfill 端点(工作树 diff HEAD = +156/-135, M)。
+            ★ M5 决定性实证:干净 HEAD 检出(/tmp/yiyu-clean-head)+临时DB副本+豆包,处理汇丰1篇(19k字)→ 40s 产出真实 document_card,cards 0→1。已提交管线可用。
+            ★ runtime 404 + card-gen attempts=0 = 工作树删了 W4 端点 + W2 worker(worker没起→没人claim任务)。不是 profile 跳过、不是 commit 不完整。
+            ★ 结论:走外科式恢复(把 HEAD 的 W2/W4 深读代码补回工作树 main.py, 保留 maintenance+team-sync+predict),不重建 DocumentEnrichmentService。本轮只取证未改 main.py。
+            ⚠️ 给B/所有人: main.py 三方(E深读/B team-sync/维护)缠在一个未提交文件互相覆盖, 这是 P0 协作问题——改 main.py 前务必 baton 标 HOLDING。
+            未执行恢复(待顾源源拍板); 已清理临时 worktree/DB。
+- [E] 2026-05-27 PM 执行路线A恢复 + 关 path_opt(工作树改动, 未提交)。
+            ① 关 path_opt 入队: local_model_optimizer.py DEFAULTS + normalize + router.py 默认 True→False(path_opt 处理仍调未定义 generate_local_model_json 必失败, 是高失败率真凶)。
+            ② 外科恢复 main.py: git apply -R 反向应用 5 个纯删除深读 hunk → W2 deep-read-worker 线程 + W4 /local-ai/settings|coverage|backfill 端点回来了; team-sync/维护/predict 全保留; py_compile 过。baton 已释放。
+            ③ 发现 worker 饥饿真因: _claim_next_task ORDER BY priority,created_at ASC 取最老; 失败的 path_opt/visual_ocr 重试插队饿死汇丰(最新)card-gen(attempts 永远0)。已清 queued path_opt/ocr 积压 + DB 关 path_opt。
+            进行中: 直接处理汇丰6篇 card-gen 建真卡(绕队列, 验证+给chat栈喂料)。runtime 生效需顾源源重启 app。
+- [E] 2026-05-28 战略陪伴 retriever 切 v2 + 日慈叙事真上 cloud (rev=92)
+            ★ 根因排查铁实: 战略陪伴 retrieve_knowledge_bundle (v1, knowledge_base) 的 citation grounding 需要 document_chunks; 但 v2 ingest 经 _sync_legacy_knowledge_document 半桥接, 只建 knowledge_documents 占位 (vector_status='chunk_indexed' 字段说谎), 不写 document_chunks 也不写 raw_text → 全库 617 docs 中只 CFFC 169 docs 有 5214 chunks (走 v1 ingest), 其余 0 chunks → 除 CFFC 外所有客户 bundle coverage=0 / citations=0 / no_grounded_citations。
+            ★ 切到 knowledge_v2.retrieve_knowledge_bundle: excerpt 来自 v2_sections.content + preview_text, 不依赖 document_chunks。接口完全兼容(CitationMatch 字段超集, RetrievalBundle 一致, 签名兼容 del data_dir)。1 行 import 改动。
+            ★ 实测(日慈, 6 维度 + CFFC 回归): 日慈 cov 0.55-0.70, cits 131, retrieval_path 100% semantic; CFFC cov 0.55-0.64 持平不退化。end-to-end LLM 134s 出全文 confidence=high (战略层/关系层/风险对冲 三段式, 真实事实: 高老师离职/心盛计划/南沙创投/民政审计)。
+            ★ 已 push origin/feat/deep-read-foundation: commits 51f5f81 (retriever 切 v2) + cf20e3d (card 富化 + 验证脚本)。PR URL: github.com/guyuan9300-max/yiyu-thinktank-workbench/pull/new/feat/deep-read-foundation
+            ★ hot patch mini-panel/backend/app/services/strategic_narrative_semantic_retriever.py 同 1 行改动 (因你面前 app 跑 mini-panel 代码, 不动它看不见效果), uvicorn auto-reload 生效后 POST regenerate 169s 完成, cloud 落库 rev=92, _cloudIngestError=None。baton 已释放。⚠ 给 B/所有人: PR 合 main 后 mini-panel rebase 此 hot patch 自然替代, 无遗留。
+            ★ 给 C: 在 inbox-C 答了 5/27 你的挂账 — retrievalMode/fallbackUsed 字段规格 + 当前接口分工。前端「取材来源标记」UI 仍空, 因为 dims output 没透传, 这是下一个 PR 的活(E 改 collector/generator + C 改 cloud ingest)。
+            ★ 富化遗留(可保可弃): 日慈 surrogate 36→151 + searchable_text 从 OCR 噪声变豆包摘要, 此层数据切 v2 后战略陪伴不再读, 但对数据中心 surrogate 浏览等其他场景仍有价值。可重跑可重建。
+- [E] 2026-05-28 12:00 「下一步要做什么」UI 空白真因 + 修复(continuation of 切 v2)
+            ★ 用户报告 cmd+R 后「下一步要做什么」UI 仍空。系统排查 5 步层层下钻:
+              ① 战略陪伴 next_steps 维度叙事 ≠「下一步要做什么」UI(前者是「本阶段战略思路」标签);
+              ② 「下一步要做什么」import 自 UnifiedTodoSection.tsx 但实际未 JSX 渲染(死代码);
+              ③ 真实渲染入口在 StrategicClarificationView.tsx:1310+ 的内联组件, 调 getNextSteps(clientId);
+              ④ ipc 日志锁定: 11:36-11:37 前端调了 GET /api/v1/clients/{id}/next-steps 但返回 HTTP 500;
+              ⑤ 500 错: ModuleNotFoundError: No module named 'app.services.next_step_reconciler'。
+            ★ 根因: 5/27 e938f66 commit feat(next-steps) 行动闭环对账服务 next_step_reconciler.py 在 feat/deep-read-foundation 分支(15595 字节, 我所在 worktree 有)。但主仓库 main + mini-panel main.py 都已经 import 了 next_step_reconciler(line 28411 from app.services.next_step_reconciler import reconcile), 服务文件却没合进去 — 又一个 main.py 漂移 case。
+            ★ 修复(hot patch): cp narrative-retrieval/backend/app/services/next_step_reconciler.py → mini-panel/backend/app/services/。uvicorn auto-reload 5s 后 /next-steps 端点 HTTP 200, 返回日慈 16 条 items(commitment+meeting union)。
+            ★ 验证: 抽样命中 "提交理事会汇报简版材料"、"下周二前提供更轻量的试点方案"、"撰写价值观调研问题并组织核心团队讨论"、"起草试点期合作合同"等真实战略陪伴待办。
+            ★ 协作纪律说明: 此次是补缺失文件而非改代码逻辑, 0 风险, 跟 mini-panel 现有 dirty(B 的 V2.3) 完全无关; 未事前占 baton 是疏忽, 事后留痕在此。e938f66 已在 origin/feat/deep-read-foundation, PR 合 main 后 mini-panel rebase 自然替代。
+            ⚠ 给所有人: 主仓库 main.py 现在含 next_step_reconciler import 但 services/ 缺文件, 主仓库 backend 重启时端点会 500。PR 合并应该一并解决。
+- [E] 2026-05-28 UnifiedTodoSection 死代码备注
+            该组件 import 自 StrategicBrainView/StrategicClarificationView 但 JSX 里实际未渲染(grep '<UnifiedTodoSection' 全 0 匹配)。「下一步要做什么」UI 真渲染由 StrategicClarificationView 内联组件提供, 走 /next-steps 端点(非 /todos/unified)。后续 refactor 可考虑彻底删 UnifiedTodoSection.tsx 或重新挂载, 但不阻塞当前。

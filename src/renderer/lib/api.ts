@@ -2317,7 +2317,8 @@ export async function getClients() {
   return clients.filter((client) => client.alias !== 'workspace-smoke' && client.name !== '安装态冒烟客户');
 }
 
-// V2.3 Step 5 · team sync UI api
+// V2.3 Step 5 · team sync UI api（从主仓库 origin/main 同步补回:本 worktree 落后 V2.3,
+// TeamSyncPanel.tsx 引用了这 3 个导出但 api.ts 缺失 → 整个 renderer 模块加载失败白屏）
 export interface TeamSyncStats {
   pending: number;
   synced: number;
@@ -3170,19 +3171,30 @@ export async function getMeetingActionItems(clientId: string): Promise<MeetingAc
 
 export type NextStepItem = {
   fingerprint: string;
-  kind: 'meeting' | 'commitment' | 'task' | 'meeting_action';
+  kind: 'meeting' | 'commitment' | 'task' | 'meeting_action' | 'event_line';
   actor: string;
   text: string;
   dueDate: string;
   severity: 'high' | 'medium' | 'low';
   rawId: string;
+  // 行动闭环对账附加字段(后端 next_step_reconciler 产出,旧前端可忽略)
+  ownerSide?: 'us' | 'client' | 'both' | 'unknown';
+  actionDirection?: 'do' | 'follow_up' | 'wait_for' | 'confirm' | 'unknown';
+  mergedCount?: number;       // 合并了几条改写重复
+  matchedTaskTitle?: string;  // 命中的已有任务
 };
 
 export type NextStepsResponse = {
   clientId: string;
-  items: NextStepItem[];
+  items: NextStepItem[];                // 清洗后的干净主候选(candidate_next_steps)
   total: number;
   consumedCount: number;
+  // 分层附加(可选):前端不读也不影响
+  possibleDuplicates?: NextStepItem[];
+  needsReview?: NextStepItem[];
+  matchedExistingCount?: number;
+  invalidFilteredCount?: number;
+  debugSummary?: Record<string, number>;
 };
 
 export async function getNextSteps(clientId: string): Promise<NextStepsResponse> {
@@ -4181,7 +4193,7 @@ export async function cancelVectorizeAnswer(clientId: string, messageId: string)
 }
 
 export async function getDocumentText(documentId: string) {
-  return request<{ documentId?: string; content: string; kind: string; title: string }>(
+  return request<{ content: string; kind: string; title: string }>(
     `/api/v1/documents/${encodeURIComponent(documentId)}/text`,
   );
 }
@@ -6258,6 +6270,67 @@ export async function runLocalAiNow(force = false): Promise<LocalAiRunNowRespons
     `/api/v1/local-ai/run-now?force=${force ? 'true' : 'false'}`,
     { method: 'POST' },
   );
+}
+
+// ── 深度解析(深读)设置 / 覆盖率 / 存量补齐 ────────────────────────
+export type LocalAiOptimizationSettings = {
+  enabled: boolean;
+  paused: boolean;
+  manualActive: boolean;
+  parseModelMode: 'online' | 'local';
+  priorityClientId?: string | null;
+  dailyWindows: { start: string; end: string }[];
+  autoEnqueueDocumentCards: boolean;
+  requireACPower: boolean;
+  minIdleSeconds: number;
+  [key: string]: unknown;
+};
+
+export type LocalAiClientCoverage = {
+  clientId: string;
+  documents: number;
+  deepRead: number;
+  coverage: number;
+};
+
+export type LocalAiCoverageResponse = {
+  perClient: LocalAiClientCoverage[];
+  totalDocuments: number;
+  totalDeepRead: number;
+  overallCoverage: number;
+};
+
+export type LocalAiBackfillResponse = {
+  scope: string;
+  created: number;
+  attempted: number;
+  documents: number;
+  taskTypes: string[];
+};
+
+export async function getLocalAiSettings(): Promise<LocalAiOptimizationSettings> {
+  return request<LocalAiOptimizationSettings>('/api/v1/local-ai/settings');
+}
+
+/** patch 语义：后端会 merge 到当前设置，只传要改的字段即可。 */
+export async function updateLocalAiSettings(
+  patch: Partial<LocalAiOptimizationSettings>,
+): Promise<LocalAiOptimizationSettings> {
+  return request<LocalAiOptimizationSettings>('/api/v1/local-ai/settings', {
+    method: 'PUT',
+    body: JSON.stringify(patch),
+  });
+}
+
+export async function getLocalAiCoverage(clientId?: string): Promise<LocalAiCoverageResponse> {
+  const qs = clientId ? `?client_id=${encodeURIComponent(clientId)}` : '';
+  return request<LocalAiCoverageResponse>(`/api/v1/local-ai/coverage${qs}`);
+}
+
+/** 存量补齐：clientId 省略=全库。只入队，不在此跑。 */
+export async function backfillLocalAi(clientId?: string): Promise<LocalAiBackfillResponse> {
+  const qs = clientId ? `?client_id=${encodeURIComponent(clientId)}` : '';
+  return request<LocalAiBackfillResponse>(`/api/v1/local-ai/backfill${qs}`, { method: 'POST' });
 }
 
 // ============================================================
