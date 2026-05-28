@@ -260,11 +260,18 @@ function CalendarCard({
           return (
             <button key={iso} type="button" onClick={() => setSelected(iso)} className="relative mx-auto flex h-8 w-8 items-center justify-center rounded-full text-[12px] transition-colors hover:bg-slate-100">
               <span
-                className={isSel ? 'flex h-7 w-7 items-center justify-center rounded-full text-white' : isToday ? 'font-semibold text-[#5B7BFE]' : 'text-slate-600'}
-                style={isSel ? { background: ACCENT } : undefined}
+                className={
+                  isSel
+                    ? 'flex h-7 w-7 items-center justify-center rounded-full text-white'
+                    : isToday
+                      ? 'font-semibold text-rose-500'
+                      : 'text-slate-600'
+                }
+                style={isSel ? { background: isToday ? '#F43F5E' : ACCENT } : undefined}
               >
                 {day}
               </span>
+              {/* 有任务的日子:底部灰点(选中日已高亮,不再显点) */}
               {hasItems && !isSel && <span className="absolute bottom-1 h-[3px] w-[3px] rounded-full bg-slate-300" />}
             </button>
           );
