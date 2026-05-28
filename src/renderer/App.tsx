@@ -7804,6 +7804,14 @@ export default function App() {
       /* 忽略 */
     }
   }, [taskLists, taskSettingsState, currentSessionUser]);
+  // 点迷你面板里的任务 → 退出迷你 + 切到任务路由 + 复用现有 pendingPlanItemAction 脉冲弹出该任务编辑器
+  const handleMiniOpenTask = useCallback((id: string) => {
+    const task = tasks.find((t) => t.id === id);
+    setMiniMode(false);
+    void window.yiyuWorkbench?.setMiniMode?.(false);
+    setActiveTab('tasks');
+    if (task) setPendingPlanItemAction({ kind: 'open-task', task });
+  }, [tasks]);
   const isCloudSession = authState.sessionMode === 'cloud';
   // 取消"本机模式": isLocalSession 永远 false. 所有 if (isLocalSession) {...} 分支
   // 自动变 dead code (e.g. canManageSensitiveSettings 只剩 admin role check;
@@ -29596,7 +29604,8 @@ export default function App() {
         getDay={miniData.getDay}
         onToggleTask={handleMiniToggleTask}
         onQuickAdd={handleMiniQuickAdd}
-        onOpenTask={exitMiniMode}
+        onOpenTask={handleMiniOpenTask}
+        onOpenEvent={handleMiniOpenTask}
         onRestore={exitMiniMode}
       />
     );
