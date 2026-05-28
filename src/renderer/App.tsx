@@ -7761,6 +7761,49 @@ export default function App() {
   const [loadingPhase, setLoadingPhase] = useState('正在初始化桌面界面…');
   const [loadingSubProgress, setLoadingSubProgress] = useState(0);
   const currentSessionUser = authState.user || null;
+
+  // ── 迷你面板(桌面挂件)hooks:放顶层 hooks 区(任何早退 return 之前),复用现有 tasks state,不新开数据路径 ──
+  const [miniMode, setMiniMode] = useState(false);
+  const miniData = useMemo(() => buildMiniData(tasks, new Date().toISOString().slice(0, 10)), [tasks]);
+  const enterMiniMode = useCallback(() => {
+    setMiniMode(true);
+    void window.yiyuWorkbench?.setMiniMode?.(true);
+  }, []);
+  const exitMiniMode = useCallback(() => {
+    setMiniMode(false);
+    void window.yiyuWorkbench?.setMiniMode?.(false);
+  }, []);
+  const handleMiniToggleTask = useCallback(async (id: string) => {
+    const target = tasks.find((x) => x.id === id);
+    if (!target) return;
+    const willDone = target.status !== 'done';
+    // 乐观更新 + 复用现有 updateTask 路径(同一端点),失败下次 board 刷新自愈
+    setTasks((prev) => prev.map((x) => (x.id === id ? { ...x, status: (willDone ? 'done' : 'todo') as Task['status'], completedAt: willDone ? new Date().toISOString() : null } : x)));
+    try {
+      await updateTask(id, { status: willDone ? 'done' : 'todo' });
+    } catch {
+      /* 忽略:board 下次刷新自愈 */
+    }
+  }, [tasks]);
+  const handleMiniQuickAdd = useCallback(async (text: string) => {
+    try {
+      const created = await createTask({
+        title: text,
+        desc: '',
+        priority: 'normal',
+        listId: taskSettingsState?.defaultListId || taskLists[0]?.id || 'list-0',
+        ddl: '待确认',
+        ownerId: currentSessionUser?.id || null,
+        ownerName: currentSessionUser?.fullName || '',
+        collaboratorIds: [],
+        tagIds: [],
+        sourceType: 'mini_panel_quick_add',
+      });
+      setTasks((prev) => [created, ...prev]);
+    } catch {
+      /* 忽略 */
+    }
+  }, [taskLists, taskSettingsState, currentSessionUser]);
   const isCloudSession = authState.sessionMode === 'cloud';
   // 取消"本机模式": isLocalSession 永远 false. 所有 if (isLocalSession) {...} 分支
   // 自动变 dead code (e.g. canManageSensitiveSettings 只剩 admin role check;
@@ -29543,49 +29586,8 @@ export default function App() {
     ? aiModelDisplayLabel(health?.ai.provider, health?.ai.model, health?.ai.providerLabel)
     : '未配置大模型';
 
-  // ── 迷你面板(桌面挂件):复用现有 tasks state 派生,不新开数据路径/端点 ──
-  const [miniMode, setMiniMode] = useState(false);
-  const miniData = useMemo(() => buildMiniData(tasks, new Date().toISOString().slice(0, 10)), [tasks]);
-  const enterMiniMode = useCallback(() => {
-    setMiniMode(true);
-    void window.yiyuWorkbench?.setMiniMode?.(true);
-  }, []);
-  const exitMiniMode = useCallback(() => {
-    setMiniMode(false);
-    void window.yiyuWorkbench?.setMiniMode?.(false);
-  }, []);
-  const handleMiniToggleTask = useCallback(async (id: string) => {
-    const target = tasks.find((x) => x.id === id);
-    if (!target) return;
-    const willDone = target.status !== 'done';
-    // 乐观更新 + 复用现有 updateTask 路径(同一端点),失败下次 board 刷新自愈
-    setTasks((prev) => prev.map((x) => (x.id === id ? { ...x, status: (willDone ? 'done' : 'todo') as Task['status'], completedAt: willDone ? new Date().toISOString() : null } : x)));
-    try {
-      await updateTask(id, { status: willDone ? 'done' : 'todo' });
-    } catch {
-      /* 忽略:board 下次刷新自愈 */
-    }
-  }, [tasks]);
-  const handleMiniQuickAdd = useCallback(async (text: string) => {
-    try {
-      const created = await createTask({
-        title: text,
-        desc: '',
-        priority: 'normal',
-        listId: taskSettingsState?.defaultListId || taskLists[0]?.id || 'list-0',
-        ddl: '待确认',
-        ownerId: currentSessionUser?.id || null,
-        ownerName: currentSessionUser?.fullName || '',
-        collaboratorIds: [],
-        tagIds: [],
-        sourceType: 'mini_panel_quick_add',
-      });
-      setTasks((prev) => [created, ...prev]);
-    } catch {
-      /* 忽略 */
-    }
-  }, [taskLists, taskSettingsState, currentSessionUser]);
-
+  // 迷你面板早退渲染:在所有 hooks 之后(本 return 处),只决定渲染哪棵树,不跳过任何 hook。
+  // hooks 声明在顶层 hooks 区(见 miniMode/miniData/handleMini* 定义),不放这里。
   if (miniMode) {
     return (
       <MiniPanel
