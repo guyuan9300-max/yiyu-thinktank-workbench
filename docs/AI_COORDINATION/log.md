@@ -211,3 +211,18 @@
             没动/安全区: 纯只读,只新增 scripts/e_search_stack_probe.py + docs/E_SEARCH_STACK_*.md/.json + M0报告; 未改 knowledge_base.py/knowledge_v2.py, 未reindex/populate。
             ⚠️给C: 我5/26留的"云端narrative ingest透传retrievalMode/fallbackUsed"仍未接,等火山云deploy(本轮再次印证provenance缺失是P1)。
             待顾源源拍板: 走路线B(转surrogate/deep-read, Qdrant列债)还是要我先专项查"非CFFC bundle coverage=0"。
+- [E] 2026-05-28 清理主仓库 main 工作树 · B 5/27 commit pending V2.3 dirty 代清完成
+            背景: 顾源源 5/28 决定清理 main 让它回到干净状态再合 feat 分支. 深度排查后(摸 3 个 dirty 内容/V2.3 commit 完整性/B 协作通道/影响面/3 worktree 一致性)发现 main worktree 那 3 个 dirty 是 B 5/27 PM 留 log "V2.3 上线 (Step 0-5 全 done) ... commit pending" 的遗留, B 后转 R2 自动验收官未回.
+            动作:
+            · 09afb25 fix(knowledge_v2): cloud reuse 命中时构造 ExtractedDocument stub 防 line 2642 structured_sheets 崩 — 独立 bugfix 进 main (尚未 push origin, 等顾源源 review)
+            · 77a6106 feat(v23-auto-team-sync): 后台 team-sync worker + register_source 自动入队 — V2.3 PUSH 自动化代封存到新分支 feat/v23-auto-team-sync (已 push origin, B 回来自己决定 PR / 改 / 弃)
+            · main 工作树清空 (除自己的 baton + log + inbox-from-E 协作文档变更)
+            · 写 inbox-from-E.md 通知 B
+            · safety-net stash 14ab8e5c 留 reflog 7 天可恢复
+            事实:
+            · V2.3 主体 (team_sync_executor 311 行 + migrate scripts + cloud_backend + Step 0-2 报告) 早已在 3ef7532 进 main, 没动
+            · 手动端点 (/team-sync/enqueue-all|run-once|stats) 已在 3ef7532, 不依赖此次封存
+            · 前端 UI 只调手动端点 (App.tsx:29099 + api.ts:2320), 清 dirty 不影响 UI
+            · 主仓库 app db (YiyuThinkTankWorkbench2) 当前没有 source_registry 表, V2.3 ingest 在你 app 上从未实质运行, 清 dirty 对 app 行为零感知
+            遗留:
+            · narrative-retrieval + mini-panel 两 worktree 同款 source_registry_store.py dirty (hash 一致) 没清, 等顾源源回主仓库后单独处理
