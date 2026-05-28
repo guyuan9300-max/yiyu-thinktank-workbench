@@ -157,3 +157,11 @@
             ② 外科恢复 main.py: git apply -R 反向应用 5 个纯删除深读 hunk → W2 deep-read-worker 线程 + W4 /local-ai/settings|coverage|backfill 端点回来了; team-sync/维护/predict 全保留; py_compile 过。baton 已释放。
             ③ 发现 worker 饥饿真因: _claim_next_task ORDER BY priority,created_at ASC 取最老; 失败的 path_opt/visual_ocr 重试插队饿死汇丰(最新)card-gen(attempts 永远0)。已清 queued path_opt/ocr 积压 + DB 关 path_opt。
             进行中: 直接处理汇丰6篇 card-gen 建真卡(绕队列, 验证+给chat栈喂料)。runtime 生效需顾源源重启 app。
+- [E] 2026-05-28 战略陪伴 retriever 切 v2 + 日慈叙事真上 cloud (rev=92)
+            ★ 根因排查铁实: 战略陪伴 retrieve_knowledge_bundle (v1, knowledge_base) 的 citation grounding 需要 document_chunks; 但 v2 ingest 经 _sync_legacy_knowledge_document 半桥接, 只建 knowledge_documents 占位 (vector_status='chunk_indexed' 字段说谎), 不写 document_chunks 也不写 raw_text → 全库 617 docs 中只 CFFC 169 docs 有 5214 chunks (走 v1 ingest), 其余 0 chunks → 除 CFFC 外所有客户 bundle coverage=0 / citations=0 / no_grounded_citations。
+            ★ 切到 knowledge_v2.retrieve_knowledge_bundle: excerpt 来自 v2_sections.content + preview_text, 不依赖 document_chunks。接口完全兼容(CitationMatch 字段超集, RetrievalBundle 一致, 签名兼容 del data_dir)。1 行 import 改动。
+            ★ 实测(日慈, 6 维度 + CFFC 回归): 日慈 cov 0.55-0.70, cits 131, retrieval_path 100% semantic; CFFC cov 0.55-0.64 持平不退化。end-to-end LLM 134s 出全文 confidence=high (战略层/关系层/风险对冲 三段式, 真实事实: 高老师离职/心盛计划/南沙创投/民政审计)。
+            ★ 已 push origin/feat/deep-read-foundation: commits 51f5f81 (retriever 切 v2) + cf20e3d (card 富化 + 验证脚本)。PR URL: github.com/guyuan9300-max/yiyu-thinktank-workbench/pull/new/feat/deep-read-foundation
+            ★ hot patch mini-panel/backend/app/services/strategic_narrative_semantic_retriever.py 同 1 行改动 (因你面前 app 跑 mini-panel 代码, 不动它看不见效果), uvicorn auto-reload 生效后 POST regenerate 169s 完成, cloud 落库 rev=92, _cloudIngestError=None。baton 已释放。⚠ 给 B/所有人: PR 合 main 后 mini-panel rebase 此 hot patch 自然替代, 无遗留。
+            ★ 给 C: 在 inbox-C 答了 5/27 你的挂账 — retrievalMode/fallbackUsed 字段规格 + 当前接口分工。前端「取材来源标记」UI 仍空, 因为 dims output 没透传, 这是下一个 PR 的活(E 改 collector/generator + C 改 cloud ingest)。
+            ★ 富化遗留(可保可弃): 日慈 surrogate 36→151 + searchable_text 从 OCR 噪声变豆包摘要, 此层数据切 v2 后战略陪伴不再读, 但对数据中心 surrogate 浏览等其他场景仍有价值。可重跑可重建。
