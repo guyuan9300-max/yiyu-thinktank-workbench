@@ -2229,6 +2229,14 @@ def ingest_document_knowledge(
         text = cloud_md
         sections = _canonical_sections(cloud_md)
         extraction_metadata = ExtractionMetadata(parse_status="ready")
+        # 构造 stub ExtractedDocument 让后续依赖 extracted.* 的代码 (line 2642 structured_sheets) 不挂.
+        # cloud 复用走的是 markdown, 没 xlsx structured_sheets, 给空 list 即可.
+        extracted = ExtractedDocument(
+            text=text,
+            sections=sections,
+            metadata=extraction_metadata,
+            structured_sheets=[],
+        )
         cloud_reuse_hit = True
         logger.info(
             "✓ v2 cloud reuse HIT · client=%s hash=%s file_name=%s md_len=%d sections=%d (skipped OCR/LLM)",
