@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { Cloud, HardDrive, Loader2, Play, Square } from 'lucide-react';
+import { AlertTriangle, Cloud, HardDrive, Loader2, Play, Square } from 'lucide-react';
 
 import {
   backfillLocalAi,
@@ -7,11 +7,18 @@ import {
   getLocalAiCoverage,
   getLocalAiQueue,
   getLocalAiSettings,
+  getOllamaHealth,
   runLocalAiNow,
   updateLocalAiSettings,
   type LocalAiClientCoverage,
   type LocalAiOptimizationSettings,
 } from '../../lib/api';
+import type { OllamaHealthResponse } from '../../../shared/types';
+import { LocalAiHealthCard } from './LocalAiHealthCard';
+
+// 深读用的本地模型 tag 前缀（兼容量化变种如 qwen3-vl:32b-q4_K_M）。
+// 单一来源（SSOT）：所有"本地深读是否可选"判断都基于这个前缀匹配 installedModels。
+const LOCAL_PARSE_MODEL_PREFIX = 'qwen3-vl:32b';
 
 interface DeepReadSettingsCardProps {
   /** 当前工作台客户。null = 没选客户（按钮按全库范围）。 */
@@ -38,6 +45,7 @@ export function DeepReadSettingsCard({ clientId, canEdit, onFlash }: DeepReadSet
   const [running, setRunning] = useState(0);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
+  const [ollamaHealth, setOllamaHealth] = useState<OllamaHealthResponse | null>(null);
   const mounted = useRef(true);
 
   const flash = useCallback(
@@ -97,6 +105,26 @@ export function DeepReadSettingsCard({ clientId, canEdit, onFlash }: DeepReadSet
     return () => clearInterval(timer);
   }, [active, refresh]);
 
+  // 30s 轮询 ollama health：用于判断"本地"按钮是否可选。
+  useEffect(() => {
+    let alive = true;
+    const fetchHealth = async () => {
+      try {
+        const h = await getOllamaHealth();
+        if (alive) setOllamaHealth(h);
+      } catch {
+        // 静默：本地未装 Ollama 时端点会报错,等价于不可选,UI 已会处理。
+        if (alive) setOllamaHealth({ running: false, baseUrl: '', installedModels: [] });
+      }
+    };
+    void fetchHealth();
+    const timer = setInterval(() => void fetchHealth(), 30000);
+    return () => {
+      alive = false;
+      clearInterval(timer);
+    };
+  }, []);
+
   const apply = useCallback(
     async (fn: () => Promise<unknown>, okMsg?: string) => {
       if (!canEdit || busy) return;
@@ -118,6 +146,22 @@ export function DeepReadSettingsCard({ clientId, canEdit, onFlash }: DeepReadSet
   const manualOn = settings?.manualActive === true;
   const parseLocal = settings?.parseModelMode === 'local';
   const pct = coverage && coverage.documents > 0 ? Math.round((coverage.deepRead / coverage.documents) * 100) : 0;
+
+  // "本地"按钮的前置检测：Ollama 在跑 + 目标模型已 pull。
+  // 任一不满足 → 按钮置灰 + tooltip 说明原因；如果用户当前已选"本地" → 顶上加红条警示。
+  const ollamaRunning = ollamaHealth?.running === true;
+  const hasLocalParseModel = !!ollamaHealth?.installedModels?.some((m) =>
+    m.name.startsWith(LOCAL_PARSE_MODEL_PREFIX),
+  );
+  const localReady = ollamaRunning && hasLocalParseModel;
+  const localBlockedReason =
+    ollamaHealth === null
+      ? '正在检测本地模型环境…'
+      : !ollamaRunning
+        ? '本机未运行 Ollama，请先安装并启动 Ollama'
+        : !hasLocalParseModel
+          ? `本机未检测到 ${LOCAL_PARSE_MODEL_PREFIX} 模型（约 19GB，需执行 ollama pull ${LOCAL_PARSE_MODEL_PREFIX}）`
+          : null;
 
   const toggleAuto = () =>
     apply(
@@ -222,15 +266,34 @@ export function DeepReadSettingsCard({ clientId, canEdit, onFlash }: DeepReadSet
           </button>
           <button
             type="button"
-            disabled={!canEdit || busy}
+            disabled={!canEdit || busy || !localReady}
             onClick={() => setMode('local')}
-            className={`inline-flex items-center gap-1 rounded-lg px-3 py-1.5 transition-colors disabled:opacity-40 ${parseLocal ? 'bg-white text-[#5B7BFE] shadow-sm' : 'text-gray-500'}`}
-            title="本地 qwen3-vl:32b（免费，占本机算力）"
+            className={`inline-flex items-center gap-1 rounded-lg px-3 py-1.5 transition-colors disabled:cursor-not-allowed disabled:opacity-40 ${parseLocal ? 'bg-white text-[#5B7BFE] shadow-sm' : 'text-gray-500'}`}
+            title={localBlockedReason ?? `本地 ${LOCAL_PARSE_MODEL_PREFIX}（免费，占本机算力）`}
           >
             <HardDrive size={13} /> 本地
           </button>
         </div>
       </div>
+
+      {/* 本地环境未就绪警示：仅在用户当前已选"本地"但环境不可用时显示（红色,促使切回线上） */}
+      {parseLocal && !localReady && ollamaHealth !== null && (
+        <div className="flex items-start gap-2 rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-[11px] leading-5 text-rose-800">
+          <AlertTriangle size={12} className="mt-0.5 shrink-0" />
+          <div className="flex-1">
+            <p className="font-bold">本地环境未就绪，深读不会执行</p>
+            <p className="mt-0.5 font-medium">{localBlockedReason}</p>
+            <button
+              type="button"
+              disabled={!canEdit || busy}
+              onClick={() => setMode('online')}
+              className="mt-1 text-[11px] font-bold text-rose-900 underline underline-offset-2 hover:text-rose-700 disabled:opacity-50"
+            >
+              切回线上模型 →
+            </button>
+          </div>
+        </div>
+      )}
 
       {/* 现在开始解析 / 停止 */}
       <button
@@ -242,6 +305,10 @@ export function DeepReadSettingsCard({ clientId, canEdit, onFlash }: DeepReadSet
         {busy ? <Loader2 size={15} className="animate-spin" /> : manualOn ? <Square size={15} /> : <Play size={15} />}
         {manualOn ? '停止解析' : '现在开始解析'}
       </button>
+
+      {/* 本地推理硬件健康面板：给用户"为什么没在跑"的可解释信号
+          （温度/内存/电池/空闲/Ollama），原嵌在死组件 DataCenterOpsPanel 中,已挂回这里 */}
+      <LocalAiHealthCard />
 
       {!canEdit && <p className="text-[11px] text-amber-700">当前账号只能查看，不能修改解析设置。</p>}
     </div>
