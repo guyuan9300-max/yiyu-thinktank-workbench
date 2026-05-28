@@ -49,6 +49,8 @@ DEFAULT_SETTINGS: dict[str, object] = {
     "manualActive": False,
     # W: 解析用模型——"online"=跟主模型(默认,快,按量计费) / "local"=强制本地 qwen3-vl:32b(免费,占本机)。
     "parseModelMode": "online",
+    # E: 客户优先——设某 client_id 则该客户的任务先 claim(下拉菜单选);None=全量 FIFO。每次只一个。
+    "priorityClientId": None,
     # Phase 0：硬件门控阈值（Governor 用）
     "maxThermalState": 3,               # SoC 温度档位 0-5；>= 此值暂停
     "minIdleSeconds": 0,                # 用户连续无输入 >= 此秒数才能跑；0=不强制
@@ -160,6 +162,7 @@ def normalize_local_model_optimization_settings(value: object | None) -> dict[st
     settings["manualActive"] = bool(settings.get("manualActive"))
     _parse_mode = str(settings.get("parseModelMode") or "online").strip().lower()
     settings["parseModelMode"] = _parse_mode if _parse_mode in {"online", "local"} else "online"
+    settings["priorityClientId"] = (str(settings.get("priorityClientId") or "").strip() or None)
     settings["modelProfileId"] = str(settings.get("modelProfileId") or DEFAULT_PROFILE_ID).strip() or DEFAULT_PROFILE_ID
     settings["modelName"] = str(settings.get("modelName") or "").strip()
     # Phase 0：硬件门控阈值（Governor 用）。clip 到合理范围，防 UI 写入异常值
@@ -402,9 +405,12 @@ def enqueue_local_model_optimization_tasks(
     model_name: str = "",
     priority: int = 100,
 ) -> dict[str, object]:
-    clean_task_types = [item for item in (task_types or [TASK_TYPE_DOCUMENT_CARD, TASK_TYPE_PATH_OPTIMIZATION]) if item in TASK_TYPES]
+    # E 2026-05-27: 默认只入 card-gen。path_opt 处理仍调未定义的 generate_local_model_json 必失败,
+    # 且 /local-ai/backfill 等不传 task_types 的调用方会被默认带上 path_opt → 凭空塞一堆废任务。
+    # 要 path_opt 必须显式传(且先修 _process_path_optimization_task)。
+    clean_task_types = [item for item in (task_types or [TASK_TYPE_DOCUMENT_CARD]) if item in TASK_TYPES]
     if not clean_task_types:
-        clean_task_types = [TASK_TYPE_DOCUMENT_CARD, TASK_TYPE_PATH_OPTIMIZATION]
+        clean_task_types = [TASK_TYPE_DOCUMENT_CARD]
     rows = _document_rows_for_enqueue(db, client_id=client_id, document_ids=document_ids)
     created = 0
     attempted = 0
@@ -502,18 +508,19 @@ def requeue_interrupted_local_model_tasks(db: Database) -> int:
     return int(db.run_in_transaction(_update))
 
 
-def _claim_next_task(db: Database, worker_id: str) -> dict[str, object] | None:
+def _claim_next_task(db: Database, worker_id: str, priority_client_id: str = "") -> dict[str, object] | None:
     def _claim(conn) -> dict[str, object] | None:
         row = conn.execute(
             """
             SELECT *
             FROM local_model_tasks
             WHERE status = 'queued'
-            -- E 2026-05-27 修饥饿: attempts ASC 优先 —— 没试过的(attempts=0)先claim,
-            -- 失败重试(attempts>0)自动沉到队尾, 新任务永不被反复失败的老任务插队饿死。
-            ORDER BY attempts ASC, priority ASC, created_at ASC
+            -- E: 客户优先(下拉菜单选某客户)→ 该客户任务先 claim; 传空串=不影响。
+            -- 然后修饥饿: attempts ASC 优先(没试过的先), 失败重试(attempts>0)沉队尾, priority/created_at 兜底。
+            ORDER BY CASE WHEN client_id = ? THEN 0 ELSE 1 END, attempts ASC, priority ASC, created_at ASC
             LIMIT 1
-            """
+            """,
+            (priority_client_id,),
         ).fetchone()
         if row is None:
             return None
@@ -938,7 +945,7 @@ def run_due_local_model_tasks(
     failed = 0
     skipped = 0
     for iteration in range(limit):
-        task = _claim_next_task(db, resolved_worker)
+        task = _claim_next_task(db, resolved_worker, str(normalized.get("priorityClientId") or ""))
         if task is None:
             break
         try:

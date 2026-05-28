@@ -3,6 +3,7 @@ import { Cloud, HardDrive, Loader2, Play, Square } from 'lucide-react';
 
 import {
   backfillLocalAi,
+  getClients,
   getLocalAiCoverage,
   getLocalAiQueue,
   getLocalAiSettings,
@@ -32,6 +33,7 @@ const AUTO_ON_PATCH: Partial<LocalAiOptimizationSettings> = {
 export function DeepReadSettingsCard({ clientId, canEdit, onFlash }: DeepReadSettingsCardProps) {
   const [settings, setSettings] = useState<LocalAiOptimizationSettings | null>(null);
   const [coverage, setCoverage] = useState<LocalAiClientCoverage | null>(null);
+  const [clients, setClients] = useState<{ id: string; name: string }[]>([]);
   const [queued, setQueued] = useState(0);
   const [running, setRunning] = useState(0);
   const [loading, setLoading] = useState(true);
@@ -52,7 +54,19 @@ export function DeepReadSettingsCard({ clientId, canEdit, onFlash }: DeepReadSet
       ]);
       if (!mounted.current) return;
       setSettings(s);
-      setCoverage(cov.perClient.find((p) => p.clientId === clientId) ?? cov.perClient[0] ?? null);
+      // 优先客户(下拉菜单选某客户)→ 显示该客户; 全量(无)→ 聚合所有客户(而非取第一个 CFFC 的 98%)。
+      const sel = ((s.priorityClientId as string | null) ?? null) || clientId || null;
+      if (sel) {
+        setCoverage(
+          cov.perClient.find((p) => p.clientId === sel) ?? ({ clientId: sel, documents: 0, deepRead: 0, coverage: 0 } as LocalAiClientCoverage),
+        );
+      } else {
+        const agg = cov.perClient.reduce(
+          (a, p) => ({ clientId: null, documents: a.documents + p.documents, deepRead: a.deepRead + p.deepRead }),
+          { clientId: null as string | null, documents: 0, deepRead: 0 },
+        );
+        setCoverage(cov.perClient.length ? (agg as unknown as LocalAiClientCoverage) : null);
+      }
       setQueued(Number(queue.totalByStatus?.queued ?? 0));
       setRunning(Number(queue.totalByStatus?.running ?? 0));
     } catch {
@@ -65,6 +79,11 @@ export function DeepReadSettingsCard({ clientId, canEdit, onFlash }: DeepReadSet
   useEffect(() => {
     mounted.current = true;
     void refresh();
+    void getClients()
+      .then((cs) => {
+        if (mounted.current) setClients(cs.map((c) => ({ id: c.id, name: c.name })));
+      })
+      .catch(() => undefined);
     return () => {
       mounted.current = false;
     };
@@ -139,9 +158,27 @@ export function DeepReadSettingsCard({ clientId, canEdit, onFlash }: DeepReadSet
 
       {/* 解析进度 */}
       <div className="rounded-2xl border border-gray-100 bg-gray-50/70 px-4 py-3">
-        <div className="mb-1.5 flex items-center justify-between text-[12px]">
-          <span className="font-semibold text-gray-700">{clientId ? '当前客户解析率' : '全部客户解析率'}</span>
-          <span className="font-bold text-[#5B7BFE]">{coverage ? `${coverage.deepRead}/${coverage.documents}` : '—'} · {pct}%</span>
+        <div className="mb-1.5 flex items-center justify-between gap-2 text-[12px]">
+          {/* 下拉:默认"全量解析"; 选某客户=该客户优先(每次一个), 进度条/数字也切到该客户。 */}
+          <select
+            value={(settings?.priorityClientId as string | null) ?? ''}
+            disabled={!canEdit || busy}
+            onChange={(e) => {
+              const v = e.target.value;
+              void apply(
+                () => updateLocalAiSettings({ priorityClientId: v || null }),
+                v ? '已设为优先解析该客户' : '已切回全量解析',
+              );
+            }}
+            title="选一个客户优先解析(每次只一个),或全量"
+            className="min-w-0 flex-1 truncate rounded border border-gray-200 bg-white px-1.5 py-1 font-semibold text-gray-700 outline-none focus:border-[#5B7BFE] disabled:opacity-60"
+          >
+            <option value="">全部客户(全量解析)</option>
+            {clients.map((c) => (
+              <option key={c.id} value={c.id}>{c.name} · 优先</option>
+            ))}
+          </select>
+          <span className="shrink-0 font-bold text-[#5B7BFE]">{coverage ? `${coverage.deepRead}/${coverage.documents}` : '—'} · {pct}%</span>
         </div>
         <div className="h-1.5 w-full overflow-hidden rounded-full bg-gray-200">
           <div className="h-full rounded-full bg-[#5B7BFE] transition-all" style={{ width: `${pct}%` }} />
@@ -200,10 +237,10 @@ export function DeepReadSettingsCard({ clientId, canEdit, onFlash }: DeepReadSet
         type="button"
         disabled={!canEdit || busy}
         onClick={toggleManual}
-        className={`flex w-full items-center justify-center gap-2 rounded-xl px-4 py-2.5 text-[13px] font-bold text-white transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${manualOn ? 'bg-rose-500 hover:bg-rose-600' : 'bg-[#5B7BFE] hover:bg-[#4a6af0]'}`}
+        className={`flex w-full items-center justify-center gap-2 rounded-xl px-4 py-2.5 text-[13px] font-bold text-white transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${manualOn ? 'bg-emerald-500 hover:bg-emerald-600' : 'bg-[#5B7BFE] hover:bg-[#4a6af0]'}`}
       >
         {busy ? <Loader2 size={15} className="animate-spin" /> : manualOn ? <Square size={15} /> : <Play size={15} />}
-        {manualOn ? '停止' : '现在开始解析'}
+        {manualOn ? '停止解析' : '现在开始解析'}
       </button>
 
       {!canEdit && <p className="text-[11px] text-amber-700">当前账号只能查看，不能修改解析设置。</p>}

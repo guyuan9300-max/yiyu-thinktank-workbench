@@ -6278,6 +6278,7 @@ export type LocalAiOptimizationSettings = {
   paused: boolean;
   manualActive: boolean;
   parseModelMode: 'online' | 'local';
+  priorityClientId?: string | null;
   dailyWindows: { start: string; end: string }[];
   autoEnqueueDocumentCards: boolean;
   requireACPower: boolean;

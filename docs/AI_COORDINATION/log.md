@@ -165,3 +165,17 @@
             ★ hot patch mini-panel/backend/app/services/strategic_narrative_semantic_retriever.py 同 1 行改动 (因你面前 app 跑 mini-panel 代码, 不动它看不见效果), uvicorn auto-reload 生效后 POST regenerate 169s 完成, cloud 落库 rev=92, _cloudIngestError=None。baton 已释放。⚠ 给 B/所有人: PR 合 main 后 mini-panel rebase 此 hot patch 自然替代, 无遗留。
             ★ 给 C: 在 inbox-C 答了 5/27 你的挂账 — retrievalMode/fallbackUsed 字段规格 + 当前接口分工。前端「取材来源标记」UI 仍空, 因为 dims output 没透传, 这是下一个 PR 的活(E 改 collector/generator + C 改 cloud ingest)。
             ★ 富化遗留(可保可弃): 日慈 surrogate 36→151 + searchable_text 从 OCR 噪声变豆包摘要, 此层数据切 v2 后战略陪伴不再读, 但对数据中心 surrogate 浏览等其他场景仍有价值。可重跑可重建。
+- [E] 2026-05-28 12:00 「下一步要做什么」UI 空白真因 + 修复(continuation of 切 v2)
+            ★ 用户报告 cmd+R 后「下一步要做什么」UI 仍空。系统排查 5 步层层下钻:
+              ① 战略陪伴 next_steps 维度叙事 ≠「下一步要做什么」UI(前者是「本阶段战略思路」标签);
+              ② 「下一步要做什么」import 自 UnifiedTodoSection.tsx 但实际未 JSX 渲染(死代码);
+              ③ 真实渲染入口在 StrategicClarificationView.tsx:1310+ 的内联组件, 调 getNextSteps(clientId);
+              ④ ipc 日志锁定: 11:36-11:37 前端调了 GET /api/v1/clients/{id}/next-steps 但返回 HTTP 500;
+              ⑤ 500 错: ModuleNotFoundError: No module named 'app.services.next_step_reconciler'。
+            ★ 根因: 5/27 e938f66 commit feat(next-steps) 行动闭环对账服务 next_step_reconciler.py 在 feat/deep-read-foundation 分支(15595 字节, 我所在 worktree 有)。但主仓库 main + mini-panel main.py 都已经 import 了 next_step_reconciler(line 28411 from app.services.next_step_reconciler import reconcile), 服务文件却没合进去 — 又一个 main.py 漂移 case。
+            ★ 修复(hot patch): cp narrative-retrieval/backend/app/services/next_step_reconciler.py → mini-panel/backend/app/services/。uvicorn auto-reload 5s 后 /next-steps 端点 HTTP 200, 返回日慈 16 条 items(commitment+meeting union)。
+            ★ 验证: 抽样命中 "提交理事会汇报简版材料"、"下周二前提供更轻量的试点方案"、"撰写价值观调研问题并组织核心团队讨论"、"起草试点期合作合同"等真实战略陪伴待办。
+            ★ 协作纪律说明: 此次是补缺失文件而非改代码逻辑, 0 风险, 跟 mini-panel 现有 dirty(B 的 V2.3) 完全无关; 未事前占 baton 是疏忽, 事后留痕在此。e938f66 已在 origin/feat/deep-read-foundation, PR 合 main 后 mini-panel rebase 自然替代。
+            ⚠ 给所有人: 主仓库 main.py 现在含 next_step_reconciler import 但 services/ 缺文件, 主仓库 backend 重启时端点会 500。PR 合并应该一并解决。
+- [E] 2026-05-28 UnifiedTodoSection 死代码备注
+            该组件 import 自 StrategicBrainView/StrategicClarificationView 但 JSX 里实际未渲染(grep '<UnifiedTodoSection' 全 0 匹配)。「下一步要做什么」UI 真渲染由 StrategicClarificationView 内联组件提供, 走 /next-steps 端点(非 /todos/unified)。后续 refactor 可考虑彻底删 UnifiedTodoSection.tsx 或重新挂载, 但不阻塞当前。
