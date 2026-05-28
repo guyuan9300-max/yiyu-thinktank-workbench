@@ -1,6 +1,6 @@
 import { writeFileSync, appendFileSync, mkdirSync } from 'node:fs';
 try { appendFileSync('/tmp/yiyu-thinktank-electron-bootstrap.log', `[${new Date().toISOString()}] [PROBE] main.ts top-of-file reached\n`); } catch {}
-import { app, BrowserWindow, dialog, ipcMain, protocol, shell } from 'electron';
+import { app, BrowserWindow, dialog, ipcMain, protocol, screen, shell } from 'electron';
 try { appendFileSync('/tmp/yiyu-thinktank-electron-bootstrap.log', `[${new Date().toISOString()}] [PROBE] electron imported OK\n`); } catch {}
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import fs from 'node:fs';
@@ -2985,6 +2985,28 @@ ipcMain.handle('yiyu-workbench:selectFiles', async () => {
 
 ipcMain.handle('yiyu-workbench:getDesktopAppInfo', async () => {
   return resolveDesktopAppInfo();
+});
+
+// 迷你面板(桌面挂件):缩小 = 右上角小窗 + 置顶 + 隐藏红绿灯;还原 = 复位原 bounds。
+let miniSavedBounds: Electron.Rectangle | null = null;
+ipcMain.handle('yiyu-workbench:setMiniMode', (_event, enter: boolean) => {
+  if (!mainWindow) return { mini: false };
+  if (enter) {
+    miniSavedBounds = mainWindow.getBounds();
+    const W = 360;
+    const H = 480;
+    const area = screen.getDisplayMatching(miniSavedBounds).workArea;
+    mainWindow.setMinimumSize(300, 380);
+    mainWindow.setBounds({ x: area.x + area.width - W - 24, y: area.y + 24, width: W, height: H });
+    mainWindow.setAlwaysOnTop(true, 'floating');
+    if (process.platform === 'darwin') mainWindow.setWindowButtonVisibility(false);
+  } else {
+    mainWindow.setAlwaysOnTop(false);
+    if (process.platform === 'darwin') mainWindow.setWindowButtonVisibility(true);
+    mainWindow.setMinimumSize(1280, 820);
+    if (miniSavedBounds) mainWindow.setBounds(miniSavedBounds);
+  }
+  return { mini: enter };
 });
 
 ipcMain.handle('yiyu-workbench:resumeFromStartupGate', async () => {

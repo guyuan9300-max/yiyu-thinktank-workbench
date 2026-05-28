@@ -72,6 +72,7 @@ import {
   Wand2,
   Scale,
   ShieldCheck,
+  Minimize2,
 } from 'lucide-react';
 
 import type {
@@ -210,6 +211,8 @@ import {
 } from './lib/workspaceClientUiStore';
 import { ClientWorkspaceView } from './components/client_workspace/ClientWorkspaceView';
 import { FileTypeIcon, hasOpenableFile } from './components/FileTypeIcon';
+import { MiniPanel } from './components/mini_panel/MiniPanel';
+import { buildMiniData } from './components/mini_panel/buildMiniData';
 import type {
   WorkspaceAnswerActionName,
   WorkspaceDisplayChatMessage as DisplayChatMessage,
@@ -29540,11 +29543,78 @@ export default function App() {
     ? aiModelDisplayLabel(health?.ai.provider, health?.ai.model, health?.ai.providerLabel)
     : '未配置大模型';
 
+  // ── 迷你面板(桌面挂件):复用现有 tasks state 派生,不新开数据路径/端点 ──
+  const [miniMode, setMiniMode] = useState(false);
+  const miniData = useMemo(() => buildMiniData(tasks, new Date().toISOString().slice(0, 10)), [tasks]);
+  const enterMiniMode = useCallback(() => {
+    setMiniMode(true);
+    void window.yiyuWorkbench?.setMiniMode?.(true);
+  }, []);
+  const exitMiniMode = useCallback(() => {
+    setMiniMode(false);
+    void window.yiyuWorkbench?.setMiniMode?.(false);
+  }, []);
+  const handleMiniToggleTask = useCallback(async (id: string) => {
+    const target = tasks.find((x) => x.id === id);
+    if (!target) return;
+    const willDone = target.status !== 'done';
+    // 乐观更新 + 复用现有 updateTask 路径(同一端点),失败下次 board 刷新自愈
+    setTasks((prev) => prev.map((x) => (x.id === id ? { ...x, status: (willDone ? 'done' : 'todo') as Task['status'], completedAt: willDone ? new Date().toISOString() : null } : x)));
+    try {
+      await updateTask(id, { status: willDone ? 'done' : 'todo' });
+    } catch {
+      /* 忽略:board 下次刷新自愈 */
+    }
+  }, [tasks]);
+  const handleMiniQuickAdd = useCallback(async (text: string) => {
+    try {
+      const created = await createTask({
+        title: text,
+        desc: '',
+        priority: 'normal',
+        listId: taskSettingsState?.defaultListId || taskLists[0]?.id || 'list-0',
+        ddl: '待确认',
+        ownerId: currentSessionUser?.id || null,
+        ownerName: currentSessionUser?.fullName || '',
+        collaboratorIds: [],
+        tagIds: [],
+        sourceType: 'mini_panel_quick_add',
+      });
+      setTasks((prev) => [created, ...prev]);
+    } catch {
+      /* 忽略 */
+    }
+  }, [taskLists, taskSettingsState, currentSessionUser]);
+
+  if (miniMode) {
+    return (
+      <MiniPanel
+        today={miniData.today}
+        markedDates={miniData.markedDates}
+        getDay={miniData.getDay}
+        onToggleTask={handleMiniToggleTask}
+        onQuickAdd={handleMiniQuickAdd}
+        onOpenTask={exitMiniMode}
+        onRestore={exitMiniMode}
+      />
+    );
+  }
+
   return (
     <GrowthProvider>
       {/* v2.2 F1.6: 全局共享 ClientFactBundle - currentClientId 切换时所有接入 view 自动同步 */}
       <ClientFactProvider currentClientId={currentClientId || null}>
       <div className="window-drag window-drag-strip" aria-hidden="true" />
+      {/* 缩小为桌面迷你面板(挂件):复用 tasks 数据,缩小窗 + 置顶 */}
+      <button
+        type="button"
+        onClick={enterMiniMode}
+        title="缩小为桌面小组件"
+        aria-label="缩小为桌面小组件"
+        className="window-no-drag fixed right-3 top-2 z-[9500] inline-flex h-7 w-7 items-center justify-center rounded-lg text-slate-400 transition-colors hover:bg-slate-100 hover:text-slate-600"
+      >
+        <Minimize2 size={15} />
+      </button>
       {/* P10 v2：数据中心 + AI 状态灯已迁移到 sidebar 底部的 SystemStatusPanel，
             不再占据 drag-strip 区域，避免遮挡录音 indicator 和系统装饰条。 */}
       {recordingSession.isActive && (
