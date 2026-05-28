@@ -2988,23 +2988,36 @@ ipcMain.handle('yiyu-workbench:getDesktopAppInfo', async () => {
 });
 
 // 迷你面板(桌面挂件):缩小 = 右上角小窗 + 置顶 + 隐藏红绿灯;还原 = 复位原 bounds。
+// macOS 原生全屏(独立 Space)期间 setBounds 无效——必须先 setFullScreen(false) 等动画完再 resize。
 let miniSavedBounds: Electron.Rectangle | null = null;
+function applyMiniBounds(win: BrowserWindow) {
+  if (win.isDestroyed()) return;
+  miniSavedBounds = win.getBounds();
+  const W = 360;
+  const H = 480;
+  const area = screen.getDisplayMatching(miniSavedBounds).workArea;
+  win.setMinimumSize(300, 380);
+  win.setBounds({ x: area.x + area.width - W - 24, y: area.y + 24, width: W, height: H });
+  win.setAlwaysOnTop(true, 'floating');
+  if (process.platform === 'darwin') win.setWindowButtonVisibility(false);
+}
 ipcMain.handle('yiyu-workbench:setMiniMode', (_event, enter: boolean) => {
   if (!mainWindow) return { mini: false };
+  const win = mainWindow;
   if (enter) {
-    miniSavedBounds = mainWindow.getBounds();
-    const W = 360;
-    const H = 480;
-    const area = screen.getDisplayMatching(miniSavedBounds).workArea;
-    mainWindow.setMinimumSize(300, 380);
-    mainWindow.setBounds({ x: area.x + area.width - W - 24, y: area.y + 24, width: W, height: H });
-    mainWindow.setAlwaysOnTop(true, 'floating');
-    if (process.platform === 'darwin') mainWindow.setWindowButtonVisibility(false);
+    if (win.isFullScreen()) {
+      // 全屏退出是异步动画;监听 'leave-full-screen' 完成后再 resize, 否则 setBounds 被吞
+      win.once('leave-full-screen', () => applyMiniBounds(win));
+      win.setFullScreen(false);
+    } else {
+      if (win.isMaximized()) win.unmaximize();
+      applyMiniBounds(win);
+    }
   } else {
-    mainWindow.setAlwaysOnTop(false);
-    if (process.platform === 'darwin') mainWindow.setWindowButtonVisibility(true);
-    mainWindow.setMinimumSize(1280, 820);
-    if (miniSavedBounds) mainWindow.setBounds(miniSavedBounds);
+    win.setAlwaysOnTop(false);
+    if (process.platform === 'darwin') win.setWindowButtonVisibility(true);
+    win.setMinimumSize(1280, 820);
+    if (miniSavedBounds) win.setBounds(miniSavedBounds);
   }
   return { mini: enter };
 });
