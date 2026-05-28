@@ -7779,6 +7779,7 @@ declare global {
     };
     yiyuWorkbench: {
       backendBaseUrl: string;
+      setMiniMode(enter: boolean): Promise<{ mini: boolean }>;
       getDesktopAppInfo(): Promise<DesktopAppInfo>;
       resumeFromStartupGate(): Promise<DesktopStartupGateResumeResult>;
       selectFiles(): Promise<string[]>;
