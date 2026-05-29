@@ -2,6 +2,7 @@
   "name": "yiyu-thinktank-workbench",
   "version": "0.2.2",
   "private": true,
+  "license": "Apache-2.0",
   "description": "面向公益组织与小团队的 AI 协作工作台桌面版",
   "type": "module",
   "main": "build/main/main.js",
