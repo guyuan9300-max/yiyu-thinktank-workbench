@@ -11374,8 +11374,17 @@ export default function App() {
       }
     }, [editingTask.dueDate, isTaskModalOpen]);
 
+    // P0-B 修: 派生 task 字段推断结果的"输出指纹" — 即使 useEffect 因 dataCenterClients/eventLines
+    // 父组件每次新引用 反复触发, 只要推断结果相同就跳过 setEditingTask, 切断 setState→effect 循环。
+    // 这是 React useEffect "输入数组不稳 + setState 派生" 模式的标准防御。
+    const taskInferFingerprintRef = useRef<string>('');
+
     useEffect(() => {
-      if (!isTaskModalOpen) return;
+      if (!isTaskModalOpen) {
+        // 模态关闭时复位指纹, 下次打开重新计算
+        taskInferFingerprintRef.current = '';
+        return;
+      }
       const nextPriority = !editingTask.priorityTouched
         ? inferTaskPriority({
             title: editingTask.title,
@@ -11415,6 +11424,21 @@ export default function App() {
           })
         : null;
       if (!nextPriority && !nextClient && !nextEventLine && !nextDueDateInfo) return;
+      // P0-B 修: 计算输出指纹, 跟上次相同就跳过 setEditingTask 避免无限循环。
+      // 只比可能"真触发 updates"的字段, 不比对象引用 — string 序列化对 string/null/undefined 稳定。
+      const fingerprint = JSON.stringify({
+        p: nextPriority?.priority ?? null,
+        pr: nextPriority?.reason ?? null,
+        cid: nextClient?.clientId ?? null,
+        cr: nextClient?.reason ?? null,
+        cc: nextClient?.confidence ?? null,
+        eid: nextEventLine?.eventLineId ?? null,
+        er: nextEventLine?.reason ?? null,
+        dd: nextDueDateInfo?.dueDate ?? null,
+        dt: nextDueDateInfo?.dueTime ?? null,
+      });
+      if (fingerprint === taskInferFingerprintRef.current) return;
+      taskInferFingerprintRef.current = fingerprint;
       setEditingTask((prev) => {
         const updates: Partial<TaskEditorState> = {};
         if (nextPriority && (!prev.priorityTouched && (prev.priority !== nextPriority.priority || prev.priorityReason !== nextPriority.reason))) {
@@ -11463,19 +11487,23 @@ export default function App() {
 
     useEffect(() => {
       if (!isTaskModalOpen) return;
+      // P0-B 修: setEditingTask 前先判断 listId 是否真需要变;React 即使 functional update
+      // 返回 prev 也会 schedule update(在依赖项每次新引用时反复 schedule → Maximum update depth)。
       if (editingTask.scopeMode === 'PERSONAL_ONLY') {
         if (personalTaskLists.length === 0) return;
         if (personalTaskLists.some((item) => item.id === editingTask.listId)) return;
         const fallbackListId = resolveDefaultListId('personal');
         if (!fallbackListId) return;
-        setEditingTask((prev) => (prev.listId === fallbackListId ? prev : { ...prev, listId: fallbackListId }));
+        if (editingTask.listId === fallbackListId) return;
+        setEditingTask((prev) => ({ ...prev, listId: fallbackListId }));
         return;
       }
       if (orgTaskLists.length === 0) return;
       if (orgTaskLists.some((item) => item.id === editingTask.listId)) return;
       const fallbackListId = resolveDefaultListId('org');
       if (!fallbackListId) return;
-      setEditingTask((prev) => (prev.listId === fallbackListId ? prev : { ...prev, listId: fallbackListId }));
+      if (editingTask.listId === fallbackListId) return;
+      setEditingTask((prev) => ({ ...prev, listId: fallbackListId }));
     }, [
       editingTask.listId,
       editingTask.scopeMode,
