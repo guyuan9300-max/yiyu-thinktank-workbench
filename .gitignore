@@ -1,0 +1,73 @@
+node_modules/
+.expo/
+mobile/
+mobile/.expo/
+mobile/dist/
+.claude/
+.playwright-cli/
+dist/
+build/
+coverage/
+.DS_Store
+.codex/
+.yiyu-sync/
+__pycache__/
+.pytest_cache/
+.venv/
+backend/*.db
+cloud_backend/*.db
+data/*.db
+data/*.db-shm
+data/*.db-wal
+.env
+.env.local
+.env.*.local
+.env.release
+.env.release.*
+!.env.release.example
+*.p8
+*.p12
+*.cer
+*.certSigningRequest
+release-secrets/
+*.sqlite
+*.sqlite3
+*.sqlite-shm
+*.sqlite-wal
+*.db
+*.db-shm
+*.db-wal
+*.log
+*.tsbuildinfo
+temp-renderer/
+test-results/
+tmp/
+tmp-*/
+tmp*.js
+tmp*.log
+external/tmp-*/
+external/*.tar.gz
+
+# Test outputs - never commit (filtered out 2026-05-12)
+backend/output/
+output/
+
+# Report generator sandbox/preview artifacts (chart png / preview jpg / LibreOffice locks / tmp)
+docs/.~lock.*#
+docs/0[1-9]_*.png
+docs/preview-*.jpg
+docs/internal-preview-*.jpg
+docs/lu*.tmp
+# 报告生成器运行时产物（用 GET /reports/{id}/files/{format} 下载即可）
+docs/*.docx
+docs/*.pdf
+# 一次性 filter-repo 清理脚本
+run-filter-repo-cleanup.sh
+# backend/output 是产物目录（cowork 误推过 118 个文件）
+backend/output/
+tests/reports/
+dogfood_real/
+
+# node_modules symlink (V2.1 lab 指向 yiyu-thinktank-workbench/node_modules, 不能 commit)
+docs/E_M6_BEFORE_AFTER_RAW.json
+docs/E_STRATEGIC_COMPANION_DEPTH_TEST_REPORT.json
