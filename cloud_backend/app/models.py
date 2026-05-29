@@ -2073,6 +2073,11 @@ class NarrativeDimensionRecord(BaseModel):
     references: list[NarrativeReference] = Field(default_factory=list)
     dataLayerGap: str = ""               # 这一维度因为数据中心缺什么导致讲不好
     openClarifications: list[str] = Field(default_factory=list)   # AI 想跟用户澄清的问题
+    # S1 取材标签透传(5/29): 本地 narrative_generator 已 emit、前端徽章已写,
+    # 此前云端 schema 不接这 3 个字段 → GET 回来恒 undefined → 徽章永不渲染(叙事黑箱)。
+    retrievalMode: str | None = None     # semantic / semantic+fallback / fallback_only / legacy_like_only
+    fallbackUsed: bool = False           # 本段是否用了关键词兜底
+    reindexRequired: bool = False        # 是否建议为该客户补跑语义索引
 
 
 class NarrativeContributor(BaseModel):

@@ -93,6 +93,11 @@ def _dimension_from_payload(dim: NarrativeDimension, payload: dict) -> Narrative
         references=refs,
         dataLayerGap=str(payload.get("dataLayerGap", "")),
         openClarifications=[str(x) for x in open_clar if str(x).strip()],
+        # S1 取材标签透传(5/29): 从存储的原始 payload 读出本地 emit 的取材来源标记。
+        # ingest 存的是原始 dim payload(已含这些字段),此前只是没在这里读出来。
+        retrievalMode=(str(payload["retrievalMode"]) if payload.get("retrievalMode") else None),
+        fallbackUsed=bool(payload.get("fallbackUsed", False)),
+        reindexRequired=bool(payload.get("reindexRequired", False)),
     )
 
 
