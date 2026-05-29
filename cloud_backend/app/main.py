@@ -10016,6 +10016,7 @@ def _task_record(state: AppState, row, viewer_id: str | None = None) -> TaskReco
         scheduledEndAt=temporal_fields["scheduled_end_at"] if isinstance(temporal_fields["scheduled_end_at"], str) else None,
         completedAt=temporal_fields["completed_at"] if isinstance(temporal_fields["completed_at"], str) else None,
         durationMinutes=int(temporal_fields["duration_minutes"] or 60),
+        reminderMinutesBefore=int(row["reminder_minutes_before"]) if row["reminder_minutes_before"] is not None else None,
         scopeMode=str(row["scope_mode"] or "COLLAB_SHARED"),
         clientId=str(row["client_id"]) if row["client_id"] else None,
         clientName=client_name,
@@ -17619,8 +17620,8 @@ def create_app() -> FastAPI:
                 deadline_at, scheduled_start_at, scheduled_end_at, completed_at, start_date, due_date, duration_minutes,
                 client_id, event_line_id, project_module_id, project_flow_id,
                 scope_mode, priority, list_id, progress_status, source_type, source_id, business_category, current_blocker, next_action, recent_decision, evidence_count,
-                tags_json, tag_ids_json, created_at, updated_at
-            ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'todo', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                tags_json, tag_ids_json, created_at, updated_at, reminder_minutes_before
+            ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'todo', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 task_id,
@@ -17654,6 +17655,7 @@ def create_app() -> FastAPI:
                 to_json([tag.id for tag in resolved_tags]),
                 timestamp,
                 timestamp,
+                payload.reminderMinutesBefore,
             ),
         )
         state.db.executemany(
@@ -17865,11 +17867,12 @@ def create_app() -> FastAPI:
             "evidence_count": evidence_count,
             "tags_json": to_json([tag.name for tag in resolved_tags]),
             "tag_ids_json": to_json([tag.id for tag in resolved_tags]),
+            "reminder_minutes_before": payload.reminderMinutesBefore if "reminderMinutesBefore" in payload.model_fields_set else (int(row["reminder_minutes_before"]) if row["reminder_minutes_before"] is not None else None),
         }
         state.db.execute(
             """
             UPDATE tasks
-            SET title = ?, description = ?, priority = ?, list_id = ?, deadline_at = ?, scheduled_start_at = ?, scheduled_end_at = ?, completed_at = ?, start_date = ?, due_date = ?, duration_minutes = ?, scope_mode = ?, client_id = ?, event_line_id = ?, project_module_id = ?, project_flow_id = ?, progress_status = ?, owner_id = ?, business_category = ?, current_blocker = ?, next_action = ?, recent_decision = ?, evidence_count = ?, tags_json = ?, tag_ids_json = ?, updated_at = ?
+            SET title = ?, description = ?, priority = ?, list_id = ?, deadline_at = ?, scheduled_start_at = ?, scheduled_end_at = ?, completed_at = ?, start_date = ?, due_date = ?, duration_minutes = ?, scope_mode = ?, client_id = ?, event_line_id = ?, project_module_id = ?, project_flow_id = ?, progress_status = ?, owner_id = ?, business_category = ?, current_blocker = ?, next_action = ?, recent_decision = ?, evidence_count = ?, tags_json = ?, tag_ids_json = ?, reminder_minutes_before = ?, updated_at = ?
             WHERE id = ?
             """,
             (
@@ -17898,6 +17901,7 @@ def create_app() -> FastAPI:
                 merged["evidence_count"],
                 merged["tags_json"],
                 merged["tag_ids_json"],
+                merged["reminder_minutes_before"],
                 update_timestamp,
                 task_id,
             ),
