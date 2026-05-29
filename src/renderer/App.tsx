@@ -1931,7 +1931,8 @@ const DEFAULT_LOCAL_AUTH_STATE: AuthState = {
   sessionMode: 'cloud',
   user: null,
 };
-const YIYU_OFFICIAL_CLOUD_URL = '';
+const YIYU_OFFICIAL_CLOUD_URL = 'http://101.126.34.232';
+const YIYU_OFFICIAL_ORG_ID = 'org_yiyu_default';
 const YIYU_ORG_NAME_PATTERNS = ['益语智库', '益语软件'];
 
 function normalizeUrlForComparison(rawUrl?: string | null) {
@@ -7823,10 +7824,15 @@ export default function App() {
   const isLocalSession: boolean = false;
   const isYiyuOfficialCloudSession = Boolean(
     isCloudSession
-    && normalizeUrlForComparison(desktopAppInfo?.cloudBackendUrl) === YIYU_OFFICIAL_CLOUD_URL
     && (
-      isYiyuOfficialOrganizationName(orgMembershipState.organizationName)
-      || isYiyuOfficialOrganizationName(orgModelState.organization.name)
+      (
+        normalizeUrlForComparison(desktopAppInfo?.cloudBackendUrl) === YIYU_OFFICIAL_CLOUD_URL
+        && (
+          isYiyuOfficialOrganizationName(orgMembershipState.organizationName)
+          || isYiyuOfficialOrganizationName(orgModelState.organization.name)
+        )
+      )
+      || maintenanceModeStatus?.organizationId === YIYU_OFFICIAL_ORG_ID
     ),
   );
   const canShowMaintenanceSyncPanel = Boolean(
