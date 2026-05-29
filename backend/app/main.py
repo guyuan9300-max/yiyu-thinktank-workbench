@@ -8211,6 +8211,8 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
     _MAINT_KEY_ACTIVE = "maintenance_mode.active"
     _MAINT_KEY_USER = "maintenance_mode.user_id"
     _MAINT_KEY_AT = "maintenance_mode.entered_at"
+    _MAINT_KEY_LOCAL_BOOTSTRAP_USER = "maintenance_mode.local_bootstrap_user_id"
+    _MAINT_OFFICIAL_ORG_ID = "org_yiyu_default"
 
     def _persist_maintenance_state(active: bool, user_id: str, entered_at: str) -> None:
         try:
@@ -8259,6 +8261,28 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             status_record = status_record.model_copy(update={"active": bool(active and status_record.canEnter and status_record.available)})
         return status_record
 
+    def _cached_official_maintenance_status(reason: str) -> MaintenanceModeStatusRecord | None:
+        session_user = get_cached_session_user()
+        if not session_user or session_user.organizationId != _MAINT_OFFICIAL_ORG_ID:
+            return None
+        bootstrap_user_id = state.db.get_setting(_MAINT_KEY_LOCAL_BOOTSTRAP_USER, "")
+        can_enter = bool(session_user.primaryRole == "admin" or (bootstrap_user_id and session_user.id == bootstrap_user_id))
+        with state.maintenance_mode_lock:
+            active = bool(state.maintenance_mode_active and can_enter and state.maintenance_mode_user_id == session_user.id)
+            if state.maintenance_mode_active and not active:
+                state.maintenance_mode_active = False
+                state.maintenance_mode_user_id = ""
+                state.maintenance_mode_entered_at = ""
+        return MaintenanceModeStatusRecord(
+            available=True,
+            active=active,
+            canEnter=can_enter,
+            canManagePermissions=False,
+            organizationId=session_user.organizationId,
+            userId=session_user.id,
+            reason=reason,
+        )
+
     def _cloud_maintenance_status() -> MaintenanceModeStatusRecord:
         if not state.cloud_api_url:
             with state.maintenance_mode_lock:
@@ -8275,7 +8299,10 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 with state.maintenance_mode_lock:
                     state.maintenance_mode_active = False
                 return _inactive_maintenance_status(str(exc.detail or "当前账号无维护权限"))
-            raise
+            cached_status = _cached_official_maintenance_status("云端维护权限暂时不可验证，已使用本机缓存授权")
+            if cached_status:
+                return cached_status
+            return _inactive_maintenance_status("云端暂时不可用，维护模式权限暂无法验证")
         with state.maintenance_mode_lock:
             cached_user = get_cached_session_user()
             user_match = bool(
@@ -35575,7 +35602,13 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             raise HTTPException(status_code=403, detail="尚未配置云端服务地址")
         if not get_cloud_token() and not get_cloud_refresh_token():
             raise HTTPException(status_code=403, detail="尚未登录云端账号")
-        cloud_status = _coerce_maintenance_status(cloud_request("POST", "/api/v1/maintenance-mode/enter", timeout=6.0), active=True)
+        try:
+            cloud_status = _coerce_maintenance_status(cloud_request("POST", "/api/v1/maintenance-mode/enter", timeout=6.0), active=True)
+        except HTTPException:
+            cached_status = _cached_official_maintenance_status("云端维护权限暂时不可验证，已使用本机缓存授权")
+            if not cached_status or not cached_status.canEnter:
+                raise
+            cloud_status = cached_status.model_copy(update={"active": True})
         if not cloud_status.canEnter or not cloud_status.available:
             raise HTTPException(status_code=403, detail=cloud_status.reason or "当前账号无维护权限")
         with state.maintenance_mode_lock:
