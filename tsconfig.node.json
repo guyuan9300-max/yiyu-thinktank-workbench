@@ -1,0 +1,18 @@
+{
+  "compilerOptions": {
+    "composite": true,
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "allowSyntheticDefaultImports": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "strict": true,
+    "target": "ES2022",
+    "types": ["node", "electron"],
+    "rootDir": "src",
+    "outDir": "build",
+    "resolveJsonModule": true
+  },
+  "include": ["src/main", "src/shared"],
+  "exclude": ["src/**/*.test.ts", "src/renderer/legacy_features"]
+}

@@ -1,0 +1,182 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>益语智库自用平台</title>
+    <style>
+      html,
+      body {
+        margin: 0;
+        min-height: 100%;
+        background: #f9fafb;
+      }
+
+      #root {
+        min-height: 100vh;
+      }
+
+      #boot-diagnostic {
+        position: fixed;
+        inset: 0;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        padding: 32px;
+        background: #f9fafb;
+        color: #111827;
+        font-family: "PingFang SC", "SF Pro Display", "Helvetica Neue", sans-serif;
+        z-index: 2147483647;
+      }
+
+      #boot-diagnostic[data-hidden="true"] {
+        display: none;
+      }
+
+      .boot-diagnostic__panel {
+        width: min(920px, calc(100vw - 48px));
+        border-radius: 28px;
+        border: 1px solid #dbe5ff;
+        background: rgba(255, 255, 255, 0.98);
+        box-shadow: 0 24px 72px rgba(15, 23, 42, 0.12);
+        padding: 28px;
+      }
+
+      .boot-diagnostic__eyebrow {
+        margin: 0;
+        font-size: 12px;
+        font-weight: 700;
+        letter-spacing: 0.22em;
+        text-transform: uppercase;
+        color: #4f46e5;
+      }
+
+      .boot-diagnostic__title {
+        margin: 12px 0 0;
+        font-size: 28px;
+        font-weight: 700;
+        line-height: 1.25;
+      }
+
+      .boot-diagnostic__body {
+        margin: 14px 0 0;
+        font-size: 14px;
+        line-height: 1.8;
+        color: #4b5563;
+      }
+
+      .boot-diagnostic__error {
+        margin-top: 18px;
+        border-radius: 18px;
+        border: 1px solid #fecaca;
+        background: #fff1f2;
+        padding: 14px 16px;
+        font-size: 13px;
+        line-height: 1.8;
+        color: #be123c;
+        white-space: pre-wrap;
+      }
+
+      .boot-diagnostic__log {
+        margin-top: 18px;
+        border-radius: 18px;
+        border: 1px solid #e5e7eb;
+        background: #f9fafb;
+        padding: 14px 16px;
+        font-size: 12px;
+        line-height: 1.8;
+        color: #374151;
+        white-space: pre-wrap;
+      }
+    </style>
+    <script>
+      (() => {
+        const bootEvents = [];
+        const record = (message) => {
+          bootEvents.push(`${new Date().toISOString()} ${message}`);
+          window.__YIYU_BOOT_EVENTS__ = bootEvents;
+        };
+
+        const ensureDiagnostic = () => {
+          let node = document.getElementById('boot-diagnostic');
+          if (node) return node;
+          node = document.createElement('div');
+          node.id = 'boot-diagnostic';
+          node.innerHTML = `
+            <div class="boot-diagnostic__panel">
+              <p class="boot-diagnostic__eyebrow">Startup Diagnostic</p>
+              <h1 class="boot-diagnostic__title">正在初始化桌面界面…</h1>
+              <p class="boot-diagnostic__body">
+                如果页面长时间保持空白，下面会直接显示启动错误，而不是继续白屏。
+              </p>
+              <div id="boot-diagnostic-error" class="boot-diagnostic__error" style="display:none;"></div>
+              <div id="boot-diagnostic-log" class="boot-diagnostic__log">等待渲染层启动…</div>
+            </div>
+          `;
+          document.addEventListener('DOMContentLoaded', () => {
+            if (!document.getElementById('boot-diagnostic')) {
+              document.body.appendChild(node);
+            }
+          }, { once: true });
+          return node;
+        };
+
+        const renderLog = () => {
+          const node = ensureDiagnostic();
+          const logNode = node.querySelector('#boot-diagnostic-log');
+          if (logNode) {
+            logNode.textContent = bootEvents.join('\n');
+          }
+        };
+
+        const showError = (label, detail) => {
+          const node = ensureDiagnostic();
+          const errorNode = node.querySelector('#boot-diagnostic-error');
+          if (errorNode) {
+            errorNode.style.display = 'block';
+            errorNode.textContent = `${label}\n${detail}`;
+          }
+          renderLog();
+        };
+
+        window.__YIYU_HIDE_BOOT_DIAGNOSTIC__ = () => {
+          const node = document.getElementById('boot-diagnostic');
+          if (node) node.setAttribute('data-hidden', 'true');
+        };
+
+        record('index.html:bootstrap-loaded');
+        renderLog();
+
+        window.addEventListener('error', (event) => {
+          const detail = event.error && event.error.stack
+            ? event.error.stack
+            : `${event.message} @ ${event.filename}:${event.lineno}:${event.colno}`;
+          record(`window-error:${String(event.message || '').slice(0, 120)}`);
+          showError('窗口级错误', detail);
+        });
+
+        window.addEventListener('unhandledrejection', (event) => {
+          const detail = event.reason && event.reason.stack ? event.reason.stack : String(event.reason);
+          record(`unhandled-rejection:${String(event.reason || '').slice(0, 120)}`);
+          showError('未处理 Promise 异常', detail);
+        });
+
+        window.addEventListener('DOMContentLoaded', () => {
+          document.body.appendChild(ensureDiagnostic());
+          renderLog();
+        });
+
+        window.setTimeout(() => {
+          if (!window.__YIYU_APP_RENDERED__) {
+            record('index.html:render-timeout-6000ms');
+            renderLog();
+          }
+        }, 6000);
+      })();
+    </script>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/renderer/main.tsx"></script>
+  </body>
+  </html>

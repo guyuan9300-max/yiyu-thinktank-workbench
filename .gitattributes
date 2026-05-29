@@ -1,0 +1,4 @@
+.yiyu-sync/settings.system_admin.json -diff
+backend/output/** -diff
+output/** -diff
+*.tsbuildinfo -diff
