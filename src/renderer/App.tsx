@@ -517,6 +517,7 @@ import { FileSearchResultPanel } from './components/data_center/FileSearchResult
 import { ContradictionAlertPanel } from './components/client_workspace/ContradictionAlertPanel';
 import { GlossaryDriftAlertPanel } from './components/client_workspace/GlossaryDriftAlertPanel';
 import { EntityListPanel } from './components/client_workspace/EntityListPanel';
+import { ClientFactListPanel } from './components/client_workspace/ClientFactListPanel';
 import { GlossaryPendingBadge } from './components/client_workspace/GlossaryPendingBadge';
 import { RichTextDocumentEditor } from './components/client_workspace/RichTextDocumentEditor';
 import { SystemStatusPanel } from './components/global/SystemStatusPanel';
@@ -25591,6 +25592,7 @@ export default function App() {
                       {currentClientId && <ContradictionAlertPanel clientId={currentClientId} />}
                       {currentClientId && <DuplicateDocumentsSection clientId={currentClientId} hideWhenEmpty />}
                       {currentClientId && <EntityListPanel clientId={currentClientId} />}
+                      {currentClientId && <ClientFactListPanel clientId={currentClientId} />}
                     </>
                   );
                 })()}
