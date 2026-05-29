@@ -4884,6 +4884,35 @@ def _promote_candidate(
         followup_questions = enrichment.followup_questions
         tags = ["外部情报", intelligence_type]
         key_points = [summary, relevance_reason, impact, suggested_action]
+        # S3 情报并网(5/29): timely 时效情报也写入数据中心 v2_documents。
+        # 此前只有 profile_completion 分支 upsert,timely 候选一条都没进数据中心
+        # (data_center_ingest_event_id=0),导致战略陪伴/工作台取材检索不到情报。与 profile 分支同构。
+        timely_upserted = upsert_canonical_text_document(
+            db,
+            data_dir=data_dir,
+            client_id=scope.client_id,
+            canonical_kind="internet_source_doc",
+            origin_type="intelligence_candidate",
+            origin_id=draft.id,
+            title=draft.hit.title,
+            text=_candidate_markdown(
+                draft,
+                timestamp,
+                summary=summary,
+                key_points=key_points,
+                mapped_tags=[intelligence_type],
+                verification_reason=reason,
+            ),
+            visible_category="互联网情报",
+            secondary_category="时效情报",
+            created_at=published_at or draft.hit.published_at or timestamp,
+            updated_at=timestamp,
+            source_entity_type="intelligence_candidate",
+            source_entity_id=draft.id,
+            content_domain="intelligence_candidate_pool",
+        )
+        if timely_upserted:
+            data_center_document_id = str(timely_upserted.get("documentId"))
     item_id = _new_id("iitem")
     db.execute(
         """
