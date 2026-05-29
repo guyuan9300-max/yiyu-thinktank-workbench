@@ -29663,6 +29663,27 @@ export default function App() {
 
   // 迷你面板早退渲染:在所有 hooks 之后(本 return 处),只决定渲染哪棵树,不跳过任何 hook。
   // hooks 声明在顶层 hooks 区(见 miniMode/miniData/handleMini* 定义),不放这里。
+  // 迷你卡片日历:把任务拖到日期格子 → 改期到那天。自包含(handleRescheduleTask 在 TasksView 内部够不到),
+  // 用模块级 split/combine 助手 + updateTask(同 handleMiniToggleTask 路径),乐观更新失败下次刷新自愈。
+  const handleMiniRescheduleTask = async (taskId: string, dateIso: string) => {
+    const task = tasks.find((t) => t.id === taskId);
+    if (!task) return;
+    if (task.scheduledStartAt) {
+      // 有计划时间:挪到新日期、保留原时刻,按时长重算结束(裸本地时间,不带 Z)
+      const startParts = splitTaskDueDateTime(task.scheduledStartAt);
+      const nextStart = combineTaskDueDateTime(dateIso, startParts.time);
+      const durationMin = Math.max(15, task.durationMinutes || 60);
+      const end = new Date(new Date(nextStart).getTime() + durationMin * 60_000);
+      const pad = (n: number) => String(n).padStart(2, '0');
+      const nextEnd = `${end.getFullYear()}-${pad(end.getMonth() + 1)}-${pad(end.getDate())}T${pad(end.getHours())}:${pad(end.getMinutes())}`;
+      setTasks((prev) => prev.map((x) => (x.id === taskId ? { ...x, scheduledStartAt: nextStart, scheduledEndAt: nextEnd } : x)));
+      try { await updateTask(taskId, { scheduledStartAt: nextStart, scheduledEndAt: nextEnd }); } catch { /* 自愈 */ }
+    } else {
+      // 纯截止/待办:改截止日为那天
+      setTasks((prev) => prev.map((x) => (x.id === taskId ? { ...x, dueDate: dateIso, deadlineAt: dateIso } : x)));
+      try { await updateTask(taskId, { dueDate: dateIso, deadlineAt: dateIso }); } catch { /* 自愈 */ }
+    }
+  };
   if (miniMode) {
     return (
       <MiniPanel
@@ -29674,6 +29695,7 @@ export default function App() {
         onOpenTask={handleMiniOpenTask}
         onOpenEvent={handleMiniOpenTask}
         onRestore={exitMiniMode}
+        onRescheduleTask={handleMiniRescheduleTask}
       />
     );
   }

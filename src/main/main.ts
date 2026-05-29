@@ -2997,7 +2997,8 @@ function applyMiniBounds(win: BrowserWindow) {
   const H = 480;
   const area = screen.getDisplayMatching(miniSavedBounds).workArea;
   win.setMinimumSize(300, 380);
-  win.setBounds({ x: area.x + area.width - W - 24, y: area.y + 24, width: W, height: H });
+  // 5/29: 迷你卡片默认缩到桌面左上角(原为右上角 area.x + area.width - W - 24)
+  win.setBounds({ x: area.x + 24, y: area.y + 24, width: W, height: H });
   win.setAlwaysOnTop(true, 'floating');
   if (process.platform === 'darwin') win.setWindowButtonVisibility(false);
 }

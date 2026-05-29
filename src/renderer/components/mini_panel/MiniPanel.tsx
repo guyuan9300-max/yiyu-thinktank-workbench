@@ -29,6 +29,8 @@ export interface MiniPanelProps {
   onQuickAdd?: (text: string) => void;
   onRestore?: () => void;
   onOpenSettings?: () => void;
+  /** 日历视图:把任务拖到某个日期格子→改期到那天(5/29) */
+  onRescheduleTask?: (taskId: string, dateIso: string) => void;
 }
 
 type MiniView = 'today' | 'calendar';
@@ -102,11 +104,14 @@ function DayAgenda({
   onToggleTask,
   onOpenTask,
   onOpenEvent,
+  onTaskDragStart,
 }: {
   day: MiniDay;
   onToggleTask?: (id: string) => void;
   onOpenTask?: (id: string) => void;
   onOpenEvent?: (id: string) => void;
+  /** 传入即表示任务可拖拽(仅日历视图);用于把任务拖到日期格子改期 */
+  onTaskDragStart?: (id: string) => void;
 }) {
   const pending = day.tasks.filter((t) => !t.done);
   const done = day.tasks.filter((t) => t.done);
@@ -140,7 +145,16 @@ function DayAgenda({
         ) : (
           <ul>
             {[...pending, ...done].map((t) => (
-              <li key={t.id} className="group flex items-center gap-3 rounded-lg px-1 py-1.5 transition-colors hover:bg-slate-50">
+              <li
+                key={t.id}
+                draggable={!!onTaskDragStart}
+                onDragStart={onTaskDragStart ? (e) => {
+                  e.dataTransfer.setData('text/plain', t.id);
+                  e.dataTransfer.effectAllowed = 'move';
+                  onTaskDragStart(t.id);
+                } : undefined}
+                className={`group flex items-center gap-3 rounded-lg px-1 py-1.5 transition-colors hover:bg-slate-50 ${onTaskDragStart ? 'cursor-grab active:cursor-grabbing' : ''}`}
+              >
                 <button
                   type="button"
                   onClick={() => onToggleTask?.(t.id)}
@@ -214,13 +228,15 @@ function CalendarCard({
   onToggleTask,
   onOpenTask,
   onOpenEvent,
-}: Pick<MiniPanelProps, 'markedDates' | 'getDay' | 'today' | 'onToggleTask' | 'onOpenTask' | 'onOpenEvent'>) {
+  onRescheduleTask,
+}: Pick<MiniPanelProps, 'markedDates' | 'getDay' | 'today' | 'onToggleTask' | 'onOpenTask' | 'onOpenEvent' | 'onRescheduleTask'>) {
   const tIso = todayIso();
   const [cursor, setCursor] = useState(() => {
     const d = new Date(`${today.date}T00:00:00`);
     return { y: d.getFullYear(), m: d.getMonth() };
   });
   const [selected, setSelected] = useState(today.date);
+  const [dragOverIso, setDragOverIso] = useState<string | null>(null);  // 拖拽时高亮目标日期格子
   const marked = useMemo(() => new Set(markedDates), [markedDates]);
 
   const cells = useMemo(() => {
@@ -258,7 +274,20 @@ function CalendarCard({
           const isSel = iso === selected;
           const hasItems = marked.has(iso);
           return (
-            <button key={iso} type="button" onClick={() => setSelected(iso)} className="relative mx-auto flex h-8 w-8 items-center justify-center rounded-full text-[12px] transition-colors hover:bg-slate-100">
+            <button
+              key={iso}
+              type="button"
+              onClick={() => setSelected(iso)}
+              onDragOver={onRescheduleTask ? (e) => { e.preventDefault(); e.dataTransfer.dropEffect = 'move'; setDragOverIso(iso); } : undefined}
+              onDragLeave={onRescheduleTask ? () => setDragOverIso((cur) => (cur === iso ? null : cur)) : undefined}
+              onDrop={onRescheduleTask ? (e) => {
+                e.preventDefault();
+                setDragOverIso(null);
+                const id = e.dataTransfer.getData('text/plain');
+                if (id) onRescheduleTask(id, iso);
+              } : undefined}
+              className={`relative mx-auto flex h-8 w-8 items-center justify-center rounded-full text-[12px] transition-colors hover:bg-slate-100 ${dragOverIso === iso ? 'ring-2 ring-[#5B7BFE] bg-blue-50' : ''}`}
+            >
               <span
                 className={
                   isSel
@@ -279,7 +308,7 @@ function CalendarCard({
       </div>
       <div className="workspace-thin-scroll mt-3 min-h-0 flex-1 overflow-y-auto border-t border-slate-100 px-3 pb-2 pt-3">
         <div className="px-1 pb-2 text-[13px] font-semibold tracking-tight text-slate-700">{fmtDateHeader(selected)}</div>
-        <DayAgenda day={selectedDay} onToggleTask={onToggleTask} onOpenTask={onOpenTask} onOpenEvent={onOpenEvent} />
+        <DayAgenda day={selectedDay} onToggleTask={onToggleTask} onOpenTask={onOpenTask} onOpenEvent={onOpenEvent} onTaskDragStart={onRescheduleTask ? (() => undefined) : undefined} />
       </div>
     </div>
   );
@@ -294,7 +323,7 @@ export function MiniPanel(props: MiniPanelProps) {
         {view === 'today' ? (
           <TodayCard today={props.today} onToggleTask={props.onToggleTask} onOpenTask={props.onOpenTask} onOpenEvent={props.onOpenEvent} onQuickAdd={props.onQuickAdd} />
         ) : (
-          <CalendarCard markedDates={props.markedDates} getDay={props.getDay} today={props.today} onToggleTask={props.onToggleTask} onOpenTask={props.onOpenTask} onOpenEvent={props.onOpenEvent} />
+          <CalendarCard markedDates={props.markedDates} getDay={props.getDay} today={props.today} onToggleTask={props.onToggleTask} onOpenTask={props.onOpenTask} onOpenEvent={props.onOpenEvent} onRescheduleTask={props.onRescheduleTask} />
         )}
       </div>
     </div>
