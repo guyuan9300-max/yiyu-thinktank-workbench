@@ -10,7 +10,7 @@ from pathlib import Path
 # 之前 20260518001 (200 亿) 远超上限, SQLite 静默 set 为 0, 每次启动都重做完整迁移
 # (这是 20260518 那次坏 db 的真正根因之一: 重做时遇上 reload race + backfill 无事务).
 # 改用 YYYYMMDD 格式 (8 位), 每次 schema 变化递增日期. 20260519 = 此次修复.
-BACKEND_SCHEMA_VERSION = 20260530  # v2.2 F2.7 (N3 A3): reasoning_traces 表 — provenance + AI 推理链路追溯
+BACKEND_SCHEMA_VERSION = 20260531  # 5/29: + client_narrative_local_mirror 战略陪伴本地优先镜像(纯新表)
 
 
 # R6：内置罗永浩写作风格的 distilled prompt（手工 distill，不依赖在线抓取，避免外部依赖）。
@@ -4510,6 +4510,25 @@ class Database:
                     marked_at TEXT NOT NULL,
                     last_doc_title TEXT NOT NULL DEFAULT '',
                     reason TEXT NOT NULL DEFAULT '',
+                    FOREIGN KEY(client_id) REFERENCES clients(id) ON DELETE CASCADE
+                );
+
+                -- 战略陪伴叙事「本地优先镜像」(5/29): 把生成/拉取到的整段叙事存本地一份,
+                -- GET 本地优先读它(断网/慢网/VPN误路由可读上次版本, 且不每次打开都拉云端);
+                -- regenerate 成功/失败都写它(本地生成的 dims 一定落地, 线上混合更新);
+                -- stale-status 用它的 generated_at 比对, 省掉每次打开的云端往返。
+                -- 整段存 record_json, 不分维度列(避开云端新旧维度列不一致)。一客户存最新一版。
+                CREATE TABLE IF NOT EXISTS client_narrative_local_mirror (
+                    client_id TEXT PRIMARY KEY,
+                    rev INTEGER NOT NULL DEFAULT 0,
+                    generator TEXT NOT NULL DEFAULT '',
+                    model_name TEXT NOT NULL DEFAULT '',
+                    generated_at TEXT NOT NULL DEFAULT '',
+                    overall_confidence REAL NOT NULL DEFAULT 0.0,
+                    open_clarifications_count INTEGER NOT NULL DEFAULT 0,
+                    record_json TEXT NOT NULL DEFAULT '{}',
+                    source TEXT NOT NULL DEFAULT 'cloud',
+                    mirrored_at TEXT NOT NULL DEFAULT '',
                     FOREIGN KEY(client_id) REFERENCES clients(id) ON DELETE CASCADE
                 );
 

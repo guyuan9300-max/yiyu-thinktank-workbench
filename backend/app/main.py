@@ -28106,18 +28106,62 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             counts=bundle.counts,
         )
 
-    # ─── Phase 1.5c · 战略陪伴叙事面板 (云端原生, 本地 proxy) ─────────
-    # 6 维度故事网 + 共同编织澄清, 同组织 A/B 账号同源 (见 cloud_backend
-    # /api/v1/clients/{id}/narrative*). 本地仅 proxy 到云端, 不缓存,
-    # 因为澄清是多人编辑要保证一致性.
+    # ─── Phase 1.5c · 战略陪伴叙事面板 (5/29 改为本地优先 + 手动线上混合更新) ───
+    # 旧设计是"云端原生·本地不缓存", 断网/VPN误路由整页打不开。
+    # 现改成: 生成时写本地镜像 + 推云端(线上混合); 打开时本地优先读镜像(断网可读
+    # 上次版本, 被动更新不每次拉云); 只有手动 regenerate 才刷新。共同澄清仍走云端(多人协同)。
+
+    def _save_narrative_mirror(client_id: str, record: dict, source: str) -> None:
+        """把整段叙事 record 镜像到本地, 供 GET 本地优先读取。dimensions 为空则不写(避免空壳覆盖)。"""
+        if not isinstance(record, dict) or not record.get("dimensions"):
+            return
+        state.db.execute(
+            """INSERT INTO client_narrative_local_mirror(
+                   client_id, rev, generator, model_name, generated_at,
+                   overall_confidence, open_clarifications_count, record_json, source, mirrored_at
+               ) VALUES(?,?,?,?,?,?,?,?,?,?)
+               ON CONFLICT(client_id) DO UPDATE SET
+                   rev=excluded.rev, generator=excluded.generator, model_name=excluded.model_name,
+                   generated_at=excluded.generated_at, overall_confidence=excluded.overall_confidence,
+                   open_clarifications_count=excluded.open_clarifications_count,
+                   record_json=excluded.record_json, source=excluded.source, mirrored_at=excluded.mirrored_at""",
+            (
+                client_id,
+                int(record.get("rev") or 0),
+                str(record.get("generator") or ""),
+                str(record.get("modelName") or ""),
+                str(record.get("generatedAt") or ""),
+                float(record.get("overallConfidence") or 0.0),
+                int(record.get("openClarificationsCount") or 0),
+                json.dumps(record, ensure_ascii=False),
+                source,
+                now_iso(),
+            ),
+        )
 
     @app.get("/api/v1/clients/{client_id}/narrative")
     def get_client_narrative_proxy(client_id: str) -> dict:
-        return cloud_request(
+        # 本地优先: 有镜像直接返回(断网/慢网可读上次版本, 不每次打开拉云)
+        mirror = state.db.fetchone(
+            "SELECT record_json FROM client_narrative_local_mirror WHERE client_id = ?",
+            (client_id,),
+        )
+        if mirror and mirror["record_json"]:
+            try:
+                return json.loads(mirror["record_json"])
+            except Exception:
+                pass
+        # 本地还没镜像(首次/跨设备) → 拉云端 seed 并落镜像; 云端不可达则抛错, 前端按"暂无叙事"处理
+        record = cloud_request(
             "GET",
             f"/api/v1/clients/{client_id}/narrative",
             timeout=10.0,
         )
+        try:
+            _save_narrative_mirror(client_id, record, "cloud")
+        except Exception:
+            pass
+        return record
 
     @app.get("/api/v1/clients/{client_id}/narrative/stale-status")
     def get_narrative_stale_status(client_id: str) -> dict:
@@ -28134,16 +28178,12 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         last_doc_title = (row["last_doc_title"] if row else "") or ""
         reason = (row["reason"] if row else "") or ""
 
-        narrative_generated_at = ""
-        try:
-            nar = cloud_request(
-                "GET",
-                f"/api/v1/clients/{client_id}/narrative",
-                timeout=10.0,
-            )
-            narrative_generated_at = str(nar.get("generatedAt") or "")
-        except Exception:
-            pass
+        # 本地优先(5/29): 用本地镜像的 generated_at 比对, 不再每次 stale-status 都打云端
+        mrow = state.db.fetchone(
+            "SELECT generated_at FROM client_narrative_local_mirror WHERE client_id = ?",
+            (client_id,),
+        )
+        narrative_generated_at = (mrow["generated_at"] if mrow else "") or ""
 
         is_stale = bool(marked_at and marked_at > narrative_generated_at)
         return {
@@ -29517,32 +29557,47 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             "clientName": bundle.client_name,
             "clientAlias": bundle.client_alias,
         }
+        # 本地优先(5/29): 先构造本地生成结果(一定有 dims), 无论推云成功失败都写本地镜像
+        _gen_at = now_iso()
+        local_record = {
+            "id": "local-only",
+            "clientId": client_id,
+            "clientName": bundle.client_name,
+            "rev": -1,
+            "generator": ingest_payload["generator"],
+            "generatedAt": _gen_at,
+            "modelName": ingest_payload["modelName"],
+            "dimensions": [{"dimension": d, **dims[d]} for d in dims.keys()],
+            "overallConfidence": overall,
+            "openClarificationsCount": 0,
+            "dataLayerGaps": gaps_with_summary,
+            "contributors": [],
+            "updatedAt": _gen_at,
+        }
         try:
-            return cloud_request(
+            cloud_record = cloud_request(
                 "POST",
                 f"/api/v1/clients/{client_id}/narrative/ingest",
                 json_body=ingest_payload,
                 timeout=30.0,
             )
+            # 云端落库成功: 优先用云端权威 record(有真 rev/generatedAt/contributors);
+            # 云端没回完整 dims 时退用本地生成结果。两种都落本地镜像。
+            record = cloud_record if (isinstance(cloud_record, dict) and cloud_record.get("dimensions")) else local_record
+            try:
+                _save_narrative_mirror(client_id, record, "cloud")
+            except Exception:
+                pass
+            return record
         except HTTPException as exc:
-            # 云端 ingest 还没部署 → fallback: 直接返回本地生成结果, 不阻塞 UI
+            # 云端不可达(断网/未部署) → 用本地生成结果, 落镜像(source=local-only, 待联网重推), 不阻塞 UI
             if exc.status_code in (404, 405, 502):
-                return {
-                    "id": "local-only",
-                    "clientId": client_id,
-                    "clientName": bundle.client_name,
-                    "rev": -1,
-                    "generator": ingest_payload["generator"],
-                    "generatedAt": "",
-                    "modelName": ingest_payload["modelName"],
-                    "dimensions": [{"dimension": d, **dims[d]} for d in dims.keys()],
-                    "overallConfidence": overall,
-                    "openClarificationsCount": 0,
-                    "dataLayerGaps": gaps_with_summary,
-                    "contributors": [],
-                    "updatedAt": "",
-                    "_cloudIngestError": f"{exc.status_code}: {exc.detail}",
-                }
+                local_record["_cloudIngestError"] = f"{exc.status_code}: {exc.detail}"
+                try:
+                    _save_narrative_mirror(client_id, local_record, "local-only")
+                except Exception:
+                    pass
+                return local_record
             raise
 
     # ── 数据中心加工层 Phase 1 · 项目档案 + 关键人物花名册 (云端原生, 本地 proxy) ──

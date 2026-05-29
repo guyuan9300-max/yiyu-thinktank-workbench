@@ -125,21 +125,22 @@ export function StrategicClarificationView({
     setLoading(true);
     setError(null);
     try {
-      const [n, c, x] = await Promise.all([
-        getClientNarrative(clientId),
-        listClientNarrativeClarifications(clientId),
-        getClientClarificationContext(clientId).catch(() => null),
-      ]);
-      if (!isMounted()) return;  // 旧请求返回时新客户已切, 丢弃
-      setNarrative(n);
-      setClarifications(c.clarifications);
-      setCtx(x);
-    } catch (err) {
+      // 本地优先(5/29): 叙事独立加载 — 后端 GET 本地优先读镜像, 断网也能返回上次版本。
+      // 澄清/上下文是云端协同, 断网失败降级为空, 不再连累叙事整页变空。
+      try {
+        const n = await getClientNarrative(clientId);
+        if (!isMounted()) return;  // 旧请求返回时新客户已切, 丢弃
+        setNarrative(n);
+      } catch (err) {
+        if (!isMounted()) return;
+        setError(err instanceof Error ? err.message : '加载失败');
+        setNarrative(null);
+      }
+      const c = await listClientNarrativeClarifications(clientId).catch(() => null);
+      const x = await getClientClarificationContext(clientId).catch(() => null);
       if (!isMounted()) return;
-      setError(err instanceof Error ? err.message : '加载失败');
-      setNarrative(null);
-      setClarifications([]);
-      setCtx(null);
+      setClarifications(c?.clarifications ?? []);
+      setCtx(x);
     } finally {
       if (isMounted()) setLoading(false);
     }
