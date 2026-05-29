@@ -11956,20 +11956,30 @@ export default function App() {
         ? workspace?.dnaModules || []
         : (taskContextClientId ? taskClientDnaCache[taskContextClientId] || [] : []);
     const effectiveTaskClientId = taskContextClientId;
-    const activeProjectStructure =
-      effectiveTaskClientId && effectiveTaskClientId === workspace?.client.id
-        ? {
-            modules: workspace?.projectModules || [],
-            flows: workspace?.projectFlows || [],
-          }
-        : (effectiveTaskClientId
-          ? projectStructureCache[effectiveTaskClientId] || { modules: [], flows: [] }
-          : { modules: [], flows: [] });
+    // P0-B 根治(5/29): activeProjectStructure 原为裸条件表达式, 每次渲染重建新对象 →
+    // 喂给 taskProjectModuleOptions/FlowOptions 的引用每渲染都变 → 项目模块/流程 effect(12291/12305)
+    // 每渲染空跑并 setEditingTask → Maximum update depth。memo 化稳定引用从源头断循环。
+    const activeProjectStructure = useMemo(
+      () =>
+        effectiveTaskClientId && effectiveTaskClientId === workspace?.client.id
+          ? {
+              modules: workspace?.projectModules || [],
+              flows: workspace?.projectFlows || [],
+            }
+          : (effectiveTaskClientId
+            ? projectStructureCache[effectiveTaskClientId] || { modules: [], flows: [] }
+            : { modules: [], flows: [] }),
+      [effectiveTaskClientId, workspace, projectStructureCache],
+    );
     const taskProjectModuleOptions = activeProjectStructure.modules;
-    const taskProjectFlowOptions = activeProjectStructure.flows.filter((flow: ProjectFlow) => {
-      if (!editingTask.projectModuleId) return true;
-      return flow.moduleId === editingTask.projectModuleId;
-    });
+    const taskProjectFlowOptions = useMemo(
+      () =>
+        activeProjectStructure.flows.filter((flow: ProjectFlow) => {
+          if (!editingTask.projectModuleId) return true;
+          return flow.moduleId === editingTask.projectModuleId;
+        }),
+      [activeProjectStructure, editingTask.projectModuleId],
+    );
     const sortedEventLines = useMemo(
       () =>
         [...eventLines].sort((left, right) => {
@@ -12341,14 +12351,14 @@ export default function App() {
         return Object.keys(updates).length > 0 ? { ...prev, ...updates } : prev;
       });
     }, [
+      // P0-B 根治(5/29): 移除 projectFlowReason/projectModuleReason —— 它们只在 setEditingTask 的
+      // prev 回调里读, 不在 effect 闭包里读; 之前放进依赖 = effect 写自己的输出又被自己依赖触发(自激)。
       activeProjectStructure.flows,
       editingTask.clientId,
       editingTask.desc,
       editingTask.projectFlowId,
-      editingTask.projectFlowReason,
       editingTask.projectFlowTouched,
       editingTask.projectModuleId,
-      editingTask.projectModuleReason,
       editingTask.projectModuleTouched,
       editingTask.title,
       isTaskModalOpen,
