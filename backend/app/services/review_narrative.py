@@ -1710,7 +1710,9 @@ def build_weekly_mainline_cards_draft(
             f"【组织与项目背景材料】\n{data_context_lines}" if data_context_lines else "",
             (
                 "【输出要求】\n"
-                "只输出 JSON。不要解释。mainlines 最多 3 条。每条 progressText 2-4 句，nextGoalText 2-3 句。"
+                # 5/28 修: 之前硬限"3 条"导致本周主线只显示 3 条, 跟 240 行 SYSTEM_INSTRUCTION 说的"最多 6 条"冲突.
+                # 跟前端 buildWeeklyOverviewModel slice(0,6) + 240 行口径完全对齐.
+                "只输出 JSON。不要解释。mainlines 最多 6 条（按重要性排序，常见 3-5 条；真有更多独立主线再多放，宁可少不可凑数）。每条 progressText 2-4 句，nextGoalText 2-3 句。"
                 "本周任务只用于统计，前序背景只用于解释项目从哪里来、当前卡在哪里。"
                 "不要写任何资料来源、读取状态或内部诊断。"
             ),
