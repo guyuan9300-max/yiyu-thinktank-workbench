@@ -2581,6 +2581,8 @@ export interface Task {
   deadlineAt?: string | null;
   scheduledStartAt?: string | null;
   scheduledEndAt?: string | null;
+  // 任务提醒(2026-05-29): 0=准时 / 5=提前5分钟 / null|undefined=不提醒。相对 scheduledStartAt(无则 deadlineAt)。
+  reminderMinutesBefore?: number | null;
   completedAt?: string | null;
   scopeMode?: TaskScopeMode;
   clientId?: string | null;
@@ -6524,6 +6526,8 @@ export interface TaskMutationPayload {
   deadlineAt?: string | null;
   scheduledStartAt?: string | null;
   scheduledEndAt?: string | null;
+  // 任务提醒(2026-05-29): 0=准时 / 5=提前5分钟 / null|undefined=不提醒。相对 scheduledStartAt(无则 deadlineAt)。
+  reminderMinutesBefore?: number | null;
   completedAt?: string | null;
   scopeMode?: TaskScopeMode;
   clientId?: string | null;

@@ -10,7 +10,7 @@ from pathlib import Path
 # 之前 20260518001 (200 亿) 远超上限, SQLite 静默 set 为 0, 每次启动都重做完整迁移
 # (这是 20260518 那次坏 db 的真正根因之一: 重做时遇上 reload race + backfill 无事务).
 # 改用 YYYYMMDD 格式 (8 位), 每次 schema 变化递增日期. 20260519 = 此次修复.
-BACKEND_SCHEMA_VERSION = 20260531  # 5/29: + client_narrative_local_mirror 战略陪伴本地优先镜像(纯新表)
+BACKEND_SCHEMA_VERSION = 20260532  # 5/29: + tasks.reminder_minutes_before 任务提醒字段
 
 
 # R6：内置罗永浩写作风格的 distilled prompt（手工 distill，不依赖在线抓取，避免外部依赖）。
@@ -3888,6 +3888,7 @@ class Database:
             self._ensure_column("tasks", "deadline_at", "TEXT")
             self._ensure_column("tasks", "scheduled_start_at", "TEXT")
             self._ensure_column("tasks", "scheduled_end_at", "TEXT")
+            self._ensure_column("tasks", "reminder_minutes_before", "INTEGER")  # 5/29 任务提醒: 0=准时 5=提前5分 NULL=不提醒
             self._ensure_column("tasks", "completed_at", "TEXT")
             self._ensure_column("tasks", "start_date", "TEXT")
             self._ensure_column("tasks", "due_date", "TEXT")

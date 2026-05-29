@@ -989,6 +989,7 @@ class Database:
             self._ensure_column("tasks", "deadline_at", "TEXT")
             self._ensure_column("tasks", "scheduled_start_at", "TEXT")
             self._ensure_column("tasks", "scheduled_end_at", "TEXT")
+            self._ensure_column("tasks", "reminder_minutes_before", "INTEGER")  # 5/29 任务提醒(跨端共享字段): 0=准时 5=提前5分 NULL=不提醒
             self._ensure_column("tasks", "completed_at", "TEXT")
             self._ensure_column("tasks", "start_date", "TEXT")
             self._ensure_column("tasks", "duration_minutes", "INTEGER NOT NULL DEFAULT 60")

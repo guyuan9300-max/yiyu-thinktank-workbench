@@ -1016,6 +1016,7 @@ class TaskRecord(BaseModel):
     scheduledStartAt: str | None = None
     scheduledEndAt: str | None = None
     completedAt: str | None = None
+    reminderMinutesBefore: int | None = None  # 5/29 任务提醒(跨端共享): 0=准时 5=提前5分 None=不提醒
     durationMinutes: int = 60
     scopeMode: Literal["COLLAB_SHARED", "PERSONAL_ONLY"] = "COLLAB_SHARED"
     clientId: str | None = None
@@ -1096,6 +1097,7 @@ class TaskCreatePayload(BaseModel):
     scheduledStartAt: str | None = None
     scheduledEndAt: str | None = None
     completedAt: str | None = None
+    reminderMinutesBefore: int | None = None  # 5/29 任务提醒(跨端共享): 0=准时 5=提前5分 None=不提醒
     durationMinutes: int = 60
     scopeMode: Literal["COLLAB_SHARED", "PERSONAL_ONLY"] = "COLLAB_SHARED"
     clientId: str | None = None
@@ -1126,6 +1128,7 @@ class TaskUpdatePayload(BaseModel):
     scheduledStartAt: str | None = None
     scheduledEndAt: str | None = None
     completedAt: str | None = None
+    reminderMinutesBefore: int | None = None  # 5/29 任务提醒(跨端共享): 0=准时 5=提前5分 None=不提醒
     durationMinutes: int | None = None
     scopeMode: Literal["COLLAB_SHARED", "PERSONAL_ONLY"] | None = None
     clientId: str | None = None
