@@ -28,7 +28,7 @@ dependencies = [
     # dylib 文件名带版本号必须精确匹配，所以锁到 1.24.x 系列。
     # 如果将来 sherpa-onnx 升级换了底层 onnxruntime 版本，
     # main.ts 里的 ensureSherpaOnnxDylibAligned 是第二道防线（自动建软链）。
-    "onnxruntime>=1.24.4,<1.25",
+    "onnxruntime>=1.24.4,<1.27",
     "soundfile>=0.12.0",
 ]
 
