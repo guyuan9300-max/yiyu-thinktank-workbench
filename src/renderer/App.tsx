@@ -8550,6 +8550,7 @@ export default function App() {
 
   function getDefaultCollabSelectedPaths(state: Exclude<CollabDialogState, null>) {
     return state.preview.files
+      .filter((file) => file.securityIssue?.severity !== 'block')
       .filter((file) => !file.risk || !['overlap', 'delete_replace'].includes(file.risk.kind))
       .map((file) => file.path);
   }

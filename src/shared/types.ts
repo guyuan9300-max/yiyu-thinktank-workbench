@@ -6966,6 +6966,15 @@ export interface CollabConflictRisk {
   message: string;
 }
 
+export type CollabSecurityIssueSeverity = 'block' | 'warn';
+
+export interface CollabSecurityIssue {
+  severity: CollabSecurityIssueSeverity;
+  category: string;
+  message: string;
+  recommendation: string;
+}
+
 export interface CollabFileChange {
   path: string;
   previousPath?: string | null;
@@ -6974,6 +6983,7 @@ export interface CollabFileChange {
   groupLabel: string;
   summary: string;
   risk?: CollabConflictRisk | null;
+  securityIssue?: CollabSecurityIssue | null;
 }
 
 export interface CollabChangeGroup {

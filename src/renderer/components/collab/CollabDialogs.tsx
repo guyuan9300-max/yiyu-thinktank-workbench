@@ -101,6 +101,14 @@ export function CollabPreviewDialog({
 }: CollabPreviewDialogProps) {
   if (!open || !preview) return null;
   const selectedSet = new Set(selectedPaths);
+  const fileByPath = new Map(preview.files.map((file) => [file.path, file]));
+  const isBlockedPath = (targetPath: string) => fileByPath.get(targetPath)?.securityIssue?.severity === 'block';
+  const blockedSecurityFiles = mode === 'push'
+    ? preview.files.filter((file) => file.securityIssue?.severity === 'block')
+    : [];
+  const warningSecurityFiles = mode === 'push'
+    ? preview.files.filter((file) => file.securityIssue?.severity === 'warn')
+    : [];
   const actionLabel = mode === 'push' ? '提交并推送我的修改' : '按日期预览 main 修改';
   const noPushChanges = mode === 'push' && preview.executionBlockReason === '当前没有可提交的本地文件改动。';
   const alreadySynced = mode === 'pull' && preview.executionBlockReason === 'main 当前已经是最新。';
@@ -202,7 +210,7 @@ export function CollabPreviewDialog({
                         </div>
                         <ActionButton
                           className="whitespace-nowrap"
-                          onClick={() => onToggleEffectPaths(effect.relatedPaths)}
+                          onClick={() => onToggleEffectPaths(effect.relatedPaths.filter((targetPath) => !isBlockedPath(targetPath)))}
                           disabled={busy}
                         >
                           {allSelected ? '取消这组变化' : partiallySelected ? '补齐这组变化' : '纳入这组变化'}
@@ -300,6 +308,44 @@ export function CollabPreviewDialog({
               </div>
             )}
 
+            {mode === 'push' && (blockedSecurityFiles.length > 0 || warningSecurityFiles.length > 0) && (
+              <div className="rounded-3xl border border-amber-100 bg-amber-50 px-4 py-4">
+                <div className="flex items-start gap-3">
+                  <AlertCircle size={17} className="mt-0.5 shrink-0 text-amber-600" />
+                  <div>
+                    <p className="text-[13px] font-bold text-amber-900">开源安全预检</p>
+                    <p className="mt-1 text-[12px] leading-6 text-amber-800">
+                      高风险文件会被自动排除，不进入本次 commit；安全修改仍可继续推送。
+                    </p>
+                  </div>
+                </div>
+                {blockedSecurityFiles.length > 0 && (
+                  <div className="mt-3 rounded-2xl border border-amber-200 bg-white/70 px-3 py-3">
+                    <p className="text-[12px] font-bold text-amber-900">已排除风险文件 · {blockedSecurityFiles.length}</p>
+                    <div className="mt-2 space-y-2">
+                      {blockedSecurityFiles.slice(0, 6).map((file) => (
+                        <div key={file.path} className="text-[12px] leading-5 text-amber-800">
+                          <span className="font-mono text-[11px]">{file.path}</span>
+                          <span className="block text-amber-700">{file.securityIssue?.message}</span>
+                        </div>
+                      ))}
+                      {blockedSecurityFiles.length > 6 && (
+                        <p className="text-[12px] text-amber-700">还有 {blockedSecurityFiles.length - 6} 个风险文件，展开下方文件清单可查看。</p>
+                      )}
+                    </div>
+                  </div>
+                )}
+                {warningSecurityFiles.length > 0 && (
+                  <div className="mt-3 rounded-2xl border border-blue-100 bg-white/70 px-3 py-3">
+                    <p className="text-[12px] font-bold text-blue-900">需要确认的文件 · {warningSecurityFiles.length}</p>
+                    <p className="mt-1 text-[12px] leading-5 text-blue-700">
+                      安装包、文档、截图类文件不一定敏感，但建议确认无真实客户、账号或内部资料。DMG/ZIP 优先走 Release 或 TOS 发布流程。
+                    </p>
+                  </div>
+                )}
+              </div>
+            )}
+
             <details className="rounded-3xl border border-gray-100 bg-white open:shadow-sm">
               <summary className="cursor-pointer list-none px-4 py-4">
                 <div className="flex items-center justify-between gap-3">
@@ -330,7 +376,7 @@ export function CollabPreviewDialog({
                           <input
                             type="checkbox"
                             checked={isSelected}
-                            disabled={busy}
+                            disabled={busy || file.securityIssue?.severity === 'block'}
                             onChange={() => onTogglePath(file.path)}
                             className="mt-1 h-4 w-4 rounded border-gray-300 text-[#5B7BFE] focus:ring-[#5B7BFE]"
                           />
@@ -361,6 +407,27 @@ export function CollabPreviewDialog({
                                     当前如果继续执行，这个文件会按当前按钮方向整体取版本。
                                   </p>
                                 )}
+                              </div>
+                            )}
+                            {file.securityIssue && (
+                              <div
+                                className={`mt-3 rounded-2xl border px-3 py-3 ${
+                                  file.securityIssue.severity === 'block'
+                                    ? 'border-amber-200 bg-amber-50'
+                                    : 'border-blue-100 bg-blue-50'
+                                }`}
+                              >
+                                <div
+                                  className={`flex items-start gap-2 text-[12px] font-semibold ${
+                                    file.securityIssue.severity === 'block' ? 'text-amber-800' : 'text-blue-800'
+                                  }`}
+                                >
+                                  <AlertCircle size={15} className="mt-0.5 shrink-0" />
+                                  <span>{file.securityIssue.message}</span>
+                                </div>
+                                <p className={`mt-2 text-[12px] ${file.securityIssue.severity === 'block' ? 'text-amber-700' : 'text-blue-700'}`}>
+                                  {file.securityIssue.recommendation}
+                                </p>
                               </div>
                             )}
                           </div>

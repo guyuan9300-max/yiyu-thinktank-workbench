@@ -79,6 +79,16 @@ npm run install:mac-local
 
 真实密钥、证书、数据库、日志和运行时文件不得提交到仓库。
 
+## 安全扫描
+
+仓库包含推送前和 CI 可复用的安全扫描脚本：
+
+```bash
+npm run security:scan
+```
+
+它会阻止 `.env`、数据库、日志、证书、私钥、发布密钥目录和疑似真实密钥进入源码树。DMG/ZIP 安装包不被视为密钥，但不建议作为普通源码提交；正式安装包应通过 GitHub Release 或火山云 TOS 发布。
+
 ## 文档
 
 - [开发指南](docs/development.md)

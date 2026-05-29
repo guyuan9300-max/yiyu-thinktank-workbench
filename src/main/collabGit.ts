@@ -10,6 +10,7 @@ import type {
   CollabEffectPreview,
   CollabFileChange,
   CollabFileChangeType,
+  CollabSecurityIssue,
   CollabRemoteCommit,
   CollabRepoStatus,
   CommitAndPushToMainPayload,
@@ -168,6 +169,66 @@ const BINARY_EXTENSIONS = new Set([
   '.woff2',
   '.dmg',
 ]);
+
+const SECURITY_EXAMPLE_ENV_FILES = new Set([
+  '.env.example',
+  '.env.release.example',
+]);
+
+const SECURITY_BLOCKED_EXTENSIONS = new Set([
+  '.db',
+  '.sqlite',
+  '.sqlite3',
+  '.db-shm',
+  '.db-wal',
+  '.sqlite-shm',
+  '.sqlite-wal',
+  '.p8',
+  '.p12',
+  '.pem',
+  '.key',
+  '.cer',
+  '.certsigningrequest',
+  '.mobileprovision',
+  '.log',
+]);
+
+const SECURITY_WARNING_EXTENSIONS = new Set([
+  '.dmg',
+  '.zip',
+]);
+
+const SECURITY_BLOCKED_PREFIXES = [
+  '.yiyu-sync/',
+  'release-secrets/',
+  'dist/',
+  'output/',
+  'backend/output/',
+  'logs/',
+  'dogfood_real/',
+];
+
+const SECURITY_DOCUMENT_REVIEW_EXTENSIONS = new Set([
+  '.docx',
+  '.xlsx',
+  '.pptx',
+  '.pdf',
+  '.png',
+  '.jpg',
+  '.jpeg',
+]);
+
+const SECURITY_SECRET_KEYWORDS = /(?:secret|token|api[_-]?key|access[_-]?key|secret[_-]?key|app[_-]?secret|client[_-]?secret|private[_-]?key|tos[_-]?ak|tos[_-]?sk)/i;
+const SECURITY_SECRET_VALUE_PATTERN = /(?:secret|token|api[_-]?key|access[_-]?key|secret[_-]?key|app[_-]?secret|client[_-]?secret|private[_-]?key|tos[_-]?ak|tos[_-]?sk)\s*[:=]\s*["']?([^"'\s#`]+)["']?/i;
+const SECURITY_TOKEN_PATTERNS = [
+  /-----BEGIN [A-Z ]*PRIVATE KEY-----/,
+  /\bgh[pousr]_[A-Za-z0-9_]{20,}\b/,
+  /\bgithub_pat_[A-Za-z0-9_]{40,}\b/,
+  /\bsk-[A-Za-z0-9_-]{24,}\b/,
+  /\bxox[baprs]-[A-Za-z0-9-]{20,}\b/,
+  /\b(?:AKIA|ASIA)[A-Z0-9]{16}\b/,
+];
+const SECURITY_CONFIG_EXTENSIONS = new Set(['.json', '.yaml', '.yml', '.toml', '.ini', '.conf', '.config']);
 
 const IGNORABLE_LOCAL_STATUS_PATHS = new Set([
   '.yiyu-sync/settings.system_admin.json',
@@ -1199,6 +1260,135 @@ function createConflictRisk(kind: CollabConflictRisk['kind'], message: string): 
   return { kind, message };
 }
 
+function createSecurityIssue(
+  severity: CollabSecurityIssue['severity'],
+  category: string,
+  message: string,
+  recommendation: string,
+): CollabSecurityIssue {
+  return { severity, category, message, recommendation };
+}
+
+function normalizeSecurityPath(targetPath: string) {
+  return targetPath.replace(/\\/g, '/').replace(/^\/+/, '');
+}
+
+function isExampleEnvPath(targetPath: string) {
+  return SECURITY_EXAMPLE_ENV_FILES.has(path.basename(targetPath));
+}
+
+function looksLikePlaceholderSecret(value: string) {
+  const normalized = value.trim().replace(/^["']|["']$/g, '').toLowerCase();
+  if (!normalized) return true;
+  if (normalized.startsWith('<') && normalized.endsWith('>')) return true;
+  if (normalized.includes('${') || normalized.includes('process.env') || normalized.includes('os.environ')) return true;
+  if (['str', 'string', 'bool', 'boolean', 'true', 'false', 'none', 'null', 'undefined', 'optional'].includes(normalized)) return true;
+  if (normalized.length < 10) return true;
+  return [
+    'example',
+    'placeholder',
+    'changeme',
+    'change_me',
+    'your_',
+    'xxx',
+    'xxxx',
+    'dummy',
+    'test',
+    'todo',
+    '填入',
+    '替换',
+  ].some((marker) => normalized.includes(marker));
+}
+
+function readSmallTextFileForSecurity(repoPath: string, targetPath: string) {
+  const absolutePath = path.join(repoPath, targetPath);
+  try {
+    const stat = fs.statSync(absolutePath);
+    if (!stat.isFile() || stat.size > 512 * 1024) return '';
+    const buffer = fs.readFileSync(absolutePath);
+    if (buffer.includes(0)) return '';
+    return buffer.toString('utf8');
+  } catch {
+    return '';
+  }
+}
+
+function detectSecurityIssue(repoPath: string, targetPath: string, changeType: CollabFileChangeType): CollabSecurityIssue | null {
+  if (changeType === 'deleted') return null;
+  const normalizedPath = normalizeSecurityPath(targetPath);
+  const basename = path.basename(normalizedPath);
+  const lowerPath = normalizedPath.toLowerCase();
+  const extension = path.extname(lowerPath);
+
+  if ((basename === '.env' || basename.startsWith('.env.')) && !isExampleEnvPath(normalizedPath)) {
+    return createSecurityIssue(
+      'block',
+      'env_file',
+      '环境配置文件可能包含本机地址、密钥或账号信息，已从本次推送中排除。',
+      '请保留 .env.example 这类占位模板，真实配置留在本机或密钥管理系统。',
+    );
+  }
+  if (isExampleEnvPath(normalizedPath)) return null;
+
+  if (SECURITY_BLOCKED_PREFIXES.some((prefix) => lowerPath === prefix.slice(0, -1) || lowerPath.startsWith(prefix))) {
+    return createSecurityIssue(
+      'block',
+      'runtime_or_secret_path',
+      '运行时数据、发布密钥或内部同步目录不应进入公开源码仓库，已从本次推送中排除。',
+      '请把这类文件留在本机、对象存储或发布流程中，不要作为源码提交。',
+    );
+  }
+
+  if (SECURITY_BLOCKED_EXTENSIONS.has(extension)) {
+    return createSecurityIssue(
+      'block',
+      'sensitive_file_type',
+      '数据库、日志、证书或私钥类文件可能包含敏感信息，已从本次推送中排除。',
+      '如需共享结构，请提交脱敏样例或 .example 文件；如密钥曾进入仓库，请先轮换密钥。',
+    );
+  }
+
+  if (SECURITY_WARNING_EXTENSIONS.has(extension)) {
+    return createSecurityIssue(
+      'warn',
+      'installer_artifact',
+      '安装包不一定是敏感文件，但不建议作为普通源码改动提交。',
+      '请优先通过 GitHub Release 或火山云 TOS 发布 DMG/ZIP；确需入库时单独说明。',
+    );
+  }
+
+  if (SECURITY_DOCUMENT_REVIEW_EXTENSIONS.has(extension)) {
+    return createSecurityIssue(
+      'warn',
+      'review_binary_document',
+      '文档、截图或图片可能包含真实客户、账号或内部材料，推送前请人工确认。',
+      '确认无真实客户和内部数据后再推送；否则请脱敏或移出仓库。',
+    );
+  }
+
+  const content = readSmallTextFileForSecurity(repoPath, targetPath);
+  if (!content) return null;
+  if (SECURITY_TOKEN_PATTERNS.some((pattern) => pattern.test(content))) {
+    return createSecurityIssue(
+      'block',
+      'secret_pattern',
+      '文件内容疑似包含私钥、访问令牌或 API Key，已从本次推送中排除。',
+      '请删除真实密钥并改用环境变量或密钥管理；已经泄露过的密钥需要轮换。',
+    );
+  }
+  const secretMatch = content.match(SECURITY_SECRET_VALUE_PATTERN);
+  if (SECURITY_CONFIG_EXTENSIONS.has(extension) && secretMatch && SECURITY_SECRET_KEYWORDS.test(content) && !looksLikePlaceholderSecret(secretMatch[1] || '')) {
+    return createSecurityIssue(
+      'block',
+      'secret_assignment',
+      '文件内容疑似包含真实密钥配置，已从本次推送中排除。',
+      '请提交占位配置，并把真实值放在本机、云端密钥或系统钥匙串中。',
+    );
+  }
+
+  return null;
+}
+
 function createLocalFileChanges(snapshot: RepoSnapshot) {
   const remotePaths = new Set<string>();
   const remoteTypeByPath = new Map<string, ParsedDiffEntry['type']>();
@@ -1230,6 +1420,7 @@ function createLocalFileChanges(snapshot: RepoSnapshot) {
       groupLabel: group.label,
       summary: formatChangeSummary(entry.type, entry.previousPath),
       risk,
+      securityIssue: detectSecurityIssue(snapshot.gitRepoPath || snapshot.repoPath || '', entry.path, entry.type),
     } satisfies CollabFileChange;
   });
 }
@@ -1500,6 +1691,9 @@ export async function previewPushToMain(options: RepoOptions): Promise<PushPrevi
   const files = createLocalFileChanges(snapshot);
   const groups = countGroups(files);
   const effects = await buildEffectPreviews('push', snapshot, files);
+  const safeFiles = files.filter((file) => file.securityIssue?.severity !== 'block');
+  const blockedFiles = files.filter((file) => file.securityIssue?.severity === 'block');
+  const warningFiles = files.filter((file) => file.securityIssue?.severity === 'warn');
   let executionBlockReason: string | null = null;
   const notices: string[] = [];
   if (!snapshot.isConfigured) executionBlockReason = '还没有绑定源码目录，先选一个 Git 仓库后再继续。';
@@ -1507,11 +1701,20 @@ export async function previewPushToMain(options: RepoOptions): Promise<PushPrevi
   else if (!snapshot.isMainBranch) executionBlockReason = '当前不在 main 分支，先切回 main 再继续。';
   else if (snapshot.hasUnmergedPaths) executionBlockReason = '检测到 Git 冲突，先手工收口后再执行。';
   else if (!files.length && snapshot.aheadCount === 0) executionBlockReason = '当前没有可提交的本地文件改动。';
+  else if (files.length > 0 && safeFiles.length === 0 && snapshot.aheadCount === 0) {
+    executionBlockReason = '本次只发现被自动排除的高风险文件，没有可推送的安全修改。';
+  }
   if (!executionBlockReason && snapshot.aheadCount > 0) {
     notices.push(`你本地还有 ${snapshot.aheadCount} 个已提交但未推送的 commit。确认后会和这次勾选的改动一起推到 main。`);
   }
   if (!executionBlockReason && snapshot.behindCount > 0) {
     notices.push(`main 最新版本比你本地多 ${snapshot.behindCount} 个提交。确认后会先把远端 main 合进来，再继续把你勾选的本地修改推上去。`);
+  }
+  if (blockedFiles.length > 0) {
+    notices.push(`已自动排除 ${blockedFiles.length} 个高风险文件，不会进入本次提交；其余安全修改仍可推送。`);
+  }
+  if (warningFiles.length > 0) {
+    notices.push(`有 ${warningFiles.length} 个文件需要人工确认，通常是安装包、截图或文档类文件。`);
   }
   return {
     status,
@@ -1540,7 +1743,13 @@ export async function commitAndPushToMain(
   if (preview.executionBlockReason) {
     throw new Error(preview.executionBlockReason);
   }
-  const selectedPaths = normalizeSelectedPaths(payload.selectedPaths, preview.files);
+  let selectedPaths = normalizeSelectedPaths(payload.selectedPaths, preview.files);
+  const blockedPathSet = new Set(
+    preview.files
+      .filter((file) => file.securityIssue?.severity === 'block')
+      .map((file) => file.path),
+  );
+  selectedPaths = selectedPaths.filter((targetPath) => !blockedPathSet.has(targetPath));
   const message = payload.message.trim();
   if (!message && selectedPaths.length > 0) {
     throw new Error('请填写本次提交说明。');
