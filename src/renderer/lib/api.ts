@@ -2626,6 +2626,33 @@ export async function mergeEntityInto(
   });
 }
 
+// ★ ER v4 · 人工金标 verify (5/28 加, 权重最高的人工裁决)
+// status='canonical' = 这是真人物, 永远不被 LLM cluster 覆盖
+// status='noise'     = 这是 ASR 错误/不是真人物, 永久过滤
+// status='alias_of'  = 这是别名, 合并到 alias_target_id (内部触发 merge_entities)
+export interface EntityVerifyResult {
+  entityId: string;
+  verifiedStatus: string;
+  verifiedAt: string;
+  mergedInto?: string;
+  mentionsMoved?: number;
+  factsMoved?: number;
+}
+
+export async function verifyEntity(
+  entityId: string,
+  payload: {
+    status: 'canonical' | 'noise' | 'alias_of';
+    alias_target_id?: string | null;
+    reason?: string;
+  },
+): Promise<EntityVerifyResult> {
+  return request<EntityVerifyResult>(`/api/v1/entities/${entityId}/verify`, {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+}
+
 export async function getClientContradictions(
   clientId: string,
   options: {

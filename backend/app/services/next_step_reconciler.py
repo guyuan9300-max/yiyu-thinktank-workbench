@@ -20,7 +20,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
-from typing import Iterable
+from typing import Any, Iterable
 
 # ── 词表 ────────────────────────────────────────────────────────────────
 # 我方组织(固定 —— 本 app 属于益语智库,识别"我方"不算写死客户)
@@ -135,7 +135,97 @@ def quality_gate(actor: str, text: str, raw_id: str) -> tuple[str, str]:
 
 
 # ── 主体归一 + 方向 ────────────────────────────────────────────────────
-def _side_of(name: str, client_name_tokens: frozenset[str]) -> str:
+
+# ★ ER v4 (5/28): 三档 lookup 优先级
+#   Tier 2.A 人工金标 verified_canonical → 永远不被算法覆盖, 最高权重
+#   Tier 2.B 人工金标 verified_noise     → 直接 return 'noise' (ASR 错误)
+#   Tier 1   算法集中度 (entities.mention_count + client 分布)
+#   Tier 0   字符串匹配 client_name (旧逻辑兜底)
+def resolve_actor_side(name: str, client_id: str | None, db: Any | None) -> str | None:
+    """ER v4: 查 entities 表用人工金标 + 频次集中度判 side.
+
+    返回 'us' / 'client' / 'third_party' / 'noise' / None (没命中, 调用方 fallback).
+    """
+    if not name or not client_id or not db:
+        return None
+    n = name.strip()
+    if not n:
+        return None
+
+    # 剥常见后缀(老师/工/总/秘书长 等)
+    stripped = re.sub(r'(老师|秘书长|总监|主任|经理|总裁|工程师|工)$', '', n).strip()
+
+    try:
+        # Tier 2.A: 人工金标 verified_canonical (最高权重)
+        rows = db.fetchall(
+            """SELECT client_id, attributes_json
+               FROM entities
+               WHERE entity_type='person' AND verified_status='verified_canonical'
+               AND (display_name=? OR display_name=? OR aliases_json LIKE ? OR aliases_json LIKE ?)""",
+            (n, stripped, f'%"{n}"%', f'%"{stripped}"%'),
+        )
+        if rows:
+            r0 = rows[0]
+            row_cid = str(r0["client_id"])
+            if row_cid == client_id:
+                return "client"
+            return "third_party"
+
+        # Tier 2.B: 人工金标 verified_noise (ASR 错误等)
+        noise_row = db.fetchone(
+            """SELECT 1 FROM entities
+               WHERE entity_type='person' AND verified_status='verified_noise'
+               AND (display_name=? OR display_name=? OR aliases_json LIKE ? OR aliases_json LIKE ?)
+               LIMIT 1""",
+            (n, stripped, f'%"{n}"%', f'%"{stripped}"%'),
+        )
+        if noise_row:
+            return "noise"
+
+        # Tier 1: 算法集中度
+        if len(stripped) < 2:
+            return None
+        active_rows = db.fetchall(
+            """SELECT client_id, COALESCE(mention_count, 0) AS mc
+               FROM entities
+               WHERE entity_type='person' AND status='active'
+               AND (display_name=? OR display_name LIKE ? OR aliases_json LIKE ?)""",
+            (n, f'%{stripped}%', f'%"{stripped}"%'),
+        )
+        if not active_rows:
+            return None
+
+        by_client: dict[str, int] = {}
+        for r in active_rows:
+            c = str(r["client_id"] or "")
+            by_client[c] = by_client.get(c, 0) + int(r["mc"] or 0)
+        total = sum(by_client.values())
+        if total < 3:
+            return None
+
+        max_client_id = max(by_client, key=lambda c: by_client[c])
+        max_count = by_client[max_client_id]
+        concentration = max_count / total if total > 0 else 0.0
+        cross_count = len([c for c, v in by_client.items() if v >= 1])
+
+        if cross_count >= 3 and concentration < 0.5:
+            return "us"
+        if max_client_id == client_id and concentration >= 0.6 and max_count >= 5:
+            return "client"
+        if max_client_id != client_id and concentration >= 0.7:
+            return "third_party"
+        return None
+    except Exception:
+        return None
+
+
+def _side_of(name: str, client_name_tokens: frozenset[str],
+             client_id: str | None = None, db: Any | None = None) -> str:
+    # ★ ER v4: 优先 entities 查询 (Tier 2 + Tier 1)
+    er_result = resolve_actor_side(name, client_id, db)
+    if er_result is not None:
+        return er_result
+    # ── 旧字符串匹配(Tier 0 兜底) ──
     n = _norm(name)
     if not n:
         return "unknown"
@@ -150,21 +240,29 @@ def _side_of(name: str, client_name_tokens: frozenset[str]) -> str:
     return "unknown"
 
 
-def classify_direction(actor: str, text: str, client_name_tokens: frozenset[str]) -> tuple[str, str]:
-    """从 'X 向 Y: 内容' 或 actor=committer 推断 owner_side + action_direction。"""
+def classify_direction(actor: str, text: str, client_name_tokens: frozenset[str],
+                       client_id: str | None = None, db: Any | None = None) -> tuple[str, str]:
+    """从 'X 向 Y: 内容' 或 actor=committer 推断 owner_side + action_direction。
+
+    ★ ER v4 (5/28): 加 optional client_id + db, 让 _side_of 走 entities verified + 集中度。
+    """
     committer, recipient = actor, ""
     m = re.match(r"^(.+?)\s*[向→\-]+\s*(.+?)[:：]", text)
     if m:
         committer, recipient = m.group(1), m.group(2)
-    cs = _side_of(committer, client_name_tokens)
-    rs = _side_of(recipient, client_name_tokens) if recipient else "unknown"
+    cs = _side_of(committer, client_name_tokens, client_id, db)
+    rs = _side_of(recipient, client_name_tokens, client_id, db) if recipient else "unknown"
+    # ★ ER v4: noise = ASR 错误, 不应出现在 next-steps
+    if cs == "noise" or rs == "noise":
+        return "noise", "ignore"
     if "双方" in actor or "双方" in text or cs == "both":
         return "both", "confirm"
     if cs == "us":
-        return "us", "do"               # 我方承诺做
+        return "us", "do"
     if cs == "client":
-        # 客户答应给我方 → 我方要催/等
         return "client", "wait_for" if rs == "us" else "follow_up"
+    if cs == "third_party":
+        return "third_party", "follow_up"
     return "unknown", "unknown"
 
 
@@ -214,21 +312,32 @@ def reconcile(
     existing_task_titles: Iterable[str],
     client_name: str,
     medium_candidates: list[dict] | None = None,
+    client_id: str | None = None,  # ★ ER v4 (5/28): 传 client_id 让 classify_direction 走 entities 查询
+    db: Any | None = None,         # ★ ER v4: 传 db 让 _side_of 查 entities verified + 集中度
 ) -> dict[str, object]:
     """输入原始候选(dict: fingerprint/kind/actor/text/dueDate/severity/rawId),输出分层结果。
 
     medium_candidates: 会议抽取的 medium 项,单独走 needs_review(且仍过质量门挡碎片角色)。
+
+    ★ ER v4 (5/28): 可选传 client_id + db, classify_direction 会走 entities 表
+       优先级: 人工金标 > 频次集中度 > 字符串匹配兜底。
+       不传时退回纯字符串模式(向后兼容)。
     """
     client_tokens = frozenset(t for t in _ZH_TOKEN_RE.findall(client_name or "") if t not in _GENERIC_CLIENT)
 
     # 1) 质量门 + 主体方向
     valid: list[ReconciledItem] = []
     invalid_count = 0
+    noise_count = 0  # ★ ER v4: 标记被人工/算法判定为 ASR 错误的, 不进入 next-steps
     needs_review: list[ReconciledItem] = []
     for c in raw_candidates:
         actor, text = str(c.get("actor") or ""), str(c.get("text") or "")
         status, reason = quality_gate(actor, text, str(c.get("rawId") or ""))
-        owner_side, direction = classify_direction(actor, text, client_tokens)
+        owner_side, direction = classify_direction(actor, text, client_tokens, client_id, db)
+        # ★ ER v4: noise = 人工已标 verified_noise (ASR 错误), 直接过滤不走 needs_review
+        if owner_side == "noise":
+            noise_count += 1
+            continue
         item = ReconciledItem(
             fingerprint=str(c.get("fingerprint") or ""), kind=str(c.get("kind") or ""),
             actor=actor, text=text, due_date=str(c.get("dueDate") or ""),
@@ -320,6 +429,7 @@ def reconcile(
             "raw_candidates": len(raw_candidates),
             "valid_candidates": len(valid),
             "invalid_filtered": invalid_count,
+            "noise_filtered": noise_count,
             "representatives": len(representatives),
             "possible_duplicates": len(possible_duplicates),
             "matched_existing": matched_existing,

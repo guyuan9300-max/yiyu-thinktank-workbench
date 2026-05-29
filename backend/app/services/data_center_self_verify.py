@@ -172,24 +172,45 @@ def verify_entities_cluster(db: Any, ai: Any, client_id: str) -> dict[str, Any]:
 
 
 def _merge_entities(db: Any, canonical_id: str, dup_ids: list[str], now: str) -> None:
-    """把 dup_ids 合并到 canonical_id. 累计 mention_count + aliases, 把 dup 标记为 merged."""
+    """把 dup_ids 合并到 canonical_id. 累计 mention_count + aliases, 把 dup 标记为 merged.
+
+    ★ ER v4 人工金标层(5/28 加): 已 verified_canonical 的 entity 不能作为 dup 被合掉
+    (人工金标永远不被算法覆盖). verified_noise 的 dup 也跳过(已经被人工排除).
+    """
     canonical_row = db.fetchone(
-        "SELECT aliases_json, mention_count, display_name FROM entities WHERE id=?",
+        "SELECT aliases_json, mention_count, display_name, verified_status FROM entities WHERE id=?",
         (canonical_id,),
     )
     if not canonical_row:
+        return
+    # canonical 自己若已 verified_noise → 不应该作为 canonical(算法搞错了, 跳过整个合并)
+    canonical_verified = canonical_row["verified_status"]
+    if canonical_verified == "verified_noise":
+        logger.info("[_merge_entities] skip: canonical_id=%s is verified_noise", canonical_id)
         return
     aliases = _safe_loads(canonical_row["aliases_json"], [])
     if not isinstance(aliases, list):
         aliases = []
     total_mentions = int(canonical_row["mention_count"] or 0)
 
+    skipped_count = 0
     for dup_id in dup_ids:
         dup_row = db.fetchone(
-            "SELECT display_name, mention_count, aliases_json FROM entities WHERE id=?",
+            "SELECT display_name, mention_count, aliases_json, verified_status FROM entities WHERE id=?",
             (dup_id,),
         )
         if not dup_row:
+            continue
+        # ★ ER v4: 已 verified_canonical 的 entity 是人工金标, 不能被合掉
+        dup_verified = dup_row["verified_status"]
+        if dup_verified == "verified_canonical":
+            logger.info("[_merge_entities] skip dup_id=%s (verified_canonical, human gold standard)", dup_id)
+            skipped_count += 1
+            continue
+        # verified_noise 的 dup 也跳过(用户已排除, 不参与合并)
+        if dup_verified == "verified_noise":
+            logger.info("[_merge_entities] skip dup_id=%s (verified_noise)", dup_id)
+            skipped_count += 1
             continue
         dup_name = str(dup_row["display_name"] or "")
         if dup_name and dup_name not in aliases:
@@ -205,6 +226,9 @@ def _merge_entities(db: Any, canonical_id: str, dup_ids: list[str], now: str) ->
             "UPDATE entities SET status='merged', updated_at=? WHERE id=?",
             (now, dup_id),
         )
+
+    if skipped_count > 0:
+        logger.info("[_merge_entities] canonical=%s: skipped %d verified dups", canonical_id, skipped_count)
 
     db.execute(
         """UPDATE entities SET aliases_json=?, mention_count=?, updated_at=?

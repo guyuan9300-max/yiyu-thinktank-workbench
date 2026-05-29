@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useState } from 'react';
 
 import type { Entity, EntityMergeCandidate, EntityType } from '../../../shared/types';
-import { getClientEntities, getEntityMergeCandidates, mergeEntityInto } from '../../lib/api';
+import { getClientEntities, getEntityMergeCandidates, mergeEntityInto, verifyEntity } from '../../lib/api';
 
 type EntityListPanelProps = {
   clientId: string;
@@ -83,6 +83,34 @@ export function EntityListPanel({ clientId, refreshKey = 0 }: EntityListPanelPro
       cancelled = true;
     };
   }, [clientId, refreshKey, reloadKey]);
+
+  // ★ ER v4 · 人工金标 verify handler (5/28 加)
+  // 三种动作: canonical(真人物) / noise(ASR错误,永久过滤) / alias_of(同 X 合并)
+  const handleVerify = async (
+    entityId: string,
+    entityName: string,
+    status: 'canonical' | 'noise' | 'alias_of',
+  ) => {
+    if (status === 'alias_of') {
+      // alias_of 需要 prompt 让用户选 target — 简化版用 window.prompt
+      const targetId = window.prompt(`把"${entityName}"合并到哪个 entity? 输入 entity id:`);
+      if (!targetId) return;
+      try {
+        await verifyEntity(entityId, { status: 'alias_of', alias_target_id: targetId, reason: `用户标记别名: ${entityName} → ${targetId}` });
+        setReloadKey((v) => v + 1);
+      } catch (err) {
+        setError(err instanceof Error ? err.message : '别名合并失败');
+      }
+      return;
+    }
+    const reasonMap = { canonical: `用户确认是真人物: ${entityName}`, noise: `用户标记为 ASR 错误/非人物: ${entityName}` };
+    try {
+      await verifyEntity(entityId, { status, reason: reasonMap[status] });
+      setReloadKey((v) => v + 1);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : '标记失败');
+    }
+  };
 
   const handleMerge = async (
     survivingEntityId: string,
@@ -223,13 +251,44 @@ export function EntityListPanel({ clientId, refreshKey = 0 }: EntityListPanelPro
                 <li
                   key={entity.id}
                   className={`flex items-center justify-between gap-2 px-3 py-1.5 ${idx % 2 === 1 ? 'bg-[#FAFAFA]' : 'bg-white'}`}
-                  title={`置信度 ${(entity.confidence * 100).toFixed(0)}% · 最近 ${formatRelative(entity.lastSeenAt)}`}
+                  title={`置信度 ${(entity.confidence * 100).toFixed(0)}% · 最近 ${formatRelative(entity.lastSeenAt)} · id=${entity.id}`}
                 >
                   <span className="truncate text-[12px] font-medium text-gray-800">
                     {entity.displayName}
                   </span>
-                  <span className="shrink-0 text-[10px] font-medium text-gray-400">
-                    {entity.mentionCount} 次 · {formatRelative(entity.lastSeenAt)}
+                  <span className="flex shrink-0 items-center gap-2">
+                    <span className="text-[10px] font-medium text-gray-400">
+                      {entity.mentionCount} 次 · {formatRelative(entity.lastSeenAt)}
+                    </span>
+                    {/* ★ ER v4 · 3 按钮人工金标(只对 person 类显示) */}
+                    {type === 'person' && (
+                      <span className="flex shrink-0 gap-0.5">
+                        <button
+                          type="button"
+                          onClick={() => void handleVerify(entity.id, entity.displayName, 'canonical')}
+                          className="rounded px-1 py-0.5 text-[9px] font-semibold text-emerald-700 ring-1 ring-emerald-200 hover:bg-emerald-50"
+                          title={`确认"${entity.displayName}"是真人物(永久, 不被 LLM 覆盖)`}
+                        >
+                          ✓真人
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => void handleVerify(entity.id, entity.displayName, 'noise')}
+                          className="rounded px-1 py-0.5 text-[9px] font-semibold text-rose-700 ring-1 ring-rose-200 hover:bg-rose-50"
+                          title={`标记"${entity.displayName}"为 ASR 错误(永久过滤, 不再出现在下一步建议)`}
+                        >
+                          ✗错误
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => void handleVerify(entity.id, entity.displayName, 'alias_of')}
+                          className="rounded px-1 py-0.5 text-[9px] font-semibold text-amber-700 ring-1 ring-amber-200 hover:bg-amber-50"
+                          title={`合并"${entity.displayName}"到另一个 entity (会提示输入 target id)`}
+                        >
+                          =同X
+                        </button>
+                      </span>
+                    )}
                   </span>
                 </li>
               ))}

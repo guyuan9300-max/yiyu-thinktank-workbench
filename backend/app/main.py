@@ -28500,6 +28500,8 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 existing_task_titles=task_titles,
                 client_name=client_name,
                 medium_candidates=medium_items,
+                client_id=client_id,    # ★ ER v4 (5/28): 让 reconciler 查 entities verified + 集中度
+                db=state.db,            # ★ ER v4: 传 db 走 _side_of 三档 lookup
             )
             clean_items = reconciled["candidate_next_steps"]
         except Exception:
@@ -41079,6 +41081,125 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             triplesMoved=result["triples_moved"],
             factsMoved=result["facts_moved"],
         )
+
+    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    # ★ ER v4 · 人工金标 verify 端点 (5/28 加)
+    # 用户对 entity 做"权重最高"的人工裁决: 真人物 / ASR错误 / 别名 三选一
+    # 一旦 verify, 永远不被 LLM 自动 cluster 覆盖(见 data_center_self_verify._merge_entities)
+    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    @app.post("/api/v1/entities/{entity_id}/verify")
+    def verify_entity(
+        entity_id: str,
+        payload: dict,
+    ) -> dict:
+        """ER v4 人工金标 verify.
+
+        body: {
+          "status": "canonical" | "noise" | "alias_of",
+          "alias_target_id": str | None,  # 只在 status='alias_of' 时需要
+          "reason": str | None,
+        }
+
+        返回: { entityId, verifiedStatus, verifiedAt, mergedInto?, alsoTouched: [...] }
+        """
+        status_raw = str(payload.get("status") or "").strip()
+        reason = str(payload.get("reason") or "").strip()[:500]
+        alias_target_id = payload.get("alias_target_id")
+
+        if status_raw not in {"canonical", "noise", "alias_of"}:
+            raise HTTPException(status_code=400, detail="status 必须是 canonical / noise / alias_of")
+
+        # 查实体
+        row = state.db.fetchone("SELECT id, client_id, display_name FROM entities WHERE id=?", (entity_id,))
+        if not row:
+            raise HTTPException(status_code=404, detail="entity not found")
+        client_id = str(row["client_id"])
+
+        from datetime import datetime, timezone
+        now_iso = datetime.now(timezone.utc).isoformat()
+        # 当前用户 id(简化:不强校验,用 local_identities 的第一个)
+        u_row = state.db.fetchone("SELECT id FROM local_identities LIMIT 1")
+        verified_by = str(u_row["id"]) if u_row else "system"
+
+        if status_raw == "canonical":
+            # 标记为人工金标 — 永远不被 cluster 改
+            state.db.execute(
+                """UPDATE entities SET
+                   verified_status='verified_canonical',
+                   verified_by=?, verified_at=?, verified_reason=?, updated_at=?
+                   WHERE id=?""",
+                (verified_by, now_iso, reason or "user marked as canonical", now_iso, entity_id),
+            )
+            return {
+                "entityId": entity_id,
+                "verifiedStatus": "verified_canonical",
+                "verifiedAt": now_iso,
+            }
+
+        elif status_raw == "noise":
+            # 标记为 ASR 错误 / 不是真人物 — 永久过滤, reconciler 跳过
+            state.db.execute(
+                """UPDATE entities SET
+                   verified_status='verified_noise',
+                   verified_by=?, verified_at=?, verified_reason=?,
+                   status='ignored', updated_at=?
+                   WHERE id=?""",
+                (verified_by, now_iso, reason or "user marked as noise (ASR error)", now_iso, entity_id),
+            )
+            return {
+                "entityId": entity_id,
+                "verifiedStatus": "verified_noise",
+                "verifiedAt": now_iso,
+            }
+
+        else:  # alias_of
+            if not alias_target_id:
+                raise HTTPException(status_code=400, detail="alias_of 时必须提供 alias_target_id")
+            target_row = state.db.fetchone("SELECT id, client_id FROM entities WHERE id=?", (str(alias_target_id),))
+            if not target_row:
+                raise HTTPException(status_code=404, detail="alias_target entity not found")
+            if str(target_row["client_id"]) != client_id:
+                raise HTTPException(status_code=400, detail="alias_target 必须同客户")
+
+            # 1. 标记当前 entity 为 alias
+            state.db.execute(
+                """UPDATE entities SET
+                   verified_status=?, verified_by=?, verified_at=?, verified_reason=?, updated_at=?
+                   WHERE id=?""",
+                (f"verified_alias_of:{alias_target_id}", verified_by, now_iso,
+                 reason or f"user marked as alias of {alias_target_id}", now_iso, entity_id),
+            )
+            # 2. 标记 target 为 canonical (升级)
+            state.db.execute(
+                """UPDATE entities SET
+                   verified_status='verified_canonical', verified_by=?, verified_at=?,
+                   verified_reason=?, updated_at=?
+                   WHERE id=?""",
+                (verified_by, now_iso,
+                 f"auto-marked canonical because {entity_id} marked as alias", now_iso,
+                 str(alias_target_id)),
+            )
+            # 3. 真合并实体(复用 entity_merger.merge_entities)
+            try:
+                from app.services.entity_merger import merge_entities as _merge_entities_strict
+                result = _merge_entities_strict(
+                    state.db.conn,
+                    client_id=client_id,
+                    surviving_id=str(alias_target_id),
+                    merged_id=entity_id,
+                    merge_reason=f"human verify alias_of (by {verified_by}): {reason}",
+                )
+                state.db.conn.commit()
+                return {
+                    "entityId": entity_id,
+                    "verifiedStatus": f"verified_alias_of:{alias_target_id}",
+                    "verifiedAt": now_iso,
+                    "mergedInto": str(alias_target_id),
+                    "mentionsMoved": result.get("mentions_moved", 0),
+                    "factsMoved": result.get("facts_moved", 0),
+                }
+            except ValueError as exc:
+                raise HTTPException(status_code=400, detail=str(exc))
 
     @app.get("/api/v1/clients/{client_id}/relationships", response_model=RelationshipListResponseRecord)
     def get_client_relationships(
