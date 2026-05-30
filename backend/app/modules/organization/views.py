@@ -23,10 +23,11 @@ VIEWS_SQL = """
 -- ══════════════════════════════════════════════════════════════════════════════
 
 -- 1) v_active_clients:lifecycle 守卫(frozen 不出现)
+-- P0-freeze 统一:按 stage 过滤(云安全唯一真相源),取代 v1.0 会被云端覆盖的 frozen_at。
 DROP VIEW IF EXISTS v_active_clients;
 CREATE VIEW v_active_clients AS
   SELECT * FROM clients
-  WHERE frozen_at IS NULL;
+  WHERE stage != 'frozen';
 
 -- 2) v_user_visible_clients:active client × project member 关联
 --    user filter 在 Repository 加:WHERE u.user_id = ? 或 WHERE u.user_id IS NULL OR u.user_id = ?
