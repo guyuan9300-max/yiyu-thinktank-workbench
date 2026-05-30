@@ -47,9 +47,15 @@ from app.models import (
     ConsultationKnowledgeRequestRecord,
     ConsultationKnowledgeRequestUpdatePayload,
     ConsultationMissingContextRecord,
+    AppCheckinPayload,
+    AppInstallRecord,
+    ReleaseCreatePayload,
+    ReleaseRecord,
+    ReleaseUpdatePayload,
     SoftwareFeedbackCreatePayload,
     SoftwareFeedbackRecord,
     SoftwareFeedbackUpdatePayload,
+    UpdatePolicyResponse,
     DepartmentOption,
     OrgInviteResolveResult,
     EmployeeRecord,
@@ -1612,6 +1618,44 @@ def _software_feedback_row_or_404(state: AppState, feedback_id: str, organizatio
     )
     if row is None:
         raise HTTPException(status_code=404, detail="Feedback not found")
+    return row
+
+
+def _app_install_record(row) -> AppInstallRecord:
+    return AppInstallRecord(
+        installId=str(row["install_id"]),
+        organizationId=str(row["organization_id"]),
+        userId=str(row["user_id"]) if row["user_id"] else None,
+        platform=str(row["platform"] or ""),
+        arch=str(row["arch"] or ""),
+        appVersion=str(row["app_version"] or ""),
+        channel=str(row["channel"] or "stable"),
+        firstSeenAt=str(row["first_seen_at"]),
+        lastSeenAt=str(row["last_seen_at"]),
+    )
+
+
+def _release_record(row) -> ReleaseRecord:
+    return ReleaseRecord(
+        id=str(row["id"]),
+        version=str(row["version"]),
+        channel=str(row["channel"]),
+        status=str(row["status"]),
+        platforms=json.loads(row["platforms_json"] or "[]"),
+        forceUpdate=bool(row["force_update"]),
+        changelogUser=str(row["changelog_user"] or ""),
+        changelogInternal=str(row["changelog_internal"] or ""),
+        createdByUserId=str(row["created_by_user_id"]) if row["created_by_user_id"] else None,
+        publishedAt=str(row["published_at"]) if row["published_at"] else None,
+        createdAt=str(row["created_at"]),
+        updatedAt=str(row["updated_at"]),
+    )
+
+
+def _release_row_or_404(state: AppState, release_id: str):
+    row = state.db.fetchone("SELECT * FROM app_releases WHERE id = ?", (release_id,))
+    if row is None:
+        raise HTTPException(status_code=404, detail="Release not found")
     return row
 
 
@@ -16233,6 +16277,172 @@ def create_app() -> FastAPI:
         return _software_feedback_record(
             _software_feedback_row_or_404(state, feedback_id, current_user.organizationId)
         )
+
+    # ── App Installs (客户端身份上报 → 当前版本/安装数 KPI + 定向推送目标) ───
+
+    @app.post("/api/v1/app/checkin", response_model=AppInstallRecord)
+    def app_checkin(
+        payload: AppCheckinPayload,
+        current_user: SessionUser = Depends(lambda authorization=Header(default=None): _require_auth(app, authorization)),
+    ) -> AppInstallRecord:
+        timestamp = now_iso()
+        state.db.execute(
+            """
+            INSERT INTO app_installs (
+                install_id, organization_id, user_id, platform, arch, app_version, channel,
+                first_seen_at, last_seen_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(install_id) DO UPDATE SET
+                organization_id = excluded.organization_id,
+                user_id = excluded.user_id,
+                platform = excluded.platform,
+                arch = excluded.arch,
+                app_version = excluded.app_version,
+                channel = excluded.channel,
+                last_seen_at = excluded.last_seen_at
+            """,
+            (
+                payload.installId,
+                current_user.organizationId,
+                current_user.id,
+                payload.platform,
+                payload.arch,
+                payload.appVersion,
+                payload.channel,
+                timestamp,
+                timestamp,
+            ),
+        )
+        row = state.db.fetchone("SELECT * FROM app_installs WHERE install_id = ?", (payload.installId,))
+        return _app_install_record(row)
+
+    @app.get("/api/v1/app/installs", response_model=list[AppInstallRecord])
+    def list_app_installs(
+        platform: str | None = Query(default=None),
+        current_user: SessionUser = Depends(lambda authorization=Header(default=None): _require_admin(app, authorization)),
+    ) -> list[AppInstallRecord]:
+        query = ["SELECT * FROM app_installs WHERE organization_id = ?"]
+        params: list[object] = [current_user.organizationId]
+        if platform:
+            query.append("AND platform = ?")
+            params.append(platform)
+        query.append("ORDER BY last_seen_at DESC")
+        rows = state.db.fetchall(" ".join(query), tuple(params))
+        return [_app_install_record(row) for row in rows]
+
+    # ── App Releases (发版记录 + 客户端 update-policy 解析) ───
+    # v1: 按渠道(internal/beta/stable) 解析最新 published 版本; 逐组织灰度为后续增量.
+
+    @app.get("/api/v1/app/update-policy", response_model=UpdatePolicyResponse)
+    def app_update_policy(
+        platform: str = Query(...),
+        channel: str = Query(default="stable"),
+        current_user: SessionUser = Depends(lambda authorization=Header(default=None): _require_auth(app, authorization)),
+    ) -> UpdatePolicyResponse:
+        rows = state.db.fetchall(
+            "SELECT * FROM app_releases WHERE channel = ? AND status = 'published' ORDER BY published_at DESC",
+            (channel,),
+        )
+        for row in rows:
+            platforms = json.loads(row["platforms_json"] or "[]")
+            if not platforms or platform in platforms:
+                return UpdatePolicyResponse(
+                    hasUpdate=True,
+                    version=str(row["version"]),
+                    forceUpdate=bool(row["force_update"]),
+                    changelogUser=str(row["changelog_user"] or ""),
+                    publishedAt=str(row["published_at"]) if row["published_at"] else None,
+                )
+        return UpdatePolicyResponse(hasUpdate=False)
+
+    @app.get("/api/v1/app/releases", response_model=list[ReleaseRecord])
+    def list_app_releases(
+        current_user: SessionUser = Depends(lambda authorization=Header(default=None): _require_admin(app, authorization)),
+    ) -> list[ReleaseRecord]:
+        rows = state.db.fetchall("SELECT * FROM app_releases ORDER BY created_at DESC")
+        return [_release_record(row) for row in rows]
+
+    @app.post("/api/v1/app/releases", response_model=ReleaseRecord)
+    def create_app_release(
+        payload: ReleaseCreatePayload,
+        current_user: SessionUser = Depends(lambda authorization=Header(default=None): _require_admin(app, authorization)),
+    ) -> ReleaseRecord:
+        release_id = new_id("rel")
+        timestamp = now_iso()
+        state.db.execute(
+            """
+            INSERT INTO app_releases (
+                id, version, channel, status, platforms_json, force_update,
+                changelog_user, changelog_internal, created_by_user_id, created_at, updated_at
+            ) VALUES (?, ?, ?, 'draft', ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                release_id,
+                payload.version.strip(),
+                payload.channel,
+                json.dumps(payload.platforms),
+                1 if payload.forceUpdate else 0,
+                payload.changelogUser,
+                payload.changelogInternal,
+                current_user.id,
+                timestamp,
+                timestamp,
+            ),
+        )
+        _log_audit(
+            state,
+            "app_release.created",
+            actor_user_id=current_user.id,
+            target_user_id=None,
+            detail={"releaseId": release_id, "version": payload.version, "channel": payload.channel},
+        )
+        return _release_record(_release_row_or_404(state, release_id))
+
+    @app.post("/api/v1/app/releases/{release_id}", response_model=ReleaseRecord)
+    def update_app_release(
+        release_id: str,
+        payload: ReleaseUpdatePayload,
+        current_user: SessionUser = Depends(lambda authorization=Header(default=None): _require_admin(app, authorization)),
+    ) -> ReleaseRecord:
+        row = _release_row_or_404(state, release_id)
+        new_status = payload.status or str(row["status"])
+        new_channel = payload.channel or str(row["channel"])
+        platforms_json = json.dumps(payload.platforms) if payload.platforms is not None else str(row["platforms_json"])
+        force_update = (1 if payload.forceUpdate else 0) if payload.forceUpdate is not None else int(row["force_update"])
+        changelog_user = payload.changelogUser if payload.changelogUser is not None else str(row["changelog_user"])
+        changelog_internal = payload.changelogInternal if payload.changelogInternal is not None else str(row["changelog_internal"])
+        # 首次进入 published 落发布时间戳; 回滚等其它状态保留原值
+        published_at = row["published_at"]
+        if new_status == "published" and not row["published_at"]:
+            published_at = now_iso()
+        timestamp = now_iso()
+        state.db.execute(
+            """
+            UPDATE app_releases
+            SET status = ?, channel = ?, platforms_json = ?, force_update = ?,
+                changelog_user = ?, changelog_internal = ?, published_at = ?, updated_at = ?
+            WHERE id = ?
+            """,
+            (
+                new_status,
+                new_channel,
+                platforms_json,
+                force_update,
+                changelog_user,
+                changelog_internal,
+                published_at,
+                timestamp,
+                release_id,
+            ),
+        )
+        _log_audit(
+            state,
+            "app_release.updated",
+            actor_user_id=current_user.id,
+            target_user_id=None,
+            detail={"releaseId": release_id, "status": new_status, "channel": new_channel},
+        )
+        return _release_record(_release_row_or_404(state, release_id))
 
     # ── Consultation Chat (real AI) ─────────────────
 

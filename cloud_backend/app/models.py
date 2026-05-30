@@ -29,6 +29,8 @@ ConsultationKnowledgeRequestStatus = Literal["pending", "processing", "completed
 FeedbackCategory = Literal["bug", "lag", "inaccurate", "suggestion"]
 FeedbackSeverity = Literal["low", "medium", "high", "critical"]
 FeedbackStatus = Literal["open", "triaging", "in_progress", "resolved", "wontfix"]
+ReleaseChannel = Literal["internal", "beta", "stable"]
+ReleaseStatus = Literal["draft", "testing", "published", "rolled_back"]
 SmartInputIntent = Literal["task_schedule", "record_note", "unknown"]
 
 
@@ -741,6 +743,67 @@ class SoftwareFeedbackRecord(BaseModel):
     resolvedAt: str | None = None
     createdAt: str
     updatedAt: str
+
+
+class AppCheckinPayload(BaseModel):
+    installId: str = Field(min_length=1)
+    platform: str = ""
+    arch: str = ""
+    appVersion: str = ""
+    channel: str = "stable"
+
+
+class AppInstallRecord(BaseModel):
+    installId: str
+    organizationId: str
+    userId: str | None = None
+    platform: str = ""
+    arch: str = ""
+    appVersion: str = ""
+    channel: str = "stable"
+    firstSeenAt: str
+    lastSeenAt: str
+
+
+class ReleaseCreatePayload(BaseModel):
+    version: str = Field(min_length=1)
+    channel: ReleaseChannel = "stable"
+    platforms: list[str] = Field(default_factory=list)
+    forceUpdate: bool = False
+    changelogUser: str = ""
+    changelogInternal: str = ""
+
+
+class ReleaseUpdatePayload(BaseModel):
+    status: ReleaseStatus | None = None
+    channel: ReleaseChannel | None = None
+    platforms: list[str] | None = None
+    forceUpdate: bool | None = None
+    changelogUser: str | None = None
+    changelogInternal: str | None = None
+
+
+class ReleaseRecord(BaseModel):
+    id: str
+    version: str
+    channel: ReleaseChannel = "stable"
+    status: ReleaseStatus = "draft"
+    platforms: list[str] = Field(default_factory=list)
+    forceUpdate: bool = False
+    changelogUser: str = ""
+    changelogInternal: str = ""
+    createdByUserId: str | None = None
+    publishedAt: str | None = None
+    createdAt: str
+    updatedAt: str
+
+
+class UpdatePolicyResponse(BaseModel):
+    hasUpdate: bool = False
+    version: str | None = None
+    forceUpdate: bool = False
+    changelogUser: str = ""
+    publishedAt: str | None = None
 
 
 class TaskAttachmentTranscriptionResponse(BaseModel):

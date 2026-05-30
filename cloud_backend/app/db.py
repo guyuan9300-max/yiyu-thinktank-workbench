@@ -1432,6 +1432,42 @@ class Database:
                 CREATE INDEX IF NOT EXISTS idx_software_feedback_org_status
                     ON software_feedback(organization_id, status, severity, updated_at DESC);
 
+                -- 客户端安装上报 (启动/心跳) → admin-v2「当前版本/安装数/覆盖组织」KPI + 定向推送目标
+                CREATE TABLE IF NOT EXISTS app_installs (
+                    install_id TEXT PRIMARY KEY,
+                    organization_id TEXT NOT NULL,
+                    user_id TEXT,
+                    platform TEXT NOT NULL DEFAULT '',
+                    arch TEXT NOT NULL DEFAULT '',
+                    app_version TEXT NOT NULL DEFAULT '',
+                    channel TEXT NOT NULL DEFAULT 'stable',
+                    first_seen_at TEXT NOT NULL,
+                    last_seen_at TEXT NOT NULL,
+                    FOREIGN KEY(organization_id) REFERENCES organizations(id) ON DELETE CASCADE,
+                    FOREIGN KEY(user_id) REFERENCES employee_accounts(id) ON DELETE SET NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_app_installs_org_seen
+                    ON app_installs(organization_id, last_seen_at DESC);
+
+                -- 发版记录 (全局软件版本) → admin-v2「版本管理」+ 客户端 update-policy 解析源
+                CREATE TABLE IF NOT EXISTS app_releases (
+                    id TEXT PRIMARY KEY,
+                    version TEXT NOT NULL,
+                    channel TEXT NOT NULL DEFAULT 'stable',
+                    status TEXT NOT NULL DEFAULT 'draft',
+                    platforms_json TEXT NOT NULL DEFAULT '[]',
+                    force_update INTEGER NOT NULL DEFAULT 0,
+                    changelog_user TEXT NOT NULL DEFAULT '',
+                    changelog_internal TEXT NOT NULL DEFAULT '',
+                    created_by_user_id TEXT,
+                    published_at TEXT,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    FOREIGN KEY(created_by_user_id) REFERENCES employee_accounts(id) ON DELETE SET NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_app_releases_channel_status
+                    ON app_releases(channel, status, published_at DESC);
+
                 -- Phase 1.5c · 战略陪伴叙事面板 (组织共享, A/B 账号同源)
                 -- 每个客户最新版的 6 维度故事网, 由 LLM 基于关系网生成, 多人共同编织
                 CREATE TABLE IF NOT EXISTS client_narrative_versions (
