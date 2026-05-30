@@ -2695,7 +2695,7 @@ def _map_profile_tags(intent: GeneratedSearchIntent, hit: CandidateHit, body_tex
 def _profile_gap_map_snapshot(db: Database, scope: IntelligenceSearchScope) -> dict[str, object]:
     client, project = _scope_rows(db, scope)
     project_rows = [project] if project else [
-        _row_dict(row)
+        dict(row)
         for row in db.fetchall(
             "SELECT name, goal, description, keywords_json FROM project_modules WHERE client_id = ? ORDER BY updated_at DESC LIMIT 8",
             (scope.client_id,),
