@@ -20197,10 +20197,16 @@ export default function App() {
       const value = typeof nextValue === 'function' ? nextValue(previous) : nextValue;
       dispatchWorkspaceClientUi({ type: 'setAnswerActionState', clientId: currentClientId, value });
     };
-    const [isTemplateFilling, setIsTemplateFilling] = useState(false);
     const templateFillDialog = currentClientId
       ? (workspaceClientUiState.templateFillStateByClient[currentClientId] as TemplateFillDialogState | null | undefined) || null
       : null;
+    // 单一真相源:「是否在填写」从按客户存的 templateFillDialog 派生, 不再用独立全局 useState。
+    // 修复:切到别的项目再切回后, 全局 isTemplateFilling 卡 true → 按钮灰、上方进度条与真实状态脱节。
+    const isTemplateFilling = !!(
+      templateFillDialog?.open
+      && templateFillDialog.stage !== 'completed'
+      && templateFillDialog.stage !== 'failed'
+    );
     const setTemplateFillDialog = (
       nextValue: TemplateFillDialogState | null | ((previous: TemplateFillDialogState | null) => TemplateFillDialogState | null),
     ) => {
@@ -20992,7 +20998,6 @@ export default function App() {
           consecutivePollFailures = 0;
           setTemplateFillDialog((previous) => buildTemplateFillDialogFromRun(run, previous));
           const terminal = run.status === 'completed' || run.status === 'failed';
-          setIsTemplateFilling(!terminal);
           if (terminal) {
             if (run.status === 'completed') {
               flash('success', `模板已填写：${run.filledCount}/${run.fieldCount} 个字段`);
@@ -21056,7 +21061,6 @@ export default function App() {
                 }
               : previous,
           );
-          setIsTemplateFilling(false);
           flash('error', detail);
         }
       };
@@ -22210,7 +22214,6 @@ export default function App() {
         });
       }
       try {
-        setIsTemplateFilling(true);
         const run = await startClientTemplateFill(currentClientId, templatePath);
         if (shouldShowDialog) {
           setTemplateFillDialog((previous) =>
@@ -22235,7 +22238,6 @@ export default function App() {
           }));
         }
         flash('error', detail);
-        setIsTemplateFilling(false);
         return 'error' as const;
       }
     };
