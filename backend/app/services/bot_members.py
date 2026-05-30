@@ -249,6 +249,11 @@ def ensure_bot_schema(db: _DbLike) -> None:
         try:
             db.execute(sql)
         except Exception as exc:
+            # ALTER TABLE ADD COLUMN 在列已存在时报 "duplicate column"——这些是给旧库的
+            # 迁移语句,而 CREATE TABLE 已含同名列,故对新库必然重复。这是预期情况,
+            # 静默跳过,避免每次启动假报 "failed" 噪音;真失败仍 warn 可见。
+            if "duplicate column" in str(exc).lower():
+                continue
             logger.warning("ensure_bot_schema failed for stmt: %s", exc)
 
 
