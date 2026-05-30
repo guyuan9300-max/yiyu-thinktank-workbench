@@ -1729,6 +1729,31 @@ def _parse_date_only(value: str | None) -> datetime.date | None:
         return None
 
 
+def parse_task_date_value(value: str | None) -> datetime | None:
+    """解析任务日期字符串为 datetime(date-only 串补 T00:00:00);失败返回 None。
+
+    返回 datetime(带 .timestamp()),供按截止日排序/逾期判断使用。
+    与局部 parse_task_date(11207)同逻辑,提为模块级供 _sort_tasks_for_view 等复用。
+    """
+    if not value:
+        return None
+    candidate = f"{value}T00:00:00" if len(value) <= 10 else value
+    try:
+        return datetime.fromisoformat(candidate)
+    except ValueError:
+        return None
+
+
+def is_task_overdue(task: TaskRecord) -> bool:
+    """任务是否逾期:有截止日、未完成(status != done)、且截止日早于今天。"""
+    if (task.status or "") == "done":
+        return False
+    due = parse_task_date_value(task.dueDate)
+    if due is None:
+        return False
+    return due.date() < datetime.now().date()
+
+
 def _week_bounds(week_label: str) -> tuple[datetime.date, datetime.date] | None:
     match = re.match(r"^(\d{4})-W(\d{2})$", week_label.strip())
     if not match:
