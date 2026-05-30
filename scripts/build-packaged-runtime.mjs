@@ -26,7 +26,43 @@ const requirementsPath = path.join(runtimeRoot, RUNTIME_BACKEND_REQUIREMENTS_FIL
 const binaryRequirementsPath = path.join(runtimeRoot, 'backend-requirements-binary.txt');
 const manifestPath = path.join(runtimeRoot, RUNTIME_SEED_MANIFEST_FILE);
 const sourceWheelPackages = new Set(['crcmod', 'tos']);
-const extraBinaryWheelSpecs = ['sherpa-onnx-core==1.13.1'];
+const IS_WIN = process.platform === 'win32';
+// sherpa-onnx-core 是 mac 本地 ASR 的底层补充包;Windows 走云端豆包 ASR,跳过。
+const extraBinaryWheelSpecs = IS_WIN ? [] : ['sherpa-onnx-core==1.13.1'];
+
+// 平台布局描述符:uv 管理的 python-build-standalone 目录结构按 OS 不同。
+// Mac 分支与历史完全一致;Windows 为并行新增。
+const LAYOUT = IS_WIN
+  ? {
+      seedPythonExe: 'python.exe',                       // seed 根目录下
+      venvPythonExe: path.join('Scripts', 'python.exe'), // venv 下
+      libPythonRel: null,                                // win 链 python3xx.dll,venv 不需手动拷
+      signMachO: false,                                  // win 无 .so/.dylib 公证需求
+    }
+  : {
+      seedPythonExe: path.join('bin', 'python3.11'),
+      venvPythonExe: path.join('bin', 'python'),
+      libPythonRel: path.join('lib', 'libpython3.11.dylib'),
+      signMachO: true,
+    };
+
+function dirSizeHuman(rootDir) {
+  // 跨平台目录体积(替代 mac 专属 du -sh)
+  let bytes = 0;
+  const stack = [rootDir];
+  while (stack.length) {
+    const dir = stack.pop();
+    let entries;
+    try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { continue; }
+    for (const e of entries) {
+      const full = path.join(dir, e.name);
+      if (e.isSymbolicLink()) continue;
+      if (e.isDirectory()) { stack.push(full); continue; }
+      try { bytes += fs.statSync(full).size; } catch {}
+    }
+  }
+  return `${(bytes / (1024 * 1024)).toFixed(1)}MB`;
+}
 
 function run(command, args, options = {}) {
   return execFileSync(command, args, {
@@ -37,9 +73,11 @@ function run(command, args, options = {}) {
   });
 }
 
-function requireMacArm64() {
-  if (process.platform !== 'darwin' || process.arch !== 'arm64') {
-    throw new Error(`packaged runtime seed currently supports macOS arm64 only; got ${process.platform}/${process.arch}`);
+function requireSupportedPlatform() {
+  const ok = (process.platform === 'darwin' && process.arch === 'arm64')
+    || (process.platform === 'win32' && process.arch === 'x64');
+  if (!ok) {
+    throw new Error(`packaged runtime seed supports macOS/arm64 or Windows/x64; got ${process.platform}/${process.arch}`);
   }
 }
 
@@ -88,6 +126,16 @@ function resolveUvManagedPython() {
     throw new Error('uv did not return a CPython 3.11 path');
   }
   const pythonPath = fs.realpathSync(raw);
+  if (IS_WIN) {
+    if (!pythonPath.toLowerCase().endsWith('python.exe')) {
+      throw new Error(`expected uv-managed python.exe, got: ${pythonPath}`);
+    }
+    const seedRoot = path.dirname(pythonPath);  // win: python.exe 在 seed 根目录
+    if (!fs.existsSync(path.join(seedRoot, 'Lib'))) {
+      throw new Error(`invalid uv-managed CPython seed root (no Lib/): ${seedRoot}`);
+    }
+    return { pythonPath, seedRoot, version: run(pythonPath, ['--version']).trim() };
+  }
   if (!pythonPath.endsWith('/bin/python3.11')) {
     throw new Error(`expected uv-managed python3.11 executable, got: ${pythonPath}`);
   }
@@ -153,7 +201,7 @@ function writeBinaryOnlyRequirements() {
 }
 
 function main() {
-  requireMacArm64();
+  requireSupportedPlatform();
   const python = resolveUvManagedPython();
   fs.rmSync(runtimeRoot, { recursive: true, force: true });
   fs.mkdirSync(runtimeRoot, { recursive: true });
@@ -244,22 +292,24 @@ function main() {
   // venv 用 --copies (而不是 symlink) + seed python,客户机 cp -r 后改一下 pyvenv.cfg 即可使用。
   console.log('[build-packaged-runtime] creating pre-built backend-venv');
   // 用 packaged-runtime 里拷过来的 seed python 创建 venv —— 保证版本一致
-  const seedPythonPath = path.join(pythonSeedDir, 'bin', 'python3.11');
+  const seedPythonPath = path.join(pythonSeedDir, LAYOUT.seedPythonExe);
   if (!fs.existsSync(seedPythonPath)) {
     throw new Error(`seed python missing after copy: ${seedPythonPath}`);
   }
   fs.rmSync(backendVenvDir, { recursive: true, force: true });
   run(seedPythonPath, ['-m', 'venv', '--copies', '--without-pip', backendVenvDir], { stdio: 'inherit' });
 
-  // 把 seed 的 libpython3.11.dylib 拷到 venv lib/ 下,跟 runtime 启动逻辑保持一致
-  const seedLibPython = path.join(pythonSeedDir, 'lib', 'libpython3.11.dylib');
-  const venvLibPython = path.join(backendVenvDir, 'lib', 'libpython3.11.dylib');
-  if (fs.existsSync(seedLibPython)) {
-    fs.mkdirSync(path.dirname(venvLibPython), { recursive: true });
-    fs.copyFileSync(seedLibPython, venvLibPython);
+  // 把 seed 的 libpython3.11.dylib 拷到 venv lib/ 下(仅 mac;win 链 python3xx.dll 无需此步)
+  if (LAYOUT.libPythonRel) {
+    const seedLibPython = path.join(pythonSeedDir, LAYOUT.libPythonRel);
+    const venvLibPython = path.join(backendVenvDir, LAYOUT.libPythonRel);
+    if (fs.existsSync(seedLibPython)) {
+      fs.mkdirSync(path.dirname(venvLibPython), { recursive: true });
+      fs.copyFileSync(seedLibPython, venvLibPython);
+    }
   }
 
-  const venvPython = path.join(backendVenvDir, 'bin', 'python');
+  const venvPython = path.join(backendVenvDir, LAYOUT.venvPythonExe);
   // ensurepip 装 pip,然后 offline install 所有依赖到 venv site-packages
   run(venvPython, ['-m', 'ensurepip', '--upgrade', '--default-pip'], {
     stdio: 'inherit',
@@ -344,9 +394,9 @@ function main() {
   // Apple notary 会拒(无 Developer ID + 无 secure timestamp),触发 In Progress 卡死。
   // 在 build 阶段就用 Developer ID 重签,electron-builder 后续打包不会破坏内部签名。
   // 仅当显式提供了证书时才签——开发本地构建 (dist:mac-local) 不需要,跳过即可。
-  const devIdCert = process.env.APPLE_DEVELOPER_ID_APPLICATION
+  const devIdCert = !LAYOUT.signMachO ? null : (process.env.APPLE_DEVELOPER_ID_APPLICATION
     || process.env.CSC_NAME
-    || (process.env.APPLE_TEAM_ID ? findDeveloperIdCert(process.env.APPLE_TEAM_ID) : null);
+    || (process.env.APPLE_TEAM_ID ? findDeveloperIdCert(process.env.APPLE_TEAM_ID) : null));
   if (devIdCert) {
     console.log(`[build-packaged-runtime] signing venv .so/.dylib with: ${devIdCert}`);
     const machos = findMachoFiles(backendVenvDir);
@@ -396,7 +446,7 @@ function main() {
     python: {
       sourcePath: python.seedRoot,
       seedPath: RUNTIME_PYTHON_SEED_DIR,
-      executable: path.join(RUNTIME_PYTHON_SEED_DIR, 'bin', 'python3.11'),
+      executable: path.join(RUNTIME_PYTHON_SEED_DIR, LAYOUT.seedPythonExe),
       version: python.version,
       platform: `${process.platform}-${process.arch}`,
       treeSha256: sha256Directory(pythonSeedDir),
@@ -432,7 +482,7 @@ function main() {
     backendVenvSha256: manifest.backendVenv.sha256,
     requirementsSha256: manifest.backend.requirementsSha256,
     wheelhouseSha256: manifest.wheelhouse.sha256,
-    size: run('du', ['-sh', runtimeRoot]).trim(),
+    size: dirSizeHuman(runtimeRoot),
   }, null, 2));
 }
 

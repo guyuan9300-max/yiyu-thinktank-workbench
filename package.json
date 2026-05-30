@@ -40,6 +40,8 @@
     "install:mac-local": "npm run dist:mac-local && node scripts/install-mac-app.mjs && node scripts/open-installed-app.mjs",
     "dist:mac": "node scripts/ensure-mac-release-prereqs.mjs && npm run build && npm run build:packaged-runtime && electron-builder --mac dmg zip && node scripts/verify-packaged-app.mjs \"dist/mac-arm64/益语智库自用平台 V2.0.app\"",
     "dist:mac-local": "npm run build && npm run build:packaged-runtime && electron-builder --dir -c.electronDist=node_modules/electron/dist -c.mac.identity=null -c.mac.hardenedRuntime=false -c.mac.gatekeeperAssess=false -c.mac.forceCodeSigning=false -c.mac.notarize=false && node scripts/stabilize-mac-app.mjs \"dist/mac-arm64/益语智库自用平台 V2.0.app\" && node scripts/verify-packaged-app.mjs \"dist/mac-arm64/益语智库自用平台 V2.0.app\"",
+    "dist:win": "npm run build && npm run build:packaged-runtime && electron-builder --win nsis",
+    "dist:win:unsigned": "cross-env CSC_IDENTITY_AUTO_DISCOVERY=false npm run build && npm run build:packaged-runtime && electron-builder --win nsis -c.win.publish=null",
     "release:mac:doctor": "node scripts/inspect-mac-release-readiness.mjs",
     "release:mac:doctor:strict": "node scripts/inspect-mac-release-readiness.mjs --strict",
     "release:mac": "npm run dist:mac",
@@ -127,6 +129,25 @@
         "dmg",
         "zip"
       ]
+    },
+    "win": {
+      "target": [
+        "nsis"
+      ],
+      "icon": "build-resources/app-logo-ai.png",
+      "artifactName": "yiyu-workbench-${version}-${arch}.${ext}",
+      "publish": {
+        "provider": "generic",
+        "url": "https://yiyu-thinktank-releases.tos-cn-beijing.volces.com/desktop/win/",
+        "channel": "latest"
+      }
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "deleteAppDataOnUninstall": false,
+      "artifactName": "yiyu-workbench-setup-${version}.${ext}"
     },
     "publish": {
       "provider": "generic",
