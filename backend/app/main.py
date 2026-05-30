@@ -1110,6 +1110,7 @@ from app.services.template_fill import (
     fetch_template_fill_web_sources,
     infer_template_field_type,
     infer_template_value_kind,
+    normalize_template_label,
     should_enable_template_fill_web_supplement,
 )
 from app.services.topic_capture import fetch_topic_candidates_from_web, fetch_topic_source_excerpt
