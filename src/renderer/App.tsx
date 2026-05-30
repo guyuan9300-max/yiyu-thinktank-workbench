@@ -25714,7 +25714,7 @@ export default function App() {
                                   title: result.title || fileLabel,
                                   content: result.content || '',
                                   titleEdited: true,
-                                  sourceDocumentId: result.documentId || documentId,
+                                  sourceDocumentId: documentId,
                                 });
                               } catch (error) {
                                 flash('error', error instanceof Error ? `打开失败：${error.message}` : '打开失败');

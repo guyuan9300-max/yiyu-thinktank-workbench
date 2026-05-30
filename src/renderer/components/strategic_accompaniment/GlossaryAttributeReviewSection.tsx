@@ -12,7 +12,7 @@
  *  - 按钮 ghost / outline 风格, 不用实色填充
  *  - chip / pill 统一 text-[10px] font-medium rounded-full
  */
-import { useEffect, useState, type ComponentType } from 'react';
+import { useEffect, useState } from 'react';
 import {
   CircleDollarSign,
   CalendarDays,
@@ -32,6 +32,7 @@ import {
   Clock,
   Link2,
   Inbox,
+  type LucideIcon,
 } from 'lucide-react';
 import {
   listGlossaryAttributes,
@@ -48,7 +49,8 @@ interface GlossaryAttributeReviewSectionProps {
 }
 
 // 替换原 emoji 为 lucide icon component. 跟整个 codebase icon 风格统一.
-type IconType = ComponentType<{ size?: number | string; className?: string; strokeWidth?: number }>;
+// 用 lucide 官方导出的 LucideIcon 类型, 不手搓 —— 随 lucide 升级自动兼容, 不再因版本漂移崩。
+type IconType = LucideIcon;
 const CATEGORY_META: Record<string, { label: string; Icon: IconType }> = {
   amount: { label: '金额', Icon: CircleDollarSign },
   date: { label: '日期', Icon: CalendarDays },
