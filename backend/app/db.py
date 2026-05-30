@@ -5015,6 +5015,15 @@ class Database:
             from app.llm_context import SCHEMA_SQL as LLM_CONTEXT_SCHEMA_SQL
             self.conn.executescript(LLM_CONTEXT_SCHEMA_SQL)
 
+            # P0-freeze 统一:stage 是冻结状态的云安全唯一真相源。历史上 /freeze 端点
+            # 只写 frozen_at,把这些行迁移到 stage='frozen',否则 v_active_clients 改用
+            # stage 过滤后(WHERE stage != 'frozen')这些历史冻结客户会错误地重新出现。
+            # 幂等:仅命中 frozen_at 有值但 stage 未冻结/归档/丢失的行,跑一次后即空集。
+            self.conn.execute(
+                "UPDATE clients SET stage = 'frozen' "
+                "WHERE frozen_at IS NOT NULL AND stage NOT IN ('frozen', 'archived', 'lost')"
+            )
+
             # 6 个核心 SQL Views(CQRS read model · 临时聚合在 organization 模块)
             # 必须最后建,因为引用了 mirror 表 + clients/event_lines/tasks 等业务表
             from app.modules.organization import VIEWS_SQL as ORGANIZATION_VIEWS_SQL

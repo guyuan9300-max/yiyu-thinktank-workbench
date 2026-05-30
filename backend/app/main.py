@@ -13653,7 +13653,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             lastActivityAt=str(row["updated_at"]),
             relatedUserIds=related_ids,
             isDataCenterIncluded=is_in_dc,
-            isFrozen=frozen_at_value is not None,
+            isFrozen=str(row["stage"]) == "frozen" or frozen_at_value is not None,
             frozenAt=frozen_at_value,
         )
 
@@ -38753,8 +38753,10 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         if not row:
             raise HTTPException(status_code=404, detail="Client not found")
         now = now_iso()
+        # P0-freeze 统一:stage 是云安全唯一真相源(v_active_clients 按它过滤,
+        # 云同步守门保护 stage='frozen' 不被覆盖)。frozen_at 兼写作显示镜像。
         state.db.execute(
-            "UPDATE clients SET frozen_at = ? WHERE id = ?",
+            "UPDATE clients SET frozen_at = ?, stage = 'frozen' WHERE id = ?",
             (now, client_id),
         )
         log_activity("client.freeze", "client", client_id, {"name": str(row["name"])})
@@ -38766,8 +38768,11 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         row = state.db.fetchone("SELECT id, name FROM clients WHERE id = ?", (client_id,))
         if not row:
             raise HTTPException(status_code=404, detail="Client not found")
+        # P0-freeze 统一:清 frozen_at 镜像,且仅把 frozen 还原为 active
+        # (CASE 保护 archived/lost 不被误解冻)。
         state.db.execute(
-            "UPDATE clients SET frozen_at = NULL WHERE id = ?",
+            "UPDATE clients SET frozen_at = NULL, "
+            "stage = CASE WHEN stage = 'frozen' THEN 'active' ELSE stage END WHERE id = ?",
             (client_id,),
         )
         log_activity("client.unfreeze", "client", client_id, {"name": str(row["name"])})
