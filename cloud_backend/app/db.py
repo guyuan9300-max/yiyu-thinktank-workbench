@@ -1586,6 +1586,92 @@ class Database:
                 );
                 CREATE INDEX IF NOT EXISTS idx_cloud_exp_wall_reactions_quote
                     ON cloud_exp_wall_reactions(quote_id, reaction_type);
+
+                -- ════ 发版与反馈控制台 (RELEASE_CONSOLE_HANDOFF 契约 · 5 表) ════
+                -- 动态定向 + 静态交付: org_code(=organizations.slug) 解析该装哪版, 二进制走 TOS 静态包
+                CREATE TABLE IF NOT EXISTS releases (
+                    id TEXT PRIMARY KEY,
+                    version TEXT NOT NULL,
+                    status TEXT NOT NULL DEFAULT 'draft',
+                    platforms_json TEXT NOT NULL DEFAULT '[]',
+                    mandatory INTEGER NOT NULL DEFAULT 0,
+                    user_notes_json TEXT NOT NULL DEFAULT '{}',
+                    internal_notes TEXT NOT NULL DEFAULT '',
+                    screenshots_json TEXT NOT NULL DEFAULT '[]',
+                    created_by TEXT,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    published_at TEXT,
+                    FOREIGN KEY(created_by) REFERENCES employee_accounts(id) ON DELETE SET NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_releases_status ON releases(status, created_at DESC);
+
+                CREATE TABLE IF NOT EXISTS release_packages (
+                    id TEXT PRIMARY KEY,
+                    release_id TEXT NOT NULL,
+                    platform TEXT NOT NULL,
+                    file_name TEXT NOT NULL DEFAULT '',
+                    size_bytes INTEGER NOT NULL DEFAULT 0,
+                    sha512 TEXT NOT NULL DEFAULT '',
+                    download_url TEXT NOT NULL DEFAULT '',
+                    blockmap_url TEXT,
+                    downloadable INTEGER NOT NULL DEFAULT 1,
+                    published_at TEXT,
+                    FOREIGN KEY(release_id) REFERENCES releases(id) ON DELETE CASCADE
+                );
+                CREATE INDEX IF NOT EXISTS idx_release_packages_release ON release_packages(release_id, platform);
+
+                CREATE TABLE IF NOT EXISTS release_assignments (
+                    id TEXT PRIMARY KEY,
+                    release_id TEXT NOT NULL,
+                    target_type TEXT NOT NULL DEFAULT 'all',
+                    org_code TEXT,
+                    rollout_pct INTEGER NOT NULL DEFAULT 100,
+                    mandatory INTEGER NOT NULL DEFAULT 0,
+                    status TEXT NOT NULL DEFAULT 'active',
+                    created_by TEXT,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    FOREIGN KEY(release_id) REFERENCES releases(id) ON DELETE CASCADE,
+                    FOREIGN KEY(created_by) REFERENCES employee_accounts(id) ON DELETE SET NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_release_assignments_org ON release_assignments(org_code, status);
+                CREATE INDEX IF NOT EXISTS idx_release_assignments_release ON release_assignments(release_id, status);
+
+                CREATE TABLE IF NOT EXISTS feedback_items (
+                    id TEXT PRIMARY KEY,
+                    kind TEXT NOT NULL,
+                    severity TEXT NOT NULL DEFAULT 'minor',
+                    title TEXT NOT NULL DEFAULT '',
+                    description TEXT NOT NULL DEFAULT '',
+                    submitter_user_id TEXT,
+                    submitter_name TEXT NOT NULL DEFAULT '',
+                    org_code TEXT,
+                    version TEXT,
+                    page TEXT,
+                    os TEXT,
+                    screenshot_url TEXT,
+                    log_excerpt TEXT,
+                    status TEXT NOT NULL DEFAULT 'open',
+                    dup_of TEXT,
+                    linked_task_id TEXT,
+                    linked_release_id TEXT,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    FOREIGN KEY(submitter_user_id) REFERENCES employee_accounts(id) ON DELETE SET NULL,
+                    FOREIGN KEY(dup_of) REFERENCES feedback_items(id) ON DELETE SET NULL,
+                    FOREIGN KEY(linked_release_id) REFERENCES releases(id) ON DELETE SET NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_feedback_items_status ON feedback_items(status, severity, updated_at DESC);
+
+                CREATE TABLE IF NOT EXISTS release_problem_links (
+                    release_id TEXT NOT NULL,
+                    feedback_id TEXT NOT NULL,
+                    created_at TEXT NOT NULL DEFAULT '',
+                    PRIMARY KEY (release_id, feedback_id),
+                    FOREIGN KEY(release_id) REFERENCES releases(id) ON DELETE CASCADE,
+                    FOREIGN KEY(feedback_id) REFERENCES feedback_items(id) ON DELETE CASCADE
+                );
                 """
             )
 

@@ -12287,6 +12287,8 @@ def create_app() -> FastAPI:
             "http://localhost:8081",
             "http://localhost:19006",
             "exp://localhost:8081",
+            # 生产官网域名等: 逗号分隔, 经 env YIYU_CLOUD_EXTRA_ORIGINS 配置, 解 admin-v2 跨域硬阻塞
+            *[o.strip() for o in os.environ.get("YIYU_CLOUD_EXTRA_ORIGINS", "").split(",") if o.strip()],
         ],
         # Allow any origin in dev for mobile (React Native uses various origins)
         allow_origin_regex=r"^https?://(localhost|127\.0\.0\.1|192\.168\.\d+\.\d+)(:\d+)?$",
@@ -19131,6 +19133,11 @@ def create_app() -> FastAPI:
             "UPDATE cloud_exp_wall_quotes SET like_count = ?, save_count = ?, updated_at = ? WHERE id = ?",
             (like_count, save_count, now_iso(), quote_id),
         )
+
+    # 发版与反馈控制台路由 (独立文件, 不堆进 main.py)
+    from app.routes_releases import register_release_routes
+
+    register_release_routes(app, state)
 
     return app
 
