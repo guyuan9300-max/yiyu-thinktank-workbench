@@ -1171,7 +1171,7 @@ from app.services.version_manifest import (
 
 
 APP_NAME = "益语智库自用平台"
-APP_VERSION = "0.1.0"
+APP_VERSION = "0.3.0"
 LOCAL_INPUT_MEMORY_SETTINGS_KEY = "settings.local_input_memory"
 REMEMBERED_CLOUD_AUTH_SERVICE = "com.yiyu.self-workbench.remembered-cloud-auth"
 REMEMBERED_AI_INPUT_SERVICE = "com.yiyu.self-workbench.remembered-ai-input"

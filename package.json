@@ -1,6 +1,6 @@
 {
   "name": "yiyu-thinktank-workbench",
-  "version": "0.2.2",
+  "version": "0.3.0",
   "private": true,
   "description": "益语智库自用平台 V2.0 桌面版",
   "type": "module",
