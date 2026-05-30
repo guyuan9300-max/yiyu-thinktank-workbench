@@ -962,6 +962,7 @@ from app.services.analysis_center import (
 )
 from app.services.agent_worklogs import (
     AGENT_AUTO_SOURCE_TYPE,
+    _default_task_list_id,
     build_agent_execution_task_activity,
     build_agent_execution_tasks,
     build_agent_weekly_digests,
@@ -49587,7 +49588,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 task_id = new_id("task")
                 state.db.execute(
                     "INSERT INTO tasks(id, title, status, priority, list_id, source_type, source_id, owner_name, created_at, updated_at) VALUES(?,?,'todo','normal',?,'meeting',?,?,?,?)",
-                    (task_id, content, _default_task_list_id(), meeting_id, todo.get("owner", user_name), now_iso(), now_iso()),
+                    (task_id, content, _default_task_list_id(state.db), meeting_id, todo.get("owner", user_name), now_iso(), now_iso()),
                 )
                 created_tasks.append(content)
         log_activity("feishu.minutes.import", "meeting", meeting_id, {"minuteToken": minute_token, "title": parsed["title"], "taskCount": len(created_tasks)})
