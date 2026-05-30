@@ -1211,7 +1211,6 @@ def _department_report(
             list(management_bundle["support_signals"])  # type: ignore[arg-type]
             + risk_overview
             + (
-            + (
             (
                 [
                     (
@@ -1226,7 +1225,7 @@ def _department_report(
             + _judgment_blocker_lines(list(getattr(analysis, "eventLineJudgments", []) or []), limit=2)
             + analysis.confirmedFacts[:2]
             + base_report.supportSignals[:2]
-            )),
+            ),
             limit=4,
         )  # type: ignore[arg-type]
         anonymous_insights = _clean_lines(
