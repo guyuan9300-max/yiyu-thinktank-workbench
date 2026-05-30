@@ -564,7 +564,7 @@ def recompute_brand_audit(
             gap = compute_gap(
                 db, ai_service,
                 client_id=client_id, project_module_id=project_module_id,
-                target_name=target_name, brand_proposition=brand_prop,
+                target_name=target_name,
             )
             if gap.get("ok"):
                 gap_alignments = gap.get("alignments") or []
