@@ -1295,7 +1295,7 @@ def _reap_stale_knowledge_jobs(db: Any, *, max_running_minutes: int = 30) -> int
         cur = db.execute(
             """UPDATE knowledge_jobs
                SET status='failed',
-                   last_error=COALESCE(last_error,'') || ' [auto-reaped: stale running > ? min]',
+                   last_error=COALESCE(last_error,'') || ' [auto-reaped: stale running > ' || ? || ' min]',
                    finished_at=?,
                    updated_at=?
                WHERE status='running'

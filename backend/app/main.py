@@ -26736,6 +26736,8 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
 
                     # Extract golden quotes from all review notes
                     from app.services.local_memory import extract_quotes_from_text, save_pending_quotes
+                    # all_notes:跨所有客户的 (title, note) 扁平列表(由 by_client 还原)
+                    all_notes = [tn for _cname, notes in by_client.values() for tn in notes]
                     all_review_text = "\n\n".join(f"【{t}】{n}" for t, n in all_notes if len(n) > 30)
                     if all_review_text:
                         quotes = extract_quotes_from_text(state.ai, all_review_text, "周复盘")

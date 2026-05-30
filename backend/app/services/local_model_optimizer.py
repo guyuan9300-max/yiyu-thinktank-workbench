@@ -656,6 +656,24 @@ _DOCUMENT_CARD_SCHEMA = {
 }
 
 
+# 虚拟归类(path_optimization)的 JSON 输出 schema —— 匹配 _process_path_optimization_task
+# 下方 payload.get 读取的字段(virtual_path/classification_tags/recommended_owner/
+# recommended_project/confidence/reason/evidence)。
+_DOCUMENT_PATH_SCHEMA = {
+    "type": "OBJECT",
+    "properties": {
+        "virtual_path": {"type": "STRING"},
+        "classification_tags": {"type": "ARRAY", "items": {"type": "STRING"}},
+        "recommended_owner": {"type": "STRING"},
+        "recommended_project": {"type": "STRING"},
+        "confidence": {"type": "NUMBER"},
+        "reason": {"type": "STRING"},
+        "evidence": {"type": "ARRAY", "items": {"type": "STRING"}},
+    },
+    "required": ["virtual_path", "confidence"],
+}
+
+
 def _process_document_card_task(db: Database, ai_service: Any, task: dict[str, object]) -> dict[str, object]:
     knowledge_document_id = str(task.get("knowledge_document_id") or "").strip()
     context = _load_document_context(db, knowledge_document_id)
@@ -756,14 +774,26 @@ def _process_path_optimization_task(db: Database, ai_service: Any, task: dict[st
     knowledge_document_id = str(task.get("knowledge_document_id") or "").strip()
     context = _load_document_context(db, knowledge_document_id)
     prompt = _path_prompt(context)
-    payload = ai_service.generate_local_model_json(
-        profile_key=str(task.get("model_profile_id") or DEFAULT_PROFILE_ID),
-        model_name=str(task.get("model_name") or ""),
-        system_prompt="你是数据中心后台优化引擎，负责生成非破坏性的虚拟路径和分类标签。只输出 JSON。",
-        user_prompt=prompt,
+    # M-path 修复(2026-05-30): generate_local_model_json 从未实现 → 历史上每个 path_opt
+    # 任务都 AttributeError 失败。改用与 card-gen 一致的真实生成入口 _qwen_generate,
+    # 走标准 deep_analysis 路由,尊重用户的解析模型设置(parseModelMode)。
+    try:
+        _parse_local = get_local_model_optimization_settings(db).get("parseModelMode") == "local"
+    except Exception:
+        _parse_local = False
+    _raw = ai_service._qwen_generate(  # noqa: SLF001 — 复用现有生成入口(同 card-gen)
+        prompt,
+        "你是数据中心后台优化引擎，负责生成非破坏性的虚拟路径和分类标签。只输出 JSON。",
+        _DOCUMENT_PATH_SCHEMA,
         timeout_seconds=900,
         max_tokens=1200,
+        temperature=0.3,
+        task_kind="deep_analysis",
+        deep_read_local=_parse_local,
     )
+    payload = _raw if isinstance(_raw, dict) else {}
+    if not payload:
+        raise RuntimeError("path_optimization LLM 返回非 JSON / 空")
     confidence = _clamp_float(payload.get("confidence"))
     virtual_path = str(payload.get("virtual_path") or "").strip()
     apply_status = "applied" if confidence >= 0.72 and virtual_path else "pending_confirmation"
