@@ -1398,6 +1398,40 @@ class Database:
                 CREATE INDEX IF NOT EXISTS idx_consultation_knowledge_requests_org_status
                     ON consultation_knowledge_requests(organization_id, status, updated_at DESC);
 
+                -- 软件内反馈 (报错/卡顿/不准/建议) → admin-v2 控制台「用户反馈」收件箱
+                -- 隐私: client_id 仅存 id 不存客户名; log_excerpt 由客户端脱敏后上报
+                CREATE TABLE IF NOT EXISTS software_feedback (
+                    id TEXT PRIMARY KEY,
+                    organization_id TEXT NOT NULL,
+                    reporter_user_id TEXT,
+                    reporter_name TEXT NOT NULL DEFAULT '',
+                    category TEXT NOT NULL,
+                    severity TEXT NOT NULL DEFAULT 'medium',
+                    status TEXT NOT NULL DEFAULT 'open',
+                    title TEXT NOT NULL DEFAULT '',
+                    description TEXT NOT NULL DEFAULT '',
+                    app_version TEXT,
+                    platform TEXT,
+                    page_route TEXT,
+                    device_info TEXT,
+                    log_excerpt TEXT,
+                    screenshot_path TEXT,
+                    client_id TEXT,
+                    task_id TEXT,
+                    target_version TEXT,
+                    assignee_user_id TEXT,
+                    resolution_note TEXT,
+                    resolved_at TEXT,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    FOREIGN KEY(organization_id) REFERENCES organizations(id) ON DELETE CASCADE,
+                    FOREIGN KEY(reporter_user_id) REFERENCES employee_accounts(id) ON DELETE SET NULL,
+                    FOREIGN KEY(assignee_user_id) REFERENCES employee_accounts(id) ON DELETE SET NULL,
+                    FOREIGN KEY(task_id) REFERENCES tasks(id) ON DELETE SET NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_software_feedback_org_status
+                    ON software_feedback(organization_id, status, severity, updated_at DESC);
+
                 -- Phase 1.5c · 战略陪伴叙事面板 (组织共享, A/B 账号同源)
                 -- 每个客户最新版的 6 维度故事网, 由 LLM 基于关系网生成, 多人共同编织
                 CREATE TABLE IF NOT EXISTS client_narrative_versions (

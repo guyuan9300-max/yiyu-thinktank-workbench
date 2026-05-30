@@ -47,6 +47,9 @@ from app.models import (
     ConsultationKnowledgeRequestRecord,
     ConsultationKnowledgeRequestUpdatePayload,
     ConsultationMissingContextRecord,
+    SoftwareFeedbackCreatePayload,
+    SoftwareFeedbackRecord,
+    SoftwareFeedbackUpdatePayload,
     DepartmentOption,
     OrgInviteResolveResult,
     EmployeeRecord,
@@ -1571,6 +1574,44 @@ def _consultation_request_row_or_404(state: AppState, request_id: str, organizat
     )
     if row is None:
         raise HTTPException(status_code=404, detail="Consultation knowledge request not found")
+    return row
+
+
+def _software_feedback_record(row) -> SoftwareFeedbackRecord:
+    return SoftwareFeedbackRecord(
+        id=str(row["id"]),
+        organizationId=str(row["organization_id"]),
+        reporterUserId=str(row["reporter_user_id"]) if row["reporter_user_id"] else None,
+        reporterName=str(row["reporter_name"] or ""),
+        category=str(row["category"]),
+        severity=str(row["severity"]),
+        status=str(row["status"]),
+        title=str(row["title"] or ""),
+        description=str(row["description"] or ""),
+        appVersion=str(row["app_version"]) if row["app_version"] else None,
+        platform=str(row["platform"]) if row["platform"] else None,
+        pageRoute=str(row["page_route"]) if row["page_route"] else None,
+        deviceInfo=str(row["device_info"]) if row["device_info"] else None,
+        logExcerpt=str(row["log_excerpt"]) if row["log_excerpt"] else None,
+        screenshotPath=str(row["screenshot_path"]) if row["screenshot_path"] else None,
+        clientId=str(row["client_id"]) if row["client_id"] else None,
+        taskId=str(row["task_id"]) if row["task_id"] else None,
+        targetVersion=str(row["target_version"]) if row["target_version"] else None,
+        assigneeUserId=str(row["assignee_user_id"]) if row["assignee_user_id"] else None,
+        resolutionNote=str(row["resolution_note"]) if row["resolution_note"] else None,
+        resolvedAt=str(row["resolved_at"]) if row["resolved_at"] else None,
+        createdAt=str(row["created_at"]),
+        updatedAt=str(row["updated_at"]),
+    )
+
+
+def _software_feedback_row_or_404(state: AppState, feedback_id: str, organization_id: str):
+    row = state.db.fetchone(
+        "SELECT * FROM software_feedback WHERE id = ? AND organization_id = ?",
+        (feedback_id, organization_id),
+    )
+    if row is None:
+        raise HTTPException(status_code=404, detail="Feedback not found")
     return row
 
 
@@ -16059,6 +16100,139 @@ def create_app() -> FastAPI:
         )
         updated_row = _consultation_request_row_or_404(state, request_id, current_user.organizationId)
         return _consultation_knowledge_request_record(updated_row)
+
+    # ── Software Feedback (软件内报错/提建议 → 后台收件箱) ───
+    # 数据 SSOT: software_feedback 表; 桌面经 cloud_request proxy 上报, admin-v2 控制台读取.
+
+    @app.get("/api/v1/software-feedback", response_model=list[SoftwareFeedbackRecord])
+    def list_software_feedback(
+        status_filter: str | None = Query(default=None, alias="status"),
+        category: str | None = Query(default=None),
+        severity: str | None = Query(default=None),
+        limit: int = Query(default=50, ge=1, le=200),
+        offset: int = Query(default=0, ge=0),
+        current_user: SessionUser = Depends(lambda authorization=Header(default=None): _require_auth(app, authorization)),
+    ) -> list[SoftwareFeedbackRecord]:
+        query = ["SELECT * FROM software_feedback WHERE organization_id = ?"]
+        params: list[object] = [current_user.organizationId]
+        if status_filter:
+            query.append("AND status = ?")
+            params.append(status_filter)
+        if category:
+            query.append("AND category = ?")
+            params.append(category)
+        if severity:
+            query.append("AND severity = ?")
+            params.append(severity)
+        if current_user.primaryRole != "admin":
+            query.append("AND reporter_user_id = ?")
+            params.append(current_user.id)
+        query.append(
+            "ORDER BY CASE severity WHEN 'critical' THEN 0 WHEN 'high' THEN 1 WHEN 'medium' THEN 2 ELSE 3 END,"
+            " updated_at DESC LIMIT ? OFFSET ?"
+        )
+        params.extend([limit, offset])
+        rows = state.db.fetchall(" ".join(query), tuple(params))
+        return [_software_feedback_record(row) for row in rows]
+
+    @app.post("/api/v1/software-feedback", response_model=SoftwareFeedbackRecord)
+    def create_software_feedback(
+        payload: SoftwareFeedbackCreatePayload,
+        current_user: SessionUser = Depends(lambda authorization=Header(default=None): _require_auth(app, authorization)),
+    ) -> SoftwareFeedbackRecord:
+        if payload.taskId:
+            task_row = _task_row_or_404(state, payload.taskId)
+            if str(task_row["organization_id"]) != current_user.organizationId:
+                raise HTTPException(status_code=404, detail="Task not found")
+        feedback_id = new_id("fb")
+        timestamp = now_iso()
+        state.db.execute(
+            """
+            INSERT INTO software_feedback (
+                id, organization_id, reporter_user_id, reporter_name,
+                category, severity, status, title, description,
+                app_version, platform, page_route, device_info, log_excerpt, screenshot_path,
+                client_id, task_id, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, 'open', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                feedback_id,
+                current_user.organizationId,
+                current_user.id,
+                current_user.fullName,
+                payload.category,
+                payload.severity,
+                payload.title.strip(),
+                payload.description.strip(),
+                payload.appVersion,
+                payload.platform,
+                payload.pageRoute,
+                payload.deviceInfo,
+                payload.logExcerpt,
+                payload.screenshotPath,
+                payload.clientId,
+                payload.taskId,
+                timestamp,
+                timestamp,
+            ),
+        )
+        _log_audit(
+            state,
+            "software_feedback.created",
+            actor_user_id=current_user.id,
+            target_user_id=None,
+            detail={"feedbackId": feedback_id, "category": payload.category, "severity": payload.severity},
+        )
+        return _software_feedback_record(
+            _software_feedback_row_or_404(state, feedback_id, current_user.organizationId)
+        )
+
+    @app.post("/api/v1/software-feedback/{feedback_id}/status", response_model=SoftwareFeedbackRecord)
+    def update_software_feedback(
+        feedback_id: str,
+        payload: SoftwareFeedbackUpdatePayload,
+        current_user: SessionUser = Depends(lambda authorization=Header(default=None): _require_auth(app, authorization)),
+    ) -> SoftwareFeedbackRecord:
+        row = _software_feedback_row_or_404(state, feedback_id, current_user.organizationId)
+        is_admin = current_user.primaryRole == "admin"
+        is_owner = str(row["reporter_user_id"] or "") == current_user.id
+        if not (is_admin or is_owner):
+            raise HTTPException(status_code=403, detail="你当前没有处理该反馈的权限")
+
+        new_status = payload.status or str(row["status"])
+        if is_admin:
+            new_severity = payload.severity or str(row["severity"])
+            assignee = payload.assigneeUserId if payload.assigneeUserId is not None else row["assignee_user_id"]
+            target_version = payload.targetVersion if payload.targetVersion is not None else row["target_version"]
+            resolution_note = payload.resolutionNote if payload.resolutionNote is not None else row["resolution_note"]
+        else:
+            # 提交人仅能流转自己反馈的状态, 不能指派/定目标版本/改严重度
+            new_severity = str(row["severity"])
+            assignee = row["assignee_user_id"]
+            target_version = row["target_version"]
+            resolution_note = row["resolution_note"]
+
+        timestamp = now_iso()
+        resolved_at = timestamp if new_status in ("resolved", "wontfix") else None
+        state.db.execute(
+            """
+            UPDATE software_feedback
+            SET status = ?, severity = ?, assignee_user_id = ?, target_version = ?,
+                resolution_note = ?, resolved_at = ?, updated_at = ?
+            WHERE id = ?
+            """,
+            (new_status, new_severity, assignee, target_version, resolution_note, resolved_at, timestamp, feedback_id),
+        )
+        _log_audit(
+            state,
+            "software_feedback.updated",
+            actor_user_id=current_user.id,
+            target_user_id=None,
+            detail={"feedbackId": feedback_id, "status": new_status, "severity": new_severity},
+        )
+        return _software_feedback_record(
+            _software_feedback_row_or_404(state, feedback_id, current_user.organizationId)
+        )
 
     # ── Consultation Chat (real AI) ─────────────────
 
