@@ -83,6 +83,7 @@ def ensure_data_center_schema(db: Database) -> dict[str, object]:
     from app.services.data_center_sync import ensure_data_center_sync_schema
     from app.services.evidence_quality_feedback_snapshot import ensure_evidence_quality_feedback_snapshot_schema
     from app.services.evidence_quality_store import ensure_evidence_quality_annotation_schema
+    from app.services.data_gap_compensator import ensure_external_evidence_schema as ensure_data_gaps_schema
     from app.services.external_evidence import ensure_external_evidence_schema
     from app.services.generation_runtime_policy import ensure_generation_runtime_schema
     from app.services.kernel_primary_rollout import ensure_kernel_primary_rollout_schema
@@ -100,6 +101,7 @@ def ensure_data_center_schema(db: Database) -> dict[str, object]:
         ("proposal_drafts", ensure_data_center_proposal_draft_schema, ["data_center_proposal_drafts"]),
         ("kernel_primary_rollout", ensure_kernel_primary_rollout_schema, ["kernel_primary_rollout_runs"]),
         ("external_evidence", ensure_external_evidence_schema, ["external_evidence_cards"]),
+        ("data_gaps", ensure_data_gaps_schema, ["data_gaps"]),
         ("evidence_quality_annotations", ensure_evidence_quality_annotation_schema, ["evidence_quality_annotations"]),
         (
             "evidence_quality_feedback_snapshots",
