@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import logging
 import re
 import tempfile
 from dataclasses import dataclass, field
@@ -21,6 +22,8 @@ from app.services.knowledge_v2 import (
     now_iso,
     upsert_canonical_text_document,
 )
+
+logger = logging.getLogger(__name__)
 
 FETCH_HEADERS = {
     "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/135.0 Safari/537.36",

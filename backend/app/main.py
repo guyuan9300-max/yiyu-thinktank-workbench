@@ -962,6 +962,7 @@ from app.services.analysis_center import (
 )
 from app.services.agent_worklogs import (
     AGENT_AUTO_SOURCE_TYPE,
+    _default_task_list_id,
     build_agent_execution_task_activity,
     build_agent_execution_tasks,
     build_agent_weekly_digests,
@@ -1110,6 +1111,7 @@ from app.services.template_fill import (
     fetch_template_fill_web_sources,
     infer_template_field_type,
     infer_template_value_kind,
+    normalize_template_label,
     should_enable_template_fill_web_supplement,
 )
 from app.services.topic_capture import fetch_topic_candidates_from_web, fetch_topic_source_excerpt
@@ -1725,6 +1727,31 @@ def _parse_date_only(value: str | None) -> datetime.date | None:
         return datetime.fromisoformat(value).date()
     except ValueError:
         return None
+
+
+def parse_task_date_value(value: str | None) -> datetime | None:
+    """解析任务日期字符串为 datetime(date-only 串补 T00:00:00);失败返回 None。
+
+    返回 datetime(带 .timestamp()),供按截止日排序/逾期判断使用。
+    与局部 parse_task_date(11207)同逻辑,提为模块级供 _sort_tasks_for_view 等复用。
+    """
+    if not value:
+        return None
+    candidate = f"{value}T00:00:00" if len(value) <= 10 else value
+    try:
+        return datetime.fromisoformat(candidate)
+    except ValueError:
+        return None
+
+
+def is_task_overdue(task: TaskRecord) -> bool:
+    """任务是否逾期:有截止日、未完成(status != done)、且截止日早于今天。"""
+    if (task.status or "") == "done":
+        return False
+    due = parse_task_date_value(task.dueDate)
+    if due is None:
+        return False
+    return due.date() < datetime.now().date()
 
 
 def _week_bounds(week_label: str) -> tuple[datetime.date, datetime.date] | None:
@@ -49586,7 +49613,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 task_id = new_id("task")
                 state.db.execute(
                     "INSERT INTO tasks(id, title, status, priority, list_id, source_type, source_id, owner_name, created_at, updated_at) VALUES(?,?,'todo','normal',?,'meeting',?,?,?,?)",
-                    (task_id, content, _default_task_list_id(), meeting_id, todo.get("owner", user_name), now_iso(), now_iso()),
+                    (task_id, content, _default_task_list_id(state.db), meeting_id, todo.get("owner", user_name), now_iso(), now_iso()),
                 )
                 created_tasks.append(content)
         log_activity("feishu.minutes.import", "meeting", meeting_id, {"minuteToken": minute_token, "title": parsed["title"], "taskCount": len(created_tasks)})
