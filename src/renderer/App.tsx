@@ -8755,6 +8755,12 @@ export default function App() {
   async function loadOrgMembershipBlock() {
     const response = await getOrgMembershipSummary();
     setOrgMembershipState(response);
+    // 把组织码告诉主进程更新器 → 切到 org 感知更新 feed(定向推送按组织生效);非桌面环境忽略
+    try {
+      void window.yiyuWorkbench?.setUpdateOrgCode?.(response.organizationSlug ?? null);
+    } catch {
+      /* noop */
+    }
     return response;
   }
 

@@ -331,6 +331,7 @@ function createBrowserWorkbenchFallback(): Window['yiyuWorkbench'] {
   return {
     backendBaseUrl,
     setMiniMode: async () => ({ mini: false }),
+    setUpdateOrgCode: async () => ({ ok: false, reason: 'browser preview' }),
     getDesktopAppInfo: async () => ({
       appVersion: 'browser-preview',
       isPackaged: false,

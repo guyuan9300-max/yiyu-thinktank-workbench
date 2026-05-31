@@ -30,6 +30,7 @@ contextBridge.exposeInMainWorld('yiyuWorkbench', {
   backendBaseUrl,
   // 迷你面板:进入/退出桌面挂件模式(缩小窗 + 置顶);主进程做窗口 resize。
   setMiniMode: (enter: boolean): Promise<{ mini: boolean }> => ipcRenderer.invoke('yiyu-workbench:setMiniMode', enter),
+  setUpdateOrgCode: (orgCode: string | null): Promise<{ ok: boolean; reason?: string }> => ipcRenderer.invoke('yiyu-workbench:setUpdateOrgCode', orgCode),
   getDesktopAppInfo: (): Promise<DesktopAppInfo> => ipcRenderer.invoke('yiyu-workbench:getDesktopAppInfo'),
   resumeFromStartupGate: (): Promise<DesktopStartupGateResumeResult> => ipcRenderer.invoke('yiyu-workbench:resumeFromStartupGate'),
   selectFiles: (): Promise<string[]> => ipcRenderer.invoke('yiyu-workbench:selectFiles'),

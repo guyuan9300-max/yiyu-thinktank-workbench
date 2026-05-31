@@ -99,6 +99,7 @@ def test_release_publish_assignment_package_and_org_aware_yml():
     assert res.status_code == 200, res.text
     assert "version: 0.3.0" in res.text
     assert "abc123" in res.text
+    assert "https://tos/x.zip" in res.text  # url 必须是绝对 TOS 地址(electron-updater 从 TOS 下包)
 
     # 暂停指派后, acme 仍有兜底? 这里无 all 指派, 兜底=最新已发布(仍 0.3.0)
     aid = asg.json()["id"]

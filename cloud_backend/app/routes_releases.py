@@ -501,16 +501,20 @@ def register_release_routes(app: FastAPI, state) -> None:
             # 无包元数据时仅返回版本占位 (publish-to-tos 回写包后即完整)
             return PlainTextResponse(f"version: {version}\n")
         file_name = str(pkg["file_name"] or "")
+        download_url = str(pkg["download_url"] or "")
         sha512 = str(pkg["sha512"] or "")
         size = int(pkg["size_bytes"])
         release_date = str(release["published_at"] or release["created_at"])
+        # url 用【绝对 TOS 地址】→ electron-updater 直接从 TOS 下包(动态定向解析版本, 静态交付二进制);
+        # feed base 是本云端 resolver, 故必须绝对 url, 否则会去云端路径找包。download_url 缺时回退文件名。
+        file_url = download_url or file_name
         yml = (
             f"version: {version}\n"
             f"files:\n"
-            f"  - url: {file_name}\n"
+            f"  - url: {file_url}\n"
             f"    sha512: {sha512}\n"
             f"    size: {size}\n"
-            f"path: {file_name}\n"
+            f"path: {file_url}\n"
             f"sha512: {sha512}\n"
             f"releaseDate: '{release_date}'\n"
         )

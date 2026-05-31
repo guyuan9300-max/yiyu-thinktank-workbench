@@ -20,7 +20,7 @@ import {
   buildDesktopAppInfo,
   type BackendHealthPayload,
 } from './runtimeManifest.js';
-import { setupAutoUpdater } from './autoUpdater.js';
+import { setupAutoUpdater, setUpdateOrgCode } from './autoUpdater.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 // V2.1 Lab 模式 (顾源源 5/22 方案 C): ENV YIYU_LAB_MODE=1 触发, 跟主仓库 app 物理隔离
@@ -3002,6 +3002,16 @@ function applyMiniBounds(win: BrowserWindow) {
   win.setAlwaysOnTop(true, 'floating');
   if (process.platform === 'darwin') win.setWindowButtonVisibility(false);
 }
+ipcMain.handle('yiyu-workbench:setUpdateOrgCode', (_event, orgCode: string | null) => {
+  // renderer 登录拿到 organizationSlug 后调用;主进程已知云地址 → 切到 org 感知更新 feed
+  try {
+    setUpdateOrgCode(orgCode ?? null, cloudBackendUrl());
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, reason: err instanceof Error ? err.message : String(err) };
+  }
+});
+
 ipcMain.handle('yiyu-workbench:setMiniMode', (_event, enter: boolean) => {
   if (!mainWindow) return { mini: false };
   const win = mainWindow;

@@ -4743,6 +4743,7 @@ export interface OrgMembershipSummary {
   hasOrganization: boolean;
   organizationId?: string | null;
   organizationName?: string | null;
+  organizationSlug?: string | null;
   departmentId?: string | null;
   departmentName?: string | null;
   membershipStatus?: MembershipStatus;
@@ -7784,6 +7785,7 @@ declare global {
     yiyuWorkbench: {
       backendBaseUrl: string;
       setMiniMode(enter: boolean): Promise<{ mini: boolean }>;
+      setUpdateOrgCode(orgCode: string | null): Promise<{ ok: boolean; reason?: string }>;
       getDesktopAppInfo(): Promise<DesktopAppInfo>;
       resumeFromStartupGate(): Promise<DesktopStartupGateResumeResult>;
       selectFiles(): Promise<string[]>;

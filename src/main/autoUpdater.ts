@@ -31,6 +31,47 @@ const UPDATE_FEED_URL = `${UPDATE_FEED_BASE_URL}latest-mac.yml`;
 let mainWindowRef: BrowserWindow | null = null;
 let setupDone = false;
 let recheckTimer: NodeJS.Timeout | null = null;
+// org 感知更新:登录后由 renderer 经 IPC 传入(组织码 + 云端地址);未设置时回退静态 TOS。
+let currentOrgCode: string | null = null;
+let currentCloudBaseUrl: string | null = null;
+
+function computeFeedBaseUrl(): string {
+  if (currentOrgCode && currentCloudBaseUrl) {
+    const base = currentCloudBaseUrl.replace(/\/+$/, '');
+    // 动态定向(云端按组织码解析该装哪版) + 静态交付(yml 内为绝对 TOS url, 从 TOS 下包)
+    return `${base}/api/v1/updates/${encodeURIComponent(currentOrgCode)}/mac/`;
+  }
+  // 兜底:未登录/无组织码 → 静态 TOS,与原行为一致,不破坏既有静默更新
+  return UPDATE_FEED_BASE_URL;
+}
+
+function applyFeedUrl(): void {
+  try {
+    autoUpdater.setFeedURL({ provider: 'generic', url: computeFeedBaseUrl() });
+  } catch (err) {
+    console.warn('[autoUpdater] setFeedURL failed:', err);
+  }
+}
+
+/**
+ * 由 renderer 在拿到 /me/org-membership 后调用,把组织码 + 云端地址告诉更新器。
+ * 切到 org 感知 feed 后立即重检一次,让定向推送即时生效(不必等 6h 周期)。
+ */
+export function setUpdateOrgCode(orgCode: string | null, cloudBaseUrl: string | null): void {
+  const nextOrg = (orgCode || '').trim() || null;
+  const nextBase = (cloudBaseUrl || '').trim() || null;
+  if (nextOrg === currentOrgCode && nextBase === currentCloudBaseUrl) return;
+  currentOrgCode = nextOrg;
+  currentCloudBaseUrl = nextBase;
+  if (!shouldEnable()) return;
+  applyFeedUrl();
+  console.log('[autoUpdater] feed switched:', nextOrg ? `org-aware(${nextOrg})` : 'static TOS');
+  if (nextOrg && nextBase) {
+    autoUpdater.checkForUpdates().catch((err) => {
+      console.warn('[autoUpdater] re-check after org switch failed:', err);
+    });
+  }
+}
 
 function broadcast(payload: UpdateEventPayload): void {
   if (!mainWindowRef || mainWindowRef.isDestroyed()) return;
@@ -81,10 +122,7 @@ export function setupAutoUpdater(mainWindow: BrowserWindow): void {
   autoUpdater.autoDownload = true;
   autoUpdater.autoInstallOnAppQuit = true;
   autoUpdater.allowDowngrade = false;
-  autoUpdater.setFeedURL({
-    provider: 'generic',
-    url: UPDATE_FEED_BASE_URL,
-  });
+  applyFeedUrl();
   autoUpdater.logger = {
     info: (msg: unknown) => console.log('[autoUpdater]', msg),
     warn: (msg: unknown) => console.warn('[autoUpdater]', msg),
