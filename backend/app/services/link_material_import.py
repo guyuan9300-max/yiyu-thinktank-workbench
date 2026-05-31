@@ -1490,17 +1490,27 @@ def _find_bbdown() -> str | None:
 
 
 def _find_yt_dlp() -> list[str] | None:
+    # 0. encodings 修复(最优先、最稳):当前【已正确初始化】的 python 若装了 yt_dlp 模块,
+    #    直接用 [sys.executable, "-m", "yt_dlp"](继承本进程 PYTHONHOME/PYTHONPATH)。
+    #    必须在 PATH 查找之前 —— 否则打包版里 venv/bin 在 PATH 上时会返回裸 bin/yt-dlp 脚本,
+    #    按构建期 stale shebang 启错 python → 子进程找不到 encodings 标准库(init_fs_encoding 失败)。
+    import importlib.util as _importlib_util
+    if sys.executable and _importlib_util.find_spec("yt_dlp") is not None:
+        return [sys.executable, "-m", "yt_dlp"]
     # 1. PATH 里直接找
     executable = shutil.which("yt-dlp")
     if executable:
         return [executable]
-    # 2. P11 修复：当前进程的 python 同目录（Electron 打包 venv 的 yt-dlp 在 bin/yt-dlp）
+    # 2. P11 修复 + encodings 修复：打包 venv 里带了 yt-dlp(bin/yt-dlp 存在 = yt_dlp 模块已装)。
+    #    但直接跑 bin/yt-dlp 这个 shebang 脚本, 会按【构建期的绝对 python 路径】启另一个解释器,
+    #    打包重定位到用户机后该路径失效 → 子进程 python 找不到 encodings 标准库(报 init_fs_encoding)。
+    #    改用当前【已正确初始化、且 os.environ 已带 PYTHONHOME/PYTHONPATH】的 sys.executable -m yt_dlp。
     import os as _os
     venv_bin = _os.path.dirname(sys.executable) if sys.executable else ""
-    if venv_bin:
+    if venv_bin and sys.executable:
         candidate = _os.path.join(venv_bin, "yt-dlp")
-        if _os.path.isfile(candidate) and _os.access(candidate, _os.X_OK):
-            return [candidate]
+        if _os.path.isfile(candidate):
+            return [sys.executable, "-m", "yt_dlp"]
     # 3. sys.executable -m yt_dlp（当前 python 里装了 yt_dlp 包）
     if sys.executable:
         try:
