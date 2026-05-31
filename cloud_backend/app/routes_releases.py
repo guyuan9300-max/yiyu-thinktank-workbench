@@ -225,6 +225,14 @@ def _feedback_record(row) -> FeedbackRecord:
     )
 
 
+class OrgSummaryRecord(BaseModel):
+    id: str
+    name: str
+    code: str  # = organizations.slug, 定向推送用的组织码(客户端 beacon/update-policy 上报同一个值)
+    memberCount: int = 0
+    installCount: int = 0  # 占位:待客户端 beacon(app_installs)接通后填真值
+
+
 def register_release_routes(app: FastAPI, state) -> None:
     # main 已完全加载, 此处函数级 import 不会循环
     from app.main import _log_audit, _require_admin, _require_auth, new_id, now_iso
@@ -516,3 +524,28 @@ def register_release_routes(app: FastAPI, state) -> None:
             if not platforms or platform in platforms:
                 return _release_record(row)
         return None
+
+    # ════ 组织列表 (定向推送 console「组织表」: 组织名 + 唯一组织码 + 成员/安装数) ════
+    # 注: 平台级操作(益语运营发版), v1 用 _require_admin; 后续应收紧到平台所有者粒度。
+    @app.get("/api/v1/admin/organizations", response_model=list[OrgSummaryRecord])
+    def admin_list_organizations(
+        current_user=Depends(lambda authorization=Header(default=None): _require_admin(app, authorization)),
+    ) -> list[OrgSummaryRecord]:
+        rows = db.fetchall(
+            """
+            SELECT o.id, o.name, o.slug,
+              (SELECT COUNT(1) FROM employee_accounts e WHERE e.organization_id = o.id) AS member_count
+            FROM organizations o
+            ORDER BY o.created_at DESC
+            """
+        )
+        return [
+            OrgSummaryRecord(
+                id=str(r["id"]),
+                name=str(r["name"]),
+                code=str(r["slug"] or ""),
+                memberCount=int(r["member_count"] or 0),
+                installCount=0,
+            )
+            for r in rows
+        ]

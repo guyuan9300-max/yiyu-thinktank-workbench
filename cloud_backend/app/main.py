@@ -4289,7 +4289,7 @@ def _org_membership_summary(state: AppState, current_user: SessionUser) -> OrgMe
     membership_status = current_user.membershipStatus or "approved"
     if not current_user.organizationId:
         return OrgMembershipSummaryRecord(hasOrganization=False, membershipStatus=membership_status)
-    row = state.db.fetchone("SELECT id, name FROM organizations WHERE id = ?", (current_user.organizationId,))
+    row = state.db.fetchone("SELECT id, name, slug FROM organizations WHERE id = ?", (current_user.organizationId,))
     if not row:
         return OrgMembershipSummaryRecord(hasOrganization=False, membershipStatus=membership_status)
     account_row = state.db.fetchone("SELECT * FROM employee_accounts WHERE id = ?", (current_user.id,))
@@ -4303,6 +4303,7 @@ def _org_membership_summary(state: AppState, current_user: SessionUser) -> OrgMe
         hasOrganization=membership_status == "approved",
         organizationId=str(row["id"]),
         organizationName=str(row["name"]),
+        organizationSlug=str(row["slug"]) if row["slug"] else None,
         departmentId=current_user.departmentId,
         departmentName=current_user.departmentName,
         membershipStatus=membership_status,

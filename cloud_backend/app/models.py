@@ -111,6 +111,7 @@ class OrgMembershipSummaryRecord(BaseModel):
     hasOrganization: bool = False
     organizationId: str | None = None
     organizationName: str | None = None
+    organizationSlug: str | None = None
     departmentId: str | None = None
     departmentName: str | None = None
     membershipStatus: MembershipStatus = "none"

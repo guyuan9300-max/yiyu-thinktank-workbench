@@ -117,3 +117,20 @@ def test_admin_endpoints_require_admin():
     # 无 token → 401
     assert client.get("/api/v1/admin/releases").status_code == 401
     assert client.get("/api/v1/admin/feedback").status_code == 401
+    assert client.get("/api/v1/admin/organizations").status_code == 401
+
+
+def test_org_code_exposed_and_org_list_consistent():
+    # 定向推送靠组织码:org-membership 必须暴露它, admin 组织列表必须列出同一个码
+    client = TestClient(create_app())
+    h = _admin(client)
+    membership = client.get("/api/v1/me/org-membership", headers=h)
+    assert membership.status_code == 200, membership.text
+    slug = membership.json().get("organizationSlug")
+    assert slug, f"组织码未暴露: {membership.json()}"
+
+    res = client.get("/api/v1/admin/organizations", headers=h)
+    assert res.status_code == 200, res.text
+    orgs = res.json()
+    assert orgs and orgs[0]["memberCount"] >= 1
+    assert any(o["code"] == slug for o in orgs), "org-membership 的组织码与 admin 列表不一致"
