@@ -20207,6 +20207,8 @@ export default function App() {
       && templateFillDialog.stage !== 'completed'
       && templateFillDialog.stage !== 'failed'
     );
+    // P-A 透明度:填表字段「有数据/缺数据」明细的展开开关
+    const [fillDetailOpen, setFillDetailOpen] = useState(false);
     const setTemplateFillDialog = (
       nextValue: TemplateFillDialogState | null | ((previous: TemplateFillDialogState | null) => TemplateFillDialogState | null),
     ) => {
@@ -25364,6 +25366,45 @@ export default function App() {
                                 <span className="font-bold text-amber-600 tabular-nums">{templateFillDialog.missingCount}</span>
                                 <span className="text-slate-400">待确认</span>
                               </div>
+                            </div>
+                          )}
+                          {/* P-A 字段明细:哪些有数据(来源)/哪些缺数据(需补什么) */}
+                          {templateFillDialog.fields.length > 0 && (
+                            <div className="rounded-xl bg-white/70 px-2 py-1.5">
+                              <button
+                                type="button"
+                                onClick={() => setFillDetailOpen((v) => !v)}
+                                className="flex w-full items-center justify-between text-[10px] font-bold text-slate-600"
+                              >
+                                <span>
+                                  字段明细 · 有数据 {templateFillDialog.fields.filter((f) => f.status === 'filled').length}
+                                  {' / '}缺数据 {templateFillDialog.fields.filter((f) => f.status === 'missing').length}
+                                </span>
+                                <ChevronDown size={12} className={`shrink-0 text-slate-400 transition ${fillDetailOpen ? 'rotate-180' : ''}`} />
+                              </button>
+                              {fillDetailOpen && (
+                                <ul className="mt-1.5 max-h-40 space-y-1 overflow-y-auto pr-1">
+                                  {templateFillDialog.fields.map((f, idx) => (
+                                    <li key={`${f.label}-${idx}`} className="flex items-start gap-1.5 text-[10px] leading-4">
+                                      <span className={`mt-[1px] shrink-0 ${f.status === 'filled' ? 'text-emerald-500' : 'text-amber-500'}`}>
+                                        {f.status === 'filled' ? '✓' : '○'}
+                                      </span>
+                                      <span className="min-w-0">
+                                        <span className="font-medium text-slate-700">{f.label}</span>
+                                        <span className="text-slate-400">
+                                          {f.status === 'filled'
+                                            ? ((f.evidenceTitles?.length || f.webSourceTitles?.length)
+                                                ? ` · 来源：${[...(f.evidenceTitles || []), ...(f.webSourceTitles || [])].slice(0, 2).join('、')}`
+                                                : ' · 已填')
+                                            : (f.suggestedSources && f.suggestedSources.length
+                                                ? ` · 需补：${f.suggestedSources.slice(0, 2).join('、')}`
+                                                : (f.followUpQuestion ? ` · ${f.followUpQuestion}` : ' · 待确认'))}
+                                        </span>
+                                      </span>
+                                    </li>
+                                  ))}
+                                </ul>
+                              )}
                             </div>
                           )}
                           {/* 灰色滚动小字 */}
