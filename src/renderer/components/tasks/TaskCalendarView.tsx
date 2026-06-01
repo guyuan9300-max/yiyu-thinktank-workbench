@@ -76,6 +76,18 @@ const WEEK_OVERLAP_INDENT_THRESHOLD = 2; // 重叠任务数 ≤ 2 时均分宽�
 const DEFAULT_UNLINKED_TASK_COLOR = '#5B7BFE';
 const LOCAL_DRAFT_NOTICE = '任务正在保存，稍后再调整时间。';
 
+// 月视图跨天连续条单车道高度(px)
+const MONTH_MULTIDAY_BAR_HEIGHT = 18;
+
+// 任务是否跨天(整段 range 覆盖 >1 个自然日)。跨天任务在月视图渲染成连续条而非每格 chip。
+function isMultiDayCalendarTask(task: Task): boolean {
+  const range = resolveTaskDateTimeRange(task);
+  const startDay = startOfDayValue(range.startDateTime).getTime();
+  // 末尾减 1ms：end 落在次日 00:00 时，最后覆盖日仍是前一天（与 monthTasksByDateKey 的 cursor<end 一致）
+  const lastDay = startOfDayValue(new Date(range.endDateTime.getTime() - 1)).getTime();
+  return lastDay > startDay;
+}
+
 function isLocalDraftTaskId(taskId?: string | null) {
   return Boolean(taskId && taskId.startsWith('local-draft:'));
 }
@@ -560,6 +572,74 @@ export function TaskCalendarView({
     return weeks;
   }, [calendarDate, monthTasksByDateKey]);
 
+  // 月视图跨天"连续条"布局：按周行给每个跨天任务分配车道(lane)，并算出每个日格在每条车道上的渲染片段。
+  // 同一任务整周占同一 lane → 相邻格的满格出血片段首尾相连，视觉上是一条横跨多格的条。
+  type MonthDayBarSlot = {
+    task: Task;
+    roundLeft: boolean;   // 真正的起始端(本周内且非上周接续) → 左圆角
+    roundRight: boolean;  // 真正的结束端 → 右圆角
+    continuesLeft: boolean;  // 左端是"上周接续"→ 显示左箭头
+    continuesRight: boolean; // 右端是"下周接续"→ 显示右箭头
+    showTitle: boolean;   // 只在起始格显示标题
+  };
+  const monthMultiDayBarsByDateKey = useMemo(() => {
+    const result = new Map<string, Array<MonthDayBarSlot | null>>();
+    const DAY_MS = 24 * 60 * 60 * 1000;
+    monthTimelineWeeks.forEach((week) => {
+      const weekStart = startOfDayValue(week.days[0].date);
+      const weekEndDay = startOfDayValue(week.days[6].date);
+      const seen = new Set<string>();
+      const bars: Array<{ task: Task; firstCol: number; lastCol: number; continuesLeft: boolean; continuesRight: boolean }> = [];
+      week.days.forEach(({ dayTasks }) => {
+        dayTasks.forEach((task) => {
+          if (seen.has(task.id)) return;
+          if (!isMultiDayCalendarTask(task)) return;
+          seen.add(task.id);
+          const range = resolveTaskDateTimeRange(task);
+          const startDay = startOfDayValue(range.startDateTime);
+          const lastDay = startOfDayValue(new Date(range.endDateTime.getTime() - 1));
+          const firstCol = Math.max(0, Math.round((startDay.getTime() - weekStart.getTime()) / DAY_MS));
+          const lastCol = Math.min(6, Math.round((lastDay.getTime() - weekStart.getTime()) / DAY_MS));
+          if (lastCol < 0 || firstCol > 6 || lastCol < firstCol) return;
+          bars.push({
+            task,
+            firstCol,
+            lastCol,
+            continuesLeft: startDay.getTime() < weekStart.getTime(),
+            continuesRight: lastDay.getTime() > weekEndDay.getTime(),
+          });
+        });
+      });
+      // 贪心车道分配：按起始列升序、跨度大的优先，放到第一条"上一段已结束"的车道
+      bars.sort((a, b) => a.firstCol - b.firstCol || (b.lastCol - b.firstCol) - (a.lastCol - a.firstCol));
+      const laneEndCol: number[] = [];
+      const placed: Array<{ bar: (typeof bars)[number]; lane: number }> = [];
+      bars.forEach((bar) => {
+        let lane = 0;
+        while (lane < laneEndCol.length && laneEndCol[lane] >= bar.firstCol) lane += 1;
+        laneEndCol[lane] = bar.lastCol;
+        placed.push({ bar, lane });
+      });
+      const laneCount = laneEndCol.length;
+      week.days.forEach((dayObj, col) => {
+        const slots: Array<MonthDayBarSlot | null> = new Array(laneCount).fill(null);
+        placed.forEach(({ bar, lane }) => {
+          if (col < bar.firstCol || col > bar.lastCol) return;
+          slots[lane] = {
+            task: bar.task,
+            roundLeft: col === bar.firstCol && !bar.continuesLeft,
+            roundRight: col === bar.lastCol && !bar.continuesRight,
+            continuesLeft: col === bar.firstCol && bar.continuesLeft,
+            continuesRight: col === bar.lastCol && bar.continuesRight,
+            showTitle: col === bar.firstCol,
+          };
+        });
+        result.set(formatDateInputValue(dayObj.date), slots);
+      });
+    });
+    return result;
+  }, [monthTimelineWeeks]);
+
   const weekStartDate = useMemo(() => startOfWeek(selectedDate), [selectedDate]);
   const weekPages = useMemo(() => {
     return [-7, 0, 7].map((offsetDays) => {
@@ -667,10 +747,11 @@ export function TaskCalendarView({
         setResizePreviewMinutes(nextDuration);
         setResizePreviewStartMinute(nextStart);
       } else {
-        const maxDuration = Math.max(DAY_TIMELINE_SLOT_MINUTES, 24 * 60 - draft.startMinute);
+        // 不再把时长卡在当天内（旧 maxDuration = 24*60 - startMinute 会把跨天任务一碰就缩成同天）。
+        // 允许向下拖过午夜 → 时长 >当天剩余，落库后按跨天分段渲染。保底不小于一格。
         const nextDuration = Math.max(
           DAY_TIMELINE_SLOT_MINUTES,
-          Math.min(maxDuration, draft.baseDuration + deltaSlots * DAY_TIMELINE_SLOT_MINUTES),
+          draft.baseDuration + deltaSlots * DAY_TIMELINE_SLOT_MINUTES,
         );
         resizePreviewRef.current = nextDuration;
         setResizePreviewMinutes(nextDuration);
@@ -1314,7 +1395,10 @@ export function TaskCalendarView({
                     const isActiveSelection = isSameDay(cellDate, selectedDate);
                     const isToday = isSameDay(cellDate, today);
                     const isMonthAnchor = cellDate.getDate() === 1;
-                    const overflowCount = Math.max(dayTasks.length - 4, 0);
+                    // 跨天任务走"连续条"车道，不再进单格 chip 列表
+                    const cellChipTasks = dayTasks.filter((task) => !isMultiDayCalendarTask(task));
+                    const cellBarSlots = monthMultiDayBarsByDateKey.get(formatDateInputValue(cellDate)) || [];
+                    const overflowCount = Math.max(cellChipTasks.length - 4, 0);
                     const chinaCalendarMarkers = getChinaCalendarMarkers(cellDate);
                     return (
                       <div
@@ -1378,7 +1462,7 @@ export function TaskCalendarView({
                               )}
                             </div>
                             {chinaCalendarMarkers.length > 0 && (
-                              <div className="flex flex-wrap justify-end gap-1 max-w-[60%]">
+                              <div className="flex flex-nowrap justify-end gap-1 max-w-[55%] overflow-hidden">
                                 {chinaCalendarMarkers.slice(0, 2).map((marker) => (
                                   <span
                                     key={`${formatDateInputValue(cellDate)}-${marker.kind}-${marker.label}`}
@@ -1391,13 +1475,84 @@ export function TaskCalendarView({
                             )}
                           </div>
 
+                          {/* 跨天任务连续条：放在可滚动 chip 容器之外，满格出血(-mx-2.5)使相邻格首尾相连；空车道等高占位保持跨格对齐 */}
+                          {cellBarSlots.length > 0 && (
+                            <div className="mt-2 flex flex-col gap-1">
+                            {cellBarSlots.map((slot, lane) => {
+                              if (!slot) {
+                                return <div key={`barspace-${lane}`} style={{ height: MONTH_MULTIDAY_BAR_HEIGHT }} aria-hidden="true" />;
+                              }
+                              const barStyle = calendarChipStyle(slot.task, clientColorById);
+                              return (
+                                <div
+                                  key={`bar-${lane}-${slot.task.id}`}
+                                  data-no-month-range-drag="true"
+                                  role="button"
+                                  tabIndex={0}
+                                  title={slot.task.title}
+                                  draggable={!isLocalDraftTaskId(slot.task.id)}
+                                  onMouseDown={(event) => event.stopPropagation()}
+                                  onDragStart={(event) => {
+                                    event.stopPropagation();
+                                    if (isLocalDraftTaskId(slot.task.id)) {
+                                      event.preventDefault();
+                                      onCalendarNotice?.('info', LOCAL_DRAFT_NOTICE);
+                                      return;
+                                    }
+                                    // 跨天条拖拽：落到哪个日格，哪天就是任务的起始日（duration 保留，结束随之顺移）
+                                    event.dataTransfer.effectAllowed = 'move';
+                                    event.dataTransfer.setData('text/plain', slot.task.id);
+                                    dragDropHandledRef.current = false;
+                                    setDraggingTaskId(slot.task.id);
+                                  }}
+                                  onDragEnd={() => {
+                                    if (!dragDropHandledRef.current) {
+                                      setDraggingTaskId(null);
+                                      setDragTargetDay(null);
+                                    }
+                                    dragDropHandledRef.current = false;
+                                  }}
+                                  onClick={(event) => {
+                                    event.stopPropagation();
+                                    if (isLocalDraftTaskId(slot.task.id)) {
+                                      onCalendarNotice?.('info', LOCAL_DRAFT_NOTICE);
+                                      return;
+                                    }
+                                    onOpenTaskEditor(slot.task);
+                                  }}
+                                  onKeyDown={(event) => {
+                                    if (event.key === 'Enter' || event.key === ' ') {
+                                      event.preventDefault();
+                                      onOpenTaskEditor(slot.task);
+                                    }
+                                  }}
+                                  className={`-mx-2.5 flex items-center gap-0.5 overflow-hidden whitespace-nowrap border-y px-2 text-[11px] font-semibold leading-none ${isLocalDraftTaskId(slot.task.id) ? 'cursor-default' : 'cursor-grab active:cursor-grabbing'} ${draggingTaskId === slot.task.id ? 'opacity-50' : ''} ${slot.roundLeft ? 'rounded-l-md border-l' : ''} ${slot.roundRight ? 'rounded-r-md border-r' : ''} ${slot.task.status === 'done' ? 'line-through' : ''}`}
+                                  style={{ height: MONTH_MULTIDAY_BAR_HEIGHT, color: barStyle.color, backgroundColor: barStyle.backgroundColor, borderColor: barStyle.borderColor }}
+                                >
+                                  {slot.continuesLeft && (
+                                    <ChevronLeft size={10} strokeWidth={2.5} className="shrink-0 opacity-70" aria-hidden="true" />
+                                  )}
+                                  {slot.showTitle ? (
+                                    <span className="overflow-hidden text-ellipsis">{slot.task.title}</span>
+                                  ) : (
+                                    <span className="flex-1" aria-hidden="true" />
+                                  )}
+                                  {slot.continuesRight && (
+                                    <ChevronRight size={10} strokeWidth={2.5} className="ml-auto shrink-0 opacity-70" aria-hidden="true" />
+                                  )}
+                                </div>
+                              );
+                            })}
+                            </div>
+                          )}
+
                           <div className={`mt-2.5 flex min-h-0 flex-1 flex-col gap-1 ${
                             expandedCalendarDays.has(formatDateInputValue(cellDate))
                               ? 'max-h-[260px] overflow-y-auto pr-0.5'
                               : ''
                           }`}>
                             {/* 5/26: 展开时给个 max-h + 内部 scroll, 防止把整行 row 撑高搞乱 month grid. */}
-                            {dayTasks.slice(0, expandedCalendarDays.has(formatDateInputValue(cellDate)) ? dayTasks.length : 4).map((task) => {
+                            {cellChipTasks.slice(0, expandedCalendarDays.has(formatDateInputValue(cellDate)) ? cellChipTasks.length : 4).map((task) => {
                               const timedSegment = buildTaskDayTimedSegment(task, cellDate);
                               const timePrefix = timedSegment && hasTaskExplicitTime(task)
                                 ? `${formatMinuteOfDay(timedSegment.startMinute)} `
@@ -1522,7 +1677,7 @@ export function TaskCalendarView({
                                 + {overflowCount} 条更多
                               </button>
                             )}
-                            {expandedCalendarDays.has(formatDateInputValue(cellDate)) && dayTasks.length > 4 && (
+                            {expandedCalendarDays.has(formatDateInputValue(cellDate)) && cellChipTasks.length > 4 && (
                               <button
                                 type="button"
                                 data-no-month-range-drag="true"

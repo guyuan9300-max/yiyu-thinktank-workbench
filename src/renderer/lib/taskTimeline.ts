@@ -391,3 +391,72 @@ export function assignTimedTaskLanes<T extends { startMinute: number; endMinute:
   if (groupIndices.length > 0) flushGroup();
   return result;
 }
+
+// ─── 跨天起止时间段（任务编辑器"时间段"tab 用） ───────────────
+//
+// 真相源是 开始日+开始时间 / 结束日+结束时间；scheduledEndAt 可落在不同日期。
+// durationMinutes 由 (end - start) 派生，跨天时可 >1440。
+// 全天（无开始时间）v1 仅单日，落 deadlineAt（忽略 endDate）。
+// 范式对齐手机版 mobile/lib/calendar-repository-core.ts:buildScheduleFromStartEnd。
+
+export interface TaskScheduleStartEnd {
+  /** 开始日 "YYYY-MM-DD"；为空表示清除排期 */
+  startDate: string | null;
+  /** 开始时间 "HH:mm"；为空表示全天 */
+  startTime: string | null;
+  /** 结束日 "YYYY-MM-DD"；缺省同开始日 */
+  endDate: string | null;
+  /** 结束时间 "HH:mm"；为空表示不设结束 */
+  endTime: string | null;
+}
+
+export interface TaskScheduleUpdates {
+  dueDate: string | null;
+  deadlineAt: string | null;
+  scheduledStartAt: string | null;
+  scheduledEndAt: string | null;
+  /** 跨天可 >1440；null 表示无明确时段 */
+  durationMinutes: number | null;
+}
+
+function combineScheduleDateTime(date: string, time: string): string {
+  return `${date}T${time}`;
+}
+
+function parseScheduleLocalDateTime(value: string): Date | null {
+  const m = value.match(/^(\d{4})-(\d{2})-(\d{2})[T\s](\d{1,2}):(\d{2})/);
+  if (!m) return null;
+  const parsed = new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]), Number(m[4]), Number(m[5]));
+  return Number.isNaN(parsed.getTime()) ? null : parsed;
+}
+
+/** 由"开始日/时间 + 结束日/时间"推导任务排期字段（支持跨天）。 */
+export function buildTaskScheduleFromStartEnd(input: TaskScheduleStartEnd): TaskScheduleUpdates {
+  const startDate = (input.startDate || '').trim() || null;
+  const startTime = (input.startTime || '').trim() || null;
+  const endDate = (input.endDate || '').trim() || null;
+  const endTime = (input.endTime || '').trim() || null;
+
+  // 无开始日 → 清空全部排期
+  if (!startDate) {
+    return { dueDate: null, deadlineAt: null, scheduledStartAt: null, scheduledEndAt: null, durationMinutes: null };
+  }
+  // 全天（无开始时间）：v1 仅单日，落 deadlineAt，忽略 endDate
+  if (!startTime) {
+    return { dueDate: startDate, deadlineAt: startDate, scheduledStartAt: null, scheduledEndAt: null, durationMinutes: null };
+  }
+  const scheduledStartAt = combineScheduleDateTime(startDate, startTime);
+  // 无结束时间 → 只有开始时刻，不设 end
+  if (!endTime) {
+    return { dueDate: scheduledStartAt, deadlineAt: null, scheduledStartAt, scheduledEndAt: null, durationMinutes: null };
+  }
+  const scheduledEndAt = combineScheduleDateTime(endDate ?? startDate, endTime);
+  const start = parseScheduleLocalDateTime(scheduledStartAt);
+  const end = parseScheduleLocalDateTime(scheduledEndAt);
+  const durationMinutes = start && end ? Math.round((end.getTime() - start.getTime()) / 60_000) : null;
+  // 结束 <= 开始 视为无效，丢弃 end 防脏数据（picker 已校验，这里兜底）
+  if (durationMinutes == null || durationMinutes <= 0) {
+    return { dueDate: scheduledStartAt, deadlineAt: null, scheduledStartAt, scheduledEndAt: null, durationMinutes: null };
+  }
+  return { dueDate: scheduledStartAt, deadlineAt: null, scheduledStartAt, scheduledEndAt, durationMinutes };
+}
