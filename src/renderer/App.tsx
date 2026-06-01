@@ -1931,21 +1931,7 @@ const DEFAULT_LOCAL_AUTH_STATE: AuthState = {
   sessionMode: 'cloud',
   user: null,
 };
-// 官方云识别基准地址。开源版默认留空（不识别任何云为官方云）；
-// 官方分发构建时通过 VITE_YIYU_OFFICIAL_CLOUD_URL 注入自己的地址。
-const YIYU_OFFICIAL_CLOUD_URL = (import.meta.env.VITE_YIYU_OFFICIAL_CLOUD_URL ?? '').trim();
 const YIYU_OFFICIAL_ORG_ID = 'org_yiyu_default';
-const YIYU_ORG_NAME_PATTERNS = ['益语智库', '益语软件'];
-
-function normalizeUrlForComparison(rawUrl?: string | null) {
-  return (rawUrl || '').trim().replace(/\/+$/, '');
-}
-
-function isYiyuOfficialOrganizationName(name?: string | null) {
-  const normalized = (name || '').trim();
-  if (!normalized) return false;
-  return YIYU_ORG_NAME_PATTERNS.some((pattern) => normalized.includes(pattern));
-}
 
 const EMPTY_PROJECT_STRUCTURE_RESPONSE: ProjectStructureResponse = { modules: [], flows: [] };
 const PROJECT_STRUCTURE_FAILURE_CACHE_MS = 5 * 60 * 1000;
@@ -7824,18 +7810,12 @@ export default function App() {
   // 跟 backend auth_me 改造 (没 token 时 authenticated=False) 对齐 — 现在没登录
   // 直接到登录页, 不再有"local-device-user"虚假身份让客户数据对所有打开 app 的人可见.
   const isLocalSession: boolean = false;
+  // 不在开源 renderer 中硬编码官方云地址。维护模式入口只信任后端
+  // maintenance-mode/status 返回的组织与授权状态，避免公开包默认连接益语生产云。
   const isYiyuOfficialCloudSession = Boolean(
     isCloudSession
-    && (
-      (
-        normalizeUrlForComparison(desktopAppInfo?.cloudBackendUrl) === YIYU_OFFICIAL_CLOUD_URL
-        && (
-          isYiyuOfficialOrganizationName(orgMembershipState.organizationName)
-          || isYiyuOfficialOrganizationName(orgModelState.organization.name)
-        )
-      )
-      || maintenanceModeStatus?.organizationId === YIYU_OFFICIAL_ORG_ID
-    ),
+    && maintenanceModeStatus?.available
+    && maintenanceModeStatus.organizationId === YIYU_OFFICIAL_ORG_ID,
   );
   const canShowMaintenanceSyncPanel = Boolean(
     isYiyuOfficialCloudSession

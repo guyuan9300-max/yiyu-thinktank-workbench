@@ -46,7 +46,7 @@ PUBLIC_HOST=api.example.com ./bootstrap-server.sh
 
 例如：
 
-- `https://123.123.123.123.sslip.io`
+- `https://203.0.113.10.sslip.io`
 
 ## 注意
 

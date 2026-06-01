@@ -29,6 +29,7 @@ const SKIP_PREFIXES = [
 ];
 const SECRET_KEYWORDS = /(?:secret|token|api[_-]?key|access[_-]?key|secret[_-]?key|app[_-]?secret|client[_-]?secret|private[_-]?key|tos[_-]?ak|tos[_-]?sk)/i;
 const SECRET_VALUE_PATTERN = /(?:secret|token|api[_-]?key|access[_-]?key|secret[_-]?key|app[_-]?secret|client[_-]?secret|private[_-]?key|tos[_-]?ak|tos[_-]?sk)\s*[:=]\s*["']?([^"'\s#`]+)["']?/i;
+const PUBLIC_IPV4_URL_PATTERN = /https?:\/\/(?!(?:localhost|127\.0\.0\.1|0\.0\.0\.0|10\.|192\.168\.|172\.(?:1[6-9]|2\d|3[0-1])\.|192\.0\.2\.|198\.51\.100\.|203\.0\.113\.))\d{1,3}(?:\.\d{1,3}){3}(?::\d+)?/i;
 const TOKEN_PATTERNS = [
   /-----BEGIN [A-Z ]*PRIVATE KEY-----/,
   /\bgh[pousr]_[A-Za-z0-9_]{20,}\b/,
@@ -152,6 +153,9 @@ function scanPath(root, rawPath) {
   if (TOKEN_PATTERNS.some((pattern) => pattern.test(content))) {
     issues.push(issue('block', 'secret_pattern', targetPath, '文件内容疑似包含私钥、访问令牌或 API Key。', '删除真实密钥，改用环境变量或密钥管理；已泄露密钥需要轮换。'));
     return issues;
+  }
+  if (PUBLIC_IPV4_URL_PATTERN.test(content)) {
+    issues.push(issue('block', 'public_ip_url', targetPath, '文件内容出现公网 IP URL，可能暴露生产或测试基础设施。', '改用环境变量、组织配置或 .env.example 占位符；已公开的服务器入口需要补充访问控制。'));
   }
   const match = content.match(SECRET_VALUE_PATTERN);
   if (CONFIG_EXTENSIONS.has(extension) && match && SECRET_KEYWORDS.test(content) && !looksLikePlaceholder(match[1] || '')) {
