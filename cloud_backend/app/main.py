@@ -14009,6 +14009,35 @@ def create_app() -> FastAPI:
         updated_row = state.db.fetchone("SELECT * FROM clients WHERE id = ?", (client_id,))
         return _client_record_full(state, updated_row)
 
+    @app.delete("/api/v1/clients/{client_id}")
+    def delete_client(
+        client_id: str,
+        current_user: SessionUser = Depends(lambda authorization=Header(default=None): _require_auth(app, authorization)),
+    ) -> dict[str, bool]:
+        # 跨端删除：local desktop 删客户时调本端点把云端那条也删掉，否则 GET /clients
+        # 会把它反向 pull 回各端（"删了又来"根因）。权限与 PUT 一致：creator 或被勾选的
+        # related-user 才能删。子表全部 ON DELETE CASCADE，删 client 主行即级联清干净。
+        row = state.db.fetchone(
+            "SELECT * FROM clients WHERE id = ? AND organization_id = ?",
+            (client_id, current_user.organizationId),
+        )
+        if not row:
+            # 已不存在视为删除成功（幂等）——避免 local 重试时 404 噪音。
+            return {"deleted": True}
+        # organization_workspace 是组织默认工作台，list_clients 会自动重建，禁止删除。
+        if str(_row_get(row, "type") or "") == ORGANIZATION_WORKSPACE_CLIENT_TYPE:
+            raise HTTPException(status_code=400, detail="组织默认工作台不可删除")
+        creator_id = str(_row_get(row, "creator_id") or "")
+        if creator_id and creator_id != current_user.id:
+            existing_relation = state.db.fetchone(
+                "SELECT 1 FROM client_related_users WHERE client_id = ? AND user_id = ?",
+                (client_id, current_user.id),
+            )
+            if not existing_relation:
+                raise HTTPException(status_code=403, detail="无权删除该项目（仅创建者或被勾选的相关同事可删）")
+        state.db.execute("DELETE FROM clients WHERE id = ?", (client_id,))
+        return {"deleted": True}
+
     @app.get("/api/v1/mobile/capabilities", response_model=MobileCapabilityRecord)
     def get_mobile_capabilities(
         current_user: SessionUser = Depends(lambda authorization=Header(default=None): _require_auth(app, authorization)),
