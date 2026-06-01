@@ -151,7 +151,7 @@
     "electron-builder": "^26.0.12",
     "postcss": "^8.5.6",
     "tailwindcss": "^3.4.17",
-    "typescript": "^5.8.2",
+    "typescript": "^6.0.3",
     "vite": "^6.2.1",
     "wait-on": "^8.0.3"
   }
