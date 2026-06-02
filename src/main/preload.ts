@@ -5,9 +5,11 @@ import type {
   CommitAndPushToMainPayload,
   DesktopAppInfo,
   DesktopStartupGateResumeResult,
+  OfficialPushUpdatePayload,
   PullPreview,
   PullSelectedFromMainPayload,
   PushPreview,
+  UpdateOrgIdentity,
 } from '../shared/types.js';
 
 // V2.1 Lab 模式 (顾源源 5/22 方案 C): ENV YIYU_LAB_MODE=1 时 frontend 连 V2.1 backend (47831)
@@ -16,7 +18,15 @@ const DEFAULT_BACKEND_PORT_PRELOAD = LAB_MODE_PRELOAD ? 47831 : 47829;
 const backendBaseUrl = process.env.YIYU_BACKEND_URL ?? `http://127.0.0.1:${DEFAULT_BACKEND_PORT_PRELOAD}`;
 
 interface UpdateEventPayload {
-  kind: 'checking' | 'available' | 'not-available' | 'download-progress' | 'downloaded' | 'error';
+  kind:
+    | 'checking'
+    | 'available'
+    | 'not-available'
+    | 'download-progress'
+    | 'downloaded'
+    | 'error'
+    | 'official-push-available'
+    | 'official-push-not-available';
   version?: string;
   releaseNotes?: string | null;
   percent?: number;
@@ -24,12 +34,14 @@ interface UpdateEventPayload {
   transferred?: number;
   total?: number;
   message?: string;
+  officialPush?: OfficialPushUpdatePayload | null;
 }
 
 contextBridge.exposeInMainWorld('yiyuWorkbench', {
   backendBaseUrl,
   // 迷你面板:进入/退出桌面挂件模式(缩小窗 + 置顶);主进程做窗口 resize。
   setMiniMode: (enter: boolean): Promise<{ mini: boolean }> => ipcRenderer.invoke('yiyu-workbench:setMiniMode', enter),
+  setUpdateOrgIdentity: (identity: UpdateOrgIdentity | null): Promise<{ ok: boolean; reason?: string }> => ipcRenderer.invoke('yiyu-workbench:setUpdateOrgIdentity', identity),
   setUpdateOrgCode: (orgCode: string | null): Promise<{ ok: boolean; reason?: string }> => ipcRenderer.invoke('yiyu-workbench:setUpdateOrgCode', orgCode),
   getDesktopAppInfo: (): Promise<DesktopAppInfo> => ipcRenderer.invoke('yiyu-workbench:getDesktopAppInfo'),
   resumeFromStartupGate: (): Promise<DesktopStartupGateResumeResult> => ipcRenderer.invoke('yiyu-workbench:resumeFromStartupGate'),
@@ -78,6 +90,10 @@ contextBridge.exposeInMainWorld('yiyuWorkbench', {
     ipcRenderer.invoke('yiyu-workbench:readRecordingFile', absolutePath),
   setRecordingActive: (payload: { active: boolean; taskTitle?: string }): Promise<{ active: boolean }> =>
     ipcRenderer.invoke('yiyu-workbench:setRecordingActive', payload),
+  setBackgroundTasks: (payload: {
+    tasks: { kind: string; label: string; status?: string; severity?: 'loss' | 'queued' }[];
+  }): Promise<{ ok: boolean; count: number }> =>
+    ipcRenderer.invoke('yiyu-workbench:setBackgroundTasks', payload),
   watchFile: (targetPath: string): Promise<boolean> => ipcRenderer.invoke('yiyu-workbench:watchFile', targetPath),
   unwatchFile: (targetPath: string): Promise<boolean> => ipcRenderer.invoke('yiyu-workbench:unwatchFile', targetPath),
   onFileChanged: (callback: (filePath: string) => void) => {
@@ -85,8 +101,10 @@ contextBridge.exposeInMainWorld('yiyuWorkbench', {
     ipcRenderer.on('yiyu-workbench:fileChanged', handler);
     return () => { ipcRenderer.removeListener('yiyu-workbench:fileChanged', handler); };
   },
-  checkForUpdates: (): Promise<{ ok: boolean; version?: string | null; reason?: string }> =>
+  checkForUpdates: (): Promise<{ ok: boolean; version?: string | null; reason?: string; officialPush?: OfficialPushUpdatePayload | null }> =>
     ipcRenderer.invoke('yiyu-workbench:update.check'),
+  installOfficialPushUpdate: (): Promise<{ ok: boolean; version?: string | null; reason?: string; fileName?: string | null }> =>
+    ipcRenderer.invoke('yiyu-workbench:update.installOfficialPush'),
   quitAndInstallUpdate: (): Promise<{ ok: boolean; reason?: string }> =>
     ipcRenderer.invoke('yiyu-workbench:update.quitAndInstall'),
   onUpdateEvent: (callback: (payload: UpdateEventPayload) => void) => {

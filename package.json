@@ -1,6 +1,6 @@
 {
   "name": "yiyu-thinktank-workbench",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "private": true,
   "description": "益语智库自用平台 V2.0 桌面版",
   "type": "module",
@@ -8,11 +8,11 @@
   "scripts": {
     "dev:renderer": "vite --host 127.0.0.1 --port 4173 --strictPort",
     "dev:main": "tsc -p tsconfig.node.json --watch",
-    "dev:electron": "wait-on tcp:4173 build/main/main.js && cross-env YIYU_REMOTE_CLOUD_API_URL=http://101.126.34.232 VITE_DEV_SERVER_URL=http://127.0.0.1:4173 node scripts/run-local-electron.mjs .",
+    "dev:electron": "wait-on tcp:4173 build/main/main.js && cross-env VITE_DEV_SERVER_URL=http://127.0.0.1:4173 node scripts/run-local-electron.mjs .",
     "dev:electron:local-cloud": "wait-on tcp:4173 build/main/main.js && cross-env VITE_DEV_SERVER_URL=http://127.0.0.1:4173 node scripts/run-local-electron.mjs .",
     "dev": "concurrently -k \"npm:dev:renderer\" \"npm:dev:main\" \"npm:dev:electron\"",
     "dev:renderer:lab": "vite --host 127.0.0.1 --port 4174 --strictPort",
-    "dev:electron:lab": "wait-on tcp:4174 build/main/main.js && cross-env YIYU_LAB_MODE=1 YIYU_REMOTE_CLOUD_API_URL=http://101.126.34.232 VITE_DEV_SERVER_URL=http://127.0.0.1:4174 node scripts/run-local-electron.mjs .",
+    "dev:electron:lab": "wait-on tcp:4174 build/main/main.js && cross-env YIYU_LAB_MODE=1 VITE_DEV_SERVER_URL=http://127.0.0.1:4174 node scripts/run-local-electron.mjs .",
     "dev:lab": "concurrently -k \"npm:dev:renderer:lab\" \"npm:dev:main\" \"npm:dev:electron:lab\"",
     "typecheck:renderer": "tsc --noEmit --pretty false --incremental false -p tsconfig.json",
     "build:renderer": "npm run typecheck:renderer && vite build",
