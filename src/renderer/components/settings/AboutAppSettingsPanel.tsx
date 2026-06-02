@@ -1,6 +1,10 @@
 import React, { useEffect, useState } from 'react';
-import { RefreshCw, CheckCircle2, AlertCircle, RotateCcw } from 'lucide-react';
-import type { DesktopAppInfo, UpdateEventPayload } from '../../../shared/types';
+import { RefreshCw, CheckCircle2, AlertCircle, RotateCcw, FileText, ShieldAlert, Bell, Download } from 'lucide-react';
+import type { DesktopAppInfo, OfficialPushUpdatePayload, UpdateEventPayload } from '../../../shared/types';
+import { UpdateContentCard } from './UpdateContentCard';
+import { ForceUpdatePreviewModal } from './ForceUpdatePreviewModal';
+import { FeedbackSection } from './FeedbackSection';
+import { OFFICIAL_PUSH_STATE_EVENT, UPDATE_STATE_KEY } from '../UpdateNotifier';
 
 interface Props {
   desktopAppInfo: DesktopAppInfo | null;
@@ -11,6 +15,8 @@ type UpdateUiState =
   | { kind: 'checking' }
   | { kind: 'downloading'; version?: string; percent?: number }
   | { kind: 'downloaded'; version?: string }
+  | { kind: 'official-push'; push: OfficialPushUpdatePayload; installing?: boolean }
+  | { kind: 'official-push-opened'; version?: string | null; fileName?: string | null }
   | { kind: 'up-to-date'; checkedAt: number }
   | { kind: 'error'; message: string };
 
@@ -21,10 +27,31 @@ function formatPercent(percent: number | undefined): string {
   return `${Math.max(0, Math.min(100, percent)).toFixed(0)}%`;
 }
 
+function formatSize(sizeBytes: number | null | undefined): string | null {
+  if (typeof sizeBytes !== 'number' || !Number.isFinite(sizeBytes) || sizeBytes <= 0) return null;
+  if (sizeBytes >= 1024 * 1024 * 1024) return `${(sizeBytes / 1024 / 1024 / 1024).toFixed(1)} GB`;
+  return `${(sizeBytes / 1024 / 1024).toFixed(1)} MB`;
+}
+
+function pushRelationLabel(relation: OfficialPushUpdatePayload['relation']): string {
+  if (relation === 'upgrade') return '升级版本';
+  if (relation === 'downgrade') return '回退版本';
+  if (relation === 'switch-custom') return '组织定制版';
+  if (relation === 'different') return '指定版本';
+  return '官方推送';
+}
+
+function initialUpdateState(): UpdateUiState {
+  const cachedPush = typeof window !== 'undefined' ? window[UPDATE_STATE_KEY]?.officialPush : null;
+  return cachedPush ? { kind: 'official-push', push: cachedPush } : { kind: 'idle' };
+}
+
 export function AboutAppSettingsPanel({ desktopAppInfo }: Props): React.ReactElement {
-  const [updateState, setUpdateState] = useState<UpdateUiState>({ kind: 'idle' });
+  const [updateState, setUpdateState] = useState<UpdateUiState>(() => initialUpdateState());
   const [checkBusy, setCheckBusy] = useState(false);
   const [restartBusy, setRestartBusy] = useState(false);
+  const [showChangelog, setShowChangelog] = useState(false);
+  const [showForcePreview, setShowForcePreview] = useState(false);
 
   useEffect(() => {
     const subscribe = window.yiyuWorkbench?.onUpdateEvent;
@@ -46,6 +73,12 @@ export function AboutAppSettingsPanel({ desktopAppInfo }: Props): React.ReactEle
           return;
         case 'downloaded':
           setUpdateState({ kind: 'downloaded', version: payload.version });
+          return;
+        case 'official-push-available':
+          if (payload.officialPush) setUpdateState({ kind: 'official-push', push: payload.officialPush });
+          return;
+        case 'official-push-not-available':
+          setUpdateState({ kind: 'up-to-date', checkedAt: Date.now() });
           return;
         case 'not-available':
           setUpdateState({ kind: 'up-to-date', checkedAt: Date.now() });
@@ -84,6 +117,29 @@ export function AboutAppSettingsPanel({ desktopAppInfo }: Props): React.ReactEle
       setRestartBusy(false);
       setUpdateState({ kind: 'error', message: result.reason ?? '重启失败' });
     }
+  };
+
+  const handleInstallOfficialPush = async (push: OfficialPushUpdatePayload) => {
+    const trigger = window.yiyuWorkbench?.installOfficialPushUpdate;
+    if (typeof trigger !== 'function') {
+      setUpdateState({ kind: 'error', message: '当前安装包还不支持安装官方推送，请先安装迁移版本。' });
+      return;
+    }
+    setUpdateState({ kind: 'official-push', push, installing: true });
+    const result = await trigger();
+    if (!result.ok) {
+      setUpdateState({ kind: 'error', message: result.reason ?? '安装推送版本失败' });
+      return;
+    }
+    setUpdateState({ kind: 'official-push-opened', version: result.version ?? push.version, fileName: result.fileName ?? push.fileName ?? null });
+  };
+
+  const handleDismissOfficialPush = () => {
+    if (typeof window !== 'undefined' && window[UPDATE_STATE_KEY]) {
+      window[UPDATE_STATE_KEY]!.officialPush = null;
+      window.dispatchEvent(new CustomEvent(OFFICIAL_PUSH_STATE_EVENT, { detail: null }));
+    }
+    setUpdateState({ kind: 'idle' });
   };
 
   const appVersion = desktopAppInfo?.appVersion ?? '未知';
@@ -176,6 +232,45 @@ export function AboutAppSettingsPanel({ desktopAppInfo }: Props): React.ReactEle
               </span>
             </div>
           )}
+          {updateState.kind === 'official-push-opened' && (
+            <div className="flex items-start gap-2 rounded-md bg-emerald-50 px-3 py-2 text-[12px] text-emerald-700">
+              <CheckCircle2 size={14} className="mt-[2px] shrink-0" />
+              <span>
+                推送版本 {updateState.version || ''} 的安装包已下载并打开
+                {updateState.fileName ? `（${updateState.fileName}）` : ''}。请按 macOS 提示完成安装。
+              </span>
+            </div>
+          )}
+          {updateState.kind === 'official-push' && (
+            <div className="rounded-md border border-blue-100 bg-blue-50 px-3 py-3 text-[12px] text-blue-800">
+              <div className="flex items-start gap-2">
+                <Bell size={15} className="mt-[2px] shrink-0" />
+                <div className="min-w-0 flex-1">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <span className="font-semibold">{updateState.push.title}</span>
+                    <span className="rounded-full bg-white/80 px-2 py-0.5 text-[10px] font-semibold text-blue-700">
+                      {pushRelationLabel(updateState.push.relation)}
+                    </span>
+                  </div>
+                  <p className="mt-1 leading-relaxed text-blue-700/90">
+                    当前安装版本 {updateState.push.currentVersion}，推送版本 {updateState.push.version}
+                    {updateState.push.releaseVersion && updateState.push.releaseVersion !== updateState.push.version
+                      ? `（安装底版 ${updateState.push.releaseVersion}）`
+                      : ''}
+                    {formatSize(updateState.push.sizeBytes) ? ` · ${formatSize(updateState.push.sizeBytes)}` : ''}。
+                    {updateState.push.relation === 'downgrade'
+                      ? '这是官方指定的回退版本，适合测试或组织临时回滚。'
+                      : updateState.push.packageKind === 'custom'
+                        ? '这是益语智库为你所在组织指派的定制版本。'
+                        : '这是益语智库官方特地推送给你所在组织的版本。'}
+                  </p>
+                  <p className="mt-1 text-[11px] text-blue-600/80">
+                    安装阶段仍受 macOS 签名校验影响；如安装失败，请等待正式签名包。
+                  </p>
+                </div>
+              </div>
+            </div>
+          )}
           {updateState.kind === 'up-to-date' && (
             <div className="flex items-center gap-2 rounded-md bg-emerald-50 px-3 py-2 text-[12px] text-emerald-700">
               <CheckCircle2 size={14} />
@@ -200,6 +295,34 @@ export function AboutAppSettingsPanel({ desktopAppInfo }: Props): React.ReactEle
             <RefreshCw size={14} className={checkBusy || updateState.kind === 'checking' ? 'animate-spin' : ''} />
             检查更新
           </button>
+          {updateState.kind === 'official-push' && (
+            <>
+              <button
+                type="button"
+                onClick={() => handleInstallOfficialPush(updateState.push)}
+                disabled={updateState.installing}
+                className="inline-flex items-center gap-2 rounded-md bg-[#5B7BFE] px-4 py-2 text-[13px] font-medium text-white hover:bg-[#4A6AEF] disabled:opacity-60"
+              >
+                <Download size={14} />
+                {updateState.installing ? '正在准备…' : '安装推送版本'}
+              </button>
+              <button
+                type="button"
+                onClick={handleDismissOfficialPush}
+                className="inline-flex items-center gap-2 rounded-md border border-gray-200 bg-white px-4 py-2 text-[13px] font-medium text-gray-600 hover:bg-gray-50"
+              >
+                暂不安装
+              </button>
+            </>
+          )}
+          <button
+            type="button"
+            onClick={() => setShowChangelog((v) => !v)}
+            className="inline-flex items-center gap-2 rounded-md border border-gray-200 bg-white px-4 py-2 text-[13px] font-medium text-gray-700 hover:bg-gray-50"
+          >
+            <FileText size={14} />
+            查看更新内容
+          </button>
           {updateState.kind === 'downloaded' && (
             <button
               type="button"
@@ -212,7 +335,22 @@ export function AboutAppSettingsPanel({ desktopAppInfo }: Props): React.ReactEle
             </button>
           )}
         </div>
+
+        {showChangelog && <UpdateContentCard />}
+
+        <button
+          type="button"
+          onClick={() => setShowForcePreview(true)}
+          className="mt-4 inline-flex items-center gap-1.5 text-[11px] text-gray-400 hover:text-gray-600"
+        >
+          <ShieldAlert size={12} />
+          预览「强制更新」弹窗(开发用)
+        </button>
       </div>
+
+      <FeedbackSection desktopAppInfo={desktopAppInfo} />
+
+      <ForceUpdatePreviewModal open={showForcePreview} onClose={() => setShowForcePreview(false)} />
     </div>
   );
 }

@@ -20,7 +20,7 @@ export type AiModelProfileKey = 'online_primary' | 'local_text_deep' | 'local_vi
 export type AiModelCapability = 'online_primary' | 'deep_analysis' | 'vision_ocr' | 'fast_structured';
 export type AccountStatus = 'pending' | 'approved' | 'rejected' | 'disabled';
 export type MembershipStatus = 'none' | 'pending' | 'approved' | 'rejected';
-// [B] 5/25 PM (用户甲 path C): 加 'ai_agent' 让真 bot 同事 (成员甲等) 能作为组织成员存在.
+// [B] 5/25 PM (顾源源 path C): 加 'ai_agent' 让真 bot 同事 (庆华等) 能作为组织成员存在.
 // 跟 admin/employee 一样平权, 但 isLegacyOrganizationEmployee 永远放行.
 export type EmployeeRole = 'admin' | 'employee' | 'ai_agent';
 export type CollaboratorInboxStatus = 'pending' | 'accepted' | 'returned';
@@ -336,7 +336,7 @@ export interface OrgRoleTemplateSettings {
   sortOrder: number;
   active: boolean;
   /**
-   * 用户甲 5/24 V2.1 lab: 若为非空, 表示该岗位的持岗人是某个机器人同事 (bot_member.id).
+   * 顾源源 5/24 V2.1 lab: 若为非空, 表示该岗位的持岗人是某个机器人同事 (bot_member.id).
    * 与员工持岗人 (通过 bindings.primaryRoleId 反查) 互斥: 任一被设置时另一方应为空.
    * 旧数据无该字段, 加载时按 null 处理, 0 风险向后兼容.
    */
@@ -965,7 +965,7 @@ export interface ClientTemplateFillRun {
 }
 
 export type LinkMaterialPlatform = 'bilibili' | 'xiaohongshu' | 'wechat_article';
-export type LinkMaterialImportStatus = 'queued' | 'running' | 'completed' | 'failed';
+export type LinkMaterialImportStatus = 'queued' | 'running' | 'completed' | 'failed' | 'canceled';
 export type LinkMaterialMediaCacheStatus = 'not_downloaded' | 'cleaned' | 'retained' | 'failed';
 export type LinkMaterialCookieBrowser = 'firefox' | 'chrome' | 'edge' | 'safari';
 
@@ -2581,6 +2581,8 @@ export interface Task {
   deadlineAt?: string | null;
   scheduledStartAt?: string | null;
   scheduledEndAt?: string | null;
+  // 任务提醒(2026-05-29): 0=准时 / 5=提前5分钟 / null|undefined=不提醒。相对 scheduledStartAt(无则 deadlineAt)。
+  reminderMinutesBefore?: number | null;
   completedAt?: string | null;
   scopeMode?: TaskScopeMode;
   clientId?: string | null;
@@ -4741,12 +4743,36 @@ export interface OrgMembershipSummary {
   hasOrganization: boolean;
   organizationId?: string | null;
   organizationName?: string | null;
+  organizationSlug?: string | null;
   departmentId?: string | null;
   departmentName?: string | null;
   membershipStatus?: MembershipStatus;
   membershipSubmittedAt?: string | null;
   membershipRejectedReason?: string | null;
   organizationWorkspaceClientId?: string | null;
+}
+
+export interface UpdateOrgIdentity {
+  organizationId?: string | null;
+  organizationSlug?: string | null;
+  organizationName?: string | null;
+  cloudBackendUrl?: string | null;
+}
+
+export interface OfficialPushUpdatePayload {
+  title: string;
+  version: string;
+  releaseVersion?: string | null;
+  currentVersion: string;
+  packageKind: 'release' | 'custom';
+  customPackageId?: string | null;
+  customPackageName?: string | null;
+  fileName?: string | null;
+  sizeBytes?: number | null;
+  sha512?: string | null;
+  downloadUrl?: string | null;
+  organizationCode?: string | null;
+  relation: 'upgrade' | 'downgrade' | 'switch-custom' | 'different' | 'unknown';
 }
 
 export interface OrgFeishuIntegrationAuditRecord {
@@ -6524,6 +6550,8 @@ export interface TaskMutationPayload {
   deadlineAt?: string | null;
   scheduledStartAt?: string | null;
   scheduledEndAt?: string | null;
+  // 任务提醒(2026-05-29): 0=准时 / 5=提前5分钟 / null|undefined=不提醒。相对 scheduledStartAt(无则 deadlineAt)。
+  reminderMinutesBefore?: number | null;
   completedAt?: string | null;
   scopeMode?: TaskScopeMode;
   clientId?: string | null;
@@ -6966,15 +6994,6 @@ export interface CollabConflictRisk {
   message: string;
 }
 
-export type CollabSecurityIssueSeverity = 'block' | 'warn';
-
-export interface CollabSecurityIssue {
-  severity: CollabSecurityIssueSeverity;
-  category: string;
-  message: string;
-  recommendation: string;
-}
-
 export interface CollabFileChange {
   path: string;
   previousPath?: string | null;
@@ -6983,7 +7002,6 @@ export interface CollabFileChange {
   groupLabel: string;
   summary: string;
   risk?: CollabConflictRisk | null;
-  securityIssue?: CollabSecurityIssue | null;
 }
 
 export interface CollabChangeGroup {
@@ -7790,6 +7808,8 @@ declare global {
     yiyuWorkbench: {
       backendBaseUrl: string;
       setMiniMode(enter: boolean): Promise<{ mini: boolean }>;
+      setUpdateOrgIdentity(identity: UpdateOrgIdentity | null): Promise<{ ok: boolean; reason?: string }>;
+      setUpdateOrgCode(orgCode: string | null): Promise<{ ok: boolean; reason?: string }>;
       getDesktopAppInfo(): Promise<DesktopAppInfo>;
       resumeFromStartupGate(): Promise<DesktopStartupGateResumeResult>;
       selectFiles(): Promise<string[]>;
@@ -7825,7 +7845,11 @@ declare global {
       }): Promise<{ absolutePath: string; sizeBytes: number; sessionId: string }>;
       readRecordingFile(absolutePath: string): Promise<{ buffer: Uint8Array; sizeBytes: number; name: string }>;
       setRecordingActive(payload: { active: boolean; taskTitle?: string }): Promise<{ active: boolean }>;
-      checkForUpdates?(): Promise<{ ok: boolean; version?: string | null; reason?: string }>;
+      setBackgroundTasks?(payload: {
+        tasks: { kind: string; label: string; status?: string; severity?: 'loss' | 'queued' }[];
+      }): Promise<{ ok: boolean; count: number }>;
+      checkForUpdates?(): Promise<{ ok: boolean; version?: string | null; reason?: string; officialPush?: OfficialPushUpdatePayload | null }>;
+      installOfficialPushUpdate?(): Promise<{ ok: boolean; version?: string | null; reason?: string; fileName?: string | null }>;
       quitAndInstallUpdate?(): Promise<{ ok: boolean; reason?: string }>;
       onUpdateEvent?(callback: (payload: UpdateEventPayload) => void): () => void;
     };
@@ -7833,7 +7857,15 @@ declare global {
 }
 
 export interface UpdateEventPayload {
-  kind: 'checking' | 'available' | 'not-available' | 'download-progress' | 'downloaded' | 'error';
+  kind:
+    | 'checking'
+    | 'available'
+    | 'not-available'
+    | 'download-progress'
+    | 'downloaded'
+    | 'error'
+    | 'official-push-available'
+    | 'official-push-not-available';
   version?: string;
   releaseNotes?: string | null;
   percent?: number;
@@ -7841,6 +7873,7 @@ export interface UpdateEventPayload {
   transferred?: number;
   total?: number;
   message?: string;
+  officialPush?: OfficialPushUpdatePayload | null;
 }
 
 // P13-D 品牌镜子 LLM 画像 snapshot (后端 /api/v1/intelligence/brand-mirror/analyze 返回结构)
