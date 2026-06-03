@@ -4757,6 +4757,7 @@ export interface UpdateOrgIdentity {
   organizationSlug?: string | null;
   organizationName?: string | null;
   cloudBackendUrl?: string | null;
+  platform?: 'mac' | 'windows' | string | null;
 }
 
 export interface OfficialPushUpdatePayload {

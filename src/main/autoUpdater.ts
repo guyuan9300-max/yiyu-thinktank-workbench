@@ -68,6 +68,7 @@ export interface UpdateOrgIdentity {
   organizationSlug?: string | null;
   organizationName?: string | null;
   cloudBackendUrl?: string | null;
+  platform?: 'mac' | 'windows' | string | null;
 }
 
 function appendUpdaterLog(message: string): void {
@@ -353,6 +354,7 @@ export async function setUpdateOrgIdentity(identity: UpdateOrgIdentity | null): 
     organizationSlug: (identity?.organizationSlug || '').trim(),
     organizationName: (identity?.organizationName || '').trim(),
     cloudBackendUrl: (identity?.cloudBackendUrl || '').trim(),
+    platform: 'mac',
   };
   const nextIdentityKey = JSON.stringify(nextIdentity);
   if (nextIdentityKey === currentIdentityKey && currentOrgCode && currentFeedBaseUrl) return;
