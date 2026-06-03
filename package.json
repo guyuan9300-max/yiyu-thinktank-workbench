@@ -39,10 +39,14 @@
     "start:raw": "node scripts/run-local-electron.mjs .",
     "install:mac-local": "npm run dist:mac-local && node scripts/install-mac-app.mjs && node scripts/open-installed-app.mjs",
     "dist:mac": "node scripts/ensure-mac-release-prereqs.mjs && npm run build && npm run build:packaged-runtime && electron-builder --mac dmg zip -c.electronDist=node_modules/electron/dist && node scripts/verify-packaged-app.mjs \"dist/mac-arm64/益语智库自用平台 V2.0.app\"",
+    "dist:windows": "npm run build && npm run build:packaged-runtime && electron-builder --win nsis --x64 -c.publish.url=https://yiyu-thinktank-releases.tos-cn-beijing.volces.com/desktop/windows/",
     "dist:mac-local": "npm run build && npm run build:packaged-runtime && electron-builder --dir -c.electronDist=node_modules/electron/dist -c.mac.identity=null -c.mac.hardenedRuntime=false -c.mac.gatekeeperAssess=false -c.mac.forceCodeSigning=false -c.mac.notarize=false && node scripts/stabilize-mac-app.mjs \"dist/mac-arm64/益语智库自用平台 V2.0.app\" && node scripts/verify-packaged-app.mjs \"dist/mac-arm64/益语智库自用平台 V2.0.app\"",
     "release:mac:doctor": "node scripts/inspect-mac-release-readiness.mjs",
     "release:mac:doctor:strict": "node scripts/inspect-mac-release-readiness.mjs --strict",
     "release:mac": "npm run dist:mac",
+    "release:windows": "npm run dist:windows",
+    "release:windows:publish": "node scripts/publish-windows-to-tos.mjs",
+    "release:windows:publish:dry": "node scripts/publish-windows-to-tos.mjs --dry-run",
     "release:mac:verify-dmg": "node scripts/verify-mac-dmg.mjs",
     "release:mac:publish": "node scripts/publish-to-tos.mjs",
     "release:mac:publish:dry": "node scripts/publish-to-tos.mjs --dry-run",
@@ -133,6 +137,28 @@
         "dmg",
         "zip"
       ]
+    },
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "artifactName": "yiyu-workbench-${version}-${arch}-setup.${ext}",
+      "verifyUpdateCodeSignature": true,
+      "signAndEditExecutable": true,
+      "publisherName": "Yiyu Thinktank"
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "益语智库自用平台 V2.0"
     },
     "publish": {
       "provider": "generic",

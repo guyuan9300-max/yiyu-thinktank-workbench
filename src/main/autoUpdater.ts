@@ -48,9 +48,21 @@ const UPDATE_EVENT_CHANNEL = 'yiyu-workbench:update-event';
 const CHECK_DELAY_MS = 10_000;
 const RECHECK_INTERVAL_MS = 6 * 60 * 60 * 1000;
 const ORG_PUSH_RECHECK_INTERVAL_MS = 30_000;
-const UPDATE_FEED_BASE_URL = 'https://yiyu-thinktank-releases.tos-cn-beijing.volces.com/desktop/mac/';
-const UPDATE_FEED_URL = `${UPDATE_FEED_BASE_URL}latest-mac.yml`;
 const RELEASE_SERVICE_BASE_URL = 'https://www.yiyu.love';
+
+type UpdatePlatform = 'mac' | 'windows';
+
+function resolveUpdatePlatform(): UpdatePlatform | null {
+  if (process.platform === 'darwin') return 'mac';
+  if (process.platform === 'win32') return 'windows';
+  return null;
+}
+
+const UPDATE_PLATFORM = resolveUpdatePlatform();
+const UPDATE_FEED_FILE = UPDATE_PLATFORM === 'windows' ? 'latest.yml' : 'latest-mac.yml';
+const UPDATE_FEED_BASE_URL = `https://yiyu-thinktank-releases.tos-cn-beijing.volces.com/desktop/${UPDATE_PLATFORM || 'mac'}/`;
+const UPDATE_FEED_URL = `${UPDATE_FEED_BASE_URL}${UPDATE_FEED_FILE}`;
+const UPDATE_INSTALLER_EXT = UPDATE_PLATFORM === 'windows' ? 'exe' : 'dmg';
 
 let mainWindowRef: BrowserWindow | null = null;
 let setupDone = false;
@@ -167,7 +179,7 @@ function sanitizeDownloadFileName(value: string | null | undefined, fallbackVers
     .replace(/^\.+$/, '')
     .slice(0, 180);
   if (safe) return safe;
-  return `yiyu-workbench-${fallbackVersion || 'official-push'}.dmg`;
+  return `yiyu-workbench-${fallbackVersion || 'official-push'}.${UPDATE_INSTALLER_EXT}`;
 }
 
 function normalizeSha512(value: string | null | undefined): string | null {
@@ -354,7 +366,7 @@ export async function setUpdateOrgIdentity(identity: UpdateOrgIdentity | null): 
     organizationSlug: (identity?.organizationSlug || '').trim(),
     organizationName: (identity?.organizationName || '').trim(),
     cloudBackendUrl: (identity?.cloudBackendUrl || '').trim(),
-    platform: 'mac',
+    platform: UPDATE_PLATFORM || 'mac',
   };
   const nextIdentityKey = JSON.stringify(nextIdentity);
   if (nextIdentityKey === currentIdentityKey && currentOrgCode && currentFeedBaseUrl) return;
@@ -384,7 +396,7 @@ export async function setUpdateOrgIdentity(identity: UpdateOrgIdentity | null): 
       currentOrgCode = (payload.canonicalOrgCode || '').trim() || null;
       currentFeedBaseUrl = (payload.updateFeedBaseUrl || '').trim() || (
         currentOrgCode
-          ? `${RELEASE_SERVICE_BASE_URL}/api/v1/updates/${encodeURIComponent(currentOrgCode)}/mac/`
+          ? `${RELEASE_SERVICE_BASE_URL}/api/v1/updates/${encodeURIComponent(currentOrgCode)}/${UPDATE_PLATFORM || 'mac'}/`
           : null
       );
       appendUpdaterLog(currentOrgCode ? `release-org-resolved org=${currentOrgCode}` : 'release-org-resolved empty');
@@ -431,8 +443,8 @@ function shouldEnable(): boolean {
     console.log('[autoUpdater] skipped: not packaged (dev mode)');
     return false;
   }
-  if (process.platform !== 'darwin') {
-    console.log('[autoUpdater] skipped: only enabled on macOS for now');
+  if (!UPDATE_PLATFORM) {
+    console.log('[autoUpdater] skipped: unsupported platform for updater');
     return false;
   }
   return true;
@@ -443,7 +455,7 @@ function normalizeUpdateErrorMessage(message: string): string {
   if (message.includes('app-update.yml') && (lower.includes('enoent') || lower.includes('no such file'))) {
     return `当前安装包缺少更新配置文件，已改为使用益语官方火山云更新源。请稍后重试；若仍失败，请确认 ${UPDATE_FEED_URL} 已发布。`;
   }
-  if (message.includes('latest-mac.yml') && (message.includes('404') || lower.includes('not found'))) {
+  if ((message.includes('latest-mac.yml') || message.includes('latest.yml')) && (message.includes('404') || lower.includes('not found'))) {
     return `当前更新源尚未发布可用版本或暂不可访问。请确认 ${UPDATE_FEED_URL} 已发布。`;
   }
   if (lower.includes('net::err_internet_disconnected') || lower.includes('enotfound') || lower.includes('econnreset') || lower.includes('timeout')) {
