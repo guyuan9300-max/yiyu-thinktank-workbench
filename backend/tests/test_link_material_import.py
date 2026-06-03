@@ -334,6 +334,12 @@ def test_bilibili_uses_bbdown_after_yt_dlp_412(monkeypatch: pytest.MonkeyPatch, 
 def test_media_first_without_subtitle_and_engine_has_clear_error(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     monkeypatch.setattr("app.services.link_material_import._find_yt_dlp", lambda: ["yt-dlp"])
     monkeypatch.setattr("app.services.link_material_import.find_local_transcript_engine", lambda: None)
+    # m4a 非 soundfile 友好格式 → 现在会先用 ffmpeg 转 wav；mock 掉转码，专注验证"无引擎"报错。
+    monkeypatch.setattr("app.services.link_material_import.find_ffmpeg", lambda: "ffmpeg")
+    monkeypatch.setattr(
+        "app.services.link_material_import.extract_audio_from_media",
+        lambda media_path, temp_dir, *, ffmpeg: temp_dir / "audio.wav",
+    )
 
     def fake_run(command, **kwargs):  # type: ignore[no-untyped-def]
         temp_dir = Path(kwargs["cwd"])
@@ -369,6 +375,12 @@ def test_media_first_uses_local_transcription_when_no_subtitles(monkeypatch: pyt
 
     monkeypatch.setattr("app.services.link_material_import.find_local_transcript_engine", lambda: Engine())
     monkeypatch.setattr("app.services.link_material_import._transcribe_temp_audio", lambda _engine, _audio_path, _temp_dir: "本地转写后的有效正文")
+    # m4a 非 soundfile 友好格式 → 现在会先用 ffmpeg 转 wav；mock 掉转码。
+    monkeypatch.setattr("app.services.link_material_import.find_ffmpeg", lambda: "ffmpeg")
+    monkeypatch.setattr(
+        "app.services.link_material_import.extract_audio_from_media",
+        lambda media_path, temp_dir, *, ffmpeg: temp_dir / "audio.wav",
+    )
 
     def fake_run(command, **kwargs):  # type: ignore[no-untyped-def]
         temp_dir = Path(kwargs["cwd"])
@@ -496,3 +508,103 @@ def test_online_transcripts_are_in_standard_knowledge_categories() -> None:
     knowledge_v2_text = knowledge_v2_py.read_text(encoding="utf-8")
     assert 'ONLINE_TRANSCRIPT_CATEGORY = "线上转写"' in knowledge_v2_text
     assert "external_media_transcript" in knowledge_v2_text
+
+
+def test_m4a_audio_is_transcoded_to_wav_but_wav_is_not(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """修复验证: 下载到 m4a 等 soundfile 读不了的音频 → 先 ffmpeg 转 wav;wav 直接用。"""
+    monkeypatch.setattr("app.services.link_material_import._find_yt_dlp", lambda: ["yt-dlp"])
+
+    class Engine:
+        name = "builtin_sensevoice"
+        command = ["sensevoice"]
+        command_template = None
+
+    monkeypatch.setattr("app.services.link_material_import.find_local_transcript_engine", lambda: Engine())
+    monkeypatch.setattr("app.services.link_material_import.find_ffmpeg", lambda: "ffmpeg")
+    transcribed_paths: list[str] = []
+    extracted: list[str] = []
+    monkeypatch.setattr(
+        "app.services.link_material_import._transcribe_temp_audio",
+        lambda _engine, audio_path, _temp_dir: transcribed_paths.append(str(audio_path)) or "正文",
+    )
+
+    def fake_extract(media_path, temp_dir, *, ffmpeg):  # type: ignore[no-untyped-def]
+        extracted.append(str(media_path))
+        out = temp_dir / "audio.wav"
+        out.write_bytes(b"wav")
+        return out
+
+    monkeypatch.setattr("app.services.link_material_import.extract_audio_from_media", fake_extract)
+
+    def make_run(ext: str):
+        def fake_run(command, **kwargs):  # type: ignore[no-untyped-def]
+            temp_dir = Path(kwargs["cwd"])
+            (temp_dir / "test.info.json").write_text('{"title": "X"}', encoding="utf-8")
+            (temp_dir / f"test{ext}").write_bytes(b"audio")
+
+            class Completed:
+                returncode = 0
+                stdout = ""
+                stderr = ""
+
+            return Completed()
+        return fake_run
+
+    # m4a → 必须经 ffmpeg 转码,转写拿到的是 audio.wav
+    monkeypatch.setattr("subprocess.run", make_run(".m4a"))
+    extract_link_material_source("https://www.bilibili.com/video/BV1abc123456", tmp_path / "a")
+    assert len(extracted) == 1 and extracted[0].endswith(".m4a")
+    assert transcribed_paths[-1].endswith("audio.wav")
+
+    # wav → 不转码,直接喂转写
+    extracted.clear(); transcribed_paths.clear()
+    monkeypatch.setattr("subprocess.run", make_run(".wav"))
+    extract_link_material_source("https://www.bilibili.com/video/BV1def654321", tmp_path / "b")
+    assert extracted == []
+    assert transcribed_paths[-1].endswith(".wav")
+
+
+def test_xiaohongshu_download_profiles_escalate() -> None:
+    """小红书升级重试: base→headers→impersonate;开登录态再加 cookie。"""
+    from app.services.link_material_import import (
+        _build_download_attempt_profiles,
+        LinkMaterialImportOptions,
+    )
+    anon = _build_download_attempt_profiles(platform="xiaohongshu", options=LinkMaterialImportOptions())
+    names = [p.name for p in anon]
+    assert names == ["base", "xhs_headers", "xhs_impersonate"], names
+    assert anon[1].headers_applied and anon[2].impersonation_requested
+
+    with_cookie = _build_download_attempt_profiles(
+        platform="xiaohongshu",
+        options=LinkMaterialImportOptions(use_browser_cookies=True),
+    )
+    assert [p.name for p in with_cookie][-1] == "xhs_cookie"
+    assert with_cookie[-1].use_browser_cookies
+
+
+def test_classify_image_note_as_no_video() -> None:
+    """图文笔记(无视频流)被识别为 no_video。"""
+    from app.services.link_material_import import _classify_yt_dlp_access_failure
+    assert _classify_yt_dlp_access_failure("ERROR: Requested format is not available") == "no_video"
+    assert _classify_yt_dlp_access_failure("No video formats found!") == "no_video"
+
+
+def test_detect_extracts_url_from_share_blurb() -> None:
+    """小红书/B站 App 复制的是整段分享文案,要能从中抠出真正的 URL。"""
+    xhs = detect_link_material(
+        "终于找到这封神演讲！治愈人间所有焦虑！ http://xhslink.com/o/6FKLX5DG6Bl 复制一下，跳转【小红书】即刻浏览笔记。"
+    )
+    assert xhs.platform == "xiaohongshu"
+    assert xhs.normalized_url == "http://xhslink.com/o/6FKLX5DG6Bl"
+
+    # 带 query 参数的完整分享链接也要完整保留(含 xsec_token)
+    full = detect_link_material(
+        "看看这个 https://www.xiaohongshu.com/discovery/item/abc?type=video&xsec_token=TOKEN123= 即刻浏览"
+    )
+    assert full.platform == "xiaohongshu"
+    assert "xsec_token=TOKEN123=" in full.normalized_url
+
+    # 直接粘干净链接仍然正常
+    clean = detect_link_material("https://www.bilibili.com/video/BV1abc123456")
+    assert clean.platform == "bilibili"

@@ -7678,3 +7678,157 @@ def test_org_dna_context_is_injected_into_topics_and_analysis(tmp_path: Path, mo
     )
     assert analysis.status_code == 200
     assert "公益咨询市场中的 AI 落地" in captured.get("analysis_context", "")
+
+
+def test_link_import_second_different_link_enqueues_not_409(tmp_path, monkeypatch) -> None:
+    """T1 队列: 不同链接不再 409,直接入队;同一链接幂等返回同 run。"""
+    from concurrent.futures import Future
+
+    def _noop_submit(self, fn, *args, **kwargs):  # 阻止真实后台执行(避免触网/yt-dlp)
+        future: Future = Future()
+        future.set_result(None)
+        return future
+
+    monkeypatch.setattr("concurrent.futures.ThreadPoolExecutor.submit", _noop_submit)
+    client = make_client(tmp_path)
+    cid = create_test_client_record(client)
+
+    url_a = "https://www.bilibili.com/video/BV1xx411c7XD"
+    url_b = "https://www.bilibili.com/video/BV1yy411c7AB"
+
+    r1 = client.post(f"/api/v1/clients/{cid}/link-materials/import/start", json={"url": url_a})
+    assert r1.status_code == 200, r1.text
+    run_a = r1.json()["runId"]
+
+    # 不同链接: 不再拒绝, 直接入队(第二个 run)
+    r2 = client.post(f"/api/v1/clients/{cid}/link-materials/import/start", json={"url": url_b})
+    assert r2.status_code == 200, r2.text
+    assert r2.json()["runId"] != run_a
+
+    # 同一链接: 幂等返回同一 run, 不重复创建
+    r3 = client.post(f"/api/v1/clients/{cid}/link-materials/import/start", json={"url": url_a})
+    assert r3.status_code == 200, r3.text
+    assert r3.json()["runId"] == run_a
+
+
+def test_interrupted_runs_requeued_with_attempt_cap_on_restart(tmp_path, monkeypatch) -> None:
+    """T2 启动恢复: 中断(queued/running)→重新入队 attempt+1;达上限→失败;真失败不复活。"""
+    from concurrent.futures import Future
+
+    def _noop_submit(self, fn, *args, **kwargs):
+        future: Future = Future()
+        future.set_result(None)
+        return future
+
+    monkeypatch.setattr("concurrent.futures.ThreadPoolExecutor.submit", _noop_submit)
+    data_dir = tmp_path / "data"
+
+    # ---- 第一次启动: 建客户 + 插入各类残留 run ----
+    app1 = create_app(data_dir)
+    with TestClient(app1) as c1:
+        cid = create_test_client_record(c1)
+        st = app1.state.app_state
+        ts = app_main.now_iso()
+        # T-run R1: running, attempt=0, 有 path → 应重投(queued, attempt=1)
+        # T-run R2: running, attempt=2(达上限)→ 应失败
+        # T-run R3: failed(真失败)→ 应保持 failed 不动
+        for rid, status, attempt in [("tf_requeue", "running", 0), ("tf_cap", "running", 2), ("tf_realfail", "failed", 0)]:
+            st.db.execute(
+                """INSERT INTO client_template_fill_runs(id,client_id,template_name,template_path,status,phase,created_at,updated_at,attempt)
+                   VALUES(?,?,?,?,?,?,?,?,?)""",
+                (rid, cid, "测试模板", "/tmp/x.docx", status, status, ts, ts, attempt),
+            )
+        # L-run L1: running, attempt=0 → 应重投(queued, attempt=1)
+        st.db.execute(
+            """INSERT INTO workspace_link_import_runs(id,client_id,source_platform,source_url,status,stage,progress,media_cache_status,metadata_json,created_at,updated_at,attempt)
+               VALUES(?,?,?,?,?,?,?,?,?,?,?,?)""",
+            ("li_requeue", cid, "bilibili", "https://x/y", "running", "中断前", 30.0, "not_downloaded", "{}", ts, ts, 0),
+        )
+
+    # ---- 第二次启动(同 data dir): startup 跑 recover ----
+    app2 = create_app(data_dir)
+    with TestClient(app2):
+        st2 = app2.state.app_state
+        def row(table, rid):
+            return st2.db.fetchone(f"SELECT status, attempt FROM {table} WHERE id=?", (rid,))
+        r1 = row("client_template_fill_runs", "tf_requeue")
+        assert r1["status"] == "queued" and int(r1["attempt"]) == 1, dict(r1)
+        r2 = row("client_template_fill_runs", "tf_cap")
+        assert r2["status"] == "failed", dict(r2)
+        r3 = row("client_template_fill_runs", "tf_realfail")
+        assert r3["status"] == "failed" and int(r3["attempt"]) == 0, dict(r3)  # 真失败未被复活/触碰
+        # 链接转写有外部副作用(下载/临时文件/入库)，不原地续跑：中断 → 标记失败(提示重新导入)。
+        l1 = st2.db.fetchone("SELECT status, stage FROM workspace_link_import_runs WHERE id=?", ("li_requeue",))
+        assert l1["status"] == "failed", dict(l1)
+        assert "中断" in str(l1["stage"] or ""), dict(l1)
+
+
+def test_active_background_tasks_endpoint(tmp_path, monkeypatch) -> None:
+    """T4 退出守卫数据源: 端点跨客户汇总进行中/排队任务, severity 正确。"""
+    from concurrent.futures import Future
+
+    def _noop_submit(self, fn, *args, **kwargs):
+        f: Future = Future()
+        f.set_result(None)
+        return f
+
+    monkeypatch.setattr("concurrent.futures.ThreadPoolExecutor.submit", _noop_submit)
+    client = make_client(tmp_path)
+    cid = create_test_client_record(client)
+    st = client.app.state.app_state
+    ts = app_main.now_iso()
+    # 一个 running 填表(loss) + 一个 queued 链接(queued)
+    st.db.execute(
+        """INSERT INTO client_template_fill_runs(id,client_id,template_name,template_path,status,phase,created_at,updated_at,attempt)
+           VALUES(?,?,?,?,?,?,?,?,?)""",
+        ("tf_run", cid, "季度复盘模板", "/tmp/x.docx", "running", "running", ts, ts, 0),
+    )
+    st.db.execute(
+        """INSERT INTO workspace_link_import_runs(id,client_id,source_platform,source_url,title,status,stage,progress,media_cache_status,metadata_json,created_at,updated_at,attempt)
+           VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+        ("li_run", cid, "bilibili", "https://x/y", "某视频", "queued", "排队中", 0.0, "not_downloaded", "{}", ts, ts, 0),
+    )
+    r = client.get("/api/v1/system/active-background-tasks")
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["count"] == 2, body
+    kinds = {t["kind"]: t for t in body["tasks"]}
+    assert kinds["template_fill"]["severity"] == "loss"
+    assert "季度复盘模板" in kinds["template_fill"]["label"]
+    assert kinds["link_import"]["severity"] == "queued"
+    assert "某视频" in kinds["link_import"]["label"]
+
+
+def test_link_material_list_and_cancel(tmp_path, monkeypatch) -> None:
+    """Q1: 列出客户链接任务 + 取消排队中的任务。"""
+    from concurrent.futures import Future
+
+    def _noop_submit(self, fn, *args, **kwargs):
+        f: Future = Future()
+        f.set_result(None)
+        return f
+
+    monkeypatch.setattr("concurrent.futures.ThreadPoolExecutor.submit", _noop_submit)
+    client = make_client(tmp_path)
+    cid = create_test_client_record(client)
+
+    r1 = client.post(f"/api/v1/clients/{cid}/link-materials/import/start", json={"url": "https://www.bilibili.com/video/BV1aa411c7XD"})
+    r2 = client.post(f"/api/v1/clients/{cid}/link-materials/import/start", json={"url": "https://www.bilibili.com/video/BV1bb411c7XE"})
+    assert r1.status_code == 200 and r2.status_code == 200
+    run2 = r2.json()["runId"]
+
+    # 列出 → 两条都在(no-op submit 下保持 queued)
+    listed = client.get(f"/api/v1/clients/{cid}/link-materials/import-runs")
+    assert listed.status_code == 200, listed.text
+    ids = [r["runId"] for r in listed.json()]
+    assert r1.json()["runId"] in ids and run2 in ids, ids
+
+    # 取消第二条(queued)→ canceled
+    cancel = client.post(f"/api/v1/clients/{cid}/link-materials/import-runs/{run2}/cancel")
+    assert cancel.status_code == 200, cancel.text
+    assert cancel.json()["status"] == "canceled"
+
+    # 再列出 → 第二条已 canceled,不再算活跃
+    again = client.get(f"/api/v1/clients/{cid}/link-materials/import-runs")
+    by_id = {r["runId"]: r for r in again.json()}
+    assert by_id[run2]["status"] == "canceled"

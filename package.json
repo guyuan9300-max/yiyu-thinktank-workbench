@@ -38,7 +38,7 @@
     "start": "node scripts/open-installed-app.mjs",
     "start:raw": "node scripts/run-local-electron.mjs .",
     "install:mac-local": "npm run dist:mac-local && node scripts/install-mac-app.mjs && node scripts/open-installed-app.mjs",
-    "dist:mac": "node scripts/ensure-mac-release-prereqs.mjs && npm run build && npm run build:packaged-runtime && electron-builder --mac dmg zip && node scripts/verify-packaged-app.mjs \"dist/mac-arm64/益语智库自用平台 V2.0.app\"",
+    "dist:mac": "node scripts/ensure-mac-release-prereqs.mjs && npm run build && npm run build:packaged-runtime && electron-builder --mac dmg zip -c.electronDist=node_modules/electron/dist && node scripts/verify-packaged-app.mjs \"dist/mac-arm64/益语智库自用平台 V2.0.app\"",
     "dist:mac-local": "npm run build && npm run build:packaged-runtime && electron-builder --dir -c.electronDist=node_modules/electron/dist -c.mac.identity=null -c.mac.hardenedRuntime=false -c.mac.gatekeeperAssess=false -c.mac.forceCodeSigning=false -c.mac.notarize=false && node scripts/stabilize-mac-app.mjs \"dist/mac-arm64/益语智库自用平台 V2.0.app\" && node scripts/verify-packaged-app.mjs \"dist/mac-arm64/益语智库自用平台 V2.0.app\"",
     "release:mac:doctor": "node scripts/inspect-mac-release-readiness.mjs",
     "release:mac:doctor:strict": "node scripts/inspect-mac-release-readiness.mjs --strict",
@@ -55,6 +55,7 @@
     "directories": {
       "buildResources": "build-resources"
     },
+    "afterPack": "scripts/after-pack-mac.cjs",
     "extraResources": [
       {
         "from": "dist/packaged-runtime",
@@ -63,7 +64,7 @@
     ],
     "files": [
       "build/**/*",
-      "!build/main/collabGit.js.map",
+      "!**/*.map",
       "dist/renderer/**/*",
       "dist/version-manifest.json",
       ".yiyu-sync/**/*",
@@ -122,6 +123,11 @@
       "entitlementsInherit": "build-resources/entitlements.mac.inherit.plist",
       "forceCodeSigning": true,
       "notarize": true,
+      "signIgnore": [
+        "/Contents/Resources/runtime/backend-venv-prebuilt/lib/python3\\.11/site-packages/pytz/zoneinfo/",
+        "/Contents/Resources/runtime/backend-venv-prebuilt/lib/python3\\.11/site-packages/matplotlib/mpl-data/",
+        "\\.(?:tar\\.gz|whl|docx|pptx|xlsx|jpeg|jpg|png|gif|icns|ico|ttf|otf|afm|pfb|pdf|csv)$"
+      ],
       "artifactName": "yiyu-workbench-${version}-${arch}.${ext}",
       "target": [
         "dmg",

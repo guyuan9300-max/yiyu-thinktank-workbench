@@ -6,7 +6,7 @@ import { spawnSync } from 'node:child_process';
 
 export const APP_NAME = '益语智库自用平台 V2.0.app';
 export const APP_DISPLAY_NAME = '益语智库自用平台 V2.0';
-export const DEFAULT_PACKAGED_REMOTE_CLOUD_API_URL = 'http://101.126.34.232';
+export const DEFAULT_PACKAGED_REMOTE_CLOUD_API_URL = '';
 export const VERSION_MANIFEST_RELATIVE_PATH = path.join('dist', 'version-manifest.json');
 export const BANNED_RENDERER_COPY = [
   '已基于命中的资料生成简版可用回答',

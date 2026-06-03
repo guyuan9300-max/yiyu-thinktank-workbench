@@ -8035,7 +8035,7 @@ class LinkMaterialImportRunRecord(BaseModel):
     sourcePlatform: Literal["bilibili", "xiaohongshu", "wechat_article"]
     sourceUrl: str
     title: str | None = None
-    status: Literal["queued", "running", "completed", "failed"]
+    status: Literal["queued", "running", "completed", "failed", "canceled"]
     stage: str
     progress: float = 0.0
     documentId: str | None = None

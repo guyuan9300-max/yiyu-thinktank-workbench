@@ -20,7 +20,8 @@ import {
   buildDesktopAppInfo,
   type BackendHealthPayload,
 } from './runtimeManifest.js';
-import { setupAutoUpdater, setUpdateOrgCode } from './autoUpdater.js';
+import { setupAutoUpdater, setUpdateOrgCode, setUpdateOrgIdentity } from './autoUpdater.js';
+import type { UpdateOrgIdentity } from './autoUpdater.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 // V2.1 Lab 模式 (顾源源 5/22 方案 C): ENV YIYU_LAB_MODE=1 触发, 跟主仓库 app 物理隔离
@@ -31,7 +32,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const LAB_MODE = process.env.YIYU_LAB_MODE === '1';
 const DEFAULT_BACKEND_PORT = LAB_MODE ? 47831 : 47829;
 const DEFAULT_CLOUD_BACKEND_PORT = LAB_MODE ? 47832 : 47830;
-const DEFAULT_PACKAGED_REMOTE_CLOUD_API_URL = 'http://101.126.34.232';
+const DEFAULT_PACKAGED_REMOTE_CLOUD_API_URL = '';
 const projectRoot = path.resolve(__dirname, '../..');
 const isDev = !app.isPackaged && Boolean(process.env.VITE_DEV_SERVER_URL);
 const REQUIRED_BACKEND_FEATURES = ['knowledge.vectorize-answer', 'knowledge.reclass-events', 'chat.general-answer', 'chat.async-status'];
@@ -144,6 +145,17 @@ function normalizeHttpUrl(rawUrl?: string | null) {
   return trimmed.replace(/\/+$/, '');
 }
 
+function readPackagedOfficialCloudConfig() {
+  if (!app.isPackaged) return null;
+  try {
+    const configPath = path.join(process.resourcesPath, 'official-cloud.json');
+    const parsed = JSON.parse(fs.readFileSync(configPath, 'utf8')) as { cloudApiUrl?: string };
+    return parsed.cloudApiUrl || null;
+  } catch {
+    return null;
+  }
+}
+
 function localDevCloudSeedEnv() {
   const env: NodeJS.ProcessEnv = {};
   for (const key of LOCAL_DEV_CLOUD_SEED_ENV_KEYS) {
@@ -159,6 +171,7 @@ function remoteCloudBackendUrl() {
   const configuredUrl = (
     normalizeHttpUrl(process.env.YIYU_REMOTE_CLOUD_API_URL)
     || normalizeHttpUrl(process.env.YIYU_PACKAGED_REMOTE_CLOUD_API_URL)
+    || normalizeHttpUrl(readPackagedOfficialCloudConfig())
   );
   if (configuredUrl) {
     return configuredUrl;
@@ -2924,6 +2937,18 @@ let isRecordingActive = false;
 let recordingTaskTitle = '';
 let userConfirmedQuitDespiteRecording = false;
 
+// 退出守卫：渲染端每隔几秒把"后端真相"(跨客户的进行中/排队后台任务)上报到这里，
+// before-quit 把它和录音合并成一个提醒。带新鲜度 TTL，渲染端停报后视为不可信即忽略，避免幽灵条目卡死退出。
+interface ReportedBackgroundTask {
+  kind: string;
+  label: string;
+  status?: string;
+  severity?: 'loss' | 'queued';
+}
+let reportedBackgroundTasks: ReportedBackgroundTask[] = [];
+let reportedBackgroundTasksAt = 0;
+const BACKGROUND_TASKS_FRESH_MS = 15000;
+
 ipcMain.handle(
   'yiyu-workbench:setRecordingActive',
   async (_event, payload: { active: boolean; taskTitle?: string }) => {
@@ -2937,9 +2962,37 @@ ipcMain.handle(
   },
 );
 
+ipcMain.handle(
+  'yiyu-workbench:setBackgroundTasks',
+  async (_event, payload?: { tasks?: ReportedBackgroundTask[] }) => {
+    const incoming = Array.isArray(payload?.tasks) ? payload!.tasks! : [];
+    reportedBackgroundTasks = incoming.filter(
+      (task): task is ReportedBackgroundTask => Boolean(task && typeof task.label === 'string' && task.label.trim()),
+    );
+    reportedBackgroundTasksAt = Date.now();
+    return { ok: true, count: reportedBackgroundTasks.length };
+  },
+);
+
 app.on('before-quit', (event) => {
-  if (isRecordingActive && !userConfirmedQuitDespiteRecording) {
+  // 合并"录音 + 后端上报的后台任务"成一份退出提醒清单。
+  const items: { label: string; severity: 'loss' | 'queued' }[] = [];
+  if (isRecordingActive) {
+    items.push({ label: `录音「${recordingTaskTitle || '未命名录音文件'}」`, severity: 'loss' });
+  }
+  const tasksFresh = Date.now() - reportedBackgroundTasksAt <= BACKGROUND_TASKS_FRESH_MS;
+  if (tasksFresh) {
+    for (const task of reportedBackgroundTasks) {
+      items.push({ label: task.label, severity: task.severity === 'queued' ? 'queued' : 'loss' });
+    }
+  }
+  if (items.length > 0 && !userConfirmedQuitDespiteRecording) {
     const targetWindow = BrowserWindow.getAllWindows().find((w) => !w.isDestroyed()) ?? null;
+    const lines = items.map((item, index) => `${index + 1}. ${item.label}`).join('\n');
+    const lossCount = items.filter((item) => item.severity === 'loss').length;
+    const tail = lossCount > 0
+      ? '退出软件会中断这些任务，可能导致失败或内容丢失。'
+      : '退出后排队中的任务不会自动继续。';
     const choice = dialog.showMessageBoxSync(
       targetWindow as BrowserWindow,
       {
@@ -2947,13 +3000,13 @@ app.on('before-quit', (event) => {
         buttons: ['取消退出', '仍然退出'],
         defaultId: 0,
         cancelId: 0,
-        title: '录音进行中',
-        message: '当前有录音正在进行',
-        detail: `任务"${recordingTaskTitle || '未命名录音文件'}"正在录音，退出软件会丢失这段录音。\n\n确定要退出吗？`,
+        title: '后台任务进行中',
+        message: `当前有 ${items.length} 个后台任务正在进行`,
+        detail: `${lines}\n\n${tail}\n\n确定要退出吗？`,
         noLink: true,
       },
     );
-    appendElectronLaunchLog('INFO', `[app] before-quit recording-block choice=${choice}`);
+    appendElectronLaunchLog('INFO', `[app] before-quit background-block items=${items.length} choice=${choice}`);
     if (choice === 0) {
       event.preventDefault();
       return;
@@ -3002,10 +3055,23 @@ function applyMiniBounds(win: BrowserWindow) {
   win.setAlwaysOnTop(true, 'floating');
   if (process.platform === 'darwin') win.setWindowButtonVisibility(false);
 }
-ipcMain.handle('yiyu-workbench:setUpdateOrgCode', (_event, orgCode: string | null) => {
-  // renderer 登录拿到 organizationSlug 后调用;主进程已知云地址 → 切到 org 感知更新 feed
+ipcMain.handle('yiyu-workbench:setUpdateOrgIdentity', async (_event, identity: UpdateOrgIdentity | null) => {
+  // renderer 登录拿到 organizationId/organizationSlug 后调用;统一登记到官网中央发布服务。
   try {
-    setUpdateOrgCode(orgCode ?? null, cloudBackendUrl());
+    await setUpdateOrgIdentity({
+      ...(identity || {}),
+      cloudBackendUrl: identity?.cloudBackendUrl || cloudBackendUrl(),
+    });
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, reason: err instanceof Error ? err.message : String(err) };
+  }
+});
+
+ipcMain.handle('yiyu-workbench:setUpdateOrgCode', async (_event, orgCode: string | null) => {
+  // 兼容旧 renderer:旧入口仍可传 slug,但内部改走官网中央发布服务。
+  try {
+    await setUpdateOrgCode(orgCode ?? null, cloudBackendUrl());
     return { ok: true };
   } catch (err) {
     return { ok: false, reason: err instanceof Error ? err.message : String(err) };

@@ -4334,6 +4334,9 @@ class Database:
             self._ensure_column("xp_ledger", "org_contribution_score", "INTEGER NOT NULL DEFAULT 0")
             self._ensure_column("client_template_fill_runs", "processed_count", "INTEGER NOT NULL DEFAULT 0")
             self._ensure_column("client_template_fill_runs", "current_field_label", "TEXT")
+            # 中断恢复重试计数：进程崩溃/重启时把残留 run 重新入队，attempt 累加，达上限才判失败。
+            self._ensure_column("client_template_fill_runs", "attempt", "INTEGER NOT NULL DEFAULT 0")
+            self._ensure_column("workspace_link_import_runs", "attempt", "INTEGER NOT NULL DEFAULT 0")
             self._ensure_column("handbook_entries", "author_user_id", "TEXT")
             self._ensure_column("handbook_entries", "author_user_name", "TEXT")
             self._ensure_column("topic_candidates", "event_line_id", "TEXT")

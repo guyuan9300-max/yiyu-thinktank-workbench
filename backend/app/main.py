@@ -3698,6 +3698,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         recover_stale_knowledge_jobs()
         recover_stale_imports()
         recover_stale_template_fill_runs()
+        recover_stale_link_material_import_runs()
         recover_stale_loading_chat_messages()
         recover_stale_analysis_jobs(state.db)
         recover_stale_workspace_context_refresh_events(state.db)
@@ -4192,10 +4193,14 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             elif job_status == "queued":
                 update_import_status(import_id, status="queued", imported_count=processed_items)
 
+    # 中断恢复重投上限：进程崩溃/重启时把残留 run 重新入队，attempt 累加，达上限才判失败。
+    # 真失败(任务跑完报错)状态已是 'failed'(终态)，本函数只扫 queued/running，天然不复活真失败。
+    TEMPLATE_FILL_MAX_RECOVERY_ATTEMPTS = 2
+
     def recover_stale_template_fill_runs() -> None:
         stale_runs = state.db.fetchall(
             """
-            SELECT id
+            SELECT id, client_id, template_path, attempt
             FROM client_template_fill_runs
             WHERE status IN ('queued', 'running')
             ORDER BY created_at ASC
@@ -4205,19 +4210,59 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             return
         timestamp = now_iso()
         for row in stale_runs:
+            run_id = str(row["id"])
+            client_id = str(row["client_id"] or "")
+            template_path = str(row["template_path"] or "")
+            attempt = int(row["attempt"] or 0)
+            if attempt >= TEMPLATE_FILL_MAX_RECOVERY_ATTEMPTS or not template_path or not client_id:
+                # 达重试上限 / 关键信息缺失 → 判失败，不再复活，避免死循环。
+                state.db.execute(
+                    """
+                    UPDATE client_template_fill_runs
+                    SET status = 'failed', phase = 'failed',
+                        stage_label = '多次中断，已停止重试',
+                        error_message = COALESCE(NULLIF(error_message, ''), '任务多次被中断，已达重试上限，请重新发起。'),
+                        updated_at = ?
+                    WHERE id = ?
+                    """,
+                    (timestamp, run_id),
+                )
+                continue
+            # 中断(外因) → 重新入队 + attempt+1 + 重投执行器(串行排队)。
             state.db.execute(
                 """
                 UPDATE client_template_fill_runs
-                SET status = 'failed',
-                    phase = 'failed',
-                    progress = CASE
-                        WHEN progress IS NULL THEN 8.0
-                        WHEN progress > 96.0 THEN 96.0
-                        WHEN progress < 8.0 THEN 8.0
-                        ELSE progress
-                    END,
-                    stage_label = '模板填写已中断',
-                    error_message = COALESCE(NULLIF(error_message, ''), '应用重启或后台中断，当前填写任务已停止，请重新发起。'),
+                SET status = 'queued', phase = 'queued',
+                    stage_label = '检测到中断，已重新排队',
+                    attempt = attempt + 1,
+                    updated_at = ?
+                WHERE id = ?
+                """,
+                (timestamp, run_id),
+            )
+            if state.template_fill_executor is not None:
+                state.template_fill_executor.submit(run_client_template_fill, client_id, run_id, template_path)
+
+    def recover_stale_link_material_import_runs() -> None:
+        """链接转资料的启动中断处理：标记失败并提示重新导入(不原地续跑)。
+
+        与填表不同，链接转写有外部副作用(下载视频、临时文件、建文档/入库)，且中断时
+        临时目录通常已被清理。原地重跑同一条 run 会踩半截状态(实测会触发 FOREIGN KEY
+        constraint failed)。因此这里不自动续跑，而是明确标记失败、提示用户重新导入
+        ——重新导入会走一条干净的新 run，避免脏状态。填表那种纯读库的任务才原地自动续跑。
+        """
+        stale_runs = state.db.fetchall(
+            "SELECT id FROM workspace_link_import_runs WHERE status IN ('queued', 'running') ORDER BY created_at ASC"
+        )
+        if not stale_runs:
+            return
+        timestamp = now_iso()
+        for row in stale_runs:
+            state.db.execute(
+                """
+                UPDATE workspace_link_import_runs
+                SET status = 'failed', stage = '转写已中断',
+                    error = COALESCE(NULLIF(error, ''), '上次链接转写被中断（应用重启），请重新导入该链接继续。'),
                     updated_at = ?
                 WHERE id = ?
                 """,
@@ -16291,6 +16336,26 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         )
         return build_link_material_import_run(row) if row else None
 
+    def fetch_active_link_material_import_run_for_url(
+        client_id: str, source_url: str
+    ) -> LinkMaterialImportRunRecord | None:
+        """同一客户 + 同一(规整后)链接是否已有进行中/排队的 run。用于幂等去重，防重复点击。"""
+        try:
+            normalized = detect_link_material(source_url).normalized_url
+        except Exception:
+            normalized = source_url
+        row = state.db.fetchone(
+            """
+            SELECT *
+            FROM workspace_link_import_runs
+            WHERE client_id = ? AND source_url = ? AND status IN ('queued', 'running')
+            ORDER BY created_at DESC
+            LIMIT 1
+            """,
+            (client_id, normalized),
+        )
+        return build_link_material_import_run(row) if row else None
+
     def update_link_material_import_run(
         run_id: str,
         *,
@@ -16349,6 +16414,9 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         try:
             row = state.db.fetchone("SELECT * FROM workspace_link_import_runs WHERE id = ? AND client_id = ?", (run_id, client_id))
             if not row:
+                return
+            if str(row["status"]) == "canceled":
+                # 用户在排队期间取消了它，执行器取到时直接跳过，不下载、不转写。
                 return
             source_url = str(row["source_url"])
             run_metadata = from_json(str(row["metadata_json"] or "{}"), {})
@@ -16467,6 +16535,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 },
             )
         except Exception as error:
+            logger.exception("[link-material] run %s failed with unexpected error", run_id)
             media_cache_status = cleanup_temp_dir(temp_dir) if temp_dir.exists() else media_cache_status
             temp_dir_status = "cleaned" if media_cache_status == "cleaned" else ("cleanup_failed" if temp_dir.exists() else "not_created")
             update_link_material_import_run(
@@ -49220,9 +49289,12 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
     @app.post("/api/v1/clients/{client_id}/link-materials/import/start", response_model=LinkMaterialImportRunRecord)
     def start_client_link_material_import(client_id: str, payload: LinkMaterialImportStartPayload) -> LinkMaterialImportRunRecord:
         build_client_summary(client_id)
-        active_run = fetch_active_link_material_import_run(client_id)
-        if active_run:
-            raise HTTPException(status_code=409, detail="已有链接转资料任务正在运行，请等待完成后再导入新的链接。")
+        # 同一链接已有进行中/排队的 run → 幂等返回(防重复点击)。
+        # 不同链接不再拒绝：直接入队，由 link_material_executor(max_workers=1)串行排队执行，
+        # 保证大模型稳定性的同时，用户可连续提交、切去做别的事。
+        existing_run = fetch_active_link_material_import_run_for_url(client_id, payload.url)
+        if existing_run:
+            return existing_run
         try:
             run = create_link_material_import_run(
                 client_id,
@@ -49242,10 +49314,78 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         build_client_summary(client_id)
         return fetch_latest_link_material_import_run(client_id)
 
+    @app.get("/api/v1/clients/{client_id}/link-materials/import-runs", response_model=list[LinkMaterialImportRunRecord])
+    def list_client_link_material_import_runs(client_id: str, limit: int = 20) -> list[LinkMaterialImportRunRecord]:
+        """列出该客户的链接任务(进行中/排队/最近),供右上角队列卡展示。"""
+        build_client_summary(client_id)
+        capped = max(1, min(int(limit or 20), 50))
+        rows = state.db.fetchall(
+            """
+            SELECT *
+            FROM workspace_link_import_runs
+            WHERE client_id = ?
+            ORDER BY
+              CASE status WHEN 'running' THEN 0 WHEN 'queued' THEN 1 ELSE 2 END ASC,
+              created_at DESC
+            LIMIT ?
+            """,
+            (client_id, capped),
+        )
+        return [build_link_material_import_run(row) for row in rows]
+
     @app.get("/api/v1/clients/{client_id}/link-materials/import-runs/{run_id}", response_model=LinkMaterialImportRunRecord)
     def get_client_link_material_import_run(client_id: str, run_id: str) -> LinkMaterialImportRunRecord:
         build_client_summary(client_id)
         return fetch_link_material_import_run(client_id, run_id)
+
+    @app.post("/api/v1/clients/{client_id}/link-materials/import-runs/{run_id}/cancel", response_model=LinkMaterialImportRunRecord)
+    def cancel_client_link_material_import_run(client_id: str, run_id: str) -> LinkMaterialImportRunRecord:
+        """取消一个排队中的链接任务。只对 queued 生效(running 已在下载/转写,不中途强杀)。"""
+        run = fetch_link_material_import_run(client_id, run_id)
+        if run.status == "queued":
+            update_link_material_import_run(
+                run_id,
+                status="canceled",
+                stage="已取消",
+                error="已取消（排队中由用户取消）。",
+            )
+            return fetch_link_material_import_run(client_id, run_id)
+        if run.status == "running":
+            raise HTTPException(status_code=409, detail="该任务正在转写中，无法取消；可等它完成。")
+        return run
+
+    @app.get("/api/v1/system/active-background-tasks")
+    def active_background_tasks() -> dict[str, object]:
+        """跨客户汇总当前进行中/排队的后台长任务，供退出守卫提醒用。
+
+        以 DB run 状态为权威真相(不依赖前端当前选中客户)。severity:
+        - 'loss'  : running，中断会失败/丢失
+        - 'queued': 仅在排队，退出后不会继续
+        """
+        tasks: list[dict[str, object]] = []
+        for row in state.db.fetchall(
+            "SELECT template_name, status FROM client_template_fill_runs WHERE status IN ('queued','running') ORDER BY created_at ASC"
+        ):
+            status = str(row["status"])
+            name = str(row["template_name"] or "").strip()
+            tasks.append({
+                "kind": "template_fill",
+                "label": f"模板填写「{name}」" if name else "模板填写",
+                "status": status,
+                "severity": "loss" if status == "running" else "queued",
+            })
+        for row in state.db.fetchall(
+            "SELECT title, source_url, status FROM workspace_link_import_runs WHERE status IN ('queued','running') ORDER BY created_at ASC"
+        ):
+            status = str(row["status"])
+            label = str(row["title"] or "").strip() or str(row["source_url"] or "").strip()
+            tasks.append({
+                "kind": "link_import",
+                "label": f"链接转写「{label}」" if label else "链接转写",
+                "status": status,
+                "severity": "loss" if status == "running" else "queued",
+            })
+        return {"tasks": tasks, "count": len(tasks)}
 
     @app.post("/api/v1/clients/{client_id}/documents/fill-template", response_model=ClientTemplateFillResponse)
     def fill_client_template(
@@ -49314,12 +49454,8 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         active_run = fetch_active_client_template_fill_run(client_id, template_path_raw=payload.templatePath)
         if active_run:
             return active_run
-        other_active_run = fetch_active_client_template_fill_run(client_id)
-        if other_active_run:
-            raise HTTPException(
-                status_code=409,
-                detail=f"已有模板填写任务正在运行：{other_active_run.templateName}。请等待完成后再发起新的模板填写。",
-            )
+        # 不同模板不再拒绝：直接入队，由 template_fill_executor(max_workers=1)串行排队执行。
+        # 这样用户可连续发起多个填表任务，它们按提交顺序排队，避免并发冲击大模型。
         run = create_client_template_fill_run(client_id, payload.templatePath)
         if state.template_fill_executor is None:
             raise HTTPException(status_code=503, detail="模板填写执行器不可用。")
