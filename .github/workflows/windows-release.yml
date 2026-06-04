@@ -1,0 +1,145 @@
+name: Windows release build
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "Git ref or tag to build"
+        required: true
+        default: "main"
+      run_signpath:
+        description: "Submit installer to SignPath after build"
+        required: true
+        default: false
+        type: boolean
+
+permissions:
+  actions: read
+  contents: read
+
+jobs:
+  build-unsigned:
+    name: Build unsigned Windows installer
+    runs-on: windows-latest
+    outputs:
+      unsigned-artifact-id: ${{ steps.upload-unsigned-artifact.outputs.artifact-id }}
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref }}
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "npm"
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build Windows installer
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: "false"
+        run: npm run release:windows
+
+      - name: Upload unsigned Windows artifacts
+        id: upload-unsigned-artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-unsigned-${{ github.run_id }}
+          path: |
+            dist/*.exe
+            dist/*.exe.blockmap
+            dist/latest.yml
+          if-no-files-found: error
+
+  signpath:
+    name: Sign with SignPath
+    needs: build-unsigned
+    runs-on: ubuntu-latest
+    if: ${{ inputs.run_signpath && vars.SIGNPATH_ENABLED == 'true' }}
+
+    steps:
+      # Configure the exact SignPath project, signing policy, and artifact
+      # configuration after SignPath approves the open-source application.
+      - name: Submit signing request
+        uses: signpath/github-action-submit-signing-request@v2
+        with:
+          api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
+          organization-id: ${{ secrets.SIGNPATH_ORGANIZATION_ID }}
+          project-slug: ${{ vars.SIGNPATH_PROJECT_SLUG }}
+          signing-policy-slug: ${{ vars.SIGNPATH_SIGNING_POLICY_SLUG }}
+          artifact-configuration-slug: ${{ vars.SIGNPATH_ARTIFACT_CONFIGURATION_SLUG }}
+          github-artifact-id: ${{ needs.build-unsigned.outputs.unsigned-artifact-id }}
+          wait-for-completion: true
+          output-artifact-directory: signed
+
+      - name: Upload signed installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-signed-${{ github.run_id }}
+          path: signed/*.exe
+          if-no-files-found: error
+
+  refresh-update-metadata:
+    name: Refresh Windows update metadata
+    needs:
+      - build-unsigned
+      - signpath
+    runs-on: windows-latest
+    if: ${{ inputs.run_signpath && vars.SIGNPATH_ENABLED == 'true' }}
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref }}
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "npm"
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Download unsigned metadata
+        uses: actions/download-artifact@v4
+        with:
+          name: windows-unsigned-${{ github.run_id }}
+          path: dist
+
+      - name: Download signed installer
+        uses: actions/download-artifact@v4
+        with:
+          name: windows-signed-${{ github.run_id }}
+          path: signed
+
+      - name: Replace installer and refresh metadata
+        shell: pwsh
+        run: |
+          $signedExe = Get-ChildItem signed -Filter *.exe | Select-Object -First 1
+          if (-not $signedExe) { throw "No signed installer found" }
+          Copy-Item $signedExe.FullName -Destination (Join-Path "dist" $signedExe.Name) -Force
+          npm run release:windows:refresh-metadata -- --exe (Join-Path "dist" $signedExe.Name)
+
+      - name: Upload signed Windows release artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-signed-release-${{ github.run_id }}
+          path: |
+            dist/*.exe
+            dist/*.exe.blockmap
+            dist/latest.yml
+          if-no-files-found: error

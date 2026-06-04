@@ -1,52 +1,110 @@
-# 益语智库自用平台
+# Yiyu Thinktank Workbench
 
-这是一个桌面优先的内部工作台，当前包含两条主线：
+Yiyu Thinktank Workbench is an open-source desktop workbench for public-interest operations, research workflows, and organization collaboration. The app is built with Electron, React, TypeScript, and a local Python backend.
 
-- 共享业务主线：账号、审批、协作任务、周复盘、层级视野
-- 本地知识主线：客户工作台、资料导入、知识加工、AI 问答、引证、记忆沉淀
+The project is currently in early public testing. macOS is the primary maintained platform, and Windows packaging is being added through a reproducible GitHub Actions release path.
 
-## 当前架构
+## License
 
-- `src/`
-  - Electron 主进程、preload、React 单体前端壳
-- `backend/`
-  - 本地桥接后端
-  - 负责文件系统、知识底座、客户工作台、Qdrant、本地 AI 调用
-- `cloud_backend/`
-  - 共享业务后端
-  - 负责员工账号、审批、任务协作、层级视野
+This project is licensed under the GNU Affero General Public License v3.0 only. See [LICENSE](LICENSE).
 
-## 知识底座原则
+## Repository
 
-- 原始文件保留为事实源
-- AI 代理文档和记忆文档以 `.md` 形式存放在本地数据目录
-- 检索链路为：
-  - `master index`
-  - `surrogate markdown`
-  - `raw chunk drillthrough`
-- 前端搜索与最终回答分阶段执行，避免重复检索
+- Source repository: <https://github.com/guyuan9300-max/yiyu-thinktank-workbench>
+- Official website and downloads: <https://www.yiyu.love/>
+- Public update assets are distributed from the official Yiyu release source, not from GitHub Release assets.
 
-## 本地启动
+## Architecture
+
+- `src/`: Electron main process, preload bridge, shared code, and React renderer.
+- `backend/`: Local Python service for file processing, knowledge workflows, and local AI integration.
+- `cloud_backend/`: Shared organization collaboration service used by the workbench.
+- `scripts/`: Build, packaging, release, update-feed, and verification helpers.
+
+The desktop package embeds a platform-specific runtime seed in `dist/packaged-runtime` before Electron Builder creates the installer.
+
+## Development
+
+Requirements:
+
+- Node.js 22 or later
+- npm
+- Python 3.11
+- uv
+- macOS arm64 for macOS release builds, or Windows x64 for Windows release builds
+
+Install dependencies:
 
 ```bash
-cd /Users/guyuanyuan/Desktop/益语智库自用平台
-npm install
+npm ci
+```
+
+Run the local desktop app:
+
+```bash
 npm run dev
 ```
 
-## 测试
+Build validation:
 
 ```bash
-cd /Users/guyuanyuan/Desktop/益语智库自用平台/backend
-uv run pytest tests/test_api_smoke.py
-
-cd /Users/guyuanyuan/Desktop/益语智库自用平台
-npm run build
+npm run build:main -- --pretty false
+npm run build:renderer
+npm run build:backend-check
 ```
 
-## 运行数据
+## macOS Release Build
 
-- 本地工作台数据目录：
-  - `~/Library/Application Support/YiyuThinkTankWorkbench`
-- 共享业务数据目录：
-  - `~/Library/Application Support/YiyuThinkTankCloud`
+macOS release builds must be signed with a Developer ID Application certificate and notarized with Apple before they are published.
+
+```bash
+npm run release:mac
+```
+
+After verification, the release maintainer uploads the signed assets to the official release source and publishes them through the website release center.
+
+## Windows Release Build
+
+Windows release builds are produced from the same Git tag as macOS. The target installer is an NSIS x64 installer.
+
+Build locally on Windows:
+
+```powershell
+npm ci
+npm run build:packaged-runtime
+npm run release:windows
+```
+
+Unsigned Windows installers are acceptable only for short internal tests. Official website downloads and automatic updates should use signed installers.
+
+The preferred Windows signing path is SignPath for open-source builds. See:
+
+- [Code signing policy](docs/code-signing-policy.md)
+- [SignPath application notes](docs/signpath-application.md)
+
+After SignPath signs the installer, regenerate Windows update metadata because signing changes the installer hash:
+
+```powershell
+npm run release:windows:refresh-metadata -- --exe "dist\\yiyu-workbench-0.3.1-x64-setup.exe"
+```
+
+Then upload the signed installer, refreshed blockmap, and refreshed `latest.yml` to the official Windows update prefix.
+
+## Release Model
+
+The intended release model is:
+
+1. Merge all source changes into `main`.
+2. Create one annotated Git tag for the release, for example `v0.3.2`.
+3. Build platform installers from that exact tag.
+4. Sign and notarize/sign each platform artifact.
+5. Upload signed assets to the official release source.
+6. Publish the corresponding platform package from the website release center.
+
+GitHub is the source and tag baseline. Ordinary user installers are distributed from the official website and update source.
+
+## Security Notes
+
+Do not commit production secrets, signing certificates, private keys, database dumps, `.env` files, internal logs, or customer data.
+
+The repository intentionally ignores common certificate and secret file extensions. Release credentials should live only in local secure storage, GitHub Secrets, SignPath configuration, or the server-side deployment environment.

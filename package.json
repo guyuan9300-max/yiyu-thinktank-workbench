@@ -1,8 +1,8 @@
 {
   "name": "yiyu-thinktank-workbench",
   "version": "0.3.1",
-  "private": true,
   "description": "益语智库自用平台 V2.0 桌面版",
+  "license": "AGPL-3.0-only",
   "type": "module",
   "main": "build/main/main.js",
   "scripts": {
@@ -45,6 +45,7 @@
     "release:mac:doctor:strict": "node scripts/inspect-mac-release-readiness.mjs --strict",
     "release:mac": "npm run dist:mac",
     "release:windows": "npm run dist:windows",
+    "release:windows:refresh-metadata": "node scripts/refresh-windows-update-metadata.mjs",
     "release:windows:publish": "node scripts/publish-windows-to-tos.mjs",
     "release:windows:publish:dry": "node scripts/publish-windows-to-tos.mjs --dry-run",
     "release:mac:verify-dmg": "node scripts/verify-mac-dmg.mjs",
