@@ -30719,6 +30719,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                     user=cached_user,
                     message="网络中断，已保留当前设备上的登录状态，部分功能不可用。",
                     sessionMode="cloud",
+                    degraded=True,
                 )
             raise
         import threading

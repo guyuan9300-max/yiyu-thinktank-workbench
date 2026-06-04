@@ -244,6 +244,9 @@ class AuthStateResponse(BaseModel):
     sessionMode: Literal["local", "cloud"] = "cloud"
     requiresLocalIdentitySetup: bool = False
     localIdentityStatus: Literal["needs_setup", "ready", "none"] | None = None
+    # True 表示这是"网络中断 + 本地缓存"兜底产生的离线降级态(云端没法确认身份/成员资格)。
+    # 前端据此把"未确认"当成 last-known-good 处理,而不是当成"被拒绝"去清空本地数据 / 强制身份页。
+    degraded: bool = False
 
 
 class CloudConfigResponse(BaseModel):

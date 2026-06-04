@@ -7934,7 +7934,8 @@ export default function App() {
   const currentMembershipStatus = getEffectiveMembershipStatus(authState);
   const canClaimOrgAdmin = Boolean(isCloudSession && orgAdminClaimStatus.canClaim);
   const canAccessOrganizationSettings = Boolean(currentSessionUser?.primaryRole === 'admin' || canClaimOrgAdmin);
-  const shouldShowIdentityGate = isCloudSession && currentMembershipStatus !== 'approved' && !canClaimOrgAdmin;
+  // 断网兜底态(degraded)不强制身份页:此时云端没法确认成员资格,沿用本地 last-known-good;admin claim 也豁免。
+  const shouldShowIdentityGate = isCloudSession && currentMembershipStatus !== 'approved' && !canClaimOrgAdmin && authState.degraded !== true;
   const renderBranch = loading ? 'loading' : (!authState.authenticated || !currentSessionUser ? 'auth' : shouldShowIdentityGate ? 'identity' : 'main');
   useEffect(() => {
     if (canAccessOrganizationSettings) return;
@@ -9170,7 +9171,17 @@ export default function App() {
   }
 
   async function loadClientBlock(nextClientId?: string) {
-    const clientItems = await getClients();
+    let clientItems: ClientSummary[];
+    try {
+      clientItems = await getClients();
+    } catch (error) {
+      // 客户列表加载失败(断网 / 后端瞬态)时,保留上次已加载的客户,绝不清空、绝不向上抛错中断引导链。
+      // 跟 loadEventLines 一样做到 local-first 容错 —— 这是"客户没了、时间线还在"非对称的根治点:
+      // 让客户和时间线在离线时同等健壮,而不是悄悄退化成空列表(再被推断回落到益语智库)。
+      console.error('[bootstrap] loadClientBlock getClients failed; 保留上次客户列表不清空', error);
+      clearLocalServiceStartupBanner();
+      return;
+    }
     console.info(`[bootstrap] loadClientBlock fetched clients=${clientItems.length}`);
     setClients(clientItems);
     // 选客户优先级:
@@ -9542,9 +9553,14 @@ export default function App() {
       } else {
         setOrgAdminClaimStatus(DEFAULT_ORG_ADMIN_CLAIM_STATUS);
       }
+      // 仅当云端"明确"返回非 approved 时才进身份闸门并清空本地数据。
+      // nextAuth.degraded === true 表示这是断网兜底态(云端没法确认),此时绝不能把"未确认"
+      // 当成"被拒绝"——否则会清掉上次已加载的客户列表,正是"断网后客户只剩益语智库"的成因。
+      // 降级态走 else-if 正常加载分支,沿用本地 last-known-good。
       if (
         nextAuth.authenticated
         && nextAuth.sessionMode === 'cloud'
+        && !nextAuth.degraded
         && getEffectiveMembershipStatus(nextAuth) !== 'approved'
         && !nextOrgAdminClaimStatus.canClaim
       ) {
