@@ -182,6 +182,17 @@ function directorySizeBytes(rootPath) {
   return size;
 }
 
+function pruneWindowsPythonSeedAliases() {
+  if (process.platform !== 'win32') return;
+  // uv's Windows CPython seed can expose python3.exe as a link-like alias.
+  // 7-Zip used by electron-builder/NSIS treats that alias as an invalid
+  // directory while compressing the installer. The runtime manifest points to
+  // python.exe, so removing the alias is safe and keeps CI packaging stable.
+  for (const aliasName of ['python3.exe']) {
+    fs.rmSync(path.join(pythonSeedDir, aliasName), { recursive: true, force: true });
+  }
+}
+
 function requirementName(line) {
   const match = line.match(/^([A-Za-z0-9_.-]+)\s*(?:==|~=|>=|<=|>|<|!=)/);
   return match ? match[1].toLowerCase().replaceAll('_', '-') : null;
@@ -223,6 +234,7 @@ function main() {
     force: true,
     verbatimSymlinks: true,
   });
+  pruneWindowsPythonSeedAliases();
 
   console.log('[build-packaged-runtime] exporting backend locked requirements');
   run(
