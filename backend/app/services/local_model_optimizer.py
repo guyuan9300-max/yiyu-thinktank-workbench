@@ -25,11 +25,13 @@ TASK_TYPE_DOCUMENT_CARD = "document_card_generation"
 TASK_TYPE_PATH_OPTIMIZATION = "document_path_optimization"
 TASK_TYPE_VISUAL_OCR = "visual_ocr"  # Phase 1：新增（pptx slide / pdf 页 / 图片）
 TASK_TYPE_NARRATIVE_SYNTHESIS = "narrative_synthesis"  # Phase 4：N 页 → 1 文档
+TASK_TYPE_FACT_EXTRACT = "fact_extract"  # meeting-spine ②：DocumentLLMExtractor 抽 atomic_facts(走 IngestPipeline)
 TASK_TYPES = {
     TASK_TYPE_DOCUMENT_CARD,
     TASK_TYPE_PATH_OPTIMIZATION,
     TASK_TYPE_VISUAL_OCR,
     TASK_TYPE_NARRATIVE_SYNTHESIS,
+    TASK_TYPE_FACT_EXTRACT,
 }
 DEFAULT_PROFILE_ID = "local_text_deep"
 PROMPT_VERSION = "local-data-optimizer-v1"
@@ -45,6 +47,8 @@ DEFAULT_SETTINGS: dict[str, object] = {
     # E 2026-05-27: path_optimization 处理仍调未定义的 generate_local_model_json → 必失败(高失败率真凶)。
     # card-gen 才是深读地基; 关掉 path_opt 入队止血。要恢复需先修 _process_path_optimization_task。
     "autoEnqueuePathOptimization": False,
+    # meeting-spine ②: 上传后自动入队 fact_extract(DocumentLLMExtractor 抽 atomic_facts, 走 IngestPipeline)
+    "autoEnqueueFactExtract": True,
     # W: 手动直跑——"现在开始解析"按钮置 True，worker 即绕夜间窗口/governor 立刻跑；"停止"置 False。
     "manualActive": False,
     # W: 解析用模型——"online"=跟主模型(默认,快,按量计费) / "local"=强制本地 qwen3-vl:32b(免费,占本机)。
@@ -992,6 +996,9 @@ def run_due_local_model_tasks(
             elif task_type == TASK_TYPE_NARRATIVE_SYNTHESIS:
                 from app.services.task_runners import narrative_synthesis_runner  # type: ignore[import-not-found]
                 result = narrative_synthesis_runner.process(db, ai_service, task)
+            elif task_type == TASK_TYPE_FACT_EXTRACT:
+                from app.services.task_runners import fact_extract_runner
+                result = fact_extract_runner.process(db, ai_service, task)
             else:
                 skipped += 1
                 raise RuntimeError(f"不支持的本地优化任务类型：{task_type}")

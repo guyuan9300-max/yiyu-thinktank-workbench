@@ -78,7 +78,7 @@ class MinuteProcessResult:
 # ─── LLM 抽取 ────────────────────────────────────────
 
 
-def _build_extract_prompt(minute_text: str, client_name: str) -> str:
+def _build_extract_prompt(minute_text: str, client_name: str, roster_text: str = "") -> str:
     """会议纪要抽取 prompt (区分事实/承诺/风险/判断/纠错/任务).
 
     R2 fix-2: 强化 clarifications 抽取要求 (B sync 缺口 2).
@@ -86,7 +86,8 @@ def _build_extract_prompt(minute_text: str, client_name: str) -> str:
     return (
         "你是益语智库的会议纪要分析助手. 给你一段中文会议纪要, 抽取结构化信息.\n\n"
         f"客户: {client_name}\n\n"
-        "请输出一个 JSON 对象, 包含 6 个字段:\n"
+        + (f"{roster_text}\n\n" if roster_text else "")
+        + "请输出一个 JSON 对象, 包含 6 个字段:\n"
         '{\n'
         '  "facts": [...]          // 客户事实 (subject/attribute/value/time)\n'
         '  "risks": [...]          // 风险 (title/description/severity high|medium|low)\n'
@@ -196,7 +197,16 @@ def process_meeting_minute(
     extracted: dict = {}
     if use_llm:
         try:
-            prompt = _build_extract_prompt(minute_text, client_name)
+            # meeting-spine Phase1③: 注入客户名册, 让 owner/committer/speaker 对齐到已知人名
+            roster_text = ""
+            _conn = getattr(db, "conn", None)
+            if _conn is not None:
+                try:
+                    from app.services.person_resolver import build_client_roster_hint
+                    roster_text = build_client_roster_hint(_conn, client_id)
+                except Exception:
+                    roster_text = ""
+            prompt = _build_extract_prompt(minute_text, client_name, roster_text)
             raw = _call_ollama(prompt)
             extracted = _parse_json_object(raw)
         except Exception as exc:

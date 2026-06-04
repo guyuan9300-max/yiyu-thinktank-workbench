@@ -801,6 +801,31 @@ class IngestPipeline:
                 "V2.3 confidence_history 写入失败 (跳过, atomic_facts 主写入已成功): %s", exc
             )
 
+        # ★ meeting-spine Phase0 · 把 speaker_person_id 文本名解析成稳定 speaker_entity_id
+        #   (非阻塞: 失败不影响 atomic_facts 主写入; 走 raw conn, 仅非事务时自行 commit)
+        if req.metadata.speaker_person_id:
+            _conn = getattr(self._db, "conn", None)
+            if _conn is not None:
+                try:
+                    from app.services.person_resolver import resolve_person_name
+                    _eid = resolve_person_name(
+                        _conn,
+                        client_id=req.client_id,
+                        name=req.metadata.speaker_person_id,
+                        now=now,
+                    )
+                    if _eid:
+                        _conn.execute(
+                            "UPDATE atomic_facts SET speaker_entity_id = ? WHERE id = ?",
+                            (_eid, fact_id),
+                        )
+                    if not getattr(self._db, "_in_transaction", False):
+                        _conn.commit()
+                except Exception as exc:
+                    logger.warning(
+                        "speaker_entity_id 解析失败 (跳过, atomic_facts 主写入已成功): %s", exc
+                    )
+
         # 6. 如果是 supersedes, 回填新事实 id 到旧事实的 superseded_by_id
         if verdict.relation == "supersedes" and verdict.target_fact_id:
             self._db.execute(
