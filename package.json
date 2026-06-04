@@ -150,7 +150,11 @@
       "artifactName": "yiyu-workbench-${version}-${arch}-setup.${ext}",
       "verifyUpdateCodeSignature": true,
       "signAndEditExecutable": true,
-      "publisherName": "Yiyu Thinktank"
+      "signtoolOptions": {
+        "publisherName": "Yiyu Thinktank",
+        "rfc3161TimeStampServer": "http://timestamp.digicert.com",
+        "timeStampServer": "http://timestamp.digicert.com"
+      }
     },
     "nsis": {
       "oneClick": false,
