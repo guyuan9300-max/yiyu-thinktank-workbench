@@ -74,6 +74,11 @@ type PackagedRuntimeSeedManifest = {
     executable?: string;
     version?: string;
     treeSha256?: string;
+    stdlibCheck?: string;
+    dynamicLibrary?: string | null;
+    venvPython?: string;
+    venvUvicorn?: string;
+    venvScriptsDir?: string;
   };
   backend?: {
     requirementsPath?: string;
@@ -969,6 +974,41 @@ function isExecutable(filePath: string) {
   }
 }
 
+function runtimeVenvPythonRelative(manifest?: PackagedRuntimeSeedManifest | null) {
+  if (manifest?.python?.venvPython) return manifest.python.venvPython;
+  return process.platform === 'win32' ? path.join('Scripts', 'python.exe') : path.join('bin', 'python');
+}
+
+function runtimeVenvUvicornRelative(manifest?: PackagedRuntimeSeedManifest | null) {
+  if (manifest?.python?.venvUvicorn) return manifest.python.venvUvicorn;
+  return process.platform === 'win32' ? path.join('Scripts', 'uvicorn.exe') : path.join('bin', 'uvicorn');
+}
+
+function runtimeVenvScriptsDirRelative(manifest?: PackagedRuntimeSeedManifest | null) {
+  if (manifest?.python?.venvScriptsDir) return manifest.python.venvScriptsDir;
+  return process.platform === 'win32' ? 'Scripts' : 'bin';
+}
+
+function runtimeVenvSitePackagesRelative() {
+  return process.platform === 'win32'
+    ? path.join('Lib', 'site-packages')
+    : path.join('lib', 'python3.11', 'site-packages');
+}
+
+function packagedSeedPythonRelative(manifest?: PackagedRuntimeSeedManifest | null) {
+  if (manifest?.python?.executable) return manifest.python.executable;
+  return process.platform === 'win32'
+    ? path.join(PACKAGED_RUNTIME_PYTHON_SEED_DIR, 'python.exe')
+    : path.join(PACKAGED_RUNTIME_PYTHON_SEED_DIR, 'bin', 'python3.11');
+}
+
+function packagedSeedStdlibCheckRelative(manifest?: PackagedRuntimeSeedManifest | null) {
+  if (manifest?.python?.stdlibCheck) return manifest.python.stdlibCheck;
+  return process.platform === 'win32'
+    ? path.join(PACKAGED_RUNTIME_PYTHON_SEED_DIR, 'Lib', 'encodings', '__init__.py')
+    : path.join(PACKAGED_RUNTIME_PYTHON_SEED_DIR, 'lib', 'python3.11', 'encodings', '__init__.py');
+}
+
 function resolveUvBinary() {
   const searchDirs = new Set<string>();
   for (const item of (process.env.PATH ?? '').split(path.delimiter)) {
@@ -1002,7 +1042,7 @@ function backendEnv(extraEnv: NodeJS.ProcessEnv = {}) {
     pathEntries.add(path.dirname(uvBinaryPath));
   }
   if (env.VIRTUAL_ENV) {
-    pathEntries.add(path.join(env.VIRTUAL_ENV, 'bin'));
+    pathEntries.add(path.join(env.VIRTUAL_ENV, process.platform === 'win32' ? 'Scripts' : 'bin'));
   }
   env.PATH = Array.from(pathEntries).join(path.delimiter);
   const configuredCloudUrl = cloudBackendUrl();
@@ -1025,7 +1065,7 @@ function backendEnv(extraEnv: NodeJS.ProcessEnv = {}) {
   // falls back to /install and crashes during init_fs_encoding because the
   // standard library is unreachable. Explicitly anchor PYTHONHOME at the bundled
   // seed root so stdlib loads deterministically regardless of binary state.
-  if (app.isPackaged) {
+  if (app.isPackaged && process.platform !== 'win32') {
     const seedRoot = path.join(packagedRuntimeRoot(), PACKAGED_RUNTIME_PYTHON_SEED_DIR);
     if (fs.existsSync(path.join(seedRoot, 'lib', 'python3.11', 'encodings', '__init__.py'))) {
       env.PYTHONHOME = seedRoot;
@@ -1039,8 +1079,12 @@ function backendEnv(extraEnv: NodeJS.ProcessEnv = {}) {
   return env;
 }
 
-function runtimePythonPath(venvPath: string) {
-  return path.join(venvPath, 'bin', 'python');
+function runtimePythonPath(venvPath: string, manifest?: PackagedRuntimeSeedManifest | null) {
+  return path.join(venvPath, runtimeVenvPythonRelative(manifest));
+}
+
+function runtimeUvicornPath(venvPath: string, manifest?: PackagedRuntimeSeedManifest | null) {
+  return path.join(venvPath, runtimeVenvUvicornRelative(manifest));
 }
 
 async function runCommand(command: string, args: string[], env: NodeJS.ProcessEnv, label: string) {
@@ -1121,10 +1165,17 @@ async function runJsonCommand(command: string, args: string[], env: NodeJS.Proce
 }
 
 function getBackendPythonPath() {
-  if (backendRuntimeVenv && isExecutable(path.join(backendRuntimeVenv, 'bin', 'python'))) {
-    return path.join(backendRuntimeVenv, 'bin', 'python');
+  const runtimePython = backendRuntimeVenv ? runtimePythonPath(backendRuntimeVenv) : '';
+  if (runtimePython && isExecutable(runtimePython)) {
+    return runtimePython;
   }
-  const fallback = path.join(projectRoot, 'backend', '.venv', 'bin', 'python');
+  const fallback = path.join(
+    projectRoot,
+    'backend',
+    '.venv',
+    process.platform === 'win32' ? 'Scripts' : 'bin',
+    process.platform === 'win32' ? 'python.exe' : 'python',
+  );
   return fallback;
 }
 
@@ -1213,7 +1264,7 @@ function readPackagedRuntimeSeed(): PackagedRuntimeSeed {
   const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf-8')) as PackagedRuntimeSeedManifest;
   const seedPython = path.join(
     root,
-    manifest.python?.executable || path.join(PACKAGED_RUNTIME_PYTHON_SEED_DIR, 'bin', 'python3.11'),
+    packagedSeedPythonRelative(manifest),
   );
   const requirementsPath = path.join(root, manifest.backend?.requirementsPath || PACKAGED_RUNTIME_REQUIREMENTS_FILE);
   const wheelhousePath = path.join(root, manifest.wheelhouse?.path || PACKAGED_RUNTIME_WHEELHOUSE_DIR);
@@ -1262,25 +1313,20 @@ function validatePackagedRuntimeSeed(seed: PackagedRuntimeSeed) {
   // B 方案:优先 backend-venv-prebuilt;只要预装 venv 存在就不要求 wheelhouse
   // (老的回退 pip install 路径仍可工作,但新版本一律走 prebuilt)
   const hasPrebuiltVenv = fs.existsSync(seed.backendVenvPath)
-    && fs.existsSync(path.join(seed.backendVenvPath, 'bin', 'python'))
-    && fs.existsSync(path.join(seed.backendVenvPath, 'bin', 'uvicorn'));
+    && fs.existsSync(runtimePythonPath(seed.backendVenvPath, seed.manifest))
+    && fs.existsSync(runtimeUvicornPath(seed.backendVenvPath, seed.manifest));
   if (!hasPrebuiltVenv && !fs.existsSync(seed.wheelhousePath)) {
     throw new Error(`内置 backend 运行时缺失：既无预装 venv (${seed.backendVenvPath}) 也无 wheelhouse (${seed.wheelhousePath})`);
   }
-  const seedEncodings = path.join(
-    seed.root,
-    PACKAGED_RUNTIME_PYTHON_SEED_DIR,
-    'lib',
-    'python3.11',
-    'encodings',
-    '__init__.py',
-  );
+  const seedEncodings = path.join(seed.root, packagedSeedStdlibCheckRelative(seed.manifest));
   if (!fs.existsSync(seedEncodings)) {
     throw new Error(`内置 Python 标准库缺失：${seedEncodings}`);
   }
-  const seedLibPython = path.join(seed.root, PACKAGED_RUNTIME_PYTHON_SEED_DIR, 'lib', 'libpython3.11.dylib');
-  if (!fs.existsSync(seedLibPython)) {
-    throw new Error(`内置 Python 动态库缺失：${seedLibPython}`);
+  if (seed.manifest.python?.dynamicLibrary) {
+    const seedLibPython = path.join(seed.root, seed.manifest.python.dynamicLibrary);
+    if (!fs.existsSync(seedLibPython)) {
+      throw new Error(`内置 Python 动态库缺失：${seedLibPython}`);
+    }
   }
   // 仅在走 legacy wheelhouse 路径时才校验 wheelhouse 目录
   if (!hasPrebuiltVenv) {
@@ -1395,8 +1441,8 @@ async function ensurePackagedBackendRuntime(venvPath: string) {
   const seed = readPackagedRuntimeSeed();
   const metadataPath = projectRuntimeMetadataPath('backend', venvPath);
   const fingerprint = packagedRuntimeFingerprint(seed);
-  const pythonPath = path.join(venvPath, 'bin', 'python');
-  const uvicornPath = path.join(venvPath, 'bin', 'uvicorn');
+  const pythonPath = runtimePythonPath(venvPath, seed.manifest);
+  const uvicornPath = runtimeUvicornPath(venvPath, seed.manifest);
   const existingMetadata = readRuntimeSyncMetadata(metadataPath);
   const forceSync = parseBooleanEnv(process.env.YIYU_FORCE_RUNTIME_SYNC, false);
   let shouldInstall = forceSync || !isExecutable(pythonPath) || !isExecutable(uvicornPath) || existingMetadata?.fingerprint !== fingerprint;
@@ -1424,8 +1470,8 @@ async function ensurePackagedBackendRuntime(venvPath: string) {
   // B 方案根治路径:.app 内有预装 venv → 复制 + 改 pyvenv.cfg,跳过 pip install
   // 旧路径(pip install from wheelhouse)被废弃,因为 wheel 内嵌 binary 公证拒收
   const hasPrebuiltVenv = fs.existsSync(seed.backendVenvPath)
-    && fs.existsSync(path.join(seed.backendVenvPath, 'bin', 'python'))
-    && fs.existsSync(path.join(seed.backendVenvPath, 'bin', 'uvicorn'));
+    && fs.existsSync(runtimePythonPath(seed.backendVenvPath, seed.manifest))
+    && fs.existsSync(runtimeUvicornPath(seed.backendVenvPath, seed.manifest));
 
   if (hasPrebuiltVenv) {
     appendElectronLaunchLog('INFO', `[backend:packaged-runtime] copying pre-built venv from ${seed.backendVenvPath}`);
@@ -1435,11 +1481,11 @@ async function ensurePackagedBackendRuntime(venvPath: string) {
     // 重写 pyvenv.cfg 占位符,指向客户机当前的 seed python 路径
     const pyvenvCfgPath = path.join(venvPath, 'pyvenv.cfg');
     if (fs.existsSync(pyvenvCfgPath)) {
-      const seedBinDir = path.join(seed.root, PACKAGED_RUNTIME_PYTHON_SEED_DIR, 'bin');
-      const seedPythonAbs = path.join(seedBinDir, 'python3.11');
+      const seedPythonAbs = seed.seedPython;
+      const seedHomeDir = path.dirname(seedPythonAbs);
       const cfg = fs.readFileSync(pyvenvCfgPath, 'utf8');
       const fixed = cfg
-        .replace('__YIYU_RUNTIME_HOME__', seedBinDir)
+        .replace('__YIYU_RUNTIME_HOME__', seedHomeDir)
         .replace('__YIYU_RUNTIME_EXECUTABLE__', seedPythonAbs)
         .replace('__YIYU_RUNTIME_COMMAND__', `${seedPythonAbs} -m venv --copies --without-pip ${venvPath}`);
       fs.writeFileSync(pyvenvCfgPath, fixed);
@@ -1449,19 +1495,21 @@ async function ensurePackagedBackendRuntime(venvPath: string) {
     // 这条路径将随老版本淘汰,新版本统一走 hasPrebuiltVenv=true
     appendElectronLaunchLog('INFO', '[backend:packaged-runtime] no pre-built venv found, falling back to legacy pip install path');
     await runCommand(seed.seedPython, ['-m', 'venv', '--without-pip', '--copies', venvPath], backendEnv(), 'backend:packaged-venv');
-    const seedLibPython = path.join(seed.root, PACKAGED_RUNTIME_PYTHON_SEED_DIR, 'lib', 'libpython3.11.dylib');
-    const venvLibPython = path.join(venvPath, 'lib', 'libpython3.11.dylib');
-    if (fs.existsSync(seedLibPython)) {
-      fs.copyFileSync(seedLibPython, venvLibPython);
+    if (seed.manifest.python?.dynamicLibrary) {
+      const seedLibPython = path.join(seed.root, seed.manifest.python.dynamicLibrary);
+      const venvLibPython = path.join(venvPath, 'lib', path.basename(seed.manifest.python.dynamicLibrary));
+      if (fs.existsSync(seedLibPython)) {
+        fs.copyFileSync(seedLibPython, venvLibPython);
+      }
     }
     await runCommand(
-      path.join(venvPath, 'bin', 'python'),
+      runtimePythonPath(venvPath, seed.manifest),
       ['-m', 'ensurepip', '--upgrade', '--default-pip'],
       backendEnv({ VIRTUAL_ENV: venvPath }),
       'backend:packaged-ensurepip',
     );
     await runCommand(
-      path.join(venvPath, 'bin', 'python'),
+      runtimePythonPath(venvPath, seed.manifest),
       [
         '-m',
         'pip',
@@ -1501,8 +1549,8 @@ async function ensureProjectRuntime(projectDirName: 'backend' | 'cloud_backend',
     throw new Error('missing_uv_binary');
   }
   fs.mkdirSync(path.dirname(venvPath), { recursive: true });
-  const pythonPath = path.join(venvPath, 'bin', 'python');
-  const uvicornPath = path.join(venvPath, 'bin', 'uvicorn');
+  const pythonPath = runtimePythonPath(venvPath);
+  const uvicornPath = runtimeUvicornPath(venvPath);
   const metadataPath = projectRuntimeMetadataPath(projectDirName, venvPath);
   const fingerprint = buildRuntimeFingerprint(projectDirName);
   const forceSync = parseBooleanEnv(process.env.YIYU_FORCE_RUNTIME_SYNC, false);
