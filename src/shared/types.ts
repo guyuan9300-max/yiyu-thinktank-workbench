@@ -148,6 +148,9 @@ export interface AuthState {
   user?: SessionUser | null;
   message?: string | null;
   sessionMode?: 'local' | 'cloud';
+  // 后端 auth/me 在"网络中断 + 本地缓存兜底"时置 true。前端据此把"成员资格未确认"
+  // 当成 last-known-good（沿用上次已知身份/数据），而不是当成"被拒绝"去清空客户列表 / 强制身份页。
+  degraded?: boolean;
 }
 
 export type ConsultationKnowledgeTarget = 'vector_memory' | 'document_archive';
