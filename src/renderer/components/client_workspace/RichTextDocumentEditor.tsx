@@ -329,6 +329,9 @@ function RibbonToolbar({
   const [aiInFlight, setAiInFlight] = useState<{ startedAt: number; action: DocumentAiAction } | null>(null);
   const aiInFlightRef = useRef(aiInFlight);
   aiInFlightRef.current = aiInFlight;
+  // 飞行期保留的选区 Range:让"框选高光"在 AI 改写期间持续存在并锁定该段,
+  // 滚动/resize 时据此重算高光矩形,结果回来替换后再清。
+  const flightRangeRef = useRef<Range | null>(null);
   // 飞行期用户再发(右键 / ← 箭头)→ icon 闪一下提示"AI 在跑别再发"
   const [flashing, setFlashing] = useState(false);
   const flashingTimeoutRef = useRef<number | null>(null);
@@ -389,6 +392,23 @@ function RibbonToolbar({
     document.addEventListener('selectionchange', onSelChange);
     return () => document.removeEventListener('selectionchange', onSelChange);
   }, []);
+
+  // 飞行期(AI 改写中):选区高光持续显示并锁定该段。滚动/resize 时按 flightRange 重算矩形,
+  // 保证高光始终贴住那段文字;飞行结束(结果替换 / 失败)由 finally 清掉高光。
+  useEffect(() => {
+    if (!aiInFlight || !flightRangeRef.current) return;
+    const recompute = () => {
+      const range = flightRangeRef.current;
+      if (range) setAiSelectionRects(Array.from(range.getClientRects()));
+    };
+    recompute();
+    window.addEventListener('scroll', recompute, true);
+    window.addEventListener('resize', recompute);
+    return () => {
+      window.removeEventListener('scroll', recompute, true);
+      window.removeEventListener('resize', recompute);
+    };
+  }, [aiInFlight]);
 
   const captureCurrentSelection = (): { text: string; range: Range | null; rect: DOMRect | null } => {
     try {
@@ -593,7 +613,12 @@ function RibbonToolbar({
     setAiPrompt(null);
     setCapturedSelection('');
     setPopoverAnchor(null);
-    setAiSelectionRects([]);
+    // 选区场景:不再清高光 —— 让框选的那段在飞行期持续高亮并锁定,结果回来直接替换它,
+    //          用户能清楚看到"刚替换了哪段"。把 range 存进 flightRangeRef 供滚动重算。
+    // 光标插入场景(无选区):没有要锁的段,清掉高光。
+    const flightRange = snapshot.range && !snapshot.range.collapsed ? snapshot.range : null;
+    flightRangeRef.current = flightRange;
+    if (!flightRange) setAiSelectionRects([]);
     capturedRangeRef.current = null;
     setAiInFlight({ startedAt: Date.now(), action: snapshot.action });
     try {
@@ -674,6 +699,9 @@ function RibbonToolbar({
       alertWithLog(`⚠️ ${message}`, { feature: 'editor_ai_action', extra: { action: snapshot.action } });
     } finally {
       capturedRangeRef.current = null;
+      // 飞行结束(结果已替换 / 失败):清掉锁定高光与飞行 range。
+      flightRangeRef.current = null;
+      setAiSelectionRects([]);
       setAiInFlight(null);
     }
   };
@@ -771,14 +799,35 @@ function RibbonToolbar({
           - 用 capturedRange 的 viewport 矩形(fixed 定位),不动文档内容,绝对安全。
           - pointer-events-none 不挡点击;z-40 在 popover(z-50)之下、内容之上。
           这样从右键 / AI tab / 右侧 ← 箭头任意入口触发,选中那段都保持蓝色,最后被结果替换。 */}
-      {aiPrompt && aiSelectionRects.map((r, i) => (
+      {(aiPrompt || aiInFlight) && aiSelectionRects.map((r, i) => (
         <div
           key={i}
           aria-hidden="true"
-          className="pointer-events-none fixed z-40 rounded-[2px] bg-[#5B7BFE]/25 ring-1 ring-[#5B7BFE]/45"
+          // 飞行期(aiInFlight):锁定态 —— 拦截鼠标交互(onMouseDown preventDefault)让这段不能被点选/编辑,
+          //   呼吸高亮提示"AI 改写中,结果将替换此段";非飞行(仅 popover 打开):纯视觉,不挡点击。
+          onMouseDown={aiInFlight ? (e) => e.preventDefault() : undefined}
+          className={
+            aiInFlight
+              ? 'fixed z-40 cursor-not-allowed rounded-[2px] bg-[#5B7BFE]/15 ring-1 ring-[#5B7BFE]/60 animate-pulse'
+              : 'pointer-events-none fixed z-40 rounded-[2px] bg-[#5B7BFE]/25 ring-1 ring-[#5B7BFE]/45'
+          }
           style={{ top: r.top, left: r.left, width: r.width, height: r.height }}
         />
       ))}
+      {/* 飞行期在锁定段右上角挂一个"AI 改写中"小标,让"已锁定+即将替换"更直观 */}
+      {aiInFlight && aiSelectionRects.length > 0 && (
+        <div
+          aria-hidden="true"
+          className="pointer-events-none fixed z-40 flex items-center gap-1 rounded-full bg-[#5B7BFE] px-2 py-0.5 text-[10px] font-medium text-white shadow-sm"
+          style={{
+            top: Math.max(2, aiSelectionRects[0].top - 18),
+            left: aiSelectionRects[0].left,
+          }}
+        >
+          <span className="inline-block h-1.5 w-1.5 animate-pulse rounded-full bg-white" />
+          AI 改写中,将替换此段
+        </div>
+      )}
     </>
   );
 }
