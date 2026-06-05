@@ -1111,6 +1111,7 @@ from app.services.template_fill import (
     fetch_template_fill_web_sources,
     infer_template_field_type,
     infer_template_value_kind,
+    map_field_to_narrative_segment,
     match_field_to_verified_glossary,
     normalize_template_label,
     should_enable_template_fill_web_supplement,
@@ -16605,6 +16606,35 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                     f"请直接采用此值填写，并在值后附引用 [📚 {_hit.term}.{_hit.attribute_name}]，"
                     "不要因为'其它资料没提'就回退到【待确认】。"
                 )
+        except Exception:
+            pass
+
+        # ---- Phase 1：战略陪伴 6 段叙事 → 复合字段的高优先级证据 ----
+        # 数据中心已把客户综合成 6 段(带 cite、防幻觉),复合字段(简介/服务内容/特点/团队/里程碑/合作)
+        # 正是其标准答案。按字段名路由到最贴合的一段注入,直接喂"已合成画像",不靠 LLM 从碎片重拼。
+        try:
+            _seg_key = map_field_to_narrative_segment(field_label)
+            if _seg_key:
+                _nrow = state.db.fetchone(
+                    "SELECT record_json FROM client_narrative_local_mirror WHERE client_id = ?",
+                    (client_id,),
+                )
+                if _nrow and _nrow["record_json"]:
+                    import json as _json
+                    _ndata = _json.loads(_nrow["record_json"])
+                    _dims = _ndata.get("dimensions") or []
+                    _seg_text = ""
+                    for _d in _dims if isinstance(_dims, list) else []:
+                        if isinstance(_d, dict) and (_d.get("dimension") or _d.get("key")) == _seg_key:
+                            _seg_text = str(_d.get("text") or _d.get("content") or "").strip()
+                            break
+                    if _seg_text:
+                        lines.append(
+                            "🧭【战略陪伴叙事 · 已综合全部资料生成（高优先级参考）】"
+                            f"以下是系统已就「{_seg_key}」维度综合生成的客户画像（带防幻觉约束与来源标注），"
+                            "请据此为本字段提炼出贴合的答案，不要因为零散检索片段不全就回退到【待确认】：\n"
+                            + _seg_text[:1400]
+                        )
         except Exception:
             pass
 

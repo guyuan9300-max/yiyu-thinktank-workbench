@@ -135,3 +135,20 @@ def test_glossary_match_via_schema_alias():
 def test_glossary_match_empty_inputs():
     assert match_field_to_verified_glossary([], "机构名称") is None
     assert match_field_to_verified_glossary([_Attr("t", "a", "")], "机构名称") is None  # 空值不命中
+
+
+def test_map_field_to_narrative_segment():
+    from app.services.template_fill import map_field_to_narrative_segment as m
+    # 复合字段 → 对应叙事段
+    assert m("13. 主要服务内容/活动安排") == "business_intro"
+    assert m("14. 项目特点与创新点") == "business_intro"
+    assert m("15. 实施计划与关键节点") == "timeline"
+    assert m("16. 合作资源与协同机制") == "cooperation"
+    assert m("9. 项目负责人及团队") == "people"
+    assert m("4. 机构简介") == "essence"
+    assert m("12. 项目目标") == "next_steps"
+    # 精确字段 / 年度矩阵 / 盖章 / 预算 → 不注入叙事(None)
+    assert m("1. 机构名称") is None
+    assert m("2021 年") is None
+    assert m("39. 填报单位盖章") is None
+    assert m("17. 预算概算和资金使用说明") is None
