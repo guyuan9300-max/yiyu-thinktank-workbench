@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import hmac
 import hashlib
 import html
 import json
@@ -202,6 +203,8 @@ from app.models import (
     AuthLoginPayload,
     AuthRegisterPayload,
     AuthStateResponse,
+    LocalAuthLoginPayload,
+    LocalAuthRegisterPayload,
     LocalInputMemoryAiSettings,
     LocalInputMemoryCloudAuth,
     LocalInputMemoryFeishuIntegration,
@@ -406,6 +409,7 @@ from app.models import (
     OperatorRecord,
     OrgDepartmentRecord,
     OrgEmployeeBindingRecord,
+    OrgAdminClaimStatusRecord,
     OrgFeishuIntegrationRecord,
     OrgFeishuIntegrationSavePayload,
     OrgIntroDocumentRecord,
@@ -1320,6 +1324,25 @@ def new_id(prefix: str) -> str:
     return f"{prefix}_{uuid4().hex[:10]}"
 
 
+def hash_local_password(password: str) -> str:
+    salt = os.urandom(16).hex()
+    iterations = 210_000
+    digest = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), bytes.fromhex(salt), iterations).hex()
+    return f"pbkdf2_sha256${iterations}${salt}${digest}"
+
+
+def verify_local_password(password: str, password_hash: str) -> bool:
+    try:
+        scheme, iterations_raw, salt, expected = password_hash.split("$", 3)
+        if scheme != "pbkdf2_sha256":
+            return False
+        iterations = int(iterations_raw)
+        actual = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), bytes.fromhex(salt), iterations).hex()
+        return hmac.compare_digest(actual, expected)
+    except Exception:
+        return False
+
+
 def today_label() -> str:
     return datetime.now().strftime("%m-%d")
 
@@ -1572,6 +1595,7 @@ class AppState:
     volatile_cloud_refresh_token: str = ""
     volatile_cloud_session_user_json: str = ""
     cloud_session_persistent: bool = False
+    volatile_local_session_user_id: str = ""
     maintenance_mode_active: bool = False
     maintenance_mode_user_id: str = ""
     maintenance_mode_entered_at: str = ""
@@ -5200,6 +5224,126 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             state.maintenance_mode_user_id = ""
             state.maintenance_mode_entered_at = ""
         _persist_maintenance_state(False, "", "")
+
+    def _normalize_local_identifier(value: str | None) -> str:
+        return (value or "").strip().lower()
+
+    def _normalize_local_phone(value: str | None) -> str:
+        return re.sub(r"\D+", "", value or "")
+
+    def _local_identity_row(identity_id: str | None = None):
+        normalized = (identity_id or "").strip()
+        if not normalized:
+            return None
+        return state.db.fetchone("SELECT * FROM local_identities WHERE id = ?", (normalized,))
+
+    def _local_identity_count() -> int:
+        row = state.db.fetchone("SELECT COUNT(1) AS count FROM local_identities")
+        return int(row["count"] or 0) if row else 0
+
+    def _has_local_workspace_data() -> bool:
+        checks = (
+            "SELECT COUNT(1) AS count FROM clients",
+            "SELECT COUNT(1) AS count FROM documents",
+            "SELECT COUNT(1) AS count FROM tasks",
+        )
+        for sql in checks:
+            try:
+                row = state.db.fetchone(sql)
+                if row and int(row["count"] or 0) > 0:
+                    return True
+            except Exception:
+                continue
+        return False
+
+    def _local_session_user_id() -> str:
+        persisted = state.db.get_setting("local_session_user_id", "")
+        return persisted or state.volatile_local_session_user_id
+
+    def _set_local_session(identity_id: str | None, *, persist: bool = True) -> None:
+        if persist:
+            state.db.set_setting("local_session_user_id", identity_id or "")
+            state.volatile_local_session_user_id = ""
+            return
+        state.db.set_setting("local_session_user_id", "")
+        state.volatile_local_session_user_id = identity_id or ""
+
+    def clear_local_session() -> None:
+        _set_local_session(None, persist=True)
+        state.volatile_local_session_user_id = ""
+
+    def _local_user_from_row(row) -> SessionUserRecord:
+        organization_mode = str(row["organization_mode"] or "create")
+        membership_status = str(row["membership_status"] or ("pending" if organization_mode == "join" else "approved"))
+        organization_name = (
+            str(row["local_organization_name"] or "").strip()
+            if organization_mode == "create"
+            else "待加入组织"
+        )
+        if not organization_name:
+            organization_name = "本机工作区"
+        return SessionUserRecord(
+            id=str(row["id"]),
+            organizationId="local-device",
+            organizationName=organization_name,
+            email=str(row["email"]),
+            phone=str(row["phone_number"] or "") or None,
+            fullName=str(row["full_name"]),
+            primaryRole="admin" if organization_mode == "create" else "employee",
+            accountStatus="approved",
+            membershipStatus=membership_status,  # type: ignore[arg-type]
+            departmentId=str(row["pending_department_id"] or "") or None,
+            departmentName=None,
+            pendingInviteCode=str(row["pending_invite_code"] or "") or None,
+            jobTitle=str(row["job_title"] or "") or None,
+            managerName=str(row["manager_name"] or "") or None,
+            currentFocus=str(row["current_focus"] or "") or None,
+        )
+
+    def get_local_session_user() -> SessionUserRecord | None:
+        identity_id = _local_session_user_id()
+        row = _local_identity_row(identity_id)
+        if not row:
+            if identity_id:
+                clear_local_session()
+            return None
+        return _local_user_from_row(row)
+
+    def _local_setup_state() -> AuthStateResponse:
+        if _local_identity_count() > 0:
+            return AuthStateResponse(
+                authenticated=False,
+                user=None,
+                message="请选择本机账号登录，或连接云端账号。",
+                sessionMode="local",
+                requiresLocalIdentitySetup=False,
+                localIdentityStatus="ready",
+            )
+        has_workspace_data = _has_local_workspace_data()
+        return AuthStateResponse(
+            authenticated=False,
+            user=None,
+            message="已有本地数据，请先创建本机账号以保护工作区。" if has_workspace_data else "请先创建本机账号，再进入工作台。",
+            sessionMode="local",
+            requiresLocalIdentitySetup=True,
+            localIdentityStatus="needs_setup",
+        )
+
+    def _bind_current_local_identity_to_cloud(user: SessionUserRecord) -> None:
+        row = _local_identity_row(_local_session_user_id())
+        if not row:
+            return
+        state.db.execute(
+            """
+            UPDATE local_identities
+               SET bound_cloud_user_id = ?,
+                   bound_cloud_organization_id = ?,
+                   bound_cloud_email = ?,
+                   updated_at = ?
+             WHERE id = ?
+            """,
+            (user.id, user.organizationId, user.email, now_iso(), str(row["id"])),
+        )
 
     def get_cached_session_user() -> SessionUserRecord | None:
         raw = state.db.get_setting("cloud_session_user", "")
@@ -30340,10 +30484,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
 
     @app.get("/api/v1/auth/me", response_model=AuthStateResponse)
     def auth_me() -> AuthStateResponse:
-        # 取消"本机模式": 没有 cloud token 直接 authenticated=False, 前端跳登录页.
-        # 跟 per-user 数据隔离一致 — 不再有 'local-device-user' 共享身份让客户数据
-        # 对任何打开 app 的人可见. 离线降级 (网络中断 + 本地缓存) 由下方 502/503/504
-        # + cached_user 分支兜底, 仍 sessionMode='cloud', 不引入"本机模式"概念.
+        # 本地优先: 新设备没有云地址时仍可先创建本机账号进入软件。
         def _unauthenticated(message: str | None = None) -> AuthStateResponse:
             return AuthStateResponse(
                 authenticated=False,
@@ -30355,10 +30496,22 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         token = get_cloud_token()
         refresh_token = get_cloud_refresh_token()
         if not token and not refresh_token:
-            return _unauthenticated()
+            local_user = get_local_session_user()
+            if local_user:
+                return AuthStateResponse(
+                    authenticated=True,
+                    user=local_user,
+                    sessionMode="local",
+                    requiresLocalIdentitySetup=False,
+                    localIdentityStatus="ready",
+                )
+            return _local_setup_state()
         if not state.cloud_api_url:
             clear_cloud_session()
-            return _unauthenticated("尚未配置云端服务地址，请先在设置里配置后再登录。")
+            local_user = get_local_session_user()
+            if local_user:
+                return AuthStateResponse(authenticated=True, user=local_user, sessionMode="local", localIdentityStatus="ready")
+            return _local_setup_state()
         cached_user = get_cached_session_user()
         try:
             user = require_session_user()
@@ -30384,22 +30537,22 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
     def account_overview() -> AccountOverviewResponse:
         token = get_cloud_token()
         refresh_token = get_cloud_refresh_token()
-        # 取消本机模式: 未登录时返回 cloud + user=None + cloudConnected=False,
-        # 不再返回虚假的 'local-device-user'. 前端 settings 页拿到 user=None 应该跳登录.
         if not token and not refresh_token:
+            local_user = get_local_session_user()
             return AccountOverviewResponse(
-                sessionMode="cloud",
+                sessionMode="local",
                 cloudConnected=False,
                 cloudConfig=CloudConfigResponse(mode="disabled"),
-                user=None,
+                user=local_user,
             )
         if not state.cloud_api_url:
             clear_cloud_session()
+            local_user = get_local_session_user()
             return AccountOverviewResponse(
-                sessionMode="cloud",
+                sessionMode="local",
                 cloudConnected=False,
                 cloudConfig=CloudConfigResponse(mode="disabled"),
-                user=None,
+                user=local_user,
             )
         cached_user = get_cached_session_user()
         return AccountOverviewResponse(
@@ -30534,6 +30687,90 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         _save_local_input_memory_record(record)
         return _hydrate_local_input_memory(record)
 
+    @app.post("/api/v1/local-auth/register", response_model=AuthStateResponse)
+    def local_auth_register(payload: LocalAuthRegisterPayload) -> AuthStateResponse:
+        email = _normalize_local_identifier(payload.email)
+        if not re.fullmatch(r"[^@\s]+@[^@\s]+\.[^@\s]+", email):
+            raise HTTPException(status_code=400, detail="请输入有效的邮箱地址")
+        if len(payload.password or "") < 8:
+            raise HTTPException(status_code=400, detail="密码至少需要 8 位")
+        full_name = (payload.fullName or "").strip()
+        if not full_name:
+            raise HTTPException(status_code=400, detail="请填写姓名")
+        existing = state.db.fetchone("SELECT id FROM local_identities WHERE email = ?", (email,))
+        if existing:
+            raise HTTPException(status_code=409, detail="本机已存在这个邮箱账号，请直接登录。")
+        normalized_phone = _normalize_local_phone(payload.phone)
+        if normalized_phone:
+            existing_phone = state.db.fetchone("SELECT id FROM local_identities WHERE phone_number = ?", (normalized_phone,))
+            if existing_phone:
+                raise HTTPException(status_code=409, detail="本机已存在这个手机号账号，请直接登录。")
+        organization_mode = payload.organizationMode if payload.organizationMode in {"create", "join"} else "create"
+        membership_status = "pending" if organization_mode == "join" else "approved"
+        organization_name = (payload.organizationName or "").strip() or (f"{full_name} 的本机工作区" if organization_mode == "create" else "")
+        timestamp = now_iso()
+        identity_id = new_id("local_user")
+        state.db.execute(
+            """
+            INSERT INTO local_identities(
+                id, email, phone_number, full_name, password_hash,
+                local_organization_name, organization_mode, pending_invite_code,
+                pending_department_id, job_title, manager_name, current_focus,
+                membership_status, created_at, updated_at, last_login_at
+            ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                identity_id,
+                email,
+                normalized_phone or None,
+                full_name,
+                hash_local_password(payload.password),
+                organization_name,
+                organization_mode,
+                (payload.inviteCode or "").strip() or None,
+                (payload.departmentId or "").strip() or None,
+                (payload.jobTitle or "").strip() or None,
+                (payload.managerName or "").strip() or None,
+                (payload.currentFocus or "").strip(),
+                membership_status,
+                timestamp,
+                timestamp,
+                timestamp,
+            ),
+        )
+        _set_local_session(identity_id, persist=True)
+        row = _local_identity_row(identity_id)
+        if not row:
+            raise HTTPException(status_code=500, detail="本机账号创建失败")
+        user = _local_user_from_row(row)
+        log_activity("local_auth.register", "session", user.id, {"email": user.email, "organizationMode": organization_mode})
+        return AuthStateResponse(authenticated=True, user=user, sessionMode="local", localIdentityStatus="ready")
+
+    @app.post("/api/v1/local-auth/login", response_model=AuthStateResponse)
+    def local_auth_login(payload: LocalAuthLoginPayload) -> AuthStateResponse:
+        identifier = _normalize_local_identifier(payload.identifier)
+        if not identifier:
+            raise HTTPException(status_code=400, detail="请填写邮箱或手机号")
+        normalized_phone = _normalize_local_phone(identifier)
+        if "@" in identifier:
+            row = state.db.fetchone("SELECT * FROM local_identities WHERE email = ?", (identifier,))
+        else:
+            row = state.db.fetchone("SELECT * FROM local_identities WHERE phone_number = ?", (normalized_phone,))
+        if not row or not verify_local_password(payload.password, str(row["password_hash"])):
+            raise HTTPException(status_code=401, detail="邮箱/手机号或密码错误")
+        timestamp = now_iso()
+        state.db.execute(
+            "UPDATE local_identities SET last_login_at = ?, updated_at = ? WHERE id = ?",
+            (timestamp, timestamp, str(row["id"])),
+        )
+        _set_local_session(str(row["id"]), persist=payload.rememberMe)
+        refreshed = _local_identity_row(str(row["id"]))
+        if not refreshed:
+            raise HTTPException(status_code=404, detail="本机账号不存在")
+        user = _local_user_from_row(refreshed)
+        log_activity("local_auth.login", "session", user.id, {"email": user.email, "rememberMe": payload.rememberMe})
+        return AuthStateResponse(authenticated=True, user=user, sessionMode="local", localIdentityStatus="ready")
+
     @app.get("/api/v1/me/org-membership", response_model=OrgMembershipSummaryRecord)
     def me_org_membership() -> OrgMembershipSummaryRecord:
         if not get_cloud_token() and not get_cloud_refresh_token():
@@ -30564,6 +30801,38 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         except Exception:
             pass
         return membership
+
+    @app.get("/api/v1/me/org-membership/admin-claim-status", response_model=OrgAdminClaimStatusRecord)
+    def me_org_admin_claim_status() -> OrgAdminClaimStatusRecord:
+        if not state.cloud_api_url:
+            return OrgAdminClaimStatusRecord(canClaim=False, reason="尚未配置云端服务地址。")
+        if not get_cloud_token() and not get_cloud_refresh_token():
+            return OrgAdminClaimStatusRecord(canClaim=False, reason="尚未登录云端账号。")
+        try:
+            payload = cloud_request("GET", "/api/v1/me/org-membership/admin-claim-status")
+            if isinstance(payload, dict):
+                return OrgAdminClaimStatusRecord(**payload)
+        except HTTPException as exc:
+            if exc.status_code in {401, 403, 404}:
+                return OrgAdminClaimStatusRecord(canClaim=False, reason=str(exc.detail or "当前账号暂不能认领管理员。"))
+            raise
+        return OrgAdminClaimStatusRecord(canClaim=False, reason="云端管理员状态响应无效。")
+
+    @app.post("/api/v1/me/org-membership/admin-claim", response_model=AuthStateResponse)
+    def claim_me_org_admin() -> AuthStateResponse:
+        if not state.cloud_api_url:
+            raise HTTPException(status_code=400, detail="尚未配置云端服务地址。")
+        if not get_cloud_token() and not get_cloud_refresh_token():
+            raise HTTPException(status_code=400, detail="尚未登录云端账号。")
+        response = cloud_request("POST", "/api/v1/me/org-membership/admin-claim")
+        if not isinstance(response, dict):
+            raise HTTPException(status_code=502, detail="Invalid admin claim payload")
+        user = SessionUserRecord(**response)
+        persist_session = state.cloud_session_persistent or _has_persisted_cloud_session()
+        set_cloud_session(get_cloud_token(), user, persist=persist_session)
+        _ensure_local_organization_workspace_from_cloud_membership()
+        log_activity("org_admin.claim", "session", user.id, {"organizationId": user.organizationId})
+        return AuthStateResponse(authenticated=True, user=user, sessionMode="cloud")
 
     @app.get("/api/v1/org-integrations/feishu", response_model=OrgFeishuIntegrationRecord)
     def get_org_feishu_integration() -> OrgFeishuIntegrationRecord:
@@ -30742,6 +31011,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         user = SessionUserRecord(**user_payload)
         set_cloud_session(token, user, persist=True)
         set_cloud_refresh_token(refresh_token, persist=True)
+        _bind_current_local_identity_to_cloud(user)
         _ensure_local_organization_workspace_from_cloud_membership()
         log_activity("auth.register", "session", user.id, {"email": user.email})
         Thread(target=_sync_org_ai_config_from_cloud, daemon=True, name="cloud-ai-sync-register").start()
@@ -30766,6 +31036,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         user = SessionUserRecord(**user_payload)
         set_cloud_session(token, user, persist=payload.rememberMe)
         set_cloud_refresh_token(refresh_token, persist=payload.rememberMe)
+        _bind_current_local_identity_to_cloud(user)
         _ensure_local_organization_workspace_from_cloud_membership()
         log_activity("auth.login", "session", user.id, {"email": user.email})
         Thread(target=_sync_org_ai_config_from_cloud, daemon=True, name="cloud-ai-sync-login").start()
@@ -30796,15 +31067,9 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             except HTTPException:
                 pass
         clear_cloud_session()
+        clear_local_session()
         log_activity("auth.logout", "session", "current", {})
-        # 取消"本机模式": 登出后直接返回未登录态, 不再返回伪 'local-device-user'.
-        # 这是 fix "退出登录后仍看见以前页面" 的关键 — 前端拿到 authenticated=False
-        # 后, renderBranch 自动跳到 'auth' 登录页.
-        return AuthStateResponse(
-            authenticated=False,
-            user=None,
-            sessionMode="cloud",
-        )
+        return _local_setup_state()
 
     def process_pending_consultation_knowledge_requests_impl() -> ConsultationKnowledgeProcessSummaryResponse:
         all_requests = list_cloud_consultation_knowledge_requests()

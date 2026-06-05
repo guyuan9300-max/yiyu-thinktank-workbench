@@ -140,6 +140,7 @@ import type {
   MainChainStabilitySettings,
   MentionCandidate,
   Operator,
+  OrgAdminClaimStatus,
   OrgMembershipSummary,
   OfficialPushUpdatePayload,
   OrgWritingNorm,
@@ -336,6 +337,7 @@ import {
   getFeishuBotSettings,
   getFeishuSyncStatus,
   getOrgFeishuIntegration,
+  getOrgAdminClaimStatus,
   getOrgMembershipSummary,
   getFeishuUserBinding,
   getHealth,
@@ -380,6 +382,8 @@ import {
   importPaths,
   loadDemoData,
   login,
+  localLogin,
+  localRegister,
   ingestMeeting,
   logout,
   getProposals,
@@ -400,6 +404,7 @@ import {
   rebuildClientKnowledge,
   setWorkspaceInteractionState,
   register,
+  claimOrgAdmin,
   commitAndPushToMain,
   rejectEmployeeReview,
   resolveMeeting,
@@ -1927,16 +1932,24 @@ function pickDefaultRememberedCloudAuthAccount(memory: LocalInputMemory) {
   );
 }
 
-// 取消"本机模式": 启动默认为未登录 — 不再用 'local-device-user' 当 placeholder.
-// 启动时显示登录页 (loading 期间), /auth/me 加载完后:
-//   - authenticated=true → 进工作台
-//   - authenticated=false → 继续显示登录页
-// 这是 fix "退出登录后仍看见以前页面" + "重启后界面显示本机用户" 的关键.
 const DEFAULT_LOCAL_AUTH_STATE: AuthState = {
   authenticated: false,
-  sessionMode: 'cloud',
+  sessionMode: 'local',
   user: null,
+  requiresLocalIdentitySetup: true,
+  localIdentityStatus: 'needs_setup',
 };
+const DEFAULT_ORG_ADMIN_CLAIM_STATUS: OrgAdminClaimStatus = {
+  hasOrganization: false,
+  organizationId: null,
+  organizationName: null,
+  hasAdmin: false,
+  canClaim: false,
+  reason: null,
+  currentUserRole: null,
+  currentUserMembershipStatus: null,
+};
+const ORG_MANAGEMENT_SECTION_KEYS: SettingsSectionKey[] = ['system_admin', 'org_overview', 'org_departments', 'org_people', 'org_rules'];
 const YIYU_ORG_NAME_PATTERNS = ['益语智库', '益语软件'];
 
 function normalizeUrlForComparison(rawUrl?: string | null) {
@@ -1984,6 +1997,10 @@ function normalizeAuthStateForDesktop(state: AuthState | null | undefined): Auth
   }
   return {
     ...DEFAULT_LOCAL_AUTH_STATE,
+    ...state,
+    authenticated: false,
+    user: null,
+    sessionMode: state?.sessionMode || 'local',
     message: state?.message || null,
   };
 }
@@ -7516,6 +7533,8 @@ export default function App() {
   const [handbookSettingsState, setHandbookSettingsState] = useState<HandbookSettings>(DEFAULT_HANDBOOK_SETTINGS);
   const [systemAdminSettingsState, setSystemAdminSettingsState] = useState<SystemAdminSettings>(DEFAULT_SYSTEM_ADMIN_SETTINGS);
   const [orgMembershipState, setOrgMembershipState] = useState<OrgMembershipSummary>(DEFAULT_ORG_MEMBERSHIP_SUMMARY);
+  const [orgAdminClaimStatus, setOrgAdminClaimStatus] = useState<OrgAdminClaimStatus>(DEFAULT_ORG_ADMIN_CLAIM_STATUS);
+  const [orgAdminClaimBusy, setOrgAdminClaimBusy] = useState(false);
   const [orgFeishuIntegrationState, setOrgFeishuIntegrationState] = useState<OrgFeishuIntegration>(DEFAULT_ORG_FEISHU_INTEGRATION);
   const [feishuDeliveryProfileState, setFeishuDeliveryProfileState] = useState<FeishuDeliveryProfile>(DEFAULT_FEISHU_DELIVERY_PROFILE);
   const [feishuMemberAuthorizationState, setFeishuMemberAuthorizationState] = useState<FeishuMemberAuthorization>(DEFAULT_FEISHU_MEMBER_AUTHORIZATION);
@@ -7826,12 +7845,7 @@ export default function App() {
     if (task) setPendingPlanItemAction({ kind: 'open-task', task });
   }, [tasks]);
   const isCloudSession = authState.sessionMode === 'cloud';
-  // 取消"本机模式": isLocalSession 永远 false. 所有 if (isLocalSession) {...} 分支
-  // 自动变 dead code (e.g. canManageSensitiveSettings 只剩 admin role check;
-  // 各处"本机模式"文案不再渲染). 不需逐行删 22 处 UI, 这是 minimal-invasive.
-  // 跟 backend auth_me 改造 (没 token 时 authenticated=False) 对齐 — 现在没登录
-  // 直接到登录页, 不再有"local-device-user"虚假身份让客户数据对所有打开 app 的人可见.
-  const isLocalSession: boolean = false;
+  const isLocalSession = authState.sessionMode === 'local';
   const isYiyuOfficialCloudSession = Boolean(
     isCloudSession
     && normalizeUrlForComparison(desktopAppInfo?.cloudBackendUrl)
@@ -7849,8 +7863,15 @@ export default function App() {
     ),
   );
   const currentMembershipStatus = getEffectiveMembershipStatus(authState);
-  const shouldShowIdentityGate = isCloudSession && currentMembershipStatus !== 'approved';
+  const canClaimOrgAdmin = Boolean(isCloudSession && orgAdminClaimStatus.canClaim);
+  const canAccessOrganizationSettings = Boolean(currentSessionUser?.primaryRole === 'admin' || canClaimOrgAdmin);
+  const shouldShowIdentityGate = isCloudSession && currentMembershipStatus !== 'approved' && !canClaimOrgAdmin;
   const renderBranch = loading ? 'loading' : (!authState.authenticated || !currentSessionUser ? 'auth' : shouldShowIdentityGate ? 'identity' : 'main');
+  useEffect(() => {
+    if (canAccessOrganizationSettings) return;
+    if (!ORG_MANAGEMENT_SECTION_KEYS.includes(settingsSection)) return;
+    setSettingsSection('account');
+  }, [canAccessOrganizationSettings, settingsSection]);
   const currentOperatorName = currentSessionUser?.fullName || operators.find((item) => item.isCurrent)?.name || '庆华';
   const canManagePublicTaskTaxonomy = currentSessionUser?.primaryRole === 'admin';
   const [cloudAuthModalOpen, setCloudAuthModalOpen] = useState(false);
@@ -7991,6 +8012,15 @@ export default function App() {
       setAuthShellInviteStatus(EMPTY_AUTH_SHELL_INVITE_STATUS);
       return undefined;
     }
+    if (!settingsState?.cloudApiUrl?.trim()) {
+      setAuthShellInviteStatus({
+        code,
+        loading: false,
+        valid: null,
+        message: '邀请码会先保存在本机，连接云端后再识别组织与部门。',
+      });
+      return undefined;
+    }
     let cancelled = false;
     setAuthShellInviteStatus({ code, loading: true, valid: null, message: '正在识别邀请码...' });
     const timer = window.setTimeout(() => {
@@ -8024,7 +8054,7 @@ export default function App() {
       cancelled = true;
       window.clearTimeout(timer);
     };
-  }, [authShellForm.inviteCode, authShellMode]);
+  }, [authShellForm.inviteCode, authShellMode, settingsState?.cloudApiUrl]);
 
   useEffect(() => {
     if (!authState.authenticated) return;
@@ -8830,6 +8860,25 @@ export default function App() {
     return response;
   }
 
+  async function loadOrgAdminClaimStatusBlock(includeCloud = authState.sessionMode === 'cloud') {
+    if (!includeCloud) {
+      setOrgAdminClaimStatus(DEFAULT_ORG_ADMIN_CLAIM_STATUS);
+      return DEFAULT_ORG_ADMIN_CLAIM_STATUS;
+    }
+    try {
+      const response = await getOrgAdminClaimStatus();
+      setOrgAdminClaimStatus(response);
+      return response;
+    } catch (error) {
+      const fallback: OrgAdminClaimStatus = {
+        ...DEFAULT_ORG_ADMIN_CLAIM_STATUS,
+        reason: error instanceof Error ? error.message : '管理员认领状态加载失败',
+      };
+      setOrgAdminClaimStatus(fallback);
+      return fallback;
+    }
+  }
+
   async function loadOrgFeishuIntegrationBlock() {
     const response = await getOrgFeishuIntegration();
     setOrgFeishuIntegrationState(response);
@@ -8930,7 +8979,11 @@ export default function App() {
       case 'org_departments':
       case 'org_people':
       case 'org_rules':
-        await loadSystemAdminSettingsBlock(authState.sessionMode === 'cloud');
+        if (currentSessionUser?.primaryRole !== 'admin' && canClaimOrgAdmin) {
+          await loadOrgAdminClaimStatusBlock(true);
+        } else {
+          await loadSystemAdminSettingsBlock(authState.sessionMode === 'cloud');
+        }
         break;
     }
     setSettingsSectionLoaded((prev) => ({ ...prev, [section]: true }));
@@ -9401,13 +9454,22 @@ export default function App() {
           flash('error', settingsError instanceof Error ? settingsError.message : '系统设置加载失败');
         }
       }
+      let nextOrgAdminClaimStatus = DEFAULT_ORG_ADMIN_CLAIM_STATUS;
       // Always load org membership for cloud-authenticated users so the account-settings page
       // shows up-to-date organizationName / departmentName (even after a dept lead was bound
       // after the user already had approved status).
       if (nextAuth.authenticated && nextAuth.sessionMode === 'cloud') {
         await loadOrgMembershipBlock().catch(() => DEFAULT_ORG_MEMBERSHIP_SUMMARY);
+        nextOrgAdminClaimStatus = await loadOrgAdminClaimStatusBlock(true).catch(() => DEFAULT_ORG_ADMIN_CLAIM_STATUS);
+      } else {
+        setOrgAdminClaimStatus(DEFAULT_ORG_ADMIN_CLAIM_STATUS);
       }
-      if (nextAuth.authenticated && nextAuth.sessionMode === 'cloud' && getEffectiveMembershipStatus(nextAuth) !== 'approved') {
+      if (
+        nextAuth.authenticated
+        && nextAuth.sessionMode === 'cloud'
+        && getEffectiveMembershipStatus(nextAuth) !== 'approved'
+        && !nextOrgAdminClaimStatus.canClaim
+      ) {
         markLoadingPhase('正在读取组织身份状态…');
         setClients([]);
         setWorkspace(null);
@@ -9451,6 +9513,10 @@ export default function App() {
                 setOrgMembershipState(DEFAULT_ORG_MEMBERSHIP_SUMMARY);
                 return DEFAULT_ORG_MEMBERSHIP_SUMMARY;
               }),
+          },
+          {
+            name: 'org-admin-claim-status',
+            run: () => loadOrgAdminClaimStatusBlock(nextAuth.sessionMode === 'cloud'),
           },
           {
             name: 'org-feishu-integration',
@@ -9556,6 +9622,7 @@ export default function App() {
         setHandbookSettingsState(DEFAULT_HANDBOOK_SETTINGS);
         setSystemAdminSettingsState(DEFAULT_SYSTEM_ADMIN_SETTINGS);
         setOrgMembershipState(DEFAULT_ORG_MEMBERSHIP_SUMMARY);
+        setOrgAdminClaimStatus(DEFAULT_ORG_ADMIN_CLAIM_STATUS);
         setOrgFeishuIntegrationState(DEFAULT_ORG_FEISHU_INTEGRATION);
         setFeishuDeliveryProfileState(DEFAULT_FEISHU_DELIVERY_PROFILE);
         setFeishuMemberAuthorizationState(DEFAULT_FEISHU_MEMBER_AUTHORIZATION);
@@ -10119,7 +10186,7 @@ export default function App() {
       && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(form.email)
       && form.password.length >= 8
       && form.password === form.confirmPassword;
-    const registerValid = registerAccountValid && (!form.inviteCode.trim() || inviteStatus.valid !== false);
+    const registerValid = registerAccountValid;
 
     const switchMode = (nextMode: 'login' | 'register') => {
       setAuthShellMode(nextMode);
@@ -10138,11 +10205,19 @@ export default function App() {
       setAuthShellSubmitting(true);
       try {
         if (mode === 'register') {
-          const response = await register({
+          const hasPendingOrgIdentity = Boolean(
+            normalizeDepartmentInviteInput(form.inviteCode)
+            || form.departmentId
+            || form.jobTitle.trim()
+            || form.managerName.trim()
+            || form.currentFocus.trim(),
+          );
+          const response = await localRegister({
             email: form.email,
             phone: form.phone || null,
             fullName: form.fullName,
             password: form.password,
+            organizationMode: hasPendingOrgIdentity ? 'join' : 'create',
             inviteCode: normalizeDepartmentInviteInput(form.inviteCode) || null,
             departmentId: form.departmentId || null,
             jobTitle: form.jobTitle || null,
@@ -10151,7 +10226,7 @@ export default function App() {
           });
           setAuthState(response);
         } else {
-          const response = await login({ identifier: form.identifier || form.email, password: form.password, rememberMe });
+          const response = await localLogin({ identifier: form.identifier || form.email, password: form.password, rememberMe });
           setAuthState(response);
         }
         try {
@@ -10270,7 +10345,7 @@ export default function App() {
             {mode === 'register' && (
               <>
                 <p className="px-1 text-[11px] text-gray-400 leading-relaxed">
-                  免审批立即可用 · 注册后可在设置里加入组织、申请权限
+                  先创建本机账号 · 连接云端后再同步和加入组织
                 </p>
                 {/* Step 切换:underline 风格,与登录/注册 tab 一致 */}
                 <div className="flex items-center gap-6 border-b border-gray-100 pb-px">
@@ -10320,7 +10395,7 @@ export default function App() {
                   </>
                 ) : (
                   <>
-                    <input value={form.inviteCode} onChange={(event) => setForm((prev) => ({ ...prev, inviteCode: event.target.value }))} placeholder="部门邀请码 (可选, 自动识别组织)" className="w-full bg-white border border-gray-200 rounded-xl px-3.5 py-3 text-[14px] text-gray-900 outline-none focus:border-[#5B7BFE] transition-colors" />
+                    <input value={form.inviteCode} onChange={(event) => setForm((prev) => ({ ...prev, inviteCode: event.target.value }))} placeholder="部门邀请码 (可选, 先保存在本机)" className="w-full bg-white border border-gray-200 rounded-xl px-3.5 py-3 text-[14px] text-gray-900 outline-none focus:border-[#5B7BFE] transition-colors" />
                     {inviteStatus.message && (
                       <div className={`rounded-xl border px-3.5 py-2.5 text-[11.5px] ${inviteStatus.valid === false ? 'border-rose-200 bg-rose-50 text-rose-700' : 'border-blue-200 bg-blue-50 text-blue-700'}`}>
                         {inviteStatus.loading ? '正在识别邀请码…' : inviteStatus.message}
@@ -27642,8 +27717,7 @@ export default function App() {
 	  };
 
 	  const renderSettingsView = () => {
-    // 取消本机模式后, sessionMode 始终 'cloud' (除非未登录, 那时这个组件不渲染), 故永 false
-    const isLocalSession: boolean = false;
+    const isLocalSession = authState.sessionMode === 'local';
     const canManageTaskTag = (tag: TaskTag) => (tag.scope === 'self' ? tag.ownerUserId === currentSessionUser?.id : currentSessionUser?.primaryRole === 'admin');
     const canManageSensitiveSettings = isLocalSession || currentSessionUser?.primaryRole === 'admin';
     const canEditBusinessSettings = canManageSensitiveSettings || systemAdminSettingsState.allowBusinessSettingsForEmployees;
@@ -28101,6 +28175,32 @@ export default function App() {
         flash('error', error instanceof Error ? error.message : '组织身份申请提交失败');
       } finally {
         setMembershipApplySubmitting(false);
+      }
+    };
+
+    const handleClaimOrgAdmin = async () => {
+      if (!isCloudSession) {
+        flash('error', '请先登录云端账号。');
+        return;
+      }
+      setOrgAdminClaimBusy(true);
+      try {
+        const response = normalizeAuthStateForDesktop(await claimOrgAdmin());
+        setAuthState(response);
+        await Promise.all([
+          loadOrgAdminClaimStatusBlock(true),
+          loadOrgMembershipBlock().catch(() => DEFAULT_ORG_MEMBERSHIP_SUMMARY),
+          loadSystemAdminSettingsBlock(true),
+          loadEmployeeReviewBlock(),
+          loadLogsBlock(),
+        ]);
+        setSettingsSection('system_admin');
+        flash('success', '已认领为组织管理员。');
+      } catch (error) {
+        await loadOrgAdminClaimStatusBlock(true).catch(() => undefined);
+        flash('error', error instanceof Error ? error.message : '管理员认领失败');
+      } finally {
+        setOrgAdminClaimBusy(false);
       }
     };
 
@@ -29404,9 +29504,31 @@ export default function App() {
           </div>
 
           {!isCloud && (
-            <p className="rounded-xl border border-amber-100 bg-amber-50 px-4 py-3 text-[12px] text-amber-700">
-              连接云端并加入或创建组织后,才能继续配置组织结构、邀请码与飞书协作底座。
-            </p>
+            <div className="rounded-xl border border-amber-100 bg-amber-50 px-4 py-3 text-[12px] text-amber-700">
+              <p>连接云端并加入或创建组织后，才能继续配置组织结构、邀请码与飞书协作底座。</p>
+              <div className="mt-3">
+                <Button onClick={() => openCloudAuthModal('login')}>连接云端账号</Button>
+              </div>
+            </div>
+          )}
+
+          {isCloud && currentSessionUser?.primaryRole !== 'admin' && (
+            <div className="rounded-2xl border border-blue-100 bg-blue-50 px-5 py-4">
+              <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-blue-500">ADMIN CLAIM</p>
+              <h3 className="mt-2 text-[18px] font-light tracking-tight text-gray-900">认领组织管理员</h3>
+              <p className="mt-2 text-[12px] leading-relaxed text-blue-800">
+                {orgAdminClaimStatus.canClaim
+                  ? `${orgAdminClaimStatus.organizationName || orgMembershipState.organizationName || currentSessionUser?.organizationName || '当前组织'} 尚未设置管理员。认领后，你将负责成员审核、组织权限、部门与角色管理。`
+                  : orgAdminClaimStatus.reason || '当前组织暂不能认领管理员。'}
+              </p>
+              <div className="mt-4 flex items-center gap-3">
+                <Button primary onClick={() => void handleClaimOrgAdmin()} disabled={!orgAdminClaimStatus.canClaim || orgAdminClaimBusy}>
+                  {orgAdminClaimBusy ? <RefreshCw size={16} className="animate-spin" /> : <ShieldCheck size={16} />}
+                  认领管理员
+                </Button>
+                <Button onClick={() => void loadOrgAdminClaimStatusBlock(true)}>刷新状态</Button>
+              </div>
+            </div>
           )}
 
           {/* 员工审核 - Foldable,有内容才显示 */}
@@ -29427,7 +29549,7 @@ export default function App() {
           )}
 
           {/* 顾源源 5/26 真修 P0-1 (5/24 审计真发现死挂): BotMembersPanel 真主面板真挂上, 真用户加完机器人能看到列表/启停/重置密钥/AI 计划审批 */}
-          {isCloud && (
+          {isCloud && currentSessionUser?.primaryRole === 'admin' && (
             <div className="mt-8">
               <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-gray-400 mb-4">BOT MEMBERS · 机器人成员管理</p>
               <BotMembersPanel />
@@ -29435,7 +29557,7 @@ export default function App() {
           )}
 
           {/* 组织搭建中心 - 独立工作台,保留原样不嵌套 */}
-          {isCloud && (
+          {isCloud && currentSessionUser?.primaryRole === 'admin' && (
             <div>
               <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-gray-400 mb-4">STRUCTURE · 组织搭建中心</p>
               <OrganizationSetupCenter
@@ -29664,7 +29786,7 @@ export default function App() {
               </div>
               <div className="space-y-6">
                 {sectionGroups.map((group, groupIndex) => {
-                  const visibleItems = group.items.filter((section) => currentSessionUser?.primaryRole === 'admin' || !['system_admin', 'org_overview', 'org_departments', 'org_people', 'org_rules'].includes(section.key));
+                  const visibleItems = group.items.filter((section) => canAccessOrganizationSettings || !ORG_MANAGEMENT_SECTION_KEYS.includes(section.key));
                   if (visibleItems.length === 0) return null;
                   return (
                     <div key={group.group} className={groupIndex > 0 ? 'border-t border-gray-100 pt-5' : ''}>

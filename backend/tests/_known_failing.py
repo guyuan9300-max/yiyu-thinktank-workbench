@@ -7,7 +7,6 @@
   local_model_tasks 表、UnderstandingSnapshotV1Record.humanBrief
 - 剩余 90 个失败按类型分布：
     65 test_api_smoke.py     业务行为/AI 输出/ID 漂移混合
-     6 test_local_auth.py    缺整组 /api/v1/local-auth/* endpoint
      3 test_organization_dna_v2.py  AI/业务行为漂移
      3 test_local_model_optimizer.py 1 已修，2 待业务确认
      2 test_mobile_recording_text_ingest.py 缺 /api/v1/mobile/* endpoint
@@ -96,12 +95,6 @@ KNOWN_FAILING_TESTS: frozenset[str] = frozenset({
     "tests/test_feishu_org_integration.py::test_local_mode_feishu_collaboration_requires_cloud_and_org",
     "tests/test_knowledge_v2.py::test_ingest_document_knowledge_moves_derived_intro_into_background_layer",
     "tests/test_knowledge_v2.py::test_retrieve_knowledge_bundle_semantic_recall_can_append_new_doc",
-    "tests/test_local_auth.py::test_auth_me_requires_local_identity_setup_for_legacy_workspace_data",
-    "tests/test_local_auth.py::test_auth_me_requires_local_registration_when_device_is_empty",
-    "tests/test_local_auth.py::test_cloud_login_binds_current_local_identity",
-    "tests/test_local_auth.py::test_local_login_verifies_password_and_respects_remember_me",
-    "tests/test_local_auth.py::test_local_register_creates_identity_without_calling_cloud",
-    "tests/test_local_auth.py::test_local_register_join_existing_org_keeps_pending_invite_locally",
     "tests/test_local_model_optimizer.py::test_processes_card_and_virtual_path_without_moving_original_file",
     # 注：test_empty_queue 和 test_requeue_interrupted 已被 local_model_tasks
     # schema 补建（commit 6378ac1）修复，从清单移除。

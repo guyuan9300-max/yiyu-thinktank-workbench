@@ -17,7 +17,7 @@ const distRoot = path.join(projectRoot, 'dist');
 
 function usage() {
   console.log(`Usage:
-  node scripts/refresh-windows-update-metadata.mjs --exe dist/yiyu-workbench-0.3.1-x64-setup.exe [--latest dist/latest.yml]
+  node scripts/refresh-windows-update-metadata.mjs --exe dist/yiyu-workbench-0.3.2-x64-setup.exe [--latest dist/latest.yml]
 
 Refreshes latest.yml and .blockmap from the final signed Windows installer.
 Run this after Authenticode/SignPath signing because signing changes the installer hash.`);

@@ -307,3 +307,109 @@ def test_cloud_login_binds_current_local_identity(tmp_path: Path, monkeypatch) -
     assert row["bound_cloud_user_id"] == "cloud-user-1"
     assert row["bound_cloud_organization_id"] == "cloud-org-1"
     assert row["bound_cloud_email"] == "cloud-user@example.com"
+
+
+def test_admin_claim_proxy_refreshes_cloud_session_user(tmp_path: Path, monkeypatch) -> None:
+    client = make_client(tmp_path / "data")
+    state = client.app.state.app_state
+    state.cloud_api_url = "http://cloud.example.test"
+    state.db.set_setting("cloud_api_url", "http://cloud.example.test")
+
+    class FakeCloudResponse:
+        def __init__(self, status_code: int, payload: dict):
+            self.status_code = status_code
+            self._payload = payload
+            self.content = b"{}"
+            self.text = str(payload)
+
+        def json(self) -> dict:
+            return self._payload
+
+    def fake_cloud_request(method, url, **kwargs):
+        if method == "POST" and url.endswith("/api/v1/auth/login"):
+            return FakeCloudResponse(
+                200,
+                {
+                    "accessToken": "access-claim",
+                    "refreshToken": "refresh-claim",
+                    "user": {
+                        "id": "claim-user-1",
+                        "organizationId": "claim-org-1",
+                        "organizationName": "待认领组织",
+                        "email": "claim-user@example.com",
+                        "fullName": "待认领用户",
+                        "primaryRole": "employee",
+                        "accountStatus": "approved",
+                        "membershipStatus": "none",
+                    },
+                },
+            )
+        if method == "GET" and url.endswith("/api/v1/me/org-membership"):
+            return FakeCloudResponse(200, {"hasOrganization": False, "membershipStatus": "none"})
+        if method == "GET" and url.endswith("/api/v1/auth/me"):
+            return FakeCloudResponse(
+                200,
+                {
+                    "id": "claim-user-1",
+                    "organizationId": "claim-org-1",
+                    "organizationName": "待认领组织",
+                    "email": "claim-user@example.com",
+                    "fullName": "待认领用户",
+                    "primaryRole": "admin",
+                    "accountStatus": "approved",
+                    "membershipStatus": "approved",
+                },
+            )
+        if method == "GET" and url.endswith("/api/v1/me/org-membership/admin-claim-status"):
+            return FakeCloudResponse(
+                200,
+                {
+                    "hasOrganization": True,
+                    "organizationId": "claim-org-1",
+                    "organizationName": "待认领组织",
+                    "hasAdmin": False,
+                    "canClaim": True,
+                    "reason": None,
+                    "currentUserRole": "employee",
+                    "currentUserMembershipStatus": "none",
+                },
+            )
+        if method == "POST" and url.endswith("/api/v1/me/org-membership/admin-claim"):
+            return FakeCloudResponse(
+                200,
+                {
+                    "id": "claim-user-1",
+                    "organizationId": "claim-org-1",
+                    "organizationName": "待认领组织",
+                    "email": "claim-user@example.com",
+                    "fullName": "待认领用户",
+                    "primaryRole": "admin",
+                    "accountStatus": "approved",
+                    "membershipStatus": "approved",
+                },
+            )
+        raise AssertionError(f"unexpected cloud request: {method} {url}")
+
+    monkeypatch.setattr(app_main.httpx, "request", fake_cloud_request)
+
+    login = client.post(
+        "/api/v1/auth/login",
+        json={"identifier": "claim-user@example.com", "password": "CloudPass123!", "rememberMe": True},
+    )
+    assert login.status_code == 200, login.text
+    assert login.json()["user"]["primaryRole"] == "employee"
+
+    status = client.get("/api/v1/me/org-membership/admin-claim-status")
+    assert status.status_code == 200, status.text
+    assert status.json()["canClaim"] is True
+
+    claim = client.post("/api/v1/me/org-membership/admin-claim")
+    assert claim.status_code == 200, claim.text
+    payload = claim.json()
+    assert payload["authenticated"] is True
+    assert payload["sessionMode"] == "cloud"
+    assert payload["user"]["primaryRole"] == "admin"
+
+    auth_me = client.get("/api/v1/auth/me")
+    assert auth_me.status_code == 200, auth_me.text
+    assert auth_me.json()["user"]["primaryRole"] == "admin"

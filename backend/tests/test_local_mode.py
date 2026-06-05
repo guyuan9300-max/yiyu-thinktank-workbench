@@ -23,9 +23,11 @@ def test_local_mode_is_available_without_cloud_login(tmp_path: Path):
     auth_me = client.get("/api/v1/auth/me")
     assert auth_me.status_code == 200, auth_me.text
     payload = auth_me.json()
-    assert payload["authenticated"] is True
+    assert payload["authenticated"] is False
     assert payload["sessionMode"] == "local"
-    assert payload["user"]["organizationId"] == "local-device"
+    assert payload["user"] is None
+    assert payload["requiresLocalIdentitySetup"] is True
+    assert payload["localIdentityStatus"] == "needs_setup"
 
     overview = client.get("/api/v1/account/overview")
     assert overview.status_code == 200, overview.text
@@ -33,3 +35,4 @@ def test_local_mode_is_available_without_cloud_login(tmp_path: Path):
     assert overview_payload["sessionMode"] == "local"
     assert overview_payload["cloudConnected"] is False
     assert overview_payload["cloudConfig"]["mode"] == "disabled"
+    assert overview_payload["user"] is None

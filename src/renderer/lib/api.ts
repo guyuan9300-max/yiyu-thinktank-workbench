@@ -17,6 +17,8 @@ import type {
   LastCloudAiSyncStatus,
   AuthLoginPayload,
   AuthRegisterPayload,
+  LocalAuthLoginPayload,
+  LocalAuthRegisterPayload,
   ChangePasswordPayload,
   ConsultationKnowledgeProcessSummary,
   ConsultationKnowledgeRequestRecord,
@@ -54,6 +56,7 @@ import type {
   ClientWorkspaceSettingsPayload,
   DepartmentOption,
   OrgInviteResolveResult,
+  OrgAdminClaimStatus,
   DeepDnaDraft,
   DeepDnaRecord,
   DnaDelta,
@@ -1731,6 +1734,13 @@ export async function register(payload: AuthRegisterPayload) {
   });
 }
 
+export async function localRegister(payload: LocalAuthRegisterPayload) {
+  return request<AuthState>('/api/v1/local-auth/register', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+}
+
 export async function getDepartmentOptions(params?: { organizationId?: string | null; inviteCode?: string | null }) {
   const searchParams = new URLSearchParams();
   if (params?.organizationId) searchParams.set('organizationId', params.organizationId);
@@ -1745,6 +1755,13 @@ export async function resolveInviteCode(code: string) {
 
 export async function login(payload: AuthLoginPayload) {
   return request<AuthState>('/api/v1/auth/login', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function localLogin(payload: LocalAuthLoginPayload) {
+  return request<AuthState>('/api/v1/local-auth/login', {
     method: 'POST',
     body: JSON.stringify(payload),
   });
@@ -2110,6 +2127,16 @@ export async function applyOrgMembership(payload: OrgMembershipApplyPayload) {
   return request<OrgMembershipSummary>('/api/v1/me/org-membership/apply', {
     method: 'POST',
     body: JSON.stringify(payload),
+  });
+}
+
+export async function getOrgAdminClaimStatus() {
+  return request<OrgAdminClaimStatus>('/api/v1/me/org-membership/admin-claim-status');
+}
+
+export async function claimOrgAdmin() {
+  return request<AuthState>('/api/v1/me/org-membership/admin-claim', {
+    method: 'POST',
   });
 }
 

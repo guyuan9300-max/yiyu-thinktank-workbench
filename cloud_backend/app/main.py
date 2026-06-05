@@ -106,6 +106,7 @@ from app.models import (
     OrgDepartmentQuarterPlanRecord,
     OrgEmployeeBindingRecord,
     OrgFocusItemRecord,
+    OrgAdminClaimStatusRecord,
     OrgMembershipApplyPayload,
     OrgMembershipSummaryRecord,
     OrgIntroDocumentRecord,
@@ -12922,6 +12923,128 @@ def create_app() -> FastAPI:
         current_user: SessionUser = Depends(lambda authorization=Header(default=None): _require_auth(app, authorization)),
     ) -> OrgMembershipSummaryRecord:
         return _org_membership_summary(state, current_user)
+
+    def _active_admin_count(organization_id: str) -> int:
+        row = state.db.fetchone(
+            """
+            SELECT COUNT(1) AS count
+            FROM employee_accounts
+            WHERE organization_id = ?
+              AND primary_role = 'admin'
+              AND account_status = 'approved'
+              AND COALESCE(membership_status, 'approved') = 'approved'
+            """,
+            (organization_id,),
+        )
+        return int(row["count"] or 0) if row else 0
+
+    def _org_admin_claim_status(current_user: SessionUser) -> OrgAdminClaimStatusRecord:
+        organization_row = state.db.fetchone("SELECT id, name FROM organizations WHERE id = ?", (current_user.organizationId,))
+        if not organization_row:
+            return OrgAdminClaimStatusRecord(
+                hasOrganization=False,
+                organizationId=current_user.organizationId,
+                hasAdmin=False,
+                canClaim=False,
+                reason="当前账号尚未关联有效组织。",
+                currentUserRole=current_user.primaryRole,
+                currentUserMembershipStatus=current_user.membershipStatus,
+            )
+        has_admin = _active_admin_count(current_user.organizationId) > 0
+        if has_admin:
+            reason = "组织已存在管理员。"
+            can_claim = False
+        elif current_user.accountStatus in {"disabled", "rejected"} or current_user.membershipStatus in {"disabled", "rejected"}:
+            reason = "当前账号状态不可认领管理员。"
+            can_claim = False
+        else:
+            reason = None
+            can_claim = True
+        return OrgAdminClaimStatusRecord(
+            hasOrganization=True,
+            organizationId=str(organization_row["id"]),
+            organizationName=str(organization_row["name"]),
+            hasAdmin=has_admin,
+            canClaim=can_claim,
+            reason=reason,
+            currentUserRole=current_user.primaryRole,
+            currentUserMembershipStatus=current_user.membershipStatus,
+        )
+
+    @app.get("/api/v1/me/org-membership/admin-claim-status", response_model=OrgAdminClaimStatusRecord)
+    def get_org_admin_claim_status(
+        current_user: SessionUser = Depends(lambda authorization=Header(default=None): _require_auth(app, authorization)),
+    ) -> OrgAdminClaimStatusRecord:
+        return _org_admin_claim_status(current_user)
+
+    @app.post("/api/v1/me/org-membership/admin-claim", response_model=SessionUser)
+    def claim_org_admin(
+        current_user: SessionUser = Depends(lambda authorization=Header(default=None): _require_auth(app, authorization)),
+    ) -> SessionUser:
+        organization_id = current_user.organizationId
+        timestamp = now_iso()
+
+        def _claim(conn):
+            organization_row = conn.execute("SELECT id FROM organizations WHERE id = ?", (organization_id,)).fetchone()
+            if not organization_row:
+                raise HTTPException(status_code=404, detail="当前账号尚未关联有效组织。")
+            user_row = conn.execute(
+                "SELECT * FROM employee_accounts WHERE id = ? AND organization_id = ?",
+                (current_user.id, organization_id),
+            ).fetchone()
+            if not user_row:
+                raise HTTPException(status_code=404, detail="当前账号不属于该组织。")
+            if str(user_row["account_status"] or "") in {"disabled", "rejected"} or str(user_row["membership_status"] or "") in {"disabled", "rejected"}:
+                raise HTTPException(status_code=403, detail="当前账号状态不可认领管理员。")
+            admin_row = conn.execute(
+                """
+                SELECT id
+                FROM employee_accounts
+                WHERE organization_id = ?
+                  AND primary_role = 'admin'
+                  AND account_status = 'approved'
+                  AND COALESCE(membership_status, 'approved') = 'approved'
+                LIMIT 1
+                """,
+                (organization_id,),
+            ).fetchone()
+            if admin_row:
+                raise HTTPException(status_code=409, detail="组织已存在管理员，请刷新后继续。")
+            conn.execute(
+                """
+                UPDATE employee_accounts
+                   SET primary_role = 'admin',
+                       account_status = 'approved',
+                       membership_status = 'approved',
+                       approved_at = ?,
+                       approved_by = ?,
+                       rejected_reason = NULL,
+                       membership_rejected_reason = NULL,
+                       disabled_at = NULL,
+                       updated_at = ?
+                 WHERE id = ? AND organization_id = ?
+                """,
+                (timestamp, current_user.id, timestamp, current_user.id, organization_id),
+            )
+            conn.execute("DELETE FROM employee_role_bindings WHERE user_id = ?", (current_user.id,))
+            conn.execute(
+                "INSERT INTO employee_role_bindings(id, user_id, role, created_at) VALUES(?, ?, 'admin', ?)",
+                (new_id("role"), current_user.id, timestamp),
+            )
+
+        state.db.run_in_transaction(_claim)
+        _sync_employee_org_binding_from_account(state, organization_id, current_user.id)
+        _log_audit(
+            state,
+            "claim_org_admin",
+            actor_user_id=current_user.id,
+            target_user_id=current_user.id,
+            detail={"organizationId": organization_id},
+        )
+        row = state.db.fetchone("SELECT * FROM employee_accounts WHERE id = ?", (current_user.id,))
+        if not row:
+            raise HTTPException(status_code=404, detail="当前账号不存在。")
+        return _row_user(state, row)
 
     @app.post("/api/v1/me/org-membership/apply", response_model=OrgMembershipSummaryRecord)
     def apply_org_membership(

@@ -10,7 +10,7 @@ from pathlib import Path
 # 之前 20260518001 (200 亿) 远超上限, SQLite 静默 set 为 0, 每次启动都重做完整迁移
 # (这是 20260518 那次坏 db 的真正根因之一: 重做时遇上 reload race + backfill 无事务).
 # 改用 YYYYMMDD 格式 (8 位), 每次 schema 变化递增日期. 20260519 = 此次修复.
-BACKEND_SCHEMA_VERSION = 20260532  # 5/29: + tasks.reminder_minutes_before 任务提醒字段
+BACKEND_SCHEMA_VERSION = 20260605  # 6/5: + local_identities 本地账号表
 
 
 # R6：内置罗永浩写作风格的 distilled prompt（手工 distill，不依赖在线抓取，避免外部依赖）。
@@ -71,6 +71,32 @@ class Database:
                     key TEXT PRIMARY KEY,
                     value TEXT NOT NULL
                 );
+
+                CREATE TABLE IF NOT EXISTS local_identities (
+                    id TEXT PRIMARY KEY,
+                    email TEXT NOT NULL UNIQUE,
+                    phone_number TEXT,
+                    full_name TEXT NOT NULL,
+                    password_hash TEXT NOT NULL,
+                    local_organization_name TEXT NOT NULL DEFAULT '',
+                    organization_mode TEXT NOT NULL DEFAULT 'create',
+                    pending_invite_code TEXT,
+                    pending_department_id TEXT,
+                    job_title TEXT,
+                    manager_name TEXT,
+                    current_focus TEXT NOT NULL DEFAULT '',
+                    membership_status TEXT NOT NULL DEFAULT 'approved',
+                    bound_cloud_user_id TEXT,
+                    bound_cloud_organization_id TEXT,
+                    bound_cloud_email TEXT,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    last_login_at TEXT
+                );
+                CREATE INDEX IF NOT EXISTS idx_local_identities_phone
+                    ON local_identities(phone_number);
+                CREATE INDEX IF NOT EXISTS idx_local_identities_cloud_user
+                    ON local_identities(bound_cloud_user_id);
 
                 -- ══ 同步表（走云端） ══
 

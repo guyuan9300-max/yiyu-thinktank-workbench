@@ -131,6 +131,7 @@ export interface AppSettings {
 export interface SessionUser {
   id: string;
   organizationId: string;
+  organizationName?: string | null;
   email: string;
   phone?: string | null;
   fullName: string;
@@ -141,6 +142,10 @@ export interface SessionUser {
   departmentId?: string | null;
   departmentName?: string | null;
   isDepartmentLead?: boolean;
+  pendingInviteCode?: string | null;
+  jobTitle?: string | null;
+  managerName?: string | null;
+  currentFocus?: string | null;
 }
 
 export interface AuthState {
@@ -148,6 +153,8 @@ export interface AuthState {
   user?: SessionUser | null;
   message?: string | null;
   sessionMode?: 'local' | 'cloud';
+  requiresLocalIdentitySetup?: boolean;
+  localIdentityStatus?: 'needs_setup' | 'ready' | 'none' | null;
 }
 
 export type ConsultationKnowledgeTarget = 'vector_memory' | 'document_archive';
@@ -6594,6 +6601,26 @@ export interface AuthLoginPayload {
   rememberMe?: boolean;
 }
 
+export interface LocalAuthRegisterPayload {
+  email: string;
+  phone?: string | null;
+  fullName: string;
+  password: string;
+  organizationMode?: 'create' | 'join';
+  organizationName?: string | null;
+  inviteCode?: string | null;
+  departmentId?: string | null;
+  jobTitle?: string | null;
+  managerName?: string | null;
+  currentFocus?: string | null;
+}
+
+export interface LocalAuthLoginPayload {
+  identifier: string;
+  password: string;
+  rememberMe?: boolean;
+}
+
 export interface RememberedCloudAuthAccount {
   email: string;
   identifier?: string | null;
@@ -6677,6 +6704,17 @@ export interface OrgMembershipApplyPayload {
   jobTitle?: string | null;
   managerName?: string | null;
   currentFocus?: string | null;
+}
+
+export interface OrgAdminClaimStatus {
+  hasOrganization: boolean;
+  organizationId?: string | null;
+  organizationName?: string | null;
+  hasAdmin: boolean;
+  canClaim: boolean;
+  reason?: string | null;
+  currentUserRole?: EmployeeRole | null;
+  currentUserMembershipStatus?: MembershipStatus | null;
 }
 
 export interface AdminResetPasswordPayload {

@@ -128,6 +128,17 @@ class OrgMembershipApplyPayload(BaseModel):
     currentFocus: str | None = None
 
 
+class OrgAdminClaimStatusRecord(BaseModel):
+    hasOrganization: bool = False
+    organizationId: str | None = None
+    organizationName: str | None = None
+    hasAdmin: bool = False
+    canClaim: bool = False
+    reason: str | None = None
+    currentUserRole: PrimaryRole | None = None
+    currentUserMembershipStatus: MembershipStatus | None = None
+
+
 class OrgFeishuIntegrationAuditRecord(BaseModel):
     id: str
     organizationId: str

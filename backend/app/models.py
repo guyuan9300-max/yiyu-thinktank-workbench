@@ -220,6 +220,7 @@ class SettingsResponse(BaseModel):
 class SessionUserRecord(BaseModel):
     id: str
     organizationId: str
+    organizationName: str | None = None
     email: str
     phone: str | None = None
     fullName: str
@@ -230,6 +231,10 @@ class SessionUserRecord(BaseModel):
     departmentId: str | None = None
     departmentName: str | None = None
     isDepartmentLead: bool = False
+    pendingInviteCode: str | None = None
+    jobTitle: str | None = None
+    managerName: str | None = None
+    currentFocus: str | None = None
 
 
 class AuthStateResponse(BaseModel):
@@ -237,6 +242,8 @@ class AuthStateResponse(BaseModel):
     user: SessionUserRecord | None = None
     message: str | None = None
     sessionMode: Literal["local", "cloud"] = "cloud"
+    requiresLocalIdentitySetup: bool = False
+    localIdentityStatus: Literal["needs_setup", "ready", "none"] | None = None
 
 
 class CloudConfigResponse(BaseModel):
@@ -299,6 +306,26 @@ class AuthRegisterPayload(BaseModel):
 class AuthLoginPayload(BaseModel):
     email: str | None = None
     identifier: str | None = None
+    password: str
+    rememberMe: bool = True
+
+
+class LocalAuthRegisterPayload(BaseModel):
+    email: str
+    phone: str | None = None
+    fullName: str
+    password: str
+    organizationMode: Literal["create", "join"] = "create"
+    organizationName: str | None = None
+    inviteCode: str | None = None
+    departmentId: str | None = None
+    jobTitle: str | None = None
+    managerName: str | None = None
+    currentFocus: str | None = None
+
+
+class LocalAuthLoginPayload(BaseModel):
+    identifier: str
     password: str
     rememberMe: bool = True
 
@@ -2433,6 +2460,17 @@ class OrgMembershipApplyPayload(BaseModel):
     jobTitle: str | None = None
     managerName: str | None = None
     currentFocus: str | None = None
+
+
+class OrgAdminClaimStatusRecord(BaseModel):
+    hasOrganization: bool = False
+    organizationId: str | None = None
+    organizationName: str | None = None
+    hasAdmin: bool = False
+    canClaim: bool = False
+    reason: str | None = None
+    currentUserRole: EmployeeRole | None = None
+    currentUserMembershipStatus: MembershipStatus | None = None
 
 
 class OrgFeishuIntegrationAuditRecord(BaseModel):

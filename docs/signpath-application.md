@@ -8,7 +8,7 @@ These notes are intended for the release maintainer when applying for SignPath o
 - Repository URL: <https://github.com/guyuan9300-max/yiyu-thinktank-workbench>
 - License: GNU Affero General Public License v3.0 only
 - Build system: GitHub Actions
-- Artifact: Windows NSIS x64 installer, for example `yiyu-workbench-0.3.1-x64-setup.exe`
+- Artifact: Windows NSIS x64 installer, for example `yiyu-workbench-0.3.2-x64-setup.exe`
 - Intended signer: SignPath Foundation is acceptable for the open-source Windows build.
 
 ## Suggested Application Description
@@ -37,7 +37,7 @@ Then add the required SignPath values as GitHub Secrets or repository variables.
 After the signed installer is returned, run:
 
 ```powershell
-npm run release:windows:refresh-metadata -- --exe "dist\\yiyu-workbench-0.3.1-x64-setup.exe"
+npm run release:windows:refresh-metadata -- --exe "dist\\yiyu-workbench-0.3.2-x64-setup.exe"
 ```
 
 This regenerates update metadata from the signed installer.
