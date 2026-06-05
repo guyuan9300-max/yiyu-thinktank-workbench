@@ -17076,12 +17076,19 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         attachment_checklist = extract_docx_attachment_checklist(template_path)
         # 字段越多越要给每个字段更多 LLM 关注，否则 batch 容易回退到「【待确认】」。
         # 把 compact_mode 改成"分批更小、每字段更深"——而不是"省时间填得粗"。
-        compact_template_mode = total_fields >= 24
+        # P1: compact 判定按"实质字段数"算 —— 矩阵子格(年度×维度,标签含'·')是轻量定量格,
+        # 只需 1-2 个数字,不该把整表推进 compact 把复合字段(简介/目标/服务领域)的证据也砍了。
+        matrix_cell_count = sum(1 for _label in ordered_labels if "·" in _label)
+        substantive_field_count = total_fields - matrix_cell_count
+        compact_template_mode = substantive_field_count >= 24
         batch_size = 3 if compact_template_mode else 4
-        context_evidence_limit = 4 if compact_template_mode else 5
-        context_excerpt_limit = 700 if compact_template_mode else 900
-        context_evidence_char_budget = 2800 if compact_template_mode else 4200
-        context_dna_max_chars = 900 if compact_template_mode else 1200
+        # ★P1 核心★ compact 模式也给足"本地"证据 —— 本地 RAG 检索很便宜,真正费时/费钱的是
+        # 联网补充。旧 compact 把每字段证据砍到 4 条/700 字正是复合字段拿不到上下文 → 大量回退
+        # 【待确认】的卡点。这里把本地证据补回到接近非 compact 水平(联网补充仍只在非 compact 开,省时)。
+        context_evidence_limit = 6 if compact_template_mode else 6
+        context_excerpt_limit = 1000 if compact_template_mode else 1100
+        context_evidence_char_budget = 4400 if compact_template_mode else 5200
+        context_dna_max_chars = 1200 if compact_template_mode else 1400
         allow_web_supplement = not compact_template_mode
         if compact_template_mode and state.system_logger:
             state.system_logger.info(
