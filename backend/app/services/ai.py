@@ -1584,7 +1584,14 @@ class AiService:
                     enable_thinking=True,
                 )
             except Exception as error:
-                raise AiInvocationError(health.provider, self._format_provider_error(error)) from error
+                # Phase 1.5: 批量调用失败(大复合字段 + thinking + 强制JSON 容易 45s 超时)
+                # 不再整批放弃,落到下面现成的"逐字段" fallback —— 单字段方法 thinking 关、prompt 小、
+                # 26s、自带重试,把"整批崩→全兜底"变成"拆成单字段→大概率成功",且仍带叙事/字典 context。
+                logger.warning(
+                    "template_fill 批量(%s字段)调用失败,转逐字段重试: %s",
+                    len(field_contexts), self._format_provider_error(error),
+                )
+                payload = None
             if isinstance(payload, dict):
                 return {
                     label: self._clean_template_field_value(
