@@ -125,6 +125,122 @@ def normalize_template_label(text: str) -> str:
     return cleaned[:120]
 
 
+def split_field_label(cell_text: str) -> tuple[str, str | None]:
+    """把表格单元格里的"字段名 + 填写说明"拆开。
+
+    民政/年报类模板标签格常是 "1. 机构名称\\n填写登记证书上的全称。"。旧逻辑整坨当字段名,
+    说明里的"登记证书/章程/审计报告"等词会污染字段类型分类与检索 query(把"机构名称"误判成
+    附件类 → 回退【待确认】)。这里拆成: name=首行(字段名), hint=其余(填写说明,给 LLM 当上下文)。
+
+    ⚠️ 写回约束: apply_docx_template_values 的 2 列分支用 split_field_label(cells[0])[0]
+       重算匹配键, 必须与 extract 端一致。单行无说明的格 split_field_label(x)[0] ==
+       normalize_template_label(x), 向后兼容。
+    """
+    raw = str(cell_text or "")
+    parts = raw.split("\n", 1)
+    name = normalize_template_label(parts[0])
+    hint: str | None = None
+    if len(parts) > 1:
+        hint_raw = re.sub(r"\s+", " ", parts[1]).strip()
+        if hint_raw:
+            hint = hint_raw[:200]
+    if not name:  # 首行为空(以换行开头)→ 回退整体当字段名
+        name = normalize_template_label(raw)
+        hint = None
+    return name, hint
+
+
+# ---- P0b: 字段名 → 已核验字典属性 直接命中(确定性兜底,不靠 LLM 赌) ----
+
+_ENUM_PREFIX_RE = re.compile(r"^\s*(?:[0-9]{1,3}|[一二三四五六七八九十]{1,3})\s*[\.、\)）]\s*")
+
+
+def _norm_field_key(text: str) -> str:
+    """字段名/属性名归一(去枚举前缀 + 折空白 + 去标点尾巴),用于匹配比较。"""
+    s = _ENUM_PREFIX_RE.sub("", str(text or ""))
+    s = re.sub(r"[\s　]+", "", s)
+    s = s.strip(":：-_[]【】（）()。.,，、/")
+    return s
+
+
+@lru_cache(maxsize=1)
+def _foundation_alias_map() -> dict[str, str]:
+    """foundation_standard_schema.json: 别名(归一) → 标准 field_name。
+    用来把表单字段名归一到摸底表标准名,再去匹配字典属性。缺文件/解析失败则空。"""
+    mapping: dict[str, str] = {}
+    try:
+        import json
+        path = Path(__file__).parent / "foundation_standard_schema.json"
+        data = json.loads(path.read_text(encoding="utf-8"))
+        for field in data.get("fields", []):
+            std = str(field.get("field_name") or "").strip()
+            if not std:
+                continue
+            names = [std, *(field.get("aliases") or [])]
+            for n in names:
+                key = _norm_field_key(n)
+                if key:
+                    mapping.setdefault(key, std)
+    except Exception:
+        return {}
+    return mapping
+
+
+def resolve_field_standard_names(field_name: str) -> list[str]:
+    """字段名 → 候选标准名列表(含字段名本身 + schema 别名映射到的标准名)。"""
+    out: list[str] = []
+    seen: set[str] = set()
+
+    def _add(v: str) -> None:
+        v = (v or "").strip()
+        k = _norm_field_key(v)
+        if v and k and k not in seen:
+            seen.add(k)
+            out.append(v)
+
+    _add(field_name)
+    std = _foundation_alias_map().get(_norm_field_key(field_name))
+    if std:
+        _add(std)
+    return out
+
+
+def match_field_to_verified_glossary(verified_attrs, field_name: str):
+    """把表单字段名匹配到一条已核验(verified)字典属性,命中返回该属性对象,否则 None。
+    verified_attrs: 任意带 .attribute_name / .value_text / .term 的对象列表(duck-type)。
+    策略:① schema 别名归一后精确命中 attribute_name;② 高相似度模糊命中(>=0.86)。"""
+    if not verified_attrs or not field_name:
+        return None
+    candidates = resolve_field_standard_names(field_name)
+    cand_keys = {_norm_field_key(c) for c in candidates}
+    # ① 精确(归一后)
+    for attr in verified_attrs:
+        an = getattr(attr, "attribute_name", "")
+        val = str(getattr(attr, "value_text", "") or "").strip()
+        if not val:
+            continue
+        if _norm_field_key(an) in cand_keys:
+            return attr
+    # ② 模糊(difflib),取最高分且达阈值
+    from difflib import SequenceMatcher
+    best = None
+    best_score = 0.0
+    for attr in verified_attrs:
+        an = getattr(attr, "attribute_name", "")
+        val = str(getattr(attr, "value_text", "") or "").strip()
+        if not val:
+            continue
+        an_key = _norm_field_key(an)
+        for cand in candidates:
+            score = SequenceMatcher(None, _norm_field_key(cand), an_key).ratio()
+            if score > best_score:
+                best_score = score
+                best = attr
+    if best is not None and best_score >= 0.86:
+        return best
+    return None
+
+
 def extract_template_milestone_year(label: str) -> str | None:
     normalized = normalize_template_label(label)
     match = re.fullmatch(r"(20\d{2})年?重大事件(?:/|／)?里程碑", normalized)
@@ -948,7 +1064,9 @@ def extract_docx_template_fields(path: Path) -> list[TemplateFieldOccurrence]:
             cells = row.cells
             if len(cells) < 2:
                 continue
-            label_text = normalize_template_label(cells[0].text)
+            # 拆"字段名 + 填写说明":首行=字段名(用于分类/检索/匹配/写回),其余=hint(给 LLM)。
+            # apply 端 2 列分支同样用 split_field_label(cells[0])[0],保证写回匹配一致。
+            label_text, cell_hint = split_field_label(cells[0].text)
             target_text = str(cells[1].text or "").strip()
             if not label_text:
                 continue
@@ -977,6 +1095,7 @@ def extract_docx_template_fields(path: Path) -> list[TemplateFieldOccurrence]:
                         table_index=table_index,
                         row_index=row_index,
                         cell_index=1,
+                        hint=cell_hint,
                     )
                 )
 
@@ -1066,7 +1185,8 @@ def apply_docx_template_values(
             cells = row.cells
             if len(cells) < 2:
                 continue
-            label = normalize_template_label(cells[0].text)
+            # 与 extract 端一致:用 split_field_label 取首行字段名作匹配键(单行格等价 normalize)。
+            label = split_field_label(cells[0].text)[0]
             current = str(cells[1].text or "")
             replacement = str(values.get(label) or "").strip()
             if PLACEHOLDER_PATTERN.search(current):
