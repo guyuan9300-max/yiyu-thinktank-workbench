@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sys
+import time
 from pathlib import Path
 
 from fastapi.testclient import TestClient
@@ -307,6 +308,113 @@ def test_cloud_login_binds_current_local_identity(tmp_path: Path, monkeypatch) -
     assert row["bound_cloud_user_id"] == "cloud-user-1"
     assert row["bound_cloud_organization_id"] == "cloud-org-1"
     assert row["bound_cloud_email"] == "cloud-user@example.com"
+
+
+def test_cloud_login_syncs_org_ai_config_over_local_mock(tmp_path: Path, monkeypatch) -> None:
+    client = make_client(tmp_path / "data")
+    state = client.app.state.app_state
+    state.cloud_api_url = "http://cloud.example.test"
+    state.db.set_setting("cloud_api_url", "http://cloud.example.test")
+    state.ai.configure(
+        "mock",
+        "mock-summarizer",
+        "",
+        False,
+        provider_label="本地 Mock",
+        base_url="",
+    )
+
+    class FakeCloudResponse:
+        def __init__(self, status_code: int, payload: dict):
+            self.status_code = status_code
+            self._payload = payload
+            self.content = b"{}"
+            self.text = str(payload)
+
+        def json(self) -> dict:
+            return self._payload
+
+    def fake_cloud_request(method, url, **kwargs):
+        if method == "POST" and url.endswith("/api/v1/auth/login"):
+            return FakeCloudResponse(
+                200,
+                {
+                    "accessToken": "access-ai-sync",
+                    "refreshToken": "refresh-ai-sync",
+                    "user": {
+                        "id": "member-ai-sync",
+                        "organizationId": "org-ai-sync",
+                        "organizationName": "组织 AI 配置测试",
+                        "email": "member-ai@example.com",
+                        "fullName": "组织成员",
+                        "primaryRole": "employee",
+                        "accountStatus": "approved",
+                        "membershipStatus": "approved",
+                    },
+                },
+            )
+        if method == "GET" and url.endswith("/api/v1/me/org-membership"):
+            return FakeCloudResponse(
+                200,
+                {
+                    "hasOrganization": True,
+                    "organizationId": "org-ai-sync",
+                    "organizationName": "组织 AI 配置测试",
+                    "membershipStatus": "approved",
+                    "organizationWorkspaceClientId": "client-org-ai-sync",
+                },
+            )
+        if method == "GET" and url.endswith("/api/v1/settings/org-ai-config/secret"):
+            return FakeCloudResponse(
+                200,
+                {
+                    "orgId": "org-ai-sync",
+                    "aiProvider": "openai_compatible",
+                    "aiProviderLabel": "组织统一大模型",
+                    "aiBaseUrl": "https://models.example.com/v1",
+                    "aiModel": "shared-org-model",
+                    "apiKey": "sk-org-shared",
+                    "updatedAt": "2026-06-05T10:00:00",
+                },
+            )
+        if method == "GET" and url.endswith("/api/v1/settings/org-object-storage-config/secret"):
+            return FakeCloudResponse(
+                200,
+                {
+                    "orgId": "org-ai-sync",
+                    "provider": "",
+                    "enabled": False,
+                    "credentials": {},
+                    "extraConfig": {},
+                    "updatedAt": "2026-06-05T10:00:00",
+                },
+            )
+        raise AssertionError(f"unexpected cloud request: {method} {url}")
+
+    monkeypatch.setattr(app_main.httpx, "request", fake_cloud_request)
+
+    login = client.post(
+        "/api/v1/auth/login",
+        json={"identifier": "member-ai@example.com", "password": "CloudPass123!", "rememberMe": True},
+    )
+    assert login.status_code == 200, login.text
+
+    last_payload = None
+    for _ in range(30):
+        settings = client.get("/api/v1/settings")
+        assert settings.status_code == 200, settings.text
+        last_payload = settings.json()
+        if last_payload["lastCloudAiSyncStatus"]["state"] == "synced":
+            break
+        time.sleep(0.05)
+
+    assert last_payload is not None
+    assert last_payload["lastCloudAiSyncStatus"]["state"] == "synced"
+    assert last_payload["settings"]["aiProvider"] == "openai_compatible"
+    assert last_payload["settings"]["aiProviderLabel"] == "组织统一大模型"
+    assert last_payload["settings"]["aiBaseUrl"] == "https://models.example.com/v1"
+    assert last_payload["settings"]["aiModel"] == "shared-org-model"
+    assert last_payload["settings"]["aiConfigured"] is True
 
 
 def test_admin_claim_proxy_refreshes_cloud_session_user(tmp_path: Path, monkeypatch) -> None:

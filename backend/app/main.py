@@ -30186,7 +30186,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             local_provider = (state.ai.current_provider() or "").strip()
         except Exception:
             local_provider = ""
-        if local_provider in ("openclaw", "mock"):
+        if local_provider == "openclaw":
             _cloud_ai_sync_status.clear()
             _cloud_ai_sync_status.update({
                 "state": "skipped",
