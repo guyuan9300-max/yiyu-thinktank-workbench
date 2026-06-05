@@ -14,6 +14,30 @@ import httpx
 
 PLACEHOLDER_PATTERN = re.compile(r"\{\{\s*([^{}]{1,120})\s*\}\}")
 EMPTY_MARKERS = ("____", "待填写", "待补充", "待完善", "tbd", "todo")
+
+# AI 生成的字段答案里可能夹带 emoji(✅🎯🚀 等),政府申报表正文不应出现 —— 写入 docx 前统一剔除。
+# 只命中 emoji / 图形符号区段,保留中文、①②③ 圈号、【】、、。「」等正文标点与符号。
+_EMOJI_RE = re.compile(
+    "["
+    "\U0001F000-\U0001FAFF"  # 高位 emoji 平面:表情/图形/交通/旗帜/补充/扩展-A(含肤色修饰)
+    "\U00002600-\U000027BF"  # 杂项符号 + dingbats(☀-➿,含 ✅❌✨✂✈)
+    "\U00002B00-\U00002BFF"  # 杂项符号与箭头(⭐⬛⬜)
+    "\U00002300-\U000023FF"  # 技术符号(⌚⏰⏳⏩⏯)
+    "\U0000FE00-\U0000FE0F"  # 变体选择符(VS1-VS16,emoji 变体)
+    "\U0000200D"             # 零宽连接符(ZWJ,组合 emoji)
+    "\U000020E3"             # 组合键帽
+    "\U00002122\U00002139\U000024C2\U00003030\U0000303D\U00003297\U00003299"  # ™ ℹ Ⓜ 〰 〽 ㊗ ㊙
+    "]"
+)
+
+
+def strip_emoji(text: str) -> str:
+    """剔除文本中的 emoji / 图形符号,并折叠由此产生的连续空格;保留中文与常规标点。"""
+    if not text:
+        return text
+    cleaned = _EMOJI_RE.sub("", text)
+    cleaned = re.sub(r"[ \t ]{2,}", " ", cleaned)
+    return cleaned.strip()
 PROCESS_HINT_MARKERS = (
     "可从",
     "进一步梳理",
@@ -925,6 +949,8 @@ def apply_docx_template_values(
     values: dict[str, str],
 ) -> tuple[int, int]:
     document = WordDocument(template_path)
+    # 写入前剔除 AI 答案里的 emoji(只清填入值,不动模板正文符号);覆盖所有写入路径的唯一出口。
+    values = {key: (strip_emoji(val) if isinstance(val, str) else val) for key, val in (values or {}).items()}
     applied = 0
     missing = 0
 
