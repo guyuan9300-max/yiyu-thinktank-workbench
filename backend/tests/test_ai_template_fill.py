@@ -212,3 +212,45 @@ def test_build_chat_generation_profile_prefers_shorter_first_answer_budget(tmp_p
     assert profile.primary_max_tokens <= 900
     assert profile.fallback_timeout_seconds >= 16.0
     assert profile.fallback_max_tokens <= 420
+
+
+def test_batch_failure_falls_through_to_per_field(tmp_path: Path, monkeypatch):
+    """Phase 1.5: 批量 _qwen_generate 抛错时,不再 raise AiInvocationError 整批兜底,
+    而是落到现成的逐字段 generate_template_field_value(thinking关/小prompt/稳)。"""
+    db = Database(tmp_path / "app.db")
+    service = AiService(db, {"qwen": SimpleNamespace()})
+
+    monkeypatch.setattr(
+        service, "get_health",
+        lambda: AiHealth(provider="qwen", provider_label="Qwen", base_url="http://x",
+                         model="m", ready=True, detail="ok",
+                         credential_source="local", fingerprint=None),
+    )
+
+    # 批量调用必失败(模拟大复合字段 45s 超时)
+    def boom(**_: object):
+        raise RuntimeError("simulated batch timeout")
+    monkeypatch.setattr(service, "_qwen_generate", boom)
+
+    # 逐字段方法返回可识别哨兵值
+    calls = []
+    def fake_single(*, field_label, **_):
+        calls.append(field_label)
+        return f"单字段填好-{field_label}"
+    monkeypatch.setattr(service, "generate_template_field_value", fake_single)
+
+    # 不应抛 AiInvocationError;应返回逐字段结果
+    values = service.generate_template_field_values_batch(
+        template_name="模板.docx", client_name="为爱黔行",
+        field_contexts=[
+            ("13. 主要服务内容/活动安排", "ctx13"),
+            ("14. 项目特点与创新点", "ctx14"),
+            ("15. 实施计划与关键节点", "ctx15"),
+        ],
+    )
+    # 批量失败 → 全部走逐字段(3 个都被单独调用)
+    assert calls == ["13. 主要服务内容/活动安排", "14. 项目特点与创新点", "15. 实施计划与关键节点"]
+    assert values["13. 主要服务内容/活动安排"] == "单字段填好-13. 主要服务内容/活动安排"
+    assert values["15. 实施计划与关键节点"] == "单字段填好-15. 实施计划与关键节点"
+    # 关键:没有任何字段拿到"整批兜底"(build_fast_missing_value 的【待确认】)
+    assert all("单字段填好" in v for v in values.values())
