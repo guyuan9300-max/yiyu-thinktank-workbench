@@ -15478,7 +15478,9 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
 
     def create_answer_memory_markdown_document(client_id: str, message: ChatMessageRecord) -> ClientTextDocumentResponse:
         folders = ensure_client_workspace(state.data_dir, client_id)
-        target_dir = folders["战略陪伴"]
+        # 战略陪伴 是 human-visible 类别但不在 SYSTEM_FOLDER_CATEGORIES(rebucket 后),按需建,避免 KeyError: '战略陪伴'
+        target_dir = folders.get("战略陪伴") or (next(iter(folders.values())).parent / "战略陪伴")
+        target_dir.mkdir(parents=True, exist_ok=True)
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         target_path = target_dir / f"{timestamp}_{safe_filename(message.content[:18] or '战略陪伴记忆')}.md"
         target_path.write_text(build_answer_memory_markdown(client_id, message), encoding="utf-8")
@@ -15731,7 +15733,9 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
     ) -> ClientTextDocumentResponse:
         client = build_client_summary(client_id)
         folders = ensure_client_workspace(state.data_dir, client_id)
-        target_dir = folders["战略陪伴"]
+        # 战略陪伴 不在 SYSTEM_FOLDER_CATEGORIES(rebucket 后),按需建,避免 KeyError: '战略陪伴'
+        target_dir = folders.get("战略陪伴") or (next(iter(folders.values())).parent / "战略陪伴")
+        target_dir.mkdir(parents=True, exist_ok=True)
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         safe_stem = safe_filename(build_consultation_knowledge_title(request)[:18] or "咨询沉淀记忆")
         target_path = target_dir / f"{timestamp}_{safe_stem}.md"
@@ -17273,7 +17277,10 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                     detail=f"字段批次填写失败（{batch_start + 1}-{batch_end}/{total_fields}）。{error}",
                 ) from error
         folders = ensure_client_workspace(state.data_dir, client_id)
-        target_dir = folders["战略陪伴"] / "自动填写文档"
+        # 战略陪伴 不在 SYSTEM_FOLDER_CATEGORIES(rebucket 后),按需建,避免 KeyError: '战略陪伴'(模板填写失败根因)
+        _strategic_dir = folders.get("战略陪伴") or (next(iter(folders.values())).parent / "战略陪伴")
+        target_dir = _strategic_dir / "自动填写文档"
+        target_dir.mkdir(parents=True, exist_ok=True)
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         target_path = target_dir / f"{safe_filename(template_path.stem)}_已填写_{timestamp}.docx"
         apply_docx_template_values(template_path, target_path, values)
