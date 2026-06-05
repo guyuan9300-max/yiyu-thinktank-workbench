@@ -232,6 +232,10 @@ WEEKLY_MAINLINE_ACTION_KEYWORDS = (
     "约",
 )
 
+# 重点主线最多条数。prompt(下方"最多 6 条")、schema 与 _coerce 统一用它, 防再次漂移。
+# 历史 bug: 声明 6 但 _coerce 硬截 3 → 每周永远只显示 3 条(真库 20 周缓存全=3 实锤)。
+WEEKLY_MAINLINE_MAX = 6
+
 WEEKLY_MAINLINE_SYSTEM_INSTRUCTION = """\
 你是益语智库的周复盘主线卡写作助手。你会收到本周任务、任务复盘、关联材料摘要、项目/客户背景和事件线字段。
 
@@ -1606,23 +1610,28 @@ def _coerce_weekly_mainline_cards(raw: Any, evidence_pack: dict[str, Any]) -> tu
         return None, "mainlines_empty"
     if len(summary_text) < 30:
         return None, "summary_too_short"
+    evidence_text = json.dumps(evidence_pack, ensure_ascii=False, default=str)
     cards: list[WeeklyMainlineCardRecord] = []
-    combined_text_parts = [summary_text]
-    for index, item in enumerate(raw_lines[:3], start=1):
+    # meeting-spine: 放宽到 WEEKLY_MAINLINE_MAX 条; 逐卡质量门改为"不合格则 continue 跳过"
+    # (不再整份 return None)。这样放宽后靠后的弱卡 / 含违禁词的卡只被单独丢弃,
+    # 不会把整份 AI 主线打回纯文本兜底 —— 零回归。全部不合格时由下方 if not cards 兜底。
+    for index, item in enumerate(raw_lines[:WEEKLY_MAINLINE_MAX], start=1):
         if not isinstance(item, dict):
             continue
         title = _weekly_mainline_clean(item.get("title"), limit=80)
         progress_text = _weekly_mainline_clean(item.get("progressText"), limit=520)
         next_goal_text = _weekly_mainline_clean(item.get("nextGoalText"), limit=420)
-        if not title:
-            return None, "mainline_title_empty"
-        if len(progress_text) < 24:
-            return None, f"progress_too_short:{title}"
-        if len(next_goal_text) < 24:
-            return None, f"next_goal_too_short:{title}"
+        if not title or len(progress_text) < 24 or len(next_goal_text) < 24:
+            continue
         if not _weekly_mainline_has_action(next_goal_text):
-            return None, f"next_goal_has_no_action:{title}"
-        combined_text_parts.extend([title, progress_text, next_goal_text])
+            continue
+        card_text = f"{title}\n{progress_text}\n{next_goal_text}"
+        if any(term and term in card_text for term in WEEKLY_MAINLINE_INTERNAL_TERMS):
+            continue
+        if any(phrase and phrase in card_text for phrase in WEEKLY_MAINLINE_BANNED_PHRASES):
+            continue
+        if "下载按钮" in card_text and "下载按钮" not in evidence_text:
+            continue
         try:
             task_count = max(0, int(item.get("taskCount") or 0))
         except Exception:
@@ -1650,16 +1659,6 @@ def _coerce_weekly_mainline_cards(raw: Any, evidence_pack: dict[str, Any]) -> tu
         )
     if not cards:
         return None, "mainlines_empty_after_clean"
-    combined_text = "\n".join(combined_text_parts)
-    for term in WEEKLY_MAINLINE_INTERNAL_TERMS:
-        if term and term in combined_text:
-            return None, f"internal_term:{term}"
-    for phrase in WEEKLY_MAINLINE_BANNED_PHRASES:
-        if phrase and phrase in combined_text:
-            return None, f"banned_phrase:{phrase}"
-    evidence_text = json.dumps(evidence_pack, ensure_ascii=False, default=str)
-    if "下载按钮" in combined_text and "下载按钮" not in evidence_text:
-        return None, "unsupported_download_button_claim"
     meta = dict(evidence_pack.get("evidenceMeta") or {})
     meta["validated"] = True
     return (
