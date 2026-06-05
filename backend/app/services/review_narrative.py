@@ -249,6 +249,8 @@ WEEKLY_MAINLINE_SYSTEM_INSTRUCTION = """\
 - 主线必须围绕项目状态变化写，不要只把任务标题串起来；优先写“从准备到交付”“从功能完成到表达校准”“从名单整理到落地安排”这类阶段变化。
 - 如果需要用户补充资料，必须写清楚“补什么”和“补齐后能带来什么价值”。例如：补材料文字大纲后，可以判断版本是否服务资方决策、客户沟通或内部执行。
 - 如果材料不足，不要假装已经理解材料内容；直接把下一步写成补齐资料、负责人、交付物和完成时间的动作。
+- 故事网背景/前序背景只供理解项目脉络与本周所处阶段，不要据此判断卡点、不要安排谁负责或分工、不要列需要用户决策的事项。
+- 某条主线本周没有纳入任务或没有实际进展时，必须如实写“本周暂无明显进展”，不允许用背景信息脑补出本周进展。
 - 不要输出资料来源、读取状态、内部诊断、模型置信度。
 
 禁止输出：
@@ -428,6 +430,71 @@ def _weekly_mainline_task_descriptions(db: Database, task_ids: list[str]) -> dic
         for row in rows
         if str(_weekly_mainline_row_value(row, "id", "") or "")
     }
+
+
+def _weekly_mainline_collect_story_web(
+    db: Database,
+    data_dir: Any,
+    task_records: list[dict[str, Any]],
+    *,
+    access_context: Any | None = None,
+) -> list[dict[str, Any]]:
+    """v3: 每条主线复用数据中心的 page_context_pack 取故事网背景(快照/记忆/历史判断/缺口),
+    作为"在大背景下理解本周"的背景棱镜。只取背景供理解, 不把判断结论当输出。失败不阻塞。
+    与战略陪伴/分析中心共用同一份故事网, 口径一致。"""
+    seen: dict[str, tuple[str, str, str]] = {}
+    for task in task_records:
+        if not isinstance(task, dict):
+            continue
+        key, title = _weekly_mainline_group_key(task)
+        if key in seen:
+            continue
+        seen[key] = (
+            title or "本周主线",
+            _weekly_mainline_clean(task.get("eventLineId"), limit=80),
+            _weekly_mainline_clean(task.get("clientId"), limit=80),
+        )
+
+    out: list[dict[str, Any]] = []
+    for _key, (title, elid, cid) in seen.items():
+        story: dict[str, Any] = {
+            "title": title, "stage": "", "currentWork": "", "recentDecision": "",
+            "nextStep": "", "memoryFacts": [], "judgments": [],
+        }
+        try:
+            if elid:
+                snap = db.fetchone(
+                    "SELECT current_stage, current_work, recent_decision, next_step "
+                    "FROM event_line_memory_snapshots WHERE event_line_id = ?",
+                    (elid,),
+                )
+                if snap is not None:
+                    story["stage"] = _weekly_mainline_clean(snap["current_stage"], limit=80)
+                    story["currentWork"] = _weekly_mainline_clean(snap["current_work"], limit=220)
+                    story["recentDecision"] = _weekly_mainline_clean(snap["recent_decision"], limit=200)
+                    story["nextStep"] = _weekly_mainline_clean(snap["next_step"], limit=200)
+                el_row = db.fetchone("SELECT summary, intent FROM event_lines WHERE id = ?", (elid,))
+                if el_row is not None:
+                    story["memoryFacts"] = [
+                        _weekly_mainline_clean(v, limit=160)
+                        for v in [el_row["summary"], el_row["intent"]]
+                        if _weekly_mainline_clean(v, limit=160)
+                    ]
+            if cid:
+                for d in db.fetchall(
+                    "SELECT decision_title FROM key_decisions WHERE client_id = ? "
+                    "AND COALESCE(execution_status, '') != 'superseded' "
+                    "ORDER BY decided_at DESC LIMIT 2",
+                    (cid,),
+                ):
+                    t = _weekly_mainline_clean(d["decision_title"], limit=120)
+                    if t and t not in story["judgments"]:
+                        story["judgments"].append(t)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Weekly mainline story-web collect failed for %s: %s", title, exc)
+        if any([story["stage"], story["currentWork"], story["recentDecision"], story["memoryFacts"], story["judgments"]]):
+            out.append(story)
+    return out
 
 
 def build_weekly_mainline_evidence_pack(
@@ -752,6 +819,15 @@ def build_weekly_mainline_evidence_pack(
         attachments=attachments,
     )
 
+    # v3: 复用数据中心 page_context_pack, 给每条主线挂故事网背景(供"大背景下理解本周")。失败不阻塞。
+    try:
+        story_web_by_line = _weekly_mainline_collect_story_web(
+            db, data_dir, task_records, access_context=access_context
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Weekly mainline story-web collect failed: %s", exc)
+        story_web_by_line = []
+
     evidence_pack = {
         "weekLabel": week_label,
         "tasks": task_records,
@@ -760,6 +836,7 @@ def build_weekly_mainline_evidence_pack(
         "backgroundDocuments": background_documents,
         "backgroundEventLines": background_event_lines,
         "structuredMainlineEvidence": structured_mainline_evidence,
+        "storyWebByLine": story_web_by_line,
         "attachments": attachments,
         "dataContext": data_context,
         "evidenceMeta": {
@@ -1621,9 +1698,8 @@ def _coerce_weekly_mainline_cards(raw: Any, evidence_pack: dict[str, Any]) -> tu
         title = _weekly_mainline_clean(item.get("title"), limit=80)
         progress_text = _weekly_mainline_clean(item.get("progressText"), limit=520)
         next_goal_text = _weekly_mainline_clean(item.get("nextGoalText"), limit=420)
-        if not title or len(progress_text) < 24 or len(next_goal_text) < 24:
-            continue
-        if not _weekly_mainline_has_action(next_goal_text):
+        # v3: nextGoalText 改为"平实描述下一步方向"(非派活/非判断), 不再强制 action 关键词。
+        if not title or len(progress_text) < 24 or len(next_goal_text) < 18:
             continue
         card_text = f"{title}\n{progress_text}\n{next_goal_text}"
         if any(term and term in card_text for term in WEEKLY_MAINLINE_INTERNAL_TERMS):
@@ -1672,6 +1748,29 @@ def _coerce_weekly_mainline_cards(raw: Any, evidence_pack: dict[str, Any]) -> tu
     )
 
 
+def _weekly_mainline_storyweb_prompt_lines(evidence_pack: dict[str, Any]) -> str:
+    """v3: 把每条主线的故事网背景格式化进 prompt(仅供理解, 非判断)。"""
+    lines: list[str] = []
+    for item in evidence_pack.get("storyWebByLine") or []:
+        if not isinstance(item, dict):
+            continue
+        bits = [f"主线={_weekly_mainline_clean(item.get('title'), limit=90)}"]
+        if item.get("stage"):
+            bits.append(f"当前阶段={item['stage']}")
+        if item.get("currentWork"):
+            bits.append(f"在做={item['currentWork']}")
+        if item.get("recentDecision"):
+            bits.append(f"最近决策={item['recentDecision']}")
+        if item.get("nextStep"):
+            bits.append(f"既定方向={item['nextStep']}")
+        if item.get("memoryFacts"):
+            bits.append("脉络=" + "；".join(item["memoryFacts"]))
+        if item.get("judgments"):
+            bits.append("历史判断=" + "；".join(item["judgments"]))
+        lines.append("- " + "；".join(bits))
+    return "\n".join(lines)
+
+
 def build_weekly_mainline_cards_draft(
     *,
     ai: AiService,
@@ -1687,6 +1786,7 @@ def build_weekly_mainline_cards_draft(
     if health.provider == "mock" or not health.ready:
         return _weekly_mainline_fallback_result(evidence_pack, "ai_not_ready")
 
+    storyweb_lines = _weekly_mainline_storyweb_prompt_lines(evidence_pack)
     structured_lines = _weekly_mainline_structured_prompt_lines(evidence_pack)
     task_lines = _weekly_mainline_task_prompt_lines(evidence_pack)
     background_lines = _weekly_mainline_background_prompt_lines(evidence_pack)
@@ -1702,6 +1802,7 @@ def build_weekly_mainline_cards_draft(
                 f"任务关联材料数：{meta.get('attachmentCount', 0)}；"
                 f"有文字摘要的材料数：{meta.get('readableAttachmentCount', 0)}"
             ),
+            f"【主线故事网背景(仅供理解项目从哪来、到了哪一步, 不作判断)】\n{storyweb_lines}" if storyweb_lines else "",
             f"【结构化主线证据】\n{structured_lines}" if structured_lines else "",
             f"【本周任务包】\n{task_lines}" if task_lines else "",
             f"【前序背景包】\n{background_lines}" if background_lines else "",
@@ -1711,8 +1812,10 @@ def build_weekly_mainline_cards_draft(
                 "【输出要求】\n"
                 # 5/28 修: 之前硬限"3 条"导致本周主线只显示 3 条, 跟 240 行 SYSTEM_INSTRUCTION 说的"最多 6 条"冲突.
                 # 跟前端 buildWeeklyOverviewModel slice(0,6) + 240 行口径完全对齐.
-                "只输出 JSON。不要解释。mainlines 最多 6 条（按重要性排序，常见 3-5 条；真有更多独立主线再多放，宁可少不可凑数）。每条 progressText 2-4 句，nextGoalText 2-3 句。"
-                "本周任务只用于统计，前序背景只用于解释项目从哪里来、当前卡在哪里。"
+                "只输出 JSON。不要解释。mainlines 最多 6 条（按重要性排序，常见 3-5 条；真有更多独立主线再多放，宁可少不可凑数）。每条 progressText 2-4 句，nextGoalText 1-2 句。"
+                "故事网背景与前序背景只用于理解项目从哪来、到了哪一步；不要据此判断卡点、不要安排谁负责或分工、不要列需要用户决策的事项。"
+                "progressText：在故事网背景下描述本周这条线发生了什么、推进到哪一步、对这件事/客户意味着什么（把本周放进脉络里讲，不要只把任务标题串起来）。nextGoalText：平实描述接下来这条线的重心方向。"
+                "若某条主线本周没有纳入任务或没有实际进展，必须如实写“本周暂无明显进展”，不允许用故事网/前序背景脑补本周。"
                 "不要写任何资料来源、读取状态或内部诊断。"
             ),
         ]

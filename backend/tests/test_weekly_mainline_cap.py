@@ -47,8 +47,8 @@ def test_coerce_allows_up_to_max_and_caps_there() -> None:
 def test_coerce_skips_bad_cards_instead_of_whole_fallback() -> None:
     cards = [
         _card("好卡A"),
-        _card("短卡", progress="太短"),               # progress<24 → 跳过
-        _card("无动作卡", nextgoal="这是一段没有任何动作词的下一步描述文本填充长度。"),  # 无动作 → 跳过
+        _card("短progress卡", progress="太短"),         # progress<24 → 跳过
+        _card("短nextgoal卡", nextgoal="太短"),          # nextgoal<18 → 跳过
         _card("好卡B"),
     ]
     rec, reason = _coerce_weekly_mainline_cards(_raw(cards), EVID)
@@ -58,7 +58,7 @@ def test_coerce_skips_bad_cards_instead_of_whole_fallback() -> None:
 
 
 def test_coerce_all_bad_falls_back_none() -> None:
-    cards = [_card("坏A", progress="短"), _card("坏B", nextgoal="没有动作词的纯描述文本用于凑够长度阈值。")]
+    cards = [_card("坏A", progress="短"), _card("坏B", nextgoal="短")]
     rec, reason = _coerce_weekly_mainline_cards(_raw(cards), EVID)
     assert rec is None
     assert reason == "mainlines_empty_after_clean"
