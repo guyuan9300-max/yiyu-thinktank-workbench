@@ -503,6 +503,54 @@ def _iter_header_driven_table_targets(table) -> list[TemplateTableTarget]:
                     current_text=str(cells[cell_index].text or "").strip(),
                 )
             )
+    if targets:
+        return targets
+    # 宽表(矩阵)兜底:配对式表头没命中时,试着把"第一列=行锚点 + 其后多个维度列"识别出来。
+    # 旧逻辑只认 col0→col1,后面列被忽略 —— 这正是"多列只识别第一列空格"的根因。
+    return _iter_matrix_table_targets(table, header_values)
+
+
+def _iter_matrix_table_targets(table, header_values: list[str]) -> list[TemplateTableTarget]:
+    """宽表/矩阵表识别:表头行 + 第一列为行锚点(如 年度/类别)+ 其后≥2 个维度列。
+    为每个(行锚点 × 维度列)的数据格生成一个目标,标签 = "行锚点·维度表头",
+    让多列表的每一格都能被填,而不是只填紧挨标签的第一列。
+    严格触发条件(避免误伤普通两列表/无表头表):
+      · 表头≥3 列;
+      · col0 之后≥2 个非空表头列(真有多个维度);
+      · 多数数据行的 col0 都有锚点文本(确属"行锚点列")。
+    """
+    if len(header_values) < 3:
+        return []
+    answer_cols = [c for c in range(1, len(header_values)) if header_values[c]]
+    if len(answer_cols) < 2:
+        return []
+    data_rows = table.rows[1:]
+    if not data_rows:
+        return []
+    anchored = sum(
+        1 for row in data_rows
+        if row.cells and normalize_template_label(row.cells[0].text)
+    )
+    if anchored < max(1, len(data_rows) // 2 + 1):
+        return []
+    targets: list[TemplateTableTarget] = []
+    for row_index, row in enumerate(table.rows[1:], start=1):
+        cells = row.cells
+        anchor = normalize_template_label(cells[0].text) if cells else ""
+        if not anchor:
+            continue
+        for cell_index in answer_cols:
+            if cell_index >= len(cells):
+                continue
+            col_header = header_values[cell_index]
+            targets.append(
+                TemplateTableTarget(
+                    label=f"{anchor}·{col_header}",
+                    row_index=row_index,
+                    cell_index=cell_index,
+                    current_text=str(cells[cell_index].text or "").strip(),
+                )
+            )
     return targets
 
 
