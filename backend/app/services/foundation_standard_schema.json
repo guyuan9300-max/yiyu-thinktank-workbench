@@ -8,7 +8,14 @@
       "section": "一、填报单位与联系人",
       "value_type": "text",
       "aliases": [
-        "基金会全称"
+        "基金会全称",
+        "机构名称",
+        "组织全称",
+        "单位名称",
+        "基金会名称",
+        "填报单位",
+        "申报单位",
+        "机构全称"
       ],
       "is_subjective": false,
       "is_public_searchable": true
@@ -87,7 +94,9 @@
         "注册成立时间",
         "注册成立日期",
         "创立时间",
-        "创办时间"
+        "创办时间",
+        "成立年份",
+        "登记时间"
       ],
       "is_subjective": false,
       "is_public_searchable": true
@@ -1333,7 +1342,9 @@
         "公众号",
         "平台账号",
         "官方网站",
-        "公众平台账号"
+        "公众平台账号",
+        "官方网站及新媒体账号",
+        "联系方式"
       ],
       "is_subjective": false,
       "is_public_searchable": true

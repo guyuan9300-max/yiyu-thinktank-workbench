@@ -1111,6 +1111,7 @@ from app.services.template_fill import (
     fetch_template_fill_web_sources,
     infer_template_field_type,
     infer_template_value_kind,
+    match_field_to_verified_glossary,
     normalize_template_label,
     should_enable_template_fill_web_supplement,
 )
@@ -16587,6 +16588,25 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             lines.append(f"字段说明（模板要求）：{field_hint}")
         if field_section:
             lines.append(f"字段分组：{field_section}")
+
+        # ---- P0b 字典直填兜底：字段名 → 已核验(verified)字典属性 直接命中 ----
+        # 116 条已核验干净事实(基金会全称/成立时间/官网/法定代表人…)经 schema 别名归一后
+        # 直接锚定到具体字段，给 LLM 一条"权威直答"，避免它在大字典包里漏掉 → 回退【待确认】。
+        try:
+            from app.services.glossary_attributes_pack import fetch_verified_attributes
+            _verified = fetch_verified_attributes(state.db, client_id)
+            _hit = match_field_to_verified_glossary(_verified, field_label)
+            if _hit is not None:
+                _scope = f"（口径：{_hit.scope}）" if getattr(_hit, "scope", "") else ""
+                _asof = f"  截至 {_hit.as_of_date}" if getattr(_hit, "as_of_date", None) else ""
+                lines.append(
+                    "✅【字典已核验 · 直接命中（最高优先级）】"
+                    f"本字段对应已核验属性「{_hit.term}.{_hit.attribute_name}」= {_hit.value_text}{_scope}{_asof}。"
+                    f"请直接采用此值填写，并在值后附引用 [📚 {_hit.term}.{_hit.attribute_name}]，"
+                    "不要因为'其它资料没提'就回退到【待确认】。"
+                )
+        except Exception:
+            pass
 
         # ---- 数据中心权威源 1：用户已采纳的判断 ----
         # 这些是用户亲自在客户工作台 / 战略陪伴里确认过的判断，应该作为 hard fact
