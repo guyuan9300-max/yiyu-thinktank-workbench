@@ -420,6 +420,15 @@ function backendVenvUvicornRelative(manifest) {
   return runtimePlatform(manifest) === 'win32' ? path.join('Scripts', 'uvicorn.exe') : path.join('bin', 'uvicorn');
 }
 
+function isExecutable(filePath) {
+  try {
+    fs.accessSync(filePath, fs.constants.X_OK);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 export function readPackagedRuntimeSeedManifest(runtimeRoot) {
   const manifestPath = path.join(runtimeRoot, RUNTIME_SEED_MANIFEST_FILE);
   if (!fs.existsSync(manifestPath)) {
@@ -451,9 +460,11 @@ export function inspectPackagedRuntimeSeed(appPath) {
   const wheelFiles = listWheelFiles(wheelhousePath);
   // B 方案:预装 venv 路径
   const backendVenvPath = path.join(runtimeRoot, manifest?.backendVenv?.path || RUNTIME_BACKEND_VENV_DIR);
+  const backendVenvPython = path.join(backendVenvPath, backendVenvPythonRelative(manifest));
+  const backendVenvUvicorn = path.join(backendVenvPath, backendVenvUvicornRelative(manifest));
   const backendVenvExists = fs.existsSync(backendVenvPath)
-    && fs.existsSync(path.join(backendVenvPath, backendVenvPythonRelative(manifest)))
-    && fs.existsSync(path.join(backendVenvPath, backendVenvUvicornRelative(manifest)));
+    && isExecutable(backendVenvPython)
+    && isExecutable(backendVenvUvicorn);
   const backendVenvSha256 = fs.existsSync(backendVenvPath) ? sha256Directory(backendVenvPath) : null;
   const requirementsSha256 = fs.existsSync(requirementsPath) ? sha256File(requirementsPath) : null;
   const wheelhouseSha256 = fs.existsSync(wheelhousePath) ? sha256Directory(wheelhousePath) : null;
@@ -507,6 +518,8 @@ export function inspectPackagedRuntimeSeed(appPath) {
     wheelhouseSha256,
     wheelhouseHashMatch,
     backendVenvPath,
+    backendVenvPython,
+    backendVenvUvicorn,
     backendVenvExists,
     backendVenvSha256,
     backendVenvHashMatch,

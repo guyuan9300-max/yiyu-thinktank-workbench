@@ -53,6 +53,18 @@ function writeOfficialCloudConfig(appPath) {
   return true;
 }
 
+function isRuntimeVenvEntrypoint(filePath) {
+  if (!filePath.includes(`${path.sep}Contents${path.sep}Resources${path.sep}runtime${path.sep}backend-venv-prebuilt${path.sep}bin${path.sep}`)) {
+    return false;
+  }
+  try {
+    const firstBytes = fs.readFileSync(filePath, 'utf8').slice(0, 64);
+    return firstBytes.startsWith('#!');
+  } catch {
+    return false;
+  }
+}
+
 function walk(entryPath, counters) {
   const stat = fs.lstatSync(entryPath);
   if (stat.isSymbolicLink()) return;
@@ -81,7 +93,9 @@ function walk(entryPath, counters) {
     return;
   }
 
-  const executable = isMachO(entryPath) || entryPath.includes(`${path.sep}Contents${path.sep}MacOS${path.sep}`);
+  const executable = isMachO(entryPath)
+    || entryPath.includes(`${path.sep}Contents${path.sep}MacOS${path.sep}`)
+    || isRuntimeVenvEntrypoint(entryPath);
   fs.chmodSync(entryPath, executable ? 0o755 : 0o644);
   if (executable) counters.executable += 1;
   counters.files += 1;

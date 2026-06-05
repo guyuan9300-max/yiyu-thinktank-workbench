@@ -1087,6 +1087,41 @@ function runtimeUvicornPath(venvPath: string, manifest?: PackagedRuntimeSeedMani
   return path.join(venvPath, runtimeVenvUvicornRelative(manifest));
 }
 
+function repairRuntimeVenvEntryPoints(venvPath: string, manifest?: PackagedRuntimeSeedManifest | null) {
+  if (process.platform === 'win32') return;
+  const scriptsDir = path.join(venvPath, runtimeVenvScriptsDirRelative(manifest));
+  const pythonPath = runtimePythonPath(venvPath, manifest);
+  if (!fs.existsSync(scriptsDir) || !fs.existsSync(pythonPath)) return;
+  for (const name of fs.readdirSync(scriptsDir)) {
+    const entryPath = path.join(scriptsDir, name);
+    if (!fs.existsSync(entryPath)) continue;
+    const stat = fs.lstatSync(entryPath);
+    if (stat.isDirectory() || stat.isSymbolicLink()) continue;
+    let content = '';
+    try {
+      content = fs.readFileSync(entryPath, 'utf8');
+    } catch {
+      continue;
+    }
+    if (!content.startsWith('#!') && !content.startsWith("#!/bin/sh\n'''exec' ")) continue;
+    if (content.startsWith("#!/bin/sh\n'''exec' ")) {
+      const repaired = content.replace(
+        /^#!\/bin\/sh\n'''exec' "[^"]+" "\$0" "\$@"\n' '''/,
+        `#!/bin/sh\n'''exec' "${pythonPath}" "$0" "$@"\n' '''`,
+      );
+      if (repaired !== content) {
+        fs.writeFileSync(entryPath, repaired, 'utf8');
+      }
+    } else if (content.startsWith('#!') && !content.startsWith(`#!${pythonPath}\n`)) {
+      const newlineIndex = content.indexOf('\n');
+      if (newlineIndex > 0) {
+        fs.writeFileSync(entryPath, `#!${pythonPath}\n${content.slice(newlineIndex + 1)}`, 'utf8');
+      }
+    }
+    fs.chmodSync(entryPath, stat.mode | 0o755);
+  }
+}
+
 async function runCommand(command: string, args: string[], env: NodeJS.ProcessEnv, label: string) {
   await new Promise<void>((resolve, reject) => {
     const child = spawn(command, args, {
@@ -1294,6 +1329,7 @@ function packagedRuntimeFingerprint(seed: PackagedRuntimeSeed) {
     manifest.backend?.requirementsSha256 ?? 'requirements-hash-missing',
     manifest.backend?.uvLockSha256 ?? 'uv-lock-hash-missing',
     manifest.wheelhouse?.sha256 ?? 'wheelhouse-hash-missing',
+    manifest.backendVenv?.sha256 ?? 'backend-venv-hash-missing',
   ].join('|');
 }
 
@@ -1490,6 +1526,7 @@ async function ensurePackagedBackendRuntime(venvPath: string) {
         .replace('__YIYU_RUNTIME_COMMAND__', `${seedPythonAbs} -m venv --copies --without-pip ${venvPath}`);
       fs.writeFileSync(pyvenvCfgPath, fixed);
     }
+    repairRuntimeVenvEntryPoints(venvPath, seed.manifest);
   } else {
     // 回退兼容路径:旧版本 build 没生成预装 venv 时仍走 pip install
     // 这条路径将随老版本淘汰,新版本统一走 hasPrebuiltVenv=true
@@ -1526,6 +1563,7 @@ async function ensurePackagedBackendRuntime(venvPath: string) {
   }
 
   await assertPythonRuntimeUsable(pythonPath, 'backend:packaged-python-smoke', backendEnv({ VIRTUAL_ENV: venvPath }));
+  repairRuntimeVenvEntryPoints(venvPath, seed.manifest);
   if (!isExecutable(uvicornPath)) {
     throw new Error('内置后端运行时安装完成后仍缺少 uvicorn');
   }

@@ -143,6 +143,34 @@ function venvScriptsDirRelative() {
   return process.platform === 'win32' ? 'Scripts' : 'bin';
 }
 
+function normalizeVenvEntryPoints(venvDir, pythonExecutable) {
+  if (process.platform === 'win32') return;
+  const scriptsDir = path.join(venvDir, venvScriptsDirRelative());
+  if (!fs.existsSync(scriptsDir)) return;
+  for (const name of fs.readdirSync(scriptsDir)) {
+    const entryPath = path.join(scriptsDir, name);
+    if (!fs.existsSync(entryPath) || fs.lstatSync(entryPath).isDirectory()) continue;
+    let content = '';
+    try {
+      content = fs.readFileSync(entryPath, 'utf8');
+    } catch {
+      continue;
+    }
+    if (!content.startsWith('#!')) continue;
+    if (content.startsWith("#!/bin/sh\n'''exec' ")) {
+      const replaced = content.replace(
+        /^#!\/bin\/sh\n'''exec' "[^"]+" "\$0" "\$@"\n' '''/,
+        `#!/bin/sh\n'''exec' "${pythonExecutable}" "$0" "$@"\n' '''`,
+      );
+      if (replaced !== content) {
+        fs.writeFileSync(entryPath, replaced, 'utf8');
+      }
+    }
+    const stat = fs.statSync(entryPath);
+    fs.chmodSync(entryPath, stat.mode | 0o755);
+  }
+}
+
 function countFiles(rootPath, predicate = () => true) {
   if (!fs.existsSync(rootPath)) return 0;
   let count = 0;
@@ -356,7 +384,6 @@ function main() {
       env: { ...process.env, VIRTUAL_ENV: backendVenvDir },
     },
   );
-
   // 关键:venv 的 pyvenv.cfg 此时 home= 指向 dist/packaged-runtime/python-seed/bin。
   // 客户机解压后这个绝对路径不存在,runtime 端会重写它。这里只清理 build 机硬编码痕迹。
   const pyvenvCfgPath = path.join(backendVenvDir, 'pyvenv.cfg');
@@ -372,6 +399,7 @@ function main() {
       .replace(/^command = .*$/m, 'command = __YIYU_RUNTIME_COMMAND__');
     fs.writeFileSync(pyvenvCfgPath, replaced);
   }
+  normalizeVenvEntryPoints(backendVenvDir, '__YIYU_RUNTIME_EXECUTABLE__');
 
   // B 方案核心:venv 已经预装好,wheelhouse 不再需要进 .app。
   // 删 wheelhouse 目录,避免 .whl 内嵌的未签名 .so/.dylib 让 Apple 公证拒收。
