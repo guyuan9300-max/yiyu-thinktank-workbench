@@ -241,6 +241,36 @@ def match_field_to_verified_glossary(verified_attrs, field_name: str):
     return None
 
 
+# ---- Phase 1: 字段 → 战略陪伴 6 段叙事 的映射(把已合成的高质量画像喂给复合字段) ----
+# 数据中心已经把客户综合成 essence/cooperation/business_intro/people/timeline/next_steps 6 段
+# (带 cite、防幻觉规则生成),但填表一直没用。复合字段(简介/服务内容/特点/团队/里程碑/合作)
+# 正是这 6 段的标准答案。按字段名关键词路由到最贴合的一段,作为最高优先级证据注入。
+# 顺序=优先级(先匹配先用),越具体的段放前面。
+_NARRATIVE_SEGMENT_RULES: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("people", ("负责人", "团队", "核心团队", "人物", "成员", "理事会", "理事长", "秘书长", "组织架构")),
+    ("timeline", ("里程碑", "实施计划", "关键节点", "实施周期", "发展历程", "大事记", "历程", "起止时间", "时间节点")),
+    ("cooperation", ("合作资源", "协同机制", "合作机制", "合作方", "协同")),
+    ("business_intro", (
+        "服务内容", "活动安排", "项目特点", "创新点", "项目背景", "要解决的问题",
+        "服务对象", "面向人群", "主要服务", "服务领域", "项目内容", "核心业务", "过往经验",
+        "实施区域", "项目简介", "业务",
+    )),
+    ("essence", ("机构简介", "机构介绍", "组织简介", "机构定位", "宗旨", "使命", "愿景", "机构概况", "机构性质", "组织类型")),
+    ("next_steps", ("项目目标", "预期成果", "下一步", "战略", "评估方式", "发展目标")),
+)
+
+
+def map_field_to_narrative_segment(field_name: str) -> str | None:
+    """字段名 → 最贴合的叙事段 key(无匹配返回 None,如年度矩阵/盖章/纯精确事实)。"""
+    key = _norm_field_key(field_name)
+    if not key:
+        return None
+    for segment, keywords in _NARRATIVE_SEGMENT_RULES:
+        if any(kw in key for kw in keywords):
+            return segment
+    return None
+
+
 def extract_template_milestone_year(label: str) -> str | None:
     normalized = normalize_template_label(label)
     match = re.fullmatch(r"(20\d{2})年?重大事件(?:/|／)?里程碑", normalized)
