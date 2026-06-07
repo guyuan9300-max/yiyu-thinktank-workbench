@@ -1,6 +1,6 @@
 {
   "name": "yiyu-thinktank-workbench",
-  "version": "0.3.2",
+  "version": "0.24.0",
   "description": "益语智库自用平台 V2.0 桌面版",
   "license": "AGPL-3.0-only",
   "type": "module",
@@ -55,7 +55,7 @@
   },
   "build": {
     "appId": "com.yiyu.selfworkbench2",
-    "productName": "益语智库自用平台 V2.0",
+    "productName": "益语智库AI",
     "asar": false,
     "directories": {
       "buildResources": "build-resources"

@@ -51476,11 +51476,12 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         Thread(target=sync_pending_tasks_if_due, daemon=True).start()
         _restore_local_completed_task_statuses()
         _repair_completed_task_collaboration_state()
-        # If cloud user but local DB is empty, pull cloud tasks into local first
+        # If cloud user, pull cloud tasks into local in BACKGROUND (non-blocking).
+        # 顾源源 6/7: 原本同步调用 _pull_cloud_tasks_to_local() 会让每次 /tasks 阻塞到云端
+        # /tasks 返回(N+1 慢查询可达 34s, 且 >30s TTL 时首尾相接拖垮后端, 组织设置等一起卡)。
+        # 改后台线程: 本地数据秒回, 云端异步拉, 下轮刷新。_pull 自带 in_flight+TTL 守卫, 不会风暴。
         if get_cloud_token():
-            _pull_cloud_tasks_to_local()
-            _restore_local_completed_task_statuses()
-            _repair_completed_task_collaboration_state()
+            Thread(target=_pull_cloud_tasks_to_local, daemon=True).start()
         # LOCAL IS PRIMARY — always read from local SQLite
         return TaskBoardResponse(
             tasks=fetch_tasks("t.source_type != ?", (AGENT_AUTO_SOURCE_TYPE,)),
