@@ -244,6 +244,12 @@ def ensure_bot_schema(db: _DbLike) -> None:
                 1           AS is_bot
             FROM bot_members
             WHERE status = 'active'""",
+        # Phase2 云优先同步标记(顾源源 6/7 bot 上云共享):
+        #   origin='cloud' 表示该 bot 来自云端注册表(token_hash 可能为空, 仅可见不可本地代操作);
+        #   origin='local' 表示本地创建尚未推云; synced_from_cloud_at/cloud_updated_at 用于对账.
+        """ALTER TABLE bot_members ADD COLUMN origin TEXT NOT NULL DEFAULT 'local'""",
+        """ALTER TABLE bot_members ADD COLUMN cloud_updated_at TEXT NOT NULL DEFAULT ''""",
+        """ALTER TABLE bot_members ADD COLUMN synced_from_cloud_at TEXT""",
     ]
     for sql in statements:
         try:
@@ -255,6 +261,100 @@ def ensure_bot_schema(db: _DbLike) -> None:
             if "duplicate column" in str(exc).lower():
                 continue
             logger.warning("ensure_bot_schema failed for stmt: %s", exc)
+
+
+def upsert_synced_bot_from_cloud(
+    db: _DbLike,
+    *,
+    cloud_bot_id: str,
+    display_name: str,
+    handle: str,
+    actor_id: str,
+    organization_id: str = "",
+    department_id: str | None = None,
+    department_name: str = "",
+    description: str = "",
+    status: str = "active",
+    reporting: dict | None = None,
+    capabilities: list | None = None,
+    cloud_updated_at: str = "",
+) -> dict | None:
+    """把云端 /api/v1/org/bots 拉回的 bot 幂等灌入本地(保云 id, 不重生 token).
+
+    - 身份(id/handle/actor_id)来自云端, 本地不重生; origin='cloud'.
+    - token_hash 不随云端 GET 下发 → 同步进来的 bot token_hash='' (仅可见, 不可本地代它操作).
+    - reporting/capabilities 从云端 JSON 拆回 bot_reporting_lines / bot_permission_policies(DELETE+INSERT 重建).
+    """
+    ensure_bot_schema(db)
+    now = _now_iso()
+    reporting = reporting or {}
+    capabilities = capabilities or []
+    existing = db.fetchone("SELECT id FROM bot_members WHERE id = ?", (cloud_bot_id,))
+
+    def _do(conn):
+        if existing:
+            conn.execute(
+                """UPDATE bot_members SET display_name=?, handle=?, actor_id=?, organization_id=?,
+                       department_id=?, department_name=?, description=?, status=?,
+                       origin='cloud', cloud_updated_at=?, synced_from_cloud_at=?, updated_at=?
+                   WHERE id=?""",
+                (display_name, handle, actor_id, organization_id, department_id, department_name,
+                 description, status, cloud_updated_at, now, now, cloud_bot_id),
+            )
+        else:
+            conn.execute(
+                """INSERT INTO bot_members (
+                    id, organization_id, display_name, handle, actor_id, actor_type,
+                    department_id, department_name, description, status,
+                    created_by_user_id, token_hash, token_salt, token_prefix, token_rotated_at,
+                    origin, cloud_updated_at, synced_from_cloud_at, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, 'internal_ai_agent', ?, ?, ?, ?, '', '', '', '', NULL,
+                          'cloud', ?, ?, ?, ?)""",
+                (cloud_bot_id, organization_id, display_name, handle, actor_id,
+                 department_id, department_name, description, status,
+                 cloud_updated_at, now, now, now),
+            )
+        conn.execute("DELETE FROM bot_reporting_lines WHERE bot_member_id=?", (cloud_bot_id,))
+        conn.execute(
+            """INSERT INTO bot_reporting_lines (
+                id, bot_member_id, report_to_creator, report_to_department_lead, report_to_ceo,
+                department_leader_user_ids, ceo_user_ids, approval_mode, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (_new_id("botrep"), cloud_bot_id,
+             1 if reporting.get("reportToCreator", True) else 0,
+             1 if reporting.get("reportToDepartmentLead", True) else 0,
+             1 if reporting.get("reportToCeo", True) else 0,
+             json.dumps(reporting.get("departmentLeaderUserIds", []), ensure_ascii=False),
+             json.dumps(reporting.get("ceoUserIds", []), ensure_ascii=False),
+             str(reporting.get("approvalMode", "any_one")), now, now),
+        )
+        conn.execute("DELETE FROM bot_permission_policies WHERE bot_member_id=?", (cloud_bot_id,))
+        for cap in capabilities:
+            if not isinstance(cap, dict):
+                continue
+            key = cap.get("capabilityKey") or cap.get("capability_key")
+            if not key:
+                continue
+            conn.execute(
+                """INSERT INTO bot_permission_policies (
+                    id, bot_member_id, capability_key, enabled, approval_required,
+                    approval_policy, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                (_new_id("botperm"), cloud_bot_id, str(key),
+                 1 if cap.get("enabled") else 0,
+                 1 if cap.get("approvalRequired", cap.get("approval_required", True)) else 0,
+                 str(cap.get("approvalPolicy") or cap.get("approval_policy") or "supervisor_required"),
+                 now, now),
+            )
+
+    if hasattr(db, "run_in_transaction"):
+        db.run_in_transaction(_do)
+    else:
+        class _Adapter:
+            def execute(self, sql, params=()):  # noqa: ANN001
+                db.execute(sql, params)
+        _do(_Adapter())
+    return get_bot_member(db, cloud_bot_id)
 
 
 def _generate_bot_token() -> str:
