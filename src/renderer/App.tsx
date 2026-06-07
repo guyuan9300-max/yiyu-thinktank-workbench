@@ -909,17 +909,59 @@ const KNOWN_FAILURE_TAGS: Record<string, string> = {
   no_relevant_materials: '当前客户资料中没有命中相关内容。',
 };
 
+// 报错分类(UX): 把报错分成「系统问题」(该重试/等一下/找管理员)和「操作问题」(用户自己能改),
+// 让用户一眼知道是谁的问题、下一步该干嘛。统一在 showGlobalBanner 入口调用,覆盖全部报错。
+type ErrorKind = 'system' | 'user' | 'unknown';
+
+// 系统问题信号: 连接/超时/服务/内部异常/数据库/HTTP 5xx —— 不是用户操作能解决的
+const SYSTEM_ERROR_MARKERS: readonly string[] = [
+  '无法连接', '连接失败', '连不上', '超时', 'timeout', 'timed out',
+  'ECONNREFUSED', 'Failed to fetch', 'NetworkError', '网络',
+  '500', '502', '503', '504', 'Internal Server Error', 'Bad Gateway',
+  'executor', 'unavailable', '不可用', '后端', '服务未', '服务异常',
+  'no such column', 'no such table', 'OperationalError', 'sqlite',
+  'NameError', 'AttributeError', 'KeyError', 'TypeError',
+];
+
+// 操作问题信号: 必填/格式/重复/无效 —— 用户检查输入就能解决
+const USER_ERROR_MARKERS: readonly string[] = [
+  '必填', '不能为空', '未填写', '请填写', '请输入', '请选择', '至少', '最多',
+  '格式不', '格式错', '不合法', '无效', 'invalid', 'required', 'must be',
+  '已存在', '重复', 'duplicate', '已被占用', '超出', '超过', '太长', '太短',
+  'too long', 'too short', '不支持', '只支持', '请先', '尚未',
+];
+
+function classifyError(raw: string | null | undefined): { kind: ErrorKind; message: string } {
+  const text = (raw || '').trim();
+  if (!text) return { kind: 'unknown', message: '出了点小问题，请重试一次。' };
+  if (KNOWN_FAILURE_TAGS[text]) {
+    // "已取消/无命中内容" 既非系统故障也非用户错误 → 中性提示, 不强标系统/操作
+    const neutral = text === 'no_relevant_materials' || text === 'user_canceled';
+    return { kind: neutral ? 'unknown' : 'system', message: KNOWN_FAILURE_TAGS[text] };
+  }
+  // 校验类堆栈(pydantic/validation): 本质是用户填的信息有问题, 换成人话
+  if (TECHNICAL_FAILURE_MARKERS.some((m) => text.includes(m))) {
+    if (/(validation|Input should be|field required|pydantic)/i.test(text)) {
+      return { kind: 'user', message: '填写的信息有点问题（可能必填项空着或格式不对），检查一下再提交。' };
+    }
+    return { kind: 'system', message: '软件内部出错了（不是你的操作），请重试一次；如果反复出现，截图反馈给我们。' };
+  }
+  if (USER_ERROR_MARKERS.some((m) => text.includes(m))) {
+    // 短中文本身已是人话就保留, 太长/英文则给通用操作提示
+    const readable = text.length <= 60 && /[一-龥]/.test(text);
+    return { kind: 'user', message: readable ? text : '提交的信息有点问题，检查一下必填项和格式再试。' };
+  }
+  if (SYSTEM_ERROR_MARKERS.some((m) => text.includes(m)) || text.length > 200 || text.includes('\n')) {
+    return { kind: 'system', message: '系统暂时出问题了（连接或服务异常，不是你的操作），稍等几秒再重试一次。' };
+  }
+  // 认不出: 原样保留(多是已写好的中文短句), 不强行归类
+  return { kind: 'unknown', message: text };
+}
+
 function friendlyFailureMessage(raw: string | null | undefined, fallback = '请稍后重试。'): string {
   const text = (raw || '').trim();
   if (!text) return fallback;
-  if (KNOWN_FAILURE_TAGS[text]) return KNOWN_FAILURE_TAGS[text];
-  if (TECHNICAL_FAILURE_MARKERS.some((marker) => text.includes(marker))) {
-    return KNOWN_FAILURE_TAGS.internal_error;
-  }
-  if (text.length > 200 || text.includes('\n')) {
-    return KNOWN_FAILURE_TAGS.internal_error;
-  }
-  return text;
+  return classifyError(text).message;
 }
 
 function mergeActiveWorkingDocuments(
@@ -3254,7 +3296,7 @@ function mapWorkspaceContextItems(items: unknown, limit = 3): string[] {
   return lines;
 }
 
-type GlobalBanner = { type: 'success' | 'error' | 'info'; text: string } | null;
+type GlobalBanner = { type: 'success' | 'error' | 'info'; text: string; kind?: ErrorKind; rawText?: string } | null;
 
 const globalBannerSubscribers = new Set<(banner: GlobalBanner) => void>();
 let globalBannerState: GlobalBanner = null;
@@ -3269,12 +3311,22 @@ function showGlobalBanner(type: 'success' | 'error' | 'info', text: string) {
   if (typeof window !== 'undefined' && globalBannerTimer) {
     window.clearTimeout(globalBannerTimer);
   }
-  emitGlobalBanner({ type, text });
+  // 报错一律过分类器: 变人话 + 标「系统问题/操作问题」, 覆盖全部 flash('error') 入口
+  let shownText = text;
+  let kind: ErrorKind | undefined;
+  if (type === 'error') {
+    const classified = classifyError(text);
+    shownText = classified.message;
+    kind = classified.kind;
+  }
+  // rawText 保留原始文案: 供 clearLocalServiceStartupBanner 等按原文匹配(人话化后 text 已变)
+  emitGlobalBanner({ type, text: shownText, kind, rawText: text });
   if (typeof window === 'undefined') return;
+  // 报错要看清楚, 停留更久(6s); 成功/提示保持 2.4s
   globalBannerTimer = window.setTimeout(() => {
     emitGlobalBanner(null);
     globalBannerTimer = null;
-  }, 2400);
+  }, type === 'error' ? 6000 : 2400);
 }
 
 function clearGlobalBanner() {
@@ -3303,17 +3355,29 @@ function useGlobalBannerState() {
 const GlobalBannerHost = React.memo(function GlobalBannerHost() {
   const banner = useGlobalBannerState();
   if (!banner) return null;
+  // 报错标签: 让用户一眼知道是「系统问题(该重试/找管理员)」还是「操作问题(该改输入)」
+  const label =
+    banner.type === 'error'
+      ? banner.kind === 'system'
+        ? '🔧 系统问题'
+        : banner.kind === 'user'
+          ? '✏️ 操作问题'
+          : '⚠️ 提示'
+      : null;
   return (
+    // fixed + z-[10000]: 浮在所有弹窗(最高 z-[1000]/菜单 z-[9999])和毛玻璃之上, 报错不再被遮挡
     <div
-      className={`absolute top-4 right-4 z-50 px-4 py-2 rounded-2xl text-[12px] font-bold shadow-sm ${
+      role="alert"
+      className={`fixed top-4 right-4 z-[10000] max-w-[min(92vw,420px)] px-4 py-3 rounded-2xl text-[12px] font-bold shadow-lg ${
         banner.type === 'success'
-          ? 'bg-emerald-50 text-emerald-600'
+          ? 'bg-emerald-50 text-emerald-600 border border-emerald-100'
           : banner.type === 'error'
-            ? 'bg-rose-50 text-rose-600'
-            : 'bg-blue-50 text-[#5B7BFE]'
+            ? 'bg-rose-50 text-rose-600 border border-rose-200'
+            : 'bg-blue-50 text-[#5B7BFE] border border-blue-100'
       }`}
     >
-      {banner.text}
+      {label && <div className="mb-1 text-[11px] font-bold opacity-80">{label}</div>}
+      <div className="leading-relaxed font-medium">{banner.text}</div>
     </div>
   );
 });
@@ -8403,7 +8467,9 @@ export default function App() {
 
   const clearLocalServiceStartupBanner = () => {
     const currentBanner = getGlobalBanner();
-    if (!currentBanner || currentBanner.type !== 'error' || !currentBanner.text.includes('无法连接本地服务')) return;
+    // 按原始文案匹配(人话化后 text 已变, 用 rawText 兜底)
+    const matchText = currentBanner?.rawText ?? currentBanner?.text ?? '';
+    if (!currentBanner || currentBanner.type !== 'error' || !matchText.includes('无法连接本地服务')) return;
     clearGlobalBanner();
   };
 
