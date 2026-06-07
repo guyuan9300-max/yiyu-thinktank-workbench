@@ -1070,6 +1070,8 @@ async function collectRepoSnapshot(options: RepoOptions): Promise<RepoSnapshot> 
       remoteChangeCount: 0,
       remoteTargetRevision: 'origin/main',
       statusText: '先绑定源码目录，按钮才会生效。',
+      fetchFailed: false,
+      fetchErrorMessage: '',
     };
   }
   const repoRoot = await resolveGitRepoTopLevel(repoPath);
@@ -1094,6 +1096,8 @@ async function collectRepoSnapshot(options: RepoOptions): Promise<RepoSnapshot> 
       remoteChangeCount: 0,
       remoteTargetRevision: 'origin/main',
       statusText: '当前目录不是有效 Git 仓库。',
+      fetchFailed: false,
+      fetchErrorMessage: '',
     };
   }
   const scopeRelativePath = computeScopeRelativePath(repoRoot, repoPath);
