@@ -26058,7 +26058,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         cache_scope: str = "",
         allow_stale: bool = False,
     ) -> WeeklyMainlineCardsRecord | None:
-        raw = state.db.get_setting(_weekly_cache_setting_key("weekly_mainline_cards_cache", week_label, cache_scope), "")
+        raw = state.db.get_setting(_weekly_cache_setting_key("weekly_mainline_cards_cache_v3", week_label, cache_scope), "")
         if not raw:
             return None
         try:
@@ -26090,7 +26090,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         if cards.generatedBy != "ai" or not cards.mainlines:
             return
         state.db.set_setting(
-            _weekly_cache_setting_key("weekly_mainline_cards_cache", week_label, cache_scope),
+            _weekly_cache_setting_key("weekly_mainline_cards_cache_v3", week_label, cache_scope),
             json.dumps(
                 {
                     "cacheVersion": "v2-task-background-evidence",
