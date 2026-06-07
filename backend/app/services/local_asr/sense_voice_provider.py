@@ -25,6 +25,12 @@ from .model_paths import DEFAULT_MODEL_NAME, get_model_files, is_model_ready
 _RECOGNIZER_LOCK = threading.Lock()
 _RECOGNIZER_CACHE: dict[str, Any] = {}  # model_name -> sherpa_onnx.OfflineRecognizer
 
+# 长音频分块阈值：SenseVoice 是按短句（≤30s）训练的非流式模型，一次性把长音频
+# 喂进单个 stream 解码会退化/截断 → 长视频转写不完整。超过阈值就按固定窗口切块，
+# 逐段解码再拼接；每个窗口的文本作为一个自然段（用空行分隔），顺带解决"一整片"问题。
+_MAX_SINGLE_PASS_MS = 30_000
+_CHUNK_WINDOW_MS = 30_000
+
 
 def _load_recognizer(model_name: str = DEFAULT_MODEL_NAME, *, num_threads: int = 4):
     """懒加载 + cache 单例 recognizer。"""
@@ -67,6 +73,18 @@ def _read_audio_as_pcm(file_path: str) -> tuple[Any, int]:
     return audio, int(sr)
 
 
+def _decode_chunk(recognizer: Any, sample_rate: int, audio_chunk: Any) -> tuple[str, str, str, str]:
+    """对一段 PCM 跑一次解码，返回 (cleaned_text, lang, emotion, event)。
+
+    单段/整段/分窗共用，保证解码与 tag 清理逻辑只有一份。
+    """
+    stream = recognizer.create_stream()
+    stream.accept_waveform(sample_rate, audio_chunk)
+    recognizer.decode_stream(stream)
+    raw_text = (stream.result.text or "").strip()
+    return _strip_sense_voice_tags(raw_text)
+
+
 def transcribe_local_audio(
     file_path: str,
     *,
@@ -95,34 +113,65 @@ def transcribe_local_audio(
     audio, sample_rate = _read_audio_as_pcm(file_path)
     duration_ms = int(len(audio) * 1000 / sample_rate)
 
-    # 推理
-    stream = recognizer.create_stream()
-    stream.accept_waveform(sample_rate, audio)
-    recognizer.decode_stream(stream)
-    result = stream.result
-
-    # SenseVoice 输出的 text 可能含特殊 token：
-    # <|zh|><|HAPPY|><|Speech|><|withitn|> 你好世界
-    # 这些标签是模型自带的语言/情感/事件指示符。
-    raw_text = (result.text or "").strip()
-    cleaned_text, lang_tag, emotion_tag, event_tag = _strip_sense_voice_tags(raw_text)
-
-    # SenseVoice 不会返回 utterance 级 segments（它一次性给整段文本），
-    # 但我们至少给一个覆盖全音频的 segment 当 fallback；I1b-3 加切片才会有多 segment。
-    segments = [
-        LocalAsrTranscriptionSegment(
-            start_ms=0,
-            end_ms=duration_ms,
+    # 短音频（≤阈值）：单段一次性解码，保持原行为不变。
+    if duration_ms <= _MAX_SINGLE_PASS_MS:
+        # SenseVoice 输出的 text 可能含特殊 token：
+        # <|zh|><|HAPPY|><|Speech|><|withitn|> 你好世界
+        # 这些标签是模型自带的语言/情感/事件指示符。
+        cleaned_text, lang_tag, emotion_tag, event_tag = _decode_chunk(recognizer, sample_rate, audio)
+        segments = [
+            LocalAsrTranscriptionSegment(
+                start_ms=0,
+                end_ms=duration_ms,
+                text=cleaned_text,
+                emotion=emotion_tag,
+                event=event_tag,
+            )
+        ]
+        return LocalAsrTranscriptionResult(
             text=cleaned_text,
-            emotion=emotion_tag,
-            event=event_tag,
+            segments=segments,
+            language=lang_tag or language,
+            duration_ms=duration_ms,
+            elapsed_ms=(time.perf_counter() - started) * 1000.0,
+            model_name=model_name,
         )
-    ]
 
+    # 长音频：按固定窗口切块逐段解码 → 拼接。每窗一个自然段（空行分隔），
+    # 既保证长视频转写完整，又给出基础段落结构（不依赖下游 LLM）。
+    segments: list[LocalAsrTranscriptionSegment] = []
+    paragraphs: list[str] = []
+    first_lang = ""
+    window_start_ms = 0
+    while window_start_ms < duration_ms:
+        window_end_ms = min(window_start_ms + _CHUNK_WINDOW_MS, duration_ms)
+        start_sample = int(window_start_ms * sample_rate / 1000)
+        end_sample = int(window_end_ms * sample_rate / 1000)
+        chunk = audio[start_sample:end_sample]
+        if len(chunk) > 0:
+            cleaned_text, lang_tag, emotion_tag, event_tag = _decode_chunk(recognizer, sample_rate, chunk)
+            first_lang = first_lang or lang_tag
+            if cleaned_text:
+                paragraphs.append(cleaned_text)
+                segments.append(
+                    LocalAsrTranscriptionSegment(
+                        start_ms=window_start_ms,
+                        end_ms=window_end_ms,
+                        text=cleaned_text,
+                        emotion=emotion_tag,
+                        event=event_tag,
+                    )
+                )
+        window_start_ms = window_end_ms
+
+    full_text = "\n\n".join(paragraphs)
+    if not segments:
+        # 兜底：所有窗口都空也给一个覆盖全音频的占位 segment，保证下标/时长一致。
+        segments = [LocalAsrTranscriptionSegment(start_ms=0, end_ms=duration_ms, text="")]
     return LocalAsrTranscriptionResult(
-        text=cleaned_text,
+        text=full_text,
         segments=segments,
-        language=lang_tag or language,
+        language=first_lang or language,
         duration_ms=duration_ms,
         elapsed_ms=(time.perf_counter() - started) * 1000.0,
         model_name=model_name,
@@ -206,11 +255,7 @@ def transcribe_local_audio_segments(
             continue
         chunk = audio[start_sample:end_sample]
         started = time.perf_counter()
-        stream = recognizer.create_stream()
-        stream.accept_waveform(sample_rate, chunk)
-        recognizer.decode_stream(stream)
-        raw_text = (stream.result.text or "").strip()
-        cleaned_text, lang_tag, emotion_tag, event_tag = _strip_sense_voice_tags(raw_text)
+        cleaned_text, lang_tag, emotion_tag, event_tag = _decode_chunk(recognizer, sample_rate, chunk)
         elapsed_ms = (time.perf_counter() - started) * 1000.0
         seg_duration_ms = clamped_end - clamped_start
         results.append(

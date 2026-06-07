@@ -1,5 +1,5 @@
 import { useEffect } from 'react';
-import type { UpdateEventPayload } from '../../shared/types';
+import type { OfficialPushUpdatePayload, UpdateEventPayload } from '../../shared/types';
 
 /**
  * 飞书式无感更新:本组件不在主界面渲染任何 UI。
@@ -18,6 +18,7 @@ import type { UpdateEventPayload } from '../../shared/types';
  */
 
 export const UPDATE_STATE_KEY = '__yiyuUpdateState__';
+export const OFFICIAL_PUSH_STATE_EVENT = 'yiyu-official-push-state-changed';
 
 interface CachedUpdateState {
   lastEvent: UpdateEventPayload | null;
@@ -26,6 +27,7 @@ interface CachedUpdateState {
   isDownloaded: boolean;
   isDownloading: boolean;
   lastError: string | null;
+  officialPush: OfficialPushUpdatePayload | null;
 }
 
 declare global {
@@ -43,9 +45,29 @@ function ensureSlot(): CachedUpdateState {
       isDownloaded: false,
       isDownloading: false,
       lastError: null,
+      officialPush: null,
     };
   }
   return window[UPDATE_STATE_KEY]!;
+}
+
+function notifyOfficialPushStateChanged(push: OfficialPushUpdatePayload | null): void {
+  window.dispatchEvent(new CustomEvent(OFFICIAL_PUSH_STATE_EVENT, { detail: push }));
+}
+
+export function setCachedOfficialPush(push: OfficialPushUpdatePayload | null): void {
+  const slot = ensureSlot();
+  slot.officialPush = push;
+  slot.lastEvent = {
+    kind: push ? 'official-push-available' : 'official-push-not-available',
+    version: push?.version,
+    officialPush: push,
+  };
+  if (push) {
+    slot.latestVersion = push.version;
+    slot.lastError = null;
+  }
+  notifyOfficialPushStateChanged(push);
 }
 
 export function UpdateNotifier(): null {
@@ -57,6 +79,17 @@ export function UpdateNotifier(): null {
       const slot = ensureSlot();
       slot.lastEvent = payload;
       switch (payload.kind) {
+        case 'official-push-available':
+          setCachedOfficialPush(payload.officialPush ?? null);
+          slot.latestVersion = payload.officialPush?.version ?? payload.version ?? slot.latestVersion;
+          slot.isDownloading = false;
+          slot.lastError = null;
+          console.log('[updater] official push available:', payload.officialPush?.title || payload.version);
+          return;
+        case 'official-push-not-available':
+          setCachedOfficialPush(null);
+          slot.isDownloading = false;
+          return;
         case 'available':
           slot.latestVersion = payload.version ?? slot.latestVersion;
           slot.isDownloading = true;

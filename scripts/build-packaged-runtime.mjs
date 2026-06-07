@@ -37,9 +37,13 @@ function run(command, args, options = {}) {
   });
 }
 
-function requireMacArm64() {
-  if (process.platform !== 'darwin' || process.arch !== 'arm64') {
-    throw new Error(`packaged runtime seed currently supports macOS arm64 only; got ${process.platform}/${process.arch}`);
+function requireSupportedRuntimePlatform() {
+  const supported = (
+    (process.platform === 'darwin' && process.arch === 'arm64')
+    || (process.platform === 'win32' && process.arch === 'x64')
+  );
+  if (!supported) {
+    throw new Error(`packaged runtime seed supports darwin/arm64 and win32/x64; got ${process.platform}/${process.arch}`);
   }
 }
 
@@ -88,18 +92,83 @@ function resolveUvManagedPython() {
     throw new Error('uv did not return a CPython 3.11 path');
   }
   const pythonPath = fs.realpathSync(raw);
-  if (!pythonPath.endsWith('/bin/python3.11')) {
-    throw new Error(`expected uv-managed python3.11 executable, got: ${pythonPath}`);
+  let seedRoot;
+  let executableRelative;
+  let stdlibCheckRelative;
+  let dynamicLibraryRelative = null;
+  if (process.platform === 'win32') {
+    const baseName = path.basename(pythonPath).toLowerCase();
+    if (baseName !== 'python.exe') {
+      throw new Error(`expected uv-managed python.exe executable, got: ${pythonPath}`);
+    }
+    const exeDir = path.dirname(pythonPath);
+    seedRoot = fs.existsSync(path.join(exeDir, 'Lib', 'encodings', '__init__.py'))
+      ? exeDir
+      : path.dirname(exeDir);
+    executableRelative = path.relative(seedRoot, pythonPath) || 'python.exe';
+    stdlibCheckRelative = path.join('Lib', 'encodings', '__init__.py');
+    const pythonDll = fs.readdirSync(seedRoot).find((name) => /^python3\d+\.dll$/i.test(name));
+    if (pythonDll) dynamicLibraryRelative = pythonDll;
+  } else {
+    if (!pythonPath.endsWith('/bin/python3.11')) {
+      throw new Error(`expected uv-managed python3.11 executable, got: ${pythonPath}`);
+    }
+    seedRoot = path.dirname(path.dirname(pythonPath));
+    executableRelative = path.join('bin', 'python3.11');
+    stdlibCheckRelative = path.join('lib', 'python3.11', 'encodings', '__init__.py');
+    dynamicLibraryRelative = path.join('lib', 'libpython3.11.dylib');
   }
-  const seedRoot = path.dirname(path.dirname(pythonPath));
-  if (!fs.existsSync(path.join(seedRoot, 'lib', 'python3.11'))) {
+  if (!fs.existsSync(path.join(seedRoot, stdlibCheckRelative))) {
     throw new Error(`invalid uv-managed CPython seed root: ${seedRoot}`);
   }
   return {
     pythonPath,
     seedRoot,
+    executableRelative,
+    stdlibCheckRelative,
+    dynamicLibraryRelative,
     version: run(pythonPath, ['--version']).trim(),
   };
+}
+
+function venvPythonRelative() {
+  return process.platform === 'win32' ? path.join('Scripts', 'python.exe') : path.join('bin', 'python');
+}
+
+function venvUvicornRelative() {
+  return process.platform === 'win32' ? path.join('Scripts', 'uvicorn.exe') : path.join('bin', 'uvicorn');
+}
+
+function venvScriptsDirRelative() {
+  return process.platform === 'win32' ? 'Scripts' : 'bin';
+}
+
+function normalizeVenvEntryPoints(venvDir, pythonExecutable) {
+  if (process.platform === 'win32') return;
+  const scriptsDir = path.join(venvDir, venvScriptsDirRelative());
+  if (!fs.existsSync(scriptsDir)) return;
+  for (const name of fs.readdirSync(scriptsDir)) {
+    const entryPath = path.join(scriptsDir, name);
+    if (!fs.existsSync(entryPath) || fs.lstatSync(entryPath).isDirectory()) continue;
+    let content = '';
+    try {
+      content = fs.readFileSync(entryPath, 'utf8');
+    } catch {
+      continue;
+    }
+    if (!content.startsWith('#!')) continue;
+    if (content.startsWith("#!/bin/sh\n'''exec' ")) {
+      const replaced = content.replace(
+        /^#!\/bin\/sh\n'''exec' "[^"]+" "\$0" "\$@"\n' '''/,
+        `#!/bin/sh\n'''exec' "${pythonExecutable}" "$0" "$@"\n' '''`,
+      );
+      if (replaced !== content) {
+        fs.writeFileSync(entryPath, replaced, 'utf8');
+      }
+    }
+    const stat = fs.statSync(entryPath);
+    fs.chmodSync(entryPath, stat.mode | 0o755);
+  }
 }
 
 function countFiles(rootPath, predicate = () => true) {
@@ -121,6 +190,35 @@ function countFiles(rootPath, predicate = () => true) {
   };
   visit(rootPath);
   return count;
+}
+
+function directorySizeBytes(rootPath) {
+  if (!fs.existsSync(rootPath)) return 0;
+  let size = 0;
+  const visit = (entryPath) => {
+    const stat = fs.lstatSync(entryPath);
+    if (stat.isSymbolicLink()) return;
+    if (stat.isDirectory()) {
+      for (const child of fs.readdirSync(entryPath)) {
+        visit(path.join(entryPath, child));
+      }
+      return;
+    }
+    size += stat.size;
+  };
+  visit(rootPath);
+  return size;
+}
+
+function pruneWindowsPythonSeedAliases() {
+  if (process.platform !== 'win32') return;
+  // uv's Windows CPython seed can expose python3.exe as a link-like alias.
+  // 7-Zip used by electron-builder/NSIS treats that alias as an invalid
+  // directory while compressing the installer. The runtime manifest points to
+  // python.exe, so removing the alias is safe and keeps CI packaging stable.
+  for (const aliasName of ['python3.exe']) {
+    fs.rmSync(path.join(pythonSeedDir, aliasName), { recursive: true, force: true });
+  }
 }
 
 function requirementName(line) {
@@ -153,7 +251,7 @@ function writeBinaryOnlyRequirements() {
 }
 
 function main() {
-  requireMacArm64();
+  requireSupportedRuntimePlatform();
   const python = resolveUvManagedPython();
   fs.rmSync(runtimeRoot, { recursive: true, force: true });
   fs.mkdirSync(runtimeRoot, { recursive: true });
@@ -164,6 +262,7 @@ function main() {
     force: true,
     verbatimSymlinks: true,
   });
+  pruneWindowsPythonSeedAliases();
 
   console.log('[build-packaged-runtime] exporting backend locked requirements');
   run(
@@ -244,22 +343,24 @@ function main() {
   // venv 用 --copies (而不是 symlink) + seed python,客户机 cp -r 后改一下 pyvenv.cfg 即可使用。
   console.log('[build-packaged-runtime] creating pre-built backend-venv');
   // 用 packaged-runtime 里拷过来的 seed python 创建 venv —— 保证版本一致
-  const seedPythonPath = path.join(pythonSeedDir, 'bin', 'python3.11');
+  const seedPythonPath = path.join(pythonSeedDir, python.executableRelative);
   if (!fs.existsSync(seedPythonPath)) {
     throw new Error(`seed python missing after copy: ${seedPythonPath}`);
   }
   fs.rmSync(backendVenvDir, { recursive: true, force: true });
   run(seedPythonPath, ['-m', 'venv', '--copies', '--without-pip', backendVenvDir], { stdio: 'inherit' });
 
-  // 把 seed 的 libpython3.11.dylib 拷到 venv lib/ 下,跟 runtime 启动逻辑保持一致
-  const seedLibPython = path.join(pythonSeedDir, 'lib', 'libpython3.11.dylib');
-  const venvLibPython = path.join(backendVenvDir, 'lib', 'libpython3.11.dylib');
-  if (fs.existsSync(seedLibPython)) {
-    fs.mkdirSync(path.dirname(venvLibPython), { recursive: true });
-    fs.copyFileSync(seedLibPython, venvLibPython);
+  // macOS 的 python-build-standalone 需要把 libpython 带进 venv lib/。
+  if (process.platform === 'darwin' && python.dynamicLibraryRelative) {
+    const seedLibPython = path.join(pythonSeedDir, python.dynamicLibraryRelative);
+    const venvLibPython = path.join(backendVenvDir, 'lib', path.basename(python.dynamicLibraryRelative));
+    if (fs.existsSync(seedLibPython)) {
+      fs.mkdirSync(path.dirname(venvLibPython), { recursive: true });
+      fs.copyFileSync(seedLibPython, venvLibPython);
+    }
   }
 
-  const venvPython = path.join(backendVenvDir, 'bin', 'python');
+  const venvPython = path.join(backendVenvDir, venvPythonRelative());
   // ensurepip 装 pip,然后 offline install 所有依赖到 venv site-packages
   run(venvPython, ['-m', 'ensurepip', '--upgrade', '--default-pip'], {
     stdio: 'inherit',
@@ -283,19 +384,22 @@ function main() {
       env: { ...process.env, VIRTUAL_ENV: backendVenvDir },
     },
   );
-
   // 关键:venv 的 pyvenv.cfg 此时 home= 指向 dist/packaged-runtime/python-seed/bin。
   // 客户机解压后这个绝对路径不存在,runtime 端会重写它。这里只清理 build 机硬编码痕迹。
   const pyvenvCfgPath = path.join(backendVenvDir, 'pyvenv.cfg');
   if (fs.existsSync(pyvenvCfgPath)) {
     const original = fs.readFileSync(pyvenvCfgPath, 'utf8');
     // 用一个占位符,runtime 端 ensurePackagedBackendRuntime 启动时再改成绝对路径
+    const seedHomePlaceholder = process.platform === 'win32'
+      ? '__YIYU_RUNTIME_HOME__'
+      : '__YIYU_RUNTIME_HOME__';
     const replaced = original
-      .replace(/^home = .*$/m, 'home = __YIYU_RUNTIME_HOME__')
+      .replace(/^home = .*$/m, `home = ${seedHomePlaceholder}`)
       .replace(/^executable = .*$/m, 'executable = __YIYU_RUNTIME_EXECUTABLE__')
       .replace(/^command = .*$/m, 'command = __YIYU_RUNTIME_COMMAND__');
     fs.writeFileSync(pyvenvCfgPath, replaced);
   }
+  normalizeVenvEntryPoints(backendVenvDir, '__YIYU_RUNTIME_EXECUTABLE__');
 
   // B 方案核心:venv 已经预装好,wheelhouse 不再需要进 .app。
   // 删 wheelhouse 目录,避免 .whl 内嵌的未签名 .so/.dylib 让 Apple 公证拒收。
@@ -344,9 +448,9 @@ function main() {
   // Apple notary 会拒(无 Developer ID + 无 secure timestamp),触发 In Progress 卡死。
   // 在 build 阶段就用 Developer ID 重签,electron-builder 后续打包不会破坏内部签名。
   // 仅当显式提供了证书时才签——开发本地构建 (dist:mac-local) 不需要,跳过即可。
-  const devIdCert = process.env.APPLE_DEVELOPER_ID_APPLICATION
+  const devIdCert = process.platform === 'darwin' ? (process.env.APPLE_DEVELOPER_ID_APPLICATION
     || process.env.CSC_NAME
-    || (process.env.APPLE_TEAM_ID ? findDeveloperIdCert(process.env.APPLE_TEAM_ID) : null);
+    || (process.env.APPLE_TEAM_ID ? findDeveloperIdCert(process.env.APPLE_TEAM_ID) : null)) : null;
   if (devIdCert) {
     console.log(`[build-packaged-runtime] signing venv .so/.dylib with: ${devIdCert}`);
     const machos = findMachoFiles(backendVenvDir);
@@ -396,7 +500,12 @@ function main() {
     python: {
       sourcePath: python.seedRoot,
       seedPath: RUNTIME_PYTHON_SEED_DIR,
-      executable: path.join(RUNTIME_PYTHON_SEED_DIR, 'bin', 'python3.11'),
+      executable: path.join(RUNTIME_PYTHON_SEED_DIR, python.executableRelative),
+      stdlibCheck: path.join(RUNTIME_PYTHON_SEED_DIR, python.stdlibCheckRelative),
+      dynamicLibrary: python.dynamicLibraryRelative ? path.join(RUNTIME_PYTHON_SEED_DIR, python.dynamicLibraryRelative) : null,
+      venvPython: venvPythonRelative(),
+      venvUvicorn: venvUvicornRelative(),
+      venvScriptsDir: venvScriptsDirRelative(),
       version: python.version,
       platform: `${process.platform}-${process.arch}`,
       treeSha256: sha256Directory(pythonSeedDir),
@@ -432,7 +541,7 @@ function main() {
     backendVenvSha256: manifest.backendVenv.sha256,
     requirementsSha256: manifest.backend.requirementsSha256,
     wheelhouseSha256: manifest.wheelhouse.sha256,
-    size: run('du', ['-sh', runtimeRoot]).trim(),
+    sizeBytes: directorySizeBytes(runtimeRoot),
   }, null, 2));
 }
 

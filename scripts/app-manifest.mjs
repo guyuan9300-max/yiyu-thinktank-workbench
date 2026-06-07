@@ -6,7 +6,7 @@ import { spawnSync } from 'node:child_process';
 
 export const APP_NAME = '益语智库自用平台 V2.0.app';
 export const APP_DISPLAY_NAME = '益语智库自用平台 V2.0';
-export const DEFAULT_PACKAGED_REMOTE_CLOUD_API_URL = 'http://101.126.34.232';
+export const DEFAULT_PACKAGED_REMOTE_CLOUD_API_URL = '';
 export const VERSION_MANIFEST_RELATIVE_PATH = path.join('dist', 'version-manifest.json');
 export const BANNED_RENDERER_COPY = [
   '已基于命中的资料生成简版可用回答',
@@ -392,6 +392,43 @@ export function resolveAppPackagedRuntimeRoot(appPath) {
   return path.join(path.resolve(appPath), PACKAGED_RUNTIME_RELATIVE_PATH);
 }
 
+function runtimePlatform(manifest) {
+  return manifest?.platform || process.platform;
+}
+
+function pythonExecutableRelative(manifest) {
+  if (manifest?.python?.executable) return manifest.python.executable;
+  return runtimePlatform(manifest) === 'win32'
+    ? path.join(RUNTIME_PYTHON_SEED_DIR, 'python.exe')
+    : path.join(RUNTIME_PYTHON_SEED_DIR, 'bin', 'python3.11');
+}
+
+function pythonStdlibCheckRelative(manifest) {
+  if (manifest?.python?.stdlibCheck) return manifest.python.stdlibCheck;
+  return runtimePlatform(manifest) === 'win32'
+    ? path.join(RUNTIME_PYTHON_SEED_DIR, 'Lib', 'encodings', '__init__.py')
+    : path.join(RUNTIME_PYTHON_SEED_DIR, 'lib', 'python3.11', 'encodings', '__init__.py');
+}
+
+function backendVenvPythonRelative(manifest) {
+  if (manifest?.python?.venvPython) return manifest.python.venvPython;
+  return runtimePlatform(manifest) === 'win32' ? path.join('Scripts', 'python.exe') : path.join('bin', 'python');
+}
+
+function backendVenvUvicornRelative(manifest) {
+  if (manifest?.python?.venvUvicorn) return manifest.python.venvUvicorn;
+  return runtimePlatform(manifest) === 'win32' ? path.join('Scripts', 'uvicorn.exe') : path.join('bin', 'uvicorn');
+}
+
+function isExecutable(filePath) {
+  try {
+    fs.accessSync(filePath, fs.constants.X_OK);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 export function readPackagedRuntimeSeedManifest(runtimeRoot) {
   const manifestPath = path.join(runtimeRoot, RUNTIME_SEED_MANIFEST_FILE);
   if (!fs.existsSync(manifestPath)) {
@@ -415,16 +452,19 @@ export function inspectPackagedRuntimeSeed(appPath) {
   const requirementsPath = path.join(runtimeRoot, manifest?.backend?.requirementsPath || RUNTIME_BACKEND_REQUIREMENTS_FILE);
   const pythonExecutable = path.join(
     runtimeRoot,
-    manifest?.python?.executable || path.join(RUNTIME_PYTHON_SEED_DIR, 'bin', 'python3.11'),
+    pythonExecutableRelative(manifest),
   );
-  const pythonLib = path.join(runtimeRoot, RUNTIME_PYTHON_SEED_DIR, 'lib', 'libpython3.11.dylib');
+  const pythonStdlibCheck = path.join(runtimeRoot, pythonStdlibCheckRelative(manifest));
+  const pythonLib = manifest?.python?.dynamicLibrary ? path.join(runtimeRoot, manifest.python.dynamicLibrary) : null;
   const wheelhousePath = path.join(runtimeRoot, manifest?.wheelhouse?.path || RUNTIME_WHEELHOUSE_DIR);
   const wheelFiles = listWheelFiles(wheelhousePath);
   // B 方案:预装 venv 路径
   const backendVenvPath = path.join(runtimeRoot, manifest?.backendVenv?.path || RUNTIME_BACKEND_VENV_DIR);
+  const backendVenvPython = path.join(backendVenvPath, backendVenvPythonRelative(manifest));
+  const backendVenvUvicorn = path.join(backendVenvPath, backendVenvUvicornRelative(manifest));
   const backendVenvExists = fs.existsSync(backendVenvPath)
-    && fs.existsSync(path.join(backendVenvPath, 'bin', 'python'))
-    && fs.existsSync(path.join(backendVenvPath, 'bin', 'uvicorn'));
+    && isExecutable(backendVenvPython)
+    && isExecutable(backendVenvUvicorn);
   const backendVenvSha256 = fs.existsSync(backendVenvPath) ? sha256Directory(backendVenvPath) : null;
   const requirementsSha256 = fs.existsSync(requirementsPath) ? sha256File(requirementsPath) : null;
   const wheelhouseSha256 = fs.existsSync(wheelhousePath) ? sha256Directory(wheelhousePath) : null;
@@ -432,7 +472,8 @@ export function inspectPackagedRuntimeSeed(appPath) {
   if (!fs.existsSync(runtimeRoot)) missing.push(`missing runtime root: ${runtimeRoot}`);
   if (!manifest) missing.push(`missing ${RUNTIME_SEED_MANIFEST_FILE}`);
   if (!fs.existsSync(pythonExecutable)) missing.push(`missing python seed executable: ${pythonExecutable}`);
-  if (!fs.existsSync(pythonLib)) missing.push(`missing python seed libpython: ${pythonLib}`);
+  if (!fs.existsSync(pythonStdlibCheck)) missing.push(`missing python seed stdlib: ${pythonStdlibCheck}`);
+  if (pythonLib && !fs.existsSync(pythonLib)) missing.push(`missing python seed dynamic library: ${pythonLib}`);
   if (!fs.existsSync(requirementsPath)) missing.push(`missing ${RUNTIME_BACKEND_REQUIREMENTS_FILE}`);
   // B 方案:wheelhouse 跟 backendVenv 两者要有其一
   // 优先 backendVenv(新版),没有则回退到 wheelhouse 兼容旧 build
@@ -467,6 +508,7 @@ export function inspectPackagedRuntimeSeed(appPath) {
     manifest,
     pythonExecutable,
     pythonLib,
+    pythonStdlibCheck,
     pythonExecutableExists: fs.existsSync(pythonExecutable),
     requirementsPath,
     requirementsSha256,
@@ -476,6 +518,8 @@ export function inspectPackagedRuntimeSeed(appPath) {
     wheelhouseSha256,
     wheelhouseHashMatch,
     backendVenvPath,
+    backendVenvPython,
+    backendVenvUvicorn,
     backendVenvExists,
     backendVenvSha256,
     backendVenvHashMatch,

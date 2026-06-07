@@ -20,7 +20,8 @@ import {
   buildDesktopAppInfo,
   type BackendHealthPayload,
 } from './runtimeManifest.js';
-import { setupAutoUpdater, setUpdateOrgCode } from './autoUpdater.js';
+import { setupAutoUpdater, setUpdateOrgCode, setUpdateOrgIdentity } from './autoUpdater.js';
+import type { UpdateOrgIdentity } from './autoUpdater.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 // V2.1 Lab 模式 (顾源源 5/22 方案 C): ENV YIYU_LAB_MODE=1 触发, 跟主仓库 app 物理隔离
@@ -31,7 +32,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const LAB_MODE = process.env.YIYU_LAB_MODE === '1';
 const DEFAULT_BACKEND_PORT = LAB_MODE ? 47831 : 47829;
 const DEFAULT_CLOUD_BACKEND_PORT = LAB_MODE ? 47832 : 47830;
-const DEFAULT_PACKAGED_REMOTE_CLOUD_API_URL = 'http://101.126.34.232';
+const DEFAULT_PACKAGED_REMOTE_CLOUD_API_URL = '';
 const projectRoot = path.resolve(__dirname, '../..');
 const isDev = !app.isPackaged && Boolean(process.env.VITE_DEV_SERVER_URL);
 const REQUIRED_BACKEND_FEATURES = ['knowledge.vectorize-answer', 'knowledge.reclass-events', 'chat.general-answer', 'chat.async-status'];
@@ -73,6 +74,11 @@ type PackagedRuntimeSeedManifest = {
     executable?: string;
     version?: string;
     treeSha256?: string;
+    stdlibCheck?: string;
+    dynamicLibrary?: string | null;
+    venvPython?: string;
+    venvUvicorn?: string;
+    venvScriptsDir?: string;
   };
   backend?: {
     requirementsPath?: string;
@@ -144,6 +150,17 @@ function normalizeHttpUrl(rawUrl?: string | null) {
   return trimmed.replace(/\/+$/, '');
 }
 
+function readPackagedOfficialCloudConfig() {
+  if (!app.isPackaged) return null;
+  try {
+    const configPath = path.join(process.resourcesPath, 'official-cloud.json');
+    const parsed = JSON.parse(fs.readFileSync(configPath, 'utf8')) as { cloudApiUrl?: string };
+    return parsed.cloudApiUrl || null;
+  } catch {
+    return null;
+  }
+}
+
 function localDevCloudSeedEnv() {
   const env: NodeJS.ProcessEnv = {};
   for (const key of LOCAL_DEV_CLOUD_SEED_ENV_KEYS) {
@@ -159,6 +176,7 @@ function remoteCloudBackendUrl() {
   const configuredUrl = (
     normalizeHttpUrl(process.env.YIYU_REMOTE_CLOUD_API_URL)
     || normalizeHttpUrl(process.env.YIYU_PACKAGED_REMOTE_CLOUD_API_URL)
+    || normalizeHttpUrl(readPackagedOfficialCloudConfig())
   );
   if (configuredUrl) {
     return configuredUrl;
@@ -956,6 +974,41 @@ function isExecutable(filePath: string) {
   }
 }
 
+function runtimeVenvPythonRelative(manifest?: PackagedRuntimeSeedManifest | null) {
+  if (manifest?.python?.venvPython) return manifest.python.venvPython;
+  return process.platform === 'win32' ? path.join('Scripts', 'python.exe') : path.join('bin', 'python');
+}
+
+function runtimeVenvUvicornRelative(manifest?: PackagedRuntimeSeedManifest | null) {
+  if (manifest?.python?.venvUvicorn) return manifest.python.venvUvicorn;
+  return process.platform === 'win32' ? path.join('Scripts', 'uvicorn.exe') : path.join('bin', 'uvicorn');
+}
+
+function runtimeVenvScriptsDirRelative(manifest?: PackagedRuntimeSeedManifest | null) {
+  if (manifest?.python?.venvScriptsDir) return manifest.python.venvScriptsDir;
+  return process.platform === 'win32' ? 'Scripts' : 'bin';
+}
+
+function runtimeVenvSitePackagesRelative() {
+  return process.platform === 'win32'
+    ? path.join('Lib', 'site-packages')
+    : path.join('lib', 'python3.11', 'site-packages');
+}
+
+function packagedSeedPythonRelative(manifest?: PackagedRuntimeSeedManifest | null) {
+  if (manifest?.python?.executable) return manifest.python.executable;
+  return process.platform === 'win32'
+    ? path.join(PACKAGED_RUNTIME_PYTHON_SEED_DIR, 'python.exe')
+    : path.join(PACKAGED_RUNTIME_PYTHON_SEED_DIR, 'bin', 'python3.11');
+}
+
+function packagedSeedStdlibCheckRelative(manifest?: PackagedRuntimeSeedManifest | null) {
+  if (manifest?.python?.stdlibCheck) return manifest.python.stdlibCheck;
+  return process.platform === 'win32'
+    ? path.join(PACKAGED_RUNTIME_PYTHON_SEED_DIR, 'Lib', 'encodings', '__init__.py')
+    : path.join(PACKAGED_RUNTIME_PYTHON_SEED_DIR, 'lib', 'python3.11', 'encodings', '__init__.py');
+}
+
 function resolveUvBinary() {
   const searchDirs = new Set<string>();
   for (const item of (process.env.PATH ?? '').split(path.delimiter)) {
@@ -989,7 +1042,7 @@ function backendEnv(extraEnv: NodeJS.ProcessEnv = {}) {
     pathEntries.add(path.dirname(uvBinaryPath));
   }
   if (env.VIRTUAL_ENV) {
-    pathEntries.add(path.join(env.VIRTUAL_ENV, 'bin'));
+    pathEntries.add(path.join(env.VIRTUAL_ENV, process.platform === 'win32' ? 'Scripts' : 'bin'));
   }
   env.PATH = Array.from(pathEntries).join(path.delimiter);
   const configuredCloudUrl = cloudBackendUrl();
@@ -1012,7 +1065,7 @@ function backendEnv(extraEnv: NodeJS.ProcessEnv = {}) {
   // falls back to /install and crashes during init_fs_encoding because the
   // standard library is unreachable. Explicitly anchor PYTHONHOME at the bundled
   // seed root so stdlib loads deterministically regardless of binary state.
-  if (app.isPackaged) {
+  if (app.isPackaged && process.platform !== 'win32') {
     const seedRoot = path.join(packagedRuntimeRoot(), PACKAGED_RUNTIME_PYTHON_SEED_DIR);
     if (fs.existsSync(path.join(seedRoot, 'lib', 'python3.11', 'encodings', '__init__.py'))) {
       env.PYTHONHOME = seedRoot;
@@ -1026,8 +1079,47 @@ function backendEnv(extraEnv: NodeJS.ProcessEnv = {}) {
   return env;
 }
 
-function runtimePythonPath(venvPath: string) {
-  return path.join(venvPath, 'bin', 'python');
+function runtimePythonPath(venvPath: string, manifest?: PackagedRuntimeSeedManifest | null) {
+  return path.join(venvPath, runtimeVenvPythonRelative(manifest));
+}
+
+function runtimeUvicornPath(venvPath: string, manifest?: PackagedRuntimeSeedManifest | null) {
+  return path.join(venvPath, runtimeVenvUvicornRelative(manifest));
+}
+
+function repairRuntimeVenvEntryPoints(venvPath: string, manifest?: PackagedRuntimeSeedManifest | null) {
+  if (process.platform === 'win32') return;
+  const scriptsDir = path.join(venvPath, runtimeVenvScriptsDirRelative(manifest));
+  const pythonPath = runtimePythonPath(venvPath, manifest);
+  if (!fs.existsSync(scriptsDir) || !fs.existsSync(pythonPath)) return;
+  for (const name of fs.readdirSync(scriptsDir)) {
+    const entryPath = path.join(scriptsDir, name);
+    if (!fs.existsSync(entryPath)) continue;
+    const stat = fs.lstatSync(entryPath);
+    if (stat.isDirectory() || stat.isSymbolicLink()) continue;
+    let content = '';
+    try {
+      content = fs.readFileSync(entryPath, 'utf8');
+    } catch {
+      continue;
+    }
+    if (!content.startsWith('#!') && !content.startsWith("#!/bin/sh\n'''exec' ")) continue;
+    if (content.startsWith("#!/bin/sh\n'''exec' ")) {
+      const repaired = content.replace(
+        /^#!\/bin\/sh\n'''exec' "[^"]+" "\$0" "\$@"\n' '''/,
+        `#!/bin/sh\n'''exec' "${pythonPath}" "$0" "$@"\n' '''`,
+      );
+      if (repaired !== content) {
+        fs.writeFileSync(entryPath, repaired, 'utf8');
+      }
+    } else if (content.startsWith('#!') && !content.startsWith(`#!${pythonPath}\n`)) {
+      const newlineIndex = content.indexOf('\n');
+      if (newlineIndex > 0) {
+        fs.writeFileSync(entryPath, `#!${pythonPath}\n${content.slice(newlineIndex + 1)}`, 'utf8');
+      }
+    }
+    fs.chmodSync(entryPath, stat.mode | 0o755);
+  }
 }
 
 async function runCommand(command: string, args: string[], env: NodeJS.ProcessEnv, label: string) {
@@ -1108,10 +1200,17 @@ async function runJsonCommand(command: string, args: string[], env: NodeJS.Proce
 }
 
 function getBackendPythonPath() {
-  if (backendRuntimeVenv && isExecutable(path.join(backendRuntimeVenv, 'bin', 'python'))) {
-    return path.join(backendRuntimeVenv, 'bin', 'python');
+  const runtimePython = backendRuntimeVenv ? runtimePythonPath(backendRuntimeVenv) : '';
+  if (runtimePython && isExecutable(runtimePython)) {
+    return runtimePython;
   }
-  const fallback = path.join(projectRoot, 'backend', '.venv', 'bin', 'python');
+  const fallback = path.join(
+    projectRoot,
+    'backend',
+    '.venv',
+    process.platform === 'win32' ? 'Scripts' : 'bin',
+    process.platform === 'win32' ? 'python.exe' : 'python',
+  );
   return fallback;
 }
 
@@ -1200,7 +1299,7 @@ function readPackagedRuntimeSeed(): PackagedRuntimeSeed {
   const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf-8')) as PackagedRuntimeSeedManifest;
   const seedPython = path.join(
     root,
-    manifest.python?.executable || path.join(PACKAGED_RUNTIME_PYTHON_SEED_DIR, 'bin', 'python3.11'),
+    packagedSeedPythonRelative(manifest),
   );
   const requirementsPath = path.join(root, manifest.backend?.requirementsPath || PACKAGED_RUNTIME_REQUIREMENTS_FILE);
   const wheelhousePath = path.join(root, manifest.wheelhouse?.path || PACKAGED_RUNTIME_WHEELHOUSE_DIR);
@@ -1230,6 +1329,7 @@ function packagedRuntimeFingerprint(seed: PackagedRuntimeSeed) {
     manifest.backend?.requirementsSha256 ?? 'requirements-hash-missing',
     manifest.backend?.uvLockSha256 ?? 'uv-lock-hash-missing',
     manifest.wheelhouse?.sha256 ?? 'wheelhouse-hash-missing',
+    manifest.backendVenv?.sha256 ?? 'backend-venv-hash-missing',
   ].join('|');
 }
 
@@ -1249,25 +1349,20 @@ function validatePackagedRuntimeSeed(seed: PackagedRuntimeSeed) {
   // B 方案:优先 backend-venv-prebuilt;只要预装 venv 存在就不要求 wheelhouse
   // (老的回退 pip install 路径仍可工作,但新版本一律走 prebuilt)
   const hasPrebuiltVenv = fs.existsSync(seed.backendVenvPath)
-    && fs.existsSync(path.join(seed.backendVenvPath, 'bin', 'python'))
-    && fs.existsSync(path.join(seed.backendVenvPath, 'bin', 'uvicorn'));
+    && fs.existsSync(runtimePythonPath(seed.backendVenvPath, seed.manifest))
+    && fs.existsSync(runtimeUvicornPath(seed.backendVenvPath, seed.manifest));
   if (!hasPrebuiltVenv && !fs.existsSync(seed.wheelhousePath)) {
     throw new Error(`内置 backend 运行时缺失：既无预装 venv (${seed.backendVenvPath}) 也无 wheelhouse (${seed.wheelhousePath})`);
   }
-  const seedEncodings = path.join(
-    seed.root,
-    PACKAGED_RUNTIME_PYTHON_SEED_DIR,
-    'lib',
-    'python3.11',
-    'encodings',
-    '__init__.py',
-  );
+  const seedEncodings = path.join(seed.root, packagedSeedStdlibCheckRelative(seed.manifest));
   if (!fs.existsSync(seedEncodings)) {
     throw new Error(`内置 Python 标准库缺失：${seedEncodings}`);
   }
-  const seedLibPython = path.join(seed.root, PACKAGED_RUNTIME_PYTHON_SEED_DIR, 'lib', 'libpython3.11.dylib');
-  if (!fs.existsSync(seedLibPython)) {
-    throw new Error(`内置 Python 动态库缺失：${seedLibPython}`);
+  if (seed.manifest.python?.dynamicLibrary) {
+    const seedLibPython = path.join(seed.root, seed.manifest.python.dynamicLibrary);
+    if (!fs.existsSync(seedLibPython)) {
+      throw new Error(`内置 Python 动态库缺失：${seedLibPython}`);
+    }
   }
   // 仅在走 legacy wheelhouse 路径时才校验 wheelhouse 目录
   if (!hasPrebuiltVenv) {
@@ -1382,8 +1477,8 @@ async function ensurePackagedBackendRuntime(venvPath: string) {
   const seed = readPackagedRuntimeSeed();
   const metadataPath = projectRuntimeMetadataPath('backend', venvPath);
   const fingerprint = packagedRuntimeFingerprint(seed);
-  const pythonPath = path.join(venvPath, 'bin', 'python');
-  const uvicornPath = path.join(venvPath, 'bin', 'uvicorn');
+  const pythonPath = runtimePythonPath(venvPath, seed.manifest);
+  const uvicornPath = runtimeUvicornPath(venvPath, seed.manifest);
   const existingMetadata = readRuntimeSyncMetadata(metadataPath);
   const forceSync = parseBooleanEnv(process.env.YIYU_FORCE_RUNTIME_SYNC, false);
   let shouldInstall = forceSync || !isExecutable(pythonPath) || !isExecutable(uvicornPath) || existingMetadata?.fingerprint !== fingerprint;
@@ -1411,8 +1506,8 @@ async function ensurePackagedBackendRuntime(venvPath: string) {
   // B 方案根治路径:.app 内有预装 venv → 复制 + 改 pyvenv.cfg,跳过 pip install
   // 旧路径(pip install from wheelhouse)被废弃,因为 wheel 内嵌 binary 公证拒收
   const hasPrebuiltVenv = fs.existsSync(seed.backendVenvPath)
-    && fs.existsSync(path.join(seed.backendVenvPath, 'bin', 'python'))
-    && fs.existsSync(path.join(seed.backendVenvPath, 'bin', 'uvicorn'));
+    && fs.existsSync(runtimePythonPath(seed.backendVenvPath, seed.manifest))
+    && fs.existsSync(runtimeUvicornPath(seed.backendVenvPath, seed.manifest));
 
   if (hasPrebuiltVenv) {
     appendElectronLaunchLog('INFO', `[backend:packaged-runtime] copying pre-built venv from ${seed.backendVenvPath}`);
@@ -1422,33 +1517,36 @@ async function ensurePackagedBackendRuntime(venvPath: string) {
     // 重写 pyvenv.cfg 占位符,指向客户机当前的 seed python 路径
     const pyvenvCfgPath = path.join(venvPath, 'pyvenv.cfg');
     if (fs.existsSync(pyvenvCfgPath)) {
-      const seedBinDir = path.join(seed.root, PACKAGED_RUNTIME_PYTHON_SEED_DIR, 'bin');
-      const seedPythonAbs = path.join(seedBinDir, 'python3.11');
+      const seedPythonAbs = seed.seedPython;
+      const seedHomeDir = path.dirname(seedPythonAbs);
       const cfg = fs.readFileSync(pyvenvCfgPath, 'utf8');
       const fixed = cfg
-        .replace('__YIYU_RUNTIME_HOME__', seedBinDir)
+        .replace('__YIYU_RUNTIME_HOME__', seedHomeDir)
         .replace('__YIYU_RUNTIME_EXECUTABLE__', seedPythonAbs)
         .replace('__YIYU_RUNTIME_COMMAND__', `${seedPythonAbs} -m venv --copies --without-pip ${venvPath}`);
       fs.writeFileSync(pyvenvCfgPath, fixed);
     }
+    repairRuntimeVenvEntryPoints(venvPath, seed.manifest);
   } else {
     // 回退兼容路径:旧版本 build 没生成预装 venv 时仍走 pip install
     // 这条路径将随老版本淘汰,新版本统一走 hasPrebuiltVenv=true
     appendElectronLaunchLog('INFO', '[backend:packaged-runtime] no pre-built venv found, falling back to legacy pip install path');
     await runCommand(seed.seedPython, ['-m', 'venv', '--without-pip', '--copies', venvPath], backendEnv(), 'backend:packaged-venv');
-    const seedLibPython = path.join(seed.root, PACKAGED_RUNTIME_PYTHON_SEED_DIR, 'lib', 'libpython3.11.dylib');
-    const venvLibPython = path.join(venvPath, 'lib', 'libpython3.11.dylib');
-    if (fs.existsSync(seedLibPython)) {
-      fs.copyFileSync(seedLibPython, venvLibPython);
+    if (seed.manifest.python?.dynamicLibrary) {
+      const seedLibPython = path.join(seed.root, seed.manifest.python.dynamicLibrary);
+      const venvLibPython = path.join(venvPath, 'lib', path.basename(seed.manifest.python.dynamicLibrary));
+      if (fs.existsSync(seedLibPython)) {
+        fs.copyFileSync(seedLibPython, venvLibPython);
+      }
     }
     await runCommand(
-      path.join(venvPath, 'bin', 'python'),
+      runtimePythonPath(venvPath, seed.manifest),
       ['-m', 'ensurepip', '--upgrade', '--default-pip'],
       backendEnv({ VIRTUAL_ENV: venvPath }),
       'backend:packaged-ensurepip',
     );
     await runCommand(
-      path.join(venvPath, 'bin', 'python'),
+      runtimePythonPath(venvPath, seed.manifest),
       [
         '-m',
         'pip',
@@ -1465,6 +1563,7 @@ async function ensurePackagedBackendRuntime(venvPath: string) {
   }
 
   await assertPythonRuntimeUsable(pythonPath, 'backend:packaged-python-smoke', backendEnv({ VIRTUAL_ENV: venvPath }));
+  repairRuntimeVenvEntryPoints(venvPath, seed.manifest);
   if (!isExecutable(uvicornPath)) {
     throw new Error('内置后端运行时安装完成后仍缺少 uvicorn');
   }
@@ -1488,8 +1587,8 @@ async function ensureProjectRuntime(projectDirName: 'backend' | 'cloud_backend',
     throw new Error('missing_uv_binary');
   }
   fs.mkdirSync(path.dirname(venvPath), { recursive: true });
-  const pythonPath = path.join(venvPath, 'bin', 'python');
-  const uvicornPath = path.join(venvPath, 'bin', 'uvicorn');
+  const pythonPath = runtimePythonPath(venvPath);
+  const uvicornPath = runtimeUvicornPath(venvPath);
   const metadataPath = projectRuntimeMetadataPath(projectDirName, venvPath);
   const fingerprint = buildRuntimeFingerprint(projectDirName);
   const forceSync = parseBooleanEnv(process.env.YIYU_FORCE_RUNTIME_SYNC, false);
@@ -2924,6 +3023,18 @@ let isRecordingActive = false;
 let recordingTaskTitle = '';
 let userConfirmedQuitDespiteRecording = false;
 
+// 退出守卫：渲染端每隔几秒把"后端真相"(跨客户的进行中/排队后台任务)上报到这里，
+// before-quit 把它和录音合并成一个提醒。带新鲜度 TTL，渲染端停报后视为不可信即忽略，避免幽灵条目卡死退出。
+interface ReportedBackgroundTask {
+  kind: string;
+  label: string;
+  status?: string;
+  severity?: 'loss' | 'queued';
+}
+let reportedBackgroundTasks: ReportedBackgroundTask[] = [];
+let reportedBackgroundTasksAt = 0;
+const BACKGROUND_TASKS_FRESH_MS = 15000;
+
 ipcMain.handle(
   'yiyu-workbench:setRecordingActive',
   async (_event, payload: { active: boolean; taskTitle?: string }) => {
@@ -2937,9 +3048,37 @@ ipcMain.handle(
   },
 );
 
+ipcMain.handle(
+  'yiyu-workbench:setBackgroundTasks',
+  async (_event, payload?: { tasks?: ReportedBackgroundTask[] }) => {
+    const incoming = Array.isArray(payload?.tasks) ? payload!.tasks! : [];
+    reportedBackgroundTasks = incoming.filter(
+      (task): task is ReportedBackgroundTask => Boolean(task && typeof task.label === 'string' && task.label.trim()),
+    );
+    reportedBackgroundTasksAt = Date.now();
+    return { ok: true, count: reportedBackgroundTasks.length };
+  },
+);
+
 app.on('before-quit', (event) => {
-  if (isRecordingActive && !userConfirmedQuitDespiteRecording) {
+  // 合并"录音 + 后端上报的后台任务"成一份退出提醒清单。
+  const items: { label: string; severity: 'loss' | 'queued' }[] = [];
+  if (isRecordingActive) {
+    items.push({ label: `录音「${recordingTaskTitle || '未命名录音文件'}」`, severity: 'loss' });
+  }
+  const tasksFresh = Date.now() - reportedBackgroundTasksAt <= BACKGROUND_TASKS_FRESH_MS;
+  if (tasksFresh) {
+    for (const task of reportedBackgroundTasks) {
+      items.push({ label: task.label, severity: task.severity === 'queued' ? 'queued' : 'loss' });
+    }
+  }
+  if (items.length > 0 && !userConfirmedQuitDespiteRecording) {
     const targetWindow = BrowserWindow.getAllWindows().find((w) => !w.isDestroyed()) ?? null;
+    const lines = items.map((item, index) => `${index + 1}. ${item.label}`).join('\n');
+    const lossCount = items.filter((item) => item.severity === 'loss').length;
+    const tail = lossCount > 0
+      ? '退出软件会中断这些任务，可能导致失败或内容丢失。'
+      : '退出后排队中的任务不会自动继续。';
     const choice = dialog.showMessageBoxSync(
       targetWindow as BrowserWindow,
       {
@@ -2947,13 +3086,13 @@ app.on('before-quit', (event) => {
         buttons: ['取消退出', '仍然退出'],
         defaultId: 0,
         cancelId: 0,
-        title: '录音进行中',
-        message: '当前有录音正在进行',
-        detail: `任务"${recordingTaskTitle || '未命名录音文件'}"正在录音，退出软件会丢失这段录音。\n\n确定要退出吗？`,
+        title: '后台任务进行中',
+        message: `当前有 ${items.length} 个后台任务正在进行`,
+        detail: `${lines}\n\n${tail}\n\n确定要退出吗？`,
         noLink: true,
       },
     );
-    appendElectronLaunchLog('INFO', `[app] before-quit recording-block choice=${choice}`);
+    appendElectronLaunchLog('INFO', `[app] before-quit background-block items=${items.length} choice=${choice}`);
     if (choice === 0) {
       event.preventDefault();
       return;
@@ -3002,10 +3141,23 @@ function applyMiniBounds(win: BrowserWindow) {
   win.setAlwaysOnTop(true, 'floating');
   if (process.platform === 'darwin') win.setWindowButtonVisibility(false);
 }
-ipcMain.handle('yiyu-workbench:setUpdateOrgCode', (_event, orgCode: string | null) => {
-  // renderer 登录拿到 organizationSlug 后调用;主进程已知云地址 → 切到 org 感知更新 feed
+ipcMain.handle('yiyu-workbench:setUpdateOrgIdentity', async (_event, identity: UpdateOrgIdentity | null) => {
+  // renderer 登录拿到 organizationId/organizationSlug 后调用;统一登记到官网中央发布服务。
   try {
-    setUpdateOrgCode(orgCode ?? null, cloudBackendUrl());
+    await setUpdateOrgIdentity({
+      ...(identity || {}),
+      cloudBackendUrl: identity?.cloudBackendUrl || cloudBackendUrl(),
+    });
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, reason: err instanceof Error ? err.message : String(err) };
+  }
+});
+
+ipcMain.handle('yiyu-workbench:setUpdateOrgCode', async (_event, orgCode: string | null) => {
+  // 兼容旧 renderer:旧入口仍可传 slug,但内部改走官网中央发布服务。
+  try {
+    await setUpdateOrgCode(orgCode ?? null, cloudBackendUrl());
     return { ok: true };
   } catch (err) {
     return { ok: false, reason: err instanceof Error ? err.message : String(err) };

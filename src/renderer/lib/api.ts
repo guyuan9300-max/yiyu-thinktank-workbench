@@ -17,6 +17,8 @@ import type {
   LastCloudAiSyncStatus,
   AuthLoginPayload,
   AuthRegisterPayload,
+  LocalAuthLoginPayload,
+  LocalAuthRegisterPayload,
   ChangePasswordPayload,
   ConsultationKnowledgeProcessSummary,
   ConsultationKnowledgeRequestRecord,
@@ -54,6 +56,7 @@ import type {
   ClientWorkspaceSettingsPayload,
   DepartmentOption,
   OrgInviteResolveResult,
+  OrgAdminClaimStatus,
   DeepDnaDraft,
   DeepDnaRecord,
   DnaDelta,
@@ -331,6 +334,7 @@ function createBrowserWorkbenchFallback(): Window['yiyuWorkbench'] {
   return {
     backendBaseUrl,
     setMiniMode: async () => ({ mini: false }),
+    setUpdateOrgIdentity: async () => ({ ok: false, reason: 'browser preview' }),
     setUpdateOrgCode: async () => ({ ok: false, reason: 'browser preview' }),
     getDesktopAppInfo: async () => ({
       appVersion: 'browser-preview',
@@ -427,6 +431,7 @@ function createBrowserWorkbenchFallback(): Window['yiyuWorkbench'] {
     saveRecordingBlob: async () => notAvailable('保存录音文件'),
     readRecordingFile: async () => notAvailable('读取录音文件'),
     setRecordingActive: async () => ({ active: false }),
+    setBackgroundTasks: async () => ({ ok: true, count: 0 }),
   };
 }
 
@@ -1729,6 +1734,13 @@ export async function register(payload: AuthRegisterPayload) {
   });
 }
 
+export async function localRegister(payload: LocalAuthRegisterPayload) {
+  return request<AuthState>('/api/v1/local-auth/register', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+}
+
 export async function getDepartmentOptions(params?: { organizationId?: string | null; inviteCode?: string | null }) {
   const searchParams = new URLSearchParams();
   if (params?.organizationId) searchParams.set('organizationId', params.organizationId);
@@ -1743,6 +1755,13 @@ export async function resolveInviteCode(code: string) {
 
 export async function login(payload: AuthLoginPayload) {
   return request<AuthState>('/api/v1/auth/login', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function localLogin(payload: LocalAuthLoginPayload) {
+  return request<AuthState>('/api/v1/local-auth/login', {
     method: 'POST',
     body: JSON.stringify(payload),
   });
@@ -2108,6 +2127,16 @@ export async function applyOrgMembership(payload: OrgMembershipApplyPayload) {
   return request<OrgMembershipSummary>('/api/v1/me/org-membership/apply', {
     method: 'POST',
     body: JSON.stringify(payload),
+  });
+}
+
+export async function getOrgAdminClaimStatus() {
+  return request<OrgAdminClaimStatus>('/api/v1/me/org-membership/admin-claim-status');
+}
+
+export async function claimOrgAdmin() {
+  return request<AuthState>('/api/v1/me/org-membership/admin-claim', {
+    method: 'POST',
   });
 }
 
@@ -4359,6 +4388,32 @@ export async function getLatestClientLinkMaterialImportRun(clientId: string) {
 
 export async function getClientLinkMaterialImportRun(clientId: string, runId: string) {
   return request<LinkMaterialImportRun>(`/api/v1/clients/${clientId}/link-materials/import-runs/${runId}`);
+}
+
+export async function listClientLinkMaterialImportRuns(clientId: string, limit = 20) {
+  return request<LinkMaterialImportRun[]>(
+    `/api/v1/clients/${clientId}/link-materials/import-runs?limit=${limit}`,
+  );
+}
+
+export async function cancelClientLinkMaterialImportRun(clientId: string, runId: string) {
+  return request<LinkMaterialImportRun>(
+    `/api/v1/clients/${clientId}/link-materials/import-runs/${runId}/cancel`,
+    { method: 'POST' },
+  );
+}
+
+export interface ActiveBackgroundTask {
+  kind: string;
+  label: string;
+  status?: string;
+  severity?: 'loss' | 'queued';
+}
+
+export async function getActiveBackgroundTasks() {
+  return request<{ tasks: ActiveBackgroundTask[]; count: number }>(
+    `/api/v1/system/active-background-tasks`,
+  );
 }
 
 export async function startClientTemplateFill(clientId: string, templatePath: string) {

@@ -88,7 +88,7 @@ function uploadOne(artifact) {
     console.log('         [dry-run] 跳过实际上传');
     return;
   }
-  const result = spawnSync('tosutil', ['cp', artifact.localPath, artifact.remoteKey, '-f'], {
+  const result = spawnSync('tosutil', ['cp', artifact.localPath, artifact.remoteKey], {
     stdio: 'inherit',
   });
   if (result.status !== 0) {

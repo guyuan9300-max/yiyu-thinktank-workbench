@@ -10,9 +10,14 @@ import { APP_DISPLAY_NAME, APP_NAME, sha256File } from './app-manifest.mjs';
 
 const projectRoot = path.resolve(fileURLToPath(new URL('..', import.meta.url)));
 const packageJson = JSON.parse(fs.readFileSync(path.join(projectRoot, 'package.json'), 'utf8'));
+const distDir = path.join(projectRoot, 'dist');
+const defaultDmgCandidates = [
+  path.join(distDir, `yiyu-workbench-${packageJson.version}-${process.arch}.dmg`),
+  path.join(distDir, `${APP_DISPLAY_NAME}-${packageJson.version}-${process.arch}.dmg`),
+];
 const targetDmg = process.argv[2]
   ? path.resolve(process.argv[2])
-  : path.join(projectRoot, 'dist', `${APP_DISPLAY_NAME}-${packageJson.version}-${process.arch}.dmg`);
+  : defaultDmgCandidates.find((candidate) => fs.existsSync(candidate)) || defaultDmgCandidates[0];
 
 function fail(message) {
   console.error(`[verify-mac-dmg] ${message}`);

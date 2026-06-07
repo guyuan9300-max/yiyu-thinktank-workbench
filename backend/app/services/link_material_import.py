@@ -82,6 +82,9 @@ _BILIBILI_BV_RE = re.compile(r"^BV[0-9A-Za-z]{8,}$", re.I)
 _XHS_URL_RE = re.compile(r"(xiaohongshu\.com|xhslink\.com|xhs\.cn)", re.I)
 _WECHAT_ARTICLE_URL_RE = re.compile(r"mp\.weixin\.qq\.com/s", re.I)
 _AUDIO_EXTENSIONS = {".aac", ".aiff", ".alac", ".flac", ".m4a", ".mp3", ".oga", ".ogg", ".opus", ".wav", ".weba", ".wma"}
+# SenseVoice 用 soundfile(libsndfile)解码，它只认 wav/flac/ogg/aiff 等；m4a/aac/mp3/opus/wma
+# 这些要先用 ffmpeg 转成 wav 才能转写。这个集合是"可直接喂 soundfile"的安全格式。
+_SOUNDFILE_SAFE_AUDIO_EXTENSIONS = {".wav", ".flac", ".ogg", ".oga", ".aiff", ".aif"}
 _VIDEO_EXTENSIONS = {".avi", ".flv", ".m4v", ".mkv", ".mov", ".mp4", ".mpeg", ".mpg", ".webm", ".wmv"}
 _NON_MEDIA_EXTENSIONS = {".ass", ".description", ".info.json", ".json", ".part", ".srt", ".ssa", ".txt", ".vtt"}
 _SUPPORTED_COOKIE_BROWSERS = ["firefox", "chrome", "edge", "safari"]
@@ -98,24 +101,48 @@ _BILIBILI_HEADER_ARGS = [
     "--add-header",
     f"User-Agent:{_BILIBILI_USER_AGENT}",
 ]
+# 小红书反爬会校验 Referer/Origin/UA。匿名场景补上这些能提高公开视频笔记的下载成功率；
+# 真正登录墙/私密内容仍需浏览器登录态(cookie)。
+_XHS_HEADER_ARGS = [
+    "--add-header",
+    "Origin:https://www.xiaohongshu.com",
+    "--add-header",
+    "Referer:https://www.xiaohongshu.com/",
+    "--add-header",
+    f"User-Agent:{_BILIBILI_USER_AGENT}",
+]
+
+
+# 从一段文本里抓出第一个 http(s) URL。小红书/B站 App"复制链接"复制的是整段分享文案
+# (标题 + 短链 + 推广语)，必须把真正的 URL 抠出来，否则会把中文文案当 URL 丢给 yt-dlp。
+# URL 在中文里常被空白或中文标点收尾，这里以空白和常见中文标点作为终止符。
+_URL_IN_TEXT_RE = re.compile(r"https?://[^\s，。、；！？（）()【】「」『』""''《》：]+", re.I)
+
+
+def _extract_url_from_text(text: str) -> str | None:
+    match = _URL_IN_TEXT_RE.search(text)
+    return match.group(0) if match else None
 
 
 def detect_link_material(value: str) -> LinkMaterialDetection:
     raw = str(value or "").strip()
     if not raw:
         raise LinkMaterialImportError("请先粘贴 B 站 / 小红书 / 公众号链接。")
-    if _WECHAT_ARTICLE_URL_RE.search(raw):
-        return LinkMaterialDetection(platform="wechat_article", normalized_url=raw, display_name="公众号")
+    # 纯 BV 号(没有 URL)单独处理。
     if _BILIBILI_BV_RE.match(raw):
         return LinkMaterialDetection(
             platform="bilibili",
             normalized_url=f"https://www.bilibili.com/video/{raw}",
             display_name="B站",
         )
-    if _BILIBILI_URL_RE.search(raw):
-        return LinkMaterialDetection(platform="bilibili", normalized_url=raw, display_name="B站")
-    if _XHS_URL_RE.search(raw):
-        return LinkMaterialDetection(platform="xiaohongshu", normalized_url=raw, display_name="小红书")
+    # 把真正的 URL 从分享文案里抠出来；抠不到再退回原文(兼容用户直接粘干净链接)。
+    url = _extract_url_from_text(raw) or raw
+    if _WECHAT_ARTICLE_URL_RE.search(url):
+        return LinkMaterialDetection(platform="wechat_article", normalized_url=url, display_name="公众号")
+    if _BILIBILI_URL_RE.search(url):
+        return LinkMaterialDetection(platform="bilibili", normalized_url=url, display_name="B站")
+    if _XHS_URL_RE.search(url):
+        return LinkMaterialDetection(platform="xiaohongshu", normalized_url=url, display_name="小红书")
     raise LinkMaterialImportError("暂不支持这个链接。当前仅支持 B 站链接、BV 号、小红书链接、微信公众号文章。")
 
 
@@ -199,9 +226,22 @@ class _YtDlpAdapter(LinkMaterialPlatformAdapter):
         else:
             source_metadata.update({"subtitleAvailable": False, "transcriptSource": "none"})
             media_kind = str(media_metadata.get("downloadedMediaKind") or _guess_media_kind(media_path))
-            if media_kind == "audio":
+            if media_kind == "audio" and media_path.suffix.lower() in _SOUNDFILE_SAFE_AUDIO_EXTENSIONS:
+                # 已是 soundfile 能直接读的音频(wav/flac/ogg…)，无需转码。
                 audio_path = media_path
                 source_metadata.update({"tempMediaKind": "audio", "audioExtracted": False})
+            elif media_kind == "audio":
+                # 下载到的是 m4a/aac/mp3/opus 等 soundfile 读不了的音频 → 用 ffmpeg 转成 16k 单声道 wav。
+                ffmpeg = find_ffmpeg()
+                source_metadata["ffmpegAvailable"] = bool(ffmpeg)
+                if not ffmpeg:
+                    raise LinkMaterialImportError(
+                        f"已下载本地音频，但格式（{media_path.suffix or '未知'}）需要 ffmpeg 转码后才能转写，当前未检测到 ffmpeg。",
+                        metadata=source_metadata,
+                    )
+                _notify_stage(options, "转码音频中", 44.0, source_metadata)
+                audio_path = extract_audio_from_media(media_path, temp_dir, ffmpeg=ffmpeg)
+                source_metadata.update({"tempMediaKind": "audio", "audioExtracted": True})
             else:
                 ffmpeg = find_ffmpeg()
                 source_metadata["ffmpegAvailable"] = bool(ffmpeg)
@@ -441,22 +481,71 @@ def polish_transcript_for_reading(
     return fallback
 
 
+# 无标点长文本的兜底分段长度：每段约这么多字（优先在逗号/顿号等软停顿处断，否则硬断）。
+_FALLBACK_PARAGRAPH_CHARS = 140
+
+
 def _simple_paragraph_split(text: str) -> str:
-    """fallback 分段：按句号/感叹号粗略分段，不加粗。"""
-    sentences = [s.strip() for s in re.split(r"(?<=[。！？!?])", text) if s.strip()]
-    if not sentences:
+    """fallback 分段（不依赖 LLM，云端断网时也能用）：
+
+    1. 先尊重已有的空行分段（如分窗转写已给出的段落结构），不压平；
+    2. 每个块内若有句末标点（。！？!?）→ 每 4 句一段；
+    3. 块内无句末标点（ASR 转写常见无标点）→ 按长度粗分，优先在逗号/顿号处断，
+       避免整段糊成"一整片"。
+    """
+    text = (text or "").strip()
+    if not text:
         return text
-    paragraphs: list[str] = []
-    buffer: list[str] = []
-    for sentence in sentences:
-        buffer.append(sentence)
-        # 每 4 句一段
-        if len(buffer) >= 4:
+    blocks = [b.strip() for b in re.split(r"\n\s*\n", text) if b.strip()]
+    out: list[str] = []
+    for block in blocks:
+        out.extend(_split_one_block(block))
+    return "\n\n".join(out) if out else text
+
+
+def _split_one_block(block: str) -> list[str]:
+    """单个文本块分段：有句末标点按 4 句一段，无标点按长度粗分。"""
+    sentences = [s.strip() for s in re.split(r"(?<=[。！？!?])", block) if s.strip()]
+    if len(sentences) > 1:
+        paragraphs: list[str] = []
+        buffer: list[str] = []
+        for sentence in sentences:
+            buffer.append(sentence)
+            if len(buffer) >= 4:
+                paragraphs.append("".join(buffer))
+                buffer = []
+        if buffer:
             paragraphs.append("".join(buffer))
-            buffer = []
+        return paragraphs
+    single = sentences[0] if sentences else block
+    if len(single) <= _FALLBACK_PARAGRAPH_CHARS:
+        return [single]
+    return _split_block_by_length(single)
+
+
+def _split_block_by_length(text: str) -> list[str]:
+    """无句末标点的长文本按长度切段：优先在逗号/顿号/分号等软停顿处断，否则硬切。"""
+    parts = [p for p in re.split(r"(?<=[，、；,;])", text) if p]
+    paragraphs: list[str] = []
+    buffer = ""
+    for part in parts:
+        if buffer and len(buffer) + len(part) > _FALLBACK_PARAGRAPH_CHARS:
+            paragraphs.append(buffer)
+            buffer = part
+        else:
+            buffer += part
     if buffer:
-        paragraphs.append("".join(buffer))
-    return "\n\n".join(paragraphs)
+        paragraphs.append(buffer)
+    # 仍有超长段（连软停顿都没有）→ 按字数硬切，绝不留"一整片"。
+    final: list[str] = []
+    hard_limit = int(_FALLBACK_PARAGRAPH_CHARS * 1.5)
+    for paragraph in paragraphs:
+        if len(paragraph) <= hard_limit:
+            final.append(paragraph)
+        else:
+            for index in range(0, len(paragraph), _FALLBACK_PARAGRAPH_CHARS):
+                final.append(paragraph[index:index + _FALLBACK_PARAGRAPH_CHARS])
+    return final
 
 
 _DOCX_BODY_FONT = "黑体"
@@ -903,6 +992,7 @@ def download_temp_media(
             options=options,
             profile=profile,
             mode="video_first",
+            platform=platform,
         )
         attempts.append(video_result["attempt"])
         if video_result["media_path"] is not None:
@@ -931,6 +1021,7 @@ def download_temp_media(
             options=options,
             profile=profile,
             mode="audio_fallback",
+            platform=platform,
         )
         attempts.append(audio_result["attempt"])
         if audio_result["media_path"] is not None:
@@ -999,6 +1090,17 @@ def download_temp_media(
         else:
             reason = "B站返回 HTTP 412。已尝试请求头与浏览器模拟；可启用浏览器登录态，或安装 BBDown 后重试。"
         raise LinkMaterialImportError(reason, metadata=metadata)
+    if platform == "xiaohongshu":
+        if last_failure_kind == "no_video":
+            reason = "这条小红书是图文笔记（没有视频），没有可转写的内容。请改用视频笔记的分享链接。"
+        elif last_failure_kind in {"login_required", "cookie_required"} and not options.use_browser_cookies:
+            reason = "小红书需要登录态才能访问该内容。请在弹窗里勾选「使用浏览器登录态读取链接」后重试。"
+        else:
+            reason = (
+                "小红书视频下载失败。常见原因：分享链接已过期——请从小红书 App 用「复制链接」重新获取最新链接"
+                "（旧链接里的访问令牌会失效）；若仍不行，可勾选浏览器登录态再试。"
+            )
+        raise LinkMaterialImportError(reason, metadata=metadata)
     raise LinkMaterialImportError(
         f"临时媒体下载失败：{_error_tail(last_detail, limit=240) or '未知错误'}",
         metadata=metadata,
@@ -1010,6 +1112,24 @@ def _build_download_attempt_profiles(
     platform: LinkMaterialPlatform,
     options: LinkMaterialImportOptions,
 ) -> list[_DownloadAttemptProfile]:
+    if platform == "xiaohongshu":
+        # 小红书：base → 补 headers → impersonate(浏览器指纹，缓解反爬) → cookie(登录墙)。
+        # 与 B 站同构的升级重试；加了只提高成功率，失败仍给清晰提示。
+        xhs_profiles = [
+            _DownloadAttemptProfile(name="base"),
+            _DownloadAttemptProfile(name="xhs_headers", headers_applied=True),
+            _DownloadAttemptProfile(name="xhs_impersonate", headers_applied=True, impersonation_requested=True),
+        ]
+        if options.use_browser_cookies:
+            xhs_profiles.append(
+                _DownloadAttemptProfile(
+                    name="xhs_cookie",
+                    headers_applied=True,
+                    impersonation_requested=True,
+                    use_browser_cookies=True,
+                )
+            )
+        return xhs_profiles
     if platform != "bilibili":
         return [
             _DownloadAttemptProfile(
@@ -1043,7 +1163,9 @@ def _attempt_yt_dlp_media_download(
     options: LinkMaterialImportOptions,
     profile: _DownloadAttemptProfile,
     mode: Literal["video_first", "audio_fallback"],
+    platform: LinkMaterialPlatform = "bilibili",
 ) -> dict[str, Any]:
+    header_args = _XHS_HEADER_ARGS if platform == "xiaohongshu" else _BILIBILI_HEADER_ARGS
     impersonation_target = _get_yt_dlp_impersonate_target(executable) if profile.impersonation_requested else None
     format_args = (
         [
@@ -1071,6 +1193,7 @@ def _attempt_yt_dlp_media_download(
         output_template,
         source_url,
         headers_applied=profile.headers_applied,
+        header_args=header_args,
         impersonation_requested=profile.impersonation_requested,
         impersonation_target=impersonation_target,
         use_browser_cookies=profile.use_browser_cookies,
@@ -1403,6 +1526,15 @@ def _classify_yt_dlp_access_failure(detail: str) -> str:
         return "login_required"
     if "cookie" in lowered:
         return "cookie_required"
+    # 图文笔记/无视频流：yt-dlp 找不到可下载的视频格式(小红书图文笔记最典型)。
+    if (
+        "requested format is not available" in lowered
+        or "no video formats" in lowered
+        or "no video could be found" in lowered
+        or "there is no video" in lowered
+        or "no formats found" in lowered
+    ):
+        return "no_video"
     return "unknown"
 
 
@@ -1418,13 +1550,14 @@ def _build_yt_dlp_command(
     options: LinkMaterialImportOptions,
     *args: str,
     headers_applied: bool = False,
+    header_args: list[str] | None = None,
     impersonation_requested: bool = False,
     impersonation_target: str | None = None,
     use_browser_cookies: bool | None = None,
 ) -> list[str]:
     command = [*executable]
     if headers_applied:
-        command.extend(_BILIBILI_HEADER_ARGS)
+        command.extend(header_args if header_args is not None else _BILIBILI_HEADER_ARGS)
     if impersonation_requested and impersonation_target:
         command.extend(["--impersonate", impersonation_target])
     if bool(use_browser_cookies):

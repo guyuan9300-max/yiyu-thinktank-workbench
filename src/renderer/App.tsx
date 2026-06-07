@@ -140,7 +140,9 @@ import type {
   MainChainStabilitySettings,
   MentionCandidate,
   Operator,
+  OrgAdminClaimStatus,
   OrgMembershipSummary,
+  OfficialPushUpdatePayload,
   OrgWritingNorm,
   PageContextPack,
   ProjectFlow,
@@ -268,6 +270,9 @@ import {
   startClientLinkMaterialImport,
   getLatestClientLinkMaterialImportRun,
   getClientLinkMaterialImportRun,
+  listClientLinkMaterialImportRuns,
+  cancelClientLinkMaterialImportRun,
+  getActiveBackgroundTasks,
   createEventLine,
   createProjectFlow,
   createProjectModule,
@@ -332,6 +337,7 @@ import {
   getFeishuBotSettings,
   getFeishuSyncStatus,
   getOrgFeishuIntegration,
+  getOrgAdminClaimStatus,
   getOrgMembershipSummary,
   getFeishuUserBinding,
   getHealth,
@@ -376,6 +382,8 @@ import {
   importPaths,
   loadDemoData,
   login,
+  localLogin,
+  localRegister,
   ingestMeeting,
   logout,
   getProposals,
@@ -396,6 +404,7 @@ import {
   rebuildClientKnowledge,
   setWorkspaceInteractionState,
   register,
+  claimOrgAdmin,
   commitAndPushToMain,
   rejectEmployeeReview,
   resolveMeeting,
@@ -509,7 +518,7 @@ import { reviewStatusLabel, reviewTaskDateLabel, type ReviewTaskRow } from './co
 import { GrowthProvider, notifyGrowthRefresh } from './components/growth/GrowthContext';
 // v2.2 F1.6: L2 ClientFactBundle 跨 view 共享 - 见 docs/V2.2_NORTH_STAR.md N1+N2
 import { ClientFactProvider } from './contexts/ClientFactContext';
-import { UpdateNotifier } from './components/UpdateNotifier';
+import { OFFICIAL_PUSH_STATE_EVENT, UPDATE_STATE_KEY, UpdateNotifier, setCachedOfficialPush } from './components/UpdateNotifier';
 import { AboutAppSettingsPanel } from './components/settings/AboutAppSettingsPanel';
 import { GrowthCenterView } from './components/handbook/GrowthCenterView';
 import { AppLogoMark, BrandLogoMark } from './components/settings/BrandLogoSettingsCard';
@@ -1965,17 +1974,24 @@ function pickDefaultRememberedCloudAuthAccount(memory: LocalInputMemory) {
   );
 }
 
-// 取消"本机模式": 启动默认为未登录 — 不再用 'local-device-user' 当 placeholder.
-// 启动时显示登录页 (loading 期间), /auth/me 加载完后:
-//   - authenticated=true → 进工作台
-//   - authenticated=false → 继续显示登录页
-// 这是 fix "退出登录后仍看见以前页面" + "重启后界面显示本机用户" 的关键.
 const DEFAULT_LOCAL_AUTH_STATE: AuthState = {
   authenticated: false,
-  sessionMode: 'cloud',
+  sessionMode: 'local',
   user: null,
+  requiresLocalIdentitySetup: true,
+  localIdentityStatus: 'needs_setup',
 };
-const YIYU_OFFICIAL_CLOUD_URL = 'http://101.126.34.232';
+const DEFAULT_ORG_ADMIN_CLAIM_STATUS: OrgAdminClaimStatus = {
+  hasOrganization: false,
+  organizationId: null,
+  organizationName: null,
+  hasAdmin: false,
+  canClaim: false,
+  reason: null,
+  currentUserRole: null,
+  currentUserMembershipStatus: null,
+};
+const ORG_MANAGEMENT_SECTION_KEYS: SettingsSectionKey[] = ['system_admin', 'org_overview', 'org_departments', 'org_people', 'org_rules'];
 const YIYU_ORG_NAME_PATTERNS = ['益语智库', '益语软件'];
 
 function normalizeUrlForComparison(rawUrl?: string | null) {
@@ -2023,6 +2039,10 @@ function normalizeAuthStateForDesktop(state: AuthState | null | undefined): Auth
   }
   return {
     ...DEFAULT_LOCAL_AUTH_STATE,
+    ...state,
+    authenticated: false,
+    user: null,
+    sessionMode: state?.sessionMode || 'local',
     message: state?.message || null,
   };
 }
@@ -7523,6 +7543,12 @@ export default function App() {
   const [operators, setOperators] = useState<Operator[]>([]);
   const [health, setHealth] = useState<HealthResponse | null>(null);
   const [desktopAppInfo, setDesktopAppInfo] = useState<DesktopAppInfo | null>(null);
+  const [hasOfficialPush, setHasOfficialPush] = useState(() => (
+    typeof window !== 'undefined' ? Boolean(window[UPDATE_STATE_KEY]?.officialPush) : false
+  ));
+  const [officialPushToast, setOfficialPushToast] = useState<OfficialPushUpdatePayload | null>(() => (
+    typeof window !== 'undefined' ? window[UPDATE_STATE_KEY]?.officialPush ?? null : null
+  ));
   const canUseCollabSync = Boolean(desktopAppInfo && desktopAppInfo.platform !== 'browser');
   const isMaintenanceModeActive = Boolean(maintenanceModeStatus?.active);
   const canShowCollabSync = canUseCollabSync && isMaintenanceModeActive;
@@ -7571,6 +7597,8 @@ export default function App() {
   const [handbookSettingsState, setHandbookSettingsState] = useState<HandbookSettings>(DEFAULT_HANDBOOK_SETTINGS);
   const [systemAdminSettingsState, setSystemAdminSettingsState] = useState<SystemAdminSettings>(DEFAULT_SYSTEM_ADMIN_SETTINGS);
   const [orgMembershipState, setOrgMembershipState] = useState<OrgMembershipSummary>(DEFAULT_ORG_MEMBERSHIP_SUMMARY);
+  const [orgAdminClaimStatus, setOrgAdminClaimStatus] = useState<OrgAdminClaimStatus>(DEFAULT_ORG_ADMIN_CLAIM_STATUS);
+  const [orgAdminClaimBusy, setOrgAdminClaimBusy] = useState(false);
   const [orgFeishuIntegrationState, setOrgFeishuIntegrationState] = useState<OrgFeishuIntegration>(DEFAULT_ORG_FEISHU_INTEGRATION);
   const [feishuDeliveryProfileState, setFeishuDeliveryProfileState] = useState<FeishuDeliveryProfile>(DEFAULT_FEISHU_DELIVERY_PROFILE);
   const [feishuMemberAuthorizationState, setFeishuMemberAuthorizationState] = useState<FeishuMemberAuthorization>(DEFAULT_FEISHU_MEMBER_AUTHORIZATION);
@@ -7881,15 +7909,10 @@ export default function App() {
     if (task) setPendingPlanItemAction({ kind: 'open-task', task });
   }, [tasks]);
   const isCloudSession = authState.sessionMode === 'cloud';
-  // 取消"本机模式": isLocalSession 永远 false. 所有 if (isLocalSession) {...} 分支
-  // 自动变 dead code (e.g. canManageSensitiveSettings 只剩 admin role check;
-  // 各处"本机模式"文案不再渲染). 不需逐行删 22 处 UI, 这是 minimal-invasive.
-  // 跟 backend auth_me 改造 (没 token 时 authenticated=False) 对齐 — 现在没登录
-  // 直接到登录页, 不再有"local-device-user"虚假身份让客户数据对所有打开 app 的人可见.
-  const isLocalSession: boolean = false;
+  const isLocalSession = authState.sessionMode === 'local';
   const isYiyuOfficialCloudSession = Boolean(
     isCloudSession
-    && normalizeUrlForComparison(desktopAppInfo?.cloudBackendUrl) === YIYU_OFFICIAL_CLOUD_URL
+    && normalizeUrlForComparison(desktopAppInfo?.cloudBackendUrl)
     && (
       isYiyuOfficialOrganizationName(orgMembershipState.organizationName)
       || isYiyuOfficialOrganizationName(orgModelState.organization.name)
@@ -7904,8 +7927,15 @@ export default function App() {
     ),
   );
   const currentMembershipStatus = getEffectiveMembershipStatus(authState);
-  const shouldShowIdentityGate = isCloudSession && currentMembershipStatus !== 'approved';
+  const canClaimOrgAdmin = Boolean(isCloudSession && orgAdminClaimStatus.canClaim);
+  const canAccessOrganizationSettings = Boolean(currentSessionUser?.primaryRole === 'admin' || canClaimOrgAdmin);
+  const shouldShowIdentityGate = isCloudSession && currentMembershipStatus !== 'approved' && !canClaimOrgAdmin;
   const renderBranch = loading ? 'loading' : (!authState.authenticated || !currentSessionUser ? 'auth' : shouldShowIdentityGate ? 'identity' : 'main');
+  useEffect(() => {
+    if (canAccessOrganizationSettings) return;
+    if (!ORG_MANAGEMENT_SECTION_KEYS.includes(settingsSection)) return;
+    setSettingsSection('account');
+  }, [canAccessOrganizationSettings, settingsSection]);
   const currentOperatorName = currentSessionUser?.fullName || operators.find((item) => item.isCurrent)?.name || '庆华';
   const canManagePublicTaskTaxonomy = currentSessionUser?.primaryRole === 'admin';
   const [cloudAuthModalOpen, setCloudAuthModalOpen] = useState(false);
@@ -8013,11 +8043,46 @@ export default function App() {
     }
   }, [authState.message]);
 
+  // 退出守卫数据源：每 5s 拉取后端"进行中/排队的后台任务"上报主进程。
+  // 以后端 run 状态为权威真相(跨客户准确，不受当前选中客户影响)；关闭软件时
+  // before-quit 据此把"录音 + 这些任务"合并成一个提醒，避免误关导致任务失败/丢失。
+  useEffect(() => {
+    const api = window.yiyuWorkbench;
+    if (!api?.setBackgroundTasks) return undefined;
+    let cancelled = false;
+    const sync = async () => {
+      try {
+        const res = await getActiveBackgroundTasks();
+        if (cancelled) return;
+        await api.setBackgroundTasks?.({ tasks: res.tasks || [] });
+      } catch {
+        // 后端不可达时不更新；主进程的新鲜度 TTL(15s)会自动忽略过期数据。
+      }
+    };
+    void sync();
+    const timer = window.setInterval(() => {
+      void sync();
+    }, 5000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, []);
+
   useEffect(() => {
     if (authShellMode !== 'register') return undefined;
     const code = normalizeDepartmentInviteInput(authShellForm.inviteCode);
     if (!code) {
       setAuthShellInviteStatus(EMPTY_AUTH_SHELL_INVITE_STATUS);
+      return undefined;
+    }
+    if (!settingsState?.cloudApiUrl?.trim()) {
+      setAuthShellInviteStatus({
+        code,
+        loading: false,
+        valid: null,
+        message: '邀请码会先保存在本机，连接云端后再识别组织与部门。',
+      });
       return undefined;
     }
     let cancelled = false;
@@ -8053,7 +8118,7 @@ export default function App() {
       cancelled = true;
       window.clearTimeout(timer);
     };
-  }, [authShellForm.inviteCode, authShellMode]);
+  }, [authShellForm.inviteCode, authShellMode, settingsState?.cloudApiUrl]);
 
   useEffect(() => {
     if (!authState.authenticated) return;
@@ -8511,6 +8576,19 @@ export default function App() {
   }, [activeTab, settingsSection]);
 
   useEffect(() => {
+    const syncOfficialPushFlag = () => {
+      const nextPush = window[UPDATE_STATE_KEY]?.officialPush ?? null;
+      setHasOfficialPush(Boolean(nextPush));
+      setOfficialPushToast(nextPush);
+    };
+    syncOfficialPushFlag();
+    window.addEventListener(OFFICIAL_PUSH_STATE_EVENT, syncOfficialPushFlag);
+    return () => {
+      window.removeEventListener(OFFICIAL_PUSH_STATE_EVENT, syncOfficialPushFlag);
+    };
+  }, []);
+
+  useEffect(() => {
     const handlePopState = () => {
       const nextState = normalizeStartupNavigationState(readInitialNavigationState());
       setActiveTab(nextState.activeTab);
@@ -8821,13 +8899,50 @@ export default function App() {
   async function loadOrgMembershipBlock() {
     const response = await getOrgMembershipSummary();
     setOrgMembershipState(response);
-    // 把组织码告诉主进程更新器 → 切到 org 感知更新 feed(定向推送按组织生效);非桌面环境忽略
+    // 把组织身份告诉主进程更新器 → 官网中央发布服务按稳定 organizationId 决策版本;非桌面环境忽略
     try {
-      void window.yiyuWorkbench?.setUpdateOrgCode?.(response.organizationSlug ?? null);
+      if (window.yiyuWorkbench?.setUpdateOrgIdentity) {
+        void window.yiyuWorkbench.setUpdateOrgIdentity({
+          organizationId: response.organizationId ?? null,
+          organizationSlug: response.organizationSlug ?? null,
+          organizationName: response.organizationName ?? null,
+          cloudBackendUrl: desktopAppInfo?.cloudBackendUrl ?? null,
+        }).then((result) => {
+          if (!result.ok) return;
+          window.setTimeout(() => {
+            void window.yiyuWorkbench?.checkForUpdates?.().then((updateResult) => {
+              if (updateResult?.officialPush) {
+                setCachedOfficialPush(updateResult.officialPush);
+              }
+            }).catch(() => undefined);
+          }, 500);
+        });
+      } else {
+        void window.yiyuWorkbench?.setUpdateOrgCode?.(response.organizationSlug ?? null);
+      }
     } catch {
       /* noop */
     }
     return response;
+  }
+
+  async function loadOrgAdminClaimStatusBlock(includeCloud = authState.sessionMode === 'cloud') {
+    if (!includeCloud) {
+      setOrgAdminClaimStatus(DEFAULT_ORG_ADMIN_CLAIM_STATUS);
+      return DEFAULT_ORG_ADMIN_CLAIM_STATUS;
+    }
+    try {
+      const response = await getOrgAdminClaimStatus();
+      setOrgAdminClaimStatus(response);
+      return response;
+    } catch (error) {
+      const fallback: OrgAdminClaimStatus = {
+        ...DEFAULT_ORG_ADMIN_CLAIM_STATUS,
+        reason: error instanceof Error ? error.message : '管理员认领状态加载失败',
+      };
+      setOrgAdminClaimStatus(fallback);
+      return fallback;
+    }
   }
 
   async function loadOrgFeishuIntegrationBlock() {
@@ -8930,7 +9045,11 @@ export default function App() {
       case 'org_departments':
       case 'org_people':
       case 'org_rules':
-        await loadSystemAdminSettingsBlock(authState.sessionMode === 'cloud');
+        if (currentSessionUser?.primaryRole !== 'admin' && canClaimOrgAdmin) {
+          await loadOrgAdminClaimStatusBlock(true);
+        } else {
+          await loadSystemAdminSettingsBlock(authState.sessionMode === 'cloud');
+        }
         break;
     }
     setSettingsSectionLoaded((prev) => ({ ...prev, [section]: true }));
@@ -9401,13 +9520,22 @@ export default function App() {
           flash('error', settingsError instanceof Error ? settingsError.message : '系统设置加载失败');
         }
       }
+      let nextOrgAdminClaimStatus = DEFAULT_ORG_ADMIN_CLAIM_STATUS;
       // Always load org membership for cloud-authenticated users so the account-settings page
       // shows up-to-date organizationName / departmentName (even after a dept lead was bound
       // after the user already had approved status).
       if (nextAuth.authenticated && nextAuth.sessionMode === 'cloud') {
         await loadOrgMembershipBlock().catch(() => DEFAULT_ORG_MEMBERSHIP_SUMMARY);
+        nextOrgAdminClaimStatus = await loadOrgAdminClaimStatusBlock(true).catch(() => DEFAULT_ORG_ADMIN_CLAIM_STATUS);
+      } else {
+        setOrgAdminClaimStatus(DEFAULT_ORG_ADMIN_CLAIM_STATUS);
       }
-      if (nextAuth.authenticated && nextAuth.sessionMode === 'cloud' && getEffectiveMembershipStatus(nextAuth) !== 'approved') {
+      if (
+        nextAuth.authenticated
+        && nextAuth.sessionMode === 'cloud'
+        && getEffectiveMembershipStatus(nextAuth) !== 'approved'
+        && !nextOrgAdminClaimStatus.canClaim
+      ) {
         markLoadingPhase('正在读取组织身份状态…');
         setClients([]);
         setWorkspace(null);
@@ -9451,6 +9579,10 @@ export default function App() {
                 setOrgMembershipState(DEFAULT_ORG_MEMBERSHIP_SUMMARY);
                 return DEFAULT_ORG_MEMBERSHIP_SUMMARY;
               }),
+          },
+          {
+            name: 'org-admin-claim-status',
+            run: () => loadOrgAdminClaimStatusBlock(nextAuth.sessionMode === 'cloud'),
           },
           {
             name: 'org-feishu-integration',
@@ -9556,6 +9688,7 @@ export default function App() {
         setHandbookSettingsState(DEFAULT_HANDBOOK_SETTINGS);
         setSystemAdminSettingsState(DEFAULT_SYSTEM_ADMIN_SETTINGS);
         setOrgMembershipState(DEFAULT_ORG_MEMBERSHIP_SUMMARY);
+        setOrgAdminClaimStatus(DEFAULT_ORG_ADMIN_CLAIM_STATUS);
         setOrgFeishuIntegrationState(DEFAULT_ORG_FEISHU_INTEGRATION);
         setFeishuDeliveryProfileState(DEFAULT_FEISHU_DELIVERY_PROFILE);
         setFeishuMemberAuthorizationState(DEFAULT_FEISHU_MEMBER_AUTHORIZATION);
@@ -10119,7 +10252,7 @@ export default function App() {
       && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(form.email)
       && form.password.length >= 8
       && form.password === form.confirmPassword;
-    const registerValid = registerAccountValid && (!form.inviteCode.trim() || inviteStatus.valid !== false);
+    const registerValid = registerAccountValid;
 
     const switchMode = (nextMode: 'login' | 'register') => {
       setAuthShellMode(nextMode);
@@ -10138,11 +10271,19 @@ export default function App() {
       setAuthShellSubmitting(true);
       try {
         if (mode === 'register') {
-          const response = await register({
+          const hasPendingOrgIdentity = Boolean(
+            normalizeDepartmentInviteInput(form.inviteCode)
+            || form.departmentId
+            || form.jobTitle.trim()
+            || form.managerName.trim()
+            || form.currentFocus.trim(),
+          );
+          const response = await localRegister({
             email: form.email,
             phone: form.phone || null,
             fullName: form.fullName,
             password: form.password,
+            organizationMode: hasPendingOrgIdentity ? 'join' : 'create',
             inviteCode: normalizeDepartmentInviteInput(form.inviteCode) || null,
             departmentId: form.departmentId || null,
             jobTitle: form.jobTitle || null,
@@ -10151,7 +10292,7 @@ export default function App() {
           });
           setAuthState(response);
         } else {
-          const response = await login({ identifier: form.identifier || form.email, password: form.password, rememberMe });
+          const response = await localLogin({ identifier: form.identifier || form.email, password: form.password, rememberMe });
           setAuthState(response);
         }
         try {
@@ -10270,7 +10411,7 @@ export default function App() {
             {mode === 'register' && (
               <>
                 <p className="px-1 text-[11px] text-gray-400 leading-relaxed">
-                  免审批立即可用 · 注册后可在设置里加入组织、申请权限
+                  先创建本机账号 · 连接云端后再同步和加入组织
                 </p>
                 {/* Step 切换:underline 风格,与登录/注册 tab 一致 */}
                 <div className="flex items-center gap-6 border-b border-gray-100 pb-px">
@@ -10320,7 +10461,7 @@ export default function App() {
                   </>
                 ) : (
                   <>
-                    <input value={form.inviteCode} onChange={(event) => setForm((prev) => ({ ...prev, inviteCode: event.target.value }))} placeholder="部门邀请码 (可选, 自动识别组织)" className="w-full bg-white border border-gray-200 rounded-xl px-3.5 py-3 text-[14px] text-gray-900 outline-none focus:border-[#5B7BFE] transition-colors" />
+                    <input value={form.inviteCode} onChange={(event) => setForm((prev) => ({ ...prev, inviteCode: event.target.value }))} placeholder="部门邀请码 (可选, 先保存在本机)" className="w-full bg-white border border-gray-200 rounded-xl px-3.5 py-3 text-[14px] text-gray-900 outline-none focus:border-[#5B7BFE] transition-colors" />
                     {inviteStatus.message && (
                       <div className={`rounded-xl border px-3.5 py-2.5 text-[11.5px] ${inviteStatus.valid === false ? 'border-rose-200 bg-rose-50 text-rose-700' : 'border-blue-200 bg-blue-50 text-blue-700'}`}>
                         {inviteStatus.loading ? '正在识别邀请码…' : inviteStatus.message}
@@ -20281,6 +20422,12 @@ export default function App() {
     );
     // P-A 透明度:填表字段「有数据/缺数据」明细的展开开关
     const [fillDetailOpen, setFillDetailOpen] = useState(false);
+    // Q2 右上角链接转写卡:该客户的链接任务列表(进行中/排队/最近),轮询刷新;高级(登录态)展开开关。
+    const [clientLinkMaterialRuns, setClientLinkMaterialRuns] = useState<LinkMaterialImportRun[]>([]);
+    const [linkCardAdvancedOpen, setLinkCardAdvancedOpen] = useState(false);
+    const [linkCardCancelingId, setLinkCardCancelingId] = useState<string | null>(null);
+    // Q2 上下文面板:点「链接转资料」工具时,在工具栏下方有界区域展开链接配置(不全屏、不常驻撑大工具栏)。
+    const [linkPanelOpen, setLinkPanelOpen] = useState(false);
     const setTemplateFillDialog = (
       nextValue: TemplateFillDialogState | null | ((previous: TemplateFillDialogState | null) => TemplateFillDialogState | null),
     ) => {
@@ -20325,6 +20472,12 @@ export default function App() {
     const clientLinkMaterialState = getWorkspaceLinkMaterialState(workspaceClientUiState, workspaceClientUiKey);
     const clientLinkMaterialRun = clientLinkMaterialState.run;
     const latestClientLinkMaterialRun = clientLinkMaterialState.latestRun;
+    // 链接转写是否进行中(queued/running)。后台 poller 会持续刷新 latestRun,
+    // 所以即便切到别的功能面板,这个派生值仍准确 → 共享进度条能跨面板显示链接转写进度。
+    const isLinkImporting = !!(
+      latestClientLinkMaterialRun
+      && ['queued', 'running'].includes(latestClientLinkMaterialRun.status)
+    );
     // 转写完成后自动把生成的文档加入"文件 tab"的最近列表，并收起 inline 输入栏。
     useEffect(() => {
       const run = latestClientLinkMaterialRun;
@@ -21181,10 +21334,29 @@ export default function App() {
 	          setClientLinkMaterialRun(run);
 	          setLatestClientLinkMaterialRun(run);
 	          if (run.status === 'completed') {
-	            if (run.documentPath) {
-	              void openPathBridge(run.documentPath).catch(() => undefined);
-            }
             await refreshWorkspace(currentClientId);
+            // 转写完成后直接用内嵌智能编辑器打开(而非系统 Word);失败再退回系统打开
+            let openedInEditor = false;
+            if (run.documentId && currentClientId) {
+              try {
+                const doc = await getDocumentText(run.documentId);
+                const docTitle = run.title || doc.title || '链接转写';
+                markDocumentAsUsed({ documentId: run.documentId, title: docTitle, path: run.documentPath || '' });
+                setClientWorkspaceInlineEditor({
+                  clientId: currentClientId,
+                  title: docTitle,
+                  content: doc.content || '',
+                  titleEdited: true,
+                  sourceDocumentId: run.documentId,
+                });
+                openedInEditor = true;
+              } catch {
+                openedInEditor = false;
+              }
+            }
+            if (!openedInEditor && run.documentPath) {
+              void openPathBridge(run.documentPath).catch(() => undefined);
+            }
             flash('success', run.title ? `已生成《${run.title}》并保存到线上转写` : '链接资料已保存到线上转写');
             return;
           }
@@ -21248,6 +21420,34 @@ export default function App() {
 	        }
 	      };
 		    }, [clientEditorModalState.open, clientLinkMaterialRun?.runId, clientOverlayMode, currentClientId, latestClientLinkMaterialRun, refreshWorkspace]);
+
+    // Q2 链接转写卡:轮询该客户的链接任务列表(队列)。有活跃任务时 2.5s 勤刷,全部结束后拉取一次最终态即停;
+    // isLinkImporting 翻转(新任务开始/某任务完成)会重跑本 effect,自然恢复轮询。
+    useEffect(() => {
+      if (!currentClientId) {
+        setClientLinkMaterialRuns([]);
+        return undefined;
+      }
+      let cancelled = false;
+      let timeoutId: number | null = null;
+      const tick = async () => {
+        try {
+          const runs = await listClientLinkMaterialImportRuns(currentClientId, 20);
+          if (cancelled) return;
+          setClientLinkMaterialRuns(runs);
+          if (runs.some((run) => run.status === 'queued' || run.status === 'running')) {
+            timeoutId = window.setTimeout(() => void tick(), 2500);
+          }
+        } catch {
+          if (!cancelled) timeoutId = window.setTimeout(() => void tick(), 4000);
+        }
+      };
+      void tick();
+      return () => {
+        cancelled = true;
+        if (timeoutId !== null) window.clearTimeout(timeoutId);
+      };
+    }, [currentClientId, isLinkImporting]);
 
     useEffect(() => {
       const recentMessages = (workspace?.recentMessages || []) as DisplayChatMessage[];
@@ -21824,12 +22024,33 @@ export default function App() {
 
       const latestKnowledgeJob = workspace?.knowledgeJobs?.[0] || null;
       const knowledgeJobProgressView = useMemo(() => {
+        // 链接转写进行中：进度条整体用链接 run 自己的阶段/进度/标题，
+        // 避免把链接阶段文字和无关知识任务的百分比/条目混在一起(否则会出现
+        // "下载临时媒体中 100% · 市场背景介绍"这种张冠李戴)。
+        if (isLinkImporting && latestClientLinkMaterialRun) {
+          const lr = latestClientLinkMaterialRun;
+          const linkPercent = Math.max(0, Math.min(100, Math.round(lr.progress ?? 0)));
+          return {
+            hasActivity: true,
+            processed: 0,
+            total: 0,
+            percent: linkPercent,
+            phaseLabel: lr.stage || '正在转写链接资料',
+            statusLabel: `${linkPercent}%`,
+            currentItemLabel: lr.title || '链接转写',
+            lastEventMessage: null,
+            recentEvents: [],
+            queuedItemLabels: [],
+            status: lr.status || 'running',
+          };
+        }
         const processed = latestKnowledgeJob?.processedItems || 0;
         const total = latestKnowledgeJob?.totalItems || 0;
         const activeJob = latestKnowledgeJob?.status === 'queued' || latestKnowledgeJob?.status === 'running';
         const hasActivity =
           isImportSubmitting ||
           isTemplateFilling ||
+          isLinkImporting ||
           activeJob ||
           Boolean((knowledgeStatus?.pendingJobs || 0) + (knowledgeStatus?.runningJobs || 0));
         const ratio = total > 0 ? Math.max(0, Math.min(1, processed / total)) : hasActivity ? 0.12 : 0;
@@ -21840,7 +22061,9 @@ export default function App() {
           latestKnowledgeJob?.queuedItemLabels?.[processed] ||
           null;
         const completed = total > 0 && processed >= total;
-        const phaseLabel = isTemplateFilling
+        const phaseLabel = isLinkImporting
+          ? (latestClientLinkMaterialRun?.stage || '正在转写链接资料')
+          : isTemplateFilling
           ? '正在填写模板'
           : !hasActivity
             ? ''
@@ -21870,6 +22093,11 @@ export default function App() {
       }, [
         isImportSubmitting,
         isTemplateFilling,
+        isLinkImporting,
+        latestClientLinkMaterialRun?.stage,
+        latestClientLinkMaterialRun?.progress,
+        latestClientLinkMaterialRun?.title,
+        latestClientLinkMaterialRun?.status,
         knowledgeStatus?.pendingJobs,
         knowledgeStatus?.runningJobs,
         latestKnowledgeJob,
@@ -22400,11 +22628,48 @@ export default function App() {
 	        });
 	        setClientLinkMaterialRun(run);
 	        setLatestClientLinkMaterialRun(run);
-	        flash('info', '已开始链接转资料');
+	        flash('info', '已开始链接转写，进度在右上角工具栏，可继续做别的事');
+	        // 清空输入框,方便下次直接粘贴下一个链接(多个链接会在后端排队串行处理)。
+	        setClientLinkMaterialDraft(defaultClientLinkMaterialDraft);
+	        // 开始后收起覆盖层 → 进度落到工作台右上角进度条(与填表一致),后台 poller 继续跑。
+	        setClientOverlayMode(null);
       } catch (error) {
         flash('error', error instanceof Error ? error.message : '链接转资料启动失败');
       } finally {
 	        setIsStartingClientLinkMaterial(false);
+	      }
+	    };
+
+	    const handleCancelLinkMaterialRun = async (runId: string) => {
+	      if (!currentClientId) return;
+	      setLinkCardCancelingId(runId);
+	      try {
+	        await cancelClientLinkMaterialImportRun(currentClientId, runId);
+	        const runs = await listClientLinkMaterialImportRuns(currentClientId, 20);
+	        setClientLinkMaterialRuns(runs);
+	      } catch (error) {
+	        flash('error', error instanceof Error ? error.message : '取消失败');
+	      } finally {
+	        setLinkCardCancelingId(null);
+	      }
+	    };
+
+	    // 链接转写卡:点完成项 → 用智能编辑器打开(复用既有逻辑)。
+	    const openLinkMaterialRunInEditor = async (run: LinkMaterialImportRun) => {
+	      if (!currentClientId || !run.documentId) return;
+	      try {
+	        const doc = await getDocumentText(run.documentId);
+	        const docTitle = run.title || doc.title || '链接转写';
+	        markDocumentAsUsed({ documentId: run.documentId, title: docTitle, path: run.documentPath || '' });
+	        setClientWorkspaceInlineEditor({
+	          clientId: currentClientId,
+	          title: docTitle,
+	          content: doc.content || '',
+	          titleEdited: true,
+	          sourceDocumentId: run.documentId,
+	        });
+	      } catch (error) {
+	        flash('error', error instanceof Error ? `打开失败：${error.message}` : '打开失败');
 	      }
 	    };
 
@@ -25258,7 +25523,7 @@ export default function App() {
                         link_material: {
                           icon: <Link2 size={18} />,
                           title: '链接转资料',
-                          onClick: openClientLinkMaterialOverlay,
+                          onClick: () => setLinkPanelOpen((v) => !v),
                           disabled: isBackendBlocked,
                         },
                         smart_import: {
@@ -25534,6 +25799,126 @@ export default function App() {
                         </p>
                       </div>
                     </div>
+
+                    {/* Q2 上下文面板:点「链接转资料」工具才展开;有界高度 + 滚动,不撑大工具栏 */}
+                    {linkPanelOpen && (
+                    <div className="mt-2 max-h-[44vh] overflow-y-auto rounded-2xl border border-violet-100 bg-violet-50/40 px-3 py-2">
+                      <div className="mb-1.5 flex items-center gap-1.5">
+                        <Link2 size={13} className="text-[#7C5BFE]" />
+                        <span className="text-[10px] font-bold text-slate-700">链接转写</span>
+                        {clientLinkMaterialRuns.some((r) => r.status === 'queued' || r.status === 'running') && (
+                          <span className="ml-auto shrink-0 rounded-full bg-violet-100 px-1.5 text-[9px] font-bold text-[#7C5BFE]">
+                            队列 {clientLinkMaterialRuns.filter((r) => r.status === 'queued' || r.status === 'running').length}
+                          </span>
+                        )}
+                        <button
+                          type="button"
+                          onClick={() => setLinkPanelOpen(false)}
+                          className={`shrink-0 rounded px-1 text-[11px] leading-none text-slate-400 transition hover:text-slate-700 ${
+                            clientLinkMaterialRuns.some((r) => r.status === 'queued' || r.status === 'running') ? '' : 'ml-auto'
+                          }`}
+                          title="收起"
+                        >
+                          ✕
+                        </button>
+                      </div>
+                      <div className="flex items-center gap-1.5">
+                        <input
+                          value={clientLinkMaterialDraft.url}
+                          onChange={(event) => handleClientLinkMaterialUrlChange(event.target.value)}
+                          placeholder="粘贴 B站 / 小红书 链接"
+                          disabled={isStartingClientLinkMaterial}
+                          className="min-w-0 flex-1 rounded-lg border border-violet-200 bg-white px-2 py-1 text-[11px] text-slate-800 outline-none transition focus:border-[#7C5BFE] disabled:opacity-60"
+                        />
+                        <button
+                          type="button"
+                          disabled={
+                            isStartingClientLinkMaterial
+                            || !clientLinkMaterialDraft.url.trim()
+                            || clientLinkMaterialDraft.detectedPlatform === 'unsupported'
+                          }
+                          onClick={() => void handleStartClientLinkMaterialImport()}
+                          className="shrink-0 rounded-lg bg-[#7C5BFE] px-2.5 py-1 text-[10px] font-bold text-white transition hover:bg-[#6B4BEE] disabled:opacity-40"
+                        >
+                          {isStartingClientLinkMaterial
+                            ? '提交中'
+                            : clientLinkMaterialRuns.some((r) => r.status === 'queued' || r.status === 'running')
+                              ? '加入队列'
+                              : '转写'}
+                        </button>
+                      </div>
+                      {clientLinkMaterialDraft.url.trim() && (
+                        <p className={`mt-1 text-[9px] ${clientLinkMaterialDraft.detectedPlatform === 'unsupported' ? 'text-rose-500' : 'text-slate-400'}`}>
+                          {clientLinkMaterialDraft.detectedLabel}
+                        </p>
+                      )}
+                      <button
+                        type="button"
+                        onClick={() => setLinkCardAdvancedOpen((v) => !v)}
+                        className="mt-1 text-[9px] text-slate-400 transition hover:text-slate-600"
+                      >
+                        高级 {linkCardAdvancedOpen ? '▴' : '▾'}
+                      </button>
+                      {linkCardAdvancedOpen && (
+                        <label className="mt-1 flex items-start gap-1.5 text-[9px] leading-4 text-slate-500">
+                          <input
+                            type="checkbox"
+                            checked={clientLinkMaterialUseBrowserCookies}
+                            onChange={(event) => setClientLinkMaterialUseBrowserCookies(event.target.checked)}
+                            className="mt-0.5"
+                          />
+                          <span>使用浏览器登录态读取（B站 412 / 小红书登录墙时开）</span>
+                        </label>
+                      )}
+                      {clientLinkMaterialRuns.length > 0 && (
+                        <ul className="mt-1.5 space-y-1">
+                          {clientLinkMaterialRuns.slice(0, 8).map((run) => (
+                            <li key={run.runId} className="rounded-lg bg-white/70 px-2 py-1">
+                              <div className="flex items-center gap-1.5">
+                                <span className="min-w-0 flex-1 truncate text-[10px] font-medium text-slate-700" title={run.title || run.sourceUrl}>
+                                  {run.title || run.stage || run.sourceUrl}
+                                </span>
+                                {run.status === 'running' && (
+                                  <span className="shrink-0 text-[9px] font-bold tabular-nums text-[#7C5BFE]">{Math.round(run.progress)}%</span>
+                                )}
+                                {run.status === 'queued' && <span className="shrink-0 text-[9px] text-amber-600">排队中</span>}
+                                {run.status === 'completed' && (
+                                  <button
+                                    type="button"
+                                    onClick={() => void openLinkMaterialRunInEditor(run)}
+                                    className="shrink-0 text-[9px] font-bold text-[#5B7BFE] hover:underline"
+                                  >
+                                    打开
+                                  </button>
+                                )}
+                                {run.status === 'failed' && <span className="shrink-0 text-[9px] text-rose-500">失败</span>}
+                                {run.status === 'canceled' && <span className="shrink-0 text-[9px] text-slate-400">已取消</span>}
+                                {run.status === 'queued' && (
+                                  <button
+                                    type="button"
+                                    disabled={linkCardCancelingId === run.runId}
+                                    onClick={() => void handleCancelLinkMaterialRun(run.runId)}
+                                    className="shrink-0 px-1 text-[11px] leading-none text-slate-400 transition hover:text-rose-500 disabled:opacity-40"
+                                    title="取消排队"
+                                  >
+                                    ✕
+                                  </button>
+                                )}
+                              </div>
+                              {run.status === 'running' && (
+                                <div className="mt-1 h-1 overflow-hidden rounded-full bg-violet-100">
+                                  <div className="h-full rounded-full bg-[#7C5BFE] transition-all duration-500" style={{ width: `${Math.min(Math.max(run.progress, 6), 100)}%` }} />
+                                </div>
+                              )}
+                              {run.status === 'failed' && run.error && (
+                                <p className="mt-0.5 truncate text-[9px] text-rose-400" title={run.error}>{run.error}</p>
+                              )}
+                            </li>
+                          ))}
+                        </ul>
+                      )}
+                    </div>
+                    )}
                   </>
                 );
               })()}
@@ -25633,7 +26018,7 @@ export default function App() {
                           { key: 'import', icon: <UploadCloud size={23} />, title: '导入 · 点击选文件，或直接拖入文件/文件夹', onClick: () => void handleSelectImportFiles(), disabled: isBackendBlocked },
                           { key: 'fill_template', icon: <LayoutTemplate size={23} />, title: '填写模板', onClick: () => void handleFillTemplate(), disabled: isBackendBlocked || isTemplateFilling },
                           { key: 'text_doc', icon: <PenTool size={23} />, title: '智能编辑', onClick: openClientTextDocumentOverlay, disabled: isBackendBlocked },
-                          { key: 'link_material', icon: <Link2 size={23} />, title: '链接转资料', onClick: openClientLinkMaterialOverlay, disabled: isBackendBlocked },
+                          { key: 'link_material', icon: <Link2 size={23} />, title: '链接转资料', onClick: () => setLinkPanelOpen((v) => !v), disabled: isBackendBlocked },
                           { key: 'smart_import', icon: <Sparkles size={23} />, title: '智能文件导入 · 讲故事 + 挂文件,自动分类归档', onClick: () => setIsSmartFileImportOpen(true), disabled: isBackendBlocked || !currentClientId },
                         ] as const).map((tool) => {
                           const isFavorited = favoriteWorkspaceTools.includes(tool.key);
@@ -27039,7 +27424,7 @@ export default function App() {
                         value={clientLinkMaterialDraft.url}
                         onChange={(event) => handleClientLinkMaterialUrlChange(event.target.value)}
                         placeholder="粘贴 B 站、小红书链接，或直接输入 BV 号"
-                        disabled={Boolean(clientLinkMaterialRun && clientLinkMaterialRun.status !== 'failed' && clientLinkMaterialRun.status !== 'completed')}
+                        disabled={isStartingClientLinkMaterial}
                         className="w-full rounded-2xl border border-gray-200 bg-gray-50 px-4 py-3 text-[14px] font-medium text-gray-900 outline-none transition focus:border-[#5B7BFE] focus:bg-white disabled:cursor-not-allowed disabled:opacity-70"
                       />
                       <div className="mt-3 flex flex-wrap items-center gap-2 text-[12px]">
@@ -27061,7 +27446,7 @@ export default function App() {
 	                        <input
 	                          type="checkbox"
 	                          checked={clientLinkMaterialUseBrowserCookies}
-	                          disabled={Boolean(clientLinkMaterialRun && clientLinkMaterialRun.status !== 'failed' && clientLinkMaterialRun.status !== 'completed')}
+	                          disabled={isStartingClientLinkMaterial}
 	                          onChange={(event) => setClientLinkMaterialUseBrowserCookies(event.target.checked)}
 	                          className="mt-1 h-4 w-4 rounded border-amber-200 text-[#5B7BFE] focus:ring-[#5B7BFE]"
 	                        />
@@ -27077,7 +27462,7 @@ export default function App() {
 	                          <span className="text-[11px] font-bold text-amber-800">浏览器</span>
 	                          <select
 	                            value={clientLinkMaterialCookieBrowser}
-	                            disabled={Boolean(clientLinkMaterialRun && clientLinkMaterialRun.status !== 'failed' && clientLinkMaterialRun.status !== 'completed')}
+	                            disabled={isStartingClientLinkMaterial}
 	                            onChange={(event) => setClientLinkMaterialCookieBrowser(event.target.value as LinkMaterialCookieBrowser)}
 	                            className="rounded-xl border border-amber-200 bg-white px-3 py-1.5 text-[12px] font-bold text-amber-900 outline-none focus:border-[#5B7BFE]"
 	                          >
@@ -27150,16 +27535,17 @@ export default function App() {
                           isStartingClientLinkMaterial
                           || !clientLinkMaterialDraft.url.trim()
                           || clientLinkMaterialDraft.detectedPlatform === 'unsupported'
-                          || Boolean(clientLinkMaterialRun && clientLinkMaterialRun.status !== 'failed' && clientLinkMaterialRun.status !== 'completed')
                         }
                         onClick={() => void handleStartClientLinkMaterialImport()}
                       >
-                        {isStartingClientLinkMaterial || (clientLinkMaterialRun && ['queued', 'running'].includes(clientLinkMaterialRun.status))
+                        {isStartingClientLinkMaterial
                           ? <RefreshCw size={16} className="animate-spin" />
                           : <Link2 size={16} />}
-                        {isStartingClientLinkMaterial || (clientLinkMaterialRun && ['queued', 'running'].includes(clientLinkMaterialRun.status))
-                          ? '生成中…'
-                          : '生成资料'}
+                        {isStartingClientLinkMaterial
+                          ? '提交中…'
+                          : (clientLinkMaterialRun && ['queued', 'running'].includes(clientLinkMaterialRun.status))
+                            ? '加入队列'
+                            : '生成资料'}
                       </Button>
                     </div>
                   </div>
@@ -27397,8 +27783,7 @@ export default function App() {
 	  };
 
 	  const renderSettingsView = () => {
-    // 取消本机模式后, sessionMode 始终 'cloud' (除非未登录, 那时这个组件不渲染), 故永 false
-    const isLocalSession: boolean = false;
+    const isLocalSession = authState.sessionMode === 'local';
     const canManageTaskTag = (tag: TaskTag) => (tag.scope === 'self' ? tag.ownerUserId === currentSessionUser?.id : currentSessionUser?.primaryRole === 'admin');
     const canManageSensitiveSettings = isLocalSession || currentSessionUser?.primaryRole === 'admin';
     const canEditBusinessSettings = canManageSensitiveSettings || systemAdminSettingsState.allowBusinessSettingsForEmployees;
@@ -27856,6 +28241,32 @@ export default function App() {
         flash('error', error instanceof Error ? error.message : '组织身份申请提交失败');
       } finally {
         setMembershipApplySubmitting(false);
+      }
+    };
+
+    const handleClaimOrgAdmin = async () => {
+      if (!isCloudSession) {
+        flash('error', '请先登录云端账号。');
+        return;
+      }
+      setOrgAdminClaimBusy(true);
+      try {
+        const response = normalizeAuthStateForDesktop(await claimOrgAdmin());
+        setAuthState(response);
+        await Promise.all([
+          loadOrgAdminClaimStatusBlock(true),
+          loadOrgMembershipBlock().catch(() => DEFAULT_ORG_MEMBERSHIP_SUMMARY),
+          loadSystemAdminSettingsBlock(true),
+          loadEmployeeReviewBlock(),
+          loadLogsBlock(),
+        ]);
+        setSettingsSection('system_admin');
+        flash('success', '已认领为组织管理员。');
+      } catch (error) {
+        await loadOrgAdminClaimStatusBlock(true).catch(() => undefined);
+        flash('error', error instanceof Error ? error.message : '管理员认领失败');
+      } finally {
+        setOrgAdminClaimBusy(false);
       }
     };
 
@@ -28499,7 +28910,7 @@ export default function App() {
                       <input
                         value={cloudApiHostValue(draft.cloudApiUrl)}
                         onChange={(event) => setDraft((prev) => ({ ...prev, cloudApiUrl: cloudApiUrlFromHost(event.target.value) }))}
-                        placeholder="101.126.34.232"
+                        placeholder="cloud.example.com"
                         className="min-w-0 flex-1 bg-transparent px-3 py-2.5 text-[13px] font-medium text-gray-900 outline-none placeholder:text-gray-400"
                         disabled={!canManageSensitiveSettings}
                       />
@@ -29159,9 +29570,31 @@ export default function App() {
           </div>
 
           {!isCloud && (
-            <p className="rounded-xl border border-amber-100 bg-amber-50 px-4 py-3 text-[12px] text-amber-700">
-              连接云端并加入或创建组织后,才能继续配置组织结构、邀请码与飞书协作底座。
-            </p>
+            <div className="rounded-xl border border-amber-100 bg-amber-50 px-4 py-3 text-[12px] text-amber-700">
+              <p>连接云端并加入或创建组织后，才能继续配置组织结构、邀请码与飞书协作底座。</p>
+              <div className="mt-3">
+                <Button onClick={() => openCloudAuthModal('login')}>连接云端账号</Button>
+              </div>
+            </div>
+          )}
+
+          {isCloud && currentSessionUser?.primaryRole !== 'admin' && (
+            <div className="rounded-2xl border border-blue-100 bg-blue-50 px-5 py-4">
+              <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-blue-500">ADMIN CLAIM</p>
+              <h3 className="mt-2 text-[18px] font-light tracking-tight text-gray-900">认领组织管理员</h3>
+              <p className="mt-2 text-[12px] leading-relaxed text-blue-800">
+                {orgAdminClaimStatus.canClaim
+                  ? `${orgAdminClaimStatus.organizationName || orgMembershipState.organizationName || currentSessionUser?.organizationName || '当前组织'} 尚未设置管理员。认领后，你将负责成员审核、组织权限、部门与角色管理。`
+                  : orgAdminClaimStatus.reason || '当前组织暂不能认领管理员。'}
+              </p>
+              <div className="mt-4 flex items-center gap-3">
+                <Button primary onClick={() => void handleClaimOrgAdmin()} disabled={!orgAdminClaimStatus.canClaim || orgAdminClaimBusy}>
+                  {orgAdminClaimBusy ? <RefreshCw size={16} className="animate-spin" /> : <ShieldCheck size={16} />}
+                  认领管理员
+                </Button>
+                <Button onClick={() => void loadOrgAdminClaimStatusBlock(true)}>刷新状态</Button>
+              </div>
+            </div>
           )}
 
           {/* 员工审核 - Foldable,有内容才显示 */}
@@ -29182,7 +29615,7 @@ export default function App() {
           )}
 
           {/* 顾源源 5/26 真修 P0-1 (5/24 审计真发现死挂): BotMembersPanel 真主面板真挂上, 真用户加完机器人能看到列表/启停/重置密钥/AI 计划审批 */}
-          {isCloud && (
+          {isCloud && currentSessionUser?.primaryRole === 'admin' && (
             <div className="mt-8">
               <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-gray-400 mb-4">BOT MEMBERS · 机器人成员管理</p>
               <BotMembersPanel />
@@ -29190,7 +29623,7 @@ export default function App() {
           )}
 
           {/* 组织搭建中心 - 独立工作台,保留原样不嵌套 */}
-          {isCloud && (
+          {isCloud && currentSessionUser?.primaryRole === 'admin' && (
             <div>
               <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-gray-400 mb-4">STRUCTURE · 组织搭建中心</p>
               <OrganizationSetupCenter
@@ -29419,7 +29852,7 @@ export default function App() {
               </div>
               <div className="space-y-6">
                 {sectionGroups.map((group, groupIndex) => {
-                  const visibleItems = group.items.filter((section) => currentSessionUser?.primaryRole === 'admin' || !['system_admin', 'org_overview', 'org_departments', 'org_people', 'org_rules'].includes(section.key));
+                  const visibleItems = group.items.filter((section) => canAccessOrganizationSettings || !ORG_MANAGEMENT_SECTION_KEYS.includes(section.key));
                   if (visibleItems.length === 0) return null;
                   return (
                     <div key={group.group} className={groupIndex > 0 ? 'border-t border-gray-100 pt-5' : ''}>
@@ -29443,6 +29876,12 @@ export default function App() {
                             >
                               <Icon size={14} className={isActive ? 'text-[#5B7BFE]' : 'text-gray-400'} />
                               <span className={`text-[13px] ${isActive ? 'font-medium' : 'font-normal'}`}>{section.label}</span>
+                              {section.key === 'about' && hasOfficialPush && (
+                                <span className="ml-auto inline-flex items-center gap-1 rounded-full bg-rose-50 px-2 py-0.5 text-[10px] font-medium text-rose-600">
+                                  <span className="h-1.5 w-1.5 rounded-full bg-rose-500" />
+                                  推送
+                                </span>
+                              )}
                             </button>
                           );
                         })}
@@ -30070,6 +30509,9 @@ export default function App() {
                       isSettingsActive ? 'text-[#5B7BFE]' : 'text-gray-400 group-hover:text-gray-600'
                     }`}
                   />
+                  {hasOfficialPush && (
+                    <span className="absolute right-3 top-2 h-2 w-2 rounded-full bg-rose-500 ring-2 ring-white" />
+                  )}
                   <span className="pointer-events-none absolute left-full top-1/2 z-30 ml-3 hidden -translate-y-1/2 whitespace-nowrap rounded-md border border-gray-200 bg-white px-2.5 py-1.5 text-[11px] font-medium text-gray-700 shadow-[0_8px_24px_rgba(15,23,42,0.1)] opacity-0 transition-all duration-200 group-hover:translate-x-1 group-hover:opacity-100 md:block">
                     系统设置
                   </span>
@@ -30103,6 +30545,12 @@ export default function App() {
                   <span className={`truncate text-[14px] tracking-[0.01em] ${isSettingsActive ? 'font-medium' : 'font-normal'}`}>
                     系统设置
                   </span>
+                  {hasOfficialPush && (
+                    <span className="ml-auto inline-flex items-center gap-1 rounded-full bg-rose-50 px-2 py-0.5 text-[10px] font-medium text-rose-600">
+                      <span className="h-1.5 w-1.5 rounded-full bg-rose-500" />
+                      收到推送
+                    </span>
+                  )}
                 </button>
               </div>
 
@@ -30251,6 +30699,54 @@ export default function App() {
         </div>
       )}
       </div>
+      {officialPushToast && (
+        <div className="fixed bottom-5 right-5 z-[1200] w-[360px] max-w-[calc(100vw-32px)] rounded-2xl border border-blue-100 bg-white p-4 shadow-[0_18px_55px_rgba(15,23,42,0.18)]">
+          <div className="flex items-start gap-3">
+            <div className="mt-0.5 flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-blue-50 text-[#5B7BFE]">
+              <Download size={17} />
+            </div>
+            <div className="min-w-0 flex-1">
+              <div className="flex items-start gap-2">
+                <div className="min-w-0">
+                  <p className="truncate text-[13px] font-bold text-gray-900">{officialPushToast.title || '收到益语智库官方推送'}</p>
+                  <p className="mt-1 text-[12px] leading-5 text-gray-500">
+                    当前 {officialPushToast.currentVersion}，推送 {officialPushToast.version}
+                    {officialPushToast.packageKind === 'custom' ? '，这是组织定制版。' : '。'}
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  aria-label="关闭推送提示"
+                  onClick={() => setOfficialPushToast(null)}
+                  className="rounded-full p-1 text-gray-300 hover:bg-gray-50 hover:text-gray-500"
+                >
+                  <X size={14} />
+                </button>
+              </div>
+              <div className="mt-3 flex items-center justify-end gap-2">
+                <button
+                  type="button"
+                  onClick={() => setOfficialPushToast(null)}
+                  className="rounded-lg border border-gray-200 px-3 py-1.5 text-[12px] font-medium text-gray-500 hover:bg-gray-50"
+                >
+                  稍后处理
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setActiveTab('settings');
+                    setSettingsSection('about');
+                    setOfficialPushToast(null);
+                  }}
+                  className="rounded-lg bg-[#5B7BFE] px-3 py-1.5 text-[12px] font-bold text-white hover:bg-[#4A6AED]"
+                >
+                  查看推送
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
       <UpdateNotifier />
       </ClientFactProvider>
     </GrowthProvider>
