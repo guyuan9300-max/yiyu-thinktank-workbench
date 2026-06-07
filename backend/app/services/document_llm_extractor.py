@@ -302,6 +302,17 @@ class DocumentLLMExtractor:
         # 根据 v2_documents.kind 映射 source_type (顾源源 5/22 渠道驱动)
         source_type = _map_kind_to_source_type(doc_kind, file_name)
 
+        # meeting-spine Phase1③: 把客户名册(益语员工+已知人物)注入抽取 prompt,
+        # 提高 owner / speaker_person_id 对齐到已知人名的准确度。失败不影响抽取。
+        roster_hint = ""
+        _conn = getattr(self._db, "conn", None)
+        if _conn is not None:
+            try:
+                from app.services.person_resolver import build_client_roster_hint
+                roster_hint = build_client_roster_hint(_conn, client_id)
+            except Exception:
+                roster_hint = ""
+
         # 分批
         batches = _split_to_batches(markdown, self.BATCH_CHARS)
         logger.info(
@@ -329,6 +340,7 @@ class DocumentLLMExtractor:
                     doc_kind=doc_kind,
                     source_type=source_type,
                     imported_at=imported_at,
+                    roster_hint=roster_hint,
                 )
                 if not payload:
                     self._trace_store.fail(trace_id, error_message="LLM returned empty payload")
@@ -436,6 +448,7 @@ class DocumentLLMExtractor:
         doc_kind: str,
         source_type: str,
         imported_at: str,
+        roster_hint: str = "",
     ) -> dict[str, Any] | None:
         """调 LLM 抽取一批"""
         # 延迟 import 避免循环依赖
@@ -448,7 +461,8 @@ class DocumentLLMExtractor:
             f"来源 source_type: {source_type}\n"
             f"导入时间: {imported_at}\n\n"
             f"# 资料正文\n{batch_text}\n\n"
-            f"# 任务\n"
+            + (f"{roster_hint}\n\n" if roster_hint else "")
+            + f"# 任务\n"
             f"按 system instruction 规则抽取**这家客户特定的**事实, 输出 JSON。\n"
             f"特别注意:\n"
             f"- 不要抽通用陈述 (对任何同类客户都成立的 → 不抽)\n"

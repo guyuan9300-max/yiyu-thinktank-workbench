@@ -24,7 +24,7 @@ from typing import Optional
 from uuid import uuid4
 
 from app.db import Database
-from app.services.local_model_optimizer import TASK_TYPE_VISUAL_OCR
+from app.services.local_model_optimizer import TASK_TYPE_FACT_EXTRACT, TASK_TYPE_VISUAL_OCR
 
 logger = logging.getLogger(__name__)
 
@@ -114,6 +114,52 @@ def _enqueue_visual_ocr(
         if "unique" in msg or "constraint" in msg:
             return False
         logger.warning("enqueue visual_ocr failed (doc=%s): %s", v2_document_id, exc)
+        return False
+
+
+def _enqueue_fact_extract(
+    db: Database,
+    *,
+    v2_document_id: str,
+    knowledge_document_id: str,
+    client_id: str,
+    priority: int = 150,
+) -> bool:
+    """meeting-spine ②：单条入队 fact_extract（整篇文档抽 atomic_facts）。
+
+    payload 带 source_v2_document_id 供 fact_extract_runner 走 DocumentLLMExtractor →
+    IngestPipeline（Phase0 speaker 解析 + Phase1③ 名册在此通电）。
+    UNIQUE(task_type, knowledge_document_id, input_hash) 冲突视为已入过, 返回 False。
+    """
+    input_hash = _input_hash(TASK_TYPE_FACT_EXTRACT, v2_document_id, "")
+    payload = {
+        "source_v2_document_id": v2_document_id,
+        "source_client_id": client_id,
+    }
+    now = _now_iso()
+    task_id = _new_id("lmt")
+    try:
+        db.conn.execute(
+            """
+            INSERT INTO local_model_tasks (
+                id, task_type, client_id, knowledge_document_id,
+                model_profile_id, model_name, status, priority,
+                input_hash, payload_json, result_json,
+                created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, '', 'queued', ?, ?, ?, '{}', ?, ?)
+            """,
+            (
+                task_id, TASK_TYPE_FACT_EXTRACT, client_id, knowledge_document_id,
+                "deep_read_fact", priority, input_hash,
+                json.dumps(payload, ensure_ascii=False), now, now,
+            ),
+        )
+        return True
+    except Exception as exc:  # noqa: BLE001
+        msg = str(exc).lower()
+        if "unique" in msg or "constraint" in msg:
+            return False
+        logger.warning("enqueue fact_extract failed (doc=%s): %s", v2_document_id, exc)
         return False
 
 
@@ -229,6 +275,22 @@ def route_document_for_local_inference(
     except Exception as exc:  # noqa: BLE001
         logger.warning("router: 深读入队失败 doc=%s: %s", v2_document_id, exc)
 
+    # meeting-spine ②：上传后自动入队 fact_extract（整篇抽 atomic_facts）。受 autoEnqueueFactExtract gate；
+    # 实际消化由 deep-read-worker 按 enabled/窗口/governor 节流。幂等由 UNIQUE + input_hash 保证。
+    fact_enqueued = 0
+    try:
+        from app.services.local_model_optimizer import get_local_model_optimization_settings
+        if bool(get_local_model_optimization_settings(db).get("autoEnqueueFactExtract", True)):
+            if _enqueue_fact_extract(
+                db,
+                v2_document_id=v2_document_id,
+                knowledge_document_id=_resolve_knowledge_document_id(db, doc_dict) or "",
+                client_id=str(doc_dict.get("client_id") or ""),
+            ):
+                fact_enqueued = 1
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("router: fact_extract 入队失败 doc=%s: %s", v2_document_id, exc)
+
     # kind 专属：pptx 每 slide 一条 visual_ocr（其他 kind 暂 no-op，等 runner 扩展）
     ocr_enqueued = 0
     router_fn = _ROUTERS.get(kind)
@@ -243,13 +305,14 @@ def route_document_for_local_inference(
     # 深读入队走 db.execute（已逐条在锁内提交）。pptx 的 _enqueue_visual_ocr 走 db.conn.execute
     # 原始写（未提交），仅当它真入了队才需在此 commit；加锁避免与其它共享 conn 的后台线程
     # （knowledge/analysis/deep-read worker）的提交竞争（HIGH 修复：原来裸 db.conn.commit() 绕过锁）。
-    if ocr_enqueued:
+    if ocr_enqueued or fact_enqueued:
         with db._lock:
             db.conn.commit()
     return {
-        "enqueued": card_enqueued + ocr_enqueued,
+        "enqueued": card_enqueued + ocr_enqueued + fact_enqueued,
         "documentCard": card_enqueued,
         "visualOcr": ocr_enqueued,
+        "factExtract": fact_enqueued,
         "kind": kind,
     }
 

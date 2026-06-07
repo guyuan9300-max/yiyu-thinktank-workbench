@@ -29415,19 +29415,29 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             "SELECT id FROM task_lists WHERE name='客户项目' OR id='list-1' LIMIT 1"
         ) or state.db.fetchone("SELECT id FROM task_lists ORDER BY sort_order LIMIT 1")
         default_list_id = str(list_row["id"]) if list_row else "list-0"
+        # meeting-spine Phase2: owner 文本名 → user_id(命中益语员工时落 owner_id, 提高归属准确度)
+        owner_user_id: str | None = None
+        _conn = getattr(state.db, "conn", None)
+        if _conn is not None and owner:
+            try:
+                from app.services.person_resolver import match_mirror_user
+                owner_user_id = match_mirror_user(_conn, owner)
+            except Exception:
+                owner_user_id = None
+        # meeting-spine Phase2: source_id = raw_id, 保住"任务 → 来源 commitment/action"的溯源链
         state.db.execute(
             """INSERT INTO tasks (
                 id, client_id, title, description, status, priority,
-                list_id, owner_name, ddl, deadline_at,
-                progress_status, source_type, tags_json,
+                list_id, owner_id, owner_name, ddl, deadline_at,
+                progress_status, source_type, source_id, tags_json,
                 created_at, updated_at
             ) VALUES (?, ?, ?, ?, 'open', ?,
-                      ?, ?, ?, ?,
-                      'todo', ?, '[]',
+                      ?, ?, ?, ?, ?,
+                      'todo', ?, ?, '[]',
                       ?, ?)""",
             (new_task_id, client_id, title, description, priority,
-             default_list_id, owner, due or "", due or None,
-             f"promoted_from_{kind}", now, now),
+             default_list_id, owner_user_id, owner, due or "", due or None,
+             f"promoted_from_{kind}", raw_id, now, now),
         )
         # 源标记 fulfilled (commit) / completed (action), 防止下次 narrative 复活
         if kind == "commit":

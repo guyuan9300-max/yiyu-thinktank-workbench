@@ -10,7 +10,7 @@ from pathlib import Path
 # 之前 20260518001 (200 亿) 远超上限, SQLite 静默 set 为 0, 每次启动都重做完整迁移
 # (这是 20260518 那次坏 db 的真正根因之一: 重做时遇上 reload race + backfill 无事务).
 # 改用 YYYYMMDD 格式 (8 位), 每次 schema 变化递增日期. 20260519 = 此次修复.
-BACKEND_SCHEMA_VERSION = 20260532  # 5/29: + tasks.reminder_minutes_before 任务提醒字段
+BACKEND_SCHEMA_VERSION = 20260604  # 6/4: + entities 身份解析列(resolved_kind/mirror_user_id/external_person_id/verified_*) + atomic_facts.speaker_entity_id (meeting-spine Phase0)
 
 
 # R6：内置罗永浩写作风格的 distilled prompt（手工 distill，不依赖在线抓取，避免外部依赖）。
@@ -2555,6 +2555,16 @@ class Database:
             )
             # 迭代 2：v2_chunks 追加 entity_ids_json 字段（JSON 数组）
             self._ensure_column("v2_chunks", "entity_ids_json", "TEXT NOT NULL DEFAULT '[]'")
+            # meeting-spine Phase0: entities(person) 身份解析锚点。
+            # resolved_kind: 'internal'(益语员工→mirror_users) / 'client'(客户方→cloud_external_persons) / 'unknown'
+            # 解析后的稳定 id 落在 entity 行(一处), atomic_facts.speaker_entity_id 只指向本地 entities。
+            self._ensure_column("entities", "resolved_kind", "TEXT NOT NULL DEFAULT 'unknown'")
+            self._ensure_column("entities", "mirror_user_id", "TEXT")
+            self._ensure_column("entities", "external_person_id", "TEXT")
+            # 人工金标 (ER 校正): 'unverified' / 'verified_canonical' / 'verified_noise'
+            self._ensure_column("entities", "verified_status", "TEXT NOT NULL DEFAULT 'unverified'")
+            self._ensure_column("entities", "verified_by", "TEXT")
+            self._ensure_column("entities", "verified_at", "TEXT")
             self._ensure_column("documents", "original_source_path", "TEXT")
             self._ensure_column("client_folders", "folder_kind", "TEXT NOT NULL DEFAULT 'business'")
             self._ensure_column("client_folders", "source_type", "TEXT NOT NULL DEFAULT 'legacy'")
@@ -2921,6 +2931,7 @@ class Database:
                     attempts INTEGER NOT NULL DEFAULT 0,
                     max_attempts INTEGER NOT NULL DEFAULT 3,
                     input_hash TEXT NOT NULL DEFAULT '',
+                    output_hash TEXT NOT NULL DEFAULT '',
                     payload_json TEXT NOT NULL DEFAULT '{}',
                     result_json TEXT NOT NULL DEFAULT '{}',
                     last_error TEXT,
@@ -3333,8 +3344,13 @@ class Database:
                 "TEXT NOT NULL DEFAULT 'human'",
             )
             self._ensure_column("atomic_facts", "actor_id", "TEXT NOT NULL DEFAULT ''")
-            # 说话者 (语录类事实必填), 来自 entities (person)
+            # 说话者 (语录类事实必填), 来自 entities (person) — 历史为纯文本名
             self._ensure_column("atomic_facts", "speaker_person_id", "TEXT")
+            # meeting-spine Phase0: 解析后的稳定 entity id (指向本地 entities 行,身份从 entity 行透出)
+            self._ensure_column("atomic_facts", "speaker_entity_id", "TEXT")
+            # meeting-spine ② 修 pre-existing bug: _mark_task_completed 写 output_hash 但该列从未建过
+            # → 深读 worker 完成任务报 "no such column" → 标 failed → 深加工几乎全 0。CREATE 已补, 此为存量库迁移。
+            self._ensure_column("local_model_tasks", "output_hash", "TEXT NOT NULL DEFAULT ''")
             # 事件发生时间 (≠ 录入时间)
             self._ensure_column("atomic_facts", "time_anchor", "TEXT")
             # 维度 5: 生命周期 (N3 A4 预留 — verification + N2 引用规则的关键)
