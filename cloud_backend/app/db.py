@@ -435,6 +435,36 @@ class Database:
                     FOREIGN KEY(department_id) REFERENCES org_departments(id) ON DELETE SET NULL,
                     FOREIGN KEY(manager_role_id) REFERENCES org_role_templates(id) ON DELETE SET NULL
                 );
+                -- 机器人同事(bot)云端注册表 — 全局共享、桌面+手机两端可见的真相源.
+                -- 字段对齐桌面 bot_members; reporting/capabilities 以 JSON 反范式存(桌面同步时拆回三表).
+                CREATE TABLE IF NOT EXISTS org_bots (
+                    id TEXT PRIMARY KEY,
+                    organization_id TEXT NOT NULL,
+                    display_name TEXT NOT NULL,
+                    handle TEXT NOT NULL,
+                    actor_id TEXT NOT NULL,
+                    actor_type TEXT NOT NULL DEFAULT 'internal_ai_agent',
+                    department_id TEXT,
+                    department_name TEXT NOT NULL DEFAULT '',
+                    description TEXT NOT NULL DEFAULT '',
+                    status TEXT NOT NULL DEFAULT 'active',
+                    created_by_user_id TEXT,
+                    token_hash TEXT NOT NULL DEFAULT '',
+                    token_salt TEXT NOT NULL DEFAULT '',
+                    token_prefix TEXT NOT NULL DEFAULT '',
+                    token_rotated_at TEXT,
+                    reporting_json TEXT NOT NULL DEFAULT '{}',
+                    capabilities_json TEXT NOT NULL DEFAULT '[]',
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    UNIQUE(organization_id, handle),
+                    UNIQUE(organization_id, actor_id),
+                    FOREIGN KEY(organization_id) REFERENCES organizations(id) ON DELETE CASCADE,
+                    FOREIGN KEY(department_id) REFERENCES org_departments(id) ON DELETE SET NULL,
+                    FOREIGN KEY(created_by_user_id) REFERENCES employee_accounts(id) ON DELETE SET NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_org_bots_org
+                    ON org_bots(organization_id, status, updated_at DESC);
 
                 CREATE TABLE IF NOT EXISTS org_employee_role_bindings (
                     user_id TEXT PRIMARY KEY,
@@ -893,6 +923,8 @@ class Database:
                 """
             )
             self._migrate_task_tag_library_schema()
+            # 岗位持有人=机器人同事时,记录 bot id,使"岗位归属"也随云端共享(退役桌面本地 sidecar).
+            self._ensure_column("org_role_templates", "holder_bot_id", "TEXT")
             self._ensure_column("employee_accounts", "department_id", "TEXT")
             self._ensure_column("employee_accounts", "department_name", "TEXT")
             self._ensure_column("employee_accounts", "job_title", "TEXT")

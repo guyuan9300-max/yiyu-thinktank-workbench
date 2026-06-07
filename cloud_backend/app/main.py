@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import hmac
 import html
 import ipaddress
 import json
@@ -9,6 +10,7 @@ import logging
 import mimetypes
 import os
 import re
+import secrets
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
@@ -48,6 +50,11 @@ from app.models import (
     DepartmentOption,
     OrgInviteResolveResult,
     EmployeeRecord,
+    OrgBotRecord,
+    OrgBotReportingRecord,
+    OrgBotCapabilityRecord,
+    OrgBotCreatePayload,
+    OrgBotUpdatePayload,
     EmployeeDepartmentPayload,
     EventLineActivityRecord,
     EventLineCreatePayload,
@@ -809,6 +816,117 @@ def _employee_record(row) -> EmployeeRecord:
     )
 
 
+# ───────────────────────── 机器人同事(bot)云端注册表 helpers ─────────────────────────
+# 默认能力清单(对齐桌面 bot_permission_policies 的 6 项): (key, enabled, approval_required)
+_DEFAULT_BOT_CAPABILITIES = [
+    ("workspace_file_write.request", False, True),
+    ("data_center_parse.request", True, True),
+    ("external_material_draft.create", True, True),
+    ("external_send.request", False, True),
+    ("clarification_resolution.propose", False, True),
+    ("inline_approval.allow_from_supervisor", True, False),
+]
+
+
+def _bot_hash_token(token: str, salt: str) -> str:
+    """与桌面 bot_members._hash_bot_token 完全一致: hmac_sha256(salt, token).hexdigest()."""
+    return hmac.new(salt.encode("utf-8"), token.encode("utf-8"), hashlib.sha256).hexdigest()
+
+
+def _bot_slug_handle(name: str) -> str:
+    name = (name or "").strip()
+    if not name:
+        return f"bot_{uuid4().hex[:8]}"
+    if re.search(r"[一-龥]", name):
+        return name
+    return re.sub(r"\s+", "_", name.lower())
+
+
+def _bot_auto_actor_id(handle: str) -> str:
+    if re.match(r"^[a-zA-Z0-9_]+$", handle):
+        return f"bot_{handle.lower()}"
+    return f"bot_{hashlib.md5(handle.encode('utf-8')).hexdigest()[:12]}"
+
+
+def _default_bot_capabilities_json() -> str:
+    return to_json([
+        {"capabilityKey": k, "enabled": en, "approvalRequired": req, "approvalPolicy": "supervisor_required"}
+        for (k, en, req) in _DEFAULT_BOT_CAPABILITIES
+    ])
+
+
+def _org_bot_record(row, *, token_plain: str | None = None) -> OrgBotRecord:
+    reporting_raw = from_json(_row_get(row, "reporting_json") or "{}", {}) or {}
+    caps_raw = from_json(_row_get(row, "capabilities_json") or "[]", []) or []
+    reporting = OrgBotReportingRecord(
+        reportToCreator=bool(reporting_raw.get("reportToCreator", True)),
+        reportToDepartmentLead=bool(reporting_raw.get("reportToDepartmentLead", True)),
+        reportToCeo=bool(reporting_raw.get("reportToCeo", True)),
+        departmentLeaderUserIds=[str(x) for x in reporting_raw.get("departmentLeaderUserIds", []) if str(x)],
+        ceoUserIds=[str(x) for x in reporting_raw.get("ceoUserIds", []) if str(x)],
+        approvalMode=str(reporting_raw.get("approvalMode", "any_one")),
+    )
+    capabilities = [
+        OrgBotCapabilityRecord(
+            capabilityKey=str(c.get("capabilityKey") or c.get("capability_key") or ""),
+            enabled=bool(c.get("enabled", False)),
+            approvalRequired=bool(c.get("approvalRequired", c.get("approval_required", True))),
+            approvalPolicy=str(c.get("approvalPolicy") or c.get("approval_policy") or "supervisor_required"),
+        )
+        for c in caps_raw
+        if isinstance(c, dict) and (c.get("capabilityKey") or c.get("capability_key"))
+    ]
+    return OrgBotRecord(
+        id=str(row["id"]),
+        displayName=str(row["display_name"]),
+        handle=str(row["handle"]),
+        actorId=str(row["actor_id"]),
+        actorType=str(_row_get(row, "actor_type") or "internal_ai_agent"),
+        departmentId=str(_row_get(row, "department_id") or "") or None,
+        departmentName=str(_row_get(row, "department_name") or ""),
+        description=str(_row_get(row, "description") or ""),
+        status=str(_row_get(row, "status") or "active"),
+        createdByUserId=str(_row_get(row, "created_by_user_id") or "") or None,
+        tokenPrefix=str(_row_get(row, "token_prefix") or ""),
+        tokenRotatedAt=_row_get(row, "token_rotated_at"),
+        hasToken=bool(_row_get(row, "token_hash")),
+        reporting=reporting,
+        capabilities=capabilities,
+        createdAt=str(_row_get(row, "created_at") or ""),
+        updatedAt=str(_row_get(row, "updated_at") or ""),
+        tokenPlain=token_plain,
+    )
+
+
+def _bot_directory_record(row) -> EmployeeRecord:
+    """把一个 bot 包装成 directory 里的 EmployeeRecord(isBot=True),让人/机同一接口可见."""
+    actor_id = str(row["actor_id"])
+    return EmployeeRecord(
+        id=actor_id,
+        email=f"{actor_id}@bots.yiyu.app",  # 合成邮箱仅为满足 EmailStr; bot 不登录
+        fullName=str(row["display_name"]),
+        primaryRole="employee",
+        accountStatus="approved",
+        membershipStatus="approved",
+        departmentId=str(_row_get(row, "department_id") or "") or None,
+        departmentName=str(_row_get(row, "department_name") or "") or None,
+        createdAt=str(_row_get(row, "created_at") or now_iso()),
+        isBot=True,
+        actorId=actor_id,
+        handle=str(row["handle"]),
+    )
+
+
+def _list_org_bots(state: "AppState", organization_id: str, *, status: str | None = None):
+    sql = "SELECT * FROM org_bots WHERE organization_id = ?"
+    params: list = [organization_id]
+    if status:
+        sql += " AND status = ?"
+        params.append(status)
+    sql += " ORDER BY updated_at DESC"
+    return state.db.fetchall(sql, tuple(params))
+
+
 def _split_lines(value: str | None) -> list[str]:
     if not value:
         return []
@@ -999,6 +1117,7 @@ def _list_org_roles(state: AppState, organization_id: str) -> list[OrgRoleTempla
             canApproveTasks=_bool_value(row, "can_approve_tasks"),
             canReassignTasks=_bool_value(row, "can_reassign_tasks"),
             canChangeDeadline=_bool_value(row, "can_change_deadline"),
+            holderBotId=str(_row_get(row, "holder_bot_id") or "") or None,
             sortOrder=int(row["sort_order"] or 0),
             active=_bool_value(row, "active"),
             updatedAt=str(row["updated_at"]),
@@ -3680,8 +3799,8 @@ def _save_org_model_profile(state: AppState, current_user: SessionUser, payload:
             INSERT INTO org_role_templates(
                 id, organization_id, department_id, name, level, manager_role_id, is_manager, goal,
                 responsibilities_json, should_avoid_json, collaboration_role_ids_json, task_edit_scope,
-                can_approve_tasks, can_reassign_tasks, can_change_deadline, sort_order, active, updated_at
-            ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                can_approve_tasks, can_reassign_tasks, can_change_deadline, holder_bot_id, sort_order, active, updated_at
+            ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 role.id,
@@ -3699,6 +3818,7 @@ def _save_org_model_profile(state: AppState, current_user: SessionUser, payload:
                 1 if role.canApproveTasks else 0,
                 1 if role.canReassignTasks else 0,
                 1 if role.canChangeDeadline else 0,
+                (role.holderBotId or None),
                 role.sortOrder,
                 1 if role.active else 0,
                 timestamp,
@@ -17121,7 +17241,115 @@ def create_app() -> FastAPI:
             """,
             (current_user.organizationId,),
         )
-        return [_employee_record(row) for row in rows]
+        records = [_employee_record(row) for row in rows]
+        # 机器人同事一并带出(isBot=True),桌面+手机同一接口即可见、全局共享.
+        bot_rows = _list_org_bots(state, current_user.organizationId, status="active")
+        records.extend(_bot_directory_record(b) for b in bot_rows)
+        return records
+
+    @app.get("/api/v1/org/bots", response_model=list[OrgBotRecord])
+    def list_org_bots(
+        status: str | None = Query(default=None),
+        current_user: SessionUser = Depends(lambda authorization=Header(default=None): _require_auth(app, authorization)),
+    ) -> list[OrgBotRecord]:
+        rows = _list_org_bots(state, current_user.organizationId, status=status)
+        return [_org_bot_record(r) for r in rows]
+
+    @app.post("/api/v1/org/bots", response_model=OrgBotRecord)
+    def create_org_bot(
+        payload: OrgBotCreatePayload,
+        current_user: SessionUser = Depends(lambda authorization=Header(default=None): _require_admin(app, authorization)),
+    ) -> OrgBotRecord:
+        org_id = current_user.organizationId
+        display_name = payload.displayName.strip()
+        if not display_name:
+            raise HTTPException(status_code=400, detail="display_name 必填")
+        handle = (payload.handle or "").strip() or _bot_slug_handle(display_name)
+        actor_id = _bot_auto_actor_id(handle)
+        if state.db.fetchone("SELECT id FROM org_bots WHERE organization_id = ? AND handle = ?", (org_id, handle)):
+            raise HTTPException(status_code=409, detail=f"handle 已存在: {handle}")
+        if state.db.fetchone("SELECT id FROM org_bots WHERE organization_id = ? AND actor_id = ?", (org_id, actor_id)):
+            raise HTTPException(status_code=409, detail=f"actor_id 已存在: {actor_id}")
+        bot_id = new_id("orgbot")
+        token_plain = secrets.token_urlsafe(24)
+        salt = secrets.token_hex(16)
+        token_hash = _bot_hash_token(token_plain, salt)
+        ts = now_iso()
+        reporting = payload.reporting or OrgBotReportingRecord()
+        caps_json = (
+            to_json([c.model_dump() for c in payload.capabilities])
+            if payload.capabilities is not None
+            else _default_bot_capabilities_json()
+        )
+        dept_name = (payload.departmentName or "").strip()
+        if not dept_name and payload.departmentId:
+            drow = state.db.fetchone(
+                "SELECT name FROM org_departments WHERE id = ? AND organization_id = ?",
+                (payload.departmentId, org_id),
+            )
+            dept_name = str(drow["name"]) if drow else ""
+        state.db.execute(
+            """
+            INSERT INTO org_bots(
+                id, organization_id, display_name, handle, actor_id, actor_type, department_id, department_name,
+                description, status, created_by_user_id, token_hash, token_salt, token_prefix, token_rotated_at,
+                reporting_json, capabilities_json, created_at, updated_at
+            ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                bot_id, org_id, display_name, handle, actor_id, "internal_ai_agent",
+                payload.departmentId or None, dept_name, (payload.description or "").strip(), "active",
+                current_user.id, token_hash, salt, token_plain[:8], ts,
+                to_json(reporting.model_dump()), caps_json, ts, ts,
+            ),
+        )
+        _log_audit(state, "create_org_bot", actor_user_id=current_user.id, target_user_id=None, detail={"bot_id": bot_id, "handle": handle})
+        row = state.db.fetchone("SELECT * FROM org_bots WHERE id = ?", (bot_id,))
+        return _org_bot_record(row, token_plain=token_plain)
+
+    @app.patch("/api/v1/org/bots/{bot_id}", response_model=OrgBotRecord)
+    def update_org_bot(
+        bot_id: str,
+        payload: OrgBotUpdatePayload,
+        current_user: SessionUser = Depends(lambda authorization=Header(default=None): _require_admin(app, authorization)),
+    ) -> OrgBotRecord:
+        org_id = current_user.organizationId
+        row = state.db.fetchone("SELECT * FROM org_bots WHERE id = ? AND organization_id = ?", (bot_id, org_id))
+        if not row:
+            raise HTTPException(status_code=404, detail="bot not found")
+        sets: list[str] = []
+        params: list = []
+        if payload.displayName is not None:
+            sets.append("display_name = ?"); params.append(payload.displayName.strip())
+        if payload.departmentId is not None:
+            sets.append("department_id = ?"); params.append(payload.departmentId or None)
+        if payload.departmentName is not None:
+            sets.append("department_name = ?"); params.append(payload.departmentName.strip())
+        if payload.description is not None:
+            sets.append("description = ?"); params.append(payload.description.strip())
+        if payload.status is not None and payload.status in ("active", "disabled"):
+            sets.append("status = ?"); params.append(payload.status)
+        if payload.reporting is not None:
+            sets.append("reporting_json = ?"); params.append(to_json(payload.reporting.model_dump()))
+        if payload.capabilities is not None:
+            sets.append("capabilities_json = ?"); params.append(to_json([c.model_dump() for c in payload.capabilities]))
+        token_plain = None
+        ts = now_iso()
+        if payload.rotateToken:
+            token_plain = secrets.token_urlsafe(24)
+            salt = secrets.token_hex(16)
+            sets.append("token_hash = ?"); params.append(_bot_hash_token(token_plain, salt))
+            sets.append("token_salt = ?"); params.append(salt)
+            sets.append("token_prefix = ?"); params.append(token_plain[:8])
+            sets.append("token_rotated_at = ?"); params.append(ts)
+        sets.append("updated_at = ?"); params.append(ts)
+        params.extend([bot_id, org_id])
+        state.db.execute(
+            f"UPDATE org_bots SET {', '.join(sets)} WHERE id = ? AND organization_id = ?",
+            tuple(params),
+        )
+        row = state.db.fetchone("SELECT * FROM org_bots WHERE id = ?", (bot_id,))
+        return _org_bot_record(row, token_plain=token_plain)
 
     @app.post("/api/v1/admin/employees/{employee_id}/approve", response_model=EmployeeRecord)
     def approve_employee(

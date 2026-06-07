@@ -328,6 +328,69 @@ class EmployeeRecord(BaseModel):
     disabledAt: str | None = None
     lastLoginAt: str | None = None
     createdAt: str
+    # 机器人同事: 让 directory 同一接口把 bot 与人一并带出, 两端零额外接入即可见.
+    isBot: bool = False
+    actorId: str | None = None
+    handle: str | None = None
+
+
+class OrgBotReportingRecord(BaseModel):
+    reportToCreator: bool = True
+    reportToDepartmentLead: bool = True
+    reportToCeo: bool = True
+    departmentLeaderUserIds: list[str] = Field(default_factory=list)
+    ceoUserIds: list[str] = Field(default_factory=list)
+    approvalMode: str = "any_one"
+
+
+class OrgBotCapabilityRecord(BaseModel):
+    capabilityKey: str
+    enabled: bool = False
+    approvalRequired: bool = True
+    approvalPolicy: str = "supervisor_required"
+
+
+class OrgBotRecord(BaseModel):
+    id: str
+    displayName: str
+    handle: str
+    actorId: str
+    actorType: str = "internal_ai_agent"
+    departmentId: str | None = None
+    departmentName: str = ""
+    description: str = ""
+    status: str = "active"
+    createdByUserId: str | None = None
+    tokenPrefix: str = ""
+    tokenRotatedAt: str | None = None
+    hasToken: bool = False
+    reporting: OrgBotReportingRecord = Field(default_factory=OrgBotReportingRecord)
+    capabilities: list[OrgBotCapabilityRecord] = Field(default_factory=list)
+    createdAt: str = ""
+    updatedAt: str = ""
+    # 仅创建/轮换时返回一次明文 token; 列表/详情恒为 None.
+    tokenPlain: str | None = None
+
+
+class OrgBotCreatePayload(BaseModel):
+    displayName: str
+    handle: str | None = None
+    departmentId: str | None = None
+    departmentName: str = ""
+    description: str = ""
+    reporting: OrgBotReportingRecord | None = None
+    capabilities: list[OrgBotCapabilityRecord] | None = None
+
+
+class OrgBotUpdatePayload(BaseModel):
+    displayName: str | None = None
+    departmentId: str | None = None
+    departmentName: str | None = None
+    description: str | None = None
+    status: str | None = None
+    reporting: OrgBotReportingRecord | None = None
+    capabilities: list[OrgBotCapabilityRecord] | None = None
+    rotateToken: bool = False
 
 
 class MaintenanceModeStatus(BaseModel):
