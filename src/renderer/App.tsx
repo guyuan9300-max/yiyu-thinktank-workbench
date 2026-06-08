@@ -10881,6 +10881,7 @@ export default function App() {
     currentOperatorName,
     currentSessionUser,
     currentWeekLabel,
+    dataCenterClients,
     defaultTagScope,
     departmentOptions,
     effectiveTaskSettings,
@@ -10951,6 +10952,7 @@ export default function App() {
     currentOperatorName: typeof currentOperatorName;
     currentSessionUser: typeof currentSessionUser;
     currentWeekLabel: typeof currentWeekLabel;
+    dataCenterClients: typeof dataCenterClients;
     defaultTagScope: typeof defaultTagScope;
     departmentOptions: typeof departmentOptions;
     effectiveTaskSettings: typeof effectiveTaskSettings;
@@ -11022,6 +11024,7 @@ export default function App() {
       currentOperatorName,
       currentSessionUser,
       currentWeekLabel,
+      dataCenterClients,
       defaultTagScope,
       departmentOptions,
       effectiveTaskSettings,

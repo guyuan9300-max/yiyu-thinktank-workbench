@@ -1,0 +1,9916 @@
+# 数据中心 · 数据流账本 (机器生成)
+
+> 工具: `scripts/data_flow_ledger.py` · AST 静态分析 + immutable=1 只读经验层
+> 真库: `/Users/guyuanyuan/Library/Application Support/YiyuThinkTankWorkbench2/app.db`
+> 收录函数 5502 个 · 覆盖表 274 张 · 调用链上溯 开
+
+置信度: `static_confirmed`=字面表名直接确证 · `call_name_match`=调用链靠函数名匹配 · `needs_human`=动态表名/0写边有行。
+
+---
+## `SET`
+
+- 经验层: 真库**无此表** (静态边 47写/0读)
+
+### 写边 (47)
+- `UPDATE` @ **set_setting** `backend/app/db.py:5273` — _call_name_match_
+    - chain: set_setting @backend/app/db.py:5273  ←  _sync_object_storage_config_from_cloud [worker:_sync_object_storage_config_from_cloud] @backend/app/main.py:30605
+    - chain: set_setting @backend/app/db.py:5273  ←  create_backup [endpoint:/api/v1/settings/backup] @backend/app/main.py:37518
+    - chain: set_setting @backend/app/db.py:5273  ←  sync_qdrant_for_client [worker:sync_qdrant_for_client] @backend/app/services/knowledge_base.py:1437
+    - chain: set_setting @backend/app/db.py:5273  ←  update_refresh_cycle_settings [endpoint:/api/v1/intelligence/refresh-cycle-settings] @backend/app/main.py:57306
+    - chain: set_setting @backend/app/db.py:5273  ←  update_retrieval_settings [endpoint:/api/v1/retrieval/settings] @backend/app/main.py:44158
+    - chain: set_setting @backend/app/db.py:5273  ←  update_settings [endpoint:/api/v1/settings] @backend/app/main.py:36459
+- `UPDATE` @ **create_app._persist_generated_insights** `backend/app/main.py:20424` — _call_name_match_
+    - chain: _persist_generated_insights @backend/app/main.py:20424  ←  _refresh_strategic_thoughts @backend/app/main.py:20560  ←  refresh_strategic_thoughts [endpoint:/api/v1/strategic/thoughts/refresh] @backend/app/main.py:42034
+- `UPDATE` @ **create_app.save_strategic_cockpit_snapshot** `backend/app/main.py:21587` — _call_name_match_
+    - chain: save_strategic_cockpit_snapshot @backend/app/main.py:21587  ←  apply_strategic_meeting_pack [endpoint:/api/v1/clients/{client_id}/strategic-cockpit/meeting-pack/{meeting_id}/apply] @backend/app/main.py:42202
+    - chain: save_strategic_cockpit_snapshot @backend/app/main.py:21587  ←  confirm_strategic_cockpit [endpoint:/api/v1/clients/{client_id}/strategic-cockpit/confirm] @backend/app/main.py:42174
+- `UPDATE` @ **create_app.resolve_client_duplicate_documents** `backend/app/main.py:28241` — _static_confirmed_
+    - chain: resolve_client_duplicate_documents [endpoint:/api/v1/clients/{client_id}/duplicate-documents/resolve] @backend/app/main.py:28241
+- `UPDATE` @ **create_app._save_narrative_mirror** `backend/app/main.py:28532` — _call_name_match_
+    - chain: _save_narrative_mirror @backend/app/main.py:28532  ←  get_client_narrative_proxy [endpoint:/api/v1/clients/{client_id}/narrative] @backend/app/main.py:28561
+    - chain: _save_narrative_mirror @backend/app/main.py:28532  ←  regenerate_client_narrative_proxy [endpoint:/api/v1/clients/{client_id}/narrative/regenerate] @backend/app/main.py:29879
+- `UPDATE` @ **create_app.upload_strategic_doc** `backend/app/main.py:29028` — _static_confirmed_
+    - chain: upload_strategic_doc [endpoint:/api/v1/clients/{client_id}/strategic-docs] @backend/app/main.py:29028
+- `UPDATE` @ **create_app._precompute_task_understanding** `backend/app/main.py:31743` — _needs_human_
+    - chain: _precompute_task_understanding @backend/app/main.py:31743  ←  (no caller found — orphan write)
+- `UPDATE` @ **create_app** `backend/app/main.py:3179` — _needs_human_
+    - chain: create_app @backend/app/main.py:3179  ←  (no caller found — orphan write)
+- `UPDATE` @ **create_app._ensure_cloud_event_attachment_document** `backend/app/main.py:34027` — _call_name_match_
+    - chain: _ensure_cloud_event_attachment_document @backend/app/main.py:34027  ←  _enrich_report_snapshot_with_local_parse @backend/app/main.py:34134  ←  get_event_line_report_snapshot [endpoint:/api/v1/event-lines/{event_line_id}/report-snapshot] @backend/app/main.py:34329
+- `UPDATE` @ **create_app.merge_event_lines** `backend/app/main.py:35514` — _needs_human_
+    - chain: merge_event_lines [endpoint:/api/v1/event-lines/{event_line_id}/merge] @backend/app/main.py:35514
+- `UPDATE` @ **create_app.merge_event_lines._do_merge** `backend/app/main.py:35586` — _needs_human_
+    - chain: _do_merge @backend/app/main.py:35586  ←  (no caller found — orphan write)
+- `UPDATE` @ **create_app.import_sync_intelligence_demo.apply_rows** `backend/app/main.py:54624` — _needs_human_
+    - chain: apply_rows @backend/app/main.py:54624  ←  (no caller found — orphan write)
+- `UPDATE` @ **create_app.save_client_dna_module** `backend/app/main.py:7294` — _call_name_match_
+    - chain: save_client_dna_module @backend/app/main.py:7294  ←  process_knowledge_job @backend/app/main.py:4809  ←  knowledge_worker_loop [worker:knowledge_worker_loop] @backend/app/main.py:5110
+    - chain: save_client_dna_module @backend/app/main.py:7294  ←  upsert_client_dna_module @backend/app/main.py:7384  ←  update_client_dna_document [endpoint:/api/v1/clients/{client_id}/dna-documents/{module_key}] @backend/app/main.py:45625
+- `UPDATE` @ **create_app._upsert_cloud_task_list_shadow_local** `backend/app/main.py:9166` — _call_name_match_
+    - chain: _upsert_cloud_task_list_shadow_local @backend/app/main.py:9166  ←  _pull_cloud_tasks_to_local @backend/app/main.py:9990  ←  bootstrap_task_event_lines [endpoint:/api/v1/tasks/bootstrap-event-lines] @backend/app/main.py:52159
+    - chain: _upsert_cloud_task_list_shadow_local @backend/app/main.py:9166  ←  _pull_cloud_tasks_to_local @backend/app/main.py:9990  ←  refresh_task_contexts [endpoint:/api/v1/tasks/refresh-contexts] @backend/app/main.py:52111
+    - chain: _upsert_cloud_task_list_shadow_local @backend/app/main.py:9166  ←  _upsert_cloud_task_shadow_local @backend/app/main.py:9597  ←  approve_task_review [endpoint:/api/v1/tasks/{task_id}/review/approve] @backend/app/main.py:53945
+    - chain: _upsert_cloud_task_list_shadow_local @backend/app/main.py:9166  ←  _upsert_cloud_task_shadow_local @backend/app/main.py:9597  ←  complete_task_with_review [endpoint:/api/v1/tasks/{task_id}/complete-with-review] @backend/app/main.py:53934
+    - chain: _upsert_cloud_task_list_shadow_local @backend/app/main.py:9166  ←  _upsert_cloud_task_shadow_local @backend/app/main.py:9597  ←  confirm_task [endpoint:/api/v1/tasks/{task_id}/confirm] @backend/app/main.py:53875
+    - chain: _upsert_cloud_task_list_shadow_local @backend/app/main.py:9166  ←  _upsert_cloud_task_shadow_local @backend/app/main.py:9597  ←  reject_task [endpoint:/api/v1/tasks/{task_id}/reject] @backend/app/main.py:53903
+- `UPDATE` @ **create_app._upsert_cloud_event_line_shadow_local** `backend/app/main.py:9234` — _call_name_match_
+    - chain: _upsert_cloud_event_line_shadow_local @backend/app/main.py:9234  ←  _sync_event_line_row_to_cloud [worker:_sync_event_line_row_to_cloud] @backend/app/main.py:9476
+    - chain: _upsert_cloud_event_line_shadow_local @backend/app/main.py:9234  ←  create_event_line [endpoint:/api/v1/event-lines] @backend/app/main.py:31525
+    - chain: _upsert_cloud_event_line_shadow_local @backend/app/main.py:9234  ←  delete_event_line [endpoint:/api/v1/event-lines/{event_line_id}] @backend/app/main.py:35723
+    - chain: _upsert_cloud_event_line_shadow_local @backend/app/main.py:9234  ←  get_event_line [endpoint:/api/v1/event-lines/{event_line_id}] @backend/app/main.py:31641
+    - chain: _upsert_cloud_event_line_shadow_local @backend/app/main.py:9234  ←  list_event_lines [endpoint:/api/v1/event-lines] @backend/app/main.py:31505
+    - chain: _upsert_cloud_event_line_shadow_local @backend/app/main.py:9234  ←  _normalize_task_client_and_event_line_refs @backend/app/main.py:7952  ←  update_task [endpoint:/api/v1/tasks/{task_id}] @backend/app/main.py:52636
+- `UPDATE` @ **create_app._upsert_cloud_task_shadow_local** `backend/app/main.py:9597` — _call_name_match_
+    - chain: _upsert_cloud_task_shadow_local @backend/app/main.py:9597  ←  approve_task_review [endpoint:/api/v1/tasks/{task_id}/review/approve] @backend/app/main.py:53945
+    - chain: _upsert_cloud_task_shadow_local @backend/app/main.py:9597  ←  complete_task_with_review [endpoint:/api/v1/tasks/{task_id}/complete-with-review] @backend/app/main.py:53934
+    - chain: _upsert_cloud_task_shadow_local @backend/app/main.py:9597  ←  confirm_task [endpoint:/api/v1/tasks/{task_id}/confirm] @backend/app/main.py:53875
+    - chain: _upsert_cloud_task_shadow_local @backend/app/main.py:9597  ←  reject_task [endpoint:/api/v1/tasks/{task_id}/reject] @backend/app/main.py:53903
+    - chain: _upsert_cloud_task_shadow_local @backend/app/main.py:9597  ←  return_task_review [endpoint:/api/v1/tasks/{task_id}/review/return] @backend/app/main.py:53956
+    - chain: _upsert_cloud_task_shadow_local @backend/app/main.py:9597  ←  sync_pending_tasks_if_due [worker:sync_pending_tasks_if_due] @backend/app/main.py:23973
+- `UPDATE` @ **_upsert_table** `backend/app/modules/organization/sync.py:328` — _needs_human_
+    - chain: _upsert_table @backend/app/modules/organization/sync.py:328  ←  sync_organization_directory [worker:sync_organization_directory] @backend/app/modules/organization/sync.py:149
+- `UPDATE` @ **sync_agent_execution_tasks** `backend/app/services/agent_worklogs.py:799` — _static_confirmed_
+    - chain: sync_agent_execution_tasks [worker:sync_agent_execution_tasks] @backend/app/services/agent_worklogs.py:799
+- `UPDATE` @ **_upsert** `backend/app/services/analysis_center.py:402` — _needs_human_
+    - chain: _upsert @backend/app/services/analysis_center.py:402  ←  _upsert_sync_memory_record [worker:_upsert_sync_memory_record] @backend/app/services/analysis_center.py:768
+    - chain: _upsert @backend/app/services/analysis_center.py:402  ←  _upsert_conflict_group @backend/app/services/analysis_center.py:609  ←  _sync_open_questions_and_conflicts [worker:_sync_open_questions_and_conflicts] @backend/app/services/analysis_center.py:2250
+    - chain: _upsert @backend/app/services/analysis_center.py:402  ←  _upsert_context_pack @backend/app/services/analysis_center.py:667  ←  _sync_context_pack [worker:_sync_context_pack] @backend/app/services/analysis_center.py:2380
+    - chain: _upsert @backend/app/services/analysis_center.py:402  ←  _upsert_dna_delta @backend/app/services/analysis_center.py:700  ←  _sync_dna_delta [worker:_sync_dna_delta] @backend/app/services/analysis_center.py:2554
+    - chain: _upsert @backend/app/services/analysis_center.py:402  ←  _upsert_doc_skeleton @backend/app/services/analysis_center.py:511  ←  _sync_doc_skeletons [worker:_sync_doc_skeletons] @backend/app/services/analysis_center.py:1614
+    - chain: _upsert @backend/app/services/analysis_center.py:402  ←  _upsert_evidence_card @backend/app/services/analysis_center.py:531  ←  _sync_evidence_cards [worker:_sync_evidence_cards] @backend/app/services/analysis_center.py:1670
+- `UPDATE` @ **run_brand_strategy_extraction** `backend/app/services/brand_strategy_extractor.py:248` — _call_name_match_
+    - chain: run_brand_strategy_extraction @backend/app/services/brand_strategy_extractor.py:248  ←  trigger_brand_strategy_extraction [endpoint:/api/v1/intelligence/brand-mirror/strategy-extract] @backend/app/main.py:59459
+- `UPDATE` @ **_mark_narrative_stale** `backend/app/services/data_center_broadcast.py:240` — _call_name_match_
+    - chain: _mark_narrative_stale @backend/app/services/data_center_broadcast.py:240  ←  broadcast_data_changed @backend/app/services/data_center_broadcast.py:94  ←  system_broadcast_data_changed [endpoint:/api/v1/system/broadcast-data-changed] @backend/app/main.py:30247
+    - chain: _mark_narrative_stale @backend/app/services/data_center_broadcast.py:240  ←  broadcast_data_changed @backend/app/services/data_center_broadcast.py:94  ←  ingest_document_knowledge @backend/app/services/knowledge_base.py:2802  ←  upload_task_attachment [endpoint:/api/v1/tasks/{task_id}/attachments] @backend/app/main.py:53434
+    - chain: _mark_narrative_stale @backend/app/services/data_center_broadcast.py:240  ←  broadcast_data_changed @backend/app/services/data_center_broadcast.py:94  ←  ingest_document_knowledge @backend/app/services/knowledge_base.py:2802  ←  _build_local_event_line_report_snapshot @backend/app/main.py:33643  ←  get_event_line_report_snapshot [endpoint:/api/v1/event-lines/{event_line_id}/report-snapshot] @backend/app/main.py:34329
+    - chain: _mark_narrative_stale @backend/app/services/data_center_broadcast.py:240  ←  broadcast_data_changed @backend/app/services/data_center_broadcast.py:94  ←  ingest_document_knowledge @backend/app/services/knowledge_base.py:2802  ←  _process_one_pdf @backend/app/services/internet_pdf_worker.py:96  ←  _worker_loop [worker:_worker_loop] @backend/app/services/internet_pdf_worker.py:205
+    - chain: _mark_narrative_stale @backend/app/services/data_center_broadcast.py:240  ←  broadcast_data_changed @backend/app/services/data_center_broadcast.py:94  ←  ingest_document_knowledge @backend/app/services/knowledge_base.py:2802  ←  backfill_workspace_import @backend/app/services/knowledge_v2.py:3943  ←  backfill_client_workspace_imports [endpoint:/api/v1/clients/{client_id}/workspace/backfill-imports] @backend/app/main.py:50039
+    - chain: _mark_narrative_stale @backend/app/services/data_center_broadcast.py:240  ←  broadcast_data_changed @backend/app/services/data_center_broadcast.py:94  ←  ingest_document_knowledge @backend/app/services/knowledge_base.py:2802  ←  create_client_text_document @backend/app/main.py:16116  ←  create_client_document_from_text [endpoint:/api/v1/clients/{client_id}/documents/from-text] @backend/app/main.py:49576
+- `UPDATE` @ **_upsert_ingest_event** `backend/app/services/data_center_ingest.py:388` — _call_name_match_
+    - chain: _upsert_ingest_event @backend/app/services/data_center_ingest.py:388  ←  ingest_user_input @backend/app/services/data_center_ingest.py:1089  ←  ingest_event_line_by_id @backend/app/services/data_center_ingest.py:1862  ←  create_event_line [endpoint:/api/v1/event-lines] @backend/app/main.py:31525
+    - chain: _upsert_ingest_event @backend/app/services/data_center_ingest.py:388  ←  ingest_user_input @backend/app/services/data_center_ingest.py:1089  ←  ingest_event_line_by_id @backend/app/services/data_center_ingest.py:1862  ←  update_event_line [endpoint:/api/v1/event-lines/{event_line_id}] @backend/app/main.py:35169
+    - chain: _upsert_ingest_event @backend/app/services/data_center_ingest.py:388  ←  ingest_user_input @backend/app/services/data_center_ingest.py:1089  ←  ingest_meeting_by_id @backend/app/services/data_center_ingest.py:1609  ←  apply_strategic_meeting_pack [endpoint:/api/v1/clients/{client_id}/strategic-cockpit/meeting-pack/{meeting_id}/apply] @backend/app/main.py:42202
+    - chain: _upsert_ingest_event @backend/app/services/data_center_ingest.py:388  ←  ingest_user_input @backend/app/services/data_center_ingest.py:1089  ←  ingest_meeting_by_id @backend/app/services/data_center_ingest.py:1609  ←  extract_meeting [endpoint:/api/v1/clients/{client_id}/meetings/{meeting_id}/extract] @backend/app/main.py:51418
+    - chain: _upsert_ingest_event @backend/app/services/data_center_ingest.py:388  ←  ingest_user_input @backend/app/services/data_center_ingest.py:1089  ←  ingest_meeting_by_id @backend/app/services/data_center_ingest.py:1609  ←  ingest_meeting [endpoint:/api/v1/clients/{client_id}/meetings/{meeting_id}/ingest] @backend/app/main.py:51386
+    - chain: _upsert_ingest_event @backend/app/services/data_center_ingest.py:388  ←  ingest_user_input @backend/app/services/data_center_ingest.py:1089  ←  ingest_meeting_by_id @backend/app/services/data_center_ingest.py:1609  ←  publish_meeting [endpoint:/api/v1/clients/{client_id}/meetings/{meeting_id}/publish] @backend/app/main.py:51482
+- `UPDATE` @ **_upsert_outbox_item** `backend/app/services/data_center_sync.py:327` — _call_name_match_
+    - chain: _upsert_outbox_item @backend/app/services/data_center_sync.py:327  ←  enqueue_data_center_sync_for_ingest_event [worker:enqueue_data_center_sync_for_ingest_event] @backend/app/services/data_center_sync.py:396
+    - chain: _upsert_outbox_item @backend/app/services/data_center_sync.py:327  ←  enqueue_data_center_lifecycle_for_ingest_event @backend/app/services/data_center_sync.py:441  ←  mark_ingested_source_inactive @backend/app/services/data_center_ingest.py:735  ←  delete_task [endpoint:/api/v1/tasks/{task_id}] @backend/app/main.py:53307
+    - chain: _upsert_outbox_item @backend/app/services/data_center_sync.py:327  ←  enqueue_data_center_lifecycle_for_ingest_event @backend/app/services/data_center_sync.py:441  ←  mark_ingested_source_inactive @backend/app/services/data_center_ingest.py:735  ←  update_task [endpoint:/api/v1/tasks/{task_id}] @backend/app/main.py:52636
+    - chain: _upsert_outbox_item @backend/app/services/data_center_sync.py:327  ←  enqueue_data_center_lifecycle_for_ingest_event @backend/app/services/data_center_sync.py:441  ←  _mark_documents_for_source_entity @backend/app/services/data_center_ingest.py:665  ←  _upsert_text_document_if_needed @backend/app/services/data_center_ingest.py:552  ←  ingest_user_input @backend/app/services/data_center_ingest.py:1089  ←  ingest_event_line_by_id @backend/app/services/data_center_ingest.py:1862  ←  create_event_line [endpoint:/api/v1/event-lines] @backend/app/main.py:31525
+    - chain: _upsert_outbox_item @backend/app/services/data_center_sync.py:327  ←  enqueue_data_center_lifecycle_for_ingest_event @backend/app/services/data_center_sync.py:441  ←  _mark_documents_for_source_entity @backend/app/services/data_center_ingest.py:665  ←  _upsert_text_document_if_needed @backend/app/services/data_center_ingest.py:552  ←  ingest_user_input @backend/app/services/data_center_ingest.py:1089  ←  ingest_event_line_by_id @backend/app/services/data_center_ingest.py:1862  ←  update_event_line [endpoint:/api/v1/event-lines/{event_line_id}] @backend/app/main.py:35169
+    - chain: _upsert_outbox_item @backend/app/services/data_center_sync.py:327  ←  enqueue_data_center_lifecycle_for_ingest_event @backend/app/services/data_center_sync.py:441  ←  _mark_documents_for_source_entity @backend/app/services/data_center_ingest.py:665  ←  _upsert_text_document_if_needed @backend/app/services/data_center_ingest.py:552  ←  ingest_user_input @backend/app/services/data_center_ingest.py:1089  ←  ingest_meeting_by_id @backend/app/services/data_center_ingest.py:1609  ←  apply_strategic_meeting_pack [endpoint:/api/v1/clients/{client_id}/strategic-cockpit/meeting-pack/{meeting_id}/apply] @backend/app/main.py:42202
+- `UPDATE` @ **pull_quotes_from_cloud** `backend/app/services/exp_wall_service.py:682` — _call_name_match_
+    - chain: pull_quotes_from_cloud @backend/app/services/exp_wall_service.py:682  ←  _background_sync_exp_wall [worker:_background_sync_exp_wall] @backend/app/main.py:3309
+- `UPDATE` @ **record_generation_result** `backend/app/services/generation_runtime_policy.py:292` — _call_name_match_
+    - chain: record_generation_result @backend/app/services/generation_runtime_policy.py:292  ←  resolve_chat_answer_data_center_primary @backend/app/main.py:46745  ←  document_ai_action [endpoint:/api/v1/clients/{client_id}/documents/ai-action] @backend/app/main.py:49635
+    - chain: record_generation_result @backend/app/services/generation_runtime_policy.py:292  ←  resolve_chat_answer_data_center_primary @backend/app/main.py:46745  ←  resolve_chat_answer @backend/app/main.py:48117  ←  background_resolve_chat_answer [worker:background_resolve_chat_answer] @backend/app/main.py:48335
+    - chain: record_generation_result @backend/app/services/generation_runtime_policy.py:292  ←  resolve_chat_answer_data_center_primary @backend/app/main.py:46745  ←  resolve_chat_answer @backend/app/main.py:48117  ←  send_chat_message [endpoint:/api/v1/clients/{client_id}/workspace/chat] @backend/app/main.py:49220
+- `UPDATE` @ **ensure_generation_runtime_schema** `backend/app/services/generation_runtime_policy.py:39` — _call_name_match_
+    - chain: ensure_generation_runtime_schema @backend/app/services/generation_runtime_policy.py:39  ←  get_generation_runtime_state @backend/app/services/generation_runtime_policy.py:147  ←  get_runtime_generation_state [endpoint:/api/v1/runtime/generation-state] @backend/app/main.py:44236
+    - chain: ensure_generation_runtime_schema @backend/app/services/generation_runtime_policy.py:39  ←  reset_generation_runtime_state @backend/app/services/generation_runtime_policy.py:390  ←  reset_runtime_generation_state [endpoint:/api/v1/runtime/generation-state/reset] @backend/app/main.py:44252
+    - chain: ensure_generation_runtime_schema @backend/app/services/generation_runtime_policy.py:39  ←  get_generation_runtime_state @backend/app/services/generation_runtime_policy.py:147  ←  build_workspace_chat_diagnostics @backend/app/services/workspace_chat_diagnostics.py:86  ←  get_runtime_workspace_chat_diagnostics [endpoint:/api/v1/runtime/workspace-chat-diagnostics] @backend/app/main.py:44364
+    - chain: ensure_generation_runtime_schema @backend/app/services/generation_runtime_policy.py:39  ←  record_generation_result @backend/app/services/generation_runtime_policy.py:292  ←  resolve_chat_answer_data_center_primary @backend/app/main.py:46745  ←  document_ai_action [endpoint:/api/v1/clients/{client_id}/documents/ai-action] @backend/app/main.py:49635
+    - chain: ensure_generation_runtime_schema @backend/app/services/generation_runtime_policy.py:39  ←  record_generation_result @backend/app/services/generation_runtime_policy.py:292  ←  resolve_chat_answer_data_center_primary @backend/app/main.py:46745  ←  resolve_chat_answer @backend/app/main.py:48117  ←  background_resolve_chat_answer [worker:background_resolve_chat_answer] @backend/app/main.py:48335
+    - chain: ensure_generation_runtime_schema @backend/app/services/generation_runtime_policy.py:39  ←  record_generation_result @backend/app/services/generation_runtime_policy.py:292  ←  resolve_chat_answer_data_center_primary @backend/app/main.py:46745  ←  resolve_chat_answer @backend/app/main.py:48117  ←  send_chat_message [endpoint:/api/v1/clients/{client_id}/workspace/chat] @backend/app/main.py:49220
+- `UPDATE` @ **pull_signals_from_cloud** `backend/app/services/growth_sync.py:246` — _call_name_match_
+    - chain: pull_signals_from_cloud @backend/app/services/growth_sync.py:246  ←  _background_sync_exp_wall [worker:_background_sync_exp_wall] @backend/app/main.py:3309
+- `UPDATE` @ **pull_evidence_from_cloud** `backend/app/services/growth_sync.py:314` — _call_name_match_
+    - chain: pull_evidence_from_cloud @backend/app/services/growth_sync.py:314  ←  _background_sync_exp_wall [worker:_background_sync_exp_wall] @backend/app/main.py:3309
+- `UPDATE` @ **pull_validation_events_from_cloud** `backend/app/services/growth_sync.py:390` — _call_name_match_
+    - chain: pull_validation_events_from_cloud @backend/app/services/growth_sync.py:390  ←  _background_sync_exp_wall [worker:_background_sync_exp_wall] @backend/app/main.py:3309
+- `UPDATE` @ **rebuild_weekly_snapshots_from_evidence** `backend/app/services/growth_sync.py:496` — _call_name_match_
+    - chain: rebuild_weekly_snapshots_from_evidence @backend/app/services/growth_sync.py:496  ←  _background_sync_exp_wall [worker:_background_sync_exp_wall] @backend/app/main.py:3309
+- `UPDATE` @ **pull_entries_from_cloud** `backend/app/services/handbook_sync.py:136` — _call_name_match_
+    - chain: pull_entries_from_cloud @backend/app/services/handbook_sync.py:136  ←  _background_sync_exp_wall [worker:_background_sync_exp_wall] @backend/app/main.py:3309
+- `UPDATE` @ **ensure_default_source_configs** `backend/app/services/intelligence_candidate_supply.py:1066` — _call_name_match_
+    - chain: ensure_default_source_configs @backend/app/services/intelligence_candidate_supply.py:1066  ←  run_intelligence_candidate_refresh @backend/app/services/intelligence_candidate_supply.py:5967  ←  trigger_intelligence_refresh [endpoint:/api/v1/intelligence/refresh] @backend/app/main.py:57794
+- `UPDATE` @ **ensure_user_supplied_official_sources** `backend/app/services/intelligence_candidate_supply.py:1198` — _call_name_match_
+    - chain: ensure_user_supplied_official_sources @backend/app/services/intelligence_candidate_supply.py:1198  ←  run_intelligence_candidate_refresh @backend/app/services/intelligence_candidate_supply.py:5967  ←  trigger_intelligence_refresh [endpoint:/api/v1/intelligence/refresh] @backend/app/main.py:57794
+- `UPDATE` @ **_upsert_official_site_section_configs** `backend/app/services/intelligence_candidate_supply.py:3431` — _call_name_match_
+    - chain: _upsert_official_site_section_configs @backend/app/services/intelligence_candidate_supply.py:3431  ←  discover_official_site_source_configs @backend/app/services/intelligence_candidate_supply.py:3496  ←  run_intelligence_candidate_refresh @backend/app/services/intelligence_candidate_supply.py:5967  ←  trigger_intelligence_refresh [endpoint:/api/v1/intelligence/refresh] @backend/app/main.py:57794
+- `UPDATE` @ **discover_official_site_source_configs** `backend/app/services/intelligence_candidate_supply.py:3496` — _call_name_match_
+    - chain: discover_official_site_source_configs @backend/app/services/intelligence_candidate_supply.py:3496  ←  run_intelligence_candidate_refresh @backend/app/services/intelligence_candidate_supply.py:5967  ←  trigger_intelligence_refresh [endpoint:/api/v1/intelligence/refresh] @backend/app/main.py:57794
+- `UPDATE` @ **_upsert_summary** `backend/app/services/intelligence_feedback.py:298` — _call_name_match_
+    - chain: _upsert_summary @backend/app/services/intelligence_feedback.py:298  ←  record_feedback_event @backend/app/services/intelligence_feedback.py:364  ←  chat_intelligence_item_endpoint [endpoint:/api/v1/intelligence/items/{item_id}/chat] @backend/app/main.py:58595
+    - chain: _upsert_summary @backend/app/services/intelligence_feedback.py:298  ←  record_feedback_event @backend/app/services/intelligence_feedback.py:364  ←  dismiss_intelligence_item_endpoint [endpoint:/api/v1/intelligence/items/{item_id}/dismiss] @backend/app/main.py:58386
+    - chain: _upsert_summary @backend/app/services/intelligence_feedback.py:298  ←  record_feedback_event @backend/app/services/intelligence_feedback.py:364  ←  follow_intelligence_item_endpoint [endpoint:/api/v1/intelligence/items/{item_id}/follow] @backend/app/main.py:58418
+    - chain: _upsert_summary @backend/app/services/intelligence_feedback.py:298  ←  record_feedback_event @backend/app/services/intelligence_feedback.py:364  ←  save_focus_directive [endpoint:/api/v1/intelligence/focus-directives] @backend/app/main.py:57356
+    - chain: _upsert_summary @backend/app/services/intelligence_feedback.py:298  ←  record_feedback_event @backend/app/services/intelligence_feedback.py:364  ←  submit_verification_feedback [endpoint:/api/v1/intelligence/verification-feedback] @backend/app/main.py:57564
+- `UPDATE` @ **_persist_intents** `backend/app/services/intelligence_search_intents.py:1379` — _call_name_match_
+    - chain: _persist_intents @backend/app/services/intelligence_search_intents.py:1379  ←  generate_intelligence_search_intents @backend/app/services/intelligence_search_intents.py:1457  ←  trigger_intelligence_refresh [endpoint:/api/v1/intelligence/refresh] @backend/app/main.py:57794
+- `UPDATE` @ **upsert_vector_manifest** `backend/app/services/knowledge_base.py:1784` — _call_name_match_
+    - chain: upsert_vector_manifest @backend/app/services/knowledge_base.py:1784  ←  reindex_client_vector @backend/app/services/knowledge_base.py:1627  ←  reindex_client_vector_collection [endpoint:/api/v1/clients/{client_id}/knowledge/reindex-vector] @backend/app/main.py:44127
+    - chain: upsert_vector_manifest @backend/app/services/knowledge_base.py:1784  ←  reindex_client_vector @backend/app/services/knowledge_base.py:1627  ←  run_workspace_data_center_readiness_action [endpoint:/api/v1/clients/{client_id}/workspace/data-center-readiness/actions] @backend/app/main.py:43497
+    - chain: upsert_vector_manifest @backend/app/services/knowledge_base.py:1784  ←  get_vector_runtime_status @backend/app/services/knowledge_base.py:1691  ←  get_vector_index_manifest_status @backend/app/services/knowledge_base.py:1827  ←  get_client_vector_index_status [endpoint:/api/v1/clients/{client_id}/knowledge/vector-index/status] @backend/app/main.py:44144
+    - chain: upsert_vector_manifest @backend/app/services/knowledge_base.py:1784  ←  get_vector_runtime_status @backend/app/services/knowledge_base.py:1691  ←  get_vector_index_manifest_status @backend/app/services/knowledge_base.py:1827  ←  get_workspace_data_center_readiness [endpoint:/api/v1/clients/{client_id}/workspace/data-center-readiness] @backend/app/main.py:42811
+    - chain: upsert_vector_manifest @backend/app/services/knowledge_base.py:1784  ←  get_vector_runtime_status @backend/app/services/knowledge_base.py:1691  ←  compute_knowledge_status @backend/app/services/knowledge_base.py:3398  ←  build_knowledge_status_record @backend/app/main.py:14711  ←  get_client_knowledge_progress [endpoint:/api/v1/clients/{client_id}/knowledge/progress] @backend/app/main.py:42317
+    - chain: upsert_vector_manifest @backend/app/services/knowledge_base.py:1784  ←  get_vector_runtime_status @backend/app/services/knowledge_base.py:1691  ←  compute_knowledge_status @backend/app/services/knowledge_base.py:3398  ←  build_knowledge_status_record @backend/app/main.py:14711  ←  get_client_knowledge_status [endpoint:/api/v1/clients/{client_id}/knowledge-status] @backend/app/main.py:27902
+- `UPDATE` @ **ingest_document_knowledge** `backend/app/services/knowledge_v2.py:2114` — _call_name_match_
+    - chain: ingest_document_knowledge @backend/app/services/knowledge_v2.py:2114  ←  upload_task_attachment [endpoint:/api/v1/tasks/{task_id}/attachments] @backend/app/main.py:53434
+    - chain: ingest_document_knowledge @backend/app/services/knowledge_v2.py:2114  ←  _build_local_event_line_report_snapshot @backend/app/main.py:33643  ←  get_event_line_report_snapshot [endpoint:/api/v1/event-lines/{event_line_id}/report-snapshot] @backend/app/main.py:34329
+    - chain: ingest_document_knowledge @backend/app/services/knowledge_v2.py:2114  ←  _process_one_pdf @backend/app/services/internet_pdf_worker.py:96  ←  _worker_loop [worker:_worker_loop] @backend/app/services/internet_pdf_worker.py:205
+    - chain: ingest_document_knowledge @backend/app/services/knowledge_v2.py:2114  ←  backfill_workspace_import @backend/app/services/knowledge_v2.py:3943  ←  backfill_client_workspace_imports [endpoint:/api/v1/clients/{client_id}/workspace/backfill-imports] @backend/app/main.py:50039
+    - chain: ingest_document_knowledge @backend/app/services/knowledge_v2.py:2114  ←  create_client_text_document @backend/app/main.py:16116  ←  create_client_document_from_text [endpoint:/api/v1/clients/{client_id}/documents/from-text] @backend/app/main.py:49576
+    - chain: ingest_document_knowledge @backend/app/services/knowledge_v2.py:2114  ←  execute_parse_failure_retry_batch @backend/app/main.py:42534  ←  retry_client_parse_failures [endpoint:/api/v1/clients/{client_id}/knowledge/parse-failures/retry] @backend/app/main.py:42800
+- `UPDATE` @ **_process_document_card_task** `backend/app/services/local_model_optimizer.py:681` — _call_name_match_
+    - chain: _process_document_card_task @backend/app/services/local_model_optimizer.py:681  ←  run_due_local_model_tasks @backend/app/services/local_model_optimizer.py:942  ←  local_model_optimizer_worker_loop [worker:local_model_optimizer_worker_loop] @backend/app/services/local_model_optimizer.py:1026
+    - chain: _process_document_card_task @backend/app/services/local_model_optimizer.py:681  ←  run_due_local_model_tasks @backend/app/services/local_model_optimizer.py:942  ←  run_local_ai_now [endpoint:/api/v1/local-ai/run-now] @backend/app/main.py:36970
+- `UPDATE` @ **_process_path_optimization_task** `backend/app/services/local_model_optimizer.py:777` — _call_name_match_
+    - chain: _process_path_optimization_task @backend/app/services/local_model_optimizer.py:777  ←  run_due_local_model_tasks @backend/app/services/local_model_optimizer.py:942  ←  local_model_optimizer_worker_loop [worker:local_model_optimizer_worker_loop] @backend/app/services/local_model_optimizer.py:1026
+    - chain: _process_path_optimization_task @backend/app/services/local_model_optimizer.py:777  ←  run_due_local_model_tasks @backend/app/services/local_model_optimizer.py:942  ←  run_local_ai_now [endpoint:/api/v1/local-ai/run-now] @backend/app/main.py:36970
+- `UPDATE` @ **upsert_memory_fact** `backend/app/services/memory_foundation.py:667` — _call_name_match_
+    - chain: upsert_memory_fact @backend/app/services/memory_foundation.py:667  ←  _sync_reference_scope_facts [worker:_sync_reference_scope_facts] @backend/app/services/memory_foundation.py:245
+    - chain: upsert_memory_fact @backend/app/services/memory_foundation.py:667  ←  answer_clarification_record @backend/app/services/memory_foundation.py:1492  ←  answer_clarification [endpoint:/api/v1/clarifications/{clarification_id}/answer] @backend/app/main.py:42297
+    - chain: upsert_memory_fact @backend/app/services/memory_foundation.py:667  ←  backfill_document_knowledge_to_memory @backend/app/services/memory_foundation.py:535  ←  backfill_document_knowledge_route [endpoint:/api/v1/memory/backfill-documents] @backend/app/main.py:42270
+    - chain: upsert_memory_fact @backend/app/services/memory_foundation.py:667  ←  backfill_document_knowledge_to_memory @backend/app/services/memory_foundation.py:535  ←  backfill_memory_foundation_route [endpoint:/api/v1/memory/backfill] @backend/app/main.py:42259
+    - chain: upsert_memory_fact @backend/app/services/memory_foundation.py:667  ←  record_meeting_publish_writeback @backend/app/services/memory_foundation.py:1746  ←  apply_strategic_meeting_pack [endpoint:/api/v1/clients/{client_id}/strategic-cockpit/meeting-pack/{meeting_id}/apply] @backend/app/main.py:42202
+    - chain: upsert_memory_fact @backend/app/services/memory_foundation.py:667  ←  record_meeting_publish_writeback @backend/app/services/memory_foundation.py:1746  ←  publish_meeting [endpoint:/api/v1/clients/{client_id}/meetings/{meeting_id}/publish] @backend/app/main.py:51482
+- `UPDATE` @ **refresh_organization_notebook_snapshot** `backend/app/services/memory_foundation.py:733` — _call_name_match_
+    - chain: refresh_organization_notebook_snapshot @backend/app/services/memory_foundation.py:733  ←  _sync_task_attachment_scope [worker:_sync_task_attachment_scope] @backend/app/main.py:2237
+    - chain: refresh_organization_notebook_snapshot @backend/app/services/memory_foundation.py:733  ←  backfill_document_knowledge_route [endpoint:/api/v1/memory/backfill-documents] @backend/app/main.py:42270
+    - chain: refresh_organization_notebook_snapshot @backend/app/services/memory_foundation.py:733  ←  delete_task [endpoint:/api/v1/tasks/{task_id}] @backend/app/main.py:53307
+    - chain: refresh_organization_notebook_snapshot @backend/app/services/memory_foundation.py:733  ←  update_event_line [endpoint:/api/v1/event-lines/{event_line_id}] @backend/app/main.py:35169
+    - chain: refresh_organization_notebook_snapshot @backend/app/services/memory_foundation.py:733  ←  answer_clarification_record @backend/app/services/memory_foundation.py:1492  ←  answer_clarification [endpoint:/api/v1/clarifications/{clarification_id}/answer] @backend/app/main.py:42297
+    - chain: refresh_organization_notebook_snapshot @backend/app/services/memory_foundation.py:733  ←  backfill_memory_foundation @backend/app/services/memory_foundation.py:1965  ←  backfill_memory_foundation_route [endpoint:/api/v1/memory/backfill] @backend/app/main.py:42259
+- `UPDATE` @ **refresh_event_line_memory_snapshot** `backend/app/services/memory_foundation.py:994` — _call_name_match_
+    - chain: refresh_event_line_memory_snapshot @backend/app/services/memory_foundation.py:994  ←  _sync_task_attachment_scope [worker:_sync_task_attachment_scope] @backend/app/main.py:2237
+    - chain: refresh_event_line_memory_snapshot @backend/app/services/memory_foundation.py:994  ←  delete_task [endpoint:/api/v1/tasks/{task_id}] @backend/app/main.py:53307
+    - chain: refresh_event_line_memory_snapshot @backend/app/services/memory_foundation.py:994  ←  update_event_line [endpoint:/api/v1/event-lines/{event_line_id}] @backend/app/main.py:35169
+    - chain: refresh_event_line_memory_snapshot @backend/app/services/memory_foundation.py:994  ←  _upsert_cloud_event_line_shadow_local @backend/app/main.py:9234  ←  _sync_event_line_row_to_cloud [worker:_sync_event_line_row_to_cloud] @backend/app/main.py:9476
+    - chain: refresh_event_line_memory_snapshot @backend/app/services/memory_foundation.py:994  ←  _upsert_cloud_event_line_shadow_local @backend/app/main.py:9234  ←  create_event_line [endpoint:/api/v1/event-lines] @backend/app/main.py:31525
+    - chain: refresh_event_line_memory_snapshot @backend/app/services/memory_foundation.py:994  ←  _upsert_cloud_event_line_shadow_local @backend/app/main.py:9234  ←  delete_event_line [endpoint:/api/v1/event-lines/{event_line_id}] @backend/app/main.py:35723
+- `UPDATE` @ **_upsert_item** `backend/app/services/organization_dna_v2.py:201` — _call_name_match_
+    - chain: _upsert_item @backend/app/services/organization_dna_v2.py:201  ←  refresh_organization_dna_v2 @backend/app/services/organization_dna_v2.py:905  ←  _execute_organization_dna_refresh_run @backend/app/main.py:27834  ←  refresh_organization_dna_v2_endpoint [endpoint:/api/v1/digital-assets/organization-dna/refresh] @backend/app/main.py:27893
+- `UPDATE` @ **upsert_table_from_parsed_sheet** `backend/app/services/structured_table_store.py:134` — _call_name_match_
+    - chain: upsert_table_from_parsed_sheet @backend/app/services/structured_table_store.py:134  ←  ingest_document_knowledge @backend/app/services/knowledge_base.py:2802  ←  upload_task_attachment [endpoint:/api/v1/tasks/{task_id}/attachments] @backend/app/main.py:53434
+    - chain: upsert_table_from_parsed_sheet @backend/app/services/structured_table_store.py:134  ←  ingest_document_knowledge @backend/app/services/knowledge_base.py:2802  ←  _build_local_event_line_report_snapshot @backend/app/main.py:33643  ←  get_event_line_report_snapshot [endpoint:/api/v1/event-lines/{event_line_id}/report-snapshot] @backend/app/main.py:34329
+    - chain: upsert_table_from_parsed_sheet @backend/app/services/structured_table_store.py:134  ←  ingest_document_knowledge @backend/app/services/knowledge_base.py:2802  ←  _process_one_pdf @backend/app/services/internet_pdf_worker.py:96  ←  _worker_loop [worker:_worker_loop] @backend/app/services/internet_pdf_worker.py:205
+    - chain: upsert_table_from_parsed_sheet @backend/app/services/structured_table_store.py:134  ←  ingest_document_knowledge @backend/app/services/knowledge_base.py:2802  ←  backfill_workspace_import @backend/app/services/knowledge_v2.py:3943  ←  backfill_client_workspace_imports [endpoint:/api/v1/clients/{client_id}/workspace/backfill-imports] @backend/app/main.py:50039
+    - chain: upsert_table_from_parsed_sheet @backend/app/services/structured_table_store.py:134  ←  ingest_document_knowledge @backend/app/services/knowledge_base.py:2802  ←  create_client_text_document @backend/app/main.py:16116  ←  create_client_document_from_text [endpoint:/api/v1/clients/{client_id}/documents/from-text] @backend/app/main.py:49576
+    - chain: upsert_table_from_parsed_sheet @backend/app/services/structured_table_store.py:134  ←  ingest_document_knowledge @backend/app/services/knowledge_base.py:2802  ←  execute_parse_failure_retry_batch @backend/app/main.py:42534  ←  retry_client_parse_failures [endpoint:/api/v1/clients/{client_id}/knowledge/parse-failures/retry] @backend/app/main.py:42800
+- `UPDATE` @ **save_thread_context_pack** `backend/app/services/workspace_thread_memory.py:76` — _call_name_match_
+    - chain: save_thread_context_pack @backend/app/services/workspace_thread_memory.py:76  ←  update_thread_context_after_answer @backend/app/services/workspace_thread_memory.py:247  ←  _schedule_post_answer_enrichment [worker:_schedule_post_answer_enrichment] @backend/app/main.py:48233
+
+### 读边 (0)
+- (无静态读边)
+
+## `_growth_week_temp`
+
+- 经验层: 真库**无此表** (静态边 1写/1读)
+
+### 写边 (1)
+- `INSERT` @ **rebuild_weekly_snapshots_from_evidence** `backend/app/services/growth_sync.py:496` — _call_name_match_
+    - chain: rebuild_weekly_snapshots_from_evidence @backend/app/services/growth_sync.py:496  ←  _background_sync_exp_wall [worker:_background_sync_exp_wall] @backend/app/main.py:3309
+
+### 读边 (1)
+- `SELECT-FROM` @ **rebuild_weekly_snapshots_from_evidence** `backend/app/services/growth_sync.py:496` — _static_confirmed_
+
+## `a`
+
+- 经验层: 真库**无此表** (静态边 0写/5读)
+
+### 写边 (0)
+- (无静态写边)
+
+### 读边 (5)
+- `SELECT-FROM` @ **create_app._client_row_to_cloud_payload** `backend/app/main.py:10109` — _static_confirmed_
+- `SELECT-FROM` @ **create_app** `backend/app/main.py:3179` — _static_confirmed_
+- `SELECT-FROM` @ **generate_raw_evidence_response** `backend/app/services/ai.py:1099` — _static_confirmed_
+- `SELECT-FROM` @ **build_event_line_timeline_nodes** `backend/app/services/event_line_timeline.py:293` — _static_confirmed_
+- `SELECT-FROM` @ **extract_chat_facts_to_memory** `backend/app/services/memory_foundation.py:2171` — _static_confirmed_
+
+## `action_items`
+
+- 经验层: **4 行** · 最近写入 created_at=2026-04-16T22:13:03
+
+### 写边 (6)
+- `UPDATE` @ **create_app.dismiss_unified_todo_proxy** `backend/app/main.py:29654` — _static_confirmed_
+    - chain: dismiss_unified_todo_proxy [endpoint:/api/v1/clients/{client_id}/todos/{todo_id}/dismiss] @backend/app/main.py:29654
+- `UPDATE` @ **create_app.promote_todo_to_task_proxy** `backend/app/main.py:29693` — _static_confirmed_
+    - chain: promote_todo_to_task_proxy [endpoint:/api/v1/clients/{client_id}/todos/{todo_id}/promote-to-task] @backend/app/main.py:29693
+- `INSERT+UPDATE` @ **create_app** `backend/app/main.py:3179` — _needs_human_
+    - chain: create_app @backend/app/main.py:3179  ←  (no caller found — orphan write)
+- `INSERT` @ **create_app.extract_meeting** `backend/app/main.py:51418` — _static_confirmed_
+    - chain: extract_meeting [endpoint:/api/v1/clients/{client_id}/meetings/{meeting_id}/extract] @backend/app/main.py:51418
+- `UPDATE` @ **create_app.publish_meeting** `backend/app/main.py:51482` — _static_confirmed_
+    - chain: publish_meeting [endpoint:/api/v1/clients/{client_id}/meetings/{meeting_id}/publish] @backend/app/main.py:51482
+- `INSERT` @ **create_app._populate_meeting_extraction** `backend/app/main.py:7012` — _call_name_match_
+    - chain: _populate_meeting_extraction @backend/app/main.py:7012  ←  _ingest_feishu_minutes_writeback @backend/app/main.py:7044  ←  handle_feishu_event @backend/app/main.py:7069  ←  receive_feishu_events [endpoint:/api/v1/channels/feishu/events] @backend/app/main.py:37511
+
+### 读边 (16)
+- `SELECT-FROM` @ **create_app.build_meeting_detail** `backend/app/main.py:21917` — _static_confirmed_
+    - WHERE: `meeting_id = ?`
+- `SELECT-FROM` @ **create_app.promote_todo_to_task_proxy** `backend/app/main.py:29693` — _static_confirmed_
+    - WHERE: `id=?`
+- `SELECT-FROM` @ **create_app** `backend/app/main.py:3179` — _static_confirmed_
+    - WHERE: `id = ?`
+    - WHERE: `id=?`
+    - WHERE: `meeting_id = ?`
+    - WHERE: `meeting_id = ? AND publish_status != 'published'`
+    - WHERE: `meeting_id = ? AND publish_status = 'published'`
+- `SELECT-FROM` @ **create_app._resolve_client_id_for_evidence_quality_annotation** `backend/app/main.py:3650` — _static_confirmed_
+    - WHERE: `id = ?`
+- `SELECT-FROM` @ **create_app.extract_meeting** `backend/app/main.py:51418` — _static_confirmed_
+    - WHERE: `meeting_id = ?`
+- `SELECT-FROM` @ **create_app.publish_meeting** `backend/app/main.py:51482` — _static_confirmed_
+    - WHERE: `meeting_id = ? AND publish_status != 'published'`
+    - WHERE: `meeting_id = ? AND publish_status = 'published'`
+- `SELECT-FROM` @ **create_app._populate_meeting_extraction** `backend/app/main.py:7012` — _static_confirmed_
+    - WHERE: `meeting_id = ?`
+- `SELECT-FROM` @ **_collect_work_events** `backend/app/services/badge_engine.py:279` — _static_confirmed_
+    - WHERE: `d.meeting_id = m.id) AS decision_count, (SELECT COUNT(*) FROM action_items a WHERE a.meeting_id = m.id) AS action_count, ( SELECT COUNT(*) FROM action_items a WHERE a.meeting_id = m.id AND TRIM(a.owne`
+- `SELECT-FROM` @ **_load_people_candidates** `backend/app/services/clarification_context.py:207` — _static_confirmed_
+    - WHERE: `m.client_id = ? AND ai.owner_name IS NOT NULL AND ai.owner_name != ''`
+- `SELECT-FROM` @ **_load_commitments** `backend/app/services/clarification_context.py:323` — _static_confirmed_
+    - WHERE: `m.client_id = ?`
+- `SELECT-FROM` @ **_fetch_upcoming_todos** `backend/app/services/client_strategic_pulse.py:262` — _static_confirmed_
+    - WHERE: `m.client_id=? AND (ai.publish_status IS NULL OR ai.publish_status NOT IN ('completed','dismissed')) AND ai.title NOT LIKE '%补齐%' AND ai.title NOT LIKE '%占位%'`
+- `SELECT-FROM` @ **_render_meeting_body** `backend/app/services/data_center_ingest.py:1576` — _static_confirmed_
+    - WHERE: `meeting_id = ?`
+- `SELECT-FROM` @ **_render_meeting_doc_text** `backend/app/services/knowledge_v2.py:3631` — _static_confirmed_
+    - WHERE: `meeting_id = ?`
+- `SELECT-FROM` @ **build_meeting_page_context_pack** `backend/app/services/meeting_context.py:48` — _static_confirmed_
+    - WHERE: `meeting_id = ?`
+- `SELECT-FROM` @ **record_meeting_publish_writeback** `backend/app/services/memory_foundation.py:1746` — _static_confirmed_
+    - WHERE: `meeting_id = ?`
+- `SELECT-FROM` @ **collect_all_todos** `backend/app/services/todo_aggregator.py:66` — _static_confirmed_
+    - WHERE: `m.client_id = ? AND ai.title NOT LIKE '%补齐%' AND ai.title NOT LIKE '%占位%' AND (ai.publish_status IS NULL OR ai.publish_status NOT IN ('completed', 'dismissed'))`
+
+## `activity_logs`
+
+- 经验层: **28367 行** · 最近写入 created_at=2026-06-08T19:50:11
+
+### 写边 (5)
+- `INSERT` @ **create_app** `backend/app/main.py:3179` — _needs_human_
+    - chain: create_app @backend/app/main.py:3179  ←  (no caller found — orphan write)
+- `INSERT` @ **create_app.log_activity** `backend/app/main.py:4145` — _call_name_match_
+    - chain: log_activity @backend/app/main.py:4145  ←  add_event_line_note [endpoint:/api/v1/event-lines/{event_line_id}/notes] @backend/app/main.py:35790
+    - chain: log_activity @backend/app/main.py:4145  ←  apply_client_document_auto_repair [endpoint:/api/v1/clients/{client_id}/documents/auto-repair/apply] @backend/app/main.py:39062
+    - chain: log_activity @backend/app/main.py:4145  ←  apply_strategic_meeting_pack [endpoint:/api/v1/clients/{client_id}/strategic-cockpit/meeting-pack/{meeting_id}/apply] @backend/app/main.py:42202
+    - chain: log_activity @backend/app/main.py:4145  ←  approve_proposal [endpoint:/api/v1/proposals/{proposal_id}/approve] @backend/app/main.py:33409
+    - chain: log_activity @backend/app/main.py:4145  ←  approve_task_review [endpoint:/api/v1/tasks/{task_id}/review/approve] @backend/app/main.py:53945
+    - chain: log_activity @backend/app/main.py:4145  ←  audit_maintenance_mode_action [endpoint:/api/v1/maintenance-mode/audit] @backend/app/main.py:36269
+- `INSERT` @ **fanout_contradictions_to_judgment_impact** `backend/app/services/knowledge_v2.py:2935` — _call_name_match_
+    - chain: fanout_contradictions_to_judgment_impact @backend/app/services/knowledge_v2.py:2935  ←  ingest_document_knowledge @backend/app/services/knowledge_base.py:2802  ←  upload_task_attachment [endpoint:/api/v1/tasks/{task_id}/attachments] @backend/app/main.py:53434
+    - chain: fanout_contradictions_to_judgment_impact @backend/app/services/knowledge_v2.py:2935  ←  ingest_document_knowledge @backend/app/services/knowledge_base.py:2802  ←  _build_local_event_line_report_snapshot @backend/app/main.py:33643  ←  get_event_line_report_snapshot [endpoint:/api/v1/event-lines/{event_line_id}/report-snapshot] @backend/app/main.py:34329
+    - chain: fanout_contradictions_to_judgment_impact @backend/app/services/knowledge_v2.py:2935  ←  ingest_document_knowledge @backend/app/services/knowledge_base.py:2802  ←  _process_one_pdf @backend/app/services/internet_pdf_worker.py:96  ←  _worker_loop [worker:_worker_loop] @backend/app/services/internet_pdf_worker.py:205
+    - chain: fanout_contradictions_to_judgment_impact @backend/app/services/knowledge_v2.py:2935  ←  ingest_document_knowledge @backend/app/services/knowledge_base.py:2802  ←  backfill_workspace_import @backend/app/services/knowledge_v2.py:3943  ←  backfill_client_workspace_imports [endpoint:/api/v1/clients/{client_id}/workspace/backfill-imports] @backend/app/main.py:50039
+    - chain: fanout_contradictions_to_judgment_impact @backend/app/services/knowledge_v2.py:2935  ←  ingest_document_knowledge @backend/app/services/knowledge_base.py:2802  ←  create_client_text_document @backend/app/main.py:16116  ←  create_client_document_from_text [endpoint:/api/v1/clients/{client_id}/documents/from-text] @backend/app/main.py:49576
+    - chain: fanout_contradictions_to_judgment_impact @backend/app/services/knowledge_v2.py:2935  ←  ingest_document_knowledge @backend/app/services/knowledge_base.py:2802  ←  execute_parse_failure_retry_batch @backend/app/main.py:42534  ←  retry_client_parse_failures [endpoint:/api/v1/clients/{client_id}/knowledge/parse-failures/retry] @backend/app/main.py:42800
+- `INSERT` @ **fanout_document_to_client_profile** `backend/app/services/knowledge_v2.py:3027` — _call_name_match_
+    - chain: fanout_document_to_client_profile @backend/app/services/knowledge_v2.py:3027  ←  ingest_document_knowledge @backend/app/services/knowledge_base.py:2802  ←  upload_task_attachment [endpoint:/api/v1/tasks/{task_id}/attachments] @backend/app/main.py:53434
+    - chain: fanout_document_to_client_profile @backend/app/services/knowledge_v2.py:3027  ←  ingest_document_knowledge @backend/app/services/knowledge_base.py:2802  ←  _build_local_event_line_report_snapshot @backend/app/main.py:33643  ←  get_event_line_report_snapshot [endpoint:/api/v1/event-lines/{event_line_id}/report-snapshot] @backend/app/main.py:34329
+    - chain: fanout_document_to_client_profile @backend/app/services/knowledge_v2.py:3027  ←  ingest_document_knowledge @backend/app/services/knowledge_base.py:2802  ←  _process_one_pdf @backend/app/services/internet_pdf_worker.py:96  ←  _worker_loop [worker:_worker_loop] @backend/app/services/internet_pdf_worker.py:205
+    - chain: fanout_document_to_client_profile @backend/app/services/knowledge_v2.py:3027  ←  ingest_document_knowledge @backend/app/services/knowledge_base.py:2802  ←  backfill_workspace_import @backend/app/services/knowledge_v2.py:3943  ←  backfill_client_workspace_imports [endpoint:/api/v1/clients/{client_id}/workspace/backfill-imports] @backend/app/main.py:50039
+    - chain: fanout_document_to_client_profile @backend/app/services/knowledge_v2.py:3027  ←  ingest_document_knowledge @backend/app/services/knowledge_base.py:2802  ←  create_client_text_document @backend/app/main.py:16116  ←  create_client_document_from_text [endpoint:/api/v1/clients/{client_id}/documents/from-text] @backend/app/main.py:49576
+    - chain: fanout_document_to_client_profile @backend/app/services/knowledge_v2.py:3027  ←  ingest_document_knowledge @backend/app/services/knowledge_base.py:2802  ←  execute_parse_failure_retry_batch @backend/app/main.py:42534  ←  retry_client_parse_failures [endpoint:/api/v1/clients/{client_id}/knowledge/parse-failures/retry] @backend/app/main.py:42800
+- `INSERT` @ **fanout_document_to_strategic_thoughts** `backend/app/services/knowledge_v2.py:3103` — _call_name_match_
+    - chain: fanout_document_to_strategic_thoughts @backend/app/services/knowledge_v2.py:3103  ←  ingest_document_knowledge @backend/app/services/knowledge_base.py:2802  ←  upload_task_attachment [endpoint:/api/v1/tasks/{task_id}/attachments] @backend/app/main.py:53434
+    - chain: fanout_document_to_strategic_thoughts @backend/app/services/knowledge_v2.py:3103  ←  ingest_document_knowledge @backend/app/services/knowledge_base.py:2802  ←  _build_local_event_line_report_snapshot @backend/app/main.py:33643  ←  get_event_line_report_snapshot [endpoint:/api/v1/event-lines/{event_line_id}/report-snapshot] @backend/app/main.py:34329
+    - chain: fanout_document_to_strategic_thoughts @backend/app/services/knowledge_v2.py:3103  ←  ingest_document_knowledge @backend/app/services/knowledge_base.py:2802  ←  _process_one_pdf @backend/app/services/internet_pdf_worker.py:96  ←  _worker_loop [worker:_worker_loop] @backend/app/services/internet_pdf_worker.py:205
+    - chain: fanout_document_to_strategic_thoughts @backend/app/services/knowledge_v2.py:3103  ←  ingest_document_knowledge @backend/app/services/knowledge_base.py:2802  ←  backfill_workspace_import @backend/app/services/knowledge_v2.py:3943  ←  backfill_client_workspace_imports [endpoint:/api/v1/clients/{client_id}/workspace/backfill-imports] @backend/app/main.py:50039
+    - chain: fanout_document_to_strategic_thoughts @backend/app/services/knowledge_v2.py:3103  ←  ingest_document_knowledge @backend/app/services/knowledge_base.py:2802  ←  create_client_text_document @backend/app/main.py:16116  ←  create_client_document_from_text [endpoint:/api/v1/clients/{client_id}/documents/from-text] @backend/app/main.py:49576
+    - chain: fanout_document_to_strategic_thoughts @backend/app/services/knowledge_v2.py:3103  ←  ingest_document_knowledge @backend/app/services/knowledge_base.py:2802  ←  execute_parse_failure_retry_batch @backend/app/main.py:42534  ←  retry_client_parse_failures [endpoint:/api/v1/clients/{client_id}/knowledge/parse-failures/retry] @backend/app/main.py:42800
+
+### 读边 (12)
+- `SELECT-FROM` @ **create_app._recent_due_date_change_stats** `backend/app/main.py:25909` — _static_confirmed_
+    - WHERE: `entity_type = 'task' AND action = 'task.update' AND entity_id IN (`
+    - WHERE: `entity_type = 'task' AND action = 'task.update' AND entity_id IN ({?}) AND created_at >= ?`
+- `SELECT-FROM` @ **create_app.get_client_knowledge_status** `backend/app/main.py:27902` — _static_confirmed_
+    - WHERE: `action = 'strategic_thought.refresh_pending' AND entity_id = ? AND created_at >= datetime('now', '-30 days')`
+    - WHERE: `entity_id = ? AND action IN ( 'judgment.needs_reevaluation', 'client_profile.needs_review', 'strategic_thought.refresh_pending' ) AND created_at >= datetime('now', '-7 days')`
+- `SELECT-FROM` @ **create_app.system_diagnose** `backend/app/main.py:30373` — _static_confirmed_
+    - WHERE: `action LIKE '%.error%'`
+- `SELECT-FROM` @ **create_app** `backend/app/main.py:3179` — _static_confirmed_
+    - WHERE: `action = 'strategic_thought.refresh_pending' AND entity_id = ? AND created_at >= datetime('now', '-30 days')`
+    - WHERE: `action LIKE '%.error%'`
+    - WHERE: `entity_id = ? AND action IN ( 'judgment.needs_reevaluation', 'client_profile.needs_review', 'strategic_thought.refresh_pending' ) AND created_at >= datetime('now', '-7 days')`
+    - WHERE: `entity_type = 'task' AND action = 'task.update' AND entity_id IN (`
+    - WHERE: `entity_type = 'task' AND action = 'task.update' AND entity_id IN ({?}) AND created_at >= ?`
+- `SELECT-FROM` @ **create_app.get_activity_logs** `backend/app/main.py:36286` — _static_confirmed_
+- `SELECT-FROM` @ **create_app.delete_task** `backend/app/main.py:53307` — _static_confirmed_
+    - WHERE: `entity_type = 'task' AND entity_id = ?`
+    - WHERE: `entity_type = 'task' AND entity_id IN (?, ?)`
+- `SELECT-FROM` @ **create_app.get_task_activity** `backend/app/main.py:53988` — _static_confirmed_
+    - WHERE: `entity_type = 'task' AND entity_id = ?`
+- `SELECT-FROM` @ **create_app._latest_local_task_status_update** `backend/app/main.py:9923` — _static_confirmed_
+    - WHERE: `entity_type = 'task' AND action = 'task.update' AND entity_id IN (`
+    - WHERE: `entity_type = 'task' AND action = 'task.update' AND entity_id IN ({?}) AND detail_json LIKE '%"status"%'`
+- `SELECT-FROM` @ **_build_qinghua_logs** `backend/app/services/agent_worklogs.py:263` — _static_confirmed_
+    - WHERE: `actor_name = ?`
+- `SELECT-FROM` @ **_collect_work_events** `backend/app/services/badge_engine.py:279` — _static_confirmed_
+- `SELECT-FROM` @ **build_probes** `backend/app/services/self_heal.py:209` — _static_confirmed_
+    - WHERE: `created_at > ? AND action LIKE '%.error%'`
+- `SELECT-FROM` @ **build_probes.check_error_log_spike** `backend/app/services/self_heal.py:303` — _static_confirmed_
+    - WHERE: `created_at > ? AND action LIKE '%.error%'`
+
+## `agenda_items`
+
+- 经验层: **10 行**
+
+### 写边 (5)
+- `INSERT` @ **create_app._create_strategic_meeting_pack** `backend/app/main.py:21654` — _call_name_match_
+    - chain: _create_strategic_meeting_pack @backend/app/main.py:21654  ←  create_strategic_meeting_pack [endpoint:/api/v1/clients/{client_id}/strategic-cockpit/meeting-pack] @backend/app/main.py:42195
+- `INSERT` @ **create_app** `backend/app/main.py:3179` — _needs_human_
+    - chain: create_app @backend/app/main.py:3179  ←  (no caller found — orphan write)
+- `INSERT` @ **create_app.prepare_meeting** `backend/app/main.py:50176` — _static_confirmed_
+    - chain: prepare_meeting [endpoint:/api/v1/clients/{client_id}/meetings] @backend/app/main.py:50176
+- `INSERT` @ **create_app.extract_meeting** `backend/app/main.py:51418` — _static_confirmed_
+    - chain: extract_meeting [endpoint:/api/v1/clients/{client_id}/meetings/{meeting_id}/extract] @backend/app/main.py:51418
+- `INSERT` @ **create_app._populate_meeting_extraction** `backend/app/main.py:7012` — _call_name_match_
+    - chain: _populate_meeting_extraction @backend/app/main.py:7012  ←  _ingest_feishu_minutes_writeback @backend/app/main.py:7044  ←  handle_feishu_event @backend/app/main.py:7069  ←  receive_feishu_events [endpoint:/api/v1/channels/feishu/events] @backend/app/main.py:37511
+
+### 读边 (6)
+- `SELECT-FROM` @ **create_app.build_meeting_detail** `backend/app/main.py:21917` — _static_confirmed_
+    - WHERE: `meeting_id = ?`
+- `SELECT-FROM` @ **create_app** `backend/app/main.py:3179` — _static_confirmed_
+    - WHERE: `meeting_id = ?`
+- `SELECT-FROM` @ **create_app.extract_meeting** `backend/app/main.py:51418` — _static_confirmed_
+    - WHERE: `meeting_id = ?`
+- `SELECT-FROM` @ **create_app._populate_meeting_extraction** `backend/app/main.py:7012` — _static_confirmed_
+    - WHERE: `meeting_id = ?`
+- `SELECT-FROM` @ **_render_meeting_doc_text** `backend/app/services/knowledge_v2.py:3631` — _static_confirmed_
+    - WHERE: `meeting_id = ?`
+- `SELECT-FROM` @ **build_meeting_page_context_pack** `backend/app/services/meeting_context.py:48` — _static_confirmed_
+    - WHERE: `meeting_id = ?`
+
+## `agent_run_log`
+
+- 经验层: 真库**无此表** (静态边 2写/6读)
+
+### 写边 (2)
+- `INSERT` @ **log_agent_run_start** `backend/app/services/agent_governance.py:131` — _call_name_match_
+    - chain: log_agent_run_start @backend/app/services/agent_governance.py:131  ←  compensate_client_data_gaps [endpoint:/api/v1/clients/{client_id}/data-gaps/compensate] @backend/app/main.py:40048
+    - chain: log_agent_run_start @backend/app/services/agent_governance.py:131  ←  dry_run_action [endpoint:/api/v1/actions/dry-run] @backend/app/main.py:41078
+    - chain: log_agent_run_start @backend/app/services/agent_governance.py:131  ←  feishu_push_task [endpoint:/api/v1/feishu/tasks/push] @backend/app/main.py:51079
+    - chain: log_agent_run_start @backend/app/services/agent_governance.py:131  ←  fill_client_template [endpoint:/api/v1/clients/{client_id}/documents/fill-template] @backend/app/main.py:49958
+    - chain: log_agent_run_start @backend/app/services/agent_governance.py:131  ←  generate_document [endpoint:/api/v1/documents/generate] @backend/app/main.py:50883
+    - chain: log_agent_run_start @backend/app/services/agent_governance.py:131  ←  get_client_agent_state [endpoint:/api/v1/clients/{client_id}/agent-state] @backend/app/main.py:39709
+- `UPDATE` @ **log_agent_run_complete** `backend/app/services/agent_governance.py:164` — _call_name_match_
+    - chain: log_agent_run_complete @backend/app/services/agent_governance.py:164  ←  compensate_client_data_gaps [endpoint:/api/v1/clients/{client_id}/data-gaps/compensate] @backend/app/main.py:40048
+    - chain: log_agent_run_complete @backend/app/services/agent_governance.py:164  ←  dry_run_action [endpoint:/api/v1/actions/dry-run] @backend/app/main.py:41078
+    - chain: log_agent_run_complete @backend/app/services/agent_governance.py:164  ←  feishu_push_task [endpoint:/api/v1/feishu/tasks/push] @backend/app/main.py:51079
+    - chain: log_agent_run_complete @backend/app/services/agent_governance.py:164  ←  fill_client_template [endpoint:/api/v1/clients/{client_id}/documents/fill-template] @backend/app/main.py:49958
+    - chain: log_agent_run_complete @backend/app/services/agent_governance.py:164  ←  generate_document [endpoint:/api/v1/documents/generate] @backend/app/main.py:50883
+    - chain: log_agent_run_complete @backend/app/services/agent_governance.py:164  ←  get_client_agent_state [endpoint:/api/v1/clients/{client_id}/agent-state] @backend/app/main.py:39709
+
+### 读边 (6)
+- `SELECT-FROM` @ **create_app** `backend/app/main.py:3179` — _static_confirmed_
+    - WHERE: `actor_id = ? AND triggered_at >= ? AND triggered_at < ?`
+    - WHERE: `id = ?`
+- `SELECT-FROM` @ **create_app.get_agent_run_log** `backend/app/main.py:40133` — _static_confirmed_
+    - WHERE: `id = ?`
+- `SELECT-FROM` @ **create_app.get_bot_weekly_summary** `backend/app/main.py:52350` — _static_confirmed_
+    - WHERE: `actor_id = ? AND triggered_at >= ? AND triggered_at < ?`
+- `SELECT-FROM` @ **log_agent_run_start** `backend/app/services/agent_governance.py:131` — _static_confirmed_
+    - WHERE: `idempotency_key = ?`
+- `SELECT-FROM` @ **list_recent_agent_runs** `backend/app/services/agent_governance.py:181` — _static_confirmed_
+- `SELECT-FROM` @ **get_governance_stats** `backend/app/services/agent_governance.py:312` — _static_confirmed_
+
+## `agent_weekly_plan_overrides`
+
+- 经验层: **0 行**
+
+### 写边 (1)
+- `INSERT+UPDATE` @ **upsert_agent_weekly_plan_override** `backend/app/services/agent_worklogs.py:1047` — _call_name_match_
+    - chain: upsert_agent_weekly_plan_override @backend/app/services/agent_worklogs.py:1047  ←  update_agent_weekly_plan [endpoint:/api/v1/tasks/agent-weekly-plans/{week_label}/{agent_key}] @backend/app/main.py:36422
+
+### 读边 (2)
+- `SELECT-FROM` @ **upsert_agent_weekly_plan_override** `backend/app/services/agent_worklogs.py:1047` — _static_confirmed_
+    - WHERE: `week_label = ? AND agent_key = ?`
+- `SELECT-FROM` @ **_load_plan_override_rows** `backend/app/services/agent_worklogs.py:537` — _static_confirmed_
+    - WHERE: `week_label = ?`
+
+## `aggregated`
+
+- 经验层: 真库**无此表** (静态边 0写/1读)
+
+### 写边 (0)
+- (无静态写边)
+
+### 读边 (1)
+- `SELECT-FROM` @ **generate_profile_block** `backend/app/services/ai.py:4239` — _static_confirmed_
+
+## `ai_episode_log`
+
+- 经验层: **312 行**
+
+### 写边 (1)
+- `INSERT` @ **log_ai_episode** `backend/app/services/ingest_pipeline.py:293` — _call_name_match_
+    - chain: log_ai_episode @backend/app/services/ingest_pipeline.py:293  ←  ingest @backend/app/services/ingest_pipeline.py:659  ←  extract_from_document @backend/app/services/document_llm_extractor.py:261  ←  process @backend/app/services/task_runners/fact_extract_runner.py:41  ←  run_due_local_model_tasks @backend/app/services/local_model_optimizer.py:942  ←  local_model_optimizer_worker_loop [worker:local_model_optimizer_worker_loop] @backend/app/services/local_model_optimizer.py:1026
+    - chain: log_ai_episode @backend/app/services/ingest_pipeline.py:293  ←  ingest @backend/app/services/ingest_pipeline.py:659  ←  extract_from_document @backend/app/services/document_llm_extractor.py:261  ←  process @backend/app/services/task_runners/fact_extract_runner.py:41  ←  run_due_local_model_tasks @backend/app/services/local_model_optimizer.py:942  ←  run_local_ai_now [endpoint:/api/v1/local-ai/run-now] @backend/app/main.py:36970
+
+### 读边 (0)
+- (无静态读边)
+
+## `ai_feedback_signals`
+
+- 经验层: **0 行**
+
+### 写边 (0)
+- (无静态写边)
+
+### 读边 (0)
+- (无静态读边)
+
+## `ai_improvement_suggestions`
+
+- 经验层: **0 行**
+
+### 写边 (0)
+- (无静态写边)
+
+### 读边 (0)
+- (无静态读边)
+
+## `ai_learned_rules`
+
+- 经验层: **0 行**
+
+### 写边 (0)
+- (无静态写边)
+
+### 读边 (0)
+- (无静态读边)
+
+## `ai_task_plans`
+
+- 经验层: **0 行**
+
+### 写边 (3)
+- `UPDATE` @ **decide_ai_task_plan** `backend/app/services/bot_members.py:1108` — _call_name_match_
+    - chain: decide_ai_task_plan @backend/app/services/bot_members.py:1108  ←  decide_bot_task_plan [endpoint:/api/v1/org/bots/task-plans/{ai_task_plan_id}/decide] @backend/app/main.py:50578
+- `INSERT` @ **create_ai_task_plan** `backend/app/services/bot_members.py:980` — _call_name_match_
+    - chain: create_ai_task_plan @backend/app/services/bot_members.py:980  ←  create_bot_task_plan [endpoint:/api/v1/org/bots/{bot_member_id}/task-plans] @backend/app/main.py:50495
+- `UPDATE` @ **_update_plan_progress** `backend/app/services/plan_executor.py:1622` — _call_name_match_
+    - chain: _update_plan_progress @backend/app/services/plan_executor.py:1622  ←  create_bot_task_plan [endpoint:/api/v1/org/bots/{bot_member_id}/task-plans] @backend/app/main.py:50495
+    - chain: _update_plan_progress @backend/app/services/plan_executor.py:1622  ←  decide_bot_task_plan [endpoint:/api/v1/org/bots/task-plans/{ai_task_plan_id}/decide] @backend/app/main.py:50578
+
+### 读边 (7)
+- `SELECT-FROM` @ **create_app** `backend/app/main.py:3179` — _static_confirmed_
+    - WHERE: `bot_member_id = ? AND created_at >= ? AND created_at < ?`
+    - WHERE: `p.human_initiator_id = ? AND p.created_at >= ? AND p.created_at < ?`
+- `SELECT-FROM` @ **create_app.get_user_ai_delegations** `backend/app/main.py:52247` — _static_confirmed_
+    - WHERE: `p.human_initiator_id = ? AND p.created_at >= ? AND p.created_at < ?`
+- `SELECT-FROM` @ **create_app.get_bot_weekly_summary** `backend/app/main.py:52350` — _static_confirmed_
+    - WHERE: `bot_member_id = ? AND created_at >= ? AND created_at < ?`
+- `SELECT-FROM` @ **decide_ai_task_plan** `backend/app/services/bot_members.py:1108` — _static_confirmed_
+    - WHERE: `id = ?`
+- `SELECT-FROM` @ **list_ai_task_plans** `backend/app/services/bot_members.py:1207` — _static_confirmed_
+- `SELECT-FROM` @ **execute_plan** `backend/app/services/plan_executor.py:1681` — _static_confirmed_
+    - WHERE: `id = ?`
+- `SELECT-FROM` @ **get_plan_progress** `backend/app/services/plan_executor.py:1899` — _static_confirmed_
+    - WHERE: `id = ?`
+
+## `all`
+
+- 经验层: 真库**无此表** (静态边 0写/2读)
+
+### 写边 (0)
+- (无静态写边)
+
+### 读边 (2)
+- `SELECT-FROM` @ **create_app.get_brain_dashboard** `backend/app/main.py:27671` — _static_confirmed_
+- `SELECT-FROM` @ **create_app** `backend/app/main.py:3179` — _static_confirmed_
+
+## `ambiguities`
+
+- 经验层: **0 行**
+
+### 写边 (4)
+- `INSERT+UPDATE` @ **create_app** `backend/app/main.py:3179` — _needs_human_
+    - chain: create_app @backend/app/main.py:3179  ←  (no caller found — orphan write)
+- `INSERT` @ **create_app.extract_meeting** `backend/app/main.py:51418` — _static_confirmed_
+    - chain: extract_meeting [endpoint:/api/v1/clients/{client_id}/meetings/{meeting_id}/extract] @backend/app/main.py:51418
+- `UPDATE` @ **create_app.resolve_meeting** `backend/app/main.py:51463` — _static_confirmed_
+    - chain: resolve_meeting [endpoint:/api/v1/clients/{client_id}/meetings/{meeting_id}/resolve] @backend/app/main.py:51463
+- `INSERT` @ **create_app._populate_meeting_extraction** `backend/app/main.py:7012` — _call_name_match_
+    - chain: _populate_meeting_extraction @backend/app/main.py:7012  ←  _ingest_feishu_minutes_writeback @backend/app/main.py:7044  ←  handle_feishu_event @backend/app/main.py:7069  ←  receive_feishu_events [endpoint:/api/v1/channels/feishu/events] @backend/app/main.py:37511
+
+### 读边 (7)
+- `SELECT-FROM` @ **create_app.build_strategic_cockpit_snapshot** `backend/app/main.py:20771` — _static_confirmed_
+    - WHERE: `m.client_id = ? AND a.status = 'pending'`
+- `SELECT-FROM` @ **create_app.build_meeting_detail** `backend/app/main.py:21917` — _static_confirmed_
+    - WHERE: `meeting_id = ?`
+- `SELECT-FROM` @ **create_app** `backend/app/main.py:3179` — _static_confirmed_
+    - WHERE: `m.client_id = ? AND a.status = 'pending'`
+    - WHERE: `meeting_id = ?`
+- `SELECT-FROM` @ **create_app.extract_meeting** `backend/app/main.py:51418` — _static_confirmed_
+    - WHERE: `meeting_id = ?`
+- `SELECT-FROM` @ **create_app._populate_meeting_extraction** `backend/app/main.py:7012` — _static_confirmed_
+    - WHERE: `meeting_id = ?`
+- `SELECT-FROM` @ **_collect_work_events** `backend/app/services/badge_engine.py:279` — _static_confirmed_
+    - WHERE: `d.meeting_id = m.id) AS decision_count, (SELECT COUNT(*) FROM action_items a WHERE a.meeting_id = m.id) AS action_count, ( SELECT COUNT(*) FROM action_items a WHERE a.meeting_id = m.id AND TRIM(a.owne`
+- `SELECT-FROM` @ **build_meeting_page_context_pack** `backend/app/services/meeting_context.py:48` — _static_confirmed_
+    - WHERE: `meeting_id = ?`
+
+## `analysis_jobs`
+
+- 经验层: **71 行** · 最近写入 created_at=2026-06-05T15:03:57
+
+### 写边 (4)
+- `UPDATE` @ **renew_analysis_job_lock** `backend/app/services/analysis_center.py:3111` — _call_name_match_
+    - chain: renew_analysis_job_lock @backend/app/services/analysis_center.py:3111  ←  execute_analysis_job_projection @backend/app/services/analysis_center.py:3467  ←  analysis_job_worker_loop [worker:analysis_job_worker_loop] @backend/app/main.py:5122
+- `UPDATE` @ **recover_stale_analysis_jobs** `backend/app/services/analysis_center.py:3278` — _call_name_match_
+    - chain: recover_stale_analysis_jobs @backend/app/services/analysis_center.py:3278  ←  _startup_worker [worker:_startup_worker] @backend/app/main.py:3743
+- `UPDATE` @ **claim_next_analysis_job** `backend/app/services/analysis_center.py:3295` — _call_name_match_
+    - chain: claim_next_analysis_job @backend/app/services/analysis_center.py:3295  ←  analysis_job_worker_loop [worker:analysis_job_worker_loop] @backend/app/main.py:5122
+- `UPDATE` @ **claim_next_analysis_job._claim** `backend/app/services/analysis_center.py:3356` — _needs_human_
+    - chain: _claim @backend/app/services/analysis_center.py:3356  ←  (no caller found — orphan write)
+
+### 读边 (9)
+- `SELECT-FROM` @ **_sync_event_line_client_scope_records** `backend/app/main.py:2484` — _static_confirmed_
+    - WHERE: `scope_type = 'event_line' AND scope_id = ?`
+- `SELECT-FROM` @ **list_analysis_jobs** `backend/app/services/analysis_center.py:1048` — _static_confirmed_
+    - WHERE: `client_id = ?`
+- `SELECT-FROM` @ **get_analysis_job** `backend/app/services/analysis_center.py:1058` — _static_confirmed_
+    - WHERE: `id = ?`
+- `SELECT-FROM` @ **_build_analysis_center_summary** `backend/app/services/analysis_center.py:1548` — _static_confirmed_
+    - WHERE: `client_id = ?`
+    - WHERE: `client_id = ? UNION ALL SELECT 'theme', COUNT(*) FROM theme_clusters WHERE client_id = ? UNION ALL SELECT 'conflict', COUNT(*) FROM conflict_groups WHERE client_id = ? UNION ALL SELECT 'open_q', COUNT`
+- `SELECT-FROM` @ **_build_canary_exclusion_scope** `backend/app/services/analysis_center.py:233` — _static_confirmed_
+- `SELECT-FROM` @ **create_analysis_job** `backend/app/services/analysis_center.py:2976` — _static_confirmed_
+    - WHERE: `dedupe_key = ? AND status IN ('queued', 'running')`
+- `SELECT-FROM` @ **queue_main_chain_backfill** `backend/app/services/analysis_center.py:3187` — _static_confirmed_
+    - WHERE: `client_id = ? AND scope_type = ? AND scope_id = ? AND trigger_type = ? AND intent_profile = ? AND status IN ('queued', 'running')`
+- `SELECT-FROM` @ **claim_next_analysis_job** `backend/app/services/analysis_center.py:3295` — _static_confirmed_
+    - WHERE: `status = 'queued' AND (lock_expires_at IS NULL OR lock_expires_at = '' OR lock_expires_at <= ?) AND COALESCE(trigger_type, 'manual') != 'backfill' AND ( priority = 'high' OR COALESCE(trigger_type, 'ma`
+    - WHERE: `status = 'queued' AND (lock_expires_at IS NULL OR lock_expires_at = '' OR lock_expires_at <= ?) AND COALESCE(trigger_type, 'manual') != 'backfill' AND NOT ( priority = 'high' OR COALESCE(trigger_type,`
+    - WHERE: `status = 'queued' AND (lock_expires_at IS NULL OR lock_expires_at = '' OR lock_expires_at <= ?) AND COALESCE(trigger_type, 'manual') = 'backfill'`
+- `SELECT-FROM` @ **_lookup_job_status** `backend/app/services/workspace_context_refresh.py:245` — _static_confirmed_
+    - WHERE: `id = ?`
+
+## `analysis_runs`
+
+- 经验层: **5 行** · 最近写入 created_at=2026-03-15T16:04:28
+
+### 写边 (2)
+- `INSERT` @ **create_app** `backend/app/main.py:3179` — _needs_human_
+    - chain: create_app @backend/app/main.py:3179  ←  (no caller found — orphan write)
+- `INSERT` @ **create_app.run_analysis** `backend/app/main.py:55782` — _static_confirmed_
+    - chain: run_analysis [endpoint:/api/v1/analysis-tools/runs] @backend/app/main.py:55782
+
+### 读边 (5)
+- `SELECT-FROM` @ **create_app** `backend/app/main.py:3179` — _static_confirmed_
+    - WHERE: `id = ?`
+    - WHERE: `template_id = ? AND id != ? AND created_at < ?`
+- `SELECT-FROM` @ **create_app.build_health** `backend/app/main.py:5147` — _static_confirmed_
+- `SELECT-FROM` @ **create_app.find_previous_analysis_run** `backend/app/main.py:55751` — _static_confirmed_
+    - WHERE: `id = ?`
+    - WHERE: `template_id = ? AND id != ? AND created_at < ?`
+- `SELECT-FROM` @ **create_app.list_analysis_tools** `backend/app/main.py:55765` — _static_confirmed_
+- `SELECT-FROM` @ **create_app.get_fundraising_run_comparison** `backend/app/main.py:56049` — _static_confirmed_
+    - WHERE: `id = ?`
+
+## `analysis_templates`
+
+- 经验层: **2 行** · 最近写入 created_at=2026-04-27T15:32:10
+
+### 写边 (1)
+- `INSERT` @ **seed_defaults** `backend/app/main.py:59873` — _needs_human_
+    - chain: seed_defaults @backend/app/main.py:59873  ←  create_app @backend/app/main.py:3179
+
+### 读边 (7)
+- `SELECT-FROM` @ **create_app** `backend/app/main.py:3179` — _static_confirmed_
+    - WHERE: `id = ?`
+- `SELECT-FROM` @ **create_app.update_analysis_workbench_settings** `backend/app/main.py:37336` — _static_confirmed_
+- `SELECT-FROM` @ **create_app.list_analysis_tools** `backend/app/main.py:55765` — _static_confirmed_
+- `SELECT-FROM` @ **create_app.run_analysis** `backend/app/main.py:55782` — _static_confirmed_
+    - WHERE: `id = ?`
+- `SELECT-FROM` @ **create_app._default_analysis_workbench_settings** `backend/app/main.py:5886` — _static_confirmed_
+- `SELECT-FROM` @ **seed_defaults** `backend/app/main.py:59873` — _static_confirmed_
+- `SELECT-FROM` @ **create_app.get_analysis_workbench_settings** `backend/app/main.py:6455` — _static_confirmed_
+
+## `answer_citations`
+
+- 经验层: **7595 行** · 最近写入 created_at=2026-04-21T22:24:28
+
+### 写边 (0)
+- (无静态写边)  ⚠️ **0 写边但真库有行 → needs_human (写入路径在静态扫描盲区:可能动态表名/ORM/外部进程)**
+
+### 读边 (0)
+- (无静态读边)
+
+## `answer_runs`
+
+- 经验层: **549 行** · 最近写入 created_at=2026-06-05T07:39:24
+
+### 写边 (2)
+- `INSERT` @ **create_app** `backend/app/main.py:3179` — _needs_human_
+    - chain: create_app @backend/app/main.py:3179  ←  (no caller found — orphan write)
+- `INSERT` @ **create_app.resolve_chat_answer_data_center_primary** `backend/app/main.py:46745` — _call_name_match_
+    - chain: resolve_chat_answer_data_center_primary @backend/app/main.py:46745  ←  document_ai_action [endpoint:/api/v1/clients/{client_id}/documents/ai-action] @backend/app/main.py:49635
+    - chain: resolve_chat_answer_data_center_primary @backend/app/main.py:46745  ←  resolve_chat_answer @backend/app/main.py:48117  ←  background_resolve_chat_answer [worker:background_resolve_chat_answer] @backend/app/main.py:48335
+    - chain: resolve_chat_answer_data_center_primary @backend/app/main.py:46745  ←  resolve_chat_answer @backend/app/main.py:48117  ←  send_chat_message [endpoint:/api/v1/clients/{client_id}/workspace/chat] @backend/app/main.py:49220
+
+### 读边 (0)
+- (无静态读边)
+
+## `approval_queue`
+
+- 经验层: 真库**无此表** (静态边 2写/5读)
+
+### 写边 (2)
+- `INSERT` @ **enqueue_approval** `backend/app/services/agent_governance.py:217` — _call_name_match_
+    - chain: enqueue_approval @backend/app/services/agent_governance.py:217  ←  feishu_push_task [endpoint:/api/v1/feishu/tasks/push] @backend/app/main.py:51079
+    - chain: enqueue_approval @backend/app/services/agent_governance.py:217  ←  generate_document [endpoint:/api/v1/documents/generate] @backend/app/main.py:50883
+    - chain: enqueue_approval @backend/app/services/agent_governance.py:217  ←  create_ai_task_plan @backend/app/services/bot_members.py:980  ←  create_bot_task_plan [endpoint:/api/v1/org/bots/{bot_member_id}/task-plans] @backend/app/main.py:50495
+    - chain: enqueue_approval @backend/app/services/agent_governance.py:217  ←  process_meeting_minute @backend/app/services/meeting_minute_processor.py:147  ←  process_meeting_minute_endpoint [endpoint:/api/v1/meeting-minutes/process] @backend/app/main.py:39471
+- `UPDATE` @ **decide_approval** `backend/app/services/agent_governance.py:254` — _call_name_match_
+    - chain: decide_approval @backend/app/services/agent_governance.py:254  ←  decide_approval_endpoint [endpoint:/api/v1/approvals/decide] @backend/app/main.py:39442
+    - chain: decide_approval @backend/app/services/agent_governance.py:254  ←  confirm_judgment @backend/app/services/analysis_center.py:3803  ←  confirm_judgment_endpoint [endpoint:/api/v1/memory/judgments/confirm] @backend/app/main.py:39418
+    - chain: decide_approval @backend/app/services/agent_governance.py:254  ←  confirm_judgment @backend/app/services/analysis_center.py:3803  ←  review_strategic_thought [endpoint:/api/v1/strategic/thoughts/{thought_id}/review] @backend/app/main.py:42077
+    - chain: decide_approval @backend/app/services/agent_governance.py:254  ←  create_ai_task_plan @backend/app/services/bot_members.py:980  ←  create_bot_task_plan [endpoint:/api/v1/org/bots/{bot_member_id}/task-plans] @backend/app/main.py:50495
+    - chain: decide_approval @backend/app/services/agent_governance.py:254  ←  decide_ai_task_plan @backend/app/services/bot_members.py:1108  ←  decide_bot_task_plan [endpoint:/api/v1/org/bots/task-plans/{ai_task_plan_id}/decide] @backend/app/main.py:50578
+
+### 读边 (5)
+- `SELECT-FROM` @ **create_app** `backend/app/main.py:3179` — _static_confirmed_
+    - WHERE: `target_resource = ? AND action_type = 'task.publish' AND status = 'approved'`
+- `SELECT-FROM` @ **create_app.feishu_push_task** `backend/app/main.py:51079` — _static_confirmed_
+    - WHERE: `target_resource = ? AND action_type = 'task.publish' AND status = 'approved'`
+- `SELECT-FROM` @ **list_pending_approvals** `backend/app/services/agent_governance.py:236` — _static_confirmed_
+    - WHERE: `{?}`
+- `SELECT-FROM` @ **get_governance_stats** `backend/app/services/agent_governance.py:312` — _static_confirmed_
+- `SELECT-FROM` @ **build_company_brain_context** `backend/app/services/company_brain_context_builder.py:83` — _static_confirmed_
+    - WHERE: `client_id = ? AND status = 'pending'`
+
+## `approval_records`
+
+- 经验层: **1 行** · 最近写入 created_at=2026-05-14T15:12:28
+
+### 写边 (4)
+- `UPDATE` @ **_sync_event_line_client_scope_records** `backend/app/main.py:2484` — _needs_human_
+    - chain: _sync_event_line_client_scope_records [worker:_sync_event_line_client_scope_records] @backend/app/main.py:2484
+- `INSERT` @ **create_app** `backend/app/main.py:3179` — _needs_human_
+    - chain: create_app @backend/app/main.py:3179  ←  (no caller found — orphan write)
+- `INSERT` @ **create_app._append_proposal_approval_audit** `backend/app/main.py:33038` — _needs_human_
+    - chain: _append_proposal_approval_audit @backend/app/main.py:33038  ←  (no caller found — orphan write)
+- `INSERT` @ **approve_proposal_record** `backend/app/services/proposal_approval.py:170` — _needs_human_
+    - chain: approve_proposal_record @backend/app/services/proposal_approval.py:170  ←  (no caller found — orphan write)
+
+### 读边 (3)
+- `SELECT-FROM` @ **resolve_current_approval_state** `backend/app/services/analysis_center.py:1302` — _static_confirmed_
+    - WHERE: `approval_target_type = ? AND approval_target_id = ?`
+- `SELECT-FROM` @ **decide_approval** `backend/app/services/analysis_center.py:3737` — _static_confirmed_
+    - WHERE: `id = ?`
+- `SELECT-FROM` @ **get_analysis_migration_metrics** `backend/app/services/analysis_center.py:3821` — _static_confirmed_
+    - WHERE: `decided_at >= ?`
+
+## `atomic_fact_confidence_history`
+
+- 经验层: **4 行**
+
+### 写边 (2)
+- `INSERT` @ **record_confidence_change** `backend/app/services/atomic_fact_confidence_history.py:87` — _call_name_match_
+    - chain: record_confidence_change @backend/app/services/atomic_fact_confidence_history.py:87  ←  commit_session @backend/app/services/smart_file_import.py:887  ←  smart_import_commit_session [endpoint:/api/v1/smart-import/sessions/{session_id}/commit] @backend/app/main.py:29395
+    - chain: record_confidence_change @backend/app/services/atomic_fact_confidence_history.py:87  ←  insert_fact @backend/app/services/contradiction_detector.py:40  ←  persist_chunk_facts @backend/app/services/contradiction_detector.py:305  ←  _extract_facts_for_v2_doc @backend/app/services/internet_crawler.py:755  ←  run_internet_enrichment [worker:run_internet_enrichment] @backend/app/services/internet_crawler.py:1135
+    - chain: record_confidence_change @backend/app/services/atomic_fact_confidence_history.py:87  ←  insert_fact @backend/app/services/contradiction_detector.py:40  ←  persist_chunk_facts @backend/app/services/contradiction_detector.py:305  ←  ingest_document_knowledge @backend/app/services/knowledge_base.py:2802  ←  upload_task_attachment [endpoint:/api/v1/tasks/{task_id}/attachments] @backend/app/main.py:53434
+    - chain: record_confidence_change @backend/app/services/atomic_fact_confidence_history.py:87  ←  ingest @backend/app/services/ingest_pipeline.py:659  ←  extract_from_document @backend/app/services/document_llm_extractor.py:261  ←  process @backend/app/services/task_runners/fact_extract_runner.py:41  ←  run_due_local_model_tasks @backend/app/services/local_model_optimizer.py:942  ←  local_model_optimizer_worker_loop [worker:local_model_optimizer_worker_loop] @backend/app/services/local_model_optimizer.py:1026
+    - chain: record_confidence_change @backend/app/services/atomic_fact_confidence_history.py:87  ←  ingest @backend/app/services/ingest_pipeline.py:659  ←  extract_from_document @backend/app/services/document_llm_extractor.py:261  ←  process @backend/app/services/task_runners/fact_extract_runner.py:41  ←  run_due_local_model_tasks @backend/app/services/local_model_optimizer.py:942  ←  run_local_ai_now [endpoint:/api/v1/local-ai/run-now] @backend/app/main.py:36970
+    - chain: record_confidence_change @backend/app/services/atomic_fact_confidence_history.py:87  ←  insert_fact @backend/app/services/contradiction_detector.py:40  ←  persist_chunk_facts @backend/app/services/contradiction_detector.py:305  ←  ingest_document_knowledge @backend/app/services/knowledge_base.py:2802  ←  _build_local_event_line_report_snapshot @backend/app/main.py:33643  ←  get_event_line_report_snapshot [endpoint:/api/v1/event-lines/{event_line_id}/report-snapshot] @backend/app/main.py:34329
+- `INSERT` @ **apply_user_correction** `backend/app/services/user_correction_handler.py:80` — _needs_human_
+    - chain: apply_user_correction @backend/app/services/user_correction_handler.py:80  ←  (no caller found — orphan write)
+
+### 读边 (2)
+- `SELECT-FROM` @ **list_history_for_fact** `backend/app/services/atomic_fact_confidence_history.py:131` — _static_confirmed_
+    - WHERE: `fact_id = ?`
+- `SELECT-FROM` @ **get_current_trend** `backend/app/services/atomic_fact_confidence_history.py:141` — _static_confirmed_
+    - WHERE: `fact_id = ?`
+
+## `atomic_facts`
+
+- 经验层: **2288 行** · 最近写入 created_at=2026-06-05T07:30:34
+  - source_type 分布: llm_extracted:2002, client_internal_doc:144, collaboration_task:89, client_official_doc:53
+
+### 写边 (13)
+- `UPDATE` @ **create_app.resolve_client_duplicate_documents** `backend/app/main.py:28241` — _static_confirmed_
+    - chain: resolve_client_duplicate_documents [endpoint:/api/v1/clients/{client_id}/duplicate-documents/resolve] @backend/app/main.py:28241
+- `UPDATE` @ **create_app** `backend/app/main.py:3179` — _needs_human_
+    - chain: create_app @backend/app/main.py:3179  ←  (no caller found — orphan write)
+- `INSERT` @ **_write_simple_atomic_fact** `backend/app/services/chat_message_reverse_ingester.py:274` — _call_name_match_
+    - chain: _write_simple_atomic_fact @backend/app/services/chat_message_reverse_ingester.py:274  ←  ingest_chat_message @backend/app/services/chat_message_reverse_ingester.py:311  ←  send_chat_message [endpoint:/api/v1/clients/{client_id}/workspace/chat] @backend/app/main.py:49220
+- `INSERT+UPDATE` @ **insert_fact** `backend/app/services/contradiction_detector.py:40` — _call_name_match_
+    - chain: insert_fact @backend/app/services/contradiction_detector.py:40  ←  persist_chunk_facts @backend/app/services/contradiction_detector.py:305  ←  _extract_facts_for_v2_doc @backend/app/services/internet_crawler.py:755  ←  run_internet_enrichment [worker:run_internet_enrichment] @backend/app/services/internet_crawler.py:1135
+    - chain: insert_fact @backend/app/services/contradiction_detector.py:40  ←  persist_chunk_facts @backend/app/services/contradiction_detector.py:305  ←  ingest_document_knowledge @backend/app/services/knowledge_base.py:2802  ←  upload_task_attachment [endpoint:/api/v1/tasks/{task_id}/attachments] @backend/app/main.py:53434
+    - chain: insert_fact @backend/app/services/contradiction_detector.py:40  ←  persist_chunk_facts @backend/app/services/contradiction_detector.py:305  ←  ingest_document_knowledge @backend/app/services/knowledge_base.py:2802  ←  _build_local_event_line_report_snapshot @backend/app/main.py:33643  ←  get_event_line_report_snapshot [endpoint:/api/v1/event-lines/{event_line_id}/report-snapshot] @backend/app/main.py:34329
+    - chain: insert_fact @backend/app/services/contradiction_detector.py:40  ←  persist_chunk_facts @backend/app/services/contradiction_detector.py:305  ←  ingest_document_knowledge @backend/app/services/knowledge_base.py:2802  ←  _process_one_pdf @backend/app/services/internet_pdf_worker.py:96  ←  _worker_loop [worker:_worker_loop] @backend/app/services/internet_pdf_worker.py:205
+    - chain: insert_fact @backend/app/services/contradiction_detector.py:40  ←  persist_chunk_facts @backend/app/services/contradiction_detector.py:305  ←  ingest_document_knowledge @backend/app/services/knowledge_base.py:2802  ←  backfill_workspace_import @backend/app/services/knowledge_v2.py:3943  ←  backfill_client_workspace_imports [endpoint:/api/v1/clients/{client_id}/workspace/backfill-imports] @backend/app/main.py:50039
+    - chain: insert_fact @backend/app/services/contradiction_detector.py:40  ←  persist_chunk_facts @backend/app/services/contradiction_detector.py:305  ←  ingest_document_knowledge @backend/app/services/knowledge_base.py:2802  ←  create_client_text_document @backend/app/main.py:16116  ←  create_client_document_from_text [endpoint:/api/v1/clients/{client_id}/documents/from-text] @backend/app/main.py:49576
+- `UPDATE` @ **update_review_status** `backend/app/services/contradiction_detector.py:413` — _call_name_match_
+    - chain: update_review_status @backend/app/services/contradiction_detector.py:413  ←  review_contradiction [endpoint:/api/v1/contradictions/{contradiction_id}/review] @backend/app/main.py:41982
+- `UPDATE` @ **canonicalize_atomic_facts** `backend/app/services/data_center_self_verify.py:394` — _needs_human_
+    - chain: canonicalize_atomic_facts @backend/app/services/data_center_self_verify.py:394  ←  run_self_verify @backend/app/services/data_center_self_verify.py:446
+- `UPDATE` @ **merge_entities** `backend/app/services/entity_merger.py:165` — _call_name_match_
+    - chain: merge_entities @backend/app/services/entity_merger.py:165  ←  merge_entity_into [endpoint:/api/v1/entities/{merged_id}/merge] @backend/app/main.py:41700
+- `INSERT+UPDATE` @ **ingest** `backend/app/services/ingest_pipeline.py:659` — _call_name_match_
+    - chain: ingest @backend/app/services/ingest_pipeline.py:659  ←  extract_from_document @backend/app/services/document_llm_extractor.py:261  ←  process @backend/app/services/task_runners/fact_extract_runner.py:41  ←  run_due_local_model_tasks @backend/app/services/local_model_optimizer.py:942  ←  local_model_optimizer_worker_loop [worker:local_model_optimizer_worker_loop] @backend/app/services/local_model_optimizer.py:1026
+    - chain: ingest @backend/app/services/ingest_pipeline.py:659  ←  extract_from_document @backend/app/services/document_llm_extractor.py:261  ←  process @backend/app/services/task_runners/fact_extract_runner.py:41  ←  run_due_local_model_tasks @backend/app/services/local_model_optimizer.py:942  ←  run_local_ai_now [endpoint:/api/v1/local-ai/run-now] @backend/app/main.py:36970
+    - chain: ingest @backend/app/services/ingest_pipeline.py:659  ←  extract_from_document @backend/app/services/document_llm_extractor.py:261  ←  process @backend/app/services/task_runners/fact_extract_runner.py:41  ←  diarize_audio_file @backend/app/services/local_asr/diarization_provider.py:99  ←  _transcribe_with_diarization @backend/app/services/local_asr/recording_ingest.py:114  ←  transcribe_recording_local_path @backend/app/services/local_asr/recording_ingest.py:64  ←  transcribe_recording_local_audio_endpoint [endpoint:/api/v1/recordings/transcribe-local-audio] @backend/app/main.py:37133
+- `INSERT` @ **process_meeting_minute** `backend/app/services/meeting_minute_processor.py:147` — _call_name_match_
+    - chain: process_meeting_minute @backend/app/services/meeting_minute_processor.py:147  ←  process_meeting_minute_endpoint [endpoint:/api/v1/meeting-minutes/process] @backend/app/main.py:39471
+- `UPDATE` @ **backfill_speaker_entity_ids** `backend/app/services/person_resolver.py:232` — _needs_human_
+    - chain: backfill_speaker_entity_ids @backend/app/services/person_resolver.py:232  ←  (no caller found — orphan write)
+- `INSERT` @ **commit_session** `backend/app/services/smart_file_import.py:887` — _call_name_match_
+    - chain: commit_session @backend/app/services/smart_file_import.py:887  ←  smart_import_commit_session [endpoint:/api/v1/smart-import/sessions/{session_id}/commit] @backend/app/main.py:29395
+- `UPDATE` @ **backfill_time_aliases** `backend/app/services/time_anchor_normalizer.py:196` — _needs_human_
+    - chain: backfill_time_aliases @backend/app/services/time_anchor_normalizer.py:196  ←  (no caller found — orphan write)
+- `UPDATE` @ **apply_user_correction** `backend/app/services/user_correction_handler.py:80` — _needs_human_
+    - chain: apply_user_correction @backend/app/services/user_correction_handler.py:80  ←  (no caller found — orphan write)
+
+### 读边 (55)
+- `SELECT-FROM` @ **create_app.collect_data_center_context_for_consultation** `backend/app/main.py:15884` — _static_confirmed_
+    - WHERE: `client_id = ? AND status = 'active'`
+    - WHERE: `client_id = ? AND status = 'active' AND (`
+    - WHERE: `client_id = ? AND status = 'active' AND ({?})`
+- `SELECT-FROM` @ **create_app.build_template_fill_context** `backend/app/main.py:16786` — _static_confirmed_
+    - WHERE: `client_id = ? AND status = 'active' AND verification_status = 'user_confirmed'`
+- `SELECT-FROM` @ **create_app.get_client_knowledge_status** `backend/app/main.py:27902` — _static_confirmed_
+    - WHERE: `client_id = ? AND status = 'active'`
+    - WHERE: `client_id = ? AND status = 'active' AND created_at >= ?`
+- `SELECT-FROM` @ **create_app.get_client_duplicate_documents** `backend/app/main.py:28069` — _static_confirmed_
+    - WHERE: `source_v2_document_id = ?`
+- `SELECT-FROM` @ **create_app.get_client_duplicate_documents._ref_counts** `backend/app/main.py:28088` — _static_confirmed_
+    - WHERE: `source_v2_document_id = ?`
+- `SELECT-FROM` @ **create_app** `backend/app/main.py:3179` — _static_confirmed_
+    - WHERE: `client_id = ? AND status = 'active'`
+    - WHERE: `client_id = ? AND status = 'active' AND (`
+    - WHERE: `client_id = ? AND status = 'active' AND (subject_text LIKE ? OR value_text LIKE ?)`
+    - WHERE: `client_id = ? AND status = 'active' AND (verification_status = 'user_confirmed' OR confidence >= 0.85)`
+    - WHERE: `client_id = ? AND status = 'active' AND ({?})`
+- `SELECT-FROM` @ **create_app.get_client_data_gaps** `backend/app/main.py:39920` — _static_confirmed_
+    - WHERE: `id IN (`
+    - WHERE: `id IN ({?})`
+- `SELECT-FROM` @ **create_app.check_client_evidence** `backend/app/main.py:40575` — _static_confirmed_
+    - WHERE: `client_id = ? AND status = 'active'`
+    - WHERE: `client_id = ? AND status = 'active' AND (subject_text LIKE ? OR value_text LIKE ?)`
+- `SELECT-FROM` @ **create_app.get_client_quality_context** `backend/app/main.py:40726` — _static_confirmed_
+    - WHERE: `client_id = ? AND status = 'active' AND (verification_status = 'user_confirmed' OR confidence >= 0.85)`
+    - WHERE: `client_id=? AND value_text LIKE ?`
+- `SELECT-FROM` @ **create_app.resolve_client_authority** `backend/app/main.py:41243` — _static_confirmed_
+    - WHERE: `client_id = ? AND status = 'active' AND confidence < 0.85 AND subject_text LIKE ? {attr_clause}`
+    - WHERE: `client_id = ? AND status = 'active' AND confidence >= 0.85 AND verification_status != 'user_confirmed' AND subject_text LIKE ? {attr_clause}`
+    - WHERE: `client_id = ? AND status = 'active' AND verification_status = 'user_confirmed' AND subject_text LIKE ? {attr_clause}`
+- `SELECT-FROM` @ **get_fact_bundle_lite** `backend/app/modules/client/fact_view.py:133` — _static_confirmed_
+    - WHERE: `client_id = ? AND status = 'active'`
+- `SELECT-FROM` @ **list_atomic_facts** `backend/app/modules/client/fact_view.py:361` — _static_confirmed_
+    - WHERE: `client_id = ? AND status = 'active'`
+- `SELECT-FROM` @ **derive_risk_signals** `backend/app/services/atomic_fact_semantic_deriver.py:190` — _static_confirmed_
+    - WHERE: `client_id = ? AND status = 'active'`
+- `SELECT-FROM` @ **derive_commitments** `backend/app/services/atomic_fact_semantic_deriver.py:261` — _static_confirmed_
+    - WHERE: `client_id = ? AND status = 'active'`
+- `SELECT-FROM` @ **derive_strategic_insights** `backend/app/services/atomic_fact_semantic_deriver.py:322` — _static_confirmed_
+    - WHERE: `client_id = ? AND status = 'active'`
+- `SELECT-FROM` @ **derive_event_line_activities** `backend/app/services/atomic_fact_semantic_deriver.py:76` — _static_confirmed_
+    - WHERE: `client_id = ? AND status = 'active'`
+- `SELECT-FROM` @ **score_confidence_gap** `backend/app/services/clarification_priority.py:198` — _static_confirmed_
+    - WHERE: `id = ?`
+- `SELECT-FROM` @ **score_impact** `backend/app/services/clarification_priority.py:25` — _static_confirmed_
+    - WHERE: `client_id = ? AND created_at > datetime('now', '-30 days')`
+    - WHERE: `derived_from_ids_json LIKE ? AND status='active'`
+- `SELECT-FROM` @ **top_n_clarifications_for_client** `backend/app/services/clarification_priority.py:271` — _static_confirmed_
+    - WHERE: `client_id = ? AND status = 'active' AND (confidence < 0.85 OR update_relation IN ('conflict', 'supersedes'))`
+- `SELECT-FROM` @ **score_conflict** `backend/app/services/clarification_priority.py:61` — _static_confirmed_
+    - WHERE: `client_id = ? AND subject_text = ? AND attribute = ? AND status IN ('active', 'superseded')`
+    - WHERE: `id = ?`
+- `SELECT-FROM` @ **build_company_brain_context** `backend/app/services/company_brain_context_builder.py:83` — _static_confirmed_
+    - WHERE: `client_id = ? AND status = 'active'`
+    - WHERE: `client_id = ? AND status = 'active' {?}`
+- `SELECT-FROM` @ **build_evidence_pack** `backend/app/services/company_brain_qa.py:76` — _static_confirmed_
+    - WHERE: `{?}`
+- `SELECT-FROM` @ **find_contradictions_for_fact** `backend/app/services/contradiction_detector.py:168` — _static_confirmed_
+    - WHERE: `client_id = ? AND status = 'active' AND subject_text = ? AND attribute = ? AND value_normalized != ? AND id != ? AND (? = '' OR COALESCE(source_v2_document_id, '') != ?)`
+- `JOIN` @ **list_contradictions** `backend/app/services/contradiction_detector.py:353` — _static_confirmed_
+    - WHERE: `fc.client_id = ? AND fc.review_status = ?`
+- `SELECT-FROM` @ **insert_fact** `backend/app/services/contradiction_detector.py:40` — _static_confirmed_
+    - WHERE: `client_id = ? AND subject_text = ? AND attribute = ? AND value_normalized = ? AND status = 'active'`
+- `SELECT-FROM` @ **scan_client_for_cross_source_candidates** `backend/app/services/cross_source_check.py:238` — _static_confirmed_
+    - WHERE: `client_id = ? AND status = 'active' AND subject_text IS NOT NULL AND subject_text != ''`
+- `SELECT-FROM` @ **_bg_portrait_build** `backend/app/services/data_center_broadcast.py:258` — _static_confirmed_
+    - WHERE: `client_id = ? AND status = 'active'`
+- `SELECT-FROM` @ **verify_contradictions** `backend/app/services/data_center_self_verify.py:301` — _static_confirmed_
+    - WHERE: `client_id=? AND status='active'`
+- `SELECT-FROM` @ **canonicalize_atomic_facts** `backend/app/services/data_center_self_verify.py:394` — _static_confirmed_
+    - WHERE: `client_id=? AND status='active' AND COALESCE(subject_text,'') != ''`
+- `SELECT-FROM+JOIN` @ **detect_data_gaps** `backend/app/services/data_gap_compensator.py:112` — _static_confirmed_
+    - WHERE: `client_id = ? AND status = 'active' AND confidence >= 0.85`
+    - WHERE: `fc.client_id = ? AND fc.contradiction_type = 'media_lag'`
+- `SELECT-FROM` @ **query_candidate_value** `backend/app/services/fill_table_evaluator.py:257` — _static_confirmed_
+    - WHERE: `client_id = ? AND status = 'active' AND (attribute LIKE ? OR attribute = ?)`
+- `SELECT-FROM` @ **detect_same_attr_value_diff** `backend/app/services/formal_conflict_detector.py:146` — _static_confirmed_
+    - WHERE: `client_id = ? AND status = 'active'`
+- `SELECT-FROM` @ **detect_media_lag** `backend/app/services/formal_conflict_detector.py:233` — _static_confirmed_
+    - WHERE: `client_id = ? AND status = 'active'`
+- `SELECT-FROM` @ **detect_oral_no_official** `backend/app/services/formal_conflict_detector.py:323` — _static_confirmed_
+    - WHERE: `client_id = ? AND status = 'active'`
+- `SELECT-FROM` @ **detect_role_diff** `backend/app/services/formal_conflict_detector.py:389` — _static_confirmed_
+    - WHERE: `client_id = ? AND status = 'active'`
+- `SELECT-FROM` @ **_format_atomic_facts** `backend/app/services/glossary_attribute_extractor.py:173` — _static_confirmed_
+    - WHERE: `client_id=? AND status='active'`
+- `SELECT-FROM` @ **_collect_project_candidates** `backend/app/services/glossary_candidate_generator.py:158` — _static_confirmed_
+    - WHERE: `client_id = ? AND status='active' AND confidence >= 0.5`
+- `SELECT-FROM` @ **_collect_candidates** `backend/app/services/glossary_candidate_generator.py:328` — _static_confirmed_
+    - WHERE: `client_id = ? AND status='active' AND confidence >= 0.6`
+- `SELECT-FROM` @ **find_candidates** `backend/app/services/historical_material_resolver.py:271` — _static_confirmed_
+    - WHERE: `client_id = ? AND status = 'active' AND subject_text LIKE ?`
+    - WHERE: `client_id = ? AND status = 'active' AND value_text LIKE ?`
+- `SELECT-FROM` @ **ingest** `backend/app/services/ingest_pipeline.py:659` — _static_confirmed_
+    - WHERE: `client_id = ? AND subject_text = ? AND attribute = ? AND status = 'active'`
+- `SELECT-FROM` @ **ingest_document_knowledge** `backend/app/services/knowledge_v2.py:2114` — _static_confirmed_
+    - WHERE: `client_id = ? AND status = 'active'`
+- `SELECT-FROM` @ **fanout_contradictions_to_judgment_impact** `backend/app/services/knowledge_v2.py:2935` — _static_confirmed_
+    - WHERE: `source_v2_document_id = ? AND status='active'`
+- `SELECT-FROM` @ **fanout_document_to_strategic_thoughts** `backend/app/services/knowledge_v2.py:3103` — _static_confirmed_
+    - WHERE: `source_v2_document_id = ? AND status='active'`
+- `SELECT-FROM` @ **_retrieve_atomic_facts_for_prompt** `backend/app/services/knowledge_v2.py:4875` — _static_confirmed_
+    - WHERE: `client_id = ? AND status = 'active' AND (`
+    - WHERE: `client_id = ? AND status = 'active' AND ({?})`
+- `SELECT-FROM` @ **_collect_atomic_facts** `backend/app/services/narrative_collector.py:1029` — _static_confirmed_
+    - WHERE: `client_id = ? AND status IN ('active', 'superseded') AND confidence >= 0.6`
+- `SELECT-FROM` @ **backfill_speaker_entity_ids** `backend/app/services/person_resolver.py:232` — _static_confirmed_
+    - WHERE: `client_id = ? AND speaker_person_id IS NOT NULL AND speaker_person_id <> '' AND (speaker_entity_id IS NULL OR speaker_entity_id = '')`
+- `SELECT-FROM` @ **_collect_inputs** `backend/app/services/project_portrait_builder.py:211` — _static_confirmed_
+    - WHERE: `client_id=? AND status='active' AND confidence>=0.65`
+- `SELECT-FROM` @ **_section_5_core_facts** `backend/app/services/story_card_generator.py:122` — _static_confirmed_
+    - WHERE: `client_id = ? AND confidence >= 0.85 AND status = 'active'`
+- `SELECT-FROM` @ **_section_10_evidence_sources** `backend/app/services/story_card_generator.py:252` — _static_confirmed_
+    - WHERE: `client_id = ?`
+- `SELECT-FROM` @ **_section_overall_confidence** `backend/app/services/story_card_generator.py:283` — _static_confirmed_
+    - WHERE: `client_id = ? AND status = 'active'`
+- `SELECT-FROM` @ **_section_3_key_people** `backend/app/services/story_card_generator.py:74` — _static_confirmed_
+    - WHERE: `client_id = ? AND (attribute LIKE '%职务%' OR attribute LIKE '%角色%' OR attribute LIKE '%新任%' OR attribute LIKE '%接任%' OR attribute LIKE '%用户判断%') AND status = 'active'`
+- `SELECT-FROM` @ **backfill_time_aliases** `backend/app/services/time_anchor_normalizer.py:196` — _static_confirmed_
+    - WHERE: `{?}`
+- `SELECT-FROM` @ **find_facts_by_date_query** `backend/app/services/time_anchor_normalizer.py:234` — _static_confirmed_
+    - WHERE: `client_id = ? AND status = 'active' AND (time_anchor LIKE ? OR time_anchor_text = ? OR time_aliases_json LIKE ?)`
+    - WHERE: `client_id = ? AND status = 'active' AND time_anchor >= ? AND time_anchor < ?`
+- `SELECT-FROM` @ **get_authoritative_value** `backend/app/services/user_correction_handler.py:225` — _static_confirmed_
+    - WHERE: `client_id = ? AND subject_text = ? AND (attribute LIKE ? OR attribute LIKE ? OR attribute = ?) AND status = 'active'`
+    - WHERE: `client_id = ? AND subject_text = ? AND attribute LIKE ? AND status = 'superseded'`
+- `SELECT-FROM` @ **apply_user_correction** `backend/app/services/user_correction_handler.py:80` — _static_confirmed_
+    - WHERE: `client_id = ? AND subject_text = ? AND (attribute LIKE ? OR attribute LIKE ? OR attribute LIKE ?)`
+
+## `badge_unlock_records`
+
+- 经验层: **104 行** · 最近写入 created_at=2026-05-03T16:53:58
+
+### 写边 (1)
+- `INSERT` @ **_sync_badge_unlocks** `backend/app/services/badge_engine.py:1156` — _static_confirmed_
+    - chain: _sync_badge_unlocks [worker:_sync_badge_unlocks] @backend/app/services/badge_engine.py:1156
+
+### 读边 (1)
+- `SELECT-FROM` @ **_fetch_unlock_map** `backend/app/services/badge_engine.py:1018` — _static_confirmed_
+    - WHERE: `user_id = ?`
+
+## `blowing`
+
+- 经验层: 真库**无此表** (静态边 0写/1读)
+
+### 写边 (0)
+- (无静态写边)
+
+### 读边 (1)
+- `SELECT-FROM` @ **normalize_retrieval_stage** `backend/app/models.py:18` — _static_confirmed_
+
+## `bot_members`
+
+- 经验层: **1 行** · 最近写入 created_at=2026-06-08T07:33:07.302731+00:00
+  - origin 分布: local:1
+
+### 写边 (6)
+- `INSERT+UPDATE` @ **upsert_synced_bot_from_cloud** `backend/app/services/bot_members.py:266` — _static_confirmed_
+    - chain: upsert_synced_bot_from_cloud [worker:upsert_synced_bot_from_cloud] @backend/app/services/bot_members.py:266
+- `INSERT+UPDATE` @ **upsert_synced_bot_from_cloud._do** `backend/app/services/bot_members.py:294` — _call_name_match_
+    - chain: _do @backend/app/services/bot_members.py:294  ←  upsert_synced_bot_from_cloud [worker:upsert_synced_bot_from_cloud] @backend/app/services/bot_members.py:266
+- `UPDATE` @ **_set_bot_token** `backend/app/services/bot_members.py:370` — _call_name_match_
+    - chain: _set_bot_token @backend/app/services/bot_members.py:370  ←  create_bot_member @backend/app/services/bot_members.py:436  ←  create_org_bot [endpoint:/api/v1/org/bots] @backend/app/main.py:50372
+    - chain: _set_bot_token @backend/app/services/bot_members.py:370  ←  rotate_bot_token @backend/app/services/bot_members.py:652  ←  rotate_org_bot_token [endpoint:/api/v1/org/bots/{bot_member_id}/rotate-token] @backend/app/main.py:50410
+- `INSERT` @ **create_bot_member** `backend/app/services/bot_members.py:436` — _call_name_match_
+    - chain: create_bot_member @backend/app/services/bot_members.py:436  ←  create_org_bot [endpoint:/api/v1/org/bots] @backend/app/main.py:50372
+- `INSERT` @ **create_bot_member._do_init** `backend/app/services/bot_members.py:497` — _call_name_match_
+    - chain: _do_init @backend/app/services/bot_members.py:497  ←  create_bot_member @backend/app/services/bot_members.py:436  ←  create_org_bot [endpoint:/api/v1/org/bots] @backend/app/main.py:50372
+- `UPDATE` @ **update_bot_member** `backend/app/services/bot_members.py:831` — _call_name_match_
+    - chain: update_bot_member @backend/app/services/bot_members.py:831  ←  update_org_bot [endpoint:/api/v1/org/bots/{bot_member_id}] @backend/app/main.py:50465
+
+### 读边 (11)
+- `SELECT-FROM+JOIN` @ **create_app** `backend/app/main.py:3179` — _static_confirmed_
+    - WHERE: `id = ? OR actor_id = ?`
+    - WHERE: `p.human_initiator_id = ? AND p.created_at >= ? AND p.created_at < ?`
+- `JOIN` @ **create_app.get_user_ai_delegations** `backend/app/main.py:52247` — _static_confirmed_
+    - WHERE: `p.human_initiator_id = ? AND p.created_at >= ? AND p.created_at < ?`
+- `SELECT-FROM` @ **create_app.get_bot_weekly_summary** `backend/app/main.py:52350` — _static_confirmed_
+    - WHERE: `id = ? OR actor_id = ?`
+- `SELECT-FROM` @ **ensure_bot_schema** `backend/app/services/bot_members.py:101` — _static_confirmed_
+    - WHERE: `account_status = 'approved' UNION ALL SELECT actor_id AS id, organization_id, department_id, display_name AS full_name, '' AS email, 'ai_agent' AS primary_role, 'approved' AS account_status, 'active' `
+- `SELECT-FROM` @ **upsert_synced_bot_from_cloud** `backend/app/services/bot_members.py:266` — _static_confirmed_
+    - WHERE: `id = ?`
+- `SELECT-FROM` @ **verify_bot_token** `backend/app/services/bot_members.py:386` — _static_confirmed_
+    - WHERE: `actor_id = ?`
+- `SELECT-FROM` @ **create_bot_member** `backend/app/services/bot_members.py:436` — _static_confirmed_
+    - WHERE: `actor_id = ?`
+    - WHERE: `handle = ?`
+- `SELECT-FROM` @ **backfill_bot_init** `backend/app/services/bot_members.py:563` — _static_confirmed_
+    - WHERE: `id = ?`
+- `SELECT-FROM` @ **get_bot_member** `backend/app/services/bot_members.py:766` — _static_confirmed_
+    - WHERE: `id = ?`
+- `SELECT-FROM` @ **resolve_bot_by_handle** `backend/app/services/bot_members.py:803` — _static_confirmed_
+    - WHERE: `handle = ? AND status = 'active'`
+- `SELECT-FROM` @ **list_bot_members** `backend/app/services/bot_members.py:817` — _static_confirmed_
+    - WHERE: `status = ?`
+
+## `bot_permission_policies`
+
+- 经验层: **6 行** · 最近写入 created_at=2026-06-08T07:33:07.302731+00:00
+
+### 写边 (6)
+- `INSERT` @ **upsert_synced_bot_from_cloud** `backend/app/services/bot_members.py:266` — _static_confirmed_
+    - chain: upsert_synced_bot_from_cloud [worker:upsert_synced_bot_from_cloud] @backend/app/services/bot_members.py:266
+- `INSERT` @ **upsert_synced_bot_from_cloud._do** `backend/app/services/bot_members.py:294` — _call_name_match_
+    - chain: _do @backend/app/services/bot_members.py:294  ←  upsert_synced_bot_from_cloud [worker:upsert_synced_bot_from_cloud] @backend/app/services/bot_members.py:266
+- `INSERT` @ **create_bot_member** `backend/app/services/bot_members.py:436` — _call_name_match_
+    - chain: create_bot_member @backend/app/services/bot_members.py:436  ←  create_org_bot [endpoint:/api/v1/org/bots] @backend/app/main.py:50372
+- `INSERT` @ **create_bot_member._do_init** `backend/app/services/bot_members.py:497` — _call_name_match_
+    - chain: _do_init @backend/app/services/bot_members.py:497  ←  create_bot_member @backend/app/services/bot_members.py:436  ←  create_org_bot [endpoint:/api/v1/org/bots] @backend/app/main.py:50372
+- `INSERT` @ **backfill_bot_init** `backend/app/services/bot_members.py:563` — _needs_human_
+    - chain: backfill_bot_init @backend/app/services/bot_members.py:563  ←  (no caller found — orphan write)
+- `UPDATE` @ **update_bot_member** `backend/app/services/bot_members.py:831` — _call_name_match_
+    - chain: update_bot_member @backend/app/services/bot_members.py:831  ←  update_org_bot [endpoint:/api/v1/org/bots/{bot_member_id}] @backend/app/main.py:50465
+
+### 读边 (4)
+- `SELECT-FROM` @ **upsert_synced_bot_from_cloud** `backend/app/services/bot_members.py:266` — _static_confirmed_
+    - WHERE: `bot_member_id=?`
+- `SELECT-FROM` @ **upsert_synced_bot_from_cloud._do** `backend/app/services/bot_members.py:294` — _static_confirmed_
+    - WHERE: `bot_member_id=?`
+- `SELECT-FROM` @ **backfill_bot_init** `backend/app/services/bot_members.py:563` — _static_confirmed_
+    - WHERE: `bot_member_id = ?`
+- `SELECT-FROM` @ **get_bot_member** `backend/app/services/bot_members.py:766` — _static_confirmed_
+    - WHERE: `bot_member_id = ?`
+
+## `bot_reporting_lines`
+
+- 经验层: **1 行** · 最近写入 created_at=2026-06-08T07:33:07.302731+00:00
+
+### 写边 (6)
+- `INSERT` @ **upsert_synced_bot_from_cloud** `backend/app/services/bot_members.py:266` — _static_confirmed_
+    - chain: upsert_synced_bot_from_cloud [worker:upsert_synced_bot_from_cloud] @backend/app/services/bot_members.py:266
+- `INSERT` @ **upsert_synced_bot_from_cloud._do** `backend/app/services/bot_members.py:294` — _call_name_match_
+    - chain: _do @backend/app/services/bot_members.py:294  ←  upsert_synced_bot_from_cloud [worker:upsert_synced_bot_from_cloud] @backend/app/services/bot_members.py:266
+- `INSERT` @ **create_bot_member** `backend/app/services/bot_members.py:436` — _call_name_match_
+    - chain: create_bot_member @backend/app/services/bot_members.py:436  ←  create_org_bot [endpoint:/api/v1/org/bots] @backend/app/main.py:50372
+- `INSERT` @ **create_bot_member._do_init** `backend/app/services/bot_members.py:497` — _call_name_match_
+    - chain: _do_init @backend/app/services/bot_members.py:497  ←  create_bot_member @backend/app/services/bot_members.py:436  ←  create_org_bot [endpoint:/api/v1/org/bots] @backend/app/main.py:50372
+- `INSERT` @ **backfill_bot_init** `backend/app/services/bot_members.py:563` — _needs_human_
+    - chain: backfill_bot_init @backend/app/services/bot_members.py:563  ←  (no caller found — orphan write)
+- `UPDATE` @ **update_bot_member** `backend/app/services/bot_members.py:831` — _call_name_match_
+    - chain: update_bot_member @backend/app/services/bot_members.py:831  ←  update_org_bot [endpoint:/api/v1/org/bots/{bot_member_id}] @backend/app/main.py:50465
+
+### 读边 (4)
+- `SELECT-FROM` @ **upsert_synced_bot_from_cloud** `backend/app/services/bot_members.py:266` — _static_confirmed_
+    - WHERE: `bot_member_id=?`
+- `SELECT-FROM` @ **upsert_synced_bot_from_cloud._do** `backend/app/services/bot_members.py:294` — _static_confirmed_
+    - WHERE: `bot_member_id=?`
+- `SELECT-FROM` @ **backfill_bot_init** `backend/app/services/bot_members.py:563` — _static_confirmed_
+    - WHERE: `bot_member_id = ?`
+- `SELECT-FROM` @ **get_bot_member** `backend/app/services/bot_members.py:766` — _static_confirmed_
+    - WHERE: `bot_member_id = ?`
+
+## `brand_mirror_snapshots`
+
+- 经验层: **3 行** · 最近写入 created_at=2026-05-20T19:17:49+08:00
+
+### 写边 (1)
+- `INSERT` @ **run_brand_mirror_analysis** `backend/app/services/brand_mirror_analyzer.py:260` — _call_name_match_
+    - chain: run_brand_mirror_analysis @backend/app/services/brand_mirror_analyzer.py:260  ←  trigger_brand_mirror_analysis [endpoint:/api/v1/intelligence/brand-mirror/analyze] @backend/app/main.py:59395
+
+### 读边 (1)
+- `SELECT-FROM` @ **latest_brand_mirror_snapshot** `backend/app/services/brand_mirror_analyzer.py:399` — _static_confirmed_
+    - WHERE: `client_id = ?`
+
+## `card_review_queue`
+
+- 经验层: **44 行** · 最近写入 created_at=2026-03-14T17:49:09
+
+### 写边 (1)
+- `INSERT` @ **ingest_document_knowledge** `backend/app/services/knowledge_base.py:2802` — _call_name_match_
+    - chain: ingest_document_knowledge @backend/app/services/knowledge_base.py:2802  ←  upload_task_attachment [endpoint:/api/v1/tasks/{task_id}/attachments] @backend/app/main.py:53434
+    - chain: ingest_document_knowledge @backend/app/services/knowledge_base.py:2802  ←  _build_local_event_line_report_snapshot @backend/app/main.py:33643  ←  get_event_line_report_snapshot [endpoint:/api/v1/event-lines/{event_line_id}/report-snapshot] @backend/app/main.py:34329
+    - chain: ingest_document_knowledge @backend/app/services/knowledge_base.py:2802  ←  _process_one_pdf @backend/app/services/internet_pdf_worker.py:96  ←  _worker_loop [worker:_worker_loop] @backend/app/services/internet_pdf_worker.py:205
+    - chain: ingest_document_knowledge @backend/app/services/knowledge_base.py:2802  ←  backfill_workspace_import @backend/app/services/knowledge_v2.py:3943  ←  backfill_client_workspace_imports [endpoint:/api/v1/clients/{client_id}/workspace/backfill-imports] @backend/app/main.py:50039
+    - chain: ingest_document_knowledge @backend/app/services/knowledge_base.py:2802  ←  create_client_text_document @backend/app/main.py:16116  ←  create_client_document_from_text [endpoint:/api/v1/clients/{client_id}/documents/from-text] @backend/app/main.py:49576
+    - chain: ingest_document_knowledge @backend/app/services/knowledge_base.py:2802  ←  execute_parse_failure_retry_batch @backend/app/main.py:42534  ←  retry_client_parse_failures [endpoint:/api/v1/clients/{client_id}/knowledge/parse-failures/retry] @backend/app/main.py:42800
+
+### 读边 (0)
+- (无静态读边)
+
+## `chat_messages`
+
+- 经验层: **1135 行** · 最近写入 created_at=2026-06-05T07:39:24
+
+### 写边 (13)
+- `UPDATE` @ **create_app.cancel_analysis_run_for_client** `backend/app/main.py:15436` — _call_name_match_
+    - chain: cancel_analysis_run_for_client @backend/app/main.py:15436  ←  cancel_client_analysis_run [endpoint:/api/v1/clients/{client_id}/analysis-runs/{run_id}/cancel] @backend/app/main.py:48805
+- `UPDATE` @ **create_app.mark_chat_start_submission_failed** `backend/app/main.py:15571` — _call_name_match_
+    - chain: mark_chat_start_submission_failed @backend/app/main.py:15571  ←  start_chat_message [endpoint:/api/v1/clients/{client_id}/workspace/chat/start] @backend/app/main.py:48665
+- `INSERT` @ **load_demo_dataset** `backend/app/main.py:2941` — _call_name_match_
+    - chain: load_demo_dataset @backend/app/main.py:2941  ←  load_demo_dataset_endpoint [endpoint:/api/v1/settings/demo-data/load] @backend/app/main.py:37527
+- `UPDATE` @ **_heal_orphan_loading_chat_messages** `backend/app/main.py:3097` — _needs_human_
+    - chain: _heal_orphan_loading_chat_messages @backend/app/main.py:3097  ←  create_app @backend/app/main.py:3179
+- `INSERT+UPDATE` @ **create_app** `backend/app/main.py:3179` — _needs_human_
+    - chain: create_app @backend/app/main.py:3179  ←  (no caller found — orphan write)
+- `UPDATE` @ **create_app._recover_one_stale_loading_chat_message** `backend/app/main.py:4455` — _call_name_match_
+    - chain: _recover_one_stale_loading_chat_message @backend/app/main.py:4455  ←  recover_stale_loading_chat_messages @backend/app/main.py:4628  ←  _background_reap_stale_chat_runs [worker:_background_reap_stale_chat_runs] @backend/app/main.py:3280
+    - chain: _recover_one_stale_loading_chat_message @backend/app/main.py:4455  ←  recover_stale_loading_chat_messages @backend/app/main.py:4628  ←  _startup_worker [worker:_startup_worker] @backend/app/main.py:3743
+    - chain: _recover_one_stale_loading_chat_message @backend/app/main.py:4455  ←  recover_stale_loading_chat_messages @backend/app/main.py:4628  ←  get_chat_message [endpoint:/api/v1/clients/{client_id}/workspace/chat/messages/{message_id}] @backend/app/main.py:48810
+    - chain: _recover_one_stale_loading_chat_message @backend/app/main.py:4455  ←  recover_stale_loading_chat_messages @backend/app/main.py:4628  ←  get_client_analysis_run [endpoint:/api/v1/clients/{client_id}/analysis-runs/{run_id}] @backend/app/main.py:48763
+    - chain: _recover_one_stale_loading_chat_message @backend/app/main.py:4455  ←  recover_stale_loading_chat_messages @backend/app/main.py:4628  ←  fetch_active_workspace_chat_start_response @backend/app/main.py:15509  ←  start_chat_message [endpoint:/api/v1/clients/{client_id}/workspace/chat/start] @backend/app/main.py:48665
+- `INSERT` @ **create_app.insert_user_chat_message** `backend/app/main.py:46264` — _call_name_match_
+    - chain: insert_user_chat_message @backend/app/main.py:46264  ←  send_chat_message [endpoint:/api/v1/clients/{client_id}/workspace/chat] @backend/app/main.py:49220
+    - chain: insert_user_chat_message @backend/app/main.py:46264  ←  start_chat_message [endpoint:/api/v1/clients/{client_id}/workspace/chat/start] @backend/app/main.py:48665
+- `INSERT` @ **create_app.insert_loading_assistant_message** `backend/app/main.py:46300` — _call_name_match_
+    - chain: insert_loading_assistant_message @backend/app/main.py:46300  ←  send_chat_message [endpoint:/api/v1/clients/{client_id}/workspace/chat] @backend/app/main.py:49220
+    - chain: insert_loading_assistant_message @backend/app/main.py:46300  ←  start_chat_message [endpoint:/api/v1/clients/{client_id}/workspace/chat/start] @backend/app/main.py:48665
+- `UPDATE` @ **create_app.update_loading_assistant_message** `backend/app/main.py:46356` — _call_name_match_
+    - chain: update_loading_assistant_message @backend/app/main.py:46356  ←  resolve_chat_answer_data_center_primary @backend/app/main.py:46745  ←  document_ai_action [endpoint:/api/v1/clients/{client_id}/documents/ai-action] @backend/app/main.py:49635
+    - chain: update_loading_assistant_message @backend/app/main.py:46356  ←  resolve_chat_answer_data_center_primary @backend/app/main.py:46745  ←  resolve_chat_answer @backend/app/main.py:48117  ←  background_resolve_chat_answer [worker:background_resolve_chat_answer] @backend/app/main.py:48335
+    - chain: update_loading_assistant_message @backend/app/main.py:46356  ←  resolve_chat_answer_data_center_primary @backend/app/main.py:46745  ←  resolve_chat_answer @backend/app/main.py:48117  ←  send_chat_message [endpoint:/api/v1/clients/{client_id}/workspace/chat] @backend/app/main.py:49220
+- `UPDATE` @ **create_app.resolve_chat_answer_data_center_primary** `backend/app/main.py:46745` — _call_name_match_
+    - chain: resolve_chat_answer_data_center_primary @backend/app/main.py:46745  ←  document_ai_action [endpoint:/api/v1/clients/{client_id}/documents/ai-action] @backend/app/main.py:49635
+    - chain: resolve_chat_answer_data_center_primary @backend/app/main.py:46745  ←  resolve_chat_answer @backend/app/main.py:48117  ←  background_resolve_chat_answer [worker:background_resolve_chat_answer] @backend/app/main.py:48335
+    - chain: resolve_chat_answer_data_center_primary @backend/app/main.py:46745  ←  resolve_chat_answer @backend/app/main.py:48117  ←  send_chat_message [endpoint:/api/v1/clients/{client_id}/workspace/chat] @backend/app/main.py:49220
+- `UPDATE` @ **create_app._append_post_finalize_warning** `backend/app/main.py:48166` — _call_name_match_
+    - chain: _append_post_finalize_warning @backend/app/main.py:48166  ←  _schedule_post_answer_enrichment [worker:_schedule_post_answer_enrichment] @backend/app/main.py:48233
+    - chain: _append_post_finalize_warning @backend/app/main.py:48166  ←  _run_post_finalize_step @backend/app/main.py:48200  ←  resolve_chat_answer_data_center_primary @backend/app/main.py:46745  ←  document_ai_action [endpoint:/api/v1/clients/{client_id}/documents/ai-action] @backend/app/main.py:49635
+    - chain: _append_post_finalize_warning @backend/app/main.py:48166  ←  _run_post_finalize_step @backend/app/main.py:48200  ←  resolve_chat_answer_data_center_primary @backend/app/main.py:46745  ←  resolve_chat_answer @backend/app/main.py:48117  ←  background_resolve_chat_answer [worker:background_resolve_chat_answer] @backend/app/main.py:48335
+    - chain: _append_post_finalize_warning @backend/app/main.py:48166  ←  _run_post_finalize_step @backend/app/main.py:48200  ←  resolve_chat_answer_data_center_primary @backend/app/main.py:46745  ←  resolve_chat_answer @backend/app/main.py:48117  ←  send_chat_message [endpoint:/api/v1/clients/{client_id}/workspace/chat] @backend/app/main.py:49220
+- `UPDATE` @ **create_app._merge_assistant_retrieval_summary** `backend/app/main.py:48212` — _call_name_match_
+    - chain: _merge_assistant_retrieval_summary @backend/app/main.py:48212  ←  _schedule_post_answer_enrichment [worker:_schedule_post_answer_enrichment] @backend/app/main.py:48233
+    - chain: _merge_assistant_retrieval_summary @backend/app/main.py:48212  ←  resolve_chat_answer_data_center_primary @backend/app/main.py:46745  ←  document_ai_action [endpoint:/api/v1/clients/{client_id}/documents/ai-action] @backend/app/main.py:49635
+    - chain: _merge_assistant_retrieval_summary @backend/app/main.py:48212  ←  resolve_chat_answer_data_center_primary @backend/app/main.py:46745  ←  resolve_chat_answer @backend/app/main.py:48117  ←  background_resolve_chat_answer [worker:background_resolve_chat_answer] @backend/app/main.py:48335
+    - chain: _merge_assistant_retrieval_summary @backend/app/main.py:48212  ←  resolve_chat_answer_data_center_primary @backend/app/main.py:46745  ←  resolve_chat_answer @backend/app/main.py:48117  ←  send_chat_message [endpoint:/api/v1/clients/{client_id}/workspace/chat] @backend/app/main.py:49220
+- `UPDATE` @ **create_app.background_resolve_chat_answer** `backend/app/main.py:48335` — _static_confirmed_
+    - chain: background_resolve_chat_answer [worker:background_resolve_chat_answer] @backend/app/main.py:48335
+
+### 读边 (28)
+- `SELECT-FROM` @ **create_app.fetch_chat_message_for_client** `backend/app/main.py:15133` — _static_confirmed_
+    - WHERE: `m.id = ? AND t.client_id = ?`
+- `SELECT-FROM` @ **create_app.build_client_analysis_run** `backend/app/main.py:15379` — _static_confirmed_
+    - WHERE: `id = ?`
+- `SELECT-FROM` @ **create_app._build_chat_start_response_from_run** `backend/app/main.py:15489` — _static_confirmed_
+    - WHERE: `id = ?`
+- `SELECT-FROM` @ **create_app.mark_chat_start_submission_failed** `backend/app/main.py:15571` — _static_confirmed_
+    - WHERE: `id = ?`
+- `SELECT-FROM` @ **create_app.export_answer_to_docx** `backend/app/main.py:15769` — _static_confirmed_
+    - WHERE: `thread_id = ? AND role = 'user' AND created_at <= ?`
+- `SELECT-FROM` @ **create_app.workspace_for_client** `backend/app/main.py:17770` — _static_confirmed_
+    - WHERE: `t.client_id = ?`
+- `SELECT-FROM` @ **create_app.list_chat_messages_for_thread** `backend/app/main.py:21746` — _static_confirmed_
+    - WHERE: `t.client_id = ? AND m.thread_id = ?`
+- `SELECT-FROM` @ **create_app.should_force_stable_fallback_path** `backend/app/main.py:23604` — _static_confirmed_
+    - WHERE: `failure_reason = 'llm_local_fallback_after_retry'`
+    - WHERE: `t.client_id = ? AND m.role = 'assistant'`
+- `SELECT-FROM` @ **create_app._workspace_answer_message_context** `backend/app/main.py:23822` — _static_confirmed_
+    - WHERE: `m.id = ?`
+- `SELECT-FROM` @ **create_app.get_brain_dashboard** `backend/app/main.py:27671` — _static_confirmed_
+    - WHERE: `role = 'user'`
+- `SELECT-FROM` @ **clear_demo_dataset** `backend/app/main.py:2884` — _static_confirmed_
+    - WHERE: `id IN (`
+    - WHERE: `id IN ({?})`
+- `SELECT-FROM` @ **create_app** `backend/app/main.py:3179` — _static_confirmed_
+    - WHERE: `failure_reason = 'llm_local_fallback_after_retry'`
+    - WHERE: `id = ?`
+    - WHERE: `id IN (`
+    - WHERE: `id IN ({?})`
+    - WHERE: `m.id = ?`
+- `SELECT-FROM` @ **create_app._resolve_client_id_for_evidence_quality_annotation** `backend/app/main.py:3650` — _static_confirmed_
+    - WHERE: `m.id = ?`
+- `SELECT-FROM` @ **create_app.get_client_delete_preview** `backend/app/main.py:39266` — _static_confirmed_
+    - WHERE: `t.client_id = ?`
+- `SELECT-FROM` @ **create_app.promote_workspace_answer_to_judgment_api** `backend/app/main.py:44675` — _static_confirmed_
+    - WHERE: `id = ?`
+- `SELECT-FROM` @ **create_app.recover_stale_loading_chat_messages** `backend/app/main.py:4628` — _static_confirmed_
+    - WHERE: `{?}`
+- `SELECT-FROM` @ **create_app.update_loading_assistant_message** `backend/app/main.py:46356` — _static_confirmed_
+    - WHERE: `id = ?`
+- `SELECT-FROM` @ **create_app.resolve_chat_answer_data_center_primary** `backend/app/main.py:46745` — _static_confirmed_
+    - WHERE: `id = ?`
+- `SELECT-FROM` @ **create_app._append_post_finalize_warning** `backend/app/main.py:48166` — _static_confirmed_
+    - WHERE: `id = ?`
+- `SELECT-FROM` @ **create_app._merge_assistant_retrieval_summary** `backend/app/main.py:48212` — _static_confirmed_
+    - WHERE: `id = ?`
+- `SELECT-FROM` @ **create_app.background_resolve_chat_answer** `backend/app/main.py:48335` — _static_confirmed_
+    - WHERE: `id = ?`
+- `SELECT-FROM` @ **create_app.start_chat_message** `backend/app/main.py:48665` — _static_confirmed_
+    - WHERE: `id = ?`
+- `SELECT-FROM` @ **create_app.delete_chat_message_pair** `backend/app/main.py:48823` — _static_confirmed_
+    - WHERE: `id IN (`
+    - WHERE: `id IN ({?})`
+    - WHERE: `m.id = ? AND t.client_id = ?`
+    - WHERE: `thread_id = ?`
+    - WHERE: `thread_id = ? AND role = 'assistant' AND created_at >= ? AND id != ?`
+- `SELECT-FROM` @ **batch_ingest_chat_messages** `backend/app/services/chat_message_reverse_ingester.py:441` — _static_confirmed_
+    - WHERE: `t.client_id = ? AND m.role = 'user' AND length(m.content) > 10`
+- `SELECT-FROM` @ **collect_kernel_primary_rollout_metrics** `backend/app/services/kernel_primary_rollout.py:65` — _static_confirmed_
+    - WHERE: `t.client_id IN (`
+    - WHERE: `t.client_id IN ({?}) AND m.role = 'assistant' AND m.status = 'success' {?}`
+- `SELECT-FROM` @ **build_workspace_answer_value_diagnostics** `backend/app/services/workspace_answer_value_diagnostics.py:121` — _static_confirmed_
+    - WHERE: `t.client_id = ? AND m.role = 'assistant' AND m.status = 'success'`
+    - WHERE: `t.client_id = ? AND m.role = 'assistant' AND m.status = 'success' {?}`
+- `SELECT-FROM` @ **build_workspace_chat_diagnostics** `backend/app/services/workspace_chat_diagnostics.py:86` — _static_confirmed_
+    - WHERE: `t.client_id = ? AND m.role = 'assistant' AND m.status = 'success'`
+- `SELECT-FROM` @ **bootstrap_thread_context_pack** `backend/app/services/workspace_thread_memory.py:102` — _static_confirmed_
+    - WHERE: `t.client_id = ? AND m.thread_id = ?`
+
+## `chat_thread_memory_packs`
+
+- 经验层: **27 行** · 最近写入 created_at=2026-06-05T07:39:24
+
+### 写边 (1)
+- `INSERT` @ **save_thread_context_pack** `backend/app/services/workspace_thread_memory.py:76` — _call_name_match_
+    - chain: save_thread_context_pack @backend/app/services/workspace_thread_memory.py:76  ←  update_thread_context_after_answer @backend/app/services/workspace_thread_memory.py:247  ←  _schedule_post_answer_enrichment [worker:_schedule_post_answer_enrichment] @backend/app/main.py:48233
+
+### 读边 (3)
+- `SELECT-FROM` @ **create_app** `backend/app/main.py:3179` — _static_confirmed_
+    - WHERE: `thread_id = ?`
+- `SELECT-FROM` @ **create_app.delete_chat_message_pair** `backend/app/main.py:48823` — _static_confirmed_
+    - WHERE: `thread_id = ?`
+- `SELECT-FROM` @ **load_thread_context_pack** `backend/app/services/workspace_thread_memory.py:54` — _static_confirmed_
+    - WHERE: `client_id = ? AND thread_id = ?`
+
+## `chat_threads`
+
+- 经验层: **305 行** · 最近写入 created_at=2026-05-20T18:31:38
+
+### 写边 (9)
+- `INSERT` @ **create_app._ensure_local_organization_workspace_client** `backend/app/main.py:13938` — _call_name_match_
+    - chain: _ensure_local_organization_workspace_client @backend/app/main.py:13938  ←  _with_local_organization_workspace_client_id @backend/app/main.py:14006  ←  apply_me_org_membership [endpoint:/api/v1/me/org-membership/apply] @backend/app/main.py:31003
+    - chain: _ensure_local_organization_workspace_client @backend/app/main.py:13938  ←  _with_local_organization_workspace_client_id @backend/app/main.py:14006  ←  me_org_membership [endpoint:/api/v1/me/org-membership] @backend/app/main.py:30991
+    - chain: _ensure_local_organization_workspace_client @backend/app/main.py:13938  ←  _with_local_organization_workspace_client_id @backend/app/main.py:14006  ←  _ensure_local_organization_workspace_from_cloud_membership @backend/app/main.py:14017  ←  auth_login [endpoint:/api/v1/auth/login] @backend/app/main.py:31238
+    - chain: _ensure_local_organization_workspace_client @backend/app/main.py:13938  ←  _with_local_organization_workspace_client_id @backend/app/main.py:14006  ←  _ensure_local_organization_workspace_from_cloud_membership @backend/app/main.py:14017  ←  auth_me [endpoint:/api/v1/auth/me] @backend/app/main.py:30701
+    - chain: _ensure_local_organization_workspace_client @backend/app/main.py:13938  ←  _with_local_organization_workspace_client_id @backend/app/main.py:14006  ←  _ensure_local_organization_workspace_from_cloud_membership @backend/app/main.py:14017  ←  auth_register [endpoint:/api/v1/auth/register] @backend/app/main.py:31212
+    - chain: _ensure_local_organization_workspace_client @backend/app/main.py:13938  ←  _with_local_organization_workspace_client_id @backend/app/main.py:14006  ←  _ensure_local_organization_workspace_from_cloud_membership @backend/app/main.py:14017  ←  claim_me_org_admin [endpoint:/api/v1/me/org-membership/admin-claim] @backend/app/main.py:31038
+- `UPDATE` @ **create_app.cancel_analysis_run_for_client** `backend/app/main.py:15436` — _call_name_match_
+    - chain: cancel_analysis_run_for_client @backend/app/main.py:15436  ←  cancel_client_analysis_run [endpoint:/api/v1/clients/{client_id}/analysis-runs/{run_id}/cancel] @backend/app/main.py:48805
+- `INSERT` @ **load_demo_dataset** `backend/app/main.py:2941` — _call_name_match_
+    - chain: load_demo_dataset @backend/app/main.py:2941  ←  load_demo_dataset_endpoint [endpoint:/api/v1/settings/demo-data/load] @backend/app/main.py:37527
+- `INSERT+UPDATE` @ **create_app** `backend/app/main.py:3179` — _needs_human_
+    - chain: create_app @backend/app/main.py:3179  ←  (no caller found — orphan write)
+- `INSERT` @ **create_app.create_client** `backend/app/main.py:37631` — _static_confirmed_
+    - chain: create_client [endpoint:/api/v1/clients] @backend/app/main.py:37631
+- `INSERT` @ **create_app.ensure_chat_thread** `backend/app/main.py:46248` — _call_name_match_
+    - chain: ensure_chat_thread @backend/app/main.py:46248  ←  send_chat_message [endpoint:/api/v1/clients/{client_id}/workspace/chat] @backend/app/main.py:49220
+    - chain: ensure_chat_thread @backend/app/main.py:46248  ←  start_chat_message [endpoint:/api/v1/clients/{client_id}/workspace/chat/start] @backend/app/main.py:48665
+- `UPDATE` @ **create_app.resolve_chat_answer_data_center_primary** `backend/app/main.py:46745` — _call_name_match_
+    - chain: resolve_chat_answer_data_center_primary @backend/app/main.py:46745  ←  document_ai_action [endpoint:/api/v1/clients/{client_id}/documents/ai-action] @backend/app/main.py:49635
+    - chain: resolve_chat_answer_data_center_primary @backend/app/main.py:46745  ←  resolve_chat_answer @backend/app/main.py:48117  ←  background_resolve_chat_answer [worker:background_resolve_chat_answer] @backend/app/main.py:48335
+    - chain: resolve_chat_answer_data_center_primary @backend/app/main.py:46745  ←  resolve_chat_answer @backend/app/main.py:48117  ←  send_chat_message [endpoint:/api/v1/clients/{client_id}/workspace/chat] @backend/app/main.py:49220
+- `UPDATE` @ **create_app.start_chat_message** `backend/app/main.py:48665` — _static_confirmed_
+    - chain: start_chat_message [endpoint:/api/v1/clients/{client_id}/workspace/chat/start] @backend/app/main.py:48665
+- `UPDATE` @ **create_app.delete_chat_message_pair** `backend/app/main.py:48823` — _static_confirmed_
+    - chain: delete_chat_message_pair [endpoint:/api/v1/clients/{client_id}/workspace/chat/messages/{message_id}] @backend/app/main.py:48823
+
+### 读边 (20)
+- `SELECT-FROM` @ **create_app._upsert_cloud_client_shadow_local** `backend/app/main.py:10227` — _static_confirmed_
+    - WHERE: `client_id=c.id), 0) + COALESCE((SELECT COUNT(*) FROM chat_threads WHERE client_id=c.id), 0) + COALESCE((SELECT COUNT(*) FROM documents WHERE client_id=c.id), 0) AS usage FROM clients c WHERE c.name=? `
+- `SELECT-FROM` @ **create_app.persist_retrieval_bundle** `backend/app/main.py:15091` — _static_confirmed_
+    - WHERE: `id = ? AND client_id = ?`
+- `JOIN` @ **create_app.fetch_chat_message_for_client** `backend/app/main.py:15133` — _static_confirmed_
+    - WHERE: `m.id = ? AND t.client_id = ?`
+- `SELECT-FROM` @ **create_app._build_chat_start_response_from_run** `backend/app/main.py:15489` — _static_confirmed_
+    - WHERE: `id = ? AND client_id = ?`
+- `SELECT-FROM+JOIN` @ **create_app.workspace_for_client** `backend/app/main.py:17770` — _static_confirmed_
+    - WHERE: `client_id = ?`
+    - WHERE: `t.client_id = ?`
+- `SELECT-FROM` @ **create_app.fetch_chat_thread_for_client** `backend/app/main.py:21731` — _static_confirmed_
+    - WHERE: `id = ? AND client_id = ?`
+- `JOIN` @ **create_app.list_chat_messages_for_thread** `backend/app/main.py:21746` — _static_confirmed_
+    - WHERE: `t.client_id = ? AND m.thread_id = ?`
+- `JOIN` @ **create_app.should_force_stable_fallback_path** `backend/app/main.py:23604` — _static_confirmed_
+    - WHERE: `failure_reason = 'llm_local_fallback_after_retry'`
+    - WHERE: `t.client_id = ? AND m.role = 'assistant'`
+- `JOIN` @ **create_app._workspace_answer_message_context** `backend/app/main.py:23822` — _static_confirmed_
+    - WHERE: `m.id = ?`
+- `SELECT-FROM` @ **clear_demo_dataset** `backend/app/main.py:2884` — _static_confirmed_
+    - WHERE: `id IN (`
+    - WHERE: `id IN ({?})`
+- `SELECT-FROM+JOIN` @ **create_app** `backend/app/main.py:3179` — _static_confirmed_
+    - WHERE: `client_id = ?`
+    - WHERE: `client_id=c.id), 0) + COALESCE((SELECT COUNT(*) FROM chat_threads WHERE client_id=c.id), 0) + COALESCE((SELECT COUNT(*) FROM documents WHERE client_id=c.id), 0) AS usage FROM clients c WHERE c.name=? `
+    - WHERE: `failure_reason = 'llm_local_fallback_after_retry'`
+    - WHERE: `id = ?`
+    - WHERE: `id = ? AND client_id = ?`
+- `JOIN` @ **create_app._resolve_client_id_for_evidence_quality_annotation** `backend/app/main.py:3650` — _static_confirmed_
+    - WHERE: `m.id = ?`
+- `SELECT-FROM+JOIN` @ **create_app.get_client_delete_preview** `backend/app/main.py:39266` — _static_confirmed_
+    - WHERE: `client_id = ?`
+    - WHERE: `t.client_id = ?`
+- `SELECT-FROM` @ **create_app.ensure_chat_thread** `backend/app/main.py:46248` — _static_confirmed_
+    - WHERE: `id = ?`
+- `SELECT-FROM+JOIN` @ **create_app.delete_chat_message_pair** `backend/app/main.py:48823` — _static_confirmed_
+    - WHERE: `id = ?`
+    - WHERE: `m.id = ? AND t.client_id = ?`
+- `JOIN` @ **batch_ingest_chat_messages** `backend/app/services/chat_message_reverse_ingester.py:441` — _static_confirmed_
+    - WHERE: `t.client_id = ? AND m.role = 'user' AND length(m.content) > 10`
+- `JOIN` @ **collect_kernel_primary_rollout_metrics** `backend/app/services/kernel_primary_rollout.py:65` — _static_confirmed_
+    - WHERE: `t.client_id IN (`
+    - WHERE: `t.client_id IN ({?}) AND m.role = 'assistant' AND m.status = 'success' {?}`
+- `JOIN` @ **build_workspace_answer_value_diagnostics** `backend/app/services/workspace_answer_value_diagnostics.py:121` — _static_confirmed_
+    - WHERE: `t.client_id = ? AND m.role = 'assistant' AND m.status = 'success'`
+    - WHERE: `t.client_id = ? AND m.role = 'assistant' AND m.status = 'success' {?}`
+- `JOIN` @ **build_workspace_chat_diagnostics** `backend/app/services/workspace_chat_diagnostics.py:86` — _static_confirmed_
+    - WHERE: `t.client_id = ? AND m.role = 'assistant' AND m.status = 'success'`
+- `JOIN` @ **bootstrap_thread_context_pack** `backend/app/services/workspace_thread_memory.py:102` — _static_confirmed_
+    - WHERE: `t.client_id = ? AND m.thread_id = ?`
+
+## `clarification_records`
+
+- 经验层: **0 行**
+
+### 写边 (8)
+- `INSERT` @ **ingest_chat_message** `backend/app/services/chat_message_reverse_ingester.py:311` — _call_name_match_
+    - chain: ingest_chat_message @backend/app/services/chat_message_reverse_ingester.py:311  ←  send_chat_message [endpoint:/api/v1/clients/{client_id}/workspace/chat] @backend/app/main.py:49220
+- `INSERT` @ **write_cross_source_candidate** `backend/app/services/clarification_queue_writer.py:32` — _needs_human_
+    - chain: write_cross_source_candidate @backend/app/services/clarification_queue_writer.py:32  ←  batch_write_scan_results @backend/app/services/clarification_queue_writer.py:82
+- `INSERT` @ **_insert_clarification** `backend/app/services/formal_conflict_detector.py:112` — _call_name_match_
+    - chain: _insert_clarification @backend/app/services/formal_conflict_detector.py:112  ←  detect_media_lag @backend/app/services/formal_conflict_detector.py:233  ←  detect_all @backend/app/services/formal_conflict_detector.py:471  ←  process_meeting_minute @backend/app/services/meeting_minute_processor.py:147  ←  process_meeting_minute_endpoint [endpoint:/api/v1/meeting-minutes/process] @backend/app/main.py:39471
+- `INSERT` @ **resolve_review_references** `backend/app/services/historical_material_resolver.py:459` — _call_name_match_
+    - chain: resolve_review_references @backend/app/services/historical_material_resolver.py:459  ←  resolve_history_endpoint [endpoint:/api/v1/clients/{client_id}/text/resolve-history] @backend/app/main.py:39586
+    - chain: resolve_review_references @backend/app/services/historical_material_resolver.py:459  ←  create_task @backend/app/main.py:24172  ←  accept_growth_recommendation [endpoint:/api/v1/growth/recommendations/{recommendation_id}/accept] @backend/app/main.py:56572
+    - chain: resolve_review_references @backend/app/services/historical_material_resolver.py:459  ←  create_task @backend/app/main.py:24172  ←  create_intelligence_task_endpoint [endpoint:/api/v1/intelligence/items/{item_id}/tasks] @backend/app/main.py:58553
+    - chain: resolve_review_references @backend/app/services/historical_material_resolver.py:459  ←  create_task @backend/app/main.py:24172  ←  create_manual_task [endpoint:/api/v1/tasks] @backend/app/main.py:52206
+    - chain: resolve_review_references @backend/app/services/historical_material_resolver.py:459  ←  create_task @backend/app/main.py:24172  ←  create_workspace_answer_action_task_api [endpoint:/api/v1/workspace-answer-action-cards/{message_id}/create-task] @backend/app/main.py:44635
+    - chain: resolve_review_references @backend/app/services/historical_material_resolver.py:459  ←  create_task @backend/app/main.py:24172  ←  promote_candidate_to_task [endpoint:/api/v1/topics/candidates/{candidate_id}/promote-task] @backend/app/main.py:55696
+- `INSERT` @ **process_meeting_minute** `backend/app/services/meeting_minute_processor.py:147` — _call_name_match_
+    - chain: process_meeting_minute @backend/app/services/meeting_minute_processor.py:147  ←  process_meeting_minute_endpoint [endpoint:/api/v1/meeting-minutes/process] @backend/app/main.py:39471
+- `INSERT` @ **create_clarification_record** `backend/app/services/memory_foundation.py:1465` — _call_name_match_
+    - chain: create_clarification_record @backend/app/services/memory_foundation.py:1465  ←  create_clarification [endpoint:/api/v1/clarifications] @backend/app/main.py:42289
+- `UPDATE` @ **answer_clarification_record** `backend/app/services/memory_foundation.py:1492` — _call_name_match_
+    - chain: answer_clarification_record @backend/app/services/memory_foundation.py:1492  ←  answer_clarification [endpoint:/api/v1/clarifications/{clarification_id}/answer] @backend/app/main.py:42297
+- `UPDATE` @ **apply_user_correction** `backend/app/services/user_correction_handler.py:80` — _needs_human_
+    - chain: apply_user_correction @backend/app/services/user_correction_handler.py:80  ←  (no caller found — orphan write)
+
+### 读边 (14)
+- `SELECT-FROM` @ **create_app._event_line_context_bundle** `backend/app/main.py:25005` — _static_confirmed_
+    - WHERE: `(scope_type = 'event_line' AND scope_id = ?) OR (scope_type = 'client' AND scope_id = ?)`
+- `SELECT-FROM` @ **create_app** `backend/app/main.py:3179` — _static_confirmed_
+    - WHERE: `(scope_type = 'event_line' AND scope_id = ?) OR (scope_type = 'client' AND scope_id = ?)`
+    - WHERE: `scope_id = ? AND status = 'pending'`
+- `SELECT-FROM` @ **create_app.get_client_quality_context** `backend/app/main.py:40726` — _static_confirmed_
+    - WHERE: `scope_id = ? AND status = 'pending'`
+- `SELECT-FROM` @ **list_pending_clarifications** `backend/app/services/clarification_queue_writer.py:119` — _static_confirmed_
+    - WHERE: `scope_type = 'client' AND scope_id = ? AND status = 'pending'`
+- `SELECT-FROM` @ **batch_write_scan_results** `backend/app/services/clarification_queue_writer.py:82` — _static_confirmed_
+    - WHERE: `slot_key = ?`
+- `SELECT-FROM` @ **build_company_brain_context** `backend/app/services/company_brain_context_builder.py:83` — _static_confirmed_
+    - WHERE: `scope_type='client' AND scope_id=? AND status='pending'`
+- `SELECT-FROM` @ **build_evidence_pack** `backend/app/services/company_brain_qa.py:76` — _static_confirmed_
+    - WHERE: `scope_type='client' AND scope_id=? AND status='pending'`
+- `SELECT-FROM` @ **_insert_clarification** `backend/app/services/formal_conflict_detector.py:112` — _static_confirmed_
+    - WHERE: `slot_key = ?`
+- `SELECT-FROM` @ **create_clarification_record** `backend/app/services/memory_foundation.py:1465` — _static_confirmed_
+    - WHERE: `id = ?`
+- `SELECT-FROM` @ **answer_clarification_record** `backend/app/services/memory_foundation.py:1492` — _static_confirmed_
+    - WHERE: `id = ?`
+- `SELECT-FROM` @ **_read_clarifications** `backend/app/services/memory_foundation.py:398` — _static_confirmed_
+    - WHERE: `scope_type = ? AND scope_id = ?`
+    - WHERE: `scope_type = ? AND scope_id = ? AND status = ?`
+- `SELECT-FROM` @ **_section_7_conflicts_to_clarify** `backend/app/services/story_card_generator.py:178` — _static_confirmed_
+    - WHERE: `scope_type = 'client' AND scope_id = ? AND status = 'pending'`
+- `SELECT-FROM` @ **_section_overall_confidence** `backend/app/services/story_card_generator.py:283` — _static_confirmed_
+    - WHERE: `scope_type='client' AND scope_id=? AND status='pending'`
+- `SELECT-FROM` @ **apply_user_correction** `backend/app/services/user_correction_handler.py:80` — _static_confirmed_
+    - WHERE: `scope_type='client' AND scope_id=? AND status='pending'`
+
+## `client_analysis_runs`
+
+- 经验层: **406 行** · 最近写入 created_at=2026-06-05T07:33:55
+
+### 写边 (6)
+- `INSERT` @ **create_app.create_client_analysis_run** `backend/app/main.py:15264` — _call_name_match_
+    - chain: create_client_analysis_run @backend/app/main.py:15264  ←  start_chat_message [endpoint:/api/v1/clients/{client_id}/workspace/chat/start] @backend/app/main.py:48665
+- `UPDATE` @ **create_app.update_client_analysis_run** `backend/app/main.py:15291` — _call_name_match_
+    - chain: update_client_analysis_run @backend/app/main.py:15291  ←  background_resolve_chat_answer [worker:background_resolve_chat_answer] @backend/app/main.py:48335
+    - chain: update_client_analysis_run @backend/app/main.py:15291  ←  cancel_analysis_run_for_client @backend/app/main.py:15436  ←  cancel_client_analysis_run [endpoint:/api/v1/clients/{client_id}/analysis-runs/{run_id}/cancel] @backend/app/main.py:48805
+    - chain: update_client_analysis_run @backend/app/main.py:15291  ←  mark_chat_start_submission_failed @backend/app/main.py:15571  ←  start_chat_message [endpoint:/api/v1/clients/{client_id}/workspace/chat/start] @backend/app/main.py:48665
+    - chain: update_client_analysis_run @backend/app/main.py:15291  ←  resolve_chat_answer_data_center_primary @backend/app/main.py:46745  ←  document_ai_action [endpoint:/api/v1/clients/{client_id}/documents/ai-action] @backend/app/main.py:49635
+    - chain: update_client_analysis_run @backend/app/main.py:15291  ←  resolve_chat_answer_data_center_primary @backend/app/main.py:46745  ←  resolve_chat_answer @backend/app/main.py:48117  ←  background_resolve_chat_answer [worker:background_resolve_chat_answer] @backend/app/main.py:48335
+    - chain: update_client_analysis_run @backend/app/main.py:15291  ←  resolve_chat_answer_data_center_primary @backend/app/main.py:46745  ←  resolve_chat_answer @backend/app/main.py:48117  ←  send_chat_message [endpoint:/api/v1/clients/{client_id}/workspace/chat] @backend/app/main.py:49220
+- `INSERT+UPDATE` @ **create_app** `backend/app/main.py:3179` — _needs_human_
+    - chain: create_app @backend/app/main.py:3179  ←  (no caller found — orphan write)
+- `UPDATE` @ **create_app._startup_worker** `backend/app/main.py:3743` — _static_confirmed_
+    - chain: _startup_worker [worker:_startup_worker] @backend/app/main.py:3743
+- `UPDATE` @ **create_app._recover_one_stale_loading_chat_message** `backend/app/main.py:4455` — _call_name_match_
+    - chain: _recover_one_stale_loading_chat_message @backend/app/main.py:4455  ←  recover_stale_loading_chat_messages @backend/app/main.py:4628  ←  _background_reap_stale_chat_runs [worker:_background_reap_stale_chat_runs] @backend/app/main.py:3280
+    - chain: _recover_one_stale_loading_chat_message @backend/app/main.py:4455  ←  recover_stale_loading_chat_messages @backend/app/main.py:4628  ←  _startup_worker [worker:_startup_worker] @backend/app/main.py:3743
+    - chain: _recover_one_stale_loading_chat_message @backend/app/main.py:4455  ←  recover_stale_loading_chat_messages @backend/app/main.py:4628  ←  get_chat_message [endpoint:/api/v1/clients/{client_id}/workspace/chat/messages/{message_id}] @backend/app/main.py:48810
+    - chain: _recover_one_stale_loading_chat_message @backend/app/main.py:4455  ←  recover_stale_loading_chat_messages @backend/app/main.py:4628  ←  get_client_analysis_run [endpoint:/api/v1/clients/{client_id}/analysis-runs/{run_id}] @backend/app/main.py:48763
+    - chain: _recover_one_stale_loading_chat_message @backend/app/main.py:4455  ←  recover_stale_loading_chat_messages @backend/app/main.py:4628  ←  fetch_active_workspace_chat_start_response @backend/app/main.py:15509  ←  start_chat_message [endpoint:/api/v1/clients/{client_id}/workspace/chat/start] @backend/app/main.py:48665
+- `UPDATE` @ **create_app.get_client_analysis_run** `backend/app/main.py:48763` — _static_confirmed_
+    - chain: get_client_analysis_run [endpoint:/api/v1/clients/{client_id}/analysis-runs/{run_id}] @backend/app/main.py:48763
+
+### 读边 (15)
+- `SELECT-FROM` @ **create_app.create_client_analysis_run** `backend/app/main.py:15264` — _static_confirmed_
+    - WHERE: `id = ?`
+- `SELECT-FROM` @ **create_app.update_client_analysis_run** `backend/app/main.py:15291` — _static_confirmed_
+    - WHERE: `id = ?`
+- `SELECT-FROM` @ **create_app.fetch_analysis_run_for_client** `backend/app/main.py:15422` — _static_confirmed_
+    - WHERE: `id = ? AND client_id = ?`
+- `SELECT-FROM` @ **create_app.is_client_analysis_run_canceled** `backend/app/main.py:15428` — _static_confirmed_
+    - WHERE: `id = ?`
+- `SELECT-FROM` @ **create_app.fetch_active_workspace_chat_start_response** `backend/app/main.py:15509` — _static_confirmed_
+    - WHERE: `client_id = ? AND status IN ('queued', 'running')`
+    - WHERE: `id = ? AND client_id = ?`
+- `SELECT-FROM` @ **create_app.mark_chat_start_submission_failed** `backend/app/main.py:15571` — _static_confirmed_
+    - WHERE: `id = ?`
+- `SELECT-FROM` @ **create_app.workspace_for_client** `backend/app/main.py:17770` — _static_confirmed_
+    - WHERE: `client_id = ?`
+- `SELECT-FROM` @ **create_app._collect_strategic_insight_context** `backend/app/main.py:19685` — _static_confirmed_
+    - WHERE: `client_id = ? AND COALESCE(long_answer, '') != '' AND length(long_answer) >= 120`
+- `SELECT-FROM` @ **create_app** `backend/app/main.py:3179` — _static_confirmed_
+    - WHERE: `assistant_message_id = ?`
+    - WHERE: `client_id = ?`
+    - WHERE: `client_id = ? AND COALESCE(long_answer, '') != '' AND length(long_answer) >= 120`
+    - WHERE: `client_id = ? AND status IN ('queued', 'running')`
+    - WHERE: `id = ?`
+- `SELECT-FROM` @ **create_app.recover_stale_loading_chat_messages** `backend/app/main.py:4628` — _static_confirmed_
+    - WHERE: `assistant_message_id = ?`
+    - WHERE: `id = ?)`
+- `SELECT-FROM` @ **create_app.resolve_chat_answer_data_center_primary** `backend/app/main.py:46745` — _static_confirmed_
+    - WHERE: `id = ?`
+- `SELECT-FROM` @ **create_app.resolve_chat_answer_data_center_primary.load_preserved_partial** `backend/app/main.py:47131` — _static_confirmed_
+    - WHERE: `id = ?`
+- `SELECT-FROM` @ **create_app.get_client_analysis_run** `backend/app/main.py:48763` — _static_confirmed_
+    - WHERE: `id = ?`
+- `SELECT-FROM` @ **_build_metrics** `backend/app/services/digital_asset_center.py:3129` — _static_confirmed_
+    - WHERE: `client_id = ?`
+- `SELECT-FROM` @ **build_digital_asset_narrative_context** `backend/app/services/digital_asset_narrative.py:201` — _static_confirmed_
+    - WHERE: `client_id = ?`
+    - WHERE: `client_id = ? AND status IN ('succeeded', 'completed', 'done')`
+
+## `client_brand_strategy_extracts`
+
+- 经验层: **1 行** · 最近写入 updated_at=2026-05-20T16:25:38+08:00
+
+### 写边 (3)
+- `UPDATE` @ **create_app** `backend/app/main.py:3179` — _needs_human_
+    - chain: create_app @backend/app/main.py:3179  ←  (no caller found — orphan write)
+- `UPDATE` @ **create_app.update_brand_strategy_extract_endpoint** `backend/app/main.py:59517` — _static_confirmed_
+    - chain: update_brand_strategy_extract_endpoint [endpoint:/api/v1/intelligence/brand-mirror/strategy-extract] @backend/app/main.py:59517
+- `INSERT` @ **run_brand_strategy_extraction** `backend/app/services/brand_strategy_extractor.py:248` — _call_name_match_
+    - chain: run_brand_strategy_extraction @backend/app/services/brand_strategy_extractor.py:248  ←  trigger_brand_strategy_extraction [endpoint:/api/v1/intelligence/brand-mirror/strategy-extract] @backend/app/main.py:59459
+
+### 读边 (3)
+- `SELECT-FROM` @ **create_app** `backend/app/main.py:3179` — _static_confirmed_
+    - WHERE: `client_id = ?`
+- `SELECT-FROM` @ **create_app.update_brand_strategy_extract_endpoint** `backend/app/main.py:59517` — _static_confirmed_
+    - WHERE: `client_id = ?`
+- `SELECT-FROM` @ **get_brand_strategy_extract** `backend/app/services/brand_strategy_extractor.py:375` — _static_confirmed_
+    - WHERE: `client_id = ?`
+
+## `client_delete_tombstones`
+
+- 经验层: **1 行**
+
+### 写边 (0)
+- (无静态写边)  ⚠️ **0 写边但真库有行 → needs_human (写入路径在静态扫描盲区:可能动态表名/ORM/外部进程)**
+
+### 读边 (0)
+- (无静态读边)
+
+## `client_dna_documents`
+
+- 经验层: **32 行** · 最近写入 updated_at=2026-05-16T14:05:51
+
+### 写边 (2)
+- `INSERT` @ **create_app** `backend/app/main.py:3179` — _needs_human_
+    - chain: create_app @backend/app/main.py:3179  ←  (no caller found — orphan write)
+- `INSERT` @ **create_app.save_client_dna_module** `backend/app/main.py:7294` — _call_name_match_
+    - chain: save_client_dna_module @backend/app/main.py:7294  ←  process_knowledge_job @backend/app/main.py:4809  ←  knowledge_worker_loop [worker:knowledge_worker_loop] @backend/app/main.py:5110
+    - chain: save_client_dna_module @backend/app/main.py:7294  ←  upsert_client_dna_module @backend/app/main.py:7384  ←  update_client_dna_document [endpoint:/api/v1/clients/{client_id}/dna-documents/{module_key}] @backend/app/main.py:45625
+
+### 读边 (13)
+- `SELECT-FROM` @ **create_app._collect_strategic_insight_context** `backend/app/main.py:19685` — _static_confirmed_
+    - WHERE: `client_id = ?`
+- `SELECT-FROM` @ **create_app.context_summary** `backend/app/main.py:22022` — _static_confirmed_
+    - WHERE: `client_id = ?`
+- `SELECT-FROM` @ **create_app.get_brain_dashboard** `backend/app/main.py:27671` — _static_confirmed_
+    - WHERE: `client_id = ? AND summary != '' AND summary IS NOT NULL`
+    - WHERE: `summary != '' AND summary IS NOT NULL`
+- `SELECT-FROM` @ **create_app** `backend/app/main.py:3179` — _static_confirmed_
+    - WHERE: `client_id = ?`
+    - WHERE: `client_id = ? AND module_key = ?`
+    - WHERE: `client_id = ? AND summary != '' AND summary IS NOT NULL`
+    - WHERE: `summary != '' AND summary IS NOT NULL`
+- `SELECT-FROM` @ **create_app.save_client_dna_module** `backend/app/main.py:7294` — _static_confirmed_
+    - WHERE: `client_id = ? AND module_key = ?`
+- `SELECT-FROM` @ **create_app.list_client_dna_modules** `backend/app/main.py:7371` — _static_confirmed_
+    - WHERE: `client_id = ?`
+- `SELECT-FROM` @ **get_fact_bundle_lite** `backend/app/modules/client/fact_view.py:133` — _static_confirmed_
+    - WHERE: `client_id = ?`
+- `SELECT-FROM` @ **list_dna_documents** `backend/app/modules/client/fact_view.py:329` — _static_confirmed_
+    - WHERE: `client_id = ?`
+- `SELECT-FROM` @ **load_dna_full** `backend/app/modules/client/fact_view.py:405` — _static_confirmed_
+    - WHERE: `client_id = ? AND module_key = ?`
+- `SELECT-FROM` @ **_build_metrics** `backend/app/services/digital_asset_center.py:3129` — _static_confirmed_
+    - WHERE: `client_id = ? AND summary != '' AND summary IS NOT NULL`
+- `SELECT-FROM` @ **build_digital_asset_narrative_context** `backend/app/services/digital_asset_narrative.py:201` — _static_confirmed_
+    - WHERE: `client_id = ?`
+- `SELECT-FROM` @ **compute_knowledge_status** `backend/app/services/knowledge_v2.py:4109` — _static_confirmed_
+    - WHERE: `client_id = ?`
+- `SELECT-FROM` @ **refresh_organization_notebook_snapshot** `backend/app/services/memory_foundation.py:733` — _static_confirmed_
+    - WHERE: `client_id = ?`
+
+## `client_folders`
+
+- 经验层: **103 行** · 最近写入 created_at=2026-06-02T05:49:09
+  - source_type 分布: legacy:45, system:30, ai:28
+
+### 写边 (10)
+- `INSERT+UPDATE` @ **create_app._ensure_client_folder_row** `backend/app/main.py:14537` — _call_name_match_
+    - chain: _ensure_client_folder_row @backend/app/main.py:14537  ←  create_client_folder [endpoint:/api/v1/clients/{client_id}/folders] @backend/app/main.py:38854
+    - chain: _ensure_client_folder_row @backend/app/main.py:14537  ←  _apply_client_folder_recommendation_plan @backend/app/main.py:38751  ←  apply_client_folder_recommendation [endpoint:/api/v1/clients/{client_id}/folders/apply-recommendation] @backend/app/main.py:39044
+    - chain: _ensure_client_folder_row @backend/app/main.py:14537  ←  ensure_standard_client_folders @backend/app/main.py:14645  ←  apply_client_document_auto_repair [endpoint:/api/v1/clients/{client_id}/documents/auto-repair/apply] @backend/app/main.py:39062
+    - chain: _ensure_client_folder_row @backend/app/main.py:14537  ←  ensure_standard_client_folders @backend/app/main.py:14645  ←  apply_client_folder_recommendation [endpoint:/api/v1/clients/{client_id}/folders/apply-recommendation] @backend/app/main.py:39044
+    - chain: _ensure_client_folder_row @backend/app/main.py:14537  ←  ensure_standard_client_folders @backend/app/main.py:14645  ←  create_client [endpoint:/api/v1/clients] @backend/app/main.py:37631
+    - chain: _ensure_client_folder_row @backend/app/main.py:14537  ←  ensure_standard_client_folders @backend/app/main.py:14645  ←  create_client_folder [endpoint:/api/v1/clients/{client_id}/folders] @backend/app/main.py:38854
+- `UPDATE` @ **create_app._refresh_client_folder_rows** `backend/app/main.py:14616` — _call_name_match_
+    - chain: _refresh_client_folder_rows @backend/app/main.py:14616  ←  move_client_document_folder [endpoint:/api/v1/clients/{client_id}/documents/{document_id}/move-folder] @backend/app/main.py:38933
+    - chain: _refresh_client_folder_rows @backend/app/main.py:14616  ←  update_client_folder [endpoint:/api/v1/clients/{client_id}/folders/{folder_id}] @backend/app/main.py:38884
+    - chain: _refresh_client_folder_rows @backend/app/main.py:14616  ←  _apply_client_folder_recommendation_plan @backend/app/main.py:38751  ←  apply_client_folder_recommendation [endpoint:/api/v1/clients/{client_id}/folders/apply-recommendation] @backend/app/main.py:39044
+    - chain: _refresh_client_folder_rows @backend/app/main.py:14616  ←  ensure_standard_client_folders @backend/app/main.py:14645  ←  apply_client_document_auto_repair [endpoint:/api/v1/clients/{client_id}/documents/auto-repair/apply] @backend/app/main.py:39062
+    - chain: _refresh_client_folder_rows @backend/app/main.py:14616  ←  ensure_standard_client_folders @backend/app/main.py:14645  ←  apply_client_folder_recommendation [endpoint:/api/v1/clients/{client_id}/folders/apply-recommendation] @backend/app/main.py:39044
+    - chain: _refresh_client_folder_rows @backend/app/main.py:14616  ←  ensure_standard_client_folders @backend/app/main.py:14645  ←  create_client [endpoint:/api/v1/clients] @backend/app/main.py:37631
+- `UPDATE` @ **create_app.ensure_standard_client_folders** `backend/app/main.py:14645` — _call_name_match_
+    - chain: ensure_standard_client_folders @backend/app/main.py:14645  ←  apply_client_document_auto_repair [endpoint:/api/v1/clients/{client_id}/documents/auto-repair/apply] @backend/app/main.py:39062
+    - chain: ensure_standard_client_folders @backend/app/main.py:14645  ←  apply_client_folder_recommendation [endpoint:/api/v1/clients/{client_id}/folders/apply-recommendation] @backend/app/main.py:39044
+    - chain: ensure_standard_client_folders @backend/app/main.py:14645  ←  create_client [endpoint:/api/v1/clients] @backend/app/main.py:37631
+    - chain: ensure_standard_client_folders @backend/app/main.py:14645  ←  create_client_folder [endpoint:/api/v1/clients/{client_id}/folders] @backend/app/main.py:38854
+    - chain: ensure_standard_client_folders @backend/app/main.py:14645  ←  delete_client_folder [endpoint:/api/v1/clients/{client_id}/folders/{folder_id}] @backend/app/main.py:39117
+    - chain: ensure_standard_client_folders @backend/app/main.py:14645  ←  generate_client_dna_documents [endpoint:/api/v1/clients/{client_id}/dna-documents/generate] @backend/app/main.py:45574
+- `INSERT+UPDATE` @ **create_app** `backend/app/main.py:3179` — _needs_human_
+    - chain: create_app @backend/app/main.py:3179  ←  (no caller found — orphan write)
+- `UPDATE` @ **create_app.create_client_folder** `backend/app/main.py:38854` — _static_confirmed_
+    - chain: create_client_folder [endpoint:/api/v1/clients/{client_id}/folders] @backend/app/main.py:38854
+- `UPDATE` @ **create_app.update_client_folder** `backend/app/main.py:38884` — _static_confirmed_
+    - chain: update_client_folder [endpoint:/api/v1/clients/{client_id}/folders/{folder_id}] @backend/app/main.py:38884
+- `UPDATE` @ **create_app.hide_client_folder_label** `backend/app/main.py:6433` — _call_name_match_
+    - chain: hide_client_folder_label @backend/app/main.py:6433  ←  delete_client_folder [endpoint:/api/v1/clients/{client_id}/folders/{folder_id}] @backend/app/main.py:39117
+    - chain: hide_client_folder_label @backend/app/main.py:6433  ←  update_client_folder [endpoint:/api/v1/clients/{client_id}/folders/{folder_id}] @backend/app/main.py:38884
+- `UPDATE` @ **create_app.unhide_client_folder_label** `backend/app/main.py:6442` — _call_name_match_
+    - chain: unhide_client_folder_label @backend/app/main.py:6442  ←  create_client_folder [endpoint:/api/v1/clients/{client_id}/folders] @backend/app/main.py:38854
+    - chain: unhide_client_folder_label @backend/app/main.py:6442  ←  update_client_folder [endpoint:/api/v1/clients/{client_id}/folders/{folder_id}] @backend/app/main.py:38884
+- `UPDATE` @ **refresh_client_folder_counts** `backend/app/services/knowledge_v2.py:2102` — _call_name_match_
+    - chain: refresh_client_folder_counts @backend/app/services/knowledge_v2.py:2102  ←  _sync_task_attachment_scope [worker:_sync_task_attachment_scope] @backend/app/main.py:2237
+    - chain: refresh_client_folder_counts @backend/app/services/knowledge_v2.py:2102  ←  backfill_workspace_import @backend/app/services/knowledge_v2.py:3943  ←  backfill_client_workspace_imports [endpoint:/api/v1/clients/{client_id}/workspace/backfill-imports] @backend/app/main.py:50039
+    - chain: refresh_client_folder_counts @backend/app/services/knowledge_v2.py:2102  ←  ingest_document_knowledge @backend/app/services/knowledge_base.py:2802  ←  upload_task_attachment [endpoint:/api/v1/tasks/{task_id}/attachments] @backend/app/main.py:53434
+    - chain: refresh_client_folder_counts @backend/app/services/knowledge_v2.py:2102  ←  backfill_knowledge_documents @backend/app/services/knowledge_base.py:3346  ←  process_knowledge_job @backend/app/main.py:4809  ←  knowledge_worker_loop [worker:knowledge_worker_loop] @backend/app/main.py:5110
+    - chain: refresh_client_folder_counts @backend/app/services/knowledge_v2.py:2102  ←  ingest_document_knowledge @backend/app/services/knowledge_base.py:2802  ←  _build_local_event_line_report_snapshot @backend/app/main.py:33643  ←  get_event_line_report_snapshot [endpoint:/api/v1/event-lines/{event_line_id}/report-snapshot] @backend/app/main.py:34329
+    - chain: refresh_client_folder_counts @backend/app/services/knowledge_v2.py:2102  ←  ingest_document_knowledge @backend/app/services/knowledge_base.py:2802  ←  _process_one_pdf @backend/app/services/internet_pdf_worker.py:96  ←  _worker_loop [worker:_worker_loop] @backend/app/services/internet_pdf_worker.py:205
+- `INSERT+UPDATE` @ **ensure_client_folder_rows** `backend/app/services/knowledge_v2.py:695` — _call_name_match_
+    - chain: ensure_client_folder_rows @backend/app/services/knowledge_v2.py:695  ←  backfill_workspace_import @backend/app/services/knowledge_v2.py:3943  ←  backfill_client_workspace_imports [endpoint:/api/v1/clients/{client_id}/workspace/backfill-imports] @backend/app/main.py:50039
+
+### 读边 (34)
+- `SELECT-FROM` @ **create_app.build_client_summary** `backend/app/main.py:13881` — _static_confirmed_
+    - WHERE: `client_id = ? AND is_hidden = 0`
+- `SELECT-FROM` @ **create_app._force_online_transcript_document_classification** `backend/app/main.py:14274` — _static_confirmed_
+    - WHERE: `client_id = ? AND label = ?`
+- `SELECT-FROM` @ **create_app.migrate_client_link_material_documents_to_online_transcripts** `backend/app/main.py:14391` — _static_confirmed_
+    - WHERE: `client_id = ? AND label = ?`
+- `SELECT-FROM` @ **create_app._ensure_client_folder_row** `backend/app/main.py:14537` — _static_confirmed_
+    - WHERE: `client_id = ? AND label = ?`
+- `SELECT-FROM` @ **create_app._refresh_client_folder_rows** `backend/app/main.py:14616` — _static_confirmed_
+    - WHERE: `client_id = ?`
+- `SELECT-FROM` @ **create_app.ensure_standard_client_folders** `backend/app/main.py:14645` — _static_confirmed_
+    - WHERE: `client_id = ?`
+- `SELECT-FROM` @ **create_app.register_generated_workspace_document** `backend/app/main.py:15690` — _static_confirmed_
+    - WHERE: `client_id = ? AND label = ?`
+- `SELECT-FROM` @ **create_app.create_client_text_document** `backend/app/main.py:16116` — _static_confirmed_
+    - WHERE: `client_id = ? AND label = ?`
+- `SELECT-FROM` @ **create_app.create_client_link_markdown_document** `backend/app/main.py:16214` — _static_confirmed_
+    - WHERE: `client_id = ? AND label = ?`
+- `SELECT-FROM` @ **create_app.create_client_link_docx_document** `backend/app/main.py:16335` — _static_confirmed_
+    - WHERE: `client_id = ? AND label = ?`
+- `SELECT-FROM` @ **create_app.workspace_for_client** `backend/app/main.py:17770` — _static_confirmed_
+    - WHERE: `client_id = ?`
+- `SELECT-FROM` @ **_resolve_client_folder_ref_by_path** `backend/app/main.py:2188` — _static_confirmed_
+    - WHERE: `client_id = ? AND label = ?`
+- `SELECT-FROM+JOIN` @ **create_app** `backend/app/main.py:3179` — _static_confirmed_
+    - WHERE: `client_id = ?`
+    - WHERE: `client_id = ? AND folder_kind = 'legacy_business' AND is_hidden = 1`
+    - WHERE: `client_id = ? AND is_hidden = 0`
+    - WHERE: `client_id = ? AND label = ?`
+    - WHERE: `d.client_id = ?`
+- `SELECT-FROM` @ **create_app._build_local_event_line_report_snapshot** `backend/app/main.py:33643` — _static_confirmed_
+    - WHERE: `client_id = ? AND label = ?`
+- `SELECT-FROM` @ **create_app._build_local_event_line_report_snapshot._resolve_event_attachment_document_id** `backend/app/main.py:33796` — _static_confirmed_
+    - WHERE: `client_id = ? AND label = ?`
+- `SELECT-FROM` @ **create_app._ensure_cloud_event_attachment_document** `backend/app/main.py:34027` — _static_confirmed_
+    - WHERE: `client_id = ? AND label = ?`
+- `SELECT-FROM` @ **create_app._folder_row_or_404** `backend/app/main.py:37798` — _static_confirmed_
+    - WHERE: `id = ? AND client_id = ?`
+- `SELECT-FROM` @ **create_app._folder_label_exists** `backend/app/main.py:37804` — _static_confirmed_
+    - WHERE: `client_id = ?`
+- `SELECT-FROM` @ **create_app._folder_labels_for_classification** `backend/app/main.py:37830` — _static_confirmed_
+    - WHERE: `client_id = ? AND is_hidden = 0`
+- `JOIN` @ **create_app._client_folder_recommendation_rows** `backend/app/main.py:37916` — _static_confirmed_
+    - WHERE: `d.client_id = ?`
+- `SELECT-FROM` @ **create_app._build_client_folder_recommendation_plan** `backend/app/main.py:37941` — _static_confirmed_
+    - WHERE: `client_id = ? AND folder_kind = 'legacy_business' AND is_hidden = 1`
+- `JOIN` @ **create_app._auto_repair_rows** `backend/app/main.py:38075` — _static_confirmed_
+    - WHERE: `d.client_id = ?`
+    - WHERE: `d.client_id = ? {?}`
+- `JOIN` @ **create_app._pending_document_ids_for_auto_reconcile** `backend/app/main.py:38644` — _static_confirmed_
+    - WHERE: `d.client_id = ? AND ( COALESCE(cf.label, '') IN (`
+    - WHERE: `d.client_id = ? AND ( COALESCE(cf.label, '') IN ({?}) OR COALESCE(v.visible_category, '') IN ({?}) OR COALESCE(k.human_folder_category, '') IN ({?}) )`
+- `SELECT-FROM` @ **create_app.create_client_folder** `backend/app/main.py:38854` — _static_confirmed_
+    - WHERE: `client_id = ? AND label = ?`
+- `SELECT-FROM` @ **create_app.move_client_document_folder** `backend/app/main.py:38933` — _static_confirmed_
+    - WHERE: `client_id = ? AND label = ?`
+- `SELECT-FROM` @ **create_app.delete_client_folder** `backend/app/main.py:39117` — _static_confirmed_
+    - WHERE: `id = ? AND client_id = ?`
+- `JOIN` @ **create_app.build_document_reading_preview_record** `backend/app/main.py:46173` — _static_confirmed_
+    - WHERE: `d.client_id = ? AND d.id = ?`
+- `SELECT-FROM` @ **create_app.process_knowledge_job** `backend/app/main.py:4809` — _static_confirmed_
+    - WHERE: `client_id = ? AND label = ?`
+- `SELECT-FROM` @ **create_app.upload_task_attachment** `backend/app/main.py:53434` — _static_confirmed_
+    - WHERE: `client_id = ? AND label = ?`
+- `SELECT-FROM` @ **sync_human_file_locations_for_client** `backend/app/services/knowledge_base.py:2000` — _static_confirmed_
+    - WHERE: `client_id = ? AND label = ?`
+- `SELECT-FROM` @ **refresh_client_folder_counts** `backend/app/services/knowledge_v2.py:2102` — _static_confirmed_
+    - WHERE: `client_id = ?`
+- `SELECT-FROM` @ **backfill_workspace_import** `backend/app/services/knowledge_v2.py:3943` — _static_confirmed_
+    - WHERE: `client_id = ? AND label = ?`
+- `SELECT-FROM` @ **ensure_client_folder_rows** `backend/app/services/knowledge_v2.py:695` — _static_confirmed_
+    - WHERE: `client_id = ? AND label = ?`
+- `SELECT-FROM` @ **_migrate_one_client** `backend/app/services/unified_workspace_migrator.py:108` — _static_confirmed_
+    - WHERE: `client_id = ? AND label != ?`
+    - WHERE: `id = ?`
+
+## `client_glossary`
+
+- 经验层: **407 行** · 最近写入 created_at=2026-05-20T10:24:00.442429+00:00
+
+### 写边 (3)
+- `INSERT` @ **create_term** `backend/app/modules/glossary/repository.py:186` — _call_name_match_
+    - chain: create_term @backend/app/modules/glossary/repository.py:186  ←  create_glossary_entry @backend/app/services/glossary_store.py:70  ←  create_client_glossary [endpoint:/api/v1/clients/{client_id}/glossary] @backend/app/main.py:41486
+    - chain: create_term @backend/app/modules/glossary/repository.py:186  ←  create_glossary_entry @backend/app/services/glossary_store.py:70  ←  generate_glossary_candidates @backend/app/services/glossary_candidate_generator.py:480  ←  _run_stage1_and_3_in_background [worker:_run_stage1_and_3_in_background] @backend/app/services/internet_crawler.py:1381
+    - chain: create_term @backend/app/modules/glossary/repository.py:186  ←  create_glossary_entry @backend/app/services/glossary_store.py:70  ←  generate_glossary_candidates @backend/app/services/glossary_candidate_generator.py:480  ←  generate_glossary_candidates_proxy [endpoint:/api/v1/clients/{client_id}/glossary/generate-candidates] @backend/app/main.py:29865
+- `UPDATE` @ **update_term** `backend/app/modules/glossary/repository.py:232` — _call_name_match_
+    - chain: update_term @backend/app/modules/glossary/repository.py:232  ←  update_glossary_entry @backend/app/services/glossary_store.py:99  ←  update_glossary [endpoint:/api/v1/glossary/{entry_id}] @backend/app/main.py:41516
+- `INSERT` @ **_persist_resolved_clarification_to_glossary** `backend/app/services/clarification_pre_search.py:270` — _needs_human_
+    - chain: _persist_resolved_clarification_to_glossary @backend/app/services/clarification_pre_search.py:270  ←  (no caller found — orphan write)
+
+### 读边 (30)
+- `JOIN` @ **create_app.list_glossary_attributes_proxy** `backend/app/main.py:29549` — _static_confirmed_
+    - WHERE: `ga.client_id=?`
+- `JOIN` @ **create_app.list_glossary_drift_alerts_proxy** `backend/app/main.py:29819` — _static_confirmed_
+    - WHERE: `gda.client_id = ?`
+- `JOIN` @ **create_app** `backend/app/main.py:3179` — _static_confirmed_
+    - WHERE: `ga.client_id=?`
+    - WHERE: `gda.client_id = ?`
+- `SELECT-FROM` @ **get_term_by_id** `backend/app/modules/glossary/repository.py:119` — _static_confirmed_
+    - WHERE: `id = ?`
+- `SELECT-FROM` @ **list_terms_for_client** `backend/app/modules/glossary/repository.py:127` — _static_confirmed_
+    - WHERE: `client_id = ?`
+- `SELECT-FROM` @ **find_term_by_normalized** `backend/app/modules/glossary/repository.py:136` — _static_confirmed_
+    - WHERE: `client_id = ? AND normalized_term = ?`
+- `SELECT-FROM` @ **list_terms_paginated** `backend/app/modules/glossary/repository.py:148` — _static_confirmed_
+    - WHERE: `{?}`
+- `SELECT-FROM` @ **delete_term** `backend/app/modules/glossary/repository.py:274` — _static_confirmed_
+    - WHERE: `id = ?`
+- `JOIN` @ **auto_verify_qualifying_attributes** `backend/app/services/auto_verify_rules.py:229` — _static_confirmed_
+    - WHERE: `ga.client_id = ? AND ga.verification_status = 'pending'`
+- `JOIN` @ **validate_citations** `backend/app/services/citation_validator.py:38` — _static_confirmed_
+    - WHERE: `ga.client_id = ? AND cg.term = ? AND ga.attribute_name = ? AND ga.verification_status = 'verified'`
+- `JOIN` @ **_check_question_already_answered_in_glossary** `backend/app/services/clarification_pre_search.py:162` — _static_confirmed_
+    - WHERE: `ga.client_id = ? AND ga.attribute_name LIKE ?`
+- `SELECT-FROM` @ **_persist_resolved_clarification_to_glossary** `backend/app/services/clarification_pre_search.py:270` — _static_confirmed_
+    - WHERE: `client_id = ? AND term = ?`
+- `JOIN` @ **query_candidate_value** `backend/app/services/fill_table_evaluator.py:257` — _static_confirmed_
+    - WHERE: `ga.client_id = ? AND ga.verification_status = 'pending' AND (ga.attribute_name LIKE ? OR cg.term LIKE ?)`
+    - WHERE: `ga.client_id = ? AND ga.verification_status = 'verified' AND (ga.attribute_name LIKE ? OR cg.term LIKE ?)`
+- `SELECT-FROM` @ **_format_glossary_terms** `backend/app/services/glossary_attribute_extractor.py:160` — _static_confirmed_
+    - WHERE: `client_id=?`
+- `JOIN` @ **_format_existing_verified** `backend/app/services/glossary_attribute_extractor.py:190` — _static_confirmed_
+    - WHERE: `ga.client_id=? AND ga.verification_status='verified'`
+- `SELECT-FROM` @ **extract_candidates** `backend/app/services/glossary_attribute_extractor.py:283` — _static_confirmed_
+    - WHERE: `client_id=?`
+- `JOIN` @ **fetch_verified_attributes** `backend/app/services/glossary_attributes_pack.py:30` — _static_confirmed_
+    - WHERE: `ga.client_id = ? AND ga.verification_status = 'verified'`
+- `JOIN` @ **check_fact_against_glossary** `backend/app/services/glossary_conflict_alert.py:22` — _static_confirmed_
+    - WHERE: `ga.client_id = ? AND ga.verification_status = 'verified' AND (cg.term = ? OR cg.term LIKE ? OR ? LIKE '%' || cg.term || '%') AND (ga.attribute_name = ? OR ga.attribute_name LIKE ?)`
+- `SELECT-FROM` @ **_load_glossary_raw** `backend/app/services/glossary_helpers.py:30` — _static_confirmed_
+    - WHERE: `client_id = ?`
+- `SELECT-FROM` @ **_build_business_coverage** `backend/app/services/growth_engine.py:2021` — _static_confirmed_
+    - WHERE: `owner_id=? AND client_id=c.id) AS task_cnt, (SELECT COUNT(*) FROM v2_documents WHERE owner_user_id=? AND client_id=c.id AND kind NOT IN ('task_doc','event_line_update_doc','review_entry_doc')) AS doc_`
+- `SELECT-FROM` @ **_build_internal_learning_picks** `backend/app/services/growth_engine.py:2328` — _static_confirmed_
+    - WHERE: `g.client_id IN ( SELECT DISTINCT client_id FROM tasks WHERE owner_id=? AND client_id IS NOT NULL ) AND g.category IN ('业务术语', '项目')`
+- `SELECT-FROM` @ **infer_brand_proposition_from_data_center** `backend/app/services/intelligence_positioning_gap.py:55` — _static_confirmed_
+    - WHERE: `client_id = ? AND category = '业务术语'`
+- `SELECT-FROM` @ **collect_signals** `backend/app/services/intelligence_query_strategy.py:61` — _static_confirmed_
+    - WHERE: `client_id = ?`
+- `SELECT-FROM` @ **ingest_document_knowledge** `backend/app/services/knowledge_v2.py:2114` — _static_confirmed_
+    - WHERE: `client_id = ?`
+- `JOIN` @ **_collect_glossary_relations** `backend/app/services/narrative_collector.py:457` — _static_confirmed_
+    - WHERE: `gr.client_id = ? AND gr.status != 'rejected'`
+- `SELECT-FROM` @ **_load_glossary_id_to_term** `backend/app/services/narrative_collector.py:525` — _static_confirmed_
+    - WHERE: `client_id = ?`
+- `SELECT-FROM` @ **_collect_glossary** `backend/app/services/narrative_collector.py:569` — _static_confirmed_
+    - WHERE: `client_id = ?`
+- `JOIN` @ **_collect_glossary_attributes** `backend/app/services/narrative_collector.py:595` — _static_confirmed_
+    - WHERE: `ga.client_id = ? AND ga.verification_status = 'verified'`
+- `SELECT-FROM` @ **_collect_inputs** `backend/app/services/project_portrait_builder.py:211` — _static_confirmed_
+    - WHERE: `client_id = ?`
+- `SELECT-FROM` @ **backfill_task_glossary_links** `backend/app/services/project_portrait_builder.py:25` — _static_confirmed_
+    - WHERE: `client_id = ?`
+
+## `client_narrative_local_mirror`
+
+- 经验层: **6 行**
+
+### 写边 (2)
+- `INSERT` @ **create_app._save_narrative_mirror** `backend/app/main.py:28532` — _call_name_match_
+    - chain: _save_narrative_mirror @backend/app/main.py:28532  ←  get_client_narrative_proxy [endpoint:/api/v1/clients/{client_id}/narrative] @backend/app/main.py:28561
+    - chain: _save_narrative_mirror @backend/app/main.py:28532  ←  regenerate_client_narrative_proxy [endpoint:/api/v1/clients/{client_id}/narrative/regenerate] @backend/app/main.py:29879
+- `INSERT` @ **create_app** `backend/app/main.py:3179` — _needs_human_
+    - chain: create_app @backend/app/main.py:3179  ←  (no caller found — orphan write)
+
+### 读边 (4)
+- `SELECT-FROM` @ **create_app.build_template_fill_context** `backend/app/main.py:16786` — _static_confirmed_
+    - WHERE: `client_id = ?`
+- `SELECT-FROM` @ **create_app.get_client_narrative_proxy** `backend/app/main.py:28561` — _static_confirmed_
+    - WHERE: `client_id = ?`
+- `SELECT-FROM` @ **create_app.get_narrative_stale_status** `backend/app/main.py:28585` — _static_confirmed_
+    - WHERE: `client_id = ?`
+- `SELECT-FROM` @ **create_app** `backend/app/main.py:3179` — _static_confirmed_
+    - WHERE: `client_id = ?`
+
+## `client_stage_audit`
+
+- 经验层: **174 行**
+
+### 写边 (1)
+- `INSERT` @ **_write_stage_audit** `backend/app/modules/client/repository.py:207` — _call_name_match_
+    - chain: _write_stage_audit @backend/app/modules/client/repository.py:207  ←  apply_cloud_stage_change @backend/app/modules/client/repository.py:336  ←  _upsert_cloud_client_shadow_local @backend/app/main.py:10227  ←  _pull_cloud_clients_to_local @backend/app/main.py:10347  ←  _bootstrap_client_sync [worker:_bootstrap_client_sync] @backend/app/main.py:3835
+    - chain: _write_stage_audit @backend/app/modules/client/repository.py:207  ←  apply_cloud_stage_change @backend/app/modules/client/repository.py:336  ←  _upsert_cloud_client_shadow_local @backend/app/main.py:10227  ←  _pull_cloud_clients_to_local @backend/app/main.py:10347  ←  _startup_worker [worker:_startup_worker] @backend/app/main.py:3743
+    - chain: _write_stage_audit @backend/app/modules/client/repository.py:207  ←  apply_cloud_stage_change @backend/app/modules/client/repository.py:336  ←  _upsert_cloud_client_shadow_local @backend/app/main.py:10227  ←  _pull_cloud_clients_to_local @backend/app/main.py:10347  ←  list_clients [endpoint:/api/v1/clients] @backend/app/main.py:37574
+
+### 读边 (1)
+- `SELECT-FROM` @ **list_stage_audit** `backend/app/modules/client/repository.py:391` — _static_confirmed_
+
+## `client_strategic_documents`
+
+- 经验层: **2 行**
+
+### 写边 (2)
+- `INSERT` @ **create_app.upload_strategic_doc** `backend/app/main.py:29028` — _static_confirmed_
+    - chain: upload_strategic_doc [endpoint:/api/v1/clients/{client_id}/strategic-docs] @backend/app/main.py:29028
+- `INSERT` @ **create_app** `backend/app/main.py:3179` — _needs_human_
+    - chain: create_app @backend/app/main.py:3179  ←  (no caller found — orphan write)
+
+### 读边 (5)
+- `SELECT-FROM` @ **create_app.list_strategic_docs** `backend/app/main.py:29006` — _static_confirmed_
+    - WHERE: `client_id = ?`
+- `SELECT-FROM` @ **create_app.delete_strategic_doc** `backend/app/main.py:29071` — _static_confirmed_
+    - WHERE: `client_id=? AND doc_type=?`
+- `SELECT-FROM` @ **create_app** `backend/app/main.py:3179` — _static_confirmed_
+    - WHERE: `client_id = ?`
+    - WHERE: `client_id=? AND doc_type=?`
+- `SELECT-FROM` @ **_read_strategic_docs** `backend/app/services/brand_strategy_extractor.py:233` — _static_confirmed_
+    - WHERE: `client_id = ?`
+- `SELECT-FROM` @ **get_strategic_context_for_prompt** `backend/app/services/strategic_context.py:33` — _static_confirmed_
+    - WHERE: `client_id = ?`
+
+## `client_strategic_profiles`
+
+- 经验层: **6 行** · 最近写入 updated_at=2026-05-20T10:20:19.205159
+
+### 写边 (1)
+- `INSERT+UPDATE` @ **fanout_document_to_client_profile** `backend/app/services/knowledge_v2.py:3027` — _call_name_match_
+    - chain: fanout_document_to_client_profile @backend/app/services/knowledge_v2.py:3027  ←  ingest_document_knowledge @backend/app/services/knowledge_base.py:2802  ←  upload_task_attachment [endpoint:/api/v1/tasks/{task_id}/attachments] @backend/app/main.py:53434
+    - chain: fanout_document_to_client_profile @backend/app/services/knowledge_v2.py:3027  ←  ingest_document_knowledge @backend/app/services/knowledge_base.py:2802  ←  _build_local_event_line_report_snapshot @backend/app/main.py:33643  ←  get_event_line_report_snapshot [endpoint:/api/v1/event-lines/{event_line_id}/report-snapshot] @backend/app/main.py:34329
+    - chain: fanout_document_to_client_profile @backend/app/services/knowledge_v2.py:3027  ←  ingest_document_knowledge @backend/app/services/knowledge_base.py:2802  ←  _process_one_pdf @backend/app/services/internet_pdf_worker.py:96  ←  _worker_loop [worker:_worker_loop] @backend/app/services/internet_pdf_worker.py:205
+    - chain: fanout_document_to_client_profile @backend/app/services/knowledge_v2.py:3027  ←  ingest_document_knowledge @backend/app/services/knowledge_base.py:2802  ←  backfill_workspace_import @backend/app/services/knowledge_v2.py:3943  ←  backfill_client_workspace_imports [endpoint:/api/v1/clients/{client_id}/workspace/backfill-imports] @backend/app/main.py:50039
+    - chain: fanout_document_to_client_profile @backend/app/services/knowledge_v2.py:3027  ←  ingest_document_knowledge @backend/app/services/knowledge_base.py:2802  ←  create_client_text_document @backend/app/main.py:16116  ←  create_client_document_from_text [endpoint:/api/v1/clients/{client_id}/documents/from-text] @backend/app/main.py:49576
+    - chain: fanout_document_to_client_profile @backend/app/services/knowledge_v2.py:3027  ←  ingest_document_knowledge @backend/app/services/knowledge_base.py:2802  ←  execute_parse_failure_retry_batch @backend/app/main.py:42534  ←  retry_client_parse_failures [endpoint:/api/v1/clients/{client_id}/knowledge/parse-failures/retry] @backend/app/main.py:42800
+
+### 读边 (8)
+- `SELECT-FROM` @ **create_app.get_client_knowledge_status** `backend/app/main.py:27902` — _static_confirmed_
+    - WHERE: `client_id = ? AND COALESCE(needs_review, 0) = 1`
+- `SELECT-FROM` @ **create_app** `backend/app/main.py:3179` — _static_confirmed_
+    - WHERE: `client_id = ? AND COALESCE(needs_review, 0) = 1`
+- `SELECT-FROM` @ **_load_client_profile** `backend/app/services/clarification_context.py:65` — _static_confirmed_
+    - WHERE: `client_id = ?`
+- `SELECT-FROM` @ **infer_brand_proposition_from_data_center** `backend/app/services/intelligence_positioning_gap.py:55` — _static_confirmed_
+    - WHERE: `client_id = ?`
+- `SELECT-FROM` @ **build_timely_research_strategy** `backend/app/services/intelligence_timely_strategy.py:290` — _static_confirmed_
+    - WHERE: `client_id = ?`
+- `SELECT-FROM` @ **fanout_document_to_client_profile** `backend/app/services/knowledge_v2.py:3027` — _static_confirmed_
+    - WHERE: `client_id = ?`
+- `SELECT-FROM` @ **_collect_profile** `backend/app/services/narrative_collector.py:1215` — _static_confirmed_
+    - WHERE: `client_id = ?`
+- `SELECT-FROM` @ **build_narrative_analyses** `backend/app/services/review_narrative.py:1988` — _static_confirmed_
+    - WHERE: `client_id = ?`
+
+## `client_template_fill_runs`
+
+- 经验层: **58 行** · 最近写入 created_at=2026-06-07T13:29:17
+
+### 写边 (4)
+- `INSERT` @ **create_app.create_client_template_fill_run** `backend/app/main.py:17219` — _call_name_match_
+    - chain: create_client_template_fill_run @backend/app/main.py:17219  ←  start_client_template_fill [endpoint:/api/v1/clients/{client_id}/documents/fill-template/start] @backend/app/main.py:50018
+- `UPDATE` @ **create_app.update_client_template_fill_run** `backend/app/main.py:17267` — _call_name_match_
+    - chain: update_client_template_fill_run @backend/app/main.py:17267  ←  expire_stuck_template_fill_runs @backend/app/main.py:4376  ←  get_client_template_fill_run [endpoint:/api/v1/clients/{client_id}/template-fill-runs/{run_id}] @backend/app/main.py:50033
+    - chain: update_client_template_fill_run @backend/app/main.py:17267  ←  expire_stuck_template_fill_runs @backend/app/main.py:4376  ←  start_client_template_fill [endpoint:/api/v1/clients/{client_id}/documents/fill-template/start] @backend/app/main.py:50018
+    - chain: update_client_template_fill_run @backend/app/main.py:17267  ←  expire_stuck_template_fill_runs @backend/app/main.py:4376  ←  fetch_active_client_template_fill_run @backend/app/main.py:17241  ←  start_client_template_fill [endpoint:/api/v1/clients/{client_id}/documents/fill-template/start] @backend/app/main.py:50018
+- `INSERT+UPDATE` @ **create_app** `backend/app/main.py:3179` — _needs_human_
+    - chain: create_app @backend/app/main.py:3179  ←  (no caller found — orphan write)
+- `UPDATE` @ **create_app.recover_stale_template_fill_runs** `backend/app/main.py:4284` — _call_name_match_
+    - chain: recover_stale_template_fill_runs @backend/app/main.py:4284  ←  _startup_worker [worker:_startup_worker] @backend/app/main.py:3743
+
+### 读边 (9)
+- `SELECT-FROM` @ **create_app.create_client_template_fill_run** `backend/app/main.py:17219` — _static_confirmed_
+    - WHERE: `id = ?`
+- `SELECT-FROM` @ **create_app.fetch_active_client_template_fill_run** `backend/app/main.py:17241` — _static_confirmed_
+    - WHERE: `client_id = ? AND status IN ('queued', 'running')`
+- `SELECT-FROM` @ **create_app.update_client_template_fill_run** `backend/app/main.py:17267` — _static_confirmed_
+    - WHERE: `id = ?`
+- `SELECT-FROM` @ **create_app.fetch_client_template_fill_run** `backend/app/main.py:17359` — _static_confirmed_
+    - WHERE: `id = ? AND client_id = ?`
+- `SELECT-FROM` @ **create_app.run_client_template_fill** `backend/app/main.py:17679` — _static_confirmed_
+    - WHERE: `id = ?`
+- `SELECT-FROM` @ **create_app** `backend/app/main.py:3179` — _static_confirmed_
+    - WHERE: `client_id = ? AND status IN ('queued', 'running')`
+    - WHERE: `id = ?`
+    - WHERE: `id = ? AND client_id = ?`
+    - WHERE: `status IN ('queued', 'running')`
+    - WHERE: `status IN ('queued','running')`
+- `SELECT-FROM` @ **create_app.recover_stale_template_fill_runs** `backend/app/main.py:4284` — _static_confirmed_
+    - WHERE: `status IN ('queued', 'running')`
+- `SELECT-FROM` @ **create_app.expire_stuck_template_fill_runs** `backend/app/main.py:4376` — _static_confirmed_
+    - WHERE: `status IN ('queued', 'running')`
+- `SELECT-FROM` @ **create_app.active_background_tasks** `backend/app/main.py:49925` — _static_confirmed_
+    - WHERE: `status IN ('queued','running')`
+
+## `client_units`
+
+- 经验层: **0 行**
+
+### 写边 (0)
+- (无静态写边)
+
+### 读边 (0)
+- (无静态读边)
+
+## `clients`
+
+- 经验层: **13 行** · 最近写入 created_at=2026-05-26T14:50:37
+
+### 写边 (13)
+- `UPDATE` @ **_init_schema** `backend/app/db.py:60` — _needs_human_
+    - chain: _init_schema @backend/app/db.py:60  ←  __init__ @backend/app/db.py:49
+- `UPDATE` @ **create_app._try_cloud_sync_client** `backend/app/main.py:10139` — _static_confirmed_
+    - chain: _try_cloud_sync_client [worker:_try_cloud_sync_client] @backend/app/main.py:10139
+- `INSERT+UPDATE` @ **create_app._upsert_cloud_client_shadow_local** `backend/app/main.py:10227` — _call_name_match_
+    - chain: _upsert_cloud_client_shadow_local @backend/app/main.py:10227  ←  _pull_cloud_clients_to_local @backend/app/main.py:10347  ←  _bootstrap_client_sync [worker:_bootstrap_client_sync] @backend/app/main.py:3835
+    - chain: _upsert_cloud_client_shadow_local @backend/app/main.py:10227  ←  _pull_cloud_clients_to_local @backend/app/main.py:10347  ←  _startup_worker [worker:_startup_worker] @backend/app/main.py:3743
+    - chain: _upsert_cloud_client_shadow_local @backend/app/main.py:10227  ←  _pull_cloud_clients_to_local @backend/app/main.py:10347  ←  list_clients [endpoint:/api/v1/clients] @backend/app/main.py:37574
+- `INSERT+UPDATE` @ **create_app._ensure_local_organization_workspace_client** `backend/app/main.py:13938` — _call_name_match_
+    - chain: _ensure_local_organization_workspace_client @backend/app/main.py:13938  ←  _with_local_organization_workspace_client_id @backend/app/main.py:14006  ←  apply_me_org_membership [endpoint:/api/v1/me/org-membership/apply] @backend/app/main.py:31003
+    - chain: _ensure_local_organization_workspace_client @backend/app/main.py:13938  ←  _with_local_organization_workspace_client_id @backend/app/main.py:14006  ←  me_org_membership [endpoint:/api/v1/me/org-membership] @backend/app/main.py:30991
+    - chain: _ensure_local_organization_workspace_client @backend/app/main.py:13938  ←  _with_local_organization_workspace_client_id @backend/app/main.py:14006  ←  _ensure_local_organization_workspace_from_cloud_membership @backend/app/main.py:14017  ←  auth_login [endpoint:/api/v1/auth/login] @backend/app/main.py:31238
+    - chain: _ensure_local_organization_workspace_client @backend/app/main.py:13938  ←  _with_local_organization_workspace_client_id @backend/app/main.py:14006  ←  _ensure_local_organization_workspace_from_cloud_membership @backend/app/main.py:14017  ←  auth_me [endpoint:/api/v1/auth/me] @backend/app/main.py:30701
+    - chain: _ensure_local_organization_workspace_client @backend/app/main.py:13938  ←  _with_local_organization_workspace_client_id @backend/app/main.py:14006  ←  _ensure_local_organization_workspace_from_cloud_membership @backend/app/main.py:14017  ←  auth_register [endpoint:/api/v1/auth/register] @backend/app/main.py:31212
+    - chain: _ensure_local_organization_workspace_client @backend/app/main.py:13938  ←  _with_local_organization_workspace_client_id @backend/app/main.py:14006  ←  _ensure_local_organization_workspace_from_cloud_membership @backend/app/main.py:14017  ←  claim_me_org_admin [endpoint:/api/v1/me/org-membership/admin-claim] @backend/app/main.py:31038
+- `INSERT` @ **load_demo_dataset** `backend/app/main.py:2941` — _call_name_match_
+    - chain: load_demo_dataset @backend/app/main.py:2941  ←  load_demo_dataset_endpoint [endpoint:/api/v1/settings/demo-data/load] @backend/app/main.py:37527
+- `INSERT+UPDATE` @ **create_app** `backend/app/main.py:3179` — _needs_human_
+    - chain: create_app @backend/app/main.py:3179  ←  (no caller found — orphan write)
+- `INSERT+UPDATE` @ **create_app.create_client** `backend/app/main.py:37631` — _static_confirmed_
+    - chain: create_client [endpoint:/api/v1/clients] @backend/app/main.py:37631
+- `UPDATE` @ **create_app.update_client** `backend/app/main.py:37715` — _static_confirmed_
+    - chain: update_client [endpoint:/api/v1/clients/{client_id}] @backend/app/main.py:37715
+- `UPDATE` @ **create_app.freeze_client** `backend/app/main.py:39309` — _static_confirmed_
+    - chain: freeze_client [endpoint:/api/v1/clients/{client_id}/freeze] @backend/app/main.py:39309
+- `UPDATE` @ **create_app.unfreeze_client** `backend/app/main.py:39328` — _static_confirmed_
+    - chain: unfreeze_client [endpoint:/api/v1/clients/{client_id}/unfreeze] @backend/app/main.py:39328
+- `UPDATE` @ **create_app.update_client_brand_proposition** `backend/app/main.py:59053` — _static_confirmed_
+    - chain: update_client_brand_proposition [endpoint:/api/v1/clients/{client_id}/brand-proposition] @backend/app/main.py:59053
+- `INSERT` @ **create** `backend/app/modules/client/repository.py:137` — _needs_human_
+    - chain: create @backend/app/modules/client/repository.py:137  ←  (no caller found — orphan write)
+- `UPDATE` @ **update** `backend/app/modules/client/repository.py:167` — _call_name_match_
+    - chain: update @backend/app/modules/client/repository.py:167  ←  _sync_object_storage_config_from_cloud [worker:_sync_object_storage_config_from_cloud] @backend/app/main.py:30605
+    - chain: update @backend/app/modules/client/repository.py:167  ←  _sync_org_ai_config_from_cloud [worker:_sync_org_ai_config_from_cloud] @backend/app/main.py:30392
+    - chain: update @backend/app/modules/client/repository.py:167  ←  background_resolve_chat_answer [worker:background_resolve_chat_answer] @backend/app/main.py:48335
+    - chain: update @backend/app/modules/client/repository.py:167  ←  import_documents [endpoint:/api/v1/imports] @backend/app/main.py:45956
+    - chain: update @backend/app/modules/client/repository.py:167  ←  update_analysis_workbench_settings [endpoint:/api/v1/settings/analysis-workbench] @backend/app/main.py:37336
+    - chain: update @backend/app/modules/client/repository.py:167  ←  update_client_workspace_settings [endpoint:/api/v1/settings/client-workspace] @backend/app/main.py:37300
+
+### 读边 (117)
+- `SELECT-FROM` @ **create_app._client_row_to_cloud_payload** `backend/app/main.py:10109` — _static_confirmed_
+    - WHERE: `id = ?`
+- `SELECT-FROM` @ **create_app._try_cloud_sync_client** `backend/app/main.py:10139` — _static_confirmed_
+    - WHERE: `id = ?`
+- `SELECT-FROM` @ **create_app._upsert_cloud_client_shadow_local** `backend/app/main.py:10227` — _static_confirmed_
+    - WHERE: `client_id=c.id), 0) + COALESCE((SELECT COUNT(*) FROM chat_threads WHERE client_id=c.id), 0) + COALESCE((SELECT COUNT(*) FROM documents WHERE client_id=c.id), 0) AS usage FROM clients c WHERE c.name=? `
+    - WHERE: `id = ? OR cloud_id = ?`
+- `SELECT-FROM` @ **create_app.build_cloud_event_line** `backend/app/main.py:10756` — _static_confirmed_
+    - WHERE: `id = ?`
+- `SELECT-FROM` @ **create_app.build_event_line** `backend/app/main.py:10838` — _static_confirmed_
+    - WHERE: `id = ?`
+- `JOIN` @ **create_app.fetch_tasks** `backend/app/main.py:11112` — _static_confirmed_
+- `SELECT-FROM` @ **create_app.build_growth_workbench_snapshot** `backend/app/main.py:11198` — _static_confirmed_
+    - WHERE: `id = ?`
+- `SELECT-FROM` @ **create_app.build_growth_workbench_snapshot.resolve_scope_client_name** `backend/app/main.py:11425` — _static_confirmed_
+    - WHERE: `id = ?`
+- `SELECT-FROM` @ **create_app.build_client_summary** `backend/app/main.py:13881` — _static_confirmed_
+    - WHERE: `id = ?`
+- `SELECT-FROM` @ **create_app._ensure_local_organization_workspace_client** `backend/app/main.py:13938` — _static_confirmed_
+- `SELECT-FROM` @ **create_app.build_task_project_context** `backend/app/main.py:14027` — _static_confirmed_
+    - WHERE: `id = ?`
+- `SELECT-FROM` @ **create_app._collect_strategic_insight_context** `backend/app/main.py:19685` — _static_confirmed_
+    - WHERE: `id != ? AND COALESCE(name, '') != ''`
+    - WHERE: `id = ?`
+- `SELECT-FROM` @ **create_app.build_client_business_context_modules** `backend/app/main.py:24549` — _static_confirmed_
+    - WHERE: `id = ?`
+    - WHERE: `name = ?`
+- `SELECT-FROM` @ **create_app.augment_review_response._bg_write_review_memory** `backend/app/main.py:27067` — _static_confirmed_
+    - WHERE: `frozen_at IS NULL`
+- `SELECT-FROM` @ **create_app.get_brain_dashboard** `backend/app/main.py:27671` — _static_confirmed_
+    - WHERE: `COALESCE(alias, '') != 'workspace-smoke' AND COALESCE(name, '') != '安装态冒烟客户'`
+    - WHERE: `COALESCE(alias, '') != 'workspace-smoke' AND COALESCE(name, '') != '安装态冒烟客户' AND frozen_at IS NULL`
+- `SELECT-FROM` @ **demo_data_loaded** `backend/app/main.py:2862` — _static_confirmed_
+    - WHERE: `id IN (`
+    - WHERE: `id IN ({?})`
+- `SELECT-FROM` @ **build_demo_data_response** `backend/app/main.py:2869` — _static_confirmed_
+    - WHERE: `id IN (`
+    - WHERE: `id IN ({?})`
+- `SELECT-FROM` @ **clear_demo_dataset** `backend/app/main.py:2884` — _static_confirmed_
+    - WHERE: `id IN (`
+    - WHERE: `id IN ({?})`
+- `SELECT-FROM` @ **create_app.list_next_steps** `backend/app/main.py:28844` — _static_confirmed_
+    - WHERE: `id=?`
+- `SELECT-FROM` @ **create_app.get_client_clarification_context** `backend/app/main.py:30089` — _static_confirmed_
+    - WHERE: `id = ?`
+- `SELECT-FROM` @ **create_app.get_client_strategic_pulse** `backend/app/main.py:30105` — _static_confirmed_
+    - WHERE: `id = ?`
+- `SELECT-FROM` @ **create_app.create_event_line** `backend/app/main.py:31525` — _static_confirmed_
+    - WHERE: `id = ?`
+- `SELECT-FROM+JOIN` @ **create_app** `backend/app/main.py:3179` — _static_confirmed_
+    - WHERE: `COALESCE(alias, '') != 'workspace-smoke' AND COALESCE(name, '') != '安装态冒烟客户'`
+    - WHERE: `COALESCE(alias, '') != 'workspace-smoke' AND COALESCE(name, '') != '安装态冒烟客户' AND frozen_at IS NULL`
+    - WHERE: `COALESCE(e.primary_client_id, '') != '' AND c.id IS NULL`
+    - WHERE: `COALESCE(t.client_id, '') != '' AND c.id IS NULL`
+    - WHERE: `client_id=c.id), 0) + COALESCE((SELECT COUNT(*) FROM chat_threads WHERE client_id=c.id), 0) + COALESCE((SELECT COUNT(*) FROM documents WHERE client_id=c.id), 0) AS usage FROM clients c WHERE c.name=? `
+- `SELECT-FROM` @ **create_app._gather_task_context_bundle** `backend/app/main.py:32267` — _static_confirmed_
+    - WHERE: `id = ?`
+- `SELECT-FROM` @ **create_app.update_event_line** `backend/app/main.py:35169` — _static_confirmed_
+    - WHERE: `id = ?`
+- `SELECT-FROM` @ **create_app._startup_worker** `backend/app/main.py:3743` — _static_confirmed_
+    - WHERE: `sync_status = 'pending'`
+- `SELECT-FROM` @ **create_app.list_clients** `backend/app/main.py:37574` — _static_confirmed_
+- `SELECT-FROM` @ **create_app.search_similar_clients** `backend/app/main.py:37584` — _static_confirmed_
+- `SELECT-FROM` @ **create_app.update_client** `backend/app/main.py:37715` — _static_confirmed_
+    - WHERE: `id = ?`
+- `SELECT-FROM` @ **create_app._startup_worker._bootstrap_client_sync** `backend/app/main.py:3835` — _static_confirmed_
+    - WHERE: `sync_status = 'pending'`
+- `SELECT-FROM` @ **create_app.get_client_delete_preview** `backend/app/main.py:39266` — _static_confirmed_
+    - WHERE: `id = ?`
+- `SELECT-FROM` @ **create_app.freeze_client** `backend/app/main.py:39309` — _static_confirmed_
+    - WHERE: `id = ?`
+- `SELECT-FROM` @ **create_app.unfreeze_client** `backend/app/main.py:39328` — _static_confirmed_
+    - WHERE: `id = ?`
+- `SELECT-FROM` @ **create_app.delete_client** `backend/app/main.py:39344` — _static_confirmed_
+    - WHERE: `id = ?`
+- `SELECT-FROM` @ **create_app.backfill_document_knowledge_route** `backend/app/main.py:42270` — _static_confirmed_
+    - WHERE: `frozen_at IS NULL`
+- `JOIN` @ **create_app.get_workspace_data_center_readiness** `backend/app/main.py:42811` — _static_confirmed_
+    - WHERE: `COALESCE(e.primary_client_id, '') != '' AND c.id IS NULL`
+    - WHERE: `COALESCE(t.client_id, '') != '' AND c.id IS NULL`
+- `SELECT-FROM` @ **create_app.update_retrieval_settings** `backend/app/main.py:44158` — _static_confirmed_
+    - WHERE: `frozen_at IS NULL`
+- `SELECT-FROM` @ **create_app.build_health** `backend/app/main.py:5147` — _static_confirmed_
+- `SELECT-FROM` @ **create_app.refresh_task_contexts** `backend/app/main.py:52111` — _static_confirmed_
+    - WHERE: `frozen_at IS NULL`
+- `SELECT-FROM` @ **create_app.ai_parse_task** `backend/app/main.py:52480` — _static_confirmed_
+    - WHERE: `frozen_at IS NULL`
+- `SELECT-FROM` @ **create_app._has_local_workspace_data** `backend/app/main.py:5304` — _static_confirmed_
+- `SELECT-FROM` @ **create_app.enqueue_review_memory_writeback** `backend/app/main.py:54333` — _static_confirmed_
+- `SELECT-FROM` @ **create_app.enqueue_review_memory_writeback._bg_update_memory_from_review** `backend/app/main.py:54343` — _static_confirmed_
+- `SELECT-FROM` @ **create_app.build_handbook_entry_record** `backend/app/main.py:56057` — _static_confirmed_
+    - WHERE: `id = ?`
+- `SELECT-FROM` @ **create_app.report_render** `backend/app/main.py:56920` — _static_confirmed_
+    - WHERE: `id = ?`
+- `SELECT-FROM` @ **create_app.list_intelligence_work_objects** `backend/app/main.py:57170` — _static_confirmed_
+    - WHERE: `frozen_at IS NULL`
+- `SELECT-FROM` @ **create_app.trigger_intelligence_refresh** `backend/app/main.py:57794` — _static_confirmed_
+    - WHERE: `frozen_at IS NULL`
+    - WHERE: `id=?`
+- `SELECT-FROM` @ **create_app.auto_refresh_intelligence_due** `backend/app/main.py:58168` — _static_confirmed_
+    - WHERE: `id=?`
+- `SELECT-FROM` @ **create_app.refresh_sentiment_endpoint** `backend/app/main.py:58704` — _static_confirmed_
+    - WHERE: `id = ?`
+- `SELECT-FROM` @ **create_app.recompute_sentiment_themes_endpoint** `backend/app/main.py:58911` — _static_confirmed_
+    - WHERE: `id = ?`
+- `SELECT-FROM` @ **create_app.list_sentiment_themes_endpoint** `backend/app/main.py:58955` — _static_confirmed_
+    - WHERE: `id = ?`
+- `SELECT-FROM` @ **create_app.sentiment_gap_endpoint** `backend/app/main.py:59021` — _static_confirmed_
+    - WHERE: `id = ?`
+- `SELECT-FROM` @ **create_app.update_client_brand_proposition** `backend/app/main.py:59053` — _static_confirmed_
+    - WHERE: `id = ?`
+- `SELECT-FROM` @ **create_app.get_client_brand_proposition** `backend/app/main.py:59069` — _static_confirmed_
+    - WHERE: `id = ?`
+- `SELECT-FROM` @ **create_app.trigger_brand_mirror_crawl** `backend/app/main.py:59118` — _static_confirmed_
+    - WHERE: `id = ?`
+- `SELECT-FROM` @ **create_app.trigger_website_audit** `backend/app/main.py:59203` — _static_confirmed_
+    - WHERE: `id = ?`
+- `SELECT-FROM` @ **create_app.trigger_wechat_rsshub_ingest** `backend/app/main.py:59264` — _static_confirmed_
+    - WHERE: `id = ?`
+- `SELECT-FROM` @ **create_app.trigger_wechat_sogou_ingest** `backend/app/main.py:59331` — _static_confirmed_
+    - WHERE: `id = ?`
+- `SELECT-FROM` @ **create_app.trigger_brand_mirror_analysis** `backend/app/main.py:59395` — _static_confirmed_
+    - WHERE: `id = ?`
+- `SELECT-FROM` @ **create_app.trigger_brand_strategy_extraction** `backend/app/main.py:59459` — _static_confirmed_
+    - WHERE: `id = ?`
+- `SELECT-FROM` @ **create_app.recompute_brand_audit_endpoint** `backend/app/main.py:59562` — _static_confirmed_
+    - WHERE: `id = ?`
+- `SELECT-FROM` @ **create_app.get_brand_audit_endpoint** `backend/app/main.py:59595` — _static_confirmed_
+    - WHERE: `id = ?`
+- `SELECT-FROM` @ **list_all** `backend/app/modules/client/repository.py:111` — _static_confirmed_
+    - WHERE: `stage NOT IN ('archived', 'lost')`
+- `SELECT-FROM` @ **get_by_id** `backend/app/modules/client/repository.py:81` — _static_confirmed_
+    - WHERE: `id = ?`
+- `SELECT-FROM` @ **get_by_alias** `backend/app/modules/client/repository.py:90` — _static_confirmed_
+    - WHERE: `alias = ?`
+- `SELECT-FROM` @ **list_active** `backend/app/modules/client/repository.py:99` — _static_confirmed_
+    - WHERE: `id IN (SELECT id FROM v_active_clients)`
+- `SELECT-FROM` @ **sync_organization_directory** `backend/app/modules/organization/sync.py:149` — _static_confirmed_
+- `SELECT-FROM` @ **queue_main_chain_backfill** `backend/app/services/analysis_center.py:3187` — _static_confirmed_
+    - WHERE: `frozen_at IS NULL`
+- `JOIN` @ **build_task_page_context_pack** `backend/app/services/analysis_context.py:684` — _static_confirmed_
+    - WHERE: `t.id = ?`
+- `SELECT-FROM` @ **derive_strategic_insights** `backend/app/services/atomic_fact_semantic_deriver.py:322` — _static_confirmed_
+    - WHERE: `id = ?`
+- `SELECT-FROM` @ **_load_client_profile** `backend/app/services/clarification_context.py:65` — _static_confirmed_
+    - WHERE: `id = ?`
+- `SELECT-FROM` @ **backfill_all_clients** `backend/app/services/client_profile.py:238` — _static_confirmed_
+    - WHERE: `frozen_at IS NULL`
+- `SELECT-FROM` @ **_sync_to_cloud** `backend/app/services/client_profile.py:284` — _static_confirmed_
+    - WHERE: `id = ?`
+- `SELECT-FROM` @ **_inventory_client** `backend/app/services/client_profile.py:29` — _static_confirmed_
+    - WHERE: `id = ?`
+- `SELECT-FROM` @ **compute_pulse_summary_for_clients** `backend/app/services/client_strategic_pulse.py:485` — _static_confirmed_
+    - WHERE: `frozen_at IS NULL`
+- `JOIN` @ **_task_row** `backend/app/services/data_center_ingest.py:1190` — _static_confirmed_
+    - WHERE: `t.id = ?`
+- `SELECT-FROM` @ **_client_exists** `backend/app/services/data_center_ingest.py:261` — _static_confirmed_
+    - WHERE: `id = ?`
+- `JOIN` @ **_orphan_ingest_event_rows** `backend/app/services/data_center_ingest.py:918` — _static_confirmed_
+    - WHERE: `COALESCE(e.client_id, '') != '' AND c.id IS NULL`
+- `JOIN` @ **build_orphan_client_ingest_repair_report** `backend/app/services/data_center_ingest.py:994` — _static_confirmed_
+    - WHERE: `COALESCE(e.primary_client_id, '') != '' AND c.id IS NULL`
+    - WHERE: `COALESCE(t.client_id, '') != '' AND c.id IS NULL`
+- `SELECT-FROM` @ **harvest_intelligence_for_client** `backend/app/services/data_gap_compensator.py:266` — _static_confirmed_
+    - WHERE: `id = ?`
+- `SELECT-FROM` @ **_digital_asset_days_accompanied** `backend/app/services/digital_asset_center.py:1010` — _static_confirmed_
+    - WHERE: `COALESCE(alias, '') != ? AND COALESCE(name, '') != ?`
+- `JOIN` @ **_global_count_for_clients** `backend/app/services/digital_asset_center.py:1030` — _static_confirmed_
+    - WHERE: `{?} AND COALESCE(c.alias, '') != ? AND COALESCE(c.name, '') != ?`
+- `SELECT-FROM` @ **build_client_digital_assets** `backend/app/services/digital_asset_center.py:1173` — _static_confirmed_
+    - WHERE: `id = ?`
+- `SELECT-FROM` @ **_read_notebook_snapshot** `backend/app/services/digital_asset_center.py:3380` — _static_confirmed_
+    - WHERE: `id = ?`
+- `SELECT-FROM` @ **build_digital_asset_dashboard** `backend/app/services/digital_asset_center.py:903` — _static_confirmed_
+    - WHERE: `COALESCE(alias, '') != ? AND COALESCE(name, '') != ?`
+- `JOIN` @ **_build_digital_asset_pulse** `backend/app/services/digital_asset_center.py:924` — _static_confirmed_
+    - WHERE: `COALESCE(c.alias, '') != ? AND COALESCE(c.name, '') != ? AND date(d.created_at) >= date('now', '-7 days')`
+    - WHERE: `COALESCE(c.alias, '') != ? AND COALESCE(c.name, '') != ? AND date(e.created_at) >= date('now', '-7 days')`
+    - WHERE: `COALESCE(c.alias, '') != ? AND COALESCE(c.name, '') != ? AND date(j.created_at) >= date('now', '-7 days')`
+    - WHERE: `mf.scope_type = 'client' AND COALESCE(c.alias, '') != ? AND COALESCE(c.name, '') != ? AND date(mf.created_at) >= date('now', '-7 days')`
+- `SELECT-FROM` @ **build_digital_asset_narrative_context** `backend/app/services/digital_asset_narrative.py:201` — _static_confirmed_
+    - WHERE: `id = ?`
+- `SELECT-FROM` @ **build_experience_story_draft_record** `backend/app/services/experience_story_engine.py:34` — _static_confirmed_
+    - WHERE: `id = ?`
+- `SELECT-FROM` @ **generate_glossary_candidates** `backend/app/services/glossary_candidate_generator.py:480` — _static_confirmed_
+    - WHERE: `id = ?`
+- `SELECT-FROM` @ **_build_business_coverage** `backend/app/services/growth_engine.py:2021` — _static_confirmed_
+    - WHERE: `owner_id=? AND client_id=c.id) AS task_cnt, (SELECT COUNT(*) FROM v2_documents WHERE owner_user_id=? AND client_id=c.id AND kind NOT IN ('task_doc','event_line_update_doc','review_entry_doc')) AS doc_`
+- `JOIN` @ **_build_internal_learning_picks** `backend/app/services/growth_engine.py:2328` — _static_confirmed_
+    - WHERE: `g.client_id IN ( SELECT DISTINCT client_id FROM tasks WHERE owner_id=? AND client_id IS NOT NULL ) AND g.category IN ('业务术语', '项目')`
+- `SELECT-FROM` @ **_lookup_client_name** `backend/app/services/growth_engine.py:529` — _static_confirmed_
+    - WHERE: `id = ?`
+- `SELECT-FROM` @ **_scope_rows** `backend/app/services/intelligence_candidate_supply.py:769` — _static_confirmed_
+    - WHERE: `id = ?`
+- `SELECT-FROM` @ **infer_brand_proposition_from_data_center** `backend/app/services/intelligence_positioning_gap.py:55` — _static_confirmed_
+    - WHERE: `id = ?`
+- `SELECT-FROM` @ **collect_signals** `backend/app/services/intelligence_query_strategy.py:61` — _static_confirmed_
+    - WHERE: `id = ?`
+- `SELECT-FROM` @ **resolve_intelligence_search_scope** `backend/app/services/intelligence_search_intents.py:508` — _static_confirmed_
+    - WHERE: `id = ?`
+- `SELECT-FROM` @ **_collect_context** `backend/app/services/intelligence_search_intents.py:536` — _static_confirmed_
+    - WHERE: `id = ?`
+- `SELECT-FROM` @ **_collect_target_aliases** `backend/app/services/intelligence_sentiment.py:253` — _static_confirmed_
+    - WHERE: `id = ?`
+- `SELECT-FROM` @ **build_timely_research_strategy** `backend/app/services/intelligence_timely_strategy.py:290` — _static_confirmed_
+    - WHERE: `id = ?`
+- `JOIN` @ **_load_document_context** `backend/app/services/local_model_optimizer.py:552` — _static_confirmed_
+    - WHERE: `knowledge_document_id = kd.id ) WHERE kd.id = ?`
+- `SELECT-FROM` @ **process_meeting_minute** `backend/app/services/meeting_minute_processor.py:147` — _static_confirmed_
+    - WHERE: `id = ?`
+- `SELECT-FROM` @ **backfill_document_knowledge_to_memory** `backend/app/services/memory_foundation.py:535` — _static_confirmed_
+    - WHERE: `frozen_at IS NULL`
+- `SELECT-FROM` @ **refresh_organization_notebook_snapshot** `backend/app/services/memory_foundation.py:733` — _static_confirmed_
+    - WHERE: `id = ?`
+- `SELECT-FROM` @ **_collect_tasks** `backend/app/services/narrative_collector.py:1147` — _static_confirmed_
+    - WHERE: `id = ?`
+- `SELECT-FROM` @ **collect_client_fact_bundle** `backend/app/services/narrative_collector.py:338` — _static_confirmed_
+    - WHERE: `id = ?`
+- `SELECT-FROM+JOIN` @ **_collect_task_items** `backend/app/services/organization_dna_v2.py:439` — _static_confirmed_
+    - WHERE: `t.created_at >= datetime('now', '-30 days') AND ( source_client.id IS NOT NULL OR event_client.id IS NOT NULL OR EXISTS ( SELECT 1 FROM clients c WHERE t.title LIKE '%' || c.name || '%' OR t.descripti`
+    - WHERE: `t.title LIKE '%' || c.name || '%' OR t.description LIKE '%' || c.name || '%' OR (c.alias != '' AND t.title LIKE '%' || c.alias || '%') OR (c.alias != '' AND t.description LIKE '%' || c.alias || '%')`
+- `JOIN` @ **_collect_document_items** `backend/app/services/organization_dna_v2.py:667` — _static_confirmed_
+    - WHERE: `v.parse_status IN ('ready', 'partial_ready') AND COALESCE(v.chunk_count, 0) >= 3 AND COALESCE(d.created_at, '') >= datetime('now', '-30 days') -- 排除系统生成文档（答案沉淀、客户概览、事件线等系统标识，前缀 v2doc_sysdoc_） AND v.id`
+- `SELECT-FROM` @ **_handler_documents_generate** `backend/app/services/plan_executor.py:932` — _static_confirmed_
+    - WHERE: `id = ?`
+- `SELECT-FROM` @ **_collect_inputs** `backend/app/services/project_portrait_builder.py:211` — _static_confirmed_
+    - WHERE: `id = ?`
+- `SELECT-FROM` @ **build_report_prompt_context** `backend/app/services/report_context_builder.py:294` — _static_confirmed_
+    - WHERE: `id = ?`
+- `SELECT-FROM` @ **parse_chunk** `backend/app/services/smart_file_import.py:641` — _static_confirmed_
+    - WHERE: `id = ?`
+- `SELECT-FROM` @ **generate_story_card** `backend/app/services/story_card_generator.py:325` — _static_confirmed_
+    - WHERE: `id = ?`
+- `SELECT-FROM` @ **_section_1_background** `backend/app/services/story_card_generator.py:36` — _static_confirmed_
+    - WHERE: `id = ?`
+- `SELECT-FROM` @ **build_task_context_brief_material_pack** `backend/app/services/task_context_brief_engine.py:275` — _static_confirmed_
+    - WHERE: `id = ?`
+- `SELECT-FROM` @ **migrate_all_clients** `backend/app/services/unified_workspace_migrator.py:281` — _static_confirmed_
+- `SELECT-FROM+JOIN` @ **build_weekly_review_material_pack** `backend/app/services/weekly_review_material_pack.py:335` — _static_confirmed_
+    - WHERE: `(date(t.due_date) BETWEEN ? AND ? OR date(t.created_at) BETWEEN ? AND ?) AND COALESCE(t.scope_mode, 'COLLAB_SHARED') != 'PERSONAL_ONLY'`
+    - WHERE: `id IN (`
+    - WHERE: `id IN ({?})`
+    - WHERE: `t.id IN (`
+    - WHERE: `t.id IN ({?}) AND COALESCE(t.scope_mode, 'COLLAB_SHARED') != 'PERSONAL_ONLY'`
+- `SELECT-FROM` @ **_client_row** `backend/app/services/workspace_relation_docs.py:55` — _static_confirmed_
+    - WHERE: `id = ?`
+
+## `cloud`
+
+- 经验层: 真库**无此表** (静态边 0写/5读)
+
+### 写边 (0)
+- (无静态写边)
+
+### 读边 (5)
+- `SELECT-FROM` @ **create_app._pull_cloud_clients_to_local** `backend/app/main.py:10347` — _static_confirmed_
+- `SELECT-FROM` @ **create_app.reconcile_cloud_review_response_with_local_tasks** `backend/app/main.py:27324` — _static_confirmed_
+- `SELECT-FROM` @ **create_app._sync_org_ai_config_from_cloud** `backend/app/main.py:30392` — _static_confirmed_
+- `SELECT-FROM` @ **create_app._sync_object_storage_config_from_cloud** `backend/app/main.py:30605` — _static_confirmed_
+- `SELECT-FROM` @ **create_app** `backend/app/main.py:3179` — _static_confirmed_
+
+## `cloud_backend`
+
+- 经验层: 真库**无此表** (静态边 0写/1读)
+
+### 写边 (0)
+- (无静态写边)
+
+### 读边 (1)
+- `SELECT-FROM` @ **_sync_to_cloud** `backend/app/services/client_profile.py:284` — _static_confirmed_
+
+## `commitments`
+
+- 经验层: **74 行** · 最近写入 created_at=2026-06-04T23:33:41.585275+00:00
+  - source_type 分布: narrative_generator:45, ai_inferred:27, smart_import_story:2
+
+### 写边 (12)
+- `UPDATE` @ **create_app.dismiss_unified_todo_proxy** `backend/app/main.py:29654` — _static_confirmed_
+    - chain: dismiss_unified_todo_proxy [endpoint:/api/v1/clients/{client_id}/todos/{todo_id}/dismiss] @backend/app/main.py:29654
+- `UPDATE` @ **create_app.promote_todo_to_task_proxy** `backend/app/main.py:29693` — _static_confirmed_
+    - chain: promote_todo_to_task_proxy [endpoint:/api/v1/clients/{client_id}/todos/{todo_id}/promote-to-task] @backend/app/main.py:29693
+- `UPDATE` @ **create_app** `backend/app/main.py:3179` — _needs_human_
+    - chain: create_app @backend/app/main.py:3179  ←  (no caller found — orphan write)
+- `UPDATE` @ **create_app.update_task** `backend/app/main.py:52636` — _static_confirmed_
+    - chain: update_task [endpoint:/api/v1/tasks/{task_id}] @backend/app/main.py:52636
+- `UPDATE` @ **mark_fulfilled** `backend/app/modules/commitment/repository.py:200` — _needs_human_
+    - chain: mark_fulfilled @backend/app/modules/commitment/repository.py:200  ←  (no caller found — orphan write)
+- `INSERT` @ **derive_commitments** `backend/app/services/atomic_fact_semantic_deriver.py:261` — _call_name_match_
+    - chain: derive_commitments @backend/app/services/atomic_fact_semantic_deriver.py:261  ←  derive_all @backend/app/services/atomic_fact_semantic_deriver.py:405  ←  process_meeting_minute @backend/app/services/meeting_minute_processor.py:147  ←  process_meeting_minute_endpoint [endpoint:/api/v1/meeting-minutes/process] @backend/app/main.py:39471
+- `INSERT` @ **ingest_chat_message** `backend/app/services/chat_message_reverse_ingester.py:311` — _call_name_match_
+    - chain: ingest_chat_message @backend/app/services/chat_message_reverse_ingester.py:311  ←  send_chat_message [endpoint:/api/v1/clients/{client_id}/workspace/chat] @backend/app/main.py:49220
+- `INSERT` @ **process_meeting_minute** `backend/app/services/meeting_minute_processor.py:147` — _call_name_match_
+    - chain: process_meeting_minute @backend/app/services/meeting_minute_processor.py:147  ←  process_meeting_minute_endpoint [endpoint:/api/v1/meeting-minutes/process] @backend/app/main.py:39471
+- `INSERT+UPDATE` @ **upsert_commitments_from_narrative** `backend/app/services/narrative_generator.py:1190` — _call_name_match_
+    - chain: upsert_commitments_from_narrative @backend/app/services/narrative_generator.py:1190  ←  regenerate_client_narrative_proxy [endpoint:/api/v1/clients/{client_id}/narrative/regenerate] @backend/app/main.py:29879
+- `INSERT` @ **build_portrait** `backend/app/services/project_portrait_builder.py:276` — _call_name_match_
+    - chain: build_portrait @backend/app/services/project_portrait_builder.py:276  ←  build_project_portrait_proxy [endpoint:/api/v1/clients/{client_id}/project-portrait/build] @backend/app/main.py:29198
+- `INSERT` @ **build_portrait._persist** `backend/app/services/project_portrait_builder.py:321` — _needs_human_
+    - chain: _persist @backend/app/services/project_portrait_builder.py:321  ←  (no caller found — orphan write)
+- `INSERT` @ **commit_session** `backend/app/services/smart_file_import.py:887` — _call_name_match_
+    - chain: commit_session @backend/app/services/smart_file_import.py:887  ←  smart_import_commit_session [endpoint:/api/v1/smart-import/sessions/{session_id}/commit] @backend/app/main.py:29395
+
+### 读边 (21)
+- `SELECT-FROM` @ **create_app.promote_todo_to_task_proxy** `backend/app/main.py:29693` — _static_confirmed_
+    - WHERE: `id=? AND client_id=?`
+- `SELECT-FROM` @ **create_app** `backend/app/main.py:3179` — _static_confirmed_
+    - WHERE: `id=? AND client_id=?`
+- `SELECT-FROM` @ **list_overdue** `backend/app/modules/commitment/repository.py:106` — _static_confirmed_
+    - WHERE: `deadline IS NOT NULL AND deadline < ? AND status IN (?, ?, ?)`
+    - WHERE: `deadline IS NOT NULL AND deadline < ? AND status IN (?, ?, ?) AND client_id = ?`
+- `SELECT-FROM` @ **list_for_committer** `backend/app/modules/commitment/repository.py:126` — _static_confirmed_
+    - WHERE: `committer = ?`
+    - WHERE: `committer = ? AND status IN (?, ?, ?)`
+- `SELECT-FROM` @ **list_pending_for_client** `backend/app/modules/commitment/repository.py:146` — _static_confirmed_
+    - WHERE: `client_id = ? AND status = 'pending'`
+- `SELECT-FROM` @ **list_for_client_status_grouped** `backend/app/modules/commitment/repository.py:161` — _static_confirmed_
+    - WHERE: `client_id = ?`
+- `SELECT-FROM` @ **list_active_for_client** `backend/app/modules/commitment/repository.py:180` — _static_confirmed_
+    - WHERE: `client_id = ? AND status != 'cancelled'`
+- `SELECT-FROM` @ **get_by_id** `backend/app/modules/commitment/repository.py:81` — _static_confirmed_
+    - WHERE: `id = ?`
+- `SELECT-FROM` @ **list_for_client** `backend/app/modules/commitment/repository.py:89` — _static_confirmed_
+    - WHERE: `client_id = ?`
+    - WHERE: `client_id = ? AND status IN (?, ?, ?)`
+- `SELECT-FROM` @ **derive_commitments** `backend/app/services/atomic_fact_semantic_deriver.py:261` — _static_confirmed_
+    - WHERE: `client_id = ? AND source_type = 'atomic_fact'`
+- `SELECT-FROM` @ **score_action_dependency** `backend/app/services/clarification_priority.py:103` — _static_confirmed_
+    - WHERE: `client_id = ? AND status NOT IN ('done','cancelled') AND content LIKE ?`
+- `SELECT-FROM` @ **_fetch_upcoming_todos** `backend/app/services/client_strategic_pulse.py:262` — _static_confirmed_
+    - WHERE: `client_id=? AND COALESCE(status,'pending') NOT IN ('fulfilled','cancelled','done')`
+- `SELECT-FROM` @ **build_company_brain_context** `backend/app/services/company_brain_context_builder.py:83` — _static_confirmed_
+    - WHERE: `client_id = ? AND status != 'cancelled'`
+- `SELECT-FROM` @ **build_evidence_pack** `backend/app/services/company_brain_qa.py:76` — _static_confirmed_
+    - WHERE: `client_id = ? AND status != 'cancelled'`
+- `SELECT-FROM` @ **_count_source_events** `backend/app/services/growth_engine.py:1168` — _static_confirmed_
+    - WHERE: `committer IN (`
+    - WHERE: `committer IN ({?}) AND status = 'fulfilled'`
+- `SELECT-FROM` @ **_build_commitment_summary** `backend/app/services/growth_engine.py:1751` — _static_confirmed_
+    - WHERE: `committer IN (`
+    - WHERE: `committer IN ({?})`
+    - WHERE: `committer IN ({?}) AND created_at >= ?`
+    - WHERE: `committer IN ({?}) AND deadline IS NOT NULL AND deadline != ''`
+    - WHERE: `committer IN ({?}) AND status='fulfilled' AND fulfilled_at >= ?`
+- `SELECT-FROM` @ **_build_daily_activity** `backend/app/services/growth_engine.py:2559` — _static_confirmed_
+    - WHERE: `committer IN (`
+    - WHERE: `committer IN ({?}) AND status='fulfilled' AND fulfilled_at >= ?`
+- `SELECT-FROM` @ **upsert_commitments_from_narrative** `backend/app/services/narrative_generator.py:1190` — _static_confirmed_
+    - WHERE: `client_id=?`
+    - WHERE: `client_id=? AND committer=? AND content=?`
+- `SELECT-FROM` @ **build_portrait** `backend/app/services/project_portrait_builder.py:276` — _static_confirmed_
+    - WHERE: `client_id=? AND source_type='ai_inferred'`
+- `SELECT-FROM` @ **build_portrait._persist** `backend/app/services/project_portrait_builder.py:321` — _static_confirmed_
+    - WHERE: `client_id=? AND source_type='ai_inferred'`
+- `SELECT-FROM` @ **_section_9_next_steps** `backend/app/services/story_card_generator.py:225` — _static_confirmed_
+    - WHERE: `client_id = ? AND status NOT IN ('done','cancelled')`
+
+## `conflict_groups`
+
+- 经验层: **9 行** · 最近写入 created_at=2026-06-05T15:04:03
+
+### 写边 (1)
+- `UPDATE` @ **refresh_client_analysis_projection** `backend/app/services/analysis_center.py:2820` — _call_name_match_
+    - chain: refresh_client_analysis_projection @backend/app/services/analysis_center.py:2820  ←  execute_analysis_job_projection @backend/app/services/analysis_center.py:3467  ←  analysis_job_worker_loop [worker:analysis_job_worker_loop] @backend/app/main.py:5122
+
+### 读边 (3)
+- `SELECT-FROM` @ **list_conflict_groups** `backend/app/services/analysis_center.py:1108` — _static_confirmed_
+    - WHERE: `{?}`
+- `SELECT-FROM` @ **_build_analysis_center_summary** `backend/app/services/analysis_center.py:1548` — _static_confirmed_
+    - WHERE: `client_id = ? UNION ALL SELECT 'theme', COUNT(*) FROM theme_clusters WHERE client_id = ? UNION ALL SELECT 'conflict', COUNT(*) FROM conflict_groups WHERE client_id = ? UNION ALL SELECT 'open_q', COUNT`
+- `SELECT-FROM` @ **build_client_page_context_pack** `backend/app/services/analysis_context.py:294` — _static_confirmed_
+    - WHERE: `client_id = ?`
+
+## `consultation_answers`
+
+- 经验层: 真库**无此表** (静态边 0写/1读)
+
+### 写边 (0)
+- (无静态写边)
+
+### 读边 (1)
+- `SELECT-FROM` @ **_sync_to_cloud** `backend/app/services/client_profile.py:284` — _static_confirmed_
+    - WHERE: `client_id = ?`
+
+## `context_packs`
+
+- 经验层: **24 行** · 最近写入 created_at=2026-06-05T15:04:03
+
+### 写边 (1)
+- `UPDATE` @ **_sync_event_line_client_scope_records** `backend/app/main.py:2484` — _needs_human_
+    - chain: _sync_event_line_client_scope_records [worker:_sync_event_line_client_scope_records] @backend/app/main.py:2484
+
+### 读边 (8)
+- `SELECT-FROM` @ **create_app._fetch_context_pack_summaries** `backend/app/main.py:18593` — _static_confirmed_
+    - WHERE: `client_id = ? AND id IN (`
+    - WHERE: `client_id = ? AND id IN ({?})`
+- `SELECT-FROM` @ **_sync_event_line_client_scope_records** `backend/app/main.py:2484` — _static_confirmed_
+    - WHERE: `target_type = 'event_line' AND target_id = ?`
+- `SELECT-FROM` @ **create_app** `backend/app/main.py:3179` — _static_confirmed_
+    - WHERE: `client_id = ?`
+    - WHERE: `client_id = ? AND id IN (`
+    - WHERE: `client_id = ? AND id IN ({?})`
+- `SELECT-FROM` @ **create_app.get_workspace_data_center_readiness** `backend/app/main.py:42811` — _static_confirmed_
+    - WHERE: `client_id = ?`
+- `SELECT-FROM` @ **resolve_context_pack** `backend/app/services/analysis_center.py:1473` — _static_confirmed_
+    - WHERE: `client_id = ? AND target_type = ? AND target_id = ?`
+- `SELECT-FROM` @ **_build_analysis_center_summary** `backend/app/services/analysis_center.py:1548` — _static_confirmed_
+    - WHERE: `client_id = ?`
+- `SELECT-FROM` @ **_build_canary_exclusion_scope** `backend/app/services/analysis_center.py:233` — _static_confirmed_
+    - WHERE: `job_id IN (`
+    - WHERE: `job_id IN ({?})`
+- `SELECT-FROM` @ **_sync_context_pack** `backend/app/services/analysis_center.py:2380` — _static_confirmed_
+    - WHERE: `client_id = ? AND target_type = ? AND target_id = ? AND COALESCE(invalidated_by, '') = ''`
+    - WHERE: `client_id = ? AND target_type = ? AND target_id = ? AND source_snapshot_hash = ?`
+
+## `contract_structures`
+
+- 经验层: 真库**无此表** (静态边 1写/9读)
+
+### 写边 (1)
+- `INSERT` @ **record_contract_structure** `backend/app/services/file_identity_classifier.py:374` — _call_name_match_
+    - chain: record_contract_structure @backend/app/services/file_identity_classifier.py:374  ←  smart_import_commit_session [endpoint:/api/v1/smart-import/sessions/{session_id}/commit] @backend/app/main.py:29395
+
+### 读边 (9)
+- `SELECT-FROM` @ **create_app.build_template_fill_context** `backend/app/main.py:16786` — _static_confirmed_
+    - WHERE: `client_id = ?`
+- `SELECT-FROM` @ **create_app** `backend/app/main.py:3179` — _static_confirmed_
+    - WHERE: `client_id = ?`
+    - WHERE: `client_id = ? AND amount LIKE ?`
+    - WHERE: `client_id = ? AND project_name LIKE ?`
+- `SELECT-FROM` @ **create_app.check_client_evidence** `backend/app/main.py:40575` — _static_confirmed_
+    - WHERE: `client_id = ? AND amount LIKE ?`
+- `SELECT-FROM` @ **create_app.get_client_quality_context** `backend/app/main.py:40726` — _static_confirmed_
+    - WHERE: `client_id = ?`
+    - WHERE: `client_id = ? AND amount LIKE ?`
+- `SELECT-FROM` @ **create_app.resolve_client_authority** `backend/app/main.py:41243` — _static_confirmed_
+    - WHERE: `client_id = ? AND project_name LIKE ?`
+- `SELECT-FROM` @ **build_company_brain_context** `backend/app/services/company_brain_context_builder.py:83` — _static_confirmed_
+    - WHERE: `client_id = ?`
+- `SELECT-FROM` @ **build_evidence_pack** `backend/app/services/company_brain_qa.py:76` — _static_confirmed_
+    - WHERE: `client_id = ?`
+- `SELECT-FROM` @ **find_candidates** `backend/app/services/historical_material_resolver.py:271` — _static_confirmed_
+    - WHERE: `client_id = ?`
+    - WHERE: `client_id = ? AND amount LIKE ?`
+- `SELECT-FROM` @ **collect_client_fact_bundle** `backend/app/services/narrative_collector.py:338` — _static_confirmed_
+    - WHERE: `client_id = ?`
+
+## `cooperation_relationships`
+
+- 经验层: **0 行**
+
+### 写边 (0)
+- (无静态写边)
+
+### 读边 (2)
+- `SELECT-FROM` @ **_load_client_profile** `backend/app/services/clarification_context.py:65` — _static_confirmed_
+    - WHERE: `client_id = ?`
+- `SELECT-FROM` @ **build_narrative_analyses** `backend/app/services/review_narrative.py:1988` — _static_confirmed_
+    - WHERE: `client_id = ?`
+
+## `current`
+
+- 经验层: 真库**无此表** (静态边 0写/1读)
+
+### 写边 (0)
+- (无静态写边)
+
+### 读边 (1)
+- `SELECT-FROM` @ **update_memory_index** `backend/app/services/local_memory.py:361` — _static_confirmed_
+
+## `data_center_ingest_events`
+
+- 经验层: **774 行** · 最近写入 created_at=2026-06-08T14:44:02
+  - source_type 分布: task:621, external_sentiment:100, task_attachment:23, weekly_review_entry:19, weekly_review:8, event_line_manual_update:3
+
+### 写边 (7)
+- `UPDATE` @ **_init_schema** `backend/app/db.py:60` — _needs_human_
+    - chain: _init_schema @backend/app/db.py:60  ←  __init__ @backend/app/db.py:49
+- `UPDATE` @ **ingest_external_observation** `backend/app/services/data_center_ingest.py:1228` — _call_name_match_
+    - chain: ingest_external_observation @backend/app/services/data_center_ingest.py:1228  ←  persist_sentiment_drafts @backend/app/services/intelligence_sentiment.py:655  ←  refresh_sentiment_endpoint [endpoint:/api/v1/intelligence/sentiment/refresh] @backend/app/main.py:58704
+- `UPDATE` @ **ensure_data_center_ingest_schema** `backend/app/services/data_center_ingest.py:304` — _call_name_match_
+    - chain: ensure_data_center_ingest_schema @backend/app/services/data_center_ingest.py:304  ←  get_workspace_data_center_readiness [endpoint:/api/v1/clients/{client_id}/workspace/data-center-readiness] @backend/app/main.py:42811
+    - chain: ensure_data_center_ingest_schema @backend/app/services/data_center_ingest.py:304  ←  mark_ingested_source_inactive @backend/app/services/data_center_ingest.py:735  ←  delete_task [endpoint:/api/v1/tasks/{task_id}] @backend/app/main.py:53307
+    - chain: ensure_data_center_ingest_schema @backend/app/services/data_center_ingest.py:304  ←  mark_ingested_source_inactive @backend/app/services/data_center_ingest.py:735  ←  update_task [endpoint:/api/v1/tasks/{task_id}] @backend/app/main.py:52636
+    - chain: ensure_data_center_ingest_schema @backend/app/services/data_center_ingest.py:304  ←  ingest_user_input @backend/app/services/data_center_ingest.py:1089  ←  ingest_event_line_by_id @backend/app/services/data_center_ingest.py:1862  ←  create_event_line [endpoint:/api/v1/event-lines] @backend/app/main.py:31525
+    - chain: ensure_data_center_ingest_schema @backend/app/services/data_center_ingest.py:304  ←  ingest_user_input @backend/app/services/data_center_ingest.py:1089  ←  ingest_event_line_by_id @backend/app/services/data_center_ingest.py:1862  ←  update_event_line [endpoint:/api/v1/event-lines/{event_line_id}] @backend/app/main.py:35169
+    - chain: ensure_data_center_ingest_schema @backend/app/services/data_center_ingest.py:304  ←  ingest_user_input @backend/app/services/data_center_ingest.py:1089  ←  ingest_meeting_by_id @backend/app/services/data_center_ingest.py:1609  ←  apply_strategic_meeting_pack [endpoint:/api/v1/clients/{client_id}/strategic-cockpit/meeting-pack/{meeting_id}/apply] @backend/app/main.py:42202
+- `INSERT` @ **_upsert_ingest_event** `backend/app/services/data_center_ingest.py:388` — _call_name_match_
+    - chain: _upsert_ingest_event @backend/app/services/data_center_ingest.py:388  ←  ingest_user_input @backend/app/services/data_center_ingest.py:1089  ←  ingest_event_line_by_id @backend/app/services/data_center_ingest.py:1862  ←  create_event_line [endpoint:/api/v1/event-lines] @backend/app/main.py:31525
+    - chain: _upsert_ingest_event @backend/app/services/data_center_ingest.py:388  ←  ingest_user_input @backend/app/services/data_center_ingest.py:1089  ←  ingest_event_line_by_id @backend/app/services/data_center_ingest.py:1862  ←  update_event_line [endpoint:/api/v1/event-lines/{event_line_id}] @backend/app/main.py:35169
+    - chain: _upsert_ingest_event @backend/app/services/data_center_ingest.py:388  ←  ingest_user_input @backend/app/services/data_center_ingest.py:1089  ←  ingest_meeting_by_id @backend/app/services/data_center_ingest.py:1609  ←  apply_strategic_meeting_pack [endpoint:/api/v1/clients/{client_id}/strategic-cockpit/meeting-pack/{meeting_id}/apply] @backend/app/main.py:42202
+    - chain: _upsert_ingest_event @backend/app/services/data_center_ingest.py:388  ←  ingest_user_input @backend/app/services/data_center_ingest.py:1089  ←  ingest_meeting_by_id @backend/app/services/data_center_ingest.py:1609  ←  extract_meeting [endpoint:/api/v1/clients/{client_id}/meetings/{meeting_id}/extract] @backend/app/main.py:51418
+    - chain: _upsert_ingest_event @backend/app/services/data_center_ingest.py:388  ←  ingest_user_input @backend/app/services/data_center_ingest.py:1089  ←  ingest_meeting_by_id @backend/app/services/data_center_ingest.py:1609  ←  ingest_meeting [endpoint:/api/v1/clients/{client_id}/meetings/{meeting_id}/ingest] @backend/app/main.py:51386
+    - chain: _upsert_ingest_event @backend/app/services/data_center_ingest.py:388  ←  ingest_user_input @backend/app/services/data_center_ingest.py:1089  ←  ingest_meeting_by_id @backend/app/services/data_center_ingest.py:1609  ←  publish_meeting [endpoint:/api/v1/clients/{client_id}/meetings/{meeting_id}/publish] @backend/app/main.py:51482
+- `UPDATE` @ **_mark_documents_for_source_entity** `backend/app/services/data_center_ingest.py:665` — _call_name_match_
+    - chain: _mark_documents_for_source_entity @backend/app/services/data_center_ingest.py:665  ←  mark_ingested_source_inactive @backend/app/services/data_center_ingest.py:735  ←  delete_task [endpoint:/api/v1/tasks/{task_id}] @backend/app/main.py:53307
+    - chain: _mark_documents_for_source_entity @backend/app/services/data_center_ingest.py:665  ←  mark_ingested_source_inactive @backend/app/services/data_center_ingest.py:735  ←  update_task [endpoint:/api/v1/tasks/{task_id}] @backend/app/main.py:52636
+    - chain: _mark_documents_for_source_entity @backend/app/services/data_center_ingest.py:665  ←  _upsert_text_document_if_needed @backend/app/services/data_center_ingest.py:552  ←  ingest_user_input @backend/app/services/data_center_ingest.py:1089  ←  ingest_event_line_by_id @backend/app/services/data_center_ingest.py:1862  ←  create_event_line [endpoint:/api/v1/event-lines] @backend/app/main.py:31525
+    - chain: _mark_documents_for_source_entity @backend/app/services/data_center_ingest.py:665  ←  _upsert_text_document_if_needed @backend/app/services/data_center_ingest.py:552  ←  ingest_user_input @backend/app/services/data_center_ingest.py:1089  ←  ingest_event_line_by_id @backend/app/services/data_center_ingest.py:1862  ←  update_event_line [endpoint:/api/v1/event-lines/{event_line_id}] @backend/app/main.py:35169
+    - chain: _mark_documents_for_source_entity @backend/app/services/data_center_ingest.py:665  ←  _upsert_text_document_if_needed @backend/app/services/data_center_ingest.py:552  ←  ingest_user_input @backend/app/services/data_center_ingest.py:1089  ←  ingest_meeting_by_id @backend/app/services/data_center_ingest.py:1609  ←  apply_strategic_meeting_pack [endpoint:/api/v1/clients/{client_id}/strategic-cockpit/meeting-pack/{meeting_id}/apply] @backend/app/main.py:42202
+    - chain: _mark_documents_for_source_entity @backend/app/services/data_center_ingest.py:665  ←  _upsert_text_document_if_needed @backend/app/services/data_center_ingest.py:552  ←  ingest_user_input @backend/app/services/data_center_ingest.py:1089  ←  ingest_meeting_by_id @backend/app/services/data_center_ingest.py:1609  ←  extract_meeting [endpoint:/api/v1/clients/{client_id}/meetings/{meeting_id}/extract] @backend/app/main.py:51418
+- `UPDATE` @ **mark_ingested_source_inactive** `backend/app/services/data_center_ingest.py:735` — _call_name_match_
+    - chain: mark_ingested_source_inactive @backend/app/services/data_center_ingest.py:735  ←  delete_task [endpoint:/api/v1/tasks/{task_id}] @backend/app/main.py:53307
+    - chain: mark_ingested_source_inactive @backend/app/services/data_center_ingest.py:735  ←  update_task [endpoint:/api/v1/tasks/{task_id}] @backend/app/main.py:52636
+    - chain: mark_ingested_source_inactive @backend/app/services/data_center_ingest.py:735  ←  _soft_isolate_ingested_source @backend/app/services/data_center_ingest.py:836  ←  _skip_orphan_client_ingest @backend/app/services/data_center_ingest.py:877  ←  ingest_user_input @backend/app/services/data_center_ingest.py:1089  ←  ingest_event_line_by_id @backend/app/services/data_center_ingest.py:1862  ←  create_event_line [endpoint:/api/v1/event-lines] @backend/app/main.py:31525
+    - chain: mark_ingested_source_inactive @backend/app/services/data_center_ingest.py:735  ←  _soft_isolate_ingested_source @backend/app/services/data_center_ingest.py:836  ←  _skip_orphan_client_ingest @backend/app/services/data_center_ingest.py:877  ←  ingest_user_input @backend/app/services/data_center_ingest.py:1089  ←  ingest_event_line_by_id @backend/app/services/data_center_ingest.py:1862  ←  update_event_line [endpoint:/api/v1/event-lines/{event_line_id}] @backend/app/main.py:35169
+    - chain: mark_ingested_source_inactive @backend/app/services/data_center_ingest.py:735  ←  _soft_isolate_ingested_source @backend/app/services/data_center_ingest.py:836  ←  _skip_orphan_client_ingest @backend/app/services/data_center_ingest.py:877  ←  ingest_user_input @backend/app/services/data_center_ingest.py:1089  ←  ingest_meeting_by_id @backend/app/services/data_center_ingest.py:1609  ←  apply_strategic_meeting_pack [endpoint:/api/v1/clients/{client_id}/strategic-cockpit/meeting-pack/{meeting_id}/apply] @backend/app/main.py:42202
+    - chain: mark_ingested_source_inactive @backend/app/services/data_center_ingest.py:735  ←  _soft_isolate_ingested_source @backend/app/services/data_center_ingest.py:836  ←  _skip_orphan_client_ingest @backend/app/services/data_center_ingest.py:877  ←  ingest_user_input @backend/app/services/data_center_ingest.py:1089  ←  ingest_meeting_by_id @backend/app/services/data_center_ingest.py:1609  ←  extract_meeting [endpoint:/api/v1/clients/{client_id}/meetings/{meeting_id}/extract] @backend/app/main.py:51418
+- `UPDATE` @ **_repair_orphan_ingest_event_row** `backend/app/services/data_center_ingest.py:957` — _needs_human_
+    - chain: _repair_orphan_ingest_event_row @backend/app/services/data_center_ingest.py:957  ←  build_orphan_client_ingest_repair_report @backend/app/services/data_center_ingest.py:994
+
+### 读边 (13)
+- `SELECT-FROM` @ **create_app** `backend/app/main.py:3179` — _static_confirmed_
+    - WHERE: `status = ?`
+- `SELECT-FROM` @ **create_app.get_workspace_data_center_readiness** `backend/app/main.py:42811` — _static_confirmed_
+    - WHERE: `status = ?`
+- `SELECT-FROM` @ **purge_private_task_ingest_events** `backend/app/services/data_center_ingest.py:1328` — _static_confirmed_
+    - WHERE: `id IN (`
+    - WHERE: `id IN ({?})`
+    - WHERE: `task_id IN (`
+    - WHERE: `task_id IN ({?}) OR source_id IN ({?}) OR source_entity_id IN ({?})`
+- `SELECT-FROM` @ **ensure_data_center_ingest_schema** `backend/app/services/data_center_ingest.py:304` — _static_confirmed_
+    - WHERE: `COALESCE(department_id, '') != '' AND COALESCE(department_ids_json, '[]') IN ('', '[]')`
+- `SELECT-FROM` @ **_upsert_ingest_event** `backend/app/services/data_center_ingest.py:388` — _static_confirmed_
+    - WHERE: `source_type = ? AND source_id = ? AND content_hash = ?`
+- `SELECT-FROM` @ **_mark_documents_for_source_entity** `backend/app/services/data_center_ingest.py:665` — _static_confirmed_
+    - WHERE: `source_entity_type = ? AND source_entity_id = ?`
+- `SELECT-FROM` @ **mark_ingested_source_inactive** `backend/app/services/data_center_ingest.py:735` — _static_confirmed_
+    - WHERE: `source_type = ? AND source_id = ?`
+    - WHERE: `{?}`
+- `SELECT-FROM` @ **_orphan_ingest_event_rows** `backend/app/services/data_center_ingest.py:918` — _static_confirmed_
+    - WHERE: `COALESCE(e.client_id, '') != '' AND c.id IS NULL`
+- `SELECT-FROM` @ **_ingest_event_row** `backend/app/services/data_center_sync.py:120` — _static_confirmed_
+    - WHERE: `id = ?`
+- `SELECT-FROM` @ **build_data_center_sync_preview** `backend/app/services/data_center_sync.py:490` — _static_confirmed_
+- `SELECT-FROM` @ **fetch_client_facts** `backend/app/services/evidence_tier.py:63` — _static_confirmed_
+    - WHERE: `client_id = ? AND evidence_tier IN (`
+    - WHERE: `client_id = ? AND evidence_tier IN ({?}) AND lifecycle_status = 'active'`
+- `SELECT-FROM` @ **build_timely_research_strategy** `backend/app/services/intelligence_timely_strategy.py:290` — _static_confirmed_
+    - WHERE: `lifecycle_status = 'active' AND COALESCE(source_type, '') <> 'external_intelligence' AND (client_id = ? OR project_module_id = ?)`
+    - WHERE: `lifecycle_status = 'active' AND COALESCE(source_type, '') <> 'external_intelligence' AND client_id = ?`
+- `SELECT-FROM` @ **build_weekly_review_material_pack** `backend/app/services/weekly_review_material_pack.py:335` — _static_confirmed_
+    - WHERE: `e.source_type = 'weekly_review_entry' AND e.week_label = ? AND LOWER(COALESCE(entry.content_domain, 'work')) NOT IN ('personal', 'private') AND NOT EXISTS ( SELECT 1 FROM tasks t WHERE t.id = entry.ta`
+
+## `data_center_proposal_drafts`
+
+- 经验层: **0 行**
+
+### 写边 (7)
+- `INSERT` @ **persist_data_center_proposal_drafts** `backend/app/services/data_center_proposal.py:246` — _call_name_match_
+    - chain: persist_data_center_proposal_drafts @backend/app/services/data_center_proposal.py:246  ←  resolve_data_center_kernel @backend/app/services/data_center_kernel.py:453  ←  data_center_diagnose [endpoint:/api/v1/data-center/diagnose] @backend/app/main.py:48600
+    - chain: persist_data_center_proposal_drafts @backend/app/services/data_center_proposal.py:246  ←  resolve_data_center_kernel @backend/app/services/data_center_kernel.py:453  ←  data_center_resolve [endpoint:/api/v1/data-center/resolve] @backend/app/main.py:48591
+    - chain: persist_data_center_proposal_drafts @backend/app/services/data_center_proposal.py:246  ←  resolve_data_center_kernel @backend/app/services/data_center_kernel.py:453  ←  resolve_chat_answer_data_center_primary @backend/app/main.py:46745  ←  document_ai_action [endpoint:/api/v1/clients/{client_id}/documents/ai-action] @backend/app/main.py:49635
+    - chain: persist_data_center_proposal_drafts @backend/app/services/data_center_proposal.py:246  ←  resolve_data_center_kernel @backend/app/services/data_center_kernel.py:453  ←  resolve_chat_answer_data_center_primary @backend/app/main.py:46745  ←  resolve_chat_answer @backend/app/main.py:48117  ←  background_resolve_chat_answer [worker:background_resolve_chat_answer] @backend/app/main.py:48335
+    - chain: persist_data_center_proposal_drafts @backend/app/services/data_center_proposal.py:246  ←  resolve_data_center_kernel @backend/app/services/data_center_kernel.py:453  ←  resolve_chat_answer_data_center_primary @backend/app/main.py:46745  ←  resolve_chat_answer @backend/app/main.py:48117  ←  send_chat_message [endpoint:/api/v1/clients/{client_id}/workspace/chat] @backend/app/main.py:49220
+- `INSERT` @ **create_data_center_proposal_draft** `backend/app/services/data_center_proposal.py:388` — _call_name_match_
+    - chain: create_data_center_proposal_draft @backend/app/services/data_center_proposal.py:388  ←  create_workspace_answer_action_evidence_request_api [endpoint:/api/v1/workspace-answer-action-cards/{message_id}/request-evidence] @backend/app/main.py:44577
+    - chain: create_data_center_proposal_draft @backend/app/services/data_center_proposal.py:388  ←  create_workspace_answer_action_proposal_api [endpoint:/api/v1/workspace-answer-action-cards/{message_id}/create-proposal] @backend/app/main.py:44506
+    - chain: create_data_center_proposal_draft @backend/app/services/data_center_proposal.py:388  ←  create_workspace_proposal_draft_api [endpoint:/api/v1/clients/{client_id}/workspace/proposal-drafts] @backend/app/main.py:44961
+- `UPDATE` @ **mark_data_center_proposal_draft_promoted** `backend/app/services/data_center_proposal.py:459` — _call_name_match_
+    - chain: mark_data_center_proposal_draft_promoted @backend/app/services/data_center_proposal.py:459  ←  promote_data_center_proposal_draft_api [endpoint:/api/v1/data-center/proposal-drafts/{draft_id}/promote] @backend/app/main.py:45080
+- `UPDATE` @ **mark_data_center_proposal_draft_reviewed** `backend/app/services/data_center_proposal.py:483` — _call_name_match_
+    - chain: mark_data_center_proposal_draft_reviewed @backend/app/services/data_center_proposal.py:483  ←  mark_data_center_proposal_draft_reviewed_api [endpoint:/api/v1/data-center/proposal-drafts/{draft_id}/mark-reviewed] @backend/app/main.py:45022
+    - chain: mark_data_center_proposal_draft_reviewed @backend/app/services/data_center_proposal.py:483  ←  promote_data_center_proposal_draft_api [endpoint:/api/v1/data-center/proposal-drafts/{draft_id}/promote] @backend/app/main.py:45080
+- `UPDATE` @ **reject_data_center_proposal_draft** `backend/app/services/data_center_proposal.py:515` — _call_name_match_
+    - chain: reject_data_center_proposal_draft @backend/app/services/data_center_proposal.py:515  ←  reject_data_center_proposal_draft_api [endpoint:/api/v1/data-center/proposal-drafts/{draft_id}/reject] @backend/app/main.py:45051
+- `UPDATE` @ **promote_data_center_proposal_draft** `backend/app/services/data_center_proposal.py:555` — _call_name_match_
+    - chain: promote_data_center_proposal_draft @backend/app/services/data_center_proposal.py:555  ←  promote_data_center_proposal_draft_api [endpoint:/api/v1/data-center/proposal-drafts/{draft_id}/promote] @backend/app/main.py:45080
+- `INSERT` @ **create_proposal_draft_from_external_evidence_card** `backend/app/services/external_evidence.py:328` — _call_name_match_
+    - chain: create_proposal_draft_from_external_evidence_card @backend/app/services/external_evidence.py:328  ←  create_external_evidence_proposal_draft_api [endpoint:/api/v1/external-evidence-cards/{card_id}/create-proposal-draft] @backend/app/main.py:45329
+
+### 读边 (12)
+- `SELECT-FROM` @ **create_app** `backend/app/main.py:3179` — _static_confirmed_
+    - WHERE: `client_id = ?`
+- `SELECT-FROM` @ **create_app.get_client_mobile_data_center_snapshot** `backend/app/main.py:44053` — _static_confirmed_
+    - WHERE: `client_id = ?`
+- `SELECT-FROM` @ **persist_data_center_proposal_drafts** `backend/app/services/data_center_proposal.py:246` — _static_confirmed_
+    - WHERE: `dedupe_key = ?`
+- `SELECT-FROM` @ **list_data_center_proposal_drafts** `backend/app/services/data_center_proposal.py:339` — _static_confirmed_
+- `SELECT-FROM` @ **get_data_center_proposal_draft** `backend/app/services/data_center_proposal.py:376` — _static_confirmed_
+    - WHERE: `id = ?`
+- `SELECT-FROM` @ **create_data_center_proposal_draft** `backend/app/services/data_center_proposal.py:388` — _static_confirmed_
+    - WHERE: `dedupe_key = ?`
+    - WHERE: `id = ?`
+- `SELECT-FROM` @ **mark_data_center_proposal_draft_promoted** `backend/app/services/data_center_proposal.py:459` — _static_confirmed_
+    - WHERE: `id = ?`
+- `SELECT-FROM` @ **mark_data_center_proposal_draft_reviewed** `backend/app/services/data_center_proposal.py:483` — _static_confirmed_
+    - WHERE: `id = ?`
+- `SELECT-FROM` @ **reject_data_center_proposal_draft** `backend/app/services/data_center_proposal.py:515` — _static_confirmed_
+    - WHERE: `id = ?`
+- `SELECT-FROM` @ **promote_data_center_proposal_draft** `backend/app/services/data_center_proposal.py:555` — _static_confirmed_
+    - WHERE: `id = ?`
+- `SELECT-FROM` @ **create_proposal_draft_from_external_evidence_card** `backend/app/services/external_evidence.py:328` — _static_confirmed_
+    - WHERE: `dedupe_key = ?`
+    - WHERE: `id = ?`
+- `SELECT-FROM` @ **_count_answer_action_artifacts** `backend/app/services/workspace_answer_value_diagnostics.py:435` — _static_confirmed_
+    - WHERE: `client_id = ?`
+
+## `data_center_shadow_runs`
+
+- 经验层: **834 行** · 最近写入 created_at=2026-06-08T14:34:51
+
+### 写边 (1)
+- `INSERT` @ **create_data_center_shadow_run** `backend/app/services/data_center_shadow.py:40` — _call_name_match_
+    - chain: create_data_center_shadow_run @backend/app/services/data_center_shadow.py:40  ←  resolve_data_center_kernel @backend/app/services/data_center_kernel.py:453  ←  data_center_diagnose [endpoint:/api/v1/data-center/diagnose] @backend/app/main.py:48600
+    - chain: create_data_center_shadow_run @backend/app/services/data_center_shadow.py:40  ←  resolve_data_center_kernel @backend/app/services/data_center_kernel.py:453  ←  data_center_resolve [endpoint:/api/v1/data-center/resolve] @backend/app/main.py:48591
+    - chain: create_data_center_shadow_run @backend/app/services/data_center_shadow.py:40  ←  resolve_data_center_kernel @backend/app/services/data_center_kernel.py:453  ←  resolve_chat_answer_data_center_primary @backend/app/main.py:46745  ←  document_ai_action [endpoint:/api/v1/clients/{client_id}/documents/ai-action] @backend/app/main.py:49635
+    - chain: create_data_center_shadow_run @backend/app/services/data_center_shadow.py:40  ←  resolve_data_center_kernel @backend/app/services/data_center_kernel.py:453  ←  resolve_chat_answer_data_center_primary @backend/app/main.py:46745  ←  resolve_chat_answer @backend/app/main.py:48117  ←  background_resolve_chat_answer [worker:background_resolve_chat_answer] @backend/app/main.py:48335
+    - chain: create_data_center_shadow_run @backend/app/services/data_center_shadow.py:40  ←  resolve_data_center_kernel @backend/app/services/data_center_kernel.py:453  ←  resolve_chat_answer_data_center_primary @backend/app/main.py:46745  ←  resolve_chat_answer @backend/app/main.py:48117  ←  send_chat_message [endpoint:/api/v1/clients/{client_id}/workspace/chat] @backend/app/main.py:49220
+
+### 读边 (1)
+- `SELECT-FROM` @ **list_data_center_shadow_runs** `backend/app/services/data_center_shadow.py:113` — _static_confirmed_
+
+## `data_center_sync_outbox`
+
+- 经验层: **0 行**
+
+### 写边 (1)
+- `INSERT` @ **_upsert_outbox_item** `backend/app/services/data_center_sync.py:327` — _call_name_match_
+    - chain: _upsert_outbox_item @backend/app/services/data_center_sync.py:327  ←  enqueue_data_center_sync_for_ingest_event [worker:enqueue_data_center_sync_for_ingest_event] @backend/app/services/data_center_sync.py:396
+    - chain: _upsert_outbox_item @backend/app/services/data_center_sync.py:327  ←  enqueue_data_center_lifecycle_for_ingest_event @backend/app/services/data_center_sync.py:441  ←  mark_ingested_source_inactive @backend/app/services/data_center_ingest.py:735  ←  delete_task [endpoint:/api/v1/tasks/{task_id}] @backend/app/main.py:53307
+    - chain: _upsert_outbox_item @backend/app/services/data_center_sync.py:327  ←  enqueue_data_center_lifecycle_for_ingest_event @backend/app/services/data_center_sync.py:441  ←  mark_ingested_source_inactive @backend/app/services/data_center_ingest.py:735  ←  update_task [endpoint:/api/v1/tasks/{task_id}] @backend/app/main.py:52636
+    - chain: _upsert_outbox_item @backend/app/services/data_center_sync.py:327  ←  enqueue_data_center_lifecycle_for_ingest_event @backend/app/services/data_center_sync.py:441  ←  _mark_documents_for_source_entity @backend/app/services/data_center_ingest.py:665  ←  _upsert_text_document_if_needed @backend/app/services/data_center_ingest.py:552  ←  ingest_user_input @backend/app/services/data_center_ingest.py:1089  ←  ingest_event_line_by_id @backend/app/services/data_center_ingest.py:1862  ←  create_event_line [endpoint:/api/v1/event-lines] @backend/app/main.py:31525
+    - chain: _upsert_outbox_item @backend/app/services/data_center_sync.py:327  ←  enqueue_data_center_lifecycle_for_ingest_event @backend/app/services/data_center_sync.py:441  ←  _mark_documents_for_source_entity @backend/app/services/data_center_ingest.py:665  ←  _upsert_text_document_if_needed @backend/app/services/data_center_ingest.py:552  ←  ingest_user_input @backend/app/services/data_center_ingest.py:1089  ←  ingest_event_line_by_id @backend/app/services/data_center_ingest.py:1862  ←  update_event_line [endpoint:/api/v1/event-lines/{event_line_id}] @backend/app/main.py:35169
+    - chain: _upsert_outbox_item @backend/app/services/data_center_sync.py:327  ←  enqueue_data_center_lifecycle_for_ingest_event @backend/app/services/data_center_sync.py:441  ←  _mark_documents_for_source_entity @backend/app/services/data_center_ingest.py:665  ←  _upsert_text_document_if_needed @backend/app/services/data_center_ingest.py:552  ←  ingest_user_input @backend/app/services/data_center_ingest.py:1089  ←  ingest_meeting_by_id @backend/app/services/data_center_ingest.py:1609  ←  apply_strategic_meeting_pack [endpoint:/api/v1/clients/{client_id}/strategic-cockpit/meeting-pack/{meeting_id}/apply] @backend/app/main.py:42202
+
+### 读边 (2)
+- `SELECT-FROM` @ **_upsert_outbox_item** `backend/app/services/data_center_sync.py:327` — _static_confirmed_
+    - WHERE: `source_type = ? AND source_id = ? AND content_hash = ?`
+- `SELECT-FROM` @ **build_data_center_sync_preview** `backend/app/services/data_center_sync.py:490` — _static_confirmed_
+
+## `data_gaps`
+
+- 经验层: **0 行**
+
+### 写边 (1)
+- `INSERT` @ **persist_data_gap** `backend/app/services/data_gap_compensator.py:174` — _call_name_match_
+    - chain: persist_data_gap @backend/app/services/data_gap_compensator.py:174  ←  run_data_gap_pipeline @backend/app/services/data_gap_compensator.py:334  ←  compensate_client_data_gaps [endpoint:/api/v1/clients/{client_id}/data-gaps/compensate] @backend/app/main.py:40048
+
+### 读边 (6)
+- `SELECT-FROM` @ **create_app.build_template_fill_context** `backend/app/main.py:16786` — _static_confirmed_
+    - WHERE: `client_id = ? AND status = 'open'`
+- `SELECT-FROM` @ **create_app** `backend/app/main.py:3179` — _static_confirmed_
+    - WHERE: `client_id = ? AND status = 'open'`
+- `SELECT-FROM` @ **create_app.get_client_data_gaps** `backend/app/main.py:39920` — _static_confirmed_
+- `SELECT-FROM` @ **create_app.get_client_quality_context** `backend/app/main.py:40726` — _static_confirmed_
+    - WHERE: `client_id = ? AND status = 'open'`
+- `SELECT-FROM` @ **build_company_brain_context** `backend/app/services/company_brain_context_builder.py:83` — _static_confirmed_
+    - WHERE: `client_id = ? AND status = 'open'`
+- `SELECT-FROM` @ **collect_client_fact_bundle** `backend/app/services/narrative_collector.py:338` — _static_confirmed_
+    - WHERE: `client_id = ? AND status = 'open'`
+
+## `datetime`
+
+- 经验层: 真库**无此表** (静态边 0写/1读)
+
+### 写边 (0)
+- (无静态写边)
+
+### 读边 (1)
+- `SELECT-FROM` @ **compute_time_decay** `backend/app/services/freshness_decay.py:71` — _static_confirmed_
+
+## `decisions`
+
+- 经验层: **3 行** · 最近写入 created_at=2026-04-16T22:13:03
+
+### 写边 (3)
+- `INSERT` @ **create_app** `backend/app/main.py:3179` — _needs_human_
+    - chain: create_app @backend/app/main.py:3179  ←  (no caller found — orphan write)
+- `INSERT` @ **create_app.extract_meeting** `backend/app/main.py:51418` — _static_confirmed_
+    - chain: extract_meeting [endpoint:/api/v1/clients/{client_id}/meetings/{meeting_id}/extract] @backend/app/main.py:51418
+- `INSERT` @ **create_app._populate_meeting_extraction** `backend/app/main.py:7012` — _call_name_match_
+    - chain: _populate_meeting_extraction @backend/app/main.py:7012  ←  _ingest_feishu_minutes_writeback @backend/app/main.py:7044  ←  handle_feishu_event @backend/app/main.py:7069  ←  receive_feishu_events [endpoint:/api/v1/channels/feishu/events] @backend/app/main.py:37511
+
+### 读边 (11)
+- `SELECT-FROM` @ **create_app.build_meeting_detail** `backend/app/main.py:21917` — _static_confirmed_
+    - WHERE: `meeting_id = ?`
+- `SELECT-FROM` @ **create_app** `backend/app/main.py:3179` — _static_confirmed_
+    - WHERE: `id = ?`
+    - WHERE: `meeting_id = ?`
+- `SELECT-FROM` @ **create_app._resolve_client_id_for_evidence_quality_annotation** `backend/app/main.py:3650` — _static_confirmed_
+    - WHERE: `id = ?`
+- `SELECT-FROM` @ **create_app.extract_meeting** `backend/app/main.py:51418` — _static_confirmed_
+    - WHERE: `meeting_id = ?`
+- `SELECT-FROM` @ **create_app.publish_meeting** `backend/app/main.py:51482` — _static_confirmed_
+    - WHERE: `meeting_id = ?`
+- `SELECT-FROM` @ **create_app._populate_meeting_extraction** `backend/app/main.py:7012` — _static_confirmed_
+    - WHERE: `meeting_id = ?`
+- `SELECT-FROM` @ **_collect_work_events** `backend/app/services/badge_engine.py:279` — _static_confirmed_
+    - WHERE: `d.meeting_id = m.id) AS decision_count, (SELECT COUNT(*) FROM action_items a WHERE a.meeting_id = m.id) AS action_count, ( SELECT COUNT(*) FROM action_items a WHERE a.meeting_id = m.id AND TRIM(a.owne`
+- `SELECT-FROM` @ **_render_meeting_body** `backend/app/services/data_center_ingest.py:1576` — _static_confirmed_
+    - WHERE: `meeting_id = ?`
+- `SELECT-FROM` @ **_render_meeting_doc_text** `backend/app/services/knowledge_v2.py:3631` — _static_confirmed_
+    - WHERE: `meeting_id = ?`
+- `SELECT-FROM` @ **build_meeting_page_context_pack** `backend/app/services/meeting_context.py:48` — _static_confirmed_
+    - WHERE: `meeting_id = ?`
+- `SELECT-FROM` @ **record_meeting_publish_writeback** `backend/app/services/memory_foundation.py:1746` — _static_confirmed_
+    - WHERE: `meeting_id = ?`
+
+## `dedup_relations`
+
+- 经验层: **7 行** · 最近写入 created_at=2026-03-14T17:49:09
+
+### 写边 (1)
+- `INSERT` @ **ingest_document_knowledge** `backend/app/services/knowledge_base.py:2802` — _call_name_match_
+    - chain: ingest_document_knowledge @backend/app/services/knowledge_base.py:2802  ←  upload_task_attachment [endpoint:/api/v1/tasks/{task_id}/attachments] @backend/app/main.py:53434
+    - chain: ingest_document_knowledge @backend/app/services/knowledge_base.py:2802  ←  _build_local_event_line_report_snapshot @backend/app/main.py:33643  ←  get_event_line_report_snapshot [endpoint:/api/v1/event-lines/{event_line_id}/report-snapshot] @backend/app/main.py:34329
+    - chain: ingest_document_knowledge @backend/app/services/knowledge_base.py:2802  ←  _process_one_pdf @backend/app/services/internet_pdf_worker.py:96  ←  _worker_loop [worker:_worker_loop] @backend/app/services/internet_pdf_worker.py:205
+    - chain: ingest_document_knowledge @backend/app/services/knowledge_base.py:2802  ←  backfill_workspace_import @backend/app/services/knowledge_v2.py:3943  ←  backfill_client_workspace_imports [endpoint:/api/v1/clients/{client_id}/workspace/backfill-imports] @backend/app/main.py:50039
+    - chain: ingest_document_knowledge @backend/app/services/knowledge_base.py:2802  ←  create_client_text_document @backend/app/main.py:16116  ←  create_client_document_from_text [endpoint:/api/v1/clients/{client_id}/documents/from-text] @backend/app/main.py:49576
+    - chain: ingest_document_knowledge @backend/app/services/knowledge_base.py:2802  ←  execute_parse_failure_retry_batch @backend/app/main.py:42534  ←  retry_client_parse_failures [endpoint:/api/v1/clients/{client_id}/knowledge/parse-failures/retry] @backend/app/main.py:42800
+
+### 读边 (0)
+- (无静态读边)
+
+## `digital_asset_narrative_snapshots`
+
+- 经验层: **0 行**
+
+### 写边 (1)
+- `INSERT` @ **_save_narrative_snapshot** `backend/app/services/digital_asset_narrative.py:545` — _call_name_match_
+    - chain: _save_narrative_snapshot @backend/app/services/digital_asset_narrative.py:545  ←  refresh_digital_asset_narrative @backend/app/services/digital_asset_narrative.py:590  ←  refresh_client_digital_asset_narrative [endpoint:/api/v1/clients/{client_id}/digital-assets/narrative/refresh] @backend/app/main.py:28460
+
+### 读边 (2)
+- `SELECT-FROM` @ **get_latest_digital_asset_narrative** `backend/app/services/digital_asset_narrative.py:500` — _static_confirmed_
+    - WHERE: `client_id = ? AND failure_reason = '' AND content_markdown != ''`
+- `SELECT-FROM` @ **_save_narrative_snapshot** `backend/app/services/digital_asset_narrative.py:545` — _static_confirmed_
+    - WHERE: `id = ?`
+
+## `dna_deltas`
+
+- 经验层: **24 行** · 最近写入 created_at=2026-06-05T15:04:03
+
+### 写边 (1)
+- `UPDATE` @ **_sync_event_line_client_scope_records** `backend/app/main.py:2484` — _needs_human_
+    - chain: _sync_event_line_client_scope_records [worker:_sync_event_line_client_scope_records] @backend/app/main.py:2484
+
+### 读边 (3)
+- `SELECT-FROM` @ **list_dna_deltas** `backend/app/services/analysis_center.py:1190` — _static_confirmed_
+    - WHERE: `client_id = ?`
+- `SELECT-FROM` @ **_sync_dna_delta** `backend/app/services/analysis_center.py:2554` — _static_confirmed_
+    - WHERE: `client_id = ? AND dimension = ? AND COALESCE(invalidated_by, '') = ''`
+    - WHERE: `client_id = ? AND dimension = ? AND source_snapshot_hash = ?`
+- `SELECT-FROM` @ **create_dna_delta** `backend/app/services/analysis_center.py:3667` — _static_confirmed_
+    - WHERE: `client_id = ? AND dimension = ? AND COALESCE(invalidated_by, '') = ''`
+
+## `dna_terms`
+
+- 经验层: **0 行**
+
+### 写边 (3)
+- `INSERT` @ **load_demo_dataset** `backend/app/main.py:2941` — _call_name_match_
+    - chain: load_demo_dataset @backend/app/main.py:2941  ←  load_demo_dataset_endpoint [endpoint:/api/v1/settings/demo-data/load] @backend/app/main.py:37527
+- `INSERT+UPDATE` @ **create_app** `backend/app/main.py:3179` — _needs_human_
+    - chain: create_app @backend/app/main.py:3179  ←  (no caller found — orphan write)
+- `INSERT+UPDATE` @ **create_app.upsert_client_dna** `backend/app/main.py:45909` — _static_confirmed_
+    - chain: upsert_client_dna [endpoint:/api/v1/clients/{client_id}/dna] @backend/app/main.py:45909
+
+### 读边 (9)
+- `SELECT-FROM` @ **create_app.workspace_for_client** `backend/app/main.py:17770` — _static_confirmed_
+    - WHERE: `client_id = ?`
+- `SELECT-FROM` @ **create_app.context_summary** `backend/app/main.py:22022` — _static_confirmed_
+    - WHERE: `client_id = ?`
+- `SELECT-FROM` @ **clear_demo_dataset** `backend/app/main.py:2884` — _static_confirmed_
+    - WHERE: `id IN (`
+    - WHERE: `id IN ({?})`
+- `SELECT-FROM` @ **create_app** `backend/app/main.py:3179` — _static_confirmed_
+    - WHERE: `client_id = ?`
+    - WHERE: `client_id = ? AND canonical_name = ?`
+- `SELECT-FROM` @ **create_app.get_client_delete_preview** `backend/app/main.py:39266` — _static_confirmed_
+    - WHERE: `client_id = ?`
+- `SELECT-FROM` @ **create_app.upsert_client_dna** `backend/app/main.py:45909` — _static_confirmed_
+    - WHERE: `client_id = ? AND canonical_name = ?`
+- `SELECT-FROM` @ **create_app.build_client_dna_context** `backend/app/main.py:8173` — _static_confirmed_
+    - WHERE: `client_id = ?`
+- `SELECT-FROM` @ **create_app.build_client_dna_retrieval_hint** `backend/app/main.py:8339` — _static_confirmed_
+    - WHERE: `client_id = ?`
+- `SELECT-FROM` @ **create_app.build_client_dna_term_context** `backend/app/main.py:8366` — _static_confirmed_
+    - WHERE: `client_id = ?`
+
+## `doc_skeletons`
+
+- 经验层: **445 行** · 最近写入 created_at=2026-06-05T15:04:03
+
+### 写边 (0)
+- (无静态写边)  ⚠️ **0 写边但真库有行 → needs_human (写入路径在静态扫描盲区:可能动态表名/ORM/外部进程)**
+
+### 读边 (0)
+- (无静态读边)
+
+## `document_cards`
+
+- 经验层: **259 行** · 最近写入 created_at=2026-05-26T21:09:48
+
+### 写边 (3)
+- `INSERT` @ **ingest_document_knowledge** `backend/app/services/knowledge_base.py:2802` — _call_name_match_
+    - chain: ingest_document_knowledge @backend/app/services/knowledge_base.py:2802  ←  upload_task_attachment [endpoint:/api/v1/tasks/{task_id}/attachments] @backend/app/main.py:53434
+    - chain: ingest_document_knowledge @backend/app/services/knowledge_base.py:2802  ←  _build_local_event_line_report_snapshot @backend/app/main.py:33643  ←  get_event_line_report_snapshot [endpoint:/api/v1/event-lines/{event_line_id}/report-snapshot] @backend/app/main.py:34329
+    - chain: ingest_document_knowledge @backend/app/services/knowledge_base.py:2802  ←  _process_one_pdf @backend/app/services/internet_pdf_worker.py:96  ←  _worker_loop [worker:_worker_loop] @backend/app/services/internet_pdf_worker.py:205
+    - chain: ingest_document_knowledge @backend/app/services/knowledge_base.py:2802  ←  backfill_workspace_import @backend/app/services/knowledge_v2.py:3943  ←  backfill_client_workspace_imports [endpoint:/api/v1/clients/{client_id}/workspace/backfill-imports] @backend/app/main.py:50039
+    - chain: ingest_document_knowledge @backend/app/services/knowledge_base.py:2802  ←  create_client_text_document @backend/app/main.py:16116  ←  create_client_document_from_text [endpoint:/api/v1/clients/{client_id}/documents/from-text] @backend/app/main.py:49576
+    - chain: ingest_document_knowledge @backend/app/services/knowledge_base.py:2802  ←  execute_parse_failure_retry_batch @backend/app/main.py:42534  ←  retry_client_parse_failures [endpoint:/api/v1/clients/{client_id}/knowledge/parse-failures/retry] @backend/app/main.py:42800
+- `UPDATE` @ **refresh_existing_knowledge_document** `backend/app/services/knowledge_base.py:3191` — _call_name_match_
+    - chain: refresh_existing_knowledge_document @backend/app/services/knowledge_base.py:3191  ←  hydrate_missing_surrogates @backend/app/services/knowledge_base.py:2639  ←  backfill_knowledge_documents @backend/app/services/knowledge_base.py:3346  ←  process_knowledge_job @backend/app/main.py:4809  ←  knowledge_worker_loop [worker:knowledge_worker_loop] @backend/app/main.py:5110
+- `INSERT` @ **_process_document_card_task** `backend/app/services/local_model_optimizer.py:681` — _call_name_match_
+    - chain: _process_document_card_task @backend/app/services/local_model_optimizer.py:681  ←  run_due_local_model_tasks @backend/app/services/local_model_optimizer.py:942  ←  local_model_optimizer_worker_loop [worker:local_model_optimizer_worker_loop] @backend/app/services/local_model_optimizer.py:1026
+    - chain: _process_document_card_task @backend/app/services/local_model_optimizer.py:681  ←  run_due_local_model_tasks @backend/app/services/local_model_optimizer.py:942  ←  run_local_ai_now [endpoint:/api/v1/local-ai/run-now] @backend/app/main.py:36970
+
+### 读边 (14)
+- `SELECT-FROM` @ **create_app._collect_strategic_insight_context** `backend/app/main.py:19685` — _static_confirmed_
+    - WHERE: `kd.client_id = ?`
+- `SELECT-FROM+JOIN` @ **create_app** `backend/app/main.py:3179` — _static_confirmed_
+    - WHERE: `kd.client_id = ?`
+    - WHERE: `v2.client_id = ?`
+- `JOIN` @ **create_app.get_local_ai_coverage** `backend/app/main.py:37024` — _static_confirmed_
+- `JOIN` @ **create_app.get_workspace_data_center_readiness** `backend/app/main.py:42811` — _static_confirmed_
+    - WHERE: `v2.client_id = ?`
+- `SELECT-FROM` @ **_collect_sources** `backend/app/services/digital_asset_center.py:3179` — _static_confirmed_
+    - WHERE: `kd.client_id = ?`
+- `JOIN` @ **upsert_chunk_vectors** `backend/app/services/knowledge_base.py:1382` — _static_confirmed_
+    - WHERE: `c.knowledge_document_id = ?`
+- `JOIN` @ **sync_human_file_locations_for_client** `backend/app/services/knowledge_base.py:2000` — _static_confirmed_
+    - WHERE: `kd.client_id = ?`
+- `JOIN` @ **hydrate_missing_surrogates** `backend/app/services/knowledge_base.py:2639` — _static_confirmed_
+    - WHERE: `kd.client_id = ?`
+    - WHERE: `kv.knowledge_document_id = kd.id`
+- `SELECT-FROM+JOIN` @ **ingest_document_knowledge** `backend/app/services/knowledge_base.py:2802` — _static_confirmed_
+    - WHERE: `kd.document_id = ?`
+    - WHERE: `knowledge_document_id = ?`
+- `JOIN` @ **fetch_document_cards** `backend/app/services/knowledge_base.py:3499` — _static_confirmed_
+    - WHERE: `kd.client_id = ?`
+- `SELECT-FROM` @ **retrieve_knowledge_bundle** `backend/app/services/knowledge_base.py:3798` — _static_confirmed_
+    - WHERE: `kd.client_id = ?`
+- `JOIN` @ **fetch_document_cards** `backend/app/services/knowledge_v2.py:4226` — _static_confirmed_
+    - WHERE: `dpo2.knowledge_document_id = kd.id`
+    - WHERE: `vd.client_id = ? AND vd.material_layer IN ('evidence', 'external_media_transcript') AND COALESCE(vd.canonical_kind, 'raw_file') = 'raw_file' AND`
+    - WHERE: `vd.client_id = ? AND vd.material_layer IN ('evidence', 'external_media_transcript') AND COALESCE(vd.canonical_kind, 'raw_file') = 'raw_file' AND {?}`
+- `JOIN` @ **retrieve_knowledge_bundle** `backend/app/services/knowledge_v2.py:4920` — _static_confirmed_
+    - WHERE: `dpo2.knowledge_document_id = kd.id`
+    - WHERE: `vd.client_id = ? AND vd.material_layer IN ('evidence', 'external_media_transcript') AND vd.parse_status IN ('ready', 'partial_ready') AND COALESCE(vd.is_searchable, d.is_searchable, 1) = 1 AND COALESC`
+- `JOIN` @ **get_local_model_optimization_stats** `backend/app/services/local_model_optimizer.py:245` — _static_confirmed_
+
+## `document_catalog_index`
+
+- 经验层: **206 行** · 最近写入 created_at=2026-05-26T21:13:41
+
+### 写边 (3)
+- `INSERT+UPDATE` @ **hydrate_missing_surrogates** `backend/app/services/knowledge_base.py:2639` — _call_name_match_
+    - chain: hydrate_missing_surrogates @backend/app/services/knowledge_base.py:2639  ←  backfill_knowledge_documents @backend/app/services/knowledge_base.py:3346  ←  process_knowledge_job @backend/app/main.py:4809  ←  knowledge_worker_loop [worker:knowledge_worker_loop] @backend/app/main.py:5110
+- `INSERT` @ **ingest_document_knowledge** `backend/app/services/knowledge_base.py:2802` — _call_name_match_
+    - chain: ingest_document_knowledge @backend/app/services/knowledge_base.py:2802  ←  upload_task_attachment [endpoint:/api/v1/tasks/{task_id}/attachments] @backend/app/main.py:53434
+    - chain: ingest_document_knowledge @backend/app/services/knowledge_base.py:2802  ←  _build_local_event_line_report_snapshot @backend/app/main.py:33643  ←  get_event_line_report_snapshot [endpoint:/api/v1/event-lines/{event_line_id}/report-snapshot] @backend/app/main.py:34329
+    - chain: ingest_document_knowledge @backend/app/services/knowledge_base.py:2802  ←  _process_one_pdf @backend/app/services/internet_pdf_worker.py:96  ←  _worker_loop [worker:_worker_loop] @backend/app/services/internet_pdf_worker.py:205
+    - chain: ingest_document_knowledge @backend/app/services/knowledge_base.py:2802  ←  backfill_workspace_import @backend/app/services/knowledge_v2.py:3943  ←  backfill_client_workspace_imports [endpoint:/api/v1/clients/{client_id}/workspace/backfill-imports] @backend/app/main.py:50039
+    - chain: ingest_document_knowledge @backend/app/services/knowledge_base.py:2802  ←  create_client_text_document @backend/app/main.py:16116  ←  create_client_document_from_text [endpoint:/api/v1/clients/{client_id}/documents/from-text] @backend/app/main.py:49576
+    - chain: ingest_document_knowledge @backend/app/services/knowledge_base.py:2802  ←  execute_parse_failure_retry_batch @backend/app/main.py:42534  ←  retry_client_parse_failures [endpoint:/api/v1/clients/{client_id}/knowledge/parse-failures/retry] @backend/app/main.py:42800
+- `INSERT+UPDATE` @ **refresh_existing_knowledge_document** `backend/app/services/knowledge_base.py:3191` — _call_name_match_
+    - chain: refresh_existing_knowledge_document @backend/app/services/knowledge_base.py:3191  ←  hydrate_missing_surrogates @backend/app/services/knowledge_base.py:2639  ←  backfill_knowledge_documents @backend/app/services/knowledge_base.py:3346  ←  process_knowledge_job @backend/app/main.py:4809  ←  knowledge_worker_loop [worker:knowledge_worker_loop] @backend/app/main.py:5110
+
+### 读边 (2)
+- `SELECT-FROM` @ **hydrate_missing_surrogates** `backend/app/services/knowledge_base.py:2639` — _static_confirmed_
+    - WHERE: `knowledge_document_id = ?`
+- `SELECT-FROM` @ **refresh_existing_knowledge_document** `backend/app/services/knowledge_base.py:3191` — _static_confirmed_
+    - WHERE: `knowledge_document_id = ?`
+
+## `document_chunks`
+
+- 经验层: **5371 行** · 最近写入 created_at=2026-05-26T21:10:44
+
+### 写边 (6)
+- `UPDATE` @ **_init_schema** `backend/app/db.py:60` — _needs_human_
+    - chain: _init_schema @backend/app/db.py:60  ←  __init__ @backend/app/db.py:49
+- `UPDATE` @ **create_app** `backend/app/main.py:3179` — _needs_human_
+    - chain: create_app @backend/app/main.py:3179  ←  (no caller found — orphan write)
+- `UPDATE` @ **create_app.run_workspace_data_center_readiness_action** `backend/app/main.py:43497` — _static_confirmed_
+    - chain: run_workspace_data_center_readiness_action [endpoint:/api/v1/clients/{client_id}/workspace/data-center-readiness/actions] @backend/app/main.py:43497
+- `INSERT` @ **ingest_document_knowledge** `backend/app/services/knowledge_base.py:2802` — _call_name_match_
+    - chain: ingest_document_knowledge @backend/app/services/knowledge_base.py:2802  ←  upload_task_attachment [endpoint:/api/v1/tasks/{task_id}/attachments] @backend/app/main.py:53434
+    - chain: ingest_document_knowledge @backend/app/services/knowledge_base.py:2802  ←  _build_local_event_line_report_snapshot @backend/app/main.py:33643  ←  get_event_line_report_snapshot [endpoint:/api/v1/event-lines/{event_line_id}/report-snapshot] @backend/app/main.py:34329
+    - chain: ingest_document_knowledge @backend/app/services/knowledge_base.py:2802  ←  _process_one_pdf @backend/app/services/internet_pdf_worker.py:96  ←  _worker_loop [worker:_worker_loop] @backend/app/services/internet_pdf_worker.py:205
+    - chain: ingest_document_knowledge @backend/app/services/knowledge_base.py:2802  ←  backfill_workspace_import @backend/app/services/knowledge_v2.py:3943  ←  backfill_client_workspace_imports [endpoint:/api/v1/clients/{client_id}/workspace/backfill-imports] @backend/app/main.py:50039
+    - chain: ingest_document_knowledge @backend/app/services/knowledge_base.py:2802  ←  create_client_text_document @backend/app/main.py:16116  ←  create_client_document_from_text [endpoint:/api/v1/clients/{client_id}/documents/from-text] @backend/app/main.py:49576
+    - chain: ingest_document_knowledge @backend/app/services/knowledge_base.py:2802  ←  execute_parse_failure_retry_batch @backend/app/main.py:42534  ←  retry_client_parse_failures [endpoint:/api/v1/clients/{client_id}/knowledge/parse-failures/retry] @backend/app/main.py:42800
+- `INSERT` @ **refresh_existing_knowledge_document** `backend/app/services/knowledge_base.py:3191` — _call_name_match_
+    - chain: refresh_existing_knowledge_document @backend/app/services/knowledge_base.py:3191  ←  hydrate_missing_surrogates @backend/app/services/knowledge_base.py:2639  ←  backfill_knowledge_documents @backend/app/services/knowledge_base.py:3346  ←  process_knowledge_job @backend/app/main.py:4809  ←  knowledge_worker_loop [worker:knowledge_worker_loop] @backend/app/main.py:5110
+- `UPDATE` @ **backfill_client_document_family_metadata** `backend/app/services/knowledge_v2.py:415` — _call_name_match_
+    - chain: backfill_client_document_family_metadata @backend/app/services/knowledge_v2.py:415  ←  build_data_center_retrieval_items @backend/app/services/data_center_search.py:172  ←  resolve_data_center_kernel @backend/app/services/data_center_kernel.py:453  ←  data_center_diagnose [endpoint:/api/v1/data-center/diagnose] @backend/app/main.py:48600
+    - chain: backfill_client_document_family_metadata @backend/app/services/knowledge_v2.py:415  ←  build_data_center_retrieval_items @backend/app/services/data_center_search.py:172  ←  resolve_data_center_kernel @backend/app/services/data_center_kernel.py:453  ←  data_center_resolve [endpoint:/api/v1/data-center/resolve] @backend/app/main.py:48591
+    - chain: backfill_client_document_family_metadata @backend/app/services/knowledge_v2.py:415  ←  build_data_center_retrieval_items @backend/app/services/data_center_search.py:172  ←  resolve_data_center_kernel @backend/app/services/data_center_kernel.py:453  ←  resolve_chat_answer_data_center_primary @backend/app/main.py:46745  ←  document_ai_action [endpoint:/api/v1/clients/{client_id}/documents/ai-action] @backend/app/main.py:49635
+    - chain: backfill_client_document_family_metadata @backend/app/services/knowledge_v2.py:415  ←  build_data_center_retrieval_items @backend/app/services/data_center_search.py:172  ←  resolve_data_center_kernel @backend/app/services/data_center_kernel.py:453  ←  resolve_chat_answer_data_center_primary @backend/app/main.py:46745  ←  resolve_chat_answer @backend/app/main.py:48117  ←  background_resolve_chat_answer [worker:background_resolve_chat_answer] @backend/app/main.py:48335
+    - chain: backfill_client_document_family_metadata @backend/app/services/knowledge_v2.py:415  ←  build_data_center_retrieval_items @backend/app/services/data_center_search.py:172  ←  resolve_data_center_kernel @backend/app/services/data_center_kernel.py:453  ←  resolve_chat_answer_data_center_primary @backend/app/main.py:46745  ←  resolve_chat_answer @backend/app/main.py:48117  ←  send_chat_message [endpoint:/api/v1/clients/{client_id}/workspace/chat] @backend/app/main.py:49220
+
+### 读边 (10)
+- `SELECT-FROM` @ **create_app** `backend/app/main.py:3179` — _static_confirmed_
+    - WHERE: `knowledge_document_id = ?`
+- `SELECT-FROM` @ **create_app.build_document_reading_preview_record** `backend/app/main.py:46173` — _static_confirmed_
+    - WHERE: `knowledge_document_id = ?`
+- `SELECT-FROM` @ **upsert_chunk_vectors** `backend/app/services/knowledge_base.py:1382` — _static_confirmed_
+    - WHERE: `c.knowledge_document_id = ?`
+- `SELECT-FROM` @ **sync_qdrant_for_client** `backend/app/services/knowledge_base.py:1437` — _static_confirmed_
+    - WHERE: `kd.client_id = ?`
+- `SELECT-FROM` @ **hydrate_missing_surrogates** `backend/app/services/knowledge_base.py:2639` — _static_confirmed_
+    - WHERE: `knowledge_document_id = ?`
+- `SELECT-FROM` @ **ingest_document_knowledge** `backend/app/services/knowledge_base.py:2802` — _static_confirmed_
+    - WHERE: `knowledge_document_id = ?`
+- `SELECT-FROM` @ **refresh_existing_knowledge_document** `backend/app/services/knowledge_base.py:3191` — _static_confirmed_
+    - WHERE: `knowledge_document_id = ?`
+- `SELECT-FROM` @ **compute_knowledge_status** `backend/app/services/knowledge_base.py:3398` — _static_confirmed_
+    - WHERE: `kd.client_id = ?`
+- `SELECT-FROM` @ **fetch_document_cards** `backend/app/services/knowledge_base.py:3499` — _static_confirmed_
+    - WHERE: `knowledge_document_id = ?`
+- `SELECT-FROM` @ **retrieve_knowledge_bundle** `backend/app/services/knowledge_base.py:3798` — _static_confirmed_
+    - WHERE: `knowledge_document_id = ?`
+
+## `document_deep_read_states`
+
+- 经验层: **14 行** · 最近写入 created_at=2026-05-26T11:56:57.892511+00:00
+
+### 写边 (2)
+- `INSERT+UPDATE` @ **enqueue_deep_read** `backend/app/services/document_deep_read_service.py:59` — _call_name_match_
+    - chain: enqueue_deep_read @backend/app/services/document_deep_read_service.py:59  ←  sync_states_for_client [worker:sync_states_for_client] @backend/app/services/document_deep_read_service.py:159
+- `UPDATE` @ **_set** `backend/app/services/document_deep_read_service.py:87` — _call_name_match_
+    - chain: _set @backend/app/services/document_deep_read_service.py:87  ←  sync_states_for_client [worker:sync_states_for_client] @backend/app/services/document_deep_read_service.py:159
+
+### 读边 (3)
+- `SELECT-FROM` @ **reap_stuck** `backend/app/services/document_deep_read_service.py:112` — _static_confirmed_
+    - WHERE: `status=? AND COALESCE(locked_at,'')<?`
+- `SELECT-FROM` @ **claim_next** `backend/app/services/document_deep_read_service.py:124` — _static_confirmed_
+    - WHERE: `(status IN (?,?) OR (status=? AND COALESCE(next_retry_at,'')<=?)) AND COALESCE(locked_by,'')=''`
+- `SELECT-FROM` @ **get_state** `backend/app/services/document_deep_read_service.py:51` — _static_confirmed_
+    - WHERE: `document_source_table=? AND document_id=?`
+
+## `document_fields`
+
+- 经验层: **1334 行** · 最近写入 created_at=2026-05-16T05:43:17+00:00
+
+### 写边 (1)
+- `INSERT+UPDATE` @ **upsert_document_fields** `backend/app/services/document_decomposition.py:549` — _call_name_match_
+    - chain: upsert_document_fields @backend/app/services/document_decomposition.py:549  ←  classify_and_decompose @backend/app/services/document_decomposition.py:621  ←  _background_worker [worker:_background_worker] @backend/app/main.py:49156
+    - chain: upsert_document_fields @backend/app/services/document_decomposition.py:549  ←  classify_and_decompose @backend/app/services/document_decomposition.py:621  ←  decompose_documents_batch [endpoint:/api/v1/clients/{client_id}/documents/decompose-batch] @backend/app/main.py:49095
+
+### 读边 (2)
+- `SELECT-FROM` @ **upsert_document_fields** `backend/app/services/document_decomposition.py:549` — _static_confirmed_
+    - WHERE: `document_id = ? AND schema_name = ? AND field_name = ?`
+- `JOIN` @ **_fetch_fields_by_schema** `backend/app/services/document_decomposition.py:719` — _static_confirmed_
+    - WHERE: `d.client_id = ? AND df.field_name IS NOT NULL`
+
+## `document_kinds`
+
+- 经验层: **57 行**
+
+### 写边 (4)
+- `INSERT+UPDATE` @ **upsert_document_kind** `backend/app/services/document_decomposition.py:511` — _call_name_match_
+    - chain: upsert_document_kind @backend/app/services/document_decomposition.py:511  ←  classify_and_decompose @backend/app/services/document_decomposition.py:621  ←  _background_worker [worker:_background_worker] @backend/app/main.py:49156
+    - chain: upsert_document_kind @backend/app/services/document_decomposition.py:511  ←  classify_and_decompose @backend/app/services/document_decomposition.py:621  ←  decompose_documents_batch [endpoint:/api/v1/clients/{client_id}/documents/decompose-batch] @backend/app/main.py:49095
+- `UPDATE` @ **upsert_document_fields** `backend/app/services/document_decomposition.py:549` — _call_name_match_
+    - chain: upsert_document_fields @backend/app/services/document_decomposition.py:549  ←  classify_and_decompose @backend/app/services/document_decomposition.py:621  ←  _background_worker [worker:_background_worker] @backend/app/main.py:49156
+    - chain: upsert_document_fields @backend/app/services/document_decomposition.py:549  ←  classify_and_decompose @backend/app/services/document_decomposition.py:621  ←  decompose_documents_batch [endpoint:/api/v1/clients/{client_id}/documents/decompose-batch] @backend/app/main.py:49095
+- `UPDATE` @ **mark_decomposition_failed** `backend/app/services/document_decomposition.py:605` — _call_name_match_
+    - chain: mark_decomposition_failed @backend/app/services/document_decomposition.py:605  ←  classify_and_decompose @backend/app/services/document_decomposition.py:621  ←  _background_worker [worker:_background_worker] @backend/app/main.py:49156
+    - chain: mark_decomposition_failed @backend/app/services/document_decomposition.py:605  ←  classify_and_decompose @backend/app/services/document_decomposition.py:621  ←  decompose_documents_batch [endpoint:/api/v1/clients/{client_id}/documents/decompose-batch] @backend/app/main.py:49095
+- `UPDATE` @ **classify_and_decompose** `backend/app/services/document_decomposition.py:621` — _call_name_match_
+    - chain: classify_and_decompose @backend/app/services/document_decomposition.py:621  ←  _background_worker [worker:_background_worker] @backend/app/main.py:49156
+    - chain: classify_and_decompose @backend/app/services/document_decomposition.py:621  ←  decompose_documents_batch [endpoint:/api/v1/clients/{client_id}/documents/decompose-batch] @backend/app/main.py:49095
+
+### 读边 (5)
+- `SELECT-FROM` @ **create_app** `backend/app/main.py:3179` — _static_confirmed_
+    - WHERE: `d.client_id = ?`
+    - WHERE: `document_id = ?`
+- `SELECT-FROM` @ **create_app.decompose_documents_batch** `backend/app/main.py:49095` — _static_confirmed_
+    - WHERE: `document_id = ?`
+- `SELECT-FROM` @ **create_app.get_decomposition_status** `backend/app/main.py:49192` — _static_confirmed_
+    - WHERE: `d.client_id = ?`
+- `SELECT-FROM` @ **upsert_document_kind** `backend/app/services/document_decomposition.py:511` — _static_confirmed_
+    - WHERE: `document_id = ?`
+- `JOIN` @ **_fetch_fields_by_schema** `backend/app/services/document_decomposition.py:719` — _static_confirmed_
+    - WHERE: `d.client_id = ? AND df.field_name IS NOT NULL`
+
+## `document_path_optimizations`
+
+- 经验层: **29 行** · 最近写入 created_at=2026-05-08T16:00:27
+
+### 写边 (1)
+- `INSERT` @ **_process_path_optimization_task** `backend/app/services/local_model_optimizer.py:777` — _call_name_match_
+    - chain: _process_path_optimization_task @backend/app/services/local_model_optimizer.py:777  ←  run_due_local_model_tasks @backend/app/services/local_model_optimizer.py:942  ←  local_model_optimizer_worker_loop [worker:local_model_optimizer_worker_loop] @backend/app/services/local_model_optimizer.py:1026
+    - chain: _process_path_optimization_task @backend/app/services/local_model_optimizer.py:777  ←  run_due_local_model_tasks @backend/app/services/local_model_optimizer.py:942  ←  run_local_ai_now [endpoint:/api/v1/local-ai/run-now] @backend/app/main.py:36970
+
+### 读边 (3)
+- `SELECT-FROM+JOIN` @ **fetch_document_cards** `backend/app/services/knowledge_v2.py:4226` — _static_confirmed_
+    - WHERE: `dpo2.knowledge_document_id = kd.id`
+    - WHERE: `vd.client_id = ? AND vd.material_layer IN ('evidence', 'external_media_transcript') AND COALESCE(vd.canonical_kind, 'raw_file') = 'raw_file' AND`
+    - WHERE: `vd.client_id = ? AND vd.material_layer IN ('evidence', 'external_media_transcript') AND COALESCE(vd.canonical_kind, 'raw_file') = 'raw_file' AND {?}`
+- `SELECT-FROM+JOIN` @ **retrieve_knowledge_bundle** `backend/app/services/knowledge_v2.py:4920` — _static_confirmed_
+    - WHERE: `dpo2.knowledge_document_id = kd.id`
+    - WHERE: `vd.client_id = ? AND vd.material_layer IN ('evidence', 'external_media_transcript') AND vd.parse_status IN ('ready', 'partial_ready') AND COALESCE(vd.is_searchable, d.is_searchable, 1) = 1 AND COALESC`
+- `SELECT-FROM+JOIN` @ **get_local_model_optimization_stats** `backend/app/services/local_model_optimizer.py:245` — _static_confirmed_
+
+## `document_recycle_bin`
+
+- 经验层: **28 行**
+
+### 写边 (3)
+- `INSERT` @ **create_app.resolve_client_duplicate_documents** `backend/app/main.py:28241` — _static_confirmed_
+    - chain: resolve_client_duplicate_documents [endpoint:/api/v1/clients/{client_id}/duplicate-documents/resolve] @backend/app/main.py:28241
+- `INSERT` @ **create_app** `backend/app/main.py:3179` — _needs_human_
+    - chain: create_app @backend/app/main.py:3179  ←  (no caller found — orphan write)
+- `INSERT` @ **create_app.delete_client_document** `backend/app/main.py:39134` — _static_confirmed_
+    - chain: delete_client_document [endpoint:/api/v1/clients/{client_id}/documents/{document_id}] @backend/app/main.py:39134
+
+### 读边 (0)
+- (无静态读边)
+
+## `documents`
+
+- 经验层: **2067 行** · 最近写入 created_at=2026-06-08T10:01:44
+
+### 写边 (36)
+- `UPDATE` @ **_init_schema** `backend/app/db.py:60` — _needs_human_
+    - chain: _init_schema @backend/app/db.py:60  ←  __init__ @backend/app/db.py:49
+- `UPDATE` @ **create_app._force_online_transcript_document_classification** `backend/app/main.py:14274` — _call_name_match_
+    - chain: _force_online_transcript_document_classification @backend/app/main.py:14274  ←  migrate_client_link_material_documents_to_online_transcripts @backend/app/main.py:14391  ←  ensure_standard_client_folders @backend/app/main.py:14645  ←  apply_client_document_auto_repair [endpoint:/api/v1/clients/{client_id}/documents/auto-repair/apply] @backend/app/main.py:39062
+    - chain: _force_online_transcript_document_classification @backend/app/main.py:14274  ←  migrate_client_link_material_documents_to_online_transcripts @backend/app/main.py:14391  ←  ensure_standard_client_folders @backend/app/main.py:14645  ←  apply_client_folder_recommendation [endpoint:/api/v1/clients/{client_id}/folders/apply-recommendation] @backend/app/main.py:39044
+    - chain: _force_online_transcript_document_classification @backend/app/main.py:14274  ←  migrate_client_link_material_documents_to_online_transcripts @backend/app/main.py:14391  ←  ensure_standard_client_folders @backend/app/main.py:14645  ←  create_client [endpoint:/api/v1/clients] @backend/app/main.py:37631
+    - chain: _force_online_transcript_document_classification @backend/app/main.py:14274  ←  migrate_client_link_material_documents_to_online_transcripts @backend/app/main.py:14391  ←  ensure_standard_client_folders @backend/app/main.py:14645  ←  create_client_folder [endpoint:/api/v1/clients/{client_id}/folders] @backend/app/main.py:38854
+    - chain: _force_online_transcript_document_classification @backend/app/main.py:14274  ←  migrate_client_link_material_documents_to_online_transcripts @backend/app/main.py:14391  ←  ensure_standard_client_folders @backend/app/main.py:14645  ←  delete_client_folder [endpoint:/api/v1/clients/{client_id}/folders/{folder_id}] @backend/app/main.py:39117
+    - chain: _force_online_transcript_document_classification @backend/app/main.py:14274  ←  migrate_client_link_material_documents_to_online_transcripts @backend/app/main.py:14391  ←  ensure_standard_client_folders @backend/app/main.py:14645  ←  generate_client_dna_documents [endpoint:/api/v1/clients/{client_id}/dna-documents/generate] @backend/app/main.py:45574
+- `INSERT` @ **create_app.register_generated_workspace_document** `backend/app/main.py:15690` — _call_name_match_
+    - chain: register_generated_workspace_document @backend/app/main.py:15690  ←  create_answer_export_document @backend/app/main.py:15843  ←  export_answer [endpoint:/api/v1/clients/{client_id}/knowledge/export-answer] @backend/app/main.py:49537
+    - chain: register_generated_workspace_document @backend/app/main.py:15690  ←  create_answer_memory_markdown_document @backend/app/main.py:15752  ←  vectorize_answer [endpoint:/api/v1/clients/{client_id}/knowledge/vectorize-answer] @backend/app/main.py:49344
+    - chain: register_generated_workspace_document @backend/app/main.py:15690  ←  create_consultation_memory_document @backend/app/main.py:16003  ←  sink_consultation_knowledge_request @backend/app/main.py:16027  ←  process_pending_consultation_knowledge_requests_impl @backend/app/main.py:31290  ←  process_pending_consultation_knowledge_requests [endpoint:/api/v1/consultation/knowledge-requests/process-pending] @backend/app/main.py:31363
+- `INSERT` @ **create_app.create_client_text_document** `backend/app/main.py:16116` — _call_name_match_
+    - chain: create_client_text_document @backend/app/main.py:16116  ←  create_client_document_from_text [endpoint:/api/v1/clients/{client_id}/documents/from-text] @backend/app/main.py:49576
+    - chain: create_client_text_document @backend/app/main.py:16116  ←  sink_consultation_knowledge_request @backend/app/main.py:16027  ←  process_pending_consultation_knowledge_requests_impl @backend/app/main.py:31290  ←  process_pending_consultation_knowledge_requests [endpoint:/api/v1/consultation/knowledge-requests/process-pending] @backend/app/main.py:31363
+- `INSERT` @ **create_app.create_client_link_markdown_document** `backend/app/main.py:16214` — _needs_human_
+    - chain: create_client_link_markdown_document @backend/app/main.py:16214  ←  (no caller found — orphan write)
+- `INSERT` @ **create_app.create_client_link_docx_document** `backend/app/main.py:16335` — _needs_human_
+    - chain: create_client_link_docx_document @backend/app/main.py:16335  ←  create_app @backend/app/main.py:3179
+    - chain: create_client_link_docx_document @backend/app/main.py:16335  ←  run_link_material_import @backend/app/main.py:16643
+- `UPDATE` @ **_sync_task_attachment_scope** `backend/app/main.py:2237` — _needs_human_
+    - chain: _sync_task_attachment_scope [worker:_sync_task_attachment_scope] @backend/app/main.py:2237
+- `INSERT` @ **load_demo_dataset** `backend/app/main.py:2941` — _call_name_match_
+    - chain: load_demo_dataset @backend/app/main.py:2941  ←  load_demo_dataset_endpoint [endpoint:/api/v1/settings/demo-data/load] @backend/app/main.py:37527
+- `INSERT+UPDATE` @ **create_app** `backend/app/main.py:3179` — _needs_human_
+    - chain: create_app @backend/app/main.py:3179  ←  (no caller found — orphan write)
+- `INSERT` @ **create_app._build_local_event_line_report_snapshot** `backend/app/main.py:33643` — _call_name_match_
+    - chain: _build_local_event_line_report_snapshot @backend/app/main.py:33643  ←  get_event_line_report_snapshot [endpoint:/api/v1/event-lines/{event_line_id}/report-snapshot] @backend/app/main.py:34329
+- `INSERT` @ **create_app._build_local_event_line_report_snapshot._resolve_event_attachment_document_id** `backend/app/main.py:33796` — _call_name_match_
+    - chain: _resolve_event_attachment_document_id @backend/app/main.py:33796  ←  _build_local_event_line_report_snapshot @backend/app/main.py:33643  ←  get_event_line_report_snapshot [endpoint:/api/v1/event-lines/{event_line_id}/report-snapshot] @backend/app/main.py:34329
+- `INSERT` @ **create_app._ensure_cloud_event_attachment_document** `backend/app/main.py:34027` — _call_name_match_
+    - chain: _ensure_cloud_event_attachment_document @backend/app/main.py:34027  ←  _enrich_report_snapshot_with_local_parse @backend/app/main.py:34134  ←  get_event_line_report_snapshot [endpoint:/api/v1/event-lines/{event_line_id}/report-snapshot] @backend/app/main.py:34329
+- `UPDATE` @ **create_app._set_document_auto_repair_folder** `backend/app/main.py:38480` — _call_name_match_
+    - chain: _set_document_auto_repair_folder @backend/app/main.py:38480  ←  _apply_document_auto_repair_item @backend/app/main.py:38541  ←  _run_workspace_document_auto_repair_job @backend/app/main.py:38586  ←  process_knowledge_job @backend/app/main.py:4809  ←  knowledge_worker_loop [worker:knowledge_worker_loop] @backend/app/main.py:5110
+    - chain: _set_document_auto_repair_folder @backend/app/main.py:38480  ←  _apply_document_auto_repair_item @backend/app/main.py:38541  ←  reconcile_pending_documents_for_client @backend/app/main.py:38673  ←  ensure_standard_client_folders @backend/app/main.py:14645  ←  apply_client_document_auto_repair [endpoint:/api/v1/clients/{client_id}/documents/auto-repair/apply] @backend/app/main.py:39062
+    - chain: _set_document_auto_repair_folder @backend/app/main.py:38480  ←  _apply_document_auto_repair_item @backend/app/main.py:38541  ←  reconcile_pending_documents_for_client @backend/app/main.py:38673  ←  ensure_standard_client_folders @backend/app/main.py:14645  ←  apply_client_folder_recommendation [endpoint:/api/v1/clients/{client_id}/folders/apply-recommendation] @backend/app/main.py:39044
+    - chain: _set_document_auto_repair_folder @backend/app/main.py:38480  ←  _apply_document_auto_repair_item @backend/app/main.py:38541  ←  reconcile_pending_documents_for_client @backend/app/main.py:38673  ←  ensure_standard_client_folders @backend/app/main.py:14645  ←  create_client [endpoint:/api/v1/clients] @backend/app/main.py:37631
+    - chain: _set_document_auto_repair_folder @backend/app/main.py:38480  ←  _apply_document_auto_repair_item @backend/app/main.py:38541  ←  reconcile_pending_documents_for_client @backend/app/main.py:38673  ←  ensure_standard_client_folders @backend/app/main.py:14645  ←  create_client_folder [endpoint:/api/v1/clients/{client_id}/folders] @backend/app/main.py:38854
+    - chain: _set_document_auto_repair_folder @backend/app/main.py:38480  ←  _apply_document_auto_repair_item @backend/app/main.py:38541  ←  reconcile_pending_documents_for_client @backend/app/main.py:38673  ←  ensure_standard_client_folders @backend/app/main.py:14645  ←  delete_client_folder [endpoint:/api/v1/clients/{client_id}/folders/{folder_id}] @backend/app/main.py:39117
+- `UPDATE` @ **create_app._soft_mark_document_invalid** `backend/app/main.py:38512` — _call_name_match_
+    - chain: _soft_mark_document_invalid @backend/app/main.py:38512  ←  _apply_document_auto_repair_item @backend/app/main.py:38541  ←  _run_workspace_document_auto_repair_job @backend/app/main.py:38586  ←  process_knowledge_job @backend/app/main.py:4809  ←  knowledge_worker_loop [worker:knowledge_worker_loop] @backend/app/main.py:5110
+    - chain: _soft_mark_document_invalid @backend/app/main.py:38512  ←  _apply_document_auto_repair_item @backend/app/main.py:38541  ←  reconcile_pending_documents_for_client @backend/app/main.py:38673  ←  ensure_standard_client_folders @backend/app/main.py:14645  ←  apply_client_document_auto_repair [endpoint:/api/v1/clients/{client_id}/documents/auto-repair/apply] @backend/app/main.py:39062
+    - chain: _soft_mark_document_invalid @backend/app/main.py:38512  ←  _apply_document_auto_repair_item @backend/app/main.py:38541  ←  reconcile_pending_documents_for_client @backend/app/main.py:38673  ←  ensure_standard_client_folders @backend/app/main.py:14645  ←  apply_client_folder_recommendation [endpoint:/api/v1/clients/{client_id}/folders/apply-recommendation] @backend/app/main.py:39044
+    - chain: _soft_mark_document_invalid @backend/app/main.py:38512  ←  _apply_document_auto_repair_item @backend/app/main.py:38541  ←  reconcile_pending_documents_for_client @backend/app/main.py:38673  ←  ensure_standard_client_folders @backend/app/main.py:14645  ←  create_client [endpoint:/api/v1/clients] @backend/app/main.py:37631
+    - chain: _soft_mark_document_invalid @backend/app/main.py:38512  ←  _apply_document_auto_repair_item @backend/app/main.py:38541  ←  reconcile_pending_documents_for_client @backend/app/main.py:38673  ←  ensure_standard_client_folders @backend/app/main.py:14645  ←  create_client_folder [endpoint:/api/v1/clients/{client_id}/folders] @backend/app/main.py:38854
+    - chain: _soft_mark_document_invalid @backend/app/main.py:38512  ←  _apply_document_auto_repair_item @backend/app/main.py:38541  ←  reconcile_pending_documents_for_client @backend/app/main.py:38673  ←  ensure_standard_client_folders @backend/app/main.py:14645  ←  delete_client_folder [endpoint:/api/v1/clients/{client_id}/folders/{folder_id}] @backend/app/main.py:39117
+- `UPDATE` @ **create_app._apply_client_folder_recommendation_plan** `backend/app/main.py:38751` — _call_name_match_
+    - chain: _apply_client_folder_recommendation_plan @backend/app/main.py:38751  ←  apply_client_folder_recommendation [endpoint:/api/v1/clients/{client_id}/folders/apply-recommendation] @backend/app/main.py:39044
+- `UPDATE` @ **create_app.move_client_document_folder** `backend/app/main.py:38933` — _static_confirmed_
+    - chain: move_client_document_folder [endpoint:/api/v1/clients/{client_id}/documents/{document_id}/move-folder] @backend/app/main.py:38933
+- `UPDATE` @ **create_app.run_workspace_data_center_readiness_action** `backend/app/main.py:43497` — _static_confirmed_
+    - chain: run_workspace_data_center_readiness_action [endpoint:/api/v1/clients/{client_id}/workspace/data-center-readiness/actions] @backend/app/main.py:43497
+- `INSERT` @ **create_app.import_documents** `backend/app/main.py:45956` — _static_confirmed_
+    - chain: import_documents [endpoint:/api/v1/imports] @backend/app/main.py:45956
+- `UPDATE` @ **create_app.process_knowledge_job** `backend/app/main.py:4809` — _call_name_match_
+    - chain: process_knowledge_job @backend/app/main.py:4809  ←  knowledge_worker_loop [worker:knowledge_worker_loop] @backend/app/main.py:5110
+- `UPDATE` @ **create_app.update_document_content** `backend/app/main.py:49580` — _static_confirmed_
+    - chain: update_document_content [endpoint:/api/v1/documents/{document_id}/content] @backend/app/main.py:49580
+- `INSERT` @ **create_app.upload_task_attachment** `backend/app/main.py:53434` — _needs_human_
+    - chain: upload_task_attachment [endpoint:/api/v1/tasks/{task_id}/attachments] @backend/app/main.py:53434
+- `UPDATE` @ **_mark_documents_for_source_entity** `backend/app/services/data_center_ingest.py:665` — _call_name_match_
+    - chain: _mark_documents_for_source_entity @backend/app/services/data_center_ingest.py:665  ←  mark_ingested_source_inactive @backend/app/services/data_center_ingest.py:735  ←  delete_task [endpoint:/api/v1/tasks/{task_id}] @backend/app/main.py:53307
+    - chain: _mark_documents_for_source_entity @backend/app/services/data_center_ingest.py:665  ←  mark_ingested_source_inactive @backend/app/services/data_center_ingest.py:735  ←  update_task [endpoint:/api/v1/tasks/{task_id}] @backend/app/main.py:52636
+    - chain: _mark_documents_for_source_entity @backend/app/services/data_center_ingest.py:665  ←  _upsert_text_document_if_needed @backend/app/services/data_center_ingest.py:552  ←  ingest_user_input @backend/app/services/data_center_ingest.py:1089  ←  ingest_event_line_by_id @backend/app/services/data_center_ingest.py:1862  ←  create_event_line [endpoint:/api/v1/event-lines] @backend/app/main.py:31525
+    - chain: _mark_documents_for_source_entity @backend/app/services/data_center_ingest.py:665  ←  _upsert_text_document_if_needed @backend/app/services/data_center_ingest.py:552  ←  ingest_user_input @backend/app/services/data_center_ingest.py:1089  ←  ingest_event_line_by_id @backend/app/services/data_center_ingest.py:1862  ←  update_event_line [endpoint:/api/v1/event-lines/{event_line_id}] @backend/app/main.py:35169
+    - chain: _mark_documents_for_source_entity @backend/app/services/data_center_ingest.py:665  ←  _upsert_text_document_if_needed @backend/app/services/data_center_ingest.py:552  ←  ingest_user_input @backend/app/services/data_center_ingest.py:1089  ←  ingest_meeting_by_id @backend/app/services/data_center_ingest.py:1609  ←  apply_strategic_meeting_pack [endpoint:/api/v1/clients/{client_id}/strategic-cockpit/meeting-pack/{meeting_id}/apply] @backend/app/main.py:42202
+    - chain: _mark_documents_for_source_entity @backend/app/services/data_center_ingest.py:665  ←  _upsert_text_document_if_needed @backend/app/services/data_center_ingest.py:552  ←  ingest_user_input @backend/app/services/data_center_ingest.py:1089  ←  ingest_meeting_by_id @backend/app/services/data_center_ingest.py:1609  ←  extract_meeting [endpoint:/api/v1/clients/{client_id}/meetings/{meeting_id}/extract] @backend/app/main.py:51418
+- `UPDATE` @ **mark_ingested_source_inactive** `backend/app/services/data_center_ingest.py:735` — _call_name_match_
+    - chain: mark_ingested_source_inactive @backend/app/services/data_center_ingest.py:735  ←  delete_task [endpoint:/api/v1/tasks/{task_id}] @backend/app/main.py:53307
+    - chain: mark_ingested_source_inactive @backend/app/services/data_center_ingest.py:735  ←  update_task [endpoint:/api/v1/tasks/{task_id}] @backend/app/main.py:52636
+    - chain: mark_ingested_source_inactive @backend/app/services/data_center_ingest.py:735  ←  _soft_isolate_ingested_source @backend/app/services/data_center_ingest.py:836  ←  _skip_orphan_client_ingest @backend/app/services/data_center_ingest.py:877  ←  ingest_user_input @backend/app/services/data_center_ingest.py:1089  ←  ingest_event_line_by_id @backend/app/services/data_center_ingest.py:1862  ←  create_event_line [endpoint:/api/v1/event-lines] @backend/app/main.py:31525
+    - chain: mark_ingested_source_inactive @backend/app/services/data_center_ingest.py:735  ←  _soft_isolate_ingested_source @backend/app/services/data_center_ingest.py:836  ←  _skip_orphan_client_ingest @backend/app/services/data_center_ingest.py:877  ←  ingest_user_input @backend/app/services/data_center_ingest.py:1089  ←  ingest_event_line_by_id @backend/app/services/data_center_ingest.py:1862  ←  update_event_line [endpoint:/api/v1/event-lines/{event_line_id}] @backend/app/main.py:35169
+    - chain: mark_ingested_source_inactive @backend/app/services/data_center_ingest.py:735  ←  _soft_isolate_ingested_source @backend/app/services/data_center_ingest.py:836  ←  _skip_orphan_client_ingest @backend/app/services/data_center_ingest.py:877  ←  ingest_user_input @backend/app/services/data_center_ingest.py:1089  ←  ingest_meeting_by_id @backend/app/services/data_center_ingest.py:1609  ←  apply_strategic_meeting_pack [endpoint:/api/v1/clients/{client_id}/strategic-cockpit/meeting-pack/{meeting_id}/apply] @backend/app/main.py:42202
+    - chain: mark_ingested_source_inactive @backend/app/services/data_center_ingest.py:735  ←  _soft_isolate_ingested_source @backend/app/services/data_center_ingest.py:836  ←  _skip_orphan_client_ingest @backend/app/services/data_center_ingest.py:877  ←  ingest_user_input @backend/app/services/data_center_ingest.py:1089  ←  ingest_meeting_by_id @backend/app/services/data_center_ingest.py:1609  ←  extract_meeting [endpoint:/api/v1/clients/{client_id}/meetings/{meeting_id}/extract] @backend/app/main.py:51418
+- `UPDATE` @ **_soft_isolate_ingested_source** `backend/app/services/data_center_ingest.py:836` — _call_name_match_
+    - chain: _soft_isolate_ingested_source @backend/app/services/data_center_ingest.py:836  ←  _skip_orphan_client_ingest @backend/app/services/data_center_ingest.py:877  ←  ingest_user_input @backend/app/services/data_center_ingest.py:1089  ←  ingest_event_line_by_id @backend/app/services/data_center_ingest.py:1862  ←  create_event_line [endpoint:/api/v1/event-lines] @backend/app/main.py:31525
+    - chain: _soft_isolate_ingested_source @backend/app/services/data_center_ingest.py:836  ←  _skip_orphan_client_ingest @backend/app/services/data_center_ingest.py:877  ←  ingest_user_input @backend/app/services/data_center_ingest.py:1089  ←  ingest_event_line_by_id @backend/app/services/data_center_ingest.py:1862  ←  update_event_line [endpoint:/api/v1/event-lines/{event_line_id}] @backend/app/main.py:35169
+    - chain: _soft_isolate_ingested_source @backend/app/services/data_center_ingest.py:836  ←  _skip_orphan_client_ingest @backend/app/services/data_center_ingest.py:877  ←  ingest_user_input @backend/app/services/data_center_ingest.py:1089  ←  ingest_meeting_by_id @backend/app/services/data_center_ingest.py:1609  ←  apply_strategic_meeting_pack [endpoint:/api/v1/clients/{client_id}/strategic-cockpit/meeting-pack/{meeting_id}/apply] @backend/app/main.py:42202
+    - chain: _soft_isolate_ingested_source @backend/app/services/data_center_ingest.py:836  ←  _skip_orphan_client_ingest @backend/app/services/data_center_ingest.py:877  ←  ingest_user_input @backend/app/services/data_center_ingest.py:1089  ←  ingest_meeting_by_id @backend/app/services/data_center_ingest.py:1609  ←  extract_meeting [endpoint:/api/v1/clients/{client_id}/meetings/{meeting_id}/extract] @backend/app/main.py:51418
+    - chain: _soft_isolate_ingested_source @backend/app/services/data_center_ingest.py:836  ←  _skip_orphan_client_ingest @backend/app/services/data_center_ingest.py:877  ←  ingest_user_input @backend/app/services/data_center_ingest.py:1089  ←  ingest_meeting_by_id @backend/app/services/data_center_ingest.py:1609  ←  ingest_meeting [endpoint:/api/v1/clients/{client_id}/meetings/{meeting_id}/ingest] @backend/app/main.py:51386
+    - chain: _soft_isolate_ingested_source @backend/app/services/data_center_ingest.py:836  ←  _skip_orphan_client_ingest @backend/app/services/data_center_ingest.py:877  ←  ingest_user_input @backend/app/services/data_center_ingest.py:1089  ←  ingest_meeting_by_id @backend/app/services/data_center_ingest.py:1609  ←  publish_meeting [endpoint:/api/v1/clients/{client_id}/meetings/{meeting_id}/publish] @backend/app/main.py:51482
+- `UPDATE` @ **cleanup_low_value_intelligence_artifacts** `backend/app/services/intelligence_candidate_supply.py:6959` — _needs_human_
+    - chain: cleanup_low_value_intelligence_artifacts @backend/app/services/intelligence_candidate_supply.py:6959  ←  (no caller found — orphan write)
+- `INSERT` @ **_ingest_internet_pdf** `backend/app/services/internet_crawler.py:805` — _call_name_match_
+    - chain: _ingest_internet_pdf @backend/app/services/internet_crawler.py:805  ←  run_internet_enrichment [worker:run_internet_enrichment] @backend/app/services/internet_crawler.py:1135
+- `UPDATE` @ **sync_human_file_locations_for_client** `backend/app/services/knowledge_base.py:2000` — _static_confirmed_
+    - chain: sync_human_file_locations_for_client [worker:sync_human_file_locations_for_client] @backend/app/services/knowledge_base.py:2000
+- `UPDATE` @ **ingest_document_knowledge** `backend/app/services/knowledge_v2.py:2114` — _call_name_match_
+    - chain: ingest_document_knowledge @backend/app/services/knowledge_v2.py:2114  ←  upload_task_attachment [endpoint:/api/v1/tasks/{task_id}/attachments] @backend/app/main.py:53434
+    - chain: ingest_document_knowledge @backend/app/services/knowledge_v2.py:2114  ←  _build_local_event_line_report_snapshot @backend/app/main.py:33643  ←  get_event_line_report_snapshot [endpoint:/api/v1/event-lines/{event_line_id}/report-snapshot] @backend/app/main.py:34329
+    - chain: ingest_document_knowledge @backend/app/services/knowledge_v2.py:2114  ←  _process_one_pdf @backend/app/services/internet_pdf_worker.py:96  ←  _worker_loop [worker:_worker_loop] @backend/app/services/internet_pdf_worker.py:205
+    - chain: ingest_document_knowledge @backend/app/services/knowledge_v2.py:2114  ←  backfill_workspace_import @backend/app/services/knowledge_v2.py:3943  ←  backfill_client_workspace_imports [endpoint:/api/v1/clients/{client_id}/workspace/backfill-imports] @backend/app/main.py:50039
+    - chain: ingest_document_knowledge @backend/app/services/knowledge_v2.py:2114  ←  create_client_text_document @backend/app/main.py:16116  ←  create_client_document_from_text [endpoint:/api/v1/clients/{client_id}/documents/from-text] @backend/app/main.py:49576
+    - chain: ingest_document_knowledge @backend/app/services/knowledge_v2.py:2114  ←  execute_parse_failure_retry_batch @backend/app/main.py:42534  ←  retry_client_parse_failures [endpoint:/api/v1/clients/{client_id}/knowledge/parse-failures/retry] @backend/app/main.py:42800
+- `INSERT+UPDATE` @ **upsert_canonical_text_document** `backend/app/services/knowledge_v2.py:3304` — _call_name_match_
+    - chain: upsert_canonical_text_document @backend/app/services/knowledge_v2.py:3304  ←  run_internet_enrichment [worker:run_internet_enrichment] @backend/app/services/internet_crawler.py:1135
+    - chain: upsert_canonical_text_document @backend/app/services/knowledge_v2.py:3304  ←  _promote_candidate @backend/app/services/intelligence_candidate_supply.py:4503  ←  run_intelligence_candidate_refresh @backend/app/services/intelligence_candidate_supply.py:5967  ←  trigger_intelligence_refresh [endpoint:/api/v1/intelligence/refresh] @backend/app/main.py:57794
+    - chain: upsert_canonical_text_document @backend/app/services/knowledge_v2.py:3304  ←  _upsert_text_document_if_needed @backend/app/services/data_center_ingest.py:552  ←  ingest_user_input @backend/app/services/data_center_ingest.py:1089  ←  ingest_event_line_by_id @backend/app/services/data_center_ingest.py:1862  ←  create_event_line [endpoint:/api/v1/event-lines] @backend/app/main.py:31525
+    - chain: upsert_canonical_text_document @backend/app/services/knowledge_v2.py:3304  ←  _upsert_text_document_if_needed @backend/app/services/data_center_ingest.py:552  ←  ingest_user_input @backend/app/services/data_center_ingest.py:1089  ←  ingest_event_line_by_id @backend/app/services/data_center_ingest.py:1862  ←  update_event_line [endpoint:/api/v1/event-lines/{event_line_id}] @backend/app/main.py:35169
+    - chain: upsert_canonical_text_document @backend/app/services/knowledge_v2.py:3304  ←  _upsert_text_document_if_needed @backend/app/services/data_center_ingest.py:552  ←  ingest_user_input @backend/app/services/data_center_ingest.py:1089  ←  ingest_meeting_by_id @backend/app/services/data_center_ingest.py:1609  ←  apply_strategic_meeting_pack [endpoint:/api/v1/clients/{client_id}/strategic-cockpit/meeting-pack/{meeting_id}/apply] @backend/app/main.py:42202
+    - chain: upsert_canonical_text_document @backend/app/services/knowledge_v2.py:3304  ←  _upsert_text_document_if_needed @backend/app/services/data_center_ingest.py:552  ←  ingest_user_input @backend/app/services/data_center_ingest.py:1089  ←  ingest_meeting_by_id @backend/app/services/data_center_ingest.py:1609  ←  extract_meeting [endpoint:/api/v1/clients/{client_id}/meetings/{meeting_id}/extract] @backend/app/main.py:51418
+- `INSERT` @ **backfill_workspace_import** `backend/app/services/knowledge_v2.py:3943` — _call_name_match_
+    - chain: backfill_workspace_import @backend/app/services/knowledge_v2.py:3943  ←  backfill_client_workspace_imports [endpoint:/api/v1/clients/{client_id}/workspace/backfill-imports] @backend/app/main.py:50039
+- `UPDATE` @ **backfill_client_document_family_metadata** `backend/app/services/knowledge_v2.py:415` — _call_name_match_
+    - chain: backfill_client_document_family_metadata @backend/app/services/knowledge_v2.py:415  ←  build_data_center_retrieval_items @backend/app/services/data_center_search.py:172  ←  resolve_data_center_kernel @backend/app/services/data_center_kernel.py:453  ←  data_center_diagnose [endpoint:/api/v1/data-center/diagnose] @backend/app/main.py:48600
+    - chain: backfill_client_document_family_metadata @backend/app/services/knowledge_v2.py:415  ←  build_data_center_retrieval_items @backend/app/services/data_center_search.py:172  ←  resolve_data_center_kernel @backend/app/services/data_center_kernel.py:453  ←  data_center_resolve [endpoint:/api/v1/data-center/resolve] @backend/app/main.py:48591
+    - chain: backfill_client_document_family_metadata @backend/app/services/knowledge_v2.py:415  ←  build_data_center_retrieval_items @backend/app/services/data_center_search.py:172  ←  resolve_data_center_kernel @backend/app/services/data_center_kernel.py:453  ←  resolve_chat_answer_data_center_primary @backend/app/main.py:46745  ←  document_ai_action [endpoint:/api/v1/clients/{client_id}/documents/ai-action] @backend/app/main.py:49635
+    - chain: backfill_client_document_family_metadata @backend/app/services/knowledge_v2.py:415  ←  build_data_center_retrieval_items @backend/app/services/data_center_search.py:172  ←  resolve_data_center_kernel @backend/app/services/data_center_kernel.py:453  ←  resolve_chat_answer_data_center_primary @backend/app/main.py:46745  ←  resolve_chat_answer @backend/app/main.py:48117  ←  background_resolve_chat_answer [worker:background_resolve_chat_answer] @backend/app/main.py:48335
+    - chain: backfill_client_document_family_metadata @backend/app/services/knowledge_v2.py:415  ←  build_data_center_retrieval_items @backend/app/services/data_center_search.py:172  ←  resolve_data_center_kernel @backend/app/services/data_center_kernel.py:453  ←  resolve_chat_answer_data_center_primary @backend/app/main.py:46745  ←  resolve_chat_answer @backend/app/main.py:48117  ←  send_chat_message [endpoint:/api/v1/clients/{client_id}/workspace/chat] @backend/app/main.py:49220
+- `UPDATE` @ **_handler_documents_generate._do_insert_doc** `backend/app/services/plan_executor.py:1265` — _needs_human_
+    - chain: _do_insert_doc @backend/app/services/plan_executor.py:1265  ←  (no caller found — orphan write)
+- `INSERT+UPDATE` @ **_handler_documents_generate** `backend/app/services/plan_executor.py:932` — _needs_human_
+    - chain: _handler_documents_generate @backend/app/services/plan_executor.py:932  ←  (no caller found — orphan write)
+- `INSERT` @ **commit_session** `backend/app/services/smart_file_import.py:887` — _call_name_match_
+    - chain: commit_session @backend/app/services/smart_file_import.py:887  ←  smart_import_commit_session [endpoint:/api/v1/smart-import/sessions/{session_id}/commit] @backend/app/main.py:29395
+- `UPDATE` @ **_migrate_one_client** `backend/app/services/unified_workspace_migrator.py:108` — _call_name_match_
+    - chain: _migrate_one_client @backend/app/services/unified_workspace_migrator.py:108  ←  migrate_all_clients @backend/app/services/unified_workspace_migrator.py:281  ←  unified_workspace_migrate_endpoint [endpoint:/api/v1/admin/unified-workspace-migrate] @backend/app/main.py:36643
+- `INSERT` @ **run_wechat_sogou_ingest** `backend/app/services/wechat_sogou_ingest.py:145` — _call_name_match_
+    - chain: run_wechat_sogou_ingest @backend/app/services/wechat_sogou_ingest.py:145  ←  trigger_wechat_sogou_ingest [endpoint:/api/v1/intelligence/brand-mirror/wechat-sogou-ingest] @backend/app/main.py:59331
+
+### 读边 (83)
+- `SELECT-FROM+JOIN` @ **_init_schema** `backend/app/db.py:60` — _static_confirmed_
+    - WHERE: `d.id = v2_documents.document_id`
+    - WHERE: `kd.id = document_chunks.knowledge_document_id`
+- `SELECT-FROM` @ **create_app._upsert_cloud_client_shadow_local** `backend/app/main.py:10227` — _static_confirmed_
+    - WHERE: `client_id=c.id), 0) + COALESCE((SELECT COUNT(*) FROM chat_threads WHERE client_id=c.id), 0) + COALESCE((SELECT COUNT(*) FROM documents WHERE client_id=c.id), 0) AS usage FROM clients c WHERE c.name=? `
+- `SELECT-FROM` @ **create_app.build_client_summary** `backend/app/main.py:13881` — _static_confirmed_
+    - WHERE: `client_id = ? AND content_domain = 'work'`
+- `SELECT-FROM` @ **create_app.build_task_project_context** `backend/app/main.py:14027` — _static_confirmed_
+    - WHERE: `client_id = ? AND excerpt IS NOT NULL AND TRIM(excerpt) != ''`
+- `JOIN` @ **_build_structured_fields_pack** `backend/app/main.py:1439` — _static_confirmed_
+    - WHERE: `d.client_id = ?`
+- `SELECT-FROM` @ **create_app.migrate_client_link_material_documents_to_online_transcripts** `backend/app/main.py:14391` — _static_confirmed_
+    - WHERE: `d.client_id = ? AND d.source = 'video_transcript' AND ( COALESCE(vd.visible_category, '') != ? OR COALESCE(vd.material_layer, '') != ? OR d.path NOT LIKE ? )`
+- `SELECT-FROM` @ **create_app._client_folder_file_count** `backend/app/main.py:14483` — _static_confirmed_
+    - WHERE: `client_id = ? AND folder_id = ?`
+    - WHERE: `d.client_id = ? AND d.folder_id = ? AND v.id IS NULL AND COALESCE(d.lifecycle_status, 'active') = 'active' AND COALESCE(d.is_searchable, 1) = 1`
+- `SELECT-FROM` @ **create_app.register_generated_workspace_document** `backend/app/main.py:15690` — _static_confirmed_
+    - WHERE: `id = ?`
+- `SELECT-FROM` @ **create_app.create_client_text_document** `backend/app/main.py:16116` — _static_confirmed_
+    - WHERE: `id = ?`
+- `SELECT-FROM` @ **create_app.workspace_for_client** `backend/app/main.py:17770` — _static_confirmed_
+    - WHERE: `client_id = ? AND content_domain = 'work' AND (canonical_kind = 'raw_file' OR canonical_kind = 'ai_draft' OR canonical_kind IS NULL OR canonical_kind = '')`
+- `SELECT-FROM+JOIN` @ **_sync_task_attachment_scope** `backend/app/main.py:2237` — _static_confirmed_
+    - WHERE: `a.task_id = ?`
+    - WHERE: `id = ?`
+- `SELECT-FROM` @ **create_app._fetch_intro_support_only_sources** `backend/app/main.py:23138` — _static_confirmed_
+    - WHERE: `client_id = ?`
+- `SELECT-FROM` @ **create_app.proxy_cloud_attachment_text** `backend/app/main.py:27509` — _static_confirmed_
+    - WHERE: `id = ?`
+- `SELECT-FROM` @ **create_app.proxy_cloud_attachment_text._local_text_content** `backend/app/main.py:27510` — _static_confirmed_
+    - WHERE: `id = ?`
+- `SELECT-FROM` @ **create_app.get_brain_dashboard** `backend/app/main.py:27671` — _static_confirmed_
+    - WHERE: `client_id = ?`
+- `JOIN` @ **create_app.get_client_duplicate_documents** `backend/app/main.py:28069` — _static_confirmed_
+    - WHERE: `v.client_id = ? AND COALESCE(v.content_hash, '') != '' AND v.content_hash IN ( SELECT content_hash FROM v2_documents WHERE client_id = ? AND COALESCE(content_hash, '') != ''`
+    - WHERE: `v.client_id = ? AND COALESCE(v.file_name, '') != '' AND v.file_name IN ( SELECT file_name FROM v2_documents WHERE client_id = ? AND COALESCE(file_name, '') != ''`
+- `SELECT-FROM+JOIN` @ **create_app.resolve_client_duplicate_documents** `backend/app/main.py:28241` — _static_confirmed_
+    - WHERE: `id = ?`
+    - WHERE: `v.client_id = ? AND v.id IN (`
+    - WHERE: `v.client_id = ? AND v.id IN ({?})`
+- `JOIN` @ **create_app._find_chunk_for_next_step** `backend/app/main.py:28649` — _static_confirmed_
+    - WHERE: `vd.client_id=? AND vc.content LIKE ?`
+    - WHERE: `vd.client_id=? AND vc.content LIKE ? AND (d.title LIKE '%纪要%' OR d.title LIKE '%对齐会%' OR d.title LIKE '%会议%')`
+- `SELECT-FROM` @ **build_demo_data_response** `backend/app/main.py:2869` — _static_confirmed_
+    - WHERE: `client_id IN (`
+    - WHERE: `client_id IN ({?})`
+- `SELECT-FROM` @ **clear_demo_dataset** `backend/app/main.py:2884` — _static_confirmed_
+    - WHERE: `id IN (`
+    - WHERE: `id IN ({?})`
+- `JOIN` @ **create_app.list_glossary_attributes_proxy** `backend/app/main.py:29549` — _static_confirmed_
+    - WHERE: `ga.client_id=?`
+- `SELECT-FROM+JOIN` @ **create_app** `backend/app/main.py:3179` — _static_confirmed_
+    - WHERE: `a.task_id = ?`
+    - WHERE: `client_id = ?`
+    - WHERE: `client_id = ? AND content_domain = 'work'`
+    - WHERE: `client_id = ? AND content_domain = 'work' AND (canonical_kind = 'raw_file' OR canonical_kind = 'ai_draft' OR canonical_kind IS NULL OR canonical_kind = '')`
+    - WHERE: `client_id = ? AND excerpt IS NOT NULL AND TRIM(excerpt) != ''`
+- `SELECT-FROM` @ **create_app._gather_task_context_bundle** `backend/app/main.py:32267` — _static_confirmed_
+    - WHERE: `id = ?`
+- `SELECT-FROM` @ **create_app._build_local_event_line_report_snapshot** `backend/app/main.py:33643` — _static_confirmed_
+    - WHERE: `client_id = ? AND path = ?`
+    - WHERE: `id = ?`
+- `SELECT-FROM` @ **create_app._build_local_event_line_report_snapshot._document_parse_info** `backend/app/main.py:33748` — _static_confirmed_
+    - WHERE: `id = ?`
+- `SELECT-FROM` @ **create_app._build_local_event_line_report_snapshot._resolve_event_attachment_document_id** `backend/app/main.py:33796` — _static_confirmed_
+    - WHERE: `client_id = ? AND path = ?`
+- `SELECT-FROM` @ **create_app._local_report_document_parse_info** `backend/app/main.py:33966` — _static_confirmed_
+    - WHERE: `id = ?`
+- `SELECT-FROM` @ **create_app._ensure_cloud_event_attachment_document** `backend/app/main.py:34027` — _static_confirmed_
+    - WHERE: `client_id = ? AND path = ?`
+- `SELECT-FROM` @ **create_app._resolve_client_id_for_evidence_quality_annotation** `backend/app/main.py:3650` — _static_confirmed_
+    - WHERE: `id = ?`
+- `SELECT-FROM` @ **create_app._safe_move_managed_document_path** `backend/app/main.py:37809` — _static_confirmed_
+    - WHERE: `id = ? AND client_id = ?`
+- `SELECT-FROM` @ **create_app._client_folder_recommendation_rows** `backend/app/main.py:37916` — _static_confirmed_
+    - WHERE: `d.client_id = ?`
+- `SELECT-FROM` @ **create_app._auto_repair_rows** `backend/app/main.py:38075` — _static_confirmed_
+    - WHERE: `d.client_id = ?`
+    - WHERE: `d.client_id = ? {?}`
+- `SELECT-FROM` @ **create_app._pending_document_ids_for_auto_reconcile** `backend/app/main.py:38644` — _static_confirmed_
+    - WHERE: `d.client_id = ? AND ( COALESCE(cf.label, '') IN (`
+    - WHERE: `d.client_id = ? AND ( COALESCE(cf.label, '') IN ({?}) OR COALESCE(v.visible_category, '') IN ({?}) OR COALESCE(k.human_folder_category, '') IN ({?}) )`
+- `SELECT-FROM` @ **create_app.move_client_document_folder** `backend/app/main.py:38933` — _static_confirmed_
+    - WHERE: `id = ? AND client_id = ?`
+- `SELECT-FROM` @ **create_app.recommend_client_folder** `backend/app/main.py:39014` — _static_confirmed_
+    - WHERE: `id = ? AND client_id = ?`
+- `SELECT-FROM` @ **create_app.delete_client_document** `backend/app/main.py:39134` — _static_confirmed_
+    - WHERE: `id = ?`
+    - WHERE: `id = ? AND client_id = ?`
+- `SELECT-FROM` @ **create_app.get_client_delete_preview** `backend/app/main.py:39266` — _static_confirmed_
+    - WHERE: `client_id = ?`
+- `JOIN` @ **create_app.get_workspace_data_center_readiness** `backend/app/main.py:42811` — _static_confirmed_
+    - WHERE: `v2.client_id = ?`
+- `JOIN` @ **create_app.run_workspace_data_center_readiness_action** `backend/app/main.py:43497` — _static_confirmed_
+    - WHERE: `v2.client_id = ?`
+    - WHERE: `v2.client_id = ? {?}`
+- `SELECT-FROM` @ **create_app.rebuild_client_knowledge** `backend/app/main.py:45441` — _static_confirmed_
+    - WHERE: `client_id = ?`
+- `SELECT-FROM` @ **create_app.build_document_reading_preview_record** `backend/app/main.py:46173` — _static_confirmed_
+    - WHERE: `d.client_id = ? AND d.id = ?`
+- `SELECT-FROM` @ **create_app.decompose_documents_batch** `backend/app/main.py:49095` — _static_confirmed_
+    - WHERE: `d.client_id = ? AND lower(coalesce(d.kind, '')) IN ('pdf', 'docx')`
+- `SELECT-FROM+JOIN` @ **create_app.get_decomposition_status** `backend/app/main.py:49192` — _static_confirmed_
+    - WHERE: `client_id = ? AND lower(coalesce(kind, '')) IN ('pdf', 'docx')`
+    - WHERE: `d.client_id = ?`
+- `SELECT-FROM` @ **create_app.get_document_text** `backend/app/main.py:49428` — _static_confirmed_
+    - WHERE: `id = ?`
+- `SELECT-FROM` @ **create_app.update_document_content** `backend/app/main.py:49580` — _static_confirmed_
+    - WHERE: `id = ?`
+- `SELECT-FROM` @ **create_app._has_local_workspace_data** `backend/app/main.py:5304` — _static_confirmed_
+- `SELECT-FROM` @ **create_app.upload_task_attachment** `backend/app/main.py:53434` — _static_confirmed_
+    - WHERE: `id = ?`
+- `SELECT-FROM` @ **create_app.delete_task_attachment** `backend/app/main.py:53734` — _static_confirmed_
+    - WHERE: `id = ?`
+- `JOIN` @ **create_app.fetch_task_attachments** `backend/app/main.py:8904` — _static_confirmed_
+    - WHERE: `a.task_id = ?`
+- `SELECT-FROM` @ **_collect_corpus** `backend/app/services/brand_mirror_analyzer.py:57` — _static_confirmed_
+    - WHERE: `d.client_id = ? AND d.content_domain = 'brand_official_corpus'`
+- `SELECT-FROM` @ **_build_single_client_summary** `backend/app/services/client_strategic_pulse.py:559` — _static_confirmed_
+    - WHERE: `client_id = ? AND created_at >= ? AND id NOT LIKE 'sysdoc_%'`
+- `JOIN` @ **list_contradictions** `backend/app/services/contradiction_detector.py:353` — _static_confirmed_
+    - WHERE: `fc.client_id = ? AND fc.review_status = ?`
+- `SELECT-FROM` @ **_permission_diagnostics** `backend/app/services/data_center_schema.py:35` — _static_confirmed_
+    - WHERE: `COALESCE(department_ids_json, '[]') IN ('', '[]')`
+    - WHERE: `COALESCE(is_searchable, 1) = 1 AND ( LOWER(COALESCE(visibility_scope, 'project_public')) IN ('self', 'private', 'personal') OR LOWER(COALESCE(content_domain, 'work')) IN ('personal', 'private') )`
+    - WHERE: `COALESCE(is_searchable, 1) = 1 AND COALESCE(lifecycle_status, 'active') != 'active'`
+    - WHERE: `COALESCE(organization_id, '') = ''`
+    - WHERE: `COALESCE(owner_user_id, '') = ''`
+- `SELECT-FROM` @ **_document_row** `backend/app/services/data_center_sync.py:132` — _static_confirmed_
+    - WHERE: `d.id = ?`
+- `SELECT-FROM` @ **_build_metrics** `backend/app/services/digital_asset_center.py:3129` — _static_confirmed_
+    - WHERE: `client_id = ?`
+- `SELECT-FROM` @ **_collect_sources** `backend/app/services/digital_asset_center.py:3179` — _static_confirmed_
+    - WHERE: `d.client_id = ?`
+- `SELECT-FROM` @ **_build_digital_asset_pulse** `backend/app/services/digital_asset_center.py:924` — _static_confirmed_
+    - WHERE: `COALESCE(c.alias, '') != ? AND COALESCE(c.name, '') != ? AND date(d.created_at) >= date('now', '-7 days')`
+- `SELECT-FROM` @ **build_digital_asset_narrative_context** `backend/app/services/digital_asset_narrative.py:201` — _static_confirmed_
+    - WHERE: `client_id = ?`
+- `SELECT-FROM` @ **_fetch_fields_by_schema** `backend/app/services/document_decomposition.py:719` — _static_confirmed_
+    - WHERE: `d.client_id = ? AND df.field_name IS NOT NULL`
+- `JOIN` @ **_augment_with_indexed_primary_sources** `backend/app/services/evidence_selector.py:122` — _static_confirmed_
+    - WHERE: `v.client_id = ? AND v.parse_status = 'ready'`
+- `SELECT-FROM` @ **infer_tier_from_source_doc** `backend/app/services/evidence_tier.py:196` — _static_confirmed_
+    - WHERE: `id = ?`
+- `SELECT-FROM` @ **collect_signals** `backend/app/services/intelligence_query_strategy.py:61` — _static_confirmed_
+    - WHERE: `client_id = ?`
+- `SELECT-FROM` @ **_ingest_internet_pdf** `backend/app/services/internet_crawler.py:805` — _static_confirmed_
+    - WHERE: `id = ?`
+- `JOIN` @ **_find_next_pending_pdf** `backend/app/services/internet_pdf_worker.py:59` — _static_confirmed_
+    - WHERE: `v.parse_status = 'pending_ocr' AND v.content_domain = 'internet_enrichment' AND v.kind = 'pdf'`
+- `JOIN` @ **sync_human_file_locations_for_client** `backend/app/services/knowledge_base.py:2000` — _static_confirmed_
+    - WHERE: `kd.client_id = ?`
+- `SELECT-FROM` @ **backfill_knowledge_documents** `backend/app/services/knowledge_base.py:3346` — _static_confirmed_
+    - WHERE: `d.client_id = ? AND kd.id IS NULL`
+- `SELECT-FROM` @ **ingest_document_knowledge** `backend/app/services/knowledge_v2.py:2114` — _static_confirmed_
+    - WHERE: `client_id = ? AND document_family_id = ? AND canonical_kind = 'raw_file' AND id != ?`
+    - WHERE: `id = ?`
+- `SELECT-FROM` @ **upsert_canonical_text_document** `backend/app/services/knowledge_v2.py:3304` — _static_confirmed_
+    - WHERE: `id = ?`
+- `SELECT-FROM` @ **backfill_knowledge_documents** `backend/app/services/knowledge_v2.py:3886` — _static_confirmed_
+    - WHERE: `client_id = ?`
+- `SELECT-FROM` @ **backfill_workspace_import** `backend/app/services/knowledge_v2.py:3943` — _static_confirmed_
+    - WHERE: `client_id = ?`
+- `JOIN` @ **backfill_client_document_family_metadata** `backend/app/services/knowledge_v2.py:415` — _static_confirmed_
+    - WHERE: `kd.id = document_chunks.knowledge_document_id`
+    - WHERE: `knowledge_document_id IN ( SELECT id FROM knowledge_documents WHERE client_id = ? )`
+    - WHERE: `vd.client_id = ? AND COALESCE(vd.canonical_kind, 'raw_file') = 'raw_file'`
+- `JOIN` @ **fetch_document_cards** `backend/app/services/knowledge_v2.py:4226` — _static_confirmed_
+    - WHERE: `dpo2.knowledge_document_id = kd.id`
+    - WHERE: `vd.client_id = ? AND vd.material_layer IN ('evidence', 'external_media_transcript') AND COALESCE(vd.canonical_kind, 'raw_file') = 'raw_file' AND`
+    - WHERE: `vd.client_id = ? AND vd.material_layer IN ('evidence', 'external_media_transcript') AND COALESCE(vd.canonical_kind, 'raw_file') = 'raw_file' AND {?}`
+- `JOIN` @ **retrieve_knowledge_bundle** `backend/app/services/knowledge_v2.py:4920` — _static_confirmed_
+    - WHERE: `dpo2.knowledge_document_id = kd.id`
+    - WHERE: `vd.client_id = ? AND vd.material_layer IN ('evidence', 'external_media_transcript') AND vd.parse_status IN ('ready', 'partial_ready') AND COALESCE(vd.is_searchable, d.is_searchable, 1) = 1 AND COALESC`
+- `JOIN` @ **_load_document_context** `backend/app/services/local_model_optimizer.py:552` — _static_confirmed_
+    - WHERE: `knowledge_document_id = kd.id ) WHERE kd.id = ?`
+- `JOIN` @ **extract_recent_client_actions** `backend/app/services/meeting_action_extractor.py:194` — _static_confirmed_
+    - WHERE: `vd.client_id = ? AND COALESCE(vd.imported_at, vd.updated_at, '') >= ?`
+- `JOIN` @ **_retrieve_top_chunks** `backend/app/services/narrative_collector.py:645` — _static_confirmed_
+    - WHERE: `vd.client_id = ? AND vc.content LIKE ? ESCAPE '\'`
+    - WHERE: `vd.client_id = ? AND vc.content LIKE ? ESCAPE '\' {?}`
+- `JOIN` @ **_collect_document_items** `backend/app/services/organization_dna_v2.py:667` — _static_confirmed_
+    - WHERE: `v.parse_status IN ('ready', 'partial_ready') AND COALESCE(v.chunk_count, 0) >= 3 AND COALESCE(d.created_at, '') >= datetime('now', '-30 days') -- 排除系统生成文档（答案沉淀、客户概览、事件线等系统标识，前缀 v2doc_sysdoc_） AND v.id`
+- `SELECT-FROM` @ **_handler_documents_generate** `backend/app/services/plan_executor.py:932` — _static_confirmed_
+    - WHERE: `client_id = ? AND content_domain = 'work' AND canonical_kind = 'raw_file' AND length(excerpt) > 80`
+    - WHERE: `client_id = ? AND content_domain = 'work' AND canonical_kind IN ('internet_source_doc', 'wechat_article_excerpt', 'project_enrichment_doc') AND length(excerpt) > 80`
+- `JOIN` @ **build_weekly_mainline_evidence_pack** `backend/app/services/review_narrative.py:500` — _static_confirmed_
+    - WHERE: `a.task_id IN (`
+    - WHERE: `a.task_id IN ({?}) UNION ALL SELECT 'task_attachments_cloud' AS source_table, a.id, a.task_id, a.client_id, a.event_line_id, a.document_id, a.title, a.path, a.kind, a.source, a.size_bytes, a.created_a`
+- `SELECT-FROM+JOIN` @ **build_source_reachability_audit** `backend/app/services/source_reachability.py:72` — _static_confirmed_
+    - WHERE: `d.client_id = ? AND d.path LIKE '%/_imports/%' AND v.document_id IS NULL`
+    - WHERE: `d.client_id = ? AND v.document_id IS NULL AND d.path NOT LIKE '%/_imports/%'`
+    - WHERE: `v.client_id = ?`
+- `SELECT-FROM` @ **_migrate_one_client** `backend/app/services/unified_workspace_migrator.py:108` — _static_confirmed_
+    - WHERE: `client_id = ? AND (`
+    - WHERE: `client_id = ? AND ({?})`
+    - WHERE: `client_id = ? AND canonical_kind = 'raw_file' AND document_family_id != ''`
+    - WHERE: `id = ?`
+- `SELECT-FROM` @ **run_wechat_sogou_ingest** `backend/app/services/wechat_sogou_ingest.py:145` — _static_confirmed_
+    - WHERE: `id = ?`
+- `JOIN` @ **build_weekly_review_material_pack** `backend/app/services/weekly_review_material_pack.py:335` — _static_confirmed_
+    - WHERE: `a.task_id IN (`
+    - WHERE: `a.task_id IN ({?}) UNION ALL SELECT 'task_attachments_cloud' AS source_table, a.id, a.task_id, a.client_id, a.event_line_id, a.document_id, a.title, a.kind, a.source, a.size_bytes, a.created_at, d.exc`
+    - WHERE: `entry.week_label = ? AND vd.canonical_kind = 'review_entry_doc' AND vd.origin_type = 'weekly_review_entry' AND LOWER(COALESCE(entry.content_domain, 'work')) NOT IN ('personal', 'private') AND NOT EXIS`
+    - WHERE: `vd.document_id IN (`
+    - WHERE: `vd.document_id IN ({?}) AND {?}`
+
+## `duplicate_group_reviews`
+
+- 经验层: **0 行**
+
+### 写边 (2)
+- `INSERT` @ **create_app.resolve_client_duplicate_documents** `backend/app/main.py:28241` — _static_confirmed_
+    - chain: resolve_client_duplicate_documents [endpoint:/api/v1/clients/{client_id}/duplicate-documents/resolve] @backend/app/main.py:28241
+- `INSERT` @ **create_app** `backend/app/main.py:3179` — _needs_human_
+    - chain: create_app @backend/app/main.py:3179  ←  (no caller found — orphan write)
+
+### 读边 (2)
+- `SELECT-FROM` @ **create_app.get_client_duplicate_documents** `backend/app/main.py:28069` — _static_confirmed_
+    - WHERE: `client_id = ?`
+- `SELECT-FROM` @ **create_app** `backend/app/main.py:3179` — _static_confirmed_
+    - WHERE: `client_id = ?`
+
+## `entities`
+
+- 经验层: **5025 行** · 最近写入 created_at=2026-06-05T07:30:34
+
+### 写边 (9)
+- `UPDATE` @ **create_app** `backend/app/main.py:3179` — _needs_human_
+    - chain: create_app @backend/app/main.py:3179  ←  (no caller found — orphan write)
+- `UPDATE` @ **create_app.verify_entity** `backend/app/main.py:41742` — _static_confirmed_
+    - chain: verify_entity [endpoint:/api/v1/entities/{entity_id}/verify] @backend/app/main.py:41742
+- `UPDATE` @ **_merge_entities** `backend/app/services/data_center_self_verify.py:174` — _needs_human_
+    - chain: _merge_entities @backend/app/services/data_center_self_verify.py:174  ←  verify_entities_cluster @backend/app/services/data_center_self_verify.py:85
+- `UPDATE` @ **_mark_suggested_merge** `backend/app/services/data_center_self_verify.py:240` — _needs_human_
+    - chain: _mark_suggested_merge @backend/app/services/data_center_self_verify.py:240  ←  verify_entities_cluster @backend/app/services/data_center_self_verify.py:85
+- `UPDATE` @ **merge_entities** `backend/app/services/entity_merger.py:165` — _call_name_match_
+    - chain: merge_entities @backend/app/services/entity_merger.py:165  ←  merge_entity_into [endpoint:/api/v1/entities/{merged_id}/merge] @backend/app/main.py:41700
+- `INSERT+UPDATE` @ **upsert_entity** `backend/app/services/entity_store.py:64` — _call_name_match_
+    - chain: upsert_entity @backend/app/services/entity_store.py:64  ←  persist_chunk_entities @backend/app/services/entity_store.py:180  ←  ingest_document_knowledge @backend/app/services/knowledge_base.py:2802  ←  upload_task_attachment [endpoint:/api/v1/tasks/{task_id}/attachments] @backend/app/main.py:53434
+    - chain: upsert_entity @backend/app/services/entity_store.py:64  ←  persist_chunk_entities @backend/app/services/entity_store.py:180  ←  ingest_document_knowledge @backend/app/services/knowledge_base.py:2802  ←  _build_local_event_line_report_snapshot @backend/app/main.py:33643  ←  get_event_line_report_snapshot [endpoint:/api/v1/event-lines/{event_line_id}/report-snapshot] @backend/app/main.py:34329
+    - chain: upsert_entity @backend/app/services/entity_store.py:64  ←  persist_chunk_entities @backend/app/services/entity_store.py:180  ←  ingest_document_knowledge @backend/app/services/knowledge_base.py:2802  ←  _process_one_pdf @backend/app/services/internet_pdf_worker.py:96  ←  _worker_loop [worker:_worker_loop] @backend/app/services/internet_pdf_worker.py:205
+    - chain: upsert_entity @backend/app/services/entity_store.py:64  ←  persist_chunk_entities @backend/app/services/entity_store.py:180  ←  ingest_document_knowledge @backend/app/services/knowledge_base.py:2802  ←  backfill_workspace_import @backend/app/services/knowledge_v2.py:3943  ←  backfill_client_workspace_imports [endpoint:/api/v1/clients/{client_id}/workspace/backfill-imports] @backend/app/main.py:50039
+    - chain: upsert_entity @backend/app/services/entity_store.py:64  ←  persist_chunk_entities @backend/app/services/entity_store.py:180  ←  ingest_document_knowledge @backend/app/services/knowledge_base.py:2802  ←  create_client_text_document @backend/app/main.py:16116  ←  create_client_document_from_text [endpoint:/api/v1/clients/{client_id}/documents/from-text] @backend/app/main.py:49576
+    - chain: upsert_entity @backend/app/services/entity_store.py:64  ←  persist_chunk_entities @backend/app/services/entity_store.py:180  ←  ingest_document_knowledge @backend/app/services/knowledge_base.py:2802  ←  execute_parse_failure_retry_batch @backend/app/main.py:42534  ←  retry_client_parse_failures [endpoint:/api/v1/clients/{client_id}/knowledge/parse-failures/retry] @backend/app/main.py:42800
+- `INSERT` @ **_create_person_entity** `backend/app/services/person_resolver.py:111` — _call_name_match_
+    - chain: _create_person_entity @backend/app/services/person_resolver.py:111  ←  resolve_person_name @backend/app/services/person_resolver.py:134  ←  ingest @backend/app/services/ingest_pipeline.py:659  ←  extract_from_document @backend/app/services/document_llm_extractor.py:261  ←  process @backend/app/services/task_runners/fact_extract_runner.py:41  ←  run_due_local_model_tasks @backend/app/services/local_model_optimizer.py:942  ←  local_model_optimizer_worker_loop [worker:local_model_optimizer_worker_loop] @backend/app/services/local_model_optimizer.py:1026
+    - chain: _create_person_entity @backend/app/services/person_resolver.py:111  ←  resolve_person_name @backend/app/services/person_resolver.py:134  ←  ingest @backend/app/services/ingest_pipeline.py:659  ←  extract_from_document @backend/app/services/document_llm_extractor.py:261  ←  process @backend/app/services/task_runners/fact_extract_runner.py:41  ←  run_due_local_model_tasks @backend/app/services/local_model_optimizer.py:942  ←  run_local_ai_now [endpoint:/api/v1/local-ai/run-now] @backend/app/main.py:36970
+- `UPDATE` @ **resolve_person_name** `backend/app/services/person_resolver.py:134` — _call_name_match_
+    - chain: resolve_person_name @backend/app/services/person_resolver.py:134  ←  ingest @backend/app/services/ingest_pipeline.py:659  ←  extract_from_document @backend/app/services/document_llm_extractor.py:261  ←  process @backend/app/services/task_runners/fact_extract_runner.py:41  ←  run_due_local_model_tasks @backend/app/services/local_model_optimizer.py:942  ←  local_model_optimizer_worker_loop [worker:local_model_optimizer_worker_loop] @backend/app/services/local_model_optimizer.py:1026
+    - chain: resolve_person_name @backend/app/services/person_resolver.py:134  ←  ingest @backend/app/services/ingest_pipeline.py:659  ←  extract_from_document @backend/app/services/document_llm_extractor.py:261  ←  process @backend/app/services/task_runners/fact_extract_runner.py:41  ←  run_due_local_model_tasks @backend/app/services/local_model_optimizer.py:942  ←  run_local_ai_now [endpoint:/api/v1/local-ai/run-now] @backend/app/main.py:36970
+- `INSERT+UPDATE` @ **_upsert_entity** `backend/app/services/smart_file_import.py:821` — _call_name_match_
+    - chain: _upsert_entity @backend/app/services/smart_file_import.py:821  ←  commit_session @backend/app/services/smart_file_import.py:887  ←  smart_import_commit_session [endpoint:/api/v1/smart-import/sessions/{session_id}/commit] @backend/app/main.py:29395
+
+### 读边 (23)
+- `SELECT-FROM` @ **create_app** `backend/app/main.py:3179` — _static_confirmed_
+    - WHERE: `id = ?`
+    - WHERE: `id=?`
+- `SELECT-FROM` @ **create_app.merge_entity_into** `backend/app/main.py:41700` — _static_confirmed_
+    - WHERE: `id = ?`
+- `SELECT-FROM` @ **create_app.verify_entity** `backend/app/main.py:41742` — _static_confirmed_
+    - WHERE: `id=?`
+- `SELECT-FROM` @ **_load_people_candidates** `backend/app/services/clarification_context.py:207` — _static_confirmed_
+    - WHERE: `client_id = ? AND entity_type = 'person' AND COALESCE(status, 'active') = 'active' AND display_name IS NOT NULL AND display_name != ''`
+- `SELECT-FROM` @ **_merge_entities** `backend/app/services/data_center_self_verify.py:174` — _static_confirmed_
+    - WHERE: `id=?`
+- `SELECT-FROM` @ **_mark_suggested_merge** `backend/app/services/data_center_self_verify.py:240` — _static_confirmed_
+    - WHERE: `id=?`
+- `SELECT-FROM` @ **verify_entities_cluster** `backend/app/services/data_center_self_verify.py:85` — _static_confirmed_
+    - WHERE: `client_id=? AND status='active' AND entity_type NOT IN ('amount', 'date', 'time') AND length(display_name) >= 2`
+- `SELECT-FROM` @ **find_merge_candidates** `backend/app/services/entity_merger.py:105` — _static_confirmed_
+    - WHERE: `client_id = ? AND status = 'active'`
+- `SELECT-FROM` @ **merge_entities** `backend/app/services/entity_merger.py:165` — _static_confirmed_
+    - WHERE: `id IN (?, ?)`
+- `SELECT-FROM` @ **list_entities** `backend/app/services/entity_store.py:226` — _static_confirmed_
+    - WHERE: `{?}`
+- `SELECT-FROM` @ **upsert_entity** `backend/app/services/entity_store.py:64` — _static_confirmed_
+    - WHERE: `client_id = ? AND entity_type = ? AND normalized_name = ?`
+- `SELECT-FROM` @ **_collect_candidates** `backend/app/services/glossary_candidate_generator.py:328` — _static_confirmed_
+    - WHERE: `client_id = ? AND mention_count >= 2 AND status = 'active'`
+- `JOIN` @ **fanout_document_to_event_lines** `backend/app/services/knowledge_v2.py:3162` — _static_confirmed_
+    - WHERE: `c.v2_document_id = ? AND e.client_id = ? AND e.status = 'active'`
+- `SELECT-FROM` @ **_collect_money_anchors** `backend/app/services/narrative_collector.py:1006` — _static_confirmed_
+    - WHERE: `client_id = ? AND entity_type = 'amount' AND mention_count >= 1 AND status = 'active'`
+- `SELECT-FROM` @ **_collect_persons** `backend/app/services/narrative_collector.py:952` — _static_confirmed_
+    - WHERE: `client_id = ? AND entity_type = 'person' AND mention_count >= 2 AND status = 'active'`
+- `SELECT-FROM` @ **_collect_time_anchors** `backend/app/services/narrative_collector.py:983` — _static_confirmed_
+    - WHERE: `client_id = ? AND entity_type = 'date' AND mention_count >= 2 AND status = 'active'`
+- `SELECT-FROM` @ **resolve_actor_side** `backend/app/services/next_step_reconciler.py:144` — _static_confirmed_
+    - WHERE: `entity_type='person' AND status='active' AND (display_name=? OR display_name LIKE ? OR aliases_json LIKE ?)`
+    - WHERE: `entity_type='person' AND verified_status='verified_canonical' AND (display_name=? OR display_name=? OR aliases_json LIKE ? OR aliases_json LIKE ?)`
+    - WHERE: `entity_type='person' AND verified_status='verified_noise' AND (display_name=? OR display_name=? OR aliases_json LIKE ? OR aliases_json LIKE ?)`
+- `SELECT-FROM` @ **resolve_person_name** `backend/app/services/person_resolver.py:134` — _static_confirmed_
+    - WHERE: `id = ?`
+- `SELECT-FROM` @ **build_client_roster_hint** `backend/app/services/person_resolver.py:172` — _static_confirmed_
+    - WHERE: `client_id = ? AND entity_type = 'person' AND status = 'active'`
+- `SELECT-FROM` @ **_find_person_entity** `backend/app/services/person_resolver.py:84` — _static_confirmed_
+    - WHERE: `client_id = ? AND entity_type = 'person' AND normalized_name = ?`
+    - WHERE: `client_id = ? AND entity_type = 'person' AND status = 'active'`
+- `JOIN` @ **list_triples** `backend/app/services/relation_store.py:143` — _static_confirmed_
+    - WHERE: `{?}`
+- `SELECT-FROM` @ **_find_entity_id** `backend/app/services/relation_store.py:26` — _static_confirmed_
+    - WHERE: `client_id = ? AND status = 'active' AND display_name = ?`
+    - WHERE: `client_id = ? AND status = 'active' AND normalized_name = ?`
+- `SELECT-FROM` @ **_upsert_entity** `backend/app/services/smart_file_import.py:821` — _static_confirmed_
+    - WHERE: `client_id = ? AND normalized_name = ? AND status = 'active'`
+    - WHERE: `client_id = ? AND normalized_name = ? AND status = 'merged'`
+
+## `entity_mentions`
+
+- 经验层: **12292 行** · 最近写入 created_at=2026-06-05T07:30:34
+
+### 写边 (2)
+- `UPDATE` @ **merge_entities** `backend/app/services/entity_merger.py:165` — _call_name_match_
+    - chain: merge_entities @backend/app/services/entity_merger.py:165  ←  merge_entity_into [endpoint:/api/v1/entities/{merged_id}/merge] @backend/app/main.py:41700
+- `INSERT` @ **insert_mention** `backend/app/services/entity_store.py:137` — _call_name_match_
+    - chain: insert_mention @backend/app/services/entity_store.py:137  ←  persist_chunk_entities @backend/app/services/entity_store.py:180  ←  ingest_document_knowledge @backend/app/services/knowledge_base.py:2802  ←  upload_task_attachment [endpoint:/api/v1/tasks/{task_id}/attachments] @backend/app/main.py:53434
+    - chain: insert_mention @backend/app/services/entity_store.py:137  ←  persist_chunk_entities @backend/app/services/entity_store.py:180  ←  ingest_document_knowledge @backend/app/services/knowledge_base.py:2802  ←  _build_local_event_line_report_snapshot @backend/app/main.py:33643  ←  get_event_line_report_snapshot [endpoint:/api/v1/event-lines/{event_line_id}/report-snapshot] @backend/app/main.py:34329
+    - chain: insert_mention @backend/app/services/entity_store.py:137  ←  persist_chunk_entities @backend/app/services/entity_store.py:180  ←  ingest_document_knowledge @backend/app/services/knowledge_base.py:2802  ←  _process_one_pdf @backend/app/services/internet_pdf_worker.py:96  ←  _worker_loop [worker:_worker_loop] @backend/app/services/internet_pdf_worker.py:205
+    - chain: insert_mention @backend/app/services/entity_store.py:137  ←  persist_chunk_entities @backend/app/services/entity_store.py:180  ←  ingest_document_knowledge @backend/app/services/knowledge_base.py:2802  ←  backfill_workspace_import @backend/app/services/knowledge_v2.py:3943  ←  backfill_client_workspace_imports [endpoint:/api/v1/clients/{client_id}/workspace/backfill-imports] @backend/app/main.py:50039
+    - chain: insert_mention @backend/app/services/entity_store.py:137  ←  persist_chunk_entities @backend/app/services/entity_store.py:180  ←  ingest_document_knowledge @backend/app/services/knowledge_base.py:2802  ←  create_client_text_document @backend/app/main.py:16116  ←  create_client_document_from_text [endpoint:/api/v1/clients/{client_id}/documents/from-text] @backend/app/main.py:49576
+    - chain: insert_mention @backend/app/services/entity_store.py:137  ←  persist_chunk_entities @backend/app/services/entity_store.py:180  ←  ingest_document_knowledge @backend/app/services/knowledge_base.py:2802  ←  execute_parse_failure_retry_batch @backend/app/main.py:42534  ←  retry_client_parse_failures [endpoint:/api/v1/clients/{client_id}/knowledge/parse-failures/retry] @backend/app/main.py:42800
+
+### 读边 (2)
+- `SELECT-FROM` @ **fanout_document_to_strategic_thoughts** `backend/app/services/knowledge_v2.py:3103` — _static_confirmed_
+    - WHERE: `c.v2_document_id = ?`
+- `SELECT-FROM` @ **fanout_document_to_event_lines** `backend/app/services/knowledge_v2.py:3162` — _static_confirmed_
+    - WHERE: `c.v2_document_id = ? AND e.client_id = ? AND e.status = 'active'`
+
+## `entity_merge_log`
+
+- 经验层: **0 行**
+
+### 写边 (1)
+- `INSERT` @ **merge_entities** `backend/app/services/entity_merger.py:165` — _call_name_match_
+    - chain: merge_entities @backend/app/services/entity_merger.py:165  ←  merge_entity_into [endpoint:/api/v1/entities/{merged_id}/merge] @backend/app/main.py:41700
+
+### 读边 (0)
+- (无静态读边)
+
+## `event_line_activities`
+
+- 经验层: **119 行** · 最近写入 created_at=2026-06-05T15:03:57
+  - source_type 分布: task_activity:65, attachment:37, document_ingest:15, merge:2
+
+### 写边 (16)
+- `UPDATE` @ **_init_schema** `backend/app/db.py:60` — _needs_human_
+    - chain: _init_schema @backend/app/db.py:60  ←  __init__ @backend/app/db.py:49
+- `INSERT` @ **_sync_task_attachment_scope** `backend/app/main.py:2237` — _needs_human_
+    - chain: _sync_task_attachment_scope [worker:_sync_task_attachment_scope] @backend/app/main.py:2237
+- `INSERT` @ **create_app.create_task** `backend/app/main.py:24172` — _call_name_match_
+    - chain: create_task @backend/app/main.py:24172  ←  accept_growth_recommendation [endpoint:/api/v1/growth/recommendations/{recommendation_id}/accept] @backend/app/main.py:56572
+    - chain: create_task @backend/app/main.py:24172  ←  create_intelligence_task_endpoint [endpoint:/api/v1/intelligence/items/{item_id}/tasks] @backend/app/main.py:58553
+    - chain: create_task @backend/app/main.py:24172  ←  create_manual_task [endpoint:/api/v1/tasks] @backend/app/main.py:52206
+    - chain: create_task @backend/app/main.py:24172  ←  create_workspace_answer_action_task_api [endpoint:/api/v1/workspace-answer-action-cards/{message_id}/create-task] @backend/app/main.py:44635
+    - chain: create_task @backend/app/main.py:24172  ←  promote_candidate_to_task [endpoint:/api/v1/topics/candidates/{candidate_id}/promote-task] @backend/app/main.py:55696
+    - chain: create_task @backend/app/main.py:24172  ←  promote_candidate_to_tasks [endpoint:/api/v1/topics/candidates/{candidate_id}/promote-tasks] @backend/app/main.py:55636
+- `INSERT` @ **create_app** `backend/app/main.py:3179` — _needs_human_
+    - chain: create_app @backend/app/main.py:3179  ←  (no caller found — orphan write)
+- `INSERT` @ **create_app._append_event_line_activity_for_proposal** `backend/app/main.py:33200` — _needs_human_
+    - chain: _append_event_line_activity_for_proposal @backend/app/main.py:33200  ←  _execute_ticket_actions @backend/app/main.py:33233
+    - chain: _append_event_line_activity_for_proposal @backend/app/main.py:33200  ←  create_app @backend/app/main.py:3179
+- `INSERT` @ **create_app.merge_event_lines** `backend/app/main.py:35514` — _needs_human_
+    - chain: merge_event_lines [endpoint:/api/v1/event-lines/{event_line_id}/merge] @backend/app/main.py:35514
+- `INSERT` @ **create_app.merge_event_lines._do_merge** `backend/app/main.py:35586` — _needs_human_
+    - chain: _do_merge @backend/app/main.py:35586  ←  (no caller found — orphan write)
+- `INSERT` @ **create_app.add_event_line_note** `backend/app/main.py:35790` — _static_confirmed_
+    - chain: add_event_line_note [endpoint:/api/v1/event-lines/{event_line_id}/notes] @backend/app/main.py:35790
+- `INSERT` @ **create_app.resolve_support_request** `backend/app/main.py:36115` — _static_confirmed_
+    - chain: resolve_support_request [endpoint:/api/v1/support-requests/{request_id}/resolve] @backend/app/main.py:36115
+- `INSERT` @ **create_app.publish_meeting** `backend/app/main.py:51482` — _static_confirmed_
+    - chain: publish_meeting [endpoint:/api/v1/clients/{client_id}/meetings/{meeting_id}/publish] @backend/app/main.py:51482
+- `INSERT` @ **create_app.update_task** `backend/app/main.py:52636` — _static_confirmed_
+    - chain: update_task [endpoint:/api/v1/tasks/{task_id}] @backend/app/main.py:52636
+- `INSERT` @ **create_app.upload_task_attachment** `backend/app/main.py:53434` — _needs_human_
+    - chain: upload_task_attachment [endpoint:/api/v1/tasks/{task_id}/attachments] @backend/app/main.py:53434
+- `INSERT` @ **derive_event_line_activities** `backend/app/services/atomic_fact_semantic_deriver.py:76` — _call_name_match_
+    - chain: derive_event_line_activities @backend/app/services/atomic_fact_semantic_deriver.py:76  ←  derive_all @backend/app/services/atomic_fact_semantic_deriver.py:405  ←  process_meeting_minute @backend/app/services/meeting_minute_processor.py:147  ←  process_meeting_minute_endpoint [endpoint:/api/v1/meeting-minutes/process] @backend/app/main.py:39471
+- `INSERT` @ **fanout_document_to_event_lines** `backend/app/services/knowledge_v2.py:3162` — _call_name_match_
+    - chain: fanout_document_to_event_lines @backend/app/services/knowledge_v2.py:3162  ←  ingest_document_knowledge @backend/app/services/knowledge_base.py:2802  ←  upload_task_attachment [endpoint:/api/v1/tasks/{task_id}/attachments] @backend/app/main.py:53434
+    - chain: fanout_document_to_event_lines @backend/app/services/knowledge_v2.py:3162  ←  ingest_document_knowledge @backend/app/services/knowledge_base.py:2802  ←  _build_local_event_line_report_snapshot @backend/app/main.py:33643  ←  get_event_line_report_snapshot [endpoint:/api/v1/event-lines/{event_line_id}/report-snapshot] @backend/app/main.py:34329
+    - chain: fanout_document_to_event_lines @backend/app/services/knowledge_v2.py:3162  ←  ingest_document_knowledge @backend/app/services/knowledge_base.py:2802  ←  _process_one_pdf @backend/app/services/internet_pdf_worker.py:96  ←  _worker_loop [worker:_worker_loop] @backend/app/services/internet_pdf_worker.py:205
+    - chain: fanout_document_to_event_lines @backend/app/services/knowledge_v2.py:3162  ←  ingest_document_knowledge @backend/app/services/knowledge_base.py:2802  ←  backfill_workspace_import @backend/app/services/knowledge_v2.py:3943  ←  backfill_client_workspace_imports [endpoint:/api/v1/clients/{client_id}/workspace/backfill-imports] @backend/app/main.py:50039
+    - chain: fanout_document_to_event_lines @backend/app/services/knowledge_v2.py:3162  ←  ingest_document_knowledge @backend/app/services/knowledge_base.py:2802  ←  create_client_text_document @backend/app/main.py:16116  ←  create_client_document_from_text [endpoint:/api/v1/clients/{client_id}/documents/from-text] @backend/app/main.py:49576
+    - chain: fanout_document_to_event_lines @backend/app/services/knowledge_v2.py:3162  ←  ingest_document_knowledge @backend/app/services/knowledge_base.py:2802  ←  execute_parse_failure_retry_batch @backend/app/main.py:42534  ←  retry_client_parse_failures [endpoint:/api/v1/clients/{client_id}/knowledge/parse-failures/retry] @backend/app/main.py:42800
+- `INSERT` @ **process_meeting_minute** `backend/app/services/meeting_minute_processor.py:147` — _call_name_match_
+    - chain: process_meeting_minute @backend/app/services/meeting_minute_processor.py:147  ←  process_meeting_minute_endpoint [endpoint:/api/v1/meeting-minutes/process] @backend/app/main.py:39471
+- `INSERT` @ **commit_session** `backend/app/services/smart_file_import.py:887` — _call_name_match_
+    - chain: commit_session @backend/app/services/smart_file_import.py:887  ←  smart_import_commit_session [endpoint:/api/v1/smart-import/sessions/{session_id}/commit] @backend/app/main.py:29395
+
+### 读边 (34)
+- `SELECT-FROM` @ **create_app.build_event_line** `backend/app/main.py:10838` — _static_confirmed_
+    - WHERE: `event_line_id = ?`
+- `SELECT-FROM` @ **create_app.build_event_line_detail** `backend/app/main.py:10948` — _static_confirmed_
+    - WHERE: `event_line_id = ?`
+- `SELECT-FROM` @ **_event_line_snapshot_context** `backend/app/main.py:2127` — _static_confirmed_
+    - WHERE: `event_line_id = ?`
+- `SELECT-FROM` @ **_sync_task_attachment_scope** `backend/app/main.py:2237` — _static_confirmed_
+    - WHERE: `source_type = 'attachment' AND source_id = ?`
+- `SELECT-FROM` @ **create_app** `backend/app/main.py:3179` — _static_confirmed_
+    - WHERE: `e.primary_client_id = ?`
+    - WHERE: `event_line_id = ?`
+    - WHERE: `event_line_id = ? AND source_type IN ('meeting', 'review', 'manual_note', 'attachment')`
+    - WHERE: `source_type = 'task_activity' AND source_id = ?`
+    - WHERE: `source_type = 'task_activity' AND source_id IN (?, ?)`
+- `SELECT-FROM` @ **create_app._gather_task_context_bundle** `backend/app/main.py:32267` — _static_confirmed_
+    - WHERE: `event_line_id = ?`
+- `SELECT-FROM` @ **create_app._event_line_time_prep_pack** `backend/app/main.py:32818` — _static_confirmed_
+    - WHERE: `event_line_id = ? AND source_type IN ('meeting', 'review', 'manual_note', 'attachment')`
+- `SELECT-FROM` @ **create_app._build_local_event_line_report_snapshot** `backend/app/main.py:33643` — _static_confirmed_
+    - WHERE: `event_line_id = ?`
+- `SELECT-FROM` @ **create_app._event_line_dependency_counts** `backend/app/main.py:35323` — _static_confirmed_
+    - WHERE: `event_line_id = ?`
+- `SELECT-FROM` @ **create_app.merge_event_lines** `backend/app/main.py:35514` — _static_confirmed_
+    - WHERE: `event_line_id = ?`
+- `SELECT-FROM` @ **create_app.merge_event_lines._do_merge** `backend/app/main.py:35586` — _static_confirmed_
+    - WHERE: `event_line_id = ?`
+- `SELECT-FROM` @ **create_app.delete_event_line** `backend/app/main.py:35723` — _static_confirmed_
+    - WHERE: `event_line_id = ?`
+- `SELECT-FROM` @ **create_app._expand_agent_state** `backend/app/main.py:39648` — _static_confirmed_
+    - WHERE: `e.primary_client_id = ?`
+- `SELECT-FROM` @ **create_app.get_project_agent_state** `backend/app/main.py:39819` — _static_confirmed_
+    - WHERE: `event_line_id = ?`
+- `SELECT-FROM` @ **create_app.delete_task** `backend/app/main.py:53307` — _static_confirmed_
+    - WHERE: `source_type = 'task_activity' AND source_id = ?`
+    - WHERE: `source_type = 'task_activity' AND source_id IN (?, ?)`
+- `SELECT-FROM` @ **build_event_line_page_context_pack** `backend/app/services/analysis_context.py:1244` — _static_confirmed_
+    - WHERE: `a.event_line_id = ? AND a.source_type = 'meeting'`
+- `SELECT-FROM` @ **derive_event_line_activities** `backend/app/services/atomic_fact_semantic_deriver.py:76` — _static_confirmed_
+    - WHERE: `event_line_id = ? AND source_type = 'atomic_fact'`
+- `SELECT-FROM` @ **_collect_work_events** `backend/app/services/badge_engine.py:279` — _static_confirmed_
+    - WHERE: `actor_id = ? OR LOWER(TRIM(COALESCE(actor_name, ''))) = LOWER(TRIM(?))`
+- `SELECT-FROM` @ **_load_timeline** `backend/app/services/clarification_context.py:161` — _static_confirmed_
+    - WHERE: `a.event_line_id IN (`
+    - WHERE: `a.event_line_id IN ({?})`
+- `SELECT-FROM` @ **_load_people_candidates** `backend/app/services/clarification_context.py:207` — _static_confirmed_
+    - WHERE: `event_line_id IN (`
+    - WHERE: `event_line_id IN ({?}) AND actor_name IS NOT NULL AND actor_name != ''`
+- `SELECT-FROM` @ **_fetch_current_blockers** `backend/app/services/client_strategic_pulse.py:397` — _static_confirmed_
+    - WHERE: `event_line_id = el.id) AS last_activity_at FROM event_lines el WHERE el.primary_client_id = ? AND el.status = 'active' AND (el.closed_at IS NULL OR el.closed_at = '')`
+- `SELECT-FROM` @ **build_company_brain_context** `backend/app/services/company_brain_context_builder.py:83` — _static_confirmed_
+    - WHERE: `el.primary_client_id = ?`
+- `SELECT-FROM` @ **build_evidence_pack** `backend/app/services/company_brain_qa.py:76` — _static_confirmed_
+    - WHERE: `el.primary_client_id = ?`
+- `SELECT-FROM` @ **ingest_meeting_by_id** `backend/app/services/data_center_ingest.py:1609` — _static_confirmed_
+    - WHERE: `source_type = 'meeting' AND source_id = ? AND event_line_id IS NOT NULL`
+- `SELECT-FROM` @ **fanout_document_to_event_lines** `backend/app/services/knowledge_v2.py:3162` — _static_confirmed_
+    - WHERE: `event_line_id = ? AND source_type = 'document_ingest' AND source_id = ?`
+- `SELECT-FROM` @ **refresh_event_line_memory_snapshot** `backend/app/services/memory_foundation.py:994` — _static_confirmed_
+    - WHERE: `event_line_id = ?`
+- `SELECT-FROM` @ **_collect_activities** `backend/app/services/narrative_collector.py:1110` — _static_confirmed_
+    - WHERE: `e.primary_client_id = ?`
+- `SELECT-FROM` @ **build_report_prompt_context** `backend/app/services/report_context_builder.py:294` — _static_confirmed_
+    - WHERE: `event_line_id = ?`
+    - WHERE: `event_line_id = ?{?}`
+- `SELECT-FROM` @ **build_narrative_analyses** `backend/app/services/review_narrative.py:1988` — _static_confirmed_
+    - WHERE: `event_line_id = ? AND happened_at >= ?`
+- `SELECT-FROM` @ **build_remedies** `backend/app/services/self_heal.py:348` — _static_confirmed_
+    - WHERE: `event_line_id NOT IN (SELECT id FROM event_lines)`
+- `SELECT-FROM` @ **build_remedies.clean_orphan_eline_activities** `backend/app/services/self_heal.py:450` — _static_confirmed_
+    - WHERE: `event_line_id NOT IN (SELECT id FROM event_lines)`
+- `SELECT-FROM` @ **_section_4_timeline** `backend/app/services/story_card_generator.py:101` — _static_confirmed_
+    - WHERE: `el.primary_client_id = ? AND a.happened_at IS NOT NULL`
+- `SELECT-FROM` @ **build_task_context_brief_material_pack** `backend/app/services/task_context_brief_engine.py:275` — _static_confirmed_
+    - WHERE: `event_line_id = ?`
+- `SELECT-FROM` @ **_render_event_line_doc** `backend/app/services/workspace_relation_docs.py:119` — _static_confirmed_
+    - WHERE: `event_line_id = ?`
+
+## `event_line_approval_nodes`
+
+- 经验层: **0 行**
+
+### 写边 (0)
+- (无静态写边)
+
+### 读边 (2)
+- `SELECT-FROM` @ **create_app** `backend/app/main.py:3179` — _static_confirmed_
+    - WHERE: `event_line_id = ?`
+- `SELECT-FROM` @ **create_app._event_line_dependency_counts** `backend/app/main.py:35323` — _static_confirmed_
+    - WHERE: `event_line_id = ?`
+
+## `event_line_attachments`
+
+- 经验层: **2 行**
+
+### 写边 (4)
+- `INSERT` @ **create_app** `backend/app/main.py:3179` — _needs_human_
+    - chain: create_app @backend/app/main.py:3179  ←  (no caller found — orphan write)
+- `UPDATE` @ **create_app._build_local_event_line_report_snapshot** `backend/app/main.py:33643` — _call_name_match_
+    - chain: _build_local_event_line_report_snapshot @backend/app/main.py:33643  ←  get_event_line_report_snapshot [endpoint:/api/v1/event-lines/{event_line_id}/report-snapshot] @backend/app/main.py:34329
+- `UPDATE` @ **create_app._build_local_event_line_report_snapshot._resolve_event_attachment_document_id** `backend/app/main.py:33796` — _call_name_match_
+    - chain: _resolve_event_attachment_document_id @backend/app/main.py:33796  ←  _build_local_event_line_report_snapshot @backend/app/main.py:33643  ←  get_event_line_report_snapshot [endpoint:/api/v1/event-lines/{event_line_id}/report-snapshot] @backend/app/main.py:34329
+- `INSERT` @ **create_app._ensure_cloud_event_attachment_document** `backend/app/main.py:34027` — _call_name_match_
+    - chain: _ensure_cloud_event_attachment_document @backend/app/main.py:34027  ←  _enrich_report_snapshot_with_local_parse @backend/app/main.py:34134  ←  get_event_line_report_snapshot [endpoint:/api/v1/event-lines/{event_line_id}/report-snapshot] @backend/app/main.py:34329
+
+### 读边 (6)
+- `SELECT-FROM` @ **create_app** `backend/app/main.py:3179` — _static_confirmed_
+    - WHERE: `event_line_id = ?`
+    - WHERE: `id = ?`
+    - WHERE: `{?}`
+- `SELECT-FROM` @ **create_app._build_local_event_line_report_snapshot** `backend/app/main.py:33643` — _static_confirmed_
+    - WHERE: `{?}`
+- `SELECT-FROM` @ **create_app._ensure_cloud_event_attachment_document** `backend/app/main.py:34027` — _static_confirmed_
+    - WHERE: `id = ?`
+- `SELECT-FROM` @ **create_app._event_line_dependency_counts** `backend/app/main.py:35323` — _static_confirmed_
+    - WHERE: `event_line_id = ?`
+- `SELECT-FROM` @ **create_app.delete_event_line** `backend/app/main.py:35723` — _static_confirmed_
+    - WHERE: `event_line_id = ?`
+- `SELECT-FROM` @ **_render_event_line_doc** `backend/app/services/workspace_relation_docs.py:119` — _static_confirmed_
+    - WHERE: `event_line_id = ?`
+
+## `event_line_delete_tombstones`
+
+- 经验层: **1 行**
+
+### 写边 (2)
+- `INSERT` @ **create_app.merge_event_lines** `backend/app/main.py:35514` — _needs_human_
+    - chain: merge_event_lines [endpoint:/api/v1/event-lines/{event_line_id}/merge] @backend/app/main.py:35514
+- `INSERT` @ **create_app.merge_event_lines._do_merge** `backend/app/main.py:35586` — _needs_human_
+    - chain: _do_merge @backend/app/main.py:35586  ←  (no caller found — orphan write)
+
+### 读边 (3)
+- `SELECT-FROM` @ **create_app** `backend/app/main.py:3179` — _static_confirmed_
+    - WHERE: `cloud_id = ?`
+- `SELECT-FROM` @ **create_app._upsert_cloud_event_line_shadow_local** `backend/app/main.py:9234` — _static_confirmed_
+    - WHERE: `cloud_id = ?`
+- `SELECT-FROM` @ **create_app._upsert_cloud_task_shadow_local** `backend/app/main.py:9597` — _static_confirmed_
+    - WHERE: `cloud_id = ?`
+
+## `event_line_memory_snapshots`
+
+- 经验层: **21 行** · 最近写入 created_at=2026-05-31T20:51:04
+
+### 写边 (1)
+- `INSERT` @ **refresh_event_line_memory_snapshot** `backend/app/services/memory_foundation.py:994` — _call_name_match_
+    - chain: refresh_event_line_memory_snapshot @backend/app/services/memory_foundation.py:994  ←  _sync_task_attachment_scope [worker:_sync_task_attachment_scope] @backend/app/main.py:2237
+    - chain: refresh_event_line_memory_snapshot @backend/app/services/memory_foundation.py:994  ←  delete_task [endpoint:/api/v1/tasks/{task_id}] @backend/app/main.py:53307
+    - chain: refresh_event_line_memory_snapshot @backend/app/services/memory_foundation.py:994  ←  update_event_line [endpoint:/api/v1/event-lines/{event_line_id}] @backend/app/main.py:35169
+    - chain: refresh_event_line_memory_snapshot @backend/app/services/memory_foundation.py:994  ←  _upsert_cloud_event_line_shadow_local @backend/app/main.py:9234  ←  _sync_event_line_row_to_cloud [worker:_sync_event_line_row_to_cloud] @backend/app/main.py:9476
+    - chain: refresh_event_line_memory_snapshot @backend/app/services/memory_foundation.py:994  ←  _upsert_cloud_event_line_shadow_local @backend/app/main.py:9234  ←  create_event_line [endpoint:/api/v1/event-lines] @backend/app/main.py:31525
+    - chain: refresh_event_line_memory_snapshot @backend/app/services/memory_foundation.py:994  ←  _upsert_cloud_event_line_shadow_local @backend/app/main.py:9234  ←  delete_event_line [endpoint:/api/v1/event-lines/{event_line_id}] @backend/app/main.py:35723
+
+### 读边 (11)
+- `SELECT-FROM` @ **create_app.build_strategic_cockpit_snapshot** `backend/app/main.py:20771` — _static_confirmed_
+    - WHERE: `0`
+    - WHERE: `event_line_id IN ({})`
+- `SELECT-FROM` @ **create_app** `backend/app/main.py:3179` — _static_confirmed_
+    - WHERE: `0`
+    - WHERE: `event_line_id = ?`
+    - WHERE: `event_line_id IN ({})`
+- `SELECT-FROM` @ **create_app._gather_task_context_bundle** `backend/app/main.py:32267` — _static_confirmed_
+    - WHERE: `event_line_id = ?`
+- `SELECT-FROM` @ **create_app._event_line_dependency_counts** `backend/app/main.py:35323` — _static_confirmed_
+    - WHERE: `event_line_id = ?`
+- `SELECT-FROM` @ **create_app.merge_event_lines** `backend/app/main.py:35514` — _static_confirmed_
+    - WHERE: `event_line_id IN (`
+    - WHERE: `event_line_id IN ({?})`
+- `SELECT-FROM` @ **create_app.merge_event_lines._do_merge** `backend/app/main.py:35586` — _static_confirmed_
+    - WHERE: `event_line_id IN (`
+    - WHERE: `event_line_id IN ({?})`
+- `SELECT-FROM` @ **_load_clarification_needs** `backend/app/services/clarification_context.py:400` — _static_confirmed_
+    - WHERE: `event_line_id IN (`
+    - WHERE: `event_line_id IN ({?})`
+- `SELECT-FROM` @ **_read_event_line_missing_slots** `backend/app/services/memory_foundation.py:964` — _static_confirmed_
+    - WHERE: `event_line_id = ?`
+- `SELECT-FROM` @ **refresh_event_line_memory_snapshot** `backend/app/services/memory_foundation.py:994` — _static_confirmed_
+    - WHERE: `event_line_id = ?`
+- `SELECT-FROM` @ **build_report_prompt_context** `backend/app/services/report_context_builder.py:294` — _static_confirmed_
+    - WHERE: `event_line_id = ?`
+- `SELECT-FROM` @ **_weekly_mainline_collect_story_web** `backend/app/services/review_narrative.py:435` — _static_confirmed_
+    - WHERE: `event_line_id = ?`
+
+## `event_line_state_changes`
+
+- 经验层: **0 行**
+
+### 写边 (0)
+- (无静态写边)
+
+### 读边 (0)
+- (无静态读边)
+
+## `event_line_weekly_snapshots`
+
+- 经验层: **0 行**
+
+### 写边 (0)
+- (无静态写边)
+
+### 读边 (3)
+- `SELECT-FROM` @ **create_app** `backend/app/main.py:3179` — _static_confirmed_
+    - WHERE: `event_line_id = ?`
+- `SELECT-FROM` @ **create_app._event_line_dependency_counts** `backend/app/main.py:35323` — _static_confirmed_
+    - WHERE: `event_line_id = ?`
+- `SELECT-FROM` @ **build_narrative_analyses** `backend/app/services/review_narrative.py:1988` — _static_confirmed_
+    - WHERE: `event_line_id = ?`
+
+## `event_lines`
+
+- 经验层: **20 行** · 最近写入 created_at=2026-05-31T20:51:04
+
+### 写边 (14)
+- `INSERT` @ **create_app.create_event_line** `backend/app/main.py:31525` — _static_confirmed_
+    - chain: create_event_line [endpoint:/api/v1/event-lines] @backend/app/main.py:31525
+- `INSERT+UPDATE` @ **create_app** `backend/app/main.py:3179` — _needs_human_
+    - chain: create_app @backend/app/main.py:3179  ←  (no caller found — orphan write)
+- `UPDATE` @ **create_app.update_event_line** `backend/app/main.py:35169` — _static_confirmed_
+    - chain: update_event_line [endpoint:/api/v1/event-lines/{event_line_id}] @backend/app/main.py:35169
+- `UPDATE` @ **create_app.close_event_line** `backend/app/main.py:35348` — _static_confirmed_
+    - chain: close_event_line [endpoint:/api/v1/event-lines/{event_line_id}/close] @backend/app/main.py:35348
+- `UPDATE` @ **create_app.reopen_event_line** `backend/app/main.py:35393` — _static_confirmed_
+    - chain: reopen_event_line [endpoint:/api/v1/event-lines/{event_line_id}/reopen] @backend/app/main.py:35393
+- `UPDATE` @ **create_app.merge_event_lines** `backend/app/main.py:35514` — _needs_human_
+    - chain: merge_event_lines [endpoint:/api/v1/event-lines/{event_line_id}/merge] @backend/app/main.py:35514
+- `UPDATE` @ **create_app.merge_event_lines._do_merge** `backend/app/main.py:35586` — _needs_human_
+    - chain: _do_merge @backend/app/main.py:35586  ←  (no caller found — orphan write)
+- `UPDATE` @ **create_app.retry_event_line_sync** `backend/app/main.py:35695` — _static_confirmed_
+    - chain: retry_event_line_sync [endpoint:/api/v1/event-lines/{event_line_id}/retry-sync] @backend/app/main.py:35695
+- `UPDATE` @ **create_app._startup_worker** `backend/app/main.py:3743` — _static_confirmed_
+    - chain: _startup_worker [worker:_startup_worker] @backend/app/main.py:3743
+- `UPDATE` @ **create_app.update_client** `backend/app/main.py:37715` — _static_confirmed_
+    - chain: update_client [endpoint:/api/v1/clients/{client_id}] @backend/app/main.py:37715
+- `INSERT` @ **create_app._upsert_cloud_event_line_shadow_local** `backend/app/main.py:9234` — _call_name_match_
+    - chain: _upsert_cloud_event_line_shadow_local @backend/app/main.py:9234  ←  _sync_event_line_row_to_cloud [worker:_sync_event_line_row_to_cloud] @backend/app/main.py:9476
+    - chain: _upsert_cloud_event_line_shadow_local @backend/app/main.py:9234  ←  create_event_line [endpoint:/api/v1/event-lines] @backend/app/main.py:31525
+    - chain: _upsert_cloud_event_line_shadow_local @backend/app/main.py:9234  ←  delete_event_line [endpoint:/api/v1/event-lines/{event_line_id}] @backend/app/main.py:35723
+    - chain: _upsert_cloud_event_line_shadow_local @backend/app/main.py:9234  ←  get_event_line [endpoint:/api/v1/event-lines/{event_line_id}] @backend/app/main.py:31641
+    - chain: _upsert_cloud_event_line_shadow_local @backend/app/main.py:9234  ←  list_event_lines [endpoint:/api/v1/event-lines] @backend/app/main.py:31505
+    - chain: _upsert_cloud_event_line_shadow_local @backend/app/main.py:9234  ←  _normalize_task_client_and_event_line_refs @backend/app/main.py:7952  ←  update_task [endpoint:/api/v1/tasks/{task_id}] @backend/app/main.py:52636
+- `UPDATE` @ **create_app._mark_event_line_pending** `backend/app/main.py:9445` — _call_name_match_
+    - chain: _mark_event_line_pending @backend/app/main.py:9445  ←  _sync_event_line_row_to_cloud [worker:_sync_event_line_row_to_cloud] @backend/app/main.py:9476
+    - chain: _mark_event_line_pending @backend/app/main.py:9445  ←  create_event_line [endpoint:/api/v1/event-lines] @backend/app/main.py:31525
+- `UPDATE` @ **create_app._mark_event_line_synced_without_payload** `backend/app/main.py:9460` — _static_confirmed_
+    - chain: _mark_event_line_synced_without_payload [worker:_mark_event_line_synced_without_payload] @backend/app/main.py:9460
+- `INSERT` @ **process_meeting_minute** `backend/app/services/meeting_minute_processor.py:147` — _call_name_match_
+    - chain: process_meeting_minute @backend/app/services/meeting_minute_processor.py:147  ←  process_meeting_minute_endpoint [endpoint:/api/v1/meeting-minutes/process] @backend/app/main.py:39471
+
+### 读边 (102)
+- `SELECT-FROM` @ **create_app.build_task** `backend/app/main.py:10587` — _static_confirmed_
+    - WHERE: `id = ?`
+- `SELECT-FROM` @ **create_app.build_growth_workbench_snapshot** `backend/app/main.py:11198` — _static_confirmed_
+    - WHERE: `id = ?`
+- `SELECT-FROM` @ **create_app.build_growth_workbench_snapshot.event_line_primary_client** `backend/app/main.py:11436` — _static_confirmed_
+    - WHERE: `id = ?`
+- `SELECT-FROM` @ **create_app._drill_target_response_for_event_line** `backend/app/main.py:13736` — _static_confirmed_
+    - WHERE: `id = ?`
+- `SELECT-FROM` @ **create_app.build_template_fill_context** `backend/app/main.py:16786` — _static_confirmed_
+    - WHERE: `primary_client_id = ? AND COALESCE(status, 'active') IN ('active', 'blocked', 'paused')`
+- `SELECT-FROM` @ **create_app.workspace_for_client** `backend/app/main.py:17770` — _static_confirmed_
+    - WHERE: `primary_client_id = ?) OR t.source_id = ? OR t.source_id IN (SELECT id FROM meetings WHERE client_id = ?)`
+- `SELECT-FROM` @ **create_app._collect_strategic_insight_context** `backend/app/main.py:19685` — _static_confirmed_
+    - WHERE: `primary_client_id = ?`
+    - WHERE: `primary_client_id = ?)`
+- `SELECT-FROM` @ **_event_line_snapshot_context** `backend/app/main.py:2127` — _static_confirmed_
+    - WHERE: `id = ?`
+- `SELECT-FROM` @ **create_app._event_line_context_bundle** `backend/app/main.py:25005` — _static_confirmed_
+    - WHERE: `id = ?`
+- `SELECT-FROM` @ **create_app._enrich_weekly_review_analysis_with_memory** `backend/app/main.py:25544` — _static_confirmed_
+    - WHERE: `id = ?`
+- `SELECT-FROM` @ **create_app.augment_review_response._bg_write_review_memory** `backend/app/main.py:27067` — _static_confirmed_
+- `SELECT-FROM` @ **create_app.get_brain_dashboard** `backend/app/main.py:27671` — _static_confirmed_
+    - WHERE: `primary_client_id = ?`
+- `SELECT-FROM` @ **create_app.get_client_knowledge_status** `backend/app/main.py:27902` — _static_confirmed_
+    - WHERE: `el.primary_client_id = ? AND NOT EXISTS ( SELECT 1 FROM evidence_cards ec WHERE ec.scope_type = 'event_line' AND ec.scope_id = el.id )`
+- `SELECT-FROM` @ **create_app.list_event_lines** `backend/app/main.py:31505` — _static_confirmed_
+- `SELECT-FROM` @ **create_app.create_event_line** `backend/app/main.py:31525` — _static_confirmed_
+    - WHERE: `id = ?`
+- `SELECT-FROM` @ **create_app.get_event_line** `backend/app/main.py:31641` — _static_confirmed_
+    - WHERE: `id = ?`
+    - WHERE: `id = ? OR cloud_id = ?`
+- `SELECT-FROM` @ **create_app.get_event_line_memory** `backend/app/main.py:31693` — _static_confirmed_
+    - WHERE: `id = ?`
+- `SELECT-FROM+JOIN` @ **create_app** `backend/app/main.py:3179` — _static_confirmed_
+    - WHERE: `COALESCE(e.primary_client_id, '') != '' AND c.id IS NULL`
+    - WHERE: `e.primary_client_id = ?`
+    - WHERE: `el.primary_client_id = ? AND NOT EXISTS ( SELECT 1 FROM evidence_cards ec WHERE ec.scope_type = 'event_line' AND ec.scope_id = el.id )`
+    - WHERE: `id = ?`
+    - WHERE: `id = ? OR cloud_id = ?`
+- `SELECT-FROM` @ **create_app._gather_task_context_bundle** `backend/app/main.py:32267` — _static_confirmed_
+    - WHERE: `id = ?`
+- `SELECT-FROM` @ **create_app._client_id_for_task_scope** `backend/app/main.py:32773` — _static_confirmed_
+    - WHERE: `id = ?`
+- `SELECT-FROM` @ **create_app._event_line_time_prep_pack** `backend/app/main.py:32818` — _static_confirmed_
+    - WHERE: `id = ?`
+- `SELECT-FROM` @ **create_app.upload_event_line_attachment** `backend/app/main.py:33609` — _static_confirmed_
+    - WHERE: `id = ?`
+- `SELECT-FROM` @ **create_app._build_local_event_line_report_snapshot** `backend/app/main.py:33643` — _static_confirmed_
+    - WHERE: `id = ?`
+- `SELECT-FROM` @ **create_app._event_line_primary_client_id** `backend/app/main.py:34014` — _static_confirmed_
+    - WHERE: `id = ?`
+- `SELECT-FROM` @ **create_app.export_event_line_word** `backend/app/main.py:34348` — _static_confirmed_
+    - WHERE: `id = ?`
+- `SELECT-FROM` @ **create_app.update_event_line** `backend/app/main.py:35169` — _static_confirmed_
+    - WHERE: `id = ?`
+    - WHERE: `id = ? OR cloud_id = ?`
+- `SELECT-FROM` @ **create_app.close_event_line** `backend/app/main.py:35348` — _static_confirmed_
+    - WHERE: `id = ?`
+    - WHERE: `id = ? OR cloud_id = ?`
+- `SELECT-FROM` @ **create_app.reopen_event_line** `backend/app/main.py:35393` — _static_confirmed_
+    - WHERE: `id = ?`
+    - WHERE: `id = ? OR cloud_id = ?`
+- `SELECT-FROM` @ **create_app.preview_event_line_merge** `backend/app/main.py:35451` — _static_confirmed_
+    - WHERE: `id = ?`
+    - WHERE: `id IN (`
+    - WHERE: `id IN ({?})`
+- `SELECT-FROM` @ **create_app.merge_event_lines** `backend/app/main.py:35514` — _static_confirmed_
+    - WHERE: `id = ?`
+    - WHERE: `id IN (`
+    - WHERE: `id IN ({?})`
+- `SELECT-FROM` @ **create_app.merge_event_lines._do_merge** `backend/app/main.py:35586` — _static_confirmed_
+    - WHERE: `id IN (`
+    - WHERE: `id IN ({?})`
+- `SELECT-FROM` @ **create_app.retry_event_line_sync** `backend/app/main.py:35695` — _static_confirmed_
+    - WHERE: `id = ?`
+    - WHERE: `id = ? OR cloud_id = ?`
+- `SELECT-FROM` @ **create_app.delete_event_line** `backend/app/main.py:35723` — _static_confirmed_
+    - WHERE: `id = ?`
+- `SELECT-FROM` @ **create_app.add_event_line_note** `backend/app/main.py:35790` — _static_confirmed_
+    - WHERE: `id = ?`
+- `SELECT-FROM` @ **create_app._resolve_client_id_for_scope_ref** `backend/app/main.py:3610` — _static_confirmed_
+    - WHERE: `id = ?`
+- `SELECT-FROM` @ **create_app.get_client_delete_preview** `backend/app/main.py:39266` — _static_confirmed_
+    - WHERE: `primary_client_id = ?`
+- `SELECT-FROM+JOIN` @ **create_app._expand_agent_state** `backend/app/main.py:39648` — _static_confirmed_
+    - WHERE: `e.primary_client_id = ?`
+    - WHERE: `primary_client_id = ?`
+- `SELECT-FROM` @ **create_app.get_project_agent_state** `backend/app/main.py:39819` — _static_confirmed_
+    - WHERE: `id = ?`
+- `SELECT-FROM` @ **create_app.create_clarification** `backend/app/main.py:42289` — _static_confirmed_
+    - WHERE: `id = ?`
+- `SELECT-FROM` @ **create_app.get_workspace_data_center_readiness** `backend/app/main.py:42811` — _static_confirmed_
+    - WHERE: `COALESCE(e.primary_client_id, '') != '' AND c.id IS NULL`
+- `SELECT-FROM` @ **create_app.upload_task_attachment** `backend/app/main.py:53434` — _static_confirmed_
+    - WHERE: `id = ?`
+- `SELECT-FROM` @ **create_app.upload_task_attachment._bg_preprocess_attachment** `backend/app/main.py:53642` — _static_confirmed_
+    - WHERE: `id = ?`
+- `SELECT-FROM` @ **create_app.report_draft_blueprint** `backend/app/main.py:56628` — _static_confirmed_
+    - WHERE: `id = ?`
+- `SELECT-FROM` @ **create_app._review_item_department_id** `backend/app/main.py:6288` — _static_confirmed_
+    - WHERE: `id = ?`
+- `SELECT-FROM` @ **create_app._normalize_task_client_and_event_line_refs** `backend/app/main.py:7952` — _static_confirmed_
+    - WHERE: `id = ?`
+    - WHERE: `id = ? OR cloud_id = ?`
+- `SELECT-FROM` @ **create_app._upsert_cloud_event_line_shadow_local** `backend/app/main.py:9234` — _static_confirmed_
+    - WHERE: `id = ? OR cloud_id = ?`
+    - WHERE: `id = ? OR cloud_id = ? OR id = ?`
+- `SELECT-FROM` @ **create_app._sync_event_line_row_to_cloud** `backend/app/main.py:9476` — _static_confirmed_
+    - WHERE: `id = ?`
+- `SELECT-FROM` @ **create_app.sync_pending_event_lines** `backend/app/main.py:9525` — _static_confirmed_
+    - WHERE: `sync_status IN ('pending', 'error') OR (sync_status = 'local' AND (cloud_id IS NULL OR cloud_id = ''))`
+- `SELECT-FROM` @ **create_app.ensure_event_line_cloud_id** `backend/app/main.py:9550` — _static_confirmed_
+    - WHERE: `id = ?`
+    - WHERE: `id = ? OR cloud_id = ?`
+- `SELECT-FROM` @ **get_fact_bundle_lite** `backend/app/modules/client/fact_view.py:133` — _static_confirmed_
+    - WHERE: `primary_client_id = ?`
+- `SELECT-FROM` @ **list_event_lines** `backend/app/modules/client/fact_view.py:192` — _static_confirmed_
+    - WHERE: `primary_client_id = ?`
+- `SELECT-FROM` @ **build_event_line_page_context_pack** `backend/app/services/analysis_context.py:1244` — _static_confirmed_
+    - WHERE: `id = ?`
+- `JOIN` @ **build_task_page_context_pack** `backend/app/services/analysis_context.py:684` — _static_confirmed_
+    - WHERE: `t.id = ?`
+- `SELECT-FROM` @ **derive_event_line_activities** `backend/app/services/atomic_fact_semantic_deriver.py:76` — _static_confirmed_
+    - WHERE: `primary_client_id = ?`
+- `SELECT-FROM` @ **_load_event_lines** `backend/app/services/clarification_context.py:118` — _static_confirmed_
+    - WHERE: `primary_client_id = ?`
+- `JOIN` @ **_load_timeline** `backend/app/services/clarification_context.py:161` — _static_confirmed_
+    - WHERE: `a.event_line_id IN (`
+    - WHERE: `a.event_line_id IN ({?})`
+- `SELECT-FROM` @ **_load_people_candidates** `backend/app/services/clarification_context.py:207` — _static_confirmed_
+    - WHERE: `primary_client_id = ? AND owner_name IS NOT NULL AND owner_name != ''`
+- `SELECT-FROM+JOIN` @ **_fetch_upcoming_todos** `backend/app/services/client_strategic_pulse.py:262` — _static_confirmed_
+    - WHERE: `primary_client_id=? AND next_step IS NOT NULL AND TRIM(next_step)!='' AND COALESCE(status,'')!='closed' AND closed_at IS NULL`
+    - WHERE: `t.client_id = ? AND t.status NOT IN ('done', 'completed', 'cancelled', 'archived') AND COALESCE(t.kind, 'task') IN ('task', 'todo', '')`
+- `SELECT-FROM` @ **_fetch_current_blockers** `backend/app/services/client_strategic_pulse.py:397` — _static_confirmed_
+    - WHERE: `event_line_id = el.id) AS last_activity_at FROM event_lines el WHERE el.primary_client_id = ? AND el.status = 'active' AND (el.closed_at IS NULL OR el.closed_at = '')`
+- `JOIN` @ **build_company_brain_context** `backend/app/services/company_brain_context_builder.py:83` — _static_confirmed_
+    - WHERE: `el.primary_client_id = ?`
+- `JOIN` @ **build_evidence_pack** `backend/app/services/company_brain_qa.py:76` — _static_confirmed_
+    - WHERE: `el.primary_client_id = ?`
+- `JOIN` @ **_task_row** `backend/app/services/data_center_ingest.py:1190` — _static_confirmed_
+    - WHERE: `t.id = ?`
+- `SELECT-FROM` @ **ingest_event_line_by_id** `backend/app/services/data_center_ingest.py:1862` — _static_confirmed_
+    - WHERE: `id = ?`
+- `SELECT-FROM` @ **backfill_data_center_ingest** `backend/app/services/data_center_ingest.py:1897` — _static_confirmed_
+- `SELECT-FROM` @ **build_orphan_client_ingest_repair_report** `backend/app/services/data_center_ingest.py:994` — _static_confirmed_
+    - WHERE: `COALESCE(e.primary_client_id, '') != '' AND c.id IS NULL`
+- `SELECT-FROM+JOIN` @ **_build_metrics** `backend/app/services/digital_asset_center.py:3129` — _static_confirmed_
+    - WHERE: `(e.primary_client_id = ? OR (t.source_type = 'client' AND t.source_id = ?)) AND COALESCE(t.scope_mode, 'COLLAB_SHARED') != 'PERSONAL_ONLY'`
+    - WHERE: `primary_client_id = ?`
+- `SELECT-FROM+JOIN` @ **_collect_sources** `backend/app/services/digital_asset_center.py:3179` — _static_confirmed_
+    - WHERE: `(e.primary_client_id = ? OR (t.source_type = 'client' AND t.source_id = ?)) AND COALESCE(t.scope_mode, 'COLLAB_SHARED') != 'PERSONAL_ONLY'`
+    - WHERE: `primary_client_id = ?`
+- `SELECT-FROM+JOIN` @ **build_digital_asset_narrative_context** `backend/app/services/digital_asset_narrative.py:201` — _static_confirmed_
+    - WHERE: `(e.primary_client_id = ? OR (t.source_type = 'client' AND t.source_id = ?)) AND COALESCE(t.scope_mode, 'COLLAB_SHARED') != 'PERSONAL_ONLY'`
+    - WHERE: `primary_client_id = ?`
+- `SELECT-FROM` @ **_collect_event_line_intents** `backend/app/services/glossary_candidate_generator.py:307` — _static_confirmed_
+    - WHERE: `primary_client_id = ?`
+- `SELECT-FROM` @ **_lookup_event_line_name** `backend/app/services/growth_engine.py:537` — _static_confirmed_
+    - WHERE: `id = ?`
+- `SELECT-FROM` @ **fanout_document_to_event_lines** `backend/app/services/knowledge_v2.py:3162` — _static_confirmed_
+    - WHERE: `primary_client_id = ? AND COALESCE(status, 'active') NOT IN ('archived', 'completed')`
+- `SELECT-FROM` @ **retrieve_knowledge_bundle** `backend/app/services/knowledge_v2.py:4920` — _static_confirmed_
+    - WHERE: `dpo2.knowledge_document_id = kd.id`
+    - WHERE: `t.id = COALESCE(NULLIF(vd.source_entity_id, ''), vd.origin_id) AND COALESCE(t.scope_mode, 'COLLAB_SHARED') != 'PERSONAL_ONLY' ) ) AND NOT ( vd.canonical_kind = 'task_note_doc' AND vd.origin_type = 'ta`
+    - WHERE: `vd.client_id = ? AND vd.material_layer IN ('evidence', 'external_media_transcript') AND vd.parse_status IN ('ready', 'partial_ready') AND COALESCE(vd.is_searchable, d.is_searchable, 1) = 1 AND COALESC`
+- `SELECT-FROM` @ **process_meeting_minute** `backend/app/services/meeting_minute_processor.py:147` — _static_confirmed_
+    - WHERE: `primary_client_id = ?`
+- `SELECT-FROM` @ **_resolve_client_id_for_memory_scope** `backend/app/services/memory_foundation.py:275` — _static_confirmed_
+    - WHERE: `id = ?`
+- `SELECT-FROM` @ **list_linked_event_lines** `backend/app/services/memory_foundation.py:972` — _static_confirmed_
+    - WHERE: `primary_client_id = ? OR id IN ( SELECT DISTINCT event_line_id FROM tasks WHERE client_id = ? AND event_line_id IS NOT NULL AND TRIM(event_line_id) <> '' AND COALESCE(scope_mode, 'COLLAB_SHARED') != '`
+- `SELECT-FROM` @ **refresh_event_line_memory_snapshot** `backend/app/services/memory_foundation.py:994` — _static_confirmed_
+    - WHERE: `id = ?`
+- `SELECT-FROM` @ **_collect_event_lines** `backend/app/services/narrative_collector.py:1079` — _static_confirmed_
+    - WHERE: `primary_client_id = ?`
+- `JOIN` @ **_collect_activities** `backend/app/services/narrative_collector.py:1110` — _static_confirmed_
+    - WHERE: `e.primary_client_id = ?`
+- `SELECT-FROM` @ **_collect_tasks** `backend/app/services/narrative_collector.py:1147` — _static_confirmed_
+    - WHERE: `t.client_id = ? OR EXISTS (SELECT 1 FROM event_lines e WHERE e.primary_client_id = ? AND t.event_line_id = e.id) OR t.title LIKE ?`
+- `JOIN` @ **_collect_task_items** `backend/app/services/organization_dna_v2.py:439` — _static_confirmed_
+    - WHERE: `t.created_at >= datetime('now', '-30 days') AND ( source_client.id IS NOT NULL OR event_client.id IS NOT NULL OR EXISTS ( SELECT 1 FROM clients c WHERE t.title LIKE '%' || c.name || '%' OR t.descripti`
+    - WHERE: `t.title LIKE '%' || c.name || '%' OR t.description LIKE '%' || c.name || '%' OR (c.alias != '' AND t.title LIKE '%' || c.alias || '%') OR (c.alias != '' AND t.description LIKE '%' || c.alias || '%')`
+- `SELECT-FROM` @ **_collect_event_line_items** `backend/app/services/organization_dna_v2.py:607` — _static_confirmed_
+    - WHERE: `created_at >= datetime('now', '-30 days')`
+- `SELECT-FROM` @ **_collect_gap_items** `backend/app/services/organization_dna_v2.py:741` — _static_confirmed_
+    - WHERE: `length(trim(COALESCE(next_step, ''))) = 0 OR length(trim(COALESCE(summary, ''))) = 0`
+- `SELECT-FROM` @ **_collect_inputs** `backend/app/services/project_portrait_builder.py:211` — _static_confirmed_
+    - WHERE: `primary_client_id=?`
+- `SELECT-FROM` @ **build_report_prompt_context** `backend/app/services/report_context_builder.py:294` — _static_confirmed_
+    - WHERE: `id = ?`
+- `SELECT-FROM` @ **build_narrative_analyses** `backend/app/services/review_narrative.py:1988` — _static_confirmed_
+    - WHERE: `id = ?`
+- `SELECT-FROM` @ **_weekly_mainline_collect_story_web** `backend/app/services/review_narrative.py:435` — _static_confirmed_
+    - WHERE: `id = ?`
+- `SELECT-FROM` @ **build_remedies** `backend/app/services/self_heal.py:348` — _static_confirmed_
+    - WHERE: `event_line_id NOT IN (SELECT id FROM event_lines)`
+- `SELECT-FROM` @ **build_remedies.clean_orphan_eline_activities** `backend/app/services/self_heal.py:450` — _static_confirmed_
+    - WHERE: `event_line_id NOT IN (SELECT id FROM event_lines)`
+- `SELECT-FROM` @ **parse_chunk** `backend/app/services/smart_file_import.py:641` — _static_confirmed_
+    - WHERE: `id = ?`
+- `JOIN` @ **_section_4_timeline** `backend/app/services/story_card_generator.py:101` — _static_confirmed_
+    - WHERE: `el.primary_client_id = ? AND a.happened_at IS NOT NULL`
+- `SELECT-FROM` @ **_section_2_current_phase** `backend/app/services/story_card_generator.py:50` — _static_confirmed_
+    - WHERE: `primary_client_id = ?`
+- `SELECT-FROM` @ **build_task_context_brief_material_pack** `backend/app/services/task_context_brief_engine.py:275` — _static_confirmed_
+    - WHERE: `id = ?`
+- `SELECT-FROM` @ **collect_all_todos** `backend/app/services/todo_aggregator.py:66` — _static_confirmed_
+    - WHERE: `primary_client_id=? AND next_step IS NOT NULL AND TRIM(next_step) != '' AND COALESCE(status,'') != 'closed' AND closed_at IS NULL`
+- `SELECT-FROM+JOIN` @ **build_weekly_review_material_pack** `backend/app/services/weekly_review_material_pack.py:335` — _static_confirmed_
+    - WHERE: `(date(t.due_date) BETWEEN ? AND ? OR date(t.created_at) BETWEEN ? AND ?) AND COALESCE(t.scope_mode, 'COLLAB_SHARED') != 'PERSONAL_ONLY'`
+    - WHERE: `id IN (`
+    - WHERE: `id IN ({?})`
+    - WHERE: `t.id IN (`
+    - WHERE: `t.id IN ({?}) AND COALESCE(t.scope_mode, 'COLLAB_SHARED') != 'PERSONAL_ONLY'`
+- `JOIN` @ **_render_event_line_doc** `backend/app/services/workspace_relation_docs.py:119` — _static_confirmed_
+    - WHERE: `t.client_id = ? AND t.event_line_id = ? AND COALESCE(t.scope_mode, 'COLLAB_SHARED') != 'PERSONAL_ONLY'`
+- `SELECT-FROM` @ **_materialize_event_line_docs** `backend/app/services/workspace_relation_docs.py:203` — _static_confirmed_
+    - WHERE: `el.primary_client_id = ? OR t.id IS NOT NULL`
+- `JOIN` @ **_render_project_module_doc** `backend/app/services/workspace_relation_docs.py:264` — _static_confirmed_
+    - WHERE: `t.client_id = ? AND t.project_module_id = ? AND COALESCE(t.scope_mode, 'COLLAB_SHARED') != 'PERSONAL_ONLY'`
+- `JOIN` @ **_render_project_flow_doc** `backend/app/services/workspace_relation_docs.py:321` — _static_confirmed_
+    - WHERE: `t.client_id = ? AND t.project_flow_id = ? AND COALESCE(t.scope_mode, 'COLLAB_SHARED') != 'PERSONAL_ONLY'`
+- `JOIN` @ **_review_relation_sources** `backend/app/services/workspace_relation_docs.py:457` — _static_confirmed_
+    - WHERE: `e.review_id = ? AND LOWER(COALESCE(e.content_domain, 'work')) NOT IN ('personal', 'private') AND COALESCE(t.scope_mode, 'COLLAB_SHARED') != 'PERSONAL_ONLY' AND ( pm.client_id = ? OR pf.client_id = ? O`
+- `SELECT-FROM` @ **_materialize_review_docs** `backend/app/services/workspace_relation_docs.py:564` — _static_confirmed_
+    - WHERE: `primary_client_id = ? OR id IN ( SELECT event_line_id FROM tasks WHERE client_id = ? AND event_line_id IS NOT NULL AND COALESCE(scope_mode, 'COLLAB_SHARED') != 'PERSONAL_ONLY' )`
+- `JOIN` @ **_materialize_calendar_doc** `backend/app/services/workspace_relation_docs.py:637` — _static_confirmed_
+    - WHERE: `t.client_id = ? AND COALESCE(t.scope_mode, 'COLLAB_SHARED') != 'PERSONAL_ONLY' AND (`
+    - WHERE: `t.client_id = ? AND COALESCE(t.scope_mode, 'COLLAB_SHARED') != 'PERSONAL_ONLY' AND ({?})`
+- `JOIN` @ **_task_rows_for_client** `backend/app/services/workspace_relation_docs.py:66` — _static_confirmed_
+    - WHERE: `t.client_id = ? AND COALESCE(t.scope_mode, 'COLLAB_SHARED') != 'PERSONAL_ONLY'`
+
+## `event_log`
+
+- 经验层: **312 行**
+
+### 写边 (1)
+- `INSERT` @ **log_event** `backend/app/services/ingest_pipeline.py:345` — _call_name_match_
+    - chain: log_event @backend/app/services/ingest_pipeline.py:345  ←  ingest @backend/app/services/ingest_pipeline.py:659  ←  extract_from_document @backend/app/services/document_llm_extractor.py:261  ←  process @backend/app/services/task_runners/fact_extract_runner.py:41  ←  run_due_local_model_tasks @backend/app/services/local_model_optimizer.py:942  ←  local_model_optimizer_worker_loop [worker:local_model_optimizer_worker_loop] @backend/app/services/local_model_optimizer.py:1026
+    - chain: log_event @backend/app/services/ingest_pipeline.py:345  ←  ingest @backend/app/services/ingest_pipeline.py:659  ←  extract_from_document @backend/app/services/document_llm_extractor.py:261  ←  process @backend/app/services/task_runners/fact_extract_runner.py:41  ←  run_due_local_model_tasks @backend/app/services/local_model_optimizer.py:942  ←  run_local_ai_now [endpoint:/api/v1/local-ai/run-now] @backend/app/main.py:36970
+
+### 读边 (0)
+- (无静态读边)
+
+## `evidence_cards`
+
+- 经验层: **369 行** · 最近写入 created_at=2026-06-05T15:04:03
+  - source_type 分布: document_card:175, task:113, organization_notebook:46, dna_module:20, meeting:8, project_module:4, memory_status:3
+
+### 写边 (1)
+- `UPDATE` @ **_sync_event_line_client_scope_records** `backend/app/main.py:2484` — _needs_human_
+    - chain: _sync_event_line_client_scope_records [worker:_sync_event_line_client_scope_records] @backend/app/main.py:2484
+
+### 读边 (12)
+- `SELECT-FROM` @ **create_app._fetch_evidence_support_items** `backend/app/main.py:18614` — _static_confirmed_
+    - WHERE: `client_id = ? AND id IN (`
+    - WHERE: `client_id = ? AND id IN ({?})`
+- `SELECT-FROM` @ **create_app.get_client_knowledge_status** `backend/app/main.py:27902` — _static_confirmed_
+    - WHERE: `el.primary_client_id = ? AND NOT EXISTS ( SELECT 1 FROM evidence_cards ec WHERE ec.scope_type = 'event_line' AND ec.scope_id = el.id )`
+- `SELECT-FROM` @ **create_app** `backend/app/main.py:3179` — _static_confirmed_
+    - WHERE: `client_id = ? AND id IN (`
+    - WHERE: `client_id = ? AND id IN ({?})`
+    - WHERE: `el.primary_client_id = ? AND NOT EXISTS ( SELECT 1 FROM evidence_cards ec WHERE ec.scope_type = 'event_line' AND ec.scope_id = el.id )`
+- `SELECT-FROM` @ **_build_analysis_center_summary** `backend/app/services/analysis_center.py:1548` — _static_confirmed_
+    - WHERE: `client_id = ? UNION ALL SELECT 'theme', COUNT(*) FROM theme_clusters WHERE client_id = ? UNION ALL SELECT 'conflict', COUNT(*) FROM conflict_groups WHERE client_id = ? UNION ALL SELECT 'open_q', COUNT`
+- `SELECT-FROM` @ **_list_evidence_ids_by_scope** `backend/app/services/analysis_center.py:1990` — _static_confirmed_
+    - WHERE: `client_id = ? AND scope_type = ? AND scope_id = ?`
+- `SELECT-FROM` @ **build_client_page_context_pack** `backend/app/services/analysis_context.py:294` — _static_confirmed_
+    - WHERE: `client_id = ?`
+- `SELECT-FROM` @ **_fetch_weekly_events** `backend/app/services/client_strategic_pulse.py:179` — _static_confirmed_
+    - WHERE: `client_id = ? AND updated_at >= ?`
+- `SELECT-FROM` @ **_build_metrics** `backend/app/services/digital_asset_center.py:3129` — _static_confirmed_
+    - WHERE: `client_id = ?`
+- `SELECT-FROM` @ **_collect_sources** `backend/app/services/digital_asset_center.py:3179` — _static_confirmed_
+    - WHERE: `client_id = ?`
+- `SELECT-FROM` @ **_build_digital_asset_pulse** `backend/app/services/digital_asset_center.py:924` — _static_confirmed_
+    - WHERE: `COALESCE(c.alias, '') != ? AND COALESCE(c.name, '') != ? AND date(e.created_at) >= date('now', '-7 days')`
+- `SELECT-FROM` @ **build_digital_asset_narrative_context** `backend/app/services/digital_asset_narrative.py:201` — _static_confirmed_
+    - WHERE: `client_id = ?`
+- `SELECT-FROM` @ **_assess_evidence_quality** `backend/app/services/narrative_collector.py:1243` — _static_confirmed_
+    - WHERE: `client_id = ?`
+
+## `evidence_quality_annotations`
+
+- 经验层: **321 行** · 最近写入 created_at=2026-06-02T08:41:31
+  - source_type 分布: workspace_chat:321
+
+### 写边 (2)
+- `UPDATE` @ **update_evidence_quality_human_label** `backend/app/services/evidence_quality_store.py:206` — _call_name_match_
+    - chain: update_evidence_quality_human_label @backend/app/services/evidence_quality_store.py:206  ←  update_data_center_evidence_quality_label_api [endpoint:/api/v1/data-center/evidence-quality/{annotation_id}/label] @backend/app/main.py:45367
+- `INSERT+UPDATE` @ **persist_evidence_quality_signal** `backend/app/services/evidence_quality_store.py:75` — _call_name_match_
+    - chain: persist_evidence_quality_signal @backend/app/services/evidence_quality_store.py:75  ←  persist_evidence_quality_annotations_for_items @backend/app/services/evidence_quality_store.py:154  ←  resolve_data_center_kernel @backend/app/services/data_center_kernel.py:453  ←  data_center_diagnose [endpoint:/api/v1/data-center/diagnose] @backend/app/main.py:48600
+    - chain: persist_evidence_quality_signal @backend/app/services/evidence_quality_store.py:75  ←  persist_evidence_quality_annotations_for_items @backend/app/services/evidence_quality_store.py:154  ←  resolve_data_center_kernel @backend/app/services/data_center_kernel.py:453  ←  data_center_resolve [endpoint:/api/v1/data-center/resolve] @backend/app/main.py:48591
+    - chain: persist_evidence_quality_signal @backend/app/services/evidence_quality_store.py:75  ←  persist_evidence_quality_annotations_for_items @backend/app/services/evidence_quality_store.py:154  ←  resolve_data_center_kernel @backend/app/services/data_center_kernel.py:453  ←  resolve_chat_answer_data_center_primary @backend/app/main.py:46745  ←  document_ai_action [endpoint:/api/v1/clients/{client_id}/documents/ai-action] @backend/app/main.py:49635
+    - chain: persist_evidence_quality_signal @backend/app/services/evidence_quality_store.py:75  ←  persist_evidence_quality_annotations_for_items @backend/app/services/evidence_quality_store.py:154  ←  resolve_data_center_kernel @backend/app/services/data_center_kernel.py:453  ←  resolve_chat_answer_data_center_primary @backend/app/main.py:46745  ←  resolve_chat_answer @backend/app/main.py:48117  ←  background_resolve_chat_answer [worker:background_resolve_chat_answer] @backend/app/main.py:48335
+    - chain: persist_evidence_quality_signal @backend/app/services/evidence_quality_store.py:75  ←  persist_evidence_quality_annotations_for_items @backend/app/services/evidence_quality_store.py:154  ←  resolve_data_center_kernel @backend/app/services/data_center_kernel.py:453  ←  resolve_chat_answer_data_center_primary @backend/app/main.py:46745  ←  resolve_chat_answer @backend/app/main.py:48117  ←  send_chat_message [endpoint:/api/v1/clients/{client_id}/workspace/chat] @backend/app/main.py:49220
+
+### 读边 (7)
+- `SELECT-FROM` @ **create_app** `backend/app/main.py:3179` — _static_confirmed_
+    - WHERE: `source_id = ?`
+- `SELECT-FROM` @ **create_app.get_client_mobile_data_center_snapshot** `backend/app/main.py:44053` — _static_confirmed_
+    - WHERE: `source_id = ?`
+- `SELECT-FROM` @ **get_human_quality_adjustment** `backend/app/services/evidence_quality_feedback.py:14` — _static_confirmed_
+    - WHERE: `source_type = ? AND source_id = ? AND excerpt_hash = ? AND (? IS NULL OR document_id = ?)`
+- `SELECT-FROM` @ **create_evidence_quality_feedback_snapshot** `backend/app/services/evidence_quality_feedback_snapshot.py:65` — _static_confirmed_
+    - WHERE: `updated_at >= ?`
+- `SELECT-FROM` @ **list_evidence_quality_annotations** `backend/app/services/evidence_quality_store.py:178` — _static_confirmed_
+- `SELECT-FROM` @ **update_evidence_quality_human_label** `backend/app/services/evidence_quality_store.py:206` — _static_confirmed_
+    - WHERE: `id = ?`
+- `SELECT-FROM` @ **persist_evidence_quality_signal** `backend/app/services/evidence_quality_store.py:75` — _static_confirmed_
+    - WHERE: `id = ?`
+    - WHERE: `source_type = ? AND source_id = ? AND excerpt_hash = ?`
+
+## `evidence_quality_feedback_snapshots`
+
+- 经验层: **0 行**
+
+### 写边 (1)
+- `INSERT` @ **create_evidence_quality_feedback_snapshot** `backend/app/services/evidence_quality_feedback_snapshot.py:65` — _call_name_match_
+    - chain: create_evidence_quality_feedback_snapshot @backend/app/services/evidence_quality_feedback_snapshot.py:65  ←  create_data_center_evidence_quality_snapshot_api [endpoint:/api/v1/data-center/evidence-quality/snapshots] @backend/app/main.py:44783
+
+### 读边 (2)
+- `SELECT-FROM` @ **list_evidence_quality_feedback_snapshots** `backend/app/services/evidence_quality_feedback_snapshot.py:156` — _static_confirmed_
+- `SELECT-FROM` @ **create_evidence_quality_feedback_snapshot** `backend/app/services/evidence_quality_feedback_snapshot.py:65` — _static_confirmed_
+    - WHERE: `id = ?`
+
+## `evidence_refs`
+
+- 经验层: **61 行** · 最近写入 created_at=2026-06-05T15:03:57
+  - source_type 分布: task_attachment:61
+
+### 写边 (5)
+- `UPDATE` @ **_sync_task_attachment_scope** `backend/app/main.py:2237` — _needs_human_
+    - chain: _sync_task_attachment_scope [worker:_sync_task_attachment_scope] @backend/app/main.py:2237
+- `UPDATE` @ **create_app.resolve_client_duplicate_documents** `backend/app/main.py:28241` — _static_confirmed_
+    - chain: resolve_client_duplicate_documents [endpoint:/api/v1/clients/{client_id}/duplicate-documents/resolve] @backend/app/main.py:28241
+- `INSERT+UPDATE` @ **create_app** `backend/app/main.py:3179` — _needs_human_
+    - chain: create_app @backend/app/main.py:3179  ←  (no caller found — orphan write)
+- `INSERT` @ **create_app.publish_meeting** `backend/app/main.py:51482` — _static_confirmed_
+    - chain: publish_meeting [endpoint:/api/v1/clients/{client_id}/meetings/{meeting_id}/publish] @backend/app/main.py:51482
+- `INSERT` @ **create_app.upload_task_attachment** `backend/app/main.py:53434` — _needs_human_
+    - chain: upload_task_attachment [endpoint:/api/v1/tasks/{task_id}/attachments] @backend/app/main.py:53434
+
+### 读边 (3)
+- `SELECT-FROM` @ **create_app.get_client_duplicate_documents** `backend/app/main.py:28069` — _static_confirmed_
+    - WHERE: `document_id = ?`
+- `SELECT-FROM` @ **create_app.get_client_duplicate_documents._ref_counts** `backend/app/main.py:28088` — _static_confirmed_
+    - WHERE: `document_id = ?`
+- `SELECT-FROM` @ **build_meeting_page_context_pack** `backend/app/services/meeting_context.py:48` — _static_confirmed_
+    - WHERE: `meeting_id = ?`
+
+## `execution_ticket_logs`
+
+- 经验层: **0 行**
+
+### 写边 (1)
+- `INSERT` @ **_log_execution_ticket_stage** `backend/app/services/proposal_execution.py:84` — _call_name_match_
+    - chain: _log_execution_ticket_stage @backend/app/services/proposal_execution.py:84  ←  create_execution_ticket_for_proposal @backend/app/services/proposal_execution.py:123  ←  create_proposal_execution_ticket_api [endpoint:/api/v1/proposals/{proposal_id}/execution-ticket] @backend/app/main.py:33465
+    - chain: _log_execution_ticket_stage @backend/app/services/proposal_execution.py:84  ←  create_execution_ticket_for_proposal @backend/app/services/proposal_execution.py:123  ←  execute_proposal [endpoint:/api/v1/proposals/{proposal_id}/execute] @backend/app/main.py:33574
+    - chain: _log_execution_ticket_stage @backend/app/services/proposal_execution.py:84  ←  execute_proposal_ticket @backend/app/services/proposal_execution.py:223  ←  execute_execution_ticket_api [endpoint:/api/v1/execution-tickets/{ticket_id}/execute] @backend/app/main.py:33509
+    - chain: _log_execution_ticket_stage @backend/app/services/proposal_execution.py:84  ←  execute_proposal_ticket @backend/app/services/proposal_execution.py:223  ←  execute_proposal [endpoint:/api/v1/proposals/{proposal_id}/execute] @backend/app/main.py:33574
+    - chain: _log_execution_ticket_stage @backend/app/services/proposal_execution.py:84  ←  retry_execution_ticket @backend/app/services/proposal_execution.py:359  ←  retry_execution_ticket_api [endpoint:/api/v1/execution-tickets/{ticket_id}/retry] @backend/app/main.py:33546
+
+### 读边 (2)
+- `SELECT-FROM` @ **get_execution_retry_metrics** `backend/app/services/execution_retry_metrics.py:32` — _static_confirmed_
+- `SELECT-FROM` @ **list_execution_ticket_logs** `backend/app/services/proposal_execution.py:404` — _static_confirmed_
+    - WHERE: `ticket_id = ?`
+
+## `execution_tickets`
+
+- 经验层: **0 行**
+
+### 写边 (6)
+- `INSERT+UPDATE` @ **create_app** `backend/app/main.py:3179` — _needs_human_
+    - chain: create_app @backend/app/main.py:3179  ←  (no caller found — orphan write)
+- `INSERT` @ **create_app._insert_execution_ticket** `backend/app/main.py:33108` — _needs_human_
+    - chain: _insert_execution_ticket @backend/app/main.py:33108  ←  (no caller found — orphan write)
+- `UPDATE` @ **create_app._complete_execution_ticket** `backend/app/main.py:33137` — _needs_human_
+    - chain: _complete_execution_ticket @backend/app/main.py:33137  ←  (no caller found — orphan write)
+- `INSERT` @ **create_execution_ticket_for_proposal** `backend/app/services/proposal_execution.py:123` — _call_name_match_
+    - chain: create_execution_ticket_for_proposal @backend/app/services/proposal_execution.py:123  ←  create_proposal_execution_ticket_api [endpoint:/api/v1/proposals/{proposal_id}/execution-ticket] @backend/app/main.py:33465
+    - chain: create_execution_ticket_for_proposal @backend/app/services/proposal_execution.py:123  ←  execute_proposal [endpoint:/api/v1/proposals/{proposal_id}/execute] @backend/app/main.py:33574
+- `UPDATE` @ **execute_proposal_ticket** `backend/app/services/proposal_execution.py:223` — _call_name_match_
+    - chain: execute_proposal_ticket @backend/app/services/proposal_execution.py:223  ←  execute_execution_ticket_api [endpoint:/api/v1/execution-tickets/{ticket_id}/execute] @backend/app/main.py:33509
+    - chain: execute_proposal_ticket @backend/app/services/proposal_execution.py:223  ←  execute_proposal [endpoint:/api/v1/proposals/{proposal_id}/execute] @backend/app/main.py:33574
+- `UPDATE` @ **retry_execution_ticket** `backend/app/services/proposal_execution.py:359` — _call_name_match_
+    - chain: retry_execution_ticket @backend/app/services/proposal_execution.py:359  ←  retry_execution_ticket_api [endpoint:/api/v1/execution-tickets/{ticket_id}/retry] @backend/app/main.py:33546
+
+### 读边 (11)
+- `SELECT-FROM` @ **create_app** `backend/app/main.py:3179` — _static_confirmed_
+    - WHERE: `id = ?`
+- `SELECT-FROM` @ **create_app._proposal_row_to_record** `backend/app/main.py:32677` — _static_confirmed_
+    - WHERE: `id = ?`
+- `SELECT-FROM` @ **create_app._insert_execution_ticket** `backend/app/main.py:33108` — _static_confirmed_
+    - WHERE: `id = ?`
+- `SELECT-FROM` @ **create_app._complete_execution_ticket** `backend/app/main.py:33137` — _static_confirmed_
+    - WHERE: `id = ?`
+- `SELECT-FROM+JOIN` @ **get_execution_retry_metrics** `backend/app/services/execution_retry_metrics.py:32` — _static_confirmed_
+- `SELECT-FROM` @ **_proposal_row_to_record** `backend/app/services/proposal_approval.py:71` — _static_confirmed_
+    - WHERE: `id = ?`
+- `SELECT-FROM` @ **get_execution_ticket** `backend/app/services/proposal_execution.py:112` — _static_confirmed_
+    - WHERE: `id = ?`
+- `SELECT-FROM` @ **create_execution_ticket_for_proposal** `backend/app/services/proposal_execution.py:123` — _static_confirmed_
+    - WHERE: `proposal_id = ? AND idempotency_key = ? AND status IN ('pending', 'running', 'executed')`
+- `SELECT-FROM` @ **list_execution_tickets** `backend/app/services/proposal_execution.py:437` — _static_confirmed_
+- `SELECT-FROM` @ **_count_answer_action_artifacts** `backend/app/services/workspace_answer_value_diagnostics.py:435` — _static_confirmed_
+    - WHERE: `proposal_id IN (`
+    - WHERE: `proposal_id IN ({?})`
+- `SELECT-FROM` @ **_lookup_job_status** `backend/app/services/workspace_context_refresh.py:245` — _static_confirmed_
+    - WHERE: `id = ?`
+
+## `exp_wall_quotes`
+
+- 经验层: **250 行** · 最近写入 created_at=2026-06-08T19:48:13
+  - source_type 分布: client_analysis:250
+
+### 写边 (6)
+- `INSERT` @ **insert_quote** `backend/app/services/exp_wall_service.py:147` — _call_name_match_
+    - chain: insert_quote @backend/app/services/exp_wall_service.py:147  ←  save_pending_quotes @backend/app/services/local_memory.py:287  ←  augment_review_response @backend/app/main.py:26738  ←  create_weekly_review [endpoint:/api/v1/reviews/weekly] @backend/app/main.py:54504
+    - chain: insert_quote @backend/app/services/exp_wall_service.py:147  ←  save_pending_quotes @backend/app/services/local_memory.py:287  ←  augment_review_response @backend/app/main.py:26738  ←  list_reviews [endpoint:/api/v1/reviews] @backend/app/main.py:54077
+    - chain: insert_quote @backend/app/services/exp_wall_service.py:147  ←  save_pending_quotes @backend/app/services/local_memory.py:287  ←  augment_review_response @backend/app/main.py:26738  ←  local_review_dashboard @backend/app/main.py:27293  ←  build_strategic_cockpit_snapshot @backend/app/main.py:20771  ←  apply_strategic_meeting_pack [endpoint:/api/v1/clients/{client_id}/strategic-cockpit/meeting-pack/{meeting_id}/apply] @backend/app/main.py:42202
+    - chain: insert_quote @backend/app/services/exp_wall_service.py:147  ←  save_pending_quotes @backend/app/services/local_memory.py:287  ←  augment_review_response @backend/app/main.py:26738  ←  local_review_dashboard @backend/app/main.py:27293  ←  build_strategic_cockpit_snapshot @backend/app/main.py:20771  ←  confirm_strategic_cockpit [endpoint:/api/v1/clients/{client_id}/strategic-cockpit/confirm] @backend/app/main.py:42174
+    - chain: insert_quote @backend/app/services/exp_wall_service.py:147  ←  save_pending_quotes @backend/app/services/local_memory.py:287  ←  augment_review_response @backend/app/main.py:26738  ←  local_review_dashboard @backend/app/main.py:27293  ←  build_strategic_cockpit_snapshot @backend/app/main.py:20771  ←  get_strategic_cockpit [endpoint:/api/v1/clients/{client_id}/strategic-cockpit] @backend/app/main.py:42135
+    - chain: insert_quote @backend/app/services/exp_wall_service.py:147  ←  save_pending_quotes @backend/app/services/local_memory.py:287  ←  augment_review_response @backend/app/main.py:26738  ←  local_review_dashboard @backend/app/main.py:27293  ←  build_strategic_cockpit_snapshot @backend/app/main.py:20771  ←  get_strategic_line_detail [endpoint:/api/v1/clients/{client_id}/strategic-cockpit/lines/{line_id}] @backend/app/main.py:42140
+- `UPDATE` @ **toggle_reaction** `backend/app/services/exp_wall_service.py:290` — _needs_human_
+    - chain: toggle_reaction @backend/app/services/exp_wall_service.py:290  ←  (no caller found — orphan write)
+- `UPDATE` @ **_recompute_scores** `backend/app/services/exp_wall_service.py:356` — _needs_human_
+    - chain: _recompute_scores @backend/app/services/exp_wall_service.py:356  ←  toggle_reaction @backend/app/services/exp_wall_service.py:290
+- `UPDATE` @ **delete_quote** `backend/app/services/exp_wall_service.py:459` — _needs_human_
+    - chain: delete_quote @backend/app/services/exp_wall_service.py:459  ←  (no caller found — orphan write)
+- `UPDATE` @ **push_pending_quotes_to_cloud** `backend/app/services/exp_wall_service.py:570` — _call_name_match_
+    - chain: push_pending_quotes_to_cloud @backend/app/services/exp_wall_service.py:570  ←  _background_sync_exp_wall [worker:_background_sync_exp_wall] @backend/app/main.py:3309
+- `INSERT` @ **pull_quotes_from_cloud** `backend/app/services/exp_wall_service.py:682` — _call_name_match_
+    - chain: pull_quotes_from_cloud @backend/app/services/exp_wall_service.py:682  ←  _background_sync_exp_wall [worker:_background_sync_exp_wall] @backend/app/main.py:3309
+
+### 读边 (13)
+- `SELECT-FROM` @ **list_feed** `backend/app/services/exp_wall_service.py:200` — _static_confirmed_
+    - WHERE: `{?}`
+- `SELECT-FROM` @ **get_quote** `backend/app/services/exp_wall_service.py:241` — _static_confirmed_
+    - WHERE: `q.id = ?`
+- `SELECT-FROM` @ **toggle_reaction** `backend/app/services/exp_wall_service.py:290` — _static_confirmed_
+    - WHERE: `id = ?`
+- `SELECT-FROM` @ **can_delete_quote** `backend/app/services/exp_wall_service.py:413` — _static_confirmed_
+    - WHERE: `id = ?`
+- `SELECT-FROM` @ **aggregate_contribution_by_user** `backend/app/services/exp_wall_service.py:495` — _static_confirmed_
+    - WHERE: `{?}`
+- `SELECT-FROM` @ **push_pending_quotes_to_cloud** `backend/app/services/exp_wall_service.py:570` — _static_confirmed_
+    - WHERE: `sync_status = 'pending'`
+- `SELECT-FROM` @ **pull_quotes_from_cloud** `backend/app/services/exp_wall_service.py:682` — _static_confirmed_
+    - WHERE: `id = ?`
+- `SELECT-FROM` @ **_count_source_events** `backend/app/services/growth_engine.py:1168` — _static_confirmed_
+    - WHERE: `author_user_id = ? AND status = 'active'`
+- `SELECT-FROM` @ **_fetch_exp_wall_evidence** `backend/app/services/growth_engine.py:1469` — _static_confirmed_
+    - WHERE: `author_user_id = ? AND status = 'active'`
+- `SELECT-FROM` @ **_build_impact_curve** `backend/app/services/growth_engine.py:2267` — _static_confirmed_
+    - WHERE: `author_user_id = ? AND status = 'active'`
+- `SELECT-FROM` @ **_build_internal_learning_picks** `backend/app/services/growth_engine.py:2328` — _static_confirmed_
+    - WHERE: `author_user_id != ? AND status='active' AND category = ?`
+- `SELECT-FROM` @ **_build_social_feedback** `backend/app/services/growth_engine.py:2658` — _static_confirmed_
+    - WHERE: `author_user_id = ? AND status = 'active' AND created_at >= ?`
+- `SELECT-FROM` @ **save_pending_quotes** `backend/app/services/local_memory.py:287` — _static_confirmed_
+    - WHERE: `author_user_id = ? AND quote_text = ? AND status = 'active'`
+
+## `exp_wall_reactions`
+
+- 经验层: **0 行**
+
+### 写边 (2)
+- `INSERT+UPDATE` @ **toggle_reaction** `backend/app/services/exp_wall_service.py:290` — _needs_human_
+    - chain: toggle_reaction @backend/app/services/exp_wall_service.py:290  ←  (no caller found — orphan write)
+- `UPDATE` @ **push_pending_reactions_to_cloud** `backend/app/services/exp_wall_service.py:625` — _call_name_match_
+    - chain: push_pending_reactions_to_cloud @backend/app/services/exp_wall_service.py:625  ←  _background_sync_exp_wall [worker:_background_sync_exp_wall] @backend/app/main.py:3309
+
+### 读边 (4)
+- `SELECT-FROM` @ **get_user_reactions** `backend/app/services/exp_wall_service.py:256` — _static_confirmed_
+    - WHERE: `user_id = ? AND quote_id IN (`
+    - WHERE: `user_id = ? AND quote_id IN ({?})`
+- `SELECT-FROM` @ **toggle_reaction** `backend/app/services/exp_wall_service.py:290` — _static_confirmed_
+    - WHERE: `id = ?`
+    - WHERE: `quote_id = ? AND user_id = ? AND reaction_type = ?`
+- `SELECT-FROM` @ **_recompute_scores** `backend/app/services/exp_wall_service.py:356` — _static_confirmed_
+    - WHERE: `quote_id = ?`
+    - WHERE: `r.quote_id = ?`
+- `SELECT-FROM` @ **push_pending_reactions_to_cloud** `backend/app/services/exp_wall_service.py:625` — _static_confirmed_
+    - WHERE: `sync_status = 'pending' AND pending_sync_action = 'upsert'`
+
+## `experience_story_drafts`
+
+- 经验层: **5 行** · 最近写入 created_at=2026-05-03T17:12:29
+  - source_type 分布: v2_document:5
+
+### 写边 (2)
+- `UPDATE` @ **reject_experience_story_draft** `backend/app/services/experience_story_engine.py:104` — _needs_human_
+    - chain: reject_experience_story_draft @backend/app/services/experience_story_engine.py:104  ←  (no caller found — orphan write)
+- `UPDATE` @ **regenerate_experience_story_draft** `backend/app/services/experience_story_engine.py:117` — _needs_human_
+    - chain: regenerate_experience_story_draft @backend/app/services/experience_story_engine.py:117  ←  (no caller found — orphan write)
+
+### 读边 (3)
+- `SELECT-FROM` @ **reject_experience_story_draft** `backend/app/services/experience_story_engine.py:104` — _static_confirmed_
+    - WHERE: `id = ?`
+- `SELECT-FROM` @ **regenerate_experience_story_draft** `backend/app/services/experience_story_engine.py:117` — _static_confirmed_
+    - WHERE: `id = ?`
+- `SELECT-FROM` @ **list_experience_story_drafts** `backend/app/services/experience_story_engine.py:71` — _static_confirmed_
+
+## `external_evidence_cards`
+
+- 经验层: **0 行**
+
+### 写边 (5)
+- `INSERT` @ **write_external_evidence_card** `backend/app/services/data_gap_compensator.py:220` — _call_name_match_
+    - chain: write_external_evidence_card @backend/app/services/data_gap_compensator.py:220  ←  harvest_intelligence_for_client @backend/app/services/data_gap_compensator.py:266  ←  run_data_gap_pipeline @backend/app/services/data_gap_compensator.py:334  ←  compensate_client_data_gaps [endpoint:/api/v1/clients/{client_id}/data-gaps/compensate] @backend/app/main.py:40048
+- `INSERT` @ **create_external_evidence_card_from_topic_candidate** `backend/app/services/external_evidence.py:144` — _call_name_match_
+    - chain: create_external_evidence_card_from_topic_candidate @backend/app/services/external_evidence.py:144  ←  create_external_evidence_card_api [endpoint:/api/v1/topic-candidates/{topic_id}/external-evidence-card] @backend/app/main.py:45264
+- `UPDATE` @ **accept_external_evidence_card** `backend/app/services/external_evidence.py:236` — _call_name_match_
+    - chain: accept_external_evidence_card @backend/app/services/external_evidence.py:236  ←  accept_external_evidence_card_api [endpoint:/api/v1/external-evidence-cards/{card_id}/accept] @backend/app/main.py:45284
+- `UPDATE` @ **reject_external_evidence_card** `backend/app/services/external_evidence.py:265` — _call_name_match_
+    - chain: reject_external_evidence_card @backend/app/services/external_evidence.py:265  ←  reject_external_evidence_card_api [endpoint:/api/v1/external-evidence-cards/{card_id}/reject] @backend/app/main.py:45305
+- `UPDATE` @ **create_proposal_draft_from_external_evidence_card** `backend/app/services/external_evidence.py:328` — _call_name_match_
+    - chain: create_proposal_draft_from_external_evidence_card @backend/app/services/external_evidence.py:328  ←  create_external_evidence_proposal_draft_api [endpoint:/api/v1/external-evidence-cards/{card_id}/create-proposal-draft] @backend/app/main.py:45329
+
+### 读边 (10)
+- `SELECT-FROM` @ **create_app** `backend/app/main.py:3179` — _static_confirmed_
+    - WHERE: `id = ?`
+    - WHERE: `related_scope_id=? AND title LIKE ? AND source_tier IN ('low','unknown')`
+- `SELECT-FROM` @ **create_app._resolve_client_id_for_evidence_quality_annotation** `backend/app/main.py:3650` — _static_confirmed_
+    - WHERE: `id = ?`
+- `SELECT-FROM` @ **create_app.get_client_quality_context** `backend/app/main.py:40726` — _static_confirmed_
+    - WHERE: `related_scope_id=? AND title LIKE ? AND source_tier IN ('low','unknown')`
+- `SELECT-FROM` @ **build_company_brain_context** `backend/app/services/company_brain_context_builder.py:83` — _static_confirmed_
+    - WHERE: `client_id = ? AND status = 'active'`
+- `SELECT-FROM` @ **list_external_evidence_cards** `backend/app/services/external_evidence.py:111` — _static_confirmed_
+- `SELECT-FROM` @ **create_external_evidence_card_from_topic_candidate** `backend/app/services/external_evidence.py:144` — _static_confirmed_
+    - WHERE: `id = ?`
+    - WHERE: `topic_candidate_id = ?`
+- `SELECT-FROM` @ **accept_external_evidence_card** `backend/app/services/external_evidence.py:236` — _static_confirmed_
+    - WHERE: `id = ?`
+- `SELECT-FROM` @ **reject_external_evidence_card** `backend/app/services/external_evidence.py:265` — _static_confirmed_
+    - WHERE: `id = ?`
+- `SELECT-FROM` @ **create_proposal_draft_from_external_evidence_card** `backend/app/services/external_evidence.py:328` — _static_confirmed_
+    - WHERE: `id = ?`
+- `SELECT-FROM` @ **collect_client_fact_bundle** `backend/app/services/narrative_collector.py:338` — _static_confirmed_
+    - WHERE: `client_id = ? AND status = 'active'`
+
+## `extraction`
+
+- 经验层: 真库**无此表** (静态边 0写/2读)
+
+### 写边 (0)
+- (无静态写边)
+
+### 读边 (2)
+- `SELECT-FROM` @ **create_app** `backend/app/main.py:3179` — _static_confirmed_
+- `SELECT-FROM` @ **create_app.dry_run_action** `backend/app/main.py:41078` — _static_confirmed_
+
+## `fact_contradictions`
+
+- 经验层: **81 行**
+
+### 写边 (4)
+- `INSERT` @ **insert_contradiction** `backend/app/services/contradiction_detector.py:207` — _call_name_match_
+    - chain: insert_contradiction @backend/app/services/contradiction_detector.py:207  ←  detect_and_record_for_fact @backend/app/services/contradiction_detector.py:239  ←  persist_chunk_facts @backend/app/services/contradiction_detector.py:305  ←  _extract_facts_for_v2_doc @backend/app/services/internet_crawler.py:755  ←  run_internet_enrichment [worker:run_internet_enrichment] @backend/app/services/internet_crawler.py:1135
+    - chain: insert_contradiction @backend/app/services/contradiction_detector.py:207  ←  detect_and_record_for_fact @backend/app/services/contradiction_detector.py:239  ←  persist_chunk_facts @backend/app/services/contradiction_detector.py:305  ←  ingest_document_knowledge @backend/app/services/knowledge_base.py:2802  ←  upload_task_attachment [endpoint:/api/v1/tasks/{task_id}/attachments] @backend/app/main.py:53434
+    - chain: insert_contradiction @backend/app/services/contradiction_detector.py:207  ←  detect_and_record_for_fact @backend/app/services/contradiction_detector.py:239  ←  persist_chunk_facts @backend/app/services/contradiction_detector.py:305  ←  ingest_document_knowledge @backend/app/services/knowledge_base.py:2802  ←  _build_local_event_line_report_snapshot @backend/app/main.py:33643  ←  get_event_line_report_snapshot [endpoint:/api/v1/event-lines/{event_line_id}/report-snapshot] @backend/app/main.py:34329
+    - chain: insert_contradiction @backend/app/services/contradiction_detector.py:207  ←  detect_and_record_for_fact @backend/app/services/contradiction_detector.py:239  ←  persist_chunk_facts @backend/app/services/contradiction_detector.py:305  ←  ingest_document_knowledge @backend/app/services/knowledge_base.py:2802  ←  _process_one_pdf @backend/app/services/internet_pdf_worker.py:96  ←  _worker_loop [worker:_worker_loop] @backend/app/services/internet_pdf_worker.py:205
+    - chain: insert_contradiction @backend/app/services/contradiction_detector.py:207  ←  detect_and_record_for_fact @backend/app/services/contradiction_detector.py:239  ←  persist_chunk_facts @backend/app/services/contradiction_detector.py:305  ←  ingest_document_knowledge @backend/app/services/knowledge_base.py:2802  ←  backfill_workspace_import @backend/app/services/knowledge_v2.py:3943  ←  backfill_client_workspace_imports [endpoint:/api/v1/clients/{client_id}/workspace/backfill-imports] @backend/app/main.py:50039
+    - chain: insert_contradiction @backend/app/services/contradiction_detector.py:207  ←  detect_and_record_for_fact @backend/app/services/contradiction_detector.py:239  ←  persist_chunk_facts @backend/app/services/contradiction_detector.py:305  ←  ingest_document_knowledge @backend/app/services/knowledge_base.py:2802  ←  create_client_text_document @backend/app/main.py:16116  ←  create_client_document_from_text [endpoint:/api/v1/clients/{client_id}/documents/from-text] @backend/app/main.py:49576
+- `UPDATE` @ **update_review_status** `backend/app/services/contradiction_detector.py:413` — _call_name_match_
+    - chain: update_review_status @backend/app/services/contradiction_detector.py:413  ←  review_contradiction [endpoint:/api/v1/contradictions/{contradiction_id}/review] @backend/app/main.py:41982
+- `INSERT` @ **verify_contradictions** `backend/app/services/data_center_self_verify.py:301` — _needs_human_
+    - chain: verify_contradictions @backend/app/services/data_center_self_verify.py:301  ←  run_self_verify @backend/app/services/data_center_self_verify.py:446
+- `INSERT` @ **_insert_fact_contradiction** `backend/app/services/formal_conflict_detector.py:80` — _call_name_match_
+    - chain: _insert_fact_contradiction @backend/app/services/formal_conflict_detector.py:80  ←  detect_media_lag @backend/app/services/formal_conflict_detector.py:233  ←  detect_all @backend/app/services/formal_conflict_detector.py:471  ←  process_meeting_minute @backend/app/services/meeting_minute_processor.py:147  ←  process_meeting_minute_endpoint [endpoint:/api/v1/meeting-minutes/process] @backend/app/main.py:39471
+
+### 读边 (10)
+- `SELECT-FROM` @ **create_app.get_client_knowledge_status** `backend/app/main.py:27902` — _static_confirmed_
+    - WHERE: `client_id = ? AND review_status = 'pending'`
+    - WHERE: `client_id = ? AND review_status = 'pending' AND detected_at >= ?`
+- `SELECT-FROM` @ **create_app** `backend/app/main.py:3179` — _static_confirmed_
+    - WHERE: `client_id = ? AND review_status = 'pending'`
+    - WHERE: `client_id = ? AND review_status = 'pending' AND detected_at >= ?`
+- `SELECT-FROM` @ **score_conflict** `backend/app/services/clarification_priority.py:61` — _static_confirmed_
+    - WHERE: `fact_a_id = ? OR fact_b_id = ?`
+- `SELECT-FROM` @ **list_contradictions** `backend/app/services/contradiction_detector.py:353` — _static_confirmed_
+    - WHERE: `client_id = ? AND review_status = ?`
+    - WHERE: `fc.client_id = ? AND fc.review_status = ?`
+- `SELECT-FROM` @ **update_review_status** `backend/app/services/contradiction_detector.py:413` — _static_confirmed_
+    - WHERE: `id = ?`
+- `SELECT-FROM` @ **detect_data_gaps** `backend/app/services/data_gap_compensator.py:112` — _static_confirmed_
+    - WHERE: `fc.client_id = ? AND fc.contradiction_type = 'media_lag'`
+- `SELECT-FROM` @ **_insert_fact_contradiction** `backend/app/services/formal_conflict_detector.py:80` — _static_confirmed_
+    - WHERE: `client_id = ? AND ((fact_a_id = ? AND fact_b_id = ?) OR (fact_a_id = ? AND fact_b_id = ?))`
+- `SELECT-FROM` @ **fanout_contradictions_to_judgment_impact** `backend/app/services/knowledge_v2.py:2935` — _static_confirmed_
+    - WHERE: `client_id = ? AND review_status = 'pending' AND (fact_a_id IN (`
+    - WHERE: `client_id = ? AND review_status = 'pending' AND (fact_a_id IN ({?}) OR fact_b_id IN ({?}))`
+- `SELECT-FROM` @ **_section_7_conflicts_to_clarify** `backend/app/services/story_card_generator.py:178` — _static_confirmed_
+    - WHERE: `client_id = ? AND review_status = 'pending'`
+- `SELECT-FROM` @ **_section_overall_confidence** `backend/app/services/story_card_generator.py:283` — _static_confirmed_
+    - WHERE: `client_id=?`
+
+## `failed`
+
+- 经验层: 真库**无此表** (静态边 6写/0读)
+
+### 写边 (6)
+- `UPDATE` @ **create_app** `backend/app/main.py:3179` — _needs_human_
+    - chain: create_app @backend/app/main.py:3179  ←  (no caller found — orphan write)
+- `UPDATE` @ **create_app.update_event_line** `backend/app/main.py:35169` — _static_confirmed_
+    - chain: update_event_line [endpoint:/api/v1/event-lines/{event_line_id}] @backend/app/main.py:35169
+- `UPDATE` @ **create_app.update_task_view** `backend/app/main.py:35892` — _static_confirmed_
+    - chain: update_task_view [endpoint:/api/v1/task-views/{view_id}] @backend/app/main.py:35892
+- `UPDATE` @ **auto_verify_qualifying_attributes** `backend/app/services/auto_verify_rules.py:229` — _call_name_match_
+    - chain: auto_verify_qualifying_attributes @backend/app/services/auto_verify_rules.py:229  ←  auto_verify_glossary_attributes_proxy [endpoint:/api/v1/clients/{client_id}/glossary-attributes/auto-verify] @backend/app/main.py:29527
+    - chain: auto_verify_qualifying_attributes @backend/app/services/auto_verify_rules.py:229  ←  extract_candidates @backend/app/services/glossary_attribute_extractor.py:283  ←  _run_stage1_and_3_in_background [worker:_run_stage1_and_3_in_background] @backend/app/services/internet_crawler.py:1381
+    - chain: auto_verify_qualifying_attributes @backend/app/services/auto_verify_rules.py:229  ←  extract_candidates @backend/app/services/glossary_attribute_extractor.py:283  ←  extract_glossary_attributes_proxy [endpoint:/api/v1/clients/{client_id}/glossary-attributes/extract] @backend/app/main.py:29215
+    - chain: auto_verify_qualifying_attributes @backend/app/services/auto_verify_rules.py:229  ←  extract_candidates @backend/app/services/glossary_attribute_extractor.py:283  ←  ingest_document_knowledge @backend/app/services/knowledge_base.py:2802  ←  upload_task_attachment [endpoint:/api/v1/tasks/{task_id}/attachments] @backend/app/main.py:53434
+    - chain: auto_verify_qualifying_attributes @backend/app/services/auto_verify_rules.py:229  ←  extract_candidates @backend/app/services/glossary_attribute_extractor.py:283  ←  _trigger_stage3_increment @backend/app/services/internet_pdf_worker.py:195  ←  _process_one_pdf @backend/app/services/internet_pdf_worker.py:96  ←  _worker_loop [worker:_worker_loop] @backend/app/services/internet_pdf_worker.py:205
+    - chain: auto_verify_qualifying_attributes @backend/app/services/auto_verify_rules.py:229  ←  extract_candidates @backend/app/services/glossary_attribute_extractor.py:283  ←  ingest_document_knowledge @backend/app/services/knowledge_base.py:2802  ←  _build_local_event_line_report_snapshot @backend/app/main.py:33643  ←  get_event_line_report_snapshot [endpoint:/api/v1/event-lines/{event_line_id}/report-snapshot] @backend/app/main.py:34329
+- `UPDATE` @ **_process_one_pdf** `backend/app/services/internet_pdf_worker.py:96` — _call_name_match_
+    - chain: _process_one_pdf @backend/app/services/internet_pdf_worker.py:96  ←  _worker_loop [worker:_worker_loop] @backend/app/services/internet_pdf_worker.py:205
+- `UPDATE` @ **apply_user_correction** `backend/app/services/user_correction_handler.py:80` — _needs_human_
+    - chain: apply_user_correction @backend/app/services/user_correction_handler.py:80  ←  (no caller found — orphan write)
+
+### 读边 (0)
+- (无静态读边)
+
+## `file_identities`
+
+- 经验层: 真库**无此表** (静态边 1写/8读)
+
+### 写边 (1)
+- `INSERT` @ **record_file_identity** `backend/app/services/file_identity_classifier.py:345` — _call_name_match_
+    - chain: record_file_identity @backend/app/services/file_identity_classifier.py:345  ←  smart_import_commit_session [endpoint:/api/v1/smart-import/sessions/{session_id}/commit] @backend/app/main.py:29395
+
+### 读边 (8)
+- `SELECT-FROM` @ **create_app.build_template_fill_context** `backend/app/main.py:16786` — _static_confirmed_
+    - WHERE: `client_id = ? AND is_authoritative = 1`
+- `SELECT-FROM` @ **create_app** `backend/app/main.py:3179` — _static_confirmed_
+    - WHERE: `client_id = ? AND (file_name LIKE ? OR project_name LIKE ?)`
+    - WHERE: `client_id = ? AND is_authoritative = 1`
+- `SELECT-FROM` @ **create_app.get_client_data_gaps** `backend/app/main.py:39920` — _static_confirmed_
+    - WHERE: `client_id = ? AND (file_name LIKE ? OR project_name LIKE ?)`
+- `SELECT-FROM` @ **create_app.check_client_evidence** `backend/app/main.py:40575` — _static_confirmed_
+    - WHERE: `client_id = ? AND (file_name LIKE ? OR project_name LIKE ?)`
+- `SELECT-FROM` @ **build_company_brain_context** `backend/app/services/company_brain_context_builder.py:83` — _static_confirmed_
+    - WHERE: `client_id = ?`
+- `SELECT-FROM` @ **build_evidence_pack** `backend/app/services/company_brain_qa.py:76` — _static_confirmed_
+    - WHERE: `client_id = ?`
+- `SELECT-FROM` @ **find_candidates** `backend/app/services/historical_material_resolver.py:271` — _static_confirmed_
+    - WHERE: `client_id = ? AND (file_name LIKE ? OR project_name LIKE ?)`
+- `SELECT-FROM` @ **collect_client_fact_bundle** `backend/app/services/narrative_collector.py:338` — _static_confirmed_
+    - WHERE: `client_id = ?`
+
+## `file_reclass_events`
+
+- 经验层: **642 行** · 最近写入 created_at=2026-06-05T07:30:34
+
+### 写边 (1)
+- `INSERT` @ **append_file_reclass_event** `backend/app/services/knowledge_base.py:1937` — _call_name_match_
+    - chain: append_file_reclass_event @backend/app/services/knowledge_base.py:1937  ←  _sync_legacy_knowledge_document [worker:_sync_legacy_knowledge_document] @backend/app/services/knowledge_v2.py:1936
+    - chain: append_file_reclass_event @backend/app/services/knowledge_base.py:1937  ←  sync_human_file_locations_for_client [worker:sync_human_file_locations_for_client] @backend/app/services/knowledge_base.py:2000
+    - chain: append_file_reclass_event @backend/app/services/knowledge_base.py:1937  ←  ingest_document_knowledge @backend/app/services/knowledge_base.py:2802  ←  upload_task_attachment [endpoint:/api/v1/tasks/{task_id}/attachments] @backend/app/main.py:53434
+    - chain: append_file_reclass_event @backend/app/services/knowledge_base.py:1937  ←  ingest_document_knowledge @backend/app/services/knowledge_base.py:2802  ←  _build_local_event_line_report_snapshot @backend/app/main.py:33643  ←  get_event_line_report_snapshot [endpoint:/api/v1/event-lines/{event_line_id}/report-snapshot] @backend/app/main.py:34329
+    - chain: append_file_reclass_event @backend/app/services/knowledge_base.py:1937  ←  ingest_document_knowledge @backend/app/services/knowledge_base.py:2802  ←  _process_one_pdf @backend/app/services/internet_pdf_worker.py:96  ←  _worker_loop [worker:_worker_loop] @backend/app/services/internet_pdf_worker.py:205
+    - chain: append_file_reclass_event @backend/app/services/knowledge_base.py:1937  ←  ingest_document_knowledge @backend/app/services/knowledge_base.py:2802  ←  backfill_workspace_import @backend/app/services/knowledge_v2.py:3943  ←  backfill_client_workspace_imports [endpoint:/api/v1/clients/{client_id}/workspace/backfill-imports] @backend/app/main.py:50039
+
+### 读边 (2)
+- `SELECT-FROM` @ **fetch_recent_reclass_events** `backend/app/services/knowledge_base.py:3568` — _static_confirmed_
+    - WHERE: `kd.client_id = ?`
+- `SELECT-FROM` @ **_sync_legacy_knowledge_document** `backend/app/services/knowledge_v2.py:1936` — _static_confirmed_
+    - WHERE: `knowledge_document_id = ? AND from_path = ? AND to_path = ? AND to_category = ?`
+
+## `files`
+
+- 经验层: 真库**无此表** (静态边 0写/1读)
+
+### 写边 (0)
+- (无静态写边)
+
+### 读边 (1)
+- `SELECT-FROM` @ **query** `backend/app/services/system_logger.py:129` — _static_confirmed_
+
+## `generation_runtime_state`
+
+- 经验层: **0 行**
+
+### 写边 (0)
+- (无静态写边)
+
+### 读边 (1)
+- `SELECT-FROM` @ **ensure_generation_runtime_schema** `backend/app/services/generation_runtime_policy.py:39` — _static_confirmed_
+
+## `generation_runtime_state_v2`
+
+- 经验层: **55 行** · 最近写入 updated_at=2026-06-05T07:39:24
+
+### 写边 (2)
+- `INSERT` @ **record_generation_result** `backend/app/services/generation_runtime_policy.py:292` — _call_name_match_
+    - chain: record_generation_result @backend/app/services/generation_runtime_policy.py:292  ←  resolve_chat_answer_data_center_primary @backend/app/main.py:46745  ←  document_ai_action [endpoint:/api/v1/clients/{client_id}/documents/ai-action] @backend/app/main.py:49635
+    - chain: record_generation_result @backend/app/services/generation_runtime_policy.py:292  ←  resolve_chat_answer_data_center_primary @backend/app/main.py:46745  ←  resolve_chat_answer @backend/app/main.py:48117  ←  background_resolve_chat_answer [worker:background_resolve_chat_answer] @backend/app/main.py:48335
+    - chain: record_generation_result @backend/app/services/generation_runtime_policy.py:292  ←  resolve_chat_answer_data_center_primary @backend/app/main.py:46745  ←  resolve_chat_answer @backend/app/main.py:48117  ←  send_chat_message [endpoint:/api/v1/clients/{client_id}/workspace/chat] @backend/app/main.py:49220
+- `INSERT` @ **ensure_generation_runtime_schema** `backend/app/services/generation_runtime_policy.py:39` — _call_name_match_
+    - chain: ensure_generation_runtime_schema @backend/app/services/generation_runtime_policy.py:39  ←  get_generation_runtime_state @backend/app/services/generation_runtime_policy.py:147  ←  get_runtime_generation_state [endpoint:/api/v1/runtime/generation-state] @backend/app/main.py:44236
+    - chain: ensure_generation_runtime_schema @backend/app/services/generation_runtime_policy.py:39  ←  reset_generation_runtime_state @backend/app/services/generation_runtime_policy.py:390  ←  reset_runtime_generation_state [endpoint:/api/v1/runtime/generation-state/reset] @backend/app/main.py:44252
+    - chain: ensure_generation_runtime_schema @backend/app/services/generation_runtime_policy.py:39  ←  get_generation_runtime_state @backend/app/services/generation_runtime_policy.py:147  ←  build_workspace_chat_diagnostics @backend/app/services/workspace_chat_diagnostics.py:86  ←  get_runtime_workspace_chat_diagnostics [endpoint:/api/v1/runtime/workspace-chat-diagnostics] @backend/app/main.py:44364
+    - chain: ensure_generation_runtime_schema @backend/app/services/generation_runtime_policy.py:39  ←  record_generation_result @backend/app/services/generation_runtime_policy.py:292  ←  resolve_chat_answer_data_center_primary @backend/app/main.py:46745  ←  document_ai_action [endpoint:/api/v1/clients/{client_id}/documents/ai-action] @backend/app/main.py:49635
+    - chain: ensure_generation_runtime_schema @backend/app/services/generation_runtime_policy.py:39  ←  record_generation_result @backend/app/services/generation_runtime_policy.py:292  ←  resolve_chat_answer_data_center_primary @backend/app/main.py:46745  ←  resolve_chat_answer @backend/app/main.py:48117  ←  background_resolve_chat_answer [worker:background_resolve_chat_answer] @backend/app/main.py:48335
+    - chain: ensure_generation_runtime_schema @backend/app/services/generation_runtime_policy.py:39  ←  record_generation_result @backend/app/services/generation_runtime_policy.py:292  ←  resolve_chat_answer_data_center_primary @backend/app/main.py:46745  ←  resolve_chat_answer @backend/app/main.py:48117  ←  send_chat_message [endpoint:/api/v1/clients/{client_id}/workspace/chat] @backend/app/main.py:49220
+
+### 读边 (3)
+- `SELECT-FROM` @ **get_generation_runtime_state** `backend/app/services/generation_runtime_policy.py:147` — _static_confirmed_
+    - WHERE: `client_id = ? AND answer_intent = ?`
+    - WHERE: `client_id = ? AND answer_intent = ? AND provider = ? AND model = ?`
+- `SELECT-FROM` @ **ensure_generation_runtime_schema** `backend/app/services/generation_runtime_policy.py:39` — _static_confirmed_
+- `SELECT-FROM` @ **reset_generation_runtime_state** `backend/app/services/generation_runtime_policy.py:390` — _static_confirmed_
+    - WHERE: `client_id = ?`
+    - WHERE: `client_id = ? AND answer_intent = ?`
+    - WHERE: `client_id = ? AND answer_intent = ? AND provider = ? AND model = ?`
+
+## `glossary_attributes`
+
+- 经验层: **808 行** · 最近写入 created_at=2026-05-21T11:16:44.772133+00:00
+  - source_type 分布: ai_inferred:808
+
+### 写边 (9)
+- `UPDATE` @ **create_app.verify_glossary_attribute_proxy** `backend/app/main.py:29574` — _static_confirmed_
+    - chain: verify_glossary_attribute_proxy [endpoint:/api/v1/clients/{client_id}/glossary-attributes/{attr_id}/verify] @backend/app/main.py:29574
+- `UPDATE` @ **create_app.reject_glossary_attribute_proxy** `backend/app/main.py:29781` — _static_confirmed_
+    - chain: reject_glossary_attribute_proxy [endpoint:/api/v1/clients/{client_id}/glossary-attributes/{attr_id}/reject] @backend/app/main.py:29781
+- `UPDATE` @ **create_app.resolve_glossary_drift_alert_proxy** `backend/app/main.py:29839` — _static_confirmed_
+    - chain: resolve_glossary_drift_alert_proxy [endpoint:/api/v1/clients/{client_id}/glossary-drift-alerts/{alert_id}/resolve] @backend/app/main.py:29839
+- `UPDATE` @ **create_app** `backend/app/main.py:3179` — _needs_human_
+    - chain: create_app @backend/app/main.py:3179  ←  (no caller found — orphan write)
+- `UPDATE` @ **verify_attribute** `backend/app/modules/glossary/repository.py:332` — _needs_human_
+    - chain: verify_attribute @backend/app/modules/glossary/repository.py:332  ←  (no caller found — orphan write)
+- `UPDATE` @ **auto_verify_qualifying_attributes** `backend/app/services/auto_verify_rules.py:229` — _call_name_match_
+    - chain: auto_verify_qualifying_attributes @backend/app/services/auto_verify_rules.py:229  ←  auto_verify_glossary_attributes_proxy [endpoint:/api/v1/clients/{client_id}/glossary-attributes/auto-verify] @backend/app/main.py:29527
+    - chain: auto_verify_qualifying_attributes @backend/app/services/auto_verify_rules.py:229  ←  extract_candidates @backend/app/services/glossary_attribute_extractor.py:283  ←  _run_stage1_and_3_in_background [worker:_run_stage1_and_3_in_background] @backend/app/services/internet_crawler.py:1381
+    - chain: auto_verify_qualifying_attributes @backend/app/services/auto_verify_rules.py:229  ←  extract_candidates @backend/app/services/glossary_attribute_extractor.py:283  ←  extract_glossary_attributes_proxy [endpoint:/api/v1/clients/{client_id}/glossary-attributes/extract] @backend/app/main.py:29215
+    - chain: auto_verify_qualifying_attributes @backend/app/services/auto_verify_rules.py:229  ←  extract_candidates @backend/app/services/glossary_attribute_extractor.py:283  ←  ingest_document_knowledge @backend/app/services/knowledge_base.py:2802  ←  upload_task_attachment [endpoint:/api/v1/tasks/{task_id}/attachments] @backend/app/main.py:53434
+    - chain: auto_verify_qualifying_attributes @backend/app/services/auto_verify_rules.py:229  ←  extract_candidates @backend/app/services/glossary_attribute_extractor.py:283  ←  _trigger_stage3_increment @backend/app/services/internet_pdf_worker.py:195  ←  _process_one_pdf @backend/app/services/internet_pdf_worker.py:96  ←  _worker_loop [worker:_worker_loop] @backend/app/services/internet_pdf_worker.py:205
+    - chain: auto_verify_qualifying_attributes @backend/app/services/auto_verify_rules.py:229  ←  extract_candidates @backend/app/services/glossary_attribute_extractor.py:283  ←  ingest_document_knowledge @backend/app/services/knowledge_base.py:2802  ←  _build_local_event_line_report_snapshot @backend/app/main.py:33643  ←  get_event_line_report_snapshot [endpoint:/api/v1/event-lines/{event_line_id}/report-snapshot] @backend/app/main.py:34329
+- `INSERT` @ **_persist_resolved_clarification_to_glossary** `backend/app/services/clarification_pre_search.py:270` — _needs_human_
+    - chain: _persist_resolved_clarification_to_glossary @backend/app/services/clarification_pre_search.py:270  ←  (no caller found — orphan write)
+- `UPDATE` @ **mark_glossary_attribute_tier** `backend/app/services/evidence_tier.py:178` — _needs_human_
+    - chain: mark_glossary_attribute_tier @backend/app/services/evidence_tier.py:178  ←  (no caller found — orphan write)
+- `INSERT` @ **extract_candidates** `backend/app/services/glossary_attribute_extractor.py:283` — _call_name_match_
+    - chain: extract_candidates @backend/app/services/glossary_attribute_extractor.py:283  ←  _run_stage1_and_3_in_background [worker:_run_stage1_and_3_in_background] @backend/app/services/internet_crawler.py:1381
+    - chain: extract_candidates @backend/app/services/glossary_attribute_extractor.py:283  ←  extract_glossary_attributes_proxy [endpoint:/api/v1/clients/{client_id}/glossary-attributes/extract] @backend/app/main.py:29215
+    - chain: extract_candidates @backend/app/services/glossary_attribute_extractor.py:283  ←  ingest_document_knowledge @backend/app/services/knowledge_base.py:2802  ←  upload_task_attachment [endpoint:/api/v1/tasks/{task_id}/attachments] @backend/app/main.py:53434
+    - chain: extract_candidates @backend/app/services/glossary_attribute_extractor.py:283  ←  _trigger_stage3_increment @backend/app/services/internet_pdf_worker.py:195  ←  _process_one_pdf @backend/app/services/internet_pdf_worker.py:96  ←  _worker_loop [worker:_worker_loop] @backend/app/services/internet_pdf_worker.py:205
+    - chain: extract_candidates @backend/app/services/glossary_attribute_extractor.py:283  ←  ingest_document_knowledge @backend/app/services/knowledge_base.py:2802  ←  _build_local_event_line_report_snapshot @backend/app/main.py:33643  ←  get_event_line_report_snapshot [endpoint:/api/v1/event-lines/{event_line_id}/report-snapshot] @backend/app/main.py:34329
+    - chain: extract_candidates @backend/app/services/glossary_attribute_extractor.py:283  ←  ingest_document_knowledge @backend/app/services/knowledge_base.py:2802  ←  backfill_workspace_import @backend/app/services/knowledge_v2.py:3943  ←  backfill_client_workspace_imports [endpoint:/api/v1/clients/{client_id}/workspace/backfill-imports] @backend/app/main.py:50039
+
+### 读边 (18)
+- `SELECT-FROM` @ **create_app.list_glossary_attributes_proxy** `backend/app/main.py:29549` — _static_confirmed_
+    - WHERE: `ga.client_id=?`
+- `SELECT-FROM` @ **create_app.verify_glossary_attribute_proxy** `backend/app/main.py:29574` — _static_confirmed_
+    - WHERE: `id=?`
+- `JOIN` @ **create_app.list_glossary_drift_alerts_proxy** `backend/app/main.py:29819` — _static_confirmed_
+    - WHERE: `gda.client_id = ?`
+- `SELECT-FROM+JOIN` @ **create_app** `backend/app/main.py:3179` — _static_confirmed_
+    - WHERE: `ga.client_id=?`
+    - WHERE: `gda.client_id = ?`
+    - WHERE: `id=?`
+- `SELECT-FROM` @ **list_attributes_for_term** `backend/app/modules/glossary/repository.py:290` — _static_confirmed_
+    - WHERE: `term_id = ?`
+- `SELECT-FROM` @ **list_attributes_for_client** `backend/app/modules/glossary/repository.py:299` — _static_confirmed_
+    - WHERE: `client_id = ?`
+    - WHERE: `client_id = ? AND verification_status = 'verified'`
+- `SELECT-FROM` @ **count_pending_verifications** `backend/app/modules/glossary/repository.py:322` — _static_confirmed_
+    - WHERE: `client_id = ? AND verification_status = 'pending'`
+- `SELECT-FROM` @ **has_value_conflict** `backend/app/services/auto_verify_rules.py:206` — _static_confirmed_
+    - WHERE: `client_id = ? AND term_id = ? AND attribute_name = ? AND verification_status IN ('pending', 'verified')`
+- `SELECT-FROM` @ **auto_verify_qualifying_attributes** `backend/app/services/auto_verify_rules.py:229` — _static_confirmed_
+    - WHERE: `ga.client_id = ? AND ga.verification_status = 'pending'`
+- `SELECT-FROM` @ **validate_citations** `backend/app/services/citation_validator.py:38` — _static_confirmed_
+    - WHERE: `ga.client_id = ? AND cg.term = ? AND ga.attribute_name = ? AND ga.verification_status = 'verified'`
+- `SELECT-FROM` @ **_check_question_already_answered_in_glossary** `backend/app/services/clarification_pre_search.py:162` — _static_confirmed_
+    - WHERE: `ga.client_id = ? AND ga.attribute_name LIKE ?`
+- `SELECT-FROM` @ **fetch_glossary_attributes_filtered** `backend/app/services/evidence_tier.py:110` — _static_confirmed_
+    - WHERE: `client_id = ? AND evidence_tier IN (`
+    - WHERE: `client_id = ? AND evidence_tier IN ({?})`
+- `SELECT-FROM` @ **query_candidate_value** `backend/app/services/fill_table_evaluator.py:257` — _static_confirmed_
+    - WHERE: `ga.client_id = ? AND ga.verification_status = 'pending' AND (ga.attribute_name LIKE ? OR cg.term LIKE ?)`
+    - WHERE: `ga.client_id = ? AND ga.verification_status = 'verified' AND (ga.attribute_name LIKE ? OR cg.term LIKE ?)`
+- `SELECT-FROM` @ **_format_existing_verified** `backend/app/services/glossary_attribute_extractor.py:190` — _static_confirmed_
+    - WHERE: `ga.client_id=? AND ga.verification_status='verified'`
+- `SELECT-FROM` @ **fetch_verified_attributes** `backend/app/services/glossary_attributes_pack.py:30` — _static_confirmed_
+    - WHERE: `ga.client_id = ? AND ga.verification_status = 'verified'`
+- `SELECT-FROM` @ **check_fact_against_glossary** `backend/app/services/glossary_conflict_alert.py:22` — _static_confirmed_
+    - WHERE: `ga.client_id = ? AND ga.verification_status = 'verified' AND (cg.term = ? OR cg.term LIKE ? OR ? LIKE '%' || cg.term || '%') AND (ga.attribute_name = ? OR ga.attribute_name LIKE ?)`
+- `SELECT-FROM` @ **run_internet_enrichment** `backend/app/services/internet_crawler.py:1135` — _static_confirmed_
+    - WHERE: `client_id = ?`
+- `SELECT-FROM` @ **_collect_glossary_attributes** `backend/app/services/narrative_collector.py:595` — _static_confirmed_
+    - WHERE: `ga.client_id = ? AND ga.verification_status = 'verified'`
+
+## `glossary_drift_alerts`
+
+- 经验层: **1 行**
+
+### 写边 (3)
+- `UPDATE` @ **create_app.resolve_glossary_drift_alert_proxy** `backend/app/main.py:29839` — _static_confirmed_
+    - chain: resolve_glossary_drift_alert_proxy [endpoint:/api/v1/clients/{client_id}/glossary-drift-alerts/{alert_id}/resolve] @backend/app/main.py:29839
+- `UPDATE` @ **create_app** `backend/app/main.py:3179` — _needs_human_
+    - chain: create_app @backend/app/main.py:3179  ←  (no caller found — orphan write)
+- `INSERT` @ **check_fact_against_glossary** `backend/app/services/glossary_conflict_alert.py:22` — _call_name_match_
+    - chain: check_fact_against_glossary @backend/app/services/glossary_conflict_alert.py:22  ←  detect_and_record_for_fact @backend/app/services/contradiction_detector.py:239  ←  persist_chunk_facts @backend/app/services/contradiction_detector.py:305  ←  _extract_facts_for_v2_doc @backend/app/services/internet_crawler.py:755  ←  run_internet_enrichment [worker:run_internet_enrichment] @backend/app/services/internet_crawler.py:1135
+    - chain: check_fact_against_glossary @backend/app/services/glossary_conflict_alert.py:22  ←  detect_and_record_for_fact @backend/app/services/contradiction_detector.py:239  ←  persist_chunk_facts @backend/app/services/contradiction_detector.py:305  ←  ingest_document_knowledge @backend/app/services/knowledge_base.py:2802  ←  upload_task_attachment [endpoint:/api/v1/tasks/{task_id}/attachments] @backend/app/main.py:53434
+    - chain: check_fact_against_glossary @backend/app/services/glossary_conflict_alert.py:22  ←  detect_and_record_for_fact @backend/app/services/contradiction_detector.py:239  ←  persist_chunk_facts @backend/app/services/contradiction_detector.py:305  ←  ingest_document_knowledge @backend/app/services/knowledge_base.py:2802  ←  _build_local_event_line_report_snapshot @backend/app/main.py:33643  ←  get_event_line_report_snapshot [endpoint:/api/v1/event-lines/{event_line_id}/report-snapshot] @backend/app/main.py:34329
+    - chain: check_fact_against_glossary @backend/app/services/glossary_conflict_alert.py:22  ←  detect_and_record_for_fact @backend/app/services/contradiction_detector.py:239  ←  persist_chunk_facts @backend/app/services/contradiction_detector.py:305  ←  ingest_document_knowledge @backend/app/services/knowledge_base.py:2802  ←  _process_one_pdf @backend/app/services/internet_pdf_worker.py:96  ←  _worker_loop [worker:_worker_loop] @backend/app/services/internet_pdf_worker.py:205
+    - chain: check_fact_against_glossary @backend/app/services/glossary_conflict_alert.py:22  ←  detect_and_record_for_fact @backend/app/services/contradiction_detector.py:239  ←  persist_chunk_facts @backend/app/services/contradiction_detector.py:305  ←  ingest_document_knowledge @backend/app/services/knowledge_base.py:2802  ←  backfill_workspace_import @backend/app/services/knowledge_v2.py:3943  ←  backfill_client_workspace_imports [endpoint:/api/v1/clients/{client_id}/workspace/backfill-imports] @backend/app/main.py:50039
+    - chain: check_fact_against_glossary @backend/app/services/glossary_conflict_alert.py:22  ←  detect_and_record_for_fact @backend/app/services/contradiction_detector.py:239  ←  persist_chunk_facts @backend/app/services/contradiction_detector.py:305  ←  ingest_document_knowledge @backend/app/services/knowledge_base.py:2802  ←  create_client_text_document @backend/app/main.py:16116  ←  create_client_document_from_text [endpoint:/api/v1/clients/{client_id}/documents/from-text] @backend/app/main.py:49576
+
+### 读边 (3)
+- `SELECT-FROM` @ **create_app.list_glossary_drift_alerts_proxy** `backend/app/main.py:29819` — _static_confirmed_
+    - WHERE: `gda.client_id = ?`
+- `SELECT-FROM` @ **create_app.resolve_glossary_drift_alert_proxy** `backend/app/main.py:29839` — _static_confirmed_
+    - WHERE: `id=? AND client_id=?`
+- `SELECT-FROM` @ **create_app** `backend/app/main.py:3179` — _static_confirmed_
+    - WHERE: `gda.client_id = ?`
+    - WHERE: `id=? AND client_id=?`
+
+## `glossary_relations`
+
+- 经验层: **63 行** · 最近写入 created_at=2026-05-21T11:20:14.138070+00:00
+
+### 写边 (2)
+- `INSERT` @ **build_portrait** `backend/app/services/project_portrait_builder.py:276` — _call_name_match_
+    - chain: build_portrait @backend/app/services/project_portrait_builder.py:276  ←  build_project_portrait_proxy [endpoint:/api/v1/clients/{client_id}/project-portrait/build] @backend/app/main.py:29198
+- `INSERT` @ **build_portrait._persist** `backend/app/services/project_portrait_builder.py:321` — _needs_human_
+    - chain: _persist @backend/app/services/project_portrait_builder.py:321  ←  (no caller found — orphan write)
+
+### 读边 (3)
+- `SELECT-FROM` @ **_collect_glossary_relations** `backend/app/services/narrative_collector.py:457` — _static_confirmed_
+    - WHERE: `gr.client_id = ? AND gr.status != 'rejected'`
+- `SELECT-FROM` @ **build_portrait** `backend/app/services/project_portrait_builder.py:276` — _static_confirmed_
+    - WHERE: `client_id=? AND source='ai_inferred'`
+- `SELECT-FROM` @ **build_portrait._persist** `backend/app/services/project_portrait_builder.py:321` — _static_confirmed_
+    - WHERE: `client_id=? AND source='ai_inferred'`
+
+## `goal_records`
+
+- 经验层: **0 行**
+
+### 写边 (3)
+- `INSERT` @ **load_demo_dataset** `backend/app/main.py:2941` — _call_name_match_
+    - chain: load_demo_dataset @backend/app/main.py:2941  ←  load_demo_dataset_endpoint [endpoint:/api/v1/settings/demo-data/load] @backend/app/main.py:37527
+- `INSERT` @ **create_app** `backend/app/main.py:3179` — _needs_human_
+    - chain: create_app @backend/app/main.py:3179  ←  (no caller found — orphan write)
+- `INSERT` @ **create_app.create_goal** `backend/app/main.py:45554` — _static_confirmed_
+    - chain: create_goal [endpoint:/api/v1/clients/{client_id}/goals] @backend/app/main.py:45554
+
+### 读边 (8)
+- `SELECT-FROM` @ **create_app.build_task_project_context** `backend/app/main.py:14027` — _static_confirmed_
+    - WHERE: `client_id = ?`
+- `SELECT-FROM` @ **create_app.workspace_for_client** `backend/app/main.py:17770` — _static_confirmed_
+    - WHERE: `client_id = ?`
+- `SELECT-FROM` @ **create_app.select_evidence** `backend/app/main.py:21990` — _static_confirmed_
+    - WHERE: `client_id = ?`
+- `SELECT-FROM` @ **create_app.build_client_business_context_modules** `backend/app/main.py:24549` — _static_confirmed_
+    - WHERE: `id = ?`
+- `SELECT-FROM` @ **clear_demo_dataset** `backend/app/main.py:2884` — _static_confirmed_
+    - WHERE: `id IN (`
+    - WHERE: `id IN ({?})`
+- `SELECT-FROM` @ **create_app** `backend/app/main.py:3179` — _static_confirmed_
+    - WHERE: `client_id = ?`
+    - WHERE: `id = ?`
+- `SELECT-FROM` @ **create_app.get_client_delete_preview** `backend/app/main.py:39266` — _static_confirmed_
+    - WHERE: `client_id = ?`
+- `SELECT-FROM` @ **refresh_organization_notebook_snapshot** `backend/app/services/memory_foundation.py:733` — _static_confirmed_
+    - WHERE: `client_id = ?`
+
+## `growth_ability_profiles`
+
+- 经验层: **6 行** · 最近写入 created_at=2026-04-27T15:33:19
+
+### 写边 (1)
+- `INSERT` @ **ensure_growth_catalog** `backend/app/services/growth_engine.py:975` — _call_name_match_
+    - chain: ensure_growth_catalog @backend/app/services/growth_engine.py:975  ←  build_growth_ledger @backend/app/services/growth_engine.py:4719  ←  get_growth_ledger [endpoint:/api/v1/growth/ledger] @backend/app/main.py:56537
+    - chain: ensure_growth_catalog @backend/app/services/growth_engine.py:975  ←  build_growth_overview @backend/app/services/growth_engine.py:4758  ←  get_growth_overview [endpoint:/api/v1/growth/overview] @backend/app/main.py:56478
+    - chain: ensure_growth_catalog @backend/app/services/growth_engine.py:975  ←  ingest_handbook_codification @backend/app/services/growth_engine.py:3592  ←  create_handbook [endpoint:/api/v1/handbook] @backend/app/main.py:56373
+    - chain: ensure_growth_catalog @backend/app/services/growth_engine.py:975  ←  ingest_meeting_growth_candidate @backend/app/services/growth_engine.py:2942  ←  publish_meeting [endpoint:/api/v1/clients/{client_id}/meetings/{meeting_id}/publish] @backend/app/main.py:51482
+    - chain: ensure_growth_catalog @backend/app/services/growth_engine.py:975  ←  ingest_review_growth @backend/app/services/growth_engine.py:3402  ←  create_weekly_review [endpoint:/api/v1/reviews/weekly] @backend/app/main.py:54504
+    - chain: ensure_growth_catalog @backend/app/services/growth_engine.py:975  ←  ingest_strategic_growth_candidate @backend/app/services/growth_engine.py:3010  ←  apply_strategic_meeting_pack [endpoint:/api/v1/clients/{client_id}/strategic-cockpit/meeting-pack/{meeting_id}/apply] @backend/app/main.py:42202
+
+### 读边 (1)
+- `SELECT-FROM` @ **_fetch_profile_map** `backend/app/services/growth_engine.py:1020` — _static_confirmed_
+
+## `growth_ability_weekly_snapshot`
+
+- 经验层: **108 行**
+
+### 写边 (2)
+- `INSERT` @ **_persist_weekly_snapshot** `backend/app/services/growth_engine.py:1657` — _call_name_match_
+    - chain: _persist_weekly_snapshot @backend/app/services/growth_engine.py:1657  ←  _get_or_build_ability_trends_lazy @backend/app/services/growth_engine.py:2647  ←  build_growth_overview @backend/app/services/growth_engine.py:4758  ←  get_growth_overview [endpoint:/api/v1/growth/overview] @backend/app/main.py:56478
+    - chain: _persist_weekly_snapshot @backend/app/services/growth_engine.py:1657  ←  _get_or_build_ability_trends_lazy @backend/app/services/growth_engine.py:2647  ←  build_growth_overview @backend/app/services/growth_engine.py:4758  ←  build_growth_workbench_snapshot @backend/app/main.py:11198  ←  get_growth_workbench [endpoint:/api/v1/growth/workbench] @backend/app/main.py:56523
+- `INSERT` @ **rebuild_weekly_snapshots_from_evidence** `backend/app/services/growth_sync.py:496` — _call_name_match_
+    - chain: rebuild_weekly_snapshots_from_evidence @backend/app/services/growth_sync.py:496  ←  _background_sync_exp_wall [worker:_background_sync_exp_wall] @backend/app/main.py:3309
+
+### 读边 (1)
+- `SELECT-FROM` @ **_build_ability_trends** `backend/app/services/growth_engine.py:1695` — _static_confirmed_
+    - WHERE: `user_id = ?`
+
+## `growth_capture_states`
+
+- 经验层: **690 行** · 最近写入 created_at=2026-06-08T19:48:13
+
+### 写边 (3)
+- `INSERT+UPDATE` @ **update_pending_capture_state** `backend/app/services/growth_engine.py:4455` — _call_name_match_
+    - chain: update_pending_capture_state @backend/app/services/growth_engine.py:4455  ←  update_growth_pending_capture [endpoint:/api/v1/growth/pending-captures/{capture_id}/state] @backend/app/main.py:56556
+- `INSERT` @ **rebuild_capture_states_from_signals** `backend/app/services/growth_sync.py:458` — _call_name_match_
+    - chain: rebuild_capture_states_from_signals @backend/app/services/growth_sync.py:458  ←  _background_sync_exp_wall [worker:_background_sync_exp_wall] @backend/app/main.py:3309
+- `INSERT` @ **save_pending_quotes** `backend/app/services/local_memory.py:287` — _call_name_match_
+    - chain: save_pending_quotes @backend/app/services/local_memory.py:287  ←  augment_review_response @backend/app/main.py:26738  ←  create_weekly_review [endpoint:/api/v1/reviews/weekly] @backend/app/main.py:54504
+    - chain: save_pending_quotes @backend/app/services/local_memory.py:287  ←  augment_review_response @backend/app/main.py:26738  ←  list_reviews [endpoint:/api/v1/reviews] @backend/app/main.py:54077
+    - chain: save_pending_quotes @backend/app/services/local_memory.py:287  ←  augment_review_response @backend/app/main.py:26738  ←  local_review_dashboard @backend/app/main.py:27293  ←  build_strategic_cockpit_snapshot @backend/app/main.py:20771  ←  apply_strategic_meeting_pack [endpoint:/api/v1/clients/{client_id}/strategic-cockpit/meeting-pack/{meeting_id}/apply] @backend/app/main.py:42202
+    - chain: save_pending_quotes @backend/app/services/local_memory.py:287  ←  augment_review_response @backend/app/main.py:26738  ←  local_review_dashboard @backend/app/main.py:27293  ←  build_strategic_cockpit_snapshot @backend/app/main.py:20771  ←  confirm_strategic_cockpit [endpoint:/api/v1/clients/{client_id}/strategic-cockpit/confirm] @backend/app/main.py:42174
+    - chain: save_pending_quotes @backend/app/services/local_memory.py:287  ←  augment_review_response @backend/app/main.py:26738  ←  local_review_dashboard @backend/app/main.py:27293  ←  build_strategic_cockpit_snapshot @backend/app/main.py:20771  ←  get_strategic_cockpit [endpoint:/api/v1/clients/{client_id}/strategic-cockpit] @backend/app/main.py:42135
+    - chain: save_pending_quotes @backend/app/services/local_memory.py:287  ←  augment_review_response @backend/app/main.py:26738  ←  local_review_dashboard @backend/app/main.py:27293  ←  build_strategic_cockpit_snapshot @backend/app/main.py:20771  ←  get_strategic_line_detail [endpoint:/api/v1/clients/{client_id}/strategic-cockpit/lines/{line_id}] @backend/app/main.py:42140
+
+### 读边 (4)
+- `JOIN` @ **get_pending_capture** `backend/app/services/growth_engine.py:4432` — _static_confirmed_
+    - WHERE: `s.user_id = ? AND s.id = ? AND s.source_type IN ('task_context_candidate', 'task_attachment_candidate')`
+- `SELECT-FROM` @ **update_pending_capture_state** `backend/app/services/growth_engine.py:4455` — _static_confirmed_
+    - WHERE: `signal_id = ?`
+- `JOIN` @ **_list_pending_captures** `backend/app/services/growth_engine.py:4519` — _static_confirmed_
+    - WHERE: `s.user_id = ? AND e.id IS NULL AND s.source_type IN ('task_context_candidate', 'task_attachment_candidate', 'review_insight_pending') AND COALESCE(cs.status, 'open') = 'open'`
+- `JOIN` @ **rebuild_capture_states_from_signals** `backend/app/services/growth_sync.py:458` — _static_confirmed_
+    - WHERE: `c.id IS NULL`
+
+## `growth_evidence_records`
+
+- 经验层: **394 行** · 最近写入 created_at=2026-05-18T11:56:51
+
+### 写边 (4)
+- `INSERT` @ **_award_badge_xp** `backend/app/services/badge_engine.py:1074` — _call_name_match_
+    - chain: _award_badge_xp @backend/app/services/badge_engine.py:1074  ←  _sync_badge_unlocks [worker:_sync_badge_unlocks] @backend/app/services/badge_engine.py:1156
+- `INSERT` @ **_insert_evidence_and_xp** `backend/app/services/growth_engine.py:3189` — _call_name_match_
+    - chain: _insert_evidence_and_xp @backend/app/services/growth_engine.py:3189  ←  ingest_handbook_codification @backend/app/services/growth_engine.py:3592  ←  create_handbook [endpoint:/api/v1/handbook] @backend/app/main.py:56373
+    - chain: _insert_evidence_and_xp @backend/app/services/growth_engine.py:3189  ←  ingest_meeting_growth_candidate @backend/app/services/growth_engine.py:2942  ←  publish_meeting [endpoint:/api/v1/clients/{client_id}/meetings/{meeting_id}/publish] @backend/app/main.py:51482
+    - chain: _insert_evidence_and_xp @backend/app/services/growth_engine.py:3189  ←  ingest_review_growth @backend/app/services/growth_engine.py:3402  ←  create_weekly_review [endpoint:/api/v1/reviews/weekly] @backend/app/main.py:54504
+    - chain: _insert_evidence_and_xp @backend/app/services/growth_engine.py:3189  ←  ingest_strategic_growth_candidate @backend/app/services/growth_engine.py:3010  ←  apply_strategic_meeting_pack [endpoint:/api/v1/clients/{client_id}/strategic-cockpit/meeting-pack/{meeting_id}/apply] @backend/app/main.py:42202
+    - chain: _insert_evidence_and_xp @backend/app/services/growth_engine.py:3189  ←  ingest_strategic_growth_candidate @backend/app/services/growth_engine.py:3010  ←  confirm_strategic_cockpit [endpoint:/api/v1/clients/{client_id}/strategic-cockpit/confirm] @backend/app/main.py:42174
+    - chain: _insert_evidence_and_xp @backend/app/services/growth_engine.py:3189  ←  mark_handbook_entry_reused @backend/app/services/growth_engine.py:3991  ←  mark_growth_handbook_reused [endpoint:/api/v1/growth/handbook/{entry_id}/mark-reused] @backend/app/main.py:56456
+- `INSERT` @ **pull_evidence_from_cloud** `backend/app/services/growth_sync.py:314` — _call_name_match_
+    - chain: pull_evidence_from_cloud @backend/app/services/growth_sync.py:314  ←  _background_sync_exp_wall [worker:_background_sync_exp_wall] @backend/app/main.py:3309
+- `UPDATE` @ **mark_evidence_pending** `backend/app/services/growth_sync.py:48` — _call_name_match_
+    - chain: mark_evidence_pending @backend/app/services/growth_sync.py:48  ←  _award_badge_xp @backend/app/services/badge_engine.py:1074  ←  _sync_badge_unlocks [worker:_sync_badge_unlocks] @backend/app/services/badge_engine.py:1156
+    - chain: mark_evidence_pending @backend/app/services/growth_sync.py:48  ←  _insert_evidence_and_xp @backend/app/services/growth_engine.py:3189  ←  ingest_handbook_codification @backend/app/services/growth_engine.py:3592  ←  create_handbook [endpoint:/api/v1/handbook] @backend/app/main.py:56373
+    - chain: mark_evidence_pending @backend/app/services/growth_sync.py:48  ←  _insert_evidence_and_xp @backend/app/services/growth_engine.py:3189  ←  ingest_meeting_growth_candidate @backend/app/services/growth_engine.py:2942  ←  publish_meeting [endpoint:/api/v1/clients/{client_id}/meetings/{meeting_id}/publish] @backend/app/main.py:51482
+    - chain: mark_evidence_pending @backend/app/services/growth_sync.py:48  ←  _insert_evidence_and_xp @backend/app/services/growth_engine.py:3189  ←  ingest_review_growth @backend/app/services/growth_engine.py:3402  ←  create_weekly_review [endpoint:/api/v1/reviews/weekly] @backend/app/main.py:54504
+    - chain: mark_evidence_pending @backend/app/services/growth_sync.py:48  ←  _insert_evidence_and_xp @backend/app/services/growth_engine.py:3189  ←  ingest_strategic_growth_candidate @backend/app/services/growth_engine.py:3010  ←  apply_strategic_meeting_pack [endpoint:/api/v1/clients/{client_id}/strategic-cockpit/meeting-pack/{meeting_id}/apply] @backend/app/main.py:42202
+    - chain: mark_evidence_pending @backend/app/services/growth_sync.py:48  ←  _insert_evidence_and_xp @backend/app/services/growth_engine.py:3189  ←  ingest_strategic_growth_candidate @backend/app/services/growth_engine.py:3010  ←  confirm_strategic_cockpit [endpoint:/api/v1/clients/{client_id}/strategic-cockpit/confirm] @backend/app/main.py:42174
+
+### 读边 (15)
+- `SELECT-FROM` @ **create_app.get_brain_dashboard** `backend/app/main.py:27671` — _static_confirmed_
+    - WHERE: `validation_state IN ('validated','institutionalized')`
+- `SELECT-FROM+JOIN` @ **create_app** `backend/app/main.py:3179` — _static_confirmed_
+    - WHERE: `l.user_id = ? AND l.reversed_at IS NULL AND e.handbook_entry_id = ?`
+    - WHERE: `task_id = ?`
+    - WHERE: `task_id IN (?, ?)`
+    - WHERE: `v.user_id = ? AND e.handbook_entry_id = ? AND v.event_type = 'handbook_reused'`
+    - WHERE: `validation_state IN ('validated','institutionalized')`
+- `SELECT-FROM` @ **create_app.delete_task** `backend/app/main.py:53307` — _static_confirmed_
+    - WHERE: `task_id = ?`
+    - WHERE: `task_id IN (?, ?)`
+- `JOIN` @ **create_app.build_handbook_detail** `backend/app/main.py:56121` — _static_confirmed_
+    - WHERE: `l.user_id = ? AND l.reversed_at IS NULL AND e.handbook_entry_id = ?`
+    - WHERE: `v.user_id = ? AND e.handbook_entry_id = ? AND v.event_type = 'handbook_reused'`
+- `JOIN` @ **_collect_work_events** `backend/app/services/badge_engine.py:279` — _static_confirmed_
+    - WHERE: `v.user_id = ?`
+- `SELECT-FROM` @ **reset_review_growth** `backend/app/services/growth_engine.py:3380` — _static_confirmed_
+    - WHERE: `review_id = ?`
+- `SELECT-FROM` @ **reset_signal_growth_outputs** `backend/app/services/growth_engine.py:3389` — _static_confirmed_
+    - WHERE: `signal_id = ?`
+- `SELECT-FROM` @ **rebuild_learning_recommendations** `backend/app/services/growth_engine.py:3760` — _static_confirmed_
+    - WHERE: `e.user_id = ?`
+- `SELECT-FROM` @ **mark_handbook_entry_reused** `backend/app/services/growth_engine.py:3991` — _static_confirmed_
+    - WHERE: `signal_id = ?`
+- `JOIN` @ **_list_pending_captures** `backend/app/services/growth_engine.py:4519` — _static_confirmed_
+    - WHERE: `s.user_id = ? AND e.id IS NULL AND s.source_type IN ('task_context_candidate', 'task_attachment_candidate', 'review_insight_pending') AND COALESCE(cs.status, 'open') = 'open'`
+- `JOIN` @ **build_growth_ledger** `backend/app/services/growth_engine.py:4719` — _static_confirmed_
+    - WHERE: `{?}`
+- `SELECT-FROM` @ **pull_evidence_from_cloud** `backend/app/services/growth_sync.py:314` — _static_confirmed_
+    - WHERE: `id = ?`
+- `SELECT-FROM` @ **rebuild_weekly_snapshots_from_evidence** `backend/app/services/growth_sync.py:496` — _static_confirmed_
+- `SELECT-FROM` @ **build_probes** `backend/app/services/self_heal.py:209` — _static_confirmed_
+    - WHERE: `created_at < ? AND id NOT IN (SELECT DISTINCT signal_id FROM growth_evidence_records WHERE signal_id IS NOT NULL)`
+- `SELECT-FROM` @ **build_probes.check_growth_signals** `backend/app/services/self_heal.py:318` — _static_confirmed_
+    - WHERE: `created_at < ? AND id NOT IN (SELECT DISTINCT signal_id FROM growth_evidence_records WHERE signal_id IS NOT NULL)`
+
+## `growth_recommendation_feedback`
+
+- 经验层: **0 行**
+
+### 写边 (2)
+- `INSERT` @ **create_app** `backend/app/main.py:3179` — _needs_human_
+    - chain: create_app @backend/app/main.py:3179  ←  (no caller found — orphan write)
+- `INSERT` @ **create_app.post_recommendation_feedback** `backend/app/main.py:56490` — _static_confirmed_
+    - chain: post_recommendation_feedback [endpoint:/api/v1/growth/recommendations/feedback] @backend/app/main.py:56490
+
+### 读边 (0)
+- (无静态读边)
+
+## `growth_signal_events`
+
+- 经验层: **691 行** · 最近写入 created_at=2026-06-08T19:48:13
+  - source_type 分布: review_insight_pending:250, badge_unlock:191, task_context_candidate:158, handbook_entry:35, weekly_review_task_entry:20, meeting_publish:15, migration_orphan:12, weekly_review_note:5, handbook_reuse:3, task_attachment_candidate:1, strategic_confirm:1
+
+### 写边 (8)
+- `UPDATE` @ **create_app** `backend/app/main.py:3179` — _needs_human_
+    - chain: create_app @backend/app/main.py:3179  ←  (no caller found — orphan write)
+- `UPDATE` @ **create_app.enrich_growth_insights** `backend/app/main.py:56381` — _static_confirmed_
+    - chain: enrich_growth_insights [endpoint:/api/v1/growth/enrich-insights] @backend/app/main.py:56381
+- `INSERT` @ **_award_badge_xp** `backend/app/services/badge_engine.py:1074` — _call_name_match_
+    - chain: _award_badge_xp @backend/app/services/badge_engine.py:1074  ←  _sync_badge_unlocks [worker:_sync_badge_unlocks] @backend/app/services/badge_engine.py:1156
+- `UPDATE` @ **_upsert_signal** `backend/app/services/growth_engine.py:2817` — _call_name_match_
+    - chain: _upsert_signal @backend/app/services/growth_engine.py:2817  ←  ingest_meeting_growth_candidate @backend/app/services/growth_engine.py:2942  ←  publish_meeting [endpoint:/api/v1/clients/{client_id}/meetings/{meeting_id}/publish] @backend/app/main.py:51482
+    - chain: _upsert_signal @backend/app/services/growth_engine.py:2817  ←  ingest_strategic_growth_candidate @backend/app/services/growth_engine.py:3010  ←  apply_strategic_meeting_pack [endpoint:/api/v1/clients/{client_id}/strategic-cockpit/meeting-pack/{meeting_id}/apply] @backend/app/main.py:42202
+    - chain: _upsert_signal @backend/app/services/growth_engine.py:2817  ←  ingest_strategic_growth_candidate @backend/app/services/growth_engine.py:3010  ←  confirm_strategic_cockpit [endpoint:/api/v1/clients/{client_id}/strategic-cockpit/confirm] @backend/app/main.py:42174
+    - chain: _upsert_signal @backend/app/services/growth_engine.py:2817  ←  ingest_task_growth_candidate @backend/app/services/growth_engine.py:2872  ←  update_task [endpoint:/api/v1/tasks/{task_id}] @backend/app/main.py:52636
+    - chain: _upsert_signal @backend/app/services/growth_engine.py:2817  ←  ingest_task_growth_candidate @backend/app/services/growth_engine.py:2872  ←  upload_task_attachment [endpoint:/api/v1/tasks/{task_id}/attachments] @backend/app/main.py:53434
+    - chain: _upsert_signal @backend/app/services/growth_engine.py:2817  ←  ingest_task_growth_candidate @backend/app/services/growth_engine.py:2872  ←  create_task @backend/app/main.py:24172  ←  accept_growth_recommendation [endpoint:/api/v1/growth/recommendations/{recommendation_id}/accept] @backend/app/main.py:56572
+- `INSERT` @ **_insert_signal** `backend/app/services/growth_engine.py:3077` — _call_name_match_
+    - chain: _insert_signal @backend/app/services/growth_engine.py:3077  ←  ingest_handbook_codification @backend/app/services/growth_engine.py:3592  ←  create_handbook [endpoint:/api/v1/handbook] @backend/app/main.py:56373
+    - chain: _insert_signal @backend/app/services/growth_engine.py:3077  ←  ingest_review_growth @backend/app/services/growth_engine.py:3402  ←  create_weekly_review [endpoint:/api/v1/reviews/weekly] @backend/app/main.py:54504
+    - chain: _insert_signal @backend/app/services/growth_engine.py:3077  ←  mark_handbook_entry_reused @backend/app/services/growth_engine.py:3991  ←  mark_growth_handbook_reused [endpoint:/api/v1/growth/handbook/{entry_id}/mark-reused] @backend/app/main.py:56456
+    - chain: _insert_signal @backend/app/services/growth_engine.py:3077  ←  _upsert_signal @backend/app/services/growth_engine.py:2817  ←  ingest_meeting_growth_candidate @backend/app/services/growth_engine.py:2942  ←  publish_meeting [endpoint:/api/v1/clients/{client_id}/meetings/{meeting_id}/publish] @backend/app/main.py:51482
+    - chain: _insert_signal @backend/app/services/growth_engine.py:3077  ←  _upsert_signal @backend/app/services/growth_engine.py:2817  ←  ingest_strategic_growth_candidate @backend/app/services/growth_engine.py:3010  ←  apply_strategic_meeting_pack [endpoint:/api/v1/clients/{client_id}/strategic-cockpit/meeting-pack/{meeting_id}/apply] @backend/app/main.py:42202
+    - chain: _insert_signal @backend/app/services/growth_engine.py:3077  ←  _upsert_signal @backend/app/services/growth_engine.py:2817  ←  ingest_strategic_growth_candidate @backend/app/services/growth_engine.py:3010  ←  confirm_strategic_cockpit [endpoint:/api/v1/clients/{client_id}/strategic-cockpit/confirm] @backend/app/main.py:42174
+- `INSERT` @ **pull_signals_from_cloud** `backend/app/services/growth_sync.py:246` — _call_name_match_
+    - chain: pull_signals_from_cloud @backend/app/services/growth_sync.py:246  ←  _background_sync_exp_wall [worker:_background_sync_exp_wall] @backend/app/main.py:3309
+- `UPDATE` @ **mark_signal_pending** `backend/app/services/growth_sync.py:39` — _call_name_match_
+    - chain: mark_signal_pending @backend/app/services/growth_sync.py:39  ←  _award_badge_xp @backend/app/services/badge_engine.py:1074  ←  _sync_badge_unlocks [worker:_sync_badge_unlocks] @backend/app/services/badge_engine.py:1156
+    - chain: mark_signal_pending @backend/app/services/growth_sync.py:39  ←  _insert_signal @backend/app/services/growth_engine.py:3077  ←  ingest_handbook_codification @backend/app/services/growth_engine.py:3592  ←  create_handbook [endpoint:/api/v1/handbook] @backend/app/main.py:56373
+    - chain: mark_signal_pending @backend/app/services/growth_sync.py:39  ←  _insert_signal @backend/app/services/growth_engine.py:3077  ←  ingest_review_growth @backend/app/services/growth_engine.py:3402  ←  create_weekly_review [endpoint:/api/v1/reviews/weekly] @backend/app/main.py:54504
+    - chain: mark_signal_pending @backend/app/services/growth_sync.py:39  ←  _insert_signal @backend/app/services/growth_engine.py:3077  ←  mark_handbook_entry_reused @backend/app/services/growth_engine.py:3991  ←  mark_growth_handbook_reused [endpoint:/api/v1/growth/handbook/{entry_id}/mark-reused] @backend/app/main.py:56456
+    - chain: mark_signal_pending @backend/app/services/growth_sync.py:39  ←  save_pending_quotes @backend/app/services/local_memory.py:287  ←  augment_review_response @backend/app/main.py:26738  ←  create_weekly_review [endpoint:/api/v1/reviews/weekly] @backend/app/main.py:54504
+    - chain: mark_signal_pending @backend/app/services/growth_sync.py:39  ←  save_pending_quotes @backend/app/services/local_memory.py:287  ←  augment_review_response @backend/app/main.py:26738  ←  list_reviews [endpoint:/api/v1/reviews] @backend/app/main.py:54077
+- `INSERT` @ **save_pending_quotes** `backend/app/services/local_memory.py:287` — _call_name_match_
+    - chain: save_pending_quotes @backend/app/services/local_memory.py:287  ←  augment_review_response @backend/app/main.py:26738  ←  create_weekly_review [endpoint:/api/v1/reviews/weekly] @backend/app/main.py:54504
+    - chain: save_pending_quotes @backend/app/services/local_memory.py:287  ←  augment_review_response @backend/app/main.py:26738  ←  list_reviews [endpoint:/api/v1/reviews] @backend/app/main.py:54077
+    - chain: save_pending_quotes @backend/app/services/local_memory.py:287  ←  augment_review_response @backend/app/main.py:26738  ←  local_review_dashboard @backend/app/main.py:27293  ←  build_strategic_cockpit_snapshot @backend/app/main.py:20771  ←  apply_strategic_meeting_pack [endpoint:/api/v1/clients/{client_id}/strategic-cockpit/meeting-pack/{meeting_id}/apply] @backend/app/main.py:42202
+    - chain: save_pending_quotes @backend/app/services/local_memory.py:287  ←  augment_review_response @backend/app/main.py:26738  ←  local_review_dashboard @backend/app/main.py:27293  ←  build_strategic_cockpit_snapshot @backend/app/main.py:20771  ←  confirm_strategic_cockpit [endpoint:/api/v1/clients/{client_id}/strategic-cockpit/confirm] @backend/app/main.py:42174
+    - chain: save_pending_quotes @backend/app/services/local_memory.py:287  ←  augment_review_response @backend/app/main.py:26738  ←  local_review_dashboard @backend/app/main.py:27293  ←  build_strategic_cockpit_snapshot @backend/app/main.py:20771  ←  get_strategic_cockpit [endpoint:/api/v1/clients/{client_id}/strategic-cockpit] @backend/app/main.py:42135
+    - chain: save_pending_quotes @backend/app/services/local_memory.py:287  ←  augment_review_response @backend/app/main.py:26738  ←  local_review_dashboard @backend/app/main.py:27293  ←  build_strategic_cockpit_snapshot @backend/app/main.py:20771  ←  get_strategic_line_detail [endpoint:/api/v1/clients/{client_id}/strategic-cockpit/lines/{line_id}] @backend/app/main.py:42140
+
+### 读边 (21)
+- `SELECT-FROM+JOIN` @ **create_app** `backend/app/main.py:3179` — _static_confirmed_
+    - WHERE: `l.user_id = ? AND l.reversed_at IS NULL AND e.handbook_entry_id = ?`
+    - WHERE: `task_id = ?`
+    - WHERE: `task_id IN (?, ?)`
+    - WHERE: `user_id = ? AND source_type IN ('task_context_candidate', 'task_attachment_candidate')`
+    - WHERE: `v.user_id = ? AND e.handbook_entry_id = ? AND v.event_type = 'handbook_reused'`
+- `SELECT-FROM` @ **create_app.delete_task** `backend/app/main.py:53307` — _static_confirmed_
+    - WHERE: `task_id = ?`
+    - WHERE: `task_id IN (?, ?)`
+- `JOIN` @ **create_app.build_handbook_detail** `backend/app/main.py:56121` — _static_confirmed_
+    - WHERE: `l.user_id = ? AND l.reversed_at IS NULL AND e.handbook_entry_id = ?`
+    - WHERE: `v.user_id = ? AND e.handbook_entry_id = ? AND v.event_type = 'handbook_reused'`
+- `SELECT-FROM` @ **create_app.enrich_growth_insights** `backend/app/main.py:56381` — _static_confirmed_
+    - WHERE: `user_id = ? AND source_type IN ('task_context_candidate', 'task_attachment_candidate')`
+- `SELECT-FROM` @ **_award_badge_xp** `backend/app/services/badge_engine.py:1074` — _static_confirmed_
+    - WHERE: `dedupe_key = ?`
+- `SELECT-FROM` @ **_upsert_signal** `backend/app/services/growth_engine.py:2817` — _static_confirmed_
+    - WHERE: `dedupe_key = ?`
+- `SELECT-FROM` @ **_insert_signal** `backend/app/services/growth_engine.py:3077` — _static_confirmed_
+    - WHERE: `dedupe_key = ?`
+- `SELECT-FROM` @ **_has_prior_context_chain** `backend/app/services/growth_engine.py:3127` — _static_confirmed_
+    - WHERE: `{?} AND ({?})`
+- `SELECT-FROM` @ **reset_review_growth** `backend/app/services/growth_engine.py:3380` — _static_confirmed_
+    - WHERE: `review_id = ?`
+- `SELECT-FROM` @ **ingest_handbook_codification** `backend/app/services/growth_engine.py:3592` — _static_confirmed_
+    - WHERE: `dedupe_key = ?`
+- `JOIN` @ **rebuild_learning_recommendations** `backend/app/services/growth_engine.py:3760` — _static_confirmed_
+    - WHERE: `e.user_id = ?`
+- `SELECT-FROM` @ **mark_handbook_entry_reused** `backend/app/services/growth_engine.py:3991` — _static_confirmed_
+    - WHERE: `dedupe_key = ?`
+- `SELECT-FROM` @ **_build_source_coverage** `backend/app/services/growth_engine.py:4279` — _static_confirmed_
+    - WHERE: `user_id = ?`
+- `SELECT-FROM` @ **get_pending_capture** `backend/app/services/growth_engine.py:4432` — _static_confirmed_
+    - WHERE: `s.user_id = ? AND s.id = ? AND s.source_type IN ('task_context_candidate', 'task_attachment_candidate')`
+- `SELECT-FROM` @ **update_pending_capture_state** `backend/app/services/growth_engine.py:4455` — _static_confirmed_
+    - WHERE: `id = ? AND source_type IN ('task_context_candidate', 'task_attachment_candidate', 'review_insight_pending')`
+    - WHERE: `user_id = ? AND id = ? AND source_type IN ('task_context_candidate', 'task_attachment_candidate', 'review_insight_pending')`
+- `SELECT-FROM` @ **_list_pending_captures** `backend/app/services/growth_engine.py:4519` — _static_confirmed_
+    - WHERE: `s.user_id = ? AND e.id IS NULL AND s.source_type IN ('task_context_candidate', 'task_attachment_candidate', 'review_insight_pending') AND COALESCE(cs.status, 'open') = 'open'`
+- `JOIN` @ **build_growth_ledger** `backend/app/services/growth_engine.py:4719` — _static_confirmed_
+    - WHERE: `{?}`
+- `SELECT-FROM` @ **pull_signals_from_cloud** `backend/app/services/growth_sync.py:246` — _static_confirmed_
+    - WHERE: `id = ?`
+- `SELECT-FROM` @ **rebuild_capture_states_from_signals** `backend/app/services/growth_sync.py:458` — _static_confirmed_
+    - WHERE: `c.id IS NULL`
+- `SELECT-FROM` @ **build_probes** `backend/app/services/self_heal.py:209` — _static_confirmed_
+    - WHERE: `created_at < ? AND id NOT IN (SELECT DISTINCT signal_id FROM growth_evidence_records WHERE signal_id IS NOT NULL)`
+- `SELECT-FROM` @ **build_probes.check_growth_signals** `backend/app/services/self_heal.py:318` — _static_confirmed_
+    - WHERE: `created_at < ? AND id NOT IN (SELECT DISTINCT signal_id FROM growth_evidence_records WHERE signal_id IS NOT NULL)`
+
+## `growth_validation_events`
+
+- 经验层: **10 行** · 最近写入 created_at=2026-05-18T11:41:21
+  - source_type 分布: handbook_manual_reuse:10
+
+### 写边 (3)
+- `INSERT` @ **_record_validation_event** `backend/app/services/growth_engine.py:3327` — _call_name_match_
+    - chain: _record_validation_event @backend/app/services/growth_engine.py:3327  ←  mark_handbook_entry_reused @backend/app/services/growth_engine.py:3991  ←  mark_growth_handbook_reused [endpoint:/api/v1/growth/handbook/{entry_id}/mark-reused] @backend/app/main.py:56456
+- `INSERT` @ **pull_validation_events_from_cloud** `backend/app/services/growth_sync.py:390` — _call_name_match_
+    - chain: pull_validation_events_from_cloud @backend/app/services/growth_sync.py:390  ←  _background_sync_exp_wall [worker:_background_sync_exp_wall] @backend/app/main.py:3309
+- `UPDATE` @ **mark_validation_event_pending** `backend/app/services/growth_sync.py:57` — _call_name_match_
+    - chain: mark_validation_event_pending @backend/app/services/growth_sync.py:57  ←  _record_validation_event @backend/app/services/growth_engine.py:3327  ←  mark_handbook_entry_reused @backend/app/services/growth_engine.py:3991  ←  mark_growth_handbook_reused [endpoint:/api/v1/growth/handbook/{entry_id}/mark-reused] @backend/app/main.py:56456
+
+### 读边 (7)
+- `SELECT-FROM` @ **create_app** `backend/app/main.py:3179` — _static_confirmed_
+    - WHERE: `v.user_id = ? AND e.handbook_entry_id = ? AND v.event_type = 'handbook_reused'`
+- `SELECT-FROM` @ **create_app.build_handbook_detail** `backend/app/main.py:56121` — _static_confirmed_
+    - WHERE: `v.user_id = ? AND e.handbook_entry_id = ? AND v.event_type = 'handbook_reused'`
+- `SELECT-FROM` @ **_collect_work_events** `backend/app/services/badge_engine.py:279` — _static_confirmed_
+    - WHERE: `v.user_id = ?`
+- `SELECT-FROM` @ **_record_validation_event** `backend/app/services/growth_engine.py:3327` — _static_confirmed_
+    - WHERE: `user_id = ? AND evidence_id = ? AND event_type = ? AND source_type = ? AND source_id = ?`
+- `SELECT-FROM` @ **reset_review_growth** `backend/app/services/growth_engine.py:3380` — _static_confirmed_
+    - WHERE: `evidence_id = ?`
+- `SELECT-FROM` @ **reset_signal_growth_outputs** `backend/app/services/growth_engine.py:3389` — _static_confirmed_
+    - WHERE: `evidence_id = ?`
+- `SELECT-FROM` @ **pull_validation_events_from_cloud** `backend/app/services/growth_sync.py:390` — _static_confirmed_
+    - WHERE: `id = ?`
+
+## `handbook_entries`
+
+- 经验层: **21 行** · 最近写入 created_at=2026-04-27T19:34:01
+  - source_type 分布: review_insight:21
+
+### 写边 (9)
+- `UPDATE` @ **_sync_event_line_client_scope_records** `backend/app/main.py:2484` — _needs_human_
+    - chain: _sync_event_line_client_scope_records [worker:_sync_event_line_client_scope_records] @backend/app/main.py:2484
+- `INSERT` @ **load_demo_dataset** `backend/app/main.py:2941` — _call_name_match_
+    - chain: load_demo_dataset @backend/app/main.py:2941  ←  load_demo_dataset_endpoint [endpoint:/api/v1/settings/demo-data/load] @backend/app/main.py:37527
+- `INSERT+UPDATE` @ **create_app** `backend/app/main.py:3179` — _needs_human_
+    - chain: create_app @backend/app/main.py:3179  ←  (no caller found — orphan write)
+- `INSERT` @ **create_app.create_handbook_entry** `backend/app/main.py:56286` — _call_name_match_
+    - chain: create_handbook_entry @backend/app/main.py:56286  ←  create_handbook [endpoint:/api/v1/handbook] @backend/app/main.py:56373
+- `UPDATE` @ **create_app.enrich_growth_insights** `backend/app/main.py:56381` — _static_confirmed_
+    - chain: enrich_growth_insights [endpoint:/api/v1/growth/enrich-insights] @backend/app/main.py:56381
+- `UPDATE` @ **mark_handbook_entry_reused** `backend/app/services/growth_engine.py:3991` — _call_name_match_
+    - chain: mark_handbook_entry_reused @backend/app/services/growth_engine.py:3991  ←  mark_growth_handbook_reused [endpoint:/api/v1/growth/handbook/{entry_id}/mark-reused] @backend/app/main.py:56456
+- `INSERT` @ **pull_entries_from_cloud** `backend/app/services/handbook_sync.py:136` — _call_name_match_
+    - chain: pull_entries_from_cloud @backend/app/services/handbook_sync.py:136  ←  _background_sync_exp_wall [worker:_background_sync_exp_wall] @backend/app/main.py:3309
+- `UPDATE` @ **mark_entry_pending** `backend/app/services/handbook_sync.py:69` — _needs_human_
+    - chain: mark_entry_pending @backend/app/services/handbook_sync.py:69  ←  (no caller found — orphan write)
+- `UPDATE` @ **push_pending_entries_to_cloud** `backend/app/services/handbook_sync.py:78` — _call_name_match_
+    - chain: push_pending_entries_to_cloud @backend/app/services/handbook_sync.py:78  ←  _background_sync_exp_wall [worker:_background_sync_exp_wall] @backend/app/main.py:3309
+
+### 读边 (19)
+- `SELECT-FROM` @ **create_app.get_brain_dashboard** `backend/app/main.py:27671` — _static_confirmed_
+- `SELECT-FROM` @ **build_demo_data_response** `backend/app/main.py:2869` — _static_confirmed_
+    - WHERE: `id IN (`
+    - WHERE: `id IN ({?})`
+- `SELECT-FROM` @ **clear_demo_dataset** `backend/app/main.py:2884` — _static_confirmed_
+    - WHERE: `id IN (`
+    - WHERE: `id IN ({?})`
+- `SELECT-FROM` @ **create_app** `backend/app/main.py:3179` — _static_confirmed_
+    - WHERE: `id = ?`
+- `SELECT-FROM` @ **create_app.build_health** `backend/app/main.py:5147` — _static_confirmed_
+- `SELECT-FROM` @ **create_app.build_handbook_detail** `backend/app/main.py:56121` — _static_confirmed_
+    - WHERE: `id = ?`
+- `SELECT-FROM` @ **create_app.create_handbook_entry** `backend/app/main.py:56286` — _static_confirmed_
+    - WHERE: `id = ?`
+- `SELECT-FROM` @ **create_app.list_handbook** `backend/app/main.py:56363` — _static_confirmed_
+- `SELECT-FROM` @ **create_app.enrich_growth_insights** `backend/app/main.py:56381` — _static_confirmed_
+- `SELECT-FROM` @ **_collect_work_events** `backend/app/services/badge_engine.py:279` — _static_confirmed_
+    - WHERE: `author_user_id = ? OR LOWER(TRIM(COALESCE(author_user_name, ''))) = LOWER(TRIM(?))`
+- `SELECT-FROM` @ **build_company_brain_context** `backend/app/services/company_brain_context_builder.py:83` — _static_confirmed_
+- `SELECT-FROM` @ **_count_source_events** `backend/app/services/growth_engine.py:1168` — _static_confirmed_
+    - WHERE: `author_user_id = ?`
+- `SELECT-FROM` @ **_build_impact_curve** `backend/app/services/growth_engine.py:2267` — _static_confirmed_
+    - WHERE: `author_user_id = ? AND reuse_count > 0`
+- `SELECT-FROM` @ **_build_internal_learning_picks** `backend/app/services/growth_engine.py:2328` — _static_confirmed_
+    - WHERE: `COALESCE(author_user_id, '') != ?`
+    - WHERE: `COALESCE(author_user_id, '') != ? AND ability_keys_json LIKE ?`
+- `SELECT-FROM` @ **_build_daily_activity** `backend/app/services/growth_engine.py:2559` — _static_confirmed_
+    - WHERE: `author_user_id=? AND created_at >= ?`
+- `SELECT-FROM` @ **_build_social_feedback** `backend/app/services/growth_engine.py:2658` — _static_confirmed_
+    - WHERE: `author_user_id = ? AND (last_reused_at IS NULL OR last_reused_at >= ?)`
+- `SELECT-FROM` @ **mark_handbook_entry_reused** `backend/app/services/growth_engine.py:3991` — _static_confirmed_
+    - WHERE: `id = ?`
+- `SELECT-FROM` @ **pull_entries_from_cloud** `backend/app/services/handbook_sync.py:136` — _static_confirmed_
+    - WHERE: `id = ?`
+- `SELECT-FROM` @ **push_pending_entries_to_cloud** `backend/app/services/handbook_sync.py:78` — _static_confirmed_
+    - WHERE: `sync_status = 'pending'`
+
+## `has`
+
+- 经验层: 真库**无此表** (静态边 2写/0读)
+
+### 写边 (2)
+- `UPDATE` @ **create_app.sync_pending_tasks_if_due** `backend/app/main.py:23973` — _static_confirmed_
+    - chain: sync_pending_tasks_if_due [worker:sync_pending_tasks_if_due] @backend/app/main.py:23973
+- `UPDATE` @ **create_app** `backend/app/main.py:3179` — _needs_human_
+    - chain: create_app @backend/app/main.py:3179  ←  (no caller found — orphan write)
+
+### 读边 (0)
+- (无静态读边)
+
+## `heal_log`
+
+- 经验层: **0 行**
+
+### 写边 (1)
+- `INSERT` @ **_save_record** `backend/app/services/self_heal.py:731` — _call_name_match_
+    - chain: _save_record @backend/app/services/self_heal.py:731  ←  auto_heal @backend/app/services/self_heal.py:655  ←  system_self_heal [endpoint:/api/v1/system/self-heal] @backend/app/main.py:30358
+    - chain: _save_record @backend/app/services/self_heal.py:731  ←  heal @backend/app/services/self_heal.py:611  ←  system_self_heal [endpoint:/api/v1/system/self-heal] @backend/app/main.py:30358
+
+### 读边 (1)
+- `SELECT-FROM` @ **get_heal_log** `backend/app/services/self_heal.py:709` — _static_confirmed_
+
+## `historical_reference_links`
+
+- 经验层: 真库**无此表** (静态边 1写/5读)
+
+### 写边 (1)
+- `INSERT` @ **resolve_review_references** `backend/app/services/historical_material_resolver.py:459` — _call_name_match_
+    - chain: resolve_review_references @backend/app/services/historical_material_resolver.py:459  ←  resolve_history_endpoint [endpoint:/api/v1/clients/{client_id}/text/resolve-history] @backend/app/main.py:39586
+    - chain: resolve_review_references @backend/app/services/historical_material_resolver.py:459  ←  create_task @backend/app/main.py:24172  ←  accept_growth_recommendation [endpoint:/api/v1/growth/recommendations/{recommendation_id}/accept] @backend/app/main.py:56572
+    - chain: resolve_review_references @backend/app/services/historical_material_resolver.py:459  ←  create_task @backend/app/main.py:24172  ←  create_intelligence_task_endpoint [endpoint:/api/v1/intelligence/items/{item_id}/tasks] @backend/app/main.py:58553
+    - chain: resolve_review_references @backend/app/services/historical_material_resolver.py:459  ←  create_task @backend/app/main.py:24172  ←  create_manual_task [endpoint:/api/v1/tasks] @backend/app/main.py:52206
+    - chain: resolve_review_references @backend/app/services/historical_material_resolver.py:459  ←  create_task @backend/app/main.py:24172  ←  create_workspace_answer_action_task_api [endpoint:/api/v1/workspace-answer-action-cards/{message_id}/create-task] @backend/app/main.py:44635
+    - chain: resolve_review_references @backend/app/services/historical_material_resolver.py:459  ←  create_task @backend/app/main.py:24172  ←  promote_candidate_to_task [endpoint:/api/v1/topics/candidates/{candidate_id}/promote-task] @backend/app/main.py:55696
+
+### 读边 (5)
+- `SELECT-FROM` @ **create_app.build_template_fill_context** `backend/app/main.py:16786` — _static_confirmed_
+    - WHERE: `client_id = ?`
+- `SELECT-FROM` @ **create_app** `backend/app/main.py:3179` — _static_confirmed_
+    - WHERE: `client_id = ?`
+- `SELECT-FROM` @ **build_company_brain_context** `backend/app/services/company_brain_context_builder.py:83` — _static_confirmed_
+    - WHERE: `client_id = ?`
+- `SELECT-FROM` @ **build_evidence_pack** `backend/app/services/company_brain_qa.py:76` — _static_confirmed_
+    - WHERE: `client_id = ?`
+- `SELECT-FROM` @ **collect_client_fact_bundle** `backend/app/services/narrative_collector.py:338` — _static_confirmed_
+    - WHERE: `client_id = ?`
+
+## `idempotency_keys`
+
+- 经验层: **0 行**
+
+### 写边 (3)
+- `INSERT` @ **start** `backend/app/services/idempotency_store.py:169` — _call_name_match_
+    - chain: start @backend/app/services/idempotency_store.py:169  ←  _schedule_chat_fact_extraction [worker:_schedule_chat_fact_extraction] @backend/app/main.py:1739
+    - chain: start @backend/app/services/idempotency_store.py:169  ←  _schedule_post_answer_enrichment [worker:_schedule_post_answer_enrichment] @backend/app/main.py:48233
+    - chain: start @backend/app/services/idempotency_store.py:169  ←  _startup_worker [worker:_startup_worker] @backend/app/main.py:3743
+    - chain: start @backend/app/services/idempotency_store.py:169  ←  auth_login [endpoint:/api/v1/auth/login] @backend/app/main.py:31238
+    - chain: start @backend/app/services/idempotency_store.py:169  ←  auth_me [endpoint:/api/v1/auth/me] @backend/app/main.py:30701
+    - chain: start @backend/app/services/idempotency_store.py:169  ←  auth_register [endpoint:/api/v1/auth/register] @backend/app/main.py:31212
+- `UPDATE` @ **complete** `backend/app/services/idempotency_store.py:199` — _call_name_match_
+    - chain: complete @backend/app/services/idempotency_store.py:199  ←  create_client [endpoint:/api/v1/clients] @backend/app/main.py:37631
+    - chain: complete @backend/app/services/idempotency_store.py:199  ←  create_event_line [endpoint:/api/v1/event-lines] @backend/app/main.py:31525
+    - chain: complete @backend/app/services/idempotency_store.py:199  ←  create_manual_task [endpoint:/api/v1/tasks] @backend/app/main.py:52206
+    - chain: complete @backend/app/services/idempotency_store.py:199  ←  extract_from_document @backend/app/services/document_llm_extractor.py:261  ←  process @backend/app/services/task_runners/fact_extract_runner.py:41  ←  run_due_local_model_tasks @backend/app/services/local_model_optimizer.py:942  ←  local_model_optimizer_worker_loop [worker:local_model_optimizer_worker_loop] @backend/app/services/local_model_optimizer.py:1026
+    - chain: complete @backend/app/services/idempotency_store.py:199  ←  extract_from_document @backend/app/services/document_llm_extractor.py:261  ←  process @backend/app/services/task_runners/fact_extract_runner.py:41  ←  run_due_local_model_tasks @backend/app/services/local_model_optimizer.py:942  ←  run_local_ai_now [endpoint:/api/v1/local-ai/run-now] @backend/app/main.py:36970
+    - chain: complete @backend/app/services/idempotency_store.py:199  ←  extract_from_document @backend/app/services/document_llm_extractor.py:261  ←  process @backend/app/services/task_runners/fact_extract_runner.py:41  ←  diarize_audio_file @backend/app/services/local_asr/diarization_provider.py:99  ←  _transcribe_with_diarization @backend/app/services/local_asr/recording_ingest.py:114  ←  transcribe_recording_local_path @backend/app/services/local_asr/recording_ingest.py:64  ←  transcribe_recording_local_audio_endpoint [endpoint:/api/v1/recordings/transcribe-local-audio] @backend/app/main.py:37133
+- `UPDATE` @ **mark_failed** `backend/app/services/idempotency_store.py:222` — _needs_human_
+    - chain: mark_failed @backend/app/services/idempotency_store.py:222  ←  (no caller found — orphan write)
+
+### 读边 (2)
+- `SELECT-FROM` @ **find** `backend/app/services/idempotency_store.py:118` — _static_confirmed_
+    - WHERE: `idempotency_key = ? AND request_method = ? AND request_path = ?`
+- `SELECT-FROM` @ **cleanup_expired** `backend/app/services/idempotency_store.py:238` — _static_confirmed_
+    - WHERE: `expires_at < ?`
+
+## `idempotency_keys_v25`
+
+- 经验层: 真库**无此表** (静态边 1写/1读)
+
+### 写边 (1)
+- `INSERT` @ **record_idempotency** `backend/app/services/agent_governance.py:293` — _call_name_match_
+    - chain: record_idempotency @backend/app/services/agent_governance.py:293  ←  compensate_client_data_gaps [endpoint:/api/v1/clients/{client_id}/data-gaps/compensate] @backend/app/main.py:40048
+    - chain: record_idempotency @backend/app/services/agent_governance.py:293  ←  feishu_push_task [endpoint:/api/v1/feishu/tasks/push] @backend/app/main.py:51079
+    - chain: record_idempotency @backend/app/services/agent_governance.py:293  ←  fill_client_template [endpoint:/api/v1/clients/{client_id}/documents/fill-template] @backend/app/main.py:49958
+    - chain: record_idempotency @backend/app/services/agent_governance.py:293  ←  generate_document [endpoint:/api/v1/documents/generate] @backend/app/main.py:50883
+    - chain: record_idempotency @backend/app/services/agent_governance.py:293  ←  process_meeting_minute_endpoint [endpoint:/api/v1/meeting-minutes/process] @backend/app/main.py:39471
+    - chain: record_idempotency @backend/app/services/agent_governance.py:293  ←  smart_import_commit_session [endpoint:/api/v1/smart-import/sessions/{session_id}/commit] @backend/app/main.py:29395
+
+### 读边 (1)
+- `SELECT-FROM` @ **check_idempotency** `backend/app/services/agent_governance.py:277` — _static_confirmed_
+    - WHERE: `key = ?`
+
+## `import_staged_files`
+
+- 经验层: **40 行**
+
+### 写边 (5)
+- `INSERT` @ **upload_staged_file** `backend/app/services/smart_file_import.py:193` — _call_name_match_
+    - chain: upload_staged_file @backend/app/services/smart_file_import.py:193  ←  smart_import_upload_file [endpoint:/api/v1/smart-import/sessions/{session_id}/files] @backend/app/main.py:29278
+- `UPDATE` @ **add_chunk** `backend/app/services/smart_file_import.py:272` — _call_name_match_
+    - chain: add_chunk @backend/app/services/smart_file_import.py:272  ←  smart_import_add_chunk [endpoint:/api/v1/smart-import/sessions/{session_id}/chunks] @backend/app/main.py:29318
+- `UPDATE` @ **delete_chunk** `backend/app/services/smart_file_import.py:381` — _call_name_match_
+    - chain: delete_chunk @backend/app/services/smart_file_import.py:381  ←  smart_import_delete_chunk [endpoint:/api/v1/smart-import/chunks/{chunk_id}] @backend/app/main.py:29353
+- `UPDATE` @ **assign_file_to_chunk** `backend/app/services/smart_file_import.py:401` — _call_name_match_
+    - chain: assign_file_to_chunk @backend/app/services/smart_file_import.py:401  ←  smart_import_assign_file [endpoint:/api/v1/smart-import/files/{file_id}/assign] @backend/app/main.py:29304
+- `UPDATE` @ **commit_session** `backend/app/services/smart_file_import.py:887` — _call_name_match_
+    - chain: commit_session @backend/app/services/smart_file_import.py:887  ←  smart_import_commit_session [endpoint:/api/v1/smart-import/sessions/{session_id}/commit] @backend/app/main.py:29395
+
+### 读边 (5)
+- `SELECT-FROM` @ **get_session** `backend/app/services/smart_file_import.py:108` — _static_confirmed_
+    - WHERE: `session_id = ?`
+- `SELECT-FROM` @ **delete_staged_file** `backend/app/services/smart_file_import.py:247` — _static_confirmed_
+    - WHERE: `id=?`
+- `SELECT-FROM` @ **assign_file_to_chunk** `backend/app/services/smart_file_import.py:401` — _static_confirmed_
+    - WHERE: `id=?`
+- `SELECT-FROM` @ **parse_chunk** `backend/app/services/smart_file_import.py:641` — _static_confirmed_
+    - WHERE: `cf.chunk_id = ?`
+    - WHERE: `session_id = ? AND assigned_chunk_id IS NULL`
+- `SELECT-FROM` @ **commit_session** `backend/app/services/smart_file_import.py:887` — _static_confirmed_
+    - WHERE: `session_id = ? AND document_id IS NULL`
+
+## `import_story_chunk_files`
+
+- 经验层: **39 行** · 最近写入 created_at=2026-05-21T11:13:13.090034+00:00
+
+### 写边 (2)
+- `INSERT` @ **add_chunk** `backend/app/services/smart_file_import.py:272` — _call_name_match_
+    - chain: add_chunk @backend/app/services/smart_file_import.py:272  ←  smart_import_add_chunk [endpoint:/api/v1/smart-import/sessions/{session_id}/chunks] @backend/app/main.py:29318
+- `INSERT` @ **assign_file_to_chunk** `backend/app/services/smart_file_import.py:401` — _call_name_match_
+    - chain: assign_file_to_chunk @backend/app/services/smart_file_import.py:401  ←  smart_import_assign_file [endpoint:/api/v1/smart-import/files/{file_id}/assign] @backend/app/main.py:29304
+
+### 读边 (2)
+- `SELECT-FROM` @ **assign_file_to_chunk** `backend/app/services/smart_file_import.py:401` — _static_confirmed_
+    - WHERE: `chunk_id=?`
+    - WHERE: `staged_file_id=?`
+- `JOIN` @ **parse_chunk** `backend/app/services/smart_file_import.py:641` — _static_confirmed_
+    - WHERE: `cf.chunk_id = ?`
+
+## `import_story_chunks`
+
+- 经验层: **31 行** · 最近写入 created_at=2026-05-31T09:39:40.583490+00:00
+
+### 写边 (4)
+- `INSERT` @ **add_chunk** `backend/app/services/smart_file_import.py:272` — _call_name_match_
+    - chain: add_chunk @backend/app/services/smart_file_import.py:272  ←  smart_import_add_chunk [endpoint:/api/v1/smart-import/sessions/{session_id}/chunks] @backend/app/main.py:29318
+- `UPDATE` @ **update_chunk_text** `backend/app/services/smart_file_import.py:342` — _call_name_match_
+    - chain: update_chunk_text @backend/app/services/smart_file_import.py:342  ←  smart_import_update_chunk [endpoint:/api/v1/smart-import/chunks/{chunk_id}] @backend/app/main.py:29337
+- `UPDATE` @ **patch_chunk_parsed** `backend/app/services/smart_file_import.py:358` — _call_name_match_
+    - chain: patch_chunk_parsed @backend/app/services/smart_file_import.py:358  ←  smart_import_patch_chunk_parsed [endpoint:/api/v1/smart-import/chunks/{chunk_id}/parsed] @backend/app/main.py:29371
+- `UPDATE` @ **parse_chunk** `backend/app/services/smart_file_import.py:641` — _call_name_match_
+    - chain: parse_chunk @backend/app/services/smart_file_import.py:641  ←  smart_import_parse_chunk [endpoint:/api/v1/smart-import/chunks/{chunk_id}/parse] @backend/app/main.py:29359
+    - chain: parse_chunk @backend/app/services/smart_file_import.py:641  ←  add_chunk @backend/app/services/smart_file_import.py:272  ←  smart_import_add_chunk [endpoint:/api/v1/smart-import/sessions/{session_id}/chunks] @backend/app/main.py:29318
+    - chain: parse_chunk @backend/app/services/smart_file_import.py:641  ←  commit_session @backend/app/services/smart_file_import.py:887  ←  smart_import_commit_session [endpoint:/api/v1/smart-import/sessions/{session_id}/commit] @backend/app/main.py:29395
+    - chain: parse_chunk @backend/app/services/smart_file_import.py:641  ←  update_chunk_text @backend/app/services/smart_file_import.py:342  ←  smart_import_update_chunk [endpoint:/api/v1/smart-import/chunks/{chunk_id}] @backend/app/main.py:29337
+
+### 读边 (13)
+- `SELECT-FROM` @ **create_app.smart_import_update_chunk** `backend/app/main.py:29337` — _static_confirmed_
+    - WHERE: `id=?`
+- `SELECT-FROM` @ **create_app.smart_import_patch_chunk_parsed** `backend/app/main.py:29371` — _static_confirmed_
+    - WHERE: `id=?`
+- `SELECT-FROM` @ **create_app** `backend/app/main.py:3179` — _static_confirmed_
+    - WHERE: `id=?`
+- `SELECT-FROM` @ **get_session** `backend/app/services/smart_file_import.py:108` — _static_confirmed_
+    - WHERE: `session_id = ?`
+- `SELECT-FROM` @ **add_chunk** `backend/app/services/smart_file_import.py:272` — _static_confirmed_
+    - WHERE: `session_id = ?`
+- `SELECT-FROM` @ **patch_chunk_parsed** `backend/app/services/smart_file_import.py:358` — _static_confirmed_
+    - WHERE: `id=?`
+- `SELECT-FROM` @ **delete_chunk** `backend/app/services/smart_file_import.py:381` — _static_confirmed_
+    - WHERE: `id=?`
+- `SELECT-FROM` @ **assign_file_to_chunk** `backend/app/services/smart_file_import.py:401` — _static_confirmed_
+    - WHERE: `id=?`
+- `SELECT-FROM` @ **_gather_previous_summary** `backend/app/services/smart_file_import.py:593` — _static_confirmed_
+    - WHERE: `session_id = ? AND id != ?`
+- `SELECT-FROM` @ **_gather_known_entities** `backend/app/services/smart_file_import.py:609` — _static_confirmed_
+    - WHERE: `session_id = ?`
+- `SELECT-FROM` @ **parse_chunk** `backend/app/services/smart_file_import.py:641` — _static_confirmed_
+    - WHERE: `id = ?`
+- `SELECT-FROM` @ **aggregate_session_to_plan** `backend/app/services/smart_file_import.py:748` — _static_confirmed_
+    - WHERE: `session_id = ?`
+- `SELECT-FROM` @ **commit_session** `backend/app/services/smart_file_import.py:887` — _static_confirmed_
+    - WHERE: `session_id = ? AND parse_status IN ('pending','failed') AND raw_text != ''`
+
+## `import_story_sessions`
+
+- 经验层: **24 行** · 最近写入 created_at=2026-05-31T09:39:40.575884+00:00
+
+### 写边 (8)
+- `UPDATE` @ **update_session** `backend/app/services/smart_file_import.py:139` — _call_name_match_
+    - chain: update_session @backend/app/services/smart_file_import.py:139  ←  smart_import_update_session [endpoint:/api/v1/smart-import/sessions/{session_id}] @backend/app/main.py:29258
+- `UPDATE` @ **discard_session** `backend/app/services/smart_file_import.py:172` — _call_name_match_
+    - chain: discard_session @backend/app/services/smart_file_import.py:172  ←  smart_import_discard_session [endpoint:/api/v1/smart-import/sessions/{session_id}] @backend/app/main.py:29272
+- `UPDATE` @ **upload_staged_file** `backend/app/services/smart_file_import.py:193` — _call_name_match_
+    - chain: upload_staged_file @backend/app/services/smart_file_import.py:193  ←  smart_import_upload_file [endpoint:/api/v1/smart-import/sessions/{session_id}/files] @backend/app/main.py:29278
+- `UPDATE` @ **delete_staged_file** `backend/app/services/smart_file_import.py:247` — _call_name_match_
+    - chain: delete_staged_file @backend/app/services/smart_file_import.py:247  ←  smart_import_delete_file [endpoint:/api/v1/smart-import/files/{file_id}] @backend/app/main.py:29298
+- `UPDATE` @ **add_chunk** `backend/app/services/smart_file_import.py:272` — _call_name_match_
+    - chain: add_chunk @backend/app/services/smart_file_import.py:272  ←  smart_import_add_chunk [endpoint:/api/v1/smart-import/sessions/{session_id}/chunks] @backend/app/main.py:29318
+- `UPDATE` @ **delete_chunk** `backend/app/services/smart_file_import.py:381` — _call_name_match_
+    - chain: delete_chunk @backend/app/services/smart_file_import.py:381  ←  smart_import_delete_chunk [endpoint:/api/v1/smart-import/chunks/{chunk_id}] @backend/app/main.py:29353
+- `INSERT` @ **create_session** `backend/app/services/smart_file_import.py:76` — _call_name_match_
+    - chain: create_session @backend/app/services/smart_file_import.py:76  ←  smart_import_create_session [endpoint:/api/v1/smart-import/sessions] @backend/app/main.py:29230
+- `UPDATE` @ **commit_session** `backend/app/services/smart_file_import.py:887` — _call_name_match_
+    - chain: commit_session @backend/app/services/smart_file_import.py:887  ←  smart_import_commit_session [endpoint:/api/v1/smart-import/sessions/{session_id}/commit] @backend/app/main.py:29395
+
+### 读边 (7)
+- `SELECT-FROM` @ **create_app.smart_import_commit_session** `backend/app/main.py:29395` — _static_confirmed_
+    - WHERE: `id = ?`
+- `SELECT-FROM` @ **create_app** `backend/app/main.py:3179` — _static_confirmed_
+    - WHERE: `id = ?`
+- `SELECT-FROM` @ **get_session** `backend/app/services/smart_file_import.py:108` — _static_confirmed_
+    - WHERE: `id = ?`
+- `SELECT-FROM` @ **upload_staged_file** `backend/app/services/smart_file_import.py:193` — _static_confirmed_
+    - WHERE: `id=?`
+- `SELECT-FROM` @ **add_chunk** `backend/app/services/smart_file_import.py:272` — _static_confirmed_
+    - WHERE: `id = ?`
+- `SELECT-FROM` @ **parse_chunk** `backend/app/services/smart_file_import.py:641` — _static_confirmed_
+    - WHERE: `id = ?`
+- `SELECT-FROM` @ **commit_session** `backend/app/services/smart_file_import.py:887` — _static_confirmed_
+    - WHERE: `id = ?`
+    - WHERE: `id=?`
+
+## `imports`
+
+- 经验层: **52 行** · 最近写入 created_at=2026-05-19T15:59:36
+
+### 写边 (6)
+- `INSERT+UPDATE` @ **create_app** `backend/app/main.py:3179` — _needs_human_
+    - chain: create_app @backend/app/main.py:3179  ←  (no caller found — orphan write)
+- `UPDATE` @ **create_app.update_import_status** `backend/app/main.py:4201` — _call_name_match_
+    - chain: update_import_status @backend/app/main.py:4201  ←  finish_knowledge_job @backend/app/main.py:4742  ←  knowledge_worker_loop [worker:knowledge_worker_loop] @backend/app/main.py:5110
+    - chain: update_import_status @backend/app/main.py:4201  ←  recover_stale_imports @backend/app/main.py:4240  ←  _startup_worker [worker:_startup_worker] @backend/app/main.py:3743
+    - chain: update_import_status @backend/app/main.py:4201  ←  finish_knowledge_job @backend/app/main.py:4742  ←  process_knowledge_job @backend/app/main.py:4809  ←  knowledge_worker_loop [worker:knowledge_worker_loop] @backend/app/main.py:5110
+- `INSERT+UPDATE` @ **create_app.import_documents** `backend/app/main.py:45956` — _static_confirmed_
+    - chain: import_documents [endpoint:/api/v1/imports] @backend/app/main.py:45956
+- `UPDATE` @ **create_app.process_knowledge_job** `backend/app/main.py:4809` — _call_name_match_
+    - chain: process_knowledge_job @backend/app/main.py:4809  ←  knowledge_worker_loop [worker:knowledge_worker_loop] @backend/app/main.py:5110
+- `INSERT` @ **_ensure_import_row** `backend/app/services/internet_pdf_worker.py:81` — _call_name_match_
+    - chain: _ensure_import_row @backend/app/services/internet_pdf_worker.py:81  ←  _process_one_pdf @backend/app/services/internet_pdf_worker.py:96  ←  _worker_loop [worker:_worker_loop] @backend/app/services/internet_pdf_worker.py:205
+- `INSERT+UPDATE` @ **backfill_workspace_import** `backend/app/services/knowledge_v2.py:3943` — _call_name_match_
+    - chain: backfill_workspace_import @backend/app/services/knowledge_v2.py:3943  ←  backfill_client_workspace_imports [endpoint:/api/v1/clients/{client_id}/workspace/backfill-imports] @backend/app/main.py:50039
+
+### 读边 (6)
+- `SELECT-FROM` @ **create_app.workspace_for_client** `backend/app/main.py:17770` — _static_confirmed_
+    - WHERE: `client_id = ?`
+- `SELECT-FROM` @ **create_app** `backend/app/main.py:3179` — _static_confirmed_
+    - WHERE: `client_id = ?`
+    - WHERE: `id = ?`
+    - WHERE: `status IN ('queued', 'processing')`
+- `SELECT-FROM` @ **create_app.update_import_status** `backend/app/main.py:4201` — _static_confirmed_
+    - WHERE: `id = ?`
+- `SELECT-FROM` @ **create_app.recover_stale_imports** `backend/app/main.py:4240` — _static_confirmed_
+    - WHERE: `status IN ('queued', 'processing')`
+- `SELECT-FROM` @ **create_app.process_knowledge_job** `backend/app/main.py:4809` — _static_confirmed_
+    - WHERE: `id = ?`
+- `SELECT-FROM` @ **_ensure_import_row** `backend/app/services/internet_pdf_worker.py:81` — _static_confirmed_
+    - WHERE: `id = ?`
+
+## `intelligence_brand_audits`
+
+- 经验层: **3 行** · 最近写入 created_at=2026-05-21T07:54:48.692693+00:00
+
+### 写边 (1)
+- `INSERT` @ **_persist_audit** `backend/app/services/intelligence_brand_audit.py:293` — _call_name_match_
+    - chain: _persist_audit @backend/app/services/intelligence_brand_audit.py:293  ←  recompute_brand_audit @backend/app/services/intelligence_brand_audit.py:503  ←  get_brand_audit_endpoint [endpoint:/api/v1/intelligence/sentiment/audit] @backend/app/main.py:59595
+    - chain: _persist_audit @backend/app/services/intelligence_brand_audit.py:293  ←  recompute_brand_audit @backend/app/services/intelligence_brand_audit.py:503  ←  recompute_brand_audit_endpoint [endpoint:/api/v1/intelligence/sentiment/audit/recompute] @backend/app/main.py:59562
+    - chain: _persist_audit @backend/app/services/intelligence_brand_audit.py:293  ←  recompute_brand_audit @backend/app/services/intelligence_brand_audit.py:503  ←  refresh_sentiment_endpoint [endpoint:/api/v1/intelligence/sentiment/refresh] @backend/app/main.py:58704
+
+### 读边 (4)
+- `SELECT-FROM` @ **_persist_audit** `backend/app/services/intelligence_brand_audit.py:293` — _static_confirmed_
+    - WHERE: `scope_type = ? AND scope_id = ?`
+- `SELECT-FROM` @ **get_audit** `backend/app/services/intelligence_brand_audit.py:347` — _static_confirmed_
+    - WHERE: `scope_type = ? AND scope_id = ?`
+- `SELECT-FROM` @ **audit_is_fresh** `backend/app/services/intelligence_brand_audit.py:369` — _static_confirmed_
+    - WHERE: `scope_type = ? AND scope_id = ?`
+- `SELECT-FROM` @ **recompute_brand_audit** `backend/app/services/intelligence_brand_audit.py:503` — _static_confirmed_
+    - WHERE: `scope_type = ? AND scope_id = ?`
+
+## `intelligence_candidate_items`
+
+- 经验层: **1703 行** · 最近写入 created_at=2026-05-21T16:20:52
+
+### 写边 (10)
+- `UPDATE` @ **create_app** `backend/app/main.py:3179` — _needs_human_
+    - chain: create_app @backend/app/main.py:3179  ←  (no caller found — orphan write)
+- `UPDATE` @ **create_app.submit_verification_feedback** `backend/app/main.py:57564` — _static_confirmed_
+    - chain: submit_verification_feedback [endpoint:/api/v1/intelligence/verification-feedback] @backend/app/main.py:57564
+- `UPDATE` @ **_update_candidate_verification** `backend/app/services/intelligence_candidate_supply.py:3067` — _call_name_match_
+    - chain: _update_candidate_verification @backend/app/services/intelligence_candidate_supply.py:3067  ←  _promote_candidate @backend/app/services/intelligence_candidate_supply.py:4503  ←  run_intelligence_candidate_refresh @backend/app/services/intelligence_candidate_supply.py:5967  ←  trigger_intelligence_refresh [endpoint:/api/v1/intelligence/refresh] @backend/app/main.py:57794
+- `INSERT` @ **_insert_candidate** `backend/app/services/intelligence_candidate_supply.py:4062` — _call_name_match_
+    - chain: _insert_candidate @backend/app/services/intelligence_candidate_supply.py:4062  ←  run_intelligence_candidate_refresh @backend/app/services/intelligence_candidate_supply.py:5967  ←  trigger_intelligence_refresh [endpoint:/api/v1/intelligence/refresh] @backend/app/main.py:57794
+- `UPDATE` @ **_promote_candidate** `backend/app/services/intelligence_candidate_supply.py:4503` — _call_name_match_
+    - chain: _promote_candidate @backend/app/services/intelligence_candidate_supply.py:4503  ←  run_intelligence_candidate_refresh @backend/app/services/intelligence_candidate_supply.py:5967  ←  trigger_intelligence_refresh [endpoint:/api/v1/intelligence/refresh] @backend/app/main.py:57794
+- `UPDATE` @ **_merge_candidate_evidence** `backend/app/services/intelligence_candidate_supply.py:5224` — _needs_human_
+    - chain: _merge_candidate_evidence @backend/app/services/intelligence_candidate_supply.py:5224  ←  run_profile_completion_research @backend/app/services/intelligence_candidate_supply.py:5481
+- `UPDATE` @ **run_profile_completion_research** `backend/app/services/intelligence_candidate_supply.py:5481` — _needs_human_
+    - chain: run_profile_completion_research @backend/app/services/intelligence_candidate_supply.py:5481  ←  (no caller found — orphan write)
+- `UPDATE` @ **run_intelligence_candidate_refresh** `backend/app/services/intelligence_candidate_supply.py:5967` — _call_name_match_
+    - chain: run_intelligence_candidate_refresh @backend/app/services/intelligence_candidate_supply.py:5967  ←  trigger_intelligence_refresh [endpoint:/api/v1/intelligence/refresh] @backend/app/main.py:57794
+- `UPDATE` @ **continue_timely_candidate_review** `backend/app/services/intelligence_candidate_supply.py:6523` — _needs_human_
+    - chain: continue_timely_candidate_review @backend/app/services/intelligence_candidate_supply.py:6523  ←  (no caller found — orphan write)
+- `UPDATE` @ **cleanup_low_value_intelligence_artifacts** `backend/app/services/intelligence_candidate_supply.py:6959` — _needs_human_
+    - chain: cleanup_low_value_intelligence_artifacts @backend/app/services/intelligence_candidate_supply.py:6959  ←  (no caller found — orphan write)
+
+### 读边 (15)
+- `SELECT-FROM` @ **create_app** `backend/app/main.py:3179` — _static_confirmed_
+    - WHERE: `id = ?`
+- `SELECT-FROM` @ **create_app.submit_verification_feedback** `backend/app/main.py:57564` — _static_confirmed_
+    - WHERE: `id = ?`
+- `SELECT-FROM` @ **harvest_intelligence_for_client** `backend/app/services/data_gap_compensator.py:266` — _static_confirmed_
+    - WHERE: `{?}`
+- `SELECT-FROM` @ **_promote_candidate** `backend/app/services/intelligence_candidate_supply.py:4503` — _static_confirmed_
+    - WHERE: `id = ?`
+- `SELECT-FROM` @ **_profile_created_fact_count** `backend/app/services/intelligence_candidate_supply.py:4981` — _static_confirmed_
+    - WHERE: `id = ?`
+- `SELECT-FROM` @ **_profile_research_snapshot** `backend/app/services/intelligence_candidate_supply.py:4998` — _static_confirmed_
+    - WHERE: `id IN (`
+    - WHERE: `id IN ({?})`
+- `SELECT-FROM` @ **_merge_candidate_evidence** `backend/app/services/intelligence_candidate_supply.py:5224` — _static_confirmed_
+    - WHERE: `id = ?`
+- `SELECT-FROM` @ **_existing_profile_deep_candidate** `backend/app/services/intelligence_candidate_supply.py:5261` — _static_confirmed_
+    - WHERE: `scope_type = ? AND scope_id = ? AND content_kind = 'profile_completion' AND dedupe_key = ? AND classification_status IN ('candidate', 'promoted') AND evidence_json LIKE '%deepDiveStatus%'`
+- `SELECT-FROM` @ **_profile_deep_dive_status_snapshot** `backend/app/services/intelligence_candidate_supply.py:5318` — _static_confirmed_
+    - WHERE: `scope_type = ? AND scope_id = ? AND content_kind = 'profile_completion' AND evidence_json LIKE '%deepDiveStatus%'`
+- `SELECT-FROM` @ **_profile_deep_dive_rows** `backend/app/services/intelligence_candidate_supply.py:5348` — _static_confirmed_
+    - WHERE: `c.scope_type = ? AND c.scope_id = ? AND c.content_kind = 'profile_completion' AND c.classification_status = 'candidate' AND c.evidence_json LIKE '%deepDiveStatus%'`
+- `SELECT-FROM` @ **run_intelligence_candidate_refresh** `backend/app/services/intelligence_candidate_supply.py:5967` — _static_confirmed_
+    - WHERE: `c.id IN (`
+    - WHERE: `c.id IN ({?}) AND c.content_kind = 'timely_intelligence' AND i.intelligence_type = '启发型情报' AND i.user_status = 'active'`
+    - WHERE: `c.scope_type = ? AND c.scope_id = ? AND c.content_kind = ? AND c.dedupe_key = ? AND c.classification_status = 'promoted' AND i.user_status = 'active'`
+    - WHERE: `id IN (`
+    - WHERE: `id IN ({?})`
+- `SELECT-FROM` @ **continue_timely_candidate_review** `backend/app/services/intelligence_candidate_supply.py:6523` — _static_confirmed_
+    - WHERE: `c.id IN (`
+    - WHERE: `c.id IN ({?}) AND i.intelligence_type = '启发型情报' AND i.user_status = 'active'`
+    - WHERE: `c.scope_type = ? AND c.scope_id = ? AND c.content_kind = 'timely_intelligence' AND c.classification_status = 'candidate' AND c.summary_status IN ('not_attempted', 'failed') AND c.promoted_intelligence`
+    - WHERE: `id IN (`
+    - WHERE: `id IN ({?})`
+- `SELECT-FROM` @ **get_candidate_supply_status_for_scope** `backend/app/services/intelligence_candidate_supply.py:6708` — _static_confirmed_
+    - WHERE: `scope_type = ? AND scope_id = ?`
+- `SELECT-FROM` @ **cleanup_low_value_intelligence_artifacts** `backend/app/services/intelligence_candidate_supply.py:6959` — _static_confirmed_
+    - WHERE: `COALESCE(is_user_visible_candidate, 1) = 1 AND classification_status IN ('promoted', 'duplicate')`
+    - WHERE: `COALESCE(is_user_visible_candidate, 1) = 1 OR classification_status NOT IN ('rejected', 'duplicate')`
+- `SELECT-FROM` @ **context_from_item_row** `backend/app/services/intelligence_feedback.py:125` — _static_confirmed_
+    - WHERE: `promoted_intelligence_item_id = ?`
+
+## `intelligence_feedback_events`
+
+- 经验层: **3 行** · 最近写入 created_at=2026-05-13T14:33:30Z
+
+### 写边 (1)
+- `INSERT` @ **record_feedback_event** `backend/app/services/intelligence_feedback.py:364` — _call_name_match_
+    - chain: record_feedback_event @backend/app/services/intelligence_feedback.py:364  ←  chat_intelligence_item_endpoint [endpoint:/api/v1/intelligence/items/{item_id}/chat] @backend/app/main.py:58595
+    - chain: record_feedback_event @backend/app/services/intelligence_feedback.py:364  ←  dismiss_intelligence_item_endpoint [endpoint:/api/v1/intelligence/items/{item_id}/dismiss] @backend/app/main.py:58386
+    - chain: record_feedback_event @backend/app/services/intelligence_feedback.py:364  ←  follow_intelligence_item_endpoint [endpoint:/api/v1/intelligence/items/{item_id}/follow] @backend/app/main.py:58418
+    - chain: record_feedback_event @backend/app/services/intelligence_feedback.py:364  ←  save_focus_directive [endpoint:/api/v1/intelligence/focus-directives] @backend/app/main.py:57356
+    - chain: record_feedback_event @backend/app/services/intelligence_feedback.py:364  ←  submit_verification_feedback [endpoint:/api/v1/intelligence/verification-feedback] @backend/app/main.py:57564
+
+### 读边 (1)
+- `SELECT-FROM` @ **feedback_diagnostics** `backend/app/services/intelligence_feedback.py:549` — _static_confirmed_
+    - WHERE: `{?}`
+
+## `intelligence_feedback_summaries`
+
+- 经验层: **0 行**
+
+### 写边 (1)
+- `INSERT` @ **_upsert_summary** `backend/app/services/intelligence_feedback.py:298` — _call_name_match_
+    - chain: _upsert_summary @backend/app/services/intelligence_feedback.py:298  ←  record_feedback_event @backend/app/services/intelligence_feedback.py:364  ←  chat_intelligence_item_endpoint [endpoint:/api/v1/intelligence/items/{item_id}/chat] @backend/app/main.py:58595
+    - chain: _upsert_summary @backend/app/services/intelligence_feedback.py:298  ←  record_feedback_event @backend/app/services/intelligence_feedback.py:364  ←  dismiss_intelligence_item_endpoint [endpoint:/api/v1/intelligence/items/{item_id}/dismiss] @backend/app/main.py:58386
+    - chain: _upsert_summary @backend/app/services/intelligence_feedback.py:298  ←  record_feedback_event @backend/app/services/intelligence_feedback.py:364  ←  follow_intelligence_item_endpoint [endpoint:/api/v1/intelligence/items/{item_id}/follow] @backend/app/main.py:58418
+    - chain: _upsert_summary @backend/app/services/intelligence_feedback.py:298  ←  record_feedback_event @backend/app/services/intelligence_feedback.py:364  ←  save_focus_directive [endpoint:/api/v1/intelligence/focus-directives] @backend/app/main.py:57356
+    - chain: _upsert_summary @backend/app/services/intelligence_feedback.py:298  ←  record_feedback_event @backend/app/services/intelligence_feedback.py:364  ←  submit_verification_feedback [endpoint:/api/v1/intelligence/verification-feedback] @backend/app/main.py:57564
+
+### 读边 (6)
+- `SELECT-FROM` @ **_upsert_summary** `backend/app/services/intelligence_feedback.py:298` — _static_confirmed_
+    - WHERE: `scope_type = ? AND scope_id = ? AND content_kind = ? AND target_type = ? AND target_key = ?`
+- `SELECT-FROM` @ **feedback_score_for_candidate** `backend/app/services/intelligence_feedback.py:425` — _static_confirmed_
+    - WHERE: `scope_type = ? AND scope_id = ? AND content_kind = ? AND target_type = ? AND target_key = ?`
+- `SELECT-FROM` @ **source_feedback_adjustment** `backend/app/services/intelligence_feedback.py:478` — _static_confirmed_
+    - WHERE: `scope_type = ? AND scope_id = ? AND content_kind = ? AND target_type = ? AND target_key = ?`
+- `SELECT-FROM` @ **work_object_feedback_score** `backend/app/services/intelligence_feedback.py:508` — _static_confirmed_
+    - WHERE: `{?}`
+- `SELECT-FROM` @ **search_feedback_terms** `backend/app/services/intelligence_feedback.py:523` — _static_confirmed_
+    - WHERE: `scope_type = ? AND scope_id = ? AND content_kind = ? AND target_type IN ('theme', 'tag', 'source', 'domain')`
+- `SELECT-FROM` @ **feedback_diagnostics** `backend/app/services/intelligence_feedback.py:549` — _static_confirmed_
+    - WHERE: `{?}`
+
+## `intelligence_fetch_jobs`
+
+- 经验层: **1996 行** · 最近写入 created_at=2026-05-21T16:20:52
+
+### 写边 (2)
+- `INSERT` @ **_insert_source_discovery_fetch_job** `backend/app/services/intelligence_candidate_supply.py:3390` — _call_name_match_
+    - chain: _insert_source_discovery_fetch_job @backend/app/services/intelligence_candidate_supply.py:3390  ←  discover_official_site_source_configs @backend/app/services/intelligence_candidate_supply.py:3496  ←  run_intelligence_candidate_refresh @backend/app/services/intelligence_candidate_supply.py:5967  ←  trigger_intelligence_refresh [endpoint:/api/v1/intelligence/refresh] @backend/app/main.py:57794
+- `INSERT` @ **_insert_fetch_job** `backend/app/services/intelligence_candidate_supply.py:3972` — _call_name_match_
+    - chain: _insert_fetch_job @backend/app/services/intelligence_candidate_supply.py:3972  ←  run_intelligence_candidate_refresh @backend/app/services/intelligence_candidate_supply.py:5967  ←  trigger_intelligence_refresh [endpoint:/api/v1/intelligence/refresh] @backend/app/main.py:57794
+
+### 读边 (3)
+- `SELECT-FROM` @ **get_candidate_supply_status_for_scope** `backend/app/services/intelligence_candidate_supply.py:6708` — _static_confirmed_
+    - WHERE: `scope_type = ? AND scope_id = ?`
+    - WHERE: `scope_type = ? AND scope_id = ? AND content_kind = 'source_discovery'`
+    - WHERE: `scope_type = ? AND scope_id = ? AND status = 'running'`
+- `SELECT-FROM` @ **get_source_diagnostics** `backend/app/services/intelligence_candidate_supply.py:6836` — _static_confirmed_
+    - WHERE: `{?}`
+- `SELECT-FROM` @ **_collect_context** `backend/app/services/intelligence_search_intents.py:536` — _static_confirmed_
+    - WHERE: `scope_type = ? AND scope_id = ? AND content_kind IN ('profile_completion', 'timely_intelligence')`
+
+## `intelligence_focus_directives`
+
+- 经验层: **1 行** · 最近写入 created_at=2026-05-13T14:17:53Z
+
+### 写边 (2)
+- `INSERT+UPDATE` @ **create_app** `backend/app/main.py:3179` — _needs_human_
+    - chain: create_app @backend/app/main.py:3179  ←  (no caller found — orphan write)
+- `INSERT+UPDATE` @ **create_app.save_focus_directive** `backend/app/main.py:57356` — _static_confirmed_
+    - chain: save_focus_directive [endpoint:/api/v1/intelligence/focus-directives] @backend/app/main.py:57356
+
+### 读边 (6)
+- `SELECT-FROM` @ **create_app** `backend/app/main.py:3179` — _static_confirmed_
+    - WHERE: `id=?`
+    - WHERE: `scope_type=? AND scope_id=?`
+- `SELECT-FROM` @ **create_app.list_focus_directives** `backend/app/main.py:57335` — _static_confirmed_
+- `SELECT-FROM` @ **create_app.save_focus_directive** `backend/app/main.py:57356` — _static_confirmed_
+    - WHERE: `id=?`
+    - WHERE: `scope_type=? AND scope_id=?`
+- `SELECT-FROM` @ **_load_research_brief** `backend/app/services/intelligence_candidate_supply.py:839` — _static_confirmed_
+    - WHERE: `{?}`
+- `SELECT-FROM` @ **_collect_context** `backend/app/services/intelligence_search_intents.py:536` — _static_confirmed_
+    - WHERE: `{?}`
+- `SELECT-FROM` @ **_load_directives** `backend/app/services/intelligence_timely_strategy.py:271` — _static_confirmed_
+    - WHERE: `{?}`
+
+## `intelligence_items`
+
+- 经验层: **151 行** · 最近写入 created_at=2026-05-21T16:20:52
+
+### 写边 (10)
+- `UPDATE` @ **create_app** `backend/app/main.py:3179` — _needs_human_
+    - chain: create_app @backend/app/main.py:3179  ←  (no caller found — orphan write)
+- `UPDATE` @ **create_app.submit_verification_feedback** `backend/app/main.py:57564` — _static_confirmed_
+    - chain: submit_verification_feedback [endpoint:/api/v1/intelligence/verification-feedback] @backend/app/main.py:57564
+- `UPDATE` @ **create_app.dismiss_intelligence_item_endpoint** `backend/app/main.py:58386` — _static_confirmed_
+    - chain: dismiss_intelligence_item_endpoint [endpoint:/api/v1/intelligence/items/{item_id}/dismiss] @backend/app/main.py:58386
+- `UPDATE` @ **create_app.follow_intelligence_item_endpoint** `backend/app/main.py:58418` — _static_confirmed_
+    - chain: follow_intelligence_item_endpoint [endpoint:/api/v1/intelligence/items/{item_id}/follow] @backend/app/main.py:58418
+- `UPDATE` @ **create_app.create_intelligence_task_endpoint** `backend/app/main.py:58553` — _static_confirmed_
+    - chain: create_intelligence_task_endpoint [endpoint:/api/v1/intelligence/items/{item_id}/tasks] @backend/app/main.py:58553
+- `UPDATE` @ **create_app.sentiment_feedback_endpoint** `backend/app/main.py:59645` — _static_confirmed_
+    - chain: sentiment_feedback_endpoint [endpoint:/api/v1/intelligence/sentiment/feedback] @backend/app/main.py:59645
+- `INSERT` @ **_promote_candidate** `backend/app/services/intelligence_candidate_supply.py:4503` — _call_name_match_
+    - chain: _promote_candidate @backend/app/services/intelligence_candidate_supply.py:4503  ←  run_intelligence_candidate_refresh @backend/app/services/intelligence_candidate_supply.py:5967  ←  trigger_intelligence_refresh [endpoint:/api/v1/intelligence/refresh] @backend/app/main.py:57794
+- `UPDATE` @ **cleanup_low_value_intelligence_artifacts** `backend/app/services/intelligence_candidate_supply.py:6959` — _needs_human_
+    - chain: cleanup_low_value_intelligence_artifacts @backend/app/services/intelligence_candidate_supply.py:6959  ←  (no caller found — orphan write)
+- `INSERT` @ **persist_sentiment_drafts** `backend/app/services/intelligence_sentiment.py:655` — _call_name_match_
+    - chain: persist_sentiment_drafts @backend/app/services/intelligence_sentiment.py:655  ←  refresh_sentiment_endpoint [endpoint:/api/v1/intelligence/sentiment/refresh] @backend/app/main.py:58704
+- `UPDATE` @ **_persist_themes** `backend/app/services/intelligence_theme_cluster.py:261` — _call_name_match_
+    - chain: _persist_themes @backend/app/services/intelligence_theme_cluster.py:261  ←  recompute_themes @backend/app/services/intelligence_theme_cluster.py:322  ←  list_sentiment_themes_endpoint [endpoint:/api/v1/intelligence/sentiment/themes] @backend/app/main.py:58955
+    - chain: _persist_themes @backend/app/services/intelligence_theme_cluster.py:261  ←  recompute_themes @backend/app/services/intelligence_theme_cluster.py:322  ←  recompute_sentiment_themes_endpoint [endpoint:/api/v1/intelligence/sentiment/themes/recompute] @backend/app/main.py:58911
+    - chain: _persist_themes @backend/app/services/intelligence_theme_cluster.py:261  ←  recompute_themes @backend/app/services/intelligence_theme_cluster.py:322  ←  refresh_sentiment_endpoint [endpoint:/api/v1/intelligence/sentiment/refresh] @backend/app/main.py:58704
+
+### 读边 (21)
+- `SELECT-FROM` @ **create_app** `backend/app/main.py:3179` — _static_confirmed_
+    - WHERE: `content_kind='public_opinion' AND client_id = ? AND captured_at < ?`
+    - WHERE: `content_kind='public_opinion' AND project_module_id = ? AND captured_at < ?`
+    - WHERE: `id = ?`
+    - WHERE: `id = ? AND content_kind = 'public_opinion'`
+    - WHERE: `{?}`
+- `SELECT-FROM` @ **create_app.list_intelligence_items** `backend/app/main.py:57195` — _static_confirmed_
+    - WHERE: `{?}`
+- `SELECT-FROM` @ **create_app._fetch_intelligence_item_or_404** `backend/app/main.py:58337` — _static_confirmed_
+    - WHERE: `id = ?`
+- `SELECT-FROM` @ **create_app.refresh_sentiment_endpoint** `backend/app/main.py:58704` — _static_confirmed_
+    - WHERE: `content_kind='public_opinion' AND client_id = ? AND captured_at < ?`
+    - WHERE: `content_kind='public_opinion' AND project_module_id = ? AND captured_at < ?`
+- `SELECT-FROM` @ **create_app.sentiment_feedback_endpoint** `backend/app/main.py:59645` — _static_confirmed_
+    - WHERE: `id = ? AND content_kind = 'public_opinion'`
+- `SELECT-FROM` @ **count_items** `backend/app/modules/intelligence/repository.py:14` — _static_confirmed_
+    - WHERE: `user_status = ?`
+- `SELECT-FROM` @ **_fetch_evidence_quotes** `backend/app/services/intelligence_brand_audit.py:249` — _static_confirmed_
+    - WHERE: `id IN (`
+    - WHERE: `id IN ({?})`
+- `SELECT-FROM` @ **_profile_gap_map_snapshot** `backend/app/services/intelligence_candidate_supply.py:2695` — _static_confirmed_
+    - WHERE: `scope_type = ? AND scope_id = ? AND content_kind = 'profile_completion' AND user_status = 'active'`
+- `SELECT-FROM` @ **_profile_fact_already_active** `backend/app/services/intelligence_candidate_supply.py:3030` — _static_confirmed_
+    - WHERE: `content_kind = 'profile_completion' AND user_status = 'active' AND scope_type = ? AND scope_id = ? AND COALESCE(source_url, '') = COALESCE(?, '')`
+- `SELECT-FROM` @ **_promote_candidate** `backend/app/services/intelligence_candidate_supply.py:4503` — _static_confirmed_
+    - WHERE: `content_kind = ? AND source_url = ? AND COALESCE(client_id, '') = COALESCE(?, '') AND user_status = 'active'`
+- `JOIN` @ **run_intelligence_candidate_refresh** `backend/app/services/intelligence_candidate_supply.py:5967` — _static_confirmed_
+    - WHERE: `c.id IN (`
+    - WHERE: `c.id IN ({?}) AND c.content_kind = 'timely_intelligence' AND i.intelligence_type = '启发型情报' AND i.user_status = 'active'`
+    - WHERE: `c.scope_type = ? AND c.scope_id = ? AND c.content_kind = ? AND c.dedupe_key = ? AND c.classification_status = 'promoted' AND i.user_status = 'active'`
+- `JOIN` @ **continue_timely_candidate_review** `backend/app/services/intelligence_candidate_supply.py:6523` — _static_confirmed_
+    - WHERE: `c.id IN (`
+    - WHERE: `c.id IN ({?}) AND i.intelligence_type = '启发型情报' AND i.user_status = 'active'`
+- `SELECT-FROM` @ **cleanup_low_value_intelligence_artifacts** `backend/app/services/intelligence_candidate_supply.py:6959` — _static_confirmed_
+    - WHERE: `content_kind = 'profile_completion' AND user_status <> 'dismissed' AND ( COALESCE(verification_reason, '') = '' OR verification_reason NOT LIKE '已核验：%' OR COALESCE(verified_at, '') = '' )`
+    - WHERE: `user_status <> 'dismissed'`
+- `SELECT-FROM` @ **collect_signals** `backend/app/services/intelligence_query_strategy.py:61` — _static_confirmed_
+    - WHERE: `client_id = ? AND content_kind = 'public_opinion' AND COALESCE(user_status,'active') NOT IN ('dismissed','misclassified')`
+- `SELECT-FROM` @ **_collect_context** `backend/app/services/intelligence_search_intents.py:536` — _static_confirmed_
+    - WHERE: `scope_type = ? AND scope_id = ? AND content_kind = 'profile_completion' AND user_status = 'active'`
+- `SELECT-FROM` @ **persist_sentiment_drafts** `backend/app/services/intelligence_sentiment.py:655` — _static_confirmed_
+    - WHERE: `content_kind = 'public_opinion' AND source_url = ? AND captured_at > datetime(?, '-1 day')`
+- `SELECT-FROM` @ **compute_sentiment_profile** `backend/app/services/intelligence_sentiment.py:776` — _static_confirmed_
+    - WHERE: `{?}`
+- `SELECT-FROM` @ **list_sentiment_items** `backend/app/services/intelligence_sentiment.py:863` — _static_confirmed_
+    - WHERE: `{?}`
+- `SELECT-FROM` @ **fetch_theme_items** `backend/app/services/intelligence_theme_cluster.py:417` — _static_confirmed_
+    - WHERE: `id IN (`
+    - WHERE: `id IN ({?})`
+- `SELECT-FROM` @ **_fetch_items_for_clustering** `backend/app/services/intelligence_theme_cluster.py:96` — _static_confirmed_
+    - WHERE: `content_kind = 'public_opinion' AND`
+    - WHERE: `content_kind = 'public_opinion' AND {?} AND captured_at >= ? AND COALESCE(user_status, 'active') NOT IN ('dismissed', 'misclassified')`
+- `SELECT-FROM` @ **build_timely_research_strategy** `backend/app/services/intelligence_timely_strategy.py:290` — _static_confirmed_
+    - WHERE: `scope_type = ? AND scope_id = ? AND content_kind = 'profile_completion' AND user_status = 'active'`
+
+## `intelligence_profiles`
+
+- 经验层: **0 行**
+
+### 写边 (3)
+- `UPDATE` @ **create_app** `backend/app/main.py:3179` — _needs_human_
+    - chain: create_app @backend/app/main.py:3179  ←  (no caller found — orphan write)
+- `UPDATE` @ **create_app.update_intelligence_profile** `backend/app/main.py:55350` — _static_confirmed_
+    - chain: update_intelligence_profile [endpoint:/api/v1/intelligence/profiles/{profile_id}] @backend/app/main.py:55350
+- `UPDATE` @ **create_app.refresh_intelligence_profile** `backend/app/main.py:55392` — _static_confirmed_
+    - chain: refresh_intelligence_profile [endpoint:/api/v1/intelligence/profiles/{profile_id}/refresh] @backend/app/main.py:55392
+
+### 读边 (6)
+- `SELECT-FROM` @ **create_app** `backend/app/main.py:3179` — _static_confirmed_
+    - WHERE: `COALESCE(deleted_at, '') = ''`
+    - WHERE: `id = ?`
+- `SELECT-FROM` @ **create_app.import_sync_intelligence_demo.apply_rows** `backend/app/main.py:54624` — _static_confirmed_
+    - WHERE: `scope_type = ? AND scope_id = ?`
+- `SELECT-FROM` @ **create_app.fetch_intelligence_profiles** `backend/app/main.py:54860` — _static_confirmed_
+    - WHERE: `COALESCE(deleted_at, '') = ''`
+- `SELECT-FROM` @ **create_app.update_intelligence_profile** `backend/app/main.py:55350` — _static_confirmed_
+    - WHERE: `id = ?`
+- `SELECT-FROM` @ **create_app.refresh_intelligence_profile** `backend/app/main.py:55392` — _static_confirmed_
+    - WHERE: `id = ?`
+- `SELECT-FROM` @ **create_app.trial_run_intelligence_profile** `backend/app/main.py:55402` — _static_confirmed_
+    - WHERE: `id = ?`
+
+## `intelligence_refresh_runs`
+
+- 经验层: **26 行** · 最近写入 created_at=2026-05-21T08:09:24Z
+
+### 写边 (5)
+- `UPDATE` @ **create_app** `backend/app/main.py:3179` — _needs_human_
+    - chain: create_app @backend/app/main.py:3179  ←  (no caller found — orphan write)
+- `UPDATE` @ **create_app.list_intelligence_refresh_runs** `backend/app/main.py:57686` — _static_confirmed_
+    - chain: list_intelligence_refresh_runs [endpoint:/api/v1/intelligence/refresh-runs] @backend/app/main.py:57686
+- `INSERT+UPDATE` @ **create_app.trigger_intelligence_refresh** `backend/app/main.py:57794` — _static_confirmed_
+    - chain: trigger_intelligence_refresh [endpoint:/api/v1/intelligence/refresh] @backend/app/main.py:57794
+- `INSERT` @ **create_app.trigger_intelligence_refresh._create_refresh_run** `backend/app/main.py:57838` — _call_name_match_
+    - chain: _create_refresh_run @backend/app/main.py:57838  ←  trigger_intelligence_refresh [endpoint:/api/v1/intelligence/refresh] @backend/app/main.py:57794
+- `UPDATE` @ **create_app.trigger_intelligence_refresh._update_refresh_run** `backend/app/main.py:57861` — _call_name_match_
+    - chain: _update_refresh_run @backend/app/main.py:57861  ←  trigger_intelligence_refresh [endpoint:/api/v1/intelligence/refresh] @backend/app/main.py:57794
+
+### 读边 (3)
+- `SELECT-FROM` @ **create_app** `backend/app/main.py:3179` — _static_confirmed_
+    - WHERE: `client_id = ? AND content_kind = ? AND status IN ('completed', 'failed')`
+    - WHERE: `client_id = ? AND content_kind = ? AND status IN ('queued', 'running')`
+    - WHERE: `status IN ('running','queued')`
+- `SELECT-FROM` @ **create_app.list_intelligence_refresh_runs** `backend/app/main.py:57686` — _static_confirmed_
+    - WHERE: `status IN ('running','queued')`
+- `SELECT-FROM` @ **create_app.auto_refresh_intelligence_due** `backend/app/main.py:58168` — _static_confirmed_
+    - WHERE: `client_id = ? AND content_kind = ? AND status IN ('completed', 'failed')`
+    - WHERE: `client_id = ? AND content_kind = ? AND status IN ('queued', 'running')`
+
+## `intelligence_search_diagnostics`
+
+- 经验层: **0 行**
+
+### 写边 (1)
+- `INSERT` @ **run_intelligence_search_diagnostic** `backend/app/services/intelligence_search_intents.py:1582` — _needs_human_
+    - chain: run_intelligence_search_diagnostic @backend/app/services/intelligence_search_intents.py:1582  ←  (no caller found — orphan write)
+
+### 读边 (0)
+- (无静态读边)
+
+## `intelligence_search_intents`
+
+- 经验层: **667 行** · 最近写入 created_at=2026-05-21T16:20:52
+
+### 写边 (1)
+- `INSERT+UPDATE` @ **_persist_intents** `backend/app/services/intelligence_search_intents.py:1379` — _call_name_match_
+    - chain: _persist_intents @backend/app/services/intelligence_search_intents.py:1379  ←  generate_intelligence_search_intents @backend/app/services/intelligence_search_intents.py:1457  ←  trigger_intelligence_refresh [endpoint:/api/v1/intelligence/refresh] @backend/app/main.py:57794
+
+### 读边 (5)
+- `JOIN` @ **_profile_deep_dive_rows** `backend/app/services/intelligence_candidate_supply.py:5348` — _static_confirmed_
+    - WHERE: `c.scope_type = ? AND c.scope_id = ? AND c.content_kind = 'profile_completion' AND c.classification_status = 'candidate' AND c.evidence_json LIKE '%deepDiveStatus%'`
+- `JOIN` @ **continue_timely_candidate_review** `backend/app/services/intelligence_candidate_supply.py:6523` — _static_confirmed_
+    - WHERE: `c.scope_type = ? AND c.scope_id = ? AND c.content_kind = 'timely_intelligence' AND c.classification_status = 'candidate' AND c.summary_status IN ('not_attempted', 'failed') AND c.promoted_intelligence`
+- `SELECT-FROM` @ **_persist_intents** `backend/app/services/intelligence_search_intents.py:1379` — _static_confirmed_
+    - WHERE: `scope_type = ? AND scope_id = ? AND content_kind = ? AND query = ?`
+- `SELECT-FROM` @ **generate_intelligence_search_intents** `backend/app/services/intelligence_search_intents.py:1457` — _static_confirmed_
+    - WHERE: `scope_type = ? AND scope_id = ? AND content_kind IN ({}) AND input_hash = ? AND status = 'ready' AND (expires_at IS NULL OR expires_at > ?)`
+- `SELECT-FROM` @ **get_search_intent_status_for_scope** `backend/app/services/intelligence_search_intents.py:1713` — _static_confirmed_
+    - WHERE: `scope_type = ? AND scope_id = ?`
+
+## `intelligence_sentiment_themes`
+
+- 经验层: **13 行** · 最近写入 created_at=2026-05-21T07:54:04.422929+00:00
+
+### 写边 (1)
+- `INSERT` @ **_persist_themes** `backend/app/services/intelligence_theme_cluster.py:261` — _call_name_match_
+    - chain: _persist_themes @backend/app/services/intelligence_theme_cluster.py:261  ←  recompute_themes @backend/app/services/intelligence_theme_cluster.py:322  ←  list_sentiment_themes_endpoint [endpoint:/api/v1/intelligence/sentiment/themes] @backend/app/main.py:58955
+    - chain: _persist_themes @backend/app/services/intelligence_theme_cluster.py:261  ←  recompute_themes @backend/app/services/intelligence_theme_cluster.py:322  ←  recompute_sentiment_themes_endpoint [endpoint:/api/v1/intelligence/sentiment/themes/recompute] @backend/app/main.py:58911
+    - chain: _persist_themes @backend/app/services/intelligence_theme_cluster.py:261  ←  recompute_themes @backend/app/services/intelligence_theme_cluster.py:322  ←  refresh_sentiment_endpoint [endpoint:/api/v1/intelligence/sentiment/refresh] @backend/app/main.py:58704
+
+### 读边 (6)
+- `SELECT-FROM` @ **collect_signals** `backend/app/services/intelligence_query_strategy.py:61` — _static_confirmed_
+    - WHERE: `scope_type = 'client' AND scope_id = ?`
+- `SELECT-FROM` @ **_persist_themes** `backend/app/services/intelligence_theme_cluster.py:261` — _static_confirmed_
+    - WHERE: `scope_type = ? AND scope_id = ?`
+- `SELECT-FROM` @ **recompute_themes** `backend/app/services/intelligence_theme_cluster.py:322` — _static_confirmed_
+    - WHERE: `scope_type = ? AND scope_id = ?`
+- `SELECT-FROM` @ **list_themes** `backend/app/services/intelligence_theme_cluster.py:376` — _static_confirmed_
+    - WHERE: `scope_type = ? AND scope_id = ?`
+- `SELECT-FROM` @ **fetch_theme_items** `backend/app/services/intelligence_theme_cluster.py:417` — _static_confirmed_
+    - WHERE: `id = ?`
+- `SELECT-FROM` @ **themes_cache_is_fresh** `backend/app/services/intelligence_theme_cluster.py:473` — _static_confirmed_
+    - WHERE: `scope_type = ? AND scope_id = ?`
+
+## `intelligence_source_configs`
+
+- 经验层: **155 行** · 最近写入 created_at=2026-05-21T16:09:38
+  - source_type 分布: official_site_section:72, official_site:19, grant:8, web_search:7, social_org_registry:7, regulatory_risk:7, profile_report:7, procurement:7, partner_peer:7, gov_policy:7, charity_media:7
+
+### 写边 (10)
+- `UPDATE` @ **create_app** `backend/app/main.py:3179` — _needs_human_
+    - chain: create_app @backend/app/main.py:3179  ←  (no caller found — orphan write)
+- `UPDATE` @ **create_app.update_refresh_cycle_settings** `backend/app/main.py:57306` — _static_confirmed_
+    - chain: update_refresh_cycle_settings [endpoint:/api/v1/intelligence/refresh-cycle-settings] @backend/app/main.py:57306
+- `INSERT` @ **ensure_default_source_configs** `backend/app/services/intelligence_candidate_supply.py:1066` — _call_name_match_
+    - chain: ensure_default_source_configs @backend/app/services/intelligence_candidate_supply.py:1066  ←  run_intelligence_candidate_refresh @backend/app/services/intelligence_candidate_supply.py:5967  ←  trigger_intelligence_refresh [endpoint:/api/v1/intelligence/refresh] @backend/app/main.py:57794
+- `UPDATE` @ **_disable_invalid_discovered_sources** `backend/app/services/intelligence_candidate_supply.py:1169` — _call_name_match_
+    - chain: _disable_invalid_discovered_sources @backend/app/services/intelligence_candidate_supply.py:1169  ←  run_intelligence_candidate_refresh @backend/app/services/intelligence_candidate_supply.py:5967  ←  trigger_intelligence_refresh [endpoint:/api/v1/intelligence/refresh] @backend/app/main.py:57794
+- `INSERT` @ **ensure_user_supplied_official_sources** `backend/app/services/intelligence_candidate_supply.py:1198` — _call_name_match_
+    - chain: ensure_user_supplied_official_sources @backend/app/services/intelligence_candidate_supply.py:1198  ←  run_intelligence_candidate_refresh @backend/app/services/intelligence_candidate_supply.py:5967  ←  trigger_intelligence_refresh [endpoint:/api/v1/intelligence/refresh] @backend/app/main.py:57794
+- `INSERT` @ **_upsert_official_site_section_configs** `backend/app/services/intelligence_candidate_supply.py:3431` — _call_name_match_
+    - chain: _upsert_official_site_section_configs @backend/app/services/intelligence_candidate_supply.py:3431  ←  discover_official_site_source_configs @backend/app/services/intelligence_candidate_supply.py:3496  ←  run_intelligence_candidate_refresh @backend/app/services/intelligence_candidate_supply.py:5967  ←  trigger_intelligence_refresh [endpoint:/api/v1/intelligence/refresh] @backend/app/main.py:57794
+- `INSERT` @ **discover_official_site_source_configs** `backend/app/services/intelligence_candidate_supply.py:3496` — _call_name_match_
+    - chain: discover_official_site_source_configs @backend/app/services/intelligence_candidate_supply.py:3496  ←  run_intelligence_candidate_refresh @backend/app/services/intelligence_candidate_supply.py:5967  ←  trigger_intelligence_refresh [endpoint:/api/v1/intelligence/refresh] @backend/app/main.py:57794
+- `UPDATE` @ **_recompute_source_health** `backend/app/services/intelligence_candidate_supply.py:3954` — _call_name_match_
+    - chain: _recompute_source_health @backend/app/services/intelligence_candidate_supply.py:3954  ←  _apply_source_classification_delta @backend/app/services/intelligence_candidate_supply.py:4118  ←  run_intelligence_candidate_refresh @backend/app/services/intelligence_candidate_supply.py:5967  ←  trigger_intelligence_refresh [endpoint:/api/v1/intelligence/refresh] @backend/app/main.py:57794
+- `UPDATE` @ **_insert_fetch_job** `backend/app/services/intelligence_candidate_supply.py:3972` — _call_name_match_
+    - chain: _insert_fetch_job @backend/app/services/intelligence_candidate_supply.py:3972  ←  run_intelligence_candidate_refresh @backend/app/services/intelligence_candidate_supply.py:5967  ←  trigger_intelligence_refresh [endpoint:/api/v1/intelligence/refresh] @backend/app/main.py:57794
+- `UPDATE` @ **_apply_source_classification_delta** `backend/app/services/intelligence_candidate_supply.py:4118` — _call_name_match_
+    - chain: _apply_source_classification_delta @backend/app/services/intelligence_candidate_supply.py:4118  ←  run_intelligence_candidate_refresh @backend/app/services/intelligence_candidate_supply.py:5967  ←  trigger_intelligence_refresh [endpoint:/api/v1/intelligence/refresh] @backend/app/main.py:57794
+
+### 读边 (13)
+- `SELECT-FROM` @ **ensure_default_source_configs** `backend/app/services/intelligence_candidate_supply.py:1066` — _static_confirmed_
+    - WHERE: `scope_type = ? AND scope_id = ? AND enabled = 1`
+    - WHERE: `scope_type = ? AND scope_id = ? AND source_type = ? AND source_url_template = ?`
+- `SELECT-FROM` @ **_disable_invalid_discovered_sources** `backend/app/services/intelligence_candidate_supply.py:1169` — _static_confirmed_
+    - WHERE: `scope_type = ? AND scope_id = ? AND enabled = 1 AND source_type IN ('official_site', 'official_site_section')`
+- `SELECT-FROM` @ **ensure_user_supplied_official_sources** `backend/app/services/intelligence_candidate_supply.py:1198` — _static_confirmed_
+    - WHERE: `scope_type = ? AND scope_id = ? AND enabled = 1 AND discovery_source = 'user_focus_directive'`
+    - WHERE: `scope_type = ? AND scope_id = ? AND source_type = 'official_site' AND source_url_template = ?`
+- `SELECT-FROM` @ **_official_domains_for_scope** `backend/app/services/intelligence_candidate_supply.py:1384` — _static_confirmed_
+    - WHERE: `scope_type = ? AND scope_id = ? AND enabled = 1 AND source_type IN ('official_site', 'official_site_section')`
+- `SELECT-FROM` @ **_upsert_official_site_section_configs** `backend/app/services/intelligence_candidate_supply.py:3431` — _static_confirmed_
+    - WHERE: `scope_type = ? AND scope_id = ? AND source_type = 'official_site_section' AND source_url_template = ?`
+- `SELECT-FROM` @ **discover_official_site_source_configs** `backend/app/services/intelligence_candidate_supply.py:3496` — _static_confirmed_
+    - WHERE: `scope_type = ? AND scope_id = ? AND source_type = 'official_site' AND discovery_source = 'official_site_search' AND enabled = 1`
+    - WHERE: `scope_type = ? AND scope_id = ? AND source_type = 'official_site' AND source_url_template = ?`
+- `SELECT-FROM` @ **_recompute_source_health** `backend/app/services/intelligence_candidate_supply.py:3954` — _static_confirmed_
+    - WHERE: `id = ?`
+- `JOIN` @ **_profile_deep_dive_rows** `backend/app/services/intelligence_candidate_supply.py:5348` — _static_confirmed_
+    - WHERE: `c.scope_type = ? AND c.scope_id = ? AND c.content_kind = 'profile_completion' AND c.classification_status = 'candidate' AND c.evidence_json LIKE '%deepDiveStatus%'`
+- `SELECT-FROM+JOIN` @ **continue_timely_candidate_review** `backend/app/services/intelligence_candidate_supply.py:6523` — _static_confirmed_
+    - WHERE: `c.scope_type = ? AND c.scope_id = ? AND c.content_kind = 'timely_intelligence' AND c.classification_status = 'candidate' AND c.summary_status IN ('not_attempted', 'failed') AND c.promoted_intelligence`
+    - WHERE: `scope_type = ? AND scope_id = ? AND enabled = 1`
+- `SELECT-FROM` @ **get_candidate_supply_status_for_scope** `backend/app/services/intelligence_candidate_supply.py:6708` — _static_confirmed_
+    - WHERE: `scope_type = ? AND scope_id = ? AND enabled = 1`
+    - WHERE: `scope_type = ? AND scope_id = ? AND enabled = 1 AND last_status = 'failed'`
+    - WHERE: `scope_type = ? AND scope_id = ? AND enabled = 1 AND next_due_at IS NOT NULL AND next_due_at <= ?`
+    - WHERE: `scope_type = ? AND scope_id = ? AND enabled = 1 AND source_type = 'official_site' AND discovery_source = 'official_site_search'`
+- `SELECT-FROM` @ **get_source_diagnostics** `backend/app/services/intelligence_candidate_supply.py:6836` — _static_confirmed_
+    - WHERE: `scope_type = ? AND scope_id = ? AND enabled = 1`
+- `SELECT-FROM` @ **context_from_candidate_row** `backend/app/services/intelligence_feedback.py:170` — _static_confirmed_
+    - WHERE: `id = ?`
+- `SELECT-FROM` @ **source_feedback_adjustment** `backend/app/services/intelligence_feedback.py:478` — _static_confirmed_
+    - WHERE: `id = ?`
+
+## `intelligence_verification_rules`
+
+- 经验层: **0 行**
+
+### 写边 (3)
+- `INSERT+UPDATE` @ **create_app** `backend/app/main.py:3179` — _needs_human_
+    - chain: create_app @backend/app/main.py:3179  ←  (no caller found — orphan write)
+- `INSERT+UPDATE` @ **create_app.save_verification_rule** `backend/app/main.py:57504` — _static_confirmed_
+    - chain: save_verification_rule [endpoint:/api/v1/intelligence/verification-rules] @backend/app/main.py:57504
+- `INSERT+UPDATE` @ **create_app.submit_verification_feedback** `backend/app/main.py:57564` — _static_confirmed_
+    - chain: submit_verification_feedback [endpoint:/api/v1/intelligence/verification-feedback] @backend/app/main.py:57564
+
+### 读边 (5)
+- `SELECT-FROM` @ **create_app** `backend/app/main.py:3179` — _static_confirmed_
+    - WHERE: `id=?`
+    - WHERE: `scope_type=? AND scope_id=?`
+- `SELECT-FROM` @ **create_app.list_verification_rules** `backend/app/main.py:57469` — _static_confirmed_
+- `SELECT-FROM` @ **create_app.save_verification_rule** `backend/app/main.py:57504` — _static_confirmed_
+    - WHERE: `id=?`
+    - WHERE: `scope_type=? AND scope_id=?`
+- `SELECT-FROM` @ **create_app.submit_verification_feedback** `backend/app/main.py:57564` — _static_confirmed_
+    - WHERE: `id=?`
+    - WHERE: `scope_type=? AND scope_id=?`
+- `SELECT-FROM` @ **_rule_rows** `backend/app/services/intelligence_candidate_supply.py:2059` — _static_confirmed_
+    - WHERE: `(scope_type = 'global' AND scope_id = '') OR (scope_type = ? AND scope_id = ?)`
+
+## `job_stage_runs`
+
+- 经验层: **266 行** · 最近写入 created_at=2026-06-05T15:04:03
+
+### 写边 (0)
+- (无静态写边)  ⚠️ **0 写边但真库有行 → needs_human (写入路径在静态扫描盲区:可能动态表名/ORM/外部进程)**
+
+### 读边 (1)
+- `SELECT-FROM` @ **list_analysis_job_stages** `backend/app/services/analysis_center.py:1063` — _static_confirmed_
+    - WHERE: `job_id = ?`
+
+## `json_each`
+
+- 经验层: 真库**无此表** (静态边 0写/1读)
+
+### 写边 (0)
+- (无静态写边)
+
+### 读边 (1)
+- `SELECT-FROM` @ **_json_department_match** `backend/app/services/data_center_access.py:80` — _static_confirmed_
+    - WHERE: `CAST(dc_dept.value AS TEXT) IN ({?}))`
+
+## `judgment_versions`
+
+- 经验层: **65 行** · 最近写入 created_at=2026-06-05T15:04:03
+
+### 写边 (5)
+- `INSERT` @ **create_app._save_strategic_thought_review** `backend/app/main.py:20629` — _call_name_match_
+    - chain: _save_strategic_thought_review @backend/app/main.py:20629  ←  review_strategic_thought [endpoint:/api/v1/strategic/thoughts/{thought_id}/review] @backend/app/main.py:42077
+- `UPDATE` @ **_sync_event_line_client_scope_records** `backend/app/main.py:2484` — _needs_human_
+    - chain: _sync_event_line_client_scope_records [worker:_sync_event_line_client_scope_records] @backend/app/main.py:2484
+- `INSERT` @ **create_app** `backend/app/main.py:3179` — _needs_human_
+    - chain: create_app @backend/app/main.py:3179  ←  (no caller found — orphan write)
+- `INSERT` @ **create_app.promote_workspace_answer_to_judgment_api** `backend/app/main.py:44675` — _static_confirmed_
+    - chain: promote_workspace_answer_to_judgment_api [endpoint:/api/v1/workspace-answer/{message_id}/promote-to-judgment] @backend/app/main.py:44675
+- `UPDATE` @ **fanout_contradictions_to_judgment_impact** `backend/app/services/knowledge_v2.py:2935` — _call_name_match_
+    - chain: fanout_contradictions_to_judgment_impact @backend/app/services/knowledge_v2.py:2935  ←  ingest_document_knowledge @backend/app/services/knowledge_base.py:2802  ←  upload_task_attachment [endpoint:/api/v1/tasks/{task_id}/attachments] @backend/app/main.py:53434
+    - chain: fanout_contradictions_to_judgment_impact @backend/app/services/knowledge_v2.py:2935  ←  ingest_document_knowledge @backend/app/services/knowledge_base.py:2802  ←  _build_local_event_line_report_snapshot @backend/app/main.py:33643  ←  get_event_line_report_snapshot [endpoint:/api/v1/event-lines/{event_line_id}/report-snapshot] @backend/app/main.py:34329
+    - chain: fanout_contradictions_to_judgment_impact @backend/app/services/knowledge_v2.py:2935  ←  ingest_document_knowledge @backend/app/services/knowledge_base.py:2802  ←  _process_one_pdf @backend/app/services/internet_pdf_worker.py:96  ←  _worker_loop [worker:_worker_loop] @backend/app/services/internet_pdf_worker.py:205
+    - chain: fanout_contradictions_to_judgment_impact @backend/app/services/knowledge_v2.py:2935  ←  ingest_document_knowledge @backend/app/services/knowledge_base.py:2802  ←  backfill_workspace_import @backend/app/services/knowledge_v2.py:3943  ←  backfill_client_workspace_imports [endpoint:/api/v1/clients/{client_id}/workspace/backfill-imports] @backend/app/main.py:50039
+    - chain: fanout_contradictions_to_judgment_impact @backend/app/services/knowledge_v2.py:2935  ←  ingest_document_knowledge @backend/app/services/knowledge_base.py:2802  ←  create_client_text_document @backend/app/main.py:16116  ←  create_client_document_from_text [endpoint:/api/v1/clients/{client_id}/documents/from-text] @backend/app/main.py:49576
+    - chain: fanout_contradictions_to_judgment_impact @backend/app/services/knowledge_v2.py:2935  ←  ingest_document_knowledge @backend/app/services/knowledge_base.py:2802  ←  execute_parse_failure_retry_batch @backend/app/main.py:42534  ←  retry_client_parse_failures [endpoint:/api/v1/clients/{client_id}/knowledge/parse-failures/retry] @backend/app/main.py:42800
+
+### 读边 (20)
+- `SELECT-FROM` @ **create_app.build_template_fill_context** `backend/app/main.py:16786` — _static_confirmed_
+    - WHERE: `client_id = ? AND status = 'confirmed' AND COALESCE(summary, '') != ''`
+- `SELECT-FROM` @ **create_app._collect_strategic_insight_context** `backend/app/main.py:19685` — _static_confirmed_
+    - WHERE: `client_id = ? AND COALESCE(summary, '') != ''`
+- `SELECT-FROM` @ **_sync_event_line_client_scope_records** `backend/app/main.py:2484` — _static_confirmed_
+    - WHERE: `target_type = 'event_line' AND target_id = ?`
+- `SELECT-FROM` @ **create_app.get_client_knowledge_status** `backend/app/main.py:27902` — _static_confirmed_
+    - WHERE: `client_id = ? AND COALESCE(needs_reevaluation, 0) = 1`
+    - WHERE: `client_id = ? AND status = 'confirmed' AND updated_at >= ?`
+- `SELECT-FROM` @ **create_app** `backend/app/main.py:3179` — _static_confirmed_
+    - WHERE: `client_id = ? AND COALESCE(needs_reevaluation, 0) = 1`
+    - WHERE: `client_id = ? AND COALESCE(summary, '') != ''`
+    - WHERE: `client_id = ? AND status = 'confirmed' AND COALESCE(summary, '') != ''`
+    - WHERE: `client_id = ? AND status = 'confirmed' AND updated_at >= ?`
+    - WHERE: `client_id = ? AND topic LIKE ? AND status = 'confirmed'`
+- `SELECT-FROM` @ **create_app._resolve_client_id_for_evidence_quality_annotation** `backend/app/main.py:3650` — _static_confirmed_
+    - WHERE: `id = ?`
+- `SELECT-FROM` @ **create_app.resolve_client_authority** `backend/app/main.py:41243` — _static_confirmed_
+    - WHERE: `client_id = ? AND topic LIKE ? AND status = 'confirmed'`
+- `SELECT-FROM` @ **list_judgment_versions** `backend/app/services/analysis_center.py:1148` — _static_confirmed_
+    - WHERE: `{?}`
+- `SELECT-FROM` @ **_build_analysis_center_summary** `backend/app/services/analysis_center.py:1548` — _static_confirmed_
+    - WHERE: `client_id = ? UNION ALL SELECT 'theme', COUNT(*) FROM theme_clusters WHERE client_id = ? UNION ALL SELECT 'conflict', COUNT(*) FROM conflict_groups WHERE client_id = ? UNION ALL SELECT 'open_q', COUNT`
+- `SELECT-FROM` @ **_sync_judgment_versions** `backend/app/services/analysis_center.py:2632` — _static_confirmed_
+    - WHERE: `client_id = ? AND target_type = 'client' AND target_id = ? AND topic = ? AND COALESCE(invalidated_by, '') = ''`
+    - WHERE: `client_id = ? AND target_type = 'client' AND target_id = ? AND topic = ? AND source_snapshot_hash = ?`
+    - WHERE: `client_id = ? AND target_type = 'event_line' AND target_id = ? AND topic = ? AND COALESCE(invalidated_by, '') = ''`
+    - WHERE: `client_id = ? AND target_type = 'event_line' AND target_id = ? AND topic = ? AND source_snapshot_hash = ?`
+- `SELECT-FROM` @ **confirm_judgment** `backend/app/services/analysis_center.py:3803` — _static_confirmed_
+    - WHERE: `id = ?`
+- `SELECT-FROM` @ **get_analysis_migration_metrics** `backend/app/services/analysis_center.py:3821` — _static_confirmed_
+    - WHERE: `authority_level = 'approved' AND COALESCE(invalidated_by, '') != ''`
+    - WHERE: `authority_level = 'approved' AND updated_at >= ?`
+    - WHERE: `authority_level = 'candidate' AND created_at >= ?`
+- `SELECT-FROM` @ **build_client_page_context_pack** `backend/app/services/analysis_context.py:294` — _static_confirmed_
+    - WHERE: `client_id = ? AND status = 'approved'`
+- `SELECT-FROM` @ **_build_metrics** `backend/app/services/digital_asset_center.py:3129` — _static_confirmed_
+    - WHERE: `client_id = ?`
+- `SELECT-FROM` @ **_collect_sources** `backend/app/services/digital_asset_center.py:3179` — _static_confirmed_
+    - WHERE: `client_id = ?`
+- `SELECT-FROM` @ **_build_digital_asset_pulse** `backend/app/services/digital_asset_center.py:924` — _static_confirmed_
+    - WHERE: `COALESCE(c.alias, '') != ? AND COALESCE(c.name, '') != ? AND date(j.created_at) >= date('now', '-7 days')`
+- `SELECT-FROM` @ **build_digital_asset_narrative_context** `backend/app/services/digital_asset_narrative.py:201` — _static_confirmed_
+    - WHERE: `client_id = ?`
+- `SELECT-FROM` @ **fanout_contradictions_to_judgment_impact** `backend/app/services/knowledge_v2.py:2935` — _static_confirmed_
+    - WHERE: `client_id = ? AND status = 'confirmed' AND COALESCE(needs_reevaluation, 0) = 0`
+- `SELECT-FROM` @ **materialize_workspace_native_documents** `backend/app/services/knowledge_v2.py:3782` — _static_confirmed_
+    - WHERE: `client_id = ?`
+- `SELECT-FROM` @ **_render_event_line_doc** `backend/app/services/workspace_relation_docs.py:119` — _static_confirmed_
+    - WHERE: `target_type = 'event_line' AND target_id = ?`
+
+## `kernel_primary_rollout_runs`
+
+- 经验层: **0 行**
+
+### 写边 (3)
+- `INSERT` @ **start_kernel_primary_rollout** `backend/app/services/kernel_primary_rollout.py:331` — _call_name_match_
+    - chain: start_kernel_primary_rollout @backend/app/services/kernel_primary_rollout.py:331  ←  start_kernel_primary_rollout_api [endpoint:/api/v1/data-center/kernel-primary-rollout/start] @backend/app/main.py:44868
+- `UPDATE` @ **complete_kernel_primary_rollout** `backend/app/services/kernel_primary_rollout.py:385` — _call_name_match_
+    - chain: complete_kernel_primary_rollout @backend/app/services/kernel_primary_rollout.py:385  ←  complete_kernel_primary_rollout_api [endpoint:/api/v1/data-center/kernel-primary-rollout/{run_id}/complete] @backend/app/main.py:44885
+- `UPDATE` @ **rollback_kernel_primary_rollout** `backend/app/services/kernel_primary_rollout.py:469` — _call_name_match_
+    - chain: rollback_kernel_primary_rollout @backend/app/services/kernel_primary_rollout.py:469  ←  rollback_kernel_primary_rollout_api [endpoint:/api/v1/data-center/kernel-primary-rollout/{run_id}/rollback] @backend/app/main.py:44900
+
+### 读边 (2)
+- `SELECT-FROM` @ **list_kernel_primary_rollout_runs** `backend/app/services/kernel_primary_rollout.py:301` — _static_confirmed_
+- `SELECT-FROM` @ **get_kernel_primary_rollout_run** `backend/app/services/kernel_primary_rollout.py:319` — _static_confirmed_
+    - WHERE: `id = ?`
+
+## `key_decisions`
+
+- 经验层: **0 行**
+
+### 写边 (0)
+- (无静态写边)
+
+### 读边 (1)
+- `SELECT-FROM` @ **_weekly_mainline_collect_story_web** `backend/app/services/review_narrative.py:435` — _static_confirmed_
+    - WHERE: `client_id = ? AND COALESCE(execution_status, '') != 'superseded'`
+
+## `keyword`
+
+- 经验层: 真库**无此表** (静态边 1写/0读)
+
+### 写边 (1)
+- `UPDATE` @ **detect_update_relation** `backend/app/services/ingest_pipeline.py:402` — _call_name_match_
+    - chain: detect_update_relation @backend/app/services/ingest_pipeline.py:402  ←  ingest @backend/app/services/ingest_pipeline.py:659  ←  extract_from_document @backend/app/services/document_llm_extractor.py:261  ←  process @backend/app/services/task_runners/fact_extract_runner.py:41  ←  run_due_local_model_tasks @backend/app/services/local_model_optimizer.py:942  ←  local_model_optimizer_worker_loop [worker:local_model_optimizer_worker_loop] @backend/app/services/local_model_optimizer.py:1026
+    - chain: detect_update_relation @backend/app/services/ingest_pipeline.py:402  ←  ingest @backend/app/services/ingest_pipeline.py:659  ←  extract_from_document @backend/app/services/document_llm_extractor.py:261  ←  process @backend/app/services/task_runners/fact_extract_runner.py:41  ←  run_due_local_model_tasks @backend/app/services/local_model_optimizer.py:942  ←  run_local_ai_now [endpoint:/api/v1/local-ai/run-now] @backend/app/main.py:36970
+
+### 读边 (0)
+- (无静态读边)
+
+## `knowledge_document_versions`
+
+- 经验层: **237 行** · 最近写入 created_at=2026-05-26T21:10:44
+
+### 写边 (2)
+- `INSERT` @ **ingest_document_knowledge** `backend/app/services/knowledge_base.py:2802` — _call_name_match_
+    - chain: ingest_document_knowledge @backend/app/services/knowledge_base.py:2802  ←  upload_task_attachment [endpoint:/api/v1/tasks/{task_id}/attachments] @backend/app/main.py:53434
+    - chain: ingest_document_knowledge @backend/app/services/knowledge_base.py:2802  ←  _build_local_event_line_report_snapshot @backend/app/main.py:33643  ←  get_event_line_report_snapshot [endpoint:/api/v1/event-lines/{event_line_id}/report-snapshot] @backend/app/main.py:34329
+    - chain: ingest_document_knowledge @backend/app/services/knowledge_base.py:2802  ←  _process_one_pdf @backend/app/services/internet_pdf_worker.py:96  ←  _worker_loop [worker:_worker_loop] @backend/app/services/internet_pdf_worker.py:205
+    - chain: ingest_document_knowledge @backend/app/services/knowledge_base.py:2802  ←  backfill_workspace_import @backend/app/services/knowledge_v2.py:3943  ←  backfill_client_workspace_imports [endpoint:/api/v1/clients/{client_id}/workspace/backfill-imports] @backend/app/main.py:50039
+    - chain: ingest_document_knowledge @backend/app/services/knowledge_base.py:2802  ←  create_client_text_document @backend/app/main.py:16116  ←  create_client_document_from_text [endpoint:/api/v1/clients/{client_id}/documents/from-text] @backend/app/main.py:49576
+    - chain: ingest_document_knowledge @backend/app/services/knowledge_base.py:2802  ←  execute_parse_failure_retry_batch @backend/app/main.py:42534  ←  retry_client_parse_failures [endpoint:/api/v1/clients/{client_id}/knowledge/parse-failures/retry] @backend/app/main.py:42800
+- `INSERT` @ **refresh_existing_knowledge_document** `backend/app/services/knowledge_base.py:3191` — _call_name_match_
+    - chain: refresh_existing_knowledge_document @backend/app/services/knowledge_base.py:3191  ←  hydrate_missing_surrogates @backend/app/services/knowledge_base.py:2639  ←  backfill_knowledge_documents @backend/app/services/knowledge_base.py:3346  ←  process_knowledge_job @backend/app/main.py:4809  ←  knowledge_worker_loop [worker:knowledge_worker_loop] @backend/app/main.py:5110
+
+### 读边 (4)
+- `SELECT-FROM` @ **hydrate_missing_surrogates** `backend/app/services/knowledge_base.py:2639` — _static_confirmed_
+    - WHERE: `kd.client_id = ?`
+    - WHERE: `kv.knowledge_document_id = kd.id`
+- `SELECT-FROM` @ **refresh_existing_knowledge_document** `backend/app/services/knowledge_base.py:3191` — _static_confirmed_
+    - WHERE: `knowledge_document_id = ?`
+- `SELECT-FROM+JOIN` @ **_document_rows_for_enqueue** `backend/app/services/local_model_optimizer.py:344` — _static_confirmed_
+    - WHERE: `knowledge_document_id = kd.id )`
+    - WHERE: `knowledge_document_id = kd.id ) {?}`
+- `SELECT-FROM+JOIN` @ **_load_document_context** `backend/app/services/local_model_optimizer.py:552` — _static_confirmed_
+    - WHERE: `knowledge_document_id = kd.id ) WHERE kd.id = ?`
+
+## `knowledge_documents`
+
+- 经验层: **611 行** · 最近写入 created_at=2026-06-05T07:30:34
+
+### 写边 (15)
+- `UPDATE` @ **_init_schema** `backend/app/db.py:60` — _needs_human_
+    - chain: _init_schema @backend/app/db.py:60  ←  __init__ @backend/app/db.py:49
+- `UPDATE` @ **create_app._force_online_transcript_document_classification** `backend/app/main.py:14274` — _call_name_match_
+    - chain: _force_online_transcript_document_classification @backend/app/main.py:14274  ←  migrate_client_link_material_documents_to_online_transcripts @backend/app/main.py:14391  ←  ensure_standard_client_folders @backend/app/main.py:14645  ←  apply_client_document_auto_repair [endpoint:/api/v1/clients/{client_id}/documents/auto-repair/apply] @backend/app/main.py:39062
+    - chain: _force_online_transcript_document_classification @backend/app/main.py:14274  ←  migrate_client_link_material_documents_to_online_transcripts @backend/app/main.py:14391  ←  ensure_standard_client_folders @backend/app/main.py:14645  ←  apply_client_folder_recommendation [endpoint:/api/v1/clients/{client_id}/folders/apply-recommendation] @backend/app/main.py:39044
+    - chain: _force_online_transcript_document_classification @backend/app/main.py:14274  ←  migrate_client_link_material_documents_to_online_transcripts @backend/app/main.py:14391  ←  ensure_standard_client_folders @backend/app/main.py:14645  ←  create_client [endpoint:/api/v1/clients] @backend/app/main.py:37631
+    - chain: _force_online_transcript_document_classification @backend/app/main.py:14274  ←  migrate_client_link_material_documents_to_online_transcripts @backend/app/main.py:14391  ←  ensure_standard_client_folders @backend/app/main.py:14645  ←  create_client_folder [endpoint:/api/v1/clients/{client_id}/folders] @backend/app/main.py:38854
+    - chain: _force_online_transcript_document_classification @backend/app/main.py:14274  ←  migrate_client_link_material_documents_to_online_transcripts @backend/app/main.py:14391  ←  ensure_standard_client_folders @backend/app/main.py:14645  ←  delete_client_folder [endpoint:/api/v1/clients/{client_id}/folders/{folder_id}] @backend/app/main.py:39117
+    - chain: _force_online_transcript_document_classification @backend/app/main.py:14274  ←  migrate_client_link_material_documents_to_online_transcripts @backend/app/main.py:14391  ←  ensure_standard_client_folders @backend/app/main.py:14645  ←  generate_client_dna_documents [endpoint:/api/v1/clients/{client_id}/dna-documents/generate] @backend/app/main.py:45574
+- `UPDATE` @ **_sync_task_attachment_scope** `backend/app/main.py:2237` — _needs_human_
+    - chain: _sync_task_attachment_scope [worker:_sync_task_attachment_scope] @backend/app/main.py:2237
+- `UPDATE` @ **create_app** `backend/app/main.py:3179` — _needs_human_
+    - chain: create_app @backend/app/main.py:3179  ←  (no caller found — orphan write)
+- `UPDATE` @ **create_app._set_document_auto_repair_folder** `backend/app/main.py:38480` — _call_name_match_
+    - chain: _set_document_auto_repair_folder @backend/app/main.py:38480  ←  _apply_document_auto_repair_item @backend/app/main.py:38541  ←  _run_workspace_document_auto_repair_job @backend/app/main.py:38586  ←  process_knowledge_job @backend/app/main.py:4809  ←  knowledge_worker_loop [worker:knowledge_worker_loop] @backend/app/main.py:5110
+    - chain: _set_document_auto_repair_folder @backend/app/main.py:38480  ←  _apply_document_auto_repair_item @backend/app/main.py:38541  ←  reconcile_pending_documents_for_client @backend/app/main.py:38673  ←  ensure_standard_client_folders @backend/app/main.py:14645  ←  apply_client_document_auto_repair [endpoint:/api/v1/clients/{client_id}/documents/auto-repair/apply] @backend/app/main.py:39062
+    - chain: _set_document_auto_repair_folder @backend/app/main.py:38480  ←  _apply_document_auto_repair_item @backend/app/main.py:38541  ←  reconcile_pending_documents_for_client @backend/app/main.py:38673  ←  ensure_standard_client_folders @backend/app/main.py:14645  ←  apply_client_folder_recommendation [endpoint:/api/v1/clients/{client_id}/folders/apply-recommendation] @backend/app/main.py:39044
+    - chain: _set_document_auto_repair_folder @backend/app/main.py:38480  ←  _apply_document_auto_repair_item @backend/app/main.py:38541  ←  reconcile_pending_documents_for_client @backend/app/main.py:38673  ←  ensure_standard_client_folders @backend/app/main.py:14645  ←  create_client [endpoint:/api/v1/clients] @backend/app/main.py:37631
+    - chain: _set_document_auto_repair_folder @backend/app/main.py:38480  ←  _apply_document_auto_repair_item @backend/app/main.py:38541  ←  reconcile_pending_documents_for_client @backend/app/main.py:38673  ←  ensure_standard_client_folders @backend/app/main.py:14645  ←  create_client_folder [endpoint:/api/v1/clients/{client_id}/folders] @backend/app/main.py:38854
+    - chain: _set_document_auto_repair_folder @backend/app/main.py:38480  ←  _apply_document_auto_repair_item @backend/app/main.py:38541  ←  reconcile_pending_documents_for_client @backend/app/main.py:38673  ←  ensure_standard_client_folders @backend/app/main.py:14645  ←  delete_client_folder [endpoint:/api/v1/clients/{client_id}/folders/{folder_id}] @backend/app/main.py:39117
+- `UPDATE` @ **create_app._soft_mark_document_invalid** `backend/app/main.py:38512` — _call_name_match_
+    - chain: _soft_mark_document_invalid @backend/app/main.py:38512  ←  _apply_document_auto_repair_item @backend/app/main.py:38541  ←  _run_workspace_document_auto_repair_job @backend/app/main.py:38586  ←  process_knowledge_job @backend/app/main.py:4809  ←  knowledge_worker_loop [worker:knowledge_worker_loop] @backend/app/main.py:5110
+    - chain: _soft_mark_document_invalid @backend/app/main.py:38512  ←  _apply_document_auto_repair_item @backend/app/main.py:38541  ←  reconcile_pending_documents_for_client @backend/app/main.py:38673  ←  ensure_standard_client_folders @backend/app/main.py:14645  ←  apply_client_document_auto_repair [endpoint:/api/v1/clients/{client_id}/documents/auto-repair/apply] @backend/app/main.py:39062
+    - chain: _soft_mark_document_invalid @backend/app/main.py:38512  ←  _apply_document_auto_repair_item @backend/app/main.py:38541  ←  reconcile_pending_documents_for_client @backend/app/main.py:38673  ←  ensure_standard_client_folders @backend/app/main.py:14645  ←  apply_client_folder_recommendation [endpoint:/api/v1/clients/{client_id}/folders/apply-recommendation] @backend/app/main.py:39044
+    - chain: _soft_mark_document_invalid @backend/app/main.py:38512  ←  _apply_document_auto_repair_item @backend/app/main.py:38541  ←  reconcile_pending_documents_for_client @backend/app/main.py:38673  ←  ensure_standard_client_folders @backend/app/main.py:14645  ←  create_client [endpoint:/api/v1/clients] @backend/app/main.py:37631
+    - chain: _soft_mark_document_invalid @backend/app/main.py:38512  ←  _apply_document_auto_repair_item @backend/app/main.py:38541  ←  reconcile_pending_documents_for_client @backend/app/main.py:38673  ←  ensure_standard_client_folders @backend/app/main.py:14645  ←  create_client_folder [endpoint:/api/v1/clients/{client_id}/folders] @backend/app/main.py:38854
+    - chain: _soft_mark_document_invalid @backend/app/main.py:38512  ←  _apply_document_auto_repair_item @backend/app/main.py:38541  ←  reconcile_pending_documents_for_client @backend/app/main.py:38673  ←  ensure_standard_client_folders @backend/app/main.py:14645  ←  delete_client_folder [endpoint:/api/v1/clients/{client_id}/folders/{folder_id}] @backend/app/main.py:39117
+- `UPDATE` @ **create_app._apply_client_folder_recommendation_plan** `backend/app/main.py:38751` — _call_name_match_
+    - chain: _apply_client_folder_recommendation_plan @backend/app/main.py:38751  ←  apply_client_folder_recommendation [endpoint:/api/v1/clients/{client_id}/folders/apply-recommendation] @backend/app/main.py:39044
+- `UPDATE` @ **create_app.update_client_folder** `backend/app/main.py:38884` — _static_confirmed_
+    - chain: update_client_folder [endpoint:/api/v1/clients/{client_id}/folders/{folder_id}] @backend/app/main.py:38884
+- `UPDATE` @ **create_app.move_client_document_folder** `backend/app/main.py:38933` — _static_confirmed_
+    - chain: move_client_document_folder [endpoint:/api/v1/clients/{client_id}/documents/{document_id}/move-folder] @backend/app/main.py:38933
+- `UPDATE` @ **create_app._apply_version_chain** `backend/app/main.py:4770` — _call_name_match_
+    - chain: _apply_version_chain @backend/app/main.py:4770  ←  process_knowledge_job @backend/app/main.py:4809  ←  knowledge_worker_loop [worker:knowledge_worker_loop] @backend/app/main.py:5110
+- `UPDATE` @ **sync_human_file_locations_for_client** `backend/app/services/knowledge_base.py:2000` — _static_confirmed_
+    - chain: sync_human_file_locations_for_client [worker:sync_human_file_locations_for_client] @backend/app/services/knowledge_base.py:2000
+- `INSERT+UPDATE` @ **ingest_document_knowledge** `backend/app/services/knowledge_base.py:2802` — _call_name_match_
+    - chain: ingest_document_knowledge @backend/app/services/knowledge_base.py:2802  ←  upload_task_attachment [endpoint:/api/v1/tasks/{task_id}/attachments] @backend/app/main.py:53434
+    - chain: ingest_document_knowledge @backend/app/services/knowledge_base.py:2802  ←  _build_local_event_line_report_snapshot @backend/app/main.py:33643  ←  get_event_line_report_snapshot [endpoint:/api/v1/event-lines/{event_line_id}/report-snapshot] @backend/app/main.py:34329
+    - chain: ingest_document_knowledge @backend/app/services/knowledge_base.py:2802  ←  _process_one_pdf @backend/app/services/internet_pdf_worker.py:96  ←  _worker_loop [worker:_worker_loop] @backend/app/services/internet_pdf_worker.py:205
+    - chain: ingest_document_knowledge @backend/app/services/knowledge_base.py:2802  ←  backfill_workspace_import @backend/app/services/knowledge_v2.py:3943  ←  backfill_client_workspace_imports [endpoint:/api/v1/clients/{client_id}/workspace/backfill-imports] @backend/app/main.py:50039
+    - chain: ingest_document_knowledge @backend/app/services/knowledge_base.py:2802  ←  create_client_text_document @backend/app/main.py:16116  ←  create_client_document_from_text [endpoint:/api/v1/clients/{client_id}/documents/from-text] @backend/app/main.py:49576
+    - chain: ingest_document_knowledge @backend/app/services/knowledge_base.py:2802  ←  execute_parse_failure_retry_batch @backend/app/main.py:42534  ←  retry_client_parse_failures [endpoint:/api/v1/clients/{client_id}/knowledge/parse-failures/retry] @backend/app/main.py:42800
+- `UPDATE` @ **refresh_existing_knowledge_document** `backend/app/services/knowledge_base.py:3191` — _call_name_match_
+    - chain: refresh_existing_knowledge_document @backend/app/services/knowledge_base.py:3191  ←  hydrate_missing_surrogates @backend/app/services/knowledge_base.py:2639  ←  backfill_knowledge_documents @backend/app/services/knowledge_base.py:3346  ←  process_knowledge_job @backend/app/main.py:4809  ←  knowledge_worker_loop [worker:knowledge_worker_loop] @backend/app/main.py:5110
+- `INSERT+UPDATE` @ **_sync_legacy_knowledge_document** `backend/app/services/knowledge_v2.py:1936` — _static_confirmed_
+    - chain: _sync_legacy_knowledge_document [worker:_sync_legacy_knowledge_document] @backend/app/services/knowledge_v2.py:1936
+- `UPDATE` @ **_migrate_one_client** `backend/app/services/unified_workspace_migrator.py:108` — _call_name_match_
+    - chain: _migrate_one_client @backend/app/services/unified_workspace_migrator.py:108  ←  migrate_all_clients @backend/app/services/unified_workspace_migrator.py:281  ←  unified_workspace_migrate_endpoint [endpoint:/api/v1/admin/unified-workspace-migrate] @backend/app/main.py:36643
+
+### 读边 (38)
+- `SELECT-FROM` @ **_init_schema** `backend/app/db.py:60` — _static_confirmed_
+    - WHERE: `kd.id = document_chunks.knowledge_document_id`
+- `SELECT-FROM` @ **create_app._client_folder_file_count** `backend/app/main.py:14483` — _static_confirmed_
+    - WHERE: `client_id = ? AND human_folder_category = ?`
+- `JOIN` @ **create_app._collect_strategic_insight_context** `backend/app/main.py:19685` — _static_confirmed_
+    - WHERE: `kd.client_id = ?`
+- `SELECT-FROM` @ **_sync_task_attachment_scope** `backend/app/main.py:2237` — _static_confirmed_
+    - WHERE: `document_id = ?`
+- `SELECT-FROM+JOIN` @ **create_app** `backend/app/main.py:3179` — _static_confirmed_
+    - WHERE: `client_id = ? AND human_folder_category = ?`
+    - WHERE: `client_id = ? AND knowledge_document_id IN ( SELECT id FROM knowledge_documents WHERE client_id = ? AND document_id = ? )`
+    - WHERE: `client_id = ? AND lifecycle_status = 'current' AND (import_source_path = ? OR current_human_path = ? OR original_path = ?)`
+    - WHERE: `client_id = ? AND lifecycle_status = 'current' AND binary_hash = ?`
+    - WHERE: `client_id = ? AND surrogate_id IN ( SELECT id FROM knowledge_surrogates WHERE client_id = ? AND knowledge_document_id IN ( SELECT id FROM knowledge_documents WHERE client_id = ? AND document_id = ? ) `
+- `SELECT-FROM` @ **create_app._lookup_version_info_for_kernel** `backend/app/main.py:3423` — _static_confirmed_
+    - WHERE: `document_id = ?`
+    - WHERE: `version_chain_id = ?`
+- `SELECT-FROM` @ **create_app.get_local_ai_coverage** `backend/app/main.py:37024` — _static_confirmed_
+- `JOIN` @ **create_app._client_folder_recommendation_rows** `backend/app/main.py:37916` — _static_confirmed_
+    - WHERE: `d.client_id = ?`
+- `JOIN` @ **create_app._auto_repair_rows** `backend/app/main.py:38075` — _static_confirmed_
+    - WHERE: `d.client_id = ?`
+    - WHERE: `d.client_id = ? {?}`
+- `JOIN` @ **create_app._pending_document_ids_for_auto_reconcile** `backend/app/main.py:38644` — _static_confirmed_
+    - WHERE: `d.client_id = ? AND ( COALESCE(cf.label, '') IN (`
+    - WHERE: `d.client_id = ? AND ( COALESCE(cf.label, '') IN ({?}) OR COALESCE(v.visible_category, '') IN ({?}) OR COALESCE(k.human_folder_category, '') IN ({?}) )`
+- `SELECT-FROM` @ **create_app._apply_client_folder_recommendation_plan** `backend/app/main.py:38751` — _static_confirmed_
+    - WHERE: `client_id = ? AND knowledge_document_id IN ( SELECT id FROM knowledge_documents WHERE client_id = ? AND document_id = ? )`
+    - WHERE: `client_id = ? AND surrogate_id IN ( SELECT id FROM knowledge_surrogates WHERE client_id = ? AND knowledge_document_id IN ( SELECT id FROM knowledge_documents WHERE client_id = ? AND document_id = ? ) `
+- `JOIN` @ **create_app.get_workspace_data_center_readiness** `backend/app/main.py:42811` — _static_confirmed_
+    - WHERE: `v2.client_id = ?`
+- `SELECT-FROM` @ **create_app.import_documents** `backend/app/main.py:45956` — _static_confirmed_
+    - WHERE: `client_id = ? AND lifecycle_status = 'current' AND (import_source_path = ? OR current_human_path = ? OR original_path = ?)`
+    - WHERE: `client_id = ? AND lifecycle_status = 'current' AND binary_hash = ?`
+- `SELECT-FROM` @ **create_app.build_document_reading_preview_record** `backend/app/main.py:46173` — _static_confirmed_
+    - WHERE: `document_id = ?`
+- `SELECT-FROM` @ **create_app._apply_version_chain** `backend/app/main.py:4770` — _static_confirmed_
+    - WHERE: `document_id = ?`
+- `JOIN` @ **_collect_sources** `backend/app/services/digital_asset_center.py:3179` — _static_confirmed_
+    - WHERE: `kd.client_id = ?`
+- `JOIN` @ **sync_states_for_client** `backend/app/services/document_deep_read_service.py:159` — _static_confirmed_
+    - WHERE: `ks.client_id=? AND ks.source_type='document' AND kd.document_id=?`
+- `JOIN` @ **upsert_chunk_vectors** `backend/app/services/knowledge_base.py:1382` — _static_confirmed_
+    - WHERE: `c.knowledge_document_id = ?`
+- `SELECT-FROM+JOIN` @ **sync_qdrant_for_client** `backend/app/services/knowledge_base.py:1437` — _static_confirmed_
+    - WHERE: `client_id = ?`
+    - WHERE: `kd.client_id = ?`
+- `SELECT-FROM` @ **sync_human_file_locations_for_client** `backend/app/services/knowledge_base.py:2000` — _static_confirmed_
+    - WHERE: `kd.client_id = ?`
+- `SELECT-FROM` @ **hydrate_missing_surrogates** `backend/app/services/knowledge_base.py:2639` — _static_confirmed_
+    - WHERE: `kd.client_id = ?`
+    - WHERE: `kv.knowledge_document_id = kd.id`
+- `SELECT-FROM` @ **ingest_document_knowledge** `backend/app/services/knowledge_base.py:2802` — _static_confirmed_
+    - WHERE: `client_id = ? AND id != ?`
+    - WHERE: `kd.document_id = ?`
+- `JOIN` @ **backfill_knowledge_documents** `backend/app/services/knowledge_base.py:3346` — _static_confirmed_
+    - WHERE: `d.client_id = ? AND kd.id IS NULL`
+- `SELECT-FROM+JOIN` @ **compute_knowledge_status** `backend/app/services/knowledge_base.py:3398` — _static_confirmed_
+    - WHERE: `client_id = ?`
+    - WHERE: `client_id = ? AND current_human_path IS NOT NULL`
+    - WHERE: `client_id = ? AND dedup_status != 'unique'`
+    - WHERE: `client_id = ? AND needs_review = 1`
+    - WHERE: `client_id = ? AND vector_status = 'chunk_indexed'`
+- `SELECT-FROM` @ **fetch_document_cards** `backend/app/services/knowledge_base.py:3499` — _static_confirmed_
+    - WHERE: `kd.client_id = ?`
+- `JOIN` @ **fetch_recent_reclass_events** `backend/app/services/knowledge_base.py:3568` — _static_confirmed_
+    - WHERE: `kd.client_id = ?`
+- `JOIN` @ **retrieve_knowledge_bundle** `backend/app/services/knowledge_base.py:3798` — _static_confirmed_
+    - WHERE: `kd.client_id = ?`
+- `SELECT-FROM` @ **_sync_legacy_knowledge_document** `backend/app/services/knowledge_v2.py:1936` — _static_confirmed_
+    - WHERE: `document_id = ?`
+- `SELECT-FROM` @ **backfill_workspace_import** `backend/app/services/knowledge_v2.py:3943` — _static_confirmed_
+    - WHERE: `client_id = ?`
+- `SELECT-FROM` @ **backfill_client_document_family_metadata** `backend/app/services/knowledge_v2.py:415` — _static_confirmed_
+    - WHERE: `kd.id = document_chunks.knowledge_document_id`
+    - WHERE: `knowledge_document_id IN ( SELECT id FROM knowledge_documents WHERE client_id = ? )`
+- `JOIN` @ **fetch_document_cards** `backend/app/services/knowledge_v2.py:4226` — _static_confirmed_
+    - WHERE: `dpo2.knowledge_document_id = kd.id`
+    - WHERE: `vd.client_id = ? AND vd.material_layer IN ('evidence', 'external_media_transcript') AND COALESCE(vd.canonical_kind, 'raw_file') = 'raw_file' AND`
+    - WHERE: `vd.client_id = ? AND vd.material_layer IN ('evidence', 'external_media_transcript') AND COALESCE(vd.canonical_kind, 'raw_file') = 'raw_file' AND {?}`
+- `JOIN` @ **retrieve_knowledge_bundle** `backend/app/services/knowledge_v2.py:4920` — _static_confirmed_
+    - WHERE: `dpo2.knowledge_document_id = kd.id`
+    - WHERE: `vd.client_id = ? AND vd.material_layer IN ('evidence', 'external_media_transcript') AND vd.parse_status IN ('ready', 'partial_ready') AND COALESCE(vd.is_searchable, d.is_searchable, 1) = 1 AND COALESC`
+- `SELECT-FROM` @ **get_local_model_optimization_stats** `backend/app/services/local_model_optimizer.py:245` — _static_confirmed_
+- `SELECT-FROM` @ **_document_rows_for_enqueue** `backend/app/services/local_model_optimizer.py:344` — _static_confirmed_
+    - WHERE: `knowledge_document_id = kd.id )`
+    - WHERE: `knowledge_document_id = kd.id ) {?}`
+- `SELECT-FROM` @ **_load_document_context** `backend/app/services/local_model_optimizer.py:552` — _static_confirmed_
+    - WHERE: `knowledge_document_id = kd.id ) WHERE kd.id = ?`
+- `SELECT-FROM` @ **refresh_organization_notebook_snapshot** `backend/app/services/memory_foundation.py:733` — _static_confirmed_
+    - WHERE: `client_id = ?`
+- `SELECT-FROM` @ **_resolve_knowledge_document_id** `backend/app/services/task_runners/router.py:56` — _static_confirmed_
+    - WHERE: `id = ?`
+- `SELECT-FROM` @ **_migrate_one_client** `backend/app/services/unified_workspace_migrator.py:108` — _static_confirmed_
+    - WHERE: `client_id = ? AND (`
+    - WHERE: `client_id = ? AND ({?})`
+    - WHERE: `document_id = ?`
+    - WHERE: `knowledge_document_id IN (SELECT id FROM knowledge_documents WHERE document_id = ?)`
+    - WHERE: `surrogate_id IN (SELECT id FROM knowledge_surrogates WHERE knowledge_document_id IN (SELECT id FROM knowledge_documents WHERE document_id = ?))`
+
+## `knowledge_job_events`
+
+- 经验层: **2837 行** · 最近写入 created_at=2026-05-19T21:05:52
+
+### 写边 (2)
+- `INSERT` @ **create_app** `backend/app/main.py:3179` — _needs_human_
+    - chain: create_app @backend/app/main.py:3179  ←  (no caller found — orphan write)
+- `INSERT` @ **create_app.append_knowledge_job_event** `backend/app/main.py:4158` — _call_name_match_
+    - chain: append_knowledge_job_event @backend/app/main.py:4158  ←  claim_next_knowledge_job @backend/app/main.py:4719  ←  knowledge_worker_loop [worker:knowledge_worker_loop] @backend/app/main.py:5110
+    - chain: append_knowledge_job_event @backend/app/main.py:4158  ←  enqueue_knowledge_job @backend/app/main.py:4167  ←  apply_client_document_auto_repair [endpoint:/api/v1/clients/{client_id}/documents/auto-repair/apply] @backend/app/main.py:39062
+    - chain: append_knowledge_job_event @backend/app/main.py:4158  ←  enqueue_knowledge_job @backend/app/main.py:4167  ←  import_documents [endpoint:/api/v1/imports] @backend/app/main.py:45956
+    - chain: append_knowledge_job_event @backend/app/main.py:4158  ←  enqueue_knowledge_job @backend/app/main.py:4167  ←  rebuild_client_knowledge [endpoint:/api/v1/clients/{client_id}/knowledge/rebuild] @backend/app/main.py:45441
+    - chain: append_knowledge_job_event @backend/app/main.py:4158  ←  enqueue_knowledge_job @backend/app/main.py:4167  ←  run_workspace_data_center_readiness_action [endpoint:/api/v1/clients/{client_id}/workspace/data-center-readiness/actions] @backend/app/main.py:43497
+    - chain: append_knowledge_job_event @backend/app/main.py:4158  ←  enqueue_knowledge_job @backend/app/main.py:4167  ←  trigger_brand_mirror_crawl [endpoint:/api/v1/intelligence/brand-mirror/crawl] @backend/app/main.py:59118
+
+### 读边 (4)
+- `SELECT-FROM` @ **create_app** `backend/app/main.py:3179` — _static_confirmed_
+    - WHERE: `j.client_id = ?`
+- `SELECT-FROM` @ **create_app.get_workspace_data_center_readiness** `backend/app/main.py:42811` — _static_confirmed_
+    - WHERE: `j.client_id = ?`
+- `SELECT-FROM` @ **fetch_recent_knowledge_jobs** `backend/app/services/knowledge_base.py:3596` — _static_confirmed_
+    - WHERE: `job_id = ?`
+- `SELECT-FROM` @ **fetch_recent_knowledge_jobs._job_recent_events** `backend/app/services/knowledge_base.py:3621` — _static_confirmed_
+    - WHERE: `job_id = ?`
+
+## `knowledge_jobs`
+
+- 经验层: **77 行** · 最近写入 created_at=2026-05-21T11:15:13.260379+00:00
+
+### 写边 (10)
+- `INSERT+UPDATE` @ **create_app** `backend/app/main.py:3179` — _needs_human_
+    - chain: create_app @backend/app/main.py:3179  ←  (no caller found — orphan write)
+- `INSERT` @ **create_app.enqueue_knowledge_job** `backend/app/main.py:4167` — _call_name_match_
+    - chain: enqueue_knowledge_job @backend/app/main.py:4167  ←  apply_client_document_auto_repair [endpoint:/api/v1/clients/{client_id}/documents/auto-repair/apply] @backend/app/main.py:39062
+    - chain: enqueue_knowledge_job @backend/app/main.py:4167  ←  import_documents [endpoint:/api/v1/imports] @backend/app/main.py:45956
+    - chain: enqueue_knowledge_job @backend/app/main.py:4167  ←  rebuild_client_knowledge [endpoint:/api/v1/clients/{client_id}/knowledge/rebuild] @backend/app/main.py:45441
+    - chain: enqueue_knowledge_job @backend/app/main.py:4167  ←  run_workspace_data_center_readiness_action [endpoint:/api/v1/clients/{client_id}/workspace/data-center-readiness/actions] @backend/app/main.py:43497
+    - chain: enqueue_knowledge_job @backend/app/main.py:4167  ←  trigger_brand_mirror_crawl [endpoint:/api/v1/intelligence/brand-mirror/crawl] @backend/app/main.py:59118
+    - chain: enqueue_knowledge_job @backend/app/main.py:4167  ←  trigger_wechat_rsshub_ingest [endpoint:/api/v1/intelligence/brand-mirror/wechat-ingest] @backend/app/main.py:59264
+- `UPDATE` @ **create_app.recover_stale_knowledge_jobs** `backend/app/main.py:4216` — _call_name_match_
+    - chain: recover_stale_knowledge_jobs @backend/app/main.py:4216  ←  _startup_worker [worker:_startup_worker] @backend/app/main.py:3743
+- `UPDATE` @ **create_app.claim_next_knowledge_job** `backend/app/main.py:4719` — _call_name_match_
+    - chain: claim_next_knowledge_job @backend/app/main.py:4719  ←  knowledge_worker_loop [worker:knowledge_worker_loop] @backend/app/main.py:5110
+- `UPDATE` @ **create_app.finish_knowledge_job** `backend/app/main.py:4742` — _call_name_match_
+    - chain: finish_knowledge_job @backend/app/main.py:4742  ←  knowledge_worker_loop [worker:knowledge_worker_loop] @backend/app/main.py:5110
+    - chain: finish_knowledge_job @backend/app/main.py:4742  ←  process_knowledge_job @backend/app/main.py:4809  ←  knowledge_worker_loop [worker:knowledge_worker_loop] @backend/app/main.py:5110
+- `UPDATE` @ **create_app.update_knowledge_job_progress** `backend/app/main.py:4763` — _call_name_match_
+    - chain: update_knowledge_job_progress @backend/app/main.py:4763  ←  execute_parse_failure_retry_batch @backend/app/main.py:42534  ←  retry_client_parse_failures [endpoint:/api/v1/clients/{client_id}/knowledge/parse-failures/retry] @backend/app/main.py:42800
+    - chain: update_knowledge_job_progress @backend/app/main.py:4763  ←  process_knowledge_job @backend/app/main.py:4809  ←  knowledge_worker_loop [worker:knowledge_worker_loop] @backend/app/main.py:5110
+- `INSERT+UPDATE` @ **backfill_workspace_import** `backend/app/services/knowledge_v2.py:3943` — _call_name_match_
+    - chain: backfill_workspace_import @backend/app/services/knowledge_v2.py:3943  ←  backfill_client_workspace_imports [endpoint:/api/v1/clients/{client_id}/workspace/backfill-imports] @backend/app/main.py:50039
+- `UPDATE` @ **_reap_stale_knowledge_jobs** `backend/app/services/smart_file_import.py:1288` — _needs_human_
+    - chain: _reap_stale_knowledge_jobs @backend/app/services/smart_file_import.py:1288  ←  _bg_ingest_files @backend/app/services/smart_file_import.py:1315
+- `UPDATE` @ **_bg_ingest_files** `backend/app/services/smart_file_import.py:1315` — _needs_human_
+    - chain: _bg_ingest_files @backend/app/services/smart_file_import.py:1315  ←  (no caller found — orphan write)
+- `INSERT` @ **commit_session** `backend/app/services/smart_file_import.py:887` — _call_name_match_
+    - chain: commit_session @backend/app/services/smart_file_import.py:887  ←  smart_import_commit_session [endpoint:/api/v1/smart-import/sessions/{session_id}/commit] @backend/app/main.py:29395
+
+### 读边 (14)
+- `SELECT-FROM+JOIN` @ **create_app** `backend/app/main.py:3179` — _static_confirmed_
+    - WHERE: `client_id = ?`
+    - WHERE: `client_id = ? AND job_type = 'generate_client_dna_candidates' AND status IN ('queued', 'running')`
+    - WHERE: `client_id = ? AND job_type = 'ingest_import'`
+    - WHERE: `client_id = ? AND job_type = 'internet_enrichment'`
+    - WHERE: `client_id = ? AND job_type = 'workspace_document_auto_repair' AND status IN ('queued', 'running')`
+- `SELECT-FROM` @ **create_app._has_active_workspace_document_auto_repair_job** `backend/app/main.py:38628` — _static_confirmed_
+    - WHERE: `client_id = ? AND job_type = 'workspace_document_auto_repair' AND status IN ('queued', 'running')`
+- `SELECT-FROM` @ **create_app.recover_stale_knowledge_jobs** `backend/app/main.py:4216` — _static_confirmed_
+    - WHERE: `status = 'running'`
+- `SELECT-FROM` @ **create_app.recover_stale_imports** `backend/app/main.py:4240` — _static_confirmed_
+    - WHERE: `client_id = ? AND job_type = 'ingest_import'`
+- `SELECT-FROM+JOIN` @ **create_app.get_workspace_data_center_readiness** `backend/app/main.py:42811` — _static_confirmed_
+    - WHERE: `client_id = ?`
+    - WHERE: `client_id = ? AND job_type = 'internet_enrichment'`
+    - WHERE: `client_id = ? AND status = 'failed'`
+    - WHERE: `client_id = ? AND status IN ('queued', 'running')`
+    - WHERE: `j.client_id = ?`
+- `SELECT-FROM` @ **create_app.rebuild_client_knowledge** `backend/app/main.py:45441` — _static_confirmed_
+    - WHERE: `client_id = ? AND job_type IN (`
+    - WHERE: `client_id = ? AND job_type IN ({?}) AND status IN ('queued', 'running')`
+- `SELECT-FROM` @ **create_app.claim_next_knowledge_job** `backend/app/main.py:4719` — _static_confirmed_
+    - WHERE: `id = ?`
+    - WHERE: `status = 'queued'`
+- `SELECT-FROM` @ **create_app.finish_knowledge_job** `backend/app/main.py:4742` — _static_confirmed_
+    - WHERE: `id = ?`
+- `SELECT-FROM` @ **create_app.process_knowledge_job** `backend/app/main.py:4809` — _static_confirmed_
+    - WHERE: `id = ?`
+- `SELECT-FROM` @ **create_app.maybe_enqueue_client_dna_generation_job** `backend/app/main.py:7535` — _static_confirmed_
+    - WHERE: `client_id = ? AND job_type = 'generate_client_dna_candidates' AND status IN ('queued', 'running')`
+- `SELECT-FROM` @ **compute_knowledge_status** `backend/app/services/knowledge_base.py:3398` — _static_confirmed_
+    - WHERE: `client_id = ? AND job_type != 'generate_client_dna_candidates'`
+    - WHERE: `client_id = ? AND job_type != 'generate_client_dna_candidates' AND status = 'completed' AND finished_at IS NOT NULL`
+    - WHERE: `client_id = ? AND job_type != 'generate_client_dna_candidates' AND status = 'queued'`
+    - WHERE: `client_id = ? AND job_type != 'generate_client_dna_candidates' AND status = 'running'`
+- `SELECT-FROM` @ **fetch_recent_knowledge_jobs** `backend/app/services/knowledge_base.py:3596` — _static_confirmed_
+    - WHERE: `client_id = ?`
+- `SELECT-FROM` @ **compute_knowledge_status** `backend/app/services/knowledge_v2.py:4109` — _static_confirmed_
+    - WHERE: `{?}`
+    - WHERE: `{?} AND status = 'completed'`
+    - WHERE: `{?} AND status = 'queued'`
+    - WHERE: `{?} AND status = 'running'`
+- `SELECT-FROM` @ **_lookup_job_status** `backend/app/services/workspace_context_refresh.py:245` — _static_confirmed_
+    - WHERE: `id = ?`
+
+## `knowledge_master_index`
+
+- 经验层: **564 行** · 最近写入 updated_at=2026-06-05T07:30:34
+
+### 写边 (6)
+- `UPDATE` @ **create_app._force_online_transcript_document_classification** `backend/app/main.py:14274` — _call_name_match_
+    - chain: _force_online_transcript_document_classification @backend/app/main.py:14274  ←  migrate_client_link_material_documents_to_online_transcripts @backend/app/main.py:14391  ←  ensure_standard_client_folders @backend/app/main.py:14645  ←  apply_client_document_auto_repair [endpoint:/api/v1/clients/{client_id}/documents/auto-repair/apply] @backend/app/main.py:39062
+    - chain: _force_online_transcript_document_classification @backend/app/main.py:14274  ←  migrate_client_link_material_documents_to_online_transcripts @backend/app/main.py:14391  ←  ensure_standard_client_folders @backend/app/main.py:14645  ←  apply_client_folder_recommendation [endpoint:/api/v1/clients/{client_id}/folders/apply-recommendation] @backend/app/main.py:39044
+    - chain: _force_online_transcript_document_classification @backend/app/main.py:14274  ←  migrate_client_link_material_documents_to_online_transcripts @backend/app/main.py:14391  ←  ensure_standard_client_folders @backend/app/main.py:14645  ←  create_client [endpoint:/api/v1/clients] @backend/app/main.py:37631
+    - chain: _force_online_transcript_document_classification @backend/app/main.py:14274  ←  migrate_client_link_material_documents_to_online_transcripts @backend/app/main.py:14391  ←  ensure_standard_client_folders @backend/app/main.py:14645  ←  create_client_folder [endpoint:/api/v1/clients/{client_id}/folders] @backend/app/main.py:38854
+    - chain: _force_online_transcript_document_classification @backend/app/main.py:14274  ←  migrate_client_link_material_documents_to_online_transcripts @backend/app/main.py:14391  ←  ensure_standard_client_folders @backend/app/main.py:14645  ←  delete_client_folder [endpoint:/api/v1/clients/{client_id}/folders/{folder_id}] @backend/app/main.py:39117
+    - chain: _force_online_transcript_document_classification @backend/app/main.py:14274  ←  migrate_client_link_material_documents_to_online_transcripts @backend/app/main.py:14391  ←  ensure_standard_client_folders @backend/app/main.py:14645  ←  generate_client_dna_documents [endpoint:/api/v1/clients/{client_id}/dna-documents/generate] @backend/app/main.py:45574
+- `UPDATE` @ **create_app** `backend/app/main.py:3179` — _needs_human_
+    - chain: create_app @backend/app/main.py:3179  ←  (no caller found — orphan write)
+- `UPDATE` @ **create_app._apply_client_folder_recommendation_plan** `backend/app/main.py:38751` — _call_name_match_
+    - chain: _apply_client_folder_recommendation_plan @backend/app/main.py:38751  ←  apply_client_folder_recommendation [endpoint:/api/v1/clients/{client_id}/folders/apply-recommendation] @backend/app/main.py:39044
+- `UPDATE` @ **sync_human_file_locations_for_client** `backend/app/services/knowledge_base.py:2000` — _static_confirmed_
+    - chain: sync_human_file_locations_for_client [worker:sync_human_file_locations_for_client] @backend/app/services/knowledge_base.py:2000
+- `INSERT+UPDATE` @ **upsert_master_index_record** `backend/app/services/knowledge_base.py:2583` — _call_name_match_
+    - chain: upsert_master_index_record @backend/app/services/knowledge_base.py:2583  ←  sync_human_file_locations_for_client [worker:sync_human_file_locations_for_client] @backend/app/services/knowledge_base.py:2000
+    - chain: upsert_master_index_record @backend/app/services/knowledge_base.py:2583  ←  build_client_profile @backend/app/services/client_profile.py:98  ←  build_profile [endpoint:/api/v1/clients/{client_id}/knowledge/build-profile] @backend/app/main.py:49489
+    - chain: upsert_master_index_record @backend/app/services/knowledge_base.py:2583  ←  create_memory_surrogate_from_answer @backend/app/services/knowledge_base.py:3687  ←  vectorize_answer [endpoint:/api/v1/clients/{client_id}/knowledge/vectorize-answer] @backend/app/main.py:49344
+    - chain: upsert_master_index_record @backend/app/services/knowledge_base.py:2583  ←  ingest_document_knowledge @backend/app/services/knowledge_base.py:2802  ←  upload_task_attachment [endpoint:/api/v1/tasks/{task_id}/attachments] @backend/app/main.py:53434
+    - chain: upsert_master_index_record @backend/app/services/knowledge_base.py:2583  ←  build_client_profile @backend/app/services/client_profile.py:98  ←  backfill_all_clients @backend/app/services/client_profile.py:238  ←  backfill_all [endpoint:/api/v1/knowledge/backfill-all-clients] @backend/app/main.py:49521
+    - chain: upsert_master_index_record @backend/app/services/knowledge_base.py:2583  ←  build_client_profile @backend/app/services/client_profile.py:98  ←  process_knowledge_job @backend/app/main.py:4809  ←  knowledge_worker_loop [worker:knowledge_worker_loop] @backend/app/main.py:5110
+- `UPDATE` @ **batch_enrich_surrogates** `backend/app/services/knowledge_base.py:4304` — _call_name_match_
+    - chain: batch_enrich_surrogates @backend/app/services/knowledge_base.py:4304  ←  enrich_surrogates [endpoint:/api/v1/clients/{client_id}/knowledge/enrich-surrogates] @backend/app/main.py:49472
+    - chain: batch_enrich_surrogates @backend/app/services/knowledge_base.py:4304  ←  backfill_all_clients @backend/app/services/client_profile.py:238  ←  backfill_all [endpoint:/api/v1/knowledge/backfill-all-clients] @backend/app/main.py:49521
+
+### 读边 (13)
+- `SELECT-FROM+JOIN` @ **create_app** `backend/app/main.py:3179` — _static_confirmed_
+    - WHERE: `client_id = ?`
+    - WHERE: `v2.client_id = ?`
+- `JOIN` @ **create_app.get_workspace_data_center_readiness** `backend/app/main.py:42811` — _static_confirmed_
+    - WHERE: `v2.client_id = ?`
+- `SELECT-FROM` @ **create_app.run_workspace_data_center_readiness_action** `backend/app/main.py:43497` — _static_confirmed_
+    - WHERE: `client_id = ?`
+- `SELECT-FROM` @ **sync_qdrant_for_client** `backend/app/services/knowledge_base.py:1437` — _static_confirmed_
+    - WHERE: `client_id = ?`
+- `JOIN` @ **sync_human_file_locations_for_client** `backend/app/services/knowledge_base.py:2000` — _static_confirmed_
+    - WHERE: `kd.client_id = ?`
+- `SELECT-FROM` @ **write_master_index_snapshot** `backend/app/services/knowledge_base.py:2469` — _static_confirmed_
+    - WHERE: `client_id = ?`
+- `SELECT-FROM` @ **sync_master_index_fts** `backend/app/services/knowledge_base.py:2504` — _static_confirmed_
+    - WHERE: `client_id = ?`
+- `SELECT-FROM` @ **upsert_master_index_record** `backend/app/services/knowledge_base.py:2583` — _static_confirmed_
+    - WHERE: `id = ?`
+- `JOIN` @ **hydrate_missing_surrogates** `backend/app/services/knowledge_base.py:2639` — _static_confirmed_
+    - WHERE: `kd.client_id = ?`
+    - WHERE: `kv.knowledge_document_id = kd.id`
+- `SELECT-FROM` @ **compute_knowledge_status** `backend/app/services/knowledge_base.py:3398` — _static_confirmed_
+    - WHERE: `client_id = ?`
+- `SELECT-FROM` @ **retrieve_knowledge_bundle** `backend/app/services/knowledge_base.py:3798` — _static_confirmed_
+    - WHERE: `mi.client_id = ?`
+- `SELECT-FROM` @ **batch_enrich_surrogates** `backend/app/services/knowledge_base.py:4304` — _static_confirmed_
+    - WHERE: `surrogate_id = ?`
+- `SELECT-FROM` @ **_migrate_one_client** `backend/app/services/unified_workspace_migrator.py:108` — _static_confirmed_
+    - WHERE: `surrogate_id IN (SELECT id FROM knowledge_surrogates WHERE knowledge_document_id IN (SELECT id FROM knowledge_documents WHERE document_id = ?))`
+
+## `knowledge_master_index_fts`
+
+- 经验层: **595 行**
+
+### 写边 (1)
+- `INSERT` @ **sync_master_index_fts** `backend/app/services/knowledge_base.py:2504` — _static_confirmed_
+    - chain: sync_master_index_fts [worker:sync_master_index_fts] @backend/app/services/knowledge_base.py:2504
+
+### 读边 (2)
+- `SELECT-FROM` @ **sync_master_index_fts** `backend/app/services/knowledge_base.py:2504` — _static_confirmed_
+    - WHERE: `client_id = ?`
+- `SELECT-FROM` @ **search_master_index_fts** `backend/app/services/knowledge_base.py:2545` — _static_confirmed_
+    - WHERE: `knowledge_master_index_fts MATCH ? AND client_id = ?`
+
+## `knowledge_master_index_fts_config`
+
+- 经验层: **1 行**
+
+### 写边 (0)
+- (无静态写边)  ⚠️ **0 写边但真库有行 → needs_human (写入路径在静态扫描盲区:可能动态表名/ORM/外部进程)**
+
+### 读边 (0)
+- (无静态读边)
+
+## `knowledge_master_index_fts_content`
+
+- 经验层: **595 行**
+
+### 写边 (0)
+- (无静态写边)  ⚠️ **0 写边但真库有行 → needs_human (写入路径在静态扫描盲区:可能动态表名/ORM/外部进程)**
+
+### 读边 (0)
+- (无静态读边)
+
+## `knowledge_master_index_fts_data`
+
+- 经验层: **533 行**
+
+### 写边 (0)
+- (无静态写边)  ⚠️ **0 写边但真库有行 → needs_human (写入路径在静态扫描盲区:可能动态表名/ORM/外部进程)**
+
+### 读边 (0)
+- (无静态读边)
+
+## `knowledge_master_index_fts_docsize`
+
+- 经验层: **595 行**
+
+### 写边 (0)
+- (无静态写边)  ⚠️ **0 写边但真库有行 → needs_human (写入路径在静态扫描盲区:可能动态表名/ORM/外部进程)**
+
+### 读边 (0)
+- (无静态读边)
+
+## `knowledge_master_index_fts_idx`
+
+- 经验层: **530 行**
+
+### 写边 (0)
+- (无静态写边)  ⚠️ **0 写边但真库有行 → needs_human (写入路径在静态扫描盲区:可能动态表名/ORM/外部进程)**
+
+### 读边 (0)
+- (无静态读边)
+
+## `knowledge_search_runs`
+
+- 经验层: **80 行** · 最近写入 created_at=2026-05-21T20:35:51
+
+### 写边 (2)
+- `INSERT` @ **create_app.persist_retrieval_bundle** `backend/app/main.py:15091` — _call_name_match_
+    - chain: persist_retrieval_bundle @backend/app/main.py:15091  ←  search_client_knowledge [endpoint:/api/v1/clients/{client_id}/knowledge/search] @backend/app/main.py:45480
+- `INSERT` @ **create_app** `backend/app/main.py:3179` — _needs_human_
+    - chain: create_app @backend/app/main.py:3179  ←  (no caller found — orphan write)
+
+### 读边 (2)
+- `SELECT-FROM` @ **create_app.load_cached_retrieval_bundle** `backend/app/main.py:15113` — _static_confirmed_
+    - WHERE: `id = ? AND client_id = ? AND status = 'ready'`
+- `SELECT-FROM` @ **create_app** `backend/app/main.py:3179` — _static_confirmed_
+    - WHERE: `id = ? AND client_id = ? AND status = 'ready'`
+
+## `knowledge_surrogates`
+
+- 经验层: **554 行** · 最近写入 created_at=2026-06-05T07:30:34
+  - source_type 分布: v2_instant:347, document:206, memory_answer:1
+
+### 写边 (7)
+- `UPDATE` @ **create_app._force_online_transcript_document_classification** `backend/app/main.py:14274` — _call_name_match_
+    - chain: _force_online_transcript_document_classification @backend/app/main.py:14274  ←  migrate_client_link_material_documents_to_online_transcripts @backend/app/main.py:14391  ←  ensure_standard_client_folders @backend/app/main.py:14645  ←  apply_client_document_auto_repair [endpoint:/api/v1/clients/{client_id}/documents/auto-repair/apply] @backend/app/main.py:39062
+    - chain: _force_online_transcript_document_classification @backend/app/main.py:14274  ←  migrate_client_link_material_documents_to_online_transcripts @backend/app/main.py:14391  ←  ensure_standard_client_folders @backend/app/main.py:14645  ←  apply_client_folder_recommendation [endpoint:/api/v1/clients/{client_id}/folders/apply-recommendation] @backend/app/main.py:39044
+    - chain: _force_online_transcript_document_classification @backend/app/main.py:14274  ←  migrate_client_link_material_documents_to_online_transcripts @backend/app/main.py:14391  ←  ensure_standard_client_folders @backend/app/main.py:14645  ←  create_client [endpoint:/api/v1/clients] @backend/app/main.py:37631
+    - chain: _force_online_transcript_document_classification @backend/app/main.py:14274  ←  migrate_client_link_material_documents_to_online_transcripts @backend/app/main.py:14391  ←  ensure_standard_client_folders @backend/app/main.py:14645  ←  create_client_folder [endpoint:/api/v1/clients/{client_id}/folders] @backend/app/main.py:38854
+    - chain: _force_online_transcript_document_classification @backend/app/main.py:14274  ←  migrate_client_link_material_documents_to_online_transcripts @backend/app/main.py:14391  ←  ensure_standard_client_folders @backend/app/main.py:14645  ←  delete_client_folder [endpoint:/api/v1/clients/{client_id}/folders/{folder_id}] @backend/app/main.py:39117
+    - chain: _force_online_transcript_document_classification @backend/app/main.py:14274  ←  migrate_client_link_material_documents_to_online_transcripts @backend/app/main.py:14391  ←  ensure_standard_client_folders @backend/app/main.py:14645  ←  generate_client_dna_documents [endpoint:/api/v1/clients/{client_id}/dna-documents/generate] @backend/app/main.py:45574
+- `UPDATE` @ **create_app** `backend/app/main.py:3179` — _needs_human_
+    - chain: create_app @backend/app/main.py:3179  ←  (no caller found — orphan write)
+- `UPDATE` @ **create_app._apply_client_folder_recommendation_plan** `backend/app/main.py:38751` — _call_name_match_
+    - chain: _apply_client_folder_recommendation_plan @backend/app/main.py:38751  ←  apply_client_folder_recommendation [endpoint:/api/v1/clients/{client_id}/folders/apply-recommendation] @backend/app/main.py:39044
+- `INSERT+UPDATE` @ **upsert_surrogate_record** `backend/app/services/knowledge_base.py:2409` — _call_name_match_
+    - chain: upsert_surrogate_record @backend/app/services/knowledge_base.py:2409  ←  build_client_profile @backend/app/services/client_profile.py:98  ←  build_profile [endpoint:/api/v1/clients/{client_id}/knowledge/build-profile] @backend/app/main.py:49489
+    - chain: upsert_surrogate_record @backend/app/services/knowledge_base.py:2409  ←  create_memory_surrogate_from_answer @backend/app/services/knowledge_base.py:3687  ←  vectorize_answer [endpoint:/api/v1/clients/{client_id}/knowledge/vectorize-answer] @backend/app/main.py:49344
+    - chain: upsert_surrogate_record @backend/app/services/knowledge_base.py:2409  ←  ingest_document_knowledge @backend/app/services/knowledge_base.py:2802  ←  upload_task_attachment [endpoint:/api/v1/tasks/{task_id}/attachments] @backend/app/main.py:53434
+    - chain: upsert_surrogate_record @backend/app/services/knowledge_base.py:2409  ←  build_client_profile @backend/app/services/client_profile.py:98  ←  backfill_all_clients @backend/app/services/client_profile.py:238  ←  backfill_all [endpoint:/api/v1/knowledge/backfill-all-clients] @backend/app/main.py:49521
+    - chain: upsert_surrogate_record @backend/app/services/knowledge_base.py:2409  ←  build_client_profile @backend/app/services/client_profile.py:98  ←  process_knowledge_job @backend/app/main.py:4809  ←  knowledge_worker_loop [worker:knowledge_worker_loop] @backend/app/main.py:5110
+    - chain: upsert_surrogate_record @backend/app/services/knowledge_base.py:2409  ←  ingest_document_knowledge @backend/app/services/knowledge_base.py:2802  ←  _build_local_event_line_report_snapshot @backend/app/main.py:33643  ←  get_event_line_report_snapshot [endpoint:/api/v1/event-lines/{event_line_id}/report-snapshot] @backend/app/main.py:34329
+- `UPDATE` @ **ingest_document_knowledge** `backend/app/services/knowledge_base.py:2802` — _call_name_match_
+    - chain: ingest_document_knowledge @backend/app/services/knowledge_base.py:2802  ←  upload_task_attachment [endpoint:/api/v1/tasks/{task_id}/attachments] @backend/app/main.py:53434
+    - chain: ingest_document_knowledge @backend/app/services/knowledge_base.py:2802  ←  _build_local_event_line_report_snapshot @backend/app/main.py:33643  ←  get_event_line_report_snapshot [endpoint:/api/v1/event-lines/{event_line_id}/report-snapshot] @backend/app/main.py:34329
+    - chain: ingest_document_knowledge @backend/app/services/knowledge_base.py:2802  ←  _process_one_pdf @backend/app/services/internet_pdf_worker.py:96  ←  _worker_loop [worker:_worker_loop] @backend/app/services/internet_pdf_worker.py:205
+    - chain: ingest_document_knowledge @backend/app/services/knowledge_base.py:2802  ←  backfill_workspace_import @backend/app/services/knowledge_v2.py:3943  ←  backfill_client_workspace_imports [endpoint:/api/v1/clients/{client_id}/workspace/backfill-imports] @backend/app/main.py:50039
+    - chain: ingest_document_knowledge @backend/app/services/knowledge_base.py:2802  ←  create_client_text_document @backend/app/main.py:16116  ←  create_client_document_from_text [endpoint:/api/v1/clients/{client_id}/documents/from-text] @backend/app/main.py:49576
+    - chain: ingest_document_knowledge @backend/app/services/knowledge_base.py:2802  ←  execute_parse_failure_retry_batch @backend/app/main.py:42534  ←  retry_client_parse_failures [endpoint:/api/v1/clients/{client_id}/knowledge/parse-failures/retry] @backend/app/main.py:42800
+- `UPDATE` @ **batch_enrich_surrogates** `backend/app/services/knowledge_base.py:4304` — _call_name_match_
+    - chain: batch_enrich_surrogates @backend/app/services/knowledge_base.py:4304  ←  enrich_surrogates [endpoint:/api/v1/clients/{client_id}/knowledge/enrich-surrogates] @backend/app/main.py:49472
+    - chain: batch_enrich_surrogates @backend/app/services/knowledge_base.py:4304  ←  backfill_all_clients @backend/app/services/client_profile.py:238  ←  backfill_all [endpoint:/api/v1/knowledge/backfill-all-clients] @backend/app/main.py:49521
+- `INSERT` @ **ingest_document_knowledge** `backend/app/services/knowledge_v2.py:2114` — _call_name_match_
+    - chain: ingest_document_knowledge @backend/app/services/knowledge_v2.py:2114  ←  upload_task_attachment [endpoint:/api/v1/tasks/{task_id}/attachments] @backend/app/main.py:53434
+    - chain: ingest_document_knowledge @backend/app/services/knowledge_v2.py:2114  ←  _build_local_event_line_report_snapshot @backend/app/main.py:33643  ←  get_event_line_report_snapshot [endpoint:/api/v1/event-lines/{event_line_id}/report-snapshot] @backend/app/main.py:34329
+    - chain: ingest_document_knowledge @backend/app/services/knowledge_v2.py:2114  ←  _process_one_pdf @backend/app/services/internet_pdf_worker.py:96  ←  _worker_loop [worker:_worker_loop] @backend/app/services/internet_pdf_worker.py:205
+    - chain: ingest_document_knowledge @backend/app/services/knowledge_v2.py:2114  ←  backfill_workspace_import @backend/app/services/knowledge_v2.py:3943  ←  backfill_client_workspace_imports [endpoint:/api/v1/clients/{client_id}/workspace/backfill-imports] @backend/app/main.py:50039
+    - chain: ingest_document_knowledge @backend/app/services/knowledge_v2.py:2114  ←  create_client_text_document @backend/app/main.py:16116  ←  create_client_document_from_text [endpoint:/api/v1/clients/{client_id}/documents/from-text] @backend/app/main.py:49576
+    - chain: ingest_document_knowledge @backend/app/services/knowledge_v2.py:2114  ←  execute_parse_failure_retry_batch @backend/app/main.py:42534  ←  retry_client_parse_failures [endpoint:/api/v1/clients/{client_id}/knowledge/parse-failures/retry] @backend/app/main.py:42800
+
+### 读边 (24)
+- `SELECT-FROM` @ **create_app.list_client_memory_cards** `backend/app/main.py:14714` — _static_confirmed_
+    - WHERE: `client_id = ? AND source_type = 'memory_answer'`
+- `SELECT-FROM+JOIN` @ **create_app** `backend/app/main.py:3179` — _static_confirmed_
+    - WHERE: `client_id = ? AND chat_message_id = ? AND source_type = 'memory_answer'`
+    - WHERE: `client_id = ? AND source_type = 'memory_answer'`
+    - WHERE: `client_id = ? AND surrogate_id IN ( SELECT id FROM knowledge_surrogates WHERE client_id = ? AND knowledge_document_id IN ( SELECT id FROM knowledge_documents WHERE client_id = ? AND document_id = ? ) `
+    - WHERE: `id = ?`
+    - WHERE: `v2.client_id = ?`
+- `SELECT-FROM` @ **create_app._apply_client_folder_recommendation_plan** `backend/app/main.py:38751` — _static_confirmed_
+    - WHERE: `client_id = ? AND surrogate_id IN ( SELECT id FROM knowledge_surrogates WHERE client_id = ? AND knowledge_document_id IN ( SELECT id FROM knowledge_documents WHERE client_id = ? AND document_id = ? ) `
+- `JOIN` @ **create_app.get_workspace_data_center_readiness** `backend/app/main.py:42811` — _static_confirmed_
+    - WHERE: `v2.client_id = ?`
+- `SELECT-FROM` @ **create_app.cancel_vectorize_answer** `backend/app/main.py:49395` — _static_confirmed_
+    - WHERE: `client_id = ? AND chat_message_id = ? AND source_type = 'memory_answer'`
+    - WHERE: `id = ?`
+- `SELECT-FROM` @ **backfill_all_clients** `backend/app/services/client_profile.py:238` — _static_confirmed_
+    - WHERE: `client_id = ? AND source_type = 'document'`
+- `SELECT-FROM` @ **_sync_to_cloud** `backend/app/services/client_profile.py:284` — _static_confirmed_
+    - WHERE: `client_id = ?`
+- `SELECT-FROM` @ **_inventory_client** `backend/app/services/client_profile.py:29` — _static_confirmed_
+    - WHERE: `client_id = ?`
+- `SELECT-FROM` @ **sync_states_for_client** `backend/app/services/document_deep_read_service.py:159` — _static_confirmed_
+    - WHERE: `ks.client_id=? AND ks.source_type='document' AND kd.document_id=?`
+- `SELECT-FROM` @ **coverage_for_client** `backend/app/services/document_deep_read_service.py:181` — _static_confirmed_
+    - WHERE: `client_id=? AND source_type='document'`
+- `SELECT-FROM` @ **build_timely_research_strategy** `backend/app/services/intelligence_timely_strategy.py:290` — _static_confirmed_
+    - WHERE: `client_id = ?`
+- `JOIN` @ **sync_human_file_locations_for_client** `backend/app/services/knowledge_base.py:2000` — _static_confirmed_
+    - WHERE: `kd.client_id = ?`
+- `SELECT-FROM` @ **upsert_surrogate_record** `backend/app/services/knowledge_base.py:2409` — _static_confirmed_
+    - WHERE: `id = ?`
+- `JOIN` @ **hydrate_missing_surrogates** `backend/app/services/knowledge_base.py:2639` — _static_confirmed_
+    - WHERE: `kd.client_id = ?`
+    - WHERE: `kv.knowledge_document_id = kd.id`
+- `JOIN` @ **ingest_document_knowledge** `backend/app/services/knowledge_base.py:2802` — _static_confirmed_
+    - WHERE: `kd.document_id = ?`
+- `SELECT-FROM` @ **compute_knowledge_status** `backend/app/services/knowledge_base.py:3398` — _static_confirmed_
+    - WHERE: `client_id = ?`
+    - WHERE: `client_id = ? AND source_type != 'document'`
+- `JOIN` @ **fetch_document_cards** `backend/app/services/knowledge_base.py:3499` — _static_confirmed_
+    - WHERE: `kd.client_id = ?`
+- `JOIN` @ **retrieve_knowledge_bundle** `backend/app/services/knowledge_base.py:3798` — _static_confirmed_
+    - WHERE: `mi.client_id = ?`
+- `SELECT-FROM` @ **batch_enrich_surrogates** `backend/app/services/knowledge_base.py:4304` — _static_confirmed_
+    - WHERE: `client_id = ? AND source_type = 'document'`
+- `SELECT-FROM` @ **ingest_document_knowledge** `backend/app/services/knowledge_v2.py:2114` — _static_confirmed_
+    - WHERE: `id = ?`
+- `SELECT-FROM` @ **compute_knowledge_status** `backend/app/services/knowledge_v2.py:4109` — _static_confirmed_
+    - WHERE: `client_id = ? AND source_type = 'memory_answer'`
+- `SELECT-FROM` @ **backfill_document_knowledge_to_memory** `backend/app/services/memory_foundation.py:535` — _static_confirmed_
+    - WHERE: `client_id = ? AND overview_summary IS NOT NULL AND LENGTH(overview_summary) > 50`
+- `SELECT-FROM` @ **refresh_organization_notebook_snapshot** `backend/app/services/memory_foundation.py:733` — _static_confirmed_
+    - WHERE: `client_id = ?`
+- `SELECT-FROM` @ **_migrate_one_client** `backend/app/services/unified_workspace_migrator.py:108` — _static_confirmed_
+    - WHERE: `knowledge_document_id IN (SELECT id FROM knowledge_documents WHERE document_id = ?)`
+    - WHERE: `surrogate_id IN (SELECT id FROM knowledge_surrogates WHERE knowledge_document_id IN (SELECT id FROM knowledge_documents WHERE document_id = ?))`
+
+## `learning_content_items`
+
+- 经验层: **6 行** · 最近写入 created_at=2026-04-27T15:33:19
+
+### 写边 (1)
+- `INSERT` @ **ensure_growth_catalog** `backend/app/services/growth_engine.py:975` — _call_name_match_
+    - chain: ensure_growth_catalog @backend/app/services/growth_engine.py:975  ←  build_growth_ledger @backend/app/services/growth_engine.py:4719  ←  get_growth_ledger [endpoint:/api/v1/growth/ledger] @backend/app/main.py:56537
+    - chain: ensure_growth_catalog @backend/app/services/growth_engine.py:975  ←  build_growth_overview @backend/app/services/growth_engine.py:4758  ←  get_growth_overview [endpoint:/api/v1/growth/overview] @backend/app/main.py:56478
+    - chain: ensure_growth_catalog @backend/app/services/growth_engine.py:975  ←  ingest_handbook_codification @backend/app/services/growth_engine.py:3592  ←  create_handbook [endpoint:/api/v1/handbook] @backend/app/main.py:56373
+    - chain: ensure_growth_catalog @backend/app/services/growth_engine.py:975  ←  ingest_meeting_growth_candidate @backend/app/services/growth_engine.py:2942  ←  publish_meeting [endpoint:/api/v1/clients/{client_id}/meetings/{meeting_id}/publish] @backend/app/main.py:51482
+    - chain: ensure_growth_catalog @backend/app/services/growth_engine.py:975  ←  ingest_review_growth @backend/app/services/growth_engine.py:3402  ←  create_weekly_review [endpoint:/api/v1/reviews/weekly] @backend/app/main.py:54504
+    - chain: ensure_growth_catalog @backend/app/services/growth_engine.py:975  ←  ingest_strategic_growth_candidate @backend/app/services/growth_engine.py:3010  ←  apply_strategic_meeting_pack [endpoint:/api/v1/clients/{client_id}/strategic-cockpit/meeting-pack/{meeting_id}/apply] @backend/app/main.py:42202
+
+### 读边 (4)
+- `SELECT-FROM` @ **rebuild_learning_recommendations** `backend/app/services/growth_engine.py:3760` — _static_confirmed_
+    - WHERE: `ability_key = ? AND status = 'active'`
+- `JOIN` @ **list_learning_recommendations** `backend/app/services/growth_engine.py:3889` — _static_confirmed_
+    - WHERE: `r.user_id = ? AND r.status = 'active'`
+- `JOIN` @ **mark_recommendation_accepted** `backend/app/services/growth_engine.py:3917` — _static_confirmed_
+    - WHERE: `r.id = ?`
+- `JOIN` @ **mark_recommendation_dismissed** `backend/app/services/growth_engine.py:3954` — _static_confirmed_
+    - WHERE: `r.id = ?`
+
+## `learning_recommendations`
+
+- 经验层: **10 行** · 最近写入 created_at=2026-05-18T11:56:51
+
+### 写边 (4)
+- `UPDATE` @ **_sync_event_line_client_scope_records** `backend/app/main.py:2484` — _needs_human_
+    - chain: _sync_event_line_client_scope_records [worker:_sync_event_line_client_scope_records] @backend/app/main.py:2484
+- `INSERT` @ **rebuild_learning_recommendations** `backend/app/services/growth_engine.py:3760` — _call_name_match_
+    - chain: rebuild_learning_recommendations @backend/app/services/growth_engine.py:3760  ←  ingest_handbook_codification @backend/app/services/growth_engine.py:3592  ←  create_handbook [endpoint:/api/v1/handbook] @backend/app/main.py:56373
+    - chain: rebuild_learning_recommendations @backend/app/services/growth_engine.py:3760  ←  ingest_review_growth @backend/app/services/growth_engine.py:3402  ←  create_weekly_review [endpoint:/api/v1/reviews/weekly] @backend/app/main.py:54504
+    - chain: rebuild_learning_recommendations @backend/app/services/growth_engine.py:3760  ←  mark_handbook_entry_reused @backend/app/services/growth_engine.py:3991  ←  mark_growth_handbook_reused [endpoint:/api/v1/growth/handbook/{entry_id}/mark-reused] @backend/app/main.py:56456
+    - chain: rebuild_learning_recommendations @backend/app/services/growth_engine.py:3760  ←  ingest_review_growth @backend/app/services/growth_engine.py:3402  ←  save_weekly_review_draft_locally @backend/app/main.py:54441  ←  save_weekly_review_draft [endpoint:/api/v1/reviews/weekly/draft] @backend/app/main.py:54475
+    - chain: rebuild_learning_recommendations @backend/app/services/growth_engine.py:3760  ←  ingest_review_growth @backend/app/services/growth_engine.py:3402  ←  save_weekly_review_locally @backend/app/main.py:54457  ←  create_weekly_review [endpoint:/api/v1/reviews/weekly] @backend/app/main.py:54504
+- `UPDATE` @ **mark_recommendation_accepted** `backend/app/services/growth_engine.py:3917` — _call_name_match_
+    - chain: mark_recommendation_accepted @backend/app/services/growth_engine.py:3917  ←  accept_growth_recommendation [endpoint:/api/v1/growth/recommendations/{recommendation_id}/accept] @backend/app/main.py:56572
+- `UPDATE` @ **mark_recommendation_dismissed** `backend/app/services/growth_engine.py:3954` — _call_name_match_
+    - chain: mark_recommendation_dismissed @backend/app/services/growth_engine.py:3954  ←  dismiss_growth_recommendation [endpoint:/api/v1/growth/recommendations/{recommendation_id}/dismiss] @backend/app/main.py:56604
+
+### 读边 (4)
+- `SELECT-FROM` @ **rebuild_learning_recommendations** `backend/app/services/growth_engine.py:3760` — _static_confirmed_
+    - WHERE: `user_id = ? AND dedupe_key = ? AND status IN ('accepted', 'dismissed') AND updated_at >= ?`
+    - WHERE: `user_id = ? AND status = 'active'`
+- `SELECT-FROM` @ **list_learning_recommendations** `backend/app/services/growth_engine.py:3889` — _static_confirmed_
+    - WHERE: `r.user_id = ? AND r.status = 'active'`
+- `SELECT-FROM` @ **mark_recommendation_accepted** `backend/app/services/growth_engine.py:3917` — _static_confirmed_
+    - WHERE: `id = ?`
+    - WHERE: `r.id = ?`
+- `SELECT-FROM` @ **mark_recommendation_dismissed** `backend/app/services/growth_engine.py:3954` — _static_confirmed_
+    - WHERE: `id = ?`
+    - WHERE: `r.id = ?`
+
+## `local`
+
+- 经验层: 真库**无此表** (静态边 0写/2读)
+
+### 写边 (0)
+- (无静态写边)
+
+### 读边 (2)
+- `SELECT-FROM` @ **create_app.reconcile_cloud_review_response_with_local_tasks** `backend/app/main.py:27324` — _static_confirmed_
+- `SELECT-FROM` @ **create_app** `backend/app/main.py:3179` — _static_confirmed_
+
+## `local_identities`
+
+- 经验层: **1 行** · 最近写入 created_at=2026-05-10T10:22:12
+
+### 写边 (4)
+- `INSERT` @ **create_app.local_auth_register** `backend/app/main.py:30907` — _static_confirmed_
+    - chain: local_auth_register [endpoint:/api/v1/local-auth/register] @backend/app/main.py:30907
+- `UPDATE` @ **create_app.local_auth_login** `backend/app/main.py:30966` — _static_confirmed_
+    - chain: local_auth_login [endpoint:/api/v1/local-auth/login] @backend/app/main.py:30966
+- `INSERT+UPDATE` @ **create_app** `backend/app/main.py:3179` — _needs_human_
+    - chain: create_app @backend/app/main.py:3179  ←  (no caller found — orphan write)
+- `UPDATE` @ **create_app._bind_current_local_identity_to_cloud** `backend/app/main.py:5392` — _call_name_match_
+    - chain: _bind_current_local_identity_to_cloud @backend/app/main.py:5392  ←  auth_login [endpoint:/api/v1/auth/login] @backend/app/main.py:31238
+    - chain: _bind_current_local_identity_to_cloud @backend/app/main.py:5392  ←  auth_register [endpoint:/api/v1/auth/register] @backend/app/main.py:31212
+
+### 读边 (6)
+- `SELECT-FROM` @ **create_app.local_auth_register** `backend/app/main.py:30907` — _static_confirmed_
+    - WHERE: `email = ?`
+    - WHERE: `phone_number = ?`
+- `SELECT-FROM` @ **create_app.local_auth_login** `backend/app/main.py:30966` — _static_confirmed_
+    - WHERE: `email = ?`
+    - WHERE: `phone_number = ?`
+- `SELECT-FROM` @ **create_app** `backend/app/main.py:3179` — _static_confirmed_
+    - WHERE: `email = ?`
+    - WHERE: `id = ?`
+    - WHERE: `phone_number = ?`
+- `SELECT-FROM` @ **create_app.verify_entity** `backend/app/main.py:41742` — _static_confirmed_
+- `SELECT-FROM` @ **create_app._local_identity_row** `backend/app/main.py:5294` — _static_confirmed_
+    - WHERE: `id = ?`
+- `SELECT-FROM` @ **create_app._local_identity_count** `backend/app/main.py:5300` — _static_confirmed_
+
+## `local_model_tasks`
+
+- 经验层: **218 行** · 最近写入 created_at=2026-06-05T07:30:35
+
+### 写边 (11)
+- `INSERT` @ **enqueue_local_model_optimization_tasks** `backend/app/services/local_model_optimizer.py:402` — _call_name_match_
+    - chain: enqueue_local_model_optimization_tasks @backend/app/services/local_model_optimizer.py:402  ←  backfill_local_ai_enqueue [endpoint:/api/v1/local-ai/backfill] @backend/app/main.py:36985
+    - chain: enqueue_local_model_optimization_tasks @backend/app/services/local_model_optimizer.py:402  ←  run_workspace_data_center_readiness_action [endpoint:/api/v1/clients/{client_id}/workspace/data-center-readiness/actions] @backend/app/main.py:43497
+    - chain: enqueue_local_model_optimization_tasks @backend/app/services/local_model_optimizer.py:402  ←  _enqueue_deep_read @backend/app/services/task_runners/router.py:201  ←  route_document_for_local_inference @backend/app/services/task_runners/router.py:246  ←  ingest_document_knowledge @backend/app/services/knowledge_base.py:2802  ←  upload_task_attachment [endpoint:/api/v1/tasks/{task_id}/attachments] @backend/app/main.py:53434
+    - chain: enqueue_local_model_optimization_tasks @backend/app/services/local_model_optimizer.py:402  ←  _enqueue_deep_read @backend/app/services/task_runners/router.py:201  ←  route_document_for_local_inference @backend/app/services/task_runners/router.py:246  ←  ingest_document_knowledge @backend/app/services/knowledge_base.py:2802  ←  _build_local_event_line_report_snapshot @backend/app/main.py:33643  ←  get_event_line_report_snapshot [endpoint:/api/v1/event-lines/{event_line_id}/report-snapshot] @backend/app/main.py:34329
+    - chain: enqueue_local_model_optimization_tasks @backend/app/services/local_model_optimizer.py:402  ←  _enqueue_deep_read @backend/app/services/task_runners/router.py:201  ←  route_document_for_local_inference @backend/app/services/task_runners/router.py:246  ←  ingest_document_knowledge @backend/app/services/knowledge_base.py:2802  ←  _process_one_pdf @backend/app/services/internet_pdf_worker.py:96  ←  _worker_loop [worker:_worker_loop] @backend/app/services/internet_pdf_worker.py:205
+    - chain: enqueue_local_model_optimization_tasks @backend/app/services/local_model_optimizer.py:402  ←  _enqueue_deep_read @backend/app/services/task_runners/router.py:201  ←  route_document_for_local_inference @backend/app/services/task_runners/router.py:246  ←  ingest_document_knowledge @backend/app/services/knowledge_base.py:2802  ←  backfill_workspace_import @backend/app/services/knowledge_v2.py:3943  ←  backfill_client_workspace_imports [endpoint:/api/v1/clients/{client_id}/workspace/backfill-imports] @backend/app/main.py:50039
+- `UPDATE` @ **retry_failed_local_model_optimization_tasks** `backend/app/services/local_model_optimizer.py:457` — _call_name_match_
+    - chain: retry_failed_local_model_optimization_tasks @backend/app/services/local_model_optimizer.py:457  ←  run_workspace_data_center_readiness_action [endpoint:/api/v1/clients/{client_id}/workspace/data-center-readiness/actions] @backend/app/main.py:43497
+- `UPDATE` @ **retry_failed_local_model_optimization_tasks._update** `backend/app/services/local_model_optimizer.py:465` — _needs_human_
+    - chain: _update @backend/app/services/local_model_optimizer.py:465  ←  (no caller found — orphan write)
+- `UPDATE` @ **requeue_interrupted_local_model_tasks** `backend/app/services/local_model_optimizer.py:495` — _call_name_match_
+    - chain: requeue_interrupted_local_model_tasks @backend/app/services/local_model_optimizer.py:495  ←  local_model_optimizer_worker_loop [worker:local_model_optimizer_worker_loop] @backend/app/services/local_model_optimizer.py:1026
+- `UPDATE` @ **requeue_interrupted_local_model_tasks._update** `backend/app/services/local_model_optimizer.py:496` — _needs_human_
+    - chain: _update @backend/app/services/local_model_optimizer.py:496  ←  (no caller found — orphan write)
+- `UPDATE` @ **_claim_next_task** `backend/app/services/local_model_optimizer.py:515` — _call_name_match_
+    - chain: _claim_next_task @backend/app/services/local_model_optimizer.py:515  ←  run_due_local_model_tasks @backend/app/services/local_model_optimizer.py:942  ←  local_model_optimizer_worker_loop [worker:local_model_optimizer_worker_loop] @backend/app/services/local_model_optimizer.py:1026
+    - chain: _claim_next_task @backend/app/services/local_model_optimizer.py:515  ←  run_due_local_model_tasks @backend/app/services/local_model_optimizer.py:942  ←  run_local_ai_now [endpoint:/api/v1/local-ai/run-now] @backend/app/main.py:36970
+- `UPDATE` @ **_claim_next_task._claim** `backend/app/services/local_model_optimizer.py:516` — _needs_human_
+    - chain: _claim @backend/app/services/local_model_optimizer.py:516  ←  (no caller found — orphan write)
+- `UPDATE` @ **_mark_task_completed** `backend/app/services/local_model_optimizer.py:857` — _call_name_match_
+    - chain: _mark_task_completed @backend/app/services/local_model_optimizer.py:857  ←  run_due_local_model_tasks @backend/app/services/local_model_optimizer.py:942  ←  local_model_optimizer_worker_loop [worker:local_model_optimizer_worker_loop] @backend/app/services/local_model_optimizer.py:1026
+    - chain: _mark_task_completed @backend/app/services/local_model_optimizer.py:857  ←  run_due_local_model_tasks @backend/app/services/local_model_optimizer.py:942  ←  run_local_ai_now [endpoint:/api/v1/local-ai/run-now] @backend/app/main.py:36970
+- `UPDATE` @ **_mark_task_failed** `backend/app/services/local_model_optimizer.py:876` — _call_name_match_
+    - chain: _mark_task_failed @backend/app/services/local_model_optimizer.py:876  ←  run_due_local_model_tasks @backend/app/services/local_model_optimizer.py:942  ←  local_model_optimizer_worker_loop [worker:local_model_optimizer_worker_loop] @backend/app/services/local_model_optimizer.py:1026
+    - chain: _mark_task_failed @backend/app/services/local_model_optimizer.py:876  ←  run_due_local_model_tasks @backend/app/services/local_model_optimizer.py:942  ←  run_local_ai_now [endpoint:/api/v1/local-ai/run-now] @backend/app/main.py:36970
+- `INSERT` @ **_enqueue_fact_extract** `backend/app/services/task_runners/router.py:120` — _call_name_match_
+    - chain: _enqueue_fact_extract @backend/app/services/task_runners/router.py:120  ←  route_document_for_local_inference @backend/app/services/task_runners/router.py:246  ←  ingest_document_knowledge @backend/app/services/knowledge_base.py:2802  ←  upload_task_attachment [endpoint:/api/v1/tasks/{task_id}/attachments] @backend/app/main.py:53434
+    - chain: _enqueue_fact_extract @backend/app/services/task_runners/router.py:120  ←  route_document_for_local_inference @backend/app/services/task_runners/router.py:246  ←  ingest_document_knowledge @backend/app/services/knowledge_base.py:2802  ←  _build_local_event_line_report_snapshot @backend/app/main.py:33643  ←  get_event_line_report_snapshot [endpoint:/api/v1/event-lines/{event_line_id}/report-snapshot] @backend/app/main.py:34329
+    - chain: _enqueue_fact_extract @backend/app/services/task_runners/router.py:120  ←  route_document_for_local_inference @backend/app/services/task_runners/router.py:246  ←  ingest_document_knowledge @backend/app/services/knowledge_base.py:2802  ←  _process_one_pdf @backend/app/services/internet_pdf_worker.py:96  ←  _worker_loop [worker:_worker_loop] @backend/app/services/internet_pdf_worker.py:205
+    - chain: _enqueue_fact_extract @backend/app/services/task_runners/router.py:120  ←  route_document_for_local_inference @backend/app/services/task_runners/router.py:246  ←  ingest_document_knowledge @backend/app/services/knowledge_base.py:2802  ←  backfill_workspace_import @backend/app/services/knowledge_v2.py:3943  ←  backfill_client_workspace_imports [endpoint:/api/v1/clients/{client_id}/workspace/backfill-imports] @backend/app/main.py:50039
+    - chain: _enqueue_fact_extract @backend/app/services/task_runners/router.py:120  ←  route_document_for_local_inference @backend/app/services/task_runners/router.py:246  ←  ingest_document_knowledge @backend/app/services/knowledge_base.py:2802  ←  create_client_text_document @backend/app/main.py:16116  ←  create_client_document_from_text [endpoint:/api/v1/clients/{client_id}/documents/from-text] @backend/app/main.py:49576
+    - chain: _enqueue_fact_extract @backend/app/services/task_runners/router.py:120  ←  route_document_for_local_inference @backend/app/services/task_runners/router.py:246  ←  ingest_document_knowledge @backend/app/services/knowledge_base.py:2802  ←  execute_parse_failure_retry_batch @backend/app/main.py:42534  ←  retry_client_parse_failures [endpoint:/api/v1/clients/{client_id}/knowledge/parse-failures/retry] @backend/app/main.py:42800
+- `INSERT` @ **_enqueue_visual_ocr** `backend/app/services/task_runners/router.py:70` — _needs_human_
+    - chain: _enqueue_visual_ocr @backend/app/services/task_runners/router.py:70  ←  _route_pptx @backend/app/services/task_runners/router.py:166
+
+### 读边 (7)
+- `SELECT-FROM` @ **create_app** `backend/app/main.py:3179` — _static_confirmed_
+- `SELECT-FROM` @ **create_app.get_local_ai_queue** `backend/app/main.py:36913` — _static_confirmed_
+- `SELECT-FROM` @ **_count_tasks** `backend/app/services/local_model_optimizer.py:239` — _static_confirmed_
+    - WHERE: `client_id = ? AND status = ?`
+    - WHERE: `status = ?`
+- `SELECT-FROM` @ **get_local_model_optimization_stats** `backend/app/services/local_model_optimizer.py:245` — _static_confirmed_
+- `SELECT-FROM` @ **enqueue_local_model_optimization_tasks** `backend/app/services/local_model_optimizer.py:402` — _static_confirmed_
+    - WHERE: `id = ?`
+- `SELECT-FROM` @ **_claim_next_task** `backend/app/services/local_model_optimizer.py:515` — _static_confirmed_
+    - WHERE: `id = ?`
+    - WHERE: `status = 'queued' -- E: 客户优先(下拉菜单选某客户)→ 该客户任务先 claim; 传空串=不影响。 -- 然后修饥饿: attempts ASC 优先(没试过的先), 失败重试(attempts>0)沉队尾, priority/created_at 兜底。`
+- `SELECT-FROM` @ **_claim_next_task._claim** `backend/app/services/local_model_optimizer.py:516` — _static_confirmed_
+    - WHERE: `id = ?`
+    - WHERE: `status = 'queued' -- E: 客户优先(下拉菜单选某客户)→ 该客户任务先 claim; 传空串=不影响。 -- 然后修饥饿: attempts ASC 优先(没试过的先), 失败重试(attempts>0)沉队尾, priority/created_at 兜底。`
+
+## `logical_file_mappings`
+
+- 经验层: **0 行**
+
+### 写边 (0)
+- (无静态写边)
+
+### 读边 (0)
+- (无静态读边)
+
+## `machine`
+
+- 经验层: 真库**无此表** (静态边 0写/1读)
+
+### 写边 (0)
+- (无静态写边)
+
+### 读边 (1)
+- `SELECT-FROM` @ **classify_source_availability_for_row** `backend/app/services/knowledge_v2.py:4684` — _static_confirmed_
+
+## `meeting_sources`
+
+- 经验层: **1 行** · 最近写入 created_at=2026-04-16T22:13:03
+
+### 写边 (4)
+- `INSERT` @ **create_app._create_strategic_meeting_pack** `backend/app/main.py:21654` — _call_name_match_
+    - chain: _create_strategic_meeting_pack @backend/app/main.py:21654  ←  create_strategic_meeting_pack [endpoint:/api/v1/clients/{client_id}/strategic-cockpit/meeting-pack] @backend/app/main.py:42195
+- `INSERT` @ **create_app** `backend/app/main.py:3179` — _needs_human_
+    - chain: create_app @backend/app/main.py:3179  ←  (no caller found — orphan write)
+- `INSERT` @ **create_app.ingest_meeting** `backend/app/main.py:51386` — _static_confirmed_
+    - chain: ingest_meeting [endpoint:/api/v1/clients/{client_id}/meetings/{meeting_id}/ingest] @backend/app/main.py:51386
+- `INSERT` @ **create_app._ingest_feishu_minutes_writeback** `backend/app/main.py:7044` — _call_name_match_
+    - chain: _ingest_feishu_minutes_writeback @backend/app/main.py:7044  ←  handle_feishu_event @backend/app/main.py:7069  ←  receive_feishu_events [endpoint:/api/v1/channels/feishu/events] @backend/app/main.py:37511
+
+### 读边 (5)
+- `SELECT-FROM` @ **create_app** `backend/app/main.py:3179` — _static_confirmed_
+    - WHERE: `meeting_id = ?`
+- `SELECT-FROM` @ **create_app.ingest_meeting** `backend/app/main.py:51386` — _static_confirmed_
+    - WHERE: `meeting_id = ?`
+- `SELECT-FROM` @ **create_app._ingest_feishu_minutes_writeback** `backend/app/main.py:7044` — _static_confirmed_
+    - WHERE: `meeting_id = ?`
+- `SELECT-FROM` @ **_render_meeting_body** `backend/app/services/data_center_ingest.py:1576` — _static_confirmed_
+    - WHERE: `meeting_id = ?`
+- `SELECT-FROM` @ **_render_meeting_doc_text** `backend/app/services/knowledge_v2.py:3631` — _static_confirmed_
+    - WHERE: `meeting_id = ?`
+
+## `meetings`
+
+- 经验层: **7 行** · 最近写入 created_at=2026-04-16T22:13:03
+
+### 写边 (9)
+- `INSERT` @ **create_app._create_strategic_meeting_pack** `backend/app/main.py:21654` — _call_name_match_
+    - chain: _create_strategic_meeting_pack @backend/app/main.py:21654  ←  create_strategic_meeting_pack [endpoint:/api/v1/clients/{client_id}/strategic-cockpit/meeting-pack] @backend/app/main.py:42195
+- `INSERT+UPDATE` @ **create_app** `backend/app/main.py:3179` — _needs_human_
+    - chain: create_app @backend/app/main.py:3179  ←  (no caller found — orphan write)
+- `INSERT` @ **create_app.prepare_meeting** `backend/app/main.py:50176` — _static_confirmed_
+    - chain: prepare_meeting [endpoint:/api/v1/clients/{client_id}/meetings] @backend/app/main.py:50176
+- `INSERT` @ **create_app.feishu_import_minute** `backend/app/main.py:50304` — _static_confirmed_
+    - chain: feishu_import_minute [endpoint:/api/v1/feishu/minutes/{minute_token}/import] @backend/app/main.py:50304
+- `UPDATE` @ **create_app.ingest_meeting** `backend/app/main.py:51386` — _static_confirmed_
+    - chain: ingest_meeting [endpoint:/api/v1/clients/{client_id}/meetings/{meeting_id}/ingest] @backend/app/main.py:51386
+- `UPDATE` @ **create_app.extract_meeting** `backend/app/main.py:51418` — _static_confirmed_
+    - chain: extract_meeting [endpoint:/api/v1/clients/{client_id}/meetings/{meeting_id}/extract] @backend/app/main.py:51418
+- `UPDATE` @ **create_app.resolve_meeting** `backend/app/main.py:51463` — _static_confirmed_
+    - chain: resolve_meeting [endpoint:/api/v1/clients/{client_id}/meetings/{meeting_id}/resolve] @backend/app/main.py:51463
+- `UPDATE` @ **create_app.publish_meeting** `backend/app/main.py:51482` — _static_confirmed_
+    - chain: publish_meeting [endpoint:/api/v1/clients/{client_id}/meetings/{meeting_id}/publish] @backend/app/main.py:51482
+- `UPDATE` @ **create_app._ingest_feishu_minutes_writeback** `backend/app/main.py:7044` — _call_name_match_
+    - chain: _ingest_feishu_minutes_writeback @backend/app/main.py:7044  ←  handle_feishu_event @backend/app/main.py:7069  ←  receive_feishu_events [endpoint:/api/v1/channels/feishu/events] @backend/app/main.py:37511
+
+### 读边 (39)
+- `SELECT-FROM` @ **create_app._meeting_summaries_for_tasks** `backend/app/main.py:13633` — _static_confirmed_
+    - WHERE: `id IN (`
+    - WHERE: `id IN ({?})`
+- `SELECT-FROM` @ **create_app._meeting_summary_for_id** `backend/app/main.py:13653` — _static_confirmed_
+    - WHERE: `id = ?`
+- `SELECT-FROM` @ **create_app.build_client_summary** `backend/app/main.py:13881` — _static_confirmed_
+    - WHERE: `(source_id = ? OR source_id IN (SELECT id FROM meetings WHERE client_id = ?)) AND COALESCE(scope_mode, 'COLLAB_SHARED') != 'PERSONAL_ONLY'`
+- `SELECT-FROM` @ **create_app.build_task_project_context** `backend/app/main.py:14027` — _static_confirmed_
+    - WHERE: `client_id = ?`
+    - WHERE: `status != 'done' AND (source_id = ? OR source_id IN (SELECT id FROM meetings WHERE client_id = ?)) AND COALESCE(scope_mode, 'COLLAB_SHARED') != 'PERSONAL_ONLY'`
+- `SELECT-FROM` @ **create_app.workspace_for_client** `backend/app/main.py:17770` — _static_confirmed_
+    - WHERE: `client_id = ?`
+    - WHERE: `primary_client_id = ?) OR t.source_id = ? OR t.source_id IN (SELECT id FROM meetings WHERE client_id = ?)`
+- `SELECT-FROM` @ **create_app._collect_strategic_insight_context** `backend/app/main.py:19685` — _static_confirmed_
+    - WHERE: `client_id = ?`
+- `JOIN` @ **create_app.build_strategic_cockpit_snapshot** `backend/app/main.py:20771` — _static_confirmed_
+    - WHERE: `m.client_id = ? AND a.status = 'pending'`
+- `SELECT-FROM` @ **create_app.build_meeting_detail** `backend/app/main.py:21917` — _static_confirmed_
+    - WHERE: `id = ?`
+- `SELECT-FROM` @ **create_app.build_client_business_context_modules** `backend/app/main.py:24549` — _static_confirmed_
+    - WHERE: `client_id = ?`
+    - WHERE: `id = ?`
+- `SELECT-FROM` @ **create_app.get_brain_dashboard** `backend/app/main.py:27671` — _static_confirmed_
+- `SELECT-FROM` @ **clear_demo_dataset** `backend/app/main.py:2884` — _static_confirmed_
+    - WHERE: `client_id IN (`
+    - WHERE: `client_id IN ({?})`
+- `SELECT-FROM+JOIN` @ **create_app** `backend/app/main.py:3179` — _static_confirmed_
+    - WHERE: `(source_id = ? OR source_id IN (SELECT id FROM meetings WHERE client_id = ?)) AND COALESCE(scope_mode, 'COLLAB_SHARED') != 'PERSONAL_ONLY'`
+    - WHERE: `client_id = ?`
+    - WHERE: `id = ?`
+    - WHERE: `id IN (`
+    - WHERE: `id IN ({?})`
+- `SELECT-FROM` @ **create_app._resolve_client_id_for_scope_ref** `backend/app/main.py:3610` — _static_confirmed_
+    - WHERE: `id = ?`
+- `SELECT-FROM` @ **create_app._resolve_client_id_for_evidence_quality_annotation** `backend/app/main.py:3650` — _static_confirmed_
+    - WHERE: `id = ?`
+- `SELECT-FROM` @ **create_app.get_client_delete_preview** `backend/app/main.py:39266` — _static_confirmed_
+    - WHERE: `client_id = ?`
+- `SELECT-FROM` @ **create_app.get_client_page_context** `backend/app/main.py:48487` — _static_confirmed_
+    - WHERE: `id = ?`
+- `SELECT-FROM` @ **create_app.list_meetings** `backend/app/main.py:50059` — _static_confirmed_
+    - WHERE: `client_id = ?`
+- `SELECT-FROM` @ **create_app.get_client_meeting_page_context** `backend/app/main.py:50084` — _static_confirmed_
+    - WHERE: `id = ?`
+- `SELECT-FROM` @ **create_app.handle_feishu_event** `backend/app/main.py:7069` — _static_confirmed_
+    - WHERE: `id = ?`
+- `JOIN` @ **build_event_line_page_context_pack** `backend/app/services/analysis_context.py:1244` — _static_confirmed_
+    - WHERE: `a.event_line_id = ? AND a.source_type = 'meeting'`
+- `JOIN` @ **build_project_module_page_context_pack** `backend/app/services/analysis_context.py:1455` — _static_confirmed_
+    - WHERE: `t.project_module_id = ? AND t.source_type = 'meeting' AND COALESCE(t.scope_mode, 'COLLAB_SHARED') != 'PERSONAL_ONLY'`
+- `JOIN` @ **build_project_flow_page_context_pack** `backend/app/services/analysis_context.py:1620` — _static_confirmed_
+    - WHERE: `t.project_flow_id = ? AND t.source_type = 'meeting' AND COALESCE(t.scope_mode, 'COLLAB_SHARED') != 'PERSONAL_ONLY'`
+- `SELECT-FROM` @ **build_client_page_context_pack** `backend/app/services/analysis_context.py:294` — _static_confirmed_
+    - WHERE: `client_id = ?`
+- `SELECT-FROM` @ **build_task_page_context_pack** `backend/app/services/analysis_context.py:684` — _static_confirmed_
+    - WHERE: `client_id = ?`
+- `SELECT-FROM` @ **_collect_work_events** `backend/app/services/badge_engine.py:279` — _static_confirmed_
+    - WHERE: `d.meeting_id = m.id) AS decision_count, (SELECT COUNT(*) FROM action_items a WHERE a.meeting_id = m.id) AS action_count, ( SELECT COUNT(*) FROM action_items a WHERE a.meeting_id = m.id AND TRIM(a.owne`
+- `JOIN` @ **_load_people_candidates** `backend/app/services/clarification_context.py:207` — _static_confirmed_
+    - WHERE: `m.client_id = ? AND ai.owner_name IS NOT NULL AND ai.owner_name != ''`
+- `JOIN` @ **_load_commitments** `backend/app/services/clarification_context.py:323` — _static_confirmed_
+    - WHERE: `m.client_id = ?`
+- `JOIN` @ **_fetch_upcoming_todos** `backend/app/services/client_strategic_pulse.py:262` — _static_confirmed_
+    - WHERE: `m.client_id=? AND (ai.publish_status IS NULL OR ai.publish_status NOT IN ('completed','dismissed')) AND ai.title NOT LIKE '%补齐%' AND ai.title NOT LIKE '%占位%'`
+- `SELECT-FROM` @ **ingest_meeting_by_id** `backend/app/services/data_center_ingest.py:1609` — _static_confirmed_
+    - WHERE: `id = ?`
+- `SELECT-FROM` @ **backfill_data_center_ingest** `backend/app/services/data_center_ingest.py:1897` — _static_confirmed_
+- `SELECT-FROM` @ **_build_metrics** `backend/app/services/digital_asset_center.py:3129` — _static_confirmed_
+    - WHERE: `client_id = ?`
+- `SELECT-FROM` @ **_collect_sources** `backend/app/services/digital_asset_center.py:3179` — _static_confirmed_
+    - WHERE: `client_id = ?`
+- `SELECT-FROM` @ **build_digital_asset_narrative_context** `backend/app/services/digital_asset_narrative.py:201` — _static_confirmed_
+    - WHERE: `client_id = ?`
+- `SELECT-FROM` @ **_collect_meeting_titles** `backend/app/services/glossary_candidate_generator.py:292` — _static_confirmed_
+    - WHERE: `client_id = ?`
+- `SELECT-FROM` @ **materialize_workspace_native_documents** `backend/app/services/knowledge_v2.py:3782` — _static_confirmed_
+    - WHERE: `client_id = ?`
+- `SELECT-FROM` @ **build_meeting_page_context_pack** `backend/app/services/meeting_context.py:48` — _static_confirmed_
+    - WHERE: `id = ?`
+- `SELECT-FROM` @ **_collect_dimension_chunks** `backend/app/services/narrative_collector.py:743` — _static_confirmed_
+    - WHERE: `client_id=? AND transcript_text IS NOT NULL AND transcript_text LIKE ?`
+- `JOIN` @ **collect_all_todos** `backend/app/services/todo_aggregator.py:66` — _static_confirmed_
+    - WHERE: `m.client_id = ? AND ai.title NOT LIKE '%补齐%' AND ai.title NOT LIKE '%占位%' AND (ai.publish_status IS NULL OR ai.publish_status NOT IN ('completed', 'dismissed'))`
+- `SELECT-FROM` @ **_materialize_calendar_doc** `backend/app/services/workspace_relation_docs.py:637` — _static_confirmed_
+    - WHERE: `client_id = ? AND COALESCE(NULLIF(scheduled_at, ''), '') != ''`
+
+## `memory_facts`
+
+- 经验层: **4129 行** · 最近写入 created_at=2026-06-08T19:44:47
+  - source_type 分布: task:2819, document_knowledge_backfill:450, organization_notebook:191, task_attachment:164, document:135, chat_extraction:112, external_sentiment:100, weekly_review:52, client_dna:48, weekly_review_entry:39, dream_cycle:13, event_line_manual_update:6
+
+### 写边 (4)
+- `UPDATE` @ **_write_memory_facts** `backend/app/services/data_center_ingest.py:472` — _call_name_match_
+    - chain: _write_memory_facts @backend/app/services/data_center_ingest.py:472  ←  ingest_user_input @backend/app/services/data_center_ingest.py:1089  ←  ingest_event_line_by_id @backend/app/services/data_center_ingest.py:1862  ←  create_event_line [endpoint:/api/v1/event-lines] @backend/app/main.py:31525
+    - chain: _write_memory_facts @backend/app/services/data_center_ingest.py:472  ←  ingest_user_input @backend/app/services/data_center_ingest.py:1089  ←  ingest_event_line_by_id @backend/app/services/data_center_ingest.py:1862  ←  update_event_line [endpoint:/api/v1/event-lines/{event_line_id}] @backend/app/main.py:35169
+    - chain: _write_memory_facts @backend/app/services/data_center_ingest.py:472  ←  ingest_user_input @backend/app/services/data_center_ingest.py:1089  ←  ingest_meeting_by_id @backend/app/services/data_center_ingest.py:1609  ←  apply_strategic_meeting_pack [endpoint:/api/v1/clients/{client_id}/strategic-cockpit/meeting-pack/{meeting_id}/apply] @backend/app/main.py:42202
+    - chain: _write_memory_facts @backend/app/services/data_center_ingest.py:472  ←  ingest_user_input @backend/app/services/data_center_ingest.py:1089  ←  ingest_meeting_by_id @backend/app/services/data_center_ingest.py:1609  ←  extract_meeting [endpoint:/api/v1/clients/{client_id}/meetings/{meeting_id}/extract] @backend/app/main.py:51418
+    - chain: _write_memory_facts @backend/app/services/data_center_ingest.py:472  ←  ingest_user_input @backend/app/services/data_center_ingest.py:1089  ←  ingest_meeting_by_id @backend/app/services/data_center_ingest.py:1609  ←  ingest_meeting [endpoint:/api/v1/clients/{client_id}/meetings/{meeting_id}/ingest] @backend/app/main.py:51386
+    - chain: _write_memory_facts @backend/app/services/data_center_ingest.py:472  ←  ingest_user_input @backend/app/services/data_center_ingest.py:1089  ←  ingest_meeting_by_id @backend/app/services/data_center_ingest.py:1609  ←  publish_meeting [endpoint:/api/v1/clients/{client_id}/meetings/{meeting_id}/publish] @backend/app/main.py:51482
+- `UPDATE` @ **_mark_documents_for_source_entity** `backend/app/services/data_center_ingest.py:665` — _call_name_match_
+    - chain: _mark_documents_for_source_entity @backend/app/services/data_center_ingest.py:665  ←  mark_ingested_source_inactive @backend/app/services/data_center_ingest.py:735  ←  delete_task [endpoint:/api/v1/tasks/{task_id}] @backend/app/main.py:53307
+    - chain: _mark_documents_for_source_entity @backend/app/services/data_center_ingest.py:665  ←  mark_ingested_source_inactive @backend/app/services/data_center_ingest.py:735  ←  update_task [endpoint:/api/v1/tasks/{task_id}] @backend/app/main.py:52636
+    - chain: _mark_documents_for_source_entity @backend/app/services/data_center_ingest.py:665  ←  _upsert_text_document_if_needed @backend/app/services/data_center_ingest.py:552  ←  ingest_user_input @backend/app/services/data_center_ingest.py:1089  ←  ingest_event_line_by_id @backend/app/services/data_center_ingest.py:1862  ←  create_event_line [endpoint:/api/v1/event-lines] @backend/app/main.py:31525
+    - chain: _mark_documents_for_source_entity @backend/app/services/data_center_ingest.py:665  ←  _upsert_text_document_if_needed @backend/app/services/data_center_ingest.py:552  ←  ingest_user_input @backend/app/services/data_center_ingest.py:1089  ←  ingest_event_line_by_id @backend/app/services/data_center_ingest.py:1862  ←  update_event_line [endpoint:/api/v1/event-lines/{event_line_id}] @backend/app/main.py:35169
+    - chain: _mark_documents_for_source_entity @backend/app/services/data_center_ingest.py:665  ←  _upsert_text_document_if_needed @backend/app/services/data_center_ingest.py:552  ←  ingest_user_input @backend/app/services/data_center_ingest.py:1089  ←  ingest_meeting_by_id @backend/app/services/data_center_ingest.py:1609  ←  apply_strategic_meeting_pack [endpoint:/api/v1/clients/{client_id}/strategic-cockpit/meeting-pack/{meeting_id}/apply] @backend/app/main.py:42202
+    - chain: _mark_documents_for_source_entity @backend/app/services/data_center_ingest.py:665  ←  _upsert_text_document_if_needed @backend/app/services/data_center_ingest.py:552  ←  ingest_user_input @backend/app/services/data_center_ingest.py:1089  ←  ingest_meeting_by_id @backend/app/services/data_center_ingest.py:1609  ←  extract_meeting [endpoint:/api/v1/clients/{client_id}/meetings/{meeting_id}/extract] @backend/app/main.py:51418
+- `UPDATE` @ **mark_ingested_source_inactive** `backend/app/services/data_center_ingest.py:735` — _call_name_match_
+    - chain: mark_ingested_source_inactive @backend/app/services/data_center_ingest.py:735  ←  delete_task [endpoint:/api/v1/tasks/{task_id}] @backend/app/main.py:53307
+    - chain: mark_ingested_source_inactive @backend/app/services/data_center_ingest.py:735  ←  update_task [endpoint:/api/v1/tasks/{task_id}] @backend/app/main.py:52636
+    - chain: mark_ingested_source_inactive @backend/app/services/data_center_ingest.py:735  ←  _soft_isolate_ingested_source @backend/app/services/data_center_ingest.py:836  ←  _skip_orphan_client_ingest @backend/app/services/data_center_ingest.py:877  ←  ingest_user_input @backend/app/services/data_center_ingest.py:1089  ←  ingest_event_line_by_id @backend/app/services/data_center_ingest.py:1862  ←  create_event_line [endpoint:/api/v1/event-lines] @backend/app/main.py:31525
+    - chain: mark_ingested_source_inactive @backend/app/services/data_center_ingest.py:735  ←  _soft_isolate_ingested_source @backend/app/services/data_center_ingest.py:836  ←  _skip_orphan_client_ingest @backend/app/services/data_center_ingest.py:877  ←  ingest_user_input @backend/app/services/data_center_ingest.py:1089  ←  ingest_event_line_by_id @backend/app/services/data_center_ingest.py:1862  ←  update_event_line [endpoint:/api/v1/event-lines/{event_line_id}] @backend/app/main.py:35169
+    - chain: mark_ingested_source_inactive @backend/app/services/data_center_ingest.py:735  ←  _soft_isolate_ingested_source @backend/app/services/data_center_ingest.py:836  ←  _skip_orphan_client_ingest @backend/app/services/data_center_ingest.py:877  ←  ingest_user_input @backend/app/services/data_center_ingest.py:1089  ←  ingest_meeting_by_id @backend/app/services/data_center_ingest.py:1609  ←  apply_strategic_meeting_pack [endpoint:/api/v1/clients/{client_id}/strategic-cockpit/meeting-pack/{meeting_id}/apply] @backend/app/main.py:42202
+    - chain: mark_ingested_source_inactive @backend/app/services/data_center_ingest.py:735  ←  _soft_isolate_ingested_source @backend/app/services/data_center_ingest.py:836  ←  _skip_orphan_client_ingest @backend/app/services/data_center_ingest.py:877  ←  ingest_user_input @backend/app/services/data_center_ingest.py:1089  ←  ingest_meeting_by_id @backend/app/services/data_center_ingest.py:1609  ←  extract_meeting [endpoint:/api/v1/clients/{client_id}/meetings/{meeting_id}/extract] @backend/app/main.py:51418
+- `INSERT` @ **upsert_memory_fact** `backend/app/services/memory_foundation.py:667` — _call_name_match_
+    - chain: upsert_memory_fact @backend/app/services/memory_foundation.py:667  ←  _sync_reference_scope_facts [worker:_sync_reference_scope_facts] @backend/app/services/memory_foundation.py:245
+    - chain: upsert_memory_fact @backend/app/services/memory_foundation.py:667  ←  answer_clarification_record @backend/app/services/memory_foundation.py:1492  ←  answer_clarification [endpoint:/api/v1/clarifications/{clarification_id}/answer] @backend/app/main.py:42297
+    - chain: upsert_memory_fact @backend/app/services/memory_foundation.py:667  ←  backfill_document_knowledge_to_memory @backend/app/services/memory_foundation.py:535  ←  backfill_document_knowledge_route [endpoint:/api/v1/memory/backfill-documents] @backend/app/main.py:42270
+    - chain: upsert_memory_fact @backend/app/services/memory_foundation.py:667  ←  backfill_document_knowledge_to_memory @backend/app/services/memory_foundation.py:535  ←  backfill_memory_foundation_route [endpoint:/api/v1/memory/backfill] @backend/app/main.py:42259
+    - chain: upsert_memory_fact @backend/app/services/memory_foundation.py:667  ←  record_meeting_publish_writeback @backend/app/services/memory_foundation.py:1746  ←  apply_strategic_meeting_pack [endpoint:/api/v1/clients/{client_id}/strategic-cockpit/meeting-pack/{meeting_id}/apply] @backend/app/main.py:42202
+    - chain: upsert_memory_fact @backend/app/services/memory_foundation.py:667  ←  record_meeting_publish_writeback @backend/app/services/memory_foundation.py:1746  ←  publish_meeting [endpoint:/api/v1/clients/{client_id}/meetings/{meeting_id}/publish] @backend/app/main.py:51482
+
+### 读边 (15)
+- `SELECT-FROM` @ **create_app.collect_data_center_context_for_consultation** `backend/app/main.py:15884` — _static_confirmed_
+    - WHERE: `scope_type = 'client' AND scope_id = ?`
+- `SELECT-FROM` @ **_sync_task_attachment_scope** `backend/app/main.py:2237` — _static_confirmed_
+    - WHERE: `source_type = 'task_attachment' AND source_id = ? AND scope_type = 'client' AND scope_id <> ?`
+    - WHERE: `source_type = 'task_attachment' AND source_id = ? AND scope_type = 'event_line'`
+    - WHERE: `source_type = 'task_attachment' AND source_id = ? AND scope_type = 'event_line' AND scope_id <> ?`
+- `SELECT-FROM` @ **create_app.get_brain_dashboard** `backend/app/main.py:27671` — _static_confirmed_
+    - WHERE: `created_at >= date('now', '-7 days')`
+    - WHERE: `scope_type = 'client' AND scope_id = ?`
+- `SELECT-FROM` @ **create_app** `backend/app/main.py:3179` — _static_confirmed_
+    - WHERE: `created_at >= date('now', '-7 days')`
+    - WHERE: `scope_type = 'client' AND scope_id = ?`
+    - WHERE: `scope_type = 'client' AND scope_id = ? AND source_type = 'chat_extraction' AND (valid_to IS NULL OR valid_to >= date('now'))`
+    - WHERE: `scope_type = 'task' AND scope_id = ?`
+    - WHERE: `source_type = 'task' AND source_id = ?`
+- `SELECT-FROM` @ **create_app.delete_task** `backend/app/main.py:53307` — _static_confirmed_
+    - WHERE: `scope_type = 'task' AND scope_id = ?`
+    - WHERE: `source_type = 'task' AND source_id = ?`
+- `SELECT-FROM` @ **create_app.build_client_memory_background_context** `backend/app/main.py:8218` — _static_confirmed_
+    - WHERE: `scope_type = 'client' AND scope_id = ? AND source_type = 'chat_extraction' AND (valid_to IS NULL OR valid_to >= date('now'))`
+- `SELECT-FROM` @ **_permission_diagnostics** `backend/app/services/data_center_schema.py:35` — _static_confirmed_
+    - WHERE: `COALESCE(department_ids_json, '[]') IN ('', '[]')`
+    - WHERE: `COALESCE(organization_id, '') = ''`
+    - WHERE: `COALESCE(owner_user_id, '') = ''`
+- `SELECT-FROM` @ **_build_metrics** `backend/app/services/digital_asset_center.py:3129` — _static_confirmed_
+    - WHERE: `scope_type = 'client' AND scope_id = ?`
+- `SELECT-FROM` @ **_collect_sources** `backend/app/services/digital_asset_center.py:3179` — _static_confirmed_
+    - WHERE: `scope_type = 'client' AND scope_id = ?`
+- `SELECT-FROM` @ **_build_digital_asset_pulse** `backend/app/services/digital_asset_center.py:924` — _static_confirmed_
+    - WHERE: `mf.scope_type = 'client' AND COALESCE(c.alias, '') != ? AND COALESCE(c.name, '') != ? AND date(mf.created_at) >= date('now', '-7 days')`
+- `SELECT-FROM` @ **_count_source_events** `backend/app/services/growth_engine.py:1168` — _static_confirmed_
+    - WHERE: `owner_user_id = ? AND scope_type = 'client' AND confidence >= 0.5`
+- `SELECT-FROM` @ **_fetch_memory_evidence** `backend/app/services/growth_engine.py:1504` — _static_confirmed_
+    - WHERE: `owner_user_id = ?`
+- `SELECT-FROM` @ **_read_memory_facts** `backend/app/services/memory_foundation.py:384` — _static_confirmed_
+    - WHERE: `scope_type = ? AND scope_id = ?`
+- `SELECT-FROM` @ **upsert_memory_fact** `backend/app/services/memory_foundation.py:667` — _static_confirmed_
+    - WHERE: `id = ?`
+    - WHERE: `scope_type = ? AND scope_id = ? AND fact_key = ? AND source_type = ? AND source_id = ?`
+- `SELECT-FROM` @ **refresh_organization_notebook_snapshot** `backend/app/services/memory_foundation.py:733` — _static_confirmed_
+    - WHERE: `scope_type = 'client' AND scope_id = ?`
+
+## `mirror_client_related_users`
+
+- 经验层: **0 行**
+
+### 写边 (0)
+- (无静态写边)
+
+### 读边 (2)
+- `JOIN` @ **list_users_visible_for_client** `backend/app/modules/organization/repository.py:168` — _static_confirmed_
+    - WHERE: `cru.client_id = ? AND u.account_status = 'approved'`
+- `SELECT-FROM` @ **list_clients_visible_for_user** `backend/app/modules/organization/repository.py:189` — _static_confirmed_
+    - WHERE: `user_id = ?`
+
+## `mirror_departments`
+
+- 经验层: **0 行**
+
+### 写边 (0)
+- (无静态写边)
+
+### 读边 (4)
+- `SELECT-FROM` @ **get_department_by_id** `backend/app/modules/organization/repository.py:59` — _static_confirmed_
+    - WHERE: `id = ?`
+- `SELECT-FROM` @ **list_active_departments** `backend/app/modules/organization/repository.py:67` — _static_confirmed_
+    - WHERE: `active = 1`
+    - WHERE: `organization_id = ? AND active = 1`
+- `SELECT-FROM` @ **list_all_departments** `backend/app/modules/organization/repository.py:79` — _static_confirmed_
+    - WHERE: `organization_id = ?`
+- `SELECT-FROM` @ **_resolve_dept_leader_user_id** `backend/app/services/bot_members.py:667` — _static_confirmed_
+    - WHERE: `id = ?`
+
+## `mirror_organizations`
+
+- 经验层: **0 行**
+
+### 写边 (0)
+- (无静态写边)
+
+### 读边 (3)
+- `SELECT-FROM` @ **get_organization** `backend/app/modules/organization/repository.py:41` — _static_confirmed_
+    - WHERE: `id = ?`
+- `SELECT-FROM` @ **list_organizations** `backend/app/modules/organization/repository.py:51` — _static_confirmed_
+- `SELECT-FROM` @ **_resolve_team_context_for_async_worker** `backend/app/services/knowledge_v2.py:86` — _static_confirmed_
+
+## `mirror_users`
+
+- 经验层: **0 行**
+
+### 写边 (0)
+- (无静态写边)
+
+### 读边 (6)
+- `SELECT-FROM` @ **list_department_leaders** `backend/app/modules/organization/repository.py:140` — _static_confirmed_
+    - WHERE: `(is_department_lead = 1 OR is_manager = 1) AND account_status = 'approved'`
+    - WHERE: `organization_id = ? AND (is_department_lead = 1 OR is_manager = 1) AND account_status = 'approved'`
+- `SELECT-FROM` @ **ensure_bot_schema** `backend/app/services/bot_members.py:101` — _static_confirmed_
+    - WHERE: `account_status = 'approved' UNION ALL SELECT actor_id AS id, organization_id, department_id, display_name AS full_name, '' AS email, 'ai_agent' AS primary_role, 'approved' AS account_status, 'active' `
+- `SELECT-FROM` @ **_resolve_ceo_user_ids** `backend/app/services/bot_members.py:683` — _static_confirmed_
+    - WHERE: `organization_id = ? AND primary_role = 'admin' AND account_status = 'approved'`
+    - WHERE: `primary_role = 'admin' AND account_status = 'approved'`
+- `SELECT-FROM` @ **build_client_roster_hint** `backend/app/services/person_resolver.py:172` — _static_confirmed_
+    - WHERE: `full_name IS NOT NULL AND full_name <> ''`
+- `SELECT-FROM` @ **match_mirror_user** `backend/app/services/person_resolver.py:56` — _static_confirmed_
+    - WHERE: `full_name IS NOT NULL AND full_name <> ''`
+- `SELECT-FROM` @ **_handler_documents_generate._do_create_doc_task** `backend/app/services/plan_executor.py:1315` — _static_confirmed_
+    - WHERE: `id = ?`
+
+## `module_definition_entries`
+
+- 经验层: **133 行** · 最近写入 created_at=2026-05-16T07:05:23.958524+00:00
+
+### 写边 (1)
+- `INSERT` @ **append_entry** `backend/app/services/module_dna.py:153` — _call_name_match_
+    - chain: append_entry @backend/app/services/module_dna.py:153  ←  append_module_dna_entry [endpoint:/api/v1/settings/module-dna/{module_id}/entries] @backend/app/main.py:30188
+
+### 读边 (4)
+- `SELECT-FROM` @ **append_entry** `backend/app/services/module_dna.py:153` — _static_confirmed_
+    - WHERE: `id = ?`
+- `SELECT-FROM` @ **list_entries** `backend/app/services/module_dna.py:220` — _static_confirmed_
+    - WHERE: `{?}`
+- `SELECT-FROM` @ **delete_entry** `backend/app/services/module_dna.py:248` — _static_confirmed_
+    - WHERE: `id = ?`
+- `SELECT-FROM` @ **_collect_business_context** `backend/app/services/narrative_collector.py:890` — _static_confirmed_
+    - WHERE: `module_id = ? AND category IN (`
+    - WHERE: `module_id = ? AND category IN ({?}) AND superseded_by IS NULL`
+
+## `module_definitions`
+
+- 经验层: **21 行** · 最近写入 created_at=2026-05-16T06:57:03.279117+00:00
+
+### 写边 (3)
+- `INSERT` @ **create_module** `backend/app/services/module_dna.py:101` — _call_name_match_
+    - chain: create_module @backend/app/services/module_dna.py:101  ←  create_module_dna [endpoint:/api/v1/settings/module-dna] @backend/app/main.py:30162
+- `UPDATE` @ **update_module** `backend/app/services/module_dna.py:125` — _call_name_match_
+    - chain: update_module @backend/app/services/module_dna.py:125  ←  update_module_dna [endpoint:/api/v1/settings/module-dna/{module_id}] @backend/app/main.py:30175
+- `UPDATE` @ **append_entry** `backend/app/services/module_dna.py:153` — _call_name_match_
+    - chain: append_entry @backend/app/services/module_dna.py:153  ←  append_module_dna_entry [endpoint:/api/v1/settings/module-dna/{module_id}/entries] @backend/app/main.py:30188
+
+### 读边 (2)
+- `SELECT-FROM` @ **list_modules** `backend/app/services/module_dna.py:75` — _static_confirmed_
+- `SELECT-FROM` @ **get_module** `backend/app/services/module_dna.py:87` — _static_confirmed_
+    - WHERE: `id = ?`
+
+## `narrative_kernel`
+
+- 经验层: 真库**无此表** (静态边 0写/1读)
+
+### 写边 (0)
+- (无静态写边)
+
+### 读边 (1)
+- `SELECT-FROM` @ **__getattr__** `backend/app/services/narrative_kernel.py:47` — _static_confirmed_
+
+## `narrative_stale_signals`
+
+- 经验层: **5 行**
+
+### 写边 (2)
+- `INSERT` @ **_mark_narrative_stale** `backend/app/services/data_center_broadcast.py:240` — _call_name_match_
+    - chain: _mark_narrative_stale @backend/app/services/data_center_broadcast.py:240  ←  broadcast_data_changed @backend/app/services/data_center_broadcast.py:94  ←  system_broadcast_data_changed [endpoint:/api/v1/system/broadcast-data-changed] @backend/app/main.py:30247
+    - chain: _mark_narrative_stale @backend/app/services/data_center_broadcast.py:240  ←  broadcast_data_changed @backend/app/services/data_center_broadcast.py:94  ←  ingest_document_knowledge @backend/app/services/knowledge_base.py:2802  ←  upload_task_attachment [endpoint:/api/v1/tasks/{task_id}/attachments] @backend/app/main.py:53434
+    - chain: _mark_narrative_stale @backend/app/services/data_center_broadcast.py:240  ←  broadcast_data_changed @backend/app/services/data_center_broadcast.py:94  ←  ingest_document_knowledge @backend/app/services/knowledge_base.py:2802  ←  _build_local_event_line_report_snapshot @backend/app/main.py:33643  ←  get_event_line_report_snapshot [endpoint:/api/v1/event-lines/{event_line_id}/report-snapshot] @backend/app/main.py:34329
+    - chain: _mark_narrative_stale @backend/app/services/data_center_broadcast.py:240  ←  broadcast_data_changed @backend/app/services/data_center_broadcast.py:94  ←  ingest_document_knowledge @backend/app/services/knowledge_base.py:2802  ←  _process_one_pdf @backend/app/services/internet_pdf_worker.py:96  ←  _worker_loop [worker:_worker_loop] @backend/app/services/internet_pdf_worker.py:205
+    - chain: _mark_narrative_stale @backend/app/services/data_center_broadcast.py:240  ←  broadcast_data_changed @backend/app/services/data_center_broadcast.py:94  ←  ingest_document_knowledge @backend/app/services/knowledge_base.py:2802  ←  backfill_workspace_import @backend/app/services/knowledge_v2.py:3943  ←  backfill_client_workspace_imports [endpoint:/api/v1/clients/{client_id}/workspace/backfill-imports] @backend/app/main.py:50039
+    - chain: _mark_narrative_stale @backend/app/services/data_center_broadcast.py:240  ←  broadcast_data_changed @backend/app/services/data_center_broadcast.py:94  ←  ingest_document_knowledge @backend/app/services/knowledge_base.py:2802  ←  create_client_text_document @backend/app/main.py:16116  ←  create_client_document_from_text [endpoint:/api/v1/clients/{client_id}/documents/from-text] @backend/app/main.py:49576
+- `INSERT` @ **ingest_document_knowledge** `backend/app/services/knowledge_v2.py:2114` — _call_name_match_
+    - chain: ingest_document_knowledge @backend/app/services/knowledge_v2.py:2114  ←  upload_task_attachment [endpoint:/api/v1/tasks/{task_id}/attachments] @backend/app/main.py:53434
+    - chain: ingest_document_knowledge @backend/app/services/knowledge_v2.py:2114  ←  _build_local_event_line_report_snapshot @backend/app/main.py:33643  ←  get_event_line_report_snapshot [endpoint:/api/v1/event-lines/{event_line_id}/report-snapshot] @backend/app/main.py:34329
+    - chain: ingest_document_knowledge @backend/app/services/knowledge_v2.py:2114  ←  _process_one_pdf @backend/app/services/internet_pdf_worker.py:96  ←  _worker_loop [worker:_worker_loop] @backend/app/services/internet_pdf_worker.py:205
+    - chain: ingest_document_knowledge @backend/app/services/knowledge_v2.py:2114  ←  backfill_workspace_import @backend/app/services/knowledge_v2.py:3943  ←  backfill_client_workspace_imports [endpoint:/api/v1/clients/{client_id}/workspace/backfill-imports] @backend/app/main.py:50039
+    - chain: ingest_document_knowledge @backend/app/services/knowledge_v2.py:2114  ←  create_client_text_document @backend/app/main.py:16116  ←  create_client_document_from_text [endpoint:/api/v1/clients/{client_id}/documents/from-text] @backend/app/main.py:49576
+    - chain: ingest_document_knowledge @backend/app/services/knowledge_v2.py:2114  ←  execute_parse_failure_retry_batch @backend/app/main.py:42534  ←  retry_client_parse_failures [endpoint:/api/v1/clients/{client_id}/knowledge/parse-failures/retry] @backend/app/main.py:42800
+
+### 读边 (3)
+- `SELECT-FROM` @ **create_app.get_narrative_stale_status** `backend/app/main.py:28585` — _static_confirmed_
+    - WHERE: `client_id = ?`
+- `SELECT-FROM` @ **create_app.clear_narrative_stale** `backend/app/main.py:28616` — _static_confirmed_
+    - WHERE: `client_id = ?`
+- `SELECT-FROM` @ **create_app** `backend/app/main.py:3179` — _static_confirmed_
+    - WHERE: `client_id = ?`
+
+## `narrative_suggestion_log`
+
+- 经验层: **13 行** · 最近写入 created_at=2026-06-05T15:03:22
+
+### 写边 (2)
+- `INSERT` @ **create_app.log_suggestion_action** `backend/app/main.py:29104` — _static_confirmed_
+    - chain: log_suggestion_action [endpoint:/api/v1/clients/{client_id}/suggestions/log] @backend/app/main.py:29104
+- `INSERT` @ **create_app** `backend/app/main.py:3179` — _needs_human_
+    - chain: create_app @backend/app/main.py:3179  ←  (no caller found — orphan write)
+
+### 读边 (4)
+- `SELECT-FROM` @ **create_app.list_suggestion_log** `backend/app/main.py:29141` — _static_confirmed_
+    - WHERE: `client_id = ?`
+- `SELECT-FROM` @ **create_app.remove_suggestion_log_entry** `backend/app/main.py:29172` — _static_confirmed_
+    - WHERE: `client_id = ? AND fingerprint = ?`
+- `SELECT-FROM` @ **create_app** `backend/app/main.py:3179` — _static_confirmed_
+    - WHERE: `client_id = ?`
+    - WHERE: `client_id = ? AND fingerprint = ?`
+- `SELECT-FROM` @ **_load_consumed_fingerprints** `backend/app/services/meeting_action_extractor.py:182` — _static_confirmed_
+    - WHERE: `client_id = ?`
+
+## `next_step_background_cache`
+
+- 经验层: **40 行** · 最近写入 created_at=2026-06-05T07:03:04.270475+00:00
+
+### 写边 (4)
+- `INSERT` @ **create_app._prefetch_next_step_backgrounds** `backend/app/main.py:28730` — _static_confirmed_
+    - chain: _prefetch_next_step_backgrounds [worker:_prefetch_next_step_backgrounds] @backend/app/main.py:28730
+- `INSERT` @ **create_app._prefetch_next_step_backgrounds._one** `backend/app/main.py:28758` — _needs_human_
+    - chain: _one @backend/app/main.py:28758  ←  (no caller found — orphan write)
+- `INSERT` @ **create_app.get_next_step_background** `backend/app/main.py:28791` — _static_confirmed_
+    - chain: get_next_step_background [endpoint:/api/v1/clients/{client_id}/next-steps-background] @backend/app/main.py:28791
+- `INSERT` @ **create_app** `backend/app/main.py:3179` — _needs_human_
+    - chain: create_app @backend/app/main.py:3179  ←  (no caller found — orphan write)
+
+### 读边 (3)
+- `SELECT-FROM` @ **create_app._prefetch_next_step_backgrounds** `backend/app/main.py:28730` — _static_confirmed_
+    - WHERE: `client_id = ?`
+- `SELECT-FROM` @ **create_app.get_next_step_background** `backend/app/main.py:28791` — _static_confirmed_
+    - WHERE: `client_id=? AND fingerprint=?`
+- `SELECT-FROM` @ **create_app** `backend/app/main.py:3179` — _static_confirmed_
+    - WHERE: `client_id = ?`
+    - WHERE: `client_id=? AND fingerprint=?`
+
+## `object_storage_settings`
+
+- 经验层: **1 行** · 最近写入 updated_at=2026-05-21T10:08:13+00:00
+
+### 写边 (2)
+- `INSERT` @ **_init_schema** `backend/app/db.py:60` — _needs_human_
+    - chain: _init_schema @backend/app/db.py:60  ←  __init__ @backend/app/db.py:49
+- `UPDATE` @ **save_object_storage_settings** `backend/app/services/object_storage/settings_store.py:60` — _call_name_match_
+    - chain: save_object_storage_settings @backend/app/services/object_storage/settings_store.py:60  ←  _sync_object_storage_config_from_cloud [worker:_sync_object_storage_config_from_cloud] @backend/app/main.py:30605
+    - chain: save_object_storage_settings @backend/app/services/object_storage/settings_store.py:60  ←  update_object_storage_settings_endpoint [endpoint:/api/v1/settings/object-storage] @backend/app/main.py:36746
+
+### 读边 (1)
+- `SELECT-FROM` @ **get_object_storage_settings** `backend/app/services/object_storage/settings_store.py:42` — _static_confirmed_
+    - WHERE: `id = 1`
+
+## `open_questions`
+
+- 经验层: **25 行** · 最近写入 created_at=2026-06-05T15:04:03
+
+### 写边 (0)
+- (无静态写边)  ⚠️ **0 写边但真库有行 → needs_human (写入路径在静态扫描盲区:可能动态表名/ORM/外部进程)**
+
+### 读边 (6)
+- `SELECT-FROM` @ **list_open_questions** `backend/app/services/analysis_center.py:1128` — _static_confirmed_
+    - WHERE: `{?}`
+- `SELECT-FROM` @ **_build_analysis_center_summary** `backend/app/services/analysis_center.py:1548` — _static_confirmed_
+    - WHERE: `client_id = ? UNION ALL SELECT 'theme', COUNT(*) FROM theme_clusters WHERE client_id = ? UNION ALL SELECT 'conflict', COUNT(*) FROM conflict_groups WHERE client_id = ? UNION ALL SELECT 'open_q', COUNT`
+- `SELECT-FROM` @ **build_client_page_context_pack** `backend/app/services/analysis_context.py:294` — _static_confirmed_
+    - WHERE: `client_id = ?`
+- `SELECT-FROM` @ **_build_metrics** `backend/app/services/digital_asset_center.py:3129` — _static_confirmed_
+    - WHERE: `client_id = ?`
+- `SELECT-FROM` @ **_collect_sources** `backend/app/services/digital_asset_center.py:3179` — _static_confirmed_
+    - WHERE: `client_id = ?`
+- `SELECT-FROM` @ **build_digital_asset_narrative_context** `backend/app/services/digital_asset_narrative.py:201` — _static_confirmed_
+    - WHERE: `client_id = ?`
+
+## `operators`
+
+- 经验层: **1 行** · 最近写入 created_at=2026-05-16T10:09:33
+
+### 写边 (4)
+- `UPDATE` @ **create_app** `backend/app/main.py:3179` — _needs_human_
+    - chain: create_app @backend/app/main.py:3179  ←  (no caller found — orphan write)
+- `UPDATE` @ **create_app.update_settings** `backend/app/main.py:36459` — _static_confirmed_
+    - chain: update_settings [endpoint:/api/v1/settings] @backend/app/main.py:36459
+- `UPDATE` @ **create_app.current_operator_row** `backend/app/main.py:3925` — _call_name_match_
+    - chain: current_operator_row @backend/app/main.py:3925  ←  confirm_judgment_endpoint [endpoint:/api/v1/memory/judgments/confirm] @backend/app/main.py:39418
+    - chain: current_operator_row @backend/app/main.py:3925  ←  create_intelligence_task_endpoint [endpoint:/api/v1/intelligence/items/{item_id}/tasks] @backend/app/main.py:58553
+    - chain: current_operator_row @backend/app/main.py:3925  ←  create_task_tag [endpoint:/api/v1/task-tags] @backend/app/main.py:52070
+    - chain: current_operator_row @backend/app/main.py:3925  ←  decide_approval_endpoint [endpoint:/api/v1/approvals/decide] @backend/app/main.py:39442
+    - chain: current_operator_row @backend/app/main.py:3925  ←  list_task_tags [endpoint:/api/v1/task-tags] @backend/app/main.py:52059
+    - chain: current_operator_row @backend/app/main.py:3925  ←  prepare_meeting [endpoint:/api/v1/clients/{client_id}/meetings] @backend/app/main.py:50176
+- `INSERT` @ **seed_defaults** `backend/app/main.py:59873` — _needs_human_
+    - chain: seed_defaults @backend/app/main.py:59873  ←  create_app @backend/app/main.py:3179
+
+### 读边 (16)
+- `SELECT-FROM` @ **_ensure_local_tag** `backend/app/main.py:2061` — _static_confirmed_
+    - WHERE: `id = ?`
+- `SELECT-FROM` @ **create_app** `backend/app/main.py:3179` — _static_confirmed_
+    - WHERE: `id = ?`
+- `SELECT-FROM` @ **create_app._build_local_event_line_report_snapshot** `backend/app/main.py:33643` — _static_confirmed_
+    - WHERE: `id = ?`
+- `SELECT-FROM` @ **create_app.update_settings** `backend/app/main.py:36459` — _static_confirmed_
+    - WHERE: `id = ?`
+- `SELECT-FROM` @ **create_app.current_operator_row** `backend/app/main.py:3925` — _static_confirmed_
+    - WHERE: `id = ?`
+- `SELECT-FROM` @ **create_app.build_settings_response** `backend/app/main.py:5195` — _static_confirmed_
+- `SELECT-FROM` @ **create_app.update_task** `backend/app/main.py:52636` — _static_confirmed_
+    - WHERE: `id = ?`
+- `SELECT-FROM` @ **seed_defaults** `backend/app/main.py:59873` — _static_confirmed_
+- `SELECT-FROM` @ **_resolve_user_tier** `backend/app/services/exp_wall_service.py:111` — _static_confirmed_
+    - WHERE: `id = ?`
+- `JOIN` @ **list_feed** `backend/app/services/exp_wall_service.py:200` — _static_confirmed_
+    - WHERE: `{?}`
+- `JOIN` @ **get_quote** `backend/app/services/exp_wall_service.py:241` — _static_confirmed_
+    - WHERE: `q.id = ?`
+- `JOIN` @ **_recompute_scores** `backend/app/services/exp_wall_service.py:356` — _static_confirmed_
+    - WHERE: `r.quote_id = ?`
+- `SELECT-FROM` @ **can_delete_quote** `backend/app/services/exp_wall_service.py:413` — _static_confirmed_
+    - WHERE: `id = ?`
+- `JOIN` @ **aggregate_contribution_by_user** `backend/app/services/exp_wall_service.py:495` — _static_confirmed_
+    - WHERE: `{?}`
+- `SELECT-FROM` @ **_resolve_user_aliases** `backend/app/services/growth_engine.py:1072` — _static_confirmed_
+    - WHERE: `id = ?`
+- `SELECT-FROM` @ **_resolve_operator_row** `backend/app/services/growth_engine.py:89` — _static_confirmed_
+    - WHERE: `id = ?`
+    - WHERE: `name = ?`
+
+## `org_events`
+
+- 经验层: **0 行**
+
+### 写边 (0)
+- (无静态写边)
+
+### 读边 (0)
+- (无静态读边)
+
+## `org_members_v`
+
+- 经验层: 真库**无此表** (静态边 0写/5读)
+
+### 写边 (0)
+- (无静态写边)
+
+### 读边 (5)
+- `SELECT-FROM` @ **get_user_by_id** `backend/app/modules/organization/repository.py:103` — _static_confirmed_
+    - WHERE: `id = ?`
+- `SELECT-FROM` @ **list_users** `backend/app/modules/organization/repository.py:113` — _static_confirmed_
+- `SELECT-FROM` @ **list_users_visible_for_client** `backend/app/modules/organization/repository.py:168` — _static_confirmed_
+    - WHERE: `cru.client_id = ? AND u.account_status = 'approved'`
+- `SELECT-FROM` @ **_resolve_team_context_for_async_worker** `backend/app/services/knowledge_v2.py:86` — _static_confirmed_
+    - WHERE: `primary_role = 'admin' AND organization_id = ? AND account_status = 'approved' AND is_bot = 0 AND id NOT LIKE 'user_admin%' AND (email IS NULL OR email NOT LIKE '%@yiyu-system.com')`
+- `SELECT-FROM` @ **_handler_tasks_create** `backend/app/services/plan_executor.py:1400` — _static_confirmed_
+    - WHERE: `id = ?`
+
+## `org_profiles`
+
+- 经验层: 真库**无此表** (静态边 0写/2读)
+
+### 写边 (0)
+- (无静态写边)
+
+### 读边 (2)
+- `SELECT-FROM` @ **create_app._cached_event_line_organization_context** `backend/app/main.py:10992` — _static_confirmed_
+    - WHERE: `organization_id = ?`
+- `SELECT-FROM` @ **create_app** `backend/app/main.py:3179` — _static_confirmed_
+    - WHERE: `organization_id = ?`
+
+## `organization_dna_documents`
+
+- 经验层: **4 行** · 最近写入 updated_at=2026-05-16T06:34:55.222128+00:00
+
+### 写边 (0)
+- (无静态写边)  ⚠️ **0 写边但真库有行 → needs_human (写入路径在静态扫描盲区:可能动态表名/ORM/外部进程)**
+
+### 读边 (0)
+- (无静态读边)
+
+## `organization_dna_refresh_events`
+
+- 经验层: **72 行** · 最近写入 created_at=2026-05-14T20:53:57
+
+### 写边 (2)
+- `INSERT` @ **create_app._append_organization_dna_refresh_event** `backend/app/main.py:27767` — _call_name_match_
+    - chain: _append_organization_dna_refresh_event @backend/app/main.py:27767  ←  _create_organization_dna_refresh_run @backend/app/main.py:27819  ←  refresh_organization_dna_v2_endpoint [endpoint:/api/v1/digital-assets/organization-dna/refresh] @backend/app/main.py:27893
+    - chain: _append_organization_dna_refresh_event @backend/app/main.py:27767  ←  _execute_organization_dna_refresh_run @backend/app/main.py:27834  ←  refresh_organization_dna_v2_endpoint [endpoint:/api/v1/digital-assets/organization-dna/refresh] @backend/app/main.py:27893
+- `INSERT` @ **create_app** `backend/app/main.py:3179` — _needs_human_
+    - chain: create_app @backend/app/main.py:3179  ←  (no caller found — orphan write)
+
+### 读边 (3)
+- `SELECT-FROM` @ **create_app._build_organization_dna_refresh_run** `backend/app/main.py:27776` — _static_confirmed_
+    - WHERE: `run_id = ?`
+- `SELECT-FROM` @ **create_app** `backend/app/main.py:3179` — _static_confirmed_
+    - WHERE: `run_id = ?`
+- `SELECT-FROM` @ **_row_to_run** `backend/app/services/organization_dna_v2.py:173` — _static_confirmed_
+    - WHERE: `run_id = ?`
+
+## `organization_dna_refresh_runs`
+
+- 经验层: **7 行** · 最近写入 created_at=2026-05-14T20:53:57
+
+### 写边 (3)
+- `INSERT` @ **create_app._create_organization_dna_refresh_run** `backend/app/main.py:27819` — _call_name_match_
+    - chain: _create_organization_dna_refresh_run @backend/app/main.py:27819  ←  refresh_organization_dna_v2_endpoint [endpoint:/api/v1/digital-assets/organization-dna/refresh] @backend/app/main.py:27893
+- `UPDATE` @ **create_app._execute_organization_dna_refresh_run** `backend/app/main.py:27834` — _call_name_match_
+    - chain: _execute_organization_dna_refresh_run @backend/app/main.py:27834  ←  refresh_organization_dna_v2_endpoint [endpoint:/api/v1/digital-assets/organization-dna/refresh] @backend/app/main.py:27893
+- `INSERT+UPDATE` @ **create_app** `backend/app/main.py:3179` — _needs_human_
+    - chain: create_app @backend/app/main.py:3179  ←  (no caller found — orphan write)
+
+### 读边 (3)
+- `SELECT-FROM` @ **create_app._build_organization_dna_refresh_run** `backend/app/main.py:27776` — _static_confirmed_
+    - WHERE: `id = ?`
+- `SELECT-FROM` @ **create_app** `backend/app/main.py:3179` — _static_confirmed_
+    - WHERE: `id = ?`
+- `SELECT-FROM` @ **get_organization_dna_snapshot** `backend/app/services/organization_dna_v2.py:947` — _static_confirmed_
+
+## `organization_dna_v2_items`
+
+- 经验层: **199 行** · 最近写入 created_at=2026-05-14T12:53:57.674774Z
+  - source_type 分布: task:113, event_line:36, v2_document:30, weekly_review:7, org_department:4, system_rule:4, system_gap_scan:3, org_model:1, org_quarterly_focus:1
+
+### 写边 (2)
+- `INSERT` @ **_upsert_item** `backend/app/services/organization_dna_v2.py:201` — _call_name_match_
+    - chain: _upsert_item @backend/app/services/organization_dna_v2.py:201  ←  refresh_organization_dna_v2 @backend/app/services/organization_dna_v2.py:905  ←  _execute_organization_dna_refresh_run @backend/app/main.py:27834  ←  refresh_organization_dna_v2_endpoint [endpoint:/api/v1/digital-assets/organization-dna/refresh] @backend/app/main.py:27893
+- `UPDATE` @ **_mark_stale_missing_items** `backend/app/services/organization_dna_v2.py:248` — _call_name_match_
+    - chain: _mark_stale_missing_items @backend/app/services/organization_dna_v2.py:248  ←  refresh_organization_dna_v2 @backend/app/services/organization_dna_v2.py:905  ←  _execute_organization_dna_refresh_run @backend/app/main.py:27834  ←  refresh_organization_dna_v2_endpoint [endpoint:/api/v1/digital-assets/organization-dna/refresh] @backend/app/main.py:27893
+
+### 读边 (3)
+- `SELECT-FROM` @ **_collect_context** `backend/app/services/intelligence_search_intents.py:536` — _static_confirmed_
+    - WHERE: `module_kind = 'gap_dna' AND COALESCE(status, '') <> 'deprecated'`
+- `SELECT-FROM` @ **get_organization_dna_snapshot** `backend/app/services/organization_dna_v2.py:947` — _static_confirmed_
+    - WHERE: `status != 'deprecated'`
+- `SELECT-FROM` @ **build_organization_dna_tool_context** `backend/app/services/organization_dna_v2.py:996` — _static_confirmed_
+    - WHERE: `module_kind IN (`
+    - WHERE: `module_kind IN ({?}) AND status IN ('confirmed', 'candidate', 'stale')`
+
+## `organization_notebook_snapshots`
+
+- 经验层: **13 行** · 最近写入 created_at=2026-06-01T18:23:44
+
+### 写边 (1)
+- `INSERT` @ **refresh_organization_notebook_snapshot** `backend/app/services/memory_foundation.py:733` — _call_name_match_
+    - chain: refresh_organization_notebook_snapshot @backend/app/services/memory_foundation.py:733  ←  _sync_task_attachment_scope [worker:_sync_task_attachment_scope] @backend/app/main.py:2237
+    - chain: refresh_organization_notebook_snapshot @backend/app/services/memory_foundation.py:733  ←  backfill_document_knowledge_route [endpoint:/api/v1/memory/backfill-documents] @backend/app/main.py:42270
+    - chain: refresh_organization_notebook_snapshot @backend/app/services/memory_foundation.py:733  ←  delete_task [endpoint:/api/v1/tasks/{task_id}] @backend/app/main.py:53307
+    - chain: refresh_organization_notebook_snapshot @backend/app/services/memory_foundation.py:733  ←  update_event_line [endpoint:/api/v1/event-lines/{event_line_id}] @backend/app/main.py:35169
+    - chain: refresh_organization_notebook_snapshot @backend/app/services/memory_foundation.py:733  ←  answer_clarification_record @backend/app/services/memory_foundation.py:1492  ←  answer_clarification [endpoint:/api/v1/clarifications/{clarification_id}/answer] @backend/app/main.py:42297
+    - chain: refresh_organization_notebook_snapshot @backend/app/services/memory_foundation.py:733  ←  backfill_memory_foundation @backend/app/services/memory_foundation.py:1965  ←  backfill_memory_foundation_route [endpoint:/api/v1/memory/backfill] @backend/app/main.py:42259
+
+### 读边 (6)
+- `SELECT-FROM` @ **create_app** `backend/app/main.py:3179` — _static_confirmed_
+    - WHERE: `client_id = ?`
+- `SELECT-FROM` @ **create_app._gather_task_context_bundle** `backend/app/main.py:32267` — _static_confirmed_
+    - WHERE: `client_id = ?`
+- `SELECT-FROM` @ **_read_notebook_snapshot** `backend/app/services/digital_asset_center.py:3380` — _static_confirmed_
+    - WHERE: `client_id = ?`
+- `SELECT-FROM` @ **build_digital_asset_narrative_context** `backend/app/services/digital_asset_narrative.py:201` — _static_confirmed_
+    - WHERE: `client_id = ?`
+- `SELECT-FROM` @ **refresh_organization_notebook_snapshot** `backend/app/services/memory_foundation.py:733` — _static_confirmed_
+    - WHERE: `client_id = ?`
+- `SELECT-FROM` @ **build_report_prompt_context** `backend/app/services/report_context_builder.py:294` — _static_confirmed_
+    - WHERE: `client_id = ?`
+
+## `plan`
+
+- 经验层: 真库**无此表** (静态边 1写/0读)
+
+### 写边 (1)
+- `UPDATE` @ **_update_plan_progress** `backend/app/services/plan_executor.py:1622` — _call_name_match_
+    - chain: _update_plan_progress @backend/app/services/plan_executor.py:1622  ←  create_bot_task_plan [endpoint:/api/v1/org/bots/{bot_member_id}/task-plans] @backend/app/main.py:50495
+    - chain: _update_plan_progress @backend/app/services/plan_executor.py:1622  ←  decide_bot_task_plan [endpoint:/api/v1/org/bots/task-plans/{ai_task_plan_id}/decide] @backend/app/main.py:50578
+
+### 读边 (0)
+- (无静态读边)
+
+## `progress`
+
+- 经验层: 真库**无此表** (静态边 1写/0读)
+
+### 写边 (1)
+- `UPDATE` @ **_bg_ingest_files** `backend/app/services/smart_file_import.py:1315` — _needs_human_
+    - chain: _bg_ingest_files @backend/app/services/smart_file_import.py:1315  ←  (no caller found — orphan write)
+
+### 读边 (0)
+- (无静态读边)
+
+## `project_flows`
+
+- 经验层: **0 行**
+
+### 写边 (3)
+- `INSERT+UPDATE` @ **create_app** `backend/app/main.py:3179` — _needs_human_
+    - chain: create_app @backend/app/main.py:3179  ←  (no caller found — orphan write)
+- `INSERT` @ **create_app.create_client_project_flow** `backend/app/main.py:45775` — _static_confirmed_
+    - chain: create_client_project_flow [endpoint:/api/v1/clients/{client_id}/project-flows] @backend/app/main.py:45775
+- `UPDATE` @ **create_app.update_client_project_flow** `backend/app/main.py:45829` — _static_confirmed_
+    - chain: update_client_project_flow [endpoint:/api/v1/clients/{client_id}/project-flows/{flow_id}] @backend/app/main.py:45829
+
+### 读边 (23)
+- `SELECT-FROM` @ **create_app._collect_strategic_insight_context** `backend/app/main.py:19685` — _static_confirmed_
+    - WHERE: `client_id = ? AND module_id = ?`
+- `SELECT-FROM` @ **create_app** `backend/app/main.py:3179` — _static_confirmed_
+    - WHERE: `client_id = ? AND module_id = ?`
+    - WHERE: `f.client_id = ?`
+    - WHERE: `f.id = ?`
+    - WHERE: `f.id = ? AND f.client_id = ?`
+    - WHERE: `id = ?`
+- `SELECT-FROM` @ **create_app._resolve_client_id_for_scope_ref** `backend/app/main.py:3610` — _static_confirmed_
+    - WHERE: `id = ?`
+- `SELECT-FROM` @ **create_app.delete_client_project_module** `backend/app/main.py:45751` — _static_confirmed_
+    - WHERE: `module_id = ? AND client_id = ?`
+- `SELECT-FROM` @ **create_app.create_client_project_flow** `backend/app/main.py:45775` — _static_confirmed_
+    - WHERE: `f.id = ?`
+- `SELECT-FROM` @ **create_app.update_client_project_flow** `backend/app/main.py:45829` — _static_confirmed_
+    - WHERE: `f.id = ?`
+    - WHERE: `id = ? AND client_id = ?`
+- `SELECT-FROM` @ **create_app.delete_client_project_flow** `backend/app/main.py:45882` — _static_confirmed_
+    - WHERE: `id = ? AND client_id = ?`
+- `SELECT-FROM` @ **create_app.list_project_flows** `backend/app/main.py:7621` — _static_confirmed_
+    - WHERE: `f.client_id = ?`
+- `SELECT-FROM` @ **create_app.get_project_module_detail** `backend/app/main.py:7638` — _static_confirmed_
+    - WHERE: `client_id = ? AND module_id = ?`
+- `SELECT-FROM` @ **create_app.get_project_flow_detail** `backend/app/main.py:7673` — _static_confirmed_
+    - WHERE: `f.id = ? AND f.client_id = ?`
+- `SELECT-FROM` @ **create_app.resolve_project_structure_refs** `backend/app/main.py:7707` — _static_confirmed_
+    - WHERE: `f.id = ? AND f.client_id = ?`
+- `SELECT-FROM` @ **build_project_module_page_context_pack** `backend/app/services/analysis_context.py:1455` — _static_confirmed_
+    - WHERE: `module_id = ?`
+- `SELECT-FROM` @ **build_project_flow_page_context_pack** `backend/app/services/analysis_context.py:1620` — _static_confirmed_
+    - WHERE: `f.id = ?`
+- `SELECT-FROM` @ **_collect_context** `backend/app/services/intelligence_search_intents.py:536` — _static_confirmed_
+    - WHERE: `client_id = ?`
+    - WHERE: `client_id = ? AND module_id = ?`
+- `SELECT-FROM` @ **build_timely_research_strategy** `backend/app/services/intelligence_timely_strategy.py:290` — _static_confirmed_
+    - WHERE: `client_id = ?`
+- `JOIN` @ **_render_event_line_doc** `backend/app/services/workspace_relation_docs.py:119` — _static_confirmed_
+    - WHERE: `t.client_id = ? AND t.event_line_id = ? AND COALESCE(t.scope_mode, 'COLLAB_SHARED') != 'PERSONAL_ONLY'`
+- `SELECT-FROM+JOIN` @ **_render_project_module_doc** `backend/app/services/workspace_relation_docs.py:264` — _static_confirmed_
+    - WHERE: `client_id = ? AND module_id = ?`
+    - WHERE: `t.client_id = ? AND t.project_module_id = ? AND COALESCE(t.scope_mode, 'COLLAB_SHARED') != 'PERSONAL_ONLY'`
+- `JOIN` @ **_render_project_flow_doc** `backend/app/services/workspace_relation_docs.py:321` — _static_confirmed_
+    - WHERE: `t.client_id = ? AND t.project_flow_id = ? AND COALESCE(t.scope_mode, 'COLLAB_SHARED') != 'PERSONAL_ONLY'`
+- `SELECT-FROM` @ **_materialize_project_docs** `backend/app/services/workspace_relation_docs.py:381` — _static_confirmed_
+    - WHERE: `f.client_id = ?`
+- `JOIN` @ **_review_relation_sources** `backend/app/services/workspace_relation_docs.py:457` — _static_confirmed_
+    - WHERE: `e.review_id = ? AND LOWER(COALESCE(e.content_domain, 'work')) NOT IN ('personal', 'private') AND COALESCE(t.scope_mode, 'COLLAB_SHARED') != 'PERSONAL_ONLY' AND ( pm.client_id = ? OR pf.client_id = ? O`
+- `SELECT-FROM` @ **_materialize_review_docs** `backend/app/services/workspace_relation_docs.py:564` — _static_confirmed_
+    - WHERE: `client_id = ?`
+- `JOIN` @ **_materialize_calendar_doc** `backend/app/services/workspace_relation_docs.py:637` — _static_confirmed_
+    - WHERE: `t.client_id = ? AND COALESCE(t.scope_mode, 'COLLAB_SHARED') != 'PERSONAL_ONLY' AND (`
+    - WHERE: `t.client_id = ? AND COALESCE(t.scope_mode, 'COLLAB_SHARED') != 'PERSONAL_ONLY' AND ({?})`
+- `JOIN` @ **_task_rows_for_client** `backend/app/services/workspace_relation_docs.py:66` — _static_confirmed_
+    - WHERE: `t.client_id = ? AND COALESCE(t.scope_mode, 'COLLAB_SHARED') != 'PERSONAL_ONLY'`
+
+## `project_modules`
+
+- 经验层: **4 行** · 最近写入 created_at=2026-04-06T22:29:09
+
+### 写边 (3)
+- `INSERT+UPDATE` @ **create_app** `backend/app/main.py:3179` — _needs_human_
+    - chain: create_app @backend/app/main.py:3179  ←  (no caller found — orphan write)
+- `INSERT` @ **create_app.create_client_project_module** `backend/app/main.py:45655` — _static_confirmed_
+    - chain: create_client_project_module [endpoint:/api/v1/clients/{client_id}/project-modules] @backend/app/main.py:45655
+- `UPDATE` @ **create_app.update_client_project_module** `backend/app/main.py:45700` — _static_confirmed_
+    - chain: update_client_project_module [endpoint:/api/v1/clients/{client_id}/project-modules/{module_id}] @backend/app/main.py:45700
+
+### 读边 (42)
+- `SELECT-FROM` @ **create_app._collect_strategic_insight_context** `backend/app/main.py:19685` — _static_confirmed_
+    - WHERE: `client_id = ?`
+    - WHERE: `id = ? AND client_id = ?`
+- `SELECT-FROM+JOIN` @ **create_app** `backend/app/main.py:3179` — _static_confirmed_
+    - WHERE: `client_id = ?`
+    - WHERE: `f.client_id = ?`
+    - WHERE: `f.id = ?`
+    - WHERE: `f.id = ? AND f.client_id = ?`
+    - WHERE: `id = ?`
+- `SELECT-FROM` @ **create_app._resolve_client_id_for_scope_ref** `backend/app/main.py:3610` — _static_confirmed_
+    - WHERE: `id = ?`
+- `SELECT-FROM` @ **create_app.get_project_agent_state** `backend/app/main.py:39819` — _static_confirmed_
+    - WHERE: `id = ?`
+- `SELECT-FROM` @ **create_app.create_client_project_module** `backend/app/main.py:45655` — _static_confirmed_
+    - WHERE: `id = ?`
+- `SELECT-FROM` @ **create_app.update_client_project_module** `backend/app/main.py:45700` — _static_confirmed_
+    - WHERE: `id = ?`
+    - WHERE: `id = ? AND client_id = ?`
+- `SELECT-FROM` @ **create_app.delete_client_project_module** `backend/app/main.py:45751` — _static_confirmed_
+    - WHERE: `id = ?`
+    - WHERE: `id = ? AND client_id = ?`
+- `SELECT-FROM+JOIN` @ **create_app.create_client_project_flow** `backend/app/main.py:45775` — _static_confirmed_
+    - WHERE: `f.id = ?`
+    - WHERE: `id = ? AND client_id = ?`
+- `SELECT-FROM+JOIN` @ **create_app.update_client_project_flow** `backend/app/main.py:45829` — _static_confirmed_
+    - WHERE: `f.id = ?`
+    - WHERE: `id = ? AND client_id = ?`
+- `SELECT-FROM` @ **create_app.refresh_sentiment_endpoint** `backend/app/main.py:58704` — _static_confirmed_
+    - WHERE: `id = ?`
+- `SELECT-FROM` @ **create_app.recompute_sentiment_themes_endpoint** `backend/app/main.py:58911` — _static_confirmed_
+    - WHERE: `id = ?`
+- `SELECT-FROM` @ **create_app.list_sentiment_themes_endpoint** `backend/app/main.py:58955` — _static_confirmed_
+    - WHERE: `id = ?`
+- `SELECT-FROM` @ **create_app.sentiment_gap_endpoint** `backend/app/main.py:59021` — _static_confirmed_
+    - WHERE: `id = ?`
+- `SELECT-FROM` @ **create_app.sentiment_strategy_preview_endpoint** `backend/app/main.py:59082` — _static_confirmed_
+    - WHERE: `id = ?`
+- `SELECT-FROM` @ **create_app.recompute_brand_audit_endpoint** `backend/app/main.py:59562` — _static_confirmed_
+    - WHERE: `id = ?`
+- `SELECT-FROM` @ **create_app.get_brand_audit_endpoint** `backend/app/main.py:59595` — _static_confirmed_
+    - WHERE: `id = ?`
+- `SELECT-FROM` @ **create_app.list_project_modules** `backend/app/main.py:7588` — _static_confirmed_
+    - WHERE: `client_id = ?`
+- `SELECT-FROM` @ **create_app._project_flow_record** `backend/app/main.py:7598` — _static_confirmed_
+    - WHERE: `id = ?`
+- `JOIN` @ **create_app.list_project_flows** `backend/app/main.py:7621` — _static_confirmed_
+    - WHERE: `f.client_id = ?`
+- `SELECT-FROM` @ **create_app.get_project_module_detail** `backend/app/main.py:7638` — _static_confirmed_
+    - WHERE: `id = ? AND client_id = ?`
+- `JOIN` @ **create_app.get_project_flow_detail** `backend/app/main.py:7673` — _static_confirmed_
+    - WHERE: `f.id = ? AND f.client_id = ?`
+- `SELECT-FROM+JOIN` @ **create_app.resolve_project_structure_refs** `backend/app/main.py:7707` — _static_confirmed_
+    - WHERE: `f.id = ? AND f.client_id = ?`
+    - WHERE: `id = ?`
+    - WHERE: `id = ? AND client_id = ?`
+- `SELECT-FROM` @ **build_project_module_page_context_pack** `backend/app/services/analysis_context.py:1455` — _static_confirmed_
+    - WHERE: `id = ?`
+- `JOIN` @ **build_project_flow_page_context_pack** `backend/app/services/analysis_context.py:1620` — _static_confirmed_
+    - WHERE: `f.id = ?`
+- `SELECT-FROM` @ **recompute_brand_audit** `backend/app/services/intelligence_brand_audit.py:503` — _static_confirmed_
+    - WHERE: `id = ?`
+- `SELECT-FROM` @ **_profile_gap_map_snapshot** `backend/app/services/intelligence_candidate_supply.py:2695` — _static_confirmed_
+    - WHERE: `client_id = ?`
+- `SELECT-FROM` @ **_scope_rows** `backend/app/services/intelligence_candidate_supply.py:769` — _static_confirmed_
+    - WHERE: `id = ?`
+- `SELECT-FROM` @ **compute_gap** `backend/app/services/intelligence_positioning_gap.py:199` — _static_confirmed_
+    - WHERE: `id = ?`
+- `SELECT-FROM` @ **collect_signals** `backend/app/services/intelligence_query_strategy.py:61` — _static_confirmed_
+    - WHERE: `client_id = ?`
+- `SELECT-FROM` @ **resolve_intelligence_search_scope** `backend/app/services/intelligence_search_intents.py:508` — _static_confirmed_
+    - WHERE: `id = ?`
+- `SELECT-FROM` @ **_collect_context** `backend/app/services/intelligence_search_intents.py:536` — _static_confirmed_
+    - WHERE: `client_id = ?`
+    - WHERE: `id = ?`
+- `SELECT-FROM` @ **_collect_target_aliases** `backend/app/services/intelligence_sentiment.py:253` — _static_confirmed_
+    - WHERE: `client_id = ?`
+- `SELECT-FROM` @ **build_timely_research_strategy** `backend/app/services/intelligence_timely_strategy.py:290` — _static_confirmed_
+    - WHERE: `client_id = ?`
+    - WHERE: `id = ?`
+- `SELECT-FROM` @ **refresh_organization_notebook_snapshot** `backend/app/services/memory_foundation.py:733` — _static_confirmed_
+    - WHERE: `client_id = ?`
+- `JOIN` @ **_render_event_line_doc** `backend/app/services/workspace_relation_docs.py:119` — _static_confirmed_
+    - WHERE: `t.client_id = ? AND t.event_line_id = ? AND COALESCE(t.scope_mode, 'COLLAB_SHARED') != 'PERSONAL_ONLY'`
+- `JOIN` @ **_render_project_module_doc** `backend/app/services/workspace_relation_docs.py:264` — _static_confirmed_
+    - WHERE: `t.client_id = ? AND t.project_module_id = ? AND COALESCE(t.scope_mode, 'COLLAB_SHARED') != 'PERSONAL_ONLY'`
+- `JOIN` @ **_render_project_flow_doc** `backend/app/services/workspace_relation_docs.py:321` — _static_confirmed_
+    - WHERE: `t.client_id = ? AND t.project_flow_id = ? AND COALESCE(t.scope_mode, 'COLLAB_SHARED') != 'PERSONAL_ONLY'`
+- `SELECT-FROM+JOIN` @ **_materialize_project_docs** `backend/app/services/workspace_relation_docs.py:381` — _static_confirmed_
+    - WHERE: `client_id = ?`
+    - WHERE: `f.client_id = ?`
+- `JOIN` @ **_review_relation_sources** `backend/app/services/workspace_relation_docs.py:457` — _static_confirmed_
+    - WHERE: `e.review_id = ? AND LOWER(COALESCE(e.content_domain, 'work')) NOT IN ('personal', 'private') AND COALESCE(t.scope_mode, 'COLLAB_SHARED') != 'PERSONAL_ONLY' AND ( pm.client_id = ? OR pf.client_id = ? O`
+- `SELECT-FROM` @ **_materialize_review_docs** `backend/app/services/workspace_relation_docs.py:564` — _static_confirmed_
+    - WHERE: `client_id = ?`
+- `JOIN` @ **_materialize_calendar_doc** `backend/app/services/workspace_relation_docs.py:637` — _static_confirmed_
+    - WHERE: `t.client_id = ? AND COALESCE(t.scope_mode, 'COLLAB_SHARED') != 'PERSONAL_ONLY' AND (`
+    - WHERE: `t.client_id = ? AND COALESCE(t.scope_mode, 'COLLAB_SHARED') != 'PERSONAL_ONLY' AND ({?})`
+- `JOIN` @ **_task_rows_for_client** `backend/app/services/workspace_relation_docs.py:66` — _static_confirmed_
+    - WHERE: `t.client_id = ? AND COALESCE(t.scope_mode, 'COLLAB_SHARED') != 'PERSONAL_ONLY'`
+
+## `project_procedures`
+
+- 经验层: **0 行**
+
+### 写边 (0)
+- (无静态写边)
+
+### 读边 (0)
+- (无静态读边)
+
+## `prompt_log`
+
+- 经验层: **0 行**
+
+### 写边 (0)
+- (无静态写边)
+
+### 读边 (0)
+- (无静态读边)
+
+## `proposal_records`
+
+- 经验层: **0 行**
+
+### 写边 (9)
+- `INSERT+UPDATE` @ **create_app** `backend/app/main.py:3179` — _needs_human_
+    - chain: create_app @backend/app/main.py:3179  ←  (no caller found — orphan write)
+- `INSERT` @ **create_app._insert_proposal_record** `backend/app/main.py:32973` — _call_name_match_
+    - chain: _insert_proposal_record @backend/app/main.py:32973  ←  create_meeting_followup_proposal [endpoint:/api/v1/clients/{client_id}/meetings/{meeting_id}/proposals/follow-up] @backend/app/main.py:51321
+    - chain: _insert_proposal_record @backend/app/main.py:32973  ←  create_meeting_prepare_proposal [endpoint:/api/v1/clients/{client_id}/meetings/{meeting_id}/proposals/prepare] @backend/app/main.py:51271
+    - chain: _insert_proposal_record @backend/app/main.py:32973  ←  create_task_prep_proposal [endpoint:/api/v1/tasks/{task_id}/prep-pack/proposals] @backend/app/main.py:33171
+- `UPDATE` @ **create_app._update_proposal_status** `backend/app/main.py:33072` — _needs_human_
+    - chain: _update_proposal_status @backend/app/main.py:33072  ←  (no caller found — orphan write)
+- `INSERT` @ **promote_data_center_proposal_draft** `backend/app/services/data_center_proposal.py:555` — _call_name_match_
+    - chain: promote_data_center_proposal_draft @backend/app/services/data_center_proposal.py:555  ←  promote_data_center_proposal_draft_api [endpoint:/api/v1/data-center/proposal-drafts/{draft_id}/promote] @backend/app/main.py:45080
+- `UPDATE` @ **approve_proposal_record** `backend/app/services/proposal_approval.py:170` — _needs_human_
+    - chain: approve_proposal_record @backend/app/services/proposal_approval.py:170  ←  (no caller found — orphan write)
+- `UPDATE` @ **reject_proposal_record** `backend/app/services/proposal_approval.py:220` — _needs_human_
+    - chain: reject_proposal_record @backend/app/services/proposal_approval.py:220  ←  (no caller found — orphan write)
+- `UPDATE` @ **create_execution_ticket_for_proposal** `backend/app/services/proposal_execution.py:123` — _call_name_match_
+    - chain: create_execution_ticket_for_proposal @backend/app/services/proposal_execution.py:123  ←  create_proposal_execution_ticket_api [endpoint:/api/v1/proposals/{proposal_id}/execution-ticket] @backend/app/main.py:33465
+    - chain: create_execution_ticket_for_proposal @backend/app/services/proposal_execution.py:123  ←  execute_proposal [endpoint:/api/v1/proposals/{proposal_id}/execute] @backend/app/main.py:33574
+- `UPDATE` @ **execute_proposal_ticket** `backend/app/services/proposal_execution.py:223` — _call_name_match_
+    - chain: execute_proposal_ticket @backend/app/services/proposal_execution.py:223  ←  execute_execution_ticket_api [endpoint:/api/v1/execution-tickets/{ticket_id}/execute] @backend/app/main.py:33509
+    - chain: execute_proposal_ticket @backend/app/services/proposal_execution.py:223  ←  execute_proposal [endpoint:/api/v1/proposals/{proposal_id}/execute] @backend/app/main.py:33574
+- `UPDATE` @ **retry_execution_ticket** `backend/app/services/proposal_execution.py:359` — _call_name_match_
+    - chain: retry_execution_ticket @backend/app/services/proposal_execution.py:359  ←  retry_execution_ticket_api [endpoint:/api/v1/execution-tickets/{ticket_id}/retry] @backend/app/main.py:33546
+
+### 读边 (9)
+- `SELECT-FROM` @ **create_app** `backend/app/main.py:3179` — _static_confirmed_
+    - WHERE: `client_id = ?`
+    - WHERE: `client_id = ? AND kind = ? AND status NOT IN ('rejected', 'failed') AND target_refs_json LIKE ?`
+    - WHERE: `id = ?`
+    - WHERE: `kind = ? AND target_refs_json LIKE ?`
+    - WHERE: `target_refs_json LIKE ?`
+- `SELECT-FROM` @ **create_app._latest_proposal_id_for_target** `backend/app/main.py:32782` — _static_confirmed_
+    - WHERE: `kind = ? AND target_refs_json LIKE ?`
+    - WHERE: `target_refs_json LIKE ?`
+- `SELECT-FROM` @ **create_app._find_existing_meeting_proposal** `backend/app/main.py:32948` — _static_confirmed_
+    - WHERE: `client_id = ? AND kind = ? AND status NOT IN ('rejected', 'failed') AND target_refs_json LIKE ?`
+- `SELECT-FROM` @ **create_app._insert_proposal_record** `backend/app/main.py:32973` — _static_confirmed_
+    - WHERE: `id = ?`
+- `SELECT-FROM` @ **create_app._update_proposal_status** `backend/app/main.py:33072` — _static_confirmed_
+    - WHERE: `id = ?`
+- `SELECT-FROM` @ **create_app.get_client_mobile_data_center_snapshot** `backend/app/main.py:44053` — _static_confirmed_
+    - WHERE: `client_id = ?`
+- `SELECT-FROM` @ **get_proposal_record** `backend/app/services/proposal_approval.py:106` — _static_confirmed_
+    - WHERE: `id = ?`
+- `SELECT-FROM` @ **list_proposal_records** `backend/app/services/proposal_approval.py:117` — _static_confirmed_
+- `SELECT-FROM` @ **_count_answer_action_artifacts** `backend/app/services/workspace_answer_value_diagnostics.py:435` — _static_confirmed_
+    - WHERE: `client_id = ?`
+
+## `public`
+
+- 经验层: 真库**无此表** (静态边 2写/0读)
+
+### 写边 (2)
+- `UPDATE` @ **create_app** `backend/app/main.py:3179` — _needs_human_
+    - chain: create_app @backend/app/main.py:3179  ←  (no caller found — orphan write)
+- `UPDATE` @ **create_app.update_task_list** `backend/app/main.py:51923` — _static_confirmed_
+    - chain: update_task_list [endpoint:/api/v1/task-lists/{list_id}] @backend/app/main.py:51923
+
+### 读边 (0)
+- (无静态读边)
+
+## `push`
+
+- 经验层: 真库**无此表** (静态边 2写/0读)
+
+### 写边 (2)
+- `UPDATE` @ **create_app** `backend/app/main.py:3179` — _needs_human_
+    - chain: create_app @backend/app/main.py:3179  ←  (no caller found — orphan write)
+- `UPDATE` @ **create_app.update_client** `backend/app/main.py:37715` — _static_confirmed_
+    - chain: update_client [endpoint:/api/v1/clients/{client_id}] @backend/app/main.py:37715
+
+### 读边 (0)
+- (无静态读边)
+
+## `reasoning_traces`
+
+- 经验层: **7 行**
+
+### 写边 (4)
+- `INSERT` @ **start** `backend/app/services/reasoning_trace_store.py:155` — _call_name_match_
+    - chain: start @backend/app/services/reasoning_trace_store.py:155  ←  _schedule_chat_fact_extraction [worker:_schedule_chat_fact_extraction] @backend/app/main.py:1739
+    - chain: start @backend/app/services/reasoning_trace_store.py:155  ←  _schedule_post_answer_enrichment [worker:_schedule_post_answer_enrichment] @backend/app/main.py:48233
+    - chain: start @backend/app/services/reasoning_trace_store.py:155  ←  _startup_worker [worker:_startup_worker] @backend/app/main.py:3743
+    - chain: start @backend/app/services/reasoning_trace_store.py:155  ←  auth_login [endpoint:/api/v1/auth/login] @backend/app/main.py:31238
+    - chain: start @backend/app/services/reasoning_trace_store.py:155  ←  auth_me [endpoint:/api/v1/auth/me] @backend/app/main.py:30701
+    - chain: start @backend/app/services/reasoning_trace_store.py:155  ←  auth_register [endpoint:/api/v1/auth/register] @backend/app/main.py:31212
+- `UPDATE` @ **complete** `backend/app/services/reasoning_trace_store.py:198` — _call_name_match_
+    - chain: complete @backend/app/services/reasoning_trace_store.py:198  ←  create_client [endpoint:/api/v1/clients] @backend/app/main.py:37631
+    - chain: complete @backend/app/services/reasoning_trace_store.py:198  ←  create_event_line [endpoint:/api/v1/event-lines] @backend/app/main.py:31525
+    - chain: complete @backend/app/services/reasoning_trace_store.py:198  ←  create_manual_task [endpoint:/api/v1/tasks] @backend/app/main.py:52206
+    - chain: complete @backend/app/services/reasoning_trace_store.py:198  ←  extract_from_document @backend/app/services/document_llm_extractor.py:261  ←  process @backend/app/services/task_runners/fact_extract_runner.py:41  ←  run_due_local_model_tasks @backend/app/services/local_model_optimizer.py:942  ←  local_model_optimizer_worker_loop [worker:local_model_optimizer_worker_loop] @backend/app/services/local_model_optimizer.py:1026
+    - chain: complete @backend/app/services/reasoning_trace_store.py:198  ←  extract_from_document @backend/app/services/document_llm_extractor.py:261  ←  process @backend/app/services/task_runners/fact_extract_runner.py:41  ←  run_due_local_model_tasks @backend/app/services/local_model_optimizer.py:942  ←  run_local_ai_now [endpoint:/api/v1/local-ai/run-now] @backend/app/main.py:36970
+    - chain: complete @backend/app/services/reasoning_trace_store.py:198  ←  extract_from_document @backend/app/services/document_llm_extractor.py:261  ←  process @backend/app/services/task_runners/fact_extract_runner.py:41  ←  diarize_audio_file @backend/app/services/local_asr/diarization_provider.py:99  ←  _transcribe_with_diarization @backend/app/services/local_asr/recording_ingest.py:114  ←  transcribe_recording_local_path @backend/app/services/local_asr/recording_ingest.py:64  ←  transcribe_recording_local_audio_endpoint [endpoint:/api/v1/recordings/transcribe-local-audio] @backend/app/main.py:37133
+- `UPDATE` @ **fail** `backend/app/services/reasoning_trace_store.py:242` — _call_name_match_
+    - chain: fail @backend/app/services/reasoning_trace_store.py:242  ←  extract_from_document @backend/app/services/document_llm_extractor.py:261  ←  process @backend/app/services/task_runners/fact_extract_runner.py:41  ←  run_due_local_model_tasks @backend/app/services/local_model_optimizer.py:942  ←  local_model_optimizer_worker_loop [worker:local_model_optimizer_worker_loop] @backend/app/services/local_model_optimizer.py:1026
+    - chain: fail @backend/app/services/reasoning_trace_store.py:242  ←  extract_from_document @backend/app/services/document_llm_extractor.py:261  ←  process @backend/app/services/task_runners/fact_extract_runner.py:41  ←  run_due_local_model_tasks @backend/app/services/local_model_optimizer.py:942  ←  run_local_ai_now [endpoint:/api/v1/local-ai/run-now] @backend/app/main.py:36970
+    - chain: fail @backend/app/services/reasoning_trace_store.py:242  ←  extract_from_document @backend/app/services/document_llm_extractor.py:261  ←  process @backend/app/services/task_runners/fact_extract_runner.py:41  ←  diarize_audio_file @backend/app/services/local_asr/diarization_provider.py:99  ←  _transcribe_with_diarization @backend/app/services/local_asr/recording_ingest.py:114  ←  transcribe_recording_local_path @backend/app/services/local_asr/recording_ingest.py:64  ←  transcribe_recording_local_audio_endpoint [endpoint:/api/v1/recordings/transcribe-local-audio] @backend/app/main.py:37133
+- `UPDATE` @ **revert** `backend/app/services/reasoning_trace_store.py:268` — _needs_human_
+    - chain: revert @backend/app/services/reasoning_trace_store.py:268  ←  (no caller found — orphan write)
+
+### 读边 (4)
+- `SELECT-FROM` @ **get** `backend/app/services/reasoning_trace_store.py:275` — _static_confirmed_
+    - WHERE: `id = ?`
+- `SELECT-FROM` @ **list_for_entity** `backend/app/services/reasoning_trace_store.py:281` — _static_confirmed_
+    - WHERE: `output_entity_type = ? AND output_entity_id = ?`
+- `SELECT-FROM` @ **list_session_recent** `backend/app/services/reasoning_trace_store.py:295` — _static_confirmed_
+    - WHERE: `ai_session_id = ?`
+- `SELECT-FROM` @ **list_failed_recent** `backend/app/services/reasoning_trace_store.py:309` — _static_confirmed_
+    - WHERE: `status = 'failed'`
+
+## `relationship_triples`
+
+- 经验层: **22 行** · 最近写入 created_at=2026-05-21T11:15:13.266796+00:00
+
+### 写边 (2)
+- `UPDATE` @ **merge_entities** `backend/app/services/entity_merger.py:165` — _call_name_match_
+    - chain: merge_entities @backend/app/services/entity_merger.py:165  ←  merge_entity_into [endpoint:/api/v1/entities/{merged_id}/merge] @backend/app/main.py:41700
+- `INSERT` @ **insert_triple** `backend/app/services/relation_store.py:51` — _call_name_match_
+    - chain: insert_triple @backend/app/services/relation_store.py:51  ←  persist_chunk_relations @backend/app/services/relation_store.py:96  ←  ingest_document_knowledge @backend/app/services/knowledge_base.py:2802  ←  upload_task_attachment [endpoint:/api/v1/tasks/{task_id}/attachments] @backend/app/main.py:53434
+    - chain: insert_triple @backend/app/services/relation_store.py:51  ←  persist_chunk_relations @backend/app/services/relation_store.py:96  ←  ingest_document_knowledge @backend/app/services/knowledge_base.py:2802  ←  _build_local_event_line_report_snapshot @backend/app/main.py:33643  ←  get_event_line_report_snapshot [endpoint:/api/v1/event-lines/{event_line_id}/report-snapshot] @backend/app/main.py:34329
+    - chain: insert_triple @backend/app/services/relation_store.py:51  ←  persist_chunk_relations @backend/app/services/relation_store.py:96  ←  ingest_document_knowledge @backend/app/services/knowledge_base.py:2802  ←  _process_one_pdf @backend/app/services/internet_pdf_worker.py:96  ←  _worker_loop [worker:_worker_loop] @backend/app/services/internet_pdf_worker.py:205
+    - chain: insert_triple @backend/app/services/relation_store.py:51  ←  persist_chunk_relations @backend/app/services/relation_store.py:96  ←  ingest_document_knowledge @backend/app/services/knowledge_base.py:2802  ←  backfill_workspace_import @backend/app/services/knowledge_v2.py:3943  ←  backfill_client_workspace_imports [endpoint:/api/v1/clients/{client_id}/workspace/backfill-imports] @backend/app/main.py:50039
+    - chain: insert_triple @backend/app/services/relation_store.py:51  ←  persist_chunk_relations @backend/app/services/relation_store.py:96  ←  ingest_document_knowledge @backend/app/services/knowledge_base.py:2802  ←  create_client_text_document @backend/app/main.py:16116  ←  create_client_document_from_text [endpoint:/api/v1/clients/{client_id}/documents/from-text] @backend/app/main.py:49576
+    - chain: insert_triple @backend/app/services/relation_store.py:51  ←  persist_chunk_relations @backend/app/services/relation_store.py:96  ←  ingest_document_knowledge @backend/app/services/knowledge_base.py:2802  ←  execute_parse_failure_retry_batch @backend/app/main.py:42534  ←  retry_client_parse_failures [endpoint:/api/v1/clients/{client_id}/knowledge/parse-failures/retry] @backend/app/main.py:42800
+
+### 读边 (1)
+- `SELECT-FROM` @ **list_triples** `backend/app/services/relation_store.py:143` — _static_confirmed_
+    - WHERE: `{?}`
+
+## `report_runs`
+
+- 经验层: **4 行** · 最近写入 created_at=2026-05-13T03:53:40Z
+
+### 写边 (5)
+- `INSERT+UPDATE` @ **create_app** `backend/app/main.py:3179` — _needs_human_
+    - chain: create_app @backend/app/main.py:3179  ←  (no caller found — orphan write)
+- `INSERT+UPDATE` @ **create_app.report_draft_blueprint** `backend/app/main.py:56628` — _static_confirmed_
+    - chain: report_draft_blueprint [endpoint:/api/v1/reports/draft-blueprint] @backend/app/main.py:56628
+- `UPDATE` @ **create_app.report_draft_sections** `backend/app/main.py:56755` — _static_confirmed_
+    - chain: report_draft_sections [endpoint:/api/v1/reports/{report_run_id}/draft-sections] @backend/app/main.py:56755
+- `UPDATE` @ **create_app.report_draft_sections._run_background** `backend/app/main.py:56837` — _static_confirmed_
+    - chain: _run_background [worker:_run_background] @backend/app/main.py:56837
+- `UPDATE` @ **create_app.report_render** `backend/app/main.py:56920` — _static_confirmed_
+    - chain: report_render [endpoint:/api/v1/reports/{report_run_id}/render] @backend/app/main.py:56920
+
+### 读边 (5)
+- `SELECT-FROM` @ **create_app** `backend/app/main.py:3179` — _static_confirmed_
+    - WHERE: `id = ?`
+- `SELECT-FROM` @ **create_app.report_draft_sections** `backend/app/main.py:56755` — _static_confirmed_
+    - WHERE: `id = ?`
+- `SELECT-FROM` @ **create_app.report_render** `backend/app/main.py:56920` — _static_confirmed_
+    - WHERE: `id = ?`
+- `SELECT-FROM` @ **create_app.report_download_file** `backend/app/main.py:57074` — _static_confirmed_
+    - WHERE: `id = ?`
+- `SELECT-FROM` @ **create_app.get_report_run** `backend/app/main.py:57114` — _static_confirmed_
+    - WHERE: `id = ?`
+
+## `report_section_runs`
+
+- 经验层: **17 行**
+
+### 写边 (5)
+- `INSERT+UPDATE` @ **create_app** `backend/app/main.py:3179` — _needs_human_
+    - chain: create_app @backend/app/main.py:3179  ←  (no caller found — orphan write)
+- `INSERT` @ **create_app.report_draft_blueprint** `backend/app/main.py:56628` — _static_confirmed_
+    - chain: report_draft_blueprint [endpoint:/api/v1/reports/draft-blueprint] @backend/app/main.py:56628
+- `UPDATE` @ **create_app.report_draft_sections** `backend/app/main.py:56755` — _static_confirmed_
+    - chain: report_draft_sections [endpoint:/api/v1/reports/{report_run_id}/draft-sections] @backend/app/main.py:56755
+- `UPDATE` @ **create_app.report_draft_sections._run_background** `backend/app/main.py:56837` — _static_confirmed_
+    - chain: _run_background [worker:_run_background] @backend/app/main.py:56837
+- `UPDATE` @ **create_app.report_draft_sections._run_background.progress_cb** `backend/app/main.py:56838` — _call_name_match_
+    - chain: progress_cb @backend/app/main.py:56838  ←  draft_sections_parallel @backend/app/services/report_section_scheduler.py:32  ←  _run_background [worker:_run_background] @backend/app/main.py:56837
+    - chain: progress_cb @backend/app/main.py:56838  ←  draft_sections_parallel @backend/app/services/report_section_scheduler.py:32  ←  report_draft_sections [endpoint:/api/v1/reports/{report_run_id}/draft-sections] @backend/app/main.py:56755
+
+### 读边 (5)
+- `SELECT-FROM` @ **create_app** `backend/app/main.py:3179` — _static_confirmed_
+    - WHERE: `report_run_id = ?`
+- `SELECT-FROM` @ **create_app.report_draft_sections** `backend/app/main.py:56755` — _static_confirmed_
+    - WHERE: `report_run_id=?`
+- `SELECT-FROM` @ **create_app.report_draft_sections._run_background** `backend/app/main.py:56837` — _static_confirmed_
+    - WHERE: `report_run_id=?`
+- `SELECT-FROM` @ **create_app.report_render** `backend/app/main.py:56920` — _static_confirmed_
+    - WHERE: `report_run_id = ?`
+- `SELECT-FROM` @ **create_app.get_report_run** `backend/app/main.py:57114` — _static_confirmed_
+    - WHERE: `report_run_id = ?`
+
+## `retrieval_shadow_runs`
+
+- 经验层: **0 行**
+
+### 写边 (1)
+- `INSERT` @ **create_retrieval_shadow_run** `backend/app/services/retrieval_shadow.py:33` — _needs_human_
+    - chain: create_retrieval_shadow_run @backend/app/services/retrieval_shadow.py:33  ←  (no caller found — orphan write)
+
+### 读边 (1)
+- `SELECT-FROM` @ **list_retrieval_shadow_runs** `backend/app/services/retrieval_shadow.py:83` — _static_confirmed_
+    - WHERE: `client_id = ?`
+
+## `risk_signals`
+
+- 经验层: **20 行** · 最近写入 created_at=2026-05-21T11:20:14.138070+00:00
+  - source_type 分布: ai_inferred:15, smart_import_story:5
+
+### 写边 (6)
+- `INSERT` @ **derive_risk_signals** `backend/app/services/atomic_fact_semantic_deriver.py:190` — _call_name_match_
+    - chain: derive_risk_signals @backend/app/services/atomic_fact_semantic_deriver.py:190  ←  derive_all @backend/app/services/atomic_fact_semantic_deriver.py:405  ←  process_meeting_minute @backend/app/services/meeting_minute_processor.py:147  ←  process_meeting_minute_endpoint [endpoint:/api/v1/meeting-minutes/process] @backend/app/main.py:39471
+- `INSERT` @ **ingest_chat_message** `backend/app/services/chat_message_reverse_ingester.py:311` — _call_name_match_
+    - chain: ingest_chat_message @backend/app/services/chat_message_reverse_ingester.py:311  ←  send_chat_message [endpoint:/api/v1/clients/{client_id}/workspace/chat] @backend/app/main.py:49220
+- `INSERT` @ **process_meeting_minute** `backend/app/services/meeting_minute_processor.py:147` — _call_name_match_
+    - chain: process_meeting_minute @backend/app/services/meeting_minute_processor.py:147  ←  process_meeting_minute_endpoint [endpoint:/api/v1/meeting-minutes/process] @backend/app/main.py:39471
+- `INSERT` @ **build_portrait** `backend/app/services/project_portrait_builder.py:276` — _call_name_match_
+    - chain: build_portrait @backend/app/services/project_portrait_builder.py:276  ←  build_project_portrait_proxy [endpoint:/api/v1/clients/{client_id}/project-portrait/build] @backend/app/main.py:29198
+- `INSERT` @ **build_portrait._persist** `backend/app/services/project_portrait_builder.py:321` — _needs_human_
+    - chain: _persist @backend/app/services/project_portrait_builder.py:321  ←  (no caller found — orphan write)
+- `INSERT` @ **commit_session** `backend/app/services/smart_file_import.py:887` — _call_name_match_
+    - chain: commit_session @backend/app/services/smart_file_import.py:887  ←  smart_import_commit_session [endpoint:/api/v1/smart-import/sessions/{session_id}/commit] @backend/app/main.py:29395
+
+### 读边 (11)
+- `SELECT-FROM` @ **create_app.collect_data_center_context_for_consultation** `backend/app/main.py:15884` — _static_confirmed_
+    - WHERE: `client_id = ? AND status = 'active'`
+- `SELECT-FROM` @ **create_app** `backend/app/main.py:3179` — _static_confirmed_
+    - WHERE: `client_id = ? AND status = 'active'`
+    - WHERE: `client_id = ? AND status='active'`
+- `SELECT-FROM` @ **create_app.get_client_quality_context** `backend/app/main.py:40726` — _static_confirmed_
+    - WHERE: `client_id = ? AND status='active'`
+- `SELECT-FROM` @ **derive_risk_signals** `backend/app/services/atomic_fact_semantic_deriver.py:190` — _static_confirmed_
+    - WHERE: `client_id = ? AND source_type = 'atomic_fact'`
+- `SELECT-FROM` @ **build_company_brain_context** `backend/app/services/company_brain_context_builder.py:83` — _static_confirmed_
+    - WHERE: `client_id = ? AND status = 'active'`
+- `SELECT-FROM` @ **build_evidence_pack** `backend/app/services/company_brain_qa.py:76` — _static_confirmed_
+    - WHERE: `client_id = ? AND status = 'active'`
+- `SELECT-FROM` @ **_count_source_events** `backend/app/services/growth_engine.py:1168` — _static_confirmed_
+    - WHERE: `r.status = 'active' AND r.client_id IN ( SELECT DISTINCT client_id FROM v2_documents WHERE owner_user_id = ? UNION SELECT DISTINCT client_id FROM tasks WHERE owner_id = ? AND client_id IS NOT NULL )`
+- `SELECT-FROM` @ **_collect_risk_signals** `backend/app/services/narrative_collector.py:486` — _static_confirmed_
+    - WHERE: `client_id = ? AND status = 'active'`
+- `SELECT-FROM` @ **build_portrait** `backend/app/services/project_portrait_builder.py:276` — _static_confirmed_
+    - WHERE: `client_id=? AND source_type='ai_inferred'`
+- `SELECT-FROM` @ **build_portrait._persist** `backend/app/services/project_portrait_builder.py:321` — _static_confirmed_
+    - WHERE: `client_id=? AND source_type='ai_inferred'`
+- `SELECT-FROM` @ **_section_8_risks** `backend/app/services/story_card_generator.py:205` — _static_confirmed_
+    - WHERE: `client_id = ? AND status = 'active'`
+
+## `risks`
+
+- 经验层: **2 行** · 最近写入 created_at=2026-04-16T22:13:03
+
+### 写边 (3)
+- `INSERT` @ **create_app** `backend/app/main.py:3179` — _needs_human_
+    - chain: create_app @backend/app/main.py:3179  ←  (no caller found — orphan write)
+- `INSERT` @ **create_app.extract_meeting** `backend/app/main.py:51418` — _static_confirmed_
+    - chain: extract_meeting [endpoint:/api/v1/clients/{client_id}/meetings/{meeting_id}/extract] @backend/app/main.py:51418
+- `INSERT` @ **create_app._populate_meeting_extraction** `backend/app/main.py:7012` — _call_name_match_
+    - chain: _populate_meeting_extraction @backend/app/main.py:7012  ←  _ingest_feishu_minutes_writeback @backend/app/main.py:7044  ←  handle_feishu_event @backend/app/main.py:7069  ←  receive_feishu_events [endpoint:/api/v1/channels/feishu/events] @backend/app/main.py:37511
+
+### 读边 (9)
+- `SELECT-FROM` @ **create_app.build_meeting_detail** `backend/app/main.py:21917` — _static_confirmed_
+    - WHERE: `meeting_id = ?`
+- `SELECT-FROM` @ **create_app** `backend/app/main.py:3179` — _static_confirmed_
+    - WHERE: `id = ?`
+    - WHERE: `meeting_id = ?`
+- `SELECT-FROM` @ **create_app._resolve_client_id_for_evidence_quality_annotation** `backend/app/main.py:3650` — _static_confirmed_
+    - WHERE: `id = ?`
+- `SELECT-FROM` @ **create_app.extract_meeting** `backend/app/main.py:51418` — _static_confirmed_
+    - WHERE: `meeting_id = ?`
+- `SELECT-FROM` @ **create_app._populate_meeting_extraction** `backend/app/main.py:7012` — _static_confirmed_
+    - WHERE: `meeting_id = ?`
+- `SELECT-FROM` @ **_collect_work_events** `backend/app/services/badge_engine.py:279` — _static_confirmed_
+    - WHERE: `d.meeting_id = m.id) AS decision_count, (SELECT COUNT(*) FROM action_items a WHERE a.meeting_id = m.id) AS action_count, ( SELECT COUNT(*) FROM action_items a WHERE a.meeting_id = m.id AND TRIM(a.owne`
+- `SELECT-FROM` @ **_render_meeting_body** `backend/app/services/data_center_ingest.py:1576` — _static_confirmed_
+    - WHERE: `meeting_id = ?`
+- `SELECT-FROM` @ **build_meeting_page_context_pack** `backend/app/services/meeting_context.py:48` — _static_confirmed_
+    - WHERE: `meeting_id = ?`
+- `SELECT-FROM` @ **record_meeting_publish_writeback** `backend/app/services/memory_foundation.py:1746` — _static_confirmed_
+    - WHERE: `meeting_id = ?`
+
+## `runtime_run_logs`
+
+- 经验层: **143 行** · 最近写入 created_at=2026-06-05T15:04:03
+
+### 写边 (1)
+- `UPDATE` @ **_sync_event_line_client_scope_records** `backend/app/main.py:2484` — _needs_human_
+    - chain: _sync_event_line_client_scope_records [worker:_sync_event_line_client_scope_records] @backend/app/main.py:2484
+
+### 读边 (4)
+- `SELECT-FROM` @ **get_runtime_run_log** `backend/app/services/analysis_center.py:1073` — _static_confirmed_
+    - WHERE: `id = ?`
+- `SELECT-FROM` @ **list_runtime_run_logs** `backend/app/services/analysis_center.py:1078` — _static_confirmed_
+    - WHERE: `client_id = ?`
+- `SELECT-FROM` @ **_build_analysis_center_summary** `backend/app/services/analysis_center.py:1548` — _static_confirmed_
+    - WHERE: `client_id = ?`
+- `SELECT-FROM` @ **get_analysis_migration_metrics** `backend/app/services/analysis_center.py:3821` — _static_confirmed_
+    - WHERE: `created_at >= ?`
+
+## `semantic`
+
+- 经验层: 真库**无此表** (静态边 1写/0读)
+
+### 写边 (1)
+- `UPDATE` @ **detect_update_relation** `backend/app/services/ingest_pipeline.py:402` — _call_name_match_
+    - chain: detect_update_relation @backend/app/services/ingest_pipeline.py:402  ←  ingest @backend/app/services/ingest_pipeline.py:659  ←  extract_from_document @backend/app/services/document_llm_extractor.py:261  ←  process @backend/app/services/task_runners/fact_extract_runner.py:41  ←  run_due_local_model_tasks @backend/app/services/local_model_optimizer.py:942  ←  local_model_optimizer_worker_loop [worker:local_model_optimizer_worker_loop] @backend/app/services/local_model_optimizer.py:1026
+    - chain: detect_update_relation @backend/app/services/ingest_pipeline.py:402  ←  ingest @backend/app/services/ingest_pipeline.py:659  ←  extract_from_document @backend/app/services/document_llm_extractor.py:261  ←  process @backend/app/services/task_runners/fact_extract_runner.py:41  ←  run_due_local_model_tasks @backend/app/services/local_model_optimizer.py:942  ←  run_local_ai_now [endpoint:/api/v1/local-ai/run-now] @backend/app/main.py:36970
+
+### 读边 (0)
+- (无静态读边)
+
+## `session`
+
+- 经验层: 真库**无此表** (静态边 1写/0读)
+
+### 写边 (1)
+- `UPDATE` @ **commit_session** `backend/app/services/smart_file_import.py:887` — _call_name_match_
+    - chain: commit_session @backend/app/services/smart_file_import.py:887  ←  smart_import_commit_session [endpoint:/api/v1/smart-import/sessions/{session_id}/commit] @backend/app/main.py:29395
+
+### 读边 (0)
+- (无静态读边)
+
+## `settings`
+
+- 经验层: **242 行**
+
+### 写边 (4)
+- `INSERT` @ **set_setting** `backend/app/db.py:5273` — _call_name_match_
+    - chain: set_setting @backend/app/db.py:5273  ←  _sync_object_storage_config_from_cloud [worker:_sync_object_storage_config_from_cloud] @backend/app/main.py:30605
+    - chain: set_setting @backend/app/db.py:5273  ←  create_backup [endpoint:/api/v1/settings/backup] @backend/app/main.py:37518
+    - chain: set_setting @backend/app/db.py:5273  ←  sync_qdrant_for_client [worker:sync_qdrant_for_client] @backend/app/services/knowledge_base.py:1437
+    - chain: set_setting @backend/app/db.py:5273  ←  update_refresh_cycle_settings [endpoint:/api/v1/intelligence/refresh-cycle-settings] @backend/app/main.py:57306
+    - chain: set_setting @backend/app/db.py:5273  ←  update_retrieval_settings [endpoint:/api/v1/retrieval/settings] @backend/app/main.py:44158
+    - chain: set_setting @backend/app/db.py:5273  ←  update_settings [endpoint:/api/v1/settings] @backend/app/main.py:36459
+- `INSERT` @ **create_app._save_role_holder_bot_sidecar** `backend/app/main.py:31417` — _call_name_match_
+    - chain: _save_role_holder_bot_sidecar @backend/app/main.py:31417  ←  update_org_model_profile [endpoint:/api/v1/settings/org-model/profile] @backend/app/main.py:31461
+- `INSERT` @ **create_app** `backend/app/main.py:3179` — _needs_human_
+    - chain: create_app @backend/app/main.py:3179  ←  (no caller found — orphan write)
+- `INSERT` @ **create_app.feishu_push_task** `backend/app/main.py:51079` — _static_confirmed_
+    - chain: feishu_push_task [endpoint:/api/v1/feishu/tasks/push] @backend/app/main.py:51079
+
+### 读边 (13)
+- `SELECT-FROM` @ **get_setting** `backend/app/db.py:5283` — _static_confirmed_
+    - WHERE: `key = ?`
+- `SELECT-FROM` @ **create_app._load_role_holder_bot_sidecar** `backend/app/main.py:31401` — _static_confirmed_
+    - WHERE: `key = ?`
+- `SELECT-FROM` @ **create_app** `backend/app/main.py:3179` — _static_confirmed_
+    - WHERE: `key = ?`
+- `SELECT-FROM` @ **create_app._restore_maintenance_state** `backend/app/main.py:8523` — _static_confirmed_
+- `SELECT-FROM` @ **_read_setting** `backend/app/services/analysis_center.py:3071` — _static_confirmed_
+    - WHERE: `key = ?`
+- `SELECT-FROM` @ **build_probes** `backend/app/services/self_heal.py:209` — _static_confirmed_
+    - WHERE: `key LIKE 'smart_brief_cache::%'`
+    - WHERE: `value LIKE '{%' OR value LIKE '[%'`
+- `SELECT-FROM` @ **build_probes.check_ai_bad_caches** `backend/app/services/self_heal.py:236` — _static_confirmed_
+    - WHERE: `key LIKE 'smart_brief_cache::%'`
+- `SELECT-FROM` @ **build_probes.check_settings_json** `backend/app/services/self_heal.py:288` — _static_confirmed_
+    - WHERE: `value LIKE '{%' OR value LIKE '[%'`
+- `SELECT-FROM` @ **build_remedies** `backend/app/services/self_heal.py:348` — _static_confirmed_
+    - WHERE: `key = ?`
+    - WHERE: `key IN ('cloud_token', 'cloud_refresh_token')`
+    - WHERE: `key LIKE 'cloud_task_cache%'`
+    - WHERE: `key LIKE 'smart_brief_cache::%'`
+    - WHERE: `value LIKE '{%' OR value LIKE '[%'`
+- `SELECT-FROM` @ **build_remedies.clear_cloud_task_cache** `backend/app/services/self_heal.py:362` — _static_confirmed_
+    - WHERE: `key LIKE 'cloud_task_cache%'`
+- `SELECT-FROM` @ **build_remedies.clear_ai_bad_caches** `backend/app/services/self_heal.py:369` — _static_confirmed_
+    - WHERE: `key = ?`
+    - WHERE: `key LIKE 'smart_brief_cache::%'`
+- `SELECT-FROM` @ **build_remedies.reset_cloud_token** `backend/app/services/self_heal.py:443` — _static_confirmed_
+    - WHERE: `key IN ('cloud_token', 'cloud_refresh_token')`
+- `SELECT-FROM` @ **build_remedies.repair_settings** `backend/app/services/self_heal.py:460` — _static_confirmed_
+    - WHERE: `key = ?`
+    - WHERE: `value LIKE '{%' OR value LIKE '[%'`
+
+## `source_registry`
+
+- 经验层: **4 行** · 最近写入 created_at=2026-06-04T23:30:35.028879+00:00
+  - source_type 分布: llm_extracted:4
+
+### 写边 (2)
+- `INSERT` @ **register_source** `backend/app/services/source_registry_store.py:237` — _call_name_match_
+    - chain: register_source @backend/app/services/source_registry_store.py:237  ←  commit_session @backend/app/services/smart_file_import.py:887  ←  smart_import_commit_session [endpoint:/api/v1/smart-import/sessions/{session_id}/commit] @backend/app/main.py:29395
+    - chain: register_source @backend/app/services/source_registry_store.py:237  ←  ingest_document_knowledge @backend/app/services/knowledge_base.py:2802  ←  upload_task_attachment [endpoint:/api/v1/tasks/{task_id}/attachments] @backend/app/main.py:53434
+    - chain: register_source @backend/app/services/source_registry_store.py:237  ←  upsert_canonical_text_document @backend/app/services/knowledge_v2.py:3304  ←  run_internet_enrichment [worker:run_internet_enrichment] @backend/app/services/internet_crawler.py:1135
+    - chain: register_source @backend/app/services/source_registry_store.py:237  ←  ingest_document_knowledge @backend/app/services/knowledge_base.py:2802  ←  _build_local_event_line_report_snapshot @backend/app/main.py:33643  ←  get_event_line_report_snapshot [endpoint:/api/v1/event-lines/{event_line_id}/report-snapshot] @backend/app/main.py:34329
+    - chain: register_source @backend/app/services/source_registry_store.py:237  ←  ingest_document_knowledge @backend/app/services/knowledge_base.py:2802  ←  _process_one_pdf @backend/app/services/internet_pdf_worker.py:96  ←  _worker_loop [worker:_worker_loop] @backend/app/services/internet_pdf_worker.py:205
+    - chain: register_source @backend/app/services/source_registry_store.py:237  ←  ingest_document_knowledge @backend/app/services/knowledge_base.py:2802  ←  backfill_workspace_import @backend/app/services/knowledge_v2.py:3943  ←  backfill_client_workspace_imports [endpoint:/api/v1/clients/{client_id}/workspace/backfill-imports] @backend/app/main.py:50039
+- `UPDATE` @ **supersede_version** `backend/app/services/source_registry_store.py:355` — _needs_human_
+    - chain: supersede_version @backend/app/services/source_registry_store.py:355  ←  (no caller found — orphan write)
+
+### 读边 (6)
+- `SELECT-FROM` @ **find_by_content_hash** `backend/app/services/source_registry_store.py:311` — _static_confirmed_
+    - WHERE: `content_hash = ? AND client_id = ? AND status = 'active'`
+    - WHERE: `content_hash = ? AND status = 'active'`
+- `SELECT-FROM` @ **list_sources_for_client** `backend/app/services/source_registry_store.py:334` — _static_confirmed_
+    - WHERE: `client_id = ? AND source_type = ? AND status = 'active'`
+    - WHERE: `client_id = ? AND status = 'active'`
+- `SELECT-FROM` @ **get_source** `backend/app/services/source_registry_store.py:370` — _static_confirmed_
+    - WHERE: `source_id = ?`
+- `SELECT-FROM` @ **_section_10_evidence_sources** `backend/app/services/story_card_generator.py:252` — _static_confirmed_
+    - WHERE: `client_id = ?`
+- `SELECT-FROM` @ **_build_sync_payload** `backend/app/services/team_sync_executor.py:102` — _static_confirmed_
+    - WHERE: `sr.source_id = ?`
+- `SELECT-FROM` @ **enqueue_all_unsynced** `backend/app/services/team_sync_executor.py:62` — _static_confirmed_
+    - WHERE: `tss.source_id IS NULL AND sr.org_id IS NOT NULL AND sr.org_id != '' AND sr.status = 'active'`
+
+## `source_tree_snapshots`
+
+- 经验层: **47 行** · 最近写入 created_at=2026-05-18T14:07:18
+
+### 写边 (1)
+- `INSERT+UPDATE` @ **ensure_source_tree_snapshot** `backend/app/services/knowledge_base.py:2383` — _call_name_match_
+    - chain: ensure_source_tree_snapshot @backend/app/services/knowledge_base.py:2383  ←  import_documents [endpoint:/api/v1/imports] @backend/app/main.py:45956
+
+### 读边 (1)
+- `SELECT-FROM` @ **ensure_source_tree_snapshot** `backend/app/services/knowledge_base.py:2383` — _static_confirmed_
+    - WHERE: `import_id = ?`
+
+## `speech_model_settings`
+
+- 经验层: **1 行**
+
+### 写边 (2)
+- `INSERT` @ **_init_schema** `backend/app/db.py:60` — _needs_human_
+    - chain: _init_schema @backend/app/db.py:60  ←  __init__ @backend/app/db.py:49
+- `UPDATE` @ **save_speech_model_settings** `backend/app/services/speech_recognition/settings_store.py:45` — _call_name_match_
+    - chain: save_speech_model_settings @backend/app/services/speech_recognition/settings_store.py:45  ←  update_speech_model_settings_endpoint [endpoint:/api/v1/settings/speech-model] @backend/app/main.py:36686
+
+### 读边 (1)
+- `SELECT-FROM` @ **get_speech_model_settings** `backend/app/services/speech_recognition/settings_store.py:37` — _static_confirmed_
+    - WHERE: `id = 1`
+
+## `sqlite_master`
+
+- 经验层: 真库**无此表** (静态边 0写/3读)
+
+### 写边 (0)
+- (无静态写边)
+
+### 读边 (3)
+- `SELECT-FROM` @ **_table_exists** `backend/app/services/data_center_schema.py:14` — _static_confirmed_
+    - WHERE: `type = 'table' AND name = ?`
+- `SELECT-FROM` @ **_table_exists** `backend/app/services/intelligence_timely_strategy.py:140` — _static_confirmed_
+    - WHERE: `type = 'table' AND name = ?`
+- `SELECT-FROM` @ **_table_exists** `backend/app/services/weekly_review_material_pack.py:66` — _static_confirmed_
+    - WHERE: `type = 'table' AND name = ?`
+
+## `state`
+
+- 经验层: 真库**无此表** (静态边 0写/2读)
+
+### 写边 (0)
+- (无静态写边)
+
+### 读边 (2)
+- `SELECT-FROM` @ **create_app._sync_org_ai_config_from_cloud** `backend/app/main.py:30392` — _static_confirmed_
+- `SELECT-FROM` @ **create_app** `backend/app/main.py:3179` — _static_confirmed_
+
+## `status`
+
+- 经验层: 真库**无此表** (静态边 1写/0读)
+
+### 写边 (1)
+- `UPDATE` @ **_heal_orphan_loading_chat_messages** `backend/app/main.py:3097` — _needs_human_
+    - chain: _heal_orphan_loading_chat_messages @backend/app/main.py:3097  ←  create_app @backend/app/main.py:3179
+
+### 读边 (0)
+- (无静态读边)
+
+## `strategic_cockpit_snapshots`
+
+- 经验层: **1 行** · 最近写入 created_at=2026-03-25T01:02:22
+
+### 写边 (2)
+- `INSERT` @ **create_app.save_strategic_cockpit_snapshot** `backend/app/main.py:21587` — _call_name_match_
+    - chain: save_strategic_cockpit_snapshot @backend/app/main.py:21587  ←  apply_strategic_meeting_pack [endpoint:/api/v1/clients/{client_id}/strategic-cockpit/meeting-pack/{meeting_id}/apply] @backend/app/main.py:42202
+    - chain: save_strategic_cockpit_snapshot @backend/app/main.py:21587  ←  confirm_strategic_cockpit [endpoint:/api/v1/clients/{client_id}/strategic-cockpit/confirm] @backend/app/main.py:42174
+- `INSERT` @ **create_app** `backend/app/main.py:3179` — _needs_human_
+    - chain: create_app @backend/app/main.py:3179  ←  (no caller found — orphan write)
+
+### 读边 (3)
+- `SELECT-FROM` @ **create_app._load_strategic_snapshot_row** `backend/app/main.py:19305` — _static_confirmed_
+    - WHERE: `client_id = ?`
+- `SELECT-FROM` @ **create_app.save_strategic_cockpit_snapshot** `backend/app/main.py:21587` — _static_confirmed_
+    - WHERE: `client_id = ?`
+- `SELECT-FROM` @ **create_app** `backend/app/main.py:3179` — _static_confirmed_
+    - WHERE: `client_id = ?`
+
+## `strategic_thought_insights`
+
+- 经验层: **20 行** · 最近写入 created_at=2026-06-01T17:30:41
+
+### 写边 (7)
+- `UPDATE` @ **create_app._soft_delete_legacy_strategic_insight_cache** `backend/app/main.py:19620` — _call_name_match_
+    - chain: _soft_delete_legacy_strategic_insight_cache @backend/app/main.py:19620  ←  _list_cached_strategic_thoughts @backend/app/main.py:20390  ←  _build_strategic_thoughts @backend/app/main.py:20590  ←  get_strategic_thoughts [endpoint:/api/v1/strategic/thoughts] @backend/app/main.py:42004
+    - chain: _soft_delete_legacy_strategic_insight_cache @backend/app/main.py:19620  ←  _list_cached_strategic_thoughts @backend/app/main.py:20390  ←  _hide_stale_unfavorite_strategic_thoughts @backend/app/main.py:20522  ←  _refresh_strategic_thoughts @backend/app/main.py:20560  ←  refresh_strategic_thoughts [endpoint:/api/v1/strategic/thoughts/refresh] @backend/app/main.py:42034
+- `INSERT+UPDATE` @ **create_app._persist_generated_insights** `backend/app/main.py:20424` — _call_name_match_
+    - chain: _persist_generated_insights @backend/app/main.py:20424  ←  _refresh_strategic_thoughts @backend/app/main.py:20560  ←  refresh_strategic_thoughts [endpoint:/api/v1/strategic/thoughts/refresh] @backend/app/main.py:42034
+- `UPDATE` @ **create_app._hide_stale_unfavorite_strategic_thoughts** `backend/app/main.py:20522` — _call_name_match_
+    - chain: _hide_stale_unfavorite_strategic_thoughts @backend/app/main.py:20522  ←  _refresh_strategic_thoughts @backend/app/main.py:20560  ←  refresh_strategic_thoughts [endpoint:/api/v1/strategic/thoughts/refresh] @backend/app/main.py:42034
+- `INSERT+UPDATE` @ **create_app** `backend/app/main.py:3179` — _needs_human_
+    - chain: create_app @backend/app/main.py:3179  ←  (no caller found — orphan write)
+- `UPDATE` @ **create_app.update_strategic_thought_state** `backend/app/main.py:42056` — _static_confirmed_
+    - chain: update_strategic_thought_state [endpoint:/api/v1/strategic/thoughts/{thought_id}/state] @backend/app/main.py:42056
+- `INSERT` @ **derive_strategic_insights** `backend/app/services/atomic_fact_semantic_deriver.py:322` — _call_name_match_
+    - chain: derive_strategic_insights @backend/app/services/atomic_fact_semantic_deriver.py:322  ←  derive_all @backend/app/services/atomic_fact_semantic_deriver.py:405  ←  process_meeting_minute @backend/app/services/meeting_minute_processor.py:147  ←  process_meeting_minute_endpoint [endpoint:/api/v1/meeting-minutes/process] @backend/app/main.py:39471
+- `INSERT` @ **process_meeting_minute** `backend/app/services/meeting_minute_processor.py:147` — _call_name_match_
+    - chain: process_meeting_minute @backend/app/services/meeting_minute_processor.py:147  ←  process_meeting_minute_endpoint [endpoint:/api/v1/meeting-minutes/process] @backend/app/main.py:39471
+
+### 读边 (8)
+- `SELECT-FROM` @ **create_app._list_cached_strategic_thoughts** `backend/app/main.py:20390` — _static_confirmed_
+- `SELECT-FROM` @ **create_app._persist_generated_insights** `backend/app/main.py:20424` — _static_confirmed_
+    - WHERE: `id = ?`
+- `SELECT-FROM` @ **create_app._find_strategic_thought_by_id** `backend/app/main.py:20620` — _static_confirmed_
+    - WHERE: `id = ?`
+- `SELECT-FROM` @ **create_app.get_client_knowledge_status** `backend/app/main.py:27902` — _static_confirmed_
+    - WHERE: `client_id = ? AND is_deleted = 0 AND generated_at >= ?`
+    - WHERE: `i.client_id = ? AND i.is_deleted = 0 AND NOT EXISTS ( SELECT 1 FROM strategic_thought_reviews r WHERE r.thought_id = i.id AND r.status IN ('confirmed', 'dismissed', 'task_created') )`
+- `SELECT-FROM` @ **create_app** `backend/app/main.py:3179` — _static_confirmed_
+    - WHERE: `client_id = ? AND is_deleted = 0 AND generated_at >= ?`
+    - WHERE: `i.client_id = ? AND i.is_deleted = 0 AND NOT EXISTS ( SELECT 1 FROM strategic_thought_reviews r WHERE r.thought_id = i.id AND r.status IN ('confirmed', 'dismissed', 'task_created') )`
+    - WHERE: `id = ?`
+- `SELECT-FROM` @ **create_app.update_strategic_thought_state** `backend/app/main.py:42056` — _static_confirmed_
+    - WHERE: `id = ?`
+- `SELECT-FROM` @ **derive_strategic_insights** `backend/app/services/atomic_fact_semantic_deriver.py:322` — _static_confirmed_
+    - WHERE: `client_id = ? AND source_fingerprint LIKE 'af:%'`
+- `SELECT-FROM` @ **_section_6_key_judgments** `backend/app/services/story_card_generator.py:157` — _static_confirmed_
+    - WHERE: `client_id = ? AND is_deleted = 0`
+
+## `strategic_thought_reviews`
+
+- 经验层: **2 行** · 最近写入 created_at=2026-05-14T15:13:25
+  - source_type 分布: client_dna:2
+
+### 写边 (2)
+- `INSERT+UPDATE` @ **create_app._save_strategic_thought_review** `backend/app/main.py:20629` — _call_name_match_
+    - chain: _save_strategic_thought_review @backend/app/main.py:20629  ←  review_strategic_thought [endpoint:/api/v1/strategic/thoughts/{thought_id}/review] @backend/app/main.py:42077
+- `INSERT+UPDATE` @ **create_app** `backend/app/main.py:3179` — _needs_human_
+    - chain: create_app @backend/app/main.py:3179  ←  (no caller found — orphan write)
+
+### 读边 (4)
+- `SELECT-FROM` @ **create_app._list_strategic_thought_review_map** `backend/app/main.py:19488` — _static_confirmed_
+- `SELECT-FROM` @ **create_app._save_strategic_thought_review** `backend/app/main.py:20629` — _static_confirmed_
+    - WHERE: `thought_id = ?`
+- `SELECT-FROM` @ **create_app.get_client_knowledge_status** `backend/app/main.py:27902` — _static_confirmed_
+    - WHERE: `i.client_id = ? AND i.is_deleted = 0 AND NOT EXISTS ( SELECT 1 FROM strategic_thought_reviews r WHERE r.thought_id = i.id AND r.status IN ('confirmed', 'dismissed', 'task_created') )`
+- `SELECT-FROM` @ **create_app** `backend/app/main.py:3179` — _static_confirmed_
+    - WHERE: `i.client_id = ? AND i.is_deleted = 0 AND NOT EXISTS ( SELECT 1 FROM strategic_thought_reviews r WHERE r.thought_id = i.id AND r.status IN ('confirmed', 'dismissed', 'task_created') )`
+    - WHERE: `thought_id = ?`
+
+## `structured_tables`
+
+- 经验层: **46 行** · 最近写入 created_at=2026-05-20T10:20:18.887620+00:00
+
+### 写边 (1)
+- `INSERT` @ **upsert_table_from_parsed_sheet** `backend/app/services/structured_table_store.py:134` — _call_name_match_
+    - chain: upsert_table_from_parsed_sheet @backend/app/services/structured_table_store.py:134  ←  ingest_document_knowledge @backend/app/services/knowledge_base.py:2802  ←  upload_task_attachment [endpoint:/api/v1/tasks/{task_id}/attachments] @backend/app/main.py:53434
+    - chain: upsert_table_from_parsed_sheet @backend/app/services/structured_table_store.py:134  ←  ingest_document_knowledge @backend/app/services/knowledge_base.py:2802  ←  _build_local_event_line_report_snapshot @backend/app/main.py:33643  ←  get_event_line_report_snapshot [endpoint:/api/v1/event-lines/{event_line_id}/report-snapshot] @backend/app/main.py:34329
+    - chain: upsert_table_from_parsed_sheet @backend/app/services/structured_table_store.py:134  ←  ingest_document_knowledge @backend/app/services/knowledge_base.py:2802  ←  _process_one_pdf @backend/app/services/internet_pdf_worker.py:96  ←  _worker_loop [worker:_worker_loop] @backend/app/services/internet_pdf_worker.py:205
+    - chain: upsert_table_from_parsed_sheet @backend/app/services/structured_table_store.py:134  ←  ingest_document_knowledge @backend/app/services/knowledge_base.py:2802  ←  backfill_workspace_import @backend/app/services/knowledge_v2.py:3943  ←  backfill_client_workspace_imports [endpoint:/api/v1/clients/{client_id}/workspace/backfill-imports] @backend/app/main.py:50039
+    - chain: upsert_table_from_parsed_sheet @backend/app/services/structured_table_store.py:134  ←  ingest_document_knowledge @backend/app/services/knowledge_base.py:2802  ←  create_client_text_document @backend/app/main.py:16116  ←  create_client_document_from_text [endpoint:/api/v1/clients/{client_id}/documents/from-text] @backend/app/main.py:49576
+    - chain: upsert_table_from_parsed_sheet @backend/app/services/structured_table_store.py:134  ←  ingest_document_knowledge @backend/app/services/knowledge_base.py:2802  ←  execute_parse_failure_retry_batch @backend/app/main.py:42534  ←  retry_client_parse_failures [endpoint:/api/v1/clients/{client_id}/knowledge/parse-failures/retry] @backend/app/main.py:42800
+
+### 读边 (4)
+- `SELECT-FROM` @ **upsert_table_from_parsed_sheet** `backend/app/services/structured_table_store.py:134` — _static_confirmed_
+    - WHERE: `v2_document_id = ? AND sheet_name = ?`
+- `SELECT-FROM` @ **list_tables** `backend/app/services/structured_table_store.py:205` — _static_confirmed_
+    - WHERE: `{?}`
+- `SELECT-FROM` @ **get_table** `backend/app/services/structured_table_store.py:234` — _static_confirmed_
+    - WHERE: `id = ?`
+- `SELECT-FROM` @ **find_tables_by_role** `backend/app/services/structured_table_store.py:239` — _static_confirmed_
+    - WHERE: `client_id = ? AND semantic_role IN (`
+    - WHERE: `client_id = ? AND semantic_role IN ({?})`
+
+## `surrogates`
+
+- 经验层: 真库**无此表** (静态边 0写/1读)
+
+### 写边 (0)
+- (无静态写边)
+
+### 读边 (1)
+- `SELECT-FROM` @ **_aggregate_summaries_for_dimension** `backend/app/services/client_profile.py:70` — _static_confirmed_
+
+## `sync_conflicts`
+
+- 经验层: **0 行**
+
+### 写边 (0)
+- (无静态写边)
+
+### 读边 (0)
+- (无静态读边)
+
+## `sync_memory_records`
+
+- 经验层: **6 行** · 最近写入 created_at=2026-06-05T15:04:03
+
+### 写边 (0)
+- (无静态写边)  ⚠️ **0 写边但真库有行 → needs_human (写入路径在静态扫描盲区:可能动态表名/ORM/外部进程)**
+
+### 读边 (0)
+- (无静态读边)
+
+## `sync_outbox`
+
+- 经验层: **0 行**
+
+### 写边 (0)
+- (无静态写边)
+
+### 读边 (0)
+- (无静态读边)
+
+## `task_attachments`
+
+- 经验层: **19 行** · 最近写入 created_at=2026-06-05T15:03:57
+
+### 写边 (2)
+- `UPDATE` @ **create_app.resolve_client_duplicate_documents** `backend/app/main.py:28241` — _static_confirmed_
+    - chain: resolve_client_duplicate_documents [endpoint:/api/v1/clients/{client_id}/duplicate-documents/resolve] @backend/app/main.py:28241
+- `UPDATE` @ **create_app** `backend/app/main.py:3179` — _needs_human_
+    - chain: create_app @backend/app/main.py:3179  ←  (no caller found — orphan write)
+
+### 读边 (23)
+- `SELECT-FROM` @ **create_app.get_client_duplicate_documents** `backend/app/main.py:28069` — _static_confirmed_
+    - WHERE: `document_id = ?) + (SELECT COUNT(1) FROM task_attachments_cloud WHERE document_id = ?) AS n`
+- `SELECT-FROM` @ **create_app.get_client_duplicate_documents._ref_counts** `backend/app/main.py:28088` — _static_confirmed_
+    - WHERE: `document_id = ?) + (SELECT COUNT(1) FROM task_attachments_cloud WHERE document_id = ?) AS n`
+- `SELECT-FROM` @ **create_app** `backend/app/main.py:3179` — _static_confirmed_
+    - WHERE: `event_line_id = ? UNION ALL SELECT id, task_id, title, path, kind, size_bytes, created_at, document_id, 'task_attachment' AS source_kind FROM task_attachments WHERE event_line_id = ?`
+    - WHERE: `event_line_id = ? UNION ALL SELECT id, title, path, kind, document_id FROM task_attachments_cloud WHERE event_line_id = ?`
+    - WHERE: `id = ?`
+    - WHERE: `id = ? AND task_id = ? UNION ALL SELECT id, task_id, client_id, document_id, path, title FROM task_attachments_cloud WHERE id = ? AND task_id = ?`
+    - WHERE: `task_id = ?`
+- `SELECT-FROM` @ **create_app._gather_task_context_bundle** `backend/app/main.py:32267` — _static_confirmed_
+    - WHERE: `event_line_id = ? UNION ALL SELECT id, title, path, kind, document_id FROM task_attachments_cloud WHERE event_line_id = ?`
+    - WHERE: `task_id = ? UNION ALL SELECT id, title, path, kind, document_id FROM task_attachments_cloud WHERE task_id = ?`
+- `SELECT-FROM` @ **create_app._build_local_event_line_report_snapshot** `backend/app/main.py:33643` — _static_confirmed_
+    - WHERE: `{?} UNION ALL SELECT id, task_id, title, path, kind, size_bytes, created_at, document_id, 'task_attachment' AS source_kind FROM task_attachments_cloud WHERE {?}`
+- `SELECT-FROM` @ **create_app._enrich_report_snapshot_with_local_parse** `backend/app/main.py:34134` — _static_confirmed_
+    - WHERE: `event_line_id = ? UNION ALL SELECT id, task_id, title, path, kind, size_bytes, created_at, document_id, 'task_attachment' AS source_kind FROM task_attachments WHERE event_line_id = ?`
+- `SELECT-FROM` @ **create_app._resolve_client_id_for_evidence_quality_annotation** `backend/app/main.py:3650` — _static_confirmed_
+    - WHERE: `id = ?`
+- `SELECT-FROM` @ **create_app.update_task** `backend/app/main.py:52636` — _static_confirmed_
+    - WHERE: `task_id = ?`
+- `SELECT-FROM` @ **create_app.delete_task_attachment** `backend/app/main.py:53734` — _static_confirmed_
+    - WHERE: `id = ?`
+    - WHERE: `id = ? AND task_id = ? UNION ALL SELECT id, task_id, client_id, document_id, path, title FROM task_attachments_cloud WHERE id = ? AND task_id = ?`
+- `SELECT-FROM` @ **build_event_line_page_context_pack** `backend/app/services/analysis_context.py:1244` — _static_confirmed_
+    - WHERE: `event_line_id = ?`
+- `SELECT-FROM` @ **build_task_page_context_pack** `backend/app/services/analysis_context.py:684` — _static_confirmed_
+    - WHERE: `task_id = ?`
+- `SELECT-FROM` @ **ingest_task_attachment_by_id** `backend/app/services/data_center_ingest.py:1506` — _static_confirmed_
+    - WHERE: `id = ? UNION ALL SELECT id, task_id, client_id, event_line_id, document_id, title, path, kind, source, size_bytes, created_at FROM task_attachments_cloud WHERE id = ?`
+- `SELECT-FROM` @ **backfill_data_center_ingest** `backend/app/services/data_center_ingest.py:1897` — _static_confirmed_
+- `SELECT-FROM` @ **_render_task_doc_text** `backend/app/services/knowledge_v2.py:3691` — _static_confirmed_
+    - WHERE: `task_id = ?`
+- `SELECT-FROM` @ **backfill_memory_foundation** `backend/app/services/memory_foundation.py:1965` — _static_confirmed_
+    - WHERE: `a.task_id IN (`
+    - WHERE: `a.task_id IN ({?})`
+- `SELECT-FROM` @ **refresh_event_line_memory_snapshot** `backend/app/services/memory_foundation.py:994` — _static_confirmed_
+    - WHERE: `a.event_line_id = ?`
+- `SELECT-FROM` @ **build_weekly_mainline_evidence_pack** `backend/app/services/review_narrative.py:500` — _static_confirmed_
+    - WHERE: `a.task_id IN (`
+    - WHERE: `a.task_id IN ({?}) UNION ALL SELECT 'task_attachments_cloud' AS source_table, a.id, a.task_id, a.client_id, a.event_line_id, a.document_id, a.title, a.path, a.kind, a.source, a.size_bytes, a.created_a`
+- `SELECT-FROM` @ **build_probes** `backend/app/services/self_heal.py:209` — _static_confirmed_
+- `SELECT-FROM` @ **build_probes.check_orphan_attachments** `backend/app/services/self_heal.py:253` — _static_confirmed_
+- `SELECT-FROM` @ **build_remedies** `backend/app/services/self_heal.py:348` — _static_confirmed_
+    - WHERE: `id = ?`
+- `SELECT-FROM` @ **build_remedies.clean_orphan_attachments** `backend/app/services/self_heal.py:423` — _static_confirmed_
+    - WHERE: `id = ?`
+- `SELECT-FROM` @ **_fetch_task_attachments** `backend/app/services/task_context_brief_engine.py:251` — _static_confirmed_
+    - WHERE: `task_id = ?`
+- `SELECT-FROM` @ **build_weekly_review_material_pack** `backend/app/services/weekly_review_material_pack.py:335` — _static_confirmed_
+    - WHERE: `a.task_id IN (`
+    - WHERE: `a.task_id IN ({?}) UNION ALL SELECT 'task_attachments_cloud' AS source_table, a.id, a.task_id, a.client_id, a.event_line_id, a.document_id, a.title, a.kind, a.source, a.size_bytes, a.created_at, d.exc`
+
+## `task_attachments_cloud`
+
+- 经验层: **33 行** · 最近写入 created_at=2026-05-15T10:42:18
+
+### 写边 (2)
+- `UPDATE` @ **create_app.resolve_client_duplicate_documents** `backend/app/main.py:28241` — _static_confirmed_
+    - chain: resolve_client_duplicate_documents [endpoint:/api/v1/clients/{client_id}/duplicate-documents/resolve] @backend/app/main.py:28241
+- `UPDATE` @ **create_app** `backend/app/main.py:3179` — _needs_human_
+    - chain: create_app @backend/app/main.py:3179  ←  (no caller found — orphan write)
+
+### 读边 (14)
+- `SELECT-FROM` @ **create_app.build_cloud_event_line_detail** `backend/app/main.py:10905` — _static_confirmed_
+    - WHERE: `event_line_id = ?`
+- `SELECT-FROM` @ **create_app.get_client_duplicate_documents** `backend/app/main.py:28069` — _static_confirmed_
+    - WHERE: `document_id = ?) + (SELECT COUNT(1) FROM task_attachments_cloud WHERE document_id = ?) AS n`
+- `SELECT-FROM` @ **create_app.get_client_duplicate_documents._ref_counts** `backend/app/main.py:28088` — _static_confirmed_
+    - WHERE: `document_id = ?) + (SELECT COUNT(1) FROM task_attachments_cloud WHERE document_id = ?) AS n`
+- `SELECT-FROM` @ **create_app** `backend/app/main.py:3179` — _static_confirmed_
+    - WHERE: `event_line_id = ?`
+    - WHERE: `event_line_id = ? UNION ALL SELECT id, task_id, title, path, kind, size_bytes, created_at, document_id, 'task_attachment' AS source_kind FROM task_attachments WHERE event_line_id = ?`
+    - WHERE: `event_line_id = ? UNION ALL SELECT id, title, path, kind, document_id FROM task_attachments_cloud WHERE event_line_id = ?`
+    - WHERE: `id = ?`
+    - WHERE: `id = ? AND task_id = ? UNION ALL SELECT id, task_id, client_id, document_id, path, title FROM task_attachments_cloud WHERE id = ? AND task_id = ?`
+- `SELECT-FROM` @ **create_app._gather_task_context_bundle** `backend/app/main.py:32267` — _static_confirmed_
+    - WHERE: `event_line_id = ? UNION ALL SELECT id, title, path, kind, document_id FROM task_attachments_cloud WHERE event_line_id = ?`
+    - WHERE: `task_id = ? UNION ALL SELECT id, title, path, kind, document_id FROM task_attachments_cloud WHERE task_id = ?`
+- `SELECT-FROM` @ **create_app._build_local_event_line_report_snapshot** `backend/app/main.py:33643` — _static_confirmed_
+    - WHERE: `{?} UNION ALL SELECT id, task_id, title, path, kind, size_bytes, created_at, document_id, 'task_attachment' AS source_kind FROM task_attachments_cloud WHERE {?}`
+- `SELECT-FROM` @ **create_app._enrich_report_snapshot_with_local_parse** `backend/app/main.py:34134` — _static_confirmed_
+    - WHERE: `event_line_id = ? UNION ALL SELECT id, task_id, title, path, kind, size_bytes, created_at, document_id, 'task_attachment' AS source_kind FROM task_attachments WHERE event_line_id = ?`
+- `SELECT-FROM` @ **create_app._resolve_client_id_for_evidence_quality_annotation** `backend/app/main.py:3650` — _static_confirmed_
+    - WHERE: `id = ?`
+- `SELECT-FROM` @ **create_app.delete_task** `backend/app/main.py:53307` — _static_confirmed_
+    - WHERE: `task_id IN (?, ?)`
+- `SELECT-FROM` @ **create_app.delete_task_attachment** `backend/app/main.py:53734` — _static_confirmed_
+    - WHERE: `id = ?`
+    - WHERE: `id = ? AND task_id = ? UNION ALL SELECT id, task_id, client_id, document_id, path, title FROM task_attachments_cloud WHERE id = ? AND task_id = ?`
+- `SELECT-FROM` @ **ingest_task_attachment_by_id** `backend/app/services/data_center_ingest.py:1506` — _static_confirmed_
+    - WHERE: `id = ? UNION ALL SELECT id, task_id, client_id, event_line_id, document_id, title, path, kind, source, size_bytes, created_at FROM task_attachments_cloud WHERE id = ?`
+- `SELECT-FROM` @ **backfill_data_center_ingest** `backend/app/services/data_center_ingest.py:1897` — _static_confirmed_
+- `SELECT-FROM` @ **build_weekly_mainline_evidence_pack** `backend/app/services/review_narrative.py:500` — _static_confirmed_
+    - WHERE: `a.task_id IN (`
+    - WHERE: `a.task_id IN ({?}) UNION ALL SELECT 'task_attachments_cloud' AS source_table, a.id, a.task_id, a.client_id, a.event_line_id, a.document_id, a.title, a.path, a.kind, a.source, a.size_bytes, a.created_a`
+- `SELECT-FROM` @ **build_weekly_review_material_pack** `backend/app/services/weekly_review_material_pack.py:335` — _static_confirmed_
+    - WHERE: `a.task_id IN (`
+    - WHERE: `a.task_id IN ({?}) UNION ALL SELECT 'task_attachments_cloud' AS source_table, a.id, a.task_id, a.client_id, a.event_line_id, a.document_id, a.title, a.kind, a.source, a.size_bytes, a.created_at, d.exc`
+
+## `task_collaborators`
+
+- 经验层: **255 行** · 最近写入 created_at=2026-06-08T11:55:50
+
+### 写边 (9)
+- `UPDATE` @ **create_app._mark_task_collaborator_handled** `backend/app/main.py:11124` — _call_name_match_
+    - chain: _mark_task_collaborator_handled @backend/app/main.py:11124  ←  reject_task [endpoint:/api/v1/tasks/{task_id}/reject] @backend/app/main.py:53903
+    - chain: _mark_task_collaborator_handled @backend/app/main.py:11124  ←  _mark_task_confirmed_locally @backend/app/main.py:53852  ←  confirm_task [endpoint:/api/v1/tasks/{task_id}/confirm] @backend/app/main.py:53875
+- `UPDATE` @ **create_app._repair_completed_task_collaboration_state** `backend/app/main.py:11163` — _call_name_match_
+    - chain: _repair_completed_task_collaboration_state @backend/app/main.py:11163  ←  list_tasks [endpoint:/api/v1/tasks] @backend/app/main.py:51570
+- `INSERT+UPDATE` @ **create_app** `backend/app/main.py:3179` — _needs_human_
+    - chain: create_app @backend/app/main.py:3179  ←  (no caller found — orphan write)
+- `INSERT+UPDATE` @ **create_app.update_task** `backend/app/main.py:52636` — _static_confirmed_
+    - chain: update_task [endpoint:/api/v1/tasks/{task_id}] @backend/app/main.py:52636
+- `INSERT` @ **create_app._upsert_cloud_task_shadow_local** `backend/app/main.py:9597` — _call_name_match_
+    - chain: _upsert_cloud_task_shadow_local @backend/app/main.py:9597  ←  approve_task_review [endpoint:/api/v1/tasks/{task_id}/review/approve] @backend/app/main.py:53945
+    - chain: _upsert_cloud_task_shadow_local @backend/app/main.py:9597  ←  complete_task_with_review [endpoint:/api/v1/tasks/{task_id}/complete-with-review] @backend/app/main.py:53934
+    - chain: _upsert_cloud_task_shadow_local @backend/app/main.py:9597  ←  confirm_task [endpoint:/api/v1/tasks/{task_id}/confirm] @backend/app/main.py:53875
+    - chain: _upsert_cloud_task_shadow_local @backend/app/main.py:9597  ←  reject_task [endpoint:/api/v1/tasks/{task_id}/reject] @backend/app/main.py:53903
+    - chain: _upsert_cloud_task_shadow_local @backend/app/main.py:9597  ←  return_task_review [endpoint:/api/v1/tasks/{task_id}/review/return] @backend/app/main.py:53956
+    - chain: _upsert_cloud_task_shadow_local @backend/app/main.py:9597  ←  sync_pending_tasks_if_due [worker:sync_pending_tasks_if_due] @backend/app/main.py:23973
+- `INSERT` @ **_handler_documents_generate._do_create_doc_task** `backend/app/services/plan_executor.py:1315` — _needs_human_
+    - chain: _do_create_doc_task @backend/app/services/plan_executor.py:1315  ←  _handler_documents_generate @backend/app/services/plan_executor.py:932
+- `INSERT` @ **_handler_tasks_create** `backend/app/services/plan_executor.py:1400` — _needs_human_
+    - chain: _handler_tasks_create @backend/app/services/plan_executor.py:1400  ←  (no caller found — orphan write)
+- `INSERT` @ **_handler_tasks_create._do_insert_task** `backend/app/services/plan_executor.py:1505` — _needs_human_
+    - chain: _do_insert_task @backend/app/services/plan_executor.py:1505  ←  (no caller found — orphan write)
+- `INSERT` @ **_add_task_collaborator** `backend/app/services/plan_executor.py:502` — _needs_human_
+    - chain: _add_task_collaborator @backend/app/services/plan_executor.py:502  ←  (no caller found — orphan write)
+
+### 读边 (9)
+- `SELECT-FROM` @ **create_app._task_collaboration_state** `backend/app/main.py:10502` — _static_confirmed_
+    - WHERE: `task_id = ?`
+- `SELECT-FROM` @ **create_app._lookup_task_creator_name** `backend/app/main.py:10539` — _static_confirmed_
+    - WHERE: `task_id = ? AND user_id = ?`
+- `SELECT-FROM` @ **create_app._mark_task_collaborator_handled** `backend/app/main.py:11124` — _static_confirmed_
+    - WHERE: `task_id = ? AND user_id = ? AND inbox_status = ?`
+- `SELECT-FROM+JOIN` @ **create_app** `backend/app/main.py:3179` — _static_confirmed_
+    - WHERE: `t.id = ? AND`
+    - WHERE: `t.id = ? AND {?} AND (t.owner_id = ? OR t.creator_id = ? OR tc.user_id = ?)`
+    - WHERE: `task_id = ?`
+    - WHERE: `task_id = ? AND user_id = ?`
+    - WHERE: `task_id = ? AND user_id = ? AND inbox_status = ?`
+- `SELECT-FROM` @ **create_app.update_task** `backend/app/main.py:52636` — _static_confirmed_
+    - WHERE: `task_id = ?`
+    - WHERE: `task_id = ? AND user_id = ?`
+- `JOIN` @ **create_app._review_item_matches_user** `backend/app/main.py:6315` — _static_confirmed_
+    - WHERE: `t.id = ? AND`
+    - WHERE: `t.id = ? AND {?} AND (t.owner_id = ? OR t.creator_id = ? OR tc.user_id = ?)`
+- `SELECT-FROM` @ **create_app._upsert_cloud_task_shadow_local** `backend/app/main.py:9597` — _static_confirmed_
+    - WHERE: `task_id = ?`
+- `SELECT-FROM` @ **_collect_work_events** `backend/app/services/badge_engine.py:279` — _static_confirmed_
+    - WHERE: `COALESCE(scope_mode, 'COLLAB_SHARED') != 'PERSONAL_ONLY' AND ( owner_id = ? OR creator_id = ? OR LOWER(TRIM(COALESCE(owner_name, ''))) = LOWER(TRIM(?)) OR EXISTS ( SELECT 1 FROM task_collaborators tc `
+    - WHERE: `d.meeting_id = m.id) AS decision_count, (SELECT COUNT(*) FROM action_items a WHERE a.meeting_id = m.id) AS action_count, ( SELECT COUNT(*) FROM action_items a WHERE a.meeting_id = m.id AND TRIM(a.owne`
+- `SELECT-FROM` @ **_render_task_doc_text** `backend/app/services/knowledge_v2.py:3691` — _static_confirmed_
+    - WHERE: `task_id = ?`
+
+## `task_context_brief_snapshots`
+
+- 经验层: **164 行** · 最近写入 created_at=2026-06-08T14:40:14
+
+### 写边 (1)
+- `INSERT` @ **_save_snapshot** `backend/app/services/task_context_brief_engine.py:491` — _call_name_match_
+    - chain: _save_snapshot @backend/app/services/task_context_brief_engine.py:491  ←  generate_task_context_brief_snapshot @backend/app/services/task_context_brief_engine.py:535  ←  get_task_context_brief [endpoint:/api/v1/tasks/{task_id}/context-brief] @backend/app/main.py:32639
+    - chain: _save_snapshot @backend/app/services/task_context_brief_engine.py:491  ←  generate_task_context_brief_snapshot @backend/app/services/task_context_brief_engine.py:535  ←  get_task_context_briefs_batch [endpoint:/api/v1/tasks/context-briefs/batch] @backend/app/main.py:32649
+
+### 读边 (2)
+- `SELECT-FROM` @ **_save_snapshot** `backend/app/services/task_context_brief_engine.py:491` — _static_confirmed_
+    - WHERE: `id = ?`
+    - WHERE: `task_id = ?`
+- `SELECT-FROM` @ **generate_task_context_brief_snapshot** `backend/app/services/task_context_brief_engine.py:535` — _static_confirmed_
+    - WHERE: `task_id = ? AND material_pack_hash = ?`
+
+## `task_lists`
+
+- 经验层: **277 行**
+
+### 写边 (12)
+- `UPDATE` @ **_init_schema** `backend/app/db.py:60` — _needs_human_
+    - chain: _init_schema @backend/app/db.py:60  ←  __init__ @backend/app/db.py:49
+- `INSERT` @ **create_app._ensure_local_task_list** `backend/app/main.py:23915` — _call_name_match_
+    - chain: _ensure_local_task_list @backend/app/main.py:23915  ←  create_task @backend/app/main.py:24172  ←  accept_growth_recommendation [endpoint:/api/v1/growth/recommendations/{recommendation_id}/accept] @backend/app/main.py:56572
+    - chain: _ensure_local_task_list @backend/app/main.py:23915  ←  create_task @backend/app/main.py:24172  ←  create_intelligence_task_endpoint [endpoint:/api/v1/intelligence/items/{item_id}/tasks] @backend/app/main.py:58553
+    - chain: _ensure_local_task_list @backend/app/main.py:23915  ←  create_task @backend/app/main.py:24172  ←  create_manual_task [endpoint:/api/v1/tasks] @backend/app/main.py:52206
+    - chain: _ensure_local_task_list @backend/app/main.py:23915  ←  create_task @backend/app/main.py:24172  ←  create_workspace_answer_action_task_api [endpoint:/api/v1/workspace-answer-action-cards/{message_id}/create-task] @backend/app/main.py:44635
+    - chain: _ensure_local_task_list @backend/app/main.py:23915  ←  create_task @backend/app/main.py:24172  ←  promote_candidate_to_task [endpoint:/api/v1/topics/candidates/{candidate_id}/promote-task] @backend/app/main.py:55696
+    - chain: _ensure_local_task_list @backend/app/main.py:23915  ←  create_task @backend/app/main.py:24172  ←  promote_candidate_to_tasks [endpoint:/api/v1/topics/candidates/{candidate_id}/promote-tasks] @backend/app/main.py:55636
+- `INSERT+UPDATE` @ **create_app** `backend/app/main.py:3179` — _needs_human_
+    - chain: create_app @backend/app/main.py:3179  ←  (no caller found — orphan write)
+- `UPDATE` @ **create_app.update_task_settings** `backend/app/main.py:36565` — _static_confirmed_
+    - chain: update_task_settings [endpoint:/api/v1/settings/tasks] @backend/app/main.py:36565
+- `UPDATE` @ **create_app._enforce_local_task_list_default_for_scope** `backend/app/main.py:51709` — _call_name_match_
+    - chain: _enforce_local_task_list_default_for_scope @backend/app/main.py:51709  ←  _repair_local_duplicate_task_lists @backend/app/main.py:51737  ←  repair_duplicate_task_lists [endpoint:/api/v1/task-lists/repair-duplicates] @backend/app/main.py:51909
+- `UPDATE` @ **create_app._repair_local_duplicate_task_lists** `backend/app/main.py:51737` — _call_name_match_
+    - chain: _repair_local_duplicate_task_lists @backend/app/main.py:51737  ←  repair_duplicate_task_lists [endpoint:/api/v1/task-lists/repair-duplicates] @backend/app/main.py:51909
+- `INSERT+UPDATE` @ **create_app.create_task_list** `backend/app/main.py:51846` — _static_confirmed_
+    - chain: create_task_list [endpoint:/api/v1/task-lists] @backend/app/main.py:51846
+- `UPDATE` @ **create_app.update_task_list** `backend/app/main.py:51923` — _static_confirmed_
+    - chain: update_task_list [endpoint:/api/v1/task-lists/{list_id}] @backend/app/main.py:51923
+- `UPDATE` @ **create_app.delete_task_list** `backend/app/main.py:52024` — _static_confirmed_
+    - chain: delete_task_list [endpoint:/api/v1/task-lists/{list_id}] @backend/app/main.py:52024
+- `UPDATE` @ **backfill_local_task_tag_ids** `backend/app/main.py:59794` — _needs_human_
+    - chain: backfill_local_task_tag_ids @backend/app/main.py:59794  ←  seed_defaults @backend/app/main.py:59873
+- `INSERT+UPDATE` @ **seed_defaults** `backend/app/main.py:59873` — _needs_human_
+    - chain: seed_defaults @backend/app/main.py:59873  ←  create_app @backend/app/main.py:3179
+- `INSERT` @ **create_app._upsert_cloud_task_list_shadow_local** `backend/app/main.py:9166` — _call_name_match_
+    - chain: _upsert_cloud_task_list_shadow_local @backend/app/main.py:9166  ←  _pull_cloud_tasks_to_local @backend/app/main.py:9990  ←  bootstrap_task_event_lines [endpoint:/api/v1/tasks/bootstrap-event-lines] @backend/app/main.py:52159
+    - chain: _upsert_cloud_task_list_shadow_local @backend/app/main.py:9166  ←  _pull_cloud_tasks_to_local @backend/app/main.py:9990  ←  refresh_task_contexts [endpoint:/api/v1/tasks/refresh-contexts] @backend/app/main.py:52111
+    - chain: _upsert_cloud_task_list_shadow_local @backend/app/main.py:9166  ←  _upsert_cloud_task_shadow_local @backend/app/main.py:9597  ←  approve_task_review [endpoint:/api/v1/tasks/{task_id}/review/approve] @backend/app/main.py:53945
+    - chain: _upsert_cloud_task_list_shadow_local @backend/app/main.py:9166  ←  _upsert_cloud_task_shadow_local @backend/app/main.py:9597  ←  complete_task_with_review [endpoint:/api/v1/tasks/{task_id}/complete-with-review] @backend/app/main.py:53934
+    - chain: _upsert_cloud_task_list_shadow_local @backend/app/main.py:9166  ←  _upsert_cloud_task_shadow_local @backend/app/main.py:9597  ←  confirm_task [endpoint:/api/v1/tasks/{task_id}/confirm] @backend/app/main.py:53875
+    - chain: _upsert_cloud_task_list_shadow_local @backend/app/main.py:9166  ←  _upsert_cloud_task_shadow_local @backend/app/main.py:9597  ←  reject_task [endpoint:/api/v1/tasks/{task_id}/reject] @backend/app/main.py:53903
+
+### 读边 (24)
+- `SELECT-FROM` @ **create_app.task_lists** `backend/app/main.py:10483` — _static_confirmed_
+- `JOIN` @ **create_app.fetch_tasks** `backend/app/main.py:11112` — _static_confirmed_
+- `SELECT-FROM` @ **_task_in_week** `backend/app/main.py:1870` — _static_confirmed_
+    - WHERE: `id = ?`
+    - WHERE: `scope = 'org' AND (archived_at IS NULL OR archived_at = '')`
+- `SELECT-FROM` @ **_task_in_week._task_settings_default_local_destination_row** `backend/app/main.py:1914` — _static_confirmed_
+    - WHERE: `scope = 'org' AND (archived_at IS NULL OR archived_at = '')`
+- `SELECT-FROM` @ **_task_in_week._is_task_settings_default_local_list_id** `backend/app/main.py:1935` — _static_confirmed_
+    - WHERE: `id = ?`
+- `SELECT-FROM` @ **create_app._ensure_local_task_list** `backend/app/main.py:23915` — _static_confirmed_
+    - WHERE: `id = ?`
+- `SELECT-FROM` @ **create_app.promote_todo_to_task_proxy** `backend/app/main.py:29693` — _static_confirmed_
+    - WHERE: `name='客户项目' OR id='list-1'`
+- `SELECT-FROM+JOIN` @ **create_app** `backend/app/main.py:3179` — _static_confirmed_
+    - WHERE: `archived_at IS NULL OR archived_at = ''`
+    - WHERE: `id = ?`
+    - WHERE: `id = ? OR cloud_id = ?`
+    - WHERE: `name='客户项目' OR id='list-1'`
+    - WHERE: `scope = 'org' AND (archived_at IS NULL OR archived_at = '')`
+- `SELECT-FROM` @ **create_app.update_task_settings** `backend/app/main.py:36565` — _static_confirmed_
+    - WHERE: `id = ?`
+- `SELECT-FROM` @ **create_app.update_client_workspace_settings** `backend/app/main.py:37300` — _static_confirmed_
+    - WHERE: `id = ?`
+- `SELECT-FROM` @ **create_app._task_settings_default_local_destination_row** `backend/app/main.py:3975` — _static_confirmed_
+    - WHERE: `scope = 'org' AND (archived_at IS NULL OR archived_at = '')`
+- `SELECT-FROM` @ **create_app._is_task_settings_default_local_list_id** `backend/app/main.py:3996` — _static_confirmed_
+    - WHERE: `id = ?`
+- `SELECT-FROM` @ **create_app._find_active_local_task_list_by_name** `backend/app/main.py:51599` — _static_confirmed_
+    - WHERE: `scope = ? AND (archived_at IS NULL OR archived_at = '')`
+- `SELECT-FROM` @ **create_app._enforce_local_task_list_default_for_scope** `backend/app/main.py:51709` — _static_confirmed_
+    - WHERE: `scope = ? AND (archived_at IS NULL OR archived_at = '')`
+    - WHERE: `scope = ? AND is_default = 1 AND (archived_at IS NULL OR archived_at = '')`
+- `SELECT-FROM` @ **create_app._repair_local_duplicate_task_lists** `backend/app/main.py:51737` — _static_confirmed_
+    - WHERE: `archived_at IS NULL OR archived_at = ''`
+    - WHERE: `id = ?`
+- `SELECT-FROM` @ **create_app.create_task_list** `backend/app/main.py:51846` — _static_confirmed_
+    - WHERE: `id = ?`
+    - WHERE: `scope = ?`
+- `SELECT-FROM` @ **create_app.update_task_list** `backend/app/main.py:51923` — _static_confirmed_
+    - WHERE: `id = ?`
+    - WHERE: `scope = ? AND (archived_at IS NULL OR archived_at = '')`
+    - WHERE: `scope = ? AND id != ? AND (archived_at IS NULL OR archived_at = '')`
+    - WHERE: `scope = ? AND is_default = 1`
+- `SELECT-FROM` @ **create_app.delete_task_list** `backend/app/main.py:52024` — _static_confirmed_
+    - WHERE: `id = ?`
+    - WHERE: `scope = ?`
+    - WHERE: `scope = ? AND id != ?`
+- `SELECT-FROM` @ **create_app.update_task** `backend/app/main.py:52636` — _static_confirmed_
+    - WHERE: `id = ?`
+- `SELECT-FROM` @ **seed_defaults** `backend/app/main.py:59873` — _static_confirmed_
+    - WHERE: `scope = 'personal'`
+- `SELECT-FROM` @ **create_app._upsert_cloud_task_list_shadow_local** `backend/app/main.py:9166` — _static_confirmed_
+    - WHERE: `id = ? OR cloud_id = ?`
+- `SELECT-FROM` @ **_default_task_list_id** `backend/app/services/agent_worklogs.py:232` — _static_confirmed_
+    - WHERE: `is_default = 1`
+- `JOIN` @ **build_agent_execution_tasks** `backend/app/services/agent_worklogs.py:917` — _static_confirmed_
+    - WHERE: `t.source_type = ? AND t.source_id LIKE ?`
+- `JOIN` @ **build_task_page_context_pack** `backend/app/services/analysis_context.py:684` — _static_confirmed_
+    - WHERE: `t.id = ?`
+
+## `task_notes`
+
+- 经验层: **17 行** · 最近写入 created_at=2026-04-08T21:58:34
+
+### 写边 (2)
+- `INSERT` @ **load_demo_dataset** `backend/app/main.py:2941` — _call_name_match_
+    - chain: load_demo_dataset @backend/app/main.py:2941  ←  load_demo_dataset_endpoint [endpoint:/api/v1/settings/demo-data/load] @backend/app/main.py:37527
+- `INSERT+UPDATE` @ **sync_agent_execution_tasks** `backend/app/services/agent_worklogs.py:799` — _static_confirmed_
+    - chain: sync_agent_execution_tasks [worker:sync_agent_execution_tasks] @backend/app/services/agent_worklogs.py:799
+
+### 读边 (10)
+- `SELECT-FROM` @ **create_app.build_task** `backend/app/main.py:10587` — _static_confirmed_
+    - WHERE: `task_id = ?`
+- `SELECT-FROM` @ **create_app** `backend/app/main.py:3179` — _static_confirmed_
+    - WHERE: `task_id = ?`
+- `SELECT-FROM` @ **sync_agent_execution_tasks** `backend/app/services/agent_worklogs.py:799` — _static_confirmed_
+    - WHERE: `task_id = ?`
+- `SELECT-FROM` @ **build_agent_execution_tasks** `backend/app/services/agent_worklogs.py:917` — _static_confirmed_
+    - WHERE: `task_id = ?`
+- `SELECT-FROM` @ **build_task_page_context_pack** `backend/app/services/analysis_context.py:684` — _static_confirmed_
+    - WHERE: `task_id = ?`
+- `SELECT-FROM` @ **_task_note_text** `backend/app/services/data_center_ingest.py:1397` — _static_confirmed_
+    - WHERE: `task_id = ? UNION ALL SELECT note FROM task_notes_cloud WHERE task_id = ?`
+- `SELECT-FROM` @ **ingest_task_note_by_id** `backend/app/services/data_center_ingest.py:1461` — _static_confirmed_
+    - WHERE: `task_id = ? UNION ALL SELECT note, updated_at FROM task_notes_cloud WHERE task_id = ?`
+- `SELECT-FROM` @ **backfill_data_center_ingest** `backend/app/services/data_center_ingest.py:1897` — _static_confirmed_
+- `SELECT-FROM` @ **_render_task_doc_text** `backend/app/services/knowledge_v2.py:3691` — _static_confirmed_
+    - WHERE: `task_id = ?`
+- `SELECT-FROM` @ **_fetch_task_notes** `backend/app/services/task_context_brief_engine.py:243` — _static_confirmed_
+    - WHERE: `task_id = ?`
+
+## `task_notes_cloud`
+
+- 经验层: **12 行** · 最近写入 created_at=2026-03-20T15:54:02
+
+### 写边 (0)
+- (无静态写边)  ⚠️ **0 写边但真库有行 → needs_human (写入路径在静态扫描盲区:可能动态表名/ORM/外部进程)**
+
+### 读边 (5)
+- `SELECT-FROM` @ **create_app** `backend/app/main.py:3179` — _static_confirmed_
+    - WHERE: `task_id = ?`
+- `SELECT-FROM` @ **create_app.build_cloud_task** `backend/app/main.py:8953` — _static_confirmed_
+    - WHERE: `task_id = ?`
+- `SELECT-FROM` @ **_task_note_text** `backend/app/services/data_center_ingest.py:1397` — _static_confirmed_
+    - WHERE: `task_id = ? UNION ALL SELECT note FROM task_notes_cloud WHERE task_id = ?`
+- `SELECT-FROM` @ **ingest_task_note_by_id** `backend/app/services/data_center_ingest.py:1461` — _static_confirmed_
+    - WHERE: `task_id = ? UNION ALL SELECT note, updated_at FROM task_notes_cloud WHERE task_id = ?`
+- `SELECT-FROM` @ **backfill_data_center_ingest** `backend/app/services/data_center_ingest.py:1897` — _static_confirmed_
+
+## `task_settings`
+
+- 经验层: **4 行** · 最近写入 updated_at=2026-05-16T12:59:29
+
+### 写边 (7)
+- `INSERT` @ **_task_in_week** `backend/app/main.py:1870` — _call_name_match_
+    - chain: _task_in_week @backend/app/main.py:1870  ←  local_review_dashboard_base @backend/app/main.py:27201  ←  list_reviews [endpoint:/api/v1/reviews] @backend/app/main.py:54077
+    - chain: _task_in_week @backend/app/main.py:1870  ←  local_review_dashboard_base @backend/app/main.py:27201  ←  reconcile_cloud_review_response_with_local_tasks @backend/app/main.py:27324  ←  list_reviews [endpoint:/api/v1/reviews] @backend/app/main.py:54077
+    - chain: _task_in_week @backend/app/main.py:1870  ←  local_review_dashboard_base @backend/app/main.py:27201  ←  save_local_weekly_review @backend/app/main.py:54194  ←  create_weekly_review [endpoint:/api/v1/reviews/weekly] @backend/app/main.py:54504
+    - chain: _task_in_week @backend/app/main.py:1870  ←  local_review_dashboard_base @backend/app/main.py:27201  ←  save_weekly_review_draft_locally @backend/app/main.py:54441  ←  save_weekly_review_draft [endpoint:/api/v1/reviews/weekly/draft] @backend/app/main.py:54475
+    - chain: _task_in_week @backend/app/main.py:1870  ←  local_review_dashboard_base @backend/app/main.py:27201  ←  local_review_dashboard @backend/app/main.py:27293  ←  build_strategic_cockpit_snapshot @backend/app/main.py:20771  ←  apply_strategic_meeting_pack [endpoint:/api/v1/clients/{client_id}/strategic-cockpit/meeting-pack/{meeting_id}/apply] @backend/app/main.py:42202
+    - chain: _task_in_week @backend/app/main.py:1870  ←  local_review_dashboard_base @backend/app/main.py:27201  ←  local_review_dashboard @backend/app/main.py:27293  ←  build_strategic_cockpit_snapshot @backend/app/main.py:20771  ←  confirm_strategic_cockpit [endpoint:/api/v1/clients/{client_id}/strategic-cockpit/confirm] @backend/app/main.py:42174
+- `INSERT` @ **_task_in_week._get_local_task_settings** `backend/app/main.py:1974` — _call_name_match_
+    - chain: _get_local_task_settings @backend/app/main.py:1974  ←  accept_growth_recommendation [endpoint:/api/v1/growth/recommendations/{recommendation_id}/accept] @backend/app/main.py:56572
+    - chain: _get_local_task_settings @backend/app/main.py:1974  ←  create_workspace_answer_action_task_api [endpoint:/api/v1/workspace-answer-action-cards/{message_id}/create-task] @backend/app/main.py:44635
+    - chain: _get_local_task_settings @backend/app/main.py:1974  ←  get_task_settings [endpoint:/api/v1/settings/tasks] @backend/app/main.py:36551
+    - chain: _get_local_task_settings @backend/app/main.py:1974  ←  promote_data_center_proposal_draft_api [endpoint:/api/v1/data-center/proposal-drafts/{draft_id}/promote] @backend/app/main.py:45080
+    - chain: _get_local_task_settings @backend/app/main.py:1974  ←  publish_meeting [endpoint:/api/v1/clients/{client_id}/meetings/{meeting_id}/publish] @backend/app/main.py:51482
+    - chain: _get_local_task_settings @backend/app/main.py:1974  ←  update_task_settings [endpoint:/api/v1/settings/tasks] @backend/app/main.py:36565
+- `INSERT+UPDATE` @ **create_app** `backend/app/main.py:3179` — _needs_human_
+    - chain: create_app @backend/app/main.py:3179  ←  (no caller found — orphan write)
+- `INSERT` @ **create_app.update_task_settings** `backend/app/main.py:36565` — _static_confirmed_
+    - chain: update_task_settings [endpoint:/api/v1/settings/tasks] @backend/app/main.py:36565
+- `INSERT` @ **create_app._get_local_task_settings** `backend/app/main.py:4035` — _call_name_match_
+    - chain: _get_local_task_settings @backend/app/main.py:4035  ←  accept_growth_recommendation [endpoint:/api/v1/growth/recommendations/{recommendation_id}/accept] @backend/app/main.py:56572
+    - chain: _get_local_task_settings @backend/app/main.py:4035  ←  create_workspace_answer_action_task_api [endpoint:/api/v1/workspace-answer-action-cards/{message_id}/create-task] @backend/app/main.py:44635
+    - chain: _get_local_task_settings @backend/app/main.py:4035  ←  get_task_settings [endpoint:/api/v1/settings/tasks] @backend/app/main.py:36551
+    - chain: _get_local_task_settings @backend/app/main.py:4035  ←  promote_data_center_proposal_draft_api [endpoint:/api/v1/data-center/proposal-drafts/{draft_id}/promote] @backend/app/main.py:45080
+    - chain: _get_local_task_settings @backend/app/main.py:4035  ←  publish_meeting [endpoint:/api/v1/clients/{client_id}/meetings/{meeting_id}/publish] @backend/app/main.py:51482
+    - chain: _get_local_task_settings @backend/app/main.py:4035  ←  update_task_settings [endpoint:/api/v1/settings/tasks] @backend/app/main.py:36565
+- `UPDATE` @ **create_app._repair_local_duplicate_task_lists** `backend/app/main.py:51737` — _call_name_match_
+    - chain: _repair_local_duplicate_task_lists @backend/app/main.py:51737  ←  repair_duplicate_task_lists [endpoint:/api/v1/task-lists/repair-duplicates] @backend/app/main.py:51909
+- `INSERT` @ **seed_defaults** `backend/app/main.py:59873` — _needs_human_
+    - chain: seed_defaults @backend/app/main.py:59873  ←  create_app @backend/app/main.py:3179
+
+### 读边 (6)
+- `SELECT-FROM` @ **_task_in_week** `backend/app/main.py:1870` — _static_confirmed_
+    - WHERE: `operator_id = ?`
+- `SELECT-FROM` @ **_task_in_week._get_local_task_settings** `backend/app/main.py:1974` — _static_confirmed_
+    - WHERE: `operator_id = ?`
+- `SELECT-FROM` @ **create_app** `backend/app/main.py:3179` — _static_confirmed_
+    - WHERE: `default_list_id = ?`
+    - WHERE: `operator_id = ?`
+- `SELECT-FROM` @ **create_app._get_local_task_settings** `backend/app/main.py:4035` — _static_confirmed_
+    - WHERE: `operator_id = ?`
+- `SELECT-FROM` @ **create_app._repair_local_duplicate_task_lists** `backend/app/main.py:51737` — _static_confirmed_
+    - WHERE: `default_list_id = ?`
+- `SELECT-FROM` @ **seed_defaults** `backend/app/main.py:59873` — _static_confirmed_
+
+## `task_smart_brief_action_adoptions`
+
+- 经验层: **0 行**
+
+### 写边 (2)
+- `INSERT` @ **create_app** `backend/app/main.py:3179` — _needs_human_
+    - chain: create_app @backend/app/main.py:3179  ←  (no caller found — orphan write)
+- `INSERT` @ **create_app._record_task_brief_action_adoption** `backend/app/main.py:32030` — _call_name_match_
+    - chain: _record_task_brief_action_adoption @backend/app/main.py:32030  ←  adopt_task_smart_brief_action [endpoint:/api/v1/tasks/{task_id}/smart-brief-actions/{action_key}/adopt] @backend/app/main.py:32667
+
+### 读边 (2)
+- `SELECT-FROM` @ **create_app** `backend/app/main.py:3179` — _static_confirmed_
+    - WHERE: `source_task_id = ? AND adopted_by_user_id = ?`
+- `SELECT-FROM` @ **create_app._list_adopted_task_brief_action_keys** `backend/app/main.py:32023` — _static_confirmed_
+    - WHERE: `source_task_id = ? AND adopted_by_user_id = ?`
+
+## `task_tags`
+
+- 经验层: **62 行** · 最近写入 created_at=2026-04-27T16:03:08
+
+### 写边 (9)
+- `UPDATE` @ **_init_schema** `backend/app/db.py:60` — _needs_human_
+    - chain: _init_schema @backend/app/db.py:60  ←  __init__ @backend/app/db.py:49
+- `INSERT+UPDATE` @ **_ensure_local_tag** `backend/app/main.py:2061` — _call_name_match_
+    - chain: _ensure_local_tag @backend/app/main.py:2061  ←  create_task_tag [endpoint:/api/v1/task-tags] @backend/app/main.py:52070
+- `INSERT+UPDATE` @ **create_app** `backend/app/main.py:3179` — _needs_human_
+    - chain: create_app @backend/app/main.py:3179  ←  (no caller found — orphan write)
+- `INSERT+UPDATE` @ **create_app._ensure_local_tag** `backend/app/main.py:4090` — _call_name_match_
+    - chain: _ensure_local_tag @backend/app/main.py:4090  ←  create_task_tag [endpoint:/api/v1/task-tags] @backend/app/main.py:52070
+- `UPDATE` @ **create_app.update_task_tag** `backend/app/main.py:52079` — _static_confirmed_
+    - chain: update_task_tag [endpoint:/api/v1/task-tags/{tag_id}] @backend/app/main.py:52079
+- `UPDATE` @ **backfill_local_task_tag_ids** `backend/app/main.py:59794` — _needs_human_
+    - chain: backfill_local_task_tag_ids @backend/app/main.py:59794  ←  seed_defaults @backend/app/main.py:59873
+- `INSERT` @ **seed_defaults** `backend/app/main.py:59873` — _needs_human_
+    - chain: seed_defaults @backend/app/main.py:59873  ←  create_app @backend/app/main.py:3179
+- `UPDATE` @ **create_app._ensure_task_tag_schema_for_cloud_pull** `backend/app/main.py:9905` — _call_name_match_
+    - chain: _ensure_task_tag_schema_for_cloud_pull @backend/app/main.py:9905  ←  _pull_cloud_tasks_to_local @backend/app/main.py:9990  ←  bootstrap_task_event_lines [endpoint:/api/v1/tasks/bootstrap-event-lines] @backend/app/main.py:52159
+    - chain: _ensure_task_tag_schema_for_cloud_pull @backend/app/main.py:9905  ←  _pull_cloud_tasks_to_local @backend/app/main.py:9990  ←  refresh_task_contexts [endpoint:/api/v1/tasks/refresh-contexts] @backend/app/main.py:52111
+    - chain: _ensure_task_tag_schema_for_cloud_pull @backend/app/main.py:9905  ←  _pull_cloud_tasks_to_local @backend/app/main.py:9990  ←  _strategic_task_pool @backend/app/main.py:19339  ←  build_strategic_cockpit_snapshot @backend/app/main.py:20771  ←  apply_strategic_meeting_pack [endpoint:/api/v1/clients/{client_id}/strategic-cockpit/meeting-pack/{meeting_id}/apply] @backend/app/main.py:42202
+    - chain: _ensure_task_tag_schema_for_cloud_pull @backend/app/main.py:9905  ←  _pull_cloud_tasks_to_local @backend/app/main.py:9990  ←  _strategic_task_pool @backend/app/main.py:19339  ←  build_strategic_cockpit_snapshot @backend/app/main.py:20771  ←  confirm_strategic_cockpit [endpoint:/api/v1/clients/{client_id}/strategic-cockpit/confirm] @backend/app/main.py:42174
+    - chain: _ensure_task_tag_schema_for_cloud_pull @backend/app/main.py:9905  ←  _pull_cloud_tasks_to_local @backend/app/main.py:9990  ←  _strategic_task_pool @backend/app/main.py:19339  ←  build_strategic_cockpit_snapshot @backend/app/main.py:20771  ←  get_strategic_cockpit [endpoint:/api/v1/clients/{client_id}/strategic-cockpit] @backend/app/main.py:42135
+    - chain: _ensure_task_tag_schema_for_cloud_pull @backend/app/main.py:9905  ←  _pull_cloud_tasks_to_local @backend/app/main.py:9990  ←  _strategic_task_pool @backend/app/main.py:19339  ←  build_strategic_cockpit_snapshot @backend/app/main.py:20771  ←  get_strategic_line_detail [endpoint:/api/v1/clients/{client_id}/strategic-cockpit/lines/{line_id}] @backend/app/main.py:42140
+- `INSERT` @ **create_app._pull_cloud_tasks_to_local** `backend/app/main.py:9990` — _call_name_match_
+    - chain: _pull_cloud_tasks_to_local @backend/app/main.py:9990  ←  bootstrap_task_event_lines [endpoint:/api/v1/tasks/bootstrap-event-lines] @backend/app/main.py:52159
+    - chain: _pull_cloud_tasks_to_local @backend/app/main.py:9990  ←  refresh_task_contexts [endpoint:/api/v1/tasks/refresh-contexts] @backend/app/main.py:52111
+    - chain: _pull_cloud_tasks_to_local @backend/app/main.py:9990  ←  _strategic_task_pool @backend/app/main.py:19339  ←  build_strategic_cockpit_snapshot @backend/app/main.py:20771  ←  apply_strategic_meeting_pack [endpoint:/api/v1/clients/{client_id}/strategic-cockpit/meeting-pack/{meeting_id}/apply] @backend/app/main.py:42202
+    - chain: _pull_cloud_tasks_to_local @backend/app/main.py:9990  ←  _strategic_task_pool @backend/app/main.py:19339  ←  build_strategic_cockpit_snapshot @backend/app/main.py:20771  ←  confirm_strategic_cockpit [endpoint:/api/v1/clients/{client_id}/strategic-cockpit/confirm] @backend/app/main.py:42174
+    - chain: _pull_cloud_tasks_to_local @backend/app/main.py:9990  ←  _strategic_task_pool @backend/app/main.py:19339  ←  build_strategic_cockpit_snapshot @backend/app/main.py:20771  ←  get_strategic_cockpit [endpoint:/api/v1/clients/{client_id}/strategic-cockpit] @backend/app/main.py:42135
+    - chain: _pull_cloud_tasks_to_local @backend/app/main.py:9990  ←  _strategic_task_pool @backend/app/main.py:19339  ←  build_strategic_cockpit_snapshot @backend/app/main.py:20771  ←  get_strategic_line_detail [endpoint:/api/v1/clients/{client_id}/strategic-cockpit/lines/{line_id}] @backend/app/main.py:42140
+
+### 读边 (14)
+- `SELECT-FROM` @ **create_app.sync_local_tasks_for_tag_change** `backend/app/main.py:13858` — _static_confirmed_
+    - WHERE: `id = ?`
+- `SELECT-FROM` @ **_task_in_week** `backend/app/main.py:1870` — _static_confirmed_
+    - WHERE: `scope = 'org' OR owner_operator_id = ?`
+- `SELECT-FROM` @ **_task_in_week._visible_local_task_tag_rows** `backend/app/main.py:2003` — _static_confirmed_
+    - WHERE: `scope = 'org' OR owner_operator_id = ?`
+- `SELECT-FROM` @ **_task_in_week._visible_local_task_tag_rows** `backend/app/main.py:2020` — _static_confirmed_
+    - WHERE: `scope = 'org' OR owner_operator_id = ?`
+- `SELECT-FROM` @ **_local_tag_rows_by_ids** `backend/app/main.py:2038` — _static_confirmed_
+    - WHERE: `id IN (`
+    - WHERE: `id IN ({?})`
+- `SELECT-FROM` @ **_ensure_local_tag** `backend/app/main.py:2061` — _static_confirmed_
+    - WHERE: `id = ?`
+    - WHERE: `name = ? AND scope = ? AND owner_operator_id = ?`
+- `SELECT-FROM` @ **create_app** `backend/app/main.py:3179` — _static_confirmed_
+    - WHERE: `id = ?`
+    - WHERE: `id IN (`
+    - WHERE: `id IN ({?})`
+    - WHERE: `name = ? AND scope = ? AND owner_operator_id = ?`
+    - WHERE: `scope = 'org' OR owner_operator_id = ?`
+- `SELECT-FROM` @ **create_app._visible_local_task_tag_rows** `backend/app/main.py:4064` — _static_confirmed_
+    - WHERE: `scope = 'org' OR owner_operator_id = ?`
+- `SELECT-FROM` @ **create_app._local_tag_rows_by_ids** `backend/app/main.py:4080` — _static_confirmed_
+    - WHERE: `id IN (`
+    - WHERE: `id IN ({?})`
+- `SELECT-FROM` @ **create_app._ensure_local_tag** `backend/app/main.py:4090` — _static_confirmed_
+    - WHERE: `id = ?`
+    - WHERE: `name = ? AND scope = ? AND owner_operator_id = ?`
+- `SELECT-FROM` @ **create_app.update_task_tag** `backend/app/main.py:52079` — _static_confirmed_
+    - WHERE: `id = ?`
+- `SELECT-FROM` @ **create_app.delete_task_tag** `backend/app/main.py:52097` — _static_confirmed_
+    - WHERE: `id = ?`
+- `SELECT-FROM` @ **seed_defaults** `backend/app/main.py:59873` — _static_confirmed_
+- `SELECT-FROM` @ **create_app._pull_cloud_tasks_to_local** `backend/app/main.py:9990` — _static_confirmed_
+    - WHERE: `id = ?`
+
+## `task_understanding_cache`
+
+- 经验层: **210 行** · 最近写入 created_at=2026-06-08T10:03:27
+
+### 写边 (2)
+- `INSERT` @ **create_app._precompute_task_understanding** `backend/app/main.py:31743` — _needs_human_
+    - chain: _precompute_task_understanding @backend/app/main.py:31743  ←  (no caller found — orphan write)
+- `INSERT` @ **create_app** `backend/app/main.py:3179` — _needs_human_
+    - chain: create_app @backend/app/main.py:3179  ←  (no caller found — orphan write)
+
+### 读边 (4)
+- `SELECT-FROM` @ **create_app._precompute_task_understanding** `backend/app/main.py:31743` — _static_confirmed_
+    - WHERE: `task_id = ?`
+- `SELECT-FROM` @ **create_app.get_task_understanding** `backend/app/main.py:31770` — _static_confirmed_
+    - WHERE: `task_id = ?`
+- `SELECT-FROM` @ **create_app** `backend/app/main.py:3179` — _static_confirmed_
+    - WHERE: `task_id = ?`
+- `SELECT-FROM` @ **build_task_page_context_pack** `backend/app/services/analysis_context.py:684` — _static_confirmed_
+    - WHERE: `task_id = ?`
+
+## `task_views`
+
+- 经验层: **4 行** · 最近写入 created_at=2026-03-23T13:17:48
+
+### 写边 (4)
+- `INSERT+UPDATE` @ **create_app._ensure_builtin_task_views** `backend/app/main.py:13469` — _call_name_match_
+    - chain: _ensure_builtin_task_views @backend/app/main.py:13469  ←  create_task_view [endpoint:/api/v1/task-views] @backend/app/main.py:35855
+    - chain: _ensure_builtin_task_views @backend/app/main.py:13469  ←  list_task_views [endpoint:/api/v1/task-views] @backend/app/main.py:35836
+    - chain: _ensure_builtin_task_views @backend/app/main.py:13469  ←  update_task_view [endpoint:/api/v1/task-views/{view_id}] @backend/app/main.py:35892
+    - chain: _ensure_builtin_task_views @backend/app/main.py:13469  ←  _load_task_view_definition @backend/app/main.py:13678  ←  _drill_target_response_for_task_view @backend/app/main.py:13764  ←  get_review_dashboard_drill_target [endpoint:/api/v1/reviews/dashboard/drill-target] @backend/app/main.py:35959
+- `INSERT+UPDATE` @ **create_app** `backend/app/main.py:3179` — _needs_human_
+    - chain: create_app @backend/app/main.py:3179  ←  (no caller found — orphan write)
+- `INSERT` @ **create_app.create_task_view** `backend/app/main.py:35855` — _static_confirmed_
+    - chain: create_task_view [endpoint:/api/v1/task-views] @backend/app/main.py:35855
+- `UPDATE` @ **create_app.update_task_view** `backend/app/main.py:35892` — _static_confirmed_
+    - chain: update_task_view [endpoint:/api/v1/task-views/{view_id}] @backend/app/main.py:35892
+
+### 读边 (5)
+- `SELECT-FROM` @ **create_app._ensure_builtin_task_views** `backend/app/main.py:13469` — _static_confirmed_
+- `SELECT-FROM` @ **create_app** `backend/app/main.py:3179` — _static_confirmed_
+    - WHERE: `id = ?`
+- `SELECT-FROM` @ **create_app.list_task_views** `backend/app/main.py:35836` — _static_confirmed_
+- `SELECT-FROM` @ **create_app.create_task_view** `backend/app/main.py:35855` — _static_confirmed_
+    - WHERE: `id = ?`
+- `SELECT-FROM` @ **create_app.update_task_view** `backend/app/main.py:35892` — _static_confirmed_
+    - WHERE: `id = ?`
+
+## `tasks`
+
+- 经验层: **330 行** · 最近写入 created_at=2026-06-08T11:55:50
+  - source_type 分布: manual:283, agent_auto:17, pressure_seed_doc_v2:12, chat:10, topic_candidate:4, promoted_from_commit:2, intelligence_item:1, growth_recommendation:1
+
+### 写边 (29)
+- `UPDATE` @ **_init_schema** `backend/app/db.py:60` — _needs_human_
+    - chain: _init_schema @backend/app/db.py:60  ←  __init__ @backend/app/db.py:49
+- `UPDATE` @ **create_app.sync_local_tasks_for_tag_change** `backend/app/main.py:13858` — _static_confirmed_
+    - chain: sync_local_tasks_for_tag_change [worker:sync_local_tasks_for_tag_change] @backend/app/main.py:13858
+- `UPDATE` @ **create_app._try_cloud_sync_task** `backend/app/main.py:23931` — _static_confirmed_
+    - chain: _try_cloud_sync_task [worker:_try_cloud_sync_task] @backend/app/main.py:23931
+- `UPDATE` @ **create_app.sync_pending_tasks_if_due** `backend/app/main.py:23973` — _static_confirmed_
+    - chain: sync_pending_tasks_if_due [worker:sync_pending_tasks_if_due] @backend/app/main.py:23973
+- `INSERT+UPDATE` @ **create_app.create_task** `backend/app/main.py:24172` — _call_name_match_
+    - chain: create_task @backend/app/main.py:24172  ←  accept_growth_recommendation [endpoint:/api/v1/growth/recommendations/{recommendation_id}/accept] @backend/app/main.py:56572
+    - chain: create_task @backend/app/main.py:24172  ←  create_intelligence_task_endpoint [endpoint:/api/v1/intelligence/items/{item_id}/tasks] @backend/app/main.py:58553
+    - chain: create_task @backend/app/main.py:24172  ←  create_manual_task [endpoint:/api/v1/tasks] @backend/app/main.py:52206
+    - chain: create_task @backend/app/main.py:24172  ←  create_workspace_answer_action_task_api [endpoint:/api/v1/workspace-answer-action-cards/{message_id}/create-task] @backend/app/main.py:44635
+    - chain: create_task @backend/app/main.py:24172  ←  promote_candidate_to_task [endpoint:/api/v1/topics/candidates/{candidate_id}/promote-task] @backend/app/main.py:55696
+    - chain: create_task @backend/app/main.py:24172  ←  promote_candidate_to_tasks [endpoint:/api/v1/topics/candidates/{candidate_id}/promote-tasks] @backend/app/main.py:55636
+- `INSERT` @ **load_demo_dataset** `backend/app/main.py:2941` — _call_name_match_
+    - chain: load_demo_dataset @backend/app/main.py:2941  ←  load_demo_dataset_endpoint [endpoint:/api/v1/settings/demo-data/load] @backend/app/main.py:37527
+- `UPDATE` @ **create_app.verify_glossary_attribute_proxy** `backend/app/main.py:29574` — _static_confirmed_
+    - chain: verify_glossary_attribute_proxy [endpoint:/api/v1/clients/{client_id}/glossary-attributes/{attr_id}/verify] @backend/app/main.py:29574
+- `UPDATE` @ **create_app.dismiss_unified_todo_proxy** `backend/app/main.py:29654` — _static_confirmed_
+    - chain: dismiss_unified_todo_proxy [endpoint:/api/v1/clients/{client_id}/todos/{todo_id}/dismiss] @backend/app/main.py:29654
+- `INSERT` @ **create_app.promote_todo_to_task_proxy** `backend/app/main.py:29693` — _static_confirmed_
+    - chain: promote_todo_to_task_proxy [endpoint:/api/v1/clients/{client_id}/todos/{todo_id}/promote-to-task] @backend/app/main.py:29693
+- `INSERT+UPDATE` @ **create_app** `backend/app/main.py:3179` — _needs_human_
+    - chain: create_app @backend/app/main.py:3179  ←  (no caller found — orphan write)
+- `UPDATE` @ **create_app.update_event_line** `backend/app/main.py:35169` — _static_confirmed_
+    - chain: update_event_line [endpoint:/api/v1/event-lines/{event_line_id}] @backend/app/main.py:35169
+- `UPDATE` @ **create_app.delete_event_line** `backend/app/main.py:35723` — _static_confirmed_
+    - chain: delete_event_line [endpoint:/api/v1/event-lines/{event_line_id}] @backend/app/main.py:35723
+- `UPDATE` @ **create_app._startup_worker** `backend/app/main.py:3743` — _static_confirmed_
+    - chain: _startup_worker [worker:_startup_worker] @backend/app/main.py:3743
+- `UPDATE` @ **create_app.delete_client_project_flow** `backend/app/main.py:45882` — _static_confirmed_
+    - chain: delete_client_project_flow [endpoint:/api/v1/clients/{client_id}/project-flows/{flow_id}] @backend/app/main.py:45882
+- `INSERT` @ **create_app.feishu_import_minute** `backend/app/main.py:50304` — _static_confirmed_
+    - chain: feishu_import_minute [endpoint:/api/v1/feishu/minutes/{minute_token}/import] @backend/app/main.py:50304
+- `UPDATE` @ **create_app._repair_local_duplicate_task_lists** `backend/app/main.py:51737` — _call_name_match_
+    - chain: _repair_local_duplicate_task_lists @backend/app/main.py:51737  ←  repair_duplicate_task_lists [endpoint:/api/v1/task-lists/repair-duplicates] @backend/app/main.py:51909
+- `UPDATE` @ **create_app.update_task** `backend/app/main.py:52636` — _static_confirmed_
+    - chain: update_task [endpoint:/api/v1/tasks/{task_id}] @backend/app/main.py:52636
+- `UPDATE` @ **create_app._mark_task_confirmed_locally** `backend/app/main.py:53852` — _call_name_match_
+    - chain: _mark_task_confirmed_locally @backend/app/main.py:53852  ←  confirm_task [endpoint:/api/v1/tasks/{task_id}/confirm] @backend/app/main.py:53875
+- `UPDATE` @ **create_app.reject_task** `backend/app/main.py:53903` — _static_confirmed_
+    - chain: reject_task [endpoint:/api/v1/tasks/{task_id}/reject] @backend/app/main.py:53903
+- `UPDATE` @ **create_app.save_task_note** `backend/app/main.py:53971` — _static_confirmed_
+    - chain: save_task_note [endpoint:/api/v1/tasks/{task_id}/note] @backend/app/main.py:53971
+- `UPDATE` @ **backfill_local_task_tag_ids** `backend/app/main.py:59794` — _needs_human_
+    - chain: backfill_local_task_tag_ids @backend/app/main.py:59794  ←  seed_defaults @backend/app/main.py:59873
+- `UPDATE` @ **create_app._resolve_task_cloud_event_line_dependency** `backend/app/main.py:9578` — _call_name_match_
+    - chain: _resolve_task_cloud_event_line_dependency @backend/app/main.py:9578  ←  _try_cloud_sync_task [worker:_try_cloud_sync_task] @backend/app/main.py:23931
+    - chain: _resolve_task_cloud_event_line_dependency @backend/app/main.py:9578  ←  sync_pending_tasks_if_due [worker:sync_pending_tasks_if_due] @backend/app/main.py:23973
+    - chain: _resolve_task_cloud_event_line_dependency @backend/app/main.py:9578  ←  update_task [endpoint:/api/v1/tasks/{task_id}] @backend/app/main.py:52636
+- `INSERT+UPDATE` @ **create_app._upsert_cloud_task_shadow_local** `backend/app/main.py:9597` — _call_name_match_
+    - chain: _upsert_cloud_task_shadow_local @backend/app/main.py:9597  ←  approve_task_review [endpoint:/api/v1/tasks/{task_id}/review/approve] @backend/app/main.py:53945
+    - chain: _upsert_cloud_task_shadow_local @backend/app/main.py:9597  ←  complete_task_with_review [endpoint:/api/v1/tasks/{task_id}/complete-with-review] @backend/app/main.py:53934
+    - chain: _upsert_cloud_task_shadow_local @backend/app/main.py:9597  ←  confirm_task [endpoint:/api/v1/tasks/{task_id}/confirm] @backend/app/main.py:53875
+    - chain: _upsert_cloud_task_shadow_local @backend/app/main.py:9597  ←  reject_task [endpoint:/api/v1/tasks/{task_id}/reject] @backend/app/main.py:53903
+    - chain: _upsert_cloud_task_shadow_local @backend/app/main.py:9597  ←  return_task_review [endpoint:/api/v1/tasks/{task_id}/review/return] @backend/app/main.py:53956
+    - chain: _upsert_cloud_task_shadow_local @backend/app/main.py:9597  ←  sync_pending_tasks_if_due [worker:sync_pending_tasks_if_due] @backend/app/main.py:23973
+- `UPDATE` @ **create_app._restore_local_completed_task_statuses** `backend/app/main.py:9953` — _call_name_match_
+    - chain: _restore_local_completed_task_statuses @backend/app/main.py:9953  ←  list_tasks [endpoint:/api/v1/tasks] @backend/app/main.py:51570
+    - chain: _restore_local_completed_task_statuses @backend/app/main.py:9953  ←  _merge_local_tasks_into @backend/app/main.py:10377  ←  cloud_task_board @backend/app/main.py:10445  ←  save_task_note [endpoint:/api/v1/tasks/{task_id}/note] @backend/app/main.py:53971
+    - chain: _restore_local_completed_task_statuses @backend/app/main.py:9953  ←  _merge_local_tasks_into @backend/app/main.py:10377  ←  cloud_task_board @backend/app/main.py:10445  ←  fetch_cloud_task_by_id @backend/app/main.py:10476  ←  get_task_context_preview [endpoint:/api/v1/tasks/{task_id}/context-preview] @backend/app/main.py:31806
+    - chain: _restore_local_completed_task_statuses @backend/app/main.py:9953  ←  _merge_local_tasks_into @backend/app/main.py:10377  ←  cloud_task_board @backend/app/main.py:10445  ←  fetch_cloud_task_by_id @backend/app/main.py:10476  ←  get_task_smart_brief [endpoint:/api/v1/tasks/{task_id}/smart-brief] @backend/app/main.py:32586
+    - chain: _restore_local_completed_task_statuses @backend/app/main.py:9953  ←  _merge_local_tasks_into @backend/app/main.py:10377  ←  cloud_task_board @backend/app/main.py:10445  ←  fetch_cloud_task_by_id @backend/app/main.py:10476  ←  upload_task_attachment [endpoint:/api/v1/tasks/{task_id}/attachments] @backend/app/main.py:53434
+    - chain: _restore_local_completed_task_statuses @backend/app/main.py:9953  ←  _merge_local_tasks_into @backend/app/main.py:10377  ←  cloud_task_board @backend/app/main.py:10445  ←  fetch_cloud_task_by_id @backend/app/main.py:10476  ←  _task_for_prep_pack @backend/app/main.py:32765  ←  create_task_prep_proposal [endpoint:/api/v1/tasks/{task_id}/prep-pack/proposals] @backend/app/main.py:33171
+- `INSERT` @ **sync_agent_execution_tasks** `backend/app/services/agent_worklogs.py:799` — _static_confirmed_
+    - chain: sync_agent_execution_tasks [worker:sync_agent_execution_tasks] @backend/app/services/agent_worklogs.py:799
+- `INSERT` @ **_handler_tasks_create** `backend/app/services/plan_executor.py:1400` — _needs_human_
+    - chain: _handler_tasks_create @backend/app/services/plan_executor.py:1400  ←  (no caller found — orphan write)
+- `UPDATE` @ **_auto_complete_task** `backend/app/services/plan_executor.py:522` — _needs_human_
+    - chain: _auto_complete_task @backend/app/services/plan_executor.py:522  ←  (no caller found — orphan write)
+- `INSERT` @ **_handler_documents_generate** `backend/app/services/plan_executor.py:932` — _needs_human_
+    - chain: _handler_documents_generate @backend/app/services/plan_executor.py:932  ←  (no caller found — orphan write)
+- `UPDATE` @ **backfill_task_glossary_links** `backend/app/services/project_portrait_builder.py:25` — _call_name_match_
+    - chain: backfill_task_glossary_links @backend/app/services/project_portrait_builder.py:25  ←  build_project_portrait_proxy [endpoint:/api/v1/clients/{client_id}/project-portrait/build] @backend/app/main.py:29198
+
+### 读边 (115)
+- `SELECT-FROM` @ **create_app._upsert_cloud_client_shadow_local** `backend/app/main.py:10227` — _static_confirmed_
+    - WHERE: `client_id=c.id), 0) + COALESCE((SELECT COUNT(*) FROM chat_threads WHERE client_id=c.id), 0) + COALESCE((SELECT COUNT(*) FROM documents WHERE client_id=c.id), 0) AS usage FROM clients c WHERE c.name=? `
+- `SELECT-FROM` @ **create_app._merge_local_tasks_into** `backend/app/main.py:10377` — _static_confirmed_
+    - WHERE: `id NOT LIKE 'agent_%' AND id NOT LIKE 'task_seed_%' AND ( created_at > ? OR updated_at > ? OR sync_status IN ('pending', 'syncing') )`
+- `SELECT-FROM` @ **create_app.fetch_tasks** `backend/app/main.py:11112` — _static_confirmed_
+- `SELECT-FROM` @ **create_app._repair_completed_task_collaboration_state** `backend/app/main.py:11163` — _static_confirmed_
+    - WHERE: `tasks.id = task_collaborators.task_id )), updated_at = ? WHERE inbox_status = 'pending' AND EXISTS ( SELECT 1 FROM tasks WHERE tasks.id = task_collaborators.task_id AND (tasks.status = 'done' OR tasks`
+- `SELECT-FROM` @ **create_app.sync_local_tasks_for_tag_change** `backend/app/main.py:13858` — _static_confirmed_
+- `SELECT-FROM` @ **create_app.build_client_summary** `backend/app/main.py:13881` — _static_confirmed_
+    - WHERE: `(source_id = ? OR source_id IN (SELECT id FROM meetings WHERE client_id = ?)) AND COALESCE(scope_mode, 'COLLAB_SHARED') != 'PERSONAL_ONLY'`
+- `SELECT-FROM` @ **create_app.build_task_project_context** `backend/app/main.py:14027` — _static_confirmed_
+    - WHERE: `status != 'done' AND (source_id = ? OR source_id IN (SELECT id FROM meetings WHERE client_id = ?)) AND COALESCE(scope_mode, 'COLLAB_SHARED') != 'PERSONAL_ONLY'`
+- `SELECT-FROM` @ **create_app._strategic_meeting_event_line_ids** `backend/app/main.py:19308` — _static_confirmed_
+    - WHERE: `source_type = 'meeting' AND source_id = ? AND event_line_id IS NOT NULL AND TRIM(event_line_id) <> '' AND COALESCE(scope_mode, 'COLLAB_SHARED') != 'PERSONAL_ONLY'`
+- `SELECT-FROM` @ **create_app._collect_strategic_insight_context** `backend/app/main.py:19685` — _static_confirmed_
+    - WHERE: `(`
+    - WHERE: `({?}) AND {?}`
+    - WHERE: `client_id = ? AND project_module_id = ? AND event_line_id IS NOT NULL AND TRIM(event_line_id) != '' AND COALESCE(scope_mode, 'COLLAB_SHARED') != 'PERSONAL_ONLY'`
+- `SELECT-FROM` @ **create_app.upsert_task_note** `backend/app/main.py:23896` — _static_confirmed_
+    - WHERE: `id = ?`
+- `SELECT-FROM` @ **create_app.sync_pending_tasks_if_due** `backend/app/main.py:23973` — _static_confirmed_
+    - WHERE: `sync_status = 'pending' AND (cloud_payload_json IS NOT NULL OR cloud_id IS NOT NULL)`
+- `JOIN` @ **create_app._historical_work_review_rows** `backend/app/main.py:25839` — _static_confirmed_
+    - WHERE: `r.operator_id = ? AND e.content_domain = 'work' AND e.week_label IN ({?})`
+- `JOIN` @ **create_app.local_rollup_work_items** `backend/app/main.py:26640` — _static_confirmed_
+    - WHERE: `e.week_label = ? AND e.content_domain = 'work'`
+- `SELECT-FROM` @ **create_app.get_brain_dashboard** `backend/app/main.py:27671` — _static_confirmed_
+    - WHERE: `COALESCE(scope_mode, 'COLLAB_SHARED') != 'PERSONAL_ONLY'`
+- `SELECT-FROM` @ **build_demo_data_response** `backend/app/main.py:2869` — _static_confirmed_
+    - WHERE: `id IN (`
+    - WHERE: `id IN ({?})`
+- `SELECT-FROM` @ **clear_demo_dataset** `backend/app/main.py:2884` — _static_confirmed_
+    - WHERE: `id IN (`
+    - WHERE: `id IN ({?})`
+    - WHERE: `source_id IN (`
+    - WHERE: `source_id IN ({?})`
+- `SELECT-FROM` @ **create_app.list_next_steps** `backend/app/main.py:28844` — _static_confirmed_
+    - WHERE: `client_id=? AND COALESCE(progress_status,'') != 'done'`
+- `SELECT-FROM` @ **create_app.verify_glossary_attribute_proxy** `backend/app/main.py:29574` — _static_confirmed_
+    - WHERE: `client_id=? AND progress_status='todo'`
+- `SELECT-FROM+JOIN` @ **create_app** `backend/app/main.py:3179` — _static_confirmed_
+    - WHERE: `(`
+    - WHERE: `(source_id = ? OR source_id IN (SELECT id FROM meetings WHERE client_id = ?)) AND COALESCE(scope_mode, 'COLLAB_SHARED') != 'PERSONAL_ONLY'`
+    - WHERE: `({?}) AND {?}`
+    - WHERE: `COALESCE(scope_mode, 'COLLAB_SHARED') != 'PERSONAL_ONLY'`
+    - WHERE: `COALESCE(t.client_id, '') != '' AND c.id IS NULL`
+- `SELECT-FROM` @ **create_app.get_task_smart_brief** `backend/app/main.py:32586` — _static_confirmed_
+    - WHERE: `id = ?`
+- `SELECT-FROM` @ **create_app.update_event_line** `backend/app/main.py:35169` — _static_confirmed_
+    - WHERE: `event_line_id = ? AND COALESCE(scope_mode, 'COLLAB_SHARED') != 'PERSONAL_ONLY'`
+- `SELECT-FROM` @ **create_app._event_line_dependency_counts** `backend/app/main.py:35323` — _static_confirmed_
+    - WHERE: `event_line_id = ? AND COALESCE(scope_mode, 'COLLAB_SHARED') != 'PERSONAL_ONLY'`
+- `SELECT-FROM` @ **create_app.delete_event_line** `backend/app/main.py:35723` — _static_confirmed_
+    - WHERE: `event_line_id = ? AND COALESCE(scope_mode, 'COLLAB_SHARED') != 'PERSONAL_ONLY'`
+- `SELECT-FROM` @ **create_app._resolve_client_id_for_scope_ref** `backend/app/main.py:3610` — _static_confirmed_
+    - WHERE: `id = ? AND COALESCE(scope_mode, 'COLLAB_SHARED') != 'PERSONAL_ONLY'`
+- `SELECT-FROM` @ **create_app.resolve_support_request** `backend/app/main.py:36115` — _static_confirmed_
+    - WHERE: `id = ? AND COALESCE(scope_mode, 'COLLAB_SHARED') != 'PERSONAL_ONLY'`
+- `SELECT-FROM` @ **create_app._resolve_client_id_for_evidence_quality_annotation** `backend/app/main.py:3650` — _static_confirmed_
+    - WHERE: `id = ? AND COALESCE(scope_mode, 'COLLAB_SHARED') != 'PERSONAL_ONLY'`
+- `SELECT-FROM` @ **create_app._startup_worker** `backend/app/main.py:3743` — _static_confirmed_
+    - WHERE: `sync_status='pending' AND cloud_id IS NULL AND cloud_payload_json IS NOT NULL AND cloud_payload_json != ''`
+- `SELECT-FROM` @ **create_app._startup_worker._retry_pending_task_pushes** `backend/app/main.py:3861` — _static_confirmed_
+    - WHERE: `sync_status='pending' AND cloud_id IS NULL AND cloud_payload_json IS NOT NULL AND cloud_payload_json != ''`
+- `SELECT-FROM` @ **create_app.get_client_delete_preview** `backend/app/main.py:39266` — _static_confirmed_
+    - WHERE: `client_id = ?`
+- `SELECT-FROM` @ **create_app.get_strategic_line_detail** `backend/app/main.py:42140` — _static_confirmed_
+    - WHERE: `client_id = ? AND COALESCE(scope_mode, 'COLLAB_SHARED') != 'PERSONAL_ONLY' AND ( LOWER(COALESCE(title, '')) LIKE '%' || LOWER(?) || '%' OR LOWER(COALESCE(description, '')) LIKE '%' || LOWER(?) || '%' `
+- `SELECT-FROM` @ **create_app.get_workspace_data_center_readiness** `backend/app/main.py:42811` — _static_confirmed_
+    - WHERE: `COALESCE(t.client_id, '') != '' AND c.id IS NULL`
+- `SELECT-FROM` @ **create_app.feishu_push_task** `backend/app/main.py:51079` — _static_confirmed_
+    - WHERE: `id = ?`
+- `SELECT-FROM` @ **create_app.build_health** `backend/app/main.py:5147` — _static_confirmed_
+- `SELECT-FROM` @ **create_app._repair_local_duplicate_task_lists** `backend/app/main.py:51737` — _static_confirmed_
+    - WHERE: `list_id = ?`
+- `SELECT-FROM` @ **create_app.delete_task_list** `backend/app/main.py:52024` — _static_confirmed_
+    - WHERE: `list_id = ?`
+- `SELECT-FROM` @ **create_app.get_user_ai_delegations** `backend/app/main.py:52247` — _static_confirmed_
+    - WHERE: `owner_id = ? AND source_type='manual' AND created_at >= ? AND created_at < ?`
+- `SELECT-FROM` @ **create_app.update_task** `backend/app/main.py:52636` — _static_confirmed_
+    - WHERE: `id = ?`
+    - WHERE: `id = ? OR cloud_id = ?`
+- `SELECT-FROM` @ **create_app._has_local_workspace_data** `backend/app/main.py:5304` — _static_confirmed_
+- `SELECT-FROM` @ **create_app.delete_task** `backend/app/main.py:53307` — _static_confirmed_
+    - WHERE: `id = ?`
+    - WHERE: `id = ? OR cloud_id = ?`
+- `SELECT-FROM` @ **create_app.upload_task_attachment** `backend/app/main.py:53434` — _static_confirmed_
+    - WHERE: `id = ?`
+- `SELECT-FROM` @ **create_app._resolve_task_cloud_ref** `backend/app/main.py:53840` — _static_confirmed_
+    - WHERE: `id = ? OR cloud_id = ?`
+- `SELECT-FROM` @ **create_app.weekly_review_payload_for_cloud** `backend/app/main.py:54394` — _static_confirmed_
+    - WHERE: `id = ? OR cloud_id = ?`
+- `SELECT-FROM` @ **create_app.report_draft_blueprint** `backend/app/main.py:56628` — _static_confirmed_
+    - WHERE: `event_line_id = ? AND COALESCE(client_id, '') != ''`
+- `SELECT-FROM` @ **backfill_local_task_tag_ids** `backend/app/main.py:59794` — _static_confirmed_
+- `SELECT-FROM` @ **create_app._review_item_matches_user** `backend/app/main.py:6315` — _static_confirmed_
+    - WHERE: `t.id = ? AND`
+    - WHERE: `t.id = ? AND {?} AND (t.owner_id = ? OR t.creator_id = ? OR tc.user_id = ?)`
+- `SELECT-FROM` @ **create_app.get_project_module_detail** `backend/app/main.py:7638` — _static_confirmed_
+    - WHERE: `client_id = ? AND project_module_id = ? AND COALESCE(scope_mode, 'COLLAB_SHARED') != 'PERSONAL_ONLY'`
+- `SELECT-FROM` @ **create_app.get_project_flow_detail** `backend/app/main.py:7673` — _static_confirmed_
+    - WHERE: `client_id = ? AND project_flow_id = ? AND COALESCE(scope_mode, 'COLLAB_SHARED') != 'PERSONAL_ONLY'`
+- `SELECT-FROM` @ **create_app._upsert_cloud_task_shadow_local** `backend/app/main.py:9597` — _static_confirmed_
+    - WHERE: `id = ? OR cloud_id = ?`
+- `SELECT-FROM` @ **create_app._restore_local_completed_task_statuses** `backend/app/main.py:9953` — _static_confirmed_
+    - WHERE: `id NOT LIKE 'agent_%' AND id NOT LIKE 'task_seed_%' AND (status != 'done' OR progress_status != 'done')`
+- `SELECT-FROM` @ **create_app._pull_cloud_tasks_to_local** `backend/app/main.py:9990` — _static_confirmed_
+    - WHERE: `sync_status = 'synced' AND cloud_id IS NOT NULL AND cloud_id != '' AND (creator_id = ? OR owner_id = ?)`
+- `SELECT-FROM` @ **get_fact_bundle_lite** `backend/app/modules/client/fact_view.py:133` — _static_confirmed_
+    - WHERE: `client_id = ? AND status NOT IN ('done', 'completed', 'cancelled', 'archived')`
+- `SELECT-FROM` @ **list_tasks** `backend/app/modules/client/fact_view.py:235` — _static_confirmed_
+    - WHERE: `client_id = ?`
+    - WHERE: `client_id = ? {?}`
+- `SELECT-FROM` @ **load_task_full** `backend/app/modules/client/fact_view.py:419` — _static_confirmed_
+    - WHERE: `id = ?`
+- `SELECT-FROM` @ **_build_focus_items** `backend/app/services/agent_worklogs.py:431` — _static_confirmed_
+    - WHERE: `owner_name = ? AND status != 'done'`
+- `SELECT-FROM` @ **sync_agent_execution_tasks** `backend/app/services/agent_worklogs.py:799` — _static_confirmed_
+    - WHERE: `source_type = ? AND source_id LIKE ?`
+    - WHERE: `source_type = ? AND source_id LIKE ? AND id NOT IN (`
+    - WHERE: `source_type = ? AND source_id LIKE ? AND id NOT IN ({?})`
+- `SELECT-FROM` @ **build_agent_execution_tasks** `backend/app/services/agent_worklogs.py:917` — _static_confirmed_
+    - WHERE: `t.source_type = ? AND t.source_id LIKE ?`
+- `SELECT-FROM` @ **build_event_line_page_context_pack** `backend/app/services/analysis_context.py:1244` — _static_confirmed_
+    - WHERE: `event_line_id = ? AND COALESCE(client_id, '') != '' AND COALESCE(scope_mode, 'COLLAB_SHARED') != 'PERSONAL_ONLY'`
+    - WHERE: `event_line_id = ? AND COALESCE(scope_mode, 'COLLAB_SHARED') != 'PERSONAL_ONLY'`
+- `SELECT-FROM` @ **build_project_module_page_context_pack** `backend/app/services/analysis_context.py:1455` — _static_confirmed_
+    - WHERE: `project_module_id = ? AND COALESCE(scope_mode, 'COLLAB_SHARED') != 'PERSONAL_ONLY'`
+    - WHERE: `t.project_module_id = ? AND t.source_type = 'meeting' AND COALESCE(t.scope_mode, 'COLLAB_SHARED') != 'PERSONAL_ONLY'`
+- `SELECT-FROM` @ **build_project_flow_page_context_pack** `backend/app/services/analysis_context.py:1620` — _static_confirmed_
+    - WHERE: `project_flow_id = ? AND COALESCE(scope_mode, 'COLLAB_SHARED') != 'PERSONAL_ONLY'`
+    - WHERE: `t.project_flow_id = ? AND t.source_type = 'meeting' AND COALESCE(t.scope_mode, 'COLLAB_SHARED') != 'PERSONAL_ONLY'`
+- `SELECT-FROM` @ **build_client_page_context_pack** `backend/app/services/analysis_context.py:294` — _static_confirmed_
+    - WHERE: `t.client_id = ? AND COALESCE(t.scope_mode, 'COLLAB_SHARED') != 'PERSONAL_ONLY'`
+- `SELECT-FROM` @ **build_task_page_context_pack** `backend/app/services/analysis_context.py:684` — _static_confirmed_
+    - WHERE: `id != ? AND (client_id = ? OR (? != '' AND event_line_id = ?)) AND COALESCE(scope_mode, 'COLLAB_SHARED') != 'PERSONAL_ONLY'`
+    - WHERE: `t.id = ?`
+- `SELECT-FROM` @ **_collect_work_events** `backend/app/services/badge_engine.py:279` — _static_confirmed_
+    - WHERE: `COALESCE(scope_mode, 'COLLAB_SHARED') != 'PERSONAL_ONLY' AND ( owner_id = ? OR creator_id = ? OR LOWER(TRIM(COALESCE(owner_name, ''))) = LOWER(TRIM(?)) OR EXISTS ( SELECT 1 FROM task_collaborators tc `
+    - WHERE: `d.meeting_id = m.id) AS decision_count, (SELECT COUNT(*) FROM action_items a WHERE a.meeting_id = m.id) AS action_count, ( SELECT COUNT(*) FROM action_items a WHERE a.meeting_id = m.id AND TRIM(a.owne`
+- `SELECT-FROM` @ **_load_people_candidates** `backend/app/services/clarification_context.py:207` — _static_confirmed_
+    - WHERE: `client_id = ? AND owner_name IS NOT NULL AND owner_name != ''`
+- `SELECT-FROM` @ **score_action_dependency** `backend/app/services/clarification_priority.py:103` — _static_confirmed_
+    - WHERE: `client_id = ? AND (title LIKE ? OR description LIKE ?)`
+    - WHERE: `client_id = ? AND status NOT IN ('completed','archived') AND (title LIKE ? OR description LIKE ?)`
+- `SELECT-FROM` @ **score_time_urgency** `backend/app/services/clarification_priority.py:146` — _static_confirmed_
+    - WHERE: `client_id = ? AND due_date BETWEEN datetime('now') AND datetime('now', '+30 days') AND status NOT IN ('completed','archived') AND (title LIKE ? OR description LIKE ?)`
+    - WHERE: `client_id = ? AND due_date BETWEEN datetime('now') AND datetime('now', '+7 days') AND status NOT IN ('completed','archived') AND (title LIKE ? OR description LIKE ?)`
+    - WHERE: `client_id = ? AND due_date BETWEEN datetime('now') AND datetime('now', '+90 days') AND status NOT IN ('completed','archived') AND (title LIKE ? OR description LIKE ?)`
+    - WHERE: `client_id = ? AND due_date IS NOT NULL AND (title LIKE ? OR description LIKE ?)`
+- `SELECT-FROM` @ **_fetch_upcoming_todos** `backend/app/services/client_strategic_pulse.py:262` — _static_confirmed_
+    - WHERE: `t.client_id = ? AND t.status NOT IN ('done', 'completed', 'cancelled', 'archived') AND COALESCE(t.kind, 'task') IN ('task', 'todo', '')`
+- `SELECT-FROM` @ **_build_single_client_summary** `backend/app/services/client_strategic_pulse.py:559` — _static_confirmed_
+    - WHERE: `client_id = ? AND created_at >= ?`
+- `SELECT-FROM` @ **_task_row** `backend/app/services/data_center_ingest.py:1190` — _static_confirmed_
+    - WHERE: `t.id = ?`
+- `SELECT-FROM` @ **purge_private_task_ingest_events** `backend/app/services/data_center_ingest.py:1328` — _static_confirmed_
+    - WHERE: `COALESCE(scope_mode, 'COLLAB_SHARED') = 'PERSONAL_ONLY'`
+- `SELECT-FROM` @ **backfill_data_center_ingest** `backend/app/services/data_center_ingest.py:1897` — _static_confirmed_
+    - WHERE: `COALESCE(scope_mode, 'COLLAB_SHARED') != 'PERSONAL_ONLY'`
+- `SELECT-FROM` @ **_task_id_is_private** `backend/app/services/data_center_ingest.py:254` — _static_confirmed_
+    - WHERE: `id = ?`
+- `SELECT-FROM` @ **build_orphan_client_ingest_repair_report** `backend/app/services/data_center_ingest.py:994` — _static_confirmed_
+    - WHERE: `COALESCE(t.client_id, '') != '' AND c.id IS NULL`
+- `SELECT-FROM` @ **_build_metrics** `backend/app/services/digital_asset_center.py:3129` — _static_confirmed_
+    - WHERE: `(e.primary_client_id = ? OR (t.source_type = 'client' AND t.source_id = ?)) AND COALESCE(t.scope_mode, 'COLLAB_SHARED') != 'PERSONAL_ONLY'`
+- `SELECT-FROM` @ **_collect_sources** `backend/app/services/digital_asset_center.py:3179` — _static_confirmed_
+    - WHERE: `(e.primary_client_id = ? OR (t.source_type = 'client' AND t.source_id = ?)) AND COALESCE(t.scope_mode, 'COLLAB_SHARED') != 'PERSONAL_ONLY'`
+- `SELECT-FROM` @ **build_digital_asset_narrative_context** `backend/app/services/digital_asset_narrative.py:201` — _static_confirmed_
+    - WHERE: `(e.primary_client_id = ? OR (t.source_type = 'client' AND t.source_id = ?)) AND COALESCE(t.scope_mode, 'COLLAB_SHARED') != 'PERSONAL_ONLY'`
+- `SELECT-FROM` @ **_collect_task_owners** `backend/app/services/glossary_candidate_generator.py:194` — _static_confirmed_
+    - WHERE: `client_id = ?`
+    - WHERE: `client_id = ? AND owner_name != ''`
+- `SELECT-FROM` @ **_collect_task_deadlines** `backend/app/services/glossary_candidate_generator.py:250` — _static_confirmed_
+    - WHERE: `t.client_id = ? AND t.deadline_at != ''`
+- `SELECT-FROM` @ **_collect_task_action_types** `backend/app/services/glossary_candidate_generator.py:271` — _static_confirmed_
+    - WHERE: `client_id = ?`
+- `SELECT-FROM` @ **_count_source_events** `backend/app/services/growth_engine.py:1168` — _static_confirmed_
+    - WHERE: `creator_id = ?`
+    - WHERE: `owner_id = ? AND status = 'done'`
+    - WHERE: `r.status = 'active' AND r.client_id IN ( SELECT DISTINCT client_id FROM v2_documents WHERE owner_user_id = ? UNION SELECT DISTINCT client_id FROM tasks WHERE owner_id = ? AND client_id IS NOT NULL )`
+- `SELECT-FROM` @ **_build_business_coverage** `backend/app/services/growth_engine.py:2021` — _static_confirmed_
+    - WHERE: `owner_id=? AND client_id=c.id) AS task_cnt, (SELECT COUNT(*) FROM v2_documents WHERE owner_user_id=? AND client_id=c.id AND kind NOT IN ('task_doc','event_line_update_doc','review_entry_doc')) AS doc_`
+- `SELECT-FROM` @ **_build_work_type_distribution** `backend/app/services/growth_engine.py:2230` — _static_confirmed_
+    - WHERE: `owner_id = ?`
+- `SELECT-FROM` @ **_build_internal_learning_picks** `backend/app/services/growth_engine.py:2328` — _static_confirmed_
+    - WHERE: `g.client_id IN ( SELECT DISTINCT client_id FROM tasks WHERE owner_id=? AND client_id IS NOT NULL ) AND g.category IN ('业务术语', '项目')`
+- `SELECT-FROM` @ **_build_daily_activity** `backend/app/services/growth_engine.py:2559` — _static_confirmed_
+    - WHERE: `owner_id=? AND status='done' AND updated_at >= ?`
+- `SELECT-FROM` @ **materialize_workspace_native_documents** `backend/app/services/knowledge_v2.py:3782` — _static_confirmed_
+    - WHERE: `client_id = ? AND COALESCE(scope_mode, 'COLLAB_SHARED') != 'PERSONAL_ONLY'`
+- `SELECT-FROM` @ **retrieve_knowledge_bundle** `backend/app/services/knowledge_v2.py:4920` — _static_confirmed_
+    - WHERE: `dpo2.knowledge_document_id = kd.id`
+    - WHERE: `t.id = COALESCE(NULLIF(vd.source_entity_id, ''), vd.origin_id) AND COALESCE(t.scope_mode, 'COLLAB_SHARED') != 'PERSONAL_ONLY' ) ) AND NOT ( vd.canonical_kind = 'task_note_doc' AND vd.origin_type = 'ta`
+    - WHERE: `vd.client_id = ? AND vd.material_layer IN ('evidence', 'external_media_transcript') AND vd.parse_status IN ('ready', 'partial_ready') AND COALESCE(vd.is_searchable, d.is_searchable, 1) = 1 AND COALESC`
+- `SELECT-FROM` @ **build_meeting_page_context_pack** `backend/app/services/meeting_context.py:48` — _static_confirmed_
+    - WHERE: `source_type = 'meeting' AND source_id = ? AND COALESCE(scope_mode, 'COLLAB_SHARED') != 'PERSONAL_ONLY'`
+- `JOIN` @ **record_weekly_review_writeback** `backend/app/services/memory_foundation.py:1907` — _static_confirmed_
+    - WHERE: `entry.review_id = ? AND entry.content_domain = 'work' AND COALESCE(t.scope_mode, 'COLLAB_SHARED') != 'PERSONAL_ONLY'`
+- `SELECT-FROM+JOIN` @ **backfill_memory_foundation** `backend/app/services/memory_foundation.py:1965` — _static_confirmed_
+    - WHERE: `COALESCE(scope_mode, 'COLLAB_SHARED') != 'PERSONAL_ONLY'`
+    - WHERE: `a.task_id IN (`
+    - WHERE: `a.task_id IN ({?})`
+    - WHERE: `entry.review_id = ? AND entry.content_domain = 'work' AND COALESCE(t.scope_mode, 'COLLAB_SHARED') != 'PERSONAL_ONLY'`
+    - WHERE: `id = ? AND COALESCE(scope_mode, 'COLLAB_SHARED') != 'PERSONAL_ONLY'`
+- `SELECT-FROM` @ **_resolve_client_id_for_memory_scope** `backend/app/services/memory_foundation.py:275` — _static_confirmed_
+    - WHERE: `id = ? AND COALESCE(scope_mode, 'COLLAB_SHARED') != 'PERSONAL_ONLY'`
+- `SELECT-FROM` @ **refresh_organization_notebook_snapshot** `backend/app/services/memory_foundation.py:733` — _static_confirmed_
+    - WHERE: `client_id = ? AND COALESCE(scope_mode, 'COLLAB_SHARED') != 'PERSONAL_ONLY'`
+- `SELECT-FROM` @ **list_linked_event_lines** `backend/app/services/memory_foundation.py:972` — _static_confirmed_
+    - WHERE: `primary_client_id = ? OR id IN ( SELECT DISTINCT event_line_id FROM tasks WHERE client_id = ? AND event_line_id IS NOT NULL AND TRIM(event_line_id) <> '' AND COALESCE(scope_mode, 'COLLAB_SHARED') != '`
+- `SELECT-FROM+JOIN` @ **refresh_event_line_memory_snapshot** `backend/app/services/memory_foundation.py:994` — _static_confirmed_
+    - WHERE: `a.event_line_id = ?`
+    - WHERE: `entry.content_domain = 'work' AND COALESCE(t.scope_mode, 'COLLAB_SHARED') != 'PERSONAL_ONLY'`
+    - WHERE: `event_line_id = ? AND COALESCE(scope_mode, 'COLLAB_SHARED') != 'PERSONAL_ONLY'`
+- `SELECT-FROM` @ **_collect_tasks** `backend/app/services/narrative_collector.py:1147` — _static_confirmed_
+    - WHERE: `t.client_id = ? OR EXISTS (SELECT 1 FROM event_lines e WHERE e.primary_client_id = ? AND t.event_line_id = e.id) OR t.title LIKE ?`
+- `SELECT-FROM+JOIN` @ **_collect_dimension_chunks** `backend/app/services/narrative_collector.py:743` — _static_confirmed_
+    - WHERE: `client_id=? AND (title LIKE ? OR description LIKE ?)`
+    - WHERE: `t.client_id=? AND wrt.note LIKE ?`
+- `SELECT-FROM` @ **upsert_commitments_from_narrative** `backend/app/services/narrative_generator.py:1190` — _static_confirmed_
+    - WHERE: `client_id=?`
+- `SELECT-FROM` @ **_collect_task_items** `backend/app/services/organization_dna_v2.py:439` — _static_confirmed_
+    - WHERE: `created_at >= datetime('now', '-30 days')`
+    - WHERE: `t.created_at >= datetime('now', '-30 days') AND ( source_client.id IS NOT NULL OR event_client.id IS NOT NULL OR EXISTS ( SELECT 1 FROM clients c WHERE t.title LIKE '%' || c.name || '%' OR t.descripti`
+    - WHERE: `t.title LIKE '%' || c.name || '%' OR t.description LIKE '%' || c.name || '%' OR (c.alias != '' AND t.title LIKE '%' || c.alias || '%') OR (c.alias != '' AND t.description LIKE '%' || c.alias || '%')`
+- `SELECT-FROM` @ **_collect_gap_items** `backend/app/services/organization_dna_v2.py:741` — _static_confirmed_
+    - WHERE: `length(trim(COALESCE(description, ''))) < 40 OR length(trim(COALESCE(next_action, ''))) = 0`
+- `SELECT-FROM` @ **_collect_inputs** `backend/app/services/project_portrait_builder.py:211` — _static_confirmed_
+    - WHERE: `client_id=?`
+- `SELECT-FROM` @ **backfill_task_glossary_links** `backend/app/services/project_portrait_builder.py:25` — _static_confirmed_
+    - WHERE: `client_id = ?`
+- `SELECT-FROM` @ **_weekly_mainline_task_lookup_ids** `backend/app/services/review_narrative.py:381` — _static_confirmed_
+    - WHERE: `(id IN (`
+    - WHERE: `(id IN ({?}) OR cloud_id IN ({?})) AND COALESCE(scope_mode, 'COLLAB_SHARED') != 'PERSONAL_ONLY'`
+- `SELECT-FROM` @ **_weekly_mainline_task_descriptions** `backend/app/services/review_narrative.py:409` — _static_confirmed_
+    - WHERE: `id IN (`
+    - WHERE: `id IN ({?}) AND COALESCE(scope_mode, 'COLLAB_SHARED') != 'PERSONAL_ONLY'`
+- `SELECT-FROM` @ **_section_9_next_steps** `backend/app/services/story_card_generator.py:225` — _static_confirmed_
+    - WHERE: `client_id = ? AND status NOT IN ('completed','archived')`
+- `SELECT-FROM` @ **_section_2_current_phase** `backend/app/services/story_card_generator.py:50` — _static_confirmed_
+    - WHERE: `client_id = ? AND status NOT IN ('completed','archived')`
+- `SELECT-FROM+JOIN` @ **build_task_context_brief_material_pack** `backend/app/services/task_context_brief_engine.py:275` — _static_confirmed_
+    - WHERE: `client_id = ? AND status NOT IN ('inbox', 'rejected')`
+    - WHERE: `event_line_id = ? AND status NOT IN ('inbox', 'rejected')`
+    - WHERE: `id = ?`
+    - WHERE: `t.client_id = ?`
+- `SELECT-FROM` @ **collect_all_todos** `backend/app/services/todo_aggregator.py:66` — _static_confirmed_
+    - WHERE: `client_id=? AND progress_status='todo'`
+- `SELECT-FROM` @ **build_weekly_review_material_pack** `backend/app/services/weekly_review_material_pack.py:335` — _static_confirmed_
+    - WHERE: `(date(t.due_date) BETWEEN ? AND ? OR date(t.created_at) BETWEEN ? AND ?) AND COALESCE(t.scope_mode, 'COLLAB_SHARED') != 'PERSONAL_ONLY'`
+    - WHERE: `e.source_type = 'weekly_review_entry' AND e.week_label = ? AND LOWER(COALESCE(entry.content_domain, 'work')) NOT IN ('personal', 'private') AND NOT EXISTS ( SELECT 1 FROM tasks t WHERE t.id = entry.ta`
+    - WHERE: `entry.week_label = ? AND LOWER(COALESCE(entry.content_domain, 'work')) NOT IN ('personal', 'private') AND NOT EXISTS ( SELECT 1 FROM tasks t WHERE t.id = entry.task_id AND COALESCE(t.scope_mode, 'COLL`
+    - WHERE: `entry.week_label = ? AND entry.task_id IN ({?}) AND LOWER(COALESCE(entry.content_domain, 'work')) NOT IN ('personal', 'private') AND NOT EXISTS ( SELECT 1 FROM tasks t WHERE t.id = entry.task_id AND C`
+    - WHERE: `entry.week_label = ? AND vd.canonical_kind = 'review_entry_doc' AND vd.origin_type = 'weekly_review_entry' AND LOWER(COALESCE(entry.content_domain, 'work')) NOT IN ('personal', 'private') AND NOT EXIS`
+- `SELECT-FROM` @ **_render_event_line_doc** `backend/app/services/workspace_relation_docs.py:119` — _static_confirmed_
+    - WHERE: `t.client_id = ? AND t.event_line_id = ? AND COALESCE(t.scope_mode, 'COLLAB_SHARED') != 'PERSONAL_ONLY'`
+- `SELECT-FROM+JOIN` @ **_materialize_event_line_docs** `backend/app/services/workspace_relation_docs.py:203` — _static_confirmed_
+    - WHERE: `client_id = ? AND event_line_id = ? AND COALESCE(scope_mode, 'COLLAB_SHARED') != 'PERSONAL_ONLY'`
+    - WHERE: `el.primary_client_id = ? OR t.id IS NOT NULL`
+- `SELECT-FROM` @ **_render_project_module_doc** `backend/app/services/workspace_relation_docs.py:264` — _static_confirmed_
+    - WHERE: `t.client_id = ? AND t.project_module_id = ? AND COALESCE(t.scope_mode, 'COLLAB_SHARED') != 'PERSONAL_ONLY'`
+- `SELECT-FROM` @ **_render_project_flow_doc** `backend/app/services/workspace_relation_docs.py:321` — _static_confirmed_
+    - WHERE: `t.client_id = ? AND t.project_flow_id = ? AND COALESCE(t.scope_mode, 'COLLAB_SHARED') != 'PERSONAL_ONLY'`
+- `JOIN` @ **_review_relation_sources** `backend/app/services/workspace_relation_docs.py:457` — _static_confirmed_
+    - WHERE: `e.review_id = ? AND LOWER(COALESCE(e.content_domain, 'work')) NOT IN ('personal', 'private') AND COALESCE(t.scope_mode, 'COLLAB_SHARED') != 'PERSONAL_ONLY' AND ( pm.client_id = ? OR pf.client_id = ? O`
+    - WHERE: `e.review_id = ? AND t.client_id = ? AND LOWER(COALESCE(e.content_domain, 'work')) NOT IN ('personal', 'private') AND COALESCE(t.scope_mode, 'COLLAB_SHARED') != 'PERSONAL_ONLY'`
+- `JOIN` @ **_render_review_doc** `backend/app/services/workspace_relation_docs.py:516` — _static_confirmed_
+    - WHERE: `e.review_id = ? AND LOWER(COALESCE(e.content_domain, 'work')) NOT IN ('personal', 'private') AND (t.id IS NULL OR COALESCE(t.scope_mode, 'COLLAB_SHARED') != 'PERSONAL_ONLY')`
+- `SELECT-FROM` @ **_materialize_review_docs** `backend/app/services/workspace_relation_docs.py:564` — _static_confirmed_
+    - WHERE: `primary_client_id = ? OR id IN ( SELECT event_line_id FROM tasks WHERE client_id = ? AND event_line_id IS NOT NULL AND COALESCE(scope_mode, 'COLLAB_SHARED') != 'PERSONAL_ONLY' )`
+- `SELECT-FROM` @ **_materialize_calendar_doc** `backend/app/services/workspace_relation_docs.py:637` — _static_confirmed_
+    - WHERE: `t.client_id = ? AND COALESCE(t.scope_mode, 'COLLAB_SHARED') != 'PERSONAL_ONLY' AND (`
+    - WHERE: `t.client_id = ? AND COALESCE(t.scope_mode, 'COLLAB_SHARED') != 'PERSONAL_ONLY' AND ({?})`
+- `SELECT-FROM` @ **_task_rows_for_client** `backend/app/services/workspace_relation_docs.py:66` — _static_confirmed_
+    - WHERE: `t.client_id = ? AND COALESCE(t.scope_mode, 'COLLAB_SHARED') != 'PERSONAL_ONLY'`
+
+## `team_sync_state`
+
+- 经验层: **0 行**
+
+### 写边 (2)
+- `UPDATE` @ **run_team_sync_once** `backend/app/services/team_sync_executor.py:164` — _static_confirmed_
+    - chain: run_team_sync_once [worker:run_team_sync_once] @backend/app/services/team_sync_executor.py:164
+- `INSERT` @ **enqueue_all_unsynced** `backend/app/services/team_sync_executor.py:62` — _static_confirmed_
+    - chain: enqueue_all_unsynced [worker:enqueue_all_unsynced] @backend/app/services/team_sync_executor.py:62
+
+### 读边 (3)
+- `SELECT-FROM` @ **run_team_sync_once** `backend/app/services/team_sync_executor.py:164` — _static_confirmed_
+    - WHERE: `status = 'pending' AND attempts < ?`
+- `SELECT-FROM` @ **get_sync_stats** `backend/app/services/team_sync_executor.py:299` — _static_confirmed_
+- `JOIN` @ **enqueue_all_unsynced** `backend/app/services/team_sync_executor.py:62` — _static_confirmed_
+    - WHERE: `tss.source_id IS NULL AND sr.org_id IS NOT NULL AND sr.org_id != '' AND sr.status = 'active'`
+
+## `text`
+
+- 经验层: 真库**无此表** (静态边 0写/1读)
+
+### 写边 (0)
+- (无静态写边)
+
+### 读边 (1)
+- `SELECT-FROM` @ **extract_quotes_from_text** `backend/app/services/local_memory.py:251` — _static_confirmed_
+
+## `the`
+
+- 经验层: 真库**无此表** (静态边 0写/2读)
+
+### 写边 (0)
+- (无静态写边)
+
+### 读边 (2)
+- `SELECT-FROM` @ **create_app** `backend/app/main.py:3179` — _static_confirmed_
+- `SELECT-FROM` @ **create_app._sync_review_governance_departments_from_org_model** `backend/app/main.py:6086` — _static_confirmed_
+
+## `theme_clusters`
+
+- 经验层: **37 行** · 最近写入 created_at=2026-06-05T15:04:03
+
+### 写边 (0)
+- (无静态写边)  ⚠️ **0 写边但真库有行 → needs_human (写入路径在静态扫描盲区:可能动态表名/ORM/外部进程)**
+
+### 读边 (6)
+- `SELECT-FROM` @ **list_theme_clusters** `backend/app/services/analysis_center.py:1088` — _static_confirmed_
+    - WHERE: `{?}`
+- `SELECT-FROM` @ **_build_analysis_center_summary** `backend/app/services/analysis_center.py:1548` — _static_confirmed_
+    - WHERE: `client_id = ? UNION ALL SELECT 'theme', COUNT(*) FROM theme_clusters WHERE client_id = ? UNION ALL SELECT 'conflict', COUNT(*) FROM conflict_groups WHERE client_id = ? UNION ALL SELECT 'open_q', COUNT`
+- `SELECT-FROM` @ **build_client_page_context_pack** `backend/app/services/analysis_context.py:294` — _static_confirmed_
+    - WHERE: `client_id = ?`
+- `SELECT-FROM` @ **_build_metrics** `backend/app/services/digital_asset_center.py:3129` — _static_confirmed_
+    - WHERE: `client_id = ?`
+- `SELECT-FROM` @ **_collect_sources** `backend/app/services/digital_asset_center.py:3179` — _static_confirmed_
+    - WHERE: `client_id = ?`
+- `SELECT-FROM` @ **build_digital_asset_narrative_context** `backend/app/services/digital_asset_narrative.py:201` — _static_confirmed_
+    - WHERE: `client_id = ?`
+
+## `this`
+
+- 经验层: 真库**无此表** (静态边 0写/1读)
+
+### 写边 (0)
+- (无静态写边)
+
+### 读边 (1)
+- `SELECT-FROM` @ **sanitize_chat_failure_reason** `backend/app/main.py:1681` — _static_confirmed_
+
+## `thread`
+
+- 经验层: 真库**无此表** (静态边 0写/1读)
+
+### 写边 (0)
+- (无静态写边)
+
+### 读边 (1)
+- `SELECT-FROM` @ **extract_chat_facts_to_memory** `backend/app/services/memory_foundation.py:2171` — _static_confirmed_
+
+## `topic_candidate_insights`
+
+- 经验层: **3 行** · 最近写入 created_at=2026-04-20T12:04:19
+
+### 写边 (2)
+- `INSERT+UPDATE` @ **create_app** `backend/app/main.py:3179` — _needs_human_
+    - chain: create_app @backend/app/main.py:3179  ←  (no caller found — orphan write)
+- `INSERT+UPDATE` @ **create_app.save_topic_candidate_insight** `backend/app/main.py:54873` — _call_name_match_
+    - chain: save_topic_candidate_insight @backend/app/main.py:54873  ←  ensure_topic_candidate_insight @backend/app/main.py:54983  ←  build_candidate_task_plan [endpoint:/api/v1/topics/candidates/{candidate_id}/task-plan] @backend/app/main.py:55590
+    - chain: save_topic_candidate_insight @backend/app/main.py:54873  ←  ensure_topic_candidate_insight @backend/app/main.py:54983  ←  chat_with_topic_candidate [endpoint:/api/v1/topics/candidates/{candidate_id}/chat] @backend/app/main.py:55525
+    - chain: save_topic_candidate_insight @backend/app/main.py:54873  ←  ensure_topic_candidate_insight @backend/app/main.py:54983  ←  get_candidate_insights [endpoint:/api/v1/topics/candidates/{candidate_id}/insights] @backend/app/main.py:55515
+    - chain: save_topic_candidate_insight @backend/app/main.py:54873  ←  ensure_topic_candidate_insight @backend/app/main.py:54983  ←  prefetch_topic_candidate_insight @backend/app/main.py:55078  ←  schedule_topic_candidate_insight [worker:schedule_topic_candidate_insight] @backend/app/main.py:55094
+
+### 读边 (7)
+- `SELECT-FROM` @ **_init_schema** `backend/app/db.py:60` — _static_confirmed_
+- `SELECT-FROM` @ **create_app** `backend/app/main.py:3179` — _static_confirmed_
+    - WHERE: `candidate_id = ?`
+- `SELECT-FROM` @ **create_app.import_sync_intelligence_demo.apply_rows** `backend/app/main.py:54624` — _static_confirmed_
+    - WHERE: `candidate_id = ?`
+- `SELECT-FROM` @ **create_app.build_topic_candidate** `backend/app/main.py:54672` — _static_confirmed_
+    - WHERE: `candidate_id = ?`
+- `SELECT-FROM` @ **create_app.save_topic_candidate_insight** `backend/app/main.py:54873` — _static_confirmed_
+    - WHERE: `candidate_id = ?`
+- `SELECT-FROM` @ **create_app.ensure_topic_candidate_insight** `backend/app/main.py:54983` — _static_confirmed_
+    - WHERE: `candidate_id = ?`
+- `SELECT-FROM` @ **create_app.chat_with_topic_candidate** `backend/app/main.py:55525` — _static_confirmed_
+    - WHERE: `candidate_id = ?`
+
+## `topic_candidate_seen`
+
+- 经验层: **77 行** · 最近写入 created_at=2026-04-20T12:01:30
+
+### 写边 (3)
+- `INSERT` @ **_init_schema** `backend/app/db.py:60` — _needs_human_
+    - chain: _init_schema @backend/app/db.py:60  ←  __init__ @backend/app/db.py:49
+- `INSERT+UPDATE` @ **create_app** `backend/app/main.py:3179` — _needs_human_
+    - chain: create_app @backend/app/main.py:3179  ←  (no caller found — orphan write)
+- `INSERT+UPDATE` @ **create_app.remember_topic_candidate_seen** `backend/app/main.py:55178` — _call_name_match_
+    - chain: remember_topic_candidate_seen @backend/app/main.py:55178  ←  delete_topic_candidate [endpoint:/api/v1/topics/candidates/{candidate_id}] @backend/app/main.py:55721
+    - chain: remember_topic_candidate_seen @backend/app/main.py:55178  ←  create_topic_candidate_record @backend/app/main.py:55103  ←  create_candidate [endpoint:/api/v1/topics/candidates] @backend/app/main.py:55501
+    - chain: remember_topic_candidate_seen @backend/app/main.py:55178  ←  create_topic_candidate_record @backend/app/main.py:55103  ←  capture_topic_radar_internal @backend/app/main.py:55263  ←  capture_single_topic_radar [endpoint:/api/v1/topics/radars/{radar_id}/capture] @backend/app/main.py:55457
+
+### 读边 (4)
+- `SELECT-FROM` @ **_init_schema** `backend/app/db.py:60` — _static_confirmed_
+    - WHERE: `NOT EXISTS ( SELECT 1 FROM topic_candidate_seen seen WHERE seen.radar_id = candidate.radar_id AND ( (LOWER(TRIM(COALESCE(candidate.source_url, ''))) <> '' AND seen.source_url_key = LOWER(TRIM(COALESCE`
+- `SELECT-FROM` @ **create_app** `backend/app/main.py:3179` — _static_confirmed_
+    - WHERE: `radar_id = ? AND ( (? <> '' AND source_url_key = ?) OR (? <> '' AND title_source_key = ?) )`
+- `SELECT-FROM` @ **create_app.remember_topic_candidate_seen** `backend/app/main.py:55178` — _static_confirmed_
+    - WHERE: `radar_id = ? AND ( (? <> '' AND source_url_key = ?) OR (? <> '' AND title_source_key = ?) )`
+- `SELECT-FROM` @ **create_app.topic_candidate_already_seen** `backend/app/main.py:55225` — _static_confirmed_
+    - WHERE: `radar_id = ? AND ( (? <> '' AND source_url_key = ?) OR (? <> '' AND title_source_key = ?) )`
+
+## `topic_candidates`
+
+- 经验层: **3 行** · 最近写入 created_at=2026-04-20T12:01:30
+
+### 写边 (8)
+- `UPDATE` @ **_init_schema** `backend/app/db.py:60` — _needs_human_
+    - chain: _init_schema @backend/app/db.py:60  ←  __init__ @backend/app/db.py:49
+- `INSERT` @ **load_demo_dataset** `backend/app/main.py:2941` — _call_name_match_
+    - chain: load_demo_dataset @backend/app/main.py:2941  ←  load_demo_dataset_endpoint [endpoint:/api/v1/settings/demo-data/load] @backend/app/main.py:37527
+- `INSERT+UPDATE` @ **create_app** `backend/app/main.py:3179` — _needs_human_
+    - chain: create_app @backend/app/main.py:3179  ←  (no caller found — orphan write)
+- `UPDATE` @ **create_app.save_topic_candidate_insight** `backend/app/main.py:54873` — _call_name_match_
+    - chain: save_topic_candidate_insight @backend/app/main.py:54873  ←  ensure_topic_candidate_insight @backend/app/main.py:54983  ←  build_candidate_task_plan [endpoint:/api/v1/topics/candidates/{candidate_id}/task-plan] @backend/app/main.py:55590
+    - chain: save_topic_candidate_insight @backend/app/main.py:54873  ←  ensure_topic_candidate_insight @backend/app/main.py:54983  ←  chat_with_topic_candidate [endpoint:/api/v1/topics/candidates/{candidate_id}/chat] @backend/app/main.py:55525
+    - chain: save_topic_candidate_insight @backend/app/main.py:54873  ←  ensure_topic_candidate_insight @backend/app/main.py:54983  ←  get_candidate_insights [endpoint:/api/v1/topics/candidates/{candidate_id}/insights] @backend/app/main.py:55515
+    - chain: save_topic_candidate_insight @backend/app/main.py:54873  ←  ensure_topic_candidate_insight @backend/app/main.py:54983  ←  prefetch_topic_candidate_insight @backend/app/main.py:55078  ←  schedule_topic_candidate_insight [worker:schedule_topic_candidate_insight] @backend/app/main.py:55094
+- `UPDATE` @ **create_app.update_topic_candidate_insight_state** `backend/app/main.py:54939` — _call_name_match_
+    - chain: update_topic_candidate_insight_state @backend/app/main.py:54939  ←  ensure_topic_candidate_insight @backend/app/main.py:54983  ←  build_candidate_task_plan [endpoint:/api/v1/topics/candidates/{candidate_id}/task-plan] @backend/app/main.py:55590
+    - chain: update_topic_candidate_insight_state @backend/app/main.py:54939  ←  ensure_topic_candidate_insight @backend/app/main.py:54983  ←  chat_with_topic_candidate [endpoint:/api/v1/topics/candidates/{candidate_id}/chat] @backend/app/main.py:55525
+    - chain: update_topic_candidate_insight_state @backend/app/main.py:54939  ←  ensure_topic_candidate_insight @backend/app/main.py:54983  ←  get_candidate_insights [endpoint:/api/v1/topics/candidates/{candidate_id}/insights] @backend/app/main.py:55515
+    - chain: update_topic_candidate_insight_state @backend/app/main.py:54939  ←  prefetch_topic_candidate_insight @backend/app/main.py:55078  ←  schedule_topic_candidate_insight [worker:schedule_topic_candidate_insight] @backend/app/main.py:55094
+- `INSERT` @ **create_app.create_topic_candidate_record** `backend/app/main.py:55103` — _call_name_match_
+    - chain: create_topic_candidate_record @backend/app/main.py:55103  ←  create_candidate [endpoint:/api/v1/topics/candidates] @backend/app/main.py:55501
+    - chain: create_topic_candidate_record @backend/app/main.py:55103  ←  capture_topic_radar_internal @backend/app/main.py:55263  ←  capture_single_topic_radar [endpoint:/api/v1/topics/radars/{radar_id}/capture] @backend/app/main.py:55457
+- `UPDATE` @ **create_app.promote_candidate_to_tasks** `backend/app/main.py:55636` — _static_confirmed_
+    - chain: promote_candidate_to_tasks [endpoint:/api/v1/topics/candidates/{candidate_id}/promote-tasks] @backend/app/main.py:55636
+- `UPDATE` @ **create_app.promote_candidate_to_task** `backend/app/main.py:55696` — _static_confirmed_
+    - chain: promote_candidate_to_task [endpoint:/api/v1/topics/candidates/{candidate_id}/promote-task] @backend/app/main.py:55696
+
+### 读边 (17)
+- `SELECT-FROM` @ **_init_schema** `backend/app/db.py:60` — _static_confirmed_
+    - WHERE: `NOT EXISTS ( SELECT 1 FROM topic_candidate_seen seen WHERE seen.radar_id = candidate.radar_id AND ( (LOWER(TRIM(COALESCE(candidate.source_url, ''))) <> '' AND seen.source_url_key = LOWER(TRIM(COALESCE`
+- `SELECT-FROM` @ **clear_demo_dataset** `backend/app/main.py:2884` — _static_confirmed_
+    - WHERE: `id IN (`
+    - WHERE: `id IN ({?})`
+- `SELECT-FROM` @ **create_app** `backend/app/main.py:3179` — _static_confirmed_
+    - WHERE: `id = ?`
+    - WHERE: `radar_id = ? AND ( (source_url IS NOT NULL AND source_url = ?) OR (LOWER(title) = LOWER(?) AND LOWER(source) = LOWER(?)) )`
+- `SELECT-FROM` @ **create_app.build_health** `backend/app/main.py:5147` — _static_confirmed_
+- `SELECT-FROM` @ **create_app.fetch_topic_candidates** `backend/app/main.py:54867` — _static_confirmed_
+- `SELECT-FROM` @ **create_app.prefetch_topic_candidate_insight** `backend/app/main.py:55078` — _static_confirmed_
+    - WHERE: `id = ?`
+- `SELECT-FROM` @ **create_app.create_topic_candidate_record** `backend/app/main.py:55103` — _static_confirmed_
+    - WHERE: `id = ?`
+- `SELECT-FROM` @ **create_app.topic_candidate_already_seen** `backend/app/main.py:55225` — _static_confirmed_
+    - WHERE: `radar_id = ? AND ( (source_url IS NOT NULL AND source_url = ?) OR (LOWER(title) = LOWER(?) AND LOWER(source) = LOWER(?)) )`
+- `SELECT-FROM` @ **create_app.get_candidate_insights** `backend/app/main.py:55515` — _static_confirmed_
+    - WHERE: `id = ?`
+- `SELECT-FROM` @ **create_app.chat_with_topic_candidate** `backend/app/main.py:55525` — _static_confirmed_
+    - WHERE: `id = ?`
+- `SELECT-FROM` @ **create_app.build_candidate_task_plan** `backend/app/main.py:55590` — _static_confirmed_
+    - WHERE: `id = ?`
+- `SELECT-FROM` @ **create_app.promote_candidate_to_tasks** `backend/app/main.py:55636` — _static_confirmed_
+    - WHERE: `id = ?`
+- `SELECT-FROM` @ **create_app.promote_candidate_to_task** `backend/app/main.py:55696` — _static_confirmed_
+    - WHERE: `id = ?`
+- `SELECT-FROM` @ **create_app.delete_topic_candidate** `backend/app/main.py:55721` — _static_confirmed_
+    - WHERE: `id = ?`
+- `SELECT-FROM` @ **_build_dazhou_logs** `backend/app/services/agent_worklogs.py:310` — _static_confirmed_
+    - WHERE: `c.captured_by = ?`
+- `SELECT-FROM` @ **create_external_evidence_card_from_topic_candidate** `backend/app/services/external_evidence.py:144` — _static_confirmed_
+    - WHERE: `id = ?`
+- `SELECT-FROM` @ **build_topic_page_context_pack** `backend/app/services/topic_data_center.py:34` — _static_confirmed_
+    - WHERE: `c.id = ?`
+
+## `topic_radars`
+
+- 经验层: **2 行** · 最近写入 created_at=2026-03-12T21:24:40
+
+### 写边 (4)
+- `INSERT` @ **load_demo_dataset** `backend/app/main.py:2941` — _call_name_match_
+    - chain: load_demo_dataset @backend/app/main.py:2941  ←  load_demo_dataset_endpoint [endpoint:/api/v1/settings/demo-data/load] @backend/app/main.py:37527
+- `INSERT+UPDATE` @ **create_app** `backend/app/main.py:3179` — _needs_human_
+    - chain: create_app @backend/app/main.py:3179  ←  (no caller found — orphan write)
+- `INSERT` @ **create_app.create_radar** `backend/app/main.py:55409` — _static_confirmed_
+    - chain: create_radar [endpoint:/api/v1/topics/radars] @backend/app/main.py:55409
+- `UPDATE` @ **create_app.update_radar** `backend/app/main.py:55428` — _static_confirmed_
+    - chain: update_radar [endpoint:/api/v1/topics/radars/{radar_id}] @backend/app/main.py:55428
+
+### 读边 (14)
+- `SELECT-FROM` @ **build_demo_data_response** `backend/app/main.py:2869` — _static_confirmed_
+    - WHERE: `id IN (`
+    - WHERE: `id IN ({?})`
+- `SELECT-FROM` @ **clear_demo_dataset** `backend/app/main.py:2884` — _static_confirmed_
+    - WHERE: `id IN (`
+    - WHERE: `id IN ({?})`
+- `SELECT-FROM` @ **create_app** `backend/app/main.py:3179` — _static_confirmed_
+    - WHERE: `id = ?`
+- `SELECT-FROM` @ **create_app.build_intelligence_profile** `backend/app/main.py:54802` — _static_confirmed_
+    - WHERE: `id = ?`
+- `SELECT-FROM` @ **create_app.list_topics** `backend/app/main.py:55335` — _static_confirmed_
+- `SELECT-FROM` @ **create_app.update_radar** `backend/app/main.py:55428` — _static_confirmed_
+    - WHERE: `id = ?`
+- `SELECT-FROM` @ **create_app.delete_radar** `backend/app/main.py:55448` — _static_confirmed_
+    - WHERE: `id = ?`
+- `SELECT-FROM` @ **create_app.capture_single_topic_radar** `backend/app/main.py:55457` — _static_confirmed_
+    - WHERE: `id = ?`
+- `SELECT-FROM` @ **create_app.create_candidate** `backend/app/main.py:55501` — _static_confirmed_
+    - WHERE: `id = ?`
+- `SELECT-FROM` @ **create_app.chat_with_topic_candidate** `backend/app/main.py:55525` — _static_confirmed_
+    - WHERE: `id = ?`
+- `SELECT-FROM` @ **create_app.capture_all_topic_radars** `backend/app/main.py:55685` — _static_confirmed_
+- `JOIN` @ **_build_dazhou_logs** `backend/app/services/agent_worklogs.py:310` — _static_confirmed_
+    - WHERE: `c.captured_by = ?`
+- `SELECT-FROM` @ **_build_focus_items** `backend/app/services/agent_worklogs.py:431` — _static_confirmed_
+- `JOIN` @ **build_topic_page_context_pack** `backend/app/services/topic_data_center.py:34` — _static_confirmed_
+    - WHERE: `c.id = ?`
+
+## `trashed_files`
+
+- 经验层: **55 行**
+
+### 写边 (1)
+- `INSERT` @ **trash_file** `backend/app/services/trash_can.py:69` — _call_name_match_
+    - chain: trash_file @backend/app/services/trash_can.py:69  ←  ingest_document_knowledge @backend/app/services/knowledge_base.py:2802  ←  upload_task_attachment [endpoint:/api/v1/tasks/{task_id}/attachments] @backend/app/main.py:53434
+    - chain: trash_file @backend/app/services/trash_can.py:69  ←  _migrate_one_client @backend/app/services/unified_workspace_migrator.py:108  ←  migrate_all_clients @backend/app/services/unified_workspace_migrator.py:281  ←  unified_workspace_migrate_endpoint [endpoint:/api/v1/admin/unified-workspace-migrate] @backend/app/main.py:36643
+    - chain: trash_file @backend/app/services/trash_can.py:69  ←  ingest_document_knowledge @backend/app/services/knowledge_base.py:2802  ←  _build_local_event_line_report_snapshot @backend/app/main.py:33643  ←  get_event_line_report_snapshot [endpoint:/api/v1/event-lines/{event_line_id}/report-snapshot] @backend/app/main.py:34329
+    - chain: trash_file @backend/app/services/trash_can.py:69  ←  ingest_document_knowledge @backend/app/services/knowledge_base.py:2802  ←  _process_one_pdf @backend/app/services/internet_pdf_worker.py:96  ←  _worker_loop [worker:_worker_loop] @backend/app/services/internet_pdf_worker.py:205
+    - chain: trash_file @backend/app/services/trash_can.py:69  ←  ingest_document_knowledge @backend/app/services/knowledge_base.py:2802  ←  backfill_workspace_import @backend/app/services/knowledge_v2.py:3943  ←  backfill_client_workspace_imports [endpoint:/api/v1/clients/{client_id}/workspace/backfill-imports] @backend/app/main.py:50039
+    - chain: trash_file @backend/app/services/trash_can.py:69  ←  ingest_document_knowledge @backend/app/services/knowledge_base.py:2802  ←  create_client_text_document @backend/app/main.py:16116  ←  create_client_document_from_text [endpoint:/api/v1/clients/{client_id}/documents/from-text] @backend/app/main.py:49576
+
+### 读边 (3)
+- `SELECT-FROM` @ **enforce_size_limit** `backend/app/services/trash_can.py:123` — _static_confirmed_
+    - WHERE: `id = ?`
+- `SELECT-FROM` @ **clear_all** `backend/app/services/trash_can.py:151` — _static_confirmed_
+- `SELECT-FROM` @ **get_status** `backend/app/services/trash_can.py:48` — _static_confirmed_
+
+## `user_ai_preferences`
+
+- 经验层: **0 行**
+
+### 写边 (0)
+- (无静态写边)
+
+### 读边 (0)
+- (无静态读边)
+
+## `v2_chunks`
+
+- 经验层: **12459 行** · 最近写入 created_at=2026-06-08T19:53:27
+
+### 写边 (4)
+- `UPDATE` @ **update_chunk_entity_ids** `backend/app/services/entity_store.py:168` — _call_name_match_
+    - chain: update_chunk_entity_ids @backend/app/services/entity_store.py:168  ←  persist_chunk_entities @backend/app/services/entity_store.py:180  ←  ingest_document_knowledge @backend/app/services/knowledge_base.py:2802  ←  upload_task_attachment [endpoint:/api/v1/tasks/{task_id}/attachments] @backend/app/main.py:53434
+    - chain: update_chunk_entity_ids @backend/app/services/entity_store.py:168  ←  persist_chunk_entities @backend/app/services/entity_store.py:180  ←  ingest_document_knowledge @backend/app/services/knowledge_base.py:2802  ←  _build_local_event_line_report_snapshot @backend/app/main.py:33643  ←  get_event_line_report_snapshot [endpoint:/api/v1/event-lines/{event_line_id}/report-snapshot] @backend/app/main.py:34329
+    - chain: update_chunk_entity_ids @backend/app/services/entity_store.py:168  ←  persist_chunk_entities @backend/app/services/entity_store.py:180  ←  ingest_document_knowledge @backend/app/services/knowledge_base.py:2802  ←  _process_one_pdf @backend/app/services/internet_pdf_worker.py:96  ←  _worker_loop [worker:_worker_loop] @backend/app/services/internet_pdf_worker.py:205
+    - chain: update_chunk_entity_ids @backend/app/services/entity_store.py:168  ←  persist_chunk_entities @backend/app/services/entity_store.py:180  ←  ingest_document_knowledge @backend/app/services/knowledge_base.py:2802  ←  backfill_workspace_import @backend/app/services/knowledge_v2.py:3943  ←  backfill_client_workspace_imports [endpoint:/api/v1/clients/{client_id}/workspace/backfill-imports] @backend/app/main.py:50039
+    - chain: update_chunk_entity_ids @backend/app/services/entity_store.py:168  ←  persist_chunk_entities @backend/app/services/entity_store.py:180  ←  ingest_document_knowledge @backend/app/services/knowledge_base.py:2802  ←  create_client_text_document @backend/app/main.py:16116  ←  create_client_document_from_text [endpoint:/api/v1/clients/{client_id}/documents/from-text] @backend/app/main.py:49576
+    - chain: update_chunk_entity_ids @backend/app/services/entity_store.py:168  ←  persist_chunk_entities @backend/app/services/entity_store.py:180  ←  ingest_document_knowledge @backend/app/services/knowledge_base.py:2802  ←  execute_parse_failure_retry_batch @backend/app/main.py:42534  ←  retry_client_parse_failures [endpoint:/api/v1/clients/{client_id}/knowledge/parse-failures/retry] @backend/app/main.py:42800
+- `INSERT+UPDATE` @ **ingest_document_knowledge** `backend/app/services/knowledge_v2.py:2114` — _call_name_match_
+    - chain: ingest_document_knowledge @backend/app/services/knowledge_v2.py:2114  ←  upload_task_attachment [endpoint:/api/v1/tasks/{task_id}/attachments] @backend/app/main.py:53434
+    - chain: ingest_document_knowledge @backend/app/services/knowledge_v2.py:2114  ←  _build_local_event_line_report_snapshot @backend/app/main.py:33643  ←  get_event_line_report_snapshot [endpoint:/api/v1/event-lines/{event_line_id}/report-snapshot] @backend/app/main.py:34329
+    - chain: ingest_document_knowledge @backend/app/services/knowledge_v2.py:2114  ←  _process_one_pdf @backend/app/services/internet_pdf_worker.py:96  ←  _worker_loop [worker:_worker_loop] @backend/app/services/internet_pdf_worker.py:205
+    - chain: ingest_document_knowledge @backend/app/services/knowledge_v2.py:2114  ←  backfill_workspace_import @backend/app/services/knowledge_v2.py:3943  ←  backfill_client_workspace_imports [endpoint:/api/v1/clients/{client_id}/workspace/backfill-imports] @backend/app/main.py:50039
+    - chain: ingest_document_knowledge @backend/app/services/knowledge_v2.py:2114  ←  create_client_text_document @backend/app/main.py:16116  ←  create_client_document_from_text [endpoint:/api/v1/clients/{client_id}/documents/from-text] @backend/app/main.py:49576
+    - chain: ingest_document_knowledge @backend/app/services/knowledge_v2.py:2114  ←  execute_parse_failure_retry_batch @backend/app/main.py:42534  ←  retry_client_parse_failures [endpoint:/api/v1/clients/{client_id}/knowledge/parse-failures/retry] @backend/app/main.py:42800
+- `INSERT` @ **upsert_canonical_text_document** `backend/app/services/knowledge_v2.py:3304` — _call_name_match_
+    - chain: upsert_canonical_text_document @backend/app/services/knowledge_v2.py:3304  ←  run_internet_enrichment [worker:run_internet_enrichment] @backend/app/services/internet_crawler.py:1135
+    - chain: upsert_canonical_text_document @backend/app/services/knowledge_v2.py:3304  ←  _promote_candidate @backend/app/services/intelligence_candidate_supply.py:4503  ←  run_intelligence_candidate_refresh @backend/app/services/intelligence_candidate_supply.py:5967  ←  trigger_intelligence_refresh [endpoint:/api/v1/intelligence/refresh] @backend/app/main.py:57794
+    - chain: upsert_canonical_text_document @backend/app/services/knowledge_v2.py:3304  ←  _upsert_text_document_if_needed @backend/app/services/data_center_ingest.py:552  ←  ingest_user_input @backend/app/services/data_center_ingest.py:1089  ←  ingest_event_line_by_id @backend/app/services/data_center_ingest.py:1862  ←  create_event_line [endpoint:/api/v1/event-lines] @backend/app/main.py:31525
+    - chain: upsert_canonical_text_document @backend/app/services/knowledge_v2.py:3304  ←  _upsert_text_document_if_needed @backend/app/services/data_center_ingest.py:552  ←  ingest_user_input @backend/app/services/data_center_ingest.py:1089  ←  ingest_event_line_by_id @backend/app/services/data_center_ingest.py:1862  ←  update_event_line [endpoint:/api/v1/event-lines/{event_line_id}] @backend/app/main.py:35169
+    - chain: upsert_canonical_text_document @backend/app/services/knowledge_v2.py:3304  ←  _upsert_text_document_if_needed @backend/app/services/data_center_ingest.py:552  ←  ingest_user_input @backend/app/services/data_center_ingest.py:1089  ←  ingest_meeting_by_id @backend/app/services/data_center_ingest.py:1609  ←  apply_strategic_meeting_pack [endpoint:/api/v1/clients/{client_id}/strategic-cockpit/meeting-pack/{meeting_id}/apply] @backend/app/main.py:42202
+    - chain: upsert_canonical_text_document @backend/app/services/knowledge_v2.py:3304  ←  _upsert_text_document_if_needed @backend/app/services/data_center_ingest.py:552  ←  ingest_user_input @backend/app/services/data_center_ingest.py:1089  ←  ingest_meeting_by_id @backend/app/services/data_center_ingest.py:1609  ←  extract_meeting [endpoint:/api/v1/clients/{client_id}/meetings/{meeting_id}/extract] @backend/app/main.py:51418
+- `INSERT` @ **_write_section_and_chunk** `backend/app/services/task_runners/visual_ocr_runner.py:202` — _call_name_match_
+    - chain: _write_section_and_chunk @backend/app/services/task_runners/visual_ocr_runner.py:202  ←  process @backend/app/services/task_runners/fact_extract_runner.py:41  ←  run_due_local_model_tasks @backend/app/services/local_model_optimizer.py:942  ←  local_model_optimizer_worker_loop [worker:local_model_optimizer_worker_loop] @backend/app/services/local_model_optimizer.py:1026
+    - chain: _write_section_and_chunk @backend/app/services/task_runners/visual_ocr_runner.py:202  ←  process @backend/app/services/task_runners/fact_extract_runner.py:41  ←  run_due_local_model_tasks @backend/app/services/local_model_optimizer.py:942  ←  run_local_ai_now [endpoint:/api/v1/local-ai/run-now] @backend/app/main.py:36970
+    - chain: _write_section_and_chunk @backend/app/services/task_runners/visual_ocr_runner.py:202  ←  process @backend/app/services/task_runners/fact_extract_runner.py:41  ←  diarize_audio_file @backend/app/services/local_asr/diarization_provider.py:99  ←  _transcribe_with_diarization @backend/app/services/local_asr/recording_ingest.py:114  ←  transcribe_recording_local_path @backend/app/services/local_asr/recording_ingest.py:64  ←  transcribe_recording_local_audio_endpoint [endpoint:/api/v1/recordings/transcribe-local-audio] @backend/app/main.py:37133
+
+### 读边 (18)
+- `SELECT-FROM` @ **create_app._find_chunk_for_next_step** `backend/app/main.py:28649` — _static_confirmed_
+    - WHERE: `vd.client_id=? AND vc.content LIKE ?`
+    - WHERE: `vd.client_id=? AND vc.content LIKE ? AND (d.title LIKE '%纪要%' OR d.title LIKE '%对齐会%' OR d.title LIKE '%会议%')`
+- `JOIN` @ **create_app.smart_import_commit_session** `backend/app/main.py:29395` — _static_confirmed_
+    - WHERE: `vd.import_session_id = ?`
+- `SELECT-FROM+JOIN` @ **create_app** `backend/app/main.py:3179` — _static_confirmed_
+    - WHERE: `v2_document_id = ?`
+    - WHERE: `vd.client_id=? AND vc.content LIKE ?`
+    - WHERE: `vd.client_id=? AND vc.content LIKE ? AND (d.title LIKE '%纪要%' OR d.title LIKE '%对齐会%' OR d.title LIKE '%会议%')`
+    - WHERE: `vd.document_id = ? AND vc.semantic_type IS NOT NULL AND vc.semantic_type != 'unclassified'`
+    - WHERE: `vd.import_session_id = ?`
+- `SELECT-FROM` @ **create_app._lookup_semantic_info_for_kernel** `backend/app/main.py:3452` — _static_confirmed_
+    - WHERE: `vd.document_id = ? AND vc.semantic_type IS NOT NULL AND vc.semantic_type != 'unclassified'`
+- `SELECT-FROM` @ **create_app.build_document_reading_preview_record** `backend/app/main.py:46173` — _static_confirmed_
+    - WHERE: `v2_document_id = ?`
+- `SELECT-FROM` @ **_semantic_weight_for_doc** `backend/app/services/evidence_selector.py:257` — _static_confirmed_
+    - WHERE: `vd.document_id = ? AND vc.semantic_type IS NOT NULL AND vc.semantic_type != 'unclassified'`
+- `SELECT-FROM` @ **query_candidate_value** `backend/app/services/fill_table_evaluator.py:257` — _static_confirmed_
+    - WHERE: `d.client_id = ? AND v.content LIKE ?`
+- `SELECT-FROM` @ **_format_internet_chunks** `backend/app/services/glossary_attribute_extractor.py:205` — _static_confirmed_
+    - WHERE: `d.client_id = ? AND d.content_domain = 'internet_enrichment' AND length(c.content) >= 100`
+- `SELECT-FROM` @ **_extract_facts_for_v2_doc** `backend/app/services/internet_crawler.py:755` — _static_confirmed_
+    - WHERE: `v2_document_id = ?`
+- `SELECT-FROM` @ **_remove_existing_v2_rows** `backend/app/services/knowledge_v2.py:1931` — _static_confirmed_
+    - WHERE: `v2_document_id = ?`
+- `JOIN` @ **fanout_document_to_strategic_thoughts** `backend/app/services/knowledge_v2.py:3103` — _static_confirmed_
+    - WHERE: `c.v2_document_id = ?`
+- `JOIN` @ **fanout_document_to_event_lines** `backend/app/services/knowledge_v2.py:3162` — _static_confirmed_
+    - WHERE: `c.v2_document_id = ? AND e.client_id = ? AND e.status = 'active'`
+- `SELECT-FROM` @ **compute_knowledge_status** `backend/app/services/knowledge_v2.py:4109` — _static_confirmed_
+    - WHERE: `v2_document_id IN (SELECT id FROM v2_documents WHERE client_id = ? AND material_layer IN ('evidence', 'external_media_transcript'))`
+- `SELECT-FROM` @ **extract_recent_client_actions** `backend/app/services/meeting_action_extractor.py:194` — _static_confirmed_
+    - WHERE: `vd.client_id = ? AND COALESCE(vd.imported_at, vd.updated_at, '') >= ?`
+- `SELECT-FROM` @ **_retrieve_top_chunks** `backend/app/services/narrative_collector.py:645` — _static_confirmed_
+    - WHERE: `vd.client_id = ? AND vc.content LIKE ? ESCAPE '\'`
+    - WHERE: `vd.client_id = ? AND vc.content LIKE ? ESCAPE '\' {?}`
+- `JOIN` @ **_select_data_center_chunks** `backend/app/services/task_context_brief_engine.py:185` — _static_confirmed_
+    - WHERE: `vd.client_id = ? AND COALESCE(vd.is_searchable, 1) = 1 AND COALESCE(vd.lifecycle_status, 'active') = 'active'`
+- `SELECT-FROM` @ **_next_chunk_index** `backend/app/services/task_runners/visual_ocr_runner.py:256` — _static_confirmed_
+    - WHERE: `v2_document_id = ?`
+- `SELECT-FROM` @ **_migrate_one_client** `backend/app/services/unified_workspace_migrator.py:108` — _static_confirmed_
+    - WHERE: `v2_document_id IN (SELECT id FROM v2_documents WHERE document_id = ?)`
+
+## `v2_documents`
+
+- 经验层: **1125 行** · 最近写入 updated_at=2026-06-08T19:53:27
+
+### 写边 (21)
+- `UPDATE` @ **_init_schema** `backend/app/db.py:60` — _needs_human_
+    - chain: _init_schema @backend/app/db.py:60  ←  __init__ @backend/app/db.py:49
+- `UPDATE` @ **create_app._force_online_transcript_document_classification** `backend/app/main.py:14274` — _call_name_match_
+    - chain: _force_online_transcript_document_classification @backend/app/main.py:14274  ←  migrate_client_link_material_documents_to_online_transcripts @backend/app/main.py:14391  ←  ensure_standard_client_folders @backend/app/main.py:14645  ←  apply_client_document_auto_repair [endpoint:/api/v1/clients/{client_id}/documents/auto-repair/apply] @backend/app/main.py:39062
+    - chain: _force_online_transcript_document_classification @backend/app/main.py:14274  ←  migrate_client_link_material_documents_to_online_transcripts @backend/app/main.py:14391  ←  ensure_standard_client_folders @backend/app/main.py:14645  ←  apply_client_folder_recommendation [endpoint:/api/v1/clients/{client_id}/folders/apply-recommendation] @backend/app/main.py:39044
+    - chain: _force_online_transcript_document_classification @backend/app/main.py:14274  ←  migrate_client_link_material_documents_to_online_transcripts @backend/app/main.py:14391  ←  ensure_standard_client_folders @backend/app/main.py:14645  ←  create_client [endpoint:/api/v1/clients] @backend/app/main.py:37631
+    - chain: _force_online_transcript_document_classification @backend/app/main.py:14274  ←  migrate_client_link_material_documents_to_online_transcripts @backend/app/main.py:14391  ←  ensure_standard_client_folders @backend/app/main.py:14645  ←  create_client_folder [endpoint:/api/v1/clients/{client_id}/folders] @backend/app/main.py:38854
+    - chain: _force_online_transcript_document_classification @backend/app/main.py:14274  ←  migrate_client_link_material_documents_to_online_transcripts @backend/app/main.py:14391  ←  ensure_standard_client_folders @backend/app/main.py:14645  ←  delete_client_folder [endpoint:/api/v1/clients/{client_id}/folders/{folder_id}] @backend/app/main.py:39117
+    - chain: _force_online_transcript_document_classification @backend/app/main.py:14274  ←  migrate_client_link_material_documents_to_online_transcripts @backend/app/main.py:14391  ←  ensure_standard_client_folders @backend/app/main.py:14645  ←  generate_client_dna_documents [endpoint:/api/v1/clients/{client_id}/dna-documents/generate] @backend/app/main.py:45574
+- `UPDATE` @ **_sync_task_attachment_scope** `backend/app/main.py:2237` — _needs_human_
+    - chain: _sync_task_attachment_scope [worker:_sync_task_attachment_scope] @backend/app/main.py:2237
+- `UPDATE` @ **create_app** `backend/app/main.py:3179` — _needs_human_
+    - chain: create_app @backend/app/main.py:3179  ←  (no caller found — orphan write)
+- `UPDATE` @ **create_app._set_document_auto_repair_folder** `backend/app/main.py:38480` — _call_name_match_
+    - chain: _set_document_auto_repair_folder @backend/app/main.py:38480  ←  _apply_document_auto_repair_item @backend/app/main.py:38541  ←  _run_workspace_document_auto_repair_job @backend/app/main.py:38586  ←  process_knowledge_job @backend/app/main.py:4809  ←  knowledge_worker_loop [worker:knowledge_worker_loop] @backend/app/main.py:5110
+    - chain: _set_document_auto_repair_folder @backend/app/main.py:38480  ←  _apply_document_auto_repair_item @backend/app/main.py:38541  ←  reconcile_pending_documents_for_client @backend/app/main.py:38673  ←  ensure_standard_client_folders @backend/app/main.py:14645  ←  apply_client_document_auto_repair [endpoint:/api/v1/clients/{client_id}/documents/auto-repair/apply] @backend/app/main.py:39062
+    - chain: _set_document_auto_repair_folder @backend/app/main.py:38480  ←  _apply_document_auto_repair_item @backend/app/main.py:38541  ←  reconcile_pending_documents_for_client @backend/app/main.py:38673  ←  ensure_standard_client_folders @backend/app/main.py:14645  ←  apply_client_folder_recommendation [endpoint:/api/v1/clients/{client_id}/folders/apply-recommendation] @backend/app/main.py:39044
+    - chain: _set_document_auto_repair_folder @backend/app/main.py:38480  ←  _apply_document_auto_repair_item @backend/app/main.py:38541  ←  reconcile_pending_documents_for_client @backend/app/main.py:38673  ←  ensure_standard_client_folders @backend/app/main.py:14645  ←  create_client [endpoint:/api/v1/clients] @backend/app/main.py:37631
+    - chain: _set_document_auto_repair_folder @backend/app/main.py:38480  ←  _apply_document_auto_repair_item @backend/app/main.py:38541  ←  reconcile_pending_documents_for_client @backend/app/main.py:38673  ←  ensure_standard_client_folders @backend/app/main.py:14645  ←  create_client_folder [endpoint:/api/v1/clients/{client_id}/folders] @backend/app/main.py:38854
+    - chain: _set_document_auto_repair_folder @backend/app/main.py:38480  ←  _apply_document_auto_repair_item @backend/app/main.py:38541  ←  reconcile_pending_documents_for_client @backend/app/main.py:38673  ←  ensure_standard_client_folders @backend/app/main.py:14645  ←  delete_client_folder [endpoint:/api/v1/clients/{client_id}/folders/{folder_id}] @backend/app/main.py:39117
+- `UPDATE` @ **create_app._soft_mark_document_invalid** `backend/app/main.py:38512` — _call_name_match_
+    - chain: _soft_mark_document_invalid @backend/app/main.py:38512  ←  _apply_document_auto_repair_item @backend/app/main.py:38541  ←  _run_workspace_document_auto_repair_job @backend/app/main.py:38586  ←  process_knowledge_job @backend/app/main.py:4809  ←  knowledge_worker_loop [worker:knowledge_worker_loop] @backend/app/main.py:5110
+    - chain: _soft_mark_document_invalid @backend/app/main.py:38512  ←  _apply_document_auto_repair_item @backend/app/main.py:38541  ←  reconcile_pending_documents_for_client @backend/app/main.py:38673  ←  ensure_standard_client_folders @backend/app/main.py:14645  ←  apply_client_document_auto_repair [endpoint:/api/v1/clients/{client_id}/documents/auto-repair/apply] @backend/app/main.py:39062
+    - chain: _soft_mark_document_invalid @backend/app/main.py:38512  ←  _apply_document_auto_repair_item @backend/app/main.py:38541  ←  reconcile_pending_documents_for_client @backend/app/main.py:38673  ←  ensure_standard_client_folders @backend/app/main.py:14645  ←  apply_client_folder_recommendation [endpoint:/api/v1/clients/{client_id}/folders/apply-recommendation] @backend/app/main.py:39044
+    - chain: _soft_mark_document_invalid @backend/app/main.py:38512  ←  _apply_document_auto_repair_item @backend/app/main.py:38541  ←  reconcile_pending_documents_for_client @backend/app/main.py:38673  ←  ensure_standard_client_folders @backend/app/main.py:14645  ←  create_client [endpoint:/api/v1/clients] @backend/app/main.py:37631
+    - chain: _soft_mark_document_invalid @backend/app/main.py:38512  ←  _apply_document_auto_repair_item @backend/app/main.py:38541  ←  reconcile_pending_documents_for_client @backend/app/main.py:38673  ←  ensure_standard_client_folders @backend/app/main.py:14645  ←  create_client_folder [endpoint:/api/v1/clients/{client_id}/folders] @backend/app/main.py:38854
+    - chain: _soft_mark_document_invalid @backend/app/main.py:38512  ←  _apply_document_auto_repair_item @backend/app/main.py:38541  ←  reconcile_pending_documents_for_client @backend/app/main.py:38673  ←  ensure_standard_client_folders @backend/app/main.py:14645  ←  delete_client_folder [endpoint:/api/v1/clients/{client_id}/folders/{folder_id}] @backend/app/main.py:39117
+- `UPDATE` @ **create_app._apply_client_folder_recommendation_plan** `backend/app/main.py:38751` — _call_name_match_
+    - chain: _apply_client_folder_recommendation_plan @backend/app/main.py:38751  ←  apply_client_folder_recommendation [endpoint:/api/v1/clients/{client_id}/folders/apply-recommendation] @backend/app/main.py:39044
+- `UPDATE` @ **create_app.update_client_folder** `backend/app/main.py:38884` — _static_confirmed_
+    - chain: update_client_folder [endpoint:/api/v1/clients/{client_id}/folders/{folder_id}] @backend/app/main.py:38884
+- `UPDATE` @ **create_app.move_client_document_folder** `backend/app/main.py:38933` — _static_confirmed_
+    - chain: move_client_document_folder [endpoint:/api/v1/clients/{client_id}/documents/{document_id}/move-folder] @backend/app/main.py:38933
+- `UPDATE` @ **create_app.run_workspace_data_center_readiness_action** `backend/app/main.py:43497` — _static_confirmed_
+    - chain: run_workspace_data_center_readiness_action [endpoint:/api/v1/clients/{client_id}/workspace/data-center-readiness/actions] @backend/app/main.py:43497
+- `UPDATE` @ **_mark_documents_for_source_entity** `backend/app/services/data_center_ingest.py:665` — _call_name_match_
+    - chain: _mark_documents_for_source_entity @backend/app/services/data_center_ingest.py:665  ←  mark_ingested_source_inactive @backend/app/services/data_center_ingest.py:735  ←  delete_task [endpoint:/api/v1/tasks/{task_id}] @backend/app/main.py:53307
+    - chain: _mark_documents_for_source_entity @backend/app/services/data_center_ingest.py:665  ←  mark_ingested_source_inactive @backend/app/services/data_center_ingest.py:735  ←  update_task [endpoint:/api/v1/tasks/{task_id}] @backend/app/main.py:52636
+    - chain: _mark_documents_for_source_entity @backend/app/services/data_center_ingest.py:665  ←  _upsert_text_document_if_needed @backend/app/services/data_center_ingest.py:552  ←  ingest_user_input @backend/app/services/data_center_ingest.py:1089  ←  ingest_event_line_by_id @backend/app/services/data_center_ingest.py:1862  ←  create_event_line [endpoint:/api/v1/event-lines] @backend/app/main.py:31525
+    - chain: _mark_documents_for_source_entity @backend/app/services/data_center_ingest.py:665  ←  _upsert_text_document_if_needed @backend/app/services/data_center_ingest.py:552  ←  ingest_user_input @backend/app/services/data_center_ingest.py:1089  ←  ingest_event_line_by_id @backend/app/services/data_center_ingest.py:1862  ←  update_event_line [endpoint:/api/v1/event-lines/{event_line_id}] @backend/app/main.py:35169
+    - chain: _mark_documents_for_source_entity @backend/app/services/data_center_ingest.py:665  ←  _upsert_text_document_if_needed @backend/app/services/data_center_ingest.py:552  ←  ingest_user_input @backend/app/services/data_center_ingest.py:1089  ←  ingest_meeting_by_id @backend/app/services/data_center_ingest.py:1609  ←  apply_strategic_meeting_pack [endpoint:/api/v1/clients/{client_id}/strategic-cockpit/meeting-pack/{meeting_id}/apply] @backend/app/main.py:42202
+    - chain: _mark_documents_for_source_entity @backend/app/services/data_center_ingest.py:665  ←  _upsert_text_document_if_needed @backend/app/services/data_center_ingest.py:552  ←  ingest_user_input @backend/app/services/data_center_ingest.py:1089  ←  ingest_meeting_by_id @backend/app/services/data_center_ingest.py:1609  ←  extract_meeting [endpoint:/api/v1/clients/{client_id}/meetings/{meeting_id}/extract] @backend/app/main.py:51418
+- `UPDATE` @ **mark_ingested_source_inactive** `backend/app/services/data_center_ingest.py:735` — _call_name_match_
+    - chain: mark_ingested_source_inactive @backend/app/services/data_center_ingest.py:735  ←  delete_task [endpoint:/api/v1/tasks/{task_id}] @backend/app/main.py:53307
+    - chain: mark_ingested_source_inactive @backend/app/services/data_center_ingest.py:735  ←  update_task [endpoint:/api/v1/tasks/{task_id}] @backend/app/main.py:52636
+    - chain: mark_ingested_source_inactive @backend/app/services/data_center_ingest.py:735  ←  _soft_isolate_ingested_source @backend/app/services/data_center_ingest.py:836  ←  _skip_orphan_client_ingest @backend/app/services/data_center_ingest.py:877  ←  ingest_user_input @backend/app/services/data_center_ingest.py:1089  ←  ingest_event_line_by_id @backend/app/services/data_center_ingest.py:1862  ←  create_event_line [endpoint:/api/v1/event-lines] @backend/app/main.py:31525
+    - chain: mark_ingested_source_inactive @backend/app/services/data_center_ingest.py:735  ←  _soft_isolate_ingested_source @backend/app/services/data_center_ingest.py:836  ←  _skip_orphan_client_ingest @backend/app/services/data_center_ingest.py:877  ←  ingest_user_input @backend/app/services/data_center_ingest.py:1089  ←  ingest_event_line_by_id @backend/app/services/data_center_ingest.py:1862  ←  update_event_line [endpoint:/api/v1/event-lines/{event_line_id}] @backend/app/main.py:35169
+    - chain: mark_ingested_source_inactive @backend/app/services/data_center_ingest.py:735  ←  _soft_isolate_ingested_source @backend/app/services/data_center_ingest.py:836  ←  _skip_orphan_client_ingest @backend/app/services/data_center_ingest.py:877  ←  ingest_user_input @backend/app/services/data_center_ingest.py:1089  ←  ingest_meeting_by_id @backend/app/services/data_center_ingest.py:1609  ←  apply_strategic_meeting_pack [endpoint:/api/v1/clients/{client_id}/strategic-cockpit/meeting-pack/{meeting_id}/apply] @backend/app/main.py:42202
+    - chain: mark_ingested_source_inactive @backend/app/services/data_center_ingest.py:735  ←  _soft_isolate_ingested_source @backend/app/services/data_center_ingest.py:836  ←  _skip_orphan_client_ingest @backend/app/services/data_center_ingest.py:877  ←  ingest_user_input @backend/app/services/data_center_ingest.py:1089  ←  ingest_meeting_by_id @backend/app/services/data_center_ingest.py:1609  ←  extract_meeting [endpoint:/api/v1/clients/{client_id}/meetings/{meeting_id}/extract] @backend/app/main.py:51418
+- `UPDATE` @ **_soft_isolate_ingested_source** `backend/app/services/data_center_ingest.py:836` — _call_name_match_
+    - chain: _soft_isolate_ingested_source @backend/app/services/data_center_ingest.py:836  ←  _skip_orphan_client_ingest @backend/app/services/data_center_ingest.py:877  ←  ingest_user_input @backend/app/services/data_center_ingest.py:1089  ←  ingest_event_line_by_id @backend/app/services/data_center_ingest.py:1862  ←  create_event_line [endpoint:/api/v1/event-lines] @backend/app/main.py:31525
+    - chain: _soft_isolate_ingested_source @backend/app/services/data_center_ingest.py:836  ←  _skip_orphan_client_ingest @backend/app/services/data_center_ingest.py:877  ←  ingest_user_input @backend/app/services/data_center_ingest.py:1089  ←  ingest_event_line_by_id @backend/app/services/data_center_ingest.py:1862  ←  update_event_line [endpoint:/api/v1/event-lines/{event_line_id}] @backend/app/main.py:35169
+    - chain: _soft_isolate_ingested_source @backend/app/services/data_center_ingest.py:836  ←  _skip_orphan_client_ingest @backend/app/services/data_center_ingest.py:877  ←  ingest_user_input @backend/app/services/data_center_ingest.py:1089  ←  ingest_meeting_by_id @backend/app/services/data_center_ingest.py:1609  ←  apply_strategic_meeting_pack [endpoint:/api/v1/clients/{client_id}/strategic-cockpit/meeting-pack/{meeting_id}/apply] @backend/app/main.py:42202
+    - chain: _soft_isolate_ingested_source @backend/app/services/data_center_ingest.py:836  ←  _skip_orphan_client_ingest @backend/app/services/data_center_ingest.py:877  ←  ingest_user_input @backend/app/services/data_center_ingest.py:1089  ←  ingest_meeting_by_id @backend/app/services/data_center_ingest.py:1609  ←  extract_meeting [endpoint:/api/v1/clients/{client_id}/meetings/{meeting_id}/extract] @backend/app/main.py:51418
+    - chain: _soft_isolate_ingested_source @backend/app/services/data_center_ingest.py:836  ←  _skip_orphan_client_ingest @backend/app/services/data_center_ingest.py:877  ←  ingest_user_input @backend/app/services/data_center_ingest.py:1089  ←  ingest_meeting_by_id @backend/app/services/data_center_ingest.py:1609  ←  ingest_meeting [endpoint:/api/v1/clients/{client_id}/meetings/{meeting_id}/ingest] @backend/app/main.py:51386
+    - chain: _soft_isolate_ingested_source @backend/app/services/data_center_ingest.py:836  ←  _skip_orphan_client_ingest @backend/app/services/data_center_ingest.py:877  ←  ingest_user_input @backend/app/services/data_center_ingest.py:1089  ←  ingest_meeting_by_id @backend/app/services/data_center_ingest.py:1609  ←  publish_meeting [endpoint:/api/v1/clients/{client_id}/meetings/{meeting_id}/publish] @backend/app/main.py:51482
+- `UPDATE` @ **cleanup_low_value_intelligence_artifacts** `backend/app/services/intelligence_candidate_supply.py:6959` — _needs_human_
+    - chain: cleanup_low_value_intelligence_artifacts @backend/app/services/intelligence_candidate_supply.py:6959  ←  (no caller found — orphan write)
+- `INSERT` @ **_ingest_internet_pdf** `backend/app/services/internet_crawler.py:805` — _call_name_match_
+    - chain: _ingest_internet_pdf @backend/app/services/internet_crawler.py:805  ←  run_internet_enrichment [worker:run_internet_enrichment] @backend/app/services/internet_crawler.py:1135
+- `UPDATE` @ **_process_one_pdf** `backend/app/services/internet_pdf_worker.py:96` — _call_name_match_
+    - chain: _process_one_pdf @backend/app/services/internet_pdf_worker.py:96  ←  _worker_loop [worker:_worker_loop] @backend/app/services/internet_pdf_worker.py:205
+- `INSERT+UPDATE` @ **ingest_document_knowledge** `backend/app/services/knowledge_v2.py:2114` — _call_name_match_
+    - chain: ingest_document_knowledge @backend/app/services/knowledge_v2.py:2114  ←  upload_task_attachment [endpoint:/api/v1/tasks/{task_id}/attachments] @backend/app/main.py:53434
+    - chain: ingest_document_knowledge @backend/app/services/knowledge_v2.py:2114  ←  _build_local_event_line_report_snapshot @backend/app/main.py:33643  ←  get_event_line_report_snapshot [endpoint:/api/v1/event-lines/{event_line_id}/report-snapshot] @backend/app/main.py:34329
+    - chain: ingest_document_knowledge @backend/app/services/knowledge_v2.py:2114  ←  _process_one_pdf @backend/app/services/internet_pdf_worker.py:96  ←  _worker_loop [worker:_worker_loop] @backend/app/services/internet_pdf_worker.py:205
+    - chain: ingest_document_knowledge @backend/app/services/knowledge_v2.py:2114  ←  backfill_workspace_import @backend/app/services/knowledge_v2.py:3943  ←  backfill_client_workspace_imports [endpoint:/api/v1/clients/{client_id}/workspace/backfill-imports] @backend/app/main.py:50039
+    - chain: ingest_document_knowledge @backend/app/services/knowledge_v2.py:2114  ←  create_client_text_document @backend/app/main.py:16116  ←  create_client_document_from_text [endpoint:/api/v1/clients/{client_id}/documents/from-text] @backend/app/main.py:49576
+    - chain: ingest_document_knowledge @backend/app/services/knowledge_v2.py:2114  ←  execute_parse_failure_retry_batch @backend/app/main.py:42534  ←  retry_client_parse_failures [endpoint:/api/v1/clients/{client_id}/knowledge/parse-failures/retry] @backend/app/main.py:42800
+- `INSERT+UPDATE` @ **upsert_canonical_text_document** `backend/app/services/knowledge_v2.py:3304` — _call_name_match_
+    - chain: upsert_canonical_text_document @backend/app/services/knowledge_v2.py:3304  ←  run_internet_enrichment [worker:run_internet_enrichment] @backend/app/services/internet_crawler.py:1135
+    - chain: upsert_canonical_text_document @backend/app/services/knowledge_v2.py:3304  ←  _promote_candidate @backend/app/services/intelligence_candidate_supply.py:4503  ←  run_intelligence_candidate_refresh @backend/app/services/intelligence_candidate_supply.py:5967  ←  trigger_intelligence_refresh [endpoint:/api/v1/intelligence/refresh] @backend/app/main.py:57794
+    - chain: upsert_canonical_text_document @backend/app/services/knowledge_v2.py:3304  ←  _upsert_text_document_if_needed @backend/app/services/data_center_ingest.py:552  ←  ingest_user_input @backend/app/services/data_center_ingest.py:1089  ←  ingest_event_line_by_id @backend/app/services/data_center_ingest.py:1862  ←  create_event_line [endpoint:/api/v1/event-lines] @backend/app/main.py:31525
+    - chain: upsert_canonical_text_document @backend/app/services/knowledge_v2.py:3304  ←  _upsert_text_document_if_needed @backend/app/services/data_center_ingest.py:552  ←  ingest_user_input @backend/app/services/data_center_ingest.py:1089  ←  ingest_event_line_by_id @backend/app/services/data_center_ingest.py:1862  ←  update_event_line [endpoint:/api/v1/event-lines/{event_line_id}] @backend/app/main.py:35169
+    - chain: upsert_canonical_text_document @backend/app/services/knowledge_v2.py:3304  ←  _upsert_text_document_if_needed @backend/app/services/data_center_ingest.py:552  ←  ingest_user_input @backend/app/services/data_center_ingest.py:1089  ←  ingest_meeting_by_id @backend/app/services/data_center_ingest.py:1609  ←  apply_strategic_meeting_pack [endpoint:/api/v1/clients/{client_id}/strategic-cockpit/meeting-pack/{meeting_id}/apply] @backend/app/main.py:42202
+    - chain: upsert_canonical_text_document @backend/app/services/knowledge_v2.py:3304  ←  _upsert_text_document_if_needed @backend/app/services/data_center_ingest.py:552  ←  ingest_user_input @backend/app/services/data_center_ingest.py:1089  ←  ingest_meeting_by_id @backend/app/services/data_center_ingest.py:1609  ←  extract_meeting [endpoint:/api/v1/clients/{client_id}/meetings/{meeting_id}/extract] @backend/app/main.py:51418
+- `UPDATE` @ **backfill_client_document_family_metadata** `backend/app/services/knowledge_v2.py:415` — _call_name_match_
+    - chain: backfill_client_document_family_metadata @backend/app/services/knowledge_v2.py:415  ←  build_data_center_retrieval_items @backend/app/services/data_center_search.py:172  ←  resolve_data_center_kernel @backend/app/services/data_center_kernel.py:453  ←  data_center_diagnose [endpoint:/api/v1/data-center/diagnose] @backend/app/main.py:48600
+    - chain: backfill_client_document_family_metadata @backend/app/services/knowledge_v2.py:415  ←  build_data_center_retrieval_items @backend/app/services/data_center_search.py:172  ←  resolve_data_center_kernel @backend/app/services/data_center_kernel.py:453  ←  data_center_resolve [endpoint:/api/v1/data-center/resolve] @backend/app/main.py:48591
+    - chain: backfill_client_document_family_metadata @backend/app/services/knowledge_v2.py:415  ←  build_data_center_retrieval_items @backend/app/services/data_center_search.py:172  ←  resolve_data_center_kernel @backend/app/services/data_center_kernel.py:453  ←  resolve_chat_answer_data_center_primary @backend/app/main.py:46745  ←  document_ai_action [endpoint:/api/v1/clients/{client_id}/documents/ai-action] @backend/app/main.py:49635
+    - chain: backfill_client_document_family_metadata @backend/app/services/knowledge_v2.py:415  ←  build_data_center_retrieval_items @backend/app/services/data_center_search.py:172  ←  resolve_data_center_kernel @backend/app/services/data_center_kernel.py:453  ←  resolve_chat_answer_data_center_primary @backend/app/main.py:46745  ←  resolve_chat_answer @backend/app/main.py:48117  ←  background_resolve_chat_answer [worker:background_resolve_chat_answer] @backend/app/main.py:48335
+    - chain: backfill_client_document_family_metadata @backend/app/services/knowledge_v2.py:415  ←  build_data_center_retrieval_items @backend/app/services/data_center_search.py:172  ←  resolve_data_center_kernel @backend/app/services/data_center_kernel.py:453  ←  resolve_chat_answer_data_center_primary @backend/app/main.py:46745  ←  resolve_chat_answer @backend/app/main.py:48117  ←  send_chat_message [endpoint:/api/v1/clients/{client_id}/workspace/chat] @backend/app/main.py:49220
+- `UPDATE` @ **_migrate_one_client** `backend/app/services/unified_workspace_migrator.py:108` — _call_name_match_
+    - chain: _migrate_one_client @backend/app/services/unified_workspace_migrator.py:108  ←  migrate_all_clients @backend/app/services/unified_workspace_migrator.py:281  ←  unified_workspace_migrate_endpoint [endpoint:/api/v1/admin/unified-workspace-migrate] @backend/app/main.py:36643
+- `INSERT` @ **run_wechat_sogou_ingest** `backend/app/services/wechat_sogou_ingest.py:145` — _call_name_match_
+    - chain: run_wechat_sogou_ingest @backend/app/services/wechat_sogou_ingest.py:145  ←  trigger_wechat_sogou_ingest [endpoint:/api/v1/intelligence/brand-mirror/wechat-sogou-ingest] @backend/app/main.py:59331
+
+### 读边 (81)
+- `SELECT-FROM` @ **_build_structured_fields_pack** `backend/app/main.py:1439` — _static_confirmed_
+    - WHERE: `d.client_id = ?`
+- `JOIN` @ **create_app.migrate_client_link_material_documents_to_online_transcripts** `backend/app/main.py:14391` — _static_confirmed_
+    - WHERE: `d.client_id = ? AND d.source = 'video_transcript' AND ( COALESCE(vd.visible_category, '') != ? OR COALESCE(vd.material_layer, '') != ? OR d.path NOT LIKE ? )`
+- `SELECT-FROM+JOIN` @ **create_app._client_folder_file_count** `backend/app/main.py:14483` — _static_confirmed_
+    - WHERE: `client_id = ? AND visible_category = ?`
+    - WHERE: `d.client_id = ? AND d.folder_id = ? AND v.id IS NULL AND COALESCE(d.lifecycle_status, 'active') = 'active' AND COALESCE(d.is_searchable, 1) = 1`
+- `SELECT-FROM` @ **create_app.build_template_fill_context** `backend/app/main.py:16786` — _static_confirmed_
+    - WHERE: `client_id = ? AND COALESCE(parse_status, 'ready') IN ('ready', 'partial_ready')`
+- `SELECT-FROM` @ **create_app.build_template_fill_context.collect_template_fill_public_hints** `backend/app/main.py:16800` — _static_confirmed_
+    - WHERE: `client_id = ? AND COALESCE(parse_status, 'ready') IN ('ready', 'partial_ready')`
+- `SELECT-FROM` @ **create_app._collect_strategic_insight_context** `backend/app/main.py:19685` — _static_confirmed_
+    - WHERE: `client_id = ? AND parse_status IN ('ready', 'partial_ready') AND COALESCE(preview_text, '') != ''`
+- `SELECT-FROM` @ **_sync_task_attachment_scope** `backend/app/main.py:2237` — _static_confirmed_
+    - WHERE: `document_id = ?`
+- `SELECT-FROM` @ **create_app._fetch_intro_support_sources** `backend/app/main.py:23083` — _static_confirmed_
+    - WHERE: `client_id = ? AND parse_status IN ('ready', 'partial_ready')`
+- `SELECT-FROM` @ **create_app.proxy_cloud_attachment_text** `backend/app/main.py:27509` — _static_confirmed_
+    - WHERE: `document_id = ?`
+- `SELECT-FROM` @ **create_app.proxy_cloud_attachment_text._local_text_content** `backend/app/main.py:27510` — _static_confirmed_
+    - WHERE: `document_id = ?`
+- `SELECT-FROM` @ **create_app.proxy_cloud_attachment_ocr** `backend/app/main.py:27600` — _static_confirmed_
+    - WHERE: `document_id = ?`
+- `SELECT-FROM` @ **create_app.get_client_knowledge_status** `backend/app/main.py:27902` — _static_confirmed_
+    - WHERE: `client_id = ? AND parse_status NOT IN ('ready', 'partial_ready')`
+- `SELECT-FROM` @ **create_app.get_client_duplicate_documents** `backend/app/main.py:28069` — _static_confirmed_
+    - WHERE: `v.client_id = ? AND COALESCE(v.content_hash, '') != '' AND v.content_hash IN ( SELECT content_hash FROM v2_documents WHERE client_id = ? AND COALESCE(content_hash, '') != ''`
+    - WHERE: `v.client_id = ? AND COALESCE(v.file_name, '') != '' AND v.file_name IN ( SELECT file_name FROM v2_documents WHERE client_id = ? AND COALESCE(file_name, '') != ''`
+- `SELECT-FROM` @ **create_app.resolve_client_duplicate_documents** `backend/app/main.py:28241` — _static_confirmed_
+    - WHERE: `id = ?`
+    - WHERE: `v.client_id = ? AND v.id IN (`
+    - WHERE: `v.client_id = ? AND v.id IN ({?})`
+- `JOIN` @ **create_app._find_chunk_for_next_step** `backend/app/main.py:28649` — _static_confirmed_
+    - WHERE: `vd.client_id=? AND vc.content LIKE ?`
+    - WHERE: `vd.client_id=? AND vc.content LIKE ? AND (d.title LIKE '%纪要%' OR d.title LIKE '%对齐会%' OR d.title LIKE '%会议%')`
+- `SELECT-FROM` @ **create_app.smart_import_commit_session** `backend/app/main.py:29395` — _static_confirmed_
+    - WHERE: `vd.import_session_id = ?`
+- `SELECT-FROM+JOIN` @ **create_app** `backend/app/main.py:3179` — _static_confirmed_
+    - WHERE: `client_id = ?`
+    - WHERE: `client_id = ? AND ( COALESCE(content_domain, '') = 'internet_enrichment' OR canonical_kind IN ('internet_source_doc', 'internet_fact_card', 'project_enrichment_doc', 'evaluation_reference_doc', 'simil`
+    - WHERE: `client_id = ? AND (? = 1 OR COALESCE(parse_status, 'ready') NOT IN ('ready', 'partial_ready'))`
+    - WHERE: `client_id = ? AND COALESCE(is_searchable, 1) = 1 AND COALESCE(lifecycle_status, 'active') = 'active' AND canonical_kind = 'internet_fact_card'`
+    - WHERE: `client_id = ? AND COALESCE(is_searchable, 1) = 1 AND COALESCE(lifecycle_status, 'active') = 'active' AND canonical_kind IN (`
+- `SELECT-FROM` @ **create_app._build_local_event_line_report_snapshot** `backend/app/main.py:33643` — _static_confirmed_
+    - WHERE: `document_id = ?`
+- `SELECT-FROM` @ **create_app._build_local_event_line_report_snapshot._document_parse_info** `backend/app/main.py:33748` — _static_confirmed_
+    - WHERE: `document_id = ?`
+- `SELECT-FROM` @ **create_app._local_report_document_parse_info** `backend/app/main.py:33966` — _static_confirmed_
+    - WHERE: `document_id = ?`
+- `JOIN` @ **create_app._lookup_semantic_info_for_kernel** `backend/app/main.py:3452` — _static_confirmed_
+    - WHERE: `vd.document_id = ? AND vc.semantic_type IS NOT NULL AND vc.semantic_type != 'unclassified'`
+- `SELECT-FROM` @ **create_app._resolve_client_id_for_evidence_quality_annotation** `backend/app/main.py:3650` — _static_confirmed_
+    - WHERE: `document_id = ?`
+- `JOIN` @ **create_app._client_folder_recommendation_rows** `backend/app/main.py:37916` — _static_confirmed_
+    - WHERE: `d.client_id = ?`
+- `JOIN` @ **create_app._auto_repair_rows** `backend/app/main.py:38075` — _static_confirmed_
+    - WHERE: `d.client_id = ?`
+    - WHERE: `d.client_id = ? {?}`
+- `JOIN` @ **create_app._pending_document_ids_for_auto_reconcile** `backend/app/main.py:38644` — _static_confirmed_
+    - WHERE: `d.client_id = ? AND ( COALESCE(cf.label, '') IN (`
+    - WHERE: `d.client_id = ? AND ( COALESCE(cf.label, '') IN ({?}) OR COALESCE(v.visible_category, '') IN ({?}) OR COALESCE(k.human_folder_category, '') IN ({?}) )`
+- `SELECT-FROM` @ **create_app.delete_client_document** `backend/app/main.py:39134` — _static_confirmed_
+    - WHERE: `document_id = ?`
+    - WHERE: `id = ?`
+- `SELECT-FROM` @ **create_app.list_client_parse_failures** `backend/app/main.py:42326` — _static_confirmed_
+    - WHERE: `client_id = ? AND COALESCE(parse_status, 'ready') NOT IN ('ready', 'partial_ready')`
+- `SELECT-FROM` @ **create_app.count_parse_retry_targets** `backend/app/main.py:42383` — _static_confirmed_
+    - WHERE: `client_id = ?`
+    - WHERE: `client_id = ? AND COALESCE(parse_status, 'ready') NOT IN ('ready', 'partial_ready')`
+    - WHERE: `client_id = ? {?} AND (document_id IN ({?}) OR id IN ({?}))`
+- `SELECT-FROM` @ **create_app.verify_parse_retry_ready** `backend/app/main.py:42495` — _static_confirmed_
+    - WHERE: `client_id = ? AND document_id = ?`
+- `SELECT-FROM` @ **create_app.execute_parse_failure_retry_batch** `backend/app/main.py:42534` — _static_confirmed_
+    - WHERE: `client_id = ? AND (? = 1 OR COALESCE(parse_status, 'ready') NOT IN ('ready', 'partial_ready'))`
+- `SELECT-FROM` @ **create_app.get_workspace_data_center_readiness** `backend/app/main.py:42811` — _static_confirmed_
+    - WHERE: `client_id = ? AND ( COALESCE(content_domain, '') = 'internet_enrichment' OR canonical_kind IN ('internet_source_doc', 'internet_fact_card', 'project_enrichment_doc', 'evaluation_reference_doc', 'simil`
+    - WHERE: `client_id = ? AND COALESCE(is_searchable, 1) = 1 AND COALESCE(lifecycle_status, 'active') = 'active' AND canonical_kind = 'internet_fact_card'`
+    - WHERE: `client_id = ? AND COALESCE(is_searchable, 1) = 1 AND COALESCE(lifecycle_status, 'active') = 'active' AND canonical_kind IN (`
+    - WHERE: `client_id = ? AND COALESCE(is_searchable, 1) = 1 AND COALESCE(lifecycle_status, 'active') = 'active' AND canonical_kind IN ({?})`
+    - WHERE: `client_id = ? AND canonical_kind = 'project_enrichment_doc' AND COALESCE(content_domain, '') = 'internet_enrichment'`
+- `SELECT-FROM` @ **create_app.run_workspace_data_center_readiness_action** `backend/app/main.py:43497` — _static_confirmed_
+    - WHERE: `client_id = ? AND COALESCE(parse_status, 'ready') NOT IN ('ready', 'partial_ready', 'queued', 'running', 'processing', 'parsing')`
+    - WHERE: `v2.client_id = ?`
+    - WHERE: `v2.client_id = ? {?}`
+- `JOIN` @ **create_app.build_document_reading_preview_record** `backend/app/main.py:46173` — _static_confirmed_
+    - WHERE: `d.client_id = ? AND d.id = ?`
+- `SELECT-FROM` @ **create_app.delete_task_attachment** `backend/app/main.py:53734` — _static_confirmed_
+    - WHERE: `document_id = ?`
+- `JOIN` @ **list_contradictions** `backend/app/services/contradiction_detector.py:353` — _static_confirmed_
+    - WHERE: `fc.client_id = ? AND fc.review_status = ?`
+- `SELECT-FROM` @ **_permission_diagnostics** `backend/app/services/data_center_schema.py:35` — _static_confirmed_
+    - WHERE: `COALESCE(department_ids_json, '[]') IN ('', '[]')`
+    - WHERE: `COALESCE(is_searchable, 1) = 1 AND COALESCE(lifecycle_status, 'active') != 'active'`
+    - WHERE: `COALESCE(organization_id, '') = ''`
+    - WHERE: `COALESCE(owner_user_id, '') = ''`
+- `JOIN` @ **_document_row** `backend/app/services/data_center_sync.py:132` — _static_confirmed_
+    - WHERE: `d.id = ?`
+- `SELECT-FROM` @ **_build_metrics** `backend/app/services/digital_asset_center.py:3129` — _static_confirmed_
+    - WHERE: `client_id = ? AND parse_status IN ('ready','partial_ready')`
+- `JOIN` @ **_collect_sources** `backend/app/services/digital_asset_center.py:3179` — _static_confirmed_
+    - WHERE: `d.client_id = ?`
+- `SELECT-FROM` @ **_build_selected_materials** `backend/app/services/digital_asset_narrative.py:122` — _static_confirmed_
+    - WHERE: `client_id = ?`
+- `SELECT-FROM` @ **build_digital_asset_narrative_context** `backend/app/services/digital_asset_narrative.py:201` — _static_confirmed_
+    - WHERE: `client_id = ?`
+    - WHERE: `client_id = ? AND parse_status = 'failed'`
+    - WHERE: `client_id = ? AND parse_status = 'partial_ready'`
+    - WHERE: `client_id = ? AND parse_status = 'ready'`
+- `SELECT-FROM` @ **decompose_universal** `backend/app/services/document_decomposition.py:215` — _static_confirmed_
+    - WHERE: `v2.document_id = ?`
+- `SELECT-FROM` @ **classify_document_kind** `backend/app/services/document_decomposition.py:333` — _static_confirmed_
+    - WHERE: `v2.document_id = ?`
+- `SELECT-FROM` @ **decompose_employee_contract** `backend/app/services/document_decomposition.py:395` — _static_confirmed_
+    - WHERE: `v2.document_id = ?`
+- `SELECT-FROM` @ **sync_states_for_client** `backend/app/services/document_deep_read_service.py:159` — _static_confirmed_
+    - WHERE: `client_id=?`
+- `SELECT-FROM` @ **coverage_for_client** `backend/app/services/document_deep_read_service.py:181` — _static_confirmed_
+    - WHERE: `client_id=?`
+- `SELECT-FROM` @ **extract_from_document** `backend/app/services/document_llm_extractor.py:261` — _static_confirmed_
+    - WHERE: `id = ?`
+- `SELECT-FROM` @ **_augment_with_indexed_primary_sources** `backend/app/services/evidence_selector.py:122` — _static_confirmed_
+    - WHERE: `v.client_id = ? AND v.parse_status = 'ready'`
+- `JOIN` @ **_semantic_weight_for_doc** `backend/app/services/evidence_selector.py:257` — _static_confirmed_
+    - WHERE: `vd.document_id = ? AND vc.semantic_type IS NOT NULL AND vc.semantic_type != 'unclassified'`
+- `JOIN` @ **query_candidate_value** `backend/app/services/fill_table_evaluator.py:257` — _static_confirmed_
+    - WHERE: `d.client_id = ? AND v.content LIKE ?`
+- `JOIN` @ **_format_internet_chunks** `backend/app/services/glossary_attribute_extractor.py:205` — _static_confirmed_
+    - WHERE: `d.client_id = ? AND d.content_domain = 'internet_enrichment' AND length(c.content) >= 100`
+- `SELECT-FROM` @ **_count_source_events** `backend/app/services/growth_engine.py:1168` — _static_confirmed_
+    - WHERE: `owner_user_id = ? AND kind NOT IN ('task_doc', 'event_line_update_doc', 'review_entry_doc') AND visible_category NOT IN ('任务资料', '待处理', '归档')`
+    - WHERE: `r.status = 'active' AND r.client_id IN ( SELECT DISTINCT client_id FROM v2_documents WHERE owner_user_id = ? UNION SELECT DISTINCT client_id FROM tasks WHERE owner_id = ? AND client_id IS NOT NULL )`
+- `SELECT-FROM` @ **_fetch_document_evidence** `backend/app/services/growth_engine.py:1540` — _static_confirmed_
+    - WHERE: `owner_user_id = ?`
+- `SELECT-FROM` @ **_build_business_coverage** `backend/app/services/growth_engine.py:2021` — _static_confirmed_
+    - WHERE: `owner_id=? AND client_id=c.id) AS task_cnt, (SELECT COUNT(*) FROM v2_documents WHERE owner_user_id=? AND client_id=c.id AND kind NOT IN ('task_doc','event_line_update_doc','review_entry_doc')) AS doc_`
+- `SELECT-FROM` @ **_ingest_internet_pdf** `backend/app/services/internet_crawler.py:805` — _static_confirmed_
+    - WHERE: `id = ?`
+- `SELECT-FROM` @ **_find_next_pending_pdf** `backend/app/services/internet_pdf_worker.py:59` — _static_confirmed_
+    - WHERE: `v.parse_status = 'pending_ocr' AND v.content_domain = 'internet_enrichment' AND v.kind = 'pdf'`
+- `SELECT-FROM` @ **_folder_counts** `backend/app/services/knowledge_v2.py:2079` — _static_confirmed_
+    - WHERE: `client_id = ? AND parse_status IN ('ready', 'partial_ready')`
+- `SELECT-FROM` @ **ingest_document_knowledge** `backend/app/services/knowledge_v2.py:2114` — _static_confirmed_
+    - WHERE: `client_id = ? AND content_hash = ? AND id != ?`
+    - WHERE: `id = ?`
+- `SELECT-FROM` @ **upsert_canonical_text_document** `backend/app/services/knowledge_v2.py:3304` — _static_confirmed_
+    - WHERE: `client_id = ? AND content_hash = ?`
+    - WHERE: `id = ?`
+- `SELECT-FROM` @ **backfill_knowledge_documents** `backend/app/services/knowledge_v2.py:3886` — _static_confirmed_
+    - WHERE: `document_id = ?`
+- `SELECT-FROM` @ **backfill_workspace_import** `backend/app/services/knowledge_v2.py:3943` — _static_confirmed_
+    - WHERE: `client_id = ?`
+- `SELECT-FROM` @ **compute_knowledge_status** `backend/app/services/knowledge_v2.py:4109` — _static_confirmed_
+    - WHERE: `client_id = ?`
+    - WHERE: `client_id = ? AND classification_confidence < 0.62`
+    - WHERE: `client_id = ? AND material_layer = 'background'`
+    - WHERE: `client_id = ? AND material_layer IN ('evidence', 'external_media_transcript')`
+    - WHERE: `client_id = ? AND parse_status = 'partial_ready'`
+- `SELECT-FROM` @ **backfill_client_document_family_metadata** `backend/app/services/knowledge_v2.py:415` — _static_confirmed_
+    - WHERE: `vd.client_id = ? AND COALESCE(vd.canonical_kind, 'raw_file') = 'raw_file'`
+- `SELECT-FROM` @ **fetch_document_cards** `backend/app/services/knowledge_v2.py:4226` — _static_confirmed_
+    - WHERE: `dpo2.knowledge_document_id = kd.id`
+    - WHERE: `vd.client_id = ? AND vd.material_layer IN ('evidence', 'external_media_transcript') AND COALESCE(vd.canonical_kind, 'raw_file') = 'raw_file' AND`
+    - WHERE: `vd.client_id = ? AND vd.material_layer IN ('evidence', 'external_media_transcript') AND COALESCE(vd.canonical_kind, 'raw_file') = 'raw_file' AND {?}`
+- `SELECT-FROM` @ **retrieve_knowledge_bundle** `backend/app/services/knowledge_v2.py:4920` — _static_confirmed_
+    - WHERE: `dpo2.knowledge_document_id = kd.id`
+    - WHERE: `vd.client_id = ? AND vd.material_layer IN ('evidence', 'external_media_transcript') AND vd.parse_status IN ('ready', 'partial_ready') AND COALESCE(vd.is_searchable, d.is_searchable, 1) = 1 AND COALESC`
+- `JOIN` @ **_load_document_context** `backend/app/services/local_model_optimizer.py:552` — _static_confirmed_
+    - WHERE: `knowledge_document_id = kd.id ) WHERE kd.id = ?`
+- `JOIN` @ **extract_recent_client_actions** `backend/app/services/meeting_action_extractor.py:194` — _static_confirmed_
+    - WHERE: `vd.client_id = ? AND COALESCE(vd.imported_at, vd.updated_at, '') >= ?`
+- `SELECT-FROM` @ **_collect_documents** `backend/app/services/narrative_collector.py:1185` — _static_confirmed_
+    - WHERE: `client_id = ?`
+- `JOIN` @ **_retrieve_top_chunks** `backend/app/services/narrative_collector.py:645` — _static_confirmed_
+    - WHERE: `vd.client_id = ? AND vc.content LIKE ? ESCAPE '\'`
+    - WHERE: `vd.client_id = ? AND vc.content LIKE ? ESCAPE '\' {?}`
+- `SELECT-FROM` @ **_collect_document_items** `backend/app/services/organization_dna_v2.py:667` — _static_confirmed_
+    - WHERE: `v.parse_status IN ('ready', 'partial_ready') AND COALESCE(v.chunk_count, 0) >= 3 AND COALESCE(d.created_at, '') >= datetime('now', '-30 days') -- 排除系统生成文档（答案沉淀、客户概览、事件线等系统标识，前缀 v2doc_sysdoc_） AND v.id`
+- `JOIN` @ **build_weekly_mainline_evidence_pack** `backend/app/services/review_narrative.py:500` — _static_confirmed_
+    - WHERE: `a.task_id IN (`
+    - WHERE: `a.task_id IN ({?}) UNION ALL SELECT 'task_attachments_cloud' AS source_table, a.id, a.task_id, a.client_id, a.event_line_id, a.document_id, a.title, a.path, a.kind, a.source, a.size_bytes, a.created_a`
+- `SELECT-FROM+JOIN` @ **build_source_reachability_audit** `backend/app/services/source_reachability.py:72` — _static_confirmed_
+    - WHERE: `d.client_id = ? AND d.path LIKE '%/_imports/%' AND v.document_id IS NULL`
+    - WHERE: `d.client_id = ? AND v.document_id IS NULL AND d.path NOT LIKE '%/_imports/%'`
+    - WHERE: `v.client_id = ?`
+- `SELECT-FROM` @ **_section_10_evidence_sources** `backend/app/services/story_card_generator.py:252` — _static_confirmed_
+    - WHERE: `client_id = ?`
+- `SELECT-FROM` @ **_select_data_center_chunks** `backend/app/services/task_context_brief_engine.py:185` — _static_confirmed_
+    - WHERE: `vd.client_id = ? AND COALESCE(vd.is_searchable, 1) = 1 AND COALESCE(vd.lifecycle_status, 'active') = 'active'`
+- `SELECT-FROM` @ **route_document_for_local_inference** `backend/app/services/task_runners/router.py:246` — _static_confirmed_
+    - WHERE: `id = ?`
+- `JOIN` @ **_build_sync_payload** `backend/app/services/team_sync_executor.py:102` — _static_confirmed_
+    - WHERE: `sr.source_id = ?`
+- `SELECT-FROM` @ **_migrate_one_client** `backend/app/services/unified_workspace_migrator.py:108` — _static_confirmed_
+    - WHERE: `client_id = ? AND (`
+    - WHERE: `client_id = ? AND ({?})`
+    - WHERE: `document_id = ?`
+    - WHERE: `v2_document_id IN (SELECT id FROM v2_documents WHERE document_id = ?)`
+- `SELECT-FROM` @ **_scan_downloadable_docs_from_corpus** `backend/app/services/website_audit.py:63` — _static_confirmed_
+    - WHERE: `v.client_id = ? AND v.content_domain = 'brand_official_corpus'`
+- `SELECT-FROM` @ **run_wechat_sogou_ingest** `backend/app/services/wechat_sogou_ingest.py:145` — _static_confirmed_
+    - WHERE: `id = ?`
+- `SELECT-FROM+JOIN` @ **build_weekly_review_material_pack** `backend/app/services/weekly_review_material_pack.py:335` — _static_confirmed_
+    - WHERE: `a.task_id IN (`
+    - WHERE: `a.task_id IN ({?}) UNION ALL SELECT 'task_attachments_cloud' AS source_table, a.id, a.task_id, a.client_id, a.event_line_id, a.document_id, a.title, a.kind, a.source, a.size_bytes, a.created_at, d.exc`
+    - WHERE: `entry.week_label = ? AND vd.canonical_kind = 'review_entry_doc' AND vd.origin_type = 'weekly_review_entry' AND LOWER(COALESCE(entry.content_domain, 'work')) NOT IN ('personal', 'private') AND NOT EXIS`
+    - WHERE: `vd.document_id IN (`
+    - WHERE: `vd.document_id IN ({?}) AND {?}`
+- `SELECT-FROM` @ **build_workspace_chat_diagnostics** `backend/app/services/workspace_chat_diagnostics.py:86` — _static_confirmed_
+    - WHERE: `client_id = ? AND COALESCE(parse_status, 'ready') != 'ready'`
+
+## `v2_sections`
+
+- 经验层: **6499 行** · 最近写入 created_at=2026-06-08T19:53:27
+
+### 写边 (3)
+- `INSERT` @ **ingest_document_knowledge** `backend/app/services/knowledge_v2.py:2114` — _call_name_match_
+    - chain: ingest_document_knowledge @backend/app/services/knowledge_v2.py:2114  ←  upload_task_attachment [endpoint:/api/v1/tasks/{task_id}/attachments] @backend/app/main.py:53434
+    - chain: ingest_document_knowledge @backend/app/services/knowledge_v2.py:2114  ←  _build_local_event_line_report_snapshot @backend/app/main.py:33643  ←  get_event_line_report_snapshot [endpoint:/api/v1/event-lines/{event_line_id}/report-snapshot] @backend/app/main.py:34329
+    - chain: ingest_document_knowledge @backend/app/services/knowledge_v2.py:2114  ←  _process_one_pdf @backend/app/services/internet_pdf_worker.py:96  ←  _worker_loop [worker:_worker_loop] @backend/app/services/internet_pdf_worker.py:205
+    - chain: ingest_document_knowledge @backend/app/services/knowledge_v2.py:2114  ←  backfill_workspace_import @backend/app/services/knowledge_v2.py:3943  ←  backfill_client_workspace_imports [endpoint:/api/v1/clients/{client_id}/workspace/backfill-imports] @backend/app/main.py:50039
+    - chain: ingest_document_knowledge @backend/app/services/knowledge_v2.py:2114  ←  create_client_text_document @backend/app/main.py:16116  ←  create_client_document_from_text [endpoint:/api/v1/clients/{client_id}/documents/from-text] @backend/app/main.py:49576
+    - chain: ingest_document_knowledge @backend/app/services/knowledge_v2.py:2114  ←  execute_parse_failure_retry_batch @backend/app/main.py:42534  ←  retry_client_parse_failures [endpoint:/api/v1/clients/{client_id}/knowledge/parse-failures/retry] @backend/app/main.py:42800
+- `INSERT` @ **upsert_canonical_text_document** `backend/app/services/knowledge_v2.py:3304` — _call_name_match_
+    - chain: upsert_canonical_text_document @backend/app/services/knowledge_v2.py:3304  ←  run_internet_enrichment [worker:run_internet_enrichment] @backend/app/services/internet_crawler.py:1135
+    - chain: upsert_canonical_text_document @backend/app/services/knowledge_v2.py:3304  ←  _promote_candidate @backend/app/services/intelligence_candidate_supply.py:4503  ←  run_intelligence_candidate_refresh @backend/app/services/intelligence_candidate_supply.py:5967  ←  trigger_intelligence_refresh [endpoint:/api/v1/intelligence/refresh] @backend/app/main.py:57794
+    - chain: upsert_canonical_text_document @backend/app/services/knowledge_v2.py:3304  ←  _upsert_text_document_if_needed @backend/app/services/data_center_ingest.py:552  ←  ingest_user_input @backend/app/services/data_center_ingest.py:1089  ←  ingest_event_line_by_id @backend/app/services/data_center_ingest.py:1862  ←  create_event_line [endpoint:/api/v1/event-lines] @backend/app/main.py:31525
+    - chain: upsert_canonical_text_document @backend/app/services/knowledge_v2.py:3304  ←  _upsert_text_document_if_needed @backend/app/services/data_center_ingest.py:552  ←  ingest_user_input @backend/app/services/data_center_ingest.py:1089  ←  ingest_event_line_by_id @backend/app/services/data_center_ingest.py:1862  ←  update_event_line [endpoint:/api/v1/event-lines/{event_line_id}] @backend/app/main.py:35169
+    - chain: upsert_canonical_text_document @backend/app/services/knowledge_v2.py:3304  ←  _upsert_text_document_if_needed @backend/app/services/data_center_ingest.py:552  ←  ingest_user_input @backend/app/services/data_center_ingest.py:1089  ←  ingest_meeting_by_id @backend/app/services/data_center_ingest.py:1609  ←  apply_strategic_meeting_pack [endpoint:/api/v1/clients/{client_id}/strategic-cockpit/meeting-pack/{meeting_id}/apply] @backend/app/main.py:42202
+    - chain: upsert_canonical_text_document @backend/app/services/knowledge_v2.py:3304  ←  _upsert_text_document_if_needed @backend/app/services/data_center_ingest.py:552  ←  ingest_user_input @backend/app/services/data_center_ingest.py:1089  ←  ingest_meeting_by_id @backend/app/services/data_center_ingest.py:1609  ←  extract_meeting [endpoint:/api/v1/clients/{client_id}/meetings/{meeting_id}/extract] @backend/app/main.py:51418
+- `INSERT` @ **_write_section_and_chunk** `backend/app/services/task_runners/visual_ocr_runner.py:202` — _call_name_match_
+    - chain: _write_section_and_chunk @backend/app/services/task_runners/visual_ocr_runner.py:202  ←  process @backend/app/services/task_runners/fact_extract_runner.py:41  ←  run_due_local_model_tasks @backend/app/services/local_model_optimizer.py:942  ←  local_model_optimizer_worker_loop [worker:local_model_optimizer_worker_loop] @backend/app/services/local_model_optimizer.py:1026
+    - chain: _write_section_and_chunk @backend/app/services/task_runners/visual_ocr_runner.py:202  ←  process @backend/app/services/task_runners/fact_extract_runner.py:41  ←  run_due_local_model_tasks @backend/app/services/local_model_optimizer.py:942  ←  run_local_ai_now [endpoint:/api/v1/local-ai/run-now] @backend/app/main.py:36970
+    - chain: _write_section_and_chunk @backend/app/services/task_runners/visual_ocr_runner.py:202  ←  process @backend/app/services/task_runners/fact_extract_runner.py:41  ←  diarize_audio_file @backend/app/services/local_asr/diarization_provider.py:99  ←  _transcribe_with_diarization @backend/app/services/local_asr/recording_ingest.py:114  ←  transcribe_recording_local_path @backend/app/services/local_asr/recording_ingest.py:64  ←  transcribe_recording_local_audio_endpoint [endpoint:/api/v1/recordings/transcribe-local-audio] @backend/app/main.py:37133
+
+### 读边 (7)
+- `SELECT-FROM` @ **create_app** `backend/app/main.py:3179` — _static_confirmed_
+    - WHERE: `v2_document_id = ?`
+- `SELECT-FROM` @ **create_app.build_document_reading_preview_record** `backend/app/main.py:46173` — _static_confirmed_
+    - WHERE: `v2_document_id = ?`
+- `SELECT-FROM` @ **_remove_existing_v2_rows** `backend/app/services/knowledge_v2.py:1931` — _static_confirmed_
+    - WHERE: `v2_document_id = ?`
+- `SELECT-FROM` @ **compute_knowledge_status** `backend/app/services/knowledge_v2.py:4109` — _static_confirmed_
+    - WHERE: `v2_document_id IN (SELECT id FROM v2_documents WHERE client_id = ? AND material_layer IN ('evidence', 'external_media_transcript'))`
+- `SELECT-FROM` @ **retrieve_knowledge_bundle** `backend/app/services/knowledge_v2.py:4920` — _static_confirmed_
+    - WHERE: `v2_document_id IN (`
+    - WHERE: `v2_document_id IN ({?})`
+- `SELECT-FROM` @ **_next_section_index** `backend/app/services/task_runners/visual_ocr_runner.py:246` — _static_confirmed_
+    - WHERE: `v2_document_id = ?`
+- `SELECT-FROM` @ **_migrate_one_client** `backend/app/services/unified_workspace_migrator.py:108` — _static_confirmed_
+    - WHERE: `v2_document_id IN (SELECT id FROM v2_documents WHERE document_id = ?)`
+
+## `v_active_clients`
+
+- 经验层: 真库**无此表** (静态边 0写/1读)
+
+### 写边 (0)
+- (无静态写边)
+
+### 读边 (1)
+- `SELECT-FROM` @ **list_active** `backend/app/modules/client/repository.py:99` — _static_confirmed_
+    - WHERE: `id IN (SELECT id FROM v_active_clients)`
+
+## `v_active_event_lines`
+
+- 经验层: 真库**无此表** (静态边 0写/1读)
+
+### 写边 (0)
+- (无静态写边)
+
+### 读边 (1)
+- `SELECT-FROM` @ **count_active_event_lines** `backend/app/modules/narrative/repository.py:14` — _static_confirmed_
+    - WHERE: `primary_client_id = ?`
+
+## `v_pending_tasks`
+
+- 经验层: 真库**无此表** (静态边 0写/1读)
+
+### 写边 (0)
+- (无静态写边)
+
+### 读边 (1)
+- `SELECT-FROM` @ **count_pending** `backend/app/modules/task/repository.py:16` — _static_confirmed_
+    - WHERE: `client_id = ?`
+
+## `v_searchable_knowledge`
+
+- 经验层: 真库**无此表** (静态边 0写/1读)
+
+### 写边 (0)
+- (无静态写边)
+
+### 读边 (1)
+- `SELECT-FROM` @ **count_searchable** `backend/app/modules/knowledge/repository.py:14` — _static_confirmed_
+    - WHERE: `client_id = ?`
+
+## `vector_index_manifests`
+
+- 经验层: **38 行** · 最近写入 updated_at=2026-06-08T19:50:11
+
+### 写边 (1)
+- `INSERT` @ **upsert_vector_manifest** `backend/app/services/knowledge_base.py:1784` — _call_name_match_
+    - chain: upsert_vector_manifest @backend/app/services/knowledge_base.py:1784  ←  reindex_client_vector @backend/app/services/knowledge_base.py:1627  ←  reindex_client_vector_collection [endpoint:/api/v1/clients/{client_id}/knowledge/reindex-vector] @backend/app/main.py:44127
+    - chain: upsert_vector_manifest @backend/app/services/knowledge_base.py:1784  ←  reindex_client_vector @backend/app/services/knowledge_base.py:1627  ←  run_workspace_data_center_readiness_action [endpoint:/api/v1/clients/{client_id}/workspace/data-center-readiness/actions] @backend/app/main.py:43497
+    - chain: upsert_vector_manifest @backend/app/services/knowledge_base.py:1784  ←  get_vector_runtime_status @backend/app/services/knowledge_base.py:1691  ←  get_vector_index_manifest_status @backend/app/services/knowledge_base.py:1827  ←  get_client_vector_index_status [endpoint:/api/v1/clients/{client_id}/knowledge/vector-index/status] @backend/app/main.py:44144
+    - chain: upsert_vector_manifest @backend/app/services/knowledge_base.py:1784  ←  get_vector_runtime_status @backend/app/services/knowledge_base.py:1691  ←  get_vector_index_manifest_status @backend/app/services/knowledge_base.py:1827  ←  get_workspace_data_center_readiness [endpoint:/api/v1/clients/{client_id}/workspace/data-center-readiness] @backend/app/main.py:42811
+    - chain: upsert_vector_manifest @backend/app/services/knowledge_base.py:1784  ←  get_vector_runtime_status @backend/app/services/knowledge_base.py:1691  ←  compute_knowledge_status @backend/app/services/knowledge_base.py:3398  ←  build_knowledge_status_record @backend/app/main.py:14711  ←  get_client_knowledge_progress [endpoint:/api/v1/clients/{client_id}/knowledge/progress] @backend/app/main.py:42317
+    - chain: upsert_vector_manifest @backend/app/services/knowledge_base.py:1784  ←  get_vector_runtime_status @backend/app/services/knowledge_base.py:1691  ←  compute_knowledge_status @backend/app/services/knowledge_base.py:3398  ←  build_knowledge_status_record @backend/app/main.py:14711  ←  get_client_knowledge_status [endpoint:/api/v1/clients/{client_id}/knowledge-status] @backend/app/main.py:27902
+
+### 读边 (1)
+- `SELECT-FROM` @ **get_vector_index_manifest_status** `backend/app/services/knowledge_base.py:1827` — _static_confirmed_
+    - WHERE: `client_id = ? AND embedding_signature = ?`
+
+## `website_audit_snapshots`
+
+- 经验层: **1 行** · 最近写入 created_at=2026-05-19T21:31:42+08:00
+
+### 写边 (1)
+- `INSERT` @ **run_website_audit** `backend/app/services/website_audit.py:127` — _call_name_match_
+    - chain: run_website_audit @backend/app/services/website_audit.py:127  ←  trigger_website_audit [endpoint:/api/v1/intelligence/brand-mirror/website-audit] @backend/app/main.py:59203
+
+### 读边 (2)
+- `SELECT-FROM` @ **run_brand_mirror_analysis** `backend/app/services/brand_mirror_analyzer.py:260` — _static_confirmed_
+    - WHERE: `client_id = ?`
+- `SELECT-FROM` @ **latest_website_audit** `backend/app/services/website_audit.py:214` — _static_confirmed_
+    - WHERE: `client_id = ?`
+
+## `weekly_review_task_entries`
+
+- 经验层: **17 行** · 最近写入 created_at=2026-05-18T11:56:51
+
+### 写边 (3)
+- `INSERT+UPDATE` @ **create_app** `backend/app/main.py:3179` — _needs_human_
+    - chain: create_app @backend/app/main.py:3179  ←  (no caller found — orphan write)
+- `INSERT+UPDATE` @ **create_app.save_local_weekly_review** `backend/app/main.py:54194` — _call_name_match_
+    - chain: save_local_weekly_review @backend/app/main.py:54194  ←  create_weekly_review [endpoint:/api/v1/reviews/weekly] @backend/app/main.py:54504
+    - chain: save_local_weekly_review @backend/app/main.py:54194  ←  save_weekly_review_draft_locally @backend/app/main.py:54441  ←  save_weekly_review_draft [endpoint:/api/v1/reviews/weekly/draft] @backend/app/main.py:54475
+    - chain: save_local_weekly_review @backend/app/main.py:54194  ←  save_weekly_review_locally @backend/app/main.py:54457  ←  create_weekly_review [endpoint:/api/v1/reviews/weekly] @backend/app/main.py:54504
+- `INSERT` @ **_write_review_entry** `backend/app/services/plan_executor.py:600` — _needs_human_
+    - chain: _write_review_entry @backend/app/services/plan_executor.py:600  ←  _handler_documents_generate @backend/app/services/plan_executor.py:932
+    - chain: _write_review_entry @backend/app/services/plan_executor.py:600  ←  _handler_tasks_create @backend/app/services/plan_executor.py:1400
+
+### 读边 (20)
+- `SELECT-FROM` @ **create_app.local_review_history** `backend/app/main.py:24434` — _static_confirmed_
+    - WHERE: `e.review_id = r.id AND e.content_domain = 'work' ) AS work_item_count, ( SELECT COUNT(*) FROM weekly_review_task_entries e WHERE e.review_id = r.id AND e.content_domain = 'personal' ) AS personal_item`
+- `SELECT-FROM` @ **create_app.local_review_entries_by_task** `backend/app/main.py:24501` — _static_confirmed_
+    - WHERE: `review_id = ?`
+- `SELECT-FROM` @ **create_app._historical_work_review_rows** `backend/app/main.py:25839` — _static_confirmed_
+    - WHERE: `r.operator_id = ? AND e.content_domain = 'work' AND e.week_label IN ({?})`
+- `SELECT-FROM` @ **create_app.local_rollup_work_items** `backend/app/main.py:26640` — _static_confirmed_
+    - WHERE: `e.week_label = ? AND e.content_domain = 'work'`
+- `SELECT-FROM` @ **create_app** `backend/app/main.py:3179` — _static_confirmed_
+    - WHERE: `e.review_id = r.id AND e.content_domain = 'work' ) AS work_item_count, ( SELECT COUNT(*) FROM weekly_review_task_entries e WHERE e.review_id = r.id AND e.content_domain = 'personal' ) AS personal_item`
+    - WHERE: `e.week_label = ? AND e.content_domain = 'work'`
+    - WHERE: `id = ?`
+    - WHERE: `r.operator_id = ? AND e.content_domain = 'work' AND e.week_label IN ({?})`
+    - WHERE: `review_id = ?`
+- `SELECT-FROM` @ **create_app._gather_task_context_bundle** `backend/app/main.py:32267` — _static_confirmed_
+    - WHERE: `task_id = ?`
+- `SELECT-FROM` @ **create_app.save_local_weekly_review** `backend/app/main.py:54194` — _static_confirmed_
+    - WHERE: `id = ?`
+    - WHERE: `review_id = ? AND task_id = ?`
+- `JOIN` @ **_collect_work_events** `backend/app/services/badge_engine.py:279` — _static_confirmed_
+    - WHERE: `wr.operator_id = ? OR wr.user_id = ?`
+- `SELECT-FROM` @ **ingest_weekly_review_by_id** `backend/app/services/data_center_ingest.py:1737` — _static_confirmed_
+    - WHERE: `review_id = ?`
+- `SELECT-FROM` @ **_count_source_events** `backend/app/services/growth_engine.py:1168` — _static_confirmed_
+    - WHERE: `user_id = ? AND (length(note) >= 20 OR length(structured_note_json) >= 50)`
+- `SELECT-FROM` @ **_build_review_streak** `backend/app/services/growth_engine.py:2066` — _static_confirmed_
+    - WHERE: `r.user_id = ? AND t.reviewed_at >= ?`
+- `SELECT-FROM` @ **retrieve_knowledge_bundle** `backend/app/services/knowledge_v2.py:4920` — _static_confirmed_
+    - WHERE: `dpo2.knowledge_document_id = kd.id`
+    - WHERE: `t.id = COALESCE(NULLIF(vd.source_entity_id, ''), vd.origin_id) AND COALESCE(t.scope_mode, 'COLLAB_SHARED') != 'PERSONAL_ONLY' ) ) AND NOT ( vd.canonical_kind = 'task_note_doc' AND vd.origin_type = 'ta`
+    - WHERE: `vd.client_id = ? AND vd.material_layer IN ('evidence', 'external_media_transcript') AND vd.parse_status IN ('ready', 'partial_ready') AND COALESCE(vd.is_searchable, d.is_searchable, 1) = 1 AND COALESC`
+- `SELECT-FROM` @ **record_weekly_review_writeback** `backend/app/services/memory_foundation.py:1907` — _static_confirmed_
+    - WHERE: `entry.review_id = ? AND entry.content_domain = 'work' AND COALESCE(t.scope_mode, 'COLLAB_SHARED') != 'PERSONAL_ONLY'`
+- `SELECT-FROM` @ **backfill_memory_foundation** `backend/app/services/memory_foundation.py:1965` — _static_confirmed_
+    - WHERE: `entry.review_id = ? AND entry.content_domain = 'work' AND COALESCE(t.scope_mode, 'COLLAB_SHARED') != 'PERSONAL_ONLY'`
+- `SELECT-FROM` @ **refresh_event_line_memory_snapshot** `backend/app/services/memory_foundation.py:994` — _static_confirmed_
+    - WHERE: `entry.content_domain = 'work' AND COALESCE(t.scope_mode, 'COLLAB_SHARED') != 'PERSONAL_ONLY'`
+- `SELECT-FROM` @ **_collect_dimension_chunks** `backend/app/services/narrative_collector.py:743` — _static_confirmed_
+    - WHERE: `t.client_id=? AND wrt.note LIKE ?`
+- `SELECT-FROM` @ **build_task_context_brief_material_pack** `backend/app/services/task_context_brief_engine.py:275` — _static_confirmed_
+    - WHERE: `t.client_id = ?`
+- `SELECT-FROM+JOIN` @ **build_weekly_review_material_pack** `backend/app/services/weekly_review_material_pack.py:335` — _static_confirmed_
+    - WHERE: `e.source_type = 'weekly_review_entry' AND e.week_label = ? AND LOWER(COALESCE(entry.content_domain, 'work')) NOT IN ('personal', 'private') AND NOT EXISTS ( SELECT 1 FROM tasks t WHERE t.id = entry.ta`
+    - WHERE: `entry.task_id IN (`
+    - WHERE: `entry.task_id IN ({?}) AND entry.week_label != ? AND LOWER(COALESCE(entry.content_domain, 'work')) NOT IN ('personal', 'private')`
+    - WHERE: `entry.week_label = ? AND LOWER(COALESCE(entry.content_domain, 'work')) NOT IN ('personal', 'private') AND NOT EXISTS ( SELECT 1 FROM tasks t WHERE t.id = entry.task_id AND COALESCE(t.scope_mode, 'COLL`
+    - WHERE: `entry.week_label = ? AND entry.task_id IN (`
+- `SELECT-FROM` @ **_review_relation_sources** `backend/app/services/workspace_relation_docs.py:457` — _static_confirmed_
+    - WHERE: `e.review_id = ? AND LOWER(COALESCE(e.content_domain, 'work')) NOT IN ('personal', 'private') AND COALESCE(t.scope_mode, 'COLLAB_SHARED') != 'PERSONAL_ONLY' AND ( pm.client_id = ? OR pf.client_id = ? O`
+    - WHERE: `e.review_id = ? AND t.client_id = ? AND LOWER(COALESCE(e.content_domain, 'work')) NOT IN ('personal', 'private') AND COALESCE(t.scope_mode, 'COLLAB_SHARED') != 'PERSONAL_ONLY'`
+- `SELECT-FROM` @ **_render_review_doc** `backend/app/services/workspace_relation_docs.py:516` — _static_confirmed_
+    - WHERE: `e.review_id = ? AND LOWER(COALESCE(e.content_domain, 'work')) NOT IN ('personal', 'private') AND (t.id IS NULL OR COALESCE(t.scope_mode, 'COLLAB_SHARED') != 'PERSONAL_ONLY')`
+
+## `weekly_reviews`
+
+- 经验层: **9 行** · 最近写入 created_at=2026-05-18T11:56:51
+
+### 写边 (4)
+- `INSERT+UPDATE` @ **create_app** `backend/app/main.py:3179` — _needs_human_
+    - chain: create_app @backend/app/main.py:3179  ←  (no caller found — orphan write)
+- `INSERT+UPDATE` @ **create_app.save_local_weekly_review** `backend/app/main.py:54194` — _call_name_match_
+    - chain: save_local_weekly_review @backend/app/main.py:54194  ←  create_weekly_review [endpoint:/api/v1/reviews/weekly] @backend/app/main.py:54504
+    - chain: save_local_weekly_review @backend/app/main.py:54194  ←  save_weekly_review_draft_locally @backend/app/main.py:54441  ←  save_weekly_review_draft [endpoint:/api/v1/reviews/weekly/draft] @backend/app/main.py:54475
+    - chain: save_local_weekly_review @backend/app/main.py:54194  ←  save_weekly_review_locally @backend/app/main.py:54457  ←  create_weekly_review [endpoint:/api/v1/reviews/weekly] @backend/app/main.py:54504
+- `UPDATE` @ **backfill_local_task_tag_ids** `backend/app/main.py:59794` — _needs_human_
+    - chain: backfill_local_task_tag_ids @backend/app/main.py:59794  ←  seed_defaults @backend/app/main.py:59873
+- `INSERT` @ **_ensure_weekly_review** `backend/app/services/plan_executor.py:482` — _needs_human_
+    - chain: _ensure_weekly_review @backend/app/services/plan_executor.py:482  ←  _handler_documents_generate @backend/app/services/plan_executor.py:932
+    - chain: _ensure_weekly_review @backend/app/services/plan_executor.py:482  ←  _handler_tasks_create @backend/app/services/plan_executor.py:1400
+
+### 读边 (19)
+- `SELECT-FROM` @ **create_app.local_review_row_for_week** `backend/app/main.py:24427` — _static_confirmed_
+    - WHERE: `week_label = ? AND operator_id = ?`
+- `SELECT-FROM` @ **create_app.local_review_history** `backend/app/main.py:24434` — _static_confirmed_
+    - WHERE: `e.review_id = r.id AND e.content_domain = 'work' ) AS work_item_count, ( SELECT COUNT(*) FROM weekly_review_task_entries e WHERE e.review_id = r.id AND e.content_domain = 'personal' ) AS personal_item`
+- `JOIN` @ **create_app._historical_work_review_rows** `backend/app/main.py:25839` — _static_confirmed_
+    - WHERE: `r.operator_id = ? AND e.content_domain = 'work' AND e.week_label IN ({?})`
+- `JOIN` @ **create_app.local_rollup_work_items** `backend/app/main.py:26640` — _static_confirmed_
+    - WHERE: `e.week_label = ? AND e.content_domain = 'work'`
+- `SELECT-FROM` @ **create_app.get_brain_dashboard** `backend/app/main.py:27671` — _static_confirmed_
+- `SELECT-FROM+JOIN` @ **create_app** `backend/app/main.py:3179` — _static_confirmed_
+    - WHERE: `e.review_id = r.id AND e.content_domain = 'work' ) AS work_item_count, ( SELECT COUNT(*) FROM weekly_review_task_entries e WHERE e.review_id = r.id AND e.content_domain = 'personal' ) AS personal_item`
+    - WHERE: `e.week_label = ? AND e.content_domain = 'work'`
+    - WHERE: `r.operator_id = ? AND e.content_domain = 'work' AND e.week_label IN ({?})`
+    - WHERE: `week_label = ?`
+    - WHERE: `week_label = ? AND operator_id = ?`
+- `SELECT-FROM` @ **create_app.feishu_notify_weekly_review** `backend/app/main.py:51233` — _static_confirmed_
+    - WHERE: `week_label = ?`
+- `SELECT-FROM` @ **_collect_work_events** `backend/app/services/badge_engine.py:279` — _static_confirmed_
+    - WHERE: `wr.operator_id = ? OR wr.user_id = ?`
+- `SELECT-FROM` @ **ingest_weekly_review_by_id** `backend/app/services/data_center_ingest.py:1737` — _static_confirmed_
+    - WHERE: `id = ?`
+- `SELECT-FROM` @ **backfill_weekly_review_ingest** `backend/app/services/data_center_ingest.py:1810` — _static_confirmed_
+- `SELECT-FROM` @ **backfill_data_center_ingest** `backend/app/services/data_center_ingest.py:1897` — _static_confirmed_
+- `SELECT-FROM` @ **_count_source_events** `backend/app/services/growth_engine.py:1168` — _static_confirmed_
+    - WHERE: `user_id = ? AND length(summary) >= 30`
+- `SELECT-FROM+JOIN` @ **_build_review_streak** `backend/app/services/growth_engine.py:2066` — _static_confirmed_
+    - WHERE: `r.user_id = ? AND t.reviewed_at >= ?`
+    - WHERE: `user_id = ? AND week_label LIKE '____-W%'`
+- `SELECT-FROM` @ **_build_daily_activity** `backend/app/services/growth_engine.py:2559` — _static_confirmed_
+    - WHERE: `user_id=? AND created_at >= ?`
+- `SELECT-FROM` @ **backfill_memory_foundation** `backend/app/services/memory_foundation.py:1965` — _static_confirmed_
+    - WHERE: `id = ?`
+- `SELECT-FROM` @ **_collect_review_items** `backend/app/services/organization_dna_v2.py:548` — _static_confirmed_
+    - WHERE: `created_at >= datetime('now', '-30 days')`
+- `SELECT-FROM` @ **_collect_gap_items** `backend/app/services/organization_dna_v2.py:741` — _static_confirmed_
+- `SELECT-FROM` @ **_ensure_weekly_review** `backend/app/services/plan_executor.py:482` — _static_confirmed_
+    - WHERE: `user_id = ? AND week_label = ?`
+- `SELECT-FROM` @ **_materialize_review_docs** `backend/app/services/workspace_relation_docs.py:564` — _static_confirmed_
+
+## `workspace`
+
+- 经验层: 真库**无此表** (静态边 0写/1读)
+
+### 写边 (0)
+- (无静态写边)
+
+### 读边 (1)
+- `SELECT-FROM` @ **build_workspace_dc_response_meta** `backend/app/services/workspace_data_center_adapter.py:2296` — _static_confirmed_
+
+## `workspace_answer_quality_failures`
+
+- 经验层: **0 行**
+
+### 写边 (2)
+- `INSERT+UPDATE` @ **record_workspace_answer_quality_failure** `backend/app/services/workspace_answer_value_diagnostics.py:539` — _call_name_match_
+    - chain: record_workspace_answer_quality_failure @backend/app/services/workspace_answer_value_diagnostics.py:539  ←  create_workspace_answer_value_review @backend/app/services/workspace_answer_value_diagnostics.py:948  ←  create_workspace_answer_value_review_api [endpoint:/api/v1/workspace-answer-value-reviews] @backend/app/main.py:44393
+- `UPDATE` @ **resolve_workspace_answer_quality_failure** `backend/app/services/workspace_answer_value_diagnostics.py:628` — _call_name_match_
+    - chain: resolve_workspace_answer_quality_failure @backend/app/services/workspace_answer_value_diagnostics.py:628  ←  resolve_workspace_answer_quality_failure_api [endpoint:/api/v1/workspace-answer-quality-failures/{failure_id}/resolve] @backend/app/main.py:44492
+
+### 读边 (3)
+- `SELECT-FROM` @ **record_workspace_answer_quality_failure** `backend/app/services/workspace_answer_value_diagnostics.py:539` — _static_confirmed_
+    - WHERE: `client_id = ? AND message_id = ? AND failure_type = ? AND status = 'open'`
+    - WHERE: `id = ?`
+- `SELECT-FROM` @ **list_workspace_answer_quality_failures** `backend/app/services/workspace_answer_value_diagnostics.py:602` — _static_confirmed_
+- `SELECT-FROM` @ **resolve_workspace_answer_quality_failure** `backend/app/services/workspace_answer_value_diagnostics.py:628` — _static_confirmed_
+    - WHERE: `id = ?`
+
+## `workspace_answer_value_reviews`
+
+- 经验层: **0 行**
+
+### 写边 (1)
+- `INSERT+UPDATE` @ **create_workspace_answer_value_review** `backend/app/services/workspace_answer_value_diagnostics.py:948` — _call_name_match_
+    - chain: create_workspace_answer_value_review @backend/app/services/workspace_answer_value_diagnostics.py:948  ←  create_workspace_answer_value_review_api [endpoint:/api/v1/workspace-answer-value-reviews] @backend/app/main.py:44393
+
+### 读边 (4)
+- `SELECT-FROM` @ **list_workspace_answer_value_reviews** `backend/app/services/workspace_answer_value_diagnostics.py:1055` — _static_confirmed_
+- `SELECT-FROM` @ **build_workspace_answer_value_summary** `backend/app/services/workspace_answer_value_diagnostics.py:1081` — _static_confirmed_
+    - WHERE: `client_id = ?`
+- `SELECT-FROM` @ **complete_workspace_value_validation_question** `backend/app/services/workspace_answer_value_diagnostics.py:813` — _static_confirmed_
+    - WHERE: `id = ? AND client_id = ?`
+- `SELECT-FROM` @ **create_workspace_answer_value_review** `backend/app/services/workspace_answer_value_diagnostics.py:948` — _static_confirmed_
+    - WHERE: `client_id = ? AND message_id = ?`
+    - WHERE: `id = ?`
+
+## `workspace_context_refresh_events`
+
+- 经验层: **415 行** · 最近写入 created_at=2026-06-08T14:35:20
+  - source_type 分布: task_update:188, task_create:66, event_line_delete:43, document_import_create:19, task_delete:17, document_import_complete:17, task_attachment_upload:13, parse_retry_complete:8, link_material_import:8, task_update_scope_release:6, event_line_update:6, readiness_action:retry_parse:5
+
+### 写边 (2)
+- `UPDATE` @ **mark_workspace_context_refresh_event_status** `backend/app/services/workspace_context_refresh.py:146` — _call_name_match_
+    - chain: mark_workspace_context_refresh_event_status @backend/app/services/workspace_context_refresh.py:146  ←  run_workspace_data_center_readiness_action [endpoint:/api/v1/clients/{client_id}/workspace/data-center-readiness/actions] @backend/app/main.py:43497
+    - chain: mark_workspace_context_refresh_event_status @backend/app/services/workspace_context_refresh.py:146  ←  mark_workspace_context_refresh_event_completed @backend/app/services/workspace_context_refresh.py:214  ←  run_workspace_data_center_readiness_action [endpoint:/api/v1/clients/{client_id}/workspace/data-center-readiness/actions] @backend/app/main.py:43497
+    - chain: mark_workspace_context_refresh_event_status @backend/app/services/workspace_context_refresh.py:146  ←  mark_workspace_context_refresh_event_failed @backend/app/services/workspace_context_refresh.py:229  ←  run_workspace_data_center_readiness_action [endpoint:/api/v1/clients/{client_id}/workspace/data-center-readiness/actions] @backend/app/main.py:43497
+    - chain: mark_workspace_context_refresh_event_status @backend/app/services/workspace_context_refresh.py:146  ←  mark_workspace_context_refresh_event_running @backend/app/services/workspace_context_refresh.py:199  ←  run_workspace_data_center_readiness_action [endpoint:/api/v1/clients/{client_id}/workspace/data-center-readiness/actions] @backend/app/main.py:43497
+    - chain: mark_workspace_context_refresh_event_status @backend/app/services/workspace_context_refresh.py:146  ←  mark_workspace_context_refresh_event_completed @backend/app/services/workspace_context_refresh.py:214  ←  recover_stale_workspace_context_refresh_events @backend/app/services/workspace_context_refresh.py:261  ←  _startup_worker [worker:_startup_worker] @backend/app/main.py:3743
+- `INSERT` @ **enqueue_workspace_context_refresh** `backend/app/services/workspace_context_refresh.py:82` — _call_name_match_
+    - chain: enqueue_workspace_context_refresh @backend/app/services/workspace_context_refresh.py:82  ←  create_workspace_proposal_draft_api [endpoint:/api/v1/clients/{client_id}/workspace/proposal-drafts] @backend/app/main.py:44961
+    - chain: enqueue_workspace_context_refresh @backend/app/services/workspace_context_refresh.py:82  ←  mark_data_center_proposal_draft_reviewed_api [endpoint:/api/v1/data-center/proposal-drafts/{draft_id}/mark-reviewed] @backend/app/main.py:45022
+    - chain: enqueue_workspace_context_refresh @backend/app/services/workspace_context_refresh.py:82  ←  post_workspace_context_refresh_event [endpoint:/api/v1/clients/{client_id}/workspace/context-refresh-events] @backend/app/main.py:44035
+    - chain: enqueue_workspace_context_refresh @backend/app/services/workspace_context_refresh.py:82  ←  promote_data_center_proposal_draft_api [endpoint:/api/v1/data-center/proposal-drafts/{draft_id}/promote] @backend/app/main.py:45080
+    - chain: enqueue_workspace_context_refresh @backend/app/services/workspace_context_refresh.py:82  ←  reject_data_center_proposal_draft_api [endpoint:/api/v1/data-center/proposal-drafts/{draft_id}/reject] @backend/app/main.py:45051
+    - chain: enqueue_workspace_context_refresh @backend/app/services/workspace_context_refresh.py:82  ←  run_workspace_data_center_readiness_action [endpoint:/api/v1/clients/{client_id}/workspace/data-center-readiness/actions] @backend/app/main.py:43497
+
+### 读边 (4)
+- `SELECT-FROM` @ **mark_workspace_context_refresh_event_status** `backend/app/services/workspace_context_refresh.py:146` — _static_confirmed_
+    - WHERE: `id = ?`
+- `SELECT-FROM` @ **list_workspace_context_refresh_events** `backend/app/services/workspace_context_refresh.py:173` — _static_confirmed_
+    - WHERE: `{?}`
+- `SELECT-FROM` @ **recover_stale_workspace_context_refresh_events** `backend/app/services/workspace_context_refresh.py:261` — _static_confirmed_
+    - WHERE: `status = 'queued' AND created_at <= ?`
+    - WHERE: `status = 'running' AND updated_at <= ?`
+- `SELECT-FROM` @ **enqueue_workspace_context_refresh** `backend/app/services/workspace_context_refresh.py:82` — _static_confirmed_
+    - WHERE: `dedupe_key = ? AND status IN ('queued', 'running')`
+    - WHERE: `id = ?`
+
+## `workspace_link_import_runs`
+
+- 经验层: **25 行** · 最近写入 created_at=2026-05-31T17:16:53
+
+### 写边 (4)
+- `INSERT` @ **create_app.create_link_material_import_run** `backend/app/main.py:16496` — _call_name_match_
+    - chain: create_link_material_import_run @backend/app/main.py:16496  ←  start_client_link_material_import [endpoint:/api/v1/clients/{client_id}/link-materials/import/start] @backend/app/main.py:49857
+- `UPDATE` @ **create_app.update_link_material_import_run** `backend/app/main.py:16591` — _call_name_match_
+    - chain: update_link_material_import_run @backend/app/main.py:16591  ←  cancel_client_link_material_import_run [endpoint:/api/v1/clients/{client_id}/link-materials/import-runs/{run_id}/cancel] @backend/app/main.py:49909
+- `INSERT+UPDATE` @ **create_app** `backend/app/main.py:3179` — _needs_human_
+    - chain: create_app @backend/app/main.py:3179  ←  (no caller found — orphan write)
+- `UPDATE` @ **create_app.recover_stale_link_material_import_runs** `backend/app/main.py:4330` — _call_name_match_
+    - chain: recover_stale_link_material_import_runs @backend/app/main.py:4330  ←  _startup_worker [worker:_startup_worker] @backend/app/main.py:3743
+
+### 读边 (11)
+- `SELECT-FROM` @ **create_app.create_link_material_import_run** `backend/app/main.py:16496` — _static_confirmed_
+    - WHERE: `id = ?`
+- `SELECT-FROM` @ **create_app.fetch_latest_link_material_import_run** `backend/app/main.py:16545` — _static_confirmed_
+    - WHERE: `client_id = ?`
+- `SELECT-FROM` @ **create_app.fetch_active_link_material_import_run** `backend/app/main.py:16558` — _static_confirmed_
+    - WHERE: `client_id = ? AND status IN ('queued', 'running')`
+- `SELECT-FROM` @ **create_app.fetch_active_link_material_import_run_for_url** `backend/app/main.py:16571` — _static_confirmed_
+    - WHERE: `client_id = ? AND source_url = ? AND status IN ('queued', 'running')`
+- `SELECT-FROM` @ **create_app.update_link_material_import_run** `backend/app/main.py:16591` — _static_confirmed_
+    - WHERE: `id = ?`
+- `SELECT-FROM` @ **create_app.fetch_link_material_import_run** `backend/app/main.py:16634` — _static_confirmed_
+    - WHERE: `id = ? AND client_id = ?`
+- `SELECT-FROM` @ **create_app.run_link_material_import** `backend/app/main.py:16643` — _static_confirmed_
+    - WHERE: `id = ? AND client_id = ?`
+- `SELECT-FROM` @ **create_app** `backend/app/main.py:3179` — _static_confirmed_
+    - WHERE: `client_id = ?`
+    - WHERE: `client_id = ? AND source_url = ? AND status IN ('queued', 'running')`
+    - WHERE: `client_id = ? AND status IN ('queued', 'running')`
+    - WHERE: `id = ?`
+    - WHERE: `id = ? AND client_id = ?`
+- `SELECT-FROM` @ **create_app.recover_stale_link_material_import_runs** `backend/app/main.py:4330` — _static_confirmed_
+    - WHERE: `status IN ('queued', 'running')`
+- `SELECT-FROM` @ **create_app.list_client_link_material_import_runs** `backend/app/main.py:49885` — _static_confirmed_
+    - WHERE: `client_id = ?`
+- `SELECT-FROM` @ **create_app.active_background_tasks** `backend/app/main.py:49925` — _static_confirmed_
+    - WHERE: `status IN ('queued','running')`
+
+## `workspace_value_validation_sessions`
+
+- 经验层: **0 行**
+
+### 写边 (3)
+- `INSERT` @ **create_workspace_value_validation_session** `backend/app/services/workspace_answer_value_diagnostics.py:744` — _call_name_match_
+    - chain: create_workspace_value_validation_session @backend/app/services/workspace_answer_value_diagnostics.py:744  ←  create_workspace_value_validation_session_api [endpoint:/api/v1/workspace-value-validation-sessions] @backend/app/main.py:44426
+- `UPDATE` @ **complete_workspace_value_validation_question** `backend/app/services/workspace_answer_value_diagnostics.py:813` — _call_name_match_
+    - chain: complete_workspace_value_validation_question @backend/app/services/workspace_answer_value_diagnostics.py:813  ←  complete_workspace_value_validation_question_api [endpoint:/api/v1/workspace-value-validation-sessions/{session_id}/complete-question] @backend/app/main.py:44453
+- `UPDATE` @ **finish_workspace_value_validation_session** `backend/app/services/workspace_answer_value_diagnostics.py:898` — _call_name_match_
+    - chain: finish_workspace_value_validation_session @backend/app/services/workspace_answer_value_diagnostics.py:898  ←  finish_workspace_value_validation_session_api [endpoint:/api/v1/workspace-value-validation-sessions/{session_id}/finish] @backend/app/main.py:44472
+
+### 读边 (5)
+- `SELECT-FROM` @ **create_workspace_value_validation_session** `backend/app/services/workspace_answer_value_diagnostics.py:744` — _static_confirmed_
+    - WHERE: `id = ?`
+- `SELECT-FROM` @ **list_workspace_value_validation_sessions** `backend/app/services/workspace_answer_value_diagnostics.py:775` — _static_confirmed_
+- `SELECT-FROM` @ **get_workspace_value_validation_session** `backend/app/services/workspace_answer_value_diagnostics.py:801` — _static_confirmed_
+    - WHERE: `id = ?`
+- `SELECT-FROM` @ **complete_workspace_value_validation_question** `backend/app/services/workspace_answer_value_diagnostics.py:813` — _static_confirmed_
+    - WHERE: `id = ?`
+- `SELECT-FROM` @ **finish_workspace_value_validation_session** `backend/app/services/workspace_answer_value_diagnostics.py:898` — _static_confirmed_
+    - WHERE: `id = ?`
+
+## `writing_skills`
+
+- 经验层: **1 行** · 最近写入 created_at=2026-05-14T14:42:06+00:00
+
+### 写边 (4)
+- `INSERT` @ **_seed_builtin_writing_skills** `backend/app/db.py:5061` — _needs_human_
+    - chain: _seed_builtin_writing_skills @backend/app/db.py:5061  ←  _init_schema @backend/app/db.py:60
+- `INSERT+UPDATE` @ **create_app** `backend/app/main.py:3179` — _needs_human_
+    - chain: create_app @backend/app/main.py:3179  ←  (no caller found — orphan write)
+- `INSERT` @ **create_app.create_writing_skill** `backend/app/main.py:48935` — _static_confirmed_
+    - chain: create_writing_skill [endpoint:/api/v1/writing-skills] @backend/app/main.py:48935
+- `UPDATE` @ **create_app.update_writing_skill** `backend/app/main.py:48968` — _static_confirmed_
+    - chain: update_writing_skill [endpoint:/api/v1/writing-skills/{skill_id}] @backend/app/main.py:48968
+
+### 读边 (9)
+- `SELECT-FROM` @ **_seed_builtin_writing_skills** `backend/app/db.py:5061` — _static_confirmed_
+    - WHERE: `id = ?`
+- `SELECT-FROM` @ **create_app** `backend/app/main.py:3179` — _static_confirmed_
+    - WHERE: `id = ?`
+- `SELECT-FROM` @ **create_app.resolve_chat_answer_data_center_primary** `backend/app/main.py:46745` — _static_confirmed_
+    - WHERE: `id = ?`
+- `SELECT-FROM` @ **create_app.start_chat_message** `backend/app/main.py:48665` — _static_confirmed_
+    - WHERE: `id = ?`
+- `SELECT-FROM` @ **create_app.list_writing_skills** `backend/app/main.py:48928` — _static_confirmed_
+- `SELECT-FROM` @ **create_app.create_writing_skill** `backend/app/main.py:48935` — _static_confirmed_
+    - WHERE: `id = ?`
+- `SELECT-FROM` @ **create_app.update_writing_skill** `backend/app/main.py:48968` — _static_confirmed_
+    - WHERE: `id = ?`
+- `SELECT-FROM` @ **create_app.delete_writing_skill** `backend/app/main.py:49009` — _static_confirmed_
+    - WHERE: `id = ?`
+- `SELECT-FROM` @ **create_app.document_ai_action** `backend/app/main.py:49635` — _static_confirmed_
+    - WHERE: `id = ?`
+
+## `xp_ledger`
+
+- 经验层: **76 行** · 最近写入 created_at=2026-05-18T11:56:51
+
+### 写边 (2)
+- `INSERT` @ **_award_badge_xp** `backend/app/services/badge_engine.py:1074` — _call_name_match_
+    - chain: _award_badge_xp @backend/app/services/badge_engine.py:1074  ←  _sync_badge_unlocks [worker:_sync_badge_unlocks] @backend/app/services/badge_engine.py:1156
+- `INSERT` @ **_insert_evidence_and_xp** `backend/app/services/growth_engine.py:3189` — _call_name_match_
+    - chain: _insert_evidence_and_xp @backend/app/services/growth_engine.py:3189  ←  ingest_handbook_codification @backend/app/services/growth_engine.py:3592  ←  create_handbook [endpoint:/api/v1/handbook] @backend/app/main.py:56373
+    - chain: _insert_evidence_and_xp @backend/app/services/growth_engine.py:3189  ←  ingest_meeting_growth_candidate @backend/app/services/growth_engine.py:2942  ←  publish_meeting [endpoint:/api/v1/clients/{client_id}/meetings/{meeting_id}/publish] @backend/app/main.py:51482
+    - chain: _insert_evidence_and_xp @backend/app/services/growth_engine.py:3189  ←  ingest_review_growth @backend/app/services/growth_engine.py:3402  ←  create_weekly_review [endpoint:/api/v1/reviews/weekly] @backend/app/main.py:54504
+    - chain: _insert_evidence_and_xp @backend/app/services/growth_engine.py:3189  ←  ingest_strategic_growth_candidate @backend/app/services/growth_engine.py:3010  ←  apply_strategic_meeting_pack [endpoint:/api/v1/clients/{client_id}/strategic-cockpit/meeting-pack/{meeting_id}/apply] @backend/app/main.py:42202
+    - chain: _insert_evidence_and_xp @backend/app/services/growth_engine.py:3189  ←  ingest_strategic_growth_candidate @backend/app/services/growth_engine.py:3010  ←  confirm_strategic_cockpit [endpoint:/api/v1/clients/{client_id}/strategic-cockpit/confirm] @backend/app/main.py:42174
+    - chain: _insert_evidence_and_xp @backend/app/services/growth_engine.py:3189  ←  mark_handbook_entry_reused @backend/app/services/growth_engine.py:3991  ←  mark_growth_handbook_reused [endpoint:/api/v1/growth/handbook/{entry_id}/mark-reused] @backend/app/main.py:56456
+
+### 读边 (10)
+- `SELECT-FROM+JOIN` @ **create_app** `backend/app/main.py:3179` — _static_confirmed_
+    - WHERE: `l.user_id = ? AND l.reversed_at IS NULL AND e.handbook_entry_id = ?`
+    - WHERE: `user_id = ? AND reversed_at IS NULL AND week_label <> ''`
+    - WHERE: `user_id = ? AND reversed_at IS NULL AND week_label = ?`
+    - WHERE: `v.user_id = ? AND e.handbook_entry_id = ? AND v.event_type = 'handbook_reused'`
+- `SELECT-FROM+JOIN` @ **create_app.build_handbook_detail** `backend/app/main.py:56121` — _static_confirmed_
+    - WHERE: `l.user_id = ? AND l.reversed_at IS NULL AND e.handbook_entry_id = ?`
+    - WHERE: `v.user_id = ? AND e.handbook_entry_id = ? AND v.event_type = 'handbook_reused'`
+- `SELECT-FROM` @ **create_app.resolve_growth_week_label** `backend/app/main.py:8738` — _static_confirmed_
+    - WHERE: `user_id = ? AND reversed_at IS NULL AND week_label <> ''`
+    - WHERE: `user_id = ? AND reversed_at IS NULL AND week_label = ?`
+- `SELECT-FROM` @ **_build_peer_comparison** `backend/app/services/growth_engine.py:2474` — _static_confirmed_
+    - WHERE: `reversed_at IS NULL AND COALESCE(user_id, '') != ''`
+    - WHERE: `user_id IN (`
+    - WHERE: `user_id IN ({?}) AND ability_key = ? AND reversed_at IS NULL`
+    - WHERE: `user_id IN ({?}) AND reversed_at IS NULL`
+- `SELECT-FROM` @ **_organization_baseline_score** `backend/app/services/growth_engine.py:2710` — _static_confirmed_
+    - WHERE: `ability_key = ? AND reversed_at IS NULL`
+- `SELECT-FROM` @ **reset_review_growth** `backend/app/services/growth_engine.py:3380` — _static_confirmed_
+    - WHERE: `evidence_id = ?`
+- `SELECT-FROM` @ **reset_signal_growth_outputs** `backend/app/services/growth_engine.py:3389` — _static_confirmed_
+    - WHERE: `evidence_id = ?`
+- `SELECT-FROM` @ **rebuild_learning_recommendations** `backend/app/services/growth_engine.py:3760` — _static_confirmed_
+    - WHERE: `user_id = ? AND reversed_at IS NULL`
+- `SELECT-FROM` @ **build_growth_ledger** `backend/app/services/growth_engine.py:4719` — _static_confirmed_
+    - WHERE: `{?}`
+- `SELECT-FROM` @ **build_growth_overview** `backend/app/services/growth_engine.py:4758` — _static_confirmed_
+    - WHERE: `user_id = ? AND reversed_at IS NULL AND week_label = ?`
+
+
+---
+
+## 盲区清单 (接通排查重点)
+
+### 0 写边但真库有行 (写入路径在静态扫描盲区)
+
+- `answer_citations` — 7595 行,0 静态写边 → needs_human
+- `knowledge_master_index_fts_content` — 595 行,0 静态写边 → needs_human
+- `knowledge_master_index_fts_docsize` — 595 行,0 静态写边 → needs_human
+- `knowledge_master_index_fts_data` — 533 行,0 静态写边 → needs_human
+- `knowledge_master_index_fts_idx` — 530 行,0 静态写边 → needs_human
+- `doc_skeletons` — 445 行,0 静态写边 → needs_human
+- `job_stage_runs` — 266 行,0 静态写边 → needs_human
+- `theme_clusters` — 37 行,0 静态写边 → needs_human
+- `open_questions` — 25 行,0 静态写边 → needs_human
+- `task_notes_cloud` — 12 行,0 静态写边 → needs_human
+- `sync_memory_records` — 6 行,0 静态写边 → needs_human
+- `organization_dna_documents` — 4 行,0 静态写边 → needs_human
+- `client_delete_tombstones` — 1 行,0 静态写边 → needs_human
+- `knowledge_master_index_fts_config` — 1 行,0 静态写边 → needs_human
+
+### needs_human 动态表名 (f-string / 拼接 SQL)
+
+- `backend/app/main.py:2237` — `SELECT
+            a.*,
+            d.excerpt AS document_excerpt
+        FROM {?} a
+        LEFT JOIN documents d ON d.`
+- `backend/app/main.py:2484` — `UPDATE {?} SET client_id = ?, updated_at = ? WHERE scope_type = 'event_line' AND scope_id = ?`
+- `backend/app/main.py:3179` — `SELECT
+                a.*,
+                d.excerpt AS document_excerpt
+            FROM {?} a
+            LEFT JOIN d`
+- `backend/app/main.py:8904` — `SELECT
+                a.*,
+                d.excerpt AS document_excerpt
+            FROM {?} a
+            LEFT JOIN d`
+- `backend/app/main.py:13604` — `SELECT * FROM {?} WHERE id IN ({?}) ORDER BY created_at DESC`
+- `backend/app/main.py:13619` — `SELECT * FROM {?} WHERE event_line_id = ? ORDER BY created_at DESC`
+- `backend/app/main.py:23896` — `SELECT id FROM {?} WHERE task_id = ?`
+- `backend/app/main.py:27404` — `SELECT * FROM {?} WHERE id = ?`
+- `backend/app/main.py:27405` — `SELECT * FROM {?} WHERE id = ?`
+- `backend/app/main.py:27509` — `SELECT * FROM {?} WHERE id = ?`
+- `backend/app/main.py:27510` — `SELECT * FROM {?} WHERE id = ?`
+- `backend/app/main.py:27600` — `SELECT * FROM {?} WHERE id = ?`
+- `backend/app/main.py:34018` — `SELECT document_id FROM {?} WHERE id = ?`
+- `backend/app/main.py:35451` — `SELECT COUNT(*) FROM {?} WHERE event_line_id IN ({?})`
+- `backend/app/main.py:35514` — `UPDATE {?} SET event_line_id = ? WHERE event_line_id IN ({?})`
+- `backend/app/main.py:35586` — `UPDATE {?} SET event_line_id = ? WHERE event_line_id IN ({?})`
+- `backend/app/main.py:53434` — `INSERT INTO {?}(id, task_id, client_id, event_line_id, document_id, title, path, kind, source, size_bytes, created_at)
+ `
+- `backend/app/main.py:54624` — `INSERT INTO {?} ({?})
+                            VALUES ({?})
+                            ON CONFLICT(id){?}`
+- `backend/app/db.py:60` — `SELECT id, department_id
+                        FROM {?}
+                        WHERE COALESCE(department_id, '') != '`
+- `backend/app/db.py:5103` — `UPDATE {?} SET {?} = {?} WHERE {?} IS NULL`
+- `backend/app/services/evidence_tier.py:143` — `SELECT evidence_tier, COUNT(*) AS c
+                FROM {?}
+                WHERE client_id = ?
+                GROUP B`
+- `backend/app/services/document_llm_extractor.py:261` — `F2.1 extract batch {?}/{?} from {?}`
+- `backend/app/services/digital_asset_center.py:1030` — `SELECT COUNT(1) AS count
+        FROM {?} item
+        JOIN clients c ON c.id = item.{?}
+        WHERE {?}
+          AND`
+- `backend/app/services/digital_asset_center.py:1045` — `SELECT COUNT(1) AS count
+        FROM {?}
+        WHERE {?} = ?
+          AND {?}
+          AND date(created_at) >= date`
+- `backend/app/services/data_center_ingest.py:617` — `UPDATE {?}
+            SET organization_id = ?, department_id = ?, owner_user_id = ?,
+                source_entity_type`
+- `backend/app/services/growth_sync.py:136` — `SELECT * FROM {?} WHERE sync_status = 'pending' ORDER BY created_at ASC LIMIT 100`
+- `backend/app/services/analysis_center.py:233` — `SELECT id FROM {?} WHERE context_pack_id IN ({?})`
+- `backend/app/services/analysis_center.py:263` — `SELECT id FROM {?} WHERE context_pack_id IN ({?})`
+- `backend/app/services/analysis_center.py:352` — `UPDATE {?}
+        SET invalidated_by = ?, stale_reason = ?, updated_at = ?
+        WHERE id = ? AND COALESCE(invalidate`
+- `backend/app/services/analysis_center.py:402` — `INSERT INTO {?} ({?})
+        VALUES ({?})
+        ON CONFLICT({?}) DO UPDATE SET {?}`
+- `backend/app/services/analysis_center.py:3132` — `SELECT id, created_at
+            FROM {?}
+            WHERE {?} IN ('awaiting_review', 'awaiting_revision')
+           `
+- `backend/app/services/analysis_center.py:3737` — `SELECT * FROM {?} WHERE id = ?`
+- `backend/app/services/analysis_center.py:3821` — `SELECT created_at FROM {?} WHERE id = ?`
+- `backend/app/services/data_center_self_verify.py:394` — `update {?}: {?}`
+- `backend/app/services/intelligence_candidate_supply.py:6959` — `UPDATE {?}
+                    SET lifecycle_status = 'inactive',
+                        updated_at = ?
+               `
+- `backend/app/modules/organization/sync.py:328` — `INSERT INTO {?}({?}) VALUES({?}) ON CONFLICT({?}) DO UPDATE SET {?}`
