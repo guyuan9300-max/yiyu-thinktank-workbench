@@ -289,6 +289,7 @@ import type {
   PullPreview,
   PullSelectedFromMainPayload,
   PushPreview,
+  ResolveCollabConflictsPayload,
   EventLineReportSnapshot,
   EventLineTimelineNarrative,
   // 客户项目情报流类型（2026-05-13 整合同事新版资讯情报站时补回）
@@ -411,6 +412,7 @@ function createBrowserWorkbenchFallback(): Window['yiyuWorkbench'] {
     commitAndPushToMain: async () => notAvailable('推送到 main'),
     previewPullFromMain: async () => notAvailable('从 main 拉取'),
     pullSelectedFromMain: async () => notAvailable('从 main 拉取'),
+    resolveCollabMergeConflicts: async () => notAvailable('解决 main 合并冲突'),
     rebuildAndInstallFromRepo: async () => notAvailable('重装应用'),
     setWorkspaceInteractionState: async (payload: { active: boolean; source: string; detail?: string | null }) => ({
       active: payload.active,
@@ -5719,6 +5721,10 @@ export async function previewPullFromMain(repoPath: string, targetCommit?: strin
 
 export async function pullSelectedFromMain(payload: PullSelectedFromMainPayload) {
   return window.yiyuWorkbench.pullSelectedFromMain(payload) as Promise<CollabActionResult>;
+}
+
+export async function resolveCollabMergeConflicts(payload: ResolveCollabConflictsPayload) {
+  return window.yiyuWorkbench.resolveCollabMergeConflicts(payload) as Promise<CollabActionResult>;
 }
 
 export async function rebuildAndInstallFromRepo(repoPath: string) {
