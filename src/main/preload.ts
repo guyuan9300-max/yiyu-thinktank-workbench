@@ -2,14 +2,16 @@ import { contextBridge, ipcRenderer, webUtils } from 'electron';
 import type {
   CollabActionResult,
   CollabRepoStatus,
-  CommitAndPushToMainPayload,
   DesktopAppInfo,
   DesktopStartupGateResumeResult,
+  FastForwardMainPayload,
   OfficialPushUpdatePayload,
   PullPreview,
-  PullSelectedFromMainPayload,
+  PublishCollabBranchPayload,
+  PushMainPayload,
   PushPreview,
-  ResolveCollabConflictsPayload,
+  StartCollabPreviewPayload,
+  StopCollabPreviewPayload,
   UpdateOrgIdentity,
 } from '../shared/types.js';
 
@@ -53,14 +55,18 @@ contextBridge.exposeInMainWorld('yiyuWorkbench', {
     ipcRenderer.invoke('yiyu-workbench:getCollabRepoStatus', repoPath),
   previewPushToMain: (repoPath: string): Promise<PushPreview> =>
     ipcRenderer.invoke('yiyu-workbench:previewPushToMain', repoPath),
-  commitAndPushToMain: (payload: CommitAndPushToMainPayload): Promise<CollabActionResult> =>
-    ipcRenderer.invoke('yiyu-workbench:commitAndPushToMain', payload),
+  pushSafelyToMain: (payload: PushMainPayload): Promise<CollabActionResult> =>
+    ipcRenderer.invoke('yiyu-workbench:pushSafelyToMain', payload),
+  publishCollabBranch: (payload: PublishCollabBranchPayload): Promise<CollabActionResult> =>
+    ipcRenderer.invoke('yiyu-workbench:publishCollabBranch', payload),
   previewPullFromMain: (repoPath: string, targetCommit?: string | null): Promise<PullPreview> =>
     ipcRenderer.invoke('yiyu-workbench:previewPullFromMain', repoPath, targetCommit ?? null),
-  pullSelectedFromMain: (payload: PullSelectedFromMainPayload): Promise<CollabActionResult> =>
-    ipcRenderer.invoke('yiyu-workbench:pullSelectedFromMain', payload),
-  resolveCollabMergeConflicts: (payload: ResolveCollabConflictsPayload): Promise<CollabActionResult> =>
-    ipcRenderer.invoke('yiyu-workbench:resolveCollabMergeConflicts', payload),
+  fastForwardMain: (payload: FastForwardMainPayload): Promise<CollabActionResult> =>
+    ipcRenderer.invoke('yiyu-workbench:fastForwardMain', payload),
+  startCollabPreview: (payload: StartCollabPreviewPayload): Promise<CollabActionResult> =>
+    ipcRenderer.invoke('yiyu-workbench:startCollabPreview', payload),
+  stopCollabPreview: (payload: StopCollabPreviewPayload): Promise<CollabActionResult> =>
+    ipcRenderer.invoke('yiyu-workbench:stopCollabPreview', payload),
   rebuildAndInstallFromRepo: (repoPath: string): Promise<boolean> =>
     ipcRenderer.invoke('yiyu-workbench:rebuildAndInstallFromRepo', repoPath),
   setWorkspaceInteractionState: (payload: { active: boolean; source: string; detail?: string | null }): Promise<{

@@ -1,24 +1,27 @@
 import { spawn } from 'node:child_process';
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import type {
   CollabActionResult,
   CollabChangeGroup,
   CollabChangeGroupKey,
-  CollabConflictDecision,
-  CollabConflictGroup,
   CollabConflictRisk,
   CollabEffectPreview,
   CollabFileChange,
   CollabFileChangeType,
+  CollabPreviewSession,
+  CollabRemoteBranch,
   CollabRemoteCommit,
   CollabRepoStatus,
-  CommitAndPushToMainPayload,
+  FastForwardMainPayload,
   PullPreview,
-  PullSelectedFromMainPayload,
+  PublishCollabBranchPayload,
+  PushMainPayload,
   PushPreview,
-  ResolveCollabConflictsPayload,
+  StartCollabPreviewPayload,
+  StopCollabPreviewPayload,
 } from '../shared/types.js';
 
 type RunCommandOptions = {
@@ -87,17 +90,6 @@ type RepoWorkContext = {
   gitRepoPath: string;
   scopeRelativePath: string | null;
 };
-
-type CollabAiConflictMergeInput = {
-  path: string;
-  featureTitle: string;
-  conflictMarkerText: string;
-  baseContent: string | null;
-  localContent: string | null;
-  remoteContent: string | null;
-};
-
-type CollabAiConflictMergeResolver = (input: CollabAiConflictMergeInput) => Promise<string>;
 
 type SharedSettingsTarget = {
   settingKey: 'settings.system_admin';
@@ -226,6 +218,8 @@ const COLLAB_PRIMARY_REPO_NAME = 'yiyu-thinktank-workbench';
 const COLLAB_LEGACY_REPO_NAME = 'yiyu-thinktank-workbench-main-sync';
 const COLLAB_VISIBLE_WORKSPACE_SEGMENT = `${path.sep}openclaw${path.sep}workspace`;
 const COLLAB_HIDDEN_WORKSPACE_SEGMENT = `${path.sep}.openclaw${path.sep}workspace`;
+
+const activePreviewSessions = new Map<string, { pid: number; session: CollabPreviewSession }>();
 
 function normalizeCollabRepoBindingPath(targetPath: string) {
   let normalized = path.resolve(targetPath).replace(/[\\/]+$/, '');
@@ -389,13 +383,6 @@ function labelSharedSettingKey(settingKey: string) {
 async function readGitObject(context: RepoWorkContext, revision: string, targetPath: string) {
   const gitTargetPath = toScopedGitPath(context.scopeRelativePath, targetPath);
   const result = await runGit(context.gitRepoPath, ['show', `${revision}:${gitTargetPath}`], { allowNonZero: true });
-  if (result.exitCode !== 0) return null;
-  return result.stdout;
-}
-
-async function readConflictStage(context: RepoWorkContext, stage: 1 | 2 | 3, targetPath: string) {
-  const gitTargetPath = toScopedGitPath(context.scopeRelativePath, targetPath);
-  const result = await runGit(context.gitRepoPath, ['show', `:${stage}:${gitTargetPath}`], { allowNonZero: true });
   if (result.exitCode !== 0) return null;
   return result.stdout;
 }
@@ -715,7 +702,7 @@ function summarizeRendererEffect(targetPath: string) {
     return {
       id: 'renderer-collab-shell',
       title: '推送/同步按钮的合并方式会变化',
-      summary: '同步时会完整合并双方修改，真实冲突才要求选择，不再因为文件重叠就默认跳过功能。',
+      summary: '同步按钮会先解释和预览双方修改；复杂改动不再由软件自动合并，避免静默覆盖或跳过功能。',
       visibility: 'visible' as const,
       scopeLabel: '界面可见',
       detail: '协作同步入口、确认弹窗、冲突决策和主要提示文案会更新。',
@@ -790,7 +777,7 @@ function summarizeDesktopEffect(targetPath: string) {
       summary: '这会影响你和同事如何把各自修改合并到同一个 main，目标是不再遗漏双方功能。',
       visibility: 'mixed' as const,
       scopeLabel: '协作同步',
-      detail: '同步后建议分别测试无冲突自动合并和真实冲突三选一处理。',
+      detail: '同步后建议分别测试协作分支发布、main 快进接收和隔离预览。',
     };
   }
   if (normalized.startsWith('src/main/') || normalized === 'src/renderer/lib/api.ts' || normalized === 'src/shared/types.ts') {
@@ -1463,6 +1450,99 @@ async function getRemoteCommits(context: RepoWorkContext): Promise<CollabRemoteC
   return result;
 }
 
+function formatCollabTimestamp(date = new Date()) {
+  const pad = (value: number) => String(value).padStart(2, '0');
+  return `${date.getFullYear()}${pad(date.getMonth() + 1)}${pad(date.getDate())}-${pad(date.getHours())}${pad(date.getMinutes())}${pad(date.getSeconds())}`;
+}
+
+function sanitizeBranchSegment(value: string) {
+  const normalized = value
+    .trim()
+    .toLowerCase()
+    .replace(/@.*$/, '')
+    .replace(/[^a-z0-9._-]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .replace(/\.+$/g, '');
+  return normalized || 'member';
+}
+
+async function suggestedCollabBranchName(context: RepoWorkContext) {
+  const email = await runGit(context.gitRepoPath, ['config', '--get', 'user.email'], { allowNonZero: true });
+  const name = await runGit(context.gitRepoPath, ['config', '--get', 'user.name'], { allowNonZero: true });
+  const rawOwner = (email.stdout || name.stdout || os.userInfo().username || 'member').trim();
+  return `collab/${sanitizeBranchSegment(rawOwner)}/${formatCollabTimestamp()}`;
+}
+
+function normalizeCollabBranchName(branchName: string) {
+  const trimmed = branchName.trim();
+  if (!trimmed) throw new Error('缺少协作分支名。');
+  if (!/^collab\/[a-z0-9._-]+\/[a-z0-9._/-]+$/i.test(trimmed) || trimmed.includes('..') || trimmed.endsWith('/')) {
+    throw new Error(`协作分支名不安全：${trimmed}`);
+  }
+  return trimmed;
+}
+
+async function getRemoteCollabBranches(context: RepoWorkContext): Promise<CollabRemoteBranch[]> {
+  const separator = '\x1f';
+  const result = await runGit(
+    context.gitRepoPath,
+    [
+      'for-each-ref',
+      '--sort=-committerdate',
+      `--format=%(refname:short)${separator}%(objectname)${separator}%(objectname:short)${separator}%(committerdate:iso-strict)${separator}%(subject)`,
+      'refs/remotes/origin/collab/',
+    ],
+    { allowNonZero: true },
+  );
+  const branches = result.stdout
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .map((line) => {
+      const [ref = '', hash = '', shortHash = '', authoredAt = '', ...subjectParts] = line.split('\x1f');
+      const branchName = ref.replace(/^origin\//, '');
+      return {
+        ref,
+        branchName,
+        shortName: branchName.replace(/^collab\//, ''),
+        hash,
+        shortHash,
+        subject: subjectParts.join('\x1f').trim(),
+        authoredAt,
+        authorName: '',
+        authorEmail: '',
+      };
+    })
+    .filter((branch) => branch.ref && branch.hash);
+
+  const output: CollabRemoteBranch[] = [];
+  for (const branch of branches) {
+    const authorResult = await runGit(
+      context.gitRepoPath,
+      ['show', '-s', '--format=%an%x1f%ae', branch.hash],
+      { allowNonZero: true },
+    );
+    const [authorName = '', authorEmail = ''] = authorResult.stdout.trim().split('\x1f');
+    const diffResult = await runGit(
+      context.gitRepoPath,
+      ['diff', '--name-only', '--find-renames=50%', 'origin/main...', branch.ref],
+      { allowNonZero: true },
+    );
+    const changedPaths = diffResult.stdout
+      .split(/\r?\n/)
+      .map((line) => mapRepoPathToScope(line.trim(), context.scopeRelativePath))
+      .filter((repoPath): repoPath is string => Boolean(repoPath));
+    output.push({
+      ...branch,
+      authorName,
+      authorEmail,
+      changedPaths,
+      fileCount: changedPaths.length,
+    });
+  }
+  return output;
+}
+
 function normalizeSelectedPaths(
   selectedPaths: string[],
   allFiles: CollabFileChange[],
@@ -1609,48 +1689,6 @@ async function commitStagedChangesIfAny(context: RepoWorkContext, message: strin
   return true;
 }
 
-async function listUnresolvedScopedPaths(context: RepoWorkContext) {
-  const unresolved = await runGit(context.gitRepoPath, ['diff', '--name-only', '--diff-filter=U'], { allowNonZero: true });
-  return uniquePaths(
-    unresolved.stdout
-      .split(/\r?\n/)
-      .map((line) => line.trim())
-      .filter(Boolean)
-      .map((repoPath) => stripScopePrefix(repoPath, context.scopeRelativePath))
-      .filter((repoPath): repoPath is string => repoPath !== null && repoPath.length > 0),
-  );
-}
-
-function buildConflictGroupsFromPaths(paths: string[]): CollabConflictGroup[] {
-  const grouped = new Map<CollabChangeGroupKey, string[]>();
-  for (const targetPath of paths) {
-    const group = classifyChangeGroup(targetPath);
-    const existing = grouped.get(group.key) || [];
-    existing.push(targetPath);
-    grouped.set(group.key, existing);
-  }
-  return Array.from(grouped.entries()).map(([groupKey, groupPaths]) => {
-    const label = GROUP_LABELS[groupKey];
-    const samplePath = groupPaths[0] || '';
-    const rendererEffect = groupKey === 'renderer' ? summarizeRendererEffect(samplePath) : null;
-    const desktopEffect = groupKey === 'desktop_shell' ? summarizeDesktopEffect(samplePath) : null;
-    const backendEffect = ['local_backend', 'cloud_backend', 'scripts_docs', 'other'].includes(groupKey)
-      ? summarizeBackendEffect(groupKey === 'other' ? 'scripts_docs' : groupKey)
-      : null;
-    const effect = rendererEffect || desktopEffect || backendEffect;
-    return {
-      id: groupKey,
-      title: effect?.title || `${label}存在需要确认的合并冲突`,
-      summary: effect?.summary || '本地修改和远端 main 改到了同一处，Git 无法自动判断怎样保留。',
-      operationHint: '请为这一组冲突选择保留双方、采用远端 main 或采用本地修改。',
-      paths: groupPaths,
-      riskLevel: groupPaths.some((targetPath) => hasBinaryExtension(targetPath)) ? 'high' : 'medium',
-      aiAvailable: false,
-      aiUnavailableReason: '当前协作模块还没有稳定接入软件 AI 的三方代码合并接口；可先采用远端 main 或本地修改。',
-    } satisfies CollabConflictGroup;
-  });
-}
-
 async function ensureNoConflictMarkers(context: RepoWorkContext) {
   const changed = await runGit(context.gitRepoPath, ['diff', '--cached', '--name-only'], { allowNonZero: true });
   const paths = uniquePaths(
@@ -1673,108 +1711,6 @@ async function ensureNoConflictMarkers(context: RepoWorkContext) {
   }
 }
 
-function resolveConflictTextByKeepingBoth(rawContent: string) {
-  const lines = rawContent.split(/\r?\n/);
-  const output: string[] = [];
-  for (let index = 0; index < lines.length; index += 1) {
-    const line = lines[index] || '';
-    if (!line.startsWith('<<<<<<< ')) {
-      output.push(line);
-      continue;
-    }
-    const ours: string[] = [];
-    const theirs: string[] = [];
-    index += 1;
-    while (index < lines.length && lines[index] !== '=======') {
-      ours.push(lines[index] || '');
-      index += 1;
-    }
-    index += 1;
-    while (index < lines.length && !(lines[index] || '').startsWith('>>>>>>> ')) {
-      theirs.push(lines[index] || '');
-      index += 1;
-    }
-    output.push(...ours);
-    const oursText = ours.join('\n').trim();
-    const theirsText = theirs.join('\n').trim();
-    if (theirsText && theirsText !== oursText) {
-      output.push(...theirs);
-    }
-  }
-  return output.join('\n');
-}
-
-async function checkoutConflictSide(context: RepoWorkContext, targetPath: string, side: '--ours' | '--theirs') {
-  const scopedPath = toScopedGitPath(context.scopeRelativePath, targetPath);
-  await runGit(context.gitRepoPath, ['checkout', '--ignore-skip-worktree-bits', side, '--', scopedPath], { allowNonZero: true });
-  const absolutePath = path.join(context.repoPath, targetPath);
-  const stat = await fs.promises.stat(absolutePath).catch(() => null);
-  if (stat?.isFile()) {
-    await runGit(context.gitRepoPath, ['add', '--sparse', '--', scopedPath]);
-    return;
-  }
-  await runGit(context.gitRepoPath, ['rm', '--sparse', '-f', '--ignore-unmatch', '--', scopedPath], { allowNonZero: true });
-}
-
-async function keepBothConflictPath(
-  context: RepoWorkContext,
-  targetPath: string,
-  featureTitle: string,
-  aiMergeResolver?: CollabAiConflictMergeResolver,
-) {
-  if (hasBinaryExtension(targetPath)) {
-    throw new Error(`二进制文件不能自动保留双方：${targetPath}`);
-  }
-  const absolutePath = path.join(context.repoPath, targetPath);
-  const raw = await fs.promises.readFile(absolutePath, 'utf8').catch(() => null);
-  if (raw === null) {
-    throw new Error(`找不到冲突文件：${targetPath}`);
-  }
-  const mergedContent = aiMergeResolver
-    ? await aiMergeResolver({
-      path: targetPath,
-      featureTitle,
-      conflictMarkerText: raw,
-      baseContent: await readConflictStage(context, 1, targetPath),
-      localContent: await readConflictStage(context, 2, targetPath),
-      remoteContent: await readConflictStage(context, 3, targetPath),
-    })
-    : resolveConflictTextByKeepingBoth(raw);
-  if (!mergedContent.trim()) {
-    throw new Error(`保留双方失败，合并结果为空：${targetPath}`);
-  }
-  await fs.promises.writeFile(absolutePath, mergedContent, 'utf8');
-  await addPathsToIndex(context, [targetPath]);
-}
-
-async function mergeRevisionIntoCurrent(
-  context: RepoWorkContext,
-  revision: string,
-  mode: 'push' | 'pull',
-  options: { allowFastForwardOnly?: boolean } = {},
-) {
-  const mergeArgs = options.allowFastForwardOnly
-    ? ['merge', '--ff-only', revision]
-    : ['merge', '--no-ff', '--no-edit', revision];
-  const mergeResult = await runGit(context.gitRepoPath, mergeArgs, { allowNonZero: true });
-  const unresolvedPaths = await listUnresolvedScopedPaths(context);
-  if (unresolvedPaths.length > 0) {
-    return {
-      mergeStatus: 'conflictsNeedResolution' as const,
-      conflictGroups: buildConflictGroupsFromPaths(unresolvedPaths),
-      explanation: `${mode === 'push' ? '推送' : '同步'}时发现真实 Git 冲突，需要先确认保留方式。`,
-    };
-  }
-  if (mergeResult.exitCode !== 0) {
-    throw new Error((mergeResult.stderr || mergeResult.stdout || 'git merge 失败').trim());
-  }
-  return {
-    mergeStatus: mode === 'push' ? 'autoMerged' as const : 'synced' as const,
-    conflictGroups: [],
-    explanation: null,
-  };
-}
-
 export async function getCollabRepoStatus(options: RepoOptions): Promise<CollabRepoStatus> {
   const snapshot = await collectRepoSnapshot(options);
   return snapshotToStatus(snapshot);
@@ -1789,6 +1725,10 @@ export async function previewPushToMain(options: RepoOptions): Promise<PushPrevi
   const files = createLocalFileChanges(snapshot);
   const groups = countGroups(files);
   const effects = await buildEffectPreviews('push', snapshot, files);
+  const context = snapshot.repoPath && snapshot.gitRepoPath
+    ? createRepoWorkContext(snapshot.repoPath, snapshot.gitRepoPath, snapshot.scopeRelativePath)
+    : null;
+  const suggestedBranchName = context ? await suggestedCollabBranchName(context) : null;
   let executionBlockReason: string | null = null;
   const notices: string[] = [];
   if (!snapshot.isConfigured) executionBlockReason = '还没有绑定源码目录，先选一个 Git 仓库后再继续。';
@@ -1801,10 +1741,10 @@ export async function previewPushToMain(options: RepoOptions): Promise<PushPrevi
     ? '本地没有要推送的修改，但远端 main 有新提交；请使用同步按钮合并到本机。'
     : '当前没有可提交的本地文件改动。';
   if (!executionBlockReason && snapshot.aheadCount > 0) {
-    notices.push(`你本地还有 ${snapshot.aheadCount} 个已提交但未推送的 commit。确认后会和本次本地改动一起推到 main。`);
+    notices.push(`你本地还有 ${snapshot.aheadCount} 个已提交但未推送的 commit。确认后会和本次本地改动一起推送到 GitHub main。`);
   }
   if (!executionBlockReason && snapshot.behindCount > 0) {
-    notices.push(`main 最新版本比你本地多 ${snapshot.behindCount} 个提交。确认后会先完整合并远端 main，只有真实 Git 冲突才让你选择保留方式。`);
+    notices.push(`main 最新版本比你本地多 ${snapshot.behindCount} 个提交。确认后会先尝试自动 rebase 到最新 main；成功后推送 main，失败则不改远端 main，并提示改用预览/协作分支兜底。`);
   }
   return {
     status,
@@ -1812,13 +1752,14 @@ export async function previewPushToMain(options: RepoOptions): Promise<PushPrevi
     effects,
     groups,
     files,
+    suggestedCollabBranchName: suggestedBranchName,
     notice: notices.join(' '),
     executionBlockReason,
   };
 }
 
-export async function commitAndPushToMain(
-  payload: CommitAndPushToMainPayload,
+export async function pushSafelyToMain(
+  payload: PushMainPayload,
   suggestedCandidates: string[],
   appDbPath?: string | null,
 ): Promise<CollabActionResult> {
@@ -1842,33 +1783,35 @@ export async function commitAndPushToMain(
   const scopeRelativePath = computeScopeRelativePath(gitRepoPath, repoPath);
   const context = createRepoWorkContext(repoPath, gitRepoPath, scopeRelativePath);
   const changedPaths = collectPreviewPaths(preview.files);
+  const fallbackBranchName = preview.suggestedCollabBranchName || await suggestedCollabBranchName(context);
   let createdCommit = false;
+
   try {
     if (preview.files.length > 0) {
       await addAllPreviewFilesToIndex(context, preview.files);
       createdCommit = await commitStagedChangesIfAny(context, message);
     }
-    if (preview.status.behindCount > 0) {
-      const mergeResult = await mergeRevisionIntoCurrent(context, 'origin/main', 'push');
-      if (mergeResult.mergeStatus === 'conflictsNeedResolution') {
-        const status = await getCollabRepoStatus({ repoPath, suggestedCandidates, appDbPath });
-        return {
-          status,
-          changedPaths,
-          createdCommit,
-          commitMessage: createdCommit ? message : undefined,
-          mergeStatus: mergeResult.mergeStatus,
-          conflictGroups: mergeResult.conflictGroups,
-          explanation: mergeResult.explanation,
-        };
-      }
-    }
     await ensureNoConflictMarkers(context);
-    await runGit(context.gitRepoPath, ['push', 'origin', 'main']);
+
+    const fetchResult = await runGit(context.gitRepoPath, ['fetch', 'origin'], { allowNonZero: true });
+    if (fetchResult.exitCode !== 0) {
+      throw new Error((fetchResult.stderr || fetchResult.stdout || 'git fetch origin 失败').trim());
+    }
+
+    const rebaseResult = await runGit(context.gitRepoPath, ['rebase', 'origin/main'], { allowNonZero: true });
+    if (rebaseResult.exitCode !== 0) {
+      await runGit(context.gitRepoPath, ['rebase', '--abort'], { allowNonZero: true });
+      const detail = (rebaseResult.stderr || rebaseResult.stdout || 'git rebase origin/main 失败').trim();
+      throw new Error(`${detail}。main 没有被推送；可先用同步预览查看远端变化，或发布协作分支 ${fallbackBranchName} 作为备份后交给 Codex/Claude 收口。`);
+    }
+
+    await ensureNoConflictMarkers(context);
+    await runGit(context.gitRepoPath, ['-c', 'http.version=HTTP/1.1', 'push', 'origin', 'HEAD:main']);
   } catch (error) {
     const detail = error instanceof Error ? error.message : String(error);
-    throw new Error(`完整合并并推送 main 失败：${detail}`);
+    throw new Error(`安全推送 main 失败：${detail}`);
   }
+
   const status = await getCollabRepoStatus({
     repoPath,
     suggestedCandidates,
@@ -1880,7 +1823,62 @@ export async function commitAndPushToMain(
     createdCommit,
     commitMessage: createdCommit ? message : undefined,
     mergeStatus: 'pushed',
-    explanation: '本地修改和远端 main 已完整合并并推送。',
+    explanation: '已安全推送到 GitHub main。后续对方同步/拉取 main 即可看到这次修改。',
+  };
+}
+
+export async function publishCollabBranch(
+  payload: PublishCollabBranchPayload,
+  suggestedCandidates: string[],
+  appDbPath?: string | null,
+): Promise<CollabActionResult> {
+  const preview = await previewPushToMain({
+    repoPath: payload.repoPath,
+    suggestedCandidates,
+    appDbPath,
+  });
+  if (!preview.status.repoPath) {
+    throw new Error('请先绑定源码目录。');
+  }
+  if (preview.executionBlockReason) {
+    throw new Error(preview.executionBlockReason);
+  }
+  const message = payload.message.trim();
+  if (!message && preview.files.length > 0) {
+    throw new Error('请填写本次提交说明。');
+  }
+  const repoPath = preview.status.repoPath;
+  const gitRepoPath = preview.status.workingRepoPath || repoPath;
+  const scopeRelativePath = computeScopeRelativePath(gitRepoPath, repoPath);
+  const context = createRepoWorkContext(repoPath, gitRepoPath, scopeRelativePath);
+  const changedPaths = collectPreviewPaths(preview.files);
+  const branchName = normalizeCollabBranchName(payload.branchName || preview.suggestedCollabBranchName || await suggestedCollabBranchName(context));
+  let createdCommit = false;
+  try {
+    if (preview.files.length > 0) {
+      await addAllPreviewFilesToIndex(context, preview.files);
+      createdCommit = await commitStagedChangesIfAny(context, message);
+    }
+    await ensureNoConflictMarkers(context);
+    await runGit(context.gitRepoPath, ['push', 'origin', `HEAD:refs/heads/${branchName}`]);
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error);
+    throw new Error(`发布协作分支失败：${detail}`);
+  }
+  const status = await getCollabRepoStatus({
+    repoPath,
+    suggestedCandidates,
+    appDbPath,
+  });
+  return {
+    status,
+    changedPaths,
+    createdCommit,
+    commitMessage: createdCommit ? message : undefined,
+    mergeStatus: 'collabBranchPublished',
+    collabBranchName: branchName,
+    collabBranchRef: `origin/${branchName}`,
+    explanation: `已发布到协作分支 ${branchName}。GitHub main 未改变。`,
   };
 }
 
@@ -1905,16 +1903,26 @@ export async function previewPullFromMain(options: RepoOptions): Promise<PullPre
     ? createRepoWorkContext(snapshot.repoPath, snapshot.gitRepoPath, snapshot.scopeRelativePath)
     : null;
   const remoteCommits = context ? await getRemoteCommits(context) : [];
+  const remoteBranches = context ? await getRemoteCollabBranches(context) : [];
   const selectedCommit = remoteCommits.find((commit) => commit.hash === snapshot.remoteTargetRevision);
   const syncTargetLabel = selectedCommit
     ? `${selectedCommit.shortHash} · ${selectedCommit.authoredAt.slice(0, 10)} ${selectedCommit.authoredAt.slice(11, 16)} · ${selectedCommit.subject}`
     : snapshot.remoteTargetRevision === 'origin/main'
       ? 'origin/main 最新提交'
       : snapshot.remoteTargetRevision;
+  const directReceiveBlockReason = (() => {
+    if (executionBlockReason) return executionBlockReason;
+    if (snapshot.remoteTargetRevision !== 'origin/main') return '按日期截断的同步范围只用于预览，不能直接接收。';
+    if (snapshot.localChangeCount > 0) return `本地还有 ${snapshot.localChangeCount} 项未提交改动，不能自动接收 main。`;
+    if (snapshot.aheadCount > 0) return `本地已有 ${snapshot.aheadCount} 个未推提交，不能自动接收 main。`;
+    if (snapshot.behindCount <= 0) return 'main 当前已经是最新。';
+    return null;
+  })();
+  const canFastForwardMain = !directReceiveBlockReason;
   if (!executionBlockReason && snapshot.remoteChangeCount > 0) {
     notice = snapshot.localChangeCount > 0
-      ? `当前同步截止点是 ${syncTargetLabel}，包含 ${snapshot.remoteChangeCount} 项可同步变化。你本地还有 ${snapshot.localChangeCount} 项未提交改动，确认后会先保护本地修改，再完整合并 main。`
-      : `当前同步截止点是 ${syncTargetLabel}，包含 ${snapshot.remoteChangeCount} 项可同步变化。确认后会完整合并到本机，真实 Git 冲突才需要选择保留方式。`;
+      ? `当前同步截止点是 ${syncTargetLabel}，包含 ${snapshot.remoteChangeCount} 项可查看变化。你本地还有 ${snapshot.localChangeCount} 项未提交改动，本次不会自动合并。`
+      : `当前同步截止点是 ${syncTargetLabel}，包含 ${snapshot.remoteChangeCount} 项可查看变化。只有安全快进场景才允许直接接收。`;
     if (generatedCleanupCount > 0) {
       notice += ` 其中 ${generatedCleanupCount} 项是 main 对历史生成物或数据库文件的清理，保留勾选即可让本地也清掉这些旧文件，不代表要把 4 月 27 日前的代码带回来。`;
     }
@@ -1927,8 +1935,11 @@ export async function previewPullFromMain(options: RepoOptions): Promise<PullPre
     suggestedMessage: buildSuggestedMessage('pull', groups),
     commitSummaries,
     remoteCommits,
+    remoteBranches,
     syncTargetCommit: snapshot.remoteTargetRevision === 'origin/main' ? null : snapshot.remoteTargetRevision,
     syncTargetLabel,
+    canFastForwardMain,
+    directReceiveBlockReason,
     effects,
     groups,
     files,
@@ -1964,8 +1975,8 @@ async function resolvePullChoice(context: RepoWorkContext, file: CollabFileChang
   await checkoutPathFromRevision(context, 'HEAD', file.path);
 }
 
-export async function pullSelectedFromMain(
-  payload: PullSelectedFromMainPayload,
+export async function fastForwardMain(
+  payload: FastForwardMainPayload,
   suggestedCandidates: string[],
   appDbPath?: string | null,
 ): Promise<CollabActionResult> {
@@ -1973,7 +1984,6 @@ export async function pullSelectedFromMain(
     repoPath: payload.repoPath,
     suggestedCandidates,
     appDbPath,
-    targetCommit: payload.targetCommit,
   });
   if (!preview.status.repoPath) {
     throw new Error('请先绑定源码目录。');
@@ -1981,51 +1991,20 @@ export async function pullSelectedFromMain(
   if (preview.executionBlockReason) {
     throw new Error(preview.executionBlockReason);
   }
-  const message = payload.message.trim();
-  if (!message && preview.status.localChangeCount > 0) {
-    throw new Error('请填写本次同步说明。');
+  if (!preview.canFastForwardMain) {
+    throw new Error(preview.directReceiveBlockReason || '当前 main 不能安全快进接收。');
   }
   const repoPath = preview.status.repoPath;
   const gitRepoPath = preview.status.workingRepoPath || repoPath;
   const scopeRelativePath = computeScopeRelativePath(gitRepoPath, repoPath);
   const context = createRepoWorkContext(repoPath, gitRepoPath, scopeRelativePath);
-  const localPaths = preview.status.localChangeCount > 0
-    ? collectPreviewPaths(createLocalFileChanges(await collectRepoSnapshot({
-      repoPath,
-      suggestedCandidates,
-      appDbPath,
-      fetchRemote: false,
-      targetCommit: payload.targetCommit,
-    })))
-    : [];
-  let createdCommit = false;
-  const targetRevision = preview.syncTargetCommit || 'origin/main';
   try {
-    if (localPaths.length > 0) {
-      await addPathsToIndex(context, localPaths);
-      createdCommit = await commitStagedChangesIfAny(context, message);
-    }
-    const canFastForwardOnly = !createdCommit && preview.status.aheadCount === 0;
-    const mergeResult = await mergeRevisionIntoCurrent(context, targetRevision, 'pull', {
-      allowFastForwardOnly: canFastForwardOnly,
-    });
-    if (mergeResult.mergeStatus === 'conflictsNeedResolution') {
-      const status = await getCollabRepoStatus({ repoPath, suggestedCandidates, appDbPath });
-      return {
-        status,
-        changedPaths: collectPreviewPaths(preview.files),
-        createdCommit,
-        commitMessage: createdCommit ? message : undefined,
-        mergeStatus: mergeResult.mergeStatus,
-        conflictGroups: mergeResult.conflictGroups,
-        explanation: mergeResult.explanation,
-      };
-    }
+    await runGit(context.gitRepoPath, ['merge', '--ff-only', 'origin/main']);
     await importSelectedSharedSettingsFromRepo(context.repoPath, appDbPath, collectPreviewPaths(preview.files));
     await ensureNoConflictMarkers(context);
   } catch (error) {
     const detail = error instanceof Error ? error.message : String(error);
-    throw new Error(`完整合并 main 到本机失败：${detail}`);
+    throw new Error(`快进接收 main 失败：${detail}`);
   }
 
   const status = await getCollabRepoStatus({
@@ -2036,90 +2015,127 @@ export async function pullSelectedFromMain(
   return {
     status,
     changedPaths: collectPreviewPaths(preview.files),
-    createdCommit,
-    commitMessage: createdCommit ? message : undefined,
-    mergeStatus: 'synced',
-    explanation: '远端 main 已完整合并到本机源码。',
+    createdCommit: false,
+    mergeStatus: 'mainFastForwarded',
+    explanation: '远端 main 已通过快进方式接收到本机源码。',
   };
 }
 
-export async function resolveCollabMergeConflicts(
-  payload: ResolveCollabConflictsPayload,
+function normalizePreviewTargetRef(targetRef: string) {
+  const trimmed = targetRef.trim();
+  if (trimmed === 'origin/main') return trimmed;
+  if (/^origin\/collab\/[a-z0-9._/-]+$/i.test(trimmed) && !trimmed.includes('..') && !trimmed.endsWith('/')) return trimmed;
+  if (/^[0-9a-f]{7,40}$/i.test(trimmed)) return trimmed;
+  throw new Error(`不能预览不受控的 Git 目标：${trimmed || '(empty)'}`);
+}
+
+async function resolvePreviewTarget(context: RepoWorkContext, targetRef: string) {
+  const normalized = normalizePreviewTargetRef(targetRef);
+  const result = await runGit(context.gitRepoPath, ['rev-parse', '--verify', `${normalized}^{commit}`], { allowNonZero: true });
+  if (result.exitCode !== 0 || !result.stdout.trim()) {
+    throw new Error(`找不到要预览的 Git 目标：${normalized}`);
+  }
+  return { targetRef: normalized, revision: result.stdout.trim() };
+}
+
+function safeSymlink(sourcePath: string, targetPath: string) {
+  if (!fs.existsSync(sourcePath) || fs.existsSync(targetPath)) return;
+  fs.symlinkSync(sourcePath, targetPath, 'dir');
+}
+
+export async function startCollabPreview(
+  payload: StartCollabPreviewPayload,
   suggestedCandidates: string[],
-  appDbPath?: string | null,
-  aiMergeResolver?: CollabAiConflictMergeResolver,
+  appDbPath: string | null | undefined,
+  previewRoot: string,
 ): Promise<CollabActionResult> {
   const snapshot = await collectRepoSnapshot({
     repoPath: payload.repoPath,
     suggestedCandidates,
     appDbPath,
-    fetchRemote: false,
+    fetchRemote: true,
   });
-  if (!snapshot.repoPath || !snapshot.gitRepoPath) {
-    throw new Error('请先绑定源码目录。');
-  }
-  if (!snapshot.isValid) {
-    throw new Error('当前目录不是有效 Git 仓库，请重新绑定源码目录。');
-  }
-  if (!snapshot.isMainBranch) {
-    throw new Error('当前不在 main 分支，不能继续解决协作冲突。');
-  }
+  if (!snapshot.repoPath || !snapshot.gitRepoPath) throw new Error('请先绑定源码目录。');
+  if (!snapshot.isValid) throw new Error('当前目录不是有效 Git 仓库，请重新绑定源码目录。');
   const context = createRepoWorkContext(snapshot.repoPath, snapshot.gitRepoPath, snapshot.scopeRelativePath);
-  const unresolvedPaths = await listUnresolvedScopedPaths(context);
-  if (!unresolvedPaths.length) {
-    throw new Error('当前没有待解决的 Git 冲突。');
+  const target = await resolvePreviewTarget(context, payload.targetRef);
+  const previewId = `${formatCollabTimestamp()}-${Math.random().toString(16).slice(2, 8)}`;
+  const sessionRoot = path.join(previewRoot, previewId);
+  const repoDir = path.join(sessionRoot, 'repo');
+  const dataDir = path.join(sessionRoot, 'data');
+  const logPath = path.join(sessionRoot, 'preview.log');
+  fs.mkdirSync(sessionRoot, { recursive: true });
+  fs.mkdirSync(dataDir, { recursive: true });
+  await runGit(context.gitRepoPath, ['worktree', 'add', '--detach', repoDir, target.revision]);
+  safeSymlink(path.join(context.gitRepoPath, 'node_modules'), path.join(repoDir, 'node_modules'));
+  if (appDbPath && fs.existsSync(appDbPath)) {
+    fs.copyFileSync(appDbPath, path.join(dataDir, 'app.db'));
   }
-  const conflictGroups = buildConflictGroupsFromPaths(unresolvedPaths);
-  const decisionsByGroup = new Map<string, CollabConflictDecision['choice']>();
-  for (const decision of payload.decisions) {
-    decisionsByGroup.set(decision.groupId, decision.choice);
+  const logStream = fs.createWriteStream(logPath, { flags: 'a' });
+  const child = spawn('npm', ['run', 'dev:lab'], {
+    cwd: repoDir,
+    detached: true,
+    stdio: ['ignore', logStream, logStream],
+    env: {
+      ...process.env,
+      YIYU_COLLAB_PREVIEW_MODE: '1',
+      YIYU_COLLAB_PREVIEW_ID: previewId,
+      YIYU_COLLAB_PREVIEW_TARGET: target.targetRef,
+      YIYU_WORKBENCH_DATA_DIR: dataDir,
+      VITE_NO_HMR: '1',
+    },
+  });
+  child.unref();
+  const session: CollabPreviewSession = {
+    previewId,
+    targetRef: target.targetRef,
+    label: payload.label || target.targetRef,
+    repoPath: repoDir,
+    dataDir,
+    logPath,
+    pid: child.pid || null,
+  };
+  if (child.pid) activePreviewSessions.set(previewId, { pid: child.pid, session });
+  const status = snapshotToStatus(snapshot);
+  return {
+    status,
+    changedPaths: [],
+    createdCommit: false,
+    mergeStatus: 'previewStarted',
+    previewSession: session,
+    explanation: `已开启协作预览：${session.label}。正式源码和正式数据未改变。`,
+  };
+}
+
+export async function stopCollabPreview(
+  payload: StopCollabPreviewPayload,
+  suggestedCandidates: string[],
+): Promise<CollabActionResult> {
+  const record = activePreviewSessions.get(payload.previewId);
+  if (!record) {
+    throw new Error('找不到正在运行的协作预览进程，可能已经关闭。');
   }
-  const missingGroups = conflictGroups.filter((group) => !decisionsByGroup.has(group.id));
-  if (missingGroups.length > 0) {
-    throw new Error(`还有冲突没有选择处理方式：${missingGroups.map((group) => group.title).join('、')}`);
-  }
-  for (const group of conflictGroups) {
-    const choice = decisionsByGroup.get(group.id);
-    for (const targetPath of group.paths) {
-      if (choice === 'remote_main') {
-        await checkoutConflictSide(context, targetPath, '--theirs');
-      } else if (choice === 'local') {
-        await checkoutConflictSide(context, targetPath, '--ours');
-      } else if (choice === 'keep_both') {
-        if (!aiMergeResolver) {
-          throw new Error('当前 AI 合并接口不可用，不能选择“保留双方”。');
-        }
-        await keepBothConflictPath(context, targetPath, group.title, aiMergeResolver);
-      } else {
-        throw new Error(`未知冲突处理方式：${choice}`);
-      }
+  try {
+    process.kill(-record.pid, 'SIGTERM');
+  } catch {
+    try {
+      process.kill(record.pid, 'SIGTERM');
+    } catch {
+      // Process may already be gone.
     }
   }
-  const remaining = await listUnresolvedScopedPaths(context);
-  if (remaining.length > 0) {
-    throw new Error(`仍有未解决的冲突：${remaining.join('、')}`);
-  }
-  await ensureNoConflictMarkers(context);
-  const message = payload.message.trim() || (payload.mode === 'push'
-    ? 'sync: 合并本地修改和远端 main'
-    : 'sync: 合并远端 main 和本地修改');
-  await runGit(context.gitRepoPath, ['commit', '-m', message]);
-  if (payload.mode === 'push') {
-    await runGit(context.gitRepoPath, ['push', 'origin', 'main']);
-  }
+  activePreviewSessions.delete(payload.previewId);
   const status = await getCollabRepoStatus({
-    repoPath: snapshot.repoPath,
+    repoPath: record.session.repoPath,
     suggestedCandidates,
-    appDbPath,
+    fetchRemote: false,
   });
   return {
     status,
-    changedPaths: unresolvedPaths,
-    createdCommit: true,
-    commitMessage: message,
-    mergeStatus: payload.mode === 'push' ? 'pushed' : 'synced',
-    explanation: payload.mode === 'push'
-      ? '冲突已按选择处理，并已推送到 main。'
-      : '冲突已按选择处理，远端 main 已合并到本机。',
+    changedPaths: [],
+    createdCommit: false,
+    mergeStatus: 'previewStopped',
+    previewSession: record.session,
+    explanation: '协作预览进程已停止。',
   };
 }

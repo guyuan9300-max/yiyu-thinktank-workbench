@@ -26,7 +26,7 @@ function setupRepo(seedPath, remotePath) {
   git(seedPath, ['config', 'user.email', 'seed@example.com']);
   git(seedPath, ['config', 'user.name', 'Seed']);
   writeFile(path.join(seedPath, 'package.json'), '{"name":"yiyu-thinktank-workbench"}\n');
-  writeFile(path.join(seedPath, 'src.txt'), 'one\ntwo\nthree\nfour\nfive\n');
+  writeFile(path.join(seedPath, 'src.txt'), 'one\ntwo\nthree\n');
   git(seedPath, ['add', '.']);
   git(seedPath, ['commit', '-m', 'initial']);
   git(remotePath, ['init', '--bare', '-b', 'main']);
@@ -40,8 +40,8 @@ function cloneRepo(remotePath, targetPath, name) {
   git(targetPath, ['config', 'user.name', name]);
 }
 
-async function testAutoMerge(mod) {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'yiyu-collab-auto-'));
+async function testPushSafelyToMain(mod) {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'yiyu-collab-main-push-'));
   const remotePath = path.join(root, 'remote.git');
   setupRepo(path.join(root, 'seed'), remotePath);
   const localPath = path.join(root, 'local');
@@ -49,25 +49,25 @@ async function testAutoMerge(mod) {
   cloneRepo(remotePath, localPath, 'Local');
   cloneRepo(remotePath, peerPath, 'Peer');
 
-  writeFile(path.join(peerPath, 'src.txt'), 'one\ntwo\nthree\nfour remote\nfive\n');
-  git(peerPath, ['commit', '-am', 'remote feature']);
-  git(peerPath, ['push']);
-
-  writeFile(path.join(localPath, 'src.txt'), 'one\ntwo local\nthree\nfour\nfive\n');
-  const result = await mod.commitAndPushToMain({ repoPath: localPath, message: 'sync: local feature' }, [], null);
+  writeFile(path.join(localPath, 'src.txt'), 'one\ntwo local\nthree\n');
+  const preview = await mod.previewPushToMain({ repoPath: localPath, suggestedCandidates: [], appDbPath: null });
+  if (!preview.suggestedCollabBranchName?.startsWith('collab/local/')) {
+    throw new Error(`expected suggested collab branch, got ${preview.suggestedCollabBranchName}`);
+  }
+  const result = await mod.pushSafelyToMain({ repoPath: localPath, message: 'sync: local feature' }, [], null);
   if (result.mergeStatus !== 'pushed') {
-    throw new Error(`auto merge did not push, got ${result.mergeStatus}`);
+    throw new Error(`push did not update main safely: ${JSON.stringify(result)}`);
   }
 
-  git(peerPath, ['pull', '--ff-only']);
-  const merged = fs.readFileSync(path.join(peerPath, 'src.txt'), 'utf8');
-  if (!merged.includes('two local') || !merged.includes('four remote')) {
-    throw new Error(`auto merge lost one side:\n${merged}`);
+  git(peerPath, ['fetch', 'origin']);
+  const mainText = git(peerPath, ['show', 'origin/main:src.txt']);
+  if (!mainText.includes('two local')) {
+    throw new Error(`main did not include local change:\n${mainText}`);
   }
 }
 
-async function testConflictResolution(mod) {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'yiyu-collab-conflict-'));
+async function testPushSafelyRebasesRemoteMain(mod) {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'yiyu-collab-main-rebase-'));
   const remotePath = path.join(root, 'remote.git');
   setupRepo(path.join(root, 'seed'), remotePath);
   const localPath = path.join(root, 'local');
@@ -75,31 +75,83 @@ async function testConflictResolution(mod) {
   cloneRepo(remotePath, localPath, 'Local');
   cloneRepo(remotePath, peerPath, 'Peer');
 
-  writeFile(path.join(peerPath, 'src.txt'), 'one\ntwo remote\nthree\nfour\nfive\n');
-  git(peerPath, ['commit', '-am', 'remote line']);
+  writeFile(path.join(peerPath, 'remote.txt'), 'remote\n');
+  git(peerPath, ['add', '.']);
+  git(peerPath, ['commit', '-m', 'remote feature']);
   git(peerPath, ['push']);
 
-  writeFile(path.join(localPath, 'src.txt'), 'one\ntwo local\nthree\nfour\nfive\n');
-  const conflict = await mod.commitAndPushToMain({ repoPath: localPath, message: 'sync: local line' }, [], null);
-  if (conflict.mergeStatus !== 'conflictsNeedResolution' || !conflict.conflictGroups?.length) {
-    throw new Error(`expected conflict groups, got ${JSON.stringify(conflict)}`);
+  writeFile(path.join(localPath, 'local.txt'), 'local\n');
+  const result = await mod.pushSafelyToMain({ repoPath: localPath, message: 'sync: local feature' }, [], null);
+  if (result.mergeStatus !== 'pushed') {
+    throw new Error(`push with remote changes failed: ${JSON.stringify(result)}`);
   }
 
-  await mod.resolveCollabMergeConflicts({
-    repoPath: localPath,
-    mode: 'push',
-    message: 'sync: resolve by keeping both',
-    decisions: conflict.conflictGroups.map((group) => ({ groupId: group.id, choice: 'keep_both' })),
-  }, [], null, async () => 'one\ntwo local\ntwo remote\nthree\nfour\nfive\n');
+  git(peerPath, ['fetch', 'origin']);
+  const remoteText = git(peerPath, ['show', 'origin/main:remote.txt']);
+  const localText = git(peerPath, ['show', 'origin/main:local.txt']);
+  if (!remoteText.includes('remote') || !localText.includes('local')) {
+    throw new Error('safe push did not preserve both remote and local changes');
+  }
+}
 
-  git(peerPath, ['pull', '--ff-only']);
-  const resolved = fs.readFileSync(path.join(peerPath, 'src.txt'), 'utf8');
-  if (!resolved.includes('two local') || !resolved.includes('two remote') || resolved.includes('<<<<<<<')) {
-    throw new Error(`conflict resolution failed:\n${resolved}`);
+async function testFastForwardMainAndBlocksDirty(mod) {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'yiyu-collab-ff-'));
+  const remotePath = path.join(root, 'remote.git');
+  setupRepo(path.join(root, 'seed'), remotePath);
+  const localPath = path.join(root, 'local');
+  const peerPath = path.join(root, 'peer');
+  cloneRepo(remotePath, localPath, 'Local');
+  cloneRepo(remotePath, peerPath, 'Peer');
+
+  writeFile(path.join(peerPath, 'src.txt'), 'one\ntwo remote\nthree\n');
+  git(peerPath, ['commit', '-am', 'remote feature']);
+  git(peerPath, ['push']);
+
+  const preview = await mod.previewPullFromMain({ repoPath: localPath, suggestedCandidates: [], appDbPath: null });
+  if (!preview.canFastForwardMain) {
+    throw new Error(`expected fast-forward to be available: ${preview.directReceiveBlockReason}`);
+  }
+  const result = await mod.fastForwardMain({ repoPath: localPath }, [], null);
+  if (result.mergeStatus !== 'mainFastForwarded') {
+    throw new Error(`fast-forward failed: ${JSON.stringify(result)}`);
+  }
+  const localText = fs.readFileSync(path.join(localPath, 'src.txt'), 'utf8');
+  if (!localText.includes('two remote')) {
+    throw new Error(`fast-forward did not update local file:\n${localText}`);
+  }
+
+  writeFile(path.join(localPath, 'local-only.txt'), 'dirty\n');
+  writeFile(path.join(peerPath, 'extra.txt'), 'remote extra\n');
+  git(peerPath, ['add', '.']);
+  git(peerPath, ['commit', '-m', 'remote extra']);
+  git(peerPath, ['push']);
+  const dirtyPreview = await mod.previewPullFromMain({ repoPath: localPath, suggestedCandidates: [], appDbPath: null });
+  if (dirtyPreview.canFastForwardMain || !dirtyPreview.directReceiveBlockReason?.includes('未提交改动')) {
+    throw new Error(`dirty local worktree should block direct receive: ${JSON.stringify(dirtyPreview)}`);
+  }
+}
+
+async function testPullPreviewListsCollabBranches(mod) {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'yiyu-collab-list-'));
+  const remotePath = path.join(root, 'remote.git');
+  setupRepo(path.join(root, 'seed'), remotePath);
+  const localPath = path.join(root, 'local');
+  const peerPath = path.join(root, 'peer');
+  cloneRepo(remotePath, localPath, 'Local');
+  cloneRepo(remotePath, peerPath, 'Peer');
+
+  writeFile(path.join(localPath, 'src.txt'), 'one\ncollab branch\nthree\n');
+  const published = await mod.publishCollabBranch({ repoPath: localPath, message: 'sync: collab branch' }, [], null);
+  const preview = await mod.previewPullFromMain({ repoPath: peerPath, suggestedCandidates: [], appDbPath: null });
+  const found = preview.remoteBranches?.some((branch) => branch.branchName === published.collabBranchName);
+  if (!found) {
+    throw new Error(`pull preview did not list collab branch ${published.collabBranchName}`);
   }
 }
 
 const mod = await import(pathToFileURL(path.resolve('build/main/collabGit.js')).href);
-await testAutoMerge(mod);
-await testConflictResolution(mod);
-console.log('[collab-merge] auto merge ok; keep-both conflict resolution ok');
+await testPushSafelyToMain(mod);
+await testPushSafelyRebasesRemoteMain(mod);
+await testFastForwardMainAndBlocksDirty(mod);
+await testPullPreviewListsCollabBranches(mod);
+console.log('[collab-merge] safe main push, collab branch preview, and main fast-forward ok');

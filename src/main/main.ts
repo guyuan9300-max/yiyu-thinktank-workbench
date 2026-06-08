@@ -10,12 +10,8 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import http from 'node:http';
 import net from 'node:net';
 import type {
-  CollabActionResult,
-  CommitAndPushToMainPayload,
   DesktopAppInfo,
   DesktopStartupGateResumeResult,
-  PullSelectedFromMainPayload,
-  ResolveCollabConflictsPayload,
 } from '../shared/types.js';
 import { buildRendererLaunchQuery } from '../shared/rendererLaunchQuery.js';
 import {
@@ -32,6 +28,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 // - bundle id + display name 不同, macOS Electron 允许双 app 同跑
 // - 默认 (无 ENV) 行为完全跟主仓库一致, cherry-pick 主仓库 bug fix 不破坏
 const LAB_MODE = process.env.YIYU_LAB_MODE === '1';
+const COLLAB_PREVIEW_MODE = process.env.YIYU_COLLAB_PREVIEW_MODE === '1';
 const DEFAULT_BACKEND_PORT = LAB_MODE ? 47831 : 47829;
 const DEFAULT_CLOUD_BACKEND_PORT = LAB_MODE ? 47832 : 47830;
 const DEFAULT_PACKAGED_REMOTE_CLOUD_API_URL = '';
@@ -39,12 +36,14 @@ const projectRoot = path.resolve(__dirname, '../..');
 const isDev = !app.isPackaged && Boolean(process.env.VITE_DEV_SERVER_URL);
 const REQUIRED_BACKEND_FEATURES = ['knowledge.vectorize-answer', 'knowledge.reclass-events', 'chat.general-answer', 'chat.async-status'];
 const REQUIRED_BACKEND_SCHEMA_VERSION = 20260420;
-const APP_DISPLAY_NAME = LAB_MODE ? '益语智库 V2.1 Lab' : '益语智库自用平台 V2.0';
-const APP_BUNDLE_ID = LAB_MODE ? 'com.yiyu.selfworkbench2.v21lab' : 'com.yiyu.selfworkbench2';
+const APP_DISPLAY_NAME = COLLAB_PREVIEW_MODE ? '益语智库 协作预览' : LAB_MODE ? '益语智库 V2.1 Lab' : '益语智库自用平台 V2.0';
+const APP_BUNDLE_ID = COLLAB_PREVIEW_MODE ? 'com.yiyu.selfworkbench2.collabpreview' : LAB_MODE ? 'com.yiyu.selfworkbench2.v21lab' : 'com.yiyu.selfworkbench2';
 const releasePlanPath = path.join(projectRoot, 'docs', 'mac-release-update-plan.md');
 const releaseArtifactsPath = path.join(projectRoot, 'dist');
-const USER_DATA_DIR_NAME = LAB_MODE ? 'YiyuThinkTankWorkbench2_V21Lab' : 'YiyuThinkTankWorkbench2';
-const fixedUserDataPath = path.join(app.getPath('appData'), USER_DATA_DIR_NAME);
+const USER_DATA_DIR_NAME = COLLAB_PREVIEW_MODE ? 'YiyuThinkTankWorkbench2_CollabPreview' : LAB_MODE ? 'YiyuThinkTankWorkbench2_V21Lab' : 'YiyuThinkTankWorkbench2';
+const fixedUserDataPath = COLLAB_PREVIEW_MODE && process.env.YIYU_WORKBENCH_DATA_DIR
+  ? path.resolve(process.env.YIYU_WORKBENCH_DATA_DIR)
+  : path.join(app.getPath('appData'), USER_DATA_DIR_NAME);
 const runtimeLogsDir = path.join(fixedUserDataPath, 'runtime', 'logs');
 const runtimeUiDir = path.join(fixedUserDataPath, 'runtime', 'ui');
 const electronLaunchLogPath = path.join(runtimeLogsDir, 'electron-launch.log');
@@ -1622,89 +1621,6 @@ function backendUrl() {
   return `http://127.0.0.1:${backendPort}`;
 }
 
-type CollabAiMergeStatus = {
-  available?: boolean;
-  reason?: string | null;
-  provider?: string | null;
-  model?: string | null;
-};
-
-type CollabAiMergeRequest = {
-  path: string;
-  featureTitle: string;
-  conflictMarkerText: string;
-  baseContent: string | null;
-  localContent: string | null;
-  remoteContent: string | null;
-};
-
-async function fetchJsonWithTimeout<T>(url: string, options: RequestInit = {}, timeoutMs = 90_000): Promise<T> {
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), timeoutMs);
-  try {
-    const response = await fetch(url, {
-      ...options,
-      signal: controller.signal,
-    });
-    const payload = await response.json().catch(() => ({}));
-    if (!response.ok) {
-      const detail = typeof payload?.detail === 'string' ? payload.detail : `HTTP ${response.status}`;
-      throw new Error(detail);
-    }
-    return payload as T;
-  } finally {
-    clearTimeout(timeout);
-  }
-}
-
-async function getCollabAiMergeStatus(): Promise<CollabAiMergeStatus> {
-  try {
-    return await fetchJsonWithTimeout<CollabAiMergeStatus>(
-      `${backendUrl()}/api/v1/runtime/collab-merge/ai-status`,
-      { method: 'GET' },
-      8_000,
-    );
-  } catch (error) {
-    return {
-      available: false,
-      reason: error instanceof Error ? error.message : '本地 AI 状态检查失败',
-    };
-  }
-}
-
-async function withCollabAiAvailability(result: CollabActionResult): Promise<CollabActionResult> {
-  if (result.mergeStatus !== 'conflictsNeedResolution' || !result.conflictGroups?.length) {
-    return result;
-  }
-  const status = await getCollabAiMergeStatus();
-  return {
-    ...result,
-    conflictGroups: result.conflictGroups.map((group) => ({
-      ...group,
-      aiAvailable: Boolean(status.available),
-      aiUnavailableReason: status.available
-        ? null
-        : status.reason || '当前 AI 不可用，不能自动保留双方。',
-    })),
-  };
-}
-
-async function resolveCollabConflictWithLocalAi(input: CollabAiMergeRequest): Promise<string> {
-  const payload = await fetchJsonWithTimeout<{ mergedContent?: string }>(
-    `${backendUrl()}/api/v1/runtime/collab-merge/resolve-conflict`,
-    {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(input),
-    },
-  );
-  const mergedContent = String(payload.mergedContent || '');
-  if (!mergedContent.trim()) {
-    throw new Error('AI 没有返回可用的合并内容。');
-  }
-  return mergedContent;
-}
-
 type MaintenanceModeGuardStatus = {
   active?: boolean;
   reason?: string | null;
@@ -1916,6 +1832,7 @@ async function resolveDesktopAppInfo(healthOverride?: BackendHealthPayload | nul
     // V2.1 Lab 模式下版本号带 ".1" 后缀, 前端"关于本软件"页面区分双 app
     appVersion: APP_VERSION_DISPLAY,
     runtimeMode: app.isPackaged ? 'packaged' : 'dev',
+    collabPreviewMode: COLLAB_PREVIEW_MODE,
     isPackaged: app.isPackaged,
     platform: process.platform,
     arch: process.arch,
@@ -3315,11 +3232,16 @@ ipcMain.handle('yiyu-workbench:previewPushToMain', async (_event, repoPath: stri
   });
 });
 
-ipcMain.handle('yiyu-workbench:commitAndPushToMain', async (_event, payload: CommitAndPushToMainPayload) => {
-  await requireActiveMaintenanceMode('提交并推送修改');
+ipcMain.handle('yiyu-workbench:pushSafelyToMain', async (_event, payload) => {
+  await requireActiveMaintenanceMode('安全推送 main');
   const collabGit = await loadInternalCollabGit();
-  const result = await collabGit.commitAndPushToMain(payload, getCollabSuggestedCandidates(), path.join(app.getPath('userData'), 'app.db'));
-  return withCollabAiAvailability(result);
+  return collabGit.pushSafelyToMain(payload, getCollabSuggestedCandidates(), path.join(app.getPath('userData'), 'app.db'));
+});
+
+ipcMain.handle('yiyu-workbench:publishCollabBranch', async (_event, payload) => {
+  await requireActiveMaintenanceMode('发布协作分支');
+  const collabGit = await loadInternalCollabGit();
+  return collabGit.publishCollabBranch(payload, getCollabSuggestedCandidates(), path.join(app.getPath('userData'), 'app.db'));
 });
 
 ipcMain.handle('yiyu-workbench:previewPullFromMain', async (_event, repoPath: string, targetCommit?: string | null) => {
@@ -3333,22 +3255,27 @@ ipcMain.handle('yiyu-workbench:previewPullFromMain', async (_event, repoPath: st
   });
 });
 
-ipcMain.handle('yiyu-workbench:pullSelectedFromMain', async (_event, payload: PullSelectedFromMainPayload) => {
-  await requireActiveMaintenanceMode('同步 main 修改');
+ipcMain.handle('yiyu-workbench:fastForwardMain', async (_event, payload) => {
+  await requireActiveMaintenanceMode('快进接收 main');
   const collabGit = await loadInternalCollabGit();
-  const result = await collabGit.pullSelectedFromMain(payload, getCollabSuggestedCandidates(), path.join(app.getPath('userData'), 'app.db'));
-  return withCollabAiAvailability(result);
+  return collabGit.fastForwardMain(payload, getCollabSuggestedCandidates(), path.join(app.getPath('userData'), 'app.db'));
 });
 
-ipcMain.handle('yiyu-workbench:resolveCollabMergeConflicts', async (_event, payload: ResolveCollabConflictsPayload) => {
-  await requireActiveMaintenanceMode('解决 main 合并冲突');
+ipcMain.handle('yiyu-workbench:startCollabPreview', async (_event, payload) => {
+  await requireActiveMaintenanceMode('开启协作预览');
   const collabGit = await loadInternalCollabGit();
-  return collabGit.resolveCollabMergeConflicts(
+  return collabGit.startCollabPreview(
     payload,
     getCollabSuggestedCandidates(),
     path.join(app.getPath('userData'), 'app.db'),
-    resolveCollabConflictWithLocalAi,
+    path.join(app.getPath('userData'), 'collab-previews'),
   );
+});
+
+ipcMain.handle('yiyu-workbench:stopCollabPreview', async (_event, payload) => {
+  await requireActiveMaintenanceMode('停止协作预览');
+  const collabGit = await loadInternalCollabGit();
+  return collabGit.stopCollabPreview(payload, getCollabSuggestedCandidates());
 });
 
 ipcMain.handle('yiyu-workbench:setWorkspaceInteractionState', async (_event, payload?: {

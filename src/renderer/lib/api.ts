@@ -285,11 +285,13 @@ import type {
   SaveFeishuInputMemoryPayload,
   CollabActionResult,
   CollabRepoStatus,
-  CommitAndPushToMainPayload,
+  FastForwardMainPayload,
   PullPreview,
-  PullSelectedFromMainPayload,
+  PublishCollabBranchPayload,
+  PushMainPayload,
   PushPreview,
-  ResolveCollabConflictsPayload,
+  StartCollabPreviewPayload,
+  StopCollabPreviewPayload,
   EventLineReportSnapshot,
   EventLineTimelineNarrative,
   // 客户项目情报流类型（2026-05-13 整合同事新版资讯情报站时补回）
@@ -408,11 +410,13 @@ function createBrowserWorkbenchFallback(): Window['yiyuWorkbench'] {
       remoteChangeCount: 0,
       statusText: '当前为浏览器预览模式，Git 协作能力不可用。',
     }),
-    previewPushToMain: async () => notAvailable('推送到 main'),
-    commitAndPushToMain: async () => notAvailable('推送到 main'),
+    previewPushToMain: async () => notAvailable('推送 main'),
+    pushSafelyToMain: async () => notAvailable('推送 main'),
+    publishCollabBranch: async () => notAvailable('发布协作分支'),
     previewPullFromMain: async () => notAvailable('从 main 拉取'),
-    pullSelectedFromMain: async () => notAvailable('从 main 拉取'),
-    resolveCollabMergeConflicts: async () => notAvailable('解决 main 合并冲突'),
+    fastForwardMain: async () => notAvailable('快进接收 main'),
+    startCollabPreview: async () => notAvailable('开启协作预览'),
+    stopCollabPreview: async () => notAvailable('停止协作预览'),
     rebuildAndInstallFromRepo: async () => notAvailable('重装应用'),
     setWorkspaceInteractionState: async (payload: { active: boolean; source: string; detail?: string | null }) => ({
       active: payload.active,
@@ -5711,20 +5715,28 @@ export async function previewPushToMain(repoPath: string) {
   return window.yiyuWorkbench.previewPushToMain(repoPath) as Promise<PushPreview>;
 }
 
-export async function commitAndPushToMain(payload: CommitAndPushToMainPayload) {
-  return window.yiyuWorkbench.commitAndPushToMain(payload) as Promise<CollabActionResult>;
+export async function pushSafelyToMain(payload: PushMainPayload) {
+  return window.yiyuWorkbench.pushSafelyToMain(payload) as Promise<CollabActionResult>;
+}
+
+export async function publishCollabBranch(payload: PublishCollabBranchPayload) {
+  return window.yiyuWorkbench.publishCollabBranch(payload) as Promise<CollabActionResult>;
 }
 
 export async function previewPullFromMain(repoPath: string, targetCommit?: string | null) {
   return window.yiyuWorkbench.previewPullFromMain(repoPath, targetCommit ?? null) as Promise<PullPreview>;
 }
 
-export async function pullSelectedFromMain(payload: PullSelectedFromMainPayload) {
-  return window.yiyuWorkbench.pullSelectedFromMain(payload) as Promise<CollabActionResult>;
+export async function fastForwardMain(payload: FastForwardMainPayload) {
+  return window.yiyuWorkbench.fastForwardMain(payload) as Promise<CollabActionResult>;
 }
 
-export async function resolveCollabMergeConflicts(payload: ResolveCollabConflictsPayload) {
-  return window.yiyuWorkbench.resolveCollabMergeConflicts(payload) as Promise<CollabActionResult>;
+export async function startCollabPreview(payload: StartCollabPreviewPayload) {
+  return window.yiyuWorkbench.startCollabPreview(payload) as Promise<CollabActionResult>;
+}
+
+export async function stopCollabPreview(payload: StopCollabPreviewPayload) {
+  return window.yiyuWorkbench.stopCollabPreview(payload) as Promise<CollabActionResult>;
 }
 
 export async function rebuildAndInstallFromRepo(repoPath: string) {

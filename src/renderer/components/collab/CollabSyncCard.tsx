@@ -52,7 +52,7 @@ export function CollabSyncCard({
             className="w-9 h-9 inline-flex items-center justify-center rounded-md text-gray-500 hover:text-[#5B7BFE] hover:bg-gray-50 disabled:opacity-40 transition-colors"
             onClick={onPreviewPush}
             disabled={actionDisabled}
-            title="提交并推送我的修改"
+            title="安全推送我的修改到 main"
           >
             {busyAction === 'push' ? <RefreshCw size={14} className="animate-spin" /> : <UploadCloud size={14} />}
           </button>
@@ -61,7 +61,7 @@ export function CollabSyncCard({
             className="w-9 h-9 inline-flex items-center justify-center rounded-md text-gray-500 hover:text-[#5B7BFE] hover:bg-gray-50 disabled:opacity-40 transition-colors"
             onClick={onPreviewPull}
             disabled={actionDisabled}
-            title="按日期预览 main 修改"
+            title="预览 main 和协作分支修改"
           >
             {busyAction === 'pull' ? <RefreshCw size={14} className="animate-spin" /> : <Download size={14} />}
           </button>
@@ -121,7 +121,7 @@ export function CollabSyncCard({
             disabled={actionDisabled}
           >
             {busyAction === 'push' ? <RefreshCw size={11} className="animate-spin" /> : <UploadCloud size={11} />}
-            推送
+            推 main
           </button>
           <button
             type="button"
@@ -130,7 +130,7 @@ export function CollabSyncCard({
             disabled={actionDisabled}
           >
             {busyAction === 'pull' ? <RefreshCw size={11} className="animate-spin" /> : <Download size={11} />}
-            拉取
+            预览
           </button>
         </div>
       </div>

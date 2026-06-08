@@ -305,6 +305,27 @@ def register_source(
             now, now,
         ),
     )
+
+    # ★ V2.3 PUSH 自动化 · register_source 末尾自动入队 team_sync_state
+    # 让 ingest 完成的新文档/事实立即进入推送队列, 后台 team-sync-worker daemon 自动消化.
+    # 不阻塞主流程: try/except + INSERT OR IGNORE 兜底.
+    # 隔离: visibility_scope=private/personal/self 不推 (个人独享不入云)
+    if org_id and visibility_scope not in {"private", "personal", "self"}:
+        try:
+            db.execute(
+                """
+                INSERT OR IGNORE INTO team_sync_state(
+                    source_id, client_id, organization_id, content_hash,
+                    status, attempts, last_error, created_at, updated_at
+                ) VALUES(?, ?, ?, ?, 'pending', 0, '', ?, ?)
+                """,
+                (source_id, client_id or "", org_id, content_hash, now, now),
+            )
+        except Exception:
+            # team_sync_state 表可能还没建 (旧版本 db) — 静默, 不阻塞 register_source 主流程
+            # 表建好后 (启动 ensure_team_sync_schema 会建), 下次注册自然进队
+            pass
+
     return source_id
 
 

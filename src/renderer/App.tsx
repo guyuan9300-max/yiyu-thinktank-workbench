@@ -96,7 +96,7 @@ import type {
   ClientWorkspace,
   ClientWorkspaceSettings,
   CollabActionResult,
-  CollabConflictDecision,
+  CollabPreviewSession,
   CollabRepoStatus,
   CoachCaseRecord,
   CoachReminderRule,
@@ -391,8 +391,10 @@ import {
   getProposals,
   enterMaintenanceMode,
   processPendingConsultationKnowledgeRequests,
+  fastForwardMain,
   previewPullFromMain,
   previewPushToMain,
+  pushSafelyToMain,
   publishFundraisingDna,
   publishMeeting,
   refreshWeeklyOverview,
@@ -405,10 +407,8 @@ import {
   returnTaskReview,
   rebuildClientKnowledge,
   setWorkspaceInteractionState,
-  resolveCollabMergeConflicts,
   register,
   claimOrgAdmin,
-  commitAndPushToMain,
   rejectEmployeeReview,
   resolveMeeting,
   resolveInviteCode,
@@ -469,7 +469,8 @@ import {
   startClientTemplateFill,
   getClientTemplateFillRun,
   backfillClientWorkspaceImports,
-  pullSelectedFromMain,
+  startCollabPreview,
+  stopCollabPreview,
   selectCollabRepo,
   previewClientDocumentAutoRepair,
   applyClientDocumentAutoRepair,
@@ -7392,8 +7393,7 @@ export default function App() {
   const [collabBusyAction, setCollabBusyAction] = useState<'push' | 'pull' | 'rebuild' | null>(null);
   const [collabDialogState, setCollabDialogState] = useState<CollabDialogState>(null);
   const [collabSelectedPaths, setCollabSelectedPaths] = useState<string[]>([]);
-  const [collabConflictResult, setCollabConflictResult] = useState<CollabActionResult | null>(null);
-  const [collabConflictDecisions, setCollabConflictDecisions] = useState<CollabConflictDecision[]>([]);
+  const [collabPreviewSession, setCollabPreviewSession] = useState<CollabPreviewSession | null>(null);
   const [collabCommitMessage, setCollabCommitMessage] = useState('');
   const [collabDialogError, setCollabDialogError] = useState<string | null>(null);
   const collabAutoSwitchTargetRef = useRef<string | null>(null);
@@ -8667,8 +8667,6 @@ export default function App() {
       setMaintenanceModeStatus(status);
       setCollabDialogState(null);
       setCollabSelectedPaths([]);
-      setCollabConflictResult(null);
-      setCollabConflictDecisions([]);
       setCollabCommitMessage('');
       setCollabDialogError(null);
       flash('success', '左下角推送同步已关闭。');
@@ -8715,8 +8713,6 @@ export default function App() {
   function openCollabDialog(state: Exclude<CollabDialogState, null>) {
     setCollabDialogState(state);
     setCollabSelectedPaths(getDefaultCollabSelectedPaths(state));
-    setCollabConflictResult(null);
-    setCollabConflictDecisions([]);
     setCollabCommitMessage(state.preview.suggestedMessage);
     setCollabDialogError(null);
   }
@@ -8750,8 +8746,6 @@ export default function App() {
     setCollabRepoPath(nextRepoPath);
     setCollabDialogState(null);
     setCollabSelectedPaths([]);
-    setCollabConflictResult(null);
-    setCollabConflictDecisions([]);
     setCollabCommitMessage('');
     setCollabDialogError(null);
     flash('success', '源码目录已绑定，后续协作按钮会围绕这个仓库工作。');
@@ -8816,14 +8810,6 @@ export default function App() {
     }
   }
 
-  function updateCollabConflictDecision(groupId: string, choice: CollabConflictDecision['choice']) {
-    setCollabDialogError(null);
-    setCollabConflictDecisions((prev) => {
-      const withoutCurrent = prev.filter((item) => item.groupId !== groupId);
-      return [...withoutCurrent, { groupId, choice }];
-    });
-  }
-
   async function handleConfirmCollabAction() {
     if (!canUseCollabSync) return;
     if (!collabDialogState) return;
@@ -8842,44 +8828,19 @@ export default function App() {
     setCollabBusyAction(mode);
     try {
       let result: CollabActionResult;
-      if (collabConflictResult?.conflictGroups?.length) {
-        const missingDecision = collabConflictResult.conflictGroups.find((group) => (
-          !collabConflictDecisions.some((decision) => decision.groupId === group.id)
-        ));
-        if (missingDecision) {
-          setCollabDialogError(`请先选择“${missingDecision.title}”的处理方式。`);
-          return;
-        }
-        result = await resolveCollabMergeConflicts({
-          repoPath,
-          mode,
-          decisions: collabConflictDecisions,
-          message: collabCommitMessage.trim() || collabDialogState.preview.suggestedMessage,
-        });
-      } else if (mode === 'push') {
-        result = await commitAndPushToMain({
+      if (mode === 'push') {
+        result = await pushSafelyToMain({
           repoPath,
           message: collabCommitMessage.trim() || collabDialogState.preview.suggestedMessage,
         });
       } else {
-        result = await pullSelectedFromMain({
-          repoPath,
-          message: collabCommitMessage.trim() || collabDialogState.preview.suggestedMessage,
-          targetCommit: collabDialogState.preview.syncTargetCommit || null,
-        });
+        result = await fastForwardMain({ repoPath });
       }
-      if (result.mergeStatus === 'conflictsNeedResolution' && result.conflictGroups?.length) {
-        setCollabConflictResult(result);
-        setCollabConflictDecisions([]);
-        setCollabDialogError(result.explanation || '发现真实 Git 冲突，请选择每组冲突的处理方式。');
-        await refreshCollabStatus(repoPath);
-        return;
-      }
-      flash('success', mode === 'push' ? '已完整合并并推送到 main。' : '已完整合并 main 到本地源码。');
+      flash('success', mode === 'push'
+        ? '已安全推送到 GitHub main。'
+        : '已快进接收 origin/main。');
       setCollabDialogState(null);
       setCollabSelectedPaths([]);
-      setCollabConflictResult(null);
-      setCollabConflictDecisions([]);
       setCollabCommitMessage('');
       setCollabDialogError(null);
       await refreshCollabStatus(repoPath);
@@ -8894,6 +8855,56 @@ export default function App() {
     } catch (error) {
       setCollabDialogError(error instanceof Error ? error.message : '协作操作失败');
       await refreshCollabStatus(repoPath);
+    } finally {
+      setCollabBusyAction(null);
+    }
+  }
+
+  async function handleStartCollabPreview(targetRef?: string, label?: string) {
+    if (!canUseCollabSync) return;
+    if (!collabDialogState) return;
+    if (!isMaintenanceModeActive) {
+      setCollabDialogError('请先在系统日志中打开左下角推送同步。');
+      void refreshMaintenanceModeStatus({ silent: true });
+      return;
+    }
+    const repoPath = collabRepoPath || collabStatus?.repoPath;
+    if (!repoPath) {
+      setCollabDialogError('还没有绑定源码目录。');
+      return;
+    }
+    const fallbackRef = collabDialogState.mode === 'pull'
+      ? (collabDialogState.preview.syncTargetCommit || 'origin/main')
+      : 'origin/main';
+    setCollabDialogError(null);
+    setCollabBusyAction('pull');
+    try {
+      const result = await startCollabPreview({
+        repoPath,
+        targetRef: targetRef || fallbackRef,
+        label: label || null,
+      });
+      if (result.previewSession) {
+        setCollabPreviewSession(result.previewSession);
+      }
+      flash('success', result.explanation || '协作预览已开启。');
+    } catch (error) {
+      setCollabDialogError(error instanceof Error ? error.message : '协作预览开启失败');
+    } finally {
+      setCollabBusyAction(null);
+    }
+  }
+
+  async function handleStopCollabPreview() {
+    if (!collabPreviewSession) return;
+    setCollabBusyAction('pull');
+    setCollabDialogError(null);
+    try {
+      await stopCollabPreview({ previewId: collabPreviewSession.previewId });
+      setCollabPreviewSession(null);
+      flash('success', '协作预览已停止。');
+    } catch (error) {
+      setCollabDialogError(error instanceof Error ? error.message : '协作预览停止失败');
     } finally {
       setCollabBusyAction(null);
     }
@@ -30694,6 +30705,11 @@ export default function App() {
           </div>
         )}
         <GlobalBannerHost />
+        {desktopAppInfo?.collabPreviewMode && (
+          <div className="absolute left-4 right-4 top-4 z-50 rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-[12px] font-bold text-amber-800 shadow-sm">
+            协作预览模式：当前窗口使用隔离数据目录，默认禁止写入真实云端。这里用于查看对方修改效果，不是正式工作窗口。
+          </div>
+        )}
         {viewMap[activeTab]}
       </main>
       {renderClientEditorModal()}
@@ -30704,25 +30720,27 @@ export default function App() {
             mode={collabDialogState?.mode || 'push'}
             preview={collabDialogState?.preview || null}
             selectedPaths={collabSelectedPaths}
-            conflictGroups={collabConflictResult?.conflictGroups || []}
-            conflictDecisions={collabConflictDecisions}
             message={collabCommitMessage}
             errorMessage={collabDialogError}
             busy={collabBusyAction === 'push' || collabBusyAction === 'pull'}
+            activePreviewSession={collabPreviewSession}
             onClose={() => {
               if (collabBusyAction === 'push' || collabBusyAction === 'pull') return;
               setCollabDialogState(null);
-              setCollabConflictResult(null);
-              setCollabConflictDecisions([]);
               setCollabDialogError(null);
             }}
-            onConflictDecisionChange={updateCollabConflictDecision}
             onSelectPullCommit={(targetCommit) => {
               void handleSelectPullCommit(targetCommit);
             }}
             onMessageChange={handleCollabMessageChange}
             onConfirm={() => {
               void handleConfirmCollabAction();
+            }}
+            onStartPreview={(targetRef, label) => {
+              void handleStartCollabPreview(targetRef, label);
+            }}
+            onStopPreview={() => {
+              void handleStopCollabPreview();
             }}
           />
         </React.Suspense>

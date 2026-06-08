@@ -1632,6 +1632,9 @@ def resolve_initial_cloud_api_url(db: Database) -> str:
         return ""
 
 
+COLLAB_PREVIEW_MODE = os.environ.get("YIYU_COLLAB_PREVIEW_MODE") == "1"
+
+
 @dataclass
 class AppState:
     data_dir: Path
@@ -3775,6 +3778,52 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 state.deep_read_thread.start()
         except Exception as exc:  # noqa: BLE001
             logger.warning("[startup] deep-read worker init failed: %s", exc)
+
+        # ★ V2.3 PUSH 自动化 · team-sync 后台 worker (放在 early return 之前, 跟 internet_pdf_worker 一队)
+        # 设计同 knowledge-worker / analysis-job-worker, 但要防 statReload 重启时重复起 thread.
+        # 用 threading.enumerate() 按 name 查重 (旧 worker 进程内还活着, 跳过).
+        import threading as _threading
+        if not any(t.name == "team-sync-worker" for t in _threading.enumerate()):
+            def _team_sync_worker_loop() -> None:
+                import time as _time
+                _time.sleep(30)  # 启动延迟 30s, 让 backend / db 完全 ready
+                from app.services.team_sync_executor import (
+                    ensure_team_sync_schema, run_team_sync_once, get_sync_stats,
+                )
+                try:
+                    ensure_team_sync_schema(state.db)
+                except Exception as exc:
+                    logger.warning("[team-sync-worker] ensure_team_sync_schema failed: %s", exc)
+                logger.info("[team-sync-worker] started")
+                while True:
+                    try:
+                        # 1. 没登录云端 → 短路, 避免空转刷 401
+                        if not get_cloud_token():
+                            _time.sleep(300)
+                            continue
+                        # 2. 看 pending 数
+                        stats = get_sync_stats(state.db)
+                        pending = int(stats.get("pending", 0) or 0)
+                        if pending == 0:
+                            _time.sleep(60)
+                            continue
+                        # 3. 有 pending → 跑一批
+                        result = run_team_sync_once(state.db, cloud_request, batch_size=100)
+                        count = int(result.get("count", 0) or 0)
+                        logger.info(
+                            "[team-sync-worker] batch count=%d accepted=%s duplicates=%s rejected=%s remaining=%d",
+                            count, result.get("accepted"), result.get("duplicates"),
+                            result.get("rejected"), max(0, pending - count),
+                        )
+                        # 4. 背压: 满批立即下一批 (中间 2s 让 CPU), 不满批睡 30s
+                        if count >= 100:
+                            _time.sleep(2)
+                        else:
+                            _time.sleep(30)
+                    except Exception as exc:
+                        logger.warning("[team-sync-worker] iter failed: %s", exc)
+                        _time.sleep(60)
+            Thread(target=_team_sync_worker_loop, name="team-sync-worker", daemon=True).start()
 
         if state.job_thread and state.job_thread.is_alive():
             if state.analysis_job_thread and state.analysis_job_thread.is_alive():
@@ -8420,6 +8469,9 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
 
     def cloud_request(method: str, path: str, *, json_body: dict | None = None, allow_unauthenticated: bool = False, timeout: float = 3.0) -> object:
         import time as _time
+        normalized_method = method.upper()
+        if COLLAB_PREVIEW_MODE and normalized_method not in {"GET", "HEAD", "OPTIONS"}:
+            raise HTTPException(status_code=403, detail="协作预览模式不可写云端。")
         base_url = cloud_api_base_url()
 
         # Fast fail if cloud was down recently (circuit breaker)
