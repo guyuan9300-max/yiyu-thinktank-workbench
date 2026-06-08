@@ -1735,7 +1735,8 @@ export async function register(payload: AuthRegisterPayload) {
 }
 
 export async function localRegister(payload: LocalAuthRegisterPayload) {
-  return request<AuthState>('/api/v1/local-auth/register', {
+  // local-auth 已剥离, 统一走云端注册(登录即云端). cloud 忽略 organizationMode, 靠 inviteCode 判断 join/create.
+  return request<AuthState>('/api/v1/auth/register', {
     method: 'POST',
     body: JSON.stringify(payload),
   });
@@ -1761,7 +1762,8 @@ export async function login(payload: AuthLoginPayload) {
 }
 
 export async function localLogin(payload: LocalAuthLoginPayload) {
-  return request<AuthState>('/api/v1/local-auth/login', {
+  // local-auth 已剥离, 统一走云端登录(登录即云端). cloud AuthLoginPayload 兼容 identifier 字段.
+  return request<AuthState>('/api/v1/auth/login', {
     method: 'POST',
     body: JSON.stringify(payload),
   });
