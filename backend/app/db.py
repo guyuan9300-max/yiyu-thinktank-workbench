@@ -72,31 +72,8 @@ class Database:
                     value TEXT NOT NULL
                 );
 
-                CREATE TABLE IF NOT EXISTS local_identities (
-                    id TEXT PRIMARY KEY,
-                    email TEXT NOT NULL UNIQUE,
-                    phone_number TEXT,
-                    full_name TEXT NOT NULL,
-                    password_hash TEXT NOT NULL,
-                    local_organization_name TEXT NOT NULL DEFAULT '',
-                    organization_mode TEXT NOT NULL DEFAULT 'create',
-                    pending_invite_code TEXT,
-                    pending_department_id TEXT,
-                    job_title TEXT,
-                    manager_name TEXT,
-                    current_focus TEXT NOT NULL DEFAULT '',
-                    membership_status TEXT NOT NULL DEFAULT 'approved',
-                    bound_cloud_user_id TEXT,
-                    bound_cloud_organization_id TEXT,
-                    bound_cloud_email TEXT,
-                    created_at TEXT NOT NULL,
-                    updated_at TEXT NOT NULL,
-                    last_login_at TEXT
-                );
-                CREATE INDEX IF NOT EXISTS idx_local_identities_phone
-                    ON local_identities(phone_number);
-                CREATE INDEX IF NOT EXISTS idx_local_identities_cloud_user
-                    ON local_identities(bound_cloud_user_id);
+                -- local_identities 表已随 local-auth 剥离移除(统一云端登录, 飞行模式靠 degraded)。
+                -- 旧库里残留的 local_identities 表(5/10 V2.1 phone_normalized 设计)是死表, 代码不再建/索引/读写它。
 
                 -- ══ 同步表（走云端） ══
 
