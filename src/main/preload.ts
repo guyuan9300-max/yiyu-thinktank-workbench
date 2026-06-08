@@ -9,6 +9,7 @@ import type {
   PullPreview,
   PullSelectedFromMainPayload,
   PushPreview,
+  ResolveCollabConflictsPayload,
   UpdateOrgIdentity,
 } from '../shared/types.js';
 
@@ -58,6 +59,8 @@ contextBridge.exposeInMainWorld('yiyuWorkbench', {
     ipcRenderer.invoke('yiyu-workbench:previewPullFromMain', repoPath, targetCommit ?? null),
   pullSelectedFromMain: (payload: PullSelectedFromMainPayload): Promise<CollabActionResult> =>
     ipcRenderer.invoke('yiyu-workbench:pullSelectedFromMain', payload),
+  resolveCollabMergeConflicts: (payload: ResolveCollabConflictsPayload): Promise<CollabActionResult> =>
+    ipcRenderer.invoke('yiyu-workbench:resolveCollabMergeConflicts', payload),
   rebuildAndInstallFromRepo: (repoPath: string): Promise<boolean> =>
     ipcRenderer.invoke('yiyu-workbench:rebuildAndInstallFromRepo', repoPath),
   setWorkspaceInteractionState: (payload: { active: boolean; source: string; detail?: string | null }): Promise<{

@@ -10,10 +10,12 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import http from 'node:http';
 import net from 'node:net';
 import type {
+  CollabActionResult,
   CommitAndPushToMainPayload,
   DesktopAppInfo,
   DesktopStartupGateResumeResult,
   PullSelectedFromMainPayload,
+  ResolveCollabConflictsPayload,
 } from '../shared/types.js';
 import { buildRendererLaunchQuery } from '../shared/rendererLaunchQuery.js';
 import {
@@ -1618,6 +1620,89 @@ async function ensureProjectRuntime(projectDirName: 'backend' | 'cloud_backend',
 
 function backendUrl() {
   return `http://127.0.0.1:${backendPort}`;
+}
+
+type CollabAiMergeStatus = {
+  available?: boolean;
+  reason?: string | null;
+  provider?: string | null;
+  model?: string | null;
+};
+
+type CollabAiMergeRequest = {
+  path: string;
+  featureTitle: string;
+  conflictMarkerText: string;
+  baseContent: string | null;
+  localContent: string | null;
+  remoteContent: string | null;
+};
+
+async function fetchJsonWithTimeout<T>(url: string, options: RequestInit = {}, timeoutMs = 90_000): Promise<T> {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const response = await fetch(url, {
+      ...options,
+      signal: controller.signal,
+    });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      const detail = typeof payload?.detail === 'string' ? payload.detail : `HTTP ${response.status}`;
+      throw new Error(detail);
+    }
+    return payload as T;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+async function getCollabAiMergeStatus(): Promise<CollabAiMergeStatus> {
+  try {
+    return await fetchJsonWithTimeout<CollabAiMergeStatus>(
+      `${backendUrl()}/api/v1/runtime/collab-merge/ai-status`,
+      { method: 'GET' },
+      8_000,
+    );
+  } catch (error) {
+    return {
+      available: false,
+      reason: error instanceof Error ? error.message : '本地 AI 状态检查失败',
+    };
+  }
+}
+
+async function withCollabAiAvailability(result: CollabActionResult): Promise<CollabActionResult> {
+  if (result.mergeStatus !== 'conflictsNeedResolution' || !result.conflictGroups?.length) {
+    return result;
+  }
+  const status = await getCollabAiMergeStatus();
+  return {
+    ...result,
+    conflictGroups: result.conflictGroups.map((group) => ({
+      ...group,
+      aiAvailable: Boolean(status.available),
+      aiUnavailableReason: status.available
+        ? null
+        : status.reason || '当前 AI 不可用，不能自动保留双方。',
+    })),
+  };
+}
+
+async function resolveCollabConflictWithLocalAi(input: CollabAiMergeRequest): Promise<string> {
+  const payload = await fetchJsonWithTimeout<{ mergedContent?: string }>(
+    `${backendUrl()}/api/v1/runtime/collab-merge/resolve-conflict`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(input),
+    },
+  );
+  const mergedContent = String(payload.mergedContent || '');
+  if (!mergedContent.trim()) {
+    throw new Error('AI 没有返回可用的合并内容。');
+  }
+  return mergedContent;
 }
 
 type MaintenanceModeGuardStatus = {
@@ -3233,7 +3318,8 @@ ipcMain.handle('yiyu-workbench:previewPushToMain', async (_event, repoPath: stri
 ipcMain.handle('yiyu-workbench:commitAndPushToMain', async (_event, payload: CommitAndPushToMainPayload) => {
   await requireActiveMaintenanceMode('提交并推送修改');
   const collabGit = await loadInternalCollabGit();
-  return collabGit.commitAndPushToMain(payload, getCollabSuggestedCandidates(), path.join(app.getPath('userData'), 'app.db'));
+  const result = await collabGit.commitAndPushToMain(payload, getCollabSuggestedCandidates(), path.join(app.getPath('userData'), 'app.db'));
+  return withCollabAiAvailability(result);
 });
 
 ipcMain.handle('yiyu-workbench:previewPullFromMain', async (_event, repoPath: string, targetCommit?: string | null) => {
@@ -3250,7 +3336,19 @@ ipcMain.handle('yiyu-workbench:previewPullFromMain', async (_event, repoPath: st
 ipcMain.handle('yiyu-workbench:pullSelectedFromMain', async (_event, payload: PullSelectedFromMainPayload) => {
   await requireActiveMaintenanceMode('同步 main 修改');
   const collabGit = await loadInternalCollabGit();
-  return collabGit.pullSelectedFromMain(payload, getCollabSuggestedCandidates(), path.join(app.getPath('userData'), 'app.db'));
+  const result = await collabGit.pullSelectedFromMain(payload, getCollabSuggestedCandidates(), path.join(app.getPath('userData'), 'app.db'));
+  return withCollabAiAvailability(result);
+});
+
+ipcMain.handle('yiyu-workbench:resolveCollabMergeConflicts', async (_event, payload: ResolveCollabConflictsPayload) => {
+  await requireActiveMaintenanceMode('解决 main 合并冲突');
+  const collabGit = await loadInternalCollabGit();
+  return collabGit.resolveCollabMergeConflicts(
+    payload,
+    getCollabSuggestedCandidates(),
+    path.join(app.getPath('userData'), 'app.db'),
+    resolveCollabConflictWithLocalAi,
+  );
 });
 
 ipcMain.handle('yiyu-workbench:setWorkspaceInteractionState', async (_event, payload?: {
@@ -3269,28 +3367,13 @@ ipcMain.handle('yiyu-workbench:setWorkspaceInteractionState', async (_event, pay
 });
 
 ipcMain.handle('yiyu-workbench:rebuildAndInstallFromRepo', async (_event, repoPath: string) => {
-  // P0-2 修复: 旧实现把 repoPath 拼成 `zsh -lc "cd \"<path>\" && ..."` 单字符串.
-  // JSON.stringify 的引号转义在 zsh 双引号内**不能阻止 $(...) 命令替换**.
-  // 实测: repoPath = "a$(touch /tmp/__pwned)b" 会真的执行 touch.
-  // 修法两层:
-  //   1) 路径白名单 — 必须是绝对路径 + 只允许 ASCII alnum / _ - / . 空格
-  //      (任何 backtick / $ / ; / | / & / 引号 / 换行 直接拒绝)
-  //   2) spawn 改用数组参数(no shell 解释), 每一步独立 spawn 不串
   if (typeof repoPath !== 'string' || repoPath.length === 0) {
     throw new Error('rebuildAndInstallFromRepo: 缺少 repoPath');
   }
   const normalizedRepoPath = path.resolve(repoPath);
-  // 白名单: 只允许 ASCII 字母/数字/下划线/连字符/点/斜杠/空格
-  // (绝大多数 macOS 用户目录路径都满足, 同时拒绝所有 shell 元字符)
-  const SAFE_PATH_RE = /^[a-zA-Z0-9_\-./ ]+$/;
-  if (!SAFE_PATH_RE.test(normalizedRepoPath)) {
-    appendElectronLaunchLog(
-      'ERROR',
-      `[rebuild-install-request] 拒绝含 shell 元字符的路径 path=${normalizedRepoPath.slice(0, 200)}`,
-    );
-    throw new Error('rebuildAndInstallFromRepo: 路径含不安全字符,只允许字母/数字/_/-/./空格/斜杠');
+  if (process.platform !== 'darwin') {
+    throw new Error('源码已同步；Windows 自动重装暂未接入签名安装链路，请先由 Codex 或打包流程重新构建 Windows 安装包。');
   }
-  // 二次验证: 该路径必须真实存在且是目录
   let pathStat: fs.Stats;
   try {
     pathStat = fs.statSync(normalizedRepoPath);
@@ -3300,7 +3383,7 @@ ipcMain.handle('yiyu-workbench:rebuildAndInstallFromRepo', async (_event, repoPa
   if (!pathStat.isDirectory()) {
     throw new Error('rebuildAndInstallFromRepo: 路径不是目录');
   }
-  // 第三层验证: 该目录必须是合法 git repo + 含 package.json (防 IPC 调用任意目录)
+  // 不走 shell，中文路径和括号都可以；危险字符不会被解释成命令。
   if (!fs.existsSync(path.join(normalizedRepoPath, 'package.json')) ||
       !fs.existsSync(path.join(normalizedRepoPath, '.git'))) {
     throw new Error('rebuildAndInstallFromRepo: 路径不是合法的 yiyu git repo');

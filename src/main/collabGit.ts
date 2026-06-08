@@ -6,6 +6,8 @@ import type {
   CollabActionResult,
   CollabChangeGroup,
   CollabChangeGroupKey,
+  CollabConflictDecision,
+  CollabConflictGroup,
   CollabConflictRisk,
   CollabEffectPreview,
   CollabFileChange,
@@ -16,6 +18,7 @@ import type {
   PullPreview,
   PullSelectedFromMainPayload,
   PushPreview,
+  ResolveCollabConflictsPayload,
 } from '../shared/types.js';
 
 type RunCommandOptions = {
@@ -84,6 +87,17 @@ type RepoWorkContext = {
   gitRepoPath: string;
   scopeRelativePath: string | null;
 };
+
+type CollabAiConflictMergeInput = {
+  path: string;
+  featureTitle: string;
+  conflictMarkerText: string;
+  baseContent: string | null;
+  localContent: string | null;
+  remoteContent: string | null;
+};
+
+type CollabAiConflictMergeResolver = (input: CollabAiConflictMergeInput) => Promise<string>;
 
 type SharedSettingsTarget = {
   settingKey: 'settings.system_admin';
@@ -215,6 +229,11 @@ const COLLAB_HIDDEN_WORKSPACE_SEGMENT = `${path.sep}.openclaw${path.sep}workspac
 
 function normalizeCollabRepoBindingPath(targetPath: string) {
   let normalized = path.resolve(targetPath).replace(/[\\/]+$/, '');
+  try {
+    normalized = fs.realpathSync.native(normalized).replace(/[\\/]+$/, '');
+  } catch {
+    // Keep the resolved path when the target does not exist yet.
+  }
   if (normalized.includes(COLLAB_HIDDEN_WORKSPACE_SEGMENT)) {
     normalized = normalized.replace(COLLAB_HIDDEN_WORKSPACE_SEGMENT, COLLAB_VISIBLE_WORKSPACE_SEGMENT);
   }
@@ -357,6 +376,8 @@ function finalizeEffectDrafts(drafts: EffectDraft[]): CollabEffectPreview[] {
       relatedPaths: Array.from(draft.relatedPaths),
       beforeLabel: draft.beforeLabel ?? null,
       afterLabel: draft.afterLabel ?? null,
+      explanationSource: 'user_feature_rules' as const,
+      aiUnavailableReason: '当前主进程协作模块还没有稳定的 AI 生成接口，本次先使用用户视角规则解释。',
     }))
     .filter((draft) => draft.relatedPaths.length > 0);
 }
@@ -368,6 +389,13 @@ function labelSharedSettingKey(settingKey: string) {
 async function readGitObject(context: RepoWorkContext, revision: string, targetPath: string) {
   const gitTargetPath = toScopedGitPath(context.scopeRelativePath, targetPath);
   const result = await runGit(context.gitRepoPath, ['show', `${revision}:${gitTargetPath}`], { allowNonZero: true });
+  if (result.exitCode !== 0) return null;
+  return result.stdout;
+}
+
+async function readConflictStage(context: RepoWorkContext, stage: 1 | 2 | 3, targetPath: string) {
+  const gitTargetPath = toScopedGitPath(context.scopeRelativePath, targetPath);
+  const result = await runGit(context.gitRepoPath, ['show', `:${stage}:${gitTargetPath}`], { allowNonZero: true });
   if (result.exitCode !== 0) return null;
   return result.stdout;
 }
@@ -637,14 +665,60 @@ function buildSuggestedMessage(prefix: 'push' | 'pull', groups: CollabChangeGrou
 
 function summarizeRendererEffect(targetPath: string) {
   const normalized = targetPath.replace(/\\/g, '/');
+  if (
+    normalized.includes('feishu')
+    || normalized.includes('Feishu')
+    || normalized.includes('document')
+    || normalized.includes('documents')
+  ) {
+    return {
+      id: 'feature-feishu-documents',
+      title: '飞书云文档同步和创建能力会变化',
+      summary: '这会影响任务、资料或工作台内容同步到飞书云文档的入口、创建流程或状态展示。',
+      visibility: 'visible' as const,
+      scopeLabel: '飞书联动',
+      detail: '同步后建议检查飞书授权、文档创建按钮、同步状态和失败提示。',
+    };
+  }
+  if (
+    normalized.includes('auth')
+    || normalized.includes('Auth')
+    || normalized.includes('login')
+    || normalized.includes('register')
+    || normalized.includes('membership')
+  ) {
+    return {
+      id: 'feature-auth-and-membership',
+      title: '注册登录、本地模式或加入组织流程会变化',
+      summary: '这会影响新电脑首次打开、账号登录、云端绑定、邀请码或组织身份识别。',
+      visibility: 'visible' as const,
+      scopeLabel: '账号与组织',
+      detail: '同步后建议用新设备场景检查本地注册、登录、填写云地址和加入组织。',
+    };
+  }
+  if (
+    normalized.includes('Admin')
+    || normalized.includes('admin')
+    || normalized.includes('employees')
+    || normalized.includes('permission')
+  ) {
+    return {
+      id: 'feature-org-admin',
+      title: '组织权限、成员管理或管理员操作会变化',
+      summary: '这会影响管理员看到成员、审核成员、管理权限或处理组织内账号的方式。',
+      visibility: 'visible' as const,
+      scopeLabel: '组织管理',
+      detail: '同步后建议用管理员账号检查成员列表、权限入口和普通成员可见范围。',
+    };
+  }
   if (normalized === 'src/renderer/App.tsx' || normalized.startsWith('src/renderer/components/collab/')) {
     return {
       id: 'renderer-collab-shell',
-      title: '左侧协作入口和同步弹窗会变化',
-      summary: '你会先看到“软件会怎么变”，再决定是否执行同步，不会再一上来只看文件清单。',
+      title: '推送/同步按钮的合并方式会变化',
+      summary: '同步时会完整合并双方修改，真实冲突才要求选择，不再因为文件重叠就默认跳过功能。',
       visibility: 'visible' as const,
       scopeLabel: '界面可见',
-      detail: '协作同步入口、确认弹窗和主要提示文案会更新。',
+      detail: '协作同步入口、确认弹窗、冲突决策和主要提示文案会更新。',
     };
   }
   if (normalized.startsWith('src/renderer/components/settings/')) {
@@ -699,11 +773,31 @@ function summarizeRendererEffect(targetPath: string) {
 
 function summarizeDesktopEffect(targetPath: string) {
   const normalized = targetPath.replace(/\\/g, '/');
+  if (normalized.includes('autoUpdater') || normalized.includes('release') || normalized.includes('version')) {
+    return {
+      id: 'feature-release-update',
+      title: '软件检查更新或版本发布链路会变化',
+      summary: '这会影响软件如何发现新版本、下载安装包、识别组织定向版本或展示更新状态。',
+      visibility: 'mixed' as const,
+      scopeLabel: '软件更新',
+      detail: '同步后建议检查版本号、检查更新按钮、中央更新接口和下载安装提示。',
+    };
+  }
+  if (normalized.includes('collabGit') || normalized.includes('preload') || normalized === 'src/shared/types.ts') {
+    return {
+      id: 'feature-collab-merge',
+      title: '推送/同步按钮的底层合并规则会变化',
+      summary: '这会影响你和同事如何把各自修改合并到同一个 main，目标是不再遗漏双方功能。',
+      visibility: 'mixed' as const,
+      scopeLabel: '协作同步',
+      detail: '同步后建议分别测试无冲突自动合并和真实冲突三选一处理。',
+    };
+  }
   if (normalized.startsWith('src/main/') || normalized === 'src/renderer/lib/api.ts' || normalized === 'src/shared/types.ts') {
     return {
       id: 'desktop-collab-runtime',
-      title: '桌面端同步行为会变化',
-      summary: '按钮背后的 Git 同步、确认逻辑或安装版更新流程会变化。',
+      title: '桌面端运行或桥接行为会变化',
+      summary: '按钮背后的本地服务、桌面桥接、Git 同步或安装版更新流程会变化。',
       visibility: 'mixed' as const,
       scopeLabel: '桌面行为',
       detail: '这类变化不一定马上体现在单个页面上，但会直接影响按钮怎么工作。',
@@ -723,8 +817,8 @@ function summarizeBackendEffect(groupKey: CollabChangeGroupKey) {
   if (groupKey === 'local_backend') {
     return {
       id: 'backend-local',
-      title: '本地 backend 逻辑会变化',
-      summary: '界面未必马上不同，但本地数据链路、处理规则或接口行为会变化。',
+      title: '本机数据处理和本地接口会变化',
+      summary: '这会影响本机账号、任务、文档、飞书、AI 或设置数据在本机如何保存和处理。',
       visibility: 'background' as const,
       scopeLabel: '后台逻辑',
       detail: '这类改动通常体现在任务结果、数据状态或接口响应上。',
@@ -733,8 +827,8 @@ function summarizeBackendEffect(groupKey: CollabChangeGroupKey) {
   if (groupKey === 'cloud_backend') {
     return {
       id: 'backend-cloud',
-      title: '共享 backend 逻辑会变化',
-      summary: '界面未必立刻变，但共享账号、审批、组织或云端流程会受影响。',
+      title: '组织云端共享规则会变化',
+      summary: '这会影响成员入组、组织权限、共享数据、云端 AI 配置或定向推送等跨设备能力。',
       visibility: 'background' as const,
       scopeLabel: '后台逻辑',
       detail: '这类变化更偏业务规则和共享数据处理。',
@@ -1459,7 +1553,7 @@ async function popLatestStash(context: RepoWorkContext): Promise<StashPopResult>
 }
 
 async function addPathsToIndex(context: RepoWorkContext, targetPaths: string[]) {
-  const blockedLocalPaths = targetPaths.filter((targetPath) => isIgnorableLocalStatusPath(targetPath));
+  const blockedLocalPaths = targetPaths.filter((targetPath) => isIgnorableLocalStatusPath(targetPath) && !isSharedSettingsRepoPath(targetPath));
   if (blockedLocalPaths.length > 0) {
     throw new Error(`协作同步不允许提交生成物或忽略路径：${blockedLocalPaths.join('、')}`);
   }
@@ -1485,36 +1579,200 @@ async function checkoutOursPath(context: RepoWorkContext, targetPath: string) {
   await runGit(context.gitRepoPath, ['checkout', '--ignore-skip-worktree-bits', '--ours', '--', toScopedGitPath(context.scopeRelativePath, targetPath)], { allowNonZero: true });
 }
 
-async function mergeOriginMainForPush(context: RepoWorkContext, selectedPaths: string[], preview: PushPreview) {
-  const selectedSet = new Set(selectedPaths);
-  await runGit(context.gitRepoPath, ['merge', '--no-commit', '--no-ff', 'origin/main'], { allowNonZero: true });
-  try {
-    for (const file of preview.files) {
-      if (!selectedSet.has(file.path) || !file.risk) continue;
-      if (file.type === 'deleted') {
-        await removePathsFromIndex(context, [file.path]);
-        continue;
-      }
-      await checkoutOursPath(context, file.path);
-      await addPathsToIndex(context, [file.path]);
-      if (file.type === 'renamed' && file.previousPath && file.previousPath !== file.path) {
-        await removePathsFromIndex(context, [file.previousPath]);
-      }
-    }
-    const unresolved = await runGit(context.gitRepoPath, ['diff', '--name-only', '--diff-filter=U'], { allowNonZero: true });
-    const unresolvedPaths = unresolved.stdout
+function uniquePaths(paths: string[]) {
+  return Array.from(new Set(paths.map((item) => normalizeRelativePath(item)).filter(Boolean)));
+}
+
+function collectPreviewPaths(files: CollabFileChange[]) {
+  return uniquePaths(files.flatMap((file) => {
+    const paths = [file.path];
+    if (file.previousPath && file.previousPath !== file.path) paths.push(file.previousPath);
+    return paths;
+  }));
+}
+
+async function hasStagedChanges(context: RepoWorkContext) {
+  const result = await runGit(context.gitRepoPath, ['diff', '--cached', '--quiet'], { allowNonZero: true });
+  return result.exitCode !== 0;
+}
+
+async function addAllPreviewFilesToIndex(context: RepoWorkContext, files: CollabFileChange[]) {
+  const paths = collectPreviewPaths(files);
+  if (!paths.length) return [];
+  await addPathsToIndex(context, paths);
+  return paths;
+}
+
+async function commitStagedChangesIfAny(context: RepoWorkContext, message: string) {
+  if (!(await hasStagedChanges(context))) return false;
+  await runGit(context.gitRepoPath, ['commit', '-m', message]);
+  return true;
+}
+
+async function listUnresolvedScopedPaths(context: RepoWorkContext) {
+  const unresolved = await runGit(context.gitRepoPath, ['diff', '--name-only', '--diff-filter=U'], { allowNonZero: true });
+  return uniquePaths(
+    unresolved.stdout
       .split(/\r?\n/)
       .map((line) => line.trim())
-      .filter(Boolean);
-    if (unresolvedPaths.length > 0) {
-      throw new Error(`仍有未解决的冲突：${unresolvedPaths.join('、')}`);
-    }
-    const mergeMessage = 'sync: 合并 origin/main 后继续推送选中的本地修改';
-    await runGit(context.gitRepoPath, ['commit', '-m', mergeMessage]);
-  } catch (error) {
-    await runGit(context.gitRepoPath, ['merge', '--abort'], { allowNonZero: true });
-    throw error;
+      .filter(Boolean)
+      .map((repoPath) => stripScopePrefix(repoPath, context.scopeRelativePath))
+      .filter((repoPath): repoPath is string => repoPath !== null && repoPath.length > 0),
+  );
+}
+
+function buildConflictGroupsFromPaths(paths: string[]): CollabConflictGroup[] {
+  const grouped = new Map<CollabChangeGroupKey, string[]>();
+  for (const targetPath of paths) {
+    const group = classifyChangeGroup(targetPath);
+    const existing = grouped.get(group.key) || [];
+    existing.push(targetPath);
+    grouped.set(group.key, existing);
   }
+  return Array.from(grouped.entries()).map(([groupKey, groupPaths]) => {
+    const label = GROUP_LABELS[groupKey];
+    const samplePath = groupPaths[0] || '';
+    const rendererEffect = groupKey === 'renderer' ? summarizeRendererEffect(samplePath) : null;
+    const desktopEffect = groupKey === 'desktop_shell' ? summarizeDesktopEffect(samplePath) : null;
+    const backendEffect = ['local_backend', 'cloud_backend', 'scripts_docs', 'other'].includes(groupKey)
+      ? summarizeBackendEffect(groupKey === 'other' ? 'scripts_docs' : groupKey)
+      : null;
+    const effect = rendererEffect || desktopEffect || backendEffect;
+    return {
+      id: groupKey,
+      title: effect?.title || `${label}存在需要确认的合并冲突`,
+      summary: effect?.summary || '本地修改和远端 main 改到了同一处，Git 无法自动判断怎样保留。',
+      operationHint: '请为这一组冲突选择保留双方、采用远端 main 或采用本地修改。',
+      paths: groupPaths,
+      riskLevel: groupPaths.some((targetPath) => hasBinaryExtension(targetPath)) ? 'high' : 'medium',
+      aiAvailable: false,
+      aiUnavailableReason: '当前协作模块还没有稳定接入软件 AI 的三方代码合并接口；可先采用远端 main 或本地修改。',
+    } satisfies CollabConflictGroup;
+  });
+}
+
+async function ensureNoConflictMarkers(context: RepoWorkContext) {
+  const changed = await runGit(context.gitRepoPath, ['diff', '--cached', '--name-only'], { allowNonZero: true });
+  const paths = uniquePaths(
+    changed.stdout
+      .split(/\r?\n/)
+      .map((line) => stripScopePrefix(line.trim(), context.scopeRelativePath))
+      .filter((line): line is string => Boolean(line)),
+  );
+  const markedPaths: string[] = [];
+  for (const targetPath of paths) {
+    if (hasBinaryExtension(targetPath)) continue;
+    const raw = await fs.promises.readFile(path.join(context.repoPath, targetPath), 'utf8').catch(() => null);
+    if (!raw) continue;
+    if (/^<<<<<<< |^=======$|^>>>>>>> /m.test(raw)) {
+      markedPaths.push(targetPath);
+    }
+  }
+  if (markedPaths.length > 0) {
+    throw new Error(`仍有冲突标记未清理：${markedPaths.join('、')}`);
+  }
+}
+
+function resolveConflictTextByKeepingBoth(rawContent: string) {
+  const lines = rawContent.split(/\r?\n/);
+  const output: string[] = [];
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index] || '';
+    if (!line.startsWith('<<<<<<< ')) {
+      output.push(line);
+      continue;
+    }
+    const ours: string[] = [];
+    const theirs: string[] = [];
+    index += 1;
+    while (index < lines.length && lines[index] !== '=======') {
+      ours.push(lines[index] || '');
+      index += 1;
+    }
+    index += 1;
+    while (index < lines.length && !(lines[index] || '').startsWith('>>>>>>> ')) {
+      theirs.push(lines[index] || '');
+      index += 1;
+    }
+    output.push(...ours);
+    const oursText = ours.join('\n').trim();
+    const theirsText = theirs.join('\n').trim();
+    if (theirsText && theirsText !== oursText) {
+      output.push(...theirs);
+    }
+  }
+  return output.join('\n');
+}
+
+async function checkoutConflictSide(context: RepoWorkContext, targetPath: string, side: '--ours' | '--theirs') {
+  const scopedPath = toScopedGitPath(context.scopeRelativePath, targetPath);
+  await runGit(context.gitRepoPath, ['checkout', '--ignore-skip-worktree-bits', side, '--', scopedPath], { allowNonZero: true });
+  const absolutePath = path.join(context.repoPath, targetPath);
+  const stat = await fs.promises.stat(absolutePath).catch(() => null);
+  if (stat?.isFile()) {
+    await runGit(context.gitRepoPath, ['add', '--sparse', '--', scopedPath]);
+    return;
+  }
+  await runGit(context.gitRepoPath, ['rm', '--sparse', '-f', '--ignore-unmatch', '--', scopedPath], { allowNonZero: true });
+}
+
+async function keepBothConflictPath(
+  context: RepoWorkContext,
+  targetPath: string,
+  featureTitle: string,
+  aiMergeResolver?: CollabAiConflictMergeResolver,
+) {
+  if (hasBinaryExtension(targetPath)) {
+    throw new Error(`二进制文件不能自动保留双方：${targetPath}`);
+  }
+  const absolutePath = path.join(context.repoPath, targetPath);
+  const raw = await fs.promises.readFile(absolutePath, 'utf8').catch(() => null);
+  if (raw === null) {
+    throw new Error(`找不到冲突文件：${targetPath}`);
+  }
+  const mergedContent = aiMergeResolver
+    ? await aiMergeResolver({
+      path: targetPath,
+      featureTitle,
+      conflictMarkerText: raw,
+      baseContent: await readConflictStage(context, 1, targetPath),
+      localContent: await readConflictStage(context, 2, targetPath),
+      remoteContent: await readConflictStage(context, 3, targetPath),
+    })
+    : resolveConflictTextByKeepingBoth(raw);
+  if (!mergedContent.trim()) {
+    throw new Error(`保留双方失败，合并结果为空：${targetPath}`);
+  }
+  await fs.promises.writeFile(absolutePath, mergedContent, 'utf8');
+  await addPathsToIndex(context, [targetPath]);
+}
+
+async function mergeRevisionIntoCurrent(
+  context: RepoWorkContext,
+  revision: string,
+  mode: 'push' | 'pull',
+  options: { allowFastForwardOnly?: boolean } = {},
+) {
+  const mergeArgs = options.allowFastForwardOnly
+    ? ['merge', '--ff-only', revision]
+    : ['merge', '--no-ff', '--no-edit', revision];
+  const mergeResult = await runGit(context.gitRepoPath, mergeArgs, { allowNonZero: true });
+  const unresolvedPaths = await listUnresolvedScopedPaths(context);
+  if (unresolvedPaths.length > 0) {
+    return {
+      mergeStatus: 'conflictsNeedResolution' as const,
+      conflictGroups: buildConflictGroupsFromPaths(unresolvedPaths),
+      explanation: `${mode === 'push' ? '推送' : '同步'}时发现真实 Git 冲突，需要先确认保留方式。`,
+    };
+  }
+  if (mergeResult.exitCode !== 0) {
+    throw new Error((mergeResult.stderr || mergeResult.stdout || 'git merge 失败').trim());
+  }
+  return {
+    mergeStatus: mode === 'push' ? 'autoMerged' as const : 'synced' as const,
+    conflictGroups: [],
+    explanation: null,
+  };
 }
 
 export async function getCollabRepoStatus(options: RepoOptions): Promise<CollabRepoStatus> {
@@ -1539,12 +1797,14 @@ export async function previewPushToMain(options: RepoOptions): Promise<PushPrevi
   else if (snapshot.hasUnmergedPaths) executionBlockReason = '检测到 Git 冲突，先手工收口后再执行。';
   // P1-1: fetch origin 失败时阻断 push,防止用过期 origin/main 算 behindCount=0 强推覆盖远端
   else if (snapshot.fetchFailed) executionBlockReason = `无法连上 origin (${snapshot.fetchErrorMessage || 'fetch failed'}),先确认 GitHub 网络/凭据再推送。`;
-  else if (!files.length && snapshot.aheadCount === 0) executionBlockReason = '当前没有可提交的本地文件改动。';
+  else if (!files.length && snapshot.aheadCount === 0) executionBlockReason = snapshot.behindCount > 0
+    ? '本地没有要推送的修改，但远端 main 有新提交；请使用同步按钮合并到本机。'
+    : '当前没有可提交的本地文件改动。';
   if (!executionBlockReason && snapshot.aheadCount > 0) {
-    notices.push(`你本地还有 ${snapshot.aheadCount} 个已提交但未推送的 commit。确认后会和这次勾选的改动一起推到 main。`);
+    notices.push(`你本地还有 ${snapshot.aheadCount} 个已提交但未推送的 commit。确认后会和本次本地改动一起推到 main。`);
   }
   if (!executionBlockReason && snapshot.behindCount > 0) {
-    notices.push(`main 最新版本比你本地多 ${snapshot.behindCount} 个提交。确认后会先把远端 main 合进来，再继续把你勾选的本地修改推上去。`);
+    notices.push(`main 最新版本比你本地多 ${snapshot.behindCount} 个提交。确认后会先完整合并远端 main，只有真实 Git 冲突才让你选择保留方式。`);
   }
   return {
     status,
@@ -1573,93 +1833,41 @@ export async function commitAndPushToMain(
   if (preview.executionBlockReason) {
     throw new Error(preview.executionBlockReason);
   }
-  const selectedPaths = normalizeSelectedPaths(payload.selectedPaths, preview.files);
   const message = payload.message.trim();
-  if (!message && selectedPaths.length > 0) {
+  if (!message && preview.files.length > 0) {
     throw new Error('请填写本次提交说明。');
   }
   const repoPath = preview.status.repoPath;
   const gitRepoPath = preview.status.workingRepoPath || repoPath;
   const scopeRelativePath = computeScopeRelativePath(gitRepoPath, repoPath);
   const context = createRepoWorkContext(repoPath, gitRepoPath, scopeRelativePath);
-  const selectedPathSet = new Set(selectedPaths);
-  const droppedConflictFiles = preview.files.filter((file) => (
-    !selectedPathSet.has(file.path)
-    && preview.status.behindCount > 0
-    && ['overlap', 'delete_replace'].includes(file.risk?.kind ?? '')
-  ));
-  const droppedConflictPaths = droppedConflictFiles.map((file) => file.path);
-  for (const file of droppedConflictFiles) {
-    await discardLocalPath(context, file);
-  }
-  const unselectedPaths = preview.files
-    .map((file) => file.path)
-    .filter((targetPath) => !selectedPathSet.has(targetPath) && !droppedConflictPaths.includes(targetPath));
-  // 按需 stash: 只在需要 merge (远程有新提交) 时才 stash 未选中改动。
-  // 非 merge 场景下 `git add <selected> + git commit + git push` 不会影响未选中文件,
-  // 多余的 stash + pop 会改未选中 .py 文件的 mtime, 触发 dev 模式下 uvicorn --reload
-  // 导致 backend 每次推送都被重启。
-  const willMergeUnselected = preview.status.behindCount > 0;
-  let hasStashedUnselected = false;
-  let stashRestoreWarning: string | null = null;
-  if (willMergeUnselected && unselectedPaths.length > 0) {
-    hasStashedUnselected = await pushPartialStash(context, unselectedPaths, 'codex-collab-unselected-before-push');
-  }
-  let executionPhase: 'prepare' | 'stage' | 'commit' | 'merge' | 'import' | 'push' = 'prepare';
+  const changedPaths = collectPreviewPaths(preview.files);
+  let createdCommit = false;
   try {
-    if (selectedPaths.length === 0) {
-      if (preview.status.behindCount > 0) {
-        executionPhase = 'merge';
-        await mergeOriginMainForPush(context, [], preview);
-      }
-      if (droppedConflictPaths.length > 0) {
-        executionPhase = 'import';
-        await importSelectedSharedSettingsFromRepo(context.repoPath, appDbPath, droppedConflictPaths);
-      }
-      if (preview.status.aheadCount > 0) {
-        executionPhase = 'push';
-        await runGit(context.gitRepoPath, ['push', 'origin', 'main']);
-      }
-    } else {
-      executionPhase = 'stage';
-      await addPathsToIndex(context, selectedPaths);
-      executionPhase = 'commit';
-      await runGit(context.gitRepoPath, ['commit', '-m', message]);
-      if (preview.status.behindCount > 0) {
-        executionPhase = 'merge';
-        await mergeOriginMainForPush(context, selectedPaths, preview);
-      }
-      if (droppedConflictPaths.length > 0) {
-        executionPhase = 'import';
-        await importSelectedSharedSettingsFromRepo(context.repoPath, appDbPath, droppedConflictPaths);
-      }
-      executionPhase = 'push';
-      await runGit(context.gitRepoPath, ['push', 'origin', 'main']);
+    if (preview.files.length > 0) {
+      await addAllPreviewFilesToIndex(context, preview.files);
+      createdCommit = await commitStagedChangesIfAny(context, message);
     }
+    if (preview.status.behindCount > 0) {
+      const mergeResult = await mergeRevisionIntoCurrent(context, 'origin/main', 'push');
+      if (mergeResult.mergeStatus === 'conflictsNeedResolution') {
+        const status = await getCollabRepoStatus({ repoPath, suggestedCandidates, appDbPath });
+        return {
+          status,
+          changedPaths,
+          createdCommit,
+          commitMessage: createdCommit ? message : undefined,
+          mergeStatus: mergeResult.mergeStatus,
+          conflictGroups: mergeResult.conflictGroups,
+          explanation: mergeResult.explanation,
+        };
+      }
+    }
+    await ensureNoConflictMarkers(context);
+    await runGit(context.gitRepoPath, ['push', 'origin', 'main']);
   } catch (error) {
     const detail = error instanceof Error ? error.message : String(error);
-    if (selectedPaths.length === 0) {
-      throw new Error(`同步 main 状态失败：${detail}`);
-    }
-    if (executionPhase === 'stage') {
-      throw new Error(`提交前加入文件失败：${detail}`);
-    }
-    if (executionPhase === 'commit') {
-      throw new Error(`生成提交失败：${detail}`);
-    }
-    throw new Error(`提交已生成，但同步到 main 失败：${detail}`);
-  } finally {
-    if (hasStashedUnselected) {
-      // P1-2 修复: 旧实现 .catch(() => {}) 静默吞 — stash pop 失败时本地改动留在 stash 栈但
-      // 工作区未恢复, 用户以为同步成功实际丢了改动. 改为捕获结果, 失败时记到 stash 恢复提示.
-      const stashResult = await popLatestStash(context).catch((err): StashPopResult => ({
-        ok: false,
-        stderr: err instanceof Error ? err.message : String(err),
-      }));
-      if (!stashResult.ok) {
-        stashRestoreWarning = stashResult.stderr || 'stash pop 失败,需要手动恢复';
-      }
-    }
+    throw new Error(`完整合并并推送 main 失败：${detail}`);
   }
   const status = await getCollabRepoStatus({
     repoPath,
@@ -1668,10 +1876,11 @@ export async function commitAndPushToMain(
   });
   return {
     status,
-    changedPaths: selectedPaths,
-    createdCommit: selectedPaths.length > 0,
-    commitMessage: selectedPaths.length > 0 ? message : undefined,
-    stashRestoreWarning,
+    changedPaths,
+    createdCommit,
+    commitMessage: createdCommit ? message : undefined,
+    mergeStatus: 'pushed',
+    explanation: '本地修改和远端 main 已完整合并并推送。',
   };
 }
 
@@ -1704,8 +1913,8 @@ export async function previewPullFromMain(options: RepoOptions): Promise<PullPre
       : snapshot.remoteTargetRevision;
   if (!executionBlockReason && snapshot.remoteChangeCount > 0) {
     notice = snapshot.localChangeCount > 0
-      ? `当前同步截止点是 ${syncTargetLabel}，包含 ${snapshot.remoteChangeCount} 项可同步变化。你本地还有 ${snapshot.localChangeCount} 项未提交改动，可能覆盖这些改动的文件默认不会勾选。`
-      : `当前同步截止点是 ${syncTargetLabel}，包含 ${snapshot.remoteChangeCount} 项可同步变化。你可以先按提交日期确认，再决定要不要带到本地。`;
+      ? `当前同步截止点是 ${syncTargetLabel}，包含 ${snapshot.remoteChangeCount} 项可同步变化。你本地还有 ${snapshot.localChangeCount} 项未提交改动，确认后会先保护本地修改，再完整合并 main。`
+      : `当前同步截止点是 ${syncTargetLabel}，包含 ${snapshot.remoteChangeCount} 项可同步变化。确认后会完整合并到本机，真实 Git 冲突才需要选择保留方式。`;
     if (generatedCleanupCount > 0) {
       notice += ` 其中 ${generatedCleanupCount} 项是 main 对历史生成物或数据库文件的清理，保留勾选即可让本地也清掉这些旧文件，不代表要把 4 月 27 日前的代码带回来。`;
     }
@@ -1772,102 +1981,51 @@ export async function pullSelectedFromMain(
   if (preview.executionBlockReason) {
     throw new Error(preview.executionBlockReason);
   }
-  const selectedPaths = normalizeSelectedPaths(payload.selectedPaths, preview.files, {
-    allowSharedSettings: true,
-    allowRemoteGeneratedDeletion: true,
-  });
   const message = payload.message.trim();
-  if (!message && selectedPaths.length > 0) {
+  if (!message && preview.status.localChangeCount > 0) {
     throw new Error('请填写本次同步说明。');
   }
   const repoPath = preview.status.repoPath;
   const gitRepoPath = preview.status.workingRepoPath || repoPath;
   const scopeRelativePath = computeScopeRelativePath(gitRepoPath, repoPath);
   const context = createRepoWorkContext(repoPath, gitRepoPath, scopeRelativePath);
-  if (selectedPaths.length === 0) {
-    const status = await getCollabRepoStatus({
+  const localPaths = preview.status.localChangeCount > 0
+    ? collectPreviewPaths(createLocalFileChanges(await collectRepoSnapshot({
       repoPath,
       suggestedCandidates,
       appDbPath,
-    });
-    return {
-      status,
-      changedPaths: [],
-      createdCommit: false,
-    };
-  }
-  const snapshot = await collectRepoSnapshot({
-    repoPath,
-    suggestedCandidates,
-    appDbPath,
-    fetchRemote: true,
-    targetCommit: payload.targetCommit,
-  });
-  const selectedSet = new Set(selectedPaths);
-  const overwriteLocalEntryPaths = new Set<string>();
-  for (const file of preview.files) {
-    if (!selectedSet.has(file.path)) continue;
-    if (!file.risk || !['overlap', 'delete_replace'].includes(file.risk.kind)) continue;
-    for (const entry of snapshot.localEntries) {
-      const entryPaths = collectStatusEntryPaths(entry);
-      if (entryPaths.includes(file.path) || (file.previousPath && entryPaths.includes(file.previousPath))) {
-        collectStatusEntryPaths(entry).forEach((targetPath) => overwriteLocalEntryPaths.add(targetPath));
-      }
-    }
-  }
-  const preservedLocalPaths = new Set<string>();
-  for (const entry of snapshot.localEntries) {
-    for (const targetPath of collectStatusEntryPaths(entry)) {
-      if (!overwriteLocalEntryPaths.has(targetPath)) {
-        preservedLocalPaths.add(targetPath);
-      }
-    }
-  }
-  for (const entry of snapshot.localEntries) {
-    const entryPaths = collectStatusEntryPaths(entry);
-    if (entryPaths.some((targetPath) => overwriteLocalEntryPaths.has(targetPath))) {
-      await discardParsedStatusEntry(context, entry);
-    }
-  }
-  let hasStashedPreservedLocalChanges = false;
-  let pullStashRestoreWarning: string | null = null;
-  if (preservedLocalPaths.size > 0) {
-    hasStashedPreservedLocalChanges = await pushPartialStash(
-      context,
-      Array.from(preservedLocalPaths),
-      'codex-collab-preserved-local-before-pull',
-    );
-  }
+      fetchRemote: false,
+      targetCommit: payload.targetCommit,
+    })))
+    : [];
+  let createdCommit = false;
   const targetRevision = preview.syncTargetCommit || 'origin/main';
-  await runGit(context.gitRepoPath, ['merge', '--no-commit', '--no-ff', targetRevision], { allowNonZero: true });
   try {
-    for (const file of preview.files) {
-      await resolvePullChoice(context, file, selectedPaths.includes(file.path));
+    if (localPaths.length > 0) {
+      await addPathsToIndex(context, localPaths);
+      createdCommit = await commitStagedChangesIfAny(context, message);
     }
-    const unresolved = await runGit(context.gitRepoPath, ['diff', '--name-only', '--diff-filter=U'], { allowNonZero: true });
-    const unresolvedPaths = unresolved.stdout
-      .split(/\r?\n/)
-      .map((line) => line.trim())
-      .filter(Boolean);
-    if (unresolvedPaths.length > 0) {
-      throw new Error(`仍有未解决的冲突：${unresolvedPaths.join('、')}`);
+    const canFastForwardOnly = !createdCommit && preview.status.aheadCount === 0;
+    const mergeResult = await mergeRevisionIntoCurrent(context, targetRevision, 'pull', {
+      allowFastForwardOnly: canFastForwardOnly,
+    });
+    if (mergeResult.mergeStatus === 'conflictsNeedResolution') {
+      const status = await getCollabRepoStatus({ repoPath, suggestedCandidates, appDbPath });
+      return {
+        status,
+        changedPaths: collectPreviewPaths(preview.files),
+        createdCommit,
+        commitMessage: createdCommit ? message : undefined,
+        mergeStatus: mergeResult.mergeStatus,
+        conflictGroups: mergeResult.conflictGroups,
+        explanation: mergeResult.explanation,
+      };
     }
-    await importSelectedSharedSettingsFromRepo(context.repoPath, appDbPath, selectedPaths);
-    await runGit(context.gitRepoPath, ['commit', '-m', message]);
+    await importSelectedSharedSettingsFromRepo(context.repoPath, appDbPath, collectPreviewPaths(preview.files));
+    await ensureNoConflictMarkers(context);
   } catch (error) {
-    await runGit(context.gitRepoPath, ['merge', '--abort'], { allowNonZero: true });
-    throw error;
-  } finally {
-    if (hasStashedPreservedLocalChanges) {
-      // P1-2: pull 路径 stash pop 失败旧版也吞,本地未选中改动留 stash 永远不提示.
-      const stashResult = await popLatestStash(context).catch((err): StashPopResult => ({
-        ok: false,
-        stderr: err instanceof Error ? err.message : String(err),
-      }));
-      if (!stashResult.ok) {
-        pullStashRestoreWarning = stashResult.stderr || 'pull 后 stash pop 失败,需要手动恢复';
-      }
-    }
+    const detail = error instanceof Error ? error.message : String(error);
+    throw new Error(`完整合并 main 到本机失败：${detail}`);
   }
 
   const status = await getCollabRepoStatus({
@@ -1877,9 +2035,91 @@ export async function pullSelectedFromMain(
   });
   return {
     status,
-    changedPaths: selectedPaths,
+    changedPaths: collectPreviewPaths(preview.files),
+    createdCommit,
+    commitMessage: createdCommit ? message : undefined,
+    mergeStatus: 'synced',
+    explanation: '远端 main 已完整合并到本机源码。',
+  };
+}
+
+export async function resolveCollabMergeConflicts(
+  payload: ResolveCollabConflictsPayload,
+  suggestedCandidates: string[],
+  appDbPath?: string | null,
+  aiMergeResolver?: CollabAiConflictMergeResolver,
+): Promise<CollabActionResult> {
+  const snapshot = await collectRepoSnapshot({
+    repoPath: payload.repoPath,
+    suggestedCandidates,
+    appDbPath,
+    fetchRemote: false,
+  });
+  if (!snapshot.repoPath || !snapshot.gitRepoPath) {
+    throw new Error('请先绑定源码目录。');
+  }
+  if (!snapshot.isValid) {
+    throw new Error('当前目录不是有效 Git 仓库，请重新绑定源码目录。');
+  }
+  if (!snapshot.isMainBranch) {
+    throw new Error('当前不在 main 分支，不能继续解决协作冲突。');
+  }
+  const context = createRepoWorkContext(snapshot.repoPath, snapshot.gitRepoPath, snapshot.scopeRelativePath);
+  const unresolvedPaths = await listUnresolvedScopedPaths(context);
+  if (!unresolvedPaths.length) {
+    throw new Error('当前没有待解决的 Git 冲突。');
+  }
+  const conflictGroups = buildConflictGroupsFromPaths(unresolvedPaths);
+  const decisionsByGroup = new Map<string, CollabConflictDecision['choice']>();
+  for (const decision of payload.decisions) {
+    decisionsByGroup.set(decision.groupId, decision.choice);
+  }
+  const missingGroups = conflictGroups.filter((group) => !decisionsByGroup.has(group.id));
+  if (missingGroups.length > 0) {
+    throw new Error(`还有冲突没有选择处理方式：${missingGroups.map((group) => group.title).join('、')}`);
+  }
+  for (const group of conflictGroups) {
+    const choice = decisionsByGroup.get(group.id);
+    for (const targetPath of group.paths) {
+      if (choice === 'remote_main') {
+        await checkoutConflictSide(context, targetPath, '--theirs');
+      } else if (choice === 'local') {
+        await checkoutConflictSide(context, targetPath, '--ours');
+      } else if (choice === 'keep_both') {
+        if (!aiMergeResolver) {
+          throw new Error('当前 AI 合并接口不可用，不能选择“保留双方”。');
+        }
+        await keepBothConflictPath(context, targetPath, group.title, aiMergeResolver);
+      } else {
+        throw new Error(`未知冲突处理方式：${choice}`);
+      }
+    }
+  }
+  const remaining = await listUnresolvedScopedPaths(context);
+  if (remaining.length > 0) {
+    throw new Error(`仍有未解决的冲突：${remaining.join('、')}`);
+  }
+  await ensureNoConflictMarkers(context);
+  const message = payload.message.trim() || (payload.mode === 'push'
+    ? 'sync: 合并本地修改和远端 main'
+    : 'sync: 合并远端 main 和本地修改');
+  await runGit(context.gitRepoPath, ['commit', '-m', message]);
+  if (payload.mode === 'push') {
+    await runGit(context.gitRepoPath, ['push', 'origin', 'main']);
+  }
+  const status = await getCollabRepoStatus({
+    repoPath: snapshot.repoPath,
+    suggestedCandidates,
+    appDbPath,
+  });
+  return {
+    status,
+    changedPaths: unresolvedPaths,
     createdCommit: true,
     commitMessage: message,
-    stashRestoreWarning: pullStashRestoreWarning,
+    mergeStatus: payload.mode === 'push' ? 'pushed' : 'synced',
+    explanation: payload.mode === 'push'
+      ? '冲突已按选择处理，并已推送到 main。'
+      : '冲突已按选择处理，远端 main 已合并到本机。',
   };
 }

@@ -10,7 +10,13 @@ import {
   UploadCloud,
   X,
 } from 'lucide-react';
-import type { PullPreview, PushPreview } from '../../../shared/types';
+import type {
+  CollabConflictDecision,
+  CollabConflictDecisionChoice,
+  CollabConflictGroup,
+  PullPreview,
+  PushPreview,
+} from '../../../shared/types';
 
 type PreviewMode = 'push' | 'pull';
 
@@ -19,12 +25,13 @@ type CollabPreviewDialogProps = {
   mode: PreviewMode;
   preview: PushPreview | PullPreview | null;
   selectedPaths: string[];
+  conflictGroups: CollabConflictGroup[];
+  conflictDecisions: CollabConflictDecision[];
   message: string;
   errorMessage?: string | null;
   busy: boolean;
   onClose: () => void;
-  onTogglePath: (targetPath: string) => void;
-  onToggleEffectPaths: (targetPaths: string[]) => void;
+  onConflictDecisionChange: (groupId: string, choice: CollabConflictDecisionChoice) => void;
   onSelectPullCommit?: (targetCommit: string | null) => void;
   onMessageChange: (nextValue: string) => void;
   onConfirm: () => void;
@@ -89,29 +96,37 @@ export function CollabPreviewDialog({
   mode,
   preview,
   selectedPaths,
+  conflictGroups,
+  conflictDecisions,
   message,
   errorMessage,
   busy,
   onClose,
-  onTogglePath,
-  onToggleEffectPaths,
+  onConflictDecisionChange,
   onSelectPullCommit,
   onMessageChange,
   onConfirm,
 }: CollabPreviewDialogProps) {
   if (!open || !preview) return null;
   const selectedSet = new Set(selectedPaths);
-  const actionLabel = mode === 'push' ? '提交并推送我的修改' : '按日期预览 main 修改';
+  const hasConflicts = conflictGroups.length > 0;
+  const decisionByGroup = new Map(conflictDecisions.map((decision) => [decision.groupId, decision.choice]));
+  const allConflictsDecided = !hasConflicts || conflictGroups.every((group) => decisionByGroup.has(group.id));
+  const actionLabel = hasConflicts
+    ? '确认真实冲突怎么合并'
+    : mode === 'push' ? '完整合并并推送我的修改' : '完整合并 main 修改到本机';
   const noPushChanges = mode === 'push' && preview.executionBlockReason === '当前没有可提交的本地文件改动。';
   const alreadySynced = mode === 'pull' && preview.executionBlockReason === 'main 当前已经是最新。';
   const confirmLabel = noPushChanges
     ? '当前已同步到 main'
     : alreadySynced
       ? '当前已经是最新版本'
-      : mode === 'push'
-        ? '确认推到 main'
-        : '确认从 main 同步';
-  const confirmDisabled = busy || Boolean(preview.executionBlockReason);
+      : hasConflicts
+        ? '按选择完成合并'
+        : mode === 'push'
+          ? '完整合并并推到 main'
+          : '完整合并 main 到本机';
+  const confirmDisabled = busy || Boolean(preview.executionBlockReason) || (hasConflicts && !allConflictsDecided);
 
   return (
     <div className="fixed inset-0 z-[80] overflow-y-auto bg-black/30 px-4 py-8 backdrop-blur-sm">
@@ -165,26 +180,92 @@ export function CollabPreviewDialog({
               </div>
             )}
 
+            {hasConflicts && (
+              <div className="rounded-3xl border border-rose-100 bg-rose-50 px-4 py-4">
+                <p className="text-[11px] font-bold uppercase tracking-[0.18em] text-rose-500">真实 Git 冲突</p>
+                <p className="mt-2 text-[13px] leading-6 text-rose-700">
+                  这些不是“同一文件被改过”的机械提醒，而是 Git 已经无法自动判断的冲突。请按用户功能理解后逐项选择。
+                </p>
+                <div className="mt-4 space-y-3">
+                  {conflictGroups.map((group) => {
+                    const currentChoice = decisionByGroup.get(group.id) || null;
+                    const options: { choice: CollabConflictDecisionChoice; label: string; description: string; disabled?: boolean }[] = [
+                      {
+                        choice: 'keep_both',
+                        label: '保留双方',
+                        description: group.aiAvailable
+                          ? '让软件 AI 尽量把本地和远端功能合在一起。'
+                          : group.aiUnavailableReason || '当前 AI 合并不可用，暂不能选择。',
+                        disabled: !group.aiAvailable,
+                      },
+                      {
+                        choice: 'remote_main',
+                        label: '采用远端 main',
+                        description: '这组冲突按 GitHub main 上的版本处理。',
+                      },
+                      {
+                        choice: 'local',
+                        label: '采用本地修改',
+                        description: '这组冲突按当前本机版本处理。',
+                      },
+                    ];
+                    return (
+                      <div key={group.id} className="rounded-[24px] border border-white/70 bg-white px-4 py-4 shadow-sm">
+                        <div className="flex flex-wrap items-start justify-between gap-3">
+                          <div className="min-w-0 flex-1">
+                            <p className="text-[15px] font-bold text-gray-900">{group.title}</p>
+                            <p className="mt-2 text-[13px] leading-6 text-gray-600">{group.summary}</p>
+                            <p className="mt-2 text-[12px] font-semibold text-rose-700">{group.operationHint}</p>
+                          </div>
+                          <span className="rounded-full bg-rose-50 px-3 py-1 text-[11px] font-bold text-rose-700 ring-1 ring-rose-100">
+                            {group.paths.length} 个冲突文件
+                          </span>
+                        </div>
+                        <div className="mt-4 grid gap-2 sm:grid-cols-3">
+                          {options.map((option) => (
+                            <button
+                              key={option.choice}
+                              type="button"
+                              disabled={busy || option.disabled}
+                              onClick={() => onConflictDecisionChange(group.id, option.choice)}
+                              className={`rounded-2xl border px-3 py-3 text-left transition ${
+                                currentChoice === option.choice
+                                  ? 'border-[#5B7BFE] bg-[#5B7BFE]/[0.06] text-gray-900'
+                                  : 'border-gray-100 bg-gray-50 text-gray-700 hover:border-[#5B7BFE]/30 hover:bg-white'
+                              } disabled:cursor-not-allowed disabled:opacity-50`}
+                            >
+                              <p className="text-[13px] font-bold">{option.label}</p>
+                              <p className="mt-1 text-[11px] leading-5 text-gray-500">{option.description}</p>
+                            </button>
+                          ))}
+                        </div>
+                        <details className="mt-3 rounded-2xl border border-gray-100 bg-gray-50 px-3 py-2">
+                          <summary className="cursor-pointer text-[12px] font-bold text-gray-500">查看技术证据</summary>
+                          <div className="mt-2 space-y-1">
+                            {group.paths.map((targetPath) => (
+                              <p key={targetPath} className="break-all text-[11px] text-gray-500">{targetPath}</p>
+                            ))}
+                          </div>
+                        </details>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+
             <div className="rounded-3xl border border-gray-100 bg-gray-50 px-4 py-4">
               <p className="text-[11px] font-bold uppercase tracking-[0.18em] text-gray-400">你会先看到这些变化</p>
               <p className="mt-2 text-[13px] leading-6 text-gray-600">
-                先看软件会怎么变，再决定要不要执行。文件清单还在下面，但它现在只是辅助证据。
+                这里解释的是用户能感受到的功能变化。文件清单只作为技术证据，不再用于决定哪些功能进来。
               </p>
               <div className="mt-4 grid gap-3">
                 {preview.effects.map((effect) => {
                   const selectedCount = effect.relatedPaths.filter((targetPath) => selectedSet.has(targetPath)).length;
-                  const allSelected = selectedCount > 0 && selectedCount === effect.relatedPaths.length;
-                  const partiallySelected = selectedCount > 0 && selectedCount < effect.relatedPaths.length;
                   return (
                     <div
                       key={effect.id}
-                      className={`rounded-[24px] border px-4 py-4 transition ${
-                        allSelected
-                          ? 'border-[#5B7BFE]/30 bg-white shadow-[0_12px_28px_rgba(91,123,254,0.10)]'
-                          : partiallySelected
-                            ? 'border-emerald-200 bg-emerald-50/40'
-                            : 'border-gray-100 bg-white'
-                      }`}
+                      className="rounded-[24px] border border-[#5B7BFE]/20 bg-white px-4 py-4 shadow-[0_12px_28px_rgba(91,123,254,0.08)]"
                     >
                       <div className="flex flex-wrap items-start justify-between gap-3">
                         <div className="min-w-0 flex-1">
@@ -200,13 +281,6 @@ export function CollabPreviewDialog({
                           </div>
                           <p className="mt-2 text-[13px] leading-6 text-gray-600">{effect.summary}</p>
                         </div>
-                        <ActionButton
-                          className="whitespace-nowrap"
-                          onClick={() => onToggleEffectPaths(effect.relatedPaths)}
-                          disabled={busy}
-                        >
-                          {allSelected ? '取消这组变化' : partiallySelected ? '补齐这组变化' : '纳入这组变化'}
-                        </ActionButton>
                       </div>
 
                       {effect.details.length > 0 && (
@@ -221,7 +295,7 @@ export function CollabPreviewDialog({
                       )}
 
                       <p className="mt-4 text-[12px] text-gray-400">
-                        这组变化对应 {effect.relatedPaths.length} 个底层文件，目前已纳入 {selectedCount} 个。
+                        这组功能变化对应 {effect.relatedPaths.length} 个底层文件，完整合并会一起处理{selectedCount > 0 ? `（当前预览覆盖 ${selectedCount} 个）` : ''}。
                       </p>
                     </div>
                   );
@@ -305,35 +379,25 @@ export function CollabPreviewDialog({
                 <div className="flex items-center justify-between gap-3">
                   <div>
                     <p className="text-[11px] font-bold uppercase tracking-[0.18em] text-gray-400">涉及文件</p>
-                    <p className="mt-1 text-[12px] text-gray-500">如果你想核对底层证据，再展开文件清单。</p>
+                    <p className="mt-1 text-[12px] text-gray-500">这里只是技术证据，不能再逐文件取消，避免功能被拆散。</p>
                   </div>
                   <span className="rounded-full bg-[#5B7BFE]/10 px-3 py-1 text-[12px] font-bold text-[#5B7BFE]">
-                    已选 {selectedPaths.length}
+                    完整合并 {preview.files.length}
                   </span>
                 </div>
               </summary>
               <div className="border-t border-gray-100 px-4 py-3">
                 <div className="space-y-3">
                   {preview.files.map((file) => {
-                    const isSelected = selectedSet.has(file.path);
                     const linkedEffects = preview.effects
                       .filter((effect) => effect.relatedPaths.includes(file.path))
                       .map((effect) => effect.title);
                     return (
-                      <label
+                      <div
                         key={file.path}
-                        className={`block rounded-2xl border px-4 py-3 transition ${
-                          isSelected ? 'border-[#5B7BFE]/30 bg-[#5B7BFE]/[0.05]' : 'border-gray-100 bg-gray-50/80'
-                        }`}
+                        className="block rounded-2xl border border-gray-100 bg-gray-50/80 px-4 py-3"
                       >
                         <div className="flex items-start gap-3">
-                          <input
-                            type="checkbox"
-                            checked={isSelected}
-                            disabled={busy}
-                            onChange={() => onTogglePath(file.path)}
-                            className="mt-1 h-4 w-4 rounded border-gray-300 text-[#5B7BFE] focus:ring-[#5B7BFE]"
-                          />
                           <div className="min-w-0 flex-1">
                             <div className="flex flex-wrap items-center gap-2">
                               <p className="truncate text-[13px] font-bold text-gray-900">{file.path}</p>
@@ -354,18 +418,13 @@ export function CollabPreviewDialog({
                               <div className="mt-3 rounded-2xl border border-rose-100 bg-rose-50 px-3 py-3">
                                 <div className="flex items-start gap-2 text-[12px] font-semibold text-rose-700">
                                   <AlertCircle size={15} className="mt-0.5 shrink-0" />
-                                  <span>{file.risk.message}</span>
+                                  <span>这只是文件重叠风险提示；真正冲突以 Git 合并结果为准。{file.risk.message}</span>
                                 </div>
-                                {isSelected && (
-                                  <p className="mt-3 text-[12px] font-semibold text-rose-800">
-                                    当前如果继续执行，这个文件会按当前按钮方向整体取版本。
-                                  </p>
-                                )}
                               </div>
                             )}
                           </div>
                         </div>
-                      </label>
+                      </div>
                     );
                   })}
                 </div>
@@ -409,15 +468,15 @@ export function CollabPreviewDialog({
               <div className="mt-3 space-y-3 text-[12px] leading-6 text-gray-600">
                 <div className="flex items-start gap-2">
                   <CheckCircle2 size={15} className="mt-1 shrink-0 text-emerald-500" />
-                  <span>现在先看“软件会怎么变”，文件清单被降成了第二层辅助信息。</span>
+                  <span>现在先看“用户功能会怎么变”，文件清单只作为第二层证据。</span>
                 </div>
                 <div className="flex items-start gap-2">
                   <CheckCircle2 size={15} className="mt-1 shrink-0 text-emerald-500" />
-                  <span>{mode === 'push' ? '确认后会直接提交并推送到 main。' : '确认后会把你勾选的 main 变化同步到本地 main。'}</span>
+                  <span>{hasConflicts ? '确认后会按你选择的方式解决真实冲突。' : mode === 'push' ? '确认后会完整合并本地修改与远端 main，再推送。' : '确认后会完整合并远端 main 与本地修改。'}</span>
                 </div>
                 <div className="flex items-start gap-2">
                   <AlertCircle size={15} className="mt-1 shrink-0 text-amber-500" />
-                  <span>高风险覆盖文件默认不会主动勾选；只有你主动勾选它，才会按当前按钮方向整体取版本。</span>
+                  <span>不会再因为文件重叠就默认跳过功能；只有真实 Git 冲突才进入三选一。</span>
                 </div>
                 {mode === 'pull' && (
                   <div className="flex items-start gap-2">
@@ -433,11 +492,11 @@ export function CollabPreviewDialog({
                 <div>
                   <p className="text-[11px] font-bold uppercase tracking-[0.18em] text-gray-400">确认执行</p>
                   <p className="mt-1 text-[12px] text-gray-500">
-                    {selectedPaths.length === 0
-                      ? mode === 'push'
-                        ? '当前没有勾选要推送的文件；继续后会保留这些未勾选改动，只处理 main 同步状态。'
-                        : '当前没有勾选要同步的文件；继续后会保留这些未勾选变化不动。'
-                      : `当前已纳入 ${selectedPaths.length} 个文件。`}
+                    {hasConflicts
+                      ? allConflictsDecided
+                        ? '所有冲突都已选择处理方式。'
+                        : '还有冲突未选择处理方式。'
+                      : `将完整处理 ${preview.files.length} 个底层文件，不做文件级跳过。`}
                   </p>
                 </div>
                 {mode === 'push' ? <UploadCloud size={18} className="text-[#5B7BFE]" /> : <Download size={18} className="text-[#5B7BFE]" />}

@@ -75,6 +75,28 @@ class TaskAttachmentFromMarkdownPayload(BaseModel):
     taskTitle: str | None = None
 
 
+class CollabMergeAiStatusRecord(BaseModel):
+    available: bool
+    reason: str | None = None
+    provider: str | None = None
+    model: str | None = None
+
+
+class CollabMergeConflictPayload(BaseModel):
+    path: str = Field(..., min_length=1, max_length=500)
+    featureTitle: str | None = Field(default=None, max_length=200)
+    conflictMarkerText: str = Field(..., min_length=1, max_length=120000)
+    baseContent: str | None = Field(default=None, max_length=120000)
+    localContent: str | None = Field(default=None, max_length=120000)
+    remoteContent: str | None = Field(default=None, max_length=120000)
+
+
+class CollabMergeConflictResultRecord(BaseModel):
+    mergedContent: str
+    provider: str | None = None
+    model: str | None = None
+
+
 class WorkspaceAnswerPromoteJudgmentPayload(BaseModel):
     """工作台答案直接采纳为判断时携带用户备注。"""
 
@@ -44263,6 +44285,80 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             prompt=payload.prompt,
         )
         return LlmProviderProbeResultRecord.model_validate(result)
+
+    def _collab_merge_ai_status() -> CollabMergeAiStatusRecord:
+        health = state.ai.get_health()
+        if health.provider == "mock" or not health.ready:
+            reason = health.detail or "当前 AI 未配置或不可用，不能自动保留双方。"
+            return CollabMergeAiStatusRecord(
+                available=False,
+                reason=reason,
+                provider=health.provider,
+                model=health.model,
+            )
+        return CollabMergeAiStatusRecord(
+            available=True,
+            reason=None,
+            provider=health.provider,
+            model=health.model,
+        )
+
+    def _strip_collab_merge_code_fences(value: str) -> str:
+        text = value.strip()
+        fence_match = re.match(r"^```(?:[\\w.+-]+)?\\s*\\n(?P<body>.*)\\n```\\s*$", text, flags=re.S)
+        if fence_match:
+            text = fence_match.group("body").strip()
+        return text
+
+    @app.get("/api/v1/runtime/collab-merge/ai-status", response_model=CollabMergeAiStatusRecord)
+    def get_collab_merge_ai_status() -> CollabMergeAiStatusRecord:
+        return _collab_merge_ai_status()
+
+    @app.post("/api/v1/runtime/collab-merge/resolve-conflict", response_model=CollabMergeConflictResultRecord)
+    def resolve_collab_merge_conflict_with_ai(
+        payload: CollabMergeConflictPayload,
+    ) -> CollabMergeConflictResultRecord:
+        status = _collab_merge_ai_status()
+        if not status.available:
+            raise HTTPException(status_code=503, detail=status.reason or "AI 不可用，不能自动保留双方。")
+        system_instruction = (
+            "你是资深 TypeScript/Python/Git 合并助手。"
+            "你只负责解决一个文件中的 Git 冲突，目标是尽量保留本地修改和远端 main 的用户功能。"
+            "不要写解释，不要输出 Markdown 代码块，只输出合并后的完整文件内容。"
+            "严禁保留 <<<<<<<、=======、>>>>>>> 冲突标记。"
+        )
+        feature_title = (payload.featureTitle or "协作同步冲突").strip()
+        prompt = (
+            f"请合并文件：{payload.path}\n"
+            f"可能影响的用户功能：{feature_title}\n\n"
+            "要求：\n"
+            "1. 本地修改和远端 main 不冲突的功能都要保留。\n"
+            "2. 如果两边是同一功能的不同实现，优先合成一个可读、可维护的版本。\n"
+            "3. 不要改无关内容，不要新增解释性注释。\n"
+            "4. 只输出完整文件内容。\n"
+        )
+        context_summary = "\n\n".join(
+            [
+                f"[base]\n{payload.baseContent or ''}",
+                f"[local]\n{payload.localContent or ''}",
+                f"[remote-main]\n{payload.remoteContent or ''}",
+                f"[conflict-marker-working-tree]\n{payload.conflictMarkerText}",
+            ]
+        )
+        try:
+            structured = state.ai.generate_structured(prompt, system_instruction, context_summary)
+        except AiInvocationError as exc:
+            raise HTTPException(status_code=502, detail=str(exc)) from exc
+        merged = _strip_collab_merge_code_fences(str(structured.content or "").strip())
+        if not merged:
+            raise HTTPException(status_code=502, detail="AI 没有返回合并后的文件内容。")
+        if re.search(r"^<<<<<<< |^=======$|^>>>>>>> ", merged, flags=re.M):
+            raise HTTPException(status_code=502, detail="AI 返回内容仍包含 Git 冲突标记。")
+        return CollabMergeConflictResultRecord(
+            mergedContent=merged if merged.endswith("\n") else f"{merged}\n",
+            provider=status.provider,
+            model=status.model,
+        )
 
     @app.get("/api/v1/runtime/workspace-chat-diagnostics", response_model=WorkspaceChatDiagnosticsRecord)
     def get_runtime_workspace_chat_diagnostics(

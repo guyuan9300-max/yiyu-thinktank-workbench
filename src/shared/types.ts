@@ -7064,6 +7064,8 @@ export interface CollabEffectPreview {
   relatedPaths: string[];
   beforeLabel?: string | null;
   afterLabel?: string | null;
+  explanationSource?: 'ai' | 'user_feature_rules' | 'unavailable';
+  aiUnavailableReason?: string | null;
 }
 
 export interface CollabRepoStatus {
@@ -7110,6 +7112,32 @@ export interface PullPreview {
   executionBlockReason?: string | null;
 }
 
+export type CollabMergeStatus =
+  | 'ready'
+  | 'autoMerged'
+  | 'conflictsNeedResolution'
+  | 'blocked'
+  | 'pushed'
+  | 'synced';
+
+export type CollabConflictDecisionChoice = 'keep_both' | 'remote_main' | 'local';
+
+export interface CollabConflictGroup {
+  id: string;
+  title: string;
+  summary: string;
+  operationHint: string;
+  paths: string[];
+  riskLevel: 'low' | 'medium' | 'high';
+  aiAvailable: boolean;
+  aiUnavailableReason?: string | null;
+}
+
+export interface CollabConflictDecision {
+  groupId: string;
+  choice: CollabConflictDecisionChoice;
+}
+
 export interface CollabRemoteCommit {
   hash: string;
   shortHash: string;
@@ -7128,17 +7156,24 @@ export interface CollabRemoteCommit {
 
 export interface CommitAndPushToMainPayload {
   repoPath: string;
-  selectedPaths: string[];
-  confirmedRiskPaths: string[];
+  selectedPaths?: string[];
+  confirmedRiskPaths?: string[];
   message: string;
 }
 
 export interface PullSelectedFromMainPayload {
   repoPath: string;
-  selectedPaths: string[];
-  confirmedRiskPaths: string[];
+  selectedPaths?: string[];
+  confirmedRiskPaths?: string[];
   message: string;
   targetCommit?: string | null;
+}
+
+export interface ResolveCollabConflictsPayload {
+  repoPath: string;
+  mode: 'push' | 'pull';
+  decisions: CollabConflictDecision[];
+  message: string;
 }
 
 export interface CollabActionResult {
@@ -7146,6 +7181,9 @@ export interface CollabActionResult {
   changedPaths: string[];
   createdCommit: boolean;
   commitMessage?: string | null;
+  mergeStatus?: CollabMergeStatus;
+  conflictGroups?: CollabConflictGroup[];
+  explanation?: string | null;
   // P1-2: stash pop 失败时填(本地未选中改动已 stash 但未恢复),
   // UI 必须提示用户手动 `git stash pop` 找回工作区.
   stashRestoreWarning?: string | null;
@@ -7865,6 +7903,7 @@ declare global {
       commitAndPushToMain(payload: CommitAndPushToMainPayload): Promise<CollabActionResult>;
       previewPullFromMain(repoPath: string, targetCommit?: string | null): Promise<PullPreview>;
       pullSelectedFromMain(payload: PullSelectedFromMainPayload): Promise<CollabActionResult>;
+      resolveCollabMergeConflicts(payload: ResolveCollabConflictsPayload): Promise<CollabActionResult>;
       rebuildAndInstallFromRepo(repoPath: string): Promise<boolean>;
       setWorkspaceInteractionState(payload: {
         active: boolean;
