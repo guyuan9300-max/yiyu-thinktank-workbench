@@ -26,8 +26,8 @@ const PYTHON_STARTUP_SMOKE_TIMEOUT_MS = 60_000;
 const PYTHON_VENV_CREATE_TIMEOUT_MS = 60_000;
 
 const COLLAB_REQUIRED_RENDERER_TEXT = [
-  '提交并推送我的修改',
-  '按日期预览 main 修改',
+  '发布我的修改到协作分支',
+  '预览 main 和协作分支修改',
 ];
 
 function sanitizedPythonEnv(extra = {}) {
