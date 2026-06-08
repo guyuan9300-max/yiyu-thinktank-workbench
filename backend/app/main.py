@@ -1632,6 +1632,9 @@ def resolve_initial_cloud_api_url(db: Database) -> str:
         return ""
 
 
+COLLAB_PREVIEW_MODE = os.environ.get("YIYU_COLLAB_PREVIEW_MODE") == "1"
+
+
 @dataclass
 class AppState:
     data_dir: Path
@@ -8466,6 +8469,9 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
 
     def cloud_request(method: str, path: str, *, json_body: dict | None = None, allow_unauthenticated: bool = False, timeout: float = 3.0) -> object:
         import time as _time
+        normalized_method = method.upper()
+        if COLLAB_PREVIEW_MODE and normalized_method not in {"GET", "HEAD", "OPTIONS"}:
+            raise HTTPException(status_code=403, detail="协作预览模式不可写云端。")
         base_url = cloud_api_base_url()
 
         # Fast fail if cloud was down recently (circuit breaker)

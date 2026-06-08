@@ -6988,6 +6988,7 @@ export interface DesktopAppInfo {
   frontendGitCommit?: string | null;
   bundleManifestId?: string | null;
   runtimeMode?: 'packaged' | 'dev';
+  collabPreviewMode?: boolean;
   isPackaged: boolean;
   platform: string;
   arch: string;
@@ -7094,6 +7095,7 @@ export interface PushPreview {
   effects: CollabEffectPreview[];
   groups: CollabChangeGroup[];
   files: CollabFileChange[];
+  suggestedCollabBranchName?: string | null;
   notice?: string | null;
   executionBlockReason?: string | null;
 }
@@ -7103,8 +7105,11 @@ export interface PullPreview {
   suggestedMessage: string;
   commitSummaries: string[];
   remoteCommits: CollabRemoteCommit[];
+  remoteBranches?: CollabRemoteBranch[];
   syncTargetCommit?: string | null;
   syncTargetLabel?: string | null;
+  canFastForwardMain?: boolean;
+  directReceiveBlockReason?: string | null;
   effects: CollabEffectPreview[];
   groups: CollabChangeGroup[];
   files: CollabFileChange[];
@@ -7118,7 +7123,11 @@ export type CollabMergeStatus =
   | 'conflictsNeedResolution'
   | 'blocked'
   | 'pushed'
-  | 'synced';
+  | 'synced'
+  | 'collabBranchPublished'
+  | 'mainFastForwarded'
+  | 'previewStarted'
+  | 'previewStopped';
 
 export type CollabConflictDecisionChoice = 'keep_both' | 'remote_main' | 'local';
 
@@ -7154,26 +7163,48 @@ export interface CollabRemoteCommit {
   fileCount: number;
 }
 
-export interface CommitAndPushToMainPayload {
-  repoPath: string;
-  selectedPaths?: string[];
-  confirmedRiskPaths?: string[];
-  message: string;
+export interface CollabRemoteBranch {
+  ref: string;
+  branchName: string;
+  shortName: string;
+  hash: string;
+  shortHash: string;
+  subject: string;
+  authoredAt: string;
+  authorName: string;
+  authorEmail: string;
+  changedPaths: string[];
+  fileCount: number;
 }
 
-export interface PullSelectedFromMainPayload {
+export interface PublishCollabBranchPayload {
   repoPath: string;
-  selectedPaths?: string[];
-  confirmedRiskPaths?: string[];
   message: string;
-  targetCommit?: string | null;
+  branchName?: string | null;
 }
 
-export interface ResolveCollabConflictsPayload {
+export interface FastForwardMainPayload {
   repoPath: string;
-  mode: 'push' | 'pull';
-  decisions: CollabConflictDecision[];
-  message: string;
+}
+
+export interface StartCollabPreviewPayload {
+  repoPath: string;
+  targetRef: string;
+  label?: string | null;
+}
+
+export interface StopCollabPreviewPayload {
+  previewId: string;
+}
+
+export interface CollabPreviewSession {
+  previewId: string;
+  targetRef: string;
+  label: string;
+  repoPath: string;
+  dataDir: string;
+  logPath: string;
+  pid?: number | null;
 }
 
 export interface CollabActionResult {
@@ -7184,6 +7215,9 @@ export interface CollabActionResult {
   mergeStatus?: CollabMergeStatus;
   conflictGroups?: CollabConflictGroup[];
   explanation?: string | null;
+  collabBranchName?: string | null;
+  collabBranchRef?: string | null;
+  previewSession?: CollabPreviewSession | null;
   // P1-2: stash pop 失败时填(本地未选中改动已 stash 但未恢复),
   // UI 必须提示用户手动 `git stash pop` 找回工作区.
   stashRestoreWarning?: string | null;
@@ -7900,10 +7934,11 @@ declare global {
       selectCollabRepo(): Promise<string | null>;
       getCollabRepoStatus(repoPath?: string | null): Promise<CollabRepoStatus>;
       previewPushToMain(repoPath: string): Promise<PushPreview>;
-      commitAndPushToMain(payload: CommitAndPushToMainPayload): Promise<CollabActionResult>;
+      publishCollabBranch(payload: PublishCollabBranchPayload): Promise<CollabActionResult>;
       previewPullFromMain(repoPath: string, targetCommit?: string | null): Promise<PullPreview>;
-      pullSelectedFromMain(payload: PullSelectedFromMainPayload): Promise<CollabActionResult>;
-      resolveCollabMergeConflicts(payload: ResolveCollabConflictsPayload): Promise<CollabActionResult>;
+      fastForwardMain(payload: FastForwardMainPayload): Promise<CollabActionResult>;
+      startCollabPreview(payload: StartCollabPreviewPayload): Promise<CollabActionResult>;
+      stopCollabPreview(payload: StopCollabPreviewPayload): Promise<CollabActionResult>;
       rebuildAndInstallFromRepo(repoPath: string): Promise<boolean>;
       setWorkspaceInteractionState(payload: {
         active: boolean;

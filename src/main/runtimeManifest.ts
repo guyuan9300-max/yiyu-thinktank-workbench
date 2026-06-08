@@ -218,6 +218,7 @@ export function buildDesktopAppInfo(input: {
   frontendBuildVersion?: string | null;
   frontendGitCommit?: string | null;
   runtimeMode?: 'packaged' | 'dev';
+  collabPreviewMode?: boolean;
   isPackaged: boolean;
   platform: string;
   arch: string;
@@ -284,6 +285,7 @@ export function buildDesktopAppInfo(input: {
     frontendGitCommit: input.frontendGitCommit ?? manifestInspection.manifest?.gitCommit ?? null,
     bundleManifestId: manifestInspection.bundleManifestId,
     runtimeMode: input.runtimeMode,
+    collabPreviewMode: Boolean(input.collabPreviewMode),
     isPackaged: input.isPackaged,
     platform: input.platform,
     arch: input.arch,
