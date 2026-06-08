@@ -52,7 +52,7 @@ export function CollabSyncCard({
             className="w-9 h-9 inline-flex items-center justify-center rounded-md text-gray-500 hover:text-[#5B7BFE] hover:bg-gray-50 disabled:opacity-40 transition-colors"
             onClick={onPreviewPush}
             disabled={actionDisabled}
-            title="发布我的修改到协作分支"
+            title="安全推送我的修改到 main"
           >
             {busyAction === 'push' ? <RefreshCw size={14} className="animate-spin" /> : <UploadCloud size={14} />}
           </button>
@@ -121,7 +121,7 @@ export function CollabSyncCard({
             disabled={actionDisabled}
           >
             {busyAction === 'push' ? <RefreshCw size={11} className="animate-spin" /> : <UploadCloud size={11} />}
-            发布
+            推 main
           </button>
           <button
             type="button"

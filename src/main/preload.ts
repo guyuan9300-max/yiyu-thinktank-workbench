@@ -8,6 +8,7 @@ import type {
   OfficialPushUpdatePayload,
   PullPreview,
   PublishCollabBranchPayload,
+  PushMainPayload,
   PushPreview,
   StartCollabPreviewPayload,
   StopCollabPreviewPayload,
@@ -54,6 +55,8 @@ contextBridge.exposeInMainWorld('yiyuWorkbench', {
     ipcRenderer.invoke('yiyu-workbench:getCollabRepoStatus', repoPath),
   previewPushToMain: (repoPath: string): Promise<PushPreview> =>
     ipcRenderer.invoke('yiyu-workbench:previewPushToMain', repoPath),
+  pushSafelyToMain: (payload: PushMainPayload): Promise<CollabActionResult> =>
+    ipcRenderer.invoke('yiyu-workbench:pushSafelyToMain', payload),
   publishCollabBranch: (payload: PublishCollabBranchPayload): Promise<CollabActionResult> =>
     ipcRenderer.invoke('yiyu-workbench:publishCollabBranch', payload),
   previewPullFromMain: (repoPath: string, targetCommit?: string | null): Promise<PullPreview> =>

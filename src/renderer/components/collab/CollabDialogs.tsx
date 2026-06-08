@@ -114,7 +114,7 @@ export function CollabPreviewDialog({
   if (!open || !preview) return null;
   const selectedSet = new Set(selectedPaths);
   const pullPreview = isPullPreview(preview) ? preview : null;
-  const actionLabel = mode === 'push' ? '发布我的修改到协作分支' : '预览远端修改';
+  const actionLabel = mode === 'push' ? '推送我的修改到 main' : '预览远端修改';
   const noPushChanges = mode === 'push' && preview.executionBlockReason === '当前没有可提交的本地文件改动。';
   const alreadySynced = mode === 'pull' && preview.executionBlockReason === 'main 当前已经是最新。';
   const confirmLabel = noPushChanges
@@ -122,7 +122,7 @@ export function CollabPreviewDialog({
     : alreadySynced
       ? '当前已经是最新版本'
       : mode === 'push'
-        ? '发布到协作分支'
+        ? '安全推送到 main'
         : '快进接收 main';
   const confirmDisabled = busy
     || Boolean(preview.executionBlockReason)
@@ -198,10 +198,10 @@ export function CollabPreviewDialog({
 
                 <div className="rounded-3xl border border-gray-100 bg-gray-50 px-4 py-4">
                   <p className="text-[11px] font-bold uppercase tracking-[0.18em] text-gray-400">
-                    {mode === 'push' ? '这次会发布这些变化' : '你会先看到这些变化'}
+                    {mode === 'push' ? '这次会推送这些变化' : '你会先看到这些变化'}
                   </p>
                   <p className="mt-2 text-[13px] leading-6 text-gray-600">
-                    这里解释的是用户能感受到的功能变化。文件清单只作为技术证据，不再用于自动合并或跳过功能。
+                    这里解释的是用户能感受到的功能变化。{mode === 'push' ? '推送会先接到最新 main，再安全推送；' : ''}文件清单只作为技术证据。
                   </p>
                   <div className="mt-4 grid gap-3">
                     {preview.effects.map((effect) => {
@@ -317,7 +317,7 @@ export function CollabPreviewDialog({
                   <div className="rounded-3xl border border-gray-100 bg-white px-4 py-4">
                     <p className="text-[11px] font-bold uppercase tracking-[0.18em] text-gray-400">协作分支</p>
                     <p className="mt-2 text-[13px] leading-6 text-gray-600">
-                      协作分支只用于看对方发布的修改，不会自动合并到本机 main。
+                      协作分支只用于看对方发布的修改，不会自动合并到本机 main。点“开启隔离预览窗口”会另起一个临时软件窗口，正式源码和正式数据库都不变。
                     </p>
                     <div className="mt-4 space-y-2">
                       {(pullPreview.remoteBranches || []).map((branch) => (
@@ -332,8 +332,11 @@ export function CollabPreviewDialog({
                             </div>
                             <ActionButton disabled={busy} onClick={() => onStartPreview?.(branch.ref, branch.branchName)}>
                               <Play size={13} />
-                              开启预览
+                              开启隔离预览窗口
                             </ActionButton>
+                            <p className="w-full text-right text-[11px] leading-5 text-gray-400">
+                              另起临时软件看效果，不改正式代码/数据库。
+                            </p>
                           </div>
                         </div>
                       ))}
@@ -413,7 +416,7 @@ export function CollabPreviewDialog({
                       className="mt-3 w-full rounded-2xl border border-gray-200 bg-white px-4 py-3 text-[13px] font-semibold text-gray-700 outline-none transition focus:border-[#5B7BFE] focus:ring-2 focus:ring-[#5B7BFE]/20"
                       placeholder={preview.suggestedMessage}
                     />
-                    <p className="mt-2 text-[12px] text-gray-400">确认后会发布到协作分支，不会改 GitHub main。</p>
+                    <p className="mt-2 text-[12px] text-gray-400">确认后会优先安全推送到 GitHub main；若远端变化无法自动整合，会停止并提示用预览或协作分支兜底。</p>
                   </div>
                 )}
 
@@ -426,7 +429,7 @@ export function CollabPreviewDialog({
                     </div>
                     <div className="flex items-start gap-2">
                       <CheckCircle2 size={15} className="mt-1 shrink-0 text-emerald-500" />
-                      <span>{mode === 'push' ? '发布结果会进入协作分支，main 不会变化。' : '只有本地干净且 main 可快进时，才允许直接接收。'}</span>
+                      <span>{mode === 'push' ? '推送会优先进入 main；遇到真实冲突或异常时会停住，不覆盖对方修改。' : '只有本地干净且 main 可快进时，才允许直接接收。'}</span>
                     </div>
                     <div className="flex items-start gap-2">
                       <AlertCircle size={15} className="mt-1 shrink-0 text-amber-500" />
@@ -441,13 +444,22 @@ export function CollabPreviewDialog({
                   </div>
                 </div>
 
+                {mode === 'pull' && (
+                  <div className="rounded-3xl border border-emerald-100 bg-emerald-50 px-4 py-4">
+                    <p className="text-[11px] font-bold uppercase tracking-[0.18em] text-emerald-700">开启隔离预览窗口</p>
+                    <p className="mt-2 text-[12px] font-semibold leading-6 text-emerald-900">
+                      这会另起一个临时软件窗口，用来肉眼查看对方修改后的界面和功能。正式源码、正式数据库不会改变，预览环境也默认禁止云端写入。
+                    </p>
+                  </div>
+                )}
+
                 <div className="rounded-3xl border border-gray-100 bg-white px-4 py-4">
                   <div className="flex items-center justify-between gap-3">
                     <div>
                       <p className="text-[11px] font-bold uppercase tracking-[0.18em] text-gray-400">确认执行</p>
                       <p className="mt-1 text-[12px] text-gray-500">
                         {mode === 'push'
-                          ? `将发布 ${preview.files.length} 个底层文件对应的修改到协作分支。`
+                          ? `将把 ${preview.files.length} 个底层文件对应的修改安全推送到 main。`
                           : pullPreview?.canFastForwardMain
                             ? '当前可安全快进接收 origin/main。'
                             : '当前不能直接接收，可开启隔离预览。'}
@@ -460,7 +472,7 @@ export function CollabPreviewDialog({
                     {mode === 'pull' && (
                       <ActionButton disabled={busy} onClick={() => onStartPreview?.()}>
                         <Play size={14} />
-                        开启预览
+                        开启隔离预览窗口
                       </ActionButton>
                     )}
                     <ActionButton primary disabled={confirmDisabled} onClick={onConfirm}>

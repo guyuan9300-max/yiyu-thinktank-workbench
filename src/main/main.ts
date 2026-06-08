@@ -3232,6 +3232,12 @@ ipcMain.handle('yiyu-workbench:previewPushToMain', async (_event, repoPath: stri
   });
 });
 
+ipcMain.handle('yiyu-workbench:pushSafelyToMain', async (_event, payload) => {
+  await requireActiveMaintenanceMode('安全推送 main');
+  const collabGit = await loadInternalCollabGit();
+  return collabGit.pushSafelyToMain(payload, getCollabSuggestedCandidates(), path.join(app.getPath('userData'), 'app.db'));
+});
+
 ipcMain.handle('yiyu-workbench:publishCollabBranch', async (_event, payload) => {
   await requireActiveMaintenanceMode('发布协作分支');
   const collabGit = await loadInternalCollabGit();

@@ -7183,6 +7183,11 @@ export interface PublishCollabBranchPayload {
   branchName?: string | null;
 }
 
+export interface PushMainPayload {
+  repoPath: string;
+  message: string;
+}
+
 export interface FastForwardMainPayload {
   repoPath: string;
 }
@@ -7934,6 +7939,7 @@ declare global {
       selectCollabRepo(): Promise<string | null>;
       getCollabRepoStatus(repoPath?: string | null): Promise<CollabRepoStatus>;
       previewPushToMain(repoPath: string): Promise<PushPreview>;
+      pushSafelyToMain(payload: PushMainPayload): Promise<CollabActionResult>;
       publishCollabBranch(payload: PublishCollabBranchPayload): Promise<CollabActionResult>;
       previewPullFromMain(repoPath: string, targetCommit?: string | null): Promise<PullPreview>;
       fastForwardMain(payload: FastForwardMainPayload): Promise<CollabActionResult>;

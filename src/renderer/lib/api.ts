@@ -288,6 +288,7 @@ import type {
   FastForwardMainPayload,
   PullPreview,
   PublishCollabBranchPayload,
+  PushMainPayload,
   PushPreview,
   StartCollabPreviewPayload,
   StopCollabPreviewPayload,
@@ -409,7 +410,8 @@ function createBrowserWorkbenchFallback(): Window['yiyuWorkbench'] {
       remoteChangeCount: 0,
       statusText: '当前为浏览器预览模式，Git 协作能力不可用。',
     }),
-    previewPushToMain: async () => notAvailable('发布协作分支'),
+    previewPushToMain: async () => notAvailable('推送 main'),
+    pushSafelyToMain: async () => notAvailable('推送 main'),
     publishCollabBranch: async () => notAvailable('发布协作分支'),
     previewPullFromMain: async () => notAvailable('从 main 拉取'),
     fastForwardMain: async () => notAvailable('快进接收 main'),
@@ -5711,6 +5713,10 @@ export async function getCollabRepoStatus(repoPath?: string | null) {
 
 export async function previewPushToMain(repoPath: string) {
   return window.yiyuWorkbench.previewPushToMain(repoPath) as Promise<PushPreview>;
+}
+
+export async function pushSafelyToMain(payload: PushMainPayload) {
+  return window.yiyuWorkbench.pushSafelyToMain(payload) as Promise<CollabActionResult>;
 }
 
 export async function publishCollabBranch(payload: PublishCollabBranchPayload) {

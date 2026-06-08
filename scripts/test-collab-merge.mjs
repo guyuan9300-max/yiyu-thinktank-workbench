@@ -40,34 +40,57 @@ function cloneRepo(remotePath, targetPath, name) {
   git(targetPath, ['config', 'user.name', name]);
 }
 
-async function testPublishCollabBranch(mod) {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'yiyu-collab-branch-'));
+async function testPushSafelyToMain(mod) {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'yiyu-collab-main-push-'));
   const remotePath = path.join(root, 'remote.git');
   setupRepo(path.join(root, 'seed'), remotePath);
   const localPath = path.join(root, 'local');
   const peerPath = path.join(root, 'peer');
   cloneRepo(remotePath, localPath, 'Local');
   cloneRepo(remotePath, peerPath, 'Peer');
-  const initialMain = git(localPath, ['rev-parse', 'origin/main']).trim();
 
   writeFile(path.join(localPath, 'src.txt'), 'one\ntwo local\nthree\n');
   const preview = await mod.previewPushToMain({ repoPath: localPath, suggestedCandidates: [], appDbPath: null });
   if (!preview.suggestedCollabBranchName?.startsWith('collab/local/')) {
     throw new Error(`expected suggested collab branch, got ${preview.suggestedCollabBranchName}`);
   }
-  const result = await mod.publishCollabBranch({ repoPath: localPath, message: 'sync: local feature' }, [], null);
-  if (result.mergeStatus !== 'collabBranchPublished' || !result.collabBranchName) {
-    throw new Error(`publish did not create collab branch: ${JSON.stringify(result)}`);
+  const result = await mod.pushSafelyToMain({ repoPath: localPath, message: 'sync: local feature' }, [], null);
+  if (result.mergeStatus !== 'pushed') {
+    throw new Error(`push did not update main safely: ${JSON.stringify(result)}`);
   }
 
   git(peerPath, ['fetch', 'origin']);
-  const remoteMain = git(peerPath, ['rev-parse', 'origin/main']).trim();
-  if (remoteMain !== initialMain) {
-    throw new Error('publishing a collab branch unexpectedly moved origin/main');
+  const mainText = git(peerPath, ['show', 'origin/main:src.txt']);
+  if (!mainText.includes('two local')) {
+    throw new Error(`main did not include local change:\n${mainText}`);
   }
-  const branchText = git(peerPath, ['show', `origin/${result.collabBranchName}:src.txt`]);
-  if (!branchText.includes('two local')) {
-    throw new Error(`collab branch did not include local change:\n${branchText}`);
+}
+
+async function testPushSafelyRebasesRemoteMain(mod) {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'yiyu-collab-main-rebase-'));
+  const remotePath = path.join(root, 'remote.git');
+  setupRepo(path.join(root, 'seed'), remotePath);
+  const localPath = path.join(root, 'local');
+  const peerPath = path.join(root, 'peer');
+  cloneRepo(remotePath, localPath, 'Local');
+  cloneRepo(remotePath, peerPath, 'Peer');
+
+  writeFile(path.join(peerPath, 'remote.txt'), 'remote\n');
+  git(peerPath, ['add', '.']);
+  git(peerPath, ['commit', '-m', 'remote feature']);
+  git(peerPath, ['push']);
+
+  writeFile(path.join(localPath, 'local.txt'), 'local\n');
+  const result = await mod.pushSafelyToMain({ repoPath: localPath, message: 'sync: local feature' }, [], null);
+  if (result.mergeStatus !== 'pushed') {
+    throw new Error(`push with remote changes failed: ${JSON.stringify(result)}`);
+  }
+
+  git(peerPath, ['fetch', 'origin']);
+  const remoteText = git(peerPath, ['show', 'origin/main:remote.txt']);
+  const localText = git(peerPath, ['show', 'origin/main:local.txt']);
+  if (!remoteText.includes('remote') || !localText.includes('local')) {
+    throw new Error('safe push did not preserve both remote and local changes');
   }
 }
 
@@ -127,7 +150,8 @@ async function testPullPreviewListsCollabBranches(mod) {
 }
 
 const mod = await import(pathToFileURL(path.resolve('build/main/collabGit.js')).href);
-await testPublishCollabBranch(mod);
+await testPushSafelyToMain(mod);
+await testPushSafelyRebasesRemoteMain(mod);
 await testFastForwardMainAndBlocksDirty(mod);
 await testPullPreviewListsCollabBranches(mod);
-console.log('[collab-merge] collab branch publish and safe main fast-forward ok');
+console.log('[collab-merge] safe main push, collab branch preview, and main fast-forward ok');

@@ -18,6 +18,7 @@ import type {
   FastForwardMainPayload,
   PullPreview,
   PublishCollabBranchPayload,
+  PushMainPayload,
   PushPreview,
   StartCollabPreviewPayload,
   StopCollabPreviewPayload,
@@ -1740,10 +1741,10 @@ export async function previewPushToMain(options: RepoOptions): Promise<PushPrevi
     ? '本地没有要推送的修改，但远端 main 有新提交；请使用同步按钮合并到本机。'
     : '当前没有可提交的本地文件改动。';
   if (!executionBlockReason && snapshot.aheadCount > 0) {
-    notices.push(`你本地还有 ${snapshot.aheadCount} 个已提交但未推送的 commit。确认后会和本次本地改动一起发布到协作分支。`);
+    notices.push(`你本地还有 ${snapshot.aheadCount} 个已提交但未推送的 commit。确认后会和本次本地改动一起推送到 GitHub main。`);
   }
   if (!executionBlockReason && snapshot.behindCount > 0) {
-    notices.push(`main 最新版本比你本地多 ${snapshot.behindCount} 个提交。本次不会自动合并 main，只会把你的当前修改发布到协作分支，后续再人工收口。`);
+    notices.push(`main 最新版本比你本地多 ${snapshot.behindCount} 个提交。确认后会先尝试自动 rebase 到最新 main；成功后推送 main，失败则不改远端 main，并提示改用预览/协作分支兜底。`);
   }
   return {
     status,
@@ -1754,6 +1755,75 @@ export async function previewPushToMain(options: RepoOptions): Promise<PushPrevi
     suggestedCollabBranchName: suggestedBranchName,
     notice: notices.join(' '),
     executionBlockReason,
+  };
+}
+
+export async function pushSafelyToMain(
+  payload: PushMainPayload,
+  suggestedCandidates: string[],
+  appDbPath?: string | null,
+): Promise<CollabActionResult> {
+  const preview = await previewPushToMain({
+    repoPath: payload.repoPath,
+    suggestedCandidates,
+    appDbPath,
+  });
+  if (!preview.status.repoPath) {
+    throw new Error('请先绑定源码目录。');
+  }
+  if (preview.executionBlockReason) {
+    throw new Error(preview.executionBlockReason);
+  }
+  const message = payload.message.trim();
+  if (!message && preview.files.length > 0) {
+    throw new Error('请填写本次提交说明。');
+  }
+  const repoPath = preview.status.repoPath;
+  const gitRepoPath = preview.status.workingRepoPath || repoPath;
+  const scopeRelativePath = computeScopeRelativePath(gitRepoPath, repoPath);
+  const context = createRepoWorkContext(repoPath, gitRepoPath, scopeRelativePath);
+  const changedPaths = collectPreviewPaths(preview.files);
+  const fallbackBranchName = preview.suggestedCollabBranchName || await suggestedCollabBranchName(context);
+  let createdCommit = false;
+
+  try {
+    if (preview.files.length > 0) {
+      await addAllPreviewFilesToIndex(context, preview.files);
+      createdCommit = await commitStagedChangesIfAny(context, message);
+    }
+    await ensureNoConflictMarkers(context);
+
+    const fetchResult = await runGit(context.gitRepoPath, ['fetch', 'origin'], { allowNonZero: true });
+    if (fetchResult.exitCode !== 0) {
+      throw new Error((fetchResult.stderr || fetchResult.stdout || 'git fetch origin 失败').trim());
+    }
+
+    const rebaseResult = await runGit(context.gitRepoPath, ['rebase', 'origin/main'], { allowNonZero: true });
+    if (rebaseResult.exitCode !== 0) {
+      await runGit(context.gitRepoPath, ['rebase', '--abort'], { allowNonZero: true });
+      const detail = (rebaseResult.stderr || rebaseResult.stdout || 'git rebase origin/main 失败').trim();
+      throw new Error(`${detail}。main 没有被推送；可先用同步预览查看远端变化，或发布协作分支 ${fallbackBranchName} 作为备份后交给 Codex/Claude 收口。`);
+    }
+
+    await ensureNoConflictMarkers(context);
+    await runGit(context.gitRepoPath, ['-c', 'http.version=HTTP/1.1', 'push', 'origin', 'HEAD:main']);
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error);
+    throw new Error(`安全推送 main 失败：${detail}`);
+  }
+
+  const status = await getCollabRepoStatus({
+    repoPath,
+    suggestedCandidates,
+    appDbPath,
+  });
+  return {
+    status,
+    changedPaths,
+    createdCommit,
+    commitMessage: createdCommit ? message : undefined,
+    mergeStatus: 'pushed',
+    explanation: '已安全推送到 GitHub main。后续对方同步/拉取 main 即可看到这次修改。',
   };
 }
 

@@ -394,6 +394,7 @@ import {
   fastForwardMain,
   previewPullFromMain,
   previewPushToMain,
+  pushSafelyToMain,
   publishFundraisingDna,
   publishMeeting,
   refreshWeeklyOverview,
@@ -408,7 +409,6 @@ import {
   setWorkspaceInteractionState,
   register,
   claimOrgAdmin,
-  publishCollabBranch,
   rejectEmployeeReview,
   resolveMeeting,
   resolveInviteCode,
@@ -8829,16 +8829,15 @@ export default function App() {
     try {
       let result: CollabActionResult;
       if (mode === 'push') {
-        result = await publishCollabBranch({
+        result = await pushSafelyToMain({
           repoPath,
           message: collabCommitMessage.trim() || collabDialogState.preview.suggestedMessage,
-          branchName: collabDialogState.preview.suggestedCollabBranchName || null,
         });
       } else {
         result = await fastForwardMain({ repoPath });
       }
       flash('success', mode === 'push'
-        ? `已发布到协作分支：${result.collabBranchName || 'collab/*'}`
+        ? '已安全推送到 GitHub main。'
         : '已快进接收 origin/main。');
       setCollabDialogState(null);
       setCollabSelectedPaths([]);
