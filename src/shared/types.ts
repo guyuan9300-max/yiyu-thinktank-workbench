@@ -7069,6 +7069,23 @@ export interface CollabEffectPreview {
   aiUnavailableReason?: string | null;
 }
 
+export interface CollabEffectExplanationRequest {
+  mode: 'push' | 'pull';
+  suggestedMessage: string;
+  syncTargetLabel?: string | null;
+  commitSummaries: string[];
+  diffPreview: string;
+  groups: CollabChangeGroup[];
+  files: CollabFileChange[];
+  fallbackEffects: CollabEffectPreview[];
+}
+
+export interface CollabEffectExplanationResponse {
+  effects: CollabEffectPreview[];
+  provider?: string | null;
+  model?: string | null;
+}
+
 export interface CollabRepoStatus {
   repoPath: string | null;
   repoName: string | null;

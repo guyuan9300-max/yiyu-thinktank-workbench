@@ -8,6 +8,7 @@ import {
   Layers3,
   Play,
   RefreshCw,
+  Sparkles,
   Square,
   UploadCloud,
   X,
@@ -127,6 +128,8 @@ export function CollabPreviewDialog({
   const confirmDisabled = busy
     || Boolean(preview.executionBlockReason)
     || (mode === 'pull' && !pullPreview?.canFastForwardMain);
+  const hasAiEffects = preview.effects.some((effect) => effect.explanationSource === 'ai');
+  const firstAiIssue = preview.effects.find((effect) => effect.explanationSource !== 'ai' && effect.aiUnavailableReason)?.aiUnavailableReason || null;
 
   return (
     <div className="fixed inset-0 z-[80] overflow-y-auto bg-black/30 px-4 py-8 backdrop-blur-sm">
@@ -201,8 +204,22 @@ export function CollabPreviewDialog({
                     {mode === 'push' ? '这次会推送这些变化' : '你会先看到这些变化'}
                   </p>
                   <p className="mt-2 text-[13px] leading-6 text-gray-600">
-                    这里解释的是用户能感受到的功能变化。{mode === 'push' ? '推送会先接到最新 main，再安全推送；' : ''}文件清单只作为技术证据。
+                    这里解释的是用户能感受到的功能变化、后台规则变化和架构风险。{mode === 'push' ? '推送会先接到最新 main，再安全推送；' : ''}文件清单只作为技术证据。
                   </p>
+                  <div className={`mt-3 rounded-2xl border px-3 py-3 text-[12px] font-semibold leading-6 ${
+                    hasAiEffects
+                      ? 'border-emerald-100 bg-emerald-50 text-emerald-800'
+                      : 'border-amber-200 bg-amber-50 text-amber-800'
+                  }`}>
+                    <div className="flex items-start gap-2">
+                      {hasAiEffects ? <Sparkles size={15} className="mt-0.5 shrink-0" /> : <AlertCircle size={15} className="mt-0.5 shrink-0" />}
+                      <span>
+                        {hasAiEffects
+                          ? '以下说明已由软件 AI 根据提交摘要、变更分组和有限 diff 片段生成；技术文件只放在折叠证据里。'
+                          : `AI 功能说明没有生成成功，当前展示的是规则兜底。${firstAiIssue ? `原因：${firstAiIssue}` : ''}`}
+                      </span>
+                    </div>
+                  </div>
                   <div className="mt-4 grid gap-3">
                     {preview.effects.map((effect) => {
                       const selectedCount = effect.relatedPaths.filter((targetPath) => selectedSet.has(targetPath)).length;
@@ -222,8 +239,20 @@ export function CollabPreviewDialog({
                                 <span className="rounded-full bg-gray-50 px-2.5 py-1 text-[11px] font-semibold text-gray-500 ring-1 ring-gray-200">
                                   {visibilityText(effect.visibility)}
                                 </span>
+                                <span className={`rounded-full px-2.5 py-1 text-[11px] font-semibold ring-1 ${
+                                  effect.explanationSource === 'ai'
+                                    ? 'bg-emerald-50 text-emerald-700 ring-emerald-100'
+                                    : 'bg-amber-50 text-amber-700 ring-amber-100'
+                                }`}>
+                                  {effect.explanationSource === 'ai' ? 'AI 功能说明' : '规则兜底'}
+                                </span>
                               </div>
                               <p className="mt-2 text-[13px] leading-6 text-gray-600">{effect.summary}</p>
+                              {effect.explanationSource !== 'ai' && effect.aiUnavailableReason && (
+                                <p className="mt-2 rounded-2xl border border-amber-100 bg-amber-50 px-3 py-2 text-[12px] font-semibold leading-5 text-amber-800">
+                                  {effect.aiUnavailableReason}
+                                </p>
+                              )}
                             </div>
                           </div>
 

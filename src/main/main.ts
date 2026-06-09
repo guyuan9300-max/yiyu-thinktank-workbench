@@ -10,6 +10,9 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import http from 'node:http';
 import net from 'node:net';
 import type {
+  CollabEffectExplanationRequest,
+  CollabEffectExplanationResponse,
+  CollabEffectPreview,
   DesktopAppInfo,
   DesktopStartupGateResumeResult,
 } from '../shared/types.js';
@@ -1661,11 +1664,64 @@ function requestBackendJson<T>(pathName: string, timeoutMs = 6000): Promise<T> {
   });
 }
 
+function postBackendJson<T>(pathName: string, payload: unknown, timeoutMs = 6000): Promise<T> {
+  return new Promise((resolve, reject) => {
+    const body = JSON.stringify(payload ?? {});
+    const req = http.request(`${backendUrl()}${pathName}`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Content-Length': Buffer.byteLength(body),
+      },
+    }, (res) => {
+      const chunks: Buffer[] = [];
+      res.on('data', (chunk) => {
+        chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+      });
+      res.on('end', () => {
+        const rawBody = Buffer.concat(chunks).toString('utf8');
+        let parsed: unknown = null;
+        if (rawBody.trim()) {
+          try {
+            parsed = JSON.parse(rawBody);
+          } catch {
+            reject(new Error(rawBody.slice(0, 240) || `HTTP ${res.statusCode || 500}`));
+            return;
+          }
+        }
+        if ((res.statusCode || 500) >= 400) {
+          const detail = parsed && typeof parsed === 'object' && 'detail' in parsed
+            ? String((parsed as { detail?: unknown }).detail || '')
+            : '';
+          reject(new Error(detail || `HTTP ${res.statusCode || 500}`));
+          return;
+        }
+        resolve(parsed as T);
+      });
+    });
+    req.setTimeout(timeoutMs, () => {
+      req.destroy(new Error('本地服务响应超时，请稍后重试。'));
+    });
+    req.on('error', reject);
+    req.write(body);
+    req.end();
+  });
+}
+
 async function requireActiveMaintenanceMode(actionLabel: string) {
   const status = await requestBackendJson<MaintenanceModeGuardStatus>('/api/v1/maintenance-mode/status');
   if (!status.active) {
     throw new Error(status.reason || `请先在系统日志中打开左下角推送同步，再${actionLabel}。`);
   }
+}
+
+async function explainCollabEffectsWithAi(payload: CollabEffectExplanationRequest): Promise<CollabEffectPreview[]> {
+  const response = await postBackendJson<CollabEffectExplanationResponse>(
+    '/api/v1/runtime/collab-merge/explain-effects',
+    payload,
+    30000,
+  );
+  return Array.isArray(response.effects) ? response.effects : [];
 }
 
 function cloudBackendUrl() {
@@ -3229,6 +3285,7 @@ ipcMain.handle('yiyu-workbench:previewPushToMain', async (_event, repoPath: stri
     repoPath,
     suggestedCandidates: getCollabSuggestedCandidates(),
     appDbPath: path.join(app.getPath('userData'), 'app.db'),
+    effectExplainer: explainCollabEffectsWithAi,
   });
 });
 
@@ -3252,6 +3309,7 @@ ipcMain.handle('yiyu-workbench:previewPullFromMain', async (_event, repoPath: st
     targetCommit,
     suggestedCandidates: getCollabSuggestedCandidates(),
     appDbPath: path.join(app.getPath('userData'), 'app.db'),
+    effectExplainer: explainCollabEffectsWithAi,
   });
 });
 
