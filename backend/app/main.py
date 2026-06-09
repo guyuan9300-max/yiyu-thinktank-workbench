@@ -97,6 +97,37 @@ class CollabMergeConflictResultRecord(BaseModel):
     model: str | None = None
 
 
+class CollabEffectPreviewRecord(BaseModel):
+    id: str = Field(..., min_length=1, max_length=120)
+    title: str = Field(..., min_length=1, max_length=120)
+    summary: str = Field(..., min_length=1, max_length=500)
+    visibility: Literal["visible", "mixed", "background"] = "mixed"
+    scopeLabel: str = Field(default="功能影响", max_length=80)
+    details: list[str] = Field(default_factory=list, max_length=8)
+    relatedPaths: list[str] = Field(default_factory=list, max_length=160)
+    beforeLabel: str | None = Field(default=None, max_length=80)
+    afterLabel: str | None = Field(default=None, max_length=80)
+    explanationSource: Literal["ai", "user_feature_rules", "unavailable"] = "ai"
+    aiUnavailableReason: str | None = None
+
+
+class CollabEffectExplainPayload(BaseModel):
+    mode: Literal["push", "pull"]
+    suggestedMessage: str = Field(default="", max_length=300)
+    syncTargetLabel: str | None = Field(default=None, max_length=300)
+    commitSummaries: list[str] = Field(default_factory=list, max_length=30)
+    diffPreview: str = Field(default="", max_length=24000)
+    groups: list[dict[str, object]] = Field(default_factory=list, max_length=20)
+    files: list[dict[str, object]] = Field(default_factory=list, max_length=240)
+    fallbackEffects: list[CollabEffectPreviewRecord] = Field(default_factory=list, max_length=20)
+
+
+class CollabEffectExplainResultRecord(BaseModel):
+    effects: list[CollabEffectPreviewRecord]
+    provider: str | None = None
+    model: str | None = None
+
+
 class WorkspaceAnswerPromoteJudgmentPayload(BaseModel):
     """工作台答案直接采纳为判断时携带用户备注。"""
 
@@ -44408,6 +44439,176 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             raise HTTPException(status_code=502, detail="AI 返回内容仍包含 Git 冲突标记。")
         return CollabMergeConflictResultRecord(
             mergedContent=merged if merged.endswith("\n") else f"{merged}\n",
+            provider=status.provider,
+            model=status.model,
+        )
+
+    def _collab_effect_text_is_code_mechanical(text: str) -> bool:
+        return bool(
+            re.search(r"\b(src|backend|cloud_backend|scripts|docs)/", text)
+            or re.search(r"\.(tsx?|jsx?|py|mjs|cjs|json|md|ya?ml|sql)\b", text)
+            or re.search(r"代码路径|文件清单|组件文件|模块文件|改动文件", text)
+        )
+
+    @app.post("/api/v1/runtime/collab-merge/explain-effects", response_model=CollabEffectExplainResultRecord)
+    def explain_collab_effects_with_ai(
+        payload: CollabEffectExplainPayload,
+    ) -> CollabEffectExplainResultRecord:
+        status = _collab_merge_ai_status()
+        if not status.available:
+            raise HTTPException(status_code=503, detail=status.reason or "AI 不可用，不能生成协作功能说明。")
+
+        allowed_paths = [
+            str(item.get("path") or "").strip()
+            for item in payload.files
+            if str(item.get("path") or "").strip()
+        ]
+        allowed_path_set = set(allowed_paths)
+        fallback_by_id = {item.id: item for item in payload.fallbackEffects}
+        fallback_paths = []
+        for item in payload.fallbackEffects:
+            fallback_paths.extend(item.relatedPaths)
+        fallback_paths = [path for path in dict.fromkeys(fallback_paths) if path in allowed_path_set]
+        files_brief = [
+            {
+                "path": str(item.get("path") or ""),
+                "type": str(item.get("type") or ""),
+                "area": str(item.get("groupLabel") or item.get("groupKey") or ""),
+                "hint": str(item.get("summary") or ""),
+            }
+            for item in payload.files[:120]
+        ]
+        fallback_brief = [
+            {
+                "id": item.id,
+                "title": item.title,
+                "summary": item.summary,
+                "visibility": item.visibility,
+                "scopeLabel": item.scopeLabel,
+                "relatedPaths": item.relatedPaths[:30],
+            }
+            for item in payload.fallbackEffects[:12]
+        ]
+        prompt = (
+            "请把一次 Git 协作修改翻译成用户能理解的功能/架构影响说明。\n\n"
+            f"动作：{'推送我的本地修改到 main' if payload.mode == 'push' else '预览/同步远端 main 修改'}\n"
+            f"当前查看：{payload.syncTargetLabel or '未指定'}\n"
+            f"默认提交说明：{payload.suggestedMessage}\n\n"
+            "提交摘要：\n"
+            f"{json.dumps(payload.commitSummaries[:20], ensure_ascii=False)}\n\n"
+            "变更分组：\n"
+            f"{json.dumps(payload.groups, ensure_ascii=False)[:4000]}\n\n"
+            "变更文件证据（只能作为判断材料，不要照抄成标题）：\n"
+            f"{json.dumps(files_brief, ensure_ascii=False)[:8000]}\n\n"
+            "规则草稿（仅供参考，如果它太泛或太像文件说明，请重写）：\n"
+            f"{json.dumps(fallback_brief, ensure_ascii=False)[:8000]}\n\n"
+            "关键 diff 片段：\n"
+            f"{payload.diffPreview[:20000]}\n\n"
+            "输出要求：\n"
+            "1. 只返回 JSON。\n"
+            "2. 返回 1-6 条 effects，每条必须是用户视角功能或后台架构影响。\n"
+            "3. title/summary/details 禁止写 src/、backend/、.tsx、.py 等代码路径，代码文件只能通过 relatedPaths 表达。\n"
+            "4. 必须覆盖推送和同步两种场景：推送时说明“推上 main 后同事会得到什么”，同步时说明“接收/预览后本机可能变化什么”。\n"
+            "5. 底层数据表、后台 worker、云端接口、构建脚本这类不可见变化，也要解释成“影响什么能力、什么风险、哪里验收”。\n"
+            "6. relatedPaths 只能从上面的变更文件证据中选择。"
+        )
+        schema = {
+            "type": "OBJECT",
+            "properties": {
+                "effects": {
+                    "type": "ARRAY",
+                    "items": {
+                        "type": "OBJECT",
+                        "properties": {
+                            "id": {"type": "STRING"},
+                            "title": {"type": "STRING"},
+                            "summary": {"type": "STRING"},
+                            "visibility": {"type": "STRING"},
+                            "scopeLabel": {"type": "STRING"},
+                            "details": {"type": "ARRAY", "items": {"type": "STRING"}},
+                            "relatedPaths": {"type": "ARRAY", "items": {"type": "STRING"}},
+                            "beforeLabel": {"type": "STRING"},
+                            "afterLabel": {"type": "STRING"},
+                        },
+                    },
+                },
+            },
+        }
+        try:
+            raw = state.ai._qwen_generate(
+                prompt=prompt,
+                system_instruction=(
+                    "你是益语智库软件协作审查助手。"
+                    "你的任务不是解释代码文件，而是把代码改动翻译成用户能判断的功能、业务规则、后台架构和验收风险。"
+                    "不要输出 Markdown，不要输出思考过程。"
+                ),
+                response_schema=schema,
+                timeout_seconds=28.0,
+                max_tokens=2600,
+                temperature=0.2,
+                top_p=0.8,
+                enable_thinking=False,
+                task_kind="fast_structured",
+            )
+        except AiInvocationError as exc:
+            raise HTTPException(status_code=502, detail=str(exc)) from exc
+        except Exception as exc:
+            raise HTTPException(status_code=502, detail=f"AI 功能说明调用失败：{exc}") from exc
+
+        if not isinstance(raw, dict):
+            raise HTTPException(status_code=502, detail="AI 功能说明没有返回 JSON 对象。")
+        raw_effects = raw.get("effects")
+        if not isinstance(raw_effects, list):
+            raise HTTPException(status_code=502, detail="AI 功能说明缺少 effects 数组。")
+
+        normalized: list[CollabEffectPreviewRecord] = []
+        for index, item in enumerate(raw_effects[:8]):
+            if not isinstance(item, dict):
+                continue
+            fallback = fallback_by_id.get(str(item.get("id") or "")) or (payload.fallbackEffects[index] if index < len(payload.fallbackEffects) else None)
+            title = str(item.get("title") or (fallback.title if fallback else "功能影响待确认")).strip()
+            summary = str(item.get("summary") or (fallback.summary if fallback else "这次修改会影响软件功能或后台规则，建议先预览再接收。")).strip()
+            details = [
+                str(detail).strip()
+                for detail in (item.get("details") if isinstance(item.get("details"), list) else [])
+                if str(detail).strip()
+            ][:6]
+            text_for_check = "\n".join([title, summary, *details])
+            if not title or not summary or _collab_effect_text_is_code_mechanical(text_for_check):
+                continue
+            related_paths = [
+                str(path_value).strip()
+                for path_value in (item.get("relatedPaths") if isinstance(item.get("relatedPaths"), list) else [])
+                if str(path_value).strip() in allowed_path_set
+            ]
+            if not related_paths and fallback:
+                related_paths = [path for path in fallback.relatedPaths if path in allowed_path_set]
+            if not related_paths:
+                related_paths = fallback_paths[: min(20, len(fallback_paths))]
+            if not related_paths:
+                continue
+            visibility = str(item.get("visibility") or (fallback.visibility if fallback else "mixed")).strip()
+            if visibility not in {"visible", "mixed", "background"}:
+                visibility = "mixed"
+            normalized.append(
+                CollabEffectPreviewRecord(
+                    id=re.sub(r"[^a-zA-Z0-9._-]+", "-", str(item.get("id") or f"ai-effect-{index + 1}")).strip("-") or f"ai-effect-{index + 1}",
+                    title=title[:120],
+                    summary=summary[:500],
+                    visibility=cast(Literal["visible", "mixed", "background"], visibility),
+                    scopeLabel=(str(item.get("scopeLabel") or (fallback.scopeLabel if fallback else "功能影响")).strip() or "功能影响")[:80],
+                    details=[detail[:220] for detail in details],
+                    relatedPaths=related_paths[:120],
+                    beforeLabel=(str(item.get("beforeLabel") or "").strip() or (fallback.beforeLabel if fallback else None)),
+                    afterLabel=(str(item.get("afterLabel") or "").strip() or (fallback.afterLabel if fallback else None)),
+                    explanationSource="ai",
+                    aiUnavailableReason=None,
+                )
+            )
+        if not normalized:
+            raise HTTPException(status_code=502, detail="AI 返回内容仍偏代码文件说明，已拒绝展示。")
+        return CollabEffectExplainResultRecord(
+            effects=normalized[:6],
             provider=status.provider,
             model=status.model,
         )

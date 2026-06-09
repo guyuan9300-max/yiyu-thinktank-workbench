@@ -8,6 +8,7 @@ import type {
   CollabChangeGroup,
   CollabChangeGroupKey,
   CollabConflictRisk,
+  CollabEffectExplanationRequest,
   CollabEffectPreview,
   CollabFileChange,
   CollabFileChangeType,
@@ -83,7 +84,10 @@ type RepoOptions = {
   fetchRemote?: boolean;
   appDbPath?: string | null;
   targetCommit?: string | null;
+  effectExplainer?: CollabEffectExplainer | null;
 };
+
+type CollabEffectExplainer = (request: CollabEffectExplanationRequest) => Promise<CollabEffectPreview[] | null | undefined>;
 
 type RepoWorkContext = {
   repoPath: string;
@@ -111,6 +115,9 @@ type EffectDraft = {
   beforeLabel?: string | null;
   afterLabel?: string | null;
 };
+
+const COLLAB_AI_EXPLANATION_UNAVAILABLE_REASON = 'AI 功能说明尚未生成；下面只是按路径和提交信息推断的规则兜底，不能当作完整功能评审。';
+const MAX_EFFECT_DIFF_PREVIEW_CHARS = 16000;
 
 const GROUP_LABELS: Record<CollabChangeGroupKey, string> = {
   shared_settings: '共享设置',
@@ -371,9 +378,140 @@ function finalizeEffectDrafts(drafts: EffectDraft[]): CollabEffectPreview[] {
       beforeLabel: draft.beforeLabel ?? null,
       afterLabel: draft.afterLabel ?? null,
       explanationSource: 'user_feature_rules' as const,
-      aiUnavailableReason: '当前主进程协作模块还没有稳定的 AI 生成接口，本次先使用用户视角规则解释。',
+      aiUnavailableReason: COLLAB_AI_EXPLANATION_UNAVAILABLE_REASON,
     }))
     .filter((draft) => draft.relatedPaths.length > 0);
+}
+
+function limitText(value: string, maxChars: number) {
+  if (value.length <= maxChars) return value;
+  return `${value.slice(0, maxChars)}\n\n[已截断：剩余 ${value.length - maxChars} 字符未发送给 AI]`;
+}
+
+function safeOneLine(value: unknown, fallback = '') {
+  return String(value ?? fallback).replace(/\s+/g, ' ').trim();
+}
+
+function normalizeAiEffectText(value: unknown, fallback: string) {
+  const text = safeOneLine(value, fallback);
+  return text || fallback;
+}
+
+function effectLooksCodeMechanical(effect: Pick<CollabEffectPreview, 'title' | 'summary' | 'details'>) {
+  const text = [effect.title, effect.summary, ...(effect.details || [])].join('\n');
+  return /\b(src|backend|cloud_backend|scripts|docs)\//.test(text)
+    || /\.(tsx?|jsx?|py|mjs|cjs|json|md|ya?ml|sql)\b/.test(text)
+    || /文件|代码路径|组件文件|模块文件/.test(text);
+}
+
+function markEffectsAsAiUnavailable(effects: CollabEffectPreview[], reason = COLLAB_AI_EXPLANATION_UNAVAILABLE_REASON) {
+  return effects.map((effect) => ({
+    ...effect,
+    explanationSource: 'unavailable' as const,
+    aiUnavailableReason: reason,
+  }));
+}
+
+function normalizeAiEffectPreviews(rawEffects: CollabEffectPreview[], fallbackEffects: CollabEffectPreview[], files: CollabFileChange[]) {
+  const validPaths = new Set(files.map((file) => file.path));
+  const fallbackById = new Map(fallbackEffects.map((effect) => [effect.id, effect]));
+  const fallbackPaths = Array.from(new Set(fallbackEffects.flatMap((effect) => effect.relatedPaths)));
+  const normalized = rawEffects
+    .slice(0, 8)
+    .map((effect, index) => {
+      const fallback = fallbackById.get(effect.id) || fallbackEffects[index] || fallbackEffects[0] || null;
+      const relatedPaths = Array.from(new Set((effect.relatedPaths || []).filter((targetPath) => validPaths.has(targetPath))));
+      const nextRelatedPaths = relatedPaths.length ? relatedPaths : (fallback?.relatedPaths || fallbackPaths).filter((targetPath) => validPaths.has(targetPath));
+      const details = Array.isArray(effect.details)
+        ? effect.details.map((detail) => safeOneLine(detail)).filter(Boolean).slice(0, 6)
+        : [];
+      const normalizedEffect: CollabEffectPreview = {
+        id: safeOneLine(effect.id, fallback?.id || `ai-effect-${index + 1}`).replace(/[^a-z0-9._-]+/gi, '-').replace(/^-+|-+$/g, '') || `ai-effect-${index + 1}`,
+        title: normalizeAiEffectText(effect.title, fallback?.title || '功能影响待确认'),
+        summary: normalizeAiEffectText(effect.summary, fallback?.summary || '这次修改会影响软件功能或后台规则，建议先预览再决定是否接收。'),
+        visibility: effect.visibility === 'visible' || effect.visibility === 'mixed' || effect.visibility === 'background'
+          ? effect.visibility
+          : (fallback?.visibility || 'mixed'),
+        scopeLabel: normalizeAiEffectText(effect.scopeLabel, fallback?.scopeLabel || '功能影响'),
+        details,
+        relatedPaths: nextRelatedPaths,
+        beforeLabel: safeOneLine(effect.beforeLabel, fallback?.beforeLabel || '') || null,
+        afterLabel: safeOneLine(effect.afterLabel, fallback?.afterLabel || '') || null,
+        explanationSource: 'ai',
+        aiUnavailableReason: null,
+      };
+      return normalizedEffect;
+    })
+    .filter((effect) => effect.title && effect.summary && effect.relatedPaths.length > 0 && !effectLooksCodeMechanical(effect));
+  return normalized.length ? normalized : null;
+}
+
+async function collectEffectCommitSummaries(context: RepoWorkContext, mode: 'push' | 'pull', snapshot: RepoSnapshot) {
+  const revisionRange = mode === 'push' ? 'origin/main..HEAD' : `HEAD..${snapshot.remoteTargetRevision}`;
+  const scopedGitArgs = context.scopeRelativePath ? ['--', context.scopeRelativePath] : [];
+  const result = await runGit(
+    context.gitRepoPath,
+    ['log', '--reverse', '--format=%h %aI %s', revisionRange, ...scopedGitArgs],
+    { allowNonZero: true },
+  );
+  return result.stdout
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .slice(0, 20);
+}
+
+async function collectEffectDiffPreview(context: RepoWorkContext, mode: 'push' | 'pull', snapshot: RepoSnapshot, files: CollabFileChange[]) {
+  const scopedPaths = Array.from(new Set(files
+    .map((file) => toScopedGitPath(context.scopeRelativePath, file.path))
+    .filter(Boolean)))
+    .slice(0, 80);
+  const pathArgs = scopedPaths.length ? ['--', ...scopedPaths] : [];
+  const pieces: string[] = [];
+  if (mode === 'push') {
+    if (snapshot.aheadCount > 0) {
+      const aheadResult = await runGit(
+        context.gitRepoPath,
+        ['diff', '--unified=2', '--no-ext-diff', 'origin/main...HEAD', ...pathArgs],
+        { allowNonZero: true },
+      );
+      if (aheadResult.stdout.trim()) pieces.push(`[本地已提交但未推送的差异]\n${aheadResult.stdout}`);
+    }
+    const worktreeResult = await runGit(
+      context.gitRepoPath,
+      ['diff', '--unified=2', '--no-ext-diff', 'HEAD', ...pathArgs],
+      { allowNonZero: true },
+    );
+    if (worktreeResult.stdout.trim()) pieces.push(`[本地未提交差异]\n${worktreeResult.stdout}`);
+    const untracked = files.filter((file) => file.type === 'untracked').map((file) => file.path).slice(0, 30);
+    if (untracked.length) pieces.push(`[新增未跟踪文件]\n${untracked.join('\n')}`);
+  } else {
+    const remoteResult = await runGit(
+      context.gitRepoPath,
+      ['diff', '--unified=2', '--no-ext-diff', 'HEAD', snapshot.remoteTargetRevision, ...pathArgs],
+      { allowNonZero: true },
+    );
+    if (remoteResult.stdout.trim()) pieces.push(`[远端 main 到当前预览点的差异]\n${remoteResult.stdout}`);
+  }
+  return limitText(pieces.join('\n\n'), MAX_EFFECT_DIFF_PREVIEW_CHARS);
+}
+
+function buildFunctionalSuggestedMessage(prefix: 'push' | 'pull', groups: CollabChangeGroup[], effects: CollabEffectPreview[]) {
+  const titles = effects
+    .filter((effect) => effect.explanationSource === 'ai' || effect.explanationSource === 'user_feature_rules')
+    .map((effect) => effect.title
+      .replace(/会变化/g, '')
+      .replace(/可能调整/g, '')
+      .replace(/相关/g, '')
+      .trim())
+    .filter(Boolean)
+    .slice(0, 2);
+  if (titles.length) {
+    return prefix === 'push'
+      ? `sync: ${titles.join('、')}`
+      : `sync: 从 main 同步${titles.join('、')}`;
+  }
+  return buildSuggestedMessage(prefix, groups);
 }
 
 function labelSharedSettingKey(settingKey: string) {
@@ -931,6 +1069,52 @@ async function buildEffectPreviews(
     }
   }
   return finalizeEffectDrafts(Array.from(effectMap.values()));
+}
+
+async function explainEffectPreviews(
+  mode: 'push' | 'pull',
+  snapshot: RepoSnapshot,
+  groups: CollabChangeGroup[],
+  files: CollabFileChange[],
+  fallbackEffects: CollabEffectPreview[],
+  suggestedMessage: string,
+  options: {
+    effectExplainer?: CollabEffectExplainer | null;
+    commitSummaries?: string[];
+    syncTargetLabel?: string | null;
+  } = {},
+) {
+  if (!files.length || !snapshot.repoPath || !snapshot.gitRepoPath) return fallbackEffects;
+  if (!options.effectExplainer) return markEffectsAsAiUnavailable(fallbackEffects);
+  const context = createRepoWorkContext(snapshot.repoPath, snapshot.gitRepoPath, snapshot.scopeRelativePath);
+  try {
+    const commitSummaries = options.commitSummaries?.length
+      ? options.commitSummaries
+      : await collectEffectCommitSummaries(context, mode, snapshot);
+    const diffPreview = await collectEffectDiffPreview(context, mode, snapshot, files);
+    const aiEffects = await options.effectExplainer({
+      mode,
+      suggestedMessage,
+      syncTargetLabel: options.syncTargetLabel || null,
+      commitSummaries,
+      diffPreview,
+      groups,
+      files,
+      fallbackEffects,
+    });
+    const normalized = normalizeAiEffectPreviews(aiEffects || [], fallbackEffects, files);
+    if (normalized) return normalized;
+    return markEffectsAsAiUnavailable(
+      fallbackEffects,
+      'AI 功能说明返回内容仍偏代码路径或没有覆盖真实改动，已降级为规则兜底。',
+    );
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error);
+    return markEffectsAsAiUnavailable(
+      fallbackEffects,
+      `AI 功能说明生成失败：${detail}`,
+    );
+  }
 }
 
 async function runCommand(command: string, args: string[], options: RunCommandOptions = {}): Promise<RunCommandResult> {
@@ -1724,7 +1908,12 @@ export async function previewPushToMain(options: RepoOptions): Promise<PushPrevi
   const status = snapshotToStatus(snapshot);
   const files = createLocalFileChanges(snapshot);
   const groups = countGroups(files);
-  const effects = await buildEffectPreviews('push', snapshot, files);
+  const fallbackEffects = await buildEffectPreviews('push', snapshot, files);
+  const initialSuggestedMessage = buildSuggestedMessage('push', groups);
+  const effects = await explainEffectPreviews('push', snapshot, groups, files, fallbackEffects, initialSuggestedMessage, {
+    effectExplainer: options.effectExplainer,
+  });
+  const suggestedMessage = buildFunctionalSuggestedMessage('push', groups, effects);
   const context = snapshot.repoPath && snapshot.gitRepoPath
     ? createRepoWorkContext(snapshot.repoPath, snapshot.gitRepoPath, snapshot.scopeRelativePath)
     : null;
@@ -1748,7 +1937,7 @@ export async function previewPushToMain(options: RepoOptions): Promise<PushPrevi
   }
   return {
     status,
-    suggestedMessage: buildSuggestedMessage('push', groups),
+    suggestedMessage,
     effects,
     groups,
     files,
@@ -1890,7 +2079,6 @@ export async function previewPullFromMain(options: RepoOptions): Promise<PullPre
   const status = snapshotToStatus(snapshot);
   const files = createRemoteFileChanges(snapshot);
   const groups = countGroups(files);
-  const effects = await buildEffectPreviews('pull', snapshot, files);
   let executionBlockReason: string | null = null;
   let notice: string | null = null;
   if (!snapshot.isConfigured) executionBlockReason = '还没有绑定源码目录，先选一个 Git 仓库后再继续。';
@@ -1930,9 +2118,17 @@ export async function previewPullFromMain(options: RepoOptions): Promise<PullPre
   const commitSummaries = remoteCommits.map((commit) => (
     `${commit.shortHash} ${commit.authoredAt.slice(0, 10)} ${commit.authoredAt.slice(11, 16)} ${commit.subject}`
   ));
+  const fallbackEffects = await buildEffectPreviews('pull', snapshot, files);
+  const initialSuggestedMessage = buildSuggestedMessage('pull', groups);
+  const effects = await explainEffectPreviews('pull', snapshot, groups, files, fallbackEffects, initialSuggestedMessage, {
+    effectExplainer: options.effectExplainer,
+    commitSummaries,
+    syncTargetLabel,
+  });
+  const suggestedMessage = buildFunctionalSuggestedMessage('pull', groups, effects);
   return {
     status,
-    suggestedMessage: buildSuggestedMessage('pull', groups),
+    suggestedMessage,
     commitSummaries,
     remoteCommits,
     remoteBranches,
