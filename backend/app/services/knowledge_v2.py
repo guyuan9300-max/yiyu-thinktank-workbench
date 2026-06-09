@@ -892,25 +892,54 @@ def _read_docx_text(path: Path) -> tuple[str, list[dict[str, str]]]:
             sections.append({"title": current_title, "text": content})
         buffer = []
 
-    for paragraph in document.paragraphs:
-        text = normalize_text(paragraph.text)
-        if not text:
-            continue
-        style_name = paragraph.style.name.lower() if paragraph.style and paragraph.style.name else ""
-        if "heading" in style_name:
-            flush()
-            current_title = text
-        else:
-            buffer.append(text)
-    for table in document.tables:
-        rows: list[str] = []
-        for row in table.rows:
-            cells = [normalize_text(cell.text) for cell in row.cells]
-            line = " | ".join(cell for cell in cells if cell)
-            if line:
-                rows.append(line)
-        if rows:
-            buffer.append("\n".join(rows))
+    def _md_cell(value: str) -> str:
+        # 单元格内换行折叠成空格 + 转义竖线，避免破坏 GFM 表格结构
+        cleaned = (value or "").replace("\r\n", " ").replace("\n", " ").replace("\r", " ")
+        cleaned = re.sub(r"[ \t]+", " ", cleaned).strip()
+        return cleaned.replace("|", "\\|")
+
+    def _table_to_gfm(table) -> str:
+        # docx 表格 → 合法 GFM markdown 表格：每行带首尾竖线 + 表头后插 |---| 分隔行 +
+        # 保留空单元格补齐列数（否则列错位），这样编辑器(MDXEditor tablePlugin)能渲染、
+        # 保存(render_polished_markdown_to_docx)能重建真 docx 表格，往返不丢。
+        table_rows = list(table.rows)
+        if not table_rows:
+            return ""
+        n_cols = max((len(row.cells) for row in table_rows), default=0)
+        if n_cols == 0:
+            return ""
+        lines: list[str] = []
+        for index, row in enumerate(table_rows):
+            cells = [_md_cell(cell.text) for cell in row.cells]
+            if len(cells) < n_cols:
+                cells = cells + [""] * (n_cols - len(cells))
+            lines.append("| " + " | ".join(cells[:n_cols]) + " |")
+            if index == 0:
+                lines.append("| " + " | ".join(["---"] * n_cols) + " |")
+        return "\n".join(lines)
+
+    # 按文档真实顺序遍历正文：段落与表格交错（表格不再被堆到文末），表格转成合法 GFM。
+    from docx.oxml.table import CT_Tbl
+    from docx.oxml.text.paragraph import CT_P
+    from docx.table import Table as _DocxTable
+    from docx.text.paragraph import Paragraph as _DocxParagraph
+
+    for child in document.element.body.iterchildren():
+        if isinstance(child, CT_P):
+            paragraph = _DocxParagraph(child, document)
+            text = normalize_text(paragraph.text)
+            if not text:
+                continue
+            style_name = paragraph.style.name.lower() if paragraph.style and paragraph.style.name else ""
+            if "heading" in style_name:
+                flush()
+                current_title = text
+            else:
+                buffer.append(text)
+        elif isinstance(child, CT_Tbl):
+            gfm = _table_to_gfm(_DocxTable(child, document))
+            if gfm:
+                buffer.append("\n" + gfm + "\n")
     flush()
     if not sections:
         text = normalize_text("\n".join(paragraph.text for paragraph in document.paragraphs))
