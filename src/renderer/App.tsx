@@ -14380,6 +14380,12 @@ export default function App() {
 	        resetTaskDraft(payload.dueDate || undefined);
 	        setEditingTask((prev) => ({
 	          ...prev,
+	          // 转为任务必须带标题:否则 handleSaveTask 的空标题闸会把保存弹回、窗口"跳不出"。
+	          // 标题取行动建议(任务该做什么),>40 字截断;thoughtLine 兜底。suggestion 已被
+	          // _normalizeTextForUI 压成单行,可安全 slice;完整建议仍保留在下方 desc 里。
+	          title: payload.suggestion
+	            ? (payload.suggestion.length > 40 ? `${payload.suggestion.slice(0, 40)}…` : payload.suggestion)
+	            : (payload.thoughtLine || prev.title),
 	          desc: descParts.join(''),
 	          clientId: payload.clientId || '',
 	          clientTouched: Boolean(payload.clientId),
@@ -23107,6 +23113,12 @@ export default function App() {
           creativityMode,
         );
         upsertAnalysisRun(started.analysisRun);
+        // 原子删队头：仅当本次是队列自动派发且发送已成功（analysisRun 已建）时，才把队头摘掉。
+        // 失败时（下方 catch）不删 → 队头保留，等本题答完 effect 重跑补发，避免"删了没发"丢题。
+        if (options?.fromQueue && currentClientId) {
+          const q = getWorkspaceQuestionQueue(currentClientId);
+          if (q[0] === resolvedPrompt) setWorkspaceQuestionQueue(currentClientId, q.slice(1));
+        }
         flushSync(() => {
           setThreadOptimisticMessages(draftThreadId, []);
           upsertWorkspaceMessages([started.userMessage as DisplayChatMessage, started.assistantMessage as DisplayChatMessage], started.threadId);
@@ -23226,21 +23238,28 @@ export default function App() {
     // 队列自动派发：保持最新 sendMessage 在 ref，避免 useEffect 依赖 sendMessage 引起的 stale-closure。
     const sendMessageRef = useRef(sendMessage);
     sendMessageRef.current = sendMessage;
-    // 把 queue 长度作为依赖：不然 enqueue 后 effect 不会重新评估，要等切走再回来才补派发。
-    const currentQueueLength = currentClientId ? (getWorkspaceQuestionQueue(currentClientId).length) : 0;
+    // 原子派发标志：正在派发队头时不重复派发（防 probe 窗口/依赖抖动导致双发）。
+    const dispatchingQueueRef = useRef(false);
     useEffect(() => {
       if (!currentClientId) return;
       if (hasPendingAnalysisRun || isComposerStartingMessage) return;
+      if (dispatchingQueueRef.current) return;
       const queue = getWorkspaceQuestionQueue(currentClientId);
       if (queue.length === 0) return;
-      const [head, ...rest] = queue;
-      setWorkspaceQuestionQueue(currentClientId, rest);
-      // 等当前一帧 state 提交、避免和 idle 转换同步竞态
-      const timer = window.setTimeout(() => {
-        void sendMessageRef.current?.(head, { fromQueue: true });
-      }, 80);
-      return () => window.clearTimeout(timer);
-    }, [currentClientId, hasPendingAnalysisRun, isComposerStartingMessage, currentQueueLength]);
+      const head = queue[0];
+      // 原子派发：不先删队头，发送成功（sendMessage 内 upsertAnalysisRun 处）才删队头；
+      // 失败/切页卸载则队头保留 → 题答完(hasPendingAnalysisRun 翻 false)时 effect 重跑补发，永不丢。
+      // 移除原 currentQueueLength 依赖：它本是为掩盖"删了没发"的自掐 bug 而加，根治后移除以消除自掐源
+      // （删队头→forceQueueRerender→currentQueueLength 变→cleanup 掐掉自己的发送）。
+      dispatchingQueueRef.current = true;
+      void (async () => {
+        try {
+          await sendMessageRef.current?.(head, { fromQueue: true });
+        } finally {
+          dispatchingQueueRef.current = false;
+        }
+      })();
+    }, [currentClientId, hasPendingAnalysisRun, isComposerStartingMessage]);
 
     const syncMeetingFromPipeline = async (
       pipelineAction: () => Promise<{ meeting: { id: string; stage: string; transcriptText: string; notes: string }; message: string }>,
