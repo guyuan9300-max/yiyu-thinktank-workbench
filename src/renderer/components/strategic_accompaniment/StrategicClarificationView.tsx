@@ -1277,23 +1277,40 @@ function MeetingActionItemsCard({
   const handlePromote = async (it: NextStepItem) => {
     if (!onPromote) return;
     const firstActor = (it.actor || '').split(',')[0]?.trim() || '';
-    // 拿 LLM 背景说明 (列表加载时已后台预生成, 一般是 cache 命中, 体感瞬时)
-    // cache miss 时也最多 2-3s, 不阻塞 fallback (拿不到就空背景)
+    // 结构化兜底描述: 同步可得, 不依赖网络。即使背景超时也保证弹窗有富信息预填(承诺方向/负责人/截止/关联任务)。
+    const dirLabel: Record<string, string> = {
+      do: '我方做', follow_up: '催客户', wait_for: '等客户给', confirm: '双方确认',
+    };
+    const structuredLines: string[] = [];
+    if (it.actionDirection && dirLabel[it.actionDirection]) structuredLines.push(`方向: ${dirLabel[it.actionDirection]}`);
+    if (firstActor) structuredLines.push(`负责人: ${firstActor}`);
+    if (it.dueDate) structuredLines.push(`截止: ${it.dueDate}`);
+    if (it.matchedTaskTitle) structuredLines.push(`关联已有任务: ${it.matchedTaskTitle}`);
+    const structuredDesc = structuredLines.join('\n');
+
+    // 拿 LLM 背景说明 (cache 命中瞬时)。关键: 用有界竞速 2.5s, 杜绝无界 hang——
+    // 否则后端 cache miss 同步走云端/LLM 慢或抖动时, await 永不返回 → 弹窗永远开不出来。
     let description = '';
     let sourceLabel = '';
     try {
-      const bg = await getNextStepBackground(clientId, {
+      const bgPromise = getNextStepBackground(clientId, {
         fingerprint: it.fingerprint,
         kind: it.kind,
         actor: it.actor,
         text: it.text,
       });
-      description = bg.background || '';
-      sourceLabel = bg.sourceLabel || '';
-    } catch { /* 失败也继续, 描述为空 */ }
+      bgPromise.catch(() => undefined); // 落败方挂 catch, 防超时后真请求再 reject 造成 unhandledRejection
+      const timeoutPromise = new Promise<null>((resolve) => { setTimeout(() => resolve(null), 2500); });
+      const bg = await Promise.race([bgPromise, timeoutPromise]);
+      if (bg) {
+        description = bg.background || '';
+        sourceLabel = bg.sourceLabel || '';
+      }
+    } catch { /* 失败也继续, 用结构化兜底 */ }
     if (description && sourceLabel) {
       description = `${description}\n\n— 来源: 《${sourceLabel}》`;
     }
+    if (!description) description = structuredDesc; // 背景超时/为空 → 结构化兜底, 弹窗不会空
     const fakeTodo: import('../../lib/api').UnifiedTodo = {
       id: it.rawId || `meeting:${it.fingerprint}`,
       source: it.kind === 'meeting' ? 'meeting_action' : (it.kind as 'task' | 'commitment' | 'meeting_action'),
@@ -1302,7 +1319,7 @@ function MeetingActionItemsCard({
       due_date: it.dueDate || '',
       status: 'pending',
       direction: '下一步',
-      related_to: '',
+      related_to: it.matchedTaskTitle || '',
       raw_id: it.rawId,
       severity: it.severity,
       description,
