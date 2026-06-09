@@ -1719,7 +1719,7 @@ async function explainCollabEffectsWithAi(payload: CollabEffectExplanationReques
   const response = await postBackendJson<CollabEffectExplanationResponse>(
     '/api/v1/runtime/collab-merge/explain-effects',
     payload,
-    45000,
+    30000,
   );
   return Array.isArray(response.effects) ? response.effects : [];
 }

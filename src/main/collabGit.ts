@@ -117,7 +117,7 @@ type EffectDraft = {
 };
 
 const COLLAB_AI_EXPLANATION_UNAVAILABLE_REASON = 'AI 功能说明尚未生成；下面只是按路径和提交信息推断的规则兜底，不能当作完整功能评审。';
-const MAX_EFFECT_DIFF_PREVIEW_CHARS = 16000;
+const MAX_EFFECT_DIFF_PREVIEW_CHARS = 8000;
 
 const GROUP_LABELS: Record<CollabChangeGroupKey, string> = {
   shared_settings: '共享设置',

@@ -44476,7 +44476,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 "area": str(item.get("groupLabel") or item.get("groupKey") or ""),
                 "hint": str(item.get("summary") or ""),
             }
-            for item in payload.files[:120]
+            for item in payload.files[:80]
         ]
         fallback_brief = [
             {
@@ -44487,26 +44487,26 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 "scopeLabel": item.scopeLabel,
                 "relatedPaths": item.relatedPaths[:30],
             }
-            for item in payload.fallbackEffects[:12]
+            for item in payload.fallbackEffects[:8]
         ]
         prompt = (
-            "请把一次 Git 协作修改翻译成用户能理解的功能/架构影响说明。\n\n"
+            "把一次 Git 协作修改翻译成用户能判断的功能/架构影响说明。\n\n"
             f"动作：{'推送我的本地修改到 main' if payload.mode == 'push' else '预览/同步远端 main 修改'}\n"
             f"当前查看：{payload.syncTargetLabel or '未指定'}\n"
             f"默认提交说明：{payload.suggestedMessage}\n\n"
             "提交摘要：\n"
-            f"{json.dumps(payload.commitSummaries[:20], ensure_ascii=False)}\n\n"
+            f"{json.dumps(payload.commitSummaries[:12], ensure_ascii=False)}\n\n"
             "变更分组：\n"
-            f"{json.dumps(payload.groups, ensure_ascii=False)[:4000]}\n\n"
-            "变更文件证据（只能作为判断材料，不要照抄成标题）：\n"
-            f"{json.dumps(files_brief, ensure_ascii=False)[:8000]}\n\n"
-            "规则草稿（仅供参考，如果它太泛或太像文件说明，请重写）：\n"
-            f"{json.dumps(fallback_brief, ensure_ascii=False)[:8000]}\n\n"
+            f"{json.dumps(payload.groups, ensure_ascii=False)[:2000]}\n\n"
+            "文件证据（只用于判断，不要照抄成标题）：\n"
+            f"{json.dumps(files_brief, ensure_ascii=False)[:4000]}\n\n"
+            "规则草稿（只供参考，太泛就重写）：\n"
+            f"{json.dumps(fallback_brief, ensure_ascii=False)[:4000]}\n\n"
             "关键 diff 片段：\n"
-            f"{payload.diffPreview[:20000]}\n\n"
+            f"{payload.diffPreview[:8000]}\n\n"
             "输出要求：\n"
             "1. 只返回 JSON。\n"
-            "2. 返回 1-6 条 effects，每条必须是用户视角功能或后台架构影响。\n"
+            "2. 返回 1-4 条 effects，每条必须是用户视角功能或后台架构影响。\n"
             "3. title/summary/details 禁止写 src/、backend/、.tsx、.py 等代码路径，代码文件只能通过 relatedPaths 表达。\n"
             "4. 必须覆盖推送和同步两种场景：推送时说明“推上 main 后同事会得到什么”，同步时说明“接收/预览后本机可能变化什么”。\n"
             "5. 底层数据表、后台 worker、云端接口、构建脚本这类不可见变化，也要解释成“影响什么能力、什么风险、哪里验收”。\n"
@@ -44543,11 +44543,13 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                     "不要输出 Markdown，不要输出思考过程。"
                 ),
                 response_schema=schema,
-                timeout_seconds=28.0,
-                max_tokens=2600,
-                temperature=0.2,
+                timeout_seconds=10.0,
+                max_tokens=1200,
+                temperature=0.1,
                 top_p=0.8,
                 enable_thinking=False,
+                provider_override=status.provider,
+                model_override=status.model,
                 task_kind="fast_structured",
             )
         except AiInvocationError as exc:
@@ -44562,7 +44564,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             raise HTTPException(status_code=502, detail="AI 功能说明缺少 effects 数组。")
 
         normalized: list[CollabEffectPreviewRecord] = []
-        for index, item in enumerate(raw_effects[:8]):
+        for index, item in enumerate(raw_effects[:6]):
             if not isinstance(item, dict):
                 continue
             fallback = fallback_by_id.get(str(item.get("id") or "")) or (payload.fallbackEffects[index] if index < len(payload.fallbackEffects) else None)
@@ -44572,7 +44574,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 str(detail).strip()
                 for detail in (item.get("details") if isinstance(item.get("details"), list) else [])
                 if str(detail).strip()
-            ][:6]
+            ][:4]
             text_for_check = "\n".join([title, summary, *details])
             if not title or not summary or _collab_effect_text_is_code_mechanical(text_for_check):
                 continue
@@ -44608,7 +44610,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         if not normalized:
             raise HTTPException(status_code=502, detail="AI 返回内容仍偏代码文件说明，已拒绝展示。")
         return CollabEffectExplainResultRecord(
-            effects=normalized[:6],
+            effects=normalized[:4],
             provider=status.provider,
             model=status.model,
         )
