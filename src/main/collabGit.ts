@@ -119,6 +119,172 @@ type EffectDraft = {
 const COLLAB_AI_EXPLANATION_UNAVAILABLE_REASON = 'AI 功能说明尚未生成；下面只是按路径和提交信息推断的规则兜底，不能当作完整功能评审。';
 const MAX_EFFECT_DIFF_PREVIEW_CHARS = 8000;
 
+const GENERIC_RULE_EFFECT_IDS = new Set([
+  'renderer-general',
+  'desktop-general',
+  'desktop-collab-runtime',
+  'backend-local',
+  'backend-cloud',
+  'docs-config',
+]);
+
+type FunctionalSignalSpec = {
+  id: string;
+  title: string;
+  summary: string;
+  visibility: CollabEffectPreview['visibility'];
+  scopeLabel: string;
+  details: string[];
+  textPattern: RegExp;
+  pathPattern?: RegExp;
+};
+
+const FUNCTIONAL_SIGNAL_SPECS: FunctionalSignalSpec[] = [
+  {
+    id: 'signal-feishu-doc-sync',
+    title: '文档创建或修改后的飞书云文档同步会变化',
+    summary: '这会影响本地文档保存后是否自动创建、更新或关联飞书云文档，以及同步失败时用户看到的提示。',
+    visibility: 'visible',
+    scopeLabel: '飞书文档同步',
+    details: [
+      '建议用新建文档、智能编辑保存、再次修改已有文档三种场景验收。',
+      '如果已有文档原来没有飞书映射，要特别确认保存后是否会补建云文档。',
+    ],
+    textPattern: /飞书|feishu|lark|云文档|document\s*sync|sync.*document|document.*sync/i,
+    pathPattern: /feishu|lark|document|documents/i,
+  },
+  {
+    id: 'signal-local-auth-onboarding',
+    title: '首次注册、登录、本地模式或云端绑定流程会变化',
+    summary: '这会影响新电脑首次打开软件时，用户能否先完成本地注册登录，再去系统设置里填写云端服务地址。',
+    visibility: 'visible',
+    scopeLabel: '注册登录',
+    details: [
+      '建议用空设备数据目录测试注册、退出后登录、未配置云端地址、配置云端地址后绑定。',
+      '要留意本地账号、组织邀请码和云端账号之间是否正确衔接。',
+    ],
+    textPattern: /首次|注册|登录|local[-_\s]?auth|本地模式|云端绑定|邀请码|register|login|auth|onboarding/i,
+    pathPattern: /auth|login|register|membership|settings/i,
+  },
+  {
+    id: 'signal-org-admin-claim',
+    title: '组织管理员认领、成员审核或组织权限会变化',
+    summary: '这会影响一个组织首次连接云端后谁能认领管理员，以及普通成员是否能看到组织权限入口。',
+    visibility: 'visible',
+    scopeLabel: '组织权限',
+    details: [
+      '建议分别用“组织尚无管理员”“已有管理员”“普通成员”三个账号状态验收。',
+      '要确认认领成功后能立即看到完整组织管理能力，普通成员不会误看到管理员操作。',
+    ],
+    textPattern: /管理员|认领|组织权限|成员审核|membership|admin|claim|permission|employee|approved|rejected/i,
+    pathPattern: /admin|permission|membership|employee|organization|org/i,
+  },
+  {
+    id: 'signal-ai-config-sharing',
+    title: '组织成员复用管理员 AI 配置的规则会变化',
+    summary: '这会影响成员接入组织云后，是否能直接使用组织统一的大模型配置，而不是每台电脑手动填写 API key。',
+    visibility: 'mixed',
+    scopeLabel: 'AI 配置',
+    details: [
+      '建议用管理员账号设置 AI 配置，再用普通成员账号检查能否发起 AI 请求。',
+      '同时要确认密钥不会在界面、日志或协作说明中明文泄露。',
+    ],
+    textPattern: /AI\s*配置|api\s*key|大模型|doubao|qwen|openai|model|llm|ai.*config|config.*ai/i,
+    pathPattern: /ai|model|llm|settings|cloud_backend/i,
+  },
+  {
+    id: 'signal-collab-preview-sync',
+    title: '推送/同步按钮的预览和接收规则会变化',
+    summary: '这会影响你和同事如何查看对方修改、是否直接推 main、何时进入隔离预览，以及是否会自动接收远端改动。',
+    visibility: 'visible',
+    scopeLabel: '协作同步',
+    details: [
+      '建议测试推送前说明、同步前说明、main 快进接收、复杂修改只预览不合并。',
+      '要确认说明是功能或架构影响，而不是一串代码文件名。',
+    ],
+    textPattern: /协作|同步按钮|推送按钮|预览模式|隔离预览|collab|sync|preview|merge|main/i,
+    pathPattern: /collab|sync|preload|types|main\.ts|Collab/i,
+  },
+  {
+    id: 'signal-release-update',
+    title: '版本发布、检查更新或安装包链路会变化',
+    summary: '这会影响软件检查更新、官网发布面板、TOS 静态更新源、定向推送或安装包下载。',
+    visibility: 'mixed',
+    scopeLabel: '发版更新',
+    details: [
+      '建议检查版本号、Mac 更新接口、静态 latest manifest、官网发版面板和下载安装提示。',
+      '如果触及 Windows，还要单独确认签名和安装链路。',
+    ],
+    textPattern: /发版|版本|检查更新|自动更新|latest|blockmap|TOS|安装包|dmg|zip|windows|mac|release|update|updater/i,
+    pathPattern: /release|update|updater|version|build|electron|windows|mac|tos/i,
+  },
+  {
+    id: 'signal-runtime-packaging',
+    title: '内置后端运行时或安装后的启动稳定性会变化',
+    summary: '这会影响新电脑安装后，软件是否能正确准备 Python 运行时、启动本地后端并找到必要依赖。',
+    visibility: 'background',
+    scopeLabel: '运行时',
+    details: [
+      '建议用全新安装环境验证内置后端能启动，尤其关注 uvicorn、runtime manifest 和首次启动修复。',
+      '这类变化可能用户看不到界面差异，但会决定软件能不能正常打开和联网。',
+    ],
+    textPattern: /runtime|uvicorn|venv|python|packaged[-_\s]?runtime|内置后端|运行时|install|安装/i,
+    pathPattern: /runtime|python|uvicorn|install|package|build|backend/i,
+  },
+  {
+    id: 'signal-cloud-worker-profile-sync',
+    title: '组织或团队资料的后台自动同步会变化',
+    summary: '这会影响组织、团队、成员资料是否由后台 worker 自动补齐、同步或纠正。',
+    visibility: 'background',
+    scopeLabel: '后台同步',
+    details: [
+      '建议检查后台 worker 是否启动、同步任务是否可重复执行、失败后是否会重试。',
+      '如果这是云端能力，正式生效还取决于 cloud_backend 是否部署。',
+    ],
+    textPattern: /worker|后台.*同步|组织资料|团队资料|profile|team|organization.*sync|sync.*organization/i,
+    pathPattern: /worker|profile|team|organization|cloud_backend|sync/i,
+  },
+  {
+    id: 'signal-offline-membership-state',
+    title: '断网或云端不可用时的组织成员状态判断会变化',
+    summary: '这会影响软件在网络失败时，是否把“还没确认云端状态”误显示成“被拒绝”或“不能进入组织”。',
+    visibility: 'visible',
+    scopeLabel: '离线容错',
+    details: [
+      '建议断网、云端 500、云端慢响应三种场景下检查成员状态文案。',
+      '重点确认未知状态不会误伤正常成员。',
+    ],
+    textPattern: /断网|离线|云端不可用|未确认|被拒绝|offline|network|unavailable|pending|rejected|unknown/i,
+    pathPattern: /membership|cloud|auth|network|offline/i,
+  },
+  {
+    id: 'signal-async-race-fix',
+    title: '异步加载、保存或刷新顺序会变化',
+    summary: '这会影响页面打开、数据保存、状态刷新时是否出现偶发报错、旧数据覆盖新数据或重复触发。',
+    visibility: 'mixed',
+    scopeLabel: '稳定性',
+    details: [
+      '建议重复快速打开、保存、切换页面，观察是否还有偶发错误或状态跳回。',
+      '这类修复通常不新增入口，但会减少不稳定体验。',
+    ],
+    textPattern: /race|竞态|异步|async|await|刷新|加载|保存|debounce|stale|abort|cancel/i,
+    pathPattern: /renderer|backend|service|store|hook/i,
+  },
+  {
+    id: 'signal-data-schema-migration',
+    title: '本地或云端数据表结构会变化',
+    summary: '这会影响已有数据如何迁移、字段如何保存，以及旧版本数据是否还能被新版本读取。',
+    visibility: 'background',
+    scopeLabel: '数据结构',
+    details: [
+      '建议用已有数据库升级测试，确认迁移不会丢数据，也不会重复创建字段或索引。',
+      '如果涉及云端表结构，部署前必须先备份并确认回滚方式。',
+    ],
+    textPattern: /数据表|schema|migration|migrate|sqlite|postgres|database|column|index|table|字段|索引/i,
+    pathPattern: /migration|schema|database|sqlite|postgres|db|cloud_backend|backend/i,
+  },
+];
+
 const GROUP_LABELS: Record<CollabChangeGroupKey, string> = {
   shared_settings: '共享设置',
   renderer: '界面',
@@ -410,6 +576,74 @@ function markEffectsAsAiUnavailable(effects: CollabEffectPreview[], reason = COL
     explanationSource: 'unavailable' as const,
     aiUnavailableReason: reason,
   }));
+}
+
+function buildFunctionalSignalText(files: CollabFileChange[], extraText = '') {
+  const fileText = files
+    .map((file) => [
+      file.path,
+      file.previousPath || '',
+      file.type,
+      file.groupKey,
+      GROUP_LABELS[file.groupKey],
+    ].join(' '))
+    .join('\n');
+  return `${extraText}\n${fileText}`.slice(0, 32000);
+}
+
+function buildFunctionalSignalEffects(
+  mode: 'push' | 'pull',
+  files: CollabFileChange[],
+  signalText: string,
+): CollabEffectPreview[] {
+  const matched: CollabEffectPreview[] = [];
+  for (const spec of FUNCTIONAL_SIGNAL_SPECS) {
+    if (!spec.textPattern.test(signalText)) continue;
+    const relatedPaths = files
+      .filter((file) => {
+        const combinedPath = `${file.path}\n${file.previousPath || ''}`;
+        return spec.pathPattern ? spec.pathPattern.test(combinedPath) : spec.textPattern.test(combinedPath);
+      })
+      .map((file) => file.path);
+    const fallbackPaths = files.slice(0, 40).map((file) => file.path);
+    const uniquePaths = Array.from(new Set(relatedPaths.length ? relatedPaths : fallbackPaths));
+    if (!uniquePaths.length) continue;
+    matched.push({
+      id: spec.id,
+      title: spec.title,
+      summary: mode === 'push'
+        ? `${spec.summary} 推上 main 后，同事同步或预览时会获得这部分变化。`
+        : `${spec.summary} 接收或预览远端后，本机对应能力可能变化。`,
+      visibility: spec.visibility,
+      scopeLabel: spec.scopeLabel,
+      details: spec.details,
+      relatedPaths: uniquePaths,
+      beforeLabel: mode === 'push' ? 'main 当前效果' : '你本地当前效果',
+      afterLabel: mode === 'push' ? '推送到 main 后' : '接收远端后',
+      explanationSource: 'user_feature_rules',
+      aiUnavailableReason: null,
+    });
+  }
+  return matched;
+}
+
+function mergeFunctionalRuleEffects(
+  mode: 'push' | 'pull',
+  files: CollabFileChange[],
+  fallbackEffects: CollabEffectPreview[],
+  extraText = '',
+) {
+  const signalText = buildFunctionalSignalText(files, extraText);
+  const functionalEffects = buildFunctionalSignalEffects(mode, files, signalText);
+  if (!functionalEffects.length) return fallbackEffects;
+  const functionalPaths = new Set(functionalEffects.flatMap((effect) => effect.relatedPaths));
+  const preservedFallback = fallbackEffects.filter((effect) => {
+    if (GENERIC_RULE_EFFECT_IDS.has(effect.id)) {
+      return !effect.relatedPaths.some((targetPath) => functionalPaths.has(targetPath));
+    }
+    return !functionalEffects.some((nextEffect) => nextEffect.id === effect.id);
+  });
+  return [...functionalEffects, ...preservedFallback].slice(0, 8);
 }
 
 function normalizeAiEffectPreviews(rawEffects: CollabEffectPreview[], fallbackEffects: CollabEffectPreview[], files: CollabFileChange[]) {
@@ -1085,13 +1319,27 @@ async function explainEffectPreviews(
   } = {},
 ) {
   if (!files.length || !snapshot.repoPath || !snapshot.gitRepoPath) return fallbackEffects;
-  if (!options.effectExplainer) return markEffectsAsAiUnavailable(fallbackEffects);
+  if (!options.effectExplainer) {
+    const ruleEffects = mergeFunctionalRuleEffects(
+      mode,
+      files,
+      fallbackEffects,
+      (options.commitSummaries || []).join('\n'),
+    );
+    return markEffectsAsAiUnavailable(ruleEffects);
+  }
   const context = createRepoWorkContext(snapshot.repoPath, snapshot.gitRepoPath, snapshot.scopeRelativePath);
   try {
     const commitSummaries = options.commitSummaries?.length
       ? options.commitSummaries
       : await collectEffectCommitSummaries(context, mode, snapshot);
     const diffPreview = await collectEffectDiffPreview(context, mode, snapshot, files);
+    const ruleEffects = mergeFunctionalRuleEffects(
+      mode,
+      files,
+      fallbackEffects,
+      `${commitSummaries.join('\n')}\n${diffPreview}`,
+    );
     const aiEffects = await options.effectExplainer({
       mode,
       suggestedMessage,
@@ -1100,18 +1348,38 @@ async function explainEffectPreviews(
       diffPreview,
       groups,
       files,
-      fallbackEffects,
+      fallbackEffects: ruleEffects,
     });
-    const normalized = normalizeAiEffectPreviews(aiEffects || [], fallbackEffects, files);
+    const normalized = normalizeAiEffectPreviews(aiEffects || [], ruleEffects, files);
     if (normalized) return normalized;
     return markEffectsAsAiUnavailable(
-      fallbackEffects,
+      ruleEffects,
       'AI 功能说明返回内容仍偏代码路径或没有覆盖真实改动，已降级为规则兜底。',
     );
   } catch (error) {
     const detail = error instanceof Error ? error.message : String(error);
+    let ruleEffects = fallbackEffects;
+    try {
+      const commitSummaries = options.commitSummaries?.length
+        ? options.commitSummaries
+        : await collectEffectCommitSummaries(context, mode, snapshot);
+      const diffPreview = await collectEffectDiffPreview(context, mode, snapshot, files);
+      ruleEffects = mergeFunctionalRuleEffects(
+        mode,
+        files,
+        fallbackEffects,
+        `${commitSummaries.join('\n')}\n${diffPreview}`,
+      );
+    } catch {
+      ruleEffects = mergeFunctionalRuleEffects(
+        mode,
+        files,
+        fallbackEffects,
+        (options.commitSummaries || []).join('\n'),
+      );
+    }
     return markEffectsAsAiUnavailable(
-      fallbackEffects,
+      ruleEffects,
       `AI 功能说明生成失败：${detail}`,
     );
   }
