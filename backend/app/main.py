@@ -44534,26 +44534,69 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 },
             },
         }
+        system_instruction = (
+            "你是益语智库软件协作审查助手。"
+            "你的任务不是解释代码文件，而是把代码改动翻译成用户能判断的功能、业务规则、后台架构和验收风险。"
+            "不要输出 Markdown，不要输出思考过程。"
+        )
         try:
-            raw = state.ai._qwen_generate(
-                prompt=prompt,
-                system_instruction=(
-                    "你是益语智库软件协作审查助手。"
-                    "你的任务不是解释代码文件，而是把代码改动翻译成用户能判断的功能、业务规则、后台架构和验收风险。"
-                    "不要输出 Markdown，不要输出思考过程。"
-                ),
-                response_schema=schema,
-                timeout_seconds=10.0,
-                max_tokens=1200,
-                temperature=0.1,
-                top_p=0.8,
-                enable_thinking=False,
-                provider_override=status.provider,
-                model_override=status.model,
-                task_kind="fast_structured",
-            )
+            if status.provider == "openclaw":
+                raw = state.ai._qwen_generate(
+                    prompt=prompt,
+                    system_instruction=system_instruction,
+                    response_schema=schema,
+                    timeout_seconds=8.0,
+                    max_tokens=1000,
+                    temperature=0.1,
+                    top_p=0.8,
+                    enable_thinking=False,
+                    provider_override=status.provider,
+                    model_override=status.model,
+                    task_kind="fast_structured",
+                )
+            else:
+                base_url, api_key, model = state.ai._resolve_llm_config(  # type: ignore[attr-defined]
+                    provider_override=status.provider,
+                    model_override=status.model,
+                    task_kind="fast_structured",
+                )
+                response = httpx.post(
+                    f"{base_url}/chat/completions",
+                    headers=state.ai._build_openai_compatible_headers(api_key),  # type: ignore[attr-defined]
+                    json={
+                        "model": model,
+                        "messages": [
+                            {"role": "system", "content": system_instruction},
+                            {
+                                "role": "user",
+                                "content": (
+                                    "请严格返回一个 JSON 对象，不要 Markdown，不要解释。"
+                                    "JSON 结构：{\"effects\":[{\"id\":\"...\",\"title\":\"...\",\"summary\":\"...\","
+                                    "\"visibility\":\"visible|mixed|background\",\"scopeLabel\":\"...\","
+                                    "\"details\":[\"...\"],\"relatedPaths\":[\"...\"]}]}。\n\n"
+                                    f"{prompt}"
+                                ),
+                            },
+                        ],
+                        "temperature": 0.1,
+                        "top_p": 0.8,
+                        "max_tokens": 1000,
+                        "stream": False,
+                    },
+                    timeout=httpx.Timeout(timeout=18.0, connect=5.0, read=12.0, write=8.0, pool=5.0),
+                )
+                response.raise_for_status()
+                text = (
+                    response.json()
+                    .get("choices", [{}])[0]
+                    .get("message", {})
+                    .get("content", "")
+                )
+                raw = state.ai._load_relaxed_json(str(text or ""))  # type: ignore[attr-defined]
         except AiInvocationError as exc:
             raise HTTPException(status_code=502, detail=str(exc)) from exc
+        except httpx.TimeoutException as exc:
+            raise HTTPException(status_code=504, detail="AI 功能说明生成超时，已自动降级为规则兜底。") from exc
         except Exception as exc:
             raise HTTPException(status_code=502, detail=f"AI 功能说明调用失败：{exc}") from exc
 
