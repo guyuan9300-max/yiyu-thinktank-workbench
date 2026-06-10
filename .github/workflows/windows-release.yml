@@ -7,11 +7,14 @@ on:
         description: "Git ref or tag to build"
         required: true
         default: "main"
-      run_signpath:
-        description: "Submit installer to SignPath after build"
+      signing_provider:
+        description: "Signing provider to use after unsigned build"
         required: true
-        default: false
-        type: boolean
+        default: "unsigned"
+        type: choice
+        options:
+          - unsigned
+          - sslcom
 
 permissions:
   actions: read
@@ -63,41 +66,62 @@ jobs:
             dist/latest.yml
           if-no-files-found: error
 
-  signpath:
-    name: Sign with SignPath
+  sslcom-esigner:
+    name: Sign with SSL.com eSigner
     needs: build-unsigned
     runs-on: ubuntu-latest
-    if: ${{ inputs.run_signpath && vars.SIGNPATH_ENABLED == 'true' }}
+    if: ${{ inputs.signing_provider == 'sslcom' }}
 
     steps:
-      # Configure the exact SignPath project, signing policy, and artifact
-      # configuration after SignPath approves the open-source application.
-      - name: Submit signing request
-        uses: signpath/github-action-submit-signing-request@v2
+      - name: Download unsigned Windows artifacts
+        uses: actions/download-artifact@v4
         with:
-          api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
-          organization-id: ${{ secrets.SIGNPATH_ORGANIZATION_ID }}
-          project-slug: ${{ vars.SIGNPATH_PROJECT_SLUG }}
-          signing-policy-slug: ${{ vars.SIGNPATH_SIGNING_POLICY_SLUG }}
-          artifact-configuration-slug: ${{ vars.SIGNPATH_ARTIFACT_CONFIGURATION_SLUG }}
-          github-artifact-id: ${{ needs.build-unsigned.outputs.unsigned-artifact-id }}
-          wait-for-completion: true
-          output-artifact-directory: signed
+          name: windows-unsigned-${{ github.run_id }}
+          path: dist
 
-      - name: Upload signed installer
+      - name: Locate unsigned installer
+        id: locate
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p signed
+          installer="$(find "$PWD/dist" -maxdepth 1 -type f -name '*.exe' | head -n 1)"
+          if [[ -z "$installer" ]]; then
+            echo "No unsigned installer found in dist/" >&2
+            exit 1
+          fi
+          echo "installer=$installer" >> "$GITHUB_OUTPUT"
+
+      - name: Sign installer with SSL.com eSigner
+        uses: sslcom/esigner-codesign@v1.3.2
+        with:
+          command: sign
+          username: ${{ secrets.SSLCOM_ES_USERNAME }}
+          password: ${{ secrets.SSLCOM_ES_PASSWORD }}
+          credential_id: ${{ secrets.SSLCOM_CREDENTIAL_ID }}
+          totp_secret: ${{ secrets.SSLCOM_ES_TOTP_SECRET }}
+          file_path: ${{ steps.locate.outputs.installer }}
+          output_path: ${{ github.workspace }}/signed
+          malware_block: false
+          override: false
+          environment_name: PROD
+          clean_logs: true
+          jvm_max_memory: 1024M
+
+      - name: Upload SSL.com signed installer
         uses: actions/upload-artifact@v4
         with:
-          name: windows-signed-${{ github.run_id }}
+          name: windows-sslcom-signed-${{ github.run_id }}
           path: signed/*.exe
           if-no-files-found: error
 
-  refresh-update-metadata:
-    name: Refresh Windows update metadata
+  refresh-update-metadata-sslcom:
+    name: Refresh Windows update metadata (SSL.com)
     needs:
       - build-unsigned
-      - signpath
+      - sslcom-esigner
     runs-on: windows-latest
-    if: ${{ inputs.run_signpath && vars.SIGNPATH_ENABLED == 'true' }}
+    if: ${{ inputs.signing_provider == 'sslcom' }}
 
     steps:
       - name: Check out source
@@ -120,10 +144,10 @@ jobs:
           name: windows-unsigned-${{ github.run_id }}
           path: dist
 
-      - name: Download signed installer
+      - name: Download SSL.com signed installer
         uses: actions/download-artifact@v4
         with:
-          name: windows-signed-${{ github.run_id }}
+          name: windows-sslcom-signed-${{ github.run_id }}
           path: signed
 
       - name: Replace installer and refresh metadata
@@ -134,10 +158,10 @@ jobs:
           Copy-Item $signedExe.FullName -Destination (Join-Path "dist" $signedExe.Name) -Force
           npm run release:windows:refresh-metadata -- --exe (Join-Path "dist" $signedExe.Name)
 
-      - name: Upload signed Windows release artifacts
+      - name: Upload SSL.com signed Windows release artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: windows-signed-release-${{ github.run_id }}
+          name: windows-sslcom-signed-release-${{ github.run_id }}
           path: |
             dist/*.exe
             dist/*.exe.blockmap

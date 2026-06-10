@@ -12,7 +12,6 @@ import net from 'node:net';
 import type {
   CollabEffectExplanationRequest,
   CollabEffectExplanationResponse,
-  CollabEffectPreview,
   DesktopAppInfo,
   DesktopStartupGateResumeResult,
 } from '../shared/types.js';
@@ -1715,13 +1714,17 @@ async function requireActiveMaintenanceMode(actionLabel: string) {
   }
 }
 
-async function explainCollabEffectsWithAi(payload: CollabEffectExplanationRequest): Promise<CollabEffectPreview[]> {
+async function explainCollabEffectsWithAi(payload: CollabEffectExplanationRequest): Promise<CollabEffectExplanationResponse> {
   const response = await postBackendJson<CollabEffectExplanationResponse>(
     '/api/v1/runtime/collab-merge/explain-effects',
     payload,
-    30000,
+    90000,
   );
-  return Array.isArray(response.effects) ? response.effects : [];
+  return {
+    effects: Array.isArray(response.effects) ? response.effects : [],
+    provider: response.provider ?? null,
+    model: response.model ?? null,
+  };
 }
 
 function cloudBackendUrl() {
@@ -3285,8 +3288,13 @@ ipcMain.handle('yiyu-workbench:previewPushToMain', async (_event, repoPath: stri
     repoPath,
     suggestedCandidates: getCollabSuggestedCandidates(),
     appDbPath: path.join(app.getPath('userData'), 'app.db'),
-    effectExplainer: explainCollabEffectsWithAi,
+    enableAiExplanation: true,
   });
+});
+
+ipcMain.handle('yiyu-workbench:explainCollabEffects', async (_event, payload: CollabEffectExplanationRequest) => {
+  await requireActiveMaintenanceMode('生成协作功能说明');
+  return explainCollabEffectsWithAi(payload);
 });
 
 ipcMain.handle('yiyu-workbench:pushSafelyToMain', async (_event, payload) => {
@@ -3309,7 +3317,7 @@ ipcMain.handle('yiyu-workbench:previewPullFromMain', async (_event, repoPath: st
     targetCommit,
     suggestedCandidates: getCollabSuggestedCandidates(),
     appDbPath: path.join(app.getPath('userData'), 'app.db'),
-    effectExplainer: explainCollabEffectsWithAi,
+    enableAiExplanation: true,
   });
 });
 

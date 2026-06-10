@@ -392,6 +392,7 @@ import {
   enterMaintenanceMode,
   processPendingConsultationKnowledgeRequests,
   fastForwardMain,
+  explainCollabEffects,
   previewPullFromMain,
   previewPushToMain,
   pushSafelyToMain,
@@ -8717,6 +8718,47 @@ export default function App() {
     setCollabDialogError(null);
   }
 
+  async function refreshCollabAiExplanation(state: Exclude<CollabDialogState, null>) {
+    const request = state.preview.aiExplanationRequest;
+    if (!request || state.preview.aiExplanationStatus !== 'generating') return;
+    try {
+      const response = await explainCollabEffects(request);
+      setCollabDialogState((current) => {
+        if (!current || current.mode !== state.mode || current.preview.aiExplanationRequest !== request) return current;
+        const nextPreview = {
+          ...current.preview,
+          effects: response.effects.length ? response.effects : current.preview.effects,
+          aiExplanationStatus: response.effects.length ? 'ready' as const : 'failed' as const,
+          aiExplanationError: response.effects.length ? null : 'AI 没有返回可展示的功能说明。',
+        };
+        return {
+          ...current,
+          preview: nextPreview,
+        } as CollabDialogState;
+      });
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : 'AI 功能说明生成失败';
+      setCollabDialogState((current) => {
+        if (!current || current.mode !== state.mode || current.preview.aiExplanationRequest !== request) return current;
+        return {
+          ...current,
+          preview: {
+            ...current.preview,
+            aiExplanationStatus: 'failed',
+            aiExplanationError: detail,
+            effects: current.preview.effects.map((effect) => effect.explanationSource === 'ai'
+              ? effect
+              : {
+                  ...effect,
+                  explanationSource: 'unavailable' as const,
+                  aiUnavailableReason: `AI 功能说明生成失败：${detail}`,
+                }),
+          },
+        } as CollabDialogState;
+      });
+    }
+  }
+
   async function ensureCollabRepoForAction() {
     if (!canUseCollabSync) {
       flash('error', '协作同步仅在桌面版可用，请在 Electron 应用中打开。');
@@ -8760,7 +8802,9 @@ export default function App() {
     setCollabBusyAction('push');
     try {
       const preview = await previewPushToMain(repoPath);
-      openCollabDialog({ mode: 'push', preview });
+      const nextState = { mode: 'push' as const, preview };
+      openCollabDialog(nextState);
+      void refreshCollabAiExplanation(nextState);
     } catch (error) {
       flash('error', error instanceof Error ? error.message : '推送预览失败');
     } finally {
@@ -8776,7 +8820,9 @@ export default function App() {
     setCollabBusyAction('pull');
     try {
       const preview = await previewPullFromMain(repoPath);
-      openCollabDialog({ mode: 'pull', preview });
+      const nextState = { mode: 'pull' as const, preview };
+      openCollabDialog(nextState);
+      void refreshCollabAiExplanation(nextState);
     } catch (error) {
       flash('error', error instanceof Error ? error.message : '同步预览失败');
     } finally {
@@ -8797,7 +8843,9 @@ export default function App() {
     setCollabDialogError(null);
     try {
       const preview = await previewPullFromMain(repoPath, targetCommit);
-      openCollabDialog({ mode: 'pull', preview });
+      const nextState = { mode: 'pull' as const, preview };
+      openCollabDialog(nextState);
+      void refreshCollabAiExplanation(nextState);
     } catch (error) {
       const message = error instanceof Error ? error.message : '按提交日期切换同步范围失败';
       if (collabDialogState?.mode === 'pull') {
@@ -28942,7 +28990,8 @@ export default function App() {
 
     const renderOverviewSection = () => {
       const cloudConfigured = Boolean(draft.cloudApiUrl.trim());
-      const textModelReady = draft.aiProvider !== 'mock' && Boolean(draft.aiBaseUrl);
+      const orgCloudAiReady = health?.ai?.profileKey === 'org_cloud_proxy' && Boolean(health.ai.ready);
+      const textModelReady = orgCloudAiReady || (draft.aiProvider !== 'mock' && Boolean(draft.aiBaseUrl));
       const primaryReady = cloudConfigured && textModelReady;
       const ollamaReadyCount = AI_LOCAL_MODEL_PROFILE_ORDER.filter((k) => health?.aiProfiles?.[k]?.ready).length;
       const ollamaTotal = AI_LOCAL_MODEL_PROFILE_ORDER.length;
@@ -28997,10 +29046,14 @@ export default function App() {
               {renderStatusBlock({
                 label: '文字模型',
                 valueText: textModelReady
-                  ? (draft.aiProviderLabel || aiModelDisplayLabel(draft.aiProvider, draft.aiModel, draft.aiProviderLabel))
+                  ? (orgCloudAiReady
+                      ? (health?.ai.providerLabel || '组织云 AI')
+                      : (draft.aiProviderLabel || aiModelDisplayLabel(draft.aiProvider, draft.aiModel, draft.aiProviderLabel)))
                   : '未接入',
                 accent: textModelReady ? 'success' : 'warning',
-                helper: textModelReady ? (draft.aiModel || '默认模型') : '问答 / 报告 / 洞察都依赖它',
+                helper: orgCloudAiReady
+                  ? '组织已配置，成员无需填写 Key'
+                  : (textModelReady ? (draft.aiModel || '默认模型') : '问答 / 报告 / 洞察都依赖它'),
               })}
               {renderStatusBlock({
                 label: '本地模型',
@@ -29110,6 +29163,12 @@ export default function App() {
                       记住当前 API Key（仅本机）
                     </label>
                   </div>
+
+                  {health?.ai?.profileKey === 'org_cloud_proxy' && (
+                    <p className="rounded-xl border border-emerald-100 bg-emerald-50 px-3 py-2 text-[11px] text-emerald-700">
+                      组织 AI 已启用：成员通过云端代调用管理员配置的大模型，不会下发或保存管理员 API Key。
+                    </p>
+                  )}
 
                   {isLocalSession && (
                     <p className="rounded-xl border border-blue-100 bg-blue-50 px-3 py-2 text-[11px] text-blue-700">

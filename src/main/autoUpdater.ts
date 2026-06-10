@@ -44,6 +44,15 @@ interface CentralReleaseUpdatePayload {
   releaseDate?: string | null;
 }
 
+interface StaticFeedMetadata {
+  version: string;
+  downloadUrl: string | null;
+  fileName: string | null;
+  sizeBytes: number | null;
+  sha512: string | null;
+  releaseDate: string | null;
+}
+
 const UPDATE_EVENT_CHANNEL = 'yiyu-workbench:update-event';
 const CHECK_DELAY_MS = 10_000;
 const RECHECK_INTERVAL_MS = 6 * 60 * 60 * 1000;
@@ -74,6 +83,7 @@ let currentFeedBaseUrl: string | null = null;
 let currentIdentityKey: string | null = null;
 let lastOfficialPush: OfficialPushUpdatePayload | null = null;
 let lastOfficialPushSignature: string | null = null;
+let standardUpdateReady = false;
 
 export interface UpdateOrgIdentity {
   organizationId?: string | null;
@@ -172,6 +182,35 @@ function buildOfficialPush(update: CentralReleaseUpdatePayload): OfficialPushUpd
   };
 }
 
+function buildStaticReleasePush(feed: StaticFeedMetadata): OfficialPushUpdatePayload {
+  const currentVersion = app.getVersion();
+  const comparison = compareSemverish(feed.version, currentVersion);
+  const relation: OfficialPushUpdatePayload['relation'] = comparison === 1
+    ? 'upgrade'
+    : comparison === -1
+      ? 'downgrade'
+      : feed.version !== currentVersion
+        ? 'different'
+        : 'unknown';
+  return {
+    title: relation === 'downgrade'
+      ? `收到官方回退版本：${feed.version}`
+      : `发现益语智库官方版本：${feed.version}`,
+    version: feed.version,
+    releaseVersion: feed.version,
+    currentVersion,
+    packageKind: 'release',
+    customPackageId: null,
+    customPackageName: null,
+    fileName: feed.fileName,
+    sizeBytes: feed.sizeBytes,
+    sha512: feed.sha512,
+    downloadUrl: feed.downloadUrl,
+    organizationCode: currentOrgCode,
+    relation,
+  };
+}
+
 function sanitizeDownloadFileName(value: string | null | undefined, fallbackVersion: string): string {
   const raw = String(value || '').trim();
   const safe = raw
@@ -187,6 +226,101 @@ function normalizeSha512(value: string | null | undefined): string | null {
   if (!raw) return null;
   if (/^[a-f0-9]{128}$/i.test(raw)) return Buffer.from(raw, 'hex').toString('base64');
   return raw;
+}
+
+function parseYamlScalar(line: string): string | null {
+  const index = line.indexOf(':');
+  if (index < 0) return null;
+  const raw = line.slice(index + 1).trim();
+  if (!raw) return '';
+  return raw.replace(/^["']|["']$/g, '').trim();
+}
+
+function parseStaticFeedYaml(text: string): StaticFeedMetadata {
+  const lines = text.split(/\r?\n/);
+  let version = '';
+  let pathOrUrl = '';
+  let sha512 = '';
+  let sizeBytes: number | null = null;
+  let releaseDate: string | null = null;
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (trimmed.startsWith('version:')) version = parseYamlScalar(trimmed) || '';
+    else if (trimmed.startsWith('path:')) pathOrUrl = parseYamlScalar(trimmed) || pathOrUrl;
+    else if ((trimmed.startsWith('url:') || trimmed.startsWith('- url:')) && !pathOrUrl) pathOrUrl = parseYamlScalar(trimmed) || '';
+    else if (trimmed.startsWith('sha512:')) sha512 = parseYamlScalar(trimmed) || '';
+    else if (trimmed.startsWith('size:')) {
+      const parsed = Number(parseYamlScalar(trimmed) || 0);
+      if (Number.isFinite(parsed) && parsed > 0) sizeBytes = parsed;
+    } else if (trimmed.startsWith('releaseDate:')) {
+      releaseDate = parseYamlScalar(trimmed) || null;
+    }
+  }
+  if (!version) throw new Error('更新源缺少版本号');
+  const downloadUrl = pathOrUrl ? new URL(pathOrUrl, computeFeedBaseUrl()).toString() : null;
+  const fileName = downloadUrl ? decodeURIComponent(path.basename(new URL(downloadUrl).pathname || '')) : null;
+  return { version, downloadUrl, fileName, sizeBytes, sha512: sha512 || null, releaseDate };
+}
+
+function feedFileUrl(): string {
+  return new URL(UPDATE_FEED_FILE, computeFeedBaseUrl()).toString();
+}
+
+function packageExtension(fileNameOrUrl: string | null | undefined): string {
+  const value = String(fileNameOrUrl || '').split('?')[0];
+  return path.extname(value).replace(/^\./, '').toLowerCase();
+}
+
+function canUseStandardAutoUpdater(feed: StaticFeedMetadata): boolean {
+  const ext = packageExtension(feed.fileName || feed.downloadUrl);
+  if (UPDATE_PLATFORM === 'mac') return ext === 'zip';
+  if (UPDATE_PLATFORM === 'windows') return ext === 'exe';
+  return false;
+}
+
+async function fetchStaticFeedMetadata(): Promise<StaticFeedMetadata> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 6000);
+  try {
+    const response = await fetch(feedFileUrl(), {
+      headers: { Accept: 'text/yaml,text/plain,*/*' },
+      signal: controller.signal,
+    });
+    if (!response.ok) throw new Error(`static feed check failed: ${response.status}`);
+    return parseStaticFeedYaml(await response.text());
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function checkStaticFeed(options: { broadcastResult?: boolean } = {}): Promise<{ version: string | null; officialPush?: OfficialPushUpdatePayload | null }> {
+  standardUpdateReady = false;
+  const feed = await fetchStaticFeedMetadata();
+  const comparison = compareSemverish(feed.version, app.getVersion());
+  const differs = feed.version !== app.getVersion();
+  const hasUpdate = comparison === null ? differs : comparison > 0;
+  if (!hasUpdate) {
+    lastOfficialPush = null;
+    lastOfficialPushSignature = null;
+    if (options.broadcastResult) broadcast({ kind: 'not-available', version: feed.version });
+    return { version: feed.version, officialPush: null };
+  }
+
+  if (canUseStandardAutoUpdater(feed)) {
+    standardUpdateReady = true;
+    lastOfficialPush = null;
+    lastOfficialPushSignature = null;
+    if (options.broadcastResult) broadcast({ kind: 'available', version: feed.version });
+    return { version: feed.version, officialPush: null };
+  }
+
+  const officialPush = buildStaticReleasePush(feed);
+  lastOfficialPush = officialPush;
+  lastOfficialPushSignature = officialPushSignature(officialPush);
+  if (options.broadcastResult) {
+    broadcast({ kind: 'official-push-available', version: officialPush.version, officialPush });
+  }
+  return { version: feed.version, officialPush };
 }
 
 async function writeChunk(stream: fs.WriteStream, chunk: Buffer): Promise<void> {
@@ -378,6 +512,7 @@ export async function setUpdateOrgIdentity(identity: UpdateOrgIdentity | null): 
     currentFeedBaseUrl = null;
     lastOfficialPush = null;
     lastOfficialPushSignature = null;
+    standardUpdateReady = false;
     autoUpdater.allowDowngrade = false;
     stopOfficialPushPolling();
   } else {
@@ -475,7 +610,7 @@ export function setupAutoUpdater(mainWindow: BrowserWindow): void {
 
   if (!shouldEnable()) return;
 
-  autoUpdater.autoDownload = true;
+  autoUpdater.autoDownload = false;
   autoUpdater.autoInstallOnAppQuit = true;
   autoUpdater.allowDowngrade = false;
   applyFeedUrl();
@@ -534,16 +669,35 @@ export function setupAutoUpdater(mainWindow: BrowserWindow): void {
       return { ok: false, reason: 'updater disabled in this environment' };
     }
     try {
+      broadcast({ kind: 'checking' });
       if (currentOrgCode && currentFeedBaseUrl) {
-        broadcast({ kind: 'checking' });
         const officialPush = await checkOfficialPush({ broadcastResult: true });
         return { ok: true, version: officialPush?.version ?? null, officialPush };
       }
-      const result = await autoUpdater.checkForUpdates();
-      return { ok: true, version: result?.updateInfo?.version ?? null };
+      const result = await checkStaticFeed({ broadcastResult: true });
+      return { ok: true, version: result.version, officialPush: result.officialPush ?? null };
     } catch (err) {
       const message = normalizeUpdateErrorMessage(err instanceof Error ? err.message : String(err));
       console.error('[autoUpdater] checkForUpdates failed:', message);
+      return { ok: false, reason: message };
+    }
+  });
+
+  ipcMain.handle('yiyu-workbench:update.downloadStandard', async () => {
+    if (!shouldEnable()) {
+      return { ok: false, reason: 'updater disabled in this environment' };
+    }
+    if (!standardUpdateReady) {
+      return { ok: false, reason: '当前没有可自动更新的标准安装包，请先检查更新。' };
+    }
+    try {
+      broadcast({ kind: 'checking' });
+      await autoUpdater.checkForUpdates();
+      await autoUpdater.downloadUpdate();
+      return { ok: true };
+    } catch (err) {
+      const message = normalizeUpdateErrorMessage(err instanceof Error ? err.message : String(err));
+      console.error('[autoUpdater] downloadStandard failed:', message);
       return { ok: false, reason: message };
     }
   });
@@ -552,13 +706,12 @@ export function setupAutoUpdater(mainWindow: BrowserWindow): void {
     if (!shouldEnable()) {
       return { ok: false, reason: 'updater disabled in this environment' };
     }
-    if (!currentOrgCode || !currentFeedBaseUrl) {
-      return { ok: false, reason: '当前没有组织推送源，请先登录并加入组织。' };
-    }
     try {
-      const officialPush = await checkOfficialPush({ broadcastResult: true }) || lastOfficialPush;
+      const officialPush = currentOrgCode && currentFeedBaseUrl
+        ? await checkOfficialPush({ broadcastResult: true }) || lastOfficialPush
+        : lastOfficialPush;
       if (!officialPush) {
-        return { ok: false, reason: '当前没有可安装的官方推送。' };
+        return { ok: false, reason: '当前没有可安装的官方版本，请先检查更新。' };
       }
       broadcast({ kind: 'checking' });
       const downloaded = await downloadOfficialPushPackage(officialPush);
@@ -595,7 +748,7 @@ export function setupAutoUpdater(mainWindow: BrowserWindow): void {
       checkOfficialPush().catch((err) => console.warn('[autoUpdater] initial official push check failed:', err));
       return;
     }
-    autoUpdater.checkForUpdates().catch((err) => console.warn('[autoUpdater] initial checkForUpdates failed:', err));
+    checkStaticFeed().catch((err) => console.warn('[autoUpdater] initial static feed check failed:', err));
   }, CHECK_DELAY_MS);
 
   recheckTimer = setInterval(() => {
@@ -603,7 +756,7 @@ export function setupAutoUpdater(mainWindow: BrowserWindow): void {
       checkOfficialPush().catch((err) => console.warn('[autoUpdater] periodic official push check failed:', err));
       return;
     }
-    autoUpdater.checkForUpdates().catch((err) => console.warn('[autoUpdater] periodic checkForUpdates failed:', err));
+    checkStaticFeed().catch((err) => console.warn('[autoUpdater] periodic static feed check failed:', err));
   }, RECHECK_INTERVAL_MS);
 
   app.on('before-quit', () => {

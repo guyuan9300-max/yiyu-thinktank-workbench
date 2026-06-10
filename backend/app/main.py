@@ -5359,6 +5359,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         state.volatile_cloud_refresh_token = ""
         state.volatile_cloud_session_user_json = ""
         state.cloud_session_persistent = False
+        state.ai.invalidate_org_cloud_proxy_cache()
         with state.maintenance_mode_lock:
             state.maintenance_mode_active = False
             state.maintenance_mode_user_id = ""
@@ -8562,6 +8563,24 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         if not response.content:
             return {}
         return response.json()
+
+    def _load_org_cloud_ai_status_for_ai_service() -> dict[str, object]:
+        payload = cloud_request("GET", "/api/v1/org-ai/status", timeout=3.0)
+        return payload if isinstance(payload, dict) else {"available": False, "reason": "组织 AI 状态响应无效。"}
+
+    def _invoke_org_cloud_ai_for_ai_service(payload: dict[str, object], timeout_seconds: float) -> dict[str, object]:
+        response = cloud_request(
+            "POST",
+            "/api/v1/org-ai/chat/completions",
+            json_body=payload,
+            timeout=max(float(timeout_seconds or 60.0), 12.0),
+        )
+        return response if isinstance(response, dict) else {}
+
+    state.ai.configure_org_cloud_proxy(
+        status_loader=_load_org_cloud_ai_status_for_ai_service,
+        chat_completion=_invoke_org_cloud_ai_for_ai_service,
+    )
 
     def _auto_sync_document_to_feishu_docx(
         *,
@@ -29706,28 +29725,43 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 and str(attr_row["value_category"]) == "date"
                 and "已完成" in str(attr_row["value_text"] or "")
             ):
-                # 找 deadline 关键词 + 该客户 todo task
+                # 找业务关键词 + 该客户 todo task。不要把"完成/截止/日期"这类状态词本身当成任务标题依据。
                 attr_name = str(attr_row["attribute_name"] or "")
-                # 启发式匹配: attribute_name 含"deadline/截止/到期" + title 含相关关键词
-                key_terms = [
-                    w for w in attr_name.replace("deadline", "").replace("截止", "").replace("到期", "").split()
-                    if len(w) > 2
+                auto_done_stopwords = [
+                    "完成时间",
+                    "完成日期",
+                    "完成情况",
+                    "已完成",
+                    "完成",
+                    "deadline",
+                    "截止",
+                    "到期",
+                    "日期",
+                    "时间",
+                    "已",
                 ]
-                if not key_terms and attr_name:
-                    key_terms = [attr_name[:6]]
-                task_rows = state.db.fetchall(
-                    "SELECT id, title FROM tasks WHERE client_id=? AND progress_status='todo'",
-                    (client_id,),
-                )
-                for tr in task_rows:
-                    title = str(tr["title"] or "")
-                    if any(k in title for k in key_terms):
-                        state.db.execute(
-                            "UPDATE tasks SET status='done', progress_status='done', "
-                            "completed_at=COALESCE(completed_at, ?), updated_at=? WHERE id=?",
-                            (now, now, str(tr["id"])),
-                        )
-                        linked_tasks.append(str(tr["id"]))
+                normalized_attr_name = attr_name
+                for token in auto_done_stopwords:
+                    normalized_attr_name = normalized_attr_name.replace(token, " ")
+                key_terms = [
+                    w.strip()
+                    for w in re.split(r"[\s,，、/｜|:：;；_\-]+", normalized_attr_name)
+                    if len(w.strip()) > 2 and w.strip() not in auto_done_stopwords
+                ]
+                if key_terms:
+                    task_rows = state.db.fetchall(
+                        "SELECT id, title FROM tasks WHERE client_id=? AND progress_status='todo'",
+                        (client_id,),
+                    )
+                    for tr in task_rows:
+                        title = str(tr["title"] or "")
+                        if any(k in title for k in key_terms):
+                            state.db.execute(
+                                "UPDATE tasks SET status='done', progress_status='done', "
+                                "completed_at=COALESCE(completed_at, ?), updated_at=? WHERE id=?",
+                                (now, now, str(tr["id"])),
+                            )
+                            linked_tasks.append(str(tr["id"]))
         except Exception:
             pass
 
@@ -30502,6 +30536,31 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             )
             return
         try:
+            if not current_session_is_admin():
+                status_payload = cloud_request("GET", "/api/v1/org-ai/status")
+                if not isinstance(status_payload, dict):
+                    raise RuntimeError("云端组织 AI 状态响应非 JSON 对象")
+                available = bool(status_payload.get("available"))
+                state.ai.invalidate_org_cloud_proxy_cache()
+                _cloud_ai_sync_status.clear()
+                _cloud_ai_sync_status.update({
+                    "state": "proxy_available" if available else "skipped",
+                    "at": now_iso(),
+                    "reason": None if available else str(status_payload.get("reason") or "组织 AI 暂不可用。"),
+                    "provider": str(status_payload.get("aiProvider") or "") or None,
+                    "providerLabel": str(status_payload.get("aiProviderLabel") or "") or None,
+                    "model": str(status_payload.get("aiModel") or "") or None,
+                    "baseUrl": None,
+                    "hasApiKey": bool(status_payload.get("hasApiKey")),
+                    "proxyMode": "cloud_proxy",
+                })
+                logger.info(
+                    "[cloud-ai-sync] member proxy status: available=%s provider=%s model=%s",
+                    available,
+                    str(status_payload.get("aiProvider") or "<empty>"),
+                    str(status_payload.get("aiModel") or "<empty>"),
+                )
+                return
             secret_payload = cloud_request("GET", "/api/v1/settings/org-ai-config/secret")
             if not isinstance(secret_payload, dict):
                 _cloud_ai_sync_status.clear()
@@ -30650,6 +30709,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 "hasApiKey": True,
                 "fingerprint": local_fingerprint or None,
             })
+            state.ai.invalidate_org_cloud_proxy_cache()
             logger.info(
                 "[cloud-ai-sync] pushed: provider=%s model=%s baseUrl=%s fingerprint=%s",
                 provider,
@@ -44454,6 +44514,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
     def explain_collab_effects_with_ai(
         payload: CollabEffectExplainPayload,
     ) -> CollabEffectExplainResultRecord:
+        started_at = time.perf_counter()
         status = _collab_merge_ai_status()
         if not status.available:
             raise HTTPException(status_code=503, detail=status.reason or "AI 不可用，不能生成协作功能说明。")
@@ -44497,13 +44558,13 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             "提交摘要：\n"
             f"{json.dumps(payload.commitSummaries[:12], ensure_ascii=False)}\n\n"
             "变更分组：\n"
-            f"{json.dumps(payload.groups, ensure_ascii=False)[:2000]}\n\n"
+            f"{json.dumps(payload.groups, ensure_ascii=False)[:1200]}\n\n"
             "文件证据（只用于判断，不要照抄成标题）：\n"
-            f"{json.dumps(files_brief, ensure_ascii=False)[:4000]}\n\n"
+            f"{json.dumps(files_brief, ensure_ascii=False)[:2500]}\n\n"
             "规则草稿（只供参考，太泛就重写）：\n"
-            f"{json.dumps(fallback_brief, ensure_ascii=False)[:4000]}\n\n"
+            f"{json.dumps(fallback_brief, ensure_ascii=False)[:2500]}\n\n"
             "关键 diff 片段：\n"
-            f"{payload.diffPreview[:8000]}\n\n"
+            f"{payload.diffPreview[:2500]}\n\n"
             "输出要求：\n"
             "1. 只返回 JSON。\n"
             "2. 返回 1-4 条 effects，每条必须是用户视角功能或后台架构影响。\n"
@@ -44539,66 +44600,44 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             "你的任务不是解释代码文件，而是把代码改动翻译成用户能判断的功能、业务规则、后台架构和验收风险。"
             "不要输出 Markdown，不要输出思考过程。"
         )
+        logger.info(
+            "collab effect explanation started mode=%s files=%s commits=%s diff_chars=%s fallback=%s",
+            payload.mode,
+            len(payload.files),
+            len(payload.commitSummaries),
+            len(payload.diffPreview or ""),
+            len(payload.fallbackEffects),
+        )
         try:
-            if status.provider == "openclaw":
-                raw = state.ai._qwen_generate(
-                    prompt=prompt,
-                    system_instruction=system_instruction,
-                    response_schema=schema,
-                    timeout_seconds=8.0,
-                    max_tokens=1000,
-                    temperature=0.1,
-                    top_p=0.8,
-                    enable_thinking=False,
-                    provider_override=status.provider,
-                    model_override=status.model,
-                    task_kind="fast_structured",
-                )
-            else:
-                base_url, api_key, model = state.ai._resolve_llm_config(  # type: ignore[attr-defined]
-                    provider_override=status.provider,
-                    model_override=status.model,
-                    task_kind="fast_structured",
-                )
-                response = httpx.post(
-                    f"{base_url}/chat/completions",
-                    headers=state.ai._build_openai_compatible_headers(api_key),  # type: ignore[attr-defined]
-                    json={
-                        "model": model,
-                        "messages": [
-                            {"role": "system", "content": system_instruction},
-                            {
-                                "role": "user",
-                                "content": (
-                                    "请严格返回一个 JSON 对象，不要 Markdown，不要解释。"
-                                    "JSON 结构：{\"effects\":[{\"id\":\"...\",\"title\":\"...\",\"summary\":\"...\","
-                                    "\"visibility\":\"visible|mixed|background\",\"scopeLabel\":\"...\","
-                                    "\"details\":[\"...\"],\"relatedPaths\":[\"...\"]}]}。\n\n"
-                                    f"{prompt}"
-                                ),
-                            },
-                        ],
-                        "temperature": 0.1,
-                        "top_p": 0.8,
-                        "max_tokens": 1000,
-                        "stream": False,
-                    },
-                    timeout=httpx.Timeout(timeout=18.0, connect=5.0, read=12.0, write=8.0, pool=5.0),
-                )
-                response.raise_for_status()
-                text = (
-                    response.json()
-                    .get("choices", [{}])[0]
-                    .get("message", {})
-                    .get("content", "")
-                )
-                raw = state.ai._load_relaxed_json(str(text or ""))  # type: ignore[attr-defined]
+            raw = state.ai._qwen_generate(
+                prompt=prompt,
+                system_instruction=system_instruction,
+                response_schema=schema,
+                timeout_seconds=45.0,
+                max_tokens=1200,
+                temperature=0.1,
+                top_p=0.8,
+                enable_thinking=False,
+                task_kind="fast_structured",
+            )
         except AiInvocationError as exc:
+            logger.warning(
+                "collab effect explanation ai error duration_ms=%.0f detail=%s",
+                (time.perf_counter() - started_at) * 1000,
+                str(exc)[:240],
+            )
             raise HTTPException(status_code=502, detail=str(exc)) from exc
-        except httpx.TimeoutException as exc:
-            raise HTTPException(status_code=504, detail="AI 功能说明生成超时，已自动降级为规则兜底。") from exc
         except Exception as exc:
-            raise HTTPException(status_code=502, detail=f"AI 功能说明调用失败：{exc}") from exc
+            detail = str(exc).strip() or exc.__class__.__name__
+            logger.warning(
+                "collab effect explanation failed duration_ms=%.0f detail=%s",
+                (time.perf_counter() - started_at) * 1000,
+                detail[:240],
+            )
+            lowered = detail.lower()
+            if "timeout" in lowered or "timed out" in lowered or "超时" in detail:
+                raise HTTPException(status_code=504, detail="AI 功能说明生成超时，已自动降级为规则兜底。") from exc
+            raise HTTPException(status_code=502, detail=f"AI 功能说明调用失败：{detail}") from exc
 
         if not isinstance(raw, dict):
             raise HTTPException(status_code=502, detail="AI 功能说明没有返回 JSON 对象。")
@@ -44651,7 +44690,18 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 )
             )
         if not normalized:
+            logger.warning(
+                "collab effect explanation rejected code-like output duration_ms=%.0f",
+                (time.perf_counter() - started_at) * 1000,
+            )
             raise HTTPException(status_code=502, detail="AI 返回内容仍偏代码文件说明，已拒绝展示。")
+        logger.info(
+            "collab effect explanation succeeded duration_ms=%.0f effects=%s provider=%s model=%s",
+            (time.perf_counter() - started_at) * 1000,
+            len(normalized[:4]),
+            status.provider,
+            status.model,
+        )
         return CollabEffectExplainResultRecord(
             effects=normalized[:4],
             provider=status.provider,

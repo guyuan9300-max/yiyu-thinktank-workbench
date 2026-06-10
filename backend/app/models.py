@@ -199,7 +199,7 @@ class HealthResponse(BaseModel):
 
 
 class LastCloudAiSyncStatusRecord(BaseModel):
-    state: Literal["never", "synced", "uploaded", "failed", "skipped"] = "never"
+    state: Literal["never", "synced", "uploaded", "failed", "skipped", "proxy_available"] = "never"
     at: str | None = None
     reason: str | None = None
     provider: str | None = None
@@ -208,6 +208,7 @@ class LastCloudAiSyncStatusRecord(BaseModel):
     baseUrl: str | None = None
     hasApiKey: bool = False
     fingerprint: str | None = None
+    proxyMode: str | None = None
 
 
 class SettingsResponse(BaseModel):

@@ -13,6 +13,7 @@ interface Props {
 type UpdateUiState =
   | { kind: 'idle' }
   | { kind: 'checking' }
+  | { kind: 'standard-available'; version?: string }
   | { kind: 'downloading'; version?: string; percent?: number }
   | { kind: 'downloaded'; version?: string }
   | { kind: 'official-push'; push: OfficialPushUpdatePayload; installing?: boolean }
@@ -62,7 +63,7 @@ export function AboutAppSettingsPanel({ desktopAppInfo }: Props): React.ReactEle
           setUpdateState({ kind: 'checking' });
           return;
         case 'available':
-          setUpdateState({ kind: 'downloading', version: payload.version });
+          setUpdateState({ kind: 'standard-available', version: payload.version });
           return;
         case 'download-progress':
           setUpdateState((prev) =>
@@ -116,6 +117,20 @@ export function AboutAppSettingsPanel({ desktopAppInfo }: Props): React.ReactEle
     if (!result.ok) {
       setRestartBusy(false);
       setUpdateState({ kind: 'error', message: result.reason ?? '重启失败' });
+    }
+  };
+
+  const handleDownloadStandardUpdate = async () => {
+    const trigger = window.yiyuWorkbench?.downloadStandardUpdate;
+    if (typeof trigger !== 'function') {
+      setUpdateState({ kind: 'error', message: '当前安装包还不支持确认下载更新，请先安装迁移版本。' });
+      return;
+    }
+    const version = updateState.kind === 'standard-available' ? updateState.version : undefined;
+    setUpdateState({ kind: 'downloading', version });
+    const result = await trigger();
+    if (!result.ok) {
+      setUpdateState({ kind: 'error', message: result.reason ?? '下载更新失败' });
     }
   };
 
@@ -223,6 +238,14 @@ export function AboutAppSettingsPanel({ desktopAppInfo }: Props): React.ReactEle
               )}
             </div>
           )}
+          {updateState.kind === 'standard-available' && (
+            <div className="flex items-start gap-2 rounded-md border border-blue-100 bg-blue-50 px-3 py-2 text-[12px] text-blue-800">
+              <Bell size={14} className="mt-[2px] shrink-0" />
+              <span>
+                发现新版本{updateState.version ? ` ${updateState.version}` : ''}。确认后才会开始下载，下载完成后可重启安装。
+              </span>
+            </div>
+          )}
           {updateState.kind === 'downloaded' && (
             <div className="flex items-start gap-2 rounded-md bg-emerald-50 px-3 py-2 text-[12px] text-emerald-700">
               <CheckCircle2 size={14} className="mt-[2px] shrink-0" />
@@ -236,8 +259,8 @@ export function AboutAppSettingsPanel({ desktopAppInfo }: Props): React.ReactEle
             <div className="flex items-start gap-2 rounded-md bg-emerald-50 px-3 py-2 text-[12px] text-emerald-700">
               <CheckCircle2 size={14} className="mt-[2px] shrink-0" />
               <span>
-                推送版本 {updateState.version || ''} 的安装包已下载并打开
-                {updateState.fileName ? `（${updateState.fileName}）` : ''}。请按 macOS 提示完成安装。
+                版本 {updateState.version || ''} 的安装包已下载并打开
+                {updateState.fileName ? `（${updateState.fileName}）` : ''}。请按系统提示完成安装或解压。
               </span>
             </div>
           )}
@@ -262,10 +285,12 @@ export function AboutAppSettingsPanel({ desktopAppInfo }: Props): React.ReactEle
                       ? '这是官方指定的回退版本，适合测试或组织临时回滚。'
                       : updateState.push.packageKind === 'custom'
                         ? '这是益语智库为你所在组织指派的定制版本。'
-                        : '这是益语智库官方特地推送给你所在组织的版本。'}
+                        : updateState.push.organizationCode
+                          ? '这是益语智库官方特地推送给你所在组织的版本。'
+                          : '这是益语智库官方发布的安装包。'}
                   </p>
                   <p className="mt-1 text-[11px] text-blue-600/80">
-                    安装阶段仍受 macOS 签名校验影响；如安装失败，请等待正式签名包。
+                    检查更新只读取版本信息；点下方按钮后才会下载安装包。
                   </p>
                 </div>
               </div>
@@ -295,6 +320,16 @@ export function AboutAppSettingsPanel({ desktopAppInfo }: Props): React.ReactEle
             <RefreshCw size={14} className={checkBusy || updateState.kind === 'checking' ? 'animate-spin' : ''} />
             检查更新
           </button>
+          {updateState.kind === 'standard-available' && (
+            <button
+              type="button"
+              onClick={handleDownloadStandardUpdate}
+              className="inline-flex items-center gap-2 rounded-md bg-[#5B7BFE] px-4 py-2 text-[13px] font-medium text-white hover:bg-[#4A6AEF]"
+            >
+              <Download size={14} />
+              下载并准备更新
+            </button>
+          )}
           {updateState.kind === 'official-push' && (
             <>
               <button
@@ -304,7 +339,7 @@ export function AboutAppSettingsPanel({ desktopAppInfo }: Props): React.ReactEle
                 className="inline-flex items-center gap-2 rounded-md bg-[#5B7BFE] px-4 py-2 text-[13px] font-medium text-white hover:bg-[#4A6AEF] disabled:opacity-60"
               >
                 <Download size={14} />
-                {updateState.installing ? '正在准备…' : '安装推送版本'}
+                {updateState.installing ? '正在准备…' : '下载安装包'}
               </button>
               <button
                 type="button"

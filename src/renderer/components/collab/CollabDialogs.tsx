@@ -129,7 +129,30 @@ export function CollabPreviewDialog({
     || Boolean(preview.executionBlockReason)
     || (mode === 'pull' && !pullPreview?.canFastForwardMain);
   const hasAiEffects = preview.effects.some((effect) => effect.explanationSource === 'ai');
+  const aiExplanationStatus = preview.aiExplanationStatus || (hasAiEffects ? 'ready' : 'failed');
   const firstAiIssue = preview.effects.find((effect) => effect.explanationSource !== 'ai' && effect.aiUnavailableReason)?.aiUnavailableReason || null;
+  const aiStatusTone = aiExplanationStatus === 'ready'
+    ? 'border-emerald-100 bg-emerald-50 text-emerald-800'
+    : aiExplanationStatus === 'generating'
+      ? 'border-blue-100 bg-blue-50 text-blue-800'
+      : 'border-amber-200 bg-amber-50 text-amber-800';
+  const aiStatusIcon = aiExplanationStatus === 'ready'
+    ? <Sparkles size={15} className="mt-0.5 shrink-0" />
+    : aiExplanationStatus === 'generating'
+      ? <RefreshCw size={15} className="mt-0.5 shrink-0 animate-spin" />
+      : <AlertCircle size={15} className="mt-0.5 shrink-0" />;
+  const aiStatusText = (() => {
+    if (aiExplanationStatus === 'ready') {
+      return '以下说明已由软件 AI 根据提交摘要、变更分组和有限 diff 片段生成；技术文件只放在折叠证据里。';
+    }
+    if (aiExplanationStatus === 'generating') {
+      return 'AI 功能说明正在后台生成。当前先显示规则兜底，生成成功后会自动替换；GitHub 预检和推送资格不受 AI 等待影响。';
+    }
+    if (aiExplanationStatus === 'skipped') {
+      return `AI 功能说明已跳过，当前展示规则兜底。${preview.aiExplanationError || firstAiIssue ? `原因：${preview.aiExplanationError || firstAiIssue}` : ''}`;
+    }
+    return `AI 功能说明没有生成成功，当前展示规则兜底。${preview.aiExplanationError || firstAiIssue ? `原因：${preview.aiExplanationError || firstAiIssue}` : ''}`;
+  })();
 
   return (
     <div className="fixed inset-0 z-[80] overflow-y-auto bg-black/30 px-4 py-8 backdrop-blur-sm">
@@ -206,18 +229,10 @@ export function CollabPreviewDialog({
                   <p className="mt-2 text-[13px] leading-6 text-gray-600">
                     这里解释的是用户能感受到的功能变化、后台规则变化和架构风险。{mode === 'push' ? '推送会先接到最新 main，再安全推送；' : ''}文件清单只作为技术证据。
                   </p>
-                  <div className={`mt-3 rounded-2xl border px-3 py-3 text-[12px] font-semibold leading-6 ${
-                    hasAiEffects
-                      ? 'border-emerald-100 bg-emerald-50 text-emerald-800'
-                      : 'border-amber-200 bg-amber-50 text-amber-800'
-                  }`}>
+                  <div className={`mt-3 rounded-2xl border px-3 py-3 text-[12px] font-semibold leading-6 ${aiStatusTone}`}>
                     <div className="flex items-start gap-2">
-                      {hasAiEffects ? <Sparkles size={15} className="mt-0.5 shrink-0" /> : <AlertCircle size={15} className="mt-0.5 shrink-0" />}
-                      <span>
-                        {hasAiEffects
-                          ? '以下说明已由软件 AI 根据提交摘要、变更分组和有限 diff 片段生成；技术文件只放在折叠证据里。'
-                          : `AI 功能说明没有生成成功，当前展示的是规则兜底。${firstAiIssue ? `原因：${firstAiIssue}` : ''}`}
-                      </span>
+                      {aiStatusIcon}
+                      <span>{aiStatusText}</span>
                     </div>
                   </div>
                   <div className="mt-4 grid gap-3">
@@ -242,9 +257,15 @@ export function CollabPreviewDialog({
                                 <span className={`rounded-full px-2.5 py-1 text-[11px] font-semibold ring-1 ${
                                   effect.explanationSource === 'ai'
                                     ? 'bg-emerald-50 text-emerald-700 ring-emerald-100'
+                                    : aiExplanationStatus === 'generating'
+                                      ? 'bg-blue-50 text-blue-700 ring-blue-100'
                                     : 'bg-amber-50 text-amber-700 ring-amber-100'
                                 }`}>
-                                  {effect.explanationSource === 'ai' ? 'AI 功能说明' : '规则兜底'}
+                                  {effect.explanationSource === 'ai'
+                                    ? 'AI 功能说明'
+                                    : aiExplanationStatus === 'generating'
+                                      ? '规则兜底 · AI 生成中'
+                                      : '规则兜底'}
                                 </span>
                               </div>
                               <p className="mt-2 text-[13px] leading-6 text-gray-600">{effect.summary}</p>
