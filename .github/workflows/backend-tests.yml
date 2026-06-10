@@ -1,0 +1,55 @@
+name: Backend tests
+
+# 3+4 信息高速公路审计(2026-06-10·主干道一)落地：建一条"在跑的"后端测试 CI。
+# 现状根因(D6-03)：仓库唯一 workflow windows-release.yml 不调 pytest，1233 个测试无人自动跑，
+# 90 个历史失败测试被 conftest 用 xfail(strict=False) 集中静音 → 回归保护≈0。
+# 本 workflow 在每次 push/PR(动到 backend 时)跑 pytest：
+#   - 真失败(F) → CI 红，即回归保护(466 通过的测试 + 任何新测试一旦挂就拦住)。
+#   - 已知 brittle 测试仍是 xfail(strict=False)，不误红；-rX 把"已修好却还挂在 _known_failing 清单里"(XPASS)显出来，供逐步删清单。
+# strict=True 棘轮留作 Phase 2，避免 day-1 因 XPASS 误红。
+
+on:
+  push:
+    paths:
+      - "backend/**"
+      - ".github/workflows/backend-tests.yml"
+  pull_request:
+    paths:
+      - "backend/**"
+      - ".github/workflows/backend-tests.yml"
+
+concurrency:
+  group: backend-tests-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  pytest:
+    name: pytest (hermetic, in-process)
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      # 从 backend/uv.lock 装依赖。--no-install-project：测试经 pytest pythonpath="." 直接 import app，
+      # 无需把 backend 当可安装包构建(pyproject 无 [build-system])。
+      - name: Install backend dependencies
+        run: uv sync --no-install-project
+
+      # 测试是 hermetic 的：每个测试 create_app(tmp_path) 起进程内 app + 临时 sqlite，
+      # AI 走 monkeypatch/_FakeAi 打桩，不需要真 ollama/qdrant/真库。
+      - name: Run pytest
+        run: uv run pytest -rX --durations=15

@@ -45116,6 +45116,13 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             client_id=clientId,
         )
 
+    @app.get("/api/v1/data-center/health-dashboard")
+    def get_data_center_health_dashboard_api() -> dict[str, object]:
+        """四仓健康仪表盘（只读）：四仓行数/空表、来源登记覆盖率、队列卡死、深读覆盖。"""
+        from app.services.data_center_health_dashboard import build_data_center_health_dashboard
+
+        return build_data_center_health_dashboard(state.db)
+
     @app.get("/api/v1/data-center/artifact-status", response_model=DataCenterArtifactStatusRecord)
     def get_data_center_artifact_status_api() -> DataCenterArtifactStatusRecord:
         return DataCenterArtifactStatusRecord.model_validate(build_data_center_artifact_status(state.db))
