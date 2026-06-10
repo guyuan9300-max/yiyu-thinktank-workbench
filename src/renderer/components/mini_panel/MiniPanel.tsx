@@ -328,14 +328,14 @@ export function MiniPanel(props: MiniPanelProps) {
 const SAMPLE_TODAY: MiniDay = {
   date: todayIso(),
   events: [
-    { id: 'e1', time: '09:30', title: '日慈 战略对齐会', clientName: '日慈' },
-    { id: 'e2', time: '14:00', title: 'CFFC 合同评审', clientName: 'CFFC' },
+    { id: 'e1', time: '09:30', title: '测试机构A 战略对齐会', clientName: '测试机构A' },
+    { id: 'e2', time: '14:00', title: '测试论坛A 合同评审', clientName: '测试论坛A' },
   ],
   tasks: [
-    { id: 't1', title: '输出第一版价值观建议稿', done: false, dueLabel: '今天', clientName: '日慈' },
-    { id: 't2', title: '提交理事会汇报简版材料', done: false, dueLabel: '6/10', clientName: '日慈' },
-    { id: 't3', title: '提供更轻量的试点方案及风险控制说明', done: false, dueLabel: '逾期', overdue: true, clientName: '日慈' },
-    { id: 't4', title: '完成存量品牌素材评估', done: true, clientName: '日慈' },
+    { id: 't1', title: '输出第一版价值观建议稿', done: false, dueLabel: '今天', clientName: '测试机构A' },
+    { id: 't2', title: '提交理事会汇报简版材料', done: false, dueLabel: '6/10', clientName: '测试机构A' },
+    { id: 't3', title: '提供更轻量的试点方案及风险控制说明', done: false, dueLabel: '逾期', overdue: true, clientName: '测试机构A' },
+    { id: 't4', title: '完成存量品牌素材评估', done: true, clientName: '测试机构A' },
   ],
 };
 

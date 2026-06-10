@@ -2226,9 +2226,9 @@ def _profile_fact_from_quote(quote: str, *, brief: ResearchBrief, draft: Candida
     if "毕业之后就进入" in text and "项目" in text:
         project_match = re.search(r"做[“\"]?([^”\"，。]+?项目)[”\"]?", text)
         project = project_match.group(1) if project_match else "相关项目"
-        return f"材料提到受访者毕业后进入日慈并参与“{project}”，可作为项目执行团队和人才培养线索。"
+        return f"材料提到受访者毕业后进入测试机构A并参与“{project}”，可作为项目执行团队和人才培养线索。"
     if "目前担任秘书长" in text or ("秘书长" in text and "七年" in text):
-        return "材料提到张真从项目岗位成长为机构负责人，目前担任日慈秘书长，可用于补充团队经历线索。"
+        return "材料提到张真从项目岗位成长为机构负责人，目前担任测试机构A秘书长，可用于补充团队经历线索。"
     if "快速发展期" in text and ("团队" in text or "组织" in text):
         return "文章将机构目标设定、团队成长和岗位匹配列为快速发展期公益组织的重要管理议题。"
     object_name = brief.scope.display_name or (brief.object_terms[0] if brief.object_terms else "")

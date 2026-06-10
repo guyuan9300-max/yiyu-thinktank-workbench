@@ -182,7 +182,7 @@ class DimensionChunk:
     摘要 ≤500 字, 给 LLM 当具体描述的原料.
     """
     dimension: str          # essence/business_intro/cooperation/...
-    matched_term: str       # 匹配的主题词 (例: '心盛计划' 或 '战略陪伴')
+    matched_term: str       # 匹配的主题词 (例: '测试项目A' 或 '战略陪伴')
     doc_title: str          # 来源文档标题
     excerpt: str            # 摘要 (≤500 字)
     # M1/M2 取材升级新增 (默认值兼容旧构造): 来源标注 + 检索路径

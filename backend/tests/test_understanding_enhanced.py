@@ -25,7 +25,7 @@ FORBIDDEN_BRIEF_FRAGMENTS = ["这是一条", "状态的工作任务", "系统尚
 
 def _make_snapshot(**overrides) -> WeeklyReviewTaskSnapshotRecord:
     defaults = {
-        "title": "和冯梅老师沟通CFFC的战略说明迭代",
+        "title": "和冯梅老师沟通测试论坛A的战略说明迭代",
         "status": "doing",
         "createdAt": "2026-03-20T10:00:00Z",
         "listName": "战略合作",
@@ -33,8 +33,8 @@ def _make_snapshot(**overrides) -> WeeklyReviewTaskSnapshotRecord:
         "ownerName": "顾源源",
         "projectContext": TaskProjectContextRecord(
             clientId="client_cffc",
-            clientName="CFFC",
-            backgroundSummary="CFFC是公益行业的重要枢纽组织，连接300+基金会",
+            clientName="测试论坛A",
+            backgroundSummary="测试论坛A是公益行业的重要枢纽组织，连接300+基金会",
             goalSummary="推进数字化转型合作",
             riskSummary="决策链较长",
         ),
@@ -97,9 +97,9 @@ class TestEnhancedMode:
             ai=None,
             task_entry=entry,
             org_dna_modules=_make_org_dna(),
-            event_line_name="CFFC 战略合作线",
+            event_line_name="测试论坛A 战略合作线",
             event_line_stage="方案落地",
-            event_line_summary="益语与CFFC的数字化战略合作",
+            event_line_summary="益语与测试论坛A的数字化战略合作",
         )
         assert result.mode == "enhanced"
         _assert_human_brief_quality(result.humanBrief)
@@ -115,8 +115,8 @@ class TestEnhancedMode:
             ai=None,
             task_entry=entry,
             org_dna_modules=_make_org_dna(),
-            event_line_name="CFFC 合作线",
-            meetings=[{"title": "CFFC 初次沟通", "summary": "确认了AI合作方向"}],
+            event_line_name="测试论坛A 合作线",
+            meetings=[{"title": "测试论坛A 初次沟通", "summary": "确认了AI合作方向"}],
         )
         basic_available = sum(1 for s in basic.sourceBreakdown if s.available)
         enhanced_available = sum(1 for s in enhanced.sourceBreakdown if s.available)
@@ -129,7 +129,7 @@ class TestEnhancedMode:
             ai=None,
             task_entry=entry,
             org_dna_modules=_make_org_dna(),
-            event_line_name="CFFC 合作线",
+            event_line_name="测试论坛A 合作线",
         )
         assert result.optionalAdvice is None
 
@@ -139,7 +139,7 @@ class TestEnhancedMode:
             ai=None,
             task_entry=entry,
             org_dna_modules=_make_org_dna(),
-            event_line_name="CFFC 合作线",
+            event_line_name="测试论坛A 合作线",
             event_line_history=[
                 {"weekLabel": "2026-W12", "stage": "方向确认", "taskCount": 2, "completedCount": 1},
             ],

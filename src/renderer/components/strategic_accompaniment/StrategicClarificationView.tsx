@@ -426,7 +426,7 @@ function parseBusinessIntro(text: string): Segment[] | null {
   }
 
   // 2. 数字编号列表 — 行内或跨行都能切
-  //    "1. 心灵魔法学院：xxx 2. 心盛计划：xxx 3. ..." (一段) 或 "1. xxx\n2. yyy" (多行)
+  //    "1. 测试项目C：xxx 2. 测试项目A：xxx 3. ..." (一段) 或 "1. xxx\n2. yyy" (多行)
   //    不再用 ^ 行首锚定, 用 lookbehind (开头/句号/换行/空格 后) + 数字
   const numberRe = /(?:^|[。\n]|\s)(\d+|[①②③④⑤⑥⑦⑧⑨⑩])[\.、)]\s*([^：:0-9]{2,30})[：:]([^]+?)(?=(?:[。\n\s]\d+[\.、)]|[①②③④⑤⑥⑦⑧⑨⑩][\.、)]?)|$)/g;
   const numberMatches = Array.from(t.matchAll(numberRe));
@@ -467,7 +467,7 @@ function parseBusinessIntro(text: string): Segment[] | null {
   }
 
   // 4. 段落级 "项目名: 描述" — 中文流水文里常见的格式
-  // 例: "心盛计划是日慈核心项目, 服务 18-24 青年. 教师赋能项目..."
+  // 例: "测试项目A是测试机构A核心项目, 服务 18-24 青年. 教师赋能项目..."
   // 用句号+疑似项目名启发, 但太脆弱, 留作未来 LLM 二次抽取
   return null;
 }

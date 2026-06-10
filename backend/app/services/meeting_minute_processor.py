@@ -388,7 +388,7 @@ def process_meeting_minute(
         new_event_line_count = 0
 
     # 9b. R2 fix-2 缺口 3 · 会议本身直写 event_line_activity (不依赖 derive_all)
-    # B sync d2eb27d 实测: derive_all 对 CFFC/日慈 返回 ela+0 (客户可能无 event_line 或派生条件未触发)
+    # B sync d2eb27d 实测: derive_all 对 测试论坛A/测试机构A 返回 ela+0 (客户可能无 event_line 或派生条件未触发)
     # 修法: 把"本次会议"作为一条 ela 直写, 让时间线真长.
     try:
         # 找客户的 event_line; 没有就 fallback 建一条"客户主线"

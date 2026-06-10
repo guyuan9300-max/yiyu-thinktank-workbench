@@ -129,7 +129,7 @@ export function SmartTaskParseModal({ open, onClose, onParsed }: SmartTaskParseM
             onChange={(event) => setText(event.target.value)}
             onKeyDown={handleKeyDown}
             disabled={submitting}
-            placeholder="例如:&#10;今天下午两点和金会的张征开会,讨论日慈基金会现阶段的组织问题,以及益语智库能承载哪些。目标是不要因为这阶段组织问题导致更多后续首尾,现在是救火期。"
+            placeholder="例如:&#10;今天下午两点和金会的张征开会,讨论测试机构A现阶段的组织问题,以及益语智库能承载哪些。目标是不要因为这阶段组织问题导致更多后续首尾,现在是救火期。"
             className="w-full min-h-[180px] max-h-[320px] resize-y rounded-xl border border-gray-200 bg-white px-4 py-3 text-[13px] leading-[1.7] text-gray-800 placeholder-gray-300 outline-none focus:border-[#5B7BFE] focus:ring-2 focus:ring-[#5B7BFE]/15 transition-colors disabled:bg-gray-50"
           />
           {errorMessage && (

@@ -660,7 +660,7 @@ export function AICommandModal({
                 placeholder={
                   mode === 'ai_command'
                     ? '例如: @庆华 帮我为安然集团生成一份集团介绍, 并申请放入客户工作台.\n如果我说不用审批, 直接执行第一步, 就按我的授权先开始.'
-                    : '例如: 明天下午三点提醒我联系日慈发补充协议.'
+                    : '例如: 明天下午三点提醒我联系测试机构A发补充协议.'
                 }
                 className="w-full h-32 px-3 py-2.5 text-[13px] text-gray-900 placeholder:text-gray-400 bg-gray-50 rounded-lg border border-gray-200 focus:bg-white focus:border-[#5B7BFE] focus:ring-2 focus:ring-[#5B7BFE]/15 outline-none resize-none"
               />

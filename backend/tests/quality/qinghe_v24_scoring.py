@@ -1,4 +1,4 @@
-"""[A] V2.4 P2-8 · 青禾 V2.4 新评分体系 (门禁 + 7 维分)
+"""[A] V2.4 P2-8 · 测试机构C V2.4 新评分体系 (门禁 + 7 维分)
 
 顾源源 5/23 钦定: 不再追单一总分, 改成"门禁 + 分数".
 
@@ -234,12 +234,12 @@ def render_v24_report(test_result: dict) -> str:
     overall_pass = len(critical_failed) == 0
 
     lines = []
-    lines.append("# V2.4 青禾测试 · 新评分体系报告(门禁 + 分数)")
+    lines.append("# V2.4 测试机构C测试 · 新评分体系报告(门禁 + 分数)")
     lines.append("")
     lines.append("> 顾源源 5/23 钦定: 不再追单一总分,改成「门禁 + 分数」")
     lines.append("")
     lines.append(f"**测试时间**: {test_result.get('test_meta', {}).get('run_at', '?')}")
-    lines.append(f"**测试客户**: 青禾公益基金会 + 青禾教育研究中心(跨客户隔离)")
+    lines.append(f"**测试客户**: 测试机构C + 测试机构D(跨客户隔离)")
     lines.append("")
     lines.append("---")
     lines.append("")

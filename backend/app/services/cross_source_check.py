@@ -9,7 +9,7 @@
   Layer 4 LLM 判同 (最贵)             — V2.3 新加
 
 B AI K-3 §1 经典案例:
-  "心灵魔法学院" vs "心理魔法学院" 同 pinyin xinli → 嫌疑度 0.95 → 进 clarification_records
+  "测试项目C" vs "心理魔法学院" 同 pinyin xinli → 嫌疑度 0.95 → 进 clarification_records
 
 本服务实现 4 层检测 + 综合 suspicion_score (0-1) + suggested_action.
 """
@@ -65,7 +65,7 @@ def layer2_char_similarity(text_a: str, text_b: str) -> float:
 
     返回 0-1:
       1.0 = 完全相同
-      0.83 = "心灵魔法学院" vs "心理魔法学院" (5/6 字相同)
+      0.83 = "测试项目C" vs "心理魔法学院" (5/6 字相同)
       0.5 = "张真" vs "张铮" (1/2 字相同)
       < 0.3 = 不太可能同义
     """

@@ -159,7 +159,7 @@ def sync_organization_directory(
 
     参数:
         db: app.db.Database 实例
-        cloud_base_url: 火山云地址(http://101.126.34.232)
+        cloud_base_url: 火山云地址(http://<CLOUD_BACKEND_HOST>)
         cloud_token: JWT
         derive_cru_from_local: True = 从本地 clients.related_user_ids_json 派生
                               mirror_client_related_users(默认开)

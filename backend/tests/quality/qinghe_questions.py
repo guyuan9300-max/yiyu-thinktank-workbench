@@ -46,7 +46,7 @@ class QinghQuestion:
 Q01 = QinghQuestion(
     qid="Q01", category=1, variant=1, length_kind="short", type_kind="factual",
     prompt="这个项目最早是怎么来的?",
-    must_contain=["阅读", "青禾", "5 月 6 日"],
+    must_contain=["阅读", "测试机构C", "5 月 6 日"],
     must_not_contain=["发起人为顾源源"],  # 不能编造
 )
 Q02 = QinghQuestion(
@@ -57,7 +57,7 @@ Q02 = QinghQuestion(
 Q03 = QinghQuestion(
     qid="Q03", category=1, variant=3, length_kind="long", type_kind="comparative",
     prompt=(
-        "青禾这个阅读陪伴项目最初的设想是什么?后来跟初版相比"
+        "测试机构C这个阅读陪伴项目最初的设想是什么?后来跟初版相比"
         "有什么调整?能不能把这条变化路径讲清楚。"
     ),
     must_contain=["10 所", "3 所", "调整", "试点"],

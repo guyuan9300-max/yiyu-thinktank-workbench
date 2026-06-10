@@ -46,7 +46,7 @@ def is_generic_term(term: str) -> bool:
         return True
     # 太短的通用名词 (2-3 字, 没有上下文修饰)
     if len(t) <= 3 and not any(c.isascii() for c in t):
-        # 例外: 长度 ≤3 但含机构名特征 (例 "日慈" 不抽)
+        # 例外: 长度 ≤3 但含机构名特征 (例 "测试机构A" 不抽)
         # 实际机构名一般 ≥ 4 字 (XX 基金会), 简称 2-3 字也少见
         # 留给字典 term 本身的过滤, 这里不强拒
         pass

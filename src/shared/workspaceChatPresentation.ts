@@ -108,11 +108,11 @@ export function stripFileCitations(text: string | null | undefined): string {
 }
 
 /**
- * 删除 LLM 输出里的字典引证标记(例 `[📚 心盛计划.累计服务大学生数]`)。
+ * 删除 LLM 输出里的字典引证标记(例 `[📚 测试项目A.累计服务大学生数]`)。
  *
  * Why: 后端 system 指令引导 LLM 用 `[📚 term.attribute]` 标记关键事实的字典溯源,
  * `citation_validator.py` 校验有效性后**保留**有效标记给前端做漂亮渲染。但前端
- * 一直没接渲染层,标记直接显示在 chat 正文 → 用户看见"[📚 心盛计划.累计服务人数][📚 ...]"
+ * 一直没接渲染层,标记直接显示在 chat 正文 → 用户看见"[📚 测试项目A.累计服务人数][📚 ...]"
  * 很碎,不连贯。
  *
  * 用户决定:LLM **应该**继续基于字典 verified 值生成事实(grounding 不变),但

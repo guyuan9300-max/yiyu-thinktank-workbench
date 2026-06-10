@@ -99,7 +99,7 @@ def _is_authority(url: str) -> bool:
 def _looks_like_official_homepage(url: str, title: str, client_name: str) -> bool:
     """判断这条搜索结果是否像客户官网首页.
 
-    严格启发式 (基于实测对为爱黔行误判 163.com/sohu.com 导致噪音):
+    严格启发式 (基于实测对测试机构B误判 163.com/sohu.com 导致噪音):
     - 域名既不是权威源也不是噪音也不是新闻/聚合站
     - 标题含客户名 (优先) 或 域名特征 + 客户全名命中
     - URL 路径短(<=4 段)
@@ -152,13 +152,13 @@ def _extract_disclosure_links(homepage_html: str, base_url: str) -> list[str]:
 def _expand_client_name_candidates(client_name: str, ai: Any | None = None) -> list[str]:
     """把客户简称扩展成多个候选全称.
 
-    背景: 实测发现 7 客户中 3 个 (善加/士平/CFFC) 用注册简称在搜索引擎上找不到内容,
-    但用全称 "广东省善加公益基金会" 可以. 客户在数据库里录入名字时往往用日常简称,
+    背景: 实测发现 7 客户中 3 个 (测试机构C/士平/测试论坛A) 用注册简称在搜索引擎上找不到内容,
+    但用全称 "测试机构C" 可以. 客户在数据库里录入名字时往往用日常简称,
     爬虫层应该有能力补全成"官方注册可能的全称"集合, 用全称去搜.
 
     机制 (不硬编码):
       1. 原名直接保留 (兼容已知客户)
-      2. 用 LLM 推测可能的官方注册全称, 输出多个候选 (例: 善加 → 广东省善加公益基金会 / 上海善加慈善基金会)
+      2. 用 LLM 推测可能的官方注册全称, 输出多个候选 (例: 测试机构C → 测试机构C / 测试机构C)
       3. 加常见后缀变体 (基金会/公益基金会/慈善基金会/服务中心)
     """
     name = (client_name or "").strip()
@@ -236,21 +236,21 @@ def discover_authority_seeds(
 ) -> AuthoritySeedDiscovery:
     """构造 seed URL 集合：权威源 + 官网首页 + 信息公开二级页 + 媒体报道.
 
-    实测对"日慈基金会"返回约 18-25 个高价值 URL, 覆盖：
+    实测对"测试机构A"返回约 18-25 个高价值 URL, 覆盖：
       - 搜狗百科条目 (含成立时间/性质/注册机关等结构化字段)
       - 官网首页 + 7-8 个"信息公开"二级页 (含历年年报/审计报告标题列表)
       - 南都基金会条目 / 行业评估文章
       - 网易/搜狐媒体报道 (项目细节)
 
     新增 (G 任务): ai 参数. 客户名是简称时 LLM 扩展成候选全称, 用全称去搜.
-    实测对"善加/士平/CFFC"这种名字模糊客户, 从 0-4 篇 → 期望 15+ 篇.
+    实测对"测试机构C/士平/测试论坛A"这种名字模糊客户, 从 0-4 篇 → 期望 15+ 篇.
     """
     name = (client_name or "").strip()
     out = AuthoritySeedDiscovery()
     if not name:
         return out
 
-    # 客户名扩展 (G 任务): "善加" → ["善加", "广东省善加公益基金会", ...]
+    # 客户名扩展 (G 任务): "测试机构C" → ["测试机构C", "测试机构C", ...]
     name_candidates = _expand_client_name_candidates(name, ai)
     logger.info("[authority-seeds] '%s' 扩展候选: %s", name, name_candidates)
 

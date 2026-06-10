@@ -590,7 +590,7 @@ function PulseBlockerCard({ blocker }: { blocker: StrategicPulseBlocker }) {
 }
 
 function dedupePulseTodos(todos: StrategicPulseTodo[]): StrategicPulseTodo[] {
-  // 现状数据存在重复任务 (黔行测试数据); 前端按 title+dueDate 去重以减少噪音
+  // 现状数据存在重复任务 (测试机构B测试数据); 前端按 title+dueDate 去重以减少噪音
   const seen = new Set<string>();
   const result: StrategicPulseTodo[] = [];
   for (const t of todos) {
@@ -2000,8 +2000,8 @@ export function StrategicBrainView({
 
   useEffect(() => {
     // 只在 currentClientId 真正变化时同步, 避免覆盖用户在 ThoughtScopeSelect 里的手动选择.
-    // 例:用户上面在客户工作台是日慈, 下方 ThoughtScopeSelect 自己挑了"全公司", 父组件因
-    // 其他原因 re-render 不会触发(currentClientId 没变); 但 currentClientId 真的从日慈
+    // 例:用户上面在客户工作台是测试机构A, 下方 ThoughtScopeSelect 自己挑了"全公司", 父组件因
+    // 其他原因 re-render 不会触发(currentClientId 没变); 但 currentClientId 真的从测试机构A
     // 切到士平时, 这条 effect 期望把 thought 视图也切过去.
     setThoughtClientId((prev) => (prev === currentClientId ? prev : (currentClientId || '')));
   }, [currentClientId]);

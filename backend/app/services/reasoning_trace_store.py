@@ -37,7 +37,7 @@
             "段落 5 确认'5/19 决议生效'",
             "结论: 张真.角色 = 法人代表, 时间锚 5/19",
         ],
-        output_summary="张真接任日慈法人代表",
+        output_summary="张真接任测试机构A法人代表",
         confidence=0.92,
         triggered_update_relation="supersedes",
     )

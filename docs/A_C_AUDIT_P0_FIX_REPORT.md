@@ -81,7 +81,7 @@ Headers: X-Actor-Type: external_ai_agent, X-Actor-Id: p0_test_v2,
 ```json
 {
   "taskId": "task_d1be025ea7",
-  "title": "推进 CFFC 上次合同变更说明",
+  "title": "推进 测试论坛A 上次合同变更说明",
   "approval_id": "appr_a89e0c2b21d149fab334a9ca",
   "status": "pending_approval",          ★ 不是 executed
   "feishuGuid": null,                    ★ 没真发
@@ -452,7 +452,7 @@ curl -X POST 'http://127.0.0.1:47831/api/v1/feishu/tasks/push?task_id=task_d1be0
   -H 'X-Actor-Type: external_ai_agent' \
   -H 'X-Actor-Id: p0_test_v2' \
   -H 'Idempotency-Key: p0-1-v2-1779556437'
-→ {"taskId":"task_d1be025ea7","title":"推进 CFFC 上次合同变更说明",
+→ {"taskId":"task_d1be025ea7","title":"推进 测试论坛A 上次合同变更说明",
    "approval_id":"appr_a89e0c2b21d149fab334a9ca","status":"pending_approval",
    "feishuGuid":null,"message":"推送已进入 approval queue, 等待用户在审批面板 approve 后才真发飞书.",
    "agent_run_id":"run_b6d51a91eb604945bb9933fc",

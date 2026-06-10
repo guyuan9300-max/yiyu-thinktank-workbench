@@ -18,10 +18,10 @@ test('buildEvidenceCitationCards sorts direct contract evidence ahead of generic
     },
     {
       id: 'contract',
-      title: '日慈咨询合同（0907）.docx',
+      title: '测试机构A咨询合同（0907）.docx',
       excerpt: '服务费用为40万元，并按合同约定分期付款。',
       sourceType: 'raw_document',
-      path: '/tmp/日慈咨询合同（0907）.docx',
+      path: '/tmp/测试机构A咨询合同（0907）.docx',
       score: 1,
       matchedTerms: [],
       retrievalStage: 'raw_chunk',
@@ -31,7 +31,7 @@ test('buildEvidenceCitationCards sorts direct contract evidence ahead of generic
     },
   ] satisfies EvidenceItem[]);
 
-  assert.equal(cards[0]?.sourceTitle, '日慈咨询合同（0907）.docx');
+  assert.equal(cards[0]?.sourceTitle, '测试机构A咨询合同（0907）.docx');
   assert.equal(cards[0]?.citationRole, 'direct_support');
   assert.equal(EVIDENCE_CITATION_ROLE_LABELS.direct_support, '直接依据');
 });

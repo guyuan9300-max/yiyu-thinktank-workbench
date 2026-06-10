@@ -54,7 +54,7 @@
       }
     },
     "test_2_contract_draft_cffc": {
-      "input": {"client_id": "client_a4d1db29a7", "goal": "为 CFFC 续约项目起草合同"},
+      "input": {"client_id": "client_a4d1db29a7", "goal": "为 测试论坛A 续约项目起草合同"},
       "output": {
         "status": "draft",
         "document_type": "contract_draft",
@@ -111,7 +111,7 @@
   "user_visible_validation_lens": {
     "principle": "顾源源补充: 每个模块输出对人类用户是否有指导价值",
     "M1_user_view": "顾源源能复制 config 到 Claude Desktop 30 秒接入",
-    "M2_user_view": "顾源源拿到 markdown 草稿, 含 CFFC 真实数据, 改 30 秒能用 (非空模板)",
+    "M2_user_view": "顾源源拿到 markdown 草稿, 含 测试论坛A 真实数据, 改 30 秒能用 (非空模板)",
     "M3_user_view": "B 不用猜 endpoint, 跟着 fixtures 跑就行 (非后端清单, 是复验脚本)"
   },
   "forbidden_self_check_all_passed": {

@@ -1,4 +1,4 @@
-"""V2.3 质量测试 · 青禾公益基金会 12 条数据集
+"""V2.3 质量测试 · 测试机构C 12 条数据集
 
 顾源源 2026-05-23 钦定 12 条测试数据 (5 类来源):
     A 任务/日程 · 3 条
@@ -57,7 +57,7 @@ A_1_MEETING = QinghDatum(
     category="A",
     title="5/6 与李明项目沟通会",
     narrative_raw=(
-        "2026 年 5 月 6 日,与青禾公益基金会项目经理李明开会,讨论"
+        "2026 年 5 月 6 日,与测试机构C项目经理李明开会,讨论"
         "「乡村儿童阅读陪伴项目」是否进入试点。会议后,李明承诺 5 月 10 日"
         "前提供 3 所试点学校名单。"
     ),
@@ -71,7 +71,7 @@ A_1_MEETING = QinghDatum(
     expected_facts=[
         {"subject": "乡村儿童阅读陪伴项目", "attribute": "首次沟通日期", "value": "2026-05-06"},
         {"subject": "李明", "attribute": "承诺", "value": "5/10 前提供 3 所试点学校名单"},
-        {"subject": "李明", "attribute": "角色", "value": "青禾公益基金会项目经理"},
+        {"subject": "李明", "attribute": "角色", "value": "测试机构C项目经理"},
     ],
 )
 
@@ -81,7 +81,7 @@ A_2_SEND_V1 = QinghDatum(
     category="A",
     title="5/11 我方发送第一版方案",
     narrative_raw=(
-        "5 月 11 日,益语需要给青禾发送第一版试点方案,重点说明"
+        "5 月 11 日,益语需要给测试机构C发送第一版试点方案,重点说明"
         "「为什么不建议一开始扩到 10 所学校」。"
     ),
     path="task_review",
@@ -103,7 +103,7 @@ A_3_WEEKLY = QinghDatum(
     category="A",
     title="本周复盘",
     narrative_raw=(
-        "本周项目已完成首次需求沟通,但学校名单迟迟未确认;青禾内部对"
+        "本周项目已完成首次需求沟通,但学校名单迟迟未确认;测试机构C内部对"
         "预算口径仍不统一,下周重点是确认试点范围和预算边界。"
     ),
     path="task_review",
@@ -127,7 +127,7 @@ A_3_WEEKLY = QinghDatum(
 B_4_V1_DOC = QinghDatum(
     id="B4_v1_5_8",
     category="B",
-    title="青禾阅读项目方案_v1_20260508.docx",
+    title="测试机构C阅读项目方案_v1_20260508.docx",
     narrative_raw=(
         "项目计划覆盖 10 所学校,总预算 500 万元,项目负责人为李明。"
     ),
@@ -137,7 +137,7 @@ B_4_V1_DOC = QinghDatum(
     expected_source_role="client_internal",
     expected_content_role="fact",
     happened_at="2026-05-08",
-    actor_name="青禾公益基金会",
+    actor_name="测试机构C",
     expected_facts=[
         {"subject": "乡村儿童阅读陪伴项目", "attribute": "覆盖学校数(v1)", "value": "10 所"},
         {"subject": "乡村儿童阅读陪伴项目", "attribute": "总预算(v1)", "value": "500 万元"},
@@ -149,7 +149,7 @@ B_4_V1_DOC = QinghDatum(
 B_5_V2_DOC = QinghDatum(
     id="B5_v2_5_18",
     category="B",
-    title="青禾阅读项目方案_v2_20260518.docx",
+    title="测试机构C阅读项目方案_v2_20260518.docx",
     narrative_raw=(
         "项目调整为先在 3 所学校试点,总预算 300 万元,李明负责执行推进,"
         "王华秘书长负责内部协调。"
@@ -160,7 +160,7 @@ B_5_V2_DOC = QinghDatum(
     expected_source_role="client_internal",
     expected_content_role="fact",
     happened_at="2026-05-18",
-    actor_name="青禾公益基金会",
+    actor_name="测试机构C",
     expected_should_clarify=True,  # 与 v1 矛盾
     expected_supersedes="B4_v1_5_8",
     expected_facts=[
@@ -175,7 +175,7 @@ B_5_V2_DOC = QinghDatum(
 B_6_OUR_FEEDBACK = QinghDatum(
     id="B6_our_feedback_5_20",
     category="B",
-    title="益语关于青禾阅读项目的试点建议_20260520.docx",
+    title="益语关于测试机构C阅读项目的试点建议_20260520.docx",
     narrative_raw=(
         "建议项目第一阶段不要追求覆盖学校数量,而应先验证家长参与、"
         "学校配合、志愿者稳定性和阅读活动持续性。当前最大风险不是资源"
@@ -202,9 +202,9 @@ B_6_OUR_FEEDBACK = QinghDatum(
 C_7_OFFICIAL_SITE = QinghDatum(
     id="C7_official_site_5_3",
     category="C",
-    title="青禾官网 5/3 启动会动态",
+    title="测试机构C官网 5/3 启动会动态",
     narrative_raw=(
-        "青禾公益基金会官网 2026 年 5 月 3 日发布动态:青禾启动乡村儿童"
+        "测试机构C官网 2026 年 5 月 3 日发布动态:测试机构C启动乡村儿童"
         "阅读陪伴计划,秘书长王华出席启动会。"
     ),
     path="internet_crawler",
@@ -213,7 +213,7 @@ C_7_OFFICIAL_SITE = QinghDatum(
     expected_source_role="client_official",
     expected_content_role="fact",
     happened_at="2026-05-03",
-    actor_name="青禾公益基金会官网",
+    actor_name="测试机构C官网",
     expected_facts=[
         {"subject": "乡村儿童阅读陪伴项目", "attribute": "对外公开日", "value": "2026-05-03"},
         {"subject": "王华", "attribute": "出席", "value": "5/3 启动会"},
@@ -226,7 +226,7 @@ C_8_MEDIA = QinghDatum(
     category="C",
     title="某行业媒体 5/9 报道",
     narrative_raw=(
-        "某行业媒体 2026 年 5 月 9 日报道:青禾计划在 10 所乡村学校"
+        "某行业媒体 2026 年 5 月 9 日报道:测试机构C计划在 10 所乡村学校"
         "推广阅读项目,预计投入 500 万元。"
     ),
     path="internet_crawler",
@@ -252,7 +252,7 @@ D_9_BACKGROUND = QinghDatum(
     category="D",
     title="项目背景口述",
     narrative_raw=(
-        "青禾其实一开始想做一个比较大的阅读品牌项目,但我感觉他们内部"
+        "测试机构C其实一开始想做一个比较大的阅读品牌项目,但我感觉他们内部"
         "还没有想清楚怎么长期运营。李明执行很积极,但他不是最终拍板的人。"
         "王华秘书长会影响方向,但真正最后拍板的是陈老师。"
     ),
@@ -267,7 +267,7 @@ D_9_BACKGROUND = QinghDatum(
         {"subject": "李明", "attribute": "用户判断", "value": "执行积极但非拍板人"},
         {"subject": "王华", "attribute": "用户判断", "value": "方向影响者"},
         {"subject": "陈老师", "attribute": "用户判断", "value": "最终拍板人 (待客户官方确认)"},
-        {"subject": "青禾公益基金会", "attribute": "风险", "value": "内部尚未想清长期运营机制"},
+        {"subject": "测试机构C", "attribute": "风险", "value": "内部尚未想清长期运营机制"},
     ],
 )
 
@@ -359,7 +359,7 @@ QINGHE_12_DATA: list[QinghDatum] = [
 
 
 CLIENT_ID = "client_qinghe_v23test"
-CLIENT_NAME = "青禾公益基金会"
+CLIENT_NAME = "测试机构C"
 PROJECT_ID = "project_reading_v23test"
 PROJECT_NAME = "乡村儿童阅读陪伴项目"
 
@@ -369,7 +369,7 @@ PROJECT_NAME = "乡村儿童阅读陪伴项目"
 
 EXPECTED_ENTITIES = {
     "persons": ["李明", "王华", "陈老师"],
-    "orgs": ["青禾公益基金会"],
+    "orgs": ["测试机构C"],
     "projects": ["乡村儿童阅读陪伴项目"],
     "dates": ["2026-05-03", "2026-05-06", "2026-05-08", "2026-05-09",
               "2026-05-11", "2026-05-18", "2026-05-20", "2026-05-22"],

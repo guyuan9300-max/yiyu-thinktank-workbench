@@ -47,7 +47,7 @@ def probe(db, cid):
 
 def main():
     db = Database(str(DATA_DIR / "app.db"))
-    # 挑最小的有文档客户(验证快); 排除 CFFC(已 semantic-rich)
+    # 挑最小的有文档客户(验证快); 排除 测试论坛A(已 semantic-rich)
     rows = db.fetchall("""
         SELECT id, name, n FROM (
           SELECT c.id AS id, c.name AS name,

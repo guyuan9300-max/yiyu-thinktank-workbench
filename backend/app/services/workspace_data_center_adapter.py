@@ -427,7 +427,7 @@ _CONSULTANT_HIGH_SIGNAL_TOKENS = (
     "合作",
     "品牌",
     "心灵魔法",
-    "心盛",
+    "测试项目A",
     "教师赋能",
     "繁星",
     "陪伴",
@@ -1383,7 +1383,7 @@ def _strategic_documents_block(
 ) -> str:
     """客户文档目录：按 importedAt 倒序列出文件标题。
 
-    很多客户的项目名、方案、会议纪要藏在文件名里（如「心灵魔法学院 2024 项目报告.pdf」、
+    很多客户的项目名、方案、会议纪要藏在文件名里（如「测试项目C 2024 项目报告.pdf」、
     「教师赋能体系建设方案.docx」），但 projectModules 表可能是空的。
     单独列文档目录能让 Pass 1 识别"客户都在做哪些事"，弥补 projectModules 缺失。
     不读文件内容，只列标题 + tags + kind。

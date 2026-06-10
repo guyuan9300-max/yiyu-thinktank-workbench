@@ -1266,12 +1266,12 @@ async function buildEffectPreviews(
         createEffectDraft(
           'shared-intelligence-demo',
           '资讯情报站讨论样例会同步',
-          '同步后，同事的资讯情报站会导入日慈画像和南沙公益创投情报，用于本轮模块对齐。',
+          '同步后，同事的资讯情报站会导入测试机构A画像和测试项目B情报，用于本轮模块对齐。',
           'visible',
           '共享样例',
           [file.path],
         ),
-        '包含 5 个情报画像、1 条南沙公益创投情报和完整顾问 memo。',
+        '包含 5 个情报画像、1 条测试项目B情报和完整顾问 memo。',
       );
       continue;
     }

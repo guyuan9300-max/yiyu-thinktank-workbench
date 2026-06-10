@@ -11,9 +11,9 @@
 - 不重造向量检索, 复用 knowledge_v2.retrieve_knowledge_bundle。
   (历史 5/28: 原走 knowledge_base 版, 但其 citation grounding 需要 document_chunks;
    而 v2 ingest 经 _sync_legacy_knowledge_document 只建 knowledge_documents 占位,
-   不建 document_chunks → 除 CFFC 早期 v1 ingest 外, 所有客户 coverage=0、citations=0,
+   不建 document_chunks → 除 测试论坛A 早期 v1 ingest 外, 所有客户 coverage=0、citations=0,
    失败原因 no_grounded_citations。切到 v2 版后走 v2_sections + preview_text 做 excerpt,
-   不再依赖 document_chunks; 实测日慈 6 维度 coverage 0.55-0.70、cits 131、CFFC 持平 v1。)
+   不再依赖 document_chunks; 实测测试机构A 6 维度 coverage 0.55-0.70、cits 131、测试论坛A 持平 v1。)
 - 保留 LIKE fallback (通过回调注入, 避免与 narrative_collector 循环 import)。
 - 强制 client_id 隔离 (retrieve_knowledge_bundle 内部 WHERE client_id=?; LIKE 回调同样带 client)。
 - 每段 fallback_used / source_breakdown / warnings 可追踪。

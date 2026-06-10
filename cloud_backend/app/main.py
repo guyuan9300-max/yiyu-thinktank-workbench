@@ -14313,7 +14313,7 @@ def create_app() -> FastAPI:
         if existing:
             return _client_record_full(state, existing)
 
-        # [B] 5/25 PM (顾源源真用反馈: 同事同步后看到 2 个益语智库 / 2 个日慈)
+        # [B] 5/25 PM (顾源源真用反馈: 同事同步后看到 2 个益语智库 / 2 个测试机构A)
         # 真因: 顾源源本地建的 client (id=client_53d82aa249) 跟同事本地建的 (id 不同, name 相同)
         #       push 上来都是新 id → 云端产生 2 条同名 client.
         # 修法: 加 name dedup — 同一 org 内同名 client 视为重复, 复用现有 id.
@@ -14600,7 +14600,7 @@ def create_app() -> FastAPI:
         多端共享"。这是 v0.2 修复浅显问题的核心链路改造。
 
         v1.0 升级: 如果 client_id 在云端 db 不存在 (本地客户未同步), 自动创建一个
-        minimal client row, 让叙事能落库. 这是为爱黔行/善加这种本地有但云端没的客户
+        minimal client row, 让叙事能落库. 这是测试机构B/测试机构C这种本地有但云端没的客户
         准备的兜底 — narrative 是本地驱动的, 云端只是共享层, 不该卡在 client 不存在.
         """
         existing_client = state.db.fetchone(

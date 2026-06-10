@@ -10,7 +10,7 @@
 | UnderstandingSnapshotV1 后端模型 | `backend/app/models.py` | DONE |
 | basic builder | `backend/app/services/understanding_builder.py` | DONE (9/9 tests) |
 | enhanced builder | `backend/app/services/understanding_builder.py` | DONE (6/6 tests) |
-| CFFC 联合样本验证 | `backend/tests/test_cffc_sample.py` | DONE (7/7 tests) |
+| 测试论坛A 联合样本验证 | `backend/tests/test_cffc_sample.py` | DONE (7/7 tests) |
 | UnderstandingPanel 前端组件 | `src/renderer/components/tasks/UnderstandingPanel.tsx` | DONE |
 | 任务理解 API | `GET /api/v1/tasks/{id}/understanding` | DONE |
 | 前端 API 调用 | `src/renderer/lib/api.ts → getTaskUnderstanding()` | DONE |
@@ -39,7 +39,7 @@
 | enhanced 有更多可用源 | available count > basic | test_enhanced_mode_deeper_understanding ✅ |
 | enhanced 也不硬写建议 | 无 LLM 时 optionalAdvice 为 null | test_no_false_advice_without_llm ✅ |
 | 输出不先写风险 | whatIsThis 不含"风险/阻碍/建议" | test_basic_never_starts_with_risk ✅ |
-| CFFC 识别客户 | 输出含"CFFC" | test_basic_mode_mentions_cffc ✅ |
+| 测试论坛A 识别客户 | 输出含"测试论坛A" | test_basic_mode_mentions_cffc ✅ |
 | 任务详情页读同一套理解对象 | UnderstandingPanel 渲染 | 前端已切换 |
 | 周复盘首屏不再是旧报告头 | 首屏显示"本周理解"而非"周判断视角" | WeeklyReviewSummaryPanel 已改 |
 

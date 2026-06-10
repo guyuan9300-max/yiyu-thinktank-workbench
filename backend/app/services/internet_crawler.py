@@ -526,7 +526,7 @@ def _is_strong_relevance_term(term: str) -> bool:
         return False
     if len(cleaned) >= 4:
         return True
-    return any(token in cleaned for token in ("为爱", "黔行", "日慈", "cffc"))
+    return any(token in cleaned for token in ("测试机构B", "测试机构B", "测试机构A", "cffc"))
 
 
 def _is_generic_reference_page(title: str, url: str) -> bool:
@@ -621,8 +621,8 @@ def crawl_internet_sources(
         # 用户已确认 = 两条 bypass 通路:
         # (1) depth==0 显式 seed: 用户在 official_channels 里勾选的具体 URL → 必收录;
         # (2) trusted_seed_domains 命中: 用户勾选的域名整站, 子页扩散到同域名也算官方资料,
-        #     例如 ricifoundation.com/Home/About/index.html 是官网"日慈简介"页, 标题里
-        #     可能没"日慈基金会"字面但仍是该机构官方内容. 通用导航页/短文仍会被下游过滤.
+        #     例如 ricifoundation.com/Home/About/index.html 是官网"测试机构A简介"页, 标题里
+        #     可能没"测试机构A"字面但仍是该机构官方内容. 通用导航页/短文仍会被下游过滤.
         final_domain = domain_label(document.url).lower() if document.url else ""
         bypass_relevance = bool(
             opts.trust_user_seeds

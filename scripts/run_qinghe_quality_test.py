@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """V2.3 数据中心质量测试 命令行入口
 
-跑青禾测试 + 输出报告 markdown.
+跑测试机构C测试 + 输出报告 markdown.
 
 用法:
     python scripts/run_qinghe_quality_test.py
@@ -196,7 +196,7 @@ def main():
     )
     args = parser.parse_args()
 
-    print("🚀 跑 V2.3 数据中心质量测试 · 青禾公益基金会")
+    print("🚀 跑 V2.3 数据中心质量测试 · 测试机构C")
     result = run_full_quality_test()
     print("✅ 测试完成, 渲染报告...")
 

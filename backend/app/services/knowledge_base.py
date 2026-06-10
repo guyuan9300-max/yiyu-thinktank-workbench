@@ -2544,7 +2544,7 @@ def _fts_query_for_tokens(tokens: list[str]) -> str | None:
 
 def search_master_index_fts(db: Database, client_id: str, prompt: str, limit: int = 8) -> dict[str, float]:
     # P1 · 字典反哺 — 把查询里的 term 用字典 expand 到所有 alias, 提高召回
-    # 例: 用户搜"兴盛计划" 自动包含"心盛计划" 也搜
+    # 例: 用户搜"兴盛计划" 自动包含"测试项目A" 也搜
     try:
         from app.services.glossary_helpers import expand_aliases
         expanded_terms = expand_aliases(db, client_id, prompt)
@@ -3856,7 +3856,7 @@ def retrieve_knowledge_bundle(db: Database, data_dir: Path, client_id: str, prom
         prompt,
         limit=120 if overview_mode else (96 if strategic_mode else 72),
         db=db,  # M6 修复: 传 db 让查询解析出真 embedding 签名 → 查 active collection(reindex 写入处);
-                # 不传时签名=None 只查 legacy, 与 reindex 写的 active 错位导致 sem=0。CFFC 靠 active→legacy fallback 不受影响。
+                # 不传时签名=None 只查 legacy, 与 reindex 写的 active 错位导致 sem=0。测试论坛A 靠 active→legacy fallback 不受影响。
     )
 
     scored_docs: list[dict[str, Any]] = []

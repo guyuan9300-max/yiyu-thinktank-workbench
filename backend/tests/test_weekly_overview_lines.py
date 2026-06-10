@@ -65,18 +65,18 @@ def test_cffc_line_uses_client_background_for_importance():
         ),
         OrganizationDnaModuleRecord(
             moduleKey="business_intro",
-            title="CFFC 业务背景",
+            title="测试论坛A 业务背景",
             markdownContent="",
-            normalizedText="CFFC是公益行业的重要枢纽组织，连接大量基金会，具备很强的行业影响力。",
-            summary="CFFC是公益行业的重要枢纽组织，连接大量基金会，具备很强的行业影响力。",
+            normalizedText="测试论坛A是公益行业的重要枢纽组织，连接大量基金会，具备很强的行业影响力。",
+            summary="测试论坛A是公益行业的重要枢纽组织，连接大量基金会，具备很强的行业影响力。",
         ),
     ]
     items = [
         _make_entry(
             "task_cffc_1",
             _make_snapshot(
-                title="和冯梅老师沟通CFFC的战略说明迭代",
-                clientName="CFFC",
+                title="和冯梅老师沟通测试论坛A的战略说明迭代",
+                clientName="测试论坛A",
                 eventLineId="el_cffc",
                 eventLineName="洪峰讨论赋能合作",
                 desc="推进合作说明迭代",
@@ -86,5 +86,5 @@ def test_cffc_line_uses_client_background_for_importance():
     cards = _build_weekly_line_cards(items, org_modules, [])
     assert cards
     cffc_card = cards[0]
-    assert "CFFC" in cffc_card.line_name
+    assert "测试论坛A" in cffc_card.line_name
     assert "枢纽" in cffc_card.why_it_matters or "基金会" in cffc_card.why_it_matters

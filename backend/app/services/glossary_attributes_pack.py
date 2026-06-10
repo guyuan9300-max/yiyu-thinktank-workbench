@@ -76,7 +76,7 @@ def build_verified_attributes_pack(db: Any, client_id: str) -> str:
     lines.append("引用本档案中的任何一条权威值时，必须在数值后紧跟 cite 标记，格式如下：")
     lines.append("  例 1: 缘救宝贝项目 2023 年度支出为 676.54 万元 [📚 缘救宝贝.项目启动时间]")
     lines.append("  例 2: 该项目最早于 2014 年启动 [📚 缘救宝贝.项目启动时间]")
-    lines.append("  例 3: 截至 2025 年 6 月，机构覆盖全国 11 个省 [📚 善加基金会.覆盖范围-机构当前]")
+    lines.append("  例 3: 截至 2025 年 6 月，机构覆盖全国 11 个省 [📚 测试机构C.覆盖范围-机构当前]")
     lines.append("")
     lines.append("格式说明：`[📚 term.attribute_name]`")
     lines.append("  · `term` = 上面字典档案中 `## 标题` 下的术语名")

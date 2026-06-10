@@ -4,12 +4,12 @@ Codex 报告未到. 顾源源指令: "遇到问题用自己推荐的方式解决
 A 自己作为外部 AI 直接走 yiyu_mcp_server 内部 tool functions (跳过 stdio 协议层,
 直接 import + call), 真测 db 前后差异, 真验 8 件事.
 
-任务: 基于 CFFC 当前客户状态, 为本月理事会生成一份 5 分钟项目进展汇报草稿.
+任务: 基于 测试论坛A 当前客户状态, 为本月理事会生成一份 5 分钟项目进展汇报草稿.
 
 序列 (顾源源 §4 钦定 10 个动作):
   1. read tool-registry            (resource)
-  2. read agent-state CFFC          (resource)
-  3. read data-gaps CFFC            (tool)
+  2. read agent-state 测试论坛A          (resource)
+  3. read data-gaps 测试论坛A            (tool)
   4. actions.dry-run create_task_draft (tool, 预演)
   5. documents.generate board_brief  (tool, 真生成)
   6. 同 Idempotency-Key 重发 documents.generate (验 idempotency)
@@ -31,7 +31,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 LAB_DB = Path.home() / "Library/Application Support/YiyuThinkTankWorkbench2_V21Lab/app.db"
-CFFC = "client_a4d1db29a7"
+测试论坛A = "client_a4d1db29a7"
 IDEM_KEY = f"codex-sim-{int(time.time())}"
 
 # 13 张表 (顾源源 §5)
@@ -73,7 +73,7 @@ async def run_codex_simulation() -> dict:
 
     evidence: dict = {
         "ts_start": time.strftime("%Y-%m-%d %H:%M:%S"),
-        "client_id": CFFC,
+        "client_id": 测试论坛A,
         "idempotency_key": IDEM_KEY,
         "db_before": snap_db(),
         "steps": [],
@@ -89,11 +89,11 @@ async def run_codex_simulation() -> dict:
         "schema_complete": s1_data.get("schema_completeness"),
     })
 
-    # Step 2: read agent-state CFFC
-    s2 = await mod.read_resource(f"yiyu://client/{CFFC}/state")
+    # Step 2: read agent-state 测试论坛A
+    s2 = await mod.read_resource(f"yiyu://client/{测试论坛A}/state")
     s2_data = json.loads(s2)
     evidence["steps"].append({
-        "step": 2, "name": "read agent-state CFFC",
+        "step": 2, "name": "read agent-state 测试论坛A",
         "ok": True,
         "top_fields_count": len(s2_data.keys()),
         "evidence_summary_keys": sorted((s2_data.get("evidence_summary") or {}).keys())[:8],
@@ -105,7 +105,7 @@ async def run_codex_simulation() -> dict:
 
     # Step 3: read data-gaps via tool
     s3 = await mod.call_tool("yiyu_get_data_gaps", {
-        "client_id": CFFC, "severity": "low", "limit": 5,
+        "client_id": 测试论坛A, "severity": "low", "limit": 5,
     })
     s3_data = json.loads(s3[0].text)
     evidence["steps"].append({
@@ -118,7 +118,7 @@ async def run_codex_simulation() -> dict:
     # Step 4: actions.dry-run (create_task_draft for board_brief 预演)
     s4 = await mod.call_tool("yiyu_dry_run_action", {
         "action_type": "create_task_draft",
-        "client_id": CFFC,
+        "client_id": 测试论坛A,
         "payload": {"title": "起草本月理事会简版说明", "owner": "高老师"},
     })
     s4_data = json.loads(s4[0].text)
@@ -151,7 +151,7 @@ async def run_codex_simulation() -> dict:
                 "Idempotency-Key": IDEM_KEY,
             },
             json={
-                "client_id": CFFC,
+                "client_id": 测试论坛A,
                 "document_type": "board_brief",
                 "goal": "为本月理事会做 5 分钟项目进展汇报",
             },
@@ -183,7 +183,7 @@ async def run_codex_simulation() -> dict:
                 "Idempotency-Key": IDEM_KEY,
             },
             json={
-                "client_id": CFFC,
+                "client_id": 测试论坛A,
                 "document_type": "board_brief",
                 "goal": "为本月理事会做 5 分钟项目进展汇报",
             },

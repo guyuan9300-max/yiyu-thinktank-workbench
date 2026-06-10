@@ -188,7 +188,7 @@ def signals_health_report(signals: DataCenterSignals) -> dict[str, Any]:
     if signals.aliases:
         score += 5
     else:
-        suggestions.append("补 alias（别名/简称）— 例：日慈基金会 → 日慈")
+        suggestions.append("补 alias（别名/简称）— 例：测试机构A → 测试机构A")
     if signals.domain:
         score += 5
     if signals.brand_proposition:

@@ -89,7 +89,7 @@ def _build_intro_profile_seed(prompt: str, evidence_highlights: list[EvidenceIte
             lead = f"{display_name}是一家以儿童青少年心理健康与心理教育为核心议题的公益基金会。"
         else:
             lead = f"从当前资料看，{display_name}主要围绕儿童青少年心理健康与心理教育议题持续展开工作。"
-    elif any(token in corpus for token in ("心理健康", "心理教育", "教师赋能", "心灵魔法学院")):
+    elif any(token in corpus for token in ("心理健康", "心理教育", "教师赋能", "测试项目C")):
         lead = f"从当前资料看，{display_name}主要围绕心理健康教育、关系支持与教师赋能持续展开工作。"
     else:
         lead = f"从当前资料看，{display_name}是一家持续围绕教育支持与项目协同展开工作的机构。"

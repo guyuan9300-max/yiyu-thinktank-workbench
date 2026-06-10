@@ -179,9 +179,9 @@ file_role 判定规则 (非常重要, 顾源源 5/23 R3 钦定):
   · unknown            — 真判断不了
 
 关键反例:
-  · '日慈-益语-战略陪伴合同' → file_role=client_official (双方签字合同, 不是益语产出)
-  · '日慈-心盛计划补充协议' → file_role=client_official (双方签字)
-  · '益语-关于心盛计划扩张节奏的反馈' → file_role=yiyu_produced (益语单方反馈)
+  · '测试机构A-益语-战略陪伴合同' → file_role=client_official (双方签字合同, 不是益语产出)
+  · '测试机构A-测试项目A补充协议' → file_role=client_official (双方签字)
+  · '益语-关于测试项目A扩张节奏的反馈' → file_role=yiyu_produced (益语单方反馈)
   · '教育部-某通知' → file_role=policy_basis
   · '对标-某基金会案例' → file_role=external_reference
 

@@ -134,7 +134,7 @@ class SentimentItemDraft:
 def _strip_noise_phrases(text: str) -> str:
     """从文本里挖掉"侵权举报""违规内容投诉"等网站标配 footer 短语。
 
-    避免软负面词被这些噪声带跑（例：日慈儿童活动报告页脚有"侵权举报"，
+    避免软负面词被这些噪声带跑（例：测试机构A儿童活动报告页脚有"侵权举报"，
     不应该把这条报告判成负面）。
 
     按 NOISE_FOOTER_PHRASES 长度倒序剔除，避免短的吃掉长的。
@@ -148,7 +148,7 @@ def _strip_noise_phrases(text: str) -> str:
 def analyze_sentiment(text: str, *, target_name: str | None = None) -> SentimentAnalysisResult:
     """词表分级 + 噪声剔除的情感分析。
 
-    判定逻辑（2026-05-18 升级，解决日慈案例 4 条全误判为负面的 bug）：
+    判定逻辑（2026-05-18 升级，解决测试机构A案例 4 条全误判为负面的 bug）：
       1. 先剔除 footer 噪声短语（"侵权举报""违规内容投诉"等）
       2. 命中"硬负面词"（造假/挪用/被举报/...） → 直接负面
       3. 只命中"软负面词"（投诉/举报/违规）+ 0 个硬负面 → 降级中性
@@ -260,10 +260,10 @@ def _collect_target_aliases(
 
     返回示例：
       {
-        "primary_name": "日慈基金会",
-        "aliases": ["日慈"],          # clients.alias，不同于 name 才计入
+        "primary_name": "测试机构A",
+        "aliases": ["测试机构A"],          # clients.alias，不同于 name 才计入
         "domain": "儿童心理",          # clients.domain
-        "project_modules": ["心灵魔法学院", "..."],  # 客户名下激活的模块名
+        "project_modules": ["测试项目C", "..."],  # 客户名下激活的模块名
       }
 
     NOTE：刻意没拉 entities 表的 person，因为 entity 抽取目前质量太差
@@ -330,9 +330,9 @@ def build_search_queries(
     扩展维度：
       1. 主名 + 评价 / 怎么样 / 报道 / 投诉
       2. 别名 + 评价 / 怎么样     （客户 alias 跑一遍）
-      3. 业务域辅助           （如 "日慈基金会 儿童心理"）
+      3. 业务域辅助           （如 "测试机构A 儿童心理"）
       4. site: 限定 UGC 平台   （微博/知乎/豆瓣/小红书 各一组）
-      5. 业务线 / 项目模块共现 （如 "日慈基金会 心灵魔法学院 评价"）
+      5. 业务线 / 项目模块共现 （如 "测试机构A 测试项目C 评价"）
     """
     if not target_name or not target_name.strip():
         return []
@@ -384,8 +384,8 @@ def build_search_queries(
 def _build_target_tokens(target_name: str, aliases: list[str] | None) -> list[str]:
     """生成目标判定 token：完整名 + 别名 + 主名的去常见后缀版本。
 
-    例：target_name = "日慈基金会"，aliases=["日慈"]
-        → ["日慈基金会", "日慈"]  （"日慈" 来自 alias，主名去掉"基金会"后等于 alias，去重）
+    例：target_name = "测试机构A"，aliases=["测试机构A"]
+        → ["测试机构A", "测试机构A"]  （"测试机构A" 来自 alias，主名去掉"基金会"后等于 alias，去重）
 
     例：target_name = "益语智库"，aliases=[]
         → ["益语智库", "益语"]    （去掉"智库"得到的短名作为兜底）
@@ -410,7 +410,7 @@ def _build_target_tokens(target_name: str, aliases: list[str] | None) -> list[st
     for alias in aliases or []:
         _add(alias)
 
-    # 主名截尾：日慈基金会 → 日慈；益语智库 → 益语
+    # 主名截尾：测试机构A → 测试机构A；益语智库 → 益语
     # 慎用：如果剪完只剩 1 字就放弃
     SUFFIXES = ("基金会", "公益基金会", "公益", "智库", "实验室", "中心", "研究院", "集团", "公司")
     for suffix in SUFFIXES:
@@ -476,8 +476,8 @@ def fetch_sentiment_candidates(
     captured_at = datetime.now(timezone.utc).isoformat()
 
     # 目标出现校验：title+snippet 必须含 target_name 或某个 alias，否则丢弃。
-    # 出问题的场景：搜「日慈基金会 投诉 OR 质疑」时引擎把「韩红基金会被举报」也返回了，
-    # 那条 hit 全文一个「日慈」字都没有 — 必须挡掉，否则负面预警就是错的。
+    # 出问题的场景：搜「测试机构A 投诉 OR 质疑」时引擎把「韩红基金会被举报」也返回了，
+    # 那条 hit 全文一个「测试机构A」字都没有 — 必须挡掉，否则负面预警就是错的。
     name_tokens = _build_target_tokens(target_name, aliases)
 
     def _hit_mentions_target(title: str, snippet: str) -> bool:

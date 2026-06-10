@@ -3786,7 +3786,7 @@ class Database:
                 CREATE UNIQUE INDEX IF NOT EXISTS idx_user_ai_preferences_key
                     ON user_ai_preferences(user_id, preference_key);
 
-                -- ④ project_procedures: 项目级别的执行套路 (e.g. 给日慈写工作坊方案的 6 步)
+                -- ④ project_procedures: 项目级别的执行套路 (e.g. 给测试机构A写工作坊方案的 6 步)
                 CREATE TABLE IF NOT EXISTS project_procedures (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     procedure_name TEXT NOT NULL,        -- e.g. 'workshop_proposal_for_rici'
@@ -3875,7 +3875,7 @@ class Database:
                 )
             except sqlite3.OperationalError:
                 pass  # 表不存在 → 跳过 backfill
-            # P6: 客户 canonical 化 - 多别名 (e.g. 日慈基金会 / 日慈公益基金会 / 日慈慈善基金会)
+            # P6: 客户 canonical 化 - 多别名 (e.g. 测试机构A / 测试机构A / 测试机构A慈善基金会)
             # 建客户时实时模糊匹配防止多人重复建客户, collaborator 加入既有客户的基础
             self._ensure_column("clients", "aliases_json", "TEXT NOT NULL DEFAULT '[]'")
             # P7: 项目编辑弹窗扩展字段

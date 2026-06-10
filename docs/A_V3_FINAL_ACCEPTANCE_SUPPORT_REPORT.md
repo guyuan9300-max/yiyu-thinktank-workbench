@@ -107,8 +107,8 @@ Claude Desktop 配置示例 (顾源源 §M1 钦定 read-only):
 ```
 ✓ list_resources() → 6 个 resources
 ✓ list_tools()    → 9 个 tools (全 read+judge+dry-run)
-✓ call_tool yiyu_get_client_state CFFC → HTTP 200, 14 顶层字段, evidence_summary 真返
-✓ call_tool yiyu_check_evidence "CFFC 800万元" → evidence_sufficient=false, match_count=2
+✓ call_tool yiyu_get_client_state 测试论坛A → HTTP 200, 14 顶层字段, evidence_summary 真返
+✓ call_tool yiyu_check_evidence "测试论坛A 800万元" → evidence_sufficient=false, match_count=2
 ```
 
 ### 4.4 是否能进入 Claude Desktop?
@@ -158,7 +158,7 @@ Claude Desktop 配置示例 (顾源源 §M1 钦定 read-only):
 
 ### 5.4 用户视角真测原文(顾源源补充 lens)
 
-**输入**: POST /documents/generate {client_id: CFFC, document_type: board_brief, goal: "为本月理事会做 5 分钟项目进展汇报"}
+**输入**: POST /documents/generate {client_id: 测试论坛A, document_type: board_brief, goal: "为本月理事会做 5 分钟项目进展汇报"}
 
 **输出 markdown 前 400 字**:
 ```markdown
@@ -168,10 +168,10 @@ Claude Desktop 配置示例 (顾源源 §M1 钦定 read-only):
 
 ## 项目背景
 - 本周 · 王主任 · 计划
-- 本周 · CFFC · 会议纪要处理 (1 事实 0 风险)
+- 本周 · 测试论坛A · 会议纪要处理 (1 事实 0 风险)
 - 5月 · 补充协议 · 学校数调整
 - 5月 · 补充协议 · 总预算
-- 5月 · CFFC · 会议纪要处理 (5 事实 2 风险)
+- 5月 · 测试论坛A · 会议纪要处理 (5 事实 2 风险)
 
 ## 本期重点进展
 - 提交财务可行性报告
@@ -193,7 +193,7 @@ Claude Desktop 配置示例 (顾源源 §M1 钦定 read-only):
 ```
 
 **用户视角评估**:
-- ✅ 含 CFFC 真实数据(5月补充协议 / 师资不足风险 / 学校配合度)
+- ✅ 含 测试论坛A 真实数据(5月补充协议 / 师资不足风险 / 学校配合度)
 - ✅ "下一步建议" 真 actionable(处理 20 个待澄清 / 补 10 个数据缺口)
 - ✅ "待确认项" 真问具体问题
 - ✅ 用户可直接拿去改改用,不是从零开始
@@ -315,7 +315,7 @@ asyncio.run(m())
 ```
 curl POST /api/v1/documents/generate
   Headers: X-Actor-Type, Idempotency-Key, ...
-  Body: {client_id: CFFC, document_type: board_brief, goal: 理事会汇报}
+  Body: {client_id: 测试论坛A, document_type: board_brief, goal: 理事会汇报}
 
 → status: draft
   title: 理事会简版说明
@@ -323,7 +323,7 @@ curl POST /api/v1/documents/generate
   approval_required: True, approval_id: appr_3d33ca416d994262b80355c6
   evidence_summary: 15 字段 (contracts=2, files=3, commitments=16, risks=18, data_gaps=10, ...)
   context_used: task_type=strategy_narrative, 9 张表
-  markdown: 包含 CFFC 真实数据 (王主任/补充协议/师资不足风险/...)
+  markdown: 包含 测试论坛A 真实数据 (王主任/补充协议/师资不足风险/...)
 
 接 contracts.draft:
 → approval_id: appr_16d6423884e9485fad8342a4 (+1)
@@ -381,7 +381,7 @@ curl GET /api/v1/tool-registry
      ✅ 不是后端字段, 是顾源源真能让 Claude 进系统的 "门"
 
   2. documents.generate (通用文档生成)
-     用户视角: 顾源源拿到 markdown 草稿, 含 CFFC 真实数据, 改 30 秒能用
+     用户视角: 顾源源拿到 markdown 草稿, 含 测试论坛A 真实数据, 改 30 秒能用
      ✅ 不是空模板, 是真有内容的草稿
 
   3. Final Test fixtures (3 场景)

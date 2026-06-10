@@ -254,7 +254,7 @@
       "violations": [],
       "has_hallucination": false,
       "hallucination_numbers": [],
-      "answer": "李明是青禾公益基金会的项目经理，负责项目的执行推进；[fact:af_06278d1901f5] [fact:af_25e63b707cc9]。王华担任秘书长，并负责内部协调工作；[fact:af_575376084420]。陈老师被认为是项目的最终拍板人，但这一信息需要客户官方确认；[fact:af_47f9e1f17cbb]。"
+      "answer": "李明是测试机构C的项目经理，负责项目的执行推进；[fact:af_06278d1901f5] [fact:af_25e63b707cc9]。王华担任秘书长，并负责内部协调工作；[fact:af_575376084420]。陈老师被认为是项目的最终拍板人，但这一信息需要客户官方确认；[fact:af_47f9e1f17cbb]。"
     },
     {
       "qid": "Q19",
@@ -269,7 +269,7 @@
       "violations": [],
       "has_hallucination": false,
       "hallucination_numbers": [],
-      "answer": "李明的角色在v1方案中是青禾公益基金会项目经理，而在v2方案中变为执行推进。王华从2026年5月18日开始作为秘书长/内部协调角色出现。[fact:af_06278d1901f5], [fact:af_25456570f328], [fact:af_575376084420]"
+      "answer": "李明的角色在v1方案中是测试机构C项目经理，而在v2方案中变为执行推进。王华从2026年5月18日开始作为秘书长/内部协调角色出现。[fact:af_06278d1901f5], [fact:af_25456570f328], [fact:af_575376084420]"
     },
     {
       "qid": "Q20",
@@ -285,7 +285,7 @@
       "violations": [],
       "has_hallucination": false,
       "hallucination_numbers": [],
-      "answer": "在客户官方文件中出现的人物有李明（青禾公益基金会项目经理）和王华（秘书长 / 内部协调）。陈老师的角色仅在用户口述中提及，需要正式确认。[fact:af_06278d1901f5], [fact:af_50db3d137ae3], [fact:af_47f9e1f17cbb]"
+      "answer": "在客户官方文件中出现的人物有李明（测试机构C项目经理）和王华（秘书长 / 内部协调）。陈老师的角色仅在用户口述中提及，需要正式确认。[fact:af_06278d1901f5], [fact:af_50db3d137ae3], [fact:af_47f9e1f17cbb]"
     },
     {
       "qid": "Q21",
@@ -563,7 +563,7 @@
       "violations": [],
       "has_hallucination": false,
       "hallucination_numbers": [],
-      "answer": "客户官方确认的信息包括：\n- 李明的角色为青禾公益基金会项目经理 ([fact:af_06278d1901f5])\n- 乡村儿童阅读陪伴项目的试点学校数调整为3所 ([fact:af_cbb2f2436c1c])\n- 项目总预算调整为300万元 ([fact:af_9dc64352244b])"
+      "answer": "客户官方确认的信息包括：\n- 李明的角色为测试机构C项目经理 ([fact:af_06278d1901f5])\n- 乡村儿童阅读陪伴项目的试点学校数调整为3所 ([fact:af_cbb2f2436c1c])\n- 项目总预算调整为300万元 ([fact:af_9dc64352244b])"
     },
     {
       "qid": "Q42",
@@ -614,7 +614,7 @@
       "violations": [],
       "has_hallucination": false,
       "hallucination_numbers": [],
-      "answer": "客户官方:\n1. 李明的角色为青禾公益基金会项目经理，负责乡村儿童阅读陪伴项目。[fact:af_06278d1901f5]\n2. 项目的试点学校数调整为3所。[fact:af_cbb2f2436c1c]\n\n我方判断:\n1. 不建议一开始扩展到10所学校，应先验证机制再扩大点位。[fact:af_4c6ee20e042e]\n2. 项目存在扩张过快导致服务质量失控的风险。[fact:af_2f59f3f86184]\n\n外部公开:\n1. 乡村儿童阅读陪伴项目的对外公开日为2026年5月3日。[fact:af_ef58bfbe6d09]\n2. 王华出席了项目启动会。[fact:af_be05ae0d"
+      "answer": "客户官方:\n1. 李明的角色为测试机构C项目经理，负责乡村儿童阅读陪伴项目。[fact:af_06278d1901f5]\n2. 项目的试点学校数调整为3所。[fact:af_cbb2f2436c1c]\n\n我方判断:\n1. 不建议一开始扩展到10所学校，应先验证机制再扩大点位。[fact:af_4c6ee20e042e]\n2. 项目存在扩张过快导致服务质量失控的风险。[fact:af_2f59f3f86184]\n\n外部公开:\n1. 乡村儿童阅读陪伴项目的对外公开日为2026年5月3日。[fact:af_ef58bfbe6d09]\n2. 王华出席了项目启动会。[fact:af_be05ae0d"
     },
     {
       "qid": "Q46",

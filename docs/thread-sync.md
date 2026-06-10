@@ -82,7 +82,7 @@
   - `docs/thread-sync.md`
 - 发现的问题：
   - 里程碑字段本地资料弱时，链路确实会尝试联网补充，但之前只拿官网首页和 DuckDuckGo HTML 结果。
-  - 对 `中国基金会发展论坛` 这类机构，DuckDuckGo 对 `2008年重大事件/里程碑` 基本返回空结果。
+  - 对 `测试论坛A` 这类机构，DuckDuckGo 对 `2008年重大事件/里程碑` 基本返回空结果。
   - 真实官网 `cfforum.org.cn` 的内部页 `category/20`（关于我们）、`category/21`（大事记）、`category/26`（年度盛会）本身就包含年份和里程碑线索，但旧链路不会主动跟进这些内部页。
 - 最小改动范围：
   - 只修改模板填写里的公网补充逻辑
@@ -508,7 +508,7 @@
   - `backend/app/models.py`
   - `backend/tests/test_template_fill.py`
   - `backend/tests/test_ai_template_fill.py`
-  - `/Users/guyuanyuan/Downloads/CFFC_慈善组织党建评级资料表_填写版.docx`
+  - `/Users/guyuanyuan/Downloads/测试论坛A_慈善组织党建评级资料表_填写版.docx`
 - 发现的问题：
   - 当前模板链已经能识别字段、检索资料、批量生成、回写 Word，但不同字段几乎共用同一套写法策略，容易把正式填表写成“GPT 代填说明”。
   - 精确事实、党建治理、数量字段、附件/材料字段没有明确分策略，导致“待核验”“弱推断”“过程性提示语”混在一起。
@@ -6045,7 +6045,7 @@
   - `docs/thread-sync.md`
 - 发现的问题：
   - 当前模板字段提取和 docx 回写默认只读取每行 `cells[0] -> cells[1]`。
-  - 对 CFFC 党建评级表这类四列表模板，右侧 `cells[2] -> cells[3]` 根本没有进入字段识别，也不会被回写。
+  - 对 测试论坛A 党建评级表这类四列表模板，右侧 `cells[2] -> cells[3]` 根本没有进入字段识别，也不会被回写。
 - 最小改动范围：
   - 在 `template_fill.py` 增加基于表头的多组“字段-填写内容”目标列识别；
   - 保留原有无表头/两列表模板的 fallback；
@@ -6053,7 +6053,7 @@
 - 是否已做代码修改：是
 - 验证结果：
   - `uv run pytest tests/test_template_fill.py -q` -> `12 passed`
-  - 实测 `extract_docx_template_fields` 对 `CFFC_慈善组织党建评级资料表_模拟版.docx` 的识别数从 `42` 提升到 `65`；
+  - 实测 `extract_docx_template_fields` 对 `测试论坛A_慈善组织党建评级资料表_模拟版.docx` 的识别数从 `42` 提升到 `65`；
   - `常用简称/品牌名 / 法定代表人 / 办公地址 / 党组织名称 / 成立时间 / 书记姓名/职务` 等四列表右侧字段现在都已进入模板填写链路；
   - `政策倡导（Policy / Advocacy）（服务对象/覆盖对象）`、`年会与峰会（Networking）（服务对象/覆盖对象）` 等业务模块表右侧“服务对象/覆盖对象”列现在也能被识别与回写。
 ## 2026-03-23
@@ -6170,7 +6170,7 @@
     - 当前任务标题与说明语义
     - 已上传附件
     - 事件线摘要 / 阻塞 / 下一步 / 证据数
-  - 因此像 CFFC 这种“知识资料很多但结构化目标/模块/流程尚未补齐”的客户，会被误判成 `资料较少`
+  - 因此像 测试论坛A 这种“知识资料很多但结构化目标/模块/流程尚未补齐”的客户，会被误判成 `资料较少`
 - 实际处理：
   - `buildTaskProjectPreview(...)` 新增读取：
     - `taskTitle`
@@ -6258,12 +6258,12 @@
   - `cd /Users/guyuanyuan/.openclaw/workspace/yiyu-thinktank-workbench && npm run build:renderer` 通过
   - `cd /Users/guyuanyuan/.openclaw/workspace/yiyu-thinktank-workbench && npm run dist:mac-local` 通过
 - 2026-03-23 22:00 主线程：排查“任务看不到了”。根因不是任务被清空，而是本地后端 `/api/v1/tasks` 500。具体是 `backend/app/main.py` 里的模块级 `_sync_task_attachment_scope()` 错误引用了 `create_app()` 作用域内的 `state / build_task_attachment / build_attachment_event_line_activity / ensure_standard_client_folders`。已改成显式注入 `db / data_dir / helper`，重新打包、重装并冷启动后，运行中的 `/api/v1/tasks` 恢复 200，当前真实任务数为 41（`todo=12`, `done=29`）。
-- 2026-03-23 深夜主线程：继续排查任务编辑抽屉里 CFFC 背景卡和四个 AI 洞察框为什么“资料很多但分析仍然泛”。确认根因不是资料量不足，而是两层链路都在复述泛化字段：
+- 2026-03-23 深夜主线程：继续排查任务编辑抽屉里 测试论坛A 背景卡和四个 AI 洞察框为什么“资料很多但分析仍然泛”。确认根因不是资料量不足，而是两层链路都在复述泛化字段：
   - `buildTaskProjectPreview(...)` 虽然已经开始读任务标题、附件标题和文档卡，但仍会把“结构化归属不足 / 资料未挂进模块流程”这类系统内部问题当成业务阻碍；
   - `TaskOrgContextPanel` 又继续优先吃 `eventLine.currentBlocker / recentDecision / nextStep` 这类已经被启发式泛化过的字段，导致四个框互相抄写。
   本轮已改成：
   - 对“会谈 / 演示 / 数字化平台 / AI 工具包 / 专题营”类任务，优先生成**业务阻碍**，例如“客户场景、价值主张、会后动作没有钉住”，不再把“资料没挂进模块流程”当主阻碍；
-  - CFFC 这类任务的蓝色预览卡会优先把附件标题、相关文档卡标题/摘要和会谈语义拼成“会前判断”，而不是简单回显共享项目背景；
+  - 测试论坛A 这类任务的蓝色预览卡会优先把附件标题、相关文档卡标题/摘要和会谈语义拼成“会前判断”，而不是简单回显共享项目背景；
   - `TaskOrgContextPanel` 新增泛化字段过滤，像“当前阻塞更像资料不足 / 最近进展：X / X / 结构化归属不足”这类内容不再被拿来生成四张洞察卡。
   已验证 `npx vite build` 通过，最新 renderer 产物：
   - `dist/renderer/assets/index-DQXPH-UI.js`
@@ -6370,7 +6370,7 @@
     - `ifMissing`
     - `sourceKind`
     - `linkedContext`
-  - 新增后端测试覆盖“CFFC 战略合作协议沟通”这类技能型任务，验证：
+  - 新增后端测试覆盖“测试论坛A 战略合作协议沟通”这类技能型任务，验证：
     - 能识别任务类型
     - 会拉任务材料与客户背景
     - 通用技能优先命中规则库
@@ -6379,7 +6379,7 @@
     - `GrowthWorkbenchTaskRecord` 恢复保留 `clientName / eventLineName / projectStage / businessCategory` 老字段，避免旧的 `projectGuidance`/`genericLessons` 链路被这轮结构升级打断
 - 当前状态：
   - 学习导航不再只靠阶段和泛化推荐理由拼壳，已经能围绕真实任务给出“这是什么任务、为什么现在推这个、该看哪些背景、现在具体做什么”
-  - 对“沟通 CFFC 战略合作协议”这类任务，系统会优先给出协议沟通类通用技能、任务/客户背景包和前中后动作主线
+  - 对“沟通 测试论坛A 战略合作协议”这类任务，系统会优先给出协议沟通类通用技能、任务/客户背景包和前中后动作主线
 - 验证结果：
   - `python3 -m py_compile backend/app/models.py backend/app/main.py` 通过
   - `PYTHONPATH=backend backend/.venv/bin/python -m pytest backend/tests/test_growth_workbench.py backend/tests/test_growth_engine.py -q` 通过，`10 passed`
@@ -6485,7 +6485,7 @@
   - 里程碑字段不再沿用“模板名 + 字段名”的泛检索 query，改成按 `年份 + 大事记/发展历程/重大事件` 组织本地检索词。
   - 网页补充对 `20xx年重大事件/里程碑` 这类字段放宽触发条件；即使已有 3 条弱本地证据，也允许继续补公开网页弱证据。
   - 若客户档案里未显式填写官网域名，模板链现在会优先从本地已命中的资料 excerpt 里抽取域名，优先选 `.org.cn/.org`，再直读官网首页作为弱证据。
-  - 对缩写型客户（如 CFFC），网页补充会先从本地资料标题里推公开名称，再用该名称做搜索，仍保持“本地资料优先，网页只补空白”。
+  - 对缩写型客户（如 测试论坛A），网页补充会先从本地资料标题里推公开名称，再用该名称做搜索，仍保持“本地资料优先，网页只补空白”。
   - 进一步补强：网页补充不再只依赖“当前字段命中的 2-3 条资料”，而是会从该客户全量已入库资料中补抽公开名称/官网域名线索，再回灌到模板填写搜索，避免里程碑字段因当前命中太泛而完全拿不到官网补充。
 - 是否需要主线程配合：否
 - 风险点：

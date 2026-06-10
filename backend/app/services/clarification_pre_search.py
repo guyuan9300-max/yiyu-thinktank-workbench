@@ -145,7 +145,7 @@ _CLIENT_FIELDS_LIKELY_IN_DICT = (
 
 
 def _fuzzy_match_client_name(question: str, client_name: str) -> bool:
-    """模糊匹配客户名: '日慈' 也算 '日慈基金会' 命中."""
+    """模糊匹配客户名: '测试机构A' 也算 '测试机构A' 命中."""
     if not client_name or not question:
         return False
     if client_name in question:
@@ -230,7 +230,7 @@ def _extract_glossary_candidate_from_search(
 严格 JSON 格式:
 {{
   "found": true,
-  "term": "广东省日慈公益基金会",
+  "term": "测试机构A",
   "attribute_name": "成立时间",
   "value_text": "2013年12月31日",
   "source_url": "https://baike.sogou.com/..."

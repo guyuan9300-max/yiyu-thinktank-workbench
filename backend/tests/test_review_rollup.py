@@ -233,7 +233,7 @@ def test_build_executive_review_rollup_returns_real_org_and_department_reports()
                 id="dept_consult_strategy",
                 name="咨询策略部",
                 monthlyDna="本月重点是把重点客户方案验证做深。",
-                weeklyFocus="本周重点推进黄河基金会应用交付方案。",
+                weeklyFocus="本周重点推进测试机构E应用交付方案。",
                 members=[ReviewDepartmentMemberRecord(id="u1", fullName="顾源源")],
             ),
             ReviewDepartmentConfigRecord(
@@ -522,7 +522,7 @@ def test_build_employee_review_report_department_lead_uses_department_logic():
     org_profile = build_org_model_profile()
     item = build_item(
         "task_department_lead",
-        "推进黄河基金会合作边界确认",
+        "推进测试机构E合作边界确认",
         "佳乐",
         WeeklyReviewTaskStructuredNoteRecord(
             reflection="先把合作边界和关键人确认下来。",
@@ -539,9 +539,9 @@ def test_build_employee_review_report_department_lead_uses_department_logic():
         ),
         project_context=TaskProjectContextRecord(
             clientId="client_hh",
-            clientName="黄河基金会",
+            clientName="测试机构E",
             stage="业务拓展",
-            backgroundSummary="围绕黄河基金会合作边界和确认节奏推进。",
+            backgroundSummary="围绕测试机构E合作边界和确认节奏推进。",
             goalSummary="确认合作边界和下一轮沟通。",
             riskSummary="合作边界和关键确认节点还没有收束。",
             currentFocus="当前主要在推进：合作边界和下一轮沟通确认。",
@@ -552,7 +552,7 @@ def test_build_employee_review_report_department_lead_uses_department_logic():
             sourceEvidence=["客户工作台"],
         ),
         event_line_id="eline_hh_followup",
-        event_line_name="黄河基金会合作确认",
+        event_line_name="测试机构E合作确认",
     )
 
     analysis = build_weekly_review_analysis(
@@ -574,7 +574,7 @@ def test_build_employee_review_report_department_lead_uses_department_logic():
 
     assert report.logicMode == "department_lead_eventline_context_v1"
     assert report.sourcePolicy["roleView"] == "department_lead"
-    assert any("黄河基金会合作确认" in area for area in report.focusAreas)
+    assert any("测试机构E合作确认" in area for area in report.focusAreas)
     assert any("合作边界" in signal or "部门" in signal for signal in report.supportSignals)
 
 
@@ -752,34 +752,34 @@ def test_build_employee_review_report_admin_uses_event_line_specific_summary():
     items = [
         build_item(
             "task_admin_report_1",
-            "推进黄河基金会合作方案初稿",
+            "推进测试机构E合作方案初稿",
             "顾源源",
             WeeklyReviewTaskStructuredNoteRecord(
-                progress="黄河基金会合作方案进入内部讨论阶段。",
-                nextAction="补齐方案分工后与黄河基金会确认下一轮沟通。",
+                progress="测试机构E合作方案进入内部讨论阶段。",
+                nextAction="补齐方案分工后与测试机构E确认下一轮沟通。",
                 completionStatus="in_progress",
             ),
             owner_id="user_guyuan",
             project_context=TaskProjectContextRecord(
                 clientId="client_hh",
-                clientName="黄河基金会",
+                clientName="测试机构E",
                 stage="业务拓展",
-                backgroundSummary="黄河基金会当前围绕合作方案做前期业务判断。",
+                backgroundSummary="测试机构E当前围绕合作方案做前期业务判断。",
                 goalSummary="把合作方案推进到可确认范围。",
                 riskSummary="当前风险是方案分工和下一轮沟通安排还没完全收束。",
-                currentFocus="当前主要在推进：黄河基金会合作方案初稿。",
+                currentFocus="当前主要在推进：测试机构E合作方案初稿。",
                 currentBlocker="当前阻塞：方案分工和下一轮沟通安排还没完全收束。",
-                nextAction="下一步动作：补齐方案分工后与黄河基金会确认下一轮沟通。",
-                recentProgress="最近进展：黄河基金会合作方案进入内部讨论阶段。",
+                nextAction="下一步动作：补齐方案分工后与测试机构E确认下一轮沟通。",
+                recentProgress="最近进展：测试机构E合作方案进入内部讨论阶段。",
                 infoCompleteness="high",
                 sourceEvidence=["客户工作台"],
             ),
             event_line_id="eline_hh",
-            event_line_name="黄河基金会合作推进",
+            event_line_name="测试机构E合作推进",
         ),
         build_item(
             "task_admin_report_2",
-            "补齐黄河基金会下一轮沟通提纲",
+            "补齐测试机构E下一轮沟通提纲",
             "顾源源",
             WeeklyReviewTaskStructuredNoteRecord(
                 blockerReason="下一轮沟通提纲还没完全收束。",
@@ -788,20 +788,20 @@ def test_build_employee_review_report_admin_uses_event_line_specific_summary():
             owner_id="user_guyuan",
             project_context=TaskProjectContextRecord(
                 clientId="client_hh",
-                clientName="黄河基金会",
+                clientName="测试机构E",
                 stage="业务拓展",
-                backgroundSummary="黄河基金会当前围绕合作方案做前期业务判断。",
+                backgroundSummary="测试机构E当前围绕合作方案做前期业务判断。",
                 goalSummary="把合作方案推进到可确认范围。",
                 riskSummary="当前风险是方案分工和下一轮沟通安排还没完全收束。",
-                currentFocus="当前主要在推进：黄河基金会合作方案初稿。",
+                currentFocus="当前主要在推进：测试机构E合作方案初稿。",
                 currentBlocker="当前阻塞：方案分工和下一轮沟通安排还没完全收束。",
-                nextAction="下一步动作：补齐方案分工后与黄河基金会确认下一轮沟通。",
-                recentProgress="最近进展：黄河基金会合作方案进入内部讨论阶段。",
+                nextAction="下一步动作：补齐方案分工后与测试机构E确认下一轮沟通。",
+                recentProgress="最近进展：测试机构E合作方案进入内部讨论阶段。",
                 infoCompleteness="high",
                 sourceEvidence=["客户工作台"],
             ),
             event_line_id="eline_hh",
-            event_line_name="黄河基金会合作推进",
+            event_line_name="测试机构E合作推进",
         ),
     ]
     analysis = build_weekly_review_analysis(
@@ -821,10 +821,10 @@ def test_build_employee_review_report_admin_uses_event_line_specific_summary():
     )
 
     assert report.logicMode == "admin_eventline_context_v1"
-    assert "黄河基金会" in report.summary
-    assert any("黄河基金会合作推进" in area for area in report.focusAreas)
+    assert "测试机构E" in report.summary
+    assert any("测试机构E合作推进" in area for area in report.focusAreas)
     assert any("｜" in area for area in report.focusAreas)
     assert not any(card.label == "个人-部门对齐率" for card in report.summaryMetrics)
-    assert "推进事项" in report.summary or "黄河基金会合作方案初稿" in report.summary
+    assert "推进事项" in report.summary or "测试机构E合作方案初稿" in report.summary
     assert report.sourcePolicy["eventLineSummaryCount"] >= 1
     assert report.sourcePolicy["eventLineRiskCount"] >= 1

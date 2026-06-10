@@ -1,10 +1,10 @@
-"""V2.3 质量测试 · 青禾测试 主 runner
+"""V2.3 质量测试 · 测试机构C测试 主 runner
 
 顾源源 2026-05-23 钦定测试方案 (docs/V2.3_QUALITY_TEST_PLAN.md)
 
 流程:
   1. 建临时 db (Database, V2.1 完整 schema + V2.3 阶段 1 表)
-  2. INSERT 青禾 client + project
+  2. INSERT 测试机构C client + project
   3. 按 5 类 12 条数据按真实 path 喂 IngestPipeline
   4. 跑 cross_source scan + batch 写澄清队列
   5. 跑 story_card_generator
@@ -56,7 +56,7 @@ from app.services.user_correction_handler import (  # noqa: E402
 )
 
 CLIENT_EDUCATION_ID = "client_qinghe_edu_v23test"
-CLIENT_EDUCATION_NAME = "青禾教育研究中心"
+CLIENT_EDUCATION_NAME = "测试机构D"
 
 from .qinghe_dataset import (  # noqa: E402
     CLIENT_ID,
@@ -81,7 +81,7 @@ def _now_iso() -> str:
 def setup_db(db_path: Path) -> Database:
     """建空 db + 写 client + 写 project (V2.1 完整 schema).
 
-    V2.4 P2-7 加: 第二个客户"青禾教育研究中心"做跨客户隔离测试.
+    V2.4 P2-7 加: 第二个客户"测试机构D"做跨客户隔离测试.
     """
     db = Database(db_path)
     now = _now_iso()
@@ -91,25 +91,25 @@ def setup_db(db_path: Path) -> Database:
             created_at, updated_at
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
         (
-            CLIENT_ID, CLIENT_NAME, "青禾", "公益", "陪伴",
+            CLIENT_ID, CLIENT_NAME, "测试机构C", "公益", "陪伴",
             "公益基金会客户,2026 年 5 月起服务,乡村儿童阅读陪伴项目试点中",
             "推进中", "#5B7BFE", now, now,
         ),
     )
-    # V2.4 P2-7: 第二个客户 (同名"青禾"前缀, 不同实体)
+    # V2.4 P2-7: 第二个客户 (同名"测试机构C"前缀, 不同实体)
     db.execute(
         """INSERT INTO clients (
             id, name, alias, domain, type, intro, stage, color,
             created_at, updated_at
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
         (
-            CLIENT_EDUCATION_ID, CLIENT_EDUCATION_NAME, "青禾教育",
+            CLIENT_EDUCATION_ID, CLIENT_EDUCATION_NAME, "测试机构C教育",
             "教育", "研究", "教育研究中心客户,跟基金会无关 (跨客户隔离测试)",
             "试点", "#FE7B5B", now, now,
         ),
     )
     # 在教育中心写一条 atomic_fact "李明 = 教育中心客户经理"
-    # 测试: 用户纠错青禾基金会的李明角色, 不应影响教育中心的李明
+    # 测试: 用户纠错测试机构C的李明角色, 不应影响教育中心的李明
     db.execute(
         """INSERT INTO atomic_facts (
             id, client_id, subject_text, attribute, value_text,
@@ -1016,7 +1016,7 @@ def run_user_corrections(db: Database) -> dict:
 
 
 def run_isolation_check(db: Database) -> dict:
-    """跨客户隔离: 查青禾基金会的'李明' 应不含教育中心的事实."""
+    """跨客户隔离: 查测试机构C的'李明' 应不含教育中心的事实."""
     foundation_li = db.fetchall(
         """SELECT id, value_text, source_type FROM atomic_facts
            WHERE client_id = ? AND subject_text = '李明' AND status = 'active'""",

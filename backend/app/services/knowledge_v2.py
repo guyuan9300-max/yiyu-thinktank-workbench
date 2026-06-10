@@ -3253,7 +3253,7 @@ def fanout_document_to_event_lines(
 
         # Fallback 触发逻辑：entity_extractor 抽取质量差时（常见痛点），
         # 至少让"文件名含 event_line 名 4+ 字符 substring"也能建立关联。
-        # 这样像「日慈战略合作.docx」能匹配「日慈战略陪伴」事件线。
+        # 这样像「测试机构A战略合作.docx」能匹配「测试机构A战略陪伴」事件线。
         filename_substring_match = False
         if el_name and len(el_name) >= 4 and file_name_lower:
             el_name_lower = el_name.lower()

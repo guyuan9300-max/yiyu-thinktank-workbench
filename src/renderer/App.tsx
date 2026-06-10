@@ -5230,7 +5230,7 @@ function buildTaskProjectPreview(params: {
   const currentFocus = (() => {
     if (solutionConversationTask) {
       return truncatePreviewText(
-        `当前任务的真正落点是：把${focusSubject}带进这次会谈，判断它是否能成为 CFFC 面向基金会客户的下一步合作抓手。`,
+        `当前任务的真正落点是：把${focusSubject}带进这次会谈，判断它是否能成为 测试论坛A 面向基金会客户的下一步合作抓手。`,
         120,
       );
     }
@@ -6702,7 +6702,7 @@ function ClientEditorModal({
                   onFocus={() => onInteractionState(true, 'client_name_input', modalDetail)}
                   onBlur={() => onInteractionState(state.open, 'client_modal', modalDetail)}
                   onChange={(event) => updateDraft({ name: event.target.value })}
-                  placeholder="例如:日慈基金会"
+                  placeholder="例如:测试机构A"
                   className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2.5 text-[13px] font-medium text-gray-900 outline-none focus:border-[#5B7BFE] transition-colors"
                 />
               </div>
@@ -18293,7 +18293,7 @@ export default function App() {
                     className="w-full rounded-2xl border border-gray-200 bg-white px-4 py-3 text-[15px] font-semibold text-gray-900 outline-none transition focus:border-[#5B7BFE] focus:ring-2 focus:ring-[#5B7BFE]/15 placeholder:text-gray-300"
                     autoFocus
                   />
-                  <p className="mt-2 text-[11px] text-gray-400">建议写成一条可持续推进的线名，例如“日慈教师赋能成效表达收束”或“CFFC 工作坊合作推进”。</p>
+                  <p className="mt-2 text-[11px] text-gray-400">建议写成一条可持续推进的线名，例如“测试机构A教师赋能成效表达收束”或“测试论坛A 工作坊合作推进”。</p>
                 </div>
 
                 <div className="grid gap-4 md:grid-cols-2">
@@ -23775,7 +23775,7 @@ export default function App() {
                   </p>
                   <p className="text-[12px] text-center max-w-md leading-relaxed text-gray-500 mb-6">
                     {clients.length === 0
-                      ? '先创建一个项目开始正式使用;如果只是想演示流程,也可以手动载入演示数据(会进入「[演示] 为爱黔行」等占位客户,不会影响真实数据)。'
+                      ? '先创建一个项目开始正式使用;如果只是想演示流程,也可以手动载入演示数据(会进入「[演示] 测试机构B」等占位客户,不会影响真实数据)。'
                       : '左栏点击项目即可进入,或者再创建一个新项目。'}
                   </p>
                   <div className="flex items-center gap-3">

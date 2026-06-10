@@ -51,10 +51,10 @@
 
 ## 4 · 用户视角真测(顾源源补充 lens)
 
-输入: POST /documents/generate {client_id: CFFC, document_type: board_brief, goal: 理事会汇报}
+输入: POST /documents/generate {client_id: 测试论坛A, document_type: board_brief, goal: 理事会汇报}
 
 输出:
-- markdown 真含 CFFC 真实数据(5月补充协议 / 王主任承诺 / 师资不足风险 / 学校配合度)
+- markdown 真含 测试论坛A 真实数据(5月补充协议 / 王主任承诺 / 师资不足风险 / 学校配合度)
 - "下一步建议" actionable("处理 20 个待澄清问题 / 补 10 个数据缺口")
 - "待确认项" 真问具体问题
 - 用户可直接改 30 秒拿来用

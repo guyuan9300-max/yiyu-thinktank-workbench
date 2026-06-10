@@ -139,7 +139,7 @@ proposedClarifications: 5 条
 ### 6.2 测试原文 2:会议纪要 endpoint(写入)
 
 **用户输入**(POST /api/v1/meeting-minutes/process):
-> 2026-05-23 CFFC 季度复盘(深度版): 王主任明确 5 月补充协议里学校数从 3 所调整为 1 所,
+> 2026-05-23 测试论坛A 季度复盘(深度版): 王主任明确 5 月补充协议里学校数从 3 所调整为 1 所,
 > 总预算从 800 万降为 300 万. 李丽担忧师资跟不上, 建议先培训 4 周再开课, 但具体时间
 > 还需要等新疆教育厅审批. 周明承诺 5 月 30 日前给完整财务可行性. 下季度想扩展到内蒙古,
 > 但担心政策风险尚未明朗. 张真(执行主任)强调要参考方法卡建议先验证学校配合度.
@@ -175,9 +175,9 @@ agent_run_log:          23   → 24    (+1, idempotency_key='r4-retest-cffc-2026
 ### 6.3 测试原文 3:智能文件导入(file_identity_classifier)
 
 **3 个文件**:
-1. `CFFC-益语-乡村教育帮扶服务合同_20260301.docx`(800 万版)
-2. `CFFC-补充协议_v1_20260520.docx`(调整为 300 万版)
-3. `CFFC-青年行动者推广方案_v1_20260418.docx`
+1. `测试论坛A-益语-乡村教育帮扶服务合同_20260301.docx`(800 万版)
+2. `测试论坛A-补充协议_v1_20260520.docx`(调整为 300 万版)
+3. `测试论坛A-青年行动者推广方案_v1_20260418.docx`
 
 **file_identities 3 行真识别**:
 - 合同 / supplementary_agreement / proposal 各 1 个,角色全部 `client_official` ✅
@@ -185,7 +185,7 @@ agent_run_log:          23   → 24    (+1, idempotency_key='r4-retest-cffc-2026
 **contract_structures 2 行真解析**(主合同 + 补充协议):
 ```
 contract_type: service_agreement / supplementary
-party_a: CFFC / 同上
+party_a: 测试论坛A / 同上
 party_b: 益语智库 / 同上
 amount: 800 万 / 300 万
 signed_at: 2026-03-01 / 2026-05-20
@@ -212,7 +212,7 @@ historical_links_written: 2
 ```
 gaps_detected: 10
 gap_types: outdated_external / no_external_evidence / etc.
-external_evidence_cards harvest: 0 (intelligence_candidate_items 不含 CFFC 关键词)
+external_evidence_cards harvest: 0 (intelligence_candidate_items 不含 测试论坛A 关键词)
 ```
 
 10 个 data_gaps 全部真写入 V2.1 lab db。

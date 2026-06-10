@@ -61,8 +61,8 @@ _GENERIC_ORG_SUFFIXES = (
 def _extract_unique_keyword(client_name: str) -> str:
     """从客户名抽"独特子串"用于公众号结果过滤.
 
-    搜狗对长 query "日慈基金会" 会把"基金会"这个泛词单独命中, 导致 70%+ 污染.
-    剥掉客户名末尾的通用后缀, 剩下的核心字符 (例 "日慈" / "南都" / "壹基金") 才是
+    搜狗对长 query "测试机构A" 会把"基金会"这个泛词单独命中, 导致 70%+ 污染.
+    剥掉客户名末尾的通用后缀, 剩下的核心字符 (例 "测试机构A" / "南都" / "壹基金") 才是
     强相关信号. 若剥光后剩 < 2 字符, 退回原名.
     """
     name = (client_name or "").strip()
@@ -81,8 +81,8 @@ def _is_relevant_to_client(
 ) -> bool:
     """title 或 snippet 必须命中 keyword 或任一别名才算相关.
 
-    搜狗结果带空格分词 (例 "日慈 公益 基金会"), 这里搜索的是
-    "日慈" 这种纯连字串, 自动跨过空格.
+    搜狗结果带空格分词 (例 "测试机构A 公益 基金会"), 这里搜索的是
+    "测试机构A" 这种纯连字串, 自动跨过空格.
     """
     haystack_raw = f"{title or ''}\n{snippet or ''}"
     haystack_normalized = haystack_raw.replace(" ", "").replace("　", "")
@@ -101,7 +101,7 @@ def _stable_origin_id(*, title: str, author: str) -> str:
     """同一篇公众号文章, 用 (title + author) 做稳定 hash.
 
     sogou /link?url=... 含 nonce, 每次搜索返回的 url 都不同, 所以不能用 URL hash.
-    title 在搜狗结果里是带空格分词的 ('日慈 公益 基金会 ...'), 这里 normalize 掉空格后再 hash.
+    title 在搜狗结果里是带空格分词的 ('测试机构A 公益 基金会 ...'), 这里 normalize 掉空格后再 hash.
     """
     title_norm = re.sub(r"\s+", "", (title or "").strip())
     author_norm = re.sub(r"\s+", "", (author or "").strip())
@@ -153,7 +153,7 @@ def run_wechat_sogou_ingest(
 ) -> WechatSogouIngestResult:
     """同步跑一次搜狗微信翻页抓取 → 入库 brand_official_corpus.
 
-    extra_query_aliases: 客户的常用别名 (例 ['日慈基金会', '广东省日慈公益基金会']),
+    extra_query_aliases: 客户的常用别名 (例 ['测试机构A', '测试机构A']),
         会用 ' OR ' 风格逐别名各翻一遍, 跨别名去重. 不传则只用 client_name 单查.
     """
     if not client_name.strip():
@@ -165,7 +165,7 @@ def run_wechat_sogou_ingest(
         if alias_clean and alias_clean not in queries:
             queries.append(alias_clean)
 
-    # 关键: 抽客户名独特子串. "日慈基金会" → "日慈" 防搜狗对"基金会"泛词污染.
+    # 关键: 抽客户名独特子串. "测试机构A" → "测试机构A" 防搜狗对"基金会"泛词污染.
     unique_keyword = _extract_unique_keyword(client_name)
 
     seen_origin_ids: set[str] = set()
@@ -181,7 +181,7 @@ def run_wechat_sogou_ingest(
             sogou_url = result.url
             if not sogou_url or "weixin.sogou.com" not in sogou_url:
                 continue
-            # 严格相关性: title 或 snippet 必须含独特关键词 ("日慈") 或客户全名/别名
+            # 严格相关性: title 或 snippet 必须含独特关键词 ("测试机构A") 或客户全名/别名
             if not _is_relevant_to_client(
                 result.title,
                 result.snippet,

@@ -62,7 +62,7 @@ export function DeepReadSettingsCard({ clientId, canEdit, onFlash }: DeepReadSet
       ]);
       if (!mounted.current) return;
       setSettings(s);
-      // 优先客户(下拉菜单选某客户)→ 显示该客户; 全量(无)→ 聚合所有客户(而非取第一个 CFFC 的 98%)。
+      // 优先客户(下拉菜单选某客户)→ 显示该客户; 全量(无)→ 聚合所有客户(而非取第一个 测试论坛A 的 98%)。
       const sel = ((s.priorityClientId as string | null) ?? null) || clientId || null;
       if (sel) {
         setCoverage(

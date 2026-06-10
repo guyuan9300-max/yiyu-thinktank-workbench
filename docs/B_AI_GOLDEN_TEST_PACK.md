@@ -128,7 +128,7 @@
 
 **期望调用模块**:
 1. weekly-review (周复盘 endpoint, 待 A 暴露)
-2. historical_material_resolver ("5 月初补充协议" 回指 5/18 心盛 v2 300 万)
+2. historical_material_resolver ("5 月初补充协议" 回指 5/18 测试项目A v2 300 万)
 
 **期望成果**:
 - 复盘卡 (本周变化 + 历史回指 + 风险 + 下周重点)
