@@ -663,9 +663,34 @@ def _resolve_department_from_invite(
     raw_code: str | None,
     *,
     organization_id: str | None = None,
+    strict: bool = False,
 ) -> ResolvedDepartmentInvite | None:
     lookup_values = _department_invite_lookup_values(raw_code)
     if not lookup_values:
+        return None
+    if strict:
+        # 封测安全(P0-1): 注册 / 跨组加入这类"授予某组成员身份→可读该组数据"的路径,
+        # 只接受带校验和的完整邀请码(ORG-DEPT##-CHECKSUM, 校验和由 org_id:dept_id 派生),
+        # 拒绝按部门名(如"战略部")/裸部门ID 的弱匹配 —— 防止外部隔离-org 账号靠猜
+        # inviteCode 把自己塞进他组。身份解析类端点(department-options / invite-code/resolve)
+        # 不传 strict, 行为不变。
+        strict_rows = state.db.fetchall(
+            """
+            SELECT departments.id, departments.organization_id, departments.name, departments.color,
+                   organizations.name AS organization_name
+            FROM org_departments AS departments
+            JOIN organizations ON organizations.id = departments.organization_id
+            WHERE COALESCE(departments.active, 1) != 0
+            """,
+        )
+        for value in lookup_values:
+            formatted_match = re.match(r"^([A-Z0-9]{2,8})-([A-Z0-9]{2,8})-([A-Z0-9]{2,8})$", value.upper())
+            if not formatted_match:
+                continue
+            supplied_checksum = formatted_match.group(3)
+            for row in strict_rows:
+                if supplied_checksum == _department_invite_checksum(str(row["organization_id"]), str(row["id"])):
+                    return _resolved_invite_from_department_row(row)
         return None
     for value in lookup_values:
         normalized = value.upper()
@@ -12760,7 +12785,7 @@ def create_app() -> FastAPI:
             existing_phone = state.db.fetchone("SELECT id FROM employee_accounts WHERE phone_number = ?", (normalized_phone,))
             if existing_phone:
                 raise HTTPException(status_code=409, detail="手机号已绑定其他账号")
-        invite_department = _resolve_department_from_invite(state, payload.inviteCode)
+        invite_department = _resolve_department_from_invite(state, payload.inviteCode, strict=True)
         if payload.inviteCode and not invite_department:
             raise HTTPException(status_code=400, detail="邀请码无效，请确认后重试，或清空邀请码先完成个人注册。")
         target_organization_id = invite_department.organization_id if invite_department else None
@@ -13332,7 +13357,7 @@ def create_app() -> FastAPI:
         payload: OrgMembershipApplyPayload,
         current_user: SessionUser = Depends(lambda authorization=Header(default=None): _require_auth(app, authorization)),
     ) -> OrgMembershipSummaryRecord:
-        invite_department = _resolve_department_from_invite(state, payload.inviteCode)
+        invite_department = _resolve_department_from_invite(state, payload.inviteCode, strict=True)
         if payload.inviteCode and not invite_department:
             raise HTTPException(status_code=400, detail="邀请码无效，请确认后重试。")
         target_organization_id = invite_department.organization_id if invite_department else current_user.organizationId
@@ -17083,8 +17108,16 @@ def create_app() -> FastAPI:
             _mark_missing("knowledge_surrogate", "当前云端没有知识代理摘要，无法用客户资料替代原始长文。")
 
         # ── Desktop knowledge fallback (dev / compatibility only) ──
+        # 封测安全(P0-2): 这条回退直接读桌面 app.db 且【无 organization_id 过滤】,
+        # 触发键(resolved_client_id / resolved_client_name)来自客户端任意输入 ——
+        # 一旦生产机上存在桌面 app.db, 任意隔离-org 账号即可跨组读他人客户档案。
+        # 默认关闭, 仅在显式设 YIYU_ENABLE_DESKTOP_KB_FALLBACK=1 的开发环境启用。
         resolved_desktop_client_id = resolved_client_id
-        if not dna_context and (resolved_client_id or resolved_client_name):
+        if (
+            os.getenv("YIYU_ENABLE_DESKTOP_KB_FALLBACK", "").strip() == "1"
+            and not dna_context
+            and (resolved_client_id or resolved_client_name)
+        ):
             try:
                 import sqlite3 as _sqlite3
                 from app.knowledge_store import find_desktop_app_db_path
