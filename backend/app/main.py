@@ -31586,22 +31586,40 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
 
                 # pending / 卡死的 processing → 认领执行
                 client_id = (item.clientId or "").strip()
-                if not client_id:
+                if not client_id and not (item.clientName or "").strip():
                     update_cloud_link_import_request_status(
                         item.id,
                         status="failed",
                         error_message="未指定归属客户,请在手机端选择客户后重新提交",
                     )
                     continue
-                try:
-                    client = build_client_summary(client_id)
-                except HTTPException:
-                    update_cloud_link_import_request_status(
-                        item.id,
-                        status="failed",
-                        error_message="归属客户不存在,请在手机端重新选择",
+                client = None
+                if client_id:
+                    try:
+                        client = build_client_summary(client_id)
+                    except HTTPException:
+                        client = None
+                if client is None:
+                    # 手机带的是云端客户id,本地id空间可能不同(或客户尚未镜像到桌面):
+                    # 按客户名兜底匹配本地客户,名字是跨端最稳的锚点。
+                    client_name = (item.clientName or "").strip()
+                    row = (
+                        state.db.fetchone(
+                            "SELECT id FROM clients WHERE name = ? ORDER BY created_at LIMIT 1",
+                            (client_name,),
+                        )
+                        if client_name
+                        else None
                     )
-                    continue
+                    if row is None:
+                        update_cloud_link_import_request_status(
+                            item.id,
+                            status="failed",
+                            error_message="归属客户在电脑端不存在,请在手机端重新选择",
+                        )
+                        continue
+                    client_id = str(row["id"])
+                    client = build_client_summary(client_id)
                 existing_run = fetch_active_link_material_import_run_for_url(client_id, item.url)
                 if existing_run is not None:
                     run_id = existing_run.runId
