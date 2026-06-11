@@ -89,7 +89,7 @@ def apply_user_correction(
 ) -> CorrectionResult:
     """处理一次用户纠错: supersede 旧值 + 写权威值 + 触发下游.
 
-    参数解释 (青禾示例):
+    参数解释 (测试机构C示例):
       corrected_subject              = "乡村儿童阅读陪伴项目"
       corrected_attribute_base       = "预算"
       new_authoritative_value        = "300 万元"

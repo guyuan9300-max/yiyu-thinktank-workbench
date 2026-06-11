@@ -27,7 +27,7 @@ export type ParsedSmartCommand = {
   client_name: string | null;
   /**
    * 参考客户 (合同/案例样本来源, 不是主客户).
-   * 例: "参考日慈基金会的合同结构" → references=['日慈基金会'], 不是 client_name.
+   * 例: "参考测试机构A的合同结构" → references=['测试机构A'], 不是 client_name.
    */
   client_references: string[];
   intent: AICommandIntent;
@@ -103,8 +103,8 @@ function extractBotHandle(text: string): string | null {
   return match ? match[1] : null;
 }
 
-// 顾源源 5/25 真用 bug: "参考日慈基金会的合同结构" 把日慈识别成主客户.
-// 真主客户是安然集团 (虚构, 但在 knownClientNames). 日慈只是参考样本.
+// 顾源源 5/25 真用 bug: "参考测试机构A的合同结构" 把测试机构A识别成主客户.
+// 真主客户是安然集团 (虚构, 但在 knownClientNames). 测试机构A只是参考样本.
 // 安全边界: 每个任务以客户隔离, 误识别 → 跨客户污染.
 const REFERENCE_PREFIX_RE = /(?:参考|对照|类似|像|按照|借鉴|仿照|比照|借用|套用)\s*$/;
 

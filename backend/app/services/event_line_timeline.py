@@ -132,9 +132,9 @@ def _topic_from_text(text: str) -> tuple[str, str] | None:
     normalized = _text(text)
     explicit_topics = [
         ("teacher_enablement", "教师赋能", ("教师赋能", "教师项目", "带领者")),
-        ("xinsheng", "心盛计划", ("心盛计划", "关怀员", "青年社群")),
+        ("xinsheng", "测试项目A", ("测试项目A", "关怀员", "青年社群")),
         ("fanxing", "繁星计划", ("繁星计划", "资源库", "行动营", "个人IP", "个人 IP")),
-        ("mind_magic", "心灵魔法学院", ("心灵魔法学院", "心灵魔法")),
+        ("mind_magic", "测试项目C", ("测试项目C", "心灵魔法")),
     ]
     for key, label, keywords in explicit_topics:
         if any(keyword in normalized for keyword in keywords):
@@ -156,8 +156,8 @@ def _topic_from_text(text: str) -> tuple[str, str] | None:
 def _topic_review_title(label: str, text: str) -> str:
     if label == "教师赋能":
         return "教师赋能项目进入设计校准"
-    if label == "心盛计划":
-        return "心盛计划从活动运营转向数据与品牌协同"
+    if label == "测试项目A":
+        return "测试项目A从活动运营转向数据与品牌协同"
     if label == "繁星计划":
         return "繁星计划进入战略方向重定"
     if "战略" in text:

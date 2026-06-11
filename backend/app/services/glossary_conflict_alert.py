@@ -37,7 +37,7 @@ def check_fact_against_glossary(
     if not (subject_text and attribute and value_text):
         return {"conflict": False, "reason": "empty"}
 
-    # 字典 attribute term 可能跟 fact subject 不完全一致 (例: "善加" vs "善加基金会")
+    # 字典 attribute term 可能跟 fact subject 不完全一致 (例: "测试机构C" vs "测试机构C")
     # 用 LIKE 匹配, 加上 attribute_name 精确匹配
     try:
         from app.services.text_normalizer import is_noise_difference

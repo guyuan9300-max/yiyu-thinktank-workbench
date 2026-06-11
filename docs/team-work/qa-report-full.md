@@ -28,11 +28,11 @@
 | 功能 | 状态 | 数据 |
 |------|------|------|
 | 客户列表 GET /api/v1/clients | ✅ 通过 | 7 个客户 |
-| 客户工作台 GET /api/v1/clients/{id}/workspace | ✅ 通过 | CFFC: 5会议, 12分析, 161卡片, 4DNA |
-| 客户 DNA GET /api/v1/clients/{id}/dna-documents | ✅ 通过 | CFFC 4 个模块全有内容 |
-| 客户 Notebook GET /api/v1/clients/{id}/notebook | ✅ 通过 | CFFC confidence=0.81 |
+| 客户工作台 GET /api/v1/clients/{id}/workspace | ✅ 通过 | 测试论坛A: 5会议, 12分析, 161卡片, 4DNA |
+| 客户 DNA GET /api/v1/clients/{id}/dna-documents | ✅ 通过 | 测试论坛A 4 个模块全有内容 |
+| 客户 Notebook GET /api/v1/clients/{id}/notebook | ✅ 通过 | 测试论坛A confidence=0.81 |
 | 事件线 GET /api/v1/event-lines | ✅ 通过 | 12 条活跃事件线 |
-| 会议列表 GET /api/v1/clients/{id}/meetings | ✅ 通过 | CFFC 5 场（全部 prepared） |
+| 会议列表 GET /api/v1/clients/{id}/meetings | ✅ 通过 | 测试论坛A 5 场（全部 prepared） |
 
 **模块评级：✅ 通过**
 

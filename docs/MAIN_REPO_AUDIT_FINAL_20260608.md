@@ -121,14 +121,14 @@ I have all the confirmed findings from pass 1, pass 2, and the pass 3 technical 
 
 **铁证根因**:消费端多层硬截断:
 - (1)**1800 字符硬编码**(`understanding_builder.py:37`、`ai.py:2568/4911`、`review_narrative.py` 等 12+ 处),约 450-500 汉字。
-- (2)**固定 top-N**(`narrative_collector.py:338-351`):`atomic_fact_limit=200`(CFFC 883 facts → 截 77.3%)、`person_limit=60`(CFFC 137 人 → 截 56%)、`document_limit=60`(CFFC 249 文档)、time_anchor_limit=30、activity_limit=80。
+- (2)**固定 top-N**(`narrative_collector.py:338-351`):`atomic_fact_limit=200`(测试论坛A 883 facts → 截 77.3%)、`person_limit=60`(测试论坛A 137 人 → 截 56%)、`document_limit=60`(测试论坛A 249 文档)、time_anchor_limit=30、activity_limit=80。
 - (3)**向量检索降级 LIKE 无 rerank**(`strategic_narrative_semantic_retriever.py:139-150`)。
 - (4)**module_budget 动态截断**(`workspace_data_center_adapter.py:1649-1650`):最多 4 个 DNA 模块 × 1800 = 7200 字符上限,6 模块时各 1200。
 - 根本:本地 LLM token 预算有限,设计者"先冻结为待拆规则"硬卡(`understanding_builder.py:335` 注释),未实现动态预算/优先级 rerank。
 
 **为何存在判定**:**partial**(feature 未全量铺开 + 设计性硬卡,非代码缺陷;但厚数据利用率严重不足)。
 
-**严重级**:**P1**(叙事质量直接受损:CFFC 77.3% facts、56% 人物被丢)。
+**严重级**:**P1**(叙事质量直接受损:测试论坛A 77.3% facts、56% 人物被丢)。
 
 **精确修复范围(5 处)**:
 1. `understanding_builder.py:200/346`:`atomic_fact_limit` 200→客户实际(冻结 883 max),`person_limit` 60→137。
@@ -137,7 +137,7 @@ I have all the confirmed findings from pass 1, pass 2, and the pass 3 technical 
 4. `evidence_selector.py:167`:硬裁剪改基于语义覆盖率(coverage_targets_for_focus)动态选取。
 5. `ai.py:_qwen_generate()` max_tokens 与 context 长度联动。
 
-**次生**:narrative_generator 消费层缺可观测性(用户无法判断用了 883 facts 的 22.6% 还是 100%,P2)、CFFC 深读索引只覆盖 CFFC 其他客户回退 v2_instant 薄索引(P2)。
+**次生**:narrative_generator 消费层缺可观测性(用户无法判断用了 883 facts 的 22.6% 还是 100%,P2)、测试论坛A 深读索引只覆盖 测试论坛A 其他客户回退 v2_instant 薄索引(P2)。
 
 ---
 

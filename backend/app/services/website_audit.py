@@ -65,7 +65,7 @@ def _scan_downloadable_docs_from_corpus(
 ) -> list[dict[str, str]]:
     """从 brand_official_corpus 已抓 markdown 里扫所有 PDF/DOC/XLS 链接.
 
-    Lighthouse 一次只测一个页面 (首页), 但日慈的"年报/审计报告/工作报告"是子页才有 PDF.
+    Lighthouse 一次只测一个页面 (首页), 但测试机构A的"年报/审计报告/工作报告"是子页才有 PDF.
     所以可下载文档数要走整站语料库扫描, 不是 lighthouse single-page network requests.
     """
     cur = conn.execute(

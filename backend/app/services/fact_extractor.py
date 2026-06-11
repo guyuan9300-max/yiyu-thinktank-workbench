@@ -108,7 +108,7 @@ def _is_valid_value(value: str) -> bool:
     if not any(c.isalnum() or "一" <= c <= "鿿" for c in cleaned):
         return False
     # P1: value 含问号/感叹号 → 录音转写口语句残片，拒收。
-    # 例：日慈"什么？对吧？他们在讨论什么话题" — 经典噪声
+    # 例：测试机构A"什么？对吧？他们在讨论什么话题" — 经典噪声
     if any(ch in cleaned for ch in "?？!！"):
         return False
     # P1: value 含中文逗号/分号/句号 → 切到了下一句，拒收（数字千分位 "," 已被 _normalize_value 处理过）

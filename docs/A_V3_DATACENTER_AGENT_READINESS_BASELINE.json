@@ -1,7 +1,7 @@
 {
   "timestamp": "2026-05-23T22:00:00+08:00",
   "test_client": "client_a4d1db29a7",
-  "client_name": "CFFC",
+  "client_name": "测试论坛A",
   "rule": "M0 不修复, 只测",
   "scores": {
     "agent_readiness_index": 27.75,
@@ -133,7 +133,7 @@
     "estimated_commits": 1
   },
   "honesty_notes": [
-    "本 M0 只测 CFFC 一个客户, 其它 2 个客户未跑",
+    "本 M0 只测 测试论坛A 一个客户, 其它 2 个客户未跑",
     "workspace/chat 用 prompt 字段, 不是 message",
     "approval 32 条中 27 条来自 B AI V3.0 测试 (actor_type=external_ai_agent)",
     "agent_run_log 34 条 idempotency 19 条全是历史数据",

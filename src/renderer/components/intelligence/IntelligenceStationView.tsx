@@ -1589,11 +1589,11 @@ export function IntelligenceStationView({
                     {brandKpiNegativeCount > 0 ? '需要紧急关注' : '当前无负面信号'}
                   </p>
                 </div>
-                {/* 战略对齐度 (品牌监测 #3) — 待接通后端 LLM. 当前只有日慈有 mock, 其他客户显示 "—" 避免误导 */}
+                {/* 战略对齐度 (品牌监测 #3) — 待接通后端 LLM. 当前只有测试机构A有 mock, 其他客户显示 "—" 避免误导 */}
                 <div className="flex flex-col">
                   <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-gray-400">战略对齐度</p>
                   <div className="mt-3 flex items-baseline gap-1.5">
-                    {selectedWorkObject?.name?.includes('日慈') ? (
+                    {selectedWorkObject?.name?.includes('测试机构A') ? (
                       <>
                         <span className="text-[28px] leading-none font-light tracking-tight text-amber-700 tabular-nums">C-</span>
                         <span className="text-[14px] leading-none font-light text-gray-400 tabular-nums">35%</span>
@@ -1602,9 +1602,9 @@ export function IntelligenceStationView({
                       <span className="text-[32px] leading-none font-light tracking-tight text-gray-300">—</span>
                     )}
                   </div>
-                  <div className={`mt-2 h-[2px] w-8 rounded-full ${selectedWorkObject?.name?.includes('日慈') ? 'bg-amber-500' : 'bg-transparent'}`} />
+                  <div className={`mt-2 h-[2px] w-8 rounded-full ${selectedWorkObject?.name?.includes('测试机构A') ? 'bg-amber-500' : 'bg-transparent'}`} />
                   <p className="mt-2 text-[11px] text-gray-400 truncate">
-                    {selectedWorkObject?.name?.includes('日慈') ? '该影响的人传达对了吗 · 待接通真评分' : '该影响的人传达对了吗 · 待接通'}
+                    {selectedWorkObject?.name?.includes('测试机构A') ? '该影响的人传达对了吗 · 待接通真评分' : '该影响的人传达对了吗 · 待接通'}
                   </p>
                 </div>
                 {/* 上次抓取 (两 tab 共用) */}
@@ -2881,14 +2881,14 @@ function BrandAuditCard({
       )}
 
       {/* P12 · 品牌词云 (从 SentimentMonitorPanel 移到这里, 放在"已被看见"叙述和外立面感知度报告之间) */}
-      {targetName.includes('日慈') && (
+      {targetName.includes('测试机构A') && (
         <div className="mt-3">
           <BrandWordCloud words={REAL_RICI_WORD_CLOUD} targetName={targetName} />
         </div>
       )}
 
       {/* P12 · 3 精致信息卡 (媒体覆盖度 / 合作生态 / 官方信息出口) — 紧跟词云之后 */}
-      {targetName.includes('日慈') && (
+      {targetName.includes('测试机构A') && (
         <div className="mt-3">
           <BrandInsightCardRow
             mediaCoverage={REAL_RICI_DATA.mediaCoverage}
@@ -3015,7 +3015,7 @@ function BrandAuditCard({
 // 目标信号: 从外立面 (官网 + 公众号 + 主流媒体报道) 角度看, 每类利益相关方
 //          应当看到的核心要素中, 有多少已被实际承载, 多少是缺口.
 // 真正数据应当来自: LLM 对照 stakeholder.coreMessage (n 类) × brand_official_corpus.
-// 当前为前端硬编码 mock (日慈 12 类), name → 感知度评估. 待 UI 确认后接通后端字段.
+// 当前为前端硬编码 mock (测试机构A 12 类), name → 感知度评估. 待 UI 确认后接通后端字段.
 type StakeholderPerceivabilityTier = 'covered' | 'partial' | 'missing';
 interface StakeholderPerceivabilityMock {
   tier: StakeholderPerceivabilityTier;
@@ -3089,7 +3089,7 @@ const MOCK_STAKEHOLDER_PERCEIVABILITY: Record<string, StakeholderPerceivabilityM
     tier: 'partial', score: 38,
     covered: ['方法学定义'],
     gap: ['行业深度叙事', '社会意义高度'],
-    commentary: '媒体能见到日慈,但缺乏行业深度叙事与社会意义高度,目前多停留在项目报道层级。',
+    commentary: '媒体能见到测试机构A,但缺乏行业深度叙事与社会意义高度,目前多停留在项目报道层级。',
   },
   '垂直公益媒体': {
     tier: 'partial', score: 58,
@@ -3545,16 +3545,16 @@ function BrandStrategyTreeCard({
 
 
 function _mockOfficialChannelsFor(name: string): OfficialChannel[] {
-  if (name.includes('日慈')) {
+  if (name.includes('测试机构A')) {
     // 这些数据从实际抓取的 46 条 sentiment items + client_glossary 反推
     return [
       { kind: 'homepage', label: 'www.ricifoundation.org', url: 'https://www.ricifoundation.org', confidence: 100, status: 'user_confirmed', source: '已抓 4 条页面', meta: '官网主域' },
-      { kind: 'wechat', label: '日慈公益', identifier: 'ricifoundation', confidence: 95, status: 'auto_detected', source: '搜狗微信抓到 25 条文章', meta: '已抓内容含 99公益日/心智素养/张真专访' },
-      { kind: 'wechat', label: '日慈公益基金会', identifier: 'rici_foundation', confidence: 78, status: 'auto_detected', source: '搜狗微信 type=1（待二次确认）' },
-      { kind: 'weibo', label: '@日慈公益', url: 'https://weibo.com/ricifoundation', confidence: 92, status: 'auto_detected', source: '已抓 3 条', meta: '心智素养研究院超话主理' },
-      { kind: 'bilibili', label: '(暂未识别)', confidence: 0, status: 'auto_detected', source: 'B 站 API 搜不到日慈官方号', meta: '建议手填' },
-      { kind: 'recruit', label: 'jobui.com / 日慈基金会页', url: 'https://www.jobui.com/company/...', confidence: 80, status: 'auto_detected', source: '招聘平台抓到 2 条', meta: '广东省日慈公益基金会词条' },
-      { kind: 'partner', label: '腾讯基金会', confidence: 90, status: 'auto_detected', source: '联合发布青年情绪白皮书', meta: '心盛计划联合方' },
+      { kind: 'wechat', label: '测试机构A公益', identifier: 'ricifoundation', confidence: 95, status: 'auto_detected', source: '搜狗微信抓到 25 条文章', meta: '已抓内容含 99公益日/心智素养/张真专访' },
+      { kind: 'wechat', label: '测试机构A', identifier: 'rici_foundation', confidence: 78, status: 'auto_detected', source: '搜狗微信 type=1（待二次确认）' },
+      { kind: 'weibo', label: '@测试机构A公益', url: 'https://weibo.com/ricifoundation', confidence: 92, status: 'auto_detected', source: '已抓 3 条', meta: '心智素养研究院超话主理' },
+      { kind: 'bilibili', label: '(暂未识别)', confidence: 0, status: 'auto_detected', source: 'B 站 API 搜不到测试机构A官方号', meta: '建议手填' },
+      { kind: 'recruit', label: 'jobui.com / 测试机构A页', url: 'https://www.jobui.com/company/...', confidence: 80, status: 'auto_detected', source: '招聘平台抓到 2 条', meta: '测试机构A词条' },
+      { kind: 'partner', label: '腾讯基金会', confidence: 90, status: 'auto_detected', source: '联合发布青年情绪白皮书', meta: '测试项目A联合方' },
       { kind: 'partner', label: '北京师范大学中国公益研究院', confidence: 75, status: 'auto_detected', source: 'glossary + 多次媒体引用', meta: '学术合作' },
       { kind: 'partner', label: '健达品牌', confidence: 70, status: 'auto_detected', source: '健达快乐成长计划合作报道', meta: '企业资助方' },
     ];
@@ -3562,16 +3562,16 @@ function _mockOfficialChannelsFor(name: string): OfficialChannel[] {
   return [];
 }
 
-// 真实抓回的日慈数据 (从 DB 提炼) — 用于让用户看到真实状态
+// 真实抓回的测试机构A数据 (从 DB 提炼) — 用于让用户看到真实状态
 // ── 品牌词云：50 个加权词，从 46 条 items + glossary + themes 提炼
 type WordCloudItem = { tag: string; strength: number; tone?: 'positive' | 'neutral' | 'negative'; sourceCount?: number };
 const REAL_RICI_WORD_CLOUD: WordCloudItem[] = [
   // ── 超大（90-100）核心机构身份 ──
-  { tag: '日慈', strength: 100, tone: 'neutral', sourceCount: 38 },
+  { tag: '测试机构A', strength: 100, tone: 'neutral', sourceCount: 38 },
   { tag: '公益基金会', strength: 95, tone: 'neutral', sourceCount: 30 },
   { tag: '儿童心理', strength: 95, tone: 'neutral', sourceCount: 28 },
   // ── 大（75-89）核心叙事 ──
-  { tag: '心灵魔法学院', strength: 88, tone: 'positive', sourceCount: 18 },
+  { tag: '测试项目C', strength: 88, tone: 'positive', sourceCount: 18 },
   { tag: '心智素养', strength: 85, tone: 'positive', sourceCount: 14 },
   { tag: '公益', strength: 82, tone: 'positive', sourceCount: 25 },
   { tag: '张真', strength: 80, tone: 'neutral', sourceCount: 6 },
@@ -3579,7 +3579,7 @@ const REAL_RICI_WORD_CLOUD: WordCloudItem[] = [
   // ── 中（50-74）次级标签 ──
   { tag: '青少年', strength: 72, tone: 'neutral', sourceCount: 14 },
   { tag: '心理健康', strength: 70, tone: 'neutral', sourceCount: 15 },
-  { tag: '心盛计划', strength: 68, tone: 'positive', sourceCount: 8 },
+  { tag: '测试项目A', strength: 68, tone: 'positive', sourceCount: 8 },
   { tag: '学校', strength: 65, tone: 'neutral', sourceCount: 12 },
   { tag: '白皮书', strength: 62, tone: 'positive', sourceCount: 7 },
   { tag: '教师', strength: 60, tone: 'neutral', sourceCount: 10 },
@@ -3629,12 +3629,12 @@ const REAL_RICI_DATA = {
   selfPresentation: [
     { tag: '儿童心理', strength: 95, source: '客户档案 domain + 公众号 25 条高频' },
     { tag: '青少年', strength: 90, source: '客户档案 + 主题聚类' },
-    { tag: '心灵魔法学院', strength: 85, source: '业务线 + audit narrative 提及覆盖 12 省 21000 名学生' },
+    { tag: '测试项目C', strength: 85, source: '业务线 + audit narrative 提及覆盖 12 省 21000 名学生' },
     { tag: '乡村', strength: 78, source: '99 公益日项目 + 教师赋能项目' },
-    { tag: '心智素养', strength: 72, source: '微博超话主题 + 心盛计划' },
+    { tag: '心智素养', strength: 72, source: '微博超话主题 + 测试项目A' },
     { tag: '张真', strength: 70, source: '银杏播客专访 + 媒体专访 ×3' },
     { tag: '公益基金会', strength: 65, source: '机构基础认知' },
-    { tag: '心盛计划', strength: 58, source: '2026 青年情绪白皮书' },
+    { tag: '测试项目A', strength: 58, source: '2026 青年情绪白皮书' },
     { tag: '教师赋能', strength: 52, source: '教师暑期心理健康游学营' },
   ],
   blindspots: [
@@ -3666,7 +3666,7 @@ const REAL_RICI_DATA = {
   consistency: [
     { aspect: '业务焦点表述', count: 4, tag: '官网=支持/捐赠；公众号=项目活动；媒体=张真专访；微博=超话社区——4 个落点', severity: 'medium' as const },
     { aspect: '使命语句', count: 2, tag: 'glossary 定义"青少年心理支持"，audit 推出"少儿心理公益" — 略有出入', severity: 'low' as const },
-    { aspect: '核心项目主推', count: 3, tag: '官网主推"支持我们"；公众号主推「心灵魔法学院」；媒体主推「心盛计划/白皮书」', severity: 'medium' as const },
+    { aspect: '核心项目主推', count: 3, tag: '官网主推"支持我们"；公众号主推「测试项目C」；媒体主推「测试项目A/白皮书」', severity: 'medium' as const },
   ],
   mediaCoverage: [
     { source: '微信公众号·24 个号', count: 25, tone: '正面 + 中性混合' },

@@ -183,8 +183,10 @@ from app.models import (
     TaskListRecord,
     TaskNotePayload,
     OrgAiConfigRecord,
+    OrgAiChatCompletionPayload,
     OrgAiConfigUpdatePayload,
     OrgAiConfigSecretRecord,
+    OrgAiStatusRecord,
     OrgObjectStorageConfigRecord,
     OrgObjectStorageConfigSecretRecord,
     OrgObjectStorageConfigUpdatePayload,
@@ -4246,6 +4248,13 @@ def _require_admin(app: FastAPI, authorization: str | None = Header(default=None
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="组织身份尚未确认")
     if user.primaryRole not in ALLOWED_APPROVER_ROLES:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Admin permissions required")
+    return user
+
+
+def _require_approved_member(app: FastAPI, authorization: str | None = Header(default=None)) -> SessionUser:
+    user = _require_auth(app, authorization)
+    if user.accountStatus != "approved" or user.membershipStatus != "approved":
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="组织身份尚未确认")
     return user
 
 
@@ -14135,6 +14144,132 @@ def create_app() -> FastAPI:
             updatedAt=str(row["updated_at"]),
         )
 
+    def _org_ai_status_from_row(row) -> OrgAiStatusRecord:
+        if not row:
+            return OrgAiStatusRecord(reason="组织尚未配置 AI。")
+        provider = str(row["ai_provider"] or "").strip()
+        provider_label = str(row["ai_provider_label"] or "").strip()
+        model = str(row["ai_model"] or "").strip()
+        has_key = bool(row["api_key_encrypted"])
+        if not provider or provider == "mock":
+            return OrgAiStatusRecord(
+                reason="组织 AI 配置为空或仍为 Mock。",
+                aiProvider=provider or "mock",
+                aiProviderLabel=provider_label or "本地 Mock",
+                aiModel=model,
+                hasApiKey=has_key,
+            )
+        if not model:
+            return OrgAiStatusRecord(
+                reason="组织 AI 模型名未配置。",
+                aiProvider=provider,
+                aiProviderLabel=provider_label,
+                aiModel=model,
+                hasApiKey=has_key,
+            )
+        if not str(row["ai_base_url"] or "").strip():
+            return OrgAiStatusRecord(
+                reason="组织 AI 接口地址未配置。",
+                aiProvider=provider,
+                aiProviderLabel=provider_label,
+                aiModel=model,
+                hasApiKey=has_key,
+            )
+        if not has_key:
+            return OrgAiStatusRecord(
+                reason="组织 AI API Key 未配置。",
+                aiProvider=provider,
+                aiProviderLabel=provider_label,
+                aiModel=model,
+                hasApiKey=False,
+            )
+        return OrgAiStatusRecord(
+            available=True,
+            reason=None,
+            aiProvider=provider,
+            aiProviderLabel=provider_label,
+            aiModel=model,
+            hasApiKey=True,
+        )
+
+    @app.get("/api/v1/org-ai/status", response_model=OrgAiStatusRecord)
+    def get_org_ai_status(
+        current_user: SessionUser = Depends(lambda authorization=Header(default=None): _require_approved_member(app, authorization)),
+    ) -> OrgAiStatusRecord:
+        row = state.db.fetchone("SELECT * FROM org_ai_config WHERE org_id = ?", (current_user.organizationId,))
+        return _org_ai_status_from_row(row)
+
+    @app.post("/api/v1/org-ai/chat/completions")
+    def proxy_org_ai_chat_completions(
+        payload: OrgAiChatCompletionPayload,
+        current_user: SessionUser = Depends(lambda authorization=Header(default=None): _require_approved_member(app, authorization)),
+    ) -> JSONResponse:
+        if payload.stream:
+            raise HTTPException(status_code=400, detail="组织 AI 代理第一版暂不支持流式调用。")
+        if not payload.messages:
+            raise HTTPException(status_code=400, detail="messages 不能为空。")
+        row = state.db.fetchone("SELECT * FROM org_ai_config WHERE org_id = ?", (current_user.organizationId,))
+        status_record = _org_ai_status_from_row(row)
+        if not status_record.available or not row:
+            raise HTTPException(status_code=503, detail=status_record.reason or "组织 AI 暂不可用。")
+        try:
+            api_key = _org_ai_decrypt(
+                str(row["api_key_encrypted"]),
+                str(row["encryption_nonce"]),
+                current_user.organizationId,
+            )
+        except Exception as exc:
+            logger.warning("[org-ai] decrypt failed org=%s user=%s: %s", current_user.organizationId, current_user.id, exc)
+            raise HTTPException(status_code=503, detail="组织 AI 凭据暂不可用，请联系管理员。") from exc
+        if not api_key:
+            raise HTTPException(status_code=503, detail="组织 AI API Key 未配置。")
+        base_url = str(row["ai_base_url"] or "").strip().rstrip("/")
+        model = str(row["ai_model"] or "").strip()
+        upstream_payload: dict[str, object] = {
+            "model": model,
+            "messages": payload.messages,
+            "stream": False,
+        }
+        if payload.temperature is not None:
+            upstream_payload["temperature"] = payload.temperature
+        if payload.top_p is not None:
+            upstream_payload["top_p"] = payload.top_p
+        if payload.max_tokens is not None:
+            upstream_payload["max_tokens"] = payload.max_tokens
+        if payload.enable_thinking is not None:
+            upstream_payload["enable_thinking"] = payload.enable_thinking
+        try:
+            import httpx
+
+            timeout = httpx.Timeout(timeout=None, connect=8.0, read=180.0, write=30.0, pool=8.0)
+            with httpx.Client(timeout=timeout) as client:
+                response = client.post(
+                    f"{base_url}/chat/completions",
+                    headers={
+                        "Authorization": f"Bearer {api_key}",
+                        "Content-Type": "application/json",
+                    },
+                    json=upstream_payload,
+                )
+                response.raise_for_status()
+                try:
+                    upstream_json = response.json()
+                except Exception as exc:
+                    raise HTTPException(status_code=502, detail="组织 AI 上游返回了非 JSON 响应。") from exc
+        except HTTPException:
+            raise
+        except Exception as exc:
+            logger.warning(
+                "[org-ai] upstream call failed org=%s user=%s provider=%s model=%s: %s",
+                current_user.organizationId,
+                current_user.id,
+                str(row["ai_provider"] or ""),
+                model,
+                exc,
+            )
+            raise HTTPException(status_code=502, detail="组织 AI 调用失败，请稍后重试。") from exc
+        return JSONResponse(content=upstream_json)
+
     @app.get("/api/v1/settings/org-object-storage-config", response_model=OrgObjectStorageConfigRecord)
     def get_org_object_storage_config(
         current_user: SessionUser = Depends(lambda authorization=Header(default=None): _require_auth(app, authorization)),
@@ -14313,7 +14448,7 @@ def create_app() -> FastAPI:
         if existing:
             return _client_record_full(state, existing)
 
-        # [B] 5/25 PM (顾源源真用反馈: 同事同步后看到 2 个益语智库 / 2 个日慈)
+        # [B] 5/25 PM (顾源源真用反馈: 同事同步后看到 2 个益语智库 / 2 个测试机构A)
         # 真因: 顾源源本地建的 client (id=client_53d82aa249) 跟同事本地建的 (id 不同, name 相同)
         #       push 上来都是新 id → 云端产生 2 条同名 client.
         # 修法: 加 name dedup — 同一 org 内同名 client 视为重复, 复用现有 id.
@@ -14600,7 +14735,7 @@ def create_app() -> FastAPI:
         多端共享"。这是 v0.2 修复浅显问题的核心链路改造。
 
         v1.0 升级: 如果 client_id 在云端 db 不存在 (本地客户未同步), 自动创建一个
-        minimal client row, 让叙事能落库. 这是为爱黔行/善加这种本地有但云端没的客户
+        minimal client row, 让叙事能落库. 这是测试机构B/测试机构C这种本地有但云端没的客户
         准备的兜底 — narrative 是本地驱动的, 云端只是共享层, 不该卡在 client 不存在.
         """
         existing_client = state.db.fetchone(

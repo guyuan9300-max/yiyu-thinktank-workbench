@@ -5,6 +5,7 @@ import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import type {
   CollabActionResult,
+  CollabAiExplanationStatus,
   CollabChangeGroup,
   CollabChangeGroupKey,
   CollabConflictRisk,
@@ -29,6 +30,7 @@ type RunCommandOptions = {
   cwd?: string;
   allowNonZero?: boolean;
   input?: string;
+  timeoutMs?: number;
 };
 
 type RunCommandResult = {
@@ -84,10 +86,8 @@ type RepoOptions = {
   fetchRemote?: boolean;
   appDbPath?: string | null;
   targetCommit?: string | null;
-  effectExplainer?: CollabEffectExplainer | null;
+  enableAiExplanation?: boolean;
 };
-
-type CollabEffectExplainer = (request: CollabEffectExplanationRequest) => Promise<CollabEffectPreview[] | null | undefined>;
 
 type RepoWorkContext = {
   repoPath: string;
@@ -117,7 +117,11 @@ type EffectDraft = {
 };
 
 const COLLAB_AI_EXPLANATION_UNAVAILABLE_REASON = 'AI 功能说明尚未生成；下面只是按路径和提交信息推断的规则兜底，不能当作完整功能评审。';
-const MAX_EFFECT_DIFF_PREVIEW_CHARS = 8000;
+const COLLAB_AI_EXPLANATION_PENDING_REASON = 'AI 功能说明正在后台生成；当前先显示规则兜底，生成成功后会自动替换。';
+const COLLAB_AI_EXPLANATION_FETCH_BLOCKED_REASON = 'GitHub 预检失败，已跳过 AI 功能说明；请先修复 GitHub 连接或凭据。';
+const MAX_EFFECT_DIFF_PREVIEW_CHARS = 3000;
+const GITHUB_PROXY_FALLBACK = 'http://127.0.0.1:7897';
+const REMOTE_GIT_SUBCOMMANDS = new Set(['fetch', 'push', 'pull', 'ls-remote']);
 
 const GENERIC_RULE_EFFECT_IDS = new Set([
   'renderer-general',
@@ -1266,12 +1270,12 @@ async function buildEffectPreviews(
         createEffectDraft(
           'shared-intelligence-demo',
           '资讯情报站讨论样例会同步',
-          '同步后，同事的资讯情报站会导入日慈画像和南沙公益创投情报，用于本轮模块对齐。',
+          '同步后，同事的资讯情报站会导入测试机构A画像和测试项目B情报，用于本轮模块对齐。',
           'visible',
           '共享样例',
           [file.path],
         ),
-        '包含 5 个情报画像、1 条南沙公益创投情报和完整顾问 memo。',
+        '包含 5 个情报画像、1 条测试项目B情报和完整顾问 memo。',
       );
       continue;
     }
@@ -1305,7 +1309,14 @@ async function buildEffectPreviews(
   return finalizeEffectDrafts(Array.from(effectMap.values()));
 }
 
-async function explainEffectPreviews(
+type PreparedEffectPreviews = {
+  effects: CollabEffectPreview[];
+  aiExplanationStatus: CollabAiExplanationStatus;
+  aiExplanationError: string | null;
+  aiExplanationRequest: CollabEffectExplanationRequest | null;
+};
+
+async function prepareEffectPreviews(
   mode: 'push' | 'pull',
   snapshot: RepoSnapshot,
   groups: CollabChangeGroup[],
@@ -1313,20 +1324,18 @@ async function explainEffectPreviews(
   fallbackEffects: CollabEffectPreview[],
   suggestedMessage: string,
   options: {
-    effectExplainer?: CollabEffectExplainer | null;
+    enableAiExplanation?: boolean;
     commitSummaries?: string[];
     syncTargetLabel?: string | null;
   } = {},
-) {
-  if (!files.length || !snapshot.repoPath || !snapshot.gitRepoPath) return fallbackEffects;
-  if (!options.effectExplainer) {
-    const ruleEffects = mergeFunctionalRuleEffects(
-      mode,
-      files,
-      fallbackEffects,
-      (options.commitSummaries || []).join('\n'),
-    );
-    return markEffectsAsAiUnavailable(ruleEffects);
+): Promise<PreparedEffectPreviews> {
+  if (!files.length || !snapshot.repoPath || !snapshot.gitRepoPath) {
+    return {
+      effects: fallbackEffects,
+      aiExplanationStatus: 'skipped',
+      aiExplanationError: null,
+      aiExplanationRequest: null,
+    };
   }
   const context = createRepoWorkContext(snapshot.repoPath, snapshot.gitRepoPath, snapshot.scopeRelativePath);
   try {
@@ -1340,53 +1349,49 @@ async function explainEffectPreviews(
       fallbackEffects,
       `${commitSummaries.join('\n')}\n${diffPreview}`,
     );
-    const aiEffects = await options.effectExplainer({
-      mode,
-      suggestedMessage,
-      syncTargetLabel: options.syncTargetLabel || null,
-      commitSummaries,
-      diffPreview,
-      groups,
-      files,
-      fallbackEffects: ruleEffects,
-    });
-    const normalized = normalizeAiEffectPreviews(aiEffects || [], ruleEffects, files);
-    if (normalized) return normalized;
-    return markEffectsAsAiUnavailable(
-      ruleEffects,
-      'AI 功能说明返回内容仍偏代码路径或没有覆盖真实改动，已降级为规则兜底。',
-    );
+    if (!options.enableAiExplanation) {
+      return {
+        effects: markEffectsAsAiUnavailable(ruleEffects),
+        aiExplanationStatus: 'skipped',
+        aiExplanationError: COLLAB_AI_EXPLANATION_UNAVAILABLE_REASON,
+        aiExplanationRequest: null,
+      };
+    }
+    return {
+      effects: markEffectsAsAiUnavailable(ruleEffects, COLLAB_AI_EXPLANATION_PENDING_REASON),
+      aiExplanationStatus: 'generating',
+      aiExplanationError: null,
+      aiExplanationRequest: {
+        mode,
+        suggestedMessage,
+        syncTargetLabel: options.syncTargetLabel || null,
+        commitSummaries,
+        diffPreview,
+        groups,
+        files,
+        fallbackEffects: ruleEffects,
+      },
+    };
   } catch (error) {
     const detail = error instanceof Error ? error.message : String(error);
-    let ruleEffects = fallbackEffects;
-    try {
-      const commitSummaries = options.commitSummaries?.length
-        ? options.commitSummaries
-        : await collectEffectCommitSummaries(context, mode, snapshot);
-      const diffPreview = await collectEffectDiffPreview(context, mode, snapshot, files);
-      ruleEffects = mergeFunctionalRuleEffects(
-        mode,
-        files,
-        fallbackEffects,
-        `${commitSummaries.join('\n')}\n${diffPreview}`,
-      );
-    } catch {
-      ruleEffects = mergeFunctionalRuleEffects(
-        mode,
-        files,
-        fallbackEffects,
-        (options.commitSummaries || []).join('\n'),
-      );
-    }
-    return markEffectsAsAiUnavailable(
-      ruleEffects,
-      `AI 功能说明生成失败：${detail}`,
+    const ruleEffects = mergeFunctionalRuleEffects(
+      mode,
+      files,
+      fallbackEffects,
+      (options.commitSummaries || []).join('\n'),
     );
+    return {
+      effects: markEffectsAsAiUnavailable(ruleEffects, `AI 功能说明请求准备失败：${detail}`),
+      aiExplanationStatus: 'failed',
+      aiExplanationError: detail,
+      aiExplanationRequest: null,
+    };
   }
 }
 
 async function runCommand(command: string, args: string[], options: RunCommandOptions = {}): Promise<RunCommandResult> {
   return new Promise((resolve, reject) => {
+    let didTimeout = false;
     const child = spawn(command, args, {
       cwd: options.cwd,
       stdio: [options.input === undefined ? 'ignore' : 'pipe', 'pipe', 'pipe'],
@@ -1417,9 +1422,27 @@ async function runCommand(command: string, args: string[], options: RunCommandOp
     childStderr.on('data', (chunk) => {
       stderr += chunk.toString();
     });
-    child.on('error', reject);
+    let timeoutHandle: NodeJS.Timeout | null = null;
+    if (options.timeoutMs && options.timeoutMs > 0) {
+      timeoutHandle = setTimeout(() => {
+        didTimeout = true;
+        child.kill('SIGTERM');
+        setTimeout(() => {
+          if (!child.killed) child.kill('SIGKILL');
+        }, 1500).unref();
+      }, options.timeoutMs);
+      timeoutHandle.unref();
+    }
+    child.on('error', (error) => {
+      if (timeoutHandle) clearTimeout(timeoutHandle);
+      reject(error);
+    });
     child.on('close', (exitCode) => {
+      if (timeoutHandle) clearTimeout(timeoutHandle);
       const normalizedExitCode = exitCode ?? 0;
+      if (didTimeout) {
+        stderr = `${stderr}\n${command} ${args.join(' ')} timed out after ${options.timeoutMs}ms`.trim();
+      }
       if (!options.allowNonZero && normalizedExitCode !== 0) {
         reject(new Error((stderr || stdout || `${command} exited with status ${normalizedExitCode}`).trim()));
         return;
@@ -1433,12 +1456,153 @@ async function runCommand(command: string, args: string[], options: RunCommandOp
   });
 }
 
+function finalizeGitResult(result: RunCommandResult, options: RunCommandOptions) {
+  if (!options.allowNonZero && result.exitCode !== 0) {
+    throw new Error((result.stderr || result.stdout || `git exited with status ${result.exitCode}`).trim());
+  }
+  return result;
+}
+
+function gitSubcommand(args: string[]) {
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index];
+    if (arg === '-c') {
+      index += 2;
+      continue;
+    }
+    if (arg === '-C') {
+      index += 1;
+      continue;
+    }
+    if (arg.startsWith('-')) continue;
+    return arg;
+  }
+  return null;
+}
+
+function isRemoteGitArgs(args: string[]) {
+  const subcommand = gitSubcommand(args);
+  return Boolean(subcommand && REMOTE_GIT_SUBCOMMANDS.has(subcommand));
+}
+
+function looksLikeGitHubNetworkFailure(result: RunCommandResult) {
+  const text = `${result.stderr}\n${result.stdout}`.toLowerCase();
+  return result.exitCode !== 0 && (
+    text.includes('github.com')
+    || text.includes('unable to access')
+    || text.includes('failed to connect')
+    || text.includes("couldn't connect")
+    || text.includes('empty reply from server')
+    || text.includes('operation too slow')
+    || text.includes('timed out')
+    || text.includes('connection reset')
+    || text.includes('server disconnected')
+  );
+}
+
+function normalizeProxyUrl(value: string) {
+  const trimmed = value.trim();
+  if (!trimmed) return null;
+  if (/^[a-z]+:\/\//i.test(trimmed)) return trimmed;
+  return `http://${trimmed}`;
+}
+
+let proxyCandidatesCache: string[] | null = null;
+
+async function detectGitProxyCandidates() {
+  if (proxyCandidatesCache) return proxyCandidatesCache;
+  const candidates: string[] = [];
+  for (const value of [
+    process.env.HTTPS_PROXY,
+    process.env.https_proxy,
+    process.env.HTTP_PROXY,
+    process.env.http_proxy,
+  ]) {
+    const normalized = value ? normalizeProxyUrl(value) : null;
+    if (normalized) candidates.push(normalized);
+  }
+  if (process.platform === 'darwin') {
+    const proxyResult = await runCommand('scutil', ['--proxy'], { allowNonZero: true, timeoutMs: 3000 }).catch(() => null);
+    const proxyText = proxyResult?.stdout || '';
+    const httpsEnabled = /\bHTTPSEnable\s*:\s*1\b/.test(proxyText);
+    const httpsHost = proxyText.match(/\bHTTPSProxy\s*:\s*(\S+)/)?.[1] || '';
+    const httpsPort = proxyText.match(/\bHTTPSPort\s*:\s*(\d+)/)?.[1] || '';
+    const httpEnabled = /\bHTTPEnable\s*:\s*1\b/.test(proxyText);
+    const httpHost = proxyText.match(/\bHTTPProxy\s*:\s*(\S+)/)?.[1] || '';
+    const httpPort = proxyText.match(/\bHTTPPort\s*:\s*(\d+)/)?.[1] || '';
+    if (httpsEnabled && httpsHost && httpsPort) candidates.push(`http://${httpsHost}:${httpsPort}`);
+    if (httpEnabled && httpHost && httpPort) candidates.push(`http://${httpHost}:${httpPort}`);
+  }
+  candidates.push(GITHUB_PROXY_FALLBACK);
+  proxyCandidatesCache = Array.from(new Set(candidates));
+  return proxyCandidatesCache;
+}
+
+async function originLooksLikeGitHub(repoPath: string, args: string[]) {
+  if (args.some((arg) => /^https:\/\/github\.com[/:]/i.test(arg))) return true;
+  if (!args.includes('origin')) return false;
+  const remote = await runCommand('git', ['remote', 'get-url', 'origin'], {
+    cwd: repoPath,
+    allowNonZero: true,
+    timeoutMs: 3000,
+  }).catch(() => null);
+  return /github\.com/i.test(`${remote?.stdout || ''}\n${remote?.stderr || ''}`);
+}
+
 async function runGit(repoPath: string, args: string[], options: RunCommandOptions = {}) {
-  return runCommand('git', args, {
+  const baseOptions = {
     cwd: repoPath,
     allowNonZero: options.allowNonZero,
     input: options.input,
+    timeoutMs: options.timeoutMs,
+  };
+  if (!isRemoteGitArgs(args) || !(await originLooksLikeGitHub(repoPath, args))) {
+    return runCommand('git', args, baseOptions);
+  }
+
+  const first = await runCommand('git', args, {
+    ...baseOptions,
+    allowNonZero: true,
+    timeoutMs: options.timeoutMs ?? 18000,
   });
+  if (first.exitCode === 0 || !looksLikeGitHubNetworkFailure(first)) {
+    return finalizeGitResult(first, options);
+  }
+
+  const proxyFailures: string[] = [];
+  for (const proxy of await detectGitProxyCandidates()) {
+    const retry = await runCommand('git', [
+      '-c',
+      `http.proxy=${proxy}`,
+      '-c',
+      `https.proxy=${proxy}`,
+      ...args,
+    ], {
+      ...baseOptions,
+      allowNonZero: true,
+      timeoutMs: options.timeoutMs,
+    });
+    if (retry.exitCode === 0) {
+      return finalizeGitResult({
+        ...retry,
+        stderr: [
+          retry.stderr.trim(),
+          `GitHub 直连失败，已自动通过本机代理 ${proxy} 重试成功。`,
+        ].filter(Boolean).join('\n'),
+      }, options);
+    }
+    proxyFailures.push(`${proxy}: ${(retry.stderr || retry.stdout || `exit ${retry.exitCode}`).trim().slice(0, 240)}`);
+  }
+
+  return finalizeGitResult({
+    stdout: first.stdout,
+    stderr: [
+      'GitHub 直连失败，代理兜底也未成功。',
+      `直连错误：${(first.stderr || first.stdout || `exit ${first.exitCode}`).trim()}`,
+      proxyFailures.length ? `代理错误：${proxyFailures.join(' | ')}` : '',
+    ].filter(Boolean).join('\n'),
+    exitCode: first.exitCode || 1,
+  }, options);
 }
 
 async function getGitIgnoredPathSet(repoRoot: string, targetPaths: string[]) {
@@ -2178,9 +2342,20 @@ export async function previewPushToMain(options: RepoOptions): Promise<PushPrevi
   const groups = countGroups(files);
   const fallbackEffects = await buildEffectPreviews('push', snapshot, files);
   const initialSuggestedMessage = buildSuggestedMessage('push', groups);
-  const effects = await explainEffectPreviews('push', snapshot, groups, files, fallbackEffects, initialSuggestedMessage, {
-    effectExplainer: options.effectExplainer,
-  });
+  const preparedEffects = snapshot.fetchFailed
+    ? {
+        effects: markEffectsAsAiUnavailable(
+          mergeFunctionalRuleEffects('push', files, fallbackEffects),
+          COLLAB_AI_EXPLANATION_FETCH_BLOCKED_REASON,
+        ),
+        aiExplanationStatus: 'skipped' as CollabAiExplanationStatus,
+        aiExplanationError: COLLAB_AI_EXPLANATION_FETCH_BLOCKED_REASON,
+        aiExplanationRequest: null,
+      }
+    : await prepareEffectPreviews('push', snapshot, groups, files, fallbackEffects, initialSuggestedMessage, {
+        enableAiExplanation: options.enableAiExplanation,
+      });
+  const { effects } = preparedEffects;
   const suggestedMessage = buildFunctionalSuggestedMessage('push', groups, effects);
   const context = snapshot.repoPath && snapshot.gitRepoPath
     ? createRepoWorkContext(snapshot.repoPath, snapshot.gitRepoPath, snapshot.scopeRelativePath)
@@ -2207,6 +2382,9 @@ export async function previewPushToMain(options: RepoOptions): Promise<PushPrevi
     status,
     suggestedMessage,
     effects,
+    aiExplanationStatus: preparedEffects.aiExplanationStatus,
+    aiExplanationError: preparedEffects.aiExplanationError,
+    aiExplanationRequest: preparedEffects.aiExplanationRequest,
     groups,
     files,
     suggestedCollabBranchName: suggestedBranchName,
@@ -2353,6 +2531,7 @@ export async function previewPullFromMain(options: RepoOptions): Promise<PullPre
   else if (!snapshot.isValid) executionBlockReason = '当前目录不是有效 Git 仓库，请重新绑定源码目录。';
   else if (!snapshot.isMainBranch) executionBlockReason = '当前不在 main 分支，先切回 main 再继续。';
   else if (snapshot.hasUnmergedPaths) executionBlockReason = '检测到 Git 冲突，先手工收口后再执行。';
+  else if (snapshot.fetchFailed) executionBlockReason = `无法连上 origin (${snapshot.fetchErrorMessage || 'fetch failed'}),先确认 GitHub 网络/凭据再同步。`;
   else if (!files.length) executionBlockReason = 'main 当前已经是最新。';
   const generatedCleanupCount = files.filter((file) => file.type === 'deleted' && isIgnorableLocalStatusPath(file.path)).length;
   const context = snapshot.repoPath && snapshot.gitRepoPath
@@ -2388,11 +2567,22 @@ export async function previewPullFromMain(options: RepoOptions): Promise<PullPre
   ));
   const fallbackEffects = await buildEffectPreviews('pull', snapshot, files);
   const initialSuggestedMessage = buildSuggestedMessage('pull', groups);
-  const effects = await explainEffectPreviews('pull', snapshot, groups, files, fallbackEffects, initialSuggestedMessage, {
-    effectExplainer: options.effectExplainer,
-    commitSummaries,
-    syncTargetLabel,
-  });
+  const preparedEffects = snapshot.fetchFailed
+    ? {
+        effects: markEffectsAsAiUnavailable(
+          mergeFunctionalRuleEffects('pull', files, fallbackEffects, commitSummaries.join('\n')),
+          COLLAB_AI_EXPLANATION_FETCH_BLOCKED_REASON,
+        ),
+        aiExplanationStatus: 'skipped' as CollabAiExplanationStatus,
+        aiExplanationError: COLLAB_AI_EXPLANATION_FETCH_BLOCKED_REASON,
+        aiExplanationRequest: null,
+      }
+    : await prepareEffectPreviews('pull', snapshot, groups, files, fallbackEffects, initialSuggestedMessage, {
+        enableAiExplanation: options.enableAiExplanation,
+        commitSummaries,
+        syncTargetLabel,
+      });
+  const { effects } = preparedEffects;
   const suggestedMessage = buildFunctionalSuggestedMessage('pull', groups, effects);
   return {
     status,
@@ -2405,6 +2595,9 @@ export async function previewPullFromMain(options: RepoOptions): Promise<PullPre
     canFastForwardMain,
     directReceiveBlockReason,
     effects,
+    aiExplanationStatus: preparedEffects.aiExplanationStatus,
+    aiExplanationError: preparedEffects.aiExplanationError,
+    aiExplanationRequest: preparedEffects.aiExplanationRequest,
     groups,
     files,
     notice,

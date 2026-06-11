@@ -118,7 +118,7 @@ async def list_resources() -> list[Resource]:
         Resource(
             uri="yiyu://client/{client_id}/state",
             name="Client Agent State (template)",
-            description="客户级公司大脑完整快照 (14 顶层字段). 替换 {client_id} 为真实 client id, 如 client_a4d1db29a7 (CFFC).",
+            description="客户级公司大脑完整快照 (14 顶层字段). 替换 {client_id} 为真实 client id, 如 client_a4d1db29a7 (测试论坛A).",
             mimeType="application/json",
         ),
         Resource(

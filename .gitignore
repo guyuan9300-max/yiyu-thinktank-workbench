@@ -1,8 +1,15 @@
 node_modules/
 .expo/
-mobile/
 mobile/.expo/
 mobile/dist/
+mobile/node_modules/
+mobile/.mobile-core-tests/
+mobile/android/.gradle/
+mobile/android/build/
+mobile/android/app/build/
+mobile/android/app/.cxx/
+mobile/ios/build/
+mobile/ios/Pods/
 .claude/
 .playwright-cli/
 dist/

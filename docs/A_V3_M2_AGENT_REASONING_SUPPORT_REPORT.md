@@ -48,7 +48,7 @@ Agent Readiness Index:  50 → 75 / 100   (+25)
 **curl**:
 ```bash
 POST /api/v1/clients/client_a4d1db29a7/evidence/check
-{"text":"按 5 月签的补充协议把 CFFC 乡村教育帮扶项目预算从 800 万改为 300 万 风险等级 12% 暂未确定",
+{"text":"按 5 月签的补充协议把 测试论坛A 乡村教育帮扶项目预算从 800 万改为 300 万 风险等级 12% 暂未确定",
  "target_kind":"draft"}
 ```
 
@@ -86,7 +86,7 @@ POST /api/v1/clients/client_a4d1db29a7/evidence/check
 **curl**:
 ```bash
 POST /api/v1/clients/client_a4d1db29a7/quality/context
-{"text":"CFFC 乡村教育帮扶项目预算 800 万元 风险率 8% 项目执行良好 待确认细节后续补充",
+{"text":"测试论坛A 乡村教育帮扶项目预算 800 万元 风险率 8% 项目执行良好 待确认细节后续补充",
  "output_kind":"proposal"}
 ```
 

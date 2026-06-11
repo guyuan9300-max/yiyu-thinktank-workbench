@@ -96,6 +96,8 @@ AI_MODEL_PROFILE_CAPABILITIES = {
     "local_fast": "fast_structured",
 }
 AI_TASK_KINDS = {"default", "deep_analysis", "vision_ocr", "fast_structured"}
+ORG_CLOUD_PROXY_PROFILE_KEY = "org_cloud_proxy"
+ORG_CLOUD_PROXY_BASE_URL = "cloud://org-ai"
 
 
 def llm_display_label(provider: str | None, model: str | None = None, provider_label: str | None = None) -> str:
@@ -192,6 +194,10 @@ class AiService:
         self.db = db
         self.secret_stores = secret_stores
         self._last_model_snapshot: dict[str, str] = {}
+        self._org_cloud_proxy_status_loader: Callable[[], dict[str, object]] | None = None
+        self._org_cloud_proxy_chat_completion: Callable[[dict[str, object], float], dict[str, object]] | None = None
+        self._org_cloud_proxy_status_cache: dict[str, object] = {}
+        self._org_cloud_proxy_status_cache_expires_at = 0.0
         self._initialize_settings()
 
     def _initialize_settings(self) -> None:
@@ -364,6 +370,86 @@ class AiService:
             profiles={"online_primary": profile},
             profile_api_keys={"online_primary": api_key} if api_key else None,
         )
+
+    def configure_org_cloud_proxy(
+        self,
+        *,
+        status_loader: Callable[[], dict[str, object]],
+        chat_completion: Callable[[dict[str, object], float], dict[str, object]],
+    ) -> None:
+        self._org_cloud_proxy_status_loader = status_loader
+        self._org_cloud_proxy_chat_completion = chat_completion
+        self.invalidate_org_cloud_proxy_cache()
+
+    def invalidate_org_cloud_proxy_cache(self) -> None:
+        self._org_cloud_proxy_status_cache = {}
+        self._org_cloud_proxy_status_cache_expires_at = 0.0
+
+    def _is_org_cloud_proxy_profile(self, profile: AiResolvedProfile) -> bool:
+        return profile.profile_key == ORG_CLOUD_PROXY_PROFILE_KEY
+
+    def _load_org_cloud_proxy_status(self) -> dict[str, object]:
+        loader = self._org_cloud_proxy_status_loader
+        if loader is None:
+            return {"available": False, "reason": "未连接组织云端。"}
+        now = perf_counter()
+        if self._org_cloud_proxy_status_cache and self._org_cloud_proxy_status_cache_expires_at > now:
+            return dict(self._org_cloud_proxy_status_cache)
+        try:
+            payload = loader()
+            status_payload = payload if isinstance(payload, dict) else {"available": False, "reason": "组织 AI 状态响应无效。"}
+        except Exception as exc:
+            status_payload = {"available": False, "reason": str(exc)[:200] or exc.__class__.__name__}
+        available = bool(status_payload.get("available"))
+        self._org_cloud_proxy_status_cache = dict(status_payload)
+        self._org_cloud_proxy_status_cache_expires_at = now + (45.0 if available else 12.0)
+        return dict(status_payload)
+
+    def _org_cloud_proxy_profile(self) -> AiResolvedProfile | None:
+        if self._org_cloud_proxy_chat_completion is None:
+            return None
+        status_payload = self._load_org_cloud_proxy_status()
+        if not bool(status_payload.get("available")):
+            return None
+        model = str(status_payload.get("aiModel") or "").strip()
+        if not model:
+            return None
+        provider_label = str(status_payload.get("aiProviderLabel") or "").strip() or "组织云 AI"
+        return AiResolvedProfile(
+            profile_key=ORG_CLOUD_PROXY_PROFILE_KEY,
+            provider=OPENAI_COMPATIBLE_PROVIDER,
+            provider_label=provider_label,
+            base_url=ORG_CLOUD_PROXY_BASE_URL,
+            model=model,
+            api_key="",
+            credential_source="organization_cloud_proxy",
+            fingerprint=None,
+            capability="online_primary",
+            is_local=False,
+        )
+
+    def _with_org_cloud_proxy_fallback(self, candidates: list[AiResolvedProfile], mode: str) -> list[AiResolvedProfile]:
+        if mode == "local_only":
+            return candidates
+        has_usable_personal_ai = any(
+            self._profile_is_usable(candidate)
+            and candidate.provider != MOCK_PROVIDER
+            and not self._is_org_cloud_proxy_profile(candidate)
+            for candidate in candidates
+        )
+        if has_usable_personal_ai:
+            return candidates
+        proxy_profile = self._org_cloud_proxy_profile()
+        if proxy_profile is None:
+            return candidates
+        insert_at = next((index for index, candidate in enumerate(candidates) if candidate.provider == MOCK_PROVIDER), len(candidates))
+        return [*candidates[:insert_at], proxy_profile, *candidates[insert_at:]]
+
+    def _invoke_org_cloud_proxy_chat_completion(self, payload: dict[str, object], timeout_seconds: float) -> dict[str, object]:
+        invoker = self._org_cloud_proxy_chat_completion
+        if invoker is None:
+            raise RuntimeError("组织云 AI 代理尚未初始化。")
+        return invoker(payload, timeout_seconds)
 
     def current_provider(self) -> str:
         provider = self.db.get_setting("ai_provider", DEFAULT_PROVIDER)
@@ -549,6 +635,8 @@ class AiService:
         )
 
     def _profile_is_usable(self, profile: AiResolvedProfile) -> bool:
+        if self._is_org_cloud_proxy_profile(profile):
+            return self._org_cloud_proxy_chat_completion is not None
         if profile.provider == MOCK_PROVIDER:
             return True
         if not profile.base_url or not profile.model:
@@ -559,6 +647,21 @@ class AiService:
 
     def _profile_to_health(self, profile: AiResolvedProfile) -> AiHealth:
         label = llm_display_label(profile.provider, profile.model, profile.provider_label)
+        if self._is_org_cloud_proxy_profile(profile):
+            status_payload = self._load_org_cloud_proxy_status()
+            ready = bool(status_payload.get("available")) and self._org_cloud_proxy_chat_completion is not None
+            return AiHealth(
+                provider=profile.provider,
+                provider_label=profile.provider_label or "组织云 AI",
+                base_url=profile.base_url,
+                model=profile.model,
+                ready=ready,
+                detail="组织 AI 已启用，成员通过云端代调用，不下发管理员 API Key。" if ready else str(status_payload.get("reason") or "组织 AI 暂不可用。"),
+                credential_source="organization_cloud_proxy",
+                fingerprint=None,
+                profile_key=profile.profile_key,
+                mode=self.current_ai_model_mode(),
+            )
         if profile.provider == MOCK_PROVIDER:
             return AiHealth(
                 provider=profile.provider,
@@ -661,7 +764,7 @@ class AiService:
             return [resolved]
         mode = self.current_ai_model_mode()
         if not self.advanced_ai_routing_enabled():
-            return [self._unified_profile()]
+            return self._with_org_cloud_proxy_fallback([self._unified_profile()], mode)
         settings = self.current_ai_model_profiles()
         candidates: list[AiResolvedProfile] = []
         seen: set[str] = set()
@@ -678,7 +781,7 @@ class AiService:
         unified = self._unified_profile()
         if mode != "local_only" or unified.is_local or unified.provider == MOCK_PROVIDER:
             candidates.append(unified)
-        return candidates
+        return self._with_org_cloud_proxy_fallback(candidates, mode)
 
     def get_health(self, *, task_kind: str = "default") -> AiHealth:
         if self.current_provider() == OPENCLAW_PROVIDER:
@@ -714,6 +817,9 @@ class AiService:
             profile = self._profile_from_config(key, value)
             if profile is not None:
                 profiles[key] = profile
+        org_cloud_proxy = self._org_cloud_proxy_profile()
+        if org_cloud_proxy is not None:
+            profiles[ORG_CLOUD_PROXY_PROFILE_KEY] = org_cloud_proxy
         return {key: self._profile_to_health(profile) for key, profile in profiles.items()}
 
     def resolved_model_snapshot(self, *, task_kind: str = "default") -> dict[str, str]:
@@ -1145,7 +1251,7 @@ class AiService:
                 "写不出来的部分直接说「资料中未见」，不要套通用模板。"
             )
             detail_rule = (
-                "10. 必须落到具体的项目名（如「心灵魔法学院」「心盛计划」「繁星计划」）、"
+                "10. 必须落到具体的项目名（如「测试项目C」「测试项目A」「繁星计划」）、"
                 "合作方、活动名、关键数字、时间节点、人物角色——这些细节都在战略素材或原始资料里，"
                 "必须主动挖出来，不要满足于在画像层面做抽象总结。\n"
                 if depth_mode
@@ -4980,6 +5086,23 @@ class AiService:
             if enable_thinking:
                 payload["enable_thinking"] = True
 
+            if self._is_org_cloud_proxy_profile(profile):
+                try:
+                    result = self._invoke_org_cloud_proxy_chat_completion(payload, timeout_seconds + HTTP_TIMEOUT_GRACE_SECONDS)
+                    text = (
+                        result.get("choices", [{}])[0]
+                        .get("message", {})
+                        .get("content", "")
+                    )
+                    self._record_resolved_profile(profile)
+                    if response_schema:
+                        return self._load_relaxed_json(text)
+                    return text
+                except Exception as error:
+                    detail = self._format_provider_error(error) if hasattr(self, "_format_provider_error") else str(error)
+                    errors.append(f"{display_label} 调用失败：{detail}")
+                    continue
+
             def _do_request() -> dict:
                 with httpx.Client(timeout=self._build_http_timeout(timeout_seconds)) as _client:
                     _resp = _client.post(
@@ -5104,6 +5227,34 @@ class AiService:
             }
             if enable_thinking:
                 payload["enable_thinking"] = True
+
+            if self._is_org_cloud_proxy_profile(profile):
+                proxy_payload = dict(payload)
+                proxy_payload["stream"] = False
+                try:
+                    result = self._invoke_org_cloud_proxy_chat_completion(proxy_payload, timeout_seconds + HTTP_TIMEOUT_GRACE_SECONDS)
+                    text = (
+                        result.get("choices", [{}])[0]
+                        .get("message", {})
+                        .get("content", "")
+                    )
+                    result_text = text if isinstance(text, str) else str(text or "")
+                    self._record_resolved_profile(profile)
+                    if on_reasoning_heartbeat:
+                        try:
+                            on_reasoning_heartbeat()
+                        except Exception:
+                            pass
+                    if on_token and result_text:
+                        try:
+                            on_token(result_text)
+                        except Exception:
+                            pass
+                    return result_text
+                except Exception as error:
+                    detail = self._format_provider_error(error) if hasattr(self, "_format_provider_error") else str(error)
+                    errors.append(f"{display_label} 调用失败：{detail}")
+                    continue
 
             accumulated: list[str] = []
             try:

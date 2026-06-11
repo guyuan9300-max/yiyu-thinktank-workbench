@@ -88,25 +88,25 @@ test('stripGlossaryCitations returns empty for nullish', () => {
 });
 
 test('stripGlossaryCitations removes standard [📚 term.attribute] marker', () => {
-  const input = '心盛计划累计服务近 17 万名大学生 [📚 心盛计划.累计服务大学生数]，覆盖高校同辈互助。';
+  const input = '测试项目A累计服务近 17 万名大学生 [📚 测试项目A.累计服务大学生数]，覆盖高校同辈互助。';
   const out = stripGlossaryCitations(input);
-  assert.equal(out, '心盛计划累计服务近 17 万名大学生，覆盖高校同辈互助。');
+  assert.equal(out, '测试项目A累计服务近 17 万名大学生，覆盖高校同辈互助。');
 });
 
 test('stripGlossaryCitations removes compact form without space', () => {
-  const input = '日慈基金会2013年12月成立[📚日慈基金会.成立时间]，定位前置型心育。';
+  const input = '测试机构A2013年12月成立[📚测试机构A.成立时间]，定位前置型心育。';
   const out = stripGlossaryCitations(input);
-  assert.equal(out, '日慈基金会2013年12月成立，定位前置型心育。');
+  assert.equal(out, '测试机构A2013年12月成立，定位前置型心育。');
 });
 
 test('stripGlossaryCitations removes mid-dot separator variant', () => {
-  const input = '覆盖儿童 90 万名 [📚 心灵魔法学院 · 服务对象与规模]，2024 年扩展到 31 省。';
+  const input = '覆盖儿童 90 万名 [📚 测试项目C · 服务对象与规模]，2024 年扩展到 31 省。';
   const out = stripGlossaryCitations(input);
   assert.equal(out, '覆盖儿童 90 万名，2024 年扩展到 31 省。');
 });
 
 test('stripGlossaryCitations removes multiple consecutive citations', () => {
-  const input = '关键数据 [📚 心盛计划.累计服务人数][📚 心灵魔法学院.服务对象与规模] 来源可溯。';
+  const input = '关键数据 [📚 测试项目A.累计服务人数][📚 测试项目C.服务对象与规模] 来源可溯。';
   const out = stripGlossaryCitations(input);
   assert.equal(out, '关键数据 来源可溯。');
 });
@@ -118,14 +118,14 @@ test('stripGlossaryCitations removes ⚠️ invalid-citation placeholder from va
 });
 
 test('stripGlossaryCitations preserves text without any markers', () => {
-  const input = '日慈基金会专注青少年心理健康教育，三大业务板块清晰。';
+  const input = '测试机构A专注青少年心理健康教育，三大业务板块清晰。';
   const out = stripGlossaryCitations(input);
   assert.equal(out, input);
 });
 
 test('stripGlossaryCitations does not touch file citations', () => {
   // 不重叠职责:文件名引证由 stripFileCitations 管,这里只管 📚
-  const input = '客户战略 [📚 日慈.战略主线] 跟 strategy.md 描述一致。';
+  const input = '客户战略 [📚 测试机构A.战略主线] 跟 strategy.md 描述一致。';
   const out = stripGlossaryCitations(input);
   // 📚 没了,但 strategy.md 还在(应由 stripFileCitations 接力)
   assert.equal(out, '客户战略 跟 strategy.md 描述一致。');
@@ -136,10 +136,10 @@ test('stripGlossaryCitations does not touch file citations', () => {
 // ────────────────────────────────────────────────────────────
 
 test('cleanChatOutput strips both file and glossary citations end-to-end', () => {
-  const input = '基于 strategy.md, 日慈 2013 年成立 [📚 日慈.成立时间], 三大业务板块 (见 methodology.md)。';
+  const input = '基于 strategy.md, 测试机构A 2013 年成立 [📚 测试机构A.成立时间], 三大业务板块 (见 methodology.md)。';
   const out = cleanChatOutput(input);
   // strategy.md → 战略文档, (见 methodology.md) 整段删, [📚...] 删
-  assert.equal(out, '基于 战略文档, 日慈 2013 年成立, 三大业务板块。');
+  assert.equal(out, '基于 战略文档, 测试机构A 2013 年成立, 三大业务板块。');
 });
 
 test('cleanChatOutput handles nullish', () => {

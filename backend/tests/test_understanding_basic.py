@@ -25,7 +25,7 @@ FORBIDDEN_BRIEF_FRAGMENTS = ["这是一条", "状态的工作任务", "系统尚
 
 def _make_snapshot(**overrides) -> WeeklyReviewTaskSnapshotRecord:
     defaults = {
-        "title": "和冯梅老师沟通CFFC的战略说明迭代",
+        "title": "和冯梅老师沟通测试论坛A的战略说明迭代",
         "status": "doing",
         "createdAt": "2026-03-20T10:00:00Z",
         "listName": "战略合作",
@@ -76,7 +76,7 @@ def _assert_human_brief_quality(text: str) -> None:
 class _FakeBadBriefAi:
     def _qwen_generate(self, **kwargs):
         return {
-            "humanBrief": "这是一条 todo 状态任务，与客户 CFFC 相关。",
+            "humanBrief": "这是一条 todo 状态任务，与客户 测试论坛A 相关。",
             "whatIsThis": "旧模板",
             "whyItMatters": "旧模板",
             "progressNow": "旧模板",
@@ -119,15 +119,15 @@ class TestBasicModeMinimalInput:
     def test_with_client_background(self):
         pc = TaskProjectContextRecord(
             clientId="client_cffc",
-            clientName="CFFC",
-            backgroundSummary="CFFC是公益行业的重要枢纽组织",
+            clientName="测试论坛A",
+            backgroundSummary="测试论坛A是公益行业的重要枢纽组织",
             goalSummary="推进数字化转型合作",
             riskSummary="决策链较长",
         )
         snapshot = _make_snapshot(projectContext=pc)
         entry = _make_entry(snapshot=snapshot)
         result = build_understanding_basic(ai=None, task_entry=entry, org_dna_modules=_make_org_dna())
-        assert "CFFC" in result.whatIsThis or "CFFC" in result.whyItMatters
+        assert "测试论坛A" in result.whatIsThis or "测试论坛A" in result.whyItMatters
         assert result.coverage >= 50
 
     def test_with_review_note(self):

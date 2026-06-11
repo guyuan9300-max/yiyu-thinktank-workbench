@@ -539,7 +539,7 @@ export interface HealthAiState {
 }
 
 export interface LastCloudAiSyncStatus {
-  state: 'never' | 'synced' | 'uploaded' | 'failed' | 'skipped';
+  state: 'never' | 'synced' | 'uploaded' | 'failed' | 'skipped' | 'proxy_available';
   at?: string | null;
   reason?: string | null;
   provider?: string | null;
@@ -548,6 +548,7 @@ export interface LastCloudAiSyncStatus {
   baseUrl?: string | null;
   hasApiKey: boolean;
   fingerprint?: string | null;
+  proxyMode?: string | null;
 }
 
 export interface HealthResponse {
@@ -570,7 +571,7 @@ export interface HealthResponse {
     analysisRuns: number;
   };
   ai: HealthAiState;
-  aiProfiles?: Partial<Record<AiModelProfileKey | 'unified', HealthAiState>>;
+  aiProfiles?: Partial<Record<AiModelProfileKey | 'unified' | 'org_cloud_proxy', HealthAiState>>;
   advancedAiRoutingEnabled?: boolean;
   aiModelMode?: AiModelMode;
   linkMaterialDiagnostics?: {
@@ -7086,6 +7087,8 @@ export interface CollabEffectExplanationResponse {
   model?: string | null;
 }
 
+export type CollabAiExplanationStatus = 'skipped' | 'generating' | 'ready' | 'failed';
+
 export interface CollabRepoStatus {
   repoPath: string | null;
   repoName: string | null;
@@ -7110,6 +7113,9 @@ export interface PushPreview {
   status: CollabRepoStatus;
   suggestedMessage: string;
   effects: CollabEffectPreview[];
+  aiExplanationStatus?: CollabAiExplanationStatus;
+  aiExplanationError?: string | null;
+  aiExplanationRequest?: CollabEffectExplanationRequest | null;
   groups: CollabChangeGroup[];
   files: CollabFileChange[];
   suggestedCollabBranchName?: string | null;
@@ -7128,6 +7134,9 @@ export interface PullPreview {
   canFastForwardMain?: boolean;
   directReceiveBlockReason?: string | null;
   effects: CollabEffectPreview[];
+  aiExplanationStatus?: CollabAiExplanationStatus;
+  aiExplanationError?: string | null;
+  aiExplanationRequest?: CollabEffectExplanationRequest | null;
   groups: CollabChangeGroup[];
   files: CollabFileChange[];
   notice?: string | null;
@@ -7956,6 +7965,7 @@ declare global {
       selectCollabRepo(): Promise<string | null>;
       getCollabRepoStatus(repoPath?: string | null): Promise<CollabRepoStatus>;
       previewPushToMain(repoPath: string): Promise<PushPreview>;
+      explainCollabEffects(payload: CollabEffectExplanationRequest): Promise<CollabEffectExplanationResponse>;
       pushSafelyToMain(payload: PushMainPayload): Promise<CollabActionResult>;
       publishCollabBranch(payload: PublishCollabBranchPayload): Promise<CollabActionResult>;
       previewPullFromMain(repoPath: string, targetCommit?: string | null): Promise<PullPreview>;
@@ -7991,6 +8001,7 @@ declare global {
         tasks: { kind: string; label: string; status?: string; severity?: 'loss' | 'queued' }[];
       }): Promise<{ ok: boolean; count: number }>;
       checkForUpdates?(): Promise<{ ok: boolean; version?: string | null; reason?: string; officialPush?: OfficialPushUpdatePayload | null }>;
+      downloadStandardUpdate?(): Promise<{ ok: boolean; reason?: string }>;
       installOfficialPushUpdate?(): Promise<{ ok: boolean; version?: string | null; reason?: string; fileName?: string | null }>;
       quitAndInstallUpdate?(): Promise<{ ok: boolean; reason?: string }>;
       onUpdateEvent?(callback: (payload: UpdateEventPayload) => void): () => void;

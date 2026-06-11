@@ -5,7 +5,7 @@
     ARK_API_KEY=xxx python -m app.narrative_seed \\
         --db /var/lib/yiyu/cloud.db \\
         --organization-id org_yiyu_default \\
-        --client-names 日慈基金会,为爱前行,黔行公益
+        --client-names 测试机构A,测试机构B,测试机构B
 
 或者:
     python -m app.narrative_seed --db ... --client-ids client_riciqi,client_weiaiqianxing

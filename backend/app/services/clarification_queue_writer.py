@@ -9,7 +9,7 @@ clarification_records schema:
   write_scope_json / resolved_fact_ids_json / reusable / created_at
 
 把 cross_source 嫌疑对转成"用户可回答的问题":
-  "心灵魔法学院" vs "心理魔法学院" → question="日慈基金会项目, 应该是'心灵魔法学院'还是'心理魔法学院'? (同音字疑似)"
+  "测试项目C" vs "心理魔法学院" → question="测试机构A项目, 应该是'测试项目C'还是'心理魔法学院'? (同音字疑似)"
 """
 from __future__ import annotations
 

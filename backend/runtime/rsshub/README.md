@@ -46,7 +46,7 @@ docker compose logs -f rsshub
 curl "http://<host>:1200/wechat/cn/ricifoundation?key=ABC123"
 ```
 
-理论上应该返回一个 RSS XML，含日慈最近若干篇推文。
+理论上应该返回一个 RSS XML，含测试机构A最近若干篇推文。
 
 ## 公众号路由选择
 
@@ -58,13 +58,13 @@ RSSHub 公众号有多条路由，按可用性排序：
 | `/wechat/wemp/<id>` | 微小宝镜像 | ⭐⭐ |
 | `/wechat/ths/<key>/<id>` | 天行数据，需 ths key（付费） | ⭐⭐⭐⭐⭐ 商用首选 |
 
-`<id>` 是公众号的英文 ID，比如「日慈公益基金会」的 `ricifoundation`。
+`<id>` 是公众号的英文 ID，比如「测试机构A」的 `ricifoundation`。
 
 ### 怎么查公众号英文 ID
 
-1. 微信里搜公众号「日慈公益基金会」→ 进主页 → 点右上 ··· → "查看公众号"
+1. 微信里搜公众号「测试机构A」→ 进主页 → 点右上 ··· → "查看公众号"
 2. 看到的英文字串就是 ID
-3. 或者搜狗搜 `weixin.sogou.com/weixin?type=1&query=日慈公益基金会`，结果里有「微信号: ricifoundation」字样
+3. 或者搜狗搜 `weixin.sogou.com/weixin?type=1&query=测试机构A`，结果里有「微信号: ricifoundation」字样
 
 ## 集成到益语智库
 

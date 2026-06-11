@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, EmailStr, Field
 
@@ -1679,7 +1679,7 @@ class OrgAiConfigUpdatePayload(BaseModel):
 
 
 class OrgAiConfigSecretRecord(BaseModel):
-    """Only returned to authenticated org members — contains decrypted key."""
+    """Only returned to org admins — contains decrypted key."""
     orgId: str
     aiProvider: str
     aiProviderLabel: str = ""
@@ -1687,6 +1687,25 @@ class OrgAiConfigSecretRecord(BaseModel):
     aiModel: str
     apiKey: str
     updatedAt: str
+
+
+class OrgAiStatusRecord(BaseModel):
+    available: bool = False
+    reason: str | None = None
+    aiProvider: str = ""
+    aiProviderLabel: str = ""
+    aiModel: str = ""
+    hasApiKey: bool = False
+    proxyMode: Literal["cloud_proxy"] = "cloud_proxy"
+
+
+class OrgAiChatCompletionPayload(BaseModel):
+    messages: list[dict[str, Any]] = Field(default_factory=list)
+    temperature: float | None = None
+    top_p: float | None = None
+    max_tokens: int | None = None
+    stream: bool = False
+    enable_thinking: bool | None = None
 
 
 ObjectStorageProvider = Literal["volcano_tos", "aliyun_oss", "aws_s3"]

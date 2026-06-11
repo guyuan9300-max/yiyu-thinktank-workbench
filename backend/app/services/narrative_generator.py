@@ -171,7 +171,7 @@ DIMENSION_BRIEF = {
         "\n    ✗ 不要用 HTML 标签 (例如 <br>) — 段落之间直接用换行符\\n\\n 分隔"
         "\n  "
         "\n  示例(口语化的写法, 仅参考语气):"
-        "\n    战略层: 日慈眼下最关键的不是再加新业务, 而是把团队重组后的管理真空补上."
+        "\n    战略层: 测试机构A眼下最关键的不是再加新业务, 而是把团队重组后的管理真空补上."
         "\n        益语接下来一段时间的角色要从'咨询服务'转向'管理代偿', 帮张真先把"
         "\n        价值观和组织治理这条线稳住, 再谈数字化."
         "\n  "
@@ -347,13 +347,13 @@ SYSTEM_PROMPT = """你是已经跟这个项目走了**半年**的高级战略顾
 (b) **顾问判断** — 你作为顾问对 fact 的解读, 用客观书面语表达, **不要用第一人称套话**
     **仅在需要判断/推论的层使用** (cooperation/next_steps), 不要在事实介绍层 (essence/business_intro) 滥用
     ❌ 错 (用第一人称套话): "我作为顾问看, 这通常意味着..."  ← 套话, 像 prompt 模板泄漏
-    ❌ 错 (essence 层做主观判断): "日慈这家机构应该重点关注..." ← essence 层不该做判断
-    ✅ 对 (cooperation/next_steps 层做客观判断): "从合作 N 个月的进展看, 益语属于日慈长期标杆服务型, 优先级较高"
+    ❌ 错 (essence 层做主观判断): "测试机构A这家机构应该重点关注..." ← essence 层不该做判断
+    ✅ 对 (cooperation/next_steps 层做客观判断): "从合作 N 个月的进展看, 益语属于测试机构A长期标杆服务型, 优先级较高"
     ✅ 对 (cooperation 层标推断性质): "基于现有事实推断, 后续可能涉及内部管理体系搭建; 但 facts 里目前没明示, 建议跟客户澄清"
     要点: 判断要有客观书面语气, 不要"我作为顾问看/我推荐/我判断/我觉得"这种第一人称口头禅
 
 (c) **澄清问题** — fact 不够判断时, 不要替客户回答, 把问题放在 openClarifications
-    例: openClarifications: ["18-24 岁是不是日慈核心服务对象? 还是只是行业研究背景?"]
+    例: openClarifications: ["18-24 岁是不是测试机构A核心服务对象? 还是只是行业研究背景?"]
     要点: 顾问不知道的, 直接问, 不替客户编
 
     🚨 **openClarifications 必须满足"客户专属"门槛, 不准问公共概念**:
@@ -379,15 +379,15 @@ SYSTEM_PROMPT = """你是已经跟这个项目走了**半年**的高级战略顾
 **禁止 (e) — 客户开除你的写法**:
 
 ❌ **隐含归因**: 把 fact 跟『客户的诉求/选择/动机』连起来, 添『因此/为此/希望/认为/这意味着客户...』
-    例: ❌ "18-24 岁抑郁峰值, **因此**日慈选这个赛道"
+    例: ❌ "18-24 岁抑郁峰值, **因此**测试机构A选这个赛道"
         ❌ "客户**希望**完成 XX 目标"  ❌ "客户**认为** YY"
     问题: 这把 LLM 的推断包装成了"客户的话". 客户没说的, 不要替他说。
     正确写法是 (b) 顾问判断 + 第一人称限定 + 或者 (c) 放进 openClarifications。
 
 **为什么这套规则比黑名单可靠**:
-  · 黑名单只防『儿童心育/搭建管理体系』这种已知套话, 换个客户(黔行/为爱前行) 黑名单全失效。
+  · 黑名单只防『儿童心育/搭建管理体系』这种已知套话, 换个客户(测试机构B/测试机构B) 黑名单全失效。
   · 元规则防的是**结构** — 任何"事实 + 因此/希望/认为 = 隐含归因" 都被禁, 不管哪个具体词。
-  · 客户跑日慈/黔行/华润/任何行业, 这套元规则都成立。
+  · 客户跑测试机构A/测试机构B/测试机构D/任何行业, 这套元规则都成立。
 
 **展开规则 (合格 vs 不合格)**:
   · ✅ 合格展开: 用 (b) 顾问判断模板把 fact 的业务含义说透 — "基于 [fact #X] 的客观情况, 在 cooperation/next_steps 层可推断..."
@@ -850,9 +850,9 @@ def build_user_prompt(bundle: ClientFactBundle) -> str:
     lines.append("  · 把 mention_count 高 (机器统计) 直接说成 *决策者/创始人/拍板者* (身份归因)")
     lines.append("")
     lines.append("**(e) 的正确改写**: 用 (b) 顾问客观判断, 或 (c) 放进 openClarifications。")
-    lines.append("  例 1: ❌ 『18-24 岁抑郁峰值, **因此**日慈选这个赛道』")
-    lines.append("        ✅ 『fact #X 显示 18-24 岁抑郁峰值是行业事实, 通常会是公益机构选服务对象的依据 — 但日慈是不是真把 18-24 岁锁定, 需要澄清』")
-    lines.append("        ✅ openClarifications: [『日慈核心服务对象是 18-24 岁? 还是包括其他年龄段?』]")
+    lines.append("  例 1: ❌ 『18-24 岁抑郁峰值, **因此**测试机构A选这个赛道』")
+    lines.append("        ✅ 『fact #X 显示 18-24 岁抑郁峰值是行业事实, 通常会是公益机构选服务对象的依据 — 但测试机构A是不是真把 18-24 岁锁定, 需要澄清』")
+    lines.append("        ✅ openClarifications: [『测试机构A核心服务对象是 18-24 岁? 还是包括其他年龄段?』]")
     lines.append("  例 2: ❌ 『高老师提及 93 次, 是核心决策人』")
     lines.append("        ✅ 『entity #X 显示高老师在客户资料中被提及 93 次, 远超其他人, 通常意味着位置核心 — 但 facts 里没有他职务/权限的明确说明, 需澄清』")
     lines.append("")
@@ -869,7 +869,7 @@ def build_user_prompt(bundle: ClientFactBundle) -> str:
     lines.append("")
     lines.append("**(Q5 v1.0 新增) narrative 文本里有没有 uuid/hash?**")
     lines.append("    ❌ 错: 『atomic_fact #eafa2c6f-c597-4d9d-b205-a5fa4f7f970b 显示...』")
-    lines.append("    ✅ 对: 『日慈公益基金会总部位于广州』(sourceId 放 references 数组, 不在 narrative 文本里)")
+    lines.append("    ✅ 对: 『测试机构A总部位于广州』(sourceId 放 references 数组, 不在 narrative 文本里)")
     lines.append("    narrative 是给客户读的干净中文叙事, 引用关系全部塞 references 数组让前端折叠显示。")
     lines.append("")
     lines.append("**Q3 (v0.9 新增): 这句话里的『并列项』每个都有 fact 支持吗?**")
@@ -880,7 +880,7 @@ def build_user_prompt(bundle: ClientFactBundle) -> str:
     lines.append("        ✅ 『event_line 显示益语核心是: 项目梳理 + 战略落地; 基于行业惯例推断, 可能还涉及内部管理体系层面, 但 facts 里目前没明示, 需澄清』")
     lines.append("")
     lines.append("**写每个并列句之前, 单独拎出每个名词短语问『这个名词短语对应哪条 fact?』**")
-    lines.append("**这套元规则适用于任何客户 (日慈/黔行/为爱前行/华润...). 它防的是结构, 不防具体词。**")
+    lines.append("**这套元规则适用于任何客户 (测试机构A/测试机构B/测试机构B/测试机构D...). 它防的是结构, 不防具体词。**")
     lines.append("")
     lines.append("**(Q6 v1.1 新增) openClarifications 通过『能不能爬虫答』测试了吗?**")
     lines.append("    每条 openClarifications 问题, 自问一次:『这个问题用爬虫搜百科/政府公示/官网能不能直接答?』")
@@ -1228,7 +1228,7 @@ def upsert_commitments_from_narrative(
     except Exception:
         existing_commit_contents = []
 
-    # 机制化兜底: 即使 LLM 不听 prompt 输出"高老师（善加方）", 写入前剥掉括号里的"方"字 —
+    # 机制化兜底: 即使 LLM 不听 prompt 输出"高老师（测试机构C方）", 写入前剥掉括号里的"方"字 —
     # 用户原则: 客户名注释里不要"甲乙方"含义. 通用 regex: (X方) → (X), （X方） → （X）.
     import re as _re
     _PARTY_PATTERN = _re.compile(r'([（\(])([^）\)]*?)方([）\)])')

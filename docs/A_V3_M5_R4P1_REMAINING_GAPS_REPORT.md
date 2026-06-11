@@ -46,7 +46,7 @@ V3 收尾 M5 §M5 §1 顾源源要求字段全部识别:
 
 ```
 build_template_fill_context 真注入 18 条 R4 blocks:
-  · 合同结构 2 (CFFC 300 万/800 万 完整字段)
+  · 合同结构 2 (测试论坛A 300 万/800 万 完整字段)
   · 权威文件 3 (合同/补充协议/方案)
   · 历史关联 5 (含 P1-5 任务真触发)
   · 已知缺口 8
@@ -137,7 +137,7 @@ clarification_records (chat_uncertainty): 0 → 1  (+1) ✅ "我不太清楚"真
 | "我不太清楚下周谁负责" | chitchat + triggers_clarification=True | ✅ trigger 真识别 |
 | "张总承诺周五交付 我有点担心质量" | risk + 张总 (担心优先于承诺) | ✅ 按规则优先级 |
 | "沿用之前的合同条款 强哥跟进" | correction + 强哥 + history_refs | ✅ |
-| "CFFC 项目最新合同金额是多少" | chitchat (问号末尾, 但匹配 question_heads 有要求) | ⚠️ 短问句未识别为 question, P3 优化 |
+| "测试论坛A 项目最新合同金额是多少" | chitchat (问号末尾, 但匹配 question_heads 有要求) | ⚠️ 短问句未识别为 question, P3 优化 |
 
 **M5 §4 评级**: **B+**(顾源源通过线 ≥B; 6 类要求识别全实现, smoke 短问句 P3 优化)
 

@@ -392,6 +392,7 @@ import {
   enterMaintenanceMode,
   processPendingConsultationKnowledgeRequests,
   fastForwardMain,
+  explainCollabEffects,
   previewPullFromMain,
   previewPushToMain,
   pushSafelyToMain,
@@ -5230,7 +5231,7 @@ function buildTaskProjectPreview(params: {
   const currentFocus = (() => {
     if (solutionConversationTask) {
       return truncatePreviewText(
-        `当前任务的真正落点是：把${focusSubject}带进这次会谈，判断它是否能成为 CFFC 面向基金会客户的下一步合作抓手。`,
+        `当前任务的真正落点是：把${focusSubject}带进这次会谈，判断它是否能成为 测试论坛A 面向基金会客户的下一步合作抓手。`,
         120,
       );
     }
@@ -6702,7 +6703,7 @@ function ClientEditorModal({
                   onFocus={() => onInteractionState(true, 'client_name_input', modalDetail)}
                   onBlur={() => onInteractionState(state.open, 'client_modal', modalDetail)}
                   onChange={(event) => updateDraft({ name: event.target.value })}
-                  placeholder="例如:日慈基金会"
+                  placeholder="例如:测试机构A"
                   className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2.5 text-[13px] font-medium text-gray-900 outline-none focus:border-[#5B7BFE] transition-colors"
                 />
               </div>
@@ -8717,6 +8718,47 @@ export default function App() {
     setCollabDialogError(null);
   }
 
+  async function refreshCollabAiExplanation(state: Exclude<CollabDialogState, null>) {
+    const request = state.preview.aiExplanationRequest;
+    if (!request || state.preview.aiExplanationStatus !== 'generating') return;
+    try {
+      const response = await explainCollabEffects(request);
+      setCollabDialogState((current) => {
+        if (!current || current.mode !== state.mode || current.preview.aiExplanationRequest !== request) return current;
+        const nextPreview = {
+          ...current.preview,
+          effects: response.effects.length ? response.effects : current.preview.effects,
+          aiExplanationStatus: response.effects.length ? 'ready' as const : 'failed' as const,
+          aiExplanationError: response.effects.length ? null : 'AI 没有返回可展示的功能说明。',
+        };
+        return {
+          ...current,
+          preview: nextPreview,
+        } as CollabDialogState;
+      });
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : 'AI 功能说明生成失败';
+      setCollabDialogState((current) => {
+        if (!current || current.mode !== state.mode || current.preview.aiExplanationRequest !== request) return current;
+        return {
+          ...current,
+          preview: {
+            ...current.preview,
+            aiExplanationStatus: 'failed',
+            aiExplanationError: detail,
+            effects: current.preview.effects.map((effect) => effect.explanationSource === 'ai'
+              ? effect
+              : {
+                  ...effect,
+                  explanationSource: 'unavailable' as const,
+                  aiUnavailableReason: `AI 功能说明生成失败：${detail}`,
+                }),
+          },
+        } as CollabDialogState;
+      });
+    }
+  }
+
   async function ensureCollabRepoForAction() {
     if (!canUseCollabSync) {
       flash('error', '协作同步仅在桌面版可用，请在 Electron 应用中打开。');
@@ -8760,7 +8802,9 @@ export default function App() {
     setCollabBusyAction('push');
     try {
       const preview = await previewPushToMain(repoPath);
-      openCollabDialog({ mode: 'push', preview });
+      const nextState = { mode: 'push' as const, preview };
+      openCollabDialog(nextState);
+      void refreshCollabAiExplanation(nextState);
     } catch (error) {
       flash('error', error instanceof Error ? error.message : '推送预览失败');
     } finally {
@@ -8776,7 +8820,9 @@ export default function App() {
     setCollabBusyAction('pull');
     try {
       const preview = await previewPullFromMain(repoPath);
-      openCollabDialog({ mode: 'pull', preview });
+      const nextState = { mode: 'pull' as const, preview };
+      openCollabDialog(nextState);
+      void refreshCollabAiExplanation(nextState);
     } catch (error) {
       flash('error', error instanceof Error ? error.message : '同步预览失败');
     } finally {
@@ -8797,7 +8843,9 @@ export default function App() {
     setCollabDialogError(null);
     try {
       const preview = await previewPullFromMain(repoPath, targetCommit);
-      openCollabDialog({ mode: 'pull', preview });
+      const nextState = { mode: 'pull' as const, preview };
+      openCollabDialog(nextState);
+      void refreshCollabAiExplanation(nextState);
     } catch (error) {
       const message = error instanceof Error ? error.message : '按提交日期切换同步范围失败';
       if (collabDialogState?.mode === 'pull') {
@@ -18303,7 +18351,7 @@ export default function App() {
                     className="w-full rounded-2xl border border-gray-200 bg-white px-4 py-3 text-[15px] font-semibold text-gray-900 outline-none transition focus:border-[#5B7BFE] focus:ring-2 focus:ring-[#5B7BFE]/15 placeholder:text-gray-300"
                     autoFocus
                   />
-                  <p className="mt-2 text-[11px] text-gray-400">建议写成一条可持续推进的线名，例如“日慈教师赋能成效表达收束”或“CFFC 工作坊合作推进”。</p>
+                  <p className="mt-2 text-[11px] text-gray-400">建议写成一条可持续推进的线名，例如“测试机构A教师赋能成效表达收束”或“测试论坛A 工作坊合作推进”。</p>
                 </div>
 
                 <div className="grid gap-4 md:grid-cols-2">
@@ -23785,7 +23833,7 @@ export default function App() {
                   </p>
                   <p className="text-[12px] text-center max-w-md leading-relaxed text-gray-500 mb-6">
                     {clients.length === 0
-                      ? '先创建一个项目开始正式使用;如果只是想演示流程,也可以手动载入演示数据(会进入「[演示] 为爱黔行」等占位客户,不会影响真实数据)。'
+                      ? '先创建一个项目开始正式使用;如果只是想演示流程,也可以手动载入演示数据(会进入「[演示] 测试机构B」等占位客户,不会影响真实数据)。'
                       : '左栏点击项目即可进入,或者再创建一个新项目。'}
                   </p>
                   <div className="flex items-center gap-3">
@@ -28952,7 +29000,8 @@ export default function App() {
 
     const renderOverviewSection = () => {
       const cloudConfigured = Boolean(draft.cloudApiUrl.trim());
-      const textModelReady = draft.aiProvider !== 'mock' && Boolean(draft.aiBaseUrl);
+      const orgCloudAiReady = health?.ai?.profileKey === 'org_cloud_proxy' && Boolean(health.ai.ready);
+      const textModelReady = orgCloudAiReady || (draft.aiProvider !== 'mock' && Boolean(draft.aiBaseUrl));
       const primaryReady = cloudConfigured && textModelReady;
       const ollamaReadyCount = AI_LOCAL_MODEL_PROFILE_ORDER.filter((k) => health?.aiProfiles?.[k]?.ready).length;
       const ollamaTotal = AI_LOCAL_MODEL_PROFILE_ORDER.length;
@@ -29007,10 +29056,14 @@ export default function App() {
               {renderStatusBlock({
                 label: '文字模型',
                 valueText: textModelReady
-                  ? (draft.aiProviderLabel || aiModelDisplayLabel(draft.aiProvider, draft.aiModel, draft.aiProviderLabel))
+                  ? (orgCloudAiReady
+                      ? (health?.ai.providerLabel || '组织云 AI')
+                      : (draft.aiProviderLabel || aiModelDisplayLabel(draft.aiProvider, draft.aiModel, draft.aiProviderLabel)))
                   : '未接入',
                 accent: textModelReady ? 'success' : 'warning',
-                helper: textModelReady ? (draft.aiModel || '默认模型') : '问答 / 报告 / 洞察都依赖它',
+                helper: orgCloudAiReady
+                  ? '组织已配置，成员无需填写 Key'
+                  : (textModelReady ? (draft.aiModel || '默认模型') : '问答 / 报告 / 洞察都依赖它'),
               })}
               {renderStatusBlock({
                 label: '本地模型',
@@ -29120,6 +29173,12 @@ export default function App() {
                       记住当前 API Key（仅本机）
                     </label>
                   </div>
+
+                  {health?.ai?.profileKey === 'org_cloud_proxy' && (
+                    <p className="rounded-xl border border-emerald-100 bg-emerald-50 px-3 py-2 text-[11px] text-emerald-700">
+                      组织 AI 已启用：成员通过云端代调用管理员配置的大模型，不会下发或保存管理员 API Key。
+                    </p>
+                  )}
 
                   {isLocalSession && (
                     <p className="rounded-xl border border-blue-100 bg-blue-50 px-3 py-2 text-[11px] text-blue-700">

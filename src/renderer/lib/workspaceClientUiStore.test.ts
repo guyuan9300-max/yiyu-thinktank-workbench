@@ -55,17 +55,17 @@ test('workspace UI store isolates composer drafts by client', () => {
     workspaceClientUiReducer(initialWorkspaceClientUiState, {
       type: 'setComposerDraft',
       clientKey: 'client-a',
-      value: '日慈问题',
+      value: '测试机构A问题',
     }),
     {
       type: 'setComposerDraft',
       clientKey: 'client-b',
-      value: 'CFFC 问题',
+      value: '测试论坛A 问题',
     },
   );
 
-  assert.equal(state.composerDraftByClient['client-a'], '日慈问题');
-  assert.equal(state.composerDraftByClient['client-b'], 'CFFC 问题');
+  assert.equal(state.composerDraftByClient['client-a'], '测试机构A问题');
+  assert.equal(state.composerDraftByClient['client-b'], '测试论坛A 问题');
 });
 
 test('workspace UI store keeps active runs and pending questions client scoped', () => {

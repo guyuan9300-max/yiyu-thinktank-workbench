@@ -154,7 +154,7 @@ curl OK
 ### 6.3 P1-1 narrative prompt 真用 R4 字段证据
 
 ```
-bundle.contracts_r4:        2 条 (CFFC 300 万 + 800 万版)
+bundle.contracts_r4:        2 条 (测试论坛A 300 万 + 800 万版)
 bundle.historical_links_r4: 4 条 (含 P1-4 新写 2 条)
 bundle.file_identities_r4:  3 条
 bundle.data_gaps_r4:        10 条
@@ -179,13 +179,13 @@ usedTables (9 张): contract_structures / file_identities /
 singleFileOnly: false
 
 top_contracts: 2 条
-  · CFFC ↔ 益语智库 · 乡村教育帮扶服务合同 · 300 万元人民币
-  · CFFC ↔ 益语智库 · 乡村教育帮扶项目 · 800 万元人民币
+  · 测试论坛A ↔ 益语智库 · 乡村教育帮扶服务合同 · 300 万元人民币
+  · 测试论坛A ↔ 益语智库 · 乡村教育帮扶项目 · 800 万元人民币
 
 top_files: 3 条
-  · CFFC-补充协议_v1_20260520.docx · supplementary_agreement / client_official
-  · CFFC-青年行动者推广方案_v1_20260418.docx · proposal / client_official
-  · CFFC-益语-乡村教育帮扶服务合同_20260301.docx · contract / client_official
+  · 测试论坛A-补充协议_v1_20260520.docx · supplementary_agreement / client_official
+  · 测试论坛A-青年行动者推广方案_v1_20260418.docx · proposal / client_official
+  · 测试论坛A-益语-乡村教育帮扶服务合同_20260301.docx · contract / client_official
 
 pending_clarifications_list: 5 条 (真问题)
 pending_approvals_list: 5 条
@@ -207,7 +207,7 @@ pending_approvals_list: 5 条
        - PendingClarificationsBadge (5 条)
        - PendingApprovalsBadge (count)
        - FileIdentityBadge × 3 (含 client_official 角色)
-       - ContractStructureCard × 2 (CFFC 300 万 + 800 万版完整结构)
+       - ContractStructureCard × 2 (测试论坛A 300 万 + 800 万版完整结构)
 
 用户工作台贴一段陈述:
   上轮 ❌ 只存 chat_messages

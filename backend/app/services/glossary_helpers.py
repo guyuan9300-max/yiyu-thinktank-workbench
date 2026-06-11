@@ -1,8 +1,8 @@
 """字典反哺工具 — 给所有上层模块用的统一接口.
 
 3 个核心能力:
-  1. expand_aliases — "兴盛计划" → ["兴盛计划", "心盛计划"] (搜索/匹配用)
-  2. canonicalize — "兴盛计划" → "心盛计划" (显示用)
+  1. expand_aliases — "兴盛计划" → ["兴盛计划", "测试项目A"] (搜索/匹配用)
+  2. canonicalize — "兴盛计划" → "测试项目A" (显示用)
   3. load_glossary_brief — 给 LLM 的字典上下文 (周复盘/narrative 用)
 
 用法:
@@ -61,7 +61,7 @@ def _load_glossary_raw(db: Database, client_id: str) -> list[GlossaryEntry]:
 
 
 def expand_aliases(db: Database, client_id: str, query: str) -> list[str]:
-    """『兴盛计划』 → ['兴盛计划', '心盛计划', '心盛'] — 把查询里的 token expand 到字典所有同义词.
+    """『兴盛计划』 → ['兴盛计划', '测试项目A', '测试项目A'] — 把查询里的 token expand 到字典所有同义词.
 
     用法: FTS 搜索时把 expand 后的 list 用 OR 拼起来.
     """
@@ -94,7 +94,7 @@ def expand_aliases(db: Database, client_id: str, query: str) -> list[str]:
 
 
 def canonicalize(db: Database, client_id: str, text: str) -> str:
-    """把文本中的字典别名替换成 canonical name. 例: "兴盛计划" → "心盛计划".
+    """把文本中的字典别名替换成 canonical name. 例: "兴盛计划" → "测试项目A".
 
     避免重复替换:
       · 替换前先检查 canonical 是否已经在文本中相同位置 — 是就跳过
@@ -114,7 +114,7 @@ def canonicalize(db: Database, client_id: str, text: str) -> str:
     for alias, canonical in pairs:
         if alias not in result:
             continue
-        # 关键检查: alias 在文本里是否其实已经在 canonical 内部 (例 alias="心盛" 在已替换的"心盛计划" 内)
+        # 关键检查: alias 在文本里是否其实已经在 canonical 内部 (例 alias="测试项目A" 在已替换的"测试项目A" 内)
         # 用 split + 检查相邻是否构成 canonical, 比 regex 简单
         if alias in canonical and canonical in result:
             # canonical 已存在 — 跳过这个短 alias 替换
@@ -127,10 +127,10 @@ def load_glossary_brief(db: Database, client_id: str, max_terms: int = 60) -> st
     """渲染字典摘要给 LLM 当 context (周复盘/narrative 用).
 
     返回类似:
-        日慈基金会项目字典 (60 term):
+        测试机构A项目字典 (60 term):
         ## 项目 (6)
-          · 心盛计划 [别名: 兴盛计划]
-          · 心灵魔法学院
+          · 测试项目A [别名: 兴盛计划]
+          · 测试项目C
           · 教师赋能项目
           ...
         ## 人物 (16)

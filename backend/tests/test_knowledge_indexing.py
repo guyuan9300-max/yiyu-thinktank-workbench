@@ -18,24 +18,24 @@ from app.services.knowledge_base import (
 
 
 def test_clean_title_for_search_strips_import_suffix_noise():
-    assert clean_title_for_search("基业长青2022年财务报告_CFFC_20260211.pdf") == "基业长青2022年财务报告"
-    assert clean_title_for_search("CFFC_项目价值分析表 2_CFFC_20260211.pdf") == "CFFC 项目价值分析表"
+    assert clean_title_for_search("基业长青2022年财务报告_测试论坛A_20260211.pdf") == "基业长青2022年财务报告"
+    assert clean_title_for_search("测试论坛A_项目价值分析表 2_测试论坛A_20260211.pdf") == "测试论坛A 项目价值分析表"
 
 
 def test_build_catalog_search_text_prefers_summary_and_body_over_placeholder_noise():
     catalog = build_catalog_search_text(
-        title="CFFC文件+机构和业务简介-CFF2025年会手册_CFFC_20260211.md",
-        short_summary="CFFC 的核心业务包括行业网络、数据资产和知识服务。",
+        title="测试论坛A文件+机构和业务简介-CFF2025年会手册_测试论坛A_20260211.md",
+        short_summary="测试论坛A 的核心业务包括行业网络、数据资产和知识服务。",
         summary="这份材料系统介绍了机构定位、核心业务、行业角色与未来能力版图。",
-        raw_text="CFFC正在从传统信息平台转向公益慈善行业的可信基础设施，围绕网络、数据与知识形成三层底盘，并以行业服务、研究倡导、共创交付等方式形成长期复利。",
-        keywords=["CFFC", "机构介绍", "核心业务"],
-        entities=["CFFC", "中国基金会发展论坛"],
+        raw_text="测试论坛A正在从传统信息平台转向公益慈善行业的可信基础设施，围绕网络、数据与知识形成三层底盘，并以行业服务、研究倡导、共创交付等方式形成长期复利。",
+        keywords=["测试论坛A", "机构介绍", "核心业务"],
+        entities=["测试论坛A", "测试论坛A"],
         primary_category="组织与战略",
         secondary_category="战略规划",
         document_role="机构介绍",
     )
     assert "可作为后续问答与证据引用来源" not in catalog
-    assert "CFFC 的核心业务包括行业网络、数据资产和知识服务" in catalog
+    assert "测试论坛A 的核心业务包括行业网络、数据资产和知识服务" in catalog
     assert "可信基础设施" in catalog
 
 
@@ -79,32 +79,32 @@ def test_build_coverage_terms_keeps_finance_anchor_tokens_for_chunk_matching():
 
 
 def test_is_finance_query_detects_statement_style_questions():
-    assert is_finance_query("分析CFFC的财务状况")
+    assert is_finance_query("分析测试论坛A的财务状况")
     assert is_finance_query("有没有资产负债和现金流信息")
-    assert not is_finance_query("介绍CFFC的团队")
+    assert not is_finance_query("介绍测试论坛A的团队")
 
 
 def test_is_finance_statement_query_detects_actual_statement_questions():
-    assert is_finance_statement_query("分析CFFC的财务状况")
+    assert is_finance_statement_query("分析测试论坛A的财务状况")
     assert is_finance_statement_query("有没有资产负债和现金流信息")
     assert not is_finance_statement_query("预算规划怎么做")
 
 
 def test_finance_document_score_adjustment_prefers_finance_reports_over_generic_intro_docs():
     finance_score = finance_document_score_adjustment(
-        title="基业长青2023年财务报告_CFFC_20260211.pdf",
+        title="基业长青2023年财务报告_测试论坛A_20260211.pdf",
         summary="包含资产总额、负债总额、收入总额与费用总额。",
         document_role="财务资料",
         folder_category="财务与筹款",
-        path="/tmp/财务与筹款/基业长青2023年财务报告_CFFC_20260211.pdf",
+        path="/tmp/财务与筹款/基业长青2023年财务报告_测试论坛A_20260211.pdf",
         statement_mode=True,
     )
     generic_score = finance_document_score_adjustment(
-        title="CFFC核心业务介绍 2_CFFC_20260211.pdf",
+        title="测试论坛A核心业务介绍 2_测试论坛A_20260211.pdf",
         summary="介绍五个主要项目与平台化方向。",
         document_role="会议与访谈",
         folder_category="项目与业务",
-        path="/tmp/项目与业务/CFFC核心业务介绍_2_CFFC_20260211.pdf",
+        path="/tmp/项目与业务/测试论坛A核心业务介绍_2_测试论坛A_20260211.pdf",
         statement_mode=True,
     )
     assert finance_score > generic_score
@@ -112,17 +112,17 @@ def test_finance_document_score_adjustment_prefers_finance_reports_over_generic_
 
 def test_finance_chunk_score_adjustment_prefers_numeric_finance_chunks():
     finance_chunk = finance_chunk_score_adjustment(
-        title="3 基业长青2023年财务报告_CFFC_20260211.pdf",
+        title="3 基业长青2023年财务报告_测试论坛A_20260211.pdf",
         excerpt="截止 2023 年 12 月 31 日，中心资产总额 751.44 万元，负债总额 42.62 万元，收入总额 880.51 万元。",
         section_label="第 1 页",
-        path="/tmp/财务与筹款/3 基业长青2023年财务报告_CFFC_20260211.pdf",
+        path="/tmp/财务与筹款/3 基业长青2023年财务报告_测试论坛A_20260211.pdf",
         statement_mode=True,
     )
     generic_chunk = finance_chunk_score_adjustment(
-        title="CFFC核心业务介绍 2_CFFC_20260211.pdf",
+        title="测试论坛A核心业务介绍 2_测试论坛A_20260211.pdf",
         excerpt="介绍年会、峰会、图书馆、数据平台与平台化方向。",
         section_label="概览",
-        path="/tmp/项目与业务/CFFC核心业务介绍_2_CFFC_20260211.pdf",
+        path="/tmp/项目与业务/测试论坛A核心业务介绍_2_测试论坛A_20260211.pdf",
         statement_mode=True,
     )
     assert finance_chunk > generic_chunk

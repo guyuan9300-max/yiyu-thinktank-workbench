@@ -75,7 +75,7 @@ Response (HTTP 200):
 
 → **5/5 safety_check 全过** + dry_run_safe=true ★
 
-### 1.3 真测 actions/suggest (CFFC 主样本)
+### 1.3 真测 actions/suggest (测试论坛A 主样本)
 
 ```json
 POST /api/v1/clients/client_a4d1db29a7/actions/suggest

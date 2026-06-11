@@ -91,7 +91,7 @@ def compute_strategic_pulse(
     current_blockers = _fetch_current_blockers(db, client_id, now)
 
     # P3 · 字典反哺 — 把 task title / event summary 用 canonical name 替换别名
-    # 例: "兴盛计划方案" → "心盛计划方案"
+    # 例: "兴盛计划方案" → "测试项目A方案"
     try:
         from app.services.glossary_helpers import canonicalize
         weekly_events = [_canonicalize_event(db, client_id, e, canonicalize) for e in weekly_events]

@@ -2976,9 +2976,9 @@ def load_demo_dataset(state: AppState) -> DemoDataResponse:
     clear_demo_dataset(state)
     timestamp = now_iso()
     # 演示客户必须用 [演示] 前缀,避免跟用户真实可能用的客户名撞车
-    # 历史教训:之前 demo 用名 "为爱黔行" 跟用户真客户撞名,删除时数据丢失
+    # 历史教训:之前 demo 用名 "测试机构B" 跟用户真客户撞名,删除时数据丢失
     clients = [
-        ("client_cffc", "[演示] 为爱黔行", "黔行公益", "公益教育", "非营利项目", "聚焦山区儿童教育与志愿者体系建设(演示数据,可在系统设置→演示数据里一键清空)。", "战略陪伴中", "#5B7BFE"),
+        ("client_cffc", "[演示] 测试机构B", "测试机构B", "公益教育", "非营利项目", "聚焦山区儿童教育与志愿者体系建设(演示数据,可在系统设置→演示数据里一键清空)。", "战略陪伴中", "#5B7BFE"),
         ("client_star", "[演示] 星辰科技", "星辰", "SaaS", "商业化 KA", "营销 SaaS 服务商,正在梳理增长打法(演示数据,可在系统设置→演示数据里一键清空)。", "方案梳理", "#10B981"),
     ]
     state.db.executemany(
@@ -3051,7 +3051,7 @@ def load_demo_dataset(state: AppState) -> DemoDataResponse:
         (
             "msg_seed_1",
             "thread_cffc",
-            "已为你载入为爱黔行的内部上下文。",
+            "已为你载入测试机构B的内部上下文。",
             to_json(
                 {
                     "content": "已围绕当前客户整理出一版初始判断。",
@@ -4917,7 +4917,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 # 之前会让整个 batch 死在中途（status='failed'，imported_count=0）。
                 # 改成单文件失败 -> warning event + 文件标 error + 继续下一个，
                 # batch 整体能跑完，前端能看到部分成功。
-                # 实例：2026-05-17 日慈基金会 import_id=imp_08a6520ef3 / imp_090cafb1be
+                # 实例：2026-05-17 测试机构A import_id=imp_08a6520ef3 / imp_090cafb1be
                 # 都因一个 .docx 改名自旧 .doc 抛 BadZipFile，291 个白名单文件 0 入库。
                 try:
                     excerpt = build_excerpt(path)
@@ -5359,6 +5359,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         state.volatile_cloud_refresh_token = ""
         state.volatile_cloud_session_user_json = ""
         state.cloud_session_persistent = False
+        state.ai.invalidate_org_cloud_proxy_cache()
         with state.maintenance_mode_lock:
             state.maintenance_mode_active = False
             state.maintenance_mode_user_id = ""
@@ -8563,6 +8564,24 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             return {}
         return response.json()
 
+    def _load_org_cloud_ai_status_for_ai_service() -> dict[str, object]:
+        payload = cloud_request("GET", "/api/v1/org-ai/status", timeout=3.0)
+        return payload if isinstance(payload, dict) else {"available": False, "reason": "组织 AI 状态响应无效。"}
+
+    def _invoke_org_cloud_ai_for_ai_service(payload: dict[str, object], timeout_seconds: float) -> dict[str, object]:
+        response = cloud_request(
+            "POST",
+            "/api/v1/org-ai/chat/completions",
+            json_body=payload,
+            timeout=max(float(timeout_seconds or 60.0), 12.0),
+        )
+        return response if isinstance(response, dict) else {}
+
+    state.ai.configure_org_cloud_proxy(
+        status_loader=_load_org_cloud_ai_status_for_ai_service,
+        chat_completion=_invoke_org_cloud_ai_for_ai_service,
+    )
+
     def _auto_sync_document_to_feishu_docx(
         *,
         document_id: str,
@@ -10321,7 +10340,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         existing = state.db.fetchone("SELECT * FROM clients WHERE id = ? OR cloud_id = ?", (local_id, cloud_id))
         # 机制化去重: 如果本地不存在这个 cloud_id, 但存在另一个同 name 的 client (用户已经
         # 真实使用过, 有 tasks/docs/threads), 跳过 — 防止云端冗余 client (e.g. client_cffc
-        # 和 client_85d5c52575 都叫"为爱黔行") 反复推回本地形成重复. 这是用户"删了又来"的根因.
+        # 和 client_85d5c52575 都叫"测试机构B") 反复推回本地形成重复. 这是用户"删了又来"的根因.
         if not existing:
             cloud_name = str(payload.get("name") or "").strip()
             if cloud_name:
@@ -14549,7 +14568,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         ("合同与合作文件", ("合同", "协议", "报价", "条款", "付款", "发票", "甲方", "乙方", "合作", "服务期", "知识产权"), ("合同", "合作", "协议")),
         ("会议纪要与沟通记录", ("会议", "纪要", "访谈", "沟通", "共识", "行动项", "复盘", "交流", "对齐会", "q1", "q2", "q3", "q4"), ("会议", "沟通", "纪要")),
         ("战略陪伴与组织升级", ("战略", "规划", "陪伴", "组织", "升级", "定位", "核心资产", "发展", "治理", "第二曲线", "使命", "愿景", "价值观"), ("战略", "组织", "陪伴")),
-        ("核心项目与服务模式", ("项目", "服务", "产品", "模式", "方案", "课程", "交付", "教师", "培训", "心愿", "心盈", "心盛", "心松松", "心灵魔法学院", "繁星"), ("项目", "服务", "模式")),
+        ("核心项目与服务模式", ("项目", "服务", "产品", "模式", "方案", "课程", "交付", "教师", "培训", "心愿", "心盈", "测试项目A", "心松松", "测试项目C", "繁星"), ("项目", "服务", "模式")),
         ("品牌传播与对外材料", ("品牌", "传播", "宣传", "手册", "介绍", "路演", "官网", "公众号", "新闻", "对外", "视觉", "vi"), ("品牌", "传播", "对外")),
         ("研究与行业资料", ("研究", "行业", "案例", "对标", "调研", "数据", "报告", "趋势", "领域"), ("研究", "行业", "对标")),
     )
@@ -19684,7 +19703,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
     LEGACY_STRATEGIC_INSIGHT_TITLES = {
         "从项目服务组织转向关系生态组织",
         "教师赋能项目是战略样板入口",
-        "心盛计划是第二曲线验证场",
+        "测试项目A是第二曲线验证场",
         "新加坡合作是战略窗口，但内部表达需先收束",
         "对外介绍需要从项目罗列升级为战略能力表达",
         "关键事项依赖少数关键人，战略节奏需要收束",
@@ -23037,7 +23056,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
 
     INTRO_PROJECT_SIGNAL_HINTS: tuple[tuple[str, tuple[str, ...]], ...] = (
         ("教师赋能", ("教师赋能", "教师成长", "教师项目")),
-        ("心盛计划", ("心盛计划", "心盛")),
+        ("测试项目A", ("测试项目A", "测试项目A")),
         ("繁星计划", ("繁星计划", "繁星")),
         ("关怀员培养", ("关怀员", "关怀员培养")),
         ("行动营", ("行动营",)),
@@ -23077,8 +23096,8 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
     )
     INTRO_SUPPORT_HINTS: tuple[tuple[int, tuple[str, ...]], ...] = (
         (8, ("使命", "愿景", "价值观", "机构介绍", "业务介绍", "基金会")),
-        (7, ("心灵魔法学院", "项目介绍", "平台建设方案", "教师项目飞轮", "教师赋能")),
-        (8, ("心盛", "繁星", "关怀员", "青年小组", "沙龙")),
+        (7, ("测试项目C", "项目介绍", "平台建设方案", "教师项目飞轮", "教师赋能")),
+        (8, ("测试项目A", "繁星", "关怀员", "青年小组", "沙龙")),
         (5, ("战略", "飞轮", "数字化", "价值可被证明", "经验可被复用", "蓝图", "复利")),
         (6, ("第二曲线", "场域资产", "数据资产", "复利型组织", "经营自有场域", "做项目的服务型基金会")),
     )
@@ -23134,7 +23153,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
     def _project_signal_default_summary(project: str) -> str:
         if "教师赋能" in project or ("教师" in project and "计划" not in project):
             return "聚焦带领者培养、教师支持与协作机制。"
-        if "心盛" in project:
+        if "测试项目A" in project:
             return "聚焦关怀员培养、青年社群与内容协同。"
         if "繁星" in project:
             return "聚焦定位校准、传播联动与资源协同。"
@@ -23199,7 +23218,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 if any(token in text for token in tokens):
                     score += float(bonus)
             if any(token in text for token in INTRO_SUPPORT_NOISE_TOKENS):
-                score -= 1.5 if any(token in text for token in ("心盛", "繁星", "关怀员", "教师赋能", "教师项目飞轮")) else 4.5
+                score -= 1.5 if any(token in text for token in ("测试项目A", "繁星", "关怀员", "教师赋能", "教师项目飞轮")) else 4.5
             if len(excerpt) >= 80:
                 score += 0.8
             if score <= 0:
@@ -23227,7 +23246,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             haystack = f"{title} {text}"
             if any(token in haystack for token in ("战略研究", "第二曲线", "场域资产", "数据资产", "复利型组织", "经营自有场域", "做项目的服务型基金会", "筹款 市场 运营")):
                 return "strategy"
-            if any(token in haystack for token in ("心盛", "关怀员", "青年小组", "青年社群", "沙龙")):
+            if any(token in haystack for token in ("测试项目A", "关怀员", "青年小组", "青年社群", "沙龙")):
                 return "youth"
             if any(token in haystack for token in ("教师赋能", "教师项目飞轮", "教师互助", "教师心理关怀", "带领者培训")):
                 return "teacher"
@@ -23286,7 +23305,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 score -= 2.5
             if "教师赋能" in text or "教师发展中心" in text or "教师心理关怀" in text:
                 score += 1.5
-            if "心盛计划" in text or "关怀员" in text:
+            if "测试项目A" in text or "关怀员" in text:
                 score += 1.5
             if "使命愿景价值观" in text or "业务介绍" in text:
                 score += 1.2
@@ -23385,7 +23404,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         if any(token in corpus for token in ("教师", "课堂", "支持网络", "教师赋能", "教师心理关怀")):
             points.append("学校里的心理支持资源并不稳定，教师承担了大量情绪劳动，却往往缺少工具、机制与长期专业支撑。")
         if any(token in corpus for token in ("不是单点", "不是一个项目", "不是单点的课程", "课程或活动", "预防视角")):
-            points.append("心理服务在教育现场常常被当作“出问题后的补丁”，但日慈试图把它前置为日常教育体系的一部分，而不是等到危机发生才介入。")
+            points.append("心理服务在教育现场常常被当作“出问题后的补丁”，但测试机构A试图把它前置为日常教育体系的一部分，而不是等到危机发生才介入。")
         if any(token in corpus for token in ("不是在拯救", "有问题的个体", "大多数孩子都能用得上", "人人可触及")):
             points.append("它试图把议题从“拯救少数有问题的个体”转成“为大多数孩子和青年搭建可触及的关系保护网”，这是它和传统单点心理项目最不一样的地方。")
         if any(token in corpus for token in ("可被复制", "可持续运行", "经验可被复用", "标准化", "业务流蓝图")):
@@ -23404,10 +23423,10 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
 
     def _build_intro_business_lines(corpus: str) -> list[str]:
         lines: list[str] = []
-        if "心灵魔法学院" in corpus:
-            lines.append("心灵魔法学院：这是目前最清晰的一条一线业务线，面向乡村儿童青少年，从预防视角出发，通过赋能在地教师、提供主题式和体验式的标准化课程资料与配套培训，把心理主题活动真正带进学校。")
-        if any(token in corpus for token in ("心盛计划", "心盛", "关怀员", "青年小组", "青年社群", "沙龙")):
-            lines.append("心盛计划：围绕青年小组、沙龙、关怀员培养与社群运营展开，同时牵动内容协同和品牌建设，是面向青年群体及青年支持者的重要业务线。")
+        if "测试项目C" in corpus:
+            lines.append("测试项目C：这是目前最清晰的一条一线业务线，面向乡村儿童青少年，从预防视角出发，通过赋能在地教师、提供主题式和体验式的标准化课程资料与配套培训，把心理主题活动真正带进学校。")
+        if any(token in corpus for token in ("测试项目A", "测试项目A", "关怀员", "青年小组", "青年社群", "沙龙")):
+            lines.append("测试项目A：围绕青年小组、沙龙、关怀员培养与社群运营展开，同时牵动内容协同和品牌建设，是面向青年群体及青年支持者的重要业务线。")
         if any(token in corpus for token in ("教师发展中心", "教师赋能", "教师项目飞轮", "教师心理关怀", "教师互助", "教师支持平台", "教师心理支持平台", "三星教师")):
             lines.append("教师发展中心：围绕教师互助网络、教师心理支持与带领者培养展开，目标是让教师这一关键支持节点被持续赋能、被连接，并逐步成为学校心理支持系统中的稳定角色。")
         elif "繁星计划" in corpus:
@@ -23435,8 +23454,8 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
 
     def _build_intro_advantage_summary(corpus: str) -> str:
         if any(token in corpus for token in ("关系支持系统", "可被复制", "经验可被复用", "生态", "数字化", "场域资产", "数据资产")):
-            return "日慈的优势不只是“更专业”，而是更系统：它把心理健康从单点服务升级为教育系统工程，通过现场实践、路径提炼、行业协作与数字化能力，让组织能够不断积累资产、持续迭代、扩大影响。"
-        return "日慈的独特之处，不在于做了多少单点活动，而在于它正尝试把心理健康支持变成一种可持续复制、可长期运行的系统能力。"
+            return "测试机构A的优势不只是“更专业”，而是更系统：它把心理健康从单点服务升级为教育系统工程，通过现场实践、路径提炼、行业协作与数字化能力，让组织能够不断积累资产、持续迭代、扩大影响。"
+        return "测试机构A的独特之处，不在于做了多少单点活动，而在于它正尝试把心理健康支持变成一种可持续复制、可长期运行的系统能力。"
 
     def build_intro_profile_answer_from_evidence(
         client_id: str,
@@ -27169,13 +27188,13 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                         cname = snap.clientName or ""
 
                         # If cloud didn't provide eventLineId, try matching by:
-                        # 1. Client name in task title (e.g. "日慈" in "日慈笑雨Q1...")
+                        # 1. Client name in task title (e.g. "测试机构A" in "测试机构A笑雨Q1...")
                         # 2. Event line name substring in task title
                         if not el_id:
                             for eid, erow in el_map.items():
                                 el_name = str(erow["name"])
                                 client_name_local = str(erow["primary_client_name"] or "")
-                                # Match by client name or its first 2 chars (e.g. "日慈" from "日慈基金会")
+                                # Match by client name or its first 2 chars (e.g. "测试机构A" from "测试机构A")
                                 client_short = client_name_local[:2] if len(client_name_local) >= 2 else ""
                                 if client_name_local and len(client_name_local) >= 2 and (client_name_local in title or (client_short and client_short in title)):
                                     el_id = eid
@@ -28150,7 +28169,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         response_model=list[DuplicateDocumentGroupRecord],
     )
     def get_client_duplicate_documents(client_id: str) -> list[DuplicateDocumentGroupRecord]:
-        # 用户反馈最直观的「矛盾」就是同一份文件被上传了多次（如日慈基金会某份会议纪要 × 4）。
+        # 用户反馈最直观的「矛盾」就是同一份文件被上传了多次（如测试机构A某份会议纪要 × 4）。
         # 之前 fact_contradictions 只检测事实级矛盾（同个 subject 同个 attribute 不同 value），
         # 文件级别的重复完全没被识别。这里补上：
         # - same_content_hash：内容字节完全一致（100% 真重复，强烈建议合并）
@@ -29706,28 +29725,43 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 and str(attr_row["value_category"]) == "date"
                 and "已完成" in str(attr_row["value_text"] or "")
             ):
-                # 找 deadline 关键词 + 该客户 todo task
+                # 找业务关键词 + 该客户 todo task。不要把"完成/截止/日期"这类状态词本身当成任务标题依据。
                 attr_name = str(attr_row["attribute_name"] or "")
-                # 启发式匹配: attribute_name 含"deadline/截止/到期" + title 含相关关键词
-                key_terms = [
-                    w for w in attr_name.replace("deadline", "").replace("截止", "").replace("到期", "").split()
-                    if len(w) > 2
+                auto_done_stopwords = [
+                    "完成时间",
+                    "完成日期",
+                    "完成情况",
+                    "已完成",
+                    "完成",
+                    "deadline",
+                    "截止",
+                    "到期",
+                    "日期",
+                    "时间",
+                    "已",
                 ]
-                if not key_terms and attr_name:
-                    key_terms = [attr_name[:6]]
-                task_rows = state.db.fetchall(
-                    "SELECT id, title FROM tasks WHERE client_id=? AND progress_status='todo'",
-                    (client_id,),
-                )
-                for tr in task_rows:
-                    title = str(tr["title"] or "")
-                    if any(k in title for k in key_terms):
-                        state.db.execute(
-                            "UPDATE tasks SET status='done', progress_status='done', "
-                            "completed_at=COALESCE(completed_at, ?), updated_at=? WHERE id=?",
-                            (now, now, str(tr["id"])),
-                        )
-                        linked_tasks.append(str(tr["id"]))
+                normalized_attr_name = attr_name
+                for token in auto_done_stopwords:
+                    normalized_attr_name = normalized_attr_name.replace(token, " ")
+                key_terms = [
+                    w.strip()
+                    for w in re.split(r"[\s,，、/｜|:：;；_\-]+", normalized_attr_name)
+                    if len(w.strip()) > 2 and w.strip() not in auto_done_stopwords
+                ]
+                if key_terms:
+                    task_rows = state.db.fetchall(
+                        "SELECT id, title FROM tasks WHERE client_id=? AND progress_status='todo'",
+                        (client_id,),
+                    )
+                    for tr in task_rows:
+                        title = str(tr["title"] or "")
+                        if any(k in title for k in key_terms):
+                            state.db.execute(
+                                "UPDATE tasks SET status='done', progress_status='done', "
+                                "completed_at=COALESCE(completed_at, ?), updated_at=? WHERE id=?",
+                                (now, now, str(tr["id"])),
+                            )
+                            linked_tasks.append(str(tr["id"]))
         except Exception:
             pass
 
@@ -30502,6 +30536,31 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             )
             return
         try:
+            if not current_session_is_admin():
+                status_payload = cloud_request("GET", "/api/v1/org-ai/status")
+                if not isinstance(status_payload, dict):
+                    raise RuntimeError("云端组织 AI 状态响应非 JSON 对象")
+                available = bool(status_payload.get("available"))
+                state.ai.invalidate_org_cloud_proxy_cache()
+                _cloud_ai_sync_status.clear()
+                _cloud_ai_sync_status.update({
+                    "state": "proxy_available" if available else "skipped",
+                    "at": now_iso(),
+                    "reason": None if available else str(status_payload.get("reason") or "组织 AI 暂不可用。"),
+                    "provider": str(status_payload.get("aiProvider") or "") or None,
+                    "providerLabel": str(status_payload.get("aiProviderLabel") or "") or None,
+                    "model": str(status_payload.get("aiModel") or "") or None,
+                    "baseUrl": None,
+                    "hasApiKey": bool(status_payload.get("hasApiKey")),
+                    "proxyMode": "cloud_proxy",
+                })
+                logger.info(
+                    "[cloud-ai-sync] member proxy status: available=%s provider=%s model=%s",
+                    available,
+                    str(status_payload.get("aiProvider") or "<empty>"),
+                    str(status_payload.get("aiModel") or "<empty>"),
+                )
+                return
             secret_payload = cloud_request("GET", "/api/v1/settings/org-ai-config/secret")
             if not isinstance(secret_payload, dict):
                 _cloud_ai_sync_status.clear()
@@ -30650,6 +30709,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 "hasApiKey": True,
                 "fingerprint": local_fingerprint or None,
             })
+            state.ai.invalidate_org_cloud_proxy_cache()
             logger.info(
                 "[cloud-ai-sync] pushed: provider=%s model=%s baseUrl=%s fingerprint=%s",
                 provider,
@@ -32293,7 +32353,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             if client_name and client_name in normalized_text:
                 normalized_text = _convert_external_action_to_followup(normalized_text, client_name)
                 source_label = "跟进对方"
-            elif any(marker in lowered for marker in ("日慈", "对方", "客户")):
+            elif any(marker in lowered for marker in ("测试机构A", "对方", "客户")):
                 normalized_text = _convert_external_action_to_followup(normalized_text, client_name or "客户")
                 source_label = "跟进对方"
             elif not any(marker in normalized_text for marker in internal_markers):
@@ -37107,7 +37167,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
     def get_local_ai_coverage(client_id: str | None = None) -> dict[str, object]:
         """W4 · 深读覆盖率：每个客户有多少文档已生成 document_card（深读地基资产）。
 
-        用来肉眼确认深读是否真覆盖全客户，而不只 CFFC。client_id 省略 → 全客户。
+        用来肉眼确认深读是否真覆盖全客户，而不只 测试论坛A。client_id 省略 → 全客户。
         """
         params: list[object] = []
         client_clause = ""
@@ -37667,7 +37727,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
     def search_similar_clients(name: str = "") -> dict:
         """机制化客户 canonical 预防: 建客户时实时模糊匹配现有客户.
 
-        让多人协作时不会因为命名差异 (日慈/日慈基金会/日慈公益基金会) 把同一篮子
+        让多人协作时不会因为命名差异 (测试机构A/测试机构A/测试机构A) 把同一篮子
         拆成多条 — 这是数据中心共建的前提.
         匹配方式: 与 clients.name / alias / aliases_json 任一条目相似度 ≥ 50%.
         """
@@ -40285,7 +40345,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 "input_schema": {"client_id": "str", "prompt": "str"},
                 "output_schema": {"content": "str", "companyBrainSummary": "dict",
                                    "evidence": "list", "proposedClarifications": "list"},
-                "example_input": {"prompt": "CFFC 合同金额"},
+                "example_input": {"prompt": "测试论坛A 合同金额"},
                 "example_output": {"content": "...", "companyBrainSummary": "...{9 类 evidence}..."},
                 "risk_level": "low", "approval_required": False,
                 "read_scope": "client_id 全数据", "write_scope": "chat_messages + atomic_facts(反向入库 P0-3)",
@@ -40448,7 +40508,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 "endpoint": "POST /api/v1/tasks",
                 "input_schema": {"title": "str", "desc": "str", "clientId": "str", "listId": "str", "priority": "low|normal|high", "scopeMode": "PERSONAL_ONLY|COLLAB_SHARED", "X-Actor-Type": "header", "Idempotency-Key": "header"},
                 "output_schema": {"id": "task_xxx", "status": "todo"},
-                "example_input": {"title": "整理 CFFC 合同变更说明", "clientId": "client_a4d1db29a7", "listId": "list-1"},
+                "example_input": {"title": "整理 测试论坛A 合同变更说明", "clientId": "client_a4d1db29a7", "listId": "list-1"},
                 "example_output": {"id": "task_xxx"},
                 "risk_level": "medium", "approval_required": True,  # publish 走 approval
                 "read_scope": "client_id", "write_scope": "tasks + historical_reference_links + clarification_records + agent_run_log",
@@ -40588,7 +40648,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 "endpoint": "POST /api/v1/contracts/draft",
                 "input_schema": {"client_id": "str", "goal": "str (optional)"},
                 "output_schema": "(同 documents.generate output)",
-                "example_input": {"client_id": "client_a4d1db29a7", "goal": "为 CFFC 新项目起草合同"},
+                "example_input": {"client_id": "client_a4d1db29a7", "goal": "为 测试论坛A 新项目起草合同"},
                 "example_output": "(同 documents.generate, document_type=contract_draft)",
                 "risk_level": "high",
                 "approval_required": True,
@@ -41685,7 +41745,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
     ) -> StructuredQueryResponseRecord:
         """Phase 1：对客户的 structured_tables 跑问题级查询，返回精确计算结果。
 
-        例如 q="日慈 Q1 预算总额是多少？" → 命中 budget 表 → SUM(预算金额)
+        例如 q="测试机构A Q1 预算总额是多少？" → 命中 budget 表 → SUM(预算金额)
         例如 q="哪些项目超支了？" → 找超支项目，列出明细 + 执行率
         """
         from app.services.structured_query import query_structured_tables
@@ -42514,7 +42574,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             stem = re.sub(r"^doc_[a-z0-9]+_", "", stem)
             for _ in range(4):
                 stem = re.sub(r"[\s_-]*20\d{6,8}$", "", stem)
-                stem = re.sub(r"[\s_-]*(日慈|cffc|cfc|cffc)$", "", stem)
+                stem = re.sub(r"[\s_-]*(测试机构A|cffc|cfc|cffc)$", "", stem)
                 stem = re.sub(r"[\s_-]*(副本|copy|复制)$", "", stem)
                 stem = re.sub(r"[\s_-]*[（(]?\d+[）)]?$", "", stem)
             return re.sub(r"[^0-9a-z\u4e00-\u9fff]+", "", stem)
@@ -44454,6 +44514,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
     def explain_collab_effects_with_ai(
         payload: CollabEffectExplainPayload,
     ) -> CollabEffectExplainResultRecord:
+        started_at = time.perf_counter()
         status = _collab_merge_ai_status()
         if not status.available:
             raise HTTPException(status_code=503, detail=status.reason or "AI 不可用，不能生成协作功能说明。")
@@ -44497,13 +44558,13 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             "提交摘要：\n"
             f"{json.dumps(payload.commitSummaries[:12], ensure_ascii=False)}\n\n"
             "变更分组：\n"
-            f"{json.dumps(payload.groups, ensure_ascii=False)[:2000]}\n\n"
+            f"{json.dumps(payload.groups, ensure_ascii=False)[:1200]}\n\n"
             "文件证据（只用于判断，不要照抄成标题）：\n"
-            f"{json.dumps(files_brief, ensure_ascii=False)[:4000]}\n\n"
+            f"{json.dumps(files_brief, ensure_ascii=False)[:2500]}\n\n"
             "规则草稿（只供参考，太泛就重写）：\n"
-            f"{json.dumps(fallback_brief, ensure_ascii=False)[:4000]}\n\n"
+            f"{json.dumps(fallback_brief, ensure_ascii=False)[:2500]}\n\n"
             "关键 diff 片段：\n"
-            f"{payload.diffPreview[:8000]}\n\n"
+            f"{payload.diffPreview[:2500]}\n\n"
             "输出要求：\n"
             "1. 只返回 JSON。\n"
             "2. 返回 1-4 条 effects，每条必须是用户视角功能或后台架构影响。\n"
@@ -44539,66 +44600,44 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             "你的任务不是解释代码文件，而是把代码改动翻译成用户能判断的功能、业务规则、后台架构和验收风险。"
             "不要输出 Markdown，不要输出思考过程。"
         )
+        logger.info(
+            "collab effect explanation started mode=%s files=%s commits=%s diff_chars=%s fallback=%s",
+            payload.mode,
+            len(payload.files),
+            len(payload.commitSummaries),
+            len(payload.diffPreview or ""),
+            len(payload.fallbackEffects),
+        )
         try:
-            if status.provider == "openclaw":
-                raw = state.ai._qwen_generate(
-                    prompt=prompt,
-                    system_instruction=system_instruction,
-                    response_schema=schema,
-                    timeout_seconds=8.0,
-                    max_tokens=1000,
-                    temperature=0.1,
-                    top_p=0.8,
-                    enable_thinking=False,
-                    provider_override=status.provider,
-                    model_override=status.model,
-                    task_kind="fast_structured",
-                )
-            else:
-                base_url, api_key, model = state.ai._resolve_llm_config(  # type: ignore[attr-defined]
-                    provider_override=status.provider,
-                    model_override=status.model,
-                    task_kind="fast_structured",
-                )
-                response = httpx.post(
-                    f"{base_url}/chat/completions",
-                    headers=state.ai._build_openai_compatible_headers(api_key),  # type: ignore[attr-defined]
-                    json={
-                        "model": model,
-                        "messages": [
-                            {"role": "system", "content": system_instruction},
-                            {
-                                "role": "user",
-                                "content": (
-                                    "请严格返回一个 JSON 对象，不要 Markdown，不要解释。"
-                                    "JSON 结构：{\"effects\":[{\"id\":\"...\",\"title\":\"...\",\"summary\":\"...\","
-                                    "\"visibility\":\"visible|mixed|background\",\"scopeLabel\":\"...\","
-                                    "\"details\":[\"...\"],\"relatedPaths\":[\"...\"]}]}。\n\n"
-                                    f"{prompt}"
-                                ),
-                            },
-                        ],
-                        "temperature": 0.1,
-                        "top_p": 0.8,
-                        "max_tokens": 1000,
-                        "stream": False,
-                    },
-                    timeout=httpx.Timeout(timeout=18.0, connect=5.0, read=12.0, write=8.0, pool=5.0),
-                )
-                response.raise_for_status()
-                text = (
-                    response.json()
-                    .get("choices", [{}])[0]
-                    .get("message", {})
-                    .get("content", "")
-                )
-                raw = state.ai._load_relaxed_json(str(text or ""))  # type: ignore[attr-defined]
+            raw = state.ai._qwen_generate(
+                prompt=prompt,
+                system_instruction=system_instruction,
+                response_schema=schema,
+                timeout_seconds=45.0,
+                max_tokens=1200,
+                temperature=0.1,
+                top_p=0.8,
+                enable_thinking=False,
+                task_kind="fast_structured",
+            )
         except AiInvocationError as exc:
+            logger.warning(
+                "collab effect explanation ai error duration_ms=%.0f detail=%s",
+                (time.perf_counter() - started_at) * 1000,
+                str(exc)[:240],
+            )
             raise HTTPException(status_code=502, detail=str(exc)) from exc
-        except httpx.TimeoutException as exc:
-            raise HTTPException(status_code=504, detail="AI 功能说明生成超时，已自动降级为规则兜底。") from exc
         except Exception as exc:
-            raise HTTPException(status_code=502, detail=f"AI 功能说明调用失败：{exc}") from exc
+            detail = str(exc).strip() or exc.__class__.__name__
+            logger.warning(
+                "collab effect explanation failed duration_ms=%.0f detail=%s",
+                (time.perf_counter() - started_at) * 1000,
+                detail[:240],
+            )
+            lowered = detail.lower()
+            if "timeout" in lowered or "timed out" in lowered or "超时" in detail:
+                raise HTTPException(status_code=504, detail="AI 功能说明生成超时，已自动降级为规则兜底。") from exc
+            raise HTTPException(status_code=502, detail=f"AI 功能说明调用失败：{detail}") from exc
 
         if not isinstance(raw, dict):
             raise HTTPException(status_code=502, detail="AI 功能说明没有返回 JSON 对象。")
@@ -44651,7 +44690,18 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 )
             )
         if not normalized:
+            logger.warning(
+                "collab effect explanation rejected code-like output duration_ms=%.0f",
+                (time.perf_counter() - started_at) * 1000,
+            )
             raise HTTPException(status_code=502, detail="AI 返回内容仍偏代码文件说明，已拒绝展示。")
+        logger.info(
+            "collab effect explanation succeeded duration_ms=%.0f effects=%s provider=%s model=%s",
+            (time.perf_counter() - started_at) * 1000,
+            len(normalized[:4]),
+            status.provider,
+            status.model,
+        )
         return CollabEffectExplainResultRecord(
             effects=normalized[:4],
             provider=status.provider,
@@ -50097,7 +50147,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             evidence_items = grounded.evidence
 
         # 删字典 📚 / ⚠️ 引证标记 — LLM 应该基于字典 verified 值生成事实(grounding 不变),
-        # 但用户不希望在正文里看见 "[📚 心盛计划.累计服务人数]" 这种碎片标记。
+        # 但用户不希望在正文里看见 "[📚 测试项目A.累计服务人数]" 这种碎片标记。
         # 跟前端 stripGlossaryCitations 同一套规则(_CITE_PATTERN in citation_validator.py)。
         # 后端在这里做一道兜底:编辑器拿到的就是干净 markdown,不依赖前端 strip。
         new_content = re.sub(r"\s*\[\s*📚[^\]]*\]", "", new_content)
@@ -59012,7 +59062,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         payload:
           - clientId: 必填或 projectModuleId 必填（二选一定位监控对象）
           - projectModuleId: 业务线级舆情聚合时用
-          - targetName: 抓取关键词（如 "日慈基金会"），未填则从 client/module 表查
+          - targetName: 抓取关键词（如 "测试机构A"），未填则从 client/module 表查
           - businessLine: 业务线名（可选，加进搜索 query）
           - maxPerQuery: 每个 query 抓多少条，默认 5
         """

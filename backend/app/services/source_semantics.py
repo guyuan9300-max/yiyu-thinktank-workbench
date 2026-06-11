@@ -125,7 +125,7 @@ def infer_semantic_source_roles_fields(
             "愿景",
             "价值观",
             "定位",
-            "广东省日慈公益基金会",
+            "测试机构A",
             "是一家",
         ),
     ) or _contains_any(title_norm, ("机构介绍", "组织介绍", "使命", "愿景", "价值观", "申请书"))
@@ -157,8 +157,8 @@ def infer_semantic_source_roles_fields(
             "项目介绍",
             "课程",
             "学院",
-            "心灵魔法学院",
-            "心盛计划",
+            "测试项目C",
+            "测试项目A",
             "繁星计划",
             "教师赋能",
             "教师发展中心",
@@ -166,7 +166,7 @@ def infer_semantic_source_roles_fields(
             "教育公益项目",
             "主要项目",
         ),
-    ) or _contains_any(title_norm, ("项目介绍", "资助申请书", "心灵魔法学院", "教师发展中心", "心盛计划", "繁星计划"))
+    ) or _contains_any(title_norm, ("项目介绍", "资助申请书", "测试项目C", "教师发展中心", "测试项目A", "繁星计划"))
     if strong_program_signal and (not is_operational or _contains_any(title_norm, ("项目介绍", "资助申请书"))):
         _add("program_overview", "program_terms")
 

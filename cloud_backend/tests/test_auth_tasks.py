@@ -621,7 +621,7 @@ def test_review_dashboard_works_for_task_with_event_line_context():
     event_line = client.post(
         "/api/v1/event-lines",
         json={
-            "name": "黄河基金会合作推进",
+            "name": "测试机构E合作推进",
             "kind": "project_line",
             "primaryClientId": "client_demo_yellow_river",
         },
@@ -635,7 +635,7 @@ def test_review_dashboard_works_for_task_with_event_line_context():
         json={
             "businessCategory": "业务扩展",
             "stage": "方案推进中",
-            "summary": "围绕黄河基金会合作方案持续推进。",
+            "summary": "围绕测试机构E合作方案持续推进。",
             "intent": "确认合作范围与报价口径。",
             "currentBlocker": "客户侧预算和范围还没完全收口。",
             "recentDecision": "先继续推进官网侧准备，再给出报价判断。",
@@ -650,7 +650,7 @@ def test_review_dashboard_works_for_task_with_event_line_context():
         "/api/v1/tasks",
         json={
             "title": "给黄河教系统合作方案",
-            "description": "围绕黄河基金会合作范围继续推进方案整理。",
+            "description": "围绕测试机构E合作范围继续推进方案整理。",
             "priority": "high",
             "listId": "list-0",
             "dueDate": "2026-03-20T10:00",
@@ -676,7 +676,7 @@ def test_review_dashboard_works_for_task_with_event_line_context():
         "/api/v1/reviews/weekly",
         json={
             "weekLabel": "2026-W12",
-            "workFreeNote": "围绕黄河基金会合作推进。",
+            "workFreeNote": "围绕测试机构E合作推进。",
         },
         headers=headers,
     )
@@ -687,7 +687,7 @@ def test_review_dashboard_works_for_task_with_event_line_context():
     payload = dashboard.json()
     matched = next(item for item in payload["workItems"] if item["taskId"] == task_payload["id"])
     assert matched["taskSnapshot"]["eventLineContext"]["id"] == event_line_id
-    assert matched["taskSnapshot"]["eventLineContext"]["name"] == "黄河基金会合作推进"
+    assert matched["taskSnapshot"]["eventLineContext"]["name"] == "测试机构E合作推进"
     assert matched["taskSnapshot"]["eventLineContext"]["businessCategory"] == "业务扩展"
     assert matched["taskSnapshot"]["eventLineContext"]["evidenceCount"] == 3
     assert matched["taskSnapshot"]["eventLineContext"]["primaryClientId"] == "client_demo_yellow_river"

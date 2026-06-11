@@ -1,6 +1,8 @@
 import { contextBridge, ipcRenderer, webUtils } from 'electron';
 import type {
   CollabActionResult,
+  CollabEffectExplanationRequest,
+  CollabEffectExplanationResponse,
   CollabRepoStatus,
   DesktopAppInfo,
   DesktopStartupGateResumeResult,
@@ -55,6 +57,8 @@ contextBridge.exposeInMainWorld('yiyuWorkbench', {
     ipcRenderer.invoke('yiyu-workbench:getCollabRepoStatus', repoPath),
   previewPushToMain: (repoPath: string): Promise<PushPreview> =>
     ipcRenderer.invoke('yiyu-workbench:previewPushToMain', repoPath),
+  explainCollabEffects: (payload: CollabEffectExplanationRequest): Promise<CollabEffectExplanationResponse> =>
+    ipcRenderer.invoke('yiyu-workbench:explainCollabEffects', payload),
   pushSafelyToMain: (payload: PushMainPayload): Promise<CollabActionResult> =>
     ipcRenderer.invoke('yiyu-workbench:pushSafelyToMain', payload),
   publishCollabBranch: (payload: PublishCollabBranchPayload): Promise<CollabActionResult> =>
@@ -112,6 +116,8 @@ contextBridge.exposeInMainWorld('yiyuWorkbench', {
   },
   checkForUpdates: (): Promise<{ ok: boolean; version?: string | null; reason?: string; officialPush?: OfficialPushUpdatePayload | null }> =>
     ipcRenderer.invoke('yiyu-workbench:update.check'),
+  downloadStandardUpdate: (): Promise<{ ok: boolean; reason?: string }> =>
+    ipcRenderer.invoke('yiyu-workbench:update.downloadStandard'),
   installOfficialPushUpdate: (): Promise<{ ok: boolean; version?: string | null; reason?: string; fileName?: string | null }> =>
     ipcRenderer.invoke('yiyu-workbench:update.installOfficialPush'),
   quitAndInstallUpdate: (): Promise<{ ok: boolean; reason?: string }> =>

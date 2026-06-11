@@ -210,10 +210,52 @@ def test_valid_invite_registration_syncs_org_ai_config_and_space_profile(tmp_pat
     assert membership.json()["organizationWorkspaceClientId"]
 
     ai_secret = client.get("/api/v1/settings/org-ai-config/secret", headers=member_headers)
-    assert ai_secret.status_code == 200, ai_secret.text
-    assert ai_secret.json()["aiProvider"] == "openai-compatible"
-    assert ai_secret.json()["aiModel"] == "yiyu-cloud-model"
-    assert ai_secret.json()["apiKey"] == "sk-shared-cloud"
+    assert ai_secret.status_code == 403
+
+    ai_status = client.get("/api/v1/org-ai/status", headers=member_headers)
+    assert ai_status.status_code == 200, ai_status.text
+    assert ai_status.json()["available"] is True
+    assert ai_status.json()["aiProvider"] == "openai-compatible"
+    assert ai_status.json()["aiModel"] == "yiyu-cloud-model"
+    assert "apiKey" not in ai_status.text
+
+    class FakeOrgAiResponse:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {"choices": [{"message": {"content": "组织 AI 已可用"}}]}
+
+    class FakeOrgAiClient:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def post(self, url, *, headers, json):
+            assert url == "https://models.example.com/v1/chat/completions"
+            assert headers["Authorization"] == "Bearer sk-shared-cloud"
+            assert json["model"] == "yiyu-cloud-model"
+            return FakeOrgAiResponse()
+
+    import httpx
+
+    monkeypatch.setattr(httpx, "Client", FakeOrgAiClient)
+    proxy = client.post(
+        "/api/v1/org-ai/chat/completions",
+        json={
+            "model": "member-override-should-be-ignored",
+            "messages": [{"role": "user", "content": "ping"}],
+            "stream": False,
+        },
+        headers=member_headers,
+    )
+    assert proxy.status_code == 200, proxy.text
+    assert proxy.json()["choices"][0]["message"]["content"] == "组织 AI 已可用"
 
     org_profile = client.get("/api/v1/settings/org-model/profile", headers=member_headers)
     assert org_profile.status_code == 200, org_profile.text

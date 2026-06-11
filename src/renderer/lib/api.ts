@@ -284,6 +284,8 @@ import type {
   SaveCloudAuthInputMemoryPayload,
   SaveFeishuInputMemoryPayload,
   CollabActionResult,
+  CollabEffectExplanationRequest,
+  CollabEffectExplanationResponse,
   CollabRepoStatus,
   FastForwardMainPayload,
   PullPreview,
@@ -411,6 +413,7 @@ function createBrowserWorkbenchFallback(): Window['yiyuWorkbench'] {
       statusText: '当前为浏览器预览模式，Git 协作能力不可用。',
     }),
     previewPushToMain: async () => notAvailable('推送 main'),
+    explainCollabEffects: async () => ({ effects: [], provider: null, model: null }),
     pushSafelyToMain: async () => notAvailable('推送 main'),
     publishCollabBranch: async () => notAvailable('发布协作分支'),
     previewPullFromMain: async () => notAvailable('从 main 拉取'),
@@ -5713,6 +5716,10 @@ export async function getCollabRepoStatus(repoPath?: string | null) {
 
 export async function previewPushToMain(repoPath: string) {
   return window.yiyuWorkbench.previewPushToMain(repoPath) as Promise<PushPreview>;
+}
+
+export async function explainCollabEffects(payload: CollabEffectExplanationRequest) {
+  return window.yiyuWorkbench.explainCollabEffects(payload) as Promise<CollabEffectExplanationResponse>;
 }
 
 export async function pushSafelyToMain(payload: PushMainPayload) {
