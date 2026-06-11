@@ -12075,11 +12075,21 @@ export default function App() {
     const visibleListTaskIds = useMemo(() => new Set(visibleListTasks.map((task) => task.id)), [visibleListTasks]);
     const isAllVisibleListTasksSelected = visibleListTasks.length > 0 && visibleListTasks.every((task) => selectedListTaskIds.includes(task.id));
     useEffect(() => {
-      setSelectedListTaskIds((prev) => prev.filter((id) => visibleListTaskIds.has(id)));
+      // visibleListTaskIds 的上游(rawListTasks)未 memo,每次渲染都是新引用,本 effect 每渲染必跑;
+      // 无剔除时必须返回同一 prev 引用让 React bail,否则 setState 新数组会自触发重渲染死循环。
+      setSelectedListTaskIds((prev) => {
+        if (prev.length === 0) return prev;
+        const next = prev.filter((id) => visibleListTaskIds.has(id));
+        return next.length === prev.length ? prev : next;
+      });
     }, [visibleListTaskIds]);
     useEffect(() => {
       const availableIds = new Set(actionableInboxTasks.map((task) => task.id));
-      setSelectedInboxIds((prev) => prev.filter((id) => availableIds.has(id)));
+      setSelectedInboxIds((prev) => {
+        if (prev.length === 0) return prev;
+        const next = prev.filter((id) => availableIds.has(id));
+        return next.length === prev.length ? prev : next;
+      });
     }, [actionableInboxTasks]);
     useEffect(() => {
       if (taskViewMode !== 'list') return;
