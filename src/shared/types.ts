@@ -4911,6 +4911,48 @@ export interface FeishuMemberAuthorizationStartResult {
   qrBlockedReason?: string | null;
 }
 
+export interface FeishuDocImportStatus {
+  ready: boolean;
+  linked: boolean;
+  reason?: string | null;
+  organizationId?: string | null;
+  userId?: string | null;
+  boundAt?: string | null;
+}
+
+export interface FeishuDocImportCandidate {
+  token: string;
+  type: string;
+  title: string;
+  url: string;
+  ownerName?: string | null;
+  updatedAt?: string | null;
+  source: 'search' | 'link';
+}
+
+export interface FeishuDocImportSearchResult {
+  items: FeishuDocImportCandidate[];
+  message: string;
+}
+
+export interface FeishuDocImportImportedItem {
+  token: string;
+  title: string;
+  status: 'imported' | 'failed';
+  documentId?: string | null;
+  fileName?: string | null;
+  path?: string | null;
+  remoteUrl: string;
+  message: string;
+}
+
+export interface FeishuDocImportResult {
+  clientId: string;
+  importedCount: number;
+  failedCount: number;
+  items: FeishuDocImportImportedItem[];
+}
+
 export interface TopicRadar {
   id: string;
   title: string;

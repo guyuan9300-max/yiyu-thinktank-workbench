@@ -1562,6 +1562,13 @@ class Database:
 
             self._ensure_column("org_ai_config", "ai_provider_label", "TEXT NOT NULL DEFAULT ''")
             self._ensure_column("org_ai_config", "ai_base_url", "TEXT NOT NULL DEFAULT ''")
+            self._ensure_column("org_feishu_member_authorizations", "access_token_encrypted", "TEXT NOT NULL DEFAULT ''")
+            self._ensure_column("org_feishu_member_authorizations", "access_token_nonce", "TEXT NOT NULL DEFAULT ''")
+            self._ensure_column("org_feishu_member_authorizations", "refresh_token_encrypted", "TEXT NOT NULL DEFAULT ''")
+            self._ensure_column("org_feishu_member_authorizations", "refresh_token_nonce", "TEXT NOT NULL DEFAULT ''")
+            self._ensure_column("org_feishu_member_authorizations", "token_expires_at", "TEXT")
+            self._ensure_column("feishu_binding_relay_sessions", "relay_claim_secret", "TEXT NOT NULL DEFAULT ''")
+            self._ensure_column("feishu_binding_relay_sessions", "relay_callback_url", "TEXT NOT NULL DEFAULT ''")
             self._ensure_column("task_attachments", "document_id", "TEXT")
             self._ensure_column("event_line_attachments", "document_id", "TEXT")
 

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
+from urllib.parse import parse_qs, urlparse
 
 import pytest
 from fastapi.testclient import TestClient
@@ -83,6 +84,21 @@ def bind_current_user_to_feishu(client: TestClient, headers: dict[str, str], rec
     payload = profile.json()
     user_id = payload["id"]
     state = client.app.state.app_state
+    timestamp = cloud_main.now_iso()
+    state.db.execute(
+        """
+        INSERT INTO org_feishu_member_authorizations(
+            organization_id, user_id, app_id, open_id, authorized_at, last_verified_at, updated_at
+        ) VALUES(?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(organization_id, user_id) DO UPDATE SET
+            app_id = excluded.app_id,
+            open_id = excluded.open_id,
+            authorized_at = excluded.authorized_at,
+            last_verified_at = excluded.last_verified_at,
+            updated_at = excluded.updated_at
+        """,
+        (payload["organizationId"], user_id, "cli_demo_app", receive_id, timestamp, timestamp, timestamp),
+    )
     state.db.execute("UPDATE employee_accounts SET feishu_mobile = ? WHERE id = ?", ("13800138000", user_id))
     cloud_main._upsert_org_feishu_delivery_target(  # noqa: SLF001
         state,
@@ -92,6 +108,20 @@ def bind_current_user_to_feishu(client: TestClient, headers: dict[str, str], rec
         receive_id=receive_id,
         match_status="matched",
         last_error=None,
+    )
+    return user_id
+
+
+def bind_current_user_to_feishu_docs(client: TestClient, headers: dict[str, str], receive_id: str = "ou_doc_import") -> str:
+    user_id = bind_current_user_to_feishu(client, headers, receive_id=receive_id)
+    profile = client.get("/api/v1/auth/me", headers=headers)
+    assert profile.status_code == 200, profile.text
+    state = client.app.state.app_state
+    cloud_main._store_feishu_member_tokens(  # noqa: SLF001
+        state,
+        organization_id=profile.json()["organizationId"],
+        user_id=user_id,
+        token_payload={"access_token": "user_access_demo", "refresh_token": "refresh_demo", "expires_in": 3600},
     )
     return user_id
 
@@ -108,6 +138,69 @@ def bind_user_to_feishu(client: TestClient, organization_id: str, user_id: str, 
         match_status="matched",
         last_error=None,
     )
+
+
+def test_feishu_member_authorization_requests_document_import_scopes(tmp_path, monkeypatch):
+    registered: dict[str, str] = {}
+    monkeypatch.setenv("YIYU_FEISHU_OAUTH_RELAY_BASE_URL", "https://oauth.yiyu.love")
+    monkeypatch.setattr(
+        cloud_main,
+        "_register_feishu_oauth_relay_session",
+        lambda **kwargs: registered.update(kwargs),
+    )
+    client = make_client(tmp_path, monkeypatch)
+    headers = auth_headers(client)
+    save_org_feishu_integration(client, headers, monkeypatch)
+
+    response = client.post("/api/v1/me/feishu-authorization/start", headers=headers)
+
+    assert response.status_code == 200, response.text
+    query = parse_qs(urlparse(response.json()["authorizeUrl"]).query)
+    assert query["redirect_uri"] == ["https://oauth.yiyu.love/feishu/member/callback"]
+    assert response.json()["callbackUrl"] == "https://oauth.yiyu.love/feishu/member/callback"
+    assert registered["state_token"] == response.json()["state"]
+    assert registered["claim_secret"]
+    scopes = set(" ".join(query.get("scope", [])).split())
+    assert "offline_access" in scopes
+    assert "docx:document:readonly" in scopes
+    assert "drive:export:readonly" in scopes
+    assert "wiki:wiki:readonly" in scopes
+
+
+def test_feishu_member_authorization_claims_code_from_relay(tmp_path, monkeypatch):
+    monkeypatch.setenv("YIYU_FEISHU_OAUTH_RELAY_BASE_URL", "https://oauth.yiyu.love")
+    monkeypatch.setattr(cloud_main, "_register_feishu_oauth_relay_session", lambda **_: None)
+    monkeypatch.setattr(cloud_main, "_claim_feishu_oauth_relay_code", lambda **_: {"status": "authorized", "code": "relay_code_demo"})
+    monkeypatch.setattr(cloud_main, "_feishu_fetch_app_access_token", lambda **_: ("app_token_demo", {"code": 0}))
+    monkeypatch.setattr(
+        cloud_main,
+        "_feishu_exchange_authorization_code",
+        lambda **_: {
+            "access_token": "user_access_demo",
+            "refresh_token": "refresh_demo",
+            "expires_in": 3600,
+            "open_id": "ou_relay_member",
+            "union_id": "on_relay_member",
+        },
+    )
+    monkeypatch.setattr(
+        cloud_main,
+        "_feishu_fetch_user_info",
+        lambda **_: {"open_id": "ou_relay_member", "union_id": "on_relay_member", "name": "授权成员"},
+    )
+    client = make_client(tmp_path, monkeypatch)
+    headers = auth_headers(client)
+    save_org_feishu_integration(client, headers, monkeypatch)
+    started = client.post("/api/v1/me/feishu-authorization/start", headers=headers)
+    assert started.status_code == 200, started.text
+
+    status_response = client.get("/api/v1/me/feishu-authorization", headers=headers)
+
+    assert status_response.status_code == 200, status_response.text
+    payload = status_response.json()
+    assert payload["linked"] is True
+    assert payload["openId"] == "ou_relay_member"
+    assert payload["name"] == "授权成员"
 
 
 def another_employee_id(client: TestClient, organization_id: str, excluded_user_id: str) -> str:
@@ -322,20 +415,9 @@ def test_update_task_auto_updates_feishu_task_center_completion_and_members(tmp_
 def test_sync_document_creates_feishu_docx_and_writes_blocks(tmp_path, monkeypatch):
     client = make_client(tmp_path, monkeypatch)
     headers = auth_headers(client)
-    profile = client.get("/api/v1/auth/me", headers=headers)
-    assert profile.status_code == 200, profile.text
-    user_id = profile.json()["id"]
     save_org_feishu_integration(client, headers, monkeypatch)
     monkeypatch.setattr(cloud_main, "_feishu_fetch_tenant_access_token", lambda **_: ("tenant_demo", {"code": 0}))
-    cloud_main._upsert_org_feishu_delivery_target(  # noqa: SLF001
-        client.app.state.app_state,
-        organization_id=profile.json()["organizationId"],
-        user_id=user_id,
-        mobile="13800138000",
-        receive_id="ou_admin",
-        match_status="matched",
-        last_error=None,
-    )
+    bind_current_user_to_feishu(client, headers)
     created_titles: list[str] = []
     appended_blocks: list[list[dict]] = []
     sent_messages: list[str] = []
@@ -385,6 +467,51 @@ def test_sync_document_creates_feishu_docx_and_writes_blocks(tmp_path, monkeypat
     assert appended_blocks and appended_blocks[0][0]["block_type"] == 3
     assert sent_messages and "项目会议纪要" in sent_messages[0]
     assert "https://feishu.cn/docx/docx_demo_1" in sent_messages[0]
+
+
+def test_sync_document_waits_for_member_feishu_binding(tmp_path, monkeypatch):
+    client = make_client(tmp_path, monkeypatch)
+    headers = auth_headers(client)
+    profile = client.get("/api/v1/auth/me", headers=headers)
+    assert profile.status_code == 200, profile.text
+    user_id = profile.json()["id"]
+    save_org_feishu_integration(client, headers, monkeypatch)
+    monkeypatch.setattr(cloud_main, "_feishu_fetch_tenant_access_token", lambda **_: ("tenant_demo", {"code": 0}))
+    cloud_main._upsert_org_feishu_delivery_target(  # noqa: SLF001
+        client.app.state.app_state,
+        organization_id=profile.json()["organizationId"],
+        user_id=user_id,
+        mobile="13800138000",
+        receive_id="ou_delivery_only",
+        match_status="matched",
+        last_error=None,
+    )
+    created_titles: list[str] = []
+    monkeypatch.setattr(
+        cloud_main,
+        "_feishu_create_docx_document",
+        lambda *, tenant_access_token, title: created_titles.append(title)
+        or {"code": 0, "data": {"document": {"document_id": "docx_should_not_create"}}},
+    )
+
+    response = client.post(
+        "/api/v1/feishu-sync/documents",
+        json={
+            "localId": "doc_pending_binding",
+            "title": "待绑定文档",
+            "content": "需要当前成员先绑定飞书身份。",
+            "clientId": "client_demo",
+            "triggerSource": "document_created",
+        },
+        headers=headers,
+    )
+
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert payload["status"] == "queued"
+    assert payload["remoteId"] is None
+    assert payload["details"]["blockedReason"] == "member_authorization_required"
+    assert created_titles == []
 
 
 def test_sync_answer_export_document_notifies_current_user_on_create(tmp_path, monkeypatch):
@@ -520,6 +647,7 @@ def test_sync_document_preserves_inline_image_position_as_docx_image_block(tmp_p
     headers = auth_headers(client)
     save_org_feishu_integration(client, headers, monkeypatch)
     monkeypatch.setattr(cloud_main, "_feishu_fetch_tenant_access_token", lambda **_: ("tenant_demo", {"code": 0}))
+    bind_current_user_to_feishu(client, headers)
     monkeypatch.setattr(
         cloud_main,
         "_feishu_create_docx_document",
@@ -578,6 +706,7 @@ def test_sync_document_does_not_write_base64_text_when_image_upload_fails(tmp_pa
     headers = auth_headers(client)
     save_org_feishu_integration(client, headers, monkeypatch)
     monkeypatch.setattr(cloud_main, "_feishu_fetch_tenant_access_token", lambda **_: ("tenant_demo", {"code": 0}))
+    bind_current_user_to_feishu(client, headers)
     monkeypatch.setattr(
         cloud_main,
         "_feishu_create_docx_document",
@@ -639,6 +768,7 @@ def test_sync_document_updates_existing_docx_in_place_when_mapping_exists(tmp_pa
     headers = auth_headers(client)
     save_org_feishu_integration(client, headers, monkeypatch)
     monkeypatch.setattr(cloud_main, "_feishu_fetch_tenant_access_token", lambda **_: ("tenant_demo", {"code": 0}))
+    bind_current_user_to_feishu(client, headers)
     create_calls: list[str] = []
     clear_calls: list[str] = []
     append_calls: list[str] = []
@@ -693,6 +823,7 @@ def test_sync_document_preserves_existing_docx_when_clear_fails(tmp_path, monkey
     headers = auth_headers(client)
     save_org_feishu_integration(client, headers, monkeypatch)
     monkeypatch.setattr(cloud_main, "_feishu_fetch_tenant_access_token", lambda **_: ("tenant_demo", {"code": 0}))
+    bind_current_user_to_feishu(client, headers)
     create_calls: list[str] = []
     append_calls: list[str] = []
 
@@ -1114,3 +1245,148 @@ def test_feishu_calendar_status_is_skipped_when_direct_calendar_sync_is_retired(
     assert response.status_code == 200, response.text
     assert response.json()["status"] == "skipped"
     assert response.json()["details"]["calendarSyncRetired"] is True
+
+
+def test_feishu_doc_import_status_requires_document_token(tmp_path, monkeypatch):
+    client = make_client(tmp_path, monkeypatch)
+    headers = auth_headers(client)
+    save_org_feishu_integration(client, headers, monkeypatch)
+    bind_current_user_to_feishu(client, headers)
+
+    response = client.get("/api/v1/feishu-doc-import/status", headers=headers)
+
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert payload["linked"] is True
+    assert payload["ready"] is False
+    assert "令牌" in payload["reason"]
+
+
+def test_feishu_doc_import_resolves_links_after_member_token(tmp_path, monkeypatch):
+    client = make_client(tmp_path, monkeypatch)
+    headers = auth_headers(client)
+    save_org_feishu_integration(client, headers, monkeypatch)
+    bind_current_user_to_feishu_docs(client, headers)
+
+    def fake_user_api_post(*, user_access_token, path, body=None):
+        assert user_access_token == "user_access_demo"
+        assert path == "/drive/v1/metas/batch_query"
+        assert body == {
+            "request_docs": [{"doc_token": "ABCabc123", "doc_type": "docx"}],
+            "with_url": True,
+        }
+        return {
+            "code": 0,
+            "data": {
+                "metas": [
+                    {
+                        "doc_token": "ABCabc123",
+                        "doc_type": "docx",
+                        "title": "真实飞书标题",
+                        "url": "https://example.feishu.cn/docx/ABCabc123",
+                    }
+                ]
+            },
+        }
+
+    monkeypatch.setattr(cloud_main, "_feishu_user_api_post", fake_user_api_post)
+
+    status = client.get("/api/v1/feishu-doc-import/status", headers=headers)
+    response = client.post(
+        "/api/v1/feishu-doc-import/resolve-links",
+        json={"links": ["https://example.feishu.cn/docx/ABCabc123"]},
+        headers=headers,
+    )
+
+    assert status.status_code == 200, status.text
+    assert status.json()["ready"] is True
+    assert response.status_code == 200, response.text
+    item = response.json()["items"][0]
+    assert item["token"] == "ABCabc123"
+    assert item["type"] == "docx"
+    assert item["title"] == "真实飞书标题"
+
+
+def test_feishu_doc_import_search_returns_user_visible_candidates(tmp_path, monkeypatch):
+    client = make_client(tmp_path, monkeypatch)
+    headers = auth_headers(client)
+    save_org_feishu_integration(client, headers, monkeypatch)
+    bind_current_user_to_feishu_docs(client, headers)
+
+    def fake_user_api_post(*, user_access_token, path, body=None):
+        assert user_access_token == "user_access_demo"
+        assert path == "/drive/v1/files/search"
+        assert body == {"search_key": "导入测试", "count": 10, "offset": 0}
+        return {
+            "code": 0,
+            "data": {
+                "items": [
+                    {
+                        "obj_token": "docx_search_1",
+                        "obj_type": "docx",
+                        "title": "飞书导入测试文档",
+                        "url": "https://example.feishu.cn/docx/docx_search_1",
+                    }
+                ]
+            },
+        }
+
+    monkeypatch.setattr(cloud_main, "_feishu_user_api_post", fake_user_api_post)
+
+    response = client.post(
+        "/api/v1/feishu-doc-import/search",
+        json={"query": "导入测试", "pageSize": 10},
+        headers=headers,
+    )
+
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert payload["items"][0]["title"] == "飞书导入测试文档"
+    assert payload["items"][0]["token"] == "docx_search_1"
+
+
+def test_feishu_doc_import_export_encodes_chinese_filename_header(tmp_path, monkeypatch):
+    client = make_client(tmp_path, monkeypatch)
+    headers = auth_headers(client)
+    save_org_feishu_integration(client, headers, monkeypatch)
+    bind_current_user_to_feishu_docs(client, headers)
+    monkeypatch.setattr(cloud_main, "_feishu_export_docx_bytes", lambda **_: b"docx-bytes")
+
+    response = client.post(
+        "/api/v1/feishu-doc-import/export-docx",
+        json={"token": "docx_zh_title", "type": "docx", "title": "中文标题"},
+        headers=headers,
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.content == b"docx-bytes"
+    assert response.headers["x-feishu-file-name"] == "%E4%B8%AD%E6%96%87%E6%A0%87%E9%A2%98.docx"
+    assert "filename*=UTF-8''%E4%B8%AD%E6%96%87%E6%A0%87%E9%A2%98.docx" in response.headers["content-disposition"]
+
+
+def test_feishu_doc_import_registers_mapping_metadata(tmp_path, monkeypatch):
+    client = make_client(tmp_path, monkeypatch)
+    headers = auth_headers(client)
+    save_org_feishu_integration(client, headers, monkeypatch)
+    bind_current_user_to_feishu_docs(client, headers)
+
+    response = client.post(
+        "/api/v1/feishu-doc-import/mappings",
+        json={
+            "localId": "local_doc_import_1",
+            "remoteId": "docx_remote_1",
+            "remoteUrl": "https://example.feishu.cn/docx/docx_remote_1",
+            "title": "飞书导入映射测试",
+            "clientId": "client_demo",
+            "remoteUpdatedAt": "2026-06-11T10:00:00+00:00",
+        },
+        headers=headers,
+    )
+
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert payload["status"] == "synced"
+    assert payload["remoteId"] == "docx_remote_1"
+    assert payload["details"]["direction"] == "feishu_to_workbench"
+    assert payload["details"]["clientId"] == "client_demo"
+    assert payload["details"]["remoteUpdatedAt"] == "2026-06-11T10:00:00+00:00"

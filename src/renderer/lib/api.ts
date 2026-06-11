@@ -72,6 +72,10 @@ import type {
   FeishuBotSettingsPayload,
   FeishuDeliveryProfile,
   FeishuDeliveryProfilePayload,
+  FeishuDocImportCandidate,
+  FeishuDocImportResult,
+  FeishuDocImportSearchResult,
+  FeishuDocImportStatus,
   FeishuDocumentSyncPayload,
   FeishuMemberAuthorization,
   FeishuMemberAuthorizationStartResult,
@@ -2209,6 +2213,38 @@ export async function syncDocumentToFeishuDocx(payload: FeishuDocumentSyncPayloa
   return request<FeishuSyncStatusRecord>('/api/v1/feishu-sync/documents', {
     method: 'POST',
     body: JSON.stringify(payload),
+  });
+}
+
+export async function getFeishuDocImportStatus() {
+  return request<FeishuDocImportStatus>('/api/v1/feishu-doc-import/status');
+}
+
+export async function searchFeishuDocsForImport(payload: { query: string; pageSize?: number }) {
+  return request<FeishuDocImportSearchResult>('/api/v1/feishu-doc-import/search', {
+    method: 'POST',
+    body: JSON.stringify({ query: payload.query, pageSize: payload.pageSize ?? 20 }),
+  });
+}
+
+export async function resolveFeishuDocImportLinks(links: string[]) {
+  return request<FeishuDocImportSearchResult>('/api/v1/feishu-doc-import/resolve-links', {
+    method: 'POST',
+    body: JSON.stringify({ links }),
+  });
+}
+
+export async function importFeishuDocsToClient(clientId: string, items: FeishuDocImportCandidate[]) {
+  return request<FeishuDocImportResult>(`/api/v1/clients/${encodeURIComponent(clientId)}/feishu-doc-import/import`, {
+    method: 'POST',
+    body: JSON.stringify({
+      items: items.map((item) => ({
+        token: item.token,
+        type: item.type,
+        title: item.title,
+        url: item.url,
+      })),
+    }),
   });
 }
 

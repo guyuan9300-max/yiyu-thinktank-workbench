@@ -52,7 +52,6 @@ import {
   Layout,
   LayoutDashboard,
   GitMerge,
-  Radio,
   ListChecks,
   AlertTriangle,
   ArrowRight,
@@ -119,6 +118,9 @@ import type {
   EventLineMergePreview,
   FeishuDeliveryProfile,
   FeishuDeliveryProfilePayload,
+  FeishuDocImportCandidate,
+  FeishuDocImportResult,
+  FeishuDocImportStatus,
   FeishuMemberAuthorization,
   FeishuMemberAuthorizationStartResult,
   FeishuBotSettings,
@@ -336,6 +338,7 @@ import {
   clearFeishuMemberAuthorization,
   getFeishuDeliveryProfile,
   getFeishuMemberAuthorization,
+  getFeishuDocImportStatus,
   getFeishuBotSettings,
   getFeishuSyncStatus,
   getOrgFeishuIntegration,
@@ -382,6 +385,7 @@ import {
   generateEventLineClarificationDraft,
   importFundraisingDna,
   importPaths,
+  importFeishuDocsToClient,
   loadDemoData,
   login,
   localLogin,
@@ -419,6 +423,9 @@ import {
   saveFeishuDeliveryProfile,
   saveFeishuInputMemory,
   searchClientKnowledge,
+  searchFeishuDocsForImport,
+  resolveFeishuDocImportLinks,
+  syncDocumentToFeishuDocx,
   getClientAnalysisRun,
   getClientChatThread,
   deleteClientChatMessagePair,
@@ -1893,13 +1900,13 @@ const DEFAULT_FEISHU_DELIVERY_PROFILE: FeishuDeliveryProfile = {
   organizationName: null,
   mobile: '',
   normalizedMobile: null,
-  deliveryStatus: 'missing_org',
-  deliveryStatusLabel: '尚未连接组织',
+  deliveryStatus: 'failed',
+  deliveryStatusLabel: '任务提醒状态暂未读取',
   readyForNotifications: false,
   receiveId: null,
   lastVerifiedAt: null,
   lastError: null,
-  blockedReason: '连接云端并加入组织后，才能填写飞书接收手机号。',
+  blockedReason: '飞书任务提醒手机号状态暂未读取；这不代表组织或成员身份未连接。',
 };
 
 const DEFAULT_LOCAL_INPUT_MEMORY: LocalInputMemory = {
@@ -7570,6 +7577,16 @@ export default function App() {
   const [backendCompatibilityError, setBackendCompatibilityError] = useState<string | null>(null);
   const [isImportSubmitting, setIsImportSubmitting] = useState(false);
   const [latestImportFeedback, setLatestImportFeedback] = useState<ImportFeedback | null>(null);
+  const [isFeishuImportOpen, setIsFeishuImportOpen] = useState(false);
+  const [feishuImportStatus, setFeishuImportStatus] = useState<FeishuDocImportStatus | null>(null);
+  const [feishuImportQuery, setFeishuImportQuery] = useState('');
+  const [feishuImportLinksText, setFeishuImportLinksText] = useState('');
+  const [feishuImportCandidates, setFeishuImportCandidates] = useState<FeishuDocImportCandidate[]>([]);
+  const [selectedFeishuImportKeys, setSelectedFeishuImportKeys] = useState<string[]>([]);
+  const [isFeishuImportLoading, setIsFeishuImportLoading] = useState(false);
+  const [isFeishuImportSubmitting, setIsFeishuImportSubmitting] = useState(false);
+  const [feishuImportResult, setFeishuImportResult] = useState<FeishuDocImportResult | null>(null);
+  const [feishuImportMessage, setFeishuImportMessage] = useState('');
   const [activeWorkingDocuments, setActiveWorkingDocuments] = useState<ActiveWorkingDocument[]>([]);
   const activeWorkingDocumentsClientRef = useRef('');
   const importProgressHoldUntilRef = useRef<number>(0);
@@ -20402,6 +20419,7 @@ export default function App() {
     };
     const [filesTabSearchInput, setFilesTabSearchInput] = useState('');
     const [feishuDocumentSyncStatusById, setFeishuDocumentSyncStatusById] = useState<Record<string, FeishuSyncStatusRecord | null>>({});
+    const [feishuDocumentSyncingById, setFeishuDocumentSyncingById] = useState<Record<string, boolean>>({});
     const visibleFeishuDocumentIdsKey = useMemo(() => {
       if (workspaceRightTab !== 'files') return '';
       return (workspace?.documents || [])
@@ -20444,6 +20462,14 @@ export default function App() {
         cancelled = true;
       };
     }, [visibleFeishuDocumentIdsKey, feishuDocumentSyncStatusById]);
+    const openFeishuMemberAuthorizationSettings = () => {
+      setActiveTab('settings');
+      setSettingsSection('overview');
+      void loadSettingsBlock().catch((error) => {
+        flash('error', error instanceof Error ? error.message : '系统设置加载失败');
+      });
+      void loadFeishuMemberAuthorizationBlock().catch(() => undefined);
+    };
     const [filesTabSearchResult, setFilesTabSearchResult] = useState<KnowledgeSearchResult | null>(null);
     const [isFilesTabSearching, setIsFilesTabSearching] = useState(false);
     const [isLinkMaterialInlineExpanded, setIsLinkMaterialInlineExpanded] = useState(false);
@@ -22547,6 +22573,129 @@ export default function App() {
       }
     };
 
+    const feishuImportKey = (item: FeishuDocImportCandidate) => `${item.type}:${item.token}`;
+    const mergeFeishuImportCandidates = (items: FeishuDocImportCandidate[]) => {
+      setFeishuImportCandidates((prev) => {
+        const map = new Map<string, FeishuDocImportCandidate>();
+        [...prev, ...items].forEach((item) => {
+          if (!item.token) return;
+          map.set(feishuImportKey(item), item);
+        });
+        return Array.from(map.values());
+      });
+    };
+    const openFeishuDocImportModal = async () => {
+      if (!currentClientId) {
+        flash('error', '请先选择客户或项目');
+        return;
+      }
+      setIsFeishuImportOpen(true);
+      setFeishuImportMessage('');
+      setFeishuImportResult(null);
+      setIsFeishuImportLoading(true);
+      try {
+        const status = await getFeishuDocImportStatus();
+        setFeishuImportStatus(status);
+        if (!status.ready && status.reason) {
+          setFeishuImportMessage(status.reason);
+        }
+      } catch (error) {
+        const message = error instanceof Error ? error.message : '飞书导入状态检查失败';
+        setFeishuImportStatus({ ready: false, linked: false, reason: message });
+        setFeishuImportMessage(message);
+      } finally {
+        setIsFeishuImportLoading(false);
+      }
+    };
+    const handleSearchFeishuDocsForImport = async () => {
+      const query = feishuImportQuery.trim();
+      if (!query) {
+        flash('info', '请先输入飞书文档关键词');
+        return;
+      }
+      setIsFeishuImportLoading(true);
+      setFeishuImportMessage('');
+      try {
+        const result = await searchFeishuDocsForImport({ query, pageSize: 20 });
+        mergeFeishuImportCandidates(result.items || []);
+        setFeishuImportMessage(result.message || (result.items.length ? `找到 ${result.items.length} 份飞书文档` : '没有找到可导入的飞书文档'));
+      } catch (error) {
+        setFeishuImportMessage(error instanceof Error ? error.message : '搜索飞书文档失败');
+      } finally {
+        setIsFeishuImportLoading(false);
+      }
+    };
+    const handleResolveFeishuImportLinks = async () => {
+      const links = feishuImportLinksText
+        .split(/\r?\n/)
+        .map((item) => item.trim())
+        .filter(Boolean);
+      if (!links.length) {
+        flash('info', '请先粘贴飞书文档链接');
+        return;
+      }
+      setIsFeishuImportLoading(true);
+      setFeishuImportMessage('');
+      try {
+        const result = await resolveFeishuDocImportLinks(links);
+        mergeFeishuImportCandidates(result.items || []);
+        setFeishuImportMessage(result.message || (result.items.length ? `识别到 ${result.items.length} 份飞书文档` : '没有识别到可导入的飞书文档'));
+      } catch (error) {
+        setFeishuImportMessage(error instanceof Error ? error.message : '解析飞书链接失败');
+      } finally {
+        setIsFeishuImportLoading(false);
+      }
+    };
+    const handleImportSelectedFeishuDocs = async () => {
+      if (!currentClientId) {
+        flash('error', '请先选择客户或项目');
+        return;
+      }
+      const selectedKeys = new Set(selectedFeishuImportKeys);
+      const selectedItems = feishuImportCandidates.filter((item) => selectedKeys.has(feishuImportKey(item)));
+      if (!selectedItems.length) {
+        flash('info', '请先勾选要导入的飞书文档');
+        return;
+      }
+      setIsFeishuImportSubmitting(true);
+      setFeishuImportResult(null);
+      setFeishuImportMessage('正在导出飞书文档并导入资料库。');
+      try {
+        const result = await importFeishuDocsToClient(currentClientId, selectedItems);
+        setFeishuImportResult(result);
+        const importedSyncStatusById: Record<string, FeishuSyncStatusRecord> = {};
+        for (const item of result.items) {
+          if (item.status !== 'imported' || !item.documentId) continue;
+          importedSyncStatusById[item.documentId] = {
+            localType: 'document',
+            localId: item.documentId,
+            remoteType: 'docx_document',
+            remoteId: item.token,
+            remoteUrl: item.remoteUrl,
+            status: 'synced',
+            message: '已与飞书文档建立一一对应关系。',
+            lastSyncedAt: new Date().toISOString(),
+            updatedAt: new Date().toISOString(),
+            details: { importedFromFeishu: true },
+          };
+        }
+        await refreshWorkspace(currentClientId);
+        setFeishuDocumentSyncStatusById((prev) => ({ ...prev, ...importedSyncStatusById }));
+        if (result.importedCount > 0) {
+          flash('success', `已接收 ${result.importedCount} 份飞书文档，后台正在解析`);
+        } else {
+          flash('info', result.failedCount ? '飞书文档未能导入，请查看失败原因' : '没有新文档导入');
+        }
+        setFeishuImportMessage(result.failedCount ? `已处理，${result.importedCount} 已接收，${result.failedCount} 失败。` : `已接收 ${result.importedCount} 份文档，后台正在解析并加入资料库。`);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : '导入飞书文档失败';
+        setFeishuImportMessage(message);
+        flash('error', message);
+      } finally {
+        setIsFeishuImportSubmitting(false);
+      }
+    };
+
     const handleImport = async (mode: 'folder' | 'file', paths: string[], options?: { attachToComposer?: boolean }) => {
       if (!currentClientId) {
         flash('error', '请先选择客户');
@@ -23590,6 +23739,177 @@ export default function App() {
           if (currentClientId) void refreshWorkspace(currentClientId);
         }}
       />
+      {isFeishuImportOpen && (
+        <div className="fixed inset-0 z-[70] flex items-center justify-center bg-black/30 px-4 backdrop-blur-md animate-in fade-in">
+          <div className="flex max-h-[88vh] w-full max-w-[760px] flex-col overflow-hidden rounded-[28px] border border-gray-100 bg-white shadow-[0_20px_60px_rgba(15,23,42,0.18)]">
+            <div className="flex items-center justify-between gap-4 border-b border-gray-100 px-6 py-5">
+              <div className="min-w-0">
+                <div className="flex items-center gap-2 text-[16px] font-bold text-slate-900">
+                  <Download size={18} className="text-[#5B7BFE]" />
+                  从飞书导入文档
+                </div>
+                <p className="mt-1 text-[12px] text-slate-500">选择你有权限访问的飞书文档，导入当前项目资料库。</p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setIsFeishuImportOpen(false)}
+                className="rounded-xl p-2 text-slate-400 transition hover:bg-slate-50 hover:text-slate-700"
+                aria-label="关闭飞书导入"
+              >
+                <X size={18} />
+              </button>
+            </div>
+
+            <div className="flex-1 overflow-y-auto px-6 py-5">
+              {isFeishuImportLoading && !feishuImportStatus ? (
+                <div className="rounded-2xl border border-blue-100 bg-blue-50 px-4 py-3 text-[13px] font-semibold text-blue-700">
+                  正在检查飞书授权状态…
+                </div>
+              ) : feishuImportStatus && !feishuImportStatus.ready ? (
+                <div className="rounded-2xl border border-amber-100 bg-amber-50 px-4 py-4">
+                  <div className="flex items-start gap-3">
+                    <AlertTriangle size={18} className="mt-0.5 text-amber-600" />
+                    <div className="min-w-0 flex-1">
+                      <p className="text-[13px] font-bold text-amber-800">需要先绑定飞书身份</p>
+                      <p className="mt-1 text-[12px] leading-5 text-amber-700">{feishuImportStatus.reason || '读取飞书文档前需要完成成员飞书授权。'}</p>
+                      <button
+                        type="button"
+                        className="mt-3 rounded-xl bg-amber-600 px-3 py-2 text-[12px] font-bold text-white shadow-sm transition hover:bg-amber-700"
+                        onClick={() => {
+                          setIsFeishuImportOpen(false);
+                          openFeishuMemberAuthorizationSettings();
+                        }}
+                      >
+                        去系统设置绑定飞书
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              ) : (
+                <div className="space-y-5">
+                  <div className="grid gap-4 md:grid-cols-2">
+                    <div className="rounded-2xl border border-gray-200 bg-gray-50/70 p-4">
+                      <div className="flex items-center gap-2 text-[13px] font-bold text-slate-800">
+                        <Search size={15} className="text-[#5B7BFE]" />
+                        关键词搜索
+                      </div>
+                      <div className="mt-3 flex gap-2">
+                        <input
+                          value={feishuImportQuery}
+                          onChange={(event) => setFeishuImportQuery(event.target.value)}
+                          onKeyDown={(event) => {
+                            if (event.key === 'Enter') void handleSearchFeishuDocsForImport();
+                          }}
+                          className="min-w-0 flex-1 rounded-xl border border-gray-200 bg-white px-3 py-2 text-[12px] text-slate-800 outline-none transition focus:border-[#8EA2FF]"
+                          placeholder="输入文档关键词"
+                        />
+                        <button
+                          type="button"
+                          disabled={isFeishuImportLoading}
+                          onClick={() => void handleSearchFeishuDocsForImport()}
+                          className="rounded-xl bg-[#5B7BFE] px-3 py-2 text-[12px] font-bold text-white transition hover:bg-[#4A63CF] disabled:cursor-wait disabled:opacity-60"
+                        >
+                          搜索
+                        </button>
+                      </div>
+                    </div>
+                    <div className="rounded-2xl border border-gray-200 bg-gray-50/70 p-4">
+                      <div className="flex items-center gap-2 text-[13px] font-bold text-slate-800">
+                        <Link2 size={15} className="text-[#5B7BFE]" />
+                        粘贴链接
+                      </div>
+                      <textarea
+                        value={feishuImportLinksText}
+                        onChange={(event) => setFeishuImportLinksText(event.target.value)}
+                        className="mt-3 h-[76px] w-full resize-none rounded-xl border border-gray-200 bg-white px-3 py-2 text-[12px] leading-5 text-slate-800 outline-none transition focus:border-[#8EA2FF]"
+                        placeholder="一行一个飞书文档链接"
+                      />
+                      <button
+                        type="button"
+                        disabled={isFeishuImportLoading}
+                        onClick={() => void handleResolveFeishuImportLinks()}
+                        className="mt-2 rounded-xl border border-blue-100 bg-white px-3 py-2 text-[12px] font-bold text-[#4A63CF] transition hover:bg-blue-50 disabled:cursor-wait disabled:opacity-60"
+                      >
+                        解析链接
+                      </button>
+                    </div>
+                  </div>
+
+                  {feishuImportMessage && (
+                    <div className="rounded-2xl border border-blue-100 bg-blue-50 px-4 py-3 text-[12px] font-semibold text-blue-700">
+                      {feishuImportMessage}
+                    </div>
+                  )}
+
+                  <div className="rounded-2xl border border-gray-200 bg-white">
+                    <div className="flex items-center justify-between border-b border-gray-100 px-4 py-3">
+                      <span className="text-[13px] font-bold text-slate-900">可导入文档</span>
+                      <span className="text-[11px] font-semibold text-slate-400">{selectedFeishuImportKeys.length}/{feishuImportCandidates.length} 已选</span>
+                    </div>
+                    {feishuImportCandidates.length === 0 ? (
+                      <div className="px-4 py-8 text-center text-[12px] text-slate-400">
+                        搜索或粘贴链接后，可在这里勾选要导入的飞书文档。
+                      </div>
+                    ) : (
+                      <div className="max-h-[260px] divide-y divide-gray-100 overflow-y-auto">
+                        {feishuImportCandidates.map((candidate) => {
+                          const key = feishuImportKey(candidate);
+                          const checked = selectedFeishuImportKeys.includes(key);
+                          return (
+                            <label key={key} className="flex cursor-pointer items-start gap-3 px-4 py-3 transition hover:bg-blue-50/40">
+                              <input
+                                type="checkbox"
+                                checked={checked}
+                                onChange={() => {
+                                  setSelectedFeishuImportKeys((prev) => (
+                                    prev.includes(key) ? prev.filter((item) => item !== key) : [...prev, key]
+                                  ));
+                                }}
+                                className="mt-1 h-4 w-4 rounded border-gray-300 text-[#5B7BFE]"
+                              />
+                              <div className="min-w-0 flex-1">
+                                <p className="truncate text-[13px] font-bold text-slate-800" title={candidate.title}>{candidate.title}</p>
+                                <p className="mt-1 truncate text-[11px] text-slate-400" title={candidate.url}>
+                                  {candidate.type.toUpperCase()} · {candidate.ownerName || '飞书文档'}{candidate.updatedAt ? ` · ${candidate.updatedAt}` : ''}
+                                </p>
+                              </div>
+                            </label>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </div>
+
+                  {feishuImportResult && (
+                    <div className="rounded-2xl border border-gray-200 bg-gray-50 px-4 py-3">
+                      <p className="text-[12px] font-bold text-slate-800">导入结果：{feishuImportResult.importedCount} 已接收，{feishuImportResult.failedCount} 失败</p>
+                      <div className="mt-2 max-h-[120px] space-y-1 overflow-y-auto">
+                        {feishuImportResult.items.map((item) => (
+                          <p key={`${item.token}-${item.status}`} className={`truncate text-[11px] ${item.status === 'imported' ? 'text-emerald-700' : 'text-rose-600'}`} title={item.message}>
+                            {item.status === 'imported' ? '已接收' : '失败'} · {item.title}{item.message ? `：${item.message}` : ''}
+                          </p>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+
+            <div className="flex items-center justify-between gap-3 border-t border-gray-100 bg-gray-50 px-6 py-4">
+              <p className="text-[11px] text-slate-400">第一版只导入飞书文档/Docx，不会自动覆盖本地已有资料。</p>
+              <button
+                type="button"
+                disabled={!feishuImportStatus?.ready || selectedFeishuImportKeys.length === 0 || isFeishuImportSubmitting}
+                onClick={() => void handleImportSelectedFeishuDocs()}
+                className="rounded-xl bg-[#5B7BFE] px-4 py-2 text-[12px] font-bold text-white shadow-sm transition hover:bg-[#4A63CF] disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                {isFeishuImportSubmitting ? '导入中…' : '导入所选文档'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
       <div className="h-full bg-white overflow-x-auto overflow-y-hidden">
         <div className="flex h-full min-w-[850px]">
           {/* 左栏:项目列表,跟主 nav 一致的扁平 + 左锚线风格。P9：可收起。 */}
@@ -25695,6 +26015,12 @@ export default function App() {
                           onClick: () => setLinkPanelOpen((v) => !v),
                           disabled: isBackendBlocked,
                         },
+                        feishu_import: {
+                          icon: <Download size={18} />,
+                          title: '从飞书导入文档',
+                          onClick: () => void openFeishuDocImportModal(),
+                          disabled: isBackendBlocked || !currentClientId,
+                        },
                         smart_import: {
                           icon: <Sparkles size={18} />,
                           title: '智能文件导入',
@@ -26188,6 +26514,7 @@ export default function App() {
                           { key: 'fill_template', icon: <LayoutTemplate size={23} />, title: '填写模板', onClick: () => void handleFillTemplate(), disabled: isBackendBlocked || isTemplateFilling },
                           { key: 'text_doc', icon: <PenTool size={23} />, title: '智能编辑', onClick: openClientTextDocumentOverlay, disabled: isBackendBlocked },
                           { key: 'link_material', icon: <Link2 size={23} />, title: '链接转资料', onClick: () => setLinkPanelOpen((v) => !v), disabled: isBackendBlocked },
+                          { key: 'feishu_import', icon: <Download size={23} />, title: '从飞书导入文档', onClick: () => void openFeishuDocImportModal(), disabled: isBackendBlocked || !currentClientId },
                           { key: 'smart_import', icon: <Sparkles size={23} />, title: '智能文件导入 · 讲故事 + 挂文件,自动分类归档', onClick: () => setIsSmartFileImportOpen(true), disabled: isBackendBlocked || !currentClientId },
                         ] as const).map((tool) => {
                           const isFavorited = favoriteWorkspaceTools.includes(tool.key);
@@ -26281,13 +26608,113 @@ export default function App() {
 
             {/* Tab: 文件（仅显示用户用过的，搜索结果跳引证 tab） */}
             {workspaceRightTab === 'files' && (() => {
+              const isFeishuDocxSyncableDocument = (params: { path?: string; kind?: string; source?: string; title?: string }) => {
+                const kind = (params.kind || '').toLowerCase();
+                const source = (params.source || '').toLowerCase();
+                const name = `${params.path || ''} ${params.title || ''}`.toLowerCase();
+                const extensionMatched = /\.(docx?|md|markdown|txt)$/i.test(name);
+                const kindMatched = ['doc', 'docx', 'md', 'markdown', 'txt', 'manual_text_doc'].includes(kind);
+                const sourceMatched = [
+                  'manual_text_doc',
+                  'workspace_native',
+                  'answer_export_doc',
+                  'answer_memory_doc',
+                  'link_material_import',
+                  'auto_repair',
+                  'consultation_knowledge_memory',
+                  'internet_enrichment',
+                  'readiness_action',
+                ].includes(source);
+                return extensionMatched || kindMatched || sourceMatched;
+              };
+              const localFeishuDocumentStatus = (
+                documentId: string,
+                status: FeishuSyncStatusRecord['status'],
+                message: string,
+                details: Record<string, unknown> = {},
+              ): FeishuSyncStatusRecord => ({
+                localType: 'document',
+                localId: documentId,
+                remoteType: 'docx_document',
+                status,
+                message,
+                updatedAt: new Date().toISOString(),
+                details,
+              });
+              const handleCreateFeishuDocument = async (params: { documentId: string; fileLabel: string; path: string; title: string }) => {
+                const { documentId, fileLabel, path, title } = params;
+                if (!documentId) return;
+                if (!currentClientId) {
+                  flash('error', '请先选择客户或项目');
+                  return;
+                }
+                if (!feishuMemberAuthorizationState.linked) {
+                  setFeishuDocumentSyncStatusById((prev) => ({
+                    ...prev,
+                    [documentId]: localFeishuDocumentStatus(
+                      documentId,
+                      'queued',
+                      '当前成员尚未绑定飞书身份。绑定后再创建，才能保证你能打开和编辑飞书文档。',
+                      { blockedReason: 'member_authorization_required' },
+                    ),
+                  }));
+                  flash(
+                    'info',
+                    feishuMemberAuthorizationState.readyForAuthorization
+                      ? '请先完成成员飞书授权，绑定后再创建飞书文档。'
+                      : (feishuMemberAuthorizationState.blockedReason || '请先确认组织飞书应用已配置，再完成成员飞书授权。'),
+                  );
+                  openFeishuMemberAuthorizationSettings();
+                  return;
+                }
+                setFeishuDocumentSyncingById((prev) => ({ ...prev, [documentId]: true }));
+                setFeishuDocumentSyncStatusById((prev) => ({
+                  ...prev,
+                  [documentId]: localFeishuDocumentStatus(documentId, 'syncing', '正在创建飞书文档。'),
+                }));
+                try {
+                  const documentText = await getDocumentText(documentId);
+                  const record = await syncDocumentToFeishuDocx({
+                    localType: 'document',
+                    localId: documentId,
+                    title: documentText.title || title || fileLabel,
+                    content: documentText.content || '',
+                    clientId: currentClientId,
+                    triggerSource: 'manual_document_created',
+                    notifyOnCreate: false,
+                  });
+                  setFeishuDocumentSyncStatusById((prev) => ({ ...prev, [documentId]: record }));
+                  if (record.status === 'synced') {
+                    markDocumentAsUsed({ documentId, title: fileLabel, path });
+                    flash('success', '已创建飞书文档，可从文件卡片打开。');
+                  } else if (record.status === 'queued' && record.details?.blockedReason === 'member_authorization_required') {
+                    flash('info', record.message || '请先绑定飞书身份，再创建飞书文档。');
+                    openFeishuMemberAuthorizationSettings();
+                  } else if (record.status === 'failed') {
+                    flash('error', record.message || '飞书文档创建失败，可稍后重试。');
+                  } else {
+                    flash('info', record.message || '飞书同步状态已更新。');
+                  }
+                } catch (error) {
+                  const message = error instanceof Error ? error.message : '创建飞书文档失败';
+                  setFeishuDocumentSyncStatusById((prev) => ({
+                    ...prev,
+                    [documentId]: localFeishuDocumentStatus(documentId, 'failed', message),
+                  }));
+                  flash('error', `创建飞书文档失败：${message}`);
+                } finally {
+                  setFeishuDocumentSyncingById((prev) => ({ ...prev, [documentId]: false }));
+                }
+              };
               const renderFileCard = (params: {
                 key: string;
                 documentId: string;
                 title: string;
                 path: string;
+                kind?: string;
+                source?: string;
               }) => {
-                const { key, documentId, title, path } = params;
+                const { key, documentId, title, path, kind, source } = params;
                 const canOpen = Boolean(path) && hasOpenableFile(path);
                 const basename = path ? (path.split(/[/\\]/).pop() || '') : '';
                 const fileLabel = basename || title || '未命名资料';
@@ -26295,15 +26722,71 @@ export default function App() {
                   documentId && activeWorkingDocuments.some((doc) => doc.documentId === documentId),
                 );
                 const feishuSyncStatus = documentId ? feishuDocumentSyncStatusById[documentId] : null;
-                const feishuSyncLabel = (() => {
-                  if (!feishuSyncStatus) return '';
-                  if (feishuSyncStatus.status === 'synced') return '已同步飞书文档';
-                  if (feishuSyncStatus.status === 'queued' || feishuSyncStatus.status === 'syncing') return '飞书同步排队中';
-                  if (feishuSyncStatus.status === 'failed') return '飞书同步失败';
-                  if (feishuSyncStatus.status === 'not_configured') return '未配置飞书同步';
-                  if (feishuSyncStatus.status === 'skipped') return '未同步飞书文档';
-                  return '';
-                })();
+                const isCreatingFeishuDoc = Boolean(documentId && feishuDocumentSyncingById[documentId]);
+                const feishuStatus = isCreatingFeishuDoc ? 'syncing' : (feishuSyncStatus?.status || 'idle');
+                const feishuBlockedReason = feishuSyncStatus?.details?.blockedReason;
+                const isPendingFeishuBinding = feishuStatus === 'queued' && feishuBlockedReason === 'member_authorization_required';
+                const isFeishuSyncable = Boolean(documentId) && isFeishuDocxSyncableDocument({ path, kind, source, title: fileLabel });
+                const renderFeishuDocxAction = () => {
+                  if (!isFeishuSyncable) return null;
+                  const remoteUrl = feishuSyncStatus?.remoteUrl || '';
+                  const isSynced = feishuStatus === 'synced';
+                  const isOpenableRemote = isSynced && Boolean(remoteUrl);
+                  const isRetry = feishuStatus === 'failed';
+                  const isDisabled =
+                    feishuStatus === 'syncing'
+                    || (feishuStatus === 'queued' && !isPendingFeishuBinding)
+                    || feishuStatus === 'not_configured'
+                    || (isSynced && !remoteUrl);
+                  const statusDotClassName = (() => {
+                    if (isSynced) return 'bg-emerald-500';
+                    if (feishuStatus === 'failed') return 'bg-rose-500';
+                    if (feishuStatus === 'queued' || feishuStatus === 'syncing') return 'bg-amber-500';
+                    if (feishuStatus === 'not_configured') return 'bg-slate-400';
+                    return '';
+                  })();
+                  const titleText = (() => {
+                    if (isOpenableRemote) return '打开其飞书文档';
+                    if (isSynced) return '已创建飞书文档，但缺少可打开链接';
+                    if (feishuStatus === 'syncing') return '正在创建飞书文档';
+                    if (isPendingFeishuBinding) return '待绑定飞书后创建；点击去系统设置完成授权';
+                    if (feishuStatus === 'queued') return feishuSyncStatus?.message || '飞书同步排队中';
+                    if (feishuStatus === 'not_configured') return feishuSyncStatus?.message || '组织尚未配置飞书应用';
+                    if (isRetry) return feishuSyncStatus?.message ? `重试创建飞书文档：${feishuSyncStatus.message}` : '重试创建飞书文档';
+                    if (feishuStatus === 'skipped') return feishuSyncStatus?.message || '创建飞书文档';
+                    return '创建飞书文档';
+                  })();
+                  return (
+                    <button
+                      type="button"
+                      disabled={isDisabled}
+                      onClick={() => {
+                        if (isOpenableRemote) {
+                          markDocumentAsUsed({ documentId, title: fileLabel, path });
+                          void window.yiyuWorkbench.openExternalUrl(remoteUrl);
+                          return;
+                        }
+                        void handleCreateFeishuDocument({ documentId, fileLabel, path, title });
+                      }}
+                      className={`relative rounded-lg p-1.5 transition-colors ${
+                        isDisabled
+                          ? 'text-slate-300 cursor-not-allowed'
+                          : isOpenableRemote
+                            ? 'text-emerald-600 hover:text-emerald-700 hover:bg-emerald-50'
+                            : isRetry
+                              ? 'text-rose-500 hover:text-rose-600 hover:bg-rose-50'
+                              : 'text-slate-500 hover:text-[#5B7BFE] hover:bg-blue-50'
+                      }`}
+                      title={titleText}
+                      aria-label={isOpenableRemote ? '打开其飞书文档' : '创建飞书文档'}
+                    >
+                      {isOpenableRemote ? <ExternalLink size={16} /> : isRetry ? <RefreshCw size={16} /> : <UploadCloud size={16} />}
+                      {statusDotClassName && (
+                        <span className={`absolute right-0.5 top-0.5 h-1.5 w-1.5 rounded-full ring-1 ring-white ${statusDotClassName}`} />
+                      )}
+                    </button>
+                  );
+                };
                 return (
                   <div key={key} className="bg-white border border-gray-200 rounded-xl overflow-hidden hover:shadow-sm transition-shadow">
                     <div className="flex items-start gap-3 px-3 pt-2.5 pb-1.5">
@@ -26312,23 +26795,8 @@ export default function App() {
                         {fileLabel}
                       </p>
                     </div>
-                    {feishuSyncLabel && (
-                      <div className="mx-3 mb-1 flex items-center gap-1.5 rounded-lg bg-slate-50 px-2 py-1 text-[10px] font-bold text-slate-500">
-                        <Radio size={11} className={feishuSyncStatus?.status === 'synced' ? 'text-emerald-500' : 'text-slate-400'} />
-                        <span className="truncate">{feishuSyncLabel}</span>
-                        {feishuSyncStatus?.remoteUrl && (
-                          <button
-                            type="button"
-                            className="ml-auto shrink-0 text-[#5B7BFE] hover:text-[#3653D6]"
-                            title="打开飞书文档"
-                            onClick={() => void window.yiyuWorkbench.openExternalUrl(feishuSyncStatus.remoteUrl || '')}
-                          >
-                            <ExternalLink size={12} />
-                          </button>
-                        )}
-                      </div>
-                    )}
                     <div className="flex items-center gap-1 px-3 pt-1.5 pb-2.5">
+                      {renderFeishuDocxAction()}
                       <button
                         type="button"
                         onClick={() => attachDocumentReferenceToComposer({ documentId, fileLabel, path })}
@@ -26537,6 +27005,8 @@ export default function App() {
                           documentId: doc.id,
                           title: doc.title,
                           path: doc.path,
+                          kind: doc.kind,
+                          source: doc.source,
                           lastTouchedAt: Math.max(
                             usedAtMap.get(doc.id) || 0,
                             parseImportedMs(doc.importedAt),
@@ -29360,8 +29830,8 @@ export default function App() {
             {renderFoldable({
               key: 'feishu',
               eyebrow: 'FEISHU · 飞书集成',
-              title: '机器人 · 组织绑定 · 通知投递',
-              helper: '整个组织共用一套飞书应用，验证通过后按成员手机号自动推送任务提醒。',
+              title: '组织应用 · 成员文档授权 · 通知投递',
+              helper: '组织应用由管理员配置；成员文档授权用于创建/导入飞书文档；任务提醒手机号只用于机器人通知。',
               statusChip: feishuConfigured
                 ? { text: '已接通', tone: 'success' }
                 : { text: '未接通', tone: 'neutral' },
@@ -29371,6 +29841,9 @@ export default function App() {
                   membership={orgMembershipState}
                   integration={orgFeishuIntegrationState}
                   deliveryProfile={feishuDeliveryProfileState}
+                  memberAuthorization={feishuMemberAuthorizationState}
+                  memberAuthorizationFlow={feishuAuthorizationFlowState}
+                  memberAuthorizationBusy={feishuAuthorizationBusyAction !== 'idle'}
                   currentUserName={currentSessionUser?.fullName || null}
                   saveBusy={isSavingOrgFeishuIntegration}
                   savePhoneBusy={isSavingFeishuDeliveryProfile}
@@ -29378,6 +29851,10 @@ export default function App() {
                   onSaveIntegration={handleSaveOrgFeishuIntegration}
                   onSaveRememberedInputs={handleSaveFeishuInputMemory}
                   onSaveDeliveryProfile={handleSaveFeishuDeliveryProfile}
+                  onStartMemberAuthorization={handleStartFeishuMemberAuthorization}
+                  onRefreshMemberAuthorization={() => handleRefreshFeishuMemberAuthorization(false).then(() => undefined)}
+                  onClearMemberAuthorization={handleClearFeishuMemberAuthorization}
+                  onOpenMemberAuthorization={handleOpenFeishuAuthorizationInBrowser}
                   onOpenOrganizationSetup={() => setSettingsSection('system_admin')}
                   onOpenCloudAuth={() => openCloudAuthModal('login')}
                 />

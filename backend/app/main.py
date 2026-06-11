@@ -57,7 +57,7 @@ from pathlib import Path
 from threading import Event, Lock, Thread
 from time import perf_counter
 from typing import Callable, Literal, cast
-from urllib.parse import quote, urlparse, urlunparse
+from urllib.parse import quote, unquote, urlparse, urlunparse
 from uuid import uuid4
 
 import httpx
@@ -470,11 +470,21 @@ from app.models import (
     MaintenancePermissionUpdatePayloadRecord,
     FeishuBotSettingsPayload,
     FeishuBotSettingsRecord,
+    FeishuDocImportImportedItemRecord,
+    FeishuDocImportRequestPayload,
+    FeishuDocImportResolveLinksPayload,
+    FeishuDocImportResultRecord,
+    FeishuDocImportSearchPayload,
+    FeishuDocImportSearchResultRecord,
+    FeishuDocImportStatusRecord,
+    FeishuDeliveryProfileRecord,
+    FeishuDeliveryProfileSavePayload,
     FeishuMemberAuthorizationRecord,
     FeishuMemberAuthorizationStartResponse,
     FeishuMeetingLaunchPayload,
     FeishuMeetingLaunchResponse,
     FeishuReceiveIdType,
+    FeishuSyncStatusRecord,
     FeishuUserBindingRecord,
     FeishuUserBindingStartResponse,
     EventLineActivityRecord,
@@ -4299,7 +4309,14 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             SELECT id
             FROM knowledge_jobs
             WHERE status = 'running'
-            ORDER BY created_at ASC
+            ORDER BY
+                CASE job_type
+                    WHEN 'ingest_import' THEN 0
+                    WHEN 'retry_parse' THEN 1
+                    WHEN 'backfill_knowledge' THEN 2
+                    ELSE 9
+                END ASC,
+                created_at ASC
             """
         )
         if not stale_rows:
@@ -8563,6 +8580,53 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         if not response.content:
             return {}
         return response.json()
+
+    def cloud_request_binary(method: str, path: str, *, json_body: dict | None = None, timeout: float = 120.0) -> tuple[bytes, dict[str, str]]:
+        import time as _time
+        normalized_method = method.upper()
+        if COLLAB_PREVIEW_MODE and normalized_method not in {"GET", "HEAD", "OPTIONS"}:
+            raise HTTPException(status_code=403, detail="协作预览模式不可写云端。")
+        base_url = cloud_api_base_url()
+
+        def perform_request(token: str | None):
+            headers = {}
+            if token:
+                headers["Authorization"] = f"Bearer {token}"
+            return httpx.request(
+                method,
+                f"{base_url}{path}",
+                json=json_body,
+                headers=headers,
+                timeout=timeout,
+            )
+
+        token = get_cloud_token()
+        if not token:
+            if get_cloud_refresh_token():
+                refresh_cloud_session()
+                token = get_cloud_token()
+            else:
+                raise HTTPException(status_code=401, detail="Not authenticated")
+        try:
+            response = perform_request(token)
+        except httpx.HTTPError:
+            _time.sleep(0.5)
+            try:
+                response = perform_request(token)
+            except httpx.HTTPError as exc:
+                raise HTTPException(status_code=502, detail=f"Cloud backend unavailable: {exc}") from exc
+        if response.status_code == 401 and get_cloud_refresh_token():
+            refresh_cloud_session()
+            token = get_cloud_token()
+            response = perform_request(token)
+        if response.status_code >= 400:
+            try:
+                payload = response.json()
+                detail = payload.get("detail") if isinstance(payload, dict) else response.text
+            except Exception:
+                detail = response.text
+            raise HTTPException(status_code=response.status_code, detail=detail or f"HTTP {response.status_code}")
+        return response.content, {key: value for key, value in response.headers.items()}
 
     def _load_org_cloud_ai_status_for_ai_service() -> dict[str, object]:
         payload = cloud_request("GET", "/api/v1/org-ai/status", timeout=3.0)
@@ -16419,13 +16483,6 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 "refreshEventId": str(refresh_event.id or ""),
             },
         )
-        _auto_sync_document_to_feishu_docx(
-            document_id=document_id,
-            title=resolved_title,
-            content=normalized_content,
-            client_id=client_id,
-            trigger_source="link_material_document_created",
-        )
         return ClientTextDocumentResponse(
             clientId=client_id,
             documentId=document_id,
@@ -16559,13 +16616,6 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 "runId": run_id,
                 "refreshEventId": str(refresh_event.id or ""),
             },
-        )
-        _auto_sync_document_to_feishu_docx(
-            document_id=document_id,
-            title=resolved_title,
-            content=polished_body or normalized_content,
-            client_id=client_id,
-            trigger_source="link_material_document_created",
         )
         return ClientTextDocumentResponse(
             clientId=client_id,
@@ -31222,6 +31272,48 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             raise HTTPException(status_code=502, detail="Invalid org feishu payload")
         return OrgFeishuIntegrationRecord(**response)
 
+    @app.get("/api/v1/me/feishu-delivery-profile", response_model=FeishuDeliveryProfileRecord)
+    def get_feishu_delivery_profile() -> FeishuDeliveryProfileRecord:
+        if not get_cloud_token() and not get_cloud_refresh_token():
+            return FeishuDeliveryProfileRecord(
+                userId="local-device-user",
+                organizationId=None,
+                organizationName=None,
+                deliveryStatus="missing_org",
+                deliveryStatusLabel="尚未连接云端组织",
+                readyForNotifications=False,
+                blockedReason="任务提醒手机号依赖云端组织和组织飞书应用；本地模式下可先不填写。",
+            )
+        try:
+            payload = cloud_request("GET", "/api/v1/me/feishu-delivery-profile")
+            if isinstance(payload, dict):
+                return FeishuDeliveryProfileRecord(**payload)
+        except Exception as exc:
+            logger.warning("feishu.delivery_profile.fetch_failed: %s", exc)
+        return FeishuDeliveryProfileRecord(
+            userId="cloud-user",
+            organizationId=None,
+            organizationName=None,
+            deliveryStatus="failed",
+            deliveryStatusLabel="任务提醒状态暂不可用",
+            readyForNotifications=False,
+            blockedReason="已连接云端，但暂时读取不到飞书任务提醒手机号状态；这不代表你未加入组织。",
+        )
+
+    @app.post("/api/v1/me/feishu-delivery-profile", response_model=FeishuDeliveryProfileRecord)
+    def save_feishu_delivery_profile(payload: FeishuDeliveryProfileSavePayload) -> FeishuDeliveryProfileRecord:
+        if not get_cloud_token() and not get_cloud_refresh_token():
+            raise HTTPException(status_code=400, detail="连接云端并加入组织后，才能保存飞书任务提醒手机号。")
+        response = cloud_request(
+            "POST",
+            "/api/v1/me/feishu-delivery-profile",
+            json_body=payload.model_dump(),
+            timeout=18.0,
+        )
+        if not isinstance(response, dict):
+            raise HTTPException(status_code=502, detail="Invalid feishu delivery profile payload")
+        return FeishuDeliveryProfileRecord(**response)
+
     @app.get("/api/v1/me/feishu-authorization", response_model=FeishuMemberAuthorizationRecord)
     def get_feishu_member_authorization() -> FeishuMemberAuthorizationRecord:
         if not get_cloud_token() and not get_cloud_refresh_token():
@@ -31316,6 +31408,193 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         if not isinstance(response, dict):
             raise HTTPException(status_code=502, detail="Invalid feishu document sync payload")
         return response
+
+    @app.get("/api/v1/feishu-doc-import/status", response_model=FeishuDocImportStatusRecord)
+    def get_feishu_doc_import_status() -> FeishuDocImportStatusRecord:
+        if not get_cloud_token() and not get_cloud_refresh_token():
+            return FeishuDocImportStatusRecord(
+                ready=False,
+                linked=False,
+                reason="连接云端并加入组织后，才能从飞书导入文档。",
+            )
+        response = cloud_request("GET", "/api/v1/feishu-doc-import/status", timeout=8.0)
+        if not isinstance(response, dict):
+            raise HTTPException(status_code=502, detail="Invalid feishu import status payload")
+        return FeishuDocImportStatusRecord(**response)
+
+    @app.post("/api/v1/feishu-doc-import/search", response_model=FeishuDocImportSearchResultRecord)
+    def search_feishu_docs_for_import(payload: FeishuDocImportSearchPayload) -> FeishuDocImportSearchResultRecord:
+        if not get_cloud_token() and not get_cloud_refresh_token():
+            raise HTTPException(status_code=400, detail="连接云端并加入组织后，才能搜索飞书文档。")
+        response = cloud_request(
+            "POST",
+            "/api/v1/feishu-doc-import/search",
+            json_body=payload.model_dump(),
+            timeout=24.0,
+        )
+        if not isinstance(response, dict):
+            raise HTTPException(status_code=502, detail="Invalid feishu import search payload")
+        return FeishuDocImportSearchResultRecord(**response)
+
+    @app.post("/api/v1/feishu-doc-import/resolve-links", response_model=FeishuDocImportSearchResultRecord)
+    def resolve_feishu_doc_import_links(payload: FeishuDocImportResolveLinksPayload) -> FeishuDocImportSearchResultRecord:
+        if not get_cloud_token() and not get_cloud_refresh_token():
+            raise HTTPException(status_code=400, detail="连接云端并加入组织后，才能解析飞书文档链接。")
+        response = cloud_request(
+            "POST",
+            "/api/v1/feishu-doc-import/resolve-links",
+            json_body=payload.model_dump(),
+            timeout=12.0,
+        )
+        if not isinstance(response, dict):
+            raise HTTPException(status_code=502, detail="Invalid feishu link resolve payload")
+        return FeishuDocImportSearchResultRecord(**response)
+
+    @app.post("/api/v1/clients/{client_id}/feishu-doc-import/import", response_model=FeishuDocImportResultRecord)
+    def import_feishu_docs_to_client(client_id: str, payload: FeishuDocImportRequestPayload) -> FeishuDocImportResultRecord:
+        build_client_summary(client_id)
+        if not get_cloud_token() and not get_cloud_refresh_token():
+            raise HTTPException(status_code=400, detail="连接云端并加入组织后，才能从飞书导入文档。")
+        import_root = state.data_dir / "_imports" / "feishu" / client_id / datetime.now().strftime("%Y%m%d_%H%M%S")
+        import_root.mkdir(parents=True, exist_ok=True)
+        items: list[FeishuDocImportImportedItemRecord] = []
+        exported_items: list[tuple[FeishuDocImportSelectionPayload, str, Path]] = []
+        for candidate in payload.items:
+            title = (candidate.title or "飞书文档").strip() or "飞书文档"
+            try:
+                content, headers = cloud_request_binary(
+                    "POST",
+                    "/api/v1/feishu-doc-import/export-docx",
+                    json_body={
+                        "token": candidate.token,
+                        "type": candidate.type,
+                        "title": title,
+                    },
+                    timeout=150.0,
+                )
+                if not content:
+                    raise HTTPException(status_code=502, detail="飞书导出文件为空。")
+                header_name = unquote(headers.get("x-feishu-file-name", ""))
+                file_name = safe_filename(header_name or f"{title}.docx")
+                if not file_name.lower().endswith(".docx"):
+                    file_name = f"{Path(file_name).stem or '飞书文档'}.docx"
+                target_path = import_root / file_name
+                if target_path.exists():
+                    target_path = import_root / f"{target_path.stem}_{uuid4().hex[:6]}.docx"
+                target_path.write_bytes(content)
+                exported_items.append((candidate, title, target_path))
+            except Exception as exc:
+                detail = str(exc.detail) if isinstance(exc, HTTPException) else str(exc)
+                items.append(
+                    FeishuDocImportImportedItemRecord(
+                        token=candidate.token,
+                        title=title,
+                        status="failed",
+                        remoteUrl=candidate.url,
+                        message=detail or "导入失败。",
+                    )
+                )
+        if exported_items:
+            try:
+                records = import_documents(ImportPayload(clientId=client_id, mode="folder", paths=[str(import_root)]))
+                imported_by_name = {
+                    str(document.fileName or ""): document
+                    for record in records
+                    for document in record.documents
+                    if document.documentId
+                }
+                for candidate, title, target_path in exported_items:
+                    imported_doc = imported_by_name.get(target_path.name)
+                    if not imported_doc:
+                        items.append(
+                            FeishuDocImportImportedItemRecord(
+                                token=candidate.token,
+                                title=title,
+                                status="failed",
+                                remoteUrl=candidate.url,
+                                message="这份飞书文档可能已存在或未能入库。",
+                            )
+                        )
+                        continue
+                    try:
+                        cloud_request(
+                            "POST",
+                            "/api/v1/feishu-doc-import/mappings",
+                            json_body={
+                                "localId": imported_doc.documentId,
+                                "remoteId": candidate.token,
+                                "remoteUrl": candidate.url or "",
+                                "title": title,
+                                "clientId": client_id,
+                                "remoteUpdatedAt": candidate.updatedAt or "",
+                            },
+                            timeout=10.0,
+                        )
+                    except Exception as mapping_exc:
+                        logger.warning("feishu.import.mapping_failed document=%s error=%s", imported_doc.documentId, mapping_exc)
+                    items.append(
+                        FeishuDocImportImportedItemRecord(
+                            token=candidate.token,
+                            title=title,
+                            status="imported",
+                            documentId=imported_doc.documentId,
+                            fileName=imported_doc.fileName,
+                            path=imported_doc.path,
+                            remoteUrl=candidate.url,
+                            message="已接收进当前项目资料库，后台正在解析。",
+                        )
+                    )
+            except Exception as exc:
+                detail = str(exc.detail) if isinstance(exc, HTTPException) else str(exc)
+                for candidate, title, _target_path in exported_items:
+                    items.append(
+                        FeishuDocImportImportedItemRecord(
+                            token=candidate.token,
+                            title=title,
+                            status="failed",
+                            remoteUrl=candidate.url,
+                            message=detail or "导入失败。",
+                        )
+                    )
+        imported_count = sum(1 for item in items if item.status == "imported")
+        failed_count = sum(1 for item in items if item.status == "failed")
+        if imported_count > 0:
+            _enqueue_workspace_refresh_safe(
+                client_id=client_id,
+                source_type="feishu_doc_import",
+                source_id=uuid4().hex,
+                reason="feishu_doc_import_completed",
+                scope_type="client",
+                scope_id=client_id,
+                priority="normal",
+            )
+        return FeishuDocImportResultRecord(
+            clientId=client_id,
+            importedCount=imported_count,
+            failedCount=failed_count,
+            items=items,
+        )
+
+    def _parse_iso_datetime(value: str | None) -> datetime | None:
+        text = str(value or "").strip()
+        if not text:
+            return None
+        try:
+            normalized = text.replace("Z", "+00:00")
+            parsed = datetime.fromisoformat(normalized)
+            if parsed.tzinfo is None:
+                parsed = parsed.replace(tzinfo=timezone.utc)
+            return parsed.astimezone(timezone.utc)
+        except Exception:
+            return None
+
+    def _iso_from_mtime(path: Path) -> str | None:
+        try:
+            if path.exists():
+                return datetime.fromtimestamp(path.stat().st_mtime, timezone.utc).isoformat()
+        except Exception:
+            return None
+        return None
 
     @app.get("/api/v1/auth/department-options", response_model=list[DepartmentOptionRecord])
     def auth_department_options(
