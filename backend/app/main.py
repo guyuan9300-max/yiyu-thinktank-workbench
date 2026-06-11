@@ -325,6 +325,7 @@ from app.models import (
     CloudConfigResponse,
     ConsultationKnowledgeProcessSummaryResponse,
     ConsultationKnowledgeRequestRecord,
+    LinkImportRelayRequestRecord,
     ClientDnaGeneratePayload,
     ClientDnaModuleRecord,
     ClientDnaModulesResponse,
@@ -8827,6 +8828,43 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         if updated_at is None:
             return True
         return now_ts - updated_at.timestamp() >= 300
+
+    def list_cloud_link_import_requests() -> list[LinkImportRelayRequestRecord]:
+        try:
+            payload = cloud_request("GET", "/api/v1/link-import-requests")
+            if isinstance(payload, list):
+                return [LinkImportRelayRequestRecord(**item) for item in payload if isinstance(item, dict)]
+        except Exception:
+            pass
+        return []
+
+    def update_cloud_link_import_request_status(
+        request_id: str,
+        *,
+        status: Literal["processing", "completed", "failed"],
+        error_message: str = "",
+        local_run_id: str | None = None,
+        local_document_id: str | None = None,
+        local_document_path: str | None = None,
+        client_id: str | None = None,
+        client_name: str | None = None,
+    ) -> LinkImportRelayRequestRecord:
+        payload = cloud_request(
+            "POST",
+            f"/api/v1/link-import-requests/{request_id}/status",
+            json_body={
+                "status": status,
+                "errorMessage": error_message,
+                "localRunId": local_run_id,
+                "localDocumentId": local_document_id,
+                "localDocumentPath": local_document_path,
+                "clientId": client_id,
+                "clientName": client_name,
+            },
+        )
+        if not isinstance(payload, dict):
+            raise HTTPException(status_code=502, detail="Invalid link import status payload")
+        return LinkImportRelayRequestRecord(**payload)
 
     def resolve_growth_actor() -> tuple[str, str]:
         session_user = get_cached_session_user()
@@ -31490,6 +31528,107 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         summary.items = processed_items
         return summary
 
+    def _link_relay_is_stale(item: LinkImportRelayRequestRecord, *, now_ts: float, threshold: float) -> bool:
+        updated_at = _parse_iso_moment(item.updatedAt)
+        if updated_at is None:
+            return True
+        return now_ts - updated_at.timestamp() >= threshold
+
+    def _process_pending_link_import_requests_impl() -> None:
+        """消化云端链接转文字队列(手机提交) → 本地 link_material_import 管线。
+
+        与 consultation knowledge 同一轮询周期顺路执行,不另起轮询。
+        run 是 executor 异步执行的,所以分两拍:
+        - pending(或 processing 卡死超时) → 建 run 提交 → 回写 processing+localRunId
+        - processing+localRunId → 查 run 状态 → completed/failed 回写终态
+        """
+        requests = list_cloud_link_import_requests()
+        if not requests:
+            return
+        now_ts = time.time()
+        for item in requests:
+            if item.status in ("completed", "failed"):
+                continue
+            try:
+                if item.status == "processing" and item.localRunId:
+                    client_id = (item.clientId or "").strip()
+                    run = None
+                    if client_id:
+                        try:
+                            run = fetch_link_material_import_run(client_id, item.localRunId)
+                        except HTTPException:
+                            run = None
+                    if run is not None:
+                        if run.status == "completed":
+                            update_cloud_link_import_request_status(
+                                item.id,
+                                status="completed",
+                                local_run_id=run.runId,
+                                local_document_id=run.documentId,
+                                local_document_path=run.documentPath,
+                            )
+                        elif run.status in ("failed", "canceled"):
+                            update_cloud_link_import_request_status(
+                                item.id,
+                                status="failed",
+                                error_message=run.error or "链接转文字执行失败",
+                                local_run_id=run.runId,
+                            )
+                        # queued/running → 等下一轮
+                        continue
+                    # 本地查不到该 run(另一台桌面认领后离线/run丢失):超时 30 分钟才重新认领
+                    if not _link_relay_is_stale(item, now_ts=now_ts, threshold=1800):
+                        continue
+                elif item.status == "processing":
+                    # processing 但没 localRunId(认领写一半挂了):5 分钟后重试
+                    if not _link_relay_is_stale(item, now_ts=now_ts, threshold=300):
+                        continue
+
+                # pending / 卡死的 processing → 认领执行
+                client_id = (item.clientId or "").strip()
+                if not client_id:
+                    update_cloud_link_import_request_status(
+                        item.id,
+                        status="failed",
+                        error_message="未指定归属客户,请在手机端选择客户后重新提交",
+                    )
+                    continue
+                try:
+                    client = build_client_summary(client_id)
+                except HTTPException:
+                    update_cloud_link_import_request_status(
+                        item.id,
+                        status="failed",
+                        error_message="归属客户不存在,请在手机端重新选择",
+                    )
+                    continue
+                existing_run = fetch_active_link_material_import_run_for_url(client_id, item.url)
+                if existing_run is not None:
+                    run_id = existing_run.runId
+                else:
+                    try:
+                        new_run = create_link_material_import_run(client_id, item.url)
+                    except LinkMaterialImportError as error:
+                        update_cloud_link_import_request_status(item.id, status="failed", error_message=str(error))
+                        continue
+                    if state.link_material_executor is None:
+                        update_cloud_link_import_request_status(
+                            item.id, status="failed", error_message="链接转资料执行器不可用,请稍后重试"
+                        )
+                        continue
+                    state.link_material_executor.submit(run_link_material_import, client_id, new_run.runId)
+                    run_id = new_run.runId
+                update_cloud_link_import_request_status(
+                    item.id,
+                    status="processing",
+                    local_run_id=run_id,
+                    client_id=client_id,
+                    client_name=getattr(client, "name", None),
+                )
+            except Exception as exc:
+                if state.system_logger:
+                    state.system_logger.warn("cloud", "链接转文字中继处理失败", error=str(exc))
+
     @app.get("/api/v1/consultation/knowledge-requests", response_model=list[ConsultationKnowledgeRequestRecord])
     def list_consultation_knowledge_requests(
         status_filter: Literal["pending", "processing", "completed", "failed"] | None = Query(default=None, alias="status"),
@@ -31522,7 +31661,14 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             return ConsultationKnowledgeProcessSummaryResponse(updatedAt=now_iso())
         state.consultation_knowledge_sync_running = True
         try:
-            return process_pending_consultation_knowledge_requests_impl()
+            summary = process_pending_consultation_knowledge_requests_impl()
+            # 顺路消化手机端链接转文字队列(同周期,不另起轮询);互不阻断
+            try:
+                _process_pending_link_import_requests_impl()
+            except Exception as exc:
+                if state.system_logger:
+                    state.system_logger.warn("cloud", "链接转文字中继轮询失败", error=str(exc))
+            return summary
         finally:
             state.consultation_knowledge_sync_running = False
 

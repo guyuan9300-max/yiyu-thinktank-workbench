@@ -284,6 +284,27 @@ class ConsultationKnowledgeRequestRecord(BaseModel):
     updatedAt: str
 
 
+class LinkImportRelayRequestRecord(BaseModel):
+    """云端 link_import_requests 队列记录(手机提交→桌面处理的链接转文字中继)。"""
+
+    id: str
+    organizationId: str
+    url: str
+    sourceHint: str | None = None
+    clientId: str | None = None
+    clientName: str | None = None
+    status: Literal["pending", "processing", "completed", "failed"] = "pending"
+    requestedByUserId: str
+    requestedByName: str = ""
+    errorMessage: str | None = None
+    localRunId: str | None = None
+    localDocumentId: str | None = None
+    localDocumentPath: str | None = None
+    completedAt: str | None = None
+    createdAt: str
+    updatedAt: str
+
+
 class ConsultationKnowledgeProcessSummaryResponse(BaseModel):
     totalPending: int = 0
     processedCount: int = 0

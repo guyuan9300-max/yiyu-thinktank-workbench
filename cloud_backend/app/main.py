@@ -47,6 +47,9 @@ from app.models import (
     ConsultationKnowledgeRequestRecord,
     ConsultationKnowledgeRequestUpdatePayload,
     ConsultationMissingContextRecord,
+    LinkImportRequestCreatePayload,
+    LinkImportRequestRecord,
+    LinkImportRequestUpdatePayload,
     AppCheckinPayload,
     AppInstallRecord,
     ReleaseCreatePayload,
@@ -16343,6 +16346,166 @@ def create_app() -> FastAPI:
         )
         updated_row = _consultation_request_row_or_404(state, request_id, current_user.organizationId)
         return _consultation_knowledge_request_record(updated_row)
+
+    # ── 链接转文字中继队列 (手机提交 → 桌面端处理) ────────────
+    # 手机端在咨询页粘贴 B站/小红书 链接 → 此队列;桌面端复用 process-pending 轮询认领,
+    # 灌进本地 link_material_import 管线(浏览器cookie/impersonate反爬只在桌面可用),
+    # 结果(文档id/路径)回写。队列可见性=组织级(入库目标本就是组织数据中心)。
+
+    def _link_import_request_record(row) -> LinkImportRequestRecord:
+        return LinkImportRequestRecord(
+            id=str(row["id"]),
+            organizationId=str(row["organization_id"]),
+            url=str(row["url"]),
+            sourceHint=row["source_hint"],
+            clientId=row["client_id"],
+            clientName=row["client_name"],
+            status=str(row["status"]),
+            requestedByUserId=str(row["requested_by_user_id"]),
+            requestedByName=str(row["requested_by_name"] or "") if "requested_by_name" in row.keys() else "",
+            errorMessage=row["error_message"],
+            localRunId=row["local_run_id"],
+            localDocumentId=row["local_document_id"],
+            localDocumentPath=row["local_document_path"],
+            completedAt=row["completed_at"],
+            createdAt=str(row["created_at"]),
+            updatedAt=str(row["updated_at"]),
+        )
+
+    def _link_import_request_row_or_404(request_id: str, organization_id: str):
+        row = state.db.fetchone(
+            """
+            SELECT req.*, author.full_name AS requested_by_name
+            FROM link_import_requests req
+            LEFT JOIN employee_accounts author ON author.id = req.requested_by_user_id
+            WHERE req.id = ? AND req.organization_id = ?
+            """,
+            (request_id, organization_id),
+        )
+        if row is None:
+            raise HTTPException(status_code=404, detail="Link import request not found")
+        return row
+
+    @app.get("/api/v1/link-import-requests", response_model=list[LinkImportRequestRecord])
+    def list_link_import_requests(
+        status_filter: str | None = Query(default=None, alias="status"),
+        limit: int = Query(default=100, ge=1, le=200),
+        current_user: SessionUser = Depends(lambda authorization=Header(default=None): _require_auth(app, authorization)),
+    ) -> list[LinkImportRequestRecord]:
+        query = [
+            """
+            SELECT req.*, author.full_name AS requested_by_name
+            FROM link_import_requests req
+            LEFT JOIN employee_accounts author ON author.id = req.requested_by_user_id
+            WHERE req.organization_id = ?
+            """
+        ]
+        params: list[object] = [current_user.organizationId]
+        if status_filter:
+            query.append("AND req.status = ?")
+            params.append(status_filter)
+        query.append("ORDER BY req.updated_at DESC LIMIT ?")
+        params.append(limit)
+        rows = state.db.fetchall(" ".join(query), tuple(params))
+        return [_link_import_request_record(row) for row in rows]
+
+    @app.post("/api/v1/link-import-requests", response_model=LinkImportRequestRecord)
+    def create_link_import_request(
+        payload: LinkImportRequestCreatePayload,
+        current_user: SessionUser = Depends(lambda authorization=Header(default=None): _require_auth(app, authorization)),
+    ) -> LinkImportRequestRecord:
+        url = payload.url.strip()
+        if not url.lower().startswith(("http://", "https://")):
+            raise HTTPException(status_code=422, detail="仅支持 http(s) 链接")
+        # 幂等: 同组织同链接已在排队/处理中 → 直接返回既有请求(防重复提交)。
+        existing = state.db.fetchone(
+            """
+            SELECT req.*, author.full_name AS requested_by_name
+            FROM link_import_requests req
+            LEFT JOIN employee_accounts author ON author.id = req.requested_by_user_id
+            WHERE req.organization_id = ? AND req.url = ? AND req.status IN ('pending', 'processing')
+            ORDER BY req.created_at DESC
+            """,
+            (current_user.organizationId, url),
+        )
+        if existing is not None:
+            return _link_import_request_record(existing)
+        request_id = new_id("link_import")
+        timestamp = now_iso()
+        state.db.execute(
+            """
+            INSERT INTO link_import_requests(
+                id, organization_id, url, source_hint, client_id, client_name,
+                status, requested_by_user_id, created_at, updated_at
+            ) VALUES(?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?)
+            """,
+            (
+                request_id,
+                current_user.organizationId,
+                url,
+                (payload.sourceHint or "").strip() or None,
+                (payload.clientId or "").strip() or None,
+                (payload.clientName or "").strip() or None,
+                current_user.id,
+                timestamp,
+                timestamp,
+            ),
+        )
+        _log_audit(
+            state,
+            "link_import.request_created",
+            actor_user_id=current_user.id,
+            target_user_id=None,
+            detail={"requestId": request_id, "url": url, "clientId": payload.clientId or ""},
+        )
+        row = _link_import_request_row_or_404(request_id, current_user.organizationId)
+        return _link_import_request_record(row)
+
+    @app.post("/api/v1/link-import-requests/{request_id}/status", response_model=LinkImportRequestRecord)
+    def update_link_import_request(
+        request_id: str,
+        payload: LinkImportRequestUpdatePayload,
+        current_user: SessionUser = Depends(lambda authorization=Header(default=None): _require_auth(app, authorization)),
+    ) -> LinkImportRequestRecord:
+        row = _link_import_request_row_or_404(request_id, current_user.organizationId)
+        timestamp = now_iso()
+        normalized_error = payload.errorMessage.strip() or None
+        completed_at = timestamp if payload.status == "completed" else None
+        if payload.status == "processing":
+            normalized_error = None
+        state.db.execute(
+            """
+            UPDATE link_import_requests
+            SET status = ?, error_message = ?,
+                local_run_id = COALESCE(?, local_run_id),
+                local_document_id = ?, local_document_path = ?,
+                client_id = COALESCE(?, client_id),
+                client_name = COALESCE(?, client_name),
+                completed_at = ?, updated_at = ?
+            WHERE id = ?
+            """,
+            (
+                payload.status,
+                normalized_error,
+                payload.localRunId,
+                payload.localDocumentId,
+                payload.localDocumentPath,
+                (payload.clientId or "").strip() or None,
+                (payload.clientName or "").strip() or None,
+                completed_at,
+                timestamp,
+                request_id,
+            ),
+        )
+        _log_audit(
+            state,
+            "link_import.request_updated",
+            actor_user_id=current_user.id,
+            target_user_id=None,
+            detail={"requestId": request_id, "status": payload.status, "localRunId": payload.localRunId or ""},
+        )
+        updated = _link_import_request_row_or_404(request_id, current_user.organizationId)
+        return _link_import_request_record(updated)
 
     # ── Software Feedback (软件内报错/提建议 → 后台收件箱) ───
     # 数据 SSOT: software_feedback 表; 桌面经 cloud_request proxy 上报, admin-v2 控制台读取.

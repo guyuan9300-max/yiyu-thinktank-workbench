@@ -696,6 +696,43 @@ class ConsultationKnowledgeRequestRecord(BaseModel):
     updatedAt: str
 
 
+class LinkImportRequestCreatePayload(BaseModel):
+    url: str = Field(min_length=8)
+    sourceHint: str | None = None
+    clientId: str | None = None
+    clientName: str | None = None
+
+
+class LinkImportRequestUpdatePayload(BaseModel):
+    status: Literal["processing", "completed", "failed"]
+    errorMessage: str = ""
+    localRunId: str | None = None
+    localDocumentId: str | None = None
+    localDocumentPath: str | None = None
+    # 桌面认领时回写实际归属客户(手机未指定时由桌面解析),仅补空不覆盖
+    clientId: str | None = None
+    clientName: str | None = None
+
+
+class LinkImportRequestRecord(BaseModel):
+    id: str
+    organizationId: str
+    url: str
+    sourceHint: str | None = None
+    clientId: str | None = None
+    clientName: str | None = None
+    status: ConsultationKnowledgeRequestStatus = "pending"
+    requestedByUserId: str
+    requestedByName: str = ""
+    errorMessage: str | None = None
+    localRunId: str | None = None
+    localDocumentId: str | None = None
+    localDocumentPath: str | None = None
+    completedAt: str | None = None
+    createdAt: str
+    updatedAt: str
+
+
 class SoftwareFeedbackCreatePayload(BaseModel):
     category: FeedbackCategory
     severity: FeedbackSeverity = "medium"

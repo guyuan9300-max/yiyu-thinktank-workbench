@@ -1398,6 +1398,31 @@ class Database:
                 CREATE INDEX IF NOT EXISTS idx_consultation_knowledge_requests_org_status
                     ON consultation_knowledge_requests(organization_id, status, updated_at DESC);
 
+                -- 手机端链接转文字中继队列: 手机提交 B站/小红书 链接 → 桌面端轮询认领,
+                -- 灌进本地 link_material_import 管线(反爬工具链在桌面),结果回写此表。
+                -- local_run_id = 桌面 import run id(认领时写入,跨轮询周期跟踪异步执行)。
+                CREATE TABLE IF NOT EXISTS link_import_requests (
+                    id TEXT PRIMARY KEY,
+                    organization_id TEXT NOT NULL,
+                    url TEXT NOT NULL,
+                    source_hint TEXT,
+                    client_id TEXT,
+                    client_name TEXT,
+                    status TEXT NOT NULL DEFAULT 'pending',
+                    requested_by_user_id TEXT NOT NULL,
+                    error_message TEXT,
+                    local_run_id TEXT,
+                    local_document_id TEXT,
+                    local_document_path TEXT,
+                    completed_at TEXT,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    FOREIGN KEY(organization_id) REFERENCES organizations(id) ON DELETE CASCADE,
+                    FOREIGN KEY(requested_by_user_id) REFERENCES employee_accounts(id) ON DELETE CASCADE
+                );
+                CREATE INDEX IF NOT EXISTS idx_link_import_requests_org_status
+                    ON link_import_requests(organization_id, status, updated_at DESC);
+
                 -- 软件内反馈 (报错/卡顿/不准/建议) → admin-v2 控制台「用户反馈」收件箱
                 -- 隐私: client_id 仅存 id 不存客户名; log_excerpt 由客户端脱敏后上报
                 CREATE TABLE IF NOT EXISTS software_feedback (
