@@ -10,7 +10,7 @@ from pathlib import Path
 # 之前 20260518001 (200 亿) 远超上限, SQLite 静默 set 为 0, 每次启动都重做完整迁移
 # (这是 20260518 那次坏 db 的真正根因之一: 重做时遇上 reload race + backfill 无事务).
 # 改用 YYYYMMDD 格式 (8 位), 每次 schema 变化递增日期. 20260519 = 此次修复.
-BACKEND_SCHEMA_VERSION = 20260607  # 合并: meeting-spine列(20260604)+local_identities(20260605)
+BACKEND_SCHEMA_VERSION = 20260613  # 合并: meeting-spine列+local_identities+software_feedback_outbox+central_feedback_delivery
 
 
 # R6：内置罗永浩写作风格的 distilled prompt（手工 distill，不依赖在线抓取，避免外部依赖）。
@@ -1717,6 +1717,26 @@ class Database:
                 );
                 CREATE INDEX IF NOT EXISTS idx_sync_outbox_queue
                     ON sync_outbox(updated_at ASC, queued_at ASC);
+
+                CREATE TABLE IF NOT EXISTS software_feedback_outbox (
+                    id TEXT PRIMARY KEY,
+                    payload_json TEXT NOT NULL DEFAULT '{}',
+                    local_feedback_id TEXT NOT NULL DEFAULT '',
+                    screenshot_path TEXT NOT NULL DEFAULT '',
+                    status TEXT NOT NULL DEFAULT 'queued',
+                    central_status TEXT NOT NULL DEFAULT 'queued',
+                    central_feedback_id TEXT NOT NULL DEFAULT '',
+                    central_attempts INTEGER NOT NULL DEFAULT 0,
+                    central_last_error TEXT NOT NULL DEFAULT '',
+                    cloud_feedback_id TEXT NOT NULL DEFAULT '',
+                    attempts INTEGER NOT NULL DEFAULT 0,
+                    last_error TEXT NOT NULL DEFAULT '',
+                    queued_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    sent_at TEXT
+                );
+                CREATE INDEX IF NOT EXISTS idx_software_feedback_outbox_queue
+                    ON software_feedback_outbox(status, updated_at ASC, queued_at ASC);
 
                 CREATE TABLE IF NOT EXISTS sync_conflicts (
                     entity_type TEXT NOT NULL,
@@ -4338,7 +4358,39 @@ class Database:
                 ON sync_outbox(updated_at ASC, queued_at ASC)
                 """
             )
+            self.conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS software_feedback_outbox (
+                    id TEXT PRIMARY KEY,
+                    payload_json TEXT NOT NULL DEFAULT '{}',
+                    local_feedback_id TEXT NOT NULL DEFAULT '',
+                    screenshot_path TEXT NOT NULL DEFAULT '',
+                    status TEXT NOT NULL DEFAULT 'queued',
+                    central_status TEXT NOT NULL DEFAULT 'queued',
+                    central_feedback_id TEXT NOT NULL DEFAULT '',
+                    central_attempts INTEGER NOT NULL DEFAULT 0,
+                    central_last_error TEXT NOT NULL DEFAULT '',
+                    cloud_feedback_id TEXT NOT NULL DEFAULT '',
+                    attempts INTEGER NOT NULL DEFAULT 0,
+                    last_error TEXT NOT NULL DEFAULT '',
+                    queued_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    sent_at TEXT
+                )
+                """
+            )
+            self.conn.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_software_feedback_outbox_queue
+                ON software_feedback_outbox(status, updated_at ASC, queued_at ASC)
+                """
+            )
             self._ensure_column("growth_evidence_records", "contribution_tags_json", "TEXT NOT NULL DEFAULT '[]'")
+            self._ensure_column("software_feedback_outbox", "local_feedback_id", "TEXT NOT NULL DEFAULT ''")
+            self._ensure_column("software_feedback_outbox", "central_status", "TEXT NOT NULL DEFAULT 'queued'")
+            self._ensure_column("software_feedback_outbox", "central_feedback_id", "TEXT NOT NULL DEFAULT ''")
+            self._ensure_column("software_feedback_outbox", "central_attempts", "INTEGER NOT NULL DEFAULT 0")
+            self._ensure_column("software_feedback_outbox", "central_last_error", "TEXT NOT NULL DEFAULT ''")
             self._ensure_column("growth_evidence_records", "org_contribution_score", "INTEGER NOT NULL DEFAULT 0")
             self._ensure_column("growth_evidence_records", "suggested_premium_rate", "REAL NOT NULL DEFAULT 0")
             self._ensure_column("growth_evidence_records", "validation_state", "TEXT NOT NULL DEFAULT 'candidate'")

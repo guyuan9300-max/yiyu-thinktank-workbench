@@ -26,9 +26,6 @@ OrgRuleActorScope = Literal["assignee", "manager", "department_lead", "organizat
 OrgWorkflowTriggerType = Literal["weekly_followup", "task_created", "meeting_closed", "client_update", "manual"]
 ConsultationKnowledgeTarget = Literal["vector_memory", "document_archive"]
 ConsultationKnowledgeRequestStatus = Literal["pending", "processing", "completed", "failed"]
-FeedbackCategory = Literal["bug", "lag", "inaccurate", "suggestion"]
-FeedbackSeverity = Literal["low", "medium", "high", "critical"]
-FeedbackStatus = Literal["open", "triaging", "in_progress", "resolved", "wontfix"]
 ReleaseChannel = Literal["internal", "beta", "stable"]
 ReleaseStatus = Literal["draft", "testing", "published", "rolled_back"]
 SmartInputIntent = Literal["task_schedule", "record_note", "unknown"]
@@ -770,55 +767,6 @@ class ConsultationKnowledgeRequestRecord(BaseModel):
     localDocumentId: str | None = None
     localDocumentPath: str | None = None
     completedAt: str | None = None
-    createdAt: str
-    updatedAt: str
-
-
-class SoftwareFeedbackCreatePayload(BaseModel):
-    category: FeedbackCategory
-    severity: FeedbackSeverity = "medium"
-    title: str = Field(min_length=1)
-    description: str = ""
-    appVersion: str | None = None
-    platform: str | None = None
-    pageRoute: str | None = None
-    deviceInfo: str | None = None
-    logExcerpt: str | None = None
-    screenshotPath: str | None = None
-    clientId: str | None = None
-    taskId: str | None = None
-
-
-class SoftwareFeedbackUpdatePayload(BaseModel):
-    status: FeedbackStatus | None = None
-    severity: FeedbackSeverity | None = None
-    assigneeUserId: str | None = None
-    targetVersion: str | None = None
-    resolutionNote: str | None = None
-
-
-class SoftwareFeedbackRecord(BaseModel):
-    id: str
-    organizationId: str
-    reporterUserId: str | None = None
-    reporterName: str = ""
-    category: FeedbackCategory
-    severity: FeedbackSeverity = "medium"
-    status: FeedbackStatus = "open"
-    title: str = ""
-    description: str = ""
-    appVersion: str | None = None
-    platform: str | None = None
-    pageRoute: str | None = None
-    deviceInfo: str | None = None
-    logExcerpt: str | None = None
-    screenshotPath: str | None = None
-    clientId: str | None = None
-    taskId: str | None = None
-    targetVersion: str | None = None
-    assigneeUserId: str | None = None
-    resolutionNote: str | None = None
-    resolvedAt: str | None = None
     createdAt: str
     updatedAt: str
 

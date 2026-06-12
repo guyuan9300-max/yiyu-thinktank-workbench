@@ -396,7 +396,6 @@ import {
   enterMaintenanceMode,
   processPendingConsultationKnowledgeRequests,
   fastForwardMain,
-  explainCollabEffects,
   previewPullFromMain,
   previewPushToMain,
   pushSafelyToMain,
@@ -7940,18 +7939,20 @@ export default function App() {
   const isLocalSession = authState.sessionMode === 'local';
   const isYiyuOfficialCloudSession = Boolean(
     isCloudSession
-    && normalizeUrlForComparison(desktopAppInfo?.cloudBackendUrl)
     && (
-      isYiyuOfficialOrganizationName(orgMembershipState.organizationName)
+      isYiyuOfficialOrganizationName(currentSessionUser?.organizationName)
+      || isYiyuOfficialOrganizationName(orgMembershipState.organizationName)
       || isYiyuOfficialOrganizationName(orgModelState.organization.name)
     ),
   );
   const canShowMaintenanceSyncPanel = Boolean(
-    isYiyuOfficialCloudSession
-    || (
-      canUseCollabSync
-      && maintenanceModeStatus?.available
-      && (maintenanceModeStatus.canEnter || maintenanceModeStatus.active)
+    canUseCollabSync
+    && (
+      isYiyuOfficialCloudSession
+      || (
+        maintenanceModeStatus?.available
+        && (maintenanceModeStatus.canEnter || maintenanceModeStatus.active)
+      )
     ),
   );
   const currentMembershipStatus = getEffectiveMembershipStatus(authState);
@@ -8735,47 +8736,6 @@ export default function App() {
     setCollabDialogError(null);
   }
 
-  async function refreshCollabAiExplanation(state: Exclude<CollabDialogState, null>) {
-    const request = state.preview.aiExplanationRequest;
-    if (!request || state.preview.aiExplanationStatus !== 'generating') return;
-    try {
-      const response = await explainCollabEffects(request);
-      setCollabDialogState((current) => {
-        if (!current || current.mode !== state.mode || current.preview.aiExplanationRequest !== request) return current;
-        const nextPreview = {
-          ...current.preview,
-          effects: response.effects.length ? response.effects : current.preview.effects,
-          aiExplanationStatus: response.effects.length ? 'ready' as const : 'failed' as const,
-          aiExplanationError: response.effects.length ? null : 'AI 没有返回可展示的功能说明。',
-        };
-        return {
-          ...current,
-          preview: nextPreview,
-        } as CollabDialogState;
-      });
-    } catch (error) {
-      const detail = error instanceof Error ? error.message : 'AI 功能说明生成失败';
-      setCollabDialogState((current) => {
-        if (!current || current.mode !== state.mode || current.preview.aiExplanationRequest !== request) return current;
-        return {
-          ...current,
-          preview: {
-            ...current.preview,
-            aiExplanationStatus: 'failed',
-            aiExplanationError: detail,
-            effects: current.preview.effects.map((effect) => effect.explanationSource === 'ai'
-              ? effect
-              : {
-                  ...effect,
-                  explanationSource: 'unavailable' as const,
-                  aiUnavailableReason: `AI 功能说明生成失败：${detail}`,
-                }),
-          },
-        } as CollabDialogState;
-      });
-    }
-  }
-
   async function ensureCollabRepoForAction() {
     if (!canUseCollabSync) {
       flash('error', '协作同步仅在桌面版可用，请在 Electron 应用中打开。');
@@ -8821,7 +8781,6 @@ export default function App() {
       const preview = await previewPushToMain(repoPath);
       const nextState = { mode: 'push' as const, preview };
       openCollabDialog(nextState);
-      void refreshCollabAiExplanation(nextState);
     } catch (error) {
       flash('error', error instanceof Error ? error.message : '推送预览失败');
     } finally {
@@ -8839,7 +8798,6 @@ export default function App() {
       const preview = await previewPullFromMain(repoPath);
       const nextState = { mode: 'pull' as const, preview };
       openCollabDialog(nextState);
-      void refreshCollabAiExplanation(nextState);
     } catch (error) {
       flash('error', error instanceof Error ? error.message : '同步预览失败');
     } finally {
@@ -8862,7 +8820,6 @@ export default function App() {
       const preview = await previewPullFromMain(repoPath, targetCommit);
       const nextState = { mode: 'pull' as const, preview };
       openCollabDialog(nextState);
-      void refreshCollabAiExplanation(nextState);
     } catch (error) {
       const message = error instanceof Error ? error.message : '按提交日期切换同步范围失败';
       if (collabDialogState?.mode === 'pull') {
@@ -10282,6 +10239,17 @@ export default function App() {
     if (!canUseCollabSync) return;
     void refreshMaintenanceModeStatus({ silent: true });
   }, [canUseCollabSync]);
+
+  useEffect(() => {
+    if (!canUseCollabSync || !isCloudSession) return;
+    void refreshMaintenanceModeStatus({ silent: true });
+  }, [
+    canUseCollabSync,
+    isCloudSession,
+    currentSessionUser?.id,
+    currentSessionUser?.organizationId,
+    currentSessionUser?.organizationName,
+  ]);
 
   useEffect(() => {
     if (canShowCollabSync) return;
@@ -20420,22 +20388,38 @@ export default function App() {
     const [filesTabSearchInput, setFilesTabSearchInput] = useState('');
     const [feishuDocumentSyncStatusById, setFeishuDocumentSyncStatusById] = useState<Record<string, FeishuSyncStatusRecord | null>>({});
     const [feishuDocumentSyncingById, setFeishuDocumentSyncingById] = useState<Record<string, boolean>>({});
-    const visibleFeishuDocumentIdsKey = useMemo(() => {
-      if (workspaceRightTab !== 'files') return '';
+    const visibleFeishuDocuments = useMemo(() => {
+      if (workspaceRightTab !== 'files') return [];
       return (workspace?.documents || [])
         .filter((doc) => Boolean(doc.id))
         .slice(0, 40)
+        .map((doc) => ({
+          id: doc.id,
+          originalSourcePath: doc.originalSourcePath || '',
+        }));
+    }, [workspaceRightTab, workspace?.documents]);
+    const visibleFeishuDocumentIdsKey = useMemo(() => {
+      return visibleFeishuDocuments
         .map((doc) => doc.id)
         .join('|');
-    }, [workspaceRightTab, workspace?.documents]);
+    }, [visibleFeishuDocuments]);
     useEffect(() => {
       if (!visibleFeishuDocumentIdsKey) return undefined;
       let cancelled = false;
-      const documentIds = visibleFeishuDocumentIdsKey.split('|').filter(Boolean);
-      const missingIds = documentIds.filter((id) => !(id in feishuDocumentSyncStatusById));
-      if (missingIds.length === 0) return undefined;
+      const documentIds = visibleFeishuDocuments.map((doc) => doc.id).filter(Boolean);
+      const documentById = new Map(visibleFeishuDocuments.map((doc) => [doc.id, doc]));
+      const idsToFetch = documentIds.filter((id) => {
+        const current = feishuDocumentSyncStatusById[id];
+        if (!(id in feishuDocumentSyncStatusById)) return true;
+        const source = (documentById.get(id)?.originalSourcePath || '').replace(/\\/g, '/');
+        const importedFromFeishu = source.includes('/_imports/feishu/');
+        if (!importedFromFeishu) return false;
+        const status = current?.status || 'idle';
+        return !['synced', 'imported_missing_mapping'].includes(status);
+      });
+      if (idsToFetch.length === 0) return undefined;
       void Promise.allSettled(
-        missingIds.map(async (documentId) => {
+        idsToFetch.map(async (documentId) => {
           try {
             const record = await getFeishuSyncStatus({
               localType: 'document',
@@ -20461,7 +20445,7 @@ export default function App() {
       return () => {
         cancelled = true;
       };
-    }, [visibleFeishuDocumentIdsKey, feishuDocumentSyncStatusById]);
+    }, [visibleFeishuDocumentIdsKey, visibleFeishuDocuments, feishuDocumentSyncStatusById]);
     const openFeishuMemberAuthorizationSettings = () => {
       setActiveTab('settings');
       setSettingsSection('overview');
@@ -26712,9 +26696,10 @@ export default function App() {
                 title: string;
                 path: string;
                 kind?: string;
-                source?: string;
-              }) => {
-                const { key, documentId, title, path, kind, source } = params;
+                  source?: string;
+                  originalSourcePath?: string | null;
+                }) => {
+                const { key, documentId, title, path, kind, source, originalSourcePath } = params;
                 const canOpen = Boolean(path) && hasOpenableFile(path);
                 const basename = path ? (path.split(/[/\\]/).pop() || '') : '';
                 const fileLabel = basename || title || '未命名资料';
@@ -26726,6 +26711,10 @@ export default function App() {
                 const feishuStatus = isCreatingFeishuDoc ? 'syncing' : (feishuSyncStatus?.status || 'idle');
                 const feishuBlockedReason = feishuSyncStatus?.details?.blockedReason;
                 const isPendingFeishuBinding = feishuStatus === 'queued' && feishuBlockedReason === 'member_authorization_required';
+                const importedFromFeishu = Boolean(
+                  feishuSyncStatus?.details?.importedFromFeishu
+                  || (originalSourcePath || '').replace(/\\/g, '/').includes('/_imports/feishu/'),
+                );
                 const isFeishuSyncable = Boolean(documentId) && isFeishuDocxSyncableDocument({ path, kind, source, title: fileLabel });
                 const renderFeishuDocxAction = () => {
                   if (!isFeishuSyncable) return null;
@@ -26736,10 +26725,13 @@ export default function App() {
                   const isDisabled =
                     feishuStatus === 'syncing'
                     || (feishuStatus === 'queued' && !isPendingFeishuBinding)
+                    || feishuStatus === 'imported_missing_mapping'
+                    || (isRetry && importedFromFeishu)
                     || feishuStatus === 'not_configured'
                     || (isSynced && !remoteUrl);
                   const statusDotClassName = (() => {
                     if (isSynced) return 'bg-emerald-500';
+                    if (feishuStatus === 'imported_missing_mapping') return 'bg-amber-500';
                     if (feishuStatus === 'failed') return 'bg-rose-500';
                     if (feishuStatus === 'queued' || feishuStatus === 'syncing') return 'bg-amber-500';
                     if (feishuStatus === 'not_configured') return 'bg-slate-400';
@@ -26748,10 +26740,12 @@ export default function App() {
                   const titleText = (() => {
                     if (isOpenableRemote) return '打开其飞书文档';
                     if (isSynced) return '已创建飞书文档，但缺少可打开链接';
+                    if (feishuStatus === 'imported_missing_mapping') return feishuSyncStatus?.message || '这份文档来自飞书，但缺少原文链接映射';
                     if (feishuStatus === 'syncing') return '正在创建飞书文档';
                     if (isPendingFeishuBinding) return '待绑定飞书后创建；点击去系统设置完成授权';
                     if (feishuStatus === 'queued') return feishuSyncStatus?.message || '飞书同步排队中';
                     if (feishuStatus === 'not_configured') return feishuSyncStatus?.message || '组织尚未配置飞书应用';
+                    if (isRetry && importedFromFeishu) return feishuSyncStatus?.message || '这份文档来自飞书，正在等待映射修复';
                     if (isRetry) return feishuSyncStatus?.message ? `重试创建飞书文档：${feishuSyncStatus.message}` : '重试创建飞书文档';
                     if (feishuStatus === 'skipped') return feishuSyncStatus?.message || '创建飞书文档';
                     return '创建飞书文档';
@@ -26766,7 +26760,9 @@ export default function App() {
                           void window.yiyuWorkbench.openExternalUrl(remoteUrl);
                           return;
                         }
-                        void handleCreateFeishuDocument({ documentId, fileLabel, path, title });
+                        if (!importedFromFeishu) {
+                          void handleCreateFeishuDocument({ documentId, fileLabel, path, title });
+                        }
                       }}
                       className={`relative rounded-lg p-1.5 transition-colors ${
                         isDisabled
@@ -26778,9 +26774,9 @@ export default function App() {
                               : 'text-slate-500 hover:text-[#5B7BFE] hover:bg-blue-50'
                       }`}
                       title={titleText}
-                      aria-label={isOpenableRemote ? '打开其飞书文档' : '创建飞书文档'}
+                      aria-label={isOpenableRemote ? '打开其飞书文档' : importedFromFeishu ? '飞书导入文档映射待修复' : '创建飞书文档'}
                     >
-                      {isOpenableRemote ? <ExternalLink size={16} /> : isRetry ? <RefreshCw size={16} /> : <UploadCloud size={16} />}
+                      {isOpenableRemote ? <ExternalLink size={16} /> : importedFromFeishu ? <ExternalLink size={16} /> : isRetry ? <RefreshCw size={16} /> : <UploadCloud size={16} />}
                       {statusDotClassName && (
                         <span className={`absolute right-0.5 top-0.5 h-1.5 w-1.5 rounded-full ring-1 ring-white ${statusDotClassName}`} />
                       )}
@@ -27007,6 +27003,7 @@ export default function App() {
                           path: doc.path,
                           kind: doc.kind,
                           source: doc.source,
+                          originalSourcePath: doc.originalSourcePath,
                           lastTouchedAt: Math.max(
                             usedAtMap.get(doc.id) || 0,
                             parseImportedMs(doc.importedAt),

@@ -173,3 +173,72 @@ def test_overdue_digest_sends_red_summary_once_per_day(tmp_path, monkeypatch):
     )
     assert len(rows) == 1
     assert str(rows[0]["delivery_status"]) == "sent_card"
+
+
+def test_overdue_digest_does_not_treat_date_only_due_today_as_overdue(tmp_path, monkeypatch):
+    client = make_client(tmp_path, monkeypatch)
+    headers, user = auth_headers(client, "admin@yiyu-system.com", "Admin123!")
+    save_org_feishu_integration(client, headers, monkeypatch)
+    seed_member_mobile(client, user["id"], "13800138000")
+
+    sent_cards: list[dict[str, object]] = []
+    configure_send_mocks(monkeypatch, sent_cards)
+
+    created = client.post(
+        "/api/v1/tasks",
+        json={
+            "title": "今天到期但还没过期的任务",
+            "description": "",
+            "priority": "normal",
+            "listId": "list-0",
+            "dueDate": "2026-04-13",
+            "collaboratorIds": [user["id"]],
+            "ownerId": user["id"],
+        },
+        headers=headers,
+    )
+    assert created.status_code == 200, created.text
+    sent_cards.clear()
+
+    service = client.app.state.app_state.feishu_notifications
+    assert service is not None
+    service.process_overdue_digest(reference_time=datetime(2026, 4, 13, 10, 0, 0))
+
+    assert sent_cards == []
+
+
+def test_overdue_digest_excludes_completed_tasks(tmp_path, monkeypatch):
+    client = make_client(tmp_path, monkeypatch)
+    headers, user = auth_headers(client, "admin@yiyu-system.com", "Admin123!")
+    save_org_feishu_integration(client, headers, monkeypatch)
+    seed_member_mobile(client, user["id"], "13800138000")
+
+    sent_cards: list[dict[str, object]] = []
+    configure_send_mocks(monkeypatch, sent_cards)
+
+    created = client.post(
+        "/api/v1/tasks",
+        json={
+            "title": "已经完成的历史任务",
+            "description": "",
+            "priority": "normal",
+            "listId": "list-0",
+            "dueDate": "2026-04-09",
+            "collaboratorIds": [user["id"]],
+            "ownerId": user["id"],
+        },
+        headers=headers,
+    )
+    assert created.status_code == 200, created.text
+    task_id = created.json()["id"]
+    client.app.state.app_state.db.execute(
+        "UPDATE tasks SET progress_status = 'done', completed_at = ?, updated_at = ? WHERE id = ?",
+        ("2026-04-10T09:30:00", now_iso(), task_id),
+    )
+    sent_cards.clear()
+
+    service = client.app.state.app_state.feishu_notifications
+    assert service is not None
+    service.process_overdue_digest(reference_time=datetime(2026, 4, 13, 10, 0, 0))
+
+    assert sent_cards == []

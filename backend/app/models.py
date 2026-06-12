@@ -1015,6 +1015,7 @@ class DocumentRecord(BaseModel):
     folderId: str | None = None
     title: str
     path: str
+    originalSourcePath: str | None = None
     kind: str
     source: str
     excerpt: str

@@ -1,8 +1,6 @@
 import { contextBridge, ipcRenderer, webUtils } from 'electron';
 import type {
   CollabActionResult,
-  CollabEffectExplanationRequest,
-  CollabEffectExplanationResponse,
   CollabRepoStatus,
   DesktopAppInfo,
   DesktopStartupGateResumeResult,
@@ -57,8 +55,6 @@ contextBridge.exposeInMainWorld('yiyuWorkbench', {
     ipcRenderer.invoke('yiyu-workbench:getCollabRepoStatus', repoPath),
   previewPushToMain: (repoPath: string): Promise<PushPreview> =>
     ipcRenderer.invoke('yiyu-workbench:previewPushToMain', repoPath),
-  explainCollabEffects: (payload: CollabEffectExplanationRequest): Promise<CollabEffectExplanationResponse> =>
-    ipcRenderer.invoke('yiyu-workbench:explainCollabEffects', payload),
   pushSafelyToMain: (payload: PushMainPayload): Promise<CollabActionResult> =>
     ipcRenderer.invoke('yiyu-workbench:pushSafelyToMain', payload),
   publishCollabBranch: (payload: PublishCollabBranchPayload): Promise<CollabActionResult> =>

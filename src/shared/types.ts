@@ -726,6 +726,7 @@ export interface DocumentRecord {
   folderId?: string | null;
   title: string;
   path: string;
+  originalSourcePath?: string | null;
   kind: string;
   // 后端实际有 30+ 种 source 值（folder/file/task_attachment/workspace_native/answer_memory_doc/auto_repair...），
   // 老 union 类型不全导致前端无法 type-safe 比较；放宽为 string，由消费方明确处理已知集合。
@@ -4852,6 +4853,7 @@ export type FeishuSyncStatus =
   | 'queued'
   | 'syncing'
   | 'synced'
+  | 'imported_missing_mapping'
   | 'failed';
 
 export interface FeishuSyncStatusRecord {
@@ -7108,28 +7110,8 @@ export interface CollabEffectPreview {
   relatedPaths: string[];
   beforeLabel?: string | null;
   afterLabel?: string | null;
-  explanationSource?: 'ai' | 'user_feature_rules' | 'unavailable';
-  aiUnavailableReason?: string | null;
+  explanationSource?: 'user_feature_rules';
 }
-
-export interface CollabEffectExplanationRequest {
-  mode: 'push' | 'pull';
-  suggestedMessage: string;
-  syncTargetLabel?: string | null;
-  commitSummaries: string[];
-  diffPreview: string;
-  groups: CollabChangeGroup[];
-  files: CollabFileChange[];
-  fallbackEffects: CollabEffectPreview[];
-}
-
-export interface CollabEffectExplanationResponse {
-  effects: CollabEffectPreview[];
-  provider?: string | null;
-  model?: string | null;
-}
-
-export type CollabAiExplanationStatus = 'skipped' | 'generating' | 'ready' | 'failed';
 
 export interface CollabRepoStatus {
   repoPath: string | null;
@@ -7155,9 +7137,6 @@ export interface PushPreview {
   status: CollabRepoStatus;
   suggestedMessage: string;
   effects: CollabEffectPreview[];
-  aiExplanationStatus?: CollabAiExplanationStatus;
-  aiExplanationError?: string | null;
-  aiExplanationRequest?: CollabEffectExplanationRequest | null;
   groups: CollabChangeGroup[];
   files: CollabFileChange[];
   suggestedCollabBranchName?: string | null;
@@ -7176,9 +7155,6 @@ export interface PullPreview {
   canFastForwardMain?: boolean;
   directReceiveBlockReason?: string | null;
   effects: CollabEffectPreview[];
-  aiExplanationStatus?: CollabAiExplanationStatus;
-  aiExplanationError?: string | null;
-  aiExplanationRequest?: CollabEffectExplanationRequest | null;
   groups: CollabChangeGroup[];
   files: CollabFileChange[];
   notice?: string | null;
@@ -8007,7 +7983,6 @@ declare global {
       selectCollabRepo(): Promise<string | null>;
       getCollabRepoStatus(repoPath?: string | null): Promise<CollabRepoStatus>;
       previewPushToMain(repoPath: string): Promise<PushPreview>;
-      explainCollabEffects(payload: CollabEffectExplanationRequest): Promise<CollabEffectExplanationResponse>;
       pushSafelyToMain(payload: PushMainPayload): Promise<CollabActionResult>;
       publishCollabBranch(payload: PublishCollabBranchPayload): Promise<CollabActionResult>;
       previewPullFromMain(repoPath: string, targetCommit?: string | null): Promise<PullPreview>;
