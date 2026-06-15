@@ -24433,6 +24433,54 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                     to_json({"eventType": "created"}),
                 ),
             )
+        session_user_for_collab = get_cached_session_user()
+        collaborator_ids_for_local = list(dict.fromkeys(payload.collaboratorIds or []))
+        if resolved_owner_id:
+            collaborator_ids_for_local = [
+                resolved_owner_id,
+                *[uid for uid in collaborator_ids_for_local if uid != resolved_owner_id],
+            ]
+        elif not collaborator_ids_for_local and session_user_for_collab:
+            collaborator_ids_for_local = [session_user_for_collab.id]
+        local_org_id = session_user_for_collab.organizationId if session_user_for_collab else ""
+        for idx, collaborator_id in enumerate(collaborator_ids_for_local):
+            normalized_collaborator_id = str(collaborator_id or "").strip()
+            if not normalized_collaborator_id:
+                continue
+            is_owner = bool(resolved_owner_id and normalized_collaborator_id == resolved_owner_id)
+            is_self = bool(session_user_for_collab and normalized_collaborator_id == session_user_for_collab.id)
+            operator_row = state.db.fetchone("SELECT name FROM operators WHERE id = ?", (normalized_collaborator_id,))
+            full_name = (
+                resolved_owner_name
+                if is_owner and resolved_owner_name
+                else session_user_for_collab.fullName
+                if is_self and session_user_for_collab
+                else str(operator_row["name"])
+                if operator_row and operator_row["name"]
+                else ""
+            )
+            state.db.execute(
+                """
+                INSERT OR IGNORE INTO task_collaborators(
+                    task_id, organization_id, user_id, full_name, email,
+                    order_index, is_owner, inbox_status, return_reason, handled_at,
+                    created_at, updated_at
+                ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?)
+                """,
+                (
+                    task_id,
+                    local_org_id,
+                    normalized_collaborator_id,
+                    full_name,
+                    "",
+                    idx,
+                    1 if is_owner else 0,
+                    "accepted" if is_owner or is_self else "pending",
+                    timestamp if is_owner or is_self else None,
+                    timestamp,
+                    timestamp,
+                ),
+            )
         log_activity("task.create", "task", task_id, payload.model_dump())
         created_task = fetch_tasks("t.id = ?", (task_id,))[0]
         _safe_data_center_ingest(
@@ -24463,8 +24511,8 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         # --- ASYNC CLOUD SYNC: push to cloud in background, never block the user ---
         if has_cloud:
             session_user = get_cached_session_user()
-            collaborator_ids = payload.collaboratorIds or ([session_user.id] if session_user else [])
-            owner_id = payload.ownerId or (collaborator_ids[0] if collaborator_ids else None)
+            collaborator_ids = collaborator_ids_for_local or ([session_user.id] if session_user else [])
+            owner_id = resolved_owner_id or (collaborator_ids[0] if collaborator_ids else None)
             cloud_payload = {
                 # 关键：把本地 task_id 作为云端 task id（cloud_backend TaskCreatePayload.id 已支持）。
                 # 不传 id 时云端会 new_id() 生成新 id —— 一旦 POST 响应丢失 / 超时，下次 pull 时
@@ -36485,9 +36533,33 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             return _drill_target_response_for_attachment_group(target)
         raise HTTPException(status_code=400, detail=f"Unsupported dashboard drill target: {target.targetType}")
 
+    def _task_plan_link_cloud_task_id(task_id: str) -> str:
+        row = state.db.fetchone(
+            "SELECT id, cloud_id FROM tasks WHERE id = ? OR cloud_id = ? ORDER BY updated_at DESC LIMIT 1",
+            (task_id, task_id),
+        )
+        if not row:
+            return task_id
+        return str(row["cloud_id"] or row["id"] or task_id).strip() or task_id
+
+    def _is_cloud_task_not_found(exc: HTTPException) -> bool:
+        if exc.status_code != 404:
+            return False
+        detail = exc.detail
+        detail_text = json.dumps(detail, ensure_ascii=False) if isinstance(detail, (dict, list)) else str(detail or "")
+        return "Task not found" in detail_text or "任务不存在" in detail_text
+
     @app.get("/api/v1/tasks/{task_id}/plan-link", response_model=TaskPlanLinkRecord | None)
     def read_task_plan_link(task_id: str) -> TaskPlanLinkRecord | None:
-        response = cloud_request("GET", f"/api/v1/tasks/{task_id}/plan-link")
+        if not get_cloud_token():
+            return None
+        cloud_task_id = _task_plan_link_cloud_task_id(task_id)
+        try:
+            response = cloud_request("GET", f"/api/v1/tasks/{cloud_task_id}/plan-link")
+        except HTTPException as exc:
+            if _is_cloud_task_not_found(exc):
+                return None
+            raise
         if response is None:
             return None
         if not isinstance(response, dict):
@@ -36496,7 +36568,15 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
 
     @app.post("/api/v1/tasks/{task_id}/plan-link/recompute", response_model=TaskPlanLinkRecord | None)
     def recompute_task_plan_link(task_id: str) -> TaskPlanLinkRecord | None:
-        response = cloud_request("POST", f"/api/v1/tasks/{task_id}/plan-link/recompute")
+        if not get_cloud_token():
+            return None
+        cloud_task_id = _task_plan_link_cloud_task_id(task_id)
+        try:
+            response = cloud_request("POST", f"/api/v1/tasks/{cloud_task_id}/plan-link/recompute")
+        except HTTPException as exc:
+            if _is_cloud_task_not_found(exc):
+                return None
+            raise
         if response is None:
             return None
         if not isinstance(response, dict):
@@ -36505,7 +36585,15 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
 
     @app.patch("/api/v1/tasks/{task_id}/plan-link", response_model=TaskPlanLinkRecord | None)
     def patch_task_plan_link(task_id: str, payload: TaskPlanLinkUpsertPayload) -> TaskPlanLinkRecord | None:
-        response = cloud_request("PATCH", f"/api/v1/tasks/{task_id}/plan-link", json_body=payload.model_dump())
+        if not get_cloud_token():
+            return None
+        cloud_task_id = _task_plan_link_cloud_task_id(task_id)
+        try:
+            response = cloud_request("PATCH", f"/api/v1/tasks/{cloud_task_id}/plan-link", json_body=payload.model_dump())
+        except HTTPException as exc:
+            if _is_cloud_task_not_found(exc):
+                raise HTTPException(status_code=409, detail="任务尚未同步到云端，请稍后再试") from exc
+            raise
         if response is None:
             return None
         if not isinstance(response, dict):
