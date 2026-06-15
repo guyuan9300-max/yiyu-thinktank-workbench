@@ -9990,15 +9990,18 @@ class FeishuNotificationService:
             """
             SELECT DISTINCT t.id, t.title, t.due_date, t.progress_status, t.completed_at
             FROM tasks t
-            LEFT JOIN task_collaborators tc ON tc.task_id = t.id
+            LEFT JOIN task_collaborators tc ON tc.task_id = t.id AND tc.user_id = ?
             WHERE t.organization_id = ?
               AND COALESCE(t.progress_status, '') NOT IN ('done', 'rejected', 'cancelled')
               AND (t.completed_at IS NULL OR t.completed_at = '')
               AND t.due_date IS NOT NULL
-              AND (t.owner_id = ? OR tc.user_id = ?)
+              AND (
+                t.owner_id = ?
+                OR (tc.user_id IS NOT NULL AND COALESCE(tc.inbox_status, '') != 'accepted')
+              )
             ORDER BY t.due_date ASC, t.created_at ASC
             """,
-            (organization_id, user_id, user_id),
+            (user_id, organization_id, user_id),
         )
         overdue: list[dict[str, str]] = []
         for row in rows:
