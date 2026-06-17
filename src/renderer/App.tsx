@@ -1637,6 +1637,7 @@ function aiRouteLabel(provider?: AiProvider | string | null, model?: string | nu
 }
 
 const CLOUD_API_URL_PREFIX = 'http://';
+const FEISHU_LOCAL_CALDAV_HELP_URL = 'https://www.feishu.cn/hc/zh-CN/articles/360043178673-%E8%AE%BE%E7%BD%AE%E6%9C%AC%E5%9C%B0%E7%B3%BB%E7%BB%9F%E6%97%A5%E5%8E%86%E4%B8%8E%E9%A3%9E%E4%B9%A6%E6%97%A5%E5%8E%86%E4%B9%8B%E9%97%B4%E7%9A%84%E5%90%8C%E6%AD%A5';
 
 function cloudApiHostValue(rawUrl?: string | null) {
   return String(rawUrl || '')
@@ -19461,6 +19462,21 @@ export default function App() {
                       </select>
                     </TaskPropertyRow>
 
+                    <div className="rounded-xl border border-blue-100 bg-blue-50/70 px-3 py-2 text-[11px] leading-5 text-slate-600">
+                      <p>
+                        接通飞书后，带时间的协作任务会同步为飞书任务和飞书日历提醒；飞书任务新建或修改后通常会在约 1 分钟内同步到益语，请耐心等待。益语任务和飞书任务任选其一创建即可；手机系统日历只用于提醒，修改请回益语任务或飞书任务。
+                      </p>
+                      <a
+                        href={FEISHU_LOCAL_CALDAV_HELP_URL}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="mt-1 inline-flex items-center gap-1 font-bold text-blue-700 hover:text-blue-800"
+                      >
+                        <ExternalLink size={11} />
+                        飞书日历同步官方指引
+                      </a>
+                    </div>
+
                     {/* AUDIT-20260518-017: 组织任务清单已废弃,任务组织改由事件线、部门计划、
                           项目模板/标准流程承接. 只在"个人日程"模式下保留 select(个人轻量分类),
                           组织任务里不再展示这个字段, 用户也不能再误选已废弃的清单.
@@ -29827,8 +29843,7 @@ export default function App() {
             {renderFoldable({
               key: 'feishu',
               eyebrow: 'FEISHU · 飞书集成',
-              title: '组织应用 · 成员文档授权 · 通知投递',
-              helper: '组织应用由管理员配置；成员文档授权用于创建/导入飞书文档；任务提醒手机号只用于机器人通知。',
+              title: '飞书自建应用 · 身份绑定',
               statusChip: feishuConfigured
                 ? { text: '已接通', tone: 'success' }
                 : { text: '未接通', tone: 'neutral' },

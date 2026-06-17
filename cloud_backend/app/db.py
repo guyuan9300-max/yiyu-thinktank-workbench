@@ -1304,6 +1304,25 @@ class Database:
                 CREATE INDEX IF NOT EXISTS idx_org_feishu_sync_outbox_due
                     ON org_feishu_sync_outbox(organization_id, sync_status, due_at, updated_at DESC);
 
+                CREATE TABLE IF NOT EXISTS org_feishu_task_inbound_cursors (
+                    organization_id TEXT NOT NULL,
+                    user_id TEXT NOT NULL,
+                    open_id TEXT NOT NULL DEFAULT '',
+                    inbound_started_at TEXT NOT NULL,
+                    cursor_updated_at TEXT NOT NULL DEFAULT '',
+                    last_success_at TEXT,
+                    last_checked_at TEXT,
+                    last_error TEXT NOT NULL DEFAULT '',
+                    last_seen_remote_ids_json TEXT NOT NULL DEFAULT '[]',
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    PRIMARY KEY (organization_id, user_id),
+                    FOREIGN KEY(organization_id) REFERENCES organizations(id) ON DELETE CASCADE,
+                    FOREIGN KEY(user_id) REFERENCES employee_accounts(id) ON DELETE CASCADE
+                );
+                CREATE INDEX IF NOT EXISTS idx_org_feishu_task_inbound_cursors_org
+                    ON org_feishu_task_inbound_cursors(organization_id, updated_at DESC);
+
                 CREATE TABLE IF NOT EXISTS org_feishu_query_logs (
                     id TEXT PRIMARY KEY,
                     organization_id TEXT NOT NULL,
@@ -1537,6 +1556,29 @@ class Database:
             self._ensure_column("feishu_binding_relay_sessions", "relay_callback_url", "TEXT NOT NULL DEFAULT ''")
             self._ensure_column("task_attachments", "document_id", "TEXT")
             self._ensure_column("event_line_attachments", "document_id", "TEXT")
+            self.conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS org_feishu_task_inbound_cursors (
+                    organization_id TEXT NOT NULL,
+                    user_id TEXT NOT NULL,
+                    open_id TEXT NOT NULL DEFAULT '',
+                    inbound_started_at TEXT NOT NULL,
+                    cursor_updated_at TEXT NOT NULL DEFAULT '',
+                    last_success_at TEXT,
+                    last_checked_at TEXT,
+                    last_error TEXT NOT NULL DEFAULT '',
+                    last_seen_remote_ids_json TEXT NOT NULL DEFAULT '[]',
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    PRIMARY KEY (organization_id, user_id),
+                    FOREIGN KEY(organization_id) REFERENCES organizations(id) ON DELETE CASCADE,
+                    FOREIGN KEY(user_id) REFERENCES employee_accounts(id) ON DELETE CASCADE
+                )
+                """
+            )
+            self.conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_org_feishu_task_inbound_cursors_org ON org_feishu_task_inbound_cursors(organization_id, updated_at DESC)"
+            )
 
             # 主线还原 LLM 叙事 (P1) — AI 把碎片素材重组成 3-5 个关键转折点
             self.conn.executescript(

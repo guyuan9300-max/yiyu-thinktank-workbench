@@ -5,6 +5,7 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
 import pytest
+from fastapi import HTTPException
 from fastapi.testclient import TestClient
 
 sys.path.append(str(Path(__file__).resolve().parents[1]))
@@ -34,6 +35,31 @@ def stub_feishu_task_center(monkeypatch):
         cloud_main,
         "_feishu_add_task_members",
         lambda *, tenant_access_token, task_guid, members: {"code": 0, "data": {}},
+    )
+    monkeypatch.setattr(
+        cloud_main,
+        "_feishu_create_calendar_event",
+        lambda *, tenant_access_token, calendar_id, body: {"code": 0, "data": {"event": {"event_id": "evt_auto_mirror"}}},
+    )
+    monkeypatch.setattr(
+        cloud_main,
+        "_feishu_update_calendar_event",
+        lambda *, tenant_access_token, calendar_id, event_id, body: {"code": 0, "data": {"event": {"event_id": event_id}}},
+    )
+    monkeypatch.setattr(
+        cloud_main,
+        "_feishu_delete_calendar_event",
+        lambda *, tenant_access_token, calendar_id, event_id: {"code": 0},
+    )
+    monkeypatch.setattr(
+        cloud_main,
+        "_feishu_list_calendar_event_attendees",
+        lambda *, tenant_access_token, calendar_id, event_id: {"code": 0, "data": {"items": []}},
+    )
+    monkeypatch.setattr(
+        cloud_main,
+        "_feishu_create_calendar_event_attendees",
+        lambda *, tenant_access_token, calendar_id, event_id, open_ids, need_notification=False: {"code": 0, "data": {"items": []}},
     )
     monkeypatch.setattr(
         cloud_main,
@@ -137,6 +163,44 @@ def bind_user_to_feishu(client: TestClient, organization_id: str, user_id: str, 
         receive_id=receive_id,
         match_status="matched",
         last_error=None,
+    )
+
+
+def authorize_user_to_feishu(client: TestClient, organization_id: str, user_id: str, receive_id: str) -> None:
+    state = client.app.state.app_state
+    timestamp = cloud_main.now_iso()
+    state.db.execute(
+        """
+        INSERT INTO org_feishu_member_authorizations(
+            organization_id, user_id, app_id, open_id, authorized_at, last_verified_at, updated_at
+        ) VALUES(?, ?, 'cli_demo_app', ?, ?, ?, ?)
+        ON CONFLICT(organization_id, user_id) DO UPDATE SET
+            app_id = excluded.app_id,
+            open_id = excluded.open_id,
+            authorized_at = excluded.authorized_at,
+            last_verified_at = excluded.last_verified_at,
+            updated_at = excluded.updated_at
+        """,
+        (organization_id, user_id, receive_id, timestamp, timestamp, timestamp),
+    )
+    bind_user_to_feishu(client, organization_id, user_id, receive_id)
+
+
+def seed_feishu_inbound_cursor(client: TestClient, organization_id: str, user_id: str, open_id: str, since: str = "2026-05-01T00:00:00+08:00") -> None:
+    state = client.app.state.app_state
+    timestamp = cloud_main.now_iso()
+    state.db.execute(
+        """
+        INSERT INTO org_feishu_task_inbound_cursors(
+            organization_id, user_id, open_id, inbound_started_at, cursor_updated_at,
+            last_success_at, last_checked_at, last_error, last_seen_remote_ids_json, created_at, updated_at
+        ) VALUES(?, ?, ?, ?, ?, NULL, NULL, '', '[]', ?, ?)
+        ON CONFLICT(organization_id, user_id) DO UPDATE SET
+            open_id = excluded.open_id,
+            cursor_updated_at = excluded.cursor_updated_at,
+            updated_at = excluded.updated_at
+        """,
+        (organization_id, user_id, open_id, since, since, timestamp, timestamp),
     )
 
 
@@ -249,7 +313,7 @@ def create_task(client: TestClient, headers: dict[str, str], **overrides) -> str
     return response.json()["id"]
 
 
-def test_create_task_does_not_create_extra_calendar_event_when_task_center_is_primary(tmp_path, monkeypatch):
+def test_create_task_creates_calendar_mirror_after_task_center_sync(tmp_path, monkeypatch):
     client = make_client(tmp_path, monkeypatch)
     headers = auth_headers(client)
     save_org_feishu_integration(client, headers, monkeypatch)
@@ -269,7 +333,9 @@ def test_create_task_does_not_create_extra_calendar_event_when_task_center_is_pr
         scheduledEndAt="2026-05-26T11:00",
     )
 
-    assert created_events == []
+    assert created_events
+    assert created_events[0]["summary"] == "同步到飞书日历"
+    assert created_events[0]["reminders"] == [{"minutes": 0}]
     status = client.get(
         "/api/v1/feishu-sync/status",
         params={"localType": "task", "localId": task_id, "remoteType": "calendar_event"},
@@ -277,10 +343,10 @@ def test_create_task_does_not_create_extra_calendar_event_when_task_center_is_pr
     )
     assert status.status_code == 200, status.text
     payload = status.json()
-    assert payload["status"] == "skipped"
-    assert payload["remoteId"] is None
-    assert payload["details"]["calendarSyncRetired"] is True
-    assert payload["details"]["triggerSource"].endswith("calendar_route_retired") or payload["details"]["triggerSource"].endswith("task_center_primary")
+    assert payload["status"] == "synced"
+    assert payload["remoteId"] == "evt_auto_create"
+    assert payload["details"]["calendarMirror"] is True
+    assert payload["details"]["calendarMode"] == "scheduled"
 
 
 def test_task_center_sync_adds_owner_and_collaborators_as_feishu_assignees(tmp_path, monkeypatch):
@@ -366,6 +432,73 @@ def test_create_task_auto_syncs_feishu_task_center_when_user_is_matched(tmp_path
     assert payload["details"]["taskMemberSyncStatus"] == "synced"
 
 
+def test_create_task_syncs_feishu_task_center_even_without_matched_member(tmp_path, monkeypatch):
+    client = make_client(tmp_path, monkeypatch)
+    headers = auth_headers(client)
+    save_org_feishu_integration(client, headers, monkeypatch)
+    monkeypatch.setattr(cloud_main, "_feishu_fetch_tenant_access_token", lambda **_: ("tenant_demo", {"code": 0}))
+    created_bodies: list[dict] = []
+    monkeypatch.setattr(
+        cloud_main,
+        "_feishu_create_task",
+        lambda *, tenant_access_token, body: created_bodies.append(body)
+        or {"code": 0, "data": {"task": {"guid": "task_guid_missing_member", "url": "https://applink.feishu.cn/client/todo/detail?guid=task_guid_missing_member"}}},
+    )
+
+    task_id = create_task(client, headers, dueDate="2026-05-28")
+
+    assert created_bodies
+    assert created_bodies[0]["members"] == []
+    status = client.get(
+        "/api/v1/feishu-sync/status",
+        params={"localType": "task", "localId": task_id, "remoteType": "feishu_task"},
+        headers=headers,
+    )
+    assert status.status_code == 200, status.text
+    payload = status.json()
+    assert payload["status"] == "synced"
+    assert payload["remoteId"] == "task_guid_missing_member"
+    assert payload["details"]["taskMemberSyncStatus"] == "missing_members"
+    assert payload["details"]["taskMemberOpenIdCount"] == 0
+    assert payload["details"]["taskMemberMissingUserCount"] >= 1
+    assert "飞书账号手机号" in payload["details"]["taskMemberSyncMessage"]
+
+
+def test_create_task_syncs_feishu_task_center_with_partial_member_match(tmp_path, monkeypatch):
+    client = make_client(tmp_path, monkeypatch)
+    headers = auth_headers(client)
+    profile = client.get("/api/v1/auth/me", headers=headers)
+    assert profile.status_code == 200, profile.text
+    organization_id = profile.json()["organizationId"]
+    owner_id = bind_current_user_to_feishu(client, headers, receive_id="ou_task_owner_partial")
+    collaborator_id = another_employee_id(client, organization_id, owner_id)
+    save_org_feishu_integration(client, headers, monkeypatch)
+    monkeypatch.setattr(cloud_main, "_feishu_fetch_tenant_access_token", lambda **_: ("tenant_demo", {"code": 0}))
+    created_bodies: list[dict] = []
+    monkeypatch.setattr(
+        cloud_main,
+        "_feishu_create_task",
+        lambda *, tenant_access_token, body: created_bodies.append(body)
+        or {"code": 0, "data": {"task": {"guid": "task_guid_partial_member", "url": "https://applink.feishu.cn/client/todo/detail?guid=task_guid_partial_member"}}},
+    )
+
+    task_id = create_task(client, headers, ownerId=owner_id, collaboratorIds=[owner_id, collaborator_id], dueDate="2026-05-28")
+
+    assert created_bodies
+    assert created_bodies[0]["members"] == [{"id": "ou_task_owner_partial", "type": "user", "role": "assignee"}]
+    status = client.get(
+        "/api/v1/feishu-sync/status",
+        params={"localType": "task", "localId": task_id, "remoteType": "feishu_task"},
+        headers=headers,
+    )
+    assert status.status_code == 200, status.text
+    payload = status.json()
+    assert payload["status"] == "synced"
+    assert payload["details"]["taskMemberSyncStatus"] == "partial"
+    assert payload["details"]["taskMemberOpenIdCount"] == 1
+    assert payload["details"]["taskMemberMissingUserCount"] >= 1
+
+
 def test_update_task_auto_updates_feishu_task_center_completion_and_members(tmp_path, monkeypatch):
     client = make_client(tmp_path, monkeypatch)
     headers = auth_headers(client)
@@ -392,7 +525,22 @@ def test_update_task_auto_updates_feishu_task_center_completion_and_members(tmp_
         "_feishu_add_task_members",
         lambda *, tenant_access_token, task_guid, members: added_members.append({"task_guid": task_guid, "members": members}) or {"code": 0},
     )
+    calendar_updates: list[dict] = []
+    calendar_deletes: list[str] = []
+    monkeypatch.setattr(
+        cloud_main,
+        "_feishu_update_calendar_event",
+        lambda *, tenant_access_token, calendar_id, event_id, body: calendar_updates.append({"event_id": event_id, "body": body})
+        or {"code": 0, "data": {"event": {"event_id": event_id}}},
+    )
+    monkeypatch.setattr(
+        cloud_main,
+        "_feishu_delete_calendar_event",
+        lambda *, tenant_access_token, calendar_id, event_id: calendar_deletes.append(event_id) or {"code": 0},
+    )
     task_id = create_task(client, headers, ownerId=user_id, dueDate="2026-05-28")
+    calendar_updates.clear()
+    calendar_deletes.clear()
 
     response = client.patch(
         f"/api/v1/tasks/{task_id}",
@@ -410,6 +558,788 @@ def test_update_task_auto_updates_feishu_task_center_completion_and_members(tmp_
     assert added_members == [
         {"task_guid": "task_guid_update", "members": [{"id": "ou_task_owner", "type": "user", "role": "assignee"}]}
     ]
+    assert calendar_updates == []
+    assert calendar_deletes == []
+
+
+def test_update_inbound_feishu_task_falls_back_to_member_invoker_when_tenant_unauthorized(tmp_path, monkeypatch):
+    client = make_client(tmp_path, monkeypatch)
+    headers = auth_headers(client)
+    user_id = bind_current_user_to_feishu(client, headers, receive_id="ou_member_invoker")
+    save_org_feishu_integration(client, headers, monkeypatch)
+    monkeypatch.setattr(cloud_main, "_feishu_fetch_tenant_access_token", lambda **_: ("tenant_demo", {"code": 0}))
+    task_id = create_task(client, headers, ownerId=user_id, dueDate="2026-05-28")
+    state = client.app.state.app_state
+    state.db.execute(
+        """
+        UPDATE org_feishu_sync_mappings
+        SET remote_id = 'task_guid_user_created', remote_url = 'https://applink.feishu.cn/client/todo/detail?guid=task_guid_user_created'
+        WHERE local_id = ? AND remote_type = 'feishu_task'
+        """,
+        (task_id,),
+    )
+
+    monkeypatch.setattr(
+        cloud_main,
+        "_feishu_update_task",
+        lambda **kwargs: (_ for _ in ()).throw(
+            HTTPException(status_code=400, detail="Invoker is unauthorized to update a task for the task with guid 'task_guid_user_created'.")
+        ),
+    )
+    monkeypatch.setattr(cloud_main, "_feishu_member_access_token_for_user", lambda *args, **kwargs: "user_access_demo")
+    user_updates: list[dict] = []
+    monkeypatch.setattr(
+        cloud_main,
+        "_feishu_update_task_as_user",
+        lambda *, user_access_token, task_guid, body, update_fields: user_updates.append(
+            {"user_access_token": user_access_token, "task_guid": task_guid, "body": body, "update_fields": update_fields}
+        )
+        or {"code": 0, "data": {"task": {"guid": task_guid, "url": "https://applink.feishu.cn/client/todo/detail?guid=task_guid_user_created"}}},
+    )
+
+    response = client.patch(f"/api/v1/tasks/{task_id}", json={"progressStatus": "done"}, headers=headers)
+
+    assert response.status_code == 200, response.text
+    assert user_updates
+    assert user_updates[0]["user_access_token"] == "user_access_demo"
+    assert user_updates[0]["task_guid"] == "task_guid_user_created"
+    assert user_updates[0]["body"]["completed_at"] > 0
+    outbox = state.db.fetchone(
+        "SELECT * FROM org_feishu_sync_outbox WHERE local_id = ? AND remote_type = 'feishu_task'",
+        (task_id,),
+    )
+    assert outbox is None
+    mapping = state.db.fetchone(
+        "SELECT * FROM org_feishu_sync_mappings WHERE local_id = ? AND remote_type = 'feishu_task'",
+        (task_id,),
+    )
+    assert mapping["sync_status"] == "synced"
+    assert '"taskUpdateInvoker": "member_user"' in str(mapping["metadata_json"])
+
+
+def test_failed_feishu_task_sync_is_retried_from_outbox(tmp_path, monkeypatch):
+    client = make_client(tmp_path, monkeypatch)
+    headers = auth_headers(client)
+    user_id = bind_current_user_to_feishu(client, headers, receive_id="ou_retry_task_owner")
+    save_org_feishu_integration(client, headers, monkeypatch)
+    monkeypatch.setattr(cloud_main, "_feishu_fetch_tenant_access_token", lambda **_: ("tenant_demo", {"code": 0}))
+
+    def fail_create_task(*, tenant_access_token, body):
+        raise RuntimeError("task api temporarily unavailable")
+
+    monkeypatch.setattr(cloud_main, "_feishu_create_task", fail_create_task)
+    task_id = create_task(client, headers, ownerId=user_id, dueDate="2026-05-28")
+    state = client.app.state.app_state
+    row = state.db.fetchone(
+        "SELECT * FROM org_feishu_sync_outbox WHERE local_type = 'task' AND local_id = ? AND action = 'retry_task_sync'",
+        (task_id,),
+    )
+    assert row is not None
+    assert row["sync_status"] == "failed"
+    status = client.get(
+        "/api/v1/feishu-sync/status",
+        params={"localType": "task", "localId": task_id, "remoteType": "feishu_task"},
+        headers=headers,
+    )
+    assert status.json()["status"] == "failed"
+
+    monkeypatch.setattr(
+        cloud_main,
+        "_feishu_create_task",
+        lambda *, tenant_access_token, body: {"code": 0, "data": {"task": {"guid": "task_guid_retry", "url": "https://applink.feishu.cn/client/todo/detail?guid=task_guid_retry"}}},
+    )
+
+    processed = cloud_main._process_feishu_sync_outbox_once(state)  # noqa: SLF001
+    retried = state.db.fetchone(
+        "SELECT * FROM org_feishu_sync_outbox WHERE local_type = 'task' AND local_id = ? AND action = 'retry_task_sync'",
+        (task_id,),
+    )
+
+    assert processed == 1
+    assert retried["sync_status"] == "synced"
+    status = client.get(
+        "/api/v1/feishu-sync/status",
+        params={"localType": "task", "localId": task_id, "remoteType": "feishu_task"},
+        headers=headers,
+    )
+    payload = status.json()
+    assert payload["status"] == "synced"
+    assert payload["remoteId"] == "task_guid_retry"
+
+
+def test_failed_calendar_mirror_sync_is_retried_from_outbox(tmp_path, monkeypatch):
+    client = make_client(tmp_path, monkeypatch)
+    headers = auth_headers(client)
+    user_id = bind_current_user_to_feishu(client, headers, receive_id="ou_calendar_retry_owner")
+    save_org_feishu_integration(client, headers, monkeypatch)
+    monkeypatch.setattr(cloud_main, "_feishu_fetch_tenant_access_token", lambda **_: ("tenant_demo", {"code": 0}))
+
+    def fail_create_calendar(*, tenant_access_token, calendar_id, body):
+        raise RuntimeError("calendar api temporarily unavailable")
+
+    monkeypatch.setattr(cloud_main, "_feishu_create_calendar_event", fail_create_calendar)
+    task_id = create_task(client, headers, ownerId=user_id, scheduledStartAt="2026-05-28T09:00")
+    state = client.app.state.app_state
+    row = state.db.fetchone(
+        "SELECT * FROM org_feishu_sync_outbox WHERE local_type = 'task' AND local_id = ? AND action = 'retry_calendar_sync'",
+        (task_id,),
+    )
+    assert row is not None
+    assert row["sync_status"] == "failed"
+    status = client.get(
+        "/api/v1/feishu-sync/status",
+        params={"localType": "task", "localId": task_id, "remoteType": "calendar_event"},
+        headers=headers,
+    )
+    assert status.json()["status"] == "failed"
+
+    monkeypatch.setattr(
+        cloud_main,
+        "_feishu_create_calendar_event",
+        lambda *, tenant_access_token, calendar_id, body: {"code": 0, "data": {"event": {"event_id": "evt_retry_mirror"}}},
+    )
+
+    processed = cloud_main._process_feishu_sync_outbox_once(state)  # noqa: SLF001
+    retried = state.db.fetchone(
+        "SELECT * FROM org_feishu_sync_outbox WHERE local_type = 'task' AND local_id = ? AND action = 'retry_calendar_sync'",
+        (task_id,),
+    )
+
+    assert processed == 1
+    assert retried["sync_status"] == "synced"
+    status = client.get(
+        "/api/v1/feishu-sync/status",
+        params={"localType": "task", "localId": task_id, "remoteType": "calendar_event"},
+        headers=headers,
+    )
+    payload = status.json()
+    assert payload["status"] == "synced"
+    assert payload["remoteId"] == "evt_retry_mirror"
+
+
+def test_feishu_task_remote_id_conflict_is_blocked_without_rebinding(tmp_path, monkeypatch):
+    client = make_client(tmp_path, monkeypatch)
+    headers = auth_headers(client)
+    user_id = bind_current_user_to_feishu(client, headers, receive_id="ou_task_conflict")
+    save_org_feishu_integration(client, headers, monkeypatch)
+    monkeypatch.setattr(cloud_main, "_feishu_fetch_tenant_access_token", lambda **_: ("tenant_demo", {"code": 0}))
+    monkeypatch.setattr(
+        cloud_main,
+        "_feishu_create_task",
+        lambda *, tenant_access_token, body: {
+            "code": 0,
+            "data": {"task": {"guid": "task_guid_shared", "url": "https://applink.feishu.cn/client/todo/detail?guid=task_guid_shared"}},
+        },
+    )
+
+    first_task_id = create_task(client, headers, ownerId=user_id, dueDate="2026-05-28")
+    second_task_id = create_task(client, headers, ownerId=user_id, dueDate="2026-05-29")
+
+    first_status = client.get(
+        "/api/v1/feishu-sync/status",
+        params={"localType": "task", "localId": first_task_id, "remoteType": "feishu_task"},
+        headers=headers,
+    )
+    second_status = client.get(
+        "/api/v1/feishu-sync/status",
+        params={"localType": "task", "localId": second_task_id, "remoteType": "feishu_task"},
+        headers=headers,
+    )
+    assert first_status.json()["status"] == "synced"
+    assert first_status.json()["remoteId"] == "task_guid_shared"
+    payload = second_status.json()
+    assert payload["status"] == "mapping_conflict"
+    assert payload["remoteId"] is None
+    assert payload["details"]["conflictRemoteId"] == "task_guid_shared"
+    assert payload["details"]["conflictLocalId"] == first_task_id
+    rows = client.app.state.app_state.db.fetchall(
+        "SELECT * FROM org_feishu_sync_mappings WHERE remote_type = 'feishu_task' AND remote_id = ?",
+        ("task_guid_shared",),
+    )
+    assert len(rows) == 1
+    assert rows[0]["local_id"] == first_task_id
+
+
+def test_calendar_remote_id_conflict_is_blocked_without_rebinding(tmp_path, monkeypatch):
+    client = make_client(tmp_path, monkeypatch)
+    headers = auth_headers(client)
+    user_id = bind_current_user_to_feishu(client, headers, receive_id="ou_calendar_conflict")
+    save_org_feishu_integration(client, headers, monkeypatch)
+    monkeypatch.setattr(cloud_main, "_feishu_fetch_tenant_access_token", lambda **_: ("tenant_demo", {"code": 0}))
+    task_counter = {"value": 0}
+
+    def create_unique_task(*, tenant_access_token, body):
+        task_counter["value"] += 1
+        guid = f"task_guid_calendar_conflict_{task_counter['value']}"
+        return {"code": 0, "data": {"task": {"guid": guid, "url": f"https://applink.feishu.cn/client/todo/detail?guid={guid}"}}}
+
+    monkeypatch.setattr(cloud_main, "_feishu_create_task", create_unique_task)
+    monkeypatch.setattr(
+        cloud_main,
+        "_feishu_create_calendar_event",
+        lambda *, tenant_access_token, calendar_id, body: {"code": 0, "data": {"event": {"event_id": "evt_shared_mirror"}}},
+    )
+
+    first_task_id = create_task(client, headers, ownerId=user_id, scheduledStartAt="2026-05-28T09:00")
+    second_task_id = create_task(client, headers, ownerId=user_id, scheduledStartAt="2026-05-29T09:00")
+
+    first_status = client.get(
+        "/api/v1/feishu-sync/status",
+        params={"localType": "task", "localId": first_task_id, "remoteType": "calendar_event"},
+        headers=headers,
+    )
+    second_status = client.get(
+        "/api/v1/feishu-sync/status",
+        params={"localType": "task", "localId": second_task_id, "remoteType": "calendar_event"},
+        headers=headers,
+    )
+    assert first_status.json()["status"] == "synced"
+    assert first_status.json()["remoteId"] == "evt_shared_mirror"
+    payload = second_status.json()
+    assert payload["status"] == "mapping_conflict"
+    assert payload["remoteId"] is None
+    assert payload["details"]["conflictRemoteId"] == "evt_shared_mirror"
+    assert payload["details"]["conflictLocalId"] == first_task_id
+    task_status = client.get(
+        "/api/v1/feishu-sync/status",
+        params={"localType": "task", "localId": second_task_id, "remoteType": "feishu_task"},
+        headers=headers,
+    )
+    assert task_status.json()["status"] == "synced"
+    rows = client.app.state.app_state.db.fetchall(
+        "SELECT * FROM org_feishu_sync_mappings WHERE remote_type = 'calendar_event' AND remote_id = ?",
+        ("evt_shared_mirror",),
+    )
+    assert len(rows) == 1
+    assert rows[0]["local_id"] == first_task_id
+
+
+def test_feishu_mapping_diagnostics_reports_anomalies_without_repairing(tmp_path, monkeypatch):
+    client = make_client(tmp_path, monkeypatch)
+    headers = auth_headers(client)
+    profile = client.get("/api/v1/auth/me", headers=headers)
+    assert profile.status_code == 200, profile.text
+    organization_id = profile.json()["organizationId"]
+    save_org_feishu_integration(client, headers, monkeypatch)
+    monkeypatch.setattr(cloud_main, "_feishu_fetch_tenant_access_token", lambda **_: ("tenant_demo", {"code": 0}))
+
+    first_task_id = create_task(client, headers, dueDate="2026-05-28")
+    second_task_id = create_task(client, headers, dueDate="2026-05-29")
+    state = client.app.state.app_state
+    cloud_main._upsert_feishu_sync_mapping(  # noqa: SLF001
+        state,
+        organization_id=organization_id,
+        local_type="task",
+        local_id=first_task_id,
+        remote_type="feishu_task",
+        status_value="synced",
+        message="测试重复远端任务。",
+        remote_id="task_guid_duplicate_diag",
+    )
+    cloud_main._upsert_feishu_sync_mapping(  # noqa: SLF001
+        state,
+        organization_id=organization_id,
+        local_type="task",
+        local_id=second_task_id,
+        remote_type="feishu_task",
+        status_value="synced",
+        message="测试重复远端任务。",
+        remote_id="task_guid_duplicate_diag",
+    )
+    cloud_main._upsert_feishu_sync_mapping(  # noqa: SLF001
+        state,
+        organization_id=organization_id,
+        local_type="task",
+        local_id=first_task_id,
+        remote_type="calendar_event",
+        status_value="synced",
+        message="缺少远端 ID。",
+        clear_remote_id=True,
+    )
+    cloud_main._upsert_feishu_sync_mapping(  # noqa: SLF001
+        state,
+        organization_id=organization_id,
+        local_type="task",
+        local_id="task_missing_for_diag",
+        remote_type="calendar_event",
+        status_value="failed",
+        message="孤儿映射。",
+        remote_id="evt_orphan_diag",
+    )
+
+    issues = cloud_main._inspect_feishu_task_sync_mappings(state, organization_id=organization_id)  # noqa: SLF001
+    issue_types = {item["type"] for item in issues}
+
+    assert {"duplicate_remote_id", "missing_remote_id", "orphan_local_task"}.issubset(issue_types)
+    duplicate = next(item for item in issues if item["type"] == "duplicate_remote_id" and item["remoteId"] == "task_guid_duplicate_diag")
+    assert set(duplicate["localIds"]) == {first_task_id, second_task_id}
+    rows = state.db.fetchall(
+        "SELECT * FROM org_feishu_sync_mappings WHERE remote_type = 'feishu_task' AND remote_id = ?",
+        ("task_guid_duplicate_diag",),
+    )
+    assert len(rows) == 2
+
+
+def test_delete_task_clears_remote_feishu_task_mapping(tmp_path, monkeypatch):
+    client = make_client(tmp_path, monkeypatch)
+    headers = auth_headers(client)
+    user_id = bind_current_user_to_feishu(client, headers, receive_id="ou_task_delete")
+    save_org_feishu_integration(client, headers, monkeypatch)
+    monkeypatch.setattr(cloud_main, "_feishu_fetch_tenant_access_token", lambda **_: ("tenant_demo", {"code": 0}))
+    monkeypatch.setattr(
+        cloud_main,
+        "_feishu_create_task",
+        lambda *, tenant_access_token, body: {"code": 0, "data": {"task": {"guid": "task_guid_delete", "url": "https://applink.feishu.cn/client/todo/detail?guid=task_guid_delete"}}},
+    )
+    delete_calls: list[str] = []
+    monkeypatch.setattr(
+        cloud_main,
+        "_feishu_delete_task",
+        lambda *, tenant_access_token, task_guid: delete_calls.append(task_guid) or {"code": 0},
+    )
+    task_id = create_task(client, headers, ownerId=user_id, dueDate="2026-05-28")
+
+    response = client.delete(f"/api/v1/tasks/{task_id}", headers=headers)
+
+    assert response.status_code == 200, response.text
+    assert delete_calls == ["task_guid_delete"]
+    status = client.get(
+        "/api/v1/feishu-sync/status",
+        params={"localType": "task", "localId": task_id, "remoteType": "feishu_task"},
+        headers=headers,
+    )
+    assert status.status_code == 200, status.text
+    payload = status.json()
+    assert payload["status"] == "skipped"
+    assert payload["remoteId"] is None
+    assert payload["details"]["deletedRemoteId"] == "task_guid_delete"
+
+
+def test_feishu_task_inbound_first_poll_initializes_cursor_without_history_import(tmp_path, monkeypatch):
+    client = make_client(tmp_path, monkeypatch)
+    headers = auth_headers(client)
+    profile = client.get("/api/v1/auth/me", headers=headers).json()
+    organization_id = profile["organizationId"]
+    bind_current_user_to_feishu(client, headers, receive_id="ou_inbound_first_poll")
+    save_org_feishu_integration(client, headers, monkeypatch)
+    monkeypatch.setattr(cloud_main, "_feishu_fetch_tenant_access_token", lambda **_: ("tenant_demo", {"code": 0}))
+    monkeypatch.setattr(cloud_main, "_feishu_member_access_token_for_user", lambda *args, **kwargs: "user_access_demo")
+    monkeypatch.setattr(
+        cloud_main,
+        "_feishu_list_member_recent_tasks",
+        lambda **_: pytest.fail("首次启用反向同步不应拉取和导入历史飞书任务"),
+    )
+
+    result = cloud_main._process_feishu_task_inbound_once(client.app.state.app_state)  # noqa: SLF001
+
+    assert result["initialized"] == 1
+    task_count = client.app.state.app_state.db.scalar(
+        "SELECT COUNT(1) FROM tasks WHERE organization_id = ? AND source_type = 'feishu_task'",
+        (organization_id,),
+    )
+    assert task_count == 0
+
+
+def test_feishu_task_inbound_skips_unmatched_members_without_creating_wrong_task(tmp_path, monkeypatch):
+    client = make_client(tmp_path, monkeypatch)
+    headers = auth_headers(client)
+    profile = client.get("/api/v1/auth/me", headers=headers).json()
+    organization_id = profile["organizationId"]
+    user_id = bind_current_user_to_feishu(client, headers, receive_id="ou_inbound_bound_member")
+    seed_feishu_inbound_cursor(client, organization_id, user_id, "ou_inbound_bound_member")
+    save_org_feishu_integration(client, headers, monkeypatch)
+    monkeypatch.setattr(cloud_main, "_feishu_fetch_tenant_access_token", lambda **_: ("tenant_demo", {"code": 0}))
+    monkeypatch.setattr(cloud_main, "_feishu_member_access_token_for_user", lambda *args, **kwargs: "user_access_demo")
+    monkeypatch.setattr(
+        cloud_main,
+        "_feishu_list_member_recent_tasks",
+        lambda **_: {
+            "code": 0,
+            "data": {
+                "items": [
+                    {
+                        "guid": "task_guid_unmatched_member",
+                        "summary": "无法匹配成员的飞书任务",
+                        "members": [{"id": "ou_not_bound_in_yiyu"}],
+                        "updated_at": "2026-05-28T10:05:00+08:00",
+                    }
+                ]
+            },
+        },
+    )
+
+    result = cloud_main._process_feishu_task_inbound_once(client.app.state.app_state)  # noqa: SLF001
+
+    assert result["synced"] == 0
+    assert result["skipped"] == 1
+    task_row = client.app.state.app_state.db.fetchone("SELECT * FROM tasks WHERE source_id = ?", ("task_guid_unmatched_member",))
+    assert task_row is None
+
+
+def test_feishu_task_inbound_creates_regular_yiyu_task_for_single_member_and_calendar_mirror(tmp_path, monkeypatch):
+    client = make_client(tmp_path, monkeypatch)
+    headers = auth_headers(client)
+    profile = client.get("/api/v1/auth/me", headers=headers).json()
+    organization_id = profile["organizationId"]
+    user_id = bind_current_user_to_feishu(client, headers, receive_id="ou_inbound_owner")
+    seed_feishu_inbound_cursor(client, organization_id, user_id, "ou_inbound_owner")
+    save_org_feishu_integration(client, headers, monkeypatch)
+    monkeypatch.setattr(cloud_main, "_feishu_fetch_tenant_access_token", lambda **_: ("tenant_demo", {"code": 0}))
+    monkeypatch.setattr(cloud_main, "_feishu_member_access_token_for_user", lambda *args, **kwargs: "user_access_demo")
+    monkeypatch.setattr(
+        cloud_main,
+        "_feishu_list_member_recent_tasks",
+        lambda **_: {
+            "code": 0,
+            "data": {
+                "items": [
+                    {
+                        "guid": "task_guid_inbound_private",
+                        "summary": "手机上创建的飞书任务",
+                        "description": "从飞书任务中心自动进入益语。",
+                        "members": [{"id": "ou_inbound_owner", "role": "assignee"}],
+                        "start": {"datetime": "2026-05-28T10:00:00+08:00"},
+                        "due": {"datetime": "2026-05-28T11:00:00+08:00"},
+                        "updated_at": "2026-05-28T10:05:00+08:00",
+                        "url": "https://applink.feishu.cn/client/todo/detail?guid=task_guid_inbound_private",
+                    }
+                ]
+            },
+        },
+    )
+
+    result = cloud_main._process_feishu_task_inbound_once(client.app.state.app_state)  # noqa: SLF001
+
+    assert result["synced"] == 1
+    task_row = client.app.state.app_state.db.fetchone("SELECT * FROM tasks WHERE source_type = 'feishu_task' AND source_id = ?", ("task_guid_inbound_private",))
+    assert task_row is not None
+    assert task_row["title"] == "手机上创建的飞书任务"
+    assert task_row["scope_mode"] == "COLLAB_SHARED"
+    assert task_row["owner_id"] == user_id
+    mapping = client.app.state.app_state.db.fetchone("SELECT * FROM org_feishu_sync_mappings WHERE local_id = ? AND remote_type = 'feishu_task'", (task_row["id"],))
+    assert mapping["remote_id"] == "task_guid_inbound_private"
+    calendar = client.app.state.app_state.db.fetchone("SELECT * FROM org_feishu_sync_mappings WHERE local_id = ? AND remote_type = 'calendar_event'", (task_row["id"],))
+    assert calendar["sync_status"] == "synced"
+
+
+def test_feishu_task_inbound_creates_collab_task_for_multiple_matched_members(tmp_path, monkeypatch):
+    client = make_client(tmp_path, monkeypatch)
+    headers = auth_headers(client)
+    profile = client.get("/api/v1/auth/me", headers=headers).json()
+    organization_id = profile["organizationId"]
+    owner_id = bind_current_user_to_feishu(client, headers, receive_id="ou_inbound_owner_multi")
+    collaborator_id = another_employee_id(client, organization_id, owner_id)
+    authorize_user_to_feishu(client, organization_id, collaborator_id, "ou_inbound_collab_multi")
+    seed_feishu_inbound_cursor(client, organization_id, owner_id, "ou_inbound_owner_multi")
+    seed_feishu_inbound_cursor(client, organization_id, collaborator_id, "ou_inbound_collab_multi")
+    save_org_feishu_integration(client, headers, monkeypatch)
+    monkeypatch.setattr(cloud_main, "_feishu_fetch_tenant_access_token", lambda **_: ("tenant_demo", {"code": 0}))
+    monkeypatch.setattr(cloud_main, "_feishu_member_access_token_for_user", lambda *args, **kwargs: "user_access_demo")
+    remote_task = {
+        "guid": "task_guid_inbound_collab",
+        "summary": "多人飞书协作任务",
+        "members": [{"id": "ou_inbound_owner_multi"}, {"id": "ou_inbound_collab_multi"}],
+        "due": {"date": "2026-05-29", "is_all_day": True},
+        "updated_at": "2026-05-29T09:00:00+08:00",
+    }
+    monkeypatch.setattr(cloud_main, "_feishu_list_member_recent_tasks", lambda **_: {"code": 0, "data": {"items": [remote_task]}})
+
+    result = cloud_main._process_feishu_task_inbound_once(client.app.state.app_state)  # noqa: SLF001
+
+    assert result["synced"] == 1
+    task_row = client.app.state.app_state.db.fetchone("SELECT * FROM tasks WHERE source_id = ?", ("task_guid_inbound_collab",))
+    assert task_row["scope_mode"] == "COLLAB_SHARED"
+    assert task_row["owner_id"] == owner_id
+    collaborators = set(cloud_main._task_collaborator_ids(client.app.state.app_state, str(task_row["id"])))  # noqa: SLF001
+    assert collaborators == {owner_id, collaborator_id}
+
+
+def test_feishu_task_inbound_updates_existing_task_without_pushing_back_to_feishu(tmp_path, monkeypatch):
+    client = make_client(tmp_path, monkeypatch)
+    headers = auth_headers(client)
+    profile = client.get("/api/v1/auth/me", headers=headers).json()
+    organization_id = profile["organizationId"]
+    user_id = bind_current_user_to_feishu(client, headers, receive_id="ou_inbound_update")
+    seed_feishu_inbound_cursor(client, organization_id, user_id, "ou_inbound_update")
+    save_org_feishu_integration(client, headers, monkeypatch)
+    monkeypatch.setattr(cloud_main, "_feishu_fetch_tenant_access_token", lambda **_: ("tenant_demo", {"code": 0}))
+    monkeypatch.setattr(cloud_main, "_feishu_member_access_token_for_user", lambda *args, **kwargs: "user_access_demo")
+    remote_task = {
+        "guid": "task_guid_inbound_update",
+        "summary": "飞书任务初始标题",
+        "members": [{"id": "ou_inbound_update"}],
+        "updated_at": "2026-05-29T09:00:00+08:00",
+    }
+    monkeypatch.setattr(cloud_main, "_feishu_list_member_recent_tasks", lambda **_: {"code": 0, "data": {"items": [remote_task]}})
+    cloud_main._process_feishu_task_inbound_once(client.app.state.app_state)  # noqa: SLF001
+    task_row = client.app.state.app_state.db.fetchone("SELECT * FROM tasks WHERE source_id = ?", ("task_guid_inbound_update",))
+    assert task_row["title"] == "飞书任务初始标题"
+    seed_feishu_inbound_cursor(client, organization_id, user_id, "ou_inbound_update", since="2026-05-29T09:00:01+08:00")
+
+    def fail_if_outbound_update(**kwargs):
+        raise AssertionError("反向同步更新益语任务时不应立即回推飞书任务")
+
+    monkeypatch.setattr(cloud_main, "_feishu_update_task", fail_if_outbound_update)
+    updated_remote_task = {
+        **remote_task,
+        "summary": "飞书任务修改后的标题",
+        "description": "飞书侧更新描述",
+        "completed_at": 1780000000000,
+        "updated_at": "2026-05-29T10:00:00+08:00",
+    }
+    monkeypatch.setattr(cloud_main, "_feishu_list_member_recent_tasks", lambda **_: {"code": 0, "data": {"items": [updated_remote_task]}})
+
+    result = cloud_main._process_feishu_task_inbound_once(client.app.state.app_state)  # noqa: SLF001
+
+    assert result["synced"] == 1
+    updated_row = client.app.state.app_state.db.fetchone("SELECT * FROM tasks WHERE id = ?", (task_row["id"],))
+    assert updated_row["title"] == "飞书任务修改后的标题"
+    assert updated_row["description"] == "飞书侧更新描述"
+    assert updated_row["progress_status"] == "done"
+
+
+def test_feishu_task_inbound_does_not_overwrite_newer_local_completion(tmp_path, monkeypatch):
+    client = make_client(tmp_path, monkeypatch)
+    headers = auth_headers(client)
+    profile = client.get("/api/v1/auth/me", headers=headers).json()
+    organization_id = profile["organizationId"]
+    user_id = bind_current_user_to_feishu(client, headers, receive_id="ou_inbound_stale")
+    seed_feishu_inbound_cursor(client, organization_id, user_id, "ou_inbound_stale")
+    save_org_feishu_integration(client, headers, monkeypatch)
+    monkeypatch.setattr(cloud_main, "_feishu_fetch_tenant_access_token", lambda **_: ("tenant_demo", {"code": 0}))
+    monkeypatch.setattr(cloud_main, "_feishu_member_access_token_for_user", lambda *args, **kwargs: "user_access_demo")
+    remote_task = {
+        "guid": "task_guid_inbound_stale",
+        "summary": "飞书旧状态不应覆盖本地完成",
+        "members": [{"id": "ou_inbound_stale"}],
+        "updated_at": "2026-05-29T09:00:00+08:00",
+    }
+    monkeypatch.setattr(cloud_main, "_feishu_list_member_recent_tasks", lambda **_: {"code": 0, "data": {"items": [remote_task]}})
+    cloud_main._process_feishu_task_inbound_once(client.app.state.app_state)  # noqa: SLF001
+    task_row = client.app.state.app_state.db.fetchone("SELECT * FROM tasks WHERE source_id = ?", ("task_guid_inbound_stale",))
+    assert task_row is not None
+    client.app.state.app_state.db.execute(
+        "UPDATE tasks SET progress_status = 'done', completed_at = ?, updated_at = ? WHERE id = ?",
+        ("2026-05-29T10:05:00+08:00", "2026-05-29T10:05:00+08:00", task_row["id"]),
+    )
+    client.app.state.app_state.db.execute(
+        "UPDATE org_feishu_sync_mappings SET last_synced_at = ? WHERE local_id = ? AND remote_type = 'feishu_task'",
+        ("2026-05-29T09:00:00+08:00", task_row["id"]),
+    )
+    seed_feishu_inbound_cursor(client, organization_id, user_id, "ou_inbound_stale", since="2026-05-29T09:00:01+08:00")
+    stale_remote_task = {
+        **remote_task,
+        "summary": "飞书旧状态不应覆盖本地完成",
+        "completed_at": 0,
+        "updated_at": "2026-05-29T10:00:00+08:00",
+    }
+    monkeypatch.setattr(cloud_main, "_feishu_list_member_recent_tasks", lambda **_: {"code": 0, "data": {"items": [stale_remote_task]}})
+
+    result = cloud_main._process_feishu_task_inbound_once(client.app.state.app_state)  # noqa: SLF001
+
+    assert result["skipped"] == 1
+    updated_row = client.app.state.app_state.db.fetchone("SELECT * FROM tasks WHERE id = ?", (task_row["id"],))
+    assert updated_row["progress_status"] == "done"
+    mapping = client.app.state.app_state.db.fetchone(
+        "SELECT * FROM org_feishu_sync_mappings WHERE local_id = ? AND remote_type = 'feishu_task'",
+        (task_row["id"],),
+    )
+    assert mapping["sync_status"] == "skipped"
+    assert "remote_stale" in str(mapping["metadata_json"]) or "skip_stale_remote" in str(mapping["metadata_json"])
+
+
+def test_feishu_task_inbound_completion_keeps_existing_calendar_event(tmp_path, monkeypatch):
+    client = make_client(tmp_path, monkeypatch)
+    headers = auth_headers(client)
+    profile = client.get("/api/v1/auth/me", headers=headers).json()
+    organization_id = profile["organizationId"]
+    user_id = bind_current_user_to_feishu(client, headers, receive_id="ou_inbound_done_keep_calendar")
+    seed_feishu_inbound_cursor(client, organization_id, user_id, "ou_inbound_done_keep_calendar")
+    save_org_feishu_integration(client, headers, monkeypatch)
+    monkeypatch.setattr(cloud_main, "_feishu_fetch_tenant_access_token", lambda **_: ("tenant_demo", {"code": 0}))
+    monkeypatch.setattr(cloud_main, "_feishu_member_access_token_for_user", lambda *args, **kwargs: "user_access_demo")
+    remote_task = {
+        "guid": "task_guid_inbound_done_keep_calendar",
+        "summary": "飞书任务完成保留日历",
+        "members": [{"id": "ou_inbound_done_keep_calendar"}],
+        "due": {"datetime": "2026-05-29T09:00:00+08:00"},
+        "updated_at": "2026-05-29T09:00:00+08:00",
+    }
+    monkeypatch.setattr(cloud_main, "_feishu_list_member_recent_tasks", lambda **_: {"code": 0, "data": {"items": [remote_task]}})
+    cloud_main._process_feishu_task_inbound_once(client.app.state.app_state)  # noqa: SLF001
+    task_row = client.app.state.app_state.db.fetchone("SELECT * FROM tasks WHERE source_id = ?", ("task_guid_inbound_done_keep_calendar",))
+    assert task_row is not None
+    calendar = client.app.state.app_state.db.fetchone("SELECT * FROM org_feishu_sync_mappings WHERE local_id = ? AND remote_type = 'calendar_event'", (task_row["id"],))
+    assert calendar["remote_id"] == "evt_auto_mirror"
+    seed_feishu_inbound_cursor(client, organization_id, user_id, "ou_inbound_done_keep_calendar", since="2026-05-29T09:00:01+08:00")
+
+    def fail_if_calendar_changed(**kwargs):
+        raise AssertionError("飞书任务完成时不应改写或删除已有日历事件")
+
+    monkeypatch.setattr(cloud_main, "_feishu_update_calendar_event", fail_if_calendar_changed)
+    monkeypatch.setattr(cloud_main, "_feishu_delete_calendar_event", fail_if_calendar_changed)
+    updated_remote_task = {
+        **remote_task,
+        "completed_at": 1780000000000,
+        "updated_at": "2026-05-29T10:00:00+08:00",
+    }
+    monkeypatch.setattr(cloud_main, "_feishu_list_member_recent_tasks", lambda **_: {"code": 0, "data": {"items": [updated_remote_task]}})
+
+    result = cloud_main._process_feishu_task_inbound_once(client.app.state.app_state)  # noqa: SLF001
+
+    assert result["synced"] == 1
+    updated_row = client.app.state.app_state.db.fetchone("SELECT * FROM tasks WHERE id = ?", (task_row["id"],))
+    assert updated_row["progress_status"] == "done"
+    kept = client.app.state.app_state.db.fetchone("SELECT * FROM org_feishu_sync_mappings WHERE local_id = ? AND remote_type = 'calendar_event'", (task_row["id"],))
+    assert kept["remote_id"] == "evt_auto_mirror"
+
+
+def test_feishu_task_inbound_keeps_calendar_event_when_remote_task_loses_time(tmp_path, monkeypatch):
+    client = make_client(tmp_path, monkeypatch)
+    headers = auth_headers(client)
+    profile = client.get("/api/v1/auth/me", headers=headers).json()
+    organization_id = profile["organizationId"]
+    user_id = bind_current_user_to_feishu(client, headers, receive_id="ou_inbound_keep_calendar")
+    seed_feishu_inbound_cursor(client, organization_id, user_id, "ou_inbound_keep_calendar")
+    save_org_feishu_integration(client, headers, monkeypatch)
+    monkeypatch.setattr(cloud_main, "_feishu_fetch_tenant_access_token", lambda **_: ("tenant_demo", {"code": 0}))
+    monkeypatch.setattr(cloud_main, "_feishu_member_access_token_for_user", lambda *args, **kwargs: "user_access_demo")
+    remote_task = {
+        "guid": "task_guid_inbound_keep_calendar",
+        "summary": "飞书任务带日程",
+        "members": [{"id": "ou_inbound_keep_calendar"}],
+        "due": {"datetime": "2026-05-29T09:00:00+08:00"},
+        "updated_at": "2026-05-29T09:00:00+08:00",
+    }
+    monkeypatch.setattr(cloud_main, "_feishu_list_member_recent_tasks", lambda **_: {"code": 0, "data": {"items": [remote_task]}})
+    cloud_main._process_feishu_task_inbound_once(client.app.state.app_state)  # noqa: SLF001
+    task_row = client.app.state.app_state.db.fetchone("SELECT * FROM tasks WHERE source_id = ?", ("task_guid_inbound_keep_calendar",))
+    assert task_row is not None
+    calendar = client.app.state.app_state.db.fetchone("SELECT * FROM org_feishu_sync_mappings WHERE local_id = ? AND remote_type = 'calendar_event'", (task_row["id"],))
+    assert calendar["remote_id"] == "evt_auto_mirror"
+    seed_feishu_inbound_cursor(client, organization_id, user_id, "ou_inbound_keep_calendar", since="2026-05-29T09:00:01+08:00")
+
+    def fail_if_calendar_changed(**kwargs):
+        raise AssertionError("飞书任务变成无时间时不应改写或删除已有日历事件")
+
+    monkeypatch.setattr(cloud_main, "_feishu_update_calendar_event", fail_if_calendar_changed)
+    monkeypatch.setattr(cloud_main, "_feishu_delete_calendar_event", fail_if_calendar_changed)
+    updated_remote_task = {
+        "guid": "task_guid_inbound_keep_calendar",
+        "summary": "飞书任务无日程",
+        "members": [{"id": "ou_inbound_keep_calendar"}],
+        "updated_at": "2026-05-29T10:00:00+08:00",
+    }
+    monkeypatch.setattr(cloud_main, "_feishu_list_member_recent_tasks", lambda **_: {"code": 0, "data": {"items": [updated_remote_task]}})
+
+    result = cloud_main._process_feishu_task_inbound_once(client.app.state.app_state)  # noqa: SLF001
+
+    assert result["synced"] == 1
+    kept = client.app.state.app_state.db.fetchone("SELECT * FROM org_feishu_sync_mappings WHERE local_id = ? AND remote_type = 'calendar_event'", (task_row["id"],))
+    assert kept["sync_status"] == "skipped"
+    assert kept["remote_id"] == "evt_auto_mirror"
+    assert "task_without_time_keep_existing_event" in kept["metadata_json"]
+
+
+def test_feishu_task_inbound_delete_removes_yiyu_task_and_calendar_mapping(tmp_path, monkeypatch):
+    client = make_client(tmp_path, monkeypatch)
+    headers = auth_headers(client)
+    profile = client.get("/api/v1/auth/me", headers=headers).json()
+    organization_id = profile["organizationId"]
+    user_id = bind_current_user_to_feishu(client, headers, receive_id="ou_inbound_delete")
+    seed_feishu_inbound_cursor(client, organization_id, user_id, "ou_inbound_delete")
+    save_org_feishu_integration(client, headers, monkeypatch)
+    monkeypatch.setattr(cloud_main, "_feishu_fetch_tenant_access_token", lambda **_: ("tenant_demo", {"code": 0}))
+    monkeypatch.setattr(cloud_main, "_feishu_member_access_token_for_user", lambda *args, **kwargs: "user_access_demo")
+    monkeypatch.setattr(
+        cloud_main,
+        "_feishu_list_member_recent_tasks",
+        lambda **_: {
+            "code": 0,
+            "data": {
+                "items": [
+                    {
+                        "guid": "task_guid_inbound_delete",
+                        "summary": "即将删除的飞书任务",
+                        "members": [{"id": "ou_inbound_delete"}],
+                        "start": {"datetime": "2026-05-30T10:00:00+08:00"},
+                        "updated_at": "2026-05-30T10:00:00+08:00",
+                    }
+                ]
+            },
+        },
+    )
+    cloud_main._process_feishu_task_inbound_once(client.app.state.app_state)  # noqa: SLF001
+    task_row = client.app.state.app_state.db.fetchone("SELECT * FROM tasks WHERE source_id = ?", ("task_guid_inbound_delete",))
+    assert task_row is not None
+    delete_calls: list[str] = []
+    monkeypatch.setattr(
+        cloud_main,
+        "_feishu_delete_calendar_event",
+        lambda *, tenant_access_token, calendar_id, event_id: delete_calls.append(event_id) or {"code": 0},
+    )
+    seed_feishu_inbound_cursor(client, organization_id, user_id, "ou_inbound_delete", since="2026-05-30T10:00:01+08:00")
+    monkeypatch.setattr(
+        cloud_main,
+        "_feishu_list_member_recent_tasks",
+        lambda **_: {
+            "code": 0,
+            "data": {
+                "items": [
+                    {
+                        "guid": "task_guid_inbound_delete",
+                        "deleted": True,
+                        "members": [{"id": "ou_inbound_delete"}],
+                        "updated_at": "2026-05-30T11:00:00+08:00",
+                    }
+                ]
+            },
+        },
+    )
+
+    result = cloud_main._process_feishu_task_inbound_once(client.app.state.app_state)  # noqa: SLF001
+
+    assert result["synced"] == 1
+    assert client.app.state.app_state.db.fetchone("SELECT * FROM tasks WHERE id = ?", (task_row["id"],)) is None
+    assert client.app.state.app_state.db.fetchone("SELECT * FROM org_feishu_sync_mappings WHERE local_id = ?", (task_row["id"],)) is None
+    assert delete_calls == ["evt_auto_mirror"]
+
+
+def test_feishu_task_inbound_delete_without_mapping_does_not_delete_similar_yiyu_task(tmp_path, monkeypatch):
+    client = make_client(tmp_path, monkeypatch)
+    headers = auth_headers(client)
+    profile = client.get("/api/v1/auth/me", headers=headers).json()
+    organization_id = profile["organizationId"]
+    local_task_id = create_task(client, headers, title="标题相同但没有飞书映射", dueDate="2026-05-30")
+    user_id = bind_current_user_to_feishu(client, headers, receive_id="ou_inbound_delete_no_mapping")
+    seed_feishu_inbound_cursor(client, organization_id, user_id, "ou_inbound_delete_no_mapping")
+    save_org_feishu_integration(client, headers, monkeypatch)
+    monkeypatch.setattr(cloud_main, "_feishu_fetch_tenant_access_token", lambda **_: ("tenant_demo", {"code": 0}))
+    monkeypatch.setattr(cloud_main, "_feishu_member_access_token_for_user", lambda *args, **kwargs: "user_access_demo")
+    monkeypatch.setattr(
+        cloud_main,
+        "_feishu_list_member_recent_tasks",
+        lambda **_: {
+            "code": 0,
+            "data": {
+                "items": [
+                    {
+                        "guid": "task_guid_deleted_without_mapping",
+                        "summary": "标题相同但没有飞书映射",
+                        "deleted": True,
+                        "members": [{"id": "ou_inbound_delete_no_mapping"}],
+                        "updated_at": "2026-05-30T11:00:00+08:00",
+                    }
+                ]
+            },
+        },
+    )
+
+    result = cloud_main._process_feishu_task_inbound_once(client.app.state.app_state)  # noqa: SLF001
+
+    assert result["synced"] == 0
+    assert result["skipped"] == 1
+    assert client.app.state.app_state.db.fetchone("SELECT * FROM tasks WHERE id = ?", (local_task_id,)) is not None
 
 
 def test_sync_document_creates_feishu_docx_and_writes_blocks(tmp_path, monkeypatch):
@@ -521,6 +1451,7 @@ def test_sync_answer_export_document_notifies_current_user_on_create(tmp_path, m
     assert profile.status_code == 200, profile.text
     user_id = profile.json()["id"]
     save_org_feishu_integration(client, headers, monkeypatch)
+    bind_current_user_to_feishu(client, headers, receive_id="ou_doc_creator")
     monkeypatch.setattr(cloud_main, "_feishu_fetch_tenant_access_token", lambda **_: ("tenant_demo", {"code": 0}))
     cloud_main._upsert_org_feishu_delivery_target(  # noqa: SLF001
         client.app.state.app_state,
@@ -575,6 +1506,7 @@ def test_synced_document_defaults_to_org_editable_and_creator_owner(tmp_path, mo
     assert profile.status_code == 200, profile.text
     user_id = profile.json()["id"]
     save_org_feishu_integration(client, headers, monkeypatch)
+    bind_current_user_to_feishu(client, headers, receive_id="ou_doc_creator")
     monkeypatch.setattr(cloud_main, "_feishu_fetch_tenant_access_token", lambda **_: ("tenant_demo", {"code": 0}))
     cloud_main._upsert_org_feishu_delivery_target(  # noqa: SLF001
         client.app.state.app_state,
@@ -981,6 +1913,7 @@ def test_outbox_retry_processes_failed_docx_sync(tmp_path, monkeypatch):
     client = make_client(tmp_path, monkeypatch)
     headers = auth_headers(client)
     save_org_feishu_integration(client, headers, monkeypatch)
+    bind_current_user_to_feishu(client, headers, receive_id="ou_doc_retry")
     monkeypatch.setattr(cloud_main, "_feishu_fetch_tenant_access_token", lambda **_: ("tenant_demo", {"code": 0}))
     monkeypatch.setattr(
         cloud_main,
@@ -1019,7 +1952,7 @@ def test_outbox_retry_processes_failed_docx_sync(tmp_path, monkeypatch):
     assert status.json()["status"] == "synced"
 
 
-def test_update_task_does_not_update_extra_calendar_event_when_time_or_title_changes(tmp_path, monkeypatch):
+def test_update_task_updates_existing_calendar_mirror_when_time_or_title_changes(tmp_path, monkeypatch):
     client = make_client(tmp_path, monkeypatch)
     headers = auth_headers(client)
     save_org_feishu_integration(client, headers, monkeypatch)
@@ -1030,7 +1963,7 @@ def test_update_task_does_not_update_extra_calendar_event_when_time_or_title_cha
         cloud_main,
         "_feishu_create_calendar_event",
         lambda *, tenant_access_token, calendar_id, body: created_events.append(body)
-        or {"code": 0, "data": {"event": {"event_id": "evt_should_not_create"}}},
+        or {"code": 0, "data": {"event": {"event_id": "evt_existing_mirror"}}},
     )
     monkeypatch.setattr(
         cloud_main,
@@ -1056,8 +1989,10 @@ def test_update_task_does_not_update_extra_calendar_event_when_time_or_title_cha
     )
 
     assert response.status_code == 200, response.text
-    assert created_events == []
-    assert updated_events == []
+    assert len(created_events) == 1
+    assert updated_events
+    assert updated_events[0]["event_id"] == "evt_existing_mirror"
+    assert updated_events[0]["body"]["summary"] == "更新后的飞书日程任务"
     status = client.get(
         "/api/v1/feishu-sync/status",
         params={"localType": "task", "localId": task_id, "remoteType": "calendar_event"},
@@ -1065,11 +2000,12 @@ def test_update_task_does_not_update_extra_calendar_event_when_time_or_title_cha
     )
     assert status.status_code == 200, status.text
     payload = status.json()
-    assert payload["status"] == "skipped"
-    assert payload["details"]["calendarSyncRetired"] is True
+    assert payload["status"] == "synced"
+    assert payload["remoteId"] == "evt_existing_mirror"
+    assert payload["details"]["action"] == "update"
 
 
-def test_update_task_deletes_existing_legacy_calendar_event_mapping(tmp_path, monkeypatch):
+def test_update_task_updates_existing_calendar_event_mapping(tmp_path, monkeypatch):
     client = make_client(tmp_path, monkeypatch)
     headers = auth_headers(client)
     profile = client.get("/api/v1/auth/me", headers=headers)
@@ -1078,10 +2014,17 @@ def test_update_task_deletes_existing_legacy_calendar_event_mapping(tmp_path, mo
     save_org_feishu_integration(client, headers, monkeypatch)
     monkeypatch.setattr(cloud_main, "_feishu_fetch_tenant_access_token", lambda **_: ("tenant_demo", {"code": 0}))
     deleted_events: list[str] = []
+    updated_events: list[dict] = []
     monkeypatch.setattr(
         cloud_main,
         "_feishu_delete_calendar_event",
         lambda *, tenant_access_token, calendar_id, event_id: deleted_events.append(event_id) or {"code": 0},
+    )
+    monkeypatch.setattr(
+        cloud_main,
+        "_feishu_update_calendar_event",
+        lambda *, tenant_access_token, calendar_id, event_id, body: updated_events.append({"event_id": event_id, "body": body})
+        or {"code": 0, "data": {"event": {"event_id": event_id}}},
     )
     task_id = create_task(client, headers, scheduledStartAt="2026-05-26T10:00", scheduledEndAt="2026-05-26T11:00")
     cloud_main._upsert_feishu_sync_mapping(  # noqa: SLF001
@@ -1105,18 +2048,75 @@ def test_update_task_deletes_existing_legacy_calendar_event_mapping(tmp_path, mo
     )
 
     assert response.status_code == 200, response.text
-    assert deleted_events == ["evt_remove_time"]
+    assert deleted_events == []
+    assert updated_events and updated_events[0]["event_id"] == "evt_remove_time"
     status = client.get(
         "/api/v1/feishu-sync/status",
         params={"localType": "task", "localId": task_id, "remoteType": "calendar_event"},
         headers=headers,
     )
-    assert status.json()["status"] == "skipped"
-    assert status.json()["remoteId"] is None
-    assert status.json()["details"]["deleteStatus"] == "deleted"
+    assert status.json()["status"] == "synced"
+    assert status.json()["remoteId"] == "evt_remove_time"
+    assert status.json()["details"]["action"] == "update"
 
 
-def test_sync_task_calendar_route_is_retired_and_does_not_create_event(tmp_path, monkeypatch):
+def test_update_task_keeps_existing_calendar_event_when_time_is_removed(tmp_path, monkeypatch):
+    client = make_client(tmp_path, monkeypatch)
+    headers = auth_headers(client)
+    save_org_feishu_integration(client, headers, monkeypatch)
+    monkeypatch.setattr(cloud_main, "_feishu_fetch_tenant_access_token", lambda **_: ("tenant_demo", {"code": 0}))
+    created_events: list[dict] = []
+    monkeypatch.setattr(
+        cloud_main,
+        "_feishu_create_calendar_event",
+        lambda *, tenant_access_token, calendar_id, body: created_events.append(body)
+        or {"code": 0, "data": {"event": {"event_id": "evt_keep_when_time_removed"}}},
+    )
+    update_calls: list[dict] = []
+    delete_calls: list[str] = []
+    monkeypatch.setattr(
+        cloud_main,
+        "_feishu_update_calendar_event",
+        lambda *, tenant_access_token, calendar_id, event_id, body: update_calls.append({"event_id": event_id, "body": body})
+        or {"code": 0, "data": {"event": {"event_id": event_id}}},
+    )
+    monkeypatch.setattr(
+        cloud_main,
+        "_feishu_delete_calendar_event",
+        lambda *, tenant_access_token, calendar_id, event_id: delete_calls.append(event_id) or {"code": 0},
+    )
+    task_id = create_task(
+        client,
+        headers,
+        scheduledStartAt="2026-05-26T10:00",
+        scheduledEndAt="2026-05-26T11:00",
+    )
+    assert created_events
+    update_calls.clear()
+
+    response = client.patch(
+        f"/api/v1/tasks/{task_id}",
+        json={"scheduledStartAt": None, "scheduledEndAt": None},
+        headers=headers,
+    )
+
+    assert response.status_code == 200, response.text
+    assert update_calls == []
+    assert delete_calls == []
+    status = client.get(
+        "/api/v1/feishu-sync/status",
+        params={"localType": "task", "localId": task_id, "remoteType": "calendar_event"},
+        headers=headers,
+    )
+    assert status.status_code == 200, status.text
+    payload = status.json()
+    assert payload["status"] == "skipped"
+    assert payload["remoteId"] == "evt_keep_when_time_removed"
+    assert payload["details"]["reason"] == "task_without_time_keep_existing_event"
+    assert payload["details"]["keptExistingRemoteId"] == "evt_keep_when_time_removed"
+
+
+def test_sync_task_calendar_route_creates_and_updates_mirror(tmp_path, monkeypatch):
     client = make_client(tmp_path, monkeypatch)
     headers = auth_headers(client)
     save_org_feishu_integration(client, headers, monkeypatch)
@@ -1148,18 +2148,18 @@ def test_sync_task_calendar_route_is_retired_and_does_not_create_event(tmp_path,
     first = client.post(f"/api/v1/feishu-sync/calendar/tasks/{task_id}", headers=headers)
     assert first.status_code == 200, first.text
     first_payload = first.json()
-    assert first_payload["status"] == "skipped"
-    assert first_payload["remoteId"] is None
-    assert first_payload["details"]["calendarSyncRetired"] is True
-    assert created_events == []
+    assert first_payload["status"] == "synced"
+    assert first_payload["remoteId"] == "evt_demo_1"
+    assert first_payload["details"]["calendarMode"] == "scheduled"
+    assert created_events and created_events[0]["reminders"] == [{"minutes": 0}]
 
     second = client.post(f"/api/v1/feishu-sync/calendar/tasks/{task_id}", headers=headers)
     assert second.status_code == 200, second.text
-    assert second.json()["status"] == "skipped"
-    assert updated_events == []
+    assert second.json()["status"] == "synced"
+    assert updated_events and updated_events[0]["event_id"] == "evt_demo_1"
 
 
-def test_sync_task_calendar_route_retired_even_for_inverted_time(tmp_path, monkeypatch):
+def test_sync_task_calendar_route_fails_for_inverted_time(tmp_path, monkeypatch):
     client = make_client(tmp_path, monkeypatch)
     headers = auth_headers(client)
     save_org_feishu_integration(client, headers, monkeypatch)
@@ -1181,12 +2181,12 @@ def test_sync_task_calendar_route_retired_even_for_inverted_time(tmp_path, monke
 
     assert response.status_code == 200, response.text
     payload = response.json()
-    assert payload["status"] == "skipped"
-    assert "任务中心" in payload["message"]
+    assert payload["status"] == "failed"
+    assert "结束时间早于" in payload["message"]
     assert calls == []
 
 
-def test_sync_task_calendar_route_retired_for_deadline_time(tmp_path, monkeypatch):
+def test_sync_task_calendar_route_creates_deadline_time_mirror(tmp_path, monkeypatch):
     client = make_client(tmp_path, monkeypatch)
     headers = auth_headers(client)
     save_org_feishu_integration(client, headers, monkeypatch)
@@ -1209,15 +2209,48 @@ def test_sync_task_calendar_route_retired_for_deadline_time(tmp_path, monkeypatc
 
     assert response.status_code == 200, response.text
     payload = response.json()
-    assert payload["status"] == "skipped"
-    assert payload["details"]["calendarSyncRetired"] is True
-    assert created_events == []
+    assert payload["status"] == "synced"
+    assert payload["remoteId"] == "evt_deadline"
+    assert payload["details"]["calendarMode"] == "deadline"
+    assert created_events
+    assert created_events[0]["reminders"] == [{"minutes": 0}]
+
+
+def test_date_only_task_creates_calendar_mirror_at_default_morning_time(tmp_path, monkeypatch):
+    client = make_client(tmp_path, monkeypatch)
+    headers = auth_headers(client)
+    save_org_feishu_integration(client, headers, monkeypatch)
+    monkeypatch.setattr(cloud_main, "_feishu_fetch_tenant_access_token", lambda **_: ("tenant_demo", {"code": 0}))
+    created_events: list[dict] = []
+    monkeypatch.setattr(
+        cloud_main,
+        "_feishu_create_calendar_event",
+        lambda *, tenant_access_token, calendar_id, body: created_events.append(body)
+        or {"code": 0, "data": {"event": {"event_id": "evt_date_only"}}},
+    )
+
+    task_id = create_task(client, headers, dueDate="2026-05-26")
+
+    assert task_id
+    assert created_events
+    assert created_events[0]["start_time"]["timestamp"] == str(int(cloud_main.datetime(2026, 5, 26, 9, tzinfo=cloud_main.FEISHU_SYNC_TZ).timestamp()))
+    assert created_events[0]["end_time"]["timestamp"] == str(int(cloud_main.datetime(2026, 5, 26, 10, tzinfo=cloud_main.FEISHU_SYNC_TZ).timestamp()))
+    status = client.get(
+        "/api/v1/feishu-sync/status",
+        params={"localType": "task", "localId": task_id, "remoteType": "calendar_event"},
+        headers=headers,
+    )
+    payload = status.json()
+    assert payload["status"] == "synced"
+    assert payload["details"]["calendarMode"] == "date_only"
+    assert payload["details"]["dateOnlyDefaultTime"] == "09:00"
 
 
 def test_sync_task_calendar_skips_task_without_explicit_time(tmp_path, monkeypatch):
     client = make_client(tmp_path, monkeypatch)
     headers = auth_headers(client)
     save_org_feishu_integration(client, headers, monkeypatch)
+    monkeypatch.setattr(cloud_main, "_feishu_fetch_tenant_access_token", lambda **_: ("tenant_demo", {"code": 0}))
     calls: list[dict] = []
     monkeypatch.setattr(cloud_main, "_feishu_create_calendar_event", lambda **kwargs: calls.append(kwargs) or {})
 
@@ -1227,13 +2260,42 @@ def test_sync_task_calendar_skips_task_without_explicit_time(tmp_path, monkeypat
     assert response.status_code == 200, response.text
     payload = response.json()
     assert payload["status"] == "skipped"
-    assert "任务中心" in payload["message"]
+    assert "没有明确时间" in payload["message"]
     assert calls == []
 
 
-def test_feishu_calendar_status_is_skipped_when_direct_calendar_sync_is_retired(tmp_path, monkeypatch):
+def test_done_task_without_existing_calendar_does_not_create_mirror(tmp_path, monkeypatch):
     client = make_client(tmp_path, monkeypatch)
     headers = auth_headers(client)
+    save_org_feishu_integration(client, headers, monkeypatch)
+    monkeypatch.setattr(cloud_main, "_feishu_fetch_tenant_access_token", lambda **_: ("tenant_demo", {"code": 0}))
+    calls: list[dict] = []
+    monkeypatch.setattr(cloud_main, "_feishu_create_calendar_event", lambda **kwargs: calls.append(kwargs) or {})
+    task_id = create_task(client, headers, dueDate="2026-05-26")
+    state = client.app.state.app_state
+    calls.clear()
+    state.db.execute(
+        "DELETE FROM org_feishu_sync_mappings WHERE local_type = 'task' AND local_id = ? AND remote_type = 'calendar_event'",
+        (task_id,),
+    )
+    response = client.patch(f"/api/v1/tasks/{task_id}", json={"progressStatus": "done"}, headers=headers)
+
+    assert response.status_code == 200, response.text
+    assert calls == []
+    status = client.get(
+        "/api/v1/feishu-sync/status",
+        params={"localType": "task", "localId": task_id, "remoteType": "calendar_event"},
+        headers=headers,
+    )
+    assert status.json()["status"] == "skipped"
+    assert "已完成" in status.json()["message"]
+
+
+def test_feishu_calendar_status_is_synced_after_task_center_creates_mirror(tmp_path, monkeypatch):
+    client = make_client(tmp_path, monkeypatch)
+    headers = auth_headers(client)
+    save_org_feishu_integration(client, headers, monkeypatch)
+    monkeypatch.setattr(cloud_main, "_feishu_fetch_tenant_access_token", lambda **_: ("tenant_demo", {"code": 0}))
     task_id = create_task(client, headers, scheduledStartAt="2026-05-26T10:00")
 
     response = client.get(
@@ -1243,8 +2305,8 @@ def test_feishu_calendar_status_is_skipped_when_direct_calendar_sync_is_retired(
     )
 
     assert response.status_code == 200, response.text
-    assert response.json()["status"] == "skipped"
-    assert response.json()["details"]["calendarSyncRetired"] is True
+    assert response.json()["status"] == "synced"
+    assert response.json()["details"]["calendarMirror"] is True
 
 
 def test_feishu_doc_import_status_requires_document_token(tmp_path, monkeypatch):

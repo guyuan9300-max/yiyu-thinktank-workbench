@@ -296,6 +296,7 @@ FeishuSyncStatus = Literal[
     "queued",
     "syncing",
     "synced",
+    "mapping_conflict",
     "failed",
 ]
 
@@ -315,6 +316,18 @@ class FeishuSyncStatusRecord(BaseModel):
 
 class FeishuTaskCalendarSyncPayload(BaseModel):
     notify: bool = False
+
+
+class FeishuTaskInboundStatusRecord(BaseModel):
+    organizationId: str
+    enabled: bool = False
+    trackedMemberCount: int = 0
+    lastSuccessAt: str | None = None
+    lastError: str | None = None
+    lastCheckedAt: str | None = None
+    intervalSeconds: int = 60
+    updatedAt: str | None = None
+    details: dict[str, object] = Field(default_factory=dict)
 
 
 class FeishuDocumentSyncPayload(BaseModel):

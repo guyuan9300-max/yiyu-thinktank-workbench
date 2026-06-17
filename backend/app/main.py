@@ -9758,6 +9758,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         )
         local_task_id = str(existing["id"]) if existing and existing["id"] else cloud_id
         progress_status = str(payload.get("progressStatus") or "todo")
+        preserve_local_done_from_cloud_pull = False
 
         # ─── Protect newer local state from stale-cloud overwrite ──────────────────
         # When the local task has unsynced changes (sync_status in {'pending','local','error'})
@@ -9780,6 +9781,18 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             local_done_cloud_not = (
                 local_progress == "done" and cloud_progress != "done"
             ) or (local_completed and not str(payload.get("completedAt") or "").strip())
+            if local_done_cloud_not and not local_has_unsynced_edits and not local_newer_than_cloud:
+                completed_at = local_completed or now_iso()
+                payload = dict(payload)
+                payload["progressStatus"] = "done"
+                payload["completedAt"] = completed_at
+                progress_status = "done"
+                cloud_progress = progress_status
+                preserve_local_done_from_cloud_pull = True
+                logger.info(
+                    "[CLOUD-UPSERT-PRESERVE-DONE] task=%s accepted cloud fields while keeping local completion",
+                    local_task_id,
+                )
             if local_has_unsynced_edits or local_newer_than_cloud or local_done_cloud_not:
                 # 机制化自愈 (P0 fix): 当 SKIP 时, 如果本地和云端内容已经达成一致
                 # (progress 一致 + completed_at 都为空或都非空), 自动把 sync_status
@@ -9806,11 +9819,16 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                                 "[CLOUD-SYNC-AUTOHEAL-FAIL] task=%s: %s",
                                 local_task_id, exc,
                             )
-                logger.info(
-                    "[CLOUD-UPSERT-SKIP] task=%s sync=%s local_progress=%s cloud_progress=%s local_updated=%s cloud_updated=%s",
-                    local_task_id, local_sync_status, local_progress, cloud_progress, local_updated_at, cloud_updated_at,
-                )
-                return local_task_id
+                if preserve_local_done_from_cloud_pull:
+                    # Keep the local completion, but do not discard newer cloud fields such as
+                    # description/title that do not conflict with the completion state.
+                    pass
+                else:
+                    logger.info(
+                        "[CLOUD-UPSERT-SKIP] task=%s sync=%s local_progress=%s cloud_progress=%s local_updated=%s cloud_updated=%s",
+                        local_task_id, local_sync_status, local_progress, cloud_progress, local_updated_at, cloud_updated_at,
+                    )
+                    return local_task_id
         # ───────────────────────────────────────────────────────────────────────────
 
         temporal_fields = derive_task_temporal_fields(
@@ -9828,6 +9846,8 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         due_date = str(temporal_fields["due_date"]) if temporal_fields["due_date"] else None
         viewer_status = str(payload.get("viewerInboxStatus")) if payload.get("viewerInboxStatus") else None
         local_status = "inbox" if viewer_status == "pending" else progress_status
+        if preserve_local_done_from_cloud_pull:
+            local_status = "done"
         payload_event_line_id = str(payload.get("eventLineId")) if payload.get("eventLineId") else None
         # Tombstone redirect：若这个 eventLineId 已被本地合并到目标，云端拉回时把指针修正
         # 到 merged_to_id，避免任务被写回到孤儿 event_line 上（合并后任务数缩水的根因）。
@@ -9864,6 +9884,13 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         tags = [item for item in payload.get("tags", []) if isinstance(item, dict)]
         timestamp = now_iso()
         resolved_updated_at = str(payload.get("updatedAt") or timestamp)
+        next_sync_status = "pending" if preserve_local_done_from_cloud_pull else "synced"
+        next_pending_sync_action = "update" if preserve_local_done_from_cloud_pull else ""
+        next_last_sync_error = (
+            "云端仍是未完成状态，已保留本地完成状态并等待回写。"
+            if preserve_local_done_from_cloud_pull
+            else ""
+        )
         if (
             existing
             and str(existing["sync_status"] or "") in {"pending", "syncing"}
@@ -9983,13 +10010,13 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 to_json([str(item.get("id") or "") for item in tags]),
                 str(payload.get("createdAt") or (str(existing["created_at"]) if existing and existing["created_at"] else timestamp)),
                 resolved_updated_at,
-                "synced",
+                next_sync_status,
                 cloud_id,
                 to_json(payload),
                 timestamp,
                 resolved_updated_at,
-                "",
-                "",
+                next_pending_sync_action,
+                next_last_sync_error,
             ),
         )
         collaborators = payload.get("collaborators")
@@ -54982,7 +55009,11 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
     def complete_task_with_review(task_id: str, payload: TaskCompletionReviewPayload) -> TaskRecord:
         if not get_cloud_token():
             raise HTTPException(status_code=400, detail="当前环境未启用组织复核链")
-        response = cloud_request("POST", f"/api/v1/tasks/{task_id}/complete-with-review", payload.model_dump())
+        response = cloud_request(
+            "POST",
+            f"/api/v1/tasks/{task_id}/complete-with-review",
+            json_body=payload.model_dump(),
+        )
         if not isinstance(response, dict):
             raise HTTPException(status_code=502, detail="Invalid cloud task payload")
         log_activity("task.complete-with-review", "task", task_id, {"reviewNote": payload.reviewNote[:60]})

@@ -14,7 +14,7 @@ if [[ -z "${TARGET}" ]]; then
 fi
 
 if [[ -n "${YIYU_VOLCENGINE_SSH_KEY:-}" ]]; then
-  SSH_OPTS+=(-i "${YIYU_VOLCENGINE_SSH_KEY}")
+  SSH_OPTS+=(-i "${YIYU_VOLCENGINE_SSH_KEY}" -o IdentitiesOnly=yes)
 fi
 
 echo "==> Syncing cloud backend code to ${TARGET}:${REMOTE_DIR}"

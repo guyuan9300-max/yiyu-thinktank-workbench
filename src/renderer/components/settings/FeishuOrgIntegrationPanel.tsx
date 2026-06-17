@@ -11,6 +11,10 @@ import type {
   OrgMembershipSummary,
 } from '../../../shared/types';
 
+const FEISHU_ENTERPRISE_HELP_URL = 'https://www.feishu.cn/hc/zh-CN/articles/360043741453-%E5%88%9B%E5%BB%BA%E4%BC%81%E4%B8%9A';
+const FEISHU_CUSTOM_APP_HELP_URL = 'https://open.feishu.cn/document/home/introduction-to-custom-app-development/self-built-application-development-process?lang=zh-CN';
+const FEISHU_APP_CONSOLE_URL = 'https://open.feishu.cn/app';
+
 type MemberAuthorizationFlow = {
   authorizeUrl: string;
   callbackUrl: string;
@@ -21,6 +25,20 @@ type MemberAuthorizationFlow = {
   isPolling: boolean;
   statusMessage: string;
 };
+
+function FeishuHelpLink({ href, children }: { href: string; children: React.ReactNode }) {
+  return (
+    <a
+      href={href}
+      target="_blank"
+      rel="noreferrer"
+      className="inline-flex items-center gap-1 rounded-full bg-white px-3 py-1 font-bold text-indigo-600 transition hover:text-indigo-700"
+    >
+      <ExternalLink size={12} />
+      {children}
+    </a>
+  );
+}
 
 type Props = {
   sessionMode: 'local' | 'cloud';
@@ -119,15 +137,15 @@ export function FeishuOrgIntegrationPanel({
 
   const integrationHelper = useMemo(() => {
     if (sessionMode !== 'cloud') {
-      return '连接云端并加入组织后，才能启用飞书任务提醒。';
+      return '连接益语云端并加入组织后，才能配置飞书自建应用。个人用户如需完整飞书同步，可先创建一人飞书企业/团队。';
     }
     if (!membership.hasOrganization) {
-      return '你还没有加入任何组织。飞书提醒依赖组织信息，请先加入组织或创建组织。';
+      return '你还没有加入任何组织。飞书同步依赖益语组织或个人部署空间，请先加入组织或创建组织。';
     }
     if (integration.enabled) {
-      return '当前组织飞书应用已验证。成员填写飞书手机号后，任务提醒即可自动按手机号匹配发送。';
+      return '当前飞书自建应用已验证。成员完成飞书身份绑定后，可使用飞书文档权限、从飞书导入文档，并让参与的飞书任务进入益语；手机号只用于机器人提醒和任务成员匹配。';
     }
-    return integration.lastValidationMessage || '完成后，软件会按成员填写的飞书手机号自动发送任务提醒。';
+    return integration.lastValidationMessage || '完成后，益语云端会使用该飞书自建应用调用飞书开放平台，承接飞书文档、任务和日历相关能力。';
   }, [integration.lastValidationMessage, membership.hasOrganization, sessionMode]);
 
   const deliveryHelper = useMemo(() => {
@@ -138,10 +156,10 @@ export function FeishuOrgIntegrationPanel({
       return '先加入或创建组织，再填写你的飞书接收手机号。';
     }
     if (!integration.enabled) {
-      return '当前组织尚未接通飞书。接通后，软件才会按手机号匹配并发送任务提醒。';
+      return '当前还没有接通飞书自建应用。接通后，软件才会按手机号匹配并发送任务提醒。';
     }
     return deliveryProfile.blockedReason
-      || '请填写你登录飞书时使用的手机号。软件会按这个手机号匹配你的飞书身份并发送任务提醒。';
+      || '请填写你登录飞书时使用的手机号。软件会按这个手机号匹配飞书成员，用于机器人提醒，也用于把益语负责人/协作者稳定分配到飞书任务。';
   }, [deliveryProfile.blockedReason, integration.enabled, membership.hasOrganization, sessionMode]);
 
   const handleSaveIntegration = async () => {
@@ -169,29 +187,32 @@ export function FeishuOrgIntegrationPanel({
   return (
     <div className="space-y-8">
       <div className="space-y-5">
+        <div className="rounded-2xl border border-indigo-100 bg-indigo-50/80 px-4 py-3 text-[13px] font-semibold leading-6 text-slate-800">
+          请依次完成飞书自建应用接入、我的飞书身份绑定、飞书成员匹配手机号。飞书任务、文档和日历提醒依赖飞书自建应用；成员绑定飞书身份后，任务和文档才能正确落到本人权限下。
+        </div>
         <div className="flex items-start justify-between gap-4">
           <div className="min-w-0 flex-1">
-            <p className="text-[11px] font-bold uppercase tracking-[0.12em] text-gray-500">组织飞书接入</p>
+            <p className="text-[11px] font-bold uppercase tracking-[0.12em] text-gray-500">飞书自建应用接入</p>
             <p className="text-[12px] text-gray-500 mt-1.5 leading-relaxed">
-              这一步配置的是整个组织共用的飞书应用。验证通过后，软件会按成员填写的飞书手机号自动发送任务提醒。
+              这一步配置的是益语云端调用飞书开放平台所需的自建应用。益语云端负责益语任务数据和同步编排；飞书任务、文档、日历能力来自组织或个人配置的飞书自建应用。
             </p>
             <div className="mt-3 rounded-2xl border border-indigo-100 bg-indigo-50/70 px-4 py-3 text-[12px] leading-6 text-slate-700">
-              <p className="font-bold text-slate-900">组织飞书接入需要管理员完成 5 步：</p>
+              <p className="font-bold text-slate-900">管理员配置飞书自建应用需要完成 5 步：</p>
               <ol className="mt-2 list-decimal space-y-1 pl-5">
                 <li>
                   打开飞书开放平台：
                   <a
-                    href="https://open.feishu.cn/app"
+                    href={FEISHU_APP_CONSOLE_URL}
                     target="_blank"
                     rel="noreferrer"
                     className="ml-1 font-bold text-indigo-600 hover:text-indigo-700"
                   >
-                    https://open.feishu.cn/app
+                    {FEISHU_APP_CONSOLE_URL}
                   </a>
                 </li>
-                <li>创建“企业自建应用”。</li>
+                <li>创建“企业自建应用”。个人用户如无组织，可先按飞书官方指引创建一人企业/团队，自己作为管理员。</li>
                 <li>复制 App ID 和 App Secret，填写到本页。</li>
-                <li>启用应用的“机器人”能力，用于任务通知。</li>
+                <li>按需启用机器人、任务、文档、日历等能力；成员完成飞书身份绑定后，才能访问个人飞书文档并参与飞书任务同步。</li>
                 <li>
                   在“开发配置 → 安全设置 → 重定向 URL”中添加：
                   <span className="mt-1 block break-all rounded-xl bg-white px-3 py-2 font-mono text-[11px] text-indigo-700">
@@ -199,8 +220,13 @@ export function FeishuOrgIntegrationPanel({
                   </span>
                 </li>
               </ol>
+              <div className="mt-3 flex flex-wrap gap-2 text-[11px]">
+                <span className="inline-flex items-center rounded-full bg-indigo-100 px-3 py-1 font-bold text-indigo-700">官方指引</span>
+                <FeishuHelpLink href={FEISHU_ENTERPRISE_HELP_URL}>创建飞书企业/团队</FeishuHelpLink>
+                <FeishuHelpLink href={FEISHU_CUSTOM_APP_HELP_URL}>企业自建应用流程</FeishuHelpLink>
+              </div>
               <p className="mt-2 text-[11px] text-slate-500">
-                完成后点击“验证并保存组织飞书接入”。检测通过后，成员即可绑定自己的飞书身份并使用飞书文档同步。
+                完成后点击“验证并保存飞书自建应用接入”。检测通过后，成员只需绑定自己的飞书身份，不需要填写 App Secret。
               </p>
             </div>
           </div>
@@ -259,7 +285,7 @@ export function FeishuOrgIntegrationPanel({
               className="inline-flex items-center gap-2 rounded-2xl px-5 py-3 text-[13px] font-bold text-white bg-indigo-500 disabled:opacity-50 disabled:cursor-not-allowed"
             >
               {saveBusy ? <RefreshCw size={16} className="animate-spin" /> : <CheckCircle2 size={16} />}
-              验证并保存组织飞书接入
+              验证并保存飞书自建应用接入
             </button>
           </div>
         )}
@@ -268,9 +294,9 @@ export function FeishuOrgIntegrationPanel({
       <div className="border-t border-gray-100 pt-6 space-y-5">
         <div className="flex items-start justify-between gap-4">
           <div className="min-w-0 flex-1">
-            <p className="text-[11px] font-bold uppercase tracking-[0.12em] text-gray-500">我的飞书文档授权</p>
+            <p className="text-[11px] font-bold uppercase tracking-[0.12em] text-gray-500">我的飞书身份绑定</p>
             <p className="text-[12px] text-gray-500 mt-1.5 leading-relaxed">
-              这一步绑定的是当前成员的个人飞书身份，用于创建、打开和从飞书导入文档；授权由益语统一 HTTPS 回调入口承接，不需要成员配置云地址或手机号。
+              这一步绑定的是当前成员的个人飞书身份，用于飞书文档权限、从飞书导入文档，也用于让你参与的飞书任务自动进入益语。成员不填写 App Secret。
             </p>
           </div>
           <div className={`text-[10px] font-bold uppercase tracking-[0.12em] px-2.5 py-1 rounded-full border ${
@@ -289,11 +315,11 @@ export function FeishuOrgIntegrationPanel({
             <KeyRound size={14} />
             当前成员：{currentUserName || '当前账号'}
           </p>
-          <p className="text-[12px] text-slate-600 mt-2 leading-6">
-            {memberAuthorization.linked
-              ? `已绑定：${memberAuthorization.name || memberAuthorization.email || memberAuthorization.openId || '当前飞书成员'}`
-              : memberAuthorization.blockedReason || '组织飞书应用已接通。绑定后，软件创建的飞书文档会确保当前成员可打开和编辑，也可以从飞书导入文档。'}
-          </p>
+            <p className="text-[12px] text-slate-600 mt-2 leading-6">
+              {memberAuthorization.linked
+                ? `已绑定：${memberAuthorization.name || memberAuthorization.email || memberAuthorization.openId || '当前飞书成员'}`
+                : memberAuthorization.blockedReason || '飞书自建应用已接通。绑定后，软件创建的飞书文档会确保当前成员可打开和编辑，也可以从飞书导入文档；你参与的飞书任务也可进入益语。'}
+            </p>
           {memberAuthorization.boundAt ? (
             <p className="text-[11px] text-slate-400 mt-2">授权时间：{memberAuthorization.boundAt}</p>
           ) : null}
@@ -356,9 +382,9 @@ export function FeishuOrgIntegrationPanel({
 	      <div className="border-t border-gray-100 pt-6 space-y-5">
 	        <div className="flex items-start justify-between gap-4">
 	          <div className="min-w-0 flex-1">
-	            <p className="text-[11px] font-bold uppercase tracking-[0.12em] text-gray-500">任务提醒手机号（可选）</p>
+	            <p className="text-[11px] font-bold uppercase tracking-[0.12em] text-gray-500">飞书成员匹配手机号（推荐）</p>
 	            <p className="text-[12px] text-gray-500 mt-1.5 leading-relaxed">
-	              只用于飞书机器人给你发送任务提醒。文档创建、打开和导入看上面的“我的飞书文档授权”，不靠手机号完成。
+	              用于机器人提醒，也用于把益语负责人/协作者稳定分配到飞书任务。不填写也可创建飞书任务，但可能无法自动分配成员；飞书文档权限和飞书任务反向同步仍看上面的飞书身份绑定。
 	            </p>
 	          </div>
           <div className={`text-[10px] font-bold uppercase tracking-[0.12em] px-2.5 py-1 rounded-full border ${deliveryTone(deliveryProfile.deliveryStatus)}`}>
