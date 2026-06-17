@@ -1,0 +1,228 @@
+﻿表名,中文解释,四仓,行数,状态,主要写入入口,主要读取方,scope列(client/org/user/source),时间列(created/updated),备注
+action_items,会议/纪要派生的待办行动项,原始资料,4,真接通,/api/v1/clients/{client_id}/todos/{todo_id}/dismiss; /api/v1/clients/{client_id}/todos/{todo_id}/promote-to-task; /api/v1/clients/{client_id}/meetings/{meeting_id}/extract,build_meeting_detail; promote_todo_to_task_proxy,client无/org无/user无/source无,"created有,updated无",
+activity_logs,全局活动审计日志,系统,28688,真接通,create_app; /api/v1/event-lines/{event_line_id}/notes; /api/v1/tasks/{task_id}/attachments,_latest_local_task_status_update; _recent_due_date_change_stats,client无/org无/user无/source无,"created有,updated无",needs_human动态写
+agenda_items,会议议程条目,原始资料,10,真接通,/api/v1/clients/{client_id}/strategic-cockpit/meeting-pack; create_app; /api/v1/clients/{client_id}/meetings,build_meeting_detail; create_app,client无/org无/user无/source无,"created无,updated无",
+agent_weekly_plan_overrides,AI周计划人工覆盖项,系统,0,死表,(无/建表),upsert_agent_weekly_plan_override; _load_plan_override_rows,client无/org无/user无/source无,"created有,updated有",空表
+ai_episode_log,AI执行回合日志,系统,312,半接通,local_model_optimizer_worker_loop,(无读边),client有/org无/user有/source无,"created无,updated无",
+ai_feedback_signals,AI反馈信号,系统,0,门面,(无/建表),(无读边),client无/org无/user有/source无,"created有,updated无",空表
+ai_improvement_suggestions,AI改进建议,系统,0,门面,(无/建表),(无读边),client无/org无/user无/source无,"created无,updated无",空表
+ai_learned_rules,AI学习到的规则,系统,0,门面,(无/建表),(无读边),client有/org无/user有/source无,"created无,updated无",空表
+ai_task_plans,AI生成的任务计划,系统,0,死表,/api/v1/org/bots/task-plans/{ai_task_plan_id}/decide; /api/v1/org/bots/{bot_member_id}/task-plans,create_app; get_user_ai_delegations,client有/org无/user无/source无,"created有,updated有",空表
+ambiguities,抽取出的歧义点,共识事实,0,死表,/api/v1/clients/{client_id}/meetings/{meeting_id}/extract; /api/v1/clients/{client_id}/meetings/{meeting_id}/resolve; /api/v1/channels/feishu/events,build_strategic_cockpit_snapshot; build_meeting_detail,client无/org无/user无/source无,"created有,updated无",空表
+analysis_jobs,分析中心异步作业队列,系统,72,真接通,analysis_job_worker_loop; _startup_worker; claim_next_analysis_job._claim,_sync_event_line_client_scope_records; list_analysis_jobs,client有/org无/user无/source无,"created有,updated有",needs_human动态写
+analysis_runs,分析运行记录,认知产品,5,真接通,create_app; /api/v1/analysis-tools/runs,create_app; build_health,client无/org无/user无/source无,"created有,updated无",
+analysis_templates,分析模板,认知产品,2,真接通,seed_defaults,create_app; update_analysis_workbench_settings,client无/org无/user无/source无,"created有,updated无",needs_human动态写
+answer_citations,问答结果引用溯源,认知产品,7595,半接通,(无/建表),(无读边),client无/org无/user无/source无,"created有,updated无",
+answer_runs,AI问答运行结果,认知产品,551,半接通,create_app; /api/v1/clients/{client_id}/documents/ai-action,(无读边),client有/org无/user无/source无,"created有,updated无",孤儿写;needs_human动态写
+approval_records,审批记录,系统,1,真接通,_sync_event_line_client_scope_records; create_app; create_app._append_proposal_approval_audit,resolve_current_approval_state; decide_approval,client有/org无/user无/source无,"created有,updated无",孤儿写;needs_human动态写
+atomic_fact_confidence_history,原子事实置信度变更史,共识事实,4,真接通,/api/v1/smart-import/sessions/{session_id}/commit; apply_user_correction,list_history_for_fact; get_current_trend,client无/org无/user无/source有,"created无,updated无",孤儿写;needs_human动态写
+atomic_facts,加工后的原子事实,共识事实,2288,真接通,/api/v1/clients/{client_id}/duplicate-documents/resolve; create_app; /api/v1/clients/{client_id}/workspace/chat,collect_data_center_context_for_consultation; build_template_fill_context,client有/org无/user无/source有,"created有,updated有",
+badge_unlock_records,成长徽章解锁记录,认知产品,104,真接通,_sync_badge_unlocks,_fetch_unlock_map,client无/org无/user有/source无,"created有,updated无",
+bot_members,机器人同事成员,系统,1,真接通,/api/v1/org/bots; /api/v1/org/bots/{bot_member_id},create_app; get_user_ai_delegations,client无/org有/user无/source无,"created有,updated有",
+bot_permission_policies,机器人权限策略,系统,6,真接通,upsert_synced_bot_from_cloud; /api/v1/org/bots; backfill_bot_init,upsert_synced_bot_from_cloud; upsert_synced_bot_from_cloud._do,client无/org无/user无/source无,"created有,updated有",
+bot_reporting_lines,机器人汇报线,系统,1,真接通,upsert_synced_bot_from_cloud; /api/v1/org/bots; backfill_bot_init,upsert_synced_bot_from_cloud; upsert_synced_bot_from_cloud._do,client无/org无/user无/source无,"created有,updated有",
+brand_mirror_snapshots,品牌镜像快照,认知产品,3,真接通,/api/v1/intelligence/brand-mirror/analyze,latest_brand_mirror_snapshot,client有/org无/user无/source无,"created有,updated无",
+card_review_queue,卡片复核队列,富化索引,44,半接通,/api/v1/tasks/{task_id}/attachments,(无读边),client无/org无/user无/source无,"created有,updated有",
+chat_messages,工作台对话消息,原始资料,1139,真接通,/api/v1/clients/{client_id}/analysis-runs/{run_id}/cancel; /api/v1/clients/{client_id}/workspace/chat/start; /api/v1/settings/demo-data/load,fetch_chat_message_for_client; build_client_analysis_run,client无/org无/user无/source无,"created有,updated无",
+chat_thread_memory_packs,对话线程记忆包,原始资料,27,真接通,_schedule_post_answer_enrichment,create_app; delete_chat_message_pair,client有/org无/user无/source无,"created有,updated有",
+chat_threads,工作台对话线程,原始资料,305,真接通,/api/v1/me/org-membership/apply; /api/v1/clients/{client_id}/analysis-runs/{run_id}/cancel; /api/v1/settings/demo-data/load,_upsert_cloud_client_shadow_local; persist_retrieval_bundle,client有/org无/user无/source无,"created有,updated有",
+clarification_records,澄清问答记录,共识事实,0,死表,/api/v1/clients/{client_id}/workspace/chat; write_cross_source_candidate; /api/v1/meeting-minutes/process,_event_line_context_bundle; create_app,client无/org无/user无/source无,"created有,updated有",空表
+client_analysis_runs,客户分析运行结果,认知产品,408,真接通,/api/v1/clients/{client_id}/workspace/chat/start; background_resolve_chat_answer; _startup_worker,create_client_analysis_run; update_client_analysis_run,client有/org无/user无/source无,"created有,updated有",
+client_brand_strategy_extracts,客户品牌战略抽取,共识事实,1,真接通,create_app; /api/v1/intelligence/brand-mirror/strategy-extract,create_app; update_brand_strategy_extract_endpoint,client有/org无/user无/source无,"created无,updated有",
+client_delete_tombstones,客户删除墓碑,共识事实,1,半接通,(无/建表),(无读边),client无/org无/user无/source无,"created无,updated无",
+client_dna_documents,客户DNA文档,原始资料,32,真接通,create_app; knowledge_worker_loop,_collect_strategic_insight_context; context_summary,client有/org无/user无/source无,"created无,updated有",孤儿写;needs_human动态写
+client_folders,客户文件夹,系统,103,真接通,/api/v1/clients/{client_id}/documents/{document_id}/move-folder; /api/v1/clients/{client_id}/documents/auto-repair/apply; /api/v1/clients/{client_id}/folders,build_client_summary; _force_online_transcript_document_classification,client有/org无/user无/source有,"created有,updated无",
+client_glossary,客户术语表,共识事实,407,真接通,/api/v1/clients/{client_id}/glossary; /api/v1/glossary/{entry_id}; _persist_resolved_clarification_to_glossary,list_glossary_attributes_proxy; list_glossary_drift_alerts_proxy,client有/org无/user无/source无,"created有,updated有",needs_human动态写
+client_narrative_local_mirror,客户叙事本地镜像,认知产品,7,真接通,/api/v1/clients/{client_id}/narrative; create_app,build_template_fill_context; get_client_narrative_proxy,client有/org无/user无/source无,"created无,updated无",孤儿写;needs_human动态写
+client_stage_audit,客户阶段变更审计,认知产品,236,真接通,_bootstrap_client_sync,list_stage_audit,client有/org无/user有/source无,"created无,updated无",
+client_strategic_documents,客户战略文档,原始资料,2,真接通,/api/v1/clients/{client_id}/strategic-docs; create_app,list_strategic_docs; delete_strategic_doc,client有/org无/user无/source无,"created无,updated无",
+client_strategic_profiles,客户战略画像,认知产品,6,真接通,(无/建表),get_client_knowledge_status; create_app,client有/org无/user无/source无,"created无,updated有",
+client_template_fill_runs,客户智能填表运行,认知产品,59,真接通,/api/v1/clients/{client_id}/documents/fill-template/start; /api/v1/clients/{client_id}/template-fill-runs/{run_id}; _startup_worker,create_client_template_fill_run; fetch_active_client_template_fill_run,client有/org无/user无/source无,"created有,updated有",needs_human动态写
+client_units,客户单元(空),系统,0,门面,(无/建表),(无读边),client有/org无/user无/source无,"created有,updated无",空表
+clients,客户主表,共识事实,14,真接通,_try_cloud_sync_client; /api/v1/settings/demo-data/load; /api/v1/clients/{client_id},_client_row_to_cloud_payload; _try_cloud_sync_client,client无/org无/user无/source无,"created有,updated有",
+commitments,承诺事项,共识事实,75,真接通,/api/v1/clients/{client_id}/todos/{todo_id}/dismiss; /api/v1/clients/{client_id}/todos/{todo_id}/promote-to-task; create_app,promote_todo_to_task_proxy; create_app,client有/org无/user无/source有,"created有,updated有",
+conflict_groups,事实冲突分组,共识事实,9,真接通,analysis_job_worker_loop,list_conflict_groups; _build_analysis_center_summary,client有/org无/user无/source无,"created有,updated有",
+context_packs,上下文打包结果,认知产品,25,真接通,_sync_event_line_client_scope_records,_fetch_context_pack_summaries; _sync_event_line_client_scope_records,client有/org无/user无/source无,"created有,updated有",needs_human动态写
+cooperation_relationships,合作关系(空),共识事实,0,门面,(无/建表),_load_client_profile; build_narrative_analyses,client有/org无/user无/source无,"created无,updated有",空表
+data_center_ingest_events,数据中心统一来源登记事件,系统,805,真接通,/api/v1/intelligence/sentiment/refresh; /api/v1/clients/{client_id}/workspace/data-center-readiness; /api/v1/event-lines,create_app; get_workspace_data_center_readiness,client有/org有/user无/source有,"created有,updated有",needs_human动态写
+data_center_proposal_drafts,数据中心提案草稿,系统,0,死表,/api/v1/data-center/diagnose; /api/v1/workspace-answer-action-cards/{message_id}/request-evidence; /api/v1/data-center/proposal-drafts/{draft_id}/promote,create_app; get_client_mobile_data_center_snapshot,client有/org无/user无/source无,"created有,updated有",空表
+data_center_shadow_runs,数据中心影子运行,系统,844,真接通,/api/v1/data-center/diagnose,list_data_center_shadow_runs,client无/org无/user无/source无,"created有,updated无",
+data_center_sync_outbox,数据中心同步发件箱,系统,0,死表,enqueue_data_center_sync_for_ingest_event,_upsert_outbox_item; build_data_center_sync_preview,client无/org有/user无/source有,"created有,updated有",空表
+data_gaps,数据缺口,共识事实,0,死表,/api/v1/clients/{client_id}/data-gaps/compensate,build_template_fill_context; create_app,client有/org无/user无/source无,"created无,updated无",空表
+decisions,决策记录,共识事实,3,真接通,create_app; /api/v1/clients/{client_id}/meetings/{meeting_id}/extract; /api/v1/channels/feishu/events,build_meeting_detail; create_app,client无/org无/user无/source无,"created有,updated无",
+dedup_relations,去重关系,富化索引,7,半接通,/api/v1/tasks/{task_id}/attachments,(无读边),client无/org无/user无/source无,"created有,updated无",
+digital_asset_narrative_snapshots,数字资产叙事快照,认知产品,0,死表,/api/v1/clients/{client_id}/digital-assets/narrative/refresh,get_latest_digital_asset_narrative; _save_narrative_snapshot,client有/org无/user无/source无,"created有,updated有",空表
+dna_deltas,DNA增量变更,共识事实,25,真接通,_sync_event_line_client_scope_records,list_dna_deltas; _sync_dna_delta,client有/org无/user无/source无,"created有,updated有",needs_human动态写
+dna_terms,DNA术语(空),共识事实,0,死表,/api/v1/settings/demo-data/load,workspace_for_client; context_summary,client有/org无/user无/source无,"created有,updated有",空表
+doc_skeletons,文档骨架索引,富化索引,446,半接通,(无/建表),(无读边),client有/org无/user无/source无,"created有,updated有",
+document_cards,文档卡片,富化索引,259,真接通,/api/v1/tasks/{task_id}/attachments; knowledge_worker_loop; local_model_optimizer_worker_loop,_collect_strategic_insight_context; create_app,client无/org无/user无/source无,"created有,updated有",
+document_catalog_index,文档目录索引,富化索引,206,真接通,/api/v1/tasks/{task_id}/attachments,hydrate_missing_surrogates; refresh_existing_knowledge_document,client无/org无/user无/source无,"created有,updated无",
+document_chunks,文档切块(老),富化索引,5371,真接通,create_app; /api/v1/clients/{client_id}/workspace/data-center-readiness/actions; /api/v1/tasks/{task_id}/attachments,create_app; build_document_reading_preview_record,client无/org无/user无/source无,"created有,updated无","老切块,v2_chunks为新主表疑重复"
+document_deep_read_states,文档深读状态,富化索引,14,真接通,sync_states_for_client,reap_stuck; claim_next,client有/org有/user无/source无,"created有,updated有",
+document_fields,文档抽取字段,原始资料,1334,真接通,(无/建表),upsert_document_fields; _fetch_fields_by_schema,client无/org无/user无/source无,"created有,updated有",
+document_kinds,文档类型字典,系统,57,真接通,_background_worker,create_app; decompose_documents_batch,client无/org无/user无/source无,"created无,updated无",
+document_path_optimizations,文档路径优化建议,富化索引,29,真接通,local_model_optimizer_worker_loop,fetch_document_cards; retrieve_knowledge_bundle,client有/org无/user无/source无,"created有,updated有",
+document_recycle_bin,文档回收站,原始资料,28,半接通,/api/v1/clients/{client_id}/duplicate-documents/resolve; create_app; /api/v1/clients/{client_id}/documents/{document_id},(无读边),client有/org无/user无/source无,"created无,updated无",
+documents,原始文档主表,原始资料,2083,真接通,/api/v1/clients/{client_id}/documents/auto-repair/apply; /api/v1/clients/{client_id}/knowledge/export-answer; /api/v1/clients/{client_id}/documents/from-text,_upsert_cloud_client_shadow_local; build_client_summary,client有/org有/user无/source无,"created有,updated无",
+duplicate_group_reviews,重复组复核,富化索引,0,死表,/api/v1/clients/{client_id}/duplicate-documents/resolve; create_app,get_client_duplicate_documents; create_app,client有/org无/user无/source无,"created无,updated无",空表
+entities,实体表,共识事实,5036,真接通,create_app; /api/v1/entities/{entity_id}/verify; _merge_entities,create_app; merge_entity_into,client有/org无/user无/source无,"created有,updated有",
+entity_mentions,实体提及,共识事实,12309,真接通,/api/v1/entities/{merged_id}/merge; /api/v1/tasks/{task_id}/attachments,fanout_document_to_strategic_thoughts; fanout_document_to_event_lines,client无/org无/user无/source无,"created有,updated无",
+entity_merge_log,实体合并日志,共识事实,0,死表,/api/v1/entities/{merged_id}/merge,(无读边),client有/org无/user无/source无,"created有,updated无",空表
+event_line_activities,事件线活动,共识事实,124,真接通,_sync_task_attachment_scope; /api/v1/growth/recommendations/{recommendation_id}/accept; create_app,build_event_line; build_event_line_detail,client无/org无/user无/source有,"created有,updated无",
+event_line_approval_nodes,事件线审批节点(空),系统,0,门面,(无/建表),create_app; _event_line_dependency_counts,client无/org无/user无/source无,"created有,updated无",空表
+event_line_attachments,事件线附件,原始资料,2,真接通,create_app; /api/v1/event-lines/{event_line_id}/report-snapshot,create_app; _build_local_event_line_report_snapshot,client无/org无/user无/source无,"created无,updated无",needs_human动态写
+event_line_delete_tombstones,事件线删除墓碑,共识事实,1,真接通,/api/v1/event-lines/{event_line_id}/merge; create_app.merge_event_lines._do_merge,create_app; _upsert_cloud_event_line_shadow_local,client无/org无/user无/source无,"created无,updated无",孤儿写;needs_human动态写
+event_line_memory_snapshots,事件线记忆快照,共识事实,19,真接通,_sync_task_attachment_scope,build_strategic_cockpit_snapshot; create_app,client无/org无/user无/source无,"created有,updated有",
+event_line_state_changes,事件线状态变更(空),共识事实,0,门面,(无/建表),(无读边),client无/org无/user无/source无,"created无,updated无",空表
+event_line_weekly_snapshots,事件线周快照(空),认知产品,0,门面,(无/建表),create_app; _event_line_dependency_counts,client无/org无/user无/source无,"created有,updated无",空表
+event_lines,事件线主表,共识事实,18,真接通,/api/v1/event-lines; /api/v1/event-lines/{event_line_id}; /api/v1/event-lines/{event_line_id}/close,build_task; build_growth_workbench_snapshot,client无/org有/user有/source无,"created有,updated有",
+event_log,事件日志,系统,312,半接通,local_model_optimizer_worker_loop,(无读边),client有/org无/user无/source无,"created无,updated无",
+evidence_cards,证据卡片,富化索引,378,真接通,_sync_event_line_client_scope_records,_fetch_evidence_support_items; get_client_knowledge_status,client有/org无/user无/source有,"created有,updated有",needs_human动态写
+evidence_quality_annotations,证据质量标注,富化索引,328,真接通,/api/v1/data-center/evidence-quality/{annotation_id}/label,create_app; get_client_mobile_data_center_snapshot,client无/org无/user无/source有,"created有,updated有",
+evidence_quality_feedback_snapshots,证据质量反馈快照(空),富化索引,0,死表,/api/v1/data-center/evidence-quality/snapshots,list_evidence_quality_feedback_snapshots; create_evidence_quality_feedback_snapshot,client无/org无/user无/source无,"created有,updated无",空表
+evidence_refs,证据引用,富化索引,62,真接通,_sync_task_attachment_scope; /api/v1/clients/{client_id}/duplicate-documents/resolve; /api/v1/clients/{client_id}/meetings/{meeting_id}/publish,get_client_duplicate_documents; get_client_duplicate_documents._ref_counts,client有/org无/user无/source有,"created有,updated无",
+execution_ticket_logs,执行工单日志(空),系统,0,死表,/api/v1/proposals/{proposal_id}/execution-ticket,get_execution_retry_metrics; list_execution_ticket_logs,client无/org无/user无/source无,"created有,updated无",空表
+execution_tickets,执行工单(空),系统,0,死表,create_app._insert_execution_ticket; create_app._complete_execution_ticket; /api/v1/proposals/{proposal_id}/execution-ticket,create_app; _proposal_row_to_record,client有/org无/user无/source无,"created有,updated有",空表
+exp_wall_quotes,经验墙引语(疑与handbook_entries重复),共识事实,254,真接通,/api/v1/reviews/weekly; toggle_reaction; _recompute_scores,list_feed; get_quote,client无/org无/user无/source有,"created有,updated有",needs_human动态写;疑与handbook_entries重复(经验墙双表)
+exp_wall_reactions,经验墙互动(空),共识事实,0,死表,_background_sync_exp_wall,get_user_reactions; toggle_reaction,client无/org无/user有/source无,"created有,updated无",空表;孤儿写
+experience_story_drafts,经验故事草稿,认知产品,5,真接通,reject_experience_story_draft; regenerate_experience_story_draft,reject_experience_story_draft; regenerate_experience_story_draft,client有/org无/user无/source有,"created有,updated有",孤儿写;needs_human动态写
+external_evidence_cards,外部证据卡片(空),富化索引,0,死表,/api/v1/clients/{client_id}/data-gaps/compensate; /api/v1/topic-candidates/{topic_id}/external-evidence-card; /api/v1/external-evidence-cards/{card_id}/accept,create_app; _resolve_client_id_for_evidence_quality_annotation,client有/org无/user无/source无,"created有,updated有",空表
+fact_contradictions,事实矛盾,共识事实,81,真接通,run_internet_enrichment; /api/v1/contradictions/{contradiction_id}/review; verify_contradictions,get_client_knowledge_status; create_app,client有/org无/user无/source无,"created无,updated无",needs_human动态写
+file_reclass_events,文件重分类事件,系统,643,真接通,_sync_legacy_knowledge_document,fetch_recent_reclass_events; _sync_legacy_knowledge_document,client无/org无/user无/source无,"created有,updated无",
+generation_runtime_state,"生成运行态(老,空)",系统,0,门面,(无/建表),ensure_generation_runtime_schema,client有/org无/user无/source无,"created无,updated有",空表;被v2替代
+generation_runtime_state_v2,生成运行态v2,系统,56,真接通,/api/v1/clients/{client_id}/documents/ai-action; /api/v1/runtime/generation-state,get_generation_runtime_state; ensure_generation_runtime_schema,client有/org无/user无/source无,"created无,updated有",
+glossary_attributes,术语属性,共识事实,808,真接通,/api/v1/clients/{client_id}/glossary-attributes/{attr_id}/verify; /api/v1/clients/{client_id}/glossary-attributes/{attr_id}/reject; /api/v1/clients/{client_id}/glossary-drift-alerts/{alert_id}/resolve,list_glossary_attributes_proxy; verify_glossary_attribute_proxy,client有/org无/user无/source有,"created有,updated有",
+glossary_drift_alerts,术语漂移告警,共识事实,1,真接通,/api/v1/clients/{client_id}/glossary-drift-alerts/{alert_id}/resolve; create_app; run_internet_enrichment,list_glossary_drift_alerts_proxy; resolve_glossary_drift_alert_proxy,client有/org无/user无/source无,"created无,updated无",
+glossary_relations,术语关系,共识事实,63,真接通,/api/v1/clients/{client_id}/project-portrait/build; build_portrait._persist,_collect_glossary_relations; build_portrait,client有/org无/user无/source无,"created有,updated有",孤儿写;needs_human动态写
+goal_records,目标记录(空),系统,0,死表,/api/v1/settings/demo-data/load; create_app; /api/v1/clients/{client_id}/goals,build_task_project_context; workspace_for_client,client有/org无/user无/source无,"created有,updated有",空表
+growth_ability_profiles,成长能力画像,认知产品,6,真接通,/api/v1/growth/ledger,_fetch_profile_map,client无/org无/user无/source无,"created有,updated有",
+growth_ability_weekly_snapshot,成长能力周快照,认知产品,114,真接通,/api/v1/growth/overview; _background_sync_exp_wall,_build_ability_trends,client无/org无/user有/source无,"created无,updated无",
+growth_capture_states,成长无感采集状态,共识事实,694,真接通,_background_sync_exp_wall; /api/v1/reviews/weekly,get_pending_capture; update_pending_capture_state,client无/org无/user有/source无,"created有,updated有",
+growth_evidence_records,成长证据记录,共识事实,394,真接通,_sync_badge_unlocks; /api/v1/handbook; _background_sync_exp_wall,get_brain_dashboard; create_app,client无/org无/user有/source无,"created有,updated有",
+growth_recommendation_feedback,成长推荐反馈(空),系统,0,死表,create_app; /api/v1/growth/recommendations/feedback,(无读边),client无/org无/user有/source有,"created有,updated无",空表
+growth_signal_events,成长信号事件,共识事实,709,真接通,create_app; /api/v1/growth/enrich-insights; _sync_badge_unlocks,create_app; delete_task,client无/org无/user有/source有,"created有,updated有",
+growth_validation_events,成长验证事件,认知产品,10,真接通,/api/v1/growth/handbook/{entry_id}/mark-reused; _background_sync_exp_wall,create_app; build_handbook_detail,client无/org无/user有/source有,"created有,updated有",
+handbook_entries,组织手册条目(经验墙正表),共识事实,21,真接通,_sync_event_line_client_scope_records; /api/v1/settings/demo-data/load; /api/v1/handbook,get_brain_dashboard; build_demo_data_response,client有/org无/user无/source有,"created有,updated无",
+heal_log,自愈日志(空),系统,0,死表,/api/v1/system/self-heal,get_heal_log,client无/org无/user无/source无,"created无,updated无",空表
+idempotency_keys,幂等键(空),系统,0,死表,_schedule_chat_fact_extraction; /api/v1/clients; mark_failed,find; cleanup_expired,client无/org无/user无/source无,"created有,updated无",空表
+import_staged_files,导入暂存文件,原始资料,40,真接通,/api/v1/smart-import/sessions/{session_id}/files; /api/v1/smart-import/sessions/{session_id}/chunks; /api/v1/smart-import/chunks/{chunk_id},get_session; delete_staged_file,client无/org无/user无/source无,"created无,updated无",
+import_story_chunk_files,导入故事块文件,原始资料,39,真接通,/api/v1/smart-import/sessions/{session_id}/chunks; /api/v1/smart-import/files/{file_id}/assign,assign_file_to_chunk; parse_chunk,client无/org无/user无/source无,"created有,updated无",
+import_story_chunks,导入故事切块,原始资料,31,真接通,/api/v1/smart-import/sessions/{session_id}/chunks; /api/v1/smart-import/chunks/{chunk_id}; /api/v1/smart-import/chunks/{chunk_id}/parsed,smart_import_update_chunk; smart_import_patch_chunk_parsed,client无/org无/user无/source无,"created有,updated有",
+import_story_sessions,导入故事会话,原始资料,24,真接通,/api/v1/smart-import/sessions/{session_id}; /api/v1/smart-import/sessions/{session_id}/files; /api/v1/smart-import/files/{file_id},smart_import_commit_session; create_app,client有/org无/user无/source无,"created有,updated有",
+imports,导入批次,原始资料,52,真接通,knowledge_worker_loop; _worker_loop,workspace_for_client; create_app,client有/org无/user无/source无,"created有,updated无",
+intelligence_brand_audits,资讯品牌审计,认知产品,3,真接通,/api/v1/intelligence/sentiment/audit,_persist_audit; get_audit,client无/org无/user无/source无,"created有,updated有",
+intelligence_candidate_items,资讯候选条目(抓取原文),原始资料,1703,真接通,create_app; /api/v1/intelligence/verification-feedback; /api/v1/intelligence/refresh,create_app; submit_verification_feedback,client有/org无/user无/source无,"created有,updated有",
+intelligence_feedback_events,资讯反馈事件,系统,3,真接通,/api/v1/intelligence/items/{item_id}/chat,feedback_diagnostics,client有/org无/user无/source无,"created有,updated无",
+intelligence_feedback_summaries,资讯反馈汇总(空),认知产品,0,死表,/api/v1/intelligence/items/{item_id}/chat,_upsert_summary; feedback_score_for_candidate,client有/org无/user无/source无,"created有,updated有",空表
+intelligence_fetch_jobs,资讯抓取作业,原始资料,1996,真接通,/api/v1/intelligence/refresh,get_candidate_supply_status_for_scope; get_source_diagnostics,client有/org无/user无/source无,"created有,updated无",
+intelligence_focus_directives,资讯聚焦指令,系统,1,真接通,(无/建表),create_app; list_focus_directives,client无/org无/user无/source无,"created有,updated有",
+intelligence_items,资讯条目,原始资料,151,真接通,create_app; /api/v1/intelligence/verification-feedback; /api/v1/intelligence/items/{item_id}/dismiss,create_app; list_intelligence_items,client有/org无/user无/source无,"created有,updated有",
+intelligence_profiles,资讯画像(空),系统,0,死表,create_app; /api/v1/intelligence/profiles/{profile_id}; /api/v1/intelligence/profiles/{profile_id}/refresh,create_app; import_sync_intelligence_demo.apply_rows,client有/org有/user无/source无,"created有,updated有",空表
+intelligence_refresh_runs,资讯刷新运行,认知产品,26,真接通,create_app; /api/v1/intelligence/refresh-runs; /api/v1/intelligence/refresh,create_app; list_intelligence_refresh_runs,client有/org无/user无/source无,"created有,updated有",
+intelligence_search_diagnostics,资讯检索诊断(空),系统,0,门面,run_intelligence_search_diagnostic,(无读边),client有/org无/user无/source无,"created有,updated无",空表;孤儿写
+intelligence_search_intents,资讯检索意图,认知产品,667,真接通,(无/建表),_profile_deep_dive_rows; continue_timely_candidate_review,client有/org无/user无/source无,"created有,updated有",
+intelligence_sentiment_themes,资讯情绪主题,认知产品,13,真接通,/api/v1/intelligence/sentiment/themes,collect_signals; _persist_themes,client无/org无/user无/source无,"created有,updated有",
+intelligence_source_configs,资讯源配置,系统,155,真接通,create_app; /api/v1/intelligence/refresh-cycle-settings; /api/v1/intelligence/refresh,ensure_default_source_configs; _disable_invalid_discovered_sources,client有/org无/user无/source有,"created有,updated有",
+intelligence_verification_rules,资讯核验规则(空),系统,0,死表,(无/建表),create_app; list_verification_rules,client无/org无/user无/source无,"created有,updated有",空表
+job_stage_runs,作业阶段运行,系统,275,半接通,(无/建表),list_analysis_job_stages,client无/org无/user无/source无,"created有,updated有",
+judgment_versions,判断/判卡版本,认知产品,67,真接通,/api/v1/strategic/thoughts/{thought_id}/review; _sync_event_line_client_scope_records; create_app,build_template_fill_context; _collect_strategic_insight_context,client有/org无/user无/source无,"created有,updated有",
+kernel_primary_rollout_runs,内核主推灰度运行(空),系统,0,死表,/api/v1/data-center/kernel-primary-rollout/start; /api/v1/data-center/kernel-primary-rollout/{run_id}/complete; /api/v1/data-center/kernel-primary-rollout/{run_id}/rollback,list_kernel_primary_rollout_runs; get_kernel_primary_rollout_run,client无/org无/user无/source无,"created有,updated有",空表
+key_decisions,关键决策(空),共识事实,0,门面,(无/建表),_weekly_mainline_collect_story_web,client有/org无/user无/source有,"created有,updated有",空表
+knowledge_document_versions,知识文档版本,原始资料,237,真接通,/api/v1/tasks/{task_id}/attachments; knowledge_worker_loop,hydrate_missing_surrogates; refresh_existing_knowledge_document,client无/org无/user无/source无,"created有,updated无",
+knowledge_documents,知识文档,原始资料,612,真接通,/api/v1/clients/{client_id}/documents/auto-repair/apply; _sync_task_attachment_scope; create_app,_client_folder_file_count; _collect_strategic_insight_context,client有/org无/user无/source无,"created有,updated有",
+knowledge_job_events,知识作业事件,系统,2837,真接通,create_app; knowledge_worker_loop,create_app; get_workspace_data_center_readiness,client无/org无/user无/source无,"created有,updated无",孤儿写;needs_human动态写
+knowledge_jobs,知识作业,系统,77,真接通,/api/v1/clients/{client_id}/documents/auto-repair/apply; _startup_worker; knowledge_worker_loop,create_app; _has_active_workspace_document_auto_repair_job,client有/org无/user无/source无,"created有,updated有",needs_human动态写
+knowledge_master_index,知识主索引,富化索引,565,真接通,/api/v1/clients/{client_id}/documents/auto-repair/apply; create_app; /api/v1/clients/{client_id}/folders/apply-recommendation,create_app; get_workspace_data_center_readiness,client有/org无/user无/source无,"created无,updated有",
+knowledge_master_index_fts,知识主索引FTS,富化索引,596,真接通,sync_master_index_fts,sync_master_index_fts; search_master_index_fts,client有/org无/user无/source无,"created无,updated无",
+knowledge_master_index_fts_config,FTS配置,富化索引,1,半接通,(无/建表),(无读边),client无/org无/user无/source无,"created无,updated无",
+knowledge_master_index_fts_content,FTS内容,富化索引,596,半接通,(无/建表),(无读边),client无/org无/user无/source无,"created无,updated无",
+knowledge_master_index_fts_data,FTS数据,富化索引,583,半接通,(无/建表),(无读边),client无/org无/user无/source无,"created无,updated无",
+knowledge_master_index_fts_docsize,FTS文档大小,富化索引,596,半接通,(无/建表),(无读边),client无/org无/user无/source无,"created无,updated无",
+knowledge_master_index_fts_idx,FTS索引,富化索引,580,半接通,(无/建表),(无读边),client无/org无/user无/source无,"created无,updated无",
+knowledge_search_runs,知识检索运行,认知产品,80,真接通,/api/v1/clients/{client_id}/knowledge/search; create_app,load_cached_retrieval_bundle; create_app,client有/org无/user无/source无,"created有,updated有",孤儿写;needs_human动态写
+knowledge_surrogates,知识代理摘要(深读卡),富化索引,555,真接通,/api/v1/clients/{client_id}/documents/auto-repair/apply; create_app; /api/v1/clients/{client_id}/folders/apply-recommendation,list_client_memory_cards; create_app,client有/org无/user无/source有,"created有,updated有",needs_human动态写
+learning_content_items,学习内容条目,认知产品,6,真接通,/api/v1/growth/ledger,rebuild_learning_recommendations; list_learning_recommendations,client无/org无/user无/source无,"created有,updated有",
+learning_recommendations,学习推荐,认知产品,10,真接通,_sync_event_line_client_scope_records; /api/v1/handbook; /api/v1/growth/recommendations/{recommendation_id}/accept,rebuild_learning_recommendations; list_learning_recommendations,client有/org无/user有/source无,"created有,updated有",needs_human动态写
+local_identities,本地身份(V2.1残留孤儿表),系统,1,真接通,/api/v1/local-auth/register; /api/v1/local-auth/login; /api/v1/auth/login,local_auth_register; local_auth_login,client无/org无/user无/source无,"created有,updated有",V2.1残留孤儿表
+local_model_tasks,本地模型任务队列,系统,221,真接通,/api/v1/local-ai/backfill; /api/v1/clients/{client_id}/workspace/data-center-readiness/actions; retry_failed_local_model_optimization_tasks._update,create_app; get_local_ai_queue,client有/org无/user无/source无,"created有,updated有",needs_human动态写
+logical_file_mappings,逻辑文件映射(空),系统,0,门面,(无/建表),(无读边),client无/org无/user无/source无,"created有,updated有",空表
+meeting_sources,会议来源,原始资料,1,真接通,/api/v1/clients/{client_id}/strategic-cockpit/meeting-pack; create_app; /api/v1/clients/{client_id}/meetings/{meeting_id}/ingest,create_app; ingest_meeting,client无/org无/user无/source无,"created有,updated无",
+meetings,会议主表,原始资料,7,真接通,/api/v1/clients/{client_id}/strategic-cockpit/meeting-pack; /api/v1/clients/{client_id}/meetings; /api/v1/feishu/minutes/{minute_token}/import,_meeting_summaries_for_tasks; _meeting_summary_for_id,client有/org无/user无/source无,"created有,updated有",
+memory_facts,记忆事实(事实层主表),共识事实,4318,真接通,/api/v1/event-lines; /api/v1/tasks/{task_id}; _sync_reference_scope_facts,collect_data_center_context_for_consultation; _sync_task_attachment_scope,client无/org有/user无/source有,"created有,updated有",
+mirror_client_related_users,镜像-客户相关用户(空),系统,0,门面,(无/建表),list_users_visible_for_client; list_clients_visible_for_user,client有/org无/user有/source无,"created无,updated无",空表;组织镜像表全空(镜像桥未写)
+mirror_departments,镜像-部门(空),系统,0,门面,(无/建表),get_department_by_id; list_active_departments,client无/org有/user无/source无,"created无,updated无",空表;组织镜像表全空(镜像桥未写)
+mirror_organizations,镜像-组织(空),系统,0,门面,(无/建表),get_organization; list_organizations,client无/org无/user无/source无,"created无,updated无",空表;组织镜像表全空(镜像桥未写)
+mirror_users,镜像-用户(空),系统,0,门面,(无/建表),list_department_leaders; ensure_bot_schema,client无/org有/user无/source无,"created无,updated无",空表;组织镜像表全空(镜像桥未写)
+module_definition_entries,模块定义条目,富化索引,133,真接通,/api/v1/settings/module-dna/{module_id}/entries,append_entry; list_entries,client无/org无/user无/source无,"created有,updated无",
+module_definitions,模块定义,富化索引,21,真接通,/api/v1/settings/module-dna; /api/v1/settings/module-dna/{module_id}; /api/v1/settings/module-dna/{module_id}/entries,list_modules; get_module,client无/org无/user无/source无,"created有,updated有",
+narrative_stale_signals,叙事过期信号,认知产品,5,真接通,/api/v1/system/broadcast-data-changed; /api/v1/tasks/{task_id}/attachments,get_narrative_stale_status; clear_narrative_stale,client有/org无/user无/source无,"created无,updated无",
+narrative_suggestion_log,叙事建议日志,认知产品,19,真接通,/api/v1/clients/{client_id}/suggestions/log; create_app,list_suggestion_log; remove_suggestion_log_entry,client有/org无/user无/source无,"created有,updated无",
+next_step_background_cache,下一步建议后台缓存,认知产品,41,真接通,_prefetch_next_step_backgrounds; create_app._prefetch_next_step_backgrounds._one; /api/v1/clients/{client_id}/next-steps-background,_prefetch_next_step_backgrounds; get_next_step_background,client有/org无/user无/source无,"created有,updated无",
+object_storage_settings,对象存储配置,系统,1,真接通,_sync_object_storage_config_from_cloud,get_object_storage_settings,client无/org无/user无/source无,"created无,updated有",needs_human动态写
+open_questions,开放问题,共识事实,25,半接通,(无/建表),list_open_questions; _build_analysis_center_summary,client有/org无/user无/source无,"created有,updated有",
+operators,操作员账号,系统,1,真接通,create_app; /api/v1/settings; /api/v1/memory/judgments/confirm,_ensure_local_tag; create_app,client无/org无/user无/source无,"created有,updated有",
+org_events,组织事件(空),系统,0,门面,(无/建表),(无读边),client有/org无/user无/source有,"created有,updated有",空表
+organization_dna_documents,组织DNA文档,原始资料,4,半接通,(无/建表),(无读边),client无/org无/user无/source无,"created无,updated有",
+organization_dna_refresh_events,组织DNA刷新事件,认知产品,72,真接通,/api/v1/digital-assets/organization-dna/refresh; create_app,_build_organization_dna_refresh_run; create_app,client无/org无/user无/source无,"created有,updated无",孤儿写;needs_human动态写
+organization_dna_refresh_runs,组织DNA刷新运行,认知产品,7,真接通,/api/v1/digital-assets/organization-dna/refresh,_build_organization_dna_refresh_run; create_app,client无/org无/user无/source无,"created有,updated有",needs_human动态写
+organization_dna_v2_items,组织DNA v2条目,认知产品,199,真接通,/api/v1/digital-assets/organization-dna/refresh,_collect_context; get_organization_dna_snapshot,client无/org无/user无/source有,"created有,updated有",
+organization_notebook_snapshots,组织笔记本快照,认知产品,13,真接通,_sync_task_attachment_scope,create_app; _gather_task_context_bundle,client有/org无/user无/source无,"created有,updated有",
+project_flows,项目流程(空),系统,0,死表,/api/v1/clients/{client_id}/project-flows; /api/v1/clients/{client_id}/project-flows/{flow_id},_collect_strategic_insight_context; create_app,client有/org无/user无/source无,"created有,updated有",空表
+project_modules,项目模块,系统,4,真接通,/api/v1/clients/{client_id}/project-modules; /api/v1/clients/{client_id}/project-modules/{module_id},_collect_strategic_insight_context; create_app,client有/org无/user无/source无,"created有,updated有",
+project_procedures,项目程序(空),系统,0,门面,(无/建表),(无读边),client有/org无/user无/source无,"created有,updated有",空表
+prompt_log,提示词日志(空),系统,0,门面,(无/建表),(无读边),client有/org无/user有/source无,"created有,updated无",空表
+proposal_records,提案记录(空),系统,0,死表,/api/v1/clients/{client_id}/meetings/{meeting_id}/proposals/follow-up; create_app._update_proposal_status; /api/v1/data-center/proposal-drafts/{draft_id}/promote,create_app; _latest_proposal_id_for_target,client有/org无/user无/source无,"created有,updated有",空表
+reasoning_traces,推理链路,认知产品,7,真接通,_schedule_chat_fact_extraction; /api/v1/clients; local_model_optimizer_worker_loop,get; list_for_entity,client无/org无/user无/source无,"created无,updated无",needs_human动态写
+relationship_triples,关系三元组,共识事实,22,真接通,/api/v1/entities/{merged_id}/merge; /api/v1/tasks/{task_id}/attachments,list_triples,client有/org无/user无/source无,"created有,updated有",
+report_runs,报告运行,认知产品,4,真接通,/api/v1/reports/{report_run_id}/draft-sections; _run_background; /api/v1/reports/{report_run_id}/render,create_app; report_draft_sections,client有/org无/user无/source无,"created有,updated有",
+report_section_runs,报告分段运行,认知产品,17,真接通,/api/v1/reports/draft-blueprint; /api/v1/reports/{report_run_id}/draft-sections; _run_background,create_app; report_draft_sections,client无/org无/user无/source无,"created无,updated无",
+retrieval_shadow_runs,检索影子运行(空),系统,0,门面,create_retrieval_shadow_run,list_retrieval_shadow_runs,client有/org无/user无/source无,"created有,updated无",空表;孤儿写
+risk_signals,风险信号,共识事实,20,真接通,/api/v1/meeting-minutes/process; /api/v1/clients/{client_id}/workspace/chat; /api/v1/clients/{client_id}/project-portrait/build,collect_data_center_context_for_consultation; create_app,client有/org无/user无/source有,"created有,updated有",needs_human动态写
+risks,风险,共识事实,2,真接通,create_app; /api/v1/clients/{client_id}/meetings/{meeting_id}/extract; /api/v1/channels/feishu/events,build_meeting_detail; create_app,client无/org无/user无/source无,"created有,updated无",
+runtime_run_logs,运行时日志,系统,155,真接通,_sync_event_line_client_scope_records,get_runtime_run_log; list_runtime_run_logs,client有/org无/user无/source无,"created有,updated无",needs_human动态写
+settings,全局键值配置,系统,245,真接通,_sync_object_storage_config_from_cloud; /api/v1/settings/org-model/profile; create_app,get_setting; _load_role_holder_bot_sidecar,client无/org无/user无/source无,"created无,updated无",
+source_registry,统一来源登记表,系统,4,真接通,/api/v1/smart-import/sessions/{session_id}/commit; supersede_version,find_by_content_hash; list_sources_for_client,client有/org有/user有/source有,"created有,updated有",孤儿写;needs_human动态写
+source_tree_snapshots,文件树快照,系统,47,真接通,(无/建表),ensure_source_tree_snapshot,client有/org无/user无/source无,"created有,updated无",
+speech_model_settings,语音模型配置,系统,1,真接通,/api/v1/settings/speech-model,get_speech_model_settings,client无/org无/user无/source无,"created无,updated有",needs_human动态写
+strategic_cockpit_snapshots,战略驾驶舱快照,认知产品,1,真接通,/api/v1/clients/{client_id}/strategic-cockpit/meeting-pack/{meeting_id}/apply; create_app,_load_strategic_snapshot_row; save_strategic_cockpit_snapshot,client有/org无/user无/source无,"created有,updated有",孤儿写;needs_human动态写
+strategic_thought_insights,战略思想洞察,认知产品,20,真接通,/api/v1/strategic/thoughts; /api/v1/strategic/thoughts/refresh; /api/v1/strategic/thoughts/{thought_id}/state,_list_cached_strategic_thoughts; _persist_generated_insights,client有/org无/user无/source无,"created有,updated有",
+strategic_thought_reviews,战略思想评审,认知产品,2,真接通,(无/建表),_list_strategic_thought_review_map; _save_strategic_thought_review,client有/org无/user无/source有,"created有,updated有",孤儿写;needs_human动态写
+structured_tables,结构化表格抽取,原始资料,46,真接通,/api/v1/tasks/{task_id}/attachments,upsert_table_from_parsed_sheet; list_tables,client有/org无/user无/source无,"created有,updated有",
+sync_conflicts,同步冲突(空),系统,0,门面,(无/建表),(无读边),client无/org无/user无/source无,"created有,updated有",空表
+sync_memory_records,同步记忆记录,共识事实,6,半接通,(无/建表),(无读边),client有/org无/user无/source无,"created有,updated有",
+sync_outbox,同步发件箱(空),系统,0,门面,(无/建表),(无读边),client无/org无/user无/source无,"created无,updated有",空表
+task_attachments,任务附件,原始资料,20,真接通,/api/v1/clients/{client_id}/duplicate-documents/resolve; create_app,get_client_duplicate_documents; get_client_duplicate_documents._ref_counts,client有/org无/user无/source无,"created有,updated无",
+task_attachments_cloud,任务附件(云),原始资料,33,真接通,/api/v1/clients/{client_id}/duplicate-documents/resolve; create_app,build_cloud_event_line_detail; get_client_duplicate_documents,client有/org无/user无/source无,"created有,updated无",云影子表与本地正表并存
+task_collaborators,任务协作者,共识事实,276,真接通,/api/v1/tasks/{task_id}/reject; /api/v1/tasks; /api/v1/tasks/{task_id}/review/approve,_task_collaboration_state; _lookup_task_creator_name,client无/org有/user有/source无,"created有,updated有",
+task_context_brief_snapshots,任务上下文简报快照,认知产品,179,真接通,/api/v1/tasks/{task_id}/context-brief,_save_snapshot; generate_task_context_brief_snapshot,client有/org无/user无/source无,"created有,updated有",
+task_lists,任务清单,共识事实,277,真接通,/api/v1/growth/recommendations/{recommendation_id}/accept; /api/v1/settings/tasks; /api/v1/task-lists/repair-duplicates,task_lists; fetch_tasks,client无/org有/user无/source无,"created无,updated无",
+task_notes,任务备注,原始资料,17,真接通,/api/v1/settings/demo-data/load,build_task; create_app,client无/org无/user无/source无,"created有,updated有",
+task_notes_cloud,任务备注(云),原始资料,12,半接通,(无/建表),create_app; build_cloud_task,client无/org无/user无/source无,"created有,updated有",云影子表与本地正表并存
+task_settings,任务设置,系统,4,真接通,/api/v1/reviews; /api/v1/growth/recommendations/{recommendation_id}/accept; /api/v1/settings/tasks,_task_in_week; _task_in_week._get_local_task_settings,client无/org无/user有/source无,"created无,updated有",
+task_smart_brief_action_adoptions,智能简报行动采纳(空),认知产品,0,死表,/api/v1/tasks/{task_id}/smart-brief-actions/{action_key}/adopt; create_app,_list_adopted_task_brief_action_keys; create_app,client无/org无/user无/source无,"created无,updated无",空表;孤儿写
+task_tags,任务标签,共识事实,62,真接通,/api/v1/tasks/bootstrap-event-lines; /api/v1/task-tags/{tag_id}; backfill_local_task_tag_ids,_pull_cloud_tasks_to_local; sync_local_tasks_for_tag_change,client无/org有/user有/source无,"created有,updated有",
+task_understanding_cache,任务理解缓存,认知产品,224,真接通,create_app._precompute_task_understanding; create_app,_precompute_task_understanding; get_task_understanding,client无/org无/user无/source无,"created有,updated有",孤儿写;needs_human动态写
+task_views,任务视图,系统,4,真接通,/api/v1/task-views; /api/v1/task-views/{view_id},_ensure_builtin_task_views; create_app,client无/org无/user无/source无,"created有,updated有",
+tasks,任务主表,共识事实,344,真接通,/api/v1/tasks; sync_local_tasks_for_tag_change; _try_cloud_sync_task,_restore_local_completed_task_statuses; _pull_cloud_tasks_to_local,client有/org有/user有/source有,"created有,updated有",
+team_sync_state,团队同步状态(空),系统,0,死表,/api/v1/smart-import/sessions/{session_id}/commit; run_team_sync_once; enqueue_all_unsynced,run_team_sync_once; get_sync_stats,client有/org有/user无/source有,"created有,updated有",空表
+theme_clusters,主题聚类,富化索引,37,半接通,(无/建表),list_theme_clusters; _build_analysis_center_summary,client有/org无/user无/source无,"created有,updated有",
+topic_candidate_insights,选题候选洞察,认知产品,3,真接通,(无/建表),create_app; import_sync_intelligence_demo.apply_rows,client无/org无/user无/source无,"created有,updated有",孤儿写;needs_human动态写
+topic_candidate_seen,选题候选已读,认知产品,77,真接通,(无/建表),create_app; remember_topic_candidate_seen,client无/org无/user无/source无,"created有,updated无",needs_human动态写
+topic_candidates,选题候选,认知产品,3,真接通,/api/v1/settings/demo-data/load; /api/v1/topics/candidates/{candidate_id}/task-plan; /api/v1/topics/candidates,clear_demo_dataset; create_app,client无/org无/user无/source无,"created有,updated有",
+topic_radars,选题雷达,认知产品,2,真接通,/api/v1/settings/demo-data/load; /api/v1/topics/radars; /api/v1/topics/radars/{radar_id},build_demo_data_response; clear_demo_dataset,client无/org无/user无/source无,"created有,updated无",
+trashed_files,废弃文件,原始资料,55,真接通,/api/v1/tasks/{task_id}/attachments,enforce_size_limit; clear_all,client有/org无/user无/source无,"created无,updated无",
+user_ai_preferences,用户AI偏好(空),系统,0,门面,(无/建表),(无读边),client无/org无/user有/source无,"created有,updated有",空表
+v2_chunks,v2文档切块,富化索引,12548,真接通,/api/v1/tasks/{task_id}/attachments; run_internet_enrichment; local_model_optimizer_worker_loop,_find_chunk_for_next_step; smart_import_commit_session,client无/org无/user无/source无,"created有,updated无",
+v2_documents,v2文档(新主表),原始资料,1141,真接通,/api/v1/clients/{client_id}/documents/auto-repair/apply; _sync_task_attachment_scope; create_app,migrate_client_link_material_documents_to_online_transcripts; _client_folder_file_count,client有/org有/user无/source无,"created无,updated有",
+v2_sections,v2文档分节,富化索引,6577,真接通,/api/v1/tasks/{task_id}/attachments; run_internet_enrichment; local_model_optimizer_worker_loop,create_app; build_document_reading_preview_record,client无/org无/user无/source无,"created有,updated无",
+vector_index_manifests,向量索引清单,富化索引,38,真接通,/api/v1/clients/{client_id}/knowledge/reindex-vector,get_vector_index_manifest_status,client有/org无/user无/source无,"created无,updated有",
+website_audit_snapshots,官网审计快照,认知产品,1,真接通,/api/v1/intelligence/brand-mirror/website-audit,run_brand_mirror_analysis; latest_website_audit,client有/org无/user无/source无,"created有,updated无",
+weekly_review_task_entries,周复盘任务条目,认知产品,17,真接通,_write_review_entry,local_review_history; local_review_entries_by_task,client无/org有/user有/source无,"created有,updated有",needs_human动态写
+weekly_reviews,周复盘,认知产品,9,真接通,backfill_local_task_tag_ids; _ensure_weekly_review,local_review_row_for_week; local_review_history,client无/org有/user有/source无,"created有,updated有",needs_human动态写
+workspace_answer_quality_failures,工作台答案质量失败(空),认知产品,0,死表,/api/v1/workspace-answer-quality-failures/{failure_id}/resolve,record_workspace_answer_quality_failure; list_workspace_answer_quality_failures,client有/org无/user无/source无,"created有,updated有",空表
+workspace_answer_value_reviews,工作台答案价值评审(空),认知产品,0,死表,(无/建表),list_workspace_answer_value_reviews; build_workspace_answer_value_summary,client有/org无/user无/source无,"created有,updated无",空表
+workspace_context_refresh_events,工作台上下文刷新事件,系统,446,真接通,/api/v1/clients/{client_id}/workspace/data-center-readiness/actions; /api/v1/clients/{client_id}/workspace/proposal-drafts,mark_workspace_context_refresh_event_status; list_workspace_context_refresh_events,client有/org无/user无/source有,"created有,updated有",
+workspace_link_import_runs,工作台链接导入运行,原始资料,25,真接通,/api/v1/clients/{client_id}/link-materials/import/start; /api/v1/clients/{client_id}/link-materials/import-runs/{run_id}/cancel; _startup_worker,create_link_material_import_run; fetch_latest_link_material_import_run,client有/org无/user无/source无,"created有,updated有",needs_human动态写
+workspace_value_validation_sessions,工作台价值验证会话(空),认知产品,0,死表,/api/v1/workspace-value-validation-sessions; /api/v1/workspace-value-validation-sessions/{session_id}/complete-question; /api/v1/workspace-value-validation-sessions/{session_id}/finish,create_workspace_value_validation_session; list_workspace_value_validation_sessions,client有/org无/user无/source无,"created有,updated有",空表
+writing_skills,写作技能配置,系统,1,真接通,_seed_builtin_writing_skills; /api/v1/writing-skills; /api/v1/writing-skills/{skill_id},_seed_builtin_writing_skills; create_app,client无/org无/user无/source无,"created有,updated有",
+xp_ledger,成长经验值账本,认知产品,76,真接通,_sync_badge_unlocks; /api/v1/handbook,create_app; build_handbook_detail,client无/org无/user有/source无,"created有,updated无",

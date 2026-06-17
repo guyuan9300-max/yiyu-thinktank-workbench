@@ -1,0 +1,17 @@
+模块,类型,用户入口,读主表,写主表,进数据中心,所属四仓,算法层组件,AI调用,来源标注,行动回流,当前状态,当前风险
+任务与日程,输入+呈现,侧栏 任务与日程(App.tsx:10283),tasks/task_lists/task_collaborators/event_lines,tasks/task_attachments/data_center_ingest_events(task),是(task 类经 ingest_user_input),共识,next_step_reconciler/task_understanding,AiService(brief/understanding),下一步有来源面包屑,真接通(转任务/日程/复盘),真接通,P1:org_id 空
+客户工作台,输入+呈现,客户列表→工作台 单接口 GET /clients/{id}/workspace,clients/client_folders/documents/answer_runs,chat_messages/atomic_facts(反向ingest但产出0),半(chat反向入口产出为零),共识+认知,workspace_for_client/retrieve_knowledge_bundle,AiService 问答,强(本轮来源/查看依据/路由来源),真接通(问答→任务),真接通(信息包)/写回半,P1:chat反向入口0产出;P1:答citation冻4/21
+战略陪伴,呈现,战略驾驶舱 单接口 getStrategicCockpit,client_strategic_profiles/narrative镜像/atomic_facts,strategic_cockpit_snapshots/client_narrative_local_mirror,半,认知,narrative_generator/snr语义检索/understanding_builder,AiService 六段叙事,有取材标签,转任务(6/9修跳不出bug),真接通(单接口)/取材半,P1:深读覆盖19.8%;P1:厚数据欠消费(6/8簇F)
+资讯情报站,输入+呈现,资讯页,intelligence_items/candidate_items/fetch_jobs,intelligence_*/external_sentiment ingest,半(external_sentiment登记/抓取本身不登记source),原始+认知,intelligence refresh worker,AiService 筛选,部分,半,半接通,P2:69.5%抓取无结果;P1:refresh不登记
+成长中心,呈现,成长页,growth_signal_events/xp_ledger/badge,growth_signal_events/growth_evidence_records,"否(自成一套,云同步603卡死)",认知,growth_engine/badge_engine,本地,弱,半,半接通,P1:云同步603 local永冻(簇C)
+智能文件导入,输入,数据中心→导入/拖拽(App.tsx:26139),imports/import_staged_files,imports/documents/v2_documents/v2_chunks,否(最大入口绕过统一登记),原始+富化,smart_file_import/ingest_pipeline/knowledge_v2,AiService 抽取,store source_v2_document_id,真接通(深读流水线),真接通但绕登记,P1:1433 file_import 0登记
+数据中心,呈现+输入,数据中心面板,documents/v2_documents/entities/atomic_facts,source_registry(4行门面)/ingest_events,主干半成,四仓全,ingest_pipeline/data_center_ingest/self_verify,AiService,部分,NA,半接通(主干半成),P0:写入侧三套路径分裂;P1:source_registry门面
+组织计划工坊,输入+呈现,任务→组织计划 tab(App.tsx:15584),task_lists/project_modules/project_flows(0),ai_task_plans(0死表)/project_*,否,认知,AI拆解,AiService,弱,半,门面/半,P2:project_flows/procedures/ai_task_plans 全0死表
+周复盘,输入+呈现,任务→周复盘(App.tsx:15586)/本周概览,weekly_reviews/weekly_review_task_entries,weekly_review ingest(登记),是(weekly_review类登记),共识+认知,review_narrative/retrieve_knowledge_bundle,AiService,部分,真接通(复盘条目),半接通,P1:概览对事实层消费薄(记忆6/8)
+事件线,输入+呈现,客户→事件线/report-snapshot,event_lines/event_line_activities,event_lines/event_line_manual_update ingest,是(manual_update登记),共识,event_line report builder/ingest_document_knowledge,AiService 报告,有,真接通,真接通(report-snapshot是主干道之一),P2:event_line_*快照表全0
+文档生成/报告,输入+呈现,报告生成(App.tsx:25744 AI填写),report_runs(4)/report_section_runs(17)/v2_chunks,report_runs/report_section_runs,否,认知,report generator/retrieve_knowledge_bundle,AiService,有,导出Word,半接通(行数薄),P2:report_runs仅4行
+一键智能填表,输入+呈现,智能填表(App.tsx:25838 逐字段来源),client_template_fill_runs/clients/client_dna_documents,client_template_fill_runs,否(内联直查表不走检索干道),认知,内联 context_pack 拼装(绕干道),AiService,强(逐字段 来源/需补/待确认),真接通(缺材料提醒),半接通(绕干道),P1:绕共享检索干道自拼context
+系统设置/健康,呈现,设置/系统健康面板,settings/analysis_jobs/local_model_tasks/索引状态,settings,否,系统,health 信息包,NA,部分,NA,半接通,P1:状态源分裂(文件数4源);P1:队列无reaper
+发版反馈控制台,输入+呈现,设置→发版反馈,software_feedback/app_installs/app_releases,software_feedback,否(独立),系统,release console,NA,NA,NA,半接通,P2:5/30仅本地分支
+手机版同步接口(桌面侧),输入,mobile→桌面同步端点,sync_outbox(0)/task shadow,task/event_line shadow,否(镜像桥未写),共识,sync worker/shadow upsert,NA,NA,NA,半接通,P1:mirror_*全0;离线5次冻(簇B)
+智能填表/会议纪要处理,输入,/api/v1/meeting-minutes/process(前端从不调),meetings/agent governance(表不存在),atomic_facts/event_line(后端写但前端不触发),否(整链不可达),共识,meeting_minute_processor(后端完整),AiService,有,断(前端未接),门面(后端在前端断),P1:会议链前端从未接(簇D)
