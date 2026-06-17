@@ -33,6 +33,8 @@ import SettingsAbout from "../../components/SettingsAbout";
 
 type SettingsView = "account" | "device" | "about" | null;
 
+const FEISHU_LOCAL_CALDAV_HELP_URL = "https://www.feishu.cn/hc/zh-CN/articles/360043178673-%E8%AE%BE%E7%BD%AE%E6%9C%AC%E5%9C%B0%E7%B3%BB%E7%BB%9F%E6%97%A5%E5%8E%86%E4%B8%8E%E9%A3%9E%E4%B9%A6%E6%97%A5%E5%8E%86%E4%B9%8B%E9%97%B4%E7%9A%84%E5%90%8C%E6%AD%A5";
+
 function getInitials(name: string): string {
   if (name.length <= 2) return name;
   return name.slice(-2);
@@ -967,7 +969,7 @@ export default function ProfileScreen() {
             <SettingsRow
               icon={<MessageSquare size={20} color={palette.textTertiary} strokeWidth={iconStroke} />}
               title="飞书绑定"
-              subtitle=""
+              subtitle="绑定后，你参与的飞书任务可进入益语，也用于飞书文档权限"
               onPress={handleOpenFeishuBinding}
               rightText={feishuBindingRightText}
             />
@@ -979,6 +981,20 @@ export default function ProfileScreen() {
               onPress={handleOpenNotificationSettings}
               rightText="前往设置"
             />
+          </View>
+          <View style={styles.feishuCalendarHintCard}>
+            <Text style={styles.feishuCalendarHintTitle}>手机日历提醒说明</Text>
+            <Text style={styles.feishuCalendarHintText}>
+              若要在手机系统日历收到提醒，请按飞书官方指引启用 CalDAV；系统日历只看提醒，不作为任务编辑入口。
+            </Text>
+            <TouchableOpacity
+              activeOpacity={0.72}
+              onPress={() => {
+                void Linking.openURL(FEISHU_LOCAL_CALDAV_HELP_URL);
+              }}
+            >
+              <Text style={styles.feishuCalendarHintLink}>查看飞书 CalDAV 指引</Text>
+            </TouchableOpacity>
           </View>
 
           {/* Settings section: 本机偏好 */}
@@ -1458,6 +1474,32 @@ const styles = StyleSheet.create({
     paddingHorizontal: spacing.lg, // 16
     paddingVertical: 0, // 行高 64 已经足够，不再加垂直 padding
     overflow: "hidden", // 首末行内圆角
+  },
+  feishuCalendarHintCard: {
+    marginTop: spacing.md,
+    backgroundColor: "rgba(91,123,254,0.08)",
+    borderWidth: 1,
+    borderColor: "rgba(91,123,254,0.18)",
+    borderRadius: borderRadius.md,
+    paddingHorizontal: spacing.lg,
+    paddingVertical: spacing.md,
+  },
+  feishuCalendarHintTitle: {
+    ...typography.label,
+    color: palette.inkBlue,
+    fontWeight: "700",
+  },
+  feishuCalendarHintText: {
+    ...typography.caption,
+    color: palette.textSecondary,
+    marginTop: spacing.xs,
+    lineHeight: 19,
+  },
+  feishuCalendarHintLink: {
+    ...typography.label,
+    color: palette.inkBlue,
+    fontWeight: "700",
+    marginTop: spacing.sm,
   },
   // 入口行 —— 高 64，icon 占 layout.iconSlotWidth=52（含 gap），rightText 13pt
   settingsRow: {

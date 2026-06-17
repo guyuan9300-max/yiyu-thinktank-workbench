@@ -26,9 +26,6 @@ OrgRuleActorScope = Literal["assignee", "manager", "department_lead", "organizat
 OrgWorkflowTriggerType = Literal["weekly_followup", "task_created", "meeting_closed", "client_update", "manual"]
 ConsultationKnowledgeTarget = Literal["vector_memory", "document_archive"]
 ConsultationKnowledgeRequestStatus = Literal["pending", "processing", "completed", "failed"]
-FeedbackCategory = Literal["bug", "lag", "inaccurate", "suggestion"]
-FeedbackSeverity = Literal["low", "medium", "high", "critical"]
-FeedbackStatus = Literal["open", "triaging", "in_progress", "resolved", "wontfix"]
 ReleaseChannel = Literal["internal", "beta", "stable"]
 ReleaseStatus = Literal["draft", "testing", "published", "rolled_back"]
 SmartInputIntent = Literal["task_schedule", "record_note", "unknown"]
@@ -194,6 +191,36 @@ class FeishuDeliveryProfileSavePayload(BaseModel):
     mobile: str | None = None
 
 
+class FeishuMemberAuthorizationRecord(BaseModel):
+    linked: bool = False
+    readyForAuthorization: bool = False
+    organizationId: str | None = None
+    organizationName: str | None = None
+    appId: str = ""
+    userId: str = ""
+    openId: str | None = None
+    unionId: str | None = None
+    feishuUserId: str | None = None
+    name: str | None = None
+    enName: str | None = None
+    avatarUrl: str | None = None
+    email: str | None = None
+    tenantKey: str | None = None
+    boundAt: str | None = None
+    lastVerifiedAt: str | None = None
+    lastError: str | None = None
+    blockedReason: str | None = None
+
+
+class FeishuMemberAuthorizationStartResponse(BaseModel):
+    authorizeUrl: str
+    state: str
+    expiresAt: str
+    callbackUrl: str
+    qrReady: bool = False
+    qrBlockedReason: str | None = None
+
+
 # 手机端"飞书绑定"入口期待的 OAuth 风格响应（mobile FeishuUserBinding 同构）。
 # 目前 cloud_backend 上 OAuth 绑定流程未实现，本类型用于 stub 路由，让 mobile
 # profile 页一进入不再 404 弹 Alert。后续真正接入 OAuth 时只需替换 stub。
@@ -269,6 +296,7 @@ FeishuSyncStatus = Literal[
     "queued",
     "syncing",
     "synced",
+    "mapping_conflict",
     "failed",
 ]
 
@@ -290,6 +318,18 @@ class FeishuTaskCalendarSyncPayload(BaseModel):
     notify: bool = False
 
 
+class FeishuTaskInboundStatusRecord(BaseModel):
+    organizationId: str
+    enabled: bool = False
+    trackedMemberCount: int = 0
+    lastSuccessAt: str | None = None
+    lastError: str | None = None
+    lastCheckedAt: str | None = None
+    intervalSeconds: int = 60
+    updatedAt: str | None = None
+    details: dict[str, object] = Field(default_factory=dict)
+
+
 class FeishuDocumentSyncPayload(BaseModel):
     localType: str = "document"
     localId: str
@@ -298,6 +338,54 @@ class FeishuDocumentSyncPayload(BaseModel):
     clientId: str | None = None
     triggerSource: str = "document_saved"
     notifyOnCreate: bool = False
+
+
+class FeishuDocImportStatusRecord(BaseModel):
+    ready: bool = False
+    linked: bool = False
+    reason: str | None = None
+    organizationId: str | None = None
+    userId: str | None = None
+    boundAt: str | None = None
+
+
+class FeishuDocImportCandidateRecord(BaseModel):
+    token: str
+    type: str = "docx"
+    title: str
+    url: str = ""
+    ownerName: str | None = None
+    updatedAt: str | None = None
+    source: Literal["search", "link"] = "search"
+
+
+class FeishuDocImportSearchPayload(BaseModel):
+    query: str = Field(min_length=1, max_length=120)
+    pageSize: int = Field(default=20, ge=1, le=50)
+
+
+class FeishuDocImportSearchResultRecord(BaseModel):
+    items: list[FeishuDocImportCandidateRecord] = Field(default_factory=list)
+    message: str = ""
+
+
+class FeishuDocImportResolveLinksPayload(BaseModel):
+    links: list[str] = Field(default_factory=list, max_length=50)
+
+
+class FeishuDocImportExportPayload(BaseModel):
+    token: str = Field(min_length=1)
+    type: str = "docx"
+    title: str = "飞书文档"
+
+
+class FeishuDocImportMappingPayload(BaseModel):
+    localId: str = Field(min_length=1)
+    remoteId: str = Field(min_length=1)
+    remoteUrl: str = ""
+    title: str = "飞书文档"
+    clientId: str | None = None
+    remoteUpdatedAt: str | None = None
 
 
 class RolePayload(BaseModel):

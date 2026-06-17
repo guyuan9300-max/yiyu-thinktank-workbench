@@ -1036,6 +1036,7 @@ class DocumentRecord(BaseModel):
     folderId: str | None = None
     title: str
     path: str
+    originalSourcePath: str | None = None
     kind: str
     source: str
     excerpt: str
@@ -2576,6 +2577,81 @@ class FeishuMemberAuthorizationStartResponse(BaseModel):
     callbackUrl: str
     qrReady: bool = False
     qrBlockedReason: str | None = None
+
+
+class FeishuSyncStatusRecord(BaseModel):
+    localType: str
+    localId: str
+    remoteType: str
+    remoteId: str | None = None
+    remoteUrl: str | None = None
+    status: str = "idle"
+    message: str = ""
+    lastSyncedAt: str | None = None
+    updatedAt: str
+    details: dict[str, object] = Field(default_factory=dict)
+
+
+class FeishuDocImportStatusRecord(BaseModel):
+    ready: bool = False
+    linked: bool = False
+    reason: str | None = None
+    organizationId: str | None = None
+    userId: str | None = None
+    boundAt: str | None = None
+
+
+class FeishuDocImportCandidateRecord(BaseModel):
+    token: str
+    type: str = "docx"
+    title: str
+    url: str = ""
+    ownerName: str | None = None
+    updatedAt: str | None = None
+    source: Literal["search", "link"] = "search"
+
+
+class FeishuDocImportSearchPayload(BaseModel):
+    query: str = Field(min_length=1, max_length=120)
+    pageSize: int = Field(default=20, ge=1, le=50)
+
+
+class FeishuDocImportSearchResultRecord(BaseModel):
+    items: list[FeishuDocImportCandidateRecord] = Field(default_factory=list)
+    message: str = ""
+
+
+class FeishuDocImportResolveLinksPayload(BaseModel):
+    links: list[str] = Field(default_factory=list, max_length=50)
+
+
+class FeishuDocImportSelectionPayload(BaseModel):
+    token: str = Field(min_length=1)
+    type: str = "docx"
+    title: str = "飞书文档"
+    url: str = ""
+
+
+class FeishuDocImportRequestPayload(BaseModel):
+    items: list[FeishuDocImportSelectionPayload] = Field(default_factory=list, min_length=1, max_length=20)
+
+
+class FeishuDocImportImportedItemRecord(BaseModel):
+    token: str
+    title: str
+    status: Literal["imported", "failed"]
+    documentId: str | None = None
+    fileName: str | None = None
+    path: str | None = None
+    remoteUrl: str = ""
+    message: str = ""
+
+
+class FeishuDocImportResultRecord(BaseModel):
+    clientId: str
+    importedCount: int = 0
+    failedCount: int = 0
+    items: list[FeishuDocImportImportedItemRecord] = Field(default_factory=list)
 
 
 class AiTagSuggestionPayload(BaseModel):

@@ -57,7 +57,7 @@ from pathlib import Path
 from threading import Event, Lock, Thread
 from time import perf_counter
 from typing import Callable, Literal, cast
-from urllib.parse import quote, urlparse, urlunparse
+from urllib.parse import quote, unquote, urlparse, urlunparse
 from uuid import uuid4
 
 import httpx
@@ -93,37 +93,6 @@ class CollabMergeConflictPayload(BaseModel):
 
 class CollabMergeConflictResultRecord(BaseModel):
     mergedContent: str
-    provider: str | None = None
-    model: str | None = None
-
-
-class CollabEffectPreviewRecord(BaseModel):
-    id: str = Field(..., min_length=1, max_length=120)
-    title: str = Field(..., min_length=1, max_length=120)
-    summary: str = Field(..., min_length=1, max_length=500)
-    visibility: Literal["visible", "mixed", "background"] = "mixed"
-    scopeLabel: str = Field(default="功能影响", max_length=80)
-    details: list[str] = Field(default_factory=list, max_length=8)
-    relatedPaths: list[str] = Field(default_factory=list, max_length=160)
-    beforeLabel: str | None = Field(default=None, max_length=80)
-    afterLabel: str | None = Field(default=None, max_length=80)
-    explanationSource: Literal["ai", "user_feature_rules", "unavailable"] = "ai"
-    aiUnavailableReason: str | None = None
-
-
-class CollabEffectExplainPayload(BaseModel):
-    mode: Literal["push", "pull"]
-    suggestedMessage: str = Field(default="", max_length=300)
-    syncTargetLabel: str | None = Field(default=None, max_length=300)
-    commitSummaries: list[str] = Field(default_factory=list, max_length=30)
-    diffPreview: str = Field(default="", max_length=24000)
-    groups: list[dict[str, object]] = Field(default_factory=list, max_length=20)
-    files: list[dict[str, object]] = Field(default_factory=list, max_length=240)
-    fallbackEffects: list[CollabEffectPreviewRecord] = Field(default_factory=list, max_length=20)
-
-
-class CollabEffectExplainResultRecord(BaseModel):
-    effects: list[CollabEffectPreviewRecord]
     provider: str | None = None
     model: str | None = None
 
@@ -471,11 +440,21 @@ from app.models import (
     MaintenancePermissionUpdatePayloadRecord,
     FeishuBotSettingsPayload,
     FeishuBotSettingsRecord,
+    FeishuDocImportImportedItemRecord,
+    FeishuDocImportRequestPayload,
+    FeishuDocImportResolveLinksPayload,
+    FeishuDocImportResultRecord,
+    FeishuDocImportSearchPayload,
+    FeishuDocImportSearchResultRecord,
+    FeishuDocImportStatusRecord,
+    FeishuDeliveryProfileRecord,
+    FeishuDeliveryProfileSavePayload,
     FeishuMemberAuthorizationRecord,
     FeishuMemberAuthorizationStartResponse,
     FeishuMeetingLaunchPayload,
     FeishuMeetingLaunchResponse,
     FeishuReceiveIdType,
+    FeishuSyncStatusRecord,
     FeishuUserBindingRecord,
     FeishuUserBindingStartResponse,
     EventLineActivityRecord,
@@ -3780,6 +3759,10 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         _restore_maintenance_state()
         if os.getenv("YIYU_DISABLE_STARTUP_WORKERS", "0") == "1":
             return
+        try:
+            _retry_software_feedback_outbox(limit=3)
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("[startup] software feedback outbox retry skipped: %s", exc)
         # 互联网 PDF OCR 后台 worker · 单独启动 (不依赖其他 worker 状态)
         # 闲时扫 v2_documents.parse_status='pending_ocr' 一个个跑完整 OCR.
         # 完整性优先, 不限页数不切 retry, 让用户主流程不阻塞.
@@ -4300,7 +4283,14 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             SELECT id
             FROM knowledge_jobs
             WHERE status = 'running'
-            ORDER BY created_at ASC
+            ORDER BY
+                CASE job_type
+                    WHEN 'ingest_import' THEN 0
+                    WHEN 'retry_parse' THEN 1
+                    WHEN 'backfill_knowledge' THEN 2
+                    ELSE 9
+                END ASC,
+                created_at ASC
             """
         )
         if not stale_rows:
@@ -8565,6 +8555,53 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             return {}
         return response.json()
 
+    def cloud_request_binary(method: str, path: str, *, json_body: dict | None = None, timeout: float = 120.0) -> tuple[bytes, dict[str, str]]:
+        import time as _time
+        normalized_method = method.upper()
+        if COLLAB_PREVIEW_MODE and normalized_method not in {"GET", "HEAD", "OPTIONS"}:
+            raise HTTPException(status_code=403, detail="协作预览模式不可写云端。")
+        base_url = cloud_api_base_url()
+
+        def perform_request(token: str | None):
+            headers = {}
+            if token:
+                headers["Authorization"] = f"Bearer {token}"
+            return httpx.request(
+                method,
+                f"{base_url}{path}",
+                json=json_body,
+                headers=headers,
+                timeout=timeout,
+            )
+
+        token = get_cloud_token()
+        if not token:
+            if get_cloud_refresh_token():
+                refresh_cloud_session()
+                token = get_cloud_token()
+            else:
+                raise HTTPException(status_code=401, detail="Not authenticated")
+        try:
+            response = perform_request(token)
+        except httpx.HTTPError:
+            _time.sleep(0.5)
+            try:
+                response = perform_request(token)
+            except httpx.HTTPError as exc:
+                raise HTTPException(status_code=502, detail=f"Cloud backend unavailable: {exc}") from exc
+        if response.status_code == 401 and get_cloud_refresh_token():
+            refresh_cloud_session()
+            token = get_cloud_token()
+            response = perform_request(token)
+        if response.status_code >= 400:
+            try:
+                payload = response.json()
+                detail = payload.get("detail") if isinstance(payload, dict) else response.text
+            except Exception:
+                detail = response.text
+            raise HTTPException(status_code=response.status_code, detail=detail or f"HTTP {response.status_code}")
+        return response.content, {key: value for key, value in response.headers.items()}
+
     def _load_org_cloud_ai_status_for_ai_service() -> dict[str, object]:
         payload = cloud_request("GET", "/api/v1/org-ai/status", timeout=3.0)
         return payload if isinstance(payload, dict) else {"available": False, "reason": "组织 AI 状态响应无效。"}
@@ -9759,6 +9796,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         )
         local_task_id = str(existing["id"]) if existing and existing["id"] else cloud_id
         progress_status = str(payload.get("progressStatus") or "todo")
+        preserve_local_done_from_cloud_pull = False
 
         # ─── Protect newer local state from stale-cloud overwrite ──────────────────
         # When the local task has unsynced changes (sync_status in {'pending','local','error'})
@@ -9781,6 +9819,18 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             local_done_cloud_not = (
                 local_progress == "done" and cloud_progress != "done"
             ) or (local_completed and not str(payload.get("completedAt") or "").strip())
+            if local_done_cloud_not and not local_has_unsynced_edits and not local_newer_than_cloud:
+                completed_at = local_completed or now_iso()
+                payload = dict(payload)
+                payload["progressStatus"] = "done"
+                payload["completedAt"] = completed_at
+                progress_status = "done"
+                cloud_progress = progress_status
+                preserve_local_done_from_cloud_pull = True
+                logger.info(
+                    "[CLOUD-UPSERT-PRESERVE-DONE] task=%s accepted cloud fields while keeping local completion",
+                    local_task_id,
+                )
             if local_has_unsynced_edits or local_newer_than_cloud or local_done_cloud_not:
                 # 机制化自愈 (P0 fix): 当 SKIP 时, 如果本地和云端内容已经达成一致
                 # (progress 一致 + completed_at 都为空或都非空), 自动把 sync_status
@@ -9807,11 +9857,16 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                                 "[CLOUD-SYNC-AUTOHEAL-FAIL] task=%s: %s",
                                 local_task_id, exc,
                             )
-                logger.info(
-                    "[CLOUD-UPSERT-SKIP] task=%s sync=%s local_progress=%s cloud_progress=%s local_updated=%s cloud_updated=%s",
-                    local_task_id, local_sync_status, local_progress, cloud_progress, local_updated_at, cloud_updated_at,
-                )
-                return local_task_id
+                if preserve_local_done_from_cloud_pull:
+                    # Keep the local completion, but do not discard newer cloud fields such as
+                    # description/title that do not conflict with the completion state.
+                    pass
+                else:
+                    logger.info(
+                        "[CLOUD-UPSERT-SKIP] task=%s sync=%s local_progress=%s cloud_progress=%s local_updated=%s cloud_updated=%s",
+                        local_task_id, local_sync_status, local_progress, cloud_progress, local_updated_at, cloud_updated_at,
+                    )
+                    return local_task_id
         # ───────────────────────────────────────────────────────────────────────────
 
         temporal_fields = derive_task_temporal_fields(
@@ -9829,6 +9884,8 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         due_date = str(temporal_fields["due_date"]) if temporal_fields["due_date"] else None
         viewer_status = str(payload.get("viewerInboxStatus")) if payload.get("viewerInboxStatus") else None
         local_status = "inbox" if viewer_status == "pending" else progress_status
+        if preserve_local_done_from_cloud_pull:
+            local_status = "done"
         payload_event_line_id = str(payload.get("eventLineId")) if payload.get("eventLineId") else None
         # Tombstone redirect：若这个 eventLineId 已被本地合并到目标，云端拉回时把指针修正
         # 到 merged_to_id，避免任务被写回到孤儿 event_line 上（合并后任务数缩水的根因）。
@@ -9865,6 +9922,13 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         tags = [item for item in payload.get("tags", []) if isinstance(item, dict)]
         timestamp = now_iso()
         resolved_updated_at = str(payload.get("updatedAt") or timestamp)
+        next_sync_status = "pending" if preserve_local_done_from_cloud_pull else "synced"
+        next_pending_sync_action = "update" if preserve_local_done_from_cloud_pull else ""
+        next_last_sync_error = (
+            "云端仍是未完成状态，已保留本地完成状态并等待回写。"
+            if preserve_local_done_from_cloud_pull
+            else ""
+        )
         if (
             existing
             and str(existing["sync_status"] or "") in {"pending", "syncing"}
@@ -9984,13 +10048,13 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 to_json([str(item.get("id") or "") for item in tags]),
                 str(payload.get("createdAt") or (str(existing["created_at"]) if existing and existing["created_at"] else timestamp)),
                 resolved_updated_at,
-                "synced",
+                next_sync_status,
                 cloud_id,
                 to_json(payload),
                 timestamp,
                 resolved_updated_at,
-                "",
-                "",
+                next_pending_sync_action,
+                next_last_sync_error,
             ),
         )
         collaborators = payload.get("collaborators")
@@ -16457,13 +16521,6 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 "refreshEventId": str(refresh_event.id or ""),
             },
         )
-        _auto_sync_document_to_feishu_docx(
-            document_id=document_id,
-            title=resolved_title,
-            content=normalized_content,
-            client_id=client_id,
-            trigger_source="link_material_document_created",
-        )
         return ClientTextDocumentResponse(
             clientId=client_id,
             documentId=document_id,
@@ -16597,13 +16654,6 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 "runId": run_id,
                 "refreshEventId": str(refresh_event.id or ""),
             },
-        )
-        _auto_sync_document_to_feishu_docx(
-            document_id=document_id,
-            title=resolved_title,
-            content=polished_body or normalized_content,
-            client_id=client_id,
-            trigger_source="link_material_document_created",
         )
         return ClientTextDocumentResponse(
             clientId=client_id,
@@ -17965,6 +18015,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 folderId=str(row["folder_id"]) if row["folder_id"] else None,
                 title=str(row["title"]),
                 path=str(row["path"]),
+                originalSourcePath=str(row["original_source_path"]) if row["original_source_path"] else None,
                 kind=str(row["kind"]),
                 source=str(row["source"]),
                 excerpt=str(row["excerpt"]),
@@ -24447,6 +24498,54 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                     to_json({"eventType": "created"}),
                 ),
             )
+        session_user_for_collab = get_cached_session_user()
+        collaborator_ids_for_local = list(dict.fromkeys(payload.collaboratorIds or []))
+        if resolved_owner_id:
+            collaborator_ids_for_local = [
+                resolved_owner_id,
+                *[uid for uid in collaborator_ids_for_local if uid != resolved_owner_id],
+            ]
+        elif not collaborator_ids_for_local and session_user_for_collab:
+            collaborator_ids_for_local = [session_user_for_collab.id]
+        local_org_id = session_user_for_collab.organizationId if session_user_for_collab else ""
+        for idx, collaborator_id in enumerate(collaborator_ids_for_local):
+            normalized_collaborator_id = str(collaborator_id or "").strip()
+            if not normalized_collaborator_id:
+                continue
+            is_owner = bool(resolved_owner_id and normalized_collaborator_id == resolved_owner_id)
+            is_self = bool(session_user_for_collab and normalized_collaborator_id == session_user_for_collab.id)
+            operator_row = state.db.fetchone("SELECT name FROM operators WHERE id = ?", (normalized_collaborator_id,))
+            full_name = (
+                resolved_owner_name
+                if is_owner and resolved_owner_name
+                else session_user_for_collab.fullName
+                if is_self and session_user_for_collab
+                else str(operator_row["name"])
+                if operator_row and operator_row["name"]
+                else ""
+            )
+            state.db.execute(
+                """
+                INSERT OR IGNORE INTO task_collaborators(
+                    task_id, organization_id, user_id, full_name, email,
+                    order_index, is_owner, inbox_status, return_reason, handled_at,
+                    created_at, updated_at
+                ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?)
+                """,
+                (
+                    task_id,
+                    local_org_id,
+                    normalized_collaborator_id,
+                    full_name,
+                    "",
+                    idx,
+                    1 if is_owner else 0,
+                    "accepted" if is_owner or is_self else "pending",
+                    timestamp if is_owner or is_self else None,
+                    timestamp,
+                    timestamp,
+                ),
+            )
         log_activity("task.create", "task", task_id, payload.model_dump())
         created_task = fetch_tasks("t.id = ?", (task_id,))[0]
         _safe_data_center_ingest(
@@ -24477,8 +24576,8 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         # --- ASYNC CLOUD SYNC: push to cloud in background, never block the user ---
         if has_cloud:
             session_user = get_cached_session_user()
-            collaborator_ids = payload.collaboratorIds or ([session_user.id] if session_user else [])
-            owner_id = payload.ownerId or (collaborator_ids[0] if collaborator_ids else None)
+            collaborator_ids = collaborator_ids_for_local or ([session_user.id] if session_user else [])
+            owner_id = resolved_owner_id or (collaborator_ids[0] if collaborator_ids else None)
             cloud_payload = {
                 # 关键：把本地 task_id 作为云端 task id（cloud_backend TaskCreatePayload.id 已支持）。
                 # 不传 id 时云端会 new_id() 生成新 id —— 一旦 POST 响应丢失 / 超时，下次 pull 时
@@ -30452,6 +30551,13 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         text = re.sub(r"\b[a-f0-9]{32,}\b", "<HEX>", text)
         # Authorization 头里的 Bearer
         text = re.sub(r"(Bearer\s+)[A-Za-z0-9_\-\.]+", r"\1<TOKEN>", text, flags=re.IGNORECASE)
+        # 常见 API key / 云端 key 形态
+        text = re.sub(r"(?<![A-Za-z0-9_])sk-[A-Za-z0-9_\-]{12,}", "sk-<TOKEN>", text)
+        text = re.sub(r"(?<![A-Za-z0-9_])volc_[A-Za-z0-9_\-]{12,}", "volc_<TOKEN>", text)
+        text = re.sub(r"(?i)(api[_-]?key\s*[:=]\s*)[A-Za-z0-9_\-\.]{8,}", r"\1<TOKEN>", text)
+        text = re.sub(r"(?i)(x[_-]?api[_-]?key\s*[:=]\s*)[A-Za-z0-9_\-\.]{8,}", r"\1<TOKEN>", text)
+        # 中国大陆手机号
+        text = re.sub(r"(?<!\d)1[3-9]\d{9}(?!\d)", "<PHONE>", text)
         return text
 
     @app.post("/api/v1/system/client-error")
@@ -31260,6 +31366,48 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             raise HTTPException(status_code=502, detail="Invalid org feishu payload")
         return OrgFeishuIntegrationRecord(**response)
 
+    @app.get("/api/v1/me/feishu-delivery-profile", response_model=FeishuDeliveryProfileRecord)
+    def get_feishu_delivery_profile() -> FeishuDeliveryProfileRecord:
+        if not get_cloud_token() and not get_cloud_refresh_token():
+            return FeishuDeliveryProfileRecord(
+                userId="local-device-user",
+                organizationId=None,
+                organizationName=None,
+                deliveryStatus="missing_org",
+                deliveryStatusLabel="尚未连接云端组织",
+                readyForNotifications=False,
+                blockedReason="任务提醒手机号依赖云端组织和组织飞书应用；本地模式下可先不填写。",
+            )
+        try:
+            payload = cloud_request("GET", "/api/v1/me/feishu-delivery-profile")
+            if isinstance(payload, dict):
+                return FeishuDeliveryProfileRecord(**payload)
+        except Exception as exc:
+            logger.warning("feishu.delivery_profile.fetch_failed: %s", exc)
+        return FeishuDeliveryProfileRecord(
+            userId="cloud-user",
+            organizationId=None,
+            organizationName=None,
+            deliveryStatus="failed",
+            deliveryStatusLabel="任务提醒状态暂不可用",
+            readyForNotifications=False,
+            blockedReason="已连接云端，但暂时读取不到飞书任务提醒手机号状态；这不代表你未加入组织。",
+        )
+
+    @app.post("/api/v1/me/feishu-delivery-profile", response_model=FeishuDeliveryProfileRecord)
+    def save_feishu_delivery_profile(payload: FeishuDeliveryProfileSavePayload) -> FeishuDeliveryProfileRecord:
+        if not get_cloud_token() and not get_cloud_refresh_token():
+            raise HTTPException(status_code=400, detail="连接云端并加入组织后，才能保存飞书任务提醒手机号。")
+        response = cloud_request(
+            "POST",
+            "/api/v1/me/feishu-delivery-profile",
+            json_body=payload.model_dump(),
+            timeout=18.0,
+        )
+        if not isinstance(response, dict):
+            raise HTTPException(status_code=502, detail="Invalid feishu delivery profile payload")
+        return FeishuDeliveryProfileRecord(**response)
+
     @app.get("/api/v1/me/feishu-authorization", response_model=FeishuMemberAuthorizationRecord)
     def get_feishu_member_authorization() -> FeishuMemberAuthorizationRecord:
         if not get_cloud_token() and not get_cloud_refresh_token():
@@ -31317,14 +31465,92 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
     ) -> object:
         if not get_cloud_token() and not get_cloud_refresh_token():
             raise HTTPException(status_code=400, detail="连接云端并加入组织后，才能查看飞书同步状态。")
+        def _local_feishu_import_status(cloud_record: dict[str, object] | None = None) -> dict[str, object] | None:
+            if localType != "document" or remoteType != "docx_document":
+                return None
+            row = state.db.fetchone(
+                "SELECT title, original_source_path FROM documents WHERE id = ?",
+                (localId,),
+            )
+            if not row:
+                return None
+            original_source_path = str(row["original_source_path"] or "")
+            normalized_source = original_source_path.replace("\\", "/")
+            if "/_imports/feishu/" not in normalized_source:
+                return None
+            source_path = Path(original_source_path)
+            sidecar_path = source_path.with_name(f"{source_path.name}.feishu-source.json")
+            meta: dict[str, object] = {}
+            if sidecar_path.is_file():
+                try:
+                    loaded = json.loads(sidecar_path.read_text(encoding="utf-8"))
+                    if isinstance(loaded, dict):
+                        meta = loaded
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("feishu.import.sidecar_read_failed document=%s error=%s", localId, exc)
+            remote_id = str(meta.get("token") or meta.get("remoteId") or "")
+            remote_url = str(meta.get("remoteUrl") or meta.get("url") or "")
+            timestamp = now_iso()
+            if remote_id or remote_url:
+                return {
+                    "localType": localType,
+                    "localId": localId,
+                    "remoteType": remoteType,
+                    "remoteId": remote_id or None,
+                    "remoteUrl": remote_url or None,
+                    "status": "synced",
+                    "message": "已从飞书导入软件资料库，可打开原飞书文档。",
+                    "lastSyncedAt": str(meta.get("importedAt") or timestamp),
+                    "updatedAt": str(meta.get("importedAt") or timestamp),
+                    "details": {
+                        "direction": "feishu_to_workbench",
+                        "importedFromFeishu": True,
+                        "source": "local_import_sidecar",
+                        "cloudStatus": cloud_record.get("status") if isinstance(cloud_record, dict) else None,
+                    },
+                }
+            return {
+                "localType": localType,
+                "localId": localId,
+                "remoteType": remoteType,
+                "remoteId": None,
+                "remoteUrl": None,
+                "status": "imported_missing_mapping",
+                "message": "这份文档来自飞书，但缺少原文链接映射；请重新从飞书导入或联系管理员修复映射。",
+                "lastSyncedAt": None,
+                "updatedAt": timestamp,
+                "details": {
+                    "direction": "feishu_to_workbench",
+                    "importedFromFeishu": True,
+                    "source": "local_import_path",
+                    "cloudStatus": cloud_record.get("status") if isinstance(cloud_record, dict) else None,
+                },
+            }
+
         params = [
             f"localType={quote(localType)}",
             f"localId={quote(localId)}",
             f"remoteType={quote(remoteType)}",
         ]
-        response = cloud_request("GET", f"/api/v1/feishu-sync/status?{'&'.join(params)}", timeout=8.0)
+        try:
+            response = cloud_request("GET", f"/api/v1/feishu-sync/status?{'&'.join(params)}", timeout=8.0)
+        except Exception as exc:
+            local_import_status = _local_feishu_import_status(None)
+            if local_import_status:
+                local_import_status["message"] = str(local_import_status.get("message") or "") or "已从飞书导入软件资料库。"
+                details = dict(local_import_status.get("details") or {})
+                details["cloudStatusError"] = str(exc)
+                local_import_status["details"] = details
+                return local_import_status
+            raise
         if not isinstance(response, dict):
             raise HTTPException(status_code=502, detail="Invalid feishu sync status payload")
+        local_import_status = _local_feishu_import_status(response)
+        if local_import_status and (
+            str(local_import_status.get("status") or "") == "synced"
+            or str(response.get("status") or "") in {"idle", "failed", "skipped"}
+        ):
+            return local_import_status
         return response
 
     @app.post("/api/v1/feishu-sync/calendar/tasks/{task_id}")
@@ -31354,6 +31580,208 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         if not isinstance(response, dict):
             raise HTTPException(status_code=502, detail="Invalid feishu document sync payload")
         return response
+
+    @app.get("/api/v1/feishu-doc-import/status", response_model=FeishuDocImportStatusRecord)
+    def get_feishu_doc_import_status() -> FeishuDocImportStatusRecord:
+        if not get_cloud_token() and not get_cloud_refresh_token():
+            return FeishuDocImportStatusRecord(
+                ready=False,
+                linked=False,
+                reason="连接云端并加入组织后，才能从飞书导入文档。",
+            )
+        response = cloud_request("GET", "/api/v1/feishu-doc-import/status", timeout=8.0)
+        if not isinstance(response, dict):
+            raise HTTPException(status_code=502, detail="Invalid feishu import status payload")
+        return FeishuDocImportStatusRecord(**response)
+
+    @app.post("/api/v1/feishu-doc-import/search", response_model=FeishuDocImportSearchResultRecord)
+    def search_feishu_docs_for_import(payload: FeishuDocImportSearchPayload) -> FeishuDocImportSearchResultRecord:
+        if not get_cloud_token() and not get_cloud_refresh_token():
+            raise HTTPException(status_code=400, detail="连接云端并加入组织后，才能搜索飞书文档。")
+        response = cloud_request(
+            "POST",
+            "/api/v1/feishu-doc-import/search",
+            json_body=payload.model_dump(),
+            timeout=24.0,
+        )
+        if not isinstance(response, dict):
+            raise HTTPException(status_code=502, detail="Invalid feishu import search payload")
+        return FeishuDocImportSearchResultRecord(**response)
+
+    @app.post("/api/v1/feishu-doc-import/resolve-links", response_model=FeishuDocImportSearchResultRecord)
+    def resolve_feishu_doc_import_links(payload: FeishuDocImportResolveLinksPayload) -> FeishuDocImportSearchResultRecord:
+        if not get_cloud_token() and not get_cloud_refresh_token():
+            raise HTTPException(status_code=400, detail="连接云端并加入组织后，才能解析飞书文档链接。")
+        response = cloud_request(
+            "POST",
+            "/api/v1/feishu-doc-import/resolve-links",
+            json_body=payload.model_dump(),
+            timeout=12.0,
+        )
+        if not isinstance(response, dict):
+            raise HTTPException(status_code=502, detail="Invalid feishu link resolve payload")
+        return FeishuDocImportSearchResultRecord(**response)
+
+    @app.post("/api/v1/clients/{client_id}/feishu-doc-import/import", response_model=FeishuDocImportResultRecord)
+    def import_feishu_docs_to_client(client_id: str, payload: FeishuDocImportRequestPayload) -> FeishuDocImportResultRecord:
+        build_client_summary(client_id)
+        if not get_cloud_token() and not get_cloud_refresh_token():
+            raise HTTPException(status_code=400, detail="连接云端并加入组织后，才能从飞书导入文档。")
+        import_root = state.data_dir / "_imports" / "feishu" / client_id / datetime.now().strftime("%Y%m%d_%H%M%S")
+        import_root.mkdir(parents=True, exist_ok=True)
+        items: list[FeishuDocImportImportedItemRecord] = []
+        exported_items: list[tuple[FeishuDocImportSelectionPayload, str, Path]] = []
+        for candidate in payload.items:
+            title = (candidate.title or "飞书文档").strip() or "飞书文档"
+            try:
+                content, headers = cloud_request_binary(
+                    "POST",
+                    "/api/v1/feishu-doc-import/export-docx",
+                    json_body={
+                        "token": candidate.token,
+                        "type": candidate.type,
+                        "title": title,
+                    },
+                    timeout=150.0,
+                )
+                if not content:
+                    raise HTTPException(status_code=502, detail="飞书导出文件为空。")
+                header_name = unquote(headers.get("x-feishu-file-name", ""))
+                file_name = safe_filename(header_name or f"{title}.docx")
+                if not file_name.lower().endswith(".docx"):
+                    file_name = f"{Path(file_name).stem or '飞书文档'}.docx"
+                target_path = import_root / file_name
+                if target_path.exists():
+                    target_path = import_root / f"{target_path.stem}_{uuid4().hex[:6]}.docx"
+                target_path.write_bytes(content)
+                exported_items.append((candidate, title, target_path))
+            except Exception as exc:
+                detail = str(exc.detail) if isinstance(exc, HTTPException) else str(exc)
+                items.append(
+                    FeishuDocImportImportedItemRecord(
+                        token=candidate.token,
+                        title=title,
+                        status="failed",
+                        remoteUrl=candidate.url,
+                        message=detail or "导入失败。",
+                    )
+                )
+        if exported_items:
+            try:
+                records = import_documents(ImportPayload(clientId=client_id, mode="folder", paths=[str(import_root)]))
+                imported_by_name = {
+                    str(document.fileName or ""): document
+                    for record in records
+                    for document in record.documents
+                    if document.documentId
+                }
+                for candidate, title, target_path in exported_items:
+                    imported_doc = imported_by_name.get(target_path.name)
+                    if not imported_doc:
+                        items.append(
+                            FeishuDocImportImportedItemRecord(
+                                token=candidate.token,
+                                title=title,
+                                status="failed",
+                                remoteUrl=candidate.url,
+                                message="这份飞书文档可能已存在或未能入库。",
+                            )
+                        )
+                        continue
+                    sidecar_path = target_path.with_name(f"{target_path.name}.feishu-source.json")
+                    sidecar_payload = {
+                        "token": candidate.token,
+                        "type": candidate.type,
+                        "title": title,
+                        "remoteUrl": candidate.url or "",
+                        "remoteUpdatedAt": candidate.updatedAt or "",
+                        "documentId": imported_doc.documentId,
+                        "clientId": client_id,
+                        "importedAt": now_iso(),
+                    }
+                    try:
+                        sidecar_path.write_text(json.dumps(sidecar_payload, ensure_ascii=False, indent=2), encoding="utf-8")
+                    except Exception as sidecar_exc:  # noqa: BLE001
+                        logger.warning("feishu.import.sidecar_write_failed document=%s error=%s", imported_doc.documentId, sidecar_exc)
+                    try:
+                        cloud_request(
+                            "POST",
+                            "/api/v1/feishu-doc-import/mappings",
+                            json_body={
+                                "localId": imported_doc.documentId,
+                                "remoteId": candidate.token,
+                                "remoteUrl": candidate.url or "",
+                                "title": title,
+                                "clientId": client_id,
+                                "remoteUpdatedAt": candidate.updatedAt or "",
+                            },
+                            timeout=10.0,
+                        )
+                    except Exception as mapping_exc:
+                        logger.warning("feishu.import.mapping_failed document=%s error=%s", imported_doc.documentId, mapping_exc)
+                    items.append(
+                        FeishuDocImportImportedItemRecord(
+                            token=candidate.token,
+                            title=title,
+                            status="imported",
+                            documentId=imported_doc.documentId,
+                            fileName=imported_doc.fileName,
+                            path=imported_doc.path,
+                            remoteUrl=candidate.url,
+                            message="已接收进当前项目资料库，后台正在解析。",
+                        )
+                    )
+            except Exception as exc:
+                detail = str(exc.detail) if isinstance(exc, HTTPException) else str(exc)
+                for candidate, title, _target_path in exported_items:
+                    items.append(
+                        FeishuDocImportImportedItemRecord(
+                            token=candidate.token,
+                            title=title,
+                            status="failed",
+                            remoteUrl=candidate.url,
+                            message=detail or "导入失败。",
+                        )
+                    )
+        imported_count = sum(1 for item in items if item.status == "imported")
+        failed_count = sum(1 for item in items if item.status == "failed")
+        if imported_count > 0:
+            _enqueue_workspace_refresh_safe(
+                client_id=client_id,
+                source_type="feishu_doc_import",
+                source_id=uuid4().hex,
+                reason="feishu_doc_import_completed",
+                scope_type="client",
+                scope_id=client_id,
+                priority="normal",
+            )
+        return FeishuDocImportResultRecord(
+            clientId=client_id,
+            importedCount=imported_count,
+            failedCount=failed_count,
+            items=items,
+        )
+
+    def _parse_iso_datetime(value: str | None) -> datetime | None:
+        text = str(value or "").strip()
+        if not text:
+            return None
+        try:
+            normalized = text.replace("Z", "+00:00")
+            parsed = datetime.fromisoformat(normalized)
+            if parsed.tzinfo is None:
+                parsed = parsed.replace(tzinfo=timezone.utc)
+            return parsed.astimezone(timezone.utc)
+        except Exception:
+            return None
+
+    def _iso_from_mtime(path: Path) -> str | None:
+        try:
+            if path.exists():
+                return datetime.fromtimestamp(path.stat().st_mtime, timezone.utc).isoformat()
+        except Exception:
+            return None
+        return None
 
     @app.get("/api/v1/auth/department-options", response_model=list[DepartmentOptionRecord])
     def auth_department_options(
@@ -36296,9 +36724,33 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             return _drill_target_response_for_attachment_group(target)
         raise HTTPException(status_code=400, detail=f"Unsupported dashboard drill target: {target.targetType}")
 
+    def _task_plan_link_cloud_task_id(task_id: str) -> str:
+        row = state.db.fetchone(
+            "SELECT id, cloud_id FROM tasks WHERE id = ? OR cloud_id = ? ORDER BY updated_at DESC LIMIT 1",
+            (task_id, task_id),
+        )
+        if not row:
+            return task_id
+        return str(row["cloud_id"] or row["id"] or task_id).strip() or task_id
+
+    def _is_cloud_task_not_found(exc: HTTPException) -> bool:
+        if exc.status_code != 404:
+            return False
+        detail = exc.detail
+        detail_text = json.dumps(detail, ensure_ascii=False) if isinstance(detail, (dict, list)) else str(detail or "")
+        return "Task not found" in detail_text or "任务不存在" in detail_text
+
     @app.get("/api/v1/tasks/{task_id}/plan-link", response_model=TaskPlanLinkRecord | None)
     def read_task_plan_link(task_id: str) -> TaskPlanLinkRecord | None:
-        response = cloud_request("GET", f"/api/v1/tasks/{task_id}/plan-link")
+        if not get_cloud_token():
+            return None
+        cloud_task_id = _task_plan_link_cloud_task_id(task_id)
+        try:
+            response = cloud_request("GET", f"/api/v1/tasks/{cloud_task_id}/plan-link")
+        except HTTPException as exc:
+            if _is_cloud_task_not_found(exc):
+                return None
+            raise
         if response is None:
             return None
         if not isinstance(response, dict):
@@ -36307,7 +36759,15 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
 
     @app.post("/api/v1/tasks/{task_id}/plan-link/recompute", response_model=TaskPlanLinkRecord | None)
     def recompute_task_plan_link(task_id: str) -> TaskPlanLinkRecord | None:
-        response = cloud_request("POST", f"/api/v1/tasks/{task_id}/plan-link/recompute")
+        if not get_cloud_token():
+            return None
+        cloud_task_id = _task_plan_link_cloud_task_id(task_id)
+        try:
+            response = cloud_request("POST", f"/api/v1/tasks/{cloud_task_id}/plan-link/recompute")
+        except HTTPException as exc:
+            if _is_cloud_task_not_found(exc):
+                return None
+            raise
         if response is None:
             return None
         if not isinstance(response, dict):
@@ -36316,7 +36776,15 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
 
     @app.patch("/api/v1/tasks/{task_id}/plan-link", response_model=TaskPlanLinkRecord | None)
     def patch_task_plan_link(task_id: str, payload: TaskPlanLinkUpsertPayload) -> TaskPlanLinkRecord | None:
-        response = cloud_request("PATCH", f"/api/v1/tasks/{task_id}/plan-link", json_body=payload.model_dump())
+        if not get_cloud_token():
+            return None
+        cloud_task_id = _task_plan_link_cloud_task_id(task_id)
+        try:
+            response = cloud_request("PATCH", f"/api/v1/tasks/{cloud_task_id}/plan-link", json_body=payload.model_dump())
+        except HTTPException as exc:
+            if _is_cloud_task_not_found(exc):
+                raise HTTPException(status_code=409, detail="任务尚未同步到云端，请稍后再试") from exc
+            raise
         if response is None:
             return None
         if not isinstance(response, dict):
@@ -36710,6 +37178,470 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         if not state.system_logger:
             return []
         return state.system_logger.list_log_dates()
+
+    # ── Software Feedback (local proxy + offline outbox) ───────────
+    _FEEDBACK_SCREENSHOT_MAX_BYTES = 6 * 1024 * 1024
+    _FEEDBACK_SCREENSHOT_TYPES = {
+        "image/png": ".png",
+        "image/jpeg": ".jpg",
+        "image/jpg": ".jpg",
+        "image/webp": ".webp",
+    }
+
+    def _feedback_screenshot_ext(filename: str | None, content_type: str | None) -> str | None:
+        normalized_type = str(content_type or "").lower().strip()
+        ext = _FEEDBACK_SCREENSHOT_TYPES.get(normalized_type)
+        if ext:
+            return ext
+        guessed = Path(filename or "").suffix.lower()
+        if guessed in {".png", ".jpg", ".jpeg", ".webp"}:
+            return ".jpg" if guessed == ".jpeg" else guessed
+        return None
+
+    _FEEDBACK_CENTRAL_BASE_URL = os.environ.get("YIYU_FEEDBACK_CENTRAL_BASE_URL", "https://www.yiyu.love").rstrip("/")
+    _FEEDBACK_CLIENT_ID_KEY = "software_feedback.client_id"
+    _FEEDBACK_CLIENT_TOKEN_KEY = "software_feedback.client_token"
+
+    def _ensure_feedback_client_identity() -> tuple[str, str]:
+        client_id = state.db.get_setting(_FEEDBACK_CLIENT_ID_KEY, "").strip()
+        client_token = state.db.get_setting(_FEEDBACK_CLIENT_TOKEN_KEY, "").strip()
+        if not client_id:
+            client_id = f"fbc_{uuid4().hex}"
+            state.db.set_setting(_FEEDBACK_CLIENT_ID_KEY, client_id)
+        if not client_token:
+            client_token = f"fbt_{uuid4().hex}{uuid4().hex}"
+            state.db.set_setting(_FEEDBACK_CLIENT_TOKEN_KEY, client_token)
+        return client_id, client_token
+
+    def _feedback_central_headers() -> dict[str, str]:
+        client_id, client_token = _ensure_feedback_client_identity()
+        return {
+            "X-Yiyu-Feedback-Client-Id": client_id,
+            "X-Yiyu-Feedback-Client-Token": client_token,
+        }
+
+    def _central_feedback_payload(payload: dict[str, object]) -> dict[str, object]:
+        client_id, _client_token = _ensure_feedback_client_identity()
+        category = str(payload.get("category") or "bug")
+        return {
+            "localFeedbackId": payload.get("localFeedbackId") or "",
+            "feedbackClientId": client_id,
+            "kind": "feature" if category == "suggestion" else "bug",
+            "category": category,
+            "severity": payload.get("severity") or "medium",
+            "title": payload.get("title") or "用户反馈",
+            "description": payload.get("description") or "",
+            "version": payload.get("appVersion") or payload.get("version") or None,
+            "appVersion": payload.get("appVersion") or None,
+            "platform": payload.get("platform") or None,
+            "os": payload.get("platform") or None,
+            "page": payload.get("pageRoute") or None,
+            "moduleKey": payload.get("moduleKey") or payload.get("pageRoute") or None,
+            "orgCode": payload.get("organizationCode") or payload.get("orgCode") or payload.get("organizationId") or None,
+            "organizationId": payload.get("organizationId") or None,
+            "organizationName": payload.get("organizationName") or None,
+            "deviceInfo": payload.get("deviceInfo") or None,
+            "clientId": payload.get("clientId") or None,
+            "taskId": payload.get("taskId") or None,
+            "logExcerpt": payload.get("logExcerpt") or None,
+            "source": "desktop",
+        }
+
+    def _feedback_log_excerpt(limit: int = 50) -> str:
+        entries: list[dict[str, object]] = []
+        if state.system_logger:
+            try:
+                entries.extend(state.system_logger.query(level="ERROR", limit=limit))
+                entries.extend(state.system_logger.query(level="WARN", limit=limit))
+            except Exception:
+                pass
+        try:
+            entries.extend(
+                entry for entry in _runtime_log_entries(limit)
+                if str(entry.get("level") or "").upper() in {"ERROR", "WARN"}
+            )
+        except Exception:
+            pass
+        normalized: list[tuple[str, str]] = []
+        seen: set[str] = set()
+        for entry in entries:
+            ts = str(entry.get("ts") or entry.get("created_at") or "")
+            message = str(entry.get("message") or entry.get("error") or "")
+            if not message:
+                detail = entry.get("detail")
+                if isinstance(detail, dict):
+                    message = json.dumps(detail, ensure_ascii=False, default=str)
+            source = str(entry.get("source") or "")
+            level = str(entry.get("level") or "").upper()
+            line = _mask_sensitive(f"[{ts}] [{level}] {source} {message}".strip())
+            if not line or line in seen:
+                continue
+            seen.add(line)
+            normalized.append((ts, line[:800]))
+        normalized.sort(key=lambda item: item[0], reverse=True)
+        text = "\n".join(line for _ts, line in normalized[:limit])
+        if len(text) > 12000:
+            text = text[:12000] + "\n...[truncated]"
+        return text
+
+    def _feedback_outbox_record(row) -> dict[str, object]:
+        payload = from_json(str(row["payload_json"] or "{}"), {})
+        if not isinstance(payload, dict):
+            payload = {}
+        central_status = str(row["central_status"] or "queued") if "central_status" in row.keys() else str(row["status"] or "queued")
+        central_error = str(row["central_last_error"] or "") if "central_last_error" in row.keys() else ""
+        central_id = str(row["central_feedback_id"] or "") if "central_feedback_id" in row.keys() else ""
+        last_error = central_error or str(row["last_error"] or "")
+        return {
+            "id": central_id or str(row["id"]),
+            "localFeedbackId": str(row["local_feedback_id"] or payload.get("localFeedbackId") or row["id"]),
+            "centralFeedbackId": central_id or None,
+            "localOutboxId": str(row["id"]),
+            "queued": central_status != "sent",
+            "queueStatus": str(row["status"] or "queued"),
+            "centralStatus": central_status,
+            "lastError": last_error,
+            "category": str(payload.get("category") or "bug"),
+            "severity": str(payload.get("severity") or "medium"),
+            "status": "queued",
+            "title": str(payload.get("title") or ""),
+            "description": str(payload.get("description") or ""),
+            "appVersion": payload.get("appVersion"),
+            "platform": payload.get("platform"),
+            "pageRoute": payload.get("pageRoute"),
+            "deviceInfo": payload.get("deviceInfo"),
+            "logExcerpt": payload.get("logExcerpt"),
+            "screenshotPath": str(row["screenshot_path"] or "") or None,
+            "clientId": payload.get("clientId"),
+            "taskId": payload.get("taskId"),
+            "resolutionNote": None,
+            "createdAt": str(row["queued_at"]),
+            "updatedAt": str(row["updated_at"]),
+        }
+
+    def _store_feedback_outbox(
+        *,
+        payload: dict[str, object],
+        screenshot_content: bytes | None,
+        screenshot_filename: str | None,
+        screenshot_content_type: str | None,
+        central_status: str,
+        central_feedback_id: str = "",
+        central_error: str = "",
+    ) -> dict[str, object]:
+        outbox_id = new_id("lfb")
+        local_feedback_id = str(payload.get("localFeedbackId") or outbox_id)
+        timestamp = now_iso()
+        screenshot_path = ""
+        if screenshot_content:
+            ext = _feedback_screenshot_ext(screenshot_filename, screenshot_content_type) or ".png"
+            feedback_dir = state.data_dir / "software-feedback-outbox" / "screenshots"
+            feedback_dir.mkdir(parents=True, exist_ok=True)
+            safe_name = safe_filename(screenshot_filename or f"{outbox_id}{ext}")
+            stem = Path(safe_name).stem or outbox_id
+            target = feedback_dir / safe_filename(f"{timestamp.replace(':', '').replace('-', '')}_{outbox_id}_{stem}{ext}")
+            target.write_bytes(screenshot_content)
+            screenshot_path = str(target)
+        state.db.execute(
+            """
+            INSERT INTO software_feedback_outbox(
+                id, payload_json, local_feedback_id, screenshot_path,
+                status, central_status, central_feedback_id, central_attempts, central_last_error,
+                attempts, last_error, queued_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, 0, ?, ?, ?)
+            """,
+            (
+                outbox_id,
+                to_json(payload),
+                local_feedback_id,
+                screenshot_path,
+                "sent" if central_status == "sent" else "queued",
+                central_status,
+                central_feedback_id,
+                str(central_error)[:500],
+                str(central_error)[:500],
+                timestamp,
+                timestamp,
+            ),
+        )
+        row = state.db.fetchone("SELECT * FROM software_feedback_outbox WHERE id = ?", (outbox_id,))
+        return _feedback_outbox_record(row)
+
+    def _upload_feedback_screenshot_to_central(
+        feedback_id: str,
+        *,
+        screenshot_content: bytes,
+        screenshot_filename: str,
+        screenshot_content_type: str,
+    ) -> dict[str, object] | None:
+        if not _FEEDBACK_CENTRAL_BASE_URL:
+            raise HTTPException(status_code=502, detail="Central feedback endpoint unavailable")
+        response = httpx.post(
+            f"{_FEEDBACK_CENTRAL_BASE_URL}/api/v1/feedback/{quote(feedback_id)}/screenshot",
+            content=screenshot_content,
+            headers={
+                **_feedback_central_headers(),
+                "Content-Type": screenshot_content_type,
+                "X-File-Name": screenshot_filename,
+            },
+            timeout=15.0,
+        )
+        if response.status_code >= 400:
+            raise HTTPException(status_code=response.status_code, detail=response.text[:300] or "Central screenshot upload failed")
+        return response.json() if response.content else None
+
+    def _submit_feedback_to_central(
+        payload: dict[str, object],
+        *,
+        screenshot_content: bytes | None = None,
+        screenshot_filename: str | None = None,
+        screenshot_content_type: str | None = None,
+    ) -> dict[str, object]:
+        if not _FEEDBACK_CENTRAL_BASE_URL:
+            raise HTTPException(status_code=502, detail="Central feedback endpoint unavailable")
+        response = httpx.post(
+            f"{_FEEDBACK_CENTRAL_BASE_URL}/api/v1/feedback",
+            json=_central_feedback_payload(payload),
+            headers=_feedback_central_headers(),
+            timeout=8.0,
+        )
+        if response.status_code >= 400:
+            raise HTTPException(status_code=response.status_code, detail=response.text[:300] or "Central feedback submit failed")
+        record = response.json() if response.content else {}
+        if not isinstance(record, dict):
+            raise HTTPException(status_code=502, detail="Central feedback response invalid")
+        feedback_id = str(record.get("id") or "")
+        if feedback_id and screenshot_content and screenshot_filename and screenshot_content_type:
+            uploaded = _upload_feedback_screenshot_to_central(
+                feedback_id,
+                screenshot_content=screenshot_content,
+                screenshot_filename=screenshot_filename,
+                screenshot_content_type=screenshot_content_type,
+            )
+            if uploaded:
+                record.update(uploaded)
+        record["queued"] = False
+        record["central"] = True
+        return record
+
+    def _list_central_software_feedback() -> list[dict[str, object]]:
+        if not _FEEDBACK_CENTRAL_BASE_URL:
+            return []
+        response = httpx.get(
+            f"{_FEEDBACK_CENTRAL_BASE_URL}/api/v1/feedback/mine",
+            headers=_feedback_central_headers(),
+            timeout=8.0,
+        )
+        if response.status_code >= 400:
+            raise HTTPException(status_code=response.status_code, detail=response.text[:300] or "Central feedback list failed")
+        payload = response.json() if response.content else []
+        if isinstance(payload, dict):
+            payload = payload.get("items", [])
+        return [dict(item, queued=False, central=True) for item in payload if isinstance(item, dict)]
+
+    def _retry_software_feedback_outbox(limit: int = 5) -> None:
+        rows = state.db.fetchall(
+            """
+            SELECT * FROM software_feedback_outbox
+            WHERE status IN ('queued', 'failed')
+              AND attempts < 10
+              AND central_status IN ('queued', 'failed')
+            ORDER BY updated_at ASC, queued_at ASC
+            LIMIT ?
+            """,
+            (limit,),
+        )
+        for row in rows:
+            payload = from_json(str(row["payload_json"] or "{}"), {})
+            if not isinstance(payload, dict):
+                payload = {}
+            screenshot_path = str(row["screenshot_path"] or "")
+            screenshot_content: bytes | None = None
+            screenshot_filename: str | None = None
+            screenshot_content_type: str | None = None
+            if screenshot_path:
+                path_obj = Path(screenshot_path)
+                if path_obj.exists() and path_obj.is_file():
+                    screenshot_content = path_obj.read_bytes()
+                    screenshot_filename = path_obj.name
+                    screenshot_content_type = "image/png"
+                    if path_obj.suffix.lower() in {".jpg", ".jpeg"}:
+                        screenshot_content_type = "image/jpeg"
+                    elif path_obj.suffix.lower() == ".webp":
+                        screenshot_content_type = "image/webp"
+            previous_central_status = str(row["central_status"] or "queued")
+            central_status = previous_central_status
+            central_id = str(row["central_feedback_id"] or "")
+            central_error = str(row["central_last_error"] or "")
+            central_tried = previous_central_status != "sent"
+
+            if central_tried:
+                try:
+                    central_record = _submit_feedback_to_central(
+                        payload,
+                        screenshot_content=screenshot_content,
+                        screenshot_filename=screenshot_filename,
+                        screenshot_content_type=screenshot_content_type,
+                    )
+                    central_status = "sent"
+                    central_id = str(central_record.get("id") or central_id)
+                    central_error = ""
+                except Exception as exc:
+                    central_status = "failed"
+                    central_error = str(exc)[:500]
+
+            overall_sent = central_status == "sent"
+            timestamp = now_iso()
+            state.db.execute(
+                """
+                UPDATE software_feedback_outbox
+                SET status = ?, central_status = ?, central_feedback_id = ?,
+                    central_attempts = central_attempts + ?,
+                    central_last_error = ?, attempts = attempts + 1, last_error = ?,
+                    updated_at = ?, sent_at = CASE WHEN ? THEN ? ELSE sent_at END
+                WHERE id = ?
+                """,
+                (
+                    "sent" if overall_sent else "failed",
+                    central_status,
+                    central_id,
+                    1 if central_tried else 0,
+                    central_error,
+                    central_error[:500],
+                    timestamp,
+                    1 if overall_sent else 0,
+                    timestamp,
+                    str(row["id"]),
+                ),
+            )
+
+    @app.get("/api/v1/software-feedback")
+    def list_local_software_feedback() -> dict[str, object]:
+        try:
+            _retry_software_feedback_outbox(limit=5)
+        except Exception:
+            pass
+        central_items: list[dict[str, object]] = []
+        central_error = ""
+        try:
+            central_items = _list_central_software_feedback()
+        except Exception as exc:
+            central_error = str(exc)[:300]
+        rows = state.db.fetchall(
+            """
+            SELECT * FROM software_feedback_outbox
+            WHERE status IN ('queued', 'failed')
+            ORDER BY queued_at DESC
+            LIMIT 100
+            """
+        )
+        queued_items = [_feedback_outbox_record(row) for row in rows]
+        merged: dict[str, dict[str, object]] = {}
+        for item in queued_items + central_items:
+            key = str(item.get("localFeedbackId") or item.get("id") or item.get("localOutboxId") or "")
+            if not key:
+                continue
+            existing = merged.get(key)
+            if not existing:
+                merged[key] = item
+                continue
+            existing.update({k: v for k, v in item.items() if v not in (None, "", [])})
+            existing["queued"] = bool(existing.get("queued")) and bool(item.get("queued"))
+        return {
+            "items": list(merged.values()),
+            "queuedCount": len(queued_items),
+            "centralError": central_error or None,
+        }
+
+    @app.post("/api/v1/software-feedback")
+    async def create_local_software_feedback(
+        category: str = Form(...),
+        severity: str = Form(default="medium"),
+        title: str = Form(...),
+        description: str = Form(default=""),
+        appVersion: str | None = Form(default=None),
+        platform: str | None = Form(default=None),
+        pageRoute: str | None = Form(default=None),
+        deviceInfo: str | None = Form(default=None),
+        clientId: str | None = Form(default=None),
+        taskId: str | None = Form(default=None),
+        screenshot: UploadFile | None = File(default=None),
+    ) -> dict[str, object]:
+        normalized_category = category if category in {"bug", "suggestion"} else "bug"
+        normalized_severity = severity if severity in {"low", "medium", "high", "critical"} else "medium"
+        clean_title = title.strip()
+        if not clean_title:
+            raise HTTPException(status_code=400, detail="请先填写反馈标题")
+        screenshot_content: bytes | None = None
+        screenshot_filename: str | None = None
+        screenshot_content_type: str | None = None
+        if screenshot is not None:
+            content = await screenshot.read()
+            if content:
+                if len(content) > _FEEDBACK_SCREENSHOT_MAX_BYTES:
+                    raise HTTPException(status_code=413, detail="截图不能超过 6MB")
+                ext = _feedback_screenshot_ext(screenshot.filename, screenshot.content_type)
+                if not ext:
+                    raise HTTPException(status_code=415, detail="仅支持 png / jpg / webp 截图")
+                screenshot_content = content
+                screenshot_filename = safe_filename(screenshot.filename or f"feedback{ext}")
+                if "." not in screenshot_filename:
+                    screenshot_filename = safe_filename(f"{screenshot_filename}{ext}")
+                screenshot_content_type = str(screenshot.content_type or "").lower() or {
+                    ".png": "image/png",
+                    ".jpg": "image/jpeg",
+                    ".webp": "image/webp",
+                }.get(ext, "image/png")
+        payload: dict[str, object] = {
+            "localFeedbackId": f"lfb_{uuid4().hex}",
+            "category": normalized_category,
+            "severity": normalized_severity,
+            "title": clean_title[:200],
+            "description": description.strip()[:5000],
+            "appVersion": appVersion or None,
+            "platform": platform or None,
+            "pageRoute": pageRoute or None,
+            "deviceInfo": deviceInfo or None,
+            "logExcerpt": _feedback_log_excerpt(),
+            "clientId": clientId or None,
+            "taskId": taskId or None,
+        }
+        session_user = get_cached_session_user()
+        if session_user:
+            payload["organizationId"] = session_user.organizationId
+            payload["organizationName"] = session_user.organizationName or ""
+            payload["orgCode"] = session_user.organizationId
+        central_record: dict[str, object] | None = None
+        central_error = ""
+        central_status = "queued"
+        try:
+            central_record = _submit_feedback_to_central(
+                payload,
+                screenshot_content=screenshot_content,
+                screenshot_filename=screenshot_filename,
+                screenshot_content_type=screenshot_content_type,
+            )
+            central_status = "sent"
+        except Exception as exc:
+            central_status = "failed"
+            central_error = str(exc)[:500]
+        if central_status == "sent":
+            try:
+                _retry_software_feedback_outbox(limit=3)
+            except Exception:
+                pass
+            record = central_record or {}
+            return {"queued": False, "record": record}
+        queued = _store_feedback_outbox(
+            payload=payload,
+            screenshot_content=screenshot_content,
+            screenshot_filename=screenshot_filename,
+            screenshot_content_type=screenshot_content_type,
+            central_status=central_status,
+            central_feedback_id=str((central_record or {}).get("id") or ""),
+            central_error=central_error,
+        )
+        return {"queued": central_status != "sent", "record": queued}
 
     @app.get("/api/v1/tasks/agent-worklogs", response_model=AgentWorklogResponse)
     def get_agent_worklogs(month: str | None = Query(default=None)) -> AgentWorklogResponse:
@@ -44663,211 +45595,6 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             raise HTTPException(status_code=502, detail="AI 返回内容仍包含 Git 冲突标记。")
         return CollabMergeConflictResultRecord(
             mergedContent=merged if merged.endswith("\n") else f"{merged}\n",
-            provider=status.provider,
-            model=status.model,
-        )
-
-    def _collab_effect_text_is_code_mechanical(text: str) -> bool:
-        return bool(
-            re.search(r"\b(src|backend|cloud_backend|scripts|docs)/", text)
-            or re.search(r"\.(tsx?|jsx?|py|mjs|cjs|json|md|ya?ml|sql)\b", text)
-            or re.search(r"代码路径|文件清单|组件文件|模块文件|改动文件", text)
-        )
-
-    @app.post("/api/v1/runtime/collab-merge/explain-effects", response_model=CollabEffectExplainResultRecord)
-    def explain_collab_effects_with_ai(
-        payload: CollabEffectExplainPayload,
-    ) -> CollabEffectExplainResultRecord:
-        started_at = time.perf_counter()
-        status = _collab_merge_ai_status()
-        if not status.available:
-            raise HTTPException(status_code=503, detail=status.reason or "AI 不可用，不能生成协作功能说明。")
-
-        allowed_paths = [
-            str(item.get("path") or "").strip()
-            for item in payload.files
-            if str(item.get("path") or "").strip()
-        ]
-        allowed_path_set = set(allowed_paths)
-        fallback_by_id = {item.id: item for item in payload.fallbackEffects}
-        fallback_paths = []
-        for item in payload.fallbackEffects:
-            fallback_paths.extend(item.relatedPaths)
-        fallback_paths = [path for path in dict.fromkeys(fallback_paths) if path in allowed_path_set]
-        files_brief = [
-            {
-                "path": str(item.get("path") or ""),
-                "type": str(item.get("type") or ""),
-                "area": str(item.get("groupLabel") or item.get("groupKey") or ""),
-                "hint": str(item.get("summary") or ""),
-            }
-            for item in payload.files[:80]
-        ]
-        fallback_brief = [
-            {
-                "id": item.id,
-                "title": item.title,
-                "summary": item.summary,
-                "visibility": item.visibility,
-                "scopeLabel": item.scopeLabel,
-                "relatedPaths": item.relatedPaths[:30],
-            }
-            for item in payload.fallbackEffects[:8]
-        ]
-        prompt = (
-            "把一次 Git 协作修改翻译成用户能判断的功能/架构影响说明。\n\n"
-            f"动作：{'推送我的本地修改到 main' if payload.mode == 'push' else '预览/同步远端 main 修改'}\n"
-            f"当前查看：{payload.syncTargetLabel or '未指定'}\n"
-            f"默认提交说明：{payload.suggestedMessage}\n\n"
-            "提交摘要：\n"
-            f"{json.dumps(payload.commitSummaries[:12], ensure_ascii=False)}\n\n"
-            "变更分组：\n"
-            f"{json.dumps(payload.groups, ensure_ascii=False)[:1200]}\n\n"
-            "文件证据（只用于判断，不要照抄成标题）：\n"
-            f"{json.dumps(files_brief, ensure_ascii=False)[:2500]}\n\n"
-            "规则草稿（只供参考，太泛就重写）：\n"
-            f"{json.dumps(fallback_brief, ensure_ascii=False)[:2500]}\n\n"
-            "关键 diff 片段：\n"
-            f"{payload.diffPreview[:2500]}\n\n"
-            "输出要求：\n"
-            "1. 只返回 JSON。\n"
-            "2. 返回 1-4 条 effects，每条必须是用户视角功能或后台架构影响。\n"
-            "3. title/summary/details 禁止写 src/、backend/、.tsx、.py 等代码路径，代码文件只能通过 relatedPaths 表达。\n"
-            "4. 必须覆盖推送和同步两种场景：推送时说明“推上 main 后同事会得到什么”，同步时说明“接收/预览后本机可能变化什么”。\n"
-            "5. 底层数据表、后台 worker、云端接口、构建脚本这类不可见变化，也要解释成“影响什么能力、什么风险、哪里验收”。\n"
-            "6. relatedPaths 只能从上面的变更文件证据中选择。"
-        )
-        schema = {
-            "type": "OBJECT",
-            "properties": {
-                "effects": {
-                    "type": "ARRAY",
-                    "items": {
-                        "type": "OBJECT",
-                        "properties": {
-                            "id": {"type": "STRING"},
-                            "title": {"type": "STRING"},
-                            "summary": {"type": "STRING"},
-                            "visibility": {"type": "STRING"},
-                            "scopeLabel": {"type": "STRING"},
-                            "details": {"type": "ARRAY", "items": {"type": "STRING"}},
-                            "relatedPaths": {"type": "ARRAY", "items": {"type": "STRING"}},
-                            "beforeLabel": {"type": "STRING"},
-                            "afterLabel": {"type": "STRING"},
-                        },
-                    },
-                },
-            },
-        }
-        system_instruction = (
-            "你是益语智库软件协作审查助手。"
-            "你的任务不是解释代码文件，而是把代码改动翻译成用户能判断的功能、业务规则、后台架构和验收风险。"
-            "不要输出 Markdown，不要输出思考过程。"
-        )
-        logger.info(
-            "collab effect explanation started mode=%s files=%s commits=%s diff_chars=%s fallback=%s",
-            payload.mode,
-            len(payload.files),
-            len(payload.commitSummaries),
-            len(payload.diffPreview or ""),
-            len(payload.fallbackEffects),
-        )
-        try:
-            raw = state.ai._qwen_generate(
-                prompt=prompt,
-                system_instruction=system_instruction,
-                response_schema=schema,
-                timeout_seconds=45.0,
-                max_tokens=1200,
-                temperature=0.1,
-                top_p=0.8,
-                enable_thinking=False,
-                task_kind="fast_structured",
-            )
-        except AiInvocationError as exc:
-            logger.warning(
-                "collab effect explanation ai error duration_ms=%.0f detail=%s",
-                (time.perf_counter() - started_at) * 1000,
-                str(exc)[:240],
-            )
-            raise HTTPException(status_code=502, detail=str(exc)) from exc
-        except Exception as exc:
-            detail = str(exc).strip() or exc.__class__.__name__
-            logger.warning(
-                "collab effect explanation failed duration_ms=%.0f detail=%s",
-                (time.perf_counter() - started_at) * 1000,
-                detail[:240],
-            )
-            lowered = detail.lower()
-            if "timeout" in lowered or "timed out" in lowered or "超时" in detail:
-                raise HTTPException(status_code=504, detail="AI 功能说明生成超时，已自动降级为规则兜底。") from exc
-            raise HTTPException(status_code=502, detail=f"AI 功能说明调用失败：{detail}") from exc
-
-        if not isinstance(raw, dict):
-            raise HTTPException(status_code=502, detail="AI 功能说明没有返回 JSON 对象。")
-        raw_effects = raw.get("effects")
-        if not isinstance(raw_effects, list):
-            raise HTTPException(status_code=502, detail="AI 功能说明缺少 effects 数组。")
-
-        normalized: list[CollabEffectPreviewRecord] = []
-        for index, item in enumerate(raw_effects[:6]):
-            if not isinstance(item, dict):
-                continue
-            fallback = fallback_by_id.get(str(item.get("id") or "")) or (payload.fallbackEffects[index] if index < len(payload.fallbackEffects) else None)
-            title = str(item.get("title") or (fallback.title if fallback else "功能影响待确认")).strip()
-            summary = str(item.get("summary") or (fallback.summary if fallback else "这次修改会影响软件功能或后台规则，建议先预览再接收。")).strip()
-            details = [
-                str(detail).strip()
-                for detail in (item.get("details") if isinstance(item.get("details"), list) else [])
-                if str(detail).strip()
-            ][:4]
-            text_for_check = "\n".join([title, summary, *details])
-            if not title or not summary or _collab_effect_text_is_code_mechanical(text_for_check):
-                continue
-            related_paths = [
-                str(path_value).strip()
-                for path_value in (item.get("relatedPaths") if isinstance(item.get("relatedPaths"), list) else [])
-                if str(path_value).strip() in allowed_path_set
-            ]
-            if not related_paths and fallback:
-                related_paths = [path for path in fallback.relatedPaths if path in allowed_path_set]
-            if not related_paths:
-                related_paths = fallback_paths[: min(20, len(fallback_paths))]
-            if not related_paths:
-                continue
-            visibility = str(item.get("visibility") or (fallback.visibility if fallback else "mixed")).strip()
-            if visibility not in {"visible", "mixed", "background"}:
-                visibility = "mixed"
-            normalized.append(
-                CollabEffectPreviewRecord(
-                    id=re.sub(r"[^a-zA-Z0-9._-]+", "-", str(item.get("id") or f"ai-effect-{index + 1}")).strip("-") or f"ai-effect-{index + 1}",
-                    title=title[:120],
-                    summary=summary[:500],
-                    visibility=cast(Literal["visible", "mixed", "background"], visibility),
-                    scopeLabel=(str(item.get("scopeLabel") or (fallback.scopeLabel if fallback else "功能影响")).strip() or "功能影响")[:80],
-                    details=[detail[:220] for detail in details],
-                    relatedPaths=related_paths[:120],
-                    beforeLabel=(str(item.get("beforeLabel") or "").strip() or (fallback.beforeLabel if fallback else None)),
-                    afterLabel=(str(item.get("afterLabel") or "").strip() or (fallback.afterLabel if fallback else None)),
-                    explanationSource="ai",
-                    aiUnavailableReason=None,
-                )
-            )
-        if not normalized:
-            logger.warning(
-                "collab effect explanation rejected code-like output duration_ms=%.0f",
-                (time.perf_counter() - started_at) * 1000,
-            )
-            raise HTTPException(status_code=502, detail="AI 返回内容仍偏代码文件说明，已拒绝展示。")
-        logger.info(
-            "collab effect explanation succeeded duration_ms=%.0f effects=%s provider=%s model=%s",
-            (time.perf_counter() - started_at) * 1000,
-            len(normalized[:4]),
-            status.provider,
-            status.model,
-        )
-        return CollabEffectExplainResultRecord(
-            effects=normalized[:4],
             provider=status.provider,
             model=status.model,
         )
@@ -54453,7 +55180,11 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
     def complete_task_with_review(task_id: str, payload: TaskCompletionReviewPayload) -> TaskRecord:
         if not get_cloud_token():
             raise HTTPException(status_code=400, detail="当前环境未启用组织复核链")
-        response = cloud_request("POST", f"/api/v1/tasks/{task_id}/complete-with-review", payload.model_dump())
+        response = cloud_request(
+            "POST",
+            f"/api/v1/tasks/{task_id}/complete-with-review",
+            json_body=payload.model_dump(),
+        )
         if not isinstance(response, dict):
             raise HTTPException(status_code=502, detail="Invalid cloud task payload")
         log_activity("task.complete-with-review", "task", task_id, {"reviewNote": payload.reviewNote[:60]})

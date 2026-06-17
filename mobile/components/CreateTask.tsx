@@ -742,6 +742,9 @@ export default function CreateTask({ onClose, onCreated, preset, task, draft }: 
               onClear={() => { setCustomDate(null); setCustomTime(null); setCustomEndDate(null); setCustomEndTime(null); setDateCleared(true); }}
             />
           )}
+          <Text style={s.feishuSyncHint}>
+            手机版创建的任务会经组织云同步到电脑端；若组织已接通飞书，也会进入飞书任务，带时间时生成日历提醒。
+          </Text>
           <View style={s.propRow}>
             <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}><Tag size={20} color={colors.accent} /><Text style={s.propLabel}>动作类型</Text></View>
             <View style={s.chips}>{actionTypes.map(t => (
@@ -854,6 +857,13 @@ const s = StyleSheet.create({
   propRow: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", paddingBottom: 16, borderBottomWidth: 1, borderBottomColor: colors.borderLight },
   propLabel: { fontSize: 14, fontWeight: "500", color: colors.textSecondary },
   propDateHint: { fontSize: 13, color: palette.textTertiary, fontWeight: "400" },
+  feishuSyncHint: {
+    marginTop: -8,
+    marginBottom: 2,
+    fontSize: 12,
+    lineHeight: 18,
+    color: palette.textTertiary,
+  },
   chips: { flexDirection: "row", gap: 8 },
   chip: { paddingHorizontal: 12, paddingVertical: 6, borderRadius: 8, backgroundColor: colors.surfaceSecondary },
   chipActive: { backgroundColor: colors.accentBg2, borderWidth: 1, borderColor: colors.accent },

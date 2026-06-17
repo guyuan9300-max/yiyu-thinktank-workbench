@@ -692,6 +692,9 @@ export default function DateTimePickerSheet({ value, onChange, onClose, onClear 
                 <Text style={s.optionValueGray}>暂未支持</Text>
               </View>
             </View>
+            <Text style={s.calendarMirrorHint}>
+              飞书日历和手机系统日历只用于提醒；修改任务请回益语任务或飞书任务。
+            </Text>
           </View>
         )}
 
@@ -793,6 +796,9 @@ export default function DateTimePickerSheet({ value, onChange, onClose, onClear 
                 <Text style={s.optionValueGray}>暂未支持</Text>
               </View>
             </View>
+            <Text style={s.calendarMirrorHint}>
+              飞书日历和手机系统日历只用于提醒；修改任务请回益语任务或飞书任务。
+            </Text>
           </View>
         )}
 
@@ -951,6 +957,12 @@ const s = StyleSheet.create({
     backgroundColor: colors.surfaceSecondary,
     borderRadius: borderRadius.md,
     overflow: "hidden",
+  },
+  calendarMirrorHint: {
+    marginTop: spacing.sm,
+    fontSize: fontSize.xs,
+    lineHeight: 18,
+    color: colors.textTertiary,
   },
   optionRow: {
     flexDirection: "row",

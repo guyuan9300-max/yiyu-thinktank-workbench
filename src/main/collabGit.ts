@@ -5,11 +5,9 @@ import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import type {
   CollabActionResult,
-  CollabAiExplanationStatus,
   CollabChangeGroup,
   CollabChangeGroupKey,
   CollabConflictRisk,
-  CollabEffectExplanationRequest,
   CollabEffectPreview,
   CollabFileChange,
   CollabFileChangeType,
@@ -86,7 +84,6 @@ type RepoOptions = {
   fetchRemote?: boolean;
   appDbPath?: string | null;
   targetCommit?: string | null;
-  enableAiExplanation?: boolean;
 };
 
 type RepoWorkContext = {
@@ -116,9 +113,6 @@ type EffectDraft = {
   afterLabel?: string | null;
 };
 
-const COLLAB_AI_EXPLANATION_UNAVAILABLE_REASON = 'AI 功能说明尚未生成；下面只是按路径和提交信息推断的规则兜底，不能当作完整功能评审。';
-const COLLAB_AI_EXPLANATION_PENDING_REASON = 'AI 功能说明正在后台生成；当前先显示规则兜底，生成成功后会自动替换。';
-const COLLAB_AI_EXPLANATION_FETCH_BLOCKED_REASON = 'GitHub 预检失败，已跳过 AI 功能说明；请先修复 GitHub 连接或凭据。';
 const MAX_EFFECT_DIFF_PREVIEW_CHARS = 3000;
 const GITHUB_PROXY_FALLBACK = 'http://127.0.0.1:7897';
 const REMOTE_GIT_SUBCOMMANDS = new Set(['fetch', 'push', 'pull', 'ls-remote']);
@@ -548,38 +542,13 @@ function finalizeEffectDrafts(drafts: EffectDraft[]): CollabEffectPreview[] {
       beforeLabel: draft.beforeLabel ?? null,
       afterLabel: draft.afterLabel ?? null,
       explanationSource: 'user_feature_rules' as const,
-      aiUnavailableReason: COLLAB_AI_EXPLANATION_UNAVAILABLE_REASON,
     }))
     .filter((draft) => draft.relatedPaths.length > 0);
 }
 
 function limitText(value: string, maxChars: number) {
   if (value.length <= maxChars) return value;
-  return `${value.slice(0, maxChars)}\n\n[已截断：剩余 ${value.length - maxChars} 字符未发送给 AI]`;
-}
-
-function safeOneLine(value: unknown, fallback = '') {
-  return String(value ?? fallback).replace(/\s+/g, ' ').trim();
-}
-
-function normalizeAiEffectText(value: unknown, fallback: string) {
-  const text = safeOneLine(value, fallback);
-  return text || fallback;
-}
-
-function effectLooksCodeMechanical(effect: Pick<CollabEffectPreview, 'title' | 'summary' | 'details'>) {
-  const text = [effect.title, effect.summary, ...(effect.details || [])].join('\n');
-  return /\b(src|backend|cloud_backend|scripts|docs)\//.test(text)
-    || /\.(tsx?|jsx?|py|mjs|cjs|json|md|ya?ml|sql)\b/.test(text)
-    || /文件|代码路径|组件文件|模块文件/.test(text);
-}
-
-function markEffectsAsAiUnavailable(effects: CollabEffectPreview[], reason = COLLAB_AI_EXPLANATION_UNAVAILABLE_REASON) {
-  return effects.map((effect) => ({
-    ...effect,
-    explanationSource: 'unavailable' as const,
-    aiUnavailableReason: reason,
-  }));
+  return `${value.slice(0, maxChars)}\n\n[已截断：剩余 ${value.length - maxChars} 字符未用于功能推断]`;
 }
 
 function buildFunctionalSignalText(files: CollabFileChange[], extraText = '') {
@@ -625,7 +594,6 @@ function buildFunctionalSignalEffects(
       beforeLabel: mode === 'push' ? 'main 当前效果' : '你本地当前效果',
       afterLabel: mode === 'push' ? '推送到 main 后' : '接收远端后',
       explanationSource: 'user_feature_rules',
-      aiUnavailableReason: null,
     });
   }
   return matched;
@@ -648,40 +616,6 @@ function mergeFunctionalRuleEffects(
     return !functionalEffects.some((nextEffect) => nextEffect.id === effect.id);
   });
   return [...functionalEffects, ...preservedFallback].slice(0, 8);
-}
-
-function normalizeAiEffectPreviews(rawEffects: CollabEffectPreview[], fallbackEffects: CollabEffectPreview[], files: CollabFileChange[]) {
-  const validPaths = new Set(files.map((file) => file.path));
-  const fallbackById = new Map(fallbackEffects.map((effect) => [effect.id, effect]));
-  const fallbackPaths = Array.from(new Set(fallbackEffects.flatMap((effect) => effect.relatedPaths)));
-  const normalized = rawEffects
-    .slice(0, 8)
-    .map((effect, index) => {
-      const fallback = fallbackById.get(effect.id) || fallbackEffects[index] || fallbackEffects[0] || null;
-      const relatedPaths = Array.from(new Set((effect.relatedPaths || []).filter((targetPath) => validPaths.has(targetPath))));
-      const nextRelatedPaths = relatedPaths.length ? relatedPaths : (fallback?.relatedPaths || fallbackPaths).filter((targetPath) => validPaths.has(targetPath));
-      const details = Array.isArray(effect.details)
-        ? effect.details.map((detail) => safeOneLine(detail)).filter(Boolean).slice(0, 6)
-        : [];
-      const normalizedEffect: CollabEffectPreview = {
-        id: safeOneLine(effect.id, fallback?.id || `ai-effect-${index + 1}`).replace(/[^a-z0-9._-]+/gi, '-').replace(/^-+|-+$/g, '') || `ai-effect-${index + 1}`,
-        title: normalizeAiEffectText(effect.title, fallback?.title || '功能影响待确认'),
-        summary: normalizeAiEffectText(effect.summary, fallback?.summary || '这次修改会影响软件功能或后台规则，建议先预览再决定是否接收。'),
-        visibility: effect.visibility === 'visible' || effect.visibility === 'mixed' || effect.visibility === 'background'
-          ? effect.visibility
-          : (fallback?.visibility || 'mixed'),
-        scopeLabel: normalizeAiEffectText(effect.scopeLabel, fallback?.scopeLabel || '功能影响'),
-        details,
-        relatedPaths: nextRelatedPaths,
-        beforeLabel: safeOneLine(effect.beforeLabel, fallback?.beforeLabel || '') || null,
-        afterLabel: safeOneLine(effect.afterLabel, fallback?.afterLabel || '') || null,
-        explanationSource: 'ai',
-        aiUnavailableReason: null,
-      };
-      return normalizedEffect;
-    })
-    .filter((effect) => effect.title && effect.summary && effect.relatedPaths.length > 0 && !effectLooksCodeMechanical(effect));
-  return normalized.length ? normalized : null;
 }
 
 async function collectEffectCommitSummaries(context: RepoWorkContext, mode: 'push' | 'pull', snapshot: RepoSnapshot) {
@@ -736,7 +670,6 @@ async function collectEffectDiffPreview(context: RepoWorkContext, mode: 'push' |
 
 function buildFunctionalSuggestedMessage(prefix: 'push' | 'pull', groups: CollabChangeGroup[], effects: CollabEffectPreview[]) {
   const titles = effects
-    .filter((effect) => effect.explanationSource === 'ai' || effect.explanationSource === 'user_feature_rules')
     .map((effect) => effect.title
       .replace(/会变化/g, '')
       .replace(/可能调整/g, '')
@@ -1309,33 +1242,17 @@ async function buildEffectPreviews(
   return finalizeEffectDrafts(Array.from(effectMap.values()));
 }
 
-type PreparedEffectPreviews = {
-  effects: CollabEffectPreview[];
-  aiExplanationStatus: CollabAiExplanationStatus;
-  aiExplanationError: string | null;
-  aiExplanationRequest: CollabEffectExplanationRequest | null;
-};
-
-async function prepareEffectPreviews(
+async function buildFunctionalEffectPreviews(
   mode: 'push' | 'pull',
   snapshot: RepoSnapshot,
-  groups: CollabChangeGroup[],
   files: CollabFileChange[],
   fallbackEffects: CollabEffectPreview[],
-  suggestedMessage: string,
   options: {
-    enableAiExplanation?: boolean;
     commitSummaries?: string[];
-    syncTargetLabel?: string | null;
   } = {},
-): Promise<PreparedEffectPreviews> {
+): Promise<CollabEffectPreview[]> {
   if (!files.length || !snapshot.repoPath || !snapshot.gitRepoPath) {
-    return {
-      effects: fallbackEffects,
-      aiExplanationStatus: 'skipped',
-      aiExplanationError: null,
-      aiExplanationRequest: null,
-    };
+    return fallbackEffects;
   }
   const context = createRepoWorkContext(snapshot.repoPath, snapshot.gitRepoPath, snapshot.scopeRelativePath);
   try {
@@ -1349,43 +1266,14 @@ async function prepareEffectPreviews(
       fallbackEffects,
       `${commitSummaries.join('\n')}\n${diffPreview}`,
     );
-    if (!options.enableAiExplanation) {
-      return {
-        effects: markEffectsAsAiUnavailable(ruleEffects),
-        aiExplanationStatus: 'skipped',
-        aiExplanationError: COLLAB_AI_EXPLANATION_UNAVAILABLE_REASON,
-        aiExplanationRequest: null,
-      };
-    }
-    return {
-      effects: markEffectsAsAiUnavailable(ruleEffects, COLLAB_AI_EXPLANATION_PENDING_REASON),
-      aiExplanationStatus: 'generating',
-      aiExplanationError: null,
-      aiExplanationRequest: {
-        mode,
-        suggestedMessage,
-        syncTargetLabel: options.syncTargetLabel || null,
-        commitSummaries,
-        diffPreview,
-        groups,
-        files,
-        fallbackEffects: ruleEffects,
-      },
-    };
+    return ruleEffects;
   } catch (error) {
-    const detail = error instanceof Error ? error.message : String(error);
-    const ruleEffects = mergeFunctionalRuleEffects(
+    return mergeFunctionalRuleEffects(
       mode,
       files,
       fallbackEffects,
       (options.commitSummaries || []).join('\n'),
     );
-    return {
-      effects: markEffectsAsAiUnavailable(ruleEffects, `AI 功能说明请求准备失败：${detail}`),
-      aiExplanationStatus: 'failed',
-      aiExplanationError: detail,
-      aiExplanationRequest: null,
-    };
   }
 }
 
@@ -2341,21 +2229,9 @@ export async function previewPushToMain(options: RepoOptions): Promise<PushPrevi
   const files = createLocalFileChanges(snapshot);
   const groups = countGroups(files);
   const fallbackEffects = await buildEffectPreviews('push', snapshot, files);
-  const initialSuggestedMessage = buildSuggestedMessage('push', groups);
-  const preparedEffects = snapshot.fetchFailed
-    ? {
-        effects: markEffectsAsAiUnavailable(
-          mergeFunctionalRuleEffects('push', files, fallbackEffects),
-          COLLAB_AI_EXPLANATION_FETCH_BLOCKED_REASON,
-        ),
-        aiExplanationStatus: 'skipped' as CollabAiExplanationStatus,
-        aiExplanationError: COLLAB_AI_EXPLANATION_FETCH_BLOCKED_REASON,
-        aiExplanationRequest: null,
-      }
-    : await prepareEffectPreviews('push', snapshot, groups, files, fallbackEffects, initialSuggestedMessage, {
-        enableAiExplanation: options.enableAiExplanation,
-      });
-  const { effects } = preparedEffects;
+  const effects = snapshot.fetchFailed
+    ? mergeFunctionalRuleEffects('push', files, fallbackEffects)
+    : await buildFunctionalEffectPreviews('push', snapshot, files, fallbackEffects);
   const suggestedMessage = buildFunctionalSuggestedMessage('push', groups, effects);
   const context = snapshot.repoPath && snapshot.gitRepoPath
     ? createRepoWorkContext(snapshot.repoPath, snapshot.gitRepoPath, snapshot.scopeRelativePath)
@@ -2382,9 +2258,6 @@ export async function previewPushToMain(options: RepoOptions): Promise<PushPrevi
     status,
     suggestedMessage,
     effects,
-    aiExplanationStatus: preparedEffects.aiExplanationStatus,
-    aiExplanationError: preparedEffects.aiExplanationError,
-    aiExplanationRequest: preparedEffects.aiExplanationRequest,
     groups,
     files,
     suggestedCollabBranchName: suggestedBranchName,
@@ -2566,23 +2439,9 @@ export async function previewPullFromMain(options: RepoOptions): Promise<PullPre
     `${commit.shortHash} ${commit.authoredAt.slice(0, 10)} ${commit.authoredAt.slice(11, 16)} ${commit.subject}`
   ));
   const fallbackEffects = await buildEffectPreviews('pull', snapshot, files);
-  const initialSuggestedMessage = buildSuggestedMessage('pull', groups);
-  const preparedEffects = snapshot.fetchFailed
-    ? {
-        effects: markEffectsAsAiUnavailable(
-          mergeFunctionalRuleEffects('pull', files, fallbackEffects, commitSummaries.join('\n')),
-          COLLAB_AI_EXPLANATION_FETCH_BLOCKED_REASON,
-        ),
-        aiExplanationStatus: 'skipped' as CollabAiExplanationStatus,
-        aiExplanationError: COLLAB_AI_EXPLANATION_FETCH_BLOCKED_REASON,
-        aiExplanationRequest: null,
-      }
-    : await prepareEffectPreviews('pull', snapshot, groups, files, fallbackEffects, initialSuggestedMessage, {
-        enableAiExplanation: options.enableAiExplanation,
-        commitSummaries,
-        syncTargetLabel,
-      });
-  const { effects } = preparedEffects;
+  const effects = snapshot.fetchFailed
+    ? mergeFunctionalRuleEffects('pull', files, fallbackEffects, commitSummaries.join('\n'))
+    : await buildFunctionalEffectPreviews('pull', snapshot, files, fallbackEffects, { commitSummaries });
   const suggestedMessage = buildFunctionalSuggestedMessage('pull', groups, effects);
   return {
     status,
@@ -2595,9 +2454,6 @@ export async function previewPullFromMain(options: RepoOptions): Promise<PullPre
     canFastForwardMain,
     directReceiveBlockReason,
     effects,
-    aiExplanationStatus: preparedEffects.aiExplanationStatus,
-    aiExplanationError: preparedEffects.aiExplanationError,
-    aiExplanationRequest: preparedEffects.aiExplanationRequest,
     groups,
     files,
     notice,

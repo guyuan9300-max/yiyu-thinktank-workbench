@@ -21,7 +21,7 @@ from threading import Event, Lock, Thread
 # Module-level 单例, 跨所有 worker 线程串行 refresh.
 _REFRESH_TOKEN_ROTATION_LOCK = Lock()
 from typing import Literal, cast
-from urllib.parse import parse_qs, unquote, urlparse
+from urllib.parse import parse_qs, quote, unquote, urlparse
 from uuid import uuid4
 
 from fastapi import Body, Depends, FastAPI, File, Form, Header, HTTPException, Query, Request, UploadFile, status
@@ -55,9 +55,6 @@ from app.models import (
     ReleaseCreatePayload,
     ReleaseRecord,
     ReleaseUpdatePayload,
-    SoftwareFeedbackCreatePayload,
-    SoftwareFeedbackRecord,
-    SoftwareFeedbackUpdatePayload,
     UpdatePolicyResponse,
     DepartmentOption,
     OrgInviteResolveResult,
@@ -89,8 +86,18 @@ from app.models import (
     HierarchyReportRecord,
     FeishuBindingRelaySessionCreatePayload,
     FeishuBindingRelaySessionStatusRecord,
+    FeishuDocImportCandidateRecord,
+    FeishuDocImportExportPayload,
+    FeishuDocImportMappingPayload,
+    FeishuDocImportResolveLinksPayload,
+    FeishuDocImportSearchPayload,
+    FeishuDocImportSearchResultRecord,
+    FeishuDocImportStatusRecord,
     FeishuDocumentSyncPayload,
+    FeishuMemberAuthorizationRecord,
+    FeishuMemberAuthorizationStartResponse,
     FeishuSyncStatusRecord,
+    FeishuTaskInboundStatusRecord,
     FeishuTaskCalendarSyncPayload,
     AdminResetPasswordPayload,
     ChangePasswordPayload,
@@ -258,6 +265,7 @@ TASK_IMMEDIATE_FEISHU_CHANGE_FIELDS: tuple[str, ...] = (
     "durationMinutes",
     "ownerId",
     "collaboratorIds",
+    "progressStatus",
 )
 TASK_DEFERRED_FEISHU_CHANGE_FIELDS: tuple[str, ...] = ("title", "description", "priority", "listId")
 TASK_FEISHU_CALENDAR_SYNC_FIELDS: tuple[str, ...] = (
@@ -284,6 +292,8 @@ TASK_FEISHU_TASK_SYNC_FIELDS: tuple[str, ...] = (
     "progressStatus",
 )
 FEISHU_QUERY_REPLY_LIMIT = 5
+FEISHU_TASK_INBOUND_DEFAULT_INTERVAL_SECONDS = 60
+FEISHU_TASK_INBOUND_PAGE_SIZE = 50
 FEISHU_QUERY_HELP_TEXT = (
     "当前支持这些问法：\n"
     "1. 我今天有哪些任务\n"
@@ -418,6 +428,8 @@ class AppState:
     feishu_query_manager: "FeishuLongConnectionCoordinator | None" = None
     feishu_sync_stop: Event = field(default_factory=Event)
     feishu_sync_thread: Thread | None = None
+    feishu_task_inbound_stop: Event = field(default_factory=Event)
+    feishu_task_inbound_thread: Thread | None = None
 
 
 def _state(app: FastAPI) -> AppState:
@@ -1610,44 +1622,6 @@ def _consultation_request_row_or_404(state: AppState, request_id: str, organizat
     )
     if row is None:
         raise HTTPException(status_code=404, detail="Consultation knowledge request not found")
-    return row
-
-
-def _software_feedback_record(row) -> SoftwareFeedbackRecord:
-    return SoftwareFeedbackRecord(
-        id=str(row["id"]),
-        organizationId=str(row["organization_id"]),
-        reporterUserId=str(row["reporter_user_id"]) if row["reporter_user_id"] else None,
-        reporterName=str(row["reporter_name"] or ""),
-        category=str(row["category"]),
-        severity=str(row["severity"]),
-        status=str(row["status"]),
-        title=str(row["title"] or ""),
-        description=str(row["description"] or ""),
-        appVersion=str(row["app_version"]) if row["app_version"] else None,
-        platform=str(row["platform"]) if row["platform"] else None,
-        pageRoute=str(row["page_route"]) if row["page_route"] else None,
-        deviceInfo=str(row["device_info"]) if row["device_info"] else None,
-        logExcerpt=str(row["log_excerpt"]) if row["log_excerpt"] else None,
-        screenshotPath=str(row["screenshot_path"]) if row["screenshot_path"] else None,
-        clientId=str(row["client_id"]) if row["client_id"] else None,
-        taskId=str(row["task_id"]) if row["task_id"] else None,
-        targetVersion=str(row["target_version"]) if row["target_version"] else None,
-        assigneeUserId=str(row["assignee_user_id"]) if row["assignee_user_id"] else None,
-        resolutionNote=str(row["resolution_note"]) if row["resolution_note"] else None,
-        resolvedAt=str(row["resolved_at"]) if row["resolved_at"] else None,
-        createdAt=str(row["created_at"]),
-        updatedAt=str(row["updated_at"]),
-    )
-
-
-def _software_feedback_row_or_404(state: AppState, feedback_id: str, organization_id: str):
-    row = state.db.fetchone(
-        "SELECT * FROM software_feedback WHERE id = ? AND organization_id = ?",
-        (feedback_id, organization_id),
-    )
-    if row is None:
-        raise HTTPException(status_code=404, detail="Feedback not found")
     return row
 
 
@@ -4410,17 +4384,95 @@ def _is_public_https_feishu_url(url: str | None) -> bool:
     return parsed.scheme == "https" and _is_public_hostname(hostname)
 
 
+def _feishu_oauth_relay_base_url() -> str:
+    return os.getenv("YIYU_FEISHU_OAUTH_RELAY_BASE_URL", "https://yiyu.love/oauth").strip().rstrip("/")
+
+
+def _feishu_oauth_relay_callback_url() -> str:
+    base_url = _feishu_oauth_relay_base_url()
+    return f"{base_url}/feishu/member/callback" if base_url else ""
+
+
+def _feishu_member_authorization_callback_mode(callback_mode: str) -> str:
+    normalized = (callback_mode or "cloud_relay").strip().lower()
+    if normalized in {"custom", "direct_cloud"}:
+        return normalized
+    return "cloud_relay"
+
+
 def _build_org_feishu_callback_url(request: Request, callback_mode: str, custom_callback_url: str) -> tuple[str, str | None]:
+    mode = _feishu_member_authorization_callback_mode(callback_mode)
     normalized_custom = _normalize_feishu_custom_callback_url(custom_callback_url)
-    if callback_mode == "custom":
+    if mode == "custom":
         if _is_public_https_feishu_url(normalized_custom):
             return normalized_custom, None
         return "", "当前自定义回调地址不是可公网访问的 HTTPS 地址，成员暂时还不能授权飞书身份。"
 
+    if mode == "cloud_relay":
+        relay_callback_url = _feishu_oauth_relay_callback_url()
+        if _is_public_https_feishu_url(relay_callback_url):
+            return relay_callback_url, None
+        return "", "飞书统一授权入口暂不可用，请稍后重试。"
+
     public_base_url = _resolve_public_base_url(request)
     if public_base_url and public_base_url.startswith("https://"):
         return f"{public_base_url}/api/v1/integrations/feishu/member-authorization/callback", None
-    return "", "当前组织飞书应用已验证，但云端还没有可公网访问的 HTTPS 授权回调地址，成员暂时还不能授权飞书身份。"
+    return "", "当前组织云端没有可公网访问的 HTTPS 授权回调地址，请改用统一授权入口或配置自定义 HTTPS 回调。"
+
+
+def _feishu_oauth_state_hash(state_token: str) -> str:
+    return hashlib.sha256(state_token.encode("utf-8")).hexdigest()
+
+
+def _register_feishu_oauth_relay_session(*, state_token: str, claim_secret: str, expires_at: str) -> None:
+    import httpx
+
+    base_url = _feishu_oauth_relay_base_url()
+    if not _is_public_https_feishu_url(base_url):
+        raise HTTPException(status_code=400, detail="飞书统一授权入口暂不可用，请稍后重试。")
+    try:
+        with httpx.Client(timeout=httpx.Timeout(8.0, connect=3.0)) as client:
+            response = client.post(
+                f"{base_url}/feishu/member/sessions",
+                json={
+                    "stateHash": _feishu_oauth_state_hash(state_token),
+                    "claimSecretHash": _feishu_oauth_state_hash(claim_secret),
+                    "expiresAt": expires_at,
+                },
+            )
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail="飞书统一授权入口暂时无法连接，请稍后重试。") from exc
+    if response.status_code >= 400:
+        raise HTTPException(status_code=502, detail="飞书统一授权入口暂时不可用，请稍后重试。")
+
+
+def _claim_feishu_oauth_relay_code(*, state_token: str, claim_secret: str) -> dict:
+    import httpx
+
+    base_url = _feishu_oauth_relay_base_url()
+    if not _is_public_https_feishu_url(base_url):
+        return {"status": "error", "errorMessage": "飞书统一授权入口暂不可用。"}
+    try:
+        with httpx.Client(timeout=httpx.Timeout(8.0, connect=3.0)) as client:
+            response = client.post(
+                f"{base_url}/feishu/member/code/claim",
+                json={"state": state_token, "claimSecret": claim_secret},
+            )
+    except Exception:
+        return {"status": "pending", "errorMessage": "飞书统一授权入口暂时无法连接。"}
+    if response.status_code == 404:
+        return {"status": "pending"}
+    if response.status_code >= 400:
+        return {"status": "error", "errorMessage": "飞书统一授权入口领取授权结果失败。"}
+    try:
+        payload = response.json()
+    except ValueError:
+        return {"status": "error", "errorMessage": "飞书统一授权入口返回了无法解析的结果。"}
+    return payload if isinstance(payload, dict) else {"status": "error", "errorMessage": "飞书统一授权入口返回了无效结果。"}
+
+
+def _feishu_member_authorization_uses_relay(callback_mode: str) -> bool:
+    return _feishu_member_authorization_callback_mode(callback_mode) == "cloud_relay"
 
 
 def _feishu_parse_response_json(response) -> dict:
@@ -4498,10 +4550,522 @@ def _feishu_fetch_user_info(*, user_access_token: str) -> dict:
     return data
 
 
+def _feishu_token_expires_at(token_payload: dict) -> str | None:
+    raw_expires = token_payload.get("expires_in") or token_payload.get("expire") or token_payload.get("expires_in_seconds")
+    try:
+        seconds = int(raw_expires or 0)
+    except (TypeError, ValueError):
+        seconds = 0
+    if seconds <= 0:
+        return None
+    return (datetime.now(timezone.utc) + timedelta(seconds=max(60, seconds - 120))).isoformat()
+
+
+def _feishu_refresh_user_access_token(
+    *,
+    app_access_token: str,
+    app_id: str,
+    app_secret: str,
+    refresh_token: str,
+) -> dict:
+    import httpx
+
+    with httpx.Client(timeout=httpx.Timeout(12.0, connect=4.0)) as client:
+        response = client.post(
+            "https://open.feishu.cn/open-apis/authen/v1/refresh_access_token",
+            headers={"Authorization": f"Bearer {app_access_token}"},
+            json={
+                "grant_type": "refresh_token",
+                "refresh_token": refresh_token,
+                "app_id": app_id,
+                "app_secret": app_secret,
+            },
+        )
+    payload = _feishu_parse_response_json(response)
+    _raise_for_feishu_api_error(payload, "飞书用户令牌刷新失败。")
+    data = payload.get("data")
+    if not isinstance(data, dict):
+        raise HTTPException(status_code=502, detail="飞书用户令牌刷新响应缺少 data。")
+    access_token = str(data.get("access_token") or "").strip()
+    if not access_token:
+        raise HTTPException(status_code=400, detail="飞书没有返回新的用户 access token。")
+    return data
+
+
+def _store_feishu_member_tokens(
+    state: AppState,
+    *,
+    organization_id: str,
+    user_id: str,
+    token_payload: dict,
+) -> dict[str, object]:
+    access_token = str(token_payload.get("access_token") or "").strip()
+    refresh_token = str(token_payload.get("refresh_token") or "").strip()
+    if not access_token:
+        return {"hasAccessToken": False}
+    encrypted_access, access_nonce = _org_feishu_encrypt(state, access_token, organization_id)
+    encrypted_refresh = ""
+    refresh_nonce = ""
+    if refresh_token:
+        encrypted_refresh, refresh_nonce = _org_feishu_encrypt(state, refresh_token, organization_id)
+    token_expires_at = _feishu_token_expires_at(token_payload)
+    state.db.execute(
+        """
+        UPDATE org_feishu_member_authorizations
+        SET access_token_encrypted = ?, access_token_nonce = ?,
+            refresh_token_encrypted = CASE WHEN ? != '' THEN ? ELSE refresh_token_encrypted END,
+            refresh_token_nonce = CASE WHEN ? != '' THEN ? ELSE refresh_token_nonce END,
+            token_expires_at = ?, updated_at = ?
+        WHERE organization_id = ? AND user_id = ?
+        """,
+        (
+            encrypted_access,
+            access_nonce,
+            encrypted_refresh,
+            encrypted_refresh,
+            refresh_nonce,
+            refresh_nonce,
+            token_expires_at,
+            now_iso(),
+            organization_id,
+            user_id,
+        ),
+    )
+    return {"hasAccessToken": True, "tokenExpiresAt": token_expires_at}
+
+
+def _finalize_feishu_member_authorization_from_code(
+    state: AppState,
+    *,
+    organization_id: str,
+    user_id: str,
+    code: str,
+) -> None:
+    integration_row = state.db.fetchone(
+        "SELECT * FROM org_feishu_integrations WHERE organization_id = ?",
+        (organization_id,),
+    )
+    if not integration_row or not integration_row["enabled"] or not integration_row["app_id"] or not integration_row["app_secret_encrypted"]:
+        raise HTTPException(status_code=400, detail="当前组织尚未完成飞书接入，请先回到软件里补齐组织飞书配置。")
+
+    app_secret = _org_feishu_decrypt(
+        state,
+        str(integration_row["app_secret_encrypted"]),
+        str(integration_row["encryption_nonce"]),
+        organization_id,
+    )
+    app_access_token, _ = _feishu_fetch_app_access_token(
+        app_id=str(integration_row["app_id"]),
+        app_secret=app_secret,
+    )
+    token_payload = _feishu_exchange_authorization_code(
+        app_access_token=app_access_token,
+        app_id=str(integration_row["app_id"]),
+        app_secret=app_secret,
+        code=code.strip(),
+    )
+    user_access_token = str(token_payload.get("access_token") or "").strip()
+    user_info = _feishu_fetch_user_info(user_access_token=user_access_token)
+    timestamp = now_iso()
+    open_id = str(user_info.get("open_id") or token_payload.get("open_id") or "").strip()
+    if not open_id:
+        raise HTTPException(status_code=400, detail="飞书没有返回 open_id，无法完成成员授权。")
+    state.db.execute(
+        """
+        INSERT INTO org_feishu_member_authorizations(
+            organization_id, user_id, app_id, open_id, union_id, feishu_user_id, name, en_name,
+            avatar_url, email, tenant_key, authorized_at, last_verified_at, last_error, updated_at
+        ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?)
+        ON CONFLICT(organization_id, user_id) DO UPDATE SET
+            app_id = excluded.app_id,
+            open_id = excluded.open_id,
+            union_id = excluded.union_id,
+            feishu_user_id = excluded.feishu_user_id,
+            name = excluded.name,
+            en_name = excluded.en_name,
+            avatar_url = excluded.avatar_url,
+            email = excluded.email,
+            tenant_key = excluded.tenant_key,
+            authorized_at = excluded.authorized_at,
+            last_verified_at = excluded.last_verified_at,
+            last_error = NULL,
+            updated_at = excluded.updated_at
+        """,
+        (
+            organization_id,
+            user_id,
+            str(integration_row["app_id"]),
+            open_id,
+            str(user_info.get("union_id") or token_payload.get("union_id") or "").strip() or None,
+            str(user_info.get("user_id") or token_payload.get("user_id") or "").strip() or None,
+            str(user_info.get("name") or "").strip() or None,
+            str(user_info.get("en_name") or "").strip() or None,
+            str(user_info.get("avatar_url") or "").strip() or None,
+            str(user_info.get("email") or "").strip() or None,
+            str(user_info.get("tenant_key") or token_payload.get("tenant_key") or "").strip() or None,
+            timestamp,
+            timestamp,
+            timestamp,
+        ),
+    )
+    _store_feishu_member_tokens(
+        state,
+        organization_id=organization_id,
+        user_id=user_id,
+        token_payload=token_payload,
+    )
+
+
+def _feishu_member_access_token(state: AppState, *, current_user: SessionUser) -> str:
+    row = state.db.fetchone(
+        """
+        SELECT auth.*, integ.app_id AS integration_app_id, integ.app_secret_encrypted, integ.encryption_nonce AS integration_nonce
+        FROM org_feishu_member_authorizations AS auth
+        JOIN org_feishu_integrations AS integ ON integ.organization_id = auth.organization_id
+        WHERE auth.organization_id = ? AND auth.user_id = ?
+        LIMIT 1
+        """,
+        (current_user.organizationId, current_user.id),
+    )
+    if not row or not row["open_id"]:
+        raise HTTPException(status_code=400, detail="请先在系统设置完成成员飞书授权。")
+    encrypted_access = str(row["access_token_encrypted"] or "").strip()
+    access_nonce = str(row["access_token_nonce"] or "").strip()
+    if not encrypted_access or not access_nonce:
+        raise HTTPException(status_code=400, detail="当前飞书授权缺少文档读取令牌，请重新绑定飞书身份。")
+    expires_raw = str(row["token_expires_at"] or "").strip()
+    if expires_raw:
+        try:
+            expires_at = datetime.fromisoformat(expires_raw)
+            if expires_at.tzinfo is None:
+                expires_at = expires_at.replace(tzinfo=timezone.utc)
+            if expires_at > datetime.now(timezone.utc) + timedelta(seconds=60):
+                return _org_feishu_decrypt(state, encrypted_access, access_nonce, current_user.organizationId)
+        except Exception:
+            pass
+    else:
+        return _org_feishu_decrypt(state, encrypted_access, access_nonce, current_user.organizationId)
+
+    encrypted_refresh = str(row["refresh_token_encrypted"] or "").strip()
+    refresh_nonce = str(row["refresh_token_nonce"] or "").strip()
+    if not encrypted_refresh or not refresh_nonce:
+        raise HTTPException(status_code=400, detail="飞书授权已过期，请重新绑定飞书身份。")
+    app_id = str(row["integration_app_id"] or "").strip()
+    app_secret_encrypted = str(row["app_secret_encrypted"] or "").strip()
+    integration_nonce = str(row["integration_nonce"] or "").strip()
+    if not app_id or not app_secret_encrypted or not integration_nonce:
+        raise HTTPException(status_code=400, detail="组织飞书应用配置不完整。")
+    app_secret = _org_feishu_decrypt(state, app_secret_encrypted, integration_nonce, current_user.organizationId)
+    app_access_token, _ = _feishu_fetch_app_access_token(app_id=app_id, app_secret=app_secret)
+    refresh_token = _org_feishu_decrypt(state, encrypted_refresh, refresh_nonce, current_user.organizationId)
+    refreshed = _feishu_refresh_user_access_token(
+        app_access_token=app_access_token,
+        app_id=app_id,
+        app_secret=app_secret,
+        refresh_token=refresh_token,
+    )
+    _store_feishu_member_tokens(
+        state,
+        organization_id=current_user.organizationId,
+        user_id=current_user.id,
+        token_payload=refreshed,
+    )
+    return str(refreshed.get("access_token") or "").strip()
+
+
+def _feishu_member_access_token_for_user(state: AppState, *, organization_id: str, user_id: str) -> str:
+    row = state.db.fetchone(
+        """
+        SELECT *
+        FROM employee_accounts
+        WHERE organization_id = ? AND id = ?
+        """,
+        (organization_id, user_id),
+    )
+    if not row:
+        raise HTTPException(status_code=400, detail="成员不存在，无法读取飞书任务。")
+    return _feishu_member_access_token(state, current_user=_row_user(state, row))
+
+
+def _feishu_user_api_get(*, user_access_token: str, path: str, params: dict[str, object] | None = None) -> dict:
+    import httpx
+
+    with httpx.Client(timeout=httpx.Timeout(18.0, connect=5.0)) as client:
+        response = client.get(
+            f"https://open.feishu.cn/open-apis{path}",
+            headers={"Authorization": f"Bearer {user_access_token}"},
+            params=params or {},
+        )
+    payload = _feishu_parse_response_json(response)
+    _raise_for_feishu_api_error(payload, "飞书接口请求失败。")
+    return payload
+
+
+def _feishu_user_api_post(*, user_access_token: str, path: str, body: dict[str, object] | None = None) -> dict:
+    import httpx
+
+    with httpx.Client(timeout=httpx.Timeout(18.0, connect=5.0)) as client:
+        response = client.post(
+            f"https://open.feishu.cn/open-apis{path}",
+            headers={"Authorization": f"Bearer {user_access_token}"},
+            json=body or {},
+        )
+    payload = _feishu_parse_response_json(response)
+    _raise_for_feishu_api_error(payload, "飞书接口请求失败。")
+    return payload
+
+
+def _feishu_user_api_patch(*, user_access_token: str, path: str, body: dict[str, object]) -> dict:
+    import httpx
+
+    with httpx.Client(timeout=httpx.Timeout(20.0, connect=5.0)) as client:
+        response = client.patch(
+            f"https://open.feishu.cn/open-apis{path}",
+            headers={"Authorization": f"Bearer {user_access_token}"},
+            json=body,
+        )
+    payload = _feishu_parse_response_json(response)
+    _raise_for_feishu_api_error(payload, "飞书接口请求失败。")
+    return payload
+
+
+def _feishu_doc_candidate_from_raw(raw: dict, *, source: str) -> FeishuDocImportCandidateRecord | None:
+    token = str(
+        raw.get("obj_token")
+        or raw.get("token")
+        or raw.get("doc_token")
+        or raw.get("document_id")
+        or raw.get("node_token")
+        or ""
+    ).strip()
+    raw_type = str(raw.get("obj_type") or raw.get("type") or raw.get("file_type") or raw.get("node_type") or "docx").strip().lower()
+    if raw_type in {"doc", "docs"}:
+        normalized_type = "doc"
+    elif raw_type in {"wiki", "wiki_node"}:
+        normalized_type = "wiki"
+    else:
+        normalized_type = "docx"
+    if not token:
+        return None
+    title = str(raw.get("title") or raw.get("name") or raw.get("obj_title") or "飞书文档").strip() or "飞书文档"
+    url = str(raw.get("url") or raw.get("link") or raw.get("obj_url") or "").strip()
+    if not url:
+        prefix = "docx" if normalized_type == "docx" else "docs" if normalized_type == "doc" else "wiki"
+        url = f"https://feishu.cn/{prefix}/{token}"
+    owner = raw.get("owner") or raw.get("owner_name") or raw.get("creator")
+    if isinstance(owner, dict):
+        owner_name = str(owner.get("name") or owner.get("en_name") or "").strip() or None
+    else:
+        owner_name = str(owner or "").strip() or None
+    updated_at = str(raw.get("updated_time") or raw.get("update_time") or raw.get("modified_time") or raw.get("updated_at") or "").strip() or None
+    return FeishuDocImportCandidateRecord(
+        token=token,
+        type=normalized_type,
+        title=title,
+        url=url,
+        ownerName=owner_name,
+        updatedAt=updated_at,
+        source=cast(Literal["search", "link"], source),
+    )
+
+
+def _feishu_doc_candidate_from_meta(raw: dict, *, source: str) -> FeishuDocImportCandidateRecord | None:
+    token = str(raw.get("doc_token") or raw.get("token") or raw.get("obj_token") or "").strip()
+    if not token:
+        return None
+    raw_type = str(raw.get("doc_type") or raw.get("type") or raw.get("obj_type") or "docx").strip().lower()
+    if raw_type in {"doc", "docs"}:
+        normalized_type = "doc"
+    elif raw_type in {"wiki", "wiki_node"}:
+        normalized_type = "wiki"
+    else:
+        normalized_type = "docx"
+    title = str(raw.get("title") or raw.get("name") or "飞书文档").strip() or "飞书文档"
+    url = str(raw.get("url") or raw.get("link") or "").strip()
+    if not url:
+        prefix = "docx" if normalized_type == "docx" else "docs" if normalized_type == "doc" else "wiki"
+        url = f"https://feishu.cn/{prefix}/{token}"
+    owner = raw.get("owner") or raw.get("owner_name") or raw.get("creator")
+    if isinstance(owner, dict):
+        owner_name = str(owner.get("name") or owner.get("en_name") or "").strip() or None
+    else:
+        owner_name = str(owner or "").strip() or None
+    updated_at = str(raw.get("latest_modify_time") or raw.get("updated_time") or raw.get("modified_time") or "").strip() or None
+    return FeishuDocImportCandidateRecord(
+        token=token,
+        type=normalized_type,
+        title=title,
+        url=url,
+        ownerName=owner_name,
+        updatedAt=updated_at,
+        source=cast(Literal["search", "link"], source),
+    )
+
+
+def _feishu_doc_candidate_metadata(
+    *,
+    user_access_token: str,
+    token: str,
+    doc_type: str,
+    fallback_url: str = "",
+    source: Literal["search", "link"] = "link",
+) -> FeishuDocImportCandidateRecord | None:
+    normalized_type = "docx" if doc_type not in {"doc", "wiki"} else doc_type
+    try:
+        payload = _feishu_user_api_post(
+            user_access_token=user_access_token,
+            path="/drive/v1/metas/batch_query",
+            body={
+                "request_docs": [{"doc_token": token, "doc_type": normalized_type}],
+                "with_url": True,
+            },
+        )
+    except Exception:
+        return None
+    data = payload.get("data")
+    metas = data.get("metas") if isinstance(data, dict) else None
+    if not isinstance(metas, list) or not metas:
+        return None
+    first = metas[0]
+    if not isinstance(first, dict):
+        return None
+    candidate = _feishu_doc_candidate_from_meta(first, source=source)
+    if candidate and fallback_url and not candidate.url:
+        candidate.url = fallback_url
+    return candidate
+
+
+def _extract_feishu_doc_candidates(payload: dict, *, source: str) -> list[FeishuDocImportCandidateRecord]:
+    data = payload.get("data")
+    containers: list[object] = []
+    if isinstance(data, dict):
+        for key in ("items", "nodes", "files", "docs", "list"):
+            value = data.get(key)
+            if isinstance(value, list):
+                containers.extend(value)
+    elif isinstance(data, list):
+        containers.extend(data)
+    candidates: list[FeishuDocImportCandidateRecord] = []
+    seen: set[tuple[str, str]] = set()
+    for item in containers:
+        if not isinstance(item, dict):
+            continue
+        raw = item.get("node") if isinstance(item.get("node"), dict) else item
+        candidate = _feishu_doc_candidate_from_raw(raw, source=source)
+        if not candidate:
+            continue
+        key = (candidate.type, candidate.token)
+        if key in seen:
+            continue
+        seen.add(key)
+        candidates.append(candidate)
+    return candidates
+
+
+def _parse_feishu_doc_link(raw_link: str) -> FeishuDocImportCandidateRecord | None:
+    link = str(raw_link or "").strip()
+    if not link:
+        return None
+    parsed = urlparse(link)
+    path = unquote(parsed.path or "")
+    match = re.search(r"/(docx|docs|wiki)/([A-Za-z0-9_\-]+)", path)
+    if not match:
+        query = parse_qs(parsed.query or "")
+        token = str((query.get("token") or query.get("doc_token") or [""])[0]).strip()
+        if not token:
+            return None
+        doc_type = "docx"
+    else:
+        raw_type = match.group(1)
+        token = match.group(2)
+        doc_type = "docx" if raw_type == "docx" else "doc" if raw_type == "docs" else "wiki"
+    return FeishuDocImportCandidateRecord(
+        token=token,
+        type=doc_type,
+        title="飞书文档",
+        url=link,
+        source="link",
+    )
+
+
+def _feishu_export_docx_bytes(*, user_access_token: str, token: str, doc_type: str) -> bytes:
+    import httpx
+
+    normalized_type = "docx" if doc_type not in {"doc", "wiki"} else doc_type
+    create_payload = _feishu_user_api_post(
+        user_access_token=user_access_token,
+        path="/drive/v1/export_tasks",
+        body={"file_extension": "docx", "token": token, "type": normalized_type},
+    )
+    data = create_payload.get("data")
+    ticket = ""
+    if isinstance(data, dict):
+        ticket = str(data.get("ticket") or data.get("task_id") or "").strip()
+    if not ticket:
+        raise HTTPException(status_code=502, detail="飞书没有返回导出任务 ticket。")
+
+    file_token = ""
+    last_status = ""
+    for _ in range(36):
+        time.sleep(2)
+        result_payload = _feishu_user_api_get(
+            user_access_token=user_access_token,
+            path=f"/drive/v1/export_tasks/{ticket}",
+            params={"token": token},
+        )
+        result_data = result_payload.get("data")
+        if not isinstance(result_data, dict):
+            continue
+        result = result_data.get("result") if isinstance(result_data.get("result"), dict) else result_data
+        if not isinstance(result, dict):
+            continue
+        last_status = str(result.get("job_status") or result.get("status") or "").strip().lower()
+        file_token = str(result.get("file_token") or result.get("fileToken") or "").strip()
+        if file_token:
+            break
+        if last_status in {"fail", "failed", "error"}:
+            raise HTTPException(status_code=502, detail="飞书文档导出失败。")
+    if not file_token:
+        raise HTTPException(status_code=504, detail="飞书文档导出超时，请稍后重试。")
+
+    with httpx.Client(timeout=httpx.Timeout(90.0, connect=8.0)) as client:
+        response = client.get(
+            f"https://open.feishu.cn/open-apis/drive/v1/export_tasks/file/{file_token}/download",
+            headers={"Authorization": f"Bearer {user_access_token}"},
+        )
+    if response.status_code >= 400:
+        try:
+            payload = response.json()
+            detail = payload.get("msg") or payload.get("message") or payload.get("detail")
+        except Exception:
+            detail = response.text
+        raise HTTPException(status_code=response.status_code, detail=detail or "飞书导出文件下载失败。")
+    if not response.content:
+        raise HTTPException(status_code=502, detail="飞书导出文件为空。")
+    return response.content
+
+
+FEISHU_MEMBER_DOCUMENT_SCOPES = (
+    "offline_access",
+    "docx:document:readonly",
+    "docs:doc:readonly",
+    "wiki:wiki:readonly",
+    "drive:drive:readonly",
+    "drive:export:readonly",
+)
+
+
 def _build_feishu_authorize_url(*, app_id: str, redirect_uri: str, state_token: str) -> str:
     from urllib.parse import urlencode
 
-    query = urlencode({"app_id": app_id, "redirect_uri": redirect_uri, "state": state_token})
+    query = urlencode(
+        {
+            "app_id": app_id,
+            "redirect_uri": redirect_uri,
+            "state": state_token,
+            "scope": " ".join(FEISHU_MEMBER_DOCUMENT_SCOPES),
+        }
+    )
     return f"https://open.feishu.cn/open-apis/authen/v1/index?{query}"
 
 
@@ -4643,7 +5207,7 @@ def _org_feishu_integration_record(state: AppState, current_user: SessionUser, r
         configured_by = str(actor_row["full_name"]) if actor_row and actor_row["full_name"] else str(row["configured_by"])
     last_validation_message = str(row["last_validation_message"] or "") or None
     if bool(row["enabled"]) and str(row["last_validation_status"] or "idle") == "success":
-        last_validation_message = "飞书应用验证成功。成员填写飞书手机号后，任务提醒即可自动按手机号匹配发送。"
+        last_validation_message = "飞书应用验证成功。手机号用于机器人提醒和飞书任务成员匹配；文档授权通过益语统一 HTTPS 回调入口完成，不需要成员填写回调地址。"
     return OrgFeishuIntegrationRecord(
         organizationId=membership.organizationId,
         organizationName=membership.organizationName,
@@ -4670,10 +5234,10 @@ def _feishu_delivery_status_label(status: str) -> str:
     return {
         "missing_org": "请先加入或创建组织",
         "integration_pending": "请先完成组织飞书接入",
-        "missing_mobile": "请填写飞书手机号",
-        "matched": "已匹配飞书提醒目标",
-        "not_found": "暂未匹配到飞书接收身份",
-        "failed": "飞书提醒目标校验失败",
+        "missing_mobile": "请填写飞书成员匹配手机号",
+        "matched": "已匹配飞书成员",
+        "not_found": "暂未匹配到飞书成员",
+        "failed": "飞书成员匹配失败",
     }.get(status, "飞书提醒状态未知")
 
 
@@ -4730,7 +5294,7 @@ def _feishu_delivery_profile_record(state: AppState, current_user: SessionUser) 
             readyForNotifications=False,
             lastVerifiedAt=str(target_row["last_verified_at"]) if target_row and target_row["last_verified_at"] else None,
             lastError=str(target_row["last_error"]) if target_row and target_row["last_error"] else None,
-            blockedReason="请填写你登录飞书时使用的手机号，软件会按该手机号匹配你的飞书身份并发送任务提醒。",
+            blockedReason="请填写你登录飞书时使用的手机号，软件会按该手机号匹配飞书成员，用于机器人提醒和飞书任务分配。",
         )
 
     status = str(target_row["match_status"] or "not_found") if target_row else "missing_mobile"
@@ -4903,6 +5467,7 @@ def _feishu_message_id_from_payload(payload: dict | None) -> str | None:
 
 FEISHU_DEFAULT_CALENDAR_ID = "primary"
 FEISHU_SYNC_TZ = timezone(timedelta(hours=8))
+FEISHU_DATE_ONLY_CALENDAR_HOUR = 9
 
 
 def _parse_feishu_sync_datetime(value: str | None) -> tuple[datetime | None, bool]:
@@ -4935,14 +5500,25 @@ def _feishu_timestamp_ms(dt: datetime) -> int:
 def _task_calendar_window(row) -> tuple[str, str, str, dict[str, object]]:
     duration = max(15, int(row["duration_minutes"] or 60))
     title = str(row["title"] or "").strip() or "未命名任务"
+
+    def default_date_window(dt: datetime, reason: str) -> tuple[str, str, str, dict[str, object]]:
+        start = dt.replace(hour=FEISHU_DATE_ONLY_CALENDAR_HOUR, minute=0, second=0, microsecond=0)
+        end = start + timedelta(minutes=60)
+        return "ready", "", "date_only", {
+            "reason": reason,
+            "title": title,
+            "startAt": start.isoformat(),
+            "endAt": end.isoformat(),
+            "startTimestamp": _feishu_timestamp(start),
+            "endTimestamp": _feishu_timestamp(end),
+            "dateOnlyDefaultTime": "09:00",
+        }
+
     scheduled_start, scheduled_start_date_only = _parse_feishu_sync_datetime(str(row["scheduled_start_at"]) if row["scheduled_start_at"] else None)
     scheduled_end, scheduled_end_date_only = _parse_feishu_sync_datetime(str(row["scheduled_end_at"]) if row["scheduled_end_at"] else None)
     if scheduled_start:
         if scheduled_start_date_only:
-            return "skipped", "任务只有日期，没有明确开始时间，暂不创建飞书日程。", "", {
-                "reason": "scheduled_start_date_only",
-                "title": title,
-            }
+            return default_date_window(scheduled_start, "scheduled_start_date_only")
         end = scheduled_end or (scheduled_start + timedelta(minutes=duration))
         if scheduled_end_date_only:
             return "time_invalid", "结束时间只有日期，无法判断日程时段，请补充具体时间。", "", {
@@ -4967,17 +5543,28 @@ def _task_calendar_window(row) -> tuple[str, str, str, dict[str, object]]:
     deadline, deadline_date_only = _parse_feishu_sync_datetime(str(row["deadline_at"]) if row["deadline_at"] else None)
     if deadline:
         if deadline_date_only:
-            return "skipped", "任务只有截止日期，没有明确时间点，暂不创建飞书日程。", "", {
-                "reason": "deadline_date_only",
-                "title": title,
-            }
-        start = deadline - timedelta(minutes=30)
+            return default_date_window(deadline, "deadline_date_only")
+        start = deadline
+        end = deadline + timedelta(minutes=duration)
         return "ready", "", "deadline", {
             "title": title,
             "startAt": start.isoformat(),
-            "endAt": deadline.isoformat(),
+            "endAt": end.isoformat(),
             "startTimestamp": _feishu_timestamp(start),
-            "endTimestamp": _feishu_timestamp(deadline),
+            "endTimestamp": _feishu_timestamp(end),
+        }
+
+    due_date, due_date_only = _parse_feishu_sync_datetime(str(row["due_date"]) if row["due_date"] else None)
+    if due_date:
+        if due_date_only:
+            return default_date_window(due_date, "due_date_only")
+        end = due_date + timedelta(minutes=duration)
+        return "ready", "", "due_date", {
+            "title": title,
+            "startAt": due_date.isoformat(),
+            "endAt": end.isoformat(),
+            "startTimestamp": _feishu_timestamp(due_date),
+            "endTimestamp": _feishu_timestamp(end),
         }
 
     return "skipped", "任务没有明确时间，暂不创建飞书日程。", "", {"reason": "missing_time", "title": title}
@@ -5450,11 +6037,24 @@ def _task_feishu_task_member_open_ids(
             failed_user_ids.append(user_id)
         else:
             missing_user_ids.append(user_id)
+    if members and (missing_user_ids or failed_user_ids):
+        task_member_sync_status = "partial"
+        task_member_sync_message = "飞书任务已同步，但部分负责人或协作者未匹配到飞书身份；建议补充对应飞书账号手机号。"
+    elif members:
+        task_member_sync_status = "synced"
+        task_member_sync_message = "飞书任务成员已按手机号匹配。"
+    else:
+        task_member_sync_status = "missing_members"
+        task_member_sync_message = "飞书任务已同步，但暂无成员可自动分配；建议填写对应飞书账号手机号以稳定匹配。"
     return members, {
         "taskMemberCandidateUserCount": len(desired_roles),
         "taskMemberOpenIdCount": len(members),
         "taskMemberMissingUserCount": len(missing_user_ids),
         "taskMemberFailedUserCount": len(failed_user_ids),
+        "taskMemberMissingUserIds": missing_user_ids,
+        "taskMemberFailedUserIds": failed_user_ids,
+        "taskMemberSyncStatus": task_member_sync_status,
+        "taskMemberSyncMessage": task_member_sync_message,
     }
 
 
@@ -5526,7 +6126,7 @@ def _feishu_task_body(
         body["due"] = due
     if include_immutable:
         body["client_token"] = f"yiyu-task-{task_row['id']}"
-    return body, {**member_metadata, **time_metadata, "taskMemberSyncStatus": "synced" if members else "no_matched_user"}
+    return body, {**member_metadata, **time_metadata}
 
 
 def _feishu_create_task(
@@ -5553,6 +6153,56 @@ def _feishu_update_task(
         path=f"/task/v2/tasks/{task_guid}?user_id_type=open_id",
         body={"task": body, "update_fields": update_fields},
     )
+
+
+def _feishu_update_task_as_user(
+    *,
+    user_access_token: str,
+    task_guid: str,
+    body: dict[str, object],
+    update_fields: list[str],
+) -> dict:
+    return _feishu_user_api_patch(
+        user_access_token=user_access_token,
+        path=f"/task/v2/tasks/{task_guid}?user_id_type=open_id",
+        body={"task": body, "update_fields": update_fields},
+    )
+
+
+def _feishu_task_update_requires_user_invoker(exc: Exception) -> bool:
+    if not isinstance(exc, HTTPException):
+        return False
+    detail = str(exc.detail or "").lower()
+    return "invoker is unauthorized" in detail or "unauthorized to update a task" in detail
+
+
+def _feishu_task_update_user_access_token(
+    state: AppState,
+    *,
+    organization_id: str,
+    task_row,
+    current_user: SessionUser,
+) -> tuple[str | None, str | None]:
+    candidates: list[str] = []
+    for user_id in [
+        str(task_row["owner_id"] or ""),
+        *_task_collaborator_ids(state, str(task_row["id"])),
+        str(task_row["creator_id"] or ""),
+        current_user.id,
+    ]:
+        user_id = str(user_id or "").strip()
+        if user_id and user_id not in candidates:
+            candidates.append(user_id)
+    for user_id in candidates:
+        try:
+            return _feishu_member_access_token_for_user(
+                state,
+                organization_id=organization_id,
+                user_id=user_id,
+            ), user_id
+        except Exception:
+            continue
+    return None, None
 
 
 def _feishu_add_task_members(
@@ -5584,14 +6234,17 @@ def _feishu_delete_task(
 def _feishu_calendar_event_body(row, window: dict[str, object], *, mode: str) -> dict[str, object]:
     title = str(row["title"] or "").strip() or "未命名任务"
     description = str(row["description"] or "").strip()
-    source_note = "由益语智库任务单向同步。"
+    source_note = "由益语智库任务同步为飞书日历提醒镜像；请在益语任务或飞书任务中修改，手机系统日历仅用于提醒。"
     if mode == "deadline":
-        source_note = "由益语智库任务截止时间单向同步。"
+        source_note = "由益语智库任务截止时间同步为飞书日历提醒镜像；请在益语任务或飞书任务中修改，手机系统日历仅用于提醒。"
+    elif mode == "date_only":
+        source_note = "由益语智库日期型任务同步为飞书日历提醒镜像，默认放在当天 09:00；请在益语任务或飞书任务中修改。"
     return {
         "summary": title[:120],
         "description": f"{description}\n\n{source_note}".strip(),
         "start_time": {"timestamp": str(window["startTimestamp"])},
         "end_time": {"timestamp": str(window["endTimestamp"])},
+        "reminders": [{"minutes": 0}],
     }
 
 
@@ -5658,16 +6311,163 @@ def _feishu_create_docx_document(*, tenant_access_token: str, title: str) -> dic
 
 
 def _feishu_current_user_open_id(state: AppState, *, current_user: SessionUser) -> str:
-    target = state.db.fetchone(
+    authorization = state.db.fetchone(
         """
-        SELECT receive_id
-        FROM org_feishu_delivery_targets
-        WHERE organization_id = ? AND user_id = ? AND match_status = 'matched'
-          AND receive_id_type = 'open_id' AND receive_id IS NOT NULL
+        SELECT open_id
+        FROM org_feishu_member_authorizations
+        WHERE organization_id = ? AND user_id = ? AND open_id IS NOT NULL AND TRIM(open_id) != ''
+        ORDER BY COALESCE(last_verified_at, authorized_at, updated_at) DESC
+        LIMIT 1
         """,
         (current_user.organizationId, current_user.id),
     )
-    return str(target["receive_id"] or "").strip() if target and target["receive_id"] else ""
+    if authorization and authorization["open_id"]:
+        return str(authorization["open_id"]).strip()
+    return ""
+
+
+def _sync_feishu_member_authorization_from_relay(state: AppState, *, current_user: SessionUser) -> None:
+    if not current_user.organizationId:
+        return
+    row = state.db.fetchone(
+        """
+        SELECT *
+        FROM feishu_binding_relay_sessions
+        WHERE organization_id = ?
+          AND user_id = ?
+          AND cleared_at IS NULL
+          AND authorized_at IS NULL
+          AND COALESCE(relay_claim_secret, '') != ''
+        ORDER BY created_at DESC
+        LIMIT 1
+        """,
+        (current_user.organizationId, current_user.id),
+    )
+    if not row:
+        return
+    try:
+        expires_at = datetime.fromisoformat(str(row["expires_at"]))
+        if expires_at.tzinfo is None:
+            expires_at = expires_at.replace(tzinfo=timezone.utc)
+        if row["expires_at"] and expires_at <= datetime.now(timezone.utc):
+            state.db.execute(
+                "UPDATE feishu_binding_relay_sessions SET cleared_at = ?, error_message = ? WHERE state_token = ?",
+                (now_iso(), "授权会话已过期。", str(row["state_token"])),
+            )
+            return
+    except ValueError:
+        state.db.execute(
+            "UPDATE feishu_binding_relay_sessions SET cleared_at = ?, error_message = ? WHERE state_token = ?",
+            (now_iso(), "授权会话时间损坏。", str(row["state_token"])),
+        )
+        return
+
+    claim = _claim_feishu_oauth_relay_code(
+        state_token=str(row["state_token"]),
+        claim_secret=str(row["relay_claim_secret"]),
+    )
+    status_value = str(claim.get("status") or "pending")
+    if status_value == "pending":
+        return
+    if status_value != "authorized" or not str(claim.get("code") or "").strip():
+        message = str(claim.get("errorMessage") or "飞书授权未完成，请重新发起授权。")
+        state.db.execute(
+            "UPDATE feishu_binding_relay_sessions SET error_message = ?, cleared_at = ? WHERE state_token = ?",
+            (message, now_iso(), str(row["state_token"])),
+        )
+        state.db.execute(
+            """
+            INSERT INTO org_feishu_member_authorizations(
+                organization_id, user_id, app_id, last_error, updated_at
+            ) VALUES(?, ?, ?, ?, ?)
+            ON CONFLICT(organization_id, user_id) DO UPDATE SET
+                last_error = excluded.last_error,
+                updated_at = excluded.updated_at
+            """,
+            (current_user.organizationId, current_user.id, "", message, now_iso()),
+        )
+        return
+    try:
+        _finalize_feishu_member_authorization_from_code(
+            state,
+            organization_id=current_user.organizationId,
+            user_id=current_user.id,
+            code=str(claim["code"]),
+        )
+    except HTTPException as exc:
+        message = str(exc.detail)
+    except Exception as exc:
+        message = str(exc)
+    else:
+        state.db.execute(
+            "UPDATE feishu_binding_relay_sessions SET authorized_at = ?, error_message = NULL, cleared_at = ? WHERE state_token = ?",
+            (now_iso(), now_iso(), str(row["state_token"])),
+        )
+        return
+    state.db.execute(
+        "UPDATE feishu_binding_relay_sessions SET error_message = ?, cleared_at = ? WHERE state_token = ?",
+        (message, now_iso(), str(row["state_token"])),
+    )
+    state.db.execute(
+        """
+        INSERT INTO org_feishu_member_authorizations(
+            organization_id, user_id, app_id, last_error, updated_at
+        ) VALUES(?, ?, ?, ?, ?)
+        ON CONFLICT(organization_id, user_id) DO UPDATE SET
+            last_error = excluded.last_error,
+            updated_at = excluded.updated_at
+        """,
+        (current_user.organizationId, current_user.id, "", message, now_iso()),
+    )
+
+
+def _feishu_member_authorization_record(
+    state: AppState,
+    *,
+    current_user: SessionUser,
+    request: Request | None = None,
+) -> FeishuMemberAuthorizationRecord:
+    _sync_feishu_member_authorization_from_relay(state, current_user=current_user)
+    integration = state.db.fetchone(
+        "SELECT * FROM org_feishu_integrations WHERE organization_id = ?",
+        (current_user.organizationId,),
+    )
+    callback_url = ""
+    callback_error = "当前组织尚未配置飞书应用。"
+    if integration and integration["enabled"] and integration["app_id"] and integration["app_secret_encrypted"]:
+        callback_url, callback_error = _build_org_feishu_callback_url(
+            request,
+            str(integration["callback_mode"] or "auto"),
+            str(integration["custom_callback_url"] or ""),
+        )
+    row = state.db.fetchone(
+        """
+        SELECT * FROM org_feishu_member_authorizations
+        WHERE organization_id = ? AND user_id = ?
+        """,
+        (current_user.organizationId, current_user.id),
+    )
+    linked = bool(row and row["open_id"])
+    return FeishuMemberAuthorizationRecord(
+        linked=linked,
+        readyForAuthorization=bool(integration and integration["enabled"] and integration["app_id"] and integration["app_secret_encrypted"] and callback_url),
+        organizationId=current_user.organizationId,
+        organizationName=current_user.organizationName,
+        appId=str(integration["app_id"] or "") if integration else "",
+        userId=current_user.id,
+        openId=str(row["open_id"]) if row and row["open_id"] else None,
+        unionId=str(row["union_id"]) if row and row["union_id"] else None,
+        feishuUserId=str(row["feishu_user_id"]) if row and row["feishu_user_id"] else None,
+        name=str(row["name"]) if row and row["name"] else None,
+        enName=str(row["en_name"]) if row and row["en_name"] else None,
+        avatarUrl=str(row["avatar_url"]) if row and row["avatar_url"] else None,
+        email=str(row["email"]) if row and row["email"] else None,
+        tenantKey=str(row["tenant_key"]) if row and row["tenant_key"] else None,
+        boundAt=str(row["authorized_at"]) if row and row["authorized_at"] else None,
+        lastVerifiedAt=str(row["last_verified_at"]) if row and row["last_verified_at"] else None,
+        lastError=str(row["last_error"]) if row and row["last_error"] else None,
+        blockedReason=None if callback_url or linked else callback_error,
+    )
 
 
 def _feishu_set_docx_org_editable(*, tenant_access_token: str, document_id: str) -> dict:
@@ -6301,6 +7101,25 @@ def _sync_document_to_feishu_docx_record(
         return _feishu_sync_status_record(row, local_type=local_type, local_id=payload.localId, remote_type=remote_type)
     _, tenant_access_token = tenant_access
 
+    current_user_open_id = _feishu_current_user_open_id(state, current_user=current_user)
+    metadata["creatorFeishuOpenIdMatched"] = bool(current_user_open_id)
+    if not current_user_open_id:
+        row = _upsert_feishu_sync_mapping(
+            state,
+            organization_id=current_user.organizationId,
+            local_type=local_type,
+            local_id=payload.localId,
+            remote_type=remote_type,
+            status_value="queued",
+            message="当前成员尚未绑定飞书身份。请先在系统设置完成成员飞书授权，再创建飞书文档。",
+            metadata={
+                **metadata,
+                "blockedReason": "member_authorization_required",
+                "nextAction": "bind_feishu_member_authorization",
+            },
+        )
+        return _feishu_sync_status_record(row, local_type=local_type, local_id=payload.localId, remote_type=remote_type)
+
     try:
         existing = state.db.fetchone(
             """
@@ -6449,6 +7268,194 @@ def _feishu_task_mapping_row(state: AppState, *, organization_id: str, task_id: 
     )
 
 
+def _feishu_remote_type_label(remote_type: str) -> str:
+    if remote_type == "feishu_task":
+        return "飞书任务"
+    if remote_type == "calendar_event":
+        return "飞书日历事件"
+    return "飞书记录"
+
+
+def _feishu_remote_mapping_conflict_row(
+    state: AppState,
+    *,
+    organization_id: str,
+    local_type: str,
+    local_id: str,
+    remote_type: str,
+    remote_id: str | None,
+):
+    resolved_remote_id = str(remote_id or "").strip()
+    if not resolved_remote_id:
+        return None
+    return state.db.fetchone(
+        """
+        SELECT * FROM org_feishu_sync_mappings
+        WHERE organization_id = ?
+          AND remote_type = ?
+          AND remote_id = ?
+          AND NOT (local_type = ? AND local_id = ?)
+        ORDER BY updated_at DESC
+        LIMIT 1
+        """,
+        (organization_id, remote_type, resolved_remote_id, local_type, local_id),
+    )
+
+
+def _mark_feishu_remote_mapping_conflict(
+    state: AppState,
+    *,
+    organization_id: str,
+    local_type: str,
+    local_id: str,
+    remote_type: str,
+    remote_id: str,
+    conflict_row,
+    trigger_source: str,
+    metadata: dict[str, object] | None = None,
+) -> FeishuSyncStatusRecord:
+    label = _feishu_remote_type_label(remote_type)
+    message = f"{label}已绑定到另一条益语任务，已阻止同步以避免重复映射。"
+    conflict_metadata = {
+        **(metadata or {}),
+        "triggerSource": trigger_source,
+        "mappingConflict": True,
+        "conflictRemoteType": remote_type,
+        "conflictRemoteId": remote_id,
+        "conflictLocalType": str(conflict_row["local_type"]) if conflict_row else "",
+        "conflictLocalId": str(conflict_row["local_id"]) if conflict_row else "",
+        "conflictMappingId": str(conflict_row["id"]) if conflict_row else "",
+    }
+    logger.warning(
+        "feishu.sync.mapping_conflict remote_type=%s remote_id=%s local_id=%s conflict_local_id=%s",
+        remote_type,
+        remote_id,
+        local_id,
+        conflict_metadata["conflictLocalId"],
+    )
+    row = _upsert_feishu_sync_mapping(
+        state,
+        organization_id=organization_id,
+        local_type=local_type,
+        local_id=local_id,
+        remote_type=remote_type,
+        status_value="mapping_conflict",
+        message=message,
+        metadata=conflict_metadata,
+    )
+    return _feishu_sync_status_record(row, local_type=local_type, local_id=local_id, remote_type=remote_type)
+
+
+def _guard_feishu_remote_mapping(
+    state: AppState,
+    *,
+    organization_id: str,
+    local_type: str,
+    local_id: str,
+    remote_type: str,
+    remote_id: str | None,
+    trigger_source: str,
+    metadata: dict[str, object] | None = None,
+) -> FeishuSyncStatusRecord | None:
+    resolved_remote_id = str(remote_id or "").strip()
+    conflict = _feishu_remote_mapping_conflict_row(
+        state,
+        organization_id=organization_id,
+        local_type=local_type,
+        local_id=local_id,
+        remote_type=remote_type,
+        remote_id=resolved_remote_id,
+    )
+    if not conflict:
+        return None
+    return _mark_feishu_remote_mapping_conflict(
+        state,
+        organization_id=organization_id,
+        local_type=local_type,
+        local_id=local_id,
+        remote_type=remote_type,
+        remote_id=resolved_remote_id,
+        conflict_row=conflict,
+        trigger_source=trigger_source,
+        metadata=metadata,
+    )
+
+
+def _inspect_feishu_task_sync_mappings(state: AppState, *, organization_id: str | None = None) -> list[dict[str, object]]:
+    issues: list[dict[str, object]] = []
+    org_filter = "AND organization_id = ?" if organization_id else ""
+    params: tuple[object, ...] = (organization_id,) if organization_id else ()
+    duplicate_rows = state.db.fetchall(
+        f"""
+        SELECT organization_id, remote_type, remote_id, COUNT(*) AS count, GROUP_CONCAT(local_id) AS local_ids
+        FROM org_feishu_sync_mappings
+        WHERE local_type = 'task'
+          AND remote_type IN ('feishu_task', 'calendar_event')
+          AND remote_id != ''
+          {org_filter}
+        GROUP BY organization_id, remote_type, remote_id
+        HAVING COUNT(*) > 1
+        """,
+        params,
+    )
+    for row in duplicate_rows:
+        issues.append({
+            "type": "duplicate_remote_id",
+            "organizationId": str(row["organization_id"]),
+            "remoteType": str(row["remote_type"]),
+            "remoteId": str(row["remote_id"]),
+            "count": int(row["count"] or 0),
+            "localIds": [item for item in str(row["local_ids"] or "").split(",") if item],
+        })
+    missing_rows = state.db.fetchall(
+        f"""
+        SELECT id, organization_id, local_id, remote_type, sync_status
+        FROM org_feishu_sync_mappings
+        WHERE local_type = 'task'
+          AND remote_type IN ('feishu_task', 'calendar_event')
+          AND sync_status = 'synced'
+          AND remote_id = ''
+          {org_filter}
+        """,
+        params,
+    )
+    for row in missing_rows:
+        issues.append({
+            "type": "missing_remote_id",
+            "mappingId": str(row["id"]),
+            "organizationId": str(row["organization_id"]),
+            "localId": str(row["local_id"]),
+            "remoteType": str(row["remote_type"]),
+            "status": str(row["sync_status"]),
+        })
+    orphan_rows = state.db.fetchall(
+        f"""
+        SELECT m.id, m.organization_id, m.local_id, m.remote_type, m.remote_id, m.sync_status
+        FROM org_feishu_sync_mappings m
+        LEFT JOIN tasks t ON t.id = m.local_id
+        WHERE m.local_type = 'task'
+          AND m.remote_type IN ('feishu_task', 'calendar_event')
+          AND t.id IS NULL
+          AND (m.remote_id != '' OR m.sync_status NOT IN ('skipped', 'not_configured'))
+          {org_filter.replace('organization_id', 'm.organization_id')}
+        """,
+        params,
+    )
+    for row in orphan_rows:
+        issues.append({
+            "type": "orphan_local_task",
+            "mappingId": str(row["id"]),
+            "organizationId": str(row["organization_id"]),
+            "localId": str(row["local_id"]),
+            "remoteType": str(row["remote_type"]),
+            "remoteId": str(row["remote_id"]),
+            "status": str(row["sync_status"]),
+        })
+    if issues:
+        logger.warning("feishu.sync.mapping_diagnostics count=%s sample=%s", len(issues), issues[:10])
+    return issues
+
+
 def _retire_task_feishu_calendar_event(
     state: AppState,
     *,
@@ -6541,6 +7548,18 @@ def _sync_task_to_feishu_task_record(
     existing = _feishu_task_mapping_row(state, organization_id=current_user.organizationId, task_id=task_id)
     try:
         if existing and existing["remote_id"]:
+            conflict_record = _guard_feishu_remote_mapping(
+                state,
+                organization_id=current_user.organizationId,
+                local_type="task",
+                local_id=task_id,
+                remote_type="feishu_task",
+                remote_id=str(existing["remote_id"]),
+                trigger_source=trigger_source,
+                metadata=metadata,
+            )
+            if conflict_record:
+                return conflict_record
             body, task_metadata = _feishu_task_body(
                 state,
                 task_row=task_row,
@@ -6548,8 +7567,6 @@ def _sync_task_to_feishu_task_record(
                 tenant_access_token=tenant_access_token,
                 include_immutable=False,
             )
-            if task_metadata.get("taskMemberSyncStatus") == "no_matched_user":
-                raise HTTPException(status_code=400, detail="未匹配到任务成员的飞书账号，暂不能同步到飞书任务中心。")
             # 飞书 Task v2 的 PATCH 不接受 members；成员变更需要单独的 members API。
             # 这里先保证任务主体信息、时间和完成状态稳定更新，避免二次同步失败。
             update_body = dict(body)
@@ -6559,12 +7576,34 @@ def _sync_task_to_feishu_task_record(
                 for field in ("summary", "description", "start", "due", "completed_at", "extra")
                 if field in update_body
             ]
-            api_payload = _feishu_update_task(
-                tenant_access_token=tenant_access_token,
-                task_guid=str(existing["remote_id"]),
-                body=update_body,
-                update_fields=update_fields,
-            )
+            task_update_invoker = "tenant"
+            task_update_invoker_user_id = ""
+            try:
+                api_payload = _feishu_update_task(
+                    tenant_access_token=tenant_access_token,
+                    task_guid=str(existing["remote_id"]),
+                    body=update_body,
+                    update_fields=update_fields,
+                )
+            except Exception as exc:
+                if not _feishu_task_update_requires_user_invoker(exc):
+                    raise
+                user_access_token, invoker_user_id = _feishu_task_update_user_access_token(
+                    state,
+                    organization_id=current_user.organizationId,
+                    task_row=task_row,
+                    current_user=current_user,
+                )
+                if not user_access_token:
+                    raise
+                api_payload = _feishu_update_task_as_user(
+                    user_access_token=user_access_token,
+                    task_guid=str(existing["remote_id"]),
+                    body=update_body,
+                    update_fields=update_fields,
+                )
+                task_update_invoker = "member_user"
+                task_update_invoker_user_id = invoker_user_id or ""
             member_patch_status = "not_needed"
             member_patch_error = ""
             try:
@@ -6589,8 +7628,6 @@ def _sync_task_to_feishu_task_record(
                 tenant_access_token=tenant_access_token,
                 include_immutable=True,
             )
-            if task_metadata.get("taskMemberSyncStatus") == "no_matched_user":
-                raise HTTPException(status_code=400, detail="未匹配到任务成员的飞书账号，暂不能同步到飞书任务中心。")
             api_payload = _feishu_create_task(
                 tenant_access_token=tenant_access_token,
                 body=body,
@@ -6600,9 +7637,23 @@ def _sync_task_to_feishu_task_record(
             action = "create"
         if not remote_id:
             raise HTTPException(status_code=502, detail="飞书任务返回成功但缺少 guid，无法建立后续更新映射。")
+        conflict_record = _guard_feishu_remote_mapping(
+            state,
+            organization_id=current_user.organizationId,
+            local_type="task",
+            local_id=task_id,
+            remote_type="feishu_task",
+            remote_id=remote_id,
+            trigger_source=trigger_source,
+            metadata=metadata,
+        )
+        if conflict_record:
+            return conflict_record
         if action == "create":
             member_patch_status = "created_with_members"
             member_patch_error = ""
+            task_update_invoker = "tenant"
+            task_update_invoker_user_id = ""
     except Exception as exc:
         error_message = str(exc.detail) if isinstance(exc, HTTPException) else str(exc)
         if queue_on_failure:
@@ -6629,13 +7680,27 @@ def _sync_task_to_feishu_task_record(
         )
         return _feishu_sync_status_record(row, local_type="task", local_id=task_id, remote_type="feishu_task")
 
-    calendar_retire_metadata = _retire_task_feishu_calendar_event(
-        state,
-        task_row=task_row,
-        current_user=current_user,
-        tenant_access_token=tenant_access_token,
-        trigger_source=f"{trigger_source}:task_center_primary",
-    )
+    try:
+        calendar_record = _sync_task_to_feishu_calendar_record(
+            state,
+            task_row=task_row,
+            current_user=current_user,
+            payload=FeishuTaskCalendarSyncPayload(notify=False),
+            trigger_source=f"{trigger_source}:task_center_synced",
+            queue_on_failure=True,
+        )
+        calendar_sync_metadata = {
+            "calendarMirrorStatus": calendar_record.status,
+            "calendarMirrorMessage": calendar_record.message,
+            "calendarMirrorRemoteId": calendar_record.remoteId or "",
+        }
+    except Exception as exc:
+        logger.exception("feishu.calendar.mirror_after_task_sync_failed", extra={"task_id": task_id})
+        calendar_sync_metadata = {
+            "calendarMirrorStatus": "failed",
+            "calendarMirrorMessage": str(exc.detail) if isinstance(exc, HTTPException) else str(exc),
+            "calendarMirrorRemoteId": "",
+        }
     row = _upsert_feishu_sync_mapping(
         state,
         organization_id=current_user.organizationId,
@@ -6650,9 +7715,11 @@ def _sync_task_to_feishu_task_record(
             **metadata,
             **task_metadata,
             "action": action,
+            "taskUpdateInvoker": task_update_invoker,
+            "taskUpdateInvokerUserId": task_update_invoker_user_id,
             "taskMemberPatchStatus": member_patch_status,
             "taskMemberPatchError": member_patch_error,
-            **calendar_retire_metadata,
+            **calendar_sync_metadata,
         },
         last_synced_at=now_iso(),
     )
@@ -6669,13 +7736,186 @@ def _sync_task_to_feishu_calendar_record(
     queue_on_failure: bool = True,
 ) -> FeishuSyncStatusRecord:
     task_id = str(task_row["id"])
-    _retire_task_feishu_calendar_event(
+    metadata: dict[str, object] = {
+        "triggerSource": trigger_source,
+        "title": str(task_row["title"] or "").strip() or "未命名任务",
+        "calendarMirror": True,
+    }
+    tenant_access = _resolve_org_feishu_tenant_access_token(state, organization_id=current_user.organizationId)
+    if not tenant_access:
+        row = _upsert_feishu_sync_mapping(
+            state,
+            organization_id=current_user.organizationId,
+            local_type="task",
+            local_id=task_id,
+            remote_type="calendar_event",
+            status_value="not_configured",
+            message="组织尚未配置可用的飞书应用，暂不能同步飞书日历提醒镜像。",
+            metadata=metadata,
+        )
+        return _feishu_sync_status_record(row, local_type="task", local_id=task_id, remote_type="calendar_event")
+
+    existing = _feishu_calendar_mapping_row(state, organization_id=current_user.organizationId, task_id=task_id)
+    if str(task_row["progress_status"] or "") == "done":
+        if existing and existing["remote_id"]:
+            return _feishu_sync_status_record(existing, local_type="task", local_id=task_id, remote_type="calendar_event")
+        row = _upsert_feishu_sync_mapping(
+            state,
+            organization_id=current_user.organizationId,
+            local_type="task",
+            local_id=task_id,
+            remote_type="calendar_event",
+            status_value="skipped",
+            message="任务已完成，不再新建飞书日历提醒镜像。",
+            metadata={**metadata, "reason": "task_done_without_existing_event"},
+        )
+        return _feishu_sync_status_record(row, local_type="task", local_id=task_id, remote_type="calendar_event")
+
+    calendar_status, calendar_message, calendar_mode, window = _task_calendar_window(task_row)
+    if calendar_status == "skipped":
+        if existing and existing["remote_id"]:
+            row = _upsert_feishu_sync_mapping(
+                state,
+                organization_id=current_user.organizationId,
+                local_type="task",
+                local_id=task_id,
+                remote_type="calendar_event",
+                status_value="skipped",
+                message=calendar_message or "任务当前没有明确时间，保留既有飞书日历提醒镜像。",
+                remote_id=str(existing["remote_id"]),
+                remote_url=str(existing["remote_url"] or "") or None,
+                metadata={
+                    **metadata,
+                    **window,
+                    "reason": "task_without_time_keep_existing_event",
+                    "keptExistingRemoteId": str(existing["remote_id"]),
+                },
+            )
+            return _feishu_sync_status_record(row, local_type="task", local_id=task_id, remote_type="calendar_event")
+        row = _upsert_feishu_sync_mapping(
+            state,
+            organization_id=current_user.organizationId,
+            local_type="task",
+            local_id=task_id,
+            remote_type="calendar_event",
+            status_value="skipped",
+            message=calendar_message,
+            metadata={**metadata, **window},
+        )
+        return _feishu_sync_status_record(row, local_type="task", local_id=task_id, remote_type="calendar_event")
+    if calendar_status != "ready":
+        row = _upsert_feishu_sync_mapping(
+            state,
+            organization_id=current_user.organizationId,
+            local_type="task",
+            local_id=task_id,
+            remote_type="calendar_event",
+            status_value="failed",
+            message=calendar_message or "任务时间无法生成飞书日历提醒镜像。",
+            metadata={**metadata, **window, "calendarStatus": calendar_status},
+        )
+        return _feishu_sync_status_record(row, local_type="task", local_id=task_id, remote_type="calendar_event")
+
+    _, tenant_access_token = tenant_access
+    try:
+        body = _feishu_calendar_event_body(task_row, window, mode=calendar_mode)
+        if existing and existing["remote_id"]:
+            conflict_record = _guard_feishu_remote_mapping(
+                state,
+                organization_id=current_user.organizationId,
+                local_type="task",
+                local_id=task_id,
+                remote_type="calendar_event",
+                remote_id=str(existing["remote_id"]),
+                trigger_source=trigger_source,
+                metadata={**metadata, **window},
+            )
+            if conflict_record:
+                return conflict_record
+            api_payload = _feishu_update_calendar_event(
+                tenant_access_token=tenant_access_token,
+                calendar_id=FEISHU_DEFAULT_CALENDAR_ID,
+                event_id=str(existing["remote_id"]),
+                body=body,
+            )
+            remote_id = str(existing["remote_id"])
+            action = "update"
+        else:
+            api_payload = _feishu_create_calendar_event(
+                tenant_access_token=tenant_access_token,
+                calendar_id=FEISHU_DEFAULT_CALENDAR_ID,
+                body=body,
+            )
+            remote_id = _feishu_calendar_event_id(api_payload) or ""
+            action = "create"
+        if not remote_id:
+            raise HTTPException(status_code=502, detail="飞书日历返回成功但缺少 event_id，无法建立后续更新映射。")
+        conflict_record = _guard_feishu_remote_mapping(
+            state,
+            organization_id=current_user.organizationId,
+            local_type="task",
+            local_id=task_id,
+            remote_type="calendar_event",
+            remote_id=remote_id,
+            trigger_source=trigger_source,
+            metadata={**metadata, **window},
+        )
+        if conflict_record:
+            return conflict_record
+        attendee_metadata = _ensure_task_feishu_calendar_attendees(
+            state,
+            tenant_access_token=tenant_access_token,
+            calendar_id=FEISHU_DEFAULT_CALENDAR_ID,
+            event_id=remote_id,
+            task_row=task_row,
+            current_user=current_user,
+            need_notification=bool(payload.notify) if payload else False,
+        )
+    except Exception as exc:
+        error_message = str(exc.detail) if isinstance(exc, HTTPException) else str(exc)
+        if queue_on_failure:
+            _queue_feishu_sync_outbox(
+                state,
+                organization_id=current_user.organizationId,
+                local_type="task",
+                local_id=task_id,
+                remote_type="calendar_event",
+                action="retry_calendar_sync",
+                payload={"triggerSource": trigger_source, "requestedByUserId": current_user.id},
+                status_value="failed",
+                last_error=error_message,
+            )
+        row = _upsert_feishu_sync_mapping(
+            state,
+            organization_id=current_user.organizationId,
+            local_type="task",
+            local_id=task_id,
+            remote_type="calendar_event",
+            status_value="failed",
+            message=error_message or "同步飞书日历提醒镜像失败。",
+            metadata={**metadata, **window},
+        )
+        return _feishu_sync_status_record(row, local_type="task", local_id=task_id, remote_type="calendar_event")
+
+    row = _upsert_feishu_sync_mapping(
         state,
-        task_row=task_row,
-        current_user=current_user,
-        trigger_source=f"{trigger_source}:calendar_route_retired",
+        organization_id=current_user.organizationId,
+        local_type="task",
+        local_id=task_id,
+        remote_type="calendar_event",
+        status_value="synced",
+        message="已同步到飞书日历提醒镜像。",
+        remote_id=remote_id,
+        metadata={
+            **metadata,
+            **window,
+            **attendee_metadata,
+            "calendarMode": calendar_mode,
+            "action": action,
+            "reminderMinutes": 0,
+        },
+        last_synced_at=now_iso(),
     )
-    row = _feishu_calendar_mapping_row(state, organization_id=current_user.organizationId, task_id=task_id)
     return _feishu_sync_status_record(row, local_type="task", local_id=task_id, remote_type="calendar_event")
 
 
@@ -6777,6 +8017,871 @@ def _delete_feishu_task_sync_mappings_for_deleted_task(
             clear_remote_url=status_value == "skipped",
             metadata={"triggerSource": "task_deleted", "deletedRemoteId": str(existing["remote_id"])},
         )
+
+
+def _feishu_task_item_remote_id(item: dict | None) -> str:
+    if not isinstance(item, dict):
+        return ""
+    for key in ("guid", "task_guid", "task_id", "id"):
+        value = str(item.get(key) or "").strip()
+        if value:
+            return value
+    return ""
+
+
+def _feishu_task_item_remote_url(item: dict | None, remote_id: str) -> str:
+    if not isinstance(item, dict):
+        return ""
+    for key in ("url", "app_link", "appLink"):
+        value = str(item.get(key) or "").strip()
+        if value:
+            return value
+    return f"https://applink.feishu.cn/client/todo/detail?guid={remote_id}" if remote_id else ""
+
+
+def _feishu_task_item_title(item: dict | None) -> str:
+    if not isinstance(item, dict):
+        return "飞书任务"
+    for key in ("summary", "title", "name"):
+        value = str(item.get(key) or "").strip()
+        if value:
+            return value
+    return "飞书任务"
+
+
+def _feishu_task_item_description(item: dict | None) -> str:
+    if not isinstance(item, dict):
+        return ""
+    for key in ("description", "desc", "notes"):
+        value = item.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return ""
+
+
+def _feishu_remote_timestamp_to_iso(value: object) -> str | None:
+    if value is None or value == "":
+        return None
+    if isinstance(value, (int, float)):
+        number = float(value)
+        if number <= 0:
+            return None
+        if number > 10_000_000_000:
+            number = number / 1000
+        return datetime.fromtimestamp(number, tz=FEISHU_SYNC_TZ).replace(microsecond=0).isoformat()
+    text = str(value).strip()
+    if not text:
+        return None
+    if re.fullmatch(r"\d{10,13}", text):
+        return _feishu_remote_timestamp_to_iso(int(text))
+    try:
+        dt = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=FEISHU_SYNC_TZ)
+    return dt.replace(microsecond=0).isoformat()
+
+
+def _feishu_task_time_part_to_iso(part: object) -> tuple[str | None, bool]:
+    if not isinstance(part, dict):
+        return None, False
+    for key in ("timestamp", "time", "datetime", "date"):
+        if key not in part:
+            continue
+        value = part.get(key)
+        if value is None or value == "":
+            continue
+        is_all_day = bool(part.get("is_all_day") or part.get("all_day"))
+        iso_value = _feishu_remote_timestamp_to_iso(value)
+        if iso_value:
+            if is_all_day:
+                return iso_value[:10], True
+            return normalize_task_time_field(iso_value) or iso_value, False
+    return None, False
+
+
+def _feishu_task_item_temporal_fields(item: dict | None, timestamp: str) -> dict[str, object | None]:
+    start_value, start_date_only = _feishu_task_time_part_to_iso(item.get("start") if isinstance(item, dict) else None)
+    due_value, due_date_only = _feishu_task_time_part_to_iso(item.get("due") if isinstance(item, dict) else None)
+    completed_iso = None
+    if isinstance(item, dict):
+        completed_iso = _feishu_remote_timestamp_to_iso(item.get("completed_at") or item.get("completedAt") or item.get("completed_time"))
+    progress_status = "done" if completed_iso or _feishu_task_item_is_completed(item) else "todo"
+    return derive_task_temporal_fields(
+        start_date=start_value if start_date_only else None,
+        due_date=due_value if due_date_only else None,
+        duration_minutes=60,
+        deadline_at=due_value if due_value and not due_date_only else None,
+        scheduled_start_at=start_value if start_value and not start_date_only else None,
+        scheduled_end_at=None,
+        completed_at=completed_iso,
+        status=progress_status,
+        timestamp=timestamp,
+    )
+
+
+def _feishu_task_item_updated_at(item: dict | None) -> str | None:
+    if not isinstance(item, dict):
+        return None
+    for key in ("updated_at", "update_time", "updated_time", "modified_at", "modify_time"):
+        value = _feishu_remote_timestamp_to_iso(item.get(key))
+        if value:
+            return value
+    return None
+
+
+def _feishu_sync_timestamp_seconds(value: object) -> float | None:
+    iso_value = _feishu_remote_timestamp_to_iso(value)
+    if not iso_value:
+        return None
+    try:
+        dt = datetime.fromisoformat(iso_value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=FEISHU_SYNC_TZ)
+    return dt.timestamp()
+
+
+def _feishu_remote_task_is_stale_for_local(remote_updated_at: object, local_updated_at: object) -> bool:
+    remote_seconds = _feishu_sync_timestamp_seconds(remote_updated_at)
+    local_seconds = _feishu_sync_timestamp_seconds(local_updated_at)
+    if remote_seconds is None or local_seconds is None:
+        return False
+    return remote_seconds + 1 < local_seconds
+
+
+def _feishu_should_skip_stale_inbound_task(
+    *,
+    remote_updated_at: object,
+    local_updated_at: object,
+    mapping_last_synced_at: object,
+) -> bool:
+    remote_seconds = _feishu_sync_timestamp_seconds(remote_updated_at)
+    local_seconds = _feishu_sync_timestamp_seconds(local_updated_at)
+    if remote_seconds is None or local_seconds is None:
+        return False
+    last_synced_seconds = _feishu_sync_timestamp_seconds(mapping_last_synced_at)
+    if last_synced_seconds is not None and local_seconds <= last_synced_seconds + 1:
+        return False
+    return remote_seconds + 1 < local_seconds
+
+
+def _feishu_task_item_is_deleted(item: dict | None) -> bool:
+    if not isinstance(item, dict):
+        return False
+    status_text = str(item.get("status") or item.get("state") or "").strip().lower()
+    return bool(item.get("deleted") or item.get("is_deleted") or item.get("isDeleted") or status_text in {"deleted", "removed", "archived"})
+
+
+def _feishu_task_item_is_completed(item: dict | None) -> bool:
+    if not isinstance(item, dict):
+        return False
+    status_text = str(item.get("status") or item.get("state") or "").strip().lower()
+    return bool(item.get("completed") or item.get("is_completed") or item.get("isCompleted") or status_text in {"done", "completed", "closed"})
+
+
+def _feishu_task_item_member_open_ids(item: dict | None) -> list[str]:
+    if not isinstance(item, dict):
+        return []
+    candidates: list[object] = []
+    for key in ("members", "assignees", "followers", "collaborators"):
+        value = item.get(key)
+        if isinstance(value, list):
+            candidates.extend(value)
+    for key in ("creator", "owner"):
+        value = item.get(key)
+        if isinstance(value, dict):
+            candidates.append(value)
+    open_ids: list[str] = []
+    for candidate in candidates:
+        if isinstance(candidate, str):
+            resolved = candidate.strip()
+        elif isinstance(candidate, dict):
+            resolved = ""
+            for key in ("id", "open_id", "user_id", "member_id"):
+                resolved = str(candidate.get(key) or "").strip()
+                if resolved:
+                    break
+        else:
+            resolved = ""
+        if resolved and resolved not in open_ids:
+            open_ids.append(resolved)
+    return open_ids
+
+
+def _feishu_task_items_from_payload(payload: dict | None) -> tuple[list[dict], str | None]:
+    if not isinstance(payload, dict):
+        return [], None
+    data = payload.get("data")
+    if not isinstance(data, dict):
+        return [], None
+    raw_items = data.get("items") or data.get("tasks") or data.get("list") or []
+    if isinstance(raw_items, dict):
+        raw_items = raw_items.get("items") or raw_items.get("tasks") or []
+    items = [item for item in raw_items if isinstance(item, dict)] if isinstance(raw_items, list) else []
+    page_token = str(data.get("page_token") or data.get("next_page_token") or data.get("nextPageToken") or "").strip() or None
+    has_more = bool(data.get("has_more") or data.get("hasMore"))
+    return items, page_token if has_more else None
+
+
+def _feishu_list_member_recent_tasks(
+    *,
+    user_access_token: str,
+    open_id: str,
+    updated_since: str,
+    page_token: str | None = None,
+) -> dict:
+    params: dict[str, object] = {
+        "user_id_type": "open_id",
+        "page_size": FEISHU_TASK_INBOUND_PAGE_SIZE,
+        "member_id": open_id,
+        "updated_since": updated_since,
+    }
+    if page_token:
+        params["page_token"] = page_token
+    return _feishu_user_api_get(
+        user_access_token=user_access_token,
+        path="/task/v2/task_v2/list_related_task",
+        params=params,
+    )
+
+
+def _bound_feishu_task_members_for_org(state: AppState, *, organization_id: str) -> list[dict[str, str]]:
+    rows = state.db.fetchall(
+        """
+        SELECT auth.user_id, auth.open_id, ea.full_name
+        FROM org_feishu_member_authorizations AS auth
+        JOIN employee_accounts AS ea ON ea.id = auth.user_id AND ea.organization_id = auth.organization_id
+        WHERE auth.organization_id = ?
+          AND auth.open_id IS NOT NULL AND TRIM(auth.open_id) != ''
+          AND ea.account_status = 'approved'
+          AND (ea.membership_status IS NULL OR ea.membership_status = '' OR ea.membership_status = 'approved')
+        ORDER BY auth.updated_at ASC
+        """,
+        (organization_id,),
+    )
+    return [
+        {"userId": str(row["user_id"]), "openId": str(row["open_id"]), "name": str(row["full_name"] or "")}
+        for row in rows
+    ]
+
+
+def _open_id_user_map(state: AppState, *, organization_id: str) -> dict[str, str]:
+    return {
+        str(row["open_id"]): str(row["user_id"])
+        for row in state.db.fetchall(
+            """
+            SELECT user_id, open_id
+            FROM org_feishu_member_authorizations
+            WHERE organization_id = ? AND open_id IS NOT NULL AND TRIM(open_id) != ''
+            """,
+            (organization_id,),
+        )
+    }
+
+
+def _feishu_task_remote_mapping_row(state: AppState, *, organization_id: str, remote_id: str):
+    return state.db.fetchone(
+        """
+        SELECT *
+        FROM org_feishu_sync_mappings
+        WHERE organization_id = ?
+          AND local_type = 'task'
+          AND remote_type = 'feishu_task'
+          AND remote_id = ?
+        ORDER BY updated_at DESC
+        LIMIT 1
+        """,
+        (organization_id, remote_id),
+    )
+
+
+def _ensure_feishu_task_inbound_cursor(state: AppState, *, organization_id: str, user_id: str, open_id: str) -> tuple[object | None, bool]:
+    row = state.db.fetchone(
+        "SELECT * FROM org_feishu_task_inbound_cursors WHERE organization_id = ? AND user_id = ?",
+        (organization_id, user_id),
+    )
+    if row:
+        if str(row["open_id"] or "") != open_id:
+            state.db.execute(
+                "UPDATE org_feishu_task_inbound_cursors SET open_id = ?, updated_at = ? WHERE organization_id = ? AND user_id = ?",
+                (open_id, now_iso(), organization_id, user_id),
+            )
+            row = state.db.fetchone(
+                "SELECT * FROM org_feishu_task_inbound_cursors WHERE organization_id = ? AND user_id = ?",
+                (organization_id, user_id),
+            )
+        return row, False
+    timestamp = now_iso()
+    state.db.execute(
+        """
+        INSERT INTO org_feishu_task_inbound_cursors(
+            organization_id, user_id, open_id, inbound_started_at, cursor_updated_at,
+            last_success_at, last_checked_at, last_error, last_seen_remote_ids_json, created_at, updated_at
+        ) VALUES(?, ?, ?, ?, ?, NULL, ?, '', '[]', ?, ?)
+        """,
+        (organization_id, user_id, open_id, timestamp, timestamp, timestamp, timestamp, timestamp),
+    )
+    return None, True
+
+
+def _mark_feishu_task_inbound_cursor(
+    state: AppState,
+    *,
+    organization_id: str,
+    user_id: str,
+    open_id: str,
+    cursor_updated_at: str,
+    last_error: str = "",
+    seen_remote_ids: list[str] | None = None,
+) -> None:
+    timestamp = now_iso()
+    state.db.execute(
+        """
+        INSERT INTO org_feishu_task_inbound_cursors(
+            organization_id, user_id, open_id, inbound_started_at, cursor_updated_at,
+            last_success_at, last_checked_at, last_error, last_seen_remote_ids_json, created_at, updated_at
+        ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(organization_id, user_id) DO UPDATE SET
+            open_id = excluded.open_id,
+            cursor_updated_at = excluded.cursor_updated_at,
+            last_success_at = excluded.last_success_at,
+            last_checked_at = excluded.last_checked_at,
+            last_error = excluded.last_error,
+            last_seen_remote_ids_json = excluded.last_seen_remote_ids_json,
+            updated_at = excluded.updated_at
+        """,
+        (
+            organization_id,
+            user_id,
+            open_id,
+            timestamp,
+            cursor_updated_at,
+            None if last_error else timestamp,
+            timestamp,
+            last_error,
+            to_json(seen_remote_ids or []),
+            timestamp,
+            timestamp,
+        ),
+    )
+
+
+def _feishu_inbound_default_list_id(state: AppState, organization_id: str) -> str:
+    list_id = _default_list_id(state, organization_id)
+    if list_id:
+        return list_id
+    existing = _find_active_task_list_by_name(state, organization_id, "org", "飞书同步")
+    if existing:
+        return str(existing["id"])
+    timestamp = now_iso()
+    list_id = new_id("list")
+    state.db.execute(
+        """
+        INSERT INTO task_lists(id, organization_id, name, color, sort_order, is_default, scope, archived_at)
+        VALUES(?, ?, '飞书同步', '#5B7BFE', 999, 1, 'org', NULL)
+        """,
+        (list_id, organization_id),
+    )
+    state.db.execute(
+        """
+        INSERT INTO task_settings(user_id, organization_id, default_list_id, updated_at)
+        SELECT id, organization_id, ?, ?
+        FROM employee_accounts
+        WHERE organization_id = ?
+        ON CONFLICT(user_id) DO UPDATE SET
+            default_list_id = COALESCE(task_settings.default_list_id, excluded.default_list_id),
+            updated_at = excluded.updated_at
+        """,
+        (list_id, timestamp, organization_id),
+    )
+    return list_id
+
+
+def _upsert_inbound_task_collaborators(
+    state: AppState,
+    *,
+    task_id: str,
+    owner_id: str,
+    collaborator_ids: list[str],
+    timestamp: str,
+) -> None:
+    ordered = list(dict.fromkeys([owner_id, *[item for item in collaborator_ids if item]]))
+    state.db.execute("DELETE FROM task_collaborators WHERE task_id = ?", (task_id,))
+    state.db.executemany(
+        """
+        INSERT INTO task_collaborators(
+            task_id, user_id, order_index, is_owner, inbox_status, return_reason, handled_at, created_at, updated_at
+        ) VALUES(?, ?, ?, ?, 'accepted', NULL, ?, ?, ?)
+        """,
+        [
+            (task_id, user_id, index, 1 if user_id == owner_id else 0, timestamp, timestamp, timestamp)
+            for index, user_id in enumerate(ordered)
+        ],
+    )
+
+
+def _matched_yiyu_members_for_feishu_task(state: AppState, *, organization_id: str, item: dict) -> list[str]:
+    mapping = _open_id_user_map(state, organization_id=organization_id)
+    user_ids: list[str] = []
+    for open_id in _feishu_task_item_member_open_ids(item):
+        user_id = mapping.get(open_id)
+        if user_id and user_id not in user_ids:
+            user_ids.append(user_id)
+    return user_ids
+
+
+def _sync_inbound_feishu_task_to_yiyu(
+    state: AppState,
+    *,
+    organization_id: str,
+    item: dict,
+    tenant_access_token: str,
+) -> dict[str, object]:
+    remote_id = _feishu_task_item_remote_id(item)
+    if not remote_id:
+        return {"status": "skipped", "reason": "missing_remote_id"}
+    existing_mapping = _feishu_task_remote_mapping_row(state, organization_id=organization_id, remote_id=remote_id)
+    if _feishu_task_item_is_deleted(item):
+        if not existing_mapping:
+            logger.info("feishu.task.inbound.delete_without_mapping remote_id=%s", remote_id)
+            return {"status": "skipped", "reason": "delete_without_mapping", "remoteId": remote_id}
+        return _delete_yiyu_task_for_deleted_feishu_remote(
+            state,
+            organization_id=organization_id,
+            remote_id=remote_id,
+            local_id=str(existing_mapping["local_id"]),
+            tenant_access_token=tenant_access_token,
+        )
+
+    matched_user_ids = _matched_yiyu_members_for_feishu_task(state, organization_id=organization_id, item=item)
+    if not matched_user_ids:
+        logger.info("feishu.task.inbound.no_matched_member remote_id=%s", remote_id)
+        return {"status": "skipped", "reason": "no_matched_member", "remoteId": remote_id}
+
+    owner_id = matched_user_ids[0]
+    collaborator_ids = matched_user_ids
+    actor_row = state.db.fetchone("SELECT * FROM employee_accounts WHERE id = ?", (owner_id,))
+    if not actor_row:
+        return {"status": "skipped", "reason": "owner_missing", "remoteId": remote_id}
+    actor = _row_user(state, actor_row)
+    timestamp = now_iso()
+    remote_updated_at = _feishu_task_item_updated_at(item) or timestamp
+    temporal = _feishu_task_item_temporal_fields(item, timestamp)
+    progress_status = "done" if _feishu_task_item_is_completed(item) or temporal.get("completed_at") else "todo"
+    remote_url = _feishu_task_item_remote_url(item, remote_id)
+    title = _feishu_task_item_title(item)
+    description = _feishu_task_item_description(item)
+    next_scope_mode = "COLLAB_SHARED"
+
+    if existing_mapping:
+        task_row = state.db.fetchone("SELECT * FROM tasks WHERE id = ? AND organization_id = ?", (str(existing_mapping["local_id"]), organization_id))
+        if not task_row:
+            _upsert_feishu_sync_mapping(
+                state,
+                organization_id=organization_id,
+                local_type="task",
+                local_id=str(existing_mapping["local_id"]),
+                remote_type="feishu_task",
+                status_value="failed",
+                message="飞书任务已有映射，但本地益语任务不存在，已停止自动改绑。",
+                metadata={"triggerSource": "feishu_task_inbound", "remoteId": remote_id, "remoteUpdatedAt": remote_updated_at},
+            )
+            return {"status": "failed", "reason": "orphan_mapping", "remoteId": remote_id}
+        task_id = str(task_row["id"])
+        if _feishu_should_skip_stale_inbound_task(
+            remote_updated_at=remote_updated_at,
+            local_updated_at=task_row["updated_at"],
+            mapping_last_synced_at=existing_mapping["last_synced_at"],
+        ):
+            _upsert_feishu_sync_mapping(
+                state,
+                organization_id=organization_id,
+                local_type="task",
+                local_id=task_id,
+                remote_type="feishu_task",
+                status_value="skipped",
+                message="飞书任务更新时间早于益语本地任务，已跳过反向覆盖。",
+                remote_id=remote_id,
+                remote_url=remote_url,
+                metadata={
+                    "triggerSource": "feishu_task_inbound",
+                    "action": "skip_stale_remote",
+                    "remoteUpdatedAt": remote_updated_at,
+                    "localUpdatedAt": str(task_row["updated_at"] or ""),
+                    "matchedUserIds": matched_user_ids,
+                    "scopeMode": str(task_row["scope_mode"] or "COLLAB_SHARED"),
+                },
+                last_synced_at=timestamp,
+            )
+            return {
+                "status": "skipped",
+                "reason": "remote_stale_after_local_update",
+                "remoteId": remote_id,
+                "localId": task_id,
+            }
+        state.db.execute(
+            """
+            UPDATE tasks
+            SET title = ?, description = ?, owner_id = ?, deadline_at = ?, scheduled_start_at = ?,
+                scheduled_end_at = ?, completed_at = ?, start_date = ?, due_date = ?, duration_minutes = ?,
+                scope_mode = ?, progress_status = ?, source_type = 'feishu_task', source_id = ?, updated_at = ?
+            WHERE id = ? AND organization_id = ?
+            """,
+            (
+                title,
+                description,
+                owner_id,
+                temporal["deadline_at"],
+                temporal["scheduled_start_at"],
+                temporal["scheduled_end_at"],
+                temporal["completed_at"],
+                temporal["start_date"],
+                temporal["due_date"],
+                temporal["duration_minutes"],
+                next_scope_mode or str(task_row["scope_mode"] or "COLLAB_SHARED"),
+                progress_status,
+                remote_id,
+                timestamp,
+                task_id,
+                organization_id,
+            ),
+        )
+        _upsert_inbound_task_collaborators(state, task_id=task_id, owner_id=owner_id, collaborator_ids=collaborator_ids, timestamp=timestamp)
+        action = "update"
+    else:
+        task_id = new_id("task")
+        list_id = _feishu_inbound_default_list_id(state, organization_id)
+        state.db.execute(
+            """
+            INSERT INTO tasks(
+                id, organization_id, title, description, creator_id, owner_id,
+                deadline_at, scheduled_start_at, scheduled_end_at, completed_at, start_date, due_date, duration_minutes,
+                client_id, event_line_id, project_module_id, project_flow_id,
+                scope_mode, priority, list_id, progress_status, source_type, source_id,
+                business_category, current_blocker, next_action, recent_decision, evidence_count,
+                tags_json, tag_ids_json, created_at, updated_at, reminder_minutes_before
+            ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, NULL, ?, 'normal', ?, ?, 'feishu_task', ?, NULL, NULL, NULL, NULL, 0, '[]', '[]', ?, ?, NULL)
+            """,
+            (
+                task_id,
+                organization_id,
+                title,
+                description,
+                owner_id,
+                owner_id,
+                temporal["deadline_at"],
+                temporal["scheduled_start_at"],
+                temporal["scheduled_end_at"],
+                temporal["completed_at"],
+                temporal["start_date"],
+                temporal["due_date"],
+                temporal["duration_minutes"],
+                "COLLAB_SHARED",
+                list_id,
+                progress_status,
+                remote_id,
+                timestamp,
+                timestamp,
+            ),
+        )
+        _upsert_inbound_task_collaborators(state, task_id=task_id, owner_id=owner_id, collaborator_ids=collaborator_ids, timestamp=timestamp)
+        _record_activity(
+            state,
+            task_id,
+            owner_id,
+            "feishu_imported",
+            {"remoteId": remote_id, "remoteUrl": remote_url, "matchedUserIds": matched_user_ids},
+        )
+        action = "create"
+
+    task_row = _task_row_or_404(state, task_id, organization_id=organization_id)
+    _sync_task_org_link(state, task_row, collaborator_ids)
+    _upsert_feishu_sync_mapping(
+        state,
+        organization_id=organization_id,
+        local_type="task",
+        local_id=task_id,
+        remote_type="feishu_task",
+        status_value="synced",
+        message="已从飞书任务自动同步到益语任务。",
+        remote_id=remote_id,
+        remote_url=remote_url,
+        metadata={
+            "triggerSource": "feishu_task_inbound",
+            "action": action,
+            "remoteUpdatedAt": remote_updated_at,
+            "matchedUserIds": matched_user_ids,
+            "scopeMode": next_scope_mode or "existing",
+        },
+        last_synced_at=timestamp,
+    )
+    calendar_record = _sync_task_to_feishu_calendar_record(
+        state,
+        task_row=task_row,
+        current_user=actor,
+        payload=FeishuTaskCalendarSyncPayload(notify=False),
+        trigger_source="feishu_task_inbound:calendar_mirror",
+        queue_on_failure=True,
+    )
+    return {
+        "status": "synced",
+        "action": action,
+        "remoteId": remote_id,
+        "localId": task_id,
+        "calendarStatus": calendar_record.status,
+    }
+
+
+def _delete_yiyu_task_for_deleted_feishu_remote(
+    state: AppState,
+    *,
+    organization_id: str,
+    remote_id: str,
+    local_id: str,
+    tenant_access_token: str,
+) -> dict[str, object]:
+    task_row = state.db.fetchone("SELECT * FROM tasks WHERE id = ? AND organization_id = ?", (local_id, organization_id))
+    if not task_row:
+        state.db.execute(
+            "DELETE FROM org_feishu_sync_mappings WHERE organization_id = ? AND local_type = 'task' AND local_id = ? AND remote_type IN ('feishu_task', 'calendar_event')",
+            (organization_id, local_id),
+        )
+        return {"status": "skipped", "reason": "local_task_missing_mapping_cleaned", "remoteId": remote_id, "localId": local_id}
+    calendar_row = _feishu_calendar_mapping_row(state, organization_id=organization_id, task_id=local_id)
+    calendar_deleted = False
+    calendar_error = ""
+    if calendar_row and calendar_row["remote_id"]:
+        try:
+            _feishu_delete_calendar_event(
+                tenant_access_token=tenant_access_token,
+                calendar_id=FEISHU_DEFAULT_CALENDAR_ID,
+                event_id=str(calendar_row["remote_id"]),
+            )
+            calendar_deleted = True
+        except Exception as exc:
+            calendar_error = str(exc.detail) if isinstance(exc, HTTPException) else str(exc)
+            logger.warning("feishu.task.inbound.calendar_delete_failed local_id=%s error=%s", local_id, calendar_error)
+    state.db.execute("DELETE FROM event_line_activities WHERE source_type = 'task_activity' AND source_id = ?", (local_id,))
+    state.db.execute("DELETE FROM tasks WHERE id = ? AND organization_id = ?", (local_id, organization_id))
+    state.db.execute(
+        "DELETE FROM org_feishu_sync_mappings WHERE organization_id = ? AND local_type = 'task' AND local_id = ? AND remote_type IN ('feishu_task', 'calendar_event')",
+        (organization_id, local_id),
+    )
+    return {
+        "status": "deleted",
+        "remoteId": remote_id,
+        "localId": local_id,
+        "calendarDeleted": calendar_deleted,
+        "calendarError": calendar_error,
+    }
+
+
+def _process_feishu_task_inbound_for_member(
+    state: AppState,
+    *,
+    organization_id: str,
+    user_id: str,
+    open_id: str,
+    user_access_token: str,
+    tenant_access_token: str,
+    processed_remote_ids: set[str] | None = None,
+) -> dict[str, object]:
+    cursor, initialized = _ensure_feishu_task_inbound_cursor(
+        state,
+        organization_id=organization_id,
+        user_id=user_id,
+        open_id=open_id,
+    )
+    if initialized or cursor is None:
+        return {"checked": 0, "synced": 0, "skipped": 0, "initialized": True}
+    updated_since = str(cursor["cursor_updated_at"] or cursor["inbound_started_at"] or now_iso())
+    page_token: str | None = None
+    checked = 0
+    synced = 0
+    skipped = 0
+    failures: list[str] = []
+    seen_remote_ids: list[str] = []
+    newest_seen = updated_since
+    while True:
+        payload = _feishu_list_member_recent_tasks(
+            user_access_token=user_access_token,
+            open_id=open_id,
+            updated_since=updated_since,
+            page_token=page_token,
+        )
+        items, page_token = _feishu_task_items_from_payload(payload)
+        for item in items:
+            checked += 1
+            remote_id = _feishu_task_item_remote_id(item)
+            if remote_id:
+                seen_remote_ids.append(remote_id)
+                if processed_remote_ids is not None and remote_id in processed_remote_ids:
+                    skipped += 1
+                    continue
+                if processed_remote_ids is not None:
+                    processed_remote_ids.add(remote_id)
+            remote_updated_at = _feishu_task_item_updated_at(item)
+            if remote_updated_at and remote_updated_at > newest_seen:
+                newest_seen = remote_updated_at
+            try:
+                result = _sync_inbound_feishu_task_to_yiyu(
+                    state,
+                    organization_id=organization_id,
+                    item=item,
+                    tenant_access_token=tenant_access_token,
+                )
+            except Exception as exc:
+                failures.append(str(exc.detail) if isinstance(exc, HTTPException) else str(exc))
+                continue
+            if result.get("status") in {"synced", "deleted"}:
+                synced += 1
+            elif result.get("status") == "failed":
+                failures.append(str(result.get("reason") or result.get("remoteId") or "failed"))
+            else:
+                skipped += 1
+        if not page_token:
+            break
+    error_message = "; ".join(failures[:5])
+    _mark_feishu_task_inbound_cursor(
+        state,
+        organization_id=organization_id,
+        user_id=user_id,
+        open_id=open_id,
+        cursor_updated_at=updated_since if failures else (newest_seen or now_iso()),
+        last_error=error_message,
+        seen_remote_ids=list(dict.fromkeys(seen_remote_ids))[:20],
+    )
+    return {"checked": checked, "synced": synced, "skipped": skipped, "failed": len(failures), "initialized": False}
+
+
+def _process_feishu_task_inbound_once(state: AppState, *, limit_orgs: int = 20) -> dict[str, object]:
+    rows = state.db.fetchall(
+        """
+        SELECT organization_id
+        FROM org_feishu_integrations
+        WHERE enabled = 1 AND app_id != '' AND app_secret_encrypted != ''
+        ORDER BY updated_at ASC
+        LIMIT ?
+        """,
+        (limit_orgs,),
+    )
+    result = {"organizations": 0, "members": 0, "checked": 0, "synced": 0, "skipped": 0, "failed": 0, "initialized": 0}
+    for row in rows:
+        organization_id = str(row["organization_id"])
+        tenant_access = _resolve_org_feishu_tenant_access_token(state, organization_id=organization_id)
+        if not tenant_access:
+            continue
+        _, tenant_access_token = tenant_access
+        members = _bound_feishu_task_members_for_org(state, organization_id=organization_id)
+        result["organizations"] += 1
+        processed_remote_ids: set[str] = set()
+        for member in members:
+            result["members"] += 1
+            try:
+                user_access_token = _feishu_member_access_token_for_user(
+                    state,
+                    organization_id=organization_id,
+                    user_id=member["userId"],
+                )
+                member_result = _process_feishu_task_inbound_for_member(
+                    state,
+                    organization_id=organization_id,
+                    user_id=member["userId"],
+                    open_id=member["openId"],
+                    user_access_token=user_access_token,
+                    tenant_access_token=tenant_access_token,
+                    processed_remote_ids=processed_remote_ids,
+                )
+                for key in ("checked", "synced", "skipped", "failed"):
+                    result[key] += int(member_result.get(key) or 0)
+                if member_result.get("initialized"):
+                    result["initialized"] += 1
+            except Exception as exc:
+                result["failed"] += 1
+                cursor = state.db.fetchone(
+                    "SELECT cursor_updated_at, inbound_started_at FROM org_feishu_task_inbound_cursors WHERE organization_id = ? AND user_id = ?",
+                    (organization_id, member["userId"]),
+                )
+                preserved_cursor = str(cursor["cursor_updated_at"] or cursor["inbound_started_at"] or now_iso()) if cursor else now_iso()
+                _mark_feishu_task_inbound_cursor(
+                    state,
+                    organization_id=organization_id,
+                    user_id=member["userId"],
+                    open_id=member["openId"],
+                    cursor_updated_at=preserved_cursor,
+                    last_error=str(exc.detail) if isinstance(exc, HTTPException) else str(exc),
+                )
+                logger.exception("feishu.task.inbound.member_failed", extra={"organization_id": organization_id, "user_id": member["userId"]})
+    return result
+
+
+def _feishu_task_inbound_interval_seconds() -> int:
+    try:
+        value = int(os.getenv("YIYU_FEISHU_TASK_INBOUND_INTERVAL_SECONDS", str(FEISHU_TASK_INBOUND_DEFAULT_INTERVAL_SECONDS)))
+    except ValueError:
+        value = FEISHU_TASK_INBOUND_DEFAULT_INTERVAL_SECONDS
+    return max(60, value)
+
+
+def _feishu_task_inbound_loop(state: AppState) -> None:
+    while not state.feishu_task_inbound_stop.is_set():
+        try:
+            _process_feishu_task_inbound_once(state)
+        except Exception:
+            logger.exception("feishu.task.inbound.loop_failed")
+        state.feishu_task_inbound_stop.wait(_feishu_task_inbound_interval_seconds())
+
+
+def _feishu_task_inbound_status_record(state: AppState, organization_id: str) -> FeishuTaskInboundStatusRecord:
+    tracked_count = int(
+        state.db.scalar(
+            """
+            SELECT COUNT(1) AS count
+            FROM org_feishu_member_authorizations auth
+            JOIN employee_accounts ea ON ea.id = auth.user_id AND ea.organization_id = auth.organization_id
+            WHERE auth.organization_id = ?
+              AND auth.open_id IS NOT NULL AND TRIM(auth.open_id) != ''
+              AND ea.account_status = 'approved'
+              AND (ea.membership_status IS NULL OR ea.membership_status = '' OR ea.membership_status = 'approved')
+            """,
+            (organization_id,),
+        )
+    )
+    cursor_row = state.db.fetchone(
+        """
+        SELECT MAX(last_success_at) AS last_success_at,
+               MAX(last_checked_at) AS last_checked_at,
+               MAX(updated_at) AS updated_at
+        FROM org_feishu_task_inbound_cursors
+        WHERE organization_id = ?
+        """,
+        (organization_id,),
+    )
+    error_row = state.db.fetchone(
+        """
+        SELECT last_error
+        FROM org_feishu_task_inbound_cursors
+        WHERE organization_id = ? AND last_error != ''
+        ORDER BY updated_at DESC
+        LIMIT 1
+        """,
+        (organization_id,),
+    )
+    integration = state.db.fetchone("SELECT enabled FROM org_feishu_integrations WHERE organization_id = ?", (organization_id,))
+    return FeishuTaskInboundStatusRecord(
+        organizationId=organization_id,
+        enabled=bool(integration and int(integration["enabled"] or 0)),
+        trackedMemberCount=tracked_count,
+        lastSuccessAt=str(cursor_row["last_success_at"]) if cursor_row and cursor_row["last_success_at"] else None,
+        lastCheckedAt=str(cursor_row["last_checked_at"]) if cursor_row and cursor_row["last_checked_at"] else None,
+        lastError=str(error_row["last_error"]) if error_row and error_row["last_error"] else None,
+        intervalSeconds=_feishu_task_inbound_interval_seconds(),
+        updatedAt=str(cursor_row["updated_at"]) if cursor_row and cursor_row["updated_at"] else None,
+        details={"mode": "polling", "historyImport": False},
+    )
 
 
 def _feishu_sync_actor_for_org(state: AppState, organization_id: str) -> SessionUser | None:
@@ -6926,6 +9031,16 @@ def _process_feishu_sync_outbox_once(state: AppState, *, limit: int = 10) -> int
                     row_id=row_id,
                     status_value="synced",
                     attempt_count=attempt_count,
+                    processed=True,
+                )
+                processed_count += 1
+            elif record.status == "mapping_conflict":
+                _mark_feishu_sync_outbox(
+                    state,
+                    row_id=row_id,
+                    status_value="failed",
+                    attempt_count=attempt_count,
+                    last_error=record.message or "飞书同步映射冲突，已停止自动重试。",
                     processed=True,
                 )
                 processed_count += 1
@@ -8554,10 +10669,14 @@ def _task_changed_field_labels(changed_fields: list[str]) -> list[str]:
         labels.append("负责人")
     if "collaboratorIds" in changed_fields:
         labels.append("协作者")
+    if "progressStatus" in changed_fields:
+        labels.append("完成状态")
     return labels
 
 
 def _task_change_notice_heading(changed_fields: list[str]) -> str:
+    if "progressStatus" in changed_fields:
+        return "任务状态已更新"
     if any(field in TASK_IMMEDIATE_FEISHU_CHANGE_FIELDS for field in changed_fields):
         return "任务安排已更新"
     return "任务内容已更新"
@@ -8642,6 +10761,8 @@ def _build_task_changed_feishu_message(
     if "collaboratorIds" in changed_fields:
         names = [person_names.get(user_id, user_id) for user_id in collaborator_ids if user_id]
         lines.append(f"协作者：{'、'.join(names) if names else '无'}")
+    if "progressStatus" in changed_fields:
+        lines.append(f"状态：{_task_progress_label(str(task_row['progress_status'] or 'todo'))}")
     lines.append("请回到益语智库查看最新安排。")
     return "\n".join(lines)
 
@@ -9320,22 +11441,29 @@ class FeishuNotificationService:
     def _collect_overdue_tasks_for_user(self, *, organization_id: str, user_id: str, reference_time: datetime) -> list[dict[str, str]]:
         rows = self.state.db.fetchall(
             """
-            SELECT DISTINCT t.id, t.title, t.due_date
+            SELECT DISTINCT t.id, t.title, t.due_date, t.progress_status, t.completed_at
             FROM tasks t
-            LEFT JOIN task_collaborators tc ON tc.task_id = t.id
+            LEFT JOIN task_collaborators tc ON tc.task_id = t.id AND tc.user_id = ?
             WHERE t.organization_id = ?
-              AND t.progress_status NOT IN ('done', 'rejected')
+              AND COALESCE(t.progress_status, '') NOT IN ('done', 'rejected', 'cancelled')
+              AND (t.completed_at IS NULL OR t.completed_at = '')
               AND t.due_date IS NOT NULL
-              AND (t.owner_id = ? OR tc.user_id = ?)
+              AND (
+                t.owner_id = ?
+                OR (tc.user_id IS NOT NULL AND COALESCE(tc.inbox_status, '') != 'accepted')
+              )
             ORDER BY t.due_date ASC, t.created_at ASC
             """,
-            (organization_id, user_id, user_id),
+            (user_id, organization_id, user_id),
         )
         overdue: list[dict[str, str]] = []
         for row in rows:
             due_value = str(row["due_date"]) if row["due_date"] else None
-            due_dt = _task_datetime_value(due_value)
-            if due_dt is None or due_dt >= reference_time:
+            if task_has_explicit_time(due_value):
+                due_dt = _task_datetime_value(due_value)
+                if due_dt is None or due_dt >= reference_time:
+                    continue
+            elif not _is_due_date_overdue_by_day(due_value, reference_time.date()):
                 continue
             overdue.append(
                 {
@@ -9568,8 +11696,12 @@ def _feishu_relay_session_status(row) -> Literal["pending", "authorized", "expir
         return "error"
     expires_at_raw = str(row["expires_at"] or "")
     try:
-        if expires_at_raw and datetime.fromisoformat(expires_at_raw) <= datetime.now():
-            return "expired"
+        if expires_at_raw:
+            expires_at = datetime.fromisoformat(expires_at_raw)
+            if expires_at.tzinfo is None:
+                expires_at = expires_at.replace(tzinfo=timezone.utc)
+            if expires_at <= datetime.now(timezone.utc):
+                return "expired"
     except ValueError:
         return "error"
     if row["error_message"]:
@@ -12699,6 +14831,21 @@ def create_app() -> FastAPI:
         )
         state.feishu_sync_thread.start()
 
+    @app.on_event("startup")
+    def _startup_feishu_task_inbound() -> None:
+        if os.getenv("PYTEST_CURRENT_TEST"):
+            return
+        if state.feishu_task_inbound_thread and state.feishu_task_inbound_thread.is_alive():
+            return
+        state.feishu_task_inbound_stop.clear()
+        state.feishu_task_inbound_thread = Thread(
+            target=_feishu_task_inbound_loop,
+            args=(state,),
+            name="feishu-task-inbound-loop",
+            daemon=True,
+        )
+        state.feishu_task_inbound_thread.start()
+
     @app.on_event("shutdown")
     def _shutdown_feishu_notifications() -> None:
         state.feishu_notification_stop.set()
@@ -12716,6 +14863,12 @@ def create_app() -> FastAPI:
         state.feishu_sync_stop.set()
         if state.feishu_sync_thread and state.feishu_sync_thread.is_alive():
             state.feishu_sync_thread.join(timeout=1.5)
+
+    @app.on_event("shutdown")
+    def _shutdown_feishu_task_inbound() -> None:
+        state.feishu_task_inbound_stop.set()
+        if state.feishu_task_inbound_thread and state.feishu_task_inbound_thread.is_alive():
+            state.feishu_task_inbound_thread.join(timeout=1.5)
 
     @app.get("/api/v1/auth/department-options", response_model=list[DepartmentOption])
     def list_department_options(
@@ -13546,6 +15699,79 @@ def create_app() -> FastAPI:
     ) -> FeishuDeliveryProfileRecord:
         return _feishu_delivery_profile_record(state, current_user)
 
+    @app.get("/api/v1/me/feishu-authorization", response_model=FeishuMemberAuthorizationRecord)
+    def get_feishu_member_authorization(
+        request: Request,
+        current_user: SessionUser = Depends(lambda authorization=Header(default=None): _require_auth(app, authorization)),
+    ) -> FeishuMemberAuthorizationRecord:
+        return _feishu_member_authorization_record(state, current_user=current_user, request=request)
+
+    @app.post("/api/v1/me/feishu-authorization/start", response_model=FeishuMemberAuthorizationStartResponse)
+    def start_feishu_member_authorization(
+        request: Request,
+        current_user: SessionUser = Depends(lambda authorization=Header(default=None): _require_auth(app, authorization)),
+    ) -> FeishuMemberAuthorizationStartResponse:
+        integration = state.db.fetchone(
+            "SELECT * FROM org_feishu_integrations WHERE organization_id = ?",
+            (current_user.organizationId,),
+        )
+        if not integration or not integration["enabled"] or not integration["app_id"] or not integration["app_secret_encrypted"]:
+            raise HTTPException(status_code=400, detail="请先完成组织飞书应用配置。")
+        callback_url, callback_error = _build_org_feishu_callback_url(
+            request,
+            str(integration["callback_mode"] or "auto"),
+            str(integration["custom_callback_url"] or ""),
+        )
+        if not callback_url:
+            raise HTTPException(status_code=400, detail=callback_error or "飞书授权回调地址不可用。")
+        state_token = secrets.token_urlsafe(24)
+        relay_claim_secret = secrets.token_urlsafe(32) if _feishu_member_authorization_uses_relay(str(integration["callback_mode"] or "cloud_relay")) else ""
+        expires_at = (datetime.now(timezone.utc) + timedelta(minutes=10)).isoformat()
+        if relay_claim_secret:
+            _register_feishu_oauth_relay_session(
+                state_token=state_token,
+                claim_secret=relay_claim_secret,
+                expires_at=expires_at,
+            )
+        timestamp = now_iso()
+        state.db.execute(
+            """
+            INSERT INTO feishu_binding_relay_sessions(
+                state_token, organization_id, user_id, code, error_message, created_at, expires_at,
+                authorized_at, cleared_at, relay_claim_secret, relay_callback_url
+            ) VALUES(?, ?, ?, NULL, NULL, ?, ?, NULL, NULL, ?, ?)
+            """,
+            (state_token, current_user.organizationId, current_user.id, timestamp, expires_at, relay_claim_secret, callback_url),
+        )
+        authorize_url = _build_feishu_authorize_url(
+            app_id=str(integration["app_id"]),
+            redirect_uri=callback_url,
+            state_token=state_token,
+        )
+        return FeishuMemberAuthorizationStartResponse(
+            authorizeUrl=authorize_url,
+            state=state_token,
+            expiresAt=expires_at,
+            callbackUrl=callback_url,
+            qrReady=_is_public_https_feishu_url(callback_url),
+            qrBlockedReason=None if _is_public_https_feishu_url(callback_url) else "授权回调地址不是公网 HTTPS。",
+        )
+
+    @app.delete("/api/v1/me/feishu-authorization", response_model=FeishuMemberAuthorizationRecord)
+    def clear_feishu_member_authorization(
+        request: Request,
+        current_user: SessionUser = Depends(lambda authorization=Header(default=None): _require_auth(app, authorization)),
+    ) -> FeishuMemberAuthorizationRecord:
+        state.db.execute(
+            "DELETE FROM org_feishu_member_authorizations WHERE organization_id = ? AND user_id = ?",
+            (current_user.organizationId, current_user.id),
+        )
+        state.db.execute(
+            "UPDATE feishu_binding_relay_sessions SET cleared_at = ? WHERE organization_id = ? AND user_id = ? AND cleared_at IS NULL",
+            (now_iso(), current_user.organizationId, current_user.id),
+        )
+        return _feishu_member_authorization_record(state, current_user=current_user, request=request)
+
     # ─── 飞书 OAuth 用户绑定（stub） ─────────────────────────────────────
     #
     # 手机端 profile 页一打开就调 `GET /api/v1/settings/feishu-user-binding`，
@@ -13744,12 +15970,160 @@ def create_app() -> FastAPI:
             trigger_source="manual",
         )
 
+    @app.get("/api/v1/feishu-sync/tasks/inbound-status", response_model=FeishuTaskInboundStatusRecord)
+    def get_feishu_task_inbound_status(
+        current_user: SessionUser = Depends(lambda authorization=Header(default=None): _require_admin(app, authorization)),
+    ) -> FeishuTaskInboundStatusRecord:
+        return _feishu_task_inbound_status_record(state, current_user.organizationId)
+
     @app.post("/api/v1/feishu-sync/documents", response_model=FeishuSyncStatusRecord)
     def sync_document_to_feishu_docx(
         payload: FeishuDocumentSyncPayload,
         current_user: SessionUser = Depends(lambda authorization=Header(default=None): _require_auth(app, authorization)),
     ) -> FeishuSyncStatusRecord:
         return _sync_document_to_feishu_docx_record(state, payload=payload, current_user=current_user)
+
+    @app.get("/api/v1/feishu-doc-import/status", response_model=FeishuDocImportStatusRecord)
+    def get_feishu_doc_import_status(
+        current_user: SessionUser = Depends(lambda authorization=Header(default=None): _require_approved_member(app, authorization)),
+    ) -> FeishuDocImportStatusRecord:
+        row = state.db.fetchone(
+            """
+            SELECT * FROM org_feishu_member_authorizations
+            WHERE organization_id = ? AND user_id = ?
+            """,
+            (current_user.organizationId, current_user.id),
+        )
+        linked = bool(row and row["open_id"])
+        has_token = bool(row and row["access_token_encrypted"] and row["access_token_nonce"])
+        reason = None
+        if not linked:
+            reason = "请先在系统设置完成成员飞书授权。"
+        elif not has_token:
+            reason = "当前飞书授权缺少文档读取令牌，请重新绑定飞书身份。"
+        return FeishuDocImportStatusRecord(
+            ready=linked and has_token,
+            linked=linked,
+            reason=reason,
+            organizationId=current_user.organizationId,
+            userId=current_user.id,
+            boundAt=str(row["authorized_at"]) if row and row["authorized_at"] else None,
+        )
+
+    @app.post("/api/v1/feishu-doc-import/search", response_model=FeishuDocImportSearchResultRecord)
+    def search_feishu_docs_for_import(
+        payload: FeishuDocImportSearchPayload,
+        current_user: SessionUser = Depends(lambda authorization=Header(default=None): _require_approved_member(app, authorization)),
+    ) -> FeishuDocImportSearchResultRecord:
+        user_access_token = _feishu_member_access_token(state, current_user=current_user)
+        query = payload.query.strip()
+        if not query:
+            raise HTTPException(status_code=400, detail="请输入要搜索的飞书文档关键词。")
+        items: list[FeishuDocImportCandidateRecord] = []
+        errors: list[str] = []
+        try:
+            drive_payload = _feishu_user_api_post(
+                user_access_token=user_access_token,
+                path="/drive/v1/files/search",
+                body={"search_key": query, "count": payload.pageSize, "offset": 0},
+            )
+            items.extend(_extract_feishu_doc_candidates(drive_payload, source="search"))
+        except Exception as exc:
+            errors.append(str(exc.detail) if isinstance(exc, HTTPException) else str(exc))
+        if not items:
+            try:
+                wiki_payload = _feishu_user_api_post(
+                    user_access_token=user_access_token,
+                    path="/wiki/v2/nodes/search",
+                    body={"query": query, "page_size": payload.pageSize},
+                )
+                items.extend(_extract_feishu_doc_candidates(wiki_payload, source="search"))
+            except Exception as exc:
+                errors.append(str(exc.detail) if isinstance(exc, HTTPException) else str(exc))
+        supported = [item for item in items if item.type in {"docx", "doc", "wiki"}]
+        message = "" if supported else ("没有找到可导入的飞书文档。" if not errors else f"飞书搜索暂不可用：{errors[-1]}")
+        return FeishuDocImportSearchResultRecord(items=supported[: payload.pageSize], message=message)
+
+    @app.post("/api/v1/feishu-doc-import/resolve-links", response_model=FeishuDocImportSearchResultRecord)
+    def resolve_feishu_doc_import_links(
+        payload: FeishuDocImportResolveLinksPayload,
+        current_user: SessionUser = Depends(lambda authorization=Header(default=None): _require_approved_member(app, authorization)),
+    ) -> FeishuDocImportSearchResultRecord:
+        user_access_token = _feishu_member_access_token(state, current_user=current_user)
+        candidates: list[FeishuDocImportCandidateRecord] = []
+        seen: set[tuple[str, str]] = set()
+        for link in payload.links:
+            candidate = _parse_feishu_doc_link(link)
+            if not candidate:
+                continue
+            metadata = _feishu_doc_candidate_metadata(
+                user_access_token=user_access_token,
+                token=candidate.token,
+                doc_type=candidate.type,
+                fallback_url=candidate.url,
+                source="link",
+            )
+            if metadata:
+                candidate = metadata
+            key = (candidate.type, candidate.token)
+            if key in seen:
+                continue
+            seen.add(key)
+            candidates.append(candidate)
+        message = "" if candidates else "没有识别到可导入的飞书文档链接。"
+        return FeishuDocImportSearchResultRecord(items=candidates, message=message)
+
+    @app.post("/api/v1/feishu-doc-import/export-docx")
+    def export_feishu_docx_for_import(
+        payload: FeishuDocImportExportPayload,
+        current_user: SessionUser = Depends(lambda authorization=Header(default=None): _require_approved_member(app, authorization)),
+    ) -> Response:
+        user_access_token = _feishu_member_access_token(state, current_user=current_user)
+        if payload.type not in {"docx", "doc", "wiki"}:
+            raise HTTPException(status_code=400, detail="当前只支持导入飞书文档。")
+        content = _feishu_export_docx_bytes(
+            user_access_token=user_access_token,
+            token=payload.token,
+            doc_type=payload.type,
+        )
+        filename = safe_filename(f"{payload.title or '飞书文档'}.docx")
+        encoded_filename = quote(filename)
+        return Response(
+            content=content,
+            media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            headers={
+                "X-Feishu-File-Name": encoded_filename,
+                "X-Feishu-Remote-Id": payload.token,
+                "X-Feishu-Remote-Type": payload.type,
+                "Content-Disposition": f"attachment; filename=\"feishu-document.docx\"; filename*=UTF-8''{encoded_filename}",
+            },
+        )
+
+    @app.post("/api/v1/feishu-doc-import/mappings", response_model=FeishuSyncStatusRecord)
+    def register_feishu_import_mapping(
+        payload: FeishuDocImportMappingPayload,
+        current_user: SessionUser = Depends(lambda authorization=Header(default=None): _require_approved_member(app, authorization)),
+    ) -> FeishuSyncStatusRecord:
+        remote_url = payload.remoteUrl or f"https://feishu.cn/docx/{payload.remoteId}"
+        row = _upsert_feishu_sync_mapping(
+            state,
+            organization_id=current_user.organizationId,
+            local_type="document",
+            local_id=payload.localId,
+            remote_type="docx_document",
+            status_value="synced",
+            message="已从飞书导入软件资料库。",
+            remote_id=payload.remoteId,
+            remote_url=remote_url,
+            metadata={
+                "direction": "feishu_to_workbench",
+                "title": payload.title,
+                "clientId": payload.clientId or "",
+                "remoteUpdatedAt": payload.remoteUpdatedAt or "",
+            },
+            last_synced_at=now_iso(),
+        )
+        return _feishu_sync_status_record(row, local_type="document", local_id=payload.localId, remote_type="docx_document")
 
     @app.post("/api/v1/integrations/feishu/user-binding/sessions", response_model=FeishuBindingRelaySessionStatusRecord)
     def create_feishu_binding_relay_session(
@@ -13823,6 +16197,7 @@ def create_app() -> FastAPI:
     @app.get("/api/v1/integrations/feishu/member-authorization/callback", response_class=HTMLResponse)
     @app.get("/api/v1/integrations/feishu/user-binding/callback", response_class=HTMLResponse)
     def receive_feishu_binding_relay_callback(
+        request: Request,
         code: str | None = Query(default=None),
         state_token: str | None = Query(default=None, alias="state"),
     ) -> HTMLResponse:
@@ -13837,7 +16212,10 @@ def create_app() -> FastAPI:
         if row["cleared_at"]:
             return _render_feishu_relay_callback_page("飞书绑定失败", "这次扫码授权会话已经结束，请回到桌面工作台重新发起绑定。", success=False)
         try:
-            if row["expires_at"] and datetime.fromisoformat(str(row["expires_at"])) <= datetime.now():
+            expires_at = datetime.fromisoformat(str(row["expires_at"]))
+            if expires_at.tzinfo is None:
+                expires_at = expires_at.replace(tzinfo=timezone.utc)
+            if row["expires_at"] and expires_at <= datetime.now(timezone.utc):
                 state.db.execute(
                     "UPDATE feishu_binding_relay_sessions SET error_message = ? WHERE state_token = ?",
                     ("这次扫码授权请求已经过期，请重新发起绑定。", state_token),
@@ -13856,81 +16234,28 @@ def create_app() -> FastAPI:
             )
             return _render_feishu_relay_callback_page("飞书绑定失败", "飞书没有返回有效授权码，请回到桌面工作台重新发起绑定。", success=False)
 
-        organization_id = str(row["organization_id"])
-        user_id = str(row["user_id"])
-        integration_row = state.db.fetchone(
-            "SELECT * FROM org_feishu_integrations WHERE organization_id = ?",
-            (organization_id,),
-        )
-        if not integration_row or not integration_row["enabled"] or not integration_row["app_id"] or not integration_row["app_secret_encrypted"]:
-            message = "当前组织尚未完成飞书接入，请先回到软件里补齐组织飞书配置。"
-            state.db.execute(
-                "UPDATE feishu_binding_relay_sessions SET error_message = ? WHERE state_token = ?",
-                (message, state_token),
-            )
-            return _render_feishu_relay_callback_page("飞书绑定失败", message, success=False)
-
-        try:
-            app_secret = _org_feishu_decrypt(
-                state,
-                str(integration_row["app_secret_encrypted"]),
-                str(integration_row["encryption_nonce"]),
-                organization_id,
-            )
-            app_access_token, _ = _feishu_fetch_app_access_token(
-                app_id=str(integration_row["app_id"]),
-                app_secret=app_secret,
-            )
-            token_payload = _feishu_exchange_authorization_code(
-                app_access_token=app_access_token,
-                app_id=str(integration_row["app_id"]),
-                app_secret=app_secret,
-                code=code.strip(),
-            )
-            user_access_token = str(token_payload.get("access_token") or "").strip()
-            user_info = _feishu_fetch_user_info(user_access_token=user_access_token)
+        if request.url.path.endswith("/user-binding/callback"):
             timestamp = now_iso()
-            open_id = str(user_info.get("open_id") or token_payload.get("open_id") or "").strip()
-            if not open_id:
-                raise HTTPException(status_code=400, detail="飞书没有返回 open_id，无法完成成员授权。")
             state.db.execute(
                 """
-                INSERT INTO org_feishu_member_authorizations(
-                    organization_id, user_id, app_id, open_id, union_id, feishu_user_id, name, en_name,
-                    avatar_url, email, tenant_key, authorized_at, last_verified_at, last_error, updated_at
-                ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?)
-                ON CONFLICT(organization_id, user_id) DO UPDATE SET
-                    app_id = excluded.app_id,
-                    open_id = excluded.open_id,
-                    union_id = excluded.union_id,
-                    feishu_user_id = excluded.feishu_user_id,
-                    name = excluded.name,
-                    en_name = excluded.en_name,
-                    avatar_url = excluded.avatar_url,
-                    email = excluded.email,
-                    tenant_key = excluded.tenant_key,
-                    authorized_at = excluded.authorized_at,
-                    last_verified_at = excluded.last_verified_at,
-                    last_error = NULL,
-                    updated_at = excluded.updated_at
+                UPDATE feishu_binding_relay_sessions
+                SET code = ?, error_message = NULL, authorized_at = ?
+                WHERE state_token = ?
                 """,
-                (
-                    organization_id,
-                    user_id,
-                    str(integration_row["app_id"]),
-                    open_id,
-                    str(user_info.get("union_id") or token_payload.get("union_id") or "").strip() or None,
-                    str(user_info.get("user_id") or token_payload.get("user_id") or "").strip() or None,
-                    str(user_info.get("name") or "").strip() or None,
-                    str(user_info.get("en_name") or "").strip() or None,
-                    str(user_info.get("avatar_url") or "").strip() or None,
-                    str(user_info.get("email") or "").strip() or None,
-                    str(user_info.get("tenant_key") or token_payload.get("tenant_key") or "").strip() or None,
-                    timestamp,
-                    timestamp,
-                    timestamp,
-                ),
+                (code.strip(), timestamp, state_token),
             )
+            return _render_feishu_relay_callback_page("飞书授权结果已回传", "授权码已安全回传到组织云端，现在回到桌面工作台即可继续完成绑定。", success=True)
+
+        organization_id = str(row["organization_id"])
+        user_id = str(row["user_id"])
+        try:
+            _finalize_feishu_member_authorization_from_code(
+                state,
+                organization_id=organization_id,
+                user_id=user_id,
+                code=code.strip(),
+            )
+            timestamp = now_iso()
             state.db.execute(
                 """
                 UPDATE feishu_binding_relay_sessions
@@ -13961,7 +16286,7 @@ def create_app() -> FastAPI:
             (
                 organization_id,
                 user_id,
-                str(integration_row["app_id"]) if integration_row and integration_row["app_id"] else "",
+                "",
                 message,
                 now_iso(),
             ),
@@ -18918,13 +21243,6 @@ def create_app() -> FastAPI:
         )
         task_row = _task_row_or_404(state, task_id)
         _sync_task_org_link(state, task_row, collaborator_ids)
-        _auto_sync_task_feishu_calendar(
-            state,
-            task_row=task_row,
-            current_user=current_user,
-            changed_fields=None,
-            trigger_source="task_created",
-        )
         _auto_sync_task_feishu_task(
             state,
             task_row=task_row,
@@ -19186,13 +21504,6 @@ def create_app() -> FastAPI:
         if payload.collaboratorIds is not None:
             if {item for item in next_collaborator_ids if item} != {item for item in existing_collaborator_ids if item}:
                 changed_fields.append("collaboratorIds")
-        _auto_sync_task_feishu_calendar(
-            state,
-            task_row=updated_row,
-            current_user=current_user,
-            changed_fields=changed_fields,
-            trigger_source="task_updated",
-        )
         _auto_sync_task_feishu_task(
             state,
             task_row=updated_row,

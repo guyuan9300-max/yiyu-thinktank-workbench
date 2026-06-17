@@ -72,6 +72,10 @@ import type {
   FeishuBotSettingsPayload,
   FeishuDeliveryProfile,
   FeishuDeliveryProfilePayload,
+  FeishuDocImportCandidate,
+  FeishuDocImportResult,
+  FeishuDocImportSearchResult,
+  FeishuDocImportStatus,
   FeishuDocumentSyncPayload,
   FeishuMemberAuthorization,
   FeishuMemberAuthorizationStartResult,
@@ -284,8 +288,6 @@ import type {
   SaveCloudAuthInputMemoryPayload,
   SaveFeishuInputMemoryPayload,
   CollabActionResult,
-  CollabEffectExplanationRequest,
-  CollabEffectExplanationResponse,
   CollabRepoStatus,
   FastForwardMainPayload,
   PullPreview,
@@ -413,7 +415,6 @@ function createBrowserWorkbenchFallback(): Window['yiyuWorkbench'] {
       statusText: '当前为浏览器预览模式，Git 协作能力不可用。',
     }),
     previewPushToMain: async () => notAvailable('推送 main'),
-    explainCollabEffects: async () => ({ effects: [], provider: null, model: null }),
     pushSafelyToMain: async () => notAvailable('推送 main'),
     publishCollabBranch: async () => notAvailable('发布协作分支'),
     previewPullFromMain: async () => notAvailable('从 main 拉取'),
@@ -2212,6 +2213,38 @@ export async function syncDocumentToFeishuDocx(payload: FeishuDocumentSyncPayloa
   });
 }
 
+export async function getFeishuDocImportStatus() {
+  return request<FeishuDocImportStatus>('/api/v1/feishu-doc-import/status');
+}
+
+export async function searchFeishuDocsForImport(payload: { query: string; pageSize?: number }) {
+  return request<FeishuDocImportSearchResult>('/api/v1/feishu-doc-import/search', {
+    method: 'POST',
+    body: JSON.stringify({ query: payload.query, pageSize: payload.pageSize ?? 20 }),
+  });
+}
+
+export async function resolveFeishuDocImportLinks(links: string[]) {
+  return request<FeishuDocImportSearchResult>('/api/v1/feishu-doc-import/resolve-links', {
+    method: 'POST',
+    body: JSON.stringify({ links }),
+  });
+}
+
+export async function importFeishuDocsToClient(clientId: string, items: FeishuDocImportCandidate[]) {
+  return request<FeishuDocImportResult>(`/api/v1/clients/${encodeURIComponent(clientId)}/feishu-doc-import/import`, {
+    method: 'POST',
+    body: JSON.stringify({
+      items: items.map((item) => ({
+        token: item.token,
+        type: item.type,
+        title: item.title,
+        url: item.url,
+      })),
+    }),
+  });
+}
+
 export async function createBackup() {
   return request<{ backupPath: string; createdAt: string }>('/api/v1/settings/backup', { method: 'POST' });
 }
@@ -2310,6 +2343,79 @@ export async function exportSystemLogs(params?: {
 
 export async function getLogDates() {
   return request<string[]>('/api/v1/logs/dates');
+}
+
+// ── Software Feedback ─────────────────────────────────────────
+export type SoftwareFeedbackCategory = 'bug' | 'suggestion';
+export type SoftwareFeedbackSeverity = 'low' | 'medium' | 'high' | 'critical';
+
+export type SoftwareFeedbackItem = {
+  id: string;
+  localFeedbackId?: string | null;
+  centralFeedbackId?: string | null;
+  localOutboxId?: string;
+  queued?: boolean;
+  queueStatus?: string;
+  centralStatus?: string;
+  central?: boolean;
+  lastError?: string;
+  category: SoftwareFeedbackCategory | string;
+  severity: SoftwareFeedbackSeverity | string;
+  status: string;
+  title: string;
+  description?: string;
+  appVersion?: string | null;
+  platform?: string | null;
+  pageRoute?: string | null;
+  deviceInfo?: string | null;
+  logExcerpt?: string | null;
+  screenshotPath?: string | null;
+  clientId?: string | null;
+  taskId?: string | null;
+  resolutionNote?: string | null;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type SoftwareFeedbackListResponse = {
+  items: SoftwareFeedbackItem[];
+  queuedCount: number;
+  centralError?: string | null;
+};
+
+export type SoftwareFeedbackSubmitResponse = {
+  queued: boolean;
+  record: SoftwareFeedbackItem;
+};
+
+export async function listSoftwareFeedback() {
+  return request<SoftwareFeedbackListResponse>('/api/v1/software-feedback');
+}
+
+export async function submitSoftwareFeedback(payload: {
+  category: SoftwareFeedbackCategory;
+  severity: SoftwareFeedbackSeverity;
+  title: string;
+  description?: string;
+  appVersion?: string | null;
+  platform?: string | null;
+  pageRoute?: string | null;
+  deviceInfo?: string | null;
+  screenshot?: File | null;
+}) {
+  const formData = new FormData();
+  formData.append('category', payload.category);
+  formData.append('severity', payload.severity);
+  formData.append('title', payload.title);
+  formData.append('description', payload.description || '');
+  if (payload.appVersion) formData.append('appVersion', payload.appVersion);
+  if (payload.platform) formData.append('platform', payload.platform);
+  if (payload.pageRoute) formData.append('pageRoute', payload.pageRoute);
+  if (payload.deviceInfo) formData.append('deviceInfo', payload.deviceInfo);
+  if (payload.screenshot) formData.append('screenshot', payload.screenshot);
+  return requestForm<SoftwareFeedbackSubmitResponse>('/api/v1/software-feedback', formData, {
+    method: 'POST',
+  });
 }
 
 export async function getEmployees() {
@@ -5716,10 +5822,6 @@ export async function getCollabRepoStatus(repoPath?: string | null) {
 
 export async function previewPushToMain(repoPath: string) {
   return window.yiyuWorkbench.previewPushToMain(repoPath) as Promise<PushPreview>;
-}
-
-export async function explainCollabEffects(payload: CollabEffectExplanationRequest) {
-  return window.yiyuWorkbench.explainCollabEffects(payload) as Promise<CollabEffectExplanationResponse>;
 }
 
 export async function pushSafelyToMain(payload: PushMainPayload) {
