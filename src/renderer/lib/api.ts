@@ -153,6 +153,8 @@ import type {
   MobileDataCenterSnapshotSummary,
   EvidenceQualityAnnotation,
   SettingsPayload,
+  SandboxWorkspaceRecord,
+  SandboxWorkspacesResponse,
   SystemAdminSettings,
   SystemAdminSettingsPayload,
   TaskOrgBackfillResult,
@@ -1837,6 +1839,14 @@ export async function adminResetPassword(employeeId: string, payload: AdminReset
 
 export async function getSettings() {
   return request<{ settings: AppSettings; operators: Operator[]; health: HealthResponse; lastCloudAiSyncStatus: LastCloudAiSyncStatus }>('/api/v1/settings');
+}
+
+export async function getWorkspaces() {
+  return request<SandboxWorkspacesResponse>('/api/v1/workspaces');
+}
+
+export async function getCurrentWorkspace() {
+  return request<SandboxWorkspaceRecord>('/api/v1/workspaces/current');
 }
 
 export async function syncOrgAiConfigToCloud() {

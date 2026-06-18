@@ -128,6 +128,30 @@ export interface AppSettings {
   demoDataLoaded: boolean;
 }
 
+export type SandboxKind = 'local' | 'organization';
+export type SandboxStatus = 'active' | 'archived';
+
+export interface SandboxWorkspaceRecord {
+  id: string;
+  kind: SandboxKind;
+  name: string;
+  status: SandboxStatus;
+  cloudApiUrl: string;
+  organizationId?: string | null;
+  organizationName?: string | null;
+  localIdentityId?: string | null;
+  isLegacyDefault: boolean;
+  metadata: Record<string, unknown>;
+  createdAt: string;
+  updatedAt: string;
+  lastActiveAt?: string | null;
+}
+
+export interface SandboxWorkspacesResponse {
+  activeSandboxId: string;
+  workspaces: SandboxWorkspaceRecord[];
+}
+
 export interface SessionUser {
   id: string;
   organizationId: string;

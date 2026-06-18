@@ -50,6 +50,8 @@ AiModelCapability = Literal["online_primary", "deep_analysis", "vision_ocr", "fa
 AccountStatus = Literal["pending", "approved", "rejected", "disabled"]
 MembershipStatus = Literal["none", "pending", "approved", "rejected"]
 EmployeeRole = Literal["admin", "employee"]
+SandboxKind = Literal["local", "organization"]
+SandboxStatus = Literal["active", "archived"]
 CollaboratorInboxStatus = Literal["pending", "accepted", "returned"]
 OrgRoleLevel = Literal["employee", "supervisor", "department_lead", "organization_lead"]
 OrgReportingLineType = Literal["business", "administrative"]
@@ -158,6 +160,27 @@ class AppSettingsResponse(BaseModel):
     aiModelMode: AiModelMode = "auto"
     aiModelProfiles: dict[str, AiModelProfileRecord] = Field(default_factory=dict)
     demoDataLoaded: bool = False
+
+
+class SandboxWorkspaceRecord(BaseModel):
+    id: str
+    kind: SandboxKind
+    name: str
+    status: SandboxStatus = "active"
+    cloudApiUrl: str = ""
+    organizationId: str | None = None
+    organizationName: str | None = None
+    localIdentityId: str | None = None
+    isLegacyDefault: bool = False
+    metadata: dict[str, object] = Field(default_factory=dict)
+    createdAt: str
+    updatedAt: str
+    lastActiveAt: str | None = None
+
+
+class SandboxWorkspacesResponse(BaseModel):
+    activeSandboxId: str
+    workspaces: list[SandboxWorkspaceRecord]
 
 
 class HealthAiState(BaseModel):

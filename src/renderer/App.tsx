@@ -204,6 +204,7 @@ import type {
   WorkspaceAnswerFinalization,
   WorkspaceAnswerPresentation,
   SourceIntegrityReport,
+  SandboxWorkspacesResponse,
 } from '../shared/types';
 import {
   CLIENT_CHAT_DRAFT_THREAD_ID,
@@ -356,6 +357,7 @@ import {
   getReviews,
   getWeeklyOverviewRefreshStatus,
   getSettings,
+  getWorkspaces,
   getStrategicCockpit,
   getSupportRequests,
   getSystemAdminSettings,
@@ -7609,6 +7611,7 @@ export default function App() {
       system_logs: false,
       about: false,
     });
+  const [workspacesState, setWorkspacesState] = useState<SandboxWorkspacesResponse | null>(null);
   const [logs, setLogs] = useState<
     Array<{
       id: string;
@@ -8939,10 +8942,14 @@ export default function App() {
   }
 
   async function loadSettingsBlock() {
-    const response = await getSettings();
+    const [response, workspaces] = await Promise.all([
+      getSettings(),
+      getWorkspaces().catch(() => null),
+    ]);
     setSettingsState(response.settings);
     setOperators(response.operators);
     setHealth(response.health);
+    setWorkspacesState(workspaces);
     clearLocalServiceStartupBanner();
     const missingFeatures = REQUIRED_BACKEND_FEATURES.filter((feature) => !response.health.featureFlags.includes(feature));
     setBackendCompatibilityError(
@@ -29491,6 +29498,12 @@ export default function App() {
       const speechConfigured = Boolean(speechModelSettingsState?.enabled);
       const objectStorageConfigured = Boolean(objectStorageSettingsState?.enabled);
       const feishuConfigured = Boolean(orgFeishuIntegrationState?.enabled);
+      const activeWorkspace = workspacesState?.workspaces.find((item) => item.id === workspacesState.activeSandboxId) || null;
+      const workspaceKindLabel = activeWorkspace?.kind === 'organization' ? '组织工作空间' : '本机工作空间';
+      const workspaceCloudLabel = activeWorkspace?.cloudApiUrl
+        ? (cloudApiHostValue(activeWorkspace.cloudApiUrl) || '已配置云端')
+        : '未绑定云端';
+      const workspaceOrgLabel = activeWorkspace?.organizationName || activeWorkspace?.organizationId || '尚未绑定组织';
 
       const accentLine = (accent: 'success' | 'warning' | 'danger' | 'neutral') =>
         accent === 'success' ? 'bg-emerald-500'
@@ -29555,6 +29568,34 @@ export default function App() {
                 accent: ollamaReadyCount === ollamaTotal ? 'success' : ollamaReadyCount > 0 ? 'warning' : 'neutral',
                 helper: '向量 / 视觉 / 重排 三个 Ollama profile',
               })}
+            </div>
+          </div>
+
+          <div className="rounded-2xl border border-blue-100 bg-blue-50/70 px-4 py-3">
+            <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
+              <div className="min-w-0">
+                <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-blue-500">CURRENT WORKSPACE</p>
+                <p className="mt-1 text-[16px] font-semibold text-gray-950 truncate">
+                  {activeWorkspace?.name || '工作空间底座未加载'}
+                </p>
+                <p className="mt-1 text-[12px] leading-5 text-blue-800">
+                  当前阶段仅用于标记归属底座，历史客户、任务、文档和资料库尚未拆分；现有登录、云端连接、AI 与飞书设置仍按原流程工作。
+                </p>
+              </div>
+              <div className="grid grid-cols-3 gap-3 text-right md:min-w-[360px]">
+                <div>
+                  <p className="text-[10px] font-bold uppercase tracking-[0.16em] text-blue-400">类型</p>
+                  <p className="mt-1 text-[12px] font-semibold text-gray-900">{activeWorkspace ? workspaceKindLabel : '未就绪'}</p>
+                </div>
+                <div>
+                  <p className="text-[10px] font-bold uppercase tracking-[0.16em] text-blue-400">云端</p>
+                  <p className="mt-1 text-[12px] font-semibold text-gray-900 truncate">{activeWorkspace ? workspaceCloudLabel : '—'}</p>
+                </div>
+                <div>
+                  <p className="text-[10px] font-bold uppercase tracking-[0.16em] text-blue-400">组织</p>
+                  <p className="mt-1 text-[12px] font-semibold text-gray-900 truncate">{activeWorkspace ? workspaceOrgLabel : '—'}</p>
+                </div>
+              </div>
             </div>
           </div>
 

@@ -276,6 +276,8 @@ from app.models import (
     AmbiguityItem,
     AppSettingsPayload,
     AppSettingsResponse,
+    SandboxWorkspaceRecord,
+    SandboxWorkspacesResponse,
     BackupResponse,
     BadgeBoardResponse,
     ChatMessageRecord,
@@ -1237,6 +1239,11 @@ from app.services.learning_presets import (
     preset_card_to_support_material,
 )
 from app.services.secrets import MacOSKeychainSecretStore, MemorySecretStore
+from app.services.sandbox_registry import (
+    build_workspaces_response,
+    ensure_sandbox_registry,
+    get_active_sandbox,
+)
 from app.services.version_manifest import (
     backend_source_hash,
     compute_manifest_id,
@@ -3199,6 +3206,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         db, migration_backup_path = init_database_with_migration_guard(resolved_data_dir)
     except Exception as error:
         raise RuntimeError(f"数据库迁移失败，已回滚并阻断启动：{error}") from error
+    ensure_sandbox_registry(db)
 
     # 启动时自愈：清理"卡在 loading 状态的孤儿 assistant 消息"
     healed_chat_count = _heal_orphan_loading_chat_messages(db)
@@ -36994,6 +37002,14 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
     @app.get("/api/v1/settings", response_model=SettingsResponse)
     def get_settings() -> SettingsResponse:
         return build_settings_response()
+
+    @app.get("/api/v1/workspaces", response_model=SandboxWorkspacesResponse)
+    def get_workspaces() -> SandboxWorkspacesResponse:
+        return build_workspaces_response(state.db)
+
+    @app.get("/api/v1/workspaces/current", response_model=SandboxWorkspaceRecord)
+    def get_current_workspace() -> SandboxWorkspaceRecord:
+        return get_active_sandbox(state.db)
 
     @app.get("/api/v1/maintenance-mode/status", response_model=MaintenanceModeStatusRecord)
     def get_maintenance_mode_status() -> MaintenanceModeStatusRecord:

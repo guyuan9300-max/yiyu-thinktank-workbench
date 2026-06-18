@@ -10,7 +10,7 @@ from pathlib import Path
 # 之前 20260518001 (200 亿) 远超上限, SQLite 静默 set 为 0, 每次启动都重做完整迁移
 # (这是 20260518 那次坏 db 的真正根因之一: 重做时遇上 reload race + backfill 无事务).
 # 改用 YYYYMMDD 格式 (8 位), 每次 schema 变化递增日期. 20260519 = 此次修复.
-BACKEND_SCHEMA_VERSION = 20260613  # 合并: meeting-spine列+local_identities+software_feedback_outbox+central_feedback_delivery
+BACKEND_SCHEMA_VERSION = 20260617  # 阶段1: sandbox registry + active_sandbox_id 工作空间壳
 
 
 # R6：内置罗永浩写作风格的 distilled prompt（手工 distill，不依赖在线抓取，避免外部依赖）。
@@ -72,8 +72,55 @@ class Database:
                     value TEXT NOT NULL
                 );
 
-                -- local_identities 表已随 local-auth 剥离移除(统一云端登录, 飞行模式靠 degraded)。
-                -- 旧库里残留的 local_identities 表(5/10 V2.1 phone_normalized 设计)是死表, 代码不再建/索引/读写它。
+                CREATE TABLE IF NOT EXISTS sandboxes (
+                    id TEXT PRIMARY KEY,
+                    kind TEXT NOT NULL CHECK(kind IN ('local', 'organization')),
+                    name TEXT NOT NULL,
+                    status TEXT NOT NULL DEFAULT 'active' CHECK(status IN ('active', 'archived')),
+                    cloud_api_url TEXT NOT NULL DEFAULT '',
+                    organization_id TEXT,
+                    organization_name TEXT,
+                    local_identity_id TEXT,
+                    is_legacy_default INTEGER NOT NULL DEFAULT 0,
+                    metadata_json TEXT NOT NULL DEFAULT '{}',
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    last_active_at TEXT
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_sandboxes_kind_status
+                ON sandboxes(kind, status);
+
+                CREATE INDEX IF NOT EXISTS idx_sandboxes_organization
+                ON sandboxes(organization_id);
+
+                CREATE TABLE IF NOT EXISTS local_identities (
+                    id TEXT PRIMARY KEY,
+                    email TEXT NOT NULL UNIQUE,
+                    phone_number TEXT UNIQUE,
+                    full_name TEXT NOT NULL,
+                    password_hash TEXT NOT NULL,
+                    local_organization_name TEXT NOT NULL DEFAULT '',
+                    organization_mode TEXT NOT NULL DEFAULT 'create',
+                    pending_invite_code TEXT,
+                    pending_department_id TEXT,
+                    job_title TEXT,
+                    manager_name TEXT,
+                    current_focus TEXT NOT NULL DEFAULT '',
+                    membership_status TEXT NOT NULL DEFAULT 'approved',
+                    bound_cloud_user_id TEXT,
+                    bound_cloud_organization_id TEXT,
+                    bound_cloud_email TEXT,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    last_login_at TEXT
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_local_identities_email
+                ON local_identities(email);
+
+                CREATE INDEX IF NOT EXISTS idx_local_identities_phone
+                ON local_identities(phone_number);
 
                 -- ══ 同步表（走云端） ══
 

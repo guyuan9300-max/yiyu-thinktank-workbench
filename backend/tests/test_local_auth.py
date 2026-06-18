@@ -310,7 +310,7 @@ def test_cloud_login_binds_current_local_identity(tmp_path: Path, monkeypatch) -
     assert row["bound_cloud_email"] == "cloud-user@example.com"
 
 
-def test_cloud_login_syncs_org_ai_config_over_local_mock(tmp_path: Path, monkeypatch) -> None:
+def test_cloud_login_uses_org_ai_proxy_over_local_mock_for_member(tmp_path: Path, monkeypatch) -> None:
     client = make_client(tmp_path / "data")
     state = client.app.state.app_state
     state.cloud_api_url = "http://cloud.example.test"
@@ -389,6 +389,17 @@ def test_cloud_login_syncs_org_ai_config_over_local_mock(tmp_path: Path, monkeyp
                     "updatedAt": "2026-06-05T10:00:00",
                 },
             )
+        if method == "GET" and url.endswith("/api/v1/org-ai/status"):
+            return FakeCloudResponse(
+                200,
+                    {
+                        "available": True,
+                        "aiProvider": "openai_compatible",
+                        "aiProviderLabel": "组织统一大模型",
+                        "aiModel": "shared-org-model",
+                        "hasApiKey": True,
+                    },
+                )
         raise AssertionError(f"unexpected cloud request: {method} {url}")
 
     monkeypatch.setattr(app_main.httpx, "request", fake_cloud_request)
@@ -404,16 +415,17 @@ def test_cloud_login_syncs_org_ai_config_over_local_mock(tmp_path: Path, monkeyp
         settings = client.get("/api/v1/settings")
         assert settings.status_code == 200, settings.text
         last_payload = settings.json()
-        if last_payload["lastCloudAiSyncStatus"]["state"] == "synced":
+        if last_payload["lastCloudAiSyncStatus"]["state"] in {"proxy_available", "synced"}:
             break
         time.sleep(0.05)
 
     assert last_payload is not None
-    assert last_payload["lastCloudAiSyncStatus"]["state"] == "synced"
-    assert last_payload["settings"]["aiProvider"] == "openai_compatible"
-    assert last_payload["settings"]["aiProviderLabel"] == "组织统一大模型"
-    assert last_payload["settings"]["aiBaseUrl"] == "https://models.example.com/v1"
-    assert last_payload["settings"]["aiModel"] == "shared-org-model"
+    assert last_payload["lastCloudAiSyncStatus"]["state"] == "proxy_available"
+    assert last_payload["lastCloudAiSyncStatus"]["provider"] == "openai_compatible"
+    assert last_payload["lastCloudAiSyncStatus"]["providerLabel"] == "组织统一大模型"
+    assert last_payload["lastCloudAiSyncStatus"]["model"] == "shared-org-model"
+    assert last_payload["lastCloudAiSyncStatus"]["proxyMode"] == "cloud_proxy"
+    assert last_payload["settings"]["aiProvider"] == "mock"
     assert last_payload["settings"]["aiConfigured"] is True
 
 
