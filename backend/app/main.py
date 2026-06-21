@@ -25241,6 +25241,24 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 break
         return deduped
 
+    def _safe_event_line_context_bundle(
+        event_line_id: str,
+        *,
+        analysis: WeeklyReviewAnalysisRecord | None = None,
+    ) -> EventLineContextBundleRecord | None:
+        # 容错兜底: 单条事件线的活动/快照若有脏数据(枚举越界 / 必填缺失 / 字段不符)导致
+        # Pydantic ValidationError 或 AttributeError, 不让它打崩整个周复盘刷新——降级跳过该条 + 告警,
+        # 调用方均已处理 None。放行 HTTPException(端点的 404 等正当语义)。
+        try:
+            return _event_line_context_bundle(event_line_id, analysis=analysis)
+        except HTTPException:
+            raise
+        except Exception as exc:
+            logger.warning(
+                "事件线上下文束构建失败,降级跳过 event_line_id=%s: %s", event_line_id, exc
+            )
+            return None
+
     def _event_line_context_bundle(
         event_line_id: str,
         *,
@@ -25323,7 +25341,8 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                     title=activity.title,
                     summary=_first_nonempty_text(
                         activity.summary,
-                        activity.detail,
+                        # EventLineActivityRecord 无 detail 字段; meeting 细节在 metadata,缺省回退 title。
+                        activity.metadata.get("detail") if isinstance(activity.metadata, dict) else None,
                         activity.title,
                     ) or activity.title,
                     happened_at=activity.happenedAt,
@@ -25751,7 +25770,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         session_user = get_cached_session_user()
         governance = _review_governance_with_members() if session_user else None
         viewer_role = _resolve_review_viewer_role(session_user, governance)
-        bundle = _event_line_context_bundle(task.eventLineId) if task.eventLineId else None
+        bundle = _safe_event_line_context_bundle(task.eventLineId) if task.eventLineId else None
         if bundle is None:
             bundle = _build_ad_hoc_task_context_bundle(task)
         judgment = _build_event_line_judgment(bundle, viewer_role=viewer_role)
@@ -25864,7 +25883,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 "backgroundSources": background_sources,
                 "missingSlots": merged_missing_slots,
             }
-            bundle = _event_line_context_bundle(event_line_id, analysis=analysis)
+            bundle = _safe_event_line_context_bundle(event_line_id, analysis=analysis)
             if bundle is not None:
                 bundles.append(bundle)
                 judgment = _build_event_line_judgment(bundle, viewer_role=viewer_role)
@@ -32433,7 +32452,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
 
     @app.get("/api/v1/event-lines/{event_line_id}/context-bundle", response_model=EventLineContextBundleRecord)
     def get_event_line_context_bundle(event_line_id: str) -> EventLineContextBundleRecord:
-        bundle = _event_line_context_bundle(event_line_id)
+        bundle = _safe_event_line_context_bundle(event_line_id)
         if bundle is None:
             raise HTTPException(status_code=404, detail="Event line context bundle not found")
         return bundle

@@ -1568,7 +1568,7 @@ class EventLineRecord(BaseModel):
 class EventLineActivityRecord(BaseModel):
     id: str
     eventLineId: str
-    sourceType: Literal["task_activity", "meeting", "support_request", "review", "attachment", "manual_note"]
+    sourceType: Literal["task_activity", "meeting", "support_request", "review", "attachment", "manual_note", "merge", "document_ingest", "atomic_fact"]
     sourceId: str
     happenedAt: str
     actorId: str | None = None
@@ -1700,7 +1700,7 @@ class EventLineMergePreviewRecord(BaseModel):
 
 class EventLineImportActivityPayload(BaseModel):
     id: str = Field(min_length=1)
-    sourceType: Literal["task_activity", "meeting", "support_request", "review", "attachment", "manual_note"]
+    sourceType: Literal["task_activity", "meeting", "support_request", "review", "attachment", "manual_note", "merge", "document_ingest", "atomic_fact"]
     sourceId: str = Field(min_length=1)
     happenedAt: str = Field(min_length=1)
     actorId: str | None = None
