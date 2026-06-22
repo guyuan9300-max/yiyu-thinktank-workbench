@@ -168,6 +168,9 @@ class SandboxWorkspaceRecord(BaseModel):
     name: str
     status: SandboxStatus = "active"
     cloudApiUrl: str = ""
+    cloudConnected: bool = False
+    cloudUserFullName: str | None = None
+    cloudUserEmail: str | None = None
     organizationId: str | None = None
     organizationName: str | None = None
     localIdentityId: str | None = None
@@ -181,6 +184,17 @@ class SandboxWorkspaceRecord(BaseModel):
 class SandboxWorkspacesResponse(BaseModel):
     activeSandboxId: str
     workspaces: list[SandboxWorkspaceRecord]
+
+
+class SandboxWorkspaceCreatePayload(BaseModel):
+    kind: SandboxKind = "organization"
+    name: str = ""
+    cloudApiUrl: str = ""
+
+
+class SandboxWorkspaceUpdatePayload(BaseModel):
+    name: str | None = None
+    cloudApiUrl: str | None = None
 
 
 class HealthAiState(BaseModel):
@@ -261,6 +275,20 @@ class SessionUserRecord(BaseModel):
     currentFocus: str | None = None
 
 
+class OrganizationCandidateRecord(BaseModel):
+    organizationId: str
+    organizationName: str | None = None
+    organizationSlug: str | None = None
+    memberId: str
+    fullName: str
+    email: str
+    primaryRole: EmployeeRole
+    accountStatus: AccountStatus
+    membershipStatus: MembershipStatus = "approved"
+    departmentId: str | None = None
+    departmentName: str | None = None
+
+
 class AuthStateResponse(BaseModel):
     authenticated: bool
     user: SessionUserRecord | None = None
@@ -271,6 +299,26 @@ class AuthStateResponse(BaseModel):
     # True 表示这是"网络中断 + 本地缓存"兜底产生的离线降级态(云端没法确认身份/成员资格)。
     # 前端据此把"未确认"当成 last-known-good 处理,而不是当成"被拒绝"去清空本地数据 / 强制身份页。
     degraded: bool = False
+    organizationSelectionRequired: bool = False
+    organizationSelectionToken: str | None = None
+    organizations: list[OrganizationCandidateRecord] = Field(default_factory=list)
+
+
+class SelectOrganizationPayload(BaseModel):
+    organizationSelectionToken: str
+    organizationId: str
+
+
+class CreateOrganizationPayload(BaseModel):
+    organizationName: str
+
+
+class JoinOrganizationPayload(BaseModel):
+    inviteCode: str
+    departmentId: str | None = None
+    jobTitle: str | None = None
+    managerName: str | None = None
+    currentFocus: str | None = None
 
 
 class CloudConfigResponse(BaseModel):

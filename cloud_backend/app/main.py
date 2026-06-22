@@ -243,6 +243,11 @@ from app.models import (
     GrowthSignalSyncResponse,
     GrowthEvidenceSyncResponse,
     GrowthValidationEventSyncResponse,
+    AuthFlowResponse,
+    AuthOrganizationSelectPayload,
+    CreateOrganizationPayload,
+    JoinOrganizationPayload,
+    OrganizationCandidate,
 )
 from app.smart_input import build_smart_task_draft, transcribe_audio_with_doubao
 from app.bootstrap_security import DEFAULT_BOOTSTRAP_ADMIN_EMAIL, ensure_cloud_secret, resolve_seed_users
@@ -825,12 +830,13 @@ def _row_user(state: AppState, row) -> SessionUser:
     organization_id = str(row["organization_id"])
     organization_name = _organization_name(state, organization_id)
     avatar_url = str(_row_get(row, "avatar_url") or "") or None
+    identity = _identity_row_for_member(state, row)
     return SessionUser(
         id=str(row["id"]),
         organizationId=organization_id,
         organizationName=organization_name,
-        email=str(row["email"]),
-        phone=str(_row_get(row, "phone_number") or "") or None,
+        email=str(identity["email"] if identity else row["email"]),
+        phone=str((identity["phone_number"] if identity else _row_get(row, "phone_number")) or "") or None,
         fullName=str(row["full_name"]),
         primaryRole=str(row["primary_role"]),
         accountStatus=str(row["account_status"]),
@@ -868,6 +874,151 @@ def _employee_record(row) -> EmployeeRecord:
         lastLoginAt=row["last_login_at"],
         createdAt=str(row["created_at"]),
     )
+
+
+def _identity_row_for_member(state: AppState, member_row):
+    identity_id = str(_row_get(member_row, "identity_id") or "").strip()
+    if not identity_id:
+        return None
+    return state.db.fetchone("SELECT * FROM cloud_identities WHERE id = ?", (identity_id,))
+
+
+def _identity_row_by_identifier(state: AppState, identifier: str):
+    value = str(identifier or "").strip()
+    if not value:
+        return None
+    if "@" in value:
+        identity = state.db.fetchone("SELECT * FROM cloud_identities WHERE email = ?", (value.lower(),))
+        if identity:
+            return identity
+        legacy = state.db.fetchone("SELECT * FROM employee_accounts WHERE email = ? ORDER BY created_at ASC LIMIT 1", (value.lower(),))
+        return _ensure_identity_from_legacy_member(state, legacy) if legacy else None
+    normalized_phone = _normalize_account_phone(value)
+    if normalized_phone:
+        identity = state.db.fetchone("SELECT * FROM cloud_identities WHERE phone_number = ?", (normalized_phone,))
+        if identity:
+            return identity
+        legacy = state.db.fetchone("SELECT * FROM employee_accounts WHERE phone_number = ? ORDER BY created_at ASC LIMIT 1", (normalized_phone,))
+        return _ensure_identity_from_legacy_member(state, legacy) if legacy else None
+    return None
+
+
+def _identity_row_by_email(state: AppState, email: str):
+    normalized_email = str(email or "").strip().lower()
+    identity = state.db.fetchone("SELECT * FROM cloud_identities WHERE email = ?", (normalized_email,))
+    if identity:
+        return identity
+    legacy = state.db.fetchone("SELECT * FROM employee_accounts WHERE email = ? ORDER BY created_at ASC LIMIT 1", (normalized_email,))
+    return _ensure_identity_from_legacy_member(state, legacy) if legacy else None
+
+
+def _ensure_identity_from_legacy_member(state: AppState, member_row):
+    if not member_row:
+        return None
+    existing = _identity_row_for_member(state, member_row)
+    if existing:
+        return existing
+    timestamp = now_iso()
+    email = str(member_row["email"] or "").strip().lower()
+    if not email:
+        return None
+    identity_id = new_id("ident")
+    phone = str(_row_get(member_row, "phone_number") or "").strip() or None
+    if phone:
+        phone_owner = state.db.fetchone("SELECT id FROM cloud_identities WHERE phone_number = ?", (phone,))
+        if phone_owner:
+            phone = None
+    state.db.execute(
+        """
+        INSERT INTO cloud_identities(id, email, phone_number, full_name, password_hash, last_login_at, created_at, updated_at)
+        VALUES(?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            identity_id,
+            email,
+            phone,
+            str(member_row["full_name"] or ""),
+            str(member_row["password_hash"] or ""),
+            _row_get(member_row, "last_login_at"),
+            _row_get(member_row, "created_at") or timestamp,
+            timestamp,
+        ),
+    )
+    state.db.execute("UPDATE employee_accounts SET identity_id = ? WHERE email = ?", (identity_id, email))
+    return state.db.fetchone("SELECT * FROM cloud_identities WHERE id = ?", (identity_id,))
+
+
+def _member_rows_for_identity(state: AppState, identity_id: str) -> list:
+    rows = state.db.fetchall(
+        """
+        SELECT ea.*, o.name AS organization_name, o.slug AS organization_slug
+        FROM employee_accounts ea
+        JOIN organizations o ON o.id = ea.organization_id
+        WHERE ea.identity_id = ?
+          AND ea.account_status != 'disabled'
+        ORDER BY
+          CASE COALESCE(ea.membership_status, ea.account_status)
+            WHEN 'approved' THEN 0
+            WHEN 'pending' THEN 1
+            WHEN 'none' THEN 2
+            ELSE 3
+          END,
+          ea.created_at ASC
+        """,
+        (identity_id,),
+    )
+    return [_repair_membership_status_from_account(state, row) for row in rows]
+
+
+def _organization_candidate_from_member(state: AppState, row) -> OrganizationCandidate:
+    department_id = str(_row_get(row, "department_id") or "") or None
+    department_name = str(_row_get(row, "department_name") or "") or None
+    identity = _identity_row_for_member(state, row)
+    return OrganizationCandidate(
+        organizationId=str(row["organization_id"]),
+        organizationName=str(_row_get(row, "organization_name") or _organization_name(state, str(row["organization_id"])) or ""),
+        organizationSlug=str(_row_get(row, "organization_slug") or "") or None,
+        memberId=str(row["id"]),
+        fullName=str(row["full_name"]),
+        email=str(identity["email"] if identity else row["email"]),
+        primaryRole=str(row["primary_role"]),
+        accountStatus=str(row["account_status"]),
+        membershipStatus=_account_membership_status(row),
+        departmentId=department_id,
+        departmentName=department_name,
+    )
+
+
+def _create_identity_for_credentials(
+    state: AppState,
+    *,
+    email: str,
+    phone: str | None,
+    full_name: str,
+    password_hash: str,
+    timestamp: str,
+):
+    normalized_email = str(email or "").strip().lower()
+    existing = _identity_row_by_email(state, normalized_email)
+    if existing:
+        return existing
+    normalized_phone = _normalize_account_phone(phone)
+    if normalized_phone:
+        phone_owner = state.db.fetchone("SELECT id FROM cloud_identities WHERE phone_number = ?", (normalized_phone,))
+        if phone_owner:
+            raise HTTPException(status_code=409, detail="手机号已绑定其他账号")
+    identity_id = new_id("ident")
+    state.db.execute(
+        """
+        INSERT INTO cloud_identities(id, email, phone_number, full_name, password_hash, last_login_at, created_at, updated_at)
+        VALUES(?, ?, ?, ?, ?, NULL, ?, ?)
+        """,
+        (identity_id, normalized_email, normalized_phone or None, full_name, password_hash, timestamp, timestamp),
+    )
+    row = state.db.fetchone("SELECT * FROM cloud_identities WHERE id = ?", (identity_id,))
+    if not row:
+        raise HTTPException(status_code=500, detail="身份创建失败")
+    return row
 
 
 # ───────────────────────── 机器人同事(bot)云端注册表 helpers ─────────────────────────
@@ -8171,6 +8322,16 @@ def _feishu_should_skip_stale_inbound_task(
     return remote_seconds + 1 < local_seconds
 
 
+def _feishu_mapping_has_pending_local_outbound(mapping_row, task_row) -> bool:
+    """Return True when local task changes are not safely reflected in Feishu yet."""
+    if not mapping_row:
+        return False
+    status = str(mapping_row["sync_status"] or "").strip()
+    if status not in {"queued", "syncing", "failed", "mapping_conflict"}:
+        return False
+    return True
+
+
 def _feishu_task_item_is_deleted(item: dict | None) -> bool:
     if not isinstance(item, dict):
         return False
@@ -8494,6 +8655,34 @@ def _sync_inbound_feishu_task_to_yiyu(
             )
             return {"status": "failed", "reason": "orphan_mapping", "remoteId": remote_id}
         task_id = str(task_row["id"])
+        if _feishu_mapping_has_pending_local_outbound(existing_mapping, task_row):
+            _upsert_feishu_sync_mapping(
+                state,
+                organization_id=organization_id,
+                local_type="task",
+                local_id=task_id,
+                remote_type="feishu_task",
+                status_value="queued",
+                message="益语任务有尚未成功写回飞书的本地修改，已暂停反向覆盖。",
+                remote_id=remote_id,
+                remote_url=remote_url,
+                metadata={
+                    "triggerSource": "feishu_task_inbound",
+                    "action": "skip_pending_local_outbound",
+                    "previousSyncStatus": str(existing_mapping["sync_status"] or ""),
+                    "remoteUpdatedAt": remote_updated_at,
+                    "localUpdatedAt": str(task_row["updated_at"] or ""),
+                    "lastSyncedAt": str(existing_mapping["last_synced_at"] or ""),
+                    "matchedUserIds": matched_user_ids,
+                    "scopeMode": str(task_row["scope_mode"] or "COLLAB_SHARED"),
+                },
+            )
+            return {
+                "status": "skipped",
+                "reason": "pending_local_outbound",
+                "remoteId": remote_id,
+                "localId": task_id,
+            }
         if _feishu_should_skip_stale_inbound_task(
             remote_updated_at=remote_updated_at,
             local_updated_at=task_row["updated_at"],
@@ -14934,16 +15123,74 @@ def create_app() -> FastAPI:
         )
         return AuthTokenResponse(accessToken=token, refreshToken=refresh_token, user=session_user)
 
-    @app.post("/api/v1/auth/register", response_model=AuthTokenResponse)
-    def register(payload: RegisterPayload) -> AuthTokenResponse:
-        existing = state.db.fetchone("SELECT id FROM employee_accounts WHERE email = ?", (payload.email.lower(),))
-        if existing:
-            raise HTTPException(status_code=409, detail="邮箱已存在，请登录已有云账号绑定。")
+    def _auth_flow_from_token_response(response: AuthTokenResponse) -> AuthFlowResponse:
+        return AuthFlowResponse(
+            accessToken=response.accessToken,
+            refreshToken=response.refreshToken,
+            tokenType=response.tokenType,
+            expiresInSeconds=response.expiresInSeconds,
+            user=response.user,
+            organizationSelectionRequired=False,
+        )
+
+    def _organization_selection_response(identity_row) -> AuthFlowResponse:
+        identity_id = str(identity_row["id"])
+        members = _member_rows_for_identity(state, identity_id)
+        candidates = [_organization_candidate_from_member(state, row) for row in members]
+        selection_token = create_access_token(
+            state.secret_key,
+            identity_id,
+            extra={"purpose": "organization_selection"},
+            expires_minutes=10,
+        )
+        return AuthFlowResponse(
+            organizationSelectionRequired=True,
+            organizationSelectionToken=selection_token,
+            organizations=candidates,
+        )
+
+    def _issue_auth_for_member_row(row) -> AuthFlowResponse:
+        session_id = new_id("sess")
+        refresh_token = new_id("rt")
+        timestamp = now_iso()
+        expires_at = (datetime.now() + timedelta(days=30)).replace(microsecond=0).isoformat()
+        state.db.execute(
+            "INSERT INTO auth_refresh_sessions(id, user_id, refresh_token, created_at, expires_at, revoked_at) VALUES(?, ?, ?, ?, ?, NULL)",
+            (session_id, str(row["id"]), refresh_token, timestamp, expires_at),
+        )
+        state.db.execute(
+            "UPDATE employee_accounts SET last_login_at = ?, updated_at = ? WHERE id = ?",
+            (timestamp, timestamp, str(row["id"])),
+        )
+        identity_id = str(_row_get(row, "identity_id") or "")
+        if identity_id:
+            state.db.execute(
+                "UPDATE cloud_identities SET last_login_at = ?, updated_at = ? WHERE id = ?",
+                (timestamp, timestamp, identity_id),
+            )
+        _log_audit(state, "login", actor_user_id=str(row["id"]), target_user_id=str(row["id"]), detail={"sessionId": session_id})
+        return _auth_flow_from_token_response(_issue_auth_tokens(row, session_id=session_id, refresh_token=refresh_token))
+
+    @app.post("/api/v1/auth/register", response_model=AuthFlowResponse)
+    def register(payload: RegisterPayload) -> AuthFlowResponse:
+        timestamp = now_iso()
+        normalized_email = payload.email.lower()
         normalized_phone = _normalize_account_phone(payload.phone)
-        if normalized_phone:
-            existing_phone = state.db.fetchone("SELECT id FROM employee_accounts WHERE phone_number = ?", (normalized_phone,))
-            if existing_phone:
-                raise HTTPException(status_code=409, detail="手机号已绑定其他账号")
+        identity = _identity_row_by_email(state, normalized_email)
+        password_hash = hash_password(payload.password)
+        if identity:
+            if not verify_password(payload.password, str(identity["password_hash"])):
+                raise HTTPException(status_code=409, detail="邮箱已存在，请登录已有云账号绑定。")
+            password_hash = str(identity["password_hash"])
+        else:
+            identity = _create_identity_for_credentials(
+                state,
+                email=normalized_email,
+                phone=normalized_phone,
+                full_name=payload.fullName,
+                password_hash=password_hash,
+                timestamp=timestamp,
+            )
         invite_department = _resolve_department_from_invite(state, payload.inviteCode, strict=True)
         if payload.inviteCode and not invite_department:
             raise HTTPException(status_code=400, detail="邀请码无效，请确认后重试，或清空邀请码先完成个人注册。")
@@ -14964,7 +15211,12 @@ def create_app() -> FastAPI:
         has_verified_invite = invite_department is not None
         account_status = "approved" if has_verified_invite or not requested_membership else "pending"
         membership_status = "approved" if has_verified_invite else "pending" if requested_membership else "none"
-        timestamp = now_iso()
+        existing_member = state.db.fetchone(
+            "SELECT * FROM employee_accounts WHERE identity_id = ? AND organization_id = ?",
+            (str(identity["id"]), target_organization_id or ""),
+        ) if target_organization_id else None
+        if existing_member:
+            return _issue_auth_for_member_row(existing_member)
         user_id = new_id("emp")
         if not target_organization_id:
             target_organization_id, _ = _create_registration_organization(
@@ -14976,19 +15228,20 @@ def create_app() -> FastAPI:
         state.db.execute(
             """
             INSERT INTO employee_accounts(
-                id, organization_id, email, phone_number, full_name, password_hash, primary_role, account_status,
+                id, identity_id, organization_id, email, phone_number, full_name, password_hash, primary_role, account_status,
                 membership_status, membership_submitted_at, membership_rejected_reason,
                 approved_at, approved_by, rejected_reason, disabled_at, recent_mentions_json, last_login_at,
                 department_id, department_name, job_title, manager_name, current_focus, is_department_lead, created_at, updated_at
-            ) VALUES(?, ?, ?, ?, ?, ?, 'employee', ?, ?, ?, NULL, ?, NULL, NULL, NULL, '[]', ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES(?, ?, ?, ?, ?, ?, ?, 'employee', ?, ?, ?, NULL, ?, NULL, NULL, NULL, '[]', ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 user_id,
+                str(identity["id"]),
                 target_organization_id,
                 payload.email.lower(),
                 normalized_phone or None,
                 payload.fullName,
-                hash_password(payload.password),
+                password_hash,
                 account_status,
                 membership_status,
                 timestamp if requested_membership else None,
@@ -15032,35 +15285,161 @@ def create_app() -> FastAPI:
             (session_id, user_id, refresh_token, timestamp, expires_at),
         )
         _log_audit(state, "register_login", actor_user_id=user_id, target_user_id=user_id, detail={"sessionId": session_id})
-        return _issue_auth_tokens(row, session_id=session_id, refresh_token=refresh_token)
+        return _auth_flow_from_token_response(_issue_auth_tokens(row, session_id=session_id, refresh_token=refresh_token))
 
-    @app.post("/api/v1/auth/login", response_model=AuthTokenResponse)
-    def login(payload: LoginPayload) -> AuthTokenResponse:
+    @app.post("/api/v1/auth/login", response_model=AuthFlowResponse)
+    def login(payload: LoginPayload) -> AuthFlowResponse:
         identifier = str(payload.identifier or payload.email or "").strip()
         if not identifier:
             raise HTTPException(status_code=400, detail="请填写邮箱或手机号")
-        normalized_phone = _normalize_account_phone(identifier)
-        if "@" in identifier:
-            row = state.db.fetchone("SELECT * FROM employee_accounts WHERE email = ?", (identifier.lower(),))
-        else:
-            row = state.db.fetchone("SELECT * FROM employee_accounts WHERE phone_number = ?", (normalized_phone,))
-        if not row or not verify_password(payload.password, str(row["password_hash"])):
+        identity = _identity_row_by_identifier(state, identifier)
+        if not identity or not verify_password(payload.password, str(identity["password_hash"])):
             raise HTTPException(status_code=401, detail="邮箱/手机号或密码错误")
+        member_rows = _member_rows_for_identity(state, str(identity["id"]))
+        if not member_rows:
+            raise HTTPException(status_code=403, detail="当前账号尚未加入任何组织")
+        if len(member_rows) > 1:
+            return _organization_selection_response(identity)
+        row = member_rows[0]
         row = _ensure_login_allowed(row)
-        session_id = new_id("sess")
-        refresh_token = new_id("rt")
+        return _issue_auth_for_member_row(row)
+
+    @app.post("/api/v1/auth/select-organization", response_model=AuthFlowResponse)
+    def select_organization(payload: AuthOrganizationSelectPayload) -> AuthFlowResponse:
+        try:
+            token_payload = decode_access_token(state.secret_key, payload.organizationSelectionToken)
+        except ValueError as exc:
+            raise HTTPException(status_code=401, detail="组织选择已过期，请重新登录") from exc
+        if token_payload.get("purpose") != "organization_selection":
+            raise HTTPException(status_code=401, detail="组织选择令牌无效")
+        identity_id = str(token_payload.get("sub") or "")
+        row = state.db.fetchone(
+            "SELECT * FROM employee_accounts WHERE identity_id = ? AND organization_id = ?",
+            (identity_id, payload.organizationId),
+        )
+        if not row:
+            raise HTTPException(status_code=404, detail="当前账号不属于所选组织")
+        row = _ensure_login_allowed(row)
+        return _issue_auth_for_member_row(row)
+
+    def _current_identity_for_user(current_user: SessionUser):
+        member_row = state.db.fetchone("SELECT * FROM employee_accounts WHERE id = ?", (current_user.id,))
+        if not member_row:
+            raise HTTPException(status_code=404, detail="当前成员不存在")
+        identity = _identity_row_for_member(state, member_row)
+        if not identity:
+            raise HTTPException(status_code=409, detail="当前账号缺少身份绑定，请重新登录后重试")
+        return identity, member_row
+
+    @app.post("/api/v1/auth/organizations/create", response_model=AuthFlowResponse)
+    def create_identity_organization(
+        payload: CreateOrganizationPayload,
+        current_user: SessionUser = Depends(lambda authorization=Header(default=None): _require_auth(app, authorization)),
+    ) -> AuthFlowResponse:
+        identity, current_member = _current_identity_for_user(current_user)
         timestamp = now_iso()
-        expires_at = (datetime.now() + timedelta(days=30)).replace(microsecond=0).isoformat()
+        organization_id, organization_name = _create_registration_organization(
+            state,
+            str(identity["full_name"] or current_user.fullName),
+            timestamp,
+            payload.organizationName,
+        )
+        user_id = new_id("emp")
         state.db.execute(
-            "INSERT INTO auth_refresh_sessions(id, user_id, refresh_token, created_at, expires_at, revoked_at) VALUES(?, ?, ?, ?, ?, NULL)",
-            (session_id, str(row["id"]), refresh_token, timestamp, expires_at),
+            """
+            INSERT INTO employee_accounts(
+                id, identity_id, organization_id, email, phone_number, full_name, password_hash, primary_role,
+                account_status, membership_status, membership_submitted_at, membership_rejected_reason,
+                approved_at, approved_by, rejected_reason, disabled_at, recent_mentions_json, last_login_at,
+                department_id, department_name, job_title, manager_name, current_focus, is_department_lead, created_at, updated_at
+            ) VALUES(?, ?, ?, ?, ?, ?, ?, 'admin', 'approved', 'approved', NULL, NULL, ?, ?, NULL, NULL, '[]', NULL, NULL, NULL, NULL, NULL, '', 0, ?, ?)
+            """,
+            (
+                user_id,
+                str(identity["id"]),
+                organization_id,
+                str(identity["email"]),
+                str(identity["phone_number"] or "") or None,
+                str(identity["full_name"] or current_member["full_name"]),
+                str(identity["password_hash"]),
+                timestamp,
+                current_user.id,
+                timestamp,
+                timestamp,
+            ),
         )
         state.db.execute(
-            "UPDATE employee_accounts SET last_login_at = ?, updated_at = ? WHERE id = ?",
-            (timestamp, timestamp, str(row["id"])),
+            "INSERT INTO employee_role_bindings(id, user_id, role, created_at) VALUES(?, ?, 'admin', ?)",
+            (new_id("role"), user_id, timestamp),
         )
-        _log_audit(state, "login", actor_user_id=str(row["id"]), target_user_id=str(row["id"]), detail={"sessionId": session_id})
-        return _issue_auth_tokens(row, session_id=session_id, refresh_token=refresh_token)
+        _log_audit(
+            state,
+            "identity_create_organization",
+            actor_user_id=current_user.id,
+            target_user_id=user_id,
+            detail={"organizationId": organization_id, "organizationName": organization_name},
+        )
+        row = state.db.fetchone("SELECT * FROM employee_accounts WHERE id = ?", (user_id,))
+        if not row:
+            raise HTTPException(status_code=500, detail="组织创建后未找到成员记录")
+        return _issue_auth_for_member_row(row)
+
+    @app.post("/api/v1/auth/organizations/join", response_model=AuthFlowResponse)
+    def join_identity_organization(
+        payload: JoinOrganizationPayload,
+        current_user: SessionUser = Depends(lambda authorization=Header(default=None): _require_auth(app, authorization)),
+    ) -> AuthFlowResponse:
+        identity, current_member = _current_identity_for_user(current_user)
+        invite_department = _resolve_department_from_invite(state, payload.inviteCode, strict=True)
+        if not invite_department:
+            raise HTTPException(status_code=400, detail="邀请码无效，请确认后重试。")
+        existing = state.db.fetchone(
+            "SELECT * FROM employee_accounts WHERE identity_id = ? AND organization_id = ?",
+            (str(identity["id"]), invite_department.organization_id),
+        )
+        if existing:
+            return _issue_auth_for_member_row(_ensure_login_allowed(existing))
+        timestamp = now_iso()
+        user_id = new_id("emp")
+        state.db.execute(
+            """
+            INSERT INTO employee_accounts(
+                id, identity_id, organization_id, email, phone_number, full_name, password_hash, primary_role,
+                account_status, membership_status, membership_submitted_at, membership_rejected_reason,
+                approved_at, approved_by, rejected_reason, disabled_at, recent_mentions_json, last_login_at,
+                department_id, department_name, job_title, manager_name, current_focus, is_department_lead, created_at, updated_at
+            ) VALUES(?, ?, ?, ?, ?, ?, ?, 'employee', 'approved', 'approved', ?, NULL, ?, NULL, NULL, NULL, '[]', NULL, ?, ?, ?, ?, ?, 0, ?, ?)
+            """,
+            (
+                user_id,
+                str(identity["id"]),
+                invite_department.organization_id,
+                str(identity["email"]),
+                str(identity["phone_number"] or "") or None,
+                str(identity["full_name"] or current_member["full_name"]),
+                str(identity["password_hash"]),
+                timestamp,
+                timestamp,
+                invite_department.department_id,
+                invite_department.department_name,
+                (payload.jobTitle or "").strip() or None,
+                (payload.managerName or "").strip() or None,
+                (payload.currentFocus or "").strip(),
+                timestamp,
+                timestamp,
+            ),
+        )
+        _log_audit(
+            state,
+            "identity_join_organization",
+            actor_user_id=current_user.id,
+            target_user_id=user_id,
+            detail={"organizationId": invite_department.organization_id, "inviteCode": payload.inviteCode},
+        )
+        row = state.db.fetchone("SELECT * FROM employee_accounts WHERE id = ?", (user_id,))
+        if not row:
+            raise HTTPException(status_code=500, detail="加入组织后未找到成员记录")
+        return _issue_auth_for_member_row(row)
 
     @app.post("/api/v1/auth/refresh", response_model=AuthTokenResponse)
     def refresh_auth(payload: RefreshPayload) -> AuthTokenResponse:
@@ -15124,27 +15503,34 @@ def create_app() -> FastAPI:
         payload: UpdateProfilePayload,
         current_user: SessionUser = Depends(lambda authorization=Header(default=None): _require_auth(app, authorization)),
     ) -> SessionUser:
+        identity, _member = _current_identity_for_user(current_user)
         updates: list[str] = []
         params: list[object] = []
+        identity_updates: list[str] = []
+        identity_params: list[object] = []
         if payload.fullName and payload.fullName.strip():
             updates.append("full_name = ?")
             params.append(payload.fullName.strip())
+            identity_updates.append("full_name = ?")
+            identity_params.append(payload.fullName.strip())
         if payload.email:
             normalized_email = str(payload.email).strip().lower()
             existing = state.db.fetchone(
-                "SELECT id FROM employee_accounts WHERE email = ? AND id != ?",
-                (normalized_email, current_user.id),
+                "SELECT id FROM cloud_identities WHERE email = ? AND id != ?",
+                (normalized_email, str(identity["id"])),
             )
             if existing:
                 raise HTTPException(status_code=409, detail="这个邮箱已被其他账号占用。")
             updates.append("email = ?")
             params.append(normalized_email)
+            identity_updates.append("email = ?")
+            identity_params.append(normalized_email)
         if payload.phone is not None:
             normalized_phone = _normalize_account_phone(payload.phone)
             if normalized_phone:
                 existing = state.db.fetchone(
-                    "SELECT id FROM employee_accounts WHERE phone_number = ? AND id != ?",
-                    (normalized_phone, current_user.id),
+                    "SELECT id FROM cloud_identities WHERE phone_number = ? AND id != ?",
+                    (normalized_phone, str(identity["id"])),
                 )
                 if existing:
                     raise HTTPException(status_code=409, detail="这个手机号已被其他账号绑定。")
@@ -15152,18 +15538,30 @@ def create_app() -> FastAPI:
                 params.append(normalized_phone)
                 updates.append("phone_verified_at = COALESCE(phone_verified_at, ?)")
                 params.append(now_iso())
+                identity_updates.append("phone_number = ?")
+                identity_params.append(normalized_phone)
             else:
                 updates.append("phone_number = NULL")
                 updates.append("phone_verified_at = NULL")
+                identity_updates.append("phone_number = NULL")
         if not updates:
             raise HTTPException(status_code=400, detail="没有可更新的字段。")
         updates.append("updated_at = ?")
-        params.append(now_iso())
+        timestamp = now_iso()
+        params.append(timestamp)
         params.append(current_user.id)
         state.db.execute(
             f"UPDATE employee_accounts SET {', '.join(updates)} WHERE id = ?",
             tuple(params),
         )
+        if identity_updates:
+            identity_updates.append("updated_at = ?")
+            identity_params.append(timestamp)
+            identity_params.append(str(identity["id"]))
+            state.db.execute(
+                f"UPDATE cloud_identities SET {', '.join(identity_updates)} WHERE id = ?",
+                tuple(identity_params),
+            )
         row = state.db.fetchone("SELECT * FROM employee_accounts WHERE id = ?", (current_user.id,))
         if not row:
             raise HTTPException(status_code=404, detail="用户不存在。")
@@ -15249,12 +15647,20 @@ def create_app() -> FastAPI:
         row = state.db.fetchone("SELECT * FROM employee_accounts WHERE id = ?", (current_user.id,))
         if not row:
             raise HTTPException(status_code=404, detail="用户不存在")
-        if not verify_password(payload.currentPassword, str(row["password_hash"])):
+        identity = _identity_row_for_member(state, row)
+        password_hash = str(identity["password_hash"] if identity else row["password_hash"])
+        if not verify_password(payload.currentPassword, password_hash):
             raise HTTPException(status_code=400, detail="当前密码不正确")
+        next_hash = hash_password(payload.newPassword)
         state.db.execute(
             "UPDATE employee_accounts SET password_hash = ?, updated_at = ? WHERE id = ?",
-            (hash_password(payload.newPassword), now_iso(), current_user.id),
+            (next_hash, now_iso(), current_user.id),
         )
+        if identity:
+            state.db.execute(
+                "UPDATE cloud_identities SET password_hash = ?, updated_at = ? WHERE id = ?",
+                (next_hash, now_iso(), str(identity["id"])),
+            )
         _log_audit(state, "change_password", actor_user_id=current_user.id, target_user_id=current_user.id, detail={})
         return {"message": "密码修改成功"}
 
@@ -21350,13 +21756,20 @@ def create_app() -> FastAPI:
             _get_user_or_404(state, user_id)
         update_timestamp = now_iso()
         next_progress_status = payload.progressStatus or row["progress_status"]
+        next_start_date = payload.startDate if "startDate" in payload.model_fields_set else (str(row["start_date"]) if row["start_date"] else None)
+        next_due_date = payload.dueDate if "dueDate" in payload.model_fields_set else (str(row["due_date"]) if row["due_date"] else None)
+        next_deadline_at = payload.deadlineAt if "deadlineAt" in payload.model_fields_set else (str(row["deadline_at"]) if row["deadline_at"] else None)
+        next_scheduled_start_at = payload.scheduledStartAt if "scheduledStartAt" in payload.model_fields_set else (str(row["scheduled_start_at"]) if row["scheduled_start_at"] else None)
+        next_scheduled_end_at = payload.scheduledEndAt if "scheduledEndAt" in payload.model_fields_set else (str(row["scheduled_end_at"]) if row["scheduled_end_at"] else None)
+        if "dueDate" in payload.model_fields_set and "deadlineAt" not in payload.model_fields_set:
+            next_deadline_at = payload.dueDate
         temporal_fields = derive_task_temporal_fields(
-            start_date=payload.startDate if "startDate" in payload.model_fields_set else (str(row["start_date"]) if row["start_date"] else None),
-            due_date=payload.dueDate if "dueDate" in payload.model_fields_set else (str(row["due_date"]) if row["due_date"] else None),
+            start_date=next_start_date,
+            due_date=next_due_date,
             duration_minutes=payload.durationMinutes if payload.durationMinutes is not None else previous_duration_minutes,
-            deadline_at=payload.deadlineAt if "deadlineAt" in payload.model_fields_set else (str(row["deadline_at"]) if row["deadline_at"] else None),
-            scheduled_start_at=payload.scheduledStartAt if "scheduledStartAt" in payload.model_fields_set else (str(row["scheduled_start_at"]) if row["scheduled_start_at"] else None),
-            scheduled_end_at=payload.scheduledEndAt if "scheduledEndAt" in payload.model_fields_set else (str(row["scheduled_end_at"]) if row["scheduled_end_at"] else None),
+            deadline_at=next_deadline_at,
+            scheduled_start_at=next_scheduled_start_at,
+            scheduled_end_at=next_scheduled_end_at,
             completed_at=payload.completedAt if "completedAt" in payload.model_fields_set else (str(row["completed_at"]) if row["completed_at"] else None),
             previous_completed_at=str(row["completed_at"]) if row["completed_at"] else None,
             status=str(next_progress_status),

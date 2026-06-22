@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 import shutil
 import sqlite3
 import threading
@@ -10,7 +11,7 @@ from pathlib import Path
 # 之前 20260518001 (200 亿) 远超上限, SQLite 静默 set 为 0, 每次启动都重做完整迁移
 # (这是 20260518 那次坏 db 的真正根因之一: 重做时遇上 reload race + backfill 无事务).
 # 改用 YYYYMMDD 格式 (8 位), 每次 schema 变化递增日期. 20260519 = 此次修复.
-BACKEND_SCHEMA_VERSION = 20260617  # 阶段1: sandbox registry + active_sandbox_id 工作空间壳
+BACKEND_SCHEMA_VERSION = 20260619  # 阶段5: business data scoped by active sandbox
 
 
 # R6：内置罗永浩写作风格的 distilled prompt（手工 distill，不依赖在线抓取，避免外部依赖）。
@@ -94,6 +95,18 @@ class Database:
                 CREATE INDEX IF NOT EXISTS idx_sandboxes_organization
                 ON sandboxes(organization_id);
 
+                CREATE TABLE IF NOT EXISTS sandbox_settings (
+                    sandbox_id TEXT NOT NULL,
+                    key TEXT NOT NULL,
+                    value TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    PRIMARY KEY (sandbox_id, key),
+                    FOREIGN KEY(sandbox_id) REFERENCES sandboxes(id) ON DELETE CASCADE
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_sandbox_settings_key
+                ON sandbox_settings(key);
+
                 CREATE TABLE IF NOT EXISTS local_identities (
                     id TEXT PRIMARY KEY,
                     email TEXT NOT NULL UNIQUE,
@@ -137,6 +150,7 @@ class Database:
 
                 CREATE TABLE IF NOT EXISTS clients (
                     id TEXT PRIMARY KEY,
+                    sandbox_id TEXT NOT NULL DEFAULT '',
                     name TEXT NOT NULL,
                     alias TEXT NOT NULL,
                     domain TEXT NOT NULL,
@@ -1229,6 +1243,7 @@ class Database:
 
                 CREATE TABLE IF NOT EXISTS task_lists (
                     id TEXT PRIMARY KEY,
+                    sandbox_id TEXT NOT NULL DEFAULT '',
                     organization_id TEXT NOT NULL DEFAULT '',
                     name TEXT NOT NULL,
                     color TEXT NOT NULL,
@@ -1247,8 +1262,9 @@ class Database:
 
                 CREATE TABLE IF NOT EXISTS task_tags (
                     id TEXT PRIMARY KEY,
+                    sandbox_id TEXT NOT NULL DEFAULT '',
                     organization_id TEXT NOT NULL DEFAULT '',
-                    name TEXT NOT NULL UNIQUE,
+                    name TEXT NOT NULL,
                     scope TEXT NOT NULL DEFAULT 'org',
                     color TEXT NOT NULL DEFAULT '#5B7BFE',
                     owner_operator_id TEXT NOT NULL DEFAULT '',
@@ -1300,6 +1316,7 @@ class Database:
 
                 CREATE TABLE IF NOT EXISTS tasks (
                     id TEXT PRIMARY KEY,
+                    sandbox_id TEXT NOT NULL DEFAULT '',
                     organization_id TEXT NOT NULL DEFAULT '',
                     title TEXT NOT NULL,
                     description TEXT NOT NULL,
@@ -3962,7 +3979,12 @@ class Database:
             self._ensure_column("clients", "pending_sync_action", "TEXT NOT NULL DEFAULT ''")
             self._ensure_column("clients", "last_synced_at", "TEXT NOT NULL DEFAULT ''")
             self._ensure_column("clients", "last_sync_error", "TEXT NOT NULL DEFAULT ''")
+            self._ensure_column("clients", "sandbox_id", "TEXT NOT NULL DEFAULT ''")
+            self._ensure_column("task_lists", "sandbox_id", "TEXT NOT NULL DEFAULT ''")
+            self._ensure_column("task_tags", "sandbox_id", "TEXT NOT NULL DEFAULT ''")
+            self._rebuild_task_tags_without_global_name_unique()
             self._ensure_column("tasks", "tag_ids_json", "TEXT NOT NULL DEFAULT '[]'")
+            self._ensure_column("tasks", "sandbox_id", "TEXT NOT NULL DEFAULT ''")
             self._ensure_column("tasks", "organization_id", "TEXT NOT NULL DEFAULT ''")
             self._ensure_column("tasks", "creator_id", "TEXT NOT NULL DEFAULT ''")
             self._ensure_column("tasks", "owner_id", "TEXT")
@@ -3993,6 +4015,18 @@ class Database:
             self._ensure_column("tasks", "last_cloud_version", "TEXT NOT NULL DEFAULT ''")
             self._ensure_column("tasks", "pending_sync_action", "TEXT NOT NULL DEFAULT ''")
             self._ensure_column("tasks", "last_sync_error", "TEXT NOT NULL DEFAULT ''")
+            self.conn.executescript(
+                """
+                CREATE INDEX IF NOT EXISTS idx_clients_sandbox_updated
+                    ON clients(sandbox_id, updated_at DESC);
+                CREATE INDEX IF NOT EXISTS idx_tasks_sandbox_updated
+                    ON tasks(sandbox_id, updated_at DESC);
+                CREATE INDEX IF NOT EXISTS idx_task_lists_sandbox_scope
+                    ON task_lists(sandbox_id, scope, sort_order ASC);
+                CREATE INDEX IF NOT EXISTS idx_task_tags_sandbox_scope
+                    ON task_tags(sandbox_id, scope, name COLLATE NOCASE);
+                """
+            )
             # 第一档 #2 fix: tasks 4 个 backfill UPDATE 包显式事务. 中途崩 → rollback 不留半成品.
             # 这些 backfill 都是 idempotent (带 WHERE IS NULL), 重做安全.
             self.conn.commit()  # 先 commit 之前累积的 _ensure_column, 让 backfill 独立成段
@@ -5227,6 +5261,99 @@ class Database:
             self.conn.execute(
                 f"UPDATE {table_name} SET {column_name} = {default_literal} WHERE {column_name} IS NULL"
             )
+
+    def _rebuild_task_tags_without_global_name_unique(self) -> None:
+        row = self.conn.execute(
+            "SELECT sql FROM sqlite_master WHERE type='table' AND name='task_tags'"
+        ).fetchone()
+        raw_sql = str(row["sql"] if row and row["sql"] else "")
+        normalized_sql = re.sub(r"\s+", " ", raw_sql).lower()
+        if "name text not null unique" not in normalized_sql and "unique(name" not in normalized_sql:
+            return
+        backup_table = "task_tags__stage5_global_unique_backup"
+        self.conn.execute(f"DROP TABLE IF EXISTS {backup_table}")
+        self.conn.execute(f"ALTER TABLE task_tags RENAME TO {backup_table}")
+        self.conn.executescript(
+            """
+            CREATE TABLE task_tags (
+                id TEXT PRIMARY KEY,
+                sandbox_id TEXT NOT NULL DEFAULT '',
+                organization_id TEXT NOT NULL DEFAULT '',
+                name TEXT NOT NULL,
+                scope TEXT NOT NULL DEFAULT 'org',
+                color TEXT NOT NULL DEFAULT '#5B7BFE',
+                owner_operator_id TEXT NOT NULL DEFAULT '',
+                operator_id TEXT NOT NULL DEFAULT '',
+                created_by TEXT NOT NULL DEFAULT '',
+                created_at TEXT NOT NULL DEFAULT '',
+                updated_at TEXT NOT NULL DEFAULT '',
+                archived_at TEXT,
+                sync_status TEXT NOT NULL DEFAULT 'local',
+                cloud_id TEXT,
+                cloud_payload_json TEXT NOT NULL DEFAULT '',
+                last_synced_at TEXT NOT NULL DEFAULT '',
+                last_cloud_version TEXT NOT NULL DEFAULT '',
+                pending_sync_action TEXT NOT NULL DEFAULT '',
+                last_sync_error TEXT NOT NULL DEFAULT ''
+            );
+            """
+        )
+        target_columns = [
+            "id",
+            "sandbox_id",
+            "organization_id",
+            "name",
+            "scope",
+            "color",
+            "owner_operator_id",
+            "operator_id",
+            "created_by",
+            "created_at",
+            "updated_at",
+            "archived_at",
+            "sync_status",
+            "cloud_id",
+            "cloud_payload_json",
+            "last_synced_at",
+            "last_cloud_version",
+            "pending_sync_action",
+            "last_sync_error",
+        ]
+        existing_columns = {
+            str(info["name"])
+            for info in self.conn.execute(f"PRAGMA table_info({backup_table})").fetchall()
+        }
+        default_expr = {
+            "sandbox_id": "''",
+            "organization_id": "''",
+            "scope": "'org'",
+            "color": "'#5B7BFE'",
+            "owner_operator_id": "''",
+            "operator_id": "''",
+            "created_by": "''",
+            "created_at": "''",
+            "updated_at": "''",
+            "archived_at": "NULL",
+            "sync_status": "'local'",
+            "cloud_id": "NULL",
+            "cloud_payload_json": "''",
+            "last_synced_at": "''",
+            "last_cloud_version": "''",
+            "pending_sync_action": "''",
+            "last_sync_error": "''",
+        }
+        select_exprs = [
+            column if column in existing_columns else default_expr.get(column, "''")
+            for column in target_columns
+        ]
+        self.conn.execute(
+            f"""
+            INSERT INTO task_tags({", ".join(target_columns)})
+            SELECT {", ".join(select_exprs)}
+            FROM {backup_table}
+            """
+        )
+        self.conn.execute(f"DROP TABLE IF EXISTS {backup_table}")
 
     def has_column(self, table_name: str, column_name: str) -> bool:
         with self._lock:

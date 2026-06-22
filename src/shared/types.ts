@@ -137,6 +137,9 @@ export interface SandboxWorkspaceRecord {
   name: string;
   status: SandboxStatus;
   cloudApiUrl: string;
+  cloudConnected: boolean;
+  cloudUserFullName?: string | null;
+  cloudUserEmail?: string | null;
   organizationId?: string | null;
   organizationName?: string | null;
   localIdentityId?: string | null;
@@ -150,6 +153,17 @@ export interface SandboxWorkspaceRecord {
 export interface SandboxWorkspacesResponse {
   activeSandboxId: string;
   workspaces: SandboxWorkspaceRecord[];
+}
+
+export interface SandboxWorkspaceCreatePayload {
+  kind: SandboxKind;
+  name: string;
+  cloudApiUrl?: string;
+}
+
+export interface SandboxWorkspaceUpdatePayload {
+  name?: string;
+  cloudApiUrl?: string;
 }
 
 export interface SessionUser {
@@ -172,6 +186,20 @@ export interface SessionUser {
   currentFocus?: string | null;
 }
 
+export interface OrganizationCandidate {
+  organizationId: string;
+  organizationName?: string | null;
+  organizationSlug?: string | null;
+  memberId: string;
+  fullName: string;
+  email: string;
+  primaryRole: EmployeeRole;
+  accountStatus: AccountStatus;
+  membershipStatus?: MembershipStatus;
+  departmentId?: string | null;
+  departmentName?: string | null;
+}
+
 export interface AuthState {
   authenticated: boolean;
   user?: SessionUser | null;
@@ -182,6 +210,9 @@ export interface AuthState {
   // 后端 auth/me 在"网络中断 + 本地缓存兜底"时置 true。前端据此把"成员资格未确认"
   // 当成 last-known-good（沿用上次已知身份/数据），而不是当成"被拒绝"去清空客户列表 / 强制身份页。
   degraded?: boolean;
+  organizationSelectionRequired?: boolean;
+  organizationSelectionToken?: string | null;
+  organizations?: OrganizationCandidate[];
 }
 
 export type ConsultationKnowledgeTarget = 'vector_memory' | 'document_archive';
@@ -6671,6 +6702,23 @@ export interface AuthLoginPayload {
   identifier?: string;
   password: string;
   rememberMe?: boolean;
+}
+
+export interface SelectOrganizationPayload {
+  organizationSelectionToken: string;
+  organizationId: string;
+}
+
+export interface CreateOrganizationPayload {
+  organizationName: string;
+}
+
+export interface JoinOrganizationPayload {
+  inviteCode: string;
+  departmentId?: string | null;
+  jobTitle?: string | null;
+  managerName?: string | null;
+  currentFocus?: string | null;
 }
 
 export interface LocalAuthRegisterPayload {

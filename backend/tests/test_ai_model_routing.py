@@ -4,6 +4,7 @@ from pathlib import Path
 
 from app.db import Database
 from app.services.ai import AiService
+from app.services.sandbox_registry import get_active_sandbox_id, get_sandbox_setting
 
 
 class FakeSecretStore:
@@ -150,5 +151,8 @@ def test_profile_api_keys_are_kept_out_of_settings(tmp_path: Path) -> None:
         profile_api_keys={"local_text_deep": "local-secret"},
     )
 
-    assert "local-secret" not in db.get_setting("settings.ai_model_profiles", "")
-    assert stores["ai_profile:local_text_deep"].get_api_key() == "local-secret"
+    active_sandbox_id = get_active_sandbox_id(db)
+    assert "local-secret" not in get_sandbox_setting(db, active_sandbox_id, "settings.ai_model_profiles", "")
+    scoped_store = service._store_for("ai_profile:local_text_deep", base_url="http://127.0.0.1:11434/v1")  # noqa: SLF001
+    assert scoped_store is not None
+    assert scoped_store.get_api_key() == "local-secret"

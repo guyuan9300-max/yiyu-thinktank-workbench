@@ -1148,6 +1148,63 @@ def test_feishu_task_inbound_does_not_overwrite_newer_local_completion(tmp_path,
     assert "remote_stale" in str(mapping["metadata_json"]) or "skip_stale_remote" in str(mapping["metadata_json"])
 
 
+def test_feishu_task_inbound_does_not_revert_local_due_date_when_outbound_sync_failed(tmp_path, monkeypatch):
+    client = make_client(tmp_path, monkeypatch)
+    headers = auth_headers(client)
+    profile = client.get("/api/v1/auth/me", headers=headers).json()
+    organization_id = profile["organizationId"]
+    user_id = bind_current_user_to_feishu(client, headers, receive_id="ou_inbound_due_guard")
+    save_org_feishu_integration(client, headers, monkeypatch)
+    monkeypatch.setattr(cloud_main, "_feishu_fetch_tenant_access_token", lambda **_: ("tenant_demo", {"code": 0}))
+    task_id = create_task(client, headers, ownerId=user_id, dueDate="2026-06-20")
+    state = client.app.state.app_state
+
+    def fail_update_task(**kwargs):
+        raise HTTPException(status_code=400, detail="simulated task update outage")
+
+    monkeypatch.setattr(cloud_main, "_feishu_update_task", fail_update_task)
+    monkeypatch.setattr(
+        cloud_main,
+        "_feishu_member_access_token_for_user",
+        lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("no member token")),
+    )
+
+    response = client.patch(f"/api/v1/tasks/{task_id}", json={"dueDate": "2026-06-26"}, headers=headers)
+
+    assert response.status_code == 200, response.text
+    local_after_patch = state.db.fetchone("SELECT * FROM tasks WHERE id = ?", (task_id,))
+    assert local_after_patch["due_date"] == "2026-06-26"
+    mapping_after_patch = state.db.fetchone(
+        "SELECT * FROM org_feishu_sync_mappings WHERE local_id = ? AND remote_type = 'feishu_task'",
+        (task_id,),
+    )
+    assert mapping_after_patch["sync_status"] == "failed"
+
+    monkeypatch.setattr(cloud_main, "_feishu_member_access_token_for_user", lambda *args, **kwargs: "user_access_demo")
+    seed_feishu_inbound_cursor(client, organization_id, user_id, "ou_inbound_due_guard", since="2026-06-20T00:00:00+08:00")
+    stale_remote_task = {
+        "guid": str(mapping_after_patch["remote_id"]),
+        "summary": "同步到飞书日历",
+        "description": "这是一条需要进入日程的任务。",
+        "members": [{"id": "ou_inbound_due_guard"}],
+        "due": {"date": "2026-06-20", "is_all_day": True},
+        "updated_at": "2026-06-30T09:00:00+08:00",
+    }
+    monkeypatch.setattr(cloud_main, "_feishu_list_member_recent_tasks", lambda **_: {"code": 0, "data": {"items": [stale_remote_task]}})
+
+    result = cloud_main._process_feishu_task_inbound_once(state)  # noqa: SLF001
+
+    assert result["skipped"] == 1
+    local_after_inbound = state.db.fetchone("SELECT * FROM tasks WHERE id = ?", (task_id,))
+    assert local_after_inbound["due_date"] == "2026-06-26"
+    mapping_after_inbound = state.db.fetchone(
+        "SELECT * FROM org_feishu_sync_mappings WHERE local_id = ? AND remote_type = 'feishu_task'",
+        (task_id,),
+    )
+    assert mapping_after_inbound["sync_status"] == "queued"
+    assert "pending_local_outbound" in str(mapping_after_inbound["metadata_json"])
+
+
 def test_feishu_task_inbound_completion_keeps_existing_calendar_event(tmp_path, monkeypatch):
     client = make_client(tmp_path, monkeypatch)
     headers = auth_headers(client)

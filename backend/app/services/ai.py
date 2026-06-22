@@ -16,6 +16,15 @@ import httpx
 
 from app.db import Database
 from app.models import AiStructuredResponse
+from app.services.sandbox_registry import (
+    ACTIVE_SANDBOX_SETTING_KEY,
+    get_active_sandbox,
+    get_active_sandbox_id,
+    get_active_sandbox_setting,
+    get_sandbox_setting,
+    set_active_sandbox_setting,
+    set_sandbox_setting,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -89,6 +98,8 @@ AI_MODEL_PROFILES_SETTING = "settings.ai_model_profiles"
 AI_MODEL_MODES = {"auto", "online_first", "local_first", "local_only"}
 AI_MODEL_PROFILE_KEYS = ("online_primary", "local_text_deep", "local_vision_ocr", "local_fast")
 AI_MODEL_PROFILE_SECRET_PREFIX = "ai_profile:"
+DEVICE_LOCAL_AI_MAIN_SETTING = "settings.device_local_ai_main"
+DEVICE_LOCAL_AI_PROFILES_SETTING = "settings.device_local_ai_profiles"
 AI_MODEL_PROFILE_CAPABILITIES = {
     "online_primary": "online_primary",
     "local_text_deep": "deep_analysis",
@@ -163,6 +174,33 @@ class AiInvocationError(RuntimeError):
         self.detail = detail
 
 
+class _ScopedMemorySecretStore:
+    def __init__(self, bucket: dict[tuple[str, str], str], key: tuple[str, str], source_label: str):
+        self.bucket = bucket
+        self.key = key
+        self.source_label = source_label
+
+    def set_api_key(self, value: str) -> None:
+        self.bucket[self.key] = value.strip()
+
+    def get_api_key(self) -> str:
+        return self.bucket.get(self.key, "")
+
+    def delete_api_key(self) -> None:
+        self.bucket.pop(self.key, None)
+
+    def get_api_key_fingerprint(self) -> str | None:
+        value = self.get_api_key()
+        if not value:
+            return None
+        import hashlib
+
+        return hashlib.sha256(value.encode("utf-8")).hexdigest()[:12]
+
+    def get_source_label(self) -> str:
+        return self.source_label
+
+
 @dataclass(frozen=True)
 class ChatGenerationProfile:
     primary_context: str
@@ -193,6 +231,7 @@ class AiService:
     def __init__(self, db: Database, secret_stores: dict[str, object]):
         self.db = db
         self.secret_stores = secret_stores
+        self._scoped_memory_secrets: dict[tuple[str, str], str] = {}
         self._last_model_snapshot: dict[str, str] = {}
         self._org_cloud_proxy_status_loader: Callable[[], dict[str, object]] | None = None
         self._org_cloud_proxy_chat_completion: Callable[[dict[str, object], float], dict[str, object]] | None = None
@@ -201,31 +240,189 @@ class AiService:
         self._initialize_settings()
 
     def _initialize_settings(self) -> None:
-        provider = self.db.get_setting("ai_provider", "").strip()
+        self._copy_legacy_ai_settings_if_needed()
+        provider = self._get_ai_setting("ai_provider", "").strip()
         if provider in LEGACY_PROVIDER_PRESETS:
             self._migrate_legacy_provider(provider)
             return
         if provider not in DEFAULT_MODELS:
             provider = DEFAULT_PROVIDER
-        self.db.set_setting("ai_provider", provider)
-        if not self.db.get_setting("ai_model", ""):
-            self.db.set_setting("ai_model", DEFAULT_MODELS.get(provider, DEFAULT_MODEL))
+        self._set_ai_setting("ai_provider", provider)
+        if not self._get_ai_setting("ai_model", ""):
+            self._set_ai_setting("ai_model", DEFAULT_MODELS.get(provider, DEFAULT_MODEL))
         if provider == OPENAI_COMPATIBLE_PROVIDER:
-            self.db.set_setting(
+            self._set_ai_setting(
                 "ai_provider_label",
-                self.db.get_setting("ai_provider_label", DEFAULT_OPENAI_COMPATIBLE_LABEL) or DEFAULT_OPENAI_COMPATIBLE_LABEL,
+                self._get_ai_setting("ai_provider_label", DEFAULT_OPENAI_COMPATIBLE_LABEL) or DEFAULT_OPENAI_COMPATIBLE_LABEL,
             )
-            self.db.set_setting(
+            self._set_ai_setting(
                 "ai_base_url",
-                self.db.get_setting("ai_base_url", DEFAULT_OPENAI_COMPATIBLE_BASE_URL) or DEFAULT_OPENAI_COMPATIBLE_BASE_URL,
+                self._get_ai_setting("ai_base_url", DEFAULT_OPENAI_COMPATIBLE_BASE_URL) or DEFAULT_OPENAI_COMPATIBLE_BASE_URL,
             )
+
+    def _active_sandbox_id(self) -> str:
+        active_id = self.db.get_setting(ACTIVE_SANDBOX_SETTING_KEY, "").strip()
+        return active_id or get_active_sandbox_id(self.db)
+
+    def _active_sandbox_is_legacy_default(self) -> bool:
+        try:
+            active_id = self._active_sandbox_id()
+            row = self.db.fetchone("SELECT is_legacy_default FROM sandboxes WHERE id = ?", (active_id,))
+            if row is not None:
+                return bool(row["is_legacy_default"])
+            return bool(get_active_sandbox(self.db).isLegacyDefault)
+        except Exception:
+            return False
+
+    def _get_sandbox_setting_direct(self, sandbox_id: str, key: str, default: str = "") -> str:
+        row = self.db.fetchone(
+            "SELECT value FROM sandbox_settings WHERE sandbox_id = ? AND key = ?",
+            (sandbox_id, key),
+        )
+        return str(row["value"]) if row is not None else default
+
+    def _set_sandbox_setting_direct(self, sandbox_id: str, key: str, value: str) -> None:
+        now = datetime.utcnow().isoformat(timespec="seconds") + "Z"
+        self.db.execute(
+            """
+            INSERT INTO sandbox_settings(sandbox_id, key, value, updated_at)
+            VALUES(?, ?, ?, ?)
+            ON CONFLICT(sandbox_id, key) DO UPDATE SET
+                value = excluded.value,
+                updated_at = excluded.updated_at
+            """,
+            (sandbox_id, key, value or "", now),
+        )
+
+    def _get_ai_setting(self, key: str, default: str = "") -> str:
+        active_id = self._active_sandbox_id()
+        value = self._get_sandbox_setting_direct(active_id, key, "")
+        if value != "":
+            return value
+        local_main = self._device_local_ai_main()
+        sandbox_has_ai_config = bool(self._get_sandbox_setting_direct(active_id, "ai_provider", ""))
+        if not sandbox_has_ai_config and key in {"ai_provider", "ai_provider_label", "ai_base_url", "ai_model"} and local_main:
+            mapped_key = {
+                "ai_provider": "provider",
+                "ai_provider_label": "providerLabel",
+                "ai_base_url": "baseUrl",
+                "ai_model": "model",
+            }[key]
+            local_value = str(local_main.get(mapped_key) or "").strip()
+            if local_value:
+                return local_value
+        if self._active_sandbox_is_legacy_default():
+            legacy_value = self.db.get_setting(key, "")
+            if legacy_value != "":
+                return legacy_value
+        return default
+
+    def _set_ai_setting(self, key: str, value: str) -> None:
+        self._set_sandbox_setting_direct(self._active_sandbox_id(), key, value or "")
+
+    def _load_json_setting_object(self, key: str) -> dict[str, Any]:
+        raw = self.db.get_setting(key, "")
+        if not raw:
+            return {}
+        try:
+            parsed = json.loads(raw)
+        except Exception:
+            return {}
+        return parsed if isinstance(parsed, dict) else {}
+
+    def _save_json_setting_object(self, key: str, value: dict[str, Any]) -> None:
+        self.db.set_setting(key, json.dumps(value, ensure_ascii=False))
+
+    def _device_local_ai_main(self) -> dict[str, object]:
+        payload = self._load_json_setting_object(DEVICE_LOCAL_AI_MAIN_SETTING)
+        base_url = str(payload.get("baseUrl") or payload.get("base_url") or "").strip()
+        model = str(payload.get("model") or "").strip()
+        if not base_url or not model or not self._is_local_base_url(base_url):
+            return {}
+        return {
+            "provider": OPENAI_COMPATIBLE_PROVIDER,
+            "providerLabel": str(payload.get("providerLabel") or payload.get("provider_label") or "本地大模型").strip() or "本地大模型",
+            "baseUrl": self._normalize_base_url(base_url),
+            "model": model,
+        }
+
+    def _save_device_local_ai_main(self, *, provider_label: str, base_url: str, model: str) -> None:
+        if not self._is_local_base_url(base_url) or not model.strip():
+            return
+        self._save_json_setting_object(
+            DEVICE_LOCAL_AI_MAIN_SETTING,
+            {
+                "provider": OPENAI_COMPATIBLE_PROVIDER,
+                "providerLabel": provider_label.strip() or "本地大模型",
+                "baseUrl": self._normalize_base_url(base_url),
+                "model": model.strip(),
+                "updatedAt": datetime.utcnow().isoformat(timespec="seconds") + "Z",
+            },
+        )
+
+    def _device_local_profile_settings(self) -> dict[str, dict[str, object]]:
+        raw = self._load_json_setting_object(DEVICE_LOCAL_AI_PROFILES_SETTING)
+        return {
+            str(key): dict(value)
+            for key, value in raw.items()
+            if str(key) in AI_MODEL_PROFILE_KEYS and isinstance(value, dict)
+        }
+
+    def _save_device_local_profile_setting(self, profile_key: str, profile: dict[str, object]) -> None:
+        if profile_key not in AI_MODEL_PROFILE_KEYS:
+            return
+        normalized = self._normalize_profile_config(profile_key, profile)
+        if not bool(normalized.get("isLocal")):
+            return
+        base_url = str(normalized.get("baseUrl") or "")
+        model = str(normalized.get("model") or "")
+        if not base_url or not model:
+            return
+        current = self._device_local_profile_settings()
+        current[profile_key] = {
+            **normalized,
+            "enabled": False,
+            "updatedAt": datetime.utcnow().isoformat(timespec="seconds") + "Z",
+        }
+        self._save_json_setting_object(DEVICE_LOCAL_AI_PROFILES_SETTING, current)
+
+    def _copy_legacy_ai_settings_if_needed(self) -> None:
+        active_id = self._active_sandbox_id()
+        if self._get_sandbox_setting_direct(active_id, "ai_provider", ""):
+            return
+        provider = self.db.get_setting("ai_provider", "").strip()
+        if not provider:
+            provider = DEFAULT_PROVIDER
+        provider = OPENAI_COMPATIBLE_PROVIDER if provider in LEGACY_PROVIDER_PRESETS else provider
+        if provider not in DEFAULT_MODELS:
+            provider = DEFAULT_PROVIDER
+        provider_label = self.db.get_setting("ai_provider_label", "")
+        base_url = self.db.get_setting("ai_base_url", "")
+        model = self.db.get_setting("ai_model", "") or DEFAULT_MODELS.get(provider, DEFAULT_MODEL)
+        for key, value in {
+            "ai_provider": provider,
+            "ai_provider_label": provider_label,
+            "ai_base_url": base_url,
+            "ai_model": model,
+            ADVANCED_AI_ROUTING_SETTING: self.db.get_setting(ADVANCED_AI_ROUTING_SETTING, ""),
+            AI_MODEL_MODE_SETTING: self.db.get_setting(AI_MODEL_MODE_SETTING, ""),
+            AI_MODEL_PROFILES_SETTING: self.db.get_setting(AI_MODEL_PROFILES_SETTING, ""),
+        }.items():
+            if value != "":
+                self._set_sandbox_setting_direct(active_id, key, value)
+        if provider == OPENAI_COMPATIBLE_PROVIDER and self._is_local_base_url(base_url):
+            self._save_device_local_ai_main(provider_label=provider_label or "本地大模型", base_url=base_url, model=model)
+        for profile_key, profile in self._read_profile_settings(raw=self.db.get_setting(AI_MODEL_PROFILES_SETTING, "")).items():
+            normalized = self._normalize_profile_config(profile_key, profile)
+            if bool(normalized.get("isLocal")):
+                self._save_device_local_profile_setting(profile_key, normalized)
 
     def _migrate_legacy_provider(self, legacy_provider: str) -> None:
         preset = LEGACY_PROVIDER_PRESETS[legacy_provider]
-        self.db.set_setting("ai_provider", OPENAI_COMPATIBLE_PROVIDER)
-        self.db.set_setting("ai_provider_label", self.db.get_setting("ai_provider_label", str(preset["label"])) or str(preset["label"]))
-        self.db.set_setting("ai_base_url", self.db.get_setting("ai_base_url", str(preset["base_url"])) or str(preset["base_url"]))
-        self.db.set_setting("ai_model", self.db.get_setting("ai_model", str(preset["model"])) or str(preset["model"]))
+        self._set_ai_setting("ai_provider", OPENAI_COMPATIBLE_PROVIDER)
+        self._set_ai_setting("ai_provider_label", self._get_ai_setting("ai_provider_label", str(preset["label"])) or str(preset["label"]))
+        self._set_ai_setting("ai_base_url", self._get_ai_setting("ai_base_url", str(preset["base_url"])) or str(preset["base_url"]))
+        self._set_ai_setting("ai_model", self._get_ai_setting("ai_model", str(preset["model"])) or str(preset["model"]))
         self._copy_legacy_api_key(legacy_provider)
 
     def _copy_legacy_api_key(self, legacy_provider: str) -> None:
@@ -263,13 +460,14 @@ class AiService:
         return f"{AI_MODEL_PROFILE_SECRET_PREFIX}{profile_key}"
 
     def advanced_ai_routing_enabled(self) -> bool:
-        return self._normalize_bool(self.db.get_setting(ADVANCED_AI_ROUTING_SETTING, "0"), False)
+        return self._normalize_bool(self._get_ai_setting(ADVANCED_AI_ROUTING_SETTING, "0"), False)
 
     def current_ai_model_mode(self) -> str:
-        return self._normalize_model_mode(self.db.get_setting(AI_MODEL_MODE_SETTING, "auto"))
+        return self._normalize_model_mode(self._get_ai_setting(AI_MODEL_MODE_SETTING, "auto"))
 
-    def _read_profile_settings(self) -> dict[str, dict[str, object]]:
-        raw = self.db.get_setting(AI_MODEL_PROFILES_SETTING, "")
+    def _read_profile_settings(self, raw: str | None = None) -> dict[str, dict[str, object]]:
+        if raw is None:
+            raw = self._get_ai_setting(AI_MODEL_PROFILES_SETTING, "")
         if not raw:
             return {}
         try:
@@ -308,6 +506,14 @@ class AiService:
 
     def current_ai_model_profiles(self) -> dict[str, dict[str, object]]:
         settings = self._read_profile_settings()
+        device_local_profiles = self._device_local_profile_settings()
+        for key, profile in device_local_profiles.items():
+            if key not in AI_MODEL_PROFILE_KEYS:
+                continue
+            current = settings.get(key, {})
+            current_base_url = str(current.get("baseUrl") or current.get("base_url") or "").strip()
+            if not current or not current_base_url or self._is_local_base_url(current_base_url):
+                settings[key] = {**profile, "enabled": bool(current.get("enabled", False))}
         return {
             key: self._normalize_profile_config(key, settings.get(key))
             for key in AI_MODEL_PROFILE_KEYS
@@ -323,19 +529,25 @@ class AiService:
         clear_profile_api_keys: list[str] | None = None,
     ) -> None:
         if advanced_enabled is not None:
-            self.db.set_setting(ADVANCED_AI_ROUTING_SETTING, "1" if bool(advanced_enabled) else "0")
+            self._set_ai_setting(ADVANCED_AI_ROUTING_SETTING, "1" if bool(advanced_enabled) else "0")
         if model_mode is not None:
-            self.db.set_setting(AI_MODEL_MODE_SETTING, self._normalize_model_mode(model_mode))
+            self._set_ai_setting(AI_MODEL_MODE_SETTING, self._normalize_model_mode(model_mode))
         if profiles is not None:
-            current = self.current_ai_model_profiles()
+            current = self._read_profile_settings()
             for key, value in profiles.items():
                 profile_key = str(key)
                 if profile_key not in AI_MODEL_PROFILE_KEYS or not isinstance(value, dict):
                     continue
-                current[profile_key] = self._normalize_profile_config(profile_key, value)
-            self.db.set_setting(AI_MODEL_PROFILES_SETTING, json.dumps(current, ensure_ascii=False))
+                normalized = self._normalize_profile_config(profile_key, value)
+                if bool(normalized.get("isLocal")):
+                    self._save_device_local_profile_setting(profile_key, normalized)
+                    current[profile_key] = {"enabled": bool(normalized.get("enabled", False))}
+                else:
+                    current[profile_key] = normalized
+            self._set_ai_setting(AI_MODEL_PROFILES_SETTING, json.dumps(current, ensure_ascii=False))
         for key in clear_profile_api_keys or []:
-            store = self._store_for(self._profile_store_key(str(key)))
+            profile = self.current_ai_model_profiles().get(str(key), {})
+            store = self._store_for(self._profile_store_key(str(key)), base_url=str(profile.get("baseUrl") or ""))
             if store:
                 store.delete_api_key()
         for key, value in (profile_api_keys or {}).items():
@@ -345,7 +557,8 @@ class AiService:
             clean_key = str(value or "").strip()
             if not clean_key:
                 continue
-            store = self._store_for(self._profile_store_key(profile_key))
+            profile = self.current_ai_model_profiles().get(profile_key, {})
+            store = self._store_for(self._profile_store_key(profile_key), base_url=str(profile.get("baseUrl") or ""))
             if store:
                 store.set_api_key(clean_key)
 
@@ -452,25 +665,25 @@ class AiService:
         return invoker(payload, timeout_seconds)
 
     def current_provider(self) -> str:
-        provider = self.db.get_setting("ai_provider", DEFAULT_PROVIDER)
+        provider = self._get_ai_setting("ai_provider", DEFAULT_PROVIDER)
         return provider if provider in DEFAULT_MODELS else DEFAULT_PROVIDER
 
     def current_provider_label(self) -> str:
         provider = self.current_provider()
         if provider == OPENAI_COMPATIBLE_PROVIDER:
-            return self.db.get_setting("ai_provider_label", DEFAULT_OPENAI_COMPATIBLE_LABEL) or DEFAULT_OPENAI_COMPATIBLE_LABEL
+            return self._get_ai_setting("ai_provider_label", DEFAULT_OPENAI_COMPATIBLE_LABEL) or DEFAULT_OPENAI_COMPATIBLE_LABEL
         return PROVIDER_LABELS.get(provider, provider or "AI")
 
     def current_base_url(self) -> str:
         provider = self.current_provider()
         if provider == OPENAI_COMPATIBLE_PROVIDER:
-            return self._normalize_base_url(self.db.get_setting("ai_base_url", ""))
+            return self._normalize_base_url(self._get_ai_setting("ai_base_url", ""))
         if provider in LEGACY_PROVIDER_PRESETS:
             return str(LEGACY_PROVIDER_PRESETS[provider]["base_url"])
         return ""
 
     def current_model(self) -> str:
-        model = self.db.get_setting("ai_model", "")
+        model = self._get_ai_setting("ai_model", "")
         return model or DEFAULT_MODELS[self.current_provider()]
 
     def current_model_label(self) -> str:
@@ -483,7 +696,7 @@ class AiService:
         cloud sync endpoint (e.g. admin pushing org AI config). Must never be
         returned through a public HTTP response or logged.
         """
-        store = self._store_for(self.current_provider())
+        store = self._store_for(self.current_provider(), base_url=self.current_base_url())
         if not store:
             return ""
         return str(store.get_api_key() or "").strip()
@@ -535,11 +748,11 @@ class AiService:
         if target_provider not in DEFAULT_MODELS:
             target_provider = DEFAULT_PROVIDER
         if provider:
-            self.db.set_setting("ai_provider", target_provider)
+            self._set_ai_setting("ai_provider", target_provider)
             if not model:
-                self.db.set_setting("ai_model", DEFAULT_MODELS[target_provider])
+                self._set_ai_setting("ai_model", DEFAULT_MODELS[target_provider])
         if model is not None:
-            self.db.set_setting("ai_model", model.strip())
+            self._set_ai_setting("ai_model", model.strip())
         if target_provider == OPENAI_COMPATIBLE_PROVIDER:
             if raw_provider in LEGACY_PROVIDER_PRESETS:
                 preset = LEGACY_PROVIDER_PRESETS[raw_provider]
@@ -548,20 +761,30 @@ class AiService:
                 if base_url is None:
                     base_url = str(preset["base_url"])
             if provider_label is not None:
-                self.db.set_setting("ai_provider_label", provider_label.strip())
+                self._set_ai_setting("ai_provider_label", provider_label.strip())
             elif provider:
-                self.db.set_setting(
+                self._set_ai_setting(
                     "ai_provider_label",
-                    self.db.get_setting("ai_provider_label", DEFAULT_OPENAI_COMPATIBLE_LABEL) or DEFAULT_OPENAI_COMPATIBLE_LABEL,
+                    self._get_ai_setting("ai_provider_label", DEFAULT_OPENAI_COMPATIBLE_LABEL) or DEFAULT_OPENAI_COMPATIBLE_LABEL,
                 )
             if base_url is not None:
-                self.db.set_setting("ai_base_url", self._normalize_base_url(base_url))
+                normalized_base_url = self._normalize_base_url(base_url)
+                self._set_ai_setting("ai_base_url", normalized_base_url)
+                if self._is_local_base_url(normalized_base_url):
+                    self._save_device_local_ai_main(
+                        provider_label=provider_label or self.current_provider_label(),
+                        base_url=normalized_base_url,
+                        model=model or self.current_model(),
+                    )
+                    for key in ("ai_provider", "ai_provider_label", "ai_base_url", "ai_model"):
+                        self._set_ai_setting(key, "")
             elif provider:
-                self.db.set_setting(
+                self._set_ai_setting(
                     "ai_base_url",
-                    self.db.get_setting("ai_base_url", DEFAULT_OPENAI_COMPATIBLE_BASE_URL) or DEFAULT_OPENAI_COMPATIBLE_BASE_URL,
+                    self._get_ai_setting("ai_base_url", DEFAULT_OPENAI_COMPATIBLE_BASE_URL) or DEFAULT_OPENAI_COMPATIBLE_BASE_URL,
                 )
-        store = self._store_for(target_provider)
+        target_base_url = self.current_base_url() if target_provider == self.current_provider() else self._normalize_base_url(base_url)
+        store = self._store_for(target_provider, base_url=target_base_url)
         if clear_api_key and store:
             store.delete_api_key()
         if api_key and store:
@@ -572,7 +795,7 @@ class AiService:
         model = self.current_model()
         provider_label = self.current_provider_label()
         base_url = self.current_base_url()
-        store = self._store_for(provider)
+        store = self._store_for(provider, base_url=base_url)
         api_key = store.get_api_key() if store else ""
         return AiResolvedProfile(
             profile_key="unified",
@@ -595,7 +818,7 @@ class AiService:
         base_url = str(normalized.get("baseUrl") or "")
         model = str(normalized.get("model") or "")
         provider_label = str(normalized.get("providerLabel") or "")
-        store = self._store_for(self._profile_store_key(profile_key))
+        store = self._store_for(self._profile_store_key(profile_key), base_url=base_url)
         api_key = store.get_api_key() if store else ""
         return AiResolvedProfile(
             profile_key=profile_key,
@@ -620,7 +843,7 @@ class AiService:
         model = str(normalized.get("model") or "")
         if not base_url or not model:
             return None
-        store = self._store_for(self._profile_store_key("local_text_deep"))
+        store = self._store_for(self._profile_store_key("local_text_deep"), base_url=base_url)
         return AiResolvedProfile(
             profile_key="local_text_deep",
             provider=str(normalized.get("provider") or OPENAI_COMPATIBLE_PROVIDER),
@@ -743,7 +966,7 @@ class AiService:
                 preset = LEGACY_PROVIDER_PRESETS.get(requested_provider or "")
                 base_url = str(preset["base_url"]) if preset else ""
                 provider_label = str(preset["label"]) if preset else llm_display_label(provider, model)
-                store = self._store_for(provider)
+                store = self._store_for(provider, base_url=base_url)
                 api_key = store.get_api_key() if store else ""
                 source = store.get_source_label() if store else "unavailable"
                 fingerprint = store.get_api_key_fingerprint() if store else None
@@ -961,7 +1184,7 @@ class AiService:
                 "error": f"{llm_display_label(target_provider, target_model, target_label)} 接口地址 Base URL 未配置。",
                 "errorKind": "config_error",
             }
-        store = self._store_for(target_provider)
+        store = self._store_for(target_provider, base_url=target_base_url)
         api_key = store.get_api_key() if store else ""
         if not api_key and not self._is_local_base_url(target_base_url):
             return {
@@ -4746,8 +4969,57 @@ class AiService:
             "confidence": confidence,
         }
 
-    def _store_for(self, provider: str) -> Any | None:
-        return self.secret_stores.get(provider)
+    def _secret_scope_account(self, base_url: str | None = None) -> tuple[str, str]:
+        if self._is_local_base_url(base_url):
+            return "device-local", "device"
+        return f"sandbox:{self._active_sandbox_id()}", "sandbox"
+
+    def _store_for(self, provider: str, *, base_url: str | None = None) -> Any | None:
+        base_store = self.secret_stores.get(provider)
+        if base_store is None:
+            return None
+        account_name, scope_kind = self._secret_scope_account(base_url)
+        if hasattr(base_store, "service_name"):
+            try:
+                scoped = base_store.__class__(
+                    service_name=getattr(base_store, "service_name"),
+                    account_name=account_name,
+                )
+            except TypeError:
+                scoped = None
+        else:
+            scoped = None
+        if scoped is None:
+            scoped = _ScopedMemorySecretStore(
+                self._scoped_memory_secrets,
+                (provider, account_name),
+                f"memory:{scope_kind}",
+            )
+        self._seed_scoped_secret_from_legacy_if_needed(provider, scoped, base_store, base_url)
+        return scoped
+
+    def _seed_scoped_secret_from_legacy_if_needed(
+        self,
+        provider: str,
+        scoped_store: Any,
+        legacy_store: Any,
+        base_url: str | None,
+    ) -> None:
+        should_seed = self._active_sandbox_is_legacy_default()
+        if not should_seed:
+            return
+        try:
+            if str(scoped_store.get_api_key() or "").strip():
+                return
+            legacy_key = str(legacy_store.get_api_key() or "").strip()
+        except Exception:
+            return
+        if not legacy_key:
+            return
+        try:
+            scoped_store.set_api_key(legacy_key)
+        except Exception:
+            return
 
     def _mock_generate(self, prompt: str, context_summary: str) -> AiStructuredResponse:
         topic = self._short_topic(prompt)

@@ -204,6 +204,8 @@ import type {
   WorkspaceAnswerFinalization,
   WorkspaceAnswerPresentation,
   SourceIntegrityReport,
+  OrganizationCandidate,
+  SandboxWorkspaceRecord,
   SandboxWorkspacesResponse,
 } from '../shared/types';
 import {
@@ -358,6 +360,12 @@ import {
   getWeeklyOverviewRefreshStatus,
   getSettings,
   getWorkspaces,
+  createWorkspace,
+  updateWorkspace,
+  activateWorkspace,
+  selectOrganization,
+  createOrganization,
+  joinOrganization,
   getStrategicCockpit,
   getSupportRequests,
   getSystemAdminSettings,
@@ -7610,8 +7618,19 @@ export default function App() {
       org_rules: false,
       system_logs: false,
       about: false,
-    });
+  });
   const [workspacesState, setWorkspacesState] = useState<SandboxWorkspacesResponse | null>(null);
+  const [workspaceManagerOpen, setWorkspaceManagerOpen] = useState(false);
+  const [workspaceManagerBusy, setWorkspaceManagerBusy] = useState(false);
+  const [businessWorkspaceResetKey, setBusinessWorkspaceResetKey] = useState(0);
+  const [workspaceCreateOrgDraft, setWorkspaceCreateOrgDraft] = useState({ organizationName: '', cloudApiUrl: '' });
+  const [workspaceJoinOrgDraft, setWorkspaceJoinOrgDraft] = useState({ inviteCode: '', cloudApiUrl: '' });
+  const [organizationSelection, setOrganizationSelection] = useState<{
+    token: string;
+    organizations: OrganizationCandidate[];
+  } | null>(null);
+  const activeWorkspaceRecord: SandboxWorkspaceRecord | null =
+    workspacesState?.workspaces.find((item) => item.id === workspacesState.activeSandboxId) || null;
   const [logs, setLogs] = useState<
     Array<{
       id: string;
@@ -8077,6 +8096,24 @@ export default function App() {
     }
   }, [authState.message]);
 
+  useEffect(() => {
+    if (authState.authenticated) return;
+    if (
+      authState.sessionMode === 'local'
+      && authState.requiresLocalIdentitySetup
+      && authState.localIdentityStatus === 'needs_setup'
+    ) {
+      setAuthShellMode('register');
+      setAuthShellMessage('');
+    }
+  }, [
+    authState.authenticated,
+    authState.localIdentityStatus,
+    authState.requiresLocalIdentitySetup,
+    authState.sessionMode,
+    workspacesState?.activeSandboxId,
+  ]);
+
   // 退出守卫数据源：每 5s 拉取后端"进行中/排队的后台任务"上报主进程。
   // 以后端 run 状态为权威真相(跨客户准确，不受当前选中客户影响)；关闭软件时
   // before-quit 据此把"录音 + 这些任务"合并成一个提醒，避免误关导致任务失败/丢失。
@@ -8449,6 +8486,196 @@ export default function App() {
       rememberInputs: localInputMemoryState.cloudAuth.rememberInputs,
     });
     setCloudAuthModalOpen(true);
+  };
+
+  const resetFeishuWorkspaceTransientState = () => {
+    setOrgFeishuIntegrationState(DEFAULT_ORG_FEISHU_INTEGRATION);
+    setFeishuDeliveryProfileState(DEFAULT_FEISHU_DELIVERY_PROFILE);
+    setFeishuMemberAuthorizationState(DEFAULT_FEISHU_MEMBER_AUTHORIZATION);
+    setFeishuAuthorizationFlowState(null);
+    setFeishuAuthorizationBusyAction('idle');
+    setIsFeishuImportOpen(false);
+    setFeishuImportStatus(null);
+    setFeishuImportQuery('');
+    setFeishuImportLinksText('');
+    setFeishuImportCandidates([]);
+    setSelectedFeishuImportKeys([]);
+    setIsFeishuImportLoading(false);
+    setIsFeishuImportSubmitting(false);
+    setFeishuImportResult(null);
+    setFeishuImportMessage('');
+  };
+
+  const resetBusinessWorkspaceTransientState = () => {
+    optimisticTasksRef.current.clear();
+    setClients([]);
+    setCurrentClientId('');
+    setWorkspace(null);
+    setWorkspacePageContext(null);
+    setWorkspacePageContextError(null);
+    setWorkspacePersistedProposalDrafts([]);
+    setWorkspacePersistedProposalDraftsError(null);
+    setWorkspacePersistedProposalDraftsBusyId(null);
+    setTasks([]);
+    setTaskLists([]);
+    setTaskTags([]);
+    setClientWorkspaceInlineEditor(null);
+    setWorkspaceSelectedMeetingId('');
+    setWorkspaceMeetingTranscript('');
+    setWorkspaceMeetingNotes('');
+    setClientEditorModalState({
+      open: false,
+      editingClientId: null,
+      requestId: `workspace-reset-${Date.now()}`,
+      initialDraft: createEmptyClientEditorDraft(),
+    });
+    setBusinessWorkspaceResetKey((value) => value + 1);
+  };
+
+  const refreshWorkspaceAwareState = async (nextWorkspaces?: SandboxWorkspacesResponse) => {
+    if (nextWorkspaces) setWorkspacesState(nextWorkspaces);
+    resetFeishuWorkspaceTransientState();
+    resetBusinessWorkspaceTransientState();
+    await Promise.all([
+      loadSettingsBlock(),
+      loadAuthBlock(),
+      loadLocalInputMemoryBlock(),
+      refreshMaintenanceModeStatus({ silent: true }),
+    ]);
+    await Promise.all([
+      loadOrgMembershipBlock().catch(() => DEFAULT_ORG_MEMBERSHIP_SUMMARY),
+      loadOrgFeishuIntegrationBlock().catch(() => DEFAULT_ORG_FEISHU_INTEGRATION),
+      loadFeishuDeliveryProfileBlock().catch(() => DEFAULT_FEISHU_DELIVERY_PROFILE),
+      loadFeishuMemberAuthorizationBlock().catch(() => DEFAULT_FEISHU_MEMBER_AUTHORIZATION),
+    ]);
+    await Promise.all([
+      loadClientWorkspaceSettingsBlock().catch(() => undefined),
+      loadClientBlock().catch(() => undefined),
+      loadTaskSettingsBlock().catch(() => undefined),
+      loadTaskBlock().catch(() => undefined),
+    ]);
+  };
+
+  const handleActivateWorkspace = async (workspaceId: string) => {
+    setWorkspaceManagerBusy(true);
+    try {
+      const response = await activateWorkspace(workspaceId);
+      await refreshWorkspaceAwareState(response);
+      flash('success', '已切换工作空间。客户、任务和文档已按当前工作空间刷新显示。');
+    } catch (error) {
+      flash('error', error instanceof Error ? error.message : '切换工作空间失败');
+    } finally {
+      setWorkspaceManagerBusy(false);
+    }
+  };
+
+  const workspaceActionCloudUrl = (value: string) => cloudApiUrlFromHost(value);
+
+  const activeWorkspaceMatchesCloudUrl = (cloudApiUrl: string) => {
+    if (!cloudApiUrl || !activeWorkspaceRecord?.cloudConnected) return false;
+    return normalizeUrlForComparison(activeWorkspaceRecord.cloudApiUrl) === normalizeUrlForComparison(cloudApiUrl);
+  };
+
+  const createPendingOrganizationWorkspace = async (params: {
+    name: string;
+    cloudApiUrl: string;
+    successMessage: string;
+  }) => {
+    const response = await createWorkspace({
+      kind: 'organization',
+      name: params.name,
+      cloudApiUrl: params.cloudApiUrl || undefined,
+    });
+    await refreshWorkspaceAwareState(response);
+    flash('success', params.successMessage);
+  };
+
+  const handleCreateOrganizationWorkspace = async () => {
+    const organizationName = workspaceCreateOrgDraft.organizationName.trim();
+    const cloudApiUrl = workspaceActionCloudUrl(workspaceCreateOrgDraft.cloudApiUrl);
+    if (!organizationName) {
+      flash('error', '请填写要创建的组织名称。');
+      return;
+    }
+    setWorkspaceManagerBusy(true);
+    try {
+      if (activeWorkspaceMatchesCloudUrl(cloudApiUrl)) {
+        const response = await createOrganization({ organizationName });
+        setAuthState(response);
+        setWorkspaceCreateOrgDraft({ organizationName: '', cloudApiUrl: '' });
+        await loadAll();
+        flash('success', '新组织已在云端创建，并已切换到对应工作空间。');
+        return;
+      }
+      await createPendingOrganizationWorkspace({
+        name: organizationName,
+        cloudApiUrl,
+        successMessage: cloudApiUrl
+          ? '已创建并切换到该组织工作空间。请在系统设置里确认云端地址并登录后，再完成真实组织开通。'
+          : '已创建并切换到该组织工作空间沙箱。填入云端地址并登录后，才会真正连接云端组织。',
+      });
+      setWorkspaceCreateOrgDraft({ organizationName: '', cloudApiUrl: '' });
+    } catch (error) {
+      flash('error', error instanceof Error ? error.message : '创建组织工作空间失败');
+    } finally {
+      setWorkspaceManagerBusy(false);
+    }
+  };
+
+  const handleJoinOrganizationWorkspace = async () => {
+    const inviteCode = normalizeDepartmentInviteInput(workspaceJoinOrgDraft.inviteCode);
+    const cloudApiUrl = workspaceActionCloudUrl(workspaceJoinOrgDraft.cloudApiUrl);
+    if (!inviteCode) {
+      flash('error', '请填写组织或部门邀请码。');
+      return;
+    }
+    if (!cloudApiUrl) {
+      flash('error', '请填写对方组织的云端服务地址。');
+      return;
+    }
+    setWorkspaceManagerBusy(true);
+    try {
+      if (activeWorkspaceMatchesCloudUrl(cloudApiUrl)) {
+        const response = await joinOrganization({ inviteCode });
+        setAuthState(response);
+        setWorkspaceJoinOrgDraft({ inviteCode: '', cloudApiUrl: '' });
+        await loadAll();
+        flash('success', '已加入组织，并已切换到对应工作空间。');
+        return;
+      }
+      const inviteLabel = inviteCode.length > 8 ? `${inviteCode.slice(0, 8)}…` : inviteCode;
+      await createPendingOrganizationWorkspace({
+        name: `待加入组织 · ${inviteLabel}`,
+        cloudApiUrl,
+        successMessage: '已创建并切换到待加入组织工作空间。请在系统设置里确认云端地址并登录后，再提交邀请码完成加入。',
+      });
+      setWorkspaceJoinOrgDraft({ inviteCode: '', cloudApiUrl: '' });
+    } catch (error) {
+      flash('error', error instanceof Error ? error.message : '加入组织工作空间失败');
+    } finally {
+      setWorkspaceManagerBusy(false);
+    }
+  };
+
+  const handleSelectOrganization = async (organizationId: string) => {
+    if (!organizationSelection?.token) return;
+    setCloudAuthSubmitting(true);
+    setCloudAuthMessage('');
+    try {
+      const response = await selectOrganization({
+        organizationSelectionToken: organizationSelection.token,
+        organizationId,
+      });
+      setAuthState(response);
+      setOrganizationSelection(null);
+      await loadAll();
+      setCloudAuthModalOpen(false);
+      flash('success', '已进入所选组织工作空间。');
+    } catch (error) {
+      setCloudAuthMessage(error instanceof Error ? error.message : '选择组织失败');
+    } finally {
+      setCloudAuthSubmitting(false);
+    }
   };
 
   useEffect(() => {
@@ -9832,6 +10059,14 @@ export default function App() {
           managerName: cloudAuthForm.managerName || null,
           currentFocus: cloudAuthForm.currentFocus || null,
         });
+        if (response.organizationSelectionRequired) {
+          setOrganizationSelection({
+            token: response.organizationSelectionToken || '',
+            organizations: response.organizations || [],
+          });
+          setCloudAuthMessage(response.message || '请选择要进入的组织工作空间。');
+          return;
+        }
         setAuthState(response);
       } else {
         const response = await login({
@@ -9839,6 +10074,14 @@ export default function App() {
           password: cloudAuthForm.password,
           rememberMe: cloudAuthForm.rememberMe,
         });
+        if (response.organizationSelectionRequired) {
+          setOrganizationSelection({
+            token: response.organizationSelectionToken || '',
+            organizations: response.organizations || [],
+          });
+          setCloudAuthMessage(response.message || '请选择要进入的组织工作空间。');
+          return;
+        }
         setAuthState(response);
       }
       try {
@@ -10447,6 +10690,12 @@ export default function App() {
             </button>
           </div>
 
+          <div className="mb-5 rounded-2xl border border-blue-100 bg-blue-50/70 px-4 py-3 text-[12px] leading-5 text-blue-800">
+            {mode === 'login'
+              ? '这里登录的是本机工作空间账号，不是益语智库云端组织账号。若你第一次使用本机工作空间，请先创建本机账号。'
+              : '这里创建的是只保存在本机工作空间的账号。可以使用与你云端账号相同的邮箱，但本机密码与云端组织密码不会自动同步。'}
+          </div>
+
           <div className="space-y-3.5">
             {mode === 'login' && (
               <>
@@ -10504,7 +10753,7 @@ export default function App() {
             {mode === 'register' && (
               <>
                 <p className="px-1 text-[11px] text-gray-400 leading-relaxed">
-                  先创建本机账号 · 连接云端后再同步和加入组织
+                  先创建本机账号 · 以后可在工作空间管理里连接云端或加入组织
                 </p>
                 {/* Step 切换:underline 风格,与登录/注册 tab 一致 */}
                 <div className="flex items-center gap-6 border-b border-gray-100 pb-px">
@@ -10624,6 +10873,142 @@ export default function App() {
     );
   };
 
+  const renderWorkspaceManagerModal = () => {
+    if (!workspaceManagerOpen) return null;
+    const workspaces = workspacesState?.workspaces || [];
+    return (
+      <div className="fixed inset-0 z-[88] flex items-center justify-center bg-slate-950/35 px-4">
+        <div className="w-full max-w-[860px] max-h-[88vh] overflow-y-auto rounded-[30px] border border-gray-100 bg-white shadow-[0_24px_90px_rgba(15,23,42,0.18)]">
+          <div className="flex items-start justify-between gap-4 border-b border-gray-100 px-7 py-6">
+            <div>
+              <p className="text-[11px] font-bold uppercase tracking-[0.16em] text-[#5B7BFE]">WORKSPACE · 工作空间</p>
+              <h2 className="mt-2 text-[24px] font-bold text-gray-900">工作空间管理</h2>
+              <p className="mt-2 text-[13px] leading-6 text-gray-500">
+                客户、任务和文档按工作空间隔离；AI、飞书和云连接会随工作空间切换。
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={() => setWorkspaceManagerOpen(false)}
+              className="inline-flex h-10 w-10 items-center justify-center rounded-2xl border border-gray-200 bg-white text-gray-500 hover:text-gray-900"
+              aria-label="关闭"
+            >
+              <X size={18} />
+            </button>
+          </div>
+          <div className="grid gap-5 px-7 py-6 lg:grid-cols-[1.25fr_0.9fr]">
+            <div className="space-y-3">
+              {workspaces.map((workspace) => {
+                const active = workspace.id === workspacesState?.activeSandboxId;
+                const kindLabel = workspace.kind === 'organization' ? '组织工作空间' : '本机工作空间';
+                const cloudLabel = workspace.kind === 'local'
+                  ? '纯个人空间'
+                  : workspace.cloudApiUrl ? (cloudApiHostValue(workspace.cloudApiUrl) || '已配置云端') : '未配置云端';
+                const userLabel = workspace.kind === 'local'
+                  ? '不显示组织空间内容'
+                  : workspace.cloudConnected
+                    ? (workspace.cloudUserFullName || workspace.cloudUserEmail || '已登录云端')
+                    : '未登录云端';
+                return (
+                  <div key={workspace.id} className={`rounded-2xl border px-4 py-3 ${active ? 'border-blue-200 bg-blue-50/70' : 'border-gray-100 bg-gray-50/70'}`}>
+                    <div className="flex items-start justify-between gap-3">
+                      <div className="min-w-0">
+                        <div className="flex flex-wrap items-center gap-2">
+                          <p className="truncate text-[15px] font-semibold text-gray-950">{workspace.name}</p>
+                          {active && <span className="rounded-full bg-blue-600 px-2 py-0.5 text-[10px] font-bold text-white">当前</span>}
+                        </div>
+                        <p className="mt-1 text-[12px] text-gray-500">{kindLabel} · {cloudLabel} · {userLabel}</p>
+                        {workspace.kind === 'local' && (
+                          <p className="mt-1 text-[11px] leading-5 text-gray-500">
+                            本机工作空间只保存个人使用数据，不参与组织云同步，也不会显示组织工作空间的客户、任务和文档。
+                          </p>
+                        )}
+                        {workspace.organizationName && <p className="mt-1 text-[11px] text-gray-400">组织：{workspace.organizationName}</p>}
+                      </div>
+                      {!active && (
+                        <Button disabled={workspaceManagerBusy} onClick={() => void handleActivateWorkspace(workspace.id)}>
+                          切换
+                        </Button>
+                      )}
+                    </div>
+                  </div>
+                );
+              })}
+              {workspaces.length === 0 && (
+                <div className="rounded-2xl border border-dashed border-gray-200 px-4 py-8 text-center text-[13px] text-gray-500">
+                  暂无工作空间。
+                </div>
+              )}
+            </div>
+            <div className="space-y-4 rounded-2xl border border-gray-100 bg-white px-4 py-4">
+              <div>
+                <p className="text-[13px] font-semibold text-gray-900">组织工作空间操作</p>
+              </div>
+              <div className="rounded-2xl border border-gray-100 bg-gray-50/70 px-4 py-4 space-y-3">
+                <div>
+                  <p className="text-[13px] font-semibold text-gray-900">加入另一个组织</p>
+                  <p className="mt-1 text-[12px] leading-5 text-gray-500">
+                    需要填写对方组织的云端服务地址和邀请码；只有连到对应云端后，加入申请才会发送给该组织管理员。
+                  </p>
+                </div>
+                <label className="block text-[12px] font-semibold text-gray-600">
+                  组织 / 部门邀请码
+                  <input
+                    value={workspaceJoinOrgDraft.inviteCode}
+                    onChange={(event) => setWorkspaceJoinOrgDraft((prev) => ({ ...prev, inviteCode: event.target.value }))}
+                    className="mt-1.5 w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-[13px] outline-none focus:border-[#5B7BFE]"
+                    placeholder="邀请码"
+                  />
+                </label>
+                <label className="block text-[12px] font-semibold text-gray-600">
+                  云端服务地址
+                  <input
+                    value={workspaceJoinOrgDraft.cloudApiUrl}
+                    onChange={(event) => setWorkspaceJoinOrgDraft((prev) => ({ ...prev, cloudApiUrl: event.target.value }))}
+                    className="mt-1.5 w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-[13px] outline-none focus:border-[#5B7BFE]"
+                    placeholder="https://your-cloud.example.com"
+                  />
+                </label>
+                <Button className="w-full" disabled={workspaceManagerBusy} onClick={() => void handleJoinOrganizationWorkspace()}>
+                  创建待加入组织工作空间
+                </Button>
+              </div>
+              <div className="rounded-2xl border border-gray-100 bg-gray-50/70 px-4 py-4 space-y-3">
+                <div>
+                  <p className="text-[13px] font-semibold text-gray-900">创建另一个组织</p>
+                  <p className="mt-1 text-[12px] leading-5 text-gray-500">
+                    可先创建组织工作空间；之后在该工作空间的系统设置里补充云端服务地址并登录，再完成真实组织开通。
+                  </p>
+                </div>
+                <label className="block text-[12px] font-semibold text-gray-600">
+                  新组织名称
+                  <input
+                    value={workspaceCreateOrgDraft.organizationName}
+                    onChange={(event) => setWorkspaceCreateOrgDraft((prev) => ({ ...prev, organizationName: event.target.value }))}
+                    className="mt-1.5 w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-[13px] outline-none focus:border-[#5B7BFE]"
+                    placeholder="例如：第二项目组"
+                  />
+                </label>
+                <label className="block text-[12px] font-semibold text-gray-600">
+                  云端服务地址
+                  <input
+                    value={workspaceCreateOrgDraft.cloudApiUrl}
+                    onChange={(event) => setWorkspaceCreateOrgDraft((prev) => ({ ...prev, cloudApiUrl: event.target.value }))}
+                    className="mt-1.5 w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-[13px] outline-none focus:border-[#5B7BFE]"
+                    placeholder="https://your-cloud.example.com"
+                  />
+                </label>
+                <Button className="w-full" disabled={workspaceManagerBusy} onClick={() => void handleCreateOrganizationWorkspace()}>
+                  创建组织工作空间
+                </Button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  };
+
   const renderCloudAuthModal = () => {
     if (!cloudAuthModalOpen) return null;
     const rememberedAccounts = localInputMemoryState.cloudAuth.accounts;
@@ -10647,7 +11032,7 @@ export default function App() {
               <h2 className="mt-2 text-[24px] font-bold text-gray-900">{cloudAuthMode === 'register' ? '注册个人账号' : '登录云端账号'}</h2>
               <p className="mt-2 text-[13px] text-gray-500">
                 {cloudAuthMode === 'register'
-                  ? '注册账号依赖云端服务；开源版默认不提供云。本机模式可直接使用，接好云端后再注册、同步和加入组织。'
+                  ? '注册账号依赖云端服务；开源版默认不提供云。本机工作空间可直接使用，接好云端后再注册、同步和加入组织。'
                   : '登录云端后才会启用云同步、组织协作和需要组织数据的功能。'}
               </p>
             </div>
@@ -10690,6 +11075,30 @@ export default function App() {
                 注册
               </button>
             </div>
+
+            {organizationSelection && (
+              <div className="rounded-2xl border border-blue-100 bg-blue-50/70 px-4 py-4">
+                <p className="text-[14px] font-bold text-gray-950">选择要进入的组织工作空间</p>
+                <p className="mt-1 text-[12px] leading-5 text-gray-600">这个账号属于多个组织。请选择一个组织，软件会自动切换到对应工作空间。</p>
+                <div className="mt-3 grid gap-2">
+                  {organizationSelection.organizations.map((org) => (
+                    <button
+                      key={org.organizationId}
+                      type="button"
+                      disabled={cloudAuthSubmitting}
+                      onClick={() => void handleSelectOrganization(org.organizationId)}
+                      className="rounded-xl border border-blue-100 bg-white px-3 py-3 text-left hover:border-blue-300"
+                    >
+                      <div className="flex items-center justify-between gap-3">
+                        <span className="text-[13px] font-semibold text-gray-900">{org.organizationName || org.organizationId}</span>
+                        <span className="text-[11px] text-blue-600">{org.primaryRole === 'admin' ? '管理员' : '成员'} · {org.membershipStatus || 'approved'}</span>
+                      </div>
+                      <p className="mt-1 text-[11px] text-gray-500">{org.email}{org.departmentName ? ` · ${org.departmentName}` : ''}</p>
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
 
             {cloudAuthMode === 'register' && (
               <div className="flex items-center gap-2 rounded-2xl bg-gray-50 p-1 text-[12px] font-bold text-gray-500">
@@ -20421,6 +20830,10 @@ export default function App() {
     const [filesTabSearchInput, setFilesTabSearchInput] = useState('');
     const [feishuDocumentSyncStatusById, setFeishuDocumentSyncStatusById] = useState<Record<string, FeishuSyncStatusRecord | null>>({});
     const [feishuDocumentSyncingById, setFeishuDocumentSyncingById] = useState<Record<string, boolean>>({});
+    useEffect(() => {
+      setFeishuDocumentSyncStatusById({});
+      setFeishuDocumentSyncingById({});
+    }, [workspacesState?.activeSandboxId]);
     const visibleFeishuDocuments = useMemo(() => {
       if (workspaceRightTab !== 'files') return [];
       return (workspace?.documents || [])
@@ -29271,8 +29684,7 @@ export default function App() {
     const AccountProfileCard = () => {
       const cardIsLocal = isLocalSession;
       const canSubmit =
-        !cardIsLocal
-        && !profileSubmitting
+        !profileSubmitting
         && Boolean(profileDraft.fullName?.trim())
         && Boolean(profileDraft.email?.trim())
         && (
@@ -29284,55 +29696,46 @@ export default function App() {
         <div className="space-y-4">
           {cardIsLocal && (
             <p className="rounded-xl border border-blue-100 bg-blue-50 px-3 py-2 text-[11px] text-blue-700">
-              本机模式。连接云端后这里会显示姓名 / 昵称 / 邮箱 / 登录手机号。
+              本机账号信息只保存在当前本机工作空间，不会同步到组织云端。
             </p>
           )}
           <div>
             {renderFieldLabel('姓名 / 昵称')}
             <input
-              value={cardIsLocal ? '' : (profileDraft.fullName || '')}
+              value={profileDraft.fullName || ''}
               onChange={(event) => setProfileDraft((prev) => ({ ...prev, fullName: event.target.value }))}
-              placeholder={cardIsLocal ? '登录后填写' : '姓名 / 昵称'}
+              placeholder="姓名 / 昵称"
               className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2.5 text-[13px] outline-none focus:border-[#5B7BFE] disabled:text-gray-400 disabled:bg-gray-50"
-              disabled={cardIsLocal}
             />
           </div>
           <div>
             {renderFieldLabel('邮箱')}
             <input
-              value={cardIsLocal ? '' : (profileDraft.email || '')}
+              value={profileDraft.email || ''}
               onChange={(event) => setProfileDraft((prev) => ({ ...prev, email: event.target.value }))}
-              placeholder={cardIsLocal ? '登录后填写' : '邮箱'}
+              placeholder="邮箱"
               className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2.5 text-[13px] outline-none focus:border-[#5B7BFE] disabled:text-gray-400 disabled:bg-gray-50"
-              disabled={cardIsLocal}
             />
           </div>
           <div>
             {renderFieldLabel('登录手机号')}
             <input
-              value={cardIsLocal ? '' : (profileDraft.phone || '')}
+              value={profileDraft.phone || ''}
               onChange={(event) => setProfileDraft((prev) => ({ ...prev, phone: event.target.value }))}
-              placeholder={cardIsLocal ? '登录后填写' : '可选,与飞书通知手机号无关'}
+              placeholder="可选,与飞书通知手机号无关"
               className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2.5 text-[13px] outline-none focus:border-[#5B7BFE] disabled:text-gray-400 disabled:bg-gray-50"
-              disabled={cardIsLocal}
             />
           </div>
-          {!cardIsLocal && profileMessage && (
+          {profileMessage && (
             <p className={`rounded-xl border px-3 py-2 text-[12px] ${profileMessage.includes('已更新') ? 'border-emerald-200 bg-emerald-50 text-emerald-700' : 'border-rose-200 bg-rose-50 text-rose-600'}`}>
               {profileMessage}
             </p>
           )}
           <div className="pt-2 border-t border-gray-100">
-            {cardIsLocal ? (
-              <Button primary onClick={() => openCloudAuthModal('login')}>
-                <ShieldAlert size={16} /> 注册 / 登录
-              </Button>
-            ) : (
-              <Button primary onClick={() => void handleSaveProfile()} disabled={!canSubmit}>
-                {profileSubmitting ? <RefreshCw size={16} className="animate-spin" /> : <User size={16} />}
-                保存基本信息
-              </Button>
-            )}
+            <Button primary onClick={() => void handleSaveProfile()} disabled={!canSubmit}>
+              {profileSubmitting ? <RefreshCw size={16} className="animate-spin" /> : <User size={16} />}
+              保存基本信息
+            </Button>
           </div>
         </div>
       );
@@ -29436,7 +29839,7 @@ export default function App() {
                 <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-gray-400">登录账号</p>
                 <span className="mt-3 text-[20px] leading-none font-light tracking-tight text-gray-900 truncate">{currentSessionUser?.fullName || currentSessionUser?.email || '未登录'}</span>
                 <div className="mt-2 h-[2px] w-8 rounded-full bg-emerald-500" />
-                <p className="mt-2 text-[11px] text-gray-400 truncate">{isLocalSession ? '本机模式' : '云端账号'}</p>
+                <p className="mt-2 text-[11px] text-gray-400 truncate">{isLocalSession ? '本机账号' : '云端账号'}</p>
               </div>
               <div className="flex flex-col">
                 <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-gray-400">组织身份</p>
@@ -29468,7 +29871,7 @@ export default function App() {
               eyebrow: 'PROFILE · 基本信息',
               title: '姓名 · 邮箱 · 登录手机号',
               helper: isLocalSession
-                ? '当前是本机模式。连接云端后可在此维护姓名 / 昵称、邮箱、登录手机号。'
+                ? '当前是本机工作空间。这里维护的是本机账号资料，不会同步到组织空间。'
                 : '飞书通知手机号在飞书集成里单独维护,不要混淆。',
               statusChip: isLocalSession
                 ? { text: '本机', tone: 'neutral' }
@@ -29476,11 +29879,11 @@ export default function App() {
               tint: true,
               children: <AccountProfileCard />,
             })}
-            {!isLocalSession && renderFoldable({
+            {currentSessionUser && renderFoldable({
               key: 'password',
               eyebrow: 'SECURITY · 修改密码',
               title: '登录密码',
-              helper: '新密码至少 8 位。',
+              helper: isLocalSession ? '修改当前本机账号密码。新密码至少 8 位。' : '修改当前云端账号密码。新密码至少 8 位。',
               children: <ChangePasswordCard flash={flash} />,
             })}
           </div>
@@ -29579,8 +29982,15 @@ export default function App() {
                   {activeWorkspace?.name || '工作空间底座未加载'}
                 </p>
                 <p className="mt-1 text-[12px] leading-5 text-blue-800">
-                  当前阶段仅用于标记归属底座，历史客户、任务、文档和资料库尚未拆分；现有登录、云端连接、AI 与飞书设置仍按原流程工作。
+                  客户、任务和文档按工作空间隔离；AI、飞书和云连接会随工作空间切换。
                 </p>
+                <button
+                  type="button"
+                  onClick={() => setWorkspaceManagerOpen(true)}
+                  className="mt-3 rounded-xl border border-blue-200 bg-white/80 px-3 py-1.5 text-[12px] font-semibold text-blue-700 hover:bg-white"
+                >
+                  管理工作空间
+                </button>
               </div>
               <div className="grid grid-cols-3 gap-3 text-right md:min-w-[360px]">
                 <div>
@@ -29603,12 +30013,15 @@ export default function App() {
           <div>
             {renderFoldable({
               key: 'primary',
-              eyebrow: 'PRIMARY · 主链接',
-              title: '云端地址 · 大模型 · API Key',
-              helper: '用于客户工作台问答、报告生成、洞察分析等所有文字分析。本机模式可先接入；连接云端后只有管理员可写。',
+              eyebrow: 'WORKSPACE AI · 当前工作空间 AI',
+              title: '云端地址 · 远程 AI · API Key',
+              helper: '远程 AI 与 API Key 只属于当前工作空间；本地大模型是这台电脑的共享资源，所有工作空间都可以选择使用。',
               statusChip: primaryReady ? { text: '已配置', tone: 'success' } : { text: '未完成', tone: 'warning' },
               children: (
                 <div className="space-y-5">
+                  <div className="rounded-xl border border-indigo-100 bg-indigo-50 px-3 py-2 text-[11px] leading-5 text-indigo-700">
+                    当前工作空间：{activeWorkspaceRecord?.name || '未加载'}。豆包、通义、自定义兼容接口等远程 AI 会随工作空间切换；localhost / 127.0.0.1 的本地模型作为本机共享能力保留。
+                  </div>
                   <div>
                     <p className="text-[11px] font-bold uppercase tracking-[0.12em] text-gray-500 mb-2">云端服务地址</p>
                     <div className="flex items-center overflow-hidden rounded-xl border border-gray-200 bg-white focus-within:border-[#5B7BFE]">
@@ -29677,7 +30090,7 @@ export default function App() {
                   </div>
 
                   <div>
-                    <p className="text-[11px] font-bold uppercase tracking-[0.12em] text-gray-500 mb-2">API Key</p>
+                    <p className="text-[11px] font-bold uppercase tracking-[0.12em] text-gray-500 mb-2">API Key（远程 AI 仅当前工作空间）</p>
                     <input
                       type="password"
                       value={draft.apiKey}
@@ -29694,7 +30107,7 @@ export default function App() {
                         onChange={(event) => setRememberAiInputKey(event.target.checked)}
                         disabled={!canManageSensitiveSettings}
                       />
-                      记住当前 API Key（仅本机）
+                      记住当前 API Key（仅当前工作空间）
                     </label>
                   </div>
 
@@ -29706,7 +30119,7 @@ export default function App() {
 
                   {isLocalSession && (
                     <p className="rounded-xl border border-blue-100 bg-blue-50 px-3 py-2 text-[11px] text-blue-700">
-                      本机模式：可先保存云端地址，再打开登录窗口连接云端账号。
+                      本机工作空间：可先保存云端地址，再打开登录窗口连接云端账号。
                     </p>
                   )}
 
@@ -29732,7 +30145,7 @@ export default function App() {
               key: 'advanced',
               eyebrow: 'ADVANCED · 高级模型分工',
               title: '按任务派发不同模型',
-              helper: '开启后按任务类型派发不同模型（向量 / 视觉 / 重排）。关闭时所有调用都走主链接。',
+              helper: '开启后按任务类型派发不同模型。本地 Ollama 等 localhost 模型是本机共享资源；远程线上 profile 仍按当前工作空间隔离。',
               statusChip: draft.advancedAiRoutingEnabled
                 ? { text: '已启用', tone: 'success' }
                 : { text: '未启用', tone: 'neutral' },
@@ -29908,6 +30321,7 @@ export default function App() {
                   memberAuthorizationFlow={feishuAuthorizationFlowState}
                   memberAuthorizationBusy={feishuAuthorizationBusyAction !== 'idle'}
                   currentUserName={currentSessionUser?.fullName || null}
+                  currentWorkspaceName={activeWorkspaceRecord?.name || null}
                   saveBusy={isSavingOrgFeishuIntegration}
                   savePhoneBusy={isSavingFeishuDeliveryProfile}
                   rememberedInputs={localInputMemoryState.feishuIntegration}
@@ -30282,7 +30696,7 @@ export default function App() {
               </div>
               <div className="flex flex-col">
                 <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-gray-400">云端</p>
-                <span className="mt-3 text-[20px] leading-none font-light tracking-tight text-gray-900 truncate">{isCloud ? '已连接' : '本机模式'}</span>
+                <span className="mt-3 text-[20px] leading-none font-light tracking-tight text-gray-900 truncate">{isCloud ? '已连接' : '本机工作空间'}</span>
                 <div className={`mt-2 h-[2px] w-8 rounded-full ${isCloud ? 'bg-emerald-500' : 'bg-amber-500'}`} />
                 <p className="mt-2 text-[11px] text-gray-400 truncate">{isCloud ? '组织数据库已接通' : '需连云端后才能搭建组织'}</p>
               </div>
@@ -30722,9 +31136,9 @@ export default function App() {
   };
 
   const viewMap: Record<NavKey, React.ReactNode> = {
-    tasks: <TasksView />,
+    tasks: <TasksView key={`tasks-${businessWorkspaceResetKey}`} />,
     client_workspace: (
-      <WorkspaceClientStoreProvider state={workspaceClientUiState} dispatch={dispatchWorkspaceClientUi}>
+      <WorkspaceClientStoreProvider key={`client-workspace-${businessWorkspaceResetKey}`} state={workspaceClientUiState} dispatch={dispatchWorkspaceClientUi}>
         <ClientWorkspaceView>{renderClientWorkspaceView}</ClientWorkspaceView>
       </WorkspaceClientStoreProvider>
     ),
@@ -31277,8 +31691,18 @@ export default function App() {
               {/* 当前登录 — 紧贴系统设置下方, 用稍微缩进的轻量信息块, 不再有顶部 border */}
               <div className="px-5 pb-4 pt-2">
                 <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-gray-400 mb-1">CURRENT · 当前登录</p>
-                <p className="text-[12px] font-medium text-gray-900 truncate">{isLocalSession ? '本机模式' : currentSessionUser.fullName}</p>
-                <p className="text-[10.5px] text-gray-400 truncate mt-0.5">{isLocalSession ? `未连接云端 · ${sidebarAiStatusLabel} · ${health?.stats.clients || 0} 客户` : `${sidebarAiStatusLabel} · ${health?.stats.clients || 0} 客户`}</p>
+                <button
+                  type="button"
+                  onClick={() => setWorkspaceManagerOpen(true)}
+                  className="mb-1 block max-w-full truncate text-left text-[10.5px] font-semibold text-[#5B7BFE] hover:text-[#425fe8]"
+                  title={activeWorkspaceRecord?.name || '工作空间'}
+                >
+                  工作空间：{activeWorkspaceRecord?.name || '未加载'}
+                </button>
+                <p className="text-[12px] font-medium text-gray-900 truncate">
+                  {currentSessionUser.fullName || currentSessionUser.email || (isLocalSession ? '本机账号' : '未命名账号')}
+                </p>
+                <p className="text-[10.5px] text-gray-400 truncate mt-0.5">{isLocalSession ? `本机工作空间 · ${sidebarAiStatusLabel} · ${health?.stats.clients || 0} 客户` : `${sidebarAiStatusLabel} · ${health?.stats.clients || 0} 客户`}</p>
                 {isLocalSession ? (
                   <button
                     type="button"
@@ -31363,6 +31787,7 @@ export default function App() {
           />
         </React.Suspense>
       )}
+      {renderWorkspaceManagerModal()}
       {renderCloudAuthModal()}
       {attachmentDeleteConfirm && (
         <div className="fixed inset-0 bg-black/35 z-[60] flex items-center justify-center animate-in fade-in">

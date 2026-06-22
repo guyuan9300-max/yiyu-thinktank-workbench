@@ -11,6 +11,7 @@ sys.path.append(str(Path(__file__).resolve().parents[1]))
 
 import app.main as app_main  # noqa: E402
 from app.main import create_app  # noqa: E402
+from app.services.sandbox_registry import get_active_sandbox_setting  # noqa: E402
 
 
 def make_client(tmp_path: Path) -> TestClient:
@@ -64,5 +65,5 @@ def test_auth_me_refreshes_expired_cloud_session(tmp_path: Path, monkeypatch):
     payload = response.json()
     assert payload["authenticated"] is True
     assert payload["user"]["email"] == "guyuan@klngo.org"
-    assert db.get_setting("cloud_access_token", "") == "fresh-access"
-    assert db.get_setting("cloud_refresh_token", "") == "refresh-2"
+    assert get_active_sandbox_setting(db, "cloud_access_token", "") == "fresh-access"
+    assert get_active_sandbox_setting(db, "cloud_refresh_token", "") == "refresh-2"

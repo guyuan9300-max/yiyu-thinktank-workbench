@@ -11,6 +11,7 @@ sys.path.append(str(Path(__file__).resolve().parents[1]))
 
 import app.main as app_main  # noqa: E402
 from app.main import create_app  # noqa: E402
+from app.services.sandbox_registry import get_active_sandbox, get_active_sandbox_setting  # noqa: E402
 
 
 def make_client(tmp_path: Path) -> TestClient:
@@ -65,6 +66,9 @@ def test_register_restores_cloud_session_immediately(tmp_path: Path, monkeypatch
     assert payload["authenticated"] is True
     assert payload["sessionMode"] == "cloud"
     assert payload["user"]["email"] == "personal@example.com"
-    assert db.get_setting("cloud_access_token", "") == "cloud-access-token"
-    assert db.get_setting("cloud_refresh_token", "") == "cloud-refresh-token"
-    assert json.loads(db.get_setting("cloud_session_user", ""))["email"] == "personal@example.com"
+    active_workspace = get_active_sandbox(db)
+    assert active_workspace.kind == "organization"
+    assert active_workspace.organizationId == "org_yiyu_default"
+    assert get_active_sandbox_setting(db, "cloud_access_token", "") == "cloud-access-token"
+    assert get_active_sandbox_setting(db, "cloud_refresh_token", "") == "cloud-refresh-token"
+    assert json.loads(get_active_sandbox_setting(db, "cloud_session_user", ""))["email"] == "personal@example.com"

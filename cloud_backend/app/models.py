@@ -48,12 +48,60 @@ class SessionUser(BaseModel):
     isDepartmentLead: bool = False
 
 
+class OrganizationCandidate(BaseModel):
+    organizationId: str
+    organizationName: str | None = None
+    organizationSlug: str | None = None
+    memberId: str
+    fullName: str
+    email: EmailStr
+    primaryRole: PrimaryRole
+    accountStatus: AccountStatus
+    membershipStatus: MembershipStatus = "approved"
+    departmentId: str | None = None
+    departmentName: str | None = None
+
+
 class AuthTokenResponse(BaseModel):
     accessToken: str
     refreshToken: str | None = None
     tokenType: str = "bearer"
     expiresInSeconds: int = 12 * 60 * 60
     user: SessionUser
+
+
+class AuthOrganizationSelectionResponse(BaseModel):
+    organizationSelectionRequired: bool = True
+    organizationSelectionToken: str
+    organizations: list[OrganizationCandidate]
+
+
+class AuthOrganizationSelectPayload(BaseModel):
+    organizationSelectionToken: str = Field(min_length=1)
+    organizationId: str = Field(min_length=1)
+
+
+class CreateOrganizationPayload(BaseModel):
+    organizationName: str = Field(min_length=1)
+
+
+class JoinOrganizationPayload(BaseModel):
+    inviteCode: str = Field(min_length=1)
+    departmentId: str | None = None
+    jobTitle: str | None = None
+    managerName: str | None = None
+    currentFocus: str | None = None
+
+
+class AuthFlowResponse(BaseModel):
+    accessToken: str | None = None
+    refreshToken: str | None = None
+    tokenType: str = "bearer"
+    expiresInSeconds: int = 12 * 60 * 60
+    user: SessionUser | None = None
+    organizationSelectionRequired: bool = False
+    organizationSelectionToken: str | None = None
+    organizations: list[OrganizationCandidate] = Field(default_factory=list)
 
 
 class RegisterPayload(BaseModel):

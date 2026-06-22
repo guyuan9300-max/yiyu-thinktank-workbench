@@ -190,6 +190,68 @@ def test_local_login_verifies_password_and_respects_remember_me(tmp_path: Path) 
     assert remembered_auth.json()["user"]["email"] == "remember@example.com"
 
 
+def test_local_profile_and_password_update_stay_local(tmp_path: Path, monkeypatch) -> None:
+    client = make_client(tmp_path / "data")
+
+    def fail_cloud_request(*args, **kwargs):
+        raise AssertionError("local profile/password should not call cloud httpx")
+
+    monkeypatch.setattr(app_main.httpx, "request", fail_cloud_request)
+
+    register = client.post(
+        "/api/v1/local-auth/register",
+        json={
+            "email": "profile@example.com",
+            "phone": "13800138000",
+            "fullName": "原本机用户",
+            "password": "Password123!",
+            "organizationMode": "create",
+            "organizationName": "本机空间",
+        },
+    )
+    assert register.status_code == 200, register.text
+
+    profile = client.patch(
+        "/api/v1/auth/me",
+        json={"email": "profile-new@example.com", "phone": "13900139000", "fullName": "新本机用户"},
+    )
+    assert profile.status_code == 200, profile.text
+    payload = profile.json()
+    assert payload["sessionMode"] == "local"
+    assert payload["user"]["email"] == "profile-new@example.com"
+    assert payload["user"]["phone"] == "13900139000"
+    assert payload["user"]["fullName"] == "新本机用户"
+
+    wrong_password = client.post(
+        "/api/v1/auth/change-password",
+        json={"currentPassword": "bad-password", "newPassword": "Password456!"},
+    )
+    assert wrong_password.status_code == 400
+
+    changed = client.post(
+        "/api/v1/auth/change-password",
+        json={"currentPassword": "Password123!", "newPassword": "Password456!"},
+    )
+    assert changed.status_code == 200, changed.text
+
+    logout = client.post("/api/v1/auth/logout")
+    assert logout.status_code == 200, logout.text
+    assert logout.json()["authenticated"] is False
+
+    old_login = client.post(
+        "/api/v1/local-auth/login",
+        json={"identifier": "profile-new@example.com", "password": "Password123!", "rememberMe": True},
+    )
+    assert old_login.status_code == 401
+
+    new_login = client.post(
+        "/api/v1/local-auth/login",
+        json={"identifier": "13900139000", "password": "Password456!", "rememberMe": True},
+    )
+    assert new_login.status_code == 200, new_login.text
+    assert new_login.json()["user"]["email"] == "profile-new@example.com"
+
+
 def test_auth_me_requires_local_identity_setup_for_legacy_workspace_data(tmp_path: Path) -> None:
     client = make_client(tmp_path / "data")
     db = client.app.state.app_state.db
@@ -425,7 +487,9 @@ def test_cloud_login_uses_org_ai_proxy_over_local_mock_for_member(tmp_path: Path
     assert last_payload["lastCloudAiSyncStatus"]["providerLabel"] == "组织统一大模型"
     assert last_payload["lastCloudAiSyncStatus"]["model"] == "shared-org-model"
     assert last_payload["lastCloudAiSyncStatus"]["proxyMode"] == "cloud_proxy"
-    assert last_payload["settings"]["aiProvider"] == "mock"
+    assert last_payload["settings"]["aiProvider"] == "openai_compatible"
+    assert last_payload["settings"]["aiCredentialSource"] == "organization_cloud_proxy"
+    assert last_payload["settings"]["aiFingerprint"] is None
     assert last_payload["settings"]["aiConfigured"] is True
 
 

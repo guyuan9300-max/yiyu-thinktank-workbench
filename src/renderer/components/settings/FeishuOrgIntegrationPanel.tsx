@@ -49,6 +49,7 @@ type Props = {
   memberAuthorizationFlow: MemberAuthorizationFlow | null;
   memberAuthorizationBusy: boolean;
   currentUserName?: string | null;
+  currentWorkspaceName?: string | null;
   saveBusy: boolean;
   savePhoneBusy: boolean;
   rememberedInputs: LocalInputMemoryFeishuIntegration;
@@ -95,6 +96,7 @@ export function FeishuOrgIntegrationPanel({
   memberAuthorizationFlow,
   memberAuthorizationBusy,
   currentUserName,
+  currentWorkspaceName,
   saveBusy,
   savePhoneBusy,
   rememberedInputs,
@@ -187,6 +189,13 @@ export function FeishuOrgIntegrationPanel({
   return (
     <div className="space-y-8">
       <div className="space-y-5">
+        <div className="rounded-2xl border border-slate-200 bg-white px-4 py-3">
+          <p className="text-[11px] font-bold uppercase tracking-[0.12em] text-slate-400">当前工作空间</p>
+          <p className="mt-1 text-[14px] font-bold text-slate-900">{currentWorkspaceName || '当前工作空间'}</p>
+          <p className="mt-1 text-[12px] leading-6 text-slate-500">
+            飞书自建应用、成员飞书身份绑定、飞书成员匹配手机号都只属于当前工作空间；切换工作空间后会重新读取对应组织或本机的飞书状态。
+          </p>
+        </div>
         <div className="rounded-2xl border border-indigo-100 bg-indigo-50/80 px-4 py-3 text-[13px] font-semibold leading-6 text-slate-800">
           请依次完成飞书自建应用接入、我的飞书身份绑定、飞书成员匹配手机号。飞书任务、文档和日历提醒依赖飞书自建应用；成员绑定飞书身份后，任务和文档才能正确落到本人权限下。
         </div>

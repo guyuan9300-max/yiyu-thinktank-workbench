@@ -11,6 +11,7 @@ sys.path.append(str(Path(__file__).resolve().parents[1]))
 
 import app.main as app_main  # noqa: E402
 from app.main import create_app  # noqa: E402
+from app.services.sandbox_registry import set_active_sandbox_setting  # noqa: E402
 
 
 BASE_URL = "http://127.0.0.1:47830"
@@ -35,9 +36,9 @@ def seed_cloud_session(client: TestClient) -> None:
     }
     state = client.app.state.app_state
     state.cloud_api_url = BASE_URL
-    state.db.set_setting("cloud_api_url", BASE_URL)
-    state.db.set_setting("cloud_access_token", "token_admin")
-    state.db.set_setting("cloud_session_user", json.dumps(user_payload, ensure_ascii=False))
+    set_active_sandbox_setting(state.db, "cloud_api_url", BASE_URL)
+    set_active_sandbox_setting(state.db, "cloud_access_token", "token_admin")
+    set_active_sandbox_setting(state.db, "cloud_session_user", json.dumps(user_payload, ensure_ascii=False))
 
 
 def test_local_maintenance_mode_requires_cloud_session(tmp_path: Path) -> None:

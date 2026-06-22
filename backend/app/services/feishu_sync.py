@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import json
 from datetime import datetime, timedelta, timezone
-from typing import Any, Literal
+from typing import Any, Callable, Literal
 
 import httpx
 
@@ -529,15 +529,16 @@ def list_approval_instances(
 class FeishuSyncState:
     """管理飞书同步的状态和 token 缓存"""
 
-    def __init__(self, db: Any, feishu_secret_store: Any):
+    def __init__(self, db: Any, feishu_secret_store: Any, settings_getter: Callable[[str, str], str] | None = None):
         self.db = db
         self.secret_store = feishu_secret_store
+        self.settings_getter = settings_getter or db.get_setting
         self._cached_token: str | None = None
         self._token_expires_at: float = 0
 
     def _get_bot_config(self) -> tuple[str, str]:
         """获取飞书 App ID 和 Secret"""
-        raw = self.db.get_setting("feishu_bot", "{}")
+        raw = self.settings_getter("feishu_bot", "{}")
         import json as _json
         config = _json.loads(raw) if isinstance(raw, str) else {}
         app_id = str(config.get("appId") or "").strip()
@@ -567,7 +568,7 @@ class FeishuSyncState:
     def get_user_binding(self, user_id: str) -> dict | None:
         """获取用户的飞书绑定信息"""
         import json as _json
-        raw = self.db.get_setting(f"feishu_user_binding:{user_id}", "")
+        raw = self.settings_getter(f"feishu_user_binding:{user_id}", "")
         if not raw:
             return None
         try:
@@ -581,7 +582,7 @@ class FeishuSyncState:
     def get_receiver_config(self) -> tuple[str, str]:
         """获取全局消息接收者配置"""
         import json as _json
-        raw = self.db.get_setting("feishu_bot", "{}")
+        raw = self.settings_getter("feishu_bot", "{}")
         config = _json.loads(raw) if isinstance(raw, str) else {}
         return str(config.get("receiveIdType") or "open_id"), str(config.get("receiverId") or "")
 

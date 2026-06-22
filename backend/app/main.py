@@ -261,6 +261,8 @@ from app.models import (
     AuthLoginPayload,
     AuthRegisterPayload,
     AuthStateResponse,
+    CreateOrganizationPayload,
+    JoinOrganizationPayload,
     LocalAuthLoginPayload,
     LocalAuthRegisterPayload,
     LocalInputMemoryAiSettings,
@@ -276,8 +278,11 @@ from app.models import (
     AmbiguityItem,
     AppSettingsPayload,
     AppSettingsResponse,
+    SandboxWorkspaceCreatePayload,
     SandboxWorkspaceRecord,
+    SandboxWorkspaceUpdatePayload,
     SandboxWorkspacesResponse,
+    SelectOrganizationPayload,
     BackupResponse,
     BadgeBoardResponse,
     ChatMessageRecord,
@@ -1240,9 +1245,23 @@ from app.services.learning_presets import (
 )
 from app.services.secrets import MacOSKeychainSecretStore, MemorySecretStore
 from app.services.sandbox_registry import (
+    DEFAULT_LOCAL_SANDBOX_ID,
+    activate_sandbox,
     build_workspaces_response,
+    clear_active_cloud_session,
+    create_sandbox,
     ensure_sandbox_registry,
+    ensure_organization_sandbox_for_session,
     get_active_sandbox,
+    get_active_sandbox_id,
+    get_active_sandbox_setting,
+    get_sandbox_kind,
+    get_sandbox_local_identity_id,
+    get_sandbox_setting,
+    set_active_sandbox_setting,
+    set_sandbox_local_identity_id,
+    set_sandbox_setting,
+    update_sandbox,
 )
 from app.services.version_manifest import (
     backend_source_hash,
@@ -1642,7 +1661,7 @@ def normalize_configured_cloud_api_url(raw_url: str | None) -> str:
 
 def resolve_initial_cloud_api_url(db: Database) -> str:
     raw_env_url = os.environ.get("YIYU_CLOUD_API_URL")
-    raw_url = raw_env_url if raw_env_url is not None else db.get_setting("cloud_api_url", "")
+    raw_url = raw_env_url if raw_env_url is not None else get_active_sandbox_setting(db, "cloud_api_url", db.get_setting("cloud_api_url", ""))
     try:
         return normalize_configured_cloud_api_url(raw_url)
     except ValueError as exc:
@@ -1670,13 +1689,16 @@ class AppState:
     chat_answer_executor: ThreadPoolExecutor | None = None
     template_fill_executor: ThreadPoolExecutor | None = None
     link_material_executor: ThreadPoolExecutor | None = None
+    feishu_secret_stores: dict[str, MacOSKeychainSecretStore | MemorySecretStore] = field(default_factory=dict)
     weekly_overview_refresh_lock: Lock = field(default_factory=Lock)
     weekly_overview_refresh_status: dict[str, WeeklyOverviewRefreshStatusRecord] = field(default_factory=dict)
     volatile_cloud_access_token: str = ""
     volatile_cloud_refresh_token: str = ""
     volatile_cloud_session_user_json: str = ""
+    volatile_cloud_sessions: dict[str, dict[str, str]] = field(default_factory=dict)
     cloud_session_persistent: bool = False
     volatile_local_session_user_id: str = ""
+    volatile_local_sessions: dict[str, str] = field(default_factory=dict)
     maintenance_mode_active: bool = False
     maintenance_mode_user_id: str = ""
     maintenance_mode_entered_at: str = ""
@@ -1937,9 +1959,13 @@ def _task_in_week(task: TaskRecord, week_label: str) -> bool:
             """
             SELECT *
             FROM task_lists
-            WHERE scope = 'org' AND (archived_at IS NULL OR archived_at = '')
+            WHERE scope = 'org'
+              AND COALESCE(sandbox_id, '') = ?
+              AND (archived_at IS NULL OR archived_at = '')
             ORDER BY sort_order ASC, name COLLATE NOCASE ASC, id ASC
             """
+            ,
+            active_business_sandbox_param(),
         )
         candidates = [row for row in rows if _is_task_settings_default_local_list_row(row)]
         if not candidates:
@@ -1956,7 +1982,10 @@ def _task_in_week(task: TaskRecord, week_label: str) -> bool:
     def _is_task_settings_default_local_list_id(list_id: str | None) -> bool:
         if not list_id:
             return False
-        row = state.db.fetchone("SELECT * FROM task_lists WHERE id = ?", (list_id,))
+        row = state.db.fetchone(
+            "SELECT * FROM task_lists WHERE id = ? AND COALESCE(sandbox_id, '') = ?",
+            (list_id, active_business_sandbox_id()),
+        )
         return _is_task_settings_default_local_list_row(row)
 
     def _local_default_list_id() -> str | None:
@@ -2026,12 +2055,13 @@ def _task_in_week(task: TaskRecord, week_label: str) -> bool:
             """
             SELECT *
             FROM task_tags
-            WHERE scope = 'org' OR owner_operator_id = ?
+            WHERE COALESCE(sandbox_id, '') = ?
+              AND (scope = 'org' OR owner_operator_id = ?)
             ORDER BY CASE WHEN archived_at IS NULL OR archived_at = '' THEN 0 ELSE 1 END,
                      CASE scope WHEN 'org' THEN 0 ELSE 1 END,
                      name COLLATE NOCASE ASC
             """,
-            (operator_id,),
+            (active_business_sandbox_id(), operator_id),
         )
 
     def _visible_local_task_tags(db: Database, operator_id: str) -> list[TaskTagRecord]:
@@ -2043,12 +2073,13 @@ def _task_in_week(task: TaskRecord, week_label: str) -> bool:
             """
             SELECT *
             FROM task_tags
-            WHERE scope = 'org' OR owner_operator_id = ?
+            WHERE COALESCE(sandbox_id, '') = ?
+              AND (scope = 'org' OR owner_operator_id = ?)
             ORDER BY CASE WHEN archived_at IS NULL OR archived_at = '' THEN 0 ELSE 1 END,
                      CASE scope WHEN 'org' THEN 0 ELSE 1 END,
                      name COLLATE NOCASE ASC
             """,
-            (operator_id,),
+            (active_business_sandbox_id(), operator_id),
         )
 
 
@@ -3265,6 +3296,76 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             f"migration_backup={str(migration_backup_path) if migration_backup_path else 'none'}"
         ),
     )
+
+    def active_business_sandbox_id() -> str:
+        return get_active_sandbox_id(state.db) or DEFAULT_LOCAL_SANDBOX_ID
+
+    def active_business_sandbox_param() -> tuple[str]:
+        return (active_business_sandbox_id(),)
+
+    def active_business_sandbox_where(alias: str) -> str:
+        if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", alias):
+            raise ValueError("invalid SQL alias")
+        return f"COALESCE({alias}.sandbox_id, '') = ?"
+
+    def scoped_task_list_id(seed: str = "list-0") -> str:
+        sandbox_id = active_business_sandbox_id()
+        if sandbox_id == DEFAULT_LOCAL_SANDBOX_ID and seed == "list-0":
+            return "list-0"
+        safe = re.sub(r"[^A-Za-z0-9_-]+", "_", sandbox_id).strip("_")[:48] or "sandbox"
+        return f"list_{safe}_inbox"
+
+    def require_client_in_active_sandbox(client_id: str):
+        row = state.db.fetchone(
+            "SELECT * FROM clients WHERE id = ? AND COALESCE(sandbox_id, '') = ?",
+            (client_id, active_business_sandbox_id()),
+        )
+        if not row:
+            raise HTTPException(status_code=404, detail="Client not found")
+        return row
+
+    def require_task_in_active_sandbox(task_id: str):
+        row = state.db.fetchone(
+            """
+            SELECT *
+            FROM tasks
+            WHERE (id = ? OR cloud_id = ?)
+              AND COALESCE(sandbox_id, '') = ?
+            ORDER BY updated_at DESC
+            LIMIT 1
+            """,
+            (task_id, task_id, active_business_sandbox_id()),
+        )
+        if not row:
+            raise HTTPException(status_code=404, detail="Task not found")
+        return row
+
+    def require_document_in_active_sandbox(document_id: str, client_id: str | None = None):
+        normalized_document_id = (document_id or "").strip()
+        normalized_client_id = (client_id or "").strip()
+        if not normalized_document_id:
+            raise HTTPException(status_code=404, detail="Document not found")
+        params: list[object] = [normalized_document_id, active_business_sandbox_id()]
+        client_clause = ""
+        if normalized_client_id:
+            client_clause = " AND d.client_id = ?"
+            params.append(normalized_client_id)
+        row = state.db.fetchone(
+            f"""
+            SELECT d.*
+            FROM documents d
+            JOIN clients c ON c.id = d.client_id
+            WHERE d.id = ?
+              AND COALESCE(c.sandbox_id, '') = ?
+              {client_clause}
+            LIMIT 1
+            """,
+            tuple(params),
+        )
+        if not row:
+            raise HTTPException(status_code=404, detail="Document not found")
+        return row
+
     workspace_chat_start_locks_guard = Lock()
     workspace_chat_start_locks: dict[str, Lock] = {}
 
@@ -3544,6 +3645,21 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         rejection_reason = validate_local_browser_request(request.url.path, request.headers, request.method)
         if rejection_reason:
             return JSONResponse(status_code=403, content={"detail": rejection_reason})
+        return await call_next(request)
+
+    @app.middleware("http")
+    async def _active_workspace_client_guard(request: Request, call_next):
+        path = request.url.path
+        if path.startswith("/api/v1/clients/"):
+            parts = path.split("/")
+            client_id = unquote(parts[4]) if len(parts) > 4 else ""
+            if client_id and client_id not in {"search-similar"}:
+                row = state.db.fetchone(
+                    "SELECT id FROM clients WHERE id = ? AND COALESCE(sandbox_id, '') = ?",
+                    (client_id, active_business_sandbox_id()),
+                )
+                if row is None:
+                    return JSONResponse(status_code=404, content={"detail": "Client not found"})
         return await call_next(request)
 
     @app.middleware("http")
@@ -3895,7 +4011,9 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 "UPDATE tasks "
                 "SET sync_status='pending', "
                 "    pending_sync_action=COALESCE(NULLIF(pending_sync_action,''),'create') "
-                "WHERE sync_status='syncing'"
+                "WHERE sync_status='syncing' "
+                "  AND COALESCE(sandbox_id, '') = ?",
+                active_business_sandbox_param(),
             )
             state.db.execute(
                 "UPDATE event_lines SET sync_status='pending' WHERE sync_status='syncing'"
@@ -3912,7 +4030,13 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             # 推送本地 pending 的 client（上次启动期间没 token 或失败留下的）
             try:
                 pending = state.db.fetchall(
-                    "SELECT id, pending_sync_action FROM clients WHERE sync_status = 'pending'"
+                    """
+                    SELECT id, pending_sync_action
+                    FROM clients
+                    WHERE sync_status = 'pending'
+                      AND COALESCE(sandbox_id, '') = ?
+                    """,
+                    active_business_sandbox_param(),
                 )
                 for row in pending:
                     cid = str(row["id"])
@@ -3939,7 +4063,9 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                     "WHERE sync_status='pending' "
                     "  AND cloud_id IS NULL "
                     "  AND cloud_payload_json IS NOT NULL AND cloud_payload_json != '' "
-                    "ORDER BY created_at"
+                    "  AND COALESCE(sandbox_id, '') = ? "
+                    "ORDER BY created_at",
+                    active_business_sandbox_param(),
                 )
             except Exception:
                 return
@@ -4049,9 +4175,12 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             """
             SELECT *
             FROM task_lists
-            WHERE scope = 'org' AND (archived_at IS NULL OR archived_at = '')
+            WHERE scope = 'org'
+              AND COALESCE(sandbox_id, '') = ?
+              AND (archived_at IS NULL OR archived_at = '')
             ORDER BY sort_order ASC, name COLLATE NOCASE ASC, id ASC
-            """
+            """,
+            active_business_sandbox_param(),
         )
         candidates = [row for row in rows if _is_task_settings_default_local_list_row(row)]
         if not candidates:
@@ -4068,7 +4197,10 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
     def _is_task_settings_default_local_list_id(list_id: str | None) -> bool:
         if not list_id:
             return False
-        row = state.db.fetchone("SELECT * FROM task_lists WHERE id = ?", (list_id,))
+        row = state.db.fetchone(
+            "SELECT * FROM task_lists WHERE id = ? AND COALESCE(sandbox_id, '') = ?",
+            (list_id, active_business_sandbox_id()),
+        )
         return _is_task_settings_default_local_list_row(row)
 
     def _local_default_list_id() -> str | None:
@@ -4138,12 +4270,13 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             """
             SELECT *
             FROM task_tags
-            WHERE scope = 'org' OR owner_operator_id = ?
+            WHERE COALESCE(sandbox_id, '') = ?
+              AND (scope = 'org' OR owner_operator_id = ?)
             ORDER BY CASE WHEN archived_at IS NULL OR archived_at = '' THEN 0 ELSE 1 END,
                      CASE scope WHEN 'org' THEN 0 ELSE 1 END,
                      name COLLATE NOCASE ASC
             """,
-            (operator_id,),
+            (active_business_sandbox_id(), operator_id),
         )
 
     def _visible_local_task_tags(db: Database, operator_id: str) -> list[TaskTagRecord]:
@@ -4153,8 +4286,13 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         if not tag_ids:
             return []
         rows = db.fetchall(
-            f"SELECT * FROM task_tags WHERE id IN ({_sql_placeholders(tag_ids)})",
-            tuple(tag_ids),
+            f"""
+            SELECT *
+            FROM task_tags
+            WHERE id IN ({_sql_placeholders(tag_ids)})
+              AND COALESCE(sandbox_id, '') = ?
+            """,
+            (*tag_ids, active_business_sandbox_id()),
         )
         by_id = {str(row["id"]): row for row in rows}
         return [by_id[tag_id] for tag_id in tag_ids if tag_id in by_id]
@@ -4174,8 +4312,15 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         resolved_color = color or ("#9CA3AF" if scope == "self" else "#5B7BFE")
         resolved_creator = created_by or str(current_operator_row()["name"])
         existing = db.fetchone(
-            "SELECT * FROM task_tags WHERE name = ? AND scope = ? AND owner_operator_id = ?",
-            (trimmed, scope, owner_operator_id),
+            """
+            SELECT *
+            FROM task_tags
+            WHERE name = ?
+              AND scope = ?
+              AND owner_operator_id = ?
+              AND COALESCE(sandbox_id, '') = ?
+            """,
+            (trimmed, scope, owner_operator_id, active_business_sandbox_id()),
         )
         timestamp = now_iso()
         if existing:
@@ -4196,10 +4341,10 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         db.execute(
             """
             INSERT INTO task_tags(
-                id, name, color, scope, owner_operator_id, created_by, archived_at, created_at, updated_at
-            ) VALUES(?, ?, ?, ?, ?, ?, NULL, ?, ?)
+                id, sandbox_id, name, color, scope, owner_operator_id, created_by, archived_at, created_at, updated_at
+            ) VALUES(?, ?, ?, ?, ?, ?, ?, NULL, ?, ?)
             """,
-            (tag_id, trimmed, resolved_color, scope, owner_operator_id, resolved_creator, timestamp, timestamp),
+            (tag_id, active_business_sandbox_id(), trimmed, resolved_color, scope, owner_operator_id, resolved_creator, timestamp, timestamp),
         )
         row = db.fetchone("SELECT * FROM task_tags WHERE id = ?", (tag_id,))
         if not row:
@@ -5258,8 +5403,14 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             featureFlags=BACKEND_FEATURE_FLAGS,
             dataDir=str(state.data_dir),
             stats={
-                "clients": state.db.scalar("SELECT COUNT(1) AS count FROM clients"),
-                "tasks": state.db.scalar("SELECT COUNT(1) AS count FROM tasks"),
+                "clients": state.db.scalar(
+                    "SELECT COUNT(1) AS count FROM clients WHERE COALESCE(sandbox_id, '') = ?",
+                    active_business_sandbox_param(),
+                ),
+                "tasks": state.db.scalar(
+                    "SELECT COUNT(1) AS count FROM tasks WHERE COALESCE(sandbox_id, '') = ?",
+                    active_business_sandbox_param(),
+                ),
                 "topics": state.db.scalar("SELECT COUNT(1) AS count FROM topic_candidates"),
                 "handbookEntries": state.db.scalar("SELECT COUNT(1) AS count FROM handbook_entries"),
                 "analysisRuns": state.db.scalar("SELECT COUNT(1) AS count FROM analysis_runs"),
@@ -5312,48 +5463,64 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         )
 
     def _has_persisted_cloud_session() -> bool:
-        return bool(state.db.get_setting("cloud_access_token", "") or state.db.get_setting("cloud_refresh_token", ""))
+        return bool(
+            get_active_sandbox_setting(state.db, "cloud_access_token", "")
+            or get_active_sandbox_setting(state.db, "cloud_refresh_token", "")
+        )
+
+    def _active_volatile_cloud_session() -> dict[str, str]:
+        active_id = get_active_sandbox_id(state.db)
+        return state.volatile_cloud_sessions.setdefault(active_id, {})
 
     def get_cloud_token() -> str:
-        token = state.db.get_setting("cloud_access_token", "")
+        token = get_active_sandbox_setting(state.db, "cloud_access_token", "")
         if token:
             state.cloud_session_persistent = True
             return token
-        return state.volatile_cloud_access_token
+        return _active_volatile_cloud_session().get("cloud_access_token", "")
 
     def get_cloud_refresh_token() -> str:
-        token = state.db.get_setting("cloud_refresh_token", "")
+        token = get_active_sandbox_setting(state.db, "cloud_refresh_token", "")
         if token:
             state.cloud_session_persistent = True
             return token
-        return state.volatile_cloud_refresh_token
+        return _active_volatile_cloud_session().get("cloud_refresh_token", "")
 
     def set_cloud_session(token: str | None, user: SessionUserRecord | None, *, persist: bool = True) -> None:
         state.cloud_session_persistent = persist
         session_user_json = to_json(user.model_dump()) if user else ""
+        volatile_session = _active_volatile_cloud_session()
         if persist:
-            state.db.set_setting("cloud_access_token", token or "")
-            state.db.set_setting("cloud_session_user", session_user_json)
+            set_active_sandbox_setting(state.db, "cloud_access_token", token or "")
+            set_active_sandbox_setting(state.db, "cloud_session_user", session_user_json)
+            volatile_session.pop("cloud_access_token", None)
+            volatile_session.pop("cloud_session_user", None)
             state.volatile_cloud_access_token = ""
             state.volatile_cloud_session_user_json = ""
             return
-        state.db.set_setting("cloud_access_token", "")
-        state.db.set_setting("cloud_session_user", "")
+        set_active_sandbox_setting(state.db, "cloud_access_token", "")
+        set_active_sandbox_setting(state.db, "cloud_session_user", "")
+        volatile_session["cloud_access_token"] = token or ""
+        volatile_session["cloud_session_user"] = session_user_json
         state.volatile_cloud_access_token = token or ""
         state.volatile_cloud_session_user_json = session_user_json
 
     def set_cloud_refresh_token(token: str | None, *, persist: bool = True) -> None:
         state.cloud_session_persistent = persist
+        volatile_session = _active_volatile_cloud_session()
         if persist:
-            state.db.set_setting("cloud_refresh_token", token or "")
+            set_active_sandbox_setting(state.db, "cloud_refresh_token", token or "")
+            volatile_session.pop("cloud_refresh_token", None)
             state.volatile_cloud_refresh_token = ""
             return
-        state.db.set_setting("cloud_refresh_token", "")
+        set_active_sandbox_setting(state.db, "cloud_refresh_token", "")
+        volatile_session["cloud_refresh_token"] = token or ""
         state.volatile_cloud_refresh_token = token or ""
 
     def clear_cloud_session() -> None:
-        set_cloud_session(None, None, persist=True)
-        set_cloud_refresh_token(None, persist=True)
+        active_id = get_active_sandbox_id(state.db)
+        clear_active_cloud_session(state.db)
+        state.volatile_cloud_sessions.pop(active_id, None)
         state.volatile_cloud_access_token = ""
         state.volatile_cloud_refresh_token = ""
         state.volatile_cloud_session_user_json = ""
@@ -5365,11 +5532,53 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             state.maintenance_mode_entered_at = ""
         _persist_maintenance_state(False, "", "")
 
+    def _refresh_active_workspace_runtime() -> None:
+        raw_url = get_active_sandbox_setting(state.db, "cloud_api_url", "")
+        try:
+            state.cloud_api_url = normalize_configured_cloud_api_url(raw_url)
+        except ValueError:
+            state.cloud_api_url = ""
+        state.cloud_session_persistent = _has_persisted_cloud_session()
+        try:
+            _cloud_circuit_breaker["last_failure"] = 0.0
+        except NameError:
+            pass
+        state.ai.invalidate_org_cloud_proxy_cache()
+        state.ai.reset_last_model_snapshot()
+        try:
+            _cloud_ai_sync_status.clear()
+            _cloud_ai_sync_status.update({"state": "never"})
+        except NameError:
+            pass
+        with state.maintenance_mode_lock:
+            state.maintenance_mode_active = False
+            state.maintenance_mode_user_id = ""
+            state.maintenance_mode_entered_at = ""
+        _persist_maintenance_state(False, "", "")
+
+    def _set_active_workspace_cloud_api_url(next_cloud_api_url: str) -> None:
+        if next_cloud_api_url != get_active_sandbox_setting(state.db, "cloud_api_url", ""):
+            clear_cloud_session()
+        set_active_sandbox_setting(state.db, "cloud_api_url", next_cloud_api_url)
+        _refresh_active_workspace_runtime()
+
     def _normalize_local_identifier(value: str | None) -> str:
         return (value or "").strip().lower()
 
     def _normalize_local_phone(value: str | None) -> str:
         return re.sub(r"\D+", "", value or "")
+
+    def _active_workspace_is_local() -> bool:
+        active_id = get_active_sandbox_id(state.db)
+        return get_sandbox_kind(state.db, active_id) == "local"
+
+    def _ensure_active_local_workspace() -> str:
+        active_id = get_active_sandbox_id(state.db)
+        if get_sandbox_kind(state.db, active_id) == "local":
+            return active_id
+        activate_sandbox(state.db, DEFAULT_LOCAL_SANDBOX_ID)
+        _refresh_active_workspace_runtime()
+        return DEFAULT_LOCAL_SANDBOX_ID
 
     def _local_identity_row(identity_id: str | None = None):
         normalized = (identity_id or "").strip()
@@ -5382,14 +5591,23 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         return int(row["count"] or 0) if row else 0
 
     def _has_local_workspace_data() -> bool:
+        active_id = get_active_sandbox_id(state.db)
         checks = (
-            "SELECT COUNT(1) AS count FROM clients",
-            "SELECT COUNT(1) AS count FROM documents",
-            "SELECT COUNT(1) AS count FROM tasks",
+            ("SELECT COUNT(1) AS count FROM clients WHERE sandbox_id = ?", (active_id,)),
+            ("SELECT COUNT(1) AS count FROM tasks WHERE sandbox_id = ?", (active_id,)),
+            (
+                """
+                SELECT COUNT(1) AS count
+                  FROM documents d
+                  JOIN clients c ON c.id = d.client_id
+                 WHERE c.sandbox_id = ?
+                """,
+                (active_id,),
+            ),
         )
-        for sql in checks:
+        for sql, params in checks:
             try:
-                row = state.db.fetchone(sql)
+                row = state.db.fetchone(sql, params)
                 if row and int(row["count"] or 0) > 0:
                     return True
             except Exception:
@@ -5397,20 +5615,45 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         return False
 
     def _local_session_user_id() -> str:
-        persisted = state.db.get_setting("local_session_user_id", "")
-        return persisted or state.volatile_local_session_user_id
+        if not _active_workspace_is_local():
+            return ""
+        active_id = get_active_sandbox_id(state.db)
+        persisted = get_sandbox_local_identity_id(state.db, active_id)
+        if persisted:
+            return persisted
+        legacy = state.db.get_setting("local_session_user_id", "").strip() if active_id == DEFAULT_LOCAL_SANDBOX_ID else ""
+        if legacy:
+            set_sandbox_local_identity_id(state.db, active_id, legacy)
+            return legacy
+        return state.volatile_local_sessions.get(active_id, "") or (
+            state.volatile_local_session_user_id if active_id == DEFAULT_LOCAL_SANDBOX_ID else ""
+        )
 
     def _set_local_session(identity_id: str | None, *, persist: bool = True) -> None:
+        active_id = _ensure_active_local_workspace()
         if persist:
-            state.db.set_setting("local_session_user_id", identity_id or "")
-            state.volatile_local_session_user_id = ""
+            set_sandbox_local_identity_id(state.db, active_id, identity_id)
+            if active_id == DEFAULT_LOCAL_SANDBOX_ID:
+                state.db.set_setting("local_session_user_id", identity_id or "")
+            state.volatile_local_sessions.pop(active_id, None)
+            if active_id == DEFAULT_LOCAL_SANDBOX_ID:
+                state.volatile_local_session_user_id = ""
             return
-        state.db.set_setting("local_session_user_id", "")
-        state.volatile_local_session_user_id = identity_id or ""
+        set_sandbox_local_identity_id(state.db, active_id, None)
+        if active_id == DEFAULT_LOCAL_SANDBOX_ID:
+            state.db.set_setting("local_session_user_id", "")
+        state.volatile_local_sessions[active_id] = identity_id or ""
+        if active_id == DEFAULT_LOCAL_SANDBOX_ID:
+            state.volatile_local_session_user_id = identity_id or ""
 
     def clear_local_session() -> None:
+        if not _active_workspace_is_local():
+            return
+        active_id = get_active_sandbox_id(state.db)
         _set_local_session(None, persist=True)
-        state.volatile_local_session_user_id = ""
+        state.volatile_local_sessions.pop(active_id, None)
+        if active_id == DEFAULT_LOCAL_SANDBOX_ID:
+            state.volatile_local_session_user_id = ""
 
     def _local_user_from_row(row) -> SessionUserRecord:
         organization_mode = str(row["organization_mode"] or "create")
@@ -5469,8 +5712,8 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             localIdentityStatus="needs_setup",
         )
 
-    def _bind_current_local_identity_to_cloud(user: SessionUserRecord) -> None:
-        row = _local_identity_row(_local_session_user_id())
+    def _bind_current_local_identity_to_cloud(user: SessionUserRecord, identity_id: str | None = None) -> None:
+        row = _local_identity_row(identity_id or _local_session_user_id())
         if not row:
             return
         state.db.execute(
@@ -5486,9 +5729,9 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         )
 
     def get_cached_session_user() -> SessionUserRecord | None:
-        raw = state.db.get_setting("cloud_session_user", "")
+        raw = get_active_sandbox_setting(state.db, "cloud_session_user", "")
         if not raw:
-            raw = state.volatile_cloud_session_user_json
+            raw = _active_volatile_cloud_session().get("cloud_session_user", "") or state.volatile_cloud_session_user_json
         parsed = from_json(raw, {}) if raw else {}
         if not isinstance(parsed, dict) or not parsed:
             return None
@@ -6459,12 +6702,76 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
 
         return viewer_department.name
 
-    def _hydrate_feishu_bot_settings(record: FeishuBotSettingsRecord) -> FeishuBotSettingsRecord:
+    def _sandbox_setting_exists(sandbox_id: str, key: str) -> bool:
+        row = state.db.fetchone(
+            "SELECT 1 FROM sandbox_settings WHERE sandbox_id = ? AND key = ?",
+            (sandbox_id, key),
+        )
+        return row is not None
+
+    def _sandbox_is_legacy_default(sandbox_id: str) -> bool:
+        row = state.db.fetchone("SELECT is_legacy_default FROM sandboxes WHERE id = ?", (sandbox_id,))
+        return bool(row and int(row["is_legacy_default"] or 0))
+
+    def _get_workspace_setting(
+        key: str,
+        default: str = "",
+        *,
+        sandbox_id: str | None = None,
+        legacy_keys: tuple[str, ...] = (),
+    ) -> str:
+        resolved_sandbox_id = sandbox_id or get_active_sandbox_id(state.db)
+        if _sandbox_setting_exists(resolved_sandbox_id, key):
+            return get_sandbox_setting(state.db, resolved_sandbox_id, key, default)
+        if _sandbox_is_legacy_default(resolved_sandbox_id):
+            for legacy_key in (key, *legacy_keys):
+                legacy_value = state.db.get_setting(legacy_key, "")
+                if legacy_value:
+                    set_sandbox_setting(state.db, resolved_sandbox_id, key, legacy_value)
+                    return legacy_value
+        return default
+
+    def _set_workspace_setting(key: str, value: str, *, sandbox_id: str | None = None) -> None:
+        set_sandbox_setting(state.db, sandbox_id or get_active_sandbox_id(state.db), key, value or "")
+
+    def _feishu_secret_store_for_sandbox(sandbox_id: str | None = None):
+        resolved_sandbox_id = sandbox_id or get_active_sandbox_id(state.db)
+        store = state.feishu_secret_stores.get(resolved_sandbox_id)
+        if store is None:
+            store = build_secret_store("com.yiyu.self-workbench.feishu", account_name=resolved_sandbox_id)
+            state.feishu_secret_stores[resolved_sandbox_id] = store
+        migrated_key = "settings.feishu_secret_migrated"
+        if (
+            _sandbox_is_legacy_default(resolved_sandbox_id)
+            and not _sandbox_setting_exists(resolved_sandbox_id, migrated_key)
+        ):
+            try:
+                scoped_has_secret = bool(store.get_api_key().strip())
+            except Exception:
+                scoped_has_secret = False
+            if not scoped_has_secret:
+                try:
+                    legacy_secret = state.feishu_secret_store.get_api_key().strip()
+                except Exception:
+                    legacy_secret = ""
+                if legacy_secret:
+                    try:
+                        store.set_api_key(legacy_secret)
+                    except Exception:
+                        pass
+            _set_workspace_setting(migrated_key, "1", sandbox_id=resolved_sandbox_id)
+        return store
+
+    def _feishu_secret_store_for_active_sandbox():
+        return _feishu_secret_store_for_sandbox()
+
+    def _hydrate_feishu_bot_settings(record: FeishuBotSettingsRecord, *, sandbox_id: str | None = None) -> FeishuBotSettingsRecord:
         fingerprint: str | None = None
         source = "unconfigured"
         try:
-            fingerprint = state.feishu_secret_store.get_api_key_fingerprint()
-            source = state.feishu_secret_store.get_source_label() if fingerprint else "unconfigured"
+            secret_store = _feishu_secret_store_for_sandbox(sandbox_id)
+            fingerprint = secret_store.get_api_key_fingerprint()
+            source = secret_store.get_source_label() if fingerprint else "unconfigured"
         except Exception:
             source = "unavailable"
         has_app_secret = bool(fingerprint)
@@ -6491,7 +6798,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 "updatedAt": now_iso(),
             }
         )
-        state.db.set_setting("settings.feishu_bot", to_json(sanitized.model_dump()))
+        set_active_sandbox_setting(state.db, "settings.feishu_bot", to_json(sanitized.model_dump()))
         return _hydrate_feishu_bot_settings(sanitized)
 
     def get_client_workspace_settings() -> ClientWorkspaceSettingsRecord:
@@ -6615,16 +6922,65 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         return build_secret_store(REMEMBERED_CLOUD_AUTH_SERVICE, account_name=normalized_email)
 
     def _remembered_ai_store():
-        return build_secret_store(REMEMBERED_AI_INPUT_SERVICE)
+        return build_secret_store(REMEMBERED_AI_INPUT_SERVICE, account_name=get_active_sandbox_id(state.db))
 
     def _remembered_feishu_store():
-        return build_secret_store(REMEMBERED_FEISHU_INPUT_SERVICE)
+        return build_secret_store(REMEMBERED_FEISHU_INPUT_SERVICE, account_name=get_active_sandbox_id(state.db))
 
     def _get_local_input_memory_record() -> LocalInputMemoryResponse:
         return _load_json_settings_record(
             LOCAL_INPUT_MEMORY_SETTINGS_KEY,
             _default_local_input_memory,
             LocalInputMemoryResponse,
+        )
+
+    def _get_active_workspace_ai_input_memory(raw_record: LocalInputMemoryResponse) -> LocalInputMemoryAiSettings:
+        raw = get_active_sandbox_setting(state.db, "local_input_memory.ai", "")
+        if not raw:
+            return raw_record.aiSettings
+        try:
+            parsed = json.loads(raw)
+        except Exception:
+            return raw_record.aiSettings
+        if not isinstance(parsed, dict):
+            return raw_record.aiSettings
+        return LocalInputMemoryAiSettings(rememberApiKey=bool(parsed.get("rememberApiKey")))
+
+    def _save_active_workspace_ai_input_memory(record: LocalInputMemoryAiSettings) -> None:
+        set_active_sandbox_setting(
+            state.db,
+            "local_input_memory.ai",
+            json.dumps({"rememberApiKey": bool(record.rememberApiKey)}, ensure_ascii=False),
+        )
+
+    def _get_active_workspace_feishu_input_memory(raw_record: LocalInputMemoryResponse) -> LocalInputMemoryFeishuIntegration:
+        raw = _get_workspace_setting("local_input_memory.feishu", "", legacy_keys=())
+        if not raw:
+            if raw_record.feishuIntegration.rememberInputs or raw_record.feishuIntegration.appId:
+                _save_active_workspace_feishu_input_memory(raw_record.feishuIntegration)
+                return raw_record.feishuIntegration
+            return raw_record.feishuIntegration
+        try:
+            parsed = json.loads(raw)
+        except Exception:
+            return raw_record.feishuIntegration
+        if not isinstance(parsed, dict):
+            return raw_record.feishuIntegration
+        return LocalInputMemoryFeishuIntegration(**parsed)
+
+    def _save_active_workspace_feishu_input_memory(record: LocalInputMemoryFeishuIntegration) -> None:
+        set_active_sandbox_setting(
+            state.db,
+            "local_input_memory.feishu",
+            json.dumps(
+                {
+                    "rememberInputs": bool(record.rememberInputs),
+                    "appId": record.appId.strip(),
+                    "callbackMode": record.callbackMode or "cloud_relay",
+                    "customCallbackUrl": record.customCallbackUrl.strip(),
+                },
+                ensure_ascii=False,
+            ),
         )
 
     def _save_local_input_memory_record(record: LocalInputMemoryResponse) -> LocalInputMemoryResponse:
@@ -6652,28 +7008,30 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             accounts=remembered_accounts,
         )
 
+        workspace_ai_memory = _get_active_workspace_ai_input_memory(raw_record)
         remembered_ai_key = ""
-        if raw_record.aiSettings.rememberApiKey:
+        if workspace_ai_memory.rememberApiKey:
             try:
                 remembered_ai_key = _remembered_ai_store().get_api_key()
             except Exception:
                 remembered_ai_key = ""
         ai_settings = LocalInputMemoryAiSettings(
-            rememberApiKey=raw_record.aiSettings.rememberApiKey,
+            rememberApiKey=workspace_ai_memory.rememberApiKey,
             apiKey=remembered_ai_key,
         )
 
+        workspace_feishu_memory = _get_active_workspace_feishu_input_memory(raw_record)
         remembered_feishu_secret = ""
-        if raw_record.feishuIntegration.rememberInputs:
+        if workspace_feishu_memory.rememberInputs:
             try:
                 remembered_feishu_secret = _remembered_feishu_store().get_api_key()
             except Exception:
                 remembered_feishu_secret = ""
         feishu_integration = LocalInputMemoryFeishuIntegration(
-            rememberInputs=raw_record.feishuIntegration.rememberInputs,
-            appId=raw_record.feishuIntegration.appId,
-            callbackMode=raw_record.feishuIntegration.callbackMode,
-            customCallbackUrl=raw_record.feishuIntegration.customCallbackUrl,
+            rememberInputs=workspace_feishu_memory.rememberInputs,
+            appId=workspace_feishu_memory.appId,
+            callbackMode=workspace_feishu_memory.callbackMode,
+            customCallbackUrl=workspace_feishu_memory.customCallbackUrl,
             appSecret=remembered_feishu_secret,
         )
 
@@ -6683,9 +7041,25 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             feishuIntegration=feishu_integration,
         )
 
-    def get_feishu_bot_settings() -> FeishuBotSettingsRecord:
-        record = _load_json_settings_record("settings.feishu_bot", _default_feishu_bot_settings, FeishuBotSettingsRecord)
-        return _hydrate_feishu_bot_settings(record)
+    def get_feishu_bot_settings(*, sandbox_id: str | None = None) -> FeishuBotSettingsRecord:
+        raw = _get_workspace_setting(
+            "settings.feishu_bot",
+            "",
+            sandbox_id=sandbox_id,
+            legacy_keys=("feishu_bot",),
+        )
+        if raw:
+            parsed = from_json(raw, {})
+            if isinstance(parsed, dict):
+                try:
+                    record = FeishuBotSettingsRecord(**parsed)
+                except Exception:
+                    record = _default_feishu_bot_settings()
+            else:
+                record = _default_feishu_bot_settings()
+        else:
+            record = _default_feishu_bot_settings()
+        return _hydrate_feishu_bot_settings(record, sandbox_id=sandbox_id)
 
     def _feishu_user_binding_key(user_id: str) -> str:
         return f"settings.feishu_user_binding:{user_id}"
@@ -6696,67 +7070,84 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
     def _feishu_user_binding_pending_key(user_id: str) -> str:
         return f"settings.feishu_user_binding_pending:{user_id}"
 
-    def _feishu_user_binding_authorization_ready() -> bool:
-        settings = get_feishu_bot_settings()
+    def _feishu_user_binding_authorization_ready(*, sandbox_id: str | None = None) -> bool:
+        settings = get_feishu_bot_settings(sandbox_id=sandbox_id)
         if not settings.appId.strip():
             return False
         try:
-            return bool(state.feishu_secret_store.get_api_key().strip())
+            return bool(_feishu_secret_store_for_sandbox(sandbox_id).get_api_key().strip())
         except Exception:
             return False
 
-    def _default_feishu_user_binding(user_id: str) -> FeishuUserBindingRecord:
-        return FeishuUserBindingRecord(userId=user_id, appId=get_feishu_bot_settings().appId.strip())
+    def _default_feishu_user_binding(user_id: str, *, sandbox_id: str | None = None) -> FeishuUserBindingRecord:
+        return FeishuUserBindingRecord(userId=user_id, appId=get_feishu_bot_settings(sandbox_id=sandbox_id).appId.strip())
 
-    def get_feishu_user_binding(user_id: str) -> FeishuUserBindingRecord:
-        raw = state.db.get_setting(_feishu_user_binding_key(user_id), "")
+    def get_feishu_user_binding(user_id: str, *, sandbox_id: str | None = None) -> FeishuUserBindingRecord:
+        raw = _get_workspace_setting(_feishu_user_binding_key(user_id), "", sandbox_id=sandbox_id)
         if raw:
             parsed = from_json(raw, {})
             if isinstance(parsed, dict):
                 try:
                     record = FeishuUserBindingRecord(**parsed)
                 except Exception:
-                    record = _default_feishu_user_binding(user_id)
+                    record = _default_feishu_user_binding(user_id, sandbox_id=sandbox_id)
             else:
-                record = _default_feishu_user_binding(user_id)
+                record = _default_feishu_user_binding(user_id, sandbox_id=sandbox_id)
         else:
-            record = _default_feishu_user_binding(user_id)
-        settings = get_feishu_bot_settings()
+            record = _default_feishu_user_binding(user_id, sandbox_id=sandbox_id)
+        settings = get_feishu_bot_settings(sandbox_id=sandbox_id)
         return record.model_copy(
             update={
                 "userId": user_id,
                 "appId": settings.appId.strip(),
                 "linked": bool(record.openId),
-                "readyForAuthorization": _feishu_user_binding_authorization_ready(),
+                "readyForAuthorization": _feishu_user_binding_authorization_ready(sandbox_id=sandbox_id),
             }
         )
 
-    def save_feishu_user_binding(record: FeishuUserBindingRecord) -> FeishuUserBindingRecord:
+    def save_feishu_user_binding(record: FeishuUserBindingRecord, *, sandbox_id: str | None = None) -> FeishuUserBindingRecord:
         sanitized = record.model_copy(
             update={
                 "linked": bool(record.openId),
-                "readyForAuthorization": _feishu_user_binding_authorization_ready(),
-                "appId": get_feishu_bot_settings().appId.strip(),
+                "readyForAuthorization": _feishu_user_binding_authorization_ready(sandbox_id=sandbox_id),
+                "appId": get_feishu_bot_settings(sandbox_id=sandbox_id).appId.strip(),
                 "lastError": record.lastError.strip() if record.lastError else None,
             }
         )
-        state.db.set_setting(_feishu_user_binding_key(sanitized.userId), to_json(sanitized.model_dump()))
-        return get_feishu_user_binding(sanitized.userId)
+        _set_workspace_setting(_feishu_user_binding_key(sanitized.userId), to_json(sanitized.model_dump()), sandbox_id=sandbox_id)
+        return get_feishu_user_binding(sanitized.userId, sandbox_id=sandbox_id)
 
-    def clear_feishu_user_binding(user_id: str) -> FeishuUserBindingRecord:
-        state.db.set_setting(_feishu_user_binding_key(user_id), "")
-        return get_feishu_user_binding(user_id)
+    def clear_feishu_user_binding(user_id: str, *, sandbox_id: str | None = None) -> FeishuUserBindingRecord:
+        _set_workspace_setting(_feishu_user_binding_key(user_id), "", sandbox_id=sandbox_id)
+        return get_feishu_user_binding(user_id, sandbox_id=sandbox_id)
 
     def save_feishu_oauth_state(state_token: str, user_id: str, expires_at: str) -> None:
-        state.db.set_setting(
+        sandbox_id = get_active_sandbox_id(state.db)
+        _set_workspace_setting(
             _feishu_oauth_state_key(state_token),
-            to_json({"userId": user_id, "expiresAt": expires_at, "createdAt": now_iso()}),
+            to_json({"userId": user_id, "expiresAt": expires_at, "sandboxId": sandbox_id, "createdAt": now_iso()}),
+            sandbox_id=sandbox_id,
         )
 
     def pop_feishu_oauth_state(state_token: str) -> dict[str, str] | None:
         key = _feishu_oauth_state_key(state_token)
-        raw = state.db.get_setting(key, "")
-        state.db.set_setting(key, "")
+        raw = ""
+        found_sandbox_id = ""
+        active_id = get_active_sandbox_id(state.db)
+        candidate_ids = [active_id]
+        rows = state.db.fetchall("SELECT id FROM sandboxes WHERE id <> ? ORDER BY COALESCE(last_active_at, created_at) DESC", (active_id,))
+        candidate_ids.extend(str(row["id"]) for row in rows)
+        for candidate_id in candidate_ids:
+            if _sandbox_setting_exists(candidate_id, key):
+                raw = get_sandbox_setting(state.db, candidate_id, key, "")
+                found_sandbox_id = candidate_id
+                break
+        if found_sandbox_id:
+            _set_workspace_setting(key, "", sandbox_id=found_sandbox_id)
+        if not raw:
+            raw = state.db.get_setting(key, "")
+            if raw:
+                state.db.set_setting(key, "")
         if not raw:
             return None
         parsed = from_json(raw, {})
@@ -6765,10 +7156,16 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         return {str(k): str(v) for k, v in parsed.items() if v is not None}
 
     def clear_feishu_oauth_state(state_token: str) -> None:
-        state.db.set_setting(_feishu_oauth_state_key(state_token), "")
+        key = _feishu_oauth_state_key(state_token)
+        rows = state.db.fetchall("SELECT id FROM sandboxes", ())
+        for row in rows:
+            sandbox_id = str(row["id"])
+            if _sandbox_setting_exists(sandbox_id, key):
+                _set_workspace_setting(key, "", sandbox_id=sandbox_id)
+        state.db.set_setting(key, "")
 
-    def get_feishu_user_binding_pending(user_id: str) -> dict[str, str] | None:
-        raw = state.db.get_setting(_feishu_user_binding_pending_key(user_id), "")
+    def get_feishu_user_binding_pending(user_id: str, *, sandbox_id: str | None = None) -> dict[str, str] | None:
+        raw = _get_workspace_setting(_feishu_user_binding_pending_key(user_id), "", sandbox_id=sandbox_id)
         if not raw:
             return None
         parsed = from_json(raw, {})
@@ -6777,41 +7174,44 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         return {str(key): str(value) for key, value in parsed.items() if value is not None}
 
     def save_feishu_user_binding_pending(user_id: str, *, state_token: str, expires_at: str, callback_url: str, mode: str) -> None:
-        state.db.set_setting(
+        sandbox_id = get_active_sandbox_id(state.db)
+        _set_workspace_setting(
             _feishu_user_binding_pending_key(user_id),
             to_json(
                 {
                     "state": state_token,
                     "expiresAt": expires_at,
+                    "sandboxId": sandbox_id,
                     "callbackUrl": callback_url,
                     "mode": mode,
                     "updatedAt": now_iso(),
                 }
             ),
+            sandbox_id=sandbox_id,
         )
 
-    def clear_feishu_user_binding_pending(user_id: str) -> None:
-        state.db.set_setting(_feishu_user_binding_pending_key(user_id), "")
+    def clear_feishu_user_binding_pending(user_id: str, *, sandbox_id: str | None = None) -> None:
+        _set_workspace_setting(_feishu_user_binding_pending_key(user_id), "", sandbox_id=sandbox_id)
 
     def _feishu_cloud_relay_callback_url() -> str:
         return f"{cloud_api_base_url()}/api/v1/integrations/feishu/user-binding/callback"
 
-    def _save_feishu_user_binding_error(user_id: str, message: str) -> FeishuUserBindingRecord:
-        existing = get_feishu_user_binding(user_id)
-        return save_feishu_user_binding(existing.model_copy(update={"lastError": message, "lastVerifiedAt": now_iso()}))
+    def _save_feishu_user_binding_error(user_id: str, message: str, *, sandbox_id: str | None = None) -> FeishuUserBindingRecord:
+        existing = get_feishu_user_binding(user_id, sandbox_id=sandbox_id)
+        return save_feishu_user_binding(existing.model_copy(update={"lastError": message, "lastVerifiedAt": now_iso()}), sandbox_id=sandbox_id)
 
-    def _finalize_feishu_user_binding(user_id: str, code: str) -> FeishuUserBindingRecord:
-        settings = get_feishu_bot_settings()
+    def _finalize_feishu_user_binding(user_id: str, code: str, *, sandbox_id: str | None = None) -> FeishuUserBindingRecord:
+        settings = get_feishu_bot_settings(sandbox_id=sandbox_id)
         if not settings.appId.strip():
             raise HTTPException(status_code=400, detail="当前工作台还没有配置飞书 App ID。")
         try:
-            app_secret = state.feishu_secret_store.get_api_key().strip()
+            app_secret = _feishu_secret_store_for_sandbox(sandbox_id).get_api_key().strip()
         except Exception:
             app_secret = ""
         if not app_secret:
             raise HTTPException(status_code=400, detail="当前工作台还没有配置飞书 App Secret。")
 
-        existing = get_feishu_user_binding(user_id)
+        existing = get_feishu_user_binding(user_id, sandbox_id=sandbox_id)
         app_access_token, _ = fetch_app_access_token(app_id=settings.appId.strip(), app_secret=app_secret)
         token_payload = exchange_authorization_code(
             app_access_token=app_access_token,
@@ -6838,26 +7238,27 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 boundAt=existing.boundAt or now_iso(),
                 lastVerifiedAt=now_iso(),
                 lastError=None,
-            )
+            ),
+            sandbox_id=sandbox_id,
         )
         if not binding.openId:
-            _save_feishu_user_binding_error(user_id, "飞书没有返回 open_id，无法完成绑定。")
+            _save_feishu_user_binding_error(user_id, "飞书没有返回 open_id，无法完成绑定。", sandbox_id=sandbox_id)
             raise HTTPException(status_code=400, detail="飞书没有返回 open_id，当前无法把软件账号和飞书账号关联起来。")
         log_activity("feishu.user_binding.success", "settings", user_id, {"openId": binding.openId, "email": binding.email})
         return binding
 
-    def _clear_feishu_cloud_relay_session(user_id: str) -> None:
-        pending = get_feishu_user_binding_pending(user_id)
+    def _clear_feishu_cloud_relay_session(user_id: str, *, sandbox_id: str | None = None) -> None:
+        pending = get_feishu_user_binding_pending(user_id, sandbox_id=sandbox_id)
         if pending and pending.get("state"):
             clear_feishu_oauth_state(str(pending.get("state")))
         if not pending or pending.get("mode") != "cloud_relay" or not pending.get("state"):
-            clear_feishu_user_binding_pending(user_id)
+            clear_feishu_user_binding_pending(user_id, sandbox_id=sandbox_id)
             return
         try:
             cloud_request("DELETE", f"/api/v1/integrations/feishu/user-binding/sessions/{pending['state']}")
         except HTTPException:
             pass
-        clear_feishu_user_binding_pending(user_id)
+        clear_feishu_user_binding_pending(user_id, sandbox_id=sandbox_id)
 
     def sync_feishu_user_binding_from_cloud_relay(user_id: str) -> FeishuUserBindingRecord | None:
         pending = get_feishu_user_binding_pending(user_id)
@@ -6971,9 +7372,9 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
 
         try:
             if payload.clearAppSecret:
-                state.feishu_secret_store.delete_api_key()
+                _feishu_secret_store_for_active_sandbox().delete_api_key()
             elif payload.appSecret and payload.appSecret.strip():
-                state.feishu_secret_store.set_api_key(payload.appSecret.strip())
+                _feishu_secret_store_for_active_sandbox().set_api_key(payload.appSecret.strip())
         except Exception as exc:
             # secrets.py 内部已经 sanitize 过 exception, 这里再加一道防御:
             # 即便底层泄漏, 也不把 exc 直接拼进 detail. 服务端日志保留完整 exc 便于排错.
@@ -6984,7 +7385,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             app_id = next_record.appId.strip()
             receiver_id = next_record.receiverId.strip()
             bot_name = next_record.botName.strip() or "罗茜茜"
-            app_secret = state.feishu_secret_store.get_api_key().strip()
+            app_secret = _feishu_secret_store_for_active_sandbox().get_api_key().strip()
             attempted_at = now_iso()
             if not app_id:
                 next_record = next_record.model_copy(
@@ -7058,7 +7459,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         settings = get_feishu_bot_settings()
         if not settings.appId.strip():
             raise FeishuApiError("飞书 App ID 未配置。")
-        app_secret = state.feishu_secret_store.get_api_key().strip()
+        app_secret = _feishu_secret_store_for_active_sandbox().get_api_key().strip()
         if not app_secret:
             raise FeishuApiError("飞书 App Secret 未配置。")
         tenant_access_token, _ = fetch_tenant_access_token(app_id=settings.appId, app_secret=app_secret)
@@ -7082,7 +7483,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         settings = get_feishu_bot_settings()
         app_secret = ""
         try:
-            app_secret = state.feishu_secret_store.get_api_key().strip()
+            app_secret = _feishu_secret_store_for_active_sandbox().get_api_key().strip()
         except Exception:
             app_secret = ""
         if settings.appId.strip() and settings.receiverId.strip() and app_secret:
@@ -7212,11 +7613,11 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             settings = get_feishu_bot_settings()
             if not settings.appId.strip():
                 return {"ok": True, "ignored": "missing_app_id"}
-            app_secret = state.feishu_secret_store.get_api_key().strip()
+            app_secret = _feishu_secret_store_for_active_sandbox().get_api_key().strip()
             if not app_secret:
                 return {"ok": True, "ignored": "missing_app_secret"}
             _send_feishu_chat_text(chat_id, _default_feishu_inbound_reply(settings.botName))
-            state.db.set_setting("settings.feishu_last_event_at", now_iso())
+            set_active_sandbox_setting(state.db, "settings.feishu_last_event_at", now_iso())
             log_activity("feishu.inbound.reply", "channel", chat_id, {"eventType": event_type, "messageType": message_type})
             return {"ok": True}
         except FeishuApiError as exc:
@@ -8488,7 +8889,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         user = SessionUserRecord(**user_payload)
         set_cloud_session(token, user, persist=persist_session)
         set_cloud_refresh_token(next_refresh_token, persist=persist_session)
-        Thread(target=_sync_org_ai_config_from_cloud, daemon=True, name="cloud-ai-sync-refresh").start()
+        Thread(target=lambda: _sync_org_ai_config_from_cloud(user), daemon=True, name="cloud-ai-sync-refresh").start()
         return user
 
     # Circuit breaker: if cloud was unreachable, skip retries for 60s
@@ -9356,22 +9757,40 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         color: str | None = None,
     ) -> str:
         normalized_list_id = (list_id or str(payload.get("id") or "")).strip() or "list-0"
+        active_sandbox_id = active_business_sandbox_id()
+        if normalized_list_id == "list-0":
+            local_candidate_id = scoped_task_list_id("list-0")
+        else:
+            local_candidate_id = normalized_list_id
+            owner_row = state.db.fetchone(
+                "SELECT id, sandbox_id FROM task_lists WHERE id = ?",
+                (local_candidate_id,),
+            )
+            if owner_row and str(owner_row["sandbox_id"] or "") != active_sandbox_id:
+                safe = re.sub(r"[^A-Za-z0-9_-]+", "_", active_sandbox_id).strip("_")[:32] or "sandbox"
+                local_candidate_id = f"{normalized_list_id}_{safe}"
         timestamp = now_iso()
         existing = state.db.fetchone(
-            "SELECT id FROM task_lists WHERE id = ? OR cloud_id = ?",
-            (normalized_list_id, normalized_list_id),
+            """
+            SELECT id
+            FROM task_lists
+            WHERE COALESCE(sandbox_id, '') = ?
+              AND (id = ? OR cloud_id = ?)
+            """,
+            (active_sandbox_id, local_candidate_id, normalized_list_id),
         )
-        local_list_id = str(existing["id"]) if existing and existing["id"] else normalized_list_id
+        local_list_id = str(existing["id"]) if existing and existing["id"] else local_candidate_id
         resolved_name = (name or str(payload.get("name") or "")).strip() or "收集箱"
         resolved_color = (color or str(payload.get("color") or "")).strip() or "#5B7BFE"
         state.db.execute(
             """
             INSERT INTO task_lists(
-                id, organization_id, name, color, sort_order, is_default, scope, archived_at,
+                id, sandbox_id, organization_id, name, color, sort_order, is_default, scope, archived_at,
                 sync_status, cloud_id, cloud_payload_json, last_synced_at, last_cloud_version,
                 pending_sync_action, last_sync_error
-            ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(id) DO UPDATE SET
+                sandbox_id = excluded.sandbox_id,
                 name = excluded.name,
                 color = excluded.color,
                 sort_order = excluded.sort_order,
@@ -9388,6 +9807,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             """,
             (
                 local_list_id,
+                active_sandbox_id,
                 str(payload.get("organizationId") or ""),
                 resolved_name,
                 resolved_color,
@@ -9783,6 +10203,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         cloud_id = str(payload.get("id") or "").strip()
         if not cloud_id:
             return None
+        active_sandbox_id = active_business_sandbox_id()
         list_id = _upsert_cloud_task_list_shadow_local(
             {
                 "id": payload.get("listId"),
@@ -9798,11 +10219,22 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             SELECT id, organization_id, creator_id, owner_name, ddl, created_at,
                    status, progress_status, sync_status, pending_sync_action, updated_at, completed_at
             FROM tasks
-            WHERE id = ? OR cloud_id = ?
+            WHERE (id = ? OR cloud_id = ?)
+              AND COALESCE(sandbox_id, '') = ?
+            ORDER BY updated_at DESC
+            LIMIT 1
             """,
-            (cloud_id, cloud_id),
+            (cloud_id, cloud_id, active_sandbox_id),
         )
         local_task_id = str(existing["id"]) if existing and existing["id"] else cloud_id
+        if not existing:
+            conflicting_id = state.db.fetchone(
+                "SELECT id FROM tasks WHERE id = ? AND COALESCE(sandbox_id, '') != ?",
+                (cloud_id, active_sandbox_id),
+            )
+            if conflicting_id:
+                safe_sandbox = re.sub(r"[^a-zA-Z0-9_]+", "_", active_sandbox_id).strip("_")[:40] or "sandbox"
+                local_task_id = f"{cloud_id}_{safe_sandbox}"
         progress_status = str(payload.get("progressStatus") or "todo")
         preserve_local_done_from_cloud_pull = False
 
@@ -9972,13 +10404,14 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         state.db.execute(
             """
             INSERT INTO tasks(
-                id, organization_id, title, description, status, priority, list_id, creator_id, owner_id, owner_name,
+                id, sandbox_id, organization_id, title, description, status, priority, list_id, creator_id, owner_id, owner_name,
                 progress_status, ddl, deadline_at, scheduled_start_at, scheduled_end_at, completed_at, start_date, due_date, duration_minutes, scope_mode, client_id, event_line_id, project_module_id,
                 project_flow_id, business_category, current_blocker, next_action, recent_decision, evidence_count,
                 source_type, source_id, tags_json, tag_ids_json, created_at, updated_at, sync_status, cloud_id,
                 cloud_payload_json, last_synced_at, last_cloud_version, pending_sync_action, last_sync_error
-            ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(id) DO UPDATE SET
+                sandbox_id = excluded.sandbox_id,
                 organization_id = excluded.organization_id,
                 title = excluded.title,
                 description = excluded.description,
@@ -10022,6 +10455,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             """,
             (
                 local_task_id,
+                active_sandbox_id,
                 str(payload.get("organizationId") or (str(existing["organization_id"]) if existing and existing["organization_id"] else "")),
                 str(payload.get("title") or ""),
                 str(payload.get("description") or ""),
@@ -10169,8 +10603,10 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             FROM tasks
             WHERE id NOT LIKE 'agent_%'
               AND id NOT LIKE 'task_seed_%'
+              AND COALESCE(sandbox_id, '') = ?
               AND (status != 'done' OR progress_status != 'done')
-            """
+            """,
+            active_business_sandbox_param(),
         )
         restored = 0
         for row in rows:
@@ -10246,17 +10682,30 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             tid = str(item.get("id", ""))
             if not tid:
                 continue
-            existing = state.db.fetchone("SELECT id FROM task_tags WHERE id = ?", (tid,))
+            active_sandbox_id = active_business_sandbox_id()
+            existing = state.db.fetchone(
+                "SELECT id FROM task_tags WHERE id = ? AND COALESCE(sandbox_id, '') = ?",
+                (tid, active_sandbox_id),
+            )
             if not existing:
                 owner_operator_id = str(item.get("operatorId") or "")
+                local_tag_id = tid
+                conflicting_id = state.db.fetchone(
+                    "SELECT id FROM task_tags WHERE id = ? AND COALESCE(sandbox_id, '') != ?",
+                    (tid, active_sandbox_id),
+                )
+                if conflicting_id:
+                    safe_sandbox = re.sub(r"[^a-zA-Z0-9_]+", "_", active_sandbox_id).strip("_")[:40] or "sandbox"
+                    local_tag_id = f"{tid}_{safe_sandbox}"
                 state.db.execute(
                     """
                     INSERT OR IGNORE INTO task_tags(
-                        id, name, color, scope, owner_operator_id, operator_id, created_by, created_at, updated_at
-                    ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        id, sandbox_id, name, color, scope, owner_operator_id, operator_id, created_by, created_at, updated_at
+                    ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
-                        tid,
+                        local_tag_id,
+                        active_sandbox_id,
                         str(item.get("name", "")),
                         str(item.get("color", "#5B7BFE")),
                         str(item.get("scope", "org")),
@@ -10322,7 +10771,10 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         """Build the JSON body for POST/PUT /api/v1/clients from a local row.
         If override_payload provided (e.g. from a recent mutation), use it preferentially.
         """
-        row = state.db.fetchone("SELECT * FROM clients WHERE id = ?", (client_id,))
+        row = state.db.fetchone(
+            "SELECT * FROM clients WHERE id = ? AND COALESCE(sandbox_id, '') = ?",
+            (client_id, active_business_sandbox_id()),
+        )
         if not row:
             return None
         try:
@@ -10358,8 +10810,8 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             # 未登录云端，保留 pending 等下次有 token 再试
             return
         row = state.db.fetchone(
-            "SELECT cloud_id, sync_status FROM clients WHERE id = ?",
-            (client_id,),
+            "SELECT cloud_id, sync_status FROM clients WHERE id = ? AND COALESCE(sandbox_id, '') = ?",
+            (client_id, active_business_sandbox_id()),
         )
         if not row:
             return
@@ -10447,7 +10899,16 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             return None
         # local 用同 id 对账（POST 也传 id，云端同 id 不重复创建）
         local_id = cloud_id
-        existing = state.db.fetchone("SELECT * FROM clients WHERE id = ? OR cloud_id = ?", (local_id, cloud_id))
+        active_sandbox_id = active_business_sandbox_id()
+        existing = state.db.fetchone(
+            """
+            SELECT *
+            FROM clients
+            WHERE COALESCE(sandbox_id, '') = ?
+              AND (id = ? OR cloud_id = ?)
+            """,
+            (active_sandbox_id, local_id, cloud_id),
+        )
         # 机制化去重: 如果本地不存在这个 cloud_id, 但存在另一个同 name 的 client (用户已经
         # 真实使用过, 有 tasks/docs/threads), 跳过 — 防止云端冗余 client (e.g. client_cffc
         # 和 client_85d5c52575 都叫"测试机构B") 反复推回本地形成重复. 这是用户"删了又来"的根因.
@@ -10459,8 +10920,9 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                                   + COALESCE((SELECT COUNT(*) FROM chat_threads WHERE client_id=c.id), 0)
                                   + COALESCE((SELECT COUNT(*) FROM documents WHERE client_id=c.id), 0) AS usage
                        FROM clients c WHERE c.name=? AND c.id != ? AND c.cloud_id != ?
+                         AND COALESCE(c.sandbox_id, '') = ?
                        ORDER BY usage DESC LIMIT 1""",
-                    (cloud_name, local_id, cloud_id),
+                    (cloud_name, local_id, cloud_id, active_sandbox_id),
                 )
                 if dupe and int(dupe["usage"] or 0) > 0:
                     logger.info(
@@ -10532,10 +10994,10 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         state.db.execute(
             """
             INSERT INTO clients(id, name, alias, domain, type, intro, stage, color,
-                                created_at, updated_at,
+                                sandbox_id, created_at, updated_at,
                                 related_user_ids_json, is_data_center_included,
                                 sync_status, cloud_id, last_synced_at)
-            VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'synced', ?, ?)
+            VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'synced', ?, ?)
             """,
             (
                 local_id,
@@ -10546,6 +11008,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 str(payload.get("intro") or ""),
                 str(payload.get("stage") or "待导入资料"),
                 str(payload.get("color") or "#5B7BFE"),
+                active_sandbox_id,
                 str(payload.get("createdAt") or timestamp),
                 cloud_updated_at,
                 related_user_ids_json,
@@ -10610,13 +11073,14 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             FROM tasks
             WHERE id NOT LIKE 'agent_%'
               AND id NOT LIKE 'task_seed_%'
+              AND COALESCE(sandbox_id, '') = ?
               AND (
                 created_at > ?
                 OR updated_at > ?
                 OR sync_status IN ('pending', 'syncing')
               )
             """,
-            (cutoff, cutoff),
+            (active_business_sandbox_id(), cutoff, cutoff),
         )
         for row in local_rows:
             local_id = str(row["id"])
@@ -10699,11 +11163,13 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 """
                 SELECT *
                 FROM task_lists
+                WHERE COALESCE(sandbox_id, '') = ?
                 ORDER BY CASE WHEN archived_at IS NULL OR archived_at = '' THEN 0 ELSE 1 END,
                          CASE WHEN is_default = 1 THEN 0 ELSE 1 END,
                          sort_order ASC,
                          name COLLATE NOCASE ASC
-                """
+                """,
+                active_business_sandbox_param(),
             )
         ]
 
@@ -11328,10 +11794,14 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             JOIN task_lists l ON l.id = t.list_id
             LEFT JOIN clients c ON c.id = t.client_id
         """
+        scoped_params = (active_business_sandbox_id(), *params)
+        sandbox_clause = active_business_sandbox_where("t")
         if where_clause:
-            query += f" WHERE {where_clause}"
+            query += f" WHERE {sandbox_clause} AND ({where_clause})"
+        else:
+            query += f" WHERE {sandbox_clause}"
         query += " ORDER BY CASE t.status WHEN 'inbox' THEN 0 WHEN 'doing' THEN 1 WHEN 'todo' THEN 2 WHEN 'done' THEN 3 ELSE 4 END, t.updated_at DESC"
-        return [build_task(row) for row in state.db.fetchall(query, params)]
+        return [build_task(row) for row in state.db.fetchall(query, scoped_params)]
 
     def _mark_task_collaborator_handled(
         task_id: str,
@@ -14068,8 +14538,14 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         return []
 
     def sync_local_tasks_for_tag_change(tag_id: str) -> None:
-        tag_row = state.db.fetchone("SELECT * FROM task_tags WHERE id = ?", (tag_id,))
-        task_rows = state.db.fetchall("SELECT id, tag_ids_json FROM tasks")
+        tag_row = state.db.fetchone(
+            "SELECT * FROM task_tags WHERE id = ? AND COALESCE(sandbox_id, '') = ?",
+            (tag_id, active_business_sandbox_id()),
+        )
+        task_rows = state.db.fetchall(
+            "SELECT id, tag_ids_json FROM tasks WHERE COALESCE(sandbox_id, '') = ?",
+            active_business_sandbox_param(),
+        )
         for row in task_rows:
             tag_ids = _parse_json_list(row["tag_ids_json"])
             if tag_id not in tag_ids:
@@ -14091,9 +14567,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             )
 
     def build_client_summary(client_id: str):
-        row = state.db.fetchone("SELECT * FROM clients WHERE id = ?", (client_id,))
-        if not row:
-            raise HTTPException(status_code=404, detail="Client not found")
+        row = require_client_in_active_sandbox(client_id)
         # P7：解析扩展字段，老 row 缺这两列时给安全默认
         try:
             related_ids = json.loads(str(row["related_user_ids_json"] or "[]"))
@@ -14152,7 +14626,15 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         if not resolved_name:
             return None
         normalized_name = _normalize_workspace_client_name(resolved_name)
-        rows = state.db.fetchall("SELECT * FROM clients ORDER BY updated_at DESC, name COLLATE NOCASE ASC")
+        rows = state.db.fetchall(
+            """
+            SELECT *
+            FROM clients
+            WHERE COALESCE(sandbox_id, '') = ?
+            ORDER BY updated_at DESC, name COLLATE NOCASE ASC
+            """,
+            active_business_sandbox_param(),
+        )
         same_name_row = None
         typed_workspace_row = None
         for row in rows:
@@ -14185,11 +14667,12 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         client_color = "#5B7BFE"
         state.db.execute(
             """
-            INSERT INTO clients(id, name, alias, domain, type, intro, stage, color, created_at, updated_at)
-            VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO clients(id, sandbox_id, name, alias, domain, type, intro, stage, color, created_at, updated_at)
+            VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 client_id,
+                active_business_sandbox_id(),
                 resolved_name,
                 resolved_name,
                 "组织工作台",
@@ -14247,7 +14730,10 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
     ) -> TaskProjectContextRecord | None:
         if not client_id:
             return None
-        client_row = state.db.fetchone("SELECT * FROM clients WHERE id = ?", (client_id,))
+        client_row = state.db.fetchone(
+            "SELECT * FROM clients WHERE id = ? AND COALESCE(sandbox_id, '') = ?",
+            (client_id, active_business_sandbox_id()),
+        )
         if not client_row:
             return None
         client_name = str(client_row["name"])
@@ -24113,19 +24599,30 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
 
     def _ensure_local_task_list(list_id: str) -> str:
         """Ensure a task list exists locally. For cloud lists, create a local mirror if missing."""
-        row = state.db.fetchone("SELECT * FROM task_lists WHERE id = ?", (list_id,))
+        active_sandbox_id = active_business_sandbox_id()
+        row = state.db.fetchone(
+            "SELECT * FROM task_lists WHERE id = ? AND COALESCE(sandbox_id, '') = ?",
+            (list_id, active_sandbox_id),
+        )
         if row and not row["archived_at"]:
             return list_id
         fallback_id = _get_local_task_settings().defaultListId or "list-0"
-        fallback_row = state.db.fetchone("SELECT * FROM task_lists WHERE id = ?", (fallback_id,))
+        fallback_row = state.db.fetchone(
+            "SELECT * FROM task_lists WHERE id = ? AND COALESCE(sandbox_id, '') = ?",
+            (fallback_id, active_sandbox_id),
+        )
         if fallback_row and not fallback_row["archived_at"]:
             return fallback_id
         # Create a catch-all list so we never fail
+        scoped_id = scoped_task_list_id("list-0")
         state.db.execute(
-            "INSERT OR IGNORE INTO task_lists(id, name, color, sort_order, is_default, scope, created_at, updated_at) VALUES(?, ?, ?, ?, ?, ?, ?, ?)",
-            ("list-0", "收集箱", "#5B7BFE", 0, 1, "personal", now_iso(), now_iso()),
+            """
+            INSERT OR IGNORE INTO task_lists(id, sandbox_id, name, color, sort_order, is_default, scope, archived_at)
+            VALUES(?, ?, ?, ?, ?, ?, ?, NULL)
+            """,
+            (scoped_id, active_sandbox_id, "收集箱", "#5B7BFE", 0, 1, "org"),
         )
-        return "list-0"
+        return scoped_id
 
     def _try_cloud_sync_task(task_id: str, cloud_payload: dict) -> None:
         """Try to push a locally-saved task to cloud. Non-blocking: updates sync_status on result."""
@@ -24202,9 +24699,11 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             FROM tasks
             WHERE sync_status = 'pending'
               AND (cloud_payload_json IS NOT NULL OR cloud_id IS NOT NULL)
+              AND COALESCE(sandbox_id, '') = ?
             ORDER BY created_at
             LIMIT 10
-            """
+            """,
+            active_business_sandbox_param(),
         )
         synced = 0
         for row in pending_rows:
@@ -24444,16 +24943,17 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         state.db.execute(
             """
             INSERT INTO tasks(
-                id, title, description, status, priority, list_id, owner_id, owner_name, ddl,
+                id, sandbox_id, title, description, status, priority, list_id, owner_id, owner_name, ddl,
                 deadline_at, scheduled_start_at, scheduled_end_at, completed_at, start_date, due_date, duration_minutes,
                 event_line_id, source_type, source_id,
                 client_id, project_module_id, project_flow_id, scope_mode, business_category, current_blocker, next_action, recent_decision, evidence_count,
                 tags_json, tag_ids_json, sync_status, created_at, updated_at
             )
-            VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 task_id,
+                active_business_sandbox_id(),
                 payload.title,
                 payload.desc,
                 status,
@@ -24811,13 +25311,19 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             if source_type == "meeting" and source_id:
                 row = state.db.fetchone("SELECT client_id FROM meetings WHERE id = ?", (source_id,))
                 client_id = str(row["client_id"]) if row else None
-            elif source_id and state.db.fetchone("SELECT 1 FROM clients WHERE id = ?", (source_id,)):
+            elif source_id and state.db.fetchone(
+                "SELECT 1 FROM clients WHERE id = ? AND COALESCE(sandbox_id, '') = ?",
+                (source_id, active_business_sandbox_id()),
+            ):
                 client_id = source_id
             elif source_id:
                 row = state.db.fetchone("SELECT client_id FROM goal_records WHERE id = ?", (source_id,))
                 client_id = str(row["client_id"]) if row else None
             elif task.clientName:
-                row = state.db.fetchone("SELECT id FROM clients WHERE name = ?", (task.clientName,))
+                row = state.db.fetchone(
+                    "SELECT id FROM clients WHERE name = ? AND COALESCE(sandbox_id, '') = ?",
+                    (task.clientName, active_business_sandbox_id()),
+                )
                 client_id = str(row["id"]) if row and row["id"] else None
             if client_id and client_id not in seen_client_ids:
                 seen_client_ids.add(client_id)
@@ -27378,7 +27884,10 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                         # If still no client, try keyword matching against client names
                         # 冷冻项目不参与关键词匹配,避免新内容被分配到已冷冻的客户
                         if not cid:
-                            client_rows = state.db.fetchall("SELECT id, name FROM clients WHERE frozen_at IS NULL")
+                            client_rows = state.db.fetchall(
+                                "SELECT id, name FROM clients WHERE frozen_at IS NULL AND COALESCE(sandbox_id, '') = ?",
+                                active_business_sandbox_param(),
+                            )
                             for cr in client_rows:
                                 cn = str(cr["name"])
                                 if cn and len(cn) >= 2 and cn in title:
@@ -27949,18 +28458,50 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             WHERE COALESCE(alias, '') != 'workspace-smoke'
               AND COALESCE(name, '') != '安装态冒烟客户'
               AND frozen_at IS NULL
+              AND COALESCE(sandbox_id, '') = ?
             ORDER BY updated_at DESC
-            """
+            """,
+            active_business_sandbox_param(),
         )
-        task_count = int(state.db.scalar("SELECT COUNT(*) FROM tasks WHERE COALESCE(scope_mode, 'COLLAB_SHARED') != 'PERSONAL_ONLY'") or 0)
-        chat_count = int(state.db.scalar("SELECT COUNT(*) FROM chat_messages WHERE role = 'user'") or 0)
-        event_line_count = int(state.db.scalar("SELECT COUNT(*) FROM event_lines") or 0)
+        active_sandbox_id = active_business_sandbox_id()
+        task_count = int(state.db.scalar(
+            "SELECT COUNT(*) FROM tasks WHERE COALESCE(scope_mode, 'COLLAB_SHARED') != 'PERSONAL_ONLY' AND COALESCE(sandbox_id, '') = ?",
+            (active_sandbox_id,),
+        ) or 0)
+        chat_count = int(state.db.scalar(
+            """
+            SELECT COUNT(*)
+            FROM chat_messages m
+            JOIN chat_threads t ON t.id = m.thread_id
+            JOIN clients c ON c.id = t.client_id
+            WHERE m.role = 'user'
+              AND COALESCE(c.sandbox_id, '') = ?
+            """,
+            (active_sandbox_id,),
+        ) or 0)
+        event_line_count = int(state.db.scalar(
+            """
+            SELECT COUNT(*)
+            FROM event_lines e
+            JOIN clients c ON c.id = e.primary_client_id
+            WHERE COALESCE(c.sandbox_id, '') = ?
+            """,
+            (active_sandbox_id,),
+        ) or 0)
         review_count = int(state.db.scalar("SELECT COUNT(*) FROM weekly_reviews") or 0)
         meeting_count = int(state.db.scalar("SELECT COUNT(*) FROM meetings") or 0)
         handbook_count = int(state.db.scalar("SELECT COUNT(*) FROM handbook_entries") or 0)
         memory_fact_count = int(state.db.scalar("SELECT COUNT(*) FROM memory_facts") or 0)
         badge_count = int(state.db.scalar("SELECT COUNT(*) FROM growth_evidence_records WHERE validation_state IN ('validated','institutionalized')") or 0)
-        doc_count = int(state.db.scalar("SELECT COUNT(*) FROM documents") or 0)
+        doc_count = int(state.db.scalar(
+            """
+            SELECT COUNT(*)
+            FROM documents d
+            JOIN clients c ON c.id = d.client_id
+            WHERE COALESCE(c.sandbox_id, '') = ?
+            """,
+            (active_sandbox_id,),
+        ) or 0)
         dna_count = int(state.db.scalar("SELECT COUNT(*) FROM client_dna_documents WHERE summary != '' AND summary IS NOT NULL") or 0)
         first_client_row = state.db.fetchone(
             """
@@ -27968,7 +28509,9 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             FROM clients
             WHERE COALESCE(alias, '') != 'workspace-smoke'
               AND COALESCE(name, '') != '安装态冒烟客户'
-            """
+              AND COALESCE(sandbox_id, '') = ?
+            """,
+            (active_sandbox_id,),
         )
         first_client_at = str(first_client_row["val"]) if first_client_row and first_client_row["val"] else None
         days_accompanied = 0
@@ -30373,12 +30916,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         返回 5 大区块所需的真实数据 (项目骨架/时间线/人物候选/承诺/澄清需求/客户画像).
         每个字段都来自真实表; 当前空的字段前端用占位符 + '等 Phase 1' 标注.
         """
-        client_row = state.db.fetchone(
-            "SELECT 1 FROM clients WHERE id = ?",
-            (client_id,),
-        )
-        if client_row is None:
-            raise HTTPException(status_code=404, detail="Client not found")
+        require_client_in_active_sandbox(client_id)
         payload = compute_clarification_context(state.db.conn, client_id)
         return ClarificationContextResponse(**payload)
 
@@ -30393,12 +30931,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
 
         现阶段不调 LLM, 全部读现有 evidence_cards / tasks / event_lines.
         """
-        client_row = state.db.fetchone(
-            "SELECT 1 FROM clients WHERE id = ?",
-            (client_id,),
-        )
-        if client_row is None:
-            raise HTTPException(status_code=404, detail="Client not found")
+        require_client_in_active_sandbox(client_id)
         payload = compute_strategic_pulse(state.db.conn, client_id)
         return StrategicPulseRecord(**payload)
 
@@ -30677,7 +31210,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
 
     _cloud_ai_sync_status: dict[str, object] = {"state": "never"}
 
-    def _sync_org_ai_config_from_cloud() -> None:
+    def _sync_org_ai_config_from_cloud(session_user_override: SessionUserRecord | None = None) -> None:
         """Pull org-level AI config from cloud and apply locally (background, non-blocking).
 
         Writes non-sensitive diagnostics into _cloud_ai_sync_status so settings
@@ -30707,7 +31240,9 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             )
             return
         try:
-            if not current_session_is_admin():
+            session_user = session_user_override or get_cached_session_user()
+            is_org_admin = bool(session_user and session_user.primaryRole == "admin")
+            if not is_org_admin:
                 status_payload = cloud_request("GET", "/api/v1/org-ai/status")
                 if not isinstance(status_payload, dict):
                     raise RuntimeError("云端组织 AI 状态响应非 JSON 对象")
@@ -30823,6 +31358,20 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         provider_label = state.ai.current_provider_label()
         base_url = state.ai.current_base_url()
         model = state.ai.current_model()
+        if state.ai._is_local_base_url(base_url):  # type: ignore[attr-defined]
+            _cloud_ai_sync_status.clear()
+            _cloud_ai_sync_status.update({
+                "state": "skipped",
+                "at": now_iso(),
+                "reason": "当前为本机共享模型，不上传到云端组织 AI 配置",
+                "provider": provider,
+                "providerLabel": provider_label or None,
+                "model": model or None,
+                "baseUrl": base_url or None,
+                "hasApiKey": False,
+            })
+            logger.info("[cloud-ai-sync] push skipped: local device model baseUrl=%s", base_url or "<empty>")
+            return dict(_cloud_ai_sync_status)
         if not provider or provider == "mock":
             _cloud_ai_sync_status.clear()
             _cloud_ai_sync_status.update({
@@ -31025,6 +31574,8 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         token = get_cloud_token()
         refresh_token = get_cloud_refresh_token()
         if not token and not refresh_token:
+            if not _active_workspace_is_local():
+                return _unauthenticated("当前组织工作空间尚未登录云端账号。可登录云端，或切换到本机工作空间。")
             local_user = get_local_session_user()
             if local_user:
                 return AuthStateResponse(
@@ -31037,6 +31588,8 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             return _local_setup_state()
         if not state.cloud_api_url:
             clear_cloud_session()
+            if not _active_workspace_is_local():
+                return _unauthenticated("当前组织工作空间尚未配置云端服务地址。可配置云端，或切换到本机工作空间。")
             local_user = get_local_session_user()
             if local_user:
                 return AuthStateResponse(authenticated=True, user=local_user, sessionMode="local", localIdentityStatus="ready")
@@ -31068,6 +31621,16 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         token = get_cloud_token()
         refresh_token = get_cloud_refresh_token()
         if not token and not refresh_token:
+            if not _active_workspace_is_local():
+                return AccountOverviewResponse(
+                    sessionMode="cloud",
+                    cloudConnected=False,
+                    cloudConfig=CloudConfigResponse(
+                        mode="official_test" if state.cloud_api_url else "disabled",
+                        apiBaseUrl=state.cloud_api_url or None,
+                    ),
+                    user=None,
+                )
             local_user = get_local_session_user()
             return AccountOverviewResponse(
                 sessionMode="local",
@@ -31077,6 +31640,13 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             )
         if not state.cloud_api_url:
             clear_cloud_session()
+            if not _active_workspace_is_local():
+                return AccountOverviewResponse(
+                    sessionMode="cloud",
+                    cloudConnected=False,
+                    cloudConfig=CloudConfigResponse(mode="disabled"),
+                    user=None,
+                )
             local_user = get_local_session_user()
             return AccountOverviewResponse(
                 sessionMode="local",
@@ -31189,8 +31759,8 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             except Exception:
                 pass
             ai_record = LocalInputMemoryAiSettings(rememberApiKey=False)
+        _save_active_workspace_ai_input_memory(ai_record)
         record = current.model_copy(update={"aiSettings": ai_record})
-        _save_local_input_memory_record(record)
         return _hydrate_local_input_memory(record)
 
     @app.post("/api/v1/local-input-memory/feishu", response_model=LocalInputMemoryResponse)
@@ -31213,12 +31783,13 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             except Exception:
                 pass
             feishu_record = LocalInputMemoryFeishuIntegration(rememberInputs=False)
+        _save_active_workspace_feishu_input_memory(feishu_record)
         record = current.model_copy(update={"feishuIntegration": feishu_record})
-        _save_local_input_memory_record(record)
         return _hydrate_local_input_memory(record)
 
     @app.post("/api/v1/local-auth/register", response_model=AuthStateResponse)
     def local_auth_register(payload: LocalAuthRegisterPayload) -> AuthStateResponse:
+        _ensure_active_local_workspace()
         email = _normalize_local_identifier(payload.email)
         if not re.fullmatch(r"[^@\s]+@[^@\s]+\.[^@\s]+", email):
             raise HTTPException(status_code=400, detail="请输入有效的邮箱地址")
@@ -31278,6 +31849,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
 
     @app.post("/api/v1/local-auth/login", response_model=AuthStateResponse)
     def local_auth_login(payload: LocalAuthLoginPayload) -> AuthStateResponse:
+        _ensure_active_local_workspace()
         identifier = _normalize_local_identifier(payload.identifier)
         if not identifier:
             raise HTTPException(status_code=400, detail="请填写邮箱或手机号")
@@ -31584,6 +32156,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
     def sync_task_to_feishu_calendar(task_id: str, payload: dict = Body(default_factory=dict)) -> object:
         if not get_cloud_token() and not get_cloud_refresh_token():
             raise HTTPException(status_code=400, detail="连接云端并加入组织后，才能同步飞书日历。")
+        require_task_in_active_sandbox(task_id)
         response = cloud_request(
             "POST",
             f"/api/v1/feishu-sync/calendar/tasks/{quote(task_id)}",
@@ -31598,6 +32171,10 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
     def sync_document_to_feishu_docx(payload: dict = Body(default_factory=dict)) -> object:
         if not get_cloud_token() and not get_cloud_refresh_token():
             raise HTTPException(status_code=400, detail="连接云端并加入组织后，才能同步飞书文档。")
+        local_type = str((payload or {}).get("localType") or "").strip()
+        local_id = str((payload or {}).get("localId") or (payload or {}).get("documentId") or "").strip()
+        if local_id and local_type in {"", "document", "workbench_document"}:
+            require_document_in_active_sandbox(local_id)
         response = cloud_request(
             "POST",
             "/api/v1/feishu-sync/documents",
@@ -31844,6 +32421,47 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             raise HTTPException(status_code=502, detail="Invalid invite resolve payload")
         return OrgInviteResolveResultRecord(**response)
 
+    def _activate_workspace_for_cloud_user(user: SessionUserRecord) -> None:
+        current_cloud_api_url = state.cloud_api_url
+        organization_id = (user.organizationId or "").strip()
+        if not organization_id or organization_id == "local-device":
+            return
+        ensure_organization_sandbox_for_session(
+            state.db,
+            organization_id=organization_id,
+            organization_name=user.organizationName or "",
+            cloud_api_url=current_cloud_api_url,
+        )
+        _refresh_active_workspace_runtime()
+
+    def _cloud_auth_state_from_response(response: dict, *, persist: bool = True) -> AuthStateResponse:
+        local_identity_before_cloud = _local_session_user_id()
+        if response.get("organizationSelectionRequired"):
+            organizations = response.get("organizations") if isinstance(response.get("organizations"), list) else []
+            return AuthStateResponse(
+                authenticated=False,
+                sessionMode="cloud",
+                organizationSelectionRequired=True,
+                organizationSelectionToken=str(response.get("organizationSelectionToken") or ""),
+                organizations=organizations,
+                message="请选择要进入的组织工作空间。",
+            )
+        token = str(response.get("accessToken", ""))
+        refresh_token = str(response.get("refreshToken", ""))
+        user_payload = response.get("user")
+        if not token or not refresh_token or not isinstance(user_payload, dict):
+            message = response.get("message") if isinstance(response, dict) else "云端认证成功，但未拿到有效会话。"
+            raise HTTPException(status_code=502, detail=str(message))
+        user = SessionUserRecord(**user_payload)
+        _activate_workspace_for_cloud_user(user)
+        set_cloud_session(token, user, persist=persist)
+        set_cloud_refresh_token(refresh_token, persist=persist)
+        _bind_current_local_identity_to_cloud(user, local_identity_before_cloud)
+        _ensure_local_organization_workspace_from_cloud_membership()
+        Thread(target=lambda: _sync_org_ai_config_from_cloud(user), daemon=True, name="cloud-ai-sync-auth").start()
+        Thread(target=_sync_object_storage_config_from_cloud, daemon=True, name="cloud-object-storage-sync-auth").start()
+        return AuthStateResponse(authenticated=True, user=user, sessionMode="cloud")
+
     @app.post("/api/v1/auth/register", response_model=AuthStateResponse)
     def auth_register(payload: AuthRegisterPayload) -> AuthStateResponse:
         response = cloud_request(
@@ -31854,21 +32472,10 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         )
         if not isinstance(response, dict):
             raise HTTPException(status_code=502, detail="Invalid auth payload")
-        token = str(response.get("accessToken", ""))
-        refresh_token = str(response.get("refreshToken", ""))
-        user_payload = response.get("user")
-        if not token or not refresh_token or not isinstance(user_payload, dict):
-            message = response.get("message") if isinstance(response, dict) else "注册成功，但未拿到有效会话。"
-            raise HTTPException(status_code=502, detail=str(message))
-        user = SessionUserRecord(**user_payload)
-        set_cloud_session(token, user, persist=True)
-        set_cloud_refresh_token(refresh_token, persist=True)
-        _bind_current_local_identity_to_cloud(user)
-        _ensure_local_organization_workspace_from_cloud_membership()
-        log_activity("auth.register", "session", user.id, {"email": user.email})
-        Thread(target=_sync_org_ai_config_from_cloud, daemon=True, name="cloud-ai-sync-register").start()
-        Thread(target=_sync_object_storage_config_from_cloud, daemon=True, name="cloud-object-storage-sync-register").start()
-        return AuthStateResponse(authenticated=True, user=user, sessionMode="cloud")
+        auth_state = _cloud_auth_state_from_response(response, persist=True)
+        if auth_state.user:
+            log_activity("auth.register", "session", auth_state.user.id, {"email": auth_state.user.email})
+        return auth_state
 
     @app.post("/api/v1/auth/login", response_model=AuthStateResponse)
     def auth_login(payload: AuthLoginPayload) -> AuthStateResponse:
@@ -31880,28 +32487,94 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         )
         if not isinstance(response, dict):
             raise HTTPException(status_code=502, detail="Invalid auth payload")
-        token = str(response.get("accessToken", ""))
-        refresh_token = str(response.get("refreshToken", ""))
-        user_payload = response.get("user")
-        if not token or not refresh_token or not isinstance(user_payload, dict):
-            raise HTTPException(status_code=502, detail="Cloud auth payload missing session data")
-        user = SessionUserRecord(**user_payload)
-        set_cloud_session(token, user, persist=payload.rememberMe)
-        set_cloud_refresh_token(refresh_token, persist=payload.rememberMe)
-        _bind_current_local_identity_to_cloud(user)
-        _ensure_local_organization_workspace_from_cloud_membership()
-        log_activity("auth.login", "session", user.id, {"email": user.email})
-        Thread(target=_sync_org_ai_config_from_cloud, daemon=True, name="cloud-ai-sync-login").start()
-        Thread(target=_sync_object_storage_config_from_cloud, daemon=True, name="cloud-object-storage-sync-login").start()
-        return AuthStateResponse(authenticated=True, user=user)
+        auth_state = _cloud_auth_state_from_response(response, persist=payload.rememberMe)
+        if auth_state.user:
+            log_activity("auth.login", "session", auth_state.user.id, {"email": auth_state.user.email})
+        return auth_state
+
+    @app.post("/api/v1/auth/select-organization", response_model=AuthStateResponse)
+    def auth_select_organization(payload: SelectOrganizationPayload) -> AuthStateResponse:
+        response = cloud_request(
+            "POST",
+            "/api/v1/auth/select-organization",
+            json_body=payload.model_dump(),
+            allow_unauthenticated=True,
+        )
+        if not isinstance(response, dict):
+            raise HTTPException(status_code=502, detail="Invalid auth payload")
+        return _cloud_auth_state_from_response(response, persist=True)
+
+    @app.post("/api/v1/auth/organizations/create", response_model=AuthStateResponse)
+    def auth_create_organization(payload: CreateOrganizationPayload) -> AuthStateResponse:
+        response = cloud_request("POST", "/api/v1/auth/organizations/create", json_body=payload.model_dump())
+        if not isinstance(response, dict):
+            raise HTTPException(status_code=502, detail="Invalid organization create payload")
+        return _cloud_auth_state_from_response(response, persist=True)
+
+    @app.post("/api/v1/auth/organizations/join", response_model=AuthStateResponse)
+    def auth_join_organization(payload: JoinOrganizationPayload) -> AuthStateResponse:
+        response = cloud_request("POST", "/api/v1/auth/organizations/join", json_body=payload.model_dump())
+        if not isinstance(response, dict):
+            raise HTTPException(status_code=502, detail="Invalid organization join payload")
+        return _cloud_auth_state_from_response(response, persist=True)
 
     @app.post("/api/v1/auth/change-password")
     def auth_change_password(payload: dict) -> dict:
+        if not get_cloud_token() and not get_cloud_refresh_token() and _active_workspace_is_local():
+            row = _local_identity_row(_local_session_user_id())
+            if not row:
+                raise HTTPException(status_code=401, detail="请先登录本机账号。")
+            current_password = str(payload.get("currentPassword") or "")
+            new_password = str(payload.get("newPassword") or "")
+            if not verify_local_password(current_password, str(row["password_hash"])):
+                raise HTTPException(status_code=400, detail="当前密码不正确")
+            if len(new_password) < 8:
+                raise HTTPException(status_code=400, detail="新密码至少需要 8 位")
+            state.db.execute(
+                "UPDATE local_identities SET password_hash = ?, updated_at = ? WHERE id = ?",
+                (hash_local_password(new_password), now_iso(), str(row["id"])),
+            )
+            log_activity("local_auth.change_password", "session", str(row["id"]), {})
+            return {"message": "本机密码修改成功"}
         response = cloud_request("POST", "/api/v1/auth/change-password", json_body=payload)
         return response if isinstance(response, dict) else {"message": "密码修改成功"}
 
     @app.patch("/api/v1/auth/me", response_model=AuthStateResponse)
     def auth_update_profile(payload: UpdateProfilePayload) -> AuthStateResponse:
+        if not get_cloud_token() and not get_cloud_refresh_token() and _active_workspace_is_local():
+            row = _local_identity_row(_local_session_user_id())
+            if not row:
+                raise HTTPException(status_code=401, detail="请先登录本机账号。")
+            full_name = (payload.fullName or "").strip()
+            email = _normalize_local_identifier(payload.email)
+            phone = _normalize_local_phone(payload.phone)
+            if not full_name:
+                raise HTTPException(status_code=400, detail="请填写姓名")
+            if not re.fullmatch(r"[^@\s]+@[^@\s]+\.[^@\s]+", email):
+                raise HTTPException(status_code=400, detail="请输入有效的邮箱地址")
+            existing_email = state.db.fetchone("SELECT id FROM local_identities WHERE email = ? AND id <> ?", (email, str(row["id"])))
+            if existing_email:
+                raise HTTPException(status_code=409, detail="本机已存在这个邮箱账号")
+            if phone:
+                existing_phone = state.db.fetchone(
+                    "SELECT id FROM local_identities WHERE phone_number = ? AND id <> ?",
+                    (phone, str(row["id"])),
+                )
+                if existing_phone:
+                    raise HTTPException(status_code=409, detail="本机已存在这个手机号账号")
+            state.db.execute(
+                """
+                UPDATE local_identities
+                   SET full_name = ?, email = ?, phone_number = ?, updated_at = ?
+                 WHERE id = ?
+                """,
+                (full_name, email, phone or None, now_iso(), str(row["id"])),
+            )
+            refreshed = _local_identity_row(str(row["id"]))
+            if not refreshed:
+                raise HTTPException(status_code=404, detail="本机账号不存在")
+            user = _local_user_from_row(refreshed)
+            return AuthStateResponse(authenticated=True, user=user, sessionMode="local", localIdentityStatus="ready")
         if not get_cloud_token() and not get_cloud_refresh_token():
             raise HTTPException(status_code=400, detail="当前处于本机模式，请先连接云端账号。")
         response = cloud_request("PATCH", "/api/v1/auth/me", json_body=payload.model_dump(exclude_none=True))
@@ -31913,15 +32586,32 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
 
     @app.post("/api/v1/auth/logout", response_model=AuthStateResponse)
     def auth_logout() -> AuthStateResponse:
+        def _after_logout_state() -> AuthStateResponse:
+            if not _active_workspace_is_local():
+                return AuthStateResponse(
+                    authenticated=False,
+                    user=None,
+                    message="当前组织工作空间已退出登录。可重新登录云端，或切换到本机工作空间。",
+                    sessionMode="cloud",
+                )
+            local_user = get_local_session_user()
+            if local_user:
+                return AuthStateResponse(authenticated=True, user=local_user, sessionMode="local", localIdentityStatus="ready")
+            return _local_setup_state()
+
+        had_cloud_session = bool(get_cloud_token() or get_cloud_refresh_token())
         if get_cloud_token():
             try:
                 cloud_request("POST", "/api/v1/auth/logout")
             except HTTPException:
                 pass
-        clear_cloud_session()
+        if had_cloud_session:
+            clear_cloud_session()
+            log_activity("auth.logout", "session", "current", {"scope": "cloud_workspace"})
+            return _after_logout_state()
         clear_local_session()
         log_activity("auth.logout", "session", "current", {})
-        return _local_setup_state()
+        return _after_logout_state()
 
     def process_pending_consultation_knowledge_requests_impl() -> ConsultationKnowledgeProcessSummaryResponse:
         all_requests = list_cloud_consultation_knowledge_requests()
@@ -32060,8 +32750,8 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                     client_name = (item.clientName or "").strip()
                     row = (
                         state.db.fetchone(
-                            "SELECT id FROM clients WHERE name = ? ORDER BY created_at LIMIT 1",
-                            (client_name,),
+                            "SELECT id FROM clients WHERE name = ? AND COALESCE(sandbox_id, '') = ? ORDER BY created_at LIMIT 1",
+                            (client_name, active_business_sandbox_id()),
                         )
                         if client_name
                         else None
@@ -37011,6 +37701,44 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
     def get_current_workspace() -> SandboxWorkspaceRecord:
         return get_active_sandbox(state.db)
 
+    @app.post("/api/v1/workspaces", response_model=SandboxWorkspacesResponse)
+    def create_workspace(payload: SandboxWorkspaceCreatePayload) -> SandboxWorkspacesResponse:
+        try:
+            next_cloud_api_url = normalize_configured_cloud_api_url(payload.cloudApiUrl) if payload.cloudApiUrl else ""
+            created = create_sandbox(
+                state.db,
+                kind=payload.kind,
+                name=payload.name,
+                cloud_api_url=next_cloud_api_url,
+            )
+            activate_sandbox(state.db, created.id)
+            _refresh_active_workspace_runtime()
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return build_workspaces_response(state.db)
+
+    @app.patch("/api/v1/workspaces/{sandbox_id}", response_model=SandboxWorkspacesResponse)
+    def patch_workspace(sandbox_id: str, payload: SandboxWorkspaceUpdatePayload) -> SandboxWorkspacesResponse:
+        try:
+            next_cloud_api_url = None
+            if payload.cloudApiUrl is not None:
+                next_cloud_api_url = normalize_configured_cloud_api_url(payload.cloudApiUrl) if payload.cloudApiUrl else ""
+            update_sandbox(state.db, sandbox_id, name=payload.name, cloud_api_url=next_cloud_api_url)
+            if sandbox_id == get_active_sandbox_id(state.db):
+                _refresh_active_workspace_runtime()
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return build_workspaces_response(state.db)
+
+    @app.post("/api/v1/workspaces/{sandbox_id}/activate", response_model=SandboxWorkspacesResponse)
+    def activate_workspace(sandbox_id: str) -> SandboxWorkspacesResponse:
+        try:
+            activate_sandbox(state.db, sandbox_id)
+            _refresh_active_workspace_runtime()
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        return build_workspaces_response(state.db)
+
     @app.get("/api/v1/maintenance-mode/status", response_model=MaintenanceModeStatusRecord)
     def get_maintenance_mode_status() -> MaintenanceModeStatusRecord:
         return _cloud_maintenance_status()
@@ -37760,10 +38488,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 next_cloud_api_url = normalize_configured_cloud_api_url(payload.cloudApiUrl)
             except ValueError as exc:
                 raise HTTPException(status_code=400, detail=str(exc)) from exc
-            if next_cloud_api_url != state.cloud_api_url:
-                clear_cloud_session()
-                state.cloud_api_url = next_cloud_api_url
-            state.db.set_setting("cloud_api_url", next_cloud_api_url)
+            _set_active_workspace_cloud_api_url(next_cloud_api_url)
         state.ai.configure(
             payload.aiProvider,
             payload.aiModel,
@@ -37849,7 +38574,10 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         current = _get_local_task_settings(operator_id)
         next_default_list_id = payload.defaultListId if payload.defaultListId is not None else current.defaultListId
         if next_default_list_id:
-            list_row = state.db.fetchone("SELECT * FROM task_lists WHERE id = ?", (next_default_list_id,))
+            list_row = state.db.fetchone(
+                "SELECT * FROM task_lists WHERE id = ? AND COALESCE(sandbox_id, '') = ?",
+                (next_default_list_id, active_business_sandbox_id()),
+            )
             if not list_row or list_row["archived_at"]:
                 raise HTTPException(status_code=400, detail="默认清单无效")
             if not _is_task_settings_default_local_list_row(list_row):
@@ -37888,11 +38616,14 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             ),
         )
         if next_record.defaultListId:
-            default_scope_row = state.db.fetchone("SELECT scope FROM task_lists WHERE id = ?", (next_record.defaultListId,))
+            default_scope_row = state.db.fetchone(
+                "SELECT scope FROM task_lists WHERE id = ? AND COALESCE(sandbox_id, '') = ?",
+                (next_record.defaultListId, active_business_sandbox_id()),
+            )
             default_scope = str(default_scope_row["scope"] or "org") if default_scope_row else "org"
             state.db.execute(
-                "UPDATE task_lists SET is_default = CASE WHEN id = ? THEN 1 ELSE 0 END WHERE scope = ?",
-                (next_record.defaultListId, default_scope),
+                "UPDATE task_lists SET is_default = CASE WHEN id = ? THEN 1 ELSE 0 END WHERE scope = ? AND COALESCE(sandbox_id, '') = ?",
+                (next_record.defaultListId, default_scope, active_business_sandbox_id()),
         )
         log_activity("settings.tasks.update", "settings", operator_id, payload.model_dump(exclude_none=True))
         return _get_local_task_settings(operator_id)
@@ -38579,7 +39310,10 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         next_payload["updatedAt"] = now_iso()
         next_record = ClientWorkspaceSettingsRecord(**next_payload)
         if next_record.meetingPublishDefaultListId:
-            list_row = state.db.fetchone("SELECT id, archived_at FROM task_lists WHERE id = ?", (next_record.meetingPublishDefaultListId,))
+            list_row = state.db.fetchone(
+                "SELECT id, archived_at FROM task_lists WHERE id = ? AND COALESCE(sandbox_id, '') = ?",
+                (next_record.meetingPublishDefaultListId, active_business_sandbox_id()),
+            )
             if not list_row or list_row["archived_at"]:
                 raise HTTPException(status_code=400, detail="默认会议任务清单无效")
         _save_json_settings_record("settings.client_workspace", next_record)
@@ -38683,7 +39417,11 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
     @app.get("/api/v1/settings/feishu-user-binding", response_model=FeishuUserBindingRecord)
     def read_feishu_user_binding() -> FeishuUserBindingRecord:
         user = require_session_user()
-        sync_feishu_user_binding_from_cloud_relay(user.id)
+        try:
+            sync_feishu_user_binding_from_cloud_relay(user.id)
+        except HTTPException as exc:
+            if exc.status_code not in {400, 404, 503}:
+                raise
         return get_feishu_user_binding(user.id)
 
     @app.post("/api/v1/settings/feishu-user-binding/start", response_model=FeishuUserBindingStartResponse)
@@ -38693,7 +39431,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         if not settings.appId.strip():
             raise HTTPException(status_code=400, detail="请先在系统设置里配置飞书 App ID。")
         try:
-            app_secret = state.feishu_secret_store.get_api_key().strip()
+            app_secret = _feishu_secret_store_for_active_sandbox().get_api_key().strip()
         except Exception:
             app_secret = ""
         if not app_secret:
@@ -38765,20 +39503,21 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         user_id = oauth_state.get("userId", "").strip()
         if not user_id:
             return _render_feishu_binding_callback_page("飞书绑定失败", "这次授权缺少用户信息，请重新发起绑定。", success=False)
+        sandbox_id = oauth_state.get("sandboxId", "").strip() or None
         if not code or not code.strip():
             return _render_feishu_binding_callback_page("飞书绑定失败", "飞书没有返回有效授权码，请重新发起绑定。", success=False)
 
         try:
-            binding = _finalize_feishu_user_binding(user_id, code.strip())
-            clear_feishu_user_binding_pending(user_id)
+            binding = _finalize_feishu_user_binding(user_id, code.strip(), sandbox_id=sandbox_id)
+            clear_feishu_user_binding_pending(user_id, sandbox_id=sandbox_id)
             return _render_feishu_binding_callback_page("飞书账号绑定成功", f"已绑定 {binding.name or binding.email or binding.openId}。后续在任务与日历里发起飞书会议时，会优先按当前登录员工的绑定身份发送。", success=True)
         except FeishuApiError as exc:
-            _save_feishu_user_binding_error(user_id, str(exc))
-            clear_feishu_user_binding_pending(user_id)
+            _save_feishu_user_binding_error(user_id, str(exc), sandbox_id=sandbox_id)
+            clear_feishu_user_binding_pending(user_id, sandbox_id=sandbox_id)
             return _render_feishu_binding_callback_page("飞书绑定失败", str(exc), success=False)
         except HTTPException as exc:
-            _save_feishu_user_binding_error(user_id, str(exc.detail))
-            clear_feishu_user_binding_pending(user_id)
+            _save_feishu_user_binding_error(user_id, str(exc.detail), sandbox_id=sandbox_id)
+            clear_feishu_user_binding_pending(user_id, sandbox_id=sandbox_id)
             return _render_feishu_binding_callback_page("飞书绑定失败", str(exc.detail), success=False)
 
     @app.post("/api/v1/channels/feishu/events")
@@ -38852,7 +39591,16 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         #    应该能立刻看到新客户。_pull_cloud_clients_to_local 有 30 秒 TTL + in_flight 锁,
         #    不会过载;无 cloud token 时会自己跳过。
         _pull_cloud_clients_to_local()
-        return [build_client_summary(str(row["id"])) for row in state.db.fetchall("SELECT id FROM clients ORDER BY updated_at DESC")]
+        rows = state.db.fetchall(
+            """
+            SELECT id
+            FROM clients
+            WHERE COALESCE(sandbox_id, '') = ?
+            ORDER BY updated_at DESC
+            """,
+            active_business_sandbox_param(),
+        )
+        return [build_client_summary(str(row["id"])) for row in rows]
 
     @app.get("/api/v1/clients/search-similar")
     def search_similar_clients(name: str = "") -> dict:
@@ -38870,7 +39618,13 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             return {"query": query, "matches": []}
 
         rows = state.db.fetchall(
-            "SELECT id, name, alias, aliases_json, stage, color FROM clients ORDER BY updated_at DESC"
+            """
+            SELECT id, name, alias, aliases_json, stage, color
+            FROM clients
+            WHERE COALESCE(sandbox_id, '') = ?
+            ORDER BY updated_at DESC
+            """,
+            active_business_sandbox_param(),
         )
         matches: list[dict] = []
         for r in rows:
@@ -38941,12 +39695,13 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         is_data_center_included_value = 1 if payload.isDataCenterIncluded else 0
         state.db.execute(
             """
-            INSERT INTO clients(id, name, alias, domain, type, intro, stage, color, created_at, updated_at,
+            INSERT INTO clients(id, sandbox_id, name, alias, domain, type, intro, stage, color, created_at, updated_at,
                                 related_user_ids_json, is_data_center_included)
-            VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 client_id,
+                active_business_sandbox_id(),
                 payload.name,
                 payload.alias,
                 payload.domain,
@@ -38987,7 +39742,10 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
 
     @app.put("/api/v1/clients/{client_id}", response_model=ClientSummary)
     def update_client(client_id: str, payload: ClientMutationPayload) -> ClientSummary:
-        row = state.db.fetchone("SELECT color, name FROM clients WHERE id = ?", (client_id,))
+        row = state.db.fetchone(
+            "SELECT color, name FROM clients WHERE id = ? AND COALESCE(sandbox_id, '') = ?",
+            (client_id, active_business_sandbox_id()),
+        )
         if not row:
             raise HTTPException(status_code=404, detail="Client not found")
         previous_name = str(row["name"] or "").strip()
@@ -39038,7 +39796,10 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         ensure_standard_client_folders(client_id)
         log_activity("client.update", "client", client_id, payload.model_dump())
         # 批 3：cloud sync 更新（注意 db.scalar 会强制 int() 转换，cloud_id 是字符串要用 fetchone）
-        cloud_id_row = state.db.fetchone("SELECT cloud_id FROM clients WHERE id = ?", (client_id,))
+        cloud_id_row = state.db.fetchone(
+            "SELECT cloud_id FROM clients WHERE id = ? AND COALESCE(sandbox_id, '') = ?",
+            (client_id, active_business_sandbox_id()),
+        )
         existing_cloud_id = str(cloud_id_row["cloud_id"]).strip() if cloud_id_row and cloud_id_row["cloud_id"] else ""
         action: Literal["create", "update"] = "update" if existing_cloud_id else "create"
         state.db.execute(
@@ -40422,6 +41183,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         from pathlib import Path
         import shutil
 
+        build_client_summary(client_id)
         doc_row = state.db.fetchone(
             "SELECT * FROM documents WHERE id = ? AND client_id = ?",
             (document_id, client_id),
@@ -40543,7 +41305,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         因为 clients 表上 ON DELETE CASCADE 太凶,过去用户误删时数据全无 — 这个 preview
         让用户在按下"永久删除"前清楚看到代价.
         """
-        row = state.db.fetchone("SELECT name FROM clients WHERE id = ?", (client_id,))
+        row = require_client_in_active_sandbox(client_id)
         if not row:
             raise HTTPException(status_code=404, detail="Client not found")
         name = str(row["name"] or client_id)
@@ -40585,9 +41347,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
 
         与删除不同:数据完全保留,只是不再参与计算。解冻后立即恢复。
         """
-        row = state.db.fetchone("SELECT id, name FROM clients WHERE id = ?", (client_id,))
-        if not row:
-            raise HTTPException(status_code=404, detail="Client not found")
+        row = require_client_in_active_sandbox(client_id)
         now = now_iso()
         # P0-freeze 统一:stage 是云安全唯一真相源(v_active_clients 按它过滤,
         # 云同步守门保护 stage='frozen' 不被覆盖)。frozen_at 兼写作显示镜像。
@@ -40601,9 +41361,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
     @app.post("/api/v1/clients/{client_id}/unfreeze", response_model=ClientSummary)
     def unfreeze_client(client_id: str) -> ClientSummary:
         """解冻一个项目,让它重新参与所有自动 job/计算/数据中心。"""
-        row = state.db.fetchone("SELECT id, name FROM clients WHERE id = ?", (client_id,))
-        if not row:
-            raise HTTPException(status_code=404, detail="Client not found")
+        row = require_client_in_active_sandbox(client_id)
         # P0-freeze 统一:清 frozen_at 镜像,且仅把 frozen 还原为 active
         # (CASE 保护 archived/lost 不被误解冻)。
         state.db.execute(
@@ -40616,9 +41374,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
 
     @app.delete("/api/v1/clients/{client_id}")
     def delete_client(client_id: str) -> dict[str, bool]:
-        row = state.db.fetchone("SELECT name FROM clients WHERE id = ?", (client_id,))
-        if not row:
-            raise HTTPException(status_code=404, detail="Client not found")
+        row = require_client_in_active_sandbox(client_id)
         client_name = str(row["name"] or client_id)
         workspace_root = state.data_dir / "client_workspace" / client_id
         vector_root = state.data_dir / "vector_store" / client_id
@@ -43546,7 +44302,10 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         from app.services.memory_foundation import backfill_document_knowledge_to_memory
         stats = backfill_document_knowledge_to_memory(state.db)
         # 回流完后刷新所有客户的 notebook(跳过冷冻项目,它们不再参与自动计算)
-        clients = state.db.fetchall("SELECT id FROM clients WHERE frozen_at IS NULL")
+        clients = state.db.fetchall(
+            "SELECT id FROM clients WHERE frozen_at IS NULL AND COALESCE(sandbox_id, '') = ?",
+            active_business_sandbox_param(),
+        )
         refreshed = 0
         for client in clients:
             try:
@@ -45434,7 +46193,10 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         next_settings = save_retrieval_model_settings(state.db, payload)
         if retrieval_embedding_signature(previous) != retrieval_embedding_signature(next_settings):
             # 冷冻项目不参与索引刷新,它们的 embedding signature 留旧值,等解冻后再统一刷
-            client_rows = state.db.fetchall("SELECT id FROM clients WHERE frozen_at IS NULL", ())
+            client_rows = state.db.fetchall(
+                "SELECT id FROM clients WHERE frozen_at IS NULL AND COALESCE(sandbox_id, '') = ?",
+                active_business_sandbox_param(),
+            )
             for row in client_rows:
                 state.db.set_setting(f"knowledge.active_embedding_signature:{str(row['id'])}", "")
         return next_settings
@@ -50712,9 +51474,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         - .md/.txt：直接读文件
         - 其他类型暂不支持
         """
-        row = state.db.fetchone("SELECT path, kind FROM documents WHERE id = ?", (document_id,))
-        if not row:
-            raise HTTPException(status_code=404, detail="找不到这份文档")
+        row = require_document_in_active_sandbox(document_id)
         path = Path(str(row["path"] or ""))
         kind = str(row["kind"] or "").lower()
         if not str(path):
@@ -50864,9 +51624,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         """
         from app.services.link_material_import import render_polished_markdown_to_docx
 
-        row = state.db.fetchone("SELECT id, client_id, title, path FROM documents WHERE id = ?", (document_id,))
-        if not row:
-            raise HTTPException(status_code=404, detail="文档不存在或已被删除")
+        row = require_document_in_active_sandbox(document_id)
         existing_path = Path(str(row["path"]))
         if not existing_path.exists():
             raise HTTPException(status_code=410, detail="原文件已不在磁盘上,无法覆盖保存。请改用'另存为'重新建一份")
@@ -51543,11 +52301,25 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
     )
 
     _feishu_sync: FeishuSyncState | None = None
+    _feishu_sync_sandbox_id: str | None = None
 
     def _get_feishu_sync() -> FeishuSyncState:
-        nonlocal _feishu_sync
-        if _feishu_sync is None:
-            _feishu_sync = FeishuSyncState(state.db, state.feishu_secret_store)
+        nonlocal _feishu_sync, _feishu_sync_sandbox_id
+        active_sandbox_id = get_active_sandbox_id(state.db)
+        if _feishu_sync is None or _feishu_sync_sandbox_id != active_sandbox_id:
+            def _sync_setting_getter(key: str, default: str = "") -> str:
+                if key == "feishu_bot":
+                    return _get_workspace_setting("settings.feishu_bot", default, sandbox_id=active_sandbox_id, legacy_keys=("feishu_bot",))
+                if key.startswith("feishu_user_binding:"):
+                    return _get_workspace_setting(f"settings.{key}", default, sandbox_id=active_sandbox_id)
+                return state.db.get_setting(key, default)
+
+            _feishu_sync = FeishuSyncState(
+                state.db,
+                _feishu_secret_store_for_sandbox(active_sandbox_id),
+                settings_getter=_sync_setting_getter,
+            )
+            _feishu_sync_sandbox_id = active_sandbox_id
         return _feishu_sync
 
     @app.get("/api/v1/feishu/status")
@@ -52883,10 +53655,12 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             """
             SELECT *
             FROM task_lists
-            WHERE scope = ? AND (archived_at IS NULL OR archived_at = '')
+            WHERE scope = ?
+              AND COALESCE(sandbox_id, '') = ?
+              AND (archived_at IS NULL OR archived_at = '')
             ORDER BY CASE WHEN is_default = 1 THEN 0 ELSE 1 END, sort_order ASC, id ASC
             """,
-            (scope,),
+            (scope, active_business_sandbox_id()),
         ):
             if _normalize_task_list_name_for_repair(row["name"]) == normalized:
                 return row
@@ -52992,27 +53766,36 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             """
             SELECT id
             FROM task_lists
-            WHERE scope = ? AND is_default = 1 AND (archived_at IS NULL OR archived_at = '')
+            WHERE scope = ?
+              AND COALESCE(sandbox_id, '') = ?
+              AND is_default = 1
+              AND (archived_at IS NULL OR archived_at = '')
             ORDER BY sort_order ASC, id ASC
             LIMIT 1
             """,
-            (scope,),
+            (scope, active_business_sandbox_id()),
         )
         if not default_row:
             default_row = state.db.fetchone(
                 """
                 SELECT id
                 FROM task_lists
-                WHERE scope = ? AND (archived_at IS NULL OR archived_at = '')
+                WHERE scope = ?
+                  AND COALESCE(sandbox_id, '') = ?
+                  AND (archived_at IS NULL OR archived_at = '')
                 ORDER BY sort_order ASC, id ASC
                 LIMIT 1
                 """,
-                (scope,),
+                (scope, active_business_sandbox_id()),
             )
         if default_row:
             state.db.execute(
-                "UPDATE task_lists SET is_default = CASE WHEN id = ? THEN 1 ELSE 0 END WHERE scope = ?",
-                (str(default_row["id"]), scope),
+                """
+                UPDATE task_lists
+                SET is_default = CASE WHEN id = ? THEN 1 ELSE 0 END
+                WHERE scope = ? AND COALESCE(sandbox_id, '') = ?
+                """,
+                (str(default_row["id"]), scope, active_business_sandbox_id()),
             )
 
     def _repair_local_duplicate_task_lists() -> TaskListDuplicateRepairResponse:
@@ -53020,13 +53803,23 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             """
             SELECT *
             FROM task_lists
-            WHERE archived_at IS NULL OR archived_at = ''
+            WHERE COALESCE(sandbox_id, '') = ?
+              AND (archived_at IS NULL OR archived_at = '')
             ORDER BY scope ASC, name COLLATE NOCASE ASC, sort_order ASC, id ASC
-            """
+            """,
+            active_business_sandbox_param(),
         )
         task_counts = {
             str(row["list_id"]): int(row["count"] or 0)
-            for row in state.db.fetchall("SELECT list_id, COUNT(1) AS count FROM tasks GROUP BY list_id")
+            for row in state.db.fetchall(
+                """
+                SELECT list_id, COUNT(1) AS count
+                FROM tasks
+                WHERE COALESCE(sandbox_id, '') = ?
+                GROUP BY list_id
+                """,
+                active_business_sandbox_param(),
+            )
             if row["list_id"]
         }
         groups: dict[tuple[str, str], list] = {}
@@ -53062,8 +53855,12 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 task_count = int(task_counts.get(duplicate_id, 0))
                 if task_count:
                     state.db.execute(
-                        "UPDATE tasks SET list_id = ?, updated_at = ? WHERE list_id = ?",
-                        (canonical_id, now_iso(), duplicate_id),
+                        """
+                        UPDATE tasks
+                        SET list_id = ?, updated_at = ?
+                        WHERE list_id = ? AND COALESCE(sandbox_id, '') = ?
+                        """,
+                        (canonical_id, now_iso(), duplicate_id, active_business_sandbox_id()),
                     )
                     moved_count += task_count
                 settings_count = state.db.scalar(
@@ -53076,7 +53873,10 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                         (canonical_id, now_iso(), duplicate_id),
                     )
                     updated_settings_total += int(settings_count)
-                remaining = state.db.scalar("SELECT COUNT(1) AS count FROM tasks WHERE list_id = ?", (duplicate_id,))
+                remaining = state.db.scalar(
+                    "SELECT COUNT(1) AS count FROM tasks WHERE list_id = ? AND COALESCE(sandbox_id, '') = ?",
+                    (duplicate_id, active_business_sandbox_id()),
+                )
                 if remaining == 0:
                     state.db.execute("DELETE FROM task_lists WHERE id = ?", (duplicate_id,))
                     merged_ids.append(duplicate_id)
@@ -53165,21 +53965,34 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         if existing_active is not None:
             if payload.isDefault:
                 state.db.execute(
-                    "UPDATE task_lists SET is_default = CASE WHEN id = ? THEN 1 ELSE 0 END WHERE scope = ?",
-                    (str(existing_active["id"]), next_scope),
+                    """
+                    UPDATE task_lists
+                    SET is_default = CASE WHEN id = ? THEN 1 ELSE 0 END
+                    WHERE scope = ? AND COALESCE(sandbox_id, '') = ?
+                    """,
+                    (str(existing_active["id"]), next_scope, active_business_sandbox_id()),
                 )
                 existing_active = state.db.fetchone("SELECT * FROM task_lists WHERE id = ?", (str(existing_active["id"]),))
             return _local_task_list_record(existing_active)
-        is_default = bool(payload.isDefault) or state.db.scalar("SELECT COUNT(1) AS count FROM task_lists WHERE scope = ?", (next_scope,)) == 0
-        sort_order = payload.sortOrder if payload.sortOrder is not None else state.db.scalar("SELECT COALESCE(MAX(sort_order), -1) + 1 AS count FROM task_lists")
+        is_default = bool(payload.isDefault) or state.db.scalar(
+            "SELECT COUNT(1) AS count FROM task_lists WHERE scope = ? AND COALESCE(sandbox_id, '') = ?",
+            (next_scope, active_business_sandbox_id()),
+        ) == 0
+        sort_order = payload.sortOrder if payload.sortOrder is not None else state.db.scalar(
+            "SELECT COALESCE(MAX(sort_order), -1) + 1 AS count FROM task_lists WHERE COALESCE(sandbox_id, '') = ?",
+            active_business_sandbox_param(),
+        )
         if is_default:
-            state.db.execute("UPDATE task_lists SET is_default = 0 WHERE scope = ?", (next_scope,))
+            state.db.execute(
+                "UPDATE task_lists SET is_default = 0 WHERE scope = ? AND COALESCE(sandbox_id, '') = ?",
+                (next_scope, active_business_sandbox_id()),
+            )
         state.db.execute(
             """
-            INSERT INTO task_lists(id, name, color, sort_order, is_default, scope, archived_at)
-            VALUES(?, ?, ?, ?, ?, ?, NULL)
+            INSERT INTO task_lists(id, sandbox_id, name, color, sort_order, is_default, scope, archived_at)
+            VALUES(?, ?, ?, ?, ?, ?, ?, NULL)
             """,
-            (list_id, trimmed_name, payload.color.strip(), sort_order, 1 if is_default else 0, next_scope),
+            (list_id, active_business_sandbox_id(), trimmed_name, payload.color.strip(), sort_order, 1 if is_default else 0, next_scope),
         )
         row = state.db.fetchone("SELECT * FROM task_lists WHERE id = ?", (list_id,))
         assert row is not None
@@ -53232,12 +54045,18 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         session_user = get_cached_session_user()
         if session_user and session_user.primaryRole != "admin":
             row_scope = None
-            row = state.db.fetchone("SELECT scope FROM task_lists WHERE id = ?", (list_id,))
+            row = state.db.fetchone(
+                "SELECT scope FROM task_lists WHERE id = ? AND COALESCE(sandbox_id, '') = ?",
+                (list_id, active_business_sandbox_id()),
+            )
             if row:
                 row_scope = str(row["scope"] or "org")
             if (payload.scope or row_scope or "org") != "personal":
                 raise HTTPException(status_code=403, detail="Only admin can update public task lists")
-        row = state.db.fetchone("SELECT * FROM task_lists WHERE id = ?", (list_id,))
+        row = state.db.fetchone(
+            "SELECT * FROM task_lists WHERE id = ? AND COALESCE(sandbox_id, '') = ?",
+            (list_id, active_business_sandbox_id()),
+        )
         if not row:
             raise HTTPException(status_code=404, detail="Task list not found")
         trimmed_name = payload.name.strip()
@@ -53246,8 +54065,14 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         next_scope = payload.scope or str(row["scope"] or "org")
         if payload.archived is True:
             active_list_count = state.db.scalar(
-                "SELECT COUNT(1) AS count FROM task_lists WHERE scope = ? AND (archived_at IS NULL OR archived_at = '')",
-                (next_scope,),
+                """
+                SELECT COUNT(1) AS count
+                FROM task_lists
+                WHERE scope = ?
+                  AND COALESCE(sandbox_id, '') = ?
+                  AND (archived_at IS NULL OR archived_at = '')
+                """,
+                (next_scope, active_business_sandbox_id()),
             )
             if active_list_count <= 1 and not row["archived_at"]:
                 raise HTTPException(status_code=400, detail="至少保留一个可用清单")
@@ -53261,12 +54086,15 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         if next_archived_at:
             next_is_default = False
         if next_is_default:
-            state.db.execute("UPDATE task_lists SET is_default = 0 WHERE scope = ?", (next_scope,))
+            state.db.execute(
+                "UPDATE task_lists SET is_default = 0 WHERE scope = ? AND COALESCE(sandbox_id, '') = ?",
+                (next_scope, active_business_sandbox_id()),
+            )
         state.db.execute(
             """
             UPDATE task_lists
             SET name = ?, color = ?, sort_order = ?, is_default = ?, scope = ?, archived_at = ?
-            WHERE id = ?
+            WHERE id = ? AND COALESCE(sandbox_id, '') = ?
             """,
             (
                 trimmed_name,
@@ -53276,27 +54104,38 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 next_scope,
                 next_archived_at,
                 list_id,
+                active_business_sandbox_id(),
             ),
         )
         if not next_is_default and not next_archived_at and state.db.scalar(
-            "SELECT COUNT(1) AS count FROM task_lists WHERE scope = ? AND is_default = 1",
-            (next_scope,),
+            "SELECT COUNT(1) AS count FROM task_lists WHERE scope = ? AND COALESCE(sandbox_id, '') = ? AND is_default = 1",
+            (next_scope, active_business_sandbox_id()),
         ) == 0:
             state.db.execute(
-                "UPDATE task_lists SET is_default = 1 WHERE id = ?",
-                (list_id,),
+                "UPDATE task_lists SET is_default = 1 WHERE id = ? AND COALESCE(sandbox_id, '') = ?",
+                (list_id, active_business_sandbox_id()),
             )
         if next_archived_at and bool(int(row["is_default"] or 0)):
             fallback_row = state.db.fetchone(
-                "SELECT id FROM task_lists WHERE scope = ? AND id != ? AND (archived_at IS NULL OR archived_at = '') ORDER BY sort_order ASC, name COLLATE NOCASE ASC LIMIT 1",
-                (next_scope, list_id),
+                """
+                SELECT id FROM task_lists
+                WHERE scope = ?
+                  AND id != ?
+                  AND COALESCE(sandbox_id, '') = ?
+                  AND (archived_at IS NULL OR archived_at = '')
+                ORDER BY sort_order ASC, name COLLATE NOCASE ASC LIMIT 1
+                """,
+                (next_scope, list_id, active_business_sandbox_id()),
             )
             if fallback_row:
                 state.db.execute(
-                    "UPDATE task_lists SET is_default = CASE WHEN id = ? THEN 1 ELSE 0 END WHERE scope = ?",
-                    (str(fallback_row["id"]), next_scope),
+                    "UPDATE task_lists SET is_default = CASE WHEN id = ? THEN 1 ELSE 0 END WHERE scope = ? AND COALESCE(sandbox_id, '') = ?",
+                    (str(fallback_row["id"]), next_scope, active_business_sandbox_id()),
                 )
-        updated = state.db.fetchone("SELECT * FROM task_lists WHERE id = ?", (list_id,))
+        updated = state.db.fetchone(
+            "SELECT * FROM task_lists WHERE id = ? AND COALESCE(sandbox_id, '') = ?",
+            (list_id, active_business_sandbox_id()),
+        )
         assert updated is not None
         log_activity("task-list.update", "task_list", list_id, payload.model_dump(exclude_none=True))
         return _local_task_list_record(updated)
@@ -53311,28 +54150,43 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 pass  # cloud down — delete locally
         session_user = get_cached_session_user()
         if session_user and session_user.primaryRole != "admin":
-            row = state.db.fetchone("SELECT scope FROM task_lists WHERE id = ?", (list_id,))
+            row = state.db.fetchone(
+                "SELECT scope FROM task_lists WHERE id = ? AND COALESCE(sandbox_id, '') = ?",
+                (list_id, active_business_sandbox_id()),
+            )
             if not row or str(row["scope"] or "org") != "personal":
                 raise HTTPException(status_code=403, detail="Only admin can delete public task lists")
-        row = state.db.fetchone("SELECT * FROM task_lists WHERE id = ?", (list_id,))
+        row = state.db.fetchone(
+            "SELECT * FROM task_lists WHERE id = ? AND COALESCE(sandbox_id, '') = ?",
+            (list_id, active_business_sandbox_id()),
+        )
         if not row:
             raise HTTPException(status_code=404, detail="Task list not found")
-        task_count = state.db.scalar("SELECT COUNT(1) AS count FROM tasks WHERE list_id = ?", (list_id,))
+        task_count = state.db.scalar(
+            "SELECT COUNT(1) AS count FROM tasks WHERE list_id = ? AND COALESCE(sandbox_id, '') = ?",
+            (list_id, active_business_sandbox_id()),
+        )
         if task_count > 0:
             raise HTTPException(status_code=400, detail="该清单已有任务，请先归档，不支持直接删除")
-        if state.db.scalar("SELECT COUNT(1) AS count FROM task_lists WHERE scope = ?", (str(row["scope"] or "org"),)) <= 1:
+        if state.db.scalar(
+            "SELECT COUNT(1) AS count FROM task_lists WHERE scope = ? AND COALESCE(sandbox_id, '') = ?",
+            (str(row["scope"] or "org"), active_business_sandbox_id()),
+        ) <= 1:
             raise HTTPException(status_code=400, detail="至少保留一个清单")
         if bool(int(row["is_default"] or 0)):
             fallback_row = state.db.fetchone(
-                "SELECT id FROM task_lists WHERE scope = ? AND id != ? ORDER BY sort_order ASC, name COLLATE NOCASE ASC LIMIT 1",
-                (str(row["scope"] or "org"), list_id),
+                "SELECT id FROM task_lists WHERE scope = ? AND id != ? AND COALESCE(sandbox_id, '') = ? ORDER BY sort_order ASC, name COLLATE NOCASE ASC LIMIT 1",
+                (str(row["scope"] or "org"), list_id, active_business_sandbox_id()),
             )
             if fallback_row:
                 state.db.execute(
-                    "UPDATE task_lists SET is_default = CASE WHEN id = ? THEN 1 ELSE 0 END WHERE scope = ?",
-                    (str(fallback_row["id"]), str(row["scope"] or "org")),
+                    "UPDATE task_lists SET is_default = CASE WHEN id = ? THEN 1 ELSE 0 END WHERE scope = ? AND COALESCE(sandbox_id, '') = ?",
+                    (str(fallback_row["id"]), str(row["scope"] or "org"), active_business_sandbox_id()),
                 )
-        state.db.execute("DELETE FROM task_lists WHERE id = ?", (list_id,))
+        state.db.execute(
+            "DELETE FROM task_lists WHERE id = ? AND COALESCE(sandbox_id, '') = ?",
+            (list_id, active_business_sandbox_id()),
+        )
         log_activity("task-list.delete", "task_list", list_id, {})
         return {"deleted": True}
 
@@ -53362,15 +54216,21 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             response = cloud_request("PATCH", f"/api/v1/task-tags/{tag_id}", payload.model_dump())
             if isinstance(response, dict):
                 return build_cloud_task_tag(response)
-        row = state.db.fetchone("SELECT * FROM task_tags WHERE id = ?", (tag_id,))
+        row = state.db.fetchone(
+            "SELECT * FROM task_tags WHERE id = ? AND COALESCE(sandbox_id, '') = ?",
+            (tag_id, active_business_sandbox_id()),
+        )
         if not row:
             raise HTTPException(status_code=404, detail="标签不存在")
         archived_at = now_iso() if payload.archived else None
         state.db.execute(
-            "UPDATE task_tags SET name = ?, color = ?, scope = ?, archived_at = ?, updated_at = ? WHERE id = ?",
-            (payload.name, payload.color or str(row["color"]), payload.scope, archived_at, now_iso(), tag_id),
+            "UPDATE task_tags SET name = ?, color = ?, scope = ?, archived_at = ?, updated_at = ? WHERE id = ? AND COALESCE(sandbox_id, '') = ?",
+            (payload.name, payload.color or str(row["color"]), payload.scope, archived_at, now_iso(), tag_id, active_business_sandbox_id()),
         )
-        updated = state.db.fetchone("SELECT * FROM task_tags WHERE id = ?", (tag_id,))
+        updated = state.db.fetchone(
+            "SELECT * FROM task_tags WHERE id = ? AND COALESCE(sandbox_id, '') = ?",
+            (tag_id, active_business_sandbox_id()),
+        )
         assert updated is not None
         return _local_task_tag_record(updated)
 
@@ -53382,10 +54242,16 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 return {"deleted": True}
             except Exception:
                 pass  # cloud down — delete locally
-        row = state.db.fetchone("SELECT * FROM task_tags WHERE id = ?", (tag_id,))
+        row = state.db.fetchone(
+            "SELECT * FROM task_tags WHERE id = ? AND COALESCE(sandbox_id, '') = ?",
+            (tag_id, active_business_sandbox_id()),
+        )
         if not row:
             raise HTTPException(status_code=404, detail="标签不存在")
-        state.db.execute("DELETE FROM task_tags WHERE id = ?", (tag_id,))
+        state.db.execute(
+            "DELETE FROM task_tags WHERE id = ? AND COALESCE(sandbox_id, '') = ?",
+            (tag_id, active_business_sandbox_id()),
+        )
         return {"deleted": True}
 
     @app.post("/api/v1/tasks/refresh-contexts", response_model=TaskContextRefreshResultRecord)
@@ -53394,7 +54260,13 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             _pull_cloud_tasks_to_local()
         task_records = fetch_tasks(shared_task_where())
         # 冷冻项目不重新计算 task context — 它们已不参与计算
-        clients = [build_client_summary(str(row["id"])) for row in state.db.fetchall("SELECT id FROM clients WHERE frozen_at IS NULL ORDER BY updated_at DESC")]
+        clients = [
+            build_client_summary(str(row["id"]))
+            for row in state.db.fetchall(
+                "SELECT id FROM clients WHERE frozen_at IS NULL AND COALESCE(sandbox_id, '') = ? ORDER BY updated_at DESC",
+                active_business_sandbox_param(),
+            )
+        ]
         event_lines = list_event_lines()
         project_structures: dict[str, ProjectStructureResponse] = {}
         updated_tasks = 0
@@ -53919,18 +54791,25 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             """
             SELECT client_id, event_line_id, project_module_id, project_flow_id
             FROM tasks
-            WHERE id = ? OR cloud_id = ?
+            WHERE (id = ? OR cloud_id = ?)
+              AND COALESCE(sandbox_id, '') = ?
             ORDER BY updated_at DESC
             LIMIT 1
             """,
-            (task_id, task_id),
+            (task_id, task_id, active_business_sandbox_id()),
         )
+        if existing_scope_row is None and state.db.fetchone(
+            "SELECT id FROM tasks WHERE id = ? OR cloud_id = ? LIMIT 1",
+            (task_id, task_id),
+        ):
+            raise HTTPException(status_code=404, detail="Task not found")
         if not get_cloud_token():
-            row = state.db.fetchone("SELECT * FROM tasks WHERE id = ?", (task_id,))
-            if not row:
-                raise HTTPException(status_code=404, detail="Task not found")
+            row = require_task_in_active_sandbox(task_id)
             if payload.listId:
-                list_row = state.db.fetchone("SELECT * FROM task_lists WHERE id = ?", (payload.listId,))
+                list_row = state.db.fetchone(
+                    "SELECT * FROM task_lists WHERE id = ? AND COALESCE(sandbox_id, '') = ?",
+                    (payload.listId, active_business_sandbox_id()),
+                )
                 if not list_row or list_row["archived_at"]:
                     raise HTTPException(status_code=400, detail="任务清单无效")
             resolved_tags = normalize_local_task_tags(
@@ -54337,11 +55216,12 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             """
             SELECT id, cloud_id
             FROM tasks
-            WHERE id = ? OR cloud_id = ?
+            WHERE (id = ? OR cloud_id = ?)
+              AND COALESCE(sandbox_id, '') = ?
             ORDER BY updated_at DESC
             LIMIT 1
             """,
-            (task_id, task_id),
+            (task_id, task_id, active_business_sandbox_id()),
         )
         local_task_id = str(local_row_for_cloud["id"]) if local_row_for_cloud and local_row_for_cloud["id"] else task_id
         cloud_task_id = (
@@ -54379,7 +55259,17 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 updated_task = build_cloud_task(response, {})
         except Exception as error:
             # Cloud failed — if task exists locally, update local copy and return that
-            local_row = state.db.fetchone("SELECT * FROM tasks WHERE id = ? OR cloud_id = ?", (task_id, task_id))
+            local_row = state.db.fetchone(
+                """
+                SELECT *
+                FROM tasks
+                WHERE (id = ? OR cloud_id = ?)
+                  AND COALESCE(sandbox_id, '') = ?
+                ORDER BY updated_at DESC
+                LIMIT 1
+                """,
+                (task_id, task_id, active_business_sandbox_id()),
+            )
             if local_row:
                 local_id = str(local_row["id"])
                 fallback_due_date_was_set = "dueDate" in payload_fields or "ddl" in payload_fields
@@ -54590,11 +55480,12 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             """
             SELECT client_id, event_line_id, project_module_id, project_flow_id
             FROM tasks
-            WHERE id = ? OR cloud_id = ?
+            WHERE (id = ? OR cloud_id = ?)
+              AND COALESCE(sandbox_id, '') = ?
             ORDER BY updated_at DESC
             LIMIT 1
             """,
-            (task_id, task_id),
+            (task_id, task_id, active_business_sandbox_id()),
         )
         refresh_client_id = (
             str(refresh_scope_row["client_id"] or "").strip()
@@ -54602,9 +55493,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             else None
         )
         if not get_cloud_token():
-            row = state.db.fetchone("SELECT * FROM tasks WHERE id = ?", (task_id,))
-            if not row:
-                raise HTTPException(status_code=404, detail="Task not found")
+            row = require_task_in_active_sandbox(task_id)
             task_title = str(row["title"] or "任务")
             event_line_id = str(row["event_line_id"]) if row["event_line_id"] else None
             client_id = str(row["client_id"]) if row["client_id"] else None
@@ -54659,12 +55548,15 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             """
             SELECT id, cloud_id
             FROM tasks
-            WHERE id = ? OR cloud_id = ?
+            WHERE (id = ? OR cloud_id = ?)
+              AND COALESCE(sandbox_id, '') = ?
             ORDER BY updated_at DESC
             LIMIT 1
             """,
-            (task_id, task_id),
+            (task_id, task_id, active_business_sandbox_id()),
         )
+        if not delete_row:
+            raise HTTPException(status_code=404, detail="Task not found")
         local_task_id = str(delete_row["id"]) if delete_row and delete_row["id"] else task_id
         cloud_task_id = str(delete_row["cloud_id"]) if delete_row and delete_row["cloud_id"] else task_id
         try:
@@ -54719,7 +55611,12 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         eventLineId: str | None = Form(default=None),
         taskTitle: str | None = Form(default=None),
     ) -> TaskRecord:
-        local_task_row = state.db.fetchone("SELECT * FROM tasks WHERE id = ?", (task_id,))
+        local_task_row = state.db.fetchone(
+            "SELECT * FROM tasks WHERE id = ? AND COALESCE(sandbox_id, '') = ?",
+            (task_id, active_business_sandbox_id()),
+        )
+        if local_task_row is None and state.db.fetchone("SELECT id FROM tasks WHERE id = ?", (task_id,)):
+            raise HTTPException(status_code=404, detail="Task not found")
         is_cloud_task = local_task_row is None
         # Allow offline upload — attachments are stored locally regardless of cloud status
 
@@ -54811,9 +55708,12 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             kept_id = str(ingest_result["dedup_kept_document_id"])
             if kept_id:
                 document_id = kept_id
-        document_row = state.db.fetchone("SELECT * FROM documents WHERE id = ?", (document_id,))
-        if not document_row:
-            raise HTTPException(status_code=500, detail="附件归档失败。")
+        try:
+            document_row = require_document_in_active_sandbox(document_id)
+        except HTTPException as exc:
+            if exc.status_code == 404:
+                raise HTTPException(status_code=500, detail="附件归档失败。") from exc
+            raise
         attachment_id = new_id("tatt")
         table_name = "task_attachments_cloud" if is_cloud_task else "task_attachments"
         state.db.execute(
@@ -58458,7 +59358,8 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         全局冷冻的项目(frozen_at IS NOT NULL)不暴露 — 不参与情报抓取/资讯归集。
         """
         client_rows = state.db.fetchall(
-            "SELECT id, name, intro, stage FROM clients WHERE frozen_at IS NULL ORDER BY name ASC"
+            "SELECT id, name, intro, stage FROM clients WHERE frozen_at IS NULL AND COALESCE(sandbox_id, '') = ? ORDER BY name ASC",
+            active_business_sandbox_param(),
         )
         out: list[IntelligenceWorkObjectRecord] = []
         for row in client_rows:
@@ -59095,11 +59996,17 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
 
         # 确定目标客户列表
         if payload.scopeType == "client" and payload.scopeId:
-            row = state.db.fetchone("SELECT id, name FROM clients WHERE id=?", (payload.scopeId,))
+            row = state.db.fetchone(
+                "SELECT id, name FROM clients WHERE id=? AND COALESCE(sandbox_id, '') = ?",
+                (payload.scopeId, active_business_sandbox_id()),
+            )
             target_rows = [row] if row else []
         elif payload.scopeType == "all":
             # 冷冻项目不参与全局资讯供给 — 用户主动暂停的项目不爬取
-            client_rows = state.db.fetchall("SELECT id, name FROM clients WHERE frozen_at IS NULL ORDER BY name")
+            client_rows = state.db.fetchall(
+                "SELECT id, name FROM clients WHERE frozen_at IS NULL AND COALESCE(sandbox_id, '') = ? ORDER BY name",
+                active_business_sandbox_param(),
+            )
             target_rows = sorted(
                 client_rows,
                 key=lambda r: (
@@ -59477,7 +60384,10 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             raise HTTPException(status_code=400, detail="contentKinds 至少包含一个有效类型")
 
         if payload.scopeType == "client" and payload.scopeId:
-            client_row = state.db.fetchone("SELECT id, name FROM clients WHERE id=?", (payload.scopeId,))
+            client_row = state.db.fetchone(
+                "SELECT id, name FROM clients WHERE id=? AND COALESCE(sandbox_id, '') = ?",
+                (payload.scopeId, active_business_sandbox_id()),
+            )
             target_rows = [client_row] if client_row else []
             if not target_rows:
                 raise HTTPException(status_code=404, detail="客户不存在")
@@ -61186,38 +62096,38 @@ def seed_defaults(state: AppState) -> None:
         state.db.set_setting("current_operator_id", "op_qh")
     if state.db.scalar("SELECT COUNT(1) AS count FROM task_lists") == 0:
         state.db.executemany(
-            "INSERT INTO task_lists(id, name, color, sort_order, is_default, scope, archived_at) VALUES(?, ?, ?, ?, ?, ?, NULL)",
+            "INSERT INTO task_lists(id, sandbox_id, name, color, sort_order, is_default, scope, archived_at) VALUES(?, ?, ?, ?, ?, ?, ?, NULL)",
             [
-                ("list-0", "收集箱", "#5B7BFE", 0, 1, "org"),
-                ("list-1", "客户推进", "#5B7BFE", 1, 0, "org"),
-                ("list-2", "研究洞察", "#F59E0B", 2, 0, "org"),
-                ("list-3", "交付沉淀", "#10B981", 3, 0, "org"),
-                ("plist-1", "健身", "#5B7BFE", 10, 1, "personal"),
-                ("plist-2", "约会", "#EC4899", 11, 0, "personal"),
-                ("plist-3", "吃饭", "#F59E0B", 12, 0, "personal"),
-                ("plist-4", "学习", "#10B981", 13, 0, "personal"),
+                ("list-0", DEFAULT_LOCAL_SANDBOX_ID, "收集箱", "#5B7BFE", 0, 1, "org"),
+                ("list-1", DEFAULT_LOCAL_SANDBOX_ID, "客户推进", "#5B7BFE", 1, 0, "org"),
+                ("list-2", DEFAULT_LOCAL_SANDBOX_ID, "研究洞察", "#F59E0B", 2, 0, "org"),
+                ("list-3", DEFAULT_LOCAL_SANDBOX_ID, "交付沉淀", "#10B981", 3, 0, "org"),
+                ("plist-1", DEFAULT_LOCAL_SANDBOX_ID, "健身", "#5B7BFE", 10, 1, "personal"),
+                ("plist-2", DEFAULT_LOCAL_SANDBOX_ID, "约会", "#EC4899", 11, 0, "personal"),
+                ("plist-3", DEFAULT_LOCAL_SANDBOX_ID, "吃饭", "#F59E0B", 12, 0, "personal"),
+                ("plist-4", DEFAULT_LOCAL_SANDBOX_ID, "学习", "#10B981", 13, 0, "personal"),
             ],
         )
     state.db.execute("UPDATE task_lists SET scope = 'org' WHERE scope IS NULL OR scope = ''")
     if state.db.scalar("SELECT COUNT(1) AS count FROM task_lists WHERE scope = 'personal'") == 0:
         state.db.executemany(
-            "INSERT INTO task_lists(id, name, color, sort_order, is_default, scope, archived_at) VALUES(?, ?, ?, ?, ?, ?, NULL)",
+            "INSERT INTO task_lists(id, sandbox_id, name, color, sort_order, is_default, scope, archived_at) VALUES(?, ?, ?, ?, ?, ?, ?, NULL)",
             [
-                ("plist-1", "健身", "#5B7BFE", 10, 1, "personal"),
-                ("plist-2", "约会", "#EC4899", 11, 0, "personal"),
-                ("plist-3", "吃饭", "#F59E0B", 12, 0, "personal"),
-                ("plist-4", "学习", "#10B981", 13, 0, "personal"),
+                ("plist-1", DEFAULT_LOCAL_SANDBOX_ID, "健身", "#5B7BFE", 10, 1, "personal"),
+                ("plist-2", DEFAULT_LOCAL_SANDBOX_ID, "约会", "#EC4899", 11, 0, "personal"),
+                ("plist-3", DEFAULT_LOCAL_SANDBOX_ID, "吃饭", "#F59E0B", 12, 0, "personal"),
+                ("plist-4", DEFAULT_LOCAL_SANDBOX_ID, "学习", "#10B981", 13, 0, "personal"),
             ],
         )
     if state.db.scalar("SELECT COUNT(1) AS count FROM task_tags") == 0:
         state.db.executemany(
-            "INSERT INTO task_tags(id, name, scope, color, owner_operator_id, created_by, created_at, updated_at, archived_at) VALUES(?, ?, 'org', ?, '', '系统', ?, ?, NULL)",
+            "INSERT INTO task_tags(id, sandbox_id, name, scope, color, owner_operator_id, created_by, created_at, updated_at, archived_at) VALUES(?, ?, ?, 'org', ?, '', '系统', ?, ?, NULL)",
             [
-                (new_id("tag"), "高优", "#EF4444", timestamp, timestamp),
-                (new_id("tag"), "会议", "#5B7BFE", timestamp, timestamp),
-                (new_id("tag"), "待跟进", "#F59E0B", timestamp, timestamp),
-                (new_id("tag"), "跨部门", "#10B981", timestamp, timestamp),
-                (new_id("tag"), "选题", "#8B5CF6", timestamp, timestamp),
+                (new_id("tag"), DEFAULT_LOCAL_SANDBOX_ID, "高优", "#EF4444", timestamp, timestamp),
+                (new_id("tag"), DEFAULT_LOCAL_SANDBOX_ID, "会议", "#5B7BFE", timestamp, timestamp),
+                (new_id("tag"), DEFAULT_LOCAL_SANDBOX_ID, "待跟进", "#F59E0B", timestamp, timestamp),
+                (new_id("tag"), DEFAULT_LOCAL_SANDBOX_ID, "跨部门", "#10B981", timestamp, timestamp),
+                (new_id("tag"), DEFAULT_LOCAL_SANDBOX_ID, "选题", "#8B5CF6", timestamp, timestamp),
             ],
         )
     if state.db.scalar("SELECT COUNT(1) AS count FROM task_settings") == 0:

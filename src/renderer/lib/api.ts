@@ -153,8 +153,13 @@ import type {
   MobileDataCenterSnapshotSummary,
   EvidenceQualityAnnotation,
   SettingsPayload,
+  SandboxWorkspaceCreatePayload,
   SandboxWorkspaceRecord,
+  SandboxWorkspaceUpdatePayload,
   SandboxWorkspacesResponse,
+  CreateOrganizationPayload,
+  JoinOrganizationPayload,
+  SelectOrganizationPayload,
   SystemAdminSettings,
   SystemAdminSettingsPayload,
   TaskOrgBackfillResult,
@@ -1747,8 +1752,7 @@ export async function register(payload: AuthRegisterPayload) {
 }
 
 export async function localRegister(payload: LocalAuthRegisterPayload) {
-  // local-auth 已剥离, 统一走云端注册(登录即云端). cloud 忽略 organizationMode, 靠 inviteCode 判断 join/create.
-  return request<AuthState>('/api/v1/auth/register', {
+  return request<AuthState>('/api/v1/local-auth/register', {
     method: 'POST',
     body: JSON.stringify(payload),
   });
@@ -1773,9 +1777,29 @@ export async function login(payload: AuthLoginPayload) {
   });
 }
 
+export async function selectOrganization(payload: SelectOrganizationPayload) {
+  return request<AuthState>('/api/v1/auth/select-organization', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function createOrganization(payload: CreateOrganizationPayload) {
+  return request<AuthState>('/api/v1/auth/organizations/create', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function joinOrganization(payload: JoinOrganizationPayload) {
+  return request<AuthState>('/api/v1/auth/organizations/join', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+}
+
 export async function localLogin(payload: LocalAuthLoginPayload) {
-  // local-auth 已剥离, 统一走云端登录(登录即云端). cloud AuthLoginPayload 兼容 identifier 字段.
-  return request<AuthState>('/api/v1/auth/login', {
+  return request<AuthState>('/api/v1/local-auth/login', {
     method: 'POST',
     body: JSON.stringify(payload),
   });
@@ -1847,6 +1871,26 @@ export async function getWorkspaces() {
 
 export async function getCurrentWorkspace() {
   return request<SandboxWorkspaceRecord>('/api/v1/workspaces/current');
+}
+
+export async function createWorkspace(payload: SandboxWorkspaceCreatePayload) {
+  return request<SandboxWorkspacesResponse>('/api/v1/workspaces', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function updateWorkspace(id: string, payload: SandboxWorkspaceUpdatePayload) {
+  return request<SandboxWorkspacesResponse>(`/api/v1/workspaces/${encodeURIComponent(id)}`, {
+    method: 'PATCH',
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function activateWorkspace(id: string) {
+  return request<SandboxWorkspacesResponse>(`/api/v1/workspaces/${encodeURIComponent(id)}/activate`, {
+    method: 'POST',
+  });
 }
 
 export async function syncOrgAiConfigToCloud() {

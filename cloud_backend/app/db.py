@@ -36,10 +36,22 @@ class Database:
                     updated_at TEXT NOT NULL
                 );
 
+                CREATE TABLE IF NOT EXISTS cloud_identities (
+                    id TEXT PRIMARY KEY,
+                    email TEXT NOT NULL UNIQUE,
+                    phone_number TEXT UNIQUE,
+                    full_name TEXT NOT NULL,
+                    password_hash TEXT NOT NULL,
+                    last_login_at TEXT,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+
                 CREATE TABLE IF NOT EXISTS employee_accounts (
                     id TEXT PRIMARY KEY,
+                    identity_id TEXT,
                     organization_id TEXT NOT NULL,
-                    email TEXT NOT NULL UNIQUE,
+                    email TEXT NOT NULL,
                     phone_number TEXT,
                     full_name TEXT NOT NULL,
                     password_hash TEXT NOT NULL,
@@ -56,6 +68,7 @@ class Database:
                     last_login_at TEXT,
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL,
+                    FOREIGN KEY(identity_id) REFERENCES cloud_identities(id) ON DELETE CASCADE,
                     FOREIGN KEY(organization_id) REFERENCES organizations(id) ON DELETE CASCADE,
                     FOREIGN KEY(approved_by) REFERENCES employee_accounts(id) ON DELETE SET NULL
                 );
@@ -938,6 +951,7 @@ class Database:
             self._ensure_column("employee_accounts", "membership_rejected_reason", "TEXT")
             self._ensure_column("employee_accounts", "feishu_mobile", "TEXT NOT NULL DEFAULT ''")
             self._ensure_column("employee_accounts", "avatar_url", "TEXT")
+            self._ensure_cloud_identity_schema()
             self._ensure_column("clients", "type", "TEXT NOT NULL DEFAULT 'client'")
             # P7：clients 接通 local desktop 同步所需的扩展字段
             #   creator_id：local 创建者；ACL 入口（creator 或 client_related_users.user_id 可见）
@@ -951,8 +965,15 @@ class Database:
             self._ensure_column("clients", "is_data_center_included", "INTEGER NOT NULL DEFAULT 1")
             # P7：creator_id 列加完后再建索引
             self.conn.execute("CREATE INDEX IF NOT EXISTS idx_clients_creator ON clients(creator_id, updated_at DESC)")
+            self.conn.execute("DROP INDEX IF EXISTS idx_employee_accounts_phone_number")
             self.conn.execute(
-                "CREATE UNIQUE INDEX IF NOT EXISTS idx_employee_accounts_phone_number ON employee_accounts(phone_number) WHERE phone_number IS NOT NULL AND phone_number != ''"
+                "CREATE INDEX IF NOT EXISTS idx_employee_accounts_phone_number ON employee_accounts(phone_number) WHERE phone_number IS NOT NULL AND phone_number != ''"
+            )
+            self.conn.execute(
+                "CREATE UNIQUE INDEX IF NOT EXISTS idx_employee_accounts_identity_org ON employee_accounts(identity_id, organization_id) WHERE identity_id IS NOT NULL AND identity_id != ''"
+            )
+            self.conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_employee_accounts_email_org ON employee_accounts(email, organization_id)"
             )
             self.conn.execute(
                 """
@@ -1990,6 +2011,137 @@ class Database:
         if column_name in self._table_columns(table_name):
             return
         self.conn.execute(f"ALTER TABLE {table_name} ADD COLUMN {column_name} {definition}")
+
+    def _ensure_cloud_identity_schema(self) -> None:
+        self.conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS cloud_identities (
+                id TEXT PRIMARY KEY,
+                email TEXT NOT NULL UNIQUE,
+                phone_number TEXT UNIQUE,
+                full_name TEXT NOT NULL,
+                password_hash TEXT NOT NULL,
+                last_login_at TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )
+            """
+        )
+        if "identity_id" not in self._table_columns("employee_accounts"):
+            self.conn.execute("ALTER TABLE employee_accounts ADD COLUMN identity_id TEXT")
+
+        table_row = self.conn.execute(
+            "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'employee_accounts'"
+        ).fetchone()
+        table_sql = str(table_row["sql"] or "") if table_row else ""
+        if "email TEXT NOT NULL UNIQUE" in table_sql:
+            self.conn.execute("PRAGMA foreign_keys=OFF")
+            self.conn.execute("PRAGMA legacy_alter_table=ON")
+            self.conn.execute("ALTER TABLE employee_accounts RENAME TO employee_accounts_legacy_multi_org")
+            self.conn.execute(
+                """
+                CREATE TABLE employee_accounts (
+                    id TEXT PRIMARY KEY,
+                    identity_id TEXT,
+                    organization_id TEXT NOT NULL,
+                    email TEXT NOT NULL,
+                    phone_number TEXT,
+                    full_name TEXT NOT NULL,
+                    password_hash TEXT NOT NULL,
+                    primary_role TEXT NOT NULL,
+                    account_status TEXT NOT NULL,
+                    membership_status TEXT NOT NULL DEFAULT 'approved',
+                    membership_submitted_at TEXT,
+                    membership_rejected_reason TEXT,
+                    approved_at TEXT,
+                    approved_by TEXT,
+                    rejected_reason TEXT,
+                    disabled_at TEXT,
+                    recent_mentions_json TEXT NOT NULL DEFAULT '[]',
+                    last_login_at TEXT,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    department_id TEXT,
+                    department_name TEXT,
+                    job_title TEXT,
+                    manager_name TEXT,
+                    current_focus TEXT NOT NULL DEFAULT '',
+                    is_department_lead INTEGER NOT NULL DEFAULT 0,
+                    phone_verified_at TEXT,
+                    feishu_mobile TEXT NOT NULL DEFAULT '',
+                    avatar_url TEXT,
+                    FOREIGN KEY(identity_id) REFERENCES cloud_identities(id) ON DELETE CASCADE,
+                    FOREIGN KEY(organization_id) REFERENCES organizations(id) ON DELETE CASCADE,
+                    FOREIGN KEY(approved_by) REFERENCES employee_accounts(id) ON DELETE SET NULL
+                )
+                """
+            )
+            columns = self._table_columns("employee_accounts_legacy_multi_org")
+            copy_columns = [
+                "id", "identity_id", "organization_id", "email", "phone_number", "full_name",
+                "password_hash", "primary_role", "account_status", "membership_status",
+                "membership_submitted_at", "membership_rejected_reason", "approved_at",
+                "approved_by", "rejected_reason", "disabled_at", "recent_mentions_json",
+                "last_login_at", "created_at", "updated_at", "department_id", "department_name",
+                "job_title", "manager_name", "current_focus", "is_department_lead",
+                "phone_verified_at", "feishu_mobile", "avatar_url",
+            ]
+            select_exprs = [col if col in columns else "NULL" for col in copy_columns]
+            self.conn.execute(
+                f"""
+                INSERT INTO employee_accounts({', '.join(copy_columns)})
+                SELECT {', '.join(select_exprs)}
+                FROM employee_accounts_legacy_multi_org
+                """
+            )
+            self.conn.execute("DROP TABLE employee_accounts_legacy_multi_org")
+            self.conn.execute("PRAGMA legacy_alter_table=OFF")
+            self.conn.execute("PRAGMA foreign_keys=ON")
+
+        rows = self.conn.execute(
+            """
+            SELECT id, identity_id, email, phone_number, full_name, password_hash, last_login_at, created_at, updated_at
+            FROM employee_accounts
+            ORDER BY created_at ASC
+            """
+        ).fetchall()
+        email_to_identity: dict[str, str] = {}
+        for row in rows:
+            email = str(row["email"] or "").strip().lower()
+            if not email:
+                continue
+            identity_id = email_to_identity.get(email)
+            if not identity_id:
+                existing = self.conn.execute("SELECT id FROM cloud_identities WHERE email = ?", (email,)).fetchone()
+                identity_id = str(existing["id"]) if existing else f"ident_{str(row['id']).replace('-', '_')}"
+                if not existing:
+                    phone = str(row["phone_number"] or "").strip() or None
+                    if phone:
+                        phone_owner = self.conn.execute("SELECT id FROM cloud_identities WHERE phone_number = ?", (phone,)).fetchone()
+                        if phone_owner:
+                            phone = None
+                    self.conn.execute(
+                        """
+                        INSERT INTO cloud_identities(id, email, phone_number, full_name, password_hash, last_login_at, created_at, updated_at)
+                        VALUES(?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            identity_id,
+                            email,
+                            phone,
+                            str(row["full_name"] or ""),
+                            str(row["password_hash"] or ""),
+                            row["last_login_at"],
+                            row["created_at"],
+                            row["updated_at"],
+                        ),
+                    )
+                email_to_identity[email] = identity_id
+            if not row["identity_id"]:
+                self.conn.execute("UPDATE employee_accounts SET identity_id = ? WHERE id = ?", (identity_id, row["id"]))
+        self.conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_employee_accounts_identity ON employee_accounts(identity_id)"
+        )
 
     def _migrate_task_tag_library_schema(self) -> None:
         columns = self._table_columns("task_tag_library")
