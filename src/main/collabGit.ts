@@ -2405,7 +2405,9 @@ export async function previewPullFromMain(options: RepoOptions): Promise<PullPre
   else if (!snapshot.isMainBranch) executionBlockReason = '当前不在 main 分支，先切回 main 再继续。';
   else if (snapshot.hasUnmergedPaths) executionBlockReason = '检测到 Git 冲突，先手工收口后再执行。';
   else if (snapshot.fetchFailed) executionBlockReason = `无法连上 origin (${snapshot.fetchErrorMessage || 'fetch failed'}),先确认 GitHub 网络/凭据再同步。`;
-  else if (!files.length) executionBlockReason = 'main 当前已经是最新。';
+  else if (!files.length) executionBlockReason = snapshot.aheadCount > 0
+    ? `远端 main 已经合入本机；当前本地领先 ${snapshot.aheadCount} 个未推提交，没有可快进接收的远端修改。`
+    : 'main 当前已经是最新。';
   const generatedCleanupCount = files.filter((file) => file.type === 'deleted' && isIgnorableLocalStatusPath(file.path)).length;
   const context = snapshot.repoPath && snapshot.gitRepoPath
     ? createRepoWorkContext(snapshot.repoPath, snapshot.gitRepoPath, snapshot.scopeRelativePath)

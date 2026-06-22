@@ -16,10 +16,12 @@ function shortStatusText(status: CollabRepoStatus | null) {
   if (!status.isValid) return '目录无效';
   const localChanges = status.localChangeCount || 0;
   const behind = status.behindCount || 0;
-  if (localChanges === 0 && behind === 0) return '同步';
+  const ahead = status.aheadCount || 0;
+  if (localChanges === 0 && behind === 0 && ahead === 0) return '同步';
   const parts: string[] = [];
   if (localChanges > 0) parts.push(`本地 ${localChanges} 改动`);
   if (behind > 0) parts.push(`远端领先 ${behind}`);
+  if (ahead > 0) parts.push(`本地未推 ${ahead}`);
   return parts.join(' · ');
 }
 
@@ -35,10 +37,11 @@ export function CollabSyncCard({
   const actionDisabled = loading || busyAction !== null;
   const localChanges = status?.localChangeCount || 0;
   const behind = status?.behindCount || 0;
-  const isSynced = status?.isConfigured && status?.isValid && localChanges === 0 && behind === 0;
+  const ahead = status?.aheadCount || 0;
+  const isSynced = status?.isConfigured && status?.isValid && localChanges === 0 && behind === 0 && ahead === 0;
   const dotCls = !status?.isConfigured || !status?.isValid
     ? 'bg-gray-300'
-    : localChanges > 0 || behind > 0
+    : localChanges > 0 || behind > 0 || ahead > 0
       ? 'bg-amber-500'
       : 'bg-emerald-500';
 

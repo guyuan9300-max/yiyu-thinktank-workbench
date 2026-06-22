@@ -116,10 +116,18 @@ export function CollabPreviewDialog({
   const pullPreview = isPullPreview(preview) ? preview : null;
   const actionLabel = mode === 'push' ? '推送我的修改到 main' : '预览远端修改';
   const noPushChanges = mode === 'push' && preview.executionBlockReason === '当前没有可提交的本地文件改动。';
-  const alreadySynced = mode === 'pull' && preview.executionBlockReason === 'main 当前已经是最新。';
+  const pullMainIncludedButLocalAhead = mode === 'pull'
+    && pullPreview
+    && (pullPreview.status.behindCount || 0) === 0
+    && (pullPreview.status.aheadCount || 0) > 0
+    && pullPreview.files.length === 0;
+  const alreadySynced = mode === 'pull'
+    && (preview.executionBlockReason === 'main 当前已经是最新。' || Boolean(pullMainIncludedButLocalAhead));
   const confirmLabel = noPushChanges
     ? '当前没有要发布的修改'
-    : alreadySynced
+    : pullMainIncludedButLocalAhead
+      ? '远端已合入，本地待推'
+      : alreadySynced
       ? '当前已经是最新版本'
       : mode === 'push'
         ? '安全推送到 main'
@@ -172,6 +180,16 @@ export function CollabPreviewDialog({
                   </div>
                 )}
 
+                {pullMainIncludedButLocalAhead && (
+                  <div className="rounded-3xl border border-blue-100 bg-blue-50 px-4 py-4 text-[13px] leading-6 text-blue-900">
+                    <p className="font-bold">远端 main 已经在本机，不需要再快进接收。</p>
+                    <p className="mt-1 text-[12px] font-semibold text-blue-800">
+                      当前不能点“快进接收”，是因为本地还有 {pullPreview?.status.aheadCount || 0} 个提交尚未推到 GitHub main。
+                      这不是远端没拉下来，而是本机已经比远端更新。继续测试无误后，请使用“推 main”发布这些本地提交。
+                    </p>
+                  </div>
+                )}
+
                 {errorMessage && (
                   <div className="rounded-2xl border border-rose-200 bg-rose-50 px-4 py-3 text-[12px] font-semibold leading-6 text-rose-800">
                     <div className="flex items-start gap-2">
@@ -197,6 +215,7 @@ export function CollabPreviewDialog({
                   </div>
                 )}
 
+                {!(mode === 'pull' && preview.files.length === 0 && preview.effects.length === 0) && (
                 <div className="rounded-3xl border border-gray-100 bg-gray-50 px-4 py-4">
                   <p className="text-[11px] font-bold uppercase tracking-[0.18em] text-gray-400">
                     {mode === 'push' ? '这次会推送这些变化' : '你会先看到这些变化'}
@@ -261,6 +280,7 @@ export function CollabPreviewDialog({
                     )}
                   </div>
                 </div>
+                )}
 
                 {pullPreview && pullPreview.remoteCommits.length > 0 && (
                   <div className="rounded-3xl border border-gray-100 bg-white px-4 py-4">
