@@ -29,6 +29,9 @@ ConsultationKnowledgeRequestStatus = Literal["pending", "processing", "completed
 ReleaseChannel = Literal["internal", "beta", "stable"]
 ReleaseStatus = Literal["draft", "testing", "published", "rolled_back"]
 SmartInputIntent = Literal["task_schedule", "record_note", "unknown"]
+FeedbackCategory = Literal["bug", "suggestion"]
+FeedbackSeverity = Literal["low", "medium", "high", "critical"]
+FeedbackStatus = Literal["open", "triaged", "in_progress", "resolved", "wontfix", "closed"]
 
 
 class SessionUser(BaseModel):
