@@ -69,7 +69,7 @@ const VIEW_OPTIONS: { key: CalendarView; label: string }[] = [
   { key: "day", label: "日" },
 ];
 
-const WEEKDAY_LABELS = ["日", "一", "二", "三", "四", "五", "六"] as const;
+const WEEKDAY_LABELS = ["一", "二", "三", "四", "五", "六", "日"] as const;
 const WEEKDAY_CN = ["周日", "周一", "周二", "周三", "周四", "周五", "周六"] as const;
 
 const HOUR_HEIGHT = 60;
@@ -90,7 +90,7 @@ function toDateKey(date: Date): string {
 }
 
 function getWeekDates(date: Date): Date[] {
-  const day = date.getDay();
+  const day = (date.getDay() + 6) % 7;
   const dates: Date[] = [];
   for (let i = 0; i < 7; i++) {
     const d = new Date(date);

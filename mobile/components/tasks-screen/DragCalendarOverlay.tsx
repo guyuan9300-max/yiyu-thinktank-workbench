@@ -26,7 +26,7 @@ const GHOST_H = 50;
 
 function buildMonthRows(year: number, month: number): { day: number | null; dateKey: string }[][] {
   const daysInMonth = new Date(year, month + 1, 0).getDate();
-  const firstDay = new Date(year, month, 1).getDay();
+  const firstDay = (new Date(year, month, 1).getDay() + 6) % 7;
   const flat: { day: number | null; dateKey: string }[] = [];
   for (let i = 0; i < firstDay; i += 1) flat.push({ day: null, dateKey: "" });
   for (let day = 1; day <= daysInMonth; day += 1) {
@@ -119,7 +119,7 @@ function DragCalendarOverlay({
           {dragCalendarMonth.year}年{dragCalendarMonth.month + 1}月
         </Text>
         <View style={styles.weekRow}>
-          {["日", "一", "二", "三", "四", "五", "六"].map((d) => (
+          {["一", "二", "三", "四", "五", "六", "日"].map((d) => (
             <View key={d} style={styles.weekCell}>
               <Text style={styles.weekLabel}>{d}</Text>
             </View>

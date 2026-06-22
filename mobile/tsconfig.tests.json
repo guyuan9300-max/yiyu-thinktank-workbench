@@ -28,6 +28,7 @@
     "lib/current-focus-core.ts",
     "lib/sync-freeze-core.ts",
     "lib/calendar-repository-core.ts",
+    "lib/calendar-selectors.ts",
     "lib/task-time.ts",
     "lib/focus-selectors.ts",
     "lib/week-signal.ts",

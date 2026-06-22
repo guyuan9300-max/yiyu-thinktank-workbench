@@ -20,6 +20,17 @@ from app.services.sandbox_registry import (  # noqa: E402
 from app.services.feishu_sync import FeishuSyncState  # noqa: E402
 
 
+class FakeCloudResponse:
+    def __init__(self, status_code: int, payload: dict):
+        self.status_code = status_code
+        self._payload = payload
+        self.content = b"{}"
+        self.text = str(payload)
+
+    def json(self) -> dict:
+        return self._payload
+
+
 def make_client(tmp_path: Path) -> TestClient:
     app = create_app(tmp_path / "data")
     client = TestClient(app)
@@ -162,6 +173,66 @@ def test_feishu_user_binding_is_scoped_by_workspace(tmp_path: Path) -> None:
 
     assert local_sync.get_user_binding(user_id)["openId"] == "ou_local"
     assert org_sync.get_user_binding(user_id)["openId"] == "ou_org"
+
+
+def test_legacy_feishu_user_binding_endpoint_maps_member_authorization(tmp_path: Path, monkeypatch) -> None:
+    client = make_client(tmp_path)
+    db = client.app.state.app_state.db
+    org = create_sandbox(db, kind="organization", name="组织授权", cloud_api_url="https://cloud-auth.example.test")
+    activate_sandbox(db, org.id)
+    set_sandbox_setting(db, org.id, "cloud_api_url", "https://cloud-auth.example.test")
+    set_sandbox_setting(db, org.id, "cloud_access_token", "token-feishu-auth")
+    set_sandbox_setting(
+        db,
+        org.id,
+        "cloud_session_user",
+        json.dumps(
+            {
+                "id": "member-feishu",
+                "email": "member@example.com",
+                "fullName": "飞书成员",
+                "organizationId": "org-feishu",
+                "organizationName": "组织授权",
+                "primaryRole": "employee",
+                "accountStatus": "approved",
+                "membershipStatus": "approved",
+            },
+            ensure_ascii=False,
+        ),
+    )
+    client.app.state.app_state.cloud_api_url = "https://cloud-auth.example.test"
+
+    def fake_cloud_request(method, url, **kwargs):
+        if method == "GET" and url.endswith("/api/v1/me/feishu-authorization"):
+            return FakeCloudResponse(
+                200,
+                {
+                    "linked": True,
+                    "readyForAuthorization": True,
+                    "organizationId": "org-feishu",
+                    "organizationName": "组织授权",
+                    "appId": "cli_member",
+                    "userId": "member-feishu",
+                    "openId": "ou_member",
+                    "unionId": "on_member",
+                    "feishuUserId": "user_member",
+                    "name": "飞书成员",
+                    "email": "member@example.com",
+                    "boundAt": "2026-06-22T10:00:00+08:00",
+                    "lastVerifiedAt": "2026-06-22T10:00:00+08:00",
+                },
+            )
+        raise AssertionError(f"unexpected cloud request: {method} {url}")
+
+    monkeypatch.setattr(app_main.httpx, "request", fake_cloud_request)
+
+    response = client.get("/api/v1/settings/feishu-user-binding")
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert payload["linked"] is True
+    assert payload["appId"] == "cli_member"
+    assert payload["openId"] == "ou_member"
+    assert payload["lastError"] is None
 
 
 def test_feishu_oauth_callback_writes_to_original_workspace(tmp_path: Path, monkeypatch) -> None:

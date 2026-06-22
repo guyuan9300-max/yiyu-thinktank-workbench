@@ -20420,7 +20420,7 @@ export default function App() {
                         </div>
 
                         <div className="grid grid-cols-7 gap-y-2 text-center text-[11px] font-bold text-gray-400">
-                          {['日', '一', '二', '三', '四', '五', '六'].map((label) => (
+                          {['一', '二', '三', '四', '五', '六', '日'].map((label) => (
                             <span key={label}>{label}</span>
                           ))}
                         </div>

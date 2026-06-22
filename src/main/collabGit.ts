@@ -2180,6 +2180,17 @@ async function hasStagedChanges(context: RepoWorkContext) {
   return result.exitCode !== 0;
 }
 
+async function hasUncommittedChanges(context: RepoWorkContext) {
+  const scopePath = context.scopeRelativePath || '.';
+  const result = await runGit(context.gitRepoPath, ['status', '--porcelain', '--untracked-files=normal', '--', scopePath], { allowNonZero: true });
+  return result.stdout.trim().length > 0;
+}
+
+async function addAllScopedChangesToIndex(context: RepoWorkContext) {
+  const scopePath = context.scopeRelativePath || '.';
+  await runGit(context.gitRepoPath, ['add', '--sparse', '-A', '--', scopePath]);
+}
+
 async function addAllPreviewFilesToIndex(context: RepoWorkContext, files: CollabFileChange[]) {
   const paths = collectPreviewPaths(files);
   if (!paths.length) return [];
@@ -2190,6 +2201,12 @@ async function addAllPreviewFilesToIndex(context: RepoWorkContext, files: Collab
 async function commitStagedChangesIfAny(context: RepoWorkContext, message: string) {
   if (!(await hasStagedChanges(context))) return false;
   await runGit(context.gitRepoPath, ['commit', '-m', message]);
+  return true;
+}
+
+async function amendStagedChangesIfAny(context: RepoWorkContext) {
+  if (!(await hasStagedChanges(context))) return false;
+  await runGit(context.gitRepoPath, ['commit', '--amend', '--no-edit']);
   return true;
 }
 
@@ -2297,9 +2314,25 @@ export async function pushSafelyToMain(
   try {
     if (preview.files.length > 0) {
       await addAllPreviewFilesToIndex(context, preview.files);
+      await addAllScopedChangesToIndex(context);
+      await ensureNoConflictMarkers(context);
       createdCommit = await commitStagedChangesIfAny(context, message);
     }
     await ensureNoConflictMarkers(context);
+
+    if (await hasUncommittedChanges(context)) {
+      if (!message) {
+        throw new Error('仍有未提交的本地改动，但缺少提交说明，无法安全推送 main。');
+      }
+      await addAllScopedChangesToIndex(context);
+      await ensureNoConflictMarkers(context);
+      if (createdCommit) {
+        const amended = await amendStagedChangesIfAny(context);
+        createdCommit = createdCommit || amended;
+      } else {
+        createdCommit = await commitStagedChangesIfAny(context, message);
+      }
+    }
 
     const fetchResult = await runGit(context.gitRepoPath, ['fetch', 'origin'], { allowNonZero: true });
     if (fetchResult.exitCode !== 0) {

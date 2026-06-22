@@ -69,7 +69,7 @@ interface Props {
 // ─── Constants ──────────────────────────────────
 
 const SCREEN_WIDTH = Dimensions.get("window").width;
-const WEEKDAY_LABELS = ["日", "一", "二", "三", "四", "五", "六"] as const;
+const WEEKDAY_LABELS = ["一", "二", "三", "四", "五", "六", "日"] as const;
 const TIMELINE_HOUR_START = 6;
 const TIMELINE_HOUR_END = 23;
 const TIMELINE_HOURS = TIMELINE_HOUR_END - TIMELINE_HOUR_START + 1;
@@ -102,7 +102,7 @@ function isSameDay(a: string, b: string | null): boolean {
 function monthDays(year: number, month: number) {
   const first = new Date(year, month - 1, 1);
   const daysInMonth = new Date(year, month, 0).getDate();
-  const startWeekday = first.getDay();
+  const startWeekday = (first.getDay() + 6) % 7;
   const cells: { dateStr: string; day: number; isCurrentMonth: boolean }[] = [];
 
   // Previous month padding

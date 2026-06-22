@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
+import json
 
 from fastapi.testclient import TestClient
 
@@ -12,6 +13,7 @@ from app.main import create_app  # noqa: E402
 from app.services.sandbox_registry import (  # noqa: E402
     DEFAULT_LOCAL_SANDBOX_ID,
     ensure_sandbox_registry,
+    set_sandbox_setting,
 )
 
 
@@ -194,3 +196,109 @@ def test_legacy_business_rows_are_backfilled_to_default_workspace(tmp_path: Path
         row = db.fetchone(f"SELECT sandbox_id FROM {table} WHERE id = ?", (row_id,))
         assert row is not None
         assert row["sandbox_id"] == DEFAULT_LOCAL_SANDBOX_ID
+
+
+def test_dashboard_and_handbook_are_filtered_by_active_workspace(tmp_path: Path) -> None:
+    client = make_client(tmp_path)
+    db = client.app.state.app_state.db
+    set_sandbox_setting(
+        db,
+        DEFAULT_LOCAL_SANDBOX_ID,
+        "cloud_session_user",
+        json.dumps(
+            {
+                "id": "local-admin",
+                "email": "local@example.com",
+                "fullName": "本机管理员",
+                "organizationId": "org-local",
+                "organizationName": "本机组织",
+                "primaryRole": "admin",
+                "accountStatus": "approved",
+                "membershipStatus": "approved",
+            },
+            ensure_ascii=False,
+        ),
+    )
+    local_client_id = create_client_record(client, "本机统计客户")
+    local_task_id = create_task_record(client, "本机统计任务", local_client_id)
+    db.execute(
+        "INSERT INTO meetings(id, client_id, title, stage, created_at, updated_at) VALUES(?, ?, ?, ?, ?, ?)",
+        ("meeting_local", local_client_id, "本机会议", "draft", "2026-06-22T00:00:00Z", "2026-06-22T00:00:00Z"),
+    )
+    db.execute(
+        "INSERT INTO handbook_entries(id, title, summary, tags_json, source_type, client_id, source_object_type, source_object_id, created_at) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        ("handbook_local", "本机手册", "本机", "[]", "manual", local_client_id, "task", local_task_id, "2026-06-22T00:00:00Z"),
+    )
+    db.execute(
+        "INSERT INTO client_dna_documents(client_id, module_key, title, markdown_content, normalized_text, summary, file_name, content_hash, updated_at, updated_by) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (local_client_id, "overview", "本机 DNA", "text", "text", "summary", "local.md", "hash-local", "2026-06-22T00:00:00Z", "tester"),
+    )
+
+    org_workspace_id = create_workspace(client, "org-stats")
+    set_sandbox_setting(
+        db,
+        org_workspace_id,
+        "cloud_session_user",
+        json.dumps(
+            {
+                "id": "org-admin",
+                "email": "org@example.com",
+                "fullName": "组织管理员",
+                "organizationId": "org-stats",
+                "organizationName": "统计组织",
+                "primaryRole": "admin",
+                "accountStatus": "approved",
+                "membershipStatus": "approved",
+            },
+            ensure_ascii=False,
+        ),
+    )
+    org_client_id = create_client_record(client, "组织统计客户")
+    org_task_id = create_task_record(client, "组织统计任务", org_client_id)
+    db.execute("DELETE FROM memory_facts")
+    db.execute(
+        "INSERT INTO memory_facts(id, scope_type, scope_id, fact_key, fact_value, source_type, source_id, created_at, updated_at) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        ("fact_local", "client", local_client_id, "k", "v", "manual", "source", "2026-06-22T00:00:00Z", "2026-06-22T00:00:00Z"),
+    )
+    db.execute(
+        "INSERT INTO meetings(id, client_id, title, stage, created_at, updated_at) VALUES(?, ?, ?, ?, ?, ?)",
+        ("meeting_org", org_client_id, "组织会议", "draft", "2026-06-22T00:00:00Z", "2026-06-22T00:00:00Z"),
+    )
+    db.execute(
+        "INSERT INTO memory_facts(id, scope_type, scope_id, fact_key, fact_value, source_type, source_id, created_at, updated_at) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        ("fact_org", "task", org_task_id, "k", "v", "manual", "source", "2026-06-22T00:00:00Z", "2026-06-22T00:00:00Z"),
+    )
+    db.execute(
+        "INSERT INTO handbook_entries(id, title, summary, tags_json, source_type, client_id, source_object_type, source_object_id, created_at) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        ("handbook_org", "组织手册", "组织", "[]", "manual", org_client_id, "task", org_task_id, "2026-06-22T00:00:00Z"),
+    )
+    db.execute(
+        "INSERT INTO client_dna_documents(client_id, module_key, title, markdown_content, normalized_text, summary, file_name, content_hash, updated_at, updated_by) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (org_client_id, "overview", "组织 DNA", "text", "text", "summary", "org.md", "hash-org", "2026-06-22T00:00:00Z", "tester"),
+    )
+
+    dashboard = client.get("/api/v1/brain/dashboard")
+    assert dashboard.status_code == 200, dashboard.text
+    pulse = dashboard.json()["pulse"]
+    assert pulse["meetingCount"] == 1
+    assert pulse["memoryCount"] == 1
+    assert pulse["handbookCount"] == 1
+    assert pulse["dnaCount"] == 1
+    handbook = client.get("/api/v1/handbook")
+    assert handbook.status_code == 200, handbook.text
+    assert [item["id"] for item in handbook.json()["entries"]] == ["handbook_org"]
+    assert client.get("/api/v1/handbook/handbook_local").status_code == 404
+
+    response = client.post(f"/api/v1/workspaces/{DEFAULT_LOCAL_SANDBOX_ID}/activate")
+    assert response.status_code == 200, response.text
+    local_dashboard = client.get("/api/v1/brain/dashboard")
+    assert local_dashboard.status_code == 200, local_dashboard.text
+    local_pulse = local_dashboard.json()["pulse"]
+    assert local_pulse["meetingCount"] == 1
+    assert local_pulse["memoryCount"] == 1
+    assert local_pulse["handbookCount"] == 1
+    assert local_pulse["dnaCount"] == 1
+    local_handbook = client.get("/api/v1/handbook")
+    assert local_handbook.status_code == 200, local_handbook.text
+    assert [item["id"] for item in local_handbook.json()["entries"]] == ["handbook_local"]
+    assert client.get("/api/v1/handbook/handbook_org").status_code == 404

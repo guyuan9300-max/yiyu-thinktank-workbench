@@ -100,7 +100,10 @@ def test_multi_org_login_selection_creates_matching_workspace(tmp_path: Path, mo
             )
         if method == "GET" and url.endswith("/api/v1/settings/org-ai-config/secret"):
             return FakeCloudResponse(403, {"detail": "forbidden"})
-        if method == "GET" and url.endswith("/api/v1/settings/org-object-storage-config/secret"):
+        if method == "GET" and (
+            url.endswith("/api/v1/settings/org-object-storage-config")
+            or url.endswith("/api/v1/settings/org-object-storage-config/secret")
+        ):
             return FakeCloudResponse(200, {"provider": "", "enabled": False, "credentials": {}, "extraConfig": {}})
         raise AssertionError(f"unexpected cloud request: {method} {url}")
 

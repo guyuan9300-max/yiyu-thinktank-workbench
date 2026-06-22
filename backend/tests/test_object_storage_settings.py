@@ -28,6 +28,13 @@ class _InMemoryDb:
                 updated_at TEXT NOT NULL DEFAULT ''
             );
             INSERT OR IGNORE INTO object_storage_settings(id) VALUES (1);
+            CREATE TABLE IF NOT EXISTS sandbox_settings (
+                sandbox_id TEXT NOT NULL,
+                key TEXT NOT NULL,
+                value TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                PRIMARY KEY (sandbox_id, key)
+            );
             """
         )
         self.settings: dict[str, str] = {}
@@ -68,3 +75,49 @@ def test_object_storage_settings_roundtrip_and_redaction() -> None:
     assert redacted.hasCredentials is True
     assert redacted.managedByCloud is True
     assert redacted.configuredBy == "user_admin"
+
+
+def test_object_storage_settings_are_scoped_by_sandbox() -> None:
+    db = _InMemoryDb()
+    payload_a = ObjectStorageSettingsPayload(
+        provider="volcano_tos",
+        credentials={"access_key_id": "AK_A", "secret_access_key": "SK_A"},
+        extraConfig={"bucket": "bucket-a"},
+        enabled=True,
+    )
+    payload_b = ObjectStorageSettingsPayload(
+        provider="volcano_tos",
+        credentials={},
+        extraConfig={"bucket": "bucket-b"},
+        enabled=True,
+    )
+
+    save_object_storage_settings(  # type: ignore[arg-type]
+        db,
+        payload_a,
+        now_iso="2026-06-22T10:00:00+08:00",
+        sandbox_id="sbx_org_a",
+        managed_by_cloud=True,
+        configured_by="admin-a",
+    )
+    save_object_storage_settings(  # type: ignore[arg-type]
+        db,
+        payload_b,
+        now_iso="2026-06-22T10:01:00+08:00",
+        sandbox_id="sbx_org_b",
+        managed_by_cloud=True,
+        configured_by="admin-b",
+    )
+
+    record_a = get_object_storage_settings(db, sandbox_id="sbx_org_a")  # type: ignore[arg-type]
+    record_b = get_object_storage_settings(db, sandbox_id="sbx_org_b")  # type: ignore[arg-type]
+    local_record = get_object_storage_settings(db, sandbox_id="sbx_local_default")  # type: ignore[arg-type]
+
+    assert record_a.extraConfig["bucket"] == "bucket-a"
+    assert record_a.credentials["secret_access_key"] == "SK_A"
+    assert record_a.managedByCloud is True
+    assert record_a.configuredBy == "admin-a"
+    assert record_b.extraConfig["bucket"] == "bucket-b"
+    assert record_b.credentials == {}
+    assert record_b.hasCredentials is False
+    assert local_record.provider == ""

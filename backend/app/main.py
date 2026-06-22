@@ -3308,6 +3308,27 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             raise ValueError("invalid SQL alias")
         return f"COALESCE({alias}.sandbox_id, '') = ?"
 
+    def active_workspace_organization_id() -> str:
+        try:
+            return (get_active_sandbox(state.db).organizationId or "").strip()
+        except Exception:
+            return ""
+
+    def active_client_ids_sql() -> str:
+        return "SELECT id FROM clients WHERE COALESCE(sandbox_id, '') = ?"
+
+    def active_task_ids_sql() -> str:
+        return "SELECT id FROM tasks WHERE COALESCE(sandbox_id, '') = ?"
+
+    def active_handbook_scope_sql(alias: str = "h") -> str:
+        if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", alias):
+            raise ValueError("invalid SQL alias")
+        return (
+            f"((COALESCE({alias}.client_id, '') IN ({active_client_ids_sql()})) "
+            f"OR (COALESCE({alias}.source_object_type, '') = 'task' "
+            f"AND COALESCE({alias}.source_object_id, '') IN ({active_task_ids_sql()})))"
+        )
+
     def scoped_task_list_id(seed: str = "list-0") -> str:
         sandbox_id = active_business_sandbox_id()
         if sandbox_id == DEFAULT_LOCAL_SANDBOX_ID and seed == "list-0":
@@ -4094,10 +4115,11 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             def _probe_cloud():
                 import time as _time
                 try:
-                    httpx.get(f"{cloud_api_base_url()}/health", timeout=3.0)
-                    _cloud_circuit_breaker["last_failure"] = 0.0  # cloud OK — clear breaker
+                    base_url = cloud_api_base_url()
+                    httpx.get(f"{base_url}/health", timeout=3.0)
+                    _clear_cloud_circuit_breaker(base_url)  # cloud OK — clear breaker
                 except Exception:
-                    _cloud_circuit_breaker["last_failure"] = _time.time()  # cloud down — keep breaker
+                    _mark_cloud_circuit_breaker_failure()  # cloud down — keep breaker
             Thread(target=_probe_cloud, name="cloud-probe", daemon=True).start()
 
     @app.on_event("shutdown")
@@ -5540,7 +5562,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             state.cloud_api_url = ""
         state.cloud_session_persistent = _has_persisted_cloud_session()
         try:
-            _cloud_circuit_breaker["last_failure"] = 0.0
+            _clear_cloud_circuit_breaker()
         except NameError:
             pass
         state.ai.invalidate_org_cloud_proxy_cache()
@@ -5548,6 +5570,11 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         try:
             _cloud_ai_sync_status.clear()
             _cloud_ai_sync_status.update({"state": "never"})
+        except NameError:
+            pass
+        try:
+            _cloud_object_storage_sync_status.clear()
+            _cloud_object_storage_sync_status.update({"state": "never"})
         except NameError:
             pass
         with state.maintenance_mode_lock:
@@ -8892,8 +8919,28 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         Thread(target=lambda: _sync_org_ai_config_from_cloud(user), daemon=True, name="cloud-ai-sync-refresh").start()
         return user
 
-    # Circuit breaker: if cloud was unreachable, skip retries for 60s
-    _cloud_circuit_breaker: dict[str, float] = {"last_failure": 0.0}
+    # Circuit breaker: if a cloud workspace was unreachable, skip retries for 60s.
+    # Keep it scoped by workspace + cloud URL so a failed probe in one sandbox
+    # does not make another organization's Feishu/AI/feedback links look down.
+    _cloud_circuit_breakers: dict[str, float] = {}
+
+    def _cloud_circuit_breaker_key(base_url: str | None = None) -> str:
+        try:
+            sandbox_id = get_active_sandbox_id(state.db) or DEFAULT_LOCAL_SANDBOX_ID
+        except Exception:
+            sandbox_id = DEFAULT_LOCAL_SANDBOX_ID
+        normalized_base = str(base_url or state.cloud_api_url or "").strip()
+        return f"{sandbox_id}|{normalized_base}"
+
+    def _cloud_circuit_last_failure(base_url: str | None = None) -> float:
+        return float(_cloud_circuit_breakers.get(_cloud_circuit_breaker_key(base_url), 0.0) or 0.0)
+
+    def _mark_cloud_circuit_breaker_failure(base_url: str | None = None) -> None:
+        import time as _time
+        _cloud_circuit_breakers[_cloud_circuit_breaker_key(base_url)] = _time.time()
+
+    def _clear_cloud_circuit_breaker(base_url: str | None = None) -> None:
+        _cloud_circuit_breakers.pop(_cloud_circuit_breaker_key(base_url), None)
 
     class CloudUnavailableError(Exception):
         """Raised when cloud backend is unreachable. Caught by try/except Exception in local-first endpoints."""
@@ -8907,7 +8954,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         base_url = cloud_api_base_url()
 
         # Fast fail if cloud was down recently (circuit breaker)
-        if _time.time() - _cloud_circuit_breaker["last_failure"] < 60:
+        if _time.time() - _cloud_circuit_last_failure(base_url) < 60:
             raise HTTPException(status_code=502, detail="Cloud backend unavailable (circuit breaker active)")
 
         def perform_request(token: str | None):
@@ -8937,7 +8984,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             try:
                 response = perform_request(token)
             except httpx.HTTPError as exc:
-                _cloud_circuit_breaker["last_failure"] = _time.time()
+                _mark_cloud_circuit_breaker_failure(base_url)
                 raise HTTPException(status_code=502, detail=f"Cloud backend unavailable: {exc}") from exc
         if response.status_code == 401 and not allow_unauthenticated and get_cloud_refresh_token():
             refresh_cloud_session()
@@ -8945,10 +8992,10 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             try:
                 response = perform_request(token)
             except httpx.HTTPError as exc:
-                _cloud_circuit_breaker["last_failure"] = _time.time()
+                _mark_cloud_circuit_breaker_failure(base_url)
                 raise HTTPException(status_code=502, detail=f"Cloud backend unavailable: {exc}") from exc
         # Cloud responded — reset circuit breaker
-        _cloud_circuit_breaker["last_failure"] = 0.0
+        _clear_cloud_circuit_breaker(base_url)
         if response.status_code == 401 and not allow_unauthenticated:
             clear_cloud_session()
         if response.status_code == 403 and not allow_unauthenticated and path.startswith("/api/v1/auth/"):
@@ -9572,7 +9619,9 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             )
             for item in payload.get("collaborators", []) if isinstance(item, dict)
         ]
-        list_id = str(payload.get("listId", "list-0"))
+        list_id = str(payload.get("listId") or "").strip()
+        if not list_id or list_id.lower() in {"none", "null", "undefined"}:
+            list_id = "list-0"
         list_record = lists_by_id.get(
             list_id,
             TaskListRecord(
@@ -9756,7 +9805,9 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         name: str | None = None,
         color: str | None = None,
     ) -> str:
-        normalized_list_id = (list_id or str(payload.get("id") or "")).strip() or "list-0"
+        normalized_list_id = (list_id or str(payload.get("id") or "")).strip()
+        if not normalized_list_id or normalized_list_id.lower() in {"none", "null", "undefined"}:
+            normalized_list_id = "list-0"
         active_sandbox_id = active_business_sandbox_id()
         if normalized_list_id == "list-0":
             local_candidate_id = scoped_task_list_id("list-0")
@@ -24597,22 +24648,41 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             lambda: ingest_task_note_by_id(state.db, state.data_dir, task_id, note),
         )
 
-    def _ensure_local_task_list(list_id: str) -> str:
+    def _normalize_task_list_id_value(value: object | None) -> str:
+        raw = str(value or "").strip()
+        if raw.lower() in {"none", "null", "undefined"}:
+            return ""
+        return raw
+
+    def _ensure_local_task_list(list_id: object | None) -> str:
         """Ensure a task list exists locally. For cloud lists, create a local mirror if missing."""
         active_sandbox_id = active_business_sandbox_id()
+        normalized_list_id = _normalize_task_list_id_value(list_id)
         row = state.db.fetchone(
             "SELECT * FROM task_lists WHERE id = ? AND COALESCE(sandbox_id, '') = ?",
-            (list_id, active_sandbox_id),
+            (normalized_list_id, active_sandbox_id),
         )
         if row and not row["archived_at"]:
-            return list_id
-        fallback_id = _get_local_task_settings().defaultListId or "list-0"
+            return normalized_list_id
+        fallback_id = _normalize_task_list_id_value(_get_local_task_settings().defaultListId) or "list-0"
         fallback_row = state.db.fetchone(
             "SELECT * FROM task_lists WHERE id = ? AND COALESCE(sandbox_id, '') = ?",
             (fallback_id, active_sandbox_id),
         )
         if fallback_row and not fallback_row["archived_at"]:
             return fallback_id
+        first_row = state.db.fetchone(
+            """
+            SELECT * FROM task_lists
+            WHERE COALESCE(sandbox_id, '') = ?
+              AND archived_at IS NULL
+            ORDER BY is_default DESC, sort_order ASC, name ASC, id ASC
+            LIMIT 1
+            """,
+            (active_sandbox_id,),
+        )
+        if first_row:
+            return str(first_row["id"])
         # Create a catch-all list so we never fail
         scoped_id = scoped_task_list_id("list-0")
         state.db.execute(
@@ -24758,6 +24828,12 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                     )
                     continue
             try:
+                cloud_payload["listId"] = _ensure_local_task_list(
+                    cloud_payload.get("listId") or row["list_id"] or "list-0"
+                )
+                if pending_action == "update" and not cloud_id:
+                    pending_action = "create"
+                    cloud_payload["id"] = task_id
                 # Sanitize legacy/stale cloud_payload_json: older versions stored business-shape
                 # tags/collaborators (list of dicts), but the cloud TaskCreatePayload expects
                 # list[str]. Without sanitisation the cloud returns 422 every retry and the task
@@ -25094,7 +25170,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 "title": payload.title,
                 "description": payload.desc,
                 "priority": payload.priority,
-                "listId": payload.listId,
+                "listId": list_id,
                 "deadlineAt": temporal_fields["deadline_at"],
                 "scheduledStartAt": temporal_fields["scheduled_start_at"],
                 "scheduledEndAt": temporal_fields["scheduled_end_at"],
@@ -28488,11 +28564,53 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             """,
             (active_sandbox_id,),
         ) or 0)
-        review_count = int(state.db.scalar("SELECT COUNT(*) FROM weekly_reviews") or 0)
-        meeting_count = int(state.db.scalar("SELECT COUNT(*) FROM meetings") or 0)
-        handbook_count = int(state.db.scalar("SELECT COUNT(*) FROM handbook_entries") or 0)
-        memory_fact_count = int(state.db.scalar("SELECT COUNT(*) FROM memory_facts") or 0)
-        badge_count = int(state.db.scalar("SELECT COUNT(*) FROM growth_evidence_records WHERE validation_state IN ('validated','institutionalized')") or 0)
+        active_org_id = active_workspace_organization_id()
+        review_count = int(state.db.scalar(
+            "SELECT COUNT(*) FROM weekly_reviews WHERE COALESCE(organization_id, '') = ?",
+            (active_org_id,),
+        ) or 0) if active_org_id else 0
+        meeting_count = int(state.db.scalar(
+            """
+            SELECT COUNT(*)
+            FROM meetings m
+            JOIN clients c ON c.id = m.client_id
+            WHERE COALESCE(c.sandbox_id, '') = ?
+            """,
+            (active_sandbox_id,),
+        ) or 0)
+        handbook_count = int(state.db.scalar(
+            f"""
+            SELECT COUNT(*)
+            FROM handbook_entries h
+            WHERE {active_handbook_scope_sql("h")}
+            """,
+            (active_sandbox_id, active_sandbox_id),
+        ) or 0)
+        memory_fact_count = int(state.db.scalar(
+            f"""
+            SELECT COUNT(*)
+            FROM memory_facts
+            WHERE (scope_type = 'client' AND scope_id IN ({active_client_ids_sql()}))
+               OR (scope_type = 'task' AND scope_id IN ({active_task_ids_sql()}))
+            """,
+            (active_sandbox_id, active_sandbox_id),
+        ) or 0)
+        badge_count = int(state.db.scalar(
+            f"""
+            SELECT COUNT(*)
+            FROM growth_evidence_records g
+            WHERE g.validation_state IN ('validated','institutionalized')
+              AND (
+                COALESCE(g.task_id, '') IN ({active_task_ids_sql()})
+                OR COALESCE(g.handbook_entry_id, '') IN (
+                    SELECT h.id
+                    FROM handbook_entries h
+                    WHERE {active_handbook_scope_sql("h")}
+                )
+              )
+            """,
+            (active_sandbox_id, active_sandbox_id, active_sandbox_id),
+        ) or 0)
         doc_count = int(state.db.scalar(
             """
             SELECT COUNT(*)
@@ -28502,7 +28620,17 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             """,
             (active_sandbox_id,),
         ) or 0)
-        dna_count = int(state.db.scalar("SELECT COUNT(*) FROM client_dna_documents WHERE summary != '' AND summary IS NOT NULL") or 0)
+        dna_count = int(state.db.scalar(
+            """
+            SELECT COUNT(*)
+            FROM client_dna_documents d
+            JOIN clients c ON c.id = d.client_id
+            WHERE d.summary != ''
+              AND d.summary IS NOT NULL
+              AND COALESCE(c.sandbox_id, '') = ?
+            """,
+            (active_sandbox_id,),
+        ) or 0)
         first_client_row = state.db.fetchone(
             """
             SELECT MIN(created_at) AS val
@@ -28523,7 +28651,16 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             except Exception:
                 pass
         weekly_new_facts = int(state.db.scalar(
-            "SELECT COUNT(*) FROM memory_facts WHERE created_at >= date('now', '-7 days')"
+            f"""
+            SELECT COUNT(*)
+            FROM memory_facts
+            WHERE created_at >= date('now', '-7 days')
+              AND (
+                (scope_type = 'client' AND scope_id IN ({active_client_ids_sql()}))
+                OR (scope_type = 'task' AND scope_id IN ({active_task_ids_sql()}))
+              )
+            """,
+            (active_sandbox_id, active_sandbox_id),
         ) or 0)
         clients_data = []
         for row in client_rows:
@@ -31474,13 +31611,15 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         from app.services.object_storage.settings_store import save_object_storage_settings
 
         try:
-            secret_payload = cloud_request("GET", "/api/v1/settings/org-object-storage-config/secret")
-            if not isinstance(secret_payload, dict):
+            is_admin = current_session_is_admin()
+            endpoint = "/api/v1/settings/org-object-storage-config/secret" if is_admin else "/api/v1/settings/org-object-storage-config"
+            cloud_payload = cloud_request("GET", endpoint)
+            if not isinstance(cloud_payload, dict):
                 raise RuntimeError("云端响应非 JSON 对象")
-            provider = str(secret_payload.get("provider") or "").strip()
-            enabled = bool(secret_payload.get("enabled"))
-            credentials_raw = secret_payload.get("credentials")
-            extra_raw = secret_payload.get("extraConfig")
+            provider = str(cloud_payload.get("provider") or "").strip()
+            enabled = bool(cloud_payload.get("enabled"))
+            credentials_raw = cloud_payload.get("credentials") if is_admin else {}
+            extra_raw = cloud_payload.get("extraConfig")
             credentials = {
                 str(key): str(value)
                 for key, value in (credentials_raw.items() if isinstance(credentials_raw, dict) else [])
@@ -31492,6 +31631,14 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 if str(value).strip()
             }
             if not provider:
+                save_object_storage_settings(
+                    state.db,
+                    ObjectStorageSettingsPayload(provider="", credentials={}, extraConfig={}, enabled=False),
+                    now_iso=str(cloud_payload.get("updatedAt") or now_iso()),
+                    sandbox_id=get_active_sandbox_id(state.db),
+                    managed_by_cloud=True,
+                    configured_by=str(cloud_payload.get("configuredBy") or ""),
+                )
                 _cloud_object_storage_sync_status.clear()
                 _cloud_object_storage_sync_status.update({
                     "state": "skipped",
@@ -31510,10 +31657,11 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                     extraConfig=extra_config,
                     enabled=enabled,
                 ),
-                now_iso=str(secret_payload.get("updatedAt") or now_iso()),
+                now_iso=str(cloud_payload.get("updatedAt") or now_iso()),
+                sandbox_id=get_active_sandbox_id(state.db),
+                managed_by_cloud=True,
+                configured_by=str(cloud_payload.get("configuredBy") or ""),
             )
-            state.db.set_setting("settings.object_storage_managed_by_cloud", "1")
-            state.db.set_setting("settings.object_storage_configured_by", str(secret_payload.get("configuredBy") or ""))
             _cloud_object_storage_sync_status.clear()
             _cloud_object_storage_sync_status.update({
                 "state": "synced",
@@ -31521,6 +31669,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 "provider": provider,
                 "enabled": enabled,
                 "hasCredentials": bool(credentials),
+                "scope": "secret" if is_admin else "public",
             })
         except Exception as exc:
             _cloud_object_storage_sync_status.clear()
@@ -38743,8 +38892,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         return get_object_storage_settings(
             state.db,
             redact_credentials=bool(get_cached_session_user()) and not current_session_is_admin(),
-            managed_by_cloud=state.db.get_setting("settings.object_storage_managed_by_cloud", "") == "1",
-            configured_by=state.db.get_setting("settings.object_storage_configured_by", "") or None,
+            sandbox_id=get_active_sandbox_id(state.db),
         )
 
     @app.put("/api/v1/settings/object-storage", response_model=ObjectStorageSettingsRecord)
@@ -38764,24 +38912,23 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             next_record = get_object_storage_settings(
                 state.db,
                 redact_credentials=False,
-                managed_by_cloud=True,
-                configured_by=state.db.get_setting("settings.object_storage_configured_by", "") or None,
+                sandbox_id=get_active_sandbox_id(state.db),
             )
         else:
             ensure_business_settings_editable()
-            next_record = save_object_storage_settings(state.db, payload, now_iso=now_iso())
+            next_record = save_object_storage_settings(
+                state.db,
+                payload,
+                now_iso=now_iso(),
+                sandbox_id=get_active_sandbox_id(state.db),
+            )
         log_activity(
             "settings.object_storage.update",
             "settings",
             "object_storage",
             {"provider": provider_name, "enabled": payload.enabled},
         )
-        return next_record.model_copy(
-            update={
-                "managedByCloud": state.db.get_setting("settings.object_storage_managed_by_cloud", "") == "1",
-                "configuredBy": state.db.get_setting("settings.object_storage_configured_by", "") or None,
-            }
-        )
+        return next_record
 
     @app.post("/api/v1/settings/object-storage/test", response_model=ObjectStorageTestResult)
     def test_object_storage_settings_endpoint(
@@ -39414,8 +39561,33 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         ensure_admin_for_sensitive_settings()
         return update_feishu_bot_settings(payload)
 
+    def _legacy_feishu_binding_from_member_authorization(record: FeishuMemberAuthorizationRecord) -> FeishuUserBindingRecord:
+        last_error = record.blockedReason if not record.linked else None
+        return FeishuUserBindingRecord(
+            linked=record.linked,
+            readyForAuthorization=record.readyForAuthorization,
+            appId=record.appId,
+            userId=record.userId,
+            openId=record.openId,
+            unionId=record.unionId,
+            feishuUserId=record.feishuUserId,
+            name=record.name,
+            enName=record.enName,
+            avatarUrl=record.avatarUrl,
+            email=record.email,
+            tenantKey=record.tenantKey,
+            boundAt=record.boundAt,
+            lastVerifiedAt=record.lastVerifiedAt,
+            lastError=last_error,
+        )
+
     @app.get("/api/v1/settings/feishu-user-binding", response_model=FeishuUserBindingRecord)
     def read_feishu_user_binding() -> FeishuUserBindingRecord:
+        if get_cloud_token() or get_cloud_refresh_token():
+            user = get_cached_session_user()
+            if user is None:
+                user = require_session_user()
+            return _legacy_feishu_binding_from_member_authorization(get_feishu_member_authorization())
         user = require_session_user()
         try:
             sync_feishu_user_binding_from_cloud_relay(user.id)
@@ -39426,6 +39598,9 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
 
     @app.post("/api/v1/settings/feishu-user-binding/start", response_model=FeishuUserBindingStartResponse)
     def start_feishu_user_binding(request: Request) -> FeishuUserBindingStartResponse:
+        if get_cloud_token() or get_cloud_refresh_token():
+            started = start_feishu_member_authorization()
+            return FeishuUserBindingStartResponse(**started.model_dump())
         user = require_session_user()
         settings = get_feishu_bot_settings()
         if not settings.appId.strip():
@@ -39477,6 +39652,8 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
 
     @app.delete("/api/v1/settings/feishu-user-binding", response_model=FeishuUserBindingRecord)
     def delete_feishu_user_binding() -> FeishuUserBindingRecord:
+        if get_cloud_token() or get_cloud_refresh_token():
+            return _legacy_feishu_binding_from_member_authorization(clear_feishu_member_authorization())
         user = require_session_user()
         _clear_feishu_cloud_relay_session(user.id)
         cleared = clear_feishu_user_binding(user.id)
@@ -55214,7 +55391,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 cloud_update_payload["completedAt"] = None
         local_row_for_cloud = state.db.fetchone(
             """
-            SELECT id, cloud_id
+            SELECT id, cloud_id, list_id
             FROM tasks
             WHERE (id = ? OR cloud_id = ?)
               AND COALESCE(sandbox_id, '') = ?
@@ -55229,6 +55406,10 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             if local_row_for_cloud and local_row_for_cloud["cloud_id"]
             else task_id
         )
+        if "listId" in payload_fields:
+            cloud_update_payload["listId"] = _ensure_local_task_list(
+                payload.listId or (str(local_row_for_cloud["list_id"]) if local_row_for_cloud and local_row_for_cloud["list_id"] else None)
+            )
         try:
             if not _resolve_task_cloud_event_line_dependency(local_task_id, cloud_update_payload):
                 raise HTTPException(status_code=409, detail="等待事件线先同步到云端")
@@ -55308,6 +55489,11 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 if fallback_due_date_was_set:
                     fallback_due_date = fallback_due_value
                 sync_error_message = str(getattr(error, "detail", "") or str(error) or type(error).__name__)[:500]
+                fallback_list_id = _ensure_local_task_list(
+                    payload.listId if "listId" in payload_fields else (str(local_row["list_id"]) if local_row["list_id"] else None)
+                )
+                if "listId" in payload_fields:
+                    cloud_update_payload["listId"] = fallback_list_id
                 state.db.execute(
                     """
                     UPDATE tasks
@@ -55355,7 +55541,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                         1 if "priority" in payload_fields else 0,
                         payload.priority,
                         1 if "listId" in payload_fields else 0,
-                        payload.listId,
+                        fallback_list_id,
                         1 if "deadlineAt" in payload_fields or fallback_due_date_was_set else 0,
                         fallback_temporal_fields["deadline_at"],
                         1 if "scheduledStartAt" in payload_fields or fallback_due_date_was_set else 0,
@@ -56247,7 +56433,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
     def _cloud_is_available() -> bool:
         """Check if cloud backend is reachable (circuit breaker not active)."""
         import time as _time
-        return _time.time() - _cloud_circuit_breaker["last_failure"] >= 60
+        return _time.time() - _cloud_circuit_last_failure() >= 60
 
     def _safe_cloud_request(method: str, path: str, **kwargs) -> object | None:
         """cloud_request wrapper: returns None on any failure instead of raising."""
@@ -58546,11 +58732,36 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
 
     @app.get("/api/v1/handbook", response_model=HandbookResponse)
     def list_handbook() -> HandbookResponse:
-        entries = [build_handbook_entry_record(row) for row in state.db.fetchall("SELECT * FROM handbook_entries ORDER BY created_at DESC")]
+        sandbox_id = active_business_sandbox_id()
+        entries = [
+            build_handbook_entry_record(row)
+            for row in state.db.fetchall(
+                f"""
+                SELECT *
+                FROM handbook_entries h
+                WHERE {active_handbook_scope_sql("h")}
+                ORDER BY created_at DESC
+                """,
+                (sandbox_id, sandbox_id),
+            )
+        ]
         return HandbookResponse(entries=entries)
 
     @app.get("/api/v1/handbook/{entry_id}", response_model=HandbookEntryDetailRecord)
     def get_handbook_entry_detail(entry_id: str) -> HandbookEntryDetailRecord:
+        sandbox_id = active_business_sandbox_id()
+        row = state.db.fetchone(
+            f"""
+            SELECT h.id
+            FROM handbook_entries h
+            WHERE h.id = ?
+              AND {active_handbook_scope_sql("h")}
+            LIMIT 1
+            """,
+            (entry_id, sandbox_id, sandbox_id),
+        )
+        if not row:
+            raise HTTPException(status_code=404, detail="成长手册条目不存在")
         user_id, _user_name = resolve_growth_actor()
         return build_handbook_detail(entry_id, user_id)
 

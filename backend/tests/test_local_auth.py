@@ -439,7 +439,10 @@ def test_cloud_login_uses_org_ai_proxy_over_local_mock_for_member(tmp_path: Path
                     "updatedAt": "2026-06-05T10:00:00",
                 },
             )
-        if method == "GET" and url.endswith("/api/v1/settings/org-object-storage-config/secret"):
+        if method == "GET" and (
+            url.endswith("/api/v1/settings/org-object-storage-config")
+            or url.endswith("/api/v1/settings/org-object-storage-config/secret")
+        ):
             return FakeCloudResponse(
                 200,
                 {
