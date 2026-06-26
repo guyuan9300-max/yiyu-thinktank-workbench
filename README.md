@@ -53,6 +53,10 @@ npm run build:renderer
 npm run build:backend-check
 ```
 
+## Collaboration
+
+If you want to claim or contribute to a public co-building task, please read [《协作开发指引》](docs/%E3%80%8A%E5%8D%8F%E4%BD%9C%E5%BC%80%E5%8F%91%E6%8C%87%E5%BC%95%E3%80%8B.md) first.
+
 ## macOS Release Build
 
 macOS release builds must be signed with a Developer ID Application certificate and notarized with Apple before they are published.
