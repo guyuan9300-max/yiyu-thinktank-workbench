@@ -23,6 +23,7 @@ def register_user(client: TestClient, email: str) -> tuple[dict[str, str], dict]
         "/api/v1/auth/register",
         json={
             "email": email,
+            "phone": "13800138009",
             "fullName": email.split("@", 1)[0],
             "password": "Password123!",
             "organizationName": f"{email.split('@', 1)[0]} 的组织",

@@ -162,7 +162,7 @@ export function FeedbackSection({ desktopAppInfo }: FeedbackSectionProps): React
         description,
         appVersion: desktopAppInfo?.appVersion ?? null,
         platform: desktopAppInfo ? `${desktopAppInfo.platform}/${desktopAppInfo.arch}` : null,
-        pageRoute: 'settings/about/feedback',
+        pageRoute: 'settings/feedback',
         deviceInfo,
         screenshot,
       });
@@ -264,7 +264,7 @@ export function FeedbackSection({ desktopAppInfo }: FeedbackSectionProps): React
               <dl className="mt-3 grid grid-cols-2 gap-2 text-[12px]">
                 <div><dt className="text-gray-400">版本</dt><dd className="text-gray-700">{versionLabel}</dd></div>
                 <div><dt className="text-gray-400">系统</dt><dd className="text-gray-700">{platformLabel}</dd></div>
-                <div><dt className="text-gray-400">当前页面</dt><dd className="text-gray-700">关于本软件 / 反馈</dd></div>
+                <div><dt className="text-gray-400">当前页面</dt><dd className="text-gray-700">系统设置 / 反馈与建议</dd></div>
                 <div><dt className="text-gray-400">错误日志</dt><dd className="text-gray-700">仅最近 ERROR/WARN 摘要</dd></div>
               </dl>
             )}

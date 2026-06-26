@@ -72,6 +72,7 @@ import {
   Scale,
   ShieldCheck,
   Minimize2,
+  MessageSquarePlus,
 } from 'lucide-react';
 
 import type {
@@ -541,6 +542,7 @@ import { GrowthProvider, notifyGrowthRefresh } from './components/growth/GrowthC
 import { ClientFactProvider } from './contexts/ClientFactContext';
 import { OFFICIAL_PUSH_STATE_EVENT, UPDATE_STATE_KEY, UpdateNotifier, setCachedOfficialPush } from './components/UpdateNotifier';
 import { AboutAppSettingsPanel } from './components/settings/AboutAppSettingsPanel';
+import { FeedbackSection } from './components/settings/FeedbackSection';
 import { GrowthCenterView } from './components/handbook/GrowthCenterView';
 import { AppLogoMark, BrandLogoMark } from './components/settings/BrandLogoSettingsCard';
 import { FileSearchResultPanel } from './components/data_center/FileSearchResultPanel';
@@ -1647,8 +1649,6 @@ function aiRouteLabel(provider?: AiProvider | string | null, model?: string | nu
 }
 
 const CLOUD_API_URL_PREFIX = 'http://';
-const FEISHU_LOCAL_CALDAV_HELP_URL = 'https://www.feishu.cn/hc/zh-CN/articles/360043178673-%E8%AE%BE%E7%BD%AE%E6%9C%AC%E5%9C%B0%E7%B3%BB%E7%BB%9F%E6%97%A5%E5%8E%86%E4%B8%8E%E9%A3%9E%E4%B9%A6%E6%97%A5%E5%8E%86%E4%B9%8B%E9%97%B4%E7%9A%84%E5%90%8C%E6%AD%A5';
-
 function cloudApiHostValue(rawUrl?: string | null) {
   return String(rawUrl || '')
     .trim()
@@ -1917,6 +1917,18 @@ const DEFAULT_FEISHU_DELIVERY_PROFILE: FeishuDeliveryProfile = {
   lastVerifiedAt: null,
   lastError: null,
   blockedReason: '飞书任务提醒手机号状态暂未读取；这不代表组织或成员身份未连接。',
+};
+
+type FeishuTaskSyncReadiness = {
+  checked: boolean;
+  fullyConnected: boolean;
+  checkedAt: string | null;
+};
+
+const DEFAULT_FEISHU_TASK_SYNC_READINESS: FeishuTaskSyncReadiness = {
+  checked: false,
+  fullyConnected: false,
+  checkedAt: null,
 };
 
 const DEFAULT_LOCAL_INPUT_MEMORY: LocalInputMemory = {
@@ -7621,6 +7633,7 @@ export default function App() {
   });
   const [workspacesState, setWorkspacesState] = useState<SandboxWorkspacesResponse | null>(null);
   const [workspaceManagerOpen, setWorkspaceManagerOpen] = useState(false);
+  const [isFeedbackModalOpen, setIsFeedbackModalOpen] = useState(false);
   const [workspaceManagerBusy, setWorkspaceManagerBusy] = useState(false);
   const [businessWorkspaceResetKey, setBusinessWorkspaceResetKey] = useState(0);
   const [workspaceCreateOrgDraft, setWorkspaceCreateOrgDraft] = useState({ organizationName: '', cloudApiUrl: '' });
@@ -7631,6 +7644,8 @@ export default function App() {
   } | null>(null);
   const activeWorkspaceRecord: SandboxWorkspaceRecord | null =
     workspacesState?.workspaces.find((item) => item.id === workspacesState.activeSandboxId) || null;
+  const localDraftSummary = workspacesState?.localDraftSummary || null;
+  const activeWorkspaceDisplayName = activeWorkspaceRecord?.name || (localDraftSummary?.active ? '未连接组织的本机草稿' : '尚未选择组织');
   const [logs, setLogs] = useState<
     Array<{
       id: string;
@@ -7652,10 +7667,88 @@ export default function App() {
   const [orgFeishuIntegrationState, setOrgFeishuIntegrationState] = useState<OrgFeishuIntegration>(DEFAULT_ORG_FEISHU_INTEGRATION);
   const [feishuDeliveryProfileState, setFeishuDeliveryProfileState] = useState<FeishuDeliveryProfile>(DEFAULT_FEISHU_DELIVERY_PROFILE);
   const [feishuMemberAuthorizationState, setFeishuMemberAuthorizationState] = useState<FeishuMemberAuthorization>(DEFAULT_FEISHU_MEMBER_AUTHORIZATION);
+  const [orgFeishuIntegrationLoaded, setOrgFeishuIntegrationLoaded] = useState(false);
+  const [feishuDeliveryProfileLoaded, setFeishuDeliveryProfileLoaded] = useState(false);
+  const [feishuMemberAuthorizationLoaded, setFeishuMemberAuthorizationLoaded] = useState(false);
   const [feishuAuthorizationBusyAction, setFeishuAuthorizationBusyAction] = useState<'idle' | 'starting' | 'refreshing' | 'clearing'>('idle');
   const [feishuAuthorizationFlowState, setFeishuAuthorizationFlowState] = useState<FeishuAuthorizationFlowState | null>(null);
   const [isSavingOrgFeishuIntegration, setIsSavingOrgFeishuIntegration] = useState(false);
   const [isSavingFeishuDeliveryProfile, setIsSavingFeishuDeliveryProfile] = useState(false);
+  const [feishuTaskSyncReadiness, setFeishuTaskSyncReadiness] = useState<FeishuTaskSyncReadiness>(DEFAULT_FEISHU_TASK_SYNC_READINESS);
+  const [feishuSettingsFocusNonce, setFeishuSettingsFocusNonce] = useState(0);
+  const feishuIntegrationSettingsRef = useRef<HTMLDetailsElement | null>(null);
+  const feishuTransientRetryCountRef = useRef(0);
+  const feishuStatusHydrationInFlightRef = useRef(false);
+  const feishuTaskSyncReadinessInFlightRef = useRef(false);
+  const feishuSyncStrictStatusLoaded = orgFeishuIntegrationLoaded && feishuMemberAuthorizationLoaded && feishuDeliveryProfileLoaded;
+  const feishuSyncConnectedByState = Boolean(
+    orgFeishuIntegrationState.enabled &&
+    feishuMemberAuthorizationState.linked &&
+    (feishuDeliveryProfileState.readyForNotifications || feishuDeliveryProfileState.deliveryStatus === 'matched'),
+  );
+  const feishuSyncStatusLoaded = feishuSyncStrictStatusLoaded || feishuTaskSyncReadiness.checked || feishuSyncConnectedByState;
+  const feishuSyncFullyConnected = feishuSyncConnectedByState || feishuTaskSyncReadiness.fullyConnected;
+  const feishuSyncTransientUnavailable = Boolean(
+    orgFeishuIntegrationState.authorizationBlockedReason?.includes('暂') ||
+    orgFeishuIntegrationState.authorizationBlockedReason?.includes('不可用') ||
+    feishuMemberAuthorizationState.blockedReason?.includes('暂') ||
+    feishuMemberAuthorizationState.blockedReason?.includes('不可用') ||
+    feishuDeliveryProfileState.blockedReason?.includes('暂') ||
+    feishuDeliveryProfileState.blockedReason?.includes('不可用') ||
+    feishuDeliveryProfileState.deliveryStatus === 'failed',
+  );
+  const feishuSyncPromptLabel = !feishuSyncStatusLoaded
+    ? '正在确认飞书同步'
+    : feishuSyncFullyConnected
+      ? '飞书同步已完全接通'
+      : '飞书同步未完全接通';
+  const feishuSyncPromptClass = !feishuSyncStatusLoaded
+    ? 'border-slate-100 bg-slate-50 text-slate-500 hover:bg-slate-100'
+    : feishuSyncFullyConnected
+    ? 'border-emerald-100 bg-emerald-50 text-emerald-700 hover:bg-emerald-100'
+    : 'border-blue-100 bg-blue-50 text-blue-700 hover:bg-blue-100';
+  const openFeishuTaskCalendarSettings = useCallback(() => {
+    setActiveTab('settings');
+    setSettingsSection('overview');
+    setFeishuSettingsFocusNonce((current) => current + 1);
+  }, []);
+
+  useEffect(() => {
+    if (!feishuSettingsFocusNonce || activeTab !== 'settings' || settingsSection !== 'overview') return undefined;
+    const timer = window.setTimeout(() => {
+      const node = feishuIntegrationSettingsRef.current;
+      if (!node) return;
+      node.open = true;
+      node.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }, 80);
+    return () => window.clearTimeout(timer);
+  }, [activeTab, feishuSettingsFocusNonce, settingsSection]);
+
+  useEffect(() => {
+    if (!feishuSyncStatusLoaded) return undefined;
+    if (feishuSyncFullyConnected) {
+      feishuTransientRetryCountRef.current = 0;
+      return undefined;
+    }
+    if (!feishuSyncTransientUnavailable || feishuTransientRetryCountRef.current >= 6) return undefined;
+    const timer = window.setTimeout(() => {
+      feishuTransientRetryCountRef.current += 1;
+      void Promise.allSettled([
+        loadOrgFeishuIntegrationBlock(),
+        loadFeishuDeliveryProfileBlock(),
+        loadFeishuMemberAuthorizationBlock(),
+      ]);
+    }, 8000);
+    return () => window.clearTimeout(timer);
+  }, [
+    feishuSyncStatusLoaded,
+    feishuSyncFullyConnected,
+    feishuSyncTransientUnavailable,
+    orgFeishuIntegrationState.authorizationBlockedReason,
+    feishuMemberAuthorizationState.blockedReason,
+    feishuDeliveryProfileState.blockedReason,
+    feishuDeliveryProfileState.deliveryStatus,
+  ]);
 
   const [clients, setClients] = useState<ClientSummary[]>([]);
   // 全局冷冻订阅 — 本地 hiddenClientIds Set 是 clients[].isFrozen 的镜像
@@ -8489,9 +8582,15 @@ export default function App() {
   };
 
   const resetFeishuWorkspaceTransientState = () => {
+    feishuStatusHydrationInFlightRef.current = false;
+    feishuTaskSyncReadinessInFlightRef.current = false;
     setOrgFeishuIntegrationState(DEFAULT_ORG_FEISHU_INTEGRATION);
     setFeishuDeliveryProfileState(DEFAULT_FEISHU_DELIVERY_PROFILE);
     setFeishuMemberAuthorizationState(DEFAULT_FEISHU_MEMBER_AUTHORIZATION);
+    setFeishuTaskSyncReadiness(DEFAULT_FEISHU_TASK_SYNC_READINESS);
+    setOrgFeishuIntegrationLoaded(false);
+    setFeishuDeliveryProfileLoaded(false);
+    setFeishuMemberAuthorizationLoaded(false);
     setFeishuAuthorizationFlowState(null);
     setFeishuAuthorizationBusyAction('idle');
     setIsFeishuImportOpen(false);
@@ -9240,22 +9339,114 @@ export default function App() {
   }
 
   async function loadOrgFeishuIntegrationBlock() {
-    const response = await getOrgFeishuIntegration();
-    setOrgFeishuIntegrationState(response);
-    return response;
+    try {
+      const response = await getOrgFeishuIntegration();
+      setOrgFeishuIntegrationState(response);
+      return response;
+    } finally {
+      setOrgFeishuIntegrationLoaded(true);
+    }
   }
 
   async function loadFeishuDeliveryProfileBlock() {
-    const response = await getFeishuDeliveryProfile();
-    setFeishuDeliveryProfileState(response);
-    return response;
+    try {
+      const response = await getFeishuDeliveryProfile();
+      setFeishuDeliveryProfileState(response);
+      return response;
+    } finally {
+      setFeishuDeliveryProfileLoaded(true);
+    }
   }
 
   async function loadFeishuMemberAuthorizationBlock() {
-    const response = await getFeishuMemberAuthorization();
-    setFeishuMemberAuthorizationState(response);
-    return response;
+    try {
+      const response = await getFeishuMemberAuthorization();
+      setFeishuMemberAuthorizationState(response);
+      return response;
+    } finally {
+      setFeishuMemberAuthorizationLoaded(true);
+    }
   }
+
+  async function loadFeishuTaskSyncReadinessBlock() {
+    if (!authState.authenticated || authState.sessionMode !== 'cloud') {
+      setFeishuTaskSyncReadiness(DEFAULT_FEISHU_TASK_SYNC_READINESS);
+      return DEFAULT_FEISHU_TASK_SYNC_READINESS;
+    }
+    try {
+      const [integration, deliveryProfile, memberAuthorization] = await Promise.all([
+        getOrgFeishuIntegration(),
+        getFeishuDeliveryProfile(),
+        getFeishuMemberAuthorization(),
+      ]);
+      setOrgFeishuIntegrationState(integration);
+      setFeishuDeliveryProfileState(deliveryProfile);
+      setFeishuMemberAuthorizationState(memberAuthorization);
+      setOrgFeishuIntegrationLoaded(true);
+      setFeishuDeliveryProfileLoaded(true);
+      setFeishuMemberAuthorizationLoaded(true);
+      const fullyConnected = Boolean(
+        integration.enabled &&
+        memberAuthorization.linked &&
+        (deliveryProfile.readyForNotifications || deliveryProfile.deliveryStatus === 'matched'),
+      );
+      const next: FeishuTaskSyncReadiness = {
+        checked: true,
+        fullyConnected,
+        checkedAt: new Date().toISOString(),
+      };
+      setFeishuTaskSyncReadiness(next);
+      console.info('[feishu-sync-readiness]', {
+        fullyConnected,
+        orgEnabled: integration.enabled,
+        memberLinked: memberAuthorization.linked,
+        readyForNotifications: deliveryProfile.readyForNotifications,
+        deliveryStatus: deliveryProfile.deliveryStatus,
+      });
+      return next;
+    } catch (error) {
+      const next: FeishuTaskSyncReadiness = {
+        checked: true,
+        fullyConnected: false,
+        checkedAt: new Date().toISOString(),
+      };
+      setFeishuTaskSyncReadiness(next);
+      console.warn('[feishu-sync-readiness] check failed', error);
+      return next;
+    }
+  }
+
+  useEffect(() => {
+    if (!authState.authenticated || authState.sessionMode !== 'cloud') {
+      setFeishuTaskSyncReadiness(DEFAULT_FEISHU_TASK_SYNC_READINESS);
+      return;
+    }
+    if (feishuTaskSyncReadinessInFlightRef.current) return;
+    feishuTaskSyncReadinessInFlightRef.current = true;
+    void loadFeishuTaskSyncReadinessBlock().finally(() => {
+      feishuTaskSyncReadinessInFlightRef.current = false;
+    });
+  }, [authState.authenticated, authState.sessionMode, workspacesState?.activeSandboxId]);
+
+  useEffect(() => {
+    if (!authState.authenticated || authState.sessionMode !== 'cloud') return;
+    if (feishuSyncStrictStatusLoaded || feishuStatusHydrationInFlightRef.current) return;
+    feishuStatusHydrationInFlightRef.current = true;
+    void Promise.allSettled([
+      loadOrgFeishuIntegrationBlock(),
+      loadFeishuDeliveryProfileBlock(),
+      loadFeishuMemberAuthorizationBlock(),
+    ]).finally(() => {
+      feishuStatusHydrationInFlightRef.current = false;
+    });
+  }, [
+    authState.authenticated,
+    authState.sessionMode,
+    feishuSyncStrictStatusLoaded,
+    orgFeishuIntegrationLoaded,
+    feishuDeliveryProfileLoaded,
+    feishuMemberAuthorizationLoaded,
+  ]);
 
   async function loadTaskSettingsBlock() {
     const response = await getTaskSettings();
@@ -10001,6 +10192,12 @@ export default function App() {
         setOrgFeishuIntegrationState(DEFAULT_ORG_FEISHU_INTEGRATION);
         setFeishuDeliveryProfileState(DEFAULT_FEISHU_DELIVERY_PROFILE);
         setFeishuMemberAuthorizationState(DEFAULT_FEISHU_MEMBER_AUTHORIZATION);
+        feishuStatusHydrationInFlightRef.current = false;
+        feishuTaskSyncReadinessInFlightRef.current = false;
+        setFeishuTaskSyncReadiness(DEFAULT_FEISHU_TASK_SYNC_READINESS);
+        setOrgFeishuIntegrationLoaded(false);
+        setFeishuDeliveryProfileLoaded(false);
+        setFeishuMemberAuthorizationLoaded(false);
         setFeishuAuthorizationBusyAction('idle');
         setFeishuAuthorizationFlowState(null);
         setSettingsSectionLoaded({
@@ -10050,7 +10247,7 @@ export default function App() {
       if (cloudAuthMode === 'register') {
         const response = await register({
           email: cloudAuthForm.email,
-          phone: cloudAuthForm.phone || null,
+          phone: cloudAuthForm.phone.trim(),
           fullName: cloudAuthForm.fullName,
           password: cloudAuthForm.password,
           inviteCode: normalizeDepartmentInviteInput(cloudAuthForm.inviteCode) || null,
@@ -10586,6 +10783,7 @@ export default function App() {
     const registerAccountValid =
       Boolean(form.fullName.trim())
       && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(form.email)
+      && Boolean(form.phone.trim())
       && form.password.length >= 8
       && form.password === form.confirmPassword;
     const registerValid = registerAccountValid;
@@ -10616,7 +10814,7 @@ export default function App() {
           );
           const response = await localRegister({
             email: form.email,
-            phone: form.phone || null,
+            phone: form.phone.trim(),
             fullName: form.fullName,
             password: form.password,
             organizationMode: hasPendingOrgIdentity ? 'join' : 'create',
@@ -10692,8 +10890,8 @@ export default function App() {
 
           <div className="mb-5 rounded-2xl border border-blue-100 bg-blue-50/70 px-4 py-3 text-[12px] leading-5 text-blue-800">
             {mode === 'login'
-              ? '这里登录的是本机工作空间账号，不是益语智库云端组织账号。若你第一次使用本机工作空间，请先创建本机账号。'
-              : '这里创建的是只保存在本机工作空间的账号。可以使用与你云端账号相同的邮箱，但本机密码与云端组织密码不会自动同步。'}
+              ? '未连接组织时可先以本机草稿使用。正式协作请在工作空间管理里登录云端并加入或创建组织。'
+              : '注册云端账号后可加入或创建组织工作空间；未连接组织前的数据会先作为本机草稿保存。'}
           </div>
 
           <div className="space-y-3.5">
@@ -10753,7 +10951,7 @@ export default function App() {
             {mode === 'register' && (
               <>
                 <p className="px-1 text-[11px] text-gray-400 leading-relaxed">
-                  先创建本机账号 · 以后可在工作空间管理里连接云端或加入组织
+                  创建账号后可连接云端并加入组织；未连接组织前先作为本机草稿保存
                 </p>
                 {/* Step 切换:underline 风格,与登录/注册 tab 一致 */}
                 <div className="flex items-center gap-6 border-b border-gray-100 pb-px">
@@ -10788,7 +10986,10 @@ export default function App() {
                       <input value={form.email} onChange={(event) => setForm((prev) => ({ ...prev, email: event.target.value }))} placeholder="邮箱" className="w-full bg-white border border-gray-200 rounded-xl px-3.5 py-3 text-[14px] text-gray-900 outline-none focus:border-[#5B7BFE] transition-colors" />
                       {form.email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(form.email) && <p className="text-[11px] text-rose-500 mt-1.5 px-1">请输入有效的邮箱地址</p>}
                     </div>
-                    <input value={form.phone} onChange={(event) => setForm((prev) => ({ ...prev, phone: event.target.value }))} placeholder="登录手机号 (可选)" className="w-full bg-white border border-gray-200 rounded-xl px-3.5 py-3 text-[14px] text-gray-900 outline-none focus:border-[#5B7BFE] transition-colors" />
+                    <div>
+                      <input value={form.phone} onChange={(event) => setForm((prev) => ({ ...prev, phone: event.target.value }))} placeholder="手机号（必填，建议填写飞书账号绑定手机号）" className="w-full bg-white border border-gray-200 rounded-xl px-3.5 py-3 text-[14px] text-gray-900 outline-none focus:border-[#5B7BFE] transition-colors" />
+                      {!form.phone.trim() && <p className="text-[11px] text-gray-400 mt-1.5 px-1">建议填写登录飞书时绑定的手机号，后续任务成员匹配和提醒会更稳定。</p>}
+                    </div>
                     <div className="relative">
                       <input type={showPassword ? 'text' : 'password'} value={form.password} onChange={(event) => setForm((prev) => ({ ...prev, password: event.target.value }))} placeholder="密码 (至少 8 位)" className="w-full bg-white border border-gray-200 rounded-xl px-3.5 py-3 pr-11 text-[14px] text-gray-900 outline-none focus:border-[#5B7BFE] transition-colors" />
                       <button type="button" onClick={() => setAuthShellShowPassword((s) => !s)} className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600 p-1 transition-colors" tabIndex={-1} aria-label={showPassword ? '隐藏密码' : '显示密码'}>
@@ -10884,7 +11085,7 @@ export default function App() {
               <p className="text-[11px] font-bold uppercase tracking-[0.16em] text-[#5B7BFE]">WORKSPACE · 工作空间</p>
               <h2 className="mt-2 text-[24px] font-bold text-gray-900">工作空间管理</h2>
               <p className="mt-2 text-[13px] leading-6 text-gray-500">
-                客户、任务和文档按工作空间隔离；AI、飞书和云连接会随工作空间切换。
+                工作空间只代表组织。未连接组织时，软件会暂存为本机草稿；加入或创建组织后，草稿会迁入当前组织空间。
               </p>
             </div>
             <button
@@ -10900,15 +11101,10 @@ export default function App() {
             <div className="space-y-3">
               {workspaces.map((workspace) => {
                 const active = workspace.id === workspacesState?.activeSandboxId;
-                const kindLabel = workspace.kind === 'organization' ? '组织工作空间' : '本机工作空间';
-                const cloudLabel = workspace.kind === 'local'
-                  ? '纯个人空间'
-                  : workspace.cloudApiUrl ? (cloudApiHostValue(workspace.cloudApiUrl) || '已配置云端') : '未配置云端';
-                const userLabel = workspace.kind === 'local'
-                  ? '不显示组织空间内容'
-                  : workspace.cloudConnected
-                    ? (workspace.cloudUserFullName || workspace.cloudUserEmail || '已登录云端')
-                    : '未登录云端';
+                const cloudLabel = workspace.cloudApiUrl ? (cloudApiHostValue(workspace.cloudApiUrl) || '已配置云端') : '未配置云端';
+                const userLabel = workspace.cloudConnected
+                  ? (workspace.cloudUserFullName || workspace.cloudUserEmail || '已登录云端')
+                  : '未登录云端';
                 return (
                   <div key={workspace.id} className={`rounded-2xl border px-4 py-3 ${active ? 'border-blue-200 bg-blue-50/70' : 'border-gray-100 bg-gray-50/70'}`}>
                     <div className="flex items-start justify-between gap-3">
@@ -10917,12 +11113,7 @@ export default function App() {
                           <p className="truncate text-[15px] font-semibold text-gray-950">{workspace.name}</p>
                           {active && <span className="rounded-full bg-blue-600 px-2 py-0.5 text-[10px] font-bold text-white">当前</span>}
                         </div>
-                        <p className="mt-1 text-[12px] text-gray-500">{kindLabel} · {cloudLabel} · {userLabel}</p>
-                        {workspace.kind === 'local' && (
-                          <p className="mt-1 text-[11px] leading-5 text-gray-500">
-                            本机工作空间只保存个人使用数据，不参与组织云同步，也不会显示组织工作空间的客户、任务和文档。
-                          </p>
-                        )}
+                        <p className="mt-1 text-[12px] text-gray-500">组织工作空间 · {cloudLabel} · {userLabel}</p>
                         {workspace.organizationName && <p className="mt-1 text-[11px] text-gray-400">组织：{workspace.organizationName}</p>}
                       </div>
                       {!active && (
@@ -10936,7 +11127,14 @@ export default function App() {
               })}
               {workspaces.length === 0 && (
                 <div className="rounded-2xl border border-dashed border-gray-200 px-4 py-8 text-center text-[13px] text-gray-500">
-                  暂无工作空间。
+                  暂无组织工作空间。你仍可先在本机草稿中使用，加入或创建组织后再同步归档。
+                </div>
+              )}
+              {localDraftSummary?.hasData && (
+                <div className="rounded-2xl border border-amber-100 bg-amber-50 px-4 py-3 text-[12px] leading-5 text-amber-800">
+                  {localDraftSummary.migrated
+                    ? '本机历史草稿已迁入当前组织空间，原本机空间已归档隐藏。'
+                    : `本机草稿中还有 ${localDraftSummary.tasks} 条任务、${localDraftSummary.clients} 个客户；连接组织后会自动迁入当前组织。`}
                 </div>
               )}
             </div>
@@ -11016,6 +11214,7 @@ export default function App() {
     const registerAccountValid =
       Boolean(cloudAuthForm.fullName.trim())
       && emailValid
+      && Boolean(cloudAuthForm.phone.trim())
       && cloudAuthForm.password.length >= 8
       && cloudAuthForm.password === cloudAuthForm.confirmPassword;
     const registerValid =
@@ -11032,7 +11231,7 @@ export default function App() {
               <h2 className="mt-2 text-[24px] font-bold text-gray-900">{cloudAuthMode === 'register' ? '注册个人账号' : '登录云端账号'}</h2>
               <p className="mt-2 text-[13px] text-gray-500">
                 {cloudAuthMode === 'register'
-                  ? '注册账号依赖云端服务；开源版默认不提供云。本机工作空间可直接使用，接好云端后再注册、同步和加入组织。'
+                  ? '注册账号依赖云端服务；开源版默认不提供统一云。未连接组织时可先本机草稿使用，接好云端后再注册、同步和加入组织。'
                   : '登录云端后才会启用云同步、组织协作和需要组织数据的功能。'}
               </p>
             </div>
@@ -11180,9 +11379,12 @@ export default function App() {
                   <input
                     value={cloudAuthForm.phone}
                     onChange={(event) => setCloudAuthForm((prev) => ({ ...prev, phone: event.target.value }))}
-                    placeholder="登录手机号（可选，不是飞书通知手机号）"
+                    placeholder="手机号（必填，建议填写飞书账号绑定手机号）"
                     className="w-full bg-gray-50 border border-gray-200 rounded-2xl px-4 py-3 text-[14px] outline-none"
                   />
+                  <p className="md:col-span-2 -mt-2 text-[11px] leading-5 text-gray-500">
+                    建议填写登录飞书时绑定的手机号，后续任务成员匹配和提醒会更稳定。
+                  </p>
                   <input
                     type={cloudAuthShowPassword ? 'text' : 'password'}
                     value={cloudAuthForm.password}
@@ -11350,6 +11552,9 @@ export default function App() {
     evidenceMode,
     evidenceTaskId,
     expandedTaskIds,
+    feishuSyncPromptClass,
+    feishuSyncPromptLabel,
+    feishuSyncStatusLoaded,
     flash,
     growthContextJump,
     handbookEntries,
@@ -11367,6 +11572,7 @@ export default function App() {
     organizationTaskManualReason,
     organizationTaskName,
     orgModelState,
+    openFeishuTaskCalendarSettings,
     handleSavePlanFromWorkshop,
     reviewDashboard,
     reviewHistory,
@@ -11421,6 +11627,9 @@ export default function App() {
     evidenceMode: typeof evidenceMode;
     evidenceTaskId: typeof evidenceTaskId;
     expandedTaskIds: typeof expandedTaskIds;
+    feishuSyncPromptClass: typeof feishuSyncPromptClass;
+    feishuSyncPromptLabel: typeof feishuSyncPromptLabel;
+    feishuSyncStatusLoaded: typeof feishuSyncStatusLoaded;
     flash: typeof flash;
     growthContextJump: typeof growthContextJump;
     handbookEntries: typeof handbookEntries;
@@ -11438,6 +11647,7 @@ export default function App() {
     organizationTaskManualReason: typeof organizationTaskManualReason;
     organizationTaskName: typeof organizationTaskName;
     orgModelState: typeof orgModelState;
+    openFeishuTaskCalendarSettings: typeof openFeishuTaskCalendarSettings;
     handleSavePlanFromWorkshop: typeof handleSavePlanFromWorkshop;
     reviewDashboard: typeof reviewDashboard;
     reviewHistory: typeof reviewHistory;
@@ -11493,6 +11703,9 @@ export default function App() {
       evidenceMode,
       evidenceTaskId,
       expandedTaskIds,
+      feishuSyncPromptClass,
+      feishuSyncPromptLabel,
+      feishuSyncStatusLoaded,
       flash,
       growthContextJump,
       handbookEntries,
@@ -11510,6 +11723,7 @@ export default function App() {
       organizationTaskManualReason,
       organizationTaskName,
       orgModelState,
+      openFeishuTaskCalendarSettings,
       handleSavePlanFromWorkshop,
       reviewDashboard,
       reviewHistory,
@@ -14674,9 +14888,8 @@ export default function App() {
         planLinkReason: '可选：把任务挂到本月部门计划项上。点开下拉可手动选择或确认 AI 建议。',
       });
       // Asynchronously fetch current plan-link for this task and prefill the editor.
-      // S4.4 fix: 之前 catch(() => {}) 静默吞错 — 加载失败时 UI 显示"unset", 保存时会用空
-      // planLinkPlanItemId 覆盖云端真实关联. 现在: 标 planLinkSource='loadFailed' + 提示用户
-      // 不要轻易保存 (planLinkTouched=false 时 saveTask 会跳过 plan-link patch, 保护云端数据).
+      // This is optional context. If the cloud proxy is briefly unavailable, opening/editing the task
+      // should still work, and saveTask will skip plan-link sync while planLinkTouched=false.
       void getTaskPlanLink(task.id).then((link) => {
         if (!link) return;
         setEditingTask((prev) => {
@@ -14692,12 +14905,12 @@ export default function App() {
           };
         });
       }).catch((err) => {
-        flash('error', `计划关联加载失败 (${err instanceof Error ? err.message : '网络异常'})，未改动前不会保存覆盖`);
+        console.warn('[plan-link] optional prefill failed', err);
         setEditingTask((prev) => {
-          if (prev.id !== task.id) return prev;
+          if (prev.id !== task.id || prev.planLinkTouched) return prev;
           return {
             ...prev,
-            planLinkReason: '⚠️ 计划关联拉取失败, 不要点保存以免覆盖云端真实数据; 关闭重开任务面板重试',
+            planLinkReason: '计划关联暂时没有加载出来；这不影响任务内容编辑。未手动改动关联时，保存不会覆盖原有关联。',
           };
         });
       });
@@ -16058,33 +16271,47 @@ export default function App() {
               ))}
             </div>
           </div>
-          <div className="inline-flex h-[48px] overflow-hidden rounded-2xl bg-[#5B7BFE] text-white shadow-sm">
-            <button
-              type="button"
-              className="inline-flex items-center gap-1.5 px-5 text-[13px] font-medium hover:bg-[#4A63CF] transition-colors"
-              onClick={() => {
-                const presetDueDate = taskViewMode === 'calendar' && taskSelectedDate
-                  ? formatDateInputValue(taskSelectedDate)
-                  : undefined;
-                resetTaskDraft(presetDueDate);
-                setIsTaskModalOpen(true);
-              }}
-            >
-              <Plus size={16} />
-              新建任务
-            </button>
-            <span className="w-px bg-white/25" aria-hidden />
-            <button
-              type="button"
-              title="AI 工作指令 — 快速建任务, 或 @AI 同事让它帮你推进复杂工作"
-              className="inline-flex items-center gap-1.5 px-4 text-[12.5px] font-medium hover:bg-[#4A63CF] transition-colors"
-              onClick={() => setIsSmartParseModalOpen(true)}
-            >
-              <Sparkles size={14} strokeWidth={2.2} />
-              AI
-            </button>
-          </div>
-        </div>
+	          <div className="flex items-center gap-2">
+		            {(authState.sessionMode === 'cloud' || feishuSyncStatusLoaded) && (
+	              <button
+	                type="button"
+	                onClick={openFeishuTaskCalendarSettings}
+	                className={`hidden md:inline-flex h-9 items-center gap-1.5 rounded-xl border px-3 text-[12px] font-semibold transition ${feishuSyncPromptClass}`}
+	                title="前往系统设置里的飞书集成"
+		              >
+		                <CalendarIcon size={14} />
+	                <span>{feishuSyncPromptLabel}</span>
+		                <ArrowRight size={13} />
+		              </button>
+	            )}
+	            <div className="inline-flex h-[48px] overflow-hidden rounded-2xl bg-[#5B7BFE] text-white shadow-sm">
+	              <button
+	                type="button"
+	                className="inline-flex items-center gap-1.5 px-5 text-[13px] font-medium hover:bg-[#4A63CF] transition-colors"
+	                onClick={() => {
+	                  const presetDueDate = taskViewMode === 'calendar' && taskSelectedDate
+	                    ? formatDateInputValue(taskSelectedDate)
+	                    : undefined;
+	                  resetTaskDraft(presetDueDate);
+	                  setIsTaskModalOpen(true);
+	                }}
+	              >
+	                <Plus size={16} />
+	                新建任务
+	              </button>
+	              <span className="w-px bg-white/25" aria-hidden />
+	              <button
+	                type="button"
+	                title="AI 工作指令 — 快速建任务, 或 @AI 同事让它帮你推进复杂工作"
+	                className="inline-flex items-center gap-1.5 px-4 text-[12.5px] font-medium hover:bg-[#4A63CF] transition-colors"
+	                onClick={() => setIsSmartParseModalOpen(true)}
+	              >
+	                <Sparkles size={14} strokeWidth={2.2} />
+	                AI
+	              </button>
+	            </div>
+	          </div>
+	        </div>
 
         <DraggingTaskProvider
           onDragTriggered={() => {
@@ -19888,22 +20115,7 @@ export default function App() {
                       </select>
                     </TaskPropertyRow>
 
-                    <div className="rounded-xl border border-blue-100 bg-blue-50/70 px-3 py-2 text-[11px] leading-5 text-slate-600">
-                      <p>
-                        接通飞书后，带时间的协作任务会同步为飞书任务和飞书日历提醒；飞书任务新建或修改后通常会在约 1 分钟内同步到益语，请耐心等待。益语任务和飞书任务任选其一创建即可；手机系统日历只用于提醒，修改请回益语任务或飞书任务。
-                      </p>
-                      <a
-                        href={FEISHU_LOCAL_CALDAV_HELP_URL}
-                        target="_blank"
-                        rel="noreferrer"
-                        className="mt-1 inline-flex items-center gap-1 font-bold text-blue-700 hover:text-blue-800"
-                      >
-                        <ExternalLink size={11} />
-                        飞书日历同步官方指引
-                      </a>
-                    </div>
-
-                    {/* AUDIT-20260518-017: 组织任务清单已废弃,任务组织改由事件线、部门计划、
+	                    {/* AUDIT-20260518-017: 组织任务清单已废弃,任务组织改由事件线、部门计划、
                           项目模板/标准流程承接. 只在"个人日程"模式下保留 select(个人轻量分类),
                           组织任务里不再展示这个字段, 用户也不能再误选已废弃的清单.
                           保留 editingTask.listId 字段 + fallback 到 defaultListId 兼容历史. */}
@@ -28884,15 +29096,16 @@ export default function App() {
       eyebrow: string;
       title: string;
       helper?: string;
-      statusChip?: { text: string; tone: 'success' | 'warning' | 'neutral' };
-      defaultOpen?: boolean;
-      tint?: boolean;
-      children: React.ReactNode;
-    }) => {
-      const detailsBg = params.tint ? 'bg-[#FAFAFA]' : 'bg-white';
-      const summaryHover = params.tint ? 'hover:bg-[#F4F4F5]' : 'hover:bg-gray-50/70';
-      return (
-        <details key={params.key} className={`group ${detailsBg} px-5 first:rounded-t-xl last:rounded-b-xl`} open={params.defaultOpen}>
+	      statusChip?: { text: string; tone: 'success' | 'warning' | 'neutral' };
+	      defaultOpen?: boolean;
+	      tint?: boolean;
+	      detailsRef?: React.Ref<HTMLDetailsElement>;
+	      children: React.ReactNode;
+	    }) => {
+	      const detailsBg = params.tint ? 'bg-[#FAFAFA]' : 'bg-white';
+	      const summaryHover = params.tint ? 'hover:bg-[#F4F4F5]' : 'hover:bg-gray-50/70';
+	      return (
+	        <details key={params.key} ref={params.detailsRef} className={`group ${detailsBg} px-5 first:rounded-t-xl last:rounded-b-xl`} open={params.defaultOpen}>
           <summary className={`cursor-pointer list-none flex items-center justify-between gap-4 py-5 -mx-2 px-2 rounded-md ${summaryHover} transition-colors select-none`}>
             <div className="min-w-0">
               <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-gray-400">{params.eyebrow}</p>
@@ -29416,6 +29629,7 @@ export default function App() {
           loadFeishuMemberAuthorizationBlock().catch(() => DEFAULT_FEISHU_MEMBER_AUTHORIZATION),
           loadLogsBlock(),
         ]);
+        await loadFeishuTaskSyncReadinessBlock();
         flash('success', next.enabled ? '组织飞书接入已验证并生效' : (next.lastValidationMessage || '组织飞书接入保存完成'));
       } catch (error) {
         flash('error', error instanceof Error ? error.message : '组织飞书接入保存失败');
@@ -29441,6 +29655,7 @@ export default function App() {
       try {
         const next = await saveFeishuDeliveryProfile(payload);
         setFeishuDeliveryProfileState(next);
+        await loadFeishuTaskSyncReadinessBlock();
         await loadLogsBlock();
         flash(
           next.readyForNotifications ? 'success' : 'info',
@@ -29467,6 +29682,7 @@ export default function App() {
           if (next.linked) {
             linked = true;
             setFeishuAuthorizationFlowState(null);
+            void loadFeishuTaskSyncReadinessBlock();
             flash('success', `成员飞书授权已完成：${next.name || next.email || next.openId || '当前成员'}`);
             break;
           }
@@ -29511,6 +29727,7 @@ export default function App() {
               : current
           ));
         }
+        await loadFeishuTaskSyncReadinessBlock();
         if (!silent) {
           flash('success', next.linked ? '成员飞书授权状态已刷新' : '当前成员还没有完成飞书授权');
         }
@@ -29575,6 +29792,7 @@ export default function App() {
         const next = await clearFeishuMemberAuthorization();
         setFeishuMemberAuthorizationState(next);
         setFeishuAuthorizationFlowState(null);
+        await loadFeishuTaskSyncReadinessBlock();
         await loadLogsBlock();
         flash('success', '成员飞书授权已解除');
       } catch (error) {
@@ -29696,7 +29914,7 @@ export default function App() {
         <div className="space-y-4">
           {cardIsLocal && (
             <p className="rounded-xl border border-blue-100 bg-blue-50 px-3 py-2 text-[11px] text-blue-700">
-              本机账号信息只保存在当前本机工作空间，不会同步到组织云端。
+              当前是未连接组织的本机草稿。正式账号资料请在加入或创建组织后维护。
             </p>
           )}
           <div>
@@ -29718,13 +29936,16 @@ export default function App() {
             />
           </div>
           <div>
-            {renderFieldLabel('登录手机号')}
+            {renderFieldLabel('手机号')}
             <input
               value={profileDraft.phone || ''}
               onChange={(event) => setProfileDraft((prev) => ({ ...prev, phone: event.target.value }))}
-              placeholder="可选,与飞书通知手机号无关"
+              placeholder="建议填写飞书账号绑定手机号"
               className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2.5 text-[13px] outline-none focus:border-[#5B7BFE] disabled:text-gray-400 disabled:bg-gray-50"
             />
+            <p className="mt-1 text-[11px] leading-5 text-gray-500">
+              默认按飞书账号绑定手机号使用，用于任务成员匹配和提醒。
+            </p>
           </div>
           {profileMessage && (
             <p className={`rounded-xl border px-3 py-2 text-[12px] ${profileMessage.includes('已更新') ? 'border-emerald-200 bg-emerald-50 text-emerald-700' : 'border-rose-200 bg-rose-50 text-rose-600'}`}>
@@ -29750,7 +29971,7 @@ export default function App() {
             <div>
               <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-gray-400">账号</p>
               <p className="mt-2 text-[14px] font-medium text-gray-900 truncate">{currentSessionUser?.email || '未登录'}</p>
-              <p className="mt-1 text-[11px] text-gray-500 flex items-center gap-1"><Phone size={11} />{currentSessionUser?.phone || '未绑定登录手机号'}</p>
+              <p className="mt-1 text-[11px] text-gray-500 flex items-center gap-1"><Phone size={11} />{currentSessionUser?.phone || '未填写手机号'}</p>
             </div>
             <div>
               <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-gray-400">组织 / 部门</p>
@@ -29839,7 +30060,7 @@ export default function App() {
                 <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-gray-400">登录账号</p>
                 <span className="mt-3 text-[20px] leading-none font-light tracking-tight text-gray-900 truncate">{currentSessionUser?.fullName || currentSessionUser?.email || '未登录'}</span>
                 <div className="mt-2 h-[2px] w-8 rounded-full bg-emerald-500" />
-                <p className="mt-2 text-[11px] text-gray-400 truncate">{isLocalSession ? '本机账号' : '云端账号'}</p>
+                <p className="mt-2 text-[11px] text-gray-400 truncate">{isLocalSession ? '本机草稿' : '云端账号'}</p>
               </div>
               <div className="flex flex-col">
                 <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-gray-400">组织身份</p>
@@ -29862,19 +30083,19 @@ export default function App() {
               key: 'identity',
               eyebrow: 'IDENTITY · 身份与组织',
               title: '账号信息 · 部门 · 工作台',
-              helper: '这里确认账号属于哪个组织和部门。登录手机号与飞书通知手机号互不影响。',
+              helper: '这里确认账号属于哪个组织和部门。手机号默认作为飞书账号绑定手机号，用于任务成员匹配和提醒。',
               statusChip: { text: membershipStatusLabel(accountStatus), tone: accountStatusTone },
               children: <AccountIdentityCard />,
             })}
             {renderFoldable({
               key: 'profile',
               eyebrow: 'PROFILE · 基本信息',
-              title: '姓名 · 邮箱 · 登录手机号',
+              title: '姓名 · 邮箱 · 手机号',
               helper: isLocalSession
-                ? '当前是本机工作空间。这里维护的是本机账号资料，不会同步到组织空间。'
-                : '飞书通知手机号在飞书集成里单独维护,不要混淆。',
+                ? '当前是本机草稿状态。加入或创建组织后，再维护正式账号资料。'
+                : '手机号默认按飞书账号绑定手机号理解；如飞书手机号不同，可在飞书接入里单独覆盖。',
               statusChip: isLocalSession
-                ? { text: '本机', tone: 'neutral' }
+                ? { text: '草稿', tone: 'neutral' }
                 : { text: '已登录', tone: 'success' },
               tint: true,
               children: <AccountProfileCard />,
@@ -29883,7 +30104,7 @@ export default function App() {
               key: 'password',
               eyebrow: 'SECURITY · 修改密码',
               title: '登录密码',
-              helper: isLocalSession ? '修改当前本机账号密码。新密码至少 8 位。' : '修改当前云端账号密码。新密码至少 8 位。',
+              helper: isLocalSession ? '本机草稿不需要独立密码；组织云端账号登录后再修改密码。' : '修改当前云端账号密码。新密码至少 8 位。',
               children: <ChangePasswordCard flash={flash} />,
             })}
           </div>
@@ -29900,13 +30121,15 @@ export default function App() {
       const ollamaTotal = AI_LOCAL_MODEL_PROFILE_ORDER.length;
       const speechConfigured = Boolean(speechModelSettingsState?.enabled);
       const objectStorageConfigured = Boolean(objectStorageSettingsState?.enabled);
-      const feishuConfigured = Boolean(orgFeishuIntegrationState?.enabled);
+      const feishuSettingsStatusChip: { text: string; tone: 'success' | 'warning' | 'neutral' } = !feishuSyncStatusLoaded
+        ? { text: '确认中', tone: 'neutral' }
+        : feishuSyncFullyConnected
+          ? { text: '已完全接通', tone: 'success' }
+          : orgFeishuIntegrationState?.enabled
+            ? { text: '未完全接通', tone: 'warning' }
+            : { text: '未接通', tone: 'neutral' };
       const activeWorkspace = workspacesState?.workspaces.find((item) => item.id === workspacesState.activeSandboxId) || null;
-      const workspaceKindLabel = activeWorkspace?.kind === 'organization' ? '组织工作空间' : '本机工作空间';
-      const workspaceCloudLabel = activeWorkspace?.cloudApiUrl
-        ? (cloudApiHostValue(activeWorkspace.cloudApiUrl) || '已配置云端')
-        : '未绑定云端';
-      const workspaceOrgLabel = activeWorkspace?.organizationName || activeWorkspace?.organizationId || '尚未绑定组织';
+      const workspaceOrgLabel = activeWorkspace?.organizationName || activeWorkspace?.organizationId || (localDraftSummary?.active ? '未连接组织，本机草稿中' : '尚未绑定组织');
 
       const accentLine = (accent: 'success' | 'warning' | 'danger' | 'neutral') =>
         accent === 'success' ? 'bg-emerald-500'
@@ -29979,10 +30202,10 @@ export default function App() {
               <div className="min-w-0">
                 <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-blue-500">CURRENT WORKSPACE</p>
                 <p className="mt-1 text-[16px] font-semibold text-gray-950 truncate">
-                  {activeWorkspace?.name || '工作空间底座未加载'}
+                  {activeWorkspace?.name || (localDraftSummary?.active ? '本机草稿' : '尚未加入组织')}
                 </p>
                 <p className="mt-1 text-[12px] leading-5 text-blue-800">
-                  客户、任务和文档按工作空间隔离；AI、飞书和云连接会随工作空间切换。
+                  组织工作空间是正式空间；未连接组织时只作为本机草稿，不再作为独立工作空间切换。
                 </p>
                 <button
                   type="button"
@@ -29992,18 +30215,14 @@ export default function App() {
                   管理工作空间
                 </button>
               </div>
-              <div className="grid grid-cols-3 gap-3 text-right md:min-w-[360px]">
+              <div className="grid grid-cols-2 gap-3 text-right md:min-w-[260px]">
                 <div>
-                  <p className="text-[10px] font-bold uppercase tracking-[0.16em] text-blue-400">类型</p>
-                  <p className="mt-1 text-[12px] font-semibold text-gray-900">{activeWorkspace ? workspaceKindLabel : '未就绪'}</p>
-                </div>
-                <div>
-                  <p className="text-[10px] font-bold uppercase tracking-[0.16em] text-blue-400">云端</p>
-                  <p className="mt-1 text-[12px] font-semibold text-gray-900 truncate">{activeWorkspace ? workspaceCloudLabel : '—'}</p>
+                  <p className="text-[10px] font-bold uppercase tracking-[0.16em] text-blue-400">状态</p>
+                  <p className="mt-1 text-[12px] font-semibold text-gray-900">{activeWorkspace ? '组织空间' : '本机草稿'}</p>
                 </div>
                 <div>
                   <p className="text-[10px] font-bold uppercase tracking-[0.16em] text-blue-400">组织</p>
-                  <p className="mt-1 text-[12px] font-semibold text-gray-900 truncate">{activeWorkspace ? workspaceOrgLabel : '—'}</p>
+                  <p className="mt-1 text-[12px] font-semibold text-gray-900 truncate">{workspaceOrgLabel}</p>
                 </div>
               </div>
             </div>
@@ -30020,7 +30239,7 @@ export default function App() {
               children: (
                 <div className="space-y-5">
                   <div className="rounded-xl border border-indigo-100 bg-indigo-50 px-3 py-2 text-[11px] leading-5 text-indigo-700">
-                    当前工作空间：{activeWorkspaceRecord?.name || '未加载'}。豆包、通义、自定义兼容接口等远程 AI 会随工作空间切换；localhost / 127.0.0.1 的本地模型作为本机共享能力保留。
+                      当前组织空间：{activeWorkspaceDisplayName}。豆包、通义、自定义兼容接口等远程 AI 会随组织切换；localhost / 127.0.0.1 的本地模型作为本机共享能力保留。
                   </div>
                   <div>
                     <p className="text-[11px] font-bold uppercase tracking-[0.12em] text-gray-500 mb-2">云端服务地址</p>
@@ -30119,7 +30338,7 @@ export default function App() {
 
                   {isLocalSession && (
                     <p className="rounded-xl border border-blue-100 bg-blue-50 px-3 py-2 text-[11px] text-blue-700">
-                      本机工作空间：可先保存云端地址，再打开登录窗口连接云端账号。
+                      当前是本机草稿：可先保存资料；加入或创建组织后再配置该组织的云端和 AI。
                     </p>
                   )}
 
@@ -30304,13 +30523,12 @@ export default function App() {
               ),
             })}
 
-            {renderFoldable({
-              key: 'feishu',
-              eyebrow: 'FEISHU · 飞书集成',
-              title: '飞书自建应用 · 身份绑定',
-              statusChip: feishuConfigured
-                ? { text: '已接通', tone: 'success' }
-                : { text: '未接通', tone: 'neutral' },
+	            {renderFoldable({
+	              key: 'feishu',
+		              eyebrow: 'FEISHU · 飞书集成',
+		              title: '飞书自建应用 · 身份绑定',
+		              detailsRef: feishuIntegrationSettingsRef,
+		              statusChip: feishuSettingsStatusChip,
               children: (
                 <FeishuOrgIntegrationPanel
                   sessionMode={authState.sessionMode === 'cloud' ? 'cloud' : 'local'}
@@ -30696,7 +30914,7 @@ export default function App() {
               </div>
               <div className="flex flex-col">
                 <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-gray-400">云端</p>
-                <span className="mt-3 text-[20px] leading-none font-light tracking-tight text-gray-900 truncate">{isCloud ? '已连接' : '本机工作空间'}</span>
+                <span className="mt-3 text-[20px] leading-none font-light tracking-tight text-gray-900 truncate">{isCloud ? '已连接' : '本机草稿'}</span>
                 <div className={`mt-2 h-[2px] w-8 rounded-full ${isCloud ? 'bg-emerald-500' : 'bg-amber-500'}`} />
                 <p className="mt-2 text-[11px] text-gray-400 truncate">{isCloud ? '组织数据库已接通' : '需连云端后才能搭建组织'}</p>
               </div>
@@ -31217,7 +31435,7 @@ export default function App() {
             <div className="rounded-2xl border border-gray-100 bg-gray-50 px-4 py-3">
               <p className="text-gray-500 font-bold">账号</p>
               <p className="mt-1 text-gray-900">{currentSessionUser?.fullName} · {currentSessionUser?.email}</p>
-              <p className="mt-1 text-gray-500">{currentSessionUser?.phone || '未绑定登录手机号'}</p>
+              <p className="mt-1 text-gray-500">{currentSessionUser?.phone || '未填写手机号'}</p>
             </div>
             <div className="rounded-2xl border border-gray-100 bg-gray-50 px-4 py-3">
               <p className="text-gray-500 font-bold">组织 / 部门</p>
@@ -31650,6 +31868,17 @@ export default function App() {
                     系统设置
                   </span>
                 </button>
+                <button
+                  type="button"
+                  aria-label="反馈与建议"
+                  onClick={() => setIsFeedbackModalOpen(true)}
+                  className="group relative mt-1 w-full flex items-center justify-center py-3 rounded-md text-gray-400 transition-colors duration-150 hover:bg-gray-50/60 hover:text-[#5B7BFE]"
+                >
+                  <MessageSquarePlus size={17} strokeWidth={1.7} className="shrink-0" />
+                  <span className="pointer-events-none absolute left-full top-1/2 z-30 ml-3 hidden -translate-y-1/2 whitespace-nowrap rounded-md border border-gray-200 bg-white px-2.5 py-1.5 text-[11px] font-medium text-gray-700 shadow-[0_8px_24px_rgba(15,23,42,0.1)] opacity-0 transition-all duration-200 group-hover:translate-x-1 group-hover:opacity-100 md:block">
+                    反馈与建议
+                  </span>
+                </button>
               </div>
             );
           }
@@ -31686,6 +31915,15 @@ export default function App() {
                     </span>
                   )}
                 </button>
+                <button
+                  type="button"
+                  aria-label="反馈与建议"
+                  onClick={() => setIsFeedbackModalOpen(true)}
+                  className="group relative mt-1 w-full flex items-center border-l-2 border-transparent py-2.5 pl-4 pr-3 text-gray-500 transition-colors duration-150 hover:bg-gray-50/50 hover:text-gray-800"
+                >
+                  <MessageSquarePlus size={17} strokeWidth={1.7} className="mr-3 shrink-0 text-gray-400 transition-colors group-hover:text-[#5B7BFE]" />
+                  <span className="truncate text-[14px] tracking-[0.01em]">反馈与建议</span>
+                </button>
               </div>
 
               {/* 当前登录 — 紧贴系统设置下方, 用稍微缩进的轻量信息块, 不再有顶部 border */}
@@ -31697,12 +31935,12 @@ export default function App() {
                   className="mb-1 block max-w-full truncate text-left text-[10.5px] font-semibold text-[#5B7BFE] hover:text-[#425fe8]"
                   title={activeWorkspaceRecord?.name || '工作空间'}
                 >
-                  工作空间：{activeWorkspaceRecord?.name || '未加载'}
+                  工作空间：{activeWorkspaceDisplayName}
                 </button>
                 <p className="text-[12px] font-medium text-gray-900 truncate">
-                  {currentSessionUser.fullName || currentSessionUser.email || (isLocalSession ? '本机账号' : '未命名账号')}
+                  {currentSessionUser.fullName || currentSessionUser.email || (isLocalSession ? '本机草稿' : '未命名账号')}
                 </p>
-                <p className="text-[10.5px] text-gray-400 truncate mt-0.5">{isLocalSession ? `本机工作空间 · ${sidebarAiStatusLabel} · ${health?.stats.clients || 0} 客户` : `${sidebarAiStatusLabel} · ${health?.stats.clients || 0} 客户`}</p>
+                <p className="text-[10.5px] text-gray-400 truncate mt-0.5">{isLocalSession ? `未连接组织 · ${sidebarAiStatusLabel} · ${health?.stats.clients || 0} 客户` : `${sidebarAiStatusLabel} · ${health?.stats.clients || 0} 客户`}</p>
                 {isLocalSession ? (
                   <button
                     type="button"
@@ -31754,6 +31992,30 @@ export default function App() {
         )}
         {viewMap[activeTab]}
       </main>
+      {isFeedbackModalOpen && (
+        <div
+          className="fixed inset-0 z-[1200] flex items-center justify-center bg-black/35 px-5 py-8 animate-in fade-in"
+          onClick={() => setIsFeedbackModalOpen(false)}
+        >
+          <div
+            role="dialog"
+            aria-modal="true"
+            aria-label="反馈与建议"
+            className="relative max-h-[calc(100vh-64px)] w-full max-w-[760px] overflow-y-auto rounded-[24px] bg-white p-4 shadow-[0_24px_80px_rgba(15,23,42,0.22)]"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <button
+              type="button"
+              aria-label="关闭反馈与建议"
+              onClick={() => setIsFeedbackModalOpen(false)}
+              className="absolute right-5 top-5 z-10 rounded-full p-1.5 text-gray-300 transition-colors hover:bg-gray-50 hover:text-gray-600"
+            >
+              <X size={16} />
+            </button>
+            <FeedbackSection desktopAppInfo={desktopAppInfo} />
+          </div>
+        </div>
+      )}
       {renderClientEditorModal()}
       {canShowCollabSync && InternalCollabPreviewDialog && (
         <React.Suspense fallback={null}>

@@ -44,6 +44,7 @@ def test_register_restores_cloud_session_immediately(tmp_path: Path, monkeypatch
             assert method == "POST"
             assert json == {
                 "email": "personal@example.com",
+                "phone": "13800138006",
                 "fullName": "个人用户",
                 "password": "Password123!",
                 "isDepartmentLead": False,
@@ -57,6 +58,7 @@ def test_register_restores_cloud_session_immediately(tmp_path: Path, monkeypatch
         "/api/v1/auth/register",
         json={
             "email": "personal@example.com",
+            "phone": "13800138006",
             "fullName": "个人用户",
             "password": "Password123!",
         },

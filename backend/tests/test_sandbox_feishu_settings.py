@@ -43,6 +43,7 @@ def register_local_user(client: TestClient) -> str:
         "/api/v1/local-auth/register",
         json={
             "email": "workspace-feishu@example.com",
+            "phone": "13800138007",
             "fullName": "工作空间飞书测试",
             "password": "Password123!",
             "organizationMode": "create",
@@ -56,27 +57,28 @@ def register_local_user(client: TestClient) -> str:
 def test_feishu_bot_settings_are_scoped_by_workspace(tmp_path: Path) -> None:
     client = make_client(tmp_path)
     db = client.app.state.app_state.db
-    org = create_sandbox(db, kind="organization", name="组织 B", cloud_api_url="https://cloud-b.example.test")
+    org_a = create_sandbox(db, kind="organization", name="组织 A", cloud_api_url="https://cloud-a.example.test")
+    org_b = create_sandbox(db, kind="organization", name="组织 B", cloud_api_url="https://cloud-b.example.test")
 
     set_sandbox_setting(
         db,
-        DEFAULT_LOCAL_SANDBOX_ID,
+        org_a.id,
         "settings.feishu_bot",
         json.dumps({"appId": "cli_a", "receiverId": "ou_a", "updatedAt": "2026-06-18T00:00:00+00:00"}),
     )
     set_sandbox_setting(
         db,
-        org.id,
+        org_b.id,
         "settings.feishu_bot",
         json.dumps({"appId": "cli_b", "receiverId": "ou_b", "updatedAt": "2026-06-18T00:00:00+00:00"}),
     )
 
-    activate_sandbox(db, DEFAULT_LOCAL_SANDBOX_ID)
-    local_response = client.get("/api/v1/settings/feishu-bot")
-    assert local_response.status_code == 200, local_response.text
-    assert local_response.json()["appId"] == "cli_a"
+    activate_sandbox(db, org_a.id)
+    org_a_response = client.get("/api/v1/settings/feishu-bot")
+    assert org_a_response.status_code == 200, org_a_response.text
+    assert org_a_response.json()["appId"] == "cli_a"
 
-    activate_sandbox(db, org.id)
+    activate_sandbox(db, org_b.id)
     org_response = client.get("/api/v1/settings/feishu-bot")
     assert org_response.status_code == 200, org_response.text
     assert org_response.json()["appId"] == "cli_b"
@@ -94,15 +96,16 @@ def test_feishu_app_secret_does_not_bleed_to_new_workspace(tmp_path: Path) -> No
     db = client.app.state.app_state.db
     register_local_user(client)
 
-    activate_sandbox(db, DEFAULT_LOCAL_SANDBOX_ID)
+    org_a = create_sandbox(db, kind="organization", name="组织 Secret A", cloud_api_url="https://cloud-secret-a.example.test")
+    activate_sandbox(db, org_a.id)
     saved = client.post(
         "/api/v1/settings/feishu-bot",
-        json={"appId": "cli_local_secret", "appSecret": "secret-local"},
+        json={"appId": "cli_org_a_secret", "appSecret": "secret-org-a"},
     )
     assert saved.status_code == 200, saved.text
     assert saved.json()["secretFingerprint"]
 
-    org = create_sandbox(db, kind="organization", name="组织 Secret", cloud_api_url="https://cloud-secret.example.test")
+    org = create_sandbox(db, kind="organization", name="组织 Secret B", cloud_api_url="https://cloud-secret-b.example.test")
     activate_sandbox(db, org.id)
     org_response = client.get("/api/v1/settings/feishu-bot")
     assert org_response.status_code == 200, org_response.text
@@ -114,13 +117,14 @@ def test_feishu_input_memory_is_scoped_by_workspace(tmp_path: Path) -> None:
     client = make_client(tmp_path)
     db = client.app.state.app_state.db
 
-    activate_sandbox(db, DEFAULT_LOCAL_SANDBOX_ID)
-    save_local = client.post(
+    org_a = create_sandbox(db, kind="organization", name="组织 Input A", cloud_api_url="https://cloud-input-a.example.test")
+    activate_sandbox(db, org_a.id)
+    save_a = client.post(
         "/api/v1/local-input-memory/feishu",
-        json={"rememberInputs": True, "appId": "cli_local", "callbackMode": "cloud_relay"},
+        json={"rememberInputs": True, "appId": "cli_a", "callbackMode": "cloud_relay"},
     )
-    assert save_local.status_code == 200, save_local.text
-    assert save_local.json()["feishuIntegration"]["appId"] == "cli_local"
+    assert save_a.status_code == 200, save_a.text
+    assert save_a.json()["feishuIntegration"]["appId"] == "cli_a"
 
     org = create_sandbox(db, kind="organization", name="组织 D", cloud_api_url="https://cloud-d.example.test")
     activate_sandbox(db, org.id)
@@ -135,10 +139,10 @@ def test_feishu_input_memory_is_scoped_by_workspace(tmp_path: Path) -> None:
     assert save_org.status_code == 200, save_org.text
     assert save_org.json()["feishuIntegration"]["appId"] == "cli_org"
 
-    activate_sandbox(db, DEFAULT_LOCAL_SANDBOX_ID)
-    local_again = client.get("/api/v1/local-input-memory")
-    assert local_again.status_code == 200, local_again.text
-    assert local_again.json()["feishuIntegration"]["appId"] == "cli_local"
+    activate_sandbox(db, org_a.id)
+    a_again = client.get("/api/v1/local-input-memory")
+    assert a_again.status_code == 200, a_again.text
+    assert a_again.json()["feishuIntegration"]["appId"] == "cli_a"
 
 
 def test_feishu_user_binding_is_scoped_by_workspace(tmp_path: Path) -> None:
@@ -240,12 +244,13 @@ def test_feishu_oauth_callback_writes_to_original_workspace(tmp_path: Path, monk
     db = client.app.state.app_state.db
     user_id = register_local_user(client)
 
-    activate_sandbox(db, DEFAULT_LOCAL_SANDBOX_ID)
+    origin_org = create_sandbox(db, kind="organization", name="组织 OAuth A", cloud_api_url="https://cloud-oauth-a.example.test")
+    activate_sandbox(db, origin_org.id)
     saved = client.post(
         "/api/v1/settings/feishu-bot",
         json={
-            "appId": "cli_local_oauth",
-            "appSecret": "secret-local-oauth",
+            "appId": "cli_origin_oauth",
+            "appSecret": "secret-origin-oauth",
             "userBindingCallbackUrl": "http://testserver/api/v1/auth/feishu/callback",
         },
     )
@@ -253,19 +258,19 @@ def test_feishu_oauth_callback_writes_to_original_workspace(tmp_path: Path, monk
     state_token = "fs_state_original_workspace"
     set_sandbox_setting(
         db,
-        DEFAULT_LOCAL_SANDBOX_ID,
+        origin_org.id,
         f"settings.feishu_oauth_state:{state_token}",
         json.dumps(
             {
                 "userId": user_id,
                 "expiresAt": "2099-01-01T00:00:00",
-                "sandboxId": DEFAULT_LOCAL_SANDBOX_ID,
+                "sandboxId": origin_org.id,
                 "createdAt": "2026-06-18T00:00:00+00:00",
             }
         ),
     )
 
-    org = create_sandbox(db, kind="organization", name="组织 OAuth", cloud_api_url="https://cloud-oauth.example.test")
+    org = create_sandbox(db, kind="organization", name="组织 OAuth B", cloud_api_url="https://cloud-oauth-b.example.test")
     set_sandbox_setting(
         db,
         org.id,
@@ -288,9 +293,9 @@ def test_feishu_oauth_callback_writes_to_original_workspace(tmp_path: Path, monk
 
     callback = client.get(f"/api/v1/auth/feishu/callback?code=code-from-feishu&state={state_token}")
     assert callback.status_code == 200, callback.text
-    local_raw = get_sandbox_setting(db, DEFAULT_LOCAL_SANDBOX_ID, f"settings.feishu_user_binding:{user_id}", "")
+    origin_raw = get_sandbox_setting(db, origin_org.id, f"settings.feishu_user_binding:{user_id}", "")
     org_raw = get_sandbox_setting(db, org.id, f"settings.feishu_user_binding:{user_id}", "")
-    assert json.loads(local_raw)["openId"] == "ou_from_local_callback"
+    assert json.loads(origin_raw)["openId"] == "ou_from_local_callback"
     assert org_raw == ""
 
 

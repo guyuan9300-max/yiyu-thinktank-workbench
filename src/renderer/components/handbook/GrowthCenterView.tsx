@@ -37,8 +37,9 @@ import {
 
 import {
   getGrowthOverview,
-  getHandbook,
+  getGrowthExperienceWall,
   getGrowthBadges,
+  likeGrowthExperienceWallQuote,
   markHandbookEntryReused,
 } from '../../lib/api';
 import { useGrowthOverviewState } from '../growth/GrowthContext';
@@ -74,7 +75,7 @@ import type {
   GrowthPeerComparison,
   GrowthOverview,
   XpLedgerEntry,
-  HandbookEntry,
+  GrowthExperienceWallItem,
   BadgeBoard,
   BadgeProgress,
   BadgeState,
@@ -505,12 +506,12 @@ function sourceTypeCN(raw: string): string {
   return SOURCE_TYPE_CN[raw] || raw.replace(/_/g, ' ');
 }
 
-function pickQuoteText(entry: HandbookEntry): string {
-  const title = entry.title || '';
-  const summary = entry.summary || '';
-  if (title.length > 0 && title.length <= 80) return title;
-  if (summary.length > 120) return summary.slice(0, 117) + '…';
-  return summary || title.slice(0, 117) + (title.length > 117 ? '…' : '');
+function pickExperienceWallText(item: GrowthExperienceWallItem): string {
+  const text = item.text || '';
+  const summary = item.summary || '';
+  if (text.length > 0 && text.length <= 120) return text;
+  if (text.length > 120) return text.slice(0, 117) + '…';
+  return summary.slice(0, 117) + (summary.length > 117 ? '…' : '');
 }
 
 function xpTypeLabel(xpType: string): string {
@@ -1311,18 +1312,41 @@ function AbilityRadar({ abilities, gaps }: { abilities: GrowthAbilityScore[]; ga
    Tab 1: Quote Wall
    ══════════════════════════════════════════════════════════════════ */
 function ExperienceWallTab() {
-  const [entries, setEntries] = useState<HandbookEntry[]>([]);
+  const [items, setItems] = useState<GrowthExperienceWallItem[]>([]);
   const [isLoading, setIsLoading] = useState(true);
+  const [cloudSyncError, setCloudSyncError] = useState<string | null>(null);
   const [filter, setFilter] = useState<'all' | 'month' | 'quarter'>('all');
+  const [likingIds, setLikingIds] = useState<Set<string>>(() => new Set());
 
   const reloadExperienceWall = useCallback(async () => {
     try {
-      const result = await getHandbook();
-      setEntries(result.entries || []);
+      const result = await getGrowthExperienceWall();
+      setItems(result.items || []);
+      setCloudSyncError(result.cloudSyncError || null);
     } catch {
-      setEntries([]);
+      setItems([]);
+      setCloudSyncError('成长金句暂时无法加载。');
     }
   }, []);
+
+  const handleLikeQuote = useCallback((entry: GrowthExperienceWallItem) => {
+    if (entry.source !== 'exp_wall' || entry.currentUserLiked || likingIds.has(entry.id)) return;
+    setLikingIds((current) => new Set(current).add(entry.id));
+    likeGrowthExperienceWallQuote(entry.id)
+      .then((updated) => {
+        setItems((current) => current.map((item) => (item.id === updated.id ? { ...item, ...updated } : item)));
+      })
+      .catch(() => {
+        reloadExperienceWall().catch(() => undefined);
+      })
+      .finally(() => {
+        setLikingIds((current) => {
+          const next = new Set(current);
+          next.delete(entry.id);
+          return next;
+        });
+      });
+  }, [likingIds, reloadExperienceWall]);
 
   useEffect(() => {
     setIsLoading(true);
@@ -1331,7 +1355,7 @@ function ExperienceWallTab() {
   }, [reloadExperienceWall]);
 
   const sortedEntries = useMemo(() => {
-    let filtered = [...entries];
+    let filtered = [...items];
     const now = new Date();
     if (filter === 'month') {
       const cutoff = new Date(now.getFullYear(), now.getMonth(), 1);
@@ -1341,7 +1365,7 @@ function ExperienceWallTab() {
       filtered = filtered.filter((e) => new Date(e.createdAt) >= quarterStart);
     }
     return filtered.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
-  }, [entries, filter]);
+  }, [items, filter]);
 
   if (isLoading) {
     return (
@@ -1360,6 +1384,11 @@ function ExperienceWallTab() {
         <div>
           <div className="gc-section-title">组织经验金句</div>
           <span className="gc-section-hint">已沉淀 {sortedEntries.length} 条</span>
+          {cloudSyncError && (
+            <span className="gc-section-hint" style={{ marginLeft: 8, color: '#f59e0b' }}>
+              当前显示本地缓存
+            </span>
+          )}
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
           {(['all', 'month', 'quarter'] as const).map((f) => (
@@ -1382,10 +1411,12 @@ function ExperienceWallTab() {
         <div className="gc-insight-grid">
           {sortedEntries.map((entry) => {
             const isAI = entry.authorUserName?.includes('大周') || entry.authorUserName?.includes('庆华') || entry.authorUserName?.includes('花花') || entry.authorUserName?.includes('罗茜茜') || entry.sourceType?.includes('ai');
-            const hasLikes = entry.reuseCount > 0;
-            const quoteText = pickQuoteText(entry);
+            const metricCount = entry.source === 'handbook' ? entry.reuseCount : entry.likeCount;
+            const isLikedByCurrentUser = entry.source === 'exp_wall' ? Boolean(entry.currentUserLiked) : metricCount > 0;
+            const quoteText = pickExperienceWallText(entry);
             const authorName = entry.authorUserName || '团队';
             const projectName = entry.clientName || '';
+            const isLiking = likingIds.has(entry.id);
             return (
               <div key={entry.id} className="gc-card gc-insight-card">
                 <div className="gc-insight-quote">“{quoteText}”</div>
@@ -1399,15 +1430,21 @@ function ExperienceWallTab() {
                     <span className="gc-source-tag">{sourceTypeCN(entry.sourceType || '经验')} · {weekLabelFromDate(entry.createdAt)}</span>
                   </div>
                   <button
-                    className={`gc-like-btn${hasLikes ? ' liked' : ''}`}
+                    className={`gc-like-btn${isLikedByCurrentUser ? ' liked' : ''}`}
+                    disabled={entry.source === 'exp_wall' ? (isLikedByCurrentUser || isLiking) : false}
                     onClick={() => {
+                      if (entry.source === 'exp_wall') {
+                        handleLikeQuote(entry);
+                        return;
+                      }
                       markHandbookEntryReused(entry.id)
                         .then(() => reloadExperienceWall())
                         .catch(() => {});
                     }}
+                    title={entry.source === 'handbook' ? '标记为已复用' : (isLikedByCurrentUser ? '已点亮' : '点亮这条金句')}
                   >
-                    <Heart size={12} fill={hasLikes ? '#5B7BFE' : 'none'} color={hasLikes ? '#5B7BFE' : '#D1D5DB'} strokeWidth={2} />
-                    {entry.reuseCount > 0 ? ` ${entry.reuseCount}` : ''}
+                    <Heart size={12} fill={isLikedByCurrentUser ? '#5B7BFE' : 'none'} color={isLikedByCurrentUser ? '#5B7BFE' : '#D1D5DB'} strokeWidth={2} />
+                    {metricCount > 0 ? ` ${metricCount}` : ''}
                   </button>
                 </div>
               </div>
@@ -1419,8 +1456,10 @@ function ExperienceWallTab() {
           <div className="gc-loading-icon" style={{ margin: '0 auto 12px', animation: 'none' }}>
             <BookOpen size={20} color="#335CFE" />
           </div>
-          <div className="gc-empty-title">金句墙暂无内容</div>
-          <div className="gc-empty-desc">完成任务复盘和经验沉淀后，值得复用的经验金句会展示在这里。</div>
+          <div className="gc-empty-title">{cloudSyncError ? '正在显示本地缓存' : '暂无组织沉淀'}</div>
+          <div className="gc-empty-desc">
+            {cloudSyncError ? '组织沉淀同步暂时不可用，本地缓存里还没有可展示的金句。' : '完成任务复盘、经验手册或组织金句同步后，值得复用的内容会展示在这里。'}
+          </div>
         </div>
       )}
     </div>
@@ -1435,6 +1474,12 @@ function AbilityGrowthTab({ overview }: { overview: GrowthOverview | null }) {
   const isLoading = !overview && (growthState?.isGrowthLoading ?? false);
   const abilities = overview?.abilities || [];
   const topGaps = useMemo(() => (overview?.abilityGaps || []).slice(0, 3), [overview]);
+  const hasRealGrowthSignals = useMemo(() => {
+    if (!overview) return false;
+    if ((overview.weeklyXp || 0) > 0) return true;
+    if ((overview.recentEntries || []).some((entry) => entry.sourceType !== 'badge_unlock')) return true;
+    return abilities.some((ab) => (ab.totalXp || 0) > 0 || (ab.weeklyXp || 0) > 0);
+  }, [overview, abilities]);
 
   const recentEntries = useMemo(() => {
     if (!overview?.recentEntries?.length) return [];
@@ -1484,7 +1529,7 @@ function AbilityGrowthTab({ overview }: { overview: GrowthOverview | null }) {
           <BrainCircuit size={24} color="#335CFE" />
         </div>
         <div className="gc-empty-title">能力雷达待激活</div>
-        <div className="gc-empty-desc">完成任务并写下复盘后，六维能力分布会在这里自动生成。系统会从会议、任务、复盘和知识沉淀中自动识别你的成长信号。</div>
+        <div className="gc-empty-desc">多数人的成长起点在这里；你的成长会体现在复盘、任务、手册和组织反馈带来的数据变化中。</div>
       </div>
     );
   }
@@ -1495,6 +1540,23 @@ function AbilityGrowthTab({ overview }: { overview: GrowthOverview | null }) {
       {/* Radar + Ability List */}
       <div className="gc-card gc-radar-card">
         <div className="gc-radar-visual">
+          {!hasRealGrowthSignals && (
+            <div
+              style={{
+                width: '100%',
+                marginBottom: 12,
+                padding: '10px 12px',
+                borderRadius: 10,
+                background: 'rgba(91,123,254,0.06)',
+                border: '1px solid rgba(91,123,254,0.12)',
+                color: '#64748b',
+                fontSize: 12,
+                lineHeight: 1.6,
+              }}
+            >
+              多数人的成长起点在这里；你的成长会体现在复盘、任务、手册和组织反馈带来的数据变化中。
+            </div>
+          )}
           {overview?.peerComparison && overview.peerComparison.peerCount > 0 && (
             <div
               style={{

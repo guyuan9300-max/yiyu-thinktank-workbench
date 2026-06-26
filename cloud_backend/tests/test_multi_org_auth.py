@@ -146,6 +146,7 @@ def test_invalid_invite_does_not_create_extra_membership(tmp_path, monkeypatch) 
         json={
             "email": "invalid-invite@example.com",
             "fullName": "邀请码测试",
+            "phone": "13800138012",
             "password": "Password123!",
             "organizationName": "原组织",
         },

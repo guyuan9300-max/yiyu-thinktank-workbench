@@ -19,19 +19,19 @@ def make_client(data_dir: Path) -> TestClient:
     return client
 
 
-def test_auth_me_requires_local_registration_when_device_is_empty(tmp_path: Path) -> None:
+def test_auth_me_enters_local_draft_when_device_is_empty(tmp_path: Path) -> None:
     client = make_client(tmp_path / "data")
 
     response = client.get("/api/v1/auth/me")
 
     assert response.status_code == 200, response.text
     payload = response.json()
-    assert payload["authenticated"] is False
+    assert payload["authenticated"] is True
     assert payload["sessionMode"] == "local"
-    assert payload["user"] is None
-    assert payload["requiresLocalIdentitySetup"] is True
-    assert payload["localIdentityStatus"] == "needs_setup"
-    assert "本机账号" in payload["message"]
+    assert payload["user"]["id"] == "local-draft-user"
+    assert payload["requiresLocalIdentitySetup"] is False
+    assert payload["localIdentityStatus"] == "draft"
+    assert "本机草稿" in payload["message"]
 
 
 def test_local_register_creates_identity_without_calling_cloud(tmp_path: Path, monkeypatch) -> None:
@@ -47,6 +47,7 @@ def test_local_register_creates_identity_without_calling_cloud(tmp_path: Path, m
         "/api/v1/local-auth/register",
         json={
             "email": "local-owner@example.com",
+            "phone": "13800138001",
             "fullName": "本机负责人",
             "password": "Password123!",
             "organizationMode": "create",
@@ -95,6 +96,7 @@ def test_local_register_join_existing_org_keeps_pending_invite_locally(tmp_path:
         "/api/v1/local-auth/register",
         json={
             "email": "joiner@example.com",
+            "phone": "13800138002",
             "fullName": "等待加入组织",
             "password": "Password123!",
             "organizationMode": "join",
@@ -144,6 +146,7 @@ def test_local_login_verifies_password_and_respects_remember_me(tmp_path: Path) 
         "/api/v1/local-auth/register",
         json={
             "email": "remember@example.com",
+            "phone": "13800138003",
             "fullName": "本机登录用户",
             "password": "Password123!",
             "organizationMode": "create",
@@ -154,7 +157,8 @@ def test_local_login_verifies_password_and_respects_remember_me(tmp_path: Path) 
 
     logout = client.post("/api/v1/auth/logout")
     assert logout.status_code == 200, logout.text
-    assert logout.json()["authenticated"] is False
+    assert logout.json()["authenticated"] is True
+    assert logout.json()["localIdentityStatus"] == "draft"
 
     wrong_password = client.post(
         "/api/v1/local-auth/login",
@@ -174,7 +178,8 @@ def test_local_login_verifies_password_and_respects_remember_me(tmp_path: Path) 
     reopened = make_client(data_dir)
     reopened_auth = reopened.get("/api/v1/auth/me")
     assert reopened_auth.status_code == 200, reopened_auth.text
-    assert reopened_auth.json()["authenticated"] is False
+    assert reopened_auth.json()["authenticated"] is True
+    assert reopened_auth.json()["localIdentityStatus"] == "draft"
 
     remembered = reopened.post(
         "/api/v1/local-auth/login",
@@ -236,7 +241,8 @@ def test_local_profile_and_password_update_stay_local(tmp_path: Path, monkeypatc
 
     logout = client.post("/api/v1/auth/logout")
     assert logout.status_code == 200, logout.text
-    assert logout.json()["authenticated"] is False
+    assert logout.json()["authenticated"] is True
+    assert logout.json()["localIdentityStatus"] == "draft"
 
     old_login = client.post(
         "/api/v1/local-auth/login",
@@ -252,7 +258,7 @@ def test_local_profile_and_password_update_stay_local(tmp_path: Path, monkeypatc
     assert new_login.json()["user"]["email"] == "profile-new@example.com"
 
 
-def test_auth_me_requires_local_identity_setup_for_legacy_workspace_data(tmp_path: Path) -> None:
+def test_auth_me_keeps_legacy_rows_available_as_local_draft(tmp_path: Path) -> None:
     client = make_client(tmp_path / "data")
     db = client.app.state.app_state.db
     timestamp = "2026-05-08T10:00:00"
@@ -268,17 +274,18 @@ def test_auth_me_requires_local_identity_setup_for_legacy_workspace_data(tmp_pat
 
     assert response.status_code == 200, response.text
     payload = response.json()
-    assert payload["authenticated"] is False
+    assert payload["authenticated"] is True
     assert payload["sessionMode"] == "local"
-    assert payload["user"] is None
-    assert payload["requiresLocalIdentitySetup"] is True
-    assert payload["localIdentityStatus"] == "needs_setup"
-    assert "已有本地数据" in payload["message"]
+    assert payload["user"]["id"] == "local-draft-user"
+    assert payload["requiresLocalIdentitySetup"] is False
+    assert payload["localIdentityStatus"] == "draft"
+    assert "本机草稿" in payload["message"]
 
     complete = client.post(
         "/api/v1/local-auth/register",
         json={
             "email": "legacy-owner@example.com",
+            "phone": "13800138004",
             "fullName": "旧库负责人",
             "password": "Password123!",
             "organizationMode": "create",
@@ -303,6 +310,7 @@ def test_cloud_login_binds_current_local_identity(tmp_path: Path, monkeypatch) -
         "/api/v1/local-auth/register",
         json={
             "email": "local-bind@example.com",
+            "phone": "13800138005",
             "fullName": "待绑定用户",
             "password": "Password123!",
             "organizationMode": "create",

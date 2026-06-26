@@ -123,6 +123,7 @@ def test_register_approve_login_and_collaboration_flow():
         "/api/v1/auth/register",
         json={
             "email": "new-user@yiyu-system.com",
+            "phone": "13800138201",
             "fullName": "新成员",
             "password": "Password123!",
             "inviteCode": f"客户服务部：邀请码 {customer_service_invite}",
@@ -838,7 +839,7 @@ def test_task_overdue_only_after_calendar_day_ends():
 
     register = client.post(
         "/api/v1/auth/register",
-        json={"email": "overdue-check@yiyu-system.com", "fullName": "逾期校验员", "password": "Password123!", "departmentId": "dept_customer_service"},
+        json={"email": "overdue-check@yiyu-system.com", "phone": "13800138202", "fullName": "逾期校验员", "password": "Password123!", "departmentId": "dept_customer_service"},
     )
     assert register.status_code == 200, register.text
 
@@ -1267,7 +1268,7 @@ def test_task_review_approve_and_return_follow_org_permissions():
 
     register = client.post(
         "/api/v1/auth/register",
-        json={"email": "review-worker@yiyu-system.com", "fullName": "复核执行员", "password": "Password123!", "departmentId": "dept_customer_service"},
+        json={"email": "review-worker@yiyu-system.com", "phone": "13800138203", "fullName": "复核执行员", "password": "Password123!", "departmentId": "dept_customer_service"},
     )
     assert register.status_code == 200, register.text
 

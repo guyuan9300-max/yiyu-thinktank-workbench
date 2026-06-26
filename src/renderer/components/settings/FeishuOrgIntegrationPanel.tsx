@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { CheckCircle2, ExternalLink, KeyRound, RefreshCw, Unlink, Users } from 'lucide-react';
+import { CalendarDays, CheckCircle2, ExternalLink, KeyRound, RefreshCw, Unlink, Users } from 'lucide-react';
 
 import type {
   FeishuDeliveryProfile,
@@ -14,6 +14,7 @@ import type {
 const FEISHU_ENTERPRISE_HELP_URL = 'https://www.feishu.cn/hc/zh-CN/articles/360043741453-%E5%88%9B%E5%BB%BA%E4%BC%81%E4%B8%9A';
 const FEISHU_CUSTOM_APP_HELP_URL = 'https://open.feishu.cn/document/home/introduction-to-custom-app-development/self-built-application-development-process?lang=zh-CN';
 const FEISHU_APP_CONSOLE_URL = 'https://open.feishu.cn/app';
+const FEISHU_LOCAL_CALDAV_HELP_URL = 'https://www.feishu.cn/hc/zh-CN/articles/360043178673-%E8%AE%BE%E7%BD%AE%E6%9C%AC%E5%9C%B0%E7%B3%BB%E7%BB%9F%E6%97%A5%E5%8E%86%E4%B8%8E%E9%A3%9E%E4%B9%A6%E6%97%A5%E5%8E%86%E4%B9%8B%E9%97%B4%E7%9A%84%E5%90%8C%E6%AD%A5';
 
 type MemberAuthorizationFlow = {
   authorizeUrl: string;
@@ -136,6 +137,17 @@ export function FeishuOrgIntegrationPanel({
   const canAuthorizeMember = sessionMode === 'cloud' && membership.hasOrganization && integration.enabled;
   const canSaveIntegration = canConfigureIntegration && integrationChanges && !saveBusy;
   const canSaveDeliveryProfile = canConfigureDeliveryProfile && mobile.trim() !== (deliveryProfile.mobile || '') && !savePhoneBusy;
+  const taskCalendarSyncReady = Boolean(integration.enabled && memberAuthorization.linked);
+  const taskCalendarStatusClass = taskCalendarSyncReady
+    ? 'border-emerald-100 bg-emerald-50 text-emerald-700'
+    : integration.enabled
+      ? 'border-amber-100 bg-amber-50 text-amber-700'
+      : 'border-slate-100 bg-slate-50 text-slate-600';
+  const taskCalendarStatusText = taskCalendarSyncReady
+    ? '已具备'
+    : integration.enabled
+      ? '待授权'
+      : '待接入';
 
   const integrationHelper = useMemo(() => {
     if (sessionMode !== 'cloud') {
@@ -197,7 +209,7 @@ export function FeishuOrgIntegrationPanel({
           </p>
         </div>
         <div className="rounded-2xl border border-indigo-100 bg-indigo-50/80 px-4 py-3 text-[13px] font-semibold leading-6 text-slate-800">
-          请依次完成飞书自建应用接入、我的飞书身份绑定、飞书成员匹配手机号。飞书任务、文档和日历提醒依赖飞书自建应用；成员绑定飞书身份后，任务和文档才能正确落到本人权限下。
+	          请依次完成飞书自建应用接入、我的飞书身份绑定、任务与日历同步、飞书成员匹配手机号。飞书任务、文档和日历提醒依赖飞书自建应用；成员绑定飞书身份后，任务和文档才能正确落到本人权限下。
         </div>
         <div className="flex items-start justify-between gap-4">
           <div className="min-w-0 flex-1">
@@ -387,6 +399,56 @@ export function FeishuOrgIntegrationPanel({
           </div>
         )}
       </div>
+
+	      <div data-feishu-task-sync-step="true" className="border-t border-gray-100 pt-6 space-y-5">
+	        <div className="flex items-start justify-between gap-4">
+	          <div className="min-w-0 flex-1">
+	            <p className="text-[11px] font-bold uppercase tracking-[0.12em] text-gray-500">任务与日历同步</p>
+	            <p className="text-[12px] text-gray-500 mt-1.5 leading-relaxed">
+	              这一步说明益语任务、飞书任务、飞书日历事件和手机系统日历之间的关系；软件只负责益语与飞书之间的同步，手机系统日历通过飞书官方 CalDAV 完成。
+	            </p>
+	          </div>
+	          <div className={`text-[10px] font-bold uppercase tracking-[0.12em] px-2.5 py-1 rounded-full border ${taskCalendarStatusClass}`}>
+	            {taskCalendarStatusText}
+	          </div>
+	        </div>
+
+	        <div className="grid gap-3 md:grid-cols-2">
+	          <div className="rounded-2xl border border-slate-100 bg-slate-50 px-4 py-3">
+	            <p className="text-[12px] font-bold text-slate-900 flex items-center gap-2">
+	              <CalendarDays size={14} />
+	              益语 ↔ 飞书
+	            </p>
+	            <ol className="mt-2 list-decimal space-y-1 pl-5 text-[12px] leading-6 text-slate-600">
+	              <li>管理员完成飞书自建应用接入，并启用任务、日历相关能力。</li>
+	              <li>成员完成“我的飞书身份绑定”。</li>
+	              <li>带时间的协作任务会同步为飞书任务和飞书日历事件；你参与的飞书任务变更通常约 1 分钟内同步回益语。</li>
+	              <li>任务内容请在益语或飞书任务里修改，避免把手机系统日历当作编辑入口。</li>
+	            </ol>
+	          </div>
+
+	          <div className="rounded-2xl border border-slate-100 bg-slate-50 px-4 py-3">
+	            <p className="text-[12px] font-bold text-slate-900 flex items-center gap-2">
+	              <ExternalLink size={14} />
+	              飞书日历 → 手机系统日历
+	            </p>
+	            <ol className="mt-2 list-decimal space-y-1 pl-5 text-[12px] leading-6 text-slate-600">
+	              <li>在飞书中开启本地系统日历同步并获取 CalDAV 配置。</li>
+	              <li>到 iPhone、macOS 或其他手机系统日历中添加 CalDAV 账户。</li>
+	              <li>手机系统日历只用于提醒和查看；任务修改请回益语或飞书任务。</li>
+	            </ol>
+	            <a
+	              href={FEISHU_LOCAL_CALDAV_HELP_URL}
+	              target="_blank"
+	              rel="noreferrer"
+	              className="mt-3 inline-flex items-center gap-1 rounded-full bg-white px-3 py-1 text-[11px] font-bold text-indigo-600 transition hover:text-indigo-700"
+	            >
+	              <ExternalLink size={12} />
+	              飞书日历同步官方指引
+	            </a>
+	          </div>
+	        </div>
+	      </div>
 
 	      <div className="border-t border-gray-100 pt-6 space-y-5">
 	        <div className="flex items-start justify-between gap-4">

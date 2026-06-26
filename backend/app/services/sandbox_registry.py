@@ -9,11 +9,12 @@ from typing import Any
 from uuid import uuid4
 
 from app.db import Database
-from app.models import SandboxWorkspaceRecord, SandboxWorkspacesResponse
+from app.models import SandboxLocalDraftSummary, SandboxWorkspaceRecord, SandboxWorkspacesResponse
 
 
 ACTIVE_SANDBOX_SETTING_KEY = "active_sandbox_id"
 DEFAULT_LOCAL_SANDBOX_ID = "sbx_local_default"
+LOCAL_DRAFT_MIGRATION_SETTING_KEY = "local_draft_migrated_to_sandbox_id"
 CLOUD_SANDBOX_SETTING_KEYS = (
     "cloud_api_url",
     "cloud_access_token",
@@ -83,7 +84,7 @@ def _default_sandbox_values(db: Database, now: str) -> dict[str, Any]:
     return {
         "id": DEFAULT_LOCAL_SANDBOX_ID,
         "kind": "local",
-        "name": "本机工作空间",
+        "name": "未连接组织的本机草稿",
         "status": "active",
         "cloud_api_url": "",
         "organization_id": None,
@@ -101,7 +102,7 @@ def _default_local_sandbox_values(db: Database, now: str, *, is_legacy_default: 
     return {
         "id": DEFAULT_LOCAL_SANDBOX_ID,
         "kind": "local",
-        "name": "本机工作空间",
+        "name": "未连接组织的本机草稿",
         "status": "active",
         "cloud_api_url": "",
         "organization_id": None,
@@ -213,6 +214,247 @@ def _ensure_business_data_sandbox_scope(db: Database, sandbox_id: str) -> None:
     db.run_in_transaction(_txn)
 
 
+def _table_has_column(conn: Any, table: str, column: str) -> bool:
+    return _conn_has_column(conn, table, column)
+
+
+def _local_draft_counts_from_conn(conn: Any) -> dict[str, int]:
+    counts: dict[str, int] = {
+        "clients": 0,
+        "tasks": 0,
+        "taskLists": 0,
+        "taskTags": 0,
+        "documents": 0,
+        "experienceQuotes": 0,
+    }
+    for table, key in (
+        ("clients", "clients"),
+        ("tasks", "tasks"),
+        ("task_lists", "taskLists"),
+        ("task_tags", "taskTags"),
+        ("exp_wall_quotes", "experienceQuotes"),
+    ):
+        if _table_has_column(conn, table, "sandbox_id"):
+            row = conn.execute(
+                f"SELECT COUNT(1) AS count FROM {table} WHERE sandbox_id = ?",
+                (DEFAULT_LOCAL_SANDBOX_ID,),
+            ).fetchone()
+            counts[key] = int((row["count"] if isinstance(row, Row) else row[0]) or 0) if row else 0
+    if _table_has_column(conn, "clients", "sandbox_id"):
+        row = conn.execute(
+            """
+            SELECT COUNT(1) AS count
+              FROM documents d
+              JOIN clients c ON c.id = d.client_id
+             WHERE c.sandbox_id = ?
+            """,
+            (DEFAULT_LOCAL_SANDBOX_ID,),
+        ).fetchone()
+        counts["documents"] = int((row["count"] if isinstance(row, Row) else row[0]) or 0) if row else 0
+    return counts
+
+
+def _counts_have_data(counts: dict[str, int]) -> bool:
+    return any(int(value or 0) > 0 for value in counts.values())
+
+
+def _best_organization_target_from_conn(conn: Any, active_id: str = "") -> str:
+    if active_id:
+        row = conn.execute(
+            "SELECT id FROM sandboxes WHERE id = ? AND kind = 'organization' AND status = 'active'",
+            (active_id,),
+        ).fetchone()
+        if row:
+            return str(row["id"] if isinstance(row, Row) else row[0])
+    row = conn.execute(
+        """
+        SELECT id FROM sandboxes
+         WHERE kind = 'organization' AND status = 'active'
+         ORDER BY COALESCE(last_active_at, created_at) DESC, created_at ASC
+         LIMIT 1
+        """
+    ).fetchone()
+    return str(row["id"] if isinstance(row, Row) else row[0]) if row else ""
+
+
+def _merge_local_metadata(raw: str | None, patch: dict[str, Any]) -> str:
+    metadata = _load_json_object(raw)
+    metadata.update(patch)
+    return json.dumps(metadata, ensure_ascii=False)
+
+
+def migrate_local_draft_to_organization_if_possible(db: Database, target_sandbox_id: str | None = None) -> dict[str, Any]:
+    """Move visible draft data out of the old local workspace when an org exists.
+
+    The local row is kept as an internal historical container for rollback and
+    no-org draft compatibility, but it is no longer a user-manageable workspace.
+    """
+
+    now = _now_iso()
+
+    def _txn(conn: Any) -> dict[str, Any]:
+        active_row = conn.execute("SELECT value FROM settings WHERE key = ?", (ACTIVE_SANDBOX_SETTING_KEY,)).fetchone()
+        active_id = str(active_row["value"] if isinstance(active_row, Row) else active_row[0]).strip() if active_row else ""
+        target_id = (target_sandbox_id or "").strip() or _best_organization_target_from_conn(conn, active_id)
+        local_row = conn.execute("SELECT * FROM sandboxes WHERE id = ?", (DEFAULT_LOCAL_SANDBOX_ID,)).fetchone()
+        counts = _local_draft_counts_from_conn(conn)
+        has_data = _counts_have_data(counts)
+        if not local_row:
+            return {"migrated": False, "reason": "no_local_draft", "counts": counts}
+        if not target_id:
+            metadata_json = _merge_local_metadata(
+                str(local_row["metadata_json"] or "{}"),
+                {"internalDraft": True, "hiddenFromWorkspaceList": True, "updatedAt": now},
+            )
+            conn.execute(
+                "UPDATE sandboxes SET name = ?, metadata_json = ?, updated_at = ? WHERE id = ?",
+                ("未连接组织的本机草稿", metadata_json, now, DEFAULT_LOCAL_SANDBOX_ID),
+            )
+            return {"migrated": False, "reason": "no_organization_target", "counts": counts}
+        target = conn.execute(
+            "SELECT id FROM sandboxes WHERE id = ? AND kind = 'organization' AND status = 'active'",
+            (target_id,),
+        ).fetchone()
+        if not target:
+            return {"migrated": False, "reason": "invalid_organization_target", "counts": counts}
+
+        if has_data:
+            local_task_list_ids: set[str] = set()
+            if _table_has_column(conn, "tasks", "sandbox_id"):
+                for row in conn.execute(
+                    """
+                    SELECT DISTINCT list_id FROM tasks
+                     WHERE sandbox_id = ?
+                       AND list_id IS NOT NULL
+                       AND list_id != ''
+                    """,
+                    (DEFAULT_LOCAL_SANDBOX_ID,),
+                ).fetchall():
+                    raw = row["list_id"] if isinstance(row, Row) else row[0]
+                    if raw:
+                        local_task_list_ids.add(str(raw))
+            if _table_has_column(conn, "clients", "sandbox_id"):
+                conn.execute("UPDATE clients SET sandbox_id = ? WHERE sandbox_id = ?", (target_id, DEFAULT_LOCAL_SANDBOX_ID))
+            if _table_has_column(conn, "tasks", "sandbox_id"):
+                conn.execute("UPDATE tasks SET sandbox_id = ? WHERE sandbox_id = ?", (target_id, DEFAULT_LOCAL_SANDBOX_ID))
+            if _table_has_column(conn, "task_lists", "sandbox_id"):
+                id_placeholders = ",".join(["?"] * len(local_task_list_ids))
+                id_filter = f" OR id IN ({id_placeholders})" if id_placeholders else ""
+                conn.execute(
+                    f"""
+                    UPDATE task_lists
+                       SET sandbox_id = ?
+                     WHERE sandbox_id = ?
+                       AND (
+                            name NOT IN ('收集箱', '健身', '约会', '吃饭', '学习')
+                            {id_filter}
+                       )
+                    """,
+                    (target_id, DEFAULT_LOCAL_SANDBOX_ID, *sorted(local_task_list_ids)),
+                )
+            if _table_has_column(conn, "task_tags", "sandbox_id"):
+                conn.execute(
+                    """
+                    UPDATE task_tags
+                       SET sandbox_id = ?
+                     WHERE sandbox_id = ?
+                       AND name NOT IN (
+                           SELECT target.name
+                             FROM task_tags target
+                            WHERE target.sandbox_id = ?
+                       )
+                    """,
+                    (target_id, DEFAULT_LOCAL_SANDBOX_ID, target_id),
+                )
+            if _table_has_column(conn, "exp_wall_quotes", "sandbox_id"):
+                conn.execute("UPDATE exp_wall_quotes SET sandbox_id = ? WHERE sandbox_id = ?", (target_id, DEFAULT_LOCAL_SANDBOX_ID))
+            if _table_has_column(conn, "exp_wall_reactions", "sandbox_id"):
+                conn.execute("UPDATE exp_wall_reactions SET sandbox_id = ? WHERE sandbox_id = ?", (target_id, DEFAULT_LOCAL_SANDBOX_ID))
+            for table in (
+                "handbook_entries",
+                "growth_signal_events",
+                "growth_evidence_records",
+                "growth_validation_events",
+                "xp_ledger",
+                "badge_unlock_records",
+                "learning_recommendations",
+            ):
+                if _table_has_column(conn, table, "sandbox_id"):
+                    conn.execute(
+                        f"UPDATE {table} SET sandbox_id = ? WHERE sandbox_id = ?",
+                        (target_id, DEFAULT_LOCAL_SANDBOX_ID),
+                    )
+
+        metadata_json = _merge_local_metadata(
+            str(local_row["metadata_json"] or "{}"),
+            {
+                "internalDraft": True,
+                "hiddenFromWorkspaceList": True,
+                "migrated": bool(has_data),
+                "migratedToSandboxId": target_id,
+                "migratedAt": now,
+                "migrationCounts": counts,
+            },
+        )
+        conn.execute(
+            """
+            UPDATE sandboxes
+               SET status = 'archived',
+                   name = ?,
+                   metadata_json = ?,
+                   updated_at = ?
+             WHERE id = ?
+            """,
+            ("本机历史草稿（已归档）", metadata_json, now, DEFAULT_LOCAL_SANDBOX_ID),
+        )
+        conn.execute(
+            """
+            INSERT INTO settings(key, value)
+            VALUES(?, ?)
+            ON CONFLICT(key) DO UPDATE SET value = excluded.value
+            """,
+            (LOCAL_DRAFT_MIGRATION_SETTING_KEY, target_id),
+        )
+        if active_id == DEFAULT_LOCAL_SANDBOX_ID:
+            conn.execute(
+                """
+                INSERT INTO settings(key, value)
+                VALUES(?, ?)
+                ON CONFLICT(key) DO UPDATE SET value = excluded.value
+                """,
+                (ACTIVE_SANDBOX_SETTING_KEY, target_id),
+            )
+            conn.execute("UPDATE sandboxes SET last_active_at = ?, updated_at = ? WHERE id = ?", (now, now, target_id))
+        return {"migrated": bool(has_data), "targetSandboxId": target_id, "counts": counts}
+
+    return dict(db.run_in_transaction(_txn))
+
+
+def get_local_draft_summary(db: Database, active_id: str | None = None) -> SandboxLocalDraftSummary:
+    def _txn(conn: Any) -> SandboxLocalDraftSummary:
+        local_row = conn.execute("SELECT * FROM sandboxes WHERE id = ?", (DEFAULT_LOCAL_SANDBOX_ID,)).fetchone()
+        if not local_row:
+            return SandboxLocalDraftSummary()
+        counts = _local_draft_counts_from_conn(conn)
+        metadata = _load_json_object(str(local_row["metadata_json"] or "{}"))
+        return SandboxLocalDraftSummary(
+            available=True,
+            active=(active_id or "") == DEFAULT_LOCAL_SANDBOX_ID,
+            hasData=_counts_have_data(counts),
+            migrated=bool(metadata.get("migrated")),
+            migratedToSandboxId=str(metadata.get("migratedToSandboxId") or "") or None,
+            migratedAt=str(metadata.get("migratedAt") or "") or None,
+            clients=counts["clients"],
+            tasks=counts["tasks"],
+            taskLists=counts["taskLists"],
+            taskTags=counts["taskTags"],
+            documents=counts["documents"],
+            experienceQuotes=counts["experienceQuotes"],
+        )
+
+    return db.run_in_transaction(_txn, mode="DEFERRED")
+
+
 def ensure_sandbox_registry(db: Database) -> str:
     """Ensure the workspace shell exists without migrating business data."""
 
@@ -275,6 +517,17 @@ def ensure_sandbox_registry(db: Database) -> str:
         return fallback_id
 
     active_id = str(db.run_in_transaction(_txn))
+    migration_result = migrate_local_draft_to_organization_if_possible(db)
+    if migration_result.get("targetSandboxId") and active_id == DEFAULT_LOCAL_SANDBOX_ID:
+        active_id = str(migration_result["targetSandboxId"])
+    if active_id == DEFAULT_LOCAL_SANDBOX_ID:
+        target_id = ""
+        def _target_txn(conn: Any) -> str:
+            return _best_organization_target_from_conn(conn, "")
+        target_id = str(db.run_in_transaction(_target_txn, mode="DEFERRED") or "")
+        if target_id:
+            activate_sandbox(db, target_id)
+            active_id = target_id
     _ensure_business_data_sandbox_scope(db, active_id)
     return active_id
 
@@ -309,6 +562,8 @@ def list_sandboxes(db: Database) -> list[SandboxWorkspaceRecord]:
     rows = db.fetchall(
         """
         SELECT * FROM sandboxes
+        WHERE kind = 'organization'
+          AND status = 'active'
         ORDER BY is_legacy_default DESC, COALESCE(last_active_at, created_at) DESC, created_at ASC
         """
     )
@@ -329,7 +584,11 @@ def get_active_sandbox(db: Database) -> SandboxWorkspaceRecord:
 
 def build_workspaces_response(db: Database) -> SandboxWorkspacesResponse:
     active_id = ensure_sandbox_registry(db)
-    return SandboxWorkspacesResponse(activeSandboxId=active_id, workspaces=list_sandboxes(db))
+    return SandboxWorkspacesResponse(
+        activeSandboxId=active_id,
+        workspaces=list_sandboxes(db),
+        localDraftSummary=get_local_draft_summary(db, active_id),
+    )
 
 
 def get_sandbox_setting(db: Database, sandbox_id: str, key: str, default: str = "") -> str:
@@ -345,12 +604,47 @@ def set_sandbox_setting(db: Database, sandbox_id: str, key: str, value: str) -> 
     ensure_sandbox_registry(db)
 
     def _txn(conn: Any) -> None:
-        exists = conn.execute("SELECT id FROM sandboxes WHERE id = ?", (sandbox_id,)).fetchone()
+        exists = conn.execute(
+            """
+            SELECT id FROM sandboxes
+             WHERE id = ?
+               AND (
+                    (kind = 'organization' AND status = 'active')
+                    OR id = ?
+               )
+            """,
+            (sandbox_id, DEFAULT_LOCAL_SANDBOX_ID),
+        ).fetchone()
         if not exists:
             raise ValueError("工作空间不存在")
         _write_sandbox_setting_to_conn(conn, sandbox_id, key, value or "")
 
     db.run_in_transaction(_txn)
+
+
+def _ensure_visible_organization_sandbox(conn: Any, sandbox_id: str) -> None:
+    exists = conn.execute(
+        "SELECT id FROM sandboxes WHERE id = ? AND kind = 'organization' AND status = 'active'",
+        (sandbox_id,),
+    ).fetchone()
+    if not exists:
+        raise ValueError("工作空间不存在")
+
+
+def _ensure_any_internal_sandbox(conn: Any, sandbox_id: str) -> None:
+    exists = conn.execute(
+        """
+        SELECT id FROM sandboxes
+        WHERE id = ?
+           AND (
+                (kind = 'organization' AND status = 'active')
+                OR id = ?
+           )
+        """,
+            (sandbox_id, DEFAULT_LOCAL_SANDBOX_ID),
+        ).fetchone()
+    if not exists:
+        raise ValueError("工作空间不存在")
 
 
 def get_sandbox_kind(db: Database, sandbox_id: str) -> str:
@@ -375,7 +669,7 @@ def set_sandbox_local_identity_id(db: Database, sandbox_id: str, identity_id: st
             raise ValueError("工作空间不存在")
         kind = str(row["kind"] if isinstance(row, Row) else row[0])
         if kind != "local":
-            raise ValueError("本机账号只能绑定到本机工作空间")
+            raise ValueError("本机草稿身份只能绑定到内部本机草稿容器")
         conn.execute(
             "UPDATE sandboxes SET local_identity_id = ?, updated_at = ? WHERE id = ?",
             ((identity_id or "").strip() or None, now, sandbox_id),
@@ -406,7 +700,10 @@ def activate_sandbox(db: Database, sandbox_id: str) -> SandboxWorkspaceRecord:
     now = _now_iso()
 
     def _txn(conn: Any) -> None:
-        exists = conn.execute("SELECT id FROM sandboxes WHERE id = ? AND status = 'active'", (sandbox_id,)).fetchone()
+        exists = conn.execute(
+            "SELECT id FROM sandboxes WHERE id = ? AND kind = 'organization' AND status = 'active'",
+            (sandbox_id,),
+        ).fetchone()
         if not exists:
             raise ValueError("工作空间不存在")
         conn.execute(
@@ -426,8 +723,10 @@ def activate_sandbox(db: Database, sandbox_id: str) -> SandboxWorkspaceRecord:
 
 def create_sandbox(db: Database, *, kind: str, name: str, cloud_api_url: str = "") -> SandboxWorkspaceRecord:
     now = _now_iso()
-    normalized_kind = "local" if kind == "local" else "organization"
-    normalized_name = name.strip() or ("本机工作空间" if normalized_kind == "local" else "组织工作空间")
+    if kind == "local":
+        raise ValueError("本机草稿不是可创建或切换的工作空间")
+    normalized_kind = "organization"
+    normalized_name = name.strip() or "组织工作空间"
     sandbox_id = f"sbx_{normalized_kind}_{_safe_slug(normalized_name, 'workspace')}_{uuid4().hex[:8]}"
 
     def _txn(conn: Any) -> None:
@@ -464,9 +763,7 @@ def update_sandbox(db: Database, sandbox_id: str, *, name: str | None = None, cl
     now = _now_iso()
 
     def _txn(conn: Any) -> None:
-        exists = conn.execute("SELECT id FROM sandboxes WHERE id = ?", (sandbox_id,)).fetchone()
-        if not exists:
-            raise ValueError("工作空间不存在")
+        _ensure_visible_organization_sandbox(conn, sandbox_id)
         if name is not None:
             normalized_name = name.strip()
             if not normalized_name:

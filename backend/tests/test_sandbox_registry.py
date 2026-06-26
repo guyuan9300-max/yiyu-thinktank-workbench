@@ -40,17 +40,16 @@ def test_new_database_bootstraps_local_workspace(tmp_path: Path) -> None:
     assert response.status_code == 200, response.text
     payload = response.json()
     assert payload["activeSandboxId"] == DEFAULT_LOCAL_SANDBOX_ID
-    assert len(payload["workspaces"]) == 1
-    workspace = payload["workspaces"][0]
-    assert workspace["id"] == DEFAULT_LOCAL_SANDBOX_ID
-    assert workspace["kind"] == "local"
-    assert workspace["name"] == "本机工作空间"
-    assert workspace["isLegacyDefault"] is True
+    assert payload["workspaces"] == []
+    assert payload["localDraftSummary"]["available"] is True
+    assert payload["localDraftSummary"]["active"] is True
     assert db.get_setting(ACTIVE_SANDBOX_SETTING_KEY, "") == DEFAULT_LOCAL_SANDBOX_ID
 
     current = client.get("/api/v1/workspaces/current")
     assert current.status_code == 200, current.text
     assert current.json()["id"] == DEFAULT_LOCAL_SANDBOX_ID
+    assert current.json()["kind"] == "local"
+    assert current.json()["name"] == "未连接组织的本机草稿"
 
 
 def test_existing_cloud_session_bootstraps_organization_workspace(tmp_path: Path) -> None:
@@ -84,7 +83,7 @@ def test_existing_cloud_session_bootstraps_organization_workspace(tmp_path: Path
     assert db.get_setting("cloud_api_url", "") == "https://cloud.example.test"
     assert db.get_setting("cloud_session_user", "") != ""
     records = list_sandboxes(db)
-    assert any(record.id == DEFAULT_LOCAL_SANDBOX_ID and record.kind == "local" for record in records)
+    assert all(record.kind == "organization" for record in records)
 
 
 def test_registry_initialization_is_idempotent(tmp_path: Path) -> None:
@@ -95,7 +94,7 @@ def test_registry_initialization_is_idempotent(tmp_path: Path) -> None:
     records = list_sandboxes(db)
 
     assert first == second == DEFAULT_LOCAL_SANDBOX_ID
-    assert len(records) == 1
+    assert records == []
 
 
 def test_invalid_active_sandbox_repairs_to_existing_default(tmp_path: Path) -> None:
@@ -128,10 +127,10 @@ def test_workspace_api_can_create_activate_and_scope_cloud_url(tmp_path: Path) -
     assert settings.json()["settings"]["cloudApiUrl"] == "https://cloud-a.example.test"
 
     response = client.post(f"/api/v1/workspaces/{DEFAULT_LOCAL_SANDBOX_ID}/activate")
-    assert response.status_code == 200, response.text
+    assert response.status_code == 404, response.text
     settings = client.get("/api/v1/settings")
     assert settings.status_code == 200, settings.text
-    assert settings.json()["settings"]["cloudApiUrl"] == ""
+    assert settings.json()["settings"]["cloudApiUrl"] == "https://cloud-a.example.test"
 
     update = client.post("/api/v1/settings", json={"cloudApiUrl": "https://local-cloud.example.test"})
     assert update.status_code == 200, update.text
@@ -141,7 +140,7 @@ def test_workspace_api_can_create_activate_and_scope_cloud_url(tmp_path: Path) -
     assert response.status_code == 200, response.text
     settings = client.get("/api/v1/settings")
     assert settings.status_code == 200, settings.text
-    assert settings.json()["settings"]["cloudApiUrl"] == "https://cloud-a.example.test"
+    assert settings.json()["settings"]["cloudApiUrl"] == "https://local-cloud.example.test"
 
 
 def test_sandbox_cloud_tokens_do_not_bleed_between_workspaces(tmp_path: Path) -> None:
@@ -153,10 +152,9 @@ def test_sandbox_cloud_tokens_do_not_bleed_between_workspaces(tmp_path: Path) ->
     set_sandbox_setting(db, local_id, "cloud_access_token", "token-local")
     set_sandbox_setting(db, org.id, "cloud_access_token", "token-org")
 
-    activate_sandbox(db, local_id)
-    assert get_active_sandbox_setting(db, "cloud_access_token", "") == "token-local"
     activate_sandbox(db, org.id)
     assert get_active_sandbox_setting(db, "cloud_access_token", "") == "token-org"
+    assert get_sandbox_setting(db, local_id, "cloud_access_token", "") == "token-local"
 
 
 def test_organization_workspace_identity_includes_cloud_url(tmp_path: Path) -> None:
@@ -220,10 +218,10 @@ def test_workspace_update_does_not_change_other_workspace_cloud_url(tmp_path: Pa
     assert current["cloudApiUrl"] == "https://cloud-c2.example.test"
 
     response = client.post(f"/api/v1/workspaces/{DEFAULT_LOCAL_SANDBOX_ID}/activate")
-    assert response.status_code == 200, response.text
+    assert response.status_code == 404, response.text
     current = client.get("/api/v1/workspaces/current").json()
-    assert current["id"] == DEFAULT_LOCAL_SANDBOX_ID
-    assert current["cloudApiUrl"] == ""
+    assert current["id"] == org_id
+    assert current["cloudApiUrl"] == "https://cloud-c2.example.test"
 
 
 def test_cloud_logout_clears_only_active_workspace_cloud_session(tmp_path: Path) -> None:
@@ -289,6 +287,7 @@ def test_local_identity_is_bound_to_local_workspace_not_org_workspace(tmp_path: 
         "/api/v1/local-auth/register",
         json={
             "email": "workspace-local@example.com",
+            "phone": "13800138008",
             "fullName": "本机空间用户",
             "password": "Password123!",
             "organizationMode": "create",
@@ -310,8 +309,4 @@ def test_local_identity_is_bound_to_local_workspace_not_org_workspace(tmp_path: 
     assert auth_in_org.json()["sessionMode"] == "cloud"
 
     response = client.post(f"/api/v1/workspaces/{DEFAULT_LOCAL_SANDBOX_ID}/activate")
-    assert response.status_code == 200, response.text
-    auth_in_local = client.get("/api/v1/auth/me")
-    assert auth_in_local.status_code == 200, auth_in_local.text
-    assert auth_in_local.json()["authenticated"] is True
-    assert auth_in_local.json()["user"]["email"] == "workspace-local@example.com"
+    assert response.status_code == 404, response.text

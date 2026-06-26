@@ -81,11 +81,18 @@ def push_pending_entries_to_cloud(
     cloud_base_url: str,
     cloud_token: str,
     httpx_client,
+    sandbox_id: str | None = None,
 ) -> dict[str, int]:
     """扫 sync_status='pending' 真 handbook entry, 真逐条 POST. 真成功 → 'synced', 失败 → 'failed'."""
-    rows = db.fetchall(
-        "SELECT * FROM handbook_entries WHERE sync_status = 'pending' ORDER BY created_at ASC LIMIT 50"
-    )
+    if sandbox_id:
+        rows = db.fetchall(
+            "SELECT * FROM handbook_entries WHERE sync_status = 'pending' AND sandbox_id = ? ORDER BY created_at ASC LIMIT 50",
+            (sandbox_id,),
+        )
+    else:
+        rows = db.fetchall(
+            "SELECT * FROM handbook_entries WHERE sync_status = 'pending' ORDER BY created_at ASC LIMIT 50"
+        )
     pushed = 0
     failed = 0
     for row in rows:
@@ -133,12 +140,18 @@ def push_pending_entries_to_cloud(
     return {"pushed": pushed, "failed": failed}
 
 
+def _scoped_pull_key(base_key: str, sandbox_id: str | None) -> str:
+    normalized = (sandbox_id or "").strip()
+    return f"{base_key}.{normalized}" if normalized else base_key
+
+
 def pull_entries_from_cloud(
     db: Database,
     *,
     cloud_base_url: str,
     cloud_token: str,
     httpx_client,
+    sandbox_id: str | None = None,
 ) -> dict[str, object]:
     """定时拉云端增量 handbook entries (since=settings.last_handbook_pull_at).
 
@@ -159,7 +172,8 @@ def pull_entries_from_cloud(
         db.conn.execute("ALTER TABLE handbook_entries ADD COLUMN deleted_at TEXT")
     db.conn.commit()
 
-    since = db.get_setting("last_handbook_pull_at", "")
+    pull_key = _scoped_pull_key("last_handbook_pull_at", sandbox_id)
+    since = db.get_setting(pull_key, "") or db.get_setting("last_handbook_pull_at", "")
     try:
         resp = httpx_client.get(
             f"{cloud_base_url.rstrip('/')}/api/v1/handbook/entries/sync",
@@ -193,7 +207,7 @@ def pull_entries_from_cloud(
         db.conn.execute(
             """
             INSERT INTO handbook_entries(
-                id, title, summary, tags_json,
+                id, sandbox_id, title, summary, tags_json,
                 source_type, client_id, source_object_type, source_object_id, source_title,
                 event_line_id, event_line_name,
                 project_module_id, project_module_name, project_flow_id, project_flow_name,
@@ -204,8 +218,9 @@ def pull_entries_from_cloud(
                 status, deleted_by_user_id, deleted_at,
                 created_at,
                 sync_status, last_synced_at, pending_sync_action
-            ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'synced', ?, '')
+            ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'synced', ?, '')
             ON CONFLICT(id) DO UPDATE SET
+                sandbox_id = excluded.sandbox_id,
                 title = excluded.title,
                 summary = excluded.summary,
                 tags_json = excluded.tags_json,
@@ -223,7 +238,7 @@ def pull_entries_from_cloud(
                 pending_sync_action = ''
             """,
             (
-                entry_id, str(e.get("title", "")), str(e.get("summary", "")), str(e.get("tagsJson", "[]")),
+                entry_id, (sandbox_id or "sbx_local_default"), str(e.get("title", "")), str(e.get("summary", "")), str(e.get("tagsJson", "[]")),
                 str(e.get("sourceType", "")),
                 e.get("clientId"), e.get("sourceObjectType"), e.get("sourceObjectId"), e.get("sourceTitle"),
                 e.get("eventLineId"), e.get("eventLineName"),
@@ -240,7 +255,7 @@ def pull_entries_from_cloud(
         )
         merged += 1
 
-    db.set_setting("last_handbook_pull_at", server_ts)
+    db.set_setting(pull_key, server_ts)
     db.conn.commit()
     return {"pulled": len(entries), "merged": merged, "skipped_pending": skipped_pending}
 

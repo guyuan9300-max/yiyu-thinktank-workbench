@@ -150,9 +150,25 @@ export interface SandboxWorkspaceRecord {
   lastActiveAt?: string | null;
 }
 
+export interface SandboxLocalDraftSummary {
+  available: boolean;
+  active: boolean;
+  hasData: boolean;
+  migrated: boolean;
+  migratedToSandboxId?: string | null;
+  migratedAt?: string | null;
+  clients: number;
+  tasks: number;
+  taskLists: number;
+  taskTags: number;
+  documents: number;
+  experienceQuotes: number;
+}
+
 export interface SandboxWorkspacesResponse {
   activeSandboxId: string;
   workspaces: SandboxWorkspaceRecord[];
+  localDraftSummary?: SandboxLocalDraftSummary | null;
 }
 
 export interface SandboxWorkspaceCreatePayload {
@@ -206,7 +222,7 @@ export interface AuthState {
   message?: string | null;
   sessionMode?: 'local' | 'cloud';
   requiresLocalIdentitySetup?: boolean;
-  localIdentityStatus?: 'needs_setup' | 'ready' | 'none' | null;
+  localIdentityStatus?: 'needs_setup' | 'ready' | 'none' | 'draft' | null;
   // 后端 auth/me 在"网络中断 + 本地缓存兜底"时置 true。前端据此把"成员资格未确认"
   // 当成 last-known-good（沿用上次已知身份/数据），而不是当成"被拒绝"去清空客户列表 / 强制身份页。
   degraded?: boolean;
@@ -5283,6 +5299,33 @@ export interface HandbookEntryDetail extends HandbookEntry {
   reuseHistory: HandbookReuseRecord[];
 }
 
+export interface GrowthExperienceWallItem {
+  id: string;
+  source: 'handbook' | 'exp_wall';
+  text: string;
+  summary: string;
+  authorUserId?: string | null;
+  authorUserName?: string | null;
+  clientId?: string | null;
+  clientName?: string | null;
+  sourceType: string;
+  sourceObjectId: string;
+  sourceTitle?: string | null;
+  category: string;
+  reuseCount: number;
+  likeCount: number;
+  saveCount: number;
+  currentUserLiked?: boolean;
+  linkedContexts: GrowthContextLink[];
+  createdAt: string;
+}
+
+export interface GrowthExperienceWallResponse {
+  items: GrowthExperienceWallItem[];
+  refreshedFromCloud: boolean;
+  cloudSyncError?: string | null;
+}
+
 export interface HandbookReuseRecord {
   id: string;
   sourceType: string;
@@ -6686,7 +6729,7 @@ export interface TaskMutationPayload {
 
 export interface AuthRegisterPayload {
   email: string;
-  phone?: string | null;
+  phone: string;
   fullName: string;
   password: string;
   inviteCode?: string | null;
@@ -6723,7 +6766,7 @@ export interface JoinOrganizationPayload {
 
 export interface LocalAuthRegisterPayload {
   email: string;
-  phone?: string | null;
+  phone: string;
   fullName: string;
   password: string;
   organizationMode?: 'create' | 'join';

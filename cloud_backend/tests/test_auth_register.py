@@ -279,6 +279,7 @@ def test_existing_cloud_account_apply_valid_invite_unlocks_member_resources(tmp_
         "/api/v1/auth/register",
         json={
             "email": "existing-invited-member@example.com",
+            "phone": "13800138204",
             "fullName": "已有云账号同事",
             "password": "Password123!",
         },

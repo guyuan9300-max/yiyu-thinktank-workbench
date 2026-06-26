@@ -31,6 +31,11 @@ def _now_iso() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
 
 
+def _scoped_pull_key(base_key: str, sandbox_id: str | None) -> str:
+    normalized = (sandbox_id or "").strip()
+    return f"{base_key}.{normalized}" if normalized else base_key
+
+
 # ──────────────────────────────────────────────────────────────────
 # 写入 hook (供 badge_engine / growth_engine / local_memory 调用)
 # ──────────────────────────────────────────────────────────────────
@@ -143,11 +148,18 @@ def _push_table_to_cloud(
     cloud_token: str,
     httpx_client,
     extra_required_field: str | None = None,
+    sandbox_id: str | None = None,
 ) -> dict[str, int]:
     """通用 push 函数 — table 真pending 行 真POST 到云端."""
-    rows = db.fetchall(
-        f"SELECT * FROM {table} WHERE sync_status = 'pending' ORDER BY created_at ASC LIMIT 100"
-    )
+    if sandbox_id:
+        rows = db.fetchall(
+            f"SELECT * FROM {table} WHERE sync_status = 'pending' AND sandbox_id = ? ORDER BY created_at ASC LIMIT 100",
+            (sandbox_id,),
+        )
+    else:
+        rows = db.fetchall(
+            f"SELECT * FROM {table} WHERE sync_status = 'pending' ORDER BY created_at ASC LIMIT 100"
+        )
     pushed = 0
     failed = 0
     for row in rows:
@@ -193,7 +205,7 @@ def _push_table_to_cloud(
 
 
 def push_pending_signals_to_cloud(
-    db: Database, *, cloud_base_url: str, cloud_token: str, httpx_client,
+    db: Database, *, cloud_base_url: str, cloud_token: str, httpx_client, sandbox_id: str | None = None,
 ) -> dict[str, int]:
     return _push_table_to_cloud(
         db,
@@ -203,11 +215,12 @@ def push_pending_signals_to_cloud(
         cloud_base_url=cloud_base_url,
         cloud_token=cloud_token,
         httpx_client=httpx_client,
+        sandbox_id=sandbox_id,
     )
 
 
 def push_pending_evidence_to_cloud(
-    db: Database, *, cloud_base_url: str, cloud_token: str, httpx_client,
+    db: Database, *, cloud_base_url: str, cloud_token: str, httpx_client, sandbox_id: str | None = None,
 ) -> dict[str, int]:
     """注意: evidence 真push 真**先决条件** = signal_id 在云端已存在.
     真排序按 signal_id 真group 真**signal 先 push, evidence 后 push** (本函数真依赖 signal push 已跑过)."""
@@ -220,11 +233,12 @@ def push_pending_evidence_to_cloud(
         cloud_token=cloud_token,
         httpx_client=httpx_client,
         extra_required_field="signal_id",
+        sandbox_id=sandbox_id,
     )
 
 
 def push_pending_validation_events_to_cloud(
-    db: Database, *, cloud_base_url: str, cloud_token: str, httpx_client,
+    db: Database, *, cloud_base_url: str, cloud_token: str, httpx_client, sandbox_id: str | None = None,
 ) -> dict[str, int]:
     return _push_table_to_cloud(
         db,
@@ -235,6 +249,7 @@ def push_pending_validation_events_to_cloud(
         cloud_token=cloud_token,
         httpx_client=httpx_client,
         extra_required_field="evidence_id",
+        sandbox_id=sandbox_id,
     )
 
 
@@ -244,10 +259,11 @@ def push_pending_validation_events_to_cloud(
 
 
 def pull_signals_from_cloud(
-    db: Database, *, cloud_base_url: str, cloud_token: str, httpx_client,
+    db: Database, *, cloud_base_url: str, cloud_token: str, httpx_client, sandbox_id: str | None = None,
 ) -> dict[str, object]:
     """真拉云端真signal 增量, 真合并到本地 (按 id upsert)."""
-    since = db.get_setting("last_growth_signal_pull_at", "")
+    pull_key = _scoped_pull_key("last_growth_signal_pull_at", sandbox_id)
+    since = db.get_setting(pull_key, "") or db.get_setting("last_growth_signal_pull_at", "")
     try:
         resp = httpx_client.get(
             f"{cloud_base_url.rstrip('/')}/api/v1/growth/sync/signals",
@@ -278,12 +294,13 @@ def pull_signals_from_cloud(
         db.conn.execute(
             """
             INSERT INTO growth_signal_events(
-                id, user_id, user_name, source_type, source_id,
+                id, sandbox_id, user_id, user_name, source_type, source_id,
                 review_id, task_id, week_label, raw_text, context_json, dedupe_key,
                 created_at, updated_at,
                 sync_status, last_synced_at, pending_sync_action
-            ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'synced', ?, '')
+            ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'synced', ?, '')
             ON CONFLICT(id) DO UPDATE SET
+                sandbox_id = excluded.sandbox_id,
                 raw_text = excluded.raw_text,
                 context_json = excluded.context_json,
                 week_label = excluded.week_label,
@@ -295,7 +312,7 @@ def pull_signals_from_cloud(
                 pending_sync_action = ''
             """,
             (
-                sid, str(s.get("userId", "")), str(s.get("userName", "")),
+                sid, (sandbox_id or "sbx_local_default"), str(s.get("userId", "")), str(s.get("userName", "")),
                 str(s.get("sourceType", "")), str(s.get("sourceId", "")),
                 s.get("reviewId"), s.get("taskId"),
                 str(s.get("weekLabel", "")), str(s.get("rawText", "")),
@@ -306,15 +323,16 @@ def pull_signals_from_cloud(
         )
         merged += 1
 
-    db.set_setting("last_growth_signal_pull_at", server_ts)
+    db.set_setting(pull_key, server_ts)
     db.conn.commit()
     return {"pulled": len(signals), "merged": merged, "skipped_pending": skipped_pending}
 
 
 def pull_evidence_from_cloud(
-    db: Database, *, cloud_base_url: str, cloud_token: str, httpx_client,
+    db: Database, *, cloud_base_url: str, cloud_token: str, httpx_client, sandbox_id: str | None = None,
 ) -> dict[str, object]:
-    since = db.get_setting("last_growth_evidence_pull_at", "")
+    pull_key = _scoped_pull_key("last_growth_evidence_pull_at", sandbox_id)
+    since = db.get_setting(pull_key, "") or db.get_setting("last_growth_evidence_pull_at", "")
     try:
         resp = httpx_client.get(
             f"{cloud_base_url.rstrip('/')}/api/v1/growth/sync/evidence",
@@ -344,14 +362,15 @@ def pull_evidence_from_cloud(
         db.conn.execute(
             """
             INSERT INTO growth_evidence_records(
-                id, signal_id, user_id, user_name, ability_key, evidence_type, level,
+                id, sandbox_id, signal_id, user_id, user_name, ability_key, evidence_type, level,
                 confidence, reason, review_id, task_id, handbook_entry_id,
                 metadata_json, contribution_tags_json, org_contribution_score,
                 suggested_premium_rate, validation_state, ai_reason, ai_confidence,
                 created_at, updated_at,
                 sync_status, last_synced_at, pending_sync_action
-            ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'synced', ?, '')
+            ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'synced', ?, '')
             ON CONFLICT(id) DO UPDATE SET
+                sandbox_id = excluded.sandbox_id,
                 level = excluded.level,
                 confidence = excluded.confidence,
                 reason = excluded.reason,
@@ -368,7 +387,7 @@ def pull_evidence_from_cloud(
                 pending_sync_action = ''
             """,
             (
-                eid, str(e.get("signalId", "")), str(e.get("userId", "")), str(e.get("userName", "")),
+                eid, (sandbox_id or "sbx_local_default"), str(e.get("signalId", "")), str(e.get("userId", "")), str(e.get("userName", "")),
                 str(e.get("abilityKey", "")), str(e.get("evidenceType", "")), str(e.get("level", "")),
                 str(e.get("confidence", "medium")), str(e.get("reason", "")),
                 e.get("reviewId"), e.get("taskId"), e.get("handbookEntryId"),
@@ -382,15 +401,16 @@ def pull_evidence_from_cloud(
         )
         merged += 1
 
-    db.set_setting("last_growth_evidence_pull_at", server_ts)
+    db.set_setting(pull_key, server_ts)
     db.conn.commit()
     return {"pulled": len(items), "merged": merged, "skipped_pending": skipped_pending}
 
 
 def pull_validation_events_from_cloud(
-    db: Database, *, cloud_base_url: str, cloud_token: str, httpx_client,
+    db: Database, *, cloud_base_url: str, cloud_token: str, httpx_client, sandbox_id: str | None = None,
 ) -> dict[str, object]:
-    since = db.get_setting("last_growth_validation_pull_at", "")
+    pull_key = _scoped_pull_key("last_growth_validation_pull_at", sandbox_id)
+    since = db.get_setting(pull_key, "") or db.get_setting("last_growth_validation_pull_at", "")
     try:
         resp = httpx_client.get(
             f"{cloud_base_url.rstrip('/')}/api/v1/growth/sync/validation-events",
@@ -420,11 +440,12 @@ def pull_validation_events_from_cloud(
         db.conn.execute(
             """
             INSERT INTO growth_validation_events(
-                id, user_id, evidence_id, event_type, actor_id, actor_name,
+                id, sandbox_id, user_id, evidence_id, event_type, actor_id, actor_name,
                 source_type, source_id, detail_json, created_at, updated_at,
                 sync_status, last_synced_at, pending_sync_action
-            ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'synced', ?, '')
+            ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'synced', ?, '')
             ON CONFLICT(id) DO UPDATE SET
+                sandbox_id = excluded.sandbox_id,
                 event_type = excluded.event_type,
                 actor_id = excluded.actor_id,
                 actor_name = excluded.actor_name,
@@ -435,7 +456,7 @@ def pull_validation_events_from_cloud(
                 pending_sync_action = ''
             """,
             (
-                vid, str(v.get("userId", "")), str(v.get("evidenceId", "")),
+                vid, (sandbox_id or "sbx_local_default"), str(v.get("userId", "")), str(v.get("evidenceId", "")),
                 str(v.get("eventType", "")), str(v.get("actorId", "")), str(v.get("actorName", "")),
                 str(v.get("sourceType", "")), v.get("sourceId"),
                 str(v.get("detailJson", "{}")),
@@ -445,7 +466,7 @@ def pull_validation_events_from_cloud(
         )
         merged += 1
 
-    db.set_setting("last_growth_validation_pull_at", server_ts)
+    db.set_setting(pull_key, server_ts)
     db.conn.commit()
     return {"pulled": len(events), "merged": merged, "skipped_pending": skipped_pending}
 

@@ -59,8 +59,16 @@ from app.models import (
     WeeklyReviewTaskEntryRecord,
     XpLedgerEntryRecord,
 )
+from app.services.sandbox_registry import DEFAULT_LOCAL_SANDBOX_ID, get_active_sandbox_id
 
 ABILITY_ORDER = ("exec", "collab", "analyze", "insight", "risk", "write")
+
+
+def _active_sandbox_id(db: Database) -> str:
+    try:
+        return get_active_sandbox_id(db)
+    except Exception:
+        return DEFAULT_LOCAL_SANDBOX_ID
 
 # N1: role_tier → 能力维度集合 + 标签覆盖
 # CEO 看到的 6 维不同：战略判断/对外影响/组织建设/危机决策/远见洞察/资源调配
@@ -1165,7 +1173,7 @@ class _SourceContribution:
     sample_title: str = ""  # 最新一条的标题（给 evidence 用）
 
 
-def _count_source_events(db: Database, user_id: str) -> dict[str, _SourceContribution]:
+def _count_source_events(db: Database, user_id: str, *, sandbox_id: str | None = None) -> dict[str, _SourceContribution]:
     """从所有原始表统计该用户每类事件的件数 + 抽样标题。"""
 
     contributions: dict[str, _SourceContribution] = {}
@@ -1223,9 +1231,17 @@ def _count_source_events(db: Database, user_id: str) -> dict[str, _SourceContrib
             SELECT title, created_at
             FROM handbook_entries
             WHERE author_user_id = ?
+              AND (
+                ? IS NULL
+                OR COALESCE(client_id, '') IN (SELECT id FROM clients WHERE COALESCE(sandbox_id, '') = ?)
+                OR (
+                  COALESCE(source_object_type, '') = 'task'
+                  AND COALESCE(source_object_id, '') IN (SELECT id FROM tasks WHERE COALESCE(sandbox_id, '') = ?)
+                )
+              )
             ORDER BY created_at DESC
             """,
-            (user_id,),
+            (user_id, sandbox_id, sandbox_id or "", sandbox_id or ""),
         )
         if rows:
             _add("handbook_entry", len(rows), str(rows[0]["title"])[:50])
@@ -1239,9 +1255,10 @@ def _count_source_events(db: Database, user_id: str) -> dict[str, _SourceContrib
             SELECT title, updated_at
             FROM tasks
             WHERE owner_id = ? AND status = 'done'
+              AND (? IS NULL OR COALESCE(sandbox_id, '') = ?)
             ORDER BY updated_at DESC
             """,
-            (user_id,),
+            (user_id, sandbox_id, sandbox_id or ""),
         )
         if rows:
             _add("task_done", len(rows), str(rows[0]["title"])[:50])
@@ -1251,8 +1268,8 @@ def _count_source_events(db: Database, user_id: str) -> dict[str, _SourceContrib
     # B2 · 任务创建（不过滤 status，只计数量）
     try:
         row = db.fetchone(
-            "SELECT COUNT(*) AS cnt FROM tasks WHERE creator_id = ?",
-            (user_id,),
+            "SELECT COUNT(*) AS cnt FROM tasks WHERE creator_id = ? AND (? IS NULL OR COALESCE(sandbox_id, '') = ?)",
+            (user_id, sandbox_id, sandbox_id or ""),
         )
         if row:
             _add("task_created", int(row["cnt"] or 0))
@@ -1268,8 +1285,16 @@ def _count_source_events(db: Database, user_id: str) -> dict[str, _SourceContrib
             SELECT COALESCE(SUM(reuse_count), 0) AS total
             FROM handbook_entries
             WHERE author_user_id = ?
+              AND (
+                ? IS NULL
+                OR COALESCE(client_id, '') IN (SELECT id FROM clients WHERE COALESCE(sandbox_id, '') = ?)
+                OR (
+                  COALESCE(source_object_type, '') = 'task'
+                  AND COALESCE(source_object_id, '') IN (SELECT id FROM tasks WHERE COALESCE(sandbox_id, '') = ?)
+                )
+              )
             """,
-            (user_id,),
+            (user_id, sandbox_id, sandbox_id or "", sandbox_id or ""),
         )
         if row:
             _add("handbook_reused", int(row["total"] or 0))
@@ -1285,8 +1310,9 @@ def _count_source_events(db: Database, user_id: str) -> dict[str, _SourceContrib
               COALESCE(SUM(save_count), 0) AS saves
             FROM exp_wall_quotes
             WHERE author_user_id = ? AND status = 'active'
+              AND (? IS NULL OR COALESCE(sandbox_id, 'sbx_local_default') = ?)
             """,
-            (user_id,),
+            (user_id, sandbox_id, sandbox_id or ""),
         )
         if row:
             _add("exp_wall_liked", int(row["likes"] or 0))
@@ -1320,13 +1346,19 @@ def _count_source_events(db: Database, user_id: str) -> dict[str, _SourceContrib
             FROM risk_signals r
             WHERE r.status = 'active'
               AND r.client_id IN (
-                SELECT DISTINCT client_id FROM v2_documents WHERE owner_user_id = ?
+                SELECT DISTINCT d.client_id
+                FROM v2_documents d
+                LEFT JOIN clients c ON c.id = d.client_id
+                WHERE d.owner_user_id = ?
+                  AND (? IS NULL OR COALESCE(c.sandbox_id, '') = ?)
                 UNION
-                SELECT DISTINCT client_id FROM tasks WHERE owner_id = ? AND client_id IS NOT NULL
+                SELECT DISTINCT client_id FROM tasks
+                WHERE owner_id = ? AND client_id IS NOT NULL
+                  AND (? IS NULL OR COALESCE(sandbox_id, '') = ?)
               )
             ORDER BY r.captured_at DESC
             """,
-            (user_id, user_id),
+            (user_id, sandbox_id, sandbox_id or "", user_id, sandbox_id, sandbox_id or ""),
         )
         if rows:
             _add("risk_signal_owned", len(rows), str(rows[0]["title"])[:50])
@@ -1341,8 +1373,12 @@ def _count_source_events(db: Database, user_id: str) -> dict[str, _SourceContrib
             WHERE owner_user_id = ?
               AND kind NOT IN ('task_doc', 'event_line_update_doc', 'review_entry_doc')
               AND visible_category NOT IN ('任务资料', '待处理', '归档')
+              AND (
+                ? IS NULL
+                OR COALESCE(client_id, '') IN (SELECT id FROM clients WHERE COALESCE(sandbox_id, '') = ?)
+              )
             """,
-            (user_id,),
+            (user_id, sandbox_id, sandbox_id or ""),
         )
         if row:
             _add("document_owned", int(row["cnt"] or 0))
@@ -1355,8 +1391,12 @@ def _count_source_events(db: Database, user_id: str) -> dict[str, _SourceContrib
             """
             SELECT COUNT(*) AS cnt FROM memory_facts
             WHERE owner_user_id = ? AND scope_type = 'client' AND confidence >= 0.5
+              AND (
+                ? IS NULL
+                OR COALESCE(scope_id, '') IN (SELECT id FROM clients WHERE COALESCE(sandbox_id, '') = ?)
+              )
             """,
-            (user_id,),
+            (user_id, sandbox_id, sandbox_id or ""),
         )
         if row:
             _add("memory_owned_client", int(row["cnt"] or 0))
@@ -1466,16 +1506,17 @@ class _ObjectiveEvidence:
     occurred_at: str
 
 
-def _fetch_exp_wall_evidence(db: Database, user_id: str) -> list[_ObjectiveEvidence]:
+def _fetch_exp_wall_evidence(db: Database, user_id: str, *, sandbox_id: str | None = None) -> list[_ObjectiveEvidence]:
     try:
         rows = db.fetchall(
             """
             SELECT id, quote_text, category, contribution_score, like_count, save_count, created_at
             FROM exp_wall_quotes
             WHERE author_user_id = ? AND status = 'active'
+              AND (? IS NULL OR COALESCE(sandbox_id, 'sbx_local_default') = ?)
             ORDER BY created_at DESC
             """,
-            (user_id,),
+            (user_id, sandbox_id, sandbox_id or ""),
         )
     except Exception:
         return []
@@ -1581,10 +1622,10 @@ def _fetch_document_evidence(db: Database, user_id: str, *, limit: int = 20) -> 
     return items
 
 
-def _collect_objective_evidence(db: Database, user_id: str) -> list[_ObjectiveEvidence]:
+def _collect_objective_evidence(db: Database, user_id: str, *, sandbox_id: str | None = None) -> list[_ObjectiveEvidence]:
     """汇总该用户在数据中心留下的全部客观证据，按时间倒序。"""
     bucket: list[_ObjectiveEvidence] = []
-    bucket.extend(_fetch_exp_wall_evidence(db, user_id))
+    bucket.extend(_fetch_exp_wall_evidence(db, user_id, sandbox_id=sandbox_id))
     bucket.extend(_fetch_memory_evidence(db, user_id))
     bucket.extend(_fetch_document_evidence(db, user_id))
     bucket.sort(key=lambda x: x.occurred_at, reverse=True)
@@ -2330,6 +2371,7 @@ def _build_internal_learning_picks(
     user_id: str,
     ability_scores: list[GrowthAbilityScoreRecord],
     profile_map: dict[str, GrowthAbilityProfileRecord],
+    sandbox_id: str | None = None,
 ) -> GrowthLearningRecord:
     """L3：基于最弱 2 个能力维度推同事 handbook + 经验墙金句。"""
     record = GrowthLearningRecord()
@@ -2354,10 +2396,18 @@ def _build_internal_learning_picks(
                 FROM handbook_entries
                 WHERE COALESCE(author_user_id, '') != ?
                   AND ability_keys_json LIKE ?
+                  AND (
+                    ? IS NULL
+                    OR COALESCE(client_id, '') IN (SELECT id FROM clients WHERE COALESCE(sandbox_id, '') = ?)
+                    OR (
+                      COALESCE(source_object_type, '') = 'task'
+                      AND COALESCE(source_object_id, '') IN (SELECT id FROM tasks WHERE COALESCE(sandbox_id, '') = ?)
+                    )
+                  )
                 ORDER BY reuse_count DESC, created_at DESC
                 LIMIT 2
                 """,
-                (user_id, f'%"{weak.abilityKey}"%'),
+                (user_id, f'%"{weak.abilityKey}"%', sandbox_id, sandbox_id or "", sandbox_id or ""),
             )
             candidate_rows.extend(strict)
         except Exception:
@@ -2369,10 +2419,18 @@ def _build_internal_learning_picks(
                     SELECT id, title, summary, author_user_name, reuse_count, ability_keys_json
                     FROM handbook_entries
                     WHERE COALESCE(author_user_id, '') != ?
+                      AND (
+                        ? IS NULL
+                        OR COALESCE(client_id, '') IN (SELECT id FROM clients WHERE COALESCE(sandbox_id, '') = ?)
+                        OR (
+                          COALESCE(source_object_type, '') = 'task'
+                          AND COALESCE(source_object_id, '') IN (SELECT id FROM tasks WHERE COALESCE(sandbox_id, '') = ?)
+                        )
+                      )
                     ORDER BY reuse_count DESC, created_at DESC
                     LIMIT 2
                     """,
-                    (user_id,),
+                    (user_id, sandbox_id, sandbox_id or "", sandbox_id or ""),
                 )
                 candidate_rows.extend(broad)
             except Exception:
@@ -2405,10 +2463,11 @@ def _build_internal_learning_picks(
                     SELECT id, quote_text, like_count, save_count, author_user_id
                     FROM exp_wall_quotes
                     WHERE author_user_id != ? AND status='active' AND category = ?
+                      AND (? IS NULL OR COALESCE(sandbox_id, 'sbx_local_default') = ?)
                     ORDER BY hot_score DESC
                     LIMIT 1
                     """,
-                    (user_id, wall_cat),
+                    (user_id, wall_cat, sandbox_id, sandbox_id or ""),
                 )
                 for row in ew_rows:
                     record.internalPicks.append(
@@ -2655,7 +2714,7 @@ def _get_or_build_ability_trends_lazy(
     return _build_ability_trends(db, user_id, ability_scores, profile_map, weeks=8)
 
 
-def _build_social_feedback(db: Database, user_id: str) -> GrowthSocialFeedbackRecord:
+def _build_social_feedback(db: Database, user_id: str, *, sandbox_id: str | None = None) -> GrowthSocialFeedbackRecord:
     """H4：让用户看见"努力被看见"——聚合近 30 天的被复用 / 点赞 / 收藏。
 
     数据源：
@@ -2676,8 +2735,16 @@ def _build_social_feedback(db: Database, user_id: str) -> GrowthSocialFeedbackRe
             FROM handbook_entries
             WHERE author_user_id = ?
               AND (last_reused_at IS NULL OR last_reused_at >= ?)
+              AND (
+                ? IS NULL
+                OR COALESCE(client_id, '') IN (SELECT id FROM clients WHERE COALESCE(sandbox_id, '') = ?)
+                OR (
+                  COALESCE(source_object_type, '') = 'task'
+                  AND COALESCE(source_object_id, '') IN (SELECT id FROM tasks WHERE COALESCE(sandbox_id, '') = ?)
+                )
+              )
             """,
-            (user_id, cutoff),
+            (user_id, cutoff, sandbox_id, sandbox_id or "", sandbox_id or ""),
         )
         if row:
             feedback.handbookReuseCount = int(row["total_reuse"] or 0)
@@ -2694,8 +2761,9 @@ def _build_social_feedback(db: Database, user_id: str) -> GrowthSocialFeedbackRe
                 COALESCE(SUM(save_count), 0) AS total_save
             FROM exp_wall_quotes
             WHERE author_user_id = ? AND status = 'active' AND created_at >= ?
+              AND (? IS NULL OR COALESCE(sandbox_id, 'sbx_local_default') = ?)
             """,
-            (user_id, cutoff),
+            (user_id, cutoff, sandbox_id, sandbox_id or ""),
         )
         if row:
             feedback.expWallQuoteCount = int(row["quote_count"] or 0)
@@ -3093,14 +3161,16 @@ def _insert_signal(
     if existing:
         return str(existing["id"])
     signal_id = _new_id("gse")
+    sandbox_id = _active_sandbox_id(db)
     db.execute(
         """
         INSERT INTO growth_signal_events(
-            id, user_id, user_name, source_type, source_id, review_id, task_id, week_label, raw_text, context_json, dedupe_key, created_at
-        ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            id, sandbox_id, user_id, user_name, source_type, source_id, review_id, task_id, week_label, raw_text, context_json, dedupe_key, created_at
+        ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             signal_id,
+            sandbox_id,
             user_id,
             user_name,
             source_type,
@@ -3234,14 +3304,16 @@ def _insert_evidence_and_xp(
         validation_state=validation_state,
     )
     evidence_id = _new_id("gev")
+    sandbox_id = _active_sandbox_id(db)
     db.execute(
         """
         INSERT INTO growth_evidence_records(
-            id, signal_id, user_id, user_name, ability_key, evidence_type, level, confidence, reason, review_id, task_id, handbook_entry_id, metadata_json, contribution_tags_json, org_contribution_score, suggested_premium_rate, validation_state, ai_reason, ai_confidence, created_at
-        ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            id, sandbox_id, signal_id, user_id, user_name, ability_key, evidence_type, level, confidence, reason, review_id, task_id, handbook_entry_id, metadata_json, contribution_tags_json, org_contribution_score, suggested_premium_rate, validation_state, ai_reason, ai_confidence, created_at
+        ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             evidence_id,
+            sandbox_id,
             signal_id,
             user_id,
             user_name,
@@ -3291,11 +3363,12 @@ def _insert_evidence_and_xp(
     db.execute(
         """
         INSERT INTO xp_ledger(
-            id, user_id, user_name, ability_key, evidence_id, xp_type, delta, base_xp, premium_rate, premium_xp, total_xp, contribution_tags_json, validation_state, org_contribution_score, dedupe_key, week_label, created_at, reversed_at
-        ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)
+            id, sandbox_id, user_id, user_name, ability_key, evidence_id, xp_type, delta, base_xp, premium_rate, premium_xp, total_xp, contribution_tags_json, validation_state, org_contribution_score, dedupe_key, week_label, created_at, reversed_at
+        ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)
         """,
         (
             _new_id("xp"),
+            sandbox_id,
             user_id,
             user_name,
             ability_key,
@@ -3348,14 +3421,16 @@ def _record_validation_event(
     if existing:
         return False
     event_id = _new_id("gve")
+    sandbox_id = _active_sandbox_id(db)
     db.execute(
         """
         INSERT INTO growth_validation_events(
-            id, user_id, evidence_id, event_type, actor_id, actor_name, source_type, source_id, detail_json, created_at
-        ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            id, sandbox_id, user_id, evidence_id, event_type, actor_id, actor_name, source_type, source_id, detail_json, created_at
+        ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             event_id,
+            sandbox_id,
             user_id,
             evidence_id,
             event_type,
@@ -3857,11 +3932,12 @@ def rebuild_learning_recommendations(
         db.execute(
             """
             INSERT INTO learning_recommendations(
-                id, user_id, user_name, ability_key, content_item_id, trigger_source_type, trigger_source_id, reason, linked_task_id, client_id, client_name, event_line_id, event_line_name, project_stage, trigger_node, why_now, linked_contexts_json, priority, status, accepted_task_id, dismissed_reason, dedupe_key, created_at, updated_at
-            ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', NULL, NULL, ?, ?, ?)
+                id, sandbox_id, user_id, user_name, ability_key, content_item_id, trigger_source_type, trigger_source_id, reason, linked_task_id, client_id, client_name, event_line_id, event_line_name, project_stage, trigger_node, why_now, linked_contexts_json, priority, status, accepted_task_id, dismissed_reason, dedupe_key, created_at, updated_at
+            ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', NULL, NULL, ?, ?, ?)
             """,
             (
                 _new_id("rec"),
+                _active_sandbox_id(db),
                 user_id,
                 user_name,
                 ability_key,
@@ -4274,6 +4350,185 @@ def _build_ledger_entry(profile_map: dict[str, GrowthAbilityProfileRecord], row)
         createdAt=str(row["created_at"]),
         reversedAt=str(row["reversed_at"]) if row["reversed_at"] else None,
     )
+
+
+def _primary_ability_for_source(source_kind: str) -> str:
+    weights = ABILITY_WEIGHTS_BY_SOURCE.get(source_kind, {})
+    if not weights:
+        return "exec"
+    return max(weights.items(), key=lambda item: item[1])[0]
+
+
+def _source_delta_for_entry(source_kind: str) -> int:
+    ability_key = _primary_ability_for_source(source_kind)
+    weight = ABILITY_WEIGHTS_BY_SOURCE.get(source_kind, {}).get(ability_key, 1.0)
+    return max(1, int(round(SOURCE_BASE_XP.get(source_kind, 1.0) * weight)))
+
+
+def _source_entry_record(
+    profile_map: dict[str, GrowthAbilityProfileRecord],
+    *,
+    user_id: str,
+    user_name: str,
+    source_kind: str,
+    source_id: str,
+    source_title: str,
+    reason: str,
+    created_at: str,
+    task_id: str | None = None,
+    handbook_entry_id: str | None = None,
+    client_id: str | None = None,
+    client_name: str | None = None,
+) -> XpLedgerEntryRecord:
+    ability_key = _primary_ability_for_source(source_kind)
+    profile = profile_map.get(ability_key)
+    delta = _source_delta_for_entry(source_kind)
+    return XpLedgerEntryRecord(
+        id=f"src_{source_kind}_{source_id}",
+        userId=user_id,
+        userName=user_name,
+        abilityKey=ability_key,  # type: ignore[arg-type]
+        abilityLabel=profile.label if profile else ability_key,
+        evidenceId=source_id,
+        xpType="reflection",
+        delta=delta,
+        baseXp=delta,
+        premiumRate=0.0,
+        premiumXp=0,
+        totalXp=delta,
+        reason=reason,
+        sourceType=source_kind,
+        sourceId=source_id,
+        sourceTitle=source_title or None,
+        handbookEntryId=handbook_entry_id,
+        taskId=task_id,
+        clientId=client_id,
+        clientName=client_name,
+        sourceRoute=[source_kind],
+        evidenceRefs=[],
+        contextSummary=reason,
+        linkedContexts=[],
+        contributionTags=[],
+        validationState="candidate",
+        orgContributionScore=0,
+        weekLabel="",
+        createdAt=created_at,
+    )
+
+
+def _build_recent_real_source_entries(
+    db: Database,
+    user_id: str,
+    user_name: str,
+    profile_map: dict[str, GrowthAbilityProfileRecord],
+    *,
+    sandbox_id: str | None = None,
+    limit: int = 12,
+) -> list[XpLedgerEntryRecord]:
+    entries: list[XpLedgerEntryRecord] = []
+    try:
+        rows = db.fetchall(
+            """
+            SELECT t.id, t.title, t.client_id, t.updated_at, c.name AS client_name
+            FROM tasks t
+            LEFT JOIN clients c ON c.id = t.client_id
+            WHERE t.owner_id = ? AND t.status = 'done'
+              AND (? IS NULL OR COALESCE(t.sandbox_id, '') = ?)
+            ORDER BY t.updated_at DESC
+            LIMIT ?
+            """,
+            (user_id, sandbox_id, sandbox_id or "", limit),
+        )
+        for row in rows:
+            entries.append(
+                _source_entry_record(
+                    profile_map,
+                    user_id=user_id,
+                    user_name=user_name,
+                    source_kind="task_done",
+                    source_id=str(row["id"]),
+                    source_title=str(row["title"] or "完成任务"),
+                    reason=f"完成任务「{str(row['title'] or '未命名任务')[:50]}」",
+                    created_at=str(row["updated_at"] or ""),
+                    task_id=str(row["id"]),
+                    client_id=str(row["client_id"]) if row["client_id"] else None,
+                    client_name=str(row["client_name"]) if row["client_name"] else None,
+                )
+            )
+    except Exception:
+        pass
+
+    try:
+        rows = db.fetchall(
+            """
+            SELECT h.id, h.title, h.client_id, h.created_at, c.name AS client_name
+            FROM handbook_entries h
+            LEFT JOIN clients c ON c.id = h.client_id
+            WHERE h.author_user_id = ?
+              AND (
+                ? IS NULL
+                OR COALESCE(h.client_id, '') IN (SELECT id FROM clients WHERE COALESCE(sandbox_id, '') = ?)
+                OR (
+                  COALESCE(h.source_object_type, '') = 'task'
+                  AND COALESCE(h.source_object_id, '') IN (SELECT id FROM tasks WHERE COALESCE(sandbox_id, '') = ?)
+                )
+              )
+            ORDER BY h.created_at DESC
+            LIMIT ?
+            """,
+            (user_id, sandbox_id, sandbox_id or "", sandbox_id or "", limit),
+        )
+        for row in rows:
+            entries.append(
+                _source_entry_record(
+                    profile_map,
+                    user_id=user_id,
+                    user_name=user_name,
+                    source_kind="handbook_entry",
+                    source_id=str(row["id"]),
+                    source_title=str(row["title"] or "经验手册"),
+                    reason=f"沉淀经验「{str(row['title'] or '未命名经验')[:50]}」",
+                    created_at=str(row["created_at"] or ""),
+                    handbook_entry_id=str(row["id"]),
+                    client_id=str(row["client_id"]) if row["client_id"] else None,
+                    client_name=str(row["client_name"]) if row["client_name"] else None,
+                )
+            )
+    except Exception:
+        pass
+
+    try:
+        rows = db.fetchall(
+            """
+            SELECT id, quote_text, category, created_at
+            FROM exp_wall_quotes
+            WHERE author_user_id = ? AND status = 'active'
+              AND (? IS NULL OR COALESCE(sandbox_id, 'sbx_local_default') = ?)
+            ORDER BY created_at DESC
+            LIMIT ?
+            """,
+            (user_id, sandbox_id, sandbox_id or "", limit),
+        )
+        for row in rows:
+            entries.append(
+                _source_entry_record(
+                    profile_map,
+                    user_id=user_id,
+                    user_name=user_name,
+                    source_kind="exp_wall_liked",
+                    source_id=str(row["id"]),
+                    source_title=str(row["quote_text"] or "组织金句"),
+                    reason=f"组织经验墙收录「{str(row['quote_text'] or '金句')[:50]}」",
+                    created_at=str(row["created_at"] or ""),
+                )
+            )
+    except Exception:
+        pass
+
+    dedup: dict[tuple[str, str], XpLedgerEntryRecord] = {}
+    for entry in sorted(entries, key=lambda item: item.createdAt, reverse=True):
+        dedup.setdefault((entry.sourceType, entry.sourceId), entry)
+    return list(dedup.values())[:limit]
 
 
 def _build_source_coverage(
@@ -4755,14 +5010,14 @@ def build_growth_ledger(db: Database, user_id: str, *, ability_key: str | None =
     return GrowthLedgerResponse(entries=[_build_ledger_entry(profile_map, row) for row in rows])
 
 
-def build_growth_overview(db: Database, user_id: str, user_name: str, *, week_label: str = "") -> GrowthOverviewRecord:
+def build_growth_overview(db: Database, user_id: str, user_name: str, *, week_label: str = "", sandbox_id: str | None = None) -> GrowthOverviewRecord:
     ensure_growth_catalog(db)
     profile_map = _fetch_profile_map(db)
     # K3：能力分主算法切换到真实数据源（ledger 仅做时间线展示用）
     # 旧 ledger 严重失真：3/6 能力 100% 来自徽章解锁自动送 XP。新算法直接读
     # weekly_reviews / handbook / tasks / commitments / risk_signals 等原始
     # 表，按 ABILITY_WEIGHTS_BY_SOURCE 配置矩阵折算。
-    source_contributions = _count_source_events(db, user_id)
+    source_contributions = _count_source_events(db, user_id, sandbox_id=sandbox_id)
     totals = _compute_ability_totals_from_sources(source_contributions)
     weekly = {
         str(row["ability_key"]): int(row["xp"] or 0)
@@ -4788,7 +5043,22 @@ def build_growth_overview(db: Database, user_id: str, user_name: str, *, week_la
         (user_id, week_label),
     ) if week_label else None
 
-    recent_entries = build_growth_ledger(db, user_id).entries[:6]
+    ledger_recent_entries = build_growth_ledger(db, user_id).entries
+    real_source_entries = _build_recent_real_source_entries(
+        db,
+        user_id,
+        user_name,
+        profile_map,
+        sandbox_id=sandbox_id,
+    )
+    merged_recent: dict[tuple[str, str], XpLedgerEntryRecord] = {}
+    for item in [*ledger_recent_entries, *real_source_entries]:
+        merged_recent.setdefault((item.sourceType, item.sourceId), item)
+    recent_entries = sorted(
+        merged_recent.values(),
+        key=lambda item: item.createdAt,
+        reverse=True,
+    )[:6]
     weekly_entries = build_growth_ledger(db, user_id, week_label=week_label).entries if week_label else recent_entries
     recommendations = list_learning_recommendations(db, user_id)
     pending_captures = _list_pending_captures(db, user_id)
@@ -4796,7 +5066,7 @@ def build_growth_overview(db: Database, user_id: str, user_name: str, *, week_la
     # K3：旧 G1 客观证据加权保留为弱叠加（避免双计——新算法已经把
     # document/memory 纳入 source_contributions），仅 exp_wall_quote
     # 这种"被组织看见"的强信号继续用 G1 路径补强。
-    objective_evidence = _collect_objective_evidence(db, user_id)
+    objective_evidence = _collect_objective_evidence(db, user_id, sandbox_id=sandbox_id)
 
     ability_scores: list[GrowthAbilityScoreRecord] = []
     total_xp = 0
@@ -4863,7 +5133,7 @@ def build_growth_overview(db: Database, user_id: str, user_name: str, *, week_la
         recentEntries=recent_entries,
         recommendations=recommendations,
         sourceCoverage=_build_source_coverage(db, user_id, objective_evidence=objective_evidence),
-        socialFeedback=_build_social_feedback(db, user_id),
+        socialFeedback=_build_social_feedback(db, user_id, sandbox_id=sandbox_id),
         abilityTrends=_get_or_build_ability_trends_lazy(db, user_id, ability_scores, profile_map),
         dailyActivity=_build_daily_activity(db, user_id, days=84),
         commitmentSummary=_build_commitment_summary(db, user_id),
@@ -4871,7 +5141,7 @@ def build_growth_overview(db: Database, user_id: str, user_name: str, *, week_la
         reviewStreak=_build_review_streak(db, user_id),
         workTypeDistribution=_build_work_type_distribution(db, user_id),
         impactCurve=_build_impact_curve(db, user_id),
-        learning=_build_internal_learning_picks(db, user_id, ability_scores, profile_map),
+        learning=_build_internal_learning_picks(db, user_id, ability_scores, profile_map, sandbox_id=sandbox_id),
         peerComparison=_build_peer_comparison(db, user_id, ability_scores),
         projectGrowthHighlights=project_highlights,
         eventLineGrowthHighlights=event_line_highlights,

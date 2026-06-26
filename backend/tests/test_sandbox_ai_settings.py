@@ -51,6 +51,8 @@ def make_ai_service(tmp_path: Path) -> tuple[AiService, Database]:
 
 def test_remote_ai_config_and_key_are_scoped_by_workspace(tmp_path: Path) -> None:
     service, db = make_ai_service(tmp_path)
+    org_a = create_sandbox(db, kind="organization", name="组织 A", cloud_api_url="https://cloud-a.example.test")
+    activate_sandbox(db, org_a.id)
 
     service.configure(
         "openai_compatible",
@@ -78,7 +80,7 @@ def test_remote_ai_config_and_key_are_scoped_by_workspace(tmp_path: Path) -> Non
     assert service.current_model() == "model-b"
     assert service.export_current_api_key() == "key-b"
 
-    activate_sandbox(db, DEFAULT_LOCAL_SANDBOX_ID)
+    activate_sandbox(db, org_a.id)
     assert service.current_model() == "model-a"
     assert service.current_base_url() == "https://a.example.test/v1"
     assert service.export_current_api_key() == "key-a"
@@ -118,7 +120,8 @@ def test_local_model_is_shared_device_resource_but_remote_is_not(tmp_path: Path)
     )
     assert service.export_current_api_key() == "key-c"
 
-    activate_sandbox(db, DEFAULT_LOCAL_SANDBOX_ID)
+    org_d = create_sandbox(db, kind="organization", name="组织 D2", cloud_api_url="https://cloud-d2.example.test")
+    activate_sandbox(db, org_d.id)
     assert service.current_base_url() == "http://127.0.0.1:11434/v1"
     assert service.export_current_api_key() == "local-token"
 

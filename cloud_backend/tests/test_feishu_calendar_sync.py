@@ -1098,6 +1098,48 @@ def test_feishu_task_inbound_updates_existing_task_without_pushing_back_to_feish
     assert updated_row["progress_status"] == "done"
 
 
+def test_feishu_task_inbound_preserves_existing_yiyu_collaborators_when_remote_member_match_is_partial(tmp_path, monkeypatch):
+    client = make_client(tmp_path, monkeypatch)
+    headers = auth_headers(client)
+    profile = client.get("/api/v1/auth/me", headers=headers).json()
+    organization_id = profile["organizationId"]
+    owner_id = bind_current_user_to_feishu(client, headers, receive_id="ou_inbound_partial_owner")
+    collaborator_id = another_employee_id(client, organization_id, owner_id)
+    seed_feishu_inbound_cursor(client, organization_id, owner_id, "ou_inbound_partial_owner")
+    save_org_feishu_integration(client, headers, monkeypatch)
+    monkeypatch.setattr(cloud_main, "_feishu_fetch_tenant_access_token", lambda **_: ("tenant_demo", {"code": 0}))
+    monkeypatch.setattr(cloud_main, "_feishu_member_access_token_for_user", lambda *args, **kwargs: "user_access_demo")
+    remote_task = {
+        "guid": "task_guid_inbound_partial_members",
+        "summary": "飞书任务初始标题",
+        "members": [{"id": "ou_inbound_partial_owner"}],
+        "updated_at": "2026-05-29T09:00:00+08:00",
+    }
+    monkeypatch.setattr(cloud_main, "_feishu_list_member_recent_tasks", lambda **_: {"code": 0, "data": {"items": [remote_task]}})
+    cloud_main._process_feishu_task_inbound_once(client.app.state.app_state)  # noqa: SLF001
+    task_row = client.app.state.app_state.db.fetchone("SELECT * FROM tasks WHERE source_id = ?", ("task_guid_inbound_partial_members",))
+    client.app.state.app_state.db.execute(
+        """
+        INSERT INTO task_collaborators(task_id, user_id, order_index, is_owner, inbox_status, return_reason, handled_at, created_at, updated_at)
+        VALUES(?, ?, 1, 0, 'accepted', NULL, ?, ?, ?)
+        """,
+        (task_row["id"], collaborator_id, cloud_main.now_iso(), cloud_main.now_iso(), cloud_main.now_iso()),
+    )
+    seed_feishu_inbound_cursor(client, organization_id, owner_id, "ou_inbound_partial_owner", since="2026-05-29T09:00:01+08:00")
+    updated_remote_task = {
+        **remote_task,
+        "summary": "飞书任务修改后的标题",
+        "updated_at": "2026-05-29T10:00:00+08:00",
+    }
+    monkeypatch.setattr(cloud_main, "_feishu_list_member_recent_tasks", lambda **_: {"code": 0, "data": {"items": [updated_remote_task]}})
+
+    result = cloud_main._process_feishu_task_inbound_once(client.app.state.app_state)  # noqa: SLF001
+
+    assert result["synced"] == 1
+    collaborators = set(cloud_main._task_collaborator_ids(client.app.state.app_state, str(task_row["id"])))  # noqa: SLF001
+    assert collaborators == {owner_id, collaborator_id}
+
+
 def test_feishu_task_inbound_does_not_overwrite_newer_local_completion(tmp_path, monkeypatch):
     client = make_client(tmp_path, monkeypatch)
     headers = auth_headers(client)

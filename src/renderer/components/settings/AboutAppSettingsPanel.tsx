@@ -3,7 +3,6 @@ import { RefreshCw, CheckCircle2, AlertCircle, RotateCcw, FileText, ShieldAlert,
 import type { DesktopAppInfo, OfficialPushUpdatePayload, UpdateEventPayload } from '../../../shared/types';
 import { UpdateContentCard } from './UpdateContentCard';
 import { ForceUpdatePreviewModal } from './ForceUpdatePreviewModal';
-import { FeedbackSection } from './FeedbackSection';
 import { OFFICIAL_PUSH_STATE_EVENT, UPDATE_STATE_KEY } from '../UpdateNotifier';
 
 interface Props {
@@ -382,8 +381,6 @@ export function AboutAppSettingsPanel({ desktopAppInfo }: Props): React.ReactEle
           预览「强制更新」弹窗(开发用)
         </button>
       </div>
-
-      <FeedbackSection desktopAppInfo={desktopAppInfo} />
 
       <ForceUpdatePreviewModal open={showForcePreview} onClose={() => setShowForcePreview(false)} />
     </div>

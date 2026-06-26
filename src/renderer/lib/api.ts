@@ -90,6 +90,8 @@ import type {
   EventLineDetail,
   EventLineMutationPayload,
   GoalRecord,
+  GrowthExperienceWallItem,
+  GrowthExperienceWallResponse,
   GrowthLedgerResponse,
   GrowthOverview,
   GrowthPendingCaptureActionPayload,
@@ -476,6 +478,24 @@ function _retryDelayMs(attempt: number): number {
   return Math.min(5000, 600 * 2 ** (attempt - 1));
 }
 
+function _requestHeaders(method: string, options?: RequestInit): HeadersInit | undefined {
+  const headers = new Headers(options?.headers ?? {});
+  const body = options?.body;
+  const hasBody = body !== undefined && body !== null;
+  const isFormData = typeof FormData !== 'undefined' && body instanceof FormData;
+  if (
+    method !== 'GET' &&
+    method !== 'HEAD' &&
+    hasBody &&
+    !isFormData &&
+    !headers.has('Content-Type')
+  ) {
+    headers.set('Content-Type', 'application/json');
+  }
+  const headerEntries = Array.from(headers.entries());
+  return headerEntries.length > 0 ? Object.fromEntries(headerEntries) : undefined;
+}
+
 async function request<T>(path: string, options?: RequestInit): Promise<T> {
   const method = (options?.method ?? 'GET').toUpperCase();
   const isGet = method === 'GET';
@@ -489,11 +509,8 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
     let response: Response;
     try {
       response = await fetch(`${baseUrl}${path}`, {
-        headers: {
-          'Content-Type': 'application/json',
-          ...(options?.headers ?? {}),
-        },
         ...options,
+        headers: _requestHeaders(method, options),
       });
     } catch (error) {
       const detail = error instanceof Error ? error.message : String(error);
@@ -5811,6 +5828,17 @@ export async function createHandbook(payload: HandbookEntryPayload) {
 export async function getGrowthOverview(weekLabel?: string) {
   const search = weekLabel ? `?weekLabel=${encodeURIComponent(weekLabel)}` : '';
   return request<GrowthOverview>(`/api/v1/growth/overview${search}`);
+}
+
+export async function getGrowthExperienceWall(refreshCloud = true) {
+  const search = refreshCloud ? '' : '?refreshCloud=false';
+  return request<GrowthExperienceWallResponse>(`/api/v1/growth/experience-wall${search}`);
+}
+
+export async function likeGrowthExperienceWallQuote(id: string) {
+  return request<GrowthExperienceWallItem>(`/api/v1/growth/experience-wall/${encodeURIComponent(id)}/like`, {
+    method: 'POST',
+  });
 }
 
 export async function getGrowthWorkbench(params?: {

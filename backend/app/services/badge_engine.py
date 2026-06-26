@@ -18,9 +18,17 @@ from app.models import (
     GrowthAbilityKey,
     GrowthContextLinkRecord,
 )
+from app.services.sandbox_registry import DEFAULT_LOCAL_SANDBOX_ID, get_active_sandbox_id
 
 AbilityLabel = Literal["沟通协作", "客户导向", "执行推进", "组织管理", "经营意识", "学习沉淀"]
 RuleType = Literal["count", "consecutive", "ratio", "sequence", "composite"]
+
+
+def _active_sandbox_id(db: Database) -> str:
+    try:
+        return get_active_sandbox_id(db)
+    except Exception:
+        return DEFAULT_LOCAL_SANDBOX_ID
 
 ABILITY_LABELS: dict[GrowthAbilityKey, str] = {
     "collab": "沟通协作",
@@ -1087,14 +1095,16 @@ def _award_badge_xp(
     evidence_id = _new_id("gev")
     created_at = unlocked_at or _now_iso()
     reason = f"已自动点亮成长勋章【{badge.name}】"
+    sandbox_id = _active_sandbox_id(db)
     db.execute(
         """
         INSERT INTO growth_signal_events(
-            id, user_id, user_name, source_type, source_id, review_id, task_id, week_label, raw_text, context_json, dedupe_key, created_at
-        ) VALUES(?, ?, ?, 'badge_unlock', ?, NULL, NULL, ?, ?, ?, ?, ?)
+            id, sandbox_id, user_id, user_name, source_type, source_id, review_id, task_id, week_label, raw_text, context_json, dedupe_key, created_at
+        ) VALUES(?, ?, ?, ?, 'badge_unlock', ?, NULL, NULL, ?, ?, ?, ?, ?)
         """,
         (
             signal_id,
+            sandbox_id,
             user_id,
             user_name,
             badge.id,
@@ -1108,11 +1118,12 @@ def _award_badge_xp(
     db.execute(
         """
         INSERT INTO growth_evidence_records(
-            id, signal_id, user_id, user_name, ability_key, evidence_type, level, confidence, reason, review_id, task_id, handbook_entry_id, metadata_json, contribution_tags_json, org_contribution_score, suggested_premium_rate, validation_state, ai_reason, ai_confidence, created_at
-        ) VALUES(?, ?, ?, ?, ?, 'improvement', 'l3', 'high', ?, NULL, NULL, NULL, ?, '[]', 0, 0, 'validated', ?, 0, ?)
+            id, sandbox_id, signal_id, user_id, user_name, ability_key, evidence_type, level, confidence, reason, review_id, task_id, handbook_entry_id, metadata_json, contribution_tags_json, org_contribution_score, suggested_premium_rate, validation_state, ai_reason, ai_confidence, created_at
+        ) VALUES(?, ?, ?, ?, ?, ?, 'improvement', 'l3', 'high', ?, NULL, NULL, NULL, ?, '[]', 0, 0, 'validated', ?, 0, ?)
         """,
         (
             evidence_id,
+            sandbox_id,
             signal_id,
             user_id,
             user_name,
@@ -1126,11 +1137,12 @@ def _award_badge_xp(
     db.execute(
         """
         INSERT INTO xp_ledger(
-            id, user_id, user_name, ability_key, evidence_id, xp_type, delta, base_xp, premium_rate, premium_xp, total_xp, contribution_tags_json, validation_state, org_contribution_score, dedupe_key, week_label, created_at, reversed_at
-        ) VALUES(?, ?, ?, ?, ?, 'improvement', ?, ?, 0, 0, ?, '[]', 'validated', 0, ?, ?, ?, NULL)
+            id, sandbox_id, user_id, user_name, ability_key, evidence_id, xp_type, delta, base_xp, premium_rate, premium_xp, total_xp, contribution_tags_json, validation_state, org_contribution_score, dedupe_key, week_label, created_at, reversed_at
+        ) VALUES(?, ?, ?, ?, ?, ?, 'improvement', ?, ?, 0, 0, ?, '[]', 'validated', 0, ?, ?, ?, NULL)
         """,
         (
             _new_id("xp"),
+            sandbox_id,
             user_id,
             user_name,
             badge.abilityKey,
@@ -1166,11 +1178,12 @@ def _sync_badge_unlocks(db: Database, *, user_id: str, user_name: str, badges: l
         db.execute(
             """
             INSERT INTO badge_unlock_records(
-                id, user_id, user_name, badge_id, badge_code, badge_name, category_id, ability_key, xp, evidence_ids_json, unlocked_at, historical, created_at
-            ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                id, sandbox_id, user_id, user_name, badge_id, badge_code, badge_name, category_id, ability_key, xp, evidence_ids_json, unlocked_at, historical, created_at
+            ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 _new_id("bud"),
+                _active_sandbox_id(db),
                 user_id,
                 user_name,
                 badge.id,

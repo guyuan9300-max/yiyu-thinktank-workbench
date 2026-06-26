@@ -27,6 +27,7 @@ def test_cloud_registration_without_organization_name_uses_default_name(tmp_path
         "/api/v1/auth/register",
         json={
             "email": "local-first-owner@example.com",
+            "phone": "13800138101",
             "fullName": "本地优先拥有者",
             "password": "Password123!",
         },
@@ -52,6 +53,7 @@ def test_cloud_registration_uses_local_organization_name(tmp_path, monkeypatch):
         "/api/v1/auth/register",
         json={
             "email": "local-org-name@example.com",
+            "phone": "13800138102",
             "fullName": "本机身份用户",
             "password": "Password123!",
             "organizationName": "本机初始化组织",
@@ -74,6 +76,7 @@ def test_cloud_registration_conflicting_email_returns_binding_guidance(tmp_path,
         "/api/v1/auth/register",
         json={
             "email": "existing-cloud@example.com",
+            "phone": "13800138103",
             "fullName": "已有云账号",
             "password": "Password123!",
         },
@@ -84,6 +87,7 @@ def test_cloud_registration_conflicting_email_returns_binding_guidance(tmp_path,
         "/api/v1/auth/register",
         json={
             "email": "existing-cloud@example.com",
+            "phone": "13800138104",
             "fullName": "重复云账号",
             "password": "Password123!",
         },
@@ -99,6 +103,7 @@ def test_cloud_registration_invalid_invite_returns_clear_error(tmp_path, monkeyp
         "/api/v1/auth/register",
         json={
             "email": "invalid-invite@example.com",
+            "phone": "13800138105",
             "fullName": "无效邀请码用户",
             "password": "Password123!",
             "inviteCode": "not-a-real-invite",

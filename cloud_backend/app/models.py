@@ -109,7 +109,7 @@ class AuthFlowResponse(BaseModel):
 
 class RegisterPayload(BaseModel):
     email: EmailStr
-    phone: str | None = None
+    phone: str
     fullName: str
     password: str = Field(min_length=8)
     organizationName: str | None = None

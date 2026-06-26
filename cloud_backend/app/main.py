@@ -474,6 +474,16 @@ def _normalize_account_phone(raw_value: str | None) -> str:
     return f"+{digits}" if len(digits) > 11 else digits
 
 
+def _normalize_feishu_mobile_from_account_fields(feishu_mobile: str | None, phone_number: str | None) -> str:
+    explicit_mobile = _normalize_feishu_mobile(feishu_mobile)
+    if explicit_mobile:
+        return explicit_mobile
+    normalized_phone = _normalize_feishu_mobile(phone_number)
+    if len(normalized_phone) == 13 and normalized_phone.startswith("86"):
+        return normalized_phone[2:]
+    return normalized_phone
+
+
 def _account_membership_status(row) -> Literal["none", "pending", "approved", "rejected"]:
     value = str(_row_get(row, "membership_status", "") or "").strip()
     account_status = str(_row_get(row, "account_status", "approved") or "approved")
@@ -8571,20 +8581,54 @@ def _upsert_inbound_task_collaborators(
     owner_id: str,
     collaborator_ids: list[str],
     timestamp: str,
-) -> None:
-    ordered = list(dict.fromkeys([owner_id, *[item for item in collaborator_ids if item]]))
+    preserve_existing: bool = False,
+) -> list[str]:
+    existing_rows = state.db.fetchall(
+        "SELECT user_id, inbox_status, handled_at, created_at FROM task_collaborators WHERE task_id = ? ORDER BY order_index ASC",
+        (task_id,),
+    )
+    existing_ids = [str(row["user_id"]) for row in existing_rows if str(row["user_id"] or "").strip()]
+    existing_by_user = {str(row["user_id"]): row for row in existing_rows}
+    preserved_ids = existing_ids if preserve_existing else []
+    ordered = list(
+        dict.fromkeys([
+            owner_id,
+            *[item for item in collaborator_ids if item],
+            *preserved_ids,
+        ])
+    )
+
+    def existing_value(user_id: str, key: str):
+        row = existing_by_user.get(user_id)
+        if row is None:
+            return None
+        try:
+            return row[key]
+        except Exception:
+            return None
+
     state.db.execute("DELETE FROM task_collaborators WHERE task_id = ?", (task_id,))
     state.db.executemany(
         """
         INSERT INTO task_collaborators(
             task_id, user_id, order_index, is_owner, inbox_status, return_reason, handled_at, created_at, updated_at
-        ) VALUES(?, ?, ?, ?, 'accepted', NULL, ?, ?, ?)
+        ) VALUES(?, ?, ?, ?, ?, NULL, ?, ?, ?)
         """,
         [
-            (task_id, user_id, index, 1 if user_id == owner_id else 0, timestamp, timestamp, timestamp)
+            (
+                task_id,
+                user_id,
+                index,
+                1 if user_id == owner_id else 0,
+                str(existing_value(user_id, "inbox_status") or "accepted"),
+                existing_value(user_id, "handled_at") or timestamp,
+                existing_value(user_id, "created_at") or timestamp,
+                timestamp,
+            )
             for index, user_id in enumerate(ordered)
         ],
     )
+    return ordered
 
 
 def _matched_yiyu_members_for_feishu_task(state: AppState, *, organization_id: str, item: dict) -> list[str]:
@@ -8741,7 +8785,14 @@ def _sync_inbound_feishu_task_to_yiyu(
                 organization_id,
             ),
         )
-        _upsert_inbound_task_collaborators(state, task_id=task_id, owner_id=owner_id, collaborator_ids=collaborator_ids, timestamp=timestamp)
+        effective_collaborator_ids = _upsert_inbound_task_collaborators(
+            state,
+            task_id=task_id,
+            owner_id=owner_id,
+            collaborator_ids=collaborator_ids,
+            timestamp=timestamp,
+            preserve_existing=True,
+        )
         action = "update"
     else:
         task_id = new_id("task")
@@ -8779,7 +8830,14 @@ def _sync_inbound_feishu_task_to_yiyu(
                 timestamp,
             ),
         )
-        _upsert_inbound_task_collaborators(state, task_id=task_id, owner_id=owner_id, collaborator_ids=collaborator_ids, timestamp=timestamp)
+        effective_collaborator_ids = _upsert_inbound_task_collaborators(
+            state,
+            task_id=task_id,
+            owner_id=owner_id,
+            collaborator_ids=collaborator_ids,
+            timestamp=timestamp,
+            preserve_existing=False,
+        )
         _record_activity(
             state,
             task_id,
@@ -8790,7 +8848,7 @@ def _sync_inbound_feishu_task_to_yiyu(
         action = "create"
 
     task_row = _task_row_or_404(state, task_id, organization_id=organization_id)
-    _sync_task_org_link(state, task_row, collaborator_ids)
+    _sync_task_org_link(state, task_row, effective_collaborator_ids)
     _upsert_feishu_sync_mapping(
         state,
         organization_id=organization_id,
@@ -9312,10 +9370,13 @@ def _resolve_feishu_delivery_target(
     tenant_access_token: str,
 ) -> tuple[str | None, Literal["matched", "not_found", "failed"], str | None]:
     user_row = state.db.fetchone(
-        "SELECT feishu_mobile FROM employee_accounts WHERE id = ?",
+        "SELECT feishu_mobile, phone_number FROM employee_accounts WHERE id = ?",
         (user_id,),
     )
-    mobile = _normalize_feishu_mobile(str(user_row["feishu_mobile"] or "")) if user_row else ""
+    mobile = _normalize_feishu_mobile_from_account_fields(
+        str(user_row["feishu_mobile"] or "") if user_row else "",
+        str(user_row["phone_number"] or "") if user_row else "",
+    )
     if not mobile:
         _upsert_org_feishu_delivery_target(
             state,
@@ -9699,15 +9760,20 @@ def _match_accounts_by_field(state: AppState, organization_id: str, field_name: 
         normalized_mobile = _normalize_feishu_mobile(normalized)
         if not normalized_mobile:
             return []
+        normalized_account_phone = f"+86{normalized_mobile}" if len(normalized_mobile) == 11 and normalized_mobile.startswith("1") else normalized_mobile
         return state.db.fetchall(
             """
             SELECT *
             FROM employee_accounts
             WHERE organization_id = ?
               AND account_status NOT IN ('rejected', 'disabled')
-              AND replace(feishu_mobile, ' ', '') = ?
+              AND (
+                    replace(feishu_mobile, ' ', '') = ?
+                 OR phone_number = ?
+                 OR replace(phone_number, '+86', '') = ?
+              )
             """,
-            (organization_id, normalized_mobile),
+            (organization_id, normalized_mobile, normalized_account_phone, normalized_mobile),
         )
     if field_name == "full_name":
         return state.db.fetchall(
@@ -15176,6 +15242,9 @@ def create_app() -> FastAPI:
         timestamp = now_iso()
         normalized_email = payload.email.lower()
         normalized_phone = _normalize_account_phone(payload.phone)
+        default_feishu_mobile = _normalize_feishu_mobile(payload.phone)
+        if not normalized_phone:
+            raise HTTPException(status_code=400, detail="请填写手机号")
         identity = _identity_row_by_email(state, normalized_email)
         password_hash = hash_password(payload.password)
         if identity:
@@ -15231,8 +15300,8 @@ def create_app() -> FastAPI:
                 id, identity_id, organization_id, email, phone_number, full_name, password_hash, primary_role, account_status,
                 membership_status, membership_submitted_at, membership_rejected_reason,
                 approved_at, approved_by, rejected_reason, disabled_at, recent_mentions_json, last_login_at,
-                department_id, department_name, job_title, manager_name, current_focus, is_department_lead, created_at, updated_at
-            ) VALUES(?, ?, ?, ?, ?, ?, ?, 'employee', ?, ?, ?, NULL, ?, NULL, NULL, NULL, '[]', ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                department_id, department_name, job_title, manager_name, current_focus, is_department_lead, feishu_mobile, created_at, updated_at
+            ) VALUES(?, ?, ?, ?, ?, ?, ?, 'employee', ?, ?, ?, NULL, ?, NULL, NULL, NULL, '[]', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 user_id,
@@ -15253,6 +15322,7 @@ def create_app() -> FastAPI:
                 manager_name,
                 current_focus,
                 1 if payload.isDepartmentLead else 0,
+                default_feishu_mobile,
                 timestamp,
                 timestamp,
             ),

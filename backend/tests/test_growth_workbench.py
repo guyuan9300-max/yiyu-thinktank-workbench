@@ -63,7 +63,7 @@ def test_growth_workbench_understands_agreement_task(tmp_path: Path):
 
     uploaded = client.post(
         f"/api/v1/tasks/{task_id}/attachments",
-        files={"file": ("agreement-draft.md", b"# 测试论坛A \xe5\x8d\x8f\xe8\xae\xae\xe8\x8d\x89\xe6\xa1\x88", "text/markdown")},
+        files={"file": ("agreement-draft.md", "# 测试论坛A 协议草案".encode("utf-8"), "text/markdown")},
         data={"clientId": client_id, "taskTitle": "下午找 测试论坛A 沟通战略合作协议"},
     )
     assert uploaded.status_code == 200

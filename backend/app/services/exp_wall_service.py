@@ -22,15 +22,18 @@
 from __future__ import annotations
 
 import logging
+import re
 import sqlite3
 import uuid
 from dataclasses import dataclass
 from datetime import datetime
+from difflib import SequenceMatcher
 from typing import Iterable, Literal
 
 from app.db import Database
 
 logger = logging.getLogger(__name__)
+DEFAULT_SANDBOX_ID = "sbx_local_default"
 
 
 # ──────────────────────────────────────────────────────────────────
@@ -104,6 +107,81 @@ def _new_id() -> str:
     return f"qt_{uuid.uuid4().hex[:12]}"
 
 
+def normalize_quote_for_dedupe(text: str) -> str:
+    normalized = re.sub(r"[\s\"'“”‘’《》<>()（）【】\[\]{}，。！？；：、,.!?;:·…—_\-]+", "", (text or "").strip().lower())
+    replacements = {
+        "核心源头": "源头",
+        "根源": "源头",
+        "根因": "源头",
+        "源头出问题": "源头错",
+        "源头出错": "源头错",
+        "出错": "错",
+        "错了": "错",
+        "不符合预期": "无效",
+        "不符预期": "无效",
+        "不达预期": "无效",
+        "没法": "无法",
+        "怎么": "再",
+        "彻底解决": "彻底",
+        "治标不治本": "不彻底",
+        "表层": "下游",
+        "局部": "下游",
+        "调整": "修改",
+        "排查": "查",
+        "优先": "先",
+        "錯": "错",
+        "臺": "台",
+        "裏": "里",
+    }
+    for source, target in replacements.items():
+        normalized = normalized.replace(source, target)
+    return normalized
+
+
+def _quote_dedupe_traits(text: str) -> set[str]:
+    raw = text or ""
+    normalized = normalize_quote_for_dedupe(raw)
+    traits: set[str] = set()
+    if any(token in raw for token in ("源头", "根源", "根因")) or "源头" in normalized:
+        traits.add("root_cause")
+    if any(token in raw for token in ("反复", "多次", "修改", "调整", "调", "改", "不符合预期", "不符预期", "不达预期", "无效")) or any(token in normalized for token in ("反复", "修改", "无效")):
+        traits.add("revision_loop")
+    if any(token in raw for token in ("下游", "其他地方", "表层", "局部", "治标不治本", "白费")) or any(token in normalized for token in ("下游", "其他地方", "不彻底", "白费")):
+        traits.add("downstream_fix")
+    if any(token in raw for token in ("彻底", "根本", "治标不治本")) or any(token in normalized for token in ("彻底", "不彻底")):
+        traits.add("complete_fix")
+    if any(token in raw for token in ("元信息", "分享", "卡片", "静态页")):
+        traits.add("share_meta")
+    return traits
+
+
+def quotes_are_near_duplicate(left: str, right: str) -> bool:
+    a = normalize_quote_for_dedupe(left)
+    b = normalize_quote_for_dedupe(right)
+    if not a or not b:
+        return False
+    if a == b:
+        return True
+    shorter, longer = (a, b) if len(a) <= len(b) else (b, a)
+    if len(shorter) >= 18 and shorter in longer:
+        return True
+    traits_a = _quote_dedupe_traits(left)
+    traits_b = _quote_dedupe_traits(right)
+    shared_traits = traits_a & traits_b
+    if "root_cause" in shared_traits and len(shared_traits) >= 2:
+        return True
+    if min(len(a), len(b)) < 18:
+        return False
+    ratio = SequenceMatcher(None, a, b).ratio()
+    if ratio >= 0.76:
+        return True
+    grams_a = {a[index:index + 2] for index in range(len(a) - 1)}
+    grams_b = {b[index:index + 2] for index in range(len(b) - 1)}
+    if grams_a and grams_b and len(grams_a & grams_b) / max(1, len(grams_a | grams_b)) >= 0.3:
+        return True
+    return False
+
+
 def _weight_for_tier(tier: str | None) -> float:
     return TIER_WEIGHTS.get((tier or "").strip().lower(), 1.0)
 
@@ -153,6 +231,8 @@ def insert_quote(
     source_type: str,
     source_object_id: str = "",
     category: str = DEFAULT_CATEGORY,
+    sandbox_id: str = DEFAULT_SANDBOX_ID,
+    author_display_name: str = "",
     now: str | None = None,
 ) -> str:
     """AI 提取 + 润色后调用此函数自动推送到组织墙。
@@ -175,15 +255,15 @@ def insert_quote(
     db.execute(
         """
         INSERT INTO exp_wall_quotes (
-            id, author_user_id, quote_text, source_excerpt,
+            id, sandbox_id, author_user_id, author_display_name, quote_text, source_excerpt,
             source_type, source_object_id, category, status,
             like_count, save_count, contribution_score, hot_score,
             extracted_at, created_at, updated_at,
             sync_status, pending_sync_action
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, 'active', 0, 0, ?, ?, ?, ?, ?, 'pending', 'upsert')
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', 0, 0, ?, ?, ?, ?, ?, 'pending', 'upsert')
         """,
         (
-            quote_id, author_user_id, quote_text.strip(), source_excerpt,
+            quote_id, sandbox_id or DEFAULT_SANDBOX_ID, author_user_id, author_display_name.strip(), quote_text.strip(), source_excerpt,
             source_type, source_object_id, category,
             PUSH_BASE_SCORE, PUSH_BASE_SCORE,  # 初始分 = 基础分
             timestamp, timestamp, timestamp,
@@ -204,6 +284,7 @@ def list_feed(
     category: str | None = None,
     limit: int = 30,
     offset: int = 0,
+    sandbox_id: str | None = None,
 ) -> list[QuoteRecord]:
     """拉取信息流。
 
@@ -213,6 +294,9 @@ def list_feed(
     """
     where = ["q.status = 'active'"]
     params: list[object] = []
+    if sandbox_id:
+        where.append("COALESCE(q.sandbox_id, ?) = ?")
+        params.extend([DEFAULT_SANDBOX_ID, sandbox_id])
     if category and category in CATEGORIES:
         where.append("q.category = ?")
         params.append(category)
@@ -225,7 +309,7 @@ def list_feed(
     rows = db.fetchall(
         f"""
         SELECT q.*,
-               op.name AS author_name,
+               COALESCE(NULLIF(op.name, ''), NULLIF(q.author_display_name, '')) AS author_name,
                op.role AS author_role
         FROM exp_wall_quotes q
         LEFT JOIN operators op ON op.id = q.author_user_id
@@ -242,7 +326,7 @@ def get_quote(db: Database, quote_id: str) -> QuoteRecord | None:
     row = db.fetchone(
         """
         SELECT q.*,
-               op.name AS author_name,
+               COALESCE(NULLIF(op.name, ''), NULLIF(q.author_display_name, '')) AS author_name,
                op.role AS author_role
         FROM exp_wall_quotes q
         LEFT JOIN operators op ON op.id = q.author_user_id
@@ -293,6 +377,7 @@ def toggle_reaction(
     quote_id: str,
     user_id: str,
     reaction_type: str,
+    sandbox_id: str = DEFAULT_SANDBOX_ID,
 ) -> dict[str, object]:
     """切换点赞/收藏状态。已点 → 取消；未点 → 点上。
 
@@ -302,7 +387,7 @@ def toggle_reaction(
         raise ValueError(f"reaction_type 必须是 {REACTION_TYPES}, 实际：{reaction_type!r}")
 
     quote_row = db.fetchone(
-        "SELECT id, status FROM exp_wall_quotes WHERE id = ?",
+        "SELECT id, status, sandbox_id FROM exp_wall_quotes WHERE id = ?",
         (quote_id,),
     )
     if not quote_row:
@@ -310,9 +395,12 @@ def toggle_reaction(
     if str(quote_row["status"]) != "active":
         raise ValueError("已删除的金句不能互动")
 
+    row_sandbox_id = str(quote_row["sandbox_id"] or DEFAULT_SANDBOX_ID)
+    if sandbox_id and row_sandbox_id != sandbox_id:
+        raise ValueError("金句不属于当前工作空间")
     existing = db.fetchone(
-        "SELECT id FROM exp_wall_reactions WHERE quote_id = ? AND user_id = ? AND reaction_type = ?",
-        (quote_id, user_id, reaction_type),
+        "SELECT id FROM exp_wall_reactions WHERE quote_id = ? AND user_id = ? AND reaction_type = ? AND COALESCE(sandbox_id, ?) = ?",
+        (quote_id, user_id, reaction_type, DEFAULT_SANDBOX_ID, row_sandbox_id),
     )
 
     if existing:
@@ -331,10 +419,10 @@ def toggle_reaction(
         # 未点 → 点上
         db.execute(
             """
-            INSERT INTO exp_wall_reactions (id, quote_id, user_id, reaction_type, created_at, sync_status, pending_sync_action)
-            VALUES (?, ?, ?, ?, ?, 'pending', 'upsert')
+            INSERT INTO exp_wall_reactions (id, sandbox_id, quote_id, user_id, reaction_type, created_at, sync_status, pending_sync_action)
+            VALUES (?, ?, ?, ?, ?, ?, 'pending', 'upsert')
             """,
-            (f"rx_{uuid.uuid4().hex[:12]}", quote_id, user_id, reaction_type, _now_iso()),
+            (f"rx_{uuid.uuid4().hex[:12]}", row_sandbox_id, quote_id, user_id, reaction_type, _now_iso()),
         )
         action = "added"
 
@@ -549,6 +637,7 @@ def _quote_row_to_cloud_payload(row: sqlite3.Row) -> dict[str, object]:
     return {
         "id": str(row["id"]),
         "authorUserId": str(row["author_user_id"]),
+        "authorDisplayName": str(row["author_display_name"] or ""),
         "quoteText": str(row["quote_text"]),
         "sourceExcerpt": str(row["source_excerpt"] or ""),
         "sourceType": str(row["source_type"]),
@@ -573,6 +662,7 @@ def push_pending_quotes_to_cloud(
     cloud_base_url: str,
     cloud_token: str,
     httpx_client,
+    sandbox_id: str | None = None,
 ) -> dict[str, int]:
     """扫 sync_status='pending' 真 quote, 真逐条 POST 云端. 真成功 mark 'synced', 真失败 mark 'failed'.
 
@@ -583,8 +673,14 @@ def push_pending_quotes_to_cloud(
 
     Returns:
         {"pushed": N, "failed": M} 计数."""
+    where = "sync_status = 'pending'"
+    params: tuple[object, ...] = ()
+    if sandbox_id:
+        where += " AND COALESCE(sandbox_id, ?) = ?"
+        params = (DEFAULT_SANDBOX_ID, sandbox_id)
     pending_rows = db.fetchall(
-        "SELECT * FROM exp_wall_quotes WHERE sync_status = 'pending' ORDER BY updated_at ASC LIMIT 50",
+        f"SELECT * FROM exp_wall_quotes WHERE {where} ORDER BY updated_at ASC LIMIT 50",
+        params,
     )
     pushed = 0
     failed = 0
@@ -628,6 +724,7 @@ def push_pending_reactions_to_cloud(
     cloud_base_url: str,
     cloud_token: str,
     httpx_client,
+    sandbox_id: str | None = None,
 ) -> dict[str, int]:
     """同 push_pending_quotes_to_cloud. 真支持 'upsert' / 'delete' 双动作.
 
@@ -635,8 +732,14 @@ def push_pending_reactions_to_cloud(
     在 DELETE 真前真记录 — 真但目前 toggle_reaction 是 hard delete, 真**简化方案**: 真**云端按 DELETE
     endpoint 真 quote_id+reaction_type+user_id 真直接删** — 真不要求本地 row 还在."""
     # upsert 真 pending
+    where = "sync_status = 'pending' AND pending_sync_action = 'upsert'"
+    params: tuple[object, ...] = ()
+    if sandbox_id:
+        where += " AND COALESCE(sandbox_id, ?) = ?"
+        params = (DEFAULT_SANDBOX_ID, sandbox_id)
     upsert_rows = db.fetchall(
-        "SELECT * FROM exp_wall_reactions WHERE sync_status = 'pending' AND pending_sync_action = 'upsert' LIMIT 100",
+        f"SELECT * FROM exp_wall_reactions WHERE {where} LIMIT 100",
+        params,
     )
     pushed = 0
     failed = 0
@@ -685,6 +788,8 @@ def pull_quotes_from_cloud(
     cloud_base_url: str,
     cloud_token: str,
     httpx_client,
+    sandbox_id: str = DEFAULT_SANDBOX_ID,
+    request_timeout: float = 20.0,
 ) -> dict[str, object]:
     """真定时拉云端增量金句 (since=settings.last_exp_wall_pull_at).
 
@@ -693,13 +798,25 @@ def pull_quotes_from_cloud(
     真**作者展示信息** (full_name) 真**本地用 operators 表 join 真补**, 真**云端真 authorDisplayName 仅作 fallback**.
 
     真**保护**: 真**有 sync_status='pending' 真本地 row** 真**不被云端覆盖** (避免 push 还没成功就被 pull 反向冲掉)."""
-    since = db.get_setting("last_exp_wall_pull_at", "")
+    scoped_setting_key = f"last_exp_wall_pull_at.{sandbox_id or DEFAULT_SANDBOX_ID}"
+    since = db.get_setting(scoped_setting_key, "") or db.get_setting("last_exp_wall_pull_at", "")
+    missing_author_names = db.fetchone(
+        """
+        SELECT COUNT(1) AS count
+        FROM exp_wall_quotes
+        WHERE COALESCE(sandbox_id, ?) = ?
+          AND status = 'active'
+          AND COALESCE(author_display_name, '') = ''
+        """,
+        (DEFAULT_SANDBOX_ID, sandbox_id or DEFAULT_SANDBOX_ID),
+    )
+    force_full_pull = bool(missing_author_names and int(missing_author_names["count"] or 0) > 0)
     try:
         resp = httpx_client.get(
             f"{cloud_base_url.rstrip('/')}/api/v1/exp-wall/quotes",
-            params={"since": since} if since else {},
+            params={"since": since} if since and not force_full_pull else {},
             headers={"Authorization": f"Bearer {cloud_token}"},
-            timeout=20.0,
+            timeout=request_timeout,
         )
         if not (200 <= resp.status_code < 300):
             logger.warning("pull exp_wall quotes failed: HTTP %d", resp.status_code)
@@ -728,16 +845,21 @@ def pull_quotes_from_cloud(
         db.conn.execute(
             """
             INSERT INTO exp_wall_quotes(
-                id, author_user_id, quote_text, source_excerpt,
+                id, sandbox_id, author_user_id, author_display_name, quote_text, source_excerpt,
                 source_type, source_object_id, category, status,
                 deleted_by_user_id, deleted_at,
                 like_count, save_count, contribution_score, hot_score,
                 extracted_at, created_at, updated_at,
                 sync_status, last_synced_at, pending_sync_action
-            ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'synced', ?, '')
+            ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'synced', ?, '')
             ON CONFLICT(id) DO UPDATE SET
+                sandbox_id = excluded.sandbox_id,
+                author_user_id = excluded.author_user_id,
+                author_display_name = COALESCE(NULLIF(excluded.author_display_name, ''), exp_wall_quotes.author_display_name),
                 quote_text = excluded.quote_text,
                 source_excerpt = excluded.source_excerpt,
+                source_type = excluded.source_type,
+                source_object_id = excluded.source_object_id,
                 category = excluded.category,
                 status = excluded.status,
                 deleted_by_user_id = excluded.deleted_by_user_id,
@@ -752,7 +874,8 @@ def pull_quotes_from_cloud(
                 pending_sync_action = ''
             """,
             (
-                quote_id, str(q.get("authorUserId", "")), str(q.get("quoteText", "")),
+                quote_id, sandbox_id or DEFAULT_SANDBOX_ID, str(q.get("authorUserId", "")),
+                str(q.get("authorDisplayName", "")), str(q.get("quoteText", "")),
                 str(q.get("sourceExcerpt", "")), str(q.get("sourceType", "")),
                 str(q.get("sourceObjectId", "")), str(q.get("category", "方法论")),
                 str(q.get("status", "active")),
@@ -765,7 +888,7 @@ def pull_quotes_from_cloud(
         )
         merged += 1
 
-    db.set_setting("last_exp_wall_pull_at", server_ts)
+    db.set_setting(scoped_setting_key, server_ts)
     db.conn.commit()
     return {"pulled": len(quotes), "merged": merged, "skipped_pending": skipped_pending}
 
@@ -775,6 +898,7 @@ __all__ = [
     "REACTION_LIKE", "REACTION_SAVE",
     "ROLE_TIER_CEO", "ROLE_TIER_LEADER", "ROLE_TIER_MEMBER",
     "QuoteRecord",
+    "normalize_quote_for_dedupe", "quotes_are_near_duplicate",
     "insert_quote", "list_feed", "get_quote", "get_user_reactions",
     "toggle_reaction", "delete_quote", "can_delete_quote",
     "aggregate_contribution_by_user",

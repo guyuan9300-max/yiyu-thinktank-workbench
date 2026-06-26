@@ -25,7 +25,16 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from app.services.sandbox_registry import DEFAULT_LOCAL_SANDBOX_ID, get_active_sandbox_id
+
 logger = logging.getLogger(__name__)
+
+
+def _active_sandbox_id(db) -> str:
+    try:
+        return get_active_sandbox_id(db)
+    except Exception:
+        return DEFAULT_LOCAL_SANDBOX_ID
 
 
 def _now_iso() -> str:
@@ -290,9 +299,11 @@ def save_pending_quotes(
     user_id: str = "user_guyuan",
     user_name: str = "顾源源",
     *,
+    author_display_name: str = "",
     exp_wall_source_type: str = "client_analysis",
     exp_wall_source_object_id: str = "",
     exp_wall_category: str = "方法论",
+    sandbox_id: str = "sbx_local_default",
 ) -> int:
     """Save extracted quotes as pending captures + push to organization exp wall.
 
@@ -302,19 +313,60 @@ def save_pending_quotes(
     exp_wall_source_type 必须在 {task, meeting, document, client_analysis, ai_chat}。
     """
     from uuid import uuid4 as _uuid4
+    from app.services.exp_wall_service import SOURCE_TYPES, insert_quote, quotes_are_near_duplicate
+
     saved = 0
     now = _now_iso()
+    display_name = str(author_display_name or "").strip() or str(user_name or "").strip()
+    if not display_name:
+        try:
+            historical_author = db.fetchone(
+                """
+                SELECT author_display_name
+                FROM exp_wall_quotes
+                WHERE author_user_id = ? AND COALESCE(author_display_name, '') <> ''
+                ORDER BY COALESCE(updated_at, created_at) DESC
+                LIMIT 1
+                """,
+                (user_id,),
+            )
+            display_name = str(historical_author["author_display_name"] or "").strip() if historical_author else ""
+        except Exception:
+            display_name = ""
+    if not display_name:
+        display_name = "当前用户"
+
+    batch_texts: list[str] = []
     for q in quotes:
         text = str(q.get("text", "")).strip()
         source = str(q.get("source", "")).strip()
         if not text:
             continue
+        if any(quotes_are_near_duplicate(text, existing) for existing in batch_texts):
+            continue
+        try:
+            existing_rows = db.fetchall(
+                """
+                SELECT quote_text
+                FROM exp_wall_quotes
+                WHERE author_user_id = ?
+                  AND status = 'active'
+                  AND COALESCE(sandbox_id, ?) = ?
+                ORDER BY COALESCE(created_at, extracted_at) DESC
+                LIMIT 300
+                """,
+                (user_id, "sbx_local_default", sandbox_id),
+            )
+            if any(quotes_are_near_duplicate(text, str(row["quote_text"] or "")) for row in existing_rows):
+                continue
+        except Exception:
+            pass
         sig_id = f"gse_{_uuid4().hex[:10]}"
         try:
             db.execute(
-                """INSERT INTO growth_signal_events(id, user_id, user_name, source_type, source_id, raw_text, context_json, dedupe_key, created_at)
-                VALUES(?, ?, ?, 'review_insight_pending', ?, ?, ?, ?, ?)""",
-                (sig_id, user_id, user_name, source, text,
+                """INSERT INTO growth_signal_events(id, sandbox_id, user_id, user_name, source_type, source_id, raw_text, context_json, dedupe_key, created_at)
+                VALUES(?, ?, ?, ?, 'review_insight_pending', ?, ?, ?, ?, ?)""",
+                (sig_id, _active_sandbox_id(db), user_id, display_name, source, text,
                  json.dumps({"insightQuote": text, "insightSourceLabel": f"来源：{source}", "contextSummary": f"来源：{source}", "enriched": True}, ensure_ascii=False),
                  f"quote_{text[:30]}", now),
             )
@@ -334,7 +386,6 @@ def save_pending_quotes(
         except Exception:
             pass
         try:
-            from app.services.exp_wall_service import insert_quote, SOURCE_TYPES
             wall_source = exp_wall_source_type if exp_wall_source_type in SOURCE_TYPES else "client_analysis"
             existing = db.fetchone(
                 "SELECT id FROM exp_wall_quotes WHERE author_user_id = ? AND quote_text = ? AND status = 'active' LIMIT 1",
@@ -349,8 +400,11 @@ def save_pending_quotes(
                     source_type=wall_source,
                     source_object_id=exp_wall_source_object_id,
                     category=exp_wall_category,
+                    sandbox_id=sandbox_id,
+                    author_display_name=display_name,
                     now=now,
                 )
+                batch_texts.append(text)
         except Exception:
             pass
     return saved

@@ -383,6 +383,8 @@ from app.models import (
     GrowthAfterActionCaptureRecord,
     GrowthGenericLessonRecord,
     GrowthLedgerResponse,
+    GrowthExperienceWallItemRecord,
+    GrowthExperienceWallResponse,
     GrowthOverviewRecord,
     GrowthPendingCaptureActionPayload,
     GrowthPendingCaptureActionResponse,
@@ -1245,6 +1247,7 @@ from app.services.learning_presets import (
 )
 from app.services.secrets import MacOSKeychainSecretStore, MemorySecretStore
 from app.services.sandbox_registry import (
+    ACTIVE_SANDBOX_SETTING_KEY,
     DEFAULT_LOCAL_SANDBOX_ID,
     activate_sandbox,
     build_workspaces_response,
@@ -1258,6 +1261,7 @@ from app.services.sandbox_registry import (
     get_sandbox_kind,
     get_sandbox_local_identity_id,
     get_sandbox_setting,
+    migrate_local_draft_to_organization_if_possible,
     set_active_sandbox_setting,
     set_sandbox_local_identity_id,
     set_sandbox_setting,
@@ -2886,6 +2890,8 @@ def _review_entry_from_task(
     week_label: str,
     content_domain: str,
     review_id: str | None = None,
+    user_id: str | None = None,
+    user_name: str | None = None,
     note: str = "",
     structured_note: WeeklyReviewTaskStructuredNoteRecord | None = None,
     reviewed_at: str | None = None,
@@ -2897,6 +2903,8 @@ def _review_entry_from_task(
     return WeeklyReviewTaskEntryRecord(
         id=f"draft_{task.id}" if not review_id and not reviewed_at else f"review_{task.id}_{week_label}",
         reviewId=review_id,
+        userId=user_id,
+        userName=user_name,
         taskId=task.id,
         weekLabel=week_label,
         contentDomain=content_domain,  # type: ignore[arg-type]
@@ -3324,7 +3332,8 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", alias):
             raise ValueError("invalid SQL alias")
         return (
-            f"((COALESCE({alias}.client_id, '') IN ({active_client_ids_sql()})) "
+            f"(COALESCE({alias}.sandbox_id, '') = ? "
+            f"OR (COALESCE({alias}.client_id, '') IN ({active_client_ids_sql()})) "
             f"OR (COALESCE({alias}.source_object_type, '') = 'task' "
             f"AND COALESCE({alias}.source_object_id, '') IN ({active_task_ids_sql()})))"
         )
@@ -3467,42 +3476,43 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                     if state.job_stop.wait(timeout=300.0):
                         break
                     continue
+                sandbox_id = active_business_sandbox_id()
                 with _httpx.Client(timeout=20.0) as client:
                     # exp_wall (P1 备用)
                     push_q = _ew.push_pending_quotes_to_cloud(
-                        state.db, cloud_base_url=base_url, cloud_token=token, httpx_client=client,
+                        state.db, cloud_base_url=base_url, cloud_token=token, httpx_client=client, sandbox_id=sandbox_id,
                     )
                     push_r = _ew.push_pending_reactions_to_cloud(
-                        state.db, cloud_base_url=base_url, cloud_token=token, httpx_client=client,
+                        state.db, cloud_base_url=base_url, cloud_token=token, httpx_client=client, sandbox_id=sandbox_id,
                     )
                     pull_q = _ew.pull_quotes_from_cloud(
-                        state.db, cloud_base_url=base_url, cloud_token=token, httpx_client=client,
+                        state.db, cloud_base_url=base_url, cloud_token=token, httpx_client=client, sandbox_id=sandbox_id,
                     )
                     # handbook (前端经验墙真当前真用真)
                     push_h = _hb.push_pending_entries_to_cloud(
-                        state.db, cloud_base_url=base_url, cloud_token=token, httpx_client=client,
+                        state.db, cloud_base_url=base_url, cloud_token=token, httpx_client=client, sandbox_id=sandbox_id,
                     )
                     pull_h = _hb.pull_entries_from_cloud(
-                        state.db, cloud_base_url=base_url, cloud_token=token, httpx_client=client,
+                        state.db, cloud_base_url=base_url, cloud_token=token, httpx_client=client, sandbox_id=sandbox_id,
                     )
                     # 真growth (阶段 1) · 真**push 顺序 真要紧** — signal 先 push, evidence 后 push (FK 真依赖)
                     push_gs = _gs.push_pending_signals_to_cloud(
-                        state.db, cloud_base_url=base_url, cloud_token=token, httpx_client=client,
+                        state.db, cloud_base_url=base_url, cloud_token=token, httpx_client=client, sandbox_id=sandbox_id,
                     )
                     push_ge = _gs.push_pending_evidence_to_cloud(
-                        state.db, cloud_base_url=base_url, cloud_token=token, httpx_client=client,
+                        state.db, cloud_base_url=base_url, cloud_token=token, httpx_client=client, sandbox_id=sandbox_id,
                     )
                     push_gv = _gs.push_pending_validation_events_to_cloud(
-                        state.db, cloud_base_url=base_url, cloud_token=token, httpx_client=client,
+                        state.db, cloud_base_url=base_url, cloud_token=token, httpx_client=client, sandbox_id=sandbox_id,
                     )
                     pull_gs = _gs.pull_signals_from_cloud(
-                        state.db, cloud_base_url=base_url, cloud_token=token, httpx_client=client,
+                        state.db, cloud_base_url=base_url, cloud_token=token, httpx_client=client, sandbox_id=sandbox_id,
                     )
                     pull_ge = _gs.pull_evidence_from_cloud(
-                        state.db, cloud_base_url=base_url, cloud_token=token, httpx_client=client,
+                        state.db, cloud_base_url=base_url, cloud_token=token, httpx_client=client, sandbox_id=sandbox_id,
                     )
                     pull_gv = _gs.pull_validation_events_from_cloud(
-                        state.db, cloud_base_url=base_url, cloud_token=token, httpx_client=client,
+                        state.db, cloud_base_url=base_url, cloud_token=token, httpx_client=client, sandbox_id=sandbox_id,
                     )
                 # 真阶段 2 · 派生重算 (无网络真**本地真跑**, 真在 with 真之外)
                 if pull_gs["merged"] or pull_ge["merged"]:
@@ -5710,6 +5720,25 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             currentFocus=str(row["current_focus"] or "") or None,
         )
 
+    def _local_draft_user() -> SessionUserRecord:
+        return SessionUserRecord(
+            id="local-draft-user",
+            organizationId="local-draft",
+            organizationName="未连接组织",
+            email="",
+            phone=None,
+            fullName="本机草稿",
+            primaryRole="admin",
+            accountStatus="approved",
+            membershipStatus="approved",
+            departmentId=None,
+            departmentName=None,
+            pendingInviteCode=None,
+            jobTitle=None,
+            managerName=None,
+            currentFocus=None,
+        )
+
     def get_local_session_user() -> SessionUserRecord | None:
         identity_id = _local_session_user_id()
         row = _local_identity_row(identity_id)
@@ -5720,23 +5749,13 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         return _local_user_from_row(row)
 
     def _local_setup_state() -> AuthStateResponse:
-        if _local_identity_count() > 0:
-            return AuthStateResponse(
-                authenticated=False,
-                user=None,
-                message="请选择本机账号登录，或连接云端账号。",
-                sessionMode="local",
-                requiresLocalIdentitySetup=False,
-                localIdentityStatus="ready",
-            )
-        has_workspace_data = _has_local_workspace_data()
         return AuthStateResponse(
-            authenticated=False,
-            user=None,
-            message="已有本地数据，请先创建本机账号以保护工作区。" if has_workspace_data else "请先创建本机账号，再进入工作台。",
+            authenticated=True,
+            user=_local_draft_user(),
+            message="未连接组织，当前处于本机草稿状态。加入或创建组织后，草稿数据会迁入对应组织工作空间。",
             sessionMode="local",
-            requiresLocalIdentitySetup=True,
-            localIdentityStatus="needs_setup",
+            requiresLocalIdentitySetup=False,
+            localIdentityStatus="draft",
         )
 
     def _bind_current_local_identity_to_cloud(user: SessionUserRecord, identity_id: str | None = None) -> None:
@@ -13595,7 +13614,13 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
 
         user_id, user_name = resolve_growth_actor()
         resolved_week = resolve_growth_week_label(user_id, week_label)
-        overview = build_growth_overview(state.db, user_id=user_id, user_name=user_name, week_label=resolved_week)
+        overview = build_growth_overview(
+            state.db,
+            user_id=user_id,
+            user_name=user_name,
+            week_label=resolved_week,
+            sandbox_id=active_business_sandbox_id(),
+        )
 
         real_tasks = (
             fetch_tasks(
@@ -25292,10 +25317,12 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
 
     def build_local_review_record(row) -> WeeklyReviewRecord:
         operator = current_operator_row()
+        review_user_id = str(row["user_id"] or "").strip() or str(operator["id"])
+        review_user_name = _review_user_display_name(review_user_id, str(operator["name"] or ""))
         return WeeklyReviewRecord(
             id=str(row["id"]),
-            userId=str(operator["id"]),
-            userName=str(operator["name"]),
+            userId=review_user_id,
+            userName=review_user_name,
             weekLabel=str(row["week_label"]),
             workFreeNote=str(row["work_free_note"] or row["summary"] or ""),
             personalGrowthNote=str(row["personal_growth_note"] or ""),
@@ -25327,6 +25354,18 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             (review_id,),
         )
         return {str(row["task_id"]): dict(row) for row in rows}
+
+    def _review_user_display_name(user_id: str, fallback: str = "") -> str:
+        normalized_user_id = (user_id or "").strip()
+        fallback_name = (fallback or "").strip()
+        if normalized_user_id:
+            session_user = get_cached_session_user()
+            if session_user and session_user.id == normalized_user_id:
+                return session_user.fullName or session_user.email or fallback_name or "当前用户"
+            operator = state.db.fetchone("SELECT name FROM operators WHERE id = ? LIMIT 1", (normalized_user_id,))
+            if operator and str(operator["name"] or "").strip():
+                return str(operator["name"] or "").strip()
+        return fallback_name
 
     def summarize_local_review_notes(items: list[WeeklyReviewTaskEntryRecord]) -> str:
         if not items:
@@ -26691,7 +26730,8 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         placeholders = _sql_placeholders(tuple(week_labels))
         rows = state.db.fetchall(
             f"""
-            SELECT e.*
+            SELECT e.*,
+                   COALESCE(NULLIF(e.user_id, ''), NULLIF(r.user_id, '')) AS review_author_user_id
             FROM weekly_review_task_entries e
             INNER JOIN weekly_reviews r ON r.id = e.review_id
             INNER JOIN tasks t ON t.id = e.task_id AND {shared_task_sql('t')}
@@ -27506,6 +27546,8 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             note = str(row["note"] or "")
             structured_note = coerce_review_structured_note(row["structured_note_json"])
             snapshot = from_json(str(row["task_snapshot_json"] or "{}"), {})
+            review_author_user_id = str(row["review_author_user_id"] or "").strip()
+            review_author_user_name = _review_user_display_name(review_author_user_id)
             if task_rows:
                 task = task_rows[0]
                 merged_snapshot = {
@@ -27518,6 +27560,8 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                         week_label=week_label,
                         content_domain="work",
                         review_id=str(row["review_id"]),
+                        user_id=review_author_user_id or None,
+                        user_name=review_author_user_name or None,
                         note=note,
                         structured_note=structured_note,
                         reviewed_at=str(row["reviewed_at"]) if row["reviewed_at"] else None,
@@ -27531,6 +27575,8 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                     WeeklyReviewTaskEntryRecord(
                         id=str(row["id"]),
                         reviewId=str(row["review_id"]),
+                        userId=review_author_user_id or None,
+                        userName=review_author_user_name or None,
                         taskId=task_id,
                         weekLabel=week_label,
                         contentDomain="work",
@@ -27844,7 +27890,15 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                             from app.services.local_memory import extract_quotes_from_text, save_pending_quotes
                             overview_quotes = extract_quotes_from_text(state.ai, weekly_overview, "周复盘概览")
                             if overview_quotes:
-                                save_pending_quotes(state.db, overview_quotes)
+                                quote_user_id, quote_user_name = resolve_growth_actor()
+                                save_pending_quotes(
+                                    state.db,
+                                    overview_quotes,
+                                    user_id=quote_user_id,
+                                    user_name=quote_user_name,
+                                    author_display_name=quote_user_name,
+                                    sandbox_id=active_business_sandbox_id(),
+                                )
                             # Check if it's time to dream (memory consolidation)
                             if should_dream(state.data_dir):
                                 import threading as _dream_thr
@@ -27920,6 +27974,9 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
 
                     # Group notes by client (using local mapping)
                     by_client: dict[str, tuple[str, list[tuple[str, str]]]] = {}  # cid → (cname, [(title, note)])
+                    notes_by_author: dict[tuple[str, str], list[tuple[str, str]]] = {}
+                    default_review_author_id = (response.currentReview.userId if response.currentReview else "").strip()
+                    default_review_author_name = (response.currentReview.userName if response.currentReview else "").strip()
 
                     for item in response.workItems:
                         note = (item.note or "").strip()
@@ -27927,6 +27984,15 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                             continue
                         snap = item.taskSnapshot
                         title = snap.title
+                        note_author_id = (item.userId or "").strip() or default_review_author_id
+                        note_author_name = (item.userName or "").strip() or default_review_author_name
+                        if not note_author_id:
+                            note_author_id = (snap.ownerId or "").strip()
+                            note_author_name = note_author_name or (snap.ownerName or "").strip()
+                        if not note_author_id:
+                            note_author_id, fallback_author_name = resolve_growth_actor()
+                            note_author_name = note_author_name or fallback_author_name
+                        notes_by_author.setdefault((note_author_id, note_author_name or "当前用户"), []).append((title, note))
 
                         # Try to find the right client from local event line data
                         el_id = snap.eventLineId or ""
@@ -28003,13 +28069,20 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
 
                     # Extract golden quotes from all review notes
                     from app.services.local_memory import extract_quotes_from_text, save_pending_quotes
-                    # all_notes:跨所有客户的 (title, note) 扁平列表(由 by_client 还原)
-                    all_notes = [tn for _cname, notes in by_client.values() for tn in notes]
-                    all_review_text = "\n\n".join(f"【{t}】{n}" for t, n in all_notes if len(n) > 30)
-                    if all_review_text:
+                    for (quote_user_id, quote_user_name), author_notes in notes_by_author.items():
+                        all_review_text = "\n\n".join(f"【{t}】{n}" for t, n in author_notes if len(n) > 30)
+                        if not all_review_text:
+                            continue
                         quotes = extract_quotes_from_text(state.ai, all_review_text, "周复盘")
                         if quotes:
-                            save_pending_quotes(state.db, quotes)
+                            save_pending_quotes(
+                                state.db,
+                                quotes,
+                                user_id=quote_user_id,
+                                user_name=quote_user_name,
+                                author_display_name=quote_user_name,
+                                sandbox_id=active_business_sandbox_id(),
+                            )
                 except Exception:
                     pass
             _mem_thr.Thread(target=_bg_write_review_memory, daemon=True).start()
@@ -28053,6 +28126,9 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         target_week = week_label or current_review_week_label()
         review_row = local_review_row_for_week(target_week)
         review_entries = local_review_entries_by_task(str(review_row["id"])) if review_row else {}
+        current_review = build_local_review_record(review_row) if review_row else build_preview_review_record(target_week)
+        review_user_id = current_review.userId
+        review_user_name = current_review.userName
         tasks_in_week = [task for task in fetch_tasks(shared_task_where()) if _task_in_week(task, target_week)]
         tasks_by_id = {task.id: task for task in tasks_in_week}
         for task_id in review_entries:
@@ -28080,6 +28156,8 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 week_label=target_week,
                 content_domain="work",
                 review_id=str(review_row["id"]) if review_row else None,
+                user_id=str(stored.get("user_id") or review_user_id) if stored else review_user_id,
+                user_name=_review_user_display_name(str(stored.get("user_id") or review_user_id), review_user_name) if stored else review_user_name,
                 note=note,
                 structured_note=structured_note,
                 reviewed_at=reviewed_at,
@@ -28103,6 +28181,8 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             item = WeeklyReviewTaskEntryRecord(
                 id=str(stored["id"]),
                 reviewId=str(stored["review_id"]),
+                userId=str(stored.get("user_id") or review_user_id) or None,
+                userName=_review_user_display_name(str(stored.get("user_id") or review_user_id), review_user_name) or None,
                 taskId=task_id,
                 weekLabel=target_week,
                 contentDomain=content_domain,  # type: ignore[arg-type]
@@ -28112,7 +28192,6 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 taskSnapshot=snapshot,  # type: ignore[arg-type]
             )
             work_items.append(item)
-        current_review = build_local_review_record(review_row) if review_row else build_preview_review_record(target_week)
         work_analysis = None
         personal_analysis = None
         if include_analysis:
@@ -28584,7 +28663,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             FROM handbook_entries h
             WHERE {active_handbook_scope_sql("h")}
             """,
-            (active_sandbox_id, active_sandbox_id),
+            (active_sandbox_id, active_sandbox_id, active_sandbox_id),
         ) or 0)
         memory_fact_count = int(state.db.scalar(
             f"""
@@ -28609,7 +28688,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 )
               )
             """,
-            (active_sandbox_id, active_sandbox_id, active_sandbox_id),
+            (active_sandbox_id, active_sandbox_id, active_sandbox_id, active_sandbox_id),
         ) or 0)
         doc_count = int(state.db.scalar(
             """
@@ -31711,7 +31790,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
 
     @app.get("/api/v1/auth/me", response_model=AuthStateResponse)
     def auth_me() -> AuthStateResponse:
-        # 本地优先: 新设备没有云地址时仍可先创建本机账号进入软件。
+        # 本地优先: 新设备没有云地址时仍可先进入本机草稿状态。
         def _unauthenticated(message: str | None = None) -> AuthStateResponse:
             return AuthStateResponse(
                 authenticated=False,
@@ -31724,7 +31803,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         refresh_token = get_cloud_refresh_token()
         if not token and not refresh_token:
             if not _active_workspace_is_local():
-                return _unauthenticated("当前组织工作空间尚未登录云端账号。可登录云端，或切换到本机工作空间。")
+                return _unauthenticated("当前组织工作空间尚未登录云端账号。请登录云端，或在工作空间管理里加入/创建组织。")
             local_user = get_local_session_user()
             if local_user:
                 return AuthStateResponse(
@@ -31738,7 +31817,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         if not state.cloud_api_url:
             clear_cloud_session()
             if not _active_workspace_is_local():
-                return _unauthenticated("当前组织工作空间尚未配置云端服务地址。可配置云端，或切换到本机工作空间。")
+                return _unauthenticated("当前组织工作空间尚未配置云端服务地址。请在该组织的系统设置里填写云端地址。")
             local_user = get_local_session_user()
             if local_user:
                 return AuthStateResponse(authenticated=True, user=local_user, sessionMode="local", localIdentityStatus="ready")
@@ -31951,10 +32030,11 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         if existing:
             raise HTTPException(status_code=409, detail="本机已存在这个邮箱账号，请直接登录。")
         normalized_phone = _normalize_local_phone(payload.phone)
-        if normalized_phone:
-            existing_phone = state.db.fetchone("SELECT id FROM local_identities WHERE phone_number = ?", (normalized_phone,))
-            if existing_phone:
-                raise HTTPException(status_code=409, detail="本机已存在这个手机号账号，请直接登录。")
+        if not normalized_phone:
+            raise HTTPException(status_code=400, detail="请填写手机号，建议填写飞书账号绑定的手机号。")
+        existing_phone = state.db.fetchone("SELECT id FROM local_identities WHERE phone_number = ?", (normalized_phone,))
+        if existing_phone:
+            raise HTTPException(status_code=409, detail="本机已存在这个手机号账号，请直接登录。")
         organization_mode = payload.organizationMode if payload.organizationMode in {"create", "join"} else "create"
         membership_status = "pending" if organization_mode == "join" else "approved"
         organization_name = (payload.organizationName or "").strip() or (f"{full_name} 的本机工作区" if organization_mode == "create" else "")
@@ -32037,7 +32117,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
     @app.post("/api/v1/me/org-membership/apply", response_model=OrgMembershipSummaryRecord)
     def apply_me_org_membership(payload: OrgMembershipApplyPayload) -> OrgMembershipSummaryRecord:
         if not get_cloud_token() and not get_cloud_refresh_token():
-            raise HTTPException(status_code=400, detail="当前处于本机模式，请先登录云端账号。")
+            raise HTTPException(status_code=400, detail="当前未连接组织云端，请先登录或加入组织。")
         response = cloud_request(
             "POST",
             "/api/v1/me/org-membership/apply",
@@ -32087,6 +32167,21 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
 
     @app.get("/api/v1/org-integrations/feishu", response_model=OrgFeishuIntegrationRecord)
     def get_org_feishu_integration() -> OrgFeishuIntegrationRecord:
+        def cache_key(name: str) -> str:
+            return f"cache.feishu_status.{name}"
+
+        def cached_record() -> OrgFeishuIntegrationRecord | None:
+            raw = get_active_sandbox_setting(state.db, cache_key("org_integration"), "")
+            if not raw:
+                return None
+            try:
+                parsed = json.loads(raw)
+                if isinstance(parsed, dict):
+                    return OrgFeishuIntegrationRecord(**parsed)
+            except Exception:
+                return None
+            return None
+
         _offline = OrgFeishuIntegrationRecord(
             organizationId=None, organizationName=None, updatedAt=now_iso(),
             authorizationBlockedReason="云端暂时不可用，飞书协作功能稍后自动恢复。",
@@ -32096,10 +32191,12 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         try:
             payload = cloud_request("GET", "/api/v1/org-integrations/feishu")
             if isinstance(payload, dict):
-                return OrgFeishuIntegrationRecord(**payload)
-        except Exception:
-            pass
-        return _offline
+                record = OrgFeishuIntegrationRecord(**payload)
+                set_active_sandbox_setting(state.db, cache_key("org_integration"), json.dumps(record.model_dump(), ensure_ascii=False, default=str))
+                return record
+        except Exception as exc:
+            logger.warning("feishu.org_integration.fetch_failed: %s", exc)
+        return cached_record() or _offline
 
     @app.post("/api/v1/org-integrations/feishu/validate-and-save", response_model=OrgFeishuIntegrationRecord)
     def validate_and_save_org_feishu_integration(payload: OrgFeishuIntegrationSavePayload) -> OrgFeishuIntegrationRecord:
@@ -32112,10 +32209,24 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         )
         if not isinstance(response, dict):
             raise HTTPException(status_code=502, detail="Invalid org feishu payload")
-        return OrgFeishuIntegrationRecord(**response)
+        record = OrgFeishuIntegrationRecord(**response)
+        set_active_sandbox_setting(state.db, "cache.feishu_status.org_integration", json.dumps(record.model_dump(), ensure_ascii=False, default=str))
+        return record
 
     @app.get("/api/v1/me/feishu-delivery-profile", response_model=FeishuDeliveryProfileRecord)
     def get_feishu_delivery_profile() -> FeishuDeliveryProfileRecord:
+        def cached_record() -> FeishuDeliveryProfileRecord | None:
+            raw = get_active_sandbox_setting(state.db, "cache.feishu_status.delivery_profile", "")
+            if not raw:
+                return None
+            try:
+                parsed = json.loads(raw)
+                if isinstance(parsed, dict):
+                    return FeishuDeliveryProfileRecord(**parsed)
+            except Exception:
+                return None
+            return None
+
         if not get_cloud_token() and not get_cloud_refresh_token():
             return FeishuDeliveryProfileRecord(
                 userId="local-device-user",
@@ -32129,9 +32240,14 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         try:
             payload = cloud_request("GET", "/api/v1/me/feishu-delivery-profile")
             if isinstance(payload, dict):
-                return FeishuDeliveryProfileRecord(**payload)
+                record = FeishuDeliveryProfileRecord(**payload)
+                set_active_sandbox_setting(state.db, "cache.feishu_status.delivery_profile", json.dumps(record.model_dump(), ensure_ascii=False, default=str))
+                return record
         except Exception as exc:
             logger.warning("feishu.delivery_profile.fetch_failed: %s", exc)
+        cached = cached_record()
+        if cached:
+            return cached
         return FeishuDeliveryProfileRecord(
             userId="cloud-user",
             organizationId=None,
@@ -32154,10 +32270,24 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         )
         if not isinstance(response, dict):
             raise HTTPException(status_code=502, detail="Invalid feishu delivery profile payload")
-        return FeishuDeliveryProfileRecord(**response)
+        record = FeishuDeliveryProfileRecord(**response)
+        set_active_sandbox_setting(state.db, "cache.feishu_status.delivery_profile", json.dumps(record.model_dump(), ensure_ascii=False, default=str))
+        return record
 
     @app.get("/api/v1/me/feishu-authorization", response_model=FeishuMemberAuthorizationRecord)
     def get_feishu_member_authorization() -> FeishuMemberAuthorizationRecord:
+        def cached_record() -> FeishuMemberAuthorizationRecord | None:
+            raw = get_active_sandbox_setting(state.db, "cache.feishu_status.member_authorization", "")
+            if not raw:
+                return None
+            try:
+                parsed = json.loads(raw)
+                if isinstance(parsed, dict):
+                    return FeishuMemberAuthorizationRecord(**parsed)
+            except Exception:
+                return None
+            return None
+
         if not get_cloud_token() and not get_cloud_refresh_token():
             return FeishuMemberAuthorizationRecord(
                 linked=False,
@@ -32171,9 +32301,14 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         try:
             payload = cloud_request("GET", "/api/v1/me/feishu-authorization")
             if isinstance(payload, dict):
-                return FeishuMemberAuthorizationRecord(**payload)
-        except Exception:
-            pass
+                record = FeishuMemberAuthorizationRecord(**payload)
+                set_active_sandbox_setting(state.db, "cache.feishu_status.member_authorization", json.dumps(record.model_dump(), ensure_ascii=False, default=str))
+                return record
+        except Exception as exc:
+            logger.warning("feishu.member_authorization.fetch_failed: %s", exc)
+        cached = cached_record()
+        if cached:
+            return cached
         return FeishuMemberAuthorizationRecord(
             linked=False, readyForAuthorization=False, organizationId=None, organizationName=None,
             appId="", userId="local-device-user", blockedReason="云端暂时不可用，飞书协作功能稍后自动恢复。",
@@ -32203,7 +32338,9 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         payload = cloud_request("DELETE", "/api/v1/me/feishu-authorization")
         if not isinstance(payload, dict):
             raise HTTPException(status_code=502, detail="Invalid feishu authorization payload")
-        return FeishuMemberAuthorizationRecord(**payload)
+        record = FeishuMemberAuthorizationRecord(**payload)
+        set_active_sandbox_setting(state.db, "cache.feishu_status.member_authorization", json.dumps(record.model_dump(), ensure_ascii=False, default=str))
+        return record
 
     @app.get("/api/v1/feishu-sync/status")
     def get_feishu_sync_status(
@@ -32575,12 +32712,13 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         organization_id = (user.organizationId or "").strip()
         if not organization_id or organization_id == "local-device":
             return
-        ensure_organization_sandbox_for_session(
+        workspace = ensure_organization_sandbox_for_session(
             state.db,
             organization_id=organization_id,
             organization_name=user.organizationName or "",
             cloud_api_url=current_cloud_api_url,
         )
+        migrate_local_draft_to_organization_if_possible(state.db, workspace.id)
         _refresh_active_workspace_runtime()
 
     def _cloud_auth_state_from_response(response: dict, *, persist: bool = True) -> AuthStateResponse:
@@ -32725,7 +32863,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             user = _local_user_from_row(refreshed)
             return AuthStateResponse(authenticated=True, user=user, sessionMode="local", localIdentityStatus="ready")
         if not get_cloud_token() and not get_cloud_refresh_token():
-            raise HTTPException(status_code=400, detail="当前处于本机模式，请先连接云端账号。")
+            raise HTTPException(status_code=400, detail="当前未连接组织云端，请先登录或加入组织。")
         response = cloud_request("PATCH", "/api/v1/auth/me", json_body=payload.model_dump(exclude_none=True))
         if not isinstance(response, dict):
             raise HTTPException(status_code=502, detail="Invalid auth payload")
@@ -32740,7 +32878,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 return AuthStateResponse(
                     authenticated=False,
                     user=None,
-                    message="当前组织工作空间已退出登录。可重新登录云端，或切换到本机工作空间。",
+                    message="当前组织工作空间已退出登录。可重新登录云端，或在工作空间管理里加入/创建组织。",
                     sessionMode="cloud",
                 )
             local_user = get_local_session_user()
@@ -37861,6 +37999,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 cloud_api_url=next_cloud_api_url,
             )
             activate_sandbox(state.db, created.id)
+            migrate_local_draft_to_organization_if_possible(state.db, created.id)
             _refresh_active_workspace_runtime()
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -47866,6 +48005,10 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
     def get_client_project_structure(client_id: str) -> ProjectStructureResponse:
         return build_project_structure(client_id)
 
+    @app.options("/api/v1/clients/{client_id}/project-structure")
+    def options_client_project_structure(client_id: str) -> Response:
+        return Response(status_code=204)
+
     @app.get("/api/v1/clients/{client_id}/project-modules/{module_id}", response_model=ProjectModuleDetailRecord)
     def get_client_project_module_detail(client_id: str, module_id: str) -> ProjectModuleDetailRecord:
         build_client_summary(client_id)
@@ -56059,7 +56202,15 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                     from app.services.local_memory import extract_quotes_from_text, save_pending_quotes
                     quotes = extract_quotes_from_text(state.ai, text, f"附件：{document_row['title']}")
                     if quotes:
-                        save_pending_quotes(state.db, quotes)
+                        quote_user_id, quote_user_name = resolve_growth_actor()
+                        save_pending_quotes(
+                            state.db,
+                            quotes,
+                            user_id=quote_user_id,
+                            user_name=quote_user_name,
+                            author_display_name=quote_user_name,
+                            sandbox_id=active_business_sandbox_id(),
+                        )
                 except Exception:
                     pass  # 预处理失败不影响主流程
 
@@ -56567,16 +56718,19 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
     ) -> tuple[str, str, str, list[WeeklyReviewTaskEntryRecord]]:
         created_at = now_iso()
         operator_id = str(current_operator_row()["id"])
+        review_user_id, review_user_name = resolve_growth_actor()
         existing = local_review_row_for_week(payload.weekLabel)
         if existing:
             review_id = str(existing["id"])
             state.db.execute(
                 """
                 UPDATE weekly_reviews
-                SET work_free_note = ?, personal_growth_note = ?, personal_private_note = ?, updated_at = ?
+                SET user_id = CASE WHEN COALESCE(user_id, '') = '' THEN ? ELSE user_id END,
+                    work_free_note = ?, personal_growth_note = ?, personal_private_note = ?, updated_at = ?
                 WHERE id = ?
                 """,
                 (
+                    review_user_id,
                     payload.workFreeNote.strip(),
                     payload.personalGrowthNote.strip(),
                     payload.personalPrivateNote.strip(),
@@ -56589,13 +56743,14 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             state.db.execute(
                 """
                 INSERT INTO weekly_reviews(
-                    id, week_label, operator_id, summary, work_free_note, personal_growth_note, personal_private_note, created_at, updated_at
-                ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    id, week_label, operator_id, user_id, summary, work_free_note, personal_growth_note, personal_private_note, created_at, updated_at
+                ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     review_id,
                     payload.weekLabel,
                     operator_id,
+                    review_user_id,
                     "",
                     payload.workFreeNote.strip(),
                     payload.personalGrowthNote.strip(),
@@ -56633,22 +56788,24 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 state.db.execute(
                     """
                     UPDATE weekly_review_task_entries
-                    SET content_domain = ?, note = ?, structured_note_json = ?, reviewed_at = ?, task_snapshot_json = ?, updated_at = ?
+                    SET user_id = CASE WHEN COALESCE(user_id, '') = '' THEN ? ELSE user_id END,
+                        content_domain = ?, note = ?, structured_note_json = ?, reviewed_at = ?, task_snapshot_json = ?, updated_at = ?
                     WHERE id = ?
                     """,
-                    (content_domain, note, to_json(structured_note.model_dump()), created_at, to_json(snapshot), created_at, str(existing_entry["id"])),
+                    (review_user_id, content_domain, note, to_json(structured_note.model_dump()), created_at, to_json(snapshot), created_at, str(existing_entry["id"])),
                 )
             else:
                 state.db.execute(
                     """
                     INSERT INTO weekly_review_task_entries(
-                        id, review_id, task_id, week_label, content_domain, note, structured_note_json, reviewed_at, task_snapshot_json, created_at, updated_at
-                    ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        id, review_id, task_id, user_id, week_label, content_domain, note, structured_note_json, reviewed_at, task_snapshot_json, created_at, updated_at
+                    ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         new_id("review_item"),
                         review_id,
                         task_id,
+                        review_user_id,
                         payload.weekLabel,
                         content_domain,
                         note,
@@ -56666,6 +56823,8 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                         week_label=payload.weekLabel,
                         content_domain=content_domain,
                         review_id=review_id,
+                        user_id=review_user_id,
+                        user_name=review_user_name,
                         note=note,
                         structured_note=structured_note,
                         reviewed_at=created_at,
@@ -56813,10 +56972,10 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         _, created_at, operator_id, reviewed_work_items = save_local_weekly_review(payload)
         response = local_review_dashboard_base(payload.weekLabel)
         if response.currentReview:
-            _, user_name = resolve_growth_actor()
+            user_id, user_name = resolve_growth_actor()
             ingest_review_growth(
                 state.db,
-                user_id=operator_id,
+                user_id=user_id,
                 user_name=user_name,
                 review=response.currentReview,
                 task_entries=response.workItems,
@@ -56829,10 +56988,10 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         _, created_at, operator_id, reviewed_work_items = save_local_weekly_review(payload)
         response = local_review_dashboard(payload.weekLabel)
         if response.currentReview:
-            _, user_name = resolve_growth_actor()
+            user_id, user_name = resolve_growth_actor()
             ingest_review_growth(
                 state.db,
-                user_id=operator_id,
+                user_id=user_id,
                 user_name=user_name,
                 review=response.currentReview,
                 task_entries=response.workItems,
@@ -58688,14 +58847,15 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         state.db.execute(
             """
             INSERT INTO handbook_entries(
-                id, title, summary, tags_json, source_type, client_id, source_object_type, source_object_id, source_title,
+                id, sandbox_id, title, summary, tags_json, source_type, client_id, source_object_type, source_object_id, source_title,
                 event_line_id, event_line_name, project_module_id, project_module_name, project_flow_id, project_flow_name,
                 project_stage, business_category, ability_keys_json, evidence_refs_json, context_summary, reuse_count, last_reused_at,
                 author_user_id, author_user_name, created_at
-            ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, NULL, ?, ?, ?)
+            ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, NULL, ?, ?, ?)
             """,
             (
                 entry_id,
+                active_business_sandbox_id(),
                 refined_title,
                 refined_summary,
                 to_json(resolved_tags),
@@ -58742,10 +58902,532 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 WHERE {active_handbook_scope_sql("h")}
                 ORDER BY created_at DESC
                 """,
-                (sandbox_id, sandbox_id),
+                (sandbox_id, sandbox_id, sandbox_id),
             )
         ]
         return HandbookResponse(entries=entries)
+
+    def _experience_text_from_handbook(entry: HandbookEntryRecord) -> str:
+        title = (entry.title or "").strip()
+        summary = (entry.summary or "").strip()
+        if title and len(title) <= 80:
+            return title
+        if len(summary) > 120:
+            return f"{summary[:117]}…"
+        if summary:
+            return summary
+        return f"{title[:117]}…" if len(title) > 117 else title
+
+    def _normalize_experience_wall_text(text: str) -> str:
+        from app.services.exp_wall_service import normalize_quote_for_dedupe
+        return normalize_quote_for_dedupe(text)
+
+    def _experience_wall_texts_are_similar(left: str, right: str) -> bool:
+        from app.services.exp_wall_service import quotes_are_near_duplicate
+        return quotes_are_near_duplicate(left, right)
+
+    def _experience_wall_overlap_score(short_text: str, long_text: str) -> float:
+        from app.services.exp_wall_service import normalize_quote_for_dedupe
+        left = normalize_quote_for_dedupe(short_text)
+        right = normalize_quote_for_dedupe(long_text)
+        if not left or not right:
+            return 0.0
+        if left in right or right in left:
+            return 1.0
+        grams = {left[index:index + 2] for index in range(max(0, len(left) - 1))}
+        if not grams:
+            return 0.0
+        target = {right[index:index + 2] for index in range(max(0, len(right) - 1))}
+        if not target:
+            return 0.0
+        return len(grams & target) / max(1, len(grams))
+
+    def _extract_review_item_owner(row) -> tuple[str, str, str]:
+        try:
+            snapshot = json.loads(str(row["task_snapshot_json"] or "{}"))
+        except Exception:
+            snapshot = {}
+        if not isinstance(snapshot, dict):
+            snapshot = {}
+        author_id = str(row["entry_user_id"] or "").strip() or str(row["review_user_id"] or "").strip()
+        author_name = _review_user_display_name(author_id)
+        if author_id:
+            return author_id, author_name, "explicit"
+        snapshot_owner_id = str(
+            snapshot.get("ownerId")
+            or snapshot.get("assigneeId")
+            or snapshot.get("createdBy")
+            or ""
+        ).strip()
+        snapshot_owner_name = str(
+            snapshot.get("ownerName")
+            or snapshot.get("assigneeName")
+            or snapshot.get("createdByName")
+            or ""
+        ).strip()
+        if snapshot_owner_id:
+            return snapshot_owner_id, _review_user_display_name(snapshot_owner_id, snapshot_owner_name), "task_owner"
+        return "", "", ""
+
+    def _infer_exp_wall_author_from_review_notes(quote_text: str, created_at: str) -> tuple[str, str] | None:
+        rows = state.db.fetchall(
+            """
+            SELECT e.user_id AS entry_user_id,
+                   r.user_id AS review_user_id,
+                   e.note,
+                   e.structured_note_json,
+                   e.task_snapshot_json,
+                   e.created_at,
+                   e.updated_at
+            FROM weekly_review_task_entries e
+            LEFT JOIN weekly_reviews r ON r.id = e.review_id
+            WHERE COALESCE(e.note, '') <> ''
+            ORDER BY ABS(julianday(COALESCE(NULLIF(e.updated_at, ''), e.created_at)) - julianday(?)) ASC
+            LIMIT 200
+            """,
+            (created_at,),
+        )
+        best_score = 0.0
+        best_matches: list[tuple[str, str, str]] = []
+        for row in rows:
+            owner_id, owner_name, owner_source = _extract_review_item_owner(row)
+            if not owner_id and not owner_name:
+                continue
+            note_text = str(row["note"] or "")
+            try:
+                structured = json.loads(str(row["structured_note_json"] or "{}"))
+                if isinstance(structured, dict):
+                    note_text = "\n".join(
+                        value for value in [
+                            note_text,
+                            str(structured.get("reflection") or ""),
+                            str(structured.get("successExperience") or ""),
+                            str(structured.get("failureInsight") or ""),
+                            str(structured.get("supportNeeded") or ""),
+                        ] if value
+                    )
+            except Exception:
+                pass
+            score = _experience_wall_overlap_score(quote_text, note_text)
+            if score > best_score:
+                best_score = score
+                best_matches = [(owner_id, owner_name, owner_source)]
+            elif score == best_score and score > 0:
+                best_matches.append((owner_id, owner_name, owner_source))
+        if best_score < 0.38 or not best_matches:
+            return None
+        explicit_matches = [(owner_id, owner_name) for owner_id, owner_name, source in best_matches if source == "explicit" and owner_id]
+        if explicit_matches:
+            explicit_ids = {owner_id for owner_id, _ in explicit_matches}
+            if len(explicit_ids) == 1:
+                return explicit_matches[0]
+            return None
+        task_owner_matches = [(owner_id, owner_name) for owner_id, owner_name, source in best_matches if source == "task_owner" and owner_id]
+        task_owner_ids = {owner_id for owner_id, _ in task_owner_matches}
+        if len(task_owner_ids) == 1:
+            return task_owner_matches[0]
+        return None
+
+    def _backfill_legacy_exp_wall_quote_authors_from_review_notes(sandbox_id: str) -> None:
+        rows = state.db.fetchall(
+            """
+            SELECT id, author_user_id, quote_text, created_at
+            FROM exp_wall_quotes
+            WHERE (author_user_id LIKE 'user_%' OR author_user_id LIKE 'op_%')
+              AND source_excerpt IN ('周复盘', '周复盘概览')
+              AND COALESCE(source_object_id, '') = ''
+              AND COALESCE(sandbox_id, ?) = ?
+            ORDER BY created_at DESC
+            LIMIT 200
+            """,
+            (DEFAULT_LOCAL_SANDBOX_ID, sandbox_id),
+        )
+        timestamp = now_iso()
+        for row in rows:
+            inferred = _infer_exp_wall_author_from_review_notes(str(row["quote_text"] or ""), str(row["created_at"] or ""))
+            if not inferred:
+                continue
+            owner_id, owner_name = inferred
+            if not owner_id:
+                continue
+            if owner_id == str(row["author_user_id"] or "").strip():
+                continue
+            state.db.execute(
+                """
+                UPDATE exp_wall_quotes
+                SET author_user_id = ?,
+                    author_display_name = ?,
+                    updated_at = ?,
+                    sync_status = 'pending',
+                    pending_sync_action = 'upsert'
+                WHERE id = ?
+                """,
+                (owner_id, owner_name or "当前用户", timestamp, str(row["id"])),
+            )
+            state.db.execute(
+                """
+                UPDATE growth_signal_events
+                SET user_id = ?,
+                    user_name = ?,
+                    updated_at = ?,
+                    sync_status = 'pending',
+                    pending_sync_action = 'upsert'
+                WHERE user_id = ?
+                  AND raw_text = ?
+                  AND COALESCE(sandbox_id, ?) = ?
+                """,
+                (
+                    owner_id,
+                    owner_name or "当前用户",
+                    timestamp,
+                    str(row["author_user_id"] or "").strip(),
+                    str(row["quote_text"] or ""),
+                    DEFAULT_LOCAL_SANDBOX_ID,
+                    sandbox_id,
+                ),
+            )
+
+    def _resolve_exp_wall_author_name(
+        author_user_id: str,
+        explicit_name: str,
+        *,
+        current_user_id: str = "",
+        current_user_name: str = "",
+    ) -> str:
+        resolved = str(explicit_name or "").strip()
+        if resolved:
+            return resolved
+        if author_user_id and author_user_id == current_user_id and current_user_name:
+            return current_user_name
+        if author_user_id:
+            row = state.db.fetchone(
+                """
+                SELECT author_display_name
+                FROM exp_wall_quotes
+                WHERE author_user_id = ?
+                  AND COALESCE(author_display_name, '') <> ''
+                ORDER BY COALESCE(updated_at, created_at) DESC
+                LIMIT 1
+                """,
+                (author_user_id,),
+            )
+            if row and str(row["author_display_name"] or "").strip():
+                return str(row["author_display_name"] or "").strip()
+            operator = state.db.fetchone("SELECT name FROM operators WHERE id = ? LIMIT 1", (author_user_id,))
+            if operator and str(operator["name"] or "").strip():
+                return str(operator["name"] or "").strip()
+        return ""
+
+    def _build_exp_wall_item_from_quote(
+        row,
+        *,
+        current_user_id: str = "",
+        current_user_name: str = "",
+        liked_quote_ids: set[str] | None = None,
+    ) -> GrowthExperienceWallItemRecord:
+        linked_contexts: list[GrowthContextLinkRecord] = []
+        source_type = str(row["source_type"] or "")
+        source_object_id = str(row["source_object_id"] or "")
+        quote_id = str(row["id"])
+        author_user_id = str(row["author_user_id"] or "")
+        author_name = _resolve_exp_wall_author_name(
+            author_user_id,
+            str(row["author_name"] or "") or str(row["author_display_name"] or ""),
+            current_user_id=current_user_id,
+            current_user_name=current_user_name,
+        )
+        client_id: str | None = None
+        client_name: str | None = None
+        source_title: str | None = None
+        if source_type == "task" and source_object_id:
+            task = state.db.fetchone(
+                "SELECT id, title, client_id FROM tasks WHERE id = ? AND COALESCE(sandbox_id, '') = ?",
+                (source_object_id, active_business_sandbox_id()),
+            )
+            if task:
+                source_title = str(task["title"] or "")
+                linked_contexts.append(GrowthContextLinkRecord(objectType="task", objectId=source_object_id, label=source_title, tab="tasks"))
+                if task["client_id"]:
+                    client_id = str(task["client_id"])
+        elif source_type == "client_analysis" and source_object_id:
+            client_id = source_object_id
+        if client_id:
+            client = state.db.fetchone(
+                "SELECT id, name FROM clients WHERE id = ? AND COALESCE(sandbox_id, '') = ?",
+                (client_id, active_business_sandbox_id()),
+            )
+            if client:
+                client_name = str(client["name"] or "")
+                linked_contexts.append(GrowthContextLinkRecord(objectType="client", objectId=client_id, label=client_name, tab="client_workspace"))
+        return GrowthExperienceWallItemRecord(
+            id=quote_id,
+            source="exp_wall",
+            text=str(row["quote_text"] or ""),
+            summary=str(row["source_excerpt"] or ""),
+            authorUserId=author_user_id or None,
+            authorUserName=author_name or None,
+            clientId=client_id,
+            clientName=client_name,
+            sourceType=source_type,
+            sourceObjectId=source_object_id,
+            sourceTitle=source_title,
+            category=str(row["category"] or ""),
+            likeCount=int(row["like_count"] or 0),
+            saveCount=int(row["save_count"] or 0),
+            currentUserLiked=bool(liked_quote_ids and quote_id in liked_quote_ids),
+            linkedContexts=linked_contexts,
+            createdAt=str(row["created_at"] or ""),
+        )
+
+    def _is_legacy_local_exp_wall_author(user_id: str | None) -> bool:
+        normalized = str(user_id or "").strip()
+        return normalized.startswith("user_") or normalized.startswith("op_")
+
+    def _is_cloud_employee_exp_wall_author(user_id: str | None) -> bool:
+        return str(user_id or "").strip().startswith("emp_")
+
+    def _exp_wall_author_reliability(item: GrowthExperienceWallItemRecord) -> tuple[int, int, str]:
+        author_id = str(item.authorUserId or "")
+        has_name = 1 if (item.authorUserName or "").strip() else 0
+        if _is_cloud_employee_exp_wall_author(author_id):
+            tier = 4
+        elif author_id and not _is_legacy_local_exp_wall_author(author_id):
+            tier = 3
+        elif _is_legacy_local_exp_wall_author(author_id):
+            tier = 2
+        else:
+            tier = 1
+        return (tier, has_name, str(item.createdAt or ""))
+
+    def _prefer_exp_wall_duplicate_representative(
+        existing: GrowthExperienceWallItemRecord,
+        candidate: GrowthExperienceWallItemRecord,
+    ) -> GrowthExperienceWallItemRecord:
+        if _exp_wall_author_reliability(candidate) > _exp_wall_author_reliability(existing):
+            return candidate
+        if not existing.authorUserName and candidate.authorUserName:
+            return candidate
+        return existing
+
+    def _exp_wall_group_reaction_summary(
+        quote_ids: set[str],
+        *,
+        current_user_id: str,
+        sandbox_id: str,
+    ) -> tuple[int, int, bool]:
+        if not quote_ids:
+            return 0, 0, False
+        ids = sorted(quote_ids)
+        placeholders = ",".join("?" for _ in ids)
+        rows = state.db.fetchall(
+            f"""
+            SELECT quote_id, user_id, reaction_type
+            FROM exp_wall_reactions
+            WHERE quote_id IN ({placeholders})
+              AND COALESCE(sandbox_id, ?) = ?
+            """,
+            (*ids, DEFAULT_LOCAL_SANDBOX_ID, sandbox_id),
+        )
+        like_users: set[str] = set()
+        save_users: set[str] = set()
+        current_user_liked = False
+        for row in rows:
+            reaction_type = str(row["reaction_type"] or "")
+            reaction_user_id = str(row["user_id"] or "")
+            if reaction_type == "like":
+                like_users.add(reaction_user_id)
+                if current_user_id and reaction_user_id == current_user_id:
+                    current_user_liked = True
+            elif reaction_type == "save":
+                save_users.add(reaction_user_id)
+        return len(like_users), len(save_users), current_user_liked
+
+    def _merge_exp_wall_duplicate_representative(
+        representative: GrowthExperienceWallItemRecord,
+        duplicate: GrowthExperienceWallItemRecord,
+        *,
+        quote_ids: set[str],
+        current_user_id: str,
+        sandbox_id: str,
+    ) -> GrowthExperienceWallItemRecord:
+        group_like_count, group_save_count, current_user_liked = _exp_wall_group_reaction_summary(
+            quote_ids,
+            current_user_id=current_user_id,
+            sandbox_id=sandbox_id,
+        )
+        return representative.model_copy(
+            update={
+                "likeCount": max(int(representative.likeCount or 0), int(duplicate.likeCount or 0), group_like_count),
+                "saveCount": max(int(representative.saveCount or 0), int(duplicate.saveCount or 0), group_save_count),
+                "reuseCount": max(int(representative.reuseCount or 0), int(duplicate.reuseCount or 0)),
+                "currentUserLiked": bool(representative.currentUserLiked or duplicate.currentUserLiked or current_user_liked),
+            }
+        )
+
+    @app.get("/api/v1/growth/experience-wall", response_model=GrowthExperienceWallResponse)
+    def list_growth_experience_wall(refreshCloud: bool = Query(default=True)) -> GrowthExperienceWallResponse:
+        sandbox_id = active_business_sandbox_id()
+        current_user_id, current_user_name = resolve_growth_actor()
+        _backfill_legacy_exp_wall_quote_authors_from_review_notes(sandbox_id)
+        refreshed = False
+        cloud_error: str | None = None
+        cloud_base_url = normalize_configured_cloud_api_url(get_active_sandbox_setting(state.db, "cloud_api_url", ""))
+        cloud_token = get_cloud_token()
+        if refreshCloud and cloud_base_url and cloud_token:
+            try:
+                from app.services import exp_wall_service as _ew
+                with httpx.Client(timeout=4.0) as client:
+                    result = _ew.pull_quotes_from_cloud(
+                        state.db,
+                        cloud_base_url=cloud_base_url,
+                        cloud_token=cloud_token,
+                        httpx_client=client,
+                        sandbox_id=sandbox_id,
+                        request_timeout=3.0,
+                    )
+                refreshed = int(result.get("pulled", 0) or 0) >= 0
+            except Exception as exc:
+                cloud_error = str(exc)[:200]
+        _backfill_legacy_exp_wall_quote_authors_from_review_notes(sandbox_id)
+
+        handbook_items = [
+            GrowthExperienceWallItemRecord(
+                id=entry.id,
+                source="handbook",
+                text=_experience_text_from_handbook(entry),
+                summary=entry.summary,
+                authorUserId=entry.authorUserId,
+                authorUserName=entry.authorUserName,
+                clientId=entry.clientId,
+                clientName=entry.clientName,
+                sourceType=entry.sourceType,
+                sourceObjectId=entry.sourceObjectId or "",
+                sourceTitle=entry.sourceTitle,
+                reuseCount=entry.reuseCount,
+                linkedContexts=entry.linkedContexts,
+                createdAt=entry.createdAt,
+            )
+            for entry in list_handbook().entries
+        ]
+        quote_rows = state.db.fetchall(
+            """
+            SELECT q.*,
+                   COALESCE(NULLIF(op.name, ''), NULLIF(q.author_display_name, '')) AS author_name,
+                   op.role AS author_role
+            FROM exp_wall_quotes q
+            LEFT JOIN operators op ON op.id = q.author_user_id
+            WHERE q.status = 'active'
+              AND COALESCE(q.sandbox_id, ?) = ?
+            ORDER BY q.hot_score DESC, q.created_at DESC
+            LIMIT 120
+            """,
+            (DEFAULT_LOCAL_SANDBOX_ID, sandbox_id),
+        )
+        quote_ids = [str(row["id"]) for row in quote_rows]
+        try:
+            from app.services.exp_wall_service import get_user_reactions as _exp_wall_get_user_reactions
+            liked_quote_ids = {
+                quote_id
+                for quote_id, reactions in _exp_wall_get_user_reactions(
+                    state.db,
+                    user_id=current_user_id,
+                    quote_ids=quote_ids,
+                ).items()
+                if "like" in reactions
+            }
+        except Exception:
+            liked_quote_ids = set()
+        quote_items = [
+            _build_exp_wall_item_from_quote(
+                row,
+                current_user_id=current_user_id,
+                current_user_name=current_user_name,
+                liked_quote_ids=liked_quote_ids,
+            )
+            for row in quote_rows
+        ]
+        candidates = sorted(
+            [*quote_items, *handbook_items],
+            key=lambda item: (item.likeCount + item.saveCount + item.reuseCount, item.createdAt),
+            reverse=True,
+        )
+        ordered_groups: list[tuple[GrowthExperienceWallItemRecord, set[str]]] = []
+        for item in candidates:
+            if not (item.text or "").strip():
+                continue
+            item_quote_ids = {item.id} if item.source == "exp_wall" else set()
+            duplicate_index = next(
+                (
+                    index
+                    for index, (existing, _) in enumerate(ordered_groups)
+                    if _experience_wall_texts_are_similar(item.text, existing.text)
+                ),
+                None,
+            )
+            if duplicate_index is not None:
+                existing, existing_quote_ids = ordered_groups[duplicate_index]
+                merged_quote_ids = set(existing_quote_ids) | item_quote_ids
+                representative = _prefer_exp_wall_duplicate_representative(existing, item)
+                duplicate = item if representative is existing else existing
+                ordered_groups[duplicate_index] = (
+                    _merge_exp_wall_duplicate_representative(
+                        representative,
+                        duplicate,
+                        quote_ids=merged_quote_ids,
+                        current_user_id=current_user_id,
+                        sandbox_id=sandbox_id,
+                    ),
+                    merged_quote_ids,
+                )
+                continue
+            ordered_groups.append((item, item_quote_ids))
+        ordered = [item for item, _ in ordered_groups]
+        return GrowthExperienceWallResponse(items=ordered, refreshedFromCloud=refreshed, cloudSyncError=cloud_error)
+
+    @app.post("/api/v1/growth/experience-wall/{quote_id}/like", response_model=GrowthExperienceWallItemRecord)
+    def like_growth_experience_wall_quote(quote_id: str) -> GrowthExperienceWallItemRecord:
+        sandbox_id = active_business_sandbox_id()
+        user_id, user_name = resolve_growth_actor()
+        row = state.db.fetchone(
+            """
+            SELECT id
+            FROM exp_wall_reactions
+            WHERE quote_id = ? AND user_id = ? AND reaction_type = 'like' AND COALESCE(sandbox_id, ?) = ?
+            LIMIT 1
+            """,
+            (quote_id, user_id, DEFAULT_LOCAL_SANDBOX_ID, sandbox_id),
+        )
+        if not row:
+            try:
+                from app.services.exp_wall_service import REACTION_LIKE, toggle_reaction as _toggle_exp_wall_reaction
+                _toggle_exp_wall_reaction(
+                    state.db,
+                    quote_id=quote_id,
+                    user_id=user_id,
+                    reaction_type=REACTION_LIKE,
+                    sandbox_id=sandbox_id,
+                )
+            except ValueError as exc:
+                raise HTTPException(status_code=400, detail=str(exc)) from exc
+        updated_row = state.db.fetchone(
+            """
+            SELECT q.*,
+                   COALESCE(NULLIF(op.name, ''), NULLIF(q.author_display_name, '')) AS author_name,
+                   op.role AS author_role
+            FROM exp_wall_quotes q
+            LEFT JOIN operators op ON op.id = q.author_user_id
+            WHERE q.id = ? AND q.status = 'active' AND COALESCE(q.sandbox_id, ?) = ?
+            """,
+            (quote_id, DEFAULT_LOCAL_SANDBOX_ID, sandbox_id),
+        )
+        if not updated_row:
+            raise HTTPException(status_code=404, detail="成长金句不存在")
+        return _build_exp_wall_item_from_quote(
+            updated_row,
+            current_user_id=user_id,
+            current_user_name=user_name,
+            liked_quote_ids={quote_id},
+        )
 
     @app.get("/api/v1/handbook/{entry_id}", response_model=HandbookEntryDetailRecord)
     def get_handbook_entry_detail(entry_id: str) -> HandbookEntryDetailRecord:
@@ -58758,7 +59440,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
               AND {active_handbook_scope_sql("h")}
             LIMIT 1
             """,
-            (entry_id, sandbox_id, sandbox_id),
+            (entry_id, sandbox_id, sandbox_id, sandbox_id),
         )
         if not row:
             raise HTTPException(status_code=404, detail="成长手册条目不存在")
@@ -58879,6 +59561,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             user_id=user_id,
             user_name=user_name,
             week_label=resolve_growth_week_label(user_id, weekLabel),
+            sandbox_id=active_business_sandbox_id(),
         )
 
     # L6: 学习推荐反馈闭环
@@ -62305,40 +62988,41 @@ def seed_defaults(state: AppState) -> None:
             [(item[0], item[1], item[2], item[3], item[4], item[5], timestamp, timestamp) for item in operators],
         )
         state.db.set_setting("current_operator_id", "op_qh")
+    active_seed_sandbox_id = state.db.get_setting(ACTIVE_SANDBOX_SETTING_KEY, "") or DEFAULT_LOCAL_SANDBOX_ID
+    active_seed_row = state.db.fetchone(
+        "SELECT id, kind, status FROM sandboxes WHERE id = ?",
+        (active_seed_sandbox_id,),
+    )
+    if not active_seed_row or str(active_seed_row["kind"]) != "organization" or str(active_seed_row["status"]) != "active":
+        org_seed_row = state.db.fetchone(
+            """
+            SELECT id FROM sandboxes
+             WHERE kind = 'organization' AND status = 'active'
+             ORDER BY COALESCE(last_active_at, created_at) DESC
+             LIMIT 1
+            """
+        )
+        active_seed_sandbox_id = str(org_seed_row["id"]) if org_seed_row else DEFAULT_LOCAL_SANDBOX_ID
     if state.db.scalar("SELECT COUNT(1) AS count FROM task_lists") == 0:
         state.db.executemany(
             "INSERT INTO task_lists(id, sandbox_id, name, color, sort_order, is_default, scope, archived_at) VALUES(?, ?, ?, ?, ?, ?, ?, NULL)",
             [
-                ("list-0", DEFAULT_LOCAL_SANDBOX_ID, "收集箱", "#5B7BFE", 0, 1, "org"),
-                ("list-1", DEFAULT_LOCAL_SANDBOX_ID, "客户推进", "#5B7BFE", 1, 0, "org"),
-                ("list-2", DEFAULT_LOCAL_SANDBOX_ID, "研究洞察", "#F59E0B", 2, 0, "org"),
-                ("list-3", DEFAULT_LOCAL_SANDBOX_ID, "交付沉淀", "#10B981", 3, 0, "org"),
-                ("plist-1", DEFAULT_LOCAL_SANDBOX_ID, "健身", "#5B7BFE", 10, 1, "personal"),
-                ("plist-2", DEFAULT_LOCAL_SANDBOX_ID, "约会", "#EC4899", 11, 0, "personal"),
-                ("plist-3", DEFAULT_LOCAL_SANDBOX_ID, "吃饭", "#F59E0B", 12, 0, "personal"),
-                ("plist-4", DEFAULT_LOCAL_SANDBOX_ID, "学习", "#10B981", 13, 0, "personal"),
+                ("list-0", active_seed_sandbox_id, "收集箱", "#5B7BFE", 0, 1, "org"),
+                ("list-1", active_seed_sandbox_id, "客户推进", "#5B7BFE", 1, 0, "org"),
+                ("list-2", active_seed_sandbox_id, "研究洞察", "#F59E0B", 2, 0, "org"),
+                ("list-3", active_seed_sandbox_id, "交付沉淀", "#10B981", 3, 0, "org"),
             ],
         )
     state.db.execute("UPDATE task_lists SET scope = 'org' WHERE scope IS NULL OR scope = ''")
-    if state.db.scalar("SELECT COUNT(1) AS count FROM task_lists WHERE scope = 'personal'") == 0:
-        state.db.executemany(
-            "INSERT INTO task_lists(id, sandbox_id, name, color, sort_order, is_default, scope, archived_at) VALUES(?, ?, ?, ?, ?, ?, ?, NULL)",
-            [
-                ("plist-1", DEFAULT_LOCAL_SANDBOX_ID, "健身", "#5B7BFE", 10, 1, "personal"),
-                ("plist-2", DEFAULT_LOCAL_SANDBOX_ID, "约会", "#EC4899", 11, 0, "personal"),
-                ("plist-3", DEFAULT_LOCAL_SANDBOX_ID, "吃饭", "#F59E0B", 12, 0, "personal"),
-                ("plist-4", DEFAULT_LOCAL_SANDBOX_ID, "学习", "#10B981", 13, 0, "personal"),
-            ],
-        )
     if state.db.scalar("SELECT COUNT(1) AS count FROM task_tags") == 0:
         state.db.executemany(
             "INSERT INTO task_tags(id, sandbox_id, name, scope, color, owner_operator_id, created_by, created_at, updated_at, archived_at) VALUES(?, ?, ?, 'org', ?, '', '系统', ?, ?, NULL)",
             [
-                (new_id("tag"), DEFAULT_LOCAL_SANDBOX_ID, "高优", "#EF4444", timestamp, timestamp),
-                (new_id("tag"), DEFAULT_LOCAL_SANDBOX_ID, "会议", "#5B7BFE", timestamp, timestamp),
-                (new_id("tag"), DEFAULT_LOCAL_SANDBOX_ID, "待跟进", "#F59E0B", timestamp, timestamp),
-                (new_id("tag"), DEFAULT_LOCAL_SANDBOX_ID, "跨部门", "#10B981", timestamp, timestamp),
-                (new_id("tag"), DEFAULT_LOCAL_SANDBOX_ID, "选题", "#8B5CF6", timestamp, timestamp),
+                (new_id("tag"), active_seed_sandbox_id, "高优", "#EF4444", timestamp, timestamp),
+                (new_id("tag"), active_seed_sandbox_id, "会议", "#5B7BFE", timestamp, timestamp),
+                (new_id("tag"), active_seed_sandbox_id, "待跟进", "#F59E0B", timestamp, timestamp),
+                (new_id("tag"), active_seed_sandbox_id, "跨部门", "#10B981", timestamp, timestamp),
+                (new_id("tag"), active_seed_sandbox_id, "选题", "#8B5CF6", timestamp, timestamp),
             ],
         )
     if state.db.scalar("SELECT COUNT(1) AS count FROM task_settings") == 0:

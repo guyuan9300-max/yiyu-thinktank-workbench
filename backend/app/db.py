@@ -11,7 +11,7 @@ from pathlib import Path
 # 之前 20260518001 (200 亿) 远超上限, SQLite 静默 set 为 0, 每次启动都重做完整迁移
 # (这是 20260518 那次坏 db 的真正根因之一: 重做时遇上 reload race + backfill 无事务).
 # 改用 YYYYMMDD 格式 (8 位), 每次 schema 变化递增日期. 20260519 = 此次修复.
-BACKEND_SCHEMA_VERSION = 20260619  # 阶段5: business data scoped by active sandbox
+BACKEND_SCHEMA_VERSION = 20260623  # 取消独立本机工作空间 + 成长数据沙箱归属
 
 
 # R6：内置罗永浩写作风格的 distilled prompt（手工 distill，不依赖在线抓取，避免外部依赖）。
@@ -2874,7 +2874,9 @@ class Database:
                 -- 设计原则参考 [[project-yiyu-exp-wall-rules]] memory。
                 CREATE TABLE IF NOT EXISTS exp_wall_quotes (
                     id TEXT PRIMARY KEY,
+                    sandbox_id TEXT NOT NULL DEFAULT 'sbx_local_default',
                     author_user_id TEXT NOT NULL,                  -- 作者（operators.id）
+                    author_display_name TEXT NOT NULL DEFAULT '',   -- 云端作者显示名兜底
                     quote_text TEXT NOT NULL,                       -- 润色后金句
                     source_excerpt TEXT NOT NULL DEFAULT '',        -- 原文片段（溯源）
                     source_type TEXT NOT NULL,                      -- task/meeting/document/client_analysis/ai_chat
@@ -2904,6 +2906,7 @@ class Database:
                 -- UNIQUE 保证同一用户对同一金句同一动作只能有 1 条记录。
                 CREATE TABLE IF NOT EXISTS exp_wall_reactions (
                     id TEXT PRIMARY KEY,
+                    sandbox_id TEXT NOT NULL DEFAULT 'sbx_local_default',
                     quote_id TEXT NOT NULL,
                     user_id TEXT NOT NULL,
                     reaction_type TEXT NOT NULL,                   -- like / save
@@ -4731,33 +4734,69 @@ class Database:
             #   failed  → push 失败, 等下次 background 重试
             # pending_sync_action: 'upsert' = 推内容; 'delete' = 推软删除
             self._ensure_column("exp_wall_quotes", "sync_status", "TEXT NOT NULL DEFAULT 'local'")
+            self._ensure_column("exp_wall_quotes", "sandbox_id", "TEXT NOT NULL DEFAULT 'sbx_local_default'")
+            self._ensure_column("exp_wall_quotes", "author_display_name", "TEXT NOT NULL DEFAULT ''")
             self._ensure_column("exp_wall_quotes", "last_synced_at", "TEXT NOT NULL DEFAULT ''")
             self._ensure_column("exp_wall_quotes", "pending_sync_action", "TEXT NOT NULL DEFAULT ''")
             self._ensure_column("exp_wall_reactions", "sync_status", "TEXT NOT NULL DEFAULT 'local'")
+            self._ensure_column("exp_wall_reactions", "sandbox_id", "TEXT NOT NULL DEFAULT 'sbx_local_default'")
             self._ensure_column("exp_wall_reactions", "last_synced_at", "TEXT NOT NULL DEFAULT ''")
             self._ensure_column("exp_wall_reactions", "pending_sync_action", "TEXT NOT NULL DEFAULT ''")
+            self.conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_exp_wall_quotes_sandbox_status_created "
+                "ON exp_wall_quotes(sandbox_id, status, created_at DESC)"
+            )
+            self.conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_exp_wall_reactions_sandbox_quote "
+                "ON exp_wall_reactions(sandbox_id, quote_id, user_id, reaction_type)"
+            )
 
             # 真 handbook_entries 真**才是前端真用真"经验墙"** (顾源源 5/27)
             # 真同 sync 状态机模式 (local/pending/synced/failed + upsert/delete)
+            self._ensure_column("handbook_entries", "sandbox_id", "TEXT NOT NULL DEFAULT 'sbx_local_default'")
             self._ensure_column("handbook_entries", "sync_status", "TEXT NOT NULL DEFAULT 'local'")
             self._ensure_column("handbook_entries", "last_synced_at", "TEXT NOT NULL DEFAULT ''")
             self._ensure_column("handbook_entries", "pending_sync_action", "TEXT NOT NULL DEFAULT ''")
+            self.conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_handbook_entries_sandbox_created "
+                "ON handbook_entries(sandbox_id, created_at DESC)"
+            )
 
             # 真 成长积分云端同步字段 (顾源源 5/27 阶段 1 · "卷"机制核心)
             # 真同步: signal_events (信号源) + evidence_records (证据/积分) + validation_events (验证)
             # 真不同步: ability_profiles (seed) / capture_states (派生) / weekly_snapshot (派生)
+            self._ensure_column("growth_signal_events", "sandbox_id", "TEXT NOT NULL DEFAULT 'sbx_local_default'")
             self._ensure_column("growth_signal_events", "sync_status", "TEXT NOT NULL DEFAULT 'local'")
             self._ensure_column("growth_signal_events", "last_synced_at", "TEXT NOT NULL DEFAULT ''")
             self._ensure_column("growth_signal_events", "pending_sync_action", "TEXT NOT NULL DEFAULT ''")
             self._ensure_column("growth_signal_events", "updated_at", "TEXT NOT NULL DEFAULT ''")
+            self._ensure_column("growth_evidence_records", "sandbox_id", "TEXT NOT NULL DEFAULT 'sbx_local_default'")
             self._ensure_column("growth_evidence_records", "sync_status", "TEXT NOT NULL DEFAULT 'local'")
             self._ensure_column("growth_evidence_records", "last_synced_at", "TEXT NOT NULL DEFAULT ''")
             self._ensure_column("growth_evidence_records", "pending_sync_action", "TEXT NOT NULL DEFAULT ''")
             self._ensure_column("growth_evidence_records", "updated_at", "TEXT NOT NULL DEFAULT ''")
+            self._ensure_column("growth_validation_events", "sandbox_id", "TEXT NOT NULL DEFAULT 'sbx_local_default'")
             self._ensure_column("growth_validation_events", "sync_status", "TEXT NOT NULL DEFAULT 'local'")
             self._ensure_column("growth_validation_events", "last_synced_at", "TEXT NOT NULL DEFAULT ''")
             self._ensure_column("growth_validation_events", "pending_sync_action", "TEXT NOT NULL DEFAULT ''")
             self._ensure_column("growth_validation_events", "updated_at", "TEXT NOT NULL DEFAULT ''")
+            self._ensure_column("xp_ledger", "sandbox_id", "TEXT NOT NULL DEFAULT 'sbx_local_default'")
+            self._ensure_column("badge_unlock_records", "sandbox_id", "TEXT NOT NULL DEFAULT 'sbx_local_default'")
+            self._ensure_column("learning_recommendations", "sandbox_id", "TEXT NOT NULL DEFAULT 'sbx_local_default'")
+            self.conn.executescript(
+                """
+                CREATE INDEX IF NOT EXISTS idx_growth_signal_sandbox_user_created
+                    ON growth_signal_events(sandbox_id, user_id, created_at DESC);
+                CREATE INDEX IF NOT EXISTS idx_growth_evidence_sandbox_user_created
+                    ON growth_evidence_records(sandbox_id, user_id, created_at DESC);
+                CREATE INDEX IF NOT EXISTS idx_xp_ledger_sandbox_user_created
+                    ON xp_ledger(sandbox_id, user_id, created_at DESC);
+                CREATE INDEX IF NOT EXISTS idx_badge_unlock_sandbox_user_created
+                    ON badge_unlock_records(sandbox_id, user_id, created_at DESC);
+                CREATE INDEX IF NOT EXISTS idx_learning_recommendations_sandbox_user
+                    ON learning_recommendations(sandbox_id, user_id, created_at DESC);
+                """
+            )
 
             # event_line_delete_tombstones 表早就有了，但缺一列 merged_to_id —
             # 合并事件线时记录"源被合并到了哪条目标 event_line"。

@@ -181,9 +181,25 @@ class SandboxWorkspaceRecord(BaseModel):
     lastActiveAt: str | None = None
 
 
+class SandboxLocalDraftSummary(BaseModel):
+    available: bool = False
+    active: bool = False
+    hasData: bool = False
+    migrated: bool = False
+    migratedToSandboxId: str | None = None
+    migratedAt: str | None = None
+    clients: int = 0
+    tasks: int = 0
+    taskLists: int = 0
+    taskTags: int = 0
+    documents: int = 0
+    experienceQuotes: int = 0
+
+
 class SandboxWorkspacesResponse(BaseModel):
     activeSandboxId: str
     workspaces: list[SandboxWorkspaceRecord]
+    localDraftSummary: SandboxLocalDraftSummary | None = None
 
 
 class SandboxWorkspaceCreatePayload(BaseModel):
@@ -295,7 +311,7 @@ class AuthStateResponse(BaseModel):
     message: str | None = None
     sessionMode: Literal["local", "cloud"] = "cloud"
     requiresLocalIdentitySetup: bool = False
-    localIdentityStatus: Literal["needs_setup", "ready", "none"] | None = None
+    localIdentityStatus: Literal["needs_setup", "ready", "none", "draft"] | None = None
     # True 表示这是"网络中断 + 本地缓存"兜底产生的离线降级态(云端没法确认身份/成员资格)。
     # 前端据此把"未确认"当成 last-known-good 处理,而不是当成"被拒绝"去清空本地数据 / 强制身份页。
     degraded: bool = False
@@ -388,7 +404,7 @@ class ConsultationKnowledgeProcessSummaryResponse(BaseModel):
 
 class AuthRegisterPayload(BaseModel):
     email: str
-    phone: str | None = None
+    phone: str
     fullName: str
     password: str
     inviteCode: str | None = None
@@ -408,7 +424,7 @@ class AuthLoginPayload(BaseModel):
 
 class LocalAuthRegisterPayload(BaseModel):
     email: str
-    phone: str | None = None
+    phone: str
     fullName: str
     password: str
     organizationMode: Literal["create", "join"] = "create"
@@ -3014,6 +3030,8 @@ class ReviewMetricCardRecord(BaseModel):
 class WeeklyReviewTaskEntryRecord(BaseModel):
     id: str
     reviewId: str | None = None
+    userId: str | None = None
+    userName: str | None = None
     taskId: str
     weekLabel: str
     contentDomain: Literal["work", "personal"]
@@ -7453,6 +7471,33 @@ class HandbookPayload(BaseModel):
 
 class HandbookResponse(BaseModel):
     entries: list[HandbookEntryRecord]
+
+
+class GrowthExperienceWallItemRecord(BaseModel):
+    id: str
+    source: Literal["handbook", "exp_wall"]
+    text: str
+    summary: str = ""
+    authorUserId: str | None = None
+    authorUserName: str | None = None
+    clientId: str | None = None
+    clientName: str | None = None
+    sourceType: str = ""
+    sourceObjectId: str = ""
+    sourceTitle: str | None = None
+    category: str = ""
+    reuseCount: int = 0
+    likeCount: int = 0
+    saveCount: int = 0
+    currentUserLiked: bool = False
+    linkedContexts: list[GrowthContextLinkRecord] = Field(default_factory=list)
+    createdAt: str
+
+
+class GrowthExperienceWallResponse(BaseModel):
+    items: list[GrowthExperienceWallItemRecord]
+    refreshedFromCloud: bool = False
+    cloudSyncError: str | None = None
 
 
 class HandbookReuseRecord(BaseModel):
