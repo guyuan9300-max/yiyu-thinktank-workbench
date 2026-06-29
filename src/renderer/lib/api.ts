@@ -64,6 +64,7 @@ import type {
   DnaTerm,
   DocumentRecord,
   DemoDataReport,
+  AdminTransferPayload,
   EmployeeRecord,
   EmployeeRejectPayload,
   EmployeeDepartmentPayload,
@@ -2516,6 +2517,13 @@ export async function disableEmployee(id: string) {
 export async function updateEmployeeRole(id: string, payload: EmployeeRolePayload) {
   return request<EmployeeRecord>(`/api/v1/admin/employees/${id}/role`, {
     method: 'PATCH',
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function transferAdmin(payload: AdminTransferPayload) {
+  return request<{ message: string }>('/api/v1/admin/employees/transfer-admin', {
+    method: 'POST',
     body: JSON.stringify(payload),
   });
 }

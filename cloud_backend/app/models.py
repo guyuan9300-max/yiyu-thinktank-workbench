@@ -447,6 +447,12 @@ class EmployeeDepartmentPayload(BaseModel):
     departmentId: str | None = None
 
 
+class AdminTransferPayload(BaseModel):
+    targetUserId: str = Field(min_length=1)
+    currentAdminAction: Literal["keep_admin", "demote_to_member", "disable_self"] = "keep_admin"
+    currentAdminDepartmentId: str | None = None
+
+
 class RejectPayload(BaseModel):
     reason: str = ""
 

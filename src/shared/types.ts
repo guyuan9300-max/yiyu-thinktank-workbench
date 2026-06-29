@@ -281,6 +281,7 @@ export interface EmployeeRecord {
   jobTitle?: string | null;
   managerName?: string | null;
   currentFocus?: string | null;
+  isBot?: boolean;
   isDepartmentLead?: boolean;
   approvedAt?: string | null;
   rejectedReason?: string | null;
@@ -6844,6 +6845,12 @@ export interface EmployeeRolePayload {
 
 export interface EmployeeDepartmentPayload {
   departmentId?: string | null;
+}
+
+export interface AdminTransferPayload {
+  targetUserId: string;
+  currentAdminAction?: 'keep_admin' | 'demote_to_member' | 'disable_self';
+  currentAdminDepartmentId?: string | null;
 }
 
 export interface EmployeeRejectPayload {

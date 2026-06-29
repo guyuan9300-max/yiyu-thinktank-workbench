@@ -448,6 +448,7 @@ import {
   getClientMessage,
   updateEmployeeRole,
   updateEmployeeDepartment,
+  transferAdmin,
   addEventLineNote,
   adoptTaskSmartBriefAction,
   updateEventLine,
@@ -1960,6 +1961,7 @@ interface AuthShellFormState {
   fullName: string;
   password: string;
   confirmPassword: string;
+  cloudApiUrl: string;
   inviteCode: string;
   departmentId: string;
   jobTitle: string;
@@ -1989,6 +1991,7 @@ function createAuthShellForm(email = '', fullName = '', password = ''): AuthShel
     fullName,
     password,
     confirmPassword: password,
+    cloudApiUrl: '',
     inviteCode: '',
     departmentId: '',
     jobTitle: '',
@@ -8233,24 +8236,35 @@ export default function App() {
     };
   }, []);
 
-  useEffect(() => {
-    if (authShellMode !== 'register') return undefined;
-    const code = normalizeDepartmentInviteInput(authShellForm.inviteCode);
-    if (!code) {
-      setAuthShellInviteStatus(EMPTY_AUTH_SHELL_INVITE_STATUS);
-      return undefined;
-    }
-    if (!settingsState?.cloudApiUrl?.trim()) {
-      setAuthShellInviteStatus({
-        code,
-        loading: false,
-        valid: null,
-        message: '邀请码会先保存在本机，连接云端后再识别组织与部门。',
-      });
-      return undefined;
-    }
-    let cancelled = false;
-    setAuthShellInviteStatus({ code, loading: true, valid: null, message: '正在识别邀请码...' });
+	  useEffect(() => {
+	    if (authShellMode !== 'register') return undefined;
+	    const code = normalizeDepartmentInviteInput(authShellForm.inviteCode);
+	    if (!code) {
+	      setAuthShellInviteStatus(EMPTY_AUTH_SHELL_INVITE_STATUS);
+	      return undefined;
+	    }
+	    const configuredCloudUrl = settingsState?.cloudApiUrl?.trim() || '';
+	    const typedCloudUrl = cloudApiUrlFromHost(authShellForm.cloudApiUrl);
+	    if (!configuredCloudUrl && !typedCloudUrl) {
+	      setAuthShellInviteStatus({
+	        code,
+	        loading: false,
+	        valid: null,
+	        message: '填写邀请码时需要组织云端地址，注册成功后会直接进入对应组织。',
+	      });
+	      return undefined;
+	    }
+	    if (typedCloudUrl && normalizeUrlForComparison(typedCloudUrl) !== normalizeUrlForComparison(configuredCloudUrl)) {
+	      setAuthShellInviteStatus({
+	        code,
+	        loading: false,
+	        valid: null,
+	        message: '注册时会连接你填写的云端地址识别邀请码。',
+	      });
+	      return undefined;
+	    }
+	    let cancelled = false;
+	    setAuthShellInviteStatus({ code, loading: true, valid: null, message: '正在识别邀请码...' });
     const timer = window.setTimeout(() => {
       void resolveInviteCode(code)
         .then((result) => {
@@ -8282,7 +8296,7 @@ export default function App() {
       cancelled = true;
       window.clearTimeout(timer);
     };
-  }, [authShellForm.inviteCode, authShellMode, settingsState?.cloudApiUrl]);
+	  }, [authShellForm.cloudApiUrl, authShellForm.inviteCode, authShellMode, settingsState?.cloudApiUrl]);
 
   useEffect(() => {
     if (!authState.authenticated) return;
@@ -8316,10 +8330,19 @@ export default function App() {
   const [changePwError, setChangePwError] = useState('');
   const [changePwShowPassword, setChangePwShowPassword] = useState(false);
   const [employeeReviewBusyId, setEmployeeReviewBusyId] = useState<string | null>(null);
-  const [rejectingEmployeeId, setRejectingEmployeeId] = useState<string | null>(null);
-  const [employeeRejectReason, setEmployeeRejectReason] = useState('');
-  const [resetPwEmployeeId, setResetPwEmployeeId] = useState<string | null>(null);
-  const [resetPwValue, setResetPwValue] = useState('');
+	  const [rejectingEmployeeId, setRejectingEmployeeId] = useState<string | null>(null);
+	  const [employeeRejectReason, setEmployeeRejectReason] = useState('');
+	  const [resetPwEmployeeId, setResetPwEmployeeId] = useState<string | null>(null);
+	  const [resetPwValue, setResetPwValue] = useState('');
+	  const [adminTransferDraft, setAdminTransferDraft] = useState<{
+	    targetUserId: string;
+	    currentAdminAction: 'keep_admin' | 'demote_to_member' | 'disable_self';
+	    currentAdminDepartmentId: string;
+	  }>({
+	    targetUserId: '',
+	    currentAdminAction: 'keep_admin',
+	    currentAdminDepartmentId: '',
+	  });
   useEffect(() => {
     const root = typeof document === 'undefined' ? null : document.getElementById('root');
     console.info(
@@ -10805,28 +10828,69 @@ export default function App() {
       setAuthShellSubmitting(true);
       try {
         if (mode === 'register') {
-          const hasPendingOrgIdentity = Boolean(
-            normalizeDepartmentInviteInput(form.inviteCode)
-            || form.departmentId
-            || form.jobTitle.trim()
-            || form.managerName.trim()
-            || form.currentFocus.trim(),
-          );
-          const response = await localRegister({
-            email: form.email,
-            phone: form.phone.trim(),
-            fullName: form.fullName,
-            password: form.password,
-            organizationMode: hasPendingOrgIdentity ? 'join' : 'create',
-            inviteCode: normalizeDepartmentInviteInput(form.inviteCode) || null,
-            departmentId: form.departmentId || null,
-            jobTitle: form.jobTitle || null,
-            managerName: form.managerName || null,
-            currentFocus: form.currentFocus || null,
-          });
+          const inviteCode = normalizeDepartmentInviteInput(form.inviteCode);
+          let response: AuthState;
+          if (inviteCode) {
+            const cloudApiUrl = cloudApiUrlFromHost(form.cloudApiUrl || settingsState?.cloudApiUrl || '');
+            if (!cloudApiUrl) {
+              setAuthShellMessage('已填写邀请码，请先填写组织云端地址。');
+              return;
+            }
+            const currentCloudUrl = settingsState?.cloudApiUrl || '';
+            if (normalizeUrlForComparison(cloudApiUrl) !== normalizeUrlForComparison(currentCloudUrl)) {
+              await updateSettings({ cloudApiUrl });
+            }
+            response = await register({
+              email: form.email,
+              phone: form.phone.trim(),
+              fullName: form.fullName,
+              password: form.password,
+              inviteCode,
+              departmentId: form.departmentId || null,
+              jobTitle: form.jobTitle || null,
+              managerName: form.managerName || null,
+              currentFocus: form.currentFocus || null,
+            });
+            if (response.organizationSelectionRequired) {
+              setOrganizationSelection({
+                token: response.organizationSelectionToken || '',
+                organizations: response.organizations || [],
+              });
+              setCloudAuthMode('login');
+              setCloudAuthModalOpen(true);
+              setAuthShellMessage(response.message || '请选择要进入的组织工作空间。');
+              return;
+            }
+          } else {
+            response = await localRegister({
+              email: form.email,
+              phone: form.phone.trim(),
+              fullName: form.fullName,
+              password: form.password,
+              organizationMode: 'create',
+              inviteCode: null,
+              departmentId: null,
+              jobTitle: null,
+              managerName: null,
+              currentFocus: null,
+            });
+          }
           setAuthState(response);
         } else {
-          const response = await localLogin({ identifier: form.identifier || form.email, password: form.password, rememberMe });
+          const shouldUseCloudLogin = Boolean(settingsState?.cloudApiUrl?.trim() || activeWorkspaceRecord?.cloudApiUrl?.trim());
+          const response = shouldUseCloudLogin
+            ? await login({ identifier: form.identifier || form.email, password: form.password, rememberMe })
+            : await localLogin({ identifier: form.identifier || form.email, password: form.password, rememberMe });
+          if (response.organizationSelectionRequired) {
+            setOrganizationSelection({
+              token: response.organizationSelectionToken || '',
+              organizations: response.organizations || [],
+            });
+            setCloudAuthMode('login');
+            setCloudAuthModalOpen(true);
+            setAuthShellMessage(response.message || '请选择要进入的组织工作空间。');
+            return;
+          }
           setAuthState(response);
         }
         try {
@@ -10983,12 +11047,12 @@ export default function App() {
                   <>
                     <input value={form.fullName} onChange={(event) => setForm((prev) => ({ ...prev, fullName: event.target.value }))} placeholder="姓名 / 显示名" className="w-full bg-white border border-gray-200 rounded-xl px-3.5 py-3 text-[14px] text-gray-900 outline-none focus:border-[#5B7BFE] transition-colors" />
                     <div>
-                      <input value={form.email} onChange={(event) => setForm((prev) => ({ ...prev, email: event.target.value }))} placeholder="邮箱" className="w-full bg-white border border-gray-200 rounded-xl px-3.5 py-3 text-[14px] text-gray-900 outline-none focus:border-[#5B7BFE] transition-colors" />
-                      {form.email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(form.email) && <p className="text-[11px] text-rose-500 mt-1.5 px-1">请输入有效的邮箱地址</p>}
-                    </div>
-                    <div>
                       <input value={form.phone} onChange={(event) => setForm((prev) => ({ ...prev, phone: event.target.value }))} placeholder="手机号（必填，建议填写飞书账号绑定手机号）" className="w-full bg-white border border-gray-200 rounded-xl px-3.5 py-3 text-[14px] text-gray-900 outline-none focus:border-[#5B7BFE] transition-colors" />
                       {!form.phone.trim() && <p className="text-[11px] text-gray-400 mt-1.5 px-1">建议填写登录飞书时绑定的手机号，后续任务成员匹配和提醒会更稳定。</p>}
+                    </div>
+                    <div>
+                      <input value={form.email} onChange={(event) => setForm((prev) => ({ ...prev, email: event.target.value }))} placeholder="邮箱" className="w-full bg-white border border-gray-200 rounded-xl px-3.5 py-3 text-[14px] text-gray-900 outline-none focus:border-[#5B7BFE] transition-colors" />
+                      {form.email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(form.email) && <p className="text-[11px] text-rose-500 mt-1.5 px-1">请输入有效的邮箱地址</p>}
                     </div>
                     <div className="relative">
                       <input type={showPassword ? 'text' : 'password'} value={form.password} onChange={(event) => setForm((prev) => ({ ...prev, password: event.target.value }))} placeholder="密码 (至少 8 位)" className="w-full bg-white border border-gray-200 rounded-xl px-3.5 py-3 pr-11 text-[14px] text-gray-900 outline-none focus:border-[#5B7BFE] transition-colors" />
@@ -11004,7 +11068,11 @@ export default function App() {
                   </>
                 ) : (
                   <>
-                    <input value={form.inviteCode} onChange={(event) => setForm((prev) => ({ ...prev, inviteCode: event.target.value }))} placeholder="部门邀请码 (可选, 先保存在本机)" className="w-full bg-white border border-gray-200 rounded-xl px-3.5 py-3 text-[14px] text-gray-900 outline-none focus:border-[#5B7BFE] transition-colors" />
+                    <input value={form.inviteCode} onChange={(event) => setForm((prev) => ({ ...prev, inviteCode: event.target.value }))} placeholder="组织 / 部门邀请码（有则直接加入组织）" className="w-full bg-white border border-gray-200 rounded-xl px-3.5 py-3 text-[14px] text-gray-900 outline-none focus:border-[#5B7BFE] transition-colors" />
+                    <div>
+                      <input value={form.cloudApiUrl} onChange={(event) => setForm((prev) => ({ ...prev, cloudApiUrl: event.target.value }))} placeholder={settingsState?.cloudApiUrl ? `云端地址：默认使用 ${cloudApiHostValue(settingsState.cloudApiUrl)}` : '组织云端地址（填邀请码时必填）'} className="w-full bg-white border border-gray-200 rounded-xl px-3.5 py-3 text-[14px] text-gray-900 outline-none focus:border-[#5B7BFE] transition-colors" />
+                      <p className="mt-1.5 px-1 text-[11px] leading-5 text-gray-400">不填邀请码可直接进入本机草稿；填邀请码会连接对应云端并进入组织工作空间。</p>
+                    </div>
                     {inviteStatus.message && (
                       <div className={`rounded-xl border px-3.5 py-2.5 text-[11.5px] ${inviteStatus.valid === false ? 'border-rose-200 bg-rose-50 text-rose-700' : 'border-blue-200 bg-blue-50 text-blue-700'}`}>
                         {inviteStatus.loading ? '正在识别邀请码…' : inviteStatus.message}
@@ -11371,15 +11439,15 @@ export default function App() {
                     className="w-full bg-gray-50 border border-gray-200 rounded-2xl px-4 py-3 text-[14px] outline-none"
                   />
                   <input
-                    value={cloudAuthForm.email}
-                    onChange={(event) => setCloudAuthForm((prev) => ({ ...prev, email: event.target.value }))}
-                    placeholder="邮箱"
-                    className="w-full bg-gray-50 border border-gray-200 rounded-2xl px-4 py-3 text-[14px] outline-none"
-                  />
-                  <input
                     value={cloudAuthForm.phone}
                     onChange={(event) => setCloudAuthForm((prev) => ({ ...prev, phone: event.target.value }))}
                     placeholder="手机号（必填，建议填写飞书账号绑定手机号）"
+                    className="w-full bg-gray-50 border border-gray-200 rounded-2xl px-4 py-3 text-[14px] outline-none"
+                  />
+                  <input
+                    value={cloudAuthForm.email}
+                    onChange={(event) => setCloudAuthForm((prev) => ({ ...prev, email: event.target.value }))}
+                    placeholder="邮箱"
                     className="w-full bg-gray-50 border border-gray-200 rounded-2xl px-4 py-3 text-[14px] outline-none"
                   />
                   <p className="md:col-span-2 -mt-2 text-[11px] leading-5 text-gray-500">
@@ -30809,6 +30877,43 @@ export default function App() {
         }
       };
 
+      const approvedEmployees = employeeReviews.filter((e) => e.accountStatus === 'approved' && (e.membershipStatus || 'approved') === 'approved');
+      const adminTransferCandidates = approvedEmployees.filter((e) => e.id !== currentSessionUser?.id && !e.isBot);
+      const handleTransferAdmin = async () => {
+        if (!adminTransferDraft.targetUserId) {
+          flash('error', '请选择接任管理员。');
+          return;
+        }
+        const target = adminTransferCandidates.find((item) => item.id === adminTransferDraft.targetUserId);
+        if (!target) {
+          flash('error', '接任管理员无效，请刷新后重试。');
+          return;
+        }
+        const actionLabel = adminTransferDraft.currentAdminAction === 'keep_admin'
+          ? '我仍保留管理员权限'
+          : adminTransferDraft.currentAdminAction === 'demote_to_member'
+            ? '我降为普通成员'
+            : '我转交后停用自己';
+        if (!window.confirm(`确定将管理员转交给「${target.fullName}」吗？转交后：${actionLabel}。`)) return;
+        setEmployeeReviewBusyId(`transfer:${target.id}`);
+        try {
+          await transferAdmin({
+            targetUserId: target.id,
+            currentAdminAction: adminTransferDraft.currentAdminAction,
+            currentAdminDepartmentId: adminTransferDraft.currentAdminDepartmentId || null,
+          });
+          flash('success', '管理员已转交');
+          setAdminTransferDraft({ targetUserId: '', currentAdminAction: 'keep_admin', currentAdminDepartmentId: '' });
+          await loadEmployeeReviewBlock();
+          await loadAuthBlock();
+          await loadOrgMembershipBlock();
+        } catch (error) {
+          flash('error', error instanceof Error ? error.message : '管理员转交失败');
+        } finally {
+          setEmployeeReviewBusyId(null);
+        }
+      };
+
       const activeList = employeeReviews.filter((e) => e.accountStatus === 'approved' && (e.membershipStatus || 'approved') === 'approved' && e.primaryRole !== 'admin');
 
       const renderEmployeeRow = (employee: typeof employeeReviews[number], actions: React.ReactNode) => (
@@ -30828,10 +30933,61 @@ export default function App() {
         </div>
       );
 
-      if (pendingList.length === 0 && rejectedList.length === 0 && disabledList.length === 0 && activeList.length === 0) return null;
+      const canRenderTransferPanel = currentSessionUser?.primaryRole === 'admin' && adminTransferCandidates.length > 0;
+      if (pendingList.length === 0 && rejectedList.length === 0 && disabledList.length === 0 && activeList.length === 0 && !canRenderTransferPanel) return null;
 
       return (
         <div className="space-y-5">
+          {canRenderTransferPanel && renderGroup('管理员转交', adminTransferCandidates.length,
+            <div className="rounded-2xl border border-blue-100 bg-blue-50/60 px-4 py-4">
+              <p className="text-[12px] leading-5 text-blue-900">
+                管理员权限用于配置组织、云端和成员；组织层级请在「组织搭建中心」用管理层、部门和岗位表达，二者相互独立。
+              </p>
+              <div className="mt-3 grid grid-cols-1 gap-3 md:grid-cols-3">
+                <select
+                  value={adminTransferDraft.targetUserId}
+                  onChange={(event) => setAdminTransferDraft((prev) => ({ ...prev, targetUserId: event.target.value }))}
+                  className="rounded-xl border border-blue-100 bg-white px-3 py-2.5 text-[12px] font-medium text-gray-900 outline-none focus:border-[#5B7BFE]"
+                >
+                  <option value="">选择接任管理员</option>
+                  {adminTransferCandidates.map((employee) => (
+                    <option key={employee.id} value={employee.id}>
+                      {employee.fullName}{employee.departmentName ? ` · ${employee.departmentName}` : ''}
+                    </option>
+                  ))}
+                </select>
+                <select
+                  value={adminTransferDraft.currentAdminAction}
+                  onChange={(event) => setAdminTransferDraft((prev) => ({ ...prev, currentAdminAction: event.target.value as typeof prev.currentAdminAction }))}
+                  className="rounded-xl border border-blue-100 bg-white px-3 py-2.5 text-[12px] font-medium text-gray-900 outline-none focus:border-[#5B7BFE]"
+                >
+                  <option value="keep_admin">我仍保留管理员权限</option>
+                  <option value="demote_to_member">我降为普通成员</option>
+                  <option value="disable_self">我转交后停用自己</option>
+                </select>
+                <select
+                  value={adminTransferDraft.currentAdminDepartmentId}
+                  onChange={(event) => setAdminTransferDraft((prev) => ({ ...prev, currentAdminDepartmentId: event.target.value }))}
+                  className="rounded-xl border border-blue-100 bg-white px-3 py-2.5 text-[12px] font-medium text-gray-900 outline-none focus:border-[#5B7BFE]"
+                >
+                  <option value="">我的组织层级不调整</option>
+                  {departmentOptions.map((department) => (
+                    <option key={department.id} value={department.id}>{department.name}</option>
+                  ))}
+                </select>
+              </div>
+              <div className="mt-3">
+                <Button
+                  primary
+                  disabled={employeeReviewBusyId?.startsWith('transfer:') || !adminTransferDraft.targetUserId}
+                  onClick={() => void handleTransferAdmin()}
+                >
+                  {employeeReviewBusyId?.startsWith('transfer:') ? <RefreshCw size={16} className="animate-spin" /> : <ShieldCheck size={16} />}
+                  确认转交管理员
+                </Button>
+              </div>
+            </div>
+          )}
           {pendingList.length > 0 && renderGroup('待审核', pendingList.length,
             pendingList.map((employee) => renderEmployeeRow(employee, (
               <>
@@ -31566,6 +31722,9 @@ export default function App() {
   const sidebarAiStatusLabel = isRealAiConfigured(health?.ai)
     ? aiModelDisplayLabel(health?.ai.provider, health?.ai.model, health?.ai.providerLabel)
     : '未配置大模型';
+  const sidebarOrgUnitLabel = isLocalSession
+    ? '本机草稿'
+    : (orgMembershipState.departmentName || currentSessionUser.departmentName || (currentSessionUser.primaryRole === 'admin' ? '管理层' : '未分配部门'));
 
   // 迷你面板早退渲染:在所有 hooks 之后(本 return 处),只决定渲染哪棵树,不跳过任何 hook。
   // hooks 声明在顶层 hooks 区(见 miniMode/miniData/handleMini* 定义),不放这里。
@@ -31937,10 +32096,11 @@ export default function App() {
                 >
                   工作空间：{activeWorkspaceDisplayName}
                 </button>
-                <p className="text-[12px] font-medium text-gray-900 truncate">
-                  {currentSessionUser.fullName || currentSessionUser.email || (isLocalSession ? '本机草稿' : '未命名账号')}
-                </p>
-                <p className="text-[10.5px] text-gray-400 truncate mt-0.5">{isLocalSession ? `未连接组织 · ${sidebarAiStatusLabel} · ${health?.stats.clients || 0} 客户` : `${sidebarAiStatusLabel} · ${health?.stats.clients || 0} 客户`}</p>
+	                <p className="text-[12px] font-medium text-gray-900 truncate">
+	                  {currentSessionUser.fullName || currentSessionUser.email || (isLocalSession ? '本机草稿' : '未命名账号')}
+	                </p>
+                <p className="text-[10.5px] text-gray-500 truncate mt-0.5">{sidebarOrgUnitLabel}</p>
+	                <p className="text-[10.5px] text-gray-400 truncate mt-0.5">{isLocalSession ? `未连接组织 · ${sidebarAiStatusLabel} · ${health?.stats.clients || 0} 客户` : `${sidebarAiStatusLabel} · ${health?.stats.clients || 0} 客户`}</p>
                 {isLocalSession ? (
                   <button
                     type="button"

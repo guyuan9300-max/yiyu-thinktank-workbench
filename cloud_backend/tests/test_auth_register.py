@@ -263,6 +263,60 @@ def test_valid_invite_registration_syncs_org_ai_config_and_space_profile(tmp_pat
     assert any(item["id"] == "dept_customer_service" for item in org_profile.json()["departments"])
 
 
+def test_admin_transfer_promotes_target_and_keeps_one_admin_guard(tmp_path, monkeypatch):
+    data_dir = tmp_path / "cloud-data"
+    monkeypatch.setenv("YIYU_CLOUD_DATA_DIR", str(data_dir))
+    monkeypatch.setenv("YIYU_CLOUD_BOOTSTRAP_ADMIN_PASSWORD", "Admin123!")
+    monkeypatch.setenv("YIYU_CLOUD_QINGHUA_PASSWORD", "Simulate123!")
+    monkeypatch.setenv("YIYU_CLOUD_JIANING_PASSWORD", "Simulate123!")
+    monkeypatch.setenv("YIYU_CLOUD_YISHUO_PASSWORD", "Simulate123!")
+
+    app = create_app()
+    seed_registration_departments(app)
+    client = TestClient(app)
+    admin_headers = login_headers(client, "admin@yiyu-system.com", "Admin123!")
+
+    registered = client.post(
+        "/api/v1/auth/register",
+        json={
+            "email": "next-admin@example.com",
+            "fullName": "接任管理员",
+            "phone": "17316888678",
+            "password": "Password123!",
+            "inviteCode": customer_service_invite(),
+        },
+    )
+    assert registered.status_code == 200, registered.text
+    target_user = registered.json()["user"]
+    target_headers = {"Authorization": f"Bearer {registered.json()['accessToken']}"}
+
+    transferred = client.post(
+        "/api/v1/admin/employees/transfer-admin",
+        json={
+            "targetUserId": target_user["id"],
+            "currentAdminAction": "demote_to_member",
+            "currentAdminDepartmentId": "dept_customer_service",
+        },
+        headers=admin_headers,
+    )
+    assert transferred.status_code == 200, transferred.text
+
+    db = app.state.app_state.db
+    new_admin = db.fetchone("SELECT primary_role FROM employee_accounts WHERE id = ?", (target_user["id"],))
+    old_admin = db.fetchone("SELECT primary_role, department_id FROM employee_accounts WHERE email = ?", ("admin@yiyu-system.com",))
+    assert new_admin["primary_role"] == "admin"
+    assert old_admin["primary_role"] == "employee"
+    assert old_admin["department_id"] == "dept_customer_service"
+
+    demote_last_admin = client.patch(
+        f"/api/v1/admin/employees/{target_user['id']}/role",
+        json={"role": "employee"},
+        headers=target_headers,
+    )
+    assert demote_last_admin.status_code == 400, demote_last_admin.text
+    assert "至少需要保留一名管理员" in demote_last_admin.text
+
+
 def test_existing_cloud_account_apply_valid_invite_unlocks_member_resources(tmp_path, monkeypatch):
     data_dir = tmp_path / "cloud-data"
     monkeypatch.setenv("YIYU_CLOUD_DATA_DIR", str(data_dir))

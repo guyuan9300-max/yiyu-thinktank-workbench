@@ -62,6 +62,7 @@ from app.models import (
     DepartmentOption,
     OrgInviteResolveResult,
     EmployeeRecord,
+    AdminTransferPayload,
     OrgBotRecord,
     OrgBotReportingRecord,
     OrgBotCapabilityRecord,
@@ -20825,6 +20826,27 @@ def create_app() -> FastAPI:
         records.extend(_bot_directory_record(b) for b in bot_rows)
         return records
 
+    def _approved_admin_count_for_org(organization_id: str) -> int:
+        row = state.db.fetchone(
+            """
+            SELECT COUNT(1) AS count
+            FROM employee_accounts
+            WHERE organization_id = ?
+              AND primary_role = 'admin'
+              AND account_status = 'approved'
+              AND COALESCE(membership_status, 'approved') = 'approved'
+            """,
+            (organization_id,),
+        )
+        return int(row["count"] or 0) if row else 0
+
+    def _replace_employee_role_binding(conn, employee_id: str, role: str, timestamp: str) -> None:
+        conn.execute("DELETE FROM employee_role_bindings WHERE user_id = ?", (employee_id,))
+        conn.execute(
+            "INSERT INTO employee_role_bindings(id, user_id, role, created_at) VALUES(?, ?, ?, ?)",
+            (new_id("role"), employee_id, role, timestamp),
+        )
+
     @app.get("/api/v1/org/bots", response_model=list[OrgBotRecord])
     def list_org_bots(
         status: str | None = Query(default=None),
@@ -20994,7 +21016,9 @@ def create_app() -> FastAPI:
     def disable_employee(employee_id: str, current_user: SessionUser = Depends(lambda authorization=Header(default=None): _require_admin(app, authorization))) -> EmployeeRecord:
         if employee_id == current_user.id:
             raise HTTPException(status_code=400, detail="不能停用当前管理员账号")
-        _get_org_user_or_404(state, current_user.organizationId, employee_id)
+        row = _get_org_user_or_404(state, current_user.organizationId, employee_id)
+        if str(row["primary_role"] or "") == "admin" and _approved_admin_count_for_org(current_user.organizationId) <= 1:
+            raise HTTPException(status_code=400, detail="组织至少需要保留一名管理员")
         timestamp = now_iso()
         state.db.execute(
             "UPDATE employee_accounts SET account_status = 'disabled', disabled_at = ?, updated_at = ? WHERE id = ? AND organization_id = ?",
@@ -21023,7 +21047,9 @@ def create_app() -> FastAPI:
         payload: RolePayload,
         current_user: SessionUser = Depends(lambda authorization=Header(default=None): _require_admin(app, authorization)),
     ) -> EmployeeRecord:
-        _get_org_user_or_404(state, current_user.organizationId, employee_id)
+        row = _get_org_user_or_404(state, current_user.organizationId, employee_id)
+        if str(row["primary_role"] or "") == "admin" and payload.role != "admin" and _approved_admin_count_for_org(current_user.organizationId) <= 1:
+            raise HTTPException(status_code=400, detail="组织至少需要保留一名管理员")
         state.db.execute(
             "UPDATE employee_accounts SET primary_role = ?, updated_at = ? WHERE id = ? AND organization_id = ?",
             (payload.role, now_iso(), employee_id, current_user.organizationId),
@@ -21035,6 +21061,118 @@ def create_app() -> FastAPI:
         )
         _log_audit(state, "change_role", actor_user_id=current_user.id, target_user_id=employee_id, detail={"role": payload.role})
         return _employee_record(_get_org_user_or_404(state, current_user.organizationId, employee_id))
+
+    @app.post("/api/v1/admin/employees/transfer-admin")
+    def transfer_admin(
+        payload: AdminTransferPayload,
+        current_user: SessionUser = Depends(lambda authorization=Header(default=None): _require_admin(app, authorization)),
+    ) -> dict[str, str]:
+        organization_id = current_user.organizationId
+        target_user_id = payload.targetUserId.strip()
+        if target_user_id == current_user.id:
+            raise HTTPException(status_code=400, detail="接任管理员不能是当前账号自己")
+        target_row = _get_org_user_or_404(state, organization_id, target_user_id)
+        if str(target_row["account_status"] or "") != "approved" or str(target_row["membership_status"] or "approved") != "approved":
+            raise HTTPException(status_code=400, detail="只能转交给已通过的组织成员")
+        department = _get_org_department_option(state, organization_id, payload.currentAdminDepartmentId)
+        if payload.currentAdminDepartmentId and not department:
+            raise HTTPException(status_code=400, detail="请选择有效的组织层级或部门")
+        timestamp = now_iso()
+
+        def _apply_transfer(conn):
+            current_row = conn.execute(
+                "SELECT * FROM employee_accounts WHERE id = ? AND organization_id = ?",
+                (current_user.id, organization_id),
+            ).fetchone()
+            if not current_row or str(current_row["primary_role"] or "") != "admin":
+                raise HTTPException(status_code=403, detail="当前账号不再是管理员，请刷新后重试")
+
+            conn.execute(
+                """
+                UPDATE employee_accounts
+                   SET primary_role = 'admin',
+                       account_status = 'approved',
+                       membership_status = 'approved',
+                       approved_at = COALESCE(approved_at, ?),
+                       approved_by = COALESCE(approved_by, ?),
+                       rejected_reason = NULL,
+                       membership_rejected_reason = NULL,
+                       disabled_at = NULL,
+                       updated_at = ?
+                 WHERE id = ? AND organization_id = ?
+                """,
+                (timestamp, current_user.id, timestamp, target_user_id, organization_id),
+            )
+            _replace_employee_role_binding(conn, target_user_id, "admin", timestamp)
+
+            department_id = department.id if department else None
+            department_name = department.name if department else None
+            if payload.currentAdminAction == "demote_to_member":
+                conn.execute(
+                    """
+                    UPDATE employee_accounts
+                       SET primary_role = 'employee',
+                           department_id = ?,
+                           department_name = ?,
+                           updated_at = ?
+                     WHERE id = ? AND organization_id = ?
+                    """,
+                    (department_id, department_name, timestamp, current_user.id, organization_id),
+                )
+                _replace_employee_role_binding(conn, current_user.id, "employee", timestamp)
+            elif payload.currentAdminAction == "disable_self":
+                conn.execute(
+                    """
+                    UPDATE employee_accounts
+                       SET primary_role = 'employee',
+                           account_status = 'disabled',
+                           department_id = ?,
+                           department_name = ?,
+                           disabled_at = ?,
+                           updated_at = ?
+                     WHERE id = ? AND organization_id = ?
+                    """,
+                    (department_id, department_name, timestamp, timestamp, current_user.id, organization_id),
+                )
+                _replace_employee_role_binding(conn, current_user.id, "employee", timestamp)
+            elif department:
+                conn.execute(
+                    """
+                    UPDATE employee_accounts
+                       SET department_id = ?, department_name = ?, updated_at = ?
+                     WHERE id = ? AND organization_id = ?
+                    """,
+                    (department_id, department_name, timestamp, current_user.id, organization_id),
+                )
+
+            admin_row = conn.execute(
+                """
+                SELECT COUNT(1) AS count
+                FROM employee_accounts
+                WHERE organization_id = ?
+                  AND primary_role = 'admin'
+                  AND account_status = 'approved'
+                  AND COALESCE(membership_status, 'approved') = 'approved'
+                """,
+                (organization_id,),
+            ).fetchone()
+            if int(admin_row["count"] or 0) < 1:
+                raise HTTPException(status_code=400, detail="组织至少需要保留一名管理员")
+
+        state.db.run_in_transaction(_apply_transfer)
+        _sync_employee_org_binding_from_account(state, organization_id, target_user_id)
+        _sync_employee_org_binding_from_account(state, organization_id, current_user.id)
+        _log_audit(
+            state,
+            "transfer_admin",
+            actor_user_id=current_user.id,
+            target_user_id=target_user_id,
+            detail={
+                "currentAdminAction": payload.currentAdminAction,
+                "currentAdminDepartmentId": payload.currentAdminDepartmentId,
+            },
+        )
+        return {"message": "管理员已转交"}
 
     @app.patch("/api/v1/admin/employees/{employee_id}/department", response_model=EmployeeRecord)
     def update_employee_department(
