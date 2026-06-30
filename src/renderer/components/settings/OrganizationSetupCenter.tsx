@@ -83,6 +83,20 @@ type LineDefinition = {
   path: string;
 };
 
+type ManagementDisplayPerson = {
+  id: string;
+  name: string;
+  detail: string;
+};
+
+type ManagementDisplayGroup = {
+  key: 'admin' | ManagementInviteRole;
+  label: string;
+  color: string;
+  people: ManagementDisplayPerson[];
+  emptyText: string;
+};
+
 const DEPARTMENT_COLORS = ['#5B7BFE', '#0EA5E9', '#14B8A6', '#F59E0B', '#EF4444', '#8B5CF6'];
 
 function nextUiId(prefix: string) {
@@ -125,6 +139,14 @@ function isComposingKeyEvent(
 
 function resolveInputDraftText(draftValue: string | undefined, fallbackValue: string) {
   return typeof draftValue === 'string' ? draftValue : fallbackValue;
+}
+
+function employeeDisplayDetail(employee: EmployeeRecord) {
+  return employee.departmentName?.trim()
+    || employee.jobTitle?.trim()
+    || employee.email?.trim()
+    || employee.phone?.trim()
+    || '组织成员';
 }
 
 function deriveTree(
@@ -626,6 +648,77 @@ export function OrganizationSetupCenter({
       };
     });
   }, [activeRoles, approvedEmployees, organizationName, value.bindings, value.organization.leaderUserId, value.organization.organizationId]);
+  const managementGroups = useMemo<ManagementDisplayGroup[]>(() => {
+    const employeeById = new Map(approvedEmployees.map((employee) => [employee.id, employee]));
+    const peopleFromIds = (ids: Iterable<string>) => {
+      const seen = new Set<string>();
+      const people: ManagementDisplayPerson[] = [];
+      Array.from(ids).forEach((id) => {
+        if (seen.has(id)) return;
+        const employee = employeeById.get(id);
+        if (!employee) return;
+        seen.add(id);
+        people.push({
+          id: employee.id,
+          name: employee.fullName || employee.email || '未命名成员',
+          detail: employeeDisplayDetail(employee),
+        });
+      });
+      return people;
+    };
+    const rolePeople = (role: ManagementInviteRole) => {
+      const label = managementInviteRoleLabel(role);
+      const roleIds = new Set(
+        activeRoles
+          .filter((item) => !item.departmentId && (item.name.trim() === label || (role === 'organization_lead' && item.level === 'organization_lead')))
+          .map((item) => item.id),
+      );
+      const ids = new Set<string>();
+      value.bindings.forEach((binding) => {
+        if (binding.primaryRoleId && roleIds.has(binding.primaryRoleId)) {
+          ids.add(binding.userId);
+        }
+      });
+      if (role === 'organization_lead' && value.organization.leaderUserId) {
+        ids.add(value.organization.leaderUserId);
+      }
+      approvedEmployees.forEach((employee) => {
+        if ((employee.jobTitle || '').trim() === label) {
+          ids.add(employee.id);
+        }
+      });
+      return peopleFromIds(ids);
+    };
+    return [
+      {
+        key: 'admin',
+        label: '管理员',
+        color: '#6366F1',
+        people: approvedEmployees
+          .filter((employee) => employee.primaryRole === 'admin')
+          .map((employee) => ({
+            id: employee.id,
+            name: employee.fullName || employee.email || '未命名管理员',
+            detail: employeeDisplayDetail(employee),
+          })),
+        emptyText: '暂无管理员',
+      },
+      {
+        key: 'organization_lead',
+        label: '组织负责人',
+        color: '#5B7BFE',
+        people: rolePeople('organization_lead'),
+        emptyText: '待填写或待加入',
+      },
+      {
+        key: 'advisor',
+        label: '顾问',
+        color: '#10B981',
+        people: rolePeople('advisor'),
+        emptyText: '待填写或待加入',
+      },
+    ];
+  }, [activeRoles, approvedEmployees, value.bindings, value.organization.leaderUserId]);
   const bulkInviteText = useMemo(() => {
     const managementLines = managementInviteCards.map((item) => `${item.label}：${item.inviteCode}`);
     const linesOfText = tree.children.map((department, index) => {
@@ -1728,10 +1821,50 @@ export function OrganizationSetupCenter({
                     onUpload={() => void handleUploadOrganizationIntroDocument()}
                     pendingDocument={pendingOrganizationIntroDocument}
                   />
-	                </div>
+		                </div>
 
-	                <div className="relative flex flex-col gap-6">
-	                  {tree.children.map((department, index) => {
+                <div className="relative z-10 flex min-w-[240px] flex-col gap-3 rounded-2xl border border-[#DCE4FF] bg-white px-4 py-4 shadow-sm">
+                  <div className="flex items-center justify-between gap-3">
+                    <div className="flex items-center gap-2">
+                      <Users size={15} className="text-[#5B7BFE]" />
+                      <span className="text-[13px] font-bold text-gray-800">管理层</span>
+                    </div>
+                    <span className="rounded-full bg-[#EEF3FF] px-2.5 py-1 text-[10px] font-bold text-[#5B7BFE]">
+                      {managementGroups.reduce((sum, group) => sum + group.people.length, 0)} 人
+                    </span>
+                  </div>
+                  <div className="flex flex-col gap-2.5">
+                    {managementGroups.map((group) => (
+                      <div key={group.key} className="rounded-xl border border-gray-100 bg-gray-50/80 px-3 py-2.5">
+                        <div className="flex items-center justify-between gap-3">
+                          <span className="text-[11px] font-bold text-gray-600">{group.label}</span>
+                          <span
+                            className="h-2 w-2 rounded-full"
+                            style={{ backgroundColor: group.color }}
+                          />
+                        </div>
+                        {group.people.length > 0 ? (
+                          <div className="mt-2 flex flex-wrap gap-1.5">
+                            {group.people.map((person) => (
+                              <span
+                                key={`${group.key}-${person.id}`}
+                                className="inline-flex max-w-[200px] flex-col rounded-lg border border-white bg-white px-2.5 py-1.5 shadow-sm"
+                              >
+                                <span className="truncate text-[11px] font-bold text-gray-800">{person.name}</span>
+                                <span className="truncate text-[10px] text-gray-400">{person.detail}</span>
+                              </span>
+                            ))}
+                          </div>
+                        ) : (
+                          <p className="mt-1.5 text-[11px] text-gray-400">{group.emptyText}</p>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                </div>
+
+		                <div className="relative flex flex-col gap-6">
+		                  {tree.children.map((department, index) => {
 	                    const isEditingDepartmentName = editingNodeId === department.id && editingField === 'name';
 	                    const departmentSettings = value.departments.find((item) => item.id === department.id);
 	                    const departmentBindings = bindingsByDepartmentId.get(department.id) || [];
