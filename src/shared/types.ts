@@ -327,8 +327,11 @@ export interface OrgInviteResolveResult {
   valid: boolean;
   organizationId?: string | null;
   organizationName?: string | null;
+  targetType?: 'department' | 'management_role' | null;
   departmentId?: string | null;
   departmentName?: string | null;
+  roleKey?: string | null;
+  roleName?: string | null;
   message?: string | null;
 }
 
@@ -6733,6 +6736,8 @@ export interface AuthRegisterPayload {
   phone: string;
   fullName: string;
   password: string;
+  cloudApiUrl?: string | null;
+  organizationName?: string | null;
   inviteCode?: string | null;
   departmentId?: string | null;
   jobTitle?: string | null;
@@ -6746,19 +6751,23 @@ export interface AuthLoginPayload {
   identifier?: string;
   password: string;
   rememberMe?: boolean;
+  cloudApiUrl?: string | null;
 }
 
 export interface SelectOrganizationPayload {
   organizationSelectionToken: string;
   organizationId: string;
+  cloudApiUrl?: string | null;
 }
 
 export interface CreateOrganizationPayload {
   organizationName: string;
+  cloudApiUrl?: string | null;
 }
 
 export interface JoinOrganizationPayload {
   inviteCode: string;
+  cloudApiUrl?: string | null;
   departmentId?: string | null;
   jobTitle?: string | null;
   managerName?: string | null;

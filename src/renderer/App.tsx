@@ -1649,7 +1649,7 @@ function aiRouteLabel(provider?: AiProvider | string | null, model?: string | nu
   return label === 'AI' ? 'AI' : `AI · ${label}`;
 }
 
-const CLOUD_API_URL_PREFIX = 'http://';
+const CLOUD_API_URL_PREFIX = 'https://';
 function cloudApiHostValue(rawUrl?: string | null) {
   return String(rawUrl || '')
     .trim()
@@ -1658,8 +1658,24 @@ function cloudApiHostValue(rawUrl?: string | null) {
 }
 
 function cloudApiUrlFromHost(rawHost?: string | null) {
+  const rawValue = String(rawHost || '').trim();
+  if (/^https?:\/\//i.test(rawValue)) {
+    try {
+      return new URL(rawValue).origin;
+    } catch {
+      return '';
+    }
+  }
   const host = cloudApiHostValue(rawHost);
-  return host ? `${CLOUD_API_URL_PREFIX}${host}` : '';
+  if (!host) return '';
+  const parsedHost = host.startsWith('[')
+    ? host.replace(/^\[([^\]]+)\].*$/, '$1').toLowerCase()
+    : host.split(':')[0].toLowerCase();
+  const ipv4Literal = /^(?:\d{1,3}\.){3}\d{1,3}$/.test(parsedHost);
+  const scheme = parsedHost === 'localhost' || parsedHost === '::1' || parsedHost.startsWith('127.') || ipv4Literal
+    ? 'http://'
+    : CLOUD_API_URL_PREFIX;
+  return `${scheme}${host}`;
 }
 
 type HealthAiSnapshot = HealthResponse['ai'] | null | undefined;
@@ -8076,7 +8092,30 @@ export default function App() {
   );
   const currentMembershipStatus = getEffectiveMembershipStatus(authState);
   const canClaimOrgAdmin = Boolean(isCloudSession && orgAdminClaimStatus.canClaim);
-  const canAccessOrganizationSettings = Boolean(currentSessionUser?.primaryRole === 'admin' || canClaimOrgAdmin);
+  const currentUserOrgBinding = currentSessionUser
+    ? orgModelState.bindings.find((binding) => binding.userId === currentSessionUser.id)
+    : null;
+  const currentUserOrgRole = currentUserOrgBinding?.primaryRoleId
+    ? orgModelState.roles.find((role) => role.id === currentUserOrgBinding.primaryRoleId)
+    : null;
+  const currentUserOrganizationIdentity = (
+    currentUserOrgRole?.name
+    || currentSessionUser?.jobTitle
+    || ''
+  ).trim();
+  const canEditOrganizationStructure = Boolean(
+    currentSessionUser?.primaryRole === 'admin'
+    || currentUserOrgRole?.level === 'organization_lead'
+    || currentUserOrganizationIdentity === '组织负责人'
+    || currentUserOrganizationIdentity === '顾问',
+  );
+  const canAccessOrganizationSettings = Boolean(canEditOrganizationStructure || canClaimOrgAdmin);
+  const currentUserStructureLabel = currentUserOrganizationIdentity
+    || (currentSessionUser?.departmentName
+      ? `${currentSessionUser.departmentName}${currentSessionUser.isDepartmentLead ? ' · 部门负责人' : ''}`
+      : currentSessionUser?.primaryRole === 'admin'
+        ? '管理员'
+        : '未分配部门');
   // 断网兜底态(degraded)不强制身份页:此时云端没法确认成员资格,沿用本地 last-known-good;admin claim 也豁免。
   const shouldShowIdentityGate = isCloudSession && currentMembershipStatus !== 'approved' && !canClaimOrgAdmin && authState.degraded !== true;
   const renderBranch = loading ? 'loading' : (!authState.authenticated || !currentSessionUser ? 'auth' : shouldShowIdentityGate ? 'identity' : 'main');
@@ -8088,8 +8127,10 @@ export default function App() {
   const currentOperatorName = currentSessionUser?.fullName || operators.find((item) => item.isCurrent)?.name || '庆华';
   const canManagePublicTaskTaxonomy = currentSessionUser?.primaryRole === 'admin';
   const [cloudAuthModalOpen, setCloudAuthModalOpen] = useState(false);
-  const [cloudAuthMode, setCloudAuthMode] = useState<'login' | 'register'>('login');
+  const [cloudAuthAction, setCloudAuthAction] = useState<'join' | 'create'>('join');
   const [cloudAuthForm, setCloudAuthForm] = useState({
+    cloudApiUrl: '',
+    organizationName: '',
     email: '',
     identifier: '',
     phone: '',
@@ -8107,7 +8148,6 @@ export default function App() {
   const [cloudAuthSubmitting, setCloudAuthSubmitting] = useState(false);
   const [cloudAuthMessage, setCloudAuthMessage] = useState('');
   const [cloudAuthShowPassword, setCloudAuthShowPassword] = useState(false);
-  const [cloudAuthRegisterStep, setCloudAuthRegisterStep] = useState<1 | 2>(1);
   const [cloudAuthInviteStatus, setCloudAuthInviteStatus] = useState<{ code: string; loading: boolean; valid: boolean | null; message: string }>({
     code: '',
     loading: false,
@@ -8574,26 +8614,35 @@ export default function App() {
     };
   }, [clientEditorModalState.editingClientId, clientEditorModalState.open, reportWorkspaceInteractionState]);
 
-  const openCloudAuthModal = (mode: 'login' | 'register' = 'login') => {
+  const openCloudAuthModal = (
+    action: 'join' | 'create' = 'join',
+    seed: { cloudApiUrl?: string; inviteCode?: string; organizationName?: string } = {},
+  ) => {
     const rememberedCloudAccount =
       (localInputMemoryState.cloudAuth.lastEmail
         ? localInputMemoryState.cloudAuth.accounts.find((account) => account.email === localInputMemoryState.cloudAuth.lastEmail)
         : null)
       || localInputMemoryState.cloudAuth.accounts[0]
       || null;
-    setCloudAuthMode(mode);
+    const rememberedIdentifier = rememberedCloudAccount?.identifier || rememberedCloudAccount?.email || '';
+    const defaultEmail = currentSessionUser?.email || rememberedCloudAccount?.email || '';
+    const defaultPhone = currentSessionUser?.phone || '';
+    const defaultFullName = currentSessionUser?.fullName || rememberedCloudAccount?.fullName || '';
+    const defaultCloudApiUrl = seed.cloudApiUrl || activeWorkspaceRecord?.cloudApiUrl || settingsState?.cloudApiUrl || '';
+    setCloudAuthAction(action);
     setCloudAuthMessage('');
     setCloudAuthShowPassword(false);
-    setCloudAuthRegisterStep(1);
     setCloudAuthInviteStatus({ code: '', loading: false, valid: null, message: '' });
     setCloudAuthForm({
-      email: rememberedCloudAccount?.email || '',
-      identifier: rememberedCloudAccount?.identifier || rememberedCloudAccount?.email || '',
-      phone: '',
-      fullName: mode === 'register' ? (rememberedCloudAccount?.fullName || '') : '',
+      cloudApiUrl: defaultCloudApiUrl,
+      organizationName: seed.organizationName || '',
+      email: defaultEmail,
+      identifier: rememberedIdentifier || defaultEmail || defaultPhone,
+      phone: defaultPhone,
+      fullName: defaultFullName,
       password: rememberedCloudAccount?.password || '',
-      confirmPassword: mode === 'register' ? (rememberedCloudAccount?.password || '') : '',
-      inviteCode: '',
+      confirmPassword: rememberedCloudAccount?.password || '',
+      inviteCode: seed.inviteCode || '',
       departmentId: '',
       jobTitle: '',
       managerName: '',
@@ -8698,50 +8747,15 @@ export default function App() {
     return normalizeUrlForComparison(activeWorkspaceRecord.cloudApiUrl) === normalizeUrlForComparison(cloudApiUrl);
   };
 
-  const createPendingOrganizationWorkspace = async (params: {
-    name: string;
-    cloudApiUrl: string;
-    successMessage: string;
-  }) => {
-    const response = await createWorkspace({
-      kind: 'organization',
-      name: params.name,
-      cloudApiUrl: params.cloudApiUrl || undefined,
-    });
-    await refreshWorkspaceAwareState(response);
-    flash('success', params.successMessage);
-  };
-
   const handleCreateOrganizationWorkspace = async () => {
     const organizationName = workspaceCreateOrgDraft.organizationName.trim();
     const cloudApiUrl = workspaceActionCloudUrl(workspaceCreateOrgDraft.cloudApiUrl);
-    if (!organizationName) {
-      flash('error', '请填写要创建的组织名称。');
+    if (!cloudApiUrl) {
+      flash('error', '请填写组织云端服务地址。');
       return;
     }
-    setWorkspaceManagerBusy(true);
-    try {
-      if (activeWorkspaceMatchesCloudUrl(cloudApiUrl)) {
-        const response = await createOrganization({ organizationName });
-        setAuthState(response);
-        setWorkspaceCreateOrgDraft({ organizationName: '', cloudApiUrl: '' });
-        await loadAll();
-        flash('success', '新组织已在云端创建，并已切换到对应工作空间。');
-        return;
-      }
-      await createPendingOrganizationWorkspace({
-        name: organizationName,
-        cloudApiUrl,
-        successMessage: cloudApiUrl
-          ? '已创建并切换到该组织工作空间。请在系统设置里确认云端地址并登录后，再完成真实组织开通。'
-          : '已创建并切换到该组织工作空间沙箱。填入云端地址并登录后，才会真正连接云端组织。',
-      });
-      setWorkspaceCreateOrgDraft({ organizationName: '', cloudApiUrl: '' });
-    } catch (error) {
-      flash('error', error instanceof Error ? error.message : '创建组织工作空间失败');
-    } finally {
-      setWorkspaceManagerBusy(false);
-    }
+    openCloudAuthModal('create', { cloudApiUrl, organizationName });
+    setWorkspaceManagerOpen(false);
   };
 
   const handleJoinOrganizationWorkspace = async () => {
@@ -8755,28 +8769,8 @@ export default function App() {
       flash('error', '请填写对方组织的云端服务地址。');
       return;
     }
-    setWorkspaceManagerBusy(true);
-    try {
-      if (activeWorkspaceMatchesCloudUrl(cloudApiUrl)) {
-        const response = await joinOrganization({ inviteCode });
-        setAuthState(response);
-        setWorkspaceJoinOrgDraft({ inviteCode: '', cloudApiUrl: '' });
-        await loadAll();
-        flash('success', '已加入组织，并已切换到对应工作空间。');
-        return;
-      }
-      const inviteLabel = inviteCode.length > 8 ? `${inviteCode.slice(0, 8)}…` : inviteCode;
-      await createPendingOrganizationWorkspace({
-        name: `待加入组织 · ${inviteLabel}`,
-        cloudApiUrl,
-        successMessage: '已创建并切换到待加入组织工作空间。请在系统设置里确认云端地址并登录后，再提交邀请码完成加入。',
-      });
-      setWorkspaceJoinOrgDraft({ inviteCode: '', cloudApiUrl: '' });
-    } catch (error) {
-      flash('error', error instanceof Error ? error.message : '加入组织工作空间失败');
-    } finally {
-      setWorkspaceManagerBusy(false);
-    }
+    openCloudAuthModal('join', { cloudApiUrl, inviteCode });
+    setWorkspaceManagerOpen(false);
   };
 
   const handleSelectOrganization = async (organizationId: string) => {
@@ -8787,6 +8781,7 @@ export default function App() {
       const response = await selectOrganization({
         organizationSelectionToken: organizationSelection.token,
         organizationId,
+        cloudApiUrl: cloudApiUrlFromHost(cloudAuthForm.cloudApiUrl),
       });
       setAuthState(response);
       setOrganizationSelection(null);
@@ -8801,10 +8796,29 @@ export default function App() {
   };
 
   useEffect(() => {
-    if (cloudAuthMode !== 'register') return undefined;
+    if (cloudAuthAction !== 'join') return undefined;
     const code = normalizeDepartmentInviteInput(cloudAuthForm.inviteCode);
     if (!code) {
       setCloudAuthInviteStatus({ code: '', loading: false, valid: null, message: '' });
+      return undefined;
+    }
+    const typedCloudUrl = cloudApiUrlFromHost(cloudAuthForm.cloudApiUrl);
+    if (!typedCloudUrl) {
+      setCloudAuthInviteStatus({
+        code,
+        loading: false,
+        valid: null,
+        message: '填写组织云端地址后，提交时会连接云端识别邀请码。',
+      });
+      return undefined;
+    }
+    if (normalizeUrlForComparison(typedCloudUrl) !== normalizeUrlForComparison(settingsState?.cloudApiUrl || '')) {
+      setCloudAuthInviteStatus({
+        code,
+        loading: false,
+        valid: null,
+        message: '提交时会连接你填写的云端地址识别邀请码。',
+      });
       return undefined;
     }
     let cancelled = false;
@@ -8840,7 +8854,7 @@ export default function App() {
       cancelled = true;
       window.clearTimeout(timer);
     };
-  }, [cloudAuthForm.inviteCode, cloudAuthMode]);
+  }, [cloudAuthAction, cloudAuthForm.cloudApiUrl, cloudAuthForm.inviteCode, settingsState?.cloudApiUrl]);
 
   useEffect(() => {
     if (settingsState) {
@@ -10263,22 +10277,54 @@ export default function App() {
     }
   }
 
+  const normalizeCloudAuthSubmitError = (error: unknown): string => {
+    const message = error instanceof Error ? error.message : String(error || '');
+    if (/已有组织管理员|组织已存在管理员|已有管理员/.test(message)) {
+      return '这个云端已经有管理员，不能直接接管。请联系管理员生成组织或部门邀请码，然后选择「加入组织」进入。';
+    }
+    if (/JSONDecodeError|Unexpected token|Unexpected end of JSON|Expecting value/i.test(message)) {
+      return '云地址返回的不是组织云 API 数据。请确认填写的是组织云端地址，并且云服务已经部署完成。';
+    }
+    if (/Cloud backend unavailable|circuit breaker/i.test(message)) {
+      return '暂时连不上组织云。请检查云地址和网络，稍后重试；登录、加入和创建组织不会被这次失败永久锁住。';
+    }
+    return message || '提交失败';
+  };
+
   const handleCloudAuthSubmit = async () => {
     setCloudAuthSubmitting(true);
     setCloudAuthMessage('');
     try {
-      if (cloudAuthMode === 'register') {
-        const response = await register({
-          email: cloudAuthForm.email,
-          phone: cloudAuthForm.phone.trim(),
-          fullName: cloudAuthForm.fullName,
-          password: cloudAuthForm.password,
-          inviteCode: normalizeDepartmentInviteInput(cloudAuthForm.inviteCode) || null,
-          departmentId: cloudAuthForm.departmentId || null,
-          jobTitle: cloudAuthForm.jobTitle || null,
-          managerName: cloudAuthForm.managerName || null,
-          currentFocus: cloudAuthForm.currentFocus || null,
-        });
+      const cloudApiUrl = cloudApiUrlFromHost(cloudAuthForm.cloudApiUrl);
+      if (!cloudApiUrl) {
+        throw new Error('请填写组织云端地址。');
+      }
+      if (cloudAuthAction === 'join') {
+        const inviteCode = normalizeDepartmentInviteInput(cloudAuthForm.inviteCode);
+        if (!inviteCode) {
+          throw new Error('加入组织需要填写组织或部门邀请码。');
+        }
+        const response = isCloudSession && activeWorkspaceMatchesCloudUrl(cloudApiUrl)
+          ? await joinOrganization({
+            cloudApiUrl,
+            inviteCode,
+            departmentId: cloudAuthForm.departmentId || null,
+            jobTitle: cloudAuthForm.jobTitle || null,
+            managerName: cloudAuthForm.managerName || null,
+            currentFocus: cloudAuthForm.currentFocus || null,
+          })
+          : await register({
+            cloudApiUrl,
+            email: cloudAuthForm.email,
+            phone: cloudAuthForm.phone.trim(),
+            fullName: cloudAuthForm.fullName,
+            password: cloudAuthForm.password,
+            inviteCode,
+            departmentId: cloudAuthForm.departmentId || null,
+            jobTitle: cloudAuthForm.jobTitle || null,
+            managerName: cloudAuthForm.managerName || null,
+            currentFocus: cloudAuthForm.currentFocus || null,
+          });
         if (response.organizationSelectionRequired) {
           setOrganizationSelection({
             token: response.organizationSelectionToken || '',
@@ -10289,11 +10335,22 @@ export default function App() {
         }
         setAuthState(response);
       } else {
-        const response = await login({
-          identifier: cloudAuthForm.identifier || cloudAuthForm.email,
-          password: cloudAuthForm.password,
-          rememberMe: cloudAuthForm.rememberMe,
-        });
+        const organizationName = cloudAuthForm.organizationName.trim();
+        const response = isCloudSession && activeWorkspaceMatchesCloudUrl(cloudApiUrl)
+          ? await createOrganization({ cloudApiUrl, organizationName: organizationName || `${cloudAuthForm.fullName.trim() || '新组织'}的组织` })
+          : await register({
+            cloudApiUrl,
+            email: cloudAuthForm.email,
+            phone: cloudAuthForm.phone.trim(),
+            fullName: cloudAuthForm.fullName,
+            password: cloudAuthForm.password,
+            organizationName: organizationName || null,
+            inviteCode: null,
+            departmentId: null,
+            jobTitle: null,
+            managerName: null,
+            currentFocus: null,
+          });
         if (response.organizationSelectionRequired) {
           setOrganizationSelection({
             token: response.organizationSelectionToken || '',
@@ -10308,7 +10365,7 @@ export default function App() {
         const nextLocalInputMemory = await saveCloudAuthInputMemory({
           rememberInputs: cloudAuthForm.rememberInputs,
           email: cloudAuthForm.email,
-          identifier: cloudAuthMode === 'login' ? (cloudAuthForm.identifier || cloudAuthForm.email) : cloudAuthForm.email,
+          identifier: cloudAuthForm.email,
           fullName: cloudAuthForm.fullName,
           password: cloudAuthForm.password,
         });
@@ -10318,6 +10375,8 @@ export default function App() {
       }
       await loadAll();
       setCloudAuthForm({
+        cloudApiUrl: '',
+        organizationName: '',
         email: '',
         identifier: '',
         phone: '',
@@ -10335,7 +10394,7 @@ export default function App() {
       setCloudAuthMessage('');
       setCloudAuthModalOpen(false);
     } catch (error) {
-      setCloudAuthMessage(error instanceof Error ? error.message : '提交失败');
+      setCloudAuthMessage(normalizeCloudAuthSubmitError(error));
     } finally {
       setCloudAuthSubmitting(false);
     }
@@ -10350,6 +10409,8 @@ export default function App() {
     setCloudAuthModalOpen(false);
     setCloudAuthMessage('');
     setCloudAuthForm({
+      cloudApiUrl: '',
+      organizationName: '',
       email: '',
       identifier: '',
       phone: '',
@@ -10856,7 +10917,7 @@ export default function App() {
                 token: response.organizationSelectionToken || '',
                 organizations: response.organizations || [],
               });
-              setCloudAuthMode('login');
+              setCloudAuthAction('join');
               setCloudAuthModalOpen(true);
               setAuthShellMessage(response.message || '请选择要进入的组织工作空间。');
               return;
@@ -10886,7 +10947,7 @@ export default function App() {
               token: response.organizationSelectionToken || '',
               organizations: response.organizations || [],
             });
-            setCloudAuthMode('login');
+            setCloudAuthAction('join');
             setCloudAuthModalOpen(true);
             setAuthShellMessage(response.message || '请选择要进入的组织工作空间。');
             return;
@@ -11214,7 +11275,7 @@ export default function App() {
                 <div>
                   <p className="text-[13px] font-semibold text-gray-900">加入另一个组织</p>
                   <p className="mt-1 text-[12px] leading-5 text-gray-500">
-                    需要填写对方组织的云端服务地址和邀请码；只有连到对应云端后，加入申请才会发送给该组织管理员。
+                    需要填写对方组织的云端服务地址和邀请码；提交成功后会直接进入该组织，不需要重启。
                   </p>
                 </div>
                 <label className="block text-[12px] font-semibold text-gray-600">
@@ -11232,27 +11293,27 @@ export default function App() {
                     value={workspaceJoinOrgDraft.cloudApiUrl}
                     onChange={(event) => setWorkspaceJoinOrgDraft((prev) => ({ ...prev, cloudApiUrl: event.target.value }))}
                     className="mt-1.5 w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-[13px] outline-none focus:border-[#5B7BFE]"
-                    placeholder="https://your-cloud.example.com"
+                    placeholder="例如 118.145.244.188 或 cloud.example.com"
                   />
                 </label>
                 <Button className="w-full" disabled={workspaceManagerBusy} onClick={() => void handleJoinOrganizationWorkspace()}>
-                  创建待加入组织工作空间
+                  加入组织
                 </Button>
               </div>
               <div className="rounded-2xl border border-gray-100 bg-gray-50/70 px-4 py-4 space-y-3">
                 <div>
-                  <p className="text-[13px] font-semibold text-gray-900">创建另一个组织</p>
+                  <p className="text-[13px] font-semibold text-gray-900">创建或接管组织</p>
                   <p className="mt-1 text-[12px] leading-5 text-gray-500">
-                    可先创建组织工作空间；之后在该工作空间的系统设置里补充云端服务地址并登录，再完成真实组织开通。
+                    用于初始化一个新组织，或接管尚无管理员的组织云端。若云端已有管理员，成员需改用邀请码加入。
                   </p>
                 </div>
                 <label className="block text-[12px] font-semibold text-gray-600">
-                  新组织名称
+                  组织名称
                   <input
                     value={workspaceCreateOrgDraft.organizationName}
                     onChange={(event) => setWorkspaceCreateOrgDraft((prev) => ({ ...prev, organizationName: event.target.value }))}
                     className="mt-1.5 w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-[13px] outline-none focus:border-[#5B7BFE]"
-                    placeholder="例如：第二项目组"
+                    placeholder="创建新组织时填写；接管空云端时可留空"
                   />
                 </label>
                 <label className="block text-[12px] font-semibold text-gray-600">
@@ -11261,12 +11322,15 @@ export default function App() {
                     value={workspaceCreateOrgDraft.cloudApiUrl}
                     onChange={(event) => setWorkspaceCreateOrgDraft((prev) => ({ ...prev, cloudApiUrl: event.target.value }))}
                     className="mt-1.5 w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-[13px] outline-none focus:border-[#5B7BFE]"
-                    placeholder="https://your-cloud.example.com"
+                    placeholder="例如 118.145.244.188 或 cloud.example.com"
                   />
                 </label>
                 <Button className="w-full" disabled={workspaceManagerBusy} onClick={() => void handleCreateOrganizationWorkspace()}>
-                  创建组织工作空间
+                  创建或接管组织
                 </Button>
+                <p className="text-[11px] leading-5 text-amber-700">
+                  判断规则：云端已有管理员会拒绝接管；请联系管理员生成组织或部门邀请码，再从「加入另一个组织」进入。
+                </p>
               </div>
             </div>
           </div>
@@ -11279,28 +11343,34 @@ export default function App() {
     if (!cloudAuthModalOpen) return null;
     const rememberedAccounts = localInputMemoryState.cloudAuth.accounts;
     const emailValid = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(cloudAuthForm.email);
-    const registerAccountValid =
+    const cloudApiUrlValid = Boolean(cloudApiUrlFromHost(cloudAuthForm.cloudApiUrl));
+    const identityValid =
       Boolean(cloudAuthForm.fullName.trim())
       && emailValid
       && Boolean(cloudAuthForm.phone.trim())
-      && cloudAuthForm.password.length >= 8
-      && cloudAuthForm.password === cloudAuthForm.confirmPassword;
-    const registerValid =
-      registerAccountValid
-      && (!cloudAuthForm.inviteCode.trim() || cloudAuthInviteStatus.valid !== false);
-    const loginValid = Boolean((cloudAuthForm.identifier || cloudAuthForm.email).trim()) && Boolean(cloudAuthForm.password.trim());
-    const cloudApiConfigured = Boolean(settingsState?.cloudApiUrl?.trim());
+      && cloudAuthForm.password.length >= 8;
+    const joinValid =
+      cloudApiUrlValid
+      && identityValid
+      && Boolean(normalizeDepartmentInviteInput(cloudAuthForm.inviteCode))
+      && cloudAuthInviteStatus.valid !== false;
+    const createValid = cloudApiUrlValid && identityValid;
+    const submitValid = cloudAuthAction === 'join' ? joinValid : createValid;
+    const actionTitle = cloudAuthAction === 'join'
+      ? '加入组织'
+      : '创建或接管组织';
+    const submitLabel = cloudAuthAction === 'join'
+      ? '加入组织并进入工作空间'
+      : '进入管理员设置';
     return (
       <div className="fixed inset-0 z-[90] flex items-center justify-center bg-slate-950/35 px-4">
         <div className="w-full max-w-[720px] max-h-[88vh] overflow-y-auto rounded-[32px] border border-gray-100 bg-white shadow-[0_24px_90px_rgba(15,23,42,0.18)]">
           <div className="flex items-start justify-between gap-4 border-b border-gray-100 px-8 py-6">
             <div>
-              <p className="text-[11px] font-bold uppercase tracking-[0.16em] text-[#5B7BFE]">连接云端</p>
-              <h2 className="mt-2 text-[24px] font-bold text-gray-900">{cloudAuthMode === 'register' ? '注册个人账号' : '登录云端账号'}</h2>
-              <p className="mt-2 text-[13px] text-gray-500">
-                {cloudAuthMode === 'register'
-                  ? '注册账号依赖云端服务；开源版默认不提供统一云。未连接组织时可先本机草稿使用，接好云端后再注册、同步和加入组织。'
-                  : '登录云端后才会启用云同步、组织协作和需要组织数据的功能。'}
+              <p className="text-[11px] font-bold uppercase tracking-[0.16em] text-[#5B7BFE]">连接组织</p>
+              <h2 className="mt-2 text-[24px] font-bold text-gray-900">{actionTitle}</h2>
+              <p className="mt-2 text-[13px] leading-6 text-gray-500">
+                已加入过的组织可在工作空间管理中直接切换；加入新组织需要云地址和邀请码。创建/接管只适用于新组织，或尚无管理员的组织云端。
               </p>
             </div>
             <button
@@ -11312,34 +11382,27 @@ export default function App() {
               <X size={18} />
             </button>
           </div>
-            <div className="px-8 py-6 space-y-5">
-            {!cloudApiConfigured && (
-              <div className="rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-[13px] text-amber-800">
-                当前还没有配置云端服务地址。请先到「系统设置 / AI 与云端」填写你自己的云端地址并保存。
-              </div>
-            )}
+          <div className="px-8 py-6 space-y-5">
             <div className="flex bg-gray-100/80 p-1.5 rounded-2xl border border-gray-100 w-fit">
               <button
                 type="button"
                 onClick={() => {
-                  setCloudAuthMode('login');
+                  setCloudAuthAction('join');
                   setCloudAuthMessage('');
-                  setCloudAuthRegisterStep(1);
                 }}
-                className={`px-5 py-2 rounded-xl text-[13px] font-bold ${cloudAuthMode === 'login' ? 'bg-white shadow-sm text-[#5B7BFE]' : 'text-gray-500'}`}
+                className={`px-5 py-2 rounded-xl text-[13px] font-bold ${cloudAuthAction === 'join' ? 'bg-white shadow-sm text-[#5B7BFE]' : 'text-gray-500'}`}
               >
-                登录
+                加入组织
               </button>
               <button
                 type="button"
                 onClick={() => {
-                  setCloudAuthMode('register');
+                  setCloudAuthAction('create');
                   setCloudAuthMessage('');
-                  setCloudAuthRegisterStep(1);
                 }}
-                className={`px-5 py-2 rounded-xl text-[13px] font-bold ${cloudAuthMode === 'register' ? 'bg-white shadow-sm text-[#5B7BFE]' : 'text-gray-500'}`}
+                className={`px-5 py-2 rounded-xl text-[13px] font-bold ${cloudAuthAction === 'create' ? 'bg-white shadow-sm text-[#5B7BFE]' : 'text-gray-500'}`}
               >
-                注册
+                创建 / 接管
               </button>
             </div>
 
@@ -11367,25 +11430,6 @@ export default function App() {
               </div>
             )}
 
-            {cloudAuthMode === 'register' && (
-              <div className="flex items-center gap-2 rounded-2xl bg-gray-50 p-1 text-[12px] font-bold text-gray-500">
-                <button
-                  type="button"
-                  onClick={() => setCloudAuthRegisterStep(1)}
-                  className={`flex-1 rounded-xl px-3 py-2 ${cloudAuthRegisterStep === 1 ? 'bg-white text-[#5B7BFE] shadow-sm' : ''}`}
-                >
-                  1 个人账号
-                </button>
-                <button
-                  type="button"
-                  onClick={() => registerAccountValid && setCloudAuthRegisterStep(2)}
-                  className={`flex-1 rounded-xl px-3 py-2 ${cloudAuthRegisterStep === 2 ? 'bg-white text-[#5B7BFE] shadow-sm' : ''} ${!registerAccountValid ? 'opacity-50' : ''}`}
-                >
-                  2 组织身份
-                </button>
-              </div>
-            )}
-
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
               {rememberedAccounts.length > 0 && (
                 <select
@@ -11396,9 +11440,9 @@ export default function App() {
                       ...prev,
                       email: selected?.email || event.target.value,
                       identifier: selected?.identifier || selected?.email || event.target.value,
-                      fullName: cloudAuthMode === 'register' ? (selected?.fullName || '') : prev.fullName,
+                      fullName: selected?.fullName || prev.fullName,
                       password: selected?.password || '',
-                      confirmPassword: cloudAuthMode === 'register' ? (selected?.password || '') : '',
+                      confirmPassword: selected?.password || '',
                     }));
                   }}
                   className="w-full bg-gray-50 border border-gray-200 rounded-2xl px-4 py-3 text-[14px] outline-none md:col-span-2"
@@ -11413,29 +11457,48 @@ export default function App() {
                   );})}
                 </select>
               )}
-              {cloudAuthMode === 'login' && (
-                <>
-                  <input
-                    value={cloudAuthForm.identifier}
-                    onChange={(event) => setCloudAuthForm((prev) => ({ ...prev, identifier: event.target.value }))}
-                    placeholder="邮箱或登录手机号"
-                    className="w-full bg-gray-50 border border-gray-200 rounded-2xl px-4 py-3 text-[14px] outline-none"
-                  />
-                  <input
-                    type={cloudAuthShowPassword ? 'text' : 'password'}
-                    value={cloudAuthForm.password}
-                    onChange={(event) => setCloudAuthForm((prev) => ({ ...prev, password: event.target.value }))}
-                    placeholder="密码"
-                    className="w-full bg-gray-50 border border-gray-200 rounded-2xl px-4 py-3 text-[14px] outline-none"
-                  />
-                </>
+              <input
+                value={cloudAuthForm.cloudApiUrl}
+                onChange={(event) => setCloudAuthForm((prev) => ({ ...prev, cloudApiUrl: event.target.value }))}
+                placeholder="组织云端地址，例如 118.145.244.188 或 cloud.example.com"
+                className="w-full bg-gray-50 border border-gray-200 rounded-2xl px-4 py-3 text-[14px] outline-none md:col-span-2"
+              />
+              {cloudAuthAction === 'create' && (
+                <div className="md:col-span-2 rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-[12px] leading-5 text-amber-800 space-y-1">
+                  <p className="font-semibold text-amber-900">创建/接管前请确认：</p>
+                  <p>填写组织名称：创建一个新组织，并由你成为管理员。</p>
+                  <p>不填组织名称：仅在该组织云尚无管理员时接管；若云端已有管理员，系统会拒绝，请向管理员索要邀请码后选择「加入组织」。</p>
+                </div>
               )}
-              {cloudAuthMode === 'register' && cloudAuthRegisterStep === 1 && (
+              {(
                 <>
+                  {cloudAuthAction === 'create' && (
+                    <input
+                      value={cloudAuthForm.organizationName}
+                      onChange={(event) => setCloudAuthForm((prev) => ({ ...prev, organizationName: event.target.value }))}
+                      placeholder="组织名称（创建新组织时填写；接管空云端可留空）"
+                      className="w-full bg-gray-50 border border-gray-200 rounded-2xl px-4 py-3 text-[14px] outline-none md:col-span-2"
+                    />
+                  )}
+                  {cloudAuthAction === 'join' && (
+                    <>
+                      <input
+                        value={cloudAuthForm.inviteCode}
+                        onChange={(event) => setCloudAuthForm((prev) => ({ ...prev, inviteCode: event.target.value }))}
+                        placeholder="组织 / 部门邀请码"
+                        className="w-full bg-gray-50 border border-gray-200 rounded-2xl px-4 py-3 text-[14px] outline-none md:col-span-2"
+                      />
+                      {cloudAuthInviteStatus.message && (
+                        <div className={`md:col-span-2 rounded-2xl border px-4 py-3 text-[12px] ${cloudAuthInviteStatus.valid === false ? 'border-red-200 bg-red-50 text-red-700' : 'border-blue-200 bg-blue-50 text-blue-700'}`}>
+                          {cloudAuthInviteStatus.loading ? '正在识别邀请码...' : cloudAuthInviteStatus.message}
+                        </div>
+                      )}
+                    </>
+                  )}
                   <input
                     value={cloudAuthForm.fullName}
                     onChange={(event) => setCloudAuthForm((prev) => ({ ...prev, fullName: event.target.value }))}
-                    placeholder="姓名 / 昵称"
+                    placeholder="称呼"
                     className="w-full bg-gray-50 border border-gray-200 rounded-2xl px-4 py-3 text-[14px] outline-none"
                   />
                   <input
@@ -11460,57 +11523,26 @@ export default function App() {
                     placeholder="密码（至少 8 位）"
                     className="w-full bg-gray-50 border border-gray-200 rounded-2xl px-4 py-3 text-[14px] outline-none"
                   />
-                  <input
-                    type={cloudAuthShowPassword ? 'text' : 'password'}
-                    value={cloudAuthForm.confirmPassword}
-                    onChange={(event) => setCloudAuthForm((prev) => ({ ...prev, confirmPassword: event.target.value }))}
-                    placeholder="确认密码"
-                    className="w-full bg-gray-50 border border-gray-200 rounded-2xl px-4 py-3 text-[14px] outline-none"
-                  />
-                </>
-              )}
-              {cloudAuthMode === 'register' && cloudAuthRegisterStep === 2 && (
-                <>
-                  <input
-                    value={cloudAuthForm.inviteCode}
-                    onChange={(event) => setCloudAuthForm((prev) => ({ ...prev, inviteCode: event.target.value }))}
-                    placeholder="部门邀请码（自动识别组织，可选）"
-                    className="w-full bg-gray-50 border border-gray-200 rounded-2xl px-4 py-3 text-[14px] outline-none md:col-span-2"
-                  />
-                  {cloudAuthInviteStatus.message && (
-                    <div className={`md:col-span-2 rounded-2xl border px-4 py-3 text-[12px] ${cloudAuthInviteStatus.valid === false ? 'border-red-200 bg-red-50 text-red-700' : 'border-blue-200 bg-blue-50 text-blue-700'}`}>
-                      {cloudAuthInviteStatus.loading ? '正在识别邀请码...' : cloudAuthInviteStatus.message}
-                    </div>
+                  {cloudAuthAction === 'join' && (
+                    <>
+                      <select
+                        value={cloudAuthForm.departmentId}
+                        onChange={(event) => setCloudAuthForm((prev) => ({ ...prev, departmentId: event.target.value }))}
+                        className="w-full bg-gray-50 border border-gray-200 rounded-2xl px-4 py-3 text-[14px] outline-none"
+                      >
+                        <option value="">选择部门（可自动识别）</option>
+                        {departmentOptions.map((department) => (
+                          <option key={department.id} value={department.id}>{department.name}</option>
+                        ))}
+                      </select>
+                      <input
+                        value={cloudAuthForm.jobTitle}
+                        onChange={(event) => setCloudAuthForm((prev) => ({ ...prev, jobTitle: event.target.value }))}
+                        placeholder="职位（可选）"
+                        className="w-full bg-gray-50 border border-gray-200 rounded-2xl px-4 py-3 text-[14px] outline-none"
+                      />
+                    </>
                   )}
-                  <select
-                    value={cloudAuthForm.departmentId}
-                    onChange={(event) => setCloudAuthForm((prev) => ({ ...prev, departmentId: event.target.value }))}
-                    className="w-full bg-gray-50 border border-gray-200 rounded-2xl px-4 py-3 text-[14px] outline-none"
-                  >
-                    <option value="">选择部门（可选）</option>
-                    {departmentOptions.map((department) => (
-                      <option key={department.id} value={department.id}>{department.name}</option>
-                    ))}
-                  </select>
-                  <input
-                    value={cloudAuthForm.jobTitle}
-                    onChange={(event) => setCloudAuthForm((prev) => ({ ...prev, jobTitle: event.target.value }))}
-                    placeholder="职位（可选）"
-                    className="w-full bg-gray-50 border border-gray-200 rounded-2xl px-4 py-3 text-[14px] outline-none"
-                  />
-                  <input
-                    value={cloudAuthForm.managerName}
-                    onChange={(event) => setCloudAuthForm((prev) => ({ ...prev, managerName: event.target.value }))}
-                    placeholder="直属负责人（可选）"
-                    className="w-full bg-gray-50 border border-gray-200 rounded-2xl px-4 py-3 text-[14px] outline-none"
-                  />
-                  <textarea
-                    value={cloudAuthForm.currentFocus}
-                    onChange={(event) => setCloudAuthForm((prev) => ({ ...prev, currentFocus: event.target.value }))}
-                    placeholder="当前工作重点（可选）"
-                    rows={2}
-                    className="w-full bg-gray-50 border border-gray-200 rounded-2xl px-4 py-3 text-[14px] outline-none resize-none md:col-span-2"
-                  />
                 </>
               )}
             </div>
@@ -11546,27 +11578,14 @@ export default function App() {
 
             <div className="flex justify-end gap-3">
               <Button onClick={() => setCloudAuthModalOpen(false)}>取消</Button>
-              {cloudAuthMode === 'register' && cloudAuthRegisterStep === 2 && (
-                <Button onClick={() => setCloudAuthRegisterStep(1)}>上一步</Button>
-              )}
-              {cloudAuthMode === 'register' && cloudAuthRegisterStep === 1 ? (
-                <Button
-                  primary
-                  onClick={() => setCloudAuthRegisterStep(2)}
-                  disabled={!registerAccountValid}
-                >
-                  下一步：组织身份
-                </Button>
-              ) : (
-                <Button
-                  primary
-                  onClick={() => void handleCloudAuthSubmit()}
-                  disabled={!cloudApiConfigured || cloudAuthSubmitting || (cloudAuthMode === 'register' ? !registerValid : !loginValid)}
-                >
-                  {cloudAuthSubmitting ? <RefreshCw size={16} className="animate-spin" /> : cloudAuthMode === 'register' ? <UserPlus size={16} /> : <ShieldAlert size={16} />}
-                  {cloudAuthMode === 'register' ? '注册并连接云端' : '登录并连接云端'}
-                </Button>
-              )}
+              <Button
+                primary
+                onClick={() => void handleCloudAuthSubmit()}
+                disabled={cloudAuthSubmitting || !submitValid}
+              >
+                {cloudAuthSubmitting ? <RefreshCw size={16} className="animate-spin" /> : <UserPlus size={16} />}
+                {submitLabel}
+              </Button>
             </div>
           </div>
         </div>
@@ -30044,7 +30063,7 @@ export default function App() {
             <div>
               <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-gray-400">组织 / 部门</p>
               <p className="mt-2 text-[14px] font-medium text-gray-900 truncate">{orgMembershipState.organizationName || '尚未确认组织'}</p>
-              <p className="mt-1 text-[11px] text-gray-500 truncate">{orgMembershipState.departmentName || currentSessionUser?.departmentName || '尚未确认部门'}</p>
+              <p className="mt-1 text-[11px] text-gray-500 truncate">{currentUserStructureLabel || orgMembershipState.departmentName || currentSessionUser?.departmentName || '尚未确认身份'}</p>
             </div>
             <div>
               <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-gray-400">组织工作台</p>
@@ -30138,9 +30157,9 @@ export default function App() {
               </div>
               <div className="flex flex-col">
                 <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-gray-400">部门</p>
-                <span className="mt-3 text-[20px] leading-none font-light tracking-tight text-gray-900 truncate">{orgMembershipState.departmentName || currentSessionUser?.departmentName || '—'}</span>
+                <span className="mt-3 text-[20px] leading-none font-light tracking-tight text-gray-900 truncate">{currentUserStructureLabel || orgMembershipState.departmentName || currentSessionUser?.departmentName || '—'}</span>
                 <div className="mt-2 h-[2px] w-8 rounded-full bg-transparent" />
-                <p className="mt-2 text-[11px] text-gray-400 truncate">{currentSessionUser?.primaryRole === 'admin' ? '管理员' : '成员'}</p>
+                <p className="mt-2 text-[11px] text-gray-400 truncate">{currentSessionUser?.primaryRole === 'admin' ? '管理员权限' : '组织成员'}</p>
               </div>
             </div>
           </div>
@@ -30318,7 +30337,7 @@ export default function App() {
                       <input
                         value={cloudApiHostValue(draft.cloudApiUrl)}
                         onChange={(event) => setDraft((prev) => ({ ...prev, cloudApiUrl: cloudApiUrlFromHost(event.target.value) }))}
-                        placeholder="cloud.example.com"
+                        placeholder="例如 118.145.244.188 或 cloud.example.com"
                         className="min-w-0 flex-1 bg-transparent px-3 py-2.5 text-[13px] font-medium text-gray-900 outline-none placeholder:text-gray-400"
                         disabled={!canManageSensitiveSettings}
                       />
@@ -30619,7 +30638,7 @@ export default function App() {
                   onClearMemberAuthorization={handleClearFeishuMemberAuthorization}
                   onOpenMemberAuthorization={handleOpenFeishuAuthorizationInBrowser}
                   onOpenOrganizationSetup={() => setSettingsSection('system_admin')}
-                  onOpenCloudAuth={() => openCloudAuthModal('login')}
+                  onOpenCloudAuth={() => openCloudAuthModal('join')}
                 />
               ),
             })}
@@ -30934,7 +30953,7 @@ export default function App() {
       );
 
       const canRenderTransferPanel = currentSessionUser?.primaryRole === 'admin' && adminTransferCandidates.length > 0;
-      if (pendingList.length === 0 && rejectedList.length === 0 && disabledList.length === 0 && activeList.length === 0 && !canRenderTransferPanel) return null;
+      if (disabledList.length === 0 && activeList.length === 0 && !canRenderTransferPanel) return null;
 
       return (
         <div className="space-y-5">
@@ -30988,27 +31007,6 @@ export default function App() {
               </div>
             </div>
           )}
-          {pendingList.length > 0 && renderGroup('待审核', pendingList.length,
-            pendingList.map((employee) => renderEmployeeRow(employee, (
-              <>
-                <button type="button" disabled={employeeReviewBusyId === employee.id} onClick={() => void handleApprove(employee.id)} className="rounded-md border border-emerald-200 bg-emerald-50 px-3 py-1.5 text-[11px] font-bold text-emerald-700 hover:bg-emerald-100 disabled:opacity-50 transition-colors">批准</button>
-                {rejectingEmployeeId === employee.id ? (
-                  <div className="flex items-center gap-1">
-                    <input value={employeeRejectReason} onChange={(e) => setEmployeeRejectReason(e.target.value)} placeholder="驳回原因(可选)" className="w-40 rounded-md border border-gray-200 bg-white px-2 py-1.5 text-[11px] outline-none focus:border-rose-300" />
-                    <button type="button" disabled={employeeReviewBusyId === employee.id} onClick={() => void handleReject(employee.id)} className="rounded-md border border-rose-200 bg-rose-50 px-3 py-1.5 text-[11px] font-bold text-rose-700 hover:bg-rose-100 disabled:opacity-50">确认</button>
-                    <button type="button" onClick={() => { setRejectingEmployeeId(null); setEmployeeRejectReason(''); }} className="rounded-md border border-gray-200 bg-white px-2 py-1.5 text-[11px] text-gray-500">取消</button>
-                  </div>
-                ) : (
-                  <button type="button" onClick={() => setRejectingEmployeeId(employee.id)} className="rounded-md border border-rose-200 bg-rose-50 px-3 py-1.5 text-[11px] font-bold text-rose-700 hover:bg-rose-100 transition-colors">驳回</button>
-                )}
-              </>
-            )))
-          )}
-          {rejectedList.length > 0 && renderGroup('已驳回', rejectedList.length,
-            rejectedList.map((employee) => renderEmployeeRow(employee, (
-              <span className="text-[11px] text-rose-400">{employee.membershipRejectedReason || employee.rejectedReason || '未通过'}</span>
-            )))
-          )}
           {disabledList.length > 0 && renderGroup('已停用', disabledList.length,
             disabledList.map((employee) => renderEmployeeRow(employee, (
               <span className="text-[11px] text-gray-400">已停用</span>
@@ -31035,13 +31033,10 @@ export default function App() {
     };
 
     const renderSystemAdminSection = (initialAdvancedTab: OrgModelTab | null = null) => {
-      const pendingReviewCount = employeeReviews.filter((e) => (e.membershipStatus || e.accountStatus) === 'pending').length;
       const totalEmployeeCount = employeeReviews.filter((e) => e.accountStatus === 'approved' && (e.membershipStatus || 'approved') === 'approved').length;
       const isCloud = authState.sessionMode === 'cloud';
       const hasReviewContent = employeeReviews.some((e) =>
-        (e.membershipStatus || e.accountStatus) === 'pending'
-        || (e.membershipStatus || e.accountStatus) === 'rejected'
-        || e.accountStatus === 'disabled'
+        e.accountStatus === 'disabled'
         || (e.accountStatus === 'approved' && (e.membershipStatus || 'approved') === 'approved' && e.primaryRole !== 'admin')
       );
       return (
@@ -31060,13 +31055,13 @@ export default function App() {
                 <p className="mt-2 text-[11px] text-gray-400 truncate">{orgMembershipState.organizationName || '尚未确认组织'}</p>
               </div>
               <div className="flex flex-col">
-                <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-gray-400">待审核</p>
+                <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-gray-400">成员管理</p>
                 <div className="mt-3 flex items-baseline gap-1.5">
-                  <span className="text-[28px] leading-none font-light tracking-tight text-gray-900">{pendingReviewCount}</span>
-                  <span className="text-[13px] leading-none font-light text-gray-400">人</span>
+                  <span className="text-[28px] leading-none font-light tracking-tight text-gray-900">{employeeReviews.filter((e) => e.accountStatus === 'disabled').length}</span>
+                  <span className="text-[13px] leading-none font-light text-gray-400">停用</span>
                 </div>
-                <div className={`mt-2 h-[2px] w-8 rounded-full ${pendingReviewCount > 0 ? 'bg-amber-500' : 'bg-transparent'}`} />
-                <p className="mt-2 text-[11px] text-gray-400 truncate">{pendingReviewCount > 0 ? '请尽快处理' : '无新申请'}</p>
+                <div className="mt-2 h-[2px] w-8 rounded-full bg-transparent" />
+                <p className="mt-2 text-[11px] text-gray-400 truncate">有效邀请码注册后直接入组</p>
               </div>
               <div className="flex flex-col">
                 <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-gray-400">云端</p>
@@ -31081,12 +31076,12 @@ export default function App() {
             <div className="rounded-xl border border-amber-100 bg-amber-50 px-4 py-3 text-[12px] text-amber-700">
               <p>连接云端并加入或创建组织后，才能继续配置组织结构、邀请码与飞书协作底座。</p>
               <div className="mt-3">
-                <Button onClick={() => openCloudAuthModal('login')}>连接云端账号</Button>
+                <Button onClick={() => openCloudAuthModal('join')}>连接组织</Button>
               </div>
             </div>
           )}
 
-          {isCloud && currentSessionUser?.primaryRole !== 'admin' && (
+          {isCloud && currentSessionUser?.primaryRole !== 'admin' && !canEditOrganizationStructure && (
             <div className="rounded-2xl border border-blue-100 bg-blue-50 px-5 py-4">
               <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-blue-500">ADMIN CLAIM</p>
               <h3 className="mt-2 text-[18px] font-light tracking-tight text-gray-900">认领组织管理员</h3>
@@ -31105,25 +31100,23 @@ export default function App() {
             </div>
           )}
 
-          {/* 员工审核 - Foldable,有内容才显示 */}
+          {/* 成员管理 - Foldable,有内容才显示 */}
           {currentSessionUser?.primaryRole === 'admin' && hasReviewContent && (
             <div>
               {renderFoldable({
                 key: 'employee-review',
-                eyebrow: 'REVIEW · 员工账号审核',
-                title: '注册申请 · 在职管理',
-                helper: '批准注册申请、驳回不符合条件的账号、停用离职员工或重置密码。',
-                statusChip: pendingReviewCount > 0
-                  ? { text: `${pendingReviewCount} 人待审`, tone: 'warning' }
-                  : { text: `${totalEmployeeCount} 人在职`, tone: 'neutral' },
-                defaultOpen: pendingReviewCount > 0,
+                eyebrow: 'MEMBERS · 成员管理',
+                title: '在职账号 · 停用 · 重置密码',
+                helper: '拿到有效邀请码的成员会直接进入组织；这里仅用于停用离职账号、重置密码或管理员转交。',
+                statusChip: { text: `${totalEmployeeCount} 人在职`, tone: 'neutral' },
+                defaultOpen: false,
                 children: <EmployeeReviewPanel />,
               })}
             </div>
           )}
 
           {/* 顾源源 5/26 真修 P0-1 (5/24 审计真发现死挂): BotMembersPanel 真主面板真挂上, 真用户加完机器人能看到列表/启停/重置密钥/AI 计划审批 */}
-          {isCloud && currentSessionUser?.primaryRole === 'admin' && (
+          {isCloud && canEditOrganizationStructure && (
             <div className="mt-8">
               <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-gray-400 mb-4">BOT MEMBERS · 机器人成员管理</p>
               <BotMembersPanel />
@@ -31131,14 +31124,14 @@ export default function App() {
           )}
 
           {/* 组织搭建中心 - 独立工作台,保留原样不嵌套 */}
-          {isCloud && currentSessionUser?.primaryRole === 'admin' && (
+          {isCloud && canEditOrganizationStructure && (
             <div>
               <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-gray-400 mb-4">STRUCTURE · 组织搭建中心</p>
               <OrganizationSetupCenter
                 value={orgModelDraft}
                 departmentCatalog={departmentOptions}
                 employees={employeeReviews}
-                canEdit
+                canEdit={canEditOrganizationStructure}
                 isSaving={isSavingOrgModel}
                 activeWeekLabel={currentWeekLabel()}
                 initialAdvancedTab={initialAdvancedTab}
@@ -31724,7 +31717,7 @@ export default function App() {
     : '未配置大模型';
   const sidebarOrgUnitLabel = isLocalSession
     ? '本机草稿'
-    : (orgMembershipState.departmentName || currentSessionUser.departmentName || (currentSessionUser.primaryRole === 'admin' ? '管理层' : '未分配部门'));
+    : (currentUserStructureLabel || orgMembershipState.departmentName || currentSessionUser.departmentName || (currentSessionUser.primaryRole === 'admin' ? '管理层' : '未分配部门'));
 
   // 迷你面板早退渲染:在所有 hooks 之后(本 return 处),只决定渲染哪棵树,不跳过任何 hook。
   // hooks 声明在顶层 hooks 区(见 miniMode/miniData/handleMini* 定义),不放这里。
@@ -32105,9 +32098,9 @@ export default function App() {
                   <button
                     type="button"
                     className="mt-1.5 text-[10.5px] text-gray-400 hover:text-[#5B7BFE] transition-colors"
-                    onClick={() => openCloudAuthModal('login')}
+                    onClick={() => openCloudAuthModal('join')}
                   >
-                    注册 / 登录 →
+                    连接组织 →
                   </button>
                 ) : (
                   <button

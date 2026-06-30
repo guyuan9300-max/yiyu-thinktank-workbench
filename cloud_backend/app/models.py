@@ -588,8 +588,11 @@ class OrgInviteResolveResult(BaseModel):
     valid: bool
     organizationId: str | None = None
     organizationName: str | None = None
+    targetType: str | None = None
     departmentId: str | None = None
     departmentName: str | None = None
+    roleKey: str | None = None
+    roleName: str | None = None
     message: str | None = None
 
 

@@ -9,7 +9,7 @@ from fastapi.testclient import TestClient
 sys.path.append(str(Path(__file__).resolve().parents[1]))
 
 from app.db import Database  # noqa: E402
-from app.main import create_app  # noqa: E402
+from app.main import create_app, normalize_configured_cloud_api_url  # noqa: E402
 from app.services.sandbox_registry import (  # noqa: E402
     ACTIVE_SANDBOX_SETTING_KEY,
     DEFAULT_LOCAL_SANDBOX_ID,
@@ -30,6 +30,14 @@ def make_client(tmp_path: Path) -> TestClient:
     client = TestClient(app)
     client.__enter__()
     return client
+
+
+def test_cloud_url_normalization_defaults_public_hosts_to_https() -> None:
+    assert normalize_configured_cloud_api_url("118.145.244.188.sslip.io") == "https://118.145.244.188.sslip.io"
+    assert normalize_configured_cloud_api_url("cloud.example.test/") == "https://cloud.example.test"
+    assert normalize_configured_cloud_api_url("http://cloud.example.test") == "http://cloud.example.test"
+    assert normalize_configured_cloud_api_url("localhost:8000") == "http://localhost:8000"
+    assert normalize_configured_cloud_api_url("127.0.0.1:8000") == "http://127.0.0.1:8000"
 
 
 def test_new_database_bootstraps_local_workspace(tmp_path: Path) -> None:
@@ -271,8 +279,9 @@ def test_cloud_logout_clears_only_active_workspace_cloud_session(tmp_path: Path)
     response = client.post("/api/v1/auth/logout")
 
     assert response.status_code == 200, response.text
-    assert response.json()["sessionMode"] == "cloud"
-    assert response.json()["authenticated"] is False
+    assert response.json()["sessionMode"] == "local"
+    assert response.json()["authenticated"] is True
+    assert response.json()["localIdentityStatus"] in {"draft", "ready"}
     assert db.get_setting("local_session_user_id", "") == local_user_id
     assert get_sandbox_setting(db, active_org.id, "cloud_access_token", "") == ""
     assert get_sandbox_setting(db, active_org.id, "cloud_refresh_token", "") == ""
@@ -305,8 +314,9 @@ def test_local_identity_is_bound_to_local_workspace_not_org_workspace(tmp_path: 
 
     auth_in_org = client.get("/api/v1/auth/me")
     assert auth_in_org.status_code == 200, auth_in_org.text
-    assert auth_in_org.json()["authenticated"] is False
-    assert auth_in_org.json()["sessionMode"] == "cloud"
+    assert auth_in_org.json()["authenticated"] is True
+    assert auth_in_org.json()["sessionMode"] == "local"
+    assert auth_in_org.json()["localIdentityStatus"] in {"draft", "ready"}
 
     response = client.post(f"/api/v1/workspaces/{DEFAULT_LOCAL_SANDBOX_ID}/activate")
     assert response.status_code == 404, response.text

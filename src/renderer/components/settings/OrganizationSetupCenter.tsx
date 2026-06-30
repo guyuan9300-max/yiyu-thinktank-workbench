@@ -12,7 +12,7 @@ import type {
   OrgQuarterKey,
   OrgRoleTemplateSettings,
 } from '../../../shared/types';
-import { buildDepartmentInviteCode } from '../../../shared/departmentInvite';
+import { buildDepartmentInviteCode, buildManagementInviteCode, managementInviteRoleLabel, type ManagementInviteRole } from '../../../shared/departmentInvite';
 // 顾源源 5/24: 机器人同事 — 直接复用弹窗组件, 不挂底部抽屉
 import { BotMemberFormDialog, BotRotateTokenDialog } from './BotMembersPanel';
 import { listBotMembers, type BotMemberRecord } from '../../lib/api';
@@ -592,7 +592,42 @@ export function OrganizationSetupCenter({
   }, [approvedEmployeeIds, value.bindings]);
 
   const organizationName = organizationNameInput.trim() || value.organization.name.trim() || tree.name || '当前组织';
+  const managementInviteCards = useMemo(() => {
+    const roles: ManagementInviteRole[] = ['organization_lead', 'advisor'];
+    return roles.map((role) => {
+      const label = managementInviteRoleLabel(role);
+      const inviteCode = buildManagementInviteCode(value.organization.organizationId, role, organizationName);
+      const roleIds = new Set(
+        activeRoles
+          .filter((item) => !item.departmentId && item.name.trim() === label)
+          .map((item) => item.id),
+      );
+      const bindingUserIds = new Set(
+        value.bindings
+          .filter((binding) => binding.primaryRoleId && roleIds.has(binding.primaryRoleId))
+          .map((binding) => binding.userId),
+      );
+      if (role === 'organization_lead' && value.organization.leaderUserId) {
+        bindingUserIds.add(value.organization.leaderUserId);
+      }
+      const joinedCount = approvedEmployees.filter((employee) => (
+        bindingUserIds.has(employee.id)
+        || (employee.jobTitle || '').trim() === label
+      )).length;
+      return {
+        key: role,
+        label,
+        inviteCode,
+        joinedCount,
+        color: role === 'organization_lead' ? '#5B7BFE' : '#10B981',
+        helper: role === 'organization_lead'
+          ? '组织级管理身份，可查看并维护组织搭建'
+          : '顾问身份，不归入具体部门，可协助维护组织搭建',
+      };
+    });
+  }, [activeRoles, approvedEmployees, organizationName, value.bindings, value.organization.leaderUserId, value.organization.organizationId]);
   const bulkInviteText = useMemo(() => {
+    const managementLines = managementInviteCards.map((item) => `${item.label}：${item.inviteCode}`);
     const linesOfText = tree.children.map((department, index) => {
       const inviteCode = buildDepartmentInviteCode(department.id, {
         organizationId: value.organization.organizationId,
@@ -603,11 +638,12 @@ export function OrganizationSetupCenter({
       return `${department.name}：${inviteCode}`;
     });
     return [
-      `${organizationName} 各部门邀请码`,
-      '大家注册时找到自己部门的邀请码填入即可。',
+      `${organizationName} 邀请码`,
+      '组织负责人、顾问和部门成员注册时填写对应邀请码即可直接入组。',
+      ...managementLines,
       ...linesOfText,
     ].join('\n');
-  }, [organizationName, tree.children, value.organization.organizationId]);
+  }, [managementInviteCards, organizationName, tree.children, value.organization.organizationId]);
 
   const showToast = useCallback((message: string) => {
     setToast(message);
@@ -2013,6 +2049,17 @@ export function OrganizationSetupCenter({
           ) : (
             <div className="p-8">
               <div className="mx-auto grid max-w-5xl grid-cols-1 gap-5 md:grid-cols-2">
+                {managementInviteCards.map((item) => (
+                  <InviteCard
+                    key={item.key}
+                    departmentName={item.label}
+                    leadName="管理层身份"
+                    inviteCode={item.inviteCode}
+                    positions={item.helper}
+                    joinedCount={item.joinedCount}
+                    color={item.color}
+                  />
+                ))}
                 {tree.children.map((department, index) => {
                   const inviteCode = buildDepartmentInviteCode(department.id, {
                     organizationId: value.organization.organizationId,

@@ -1657,7 +1657,14 @@ def normalize_configured_cloud_api_url(raw_url: str | None) -> str:
     value = (raw_url or "").strip().rstrip("/")
     if not value:
         return ""
-    normalized_value = value if re.match(r"^https?://", value, flags=re.I) else f"http://{value}"
+    if re.match(r"^https?://", value, flags=re.I):
+        normalized_value = value
+    else:
+        parsed_host = urlparse(f"//{value}").hostname or ""
+        normalized_host = parsed_host.lower()
+        ipv4_literal = bool(re.fullmatch(r"(?:\d{1,3}\.){3}\d{1,3}", normalized_host))
+        default_scheme = "http" if normalized_host in {"localhost", "::1"} or normalized_host.startswith("127.") or ipv4_literal else "https"
+        normalized_value = f"{default_scheme}://{value}"
     parsed = urlparse(normalized_value)
     if parsed.scheme not in {"http", "https"} or not parsed.netloc or re.search(r"\s", parsed.netloc):
         raise ValueError("云端服务地址必须是有效的公网 IP 或域名")
@@ -3414,6 +3421,15 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         if not base_url:
             raise HTTPException(status_code=503, detail="尚未配置云端服务地址，请先在设置页填写云端服务地址。")
         return base_url
+
+    def normalize_auth_cloud_api_url(value: str | None) -> str | None:
+        raw = (value or "").strip()
+        if not raw:
+            return None
+        try:
+            return normalize_configured_cloud_api_url(raw).rstrip("/")
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     seed_defaults(state)
     state.db.set_setting("runtime.build_version", APP_BUILD_VERSION)
@@ -8889,6 +8905,43 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             lines.append(f"[{row['category']}] {row['canonical_name']}：{row['description']}{alias_text}")
         return "\n".join(lines)[:max_chars]
 
+    def _cloud_redirect_detail(response) -> str:
+        location = str(response.headers.get("location") or "").strip() if hasattr(response, "headers") else ""
+        if location:
+            return f"云端服务地址发生跳转，请在系统设置里把云地址改为 HTTPS 地址：{location.rstrip('/')}"
+        return "云端服务地址发生跳转，请确认系统设置里的云地址使用 HTTPS，并且填写的是组织云 API 地址。"
+
+    def _cloud_error_detail_from_response(response) -> str:
+        if 300 <= int(response.status_code or 0) < 400:
+            return _cloud_redirect_detail(response)
+        try:
+            payload = response.json()
+            if isinstance(payload, dict):
+                detail = payload.get("detail")
+                if isinstance(detail, str) and detail.strip():
+                    return detail
+                if detail is not None:
+                    return json.dumps(detail, ensure_ascii=False)
+            if isinstance(payload, list):
+                return json.dumps(payload, ensure_ascii=False)
+        except Exception:
+            pass
+        text = str(getattr(response, "text", "") or "").strip()
+        if text.startswith("<!DOCTYPE") or text.startswith("<html") or "<html" in text[:200].lower():
+            return "云端返回了网页而不是 API 数据，请检查云地址是否填写为 HTTPS 的组织云 API 地址。"
+        return text[:500] or f"HTTP {response.status_code}"
+
+    def _cloud_json_payload(response, *, context: str) -> object:
+        if 300 <= int(response.status_code or 0) < 400:
+            raise HTTPException(status_code=502, detail=_cloud_redirect_detail(response))
+        if not response.content:
+            return {}
+        try:
+            return response.json()
+        except Exception as exc:
+            detail = _cloud_error_detail_from_response(response)
+            raise HTTPException(status_code=502, detail=f"{context}失败：{detail}") from exc
+
     def refresh_cloud_session() -> SessionUserRecord:
         refresh_token = get_cloud_refresh_token()
         if not refresh_token:
@@ -8914,16 +8967,14 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 )
         except httpx.HTTPError as exc:
             raise HTTPException(status_code=502, detail=f"Cloud backend unavailable: {exc}") from exc
+        if 300 <= response.status_code < 400:
+            raise HTTPException(status_code=502, detail=_cloud_redirect_detail(response))
         if response.status_code >= 400:
-            try:
-                payload = response.json()
-                detail = payload.get("detail") if isinstance(payload, dict) else response.text
-            except Exception:
-                detail = response.text
+            detail = _cloud_error_detail_from_response(response)
             if response.status_code in {401, 403}:
                 clear_cloud_session()
             raise HTTPException(status_code=response.status_code, detail=detail or f"HTTP {response.status_code}")
-        payload = response.json() if response.content else {}
+        payload = _cloud_json_payload(response, context="刷新云端登录状态")
         if not isinstance(payload, dict):
             raise HTTPException(status_code=502, detail="Invalid cloud refresh payload")
         token = str(payload.get("accessToken", ""))
@@ -8980,12 +9031,13 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         allow_unauthenticated: bool = False,
         timeout: float = 3.0,
         bypass_circuit_breaker: bool = False,
+        base_url_override: str | None = None,
     ) -> object:
         import time as _time
         normalized_method = method.upper()
         if COLLAB_PREVIEW_MODE and normalized_method not in {"GET", "HEAD", "OPTIONS"}:
             raise HTTPException(status_code=403, detail="协作预览模式不可写云端。")
-        base_url = cloud_api_base_url()
+        base_url = (base_url_override or "").strip().rstrip("/") or cloud_api_base_url()
 
         # Fast fail if cloud was down recently (circuit breaker)
         if not bypass_circuit_breaker and _time.time() - _cloud_circuit_last_failure(base_url) < 60:
@@ -9034,16 +9086,12 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             clear_cloud_session()
         if response.status_code == 403 and not allow_unauthenticated and path.startswith("/api/v1/auth/"):
             clear_cloud_session()
+        if 300 <= response.status_code < 400:
+            raise HTTPException(status_code=502, detail=_cloud_redirect_detail(response))
         if response.status_code >= 400:
-            try:
-                payload = response.json()
-                detail = payload.get("detail") if isinstance(payload, dict) else response.text
-            except Exception:
-                detail = response.text
+            detail = _cloud_error_detail_from_response(response)
             raise HTTPException(status_code=response.status_code, detail=detail or f"HTTP {response.status_code}")
-        if not response.content:
-            return {}
-        return response.json()
+        return _cloud_json_payload(response, context="云端请求")
 
     def cloud_request_binary(method: str, path: str, *, json_body: dict | None = None, timeout: float = 120.0) -> tuple[bytes, dict[str, str]]:
         import time as _time
@@ -9083,12 +9131,10 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             refresh_cloud_session()
             token = get_cloud_token()
             response = perform_request(token)
+        if 300 <= response.status_code < 400:
+            raise HTTPException(status_code=502, detail=_cloud_redirect_detail(response))
         if response.status_code >= 400:
-            try:
-                payload = response.json()
-                detail = payload.get("detail") if isinstance(payload, dict) else response.text
-            except Exception:
-                detail = response.text
+            detail = _cloud_error_detail_from_response(response)
             raise HTTPException(status_code=response.status_code, detail=detail or f"HTTP {response.status_code}")
         return response.content, {key: value for key, value in response.headers.items()}
 
@@ -31810,37 +31856,25 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
     @app.get("/api/v1/auth/me", response_model=AuthStateResponse)
     def auth_me() -> AuthStateResponse:
         # 本地优先: 新设备没有云地址时仍可先进入本机草稿状态。
-        def _unauthenticated(message: str | None = None) -> AuthStateResponse:
-            return AuthStateResponse(
-                authenticated=False,
-                user=None,
-                message=message,
-                sessionMode="cloud",
-            )
-
         token = get_cloud_token()
         refresh_token = get_cloud_refresh_token()
         if not token and not refresh_token:
-            if _active_workspace_is_local():
-                local_user = get_local_session_user()
-                if local_user:
-                    return AuthStateResponse(
-                        authenticated=True,
-                        user=local_user,
-                        sessionMode="local",
-                        requiresLocalIdentitySetup=False,
-                        localIdentityStatus="ready",
-                    )
-                return _local_setup_state()
-            return _unauthenticated("当前组织工作空间尚未登录云端账号。请登录云端，或在工作空间管理里加入/创建组织。")
+            local_user = get_local_session_user()
+            if local_user:
+                return AuthStateResponse(
+                    authenticated=True,
+                    user=local_user,
+                    sessionMode="local",
+                    requiresLocalIdentitySetup=False,
+                    localIdentityStatus="ready",
+                )
+            return _local_setup_state()
         if not state.cloud_api_url:
             clear_cloud_session()
-            if _active_workspace_is_local():
-                local_user = get_local_session_user()
-                if local_user:
-                    return AuthStateResponse(authenticated=True, user=local_user, sessionMode="local", localIdentityStatus="ready")
-                return _local_setup_state()
-            return _unauthenticated("当前组织工作空间尚未配置云端服务地址。请在该组织的系统设置里填写云端地址。")
+            local_user = get_local_session_user()
+            if local_user:
+                return AuthStateResponse(authenticated=True, user=local_user, sessionMode="local", localIdentityStatus="ready")
+            return _local_setup_state()
         cached_user = get_cached_session_user()
         try:
             user = require_session_user()
@@ -32727,8 +32761,8 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             raise HTTPException(status_code=502, detail="Invalid invite resolve payload")
         return OrgInviteResolveResultRecord(**response)
 
-    def _activate_workspace_for_cloud_user(user: SessionUserRecord) -> None:
-        current_cloud_api_url = state.cloud_api_url
+    def _activate_workspace_for_cloud_user(user: SessionUserRecord, *, cloud_api_url: str | None = None) -> None:
+        current_cloud_api_url = (cloud_api_url or state.cloud_api_url).strip()
         organization_id = (user.organizationId or "").strip()
         if not organization_id or organization_id == "local-device":
             return
@@ -32760,7 +32794,12 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         except Exception as exc:
             logger.warning("organization mirror sync after auth failed: %s", exc)
 
-    def _cloud_auth_state_from_response(response: dict, *, persist: bool = True) -> AuthStateResponse:
+    def _cloud_auth_state_from_response(
+        response: dict,
+        *,
+        persist: bool = True,
+        cloud_api_url: str | None = None,
+    ) -> AuthStateResponse:
         local_identity_before_cloud = _local_session_user_id()
         if response.get("organizationSelectionRequired"):
             organizations = response.get("organizations") if isinstance(response.get("organizations"), list) else []
@@ -32779,7 +32818,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             message = response.get("message") if isinstance(response, dict) else "云端认证成功，但未拿到有效会话。"
             raise HTTPException(status_code=502, detail=str(message))
         user = SessionUserRecord(**user_payload)
-        _activate_workspace_for_cloud_user(user)
+        _activate_workspace_for_cloud_user(user, cloud_api_url=cloud_api_url)
         set_cloud_session(token, user, persist=persist)
         set_cloud_refresh_token(refresh_token, persist=persist)
         _bind_current_local_identity_to_cloud(user, local_identity_before_cloud)
@@ -32791,62 +32830,82 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
 
     @app.post("/api/v1/auth/register", response_model=AuthStateResponse)
     def auth_register(payload: AuthRegisterPayload) -> AuthStateResponse:
+        auth_cloud_api_url = normalize_auth_cloud_api_url(payload.cloudApiUrl)
         response = cloud_request(
             "POST",
             "/api/v1/auth/register",
-            json_body=payload.model_dump(),
+            json_body=payload.model_dump(exclude={"cloudApiUrl"}),
             allow_unauthenticated=True,
             bypass_circuit_breaker=True,
+            base_url_override=auth_cloud_api_url,
         )
         if not isinstance(response, dict):
             raise HTTPException(status_code=502, detail="Invalid auth payload")
-        auth_state = _cloud_auth_state_from_response(response, persist=True)
+        auth_state = _cloud_auth_state_from_response(response, persist=True, cloud_api_url=auth_cloud_api_url)
         if auth_state.user:
             log_activity("auth.register", "session", auth_state.user.id, {"email": auth_state.user.email})
         return auth_state
 
     @app.post("/api/v1/auth/login", response_model=AuthStateResponse)
     def auth_login(payload: AuthLoginPayload) -> AuthStateResponse:
+        auth_cloud_api_url = normalize_auth_cloud_api_url(payload.cloudApiUrl)
         response = cloud_request(
             "POST",
             "/api/v1/auth/login",
-            json_body=payload.model_dump(),
+            json_body=payload.model_dump(exclude={"cloudApiUrl"}),
             allow_unauthenticated=True,
             bypass_circuit_breaker=True,
+            base_url_override=auth_cloud_api_url,
         )
         if not isinstance(response, dict):
             raise HTTPException(status_code=502, detail="Invalid auth payload")
-        auth_state = _cloud_auth_state_from_response(response, persist=payload.rememberMe)
+        auth_state = _cloud_auth_state_from_response(response, persist=payload.rememberMe, cloud_api_url=auth_cloud_api_url)
         if auth_state.user:
             log_activity("auth.login", "session", auth_state.user.id, {"email": auth_state.user.email})
         return auth_state
 
     @app.post("/api/v1/auth/select-organization", response_model=AuthStateResponse)
     def auth_select_organization(payload: SelectOrganizationPayload) -> AuthStateResponse:
+        auth_cloud_api_url = normalize_auth_cloud_api_url(payload.cloudApiUrl)
         response = cloud_request(
             "POST",
             "/api/v1/auth/select-organization",
-            json_body=payload.model_dump(),
+            json_body=payload.model_dump(exclude={"cloudApiUrl"}),
             allow_unauthenticated=True,
             bypass_circuit_breaker=True,
+            base_url_override=auth_cloud_api_url,
         )
         if not isinstance(response, dict):
             raise HTTPException(status_code=502, detail="Invalid auth payload")
-        return _cloud_auth_state_from_response(response, persist=True)
+        return _cloud_auth_state_from_response(response, persist=True, cloud_api_url=auth_cloud_api_url)
 
     @app.post("/api/v1/auth/organizations/create", response_model=AuthStateResponse)
     def auth_create_organization(payload: CreateOrganizationPayload) -> AuthStateResponse:
-        response = cloud_request("POST", "/api/v1/auth/organizations/create", json_body=payload.model_dump(), bypass_circuit_breaker=True)
+        auth_cloud_api_url = normalize_auth_cloud_api_url(payload.cloudApiUrl)
+        response = cloud_request(
+            "POST",
+            "/api/v1/auth/organizations/create",
+            json_body=payload.model_dump(exclude={"cloudApiUrl"}),
+            bypass_circuit_breaker=True,
+            base_url_override=auth_cloud_api_url,
+        )
         if not isinstance(response, dict):
             raise HTTPException(status_code=502, detail="Invalid organization create payload")
-        return _cloud_auth_state_from_response(response, persist=True)
+        return _cloud_auth_state_from_response(response, persist=True, cloud_api_url=auth_cloud_api_url)
 
     @app.post("/api/v1/auth/organizations/join", response_model=AuthStateResponse)
     def auth_join_organization(payload: JoinOrganizationPayload) -> AuthStateResponse:
-        response = cloud_request("POST", "/api/v1/auth/organizations/join", json_body=payload.model_dump(), bypass_circuit_breaker=True)
+        auth_cloud_api_url = normalize_auth_cloud_api_url(payload.cloudApiUrl)
+        response = cloud_request(
+            "POST",
+            "/api/v1/auth/organizations/join",
+            json_body=payload.model_dump(exclude={"cloudApiUrl"}),
+            bypass_circuit_breaker=True,
+            base_url_override=auth_cloud_api_url,
+        )
         if not isinstance(response, dict):
             raise HTTPException(status_code=502, detail="Invalid organization join payload")
-        return _cloud_auth_state_from_response(response, persist=True)
+        return _cloud_auth_state_from_response(response, persist=True, cloud_api_url=auth_cloud_api_url)
 
     @app.post("/api/v1/auth/change-password")
     def auth_change_password(payload: dict) -> dict:
@@ -32917,13 +32976,6 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
     @app.post("/api/v1/auth/logout", response_model=AuthStateResponse)
     def auth_logout() -> AuthStateResponse:
         def _after_logout_state() -> AuthStateResponse:
-            if not _active_workspace_is_local():
-                return AuthStateResponse(
-                    authenticated=False,
-                    user=None,
-                    message="当前组织工作空间已退出登录。可重新登录云端，或在工作空间管理里加入/创建组织。",
-                    sessionMode="cloud",
-                )
             local_user = get_local_session_user()
             if local_user:
                 return AuthStateResponse(authenticated=True, user=local_user, sessionMode="local", localIdentityStatus="ready")

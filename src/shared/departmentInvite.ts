@@ -34,6 +34,13 @@ export type DepartmentInviteCodeOptions = {
   order?: number | null;
 };
 
+export type ManagementInviteRole = 'organization_lead' | 'advisor';
+
+const MANAGEMENT_INVITE_ROLE_META: Record<ManagementInviteRole, { label: string; prefix: string; order: number }> = {
+  organization_lead: { label: '组织负责人', prefix: 'OF', order: 1 },
+  advisor: { label: '顾问', prefix: 'GW', order: 2 },
+};
+
 export function buildDepartmentInviteCode(
   departmentId: string,
   options: DepartmentInviteCodeOptions = {},
@@ -55,6 +62,24 @@ export function buildDepartmentInviteCode(
   const orderSegment = String(orderValue).padStart(2, '0');
   const checksum = toBase36Seed(`${organizationId || ''}:${departmentId}`, 36 ** 4).padStart(4, '0').slice(0, 4);
   return `${orgPrefix}-${deptPrefix}${orderSegment}-${checksum}`;
+}
+
+export function buildManagementInviteCode(
+  organizationId: string,
+  role: ManagementInviteRole,
+  organizationName?: string | null,
+) {
+  const meta = MANAGEMENT_INVITE_ROLE_META[role];
+  const orgPrefix = normalizeInviteSegment(organizationName, 4)
+    || toBase36Seed(organizationId || '', 36 ** 4).padStart(4, '0').slice(0, 4)
+    || 'ORGX';
+  const orderSegment = String(meta.order).padStart(2, '0');
+  const checksum = toBase36Seed(`${organizationId || ''}:management:${role}`, 36 ** 4).padStart(4, '0').slice(0, 4);
+  return `${orgPrefix}-${meta.prefix}${orderSegment}-${checksum}`;
+}
+
+export function managementInviteRoleLabel(role: ManagementInviteRole) {
+  return MANAGEMENT_INVITE_ROLE_META[role].label;
 }
 
 export function buildDepartmentInviteShareText(departmentName: string, inviteCode: string) {
