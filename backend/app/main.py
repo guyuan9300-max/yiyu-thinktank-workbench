@@ -32730,6 +32730,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
     def auth_department_options(
         organizationId: str | None = None,
         inviteCode: str | None = None,
+        cloudApiUrl: str | None = None,
     ) -> list[DepartmentOptionRecord]:
         query: list[str] = []
         if organizationId:
@@ -32737,25 +32738,30 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         if inviteCode:
             query.append(f"inviteCode={quote(inviteCode)}")
         suffix = f"?{'&'.join(query)}" if query else ""
+        auth_cloud_api_url = normalize_auth_cloud_api_url(cloudApiUrl)
         response = cloud_request(
             "GET",
             f"/api/v1/auth/department-options{suffix}",
             allow_unauthenticated=True,
+            bypass_circuit_breaker=True,
+            base_url_override=auth_cloud_api_url,
         )
         if not isinstance(response, list):
             return []
         return [DepartmentOptionRecord(**item) for item in response if isinstance(item, dict)]
 
     @app.get("/api/v1/auth/invite-code/resolve", response_model=OrgInviteResolveResultRecord)
-    def auth_resolve_invite_code(code: str = "") -> OrgInviteResolveResultRecord:
+    def auth_resolve_invite_code(code: str = "", cloudApiUrl: str | None = None) -> OrgInviteResolveResultRecord:
         normalized = (code or "").strip()
         if not normalized:
             return OrgInviteResolveResultRecord(valid=False, message="请输入组织或部门邀请码")
+        auth_cloud_api_url = normalize_auth_cloud_api_url(cloudApiUrl)
         response = cloud_request(
             "GET",
             f"/api/v1/auth/invite-code/resolve?code={quote(normalized)}",
             allow_unauthenticated=True,
             bypass_circuit_breaker=True,
+            base_url_override=auth_cloud_api_url,
         )
         if not isinstance(response, dict):
             raise HTTPException(status_code=502, detail="Invalid invite resolve payload")

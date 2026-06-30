@@ -1776,16 +1776,19 @@ export async function localRegister(payload: LocalAuthRegisterPayload) {
   });
 }
 
-export async function getDepartmentOptions(params?: { organizationId?: string | null; inviteCode?: string | null }) {
+export async function getDepartmentOptions(params?: { organizationId?: string | null; inviteCode?: string | null; cloudApiUrl?: string | null }) {
   const searchParams = new URLSearchParams();
   if (params?.organizationId) searchParams.set('organizationId', params.organizationId);
   if (params?.inviteCode) searchParams.set('inviteCode', params.inviteCode);
+  if (params?.cloudApiUrl) searchParams.set('cloudApiUrl', params.cloudApiUrl);
   const suffix = searchParams.toString() ? `?${searchParams.toString()}` : '';
   return request<DepartmentOption[]>(`/api/v1/auth/department-options${suffix}`);
 }
 
-export async function resolveInviteCode(code: string) {
-  return request<OrgInviteResolveResult>(`/api/v1/auth/invite-code/resolve?code=${encodeURIComponent(code)}`);
+export async function resolveInviteCode(code: string, cloudApiUrl?: string | null) {
+  const searchParams = new URLSearchParams({ code });
+  if (cloudApiUrl) searchParams.set('cloudApiUrl', cloudApiUrl);
+  return request<OrgInviteResolveResult>(`/api/v1/auth/invite-code/resolve?${searchParams.toString()}`);
 }
 
 export async function login(payload: AuthLoginPayload) {
