@@ -1536,26 +1536,152 @@ function repairPackagedRuntimeVenvConfig(venvPath: string, seed: PackagedRuntime
   fs.writeFileSync(pyvenvCfgPath, cfg, 'utf8');
 }
 
+const WINDOWS_RUNTIME_COPY_TOOL_UNAVAILABLE_MESSAGE = 'Windows 运行时复制工具不可用，请重新安装最新版安装包；如仍失败，请联系益语支持。';
+
+function uniqueExistingWindowsToolCandidate(candidates: string[]) {
+  const seen = new Set<string>();
+  for (const candidate of candidates) {
+    const trimmed = candidate.trim();
+    if (!trimmed) continue;
+    const key = trimmed.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    if (!path.isAbsolute(trimmed) || fs.existsSync(trimmed)) {
+      return trimmed;
+    }
+  }
+  return null;
+}
+
+function windowsSystemRoots() {
+  return [
+    process.env.SystemRoot,
+    process.env.WINDIR,
+    'C:\\Windows',
+  ].filter((value): value is string => Boolean(value && value.trim()));
+}
+
+function resolveWindowsSystem32Tool(fileName: string) {
+  return uniqueExistingWindowsToolCandidate([
+    ...windowsSystemRoots().map((root) => path.join(root, 'System32', fileName)),
+    fileName,
+  ]);
+}
+
+function resolveWindowsPowerShell() {
+  return uniqueExistingWindowsToolCandidate([
+    ...windowsSystemRoots().map((root) => path.join(root, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe')),
+    'powershell.exe',
+  ]);
+}
+
+function isWindowsToolNotFoundError(error: unknown) {
+  const value = error as NodeJS.ErrnoException | undefined;
+  const message = error instanceof Error ? error.message : String(error);
+  return value?.code === 'ENOENT' || /\bENOENT\b/i.test(message) || /not found/i.test(message);
+}
+
+async function tryRunWindowsCopyTool(
+  command: string | null,
+  args: string[],
+  label: string,
+  isAcceptedExitCode: (code: number) => boolean,
+) {
+  if (!command) return false;
+  try {
+    await runCommandWithAcceptedExitCodes(command, args, backendEnv(), label, isAcceptedExitCode);
+    return true;
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error);
+    appendElectronLaunchLog('ERROR', `[backend:packaged-runtime] ${label} failed: ${detail}`);
+    if (isWindowsToolNotFoundError(error)) return false;
+    throw error;
+  }
+}
+
+async function copyPrebuiltBackendVenvWithWindowsTools(seed: PackagedRuntimeSeed, targetVenvPath: string) {
+  const robocopy = resolveWindowsSystem32Tool('robocopy.exe');
+  appendElectronLaunchLog(
+    'INFO',
+    `[backend:packaged-runtime] robocopy pre-built venv ${seed.backendVenvPath} -> ${targetVenvPath} via ${robocopy || 'unavailable'}`,
+  );
+  if (await tryRunWindowsCopyTool(
+    robocopy,
+    [
+      seed.backendVenvPath,
+      targetVenvPath,
+      '/MIR',
+      '/R:2',
+      '/W:1',
+      '/NFL',
+      '/NDL',
+      '/NP',
+    ],
+    'backend:packaged-runtime-robocopy',
+    (code) => code >= 0 && code <= 7,
+  )) {
+    return;
+  }
+
+  const powershell = resolveWindowsPowerShell();
+  appendElectronLaunchLog(
+    'INFO',
+    `[backend:packaged-runtime] PowerShell fallback pre-built venv ${seed.backendVenvPath} -> ${targetVenvPath} via ${powershell || 'unavailable'}`,
+  );
+  if (await tryRunWindowsCopyTool(
+    powershell,
+    [
+      '-NoProfile',
+      '-ExecutionPolicy',
+      'Bypass',
+      '-Command',
+      [
+        '$ErrorActionPreference = "Stop"',
+        '$source = $args[0]',
+        '$destination = $args[1]',
+        'if (Test-Path -LiteralPath $destination) { Remove-Item -LiteralPath $destination -Recurse -Force }',
+        'New-Item -ItemType Directory -Force -Path $destination | Out-Null',
+        'Get-ChildItem -LiteralPath $source -Force | ForEach-Object { Copy-Item -LiteralPath $_.FullName -Destination $destination -Recurse -Force }',
+      ].join('; '),
+      seed.backendVenvPath,
+      targetVenvPath,
+    ],
+    'backend:packaged-runtime-powershell-copy',
+    (code) => code === 0,
+  )) {
+    return;
+  }
+
+  const xcopy = resolveWindowsSystem32Tool('xcopy.exe');
+  appendElectronLaunchLog(
+    'INFO',
+    `[backend:packaged-runtime] xcopy fallback pre-built venv ${seed.backendVenvPath} -> ${targetVenvPath} via ${xcopy || 'unavailable'}`,
+  );
+  if (await tryRunWindowsCopyTool(
+    xcopy,
+    [
+      path.join(seed.backendVenvPath, '*'),
+      targetVenvPath,
+      '/E',
+      '/H',
+      '/K',
+      '/Y',
+      '/I',
+      '/C',
+    ],
+    'backend:packaged-runtime-xcopy',
+    (code) => code === 0 || code === 1,
+  )) {
+    return;
+  }
+
+  throw new Error(WINDOWS_RUNTIME_COPY_TOOL_UNAVAILABLE_MESSAGE);
+}
+
 async function copyPrebuiltBackendVenv(seed: PackagedRuntimeSeed, targetVenvPath: string) {
   if (process.platform === 'win32') {
-    appendElectronLaunchLog('INFO', `[backend:packaged-runtime] robocopy pre-built venv ${seed.backendVenvPath} -> ${targetVenvPath}`);
     fs.mkdirSync(targetVenvPath, { recursive: true });
-    await runCommandWithAcceptedExitCodes(
-      'robocopy',
-      [
-        seed.backendVenvPath,
-        targetVenvPath,
-        '/MIR',
-        '/R:2',
-        '/W:1',
-        '/NFL',
-        '/NDL',
-        '/NP',
-      ],
-      backendEnv(),
-      'backend:packaged-runtime-robocopy',
-      (code) => code >= 0 && code <= 7,
-    );
+    await copyPrebuiltBackendVenvWithWindowsTools(seed, targetVenvPath);
     return;
   }
 
