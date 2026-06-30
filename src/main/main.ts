@@ -1144,6 +1144,37 @@ async function runCommand(command: string, args: string[], env: NodeJS.ProcessEn
   });
 }
 
+async function runCommandWithAcceptedExitCodes(
+  command: string,
+  args: string[],
+  env: NodeJS.ProcessEnv,
+  label: string,
+  isAcceptedExitCode: (code: number) => boolean,
+) {
+  await new Promise<void>((resolve, reject) => {
+    const child = spawn(command, args, {
+      cwd: projectRoot,
+      env,
+      windowsHide: true,
+    });
+
+    logBackend(child.stdout, `${label}:stdout`);
+    logBackend(child.stderr, `${label}:stderr`);
+
+    child.on('error', (error) => {
+      reject(new Error(`${label} 启动失败：${error.message}`));
+    });
+    child.on('exit', (code) => {
+      const normalizedCode = code ?? -1;
+      if (isAcceptedExitCode(normalizedCode)) {
+        resolve();
+        return;
+      }
+      reject(new Error(`${label} exited with code ${normalizedCode}`));
+    });
+  });
+}
+
 async function assertPythonRuntimeUsable(pythonPath: string, label: string, env: NodeJS.ProcessEnv) {
   // Do NOT use -I (isolated mode): it bypasses PYTHONHOME and pyvenv.cfg,
   // which means the smoke test would only pass when the bare binary can
@@ -1474,6 +1505,71 @@ async function ensureSherpaOnnxDylibAligned(venvPath: string): Promise<void> {
   }
 }
 
+function packagedRuntimeTempVenvPath(venvPath: string) {
+  return path.join(
+    path.dirname(venvPath),
+    `${path.basename(venvPath)}.tmp-${process.pid}-${Date.now()}`,
+  );
+}
+
+function setPyvenvConfigLine(content: string, key: string, value: string) {
+  const escapedKey = key.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const pattern = new RegExp(`^${escapedKey}\\s*=.*$`, 'm');
+  const line = `${key} = ${value}`;
+  if (pattern.test(content)) {
+    return content.replace(pattern, line);
+  }
+  return `${content.trimEnd()}\n${line}\n`;
+}
+
+function repairPackagedRuntimeVenvConfig(venvPath: string, seed: PackagedRuntimeSeed) {
+  const pyvenvCfgPath = path.join(venvPath, 'pyvenv.cfg');
+  if (!fs.existsSync(pyvenvCfgPath)) return;
+
+  const seedPythonAbs = seed.seedPython;
+  const seedHomeDir = path.dirname(seedPythonAbs);
+  const runtimeCommand = `${seedPythonAbs} -m venv --copies --without-pip ${venvPath}`;
+  let cfg = fs.readFileSync(pyvenvCfgPath, 'utf8');
+  cfg = setPyvenvConfigLine(cfg, 'home', seedHomeDir);
+  cfg = setPyvenvConfigLine(cfg, 'executable', seedPythonAbs);
+  cfg = setPyvenvConfigLine(cfg, 'command', runtimeCommand);
+  fs.writeFileSync(pyvenvCfgPath, cfg, 'utf8');
+}
+
+async function copyPrebuiltBackendVenv(seed: PackagedRuntimeSeed, targetVenvPath: string) {
+  if (process.platform === 'win32') {
+    appendElectronLaunchLog('INFO', `[backend:packaged-runtime] robocopy pre-built venv ${seed.backendVenvPath} -> ${targetVenvPath}`);
+    fs.mkdirSync(targetVenvPath, { recursive: true });
+    await runCommandWithAcceptedExitCodes(
+      'robocopy',
+      [
+        seed.backendVenvPath,
+        targetVenvPath,
+        '/MIR',
+        '/R:2',
+        '/W:1',
+        '/NFL',
+        '/NDL',
+        '/NP',
+      ],
+      backendEnv(),
+      'backend:packaged-runtime-robocopy',
+      (code) => code >= 0 && code <= 7,
+    );
+    return;
+  }
+
+  appendElectronLaunchLog('INFO', `[backend:packaged-runtime] copying pre-built venv ${seed.backendVenvPath} -> ${targetVenvPath}`);
+  fs.cpSync(seed.backendVenvPath, targetVenvPath, { recursive: true, dereference: false, verbatimSymlinks: true });
+}
+
+function replaceRuntimeVenv(tempVenvPath: string, finalVenvPath: string) {
+  assertRuntimeVenvPathIsSafe(tempVenvPath);
+  assertRuntimeVenvPathIsSafe(finalVenvPath);
+  fs.rmSync(finalVenvPath, { recursive: true, force: true });
+  fs.renameSync(tempVenvPath, finalVenvPath);
+}
+
 async function ensurePackagedBackendRuntime(venvPath: string) {
   const seed = readPackagedRuntimeSeed();
   const metadataPath = projectRuntimeMetadataPath('backend', venvPath);
@@ -1500,9 +1596,11 @@ async function ensurePackagedBackendRuntime(venvPath: string) {
 
   validatePackagedRuntimeSeed(seed);
   assertRuntimeVenvPathIsSafe(venvPath);
-  fs.rmSync(venvPath, { recursive: true, force: true });
   fs.mkdirSync(path.dirname(venvPath), { recursive: true });
   await assertPythonRuntimeUsable(seed.seedPython, 'backend:packaged-seed-python-smoke', backendEnv());
+  const tempVenvPath = packagedRuntimeTempVenvPath(venvPath);
+  assertRuntimeVenvPathIsSafe(tempVenvPath);
+  fs.rmSync(tempVenvPath, { recursive: true, force: true });
 
   // B 方案根治路径:.app 内有预装 venv → 复制 + 改 pyvenv.cfg,跳过 pip install
   // 旧路径(pip install from wheelhouse)被废弃,因为 wheel 内嵌 binary 公证拒收
@@ -1510,61 +1608,64 @@ async function ensurePackagedBackendRuntime(venvPath: string) {
     && fs.existsSync(runtimePythonPath(seed.backendVenvPath, seed.manifest))
     && fs.existsSync(runtimeUvicornPath(seed.backendVenvPath, seed.manifest));
 
-  if (hasPrebuiltVenv) {
-    appendElectronLaunchLog('INFO', `[backend:packaged-runtime] copying pre-built venv from ${seed.backendVenvPath}`);
-    // recursive copy (含 site-packages 所有 .so/.dylib)
-    fs.cpSync(seed.backendVenvPath, venvPath, { recursive: true, dereference: false, verbatimSymlinks: true });
-
-    // 重写 pyvenv.cfg 占位符,指向客户机当前的 seed python 路径
-    const pyvenvCfgPath = path.join(venvPath, 'pyvenv.cfg');
-    if (fs.existsSync(pyvenvCfgPath)) {
-      const seedPythonAbs = seed.seedPython;
-      const seedHomeDir = path.dirname(seedPythonAbs);
-      const cfg = fs.readFileSync(pyvenvCfgPath, 'utf8');
-      const fixed = cfg
-        .replace('__YIYU_RUNTIME_HOME__', seedHomeDir)
-        .replace('__YIYU_RUNTIME_EXECUTABLE__', seedPythonAbs)
-        .replace('__YIYU_RUNTIME_COMMAND__', `${seedPythonAbs} -m venv --copies --without-pip ${venvPath}`);
-      fs.writeFileSync(pyvenvCfgPath, fixed);
-    }
-    repairRuntimeVenvEntryPoints(venvPath, seed.manifest);
-  } else {
-    // 回退兼容路径:旧版本 build 没生成预装 venv 时仍走 pip install
-    // 这条路径将随老版本淘汰,新版本统一走 hasPrebuiltVenv=true
-    appendElectronLaunchLog('INFO', '[backend:packaged-runtime] no pre-built venv found, falling back to legacy pip install path');
-    await runCommand(seed.seedPython, ['-m', 'venv', '--without-pip', '--copies', venvPath], backendEnv(), 'backend:packaged-venv');
-    if (seed.manifest.python?.dynamicLibrary) {
-      const seedLibPython = path.join(seed.root, seed.manifest.python.dynamicLibrary);
-      const venvLibPython = path.join(venvPath, 'lib', path.basename(seed.manifest.python.dynamicLibrary));
-      if (fs.existsSync(seedLibPython)) {
-        fs.copyFileSync(seedLibPython, venvLibPython);
+  try {
+    if (hasPrebuiltVenv) {
+      await copyPrebuiltBackendVenv(seed, tempVenvPath);
+      repairPackagedRuntimeVenvConfig(tempVenvPath, seed);
+      repairRuntimeVenvEntryPoints(tempVenvPath, seed.manifest);
+    } else {
+      // 回退兼容路径:旧版本 build 没生成预装 venv 时仍走 pip install
+      // 这条路径将随老版本淘汰,新版本统一走 hasPrebuiltVenv=true
+      appendElectronLaunchLog('INFO', '[backend:packaged-runtime] no pre-built venv found, falling back to legacy pip install path');
+      await runCommand(seed.seedPython, ['-m', 'venv', '--without-pip', '--copies', tempVenvPath], backendEnv(), 'backend:packaged-venv');
+      if (seed.manifest.python?.dynamicLibrary) {
+        const seedLibPython = path.join(seed.root, seed.manifest.python.dynamicLibrary);
+        const venvLibPython = path.join(tempVenvPath, 'lib', path.basename(seed.manifest.python.dynamicLibrary));
+        if (fs.existsSync(seedLibPython)) {
+          fs.copyFileSync(seedLibPython, venvLibPython);
+        }
       }
+      await runCommand(
+        runtimePythonPath(tempVenvPath, seed.manifest),
+        ['-m', 'ensurepip', '--upgrade', '--default-pip'],
+        backendEnv({ VIRTUAL_ENV: tempVenvPath }),
+        'backend:packaged-ensurepip',
+      );
+      await runCommand(
+        runtimePythonPath(tempVenvPath, seed.manifest),
+        [
+          '-m',
+          'pip',
+          'install',
+          '--no-index',
+          '--find-links',
+          seed.wheelhousePath,
+          '--requirement',
+          seed.requirementsPath,
+        ],
+        backendEnv({ VIRTUAL_ENV: tempVenvPath }),
+        'backend:packaged-wheelhouse',
+      );
     }
-    await runCommand(
-      runtimePythonPath(venvPath, seed.manifest),
-      ['-m', 'ensurepip', '--upgrade', '--default-pip'],
-      backendEnv({ VIRTUAL_ENV: venvPath }),
-      'backend:packaged-ensurepip',
+
+    await assertPythonRuntimeUsable(
+      runtimePythonPath(tempVenvPath, seed.manifest),
+      'backend:packaged-python-smoke-temp',
+      backendEnv({ VIRTUAL_ENV: tempVenvPath }),
     );
-    await runCommand(
-      runtimePythonPath(venvPath, seed.manifest),
-      [
-        '-m',
-        'pip',
-        'install',
-        '--no-index',
-        '--find-links',
-        seed.wheelhousePath,
-        '--requirement',
-        seed.requirementsPath,
-      ],
-      backendEnv({ VIRTUAL_ENV: venvPath }),
-      'backend:packaged-wheelhouse',
-    );
+    if (!isExecutable(runtimeUvicornPath(tempVenvPath, seed.manifest))) {
+      throw new Error('内置后端运行时临时安装完成后仍缺少 uvicorn');
+    }
+
+    replaceRuntimeVenv(tempVenvPath, venvPath);
+    repairPackagedRuntimeVenvConfig(venvPath, seed);
+    repairRuntimeVenvEntryPoints(venvPath, seed.manifest);
+  } catch (error) {
+    fs.rmSync(tempVenvPath, { recursive: true, force: true });
+    throw error;
   }
 
   await assertPythonRuntimeUsable(pythonPath, 'backend:packaged-python-smoke', backendEnv({ VIRTUAL_ENV: venvPath }));
-  repairRuntimeVenvEntryPoints(venvPath, seed.manifest);
   if (!isExecutable(uvicornPath)) {
     throw new Error('内置后端运行时安装完成后仍缺少 uvicorn');
   }
