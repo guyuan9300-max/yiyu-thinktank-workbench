@@ -447,6 +447,12 @@ class EmployeeDepartmentPayload(BaseModel):
     departmentId: str | None = None
 
 
+class AdminTransferPayload(BaseModel):
+    targetUserId: str = Field(min_length=1)
+    currentAdminAction: Literal["keep_admin", "demote_to_member", "disable_self"] = "keep_admin"
+    currentAdminDepartmentId: str | None = None
+
+
 class RejectPayload(BaseModel):
     reason: str = ""
 
@@ -582,8 +588,11 @@ class OrgInviteResolveResult(BaseModel):
     valid: bool
     organizationId: str | None = None
     organizationName: str | None = None
+    targetType: str | None = None
     departmentId: str | None = None
     departmentName: str | None = None
+    roleKey: str | None = None
+    roleName: str | None = None
     message: str | None = None
 
 

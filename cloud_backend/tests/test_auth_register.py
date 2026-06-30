@@ -81,6 +81,7 @@ def test_register_returns_tokens_and_allows_immediate_login(tmp_path, monkeypatc
             "fullName": "个人注册用户",
             "phone": "13800138000",
             "password": "Password123!",
+            "organizationName": "个人注册组织",
         },
     )
     assert register.status_code == 200, register.text
@@ -89,8 +90,9 @@ def test_register_returns_tokens_and_allows_immediate_login(tmp_path, monkeypatc
     assert payload["refreshToken"]
     assert payload["user"]["email"] == "new-personal-user@example.com"
     assert payload["user"]["phone"] == "+8613800138000"
+    assert payload["user"]["primaryRole"] == "admin"
     assert payload["user"]["accountStatus"] == "approved"
-    assert payload["user"]["membershipStatus"] == "none"
+    assert payload["user"]["membershipStatus"] == "approved"
 
     login = client.post(
         "/api/v1/auth/login",
@@ -101,10 +103,13 @@ def test_register_returns_tokens_and_allows_immediate_login(tmp_path, monkeypatc
     )
     assert login.status_code == 200, login.text
     assert login.json()["user"]["email"] == "new-personal-user@example.com"
-    assert login.json()["user"]["membershipStatus"] == "none"
-    blocked_tasks = client.get("/api/v1/tasks", headers={"Authorization": f"Bearer {login.json()['accessToken']}"})
-    assert blocked_tasks.status_code == 403
-    assert "组织身份尚未确认" in blocked_tasks.text
+    assert login.json()["user"]["primaryRole"] == "admin"
+    assert login.json()["user"]["membershipStatus"] == "approved"
+    role_row = app.state.app_state.db.fetchone(
+        "SELECT role FROM employee_role_bindings WHERE user_id = ? AND role = 'admin'",
+        (login.json()["user"]["id"],),
+    )
+    assert role_row is not None
 
 
 def test_legacy_pending_account_can_login_without_manual_approval(tmp_path, monkeypatch):
@@ -263,7 +268,61 @@ def test_valid_invite_registration_syncs_org_ai_config_and_space_profile(tmp_pat
     assert any(item["id"] == "dept_customer_service" for item in org_profile.json()["departments"])
 
 
-def test_existing_cloud_account_apply_valid_invite_unlocks_member_resources(tmp_path, monkeypatch):
+def test_admin_transfer_promotes_target_and_keeps_one_admin_guard(tmp_path, monkeypatch):
+    data_dir = tmp_path / "cloud-data"
+    monkeypatch.setenv("YIYU_CLOUD_DATA_DIR", str(data_dir))
+    monkeypatch.setenv("YIYU_CLOUD_BOOTSTRAP_ADMIN_PASSWORD", "Admin123!")
+    monkeypatch.setenv("YIYU_CLOUD_QINGHUA_PASSWORD", "Simulate123!")
+    monkeypatch.setenv("YIYU_CLOUD_JIANING_PASSWORD", "Simulate123!")
+    monkeypatch.setenv("YIYU_CLOUD_YISHUO_PASSWORD", "Simulate123!")
+
+    app = create_app()
+    seed_registration_departments(app)
+    client = TestClient(app)
+    admin_headers = login_headers(client, "admin@yiyu-system.com", "Admin123!")
+
+    registered = client.post(
+        "/api/v1/auth/register",
+        json={
+            "email": "next-admin@example.com",
+            "fullName": "接任管理员",
+            "phone": "17316888678",
+            "password": "Password123!",
+            "inviteCode": customer_service_invite(),
+        },
+    )
+    assert registered.status_code == 200, registered.text
+    target_user = registered.json()["user"]
+    target_headers = {"Authorization": f"Bearer {registered.json()['accessToken']}"}
+
+    transferred = client.post(
+        "/api/v1/admin/employees/transfer-admin",
+        json={
+            "targetUserId": target_user["id"],
+            "currentAdminAction": "demote_to_member",
+            "currentAdminDepartmentId": "dept_customer_service",
+        },
+        headers=admin_headers,
+    )
+    assert transferred.status_code == 200, transferred.text
+
+    db = app.state.app_state.db
+    new_admin = db.fetchone("SELECT primary_role FROM employee_accounts WHERE id = ?", (target_user["id"],))
+    old_admin = db.fetchone("SELECT primary_role, department_id FROM employee_accounts WHERE email = ?", ("admin@yiyu-system.com",))
+    assert new_admin["primary_role"] == "admin"
+    assert old_admin["primary_role"] == "employee"
+    assert old_admin["department_id"] == "dept_customer_service"
+
+    demote_last_admin = client.patch(
+        f"/api/v1/admin/employees/{target_user['id']}/role",
+        json={"role": "employee"},
+        headers=target_headers,
+    )
+    assert demote_last_admin.status_code == 400, demote_last_admin.text
+    assert "至少需要保留一名管理员" in demote_last_admin.text
+
+
+def test_register_without_invite_requires_new_org_name_when_admin_exists(tmp_path, monkeypatch):
     data_dir = tmp_path / "cloud-data"
     monkeypatch.setenv("YIYU_CLOUD_DATA_DIR", str(data_dir))
     monkeypatch.setenv("YIYU_CLOUD_BOOTSTRAP_ADMIN_PASSWORD", "Admin123!")
@@ -284,25 +343,58 @@ def test_existing_cloud_account_apply_valid_invite_unlocks_member_resources(tmp_
             "password": "Password123!",
         },
     )
-    assert register.status_code == 200, register.text
-    member_headers = {"Authorization": f"Bearer {register.json()['accessToken']}"}
-    blocked_profile = client.get("/api/v1/settings/org-model/profile", headers=member_headers)
-    assert blocked_profile.status_code == 403
+    assert register.status_code == 409, register.text
+    assert "成员加入请填写组织或部门邀请码" in register.text
 
-    applied = client.post(
-        "/api/v1/me/org-membership/apply",
+    joined = client.post(
+        "/api/v1/auth/register",
         json={
+            "email": "existing-invited-member@example.com",
+            "phone": "13800138204",
+            "fullName": "已有云账号同事",
+            "password": "Password123!",
             "inviteCode": customer_service_invite(),
             "jobTitle": "客户成功",
         },
-        headers=member_headers,
     )
-    assert applied.status_code == 200, applied.text
-    assert applied.json()["hasOrganization"] is True
-    assert applied.json()["membershipStatus"] == "approved"
-    assert applied.json()["organizationId"] == DEFAULT_ORG_ID
-    assert applied.json()["departmentId"] == "dept_customer_service"
+    assert joined.status_code == 200, joined.text
+    payload = joined.json()
+    assert payload["user"]["membershipStatus"] == "approved"
+    assert payload["user"]["organizationId"] == DEFAULT_ORG_ID
+    assert payload["user"]["departmentId"] == "dept_customer_service"
 
+
+def test_register_without_invite_claims_adminless_cloud(tmp_path, monkeypatch):
+    data_dir = tmp_path / "cloud-data"
+    monkeypatch.setenv("YIYU_CLOUD_DATA_DIR", str(data_dir))
+    monkeypatch.setenv("YIYU_CLOUD_BOOTSTRAP_ADMIN_PASSWORD", "Admin123!")
+
+    app = create_app()
+    db = app.state.app_state.db
+    timestamp = now_iso()
+    db.execute(
+        "UPDATE employee_accounts SET primary_role = 'employee', account_status = 'approved', membership_status = 'approved', updated_at = ?",
+        (timestamp,),
+    )
+    db.execute("DELETE FROM employee_role_bindings WHERE role = 'admin'")
+    client = TestClient(app)
+
+    register = client.post(
+        "/api/v1/auth/register",
+        json={
+            "email": "claim-adminless@example.com",
+            "phone": "13800138205",
+            "fullName": "接管空云端",
+            "password": "Password123!",
+        },
+    )
+    assert register.status_code == 200, register.text
+    payload = register.json()
+    assert payload["user"]["primaryRole"] == "admin"
+    assert payload["user"]["accountStatus"] == "approved"
+    assert payload["user"]["membershipStatus"] == "approved"
+
+    member_headers = {"Authorization": f"Bearer {payload['accessToken']}"}
     org_profile = client.get("/api/v1/settings/org-model/profile", headers=member_headers)
     assert org_profile.status_code == 200, org_profile.text
     assert org_profile.json()["organization"]["organizationId"] == DEFAULT_ORG_ID

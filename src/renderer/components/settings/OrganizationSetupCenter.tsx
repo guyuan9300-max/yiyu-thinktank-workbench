@@ -12,7 +12,7 @@ import type {
   OrgQuarterKey,
   OrgRoleTemplateSettings,
 } from '../../../shared/types';
-import { buildDepartmentInviteCode } from '../../../shared/departmentInvite';
+import { buildDepartmentInviteCode, buildManagementInviteCode, managementInviteRoleLabel, type ManagementInviteRole } from '../../../shared/departmentInvite';
 // 顾源源 5/24: 机器人同事 — 直接复用弹窗组件, 不挂底部抽屉
 import { BotMemberFormDialog, BotRotateTokenDialog } from './BotMembersPanel';
 import { listBotMembers, type BotMemberRecord } from '../../lib/api';
@@ -59,6 +59,7 @@ type TreeDepartmentNode = {
   leadName: string;
   leaderUserId?: string | null;
   leaderName?: string | null;
+  parentDepartmentId?: string | null;
   color: string;
   children: TreePositionNode[];
 };
@@ -149,6 +150,7 @@ function deriveTree(
         leadName: visibleLeaderName || '待设置',
         leaderUserId: department.leaderUserId || null,
         leaderName: visibleLeaderName || null,
+        parentDepartmentId: department.parentDepartmentId || null,
         color: department.color || DEPARTMENT_COLORS[0],
         children: activeRoles
           .filter((role) => role.departmentId === department.id)
@@ -567,6 +569,11 @@ export function OrganizationSetupCenter({
   const stats = useMemo(() => computeStats(value, employees), [employees, value]);
   const activeDepartments = useMemo(() => value.departments.filter((item) => item.active !== false), [value.departments]);
   const activeRoles = useMemo(() => value.roles.filter((item) => item.active !== false), [value.roles]);
+  const departmentNameById = useMemo(() => {
+    const mapping = new Map<string, string>();
+    activeDepartments.forEach((department) => mapping.set(department.id, department.name || '未命名部门'));
+    return mapping;
+  }, [activeDepartments]);
   const approvedEmployees = useMemo(
     () => employees.filter(isAssignableOrganizationEmployee),
     [employees],
@@ -585,7 +592,42 @@ export function OrganizationSetupCenter({
   }, [approvedEmployeeIds, value.bindings]);
 
   const organizationName = organizationNameInput.trim() || value.organization.name.trim() || tree.name || '当前组织';
+  const managementInviteCards = useMemo(() => {
+    const roles: ManagementInviteRole[] = ['organization_lead', 'advisor'];
+    return roles.map((role) => {
+      const label = managementInviteRoleLabel(role);
+      const inviteCode = buildManagementInviteCode(value.organization.organizationId, role, organizationName);
+      const roleIds = new Set(
+        activeRoles
+          .filter((item) => !item.departmentId && item.name.trim() === label)
+          .map((item) => item.id),
+      );
+      const bindingUserIds = new Set(
+        value.bindings
+          .filter((binding) => binding.primaryRoleId && roleIds.has(binding.primaryRoleId))
+          .map((binding) => binding.userId),
+      );
+      if (role === 'organization_lead' && value.organization.leaderUserId) {
+        bindingUserIds.add(value.organization.leaderUserId);
+      }
+      const joinedCount = approvedEmployees.filter((employee) => (
+        bindingUserIds.has(employee.id)
+        || (employee.jobTitle || '').trim() === label
+      )).length;
+      return {
+        key: role,
+        label,
+        inviteCode,
+        joinedCount,
+        color: role === 'organization_lead' ? '#5B7BFE' : '#10B981',
+        helper: role === 'organization_lead'
+          ? '组织级管理身份，可查看并维护组织搭建'
+          : '顾问身份，不归入具体部门，可协助维护组织搭建',
+      };
+    });
+  }, [activeRoles, approvedEmployees, organizationName, value.bindings, value.organization.leaderUserId, value.organization.organizationId]);
   const bulkInviteText = useMemo(() => {
+    const managementLines = managementInviteCards.map((item) => `${item.label}：${item.inviteCode}`);
     const linesOfText = tree.children.map((department, index) => {
       const inviteCode = buildDepartmentInviteCode(department.id, {
         organizationId: value.organization.organizationId,
@@ -596,11 +638,12 @@ export function OrganizationSetupCenter({
       return `${department.name}：${inviteCode}`;
     });
     return [
-      `${organizationName} 各部门邀请码`,
-      '大家注册时找到自己部门的邀请码填入即可。',
+      `${organizationName} 邀请码`,
+      '组织负责人、顾问和部门成员注册时填写对应邀请码即可直接入组。',
+      ...managementLines,
       ...linesOfText,
     ].join('\n');
-  }, [organizationName, tree.children, value.organization.organizationId]);
+  }, [managementInviteCards, organizationName, tree.children, value.organization.organizationId]);
 
   const showToast = useCallback((message: string) => {
     setToast(message);
@@ -1053,17 +1096,17 @@ export function OrganizationSetupCenter({
     }));
   }, [canEdit, updateInputDrafts]);
 
-  const handleAddDepartment = useCallback(() => {
+  const handleAddDepartment = useCallback((preset?: { name?: string; parentDepartmentId?: string | null }) => {
     if (!canEdit) return;
     const nextIndex = value.departments.length;
     const nextDepartment: OrgDepartmentSettings = {
       id: nextUiId('department'),
-      name: `新部门 ${nextIndex + 1}`,
+      name: preset?.name || `新部门 ${nextIndex + 1}`,
       color: departmentColor(nextIndex),
       leaderUserId: null,
       leaderName: '',
       introDocument: null,
-      parentDepartmentId: null,
+      parentDepartmentId: preset?.parentDepartmentId ?? null,
       mission: '',
       businessContext: '',
       teamContext: '',
@@ -1083,6 +1126,30 @@ export function OrganizationSetupCenter({
       startEditing(nextDepartment.id, 'name', nextDepartment.name);
     }, 10);
   }, [canEdit, onChange, startEditing, value]);
+
+  const handleAddManagementDepartment = useCallback(() => {
+    if (!canEdit) return;
+    const existing = activeDepartments.find((department) => department.name.trim() === '管理层');
+    if (existing) {
+      startEditing(existing.id, 'name', existing.name);
+      showToast('已有管理层节点，可继续设置负责人和成员');
+      return;
+    }
+    handleAddDepartment({ name: '管理层', parentDepartmentId: null });
+  }, [activeDepartments, canEdit, handleAddDepartment, showToast, startEditing]);
+
+  const handleUpdateDepartmentParent = useCallback((departmentId: string, parentDepartmentId: string | null) => {
+    if (!canEdit) return;
+    if (departmentId === parentDepartmentId) return;
+    onChange({
+      ...value,
+      departments: value.departments.map((department) => (
+        department.id === departmentId
+          ? { ...department, parentDepartmentId, updatedAt: new Date().toISOString() }
+          : department
+      )),
+    });
+  }, [canEdit, onChange, value]);
 
   const handleAddRole = useCallback((departmentId: string | null) => {
     if (!canEdit) return;
@@ -1685,14 +1752,15 @@ export function OrganizationSetupCenter({
 	                      hasDepartmentLeaderDraft
 	                      && visibleLeaderNameInput(departmentLeaderNameValue) !== visibleLeaderNameInput(department.leaderName)
 	                    ) || introDocumentChanged(pendingDepartmentIntroDocument, departmentSettings?.introDocument);
-                    const inviteCode = buildDepartmentInviteCode(department.id, {
-                      organizationId: value.organization.organizationId,
-	                      organizationName,
-	                      departmentName: department.name,
-	                      order: index,
-                    });
-                    return (
-                      <div key={department.id} className="flex items-center gap-10">
+	                    const inviteCode = buildDepartmentInviteCode(department.id, {
+	                      organizationId: value.organization.organizationId,
+		                      organizationName,
+		                      departmentName: department.name,
+		                      order: index,
+	                    });
+                    const parentDepartmentName = department.parentDepartmentId ? departmentNameById.get(department.parentDepartmentId) : null;
+	                    return (
+	                      <div key={department.id} className="flex items-center gap-10">
                         <div
                           id={`node-${department.id}`}
                           className="group relative z-10 flex min-w-[170px] flex-col gap-1.5 rounded-2xl border border-gray-200 bg-white px-4 py-3 pr-10 shadow-sm transition hover:border-[#5B7BFE]/40"
@@ -1741,8 +1809,8 @@ export function OrganizationSetupCenter({
                             )}
                           </div>
 
-                          <div className="flex items-center gap-1.5 pl-6">
-                            <span className="text-[11px] text-gray-400">负责人</span>
+	                          <div className="flex items-center gap-1.5 pl-6">
+	                            <span className="text-[11px] text-gray-400">负责人</span>
                             {canModify ? (
                               <LeaderPicker
                                 value={{
@@ -1755,7 +1823,27 @@ export function OrganizationSetupCenter({
                                 compact
                               />
                             ) : (
-                              <span className="text-[11px] text-gray-500">{department.leadName || '待设置'}</span>
+	                              <span className="text-[11px] text-gray-500">{department.leadName || '待设置'}</span>
+	                            )}
+	                          </div>
+
+                          <div className="flex items-center gap-1.5 pl-6">
+                            <span className="text-[11px] text-gray-400">上级</span>
+                            {canModify ? (
+                              <select
+                                value={department.parentDepartmentId || ''}
+                                onChange={(event) => handleUpdateDepartmentParent(department.id, event.target.value || null)}
+                                className="max-w-[118px] rounded-lg border border-gray-100 bg-gray-50 px-2 py-1 text-[11px] font-medium text-gray-600 outline-none focus:border-[#5B7BFE]"
+                              >
+                                <option value="">组织直属</option>
+                                {activeDepartments
+                                  .filter((item) => item.id !== department.id)
+                                  .map((item) => (
+                                    <option key={item.id} value={item.id}>{item.name || '未命名部门'}</option>
+                                  ))}
+                              </select>
+                            ) : (
+                              <span className="text-[11px] text-gray-500">{parentDepartmentName || '组织直属'}</span>
                             )}
                           </div>
 
@@ -1934,23 +2022,44 @@ export function OrganizationSetupCenter({
                     );
                   })}
 
-                  {canModify ? (
-                    <button
-                      id={`add-btn-${tree.id}`}
-                      type="button"
-                      onClick={handleAddDepartment}
-                      className="z-10 inline-flex min-w-[150px] items-center justify-center gap-1.5 rounded-xl border border-dashed border-gray-300 bg-white/70 px-4 py-3 text-[13px] font-medium text-gray-400 transition hover:border-[#5B7BFE]/60 hover:bg-[#5B7BFE]/5"
-                    >
-                      <Plus size={14} />
-                      添加部门
-                    </button>
-                  ) : null}
+	                  {canModify ? (
+                    <div className="flex flex-col gap-2">
+                      <button
+                        id={`add-btn-${tree.id}`}
+                        type="button"
+                        onClick={() => handleAddDepartment()}
+                        className="z-10 inline-flex min-w-[150px] items-center justify-center gap-1.5 rounded-xl border border-dashed border-gray-300 bg-white/70 px-4 py-3 text-[13px] font-medium text-gray-400 transition hover:border-[#5B7BFE]/60 hover:bg-[#5B7BFE]/5"
+                      >
+                        <Plus size={14} />
+                        添加部门
+                      </button>
+                      <button
+                        type="button"
+                        onClick={handleAddManagementDepartment}
+                        className="z-10 inline-flex min-w-[150px] items-center justify-center gap-1.5 rounded-xl border border-dashed border-indigo-200 bg-indigo-50/60 px-4 py-3 text-[13px] font-medium text-indigo-500 transition hover:border-indigo-300 hover:bg-indigo-50"
+                      >
+                        <Plus size={14} />
+                        添加管理层
+                      </button>
+                    </div>
+	                  ) : null}
                 </div>
               </div>
             </div>
           ) : (
             <div className="p-8">
               <div className="mx-auto grid max-w-5xl grid-cols-1 gap-5 md:grid-cols-2">
+                {managementInviteCards.map((item) => (
+                  <InviteCard
+                    key={item.key}
+                    departmentName={item.label}
+                    leadName="管理层身份"
+                    inviteCode={item.inviteCode}
+                    positions={item.helper}
+                    joinedCount={item.joinedCount}
+                    color={item.color}
+                  />
+                ))}
                 {tree.children.map((department, index) => {
                   const inviteCode = buildDepartmentInviteCode(department.id, {
                     organizationId: value.organization.organizationId,

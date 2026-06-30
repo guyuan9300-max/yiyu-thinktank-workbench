@@ -380,6 +380,40 @@ def test_cloud_login_binds_current_local_identity(tmp_path: Path, monkeypatch) -
     assert row["bound_cloud_email"] == "cloud-user@example.com"
 
 
+def test_cloud_login_reports_redirect_without_json_decode_leak(tmp_path: Path, monkeypatch) -> None:
+    client = make_client(tmp_path / "data")
+    state = client.app.state.app_state
+    state.cloud_api_url = "http://cloud.example.test"
+    state.db.set_setting("cloud_api_url", "http://cloud.example.test")
+
+    class RedirectResponse:
+        status_code = 301
+        content = b"<html><body>Moved Permanently</body></html>"
+        text = "<html><body>Moved Permanently</body></html>"
+        headers = {"location": "https://cloud.example.test/api/v1/auth/login"}
+
+        def json(self) -> dict:
+            raise ValueError("not json")
+
+    def fake_cloud_request(method, url, **kwargs):
+        assert method == "POST"
+        assert url.endswith("/api/v1/auth/login")
+        return RedirectResponse()
+
+    monkeypatch.setattr(app_main.httpx, "request", fake_cloud_request)
+
+    response = client.post(
+        "/api/v1/auth/login",
+        json={"identifier": "cloud-user@example.com", "password": "CloudPass123!", "rememberMe": True},
+    )
+
+    assert response.status_code == 502, response.text
+    detail = response.json()["detail"]
+    assert "云端服务地址发生跳转" in detail
+    assert "HTTPS" in detail
+    assert "JSONDecodeError" not in detail
+
+
 def test_cloud_login_uses_org_ai_proxy_over_local_mock_for_member(tmp_path: Path, monkeypatch) -> None:
     client = make_client(tmp_path / "data")
     state = client.app.state.app_state

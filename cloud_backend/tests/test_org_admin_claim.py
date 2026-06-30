@@ -66,15 +66,11 @@ def test_user_can_claim_admin_when_organization_has_no_admin(tmp_path, monkeypat
 
     status = client.get("/api/v1/me/org-membership/admin-claim-status", headers=headers)
     assert status.status_code == 200, status.text
-    assert status.json()["hasAdmin"] is False
-    assert status.json()["canClaim"] is True
-
-    claim = client.post("/api/v1/me/org-membership/admin-claim", headers=headers)
-    assert claim.status_code == 200, claim.text
-    payload = claim.json()
-    assert payload["primaryRole"] == "admin"
-    assert payload["accountStatus"] == "approved"
-    assert payload["membershipStatus"] == "approved"
+    assert status.json()["hasAdmin"] is True
+    assert status.json()["canClaim"] is False
+    assert user["primaryRole"] == "admin"
+    assert user["accountStatus"] == "approved"
+    assert user["membershipStatus"] == "approved"
 
     row = client.app.state.app_state.db.fetchone("SELECT primary_role, account_status, membership_status FROM employee_accounts WHERE id = ?", (user["id"],))
     assert row["primary_role"] == "admin"
@@ -85,8 +81,6 @@ def test_user_can_claim_admin_when_organization_has_no_admin(tmp_path, monkeypat
 def test_second_user_cannot_claim_after_admin_exists(tmp_path, monkeypatch) -> None:
     client = make_client(tmp_path, monkeypatch)
     owner_headers, owner = register_user(client, "claim-first@example.com")
-    first_claim = client.post("/api/v1/me/org-membership/admin-claim", headers=owner_headers)
-    assert first_claim.status_code == 200, first_claim.text
 
     second_user_id = seed_employee(client, organization_id=owner["organizationId"], email="claim-second@example.com")
     login = client.post("/api/v1/auth/login", json={"email": "claim-second@example.com", "password": "Password123!"})

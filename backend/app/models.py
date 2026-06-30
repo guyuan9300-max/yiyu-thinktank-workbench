@@ -323,14 +323,17 @@ class AuthStateResponse(BaseModel):
 class SelectOrganizationPayload(BaseModel):
     organizationSelectionToken: str
     organizationId: str
+    cloudApiUrl: str | None = None
 
 
 class CreateOrganizationPayload(BaseModel):
     organizationName: str
+    cloudApiUrl: str | None = None
 
 
 class JoinOrganizationPayload(BaseModel):
     inviteCode: str
+    cloudApiUrl: str | None = None
     departmentId: str | None = None
     jobTitle: str | None = None
     managerName: str | None = None
@@ -407,6 +410,8 @@ class AuthRegisterPayload(BaseModel):
     phone: str
     fullName: str
     password: str
+    cloudApiUrl: str | None = None
+    organizationName: str | None = None
     inviteCode: str | None = None
     departmentId: str | None = None
     jobTitle: str | None = None
@@ -420,6 +425,7 @@ class AuthLoginPayload(BaseModel):
     identifier: str | None = None
     password: str
     rememberMe: bool = True
+    cloudApiUrl: str | None = None
 
 
 class LocalAuthRegisterPayload(BaseModel):
@@ -568,6 +574,12 @@ class EmployeeDepartmentPayload(BaseModel):
     departmentId: str | None = None
 
 
+class AdminTransferPayload(BaseModel):
+    targetUserId: str = Field(min_length=1)
+    currentAdminAction: Literal["keep_admin", "demote_to_member", "disable_self"] = "keep_admin"
+    currentAdminDepartmentId: str | None = None
+
+
 class EmployeeRejectPayload(BaseModel):
     reason: str = ""
 
@@ -582,8 +594,11 @@ class OrgInviteResolveResultRecord(BaseModel):
     valid: bool
     organizationId: str | None = None
     organizationName: str | None = None
+    targetType: str | None = None
     departmentId: str | None = None
     departmentName: str | None = None
+    roleKey: str | None = None
+    roleName: str | None = None
     message: str | None = None
 
 

@@ -439,6 +439,7 @@ from app.models import (
     MeetingIngestPayload,
     MeetingPipelineResponse,
     MeetingSummary,
+    AdminTransferPayload,
     EmployeeDepartmentPayload,
     EmployeeRecord,
     EmployeeRejectPayload,
@@ -1276,7 +1277,7 @@ from app.services.version_manifest import (
 
 
 APP_NAME = "益语智库自用平台"
-APP_VERSION = "0.3.0"
+APP_VERSION = "0.25.0"
 LOCAL_INPUT_MEMORY_SETTINGS_KEY = "settings.local_input_memory"
 REMEMBERED_CLOUD_AUTH_SERVICE = "com.yiyu.self-workbench.remembered-cloud-auth"
 REMEMBERED_AI_INPUT_SERVICE = "com.yiyu.self-workbench.remembered-ai-input"
@@ -1656,7 +1657,14 @@ def normalize_configured_cloud_api_url(raw_url: str | None) -> str:
     value = (raw_url or "").strip().rstrip("/")
     if not value:
         return ""
-    normalized_value = value if re.match(r"^https?://", value, flags=re.I) else f"http://{value}"
+    if re.match(r"^https?://", value, flags=re.I):
+        normalized_value = value
+    else:
+        parsed_host = urlparse(f"//{value}").hostname or ""
+        normalized_host = parsed_host.lower()
+        ipv4_literal = bool(re.fullmatch(r"(?:\d{1,3}\.){3}\d{1,3}", normalized_host))
+        default_scheme = "http" if normalized_host in {"localhost", "::1"} or normalized_host.startswith("127.") or ipv4_literal else "https"
+        normalized_value = f"{default_scheme}://{value}"
     parsed = urlparse(normalized_value)
     if parsed.scheme not in {"http", "https"} or not parsed.netloc or re.search(r"\s", parsed.netloc):
         raise ValueError("云端服务地址必须是有效的公网 IP 或域名")
@@ -3414,6 +3422,15 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             raise HTTPException(status_code=503, detail="尚未配置云端服务地址，请先在设置页填写云端服务地址。")
         return base_url
 
+    def normalize_auth_cloud_api_url(value: str | None) -> str | None:
+        raw = (value or "").strip()
+        if not raw:
+            return None
+        try:
+            return normalize_configured_cloud_api_url(raw).rstrip("/")
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
     seed_defaults(state)
     state.db.set_setting("runtime.build_version", APP_BUILD_VERSION)
     state.db.set_setting("runtime.git_commit", APP_GIT_COMMIT or "")
@@ -3477,7 +3494,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                         break
                     continue
                 sandbox_id = active_business_sandbox_id()
-                with _httpx.Client(timeout=20.0) as client:
+                with _httpx.Client(timeout=20.0, trust_env=False) as client:
                     # exp_wall (P1 备用)
                     push_q = _ew.push_pending_quotes_to_cloud(
                         state.db, cloud_base_url=base_url, cloud_token=token, httpx_client=client, sandbox_id=sandbox_id,
@@ -4126,7 +4143,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 import time as _time
                 try:
                     base_url = cloud_api_base_url()
-                    httpx.get(f"{base_url}/health", timeout=3.0)
+                    httpx.get(f"{base_url}/health", timeout=3.0, trust_env=False)
                     _clear_cloud_circuit_breaker(base_url)  # cloud OK — clear breaker
                 except Exception:
                     _mark_cloud_circuit_breaker_failure()  # cloud down — keep breaker
@@ -5610,11 +5627,9 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         return get_sandbox_kind(state.db, active_id) == "local"
 
     def _ensure_active_local_workspace() -> str:
-        active_id = get_active_sandbox_id(state.db)
-        if get_sandbox_kind(state.db, active_id) == "local":
-            return active_id
-        activate_sandbox(state.db, DEFAULT_LOCAL_SANDBOX_ID)
-        _refresh_active_workspace_runtime()
+        # The local draft is now an internal container, not a user-switchable
+        # workspace. Local registration/login must not try to activate it.
+        get_active_sandbox_id(state.db)
         return DEFAULT_LOCAL_SANDBOX_ID
 
     def _local_identity_row(identity_id: str | None = None):
@@ -5652,45 +5667,34 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         return False
 
     def _local_session_user_id() -> str:
-        if not _active_workspace_is_local():
-            return ""
         active_id = get_active_sandbox_id(state.db)
-        persisted = get_sandbox_local_identity_id(state.db, active_id)
+        local_container_id = DEFAULT_LOCAL_SANDBOX_ID
+        persisted = get_sandbox_local_identity_id(state.db, local_container_id)
         if persisted:
             return persisted
-        legacy = state.db.get_setting("local_session_user_id", "").strip() if active_id == DEFAULT_LOCAL_SANDBOX_ID else ""
+        legacy = state.db.get_setting("local_session_user_id", "").strip()
         if legacy:
-            set_sandbox_local_identity_id(state.db, active_id, legacy)
+            set_sandbox_local_identity_id(state.db, local_container_id, legacy)
             return legacy
-        return state.volatile_local_sessions.get(active_id, "") or (
-            state.volatile_local_session_user_id if active_id == DEFAULT_LOCAL_SANDBOX_ID else ""
-        )
+        return state.volatile_local_sessions.get(local_container_id, "") or state.volatile_local_session_user_id
 
     def _set_local_session(identity_id: str | None, *, persist: bool = True) -> None:
-        active_id = _ensure_active_local_workspace()
+        local_container_id = _ensure_active_local_workspace()
         if persist:
-            set_sandbox_local_identity_id(state.db, active_id, identity_id)
-            if active_id == DEFAULT_LOCAL_SANDBOX_ID:
-                state.db.set_setting("local_session_user_id", identity_id or "")
-            state.volatile_local_sessions.pop(active_id, None)
-            if active_id == DEFAULT_LOCAL_SANDBOX_ID:
-                state.volatile_local_session_user_id = ""
+            set_sandbox_local_identity_id(state.db, local_container_id, identity_id)
+            state.db.set_setting("local_session_user_id", identity_id or "")
+            state.volatile_local_sessions.pop(local_container_id, None)
+            state.volatile_local_session_user_id = ""
             return
-        set_sandbox_local_identity_id(state.db, active_id, None)
-        if active_id == DEFAULT_LOCAL_SANDBOX_ID:
-            state.db.set_setting("local_session_user_id", "")
-        state.volatile_local_sessions[active_id] = identity_id or ""
-        if active_id == DEFAULT_LOCAL_SANDBOX_ID:
-            state.volatile_local_session_user_id = identity_id or ""
+        set_sandbox_local_identity_id(state.db, local_container_id, None)
+        state.db.set_setting("local_session_user_id", "")
+        state.volatile_local_sessions[local_container_id] = identity_id or ""
+        state.volatile_local_session_user_id = identity_id or ""
 
     def clear_local_session() -> None:
-        if not _active_workspace_is_local():
-            return
-        active_id = get_active_sandbox_id(state.db)
         _set_local_session(None, persist=True)
-        state.volatile_local_sessions.pop(active_id, None)
-        if active_id == DEFAULT_LOCAL_SANDBOX_ID:
-            state.volatile_local_session_user_id = ""
+        state.volatile_local_sessions.pop(DEFAULT_LOCAL_SANDBOX_ID, None)
+        state.volatile_local_session_user_id = ""
 
     def _local_user_from_row(row) -> SessionUserRecord:
         organization_mode = str(row["organization_mode"] or "create")
@@ -8901,30 +8905,76 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             lines.append(f"[{row['category']}] {row['canonical_name']}：{row['description']}{alias_text}")
         return "\n".join(lines)[:max_chars]
 
+    def _cloud_redirect_detail(response) -> str:
+        location = str(response.headers.get("location") or "").strip() if hasattr(response, "headers") else ""
+        if location:
+            return f"云端服务地址发生跳转，请在系统设置里把云地址改为 HTTPS 地址：{location.rstrip('/')}"
+        return "云端服务地址发生跳转，请确认系统设置里的云地址使用 HTTPS，并且填写的是组织云 API 地址。"
+
+    def _cloud_error_detail_from_response(response) -> str:
+        if 300 <= int(response.status_code or 0) < 400:
+            return _cloud_redirect_detail(response)
+        try:
+            payload = response.json()
+            if isinstance(payload, dict):
+                detail = payload.get("detail")
+                if isinstance(detail, str) and detail.strip():
+                    return detail
+                if detail is not None:
+                    return json.dumps(detail, ensure_ascii=False)
+            if isinstance(payload, list):
+                return json.dumps(payload, ensure_ascii=False)
+        except Exception:
+            pass
+        text = str(getattr(response, "text", "") or "").strip()
+        if text.startswith("<!DOCTYPE") or text.startswith("<html") or "<html" in text[:200].lower():
+            return "云端返回了网页而不是 API 数据，请检查云地址是否填写为 HTTPS 的组织云 API 地址。"
+        return text[:500] or f"HTTP {response.status_code}"
+
+    def _cloud_json_payload(response, *, context: str) -> object:
+        if 300 <= int(response.status_code or 0) < 400:
+            raise HTTPException(status_code=502, detail=_cloud_redirect_detail(response))
+        if not response.content:
+            return {}
+        try:
+            return response.json()
+        except Exception as exc:
+            detail = _cloud_error_detail_from_response(response)
+            raise HTTPException(status_code=502, detail=f"{context}失败：{detail}") from exc
+
     def refresh_cloud_session() -> SessionUserRecord:
         refresh_token = get_cloud_refresh_token()
         if not refresh_token:
             raise HTTPException(status_code=401, detail="登录状态已过期，请重新登录")
         persist_session = state.cloud_session_persistent or _has_persisted_cloud_session()
         try:
-            response = httpx.request(
-                "POST",
-                f"{cloud_api_base_url()}/api/v1/auth/refresh",
-                json={"refreshToken": refresh_token},
-                timeout=20.0,
-            )
+            try:
+                response = httpx.request(
+                    "POST",
+                    f"{cloud_api_base_url()}/api/v1/auth/refresh",
+                    json={"refreshToken": refresh_token},
+                    timeout=20.0,
+                    trust_env=False,
+                )
+            except TypeError as exc:
+                if "trust_env" not in str(exc):
+                    raise
+                response = httpx.request(
+                    "POST",
+                    f"{cloud_api_base_url()}/api/v1/auth/refresh",
+                    json={"refreshToken": refresh_token},
+                    timeout=20.0,
+                )
         except httpx.HTTPError as exc:
             raise HTTPException(status_code=502, detail=f"Cloud backend unavailable: {exc}") from exc
+        if 300 <= response.status_code < 400:
+            raise HTTPException(status_code=502, detail=_cloud_redirect_detail(response))
         if response.status_code >= 400:
-            try:
-                payload = response.json()
-                detail = payload.get("detail") if isinstance(payload, dict) else response.text
-            except Exception:
-                detail = response.text
+            detail = _cloud_error_detail_from_response(response)
             if response.status_code in {401, 403}:
                 clear_cloud_session()
             raise HTTPException(status_code=response.status_code, detail=detail or f"HTTP {response.status_code}")
-        payload = response.json() if response.content else {}
+        payload = _cloud_json_payload(response, context="刷新云端登录状态")
         if not isinstance(payload, dict):
             raise HTTPException(status_code=502, detail="Invalid cloud refresh payload")
         token = str(payload.get("accessToken", ""))
@@ -8965,22 +9015,39 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         """Raised when cloud backend is unreachable. Caught by try/except Exception in local-first endpoints."""
         pass
 
-    def cloud_request(method: str, path: str, *, json_body: dict | None = None, allow_unauthenticated: bool = False, timeout: float = 3.0) -> object:
+    def _httpx_request_without_proxy(method: str, url: str, **kwargs):
+        try:
+            return httpx.request(method, url, trust_env=False, **kwargs)
+        except TypeError as exc:
+            if "trust_env" not in str(exc):
+                raise
+            return httpx.request(method, url, **kwargs)
+
+    def cloud_request(
+        method: str,
+        path: str,
+        *,
+        json_body: dict | None = None,
+        allow_unauthenticated: bool = False,
+        timeout: float = 3.0,
+        bypass_circuit_breaker: bool = False,
+        base_url_override: str | None = None,
+    ) -> object:
         import time as _time
         normalized_method = method.upper()
         if COLLAB_PREVIEW_MODE and normalized_method not in {"GET", "HEAD", "OPTIONS"}:
             raise HTTPException(status_code=403, detail="协作预览模式不可写云端。")
-        base_url = cloud_api_base_url()
+        base_url = (base_url_override or "").strip().rstrip("/") or cloud_api_base_url()
 
         # Fast fail if cloud was down recently (circuit breaker)
-        if _time.time() - _cloud_circuit_last_failure(base_url) < 60:
+        if not bypass_circuit_breaker and _time.time() - _cloud_circuit_last_failure(base_url) < 60:
             raise HTTPException(status_code=502, detail="Cloud backend unavailable (circuit breaker active)")
 
         def perform_request(token: str | None):
             headers = {}
             if token:
                 headers["Authorization"] = f"Bearer {token}"
-            return httpx.request(
+            return _httpx_request_without_proxy(
                 method,
                 f"{base_url}{path}",
                 json=json_body,
@@ -9019,16 +9086,12 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             clear_cloud_session()
         if response.status_code == 403 and not allow_unauthenticated and path.startswith("/api/v1/auth/"):
             clear_cloud_session()
+        if 300 <= response.status_code < 400:
+            raise HTTPException(status_code=502, detail=_cloud_redirect_detail(response))
         if response.status_code >= 400:
-            try:
-                payload = response.json()
-                detail = payload.get("detail") if isinstance(payload, dict) else response.text
-            except Exception:
-                detail = response.text
+            detail = _cloud_error_detail_from_response(response)
             raise HTTPException(status_code=response.status_code, detail=detail or f"HTTP {response.status_code}")
-        if not response.content:
-            return {}
-        return response.json()
+        return _cloud_json_payload(response, context="云端请求")
 
     def cloud_request_binary(method: str, path: str, *, json_body: dict | None = None, timeout: float = 120.0) -> tuple[bytes, dict[str, str]]:
         import time as _time
@@ -9041,7 +9104,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             headers = {}
             if token:
                 headers["Authorization"] = f"Bearer {token}"
-            return httpx.request(
+            return _httpx_request_without_proxy(
                 method,
                 f"{base_url}{path}",
                 json=json_body,
@@ -9068,12 +9131,10 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             refresh_cloud_session()
             token = get_cloud_token()
             response = perform_request(token)
+        if 300 <= response.status_code < 400:
+            raise HTTPException(status_code=502, detail=_cloud_redirect_detail(response))
         if response.status_code >= 400:
-            try:
-                payload = response.json()
-                detail = payload.get("detail") if isinstance(payload, dict) else response.text
-            except Exception:
-                detail = response.text
+            detail = _cloud_error_detail_from_response(response)
             raise HTTPException(status_code=response.status_code, detail=detail or f"HTTP {response.status_code}")
         return response.content, {key: value for key, value in response.headers.items()}
 
@@ -9252,6 +9313,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 files=files,
                 data=data,
                 timeout=60.0,
+                trust_env=False,
             )
 
         token = get_cloud_token()
@@ -28400,6 +28462,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 headers=headers,
                 timeout=30.0,
                 follow_redirects=True,
+                trust_env=False,
             )
             if resp.status_code >= 400:
                 raise HTTPException(status_code=resp.status_code, detail="Attachment not found")
@@ -28427,6 +28490,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             resp = httpx.get(
                 f"{cloud_api_base_url()}/api/public/task-attachments/{attachment_id}/thumbnail",
                 timeout=15.0,
+                trust_env=False,
             )
             if resp.status_code >= 400:
                 raise HTTPException(status_code=resp.status_code, detail="Not found")
@@ -28514,7 +28578,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         if not get_cloud_token():
             raise HTTPException(status_code=404, detail="Not found")
         try:
-            resp = httpx.get(f"{cloud_api_base_url()}/api/public/task-attachments/{attachment_id}/text-content", timeout=15.0)
+            resp = httpx.get(f"{cloud_api_base_url()}/api/public/task-attachments/{attachment_id}/text-content", timeout=15.0, trust_env=False)
             if resp.status_code >= 400:
                 raise HTTPException(status_code=resp.status_code, detail="Not found")
             result = resp.json()
@@ -28564,7 +28628,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         if not get_cloud_token():
             return {"title": "", "summary": "未登录", "unsupported": True}
         try:
-            resp = httpx.get(f"{cloud_api_base_url()}/api/public/task-attachments/{attachment_id}/ocr-summary", timeout=20.0)
+            resp = httpx.get(f"{cloud_api_base_url()}/api/public/task-attachments/{attachment_id}/ocr-summary", timeout=20.0, trust_env=False)
             if resp.status_code >= 400:
                 return {"title": "", "summary": "OCR 不可用"}
             result = resp.json()
@@ -28586,6 +28650,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 headers=headers,
                 json=payload or {},
                 timeout=60.0,
+                trust_env=False,
             )
             if resp.status_code >= 400:
                 raise HTTPException(status_code=resp.status_code, detail="下载失败")
@@ -31791,19 +31856,9 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
     @app.get("/api/v1/auth/me", response_model=AuthStateResponse)
     def auth_me() -> AuthStateResponse:
         # 本地优先: 新设备没有云地址时仍可先进入本机草稿状态。
-        def _unauthenticated(message: str | None = None) -> AuthStateResponse:
-            return AuthStateResponse(
-                authenticated=False,
-                user=None,
-                message=message,
-                sessionMode="cloud",
-            )
-
         token = get_cloud_token()
         refresh_token = get_cloud_refresh_token()
         if not token and not refresh_token:
-            if not _active_workspace_is_local():
-                return _unauthenticated("当前组织工作空间尚未登录云端账号。请登录云端，或在工作空间管理里加入/创建组织。")
             local_user = get_local_session_user()
             if local_user:
                 return AuthStateResponse(
@@ -31816,8 +31871,6 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             return _local_setup_state()
         if not state.cloud_api_url:
             clear_cloud_session()
-            if not _active_workspace_is_local():
-                return _unauthenticated("当前组织工作空间尚未配置云端服务地址。请在该组织的系统设置里填写云端地址。")
             local_user = get_local_session_user()
             if local_user:
                 return AuthStateResponse(authenticated=True, user=local_user, sessionMode="local", localIdentityStatus="ready")
@@ -32702,13 +32755,14 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             "GET",
             f"/api/v1/auth/invite-code/resolve?code={quote(normalized)}",
             allow_unauthenticated=True,
+            bypass_circuit_breaker=True,
         )
         if not isinstance(response, dict):
             raise HTTPException(status_code=502, detail="Invalid invite resolve payload")
         return OrgInviteResolveResultRecord(**response)
 
-    def _activate_workspace_for_cloud_user(user: SessionUserRecord) -> None:
-        current_cloud_api_url = state.cloud_api_url
+    def _activate_workspace_for_cloud_user(user: SessionUserRecord, *, cloud_api_url: str | None = None) -> None:
+        current_cloud_api_url = (cloud_api_url or state.cloud_api_url).strip()
         organization_id = (user.organizationId or "").strip()
         if not organization_id or organization_id == "local-device":
             return
@@ -32721,7 +32775,31 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         migrate_local_draft_to_organization_if_possible(state.db, workspace.id)
         _refresh_active_workspace_runtime()
 
-    def _cloud_auth_state_from_response(response: dict, *, persist: bool = True) -> AuthStateResponse:
+    def _sync_organization_directory_after_auth() -> None:
+        """Best-effort local mirror refresh after entering an organization workspace."""
+        base_url = cloud_api_base_url()
+        token = get_cloud_token()
+        if not base_url or not token:
+            return
+        try:
+            from app.modules.organization import sync_organization_directory
+            report = sync_organization_directory(
+                state.db,
+                cloud_base_url=base_url,
+                cloud_token=token,
+                derive_cru_from_local=True,
+            )
+            if report.status != "ok":
+                logger.warning("organization mirror sync after auth returned %s: %s", report.status, report.error)
+        except Exception as exc:
+            logger.warning("organization mirror sync after auth failed: %s", exc)
+
+    def _cloud_auth_state_from_response(
+        response: dict,
+        *,
+        persist: bool = True,
+        cloud_api_url: str | None = None,
+    ) -> AuthStateResponse:
         local_identity_before_cloud = _local_session_user_id()
         if response.get("organizationSelectionRequired"):
             organizations = response.get("organizations") if isinstance(response.get("organizations"), list) else []
@@ -32740,70 +32818,94 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             message = response.get("message") if isinstance(response, dict) else "云端认证成功，但未拿到有效会话。"
             raise HTTPException(status_code=502, detail=str(message))
         user = SessionUserRecord(**user_payload)
-        _activate_workspace_for_cloud_user(user)
+        _activate_workspace_for_cloud_user(user, cloud_api_url=cloud_api_url)
         set_cloud_session(token, user, persist=persist)
         set_cloud_refresh_token(refresh_token, persist=persist)
         _bind_current_local_identity_to_cloud(user, local_identity_before_cloud)
         _ensure_local_organization_workspace_from_cloud_membership()
+        _sync_organization_directory_after_auth()
         Thread(target=lambda: _sync_org_ai_config_from_cloud(user), daemon=True, name="cloud-ai-sync-auth").start()
         Thread(target=_sync_object_storage_config_from_cloud, daemon=True, name="cloud-object-storage-sync-auth").start()
         return AuthStateResponse(authenticated=True, user=user, sessionMode="cloud")
 
     @app.post("/api/v1/auth/register", response_model=AuthStateResponse)
     def auth_register(payload: AuthRegisterPayload) -> AuthStateResponse:
+        auth_cloud_api_url = normalize_auth_cloud_api_url(payload.cloudApiUrl)
         response = cloud_request(
             "POST",
             "/api/v1/auth/register",
-            json_body=payload.model_dump(),
+            json_body=payload.model_dump(exclude={"cloudApiUrl"}),
             allow_unauthenticated=True,
+            bypass_circuit_breaker=True,
+            base_url_override=auth_cloud_api_url,
         )
         if not isinstance(response, dict):
             raise HTTPException(status_code=502, detail="Invalid auth payload")
-        auth_state = _cloud_auth_state_from_response(response, persist=True)
+        auth_state = _cloud_auth_state_from_response(response, persist=True, cloud_api_url=auth_cloud_api_url)
         if auth_state.user:
             log_activity("auth.register", "session", auth_state.user.id, {"email": auth_state.user.email})
         return auth_state
 
     @app.post("/api/v1/auth/login", response_model=AuthStateResponse)
     def auth_login(payload: AuthLoginPayload) -> AuthStateResponse:
+        auth_cloud_api_url = normalize_auth_cloud_api_url(payload.cloudApiUrl)
         response = cloud_request(
             "POST",
             "/api/v1/auth/login",
-            json_body=payload.model_dump(),
+            json_body=payload.model_dump(exclude={"cloudApiUrl"}),
             allow_unauthenticated=True,
+            bypass_circuit_breaker=True,
+            base_url_override=auth_cloud_api_url,
         )
         if not isinstance(response, dict):
             raise HTTPException(status_code=502, detail="Invalid auth payload")
-        auth_state = _cloud_auth_state_from_response(response, persist=payload.rememberMe)
+        auth_state = _cloud_auth_state_from_response(response, persist=payload.rememberMe, cloud_api_url=auth_cloud_api_url)
         if auth_state.user:
             log_activity("auth.login", "session", auth_state.user.id, {"email": auth_state.user.email})
         return auth_state
 
     @app.post("/api/v1/auth/select-organization", response_model=AuthStateResponse)
     def auth_select_organization(payload: SelectOrganizationPayload) -> AuthStateResponse:
+        auth_cloud_api_url = normalize_auth_cloud_api_url(payload.cloudApiUrl)
         response = cloud_request(
             "POST",
             "/api/v1/auth/select-organization",
-            json_body=payload.model_dump(),
+            json_body=payload.model_dump(exclude={"cloudApiUrl"}),
             allow_unauthenticated=True,
+            bypass_circuit_breaker=True,
+            base_url_override=auth_cloud_api_url,
         )
         if not isinstance(response, dict):
             raise HTTPException(status_code=502, detail="Invalid auth payload")
-        return _cloud_auth_state_from_response(response, persist=True)
+        return _cloud_auth_state_from_response(response, persist=True, cloud_api_url=auth_cloud_api_url)
 
     @app.post("/api/v1/auth/organizations/create", response_model=AuthStateResponse)
     def auth_create_organization(payload: CreateOrganizationPayload) -> AuthStateResponse:
-        response = cloud_request("POST", "/api/v1/auth/organizations/create", json_body=payload.model_dump())
+        auth_cloud_api_url = normalize_auth_cloud_api_url(payload.cloudApiUrl)
+        response = cloud_request(
+            "POST",
+            "/api/v1/auth/organizations/create",
+            json_body=payload.model_dump(exclude={"cloudApiUrl"}),
+            bypass_circuit_breaker=True,
+            base_url_override=auth_cloud_api_url,
+        )
         if not isinstance(response, dict):
             raise HTTPException(status_code=502, detail="Invalid organization create payload")
-        return _cloud_auth_state_from_response(response, persist=True)
+        return _cloud_auth_state_from_response(response, persist=True, cloud_api_url=auth_cloud_api_url)
 
     @app.post("/api/v1/auth/organizations/join", response_model=AuthStateResponse)
     def auth_join_organization(payload: JoinOrganizationPayload) -> AuthStateResponse:
-        response = cloud_request("POST", "/api/v1/auth/organizations/join", json_body=payload.model_dump())
+        auth_cloud_api_url = normalize_auth_cloud_api_url(payload.cloudApiUrl)
+        response = cloud_request(
+            "POST",
+            "/api/v1/auth/organizations/join",
+            json_body=payload.model_dump(exclude={"cloudApiUrl"}),
+            bypass_circuit_breaker=True,
+            base_url_override=auth_cloud_api_url,
+        )
         if not isinstance(response, dict):
             raise HTTPException(status_code=502, detail="Invalid organization join payload")
-        return _cloud_auth_state_from_response(response, persist=True)
+        return _cloud_auth_state_from_response(response, persist=True, cloud_api_url=auth_cloud_api_url)
 
     @app.post("/api/v1/auth/change-password")
     def auth_change_password(payload: dict) -> dict:
@@ -32874,13 +32976,6 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
     @app.post("/api/v1/auth/logout", response_model=AuthStateResponse)
     def auth_logout() -> AuthStateResponse:
         def _after_logout_state() -> AuthStateResponse:
-            if not _active_workspace_is_local():
-                return AuthStateResponse(
-                    authenticated=False,
-                    user=None,
-                    message="当前组织工作空间已退出登录。可重新登录云端，或在工作空间管理里加入/创建组织。",
-                    sessionMode="cloud",
-                )
             local_user = get_local_session_user()
             if local_user:
                 return AuthStateResponse(authenticated=True, user=local_user, sessionMode="local", localIdentityStatus="ready")
@@ -35785,7 +35880,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         try:
             if not target_path.exists():
                 url = download_url if download_url.startswith("http") else f"{cloud_api_base_url()}{download_url}"
-                response = httpx.get(url, timeout=20.0)
+                response = httpx.get(url, timeout=20.0, trust_env=False)
                 if response.status_code >= 400 or not response.content:
                     return None
                 target_path.write_bytes(response.content)
@@ -36837,7 +36932,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                         # Show image inline (like preview expanded)
                         try:
                             if download_url:
-                                img_resp = httpx.get(f"{cloud_api_base_url()}{download_url}", timeout=15.0)
+                                img_resp = httpx.get(f"{cloud_api_base_url()}{download_url}", timeout=15.0, trust_env=False)
                                 if img_resp.status_code == 200:
                                     img_stream = _BytesIO(img_resp.content)
                                     doc.add_picture(img_stream, width=Inches(4.5))
@@ -36865,6 +36960,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                             text_resp = httpx.get(
                                 f"{cloud_api_base_url()}/api/public/task-attachments/{att_id}/text-content",
                                 timeout=15.0,
+                                trust_env=False,
                             )
                             doc_text = ""
                             if text_resp.status_code == 200:
@@ -37962,6 +38058,11 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             raise HTTPException(status_code=502, detail="Invalid employee payload")
         return EmployeeRecord(**response)
 
+    @app.post("/api/v1/admin/employees/transfer-admin")
+    def transfer_admin(payload: AdminTransferPayload) -> dict:
+        response = cloud_request("POST", "/api/v1/admin/employees/transfer-admin", json_body=payload.model_dump())
+        return response if isinstance(response, dict) else {"message": "管理员已转交"}
+
     @app.patch("/api/v1/admin/employees/{employee_id}/department", response_model=EmployeeRecord)
     def patch_employee_department(employee_id: str, payload: EmployeeDepartmentPayload) -> EmployeeRecord:
         response = cloud_request("PATCH", f"/api/v1/admin/employees/{employee_id}/department", json_body=payload.model_dump())
@@ -37971,10 +38072,69 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
 
     @app.get("/api/v1/employees/mention-candidates", response_model=list[MentionCandidateRecord])
     def get_mention_candidates(q: str = Query(default="")) -> list[MentionCandidateRecord]:
-        payload = cloud_request("GET", f"/api/v1/employees/mention-candidates?q={q}")
-        if not isinstance(payload, list):
-            raise HTTPException(status_code=502, detail="Invalid mention payload")
-        return [MentionCandidateRecord(**item) for item in payload if isinstance(item, dict)]
+        def local_candidates() -> list[MentionCandidateRecord]:
+            cached_user = get_cached_session_user()
+            org_id = cached_user.organizationId if cached_user else None
+            rows = []
+            if org_id:
+                try:
+                    rows = state.db.fetchall(
+                        """
+                        SELECT id, full_name, email, primary_role
+                        FROM mirror_users
+                        WHERE organization_id = ? AND account_status = 'approved'
+                        ORDER BY full_name COLLATE NOCASE ASC
+                        """,
+                        (org_id,),
+                    )
+                except Exception:
+                    rows = []
+            row_by_id: dict[str, dict[str, str]] = {}
+            for row in rows:
+                user_id = str(row["id"])
+                row_by_id[user_id] = {
+                    "id": user_id,
+                    "fullName": str(row["full_name"] or ""),
+                    "email": str(row["email"] or ""),
+                    "primaryRole": str(row["primary_role"] or "employee"),
+                }
+            if cached_user and cached_user.id not in row_by_id:
+                row_by_id[cached_user.id] = {
+                    "id": cached_user.id,
+                    "fullName": cached_user.fullName,
+                    "email": cached_user.email or "",
+                    "primaryRole": cached_user.primaryRole,
+                }
+            needle = (q or "").strip().lower()
+            ordered = sorted(row_by_id.values(), key=lambda item: (item["id"] != (cached_user.id if cached_user else ""), item["fullName"].lower(), item["id"]))
+            if needle:
+                ordered = [
+                    item for item in ordered
+                    if needle in item["fullName"].lower() or needle in item["email"].lower()
+                ]
+            return [
+                MentionCandidateRecord(
+                    id=item["id"],
+                    fullName=item["fullName"] or item["email"] or item["id"],
+                    email=item["email"],
+                    primaryRole=item["primaryRole"],  # type: ignore[arg-type]
+                    isSelf=bool(cached_user and item["id"] == cached_user.id),
+                )
+                for item in ordered
+            ]
+
+        try:
+            payload = cloud_request(
+                "GET",
+                f"/api/v1/employees/mention-candidates?q={quote(q or '')}",
+                timeout=6.0,
+                bypass_circuit_breaker=True,
+            )
+            if not isinstance(payload, list):
+                raise HTTPException(status_code=502, detail="Invalid mention payload")
+            return [MentionCandidateRecord(**item) for item in payload if isinstance(item, dict)]
+        except Exception:
+            return local_candidates()
 
     @app.get("/api/v1/settings", response_model=SettingsResponse)
     def get_settings() -> SettingsResponse:
@@ -59276,7 +59436,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         if refreshCloud and cloud_base_url and cloud_token:
             try:
                 from app.services import exp_wall_service as _ew
-                with httpx.Client(timeout=4.0) as client:
+                with httpx.Client(timeout=4.0, trust_env=False) as client:
                     result = _ew.pull_quotes_from_cloud(
                         state.db,
                         cloud_base_url=cloud_base_url,

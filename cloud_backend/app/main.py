@@ -62,6 +62,7 @@ from app.models import (
     DepartmentOption,
     OrgInviteResolveResult,
     EmployeeRecord,
+    AdminTransferPayload,
     OrgBotRecord,
     OrgBotReportingRecord,
     OrgBotCapabilityRecord,
@@ -558,8 +559,35 @@ class ResolvedDepartmentInvite:
     color: str
 
 
+@dataclass(frozen=True)
+class ResolvedManagementInvite:
+    organization_id: str
+    organization_name: str
+    role_key: str
+    role_name: str
+
+
+@dataclass(frozen=True)
+class ResolvedOrgInvite:
+    organization_id: str
+    organization_name: str
+    target_type: str
+    department: ResolvedDepartmentInvite | None = None
+    management: ResolvedManagementInvite | None = None
+
+
+MANAGEMENT_INVITE_ROLES: dict[str, dict[str, object]] = {
+    "organization_lead": {"name": "组织负责人", "prefix": "OF", "order": 1},
+    "advisor": {"name": "顾问", "prefix": "GW", "order": 2},
+}
+
+
 def _department_invite_checksum(organization_id: str, department_id: str) -> str:
     return _base36_seed(f"{organization_id}:{department_id}", 36 ** 4).zfill(4)[:4]
+
+
+def _management_invite_checksum(organization_id: str, role_key: str) -> str:
+    return _base36_seed(f"{organization_id}:management:{role_key}", 36 ** 4).zfill(4)[:4]
 
 
 def _department_invite_code(
@@ -580,6 +608,20 @@ def _department_invite_code(
         order_value = (int(_invite_seed(department_id)[-2:]) % 99) + 1
     checksum = _department_invite_checksum(organization_id, department_id)
     return f"{org_prefix}-{dept_prefix}{str(order_value).zfill(2)}-{checksum}"
+
+
+def _management_invite_code(
+    organization_id: str,
+    role_key: str,
+    *,
+    organization_name: str = "",
+) -> str:
+    meta = MANAGEMENT_INVITE_ROLES.get(role_key) or MANAGEMENT_INVITE_ROLES["advisor"]
+    org_prefix = _normalize_invite_segment(organization_name, 4) or _base36_seed(organization_id, 36 ** 4).zfill(4)[:4] or "ORGX"
+    role_prefix = str(meta["prefix"])
+    order_value = int(meta["order"])
+    checksum = _management_invite_checksum(organization_id, role_key)
+    return f"{org_prefix}-{role_prefix}{str(order_value).zfill(2)}-{checksum}"
 
 
 def _department_invite_lookup_values(raw_code: str | None) -> list[str]:
@@ -634,6 +676,16 @@ def _resolved_invite_from_department_row(row) -> ResolvedDepartmentInvite:
         department_id=str(row["id"]),
         department_name=str(row["name"]),
         color=str(row["color"] or "#5B7BFE"),
+    )
+
+
+def _resolved_invite_from_management_role(organization_id: str, organization_name: str, role_key: str) -> ResolvedManagementInvite:
+    meta = MANAGEMENT_INVITE_ROLES.get(role_key) or MANAGEMENT_INVITE_ROLES["advisor"]
+    return ResolvedManagementInvite(
+        organization_id=organization_id,
+        organization_name=organization_name,
+        role_key=role_key,
+        role_name=str(meta["name"]),
     )
 
 
@@ -788,6 +840,127 @@ def _resolve_department_from_invite(
             }:
                 return _resolved_invite_from_department_row(row)
     return None
+
+
+def _resolve_management_from_invite(
+    state: AppState,
+    raw_code: str | None,
+    *,
+    organization_id: str | None = None,
+    strict: bool = False,
+) -> ResolvedManagementInvite | None:
+    lookup_values = _department_invite_lookup_values(raw_code)
+    if not lookup_values:
+        return None
+    params: list[str] = []
+    query = "SELECT id, name FROM organizations"
+    if organization_id:
+        query += " WHERE id = ?"
+        params.append(organization_id)
+    query += " ORDER BY created_at ASC"
+    rows = state.db.fetchall(query, tuple(params))
+    for value in lookup_values:
+        normalized = value.upper()
+        formatted_match = re.match(r"^([A-Z0-9]{2,8})-([A-Z0-9]{2,8})-([A-Z0-9]{2,8})$", normalized)
+        if strict and not formatted_match:
+            continue
+        for row in rows:
+            org_id = str(row["id"])
+            org_name = str(row["name"] or "")
+            for role_key, meta in MANAGEMENT_INVITE_ROLES.items():
+                checksum = _management_invite_checksum(org_id, role_key)
+                expected = _management_invite_code(org_id, role_key, organization_name=org_name)
+                role_segment = f"{str(meta['prefix']).upper()}{str(int(meta['order'])).zfill(2)}"
+                if formatted_match:
+                    supplied_role_segment = formatted_match.group(2)
+                    supplied_checksum = formatted_match.group(3)
+                    if supplied_role_segment == role_segment and supplied_checksum == checksum:
+                        return _resolved_invite_from_management_role(org_id, org_name, role_key)
+                elif not strict and normalized == expected:
+                    return _resolved_invite_from_management_role(org_id, org_name, role_key)
+    return None
+
+
+def _resolve_org_invite(
+    state: AppState,
+    raw_code: str | None,
+    *,
+    organization_id: str | None = None,
+    strict: bool = False,
+) -> ResolvedOrgInvite | None:
+    department = _resolve_department_from_invite(state, raw_code, organization_id=organization_id, strict=strict)
+    if department:
+        return ResolvedOrgInvite(
+            organization_id=department.organization_id,
+            organization_name=department.organization_name,
+            target_type="department",
+            department=department,
+        )
+    management = _resolve_management_from_invite(state, raw_code, organization_id=organization_id, strict=strict)
+    if management:
+        return ResolvedOrgInvite(
+            organization_id=management.organization_id,
+            organization_name=management.organization_name,
+            target_type="management_role",
+            management=management,
+        )
+    return None
+
+
+def _ensure_management_role_template(state: AppState, organization_id: str, role_key: str, timestamp: str) -> str:
+    meta = MANAGEMENT_INVITE_ROLES.get(role_key) or MANAGEMENT_INVITE_ROLES["advisor"]
+    role_name = str(meta["name"])
+    row = state.db.fetchone(
+        """
+        SELECT id
+        FROM org_role_templates
+        WHERE organization_id = ?
+          AND department_id IS NULL
+          AND name = ?
+          AND active = 1
+        ORDER BY updated_at DESC
+        LIMIT 1
+        """,
+        (organization_id, role_name),
+    )
+    if row:
+        return str(row["id"])
+    role_id = f"role_{_base36_seed(organization_id, 36 ** 6).lower()}_{role_key}"
+    existing = state.db.fetchone("SELECT id FROM org_role_templates WHERE id = ?", (role_id,))
+    if existing:
+        role_id = new_id("role")
+    level = "organization_lead" if role_key == "organization_lead" else "supervisor"
+    state.db.execute(
+        """
+        INSERT INTO org_role_templates(
+            id, organization_id, department_id, name, level, manager_role_id, is_manager, goal,
+            responsibilities_json, should_avoid_json, collaboration_role_ids_json, task_edit_scope,
+            can_approve_tasks, can_reassign_tasks, can_change_deadline, holder_bot_id, sort_order, active, updated_at
+        ) VALUES(?, ?, NULL, ?, ?, NULL, 1, '', '[]', '[]', '[]', 'organization', 1, 1, 1, NULL, ?, 1, ?)
+        """,
+        (role_id, organization_id, role_name, level, int(meta["order"]), timestamp),
+    )
+    return role_id
+
+
+def _assign_management_role_to_employee(
+    state: AppState,
+    organization_id: str,
+    employee_id: str,
+    role_key: str,
+    timestamp: str,
+) -> None:
+    role_id = _ensure_management_role_template(state, organization_id, role_key, timestamp)
+    state.db.execute(
+        """
+        INSERT OR REPLACE INTO org_employee_role_bindings(
+            user_id, organization_id, department_id, primary_role_id, manager_user_id, is_manager,
+            project_role_labels_json, current_focus, task_edit_scope, can_approve_tasks,
+            can_reassign_tasks, can_change_deadline, updated_at
+        ) VALUES(?, ?, NULL, ?, NULL, 1, '[]', '', 'organization', 1, 1, 1, ?)
+        """,
+        (employee_id, organization_id, role_id, timestamp),
+    )
 
 
 def _create_registration_organization(
@@ -3515,6 +3688,26 @@ def _is_organization_lead(state: AppState, organization_id: str, user_id: str, p
     return bool(role_row and str(role_row["level"]) == "organization_lead")
 
 
+def _is_org_model_editor(state: AppState, user: SessionUser) -> bool:
+    if user.membershipStatus != "approved" or user.accountStatus != "approved":
+        return False
+    if user.primaryRole == "admin":
+        return True
+    if (user.jobTitle or "").strip() in {"组织负责人", "顾问"}:
+        return True
+    binding_row = _org_binding_row_for_user(state, user.organizationId, user.id)
+    role_row = _org_role_row(
+        state,
+        user.organizationId,
+        str(binding_row["primary_role_id"]) if binding_row and binding_row["primary_role_id"] else None,
+    )
+    if not role_row:
+        return False
+    role_name = str(role_row["name"] or "").strip()
+    role_level = str(role_row["level"] or "").strip()
+    return role_level == "organization_lead" or role_name in {"顾问"}
+
+
 def _is_task_manager(state: AppState, organization_id: str, actor_id: str, owner_id: str | None) -> bool:
     if not owner_id or actor_id == owner_id:
         return False
@@ -4079,12 +4272,14 @@ def _save_org_model_profile(state: AppState, current_user: SessionUser, payload:
         )
 
     department_name_by_id = {department.id: department.name for department in payload.departments}
+    role_name_by_id = {role.id: role.name for role in payload.roles}
     for binding in payload.bindings:
         if not scoped_user_id(binding.userId):
             continue
         binding_department_id = scoped_department_id(binding.departmentId)
         binding_role_id = scoped_role_id(binding.primaryRoleId)
         binding_manager_id = scoped_user_id(binding.managerUserId)
+        binding_role_name = role_name_by_id.get(binding_role_id or "")
         state.db.execute(
             """
             INSERT INTO org_employee_role_bindings(
@@ -4112,13 +4307,14 @@ def _save_org_model_profile(state: AppState, current_user: SessionUser, payload:
         state.db.execute(
             """
             UPDATE employee_accounts
-               SET department_id = ?, department_name = ?, is_department_lead = ?, updated_at = ?
+               SET department_id = ?, department_name = ?, job_title = COALESCE(?, job_title), is_department_lead = ?, updated_at = ?
              WHERE id = ? AND organization_id = ?
             """,
             (
                 binding_department_id,
                 department_name_by_id.get(binding_department_id or "", None),
-                1 if binding.isManager else 0,
+                binding_role_name.strip() if binding_role_name and binding_role_name.strip() else None,
+                1 if binding.isManager and binding_department_id else 0,
                 timestamp,
                 binding.userId,
                 organization_id,
@@ -4414,6 +4610,14 @@ def _require_admin(app: FastAPI, authorization: str | None = Header(default=None
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="组织身份尚未确认")
     if user.primaryRole not in ALLOWED_APPROVER_ROLES:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Admin permissions required")
+    return user
+
+
+def _require_org_model_editor(app: FastAPI, authorization: str | None = Header(default=None)) -> SessionUser:
+    user = _require_auth(app, authorization)
+    state = _state(app)
+    if not _is_org_model_editor(state, user):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="需要管理员、组织负责人或顾问权限")
     return user
 
 
@@ -15136,8 +15340,8 @@ def create_app() -> FastAPI:
     ) -> list[DepartmentOption]:
         resolved_organization_id = (organization_id or "").strip() or None
         if invite_code:
-            invite_department = _resolve_department_from_invite(state, invite_code)
-            resolved_organization_id = invite_department.organization_id if invite_department else resolved_organization_id
+            invite_target = _resolve_org_invite(state, invite_code)
+            resolved_organization_id = invite_target.organization_id if invite_target else resolved_organization_id
         if not resolved_organization_id and authorization and authorization.startswith("Bearer "):
             try:
                 resolved_organization_id = _require_auth(app, authorization).organizationId
@@ -15152,16 +15356,34 @@ def create_app() -> FastAPI:
         normalized = (code or "").strip()
         if not normalized:
             return OrgInviteResolveResult(valid=False, message="请输入组织或部门邀请码")
-        department = _resolve_department_from_invite(state, normalized)
-        if not department:
+        invite_target = _resolve_org_invite(state, normalized)
+        if not invite_target:
             return OrgInviteResolveResult(valid=False, message="邀请码无效，请确认后重试")
+        if invite_target.department:
+            department = invite_target.department
+            return OrgInviteResolveResult(
+                valid=True,
+                organizationId=department.organization_id,
+                organizationName=department.organization_name,
+                targetType="department",
+                departmentId=department.department_id,
+                departmentName=department.department_name,
+                message=f"已识别为{department.organization_name} · {department.department_name}",
+            )
+        management = invite_target.management
+        if management:
+            return OrgInviteResolveResult(
+                valid=True,
+                organizationId=management.organization_id,
+                organizationName=management.organization_name,
+                targetType="management_role",
+                roleKey=management.role_key,
+                roleName=management.role_name,
+                message=f"已识别为{management.organization_name} · {management.role_name}",
+            )
         return OrgInviteResolveResult(
-            valid=True,
-            organizationId=department.organization_id,
-            organizationName=department.organization_name,
-            departmentId=department.department_id,
-            departmentName=department.department_name,
-            message=f"已识别为{department.organization_name} · {department.department_name}",
+            valid=False,
+            message="邀请码无效，请确认后重试",
         )
 
     def _ensure_login_allowed(row):
@@ -15260,10 +15482,12 @@ def create_app() -> FastAPI:
                 password_hash=password_hash,
                 timestamp=timestamp,
             )
-        invite_department = _resolve_department_from_invite(state, payload.inviteCode, strict=True)
-        if payload.inviteCode and not invite_department:
+        invite_target = _resolve_org_invite(state, payload.inviteCode, strict=True)
+        if payload.inviteCode and not invite_target:
             raise HTTPException(status_code=400, detail="邀请码无效，请确认后重试，或清空邀请码先完成个人注册。")
-        target_organization_id = invite_department.organization_id if invite_department else None
+        invite_department = invite_target.department if invite_target and invite_target.department else None
+        invite_management = invite_target.management if invite_target and invite_target.management else None
+        target_organization_id = invite_target.organization_id if invite_target else None
         department = (
             DepartmentOption(id=invite_department.department_id, name=invite_department.department_name, color=invite_department.color)
             if invite_department
@@ -15271,13 +15495,13 @@ def create_app() -> FastAPI:
         )
         if payload.departmentId and not department:
             raise HTTPException(status_code=400, detail="请先填写组织邀请码，再选择该组织下的部门")
-        if (payload.departmentId or payload.inviteCode) and not department:
+        if (payload.departmentId or payload.inviteCode) and not department and not invite_management:
             raise HTTPException(status_code=400, detail="请选择有效的部门")
-        job_title = payload.jobTitle.strip() if payload.jobTitle else None
+        job_title = payload.jobTitle.strip() if payload.jobTitle else (invite_management.role_name if invite_management else None)
         manager_name = payload.managerName.strip() if payload.managerName else None
         current_focus = payload.currentFocus.strip() if payload.currentFocus else ""
-        requested_membership = bool(department or job_title or manager_name or current_focus)
-        has_verified_invite = invite_department is not None
+        requested_membership = bool(department or invite_management or job_title or manager_name or current_focus)
+        has_verified_invite = invite_target is not None
         account_status = "approved" if has_verified_invite or not requested_membership else "pending"
         membership_status = "approved" if has_verified_invite else "pending" if requested_membership else "none"
         existing_member = state.db.fetchone(
@@ -15287,13 +15511,43 @@ def create_app() -> FastAPI:
         if existing_member:
             return _issue_auth_for_member_row(existing_member)
         user_id = new_id("emp")
+        created_new_organization = False
+        claimed_adminless_organization = False
         if not target_organization_id:
-            target_organization_id, _ = _create_registration_organization(
-                state,
-                payload.fullName,
-                timestamp,
-                payload.organizationName,
-            )
+            requested_organization_name = (payload.organizationName or "").strip()
+            if requested_organization_name:
+                target_organization_id, _ = _create_registration_organization(
+                    state,
+                    payload.fullName,
+                    timestamp,
+                    requested_organization_name,
+                )
+                created_new_organization = True
+            else:
+                adminless_org = None
+                organization_rows = state.db.fetchall("SELECT id, name FROM organizations ORDER BY created_at ASC")
+                if not organization_rows:
+                    target_organization_id, _ = _create_registration_organization(
+                        state,
+                        payload.fullName,
+                        timestamp,
+                        None,
+                    )
+                    created_new_organization = True
+                for org_row in organization_rows:
+                    if _active_admin_count(str(org_row["id"])) == 0:
+                        adminless_org = org_row
+                        break
+                if adminless_org:
+                    target_organization_id = str(adminless_org["id"])
+                    claimed_adminless_organization = True
+                elif not target_organization_id:
+                    raise HTTPException(status_code=409, detail="该云端已有组织管理员。成员加入请填写组织或部门邀请码；创建新组织请填写组织名称。")
+        primary_role = "admin" if created_new_organization or claimed_adminless_organization else "employee"
+        if created_new_organization or claimed_adminless_organization:
+            account_status = "approved"
+            membership_status = "approved"
+            requested_membership = True
         state.db.execute(
             """
             INSERT INTO employee_accounts(
@@ -15301,7 +15555,7 @@ def create_app() -> FastAPI:
                 membership_status, membership_submitted_at, membership_rejected_reason,
                 approved_at, approved_by, rejected_reason, disabled_at, recent_mentions_json, last_login_at,
                 department_id, department_name, job_title, manager_name, current_focus, is_department_lead, feishu_mobile, created_at, updated_at
-            ) VALUES(?, ?, ?, ?, ?, ?, ?, 'employee', ?, ?, ?, NULL, ?, NULL, NULL, NULL, '[]', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, NULL, NULL, NULL, '[]', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 user_id,
@@ -15311,6 +15565,7 @@ def create_app() -> FastAPI:
                 normalized_phone or None,
                 payload.fullName,
                 password_hash,
+                primary_role,
                 account_status,
                 membership_status,
                 timestamp if requested_membership else None,
@@ -15327,6 +15582,13 @@ def create_app() -> FastAPI:
                 timestamp,
             ),
         )
+        if primary_role == "admin":
+            state.db.execute(
+                "INSERT INTO employee_role_bindings(id, user_id, role, created_at) VALUES(?, ?, 'admin', ?)",
+                (new_id("role"), user_id, timestamp),
+            )
+        if invite_management:
+            _assign_management_role_to_employee(state, target_organization_id, user_id, invite_management.role_key, timestamp)
         _log_audit(
             state,
             "register",
@@ -15341,6 +15603,8 @@ def create_app() -> FastAPI:
                 "currentFocus": current_focus,
                 "isDepartmentLead": bool(payload.isDepartmentLead),
                 "inviteCode": (payload.inviteCode or "").strip(),
+                "inviteTargetType": invite_target.target_type if invite_target else None,
+                "managementRole": invite_management.role_key if invite_management else None,
                 "membershipStatus": membership_status,
             },
         )
@@ -15460,17 +15724,20 @@ def create_app() -> FastAPI:
         current_user: SessionUser = Depends(lambda authorization=Header(default=None): _require_auth(app, authorization)),
     ) -> AuthFlowResponse:
         identity, current_member = _current_identity_for_user(current_user)
-        invite_department = _resolve_department_from_invite(state, payload.inviteCode, strict=True)
-        if not invite_department:
+        invite_target = _resolve_org_invite(state, payload.inviteCode, strict=True)
+        if not invite_target:
             raise HTTPException(status_code=400, detail="邀请码无效，请确认后重试。")
+        invite_department = invite_target.department
+        invite_management = invite_target.management
         existing = state.db.fetchone(
             "SELECT * FROM employee_accounts WHERE identity_id = ? AND organization_id = ?",
-            (str(identity["id"]), invite_department.organization_id),
+            (str(identity["id"]), invite_target.organization_id),
         )
         if existing:
             return _issue_auth_for_member_row(_ensure_login_allowed(existing))
         timestamp = now_iso()
         user_id = new_id("emp")
+        job_title = (payload.jobTitle or "").strip() or (invite_management.role_name if invite_management else None)
         state.db.execute(
             """
             INSERT INTO employee_accounts(
@@ -15483,28 +15750,35 @@ def create_app() -> FastAPI:
             (
                 user_id,
                 str(identity["id"]),
-                invite_department.organization_id,
+                invite_target.organization_id,
                 str(identity["email"]),
                 str(identity["phone_number"] or "") or None,
                 str(identity["full_name"] or current_member["full_name"]),
                 str(identity["password_hash"]),
                 timestamp,
                 timestamp,
-                invite_department.department_id,
-                invite_department.department_name,
-                (payload.jobTitle or "").strip() or None,
+                invite_department.department_id if invite_department else None,
+                invite_department.department_name if invite_department else None,
+                job_title,
                 (payload.managerName or "").strip() or None,
                 (payload.currentFocus or "").strip(),
                 timestamp,
                 timestamp,
             ),
         )
+        if invite_management:
+            _assign_management_role_to_employee(state, invite_target.organization_id, user_id, invite_management.role_key, timestamp)
         _log_audit(
             state,
             "identity_join_organization",
             actor_user_id=current_user.id,
             target_user_id=user_id,
-            detail={"organizationId": invite_department.organization_id, "inviteCode": payload.inviteCode},
+            detail={
+                "organizationId": invite_target.organization_id,
+                "inviteCode": payload.inviteCode,
+                "inviteTargetType": invite_target.target_type,
+                "managementRole": invite_management.role_key if invite_management else None,
+            },
         )
         row = state.db.fetchone("SELECT * FROM employee_accounts WHERE id = ?", (user_id,))
         if not row:
@@ -15992,21 +16266,24 @@ def create_app() -> FastAPI:
         payload: OrgMembershipApplyPayload,
         current_user: SessionUser = Depends(lambda authorization=Header(default=None): _require_auth(app, authorization)),
     ) -> OrgMembershipSummaryRecord:
-        invite_department = _resolve_department_from_invite(state, payload.inviteCode, strict=True)
-        if payload.inviteCode and not invite_department:
+        invite_target = _resolve_org_invite(state, payload.inviteCode, strict=True)
+        if payload.inviteCode and not invite_target:
             raise HTTPException(status_code=400, detail="邀请码无效，请确认后重试。")
-        target_organization_id = invite_department.organization_id if invite_department else current_user.organizationId
+        invite_department = invite_target.department if invite_target and invite_target.department else None
+        invite_management = invite_target.management if invite_target and invite_target.management else None
+        target_organization_id = invite_target.organization_id if invite_target else current_user.organizationId
         department = (
             DepartmentOption(id=invite_department.department_id, name=invite_department.department_name, color=invite_department.color)
             if invite_department
             else _get_org_department_option(state, target_organization_id, payload.departmentId)
         )
-        if (payload.departmentId or payload.inviteCode) and not department:
+        if (payload.departmentId or payload.inviteCode) and not department and not invite_management:
             raise HTTPException(status_code=400, detail="请选择有效的部门")
         timestamp = now_iso()
-        has_verified_invite = invite_department is not None
+        has_verified_invite = invite_target is not None
         next_account_status = "approved" if has_verified_invite else "pending"
         next_membership_status = "approved" if has_verified_invite else "pending"
+        job_title = (payload.jobTitle or "").strip() or (invite_management.role_name if invite_management else None)
         state.db.execute(
             """
             UPDATE employee_accounts
@@ -16031,7 +16308,7 @@ def create_app() -> FastAPI:
                 target_organization_id,
                 department.id if department else None,
                 department.name if department else None,
-                (payload.jobTitle or "").strip() or None,
+                job_title,
                 (payload.managerName or "").strip() or None,
                 (payload.currentFocus or "").strip(),
                 next_account_status,
@@ -16042,6 +16319,8 @@ def create_app() -> FastAPI:
                 current_user.id,
             ),
         )
+        if invite_management:
+            _assign_management_role_to_employee(state, target_organization_id, current_user.id, invite_management.role_key, timestamp)
         _log_audit(
             state,
             "org_membership_apply",
@@ -16050,6 +16329,8 @@ def create_app() -> FastAPI:
             detail={
                 "departmentId": department.id if department else None,
                 "inviteCode": (payload.inviteCode or "").strip(),
+                "inviteTargetType": invite_target.target_type if invite_target else None,
+                "managementRole": invite_management.role_key if invite_management else None,
                 "membershipStatus": next_membership_status,
             },
         )
@@ -17196,7 +17477,7 @@ def create_app() -> FastAPI:
     @app.post("/api/v1/settings/org-model/profile", response_model=OrgModelProfileRecord)
     def save_org_model_profile(
         payload: OrgModelProfileRecord,
-        current_user: SessionUser = Depends(lambda authorization=Header(default=None): _require_admin(app, authorization)),
+        current_user: SessionUser = Depends(lambda authorization=Header(default=None): _require_org_model_editor(app, authorization)),
     ) -> OrgModelProfileRecord:
         return _save_org_model_profile(state, current_user, payload)
 
@@ -20825,6 +21106,27 @@ def create_app() -> FastAPI:
         records.extend(_bot_directory_record(b) for b in bot_rows)
         return records
 
+    def _approved_admin_count_for_org(organization_id: str) -> int:
+        row = state.db.fetchone(
+            """
+            SELECT COUNT(1) AS count
+            FROM employee_accounts
+            WHERE organization_id = ?
+              AND primary_role = 'admin'
+              AND account_status = 'approved'
+              AND COALESCE(membership_status, 'approved') = 'approved'
+            """,
+            (organization_id,),
+        )
+        return int(row["count"] or 0) if row else 0
+
+    def _replace_employee_role_binding(conn, employee_id: str, role: str, timestamp: str) -> None:
+        conn.execute("DELETE FROM employee_role_bindings WHERE user_id = ?", (employee_id,))
+        conn.execute(
+            "INSERT INTO employee_role_bindings(id, user_id, role, created_at) VALUES(?, ?, ?, ?)",
+            (new_id("role"), employee_id, role, timestamp),
+        )
+
     @app.get("/api/v1/org/bots", response_model=list[OrgBotRecord])
     def list_org_bots(
         status: str | None = Query(default=None),
@@ -20836,7 +21138,7 @@ def create_app() -> FastAPI:
     @app.post("/api/v1/org/bots", response_model=OrgBotRecord)
     def create_org_bot(
         payload: OrgBotCreatePayload,
-        current_user: SessionUser = Depends(lambda authorization=Header(default=None): _require_admin(app, authorization)),
+        current_user: SessionUser = Depends(lambda authorization=Header(default=None): _require_org_model_editor(app, authorization)),
     ) -> OrgBotRecord:
         org_id = current_user.organizationId
         display_name = payload.displayName.strip()
@@ -20889,7 +21191,7 @@ def create_app() -> FastAPI:
     def update_org_bot(
         bot_id: str,
         payload: OrgBotUpdatePayload,
-        current_user: SessionUser = Depends(lambda authorization=Header(default=None): _require_admin(app, authorization)),
+        current_user: SessionUser = Depends(lambda authorization=Header(default=None): _require_org_model_editor(app, authorization)),
     ) -> OrgBotRecord:
         org_id = current_user.organizationId
         row = state.db.fetchone("SELECT * FROM org_bots WHERE id = ? AND organization_id = ?", (bot_id, org_id))
@@ -20994,7 +21296,9 @@ def create_app() -> FastAPI:
     def disable_employee(employee_id: str, current_user: SessionUser = Depends(lambda authorization=Header(default=None): _require_admin(app, authorization))) -> EmployeeRecord:
         if employee_id == current_user.id:
             raise HTTPException(status_code=400, detail="不能停用当前管理员账号")
-        _get_org_user_or_404(state, current_user.organizationId, employee_id)
+        row = _get_org_user_or_404(state, current_user.organizationId, employee_id)
+        if str(row["primary_role"] or "") == "admin" and _approved_admin_count_for_org(current_user.organizationId) <= 1:
+            raise HTTPException(status_code=400, detail="组织至少需要保留一名管理员")
         timestamp = now_iso()
         state.db.execute(
             "UPDATE employee_accounts SET account_status = 'disabled', disabled_at = ?, updated_at = ? WHERE id = ? AND organization_id = ?",
@@ -21023,7 +21327,9 @@ def create_app() -> FastAPI:
         payload: RolePayload,
         current_user: SessionUser = Depends(lambda authorization=Header(default=None): _require_admin(app, authorization)),
     ) -> EmployeeRecord:
-        _get_org_user_or_404(state, current_user.organizationId, employee_id)
+        row = _get_org_user_or_404(state, current_user.organizationId, employee_id)
+        if str(row["primary_role"] or "") == "admin" and payload.role != "admin" and _approved_admin_count_for_org(current_user.organizationId) <= 1:
+            raise HTTPException(status_code=400, detail="组织至少需要保留一名管理员")
         state.db.execute(
             "UPDATE employee_accounts SET primary_role = ?, updated_at = ? WHERE id = ? AND organization_id = ?",
             (payload.role, now_iso(), employee_id, current_user.organizationId),
@@ -21035,6 +21341,118 @@ def create_app() -> FastAPI:
         )
         _log_audit(state, "change_role", actor_user_id=current_user.id, target_user_id=employee_id, detail={"role": payload.role})
         return _employee_record(_get_org_user_or_404(state, current_user.organizationId, employee_id))
+
+    @app.post("/api/v1/admin/employees/transfer-admin")
+    def transfer_admin(
+        payload: AdminTransferPayload,
+        current_user: SessionUser = Depends(lambda authorization=Header(default=None): _require_admin(app, authorization)),
+    ) -> dict[str, str]:
+        organization_id = current_user.organizationId
+        target_user_id = payload.targetUserId.strip()
+        if target_user_id == current_user.id:
+            raise HTTPException(status_code=400, detail="接任管理员不能是当前账号自己")
+        target_row = _get_org_user_or_404(state, organization_id, target_user_id)
+        if str(target_row["account_status"] or "") != "approved" or str(target_row["membership_status"] or "approved") != "approved":
+            raise HTTPException(status_code=400, detail="只能转交给已通过的组织成员")
+        department = _get_org_department_option(state, organization_id, payload.currentAdminDepartmentId)
+        if payload.currentAdminDepartmentId and not department:
+            raise HTTPException(status_code=400, detail="请选择有效的组织层级或部门")
+        timestamp = now_iso()
+
+        def _apply_transfer(conn):
+            current_row = conn.execute(
+                "SELECT * FROM employee_accounts WHERE id = ? AND organization_id = ?",
+                (current_user.id, organization_id),
+            ).fetchone()
+            if not current_row or str(current_row["primary_role"] or "") != "admin":
+                raise HTTPException(status_code=403, detail="当前账号不再是管理员，请刷新后重试")
+
+            conn.execute(
+                """
+                UPDATE employee_accounts
+                   SET primary_role = 'admin',
+                       account_status = 'approved',
+                       membership_status = 'approved',
+                       approved_at = COALESCE(approved_at, ?),
+                       approved_by = COALESCE(approved_by, ?),
+                       rejected_reason = NULL,
+                       membership_rejected_reason = NULL,
+                       disabled_at = NULL,
+                       updated_at = ?
+                 WHERE id = ? AND organization_id = ?
+                """,
+                (timestamp, current_user.id, timestamp, target_user_id, organization_id),
+            )
+            _replace_employee_role_binding(conn, target_user_id, "admin", timestamp)
+
+            department_id = department.id if department else None
+            department_name = department.name if department else None
+            if payload.currentAdminAction == "demote_to_member":
+                conn.execute(
+                    """
+                    UPDATE employee_accounts
+                       SET primary_role = 'employee',
+                           department_id = ?,
+                           department_name = ?,
+                           updated_at = ?
+                     WHERE id = ? AND organization_id = ?
+                    """,
+                    (department_id, department_name, timestamp, current_user.id, organization_id),
+                )
+                _replace_employee_role_binding(conn, current_user.id, "employee", timestamp)
+            elif payload.currentAdminAction == "disable_self":
+                conn.execute(
+                    """
+                    UPDATE employee_accounts
+                       SET primary_role = 'employee',
+                           account_status = 'disabled',
+                           department_id = ?,
+                           department_name = ?,
+                           disabled_at = ?,
+                           updated_at = ?
+                     WHERE id = ? AND organization_id = ?
+                    """,
+                    (department_id, department_name, timestamp, timestamp, current_user.id, organization_id),
+                )
+                _replace_employee_role_binding(conn, current_user.id, "employee", timestamp)
+            elif department:
+                conn.execute(
+                    """
+                    UPDATE employee_accounts
+                       SET department_id = ?, department_name = ?, updated_at = ?
+                     WHERE id = ? AND organization_id = ?
+                    """,
+                    (department_id, department_name, timestamp, current_user.id, organization_id),
+                )
+
+            admin_row = conn.execute(
+                """
+                SELECT COUNT(1) AS count
+                FROM employee_accounts
+                WHERE organization_id = ?
+                  AND primary_role = 'admin'
+                  AND account_status = 'approved'
+                  AND COALESCE(membership_status, 'approved') = 'approved'
+                """,
+                (organization_id,),
+            ).fetchone()
+            if int(admin_row["count"] or 0) < 1:
+                raise HTTPException(status_code=400, detail="组织至少需要保留一名管理员")
+
+        state.db.run_in_transaction(_apply_transfer)
+        _sync_employee_org_binding_from_account(state, organization_id, target_user_id)
+        _sync_employee_org_binding_from_account(state, organization_id, current_user.id)
+        _log_audit(
+            state,
+            "transfer_admin",
+            actor_user_id=current_user.id,
+            target_user_id=target_user_id,
+            detail={
+                "currentAdminAction": payload.currentAdminAction,
+                "currentAdminDepartmentId": payload.currentAdminDepartmentId,
+            },
+        )
+        return {"message": "管理员已转交"}
 
     @app.patch("/api/v1/admin/employees/{employee_id}/department", response_model=EmployeeRecord)
     def update_employee_department(
