@@ -166,7 +166,7 @@
     }
   },
   "dependencies": {
-    "@mdxeditor/editor": "^4.0.0",
+    "@mdxeditor/editor": "^4.0.4",
     "electron-updater": "^6.8.3",
     "lucide-react": "^0.511.0",
     "qrcode": "^1.5.4",
