@@ -212,6 +212,21 @@ def run_team_sync_once(
             timeout=30.0,
         )
     except Exception as exc:
+        status_code = getattr(exc, "status_code", None)
+        if status_code == 404:
+            now = _now_iso()
+            message = "当前组织云暂不支持 data-center batch 同步接口，已停止本批队列自动重试。"
+            for sid in source_ids:
+                db.execute(
+                    """
+                    UPDATE team_sync_state
+                    SET last_error = ?, updated_at = ?, status = 'cloud_unsupported'
+                    WHERE source_id = ?
+                    """,
+                    (message, now, sid),
+                )
+            logger.info("run_team_sync_once cloud batch endpoint unsupported (404); marked %d item(s)", len(source_ids))
+            return {"status": "cloud_unsupported", "error": message, "count": len(source_ids)}
         logger.warning("run_team_sync_once cloud POST failed: %s", exc)
         # 把这一批失败计入
         now = _now_iso()

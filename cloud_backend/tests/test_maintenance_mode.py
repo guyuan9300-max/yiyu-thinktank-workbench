@@ -35,7 +35,7 @@ def seed_employee(client: TestClient, *, user_id: str, email: str, organization_
     )
 
 
-def test_admin_can_authorize_employee_for_maintenance_mode(tmp_path: Path, monkeypatch) -> None:
+def test_only_default_org_admin_can_enter_maintenance_mode_and_member_authorization_is_removed(tmp_path: Path, monkeypatch) -> None:
     client = make_client(tmp_path, monkeypatch)
     seed_employee(client, user_id="user_maintainer", email="maintainer@example.com")
     admin_headers = auth_headers(client, "admin@yiyu-system.com", "Admin123!")
@@ -44,7 +44,7 @@ def test_admin_can_authorize_employee_for_maintenance_mode(tmp_path: Path, monke
     admin_status = client.get("/api/v1/maintenance-mode/status", headers=admin_headers)
     assert admin_status.status_code == 200
     assert admin_status.json()["canEnter"] is True
-    assert admin_status.json()["canManagePermissions"] is True
+    assert admin_status.json()["canManagePermissions"] is False
 
     denied = client.post("/api/v1/maintenance-mode/enter", headers=employee_headers)
     assert denied.status_code == 403
@@ -54,30 +54,15 @@ def test_admin_can_authorize_employee_for_maintenance_mode(tmp_path: Path, monke
         headers=admin_headers,
         json={"members": [{"userId": "user_maintainer", "authorized": True, "canManagePermissions": False}]},
     )
-    assert update.status_code == 200, update.text
+    assert update.status_code == 404, update.text
 
     employee_status = client.get("/api/v1/maintenance-mode/status", headers=employee_headers)
     assert employee_status.status_code == 200
-    assert employee_status.json()["canEnter"] is True
+    assert employee_status.json()["canEnter"] is False
     assert employee_status.json()["canManagePermissions"] is False
 
-    entered = client.post("/api/v1/maintenance-mode/enter", headers=employee_headers)
-    assert entered.status_code == 200
-    assert entered.json()["active"] is True
 
-    revoke = client.patch(
-        "/api/v1/admin/maintenance-mode/members",
-        headers=admin_headers,
-        json={"members": [{"userId": "user_maintainer", "authorized": False, "canManagePermissions": False}]},
-    )
-    assert revoke.status_code == 200, revoke.text
-
-    revoked_status = client.get("/api/v1/maintenance-mode/status", headers=employee_headers)
-    assert revoked_status.status_code == 200
-    assert revoked_status.json()["canEnter"] is False
-
-
-def test_maintenance_permissions_are_organization_scoped(tmp_path: Path, monkeypatch) -> None:
+def test_maintenance_mode_is_only_available_in_default_yiyu_org(tmp_path: Path, monkeypatch) -> None:
     client = make_client(tmp_path, monkeypatch)
     timestamp = now_iso()
     db = client.app.state.app_state.db
@@ -98,9 +83,16 @@ def test_maintenance_permissions_are_organization_scoped(tmp_path: Path, monkeyp
     )
     other_headers = auth_headers(client, "other-admin@example.com", "Password123!")
 
+    status = client.get("/api/v1/maintenance-mode/status", headers=other_headers)
+    assert status.status_code == 200
+    assert status.json()["available"] is True
+    assert status.json()["canEnter"] is False
+
+    enter = client.post("/api/v1/maintenance-mode/enter", headers=other_headers)
+    assert enter.status_code == 403
+
     members = client.get("/api/v1/admin/maintenance-mode/members", headers=other_headers)
-    assert members.status_code == 200
-    assert all(item["userId"] != "user_default_employee" for item in members.json())
+    assert members.status_code == 404
 
     cross_org_update = client.patch(
         "/api/v1/admin/maintenance-mode/members",

@@ -169,6 +169,8 @@ class SandboxWorkspaceRecord(BaseModel):
     status: SandboxStatus = "active"
     cloudApiUrl: str = ""
     cloudConnected: bool = False
+    cloudConnectionStatus: Literal["not_configured", "signed_out", "needs_login", "connected"] = "not_configured"
+    cloudNeedsLogin: bool = False
     cloudUserFullName: str | None = None
     cloudUserEmail: str | None = None
     organizationId: str | None = None
@@ -539,25 +541,6 @@ class MaintenanceModeStatusRecord(BaseModel):
     organizationId: str | None = None
     userId: str | None = None
     reason: str | None = None
-
-
-class MaintenanceMemberPermissionRecord(BaseModel):
-    userId: str
-    fullName: str
-    email: str
-    primaryRole: EmployeeRole
-    authorized: bool
-    canManagePermissions: bool
-
-
-class MaintenancePermissionMemberPayload(BaseModel):
-    userId: str
-    authorized: bool
-    canManagePermissions: bool = False
-
-
-class MaintenancePermissionUpdatePayloadRecord(BaseModel):
-    members: list[MaintenancePermissionMemberPayload] = Field(default_factory=list)
 
 
 class MaintenanceAuditPayloadRecord(BaseModel):

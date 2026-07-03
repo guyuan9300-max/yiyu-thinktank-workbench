@@ -11,7 +11,7 @@ sys.path.append(str(Path(__file__).resolve().parents[1]))
 
 import app.main as app_main  # noqa: E402
 from app.main import create_app  # noqa: E402
-from app.services.sandbox_registry import set_active_sandbox_setting  # noqa: E402
+from app.services.sandbox_registry import activate_sandbox, create_sandbox, set_active_sandbox_setting  # noqa: E402
 
 
 BASE_URL = "http://127.0.0.1:47830"
@@ -27,7 +27,8 @@ def make_client(tmp_path: Path) -> TestClient:
 def seed_cloud_session(client: TestClient) -> None:
     user_payload = {
         "id": "user_admin",
-        "organizationId": "org_default",
+        "organizationId": "org_yiyu_default",
+        "organizationName": "益语智库",
         "email": "admin@example.com",
         "fullName": "管理员",
         "primaryRole": "admin",
@@ -35,6 +36,12 @@ def seed_cloud_session(client: TestClient) -> None:
         "membershipStatus": "approved",
     }
     state = client.app.state.app_state
+    sandbox = create_sandbox(state.db, kind="organization", name="益语智库", cloud_api_url=BASE_URL)
+    state.db.execute(
+        "UPDATE sandboxes SET organization_id = ?, organization_name = ? WHERE id = ?",
+        ("org_yiyu_default", "益语智库", sandbox.id),
+    )
+    activate_sandbox(state.db, sandbox.id)
     state.cloud_api_url = BASE_URL
     set_active_sandbox_setting(state.db, "cloud_api_url", BASE_URL)
     set_active_sandbox_setting(state.db, "cloud_access_token", "token_admin")
@@ -66,8 +73,8 @@ def test_local_maintenance_mode_enter_and_exit_are_session_local(tmp_path: Path,
                     "available": True,
                     "active": False,
                     "canEnter": True,
-                    "canManagePermissions": True,
-                    "organizationId": "org_default",
+                    "canManagePermissions": False,
+                    "organizationId": "org_yiyu_default",
                     "userId": "user_admin",
                 },
             )
@@ -78,8 +85,8 @@ def test_local_maintenance_mode_enter_and_exit_are_session_local(tmp_path: Path,
                     "available": True,
                     "active": True,
                     "canEnter": True,
-                    "canManagePermissions": True,
-                    "organizationId": "org_default",
+                    "canManagePermissions": False,
+                    "organizationId": "org_yiyu_default",
                     "userId": "user_admin",
                 },
             )
@@ -90,8 +97,8 @@ def test_local_maintenance_mode_enter_and_exit_are_session_local(tmp_path: Path,
                     "available": True,
                     "active": False,
                     "canEnter": True,
-                    "canManagePermissions": True,
-                    "organizationId": "org_default",
+                    "canManagePermissions": False,
+                    "organizationId": "org_yiyu_default",
                     "userId": "user_admin",
                 },
             )

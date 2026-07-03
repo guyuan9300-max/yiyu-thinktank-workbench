@@ -19,6 +19,7 @@ from app.services.sandbox_registry import (  # noqa: E402
     ensure_sandbox_registry,
     get_active_sandbox,
     get_active_sandbox_setting,
+    get_sandbox_local_identity_id,
     get_sandbox_setting,
     list_sandboxes,
     set_sandbox_setting,
@@ -203,13 +204,135 @@ def test_new_workspace_does_not_inherit_legacy_global_cloud_token(tmp_path: Path
     db = Database(tmp_path / "app.db")
     db.set_setting("cloud_access_token", "legacy-token")
     ensure_sandbox_registry(db)
-    assert get_sandbox_setting(db, DEFAULT_LOCAL_SANDBOX_ID, "cloud_access_token", "") == "legacy-token"
+    assert get_sandbox_setting(db, DEFAULT_LOCAL_SANDBOX_ID, "cloud_access_token", "") == ""
 
     org = create_sandbox(db, kind="organization", name="新组织", cloud_api_url="https://new-cloud.example.test")
     activate_sandbox(db, org.id)
 
     assert get_active_sandbox_setting(db, "cloud_access_token", "") == ""
-    assert get_sandbox_setting(db, DEFAULT_LOCAL_SANDBOX_ID, "cloud_access_token", "") == "legacy-token"
+    assert get_sandbox_setting(db, DEFAULT_LOCAL_SANDBOX_ID, "cloud_access_token", "") == ""
+
+
+def test_matching_legacy_cloud_session_repairs_non_legacy_org_workspace(tmp_path: Path) -> None:
+    db = Database(tmp_path / "app.db")
+    ensure_sandbox_registry(db)
+    yiyu = ensure_organization_sandbox_for_session(
+        db,
+        organization_id="org_yiyu_default",
+        organization_name="益语智库",
+        cloud_api_url="http://101.126.34.232",
+    )
+    set_sandbox_setting(db, yiyu.id, "cloud_access_token", "token-yiyu")
+    set_sandbox_setting(db, yiyu.id, "cloud_refresh_token", "refresh-yiyu")
+    set_sandbox_setting(
+        db,
+        yiyu.id,
+        "cloud_session_user",
+        json.dumps(
+            {
+                "id": "emp_yiyu",
+                "organizationId": "org_yiyu_default",
+                "organizationName": "益语智库",
+                "email": "user@example.test",
+                "fullName": "用户",
+                "primaryRole": "employee",
+                "accountStatus": "approved",
+                "membershipStatus": "approved",
+            },
+            ensure_ascii=False,
+        ),
+    )
+    xingcong = ensure_organization_sandbox_for_session(
+        db,
+        organization_id="org_xingcong",
+        organization_name="星丛",
+        cloud_api_url="http://118.145.244.188",
+    )
+    set_sandbox_setting(db, xingcong.id, "cloud_access_token", "")
+    set_sandbox_setting(db, xingcong.id, "cloud_refresh_token", "")
+    set_sandbox_setting(db, xingcong.id, "cloud_session_user", get_sandbox_setting(db, yiyu.id, "cloud_session_user", ""))
+    db.set_setting("cloud_api_url", "http://118.145.244.188")
+    db.set_setting("cloud_access_token", "token-xingcong")
+    db.set_setting("cloud_refresh_token", "refresh-xingcong")
+    db.set_setting(
+        "cloud_session_user",
+        json.dumps(
+            {
+                "id": "emp_xingcong",
+                "organizationId": "org_xingcong",
+                "organizationName": "星丛",
+                "email": "user@example.test",
+                "fullName": "用户",
+                "primaryRole": "admin",
+                "accountStatus": "approved",
+                "membershipStatus": "approved",
+            },
+            ensure_ascii=False,
+        ),
+    )
+
+    activate_sandbox(db, xingcong.id)
+
+    assert get_active_sandbox_setting(db, "cloud_access_token", "") == "token-xingcong"
+    assert get_active_sandbox_setting(db, "cloud_refresh_token", "") == "refresh-xingcong"
+    assert json.loads(get_active_sandbox_setting(db, "cloud_session_user", ""))["organizationId"] == "org_xingcong"
+    assert json.loads(get_sandbox_setting(db, yiyu.id, "cloud_session_user", ""))["organizationId"] == "org_yiyu_default"
+
+
+def test_mismatched_workspace_session_is_not_reported_connected(tmp_path: Path) -> None:
+    db = Database(tmp_path / "app.db")
+    ensure_sandbox_registry(db)
+    workspace = ensure_organization_sandbox_for_session(
+        db,
+        organization_id="org_xingcong",
+        organization_name="星丛",
+        cloud_api_url="http://118.145.244.188",
+    )
+    set_sandbox_setting(db, workspace.id, "cloud_access_token", "token-wrong")
+    set_sandbox_setting(db, workspace.id, "cloud_refresh_token", "refresh-wrong")
+    set_sandbox_setting(
+        db,
+        workspace.id,
+        "cloud_session_user",
+        json.dumps(
+            {
+                "id": "emp_yiyu",
+                "organizationId": "org_yiyu_default",
+                "organizationName": "益语智库",
+                "email": "user@example.test",
+                "fullName": "用户",
+                "primaryRole": "employee",
+                "accountStatus": "approved",
+                "membershipStatus": "approved",
+            },
+            ensure_ascii=False,
+        ),
+    )
+
+    active = get_active_sandbox(db)
+
+    assert active.id == workspace.id
+    assert active.cloudConnected is False
+    assert active.cloudConnectionStatus == "needs_login"
+    assert active.cloudUserFullName is None
+
+
+def test_auth_me_in_org_workspace_without_token_does_not_fall_back_to_local_draft(tmp_path: Path) -> None:
+    client = make_client(tmp_path)
+    created = client.post(
+        "/api/v1/workspaces",
+        json={"kind": "organization", "name": "星丛", "cloudApiUrl": "http://118.145.244.188"},
+    )
+    assert created.status_code == 200, created.text
+
+    response = client.get("/api/v1/auth/me")
+
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert payload["authenticated"] is False
+    assert payload["sessionMode"] == "cloud"
+    assert payload["user"] is None
+    assert "本机草稿" not in (payload.get("message") or "")
 
 
 def test_workspace_update_does_not_change_other_workspace_cloud_url(tmp_path: Path) -> None:
@@ -314,9 +437,10 @@ def test_local_identity_is_bound_to_local_workspace_not_org_workspace(tmp_path: 
 
     auth_in_org = client.get("/api/v1/auth/me")
     assert auth_in_org.status_code == 200, auth_in_org.text
-    assert auth_in_org.json()["authenticated"] is True
-    assert auth_in_org.json()["sessionMode"] == "local"
-    assert auth_in_org.json()["localIdentityStatus"] in {"draft", "ready"}
+    assert auth_in_org.json()["authenticated"] is False
+    assert auth_in_org.json()["sessionMode"] == "cloud"
+    assert auth_in_org.json()["user"] is None
+    assert get_sandbox_local_identity_id(db, DEFAULT_LOCAL_SANDBOX_ID) == local_user_id
 
     response = client.post(f"/api/v1/workspaces/{DEFAULT_LOCAL_SANDBOX_ID}/activate")
     assert response.status_code == 404, response.text

@@ -8,6 +8,7 @@ from fastapi.testclient import TestClient
 sys.path.append(str(Path(__file__).resolve().parents[1]))
 
 from app.main import DEFAULT_ORG_ID, _department_invite_code, create_app, now_iso  # noqa: E402
+from app.security import hash_password, verify_password  # noqa: E402
 
 
 def _make_client(tmp_path, monkeypatch) -> TestClient:
@@ -169,3 +170,93 @@ def test_invalid_invite_does_not_create_extra_membership(tmp_path, monkeypatch) 
     payload = login.json()
     assert payload["organizationSelectionRequired"] is False
     assert payload["accessToken"]
+
+
+def test_admin_reset_password_syncs_member_and_identity_hashes_for_any_org(tmp_path, monkeypatch) -> None:
+    client = _make_client(tmp_path, monkeypatch)
+
+    owner = client.post(
+        "/api/v1/auth/register",
+        json={
+            "email": "reset-owner@example.com",
+            "fullName": "其他组织管理员",
+            "phone": "13800138013",
+            "password": "Password123!",
+            "organizationName": "其他组织",
+        },
+    )
+    assert owner.status_code == 200, owner.text
+    owner_payload = owner.json()
+    organization_id = owner_payload["user"]["organizationId"]
+    headers = _auth_header(owner_payload["accessToken"])
+
+    db = client.app.state.app_state.db
+    timestamp = now_iso()
+    db.execute(
+        """
+        INSERT INTO cloud_identities(id, email, phone_number, full_name, password_hash, last_login_at, created_at, updated_at)
+        VALUES(?, ?, ?, ?, ?, NULL, ?, ?)
+        """,
+        (
+            "ident_reset_member",
+            "reset-member@example.com",
+            "+8613800138014",
+            "被重置成员",
+            hash_password("OldIdentity123!"),
+            timestamp,
+            timestamp,
+        ),
+    )
+    db.execute(
+        """
+        INSERT INTO employee_accounts(
+            id, identity_id, organization_id, email, phone_number, full_name, password_hash, primary_role,
+            account_status, membership_status, approved_at, created_at, updated_at
+        )
+        VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            "emp_reset_member",
+            "ident_reset_member",
+            organization_id,
+            "reset-member@example.com",
+            "+8613800138014",
+            "被重置成员",
+            hash_password("OldEmployee123!"),
+            "employee",
+            "approved",
+            "approved",
+            timestamp,
+            timestamp,
+            timestamp,
+        ),
+    )
+
+    reset = client.post(
+        "/api/v1/admin/employees/emp_reset_member/reset-password",
+        json={"newPassword": "NewPassword123!"},
+        headers=headers,
+    )
+    assert reset.status_code == 200, reset.text
+
+    row = db.fetchone(
+        """
+        SELECT e.password_hash AS employee_hash, i.password_hash AS identity_hash
+        FROM employee_accounts e
+        JOIN cloud_identities i ON i.id = e.identity_id
+        WHERE e.id = ?
+        """,
+        ("emp_reset_member",),
+    )
+    assert row is not None
+    assert row["employee_hash"] == row["identity_hash"]
+    assert verify_password("NewPassword123!", row["employee_hash"])
+    assert verify_password("NewPassword123!", row["identity_hash"])
+
+    login = client.post(
+        "/api/v1/auth/login",
+        json={"identifier": "reset-member@example.com", "password": "NewPassword123!"},
+    )
+    assert login.status_code == 200, login.text
+    assert login.json()["user"]["id"] == "emp_reset_member"
+    assert login.json()["user"]["organizationId"] == organization_id

@@ -2016,6 +2016,19 @@ function createAuthShellForm(email = '', fullName = '', password = ''): AuthShel
   };
 }
 
+const INTERNAL_PERSON_NAME_PLACEHOLDERS = new Set([
+  '本机草稿',
+  '未连接组织',
+  '未连接组织的本机草稿',
+  '本机历史草稿',
+  '本机工作空间',
+]);
+
+function sanitizePersonNameInput(value: string | null | undefined): string {
+  const normalized = String(value || '').trim();
+  return INTERNAL_PERSON_NAME_PLACEHOLDERS.has(normalized) ? '' : normalized;
+}
+
 function pickDefaultRememberedCloudAuthAccount(memory: LocalInputMemory) {
   const rememberedAccounts = memory.cloudAuth.accounts;
   return (
@@ -2045,6 +2058,7 @@ const DEFAULT_ORG_ADMIN_CLAIM_STATUS: OrgAdminClaimStatus = {
   currentUserMembershipStatus: null,
 };
 const ORG_MANAGEMENT_SECTION_KEYS: SettingsSectionKey[] = ['system_admin', 'org_overview', 'org_departments', 'org_people', 'org_rules'];
+const YIYU_OFFICIAL_ORG_ID = 'org_yiyu_default';
 const YIYU_ORG_NAME_PATTERNS = ['益语智库', '益语软件'];
 
 function normalizeUrlForComparison(rawUrl?: string | null) {
@@ -2055,6 +2069,19 @@ function isYiyuOfficialOrganizationName(name?: string | null) {
   const normalized = (name || '').trim();
   if (!normalized) return false;
   return YIYU_ORG_NAME_PATTERNS.some((pattern) => normalized.includes(pattern));
+}
+
+function isYiyuOfficialOrganizationId(id?: string | null) {
+  return (id || '').trim() === YIYU_OFFICIAL_ORG_ID;
+}
+
+function isYiyuOfficialWorkspaceRecord(workspace?: SandboxWorkspaceRecord | null) {
+  if (!workspace || workspace.kind !== 'organization') return false;
+  return (
+    isYiyuOfficialOrganizationId(workspace.organizationId)
+    || isYiyuOfficialOrganizationName(workspace.organizationName)
+    || isYiyuOfficialOrganizationName(workspace.name)
+  );
 }
 
 const EMPTY_PROJECT_STRUCTURE_RESPONSE: ProjectStructureResponse = { modules: [], flows: [] };
@@ -7610,7 +7637,6 @@ export default function App() {
   ));
   const canUseCollabSync = Boolean(desktopAppInfo && desktopAppInfo.platform !== 'browser');
   const isMaintenanceModeActive = Boolean(maintenanceModeStatus?.active);
-  const canShowCollabSync = canUseCollabSync && isMaintenanceModeActive;
   const [workspaceThreadPreference, setWorkspaceThreadPreference] = useState<WorkspaceThreadPreference>(
     initialNavigationStateRef.current.workspaceThreadPreference,
   );
@@ -7665,6 +7691,12 @@ export default function App() {
     workspacesState?.workspaces.find((item) => item.id === workspacesState.activeSandboxId) || null;
   const localDraftSummary = workspacesState?.localDraftSummary || null;
   const activeWorkspaceDisplayName = activeWorkspaceRecord?.name || (localDraftSummary?.active ? '未连接组织的本机草稿' : '尚未选择组织');
+  const activeSandboxIdRef = useRef('');
+  useEffect(() => {
+    activeSandboxIdRef.current = workspacesState?.activeSandboxId || '';
+  }, [workspacesState?.activeSandboxId]);
+  const pendingTaskSaveCountRef = useRef(0);
+  const [pendingTaskSaveCount, setPendingTaskSaveCount] = useState(0);
   const [logs, setLogs] = useState<
     Array<{
       id: string;
@@ -7911,7 +7943,7 @@ export default function App() {
 
   const [tasks, setTasks] = useState<Task[]>([]);
   const sharedTasks = useMemo(() => filterSharedTasks(tasks), [tasks]);
-  const optimisticTasksRef = useRef<Map<string, { task: Task; addedAt: number; fromLocalDraft: boolean }>>(new Map());
+  const optimisticTasksRef = useRef<Map<string, { task: Task; addedAt: number; fromLocalDraft: boolean; sandboxId: string }>>(new Map());
   const taskContextBriefPreloadRef = useRef<(taskItems: Task[], options?: { silent?: boolean }) => Promise<void>>(async () => undefined);
   const openStrategicTaskDraftRef = useRef<(payload: StrategicTaskDraftRequest) => void>(() => undefined);
   const promoteUnifiedTodoRef = useRef<(todo: import('./lib/api').UnifiedTodo) => void>(() => undefined);
@@ -8072,24 +8104,9 @@ export default function App() {
   }, [tasks]);
   const isCloudSession = authState.sessionMode === 'cloud';
   const isLocalSession = authState.sessionMode === 'local';
-  const isYiyuOfficialCloudSession = Boolean(
-    isCloudSession
-    && (
-      isYiyuOfficialOrganizationName(currentSessionUser?.organizationName)
-      || isYiyuOfficialOrganizationName(orgMembershipState.organizationName)
-      || isYiyuOfficialOrganizationName(orgModelState.organization.name)
-    ),
-  );
-  const canShowMaintenanceSyncPanel = Boolean(
-    canUseCollabSync
-    && (
-      isYiyuOfficialCloudSession
-      || (
-        maintenanceModeStatus?.available
-        && (maintenanceModeStatus.canEnter || maintenanceModeStatus.active)
-      )
-    ),
-  );
+  const isActiveYiyuOfficialWorkspace = isYiyuOfficialWorkspaceRecord(activeWorkspaceRecord);
+  const canShowMaintenanceSyncPanel = Boolean(canUseCollabSync && isActiveYiyuOfficialWorkspace);
+  const canShowCollabSync = Boolean(canUseCollabSync && isActiveYiyuOfficialWorkspace && isMaintenanceModeActive);
   const currentMembershipStatus = getEffectiveMembershipStatus(authState);
   const canClaimOrgAdmin = Boolean(isCloudSession && orgAdminClaimStatus.canClaim);
   const currentUserOrgBinding = currentSessionUser
@@ -8618,7 +8635,7 @@ export default function App() {
     const rememberedIdentifier = rememberedCloudAccount?.identifier || rememberedCloudAccount?.email || '';
     const defaultEmail = currentSessionUser?.email || rememberedCloudAccount?.email || '';
     const defaultPhone = currentSessionUser?.phone || '';
-    const defaultFullName = currentSessionUser?.fullName || rememberedCloudAccount?.fullName || '';
+    const defaultFullName = sanitizePersonNameInput(currentSessionUser?.fullName || rememberedCloudAccount?.fullName || '');
     const defaultCloudApiUrl = seed.cloudApiUrl || activeWorkspaceRecord?.cloudApiUrl || settingsState?.cloudApiUrl || '';
     setCloudAuthAction(action);
     setCloudAuthMessage('');
@@ -8697,13 +8714,16 @@ export default function App() {
 
   const refreshWorkspaceAwareState = async (nextWorkspaces?: SandboxWorkspacesResponse) => {
     if (nextWorkspaces) setWorkspacesState(nextWorkspaces);
+    const nextActiveWorkspace = nextWorkspaces
+      ? nextWorkspaces.workspaces.find((item) => item.id === nextWorkspaces.activeSandboxId) || null
+      : activeWorkspaceRecord;
     resetFeishuWorkspaceTransientState();
     resetBusinessWorkspaceTransientState();
     await Promise.all([
       loadSettingsBlock(),
       loadAuthBlock(),
       loadLocalInputMemoryBlock(),
-      refreshMaintenanceModeStatus({ silent: true }),
+      refreshMaintenanceModeStatus({ silent: true, workspace: nextActiveWorkspace }),
     ]);
     await Promise.all([
       loadOrgMembershipBlock().catch(() => DEFAULT_ORG_MEMBERSHIP_SUMMARY),
@@ -8720,6 +8740,10 @@ export default function App() {
   };
 
   const handleActivateWorkspace = async (workspaceId: string) => {
+    if (pendingTaskSaveCountRef.current > 0 || pendingTaskSaveCount > 0) {
+      flash('info', '任务正在保存，请稍候几秒再切换工作空间。');
+      return;
+    }
     setWorkspaceManagerBusy(true);
     try {
       const response = await activateWorkspace(workspaceId);
@@ -8991,7 +9015,15 @@ export default function App() {
     };
   }, []);
 
-  async function refreshMaintenanceModeStatus(options: { silent?: boolean } = {}) {
+  async function refreshMaintenanceModeStatus(options: { silent?: boolean; workspace?: SandboxWorkspaceRecord | null } = {}) {
+    const targetWorkspace = options.workspace === undefined ? activeWorkspaceRecord : options.workspace;
+    if (!canUseCollabSync || !isYiyuOfficialWorkspaceRecord(targetWorkspace)) {
+      setMaintenanceModeStatus(null);
+      setMaintenanceModeError(null);
+      setIsMaintenanceModeLoading(false);
+      setMaintenanceModeBusyAction(null);
+      return null;
+    }
     setIsMaintenanceModeLoading(true);
     setMaintenanceModeError(null);
     try {
@@ -9845,6 +9877,7 @@ export default function App() {
     const response = await getTaskBoard();
     const now = Date.now();
     const OPTIMISTIC_TTL = 120_000;
+    const currentSandboxId = activeSandboxIdRef.current || workspacesState?.activeSandboxId || '';
     const serverIds = new Set(response.tasks.map((t: Task) => t.id));
     const buildOptimisticShadowFingerprint = (task: Task) => [
       task.title,
@@ -9862,6 +9895,8 @@ export default function App() {
     for (const [key, entry] of optimisticTasksRef.current) {
       if (now - entry.addedAt > OPTIMISTIC_TTL) {
         optimisticTasksRef.current.delete(key);
+      } else if (entry.sandboxId && currentSandboxId && entry.sandboxId !== currentSandboxId) {
+        continue;
       } else if (
         entry.fromLocalDraft
         && response.tasks.some((task) => buildOptimisticShadowFingerprint(task) === buildOptimisticShadowFingerprint(entry.task))
@@ -10304,12 +10339,13 @@ export default function App() {
         setAuthState(response);
       } else if (cloudAuthAction === 'join') {
         const inviteCode = normalizeDepartmentInviteInput(cloudAuthForm.inviteCode);
+        const fullName = sanitizePersonNameInput(cloudAuthForm.fullName);
         if (!inviteCode) {
           throw new Error('加入组织需要填写组织或部门邀请码。');
         }
         const joiningWithCurrentCloudSession = isCloudSession && activeWorkspaceMatchesCloudUrl(cloudApiUrl);
         if (!joiningWithCurrentCloudSession) {
-          if (!cloudAuthForm.fullName.trim()) {
+          if (!fullName) {
             throw new Error('请填写称呼。');
           }
           if (!cloudAuthForm.phone.trim()) {
@@ -10335,7 +10371,7 @@ export default function App() {
             cloudApiUrl,
             email: cloudAuthForm.email,
             phone: cloudAuthForm.phone.trim(),
-            fullName: cloudAuthForm.fullName,
+            fullName,
             password: cloudAuthForm.password,
             inviteCode,
             departmentId: cloudAuthForm.departmentId || null,
@@ -10354,13 +10390,14 @@ export default function App() {
         setAuthState(response);
       } else {
         const organizationName = cloudAuthForm.organizationName.trim();
+        const fullName = sanitizePersonNameInput(cloudAuthForm.fullName);
         const response = isCloudSession && activeWorkspaceMatchesCloudUrl(cloudApiUrl)
-          ? await createOrganization({ cloudApiUrl, organizationName: organizationName || `${cloudAuthForm.fullName.trim() || '新组织'}的组织` })
+          ? await createOrganization({ cloudApiUrl, organizationName: organizationName || `${fullName || '新组织'}的组织` })
           : await register({
             cloudApiUrl,
             email: cloudAuthForm.email,
             phone: cloudAuthForm.phone.trim(),
-            fullName: cloudAuthForm.fullName,
+            fullName,
             password: cloudAuthForm.password,
             organizationName: organizationName || null,
             inviteCode: null,
@@ -10787,19 +10824,27 @@ export default function App() {
   }, [canUseCollabSync]);
 
   useEffect(() => {
-    if (!canUseCollabSync) return;
+    if (!canUseCollabSync || !isActiveYiyuOfficialWorkspace) {
+      setMaintenanceModeStatus(null);
+      setMaintenanceModeError(null);
+      setIsMaintenanceModeLoading(false);
+      setMaintenanceModeBusyAction(null);
+      return;
+    }
     void refreshMaintenanceModeStatus({ silent: true });
-  }, [canUseCollabSync]);
+  }, [canUseCollabSync, isActiveYiyuOfficialWorkspace, workspacesState?.activeSandboxId]);
 
   useEffect(() => {
-    if (!canUseCollabSync || !isCloudSession) return;
+    if (!canUseCollabSync || !isCloudSession || !isActiveYiyuOfficialWorkspace) return;
     void refreshMaintenanceModeStatus({ silent: true });
   }, [
     canUseCollabSync,
     isCloudSession,
+    isActiveYiyuOfficialWorkspace,
     currentSessionUser?.id,
     currentSessionUser?.organizationId,
     currentSessionUser?.organizationName,
+    workspacesState?.activeSandboxId,
   ]);
 
   useEffect(() => {
@@ -11250,7 +11295,10 @@ export default function App() {
               {workspaces.map((workspace) => {
                 const active = workspace.id === workspacesState?.activeSandboxId;
                 const cloudLabel = workspace.cloudApiUrl ? (cloudApiHostValue(workspace.cloudApiUrl) || '已配置云端') : '未配置云端';
-                const userLabel = workspace.cloudConnected
+                const workspaceNeedsLogin = workspace.cloudNeedsLogin || workspace.cloudConnectionStatus === 'needs_login';
+                const userLabel = workspaceNeedsLogin
+                  ? '需重新登录该组织'
+                  : workspace.cloudConnected
                   ? (workspace.cloudUserFullName || workspace.cloudUserEmail || '已登录云端')
                   : '未登录云端';
                 return (
@@ -11381,18 +11429,24 @@ export default function App() {
     const rememberedAccounts = localInputMemoryState.cloudAuth.accounts;
     const emailValid = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(cloudAuthForm.email);
     const cloudApiUrlValid = Boolean(cloudApiUrlFromHost(cloudAuthForm.cloudApiUrl));
+    const sanitizedCloudAuthFullName = sanitizePersonNameInput(cloudAuthForm.fullName);
+    const joiningWithCurrentCloudSessionInModal =
+      cloudAuthAction === 'join'
+      && isCloudSession
+      && activeWorkspaceMatchesCloudUrl(cloudApiUrlFromHost(cloudAuthForm.cloudApiUrl));
     const loginValid =
       cloudApiUrlValid
       && Boolean((cloudAuthForm.identifier || cloudAuthForm.email || cloudAuthForm.phone).trim())
       && cloudAuthForm.password.length >= 8;
     const identityValid =
-      Boolean(cloudAuthForm.fullName.trim())
+      Boolean(sanitizedCloudAuthFullName)
       && emailValid
       && Boolean(cloudAuthForm.phone.trim())
       && cloudAuthForm.password.length >= 8;
     const joinValid =
       cloudApiUrlValid
-      && Boolean(normalizeDepartmentInviteInput(cloudAuthForm.inviteCode));
+      && Boolean(normalizeDepartmentInviteInput(cloudAuthForm.inviteCode))
+      && (joiningWithCurrentCloudSessionInModal || identityValid);
     const createValid = cloudApiUrlValid && identityValid;
     const submitValid = cloudAuthAction === 'login' ? loginValid : cloudAuthAction === 'join' ? joinValid : createValid;
     const actionTitle = cloudAuthAction === 'login'
@@ -11405,6 +11459,13 @@ export default function App() {
       : cloudAuthAction === 'join'
         ? '加入组织并进入工作空间'
         : '进入管理员设置';
+    const labeledField = (label: string, input: React.ReactNode, hint?: string, className = '') => (
+      <label className={`block ${className}`}>
+        <span className="mb-1.5 block text-[12px] font-semibold text-gray-700">{label}</span>
+        {input}
+        {hint ? <span className="mt-1.5 block text-[11px] leading-5 text-gray-500">{hint}</span> : null}
+      </label>
+    );
     return (
       <div className="fixed inset-0 z-[90] flex items-center justify-center bg-slate-950/35 px-4">
         <div className="w-full max-w-[720px] max-h-[88vh] overflow-y-auto rounded-[32px] border border-gray-100 bg-white shadow-[0_24px_90px_rgba(15,23,42,0.18)]">
@@ -11513,12 +11574,14 @@ export default function App() {
                   );})}
                 </select>
               )}
-              <input
-                value={cloudAuthForm.cloudApiUrl}
-                onChange={(event) => setCloudAuthForm((prev) => ({ ...prev, cloudApiUrl: event.target.value }))}
-                placeholder="组织云端地址，例如 118.145.244.188 或 cloud.example.com"
-                className="w-full bg-gray-50 border border-gray-200 rounded-2xl px-4 py-3 text-[14px] outline-none md:col-span-2"
-              />
+              {labeledField('云端服务地址', (
+                <input
+                  value={cloudAuthForm.cloudApiUrl}
+                  onChange={(event) => setCloudAuthForm((prev) => ({ ...prev, cloudApiUrl: event.target.value }))}
+                  placeholder="例如 118.145.244.188 或 cloud.example.com"
+                  className="w-full bg-gray-50 border border-gray-200 rounded-2xl px-4 py-3 text-[14px] outline-none"
+                />
+              ), undefined, 'md:col-span-2')}
               {cloudAuthAction === 'create' && (
                 <div className="md:col-span-2 rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-[12px] leading-5 text-amber-800 space-y-1">
                   <p className="font-semibold text-amber-900">创建/接管前请确认：</p>
@@ -11530,37 +11593,41 @@ export default function App() {
                 <>
                   {cloudAuthAction === 'login' && (
                     <>
-                      <input
-                        value={cloudAuthForm.identifier || cloudAuthForm.email}
-                        onChange={(event) => setCloudAuthForm((prev) => ({
-                          ...prev,
-                          identifier: event.target.value,
-                          email: event.target.value.includes('@') ? event.target.value : prev.email,
-                        }))}
-                        placeholder="手机号或邮箱"
-                        className="w-full bg-gray-50 border border-gray-200 rounded-2xl px-4 py-3 text-[14px] outline-none md:col-span-2"
-                      />
+                      {labeledField('手机号或邮箱', (
+                        <input
+                          value={cloudAuthForm.identifier || cloudAuthForm.email}
+                          onChange={(event) => setCloudAuthForm((prev) => ({
+                            ...prev,
+                            identifier: event.target.value,
+                            email: event.target.value.includes('@') ? event.target.value : prev.email,
+                          }))}
+                          placeholder="填写已加入组织的手机号或邮箱"
+                          className="w-full bg-gray-50 border border-gray-200 rounded-2xl px-4 py-3 text-[14px] outline-none"
+                        />
+                      ), undefined, 'md:col-span-2')}
                       <div className="md:col-span-2 rounded-2xl border border-blue-100 bg-blue-50/70 px-4 py-3 text-[12px] leading-5 text-blue-700">
                         换电脑或重装后，用已加入组织的手机号/邮箱和密码登录即可，不需要邀请码，也不要走“创建/接管”。
                       </div>
                     </>
                   )}
-                  {cloudAuthAction === 'create' && (
-                    <input
-                      value={cloudAuthForm.organizationName}
-                      onChange={(event) => setCloudAuthForm((prev) => ({ ...prev, organizationName: event.target.value }))}
-                      placeholder="组织名称（创建新组织时填写；接管空云端可留空）"
-                      className="w-full bg-gray-50 border border-gray-200 rounded-2xl px-4 py-3 text-[14px] outline-none md:col-span-2"
-                    />
-                  )}
+                  {cloudAuthAction === 'create' && labeledField('组织名称', (
+                      <input
+                        value={cloudAuthForm.organizationName}
+                        onChange={(event) => setCloudAuthForm((prev) => ({ ...prev, organizationName: event.target.value }))}
+                        placeholder="创建新组织时填写；接管空云端可留空"
+                        className="w-full bg-gray-50 border border-gray-200 rounded-2xl px-4 py-3 text-[14px] outline-none"
+                      />
+                    ), undefined, 'md:col-span-2')}
                   {cloudAuthAction === 'join' && (
                     <>
-                      <input
-                        value={cloudAuthForm.inviteCode}
-                        onChange={(event) => setCloudAuthForm((prev) => ({ ...prev, inviteCode: event.target.value }))}
-                        placeholder="组织 / 部门邀请码"
-                        className="w-full bg-gray-50 border border-gray-200 rounded-2xl px-4 py-3 text-[14px] outline-none md:col-span-2"
-                      />
+                      {labeledField('组织 / 部门邀请码', (
+                        <input
+                          value={cloudAuthForm.inviteCode}
+                          onChange={(event) => setCloudAuthForm((prev) => ({ ...prev, inviteCode: event.target.value }))}
+                          placeholder="填写管理员发给你的邀请码"
+                          className="w-full bg-gray-50 border border-gray-200 rounded-2xl px-4 py-3 text-[14px] outline-none"
+                        />
+                      ), undefined, 'md:col-span-2')}
                       {cloudAuthInviteStatus.message && (
                         <div className={`md:col-span-2 rounded-2xl border px-4 py-3 text-[12px] ${cloudAuthInviteStatus.valid === false ? 'border-red-200 bg-red-50 text-red-700' : 'border-blue-200 bg-blue-50 text-blue-700'}`}>
                           {cloudAuthInviteStatus.loading ? '正在识别邀请码...' : cloudAuthInviteStatus.message}
@@ -11570,44 +11637,54 @@ export default function App() {
                   )}
                   {cloudAuthAction !== 'login' && (
                     <>
-                      <input
-                        value={cloudAuthForm.fullName}
-                        onChange={(event) => setCloudAuthForm((prev) => ({ ...prev, fullName: event.target.value }))}
-                        placeholder="称呼"
-                        className="w-full bg-gray-50 border border-gray-200 rounded-2xl px-4 py-3 text-[14px] outline-none"
-                      />
-                      <input
-                        value={cloudAuthForm.phone}
-                        onChange={(event) => setCloudAuthForm((prev) => ({ ...prev, phone: event.target.value }))}
-                        placeholder="手机号（必填，建议填写飞书账号绑定手机号）"
-                        className="w-full bg-gray-50 border border-gray-200 rounded-2xl px-4 py-3 text-[14px] outline-none"
-                      />
-                      <input
-                        value={cloudAuthForm.email}
-                        onChange={(event) => setCloudAuthForm((prev) => ({ ...prev, email: event.target.value }))}
-                        placeholder="邮箱"
-                        className="w-full bg-gray-50 border border-gray-200 rounded-2xl px-4 py-3 text-[14px] outline-none"
-                      />
+                      {labeledField('称呼 / 姓名', (
+                        <input
+                          value={cloudAuthForm.fullName}
+                          onChange={(event) => setCloudAuthForm((prev) => ({ ...prev, fullName: sanitizePersonNameInput(event.target.value) }))}
+                          placeholder="填写你在组织里的称呼"
+                          className="w-full bg-gray-50 border border-gray-200 rounded-2xl px-4 py-3 text-[14px] outline-none"
+                        />
+                      ))}
+                      {labeledField('手机号', (
+                        <input
+                          value={cloudAuthForm.phone}
+                          onChange={(event) => setCloudAuthForm((prev) => ({ ...prev, phone: event.target.value }))}
+                          placeholder="建议填写飞书账号绑定手机号"
+                          className="w-full bg-gray-50 border border-gray-200 rounded-2xl px-4 py-3 text-[14px] outline-none"
+                        />
+                      ))}
+                      {labeledField('邮箱', (
+                        <input
+                          value={cloudAuthForm.email}
+                          onChange={(event) => setCloudAuthForm((prev) => ({ ...prev, email: event.target.value }))}
+                          placeholder="用于登录和接收通知"
+                          className="w-full bg-gray-50 border border-gray-200 rounded-2xl px-4 py-3 text-[14px] outline-none"
+                        />
+                      ))}
                       <p className="md:col-span-2 -mt-2 text-[11px] leading-5 text-gray-500">
                         建议填写登录飞书时绑定的手机号，后续任务成员匹配和提醒会更稳定。
                       </p>
                     </>
                   )}
-                  <input
-                    type={cloudAuthShowPassword ? 'text' : 'password'}
-                    value={cloudAuthForm.password}
-                    onChange={(event) => setCloudAuthForm((prev) => ({ ...prev, password: event.target.value }))}
-                    placeholder="密码（至少 8 位）"
-                    className="w-full bg-gray-50 border border-gray-200 rounded-2xl px-4 py-3 text-[14px] outline-none"
-                  />
+                  {labeledField('密码', (
+                    <input
+                      type={cloudAuthShowPassword ? 'text' : 'password'}
+                      value={cloudAuthForm.password}
+                      onChange={(event) => setCloudAuthForm((prev) => ({ ...prev, password: event.target.value }))}
+                      placeholder="至少 8 位"
+                      className="w-full bg-gray-50 border border-gray-200 rounded-2xl px-4 py-3 text-[14px] outline-none"
+                    />
+                  ))}
                   {cloudAuthAction === 'join' && (
                     <>
-                      <input
-                        value={cloudAuthForm.jobTitle}
-                        onChange={(event) => setCloudAuthForm((prev) => ({ ...prev, jobTitle: event.target.value }))}
-                        placeholder="职位（可选）"
-                        className="w-full bg-gray-50 border border-gray-200 rounded-2xl px-4 py-3 text-[14px] outline-none md:col-span-2"
-                      />
+                      {labeledField('职位', (
+                        <input
+                          value={cloudAuthForm.jobTitle}
+                          onChange={(event) => setCloudAuthForm((prev) => ({ ...prev, jobTitle: event.target.value }))}
+                          placeholder="可选，管理员后续也可以调整"
+                          className="w-full bg-gray-50 border border-gray-200 rounded-2xl px-4 py-3 text-[14px] outline-none"
+                        />
+                      ), undefined, 'md:col-span-2')}
                     </>
                   )}
                 </>
@@ -14112,12 +14189,24 @@ export default function App() {
       };
     };
 
-    const upsertLocalTask = (nextTask: Task, replaceId?: string | null) => {
+    const currentTaskSandboxId = () => activeSandboxIdRef.current || workspacesState?.activeSandboxId || '';
+
+    const upsertLocalTask = (
+      nextTask: Task,
+      replaceId?: string | null,
+      options?: { sandboxId?: string | null; updateVisibleState?: boolean },
+    ) => {
+      const targetSandboxId = (options?.sandboxId || currentTaskSandboxId() || '').trim();
       if (replaceId && replaceId.startsWith('local-draft:')) {
         optimisticTasksRef.current.delete(replaceId);
-        optimisticTasksRef.current.set(nextTask.id, { task: nextTask, addedAt: Date.now(), fromLocalDraft: true });
+        optimisticTasksRef.current.set(nextTask.id, { task: nextTask, addedAt: Date.now(), fromLocalDraft: true, sandboxId: targetSandboxId });
       } else if (nextTask.id.startsWith('local-draft:')) {
-        optimisticTasksRef.current.set(nextTask.id, { task: nextTask, addedAt: Date.now(), fromLocalDraft: true });
+        optimisticTasksRef.current.set(nextTask.id, { task: nextTask, addedAt: Date.now(), fromLocalDraft: true, sandboxId: targetSandboxId });
+      }
+      const shouldUpdateVisibleState = options?.updateVisibleState !== false
+        && (!targetSandboxId || targetSandboxId === currentTaskSandboxId());
+      if (!shouldUpdateVisibleState) {
+        return;
       }
       setTasks((prev) => {
         let matched = false;
@@ -14307,6 +14396,9 @@ export default function App() {
         return;
       }
       setIsSavingTask(true);
+      const saveSandboxId = currentTaskSandboxId();
+      pendingTaskSaveCountRef.current += 1;
+      setPendingTaskSaveCount(pendingTaskSaveCountRef.current);
       const combinedDueDate = combineTaskDueDateTime(editingTask.dueDate, editingTask.dueTime);
       const hasScheduledTime = Boolean((editingTask.dueTime || '').trim());
       const scheduledStartAt = hasScheduledTime ? combinedDueDate || null : null;
@@ -14404,7 +14496,7 @@ export default function App() {
         }
         : optimisticTask;
 
-      upsertLocalTask(optimisticTaskWithPendingAttachments as Task, existingTaskSnapshot?.id || null);
+      upsertLocalTask(optimisticTaskWithPendingAttachments as Task, existingTaskSnapshot?.id || null, { sandboxId: saveSandboxId });
       if (taskCalendarDisplayMode !== 'week') {
         focusCalendarOnTaskDate(payload.dueDate || combinedDueDate, payload.ddl);
       }
@@ -14413,9 +14505,16 @@ export default function App() {
       void (async () => {
         try {
           const savedTask = draftSnapshot.id
-            ? await updateTask(draftSnapshot.id, payload)
-            : await createTask(payload);
-          upsertLocalTask(savedTask, draftSnapshot.id ? draftSnapshot.id : optimisticTaskId);
+            ? await updateTask(draftSnapshot.id, payload, { sandboxId: saveSandboxId })
+            : await createTask(payload, { sandboxId: saveSandboxId });
+          const saveWorkspaceStillVisible = !saveSandboxId || saveSandboxId === currentTaskSandboxId();
+          upsertLocalTask(savedTask, draftSnapshot.id ? draftSnapshot.id : optimisticTaskId, {
+            sandboxId: saveSandboxId,
+            updateVisibleState: saveWorkspaceStillVisible,
+          });
+          if (!saveWorkspaceStillVisible) {
+            return;
+          }
 
           // 如果是"点录音按钮触发的保存"，拿到真 taskId 后立刻启动录音
           if (pendingRecordingStartRef.current?.requested) {
@@ -14543,7 +14642,9 @@ export default function App() {
             }
           }
 
-          void loadTaskBlock();
+          if (saveWorkspaceStillVisible) {
+            void loadTaskBlock();
+          }
           if ((savedTask?.eventLineId || draftSnapshot.eventLineId) && activeEventLine?.eventLine.id === (savedTask?.eventLineId || draftSnapshot.eventLineId)) {
             void openEventLineDetail(savedTask?.eventLineId || draftSnapshot.eventLineId);
           }
@@ -14563,9 +14664,13 @@ export default function App() {
         } catch (error) {
           // Local-first: backend saves to local DB first, so failures are rare.
           // If create fails, remove the optimistic draft so it cannot be edited as a real task.
+          const saveWorkspaceStillVisible = !saveSandboxId || saveSandboxId === currentTaskSandboxId();
           if (draftSnapshot.id && existingTaskSnapshot) {
-            upsertLocalTask(existingTaskSnapshot, draftSnapshot.id);
-            if (!isTaskModalOpenRef.current) {
+            upsertLocalTask(existingTaskSnapshot, draftSnapshot.id, {
+              sandboxId: saveSandboxId,
+              updateVisibleState: saveWorkspaceStillVisible,
+            });
+            if (saveWorkspaceStillVisible && !isTaskModalOpenRef.current) {
               const parsedDate = parseTaskDateValue(draftSnapshot.dueDate);
               setDuePickerMonth(parsedDate ? new Date(parsedDate.getFullYear(), parsedDate.getMonth(), 1) : getTodayCalendarState().calendarDate);
               setEditingTask(draftSnapshot);
@@ -14574,13 +14679,15 @@ export default function App() {
               setPendingSmartBriefDraftSource(smartBriefSourceSnapshot);
               setIsTaskModalOpen(true);
             }
-            flash('error', `${error instanceof Error ? error.message : '更新失败'}。草稿已恢复，请检查后重试。`);
+            if (saveWorkspaceStillVisible) {
+              flash('error', `${error instanceof Error ? error.message : '更新失败'}。草稿已恢复，请检查后重试。`);
+            }
           } else {
             removeOptimisticTask(optimisticTaskId);
             // 仅当当前没有别的任务编辑器打开时，才把失败的草稿恢复到 modal。
             // 否则 A 的失败回调会强制用 A 的 draftSnapshot 覆盖正在编辑的 B 的内容。
             // 跟上面 update 分支的 guard 对齐。
-            if (!isTaskModalOpenRef.current) {
+            if (saveWorkspaceStillVisible && !isTaskModalOpenRef.current) {
               const parsedDate = parseTaskDateValue(draftSnapshot.dueDate);
               setDuePickerMonth(parsedDate ? new Date(parsedDate.getFullYear(), parsedDate.getMonth(), 1) : getTodayCalendarState().calendarDate);
               setEditingTask(draftSnapshot);
@@ -14589,8 +14696,13 @@ export default function App() {
               setPendingSmartBriefDraftSource(smartBriefSourceSnapshot);
               setIsTaskModalOpen(true);
             }
-            flash('error', `${error instanceof Error ? error.message : '创建失败'}。草稿已恢复，请检查后重试。`);
+            if (saveWorkspaceStillVisible) {
+              flash('error', `${error instanceof Error ? error.message : '创建失败'}。草稿已恢复，请检查后重试。`);
+            }
           }
+        } finally {
+          pendingTaskSaveCountRef.current = Math.max(0, pendingTaskSaveCountRef.current - 1);
+          setPendingTaskSaveCount(pendingTaskSaveCountRef.current);
 	        }
 	      })();
 	    };
@@ -31298,10 +31410,10 @@ export default function App() {
                   eyebrow: 'SYNC · 内部同步',
                   title: '维护模式开关 · GitHub main 协作',
                   helper: '仅连接益语智库官方云的内部账号显示。普通用户更新软件只走“关于本软件”里的检查更新，不需要 GitHub 授权。',
-                  statusChip: currentSessionUser?.primaryRole === 'admin'
-                    ? { text: 'Admin 直通', tone: 'success' }
-                    : maintenanceModeStatus?.active
+                  statusChip: maintenanceModeStatus?.active
                       ? { text: '已打开', tone: 'success' }
+                      : maintenanceModeStatus?.canEnter
+                        ? { text: '可打开', tone: 'success' }
                       : { text: '需授权', tone: 'neutral' },
                   children: (
                     <MaintenanceSyncPanel

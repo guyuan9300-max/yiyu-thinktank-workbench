@@ -54,7 +54,11 @@ class Database:
         self._in_transaction = False    # Sprint 2 事务支持: True 时 execute 不 commit
         self._tx_depth = 0              # 嵌套深度: 0=无事务, >0=有事务
         self._tx_failed = False         # 标记本事务已被某层 rollback 标失败, 外层 commit 时改 rollback
-        self.conn = sqlite3.connect(self.db_path, check_same_thread=False)
+        # Use explicit transaction control. Python's default sqlite mode opens
+        # implicit transactions for DML, which can collide with our explicit
+        # BEGIN in background threads and surface as "cannot start a transaction
+        # within a transaction".
+        self.conn = sqlite3.connect(self.db_path, check_same_thread=False, isolation_level=None)
         self.conn.row_factory = sqlite3.Row
         self._init_schema()
 

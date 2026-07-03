@@ -138,6 +138,8 @@ export interface SandboxWorkspaceRecord {
   status: SandboxStatus;
   cloudApiUrl: string;
   cloudConnected: boolean;
+  cloudConnectionStatus?: 'not_configured' | 'signed_out' | 'needs_login' | 'connected';
+  cloudNeedsLogin?: boolean;
   cloudUserFullName?: string | null;
   cloudUserEmail?: string | null;
   organizationId?: string | null;
@@ -298,23 +300,6 @@ export interface MaintenanceModeStatus {
   organizationId?: string | null;
   userId?: string | null;
   reason?: string | null;
-}
-
-export interface MaintenanceMemberPermission {
-  userId: string;
-  fullName: string;
-  email: string;
-  primaryRole: EmployeeRole;
-  authorized: boolean;
-  canManagePermissions: boolean;
-}
-
-export interface MaintenancePermissionUpdatePayload {
-  members: Array<{
-    userId: string;
-    authorized: boolean;
-    canManagePermissions: boolean;
-  }>;
 }
 
 export interface DepartmentOption {

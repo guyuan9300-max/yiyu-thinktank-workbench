@@ -487,6 +487,7 @@ def compute_pulse_summary_for_clients(
     *,
     now: datetime | None = None,
     exclude_smoke: bool = True,
+    sandbox_id: str | None = None,
 ) -> list[dict[str, Any]]:
     """计算所有客户的本周脉搏摘要 - 用于本周概览顶部.
 
@@ -509,13 +510,20 @@ def compute_pulse_summary_for_clients(
 
     try:
         # 冷冻项目不参与战略脉冲计算 — 它们退出所有自动周聚合
+        params: list[object] = []
+        sandbox_clause = ""
+        if sandbox_id is not None:
+            sandbox_clause = "AND COALESCE(sandbox_id, '') = ?"
+            params.append(sandbox_id)
         client_rows = db.execute(
-            """
+            f"""
             SELECT id, name, stage, alias
             FROM clients
             WHERE frozen_at IS NULL
+              {sandbox_clause}
             ORDER BY updated_at DESC
-            """
+            """,
+            tuple(params),
         ).fetchall()
     except sqlite3.Error:
         return []

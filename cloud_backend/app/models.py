@@ -553,25 +553,6 @@ class MaintenanceModeStatus(BaseModel):
     reason: str | None = None
 
 
-class MaintenanceMemberPermission(BaseModel):
-    userId: str
-    fullName: str
-    email: str
-    primaryRole: PrimaryRole
-    authorized: bool
-    canManagePermissions: bool
-
-
-class MaintenancePermissionMemberPayload(BaseModel):
-    userId: str
-    authorized: bool
-    canManagePermissions: bool = False
-
-
-class MaintenancePermissionUpdatePayload(BaseModel):
-    members: list[MaintenancePermissionMemberPayload] = Field(default_factory=list)
-
-
 class MaintenanceAuditPayload(BaseModel):
     action: str
     detail: dict[str, object] = Field(default_factory=dict)

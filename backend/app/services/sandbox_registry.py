@@ -54,6 +54,20 @@ def _load_json_object(raw: str | None) -> dict[str, Any]:
     return parsed if isinstance(parsed, dict) else {}
 
 
+def _session_organization_id(raw: str | None) -> str:
+    return str(_load_json_object(raw).get("organizationId") or "").strip()
+
+
+def _sandbox_cloud_url_from_conn(conn: Any, sandbox_id: str, fallback: str = "") -> str:
+    row = conn.execute(
+        "SELECT value FROM sandbox_settings WHERE sandbox_id = ? AND key = 'cloud_api_url'",
+        (sandbox_id,),
+    ).fetchone()
+    if row:
+        return _normalize_cloud_api_url(str(row["value"] if isinstance(row, Row) else row[0] or ""))
+    return _normalize_cloud_api_url(fallback)
+
+
 def _cloud_session_user(db: Database) -> dict[str, Any]:
     return _load_json_object(db.get_setting("cloud_session_user", ""))
 
@@ -163,22 +177,83 @@ def _write_sandbox_setting_to_conn(conn: Any, sandbox_id: str, key: str, value: 
 
 
 def _copy_legacy_cloud_settings_if_needed(conn: Any, sandbox_id: str) -> None:
-    sandbox_row = conn.execute("SELECT is_legacy_default FROM sandboxes WHERE id = ?", (sandbox_id,)).fetchone()
-    is_legacy_default = bool(sandbox_row and int((sandbox_row["is_legacy_default"] if isinstance(sandbox_row, Row) else sandbox_row[0]) or 0))
-    if not is_legacy_default:
+    sandbox_row = conn.execute(
+        "SELECT kind, cloud_api_url, organization_id, is_legacy_default FROM sandboxes WHERE id = ?",
+        (sandbox_id,),
+    ).fetchone()
+    if not sandbox_row:
+        return
+    kind = str(sandbox_row["kind"] if isinstance(sandbox_row, Row) else sandbox_row[0] or "")
+    if kind != "organization":
+        return
+    sandbox_cloud_api_url = _sandbox_cloud_url_from_conn(
+        conn,
+        sandbox_id,
+        str(sandbox_row["cloud_api_url"] if isinstance(sandbox_row, Row) else sandbox_row[1] or ""),
+    )
+    sandbox_organization_id = str(
+        sandbox_row["organization_id"] if isinstance(sandbox_row, Row) else sandbox_row[2] or ""
+    ).strip()
+    is_legacy_default = bool(
+        sandbox_row
+        and int((sandbox_row["is_legacy_default"] if isinstance(sandbox_row, Row) else sandbox_row[3]) or 0)
+    )
+    legacy_session_row = conn.execute("SELECT value FROM settings WHERE key = 'cloud_session_user'").fetchone()
+    legacy_session_raw = (
+        str(legacy_session_row["value"] if isinstance(legacy_session_row, Row) else legacy_session_row[0])
+        if legacy_session_row
+        else ""
+    )
+    legacy_organization_id = _session_organization_id(legacy_session_raw)
+    legacy_cloud_row = conn.execute("SELECT value FROM settings WHERE key = 'cloud_api_url'").fetchone()
+    legacy_cloud_api_url = _normalize_cloud_api_url(
+        str(legacy_cloud_row["value"] if isinstance(legacy_cloud_row, Row) else legacy_cloud_row[0])
+        if legacy_cloud_row
+        else ""
+    )
+    legacy_matches_sandbox = bool(
+        legacy_organization_id
+        and sandbox_organization_id
+        and legacy_organization_id == sandbox_organization_id
+        and (not sandbox_cloud_api_url or not legacy_cloud_api_url or legacy_cloud_api_url == sandbox_cloud_api_url)
+    )
+    existing_session_row = conn.execute(
+        "SELECT value FROM sandbox_settings WHERE sandbox_id = ? AND key = 'cloud_session_user'",
+        (sandbox_id,),
+    ).fetchone()
+    existing_session_raw = (
+        str(existing_session_row["value"] if isinstance(existing_session_row, Row) else existing_session_row[0])
+        if existing_session_row
+        else ""
+    )
+    existing_organization_id = _session_organization_id(existing_session_raw)
+    if existing_organization_id and sandbox_organization_id and existing_organization_id != sandbox_organization_id:
+        if legacy_matches_sandbox:
+            for key in CLOUD_SANDBOX_SETTING_KEYS:
+                legacy_row = conn.execute("SELECT value FROM settings WHERE key = ?", (key,)).fetchone()
+                legacy_value = str(legacy_row["value"] if isinstance(legacy_row, Row) else legacy_row[0]) if legacy_row else ""
+                _write_sandbox_setting_to_conn(conn, sandbox_id, key, legacy_value)
+        else:
+            for key in ("cloud_access_token", "cloud_refresh_token", "cloud_session_user"):
+                _write_sandbox_setting_to_conn(conn, sandbox_id, key, "")
+        return
+    if not is_legacy_default and not legacy_matches_sandbox:
         return
     row = conn.execute(
         "SELECT COUNT(1) AS count FROM sandbox_settings WHERE sandbox_id = ? AND key IN (?, ?, ?, ?)",
         (sandbox_id, *CLOUD_SANDBOX_SETTING_KEYS),
     ).fetchone()
     existing_count = int((row["count"] if isinstance(row, Row) else row[0]) or 0) if row else 0
-    if existing_count > 0:
+    if existing_count > 0 and not legacy_matches_sandbox:
+        return
+    if existing_count > 0 and existing_organization_id == sandbox_organization_id:
+        return
+    if not legacy_matches_sandbox:
         return
     for key in CLOUD_SANDBOX_SETTING_KEYS:
         legacy_row = conn.execute("SELECT value FROM settings WHERE key = ?", (key,)).fetchone()
         legacy_value = str(legacy_row["value"] if isinstance(legacy_row, Row) else legacy_row[0]) if legacy_row else ""
-        if legacy_value:
-            _write_sandbox_setting_to_conn(conn, sandbox_id, key, legacy_value)
+        _write_sandbox_setting_to_conn(conn, sandbox_id, key, legacy_value)
 
 
 def _conn_has_column(conn: Any, table: str, column: str) -> bool:
@@ -499,7 +574,10 @@ def ensure_sandbox_registry(db: Database) -> str:
             """
             SELECT id FROM sandboxes
             WHERE status = 'active'
-            ORDER BY is_legacy_default DESC, COALESCE(last_active_at, created_at) DESC, created_at ASC
+            ORDER BY
+              CASE WHEN kind = 'organization' THEN 0 ELSE 1 END,
+              COALESCE(last_active_at, created_at) DESC,
+              created_at ASC
             LIMIT 1
             """
         ).fetchone()
@@ -537,16 +615,32 @@ def _record_from_row(db: Database, row: Row) -> SandboxWorkspaceRecord:
     access_token = get_sandbox_setting(db, str(row["id"]), "cloud_access_token", "")
     refresh_token = get_sandbox_setting(db, str(row["id"]), "cloud_refresh_token", "")
     session_user = _load_json_object(get_sandbox_setting(db, str(row["id"]), "cloud_session_user", ""))
+    organization_id = str(row["organization_id"]) if row["organization_id"] else None
+    session_organization_id = str(session_user.get("organizationId") or "").strip()
+    if organization_id and session_organization_id and session_organization_id != organization_id:
+        session_user = {}
+        access_token = ""
+        refresh_token = ""
+    has_cloud_url = bool((cloud_api_url or "").strip())
+    has_token = bool(access_token or refresh_token)
+    if not has_cloud_url:
+        connection_status = "not_configured"
+    elif has_token:
+        connection_status = "connected"
+    else:
+        connection_status = "needs_login"
     return SandboxWorkspaceRecord(
         id=str(row["id"]),
         kind=str(row["kind"]),  # type: ignore[arg-type]
         name=str(row["name"]),
         status=str(row["status"]),  # type: ignore[arg-type]
         cloudApiUrl=cloud_api_url,
-        cloudConnected=bool(access_token or refresh_token or session_user),
+        cloudConnected=has_token,
+        cloudConnectionStatus=connection_status,  # type: ignore[arg-type]
+        cloudNeedsLogin=connection_status == "needs_login",
         cloudUserFullName=str(session_user.get("fullName") or "") or None,
         cloudUserEmail=str(session_user.get("email") or "") or None,
-        organizationId=str(row["organization_id"]) if row["organization_id"] else None,
+        organizationId=organization_id,
         organizationName=str(row["organization_name"]) if row["organization_name"] else None,
         localIdentityId=str(row["local_identity_id"]) if row["local_identity_id"] else None,
         isLegacyDefault=bool(row["is_legacy_default"]),
@@ -564,7 +658,7 @@ def list_sandboxes(db: Database) -> list[SandboxWorkspaceRecord]:
         SELECT * FROM sandboxes
         WHERE kind = 'organization'
           AND status = 'active'
-        ORDER BY is_legacy_default DESC, COALESCE(last_active_at, created_at) DESC, created_at ASC
+        ORDER BY COALESCE(last_active_at, created_at) DESC, created_at ASC
         """
     )
     return [_record_from_row(db, row) for row in rows]

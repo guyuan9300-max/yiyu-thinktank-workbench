@@ -12,6 +12,7 @@ from app.db import Database  # noqa: E402
 from app.main import create_app  # noqa: E402
 from app.services.sandbox_registry import (  # noqa: E402
     DEFAULT_LOCAL_SANDBOX_ID,
+    ensure_organization_sandbox_for_session,
     ensure_sandbox_registry,
     set_sandbox_setting,
 )
@@ -249,7 +250,15 @@ def test_dashboard_and_handbook_are_filtered_by_active_workspace(tmp_path: Path)
         (local_client_id, "overview", "本机 DNA", "text", "text", "summary", "local.md", "hash-local", "2026-06-22T00:00:00Z", "tester"),
     )
 
-    org_a_id = create_workspace(client, "org-stats-a")
+    org_a = ensure_organization_sandbox_for_session(
+        db,
+        organization_id="org-stats",
+        organization_name="统计组织",
+        cloud_api_url="https://org-stats-a.example.test",
+    )
+    org_a_id = org_a.id
+    set_sandbox_setting(db, org_a_id, "cloud_access_token", "token-org-stats-a")
+    set_sandbox_setting(db, org_a_id, "cloud_refresh_token", "refresh-org-stats-a")
     set_sandbox_setting(
         db,
         org_a_id,
@@ -281,7 +290,15 @@ def test_dashboard_and_handbook_are_filtered_by_active_workspace(tmp_path: Path)
     assert pulse_a["handbookCount"] == 1
     assert pulse_a["dnaCount"] == 1
 
-    org_b_id = create_workspace(client, "org-stats-b")
+    org_b = ensure_organization_sandbox_for_session(
+        db,
+        organization_id="org-stats-b",
+        organization_name="统计组织 B",
+        cloud_api_url="https://org-stats-b.example.test",
+    )
+    org_b_id = org_b.id
+    set_sandbox_setting(db, org_b_id, "cloud_access_token", "token-org-stats-b")
+    set_sandbox_setting(db, org_b_id, "cloud_refresh_token", "refresh-org-stats-b")
     set_sandbox_setting(
         db,
         org_b_id,

@@ -107,9 +107,7 @@ from app.models import (
     ChangePasswordPayload,
     LoginPayload,
     MaintenanceAuditPayload,
-    MaintenanceMemberPermission,
     MaintenanceModeStatus,
-    MaintenancePermissionUpdatePayload,
     ManagementSignalCardRecord,
     MentionCandidate,
     MobileCapabilityRecord,
@@ -4628,34 +4626,10 @@ def _require_approved_member(app: FastAPI, authorization: str | None = Header(de
     return user
 
 
-def _maintenance_permission_row(state: AppState, organization_id: str, user_id: str):
-    return state.db.fetchone(
-        """
-        SELECT *
-        FROM organization_maintenance_permissions
-        WHERE organization_id = ? AND user_id = ? AND revoked_at IS NULL
-        """,
-        (organization_id, user_id),
-    )
-
-
 def _can_enter_maintenance_mode(state: AppState, user: SessionUser) -> bool:
     if user.membershipStatus != "approved" or user.accountStatus != "approved":
         return False
-    # 组织负责人 (organization_lead) 等同于 admin 拥有维护模式超级权限。
-    # _is_organization_lead 内部已经处理 admin 快路径,不需要再单独判断。
-    if _is_organization_lead(state, user.organizationId, user.id, user.primaryRole):
-        return True
-    return _maintenance_permission_row(state, user.organizationId, user.id) is not None
-
-
-def _can_manage_maintenance_permissions(state: AppState, user: SessionUser) -> bool:
-    if user.membershipStatus != "approved" or user.accountStatus != "approved":
-        return False
-    if _is_organization_lead(state, user.organizationId, user.id, user.primaryRole):
-        return True
-    row = _maintenance_permission_row(state, user.organizationId, user.id)
-    return bool(row and int(row["can_manage_permissions"] or 0))
+    return user.organizationId == DEFAULT_ORG_ID and user.primaryRole == "admin"
 
 
 def _maintenance_status_record(state: AppState, user: SessionUser, *, active: bool = False, reason: str | None = None) -> MaintenanceModeStatus:
@@ -4664,28 +4638,10 @@ def _maintenance_status_record(state: AppState, user: SessionUser, *, active: bo
         available=user.membershipStatus == "approved" and user.accountStatus == "approved",
         active=bool(active and can_enter),
         canEnter=can_enter,
-        canManagePermissions=_can_manage_maintenance_permissions(state, user),
+        canManagePermissions=False,
         organizationId=user.organizationId,
         userId=user.id,
         reason=reason,
-    )
-
-
-def _require_maintenance_permission_manager(state: AppState, user: SessionUser) -> None:
-    if not _can_manage_maintenance_permissions(state, user):
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="当前账号无维护权限管理权限")
-
-
-def _maintenance_member_record(state: AppState, row) -> MaintenanceMemberPermission:
-    permission = _maintenance_permission_row(state, str(row["organization_id"]), str(row["id"]))
-    is_admin = str(row["primary_role"]) == "admin"
-    return MaintenanceMemberPermission(
-        userId=str(row["id"]),
-        fullName=str(row["full_name"]),
-        email=str(row["email"]),
-        primaryRole=str(row["primary_role"]),
-        authorized=is_admin or permission is not None,
-        canManagePermissions=is_admin or bool(permission and int(permission["can_manage_permissions"] or 0)),
     )
 
 
@@ -16061,78 +16017,6 @@ def create_app() -> FastAPI:
         )
         return {"ok": True}
 
-    @app.get("/api/v1/admin/maintenance-mode/members", response_model=list[MaintenanceMemberPermission])
-    def get_maintenance_mode_members(
-        current_user: SessionUser = Depends(lambda authorization=Header(default=None): _require_auth(app, authorization)),
-    ) -> list[MaintenanceMemberPermission]:
-        _require_maintenance_permission_manager(state, current_user)
-        return [
-            _maintenance_member_record(state, row)
-            for row in state.db.fetchall(
-                """
-                SELECT *
-                FROM employee_accounts
-                WHERE organization_id = ?
-                ORDER BY CASE WHEN primary_role = 'admin' THEN 0 ELSE 1 END, full_name COLLATE NOCASE ASC
-                """,
-                (current_user.organizationId,),
-            )
-        ]
-
-    @app.patch("/api/v1/admin/maintenance-mode/members", response_model=list[MaintenanceMemberPermission])
-    def update_maintenance_mode_members(
-        payload: MaintenancePermissionUpdatePayload,
-        current_user: SessionUser = Depends(lambda authorization=Header(default=None): _require_auth(app, authorization)),
-    ) -> list[MaintenanceMemberPermission]:
-        _require_maintenance_permission_manager(state, current_user)
-        timestamp = now_iso()
-        changed: list[dict[str, object]] = []
-        for member in payload.members:
-            user_id = member.userId.strip()
-            if not user_id:
-                continue
-            row = state.db.fetchone(
-                "SELECT * FROM employee_accounts WHERE organization_id = ? AND id = ?",
-                (current_user.organizationId, user_id),
-            )
-            if not row:
-                raise HTTPException(status_code=404, detail="成员不属于当前组织")
-            if str(row["primary_role"]) == "admin":
-                continue
-            if member.authorized:
-                state.db.execute(
-                    """
-                    INSERT INTO organization_maintenance_permissions(
-                        organization_id, user_id, granted_by, granted_at, revoked_at, can_manage_permissions
-                    ) VALUES(?, ?, ?, ?, NULL, ?)
-                    ON CONFLICT(organization_id, user_id) DO UPDATE SET
-                        granted_by = excluded.granted_by,
-                        granted_at = excluded.granted_at,
-                        revoked_at = NULL,
-                        can_manage_permissions = excluded.can_manage_permissions
-                    """,
-                    (current_user.organizationId, user_id, current_user.id, timestamp, 1 if member.canManagePermissions else 0),
-                )
-            else:
-                state.db.execute(
-                    """
-                    UPDATE organization_maintenance_permissions
-                    SET revoked_at = ?, can_manage_permissions = 0
-                    WHERE organization_id = ? AND user_id = ?
-                    """,
-                    (timestamp, current_user.organizationId, user_id),
-                )
-            changed.append({"userId": user_id, "authorized": member.authorized, "canManagePermissions": member.canManagePermissions})
-        if changed:
-            _log_audit(
-                state,
-                "maintenance.permissions.update",
-                actor_user_id=current_user.id,
-                target_user_id=None,
-                detail={"organizationId": current_user.organizationId, "members": changed},
-            )
-        return get_maintenance_mode_members(current_user)
-
     @app.get("/api/v1/me/org-membership", response_model=OrgMembershipSummaryRecord)
     def get_org_membership(
         current_user: SessionUser = Depends(lambda authorization=Header(default=None): _require_auth(app, authorization)),
@@ -21313,11 +21197,19 @@ def create_app() -> FastAPI:
         payload: AdminResetPasswordPayload,
         current_user: SessionUser = Depends(lambda authorization=Header(default=None): _require_admin(app, authorization)),
     ) -> dict[str, str]:
-        _get_org_user_or_404(state, current_user.organizationId, employee_id)
+        row = _get_org_user_or_404(state, current_user.organizationId, employee_id)
+        timestamp = now_iso()
+        password_hash = hash_password(payload.newPassword)
         state.db.execute(
             "UPDATE employee_accounts SET password_hash = ?, updated_at = ? WHERE id = ? AND organization_id = ?",
-            (hash_password(payload.newPassword), now_iso(), employee_id, current_user.organizationId),
+            (password_hash, timestamp, employee_id, current_user.organizationId),
         )
+        identity_id = str(_row_get(row, "identity_id") or "").strip()
+        if identity_id:
+            state.db.execute(
+                "UPDATE cloud_identities SET password_hash = ?, updated_at = ? WHERE id = ?",
+                (password_hash, timestamp, identity_id),
+            )
         _log_audit(state, "admin_reset_password", actor_user_id=current_user.id, target_user_id=employee_id, detail={})
         return {"message": "密码已重置"}
 

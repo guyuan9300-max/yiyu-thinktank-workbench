@@ -115,9 +115,7 @@ import type {
   LegacyScanReport,
   IntelligenceProfile,
   LinkMaterialImportRun,
-  MaintenanceMemberPermission,
   MaintenanceModeStatus,
-  MaintenancePermissionUpdatePayload,
   MentionCandidate,
   OrgIntroDocumentSettings,
   OrgIntroDocumentUploadPayload,
@@ -1928,17 +1926,6 @@ export async function enterMaintenanceMode() {
 
 export async function exitMaintenanceMode() {
   return request<MaintenanceModeStatus>('/api/v1/maintenance-mode/exit', { method: 'POST' });
-}
-
-export async function getMaintenanceModeMembers() {
-  return request<MaintenanceMemberPermission[]>('/api/v1/admin/maintenance-mode/members');
-}
-
-export async function updateMaintenanceModeMembers(payload: MaintenancePermissionUpdatePayload) {
-  return request<MaintenanceMemberPermission[]>('/api/v1/admin/maintenance-mode/members', {
-    method: 'PATCH',
-    body: JSON.stringify(payload),
-  });
 }
 
 export async function updateSettings(payload: SettingsPayload) {
@@ -5181,16 +5168,27 @@ export async function deleteTaskTag(id: string) {
   });
 }
 
-export async function createTask(payload: TaskMutationPayload) {
+type WorkspaceScopedMutationOptions = {
+  sandboxId?: string | null;
+};
+
+function workspaceScopedHeaders(options?: WorkspaceScopedMutationOptions): HeadersInit | undefined {
+  const sandboxId = (options?.sandboxId || '').trim();
+  return sandboxId ? { 'X-Yiyu-Sandbox-Id': sandboxId } : undefined;
+}
+
+export async function createTask(payload: TaskMutationPayload, options?: WorkspaceScopedMutationOptions) {
   return request<Task>('/api/v1/tasks', {
     method: 'POST',
+    headers: workspaceScopedHeaders(options),
     body: JSON.stringify(payload),
   });
 }
 
-export async function updateTask(id: string, payload: Partial<TaskMutationPayload> & { status?: string }) {
+export async function updateTask(id: string, payload: Partial<TaskMutationPayload> & { status?: string }, options?: WorkspaceScopedMutationOptions) {
   return request<Task>(`/api/v1/tasks/${id}`, {
     method: 'PATCH',
+    headers: workspaceScopedHeaders(options),
     body: JSON.stringify(payload),
   });
 }
