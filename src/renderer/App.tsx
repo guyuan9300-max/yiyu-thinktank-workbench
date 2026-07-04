@@ -20154,6 +20154,10 @@ export default function App() {
             .map((c) => ({ id: c.id, name: c.name }))}
           currentUserId={currentSessionUser?.id || undefined}
           onPlanStarted={(info) => setActivePlanRun(info)}
+          taskLists={taskLists.map((l) => ({ id: l.id, name: l.name }))}
+          defaultListId={taskSettingsState?.defaultListId || taskLists[0]?.id || null}
+          currentOwnerName={currentSessionUser?.fullName || ''}
+          onBatchTasksCreated={(created) => setTasks((prev) => [...created, ...prev])}
         />
 
 

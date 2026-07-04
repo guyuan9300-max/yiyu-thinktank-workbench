@@ -32,6 +32,7 @@ import {
   type BotMemberRecord,
   type PlanProgressRecord,
 } from '../../lib/api';
+import type { Task } from '../../../shared/types';
 
 // A 写的 resolveBotByHandle 返回类型 (inline, 避免 import 错)
 type BotResolveResult = Awaited<ReturnType<typeof resolveBotByHandle>>;
@@ -43,6 +44,7 @@ import {
   type AICommandMode,
   type ParsedSmartCommand,
 } from '../../lib/aiCommand';
+import { BatchTaskImportPanel } from './BatchTaskImportPanel';
 
 type AICommandModalProps = {
   open: boolean;
@@ -61,6 +63,13 @@ type AICommandModalProps = {
    * 由 sidebar 系统状态那块的 PlanProgressMini 接管轮询, modal 自动关闭, 用户能继续做别的事.
    */
   onPlanStarted?: (info: { planId: string; botName: string }) => void;
+  /** 批量建任务: 可选清单 + 默认清单, 落库时 listId 兜底。 */
+  taskLists?: Array<{ id: string; name: string }>;
+  defaultListId?: string | null;
+  /** 批量建任务默认负责人名 (owner id 复用 currentUserId)。 */
+  currentOwnerName?: string;
+  /** 批量落库成功后把新任务一次性抬回 App 列表。 */
+  onBatchTasksCreated?: (created: Task[]) => void;
 };
 
 type Stage = 'input' | 'parsing' | 'bot_resolved' | 'plan_preview' | 'submitting' | 'submitted' | 'error';
@@ -74,8 +83,13 @@ export function AICommandModal({
   clientsForResolve = [],
   currentUserId,
   onPlanStarted,
+  taskLists = [],
+  defaultListId = null,
+  currentOwnerName = '',
+  onBatchTasksCreated,
 }: AICommandModalProps) {
   const [text, setText] = useState('');
+  const [batchMode, setBatchMode] = useState(false);
   const [stage, setStage] = useState<Stage>('input');
   const [mode, setMode] = useState<AICommandMode>('ai_command');
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
@@ -121,6 +135,7 @@ export function AICommandModal({
     } else {
       // 关闭时重置全部状态
       setText('');
+      setBatchMode(false);
       setStage('input');
       setMode('ai_command');
       setErrorMessage(null);
@@ -580,6 +595,21 @@ export function AICommandModal({
   // ── 渲染 ──────────────
   // (recommendedModules useMemo 已上移到 if (!open) 之前, 避免 Hooks Rule 违反)
 
+  // 批量建任务: 加法支线, 自带弹窗外壳, 单条 quick_task/ai_command 路径完全不受影响 (§M1)。
+  if (batchMode) {
+    return (
+      <BatchTaskImportPanel
+        taskLists={taskLists}
+        defaultListId={defaultListId}
+        currentUserId={currentUserId ?? null}
+        currentOwnerName={currentOwnerName}
+        onCreated={(created) => onBatchTasksCreated?.(created)}
+        onBack={() => setBatchMode(false)}
+        onClose={onClose}
+      />
+    );
+  }
+
   return (
     <div
       className="fixed inset-0 z-[60] flex items-center justify-center bg-gray-900/15 backdrop-blur-md transition-opacity"
@@ -638,6 +668,14 @@ export function AICommandModal({
                 }`}
               >
                 快速建任务
+              </button>
+              <button
+                type="button"
+                onClick={() => setBatchMode(true)}
+                className="px-2.5 py-1 rounded-md bg-gray-100 text-gray-600 transition-colors hover:bg-gray-200"
+                title="粘贴清单一次建多条任务"
+              >
+                批量导入
               </button>
               <span className="ml-auto text-[10px] text-gray-400">
                 {mode === 'ai_command' ? '复杂任务 → AI 拆解+审批' : '一句话 → 直接建任务'}
