@@ -891,10 +891,12 @@ def ensure_organization_sandbox_for_session(
 
     def _txn(conn: Any) -> None:
         sandbox_id = ""
+        preferred_same_org_id = ""
         rows = conn.execute(
             """
             SELECT id, cloud_api_url FROM sandboxes
              WHERE kind = 'organization' AND organization_id = ?
+               AND status = 'active'
              ORDER BY is_legacy_default DESC, created_at ASC
             """,
             (normalized_org_id,),
@@ -914,6 +916,23 @@ def ensure_organization_sandbox_for_session(
             if _normalize_cloud_api_url(candidate_cloud) == normalized_cloud_api_url:
                 sandbox_id = candidate_id
                 break
+            if not preferred_same_org_id:
+                candidate_session_row = conn.execute(
+                    "SELECT value FROM sandbox_settings WHERE sandbox_id = ? AND key = 'cloud_session_user'",
+                    (candidate_id,),
+                ).fetchone()
+                candidate_session = str(
+                    candidate_session_row["value"] if isinstance(candidate_session_row, Row) else candidate_session_row[0]
+                ) if candidate_session_row else ""
+                candidate_session_org = _session_organization_id(candidate_session)
+                if candidate_session_org == normalized_org_id:
+                    preferred_same_org_id = candidate_id
+
+        if not sandbox_id:
+            # If this organization already has a visible workspace with a valid
+            # matching session, keep reusing it instead of creating a second
+            # workspace under a possibly stale active cloud URL.
+            sandbox_id = preferred_same_org_id
 
         if not sandbox_id:
             legacy_row = conn.execute("SELECT id FROM sandboxes WHERE id = ?", (legacy_sandbox_id,)).fetchone()

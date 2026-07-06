@@ -985,7 +985,59 @@ def _create_registration_organization(
         """,
         (organization_id, str(datetime.now().year), timestamp),
     )
+    _ensure_org_default_task_list(state, organization_id)
     return organization_id, display_name
+
+
+def _ensure_org_default_task_list(state: AppState, organization_id: str):
+    """Ensure every organization has its own cloud-side inbox list.
+
+    `task_lists.id` is globally unique, so only the legacy default organization
+    may use `list-0`; newly created organizations receive their own list id.
+    """
+    normalized_org_id = str(organization_id or "").strip()
+    if not normalized_org_id:
+        return None
+    state.db.execute(
+        "UPDATE task_lists SET scope = 'org' WHERE organization_id = ? AND (scope IS NULL OR scope = '')",
+        (normalized_org_id,),
+    )
+    inbox_row = _find_active_task_list_by_name(state, normalized_org_id, "org", "收集箱")
+    if inbox_row is None:
+        preferred_id = "list-0" if normalized_org_id == DEFAULT_ORG_ID else new_id("list")
+        if state.db.fetchone("SELECT id FROM task_lists WHERE id = ?", (preferred_id,)):
+            preferred_id = new_id("list")
+        state.db.execute(
+            """
+            INSERT INTO task_lists(id, organization_id, name, color, sort_order, is_default, scope, archived_at)
+            VALUES(?, ?, '收集箱', '#5B7BFE', 0, 1, 'org', NULL)
+            """,
+            (preferred_id, normalized_org_id),
+        )
+        inbox_row = state.db.fetchone(
+            "SELECT * FROM task_lists WHERE id = ? AND organization_id = ?",
+            (preferred_id, normalized_org_id),
+        )
+    if _task_settings_default_destination_row(state, normalized_org_id) is None and inbox_row is not None:
+        state.db.execute(
+            "UPDATE task_lists SET is_default = CASE WHEN id = ? THEN 1 ELSE 0 END WHERE organization_id = ? AND scope = 'org'",
+            (str(inbox_row["id"]), normalized_org_id),
+        )
+    return inbox_row
+
+
+def _resolve_task_list_or_org_default(state: AppState, organization_id: str, list_id: str | None):
+    normalized_list_id = str(list_id or "").strip()
+    row = state.db.fetchone(
+        "SELECT * FROM task_lists WHERE id = ? AND organization_id = ?",
+        (normalized_list_id, organization_id),
+    ) if normalized_list_id else None
+    if row and not row["archived_at"]:
+        return row
+    row = _ensure_org_default_task_list(state, organization_id)
+    if row and not row["archived_at"]:
+        return row
+    raise HTTPException(status_code=400, detail="组织云任务清单未初始化，请刷新任务清单后重试")
 
 
 _ORG_NAME_CACHE: dict[str, str] = {}
@@ -15355,6 +15407,7 @@ def create_app() -> FastAPI:
     def _issue_auth_tokens(row, *, session_id: str, refresh_token: str) -> AuthTokenResponse:
         session_user = _row_user(state, row)
         if session_user.membershipStatus == "approved":
+            _ensure_org_default_task_list(state, session_user.organizationId)
             organization_row = state.db.fetchone("SELECT id, name FROM organizations WHERE id = ?", (session_user.organizationId,))
             if organization_row:
                 _ensure_organization_workspace_client(state, str(organization_row["id"]), str(organization_row["name"]))
@@ -21498,6 +21551,7 @@ def create_app() -> FastAPI:
 
     @app.get("/api/v1/task-lists", response_model=TaskListLibraryResponse)
     def get_task_lists(current_user: SessionUser = Depends(lambda authorization=Header(default=None): _require_auth(app, authorization))) -> TaskListLibraryResponse:
+        _ensure_org_default_task_list(state, current_user.organizationId)
         state.db.execute(
             "UPDATE task_lists SET scope = 'org' WHERE organization_id = ? AND (scope IS NULL OR scope = '')",
             (current_user.organizationId,),
@@ -21866,12 +21920,7 @@ def create_app() -> FastAPI:
 
     @app.post("/api/v1/tasks", response_model=TaskRecord)
     def create_task(payload: TaskCreatePayload, current_user: SessionUser = Depends(lambda authorization=Header(default=None): _require_auth(app, authorization))) -> TaskRecord:
-        list_row = state.db.fetchone(
-            "SELECT * FROM task_lists WHERE id = ? AND organization_id = ?",
-            (payload.listId, current_user.organizationId),
-        )
-        if not list_row or list_row["archived_at"]:
-            raise HTTPException(status_code=400, detail="Invalid task list")
+        list_row = _resolve_task_list_or_org_default(state, current_user.organizationId, payload.listId)
         collaborator_ids = [item for item in payload.collaboratorIds if item]
         owner_id = (payload.ownerId or "").strip() or None
         if owner_id and owner_id in collaborator_ids:
@@ -22092,12 +22141,7 @@ def create_app() -> FastAPI:
         owner_changed = owner_field_touched and next_owner_id != previous_owner_id
         _assert_task_edit_permission(state, current_user, row, content_changed, due_date_changed, owner_changed, status_changed)
         if payload.listId:
-            list_row = state.db.fetchone(
-                "SELECT * FROM task_lists WHERE id = ? AND organization_id = ?",
-                (payload.listId, current_user.organizationId),
-            )
-            if not list_row or list_row["archived_at"]:
-                raise HTTPException(status_code=400, detail="Invalid task list")
+            list_row = _resolve_task_list_or_org_default(state, current_user.organizationId, payload.listId)
         next_scope_mode = payload.scopeMode if payload.scopeMode is not None else str(row["scope_mode"] or "COLLAB_SHARED")
         if next_scope_mode == "PERSONAL_ONLY":
             next_client_id = None

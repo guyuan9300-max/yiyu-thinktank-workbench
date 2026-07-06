@@ -33523,24 +33523,68 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         migrate_local_draft_to_organization_if_possible(state.db, workspace.id)
         _refresh_active_workspace_runtime()
 
-    def _sync_organization_directory_after_auth() -> None:
+    def _sync_organization_directory_after_auth() -> dict[str, object]:
         """Best-effort local mirror refresh after entering an organization workspace."""
         base_url = cloud_api_base_url()
         token = get_cloud_token()
         if not base_url or not token:
-            return
+            return {"status": "skipped", "error": "当前未连接组织云"}
+        last_error = ""
+        for attempt in range(2):
+            try:
+                from app.modules.organization import sync_organization_directory
+                report = sync_organization_directory(
+                    state.db,
+                    cloud_base_url=base_url,
+                    cloud_token=token,
+                    derive_cru_from_local=True,
+                )
+                if report.status != "ok":
+                    last_error = str(report.error or "组织成员目录同步失败")
+                    logger.warning("organization mirror sync after auth returned %s: %s", report.status, report.error)
+                else:
+                    return {"status": "ok", "error": ""}
+            except Exception as exc:
+                last_error = str(exc)
+                logger.warning("organization mirror sync after auth failed: %s", exc)
+            if attempt == 0:
+                time.sleep(0.35)
+        return {"status": "failed", "error": last_error}
+
+    def _sync_task_lists_after_auth() -> dict[str, object]:
+        """Mirror the current organization's cloud task lists into the active sandbox."""
+        if not get_cloud_token():
+            return {"status": "skipped", "error": "当前未连接组织云"}
+        target_sandbox_id = active_business_sandbox_id()
         try:
-            from app.modules.organization import sync_organization_directory
-            report = sync_organization_directory(
-                state.db,
-                cloud_base_url=base_url,
-                cloud_token=token,
-                derive_cru_from_local=True,
-            )
-            if report.status != "ok":
-                logger.warning("organization mirror sync after auth returned %s: %s", report.status, report.error)
+            payload = cloud_request("GET", "/api/v1/task-lists", bypass_circuit_breaker=True)
+            if not isinstance(payload, dict):
+                return {"status": "failed", "error": "云端任务清单返回异常"}
+            items = [item for item in payload.get("lists", []) if isinstance(item, dict)]
+            mirrored = 0
+            for item in _dedupe_task_list_payload_items(items):
+                _upsert_cloud_task_list_shadow_local(item, target_sandbox_id=target_sandbox_id)
+                mirrored += 1
+            if mirrored == 0:
+                _upsert_cloud_task_list_shadow_local(
+                    {"id": "list-0", "name": "收集箱", "color": "#5B7BFE", "scope": "org", "isDefault": True},
+                    target_sandbox_id=target_sandbox_id,
+                )
+                mirrored = 1
+            _enforce_local_task_list_default_for_scope("org")
+            return {"status": "ok", "mirrored": mirrored, "error": ""}
         except Exception as exc:
-            logger.warning("organization mirror sync after auth failed: %s", exc)
+            logger.warning("task list mirror sync after auth failed: %s", exc)
+            return {"status": "failed", "error": str(exc)}
+
+    def _sync_organization_bootstrap_after_auth() -> dict[str, object]:
+        directory_report = _sync_organization_directory_after_auth()
+        task_list_report = _sync_task_lists_after_auth()
+        return {
+            "status": "ok" if directory_report.get("status") == "ok" and task_list_report.get("status") == "ok" else "partial",
+            "directory": directory_report,
+            "taskLists": task_list_report,
+        }
 
     def _cloud_auth_state_from_response(
         response: dict,
@@ -33571,7 +33615,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         set_cloud_refresh_token(refresh_token, persist=persist)
         _bind_current_local_identity_to_cloud(user, local_identity_before_cloud)
         _ensure_local_organization_workspace_from_cloud_membership()
-        _sync_organization_directory_after_auth()
+        _sync_organization_bootstrap_after_auth()
         Thread(target=lambda: _sync_org_ai_config_from_cloud(user), daemon=True, name="cloud-ai-sync-auth").start()
         Thread(target=_sync_object_storage_config_from_cloud, daemon=True, name="cloud-object-storage-sync-auth").start()
         return AuthStateResponse(authenticated=True, user=user, sessionMode="cloud")
@@ -33967,13 +34011,88 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
 
     @app.get("/api/v1/admin/employees", response_model=list[EmployeeRecord])
     def list_employee_reviews() -> list[EmployeeRecord]:
+        def local_employee_records() -> list[EmployeeRecord]:
+            cached_user = get_cached_session_user()
+            org_id = cached_user.organizationId if cached_user else None
+            if not org_id:
+                return []
+            try:
+                rows = state.db.fetchall(
+                    """
+                    SELECT
+                        u.id, u.email, u.full_name, u.primary_role, u.account_status, u.membership_status,
+                        u.department_id, d.name AS department_name, u.is_department_lead, u.cloud_updated_at,
+                        u.synced_from_cloud_at
+                    FROM mirror_users u
+                    LEFT JOIN mirror_departments d ON d.id = u.department_id
+                    WHERE u.organization_id = ?
+                    ORDER BY
+                        CASE WHEN u.account_status = 'approved' THEN 0 ELSE 1 END,
+                        u.full_name COLLATE NOCASE ASC,
+                        u.id ASC
+                    """,
+                    (org_id,),
+                )
+            except Exception:
+                return []
+            records: list[EmployeeRecord] = []
+            for row in rows:
+                records.append(
+                    EmployeeRecord(
+                        id=str(row["id"]),
+                        email=str(row["email"] or ""),
+                        phone=None,
+                        fullName=str(row["full_name"] or ""),
+                        primaryRole=str(row["primary_role"] or "employee"),  # type: ignore[arg-type]
+                        accountStatus=str(row["account_status"] or "approved"),  # type: ignore[arg-type]
+                        membershipStatus=str(row["membership_status"] or "approved"),  # type: ignore[arg-type]
+                        departmentId=str(row["department_id"]) if row["department_id"] else None,
+                        departmentName=str(row["department_name"]) if row["department_name"] else None,
+                        isDepartmentLead=bool(row["is_department_lead"]),
+                        createdAt=str(row["cloud_updated_at"] or row["synced_from_cloud_at"] or now_iso()),
+                    )
+                )
+            if cached_user and not any(item.id == cached_user.id for item in records):
+                records.insert(
+                    0,
+                    EmployeeRecord(
+                        id=cached_user.id,
+                        email=cached_user.email,
+                        phone=cached_user.phone,
+                        fullName=cached_user.fullName,
+                        primaryRole=cached_user.primaryRole,
+                        accountStatus="approved",
+                        membershipStatus=cached_user.membershipStatus or "approved",
+                        departmentId=cached_user.departmentId,
+                        departmentName=cached_user.departmentName,
+                        createdAt=now_iso(),
+                    ),
+                )
+            return records
+
         try:
             payload = cloud_request("GET", "/api/v1/admin/employees")
             if isinstance(payload, list):
                 return [EmployeeRecord(**item) for item in payload if isinstance(item, dict)]
-        except Exception:
-            pass
-        return []
+        except HTTPException as exc:
+            local_records = local_employee_records()
+            if local_records and exc.status_code in {401, 403, 502, 503, 504}:
+                return local_records
+            raise
+        except Exception as exc:
+            local_records = local_employee_records()
+            if local_records:
+                return local_records
+            raise HTTPException(status_code=502, detail=f"组织成员同步失败：{exc}") from exc
+        local_records = local_employee_records()
+        if local_records:
+            return local_records
+        raise HTTPException(status_code=502, detail="组织成员数据返回异常")
+
+    @app.post("/api/v1/organization-directory/sync")
+    def sync_organization_directory_now() -> dict[str, object]:
+        report = _sync_organization_bootstrap_after_auth()
+        return report
 
     # 顾源源 5/24 V2.1 lab: orgModel role.holderBotId 本地 sidecar 持久化.
     # 云端 (火山云) 现版本不识别 holderBotId 字段, Pydantic 默认 ignore extra → 持久化丢失.

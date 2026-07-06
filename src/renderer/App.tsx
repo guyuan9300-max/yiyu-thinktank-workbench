@@ -269,7 +269,6 @@ import {
   changePassword,
   completeTaskWithReview,
   confirmTask,
-  approveEmployee,
   createBackup,
   createClient,
   createClientTextDocument,
@@ -424,7 +423,6 @@ import {
   setWorkspaceInteractionState,
   register,
   claimOrgAdmin,
-  rejectEmployeeReview,
   resolveMeeting,
   resolveInviteCode,
   runAnalysis,
@@ -434,6 +432,7 @@ import {
   saveFeishuInputMemory,
   searchClientKnowledge,
   searchFeishuDocsForImport,
+  syncOrganizationDirectory,
   resolveFeishuDocImportLinks,
   syncDocumentToFeishuDocx,
   getClientAnalysisRun,
@@ -8378,19 +8377,20 @@ export default function App() {
   const [changePwError, setChangePwError] = useState('');
   const [changePwShowPassword, setChangePwShowPassword] = useState(false);
   const [employeeReviewBusyId, setEmployeeReviewBusyId] = useState<string | null>(null);
-	  const [rejectingEmployeeId, setRejectingEmployeeId] = useState<string | null>(null);
-	  const [employeeRejectReason, setEmployeeRejectReason] = useState('');
-	  const [resetPwEmployeeId, setResetPwEmployeeId] = useState<string | null>(null);
-	  const [resetPwValue, setResetPwValue] = useState('');
-	  const [adminTransferDraft, setAdminTransferDraft] = useState<{
-	    targetUserId: string;
-	    currentAdminAction: 'keep_admin' | 'demote_to_member' | 'disable_self';
-	    currentAdminDepartmentId: string;
-	  }>({
-	    targetUserId: '',
-	    currentAdminAction: 'keep_admin',
-	    currentAdminDepartmentId: '',
-	  });
+  const [employeeDirectoryStatus, setEmployeeDirectoryStatus] = useState<'idle' | 'loading' | 'ok' | 'error'>('idle');
+  const [employeeDirectoryError, setEmployeeDirectoryError] = useState('');
+  const [resetPwEmployeeId, setResetPwEmployeeId] = useState<string | null>(null);
+  const [resetPwValue, setResetPwValue] = useState('');
+  const [resetPwShowPassword, setResetPwShowPassword] = useState(false);
+  const [adminTransferDraft, setAdminTransferDraft] = useState<{
+    targetUserId: string;
+    currentAdminAction: 'keep_admin' | 'demote_to_member' | 'disable_self';
+    currentAdminDepartmentId: string;
+  }>({
+    targetUserId: '',
+    currentAdminAction: 'keep_admin',
+    currentAdminDepartmentId: '',
+  });
   useEffect(() => {
     const root = typeof document === 'undefined' ? null : document.getElementById('root');
     console.info(
@@ -9683,11 +9683,37 @@ export default function App() {
     return response;
   }
 
-  async function loadEmployeeReviewBlock() {
-    const response = await getEmployees();
-    const visibleEmployees = response.filter((employee) => !isLegacyOrganizationEmployee(employee));
-    setEmployeeReviews(visibleEmployees);
-    return visibleEmployees;
+  async function loadEmployeeReviewBlock(options?: { quiet?: boolean }) {
+    if (!options?.quiet) {
+      setEmployeeDirectoryStatus('loading');
+      setEmployeeDirectoryError('');
+    }
+    try {
+      const response = await getEmployees();
+      const visibleEmployees = response.filter((employee) => !isLegacyOrganizationEmployee(employee));
+      setEmployeeReviews(visibleEmployees);
+      setEmployeeDirectoryStatus('ok');
+      setEmployeeDirectoryError('');
+      return visibleEmployees;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : '组织成员同步失败';
+      setEmployeeDirectoryStatus('error');
+      setEmployeeDirectoryError(message);
+      return employeeReviews;
+    }
+  }
+
+  async function refreshOrganizationDirectoryBlock() {
+    setEmployeeDirectoryStatus('loading');
+    setEmployeeDirectoryError('');
+    try {
+      await syncOrganizationDirectory();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : '组织成员同步失败';
+      setEmployeeDirectoryStatus('error');
+      setEmployeeDirectoryError(message);
+    }
+    return loadEmployeeReviewBlock({ quiet: true });
   }
 
   async function loadLogsBlock() {
@@ -29371,7 +29397,12 @@ export default function App() {
 	      const detailsBg = params.tint ? 'bg-[#FAFAFA]' : 'bg-white';
 	      const summaryHover = params.tint ? 'hover:bg-[#F4F4F5]' : 'hover:bg-gray-50/70';
 	      return (
-	        <details key={params.key} ref={params.detailsRef} className={`group ${detailsBg} px-5 first:rounded-t-xl last:rounded-b-xl`} open={params.defaultOpen}>
+	        <details
+	          key={params.key}
+	          ref={params.detailsRef}
+	          className={`group ${detailsBg} px-5 first:rounded-t-xl last:rounded-b-xl`}
+	          {...(params.defaultOpen ? { open: true } : {})}
+	        >
           <summary className={`cursor-pointer list-none flex items-center justify-between gap-4 py-5 -mx-2 px-2 rounded-md ${summaryHover} transition-colors select-none`}>
             <div className="min-w-0">
               <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-gray-400">{params.eyebrow}</p>
@@ -31016,37 +31047,11 @@ export default function App() {
       </div>
     );
 
-    const EmployeeReviewPanel = () => {
-      const pendingList = employeeReviews.filter((e) => (e.membershipStatus || e.accountStatus) === 'pending');
-      const rejectedList = employeeReviews.filter((e) => (e.membershipStatus || e.accountStatus) === 'rejected');
+    const renderEmployeeReviewPanel = () => {
       const disabledList = employeeReviews.filter((e) => e.accountStatus === 'disabled');
+      const canManageEmployees = currentSessionUser?.primaryRole === 'admin';
+      const resetPwEmployee = resetPwEmployeeId ? employeeReviews.find((employee) => employee.id === resetPwEmployeeId) : null;
 
-      const handleApprove = async (id: string) => {
-        setEmployeeReviewBusyId(id);
-        try {
-          await approveEmployee(id, { role: 'employee' });
-          flash('success', '已批准该员工注册');
-          await loadEmployeeReviewBlock();
-        } catch (error) {
-          flash('error', error instanceof Error ? error.message : '操作失败');
-        } finally {
-          setEmployeeReviewBusyId(null);
-        }
-      };
-      const handleReject = async (id: string) => {
-        setEmployeeReviewBusyId(id);
-        try {
-          await rejectEmployeeReview(id, { reason: employeeRejectReason || '账号未通过审核，请联系管理员。' });
-          flash('success', '已驳回该注册申请');
-          setRejectingEmployeeId(null);
-          setEmployeeRejectReason('');
-          await loadEmployeeReviewBlock();
-        } catch (error) {
-          flash('error', error instanceof Error ? error.message : '操作失败');
-        } finally {
-          setEmployeeReviewBusyId(null);
-        }
-      };
       const handleDisable = async (id: string) => {
         if (!window.confirm('确定要停用该账号吗？')) return;
         setEmployeeReviewBusyId(id);
@@ -31068,6 +31073,7 @@ export default function App() {
           flash('success', '密码已重置');
           setResetPwEmployeeId(null);
           setResetPwValue('');
+          setResetPwShowPassword(false);
         } catch (error) {
           flash('error', error instanceof Error ? error.message : '操作失败');
         } finally {
@@ -31112,12 +31118,20 @@ export default function App() {
         }
       };
 
-      const activeList = employeeReviews.filter((e) => e.accountStatus === 'approved' && (e.membershipStatus || 'approved') === 'approved' && e.primaryRole !== 'admin');
+      const activeList = approvedEmployees.filter((e) => !e.isBot);
 
       const renderEmployeeRow = (employee: typeof employeeReviews[number], actions: React.ReactNode) => (
         <div key={employee.id} className="flex items-center justify-between gap-4 -mx-2 px-2 py-3 rounded-md hover:bg-gray-50/70 transition-colors">
           <div className="min-w-0">
-            <p className="text-[13px] font-medium text-gray-900 truncate">{employee.fullName}</p>
+            <div className="flex min-w-0 items-center gap-2">
+              <p className="truncate text-[13px] font-medium text-gray-900">{employee.fullName}</p>
+              {employee.primaryRole === 'admin' && (
+                <span className="shrink-0 rounded-full border border-blue-100 bg-blue-50 px-2 py-0.5 text-[10px] font-bold text-blue-600">管理员</span>
+              )}
+              {employee.primaryRole !== 'admin' && employee.isDepartmentLead && (
+                <span className="shrink-0 rounded-full border border-emerald-100 bg-emerald-50 px-2 py-0.5 text-[10px] font-bold text-emerald-600">部门负责人</span>
+              )}
+            </div>
             <p className="text-[11px] text-gray-500 truncate mt-0.5">{employee.email}{employee.departmentName ? ` · ${employee.departmentName}` : ''}{employee.jobTitle ? ` · ${employee.jobTitle}` : ''}</p>
           </div>
           <div className="flex items-center gap-1.5 flex-shrink-0">{actions}</div>
@@ -31131,11 +31145,30 @@ export default function App() {
         </div>
       );
 
-      const canRenderTransferPanel = currentSessionUser?.primaryRole === 'admin' && adminTransferCandidates.length > 0;
-      if (disabledList.length === 0 && activeList.length === 0 && !canRenderTransferPanel) return null;
+      const canRenderTransferPanel = canManageEmployees && adminTransferCandidates.length > 0;
 
       return (
         <div className="space-y-5">
+          <div className="rounded-2xl border border-gray-100 bg-gray-50/70 px-4 py-3">
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <div>
+                <p className="text-[12px] font-semibold text-gray-900">
+                  {employeeDirectoryStatus === 'loading' ? '组织成员同步中' : employeeDirectoryStatus === 'error' ? '组织成员同步失败' : '组织成员目录'}
+                </p>
+                <p className="mt-1 text-[11px] leading-relaxed text-gray-500">
+                  {employeeDirectoryStatus === 'error'
+                    ? employeeDirectoryError || '暂时无法读取组织成员，可稍后刷新。'
+                    : canManageEmployees
+                      ? '拿到有效邀请码的成员会直接进入组织；这里用于停用账号、重置密码或转交管理员。'
+                      : '你可以查看当前组织成员状态；停用、重置密码和管理员转交仅管理员可操作。'}
+                </p>
+              </div>
+              <Button onClick={() => void refreshOrganizationDirectoryBlock()} disabled={employeeDirectoryStatus === 'loading'}>
+                {employeeDirectoryStatus === 'loading' ? <RefreshCw size={16} className="animate-spin" /> : <RefreshCw size={16} />}
+                刷新成员
+              </Button>
+            </div>
+          </div>
           {canRenderTransferPanel && renderGroup('管理员转交', adminTransferCandidates.length,
             <div className="rounded-2xl border border-blue-100 bg-blue-50/60 px-4 py-4">
               <p className="text-[12px] leading-5 text-blue-900">
@@ -31193,19 +31226,88 @@ export default function App() {
           )}
           {activeList.length > 0 && renderGroup('在职员工', activeList.length,
             activeList.map((employee) => renderEmployeeRow(employee, (
-              <>
-                {resetPwEmployeeId === employee.id ? (
-                  <div className="flex items-center gap-1">
-                    <input type="password" value={resetPwValue} onChange={(e) => setResetPwValue(e.target.value)} placeholder="≥8 位" className="w-32 rounded-md border border-gray-200 bg-white px-2 py-1.5 text-[11px] outline-none focus:border-[#5B7BFE]" />
-                    <button type="button" disabled={employeeReviewBusyId === employee.id || resetPwValue.length < 8} onClick={() => void handleResetPw(employee.id)} className="rounded-md border border-blue-200 bg-blue-50 px-3 py-1.5 text-[11px] font-bold text-blue-700 hover:bg-blue-100 disabled:opacity-50">确认</button>
-                    <button type="button" onClick={() => { setResetPwEmployeeId(null); setResetPwValue(''); }} className="rounded-md border border-gray-200 bg-white px-2 py-1.5 text-[11px] text-gray-500">取消</button>
-                  </div>
+              canManageEmployees ? (
+                employee.id === currentSessionUser?.id ? (
+                  <span className="text-[11px] text-gray-400">当前账号</span>
                 ) : (
-                  <button type="button" onClick={() => setResetPwEmployeeId(employee.id)} className="rounded-md border border-blue-200 bg-blue-50 px-3 py-1.5 text-[11px] font-bold text-blue-700 hover:bg-blue-100 transition-colors">重置密码</button>
-                )}
-                <button type="button" disabled={employeeReviewBusyId === employee.id} onClick={() => void handleDisable(employee.id)} className="rounded-md border border-gray-200 bg-white px-3 py-1.5 text-[11px] font-bold text-rose-500 hover:bg-rose-50 disabled:opacity-50 transition-colors">停用</button>
-              </>
+                  <>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setResetPwEmployeeId(employee.id);
+                        setResetPwValue('');
+                        setResetPwShowPassword(false);
+                      }}
+                      className="rounded-md border border-blue-200 bg-blue-50 px-3 py-1.5 text-[11px] font-bold text-blue-700 hover:bg-blue-100 transition-colors"
+                    >
+                      重置密码
+                    </button>
+                    <button type="button" disabled={employeeReviewBusyId === employee.id} onClick={() => void handleDisable(employee.id)} className="rounded-md border border-gray-200 bg-white px-3 py-1.5 text-[11px] font-bold text-rose-500 hover:bg-rose-50 disabled:opacity-50 transition-colors">停用</button>
+                  </>
+                )
+              ) : (
+                <span className="text-[11px] text-gray-400">{employee.primaryRole === 'admin' ? '管理员' : employee.isDepartmentLead ? '部门负责人' : '成员'}</span>
+              )
             )))
+          )}
+          {activeList.length === 0 && disabledList.length === 0 && employeeDirectoryStatus !== 'loading' && (
+            <div className="rounded-xl border border-dashed border-gray-200 bg-white px-4 py-6 text-center text-[12px] text-gray-500">
+              当前组织成员目录暂无可显示成员。若刚加入组织，请点击“刷新成员”。
+            </div>
+          )}
+          {resetPwEmployee && (
+            <div className="fixed inset-0 z-[90] flex items-center justify-center bg-slate-900/30 px-4">
+              <div className="w-full max-w-[420px] rounded-3xl border border-gray-100 bg-white p-6 shadow-2xl">
+                <div className="flex items-start justify-between gap-4">
+                  <div>
+                    <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-gray-400">RESET PASSWORD</p>
+                    <h3 className="mt-2 text-[20px] font-light tracking-tight text-gray-900">重置成员密码</h3>
+                    <p className="mt-2 text-[12px] leading-relaxed text-gray-500">
+                      为「{resetPwEmployee.fullName}」设置新密码。成员可用新密码登录后自行修改。
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setResetPwEmployeeId(null);
+                      setResetPwValue('');
+                      setResetPwShowPassword(false);
+                    }}
+                    className="rounded-full border border-gray-100 bg-white p-2 text-gray-500 hover:bg-gray-50"
+                    aria-label="关闭"
+                  >
+                    <X size={16} />
+                  </button>
+                </div>
+                <div className="mt-5">
+                  <label className="text-[11px] font-semibold text-gray-500">新密码</label>
+                  <div className="mt-2 flex items-center rounded-2xl border border-gray-200 bg-white px-3 py-2.5 focus-within:border-[#5B7BFE]">
+                    <input
+                      type={resetPwShowPassword ? 'text' : 'password'}
+                      value={resetPwValue}
+                      onChange={(event) => setResetPwValue(event.target.value)}
+                      placeholder="至少 8 位"
+                      className="min-w-0 flex-1 bg-transparent text-[13px] font-medium text-gray-900 outline-none"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => setResetPwShowPassword((prev) => !prev)}
+                      className="rounded-full p-1.5 text-gray-400 hover:bg-gray-50 hover:text-gray-700"
+                      aria-label={resetPwShowPassword ? '隐藏密码' : '显示密码'}
+                    >
+                      {resetPwShowPassword ? <EyeOff size={16} /> : <Eye size={16} />}
+                    </button>
+                  </div>
+                </div>
+                <div className="mt-5 flex justify-end gap-2">
+                  <Button onClick={() => { setResetPwEmployeeId(null); setResetPwValue(''); setResetPwShowPassword(false); }}>取消</Button>
+                  <Button primary disabled={employeeReviewBusyId === resetPwEmployee.id || resetPwValue.length < 8} onClick={() => void handleResetPw(resetPwEmployee.id)}>
+                    {employeeReviewBusyId === resetPwEmployee.id ? <RefreshCw size={16} className="animate-spin" /> : <ShieldCheck size={16} />}
+                    确认重置
+                  </Button>
+                </div>
+              </div>
+            </div>
           )}
         </div>
       );
@@ -31214,10 +31316,6 @@ export default function App() {
     const renderSystemAdminSection = (initialAdvancedTab: OrgModelTab | null = null) => {
       const totalEmployeeCount = employeeReviews.filter((e) => e.accountStatus === 'approved' && (e.membershipStatus || 'approved') === 'approved').length;
       const isCloud = authState.sessionMode === 'cloud';
-      const hasReviewContent = employeeReviews.some((e) =>
-        e.accountStatus === 'disabled'
-        || (e.accountStatus === 'approved' && (e.membershipStatus || 'approved') === 'approved' && e.primaryRole !== 'admin')
-      );
       return (
         <div className="space-y-10">
           {/* HERO · 组织状态 */}
@@ -31279,17 +31377,19 @@ export default function App() {
             </div>
           )}
 
-          {/* 成员管理 - Foldable,有内容才显示 */}
-          {currentSessionUser?.primaryRole === 'admin' && hasReviewContent && (
+          {/* 成员管理 */}
+          {isCloud && (
             <div>
               {renderFoldable({
                 key: 'employee-review',
                 eyebrow: 'MEMBERS · 成员管理',
                 title: '在职账号 · 停用 · 重置密码',
-                helper: '拿到有效邀请码的成员会直接进入组织；这里仅用于停用离职账号、重置密码或管理员转交。',
+                helper: currentSessionUser?.primaryRole === 'admin'
+                  ? '拿到有效邀请码的成员会直接进入组织；这里用于停用账号、重置密码或管理员转交。'
+                  : '这里显示当前组织成员目录；停用、重置密码和管理员转交仅管理员可操作。',
                 statusChip: { text: `${totalEmployeeCount} 人在职`, tone: 'neutral' },
-                defaultOpen: false,
-                children: <EmployeeReviewPanel />,
+                defaultOpen: employeeDirectoryStatus === 'error' || employeeReviews.length === 0,
+                children: renderEmployeeReviewPanel(),
               })}
             </div>
           )}

@@ -495,6 +495,30 @@ function _requestHeaders(method: string, options?: RequestInit): HeadersInit | u
   return headerEntries.length > 0 ? Object.fromEntries(headerEntries) : undefined;
 }
 
+function normalizeApiErrorDetail(detail: string): string {
+  const message = String(detail || '').trim();
+  if (!message) return '';
+  if (/JSONDecodeError|Unexpected token|Unexpected end of JSON|Expecting value|Invalid .*payload/i.test(message)) {
+    return '云端未正确部署或云地址填写错误，请确认填写的是组织云 API 地址。';
+  }
+  if (/Invalid task list|任务清单无效|默认清单无效/i.test(message)) {
+    return '组织云任务清单未初始化，请刷新任务清单后重试。';
+  }
+  if (/工作空间不存在|Workspace not found/i.test(message)) {
+    return '组织空间记录异常，请重新选择或重新登录组织。';
+  }
+  if (/Cloud backend unavailable|circuit breaker|ConnectError|ReadTimeout|Connection refused|ECONNREFUSED|ENOTFOUND|Failed to fetch/i.test(message)) {
+    return '暂时连不上组织云，请检查云地址和网络后重试。';
+  }
+  if (/Not authenticated/i.test(message)) {
+    return '当前组织需要重新登录。';
+  }
+  if (/Only admin/i.test(message)) {
+    return '当前账号没有管理员权限。';
+  }
+  return message;
+}
+
 async function request<T>(path: string, options?: RequestInit): Promise<T> {
   const method = (options?.method ?? 'GET').toUpperCase();
   const isGet = method === 'GET';
@@ -522,7 +546,7 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
       if (isTransient) {
         throw new Error('内置服务暂时未响应，请稍候重试');
       }
-      throw new Error(detail || '请求失败');
+      throw new Error(normalizeApiErrorDetail(detail) || '请求失败');
     }
 
     if (response.ok) {
@@ -572,7 +596,7 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
       continue;
     }
 
-    throw new Error(detail || `HTTP ${status}`);
+    throw new Error(normalizeApiErrorDetail(detail) || `HTTP ${status}`);
   }
 }
 
@@ -604,7 +628,7 @@ async function requestForm<T>(path: string, formData: FormData, options?: FormRe
             const payload = JSON.parse(text) as { detail?: string };
             detail = payload.detail || text;
           } catch {}
-          reject(new Error(detail || `HTTP ${xhr.status}`));
+          reject(new Error(normalizeApiErrorDetail(detail) || `HTTP ${xhr.status}`));
           return;
         }
         try {
@@ -643,7 +667,7 @@ async function requestForm<T>(path: string, formData: FormData, options?: FormRe
         detail = text;
       }
     } catch {}
-    throw new Error(detail || `HTTP ${response.status}`);
+    throw new Error(normalizeApiErrorDetail(detail) || `HTTP ${response.status}`);
   }
   return response.json() as Promise<T>;
 }
@@ -2482,6 +2506,12 @@ export async function submitSoftwareFeedback(payload: {
 
 export async function getEmployees() {
   return request<EmployeeRecord[]>('/api/v1/admin/employees');
+}
+
+export async function syncOrganizationDirectory() {
+  return request<Record<string, unknown>>('/api/v1/organization-directory/sync', {
+    method: 'POST',
+  });
 }
 
 export async function approveEmployee(id: string, payload: EmployeeRolePayload) {

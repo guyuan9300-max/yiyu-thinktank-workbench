@@ -74,6 +74,12 @@ def test_identity_can_create_second_org_and_choose_on_login(tmp_path, monkeypatc
     assert second_org_id != first_org_id
     assert second_payload["user"]["primaryRole"] == "admin"
     assert second_payload["user"]["membershipStatus"] == "approved"
+    second_inbox = client.app.state.app_state.db.fetchone(
+        "SELECT id, name FROM task_lists WHERE organization_id = ? AND name = '收集箱' AND archived_at IS NULL",
+        (second_org_id,),
+    )
+    assert second_inbox is not None
+    assert second_inbox["id"] != "list-0"
 
     login = client.post(
         "/api/v1/auth/login",
