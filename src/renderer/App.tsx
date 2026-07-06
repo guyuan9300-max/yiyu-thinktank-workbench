@@ -2059,7 +2059,7 @@ const DEFAULT_ORG_ADMIN_CLAIM_STATUS: OrgAdminClaimStatus = {
 };
 const ORG_MANAGEMENT_SECTION_KEYS: SettingsSectionKey[] = ['system_admin', 'org_overview', 'org_departments', 'org_people', 'org_rules'];
 const YIYU_OFFICIAL_ORG_ID = 'org_yiyu_default';
-const YIYU_ORG_NAME_PATTERNS = ['益语智库', '益语软件'];
+const YIYU_ORG_NAME_PATTERNS = ['益语智库'];
 
 function normalizeUrlForComparison(rawUrl?: string | null) {
   return (rawUrl || '').trim().replace(/\/+$/, '');

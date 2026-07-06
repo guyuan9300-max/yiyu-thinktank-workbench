@@ -4629,13 +4629,15 @@ def _require_approved_member(app: FastAPI, authorization: str | None = Header(de
 def _can_enter_maintenance_mode(state: AppState, user: SessionUser) -> bool:
     if user.membershipStatus != "approved" or user.accountStatus != "approved":
         return False
-    return user.organizationId == DEFAULT_ORG_ID and user.primaryRole == "admin"
+    return user.organizationId == DEFAULT_ORG_ID
 
 
 def _maintenance_status_record(state: AppState, user: SessionUser, *, active: bool = False, reason: str | None = None) -> MaintenanceModeStatus:
     can_enter = _can_enter_maintenance_mode(state, user)
+    if user.organizationId != DEFAULT_ORG_ID:
+        reason = reason or "维护模式仅益语智库内部工作空间可用"
     return MaintenanceModeStatus(
-        available=user.membershipStatus == "approved" and user.accountStatus == "approved",
+        available=can_enter,
         active=bool(active and can_enter),
         canEnter=can_enter,
         canManagePermissions=False,

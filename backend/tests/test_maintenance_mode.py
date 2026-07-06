@@ -123,3 +123,68 @@ def test_local_maintenance_mode_enter_and_exit_are_session_local(tmp_path: Path,
     assert exited.status_code == 200
     assert exited.json()["active"] is False
     assert client.app.state.app_state.maintenance_mode_active is False
+
+
+def test_local_maintenance_mode_allows_yiyu_member_when_cloud_still_uses_old_admin_gate(tmp_path: Path, monkeypatch) -> None:
+    client = make_client(tmp_path)
+    seed_cloud_session(client)
+    set_active_sandbox_setting(
+        client.app.state.app_state.db,
+        "cloud_session_user",
+        json.dumps(
+            {
+                "id": "user_member",
+                "organizationId": "org_yiyu_default",
+                "organizationName": "益语智库",
+                "email": "member@example.com",
+                "fullName": "益语成员",
+                "primaryRole": "employee",
+                "accountStatus": "approved",
+                "membershipStatus": "approved",
+            },
+            ensure_ascii=False,
+        ),
+    )
+
+    def fake_request(method: str, url: str, json=None, headers=None, timeout=None):
+        assert headers == {"Authorization": "Bearer token_admin"}
+        if url.endswith("/api/v1/maintenance-mode/status"):
+            return httpx.Response(
+                200,
+                json={
+                    "available": True,
+                    "active": False,
+                    "canEnter": False,
+                    "canManagePermissions": False,
+                    "organizationId": "org_yiyu_default",
+                    "userId": "user_member",
+                },
+            )
+        if url.endswith("/api/v1/maintenance-mode/enter"):
+            return httpx.Response(403, json={"detail": "当前账号无维护权限"})
+        if url.endswith("/api/v1/maintenance-mode/exit"):
+            return httpx.Response(403, json={"detail": "当前账号无维护权限"})
+        raise AssertionError(f"unexpected request: {method} {url}")
+
+    monkeypatch.setattr(app_main.httpx, "request", fake_request)
+
+    status = client.get("/api/v1/maintenance-mode/status")
+    assert status.status_code == 200
+    assert status.json()["available"] is True
+    assert status.json()["canEnter"] is True
+
+    entered = client.post("/api/v1/maintenance-mode/enter")
+    assert entered.status_code == 200, entered.text
+    assert entered.json()["active"] is True
+    assert entered.json()["reason"] is None
+    assert client.app.state.app_state.maintenance_mode_active is True
+
+    exited = client.post("/api/v1/maintenance-mode/exit")
+    assert exited.status_code == 200, exited.text
+    assert exited.json()["active"] is False
+
+    status_after_exit = client.get("/api/v1/maintenance-mode/status")
+    assert status_after_exit.status_code == 200
+    assert status_after_exit.json()["active"] is False
+    assert status_after_exit.json()["canEnter"] is True
+    assert status_after_exit.json()["reason"] is None

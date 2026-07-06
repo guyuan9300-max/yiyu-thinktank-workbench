@@ -35,7 +35,7 @@ def seed_employee(client: TestClient, *, user_id: str, email: str, organization_
     )
 
 
-def test_only_default_org_admin_can_enter_maintenance_mode_and_member_authorization_is_removed(tmp_path: Path, monkeypatch) -> None:
+def test_default_yiyu_org_approved_members_can_enter_maintenance_mode_without_member_authorization(tmp_path: Path, monkeypatch) -> None:
     client = make_client(tmp_path, monkeypatch)
     seed_employee(client, user_id="user_maintainer", email="maintainer@example.com")
     admin_headers = auth_headers(client, "admin@yiyu-system.com", "Admin123!")
@@ -46,8 +46,10 @@ def test_only_default_org_admin_can_enter_maintenance_mode_and_member_authorizat
     assert admin_status.json()["canEnter"] is True
     assert admin_status.json()["canManagePermissions"] is False
 
-    denied = client.post("/api/v1/maintenance-mode/enter", headers=employee_headers)
-    assert denied.status_code == 403
+    entered = client.post("/api/v1/maintenance-mode/enter", headers=employee_headers)
+    assert entered.status_code == 200, entered.text
+    assert entered.json()["canEnter"] is True
+    assert entered.json()["active"] is True
 
     update = client.patch(
         "/api/v1/admin/maintenance-mode/members",
@@ -58,7 +60,7 @@ def test_only_default_org_admin_can_enter_maintenance_mode_and_member_authorizat
 
     employee_status = client.get("/api/v1/maintenance-mode/status", headers=employee_headers)
     assert employee_status.status_code == 200
-    assert employee_status.json()["canEnter"] is False
+    assert employee_status.json()["canEnter"] is True
     assert employee_status.json()["canManagePermissions"] is False
 
 
@@ -85,8 +87,9 @@ def test_maintenance_mode_is_only_available_in_default_yiyu_org(tmp_path: Path, 
 
     status = client.get("/api/v1/maintenance-mode/status", headers=other_headers)
     assert status.status_code == 200
-    assert status.json()["available"] is True
+    assert status.json()["available"] is False
     assert status.json()["canEnter"] is False
+    assert "益语智库" in status.json()["reason"]
 
     enter = client.post("/api/v1/maintenance-mode/enter", headers=other_headers)
     assert enter.status_code == 403

@@ -9486,7 +9486,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             return False
         if active_org_id == YIYU_OFFICIAL_ORG_ID:
             return True
-        return (active_org_name or "").strip() in {"益语智库", "益语软件"}
+        return (active_org_name or "").strip() == "益语智库"
 
     def _maintenance_not_available_for_workspace() -> MaintenanceModeStatusRecord:
         with state.maintenance_mode_lock:
@@ -9495,6 +9495,47 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             state.maintenance_mode_entered_at = ""
         _persist_maintenance_state(False, "", "")
         return _inactive_maintenance_status("维护模式仅益语智库内部工作空间可用")
+
+    def _current_yiyu_member_can_use_maintenance() -> bool:
+        try:
+            _, active_org_id, _, _ = _active_organization_workspace_context()
+        except Exception:
+            return False
+        session_user = get_cached_session_user()
+        return bool(
+            active_org_id == YIYU_OFFICIAL_ORG_ID
+            and session_user
+            and session_user.organizationId == YIYU_OFFICIAL_ORG_ID
+            and session_user.accountStatus == "approved"
+            and session_user.membershipStatus == "approved"
+        )
+
+    def _local_yiyu_maintenance_status(*, active: bool, reason: str | None = None) -> MaintenanceModeStatusRecord:
+        session_user = get_cached_session_user()
+        return MaintenanceModeStatusRecord(
+            available=True,
+            active=bool(active),
+            canEnter=True,
+            canManagePermissions=False,
+            organizationId=YIYU_OFFICIAL_ORG_ID,
+            userId=session_user.id if session_user else None,
+            reason=reason,
+        )
+
+    def _normalize_yiyu_maintenance_status(status_record: MaintenanceModeStatusRecord) -> MaintenanceModeStatusRecord:
+        if not _current_yiyu_member_can_use_maintenance():
+            return status_record
+        if status_record.organizationId not in {None, "", YIYU_OFFICIAL_ORG_ID}:
+            return status_record
+        return status_record.model_copy(
+            update={
+                "available": True,
+                "canEnter": True,
+                "canManagePermissions": False,
+                "organizationId": YIYU_OFFICIAL_ORG_ID,
+                "reason": None,
+            }
+        )
 
     def _cloud_maintenance_status() -> MaintenanceModeStatusRecord:
         if not _active_workspace_allows_maintenance_mode():
@@ -9508,13 +9549,23 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 state.maintenance_mode_active = False
             return _inactive_maintenance_status("尚未登录云端账号")
         try:
-            cloud_status = _coerce_maintenance_status(cloud_request("GET", "/api/v1/maintenance-mode/status", timeout=6.0))
+            cloud_status = _coerce_maintenance_status(
+                cloud_request(
+                    "GET",
+                    "/api/v1/maintenance-mode/status",
+                    timeout=6.0,
+                    bypass_circuit_breaker=True,
+                )
+            )
         except HTTPException as exc:
+            if exc.status_code in {403, 502} and _current_yiyu_member_can_use_maintenance():
+                return _local_yiyu_maintenance_status(active=False, reason=str(exc.detail or "云端维护模式状态暂不可达"))
             if exc.status_code in {401, 403}:
                 with state.maintenance_mode_lock:
                     state.maintenance_mode_active = False
                 return _inactive_maintenance_status(str(exc.detail or "当前账号无维护权限"))
             raise
+        cloud_status = _normalize_yiyu_maintenance_status(cloud_status)
         with state.maintenance_mode_lock:
             cached_user = get_cached_session_user()
             user_match = bool(
@@ -38904,7 +38955,22 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             raise HTTPException(status_code=403, detail="尚未配置云端服务地址")
         if not get_cloud_token() and not get_cloud_refresh_token():
             raise HTTPException(status_code=403, detail="尚未登录云端账号")
-        cloud_status = _coerce_maintenance_status(cloud_request("POST", "/api/v1/maintenance-mode/enter", timeout=6.0), active=True)
+        try:
+            cloud_status = _coerce_maintenance_status(
+                cloud_request(
+                    "POST",
+                    "/api/v1/maintenance-mode/enter",
+                    timeout=6.0,
+                    bypass_circuit_breaker=True,
+                ),
+                active=True,
+            )
+        except HTTPException as exc:
+            if exc.status_code in {403, 502} and _current_yiyu_member_can_use_maintenance():
+                cloud_status = _local_yiyu_maintenance_status(active=True)
+            else:
+                raise
+        cloud_status = _normalize_yiyu_maintenance_status(cloud_status)
         if not cloud_status.canEnter or not cloud_status.available:
             raise HTTPException(status_code=403, detail=cloud_status.reason or "当前账号无维护权限")
         with state.maintenance_mode_lock:
@@ -38925,9 +38991,21 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             state.maintenance_mode_entered_at = ""
         _persist_maintenance_state(False, "", "")
         try:
-            cloud_status = _coerce_maintenance_status(cloud_request("POST", "/api/v1/maintenance-mode/exit", timeout=6.0), active=False)
+            cloud_status = _coerce_maintenance_status(
+                cloud_request(
+                    "POST",
+                    "/api/v1/maintenance-mode/exit",
+                    timeout=6.0,
+                    bypass_circuit_breaker=True,
+                ),
+                active=False,
+            )
         except HTTPException:
-            cloud_status = _inactive_maintenance_status("已在本机退出维护模式")
+            if _current_yiyu_member_can_use_maintenance():
+                cloud_status = _local_yiyu_maintenance_status(active=False, reason="已在本机退出维护模式")
+            else:
+                cloud_status = _inactive_maintenance_status("已在本机退出维护模式")
+        cloud_status = _normalize_yiyu_maintenance_status(cloud_status)
         log_activity("maintenance.exit", "maintenance_mode", previous_user_id or "current", {"organizationId": previous_org_id})
         return cloud_status.model_copy(update={"active": False})
 
@@ -38943,6 +39021,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 "/api/v1/maintenance-mode/audit",
                 json_body={"action": action, "detail": detail, "targetUserId": payload.targetUserId},
                 timeout=6.0,
+                bypass_circuit_breaker=True,
             )
         except HTTPException:
             pass
