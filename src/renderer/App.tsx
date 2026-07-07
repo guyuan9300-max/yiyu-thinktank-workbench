@@ -208,6 +208,7 @@ import type {
   OrganizationCandidate,
   SandboxWorkspaceRecord,
   SandboxWorkspacesResponse,
+  WorkspaceRuntimeStatus,
 } from '../shared/types';
 import {
   CLIENT_CHAT_DRAFT_THREAD_ID,
@@ -1966,77 +1967,18 @@ const DEFAULT_LOCAL_INPUT_MEMORY: LocalInputMemory = {
   },
 };
 
-type AuthShellMode = 'login' | 'register';
-type AuthShellRegisterStep = 1 | 2;
-
-interface AuthShellFormState {
-  email: string;
-  identifier: string;
-  phone: string;
-  fullName: string;
-  password: string;
-  confirmPassword: string;
-  cloudApiUrl: string;
-  inviteCode: string;
-  departmentId: string;
-  jobTitle: string;
-  managerName: string;
-  currentFocus: string;
-}
-
-interface AuthShellInviteStatus {
-  code: string;
-  loading: boolean;
-  valid: boolean | null;
-  message: string;
-}
-
-const EMPTY_AUTH_SHELL_INVITE_STATUS: AuthShellInviteStatus = {
-  code: '',
-  loading: false,
-  valid: null,
-  message: '',
-};
-
-function createAuthShellForm(email = '', fullName = '', password = ''): AuthShellFormState {
-  return {
-    email,
-    identifier: email,
-    phone: '',
-    fullName,
-    password,
-    confirmPassword: password,
-    cloudApiUrl: '',
-    inviteCode: '',
-    departmentId: '',
-    jobTitle: '',
-    managerName: '',
-    currentFocus: '',
-  };
-}
-
 const INTERNAL_PERSON_NAME_PLACEHOLDERS = new Set([
   '本机草稿',
   '未连接组织',
   '未连接组织的本机草稿',
   '本机历史草稿',
   '本机工作空间',
+  '未命名账号',
 ]);
 
 function sanitizePersonNameInput(value: string | null | undefined): string {
   const normalized = String(value || '').trim();
   return INTERNAL_PERSON_NAME_PLACEHOLDERS.has(normalized) ? '' : normalized;
-}
-
-function pickDefaultRememberedCloudAuthAccount(memory: LocalInputMemory) {
-  const rememberedAccounts = memory.cloudAuth.accounts;
-  return (
-    (memory.cloudAuth.lastEmail
-      ? rememberedAccounts.find((account) => (account.identifier || account.email) === memory.cloudAuth.lastEmail)
-      : null)
-    || rememberedAccounts[0]
-    || null
-  );
 }
 
 const DEFAULT_LOCAL_AUTH_STATE: AuthState = {
@@ -2046,6 +1988,42 @@ const DEFAULT_LOCAL_AUTH_STATE: AuthState = {
   requiresLocalIdentitySetup: true,
   localIdentityStatus: 'needs_setup',
 };
+const LOCAL_DRAFT_SESSION_USER: NonNullable<AuthState['user']> = {
+  id: 'local-draft-user',
+  organizationId: 'local-draft',
+  organizationName: '未连接组织',
+  email: '',
+  phone: '',
+  fullName: '',
+  primaryRole: 'employee',
+  accountStatus: 'approved',
+  membershipStatus: 'approved',
+  departmentId: null,
+  departmentName: null,
+  isDepartmentLead: false,
+  pendingInviteCode: null,
+  jobTitle: null,
+  managerName: null,
+  currentFocus: null,
+};
+
+function isLocalDraftSessionUser(user: AuthState['user'] | null | undefined): boolean {
+  return user?.id === 'local-draft-user' || INTERNAL_PERSON_NAME_PLACEHOLDERS.has(String(user?.fullName || '').trim());
+}
+
+function getSessionDisplayIdentity(user: AuthState['user'] | null | undefined): string {
+  if (!user) return '';
+  const fullName = sanitizePersonNameInput(user.fullName || '');
+  return [fullName, user.email, user.phone]
+    .map((value) => String(value || '').trim())
+    .find(Boolean) || '';
+}
+
+function hasCompleteSessionIdentity(state: AuthState | null | undefined): boolean {
+  if (!state?.authenticated || !state.user) return false;
+  if (isLocalDraftSessionUser(state.user)) return false;
+  return Boolean(getSessionDisplayIdentity(state.user));
+}
 const DEFAULT_ORG_ADMIN_CLAIM_STATUS: OrgAdminClaimStatus = {
   hasOrganization: false,
   organizationId: null,
@@ -2058,16 +2036,9 @@ const DEFAULT_ORG_ADMIN_CLAIM_STATUS: OrgAdminClaimStatus = {
 };
 const ORG_MANAGEMENT_SECTION_KEYS: SettingsSectionKey[] = ['system_admin', 'org_overview', 'org_departments', 'org_people', 'org_rules'];
 const YIYU_OFFICIAL_ORG_ID = 'org_yiyu_default';
-const YIYU_ORG_NAME_PATTERNS = ['益语智库'];
 
 function normalizeUrlForComparison(rawUrl?: string | null) {
   return (rawUrl || '').trim().replace(/\/+$/, '');
-}
-
-function isYiyuOfficialOrganizationName(name?: string | null) {
-  const normalized = (name || '').trim();
-  if (!normalized) return false;
-  return YIYU_ORG_NAME_PATTERNS.some((pattern) => normalized.includes(pattern));
 }
 
 function isYiyuOfficialOrganizationId(id?: string | null) {
@@ -2076,11 +2047,7 @@ function isYiyuOfficialOrganizationId(id?: string | null) {
 
 function isYiyuOfficialWorkspaceRecord(workspace?: SandboxWorkspaceRecord | null) {
   if (!workspace || workspace.kind !== 'organization') return false;
-  return (
-    isYiyuOfficialOrganizationId(workspace.organizationId)
-    || isYiyuOfficialOrganizationName(workspace.organizationName)
-    || isYiyuOfficialOrganizationName(workspace.name)
-  );
+  return isYiyuOfficialOrganizationId(workspace.organizationId);
 }
 
 const EMPTY_PROJECT_STRUCTURE_RESPONSE: ProjectStructureResponse = { modules: [], flows: [] };
@@ -2111,6 +2078,17 @@ const proposalEffectMeta = {
 
 function normalizeAuthStateForDesktop(state: AuthState | null | undefined): AuthState {
   if (state?.authenticated && state.user) {
+    if (state.sessionMode === 'local' && isLocalDraftSessionUser(state.user)) {
+      return {
+        ...DEFAULT_LOCAL_AUTH_STATE,
+        authenticated: false,
+        user: null,
+        sessionMode: 'local',
+        requiresLocalIdentitySetup: false,
+        localIdentityStatus: 'draft',
+        message: state.message || '未连接组织，当前处于本机草稿状态。加入或创建组织后，草稿数据会迁入对应组织工作空间。',
+      };
+    }
     return {
       ...state,
       sessionMode: state.sessionMode || 'cloud',
@@ -2124,6 +2102,46 @@ function normalizeAuthStateForDesktop(state: AuthState | null | undefined): Auth
     sessionMode: state?.sessionMode || 'local',
     message: state?.message || null,
   };
+}
+
+const WORKSPACE_BUSY_RUNTIME_STATUSES = new Set<WorkspaceRuntimeStatus>(['verifying', 'switching']);
+const WORKSPACE_WRITE_BLOCKING_STATUSES = new Set<WorkspaceRuntimeStatus>(['verifying', 'switching', 'needs_login', 'identity_error']);
+const WORKSPACE_TRANSITION_MIN_VISIBLE_MS = 650;
+
+type WorkspaceTransitionToken = {
+  id: number;
+  sandboxId: string;
+  reason: string;
+};
+
+function resolveWorkspaceRuntimeFromRecord(
+  workspace: SandboxWorkspaceRecord | null | undefined,
+  auth: AuthState | null | undefined,
+): { status: WorkspaceRuntimeStatus; message: string } {
+  if (!workspace || workspace.kind !== 'organization') {
+    return { status: 'local_draft', message: '未连接组织，当前可先在本机草稿中使用。' };
+  }
+  const backendStatus = workspace.runtimeStatus;
+  if (backendStatus) {
+    return {
+      status: backendStatus,
+      message: workspace.statusMessage || (backendStatus === 'needs_login' ? `${workspace.name} 需要重新登录。` : `正在进入 ${workspace.name}。`),
+    };
+  }
+  if (workspace.identityState === 'mismatch') {
+    return {
+      status: 'identity_error',
+      message: workspace.identityError || `${workspace.name} 的组织身份与本地工作空间不一致，请重新登录该组织。`,
+    };
+  }
+  if (workspace.cloudNeedsLogin || workspace.cloudConnectionStatus === 'needs_login' || !auth?.authenticated) {
+    return { status: 'needs_login', message: `${workspace.name} 需要重新登录后才能继续同步组织云数据。` };
+  }
+  return { status: 'ready', message: `已进入 ${workspace.name} 工作空间。` };
+}
+
+function workspaceRuntimeBlocksWrites(status: WorkspaceRuntimeStatus): boolean {
+  return WORKSPACE_WRITE_BLOCKING_STATUSES.has(status);
 }
 
 function getEffectiveMembershipStatus(state: AuthState | null | undefined) {
@@ -7981,9 +7999,10 @@ export default function App() {
   const resolvedCockpitEvidenceClientId = evidenceMode === 'cockpit'
     ? (evidenceClientId || currentClientId || null)
     : null;
+  const hasCompleteAuthForEarlyEffects = hasCompleteSessionIdentity(authState);
 
   useEffect(() => {
-    if (!authState.authenticated || evidenceMode !== 'task-ai' || !evidenceTaskId) {
+    if (!hasCompleteAuthForEarlyEffects || evidenceMode !== 'task-ai' || !evidenceTaskId) {
       setTaskEvidencePreview(null);
       setTaskEvidenceError(null);
       setIsTaskEvidenceLoading(false);
@@ -8010,10 +8029,10 @@ export default function App() {
     return () => {
       cancelled = true;
     };
-  }, [authState.authenticated, evidenceMode, evidenceTaskId]);
+  }, [hasCompleteAuthForEarlyEffects, evidenceMode, evidenceTaskId]);
 
   useEffect(() => {
-    if (!authState.authenticated || evidenceMode !== 'cockpit' || !resolvedCockpitEvidenceClientId) {
+    if (!hasCompleteAuthForEarlyEffects || evidenceMode !== 'cockpit' || !resolvedCockpitEvidenceClientId) {
       setCockpitEvidenceSnapshot(null);
       setCockpitEvidenceError(null);
       setIsCockpitEvidenceLoading(false);
@@ -8040,7 +8059,7 @@ export default function App() {
     return () => {
       cancelled = true;
     };
-  }, [authState.authenticated, evidenceMode, resolvedCockpitEvidenceClientId]);
+  }, [hasCompleteAuthForEarlyEffects, evidenceMode, resolvedCockpitEvidenceClientId]);
 
   useEffect(() => {
     setExpandedTaskIds((prev) => prev.filter((taskId) => tasks.some((task) => task.id === taskId)));
@@ -8049,7 +8068,33 @@ export default function App() {
   const [loading, setLoading] = useState(true);
   const [loadingPhase, setLoadingPhase] = useState('正在初始化桌面界面…');
   const [loadingSubProgress, setLoadingSubProgress] = useState(0);
-  const currentSessionUser = authState.user || null;
+  const [workspaceRuntimeStatus, setWorkspaceRuntimeStatus] = useState<WorkspaceRuntimeStatus>('verifying');
+  const [workspaceRuntimeMessage, setWorkspaceRuntimeMessage] = useState('正在初始化工作空间…');
+  const [workspaceTransitionSlow, setWorkspaceTransitionSlow] = useState(false);
+  const workspaceRuntimeStatusRef = useRef<WorkspaceRuntimeStatus>('verifying');
+  const workspaceTransitionRef = useRef<WorkspaceTransitionToken>({ id: 0, sandboxId: '', reason: 'initial' });
+  const workspaceTransitionStartedAtRef = useRef(Date.now());
+  const currentSessionUser = authState.user || LOCAL_DRAFT_SESSION_USER;
+  const hasRawAuthenticatedSession = Boolean(authState.authenticated && authState.user);
+  const hasAuthenticatedSession = hasCompleteSessionIdentity(authState);
+  const hasIncompleteAuthenticatedSession = hasRawAuthenticatedSession && !hasAuthenticatedSession;
+  const sessionIdentityRecoveryRef = useRef('');
+  const workspaceRuntimeBusy = WORKSPACE_BUSY_RUNTIME_STATUSES.has(workspaceRuntimeStatus);
+  const workspaceWritesBlocked = workspaceRuntimeBlocksWrites(workspaceRuntimeStatus);
+
+  useEffect(() => {
+    workspaceRuntimeStatusRef.current = workspaceRuntimeStatus;
+  }, [workspaceRuntimeStatus]);
+
+  useEffect(() => {
+    if (!loading && !workspaceRuntimeBusy) {
+      setWorkspaceTransitionSlow(false);
+      return undefined;
+    }
+    setWorkspaceTransitionSlow(false);
+    const timer = window.setTimeout(() => setWorkspaceTransitionSlow(true), 8000);
+    return () => window.clearTimeout(timer);
+  }, [loading, workspaceRuntimeBusy, workspaceRuntimeMessage, workspaceRuntimeStatus]);
 
   // ── 迷你面板(桌面挂件)hooks:放顶层 hooks 区(任何早退 return 之前),复用现有 tasks state,不新开数据路径 ──
   const [miniMode, setMiniMode] = useState(false);
@@ -8063,6 +8108,10 @@ export default function App() {
     void window.yiyuWorkbench?.setMiniMode?.(false);
   }, []);
   const handleMiniToggleTask = useCallback(async (id: string) => {
+    if (workspaceWritesBlocked) {
+      flash('info', workspaceRuntimeMessage || '工作空间正在切换或需要重新登录，暂时不能更新任务。');
+      return;
+    }
     const target = tasks.find((x) => x.id === id);
     if (!target) return;
     const willDone = target.status !== 'done';
@@ -8073,8 +8122,12 @@ export default function App() {
     } catch {
       /* 忽略:board 下次刷新自愈 */
     }
-  }, [tasks]);
+  }, [tasks, workspaceRuntimeMessage, workspaceWritesBlocked]);
   const handleMiniQuickAdd = useCallback(async (text: string) => {
+    if (workspaceWritesBlocked) {
+      flash('info', workspaceRuntimeMessage || '工作空间正在切换或需要重新登录，暂时不能新建任务。');
+      return;
+    }
     try {
       const created = await createTask({
         title: text,
@@ -8092,7 +8145,7 @@ export default function App() {
     } catch {
       /* 忽略 */
     }
-  }, [taskLists, taskSettingsState, currentSessionUser]);
+  }, [taskLists, taskSettingsState, currentSessionUser, workspaceRuntimeMessage, workspaceWritesBlocked]);
   // 点迷你面板里的任务 → 退出迷你 + 切到任务路由 + 复用现有 pendingPlanItemAction 脉冲弹出该任务编辑器
   const handleMiniOpenTask = useCallback((id: string) => {
     const task = tasks.find((t) => t.id === id);
@@ -8107,40 +8160,49 @@ export default function App() {
   const canShowMaintenanceSyncPanel = Boolean(canUseCollabSync && isActiveYiyuOfficialWorkspace);
   const canShowCollabSync = Boolean(canUseCollabSync && isActiveYiyuOfficialWorkspace && isMaintenanceModeActive);
   const currentMembershipStatus = getEffectiveMembershipStatus(authState);
-  const canClaimOrgAdmin = Boolean(isCloudSession && orgAdminClaimStatus.canClaim);
-  const currentUserOrgBinding = currentSessionUser
+  const canClaimOrgAdmin = Boolean(hasAuthenticatedSession && isCloudSession && orgAdminClaimStatus.canClaim);
+  const currentUserOrgBinding = hasAuthenticatedSession
     ? orgModelState.bindings.find((binding) => binding.userId === currentSessionUser.id)
     : null;
   const currentUserOrgRole = currentUserOrgBinding?.primaryRoleId
     ? orgModelState.roles.find((role) => role.id === currentUserOrgBinding.primaryRoleId)
     : null;
   const currentUserOrganizationIdentity = (
-    currentUserOrgRole?.name
-    || currentSessionUser?.jobTitle
-    || ''
+    hasAuthenticatedSession
+      ? (currentUserOrgRole?.name || currentSessionUser?.jobTitle || '')
+      : ''
   ).trim();
   const canEditOrganizationStructure = Boolean(
-    currentSessionUser?.primaryRole === 'admin'
-    || currentUserOrgRole?.level === 'organization_lead'
-    || currentUserOrganizationIdentity === '组织负责人'
-    || currentUserOrganizationIdentity === '顾问',
+    hasAuthenticatedSession
+      && (
+        currentSessionUser?.primaryRole === 'admin'
+        || currentUserOrgRole?.level === 'organization_lead'
+        || currentUserOrganizationIdentity === '组织负责人'
+        || currentUserOrganizationIdentity === '顾问'
+      ),
   );
   const canAccessOrganizationSettings = Boolean(canEditOrganizationStructure || canClaimOrgAdmin);
-  const currentUserStructureLabel = currentUserOrganizationIdentity
-    || (currentSessionUser?.departmentName
-      ? `${currentSessionUser.departmentName}${currentSessionUser.isDepartmentLead ? ' · 部门负责人' : ''}`
-      : currentSessionUser?.primaryRole === 'admin'
-        ? '管理员'
-        : '未分配部门');
+  const currentUserStructureLabel = hasAuthenticatedSession
+    ? (
+      currentUserOrganizationIdentity
+      || (currentSessionUser?.departmentName
+        ? `${currentSessionUser.departmentName}${currentSessionUser.isDepartmentLead ? ' · 部门负责人' : ''}`
+        : currentSessionUser?.primaryRole === 'admin'
+          ? '管理员'
+          : '未分配部门')
+    )
+    : '';
   // 断网兜底态(degraded)不强制身份页:此时云端没法确认成员资格,沿用本地 last-known-good;admin claim 也豁免。
-  const shouldShowIdentityGate = isCloudSession && currentMembershipStatus !== 'approved' && !canClaimOrgAdmin && authState.degraded !== true;
-  const renderBranch = loading ? 'loading' : (!authState.authenticated || !currentSessionUser ? 'auth' : shouldShowIdentityGate ? 'identity' : 'main');
+  const shouldShowIdentityGate = hasAuthenticatedSession && isCloudSession && currentMembershipStatus !== 'approved' && !canClaimOrgAdmin && authState.degraded !== true;
+  const renderBranch = loading ? 'loading' : (shouldShowIdentityGate ? 'identity' : 'main');
   useEffect(() => {
     if (canAccessOrganizationSettings) return;
     if (!ORG_MANAGEMENT_SECTION_KEYS.includes(settingsSection)) return;
     setSettingsSection('account');
   }, [canAccessOrganizationSettings, settingsSection]);
-  const currentOperatorName = currentSessionUser?.fullName || operators.find((item) => item.isCurrent)?.name || '庆华';
+  const currentOperatorName = hasAuthenticatedSession
+    ? (getSessionDisplayIdentity(currentSessionUser) || operators.find((item) => item.isCurrent)?.name || '当前用户')
+    : '本机草稿';
   const canManagePublicTaskTaxonomy = currentSessionUser?.primaryRole === 'admin';
   const [cloudAuthModalOpen, setCloudAuthModalOpen] = useState(false);
   const [cloudAuthAction, setCloudAuthAction] = useState<'login' | 'join' | 'create'>('join');
@@ -8171,16 +8233,6 @@ export default function App() {
     message: '',
   });
   const [localInputMemoryState, setLocalInputMemoryState] = useState<LocalInputMemory>(DEFAULT_LOCAL_INPUT_MEMORY);
-  const [authShellMode, setAuthShellMode] = useState<AuthShellMode>('login');
-  const [authShellRegisterStep, setAuthShellRegisterStep] = useState<AuthShellRegisterStep>(1);
-  const [authShellForm, setAuthShellForm] = useState<AuthShellFormState>(() => createAuthShellForm());
-  const authShellFormTouchedRef = useRef(false);
-  const [authShellInviteStatus, setAuthShellInviteStatus] = useState<AuthShellInviteStatus>(EMPTY_AUTH_SHELL_INVITE_STATUS);
-  const [authShellRememberMe, setAuthShellRememberMe] = useState(true);
-  const [authShellRememberInputs, setAuthShellRememberInputs] = useState(DEFAULT_LOCAL_INPUT_MEMORY.cloudAuth.rememberInputs);
-  const [authShellShowPassword, setAuthShellShowPassword] = useState(false);
-  const [authShellSubmitting, setAuthShellSubmitting] = useState(false);
-  const [authShellMessage, setAuthShellMessage] = useState('');
   const [draft, setDraft] = useState<{
     currentOperatorId: string;
     cloudApiUrl: string;
@@ -8226,45 +8278,6 @@ export default function App() {
   const [objectStorageSettingsState, setObjectStorageSettingsState] = useState<ObjectStorageSettings | null>(null);
   const [isSavingObjectStorageSettings, setIsSavingObjectStorageSettings] = useState(false);
   const orgSetupInputDraftsRef = useRef<OrganizationSetupInputDraftState>({});
-  const setAuthShellFormFromUser = useCallback((next: React.SetStateAction<AuthShellFormState>) => {
-    authShellFormTouchedRef.current = true;
-    setAuthShellForm(next);
-  }, []);
-
-  useEffect(() => {
-    setAuthShellRememberInputs(localInputMemoryState.cloudAuth.rememberInputs);
-    if (authShellFormTouchedRef.current) return;
-    const defaultRememberedAccount = pickDefaultRememberedCloudAuthAccount(localInputMemoryState);
-    setAuthShellForm(createAuthShellForm(
-      defaultRememberedAccount?.identifier || defaultRememberedAccount?.email || '',
-      defaultRememberedAccount?.fullName || '',
-      defaultRememberedAccount?.password || '',
-    ));
-  }, [localInputMemoryState]);
-
-  useEffect(() => {
-    if (authState.message) {
-      setAuthShellMessage(authState.message);
-    }
-  }, [authState.message]);
-
-  useEffect(() => {
-    if (authState.authenticated) return;
-    if (
-      authState.sessionMode === 'local'
-      && authState.requiresLocalIdentitySetup
-      && authState.localIdentityStatus === 'needs_setup'
-    ) {
-      setAuthShellMode('register');
-      setAuthShellMessage('');
-    }
-  }, [
-    authState.authenticated,
-    authState.localIdentityStatus,
-    authState.requiresLocalIdentitySetup,
-    authState.sessionMode,
-    workspacesState?.activeSandboxId,
-  ]);
 
   // 退出守卫数据源：每 5s 拉取后端"进行中/排队的后台任务"上报主进程。
   // 以后端 run 状态为权威真相(跨客户准确，不受当前选中客户影响)；关闭软件时
@@ -8291,71 +8304,6 @@ export default function App() {
       window.clearInterval(timer);
     };
   }, []);
-
-	  useEffect(() => {
-	    if (authShellMode !== 'register') return undefined;
-	    const code = normalizeDepartmentInviteInput(authShellForm.inviteCode);
-	    if (!code) {
-	      setAuthShellInviteStatus(EMPTY_AUTH_SHELL_INVITE_STATUS);
-	      return undefined;
-	    }
-	    const typedCloudUrl = cloudApiUrlFromHost(authShellForm.cloudApiUrl);
-	    const lookupCloudUrl = typedCloudUrl || settingsState?.cloudApiUrl?.trim() || '';
-	    if (!lookupCloudUrl) {
-	      setAuthShellInviteStatus({
-	        code,
-	        loading: false,
-	        valid: null,
-	        message: '填写邀请码时需要组织云端地址，注册成功后会直接进入对应组织。',
-	      });
-	      return undefined;
-	    }
-	    let cancelled = false;
-	    setAuthShellInviteStatus({ code, loading: true, valid: null, message: '正在识别邀请码...' });
-    const timer = window.setTimeout(() => {
-      void resolveInviteCode(code, lookupCloudUrl)
-        .then((result) => {
-          if (cancelled) return;
-          setAuthShellInviteStatus({
-            code,
-            loading: false,
-            valid: result.valid,
-            message: result.message || (result.valid ? '邀请码已识别' : '邀请码无效'),
-          });
-          if (result.valid && result.departmentId) {
-            setAuthShellForm((prev) => normalizeDepartmentInviteInput(prev.inviteCode) === code ? { ...prev, departmentId: result.departmentId || prev.departmentId } : prev);
-          }
-          if (result.valid && result.organizationId) {
-            void loadDepartmentOptionsBlock(result.organizationId, lookupCloudUrl).catch(() => undefined);
-          }
-        })
-        .catch((error) => {
-          if (cancelled) return;
-          setAuthShellInviteStatus({
-            code,
-            loading: false,
-            valid: false,
-            message: error instanceof Error ? error.message : '邀请码识别失败',
-          });
-        });
-    }, 400);
-    return () => {
-      cancelled = true;
-      window.clearTimeout(timer);
-    };
-  }, [authShellForm.cloudApiUrl, authShellForm.inviteCode, authShellMode, settingsState?.cloudApiUrl]);
-
-  useEffect(() => {
-    if (!authState.authenticated) return;
-    authShellFormTouchedRef.current = false;
-    setAuthShellMode('login');
-    setAuthShellRegisterStep(1);
-    setAuthShellForm(createAuthShellForm());
-    setAuthShellInviteStatus(EMPTY_AUTH_SHELL_INVITE_STATUS);
-    setAuthShellRememberMe(true);
-    setAuthShellSubmitting(false);
-    setAuthShellMessage('');
-  }, [authState.authenticated]);
 
   const [profileDraft, setProfileDraft] = useState<UpdateProfilePayload>({
     fullName: currentSessionUser?.fullName || '',
@@ -8461,6 +8409,29 @@ export default function App() {
   };
   // 同步 flash 到 flashRef，让上方早期声明的 toggleFavoriteWorkspaceTool 能调用最新的 flash
   flashRef.current = flash;
+
+  const guardWorkspaceWrite = (actionLabel = '继续操作') => {
+    if (!workspaceRuntimeBlocksWrites(workspaceRuntimeStatusRef.current)) return true;
+    const message = workspaceRuntimeMessage || '工作空间正在切换或需要重新登录，暂时不能写入数据。';
+    flash('info', `${message} 请稍后再${actionLabel}。`);
+    return false;
+  };
+
+  const guardedMutation = async <T,>(actionLabel: string, fn: () => Promise<T>): Promise<T | undefined> => {
+    if (!guardWorkspaceWrite(actionLabel)) return undefined;
+    const transitionId = workspaceTransitionRef.current.id;
+    const sandboxId = activeSandboxIdRef.current;
+    const result = await fn();
+    if (
+      transitionId !== workspaceTransitionRef.current.id
+      || sandboxId !== activeSandboxIdRef.current
+      || workspaceRuntimeBlocksWrites(workspaceRuntimeStatusRef.current)
+    ) {
+      flash('info', '工作空间状态已变化，本次操作结果已忽略。');
+      return undefined;
+    }
+    return result;
+  };
 
   // AUDIT-20260518-013 修复: 录音失败 (麦克风权限 / 设备占用 / 浏览器限制) 旧实现
   // 只走全局 flash, 任务编辑器内不显示就地错误, 用户感知不到.
@@ -8688,6 +8659,29 @@ export default function App() {
 
   const resetBusinessWorkspaceTransientState = () => {
     optimisticTasksRef.current.clear();
+    reviewDirtyTaskIdsRef.current.clear();
+    reviewDraftRevisionRef.current = {};
+    reviewLoadAbortControllerRef.current?.abort();
+    reviewLoadAbortControllerRef.current = null;
+    reviewLoadSequenceRef.current += 1;
+    weeklyOverviewRefreshRequestRef.current = '';
+    if (weeklyOverviewRefreshPollRef.current !== null) {
+      window.clearTimeout(weeklyOverviewRefreshPollRef.current);
+      weeklyOverviewRefreshPollRef.current = null;
+    }
+    workspaceStartMessageAbortControllerRef.current?.abort();
+    workspaceStartMessageAbortControllerRef.current = null;
+    workspaceComposerDraftRef.current = {};
+    workspaceComposerFocusRef.current = {
+      key: '',
+      focused: false,
+      selectionStart: null,
+      selectionEnd: null,
+      updatedAt: 0,
+    };
+    activeWorkingDocumentsClientRef.current = '';
+    lastSyncedClientsRef.current = null;
+    dispatchWorkspaceClientUi({ type: 'resetAll' });
     setClients([]);
     setCurrentClientId('');
     setWorkspace(null);
@@ -8696,9 +8690,71 @@ export default function App() {
     setWorkspacePersistedProposalDrafts([]);
     setWorkspacePersistedProposalDraftsError(null);
     setWorkspacePersistedProposalDraftsBusyId(null);
+    setWorkspacePersistedProposalDraftsLoading(false);
     setTasks([]);
     setTaskLists([]);
     setTaskTags([]);
+    setUpdatingTaskStatusIds([]);
+    setExpandedTaskIds([]);
+    setProposals([]);
+    setActiveSupportRequest(null);
+    setSupportRequestActionBusy(false);
+    setSupportRequestResolutionNote('');
+    setIsImportSubmitting(false);
+    setLatestImportFeedback(null);
+    setActiveWorkingDocuments([]);
+    setClientWorkspaceSurfaceModeRequest(null);
+    setTaskSettingsState(null);
+    setReviewDashboard(null);
+    setWeeklyOverviewRefreshStatus(null);
+    setReviewHistory([]);
+    setIsLoadingReviewHistory(false);
+    setReviewDirtyTaskIds([]);
+    setRadars([]);
+    setCandidates([]);
+    setIntelligenceProfiles([]);
+    setHandbookEntries([]);
+    setGrowthContextJump(null);
+    setTaskEvidencePreview(null);
+    setTaskEvidenceError(null);
+    setIsTaskEvidenceLoading(false);
+    setCockpitEvidenceSnapshot(null);
+    setCockpitEvidenceError(null);
+    setIsCockpitEvidenceLoading(false);
+    setEvidenceMode(null);
+    setEvidenceTaskId(null);
+    setEvidenceClientId(null);
+    setSelectedReviewWeekLabel(currentWeekLabel());
+    setDepartmentOptions([]);
+    setEmployeeReviews([]);
+    setEmployeeDirectoryStatus('idle');
+    setEmployeeDirectoryError('');
+    setOrgModelState(EMPTY_ORG_MODEL_SETTINGS);
+    setOrgMembershipState(DEFAULT_ORG_MEMBERSHIP_SUMMARY);
+    setOrgAdminClaimStatus(DEFAULT_ORG_ADMIN_CLAIM_STATUS);
+    setAgentWorklogs([]);
+    setAgentWeeklyDigests([]);
+    setAgentWeeklyPlans([]);
+    setLogs([]);
+    setClientWorkspaceSettingsState(DEFAULT_CLIENT_WORKSPACE_SETTINGS);
+    setTopicsSettingsState(DEFAULT_TOPICS_SETTINGS);
+    setHandbookSettingsState(DEFAULT_HANDBOOK_SETTINGS);
+    setSystemAdminSettingsState(DEFAULT_SYSTEM_ADMIN_SETTINGS);
+    setSettingsSectionLoaded({
+      overview: false,
+      account: false,
+      tasks: false,
+      client_workspace: false,
+      topics: false,
+      handbook: false,
+      system_admin: false,
+      org_overview: false,
+      org_departments: false,
+      org_people: false,
+      org_rules: false,
+      system_logs: false,
+      about: false,
+    });
     setClientWorkspaceInlineEditor(null);
     setWorkspaceSelectedMeetingId('');
     setWorkspaceMeetingTranscript('');
@@ -8712,31 +8768,83 @@ export default function App() {
     setBusinessWorkspaceResetKey((value) => value + 1);
   };
 
-  const refreshWorkspaceAwareState = async (nextWorkspaces?: SandboxWorkspacesResponse) => {
-    if (nextWorkspaces) setWorkspacesState(nextWorkspaces);
+  const refreshWorkspaceAwareState = async (
+    nextWorkspaces?: SandboxWorkspacesResponse,
+    transitionToken?: WorkspaceTransitionToken,
+  ) => {
+    const token = transitionToken || beginWorkspaceTransition('switching', '正在刷新当前工作空间…', {
+      sandboxId: nextWorkspaces?.activeSandboxId || activeSandboxIdRef.current || workspacesState?.activeSandboxId || '',
+      reason: 'refresh-workspace-aware-state',
+    });
+    if (nextWorkspaces && shouldApplyWorkspaceLoad(token)) {
+      setWorkspacesState(nextWorkspaces);
+      activeSandboxIdRef.current = nextWorkspaces.activeSandboxId || '';
+      pinWorkspaceTransitionSandbox(token, nextWorkspaces.activeSandboxId);
+    }
     const nextActiveWorkspace = nextWorkspaces
       ? nextWorkspaces.workspaces.find((item) => item.id === nextWorkspaces.activeSandboxId) || null
       : activeWorkspaceRecord;
+    pinWorkspaceTransitionSandbox(token, nextActiveWorkspace?.id || nextWorkspaces?.activeSandboxId || null);
+    if (!shouldApplyWorkspaceLoad(token)) return;
+    markWorkspaceRuntime('switching', `正在清理 ${nextActiveWorkspace?.name || '目标'} 工作空间缓存…`);
     resetFeishuWorkspaceTransientState();
     resetBusinessWorkspaceTransientState();
-    await Promise.all([
-      loadSettingsBlock(),
-      loadAuthBlock(),
-      loadLocalInputMemoryBlock(),
+    markWorkspaceRuntime('verifying', `正在验证 ${nextActiveWorkspace?.name || '目标'} 工作空间身份…`);
+    const [, rawAuth] = await Promise.all([
+      loadSettingsBlock({ applyRuntime: false, transition: token }),
+      loadAuthBlock({ transition: token }),
+      loadLocalInputMemoryBlock({ transition: token }),
       refreshMaintenanceModeStatus({ silent: true, workspace: nextActiveWorkspace }),
     ]);
+    if (!shouldApplyWorkspaceLoad(token)) return;
+    const nextAuth = await recoverIncompleteAuthBlock(rawAuth, { transition: token });
+    if (!shouldApplyWorkspaceLoad(token)) return;
+    const nextRuntime = resolveWorkspaceRuntimeFromRecord(nextActiveWorkspace, nextAuth);
+    if (nextRuntime.status === 'needs_login' || nextRuntime.status === 'identity_error') {
+      if (shouldApplyWorkspaceLoad(token)) markWorkspaceRuntime(nextRuntime.status, nextRuntime.message);
+      return;
+    }
+    if (nextRuntime.status === 'local_draft') {
+      if (shouldApplyWorkspaceLoad(token)) markWorkspaceRuntime('local_draft', nextRuntime.message);
+      return;
+    } else {
+      markWorkspaceRuntime('switching', `正在加载 ${nextActiveWorkspace?.name || '目标'} 工作空间数据…`);
+    }
+    markWorkspaceRuntime('switching', `正在同步 ${nextActiveWorkspace?.name || '目标'} 的成员、部门和清单…`);
     await Promise.all([
-      loadOrgMembershipBlock().catch(() => DEFAULT_ORG_MEMBERSHIP_SUMMARY),
-      loadOrgFeishuIntegrationBlock().catch(() => DEFAULT_ORG_FEISHU_INTEGRATION),
-      loadFeishuDeliveryProfileBlock().catch(() => DEFAULT_FEISHU_DELIVERY_PROFILE),
-      loadFeishuMemberAuthorizationBlock().catch(() => DEFAULT_FEISHU_MEMBER_AUTHORIZATION),
+      loadOrgMembershipBlock({ transition: token }).catch(() => DEFAULT_ORG_MEMBERSHIP_SUMMARY),
+      loadOrgAdminClaimStatusBlock(nextAuth.sessionMode === 'cloud', { transition: token }).catch(() => DEFAULT_ORG_ADMIN_CLAIM_STATUS),
+      loadOrgFeishuIntegrationBlock({ transition: token }).catch(() => DEFAULT_ORG_FEISHU_INTEGRATION),
+      loadFeishuDeliveryProfileBlock({ transition: token }).catch(() => DEFAULT_FEISHU_DELIVERY_PROFILE),
+      loadFeishuMemberAuthorizationBlock({ transition: token }).catch(() => DEFAULT_FEISHU_MEMBER_AUTHORIZATION),
     ]);
+    if (!shouldApplyWorkspaceLoad(token)) return;
+    markWorkspaceRuntime('switching', `正在加载 ${nextActiveWorkspace?.name || '目标'} 的客户、任务和设置…`);
     await Promise.all([
-      loadClientWorkspaceSettingsBlock().catch(() => undefined),
-      loadClientBlock().catch(() => undefined),
-      loadTaskSettingsBlock().catch(() => undefined),
-      loadTaskBlock().catch(() => undefined),
+      loadClientWorkspaceSettingsBlock({ transition: token }).catch(() => undefined),
+      loadTopicsSettingsBlock({ transition: token }).catch(() => undefined),
+      loadHandbookSettingsBlock({ transition: token }).catch(() => undefined),
+      loadSystemAdminSettingsBlock(nextAuth.sessionMode === 'cloud', { transition: token }).catch(() => undefined),
+      loadClientBlock(undefined, { transition: token }).catch(() => undefined),
+      loadTaskSettingsBlock({ transition: token }).catch(() => undefined),
+      loadTaskBlock({ transition: token }).catch(() => undefined),
+      loadTopicsBlock({ transition: token }).catch(() => undefined),
+      loadHandbookBlock({ transition: token }).catch(() => undefined),
+      loadReviewBlock(resolveSelectedReviewWeekLabel(), {
+        skipAi: true,
+        perspective: resolveDefaultReviewPerspectiveForUser(nextAuth.user || null),
+        departmentId: resolveDefaultReviewDepartmentIdForUser(
+          nextAuth.user || null,
+          resolveDefaultReviewPerspectiveForUser(nextAuth.user || null),
+        ),
+        transition: token,
+      }).catch(() => undefined),
+      loadReviewHistoryBlock({ transition: token }).catch(() => undefined),
+      nextAuth.user?.primaryRole === 'admin'
+        ? loadEmployeeReviewBlock({ quiet: true, transition: token }).catch(() => undefined)
+        : Promise.resolve(undefined),
     ]);
+    if (shouldApplyWorkspaceLoad(token)) applyWorkspaceRuntime(nextActiveWorkspace, nextAuth);
   };
 
   const handleActivateWorkspace = async (workspaceId: string) => {
@@ -8744,15 +8852,32 @@ export default function App() {
       flash('info', '任务正在保存，请稍候几秒再切换工作空间。');
       return;
     }
+    const targetWorkspace = (workspacesState?.workspaces || []).find((item) => item.id === workspaceId) || null;
     setWorkspaceManagerBusy(true);
+    const transitionToken = beginWorkspaceTransition('switching', `正在切换到 ${targetWorkspace?.name || '目标'} 工作空间…`, {
+      sandboxId: workspaceId,
+      reason: 'activate-workspace',
+    });
     try {
       const response = await activateWorkspace(workspaceId);
-      await refreshWorkspaceAwareState(response);
-      flash('success', '已切换工作空间。客户、任务和文档已按当前工作空间刷新显示。');
+      pinWorkspaceTransitionSandbox(transitionToken, response.activeSandboxId || workspaceId);
+      await refreshWorkspaceAwareState(response, transitionToken);
+      if (shouldApplyWorkspaceLoad(transitionToken)) {
+        flash('success', '已切换工作空间。客户、任务和文档已按当前工作空间刷新显示。');
+      }
     } catch (error) {
-      flash('error', error instanceof Error ? error.message : '切换工作空间失败');
+      const currentWorkspace = (workspacesState?.workspaces || []).find((item) => item.id === workspacesState?.activeSandboxId) || null;
+      if (shouldApplyWorkspaceLoad(transitionToken)) {
+        applyWorkspaceRuntime(currentWorkspace, authState);
+        flash('error', error instanceof Error ? error.message : '切换工作空间失败');
+      }
     } finally {
-      setWorkspaceManagerBusy(false);
+      if (shouldApplyWorkspaceLoad(transitionToken)) {
+        await waitForWorkspaceTransitionMinimum();
+        setWorkspaceManagerBusy(false);
+        markLoadingPhase('启动完成');
+        setLoading(false);
+      }
     }
   };
 
@@ -8801,6 +8926,10 @@ export default function App() {
       });
       setAuthState(response);
       setOrganizationSelection(null);
+      setLoading(true);
+      markWorkspaceRuntime('verifying', '正在进入所选组织工作空间…');
+      resetFeishuWorkspaceTransientState();
+      resetBusinessWorkspaceTransientState();
       await loadAll();
       setCloudAuthModalOpen(false);
       flash('success', '已进入所选组织工作空间。');
@@ -8936,6 +9065,76 @@ export default function App() {
     console.info(`[bootstrap] phase=${phase}`);
   };
 
+  const markWorkspaceRuntime = (status: WorkspaceRuntimeStatus, message: string) => {
+    workspaceRuntimeStatusRef.current = status;
+    setWorkspaceRuntimeStatus(status);
+    setWorkspaceRuntimeMessage(message);
+    if (WORKSPACE_BUSY_RUNTIME_STATUSES.has(status)) {
+      markLoadingPhase(message);
+    }
+  };
+
+  const beginWorkspaceTransition = (
+    status: Extract<WorkspaceRuntimeStatus, 'verifying' | 'switching'>,
+    message: string,
+    options?: { sandboxId?: string | null; reason?: string },
+  ): WorkspaceTransitionToken => {
+    const token: WorkspaceTransitionToken = {
+      id: workspaceTransitionRef.current.id + 1,
+      sandboxId: options?.sandboxId || activeSandboxIdRef.current || workspacesState?.activeSandboxId || '',
+      reason: options?.reason || status,
+    };
+    workspaceTransitionRef.current = token;
+    workspaceTransitionStartedAtRef.current = Date.now();
+    setLoading(true);
+    setLoadingSubProgress(0);
+    setWorkspaceTransitionSlow(false);
+    markWorkspaceRuntime(status, message);
+    return token;
+  };
+
+  const waitForWorkspaceTransitionMinimum = async () => {
+    const elapsed = Date.now() - workspaceTransitionStartedAtRef.current;
+    const remaining = Math.max(0, WORKSPACE_TRANSITION_MIN_VISIBLE_MS - elapsed);
+    if (remaining <= 0) return;
+    await new Promise<void>((resolve) => {
+      window.setTimeout(resolve, remaining);
+    });
+  };
+
+  const pinWorkspaceTransitionSandbox = (token: WorkspaceTransitionToken, sandboxId?: string | null) => {
+    if (workspaceTransitionRef.current.id !== token.id) return;
+    const nextToken = { ...token, sandboxId: sandboxId || '' };
+    token.sandboxId = nextToken.sandboxId;
+    workspaceTransitionRef.current = nextToken;
+  };
+
+  const isWorkspaceTransitionCurrent = (token: WorkspaceTransitionToken | null | undefined): boolean => {
+    if (!token) return !WORKSPACE_BUSY_RUNTIME_STATUSES.has(workspaceRuntimeStatusRef.current);
+    const current = workspaceTransitionRef.current;
+    if (token.id !== current.id) return false;
+    if (token.sandboxId && current.sandboxId && token.sandboxId !== current.sandboxId) return false;
+    return true;
+  };
+
+  const currentActiveSandboxId = () => activeSandboxIdRef.current || workspacesState?.activeSandboxId || '';
+
+  const shouldApplyWorkspaceLoad = (token?: WorkspaceTransitionToken | null, startedSandboxId?: string): boolean => {
+    if (!isWorkspaceTransitionCurrent(token)) return false;
+    if (token) return true;
+    const currentSandboxId = currentActiveSandboxId();
+    return !startedSandboxId || !currentSandboxId || startedSandboxId === currentSandboxId;
+  };
+
+  const applyWorkspaceRuntime = (
+    workspace: SandboxWorkspaceRecord | null | undefined,
+    auth: AuthState | null | undefined,
+  ) => {
+    const nextRuntime = resolveWorkspaceRuntimeFromRecord(workspace, auth);
+    markWorkspaceRuntime(nextRuntime.status, nextRuntime.message);
+    return nextRuntime;
+  };
+
   const isLocalServiceStartupError = (error: unknown) => {
     const detail = error instanceof Error ? error.message : String(error ?? '');
     return detail.includes('无法连接本地服务');
@@ -8948,32 +9147,6 @@ export default function App() {
     if (!currentBanner || currentBanner.type !== 'error' || !matchText.includes('无法连接本地服务')) return;
     clearGlobalBanner();
   };
-
-  useEffect(() => {
-    if (!authShellMessage.includes('无法连接本地服务')) return undefined;
-    let cancelled = false;
-    const tryRecover = async () => {
-      try {
-        const response = await probeLocalBackendHealth(900);
-        if (cancelled) return;
-        setHealth(response);
-        backendReadyRef.current = true;
-        clearLocalServiceStartupBanner();
-        setAuthShellMessage('');
-        await loadAll(undefined, { allowStartupRetry: false });
-      } catch {
-        // 后端还没起来时保持静默轮询，避免持续打扰用户
-      }
-    };
-    void tryRecover();
-    const timer = window.setInterval(() => {
-      void tryRecover();
-    }, 1500);
-    return () => {
-      cancelled = true;
-      window.clearInterval(timer);
-    };
-  }, [authShellMessage]);
 
   useEffect(() => {
     if (health?.backend === 'online') {
@@ -9319,110 +9492,148 @@ export default function App() {
     setCollabCommitMessage(nextValue);
   }
 
-  async function loadSettingsBlock() {
+  async function loadSettingsBlock(options?: { applyRuntime?: boolean; transition?: WorkspaceTransitionToken }) {
+    const startedSandboxId = options?.transition?.sandboxId || currentActiveSandboxId();
     const [response, workspaces] = await Promise.all([
       getSettings(),
       getWorkspaces().catch(() => null),
     ]);
-    setSettingsState(response.settings);
-    setOperators(response.operators);
-    setHealth(response.health);
-    setWorkspacesState(workspaces);
-    clearLocalServiceStartupBanner();
-    const missingFeatures = REQUIRED_BACKEND_FEATURES.filter((feature) => !response.health.featureFlags.includes(feature));
-    setBackendCompatibilityError(
-      missingFeatures.length > 0 ? `本地后端版本过旧，请重启应用。缺少能力：${missingFeatures.join('、')}` : null,
-    );
-  }
-
-  async function loadLocalInputMemoryBlock() {
-    const response = await getLocalInputMemory();
-    setLocalInputMemoryState(response);
-    return response;
-  }
-
-  async function loadOrgMembershipBlock() {
-    const response = await getOrgMembershipSummary();
-    setOrgMembershipState(response);
-    // 把组织身份告诉主进程更新器 → 官网中央发布服务按稳定 organizationId 决策版本;非桌面环境忽略
-    try {
-      if (window.yiyuWorkbench?.setUpdateOrgIdentity) {
-        void window.yiyuWorkbench.setUpdateOrgIdentity({
-          organizationId: response.organizationId ?? null,
-          organizationSlug: response.organizationSlug ?? null,
-          organizationName: response.organizationName ?? null,
-          cloudBackendUrl: desktopAppInfo?.cloudBackendUrl ?? null,
-        }).then((result) => {
-          if (!result.ok) return;
-          window.setTimeout(() => {
-            void window.yiyuWorkbench?.checkForUpdates?.().then((updateResult) => {
-              if (updateResult?.officialPush) {
-                setCachedOfficialPush(updateResult.officialPush);
-              }
-            }).catch(() => undefined);
-          }, 500);
-        });
-      } else {
-        void window.yiyuWorkbench?.setUpdateOrgCode?.(response.organizationSlug ?? null);
+    const canApply = shouldApplyWorkspaceLoad(options?.transition, startedSandboxId);
+    if (canApply) {
+      setSettingsState(response.settings);
+      setOperators(response.operators);
+      setHealth(response.health);
+      setWorkspacesState(workspaces);
+      if (workspaces?.activeSandboxId) {
+        activeSandboxIdRef.current = workspaces.activeSandboxId;
       }
-    } catch {
-      /* noop */
+    }
+    const nextActiveWorkspace = workspaces?.workspaces.find((item) => item.id === workspaces.activeSandboxId) || null;
+    if (canApply && options?.applyRuntime !== false && !WORKSPACE_BUSY_RUNTIME_STATUSES.has(workspaceRuntimeStatusRef.current)) {
+      applyWorkspaceRuntime(nextActiveWorkspace, authState);
+    }
+    if (canApply) clearLocalServiceStartupBanner();
+    const missingFeatures = REQUIRED_BACKEND_FEATURES.filter((feature) => !response.health.featureFlags.includes(feature));
+    if (canApply) {
+      setBackendCompatibilityError(
+        missingFeatures.length > 0 ? `本地后端版本过旧，请重启应用。缺少能力：${missingFeatures.join('、')}` : null,
+      );
+    }
+    return { settings: response.settings, workspaces };
+  }
+
+  async function loadLocalInputMemoryBlock(options?: { transition?: WorkspaceTransitionToken }) {
+    const startedSandboxId = options?.transition?.sandboxId || currentActiveSandboxId();
+    const response = await getLocalInputMemory();
+    if (shouldApplyWorkspaceLoad(options?.transition, startedSandboxId)) {
+      setLocalInputMemoryState(response);
     }
     return response;
   }
 
-  async function loadOrgAdminClaimStatusBlock(includeCloud = authState.sessionMode === 'cloud') {
+  async function loadOrgMembershipBlock(options?: { transition?: WorkspaceTransitionToken }) {
+    const startedSandboxId = options?.transition?.sandboxId || currentActiveSandboxId();
+    const response = await getOrgMembershipSummary();
+    if (shouldApplyWorkspaceLoad(options?.transition, startedSandboxId)) {
+      setOrgMembershipState(response);
+      // 把组织身份告诉主进程更新器 → 官网中央发布服务按稳定 organizationId 决策版本;非桌面环境忽略
+      try {
+        if (window.yiyuWorkbench?.setUpdateOrgIdentity) {
+          void window.yiyuWorkbench.setUpdateOrgIdentity({
+            organizationId: response.organizationId ?? null,
+            organizationSlug: response.organizationSlug ?? null,
+            organizationName: response.organizationName ?? null,
+            cloudBackendUrl: desktopAppInfo?.cloudBackendUrl ?? null,
+          }).then((result) => {
+            if (!result.ok) return;
+            window.setTimeout(() => {
+              void window.yiyuWorkbench?.checkForUpdates?.().then((updateResult) => {
+                if (updateResult?.officialPush) {
+                  setCachedOfficialPush(updateResult.officialPush);
+                }
+              }).catch(() => undefined);
+            }, 500);
+          });
+        } else {
+          void window.yiyuWorkbench?.setUpdateOrgCode?.(response.organizationSlug ?? null);
+        }
+      } catch {
+        /* noop */
+      }
+    }
+    return response;
+  }
+
+  async function loadOrgAdminClaimStatusBlock(includeCloud = authState.sessionMode === 'cloud', options?: { transition?: WorkspaceTransitionToken }) {
+    const startedSandboxId = options?.transition?.sandboxId || currentActiveSandboxId();
+    const canApply = () => shouldApplyWorkspaceLoad(options?.transition, startedSandboxId);
     if (!includeCloud) {
-      setOrgAdminClaimStatus(DEFAULT_ORG_ADMIN_CLAIM_STATUS);
+      if (canApply()) {
+        setOrgAdminClaimStatus(DEFAULT_ORG_ADMIN_CLAIM_STATUS);
+      }
       return DEFAULT_ORG_ADMIN_CLAIM_STATUS;
     }
     try {
       const response = await getOrgAdminClaimStatus();
-      setOrgAdminClaimStatus(response);
+      if (canApply()) {
+        setOrgAdminClaimStatus(response);
+      }
       return response;
     } catch (error) {
       const fallback: OrgAdminClaimStatus = {
         ...DEFAULT_ORG_ADMIN_CLAIM_STATUS,
         reason: error instanceof Error ? error.message : '管理员认领状态加载失败',
       };
-      setOrgAdminClaimStatus(fallback);
+      if (canApply()) {
+        setOrgAdminClaimStatus(fallback);
+      }
       return fallback;
     }
   }
 
-  async function loadOrgFeishuIntegrationBlock() {
+  async function loadOrgFeishuIntegrationBlock(options?: { transition?: WorkspaceTransitionToken }) {
+    const startedSandboxId = options?.transition?.sandboxId || currentActiveSandboxId();
+    const canApply = () => shouldApplyWorkspaceLoad(options?.transition, startedSandboxId);
     try {
       const response = await getOrgFeishuIntegration();
-      setOrgFeishuIntegrationState(response);
+      if (canApply()) setOrgFeishuIntegrationState(response);
       return response;
     } finally {
-      setOrgFeishuIntegrationLoaded(true);
+      if (canApply()) setOrgFeishuIntegrationLoaded(true);
     }
   }
 
-  async function loadFeishuDeliveryProfileBlock() {
+  async function loadFeishuDeliveryProfileBlock(options?: { transition?: WorkspaceTransitionToken }) {
+    const startedSandboxId = options?.transition?.sandboxId || currentActiveSandboxId();
+    const canApply = () => shouldApplyWorkspaceLoad(options?.transition, startedSandboxId);
     try {
       const response = await getFeishuDeliveryProfile();
-      setFeishuDeliveryProfileState(response);
+      if (canApply()) setFeishuDeliveryProfileState(response);
       return response;
     } finally {
-      setFeishuDeliveryProfileLoaded(true);
+      if (canApply()) setFeishuDeliveryProfileLoaded(true);
     }
   }
 
-  async function loadFeishuMemberAuthorizationBlock() {
+  async function loadFeishuMemberAuthorizationBlock(options?: { transition?: WorkspaceTransitionToken }) {
+    const startedSandboxId = options?.transition?.sandboxId || currentActiveSandboxId();
+    const canApply = () => shouldApplyWorkspaceLoad(options?.transition, startedSandboxId);
     try {
       const response = await getFeishuMemberAuthorization();
-      setFeishuMemberAuthorizationState(response);
+      if (canApply()) setFeishuMemberAuthorizationState(response);
       return response;
     } finally {
-      setFeishuMemberAuthorizationLoaded(true);
+      if (canApply()) setFeishuMemberAuthorizationLoaded(true);
     }
   }
 
-  async function loadFeishuTaskSyncReadinessBlock() {
-    if (!authState.authenticated || authState.sessionMode !== 'cloud') {
-      setFeishuTaskSyncReadiness(DEFAULT_FEISHU_TASK_SYNC_READINESS);
+  async function loadFeishuTaskSyncReadinessBlock(options?: { transition?: WorkspaceTransitionToken }) {
+    const startedSandboxId = options?.transition?.sandboxId || currentActiveSandboxId();
+    const canApply = () => shouldApplyWorkspaceLoad(options?.transition, startedSandboxId);
+    if (!hasAuthenticatedSession || authState.sessionMode !== 'cloud') {
+      if (canApply()) {
+        setFeishuTaskSyncReadiness(DEFAULT_FEISHU_TASK_SYNC_READINESS);
+      }
       return DEFAULT_FEISHU_TASK_SYNC_READINESS;
     }
     try {
@@ -9431,12 +9642,14 @@ export default function App() {
         getFeishuDeliveryProfile(),
         getFeishuMemberAuthorization(),
       ]);
-      setOrgFeishuIntegrationState(integration);
-      setFeishuDeliveryProfileState(deliveryProfile);
-      setFeishuMemberAuthorizationState(memberAuthorization);
-      setOrgFeishuIntegrationLoaded(true);
-      setFeishuDeliveryProfileLoaded(true);
-      setFeishuMemberAuthorizationLoaded(true);
+      if (canApply()) {
+        setOrgFeishuIntegrationState(integration);
+        setFeishuDeliveryProfileState(deliveryProfile);
+        setFeishuMemberAuthorizationState(memberAuthorization);
+        setOrgFeishuIntegrationLoaded(true);
+        setFeishuDeliveryProfileLoaded(true);
+        setFeishuMemberAuthorizationLoaded(true);
+      }
       const fullyConnected = Boolean(
         integration.enabled &&
         memberAuthorization.linked &&
@@ -9447,7 +9660,7 @@ export default function App() {
         fullyConnected,
         checkedAt: new Date().toISOString(),
       };
-      setFeishuTaskSyncReadiness(next);
+      if (canApply()) setFeishuTaskSyncReadiness(next);
       console.info('[feishu-sync-readiness]', {
         fullyConnected,
         orgEnabled: integration.enabled,
@@ -9462,14 +9675,14 @@ export default function App() {
         fullyConnected: false,
         checkedAt: new Date().toISOString(),
       };
-      setFeishuTaskSyncReadiness(next);
+      if (canApply()) setFeishuTaskSyncReadiness(next);
       console.warn('[feishu-sync-readiness] check failed', error);
       return next;
     }
   }
 
   useEffect(() => {
-    if (!authState.authenticated || authState.sessionMode !== 'cloud') {
+    if (!hasAuthenticatedSession || authState.sessionMode !== 'cloud') {
       setFeishuTaskSyncReadiness(DEFAULT_FEISHU_TASK_SYNC_READINESS);
       return;
     }
@@ -9478,10 +9691,10 @@ export default function App() {
     void loadFeishuTaskSyncReadinessBlock().finally(() => {
       feishuTaskSyncReadinessInFlightRef.current = false;
     });
-  }, [authState.authenticated, authState.sessionMode, workspacesState?.activeSandboxId]);
+  }, [hasAuthenticatedSession, authState.sessionMode, workspacesState?.activeSandboxId]);
 
   useEffect(() => {
-    if (!authState.authenticated || authState.sessionMode !== 'cloud') return;
+    if (!hasAuthenticatedSession || authState.sessionMode !== 'cloud') return;
     if (feishuSyncStrictStatusLoaded || feishuStatusHydrationInFlightRef.current) return;
     feishuStatusHydrationInFlightRef.current = true;
     void Promise.allSettled([
@@ -9492,7 +9705,7 @@ export default function App() {
       feishuStatusHydrationInFlightRef.current = false;
     });
   }, [
-    authState.authenticated,
+    hasAuthenticatedSession,
     authState.sessionMode,
     feishuSyncStrictStatusLoaded,
     orgFeishuIntegrationLoaded,
@@ -9500,66 +9713,77 @@ export default function App() {
     feishuMemberAuthorizationLoaded,
   ]);
 
-  async function loadTaskSettingsBlock() {
+  async function loadTaskSettingsBlock(options?: { transition?: WorkspaceTransitionToken }) {
+    const startedSandboxId = options?.transition?.sandboxId || currentActiveSandboxId();
     const response = await getTaskSettings();
-    setTaskSettingsState(response);
+    if (shouldApplyWorkspaceLoad(options?.transition, startedSandboxId)) setTaskSettingsState(response);
     return response;
   }
 
-  async function loadOrgModelBlock() {
+  async function loadOrgModelBlock(options?: { transition?: WorkspaceTransitionToken }) {
+    const startedSandboxId = options?.transition?.sandboxId || currentActiveSandboxId();
     const response = await getOrgModelProfile();
-    setOrgModelState(response);
+    if (shouldApplyWorkspaceLoad(options?.transition, startedSandboxId)) setOrgModelState(response);
     return response;
   }
 
-  async function loadClientWorkspaceSettingsBlock() {
+  async function loadClientWorkspaceSettingsBlock(options?: { transition?: WorkspaceTransitionToken }) {
+    const startedSandboxId = options?.transition?.sandboxId || currentActiveSandboxId();
     const response = await getClientWorkspaceSettings();
-    setClientWorkspaceSettingsState(response);
+    if (shouldApplyWorkspaceLoad(options?.transition, startedSandboxId)) setClientWorkspaceSettingsState(response);
     return response;
   }
 
-  async function loadTopicsSettingsBlock() {
+  async function loadTopicsSettingsBlock(options?: { transition?: WorkspaceTransitionToken }) {
+    const startedSandboxId = options?.transition?.sandboxId || currentActiveSandboxId();
     const response = await getTopicsSettings();
-    setTopicsSettingsState(response);
+    if (shouldApplyWorkspaceLoad(options?.transition, startedSandboxId)) setTopicsSettingsState(response);
     return response;
   }
 
-  async function loadHandbookSettingsBlock() {
+  async function loadHandbookSettingsBlock(options?: { transition?: WorkspaceTransitionToken }) {
+    const startedSandboxId = options?.transition?.sandboxId || currentActiveSandboxId();
     const response = await getHandbookSettings();
-    setHandbookSettingsState(response);
+    if (shouldApplyWorkspaceLoad(options?.transition, startedSandboxId)) setHandbookSettingsState(response);
     return response;
   }
 
-  async function loadSystemAdminSettingsBlock(includeOrgModel = authState.sessionMode === 'cloud') {
+  async function loadSystemAdminSettingsBlock(includeOrgModel = authState.sessionMode === 'cloud', options?: { transition?: WorkspaceTransitionToken }) {
+    const startedSandboxId = options?.transition?.sandboxId || currentActiveSandboxId();
     const [response, orgModel] = await Promise.all([
       getSystemAdminSettings(),
       includeOrgModel ? getOrgModelProfile() : Promise.resolve(EMPTY_ORG_MODEL_SETTINGS),
     ]);
-    setSystemAdminSettingsState(response);
-    setOrgModelState(orgModel);
+    if (shouldApplyWorkspaceLoad(options?.transition, startedSandboxId)) {
+      setSystemAdminSettingsState(response);
+      setOrgModelState(orgModel);
+    }
     return response;
   }
 
-  async function loadSpeechModelSettingsBlock() {
+  async function loadSpeechModelSettingsBlock(options?: { transition?: WorkspaceTransitionToken }) {
+    const startedSandboxId = options?.transition?.sandboxId || currentActiveSandboxId();
     try {
       const response = await getSpeechModelSettings();
-      setSpeechModelSettingsState(response);
+      if (shouldApplyWorkspaceLoad(options?.transition, startedSandboxId)) setSpeechModelSettingsState(response);
     } catch (error) {
       // 不阻断 overview 加载，仅静默；用户保存时再校验
       console.warn('[speech-model] load failed', error);
     }
   }
 
-  async function loadObjectStorageSettingsBlock() {
+  async function loadObjectStorageSettingsBlock(options?: { transition?: WorkspaceTransitionToken }) {
+    const startedSandboxId = options?.transition?.sandboxId || currentActiveSandboxId();
     try {
       const response = await getObjectStorageSettings();
-      setObjectStorageSettingsState(response);
+      if (shouldApplyWorkspaceLoad(options?.transition, startedSandboxId)) setObjectStorageSettingsState(response);
     } catch (error) {
       console.warn('[object-storage] load failed', error);
     }
   }
 
   async function loadSettingsSectionBlock(section: SettingsSectionKey, force = false) {
+    const startedSandboxId = currentActiveSandboxId();
     if (!force && settingsSectionLoaded[section]) return;
     switch (section) {
       case 'overview':
@@ -9589,13 +9813,47 @@ export default function App() {
         }
         break;
     }
-    setSettingsSectionLoaded((prev) => ({ ...prev, [section]: true }));
+    if (shouldApplyWorkspaceLoad(null, startedSandboxId)) {
+      setSettingsSectionLoaded((prev) => ({ ...prev, [section]: true }));
+    }
   }
 
-  async function loadAuthBlock() {
+  async function loadAuthBlock(options?: { transition?: WorkspaceTransitionToken }) {
+    const startedSandboxId = options?.transition?.sandboxId || currentActiveSandboxId();
     const response = normalizeAuthStateForDesktop(await getAuthState());
-    setAuthState(response);
+    if (shouldApplyWorkspaceLoad(options?.transition, startedSandboxId)) setAuthState(response);
     return response;
+  }
+
+  async function recoverIncompleteAuthBlock(initialState: AuthState, options?: { transition?: WorkspaceTransitionToken }): Promise<AuthState> {
+    const startedSandboxId = options?.transition?.sandboxId || currentActiveSandboxId();
+    const canApply = () => shouldApplyWorkspaceLoad(options?.transition, startedSandboxId);
+    if (!initialState.authenticated || hasCompleteSessionIdentity(initialState)) {
+      return initialState;
+    }
+    console.warn('[auth] incomplete session identity detected; retrying auth/me before entering workspace');
+    try {
+      const retried = normalizeAuthStateForDesktop(await getAuthState());
+      if (hasCompleteSessionIdentity(retried)) {
+        if (canApply()) setAuthState(retried);
+        return retried;
+      }
+    } catch (error) {
+      console.warn('[auth] retry auth/me failed while recovering incomplete identity', error);
+    }
+    const fallback: AuthState = {
+      ...DEFAULT_LOCAL_AUTH_STATE,
+      authenticated: false,
+      user: null,
+      sessionMode: 'local',
+      requiresLocalIdentitySetup: false,
+      localIdentityStatus: 'draft',
+      message: initialState.sessionMode === 'cloud'
+        ? '登录信息不完整，请重新登录组织。'
+        : '未连接组织，当前处于本机草稿状态。',
+    };
+    if (canApply()) setAuthState(fallback);
+    return fallback;
   }
 
   async function probeLocalBackendHealth(probeTimeoutMs = 1800) {
@@ -9678,27 +9936,71 @@ export default function App() {
   }, [authState.authenticated]);
 
   async function loadDepartmentOptionsBlock(organizationId?: string | null, cloudApiUrl?: string | null) {
+    const startedSandboxId = currentActiveSandboxId();
     const response = await getDepartmentOptions({ organizationId, cloudApiUrl });
-    setDepartmentOptions(response);
+    if (shouldApplyWorkspaceLoad(null, startedSandboxId)) setDepartmentOptions(response);
     return response;
   }
 
-  async function loadEmployeeReviewBlock(options?: { quiet?: boolean }) {
-    if (!options?.quiet) {
+  useEffect(() => {
+    if (!hasIncompleteAuthenticatedSession) {
+      sessionIdentityRecoveryRef.current = '';
+      return undefined;
+    }
+    const recoveryKey = [
+      authState.sessionMode,
+      authState.user?.id || '',
+      authState.user?.organizationId || '',
+      activeWorkspaceRecord?.id || '',
+    ].join('::');
+    if (sessionIdentityRecoveryRef.current === recoveryKey) return undefined;
+    sessionIdentityRecoveryRef.current = recoveryKey;
+    let cancelled = false;
+    void (async () => {
+      const recovered = await recoverIncompleteAuthBlock(authState);
+      if (cancelled) return;
+      if (hasCompleteSessionIdentity(recovered)) {
+        if (recovered.sessionMode === 'cloud') {
+          await Promise.all([
+            loadOrgMembershipBlock().catch(() => DEFAULT_ORG_MEMBERSHIP_SUMMARY),
+            loadDepartmentOptionsBlock(recovered.user?.organizationId || null).catch(() => undefined),
+          ]);
+        }
+        return;
+      }
+      flash('error', recovered.message || '登录信息不完整，请重新登录组织。');
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    activeWorkspaceRecord?.id,
+    authState,
+    hasIncompleteAuthenticatedSession,
+  ]);
+
+  async function loadEmployeeReviewBlock(options?: { quiet?: boolean; transition?: WorkspaceTransitionToken }) {
+    const startedSandboxId = options?.transition?.sandboxId || currentActiveSandboxId();
+    const canApply = () => shouldApplyWorkspaceLoad(options?.transition, startedSandboxId);
+    if (!options?.quiet && canApply()) {
       setEmployeeDirectoryStatus('loading');
       setEmployeeDirectoryError('');
     }
     try {
       const response = await getEmployees();
       const visibleEmployees = response.filter((employee) => !isLegacyOrganizationEmployee(employee));
-      setEmployeeReviews(visibleEmployees);
-      setEmployeeDirectoryStatus('ok');
-      setEmployeeDirectoryError('');
+      if (canApply()) {
+        setEmployeeReviews(visibleEmployees);
+        setEmployeeDirectoryStatus('ok');
+        setEmployeeDirectoryError('');
+      }
       return visibleEmployees;
     } catch (error) {
       const message = error instanceof Error ? error.message : '组织成员同步失败';
-      setEmployeeDirectoryStatus('error');
-      setEmployeeDirectoryError(message);
+      if (canApply()) {
+        setEmployeeDirectoryStatus('error');
+        setEmployeeDirectoryError(message);
+      }
       return employeeReviews;
     }
   }
@@ -9716,11 +10018,16 @@ export default function App() {
     return loadEmployeeReviewBlock({ quiet: true });
   }
 
-  async function loadLogsBlock() {
-    setLogs(await getActivityLogs());
+  async function loadLogsBlock(options?: { transition?: WorkspaceTransitionToken }) {
+    const startedSandboxId = options?.transition?.sandboxId || currentActiveSandboxId();
+    const response = await getActivityLogs();
+    if (shouldApplyWorkspaceLoad(options?.transition, startedSandboxId)) setLogs(response);
+    return response;
   }
 
-  async function loadClientBlock(nextClientId?: string) {
+  async function loadClientBlock(nextClientId?: string, options?: { transition?: WorkspaceTransitionToken }) {
+    const startedSandboxId = options?.transition?.sandboxId || currentActiveSandboxId();
+    const canApply = () => shouldApplyWorkspaceLoad(options?.transition, startedSandboxId);
     let clientItems: ClientSummary[];
     try {
       clientItems = await getClients();
@@ -9732,6 +10039,7 @@ export default function App() {
       clearLocalServiceStartupBanner();
       return;
     }
+    if (!canApply()) return;
     console.info(`[bootstrap] loadClientBlock fetched clients=${clientItems.length}`);
     setClients(clientItems);
     // 选客户优先级:
@@ -9757,9 +10065,9 @@ export default function App() {
       console.info(`[bootstrap] loadClientBlock selecting client=${targetClientId}`);
       try {
         setWorkspace(await getClientWorkspace(targetClientId));
-        void loadClientPageContextBlock(targetClientId);
-        void loadWorkspacePersistedProposalDraftsBlock(targetClientId);
-        void loadProposalBlock(targetClientId);
+        void loadClientPageContextBlock(targetClientId, options);
+        void loadWorkspacePersistedProposalDraftsBlock(targetClientId, options);
+        void loadProposalBlock(targetClientId, options);
       } catch (error) {
         console.error('[bootstrap] loadClientBlock workspace fetch failed', error);
         setWorkspace(null);
@@ -9829,9 +10137,12 @@ export default function App() {
       isDataCenterIncluded: draft.isDataCenterIncluded !== false,
     };
     try {
-      const savedClient = modalState.editingClientId
-        ? await updateClient(modalState.editingClientId, payload)
-        : await createClient(payload);
+      const savedClient = await guardedMutation('保存项目', () => (
+        modalState.editingClientId
+          ? updateClient(modalState.editingClientId, payload)
+          : createClient(payload)
+      ));
+      if (!savedClient) return;
       // 保存成功后，清理旧 localStorage 迁移钥匙（如果有）
       if (savedClient?.id) {
         _clearClientDraftExtension(savedClient.id);
@@ -9866,6 +10177,7 @@ export default function App() {
   };
 
   const confirmClientEditorDelete = async (draft: ClientEditorDraft, confirmInput: string) => {
+    if (!guardWorkspaceWrite('删除项目')) return;
     const modalState = clientEditorModalStateRef.current;
     const editingClientId = modalState.editingClientId;
     if (!editingClientId) return;
@@ -9899,8 +10211,10 @@ export default function App() {
     }
   };
 
-  async function loadTaskBlock() {
-    const response = await getTaskBoard();
+  async function loadTaskBlock(options?: { transition?: WorkspaceTransitionToken }) {
+    const startedSandboxId = options?.transition?.sandboxId || currentActiveSandboxId();
+    const response = await getTaskBoard({ syncMode: options?.transition ? 'blocking' : 'background' });
+    if (!shouldApplyWorkspaceLoad(options?.transition, startedSandboxId)) return response;
     const now = Date.now();
     const OPTIMISTIC_TTL = 120_000;
     const currentSandboxId = activeSandboxIdRef.current || workspacesState?.activeSandboxId || '';
@@ -9943,53 +10257,69 @@ export default function App() {
     ).catch((error) => {
       console.warn('[task-context-brief] preload failed', error);
     });
-    void loadProposalBlock(currentClientId || undefined);
+    void loadProposalBlock(currentClientId || undefined, options);
     return response;
   }
 
-  async function loadProposalBlock(clientId?: string) {
+  async function loadProposalBlock(clientId?: string, options?: { transition?: WorkspaceTransitionToken }) {
+    const startedSandboxId = options?.transition?.sandboxId || currentActiveSandboxId();
     const proposalItems = await getProposals(clientId ? { clientId } : undefined);
-    setProposals(proposalItems);
+    if (shouldApplyWorkspaceLoad(options?.transition, startedSandboxId)) setProposals(proposalItems);
     return proposalItems;
   }
 
-  async function loadClientPageContextBlock(clientId: string) {
+  async function loadClientPageContextBlock(clientId: string, options?: { transition?: WorkspaceTransitionToken }) {
+    const startedSandboxId = options?.transition?.sandboxId || currentActiveSandboxId();
+    const canApply = () => shouldApplyWorkspaceLoad(options?.transition, startedSandboxId);
     try {
       const pageContext = await getClientPageContext(clientId, { page: 'client_workspace', includeRawEvidence: true });
-      setWorkspacePageContext(pageContext);
-      setWorkspacePageContextError(null);
+      if (canApply()) {
+        setWorkspacePageContext(pageContext);
+        setWorkspacePageContextError(null);
+      }
       return pageContext;
     } catch (error) {
-      setWorkspacePageContext(null);
-      setWorkspacePageContextError(error instanceof Error ? error.message : '客户上下文读取失败');
+      if (canApply()) {
+        setWorkspacePageContext(null);
+        setWorkspacePageContextError(error instanceof Error ? error.message : '客户上下文读取失败');
+      }
       return null;
     }
   }
 
-  async function loadWorkspacePersistedProposalDraftsBlock(clientId: string) {
-    setWorkspacePersistedProposalDraftsLoading(true);
+  async function loadWorkspacePersistedProposalDraftsBlock(clientId: string, options?: { transition?: WorkspaceTransitionToken }) {
+    const startedSandboxId = options?.transition?.sandboxId || currentActiveSandboxId();
+    const canApply = () => shouldApplyWorkspaceLoad(options?.transition, startedSandboxId);
+    if (canApply()) setWorkspacePersistedProposalDraftsLoading(true);
     try {
       const drafts = await getDataCenterProposalDrafts({
         clientId,
         limit: 80,
       });
-      setWorkspacePersistedProposalDrafts(drafts);
-      setWorkspacePersistedProposalDraftsError(null);
+      if (canApply()) {
+        setWorkspacePersistedProposalDrafts(drafts);
+        setWorkspacePersistedProposalDraftsError(null);
+      }
       return drafts;
     } catch (error) {
-      setWorkspacePersistedProposalDrafts([]);
-      setWorkspacePersistedProposalDraftsError(error instanceof Error ? error.message : '候选动作库加载失败');
+      if (canApply()) {
+        setWorkspacePersistedProposalDrafts([]);
+        setWorkspacePersistedProposalDraftsError(error instanceof Error ? error.message : '候选动作库加载失败');
+      }
       return [];
     } finally {
-      setWorkspacePersistedProposalDraftsLoading(false);
+      if (canApply()) setWorkspacePersistedProposalDraftsLoading(false);
     }
   }
 
-  async function loadAgentWorklogBlock(monthLabel: string) {
+  async function loadAgentWorklogBlock(monthLabel: string, options?: { transition?: WorkspaceTransitionToken }) {
+    const startedSandboxId = options?.transition?.sandboxId || currentActiveSandboxId();
     const response = await getAgentWorklogs(monthLabel);
-    setAgentWorklogs(response.worklogs);
-    setAgentWeeklyDigests(response.weeklyDigests);
-    setAgentWeeklyPlans(response.weeklyPlans);
+    if (shouldApplyWorkspaceLoad(options?.transition, startedSandboxId)) {
+      setAgentWorklogs(response.worklogs);
+      setAgentWeeklyDigests(response.weeklyDigests);
+      setAgentWeeklyPlans(response.weeklyPlans);
+    }
     return response;
   }
 
@@ -9997,12 +10327,15 @@ export default function App() {
     return weekLabel || selectedReviewWeekLabel || reviewDashboard?.weekLabel || reviewDashboard?.currentReview?.weekLabel || currentWeekLabel();
   }
 
-  async function loadReviewBlock(weekLabel?: string, options?: { skipAi?: boolean; perspective?: ReviewPerspectiveKey; departmentId?: string | null }) {
+  async function loadReviewBlock(weekLabel?: string, options?: { skipAi?: boolean; perspective?: ReviewPerspectiveKey; departmentId?: string | null; transition?: WorkspaceTransitionToken }) {
+    const { transition, ...reviewOptions } = options || {};
+    const startedSandboxId = transition?.sandboxId || currentActiveSandboxId();
+    const canApply = () => shouldApplyWorkspaceLoad(transition, startedSandboxId);
     const requestedWeekLabel = resolveSelectedReviewWeekLabel(weekLabel);
-    setSelectedReviewWeekLabel(requestedWeekLabel);
-    const requestedPerspective = options?.perspective ?? resolveDefaultReviewPerspectiveForUser(currentSessionUser);
+    if (canApply()) setSelectedReviewWeekLabel(requestedWeekLabel);
+    const requestedPerspective = reviewOptions.perspective ?? resolveDefaultReviewPerspectiveForUser(currentSessionUser);
     const requestedDepartmentId = requestedPerspective === 'department'
-      ? options?.departmentId ?? resolveDefaultReviewDepartmentIdForUser(currentSessionUser, requestedPerspective)
+      ? reviewOptions.departmentId ?? resolveDefaultReviewDepartmentIdForUser(currentSessionUser, requestedPerspective)
       : null;
     const sequence = reviewLoadSequenceRef.current + 1;
     reviewLoadSequenceRef.current = sequence;
@@ -10010,15 +10343,15 @@ export default function App() {
     const controller = new AbortController();
     reviewLoadAbortControllerRef.current = controller;
     const resolvedOptions = {
-      ...options,
-      skipAi: options?.skipAi ?? true,
+      ...reviewOptions,
+      skipAi: reviewOptions.skipAi ?? true,
       perspective: requestedPerspective,
       departmentId: requestedDepartmentId,
       signal: controller.signal,
     };
     try {
       const response = await getReviews(requestedWeekLabel, resolvedOptions);
-      if (sequence === reviewLoadSequenceRef.current) {
+      if (sequence === reviewLoadSequenceRef.current && canApply()) {
         setReviewDashboard(response);
         setWeeklyOverviewRefreshStatus(response.weeklyOverviewGenerationStatus ?? null);
         setSelectedReviewWeekLabel(response.currentReview?.weekLabel || response.weekLabel || requestedWeekLabel);
@@ -10045,28 +10378,35 @@ export default function App() {
     }
   }
 
-  async function loadReviewHistoryBlock() {
-    setIsLoadingReviewHistory(true);
+  async function loadReviewHistoryBlock(options?: { transition?: WorkspaceTransitionToken }) {
+    const startedSandboxId = options?.transition?.sandboxId || currentActiveSandboxId();
+    const canApply = () => shouldApplyWorkspaceLoad(options?.transition, startedSandboxId);
+    if (canApply()) setIsLoadingReviewHistory(true);
     try {
       const response = await getReviewHistory();
-      setReviewHistory(response.items);
+      if (canApply()) setReviewHistory(response.items);
       return response.items;
     } finally {
-      setIsLoadingReviewHistory(false);
+      if (canApply()) setIsLoadingReviewHistory(false);
     }
   }
 
-  async function loadTopicsBlock() {
+  async function loadTopicsBlock(options?: { transition?: WorkspaceTransitionToken }) {
+    const startedSandboxId = options?.transition?.sandboxId || currentActiveSandboxId();
     const response = await getTopics();
-    setRadars(response.radars);
-    setCandidates(response.candidates);
-    setIntelligenceProfiles(response.intelligenceProfiles || []);
+    if (shouldApplyWorkspaceLoad(options?.transition, startedSandboxId)) {
+      setRadars(response.radars);
+      setCandidates(response.candidates);
+      setIntelligenceProfiles(response.intelligenceProfiles || []);
+    }
     return response;
   }
 
-  async function loadHandbookBlock() {
+  async function loadHandbookBlock(options?: { transition?: WorkspaceTransitionToken }) {
+    const startedSandboxId = options?.transition?.sandboxId || currentActiveSandboxId();
     const response = await getHandbook();
-    setHandbookEntries(response.entries);
+    if (shouldApplyWorkspaceLoad(options?.transition, startedSandboxId)) setHandbookEntries(response.entries);
+    return response;
   }
 
   async function loadAll(nextClientId?: string, options?: { allowStartupRetry?: boolean }) {
@@ -10076,17 +10416,28 @@ export default function App() {
       return;
     }
     loadAllInFlightRef.current = true;
-    setLoading(true);
-    markLoadingPhase('正在连接本地后端…');
+    const transitionToken = beginWorkspaceTransition('verifying', '正在连接本地后端…', {
+      sandboxId: activeSandboxIdRef.current || workspacesState?.activeSandboxId || '',
+      reason: 'load-all',
+    });
+    resetFeishuWorkspaceTransientState();
+    resetBusinessWorkspaceTransientState();
     let keepLoadingForRetry = false;
     try {
       await waitForLocalBackendReady();
+      if (!shouldApplyWorkspaceLoad(transitionToken)) return;
       markLoadingPhase('正在恢复登录状态…');
-      const nextAuth = await loadAuthBlock();
+      let nextAuth = await loadAuthBlock({ transition: transitionToken });
+      if (!shouldApplyWorkspaceLoad(transitionToken)) return;
+      nextAuth = await recoverIncompleteAuthBlock(nextAuth, { transition: transitionToken });
+      if (!shouldApplyWorkspaceLoad(transitionToken)) return;
+      let loadedWorkspaces: SandboxWorkspacesResponse | null = null;
       try {
         markLoadingPhase('正在读取系统设置…');
-        await loadSettingsBlock();
-        await loadLocalInputMemoryBlock();
+        const settingsBlock = await loadSettingsBlock({ applyRuntime: false, transition: transitionToken });
+        loadedWorkspaces = settingsBlock.workspaces;
+        if (loadedWorkspaces) pinWorkspaceTransitionSandbox(transitionToken, loadedWorkspaces.activeSandboxId);
+        await loadLocalInputMemoryBlock({ transition: transitionToken });
       } catch (settingsError) {
         if (isLocalServiceStartupError(settingsError)) {
           window.setTimeout(() => {
@@ -10096,22 +10447,57 @@ export default function App() {
           flash('error', settingsError instanceof Error ? settingsError.message : '系统设置加载失败');
         }
       }
+      const loadedActiveWorkspace = loadedWorkspaces?.workspaces.find((item) => item.id === loadedWorkspaces?.activeSandboxId) || null;
+      pinWorkspaceTransitionSandbox(transitionToken, loadedActiveWorkspace?.id || loadedWorkspaces?.activeSandboxId || null);
+      if (!shouldApplyWorkspaceLoad(transitionToken)) return;
+      const runtime = resolveWorkspaceRuntimeFromRecord(loadedActiveWorkspace, nextAuth);
+      if (runtime.status === 'needs_login' || runtime.status === 'identity_error') {
+        markWorkspaceRuntime(runtime.status, runtime.message);
+        resetFeishuWorkspaceTransientState();
+        resetBusinessWorkspaceTransientState();
+        markLoadingPhase(runtime.message);
+        setSettingsSectionLoaded({
+          overview: true,
+          account: false,
+          tasks: true,
+          client_workspace: false,
+          topics: false,
+          handbook: false,
+          system_admin: false,
+          org_overview: false,
+          org_departments: false,
+          org_people: false,
+          org_rules: false,
+          system_logs: false,
+          about: false,
+        });
+        startupRetryRef.current = 0;
+        clearLocalServiceStartupBanner();
+        return;
+      }
+      if (runtime.status === 'local_draft') {
+        markWorkspaceRuntime('local_draft', runtime.message);
+      } else {
+        markWorkspaceRuntime('verifying', '正在验证工作空间身份…');
+      }
       let nextOrgAdminClaimStatus = DEFAULT_ORG_ADMIN_CLAIM_STATUS;
       // Always load org membership for cloud-authenticated users so the account-settings page
       // shows up-to-date organizationName / departmentName (even after a dept lead was bound
       // after the user already had approved status).
-      if (nextAuth.authenticated && nextAuth.sessionMode === 'cloud') {
-        await loadOrgMembershipBlock().catch(() => DEFAULT_ORG_MEMBERSHIP_SUMMARY);
-        nextOrgAdminClaimStatus = await loadOrgAdminClaimStatusBlock(true).catch(() => DEFAULT_ORG_ADMIN_CLAIM_STATUS);
+      if (hasCompleteSessionIdentity(nextAuth) && nextAuth.sessionMode === 'cloud') {
+        await loadOrgMembershipBlock({ transition: transitionToken }).catch(() => DEFAULT_ORG_MEMBERSHIP_SUMMARY);
+        nextOrgAdminClaimStatus = await loadOrgAdminClaimStatusBlock(true, { transition: transitionToken }).catch(() => DEFAULT_ORG_ADMIN_CLAIM_STATUS);
       } else {
-        setOrgAdminClaimStatus(DEFAULT_ORG_ADMIN_CLAIM_STATUS);
+        if (shouldApplyWorkspaceLoad(transitionToken)) {
+          setOrgAdminClaimStatus(DEFAULT_ORG_ADMIN_CLAIM_STATUS);
+        }
       }
       // 仅当云端"明确"返回非 approved 时才进身份闸门并清空本地数据。
       // nextAuth.degraded === true 表示这是断网兜底态(云端没法确认),此时绝不能把"未确认"
       // 当成"被拒绝"——否则会清掉上次已加载的客户列表,正是"断网后客户只剩益语智库"的成因。
       // 降级态走 else-if 正常加载分支,沿用本地 last-known-good。
       if (
-        nextAuth.authenticated
+        hasCompleteSessionIdentity(nextAuth)
         && nextAuth.sessionMode === 'cloud'
         && !nextAuth.degraded
         && getEffectiveMembershipStatus(nextAuth) !== 'approved'
@@ -10130,15 +10516,16 @@ export default function App() {
         setEmployeeReviews([]);
         setWorkspacePageContext(null);
         setWorkspacePersistedProposalDrafts([]);
-      } else if (nextAuth.authenticated) {
-        markLoadingPhase('正在载入核心模块数据…');
+        applyWorkspaceRuntime(loadedActiveWorkspace, nextAuth);
+      } else if (hasCompleteSessionIdentity(nextAuth)) {
+        markWorkspaceRuntime('switching', `正在同步 ${loadedActiveWorkspace?.name || '当前组织'} 的成员、部门和清单…`);
         const backgroundLoaders: Array<{ name: string; run: () => Promise<unknown> }> = [
-          { name: 'task-settings', run: () => loadTaskSettingsBlock() },
-          { name: 'activity-logs', run: () => loadLogsBlock() },
-          { name: 'task-board', run: () => loadTaskBlock() },
+          { name: 'task-settings', run: () => loadTaskSettingsBlock({ transition: transitionToken }) },
+          { name: 'activity-logs', run: () => loadLogsBlock({ transition: transitionToken }) },
+          { name: 'task-board', run: () => loadTaskBlock({ transition: transitionToken }) },
           {
             name: 'agent-worklogs',
-            run: () => (nextAuth.user?.primaryRole === 'admin' ? loadAgentWorklogBlock(taskCalendarMonthLabel) : Promise.resolve()),
+            run: () => (nextAuth.user?.primaryRole === 'admin' ? loadAgentWorklogBlock(taskCalendarMonthLabel, { transition: transitionToken }) : Promise.resolve()),
           },
           {
             name: 'reviews',
@@ -10148,52 +10535,54 @@ export default function App() {
                 skipAi: true,
                 perspective: defaultPerspective,
                 departmentId: resolveDefaultReviewDepartmentIdForUser(nextAuth.user || null, defaultPerspective),
+                transition: transitionToken,
               });
             },
           },
-          { name: 'topics', run: () => loadTopicsBlock() },
-          { name: 'handbook', run: () => loadHandbookBlock() },
+          { name: 'topics', run: () => loadTopicsBlock({ transition: transitionToken }) },
+          { name: 'handbook', run: () => loadHandbookBlock({ transition: transitionToken }) },
           {
             name: 'org-membership',
             run: () =>
-              loadOrgMembershipBlock().catch(() => {
-                setOrgMembershipState(DEFAULT_ORG_MEMBERSHIP_SUMMARY);
+              loadOrgMembershipBlock({ transition: transitionToken }).catch(() => {
+                if (shouldApplyWorkspaceLoad(transitionToken)) setOrgMembershipState(DEFAULT_ORG_MEMBERSHIP_SUMMARY);
                 return DEFAULT_ORG_MEMBERSHIP_SUMMARY;
               }),
           },
           {
             name: 'org-admin-claim-status',
-            run: () => loadOrgAdminClaimStatusBlock(nextAuth.sessionMode === 'cloud'),
+            run: () => loadOrgAdminClaimStatusBlock(nextAuth.sessionMode === 'cloud', { transition: transitionToken }),
           },
           {
             name: 'org-feishu-integration',
             run: () =>
-              loadOrgFeishuIntegrationBlock().catch(() => {
-                setOrgFeishuIntegrationState(DEFAULT_ORG_FEISHU_INTEGRATION);
+              loadOrgFeishuIntegrationBlock({ transition: transitionToken }).catch(() => {
+                if (shouldApplyWorkspaceLoad(transitionToken)) setOrgFeishuIntegrationState(DEFAULT_ORG_FEISHU_INTEGRATION);
                 return DEFAULT_ORG_FEISHU_INTEGRATION;
               }),
           },
           {
             name: 'feishu-delivery-profile',
             run: () =>
-              loadFeishuDeliveryProfileBlock().catch(() => {
-                setFeishuDeliveryProfileState(DEFAULT_FEISHU_DELIVERY_PROFILE);
+              loadFeishuDeliveryProfileBlock({ transition: transitionToken }).catch(() => {
+                if (shouldApplyWorkspaceLoad(transitionToken)) setFeishuDeliveryProfileState(DEFAULT_FEISHU_DELIVERY_PROFILE);
                 return DEFAULT_FEISHU_DELIVERY_PROFILE;
               }),
           },
           {
             name: 'feishu-member-authorization',
             run: () =>
-              loadFeishuMemberAuthorizationBlock().catch(() => {
-                setFeishuMemberAuthorizationState(DEFAULT_FEISHU_MEMBER_AUTHORIZATION);
+              loadFeishuMemberAuthorizationBlock({ transition: transitionToken }).catch(() => {
+                if (shouldApplyWorkspaceLoad(transitionToken)) setFeishuMemberAuthorizationState(DEFAULT_FEISHU_MEMBER_AUTHORIZATION);
                 return DEFAULT_FEISHU_MEMBER_AUTHORIZATION;
               }),
           },
           {
             name: 'system-admin-settings',
-            run: () => loadSystemAdminSettingsBlock(nextAuth.sessionMode === 'cloud'),
+            run: () => loadSystemAdminSettingsBlock(nextAuth.sessionMode === 'cloud', { transition: transitionToken }),
           },
         ];
+        markWorkspaceRuntime('switching', `正在加载 ${loadedActiveWorkspace?.name || '当前组织'} 的客户、任务和设置…`);
         let completedCount = 0;
         const totalCount = backgroundLoaders.length;
         const failedBackgroundBlocks = (
@@ -10208,11 +10597,14 @@ export default function App() {
                 return name;
               } finally {
                 completedCount += 1;
-                setLoadingSubProgress(Math.round((completedCount / totalCount) * 100));
+                if (shouldApplyWorkspaceLoad(transitionToken)) {
+                  setLoadingSubProgress(Math.round((completedCount / totalCount) * 100));
+                }
               }
             }),
           )
         ).filter((item): item is string => Boolean(item));
+        if (!shouldApplyWorkspaceLoad(transitionToken)) return;
         setLoadingSubProgress(0);
         if (nextAuth.user?.primaryRole !== 'admin') {
           setAgentWorklogs([]);
@@ -10220,7 +10612,8 @@ export default function App() {
           setAgentWeeklyPlans([]);
         }
         markLoadingPhase('正在载入客户工作区…');
-        await loadClientBlock(nextClientId);
+        await loadClientBlock(nextClientId, { transition: transitionToken });
+        if (!shouldApplyWorkspaceLoad(transitionToken)) return;
         if (failedBackgroundBlocks.length > 0) {
           flash('error', `部分模块加载失败：${failedBackgroundBlocks.join('、')}`);
         }
@@ -10241,10 +10634,11 @@ export default function App() {
         });
         if (nextAuth.user?.primaryRole === 'admin') {
           markLoadingPhase('正在读取员工与组织数据…');
-          await loadEmployeeReviewBlock();
+          await loadEmployeeReviewBlock({ transition: transitionToken });
         } else {
           setEmployeeReviews([]);
         }
+        if (shouldApplyWorkspaceLoad(transitionToken)) applyWorkspaceRuntime(loadedActiveWorkspace, nextAuth);
       } else {
         markLoadingPhase('正在切换到登录态…');
         setClients([]);
@@ -10296,11 +10690,13 @@ export default function App() {
           system_logs: false,
           about: false,
         });
+        markWorkspaceRuntime('local_draft', runtime.message || '未连接组织，当前可先在本机草稿中使用。');
       }
       startupRetryRef.current = 0;
       clearLocalServiceStartupBanner();
       markLoadingPhase('启动完成');
     } catch (error) {
+      if (!shouldApplyWorkspaceLoad(transitionToken)) return;
       const message = error instanceof Error ? error.message : '加载失败';
       markLoadingPhase(`启动受阻：${message}`);
       const allowStartupRetry = options?.allowStartupRetry ?? true;
@@ -10314,7 +10710,7 @@ export default function App() {
         flash('error', message);
       }
     } finally {
-      if (!keepLoadingForRetry) {
+      if (!keepLoadingForRetry && shouldApplyWorkspaceLoad(transitionToken)) {
         setLoading(false);
       }
       loadAllInFlightRef.current = false;
@@ -10455,6 +10851,10 @@ export default function App() {
       } catch (memoryError) {
         console.warn('[cloud-auth] save local input memory failed', memoryError);
       }
+      setLoading(true);
+      markWorkspaceRuntime('verifying', cloudAuthAction === 'login' ? '正在恢复组织工作空间…' : '正在进入组织工作空间…');
+      resetFeishuWorkspaceTransientState();
+      resetBusinessWorkspaceTransientState();
       await loadAll();
       setCloudAuthForm({
         cloudApiUrl: '',
@@ -10483,8 +10883,12 @@ export default function App() {
   };
 
   useEffect(() => {
+    if (!hasAuthenticatedSession) {
+      setDepartmentOptions([]);
+      return;
+    }
     void loadDepartmentOptionsBlock(currentSessionUser?.organizationId ?? null).catch(() => undefined);
-  }, [currentSessionUser?.organizationId]);
+  }, [currentSessionUser?.organizationId, hasAuthenticatedSession]);
 
   useEffect(() => {
     if (!isCloudSession) return;
@@ -10605,7 +11009,9 @@ export default function App() {
   async function refreshWorkspace(clientId?: string) {
     const targetClientId = clientId ?? currentClientId;
     if (!targetClientId) return;
+    const startedSandboxId = currentActiveSandboxId();
     const nextWorkspace = await getClientWorkspace(targetClientId);
+    if (!shouldApplyWorkspaceLoad(null, startedSandboxId)) return;
     setWorkspace((prev) => {
       if (!prev) return nextWorkspace;
       // S4.5 fix: 用关键字段集启发式比较, 不再 JSON.stringify 30+ 字段几百 KB 的对象 — Electron 卡顿元凶
@@ -10618,7 +11024,8 @@ export default function App() {
     return nextWorkspace;
   }
 
-  function applyWorkspaceKnowledgeProgress(progress: Awaited<ReturnType<typeof getClientKnowledgeProgress>>) {
+  function applyWorkspaceKnowledgeProgress(progress: Awaited<ReturnType<typeof getClientKnowledgeProgress>>, startedSandboxId = currentActiveSandboxId()) {
+    if (!shouldApplyWorkspaceLoad(null, startedSandboxId)) return;
     setWorkspace((prev) => {
       if (!prev) return prev;
       const nextStatus = progress.knowledgeStatus;
@@ -10687,6 +11094,7 @@ export default function App() {
 
   useEffect(() => {
     const targetClientId = currentClientId;
+    const startedSandboxId = currentActiveSandboxId();
     if (!targetClientId) {
       setIsImportSubmitting(false);
       return;
@@ -10701,7 +11109,7 @@ export default function App() {
       try {
         const progress = await getClientKnowledgeProgress(targetClientId);
         if (cancelled) return;
-        applyWorkspaceKnowledgeProgress(progress);
+        applyWorkspaceKnowledgeProgress(progress, startedSandboxId);
         const nextStatus = progress.knowledgeStatus;
         const nextActiveJobs = (nextStatus?.pendingJobs || 0) + (nextStatus?.runningJobs || 0);
         if (nextActiveJobs === 0 && !finalRefreshQueued && Date.now() >= importProgressHoldUntilRef.current) {
@@ -10751,23 +11159,23 @@ export default function App() {
   }, [activeTab, taskViewMode]);
 
   useEffect(() => {
-    if (activeTab !== 'tasks' || !authState.authenticated || currentSessionUser?.primaryRole !== 'admin') return;
+    if (activeTab !== 'tasks' || !hasAuthenticatedSession || currentSessionUser?.primaryRole !== 'admin') return;
     void loadAgentWorklogBlock(taskCalendarMonthLabel).catch(() => {
       setAgentWorklogs([]);
       setAgentWeeklyDigests([]);
       setAgentWeeklyPlans([]);
     });
-  }, [activeTab, authState.authenticated, currentSessionUser?.primaryRole, taskCalendarMonthLabel]);
+  }, [activeTab, hasAuthenticatedSession, currentSessionUser?.primaryRole, taskCalendarMonthLabel]);
 
   useEffect(() => {
-    if (activeTab !== 'settings' || !authState.authenticated) return;
+    if (activeTab !== 'settings' || !hasAuthenticatedSession) return;
     void loadSettingsSectionBlock(settingsSection).catch((error) => {
       flash('error', error instanceof Error ? error.message : '系统设置加载失败');
     });
-  }, [activeTab, settingsSection, authState.authenticated]);
+  }, [activeTab, settingsSection, hasAuthenticatedSession]);
 
   useEffect(() => {
-    if (!authState.authenticated || !isCloudSession) return;
+    if (!hasAuthenticatedSession || !isCloudSession) return;
     let cancelled = false;
 
     const run = async () => {
@@ -10803,7 +11211,7 @@ export default function App() {
       cancelled = true;
       window.clearInterval(timer);
     };
-  }, [authState.authenticated, currentClientId, currentSessionUser?.id, isCloudSession]);
+  }, [hasAuthenticatedSession, currentClientId, currentSessionUser?.id, isCloudSession]);
 
     const activeTaskLists = useMemo(
       () => dedupeTaskListsForDisplay(taskLists.filter((item) => !item.archivedAt)),
@@ -10941,357 +11349,6 @@ export default function App() {
     { id: 'topics_management' as const, label: '资讯情报站', icon: Newspaper },
     { id: 'growth_handbook' as const, label: '成长中心', icon: BookOpen },
   ];
-
-  const renderAuthShell = () => {
-    const rememberedAccounts = localInputMemoryState.cloudAuth.accounts;
-    const mode = authShellMode;
-    const registerStep = authShellRegisterStep;
-    const form = authShellForm;
-    const inviteStatus = authShellInviteStatus;
-    const rememberMe = authShellRememberMe;
-    const rememberInputs = authShellRememberInputs;
-    const showPassword = authShellShowPassword;
-    const submitting = authShellSubmitting;
-    const message = authShellMessage;
-    const setForm = setAuthShellFormFromUser;
-    const registerAccountValid =
-      Boolean(form.fullName.trim())
-      && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(form.email)
-      && Boolean(form.phone.trim())
-      && form.password.length >= 8
-      && form.password === form.confirmPassword;
-    const registerValid = registerAccountValid;
-
-    const switchMode = (nextMode: 'login' | 'register') => {
-      setAuthShellMode(nextMode);
-      setAuthShellMessage('');
-      setAuthShellRegisterStep(1);
-      setAuthShellInviteStatus(EMPTY_AUTH_SHELL_INVITE_STATUS);
-      if (nextMode === 'register') {
-        setForm(createAuthShellForm(form.email, form.fullName, form.password));
-        return;
-      }
-      setAuthShellRememberMe(true);
-      setForm((prev) => ({ ...prev, password: '' }));
-    };
-
-    const handleSubmit = async () => {
-      setAuthShellSubmitting(true);
-      try {
-        if (mode === 'register') {
-          const inviteCode = normalizeDepartmentInviteInput(form.inviteCode);
-          let response: AuthState;
-          if (inviteCode) {
-            const cloudApiUrl = cloudApiUrlFromHost(form.cloudApiUrl || settingsState?.cloudApiUrl || '');
-            if (!cloudApiUrl) {
-              setAuthShellMessage('已填写邀请码，请先填写组织云端地址。');
-              return;
-            }
-            const currentCloudUrl = settingsState?.cloudApiUrl || '';
-            if (normalizeUrlForComparison(cloudApiUrl) !== normalizeUrlForComparison(currentCloudUrl)) {
-              await updateSettings({ cloudApiUrl });
-            }
-            response = await register({
-              email: form.email,
-              phone: form.phone.trim(),
-              fullName: form.fullName,
-              password: form.password,
-              inviteCode,
-              departmentId: form.departmentId || null,
-              jobTitle: form.jobTitle || null,
-              managerName: form.managerName || null,
-              currentFocus: form.currentFocus || null,
-            });
-            if (response.organizationSelectionRequired) {
-              setOrganizationSelection({
-                token: response.organizationSelectionToken || '',
-                organizations: response.organizations || [],
-              });
-              setCloudAuthAction('join');
-              setCloudAuthModalOpen(true);
-              setAuthShellMessage(response.message || '请选择要进入的组织工作空间。');
-              return;
-            }
-          } else {
-            response = await localRegister({
-              email: form.email,
-              phone: form.phone.trim(),
-              fullName: form.fullName,
-              password: form.password,
-              organizationMode: 'create',
-              inviteCode: null,
-              departmentId: null,
-              jobTitle: null,
-              managerName: null,
-              currentFocus: null,
-            });
-          }
-          setAuthState(response);
-        } else {
-          const shouldUseCloudLogin = Boolean(settingsState?.cloudApiUrl?.trim() || activeWorkspaceRecord?.cloudApiUrl?.trim());
-          const response = shouldUseCloudLogin
-            ? await login({ identifier: form.identifier || form.email, password: form.password, rememberMe })
-            : await localLogin({ identifier: form.identifier || form.email, password: form.password, rememberMe });
-          if (response.organizationSelectionRequired) {
-            setOrganizationSelection({
-              token: response.organizationSelectionToken || '',
-              organizations: response.organizations || [],
-            });
-            setCloudAuthAction('join');
-            setCloudAuthModalOpen(true);
-            setAuthShellMessage(response.message || '请选择要进入的组织工作空间。');
-            return;
-          }
-          setAuthState(response);
-        }
-        try {
-          const nextLocalInputMemory = await saveCloudAuthInputMemory({
-            rememberInputs,
-            email: form.email,
-            identifier: mode === 'login' ? (form.identifier || form.email) : form.email,
-            fullName: form.fullName,
-            password: form.password,
-          });
-          setLocalInputMemoryState(nextLocalInputMemory);
-        } catch (memoryError) {
-          console.warn('[auth-shell] save local input memory failed', memoryError);
-        }
-        await loadAll();
-      } catch (error) {
-        setAuthShellMessage(error instanceof Error ? error.message : '提交失败');
-      } finally {
-        setAuthShellSubmitting(false);
-      }
-    };
-
-    // 重写后的极简登录页 (单栏居中 Notion/Linear 风):
-    //   - 删左侧引导栏 + 3 个白色卡片 + 长文案 (用户每次登录看一次是噪声)
-    //   - 删 "显示密码" checkbox → 密码框右侧 Eye/EyeOff 切换 icon
-    //   - 删 "记住这组账号和密码" checkbox → 第二次登录从已记住下拉里选即可
-    //   - 注册才显示 1 行小字提示 (免审批立即可用), 登录态完全干净
-    return (
-      <div className="min-h-screen bg-white flex items-center justify-center px-6">
-        <div className="w-full max-w-[400px] flex flex-col items-stretch py-12">
-          {/* 顶部品牌区: AppLogoMark + 品牌名 + uppercase eyebrow */}
-          <div className="flex flex-col items-center mb-10">
-            <AppLogoMark className="w-14 h-14 mb-5" />
-            <h1 className="text-[24px] font-light tracking-tight text-gray-900">益语智库</h1>
-            <p className="mt-2 text-[10px] font-bold uppercase tracking-[0.18em] text-gray-400">WORKSPACE · 战略陪伴</p>
-          </div>
-
-          {/* tabs: 登录 / 注册 (居中,underline 风格) */}
-          <div className="flex items-center justify-center gap-8 border-b border-gray-100 mb-7">
-            <button
-              type="button"
-              onClick={() => switchMode('login')}
-              className={`relative pb-3 text-[13px] font-medium transition-colors ${
-                mode === 'login' ? 'text-gray-900' : 'text-gray-400 hover:text-gray-600'
-              }`}
-            >
-              登录
-              <span className={`absolute left-0 right-0 -bottom-px h-[2px] rounded-full transition-colors ${mode === 'login' ? 'bg-[#5B7BFE]' : 'bg-transparent'}`} />
-            </button>
-            <button
-              type="button"
-              onClick={() => switchMode('register')}
-              className={`relative pb-3 text-[13px] font-medium transition-colors ${
-                mode === 'register' ? 'text-gray-900' : 'text-gray-400 hover:text-gray-600'
-              }`}
-            >
-              注册
-              <span className={`absolute left-0 right-0 -bottom-px h-[2px] rounded-full transition-colors ${mode === 'register' ? 'bg-[#5B7BFE]' : 'bg-transparent'}`} />
-            </button>
-          </div>
-
-          <div className="mb-5 rounded-2xl border border-blue-100 bg-blue-50/70 px-4 py-3 text-[12px] leading-5 text-blue-800">
-            {mode === 'login'
-              ? '未连接组织时可先以本机草稿使用。正式协作请在工作空间管理里登录云端并加入或创建组织。'
-              : '注册云端账号后可加入或创建组织工作空间；未连接组织前的数据会先作为本机草稿保存。'}
-          </div>
-
-          <div className="space-y-3.5">
-            {mode === 'login' && (
-              <>
-                {rememberedAccounts.length > 0 && (
-                  <select
-                    value={form.identifier || form.email}
-                    onChange={(event) => {
-                      const selected = rememberedAccounts.find((account) => (account.identifier || account.email) === event.target.value);
-                      setForm(createAuthShellForm(selected?.identifier || selected?.email || event.target.value, selected?.fullName || '', selected?.password || ''));
-                    }}
-                    className="w-full bg-white border border-gray-200 rounded-xl px-3.5 py-3 text-[14px] text-gray-900 outline-none focus:border-[#5B7BFE] transition-colors"
-                  >
-                    <option value="">选择已记住的账号</option>
-                    {rememberedAccounts.map((account) => {
-                      const accountIdentifier = account.identifier || account.email;
-                      return (
-                        <option key={accountIdentifier} value={accountIdentifier}>
-                          {account.fullName ? `${account.fullName} · ${accountIdentifier}` : accountIdentifier}
-                        </option>
-                      );
-                    })}
-                  </select>
-                )}
-                <input
-                  value={form.identifier}
-                  onChange={(event) => setForm((prev) => ({ ...prev, identifier: event.target.value }))}
-                  placeholder="邮箱或登录手机号"
-                  className="w-full bg-white border border-gray-200 rounded-xl px-3.5 py-3 text-[14px] text-gray-900 outline-none focus:border-[#5B7BFE] transition-colors"
-                />
-                <div className="relative">
-                  <input
-                    type={showPassword ? 'text' : 'password'}
-                    value={form.password}
-                    onChange={(event) => setForm((prev) => ({ ...prev, password: event.target.value }))}
-                    placeholder="密码"
-                    className="w-full bg-white border border-gray-200 rounded-xl px-3.5 py-3 pr-11 text-[14px] text-gray-900 outline-none focus:border-[#5B7BFE] transition-colors"
-                  />
-                  <button
-                    type="button"
-                    onClick={() => setAuthShellShowPassword((s) => !s)}
-                    className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600 p-1 transition-colors"
-                    tabIndex={-1}
-                    aria-label={showPassword ? '隐藏密码' : '显示密码'}
-                  >
-                    {showPassword ? <EyeOff size={16} /> : <Eye size={16} />}
-                  </button>
-                </div>
-                <label className="flex items-center gap-2 px-1 pt-1 text-[12px] text-gray-500 cursor-pointer">
-                  <input type="checkbox" checked={rememberMe} onChange={(event) => setAuthShellRememberMe(event.target.checked)} className="rounded" />
-                  在本设备保持登录
-                </label>
-              </>
-            )}
-
-            {mode === 'register' && (
-              <>
-                <p className="px-1 text-[11px] text-gray-400 leading-relaxed">
-                  创建账号后可连接云端并加入组织；未连接组织前先作为本机草稿保存
-                </p>
-                {/* Step 切换:underline 风格,与登录/注册 tab 一致 */}
-                <div className="flex items-center gap-6 border-b border-gray-100 pb-px">
-                  <button
-                    type="button"
-                    onClick={() => setAuthShellRegisterStep(1)}
-                    className={`relative pb-2.5 text-[12px] font-medium transition-colors ${
-                      registerStep === 1 ? 'text-gray-900' : 'text-gray-400 hover:text-gray-600'
-                    }`}
-                  >
-                    <span className="text-[10px] font-bold uppercase tracking-[0.18em] text-gray-400 mr-1.5">01</span>
-                    个人账号
-                    <span className={`absolute left-0 right-0 -bottom-px h-[2px] rounded-full ${registerStep === 1 ? 'bg-[#5B7BFE]' : 'bg-transparent'}`} />
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => registerAccountValid && setAuthShellRegisterStep(2)}
-                    disabled={!registerAccountValid}
-                    className={`relative pb-2.5 text-[12px] font-medium transition-colors ${
-                      registerStep === 2 ? 'text-gray-900' : 'text-gray-400 hover:text-gray-600'
-                    } ${!registerAccountValid ? 'opacity-40 cursor-not-allowed' : ''}`}
-                  >
-                    <span className="text-[10px] font-bold uppercase tracking-[0.18em] text-gray-400 mr-1.5">02</span>
-                    组织身份
-                    <span className={`absolute left-0 right-0 -bottom-px h-[2px] rounded-full ${registerStep === 2 ? 'bg-[#5B7BFE]' : 'bg-transparent'}`} />
-                  </button>
-                </div>
-                {registerStep === 1 ? (
-                  <>
-                    <input value={form.fullName} onChange={(event) => setForm((prev) => ({ ...prev, fullName: event.target.value }))} placeholder="姓名 / 显示名" className="w-full bg-white border border-gray-200 rounded-xl px-3.5 py-3 text-[14px] text-gray-900 outline-none focus:border-[#5B7BFE] transition-colors" />
-                    <div>
-                      <input value={form.phone} onChange={(event) => setForm((prev) => ({ ...prev, phone: event.target.value }))} placeholder="手机号（必填，建议填写飞书账号绑定手机号）" className="w-full bg-white border border-gray-200 rounded-xl px-3.5 py-3 text-[14px] text-gray-900 outline-none focus:border-[#5B7BFE] transition-colors" />
-                      {!form.phone.trim() && <p className="text-[11px] text-gray-400 mt-1.5 px-1">建议填写登录飞书时绑定的手机号，后续任务成员匹配和提醒会更稳定。</p>}
-                    </div>
-                    <div>
-                      <input value={form.email} onChange={(event) => setForm((prev) => ({ ...prev, email: event.target.value }))} placeholder="邮箱" className="w-full bg-white border border-gray-200 rounded-xl px-3.5 py-3 text-[14px] text-gray-900 outline-none focus:border-[#5B7BFE] transition-colors" />
-                      {form.email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(form.email) && <p className="text-[11px] text-rose-500 mt-1.5 px-1">请输入有效的邮箱地址</p>}
-                    </div>
-                    <div className="relative">
-                      <input type={showPassword ? 'text' : 'password'} value={form.password} onChange={(event) => setForm((prev) => ({ ...prev, password: event.target.value }))} placeholder="密码 (至少 8 位)" className="w-full bg-white border border-gray-200 rounded-xl px-3.5 py-3 pr-11 text-[14px] text-gray-900 outline-none focus:border-[#5B7BFE] transition-colors" />
-                      <button type="button" onClick={() => setAuthShellShowPassword((s) => !s)} className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600 p-1 transition-colors" tabIndex={-1} aria-label={showPassword ? '隐藏密码' : '显示密码'}>
-                        {showPassword ? <EyeOff size={16} /> : <Eye size={16} />}
-                      </button>
-                      {form.password && form.password.length < 8 && <p className="text-[11px] text-rose-500 mt-1.5 px-1">密码至少需要 8 位</p>}
-                    </div>
-                    <div>
-                      <input type={showPassword ? 'text' : 'password'} value={form.confirmPassword} onChange={(event) => setForm((prev) => ({ ...prev, confirmPassword: event.target.value }))} placeholder="确认密码" className="w-full bg-white border border-gray-200 rounded-xl px-3.5 py-3 text-[14px] text-gray-900 outline-none focus:border-[#5B7BFE] transition-colors" />
-                      {form.confirmPassword && form.password !== form.confirmPassword && <p className="text-[11px] text-rose-500 mt-1.5 px-1">两次输入的密码不一致</p>}
-                    </div>
-                  </>
-                ) : (
-                  <>
-                    <input value={form.inviteCode} onChange={(event) => setForm((prev) => ({ ...prev, inviteCode: event.target.value }))} placeholder="组织 / 部门邀请码（有则直接加入组织）" className="w-full bg-white border border-gray-200 rounded-xl px-3.5 py-3 text-[14px] text-gray-900 outline-none focus:border-[#5B7BFE] transition-colors" />
-                    <div>
-                      <input value={form.cloudApiUrl} onChange={(event) => setForm((prev) => ({ ...prev, cloudApiUrl: event.target.value }))} placeholder={settingsState?.cloudApiUrl ? `云端地址：默认使用 ${cloudApiHostValue(settingsState.cloudApiUrl)}` : '组织云端地址（填邀请码时必填）'} className="w-full bg-white border border-gray-200 rounded-xl px-3.5 py-3 text-[14px] text-gray-900 outline-none focus:border-[#5B7BFE] transition-colors" />
-                      <p className="mt-1.5 px-1 text-[11px] leading-5 text-gray-400">不填邀请码可直接进入本机草稿；填邀请码会连接对应云端并进入组织工作空间。</p>
-                    </div>
-                    {inviteStatus.message && (
-                      <div className={`rounded-xl border px-3.5 py-2.5 text-[11.5px] ${inviteStatus.valid === false ? 'border-rose-200 bg-rose-50 text-rose-700' : 'border-blue-200 bg-blue-50 text-blue-700'}`}>
-                        {inviteStatus.loading ? '正在识别邀请码…' : inviteStatus.message}
-                      </div>
-                    )}
-                    <select value={form.departmentId} onChange={(event) => setForm((prev) => ({ ...prev, departmentId: event.target.value }))} className="w-full bg-white border border-gray-200 rounded-xl px-3.5 py-3 text-[14px] text-gray-900 outline-none focus:border-[#5B7BFE] transition-colors">
-                      <option value="">选择部门 (可选)</option>
-                      {departmentOptions.map((department) => (
-                        <option key={department.id} value={department.id}>{department.name}</option>
-                      ))}
-                    </select>
-                    <input value={form.jobTitle} onChange={(event) => setForm((prev) => ({ ...prev, jobTitle: event.target.value }))} placeholder="职位 (可选)" className="w-full bg-white border border-gray-200 rounded-xl px-3.5 py-3 text-[14px] text-gray-900 outline-none focus:border-[#5B7BFE] transition-colors" />
-                    <input value={form.managerName} onChange={(event) => setForm((prev) => ({ ...prev, managerName: event.target.value }))} placeholder="直属负责人 (可选)" className="w-full bg-white border border-gray-200 rounded-xl px-3.5 py-3 text-[14px] text-gray-900 outline-none focus:border-[#5B7BFE] transition-colors" />
-                    <textarea value={form.currentFocus} onChange={(event) => setForm((prev) => ({ ...prev, currentFocus: event.target.value }))} placeholder="当前工作重点 (可选)" rows={2} className="w-full bg-white border border-gray-200 rounded-xl px-3.5 py-3 text-[14px] text-gray-900 outline-none resize-none focus:border-[#5B7BFE] transition-colors" />
-                  </>
-                )}
-              </>
-            )}
-
-            {message && (() => {
-              const isSuccess = message.includes('已提交') || message.includes('成功');
-              const isPending = message.includes('等待管理员审核') || message.includes('待审核');
-              const isRejected = message.includes('未通过审核') || message.includes('停用');
-              const style = isSuccess
-                ? 'border-emerald-200 bg-emerald-50 text-emerald-700'
-                : isPending
-                ? 'border-blue-200 bg-blue-50 text-blue-700'
-                : isRejected
-                ? 'border-rose-200 bg-rose-50 text-rose-700'
-                : 'border-amber-200 bg-amber-50 text-amber-700';
-              return <div className={`rounded-xl border px-3.5 py-2.5 text-[12px] leading-5 ${style}`}>{message}</div>;
-            })()}
-
-            {mode === 'login' ? (
-              <Button
-                primary
-                className="w-full py-3 text-[14px] mt-2"
-                onClick={() => void handleSubmit()}
-                disabled={submitting || !(form.identifier || form.email).trim() || !form.password.trim()}
-              >
-                {submitting && <RefreshCw size={16} className="animate-spin" />}
-                登录
-              </Button>
-            ) : registerStep === 1 ? (
-              <Button
-                primary
-                className="w-full py-3 text-[14px] mt-2"
-                onClick={() => setAuthShellRegisterStep(2)}
-                disabled={!registerAccountValid}
-              >
-                下一步
-              </Button>
-            ) : (
-              <Button
-                primary
-                className="w-full py-3 text-[14px] mt-2"
-                onClick={() => void handleSubmit()}
-                disabled={submitting || !registerValid}
-              >
-                {submitting && <RefreshCw size={16} className="animate-spin" />}
-                注册
-              </Button>
-            )}
-          </div>
-        </div>
-      </div>
-    );
-  };
 
   const renderWorkspaceManagerModal = () => {
     if (!workspaceManagerOpen) return null;
@@ -12125,11 +12182,14 @@ export default function App() {
     const [suggestedTaskTags, setSuggestedTaskTags] = useState<string[]>([]);
     const [eventLines, setEventLines] = useState<EventLine[]>([]);
     const [eventLinesLoadError, setEventLinesLoadError] = useState<string | null>(null);
+    const eventLinesLoadSeqRef = useRef(0);
+    const eventLineWorkspaceKey = workspacesState?.activeSandboxId || 'local';
+    const eventLineFilterStorageKey = `${EVENT_LINE_PROJECT_FILTER_STORAGE_KEY}:${eventLineWorkspaceKey}`;
     const projectStructureRequestsRef = useRef<Record<string, Promise<ProjectStructureResponse>>>({});
     const projectStructureFailedAtRef = useRef<Record<string, number>>({});
     const [eventLineProjectFilterId, setEventLineProjectFilterId] = useState<string>(() => {
       if (typeof window === 'undefined') return '__all__';
-      return window.localStorage.getItem(EVENT_LINE_PROJECT_FILTER_STORAGE_KEY) || '__all__';
+      return window.localStorage.getItem(eventLineFilterStorageKey) || '__all__';
     });
     const elProjectDropdownRef = useRef<HTMLDivElement | null>(null);
     const [elProjectDropdownOpen, setElProjectDropdownOpen] = useState(false);
@@ -12518,32 +12578,46 @@ export default function App() {
     }, [currentClientId, editingTask.clientId, organizationClientId, isTaskModalOpen, loadProjectStructureForClient, projectStructureCache, taskClientDnaCache, workspace?.client.id]);
 
     const loadEventLines = useCallback(async () => {
+      const seq = eventLinesLoadSeqRef.current + 1;
+      eventLinesLoadSeqRef.current = seq;
+      const sandboxAtStart = eventLineWorkspaceKey;
       try {
         const records = await getEventLines();
+        if (seq !== eventLinesLoadSeqRef.current || sandboxAtStart !== eventLineWorkspaceKey) return;
         setEventLines(records);
         setEventLinesLoadError(null);
       } catch (error) {
+        if (seq !== eventLinesLoadSeqRef.current || sandboxAtStart !== eventLineWorkspaceKey) return;
         console.warn('[event-lines] load failed', error);
         setEventLinesLoadError(error instanceof Error ? error.message : '事件线加载失败');
       }
-    }, []);
+    }, [eventLineWorkspaceKey]);
 
     useEffect(() => {
-      if (!authState.authenticated) return;
-      void loadEventLines();
-    }, [authState.authenticated, loadEventLines]);
-
-    useEffect(() => {
-      if (activeTab !== 'tasks' || taskViewMode !== 'event_lines' || !authState.authenticated) return;
-      void loadEventLines();
-    }, [activeTab, authState.authenticated, loadEventLines, taskViewMode]);
-
-    useEffect(() => {
-      if (authState.authenticated) return;
+      eventLinesLoadSeqRef.current += 1;
       setEventLines([]);
       setEventLinesLoadError(null);
       setEventLineProjectFilterId('__all__');
-    }, [authState.authenticated]);
+      setActiveEventLine(null);
+      setReportEventLineId(null);
+    }, [eventLineWorkspaceKey]);
+
+    useEffect(() => {
+      if (!hasAuthenticatedSession) return;
+      void loadEventLines();
+    }, [hasAuthenticatedSession, loadEventLines]);
+
+    useEffect(() => {
+      if (activeTab !== 'tasks' || taskViewMode !== 'event_lines' || !hasAuthenticatedSession) return;
+      void loadEventLines();
+    }, [activeTab, hasAuthenticatedSession, loadEventLines, taskViewMode]);
+
+    useEffect(() => {
+      if (hasAuthenticatedSession) return;
+      setEventLines([]);
+      setEventLinesLoadError(null);
+      setEventLineProjectFilterId('__all__');
+    }, [hasAuthenticatedSession]);
 
     // 自定义下拉菜单：点击外部关闭
     useEffect(() => {
@@ -13228,11 +13302,11 @@ export default function App() {
     useEffect(() => {
       if (typeof window === 'undefined') return;
       if (eventLineProjectFilterId === '__all__') {
-        window.localStorage.removeItem(EVENT_LINE_PROJECT_FILTER_STORAGE_KEY);
+        window.localStorage.removeItem(eventLineFilterStorageKey);
         return;
       }
-      window.localStorage.setItem(EVENT_LINE_PROJECT_FILTER_STORAGE_KEY, eventLineProjectFilterId);
-    }, [eventLineProjectFilterId]);
+      window.localStorage.setItem(eventLineFilterStorageKey, eventLineProjectFilterId);
+    }, [eventLineFilterStorageKey, eventLineProjectFilterId]);
     useEffect(() => {
       if (eventLineProjectFilterId === '__all__') return;
       const exists = eventLineProjectOptions.some((option) => option.id === eventLineProjectFilterId);
@@ -13291,6 +13365,7 @@ export default function App() {
     );
 
     const handleDeleteAttachmentChip = async (chip: { id: string; title: string; pending: boolean; pendingIndex: number }) => {
+      if (!guardWorkspaceWrite('删除任务附件')) return;
       const confirmed = window.confirm(`确认删除附件「${chip.title}」？`);
       if (!confirmed) return;
       if (chip.pending) {
@@ -13614,6 +13689,7 @@ export default function App() {
     };
 
     const handleSaveEventLineClarification = async () => {
+      if (!guardWorkspaceWrite('保存事件线澄清')) return;
       if (!activeEventLine) return;
       setIsSavingEventLineClarification(true);
       try {
@@ -13637,6 +13713,7 @@ export default function App() {
     };
 
     const handleGenerateEventLineClarification = async () => {
+      if (!guardWorkspaceWrite('生成事件线澄清')) return;
       if (!activeEventLine) return;
       const transcript = eventLineClarificationDraft.transcript.trim();
       if (transcript.length < 8) {
@@ -13658,6 +13735,7 @@ export default function App() {
     };
 
     const handleSaveTaskEventLineClarification = async () => {
+      if (!guardWorkspaceWrite('保存事件线澄清')) return;
       if (!selectedEventLineSummary) return;
       setIsSavingTaskEventLineClarification(true);
       try {
@@ -13684,6 +13762,7 @@ export default function App() {
     };
 
     const handleGenerateTaskEventLineClarification = async () => {
+      if (!guardWorkspaceWrite('生成事件线澄清')) return;
       if (!selectedEventLineSummary) return;
       const transcript = taskEventLineClarificationDraft.transcript.trim();
       if (transcript.length < 8) {
@@ -13705,6 +13784,7 @@ export default function App() {
     };
 
     const handleCreateEventLineFromTask = async () => {
+      if (!guardWorkspaceWrite('创建事件线')) return;
       if (editingTask.scopeMode === 'PERSONAL_ONLY') {
         flash('error', '个人日程不会接入事件线，请切回协作任务后再创建。');
         return;
@@ -13714,6 +13794,7 @@ export default function App() {
     };
 
     const handleSubmitTaskEventLineCreate = async () => {
+      if (!guardWorkspaceWrite('创建事件线')) return;
       if (editingTask.scopeMode === 'PERSONAL_ONLY') {
         flash('error', '个人日程不会接入事件线，请切回协作任务后再创建。');
         return;
@@ -13762,6 +13843,7 @@ export default function App() {
     };
 
     const handleCloseEventLine = async (targetEventLine: EventLine) => {
+      if (!guardWorkspaceWrite('归档事件线')) return;
       if (isDeletingEventLine) return;
       const lineName = targetEventLine.name || '未命名事件线';
       if (!window.confirm(`确认结束事件线”${lineName}”？结束后事件线将归档为只读，仍可查看和导出。`)) {
@@ -13784,6 +13866,7 @@ export default function App() {
     };
 
     const handleReopenEventLine = async (targetEventLine: EventLine) => {
+      if (!guardWorkspaceWrite('重新打开事件线')) return;
       if (isDeletingEventLine) return;
       setIsDeletingEventLine(true);
       try {
@@ -13798,6 +13881,7 @@ export default function App() {
     };
 
     const handleDeleteEventLine = (targetEventLine: EventLine) => {
+      if (!guardWorkspaceWrite('删除事件线')) return;
       if (isDeletingEventLine) return;
       setEventLineConfirm({ mode: 'single', target: targetEventLine });
     };
@@ -13836,6 +13920,7 @@ export default function App() {
     };
 
     const handleConfirmMergeEventLine = async () => {
+      if (!guardWorkspaceWrite('合并事件线')) return;
       if (!eventLineMergeDialog || eventLineMergeDialog.step !== 'confirm') return;
       if (isMergingEventLine) return;
       const { target, selectedSourceIds } = eventLineMergeDialog;
@@ -13870,6 +13955,7 @@ export default function App() {
     };
 
     const handleConfirmDeleteEventLineSingle = async () => {
+      if (!guardWorkspaceWrite('删除事件线')) return;
       if (!eventLineConfirm || eventLineConfirm.mode !== 'single') return;
       const target = eventLineConfirm.target;
       setIsDeletingEventLine(true);
@@ -13896,6 +13982,7 @@ export default function App() {
     };
 
     const handleConfirmBulkDeleteEmptyEventLines = async () => {
+      if (!guardWorkspaceWrite('批量删除事件线')) return;
       if (!eventLineConfirm || eventLineConfirm.mode !== 'bulk') return;
       const targets = eventLineConfirm.targets;
       setIsDeletingEventLine(true);
@@ -13936,6 +14023,7 @@ export default function App() {
     };
 
     const handleRetryEventLineSync = async (target: EventLine) => {
+      if (!guardWorkspaceWrite('同步事件线')) return;
       if (retryingSyncIds.has(target.id)) return;
       setRetryingSyncIds((prev) => {
         const next = new Set(prev);
@@ -14021,6 +14109,7 @@ export default function App() {
     };
 
     const handleSaveTemplate = async (data: TemplateData) => {
+      if (!guardWorkspaceWrite('保存任务模板')) return;
       const targetClientId = editingTask.clientId || currentClientId || workspace?.client.id || organizationClientId;
       console.warn(
         '[template-save] editingTask.clientId=',
@@ -14342,6 +14431,10 @@ export default function App() {
     const handleTaskAttachmentFiles = async (files: File[]) => {
       const fileList = files.filter((file) => file.size > 0);
       if (!fileList.length) return;
+      if (workspaceWritesBlocked) {
+        flash('info', workspaceRuntimeMessage || '工作空间正在切换或需要重新登录，暂时不能上传附件。');
+        return;
+      }
       if (isEditingTaskPersonal) {
         flash('error', '个人日程不会同步到客户工作台，请切回协作任务后再添加附件。');
         return;
@@ -14394,6 +14487,10 @@ export default function App() {
       // S4.1 fix: re-entry guard — 快连点保存按钮 / 录音完成自动触发 时, 防止双保存导致重复任务.
       // 注: 这里读 state isSavingTask 即可 (React batch 保证同 tick 内多次调用看到的是同个值).
       if (isSavingTask) {
+        return;
+      }
+      if (workspaceWritesBlocked) {
+        flash('info', workspaceRuntimeMessage || '工作空间正在切换或需要重新登录，暂时不能保存任务。');
         return;
       }
       if (!editingTask.title.trim()) {
@@ -14744,6 +14841,7 @@ export default function App() {
 	      task: { id: string; title: string; clientId?: string | null; eventLineId?: string | null },
 	      options?: { closeEditor?: boolean },
 	    ) => {
+	      if (!guardWorkspaceWrite('删除任务')) return;
 	      if (options?.closeEditor || editingTask.id === task.id) {
 	        closeTaskModal('delete-started');
 	        resetTaskDraft();
@@ -15577,6 +15675,10 @@ export default function App() {
     };
 
     const toggleTaskStatus = async (id: string, nextDone?: boolean) => {
+      if (workspaceWritesBlocked) {
+        flash('info', workspaceRuntimeMessage || '工作空间正在切换或需要重新登录，暂时不能更新任务。');
+        return;
+      }
       const task = tasks.find((item) => item.id === id);
       if (!task) return;
       if (isLocalDraftTaskId(task.id)) {
@@ -15714,6 +15816,7 @@ export default function App() {
     };
 
     const handleQuickCreateTask = async (title: string, dueDate: string) => {
+      if (!guardWorkspaceWrite('快速创建任务')) return;
       const defaultCollaborators = buildDefaultCollaborators();
       const owner = defaultCollaborators[0];
       const dueParts = splitTaskDueDateTime(dueDate);
@@ -15747,6 +15850,7 @@ export default function App() {
       nextDate: string,
       options?: { preserveCalendarViewport?: boolean },
     ) => {
+      if (!guardWorkspaceWrite('调整任务时间')) return;
       if (isLocalDraftTaskId(task.id)) {
         flash('info', '任务正在保存，稍后再调整时间。');
         return;
@@ -15825,6 +15929,7 @@ export default function App() {
     };
 
     const handleUpdateTaskDuration = async (task: Task, durationMinutes: number) => {
+      if (!guardWorkspaceWrite('调整任务时长')) return;
       if (isLocalDraftTaskId(task.id)) {
         flash('info', '任务正在保存，稍后再调整时间。');
         return;
@@ -15873,6 +15978,7 @@ export default function App() {
     };
 
     const handleBatchCompleteSelectedTasks = async () => {
+      if (!guardWorkspaceWrite('批量完成任务')) return;
       if (isBatchBusy || selectedListTasks.length === 0) return;
       const allowedTasks = selectedListTasks.filter((task) => !isLocalDraftTaskId(task.id) && task.status !== 'done' && taskCanToggleCompletion(task, currentSessionUser?.id));
       const allowedIds = new Set(allowedTasks.map((task) => task.id));
@@ -15926,6 +16032,7 @@ export default function App() {
     };
 
     const handleBatchRescheduleSelectedTasks = async () => {
+      if (!guardWorkspaceWrite('批量调整任务')) return;
       if (isBatchBusy || selectedListTasks.length === 0) return;
       if (!batchDueDate) {
         flash('info', '请先选择新的截止日期。');
@@ -15964,6 +16071,7 @@ export default function App() {
     };
 
     const handleBatchAssignEventLineSelectedTasks = async () => {
+      if (!guardWorkspaceWrite('批量归入事件线')) return;
       if (isBatchBusy || selectedListTasks.length === 0) return;
       if (!batchEventLineId) {
         flash('info', '请先选择要归入的事件线。');
@@ -16022,6 +16130,7 @@ export default function App() {
     };
 
     const handleSaveAgentWeeklyPlan = async (payload: AgentWeeklyPlanPayload) => {
+      if (!guardWorkspaceWrite('保存机器人周计划')) return;
       if (currentSessionUser?.primaryRole !== 'admin') return;
       try {
         await updateAgentWeeklyPlan(payload.weekLabel, payload.agentKey, payload);
@@ -16049,6 +16158,7 @@ export default function App() {
     };
 
     const handleApproveTaskReview = async (taskId: string) => {
+      if (!guardWorkspaceWrite('复核任务')) return;
       try {
         await approveTaskReview(taskId);
         await Promise.all([
@@ -16062,6 +16172,7 @@ export default function App() {
     };
 
     const handleReturnTaskReview = async (taskId: string) => {
+      if (!guardWorkspaceWrite('退回复核')) return;
       const result = await appPrompt({
         title: '退回复核',
         fields: [{ name: 'value', label: '请填写退回复核原因', required: true, multiline: true }],
@@ -16086,6 +16197,7 @@ export default function App() {
     };
 
     const handleCompleteWithReview = async (taskId: string) => {
+      if (!guardWorkspaceWrite('完成任务并发起复核')) return;
       const result = await appPrompt({
         title: '完成并发起复核',
         fields: [{ name: 'value', label: '请填写完成复核备注（说明完成情况）', required: true, multiline: true }],
@@ -16110,6 +16222,7 @@ export default function App() {
     };
 
     const handleConfirmTasks = async (idsToConfirm: string[]) => {
+      if (!guardWorkspaceWrite('确认协作任务')) return;
       const taskIds = Array.from(new Set(idsToConfirm)).filter(Boolean);
       if (taskIds.length === 0) return;
       setTransitioningInboxTaskIds((prev) => Array.from(new Set([...prev, ...taskIds])));
@@ -16152,6 +16265,7 @@ export default function App() {
     };
 
     const handleProposalDecision = async (proposalId: string, action: 'approve' | 'reject' | 'execute') => {
+      if (!guardWorkspaceWrite('处理 Proposal')) return;
       const busyKey = `proposal:${proposalId}`;
       updateProposalBusy(busyKey, action);
       try {
@@ -16187,6 +16301,7 @@ export default function App() {
     const proposalTargetMeeting = workspace?.meetings.find((meeting) => meeting.id === workspaceSelectedMeetingId) || workspace?.meetings[0] || null;
 
     const handleCreateMeetingProposal = async (kind: 'prepare' | 'followup') => {
+      if (!guardWorkspaceWrite('创建会议 Proposal')) return;
       if (!currentClientId || !proposalTargetMeeting) return;
       const busyKey = `meeting:${proposalTargetMeeting.id}:${kind}`;
       updateProposalBusy(busyKey, kind);
@@ -16207,6 +16322,7 @@ export default function App() {
     };
 
     const confirmReject = async () => {
+      if (!guardWorkspaceWrite('退回协作任务')) return;
       if (!rejectReason.trim()) {
         flash('error', '为了保证协作顺畅，请填写退回理由。');
         return;
@@ -16242,6 +16358,7 @@ export default function App() {
     };
 
     const generateGlobalSummary = async () => {
+      if (!guardWorkspaceWrite('生成复盘')) return;
       setIsGeneratingGlobal(true);
       try {
         const rowsToSave = dirtyReviewRows();
@@ -20853,18 +20970,20 @@ export default function App() {
                   </button>
                   <button
                     type="button"
-                    className={`rounded-lg px-6 py-2 text-sm font-medium text-white shadow-sm shadow-blue-200 disabled:cursor-wait disabled:opacity-80 ${
-                      isSavingTask || isTaskAttachmentBusy ? 'bg-blue-400' : 'bg-blue-600 hover:bg-blue-700'
+                    className={`rounded-lg px-6 py-2 text-sm font-medium text-white shadow-sm shadow-blue-200 disabled:cursor-not-allowed disabled:opacity-80 ${
+                      isSavingTask || isTaskAttachmentBusy || workspaceWritesBlocked ? 'bg-blue-400' : 'bg-blue-600 hover:bg-blue-700'
                     }`}
                     onClick={() => {
                       void handleSaveTask();
                     }}
-                    disabled={isSavingTask || isTaskAttachmentBusy}
+                    disabled={isSavingTask || isTaskAttachmentBusy || workspaceWritesBlocked}
                   >
                     {isTaskAttachmentBusy && taskAttachmentUploadProgress
                       ? `上传中 ${taskAttachmentUploadProgress.percent}%`
                       : isSavingTask
                         ? '正在保存…'
+                        : workspaceWritesBlocked
+                          ? '等待工作空间就绪'
                         : editingTask.id
                           ? '保存修改'
                           : '保存任务'}
@@ -21302,6 +21421,7 @@ export default function App() {
     } | null>(null);
     const [isDeletingDocument, setIsDeletingDocument] = useState(false);
     const handleConfirmDeleteDocument = async () => {
+      if (!guardWorkspaceWrite('删除文档')) return;
       if (!pendingDeleteDocument || !currentClientId) return;
       setIsDeletingDocument(true);
       try {
@@ -23581,6 +23701,7 @@ export default function App() {
       }
     };
     const handleImportSelectedFeishuDocs = async () => {
+      if (!guardWorkspaceWrite('导入飞书文档')) return;
       if (!currentClientId) {
         flash('error', '请先选择客户或项目');
         return;
@@ -23631,6 +23752,7 @@ export default function App() {
     };
 
     const handleImport = async (mode: 'folder' | 'file', paths: string[], options?: { attachToComposer?: boolean }) => {
+      if (!guardWorkspaceWrite('导入资料')) return [];
       if (!currentClientId) {
         flash('error', '请先选择客户');
         return [];
@@ -24037,6 +24159,7 @@ export default function App() {
     };
 
     const handleCreateClientTextDocument = async () => {
+      if (!guardWorkspaceWrite('创建文本文档')) return;
       if (!currentClientId) {
         flash('error', '请先选择项目');
         return;
@@ -29258,6 +29381,7 @@ export default function App() {
   };
 
 	  const handleClientFreezeChange = async (clientId: string, frozen: boolean) => {
+	    if (!guardWorkspaceWrite(frozen ? '冷冻项目' : '解冻项目')) return;
 	    try {
 	      const next = frozen ? await freezeClient(clientId) : await unfreezeClient(clientId);
 	      // refetch 让 clients state 同步真实 isFrozen,主组件 effect 会用它矫正本地 Set
@@ -29290,6 +29414,7 @@ export default function App() {
 	  };
 
 	  const handleApplyMembership = async () => {
+	    if (!guardWorkspaceWrite('提交组织身份申请')) return;
 	    if (!isCloudSession) {
 	      flash('error', '请先登录云端账号。');
 	      return;
@@ -29321,6 +29446,7 @@ export default function App() {
 	  };
 
 	  const handleSaveOrgModel = async (nextDraft: OrgModelSettings = orgModelDraft): Promise<boolean> => {
+	    if (!guardWorkspaceWrite('保存组织底盘')) return false;
 	    setOrgModelDraft(nextDraft);
 	    setIsSavingOrgModel(true);
 	    try {
@@ -29448,6 +29574,7 @@ export default function App() {
     };
 
     const handleSaveTag = async () => {
+      if (!guardWorkspaceWrite('保存标签')) return;
       const trimmedName = tagManageDraft.name.trim();
       if (!trimmedName) {
         flash('error', '请先填写标签名称');
@@ -29472,6 +29599,7 @@ export default function App() {
     };
 
     const handleArchiveTag = async (tag: TaskTag, archived: boolean) => {
+      if (!guardWorkspaceWrite(archived ? '归档标签' : '恢复标签')) return;
       if (!canManageTaskTag(tag)) {
         flash('error', '你没有权限调整这个标签');
         return;
@@ -29486,6 +29614,7 @@ export default function App() {
     };
 
     const handleSaveTaskSettings = async () => {
+      if (!guardWorkspaceWrite('保存任务设置')) return;
       try {
         const allowedDefaultListId = taskDefaultDestinationLists.some((list) => list.id === taskSettingsDraft.defaultListId)
           ? taskSettingsDraft.defaultListId
@@ -29511,6 +29640,7 @@ export default function App() {
     };
 
     const handleSaveOrgModel = async (nextDraft: OrgModelSettings = orgModelDraft): Promise<boolean> => {
+      if (!guardWorkspaceWrite('保存组织底盘')) return false;
       setOrgModelDraft(nextDraft);
       setIsSavingOrgModel(true);
       try {
@@ -29561,6 +29691,7 @@ export default function App() {
     };
 
     const handleDeleteTag = async (tag: TaskTag) => {
+      if (!guardWorkspaceWrite('删除标签')) return;
       if (!canManageTaskTag(tag)) {
         flash('error', '你没有权限删除这个标签');
         return;
@@ -29630,6 +29761,7 @@ export default function App() {
     };
 
     const handleSaveAiSettings = async () => {
+      if (!guardWorkspaceWrite('保存 AI 设置')) return;
       try {
         const providerForSave: AiProvider = draft.aiProvider === 'mock'
           ? 'mock'
@@ -29741,6 +29873,7 @@ export default function App() {
 
     // 语音识别模型配置 handlers（input-breadth 线程 I1a 新增）
     const handleSaveSpeechModelSettings = async (payload: SpeechModelSettingsPayload) => {
+      if (!guardWorkspaceWrite('保存语音识别设置')) return;
       setIsSavingSpeechModelSettings(true);
       try {
         const next = await updateSpeechModelSettings(payload);
@@ -29759,6 +29892,7 @@ export default function App() {
 
     // 对象存储 handlers（input-breadth 线程 I1b-1 新增）
     const handleSaveObjectStorageSettings = async (payload: ObjectStorageSettingsPayload) => {
+      if (!guardWorkspaceWrite('保存对象存储设置')) return;
       setIsSavingObjectStorageSettings(true);
       try {
         const next = await updateObjectStorageSettings(payload);
@@ -31479,11 +31613,11 @@ export default function App() {
                   <div className="flex flex-col min-w-0">
                     <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-gray-400">客户 / 任务</p>
                     <div className="mt-3 flex items-baseline gap-1.5">
-                      <span className="text-[24px] leading-none font-light tracking-tight text-gray-900">{health?.stats.clients || 0}</span>
+                      <span className="text-[24px] leading-none font-light tracking-tight text-gray-900">{clients.length}</span>
                       <span className="text-[12px] leading-none font-light text-gray-400">客户</span>
                     </div>
                     <div className="mt-2 h-[2px] w-8 rounded-full bg-transparent" />
-                    <p className="mt-2 text-[11px] text-gray-400">{health?.stats.tasks || 0} 条任务</p>
+                    <p className="mt-2 text-[11px] text-gray-400">{tasks.length} 条任务</p>
                   </div>
                   <div className="flex flex-col min-w-0">
                     <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-gray-400">资讯 / 手册</p>
@@ -31789,9 +31923,10 @@ export default function App() {
       </WorkspaceClientStoreProvider>
     ),
     strategic_accompaniment: evidenceMode === 'cockpit' ? (
-      <CockpitEvidenceView />
+      <CockpitEvidenceView key={`cockpit-${businessWorkspaceResetKey}`} />
     ) : (
       <StrategicBrainView
+        key={`strategic-${businessWorkspaceResetKey}`}
         clients={dataCenterClients}
         currentClientId={currentClientId}
         onClientChange={(clientId) => {
@@ -31811,6 +31946,7 @@ export default function App() {
     ),
     topics_management: (
       <IntelligenceStationView
+        key={`intelligence-${businessWorkspaceResetKey}`}
         activeTaskLists={activeTaskLists}
         effectiveTaskSettings={effectiveTaskSettings}
         currentSessionUser={currentSessionUser}
@@ -31820,10 +31956,11 @@ export default function App() {
       />
     ),
     growth_handbook: (
-      <GrowthCenterView />
+      <GrowthCenterView key={`growth-${businessWorkspaceResetKey}`} />
     ),
     plan_workshop: (
       <PlanWorkshopView
+        key={`plan-workshop-${businessWorkspaceResetKey}`}
         value={orgModelDraft}
         currentUser={currentSessionUser}
         onSavePlan={handleSavePlanFromWorkshop}
@@ -31839,7 +31976,11 @@ export default function App() {
         }}
       />
     ),
-    settings: renderSettingsView(),
+    settings: (
+      <React.Fragment key={`settings-${businessWorkspaceResetKey}`}>
+        {renderSettingsView()}
+      </React.Fragment>
+    ),
   };
 
   const IdentityGate = () => {
@@ -31904,12 +32045,12 @@ export default function App() {
 
   const [splashMessageTick, setSplashMessageTick] = useState(0);
   useEffect(() => {
-    if (!loading) return;
+    if (!loading && !workspaceRuntimeBusy) return;
     const timer = window.setInterval(() => setSplashMessageTick((t) => t + 1), 3000);
     return () => window.clearInterval(timer);
-  }, [loading]);
+  }, [loading, workspaceRuntimeBusy]);
 
-  if (loading) {
+  if (loading || workspaceRuntimeBusy) {
     const VALUE_MESSAGES = [
       '让每一天的工作都留下痕迹，变成成长',
       '任务、客户、会议、复盘——一个界面掌控全局',
@@ -31924,12 +32065,17 @@ export default function App() {
       '正在连接本地后端…': 12,
       '正在恢复登录状态…': 20,
       '正在读取系统设置…': 30,
+      '正在验证工作空间身份…': 38,
+      '正在清理旧空间缓存…': 34,
       '正在载入核心模块数据…': 45,
       '正在载入客户工作区…': 70,
       '正在读取员工与组织数据…': 85,
+      '正在进入组织工作空间…': 88,
+      '正在恢复组织工作空间…': 88,
       '正在切换到登录态…': 90,
       '启动完成': 100,
     };
+    const displayPhase = workspaceRuntimeBusy && workspaceRuntimeMessage ? workspaceRuntimeMessage : loadingPhase;
     const baseProgress = PHASE_PROGRESS[loadingPhase] ?? (loadingPhase.includes('受阻') ? 0 : 50);
     const progressPercent = loadingPhase === '正在载入核心模块数据…'
       ? 45 + Math.round(loadingSubProgress * 0.25)
@@ -31960,7 +32106,7 @@ export default function App() {
             className={`text-[14px] text-center font-light leading-relaxed ${isError ? 'text-rose-600' : 'text-gray-500'}`}
             style={{ animation: 'splash-fade-up 0.5s ease-out both' }}
           >
-            {isError ? loadingPhase : VALUE_MESSAGES[valueIndex]}
+            {isError ? loadingPhase : (workspaceRuntimeBusy ? displayPhase : VALUE_MESSAGES[valueIndex])}
           </p>
         </div>
 
@@ -31976,15 +32122,16 @@ export default function App() {
             />
           </div>
           <p className="mt-4 text-[10px] font-bold uppercase tracking-[0.18em] text-gray-400 text-center">
-            {isError ? loadingPhase : loadingPhase.replace(/…$/, '')}
+            {isError ? loadingPhase : displayPhase.replace(/…$/, '')}
           </p>
+          {workspaceTransitionSlow && !isError && (
+            <p className="mt-3 text-center text-[12px] leading-5 text-gray-500">
+              仍在同步组织数据，请稍候。切换完成前不会写入或显示旧空间内容。
+            </p>
+          )}
         </div>
       </div>
     );
-  }
-
-  if (!authState.authenticated || !currentSessionUser) {
-    return renderAuthShell();
   }
 
   if (shouldShowIdentityGate) {
@@ -31994,15 +32141,32 @@ export default function App() {
   const sidebarAiStatusLabel = isRealAiConfigured(health?.ai)
     ? aiModelDisplayLabel(health?.ai.provider, health?.ai.model, health?.ai.providerLabel)
     : '未配置大模型';
-  const sidebarOrgUnitLabel = isLocalSession
+  const sidebarVisibleClientCount = clients.length;
+  const sidebarSessionAccountName = getSessionDisplayIdentity(currentSessionUser);
+  const hasSidebarSessionIdentity = Boolean(hasAuthenticatedSession && sidebarSessionAccountName);
+  const sidebarOrgUnitLabel = !hasSidebarSessionIdentity
+    ? '未连接组织'
+    : isLocalSession
     ? '本机草稿'
     : (currentUserStructureLabel || orgMembershipState.departmentName || currentSessionUser.departmentName || (currentSessionUser.primaryRole === 'admin' ? '管理层' : '未分配部门'));
+  const sidebarAccountLabel = hasSidebarSessionIdentity
+    ? sidebarSessionAccountName
+    : '本机草稿';
+  const sidebarConnectionLabel = hasSidebarSessionIdentity
+    ? (isLocalSession
+      ? `未连接组织 · ${sidebarAiStatusLabel} · ${sidebarVisibleClientCount} 客户`
+      : `${sidebarAiStatusLabel} · ${sidebarVisibleClientCount} 客户`)
+    : `未连接组织 · ${sidebarVisibleClientCount} 客户`;
 
   // 迷你面板早退渲染:在所有 hooks 之后(本 return 处),只决定渲染哪棵树,不跳过任何 hook。
   // hooks 声明在顶层 hooks 区(见 miniMode/miniData/handleMini* 定义),不放这里。
   // 迷你卡片日历:把任务拖到日期格子 → 改期到那天。自包含(handleRescheduleTask 在 TasksView 内部够不到),
   // 用模块级 split/combine 助手 + updateTask(同 handleMiniToggleTask 路径),乐观更新失败下次刷新自愈。
   const handleMiniRescheduleTask = async (taskId: string, dateIso: string) => {
+    if (workspaceWritesBlocked) {
+      flash('info', workspaceRuntimeMessage || '工作空间正在切换或需要重新登录，暂时不能调整任务时间。');
+      return;
+    }
     const task = tasks.find((t) => t.id === taskId);
     if (!task) return;
     if (task.scheduledStartAt) {
@@ -32038,7 +32202,7 @@ export default function App() {
   }
 
   return (
-    <GrowthProvider>
+    <GrowthProvider key={`growth-provider-${businessWorkspaceResetKey}-${workspacesState?.activeSandboxId || 'local'}`}>
       {/* v2.2 F1.6: 全局共享 ClientFactBundle - currentClientId 切换时所有接入 view 自动同步 */}
       <ClientFactProvider currentClientId={currentClientId || null}>
       <div className="window-drag window-drag-strip" aria-hidden="true" />
@@ -32364,22 +32528,22 @@ export default function App() {
                   type="button"
                   onClick={() => setWorkspaceManagerOpen(true)}
                   className="mb-1 block max-w-full truncate text-left text-[10.5px] font-semibold text-[#5B7BFE] hover:text-[#425fe8]"
-                  title={activeWorkspaceRecord?.name || '工作空间'}
+                  title={hasSidebarSessionIdentity ? (activeWorkspaceRecord?.name || '工作空间') : '连接组织'}
                 >
-                  工作空间：{activeWorkspaceDisplayName}
+                  {hasSidebarSessionIdentity ? `工作空间：${activeWorkspaceDisplayName}` : '连接组织'}
                 </button>
 	                <p className="text-[12px] font-medium text-gray-900 truncate">
-	                  {currentSessionUser.fullName || currentSessionUser.email || (isLocalSession ? '本机草稿' : '未命名账号')}
+	                  {sidebarAccountLabel}
 	                </p>
                 <p className="text-[10.5px] text-gray-500 truncate mt-0.5">{sidebarOrgUnitLabel}</p>
-	                <p className="text-[10.5px] text-gray-400 truncate mt-0.5">{isLocalSession ? `未连接组织 · ${sidebarAiStatusLabel} · ${health?.stats.clients || 0} 客户` : `${sidebarAiStatusLabel} · ${health?.stats.clients || 0} 客户`}</p>
-                {isLocalSession ? (
+	                <p className="text-[10.5px] text-gray-400 truncate mt-0.5">{sidebarConnectionLabel}</p>
+                {!hasSidebarSessionIdentity || isLocalSession ? (
                   <button
                     type="button"
                     className="mt-1.5 text-[10.5px] text-gray-400 hover:text-[#5B7BFE] transition-colors"
                     onClick={() => openCloudAuthModal('login')}
                   >
-                    连接组织 →
+                    {hasSidebarSessionIdentity ? '连接组织 →' : '登录 / 加入组织 →'}
                   </button>
                 ) : (
                   <button

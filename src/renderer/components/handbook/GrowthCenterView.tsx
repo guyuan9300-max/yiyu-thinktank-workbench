@@ -1681,11 +1681,23 @@ function BadgesAndRankTab({ overview }: { overview: GrowthOverview | null }) {
   const [isLoading, setIsLoading] = useState(true);
 
   useEffect(() => {
+    let cancelled = false;
+    setSelectedBadge(null);
+    setBadgeBoard(null);
     setIsLoading(true);
     getGrowthBadges()
-      .then(setBadgeBoard)
-      .catch(() => setBadgeBoard(null))
-      .finally(() => setIsLoading(false));
+      .then((nextBoard) => {
+        if (!cancelled) setBadgeBoard(nextBoard);
+      })
+      .catch(() => {
+        if (!cancelled) setBadgeBoard(null);
+      })
+      .finally(() => {
+        if (!cancelled) setIsLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   const rank = overview?.rank;

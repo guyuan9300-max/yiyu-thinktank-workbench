@@ -21,6 +21,7 @@ CLOUD_SANDBOX_SETTING_KEYS = (
     "cloud_refresh_token",
     "cloud_session_user",
 )
+CLOUD_SESSION_SNAPSHOT_KEY = "cloud_session_user_snapshot"
 
 
 def _now_iso() -> str:
@@ -58,6 +59,11 @@ def _session_organization_id(raw: str | None) -> str:
     return str(_load_json_object(raw).get("organizationId") or "").strip()
 
 
+def _write_session_snapshot_if_present(conn: Any, sandbox_id: str, raw_session: str | None) -> None:
+    if _load_json_object(raw_session):
+        _write_sandbox_setting_to_conn(conn, sandbox_id, CLOUD_SESSION_SNAPSHOT_KEY, raw_session or "")
+
+
 def _sandbox_cloud_url_from_conn(conn: Any, sandbox_id: str, fallback: str = "") -> str:
     row = conn.execute(
         "SELECT value FROM sandbox_settings WHERE sandbox_id = ? AND key = 'cloud_api_url'",
@@ -86,8 +92,12 @@ def _default_sandbox_values(db: Database, now: str) -> dict[str, Any]:
             "name": display_name,
             "status": "active",
             "cloud_api_url": cloud_api_url,
+            "cloud_instance_id": "",
             "organization_id": organization_id,
             "organization_name": organization_name or None,
+            "identity_state": "unverified",
+            "identity_verified_at": None,
+            "identity_error": "",
             "local_identity_id": None,
             "is_legacy_default": 1,
             "metadata_json": json.dumps({"createdBy": "stage1_legacy_bootstrap"}, ensure_ascii=False),
@@ -101,8 +111,12 @@ def _default_sandbox_values(db: Database, now: str) -> dict[str, Any]:
         "name": "未连接组织的本机草稿",
         "status": "active",
         "cloud_api_url": "",
+        "cloud_instance_id": "",
         "organization_id": None,
         "organization_name": None,
+        "identity_state": "unverified",
+        "identity_verified_at": None,
+        "identity_error": "",
         "local_identity_id": db.get_setting("local_session_user_id", "").strip() or None,
         "is_legacy_default": 1,
         "metadata_json": json.dumps({"createdBy": "stage1_legacy_bootstrap"}, ensure_ascii=False),
@@ -119,8 +133,12 @@ def _default_local_sandbox_values(db: Database, now: str, *, is_legacy_default: 
         "name": "未连接组织的本机草稿",
         "status": "active",
         "cloud_api_url": "",
+        "cloud_instance_id": "",
         "organization_id": None,
         "organization_name": None,
+        "identity_state": "unverified",
+        "identity_verified_at": None,
+        "identity_error": "",
         "local_identity_id": db.get_setting("local_session_user_id", "").strip() or None,
         "is_legacy_default": 1 if is_legacy_default else 0,
         "metadata_json": json.dumps({"createdBy": "stage7_local_workspace"}, ensure_ascii=False),
@@ -134,9 +152,10 @@ def _insert_sandbox(conn: Any, values: dict[str, Any]) -> None:
     conn.execute(
         """
         INSERT INTO sandboxes(
-            id, kind, name, status, cloud_api_url, organization_id, organization_name,
+            id, kind, name, status, cloud_api_url, cloud_instance_id, organization_id, organization_name,
+            identity_state, identity_verified_at, identity_error,
             local_identity_id, is_legacy_default, metadata_json, created_at, updated_at, last_active_at
-        ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(id) DO NOTHING
         """,
         (
@@ -145,8 +164,12 @@ def _insert_sandbox(conn: Any, values: dict[str, Any]) -> None:
             values["name"],
             values["status"],
             values["cloud_api_url"],
+            values.get("cloud_instance_id", ""),
             values["organization_id"],
             values["organization_name"],
+            values.get("identity_state", "unverified"),
+            values.get("identity_verified_at"),
+            values.get("identity_error", ""),
             values["local_identity_id"],
             values["is_legacy_default"],
             values["metadata_json"],
@@ -233,7 +256,10 @@ def _copy_legacy_cloud_settings_if_needed(conn: Any, sandbox_id: str) -> None:
                 legacy_row = conn.execute("SELECT value FROM settings WHERE key = ?", (key,)).fetchone()
                 legacy_value = str(legacy_row["value"] if isinstance(legacy_row, Row) else legacy_row[0]) if legacy_row else ""
                 _write_sandbox_setting_to_conn(conn, sandbox_id, key, legacy_value)
+                if key == "cloud_session_user":
+                    _write_session_snapshot_if_present(conn, sandbox_id, legacy_value)
         else:
+            _write_session_snapshot_if_present(conn, sandbox_id, existing_session_raw)
             for key in ("cloud_access_token", "cloud_refresh_token", "cloud_session_user"):
                 _write_sandbox_setting_to_conn(conn, sandbox_id, key, "")
         return
@@ -254,6 +280,8 @@ def _copy_legacy_cloud_settings_if_needed(conn: Any, sandbox_id: str) -> None:
         legacy_row = conn.execute("SELECT value FROM settings WHERE key = ?", (key,)).fetchone()
         legacy_value = str(legacy_row["value"] if isinstance(legacy_row, Row) else legacy_row[0]) if legacy_row else ""
         _write_sandbox_setting_to_conn(conn, sandbox_id, key, legacy_value)
+        if key == "cloud_session_user":
+            _write_session_snapshot_if_present(conn, sandbox_id, legacy_value)
 
 
 def _conn_has_column(conn: Any, table: str, column: str) -> bool:
@@ -356,6 +384,104 @@ def _merge_local_metadata(raw: str | None, patch: dict[str, Any]) -> str:
     metadata = _load_json_object(raw)
     metadata.update(patch)
     return json.dumps(metadata, ensure_ascii=False)
+
+
+def _archive_identity_mismatched_workspaces(conn: Any, now: str, *, active_id: str = "") -> None:
+    rows = conn.execute(
+        """
+        SELECT *
+        FROM sandboxes
+        WHERE kind = 'organization'
+          AND status = 'active'
+        """
+    ).fetchall()
+    duplicate_groups: dict[tuple[str, str], list[Row]] = {}
+    for row in rows:
+        sandbox_id = str(row["id"] if isinstance(row, Row) else row[0])
+        organization_id = str(row["organization_id"] or "").strip()
+        session_row = conn.execute(
+            """
+            SELECT value
+            FROM sandbox_settings
+            WHERE sandbox_id = ?
+              AND key = 'cloud_session_user'
+            """,
+            (sandbox_id,),
+        ).fetchone()
+        session_raw = str(session_row["value"] if isinstance(session_row, Row) else session_row[0]) if session_row else ""
+        session_organization_id = _session_organization_id(session_raw)
+        if organization_id and session_organization_id and organization_id != session_organization_id:
+            _write_session_snapshot_if_present(conn, sandbox_id, session_raw)
+            metadata_json = _merge_local_metadata(
+                str(row["metadata_json"] or "{}"),
+                {
+                    "archivedReason": "identity_mismatch",
+                    "archivedAt": now,
+                    "expectedOrganizationId": organization_id,
+                    "sessionOrganizationId": session_organization_id,
+                },
+            )
+            status_sql = "" if sandbox_id == active_id else "status = 'archived',"
+            conn.execute(
+                f"""
+                UPDATE sandboxes
+                   SET {status_sql}
+                       identity_state = 'mismatch',
+                       identity_error = ?,
+                       metadata_json = ?,
+                       updated_at = ?
+                 WHERE id = ?
+                """,
+                (
+                    "云会话组织与工作空间身份不一致，请重新登录该组织。",
+                    metadata_json,
+                    now,
+                    sandbox_id,
+                ),
+            )
+            for key in ("cloud_access_token", "cloud_refresh_token", "cloud_session_user"):
+                _write_sandbox_setting_to_conn(conn, sandbox_id, key, "")
+            continue
+        cloud_instance_id = str(row["cloud_instance_id"] or "").strip()
+        if cloud_instance_id and organization_id:
+            duplicate_groups.setdefault((cloud_instance_id, organization_id), []).append(row)
+
+    for (_cloud_instance_id, _organization_id), group in duplicate_groups.items():
+        if len(group) <= 1:
+            continue
+
+        def keep_rank(item: Row) -> tuple[bool, str, str]:
+            identity_state = str(item["identity_state"] or "")
+            last_active_at = str(item["last_active_at"] or "")
+            created_at = str(item["created_at"] or "")
+            return (identity_state == "verified", last_active_at or created_at, created_at)
+
+        keep = sorted(group, key=keep_rank, reverse=True)[0]
+        keep_id = str(keep["id"])
+        for row in group:
+            sandbox_id = str(row["id"])
+            if sandbox_id == keep_id:
+                continue
+            metadata_json = _merge_local_metadata(
+                str(row["metadata_json"] or "{}"),
+                {
+                    "archivedReason": "duplicate_cloud_identity",
+                    "archivedAt": now,
+                    "keptSandboxId": keep_id,
+                },
+            )
+            conn.execute(
+                """
+                UPDATE sandboxes
+                   SET status = 'archived',
+                       identity_state = 'mismatch',
+                       identity_error = ?,
+                       metadata_json = ?,
+                       updated_at = ?
+                 WHERE id = ?
+                """,
+                ("同一云实例与组织已存在另一个工作空间，已归档重复项。", metadata_json, now, sandbox_id),
+            )
 
 
 def migrate_local_draft_to_organization_if_possible(db: Database, target_sandbox_id: str | None = None) -> dict[str, Any]:
@@ -563,8 +689,12 @@ def ensure_sandbox_registry(db: Database) -> str:
 
         active_row = conn.execute("SELECT value FROM settings WHERE key = ?", (ACTIVE_SANDBOX_SETTING_KEY,)).fetchone()
         active_id = str(active_row["value"] if isinstance(active_row, Row) else active_row[0]).strip() if active_row else ""
+        _archive_identity_mismatched_workspaces(conn, now, active_id=active_id)
         if active_id:
-            exists = conn.execute("SELECT id FROM sandboxes WHERE id = ?", (active_id,)).fetchone()
+            exists = conn.execute(
+                "SELECT id FROM sandboxes WHERE id = ? AND status = 'active'",
+                (active_id,),
+            ).fetchone()
             if exists:
                 conn.execute("UPDATE sandboxes SET last_active_at = ?, updated_at = ? WHERE id = ?", (now, now, active_id))
                 _copy_legacy_cloud_settings_if_needed(conn, active_id)
@@ -610,14 +740,46 @@ def ensure_sandbox_registry(db: Database) -> str:
     return active_id
 
 
+def _workspace_runtime_status(
+    *,
+    kind: str,
+    has_cloud_url: bool,
+    has_token: bool,
+    identity_state: str,
+    identity_error: str,
+    organization_name: str,
+    workspace_name: str,
+) -> tuple[str, str, bool]:
+    display_name = organization_name or workspace_name or "当前组织"
+    if kind != "organization":
+        return "local_draft", "未连接组织，当前可先在本机草稿中使用。", False
+    if identity_state == "mismatch":
+        return (
+            "identity_error",
+            identity_error or f"{display_name} 的组织身份与本地工作空间不一致，请重新登录该组织。",
+            False,
+        )
+    if not has_cloud_url:
+        return "needs_login", f"{display_name} 尚未配置组织云端地址。", True
+    if not has_token or identity_state == "needs_login":
+        return "needs_login", f"{display_name} 需要重新登录后才能继续同步组织云数据。", True
+    if identity_state == "error":
+        return "sync_degraded", identity_error or f"{display_name} 暂时无法完成云端身份验证，已停止后台同步。", False
+    return "ready", f"已进入 {display_name} 工作空间。", False
+
+
 def _record_from_row(db: Database, row: Row) -> SandboxWorkspaceRecord:
     cloud_api_url = get_sandbox_setting(db, str(row["id"]), "cloud_api_url", str(row["cloud_api_url"] or ""))
-    access_token = get_sandbox_setting(db, str(row["id"]), "cloud_access_token", "")
-    refresh_token = get_sandbox_setting(db, str(row["id"]), "cloud_refresh_token", "")
-    session_user = _load_json_object(get_sandbox_setting(db, str(row["id"]), "cloud_session_user", ""))
+    sandbox_id = str(row["id"])
+    access_token = get_sandbox_setting(db, sandbox_id, "cloud_access_token", "")
+    refresh_token = get_sandbox_setting(db, sandbox_id, "cloud_refresh_token", "")
+    raw_session_user = get_sandbox_setting(db, sandbox_id, "cloud_session_user", "")
+    session_user = _load_json_object(raw_session_user)
+    session_snapshot = _load_json_object(get_sandbox_setting(db, sandbox_id, CLOUD_SESSION_SNAPSHOT_KEY, "")) or session_user
     organization_id = str(row["organization_id"]) if row["organization_id"] else None
     session_organization_id = str(session_user.get("organizationId") or "").strip()
-    if organization_id and session_organization_id and session_organization_id != organization_id:
+    session_mismatches_workspace = bool(organization_id and session_organization_id and session_organization_id != organization_id)
+    if session_mismatches_workspace:
         session_user = {}
         access_token = ""
         refresh_token = ""
@@ -629,19 +791,44 @@ def _record_from_row(db: Database, row: Row) -> SandboxWorkspaceRecord:
         connection_status = "connected"
     else:
         connection_status = "needs_login"
+    kind = str(row["kind"])
+    name = str(row["name"])
+    organization_name = str(row["organization_name"]) if row["organization_name"] else ""
+    identity_state = str(row["identity_state"] or "unverified") if "identity_state" in row.keys() else "unverified"
+    identity_error = str(row["identity_error"] or "") if "identity_error" in row.keys() else ""
+    if session_mismatches_workspace and identity_state not in {"mismatch", "error"}:
+        identity_state = "mismatch"
+        identity_error = identity_error or "本地保存的登录信息属于其他组织，请重新登录当前组织。"
+    runtime_status, status_message, requires_login = _workspace_runtime_status(
+        kind=kind,
+        has_cloud_url=has_cloud_url,
+        has_token=has_token,
+        identity_state=identity_state,
+        identity_error=identity_error,
+        organization_name=organization_name,
+        workspace_name=name,
+    )
     return SandboxWorkspaceRecord(
-        id=str(row["id"]),
-        kind=str(row["kind"]),  # type: ignore[arg-type]
-        name=str(row["name"]),
+        id=sandbox_id,
+        kind=kind,  # type: ignore[arg-type]
+        name=name,
         status=str(row["status"]),  # type: ignore[arg-type]
         cloudApiUrl=cloud_api_url,
         cloudConnected=has_token,
         cloudConnectionStatus=connection_status,  # type: ignore[arg-type]
         cloudNeedsLogin=connection_status == "needs_login",
+        cloudInstanceId=str(row["cloud_instance_id"] or "") if "cloud_instance_id" in row.keys() else "",
+        identityState=identity_state,  # type: ignore[arg-type]
+        identityVerifiedAt=str(row["identity_verified_at"]) if "identity_verified_at" in row.keys() and row["identity_verified_at"] else None,
+        identityError=identity_error,
+        runtimeStatus=runtime_status,  # type: ignore[arg-type]
+        statusMessage=status_message,
+        requiresLogin=requires_login,
+        sessionSnapshot=session_snapshot,
         cloudUserFullName=str(session_user.get("fullName") or "") or None,
         cloudUserEmail=str(session_user.get("email") or "") or None,
         organizationId=organization_id,
-        organizationName=str(row["organization_name"]) if row["organization_name"] else None,
+        organizationName=organization_name or None,
         localIdentityId=str(row["local_identity_id"]) if row["local_identity_id"] else None,
         isLegacyDefault=bool(row["is_legacy_default"]),
         metadata=_load_json_object(row["metadata_json"]),
@@ -832,8 +1019,12 @@ def create_sandbox(db: Database, *, kind: str, name: str, cloud_api_url: str = "
                 "name": normalized_name,
                 "status": "active",
                 "cloud_api_url": _normalize_cloud_api_url(cloud_api_url),
+                "cloud_instance_id": "",
                 "organization_id": None,
                 "organization_name": None,
+                "identity_state": "unverified",
+                "identity_verified_at": None,
+                "identity_error": "",
                 "local_identity_id": None,
                 "is_legacy_default": 0,
                 "metadata_json": json.dumps({"createdBy": "stage2_workspace_manager"}, ensure_ascii=False),
@@ -879,6 +1070,7 @@ def ensure_organization_sandbox_for_session(
     organization_id: str,
     organization_name: str = "",
     cloud_api_url: str = "",
+    cloud_instance_id: str = "",
 ) -> SandboxWorkspaceRecord:
     normalized_org_id = organization_id.strip()
     if not normalized_org_id:
@@ -886,47 +1078,73 @@ def ensure_organization_sandbox_for_session(
     safe_org = _safe_slug(normalized_org_id, "org")
     legacy_sandbox_id = f"sbx_org_{safe_org}"
     normalized_cloud_api_url = _normalize_cloud_api_url(cloud_api_url)
+    normalized_cloud_instance_id = cloud_instance_id.strip()
     now = _now_iso()
     display_name = organization_name.strip() or "组织工作空间"
 
     def _txn(conn: Any) -> None:
         sandbox_id = ""
         preferred_same_org_id = ""
+        if normalized_cloud_instance_id:
+            identity_row = conn.execute(
+                """
+                SELECT id
+                  FROM sandboxes
+                 WHERE kind = 'organization'
+                   AND status = 'active'
+                   AND cloud_instance_id = ?
+                   AND organization_id = ?
+                 ORDER BY last_active_at DESC, created_at ASC
+                 LIMIT 1
+                """,
+                (normalized_cloud_instance_id, normalized_org_id),
+            ).fetchone()
+            if identity_row:
+                sandbox_id = str(identity_row["id"] if isinstance(identity_row, Row) else identity_row[0])
         rows = conn.execute(
             """
-            SELECT id, cloud_api_url FROM sandboxes
+            SELECT id, cloud_api_url, cloud_instance_id FROM sandboxes
              WHERE kind = 'organization' AND organization_id = ?
                AND status = 'active'
              ORDER BY is_legacy_default DESC, created_at ASC
             """,
             (normalized_org_id,),
         ).fetchall()
-        for candidate in rows:
-            candidate_id = str(candidate["id"] if isinstance(candidate, Row) else candidate[0])
-            candidate_cloud_row = conn.execute(
-                "SELECT value FROM sandbox_settings WHERE sandbox_id = ? AND key = 'cloud_api_url'",
-                (candidate_id,),
-            ).fetchone()
-            if candidate_cloud_row:
-                candidate_cloud = str(
-                    candidate_cloud_row["value"] if isinstance(candidate_cloud_row, Row) else candidate_cloud_row[0]
-                )
-            else:
-                candidate_cloud = str(candidate["cloud_api_url"] if isinstance(candidate, Row) else candidate[1] or "")
-            if _normalize_cloud_api_url(candidate_cloud) == normalized_cloud_api_url:
-                sandbox_id = candidate_id
-                break
-            if not preferred_same_org_id:
-                candidate_session_row = conn.execute(
-                    "SELECT value FROM sandbox_settings WHERE sandbox_id = ? AND key = 'cloud_session_user'",
+        if not sandbox_id:
+            for candidate in rows:
+                candidate_id = str(candidate["id"] if isinstance(candidate, Row) else candidate[0])
+                candidate_cloud_row = conn.execute(
+                    "SELECT value FROM sandbox_settings WHERE sandbox_id = ? AND key = 'cloud_api_url'",
                     (candidate_id,),
                 ).fetchone()
-                candidate_session = str(
-                    candidate_session_row["value"] if isinstance(candidate_session_row, Row) else candidate_session_row[0]
-                ) if candidate_session_row else ""
-                candidate_session_org = _session_organization_id(candidate_session)
-                if candidate_session_org == normalized_org_id:
-                    preferred_same_org_id = candidate_id
+                if candidate_cloud_row:
+                    candidate_cloud = str(
+                        candidate_cloud_row["value"] if isinstance(candidate_cloud_row, Row) else candidate_cloud_row[0]
+                    )
+                else:
+                    candidate_cloud = str(candidate["cloud_api_url"] if isinstance(candidate, Row) else candidate[1] or "")
+                candidate_instance = str(candidate["cloud_instance_id"] if isinstance(candidate, Row) else candidate[2] or "").strip()
+                # cloud_instance_id + organization_id is the identity. URL
+                # matching is only a legacy repair path, not a way to merge two
+                # already-identified cloud deployments.
+                if (
+                    normalized_cloud_api_url
+                    and _normalize_cloud_api_url(candidate_cloud) == normalized_cloud_api_url
+                    and (not normalized_cloud_instance_id or not candidate_instance)
+                ):
+                    sandbox_id = candidate_id
+                    break
+                if not normalized_cloud_instance_id and not preferred_same_org_id:
+                    candidate_session_row = conn.execute(
+                        "SELECT value FROM sandbox_settings WHERE sandbox_id = ? AND key = 'cloud_session_user'",
+                        (candidate_id,),
+                    ).fetchone()
+                    candidate_session = str(
+                        candidate_session_row["value"] if isinstance(candidate_session_row, Row) else candidate_session_row[0]
+                    ) if candidate_session_row else ""
+                    candidate_session_org = _session_organization_id(candidate_session)
+                    if candidate_session_org == normalized_org_id:
+                        preferred_same_org_id = candidate_id
 
         if not sandbox_id:
             # If this organization already has a visible workspace with a valid
@@ -949,8 +1167,12 @@ def ensure_organization_sandbox_for_session(
             "name": display_name,
             "status": "active",
             "cloud_api_url": normalized_cloud_api_url,
+            "cloud_instance_id": normalized_cloud_instance_id,
             "organization_id": normalized_org_id,
             "organization_name": organization_name.strip() or None,
+            "identity_state": "verified" if normalized_cloud_instance_id else "unverified",
+            "identity_verified_at": now if normalized_cloud_instance_id else None,
+            "identity_error": "",
             "local_identity_id": None,
             "is_legacy_default": 0,
             "metadata_json": json.dumps({"createdBy": "stage2_cloud_login"}, ensure_ascii=False),
@@ -969,6 +1191,10 @@ def ensure_organization_sandbox_for_session(
                        organization_id = ?,
                        organization_name = ?,
                        cloud_api_url = ?,
+                       cloud_instance_id = CASE WHEN ? != '' THEN ? ELSE cloud_instance_id END,
+                       identity_state = CASE WHEN ? != '' THEN 'verified' ELSE identity_state END,
+                       identity_verified_at = CASE WHEN ? != '' THEN ? ELSE identity_verified_at END,
+                       identity_error = CASE WHEN ? != '' THEN '' ELSE identity_error END,
                        updated_at = ?,
                        last_active_at = ?
                  WHERE id = ?
@@ -978,6 +1204,12 @@ def ensure_organization_sandbox_for_session(
                     normalized_org_id,
                     organization_name.strip() or None,
                     normalized_cloud_api_url,
+                    normalized_cloud_instance_id,
+                    normalized_cloud_instance_id,
+                    normalized_cloud_instance_id,
+                    normalized_cloud_instance_id,
+                    now,
+                    normalized_cloud_instance_id,
                     now,
                     now,
                     sandbox_id,

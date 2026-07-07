@@ -171,6 +171,14 @@ class SandboxWorkspaceRecord(BaseModel):
     cloudConnected: bool = False
     cloudConnectionStatus: Literal["not_configured", "signed_out", "needs_login", "connected"] = "not_configured"
     cloudNeedsLogin: bool = False
+    cloudInstanceId: str = ""
+    identityState: Literal["unverified", "verified", "needs_login", "mismatch", "error"] = "unverified"
+    identityVerifiedAt: str | None = None
+    identityError: str = ""
+    runtimeStatus: Literal["local_draft", "verifying", "switching", "ready", "needs_login", "identity_error", "sync_degraded"] = "local_draft"
+    statusMessage: str = ""
+    requiresLogin: bool = False
+    sessionSnapshot: dict[str, object] = Field(default_factory=dict)
     cloudUserFullName: str | None = None
     cloudUserEmail: str | None = None
     organizationId: str | None = None
@@ -202,6 +210,36 @@ class SandboxWorkspacesResponse(BaseModel):
     activeSandboxId: str
     workspaces: list[SandboxWorkspaceRecord]
     localDraftSummary: SandboxLocalDraftSummary | None = None
+
+
+class WorkspaceSessionDiagnosticsRecord(BaseModel):
+    sandboxId: str
+    kind: SandboxKind
+    name: str
+    cloudApiUrl: str = ""
+    cloudInstanceId: str = ""
+    organizationId: str | None = None
+    organizationName: str | None = None
+    identityState: Literal["unverified", "verified", "needs_login", "mismatch", "error"] = "unverified"
+    identityVerifiedAt: str | None = None
+    identityError: str = ""
+    runtimeStatus: Literal["local_draft", "verifying", "switching", "ready", "needs_login", "identity_error", "sync_degraded"] = "local_draft"
+    requiresLogin: bool = False
+    hasCloudApiUrl: bool = False
+    hasAccessToken: bool = False
+    hasRefreshToken: bool = False
+    hasSessionUser: bool = False
+    sessionOrganizationId: str = ""
+    sessionUserId: str = ""
+    sessionUserEmail: str = ""
+    sessionUserFullName: str = ""
+    lastActiveAt: str | None = None
+    updatedAt: str
+
+
+class WorkspaceSessionDiagnosticsResponse(BaseModel):
+    activeSandboxId: str
+    workspaces: list[WorkspaceSessionDiagnosticsRecord]
 
 
 class SandboxWorkspaceCreatePayload(BaseModel):

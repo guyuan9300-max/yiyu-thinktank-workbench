@@ -282,6 +282,8 @@ from app.models import (
     SandboxWorkspaceRecord,
     SandboxWorkspaceUpdatePayload,
     SandboxWorkspacesResponse,
+    WorkspaceSessionDiagnosticsRecord,
+    WorkspaceSessionDiagnosticsResponse,
     SelectOrganizationPayload,
     BackupResponse,
     BadgeBoardResponse,
@@ -1015,6 +1017,11 @@ from app.services.workspace_context_refresh import (
     mark_workspace_context_refresh_event_status,
     recover_stale_workspace_context_refresh_events,
 )
+from app.services.workspace_context import (
+    WorkspaceContext,
+    list_workspace_contexts,
+    load_active_workspace_context,
+)
 from app.services.analysis_center import (
     claim_next_analysis_job,
     confirm_judgment,
@@ -1671,7 +1678,7 @@ def normalize_configured_cloud_api_url(raw_url: str | None) -> str:
 
 def resolve_initial_cloud_api_url(db: Database) -> str:
     raw_env_url = os.environ.get("YIYU_CLOUD_API_URL")
-    raw_url = raw_env_url if raw_env_url is not None else get_active_sandbox_setting(db, "cloud_api_url", db.get_setting("cloud_api_url", ""))
+    raw_url = raw_env_url if raw_env_url is not None else get_active_sandbox_setting(db, "cloud_api_url", "")
     try:
         return normalize_configured_cloud_api_url(raw_url)
     except ValueError as exc:
@@ -2034,19 +2041,24 @@ def _task_in_week(task: TaskRecord, week_label: str) -> bool:
 
     def _get_local_task_settings(operator_id: str | None = None) -> TaskSettingsRecord:
         resolved_operator_id = operator_id or str(current_operator_row()["id"])
-        row = state.db.fetchone("SELECT * FROM task_settings WHERE operator_id = ?", (resolved_operator_id,))
+        sandbox_id = active_business_sandbox_id()
+        row = state.db.fetchone(
+            "SELECT * FROM task_settings WHERE sandbox_id = ? AND operator_id = ?",
+            (sandbox_id, resolved_operator_id),
+        )
         if row:
             return _local_task_settings_record(row)
         defaults = _default_local_task_settings()
         state.db.execute(
             """
             INSERT OR REPLACE INTO task_settings(
-                operator_id, default_list_id, default_priority, default_due_date_preset,
+                sandbox_id, operator_id, default_list_id, default_priority, default_due_date_preset,
                 default_view_mode, list_sort_mode, show_completed_tasks, default_review_scope,
                 auto_assign_self, updated_at
-            ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
+                sandbox_id,
                 resolved_operator_id,
                 defaults.defaultListId,
                 defaults.defaultPriority,
@@ -2177,14 +2189,16 @@ def _resolve_local_task_tags(db: Database, operator_id: str, tag_ids: list[str],
     return [_ensure_local_tag(db, operator_id, name, "org") for name in legacy_names if name.strip()]
 
 
-_event_line_snapshot_cache: dict[str, dict[str, object] | None] = {}
+_event_line_snapshot_cache: dict[tuple[str, str], dict[str, object] | None] = {}
 
 
 def _invalidate_event_line_snapshot_cache(*event_line_ids: str | None) -> None:
     for event_line_id in event_line_ids:
         normalized_id = str(event_line_id or "").strip()
         if normalized_id:
-            _event_line_snapshot_cache.pop(normalized_id, None)
+            for key in list(_event_line_snapshot_cache.keys()):
+                if key[1] == normalized_id:
+                    _event_line_snapshot_cache.pop(key, None)
 
 
 def _event_line_snapshot_context(
@@ -2192,18 +2206,29 @@ def _event_line_snapshot_context(
     event_line_id: str | None,
     fallback_name: str | None = None,
     *,
+    sandbox_id: str | None = None,
     cloud_resolver: Callable[[str, str | None], dict[str, object] | None] | None = None,
 ) -> dict[str, object] | None:
     normalized_id = (event_line_id or "").strip()
-    if normalized_id and normalized_id in _event_line_snapshot_cache:
-        return _event_line_snapshot_cache[normalized_id]
     if not normalized_id and not (fallback_name or "").strip():
         return None
 
     context: dict[str, object] | None = None
+    cache_key: tuple[str, str] | None = None
     if normalized_id:
-        row = db.fetchone("SELECT * FROM event_lines WHERE id = ?", (normalized_id,)) if db is not None else None
+        row = None
+        if db is not None:
+            if sandbox_id:
+                row = db.fetchone(
+                    "SELECT * FROM event_lines WHERE id = ? AND COALESCE(sandbox_id, '') = ?",
+                    (normalized_id, sandbox_id),
+                )
+            else:
+                row = db.fetchone("SELECT * FROM event_lines WHERE id = ?", (normalized_id,))
         if row is not None:
+            cache_key = (str(row["sandbox_id"] or ""), normalized_id)
+            if cache_key in _event_line_snapshot_cache:
+                return _event_line_snapshot_cache[cache_key]
             activity_count = int(db.scalar("SELECT COUNT(1) FROM event_line_activities WHERE event_line_id = ?", (normalized_id,)) or 0) if db is not None else 0
             context = {
                 "id": str(row["id"]),
@@ -2228,8 +2253,8 @@ def _event_line_snapshot_context(
             "id": normalized_id or None,
             "name": fallback_name.strip(),
         }
-    if normalized_id:
-        _event_line_snapshot_cache[normalized_id] = context
+    if normalized_id and cache_key is not None:
+        _event_line_snapshot_cache[cache_key] = context
     return context
 
 
@@ -3346,6 +3371,57 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
     def active_task_ids_sql() -> str:
         return "SELECT id FROM tasks WHERE COALESCE(sandbox_id, '') = ?"
 
+    def active_project_module_ids_sql() -> str:
+        return (
+            "SELECT pm.id "
+            "FROM project_modules pm "
+            "JOIN clients c ON c.id = pm.client_id "
+            "WHERE COALESCE(c.sandbox_id, '') = ?"
+        )
+
+    def active_intelligence_item_scope_sql(alias: str = "") -> str:
+        prefix = f"{alias}." if alias else ""
+        return (
+            f"((COALESCE({prefix}client_id, '') IN ({active_client_ids_sql()})) "
+            f"OR (COALESCE({prefix}project_module_id, '') IN ({active_project_module_ids_sql()})))"
+        )
+
+    def active_intelligence_refresh_run_scope_sql(alias: str = "") -> str:
+        prefix = f"{alias}." if alias else ""
+        return (
+            f"((COALESCE({prefix}client_id, '') IN ({active_client_ids_sql()})) "
+            f"OR (COALESCE({prefix}project_module_id, '') IN ({active_project_module_ids_sql()})) "
+            f"OR ({prefix}scope_type = 'client' AND COALESCE({prefix}scope_id, '') IN ({active_client_ids_sql()})) "
+            f"OR ({prefix}scope_type = 'project_module' AND COALESCE({prefix}scope_id, '') IN ({active_project_module_ids_sql()})))"
+        )
+
+    def active_intelligence_profile_scope_sql(alias: str = "") -> str:
+        return active_intelligence_refresh_run_scope_sql(alias)
+
+    def active_intelligence_source_config_scope_clause() -> tuple[str, tuple[str, str, str, str, str]]:
+        sandbox_id = active_business_sandbox_id()
+        return (
+            "("
+            "(scope_type = 'global' AND scope_id = ?) "
+            f"OR COALESCE(client_id, '') IN ({active_client_ids_sql()}) "
+            f"OR (scope_type = 'client' AND COALESCE(scope_id, '') IN ({active_client_ids_sql()})) "
+            f"OR COALESCE(project_module_id, '') IN ({active_project_module_ids_sql()}) "
+            f"OR (scope_type = 'project_module' AND COALESCE(scope_id, '') IN ({active_project_module_ids_sql()}))"
+            ")",
+            (sandbox_id, sandbox_id, sandbox_id, sandbox_id, sandbox_id),
+        )
+
+    def active_focus_scope_clause() -> tuple[str, tuple[str, str, str]]:
+        sandbox_id = active_business_sandbox_id()
+        return (
+            "("
+            "(scope_type = 'global' AND scope_id = ?) "
+            f"OR (scope_type = 'client' AND COALESCE(scope_id, '') IN ({active_client_ids_sql()})) "
+            f"OR (scope_type = 'project_module' AND COALESCE(scope_id, '') IN ({active_project_module_ids_sql()}))"
+            ")",
+            (sandbox_id, sandbox_id, sandbox_id),
+        )
+
     def active_handbook_scope_sql(alias: str = "h") -> str:
         if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", alias):
             raise ValueError("invalid SQL alias")
@@ -3386,6 +3462,22 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         )
         if not row:
             raise HTTPException(status_code=404, detail="Task not found")
+        return row
+
+    def require_event_line_in_active_sandbox(event_line_id: str):
+        row = state.db.fetchone(
+            """
+            SELECT *
+            FROM event_lines
+            WHERE (id = ? OR cloud_id = ?)
+              AND COALESCE(sandbox_id, '') = ?
+            ORDER BY updated_at DESC
+            LIMIT 1
+            """,
+            (event_line_id, event_line_id, active_business_sandbox_id()),
+        )
+        if not row:
+            raise HTTPException(status_code=404, detail="Event line not found")
         return row
 
     def require_document_in_active_sandbox(document_id: str, client_id: str | None = None):
@@ -3821,18 +3913,31 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 FROM tasks
                 WHERE id = ?
                   AND COALESCE(scope_mode, 'COLLAB_SHARED') != 'PERSONAL_ONLY'
+                  AND COALESCE(sandbox_id, '') = ?
                 """,
-                (normalized_scope_id,),
+                (normalized_scope_id, active_business_sandbox_id()),
             )
             return str(row["client_id"]) if row and row["client_id"] else None
         if normalized_scope_type == "meeting":
             row = state.db.fetchone("SELECT client_id FROM meetings WHERE id = ?", (normalized_scope_id,))
             return str(row["client_id"]) if row and row["client_id"] else None
         if normalized_scope_type == "event_line":
-            row = state.db.fetchone("SELECT primary_client_id FROM event_lines WHERE id = ?", (normalized_scope_id,))
+            row = state.db.fetchone(
+                "SELECT primary_client_id FROM event_lines WHERE id = ? AND COALESCE(sandbox_id, '') = ?",
+                (normalized_scope_id, active_business_sandbox_id()),
+            )
             return str(row["primary_client_id"]) if row and row["primary_client_id"] else None
         if normalized_scope_type == "project_module":
-            row = state.db.fetchone("SELECT client_id FROM project_modules WHERE id = ?", (normalized_scope_id,))
+            row = state.db.fetchone(
+                f"""
+                SELECT pm.client_id
+                FROM project_modules pm
+                JOIN clients c ON c.id = pm.client_id
+                WHERE pm.id = ?
+                  AND {active_business_sandbox_where("c")}
+                """,
+                (normalized_scope_id, active_business_sandbox_id()),
+            )
             return str(row["client_id"]) if row and row["client_id"] else None
         if normalized_scope_type == "project_flow":
             row = state.db.fetchone("SELECT client_id FROM project_flows WHERE id = ?", (normalized_scope_id,))
@@ -4300,19 +4405,24 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
 
     def _get_local_task_settings(operator_id: str | None = None) -> TaskSettingsRecord:
         resolved_operator_id = operator_id or str(current_operator_row()["id"])
-        row = state.db.fetchone("SELECT * FROM task_settings WHERE operator_id = ?", (resolved_operator_id,))
+        sandbox_id = active_business_sandbox_id()
+        row = state.db.fetchone(
+            "SELECT * FROM task_settings WHERE sandbox_id = ? AND operator_id = ?",
+            (sandbox_id, resolved_operator_id),
+        )
         if row:
             return _local_task_settings_record(row)
         defaults = _default_local_task_settings()
         state.db.execute(
             """
             INSERT OR REPLACE INTO task_settings(
-                operator_id, default_list_id, default_priority, default_due_date_preset,
+                sandbox_id, operator_id, default_list_id, default_priority, default_due_date_preset,
                 default_view_mode, list_sort_mode, show_completed_tasks, default_review_scope,
                 auto_assign_self, updated_at
-            ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
+                sandbox_id,
                 resolved_operator_id,
                 defaults.defaultListId,
                 defaults.defaultPriority,
@@ -5629,6 +5739,8 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         if persist:
             set_active_sandbox_setting(state.db, "cloud_access_token", token or "")
             set_active_sandbox_setting(state.db, "cloud_session_user", session_user_json)
+            if session_user_json:
+                set_active_sandbox_setting(state.db, "cloud_session_user_snapshot", session_user_json)
             volatile_session.pop("cloud_access_token", None)
             volatile_session.pop("cloud_session_user", None)
             state.volatile_cloud_access_token = ""
@@ -5851,12 +5963,23 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
 
     def _local_setup_state() -> AuthStateResponse:
         return AuthStateResponse(
-            authenticated=True,
-            user=_local_draft_user(),
+            authenticated=False,
+            user=None,
             message="未连接组织，当前处于本机草稿状态。加入或创建组织后，草稿数据会迁入对应组织工作空间。",
             sessionMode="local",
             requiresLocalIdentitySetup=False,
             localIdentityStatus="draft",
+        )
+
+    def _cloud_relogin_state(message: str | None = None) -> AuthStateResponse:
+        _, _, active_org_name, active_workspace_name = _active_organization_workspace_context()
+        display_name = active_org_name or active_workspace_name or "当前组织"
+        return AuthStateResponse(
+            authenticated=False,
+            user=None,
+            message=message or f"{display_name} 需要重新登录后才能继续同步组织云数据。",
+            sessionMode="cloud",
+            localIdentityStatus=None,
         )
 
     def _bind_current_local_identity_to_cloud(user: SessionUserRecord, identity_id: str | None = None) -> None:
@@ -5895,8 +6018,19 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         session_user = get_cached_session_user()
         return bool(session_user and session_user.primaryRole == "admin")
 
+    SANDBOX_JSON_SETTING_KEYS = {
+        "settings.client_workspace",
+        "settings.topics",
+        "settings.handbook",
+        "settings.analysis_workbench",
+        "settings.system_admin",
+    }
+
     def _load_json_settings_record(key: str, default_factory, model_cls):
-        raw = state.db.get_setting(key, "")
+        if key in SANDBOX_JSON_SETTING_KEYS:
+            raw = _get_workspace_setting(key, "")
+        else:
+            raw = state.db.get_setting(key, "")
         if raw:
             parsed = from_json(raw, {})
             if isinstance(parsed, dict):
@@ -5905,11 +6039,17 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 except Exception:
                     pass
         record = default_factory()
-        state.db.set_setting(key, to_json(record.model_dump()))
+        if key in SANDBOX_JSON_SETTING_KEYS:
+            _set_workspace_setting(key, to_json(record.model_dump()))
+        else:
+            state.db.set_setting(key, to_json(record.model_dump()))
         return record
 
     def _save_json_settings_record(key: str, record) -> object:
-        state.db.set_setting(key, to_json(record.model_dump()))
+        if key in SANDBOX_JSON_SETTING_KEYS:
+            _set_workspace_setting(key, to_json(record.model_dump()))
+        else:
+            state.db.set_setting(key, to_json(record.model_dump()))
         return record
 
     def _default_client_workspace_settings() -> ClientWorkspaceSettingsRecord:
@@ -8589,18 +8729,29 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         normalized_event_line_id = (event_line_id or "").strip() or None
         if not normalized_event_line_id:
             return normalized_client_id, None
+        active_sandbox_id = active_business_sandbox_id()
         event_line_row = state.db.fetchone(
-            "SELECT id, primary_client_id FROM event_lines WHERE id = ? OR cloud_id = ?",
-            (normalized_event_line_id, normalized_event_line_id),
+            """
+            SELECT id, primary_client_id
+            FROM event_lines
+            WHERE (id = ? OR cloud_id = ?)
+              AND COALESCE(sandbox_id, '') = ?
+            """,
+            (normalized_event_line_id, normalized_event_line_id, active_sandbox_id),
         )
         if not event_line_row and get_cloud_token():
             try:
                 cloud_el = cloud_request("GET", f"/api/v1/event-lines/{normalized_event_line_id}")
-                local_event_line_id = _upsert_cloud_event_line_shadow_local(cloud_el)
+                local_event_line_id = _upsert_cloud_event_line_shadow_local(cloud_el, target_sandbox_id=active_sandbox_id)
                 if local_event_line_id:
                     event_line_row = state.db.fetchone(
-                        "SELECT id, primary_client_id FROM event_lines WHERE id = ?",
-                        (local_event_line_id,),
+                        """
+                        SELECT id, primary_client_id
+                        FROM event_lines
+                        WHERE id = ?
+                          AND COALESCE(sandbox_id, '') = ?
+                        """,
+                        (local_event_line_id, active_sandbox_id),
                     )
             except Exception:
                 pass
@@ -9201,6 +9352,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         cloud_api_url: str
         access_token: str
         refresh_token: str
+        cloud_instance_id: str = ""
 
     def _clear_scoped_cloud_session(context: ScopedCloudContext) -> None:
         set_sandbox_setting(state.db, context.sandbox_id, "cloud_access_token", "")
@@ -9243,7 +9395,9 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         context.refresh_token = next_refresh_token
         set_sandbox_setting(state.db, context.sandbox_id, "cloud_access_token", token)
         set_sandbox_setting(state.db, context.sandbox_id, "cloud_refresh_token", next_refresh_token)
-        set_sandbox_setting(state.db, context.sandbox_id, "cloud_session_user", to_json(user.model_dump()))
+        session_user_json = to_json(user.model_dump())
+        set_sandbox_setting(state.db, context.sandbox_id, "cloud_session_user", session_user_json)
+        set_sandbox_setting(state.db, context.sandbox_id, "cloud_session_user_snapshot", session_user_json)
         return user
 
     def scoped_cloud_request(
@@ -9291,50 +9445,34 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
     def _capture_active_scoped_cloud_context() -> ScopedCloudContext | None:
         """Freeze the current organization workspace cloud session for a background job."""
         try:
-            sandbox = get_active_sandbox(state.db)
+            workspace_ctx = load_active_workspace_context(state.db)
         except Exception:
             return None
-        sandbox_id = str(sandbox.id or "").strip()
-        if not sandbox_id or sandbox.kind != "organization":
+        sandbox_id = str(workspace_ctx.sandbox_id or "").strip()
+        if not sandbox_id or workspace_ctx.kind != "organization":
             return None
-        cloud_api_url = (
-            get_sandbox_setting(state.db, sandbox_id, "cloud_api_url", "").strip()
-            or str(sandbox.cloudApiUrl or "").strip()
-        ).rstrip("/")
-        access_token = get_sandbox_setting(state.db, sandbox_id, "cloud_access_token", "").strip()
-        refresh_token = get_sandbox_setting(state.db, sandbox_id, "cloud_refresh_token", "").strip()
-        session_payload = get_sandbox_setting(state.db, sandbox_id, "cloud_session_user", "")
-        session_user: SessionUserRecord | None = None
-        if session_payload:
-            try:
-                decoded = from_json(session_payload, {})
-                if isinstance(decoded, dict):
-                    session_user = SessionUserRecord(**decoded)
-            except Exception:
-                session_user = None
-        organization_id = (
-            str(sandbox.organizationId or "").strip()
-            or (session_user.organizationId.strip() if session_user else "")
-        )
-        if session_user and organization_id and session_user.organizationId != organization_id:
+        cloud_api_url = (workspace_ctx.cloud_api_url or "").rstrip("/")
+        organization_id = (workspace_ctx.organization_id or workspace_ctx.session_organization_id).strip()
+        if not workspace_ctx.session_matches_workspace:
             logger.warning(
                 "[workspace-session] skip scoped cloud context because session org mismatches sandbox: sandbox=%s org=%s sessionOrg=%s",
                 sandbox_id,
                 organization_id,
-                session_user.organizationId,
+                workspace_ctx.session_organization_id,
             )
             set_sandbox_setting(state.db, sandbox_id, "cloud_access_token", "")
             set_sandbox_setting(state.db, sandbox_id, "cloud_refresh_token", "")
             set_sandbox_setting(state.db, sandbox_id, "cloud_session_user", "")
             return None
-        if not cloud_api_url or not organization_id or not (access_token or refresh_token):
+        if not cloud_api_url or not organization_id or not (workspace_ctx.access_token or workspace_ctx.refresh_token):
             return None
         return ScopedCloudContext(
             sandbox_id=sandbox_id,
             organization_id=organization_id,
             cloud_api_url=cloud_api_url,
-            access_token=access_token,
-            refresh_token=refresh_token,
+            access_token=workspace_ctx.access_token,
+            refresh_token=workspace_ctx.refresh_token,
+            cloud_instance_id=workspace_ctx.cloud_instance_id,
         )
 
     def cloud_request_binary(method: str, path: str, *, json_body: dict | None = None, timeout: float = 120.0) -> tuple[bytes, dict[str, str]]:
@@ -9990,6 +10128,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 response_payload = cloud_request("GET", f"/api/v1/event-lines/{event_line_id}")
                 _upsert_cloud_event_line_shadow_local(
                     response_payload,
+                    target_sandbox_id=active_business_sandbox_id(),
                     fallback_client_id=client_id,
                     fallback_name=event_line_name,
                 )
@@ -10092,6 +10231,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             state.db,
             event_line_id,
             event_line_name,
+            sandbox_id=active_business_sandbox_id(),
             cloud_resolver=resolve_cloud_event_line_context,
         )
         _sync_task_attachment_scope(
@@ -10301,6 +10441,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
     def _upsert_cloud_event_line_shadow_local(
         payload: object,
         *,
+        target_sandbox_id: str | None = None,
         local_id: str | None = None,
         fallback_client_id: str | None = None,
         fallback_name: str | None = None,
@@ -10310,6 +10451,9 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             return None
         cloud_id = str(record.get("id") or "").strip()
         if not cloud_id:
+            return None
+        active_sandbox_id = (target_sandbox_id or active_business_sandbox_id()).strip() or DEFAULT_LOCAL_SANDBOX_ID
+        if not _cloud_event_line_record_matches_sandbox(record, active_sandbox_id):
             return None
 
         # Tombstone 守卫：本地已经把这条 event_line 合并掉 / 删除掉了（写入了 tombstone），
@@ -10329,12 +10473,35 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         normalized_local_id = (local_id or "").strip() or None
         if normalized_local_id:
             existing = state.db.fetchone(
-                "SELECT * FROM event_lines WHERE id = ? OR cloud_id = ? OR id = ?",
-                (cloud_id, cloud_id, normalized_local_id),
+                """
+                SELECT *
+                FROM event_lines
+                WHERE COALESCE(sandbox_id, '') = ?
+                  AND (id = ? OR cloud_id = ? OR id = ?)
+                ORDER BY updated_at DESC
+                LIMIT 1
+                """,
+                (active_sandbox_id, cloud_id, cloud_id, normalized_local_id),
             )
         else:
-            existing = state.db.fetchone("SELECT * FROM event_lines WHERE id = ? OR cloud_id = ?", (cloud_id, cloud_id))
+            existing = state.db.fetchone(
+                """
+                SELECT *
+                FROM event_lines
+                WHERE COALESCE(sandbox_id, '') = ?
+                  AND (id = ? OR cloud_id = ?)
+                ORDER BY updated_at DESC
+                LIMIT 1
+                """,
+                (active_sandbox_id, cloud_id, cloud_id),
+            )
         local_event_line_id = str(existing["id"]) if existing and existing["id"] else (normalized_local_id or cloud_id)
+        if not existing:
+            id_owner = state.db.fetchone("SELECT sandbox_id FROM event_lines WHERE id = ?", (local_event_line_id,))
+            owner_sandbox_id = str(id_owner["sandbox_id"] or "") if id_owner else ""
+            if owner_sandbox_id and owner_sandbox_id != active_sandbox_id:
+                safe = re.sub(r"[^A-Za-z0-9_-]+", "_", active_sandbox_id).strip("_")[:40] or "sandbox"
+                local_event_line_id = f"{cloud_id}_{safe}"
         timestamp = now_iso()
 
         def value(key: str, column: str, default: object | None = None) -> object | None:
@@ -10385,14 +10552,15 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         state.db.execute(
             """
             INSERT INTO event_lines(
-                id, organization_id, name, kind, status, visibility_scope, business_category, stage,
+                id, sandbox_id, organization_id, name, kind, status, visibility_scope, business_category, stage,
                 summary, intent, current_blocker, recent_decision, next_step, evidence_count,
                 owner_id, owner_name, primary_client_id, primary_client_name, primary_department_id,
                 primary_department_name, participant_ids_json, closed_at, closed_by_user_id,
                 created_at, updated_at, sync_status, cloud_id, cloud_payload_json, last_synced_at,
                 last_cloud_version, pending_sync_action, last_sync_error
-            ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(id) DO UPDATE SET
+                sandbox_id = excluded.sandbox_id,
                 organization_id = excluded.organization_id,
                 name = excluded.name,
                 kind = excluded.kind,
@@ -10426,6 +10594,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             """,
             (
                 local_event_line_id,
+                active_sandbox_id,
                 text_value("organizationId", "organization_id", "") or "",
                 resolved_name,
                 text_value("kind", "kind", "custom") or "custom",
@@ -10546,8 +10715,46 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         record = _normalize_cloud_event_line_payload(payload)
         if not record:
             return True
+        return _cloud_event_line_record_matches_sandbox(record, context.sandbox_id, expected_organization_id=context.organization_id)
+
+    def _cloud_event_line_record_matches_sandbox(
+        record: dict[str, object],
+        target_sandbox_id: str,
+        *,
+        expected_organization_id: str | None = None,
+    ) -> bool:
+        normalized_sandbox_id = (target_sandbox_id or "").strip() or DEFAULT_LOCAL_SANDBOX_ID
+        if normalized_sandbox_id == DEFAULT_LOCAL_SANDBOX_ID:
+            return True
+        sandbox_row = state.db.fetchone(
+            "SELECT organization_id FROM sandboxes WHERE id = ?",
+            (normalized_sandbox_id,),
+        )
+        sandbox_org_id = (expected_organization_id or "").strip()
+        if not sandbox_org_id and sandbox_row:
+            sandbox_org_id = str(sandbox_row["organization_id"] or "").strip()
         returned_org_id = str(record.get("organizationId") or "").strip()
-        return not returned_org_id or returned_org_id == context.organization_id
+        if returned_org_id:
+            return bool(sandbox_org_id) and returned_org_id == sandbox_org_id
+
+        # Older cloud deployments may omit organizationId on event-line payloads.
+        # In that case the only safe inherited boundary is the parent client
+        # already mirrored in the target sandbox. If we cannot prove ownership,
+        # do not import the cloud row into an organization workspace.
+        primary_client_id = str(record.get("primaryClientId") or "").strip()
+        if not primary_client_id:
+            return False
+        client_row = state.db.fetchone(
+            """
+            SELECT id
+            FROM clients
+            WHERE COALESCE(sandbox_id, '') = ?
+              AND (id = ? OR cloud_id = ?)
+            LIMIT 1
+            """,
+            (normalized_sandbox_id, primary_client_id, primary_client_id),
+        )
+        return bool(client_row)
 
     def _sync_event_line_row_to_cloud(
         row,
@@ -10576,7 +10783,11 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                     if isinstance(existing_payload, dict):
                         if not _event_line_payload_matches_context(existing_payload, context):
                             raise HTTPException(status_code=409, detail="事件线组织归属与当前工作空间不一致")
-                        _upsert_cloud_event_line_shadow_local(existing_payload, local_id=local_event_line_id)
+                        _upsert_cloud_event_line_shadow_local(
+                            existing_payload,
+                            target_sandbox_id=context.sandbox_id if context else None,
+                            local_id=local_event_line_id,
+                        )
                         refreshed = state.db.fetchone("SELECT * FROM event_lines WHERE id = ?", (local_event_line_id,))
                         cloud_id = str(refreshed["cloud_id"] or "").strip() if refreshed else local_event_line_id
                 except HTTPException as exc:
@@ -10588,7 +10799,11 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                         raise HTTPException(status_code=502, detail="Invalid event line payload")
                     if not _event_line_payload_matches_context(response, context):
                         raise HTTPException(status_code=409, detail="事件线组织归属与当前工作空间不一致")
-                    _upsert_cloud_event_line_shadow_local(response, local_id=local_event_line_id)
+                    _upsert_cloud_event_line_shadow_local(
+                        response,
+                        target_sandbox_id=context.sandbox_id if context else None,
+                        local_id=local_event_line_id,
+                    )
                     refreshed = state.db.fetchone("SELECT cloud_id FROM event_lines WHERE id = ?", (local_event_line_id,))
                     cloud_id = str(refreshed["cloud_id"] or "").strip() if refreshed and refreshed["cloud_id"] else local_event_line_id
             if pending_action == "archive":
@@ -10605,7 +10820,11 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             if isinstance(response, dict) and (response.get("id") or response.get("eventLine")):
                 if not _event_line_payload_matches_context(response, context):
                     raise HTTPException(status_code=409, detail="事件线组织归属与当前工作空间不一致")
-                _upsert_cloud_event_line_shadow_local(response, local_id=local_event_line_id)
+                _upsert_cloud_event_line_shadow_local(
+                    response,
+                    target_sandbox_id=context.sandbox_id if context else None,
+                    local_id=local_event_line_id,
+                )
             else:
                 _mark_event_line_synced_without_payload(local_event_line_id, cloud_id or local_event_line_id)
             return True
@@ -10647,16 +10866,25 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         normalized_event_line_id = (event_line_id or "").strip()
         if not normalized_event_line_id:
             return None
+        target_sandbox_id = context.sandbox_id if context is not None else active_business_sandbox_id()
         row = state.db.fetchone(
-            "SELECT * FROM event_lines WHERE id = ? OR cloud_id = ?",
-            (normalized_event_line_id, normalized_event_line_id),
+            """
+            SELECT *
+            FROM event_lines
+            WHERE (id = ? OR cloud_id = ?)
+              AND COALESCE(sandbox_id, '') = ?
+            """,
+            (normalized_event_line_id, normalized_event_line_id, target_sandbox_id),
         )
         if row:
             cloud_id = str(row["cloud_id"] or "").strip()
             if cloud_id:
                 return cloud_id
             if _sync_event_line_row_to_cloud(row, forced_action="create", context=context):
-                synced_row = state.db.fetchone("SELECT cloud_id FROM event_lines WHERE id = ?", (str(row["id"]),))
+                synced_row = state.db.fetchone(
+                    "SELECT cloud_id FROM event_lines WHERE id = ? AND COALESCE(sandbox_id, '') = ?",
+                    (str(row["id"]), target_sandbox_id),
+                )
                 return str(synced_row["cloud_id"] or "").strip() if synced_row and synced_row["cloud_id"] else str(row["id"])
             return None
         if context is None and not get_cloud_token():
@@ -10668,9 +10896,15 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 payload = cloud_request("GET", f"/api/v1/event-lines/{normalized_event_line_id}", timeout=6.0)
             if not _event_line_payload_matches_context(payload, context):
                 return None
-            local_id = _upsert_cloud_event_line_shadow_local(payload)
+            local_id = _upsert_cloud_event_line_shadow_local(
+                payload,
+                target_sandbox_id=target_sandbox_id,
+            )
             if local_id:
-                synced_row = state.db.fetchone("SELECT cloud_id FROM event_lines WHERE id = ?", (local_id,))
+                synced_row = state.db.fetchone(
+                    "SELECT cloud_id FROM event_lines WHERE id = ? AND COALESCE(sandbox_id, '') = ?",
+                    (local_id, target_sandbox_id),
+                )
                 return str(synced_row["cloud_id"] or "").strip() if synced_row and synced_row["cloud_id"] else normalized_event_line_id
         except Exception:
             return None
@@ -10867,6 +11101,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 )
                 local_event_line_id = _upsert_cloud_event_line_shadow_local(
                     event_line_payload,
+                    target_sandbox_id=active_sandbox_id,
                     fallback_client_id=resolved_payload_client_id,
                     fallback_name=str(payload.get("eventLineName")) if payload.get("eventLineName") else None,
                 )
@@ -10878,7 +11113,8 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                         "id": payload_event_line_id,
                         "name": payload.get("eventLineName") or payload_event_line_id,
                         "primaryClientId": resolved_payload_client_id,
-                    }
+                    },
+                    target_sandbox_id=active_sandbox_id,
                 )
                 if local_event_line_id:
                     payload_event_line_id = local_event_line_id
@@ -12073,7 +12309,12 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             project_module_id=project_module.id if project_module else project_module_id,
             project_flow_id=project_flow.id if project_flow else project_flow_id,
         )
-        event_line_context = _event_line_snapshot_context(state.db, event_line_id, str(event_line_row["name"]) if event_line_row else None)
+        event_line_context = _event_line_snapshot_context(
+            state.db,
+            event_line_id,
+            str(event_line_row["name"]) if event_line_row else None,
+            sandbox_id=active_business_sandbox_id(),
+        )
         attachments = fetch_task_attachments(str(row["id"]), cloud=False)
         (
             business_category,
@@ -12675,7 +12916,9 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         week_label: str | None = None,
         client_id: str | None = None,
         mode: Literal["global", "strategic"] = "global",
+        sandbox_id: str | None = None,
     ) -> GrowthWorkbenchSnapshotRecord:
+        resolved_sandbox_id = (sandbox_id or active_business_sandbox_id()).strip() or DEFAULT_LOCAL_SANDBOX_ID
         phase_blueprints = [
             ("p1", "需求接收", "明确需求来源、目标对象和优先级", ["需求来源模糊", "优先级未经确认"]),
             ("p2", "信息核对", "确认关键事实、材料和依赖项都已到位", ["输入材料不完整", "事实口径未统一"]),
@@ -14343,7 +14586,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             user_id=user_id,
             user_name=user_name,
             week_label=resolved_week,
-            sandbox_id=active_business_sandbox_id(),
+            sandbox_id=resolved_sandbox_id,
         )
 
         real_tasks = (
@@ -25745,7 +25988,12 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             project_module_id=project_module.id if project_module else None,
             project_flow_id=project_flow.id if project_flow else None,
         )
-        event_line_context = _event_line_snapshot_context(state.db, normalized_event_line_id, None)
+        event_line_context = _event_line_snapshot_context(
+            state.db,
+            normalized_event_line_id,
+            None,
+            sandbox_id=active_business_sandbox_id(),
+        )
         (
             business_category,
             current_blocker,
@@ -26034,22 +26282,25 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
     def local_review_row_for_week(week_label: str):
         operator_id = str(current_operator_row()["id"])
         organization_id = active_workspace_organization_id()
+        sandbox_id = active_business_sandbox_id()
         return state.db.fetchone(
             """
             SELECT *
             FROM weekly_reviews
             WHERE week_label = ?
               AND operator_id = ?
+              AND COALESCE(sandbox_id, '') = ?
               AND COALESCE(organization_id, '') = ?
             ORDER BY created_at DESC
             LIMIT 1
             """,
-            (week_label, operator_id, organization_id),
+            (week_label, operator_id, sandbox_id, organization_id),
         )
 
     def local_review_history() -> ReviewHistoryResponse:
         operator_id = str(current_operator_row()["id"])
         organization_id = active_workspace_organization_id()
+        sandbox_id = active_business_sandbox_id()
         rows = state.db.fetchall(
             """
             SELECT
@@ -26067,10 +26318,11 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 ) AS personal_item_count
             FROM weekly_reviews r
             WHERE r.operator_id = ?
+              AND COALESCE(r.sandbox_id, '') = ?
               AND COALESCE(r.organization_id, '') = ?
             ORDER BY COALESCE(r.updated_at, r.created_at) DESC, r.week_label DESC
             """,
-            (operator_id, organization_id),
+            (operator_id, sandbox_id, organization_id),
         )
         return ReviewHistoryResponse(
             items=[
@@ -27509,12 +27761,13 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             INNER JOIN tasks t ON t.id = e.task_id AND {shared_task_sql('t')}
             WHERE r.operator_id = ?
               AND COALESCE(r.organization_id, '') = ?
+              AND COALESCE(r.sandbox_id, '') = ?
               AND COALESCE(t.sandbox_id, '') = ?
               AND e.content_domain = 'work'
               AND e.week_label IN ({placeholders})
             ORDER BY e.reviewed_at DESC, e.created_at DESC
             """,
-            (operator_id, organization_id, sandbox_id, *week_labels),
+            (operator_id, organization_id, sandbox_id, sandbox_id, *week_labels),
         )
         return [dict(row) for row in rows]
 
@@ -27983,6 +28236,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         meta = perspective_meta or {}
         return "::".join(
             [
+                _weekly_cache_part(meta.get("sandboxId") or active_business_sandbox_id()),
                 _weekly_cache_part(meta.get("perspective") or "mine"),
                 _weekly_cache_part(meta.get("departmentId") or "all"),
                 _weekly_cache_part(meta.get("viewerUserId") or "shared"),
@@ -28153,6 +28407,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
     ) -> str:
         return _weekly_overview_cache_scope(
             {
+                "sandboxId": active_business_sandbox_id(),
                 "perspective": perspective,
                 "departmentId": department_id or "",
                 "viewerUserId": viewer_user_id,
@@ -28312,10 +28567,11 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             WHERE e.week_label = ?
               AND e.content_domain = 'work'
               AND COALESCE(r.organization_id, '') = ?
+              AND COALESCE(r.sandbox_id, '') = ?
               AND COALESCE(t.sandbox_id, '') = ?
             ORDER BY e.reviewed_at DESC, e.created_at DESC
             """,
-            (week_label, organization_id, sandbox_id),
+            (week_label, organization_id, sandbox_id, sandbox_id),
         )
         items: list[WeeklyReviewTaskEntryRecord] = []
         for row in rows:
@@ -28455,6 +28711,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         work_analysis = response.workAnalysis
         personal_analysis = response.personalAnalysis
         perspective_meta = {
+            "sandboxId": active_business_sandbox_id(),
             "perspective": active_perspective,
             "departmentId": active_department.id if active_department else "",
             "viewerUserId": session_user.id if session_user and active_perspective == "mine" else "",
@@ -29358,13 +29615,15 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
 
     @app.post("/api/v1/event-lines/{event_line_id}/attachments/download-zip")
     def proxy_event_line_zip(event_line_id: str, payload: dict | None = None) -> Response:
+        row = require_event_line_in_active_sandbox(event_line_id)
+        cloud_event_line_id = str(row["cloud_id"] or row["id"])
         if not get_cloud_token():
             raise HTTPException(status_code=400, detail="需要登录云端")
         token = get_cloud_token()
         headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"} if token else {}
         try:
             resp = httpx.post(
-                f"{cloud_api_base_url()}/api/v1/event-lines/{event_line_id}/attachments/download-zip",
+                f"{cloud_api_base_url()}/api/v1/event-lines/{cloud_event_line_id}/attachments/download-zip",
                 headers=headers,
                 json=payload or {},
                 timeout=60.0,
@@ -29570,7 +29829,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         """
         if not get_cached_session_user():
             raise HTTPException(status_code=401, detail="未登录,无法查看数字资产中心")
-        return build_digital_asset_dashboard(state.db)
+        return build_digital_asset_dashboard(state.db, sandbox_id=active_business_sandbox_id())
 
     def _append_organization_dna_refresh_event(run_id: str, level: str, message: str, detail: dict[str, object] | None = None) -> None:
         state.db.execute(
@@ -30257,6 +30516,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
 
     @app.get("/api/v1/clients/{client_id}/digital-assets", response_model=DigitalAssetClientDetailRecord)
     def get_client_digital_assets(client_id: str) -> DigitalAssetClientDetailRecord:
+        require_client_in_active_sandbox(client_id)
         try:
             detail = build_client_digital_assets(state.db, client_id)
             detail.aiNarrative = get_latest_digital_asset_narrative(state.db, client_id)
@@ -30266,6 +30526,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
 
     @app.post("/api/v1/clients/{client_id}/digital-assets/narrative/refresh", response_model=DigitalAssetNarrativeRecord)
     def refresh_client_digital_asset_narrative(client_id: str) -> DigitalAssetNarrativeRecord:
+        require_client_in_active_sandbox(client_id)
         try:
             return refresh_digital_asset_narrative(state.db, state.ai, client_id)
         except ValueError as exc:
@@ -32624,7 +32885,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         except HTTPException as exc:
             if exc.status_code in {401, 403}:
                 clear_cloud_session()
-                return _unauthenticated(str(exc.detail))
+                return _cloud_relogin_state(str(exc.detail) or None)
             if exc.status_code in {502, 503, 504} and cached_user is not None:
                 return AuthStateResponse(
                     authenticated=True,
@@ -33509,16 +33770,38 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             raise HTTPException(status_code=502, detail="Invalid invite resolve payload")
         return OrgInviteResolveResultRecord(**response)
 
+    def _fetch_cloud_instance_id(cloud_api_url: str | None) -> str:
+        base_url = (cloud_api_url or "").strip().rstrip("/")
+        if not base_url:
+            return ""
+        try:
+            payload = cloud_request(
+                "GET",
+                "/api/v1/cloud-instance",
+                allow_unauthenticated=True,
+                bypass_circuit_breaker=True,
+                base_url_override=base_url,
+                timeout=4.0,
+            )
+        except Exception as exc:
+            logger.warning("[workspace-identity] cloud instance check skipped for %s: %s", base_url, exc)
+            return ""
+        if not isinstance(payload, dict):
+            return ""
+        return str(payload.get("cloudInstanceId") or "").strip()
+
     def _activate_workspace_for_cloud_user(user: SessionUserRecord, *, cloud_api_url: str | None = None) -> None:
         current_cloud_api_url = (cloud_api_url or state.cloud_api_url).strip()
         organization_id = (user.organizationId or "").strip()
         if not organization_id or organization_id == "local-device":
             return
+        cloud_instance_id = _fetch_cloud_instance_id(current_cloud_api_url)
         workspace = ensure_organization_sandbox_for_session(
             state.db,
             organization_id=organization_id,
             organization_name=user.organizationName or "",
             cloud_api_url=current_cloud_api_url,
+            cloud_instance_id=cloud_instance_id,
         )
         migrate_local_draft_to_organization_if_possible(state.db, workspace.id)
         _refresh_active_workspace_runtime()
@@ -34204,21 +34487,35 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
 
     @app.get("/api/v1/event-lines", response_model=list[EventLineRecord])
     def list_event_lines() -> list[EventLineRecord]:
-        if get_cloud_token():
+        active_sandbox_id = active_business_sandbox_id()
+        scoped_context = _capture_active_scoped_cloud_context()
+        if scoped_context is not None:
             try:
-                response = cloud_request("GET", "/api/v1/event-lines")
+                _pull_cloud_clients_to_local(scoped_context)
+                response = scoped_cloud_request(scoped_context, "GET", "/api/v1/event-lines", timeout=6.0)
                 if not isinstance(response, list):
                     raise HTTPException(status_code=502, detail="Invalid event line payload")
                 for item in response:
-                    _upsert_cloud_event_line_shadow_local(item)
+                    if not isinstance(item, dict):
+                        continue
+                    record = _normalize_cloud_event_line_payload(item)
+                    if record and not _cloud_event_line_record_matches_sandbox(
+                        record,
+                        scoped_context.sandbox_id,
+                        expected_organization_id=scoped_context.organization_id,
+                    ):
+                        continue
+                    _upsert_cloud_event_line_shadow_local(item, target_sandbox_id=scoped_context.sandbox_id)
             except HTTPException:
                 pass
         rows = state.db.fetchall(
             """
             SELECT *
             FROM event_lines
+            WHERE COALESCE(sandbox_id, '') = ?
             ORDER BY updated_at DESC, created_at DESC
-            """
+            """,
+            (active_sandbox_id,),
         )
         return [build_event_line(row) for row in rows]
 
@@ -34260,19 +34557,21 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         timestamp = now_iso()
         event_line_id = (payload.id or "").strip() or new_id("eline")
         client_id = str(payload.primaryClientId).strip() if payload.primaryClientId else None
-        client_row = state.db.fetchone("SELECT name FROM clients WHERE id = ?", (client_id,)) if client_id else None
+        client_row = require_client_in_active_sandbox(client_id) if client_id else None
         has_cloud = bool(get_cloud_token())
+        sandbox_id = active_business_sandbox_id()
         state.db.execute(
             """
             INSERT INTO event_lines(
-                id, name, kind, status, visibility_scope, business_category, stage, summary, intent, current_blocker,
+                id, sandbox_id, name, kind, status, visibility_scope, business_category, stage, summary, intent, current_blocker,
                 recent_decision, next_step, evidence_count, owner_id, owner_name, primary_client_id,
                 primary_client_name, primary_department_id, primary_department_name, participant_ids_json,
                 created_at, updated_at, sync_status, cloud_payload_json, pending_sync_action, last_sync_error
-            ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 event_line_id,
+                sandbox_id,
                 payload.name.strip(),
                 payload.kind,
                 payload.status,
@@ -34300,7 +34599,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 "",
             ),
         )
-        row = state.db.fetchone("SELECT * FROM event_lines WHERE id = ?", (event_line_id,))
+        row = state.db.fetchone("SELECT * FROM event_lines WHERE id = ? AND COALESCE(sandbox_id, '') = ?", (event_line_id, sandbox_id))
         if not row:
             raise HTTPException(status_code=500, detail="Event line creation failed")
         if has_cloud:
@@ -34309,11 +34608,11 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 response = cloud_request("POST", "/api/v1/event-lines", json_body=cloud_payload, timeout=6.0)
                 if not isinstance(response, dict):
                     raise HTTPException(status_code=502, detail="Invalid event line payload")
-                _upsert_cloud_event_line_shadow_local(response, local_id=event_line_id)
-                row = state.db.fetchone("SELECT * FROM event_lines WHERE id = ?", (event_line_id,))
+                _upsert_cloud_event_line_shadow_local(response, target_sandbox_id=sandbox_id, local_id=event_line_id)
+                row = state.db.fetchone("SELECT * FROM event_lines WHERE id = ? AND COALESCE(sandbox_id, '') = ?", (event_line_id, sandbox_id))
             except Exception as error:
                 _mark_event_line_pending(event_line_id, "create", error, cloud_payload)
-                row = state.db.fetchone("SELECT * FROM event_lines WHERE id = ?", (event_line_id,))
+                row = state.db.fetchone("SELECT * FROM event_lines WHERE id = ? AND COALESCE(sandbox_id, '') = ?", (event_line_id, sandbox_id))
         _safe_data_center_ingest(
             "event_line_manual_update",
             lambda: ingest_event_line_by_id(state.db, state.data_dir, event_line_id),
@@ -34340,20 +34639,35 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
 
     @app.get("/api/v1/event-lines/{event_line_id}", response_model=EventLineDetailRecord)
     def get_event_line(event_line_id: str) -> EventLineDetailRecord:
-        row = state.db.fetchone("SELECT * FROM event_lines WHERE id = ? OR cloud_id = ?", (event_line_id, event_line_id))
+        row = state.db.fetchone(
+            "SELECT * FROM event_lines WHERE (id = ? OR cloud_id = ?) AND COALESCE(sandbox_id, '') = ?",
+            (event_line_id, event_line_id, active_business_sandbox_id()),
+        )
         if row:
             return build_event_line_detail(row)
-        if get_cloud_token():
+        scoped_context = _capture_active_scoped_cloud_context()
+        if scoped_context is not None:
             try:
-                response = cloud_request("GET", f"/api/v1/event-lines/{event_line_id}")
+                response = scoped_cloud_request(scoped_context, "GET", f"/api/v1/event-lines/{event_line_id}", timeout=6.0)
                 if not isinstance(response, dict):
                     raise HTTPException(status_code=502, detail="Invalid event line detail payload")
-                local_id = _upsert_cloud_event_line_shadow_local(response)
+                record = _normalize_cloud_event_line_payload(response)
+                if record and not _cloud_event_line_record_matches_sandbox(
+                    record,
+                    scoped_context.sandbox_id,
+                    expected_organization_id=scoped_context.organization_id,
+                ):
+                    raise HTTPException(status_code=404, detail="Event line not found")
+                local_id = _upsert_cloud_event_line_shadow_local(response, target_sandbox_id=scoped_context.sandbox_id)
                 if local_id:
-                    local_row = state.db.fetchone("SELECT * FROM event_lines WHERE id = ?", (local_id,))
+                    local_row = state.db.fetchone(
+                        "SELECT * FROM event_lines WHERE id = ? AND COALESCE(sandbox_id, '') = ?",
+                        (local_id, scoped_context.sandbox_id),
+                    )
                     if local_row:
                         return build_event_line_detail(local_row)
-                return build_cloud_event_line_detail(response)
+                if record:
+                    return build_cloud_event_line_detail(response)
             except HTTPException:
                 pass
         raise HTTPException(status_code=404, detail="Event line not found")
@@ -34392,14 +34706,13 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
 
     @app.get("/api/v1/event-lines/{event_line_id}/memory", response_model=EventLineMemoryResponse)
     def get_event_line_memory(event_line_id: str) -> EventLineMemoryResponse:
-        row = state.db.fetchone("SELECT id FROM event_lines WHERE id = ?", (event_line_id,))
-        if not row:
-            raise HTTPException(status_code=404, detail="Event line not found")
-        return get_event_line_memory_response(state.db, event_line_id)
+        row = require_event_line_in_active_sandbox(event_line_id)
+        return get_event_line_memory_response(state.db, str(row["id"]))
 
     @app.get("/api/v1/event-lines/{event_line_id}/context-bundle", response_model=EventLineContextBundleRecord)
     def get_event_line_context_bundle(event_line_id: str) -> EventLineContextBundleRecord:
-        bundle = _safe_event_line_context_bundle(event_line_id)
+        row = require_event_line_in_active_sandbox(event_line_id)
+        bundle = _safe_event_line_context_bundle(str(row["id"]))
         if bundle is None:
             raise HTTPException(status_code=404, detail="Event line context bundle not found")
         return bundle
@@ -35095,12 +35408,14 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             SELECT e.note, e.structured_note_json
             FROM weekly_review_task_entries e
             INNER JOIN tasks t ON t.id = e.task_id
+            INNER JOIN weekly_reviews r ON r.id = e.review_id
             WHERE e.task_id = ?
+              AND COALESCE(r.sandbox_id, '') = ?
               AND COALESCE(t.sandbox_id, '') = ?
             ORDER BY e.reviewed_at DESC
             LIMIT 1
             """,
-            (task_id, active_business_sandbox_id()),
+            (task_id, active_business_sandbox_id(), active_business_sandbox_id()),
         )
         if review_row and review_row["note"]:
             bundle["reviewNote"] = str(review_row["note"]).strip()[:200]
@@ -36320,6 +36635,9 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         file: UploadFile = File(...),
         title: str | None = Form(default=None),
     ) -> dict:
+        row = require_event_line_in_active_sandbox(event_line_id)
+        local_event_line_id = str(row["id"])
+        cloud_event_line_id = str(row["cloud_id"] or row["id"])
         if not get_cloud_token():
             raise HTTPException(status_code=400, detail="需要登录云端才能上传事件线附件")
         content = file.file.read()
@@ -36327,20 +36645,19 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             raise HTTPException(status_code=400, detail="上传内容为空")
         try:
             result = cloud_upload_file(
-                f"/api/v1/event-lines/{event_line_id}/attachments",
+                f"/api/v1/event-lines/{cloud_event_line_id}/attachments",
                 file_name=file.filename or "attachment",
                 file_content=content,
                 content_type=file.content_type or "application/octet-stream",
                 form_fields={"title": title or file.filename or "事件线附件"},
             )
-            event_line_row = state.db.fetchone("SELECT primary_client_id FROM event_lines WHERE id = ?", (event_line_id,))
             _enqueue_workspace_refresh_safe(
-                client_id=str(event_line_row["primary_client_id"]) if event_line_row and event_line_row["primary_client_id"] else None,
+                client_id=str(row["primary_client_id"]) if row and row["primary_client_id"] else None,
                 source_type="event_line_attachment_upload",
-                source_id=event_line_id,
+                source_id=local_event_line_id,
                 reason="event_line_attachment_uploaded",
                 scope_type="event_line",
-                scope_id=event_line_id,
+                scope_id=local_event_line_id,
                 priority="normal",
             )
             return result if isinstance(result, dict) else {}
@@ -37012,12 +37329,14 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
     # ── 主线还原 LLM 叙事 (P1) · 本地 proxy 到云端 ──
     @app.get("/api/v1/event-lines/{event_line_id}/timeline-narrative")
     def get_event_line_timeline_narrative_proxy(event_line_id: str) -> dict | None:
+        row = require_event_line_in_active_sandbox(event_line_id)
+        cloud_event_line_id = str(row["cloud_id"] or row["id"])
         if not get_cloud_token():
             return None
         try:
             return cloud_request(
                 "GET",
-                f"/api/v1/event-lines/{event_line_id}/timeline-narrative",
+                f"/api/v1/event-lines/{cloud_event_line_id}/timeline-narrative",
                 timeout=10.0,
             )
         except HTTPException as exc:
@@ -37027,27 +37346,32 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
 
     @app.post("/api/v1/event-lines/{event_line_id}/timeline-narrative/regenerate")
     def regenerate_event_line_timeline_narrative_proxy(event_line_id: str, payload: dict = Body(default_factory=dict)) -> dict:
+        row = require_event_line_in_active_sandbox(event_line_id)
+        cloud_event_line_id = str(row["cloud_id"] or row["id"])
         return cloud_request(
             "POST",
-            f"/api/v1/event-lines/{event_line_id}/timeline-narrative/regenerate",
+            f"/api/v1/event-lines/{cloud_event_line_id}/timeline-narrative/regenerate",
             json_body=payload or {},
             timeout=240.0,
         )
 
     @app.get("/api/v1/event-lines/{event_line_id}/report-snapshot")
     def get_event_line_report_snapshot(event_line_id: str) -> dict:
+        row = require_event_line_in_active_sandbox(event_line_id)
+        local_event_line_id = str(row["id"])
+        cloud_event_line_id = str(row["cloud_id"] or row["id"])
         cloud_error: HTTPException | None = None
         if get_cloud_token():
             try:
-                payload = cloud_request("GET", f"/api/v1/event-lines/{event_line_id}/report-snapshot")
+                payload = cloud_request("GET", f"/api/v1/event-lines/{cloud_event_line_id}/report-snapshot")
                 if not isinstance(payload, dict):
                     raise HTTPException(status_code=502, detail="Invalid report snapshot payload")
-                return _enrich_report_snapshot_with_local_parse(payload, event_line_id)
+                return _enrich_report_snapshot_with_local_parse(payload, local_event_line_id)
             except HTTPException as exc:
                 cloud_error = exc
 
         try:
-            return _build_local_event_line_report_snapshot(event_line_id)
+            return _build_local_event_line_report_snapshot(local_event_line_id)
         except HTTPException as local_exc:
             if local_exc.status_code == 404 and cloud_error is not None:
                 raise cloud_error
@@ -37059,6 +37383,8 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         from docx.enum.text import WD_ALIGN_PARAGRAPH
         from docx.oxml.ns import qn
 
+        guarded_event_line = require_event_line_in_active_sandbox(event_line_id)
+        event_line_id = str(guarded_event_line["id"])
         doc = WordDocument()
 
         event_line_kind_labels = {
@@ -37183,7 +37509,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         snapshot_at = str(draft.get("snapshotAt", now_iso()))
 
         # ── Gather cover data ──
-        el_row = state.db.fetchone("SELECT * FROM event_lines WHERE id = ?", (event_line_id,))
+        el_row = guarded_event_line
         client_name = ""
         owner_name = ""
         stage = ""
@@ -37877,15 +38203,13 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
 
     @app.patch("/api/v1/event-lines/{event_line_id}", response_model=EventLineRecord)
     def update_event_line(event_line_id: str, payload: EventLineUpdatePayload) -> EventLineRecord:
-        row = state.db.fetchone("SELECT * FROM event_lines WHERE id = ? OR cloud_id = ?", (event_line_id, event_line_id))
-        if not row:
-            raise HTTPException(status_code=404, detail="Event line not found")
+        row = require_event_line_in_active_sandbox(event_line_id)
         local_event_line_id = str(row["id"])
         updates = payload.model_dump(exclude_unset=True)
         previous_client_id = str(row["primary_client_id"]).strip() if row["primary_client_id"] else None
         previous_client_name = str(row["primary_client_name"]).strip() if row["primary_client_name"] else None
         next_client_id = str(updates.get("primaryClientId")).strip() if updates.get("primaryClientId") else (str(row["primary_client_id"]) if row["primary_client_id"] else None)
-        client_row = state.db.fetchone("SELECT name FROM clients WHERE id = ?", (next_client_id,)) if next_client_id else None
+        client_row = require_client_in_active_sandbox(next_client_id) if next_client_id else None
         next_client_name = str(client_row["name"]).strip() if client_row and client_row["name"] else (str(row["primary_client_name"]).strip() if row["primary_client_name"] else None)
         should_sync_linked_task_client_ids = (
             bool(updates.get("syncLinkedTaskClientIds"))
@@ -37935,18 +38259,20 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 UPDATE tasks
                 SET client_id = ?, updated_at = ?
                 WHERE event_line_id = ?
+                  AND COALESCE(sandbox_id, '') = ?
                   AND COALESCE(scope_mode, 'COLLAB_SHARED') != 'PERSONAL_ONLY'
                 """,
-                (next_client_id, updated_at, local_event_line_id),
+                (next_client_id, updated_at, local_event_line_id, active_business_sandbox_id()),
             )
             task_rows = state.db.fetchall(
                 """
                 SELECT id
                 FROM tasks
                 WHERE event_line_id = ?
+                  AND COALESCE(sandbox_id, '') = ?
                   AND COALESCE(scope_mode, 'COLLAB_SHARED') != 'PERSONAL_ONLY'
                 """,
-                (local_event_line_id,),
+                (local_event_line_id, active_business_sandbox_id()),
             )
             for task_row in task_rows:
                 task_id = str(task_row["id"])
@@ -37993,7 +38319,10 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                     refresh_organization_notebook_snapshot(state.db, affected_client_id)
             refresh_event_line_memory_snapshot(state.db, local_event_line_id)
             _invalidate_event_line_snapshot_cache(local_event_line_id)
-        updated_row = state.db.fetchone("SELECT * FROM event_lines WHERE id = ?", (local_event_line_id,))
+        updated_row = state.db.fetchone(
+            "SELECT * FROM event_lines WHERE id = ? AND COALESCE(sandbox_id, '') = ?",
+            (local_event_line_id, active_business_sandbox_id()),
+        )
         if not updated_row:
             raise HTTPException(status_code=500, detail="Event line update failed")
         if get_cloud_token():
@@ -38009,10 +38338,16 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 """,
                 (action, to_json(_event_line_cloud_payload_from_row(updated_row, include_id=action == "create")), local_event_line_id),
             )
-            updated_row = state.db.fetchone("SELECT * FROM event_lines WHERE id = ?", (local_event_line_id,))
+            updated_row = state.db.fetchone(
+                "SELECT * FROM event_lines WHERE id = ? AND COALESCE(sandbox_id, '') = ?",
+                (local_event_line_id, active_business_sandbox_id()),
+            )
             if updated_row:
                 _sync_event_line_row_to_cloud(updated_row, forced_action=action)
-                updated_row = state.db.fetchone("SELECT * FROM event_lines WHERE id = ?", (local_event_line_id,))
+                updated_row = state.db.fetchone(
+                    "SELECT * FROM event_lines WHERE id = ? AND COALESCE(sandbox_id, '') = ?",
+                    (local_event_line_id, active_business_sandbox_id()),
+                )
         if not updated_row:
             raise HTTPException(status_code=500, detail="Event line update failed")
         _safe_data_center_ingest(
@@ -38056,9 +38391,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
 
     @app.post("/api/v1/event-lines/{event_line_id}/close")
     def close_event_line(event_line_id: str) -> dict:
-        row = state.db.fetchone("SELECT * FROM event_lines WHERE id = ? OR cloud_id = ?", (event_line_id, event_line_id))
-        if not row:
-            raise HTTPException(status_code=404, detail="Event line not found")
+        row = require_event_line_in_active_sandbox(event_line_id)
         local_event_line_id = str(row["id"])
         if row and str(row["status"]) not in ("done", "archived"):
             timestamp = now_iso()
@@ -38094,16 +38427,17 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 priority="normal",
             )
         if get_cloud_token():
-            updated_row = state.db.fetchone("SELECT * FROM event_lines WHERE id = ?", (local_event_line_id,))
+            updated_row = state.db.fetchone(
+                "SELECT * FROM event_lines WHERE id = ? AND COALESCE(sandbox_id, '') = ?",
+                (local_event_line_id, active_business_sandbox_id()),
+            )
             if updated_row:
                 _sync_event_line_row_to_cloud(updated_row, forced_action="archive")
         return {"status": "archived"}
 
     @app.post("/api/v1/event-lines/{event_line_id}/reopen")
     def reopen_event_line(event_line_id: str) -> dict:
-        row = state.db.fetchone("SELECT * FROM event_lines WHERE id = ? OR cloud_id = ?", (event_line_id, event_line_id))
-        if not row:
-            raise HTTPException(status_code=404, detail="Event line not found")
+        row = require_event_line_in_active_sandbox(event_line_id)
         local_event_line_id = str(row["id"])
         has_cloud = bool(get_cloud_token())
         timestamp = now_iso()
@@ -38131,7 +38465,10 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             priority="normal",
         )
         if has_cloud:
-            updated_row = state.db.fetchone("SELECT * FROM event_lines WHERE id = ?", (local_event_line_id,))
+            updated_row = state.db.fetchone(
+                "SELECT * FROM event_lines WHERE id = ? AND COALESCE(sandbox_id, '') = ?",
+                (local_event_line_id, active_business_sandbox_id()),
+            )
             if updated_row:
                 _sync_event_line_row_to_cloud(updated_row, forced_action="update" if updated_row["cloud_id"] else "create")
         return {"status": "active"}
@@ -38159,12 +38496,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
 
     @app.post("/api/v1/event-lines/{event_line_id}/merge-preview", response_model=EventLineMergePreviewRecord)
     def preview_event_line_merge(event_line_id: str, payload: EventLineMergePayload) -> EventLineMergePreviewRecord:
-        target_row = state.db.fetchone(
-            "SELECT id, name, primary_client_id FROM event_lines WHERE id = ?",
-            (event_line_id,),
-        )
-        if not target_row:
-            raise HTTPException(status_code=404, detail="目标事件线不存在")
+        target_row = require_event_line_in_active_sandbox(event_line_id)
         target_client_id = str(target_row["primary_client_id"] or "").strip()
 
         source_ids: list[str] = []
@@ -38180,8 +38512,13 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
 
         placeholders = ",".join(["?"] * len(source_ids))
         source_rows = state.db.fetchall(
-            f"SELECT id, name, status, primary_client_id FROM event_lines WHERE id IN ({placeholders})",
-            tuple(source_ids),
+            f"""
+            SELECT id, name, status, primary_client_id
+            FROM event_lines
+            WHERE id IN ({placeholders})
+              AND COALESCE(sandbox_id, '') = ?
+            """,
+            (*source_ids, active_business_sandbox_id()),
         )
         found_ids = {str(row["id"]) for row in source_rows}
         missing = [sid for sid in source_ids if sid not in found_ids]
@@ -38222,12 +38559,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
 
     @app.post("/api/v1/event-lines/{event_line_id}/merge", response_model=EventLineRecord)
     def merge_event_lines(event_line_id: str, payload: EventLineMergePayload) -> EventLineRecord:
-        target_row = state.db.fetchone(
-            "SELECT id, name, primary_client_id FROM event_lines WHERE id = ?",
-            (event_line_id,),
-        )
-        if not target_row:
-            raise HTTPException(status_code=404, detail="目标事件线不存在")
+        target_row = require_event_line_in_active_sandbox(event_line_id)
         target_id = str(target_row["id"])
         target_client_id = str(target_row["primary_client_id"] or "").strip()
 
@@ -38244,8 +38576,13 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
 
         placeholders = ",".join(["?"] * len(source_ids))
         source_rows = state.db.fetchall(
-            f"SELECT id, name, primary_client_id FROM event_lines WHERE id IN ({placeholders})",
-            tuple(source_ids),
+            f"""
+            SELECT id, cloud_id, name, primary_client_id
+            FROM event_lines
+            WHERE id IN ({placeholders})
+              AND COALESCE(sandbox_id, '') = ?
+            """,
+            (*source_ids, active_business_sandbox_id()),
         )
         found_ids = {str(row["id"]) for row in source_rows}
         missing = [sid for sid in source_ids if sid not in found_ids]
@@ -38271,11 +38608,17 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         # 云端 502/不可达 → 降级回本地+tombstone，保持单机仍能跑通。
         cloud_merge_succeeded = False
         if has_cloud:
+            target_cloud_id = str(target_row["cloud_id"] or target_id)
+            source_cloud_ids = [
+                str(row["cloud_id"] or row["id"])
+                for row in source_rows
+                if str(row["cloud_id"] or row["id"]).strip()
+            ]
             try:
                 cloud_resp = cloud_request(
                     "POST",
-                    f"/api/v1/event-lines/{event_line_id}/merge",
-                    json_body={"sourceIds": list(source_ids)},
+                    f"/api/v1/event-lines/{target_cloud_id}/merge",
+                    json_body={"sourceIds": source_cloud_ids},
                     timeout=15.0,
                 )
                 if isinstance(cloud_resp, dict) and cloud_resp.get("id"):
@@ -38284,9 +38627,9 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 # 云端拒绝（403/404/400）—— 业务错误必须传递给用户，不降级
                 if exc.status_code in (400, 403, 404, 409):
                     raise
-                logger.warning("cloud merge %s unavailable (%s)，降级本地", event_line_id, exc.status_code)
+                logger.warning("cloud merge %s unavailable (%s)，降级本地", target_cloud_id, exc.status_code)
             except Exception as exc:
-                logger.warning("cloud merge %s 网络失败，降级本地：%s", event_line_id, exc)
+                logger.warning("cloud merge %s 网络失败，降级本地：%s", target_cloud_id, exc)
 
         # 单事务：删 source snapshot → 迁移子表 → 重算 target → 删 source 主行 → 写一条 activity
         # 注意：必须用 db.run_in_transaction(callback)，不能手写 `state.db.execute("BEGIN")`
@@ -38392,11 +38735,17 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         if has_cloud and not cloud_merge_succeeded:
             # 云端 cloud merge endpoint 不可达时的兜底：把目标 push 上去，至少保证 evidence_count
             # 更新到云端；源端 event_line 在云端依然存在，靠本地 tombstone 阻止反向写回。
-            refreshed = state.db.fetchone("SELECT * FROM event_lines WHERE id = ?", (target_id,))
+            refreshed = state.db.fetchone(
+                "SELECT * FROM event_lines WHERE id = ? AND COALESCE(sandbox_id, '') = ?",
+                (target_id, active_business_sandbox_id()),
+            )
             if refreshed:
                 _sync_event_line_row_to_cloud(refreshed, forced_action="update" if refreshed["cloud_id"] else "create")
 
-        final_row = state.db.fetchone("SELECT * FROM event_lines WHERE id = ?", (target_id,))
+        final_row = state.db.fetchone(
+            "SELECT * FROM event_lines WHERE id = ? AND COALESCE(sandbox_id, '') = ?",
+            (target_id, active_business_sandbox_id()),
+        )
         if not final_row:
             raise HTTPException(status_code=500, detail="合并后无法读取目标事件线")
         return build_event_line(final_row)
@@ -38405,9 +38754,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
     def retry_event_line_sync(event_line_id: str) -> dict:
         if not get_cloud_token():
             raise HTTPException(status_code=400, detail="云端账号未登录，无法重试同步")
-        row = state.db.fetchone("SELECT * FROM event_lines WHERE id = ? OR cloud_id = ?", (event_line_id, event_line_id))
-        if not row:
-            raise HTTPException(status_code=404, detail="Event line not found")
+        row = require_event_line_in_active_sandbox(event_line_id)
         local_event_line_id = str(row["id"])
         current_sync_status = str(row["sync_status"] or "").strip()
         if current_sync_status == "synced" and not (row["pending_sync_action"] or "").strip():
@@ -38417,12 +38764,18 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             "UPDATE event_lines SET sync_status = 'syncing', last_sync_error = '', updated_at = ? WHERE id = ?",
             (now_iso(), local_event_line_id),
         )
-        refreshed = state.db.fetchone("SELECT * FROM event_lines WHERE id = ?", (local_event_line_id,))
+        refreshed = state.db.fetchone(
+            "SELECT * FROM event_lines WHERE id = ? AND COALESCE(sandbox_id, '') = ?",
+            (local_event_line_id, active_business_sandbox_id()),
+        )
         try:
             ok = _sync_event_line_row_to_cloud(refreshed, forced_action=forced_action) if refreshed else False
         except HTTPException:
             raise
-        final = state.db.fetchone("SELECT sync_status, last_sync_error FROM event_lines WHERE id = ?", (local_event_line_id,))
+        final = state.db.fetchone(
+            "SELECT sync_status, last_sync_error FROM event_lines WHERE id = ? AND COALESCE(sandbox_id, '') = ?",
+            (local_event_line_id, active_business_sandbox_id()),
+        )
         return {
             "status": "ok" if ok else "failed",
             "syncStatus": str(final["sync_status"]) if final and final["sync_status"] else None,
@@ -38431,17 +38784,20 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
 
     @app.delete("/api/v1/event-lines/{event_line_id}")
     def delete_event_line(event_line_id: str) -> dict:
+        row = require_event_line_in_active_sandbox(event_line_id)
+        local_event_line_id = str(row["id"])
+        cloud_event_line_id = str(row["cloud_id"] or row["id"])
         cloud_deleted = False
         if get_cloud_token():
             # Try real DELETE first; if cloud returns 405 (not supported), fall back to PATCH archived
             for attempt_method in ("DELETE", "PATCH_ARCHIVED"):
                 try:
                     if attempt_method == "DELETE":
-                        resp = cloud_request("DELETE", f"/api/v1/event-lines/{event_line_id}")
+                        resp = cloud_request("DELETE", f"/api/v1/event-lines/{cloud_event_line_id}")
                     else:
-                        resp = cloud_request("PATCH", f"/api/v1/event-lines/{event_line_id}", json_body={"status": "archived"})
+                        resp = cloud_request("PATCH", f"/api/v1/event-lines/{cloud_event_line_id}", json_body={"status": "archived"})
                     if isinstance(resp, dict):
-                        _upsert_cloud_event_line_shadow_local(resp)
+                        _upsert_cloud_event_line_shadow_local(resp, target_sandbox_id=active_business_sandbox_id())
                     cloud_deleted = True
                     break
                 except HTTPException as exc:
@@ -38450,8 +38806,6 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                     if exc.status_code == 405 and attempt_method == "DELETE":
                         continue  # try PATCH fallback
                     break  # 404 or other — cloud doesn't have it
-        # Always clean local copy
-        row = state.db.fetchone("SELECT id, visibility_scope, primary_client_id FROM event_lines WHERE id = ?", (event_line_id,))
         if row and not cloud_deleted:
             # Local-only fallback: only admin can delete
             if not current_session_is_admin():
@@ -38462,9 +38816,10 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                     SELECT COUNT(1)
                     FROM tasks
                     WHERE event_line_id = ?
+                      AND COALESCE(sandbox_id, '') = ?
                       AND COALESCE(scope_mode, 'COLLAB_SHARED') != 'PERSONAL_ONLY'
                     """,
-                    (event_line_id,),
+                    (local_event_line_id, active_business_sandbox_id()),
                 )
                 or 0
             )
@@ -38475,10 +38830,13 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             # Sprint 2 (S2.3): 1 UPDATE + 3 DELETE 包事务. 中途崩了不留 tasks 残留指向已删事件线.
             state.db.begin_transaction()
             try:
-                state.db.execute("UPDATE tasks SET event_line_id = NULL, updated_at = ? WHERE event_line_id = ?", (now_iso(), event_line_id))
-                state.db.execute("DELETE FROM event_line_activities WHERE event_line_id = ?", (event_line_id,))
-                state.db.execute("DELETE FROM event_line_attachments WHERE event_line_id = ?", (event_line_id,))
-                state.db.execute("DELETE FROM event_lines WHERE id = ?", (event_line_id,))
+                state.db.execute(
+                    "UPDATE tasks SET event_line_id = NULL, updated_at = ? WHERE event_line_id = ? AND COALESCE(sandbox_id, '') = ?",
+                    (now_iso(), local_event_line_id, active_business_sandbox_id()),
+                )
+                state.db.execute("DELETE FROM event_line_activities WHERE event_line_id = ?", (local_event_line_id,))
+                state.db.execute("DELETE FROM event_line_attachments WHERE event_line_id = ?", (local_event_line_id,))
+                state.db.execute("DELETE FROM event_lines WHERE id = ? AND COALESCE(sandbox_id, '') = ?", (local_event_line_id, active_business_sandbox_id()))
                 state.db.commit_transaction()
             except Exception:
                 state.db.rollback_transaction()
@@ -38486,14 +38844,12 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             _enqueue_workspace_refresh_safe(
                 client_id=row_client_id or None,
                 source_type="event_line_delete",
-                source_id=event_line_id,
+                source_id=local_event_line_id,
                 reason="event_line_deleted",
                 scope_type="event_line",
-                scope_id=event_line_id,
+                scope_id=local_event_line_id,
                 priority="high",
             )
-        if not row and not cloud_deleted:
-            raise HTTPException(status_code=404, detail="Event line not found")
         return {"status": "deleted"}
 
     @app.post("/api/v1/event-lines/{event_line_id}/notes")
@@ -38501,9 +38857,8 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         note_text = str(payload.get("text", "")).strip()
         if not note_text:
             raise HTTPException(status_code=400, detail="Note text is required")
-        row = state.db.fetchone("SELECT id FROM event_lines WHERE id = ?", (event_line_id,))
-        if not row:
-            raise HTTPException(status_code=404, detail="Event line not found")
+        row = require_event_line_in_active_sandbox(event_line_id)
+        local_event_line_id = str(row["id"])
         activity_id = new_id("ela")
         timestamp = now_iso()
         state.db.execute(
@@ -38514,7 +38869,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             """,
             (
                 activity_id,
-                event_line_id,
+                local_event_line_id,
                 activity_id,
                 timestamp,
                 current_operator_name(),
@@ -38524,20 +38879,23 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 timestamp,
             ),
         )
-        log_activity("event_line.note", "event_line", event_line_id, {"noteLength": len(note_text)})
-        event_line_row = state.db.fetchone("SELECT primary_client_id FROM event_lines WHERE id = ?", (event_line_id,))
+        log_activity("event_line.note", "event_line", local_event_line_id, {"noteLength": len(note_text)})
+        event_line_row = state.db.fetchone(
+            "SELECT primary_client_id FROM event_lines WHERE id = ? AND COALESCE(sandbox_id, '') = ?",
+            (local_event_line_id, active_business_sandbox_id()),
+        )
         _enqueue_workspace_refresh_safe(
             client_id=str(event_line_row["primary_client_id"] or "").strip() if event_line_row else None,
             source_type="event_line_note",
             source_id=activity_id,
             reason="event_line_note_added",
             scope_type="event_line",
-            scope_id=event_line_id,
+            scope_id=local_event_line_id,
             priority="normal",
         )
         return {
             "id": activity_id,
-            "eventLineId": event_line_id,
+            "eventLineId": local_event_line_id,
             "text": note_text[:500],
             "createdAt": timestamp,
         }
@@ -39022,6 +39380,57 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
     @app.get("/api/v1/workspaces/current", response_model=SandboxWorkspaceRecord)
     def get_current_workspace() -> SandboxWorkspaceRecord:
         return get_active_sandbox(state.db)
+
+    def _workspace_context_runtime(ctx: WorkspaceContext) -> tuple[str, str, bool]:
+        display_name = ctx.organization_name or ctx.sandbox_id or "当前组织"
+        if ctx.kind != "organization":
+            return "local_draft", "未连接组织，当前可先在本机草稿中使用。", False
+        if not ctx.session_matches_workspace:
+            return "identity_error", "本地保存的登录信息属于其他组织，请重新登录当前组织。", False
+        if ctx.identity_state == "mismatch":
+            return "identity_error", ctx.identity_error or f"{display_name} 的组织身份与本地工作空间不一致。", False
+        if not ctx.cloud_api_url:
+            return "needs_login", f"{display_name} 尚未配置组织云端地址。", True
+        if not (ctx.access_token or ctx.refresh_token) or ctx.identity_state == "needs_login":
+            return "needs_login", f"{display_name} 需要重新登录后才能继续同步组织云数据。", True
+        if ctx.identity_state == "error":
+            return "sync_degraded", ctx.identity_error or f"{display_name} 暂时无法完成云端身份验证。", False
+        return "ready", f"已进入 {display_name} 工作空间。", False
+
+    @app.get("/api/v1/workspaces/diagnostics", response_model=WorkspaceSessionDiagnosticsResponse)
+    def get_workspace_session_diagnostics() -> WorkspaceSessionDiagnosticsResponse:
+        active_id = get_active_sandbox_id(state.db)
+        records: list[WorkspaceSessionDiagnosticsRecord] = []
+        for ctx in list_workspace_contexts(state.db):
+            runtime_status, _status_message, requires_login = _workspace_context_runtime(ctx)
+            session_user = ctx.session_user or {}
+            records.append(
+                WorkspaceSessionDiagnosticsRecord(
+                    sandboxId=ctx.sandbox_id,
+                    kind=ctx.kind,  # type: ignore[arg-type]
+                    name=ctx.name or ctx.organization_name or ctx.sandbox_id,
+                    cloudApiUrl=ctx.cloud_api_url,
+                    cloudInstanceId=ctx.cloud_instance_id,
+                    organizationId=ctx.organization_id or None,
+                    organizationName=ctx.organization_name or None,
+                    identityState=ctx.identity_state,  # type: ignore[arg-type]
+                    identityVerifiedAt=ctx.identity_verified_at,
+                    identityError=ctx.identity_error,
+                    runtimeStatus=runtime_status,  # type: ignore[arg-type]
+                    requiresLogin=requires_login,
+                    hasCloudApiUrl=bool(ctx.cloud_api_url),
+                    hasAccessToken=bool(ctx.access_token),
+                    hasRefreshToken=bool(ctx.refresh_token),
+                    hasSessionUser=bool(session_user),
+                    sessionOrganizationId=str(session_user.get("organizationId") or ""),
+                    sessionUserId=str(session_user.get("id") or ""),
+                    sessionUserEmail=str(session_user.get("email") or ""),
+                    sessionUserFullName=str(session_user.get("fullName") or ""),
+                    lastActiveAt=ctx.last_active_at,
+                    updatedAt=now_iso(),
+                )
+            )
+        return WorkspaceSessionDiagnosticsResponse(activeSandboxId=active_id, workspaces=records)
 
     @app.post("/api/v1/workspaces", response_model=SandboxWorkspacesResponse)
     def create_workspace(payload: SandboxWorkspaceCreatePayload) -> SandboxWorkspacesResponse:
@@ -39923,12 +40332,13 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         state.db.execute(
             """
             INSERT OR REPLACE INTO task_settings(
-                operator_id, default_list_id, default_priority, default_due_date_preset,
+                sandbox_id, operator_id, default_list_id, default_priority, default_due_date_preset,
                 default_view_mode, list_sort_mode, show_completed_tasks, default_review_scope,
                 auto_assign_self, updated_at
-            ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
+                active_business_sandbox_id(),
                 operator_id,
                 next_record.defaultListId,
                 next_record.defaultPriority,
@@ -53514,12 +53924,14 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         prompt: str = Query(default=""),
         includeRawEvidence: bool = Query(default=False),
     ) -> PageContextPackRecord:
+        row = require_event_line_in_active_sandbox(event_line_id)
+        local_event_line_id = str(row["id"])
         intent = infer_page_intent(prompt, "event_line_detail")
         try:
             return build_event_line_page_context_pack(
                 state.db,
                 data_dir=state.data_dir,
-                event_line_id=event_line_id,
+                event_line_id=local_event_line_id,
                 prompt=prompt,
                 page="event_line_detail",
                 intent=intent,
@@ -54663,11 +55075,12 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             SELECT *
             FROM weekly_reviews
             WHERE week_label = ?
+              AND COALESCE(sandbox_id, '') = ?
               AND COALESCE(organization_id, '') = ?
             ORDER BY updated_at DESC
             LIMIT 1
             """,
-            (week_label, active_workspace_organization_id()),
+            (week_label, active_business_sandbox_id(), active_workspace_organization_id()),
         )
         if not row:
             raise HTTPException(status_code=404, detail="未找到该周复盘")
@@ -54997,7 +55410,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         return MeetingPipelineResponse(meeting=build_meeting_detail(meeting_id), message="会议已发布，行动项已写入任务收件箱。")
 
     @app.get("/api/v1/tasks", response_model=TaskBoardResponse)
-    def list_tasks() -> TaskBoardResponse:
+    def list_tasks(syncMode: str = Query("background")) -> TaskBoardResponse:
         # Opportunistically sync pending tasks when user views task board
         Thread(target=sync_pending_tasks_if_due, daemon=True).start()
         _restore_local_completed_task_statuses()
@@ -55008,7 +55421,28 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         # 改后台线程: 本地数据秒回, 云端异步拉, 下轮刷新。_pull 自带 in_flight+TTL 守卫, 不会风暴。
         pull_context = _capture_cloud_task_pull_context()
         if pull_context:
-            Thread(target=lambda ctx=pull_context: _pull_cloud_tasks_to_local(ctx), daemon=True).start()
+            if syncMode == "blocking":
+                finished = Event()
+
+                def run_blocking_pull(ctx: ScopedCloudContext) -> None:
+                    try:
+                        _pull_cloud_tasks_to_local(ctx)
+                    finally:
+                        finished.set()
+
+                pull_thread = Thread(target=lambda ctx=pull_context: run_blocking_pull(ctx), daemon=True)
+                pull_thread.start()
+                pull_thread.join(timeout=12.0)
+                if not finished.is_set():
+                    logger.warning(
+                        "[CLOUD-TASK-PULL] bounded blocking sync timed out sandbox=%s organization=%s; continuing in background",
+                        pull_context.sandbox_id,
+                        pull_context.organization_id,
+                    )
+                _restore_local_completed_task_statuses()
+                _repair_completed_task_collaboration_state()
+            else:
+                Thread(target=lambda ctx=pull_context: _pull_cloud_tasks_to_local(ctx), daemon=True).start()
         # LOCAL IS PRIMARY — always read from local SQLite
         return TaskBoardResponse(
             tasks=fetch_tasks("t.source_type != ?", (AGENT_AUTO_SOURCE_TYPE,)),
@@ -55242,13 +55676,13 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                     )
                     moved_count += task_count
                 settings_count = state.db.scalar(
-                    "SELECT COUNT(1) AS count FROM task_settings WHERE default_list_id = ?",
-                    (duplicate_id,),
+                    "SELECT COUNT(1) AS count FROM task_settings WHERE default_list_id = ? AND COALESCE(sandbox_id, '') = ?",
+                    (duplicate_id, active_business_sandbox_id()),
                 )
                 if settings_count:
                     state.db.execute(
-                        "UPDATE task_settings SET default_list_id = ?, updated_at = ? WHERE default_list_id = ?",
-                        (canonical_id, now_iso(), duplicate_id),
+                        "UPDATE task_settings SET default_list_id = ?, updated_at = ? WHERE default_list_id = ? AND COALESCE(sandbox_id, '') = ?",
+                        (canonical_id, now_iso(), duplicate_id, active_business_sandbox_id()),
                     )
                     updated_settings_total += int(settings_count)
                 remaining = state.db.scalar(
@@ -56223,7 +56657,12 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 project_module_id=project_module.id if project_module else None,
                 project_flow_id=project_flow.id if project_flow else None,
             )
-            event_line_context = _event_line_snapshot_context(state.db, event_line_id, None)
+            event_line_context = _event_line_snapshot_context(
+                state.db,
+                event_line_id,
+                None,
+                sandbox_id=active_business_sandbox_id(),
+            )
             attachment_count = int(state.db.scalar("SELECT COUNT(1) FROM task_attachments WHERE task_id = ?", (task_id,)) or 0)
             (
                 business_category,
@@ -57791,6 +58230,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         created_at = now_iso()
         operator_id = str(current_operator_row()["id"])
         organization_id = active_workspace_organization_id()
+        sandbox_id = active_business_sandbox_id()
         review_user_id, review_user_name = resolve_growth_actor()
         existing = local_review_row_for_week(payload.weekLabel)
         if existing:
@@ -57799,12 +58239,14 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 """
                 UPDATE weekly_reviews
                 SET user_id = CASE WHEN COALESCE(user_id, '') = '' THEN ? ELSE user_id END,
+                    sandbox_id = CASE WHEN COALESCE(sandbox_id, '') = '' THEN ? ELSE sandbox_id END,
                     organization_id = CASE WHEN COALESCE(organization_id, '') = '' THEN ? ELSE organization_id END,
                     work_free_note = ?, personal_growth_note = ?, personal_private_note = ?, updated_at = ?
                 WHERE id = ?
                 """,
                 (
                     review_user_id,
+                    sandbox_id,
                     organization_id,
                     payload.workFreeNote.strip(),
                     payload.personalGrowthNote.strip(),
@@ -57818,11 +58260,12 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             state.db.execute(
                 """
                 INSERT INTO weekly_reviews(
-                    id, week_label, operator_id, organization_id, user_id, summary, work_free_note, personal_growth_note, personal_private_note, created_at, updated_at
-                ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    id, sandbox_id, week_label, operator_id, organization_id, user_id, summary, work_free_note, personal_growth_note, personal_private_note, created_at, updated_at
+                ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     review_id,
+                    sandbox_id,
                     payload.weekLabel,
                     operator_id,
                     organization_id,
@@ -58482,16 +58925,84 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
 
     def fetch_intelligence_profiles() -> list[IntelligenceProfileRecord]:
         try:
-            rows = state.db.fetchall("SELECT * FROM intelligence_profiles WHERE COALESCE(deleted_at, '') = '' ORDER BY updated_at DESC, created_at DESC")
+            rows = state.db.fetchall(
+                f"""
+                SELECT *
+                FROM intelligence_profiles
+                WHERE COALESCE(deleted_at, '') = ''
+                  AND {active_intelligence_profile_scope_sql()}
+                ORDER BY updated_at DESC, created_at DESC
+                """,
+                (
+                    active_business_sandbox_id(),
+                    active_business_sandbox_id(),
+                    active_business_sandbox_id(),
+                    active_business_sandbox_id(),
+                ),
+            )
         except Exception:
             return []
         return [build_intelligence_profile(row) for row in rows]
 
+    def fetch_intelligence_profile_in_active_sandbox(profile_id: str):
+        row = state.db.fetchone(
+            f"""
+            SELECT *
+            FROM intelligence_profiles
+            WHERE id = ?
+              AND COALESCE(deleted_at, '') = ''
+              AND {active_intelligence_profile_scope_sql()}
+            """,
+            (
+                profile_id,
+                active_business_sandbox_id(),
+                active_business_sandbox_id(),
+                active_business_sandbox_id(),
+                active_business_sandbox_id(),
+            ),
+        )
+        if not row:
+            raise HTTPException(status_code=404, detail="Profile not found")
+        return row
+
     def fetch_topic_candidates() -> list[TopicCandidateRecord]:
         return [
             build_topic_candidate(row)
-            for row in state.db.fetchall("SELECT * FROM topic_candidates ORDER BY created_at DESC")
+            for row in state.db.fetchall(
+                """
+                SELECT c.*
+                FROM topic_candidates c
+                JOIN topic_radars r ON r.id = c.radar_id
+                WHERE COALESCE(r.sandbox_id, '') = ?
+                ORDER BY c.created_at DESC
+                """,
+                (active_business_sandbox_id(),),
+            )
         ]
+
+    def fetch_topic_radar_in_active_sandbox(radar_id: str):
+        row = state.db.fetchone(
+            "SELECT * FROM topic_radars WHERE id = ? AND COALESCE(sandbox_id, '') = ?",
+            (radar_id, active_business_sandbox_id()),
+        )
+        if not row:
+            raise HTTPException(status_code=404, detail="Radar not found")
+        return row
+
+    def fetch_topic_candidate_in_active_sandbox(candidate_id: str):
+        row = state.db.fetchone(
+            """
+            SELECT c.*
+            FROM topic_candidates c
+            JOIN topic_radars r ON r.id = c.radar_id
+            WHERE c.id = ?
+              AND COALESCE(r.sandbox_id, '') = ?
+            """,
+            (candidate_id, active_business_sandbox_id()),
+        )
+        if not row:
+            raise HTTPException(status_code=404, detail="Candidate not found")
+        return row
 
     def save_topic_candidate_insight(
         *,
@@ -58957,7 +59468,13 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
     @app.get("/api/v1/topics", response_model=TopicsResponse)
     def list_topics() -> TopicsResponse:
         import_sync_intelligence_demo()
-        radars = [build_topic_radar(row) for row in state.db.fetchall("SELECT * FROM topic_radars ORDER BY created_at ASC")]
+        radars = [
+            build_topic_radar(row)
+            for row in state.db.fetchall(
+                "SELECT * FROM topic_radars WHERE COALESCE(sandbox_id, '') = ? ORDER BY created_at ASC",
+                (active_business_sandbox_id(),),
+            )
+        ]
         return TopicsResponse(radars=radars, candidates=fetch_topic_candidates(), intelligenceProfiles=fetch_intelligence_profiles())
 
     @app.get("/api/v1/intelligence/profiles", response_model=list[IntelligenceProfileRecord])
@@ -58971,9 +59488,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
 
     @app.patch("/api/v1/intelligence/profiles/{profile_id}", response_model=IntelligenceProfileRecord)
     def update_intelligence_profile(profile_id: str, payload: IntelligenceProfileMutationPayload) -> IntelligenceProfileRecord:
-        row = state.db.fetchone("SELECT * FROM intelligence_profiles WHERE id = ?", (profile_id,))
-        if not row:
-            raise HTTPException(status_code=404, detail="Profile not found")
+        fetch_intelligence_profile_in_active_sandbox(profile_id)
         updates: list[str] = []
         params: list[object] = []
         if payload.title is not None:
@@ -59007,25 +59522,19 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         params.append(now_iso())
         params.append(profile_id)
         state.db.execute(f"UPDATE intelligence_profiles SET {', '.join(updates)} WHERE id = ?", tuple(params))
-        updated = state.db.fetchone("SELECT * FROM intelligence_profiles WHERE id = ?", (profile_id,))
-        assert updated is not None
+        updated = fetch_intelligence_profile_in_active_sandbox(profile_id)
         return build_intelligence_profile(updated)
 
     @app.post("/api/v1/intelligence/profiles/{profile_id}/refresh", response_model=IntelligenceProfileRecord)
     def refresh_intelligence_profile(profile_id: str) -> IntelligenceProfileRecord:
-        row = state.db.fetchone("SELECT * FROM intelligence_profiles WHERE id = ?", (profile_id,))
-        if not row:
-            raise HTTPException(status_code=404, detail="Profile not found")
+        fetch_intelligence_profile_in_active_sandbox(profile_id)
         state.db.execute("UPDATE intelligence_profiles SET status = ?, updated_at = ? WHERE id = ?", ("ready", now_iso(), profile_id))
-        updated = state.db.fetchone("SELECT * FROM intelligence_profiles WHERE id = ?", (profile_id,))
-        assert updated is not None
+        updated = fetch_intelligence_profile_in_active_sandbox(profile_id)
         return build_intelligence_profile(updated)
 
     @app.post("/api/v1/intelligence/profiles/{profile_id}/trial-run")
     def trial_run_intelligence_profile(profile_id: str) -> dict[str, object]:
-        row = state.db.fetchone("SELECT id FROM intelligence_profiles WHERE id = ?", (profile_id,))
-        if not row:
-            raise HTTPException(status_code=404, detail="Profile not found")
+        fetch_intelligence_profile_in_active_sandbox(profile_id)
         return {"createdCount": 0, "failureReason": "当前没有新的可精选公开情报"}
 
     @app.post("/api/v1/topics/radars", response_model=TopicRadarRecord)
@@ -59034,8 +59543,8 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         created_at = now_iso()
         preferred_sources = normalize_topic_radar_preferred_sources(payload.preferredSources)
         state.db.execute(
-            "INSERT INTO topic_radars(id, title, prompt, time_range, preferred_sources_json, created_at) VALUES(?, ?, ?, ?, ?, ?)",
-            (radar_id, payload.title, payload.prompt, payload.timeRange, to_json([item.model_dump() for item in preferred_sources]), created_at),
+            "INSERT INTO topic_radars(id, sandbox_id, title, prompt, time_range, preferred_sources_json, created_at) VALUES(?, ?, ?, ?, ?, ?, ?)",
+            (radar_id, active_business_sandbox_id(), payload.title, payload.prompt, payload.timeRange, to_json([item.model_dump() for item in preferred_sources]), created_at),
         )
         log_activity("topic.radar.create", "topic_radar", radar_id, payload.model_dump())
         return TopicRadarRecord(
@@ -59049,13 +59558,11 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
 
     @app.put("/api/v1/topics/radars/{radar_id}", response_model=TopicRadarRecord)
     def update_radar(radar_id: str, payload: TopicRadarPayload) -> TopicRadarRecord:
-        row = state.db.fetchone("SELECT * FROM topic_radars WHERE id = ?", (radar_id,))
-        if not row:
-            raise HTTPException(status_code=404, detail="Radar not found")
+        row = fetch_topic_radar_in_active_sandbox(radar_id)
         preferred_sources = normalize_topic_radar_preferred_sources(payload.preferredSources)
         state.db.execute(
-            "UPDATE topic_radars SET title = ?, prompt = ?, time_range = ?, preferred_sources_json = ? WHERE id = ?",
-            (payload.title, payload.prompt, payload.timeRange, to_json([item.model_dump() for item in preferred_sources]), radar_id),
+            "UPDATE topic_radars SET title = ?, prompt = ?, time_range = ?, preferred_sources_json = ? WHERE id = ? AND COALESCE(sandbox_id, '') = ?",
+            (payload.title, payload.prompt, payload.timeRange, to_json([item.model_dump() for item in preferred_sources]), radar_id, active_business_sandbox_id()),
         )
         log_activity("topic.radar.update", "topic_radar", radar_id, payload.model_dump())
         return TopicRadarRecord(
@@ -59069,18 +59576,14 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
 
     @app.delete("/api/v1/topics/radars/{radar_id}")
     def delete_radar(radar_id: str) -> dict[str, bool]:
-        row = state.db.fetchone("SELECT * FROM topic_radars WHERE id = ?", (radar_id,))
-        if not row:
-            raise HTTPException(status_code=404, detail="Radar not found")
-        state.db.execute("DELETE FROM topic_radars WHERE id = ?", (radar_id,))
+        row = fetch_topic_radar_in_active_sandbox(radar_id)
+        state.db.execute("DELETE FROM topic_radars WHERE id = ? AND COALESCE(sandbox_id, '') = ?", (radar_id, active_business_sandbox_id()))
         log_activity("topic.radar.delete", "topic_radar", radar_id, {"title": str(row["title"])})
         return {"deleted": True}
 
     @app.post("/api/v1/topics/radars/{radar_id}/capture", response_model=TopicCaptureRunRecord)
     def capture_single_topic_radar(radar_id: str) -> TopicCaptureRunRecord:
-        row = state.db.fetchone("SELECT * FROM topic_radars WHERE id = ?", (radar_id,))
-        if not row:
-            raise HTTPException(status_code=404, detail="Radar not found")
+        row = fetch_topic_radar_in_active_sandbox(radar_id)
         return capture_topic_radar_internal(row)
 
     @app.post("/api/v1/topics/radars/generate-title", response_model=TitleSuggestionResponse)
@@ -59122,8 +59625,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
 
     @app.post("/api/v1/topics/candidates", response_model=TopicCandidateRecord)
     def create_candidate(payload: TopicCandidatePayload) -> TopicCandidateRecord:
-        if not state.db.fetchone("SELECT 1 FROM topic_radars WHERE id = ?", (payload.radarId,)):
-            raise HTTPException(status_code=404, detail="Radar not found")
+        fetch_topic_radar_in_active_sandbox(payload.radarId)
         created = create_topic_candidate_record(
             radar_id=payload.radarId,
             title=payload.title,
@@ -59136,9 +59638,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
 
     @app.post("/api/v1/topics/candidates/{candidate_id}/insights", response_model=TopicCandidateInsightRecord)
     def get_candidate_insights(candidate_id: str) -> TopicCandidateInsightRecord:
-        row = state.db.fetchone("SELECT * FROM topic_candidates WHERE id = ?", (candidate_id,))
-        if not row:
-            raise HTTPException(status_code=404, detail="Candidate not found")
+        row = fetch_topic_candidate_in_active_sandbox(candidate_id)
         if str(row["insight_status"] or "pending") != "ready":
             raise HTTPException(status_code=409, detail="候选解析尚未完成")
         insight, _ = ensure_topic_candidate_insight(row)
@@ -59146,9 +59646,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
 
     @app.post("/api/v1/topics/candidates/{candidate_id}/chat", response_model=TopicCandidateChatResponse)
     def chat_with_topic_candidate(candidate_id: str, payload: TopicCandidateChatPayload) -> TopicCandidateChatResponse:
-        row = state.db.fetchone("SELECT * FROM topic_candidates WHERE id = ?", (candidate_id,))
-        if not row:
-            raise HTTPException(status_code=404, detail="Candidate not found")
+        row = fetch_topic_candidate_in_active_sandbox(candidate_id)
         question = payload.question.strip()
         if not question:
             raise HTTPException(status_code=400, detail="问题不能为空")
@@ -59211,9 +59709,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
 
     @app.post("/api/v1/topics/candidates/{candidate_id}/task-plan", response_model=TopicTaskPlanResponse)
     def build_candidate_task_plan(candidate_id: str) -> TopicTaskPlanResponse:
-        row = state.db.fetchone("SELECT * FROM topic_candidates WHERE id = ?", (candidate_id,))
-        if not row:
-            raise HTTPException(status_code=404, detail="Candidate not found")
+        row = fetch_topic_candidate_in_active_sandbox(candidate_id)
         topics_settings = get_topics_settings()
         if topics_settings.requireInsightBeforeActions and str(row["insight_status"] or "pending") != "ready":
             raise HTTPException(status_code=409, detail="候选解析尚未完成")
@@ -59257,9 +59753,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
 
     @app.post("/api/v1/topics/candidates/{candidate_id}/promote-tasks", response_model=TopicTaskPromotionResponse)
     def promote_candidate_to_tasks(candidate_id: str, payload: TopicTaskPromotionPayload) -> TopicTaskPromotionResponse:
-        row = state.db.fetchone("SELECT * FROM topic_candidates WHERE id = ?", (candidate_id,))
-        if not row:
-            raise HTTPException(status_code=404, detail="Candidate not found")
+        row = fetch_topic_candidate_in_active_sandbox(candidate_id)
         if not payload.tasks:
             raise HTTPException(status_code=400, detail="至少要选择一条任务")
         session_user = get_cached_session_user() if get_cloud_token() else None
@@ -59306,7 +59800,10 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
 
     @app.post("/api/v1/topics/capture", response_model=TopicCaptureBatchResponse)
     def capture_all_topic_radars() -> TopicCaptureBatchResponse:
-        radar_rows = state.db.fetchall("SELECT * FROM topic_radars ORDER BY created_at ASC")
+        radar_rows = state.db.fetchall(
+            "SELECT * FROM topic_radars WHERE COALESCE(sandbox_id, '') = ? ORDER BY created_at ASC",
+            (active_business_sandbox_id(),),
+        )
         with ThreadPoolExecutor(max_workers=min(4, max(1, len(radar_rows)))) as executor:
             runs = list(executor.map(capture_topic_radar_internal, radar_rows))
         return TopicCaptureBatchResponse(
@@ -59317,9 +59814,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
 
     @app.post("/api/v1/topics/candidates/{candidate_id}/promote-task", response_model=TaskRecord)
     def promote_candidate_to_task(candidate_id: str, payload: dict = Body(default_factory=dict)) -> TaskRecord:
-        row = state.db.fetchone("SELECT * FROM topic_candidates WHERE id = ?", (candidate_id,))
-        if not row:
-            raise HTTPException(status_code=404, detail="Candidate not found")
+        row = fetch_topic_candidate_in_active_sandbox(candidate_id)
         event_line_id = str(payload.get("eventLineId", "") or _row_value(row, "event_line_id", "") or "").strip() or None
         state.db.execute("UPDATE topic_candidates SET status = 'promoted', updated_at = ? WHERE id = ?", (now_iso(), candidate_id))
         task = create_task(
@@ -59342,9 +59837,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
 
     @app.delete("/api/v1/topics/candidates/{candidate_id}")
     def delete_topic_candidate(candidate_id: str) -> dict[str, bool]:
-        row = state.db.fetchone("SELECT * FROM topic_candidates WHERE id = ?", (candidate_id,))
-        if not row:
-            raise HTTPException(status_code=404, detail="Candidate not found")
+        row = fetch_topic_candidate_in_active_sandbox(candidate_id)
         remember_topic_candidate_seen(
             radar_id=str(row["radar_id"]),
             source_url=str(row["source_url"]) if row["source_url"] else None,
@@ -60064,6 +60557,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
 
     def _infer_exp_wall_author_from_review_notes(quote_text: str, created_at: str) -> tuple[str, str] | None:
         organization_id = active_workspace_organization_id()
+        sandbox_id = active_business_sandbox_id()
         rows = state.db.fetchall(
             """
             SELECT e.user_id AS entry_user_id,
@@ -60075,12 +60569,20 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                    e.updated_at
             FROM weekly_review_task_entries e
             LEFT JOIN weekly_reviews r ON r.id = e.review_id
+            LEFT JOIN tasks t ON t.id = e.task_id
             WHERE COALESCE(e.note, '') <> ''
-              AND COALESCE(r.organization_id, '') = ?
+              AND (COALESCE(r.organization_id, '') = ? OR COALESCE(r.organization_id, '') = '')
+              AND (
+                    COALESCE(r.sandbox_id, '') = ?
+                    OR (
+                        COALESCE(r.sandbox_id, '') = ''
+                        AND COALESCE(t.sandbox_id, '') = ?
+                    )
+                  )
             ORDER BY ABS(julianday(COALESCE(NULLIF(e.updated_at, ''), e.created_at)) - julianday(?)) ASC
             LIMIT 200
             """,
-            (organization_id, created_at),
+            (organization_id, sandbox_id, sandbox_id, created_at),
         )
         best_score = 0.0
         best_matches: list[tuple[str, str, str]] = []
@@ -60650,13 +61152,14 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
     @app.get("/api/v1/growth/overview", response_model=GrowthOverviewRecord)
     def get_growth_overview(weekLabel: str | None = Query(default=None)) -> GrowthOverviewRecord:
         user_id, user_name = resolve_growth_actor()
-        build_badge_board(state.db, user_id=user_id, user_name=user_name, auto_sync=False)
+        sandbox_id = active_business_sandbox_id()
+        build_badge_board(state.db, user_id=user_id, user_name=user_name, auto_sync=False, sandbox_id=sandbox_id)
         return build_growth_overview(
             state.db,
             user_id=user_id,
             user_name=user_name,
             week_label=resolve_growth_week_label(user_id, weekLabel),
-            sandbox_id=active_business_sandbox_id(),
+            sandbox_id=sandbox_id,
         )
 
     # L6: 学习推荐反馈闭环
@@ -60700,11 +61203,13 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         mode: Literal["global", "strategic"] = Query(default="global"),
     ) -> GrowthWorkbenchSnapshotRecord:
         user_id, user_name = resolve_growth_actor()
-        build_badge_board(state.db, user_id=user_id, user_name=user_name, auto_sync=False)
+        sandbox_id = active_business_sandbox_id()
+        build_badge_board(state.db, user_id=user_id, user_name=user_name, auto_sync=False, sandbox_id=sandbox_id)
         return build_growth_workbench_snapshot(
             week_label=resolve_growth_week_label(user_id, weekLabel),
             client_id=clientId,
             mode=mode,
+            sandbox_id=sandbox_id,
         )
 
     @app.get("/api/v1/growth/ledger", response_model=GrowthLedgerResponse)
@@ -60713,22 +61218,31 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         weekLabel: str | None = Query(default=None),
     ) -> GrowthLedgerResponse:
         user_id, user_name = resolve_growth_actor()
-        build_badge_board(state.db, user_id=user_id, user_name=user_name, auto_sync=False)
-        return build_growth_ledger(state.db, user_id=user_id, ability_key=abilityKey, week_label=weekLabel)
+        sandbox_id = active_business_sandbox_id()
+        build_badge_board(state.db, user_id=user_id, user_name=user_name, auto_sync=False, sandbox_id=sandbox_id)
+        return build_growth_ledger(
+            state.db,
+            user_id=user_id,
+            ability_key=abilityKey,
+            week_label=weekLabel,
+            sandbox_id=sandbox_id,
+        )
 
     @app.get("/api/v1/growth/badges", response_model=BadgeBoardResponse)
     def get_growth_badges() -> BadgeBoardResponse:
         user_id, user_name = resolve_growth_actor()
-        return build_badge_board(state.db, user_id=user_id, user_name=user_name, auto_sync=False)
+        sandbox_id = active_business_sandbox_id()
+        return build_badge_board(state.db, user_id=user_id, user_name=user_name, auto_sync=False, sandbox_id=sandbox_id)
 
     @app.get("/api/v1/growth/recommendations", response_model=list[LearningRecommendationRecord])
     def get_growth_recommendations() -> list[LearningRecommendationRecord]:
         user_id, user_name = resolve_growth_actor()
-        return list_learning_recommendations(state.db, user_id)
+        return list_learning_recommendations(state.db, user_id, sandbox_id=active_business_sandbox_id())
 
     @app.post("/api/v1/growth/pending-captures/{capture_id}/state", response_model=GrowthPendingCaptureActionResponse)
     def update_growth_pending_capture(capture_id: str, payload: GrowthPendingCaptureActionPayload) -> GrowthPendingCaptureActionResponse:
         user_id, _user_name = resolve_growth_actor()
+        sandbox_id = active_business_sandbox_id()
         updated = update_pending_capture_state(
             state.db,
             user_id=user_id,
@@ -60737,6 +61251,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             reason=payload.reason,
             handbook_entry_id=payload.handbookEntryId,
             created_at=now_iso(),
+            sandbox_id=sandbox_id,
         )
         if updated is None:
             raise HTTPException(status_code=404, detail="待放大的成长信号不存在或已失效")
@@ -60745,7 +61260,8 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
     @app.post("/api/v1/growth/recommendations/{recommendation_id}/accept", response_model=GrowthRecommendationActionResponse)
     def accept_growth_recommendation(recommendation_id: str) -> GrowthRecommendationActionResponse:
         user_id, user_name = resolve_growth_actor()
-        recommendation = next((item for item in list_learning_recommendations(state.db, user_id) if item.id == recommendation_id), None)
+        sandbox_id = active_business_sandbox_id()
+        recommendation = next((item for item in list_learning_recommendations(state.db, user_id, sandbox_id=sandbox_id) if item.id == recommendation_id), None)
         if recommendation is None:
             raise HTTPException(status_code=404, detail="成长练习推荐不存在或已失效")
         task_settings = _get_local_task_settings()
@@ -60769,7 +61285,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 sourceId=recommendation.id,
             )
         )
-        updated = mark_recommendation_accepted(state.db, recommendation_id, task.id)
+        updated = mark_recommendation_accepted(state.db, recommendation_id, task.id, sandbox_id=sandbox_id)
         if updated is None:
             raise HTTPException(status_code=404, detail="成长练习推荐不存在或已失效")
         return GrowthRecommendationActionResponse(recommendation=updated, task=task)
@@ -60780,10 +61296,11 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         payload: GrowthRecommendationDismissPayload,
     ) -> GrowthRecommendationActionResponse:
         user_id, _ = resolve_growth_actor()
-        recommendation = next((item for item in list_learning_recommendations(state.db, user_id) if item.id == recommendation_id), None)
+        sandbox_id = active_business_sandbox_id()
+        recommendation = next((item for item in list_learning_recommendations(state.db, user_id, sandbox_id=sandbox_id) if item.id == recommendation_id), None)
         if recommendation is None:
             raise HTTPException(status_code=404, detail="成长练习推荐不存在或已失效")
-        updated = mark_recommendation_dismissed(state.db, recommendation_id, payload.reason)
+        updated = mark_recommendation_dismissed(state.db, recommendation_id, payload.reason, sandbox_id=sandbox_id)
         if updated is None:
             raise HTTPException(status_code=404, detail="成长练习推荐不存在或已失效")
         return GrowthRecommendationActionResponse(recommendation=updated, task=None)
@@ -61384,8 +61901,8 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         if (not effective_scope_id or effective_scope_type == "all") and workObjectType and workObjectId:
             effective_scope_type = workObjectType
             effective_scope_id = workObjectId
-        sql_filters = ["content_kind = ?", "user_status = ?"]
-        sql_params: list = [contentKind, userStatus]
+        sql_filters = ["content_kind = ?", "user_status = ?", active_intelligence_item_scope_sql()]
+        sql_params: list = [contentKind, userStatus, active_business_sandbox_id(), active_business_sandbox_id()]
         if effective_scope_type == "client" and effective_scope_id:
             sql_filters.append("client_id = ?")
             sql_params.append(effective_scope_id)
@@ -61461,7 +61978,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
 
     def _refresh_cycle_settings() -> IntelligenceRefreshCycleSettingsRecord:
         def read_hours(key: str, default: int) -> int:
-            raw = state.db.get_setting(key, str(default))
+            raw = get_active_sandbox_setting(state.db, key, str(default))
             try:
                 value = int(raw)
             except Exception:
@@ -61480,36 +61997,46 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
     @app.put("/api/v1/intelligence/refresh-cycle-settings", response_model=IntelligenceRefreshCycleSettingsRecord)
     def update_refresh_cycle_settings(payload: IntelligenceRefreshCycleSettingsPayload) -> IntelligenceRefreshCycleSettingsRecord:
         timestamp = _intel_now()
+        sandbox_id = active_business_sandbox_id()
+        source_scope_clause, source_scope_params = active_intelligence_source_config_scope_clause()
         if payload.profileCompletionHours is not None:
             value = max(1, min(int(payload.profileCompletionHours), 8760))
-            state.db.set_setting("intelligence_profile_completion_cycle_hours", str(value))
+            set_sandbox_setting(state.db, sandbox_id, "intelligence_profile_completion_cycle_hours", str(value))
             state.db.execute(
-                """
+                f"""
                 UPDATE intelligence_source_configs
                 SET next_due_at = datetime(?, '+' || ? || ' hours'), updated_at = ?
-                WHERE content_kinds_json LIKE '%profile_completion%'
-                   OR source_type IN ('web_search', 'official_site', 'official_site_section', 'social_org_registry', 'profile_report', 'charity_media')
+                WHERE (
+                    content_kinds_json LIKE '%profile_completion%'
+                    OR source_type IN ('web_search', 'official_site', 'official_site_section', 'social_org_registry', 'profile_report', 'charity_media')
+                )
+                  AND {source_scope_clause}
                 """,
-                (timestamp, value, timestamp),
+                (timestamp, value, timestamp, *source_scope_params),
             )
         if payload.timelyIntelligenceHours is not None:
             value = max(1, min(int(payload.timelyIntelligenceHours), 8760))
-            state.db.set_setting("intelligence_timely_intelligence_cycle_hours", str(value))
+            set_sandbox_setting(state.db, sandbox_id, "intelligence_timely_intelligence_cycle_hours", str(value))
             state.db.execute(
-                """
+                f"""
                 UPDATE intelligence_source_configs
                 SET next_due_at = datetime(?, '+' || ? || ' hours'), updated_at = ?
-                WHERE content_kinds_json LIKE '%timely_intelligence%'
-                   OR source_type IN ('web_search', 'official_site', 'official_site_section', 'gov_policy', 'procurement', 'grant', 'regulatory_risk', 'partner_peer', 'charity_media')
+                WHERE (
+                    content_kinds_json LIKE '%timely_intelligence%'
+                    OR source_type IN ('web_search', 'official_site', 'official_site_section', 'gov_policy', 'procurement', 'grant', 'regulatory_risk', 'partner_peer', 'charity_media')
+                )
+                  AND {source_scope_clause}
                 """,
-                (timestamp, value, timestamp),
+                (timestamp, value, timestamp, *source_scope_params),
             )
         return _refresh_cycle_settings()
 
     @app.get("/api/v1/intelligence/focus-directives", response_model=list[IntelligenceFocusDirectiveRecord])
     def list_focus_directives() -> list[IntelligenceFocusDirectiveRecord]:
+        scope_clause, scope_params = active_focus_scope_clause()
         rows = state.db.fetchall(
-            "SELECT * FROM intelligence_focus_directives ORDER BY scope_type, scope_id"
+            f"SELECT * FROM intelligence_focus_directives WHERE {scope_clause} ORDER BY scope_type, scope_id",
+            scope_params,
         )
         out: list[IntelligenceFocusDirectiveRecord] = []
         for row in rows:
@@ -61530,7 +62057,25 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
     @app.put("/api/v1/intelligence/focus-directives", response_model=IntelligenceFocusDirectiveRecord)
     def save_focus_directive(payload: IntelligenceFocusDirectivePayload) -> IntelligenceFocusDirectiveRecord:
         scope_type = payload.scopeType or "global"
-        scope_id = payload.scopeId or ""
+        if scope_type == "global":
+            scope_id = active_business_sandbox_id()
+        else:
+            scope_id = payload.scopeId or ""
+        if scope_type == "client" and scope_id:
+            require_client_in_active_sandbox(scope_id)
+        if scope_type == "project_module" and scope_id:
+            module_row = state.db.fetchone(
+                f"""
+                SELECT pm.id
+                FROM project_modules pm
+                JOIN clients c ON c.id = pm.client_id
+                WHERE pm.id = ?
+                  AND {active_business_sandbox_where("c")}
+                """,
+                (scope_id, active_business_sandbox_id()),
+            )
+            if not module_row:
+                raise HTTPException(status_code=404, detail="Project module not found")
         existing = state.db.fetchone(
             "SELECT id FROM intelligence_focus_directives WHERE scope_type=? AND scope_id=?",
             (scope_type, scope_id),
@@ -61645,9 +62190,10 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         scopeType: str | None = Query(default=None),
         scopeId: str | None = Query(default=None),
     ) -> list[IntelligenceVerificationRuleRecord]:
+        scope_clause, scope_params = active_focus_scope_clause()
         sql = "SELECT * FROM intelligence_verification_rules"
-        sql_params: list = []
-        filters: list[str] = []
+        sql_params: list = list(scope_params)
+        filters: list[str] = [scope_clause]
         if scopeType:
             filters.append("scope_type = ?")
             sql_params.append(scopeType)
@@ -61678,7 +62224,25 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
     @app.put("/api/v1/intelligence/verification-rules", response_model=IntelligenceVerificationRuleRecord)
     def save_verification_rule(payload: IntelligenceVerificationRulePayload) -> IntelligenceVerificationRuleRecord:
         scope_type = payload.scopeType or "global"
-        scope_id = payload.scopeId or ""
+        if scope_type == "global":
+            scope_id = active_business_sandbox_id()
+        else:
+            scope_id = payload.scopeId or ""
+        if scope_type == "client" and scope_id:
+            require_client_in_active_sandbox(scope_id)
+        if scope_type == "project_module" and scope_id:
+            module_row = state.db.fetchone(
+                f"""
+                SELECT pm.id
+                FROM project_modules pm
+                JOIN clients c ON c.id = pm.client_id
+                WHERE pm.id = ?
+                  AND {active_business_sandbox_where("c")}
+                """,
+                (scope_id, active_business_sandbox_id()),
+            )
+            if not module_row:
+                raise HTTPException(status_code=404, detail="Project module not found")
         existing = state.db.fetchone(
             "SELECT id FROM intelligence_verification_rules WHERE scope_type=? AND scope_id=?",
             (scope_type, scope_id),
@@ -61739,7 +62303,25 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
     def submit_verification_feedback(payload: IntelligenceVerificationFeedbackPayload) -> IntelligenceVerificationRuleRecord:
         """记录补充判断标准，并让当前线索退出活跃展示。"""
         scope_type = payload.scopeType or "global"
-        scope_id = payload.scopeId or ""
+        if scope_type == "global":
+            scope_id = active_business_sandbox_id()
+        else:
+            scope_id = payload.scopeId or ""
+        if scope_type == "client" and scope_id:
+            require_client_in_active_sandbox(scope_id)
+        if scope_type == "project_module" and scope_id:
+            module_row = state.db.fetchone(
+                f"""
+                SELECT pm.id
+                FROM project_modules pm
+                JOIN clients c ON c.id = pm.client_id
+                WHERE pm.id = ?
+                  AND {active_business_sandbox_where("c")}
+                """,
+                (scope_id, active_business_sandbox_id()),
+            )
+            if not module_row:
+                raise HTTPException(status_code=404, detail="Project module not found")
         note = str(payload.note or "").strip()[:500]
         if not note:
             raise HTTPException(status_code=400, detail="判断标准不能为空")
@@ -61870,7 +62452,18 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         queued_stale_threshold = datetime.utcnow() - timedelta(minutes=30)
 
         stale_rows = state.db.fetchall(
-            "SELECT id, status, updated_at, created_at FROM intelligence_refresh_runs WHERE status IN ('running','queued')"
+            f"""
+            SELECT id, status, updated_at, created_at
+            FROM intelligence_refresh_runs
+            WHERE status IN ('running','queued')
+              AND {active_intelligence_refresh_run_scope_sql()}
+            """,
+            (
+                active_business_sandbox_id(),
+                active_business_sandbox_id(),
+                active_business_sandbox_id(),
+                active_business_sandbox_id(),
+            ),
         )
         now_ts = _intel_now()
         for stale_row in stale_rows:
@@ -61916,8 +62509,13 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                         """,
                         (now_ts, now_ts, stale_row["id"]),
                     )
-        clauses: list[str] = []
-        params: list[object] = []
+        clauses: list[str] = [active_intelligence_refresh_run_scope_sql()]
+        params: list[object] = [
+            active_business_sandbox_id(),
+            active_business_sandbox_id(),
+            active_business_sandbox_id(),
+            active_business_sandbox_id(),
+        ]
         if contentKind:
             # AUDIT-20260518-055: 跟 IntelligenceContentKind Literal 对齐.
             # profile_completion 已下线, public_opinion 是新增的舆情监控.
@@ -62529,7 +63127,8 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
 
     def _fetch_intelligence_item_or_404(item_id: str):
         row = state.db.fetchone(
-            "SELECT * FROM intelligence_items WHERE id = ?", (item_id,)
+            f"SELECT * FROM intelligence_items WHERE id = ? AND {active_intelligence_item_scope_sql()}",
+            (item_id, active_business_sandbox_id(), active_business_sandbox_id()),
         )
         if row is None:
             raise HTTPException(status_code=404, detail="情报项不存在")
@@ -64133,12 +64732,12 @@ def seed_defaults(state: AppState) -> None:
         state.db.executemany(
             """
             INSERT INTO task_settings(
-                operator_id, default_list_id, default_priority, default_due_date_preset,
+                sandbox_id, operator_id, default_list_id, default_priority, default_due_date_preset,
                 default_view_mode, list_sort_mode, show_completed_tasks, default_review_scope,
                 auto_assign_self, updated_at
-            ) VALUES(?, 'list-0', 'normal', 'today', 'calendar', 'manual', 0, 'work', 1, ?)
+            ) VALUES(?, ?, 'list-0', 'normal', 'today', 'calendar', 'manual', 0, 'work', 1, ?)
             """,
-            [(str(row["id"]), timestamp) for row in state.db.fetchall("SELECT id FROM operators")],
+            [(active_seed_sandbox_id, str(row["id"]), timestamp) for row in state.db.fetchall("SELECT id FROM operators")],
         )
     if state.db.scalar("SELECT COUNT(1) AS count FROM analysis_templates") == 0:
         state.db.executemany(

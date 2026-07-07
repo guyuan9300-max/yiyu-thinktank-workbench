@@ -101,6 +101,7 @@ class DataCenterIngestPayload:
     sourceId: str
     title: str = ""
     bodyText: str = ""
+    sandboxId: str | None = None
     organizationId: str | None = None
     departmentId: str | None = None
     departmentIds: list[str] | None = None
@@ -195,6 +196,7 @@ def _load_payload(payload: DataCenterIngestPayload | dict[str, Any]) -> DataCent
         sourceId=_text(payload.get("sourceId") or payload.get("source_id")),
         title=_text(payload.get("title")),
         bodyText=_text(payload.get("bodyText") or payload.get("body_text")),
+        sandboxId=_text(payload.get("sandboxId") or payload.get("sandbox_id")) or _metadata_text(metadata, "sandboxId", "sandbox_id") or None,
         organizationId=_text(payload.get("organizationId") or payload.get("organization_id")) or _metadata_text(metadata, "organizationId", "organization_id") or None,
         departmentId=_text(payload.get("departmentId") or payload.get("department_id")) or _metadata_text(metadata, "departmentId", "department_id", "primaryDepartmentId") or None,
         departmentIds=list(
@@ -310,6 +312,7 @@ def ensure_data_center_ingest_schema(db: Database) -> None:
             source_id TEXT NOT NULL,
             source_version TEXT NOT NULL DEFAULT '',
             content_hash TEXT NOT NULL,
+            sandbox_id TEXT NOT NULL DEFAULT '',
             organization_id TEXT NOT NULL DEFAULT '',
             department_id TEXT NOT NULL DEFAULT '',
             department_ids_json TEXT NOT NULL DEFAULT '[]',
@@ -343,6 +346,7 @@ def ensure_data_center_ingest_schema(db: Database) -> None:
     )
     for column_name, definition in (
         ("organization_id", "TEXT NOT NULL DEFAULT ''"),
+        ("sandbox_id", "TEXT NOT NULL DEFAULT ''"),
         ("department_id", "TEXT NOT NULL DEFAULT ''"),
         ("department_ids_json", "TEXT NOT NULL DEFAULT '[]'"),
         ("owner_user_id", "TEXT NOT NULL DEFAULT ''"),
@@ -365,6 +369,103 @@ def ensure_data_center_ingest_schema(db: Database) -> None:
             "UPDATE data_center_ingest_events SET department_ids_json = ? WHERE id = ?",
             (to_json([str(row["department_id"])]), str(row["id"])),
         )
+    for update_sql in (
+        """
+        UPDATE data_center_ingest_events
+        SET sandbox_id = (
+            SELECT clients.sandbox_id
+            FROM clients
+            WHERE clients.id = data_center_ingest_events.client_id
+              AND COALESCE(clients.sandbox_id, '') != ''
+            LIMIT 1
+        )
+        WHERE COALESCE(sandbox_id, '') = ''
+          AND COALESCE(client_id, '') != ''
+          AND EXISTS (
+            SELECT 1 FROM clients
+            WHERE clients.id = data_center_ingest_events.client_id
+              AND COALESCE(clients.sandbox_id, '') != ''
+          )
+        """,
+        """
+        UPDATE data_center_ingest_events
+        SET sandbox_id = (
+            SELECT tasks.sandbox_id
+            FROM tasks
+            WHERE tasks.id = data_center_ingest_events.task_id
+              AND COALESCE(tasks.sandbox_id, '') != ''
+            LIMIT 1
+        )
+        WHERE COALESCE(sandbox_id, '') = ''
+          AND COALESCE(task_id, '') != ''
+          AND EXISTS (
+            SELECT 1 FROM tasks
+            WHERE tasks.id = data_center_ingest_events.task_id
+              AND COALESCE(tasks.sandbox_id, '') != ''
+          )
+        """,
+        """
+        UPDATE data_center_ingest_events
+        SET sandbox_id = (
+            SELECT event_lines.sandbox_id
+            FROM event_lines
+            WHERE event_lines.id = data_center_ingest_events.event_line_id
+              AND COALESCE(event_lines.sandbox_id, '') != ''
+            LIMIT 1
+        )
+        WHERE COALESCE(sandbox_id, '') = ''
+          AND COALESCE(event_line_id, '') != ''
+          AND EXISTS (
+            SELECT 1 FROM event_lines
+            WHERE event_lines.id = data_center_ingest_events.event_line_id
+              AND COALESCE(event_lines.sandbox_id, '') != ''
+          )
+        """,
+        """
+        UPDATE data_center_ingest_events
+        SET sandbox_id = (
+            SELECT c.sandbox_id
+            FROM documents d
+            JOIN clients c ON c.id = d.client_id
+            WHERE d.id = data_center_ingest_events.document_id
+              AND COALESCE(c.sandbox_id, '') != ''
+            LIMIT 1
+        )
+        WHERE COALESCE(sandbox_id, '') = ''
+          AND COALESCE(document_id, '') != ''
+          AND EXISTS (
+            SELECT 1
+            FROM documents d
+            JOIN clients c ON c.id = d.client_id
+            WHERE d.id = data_center_ingest_events.document_id
+              AND COALESCE(c.sandbox_id, '') != ''
+          )
+        """,
+        """
+        UPDATE data_center_ingest_events
+        SET sandbox_id = (
+            SELECT c.sandbox_id
+            FROM meetings m
+            JOIN clients c ON c.id = m.client_id
+            WHERE m.id = data_center_ingest_events.meeting_id
+              AND COALESCE(c.sandbox_id, '') != ''
+            LIMIT 1
+        )
+        WHERE COALESCE(sandbox_id, '') = ''
+          AND COALESCE(meeting_id, '') != ''
+          AND EXISTS (
+            SELECT 1
+            FROM meetings m
+            JOIN clients c ON c.id = m.client_id
+            WHERE m.id = data_center_ingest_events.meeting_id
+              AND COALESCE(c.sandbox_id, '') != ''
+          )
+        """,
+    ):
+        try:
+            db.execute(update_sql)
+        except Exception:
+            pass
     db.execute(
         """
         CREATE INDEX IF NOT EXISTS idx_data_center_ingest_events_lifecycle
@@ -379,10 +480,154 @@ def ensure_data_center_ingest_schema(db: Database) -> None:
     )
     db.execute(
         """
+        CREATE INDEX IF NOT EXISTS idx_data_center_ingest_events_sandbox
+        ON data_center_ingest_events(sandbox_id, source_type, updated_at DESC)
+        """
+    )
+    db.execute(
+        """
         CREATE INDEX IF NOT EXISTS idx_data_center_ingest_events_access_scope
         ON data_center_ingest_events(organization_id, department_id, owner_user_id, lifecycle_status)
         """
     )
+    try:
+        if not db.has_column("memory_facts", "sandbox_id"):
+            db.ensure_column("memory_facts", "sandbox_id", "TEXT NOT NULL DEFAULT ''")
+        for update_sql in (
+            """
+            UPDATE memory_facts
+            SET sandbox_id = (
+                SELECT clients.sandbox_id
+                FROM clients
+                WHERE clients.id = memory_facts.scope_id
+                  AND COALESCE(clients.sandbox_id, '') != ''
+                LIMIT 1
+            )
+            WHERE COALESCE(memory_facts.sandbox_id, '') = ''
+              AND memory_facts.scope_type = 'client'
+              AND EXISTS (
+                SELECT 1 FROM clients
+                WHERE clients.id = memory_facts.scope_id
+                  AND COALESCE(clients.sandbox_id, '') != ''
+              )
+            """,
+            """
+            UPDATE memory_facts
+            SET sandbox_id = (
+                SELECT tasks.sandbox_id
+                FROM tasks
+                WHERE tasks.id = memory_facts.scope_id
+                  AND COALESCE(tasks.sandbox_id, '') != ''
+                LIMIT 1
+            )
+            WHERE COALESCE(memory_facts.sandbox_id, '') = ''
+              AND memory_facts.scope_type = 'task'
+              AND EXISTS (
+                SELECT 1 FROM tasks
+                WHERE tasks.id = memory_facts.scope_id
+                  AND COALESCE(tasks.sandbox_id, '') != ''
+              )
+            """,
+            """
+            UPDATE memory_facts
+            SET sandbox_id = (
+                SELECT event_lines.sandbox_id
+                FROM event_lines
+                WHERE event_lines.id = memory_facts.scope_id
+                  AND COALESCE(event_lines.sandbox_id, '') != ''
+                LIMIT 1
+            )
+            WHERE COALESCE(memory_facts.sandbox_id, '') = ''
+              AND memory_facts.scope_type = 'event_line'
+              AND EXISTS (
+                SELECT 1 FROM event_lines
+                WHERE event_lines.id = memory_facts.scope_id
+                  AND COALESCE(event_lines.sandbox_id, '') != ''
+              )
+            """,
+        ):
+            db.execute(update_sql)
+        db.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_memory_facts_sandbox_scope
+            ON memory_facts(sandbox_id, scope_type, scope_id, updated_at DESC)
+            """
+        )
+    except Exception:
+        pass
+
+
+def _resolve_payload_sandbox_id(
+    db: Database,
+    payload: DataCenterIngestPayload,
+    *,
+    document_id: str | None = None,
+) -> str:
+    def _first(query: str, params: tuple[object, ...]) -> str:
+        try:
+            row = db.fetchone(query, params)
+        except Exception:
+            return ""
+        return _text(_row_get(row, "sandbox_id"))
+
+    explicit_sandbox_id = _text(payload.sandboxId)
+    if explicit_sandbox_id:
+        if _first("SELECT id AS sandbox_id FROM sandboxes WHERE id = ? LIMIT 1", (explicit_sandbox_id,)):
+            return explicit_sandbox_id
+
+    for value, query in (
+        (
+            payload.clientId,
+            "SELECT sandbox_id FROM clients WHERE id = ? AND COALESCE(sandbox_id, '') != '' LIMIT 1",
+        ),
+        (
+            payload.taskId,
+            "SELECT sandbox_id FROM tasks WHERE id = ? AND COALESCE(sandbox_id, '') != '' LIMIT 1",
+        ),
+        (
+            payload.eventLineId,
+            "SELECT sandbox_id FROM event_lines WHERE id = ? AND COALESCE(sandbox_id, '') != '' LIMIT 1",
+        ),
+    ):
+        normalized = _text(value)
+        if normalized:
+            sandbox_id = _first(query, (normalized,))
+            if sandbox_id:
+                return sandbox_id
+
+    normalized_document_id = _text(document_id or payload.documentId)
+    if normalized_document_id:
+        sandbox_id = _first(
+            """
+            SELECT c.sandbox_id
+            FROM documents d
+            JOIN clients c ON c.id = d.client_id
+            WHERE d.id = ?
+              AND COALESCE(c.sandbox_id, '') != ''
+            LIMIT 1
+            """,
+            (normalized_document_id,),
+        )
+        if sandbox_id:
+            return sandbox_id
+
+    normalized_meeting_id = _text(payload.meetingId)
+    if normalized_meeting_id:
+        sandbox_id = _first(
+            """
+            SELECT c.sandbox_id
+            FROM meetings m
+            JOIN clients c ON c.id = m.client_id
+            WHERE m.id = ?
+              AND COALESCE(c.sandbox_id, '') != ''
+            LIMIT 1
+            """,
+            (normalized_meeting_id,),
+        )
+        if sandbox_id:
+            return sandbox_id
+
+    return ""
 
 
 def _upsert_ingest_event(
@@ -397,17 +642,19 @@ def _upsert_ingest_event(
     ensure_data_center_ingest_schema(db)
     now = _now_iso()
     event_id = _new_id("dcing")
+    sandbox_id = _resolve_payload_sandbox_id(db, payload, document_id=document_id)
     db.execute(
         """
         INSERT INTO data_center_ingest_events(
             id, source_type, source_id, source_version, content_hash,
-            organization_id, department_id, department_ids_json, owner_user_id, source_entity_type, source_entity_id,
+            sandbox_id, organization_id, department_id, department_ids_json, owner_user_id, source_entity_type, source_entity_id,
             client_id, event_line_id, task_id, meeting_id, week_label, title,
             visibility_scope, content_domain, lifecycle_status, document_id, status, error_message,
             metadata_json, created_at, updated_at
-        ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(source_type, source_id, content_hash) DO UPDATE SET
             source_version = excluded.source_version,
+            sandbox_id = excluded.sandbox_id,
             organization_id = excluded.organization_id,
             department_id = excluded.department_id,
             department_ids_json = excluded.department_ids_json,
@@ -435,6 +682,7 @@ def _upsert_ingest_event(
             payload.sourceId,
             payload.sourceVersion or "",
             content_hash,
+            sandbox_id,
             payload.organizationId or "",
             payload.departmentId or "",
             _payload_department_ids_json(payload),
@@ -522,13 +770,14 @@ def _write_memory_facts(
         db.execute(
             """
             UPDATE memory_facts
-            SET organization_id = ?, department_id = ?, owner_user_id = ?,
+            SET sandbox_id = ?, organization_id = ?, department_id = ?, owner_user_id = ?,
                 source_entity_type = ?, source_entity_id = ?,
                 visibility_scope = ?, content_domain = ?, lifecycle_status = ?,
                 department_ids_json = ?
             WHERE scope_type = ? AND scope_id = ? AND fact_key = ? AND source_type = ? AND source_id = ?
             """,
             (
+                _resolve_payload_sandbox_id(db, payload, document_id=document_id),
                 payload.organizationId or "",
                 payload.departmentId or "",
                 payload.ownerUserId or "",
@@ -1752,6 +2001,7 @@ def ingest_weekly_review_by_id(
             "sourceId": review_id,
             "title": f"{_text(_row_get(row, 'week_label'))} 周复盘",
             "bodyText": _render_weekly_review_body(row),
+            "sandboxId": _text(_row_get(row, "sandbox_id")) or None,
             "organizationId": _text(_row_get(row, "organization_id")) or None,
             "ownerUserId": _text(_row_get(row, "user_id") or _row_get(row, "operator_id")) or None,
             "sourceEntityType": "weekly_review",
@@ -1762,6 +2012,7 @@ def ingest_weekly_review_by_id(
             "sourceVersion": _text(_row_get(row, "updated_at")),
             "metadata": {
                 "organizationId": _text(_row_get(row, "organization_id")),
+                "sandboxId": _text(_row_get(row, "sandbox_id")),
                 "operatorId": _text(_row_get(row, "operator_id")),
                 "userId": _text(_row_get(row, "user_id")),
             },
@@ -1777,6 +2028,7 @@ def ingest_weekly_review_by_id(
                 "sourceId": f"{review_id}:personal_private",
                 "title": f"{_text(_row_get(row, 'week_label'))} 个人复盘",
                 "bodyText": private_body,
+                "sandboxId": _text(_row_get(row, "sandbox_id")) or None,
                 "organizationId": _text(_row_get(row, "organization_id")) or None,
                 "ownerUserId": _text(_row_get(row, "user_id") or _row_get(row, "operator_id")) or None,
                 "sourceEntityType": "weekly_review",
@@ -1787,6 +2039,7 @@ def ingest_weekly_review_by_id(
                 "sourceVersion": _text(_row_get(row, "updated_at")),
                 "metadata": {
                     "organizationId": _text(_row_get(row, "organization_id")),
+                    "sandboxId": _text(_row_get(row, "sandbox_id")),
                     "operatorId": _text(_row_get(row, "operator_id")),
                     "userId": _text(_row_get(row, "user_id")),
                     "personalPrivateNote": bool(_text(_row_get(row, "personal_private_note"))),

@@ -1,3 +1,4 @@
+from datetime import datetime, timedelta
 from pathlib import Path
 
 from fastapi.testclient import TestClient
@@ -95,8 +96,10 @@ def test_quick_response_badge_reports_progress_and_next_action(tmp_path: Path):
 
     for index in range(3):
         task_id = f"task_{index}"
-        created_at = f"2026-04-2{index + 1}T09:00:00"
-        confirm_at = f"2026-04-2{index + 1}T10:00:00"
+        created_dt = datetime.now() - timedelta(days=3 - index, hours=1)
+        confirm_dt = created_dt + timedelta(hours=1)
+        created_at = created_dt.isoformat(timespec="seconds")
+        confirm_at = confirm_dt.isoformat(timespec="seconds")
         db.execute(
             """
             INSERT INTO tasks(id, title, description, status, priority, list_id, owner_name, ddl, source_type, source_id, tags_json, tag_ids_json, created_at, updated_at)

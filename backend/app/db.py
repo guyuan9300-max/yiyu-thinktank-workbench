@@ -11,7 +11,7 @@ from pathlib import Path
 # 之前 20260518001 (200 亿) 远超上限, SQLite 静默 set 为 0, 每次启动都重做完整迁移
 # (这是 20260518 那次坏 db 的真正根因之一: 重做时遇上 reload race + backfill 无事务).
 # 改用 YYYYMMDD 格式 (8 位), 每次 schema 变化递增日期. 20260519 = 此次修复.
-BACKEND_SCHEMA_VERSION = 20260623  # 取消独立本机工作空间 + 成长数据沙箱归属
+BACKEND_SCHEMA_VERSION = 20260706  # 沙箱身份不变量 + 漏网业务数据归属
 
 
 # R6：内置罗永浩写作风格的 distilled prompt（手工 distill，不依赖在线抓取，避免外部依赖）。
@@ -83,8 +83,12 @@ class Database:
                     name TEXT NOT NULL,
                     status TEXT NOT NULL DEFAULT 'active' CHECK(status IN ('active', 'archived')),
                     cloud_api_url TEXT NOT NULL DEFAULT '',
+                    cloud_instance_id TEXT NOT NULL DEFAULT '',
                     organization_id TEXT,
                     organization_name TEXT,
+                    identity_state TEXT NOT NULL DEFAULT 'unverified',
+                    identity_verified_at TEXT,
+                    identity_error TEXT NOT NULL DEFAULT '',
                     local_identity_id TEXT,
                     is_legacy_default INTEGER NOT NULL DEFAULT 0,
                     metadata_json TEXT NOT NULL DEFAULT '{}',
@@ -1286,7 +1290,8 @@ class Database:
                 );
 
                 CREATE TABLE IF NOT EXISTS task_settings (
-                    operator_id TEXT PRIMARY KEY,
+                    sandbox_id TEXT NOT NULL DEFAULT '',
+                    operator_id TEXT NOT NULL,
                     default_list_id TEXT,
                     default_priority TEXT NOT NULL DEFAULT 'normal',
                     default_due_date_preset TEXT NOT NULL DEFAULT 'today',
@@ -1296,6 +1301,7 @@ class Database:
                     default_review_scope TEXT NOT NULL DEFAULT 'work',
                     auto_assign_self INTEGER NOT NULL DEFAULT 1,
                     updated_at TEXT NOT NULL,
+                    PRIMARY KEY(sandbox_id, operator_id),
                     FOREIGN KEY(operator_id) REFERENCES operators(id) ON DELETE CASCADE,
                     FOREIGN KEY(default_list_id) REFERENCES task_lists(id) ON DELETE SET NULL
                 );
@@ -1380,6 +1386,7 @@ class Database:
 
                 CREATE TABLE IF NOT EXISTS event_lines (
                     id TEXT PRIMARY KEY,
+                    sandbox_id TEXT NOT NULL DEFAULT '',
                     organization_id TEXT NOT NULL DEFAULT '',
                     name TEXT NOT NULL,
                     kind TEXT NOT NULL DEFAULT 'custom',
@@ -1505,6 +1512,7 @@ class Database:
                     id TEXT PRIMARY KEY,
                     scope_type TEXT NOT NULL,
                     scope_id TEXT NOT NULL,
+                    sandbox_id TEXT NOT NULL DEFAULT '',
                     fact_key TEXT NOT NULL,
                     fact_value TEXT NOT NULL,
                     source_type TEXT NOT NULL,
@@ -1725,6 +1733,7 @@ class Database:
 
                 CREATE TABLE IF NOT EXISTS weekly_reviews (
                     id TEXT PRIMARY KEY,
+                    sandbox_id TEXT NOT NULL DEFAULT '',
                     organization_id TEXT NOT NULL DEFAULT '',
                     week_label TEXT NOT NULL,
                     operator_id TEXT NOT NULL DEFAULT '',
@@ -1865,6 +1874,7 @@ class Database:
 
                 CREATE TABLE IF NOT EXISTS topic_radars (
                     id TEXT PRIMARY KEY,
+                    sandbox_id TEXT NOT NULL DEFAULT '',
                     title TEXT NOT NULL,
                     prompt TEXT NOT NULL,
                     time_range TEXT NOT NULL,
@@ -2644,6 +2654,12 @@ class Database:
                     ON entity_mentions(v2_document_id);
                 """
             )
+            # V2.3 data-center source registry is a core schema dependency for
+            # canonical document ingestion. Keep it in the main DB bootstrap so
+            # fresh installs do not repeatedly hit "no such table" during
+            # workspace login/sync.
+            from app.services.source_registry_store import ensure_schema as ensure_source_registry_schema
+            ensure_source_registry_schema(self)
             # 迭代 2：v2_chunks 追加 entity_ids_json 字段（JSON 数组）
             self._ensure_column("v2_chunks", "entity_ids_json", "TEXT NOT NULL DEFAULT '[]'")
             # meeting-spine Phase0: entities(person) 身份解析锚点。
@@ -3257,6 +3273,7 @@ class Database:
             self._ensure_column("topic_candidates", "insight_status", "TEXT NOT NULL DEFAULT 'pending'")
             self._ensure_column("topic_candidates", "insight_updated_at", "TEXT")
             self._ensure_column("topic_candidates", "insight_error", "TEXT")
+            self._ensure_column("topic_radars", "sandbox_id", "TEXT NOT NULL DEFAULT ''")
             self._ensure_column("topic_radars", "preferred_sources_json", "TEXT NOT NULL DEFAULT '[]'")
             self._ensure_column("topic_candidate_insights", "editorial_note", "TEXT NOT NULL DEFAULT ''")
             self._ensure_column("topic_candidate_insights", "discussion_prompts_json", "TEXT NOT NULL DEFAULT '[]'")
@@ -3966,6 +3983,76 @@ class Database:
                 )
             except sqlite3.OperationalError:
                 pass  # 表不存在 → 跳过 backfill
+            try:
+                self._ensure_column("data_center_ingest_events", "sandbox_id", "TEXT NOT NULL DEFAULT ''")
+                self.conn.execute(
+                    """
+                    UPDATE data_center_ingest_events
+                    SET sandbox_id = (
+                        SELECT clients.sandbox_id
+                        FROM clients
+                        WHERE clients.id = data_center_ingest_events.client_id
+                          AND COALESCE(clients.sandbox_id, '') != ''
+                        LIMIT 1
+                    )
+                    WHERE COALESCE(sandbox_id, '') = ''
+                      AND COALESCE(client_id, '') != ''
+                      AND EXISTS (
+                        SELECT 1
+                        FROM clients
+                        WHERE clients.id = data_center_ingest_events.client_id
+                          AND COALESCE(clients.sandbox_id, '') != ''
+                      )
+                    """
+                )
+                self.conn.execute(
+                    """
+                    UPDATE data_center_ingest_events
+                    SET sandbox_id = (
+                        SELECT tasks.sandbox_id
+                        FROM tasks
+                        WHERE tasks.id = data_center_ingest_events.task_id
+                          AND COALESCE(tasks.sandbox_id, '') != ''
+                        LIMIT 1
+                    )
+                    WHERE COALESCE(sandbox_id, '') = ''
+                      AND COALESCE(task_id, '') != ''
+                      AND EXISTS (
+                        SELECT 1
+                        FROM tasks
+                        WHERE tasks.id = data_center_ingest_events.task_id
+                          AND COALESCE(tasks.sandbox_id, '') != ''
+                      )
+                    """
+                )
+                self.conn.execute(
+                    """
+                    UPDATE data_center_ingest_events
+                    SET sandbox_id = (
+                        SELECT event_lines.sandbox_id
+                        FROM event_lines
+                        WHERE event_lines.id = data_center_ingest_events.event_line_id
+                          AND COALESCE(event_lines.sandbox_id, '') != ''
+                        LIMIT 1
+                    )
+                    WHERE COALESCE(sandbox_id, '') = ''
+                      AND COALESCE(event_line_id, '') != ''
+                      AND EXISTS (
+                        SELECT 1
+                        FROM event_lines
+                        WHERE event_lines.id = data_center_ingest_events.event_line_id
+                          AND COALESCE(event_lines.sandbox_id, '') != ''
+                      )
+                    """
+                )
+                self.conn.execute(
+                    """
+                    CREATE INDEX IF NOT EXISTS idx_data_center_ingest_events_sandbox
+                    ON data_center_ingest_events(sandbox_id, source_type, updated_at DESC)
+                    """
+                )
+            except sqlite3.OperationalError:
+                pass
             # P6: 客户 canonical 化 - 多别名 (e.g. 测试机构A / 测试机构A / 测试机构A慈善基金会)
             # 建客户时实时模糊匹配防止多人重复建客户, collaborator 加入既有客户的基础
             self._ensure_column("clients", "aliases_json", "TEXT NOT NULL DEFAULT '[]'")
@@ -3980,6 +4067,16 @@ class Database:
             # (爬取/数据中心计算/资讯抓取/知识库索引等),所有列客户的 endpoint 默认不返回它
             # NULL = 未冷冻;有值 = 冷冻时间(ISO 字符串,审计用)
             self._ensure_column("clients", "frozen_at", "TEXT")
+            self._ensure_column("sandboxes", "cloud_instance_id", "TEXT NOT NULL DEFAULT ''")
+            self._ensure_column("sandboxes", "identity_state", "TEXT NOT NULL DEFAULT 'unverified'")
+            self._ensure_column("sandboxes", "identity_verified_at", "TEXT")
+            self._ensure_column("sandboxes", "identity_error", "TEXT NOT NULL DEFAULT ''")
+            self.conn.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_sandboxes_cloud_identity
+                ON sandboxes(cloud_instance_id, organization_id)
+                """
+            )
             # 批 3：clients 接通 cloud sync 所需字段（mimic event_lines / tasks 的 sync schema）
             self._ensure_column("clients", "sync_status", "TEXT NOT NULL DEFAULT 'local'")
             self._ensure_column("clients", "cloud_id", "TEXT")
@@ -3990,6 +4087,7 @@ class Database:
             self._ensure_column("task_lists", "sandbox_id", "TEXT NOT NULL DEFAULT ''")
             self._ensure_column("task_tags", "sandbox_id", "TEXT NOT NULL DEFAULT ''")
             self._rebuild_task_tags_without_global_name_unique()
+            self._rebuild_task_settings_with_sandbox_scope()
             self._ensure_column("tasks", "tag_ids_json", "TEXT NOT NULL DEFAULT '[]'")
             self._ensure_column("tasks", "sandbox_id", "TEXT NOT NULL DEFAULT ''")
             self._ensure_column("tasks", "organization_id", "TEXT NOT NULL DEFAULT ''")
@@ -4024,6 +4122,8 @@ class Database:
             self._ensure_column("tasks", "last_sync_error", "TEXT NOT NULL DEFAULT ''")
             self.conn.executescript(
                 """
+                CREATE INDEX IF NOT EXISTS idx_sandboxes_cloud_identity
+                    ON sandboxes(cloud_instance_id, organization_id);
                 CREATE INDEX IF NOT EXISTS idx_clients_sandbox_updated
                     ON clients(sandbox_id, updated_at DESC);
                 CREATE INDEX IF NOT EXISTS idx_tasks_sandbox_updated
@@ -4108,6 +4208,7 @@ class Database:
                 """
             )
             self._ensure_column("event_lines", "business_category", "TEXT")
+            self._ensure_column("event_lines", "sandbox_id", "TEXT NOT NULL DEFAULT ''")
             self._ensure_column("event_lines", "current_blocker", "TEXT")
             self._ensure_column("event_lines", "recent_decision", "TEXT")
             self._ensure_column("event_lines", "evidence_count", "INTEGER NOT NULL DEFAULT 0")
@@ -4122,6 +4223,34 @@ class Database:
             self._ensure_column("event_lines", "last_cloud_version", "TEXT NOT NULL DEFAULT ''")
             self._ensure_column("event_lines", "pending_sync_action", "TEXT NOT NULL DEFAULT ''")
             self._ensure_column("event_lines", "last_sync_error", "TEXT NOT NULL DEFAULT ''")
+            self.conn.execute(
+                """
+                UPDATE event_lines
+                SET sandbox_id = (
+                    SELECT clients.sandbox_id
+                    FROM clients
+                    WHERE clients.id = event_lines.primary_client_id
+                      AND COALESCE(clients.sandbox_id, '') != ''
+                    LIMIT 1
+                )
+                WHERE COALESCE(event_lines.sandbox_id, '') = ''
+                  AND COALESCE(event_lines.primary_client_id, '') != ''
+                  AND EXISTS (
+                    SELECT 1
+                    FROM clients
+                    WHERE clients.id = event_lines.primary_client_id
+                      AND COALESCE(clients.sandbox_id, '') != ''
+                  )
+                """
+            )
+            self.conn.executescript(
+                """
+                CREATE INDEX IF NOT EXISTS idx_event_lines_sandbox_updated
+                    ON event_lines(sandbox_id, updated_at DESC);
+                CREATE INDEX IF NOT EXISTS idx_event_lines_sandbox_cloud
+                    ON event_lines(sandbox_id, cloud_id);
+                """
+            )
             self._ensure_column("event_line_activities", "created_at", "TEXT NOT NULL DEFAULT ''")
             self._ensure_column("event_line_activities", "is_key", "INTEGER NOT NULL DEFAULT 0")
             self._ensure_column("event_line_attachments", "document_id", "TEXT")
@@ -4142,6 +4271,7 @@ class Database:
             self._ensure_column("client_dna_documents", "source_kind", "TEXT NOT NULL DEFAULT 'manual'")
             self._ensure_column("client_dna_documents", "missing_info_json", "TEXT NOT NULL DEFAULT '[]'")
             self._ensure_column("weekly_reviews", "operator_id", "TEXT NOT NULL DEFAULT ''")
+            self._ensure_column("weekly_reviews", "sandbox_id", "TEXT NOT NULL DEFAULT ''")
             self._ensure_column("weekly_reviews", "organization_id", "TEXT NOT NULL DEFAULT ''")
             self._ensure_column("weekly_reviews", "user_id", "TEXT NOT NULL DEFAULT ''")
             self._ensure_column("weekly_reviews", "work_progress", "TEXT NOT NULL DEFAULT ''")
@@ -4166,6 +4296,48 @@ class Database:
             self._ensure_column("weekly_review_task_entries", "organization_id", "TEXT NOT NULL DEFAULT ''")
             self._ensure_column("weekly_review_task_entries", "user_id", "TEXT NOT NULL DEFAULT ''")
             self._ensure_column("weekly_review_task_entries", "structured_note_json", "TEXT NOT NULL DEFAULT '{}'")
+            self.conn.execute(
+                """
+                UPDATE weekly_reviews
+                SET sandbox_id = (
+                    SELECT COALESCE(t.sandbox_id, '')
+                    FROM weekly_review_task_entries e
+                    JOIN tasks t ON t.id = e.task_id
+                    WHERE e.review_id = weekly_reviews.id
+                      AND COALESCE(t.sandbox_id, '') != ''
+                    ORDER BY e.reviewed_at DESC, e.created_at DESC
+                    LIMIT 1
+                )
+                WHERE COALESCE(sandbox_id, '') = ''
+                  AND EXISTS (
+                    SELECT 1
+                    FROM weekly_review_task_entries e
+                    JOIN tasks t ON t.id = e.task_id
+                    WHERE e.review_id = weekly_reviews.id
+                      AND COALESCE(t.sandbox_id, '') != ''
+                  )
+                """
+            )
+            self.conn.execute(
+                """
+                UPDATE weekly_reviews
+                SET sandbox_id = (
+                    SELECT s.id
+                    FROM sandboxes s
+                    WHERE COALESCE(s.organization_id, '') = COALESCE(weekly_reviews.organization_id, '')
+                      AND COALESCE(s.organization_id, '') != ''
+                    LIMIT 1
+                )
+                WHERE COALESCE(sandbox_id, '') = ''
+                  AND COALESCE(organization_id, '') != ''
+                  AND (
+                    SELECT COUNT(1)
+                    FROM sandboxes s
+                    WHERE COALESCE(s.organization_id, '') = COALESCE(weekly_reviews.organization_id, '')
+                      AND COALESCE(s.organization_id, '') != ''
+                  ) = 1
+                """
+            )
             for table_name in ("documents", "document_chunks", "v2_documents"):
                 self._ensure_column(table_name, "document_family_id", "TEXT NOT NULL DEFAULT ''")
                 self._ensure_column(table_name, "canonical_kind", "TEXT NOT NULL DEFAULT 'raw_file'")
@@ -4183,6 +4355,7 @@ class Database:
                 self._ensure_column(table_name, "content_domain", "TEXT NOT NULL DEFAULT 'work'")
                 self._ensure_column(table_name, "lifecycle_status", "TEXT NOT NULL DEFAULT 'active'")
             self._ensure_column("memory_facts", "organization_id", "TEXT NOT NULL DEFAULT ''")
+            self._ensure_column("memory_facts", "sandbox_id", "TEXT NOT NULL DEFAULT ''")
             self._ensure_column("memory_facts", "department_id", "TEXT NOT NULL DEFAULT ''")
             self._ensure_column("memory_facts", "department_ids_json", "TEXT NOT NULL DEFAULT '[]'")
             self._ensure_column("memory_facts", "owner_user_id", "TEXT NOT NULL DEFAULT ''")
@@ -4192,6 +4365,66 @@ class Database:
             self._ensure_column("memory_facts", "content_domain", "TEXT NOT NULL DEFAULT 'work'")
             self._ensure_column("memory_facts", "lifecycle_status", "TEXT NOT NULL DEFAULT 'active'")
             self._ensure_column("memory_facts", "superseded_by_event_id", "TEXT NOT NULL DEFAULT ''")
+            self.conn.execute(
+                """
+                UPDATE memory_facts
+                SET sandbox_id = (
+                    SELECT clients.sandbox_id
+                    FROM clients
+                    WHERE clients.id = memory_facts.scope_id
+                      AND COALESCE(clients.sandbox_id, '') != ''
+                    LIMIT 1
+                )
+                WHERE COALESCE(memory_facts.sandbox_id, '') = ''
+                  AND memory_facts.scope_type = 'client'
+                  AND EXISTS (
+                    SELECT 1
+                    FROM clients
+                    WHERE clients.id = memory_facts.scope_id
+                      AND COALESCE(clients.sandbox_id, '') != ''
+                  )
+                """
+            )
+            self.conn.execute(
+                """
+                UPDATE memory_facts
+                SET sandbox_id = (
+                    SELECT tasks.sandbox_id
+                    FROM tasks
+                    WHERE tasks.id = memory_facts.scope_id
+                      AND COALESCE(tasks.sandbox_id, '') != ''
+                    LIMIT 1
+                )
+                WHERE COALESCE(memory_facts.sandbox_id, '') = ''
+                  AND memory_facts.scope_type = 'task'
+                  AND EXISTS (
+                    SELECT 1
+                    FROM tasks
+                    WHERE tasks.id = memory_facts.scope_id
+                      AND COALESCE(tasks.sandbox_id, '') != ''
+                  )
+                """
+            )
+            self.conn.execute(
+                """
+                UPDATE memory_facts
+                SET sandbox_id = (
+                    SELECT event_lines.sandbox_id
+                    FROM event_lines
+                    WHERE event_lines.id = memory_facts.scope_id
+                      AND COALESCE(event_lines.sandbox_id, '') != ''
+                    LIMIT 1
+                )
+                WHERE COALESCE(memory_facts.sandbox_id, '') = ''
+                  AND memory_facts.scope_type = 'event_line'
+                  AND EXISTS (
+                    SELECT 1
+                    FROM event_lines
+                    WHERE event_lines.id = memory_facts.scope_id
+                      AND COALESCE(event_lines.sandbox_id, '') != ''
+                  )
+                """
+            )
             # 第一档 #3 fix: 逐行 UPDATE 循环 三表 (documents/v2_documents/memory_facts) 包事务.
             # 原 bug: 每行独立 commit, 循环跑到一半崩 → 留下部分 department_ids_json 已填部分未填
             # 的半脏数据. 现在: 三表整体作为一个事务, 中途崩全部 rollback, 下次启动重做完整循环.
@@ -4405,6 +4638,12 @@ class Database:
                 """
                 CREATE INDEX IF NOT EXISTS idx_memory_facts_access_scope
                 ON memory_facts(organization_id, department_id, owner_user_id, lifecycle_status)
+                """
+            )
+            self.conn.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_memory_facts_sandbox_scope
+                ON memory_facts(sandbox_id, scope_type, scope_id, updated_at DESC)
                 """
             )
             self.conn.execute(
@@ -4789,6 +5028,8 @@ class Database:
             self._ensure_column("learning_recommendations", "sandbox_id", "TEXT NOT NULL DEFAULT 'sbx_local_default'")
             self.conn.executescript(
                 """
+                CREATE INDEX IF NOT EXISTS idx_weekly_reviews_sandbox_operator_week
+                    ON weekly_reviews(sandbox_id, operator_id, week_label, updated_at DESC);
                 CREATE INDEX IF NOT EXISTS idx_growth_signal_sandbox_user_created
                     ON growth_signal_events(sandbox_id, user_id, created_at DESC);
                 CREATE INDEX IF NOT EXISTS idx_growth_evidence_sandbox_user_created
@@ -4963,7 +5204,8 @@ class Database:
             self.conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS task_settings (
-                    operator_id TEXT PRIMARY KEY,
+                    sandbox_id TEXT NOT NULL DEFAULT '',
+                    operator_id TEXT NOT NULL,
                     default_list_id TEXT,
                     default_priority TEXT NOT NULL DEFAULT 'normal',
                     default_due_date_preset TEXT NOT NULL DEFAULT 'today',
@@ -4973,6 +5215,7 @@ class Database:
                     default_review_scope TEXT NOT NULL DEFAULT 'work',
                     auto_assign_self INTEGER NOT NULL DEFAULT 1,
                     updated_at TEXT NOT NULL,
+                    PRIMARY KEY(sandbox_id, operator_id),
                     FOREIGN KEY(operator_id) REFERENCES operators(id) ON DELETE CASCADE,
                     FOREIGN KEY(default_list_id) REFERENCES task_lists(id) ON DELETE SET NULL
                 );
@@ -5156,6 +5399,9 @@ class Database:
                     UNIQUE(scope_type, scope_id)
                 )
                 """
+            )
+            self.conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_topic_radars_sandbox_created ON topic_radars(sandbox_id, created_at ASC)"
             )
             self.conn.execute(
                 """
@@ -5394,6 +5640,110 @@ class Database:
             INSERT INTO task_tags({", ".join(target_columns)})
             SELECT {", ".join(select_exprs)}
             FROM {backup_table}
+            """
+        )
+        self.conn.execute(f"DROP TABLE IF EXISTS {backup_table}")
+
+    def _rebuild_task_settings_with_sandbox_scope(self) -> None:
+        row = self.conn.execute(
+            "SELECT sql FROM sqlite_master WHERE type='table' AND name='task_settings'"
+        ).fetchone()
+        if not row:
+            return
+        raw_sql = str(row["sql"] or "")
+        normalized_sql = re.sub(r"\s+", " ", raw_sql).lower()
+        table_info = self.conn.execute("PRAGMA table_info(task_settings)").fetchall()
+        columns = {str(info["name"]) for info in table_info}
+        has_composite_pk = "primary key(sandbox_id, operator_id)" in normalized_sql or "primary key (sandbox_id, operator_id)" in normalized_sql
+        if "sandbox_id" in columns and has_composite_pk:
+            self.conn.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_task_settings_sandbox_operator
+                ON task_settings(sandbox_id, operator_id)
+                """
+            )
+            return
+
+        backup_table = "task_settings__sandbox_scope_backup"
+        self.conn.execute(f"DROP TABLE IF EXISTS {backup_table}")
+        self.conn.execute(f"ALTER TABLE task_settings RENAME TO {backup_table}")
+        self.conn.executescript(
+            """
+            CREATE TABLE task_settings (
+                sandbox_id TEXT NOT NULL DEFAULT '',
+                operator_id TEXT NOT NULL,
+                default_list_id TEXT,
+                default_priority TEXT NOT NULL DEFAULT 'normal',
+                default_due_date_preset TEXT NOT NULL DEFAULT 'today',
+                default_view_mode TEXT NOT NULL DEFAULT 'list',
+                list_sort_mode TEXT NOT NULL DEFAULT 'manual',
+                show_completed_tasks INTEGER NOT NULL DEFAULT 0,
+                default_review_scope TEXT NOT NULL DEFAULT 'work',
+                auto_assign_self INTEGER NOT NULL DEFAULT 1,
+                updated_at TEXT NOT NULL,
+                PRIMARY KEY(sandbox_id, operator_id),
+                FOREIGN KEY(operator_id) REFERENCES operators(id) ON DELETE CASCADE,
+                FOREIGN KEY(default_list_id) REFERENCES task_lists(id) ON DELETE SET NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_task_settings_sandbox_operator
+            ON task_settings(sandbox_id, operator_id);
+            """
+        )
+        legacy_columns = {
+            str(info["name"])
+            for info in self.conn.execute(f"PRAGMA table_info({backup_table})").fetchall()
+        }
+        sandbox_expr = (
+            "COALESCE(NULLIF(sandbox_id, ''), "
+            "(SELECT NULLIF(value, '') FROM settings WHERE key = 'active_sandbox_id'), "
+            "(SELECT id FROM sandboxes ORDER BY is_legacy_default DESC, last_active_at DESC, created_at ASC LIMIT 1), "
+            "'sbx_local_default')"
+            if "sandbox_id" in legacy_columns
+            else (
+                "COALESCE("
+                "(SELECT NULLIF(value, '') FROM settings WHERE key = 'active_sandbox_id'), "
+                "(SELECT id FROM sandboxes ORDER BY is_legacy_default DESC, last_active_at DESC, created_at ASC LIMIT 1), "
+                "'sbx_local_default')"
+            )
+        )
+        target_columns = [
+            "sandbox_id",
+            "operator_id",
+            "default_list_id",
+            "default_priority",
+            "default_due_date_preset",
+            "default_view_mode",
+            "list_sort_mode",
+            "show_completed_tasks",
+            "default_review_scope",
+            "auto_assign_self",
+            "updated_at",
+        ]
+        defaults = {
+            "default_list_id": "NULL",
+            "default_priority": "'normal'",
+            "default_due_date_preset": "'today'",
+            "default_view_mode": "'list'",
+            "list_sort_mode": "'manual'",
+            "show_completed_tasks": "0",
+            "default_review_scope": "'work'",
+            "auto_assign_self": "1",
+            "updated_at": "''",
+        }
+        select_exprs = []
+        for column in target_columns:
+            if column == "sandbox_id":
+                select_exprs.append(sandbox_expr)
+            elif column in legacy_columns:
+                select_exprs.append(column)
+            else:
+                select_exprs.append(defaults.get(column, "''"))
+        self.conn.execute(
+            f"""
+            INSERT OR REPLACE INTO task_settings({", ".join(target_columns)})
+            SELECT {", ".join(select_exprs)}
+            FROM {backup_table}
+            WHERE COALESCE(operator_id, '') != ''
             """
         )
         self.conn.execute(f"DROP TABLE IF EXISTS {backup_table}")

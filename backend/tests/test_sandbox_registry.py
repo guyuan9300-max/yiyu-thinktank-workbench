@@ -14,6 +14,7 @@ from app.services.sandbox_registry import (  # noqa: E402
     ACTIVE_SANDBOX_SETTING_KEY,
     DEFAULT_LOCAL_SANDBOX_ID,
     activate_sandbox,
+    clear_active_cloud_session,
     create_sandbox,
     ensure_organization_sandbox_for_session,
     ensure_sandbox_registry,
@@ -24,6 +25,7 @@ from app.services.sandbox_registry import (  # noqa: E402
     list_sandboxes,
     set_sandbox_setting,
 )
+from app.services.workspace_context import load_workspace_context  # noqa: E402
 
 
 def make_client(tmp_path: Path) -> TestClient:
@@ -59,6 +61,96 @@ def test_new_database_bootstraps_local_workspace(tmp_path: Path) -> None:
     assert current.json()["id"] == DEFAULT_LOCAL_SANDBOX_ID
     assert current.json()["kind"] == "local"
     assert current.json()["name"] == "未连接组织的本机草稿"
+    assert current.json()["runtimeStatus"] == "local_draft"
+    assert current.json()["requiresLogin"] is False
+
+
+def test_workspace_current_reports_needs_login_for_existing_org_without_token(tmp_path: Path) -> None:
+    client = make_client(tmp_path)
+
+    created = client.post(
+        "/api/v1/workspaces",
+        json={"kind": "organization", "name": "星丛", "cloudApiUrl": "https://star.example.test"},
+    )
+    assert created.status_code == 200, created.text
+
+    current = client.get("/api/v1/workspaces/current")
+    assert current.status_code == 200, current.text
+    payload = current.json()
+    assert payload["kind"] == "organization"
+    assert payload["runtimeStatus"] == "needs_login"
+    assert payload["requiresLogin"] is True
+    assert "重新登录" in payload["statusMessage"] or "云端地址" in payload["statusMessage"]
+
+
+def test_explicit_missing_workspace_context_does_not_fallback_to_local(tmp_path: Path) -> None:
+    client = make_client(tmp_path)
+    db = client.app.state.app_state.db
+
+    ctx = load_workspace_context(db, "sbx_missing_target")
+
+    assert ctx.sandbox_id == "sbx_missing_target"
+    assert ctx.kind == "missing"
+    assert ctx.identity_state == "error"
+    assert "不存在" in ctx.identity_error
+
+
+def test_workspace_current_reports_ready_when_org_has_session_token(tmp_path: Path) -> None:
+    client = make_client(tmp_path)
+    db = client.app.state.app_state.db
+    workspace = ensure_organization_sandbox_for_session(
+        db,
+        organization_id="org_a",
+        organization_name="组织 A",
+        cloud_api_url="https://cloud-a.example.test",
+    )
+    active_id = workspace.id
+    set_sandbox_setting(db, active_id, "cloud_access_token", "token-a")
+    set_sandbox_setting(
+        db,
+        active_id,
+        "cloud_session_user",
+        json.dumps(
+            {
+                "id": "user_a",
+                "organizationId": "org_a",
+                "organizationName": "组织 A",
+                "email": "a@example.test",
+                "fullName": "用户 A",
+            },
+            ensure_ascii=False,
+        ),
+    )
+
+    current = client.get("/api/v1/workspaces/current")
+    assert current.status_code == 200, current.text
+    payload = current.json()
+    assert payload["runtimeStatus"] == "ready"
+    assert payload["requiresLogin"] is False
+    assert payload["sessionSnapshot"]["fullName"] == "用户 A"
+
+
+def test_workspace_current_reports_identity_error_for_mismatched_identity(tmp_path: Path) -> None:
+    client = make_client(tmp_path)
+    db = client.app.state.app_state.db
+    org = create_sandbox(db, kind="organization", name="组织 B", cloud_api_url="https://cloud-b.example.test")
+    db.execute(
+        """
+        UPDATE sandboxes
+           SET identity_state = 'mismatch',
+               identity_error = '云实例或组织身份不一致'
+         WHERE id = ?
+        """,
+        (org.id,),
+    )
+    activate_sandbox(db, org.id)
+
+    current = client.get("/api/v1/workspaces/current")
+    assert current.status_code == 200, current.text
+    payload = current.json()
+    assert payload["runtimeStatus"] == "identity_error"
+    assert payload["requiresLogin"] is False
+    assert "不一致" in payload["statusMessage"]
 
 
 def test_existing_cloud_session_bootstraps_organization_workspace(tmp_path: Path) -> None:
@@ -200,6 +292,44 @@ def test_organization_workspace_identity_includes_cloud_url(tmp_path: Path) -> N
     assert get_active_sandbox_setting(db, "cloud_access_token", "") == "token-a"
 
 
+def test_organization_workspace_identity_prefers_cloud_instance_over_url(tmp_path: Path) -> None:
+    db = Database(tmp_path / "app.db")
+    ensure_sandbox_registry(db)
+
+    first = ensure_organization_sandbox_for_session(
+        db,
+        organization_id="org_same_id",
+        organization_name="同名组织",
+        cloud_api_url="https://cloud.example.test",
+        cloud_instance_id="cloud_instance_a",
+    )
+    set_sandbox_setting(db, first.id, "cloud_access_token", "token-a")
+
+    second = ensure_organization_sandbox_for_session(
+        db,
+        organization_id="org_same_id",
+        organization_name="同名组织",
+        cloud_api_url="https://cloud.example.test",
+        cloud_instance_id="cloud_instance_b",
+    )
+    set_sandbox_setting(db, second.id, "cloud_access_token", "token-b")
+
+    assert first.id != second.id
+    assert first.organizationId == second.organizationId == "org_same_id"
+    assert first.cloudInstanceId == "cloud_instance_a"
+    assert second.cloudInstanceId == "cloud_instance_b"
+
+    again = ensure_organization_sandbox_for_session(
+        db,
+        organization_id="org_same_id",
+        organization_name="同名组织",
+        cloud_api_url="https://cloud.example.test",
+        cloud_instance_id="cloud_instance_a",
+    )
+    assert again.id == first.id
+    assert get_active_sandbox_setting(db, "cloud_access_token", "") == "token-a"
+
+
 def test_new_workspace_does_not_inherit_legacy_global_cloud_token(tmp_path: Path) -> None:
     db = Database(tmp_path / "app.db")
     db.set_setting("cloud_access_token", "legacy-token")
@@ -315,6 +445,86 @@ def test_mismatched_workspace_session_is_not_reported_connected(tmp_path: Path) 
     assert active.cloudConnected is False
     assert active.cloudConnectionStatus == "needs_login"
     assert active.cloudUserFullName is None
+    assert active.sessionSnapshot["fullName"] == "用户"
+    assert active.runtimeStatus == "identity_error"
+
+
+def test_clearing_cloud_session_keeps_last_session_snapshot_for_relogin_state(tmp_path: Path) -> None:
+    db = Database(tmp_path / "app.db")
+    workspace = ensure_organization_sandbox_for_session(
+        db,
+        organization_id="org_snapshot",
+        organization_name="快照组织",
+        cloud_api_url="https://snapshot.example.test",
+    )
+    session_payload = json.dumps(
+        {
+            "id": "emp_snapshot",
+            "organizationId": "org_snapshot",
+            "organizationName": "快照组织",
+            "email": "snapshot@example.test",
+            "fullName": "快照用户",
+            "primaryRole": "employee",
+            "accountStatus": "approved",
+            "membershipStatus": "approved",
+        },
+        ensure_ascii=False,
+    )
+    set_sandbox_setting(db, workspace.id, "cloud_access_token", "token")
+    set_sandbox_setting(db, workspace.id, "cloud_refresh_token", "refresh")
+    set_sandbox_setting(db, workspace.id, "cloud_session_user", session_payload)
+    set_sandbox_setting(db, workspace.id, "cloud_session_user_snapshot", session_payload)
+
+    clear_active_cloud_session(db)
+    active = get_active_sandbox(db)
+
+    assert active.id == workspace.id
+    assert active.runtimeStatus == "needs_login"
+    assert active.cloudUserFullName is None
+    assert active.sessionSnapshot["fullName"] == "快照用户"
+
+
+def test_workspace_diagnostics_report_session_integrity_without_token_values(tmp_path: Path) -> None:
+    client = make_client(tmp_path)
+    db = client.app.state.app_state.db
+    workspace = ensure_organization_sandbox_for_session(
+        db,
+        organization_id="org_diag",
+        organization_name="诊断组织",
+        cloud_api_url="https://diag.example.test",
+        cloud_instance_id="cli_diag",
+    )
+    set_sandbox_setting(db, workspace.id, "cloud_access_token", "secret-access-token")
+    set_sandbox_setting(db, workspace.id, "cloud_refresh_token", "secret-refresh-token")
+    set_sandbox_setting(
+        db,
+        workspace.id,
+        "cloud_session_user",
+        json.dumps(
+            {
+                "id": "emp_diag",
+                "organizationId": "org_diag",
+                "organizationName": "诊断组织",
+                "email": "diag@example.test",
+                "fullName": "诊断用户",
+                "primaryRole": "admin",
+                "accountStatus": "approved",
+                "membershipStatus": "approved",
+            },
+            ensure_ascii=False,
+        ),
+    )
+
+    response = client.get("/api/v1/workspaces/diagnostics")
+
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    record = next(item for item in payload["workspaces"] if item["sandboxId"] == workspace.id)
+    assert record["hasAccessToken"] is True
+    assert record["hasRefreshToken"] is True
+    assert record["sessionUserFullName"] == "诊断用户"
+    assert "secret-access-token" not in response.text
+    assert "secret-refresh-token" not in response.text
 
 
 def test_auth_me_in_org_workspace_without_token_does_not_fall_back_to_local_draft(tmp_path: Path) -> None:

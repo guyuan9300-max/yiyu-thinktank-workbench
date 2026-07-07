@@ -45,7 +45,8 @@
     "release:mac:publish": "node scripts/publish-to-tos.mjs",
     "release:mac:publish:dry": "node scripts/publish-to-tos.mjs --dry-run",
     "release:mac:tos": "node scripts/release-mac-to-tos.mjs",
-    "check:source-cleanliness": "node scripts/check-source-cleanliness.mjs"
+    "check:source-cleanliness": "node scripts/check-source-cleanliness.mjs",
+    "audit:sandbox": "python3 scripts/audit_sandbox_contract.py && python3 scripts/audit_sandbox_queries.py"
   },
   "build": {
     "appId": "com.yiyu.selfworkbench2",

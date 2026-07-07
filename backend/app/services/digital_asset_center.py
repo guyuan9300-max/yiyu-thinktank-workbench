@@ -900,23 +900,29 @@ INTERNAL_SMOKE_CLIENT_ALIAS = "workspace-smoke"
 INTERNAL_SMOKE_CLIENT_NAME = "安装态冒烟客户"
 
 
-def build_digital_asset_dashboard(db: Database) -> DigitalAssetDashboardRecord:
+def build_digital_asset_dashboard(db: Database, *, sandbox_id: str | None = None) -> DigitalAssetDashboardRecord:
     clients = []
+    sandbox_filter = ""
+    params: list[object] = [INTERNAL_SMOKE_CLIENT_ALIAS, INTERNAL_SMOKE_CLIENT_NAME]
+    if sandbox_id:
+        sandbox_filter = "AND COALESCE(sandbox_id, '') = ?"
+        params.append(sandbox_id)
     for row in db.fetchall(
-        """
+        f"""
         SELECT id
         FROM clients
         WHERE COALESCE(alias, '') != ?
           AND COALESCE(name, '') != ?
+          {sandbox_filter}
         ORDER BY updated_at DESC
         """,
-        (INTERNAL_SMOKE_CLIENT_ALIAS, INTERNAL_SMOKE_CLIENT_NAME),
+        tuple(params),
     ):
         detail = build_client_digital_assets(db, str(row["id"]))
         clients.append(_summarize_detail(detail))
     return DigitalAssetDashboardRecord(
         generatedAt=_now_iso(),
-        pulse=_build_digital_asset_pulse(db, clients),
+        pulse=_build_digital_asset_pulse(db, clients, sandbox_id=sandbox_id),
         clients=clients,
     )
 
@@ -924,63 +930,71 @@ def build_digital_asset_dashboard(db: Database) -> DigitalAssetDashboardRecord:
 def _build_digital_asset_pulse(
     db: Database,
     clients: list[DigitalAssetClientSummaryRecord],
+    *,
+    sandbox_id: str | None = None,
 ) -> DigitalAssetPulseRecord:
+    sandbox_clause = "AND COALESCE(c.sandbox_id, '') = ?" if sandbox_id else ""
+    sandbox_params: tuple[object, ...] = (sandbox_id,) if sandbox_id else ()
     weekly_new_facts = _safe_count(
         db,
-        """
+        f"""
         SELECT COUNT(1) AS count
         FROM memory_facts mf
         JOIN clients c ON c.id = mf.scope_id
         WHERE mf.scope_type = 'client'
           AND COALESCE(c.alias, '') != ?
           AND COALESCE(c.name, '') != ?
+          {sandbox_clause}
           AND date(mf.created_at) >= date('now', '-7 days')
         """,
-        (INTERNAL_SMOKE_CLIENT_ALIAS, INTERNAL_SMOKE_CLIENT_NAME),
+        (INTERNAL_SMOKE_CLIENT_ALIAS, INTERNAL_SMOKE_CLIENT_NAME, *sandbox_params),
     )
     weekly_new_documents = _safe_count(
         db,
-        """
+        f"""
         SELECT COUNT(1) AS count
         FROM documents d
         JOIN clients c ON c.id = d.client_id
         WHERE COALESCE(c.alias, '') != ?
           AND COALESCE(c.name, '') != ?
+          {sandbox_clause}
           AND date(d.created_at) >= date('now', '-7 days')
         """,
-        (INTERNAL_SMOKE_CLIENT_ALIAS, INTERNAL_SMOKE_CLIENT_NAME),
+        (INTERNAL_SMOKE_CLIENT_ALIAS, INTERNAL_SMOKE_CLIENT_NAME, *sandbox_params),
     )
     weekly_new_evidence = _safe_count(
         db,
-        """
+        f"""
         SELECT COUNT(1) AS count
         FROM evidence_cards e
         JOIN clients c ON c.id = e.client_id
         WHERE COALESCE(c.alias, '') != ?
           AND COALESCE(c.name, '') != ?
+          {sandbox_clause}
           AND date(e.created_at) >= date('now', '-7 days')
         """,
-        (INTERNAL_SMOKE_CLIENT_ALIAS, INTERNAL_SMOKE_CLIENT_NAME),
+        (INTERNAL_SMOKE_CLIENT_ALIAS, INTERNAL_SMOKE_CLIENT_NAME, *sandbox_params),
     )
     weekly_new_judgments = _safe_count(
         db,
-        """
+        f"""
         SELECT COUNT(1) AS count
         FROM judgment_versions j
         JOIN clients c ON c.id = j.client_id
         WHERE COALESCE(c.alias, '') != ?
           AND COALESCE(c.name, '') != ?
+          {sandbox_clause}
           AND date(j.created_at) >= date('now', '-7 days')
         """,
-        (INTERNAL_SMOKE_CLIENT_ALIAS, INTERNAL_SMOKE_CLIENT_NAME),
+        (INTERNAL_SMOKE_CLIENT_ALIAS, INTERNAL_SMOKE_CLIENT_NAME, *sandbox_params),
     )
-    days_accompanied = _digital_asset_days_accompanied(db)
+    days_accompanied = _digital_asset_days_accompanied(db, sandbox_id=sandbox_id)
     funnel = [
-        DigitalAssetPulseFunnelItemRecord(key="documents", label="资料归档", value=_global_count_for_clients(db, "documents", "client_id")),
-        DigitalAssetPulseFunnelItemRecord(key="memoryFacts", label="组织记忆", value=_global_count_for_clients(db, "memory_facts", "scope_id", "scope_type = 'client'")),
-        DigitalAssetPulseFunnelItemRecord(key="eventLines", label="事件线", value=_global_count_for_clients(db, "event_lines", "primary_client_id")),
-        DigitalAssetPulseFunnelItemRecord(key="evidenceCards", label="证据卡", value=_global_count_for_clients(db, "evidence_cards", "client_id")),
-        DigitalAssetPulseFunnelItemRecord(key="judgments", label="判断", value=_global_count_for_clients(db, "judgment_versions", "client_id")),
+        DigitalAssetPulseFunnelItemRecord(key="documents", label="资料归档", value=_global_count_for_clients(db, "documents", "client_id", sandbox_id=sandbox_id)),
+        DigitalAssetPulseFunnelItemRecord(key="memoryFacts", label="组织记忆", value=_global_count_for_clients(db, "memory_facts", "scope_id", "scope_type = 'client'", sandbox_id=sandbox_id)),
+        DigitalAssetPulseFunnelItemRecord(key="eventLines", label="事件线", value=_global_count_for_clients(db, "event_lines", "primary_client_id", sandbox_id=sandbox_id)),
+        DigitalAssetPulseFunnelItemRecord(key="evidenceCards", label="证据卡", value=_global_count_for_clients(db, "evidence_cards", "client_id", sandbox_id=sandbox_id)),
+        DigitalAssetPulseFunnelItemRecord(key="judgments", label="判断", value=_global_count_for_clients(db, "judgment_versions", "client_id", sandbox_id=sandbox_id)),
     ]
     active_organizations = _build_pulse_active_organizations(db, clients)
     learning_highlights = _build_pulse_learning_highlights(active_organizations, clients)
@@ -1007,15 +1021,21 @@ def _build_digital_asset_pulse(
     )
 
 
-def _digital_asset_days_accompanied(db: Database) -> int:
+def _digital_asset_days_accompanied(db: Database, *, sandbox_id: str | None = None) -> int:
+    sandbox_filter = ""
+    params: list[object] = [INTERNAL_SMOKE_CLIENT_ALIAS, INTERNAL_SMOKE_CLIENT_NAME]
+    if sandbox_id:
+        sandbox_filter = "AND COALESCE(sandbox_id, '') = ?"
+        params.append(sandbox_id)
     row = db.fetchone(
-        """
+        f"""
         SELECT MIN(created_at) AS val
         FROM clients
         WHERE COALESCE(alias, '') != ?
           AND COALESCE(name, '') != ?
+          {sandbox_filter}
         """,
-        (INTERNAL_SMOKE_CLIENT_ALIAS, INTERNAL_SMOKE_CLIENT_NAME),
+        tuple(params),
     )
     first_client_at = str(row["val"]) if row and row["val"] else None
     if not first_client_at:
@@ -1027,7 +1047,15 @@ def _digital_asset_days_accompanied(db: Database) -> int:
         return 0
 
 
-def _global_count_for_clients(db: Database, table: str, client_column: str, extra_where: str = "1=1") -> int:
+def _global_count_for_clients(
+    db: Database,
+    table: str,
+    client_column: str,
+    extra_where: str = "1=1",
+    *,
+    sandbox_id: str | None = None,
+) -> int:
+    sandbox_filter = "AND COALESCE(c.sandbox_id, '') = ?" if sandbox_id else ""
     return _safe_count(
         db,
         f"""
@@ -1037,8 +1065,9 @@ def _global_count_for_clients(db: Database, table: str, client_column: str, extr
         WHERE {extra_where}
           AND COALESCE(c.alias, '') != ?
           AND COALESCE(c.name, '') != ?
+          {sandbox_filter}
         """,
-        (INTERNAL_SMOKE_CLIENT_ALIAS, INTERNAL_SMOKE_CLIENT_NAME),
+        (INTERNAL_SMOKE_CLIENT_ALIAS, INTERNAL_SMOKE_CLIENT_NAME, *((sandbox_id,) if sandbox_id else ())),
     )
 
 

@@ -5041,8 +5041,9 @@ export async function upsertDna(clientId: string, payload: { category: string; c
   });
 }
 
-export async function getTaskBoard() {
-  return request<{ tasks: Task[]; lists: TaskList[]; tags: TaskTag[] }>('/api/v1/tasks');
+export async function getTaskBoard(options?: { syncMode?: 'background' | 'blocking' }) {
+  const suffix = options?.syncMode === 'blocking' ? '?syncMode=blocking' : '';
+  return request<{ tasks: Task[]; lists: TaskList[]; tags: TaskTag[] }>(`/api/v1/tasks${suffix}`);
 }
 
 export async function createSupportRequest(payload: SupportRequestCreatePayload) {

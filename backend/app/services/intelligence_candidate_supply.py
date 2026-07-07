@@ -26,6 +26,7 @@ from app.services.intelligence_ai_runner import (
     generate_intelligence_text,
     intelligence_ai_ready,
 )
+from app.services.sandbox_registry import get_active_sandbox_setting
 from app.services.intelligence_search_intents import GeneratedSearchIntent, IntelligenceSearchScope
 from app.services.intelligence_timely_strategy import (
     build_timely_research_strategy,
@@ -57,7 +58,7 @@ def refresh_cycle_hours(db: Database, content_kind: str) -> int:
     )
     default = PROFILE_TTL_HOURS if content_kind == "profile_completion" else TIMELY_TTL_HOURS
     try:
-        value = int(db.get_setting(key, str(default)))
+        value = int(get_active_sandbox_setting(db, key, str(default)))
     except Exception:
         value = default
     return max(1, min(value, 8760))

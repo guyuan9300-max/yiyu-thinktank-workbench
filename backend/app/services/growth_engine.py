@@ -1198,9 +1198,10 @@ def _count_source_events(db: Database, user_id: str, *, sandbox_id: str | None =
             SELECT id, week_label, length(summary) AS slen
             FROM weekly_reviews
             WHERE user_id = ? AND length(summary) >= 30
+              AND (? IS NULL OR COALESCE(sandbox_id, '') = ?)
             ORDER BY created_at DESC
             """,
-            (user_id,),
+            (user_id, sandbox_id, sandbox_id or ""),
         )
         if rows:
             _add("weekly_review_summary", len(rows), f"{rows[0]['week_label']} 周复盘")
@@ -1211,13 +1212,15 @@ def _count_source_events(db: Database, user_id: str, *, sandbox_id: str | None =
     try:
         rows = db.fetchall(
             """
-            SELECT id, week_label, length(note) AS nlen
-            FROM weekly_review_task_entries
-            WHERE user_id = ?
-              AND (length(note) >= 20 OR length(structured_note_json) >= 50)
-            ORDER BY reviewed_at DESC
+            SELECT e.id, e.week_label, length(e.note) AS nlen
+            FROM weekly_review_task_entries e
+            INNER JOIN weekly_reviews r ON r.id = e.review_id
+            WHERE e.user_id = ?
+              AND (length(e.note) >= 20 OR length(e.structured_note_json) >= 50)
+              AND (? IS NULL OR COALESCE(r.sandbox_id, '') = ?)
+            ORDER BY e.reviewed_at DESC
             """,
-            (user_id,),
+            (user_id, sandbox_id, sandbox_id or ""),
         )
         if rows:
             _add("weekly_review_task_note", len(rows), f"{rows[0]['week_label']} 任务复盘")
@@ -1542,17 +1545,18 @@ def _fetch_exp_wall_evidence(db: Database, user_id: str, *, sandbox_id: str | No
     return items
 
 
-def _fetch_memory_evidence(db: Database, user_id: str, *, limit: int = 30) -> list[_ObjectiveEvidence]:
+def _fetch_memory_evidence(db: Database, user_id: str, *, sandbox_id: str | None = None, limit: int = 30) -> list[_ObjectiveEvidence]:
     try:
         rows = db.fetchall(
             """
             SELECT id, scope_type, scope_id, fact_key, fact_value, source_type, confidence, updated_at
             FROM memory_facts
             WHERE owner_user_id = ?
+              AND (? IS NULL OR COALESCE(sandbox_id, '') = ?)
             ORDER BY updated_at DESC
             LIMIT ?
             """,
-            (user_id, limit),
+            (user_id, sandbox_id, sandbox_id or "", limit),
         )
     except Exception:
         return []
@@ -1578,17 +1582,19 @@ def _fetch_memory_evidence(db: Database, user_id: str, *, limit: int = 30) -> li
     return items
 
 
-def _fetch_document_evidence(db: Database, user_id: str, *, limit: int = 20) -> list[_ObjectiveEvidence]:
+def _fetch_document_evidence(db: Database, user_id: str, *, sandbox_id: str | None = None, limit: int = 20) -> list[_ObjectiveEvidence]:
     try:
         rows = db.fetchall(
             """
-            SELECT id, file_name, kind, visible_category, updated_at
-            FROM v2_documents
-            WHERE owner_user_id = ?
-            ORDER BY updated_at DESC
+            SELECT d.id, d.file_name, d.kind, d.visible_category, d.updated_at
+            FROM v2_documents d
+            LEFT JOIN clients c ON c.id = d.client_id
+            WHERE d.owner_user_id = ?
+              AND (? IS NULL OR COALESCE(c.sandbox_id, '') = ?)
+            ORDER BY d.updated_at DESC
             LIMIT ?
             """,
-            (user_id, limit),
+            (user_id, sandbox_id, sandbox_id or "", limit),
         )
     except Exception:
         return []
@@ -1626,8 +1632,8 @@ def _collect_objective_evidence(db: Database, user_id: str, *, sandbox_id: str |
     """汇总该用户在数据中心留下的全部客观证据，按时间倒序。"""
     bucket: list[_ObjectiveEvidence] = []
     bucket.extend(_fetch_exp_wall_evidence(db, user_id, sandbox_id=sandbox_id))
-    bucket.extend(_fetch_memory_evidence(db, user_id))
-    bucket.extend(_fetch_document_evidence(db, user_id))
+    bucket.extend(_fetch_memory_evidence(db, user_id, sandbox_id=sandbox_id))
+    bucket.extend(_fetch_document_evidence(db, user_id, sandbox_id=sandbox_id))
     bucket.sort(key=lambda x: x.occurred_at, reverse=True)
     return bucket
 
@@ -2534,6 +2540,8 @@ def _build_peer_comparison(
     db: Database,
     user_id: str,
     ability_scores: list[GrowthAbilityScoreRecord],
+    *,
+    sandbox_id: str | None = None,
 ) -> GrowthPeerComparisonRecord:
     """成长速度：在整个机构内的 XP 排名（不按岗位过滤）。
 
@@ -2548,7 +2556,9 @@ def _build_peer_comparison(
             """
             SELECT DISTINCT user_id FROM xp_ledger
             WHERE reversed_at IS NULL AND COALESCE(user_id, '') != ''
-            """
+              AND (? IS NULL OR COALESCE(sandbox_id, '') = ?)
+            """,
+            (sandbox_id, sandbox_id or ""),
         )
         peer_ids = [str(p["user_id"]) for p in peers]
         if user_id not in peer_ids:
@@ -2570,9 +2580,10 @@ def _build_peer_comparison(
             SELECT user_id, SUM(COALESCE(NULLIF(total_xp, 0), delta)) AS xp
             FROM xp_ledger
             WHERE user_id IN ({",".join("?" * len(peer_ids))}) AND reversed_at IS NULL
+              AND (? IS NULL OR COALESCE(sandbox_id, '') = ?)
             GROUP BY user_id
             """,
-            tuple(peer_ids),
+            tuple(peer_ids + [sandbox_id, sandbox_id or ""]),
         )
         peer_xp = {str(r["user_id"]): int(r["xp"] or 0) for r in rows}
         for pid in peer_ids:
@@ -2597,9 +2608,10 @@ def _build_peer_comparison(
                     FROM xp_ledger
                     WHERE user_id IN ({",".join("?" * len(peer_ids))})
                       AND ability_key = ? AND reversed_at IS NULL
+                      AND (? IS NULL OR COALESCE(sandbox_id, '') = ?)
                     GROUP BY user_id
                     """,
-                    tuple(peer_ids + [ab.abilityKey]),
+                    tuple(peer_ids + [ab.abilityKey, sandbox_id, sandbox_id or ""]),
                 )
                 per_xp = {str(r["user_id"]): int(r["xp"] or 0) for r in per_rows}
                 for pid in peer_ids:
@@ -2897,7 +2909,11 @@ def _upsert_signal(
     dedupe_key: str,
     created_at: str,
 ) -> str:
-    existing = db.fetchone("SELECT id FROM growth_signal_events WHERE dedupe_key = ?", (dedupe_key,))
+    sandbox_id = _active_sandbox_id(db)
+    existing = db.fetchone(
+        "SELECT id FROM growth_signal_events WHERE dedupe_key = ? AND COALESCE(sandbox_id, '') = ?",
+        (dedupe_key, sandbox_id),
+    )
     if existing:
         signal_id = str(existing["id"])
         db.execute(
@@ -3157,11 +3173,14 @@ def _insert_signal(
     dedupe_key: str,
     created_at: str,
 ) -> str:
-    existing = db.fetchone("SELECT id FROM growth_signal_events WHERE dedupe_key = ?", (dedupe_key,))
-    if existing:
-        return str(existing["id"])
     signal_id = _new_id("gse")
     sandbox_id = _active_sandbox_id(db)
+    existing = db.fetchone(
+        "SELECT id FROM growth_signal_events WHERE dedupe_key = ? AND COALESCE(sandbox_id, '') = ?",
+        (dedupe_key, sandbox_id),
+    )
+    if existing:
+        return str(existing["id"])
     db.execute(
         """
         INSERT INTO growth_signal_events(
@@ -3675,7 +3694,11 @@ def ingest_handbook_codification(
     ensure_growth_catalog(db, created_at)
     timestamp = created_at or _now_iso()
     dedupe_key = f"handbook:{entry.id}"
-    existing = db.fetchone("SELECT id FROM growth_signal_events WHERE dedupe_key = ?", (dedupe_key,))
+    sandbox_id = _active_sandbox_id(db)
+    existing = db.fetchone(
+        "SELECT id FROM growth_signal_events WHERE dedupe_key = ? AND COALESCE(sandbox_id, '') = ?",
+        (dedupe_key, sandbox_id),
+    )
     if existing:
         return
     signal_id = _insert_signal(
@@ -3842,16 +3865,21 @@ def rebuild_learning_recommendations(
 ) -> None:
     ensure_growth_catalog(db, created_at)
     timestamp = created_at or _now_iso()
-    db.execute("DELETE FROM learning_recommendations WHERE user_id = ? AND status = 'active'", (user_id,))
+    sandbox_id = _active_sandbox_id(db)
+    db.execute(
+        "DELETE FROM learning_recommendations WHERE user_id = ? AND status = 'active' AND COALESCE(sandbox_id, '') = ?",
+        (user_id, sandbox_id),
+    )
 
     totals = {str(row["ability_key"]): int(row["xp"] or 0) for row in db.fetchall(
         """
         SELECT ability_key, SUM(COALESCE(NULLIF(total_xp, 0), delta)) AS xp
         FROM xp_ledger
         WHERE user_id = ? AND reversed_at IS NULL
+          AND COALESCE(sandbox_id, '') = ?
         GROUP BY ability_key
         """,
-        (user_id,),
+        (user_id, sandbox_id),
     )}
     recent_evidence = db.fetchall(
         """
@@ -3867,10 +3895,11 @@ def rebuild_learning_recommendations(
         e
         INNER JOIN growth_signal_events s ON s.id = e.signal_id
         WHERE e.user_id = ?
+          AND COALESCE(e.sandbox_id, '') = ?
         ORDER BY e.created_at DESC
         LIMIT 12
         """,
-        (user_id,),
+        (user_id, sandbox_id),
     )
     blocker_keys = {
         str(row["ability_key"])
@@ -3908,9 +3937,10 @@ def rebuild_learning_recommendations(
             SELECT 1
             FROM learning_recommendations
             WHERE user_id = ? AND dedupe_key = ? AND status IN ('accepted', 'dismissed') AND updated_at >= ?
+              AND COALESCE(sandbox_id, '') = ?
             LIMIT 1
             """,
-            (user_id, dedupe_key, recent_cutoff),
+            (user_id, dedupe_key, recent_cutoff, sandbox_id),
         )
         if existing_recent:
             continue
@@ -3937,7 +3967,7 @@ def rebuild_learning_recommendations(
             """,
             (
                 _new_id("rec"),
-                _active_sandbox_id(db),
+                sandbox_id,
                 user_id,
                 user_name,
                 ability_key,
@@ -3962,7 +3992,7 @@ def rebuild_learning_recommendations(
         )
 
 
-def list_learning_recommendations(db: Database, user_id: str) -> list[LearningRecommendationRecord]:
+def list_learning_recommendations(db: Database, user_id: str, *, sandbox_id: str | None = None) -> list[LearningRecommendationRecord]:
     ensure_growth_catalog(db)
     rows = db.fetchall(
         """
@@ -3982,17 +4012,33 @@ def list_learning_recommendations(db: Database, user_id: str) -> list[LearningRe
         FROM learning_recommendations r
         INNER JOIN learning_content_items c ON c.id = r.content_item_id
         WHERE r.user_id = ? AND r.status = 'active'
+          AND (? IS NULL OR COALESCE(r.sandbox_id, '') = ?)
         ORDER BY CASE r.priority WHEN 'high' THEN 0 WHEN 'normal' THEN 1 ELSE 2 END, r.created_at DESC
         LIMIT 4
         """,
-        (user_id,),
+        (user_id, sandbox_id, sandbox_id or ""),
     )
     return [_build_recommendation_record(db, row) for row in rows]
 
 
-def mark_recommendation_accepted(db: Database, recommendation_id: str, task_id: str, updated_at: str | None = None) -> LearningRecommendationRecord | None:
+def mark_recommendation_accepted(
+    db: Database,
+    recommendation_id: str,
+    task_id: str,
+    updated_at: str | None = None,
+    *,
+    sandbox_id: str | None = None,
+) -> LearningRecommendationRecord | None:
     timestamp = updated_at or _now_iso()
-    row = db.fetchone("SELECT * FROM learning_recommendations WHERE id = ?", (recommendation_id,))
+    row = db.fetchone(
+        """
+        SELECT *
+        FROM learning_recommendations
+        WHERE id = ?
+          AND (? IS NULL OR COALESCE(sandbox_id, '') = ?)
+        """,
+        (recommendation_id, sandbox_id, sandbox_id or ""),
+    )
     if not row:
         return None
     db.execute(
@@ -4000,8 +4046,9 @@ def mark_recommendation_accepted(db: Database, recommendation_id: str, task_id: 
         UPDATE learning_recommendations
         SET status = 'accepted', accepted_task_id = ?, updated_at = ?
         WHERE id = ?
+          AND (? IS NULL OR COALESCE(sandbox_id, '') = ?)
         """,
-        (task_id, timestamp, recommendation_id),
+        (task_id, timestamp, recommendation_id, sandbox_id, sandbox_id or ""),
     )
     updated_row = db.fetchone(
         """
@@ -4021,15 +4068,31 @@ def mark_recommendation_accepted(db: Database, recommendation_id: str, task_id: 
         FROM learning_recommendations r
         INNER JOIN learning_content_items c ON c.id = r.content_item_id
         WHERE r.id = ?
+          AND (? IS NULL OR COALESCE(r.sandbox_id, '') = ?)
         """,
-        (recommendation_id,),
+        (recommendation_id, sandbox_id, sandbox_id or ""),
     )
     return _build_recommendation_record(db, updated_row) if updated_row else None
 
 
-def mark_recommendation_dismissed(db: Database, recommendation_id: str, reason: str = "", updated_at: str | None = None) -> LearningRecommendationRecord | None:
+def mark_recommendation_dismissed(
+    db: Database,
+    recommendation_id: str,
+    reason: str = "",
+    updated_at: str | None = None,
+    *,
+    sandbox_id: str | None = None,
+) -> LearningRecommendationRecord | None:
     timestamp = updated_at or _now_iso()
-    row = db.fetchone("SELECT * FROM learning_recommendations WHERE id = ?", (recommendation_id,))
+    row = db.fetchone(
+        """
+        SELECT *
+        FROM learning_recommendations
+        WHERE id = ?
+          AND (? IS NULL OR COALESCE(sandbox_id, '') = ?)
+        """,
+        (recommendation_id, sandbox_id, sandbox_id or ""),
+    )
     if not row:
         return None
     db.execute(
@@ -4037,8 +4100,9 @@ def mark_recommendation_dismissed(db: Database, recommendation_id: str, reason: 
         UPDATE learning_recommendations
         SET status = 'dismissed', dismissed_reason = ?, updated_at = ?
         WHERE id = ?
+          AND (? IS NULL OR COALESCE(sandbox_id, '') = ?)
         """,
-        (reason.strip(), timestamp, recommendation_id),
+        (reason.strip(), timestamp, recommendation_id, sandbox_id, sandbox_id or ""),
     )
     updated_row = db.fetchone(
         """
@@ -4058,8 +4122,9 @@ def mark_recommendation_dismissed(db: Database, recommendation_id: str, reason: 
         FROM learning_recommendations r
         INNER JOIN learning_content_items c ON c.id = r.content_item_id
         WHERE r.id = ?
+          AND (? IS NULL OR COALESCE(r.sandbox_id, '') = ?)
         """,
-        (recommendation_id,),
+        (recommendation_id, sandbox_id, sandbox_id or ""),
     )
     return _build_recommendation_record(db, updated_row) if updated_row else None
 
@@ -4096,7 +4161,11 @@ def mark_handbook_entry_reused(
         )
     )
     dedupe_key = f"handbook_reuse:{entry.id}:{source_type}:{normalized_source_id}"
-    existing_signal = db.fetchone("SELECT id FROM growth_signal_events WHERE dedupe_key = ?", (dedupe_key,))
+    sandbox_id = _active_sandbox_id(db)
+    existing_signal = db.fetchone(
+        "SELECT id FROM growth_signal_events WHERE dedupe_key = ? AND COALESCE(sandbox_id, '') = ?",
+        (dedupe_key, sandbox_id),
+    )
     if existing_signal:
         existing_rows = db.fetchall(
             """
@@ -4684,7 +4753,7 @@ def _build_pending_capture_record(row) -> GrowthPendingCaptureRecord | None:
     )
 
 
-def get_pending_capture(db: Database, user_id: str, capture_id: str) -> GrowthPendingCaptureRecord | None:
+def get_pending_capture(db: Database, user_id: str, capture_id: str, *, sandbox_id: str | None = None) -> GrowthPendingCaptureRecord | None:
     row = db.fetchone(
         """
         SELECT
@@ -4699,8 +4768,9 @@ def get_pending_capture(db: Database, user_id: str, capture_id: str) -> GrowthPe
         WHERE s.user_id = ?
           AND s.id = ?
           AND s.source_type IN ('task_context_candidate', 'task_attachment_candidate')
+          AND (? IS NULL OR COALESCE(s.sandbox_id, '') = ?)
         """,
-        (user_id, capture_id),
+        (user_id, capture_id, sandbox_id, sandbox_id or ""),
     )
     if not row:
         return None
@@ -4716,6 +4786,7 @@ def update_pending_capture_state(
     reason: str = "",
     handbook_entry_id: str | None = None,
     created_at: str | None = None,
+    sandbox_id: str | None = None,
 ) -> GrowthPendingCaptureRecord | None:
     timestamp = created_at or _now_iso()
     row = db.fetchone(
@@ -4725,10 +4796,11 @@ def update_pending_capture_state(
         WHERE user_id = ?
           AND id = ?
           AND source_type IN ('task_context_candidate', 'task_attachment_candidate', 'review_insight_pending')
+          AND (? IS NULL OR COALESCE(sandbox_id, '') = ?)
         """,
-        (user_id, capture_id),
+        (user_id, capture_id, sandbox_id, sandbox_id or ""),
     )
-    # Fallback: try with the cloud session user_id if operator ID didn't match
+    # Fallback: try with the cloud session user_id if operator ID didn't match, but keep the sandbox boundary.
     if not row:
         row = db.fetchone(
             """
@@ -4736,8 +4808,9 @@ def update_pending_capture_state(
             FROM growth_signal_events
             WHERE id = ?
               AND source_type IN ('task_context_candidate', 'task_attachment_candidate', 'review_insight_pending')
+              AND (? IS NULL OR COALESCE(sandbox_id, '') = ?)
             """,
-            (capture_id,),
+            (capture_id, sandbox_id, sandbox_id or ""),
         )
     if not row:
         return None
@@ -4768,10 +4841,10 @@ def update_pending_capture_state(
             """,
             (_new_id("gcs"), user_id, capture_id, status, normalized_reason, handbook_entry_id, timestamp, timestamp),
         )
-    return get_pending_capture(db, user_id, capture_id)
+    return get_pending_capture(db, user_id, capture_id, sandbox_id=sandbox_id)
 
 
-def _list_pending_captures(db: Database, user_id: str, *, limit: int = 6) -> list[GrowthPendingCaptureRecord]:
+def _list_pending_captures(db: Database, user_id: str, *, sandbox_id: str | None = None, limit: int = 6) -> list[GrowthPendingCaptureRecord]:
     rows = db.fetchall(
         """
         SELECT
@@ -4785,11 +4858,12 @@ def _list_pending_captures(db: Database, user_id: str, *, limit: int = 6) -> lis
         LEFT JOIN growth_capture_states cs
             ON cs.signal_id = s.id AND cs.user_id = s.user_id
         WHERE s.user_id = ? AND e.id IS NULL AND s.source_type IN ('task_context_candidate', 'task_attachment_candidate', 'review_insight_pending')
+          AND (? IS NULL OR COALESCE(s.sandbox_id, '') = ?)
           AND COALESCE(cs.status, 'open') = 'open'
         ORDER BY s.created_at DESC
         LIMIT ?
         """,
-        (user_id, limit),
+        (user_id, sandbox_id, sandbox_id or "", limit),
     )
     captures: list[GrowthPendingCaptureRecord] = []
     for row in rows:
@@ -4971,11 +5045,21 @@ def _build_ability_gaps(
     return sorted(candidates.values(), key=lambda item: (-item.gap, ABILITY_ORDER.index(item.abilityKey)))[:3]
 
 
-def build_growth_ledger(db: Database, user_id: str, *, ability_key: str | None = None, week_label: str | None = None) -> GrowthLedgerResponse:
+def build_growth_ledger(
+    db: Database,
+    user_id: str,
+    *,
+    ability_key: str | None = None,
+    week_label: str | None = None,
+    sandbox_id: str | None = None,
+) -> GrowthLedgerResponse:
     ensure_growth_catalog(db)
     profile_map = _fetch_profile_map(db)
     clauses = ["l.user_id = ?", "l.reversed_at IS NULL"]
     params: list[object] = [user_id]
+    if sandbox_id is not None:
+        clauses.append("COALESCE(l.sandbox_id, '') = ?")
+        params.append(sandbox_id)
     if ability_key:
         clauses.append("l.ability_key = ?")
         params.append(ability_key)
@@ -5026,9 +5110,10 @@ def build_growth_overview(db: Database, user_id: str, user_name: str, *, week_la
             SELECT ability_key, SUM(COALESCE(NULLIF(total_xp, 0), delta)) AS xp
             FROM xp_ledger
             WHERE user_id = ? AND reversed_at IS NULL AND week_label = ?
+              AND (? IS NULL OR COALESCE(sandbox_id, '') = ?)
             GROUP BY ability_key
             """,
-            (user_id, week_label),
+            (user_id, week_label, sandbox_id, sandbox_id or ""),
         )
     } if week_label else {}
     weekly_row = db.fetchone(
@@ -5039,11 +5124,12 @@ def build_growth_overview(db: Database, user_id: str, user_name: str, *, week_la
             SUM(COALESCE(NULLIF(total_xp, 0), delta)) AS total_xp
         FROM xp_ledger
         WHERE user_id = ? AND reversed_at IS NULL AND week_label = ?
+          AND (? IS NULL OR COALESCE(sandbox_id, '') = ?)
         """,
-        (user_id, week_label),
+        (user_id, week_label, sandbox_id, sandbox_id or ""),
     ) if week_label else None
 
-    ledger_recent_entries = build_growth_ledger(db, user_id).entries
+    ledger_recent_entries = build_growth_ledger(db, user_id, sandbox_id=sandbox_id).entries
     real_source_entries = _build_recent_real_source_entries(
         db,
         user_id,
@@ -5059,9 +5145,9 @@ def build_growth_overview(db: Database, user_id: str, user_name: str, *, week_la
         key=lambda item: item.createdAt,
         reverse=True,
     )[:6]
-    weekly_entries = build_growth_ledger(db, user_id, week_label=week_label).entries if week_label else recent_entries
-    recommendations = list_learning_recommendations(db, user_id)
-    pending_captures = _list_pending_captures(db, user_id)
+    weekly_entries = build_growth_ledger(db, user_id, week_label=week_label, sandbox_id=sandbox_id).entries if week_label else recent_entries
+    recommendations = list_learning_recommendations(db, user_id, sandbox_id=sandbox_id)
+    pending_captures = _list_pending_captures(db, user_id, sandbox_id=sandbox_id)
 
     # K3：旧 G1 客观证据加权保留为弱叠加（避免双计——新算法已经把
     # document/memory 纳入 source_contributions），仅 exp_wall_quote
@@ -5142,7 +5228,7 @@ def build_growth_overview(db: Database, user_id: str, user_name: str, *, week_la
         workTypeDistribution=_build_work_type_distribution(db, user_id),
         impactCurve=_build_impact_curve(db, user_id),
         learning=_build_internal_learning_picks(db, user_id, ability_scores, profile_map, sandbox_id=sandbox_id),
-        peerComparison=_build_peer_comparison(db, user_id, ability_scores),
+        peerComparison=_build_peer_comparison(db, user_id, ability_scores, sandbox_id=sandbox_id),
         projectGrowthHighlights=project_highlights,
         eventLineGrowthHighlights=event_line_highlights,
         strategicAlignmentHighlights=strategic_highlights,

@@ -15223,6 +15223,7 @@ def create_app() -> FastAPI:
         "/docs",
         "/redoc",
         "/openapi.json",
+        "/api/v1/cloud-instance",
         "/api/v1/auth",
         "/api/v1/me/org-membership",
     )
@@ -15257,6 +15258,20 @@ def create_app() -> FastAPI:
             employeeCount=state.db.scalar("SELECT COUNT(1) AS count FROM employee_accounts"),
             taskCount=state.db.scalar("SELECT COUNT(1) AS count FROM tasks"),
         )
+
+    @app.get("/api/v1/cloud-instance")
+    def get_cloud_instance() -> dict[str, str]:
+        cloud_instance_id = state.db.get_setting("cloud_instance_id", "").strip()
+        if not cloud_instance_id:
+            cloud_instance_id = f"cli_{uuid4().hex}"
+            state.db.set_setting("cloud_instance_id", cloud_instance_id)
+        deployment_name = os.environ.get("YIYU_CLOUD_DEPLOYMENT_NAME", "").strip()
+        return {
+            "cloudInstanceId": cloud_instance_id,
+            "service": APP_NAME,
+            "version": APP_VERSION,
+            "deploymentName": deployment_name,
+        }
 
     @app.on_event("startup")
     def _startup_feishu_notifications() -> None:

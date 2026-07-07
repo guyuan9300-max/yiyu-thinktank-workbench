@@ -26,9 +26,9 @@ def test_auth_me_enters_local_draft_when_device_is_empty(tmp_path: Path) -> None
 
     assert response.status_code == 200, response.text
     payload = response.json()
-    assert payload["authenticated"] is True
+    assert payload["authenticated"] is False
     assert payload["sessionMode"] == "local"
-    assert payload["user"]["id"] == "local-draft-user"
+    assert payload["user"] is None
     assert payload["requiresLocalIdentitySetup"] is False
     assert payload["localIdentityStatus"] == "draft"
     assert "本机草稿" in payload["message"]
@@ -157,7 +157,7 @@ def test_local_login_verifies_password_and_respects_remember_me(tmp_path: Path) 
 
     logout = client.post("/api/v1/auth/logout")
     assert logout.status_code == 200, logout.text
-    assert logout.json()["authenticated"] is True
+    assert logout.json()["authenticated"] is False
     assert logout.json()["localIdentityStatus"] == "draft"
 
     wrong_password = client.post(
@@ -178,7 +178,7 @@ def test_local_login_verifies_password_and_respects_remember_me(tmp_path: Path) 
     reopened = make_client(data_dir)
     reopened_auth = reopened.get("/api/v1/auth/me")
     assert reopened_auth.status_code == 200, reopened_auth.text
-    assert reopened_auth.json()["authenticated"] is True
+    assert reopened_auth.json()["authenticated"] is False
     assert reopened_auth.json()["localIdentityStatus"] == "draft"
 
     remembered = reopened.post(
@@ -241,7 +241,7 @@ def test_local_profile_and_password_update_stay_local(tmp_path: Path, monkeypatc
 
     logout = client.post("/api/v1/auth/logout")
     assert logout.status_code == 200, logout.text
-    assert logout.json()["authenticated"] is True
+    assert logout.json()["authenticated"] is False
     assert logout.json()["localIdentityStatus"] == "draft"
 
     old_login = client.post(
@@ -274,9 +274,9 @@ def test_auth_me_keeps_legacy_rows_available_as_local_draft(tmp_path: Path) -> N
 
     assert response.status_code == 200, response.text
     payload = response.json()
-    assert payload["authenticated"] is True
+    assert payload["authenticated"] is False
     assert payload["sessionMode"] == "local"
-    assert payload["user"]["id"] == "local-draft-user"
+    assert payload["user"] is None
     assert payload["requiresLocalIdentitySetup"] is False
     assert payload["localIdentityStatus"] == "draft"
     assert "本机草稿" in payload["message"]

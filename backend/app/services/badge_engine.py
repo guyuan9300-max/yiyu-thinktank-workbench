@@ -284,8 +284,9 @@ def _json_actor_belongs_to_user(detail: dict[str, Any], *, user_id: str, user_na
     return False
 
 
-def _collect_work_events(db: Database, *, user_id: str, user_name: str) -> list[WorkEvent]:
+def _collect_work_events(db: Database, *, user_id: str, user_name: str, sandbox_id: str | None = None) -> list[WorkEvent]:
     events: list[WorkEvent] = []
+    active_sandbox_id = sandbox_id or _active_sandbox_id(db)
 
     meeting_rows = db.fetchall(
         """
@@ -322,9 +323,11 @@ def _collect_work_events(db: Database, *, user_id: str, user_name: str) -> list[
             (SELECT COUNT(*) FROM risks r WHERE r.meeting_id = m.id) AS risk_count,
             (SELECT COUNT(*) FROM ambiguities am WHERE am.meeting_id = m.id AND COALESCE(am.status, '') != 'ignored') AS ambiguity_count
         FROM meetings m
+        INNER JOIN clients c ON c.id = m.client_id
+        WHERE COALESCE(NULLIF(c.sandbox_id, ''), ?) = ?
         ORDER BY m.updated_at DESC
         """,
-        (user_name, user_id, user_id, user_name, user_id),
+        (user_name, user_id, user_id, user_name, user_id, DEFAULT_LOCAL_SANDBOX_ID, active_sandbox_id),
     )
     for row in meeting_rows:
         if int(row["owner_count"] or 0) <= 0 and int(row["linked_task_count"] or 0) <= 0:
@@ -362,10 +365,11 @@ def _collect_work_events(db: Database, *, user_id: str, user_name: str) -> list[
                we.id AS entry_id, we.task_id, we.note, we.structured_note_json, we.task_snapshot_json
         FROM weekly_reviews wr
         LEFT JOIN weekly_review_task_entries we ON we.review_id = wr.id
-        WHERE wr.operator_id = ? OR wr.user_id = ?
+        WHERE (wr.operator_id = ? OR wr.user_id = ?)
+          AND COALESCE(NULLIF(wr.sandbox_id, ''), ?) = ?
         ORDER BY wr.updated_at DESC, we.reviewed_at DESC
         """,
-        (user_id, user_id),
+        (user_id, user_id, DEFAULT_LOCAL_SANDBOX_ID, active_sandbox_id),
     )
     reviews_by_id: dict[str, dict[str, Any]] = {}
     for row in review_rows:
@@ -502,10 +506,11 @@ def _collect_work_events(db: Database, *, user_id: str, user_name: str) -> list[
         """
         SELECT *
         FROM handbook_entries
-        WHERE author_user_id = ? OR LOWER(TRIM(COALESCE(author_user_name, ''))) = LOWER(TRIM(?))
+        WHERE (author_user_id = ? OR LOWER(TRIM(COALESCE(author_user_name, ''))) = LOWER(TRIM(?)))
+          AND COALESCE(NULLIF(sandbox_id, ''), ?) = ?
         ORDER BY created_at DESC
         """,
-        (user_id, user_name),
+        (user_id, user_name, DEFAULT_LOCAL_SANDBOX_ID, active_sandbox_id),
     )
     for row in handbook_rows:
         title = str(row["title"] or "经验沉淀")
@@ -537,9 +542,10 @@ def _collect_work_events(db: Database, *, user_id: str, user_name: str) -> list[
         FROM growth_validation_events v
         INNER JOIN growth_evidence_records e ON e.id = v.evidence_id
         WHERE v.user_id = ?
+          AND COALESCE(NULLIF(e.sandbox_id, ''), ?) = ?
         ORDER BY v.created_at DESC
         """,
-        (user_id,),
+        (user_id, DEFAULT_LOCAL_SANDBOX_ID, active_sandbox_id),
     )
     for row in validation_rows:
         metadata = from_json(row["metadata_json"], {})
@@ -563,6 +569,7 @@ def _collect_work_events(db: Database, *, user_id: str, user_name: str) -> list[
         SELECT *
         FROM tasks
         WHERE COALESCE(scope_mode, 'COLLAB_SHARED') != 'PERSONAL_ONLY'
+          AND COALESCE(NULLIF(sandbox_id, ''), ?) = ?
           AND (
             owner_id = ?
             OR creator_id = ?
@@ -575,7 +582,7 @@ def _collect_work_events(db: Database, *, user_id: str, user_name: str) -> list[
           )
         ORDER BY updated_at DESC
         """,
-        (user_id, user_id, user_name, user_id),
+        (DEFAULT_LOCAL_SANDBOX_ID, active_sandbox_id, user_id, user_id, user_name, user_id),
     )
     for row in task_rows:
         title = str(row["title"] or "任务")
@@ -617,10 +624,39 @@ def _collect_work_events(db: Database, *, user_id: str, user_name: str) -> list[
 
     logs = db.fetchall(
         """
-        SELECT id, actor_name, action, entity_type, entity_id, detail_json, created_at
-        FROM activity_logs
-        ORDER BY created_at DESC
-        """
+        SELECT l.id, l.actor_name, l.action, l.entity_type, l.entity_id, l.detail_json, l.created_at
+        FROM activity_logs l
+        LEFT JOIN tasks t ON l.entity_type = 'task' AND t.id = l.entity_id
+        LEFT JOIN clients c ON l.entity_type = 'client' AND c.id = l.entity_id
+        LEFT JOIN event_lines el ON l.entity_type = 'event_line' AND el.id = l.entity_id
+        WHERE (
+            (l.entity_type = 'task' AND COALESCE(NULLIF(t.sandbox_id, ''), ?) = ?)
+            OR (l.entity_type = 'client' AND COALESCE(NULLIF(c.sandbox_id, ''), ?) = ?)
+            OR (l.entity_type = 'event_line' AND COALESCE(NULLIF(el.sandbox_id, ''), ?) = ?)
+            OR (
+                ? = ?
+                AND (
+                    (l.entity_type = 'task' AND t.id IS NULL)
+                    OR (l.entity_type = 'client' AND c.id IS NULL)
+                    OR (l.entity_type = 'event_line' AND el.id IS NULL)
+                )
+            )
+            OR (? = ? AND l.entity_type NOT IN ('task', 'client', 'event_line', 'analysis_run', 'document', 'topic_candidate'))
+        )
+        ORDER BY l.created_at DESC
+        """,
+        (
+            DEFAULT_LOCAL_SANDBOX_ID,
+            active_sandbox_id,
+            DEFAULT_LOCAL_SANDBOX_ID,
+            active_sandbox_id,
+            DEFAULT_LOCAL_SANDBOX_ID,
+            active_sandbox_id,
+            active_sandbox_id,
+            DEFAULT_LOCAL_SANDBOX_ID,
+            active_sandbox_id,
+            DEFAULT_LOCAL_SANDBOX_ID,
+        ),
     )
     create_times: dict[str, str] = {}
     for row in sorted(logs, key=lambda item: _parse_dt(str(item["created_at"] or ""))):
@@ -763,11 +799,13 @@ def _collect_work_events(db: Database, *, user_id: str, user_name: str) -> list[
     eline_rows = db.fetchall(
         """
         SELECT *
-        FROM event_line_activities
-        WHERE actor_id = ? OR LOWER(TRIM(COALESCE(actor_name, ''))) = LOWER(TRIM(?))
+        FROM event_line_activities a
+        INNER JOIN event_lines el ON el.id = a.event_line_id
+        WHERE (a.actor_id = ? OR LOWER(TRIM(COALESCE(a.actor_name, ''))) = LOWER(TRIM(?)))
+          AND COALESCE(NULLIF(el.sandbox_id, ''), ?) = ?
         ORDER BY happened_at DESC
         """,
-        (user_id, user_name),
+        (user_id, user_name, DEFAULT_LOCAL_SANDBOX_ID, active_sandbox_id),
     )
     for row in eline_rows:
         title = str(row["title"] or "事件线活动")
@@ -1023,8 +1061,12 @@ def _badge_definitions() -> list[dict[str, Any]]:
     ]
 
 
-def _fetch_unlock_map(db: Database, user_id: str) -> dict[str, dict[str, Any]]:
-    rows = db.fetchall("SELECT * FROM badge_unlock_records WHERE user_id = ?", (user_id,))
+def _fetch_unlock_map(db: Database, user_id: str, *, sandbox_id: str | None = None) -> dict[str, dict[str, Any]]:
+    active_sandbox_id = sandbox_id or _active_sandbox_id(db)
+    rows = db.fetchall(
+        "SELECT * FROM badge_unlock_records WHERE user_id = ? AND COALESCE(sandbox_id, '') = ?",
+        (user_id, active_sandbox_id),
+    )
     return {str(row["badge_id"]): dict(row) for row in rows}
 
 
@@ -1086,16 +1128,19 @@ def _award_badge_xp(
     user_name: str,
     badge: BadgeProgressRecord,
     unlocked_at: str,
+    sandbox_id: str,
 ) -> None:
     dedupe_key = f"badge_unlock:{user_id}:{badge.id}"
-    existing = db.fetchone("SELECT id FROM growth_signal_events WHERE dedupe_key = ?", (dedupe_key,))
+    existing = db.fetchone(
+        "SELECT id FROM growth_signal_events WHERE dedupe_key = ? AND COALESCE(sandbox_id, '') = ?",
+        (dedupe_key, sandbox_id),
+    )
     if existing:
         return
     signal_id = _new_id("gse")
     evidence_id = _new_id("gev")
     created_at = unlocked_at or _now_iso()
     reason = f"已自动点亮成长勋章【{badge.name}】"
-    sandbox_id = _active_sandbox_id(db)
     db.execute(
         """
         INSERT INTO growth_signal_events(
@@ -1165,8 +1210,8 @@ def _award_badge_xp(
         logging.getLogger(__name__).warning("mark growth pending (badge unlock) failed: %s", _exc)
 
 
-def _sync_badge_unlocks(db: Database, *, user_id: str, user_name: str, badges: list[BadgeProgressRecord]) -> None:
-    unlock_map = _fetch_unlock_map(db, user_id)
+def _sync_badge_unlocks(db: Database, *, user_id: str, user_name: str, badges: list[BadgeProgressRecord], sandbox_id: str) -> None:
+    unlock_map = _fetch_unlock_map(db, user_id, sandbox_id=sandbox_id)
     now_value = _now_iso()
     for badge in badges:
         if badge.id in unlock_map:
@@ -1183,7 +1228,7 @@ def _sync_badge_unlocks(db: Database, *, user_id: str, user_name: str, badges: l
             """,
             (
                 _new_id("bud"),
-                _active_sandbox_id(db),
+                sandbox_id,
                 user_id,
                 user_name,
                 badge.id,
@@ -1198,16 +1243,25 @@ def _sync_badge_unlocks(db: Database, *, user_id: str, user_name: str, badges: l
                 now_value,
             ),
         )
-        _award_badge_xp(db, user_id=user_id, user_name=user_name, badge=badge, unlocked_at=unlocked_at)
+        _award_badge_xp(db, user_id=user_id, user_name=user_name, badge=badge, unlocked_at=unlocked_at, sandbox_id=sandbox_id)
 
 
-def build_badge_board(db: Database, *, user_id: str, user_name: str, auto_sync: bool = True) -> BadgeBoardResponse:
-    events = _collect_work_events(db, user_id=user_id, user_name=user_name)
-    unlock_map = _fetch_unlock_map(db, user_id)
+def build_badge_board(
+    db: Database,
+    *,
+    user_id: str,
+    user_name: str,
+    auto_sync: bool = True,
+    sandbox_id: str | None = None,
+) -> BadgeBoardResponse:
+    active_sandbox_id = sandbox_id or _active_sandbox_id(db)
+    events = _collect_work_events(db, user_id=user_id, user_name=user_name, sandbox_id=active_sandbox_id)
+    sandbox_id = active_sandbox_id
+    unlock_map = _fetch_unlock_map(db, user_id, sandbox_id=sandbox_id)
     badges = [_build_badge_progress(definition, events, unlock_map) for definition in _badge_definitions()]
     if auto_sync:
-        _sync_badge_unlocks(db, user_id=user_id, user_name=user_name, badges=badges)
-        unlock_map = _fetch_unlock_map(db, user_id)
+        _sync_badge_unlocks(db, user_id=user_id, user_name=user_name, badges=badges, sandbox_id=sandbox_id)
+        unlock_map = _fetch_unlock_map(db, user_id, sandbox_id=sandbox_id)
         badges = [_build_badge_progress(definition, events, unlock_map) for definition in _badge_definitions()]
 
     categories: list[BadgeCategoryRecord] = []

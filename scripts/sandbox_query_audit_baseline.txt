@@ -1,0 +1,398 @@
+# Baseline of known legacy unscoped business queries.
+# New entries indicate a likely missing WorkspaceContext/sandbox_id boundary.
+backend/app/main.py:10670:5f79ac0d9c46:UPDATE event_lines SET sync_status = 'pending', pending_sync_action = ?, cloud_payload_json = ?, last_sync_error = ?, updated_at = updated_at WHERE id = ? """, (action, to_json(pay
+backend/app/main.py:10792:ceb6c0a343d2:SELECT * FROM event_lines
+backend/app/main.py:11082:06c69c801cb6:update" or ( str(existing["sync_status"] or "") == "pending" and str(existing["status"] or "") != str(existing["progress_status"] or "") ) ) ): # Keep the user's local update visib
+backend/app/main.py:11909:e3e9c424a422:UPDATE 时 stage 字段写啥: # - 守门允许 → stage 已被 Repository 写入云端值, 这里用 cloud_stage_target # - 守门拒绝 → 保留本地 frozen, 这里用 local_stage final_stage = cloud_stage_target if stage_applied else loc
+backend/app/main.py:12243:a854329ccac6:SELECT note FROM task_notes WHERE task_id = ?", (str(row["id"]),)) client_id = str(row["client_id"]) if row["client_id"] else None event_line_id = str(row["event_line_id"]) if row[
+backend/app/main.py:12418:994c4dd88429:SELECT name FROM clients
+backend/app/main.py:12500:994c4dd88429:SELECT name FROM clients
+backend/app/main.py:12820:10c76ee63309:SELECT COUNT(1) FROM task_collaborators WHERE task_id = ? AND user_id = ? AND inbox_status = ?", (task_id, normalized_user_id, inbox_status), ) or 0 ) return updated > 0 def _repai
+backend/app/main.py:12839:e38253a10372:SELECT 1 FROM tasks
+backend/app/main.py:13095:994c4dd88429:SELECT name FROM clients
+backend/app/main.py:13107:7b6210c54c6b:SELECT primary_client_id FROM event_lines
+backend/app/main.py:15412:ceb6c0a343d2:SELECT * FROM event_lines
+backend/app/main.py:15590:07accf339d7e:SELECT COUNT(DISTINCT label) AS count FROM client_folders WHERE client_id = ? AND is_hidden = 0", (client_id,)), documentCount=state.db.scalar("SELECT COUNT(1) AS count FROM docume
+backend/app/main.py:15745:80bbb3fba260:SELECT title FROM meetings WHERE client_id = ? ORDER BY updated_at DESC LIMIT 2", (client_id,), ) meetings = [str(row["title"]).strip() for row in meeting_rows if str(row["title"])
+backend/app/main.py:17585:54ab97d914df:SELECT fact_key, fact_value, confidence, updated_at " "FROM memory_facts
+backend/app/main.py:18644:fbf1f4dd5643:SELECT name, stage, summary, intent, current_blocker, recent_decision, next_step FROM event_lines
+backend/app/main.py:19617:83651adb5252:SELECT id FROM event_lines
+backend/app/main.py:20982:be31090fb1c7:SELECT * FROM strategic_cockpit_snapshots WHERE client_id = ?", (client_id,)) def _strategic_meeting_event_line_ids(client_id: str, meeting_title: str, *, meeting_id: str | None =
+backend/app/main.py:21366:37917f21c2e8:SELECT id, name, intro, stage, updated_at FROM clients
+backend/app/main.py:21372:52ea3049f9a9:SELECT * FROM project_modules WHERE id = ? AND client_id = ?", (project_module_id, client_id), ) if project_row is None: return None client_name = str(client_row["name"] or "客户") p
+backend/app/main.py:21534:721023d44ef2:SELECT DISTINCT event_line_id FROM tasks
+backend/app/main.py:21547:e519dee2f269:SELECT id, name, stage, summary, intent, current_blocker, recent_decision, next_step, business_category, evidence_count, updated_at FROM event_lines
+backend/app/main.py:21692:835bf91eee3d:SELECT id, title, stage, notes, transcript_text, updated_at FROM meetings WHERE client_id = ? ORDER BY updated_at DESC LIMIT 10 """, (client_id,), ): add_record( category="dynamic_
+backend/app/main.py:21715:38a02fa6448a:SELECT '' WHERE 0" ) task_params = (client_id, project_module_id, *tuple(related_event_line_ids)) for row in state.db.fetchall( f""" SELECT t.id, t.title, t.description, t.current_
+backend/app/main.py:2526:851975b6b41a:DELETE FROM memory_facts WHERE source_type = 'task_attachment' AND source_id = ? AND scope_type = 'client' AND scope_id <> ? """, (attachment_source_id, normalized_client_id), ) if
+backend/app/main.py:25573:e38253a10372:SELECT 1 FROM tasks
+backend/app/main.py:2588:6dfa750304b1:UPDATE handbook_entries SET client_id = ? WHERE event_line_id = ?", (normalized_client_id, normalized_event_line_id), ) db.execute( """ UPDATE learning_recommendations
+backend/app/main.py:26868:ceb6c0a343d2:SELECT * FROM event_lines
+backend/app/main.py:27430:7b6210c54c6b:SELECT primary_client_id FROM event_lines
+backend/app/main.py:28944:60fcf5610a2e:update={ "headline": ai_headline or executive_org_report.headline, "summary": weekly_overview, "suggestedActions": weekly_next_focus or executive_org_report.suggestedActions, } ) #
+backend/app/main.py:2958:42dee15567a6:SELECT COUNT(1) AS count FROM clients
+backend/app/main.py:2968:42dee15567a6:SELECT COUNT(1) AS count FROM clients
+backend/app/main.py:2969:11292803aceb:SELECT COUNT(1) AS count FROM documents WHERE client_id IN ({client_placeholders})", DEMO_CLIENT_IDS)), tasks=int(db.scalar(f"SELECT COUNT(1) AS count FROM tasks
+backend/app/main.py:2971:ea02e23cd5a7:SELECT COUNT(1) AS count FROM topic_radars
+backend/app/main.py:2972:13129a6880c7:SELECT COUNT(1) AS count FROM handbook_entries
+backend/app/main.py:29739:110bc71ce514:SELECT COUNT(*) FROM memory_facts
+backend/app/main.py:2978:a5bfa8ca76a1:SELECT id FROM meetings WHERE client_id IN ({_sql_placeholders(DEMO_CLIENT_IDS)})", DEMO_CLIENT_IDS, ) meeting_ids = tuple(str(row["id"]) for row in meeting_rows) source_ids = tupl
+backend/app/main.py:2990:421beeb73481:DELETE FROM tasks WHERE source_id IN ({_sql_placeholders(source_ids)})", source_ids, ) state.db.execute( f"DELETE FROM topic_candidates WHERE id IN ({_sql_placeholders(DEMO_CANDIDA
+backend/app/main.py:29953:b806c9d34efa:SELECT COUNT(1) AS n FROM fact_contradictions WHERE client_id = ? AND review_status = 'pending' AND detected_at >= ?", (client_id, cutoff_iso), ) confirmed_judgments_week = state.d
+backend/app/main.py:3002:61258fb783fe:DELETE FROM handbook_entries WHERE id IN ({_sql_placeholders(DEMO_HANDBOOK_IDS)})", DEMO_HANDBOOK_IDS, ) state.db.execute( f"DELETE FROM chat_messages WHERE id IN ({_sql_placeholde
+backend/app/main.py:3069:1eb3820ffe4d:INSERT INTO documents(id, client_id, folder_id, title, path, kind, source, excerpt, tags_json, created_at) VALUES(?, ?, NULL, ?, ?, ?, ?, ?, ?, ?)", [ ("doc_1", "client_cffc", "项目启
+backend/app/main.py:3084:0211f92443b5:INSERT INTO task_notes(id, task_id, note, created_at, updated_at) VALUES(?, ?, ?, ?, ?)", (new_id("tn"), "task_seed_2", "用户反馈集中在试用转化与产品定位不清。", timestamp, timestamp), ) state.db.exe
+backend/app/main.py:3095:e5ddb829e41a:INSERT INTO topic_candidates(id, radar_id, title, summary, source, status, created_at, updated_at) VALUES(?, ?, ?, ?, ?, ?, ?, ?)", [ ("cand_1", "radar_ai", "公益组织开始搭建内部 AI 助理", "多个
+backend/app/main.py:30965:994c4dd88429:SELECT name FROM clients
+backend/app/main.py:30968:2974f55f6a11:SELECT title FROM tasks
+backend/app/main.py:31667:3444965320c9:SELECT id, title FROM tasks
+backend/app/main.py:31771:367cf9a3e2c0:SELECT id FROM task_lists WHERE name='客户项目' OR id='list-1' LIMIT 1" ) or state.db.fetchone("SELECT id FROM task_lists ORDER BY sort_order LIMIT 1") default_list_id = str(list_row["
+backend/app/main.py:35221:b140821981c0:SELECT organization_intro, collaboration_relationship FROM organization_notebook_snapshots WHERE client_id = ?", (client_id,), ) if notebook_row: org_intro = str(notebook_row["orga
+backend/app/main.py:35239:ceb6c0a343d2:SELECT * FROM event_lines
+backend/app/main.py:35542:2e2273cd66ce:SELECT * FROM tasks
+backend/app/main.py:35730:7b6210c54c6b:SELECT primary_client_id FROM event_lines
+backend/app/main.py:35859:57610495dc3b:SELECT name FROM event_lines
+backend/app/main.py:36601:ceb6c0a343d2:SELECT * FROM event_lines
+backend/app/main.py:36970:7b6210c54c6b:SELECT primary_client_id FROM event_lines
+backend/app/main.py:38571:a1fd9a89ced5:DELETE FROM event_line_memory_snapshots WHERE event_line_id IN ({placeholders})", tuple(source_ids), ) for table in _EVENT_LINE_CHILD_TABLES: conn.execute( f"UPDATE {table} SET eve
+backend/app/main.py:38590:58c25e596ad1:update' END ELSE pending_sync_action END, last_sync_error = CASE WHEN ? THEN '' ELSE last_sync_error END WHERE id = ? """, (new_evidence_count, timestamp, 1 if has_cloud else 0, 1
+backend/app/main.py:38991:358d7aec3695:SELECT id, cloud_id FROM tasks
+backend/app/main.py:39161:e072ae3c2072:SELECT event_line_id, title FROM tasks
+backend/app/main.py:3940:959a272144f4:SELECT client_id FROM documents WHERE id = ?", (annotation.documentId,)) if doc_row and doc_row["client_id"]: return str(doc_row["client_id"]) v2_row = state.db.fetchone("SELECT cl
+backend/app/main.py:41418:db8a3b6b1a95:INSERT INTO chat_threads(id, client_id, title, created_at, updated_at) VALUES(?, ?, ?, ?, ?)", (thread_id, client_id, "默认研判线程", timestamp, timestamp), ) ensure_standard_client_fold
+backend/app/main.py:41459:a8530b614089:UPDATE clients SET name = ?, alias = ?, domain = ?, type = ?, intro = ?, stage = ?, color = ?, updated_at = ?, related_user_ids_json = ?, is_data_center_included = ? WHERE id = ? "
+backend/app/main.py:43019:420c52880c95:SELECT COUNT(*) FROM chat_threads WHERE client_id = ?") message_count = int(state.db.scalar( "SELECT COUNT(*) FROM chat_messages m JOIN chat_threads t ON t.id = m.thread_id WHERE t
+backend/app/main.py:43029:49aec3f67c73:SELECT COUNT(*) FROM tasks
+backend/app/main.py:43399:e468ef131e1d:SELECT id, name, status, stage, evidence_count, summary, updated_at FROM event_lines
+backend/app/main.py:43409:38582cf688a9:SELECT a.id, a.happened_at, a.actor_name, a.title, a.summary FROM event_line_activities a JOIN event_lines
+backend/app/main.py:43563:f0468cbf44b8:SELECT id, name, primary_client_id, status, stage, evidence_count, summary, intent, current_blocker, recent_decision, next_step, updated_at FROM event_lines
+backend/app/main.py:45880:3444965320c9:SELECT id, title FROM tasks
+backend/app/main.py:46027:83651adb5252:SELECT id FROM event_lines
+backend/app/main.py:46732:96e3fa20902d:SELECT COUNT(1) AS count FROM tasks
+backend/app/main.py:46744:8d5397cb4e4b:SELECT COUNT(1) AS count FROM event_lines
+backend/app/main.py:46756:90198049a1d0:SELECT COUNT(1) AS count FROM data_center_ingest_events
+backend/app/main.py:49633:597dbfe4844b:SELECT * FROM project_flows WHERE id = ? AND client_id = ?", (flow_id, client_id)) if not row: raise HTTPException(status_code=404, detail="流程不存在") state.db.execute( "UPDATE tasks
+backend/app/main.py:54075:ffc5077556c5:INSERT INTO meetings(id, client_id, title, transcript_text, notes, stage, source_type, source_id, created_at, updated_at) VALUES(?,?,?,?,?,'ingested','feishu_minutes',?,?,?)", (mee
+backend/app/main.py:54878:2e2273cd66ce:SELECT * FROM tasks
+backend/app/main.py:56200:49aec3f67c73:SELECT COUNT(*) FROM tasks
+backend/app/main.py:56371:51bb2632bf73:SELECT id, name FROM clients
+backend/app/main.py:56699:a9bb2114de72:SELECT user_id FROM task_collaborators WHERE task_id = ?", (task_id,), ) existing_ids = {str(r["user_id"]) for r in existing_rows} desired_set = set(desired_ids) # 删除被移走的协作者 for ui
+backend/app/main.py:57261:4fbc0fbafb29:DELETE FROM activity_logs WHERE entity_type = 'task' AND entity_id = ?", (task_id,)) state.db.execute("DELETE FROM event_line_activities WHERE source_type = 'task_activity' AND sou
+backend/app/main.py:57266:1aad0d92fd11:DELETE FROM memory_facts WHERE source_type = 'task' AND source_id = ? """, (task_id,), ) state.db.execute("DELETE FROM growth_signal_events
+backend/app/main.py:57273:386838391544:DELETE FROM growth_evidence_records WHERE task_id = ?", (task_id,)) state.db.execute("DELETE FROM tasks
+backend/app/main.py:57328:0f48856ed9bb:DELETE FROM task_attachments_cloud WHERE task_id IN (?, ?)", (local_task_id, cloud_task_id)) state.db.execute("DELETE FROM tasks
+backend/app/main.py:57330:50d5cf97572b:DELETE FROM activity_logs WHERE entity_type = 'task' AND entity_id IN (?, ?)", (local_task_id, cloud_task_id)) state.db.execute( "DELETE FROM event_line_activities WHERE source_typ
+backend/app/main.py:57378:7b6210c54c6b:SELECT primary_client_id FROM event_lines
+backend/app/main.py:57381:89144156d1a6:SELECT id FROM clients
+backend/app/main.py:57604:595127e5d5d6:SELECT name, primary_client_name FROM event_lines
+backend/app/main.py:57779:bc4b2e61e0e1:SELECT id, cloud_id, sync_status FROM tasks
+backend/app/main.py:58606:b5cf06251570:SELECT id FROM intelligence_profiles
+backend/app/main.py:58780:f0e4b725c767:SELECT title FROM topic_radars
+backend/app/main.py:59432:b5ce36be9533:UPDATE intelligence_profiles SET {', '.join(updates)} WHERE id = ?", tuple(params)) updated = fetch_intelligence_profile_in_active_sandbox(profile_id) return build_intelligence_pro
+backend/app/main.py:59562:762d2b223b40:SELECT * FROM topic_radars
+backend/app/main.py:60074:cb91df0de599:SELECT * FROM analysis_runs WHERE id = ?", (run_id,)) if not row: raise HTTPException(status_code=404, detail="分析记录不存在。") current_run = build_analysis_run_record(row) previous_run
+backend/app/main.py:60146:60acab3ac064:SELECT * FROM handbook_entries
+backend/app/main.py:60152:f4c73ddca0e6:SELECT l.*, e.reason, e.evidence_type, e.metadata_json, e.contribution_tags_json, e.validation_state, e.org_contribution_score, e.review_id, e.task_id, e.handbook_entry_id, s.sourc
+backend/app/main.py:60233:b80fd07eba8a:SELECT v.*, l.delta, l.total_xp, e.metadata_json, s.context_json FROM growth_validation_events v INNER JOIN growth_evidence_records
+backend/app/main.py:60377:60acab3ac064:SELECT * FROM handbook_entries
+backend/app/main.py:60610:7b1a0c627e16:SELECT author_display_name FROM exp_wall_quotes
+backend/app/main.py:60975:fa14fa1e609b:SELECT id, context_json, raw_text FROM growth_signal_events
+backend/app/main.py:61005:c824da5049ff:UPDATE growth_signal_events SET context_json = ? WHERE id = ?", (to_json(context), str(row["id"])), ) enriched_captures += 1 except Exception: continue # 2. Enrich handbook entries
+backend/app/main.py:61249:7b6210c54c6b:SELECT primary_client_id FROM event_lines
+backend/app/main.py:61257:61a46dbd019e:SELECT client_id FROM tasks
+backend/app/main.py:61583:994c4dd88429:SELECT name FROM clients
+backend/app/main.py:61829:c580be1d48a0:SELECT COUNT(1) AS n FROM intelligence_items
+backend/app/main.py:61834:81b48f7a2698:SELECT * FROM intelligence_items
+backend/app/main.py:62261:027d4a913821:UPDATE intelligence_verification_rules SET positive_rules_json=?, exclude_rules_json=?, " "clarification_examples_json=?, updated_at=? WHERE id=?", ( to_json(positive_rules[:40]),
+backend/app/main.py:62440:c0b365766123:SELECT * FROM intelligence_refresh_runs
+backend/app/main.py:62904:b8f40cfd333e:SELECT id FROM intelligence_refresh_runs
+backend/app/main.py:62929:a6ddeb2b47ab:SELECT COALESCE(finished_at, updated_at, created_at) AS last_at FROM intelligence_refresh_runs
+backend/app/main.py:63420:cf64e2805b7b:SELECT name FROM project_modules WHERE id = ?", (project_module_id,), ) target_name = str(row["name"]) if row else "" elif client_id: row = state.db.fetchone( "SELECT name FROM cli
+backend/app/main.py:63492:bdb9ba785c7e:DELETE FROM intelligence_items WHERE content_kind='public_opinion' AND client_id = ? AND captured_at < ?", (client_id, stale_cutoff), ) elif project_module_id: state.db.execute( "D
+backend/app/main.py:63625:cf64e2805b7b:SELECT name FROM project_modules WHERE id = ?", (project_module_id,), ) target_name = str(row["name"]) if row else "" elif client_id: row = state.db.fetchone( "SELECT name FROM cli
+backend/app/main.py:63669:ace794916310:SELECT name FROM project_modules WHERE id = ?", (projectModuleId,), ) target_name = str(row["name"]) if row else "" elif clientId: row = state.db.fetchone( "SELECT name FROM client
+backend/app/main.py:63724:ace794916310:SELECT name FROM project_modules WHERE id = ?", (projectModuleId,), ) target_name = str(row["name"]) if row else "" elif clientId: row = state.db.fetchone( "SELECT name FROM client
+backend/app/main.py:63746:89144156d1a6:SELECT id FROM clients
+backend/app/main.py:63752:fe1ab9c10bae:UPDATE clients SET brand_proposition = ?, updated_at = ? WHERE id = ?", (new_value, now_iso, client_id), ) return {"clientId": client_id, "brandProposition": new_value, "updatedAt"
+backend/app/main.py:63826:7b6eeac2b207:SELECT name, alias, official_channels_json FROM clients
+backend/app/main.py:63907:994c4dd88429:SELECT name FROM clients
+backend/app/main.py:63971:994c4dd88429:SELECT name FROM clients
+backend/app/main.py:64039:42cd52efc1d9:SELECT name, aliases_json FROM clients
+backend/app/main.py:64095:994c4dd88429:SELECT name FROM clients
+backend/app/main.py:64159:994c4dd88429:SELECT name FROM clients
+backend/app/main.py:64265:cf64e2805b7b:SELECT name FROM project_modules WHERE id = ?", (project_module_id,), ) target_name = str(row["name"]) if row else "" elif client_id: row = state.db.fetchone( "SELECT name FROM cli
+backend/app/main.py:64309:ace794916310:SELECT name FROM project_modules WHERE id = ?", (projectModuleId,), ) target_name = str(row["name"]) if row else "" elif clientId: row = state.db.fetchone( "SELECT name FROM client
+backend/app/main.py:64365:963acd371980:SELECT id, user_feedback_json FROM intelligence_items
+backend/app/main.py:64488:1a5c6bd282ec:UPDATE task_tags SET scope = COALESCE(NULLIF(scope, ''), 'org'), color = COALESCE(NULLIF(color, ''), CASE WHEN scope = 'self' THEN '#9CA3AF' ELSE '#5B7BFE' END), owner_operator_id
+backend/app/main.py:64510:93f4772cf6e7:UPDATE tasks SET tag_ids_json = ?, tags_json = ?, updated_at = ? WHERE id = ?", (to_json([item.id for item in resolved]), to_json([item.name for item in resolved]), timestamp, str(
+backend/app/main.py:6897:8f9b94075653:SELECT primary_department_id FROM event_lines
+backend/app/main.py:6931:e38253a10372:SELECT 1 FROM tasks
+backend/app/main.py:8399:45851e381998:SELECT * FROM project_modules WHERE id = ? AND client_id = ?", (module_id, client_id), ) if not module_row: raise HTTPException(status_code=404, detail="项目模块不存在") module_record = _
+backend/app/main.py:8435:eab1f0f521d7:SELECT f.*, m.name AS module_name FROM project_flows f LEFT JOIN project_modules m ON m.id = f.module_id WHERE f.id = ? AND f.client_id = ? """, (flow_id, client_id), ) if not flow
+backend/app/main.py:9058:fe8244e754b9:SELECT fact_key, fact_value, valid_from, valid_to, confidence FROM memory_facts
+backend/app/services/agent_worklogs.py:313:91ade757a130:SELECT c.id, c.title, c.source, c.created_at, r.title AS radar_title FROM topic_candidates c LEFT JOIN topic_radars
+backend/app/services/agent_worklogs.py:441:2974f55f6a11:SELECT title FROM tasks
+backend/app/services/agent_worklogs.py:454:f0e4b725c767:SELECT title FROM topic_radars
+backend/app/services/agent_worklogs.py:891:66d68e01561c:SELECT id FROM task_notes WHERE task_id = ?", (task_id,)) if existing_note: db.execute( "UPDATE task_notes SET note = ?, updated_at = ? WHERE task_id = ?", (note_content, timestamp
+backend/app/services/agent_worklogs.py:911:a803c5f15db5:DELETE FROM tasks WHERE source_type = ? AND source_id LIKE ?", (AGENT_AUTO_SOURCE_TYPE, f"{week_label}::%"), ) return expected_ids def build_agent_execution_tasks( *, db: Database,
+backend/app/services/analysis_center.py:3193:89144156d1a6:SELECT id FROM clients
+backend/app/services/analysis_context.py:1257:ceb6c0a343d2:SELECT * FROM event_lines
+backend/app/services/analysis_context.py:1265:61a46dbd019e:SELECT client_id FROM tasks
+backend/app/services/analysis_context.py:1281:e7bd073c5d1c:SELECT id, title, description, status, owner_name, due_date, updated_at, client_id FROM tasks
+backend/app/services/analysis_context.py:1468:632395db302a:SELECT * FROM project_modules WHERE id = ?", (module_id,)) if not row: raise ValueError("Project module not found") client_id = str(row["client_id"] or "").strip() or None flow_row
+backend/app/services/analysis_context.py:1491:0d29cfd92d3e:SELECT DISTINCT m.id, m.title, m.stage, m.updated_at FROM tasks
+backend/app/services/analysis_context.py:1635:34fdfc95aced:SELECT f.*, m.client_id AS client_id, m.name AS module_name FROM project_flows f LEFT JOIN project_modules m ON m.id = f.module_id WHERE f.id = ? """, (flow_id,), ) if not row: rai
+backend/app/services/analysis_context.py:1660:0d29cfd92d3e:SELECT DISTINCT m.id, m.title, m.stage, m.updated_at FROM tasks
+backend/app/services/analysis_context.py:362:49324e369572:SELECT t.id, t.title, t.description, t.status, t.updated_at, t.client_id, t.event_line_id FROM tasks
+backend/app/services/analysis_context.py:700:aae9744d7431:SELECT t.*, l.name AS list_name, l.color AS list_color, c.name AS client_name, e.name AS event_line_name, e.stage AS event_line_stage, e.summary AS event_line_summary, e.current_bl
+backend/app/services/analysis_context.py:882:ed02b083db6d:SELECT id, title, description, status, updated_at, event_line_id FROM tasks
+backend/app/services/atomic_fact_semantic_deriver.py:325:f47d9c3bed1b:SELECT id, subject_text, attribute, value_text, source_type, confidence FROM atomic_facts WHERE client_id = ? AND status = 'active'""", (client_id,), ) facts = [dict(r) for r in fa
+backend/app/services/atomic_fact_semantic_deriver.py:89:83651adb5252:SELECT id FROM event_lines
+backend/app/services/badge_engine.py:292:de4249e896cc:SELECT m.*, (SELECT COUNT(*) FROM decisions d WHERE d.meeting_id = m.id) AS decision_count, (SELECT COUNT(*) FROM action_items a WHERE a.meeting_id = m.id) AS action_count, ( SELEC
+backend/app/services/badge_engine.py:361:dc27df999e66:SELECT wr.id AS review_id, wr.week_label, wr.summary, wr.work_free_note, wr.created_at, wr.updated_at, we.id AS entry_id, we.task_id, we.note, we.structured_note_json, we.task_snap
+backend/app/services/badge_engine.py:503:60acab3ac064:SELECT * FROM handbook_entries
+backend/app/services/badge_engine.py:530:48c2e6842c1e:SELECT v.id, v.event_type, v.source_type, v.source_id, v.created_at, e.metadata_json FROM growth_validation_events v INNER JOIN growth_evidence_records
+backend/app/services/badge_engine.py:563:2e2273cd66ce:SELECT * FROM tasks
+backend/app/services/clarification_context.py:122:c39c27ed72d2:SELECT id, name, kind, status, stage, summary, intent, next_step, current_blocker, recent_decision, business_category, owner_id, owner_name, evidence_count, created_at, updated_at,
+backend/app/services/clarification_context.py:172:2e837c32c776:SELECT a.id, a.event_line_id, a.source_type, a.source_id, a.happened_at, a.actor_id, a.actor_name, a.title, a.summary, a.is_key, el.name AS event_line_name FROM event_line_activiti
+backend/app/services/clarification_context.py:231:f8a50a787b6b:SELECT display_name, normalized_name, mention_count, aliases_json FROM entities WHERE client_id = ? AND entity_type = 'person' AND COALESCE(status, 'active') = 'active' AND display
+backend/app/services/clarification_context.py:270:b4bdf824cf79:SELECT actor_name, COUNT(*) AS cnt FROM event_line_activities WHERE event_line_id IN ({placeholders}) AND actor_name IS NOT NULL AND actor_name != '' GROUP BY actor_name """, tuple
+backend/app/services/clarification_context.py:68:9199ac910d26:SELECT id, name, alias, domain, type, intro, stage, color FROM clients
+backend/app/services/clarification_priority.py:125:a40e21b1d57a:SELECT COUNT(*) c FROM commitments WHERE client_id = ? AND status NOT IN ('done','cancelled') AND content LIKE ?""", (client_id, f"%{subject_text}%"), ) active_commitments = active
+backend/app/services/clarification_priority.py:161:d1c441f66db8:SELECT COUNT(*) c FROM tasks
+backend/app/services/clarification_priority.py:170:d1c441f66db8:SELECT COUNT(*) c FROM tasks
+backend/app/services/clarification_priority.py:179:d1c441f66db8:SELECT COUNT(*) c FROM tasks
+backend/app/services/clarification_priority.py:189:d1c441f66db8:SELECT COUNT(*) c FROM tasks
+backend/app/services/clarification_priority.py:91:7adee20959fa:SELECT update_relation FROM atomic_facts WHERE id = ?", (fact_id,), ) update_rel = fact_row["update_relation"] if fact_row else "none" if distinct_values >= 3: return 5 if distinct
+backend/app/services/client_profile.py:250:51bb2632bf73:SELECT id, name FROM clients
+backend/app/services/client_profile.py:293:994c4dd88429:SELECT name FROM clients
+backend/app/services/client_profile.py:31:e0b0fac07b97:SELECT name, type, stage FROM clients
+backend/app/services/client_strategic_pulse.py:271:27dfe91d21c1:SELECT t.id, t.title, t.due_date, t.deadline_at, t.event_line_id, t.status, el.name AS event_line_name FROM tasks
+backend/app/services/client_strategic_pulse.py:339:1d9581f5777b:SELECT id, name, next_step FROM event_lines
+backend/app/services/client_strategic_pulse.py:406:ce86f2b7a875:SELECT el.id, el.name, el.current_blocker, el.next_step, el.status, el.updated_at, (SELECT MAX(happened_at) FROM event_line_activities WHERE event_line_id = el.id) AS last_activity
+backend/app/services/client_strategic_pulse.py:583:f8297f5325be:SELECT COUNT(*) AS c FROM documents WHERE client_id = ? AND created_at >= ? AND id NOT LIKE 'sysdoc_%' """, (client_id, week_start_iso), ).fetchone() new_doc_count = int(new_docs["
+backend/app/services/company_brain_context_builder.py:169:bea0657f080b:SELECT ref_text, ref_type, target_table, target_id, match_score, source_doc_type FROM historical_reference_links WHERE client_id = ? ORDER BY resolved_at DESC LIMIT 20""", (client_
+backend/app/services/company_brain_context_builder.py:237:60d65f15af38:SELECT id, gap_type, subject, internal_value, external_value, suggested_action FROM data_gaps WHERE client_id = ? AND status = 'open' ORDER BY detected_at DESC LIMIT 10""", (client
+backend/app/services/company_brain_qa.py:156:c8439a3b4f0b:SELECT id, question, slot_key FROM clarification_records WHERE scope_type='client' AND scope_id=? AND status='pending' ORDER BY created_at DESC LIMIT 20""", (client_id,), ) pack.cl
+backend/app/services/data_center_health_dashboard.py:98:7ae53063d620:SELECT COUNT(*) FROM atomic_facts WHERE source_registry_id IS NOT NULL AND source_registry_id != ''" ) af_with_registry = int(row[0]) if row else 0 if "source_v2_document_id" in af
+backend/app/services/data_center_ingest.py:1007:c6fbd6907e62:SELECT source_type, source_id, source_entity_type, source_entity_id, document_id FROM data_center_ingest_events
+backend/app/services/data_center_ingest.py:1023:27cb4f193392:UPDATE documents SET lifecycle_status = ?, is_searchable = 0 WHERE id = ?", (lifecycle_status, document_id), ) db.execute( "UPDATE v2_documents SET lifecycle_status = ?, is_searcha
+backend/app/services/data_center_ingest.py:1041:d9dfd73120e5:UPDATE v2_documents SET lifecycle_status = ?, is_searchable = 0, updated_at = ? WHERE origin_type = ? AND (origin_id = ? OR origin_id LIKE ?) """, (lifecycle_status, now, source_ty
+backend/app/services/data_center_ingest.py:1069:272186c19599:SELECT id FROM data_center_ingest_events
+backend/app/services/data_center_ingest.py:1176:80a6bc8ab693:SELECT e.* FROM data_center_ingest_events
+backend/app/services/data_center_ingest.py:1224:df6e111c9178:UPDATE data_center_ingest_events SET status = ?, error_message = ?, lifecycle_status = 'scope_released', metadata_json = ?, updated_at = ? WHERE id = ? """, ( SKIPPED_ORPHAN_CLIENT
+backend/app/services/data_center_ingest.py:1265:5affaab564f5:SELECT e.id, e.name, e.primary_client_id, e.primary_client_name, e.status, e.updated_at FROM event_lines
+backend/app/services/data_center_ingest.py:1307:964e49482127:SELECT COUNT(1) FROM tasks
+backend/app/services/data_center_ingest.py:1319:fb8d8768b594:SELECT COUNT(1) FROM event_lines
+backend/app/services/data_center_ingest.py:1442:38df505816f3:SELECT t.*, COALESCE(t.client_id, el.primary_client_id) AS resolved_client_id, COALESCE(c.name, el.primary_client_name) AS resolved_client_name, el.name AS resolved_event_line_name
+backend/app/services/data_center_ingest.py:1569:ab4333c2ea7b:UPDATE data_center_ingest_events SET evidence_tier = ? WHERE id = ?", (evidence_tier, ingest_event_id), ) except Exception: # noqa: BLE001 pass # 字段不存在时静默忽略（旧 DB 兜底） return result
+backend/app/services/data_center_ingest.py:1592:272186c19599:SELECT id FROM data_center_ingest_events
+backend/app/services/data_center_ingest.py:2079:8799556dbae8:SELECT id FROM weekly_reviews
+backend/app/services/data_center_ingest.py:2116:ceb6c0a343d2:SELECT * FROM event_lines
+backend/app/services/data_center_ingest.py:2178:160d48877d20:SELECT id FROM tasks
+backend/app/services/data_center_ingest.py:2200:04d9b266d59e:SELECT id FROM task_attachments UNION SELECT id FROM task_attachments_cloud ORDER BY id """ ): if ingest_task_attachment_by_id(db, data_dir, _text(row["id"])): counts[source_type]
+backend/app/services/data_center_ingest.py:2217:83651adb5252:SELECT id FROM event_lines
+backend/app/services/data_center_ingest.py:259:cbf1a4064aa8:SELECT scope_mode FROM tasks
+backend/app/services/data_center_ingest.py:267:89144156d1a6:SELECT id FROM clients
+backend/app/services/data_center_ingest.py:711:272186c19599:SELECT id FROM data_center_ingest_events
+backend/app/services/data_center_ingest.py:931:59057abef021:UPDATE documents SET lifecycle_status = ?, is_searchable = ? WHERE source_entity_type = ? AND source_entity_id = ? """, (lifecycle_status, is_searchable, source_entity_type, source
+backend/app/services/data_center_ingest.py:956:5d2c45d44706:UPDATE data_center_ingest_events SET lifecycle_status = ?, updated_at = ? WHERE source_entity_type = ? AND source_entity_id = ? """, (lifecycle_status, now, source_entity_type, sou
+backend/app/services/data_center_schema.py:16:7684be13279d:SELECT name FROM sqlite_master WHERE type = 'table' AND name = ? LIMIT 1", (table_name,), ) return bool(row and row["name"]) def _count(db: Database, query: str) -> int: try: row =
+backend/app/services/data_center_schema.py:40:51a61630544b:SELECT COUNT(1) AS count FROM documents WHERE COALESCE(department_ids_json, '[]') IN ('', '[]')"), "v2DocumentsMissingDepartmentIds": _count(db, "SELECT COUNT(1) AS count FROM v2_d
+backend/app/services/data_center_schema.py:43:67630f85ca0f:SELECT COUNT(1) AS count FROM documents WHERE COALESCE(owner_user_id, '') = ''"), "v2DocumentsMissingOwner": _count(db, "SELECT COUNT(1) AS count FROM v2_documents WHERE COALESCE(o
+backend/app/services/data_center_sync.py:123:65e68848dd13:SELECT * FROM data_center_ingest_events
+backend/app/services/data_center_sync.py:495:61ca3b224b61:SELECT * FROM data_center_sync_outbox ORDER BY updated_at DESC, created_at DESC LIMIT ? """, (limit,), ) event_rows = db.fetchall( """ SELECT * FROM data_center_ingest_events
+backend/app/services/data_gap_compensator.py:279:994c4dd88429:SELECT name FROM clients
+backend/app/services/digital_asset_center.py:1203:203b2268bcac:SELECT id, name, stage, intro, updated_at FROM clients
+backend/app/services/digital_asset_center.py:3159:31735a9f6371:SELECT COUNT(1) AS count FROM documents WHERE client_id = ?", (client_id,)) ready_document_count = _safe_count( db, "SELECT COUNT(1) AS count FROM v2_documents WHERE client_id = ?
+backend/app/services/digital_asset_center.py:3170:8d5397cb4e4b:SELECT COUNT(1) AS count FROM event_lines
+backend/app/services/digital_asset_center.py:3171:5e83909569cf:SELECT COUNT(1) AS count FROM meetings WHERE client_id = ?", (client_id,)) task_count = _safe_count( db, """ SELECT COUNT(1) AS count FROM tasks
+backend/app/services/digital_asset_center.py:3291:1b70af8f362e:SELECT id, fact_key, fact_value, source_type, confidence, updated_at FROM memory_facts
+backend/app/services/digital_asset_center.py:3305:04187e59e215:SELECT id, name, kind, business_category, stage, summary, intent, current_blocker, recent_decision, next_step, updated_at FROM event_lines
+backend/app/services/digital_asset_center.py:3320:accb7b5b4c2a:SELECT id, title, stage, notes, transcript_text, updated_at FROM meetings WHERE client_id = ? ORDER BY updated_at DESC LIMIT 80 """, (client_id,), ): text = _join_text(row["title"]
+backend/app/services/digital_asset_center.py:3431:a8180fb07c3f:SELECT id, intro, stage, updated_at FROM clients
+backend/app/services/digital_asset_center.py:955:fecb41dd7693:SELECT COUNT(1) AS count FROM documents d JOIN clients
+backend/app/services/digital_asset_center.py:968:25e75b00537d:SELECT COUNT(1) AS count FROM evidence_cards e JOIN clients
+backend/app/services/digital_asset_narrative.py:206:ad5caa844a3d:SELECT id, name, stage, intro FROM clients
+backend/app/services/digital_asset_narrative.py:211:61b16d180fef:SELECT COUNT(1) AS count FROM documents WHERE client_id = ?", (client_id,)), "v2Documents": _safe_count(db, "SELECT COUNT(1) AS count FROM v2_documents WHERE client_id = ?", (clien
+backend/app/services/digital_asset_narrative.py:283:91678e64c7d9:SELECT name, status, stage, summary, intent, current_blocker, recent_decision, next_step, evidence_count, updated_at FROM event_lines
+backend/app/services/digital_asset_narrative.py:304:bf89d132f9a5:SELECT t.title, t.description, t.status, t.progress_status, t.evidence_count, t.updated_at FROM tasks
+backend/app/services/evidence_tier.py:80:cee8f06cce49:SELECT id, source_type, source_id, title, content_hash, evidence_tier, source_entity_type, source_entity_id, lifecycle_status, metadata_json, created_at, updated_at FROM data_cente
+backend/app/services/exp_wall_service.py:311:56152c0ffc70:SELECT q.*, COALESCE(NULLIF(op.name, ''), NULLIF(q.author_display_name, '')) AS author_name, op.role AS author_role FROM exp_wall_quotes
+backend/app/services/exp_wall_service.py:328:56152c0ffc70:SELECT q.*, COALESCE(NULLIF(op.name, ''), NULLIF(q.author_display_name, '')) AS author_name, op.role AS author_role FROM exp_wall_quotes
+backend/app/services/exp_wall_service.py:469:0c7660ff8917:SELECT r.reaction_type, COALESCE(op.role_tier, 'member') AS tier FROM exp_wall_reactions r LEFT JOIN operators op ON op.id = r.user_id WHERE r.quote_id = ? """, (quote_id,), ) weig
+backend/app/services/exp_wall_service.py:513:4fbb22ab3cb8:SELECT author_user_id FROM exp_wall_quotes
+backend/app/services/exp_wall_service.py:537:ce51c8134b70:SELECT team FROM operators WHERE id = ?", (author_id,), ) if not author_team_row: return False return str(author_team_row["team"] or "") == deleter_team return False def delete_quo
+backend/app/services/exp_wall_service.py:611:36783ce7c616:SELECT q.author_user_id AS user_id, op.name AS user_name, op.role AS user_role, op.team AS user_team, COUNT(*) AS quote_count, SUM(q.like_count) AS total_likes, SUM(q.save_count) A
+backend/app/services/exp_wall_service.py:699:3d12f2f02125:UPDATE exp_wall_quotes SET sync_status='synced', last_synced_at=?, pending_sync_action='' WHERE id = ?", (_now_iso(), quote_id), ) pushed += 1 else: logger.warning("push quote %s f
+backend/app/services/experience_story_engine.py:38:994c4dd88429:SELECT name FROM clients
+backend/app/services/glossary_candidate_generator.py:197:ddd0a372a814:SELECT DISTINCT owner_name FROM tasks
+backend/app/services/glossary_candidate_generator.py:205:e6fdba398d48:SELECT title, COALESCE(description,'') as description FROM tasks
+backend/app/services/glossary_candidate_generator.py:254:8b31239b1dfd:SELECT t.title, substr(t.deadline_at, 1, 10) as ddl, t.owner_name FROM tasks
+backend/app/services/glossary_candidate_generator.py:274:2974f55f6a11:SELECT title FROM tasks
+backend/app/services/glossary_candidate_generator.py:296:685c13503d74:SELECT title, stage FROM meetings WHERE client_id = ?", (client_id,), ) except Exception: return [] return [ {"title": str(r["title"]), "stage": str(r["stage"] or "")} for r in row
+backend/app/services/glossary_candidate_generator.py:497:51bb2632bf73:SELECT id, name FROM clients
+backend/app/services/growth_engine.py:2074:3df646ae1c08:SELECT c.id AS client_id, c.name AS client_name, (SELECT COUNT(*) FROM tasks
+backend/app/services/growth_engine.py:2076:b03c53f99047:SELECT COUNT(*) FROM v2_documents WHERE owner_user_id=? AND client_id=c.id AND kind NOT IN ('task_doc','event_line_update_doc','review_entry_doc')) AS doc_cnt, (SELECT COUNT(*) FRO
+backend/app/services/growth_engine.py:2081:329515cc53d6:SELECT DISTINCT client_id FROM tasks
+backend/app/services/growth_engine.py:2119:6f06b79d020a:SELECT DISTINCT week_label FROM weekly_reviews
+backend/app/services/growth_engine.py:2181:c1a83beddc12:SELECT t.reviewed_at, t.week_label, length(COALESCE(t.note, '')) AS nlen, length(COALESCE(t.structured_note_json, '')) AS slen FROM weekly_review_task_entries t JOIN weekly_reviews
+backend/app/services/growth_engine.py:2287:991a52fbcea1:SELECT COALESCE(NULLIF(business_category, ''), '主要业务') AS cat, COUNT(*) AS cnt FROM tasks
+backend/app/services/growth_engine.py:2322:acdd1c736e52:SELECT COALESCE(last_reused_at, created_at) AS d, reuse_count, created_at FROM handbook_entries
+backend/app/services/growth_engine.py:2333:ccf2260e59c5:SELECT created_at, like_count, save_count FROM exp_wall_quotes
+backend/app/services/growth_engine.py:2504:66e57301dcb5:SELECT g.term FROM client_glossary g JOIN clients
+backend/app/services/growth_engine.py:2508:329515cc53d6:SELECT DISTINCT client_id FROM tasks
+backend/app/services/growth_engine.py:2661:adaa32bd236e:SELECT updated_at AS d FROM tasks
+backend/app/services/growth_engine.py:2666:cf459cb9b628:SELECT created_at AS d FROM handbook_entries
+backend/app/services/growth_engine.py:2671:5ae8c23b3f66:SELECT created_at AS d FROM weekly_reviews
+backend/app/services/growth_engine.py:3244:c67727bee473:SELECT 1 FROM growth_signal_events
+backend/app/services/growth_engine.py:3475:963156c262af:SELECT id FROM growth_evidence_records
+backend/app/services/growth_engine.py:3477:edea2b345f1b:DELETE FROM xp_ledger WHERE evidence_id = ?", [(str(row["id"]),) for row in evidence_rows]) db.executemany("DELETE FROM growth_validation_events WHERE evidence_id = ?", [(str(row["
+backend/app/services/growth_engine.py:3480:dac9b3f511c1:DELETE FROM growth_signal_events WHERE review_id = ?", (review_id,)) def reset_signal_growth_outputs(db: Database, signal_id: str) -> None: evidence_rows = db.fetchall("SELECT id F
+backend/app/services/growth_engine.py:3487:1ad953e838aa:DELETE FROM xp_ledger WHERE evidence_id = ?", evidence_ids) db.executemany("DELETE FROM growth_validation_events WHERE evidence_id = ?", evidence_ids) db.execute("DELETE FROM growt
+backend/app/services/growth_engine.py:4305:6162c14b6947:UPDATE handbook_entries SET reuse_count = COALESCE(reuse_count, 0) + 1, last_reused_at = ? WHERE id = ? """, (timestamp, entry.id), ) # Award reuse XP to the original author if dif
+backend/app/services/growth_engine.py:4611:2754fa3af476:SELECT source_type, context_json FROM growth_signal_events
+backend/app/services/growth_engine.py:541:994c4dd88429:SELECT name FROM clients
+backend/app/services/growth_engine.py:549:57610495dc3b:SELECT name FROM event_lines
+backend/app/services/growth_sync.py:47:c6b5b31bf91b:UPDATE growth_signal_events SET sync_status='pending', pending_sync_action='upsert', updated_at=? WHERE id = ?", (_now_iso(), signal_id), ) db.conn.commit() def mark_evidence_pendi
+backend/app/services/growth_sync.py:490:e51fa75d69ca:SELECT s.id AS signal_id, s.user_id, s.created_at FROM growth_signal_events
+backend/app/services/growth_sync.py:528:50bcb7258167:DELETE FROM _growth_week_temp") # 真按 evidence 真聚合 db.conn.execute( """ INSERT INTO _growth_week_temp(user_id, week_label, ability_key, current_score, total_xp) SELECT user_id, strf
+backend/app/services/handbook_sync.py:103:1605a7043f47:UPDATE handbook_entries SET sync_status='failed' WHERE id = ?", (entry_id,), ) failed += 1 continue try: payload = _row_to_cloud_payload(row) resp = httpx_client.post( f"{cloud_bas
+backend/app/services/intelligence_brand_audit.py:271:6ac064128dd6:SELECT id, title FROM intelligence_items
+backend/app/services/intelligence_candidate_supply.py:2700:e63b4081e8a7:SELECT name, goal, description, keywords_json FROM project_modules WHERE client_id = ? ORDER BY updated_at DESC LIMIT 8", (scope.client_id,), ) ] rows = db.fetchall( """ SELECT tit
+backend/app/services/intelligence_candidate_supply.py:3040:f7fd3e68213d:SELECT tags_json, key_points_json FROM intelligence_items
+backend/app/services/intelligence_candidate_supply.py:4516:2eb4b816ba4b:UPDATE intelligence_candidate_items SET promotion_reason = ?, updated_at = ? WHERE id = ?", ("样张、演示域名或验收示例不得进入用户可见情报或资料库", timestamp, draft.id), ) return False if draft.feedback_ad
+backend/app/services/intelligence_candidate_supply.py:6183:80f647ced5e7:SELECT c.id FROM intelligence_candidate_items c JOIN intelligence_items
+backend/app/services/intelligence_candidate_supply.py:6348:118b98839d5d:SELECT COUNT(1) AS count FROM intelligence_candidate_items WHERE id IN ({placeholders}) AND content_kind = 'timely_intelligence' AND quality_flags_json LIKE '%effective_window_exce
+backend/app/services/intelligence_candidate_supply.py:6653:c33dce776ae0:SELECT COUNT(1) FROM intelligence_candidate_items WHERE id IN ({placeholders}) AND quality_flags_json LIKE '%fresh_window%'", tuple(candidate_ids)) or 0) extended_window_count = in
+backend/app/services/intelligence_candidate_supply.py:6964:848691dae410:SELECT COUNT(1) FROM intelligence_candidate_items WHERE COALESCE(is_user_visible_candidate, 1) = 1 AND classification_status IN ('promoted', 'duplicate') """ ) or 0 ) if promoted_v
+backend/app/services/intelligence_candidate_supply.py:7090:cf2faf036309:UPDATE {table_name} SET lifecycle_status = 'inactive', updated_at = ? WHERE source_entity_type = 'intelligence_candidate' AND source_entity_id = ? """, (timestamp, str(row["id"])),
+backend/app/services/intelligence_candidate_supply.py:770:f53678e3dd21:SELECT * FROM clients
+backend/app/services/intelligence_positioning_gap.py:71:af76a4a943ae:SELECT brand_proposition FROM clients
+backend/app/services/intelligence_positioning_gap.py:77:565277594973:SELECT current_needs, strategic_value_to_yiyu, influence FROM client_strategic_profiles WHERE client_id = ?", (client_id,), ) if sp: candidates: list[str] = [] for field_name in ("
+backend/app/services/intelligence_query_strategy.py:142:e444d6b23c2d:SELECT theme_label FROM intelligence_sentiment_themes WHERE scope_type = 'client' AND scope_id = ? ORDER BY item_count DESC LIMIT 8 """, (client_id,), ) signals.known_themes = [ st
+backend/app/services/intelligence_query_strategy.py:64:9e900988baf3:SELECT name, alias, domain, brand_proposition FROM clients
+backend/app/services/intelligence_search_intents.py:512:6f2bb2a7bde9:SELECT * FROM project_modules WHERE id = ?", (normalized_id,)) if not project: raise ValueError("Project module not found") client_id = str(project["client_id"] or "") display_name
+backend/app/services/intelligence_search_intents.py:537:f53678e3dd21:SELECT * FROM clients
+backend/app/services/intelligence_search_intents.py:605:684ee166d125:SELECT title, summary, key_points_json, tags_json FROM intelligence_items
+backend/app/services/intelligence_sentiment.py:285:e8f6ec5aebd1:SELECT name, alias, domain FROM clients
+backend/app/services/intelligence_sentiment.py:676:75ea2bad0bbf:SELECT id FROM intelligence_items
+backend/app/services/intelligence_sentiment.py:811:f16dbadcd127:SELECT timeliness_label, source, tags_json FROM intelligence_items
+backend/app/services/intelligence_sentiment.py:894:ef30302ba7c2:SELECT id, title, summary, source, source_url, captured_at, timeliness_label, relevance_reason, tags_json, user_status FROM intelligence_items
+backend/app/services/intelligence_theme_cluster.py:117:a8114a8f5b7e:SELECT id, title, summary, source, source_url, timeliness_label, captured_at FROM intelligence_items
+backend/app/services/intelligence_theme_cluster.py:425:a7477ed7739b:SELECT * FROM intelligence_sentiment_themes WHERE id = ?", (theme_id,), ) if not theme_row: return {"ok": False, "reason": "theme_not_found", "items": []} try: item_ids = json.load
+backend/app/services/intelligence_timely_strategy.py:284:67380f2eeb54:SELECT * FROM intelligence_focus_directives WHERE {clauses} ORDER BY updated_at DESC", tuple(params), ) return [_row_dict(row) for row in rows] def build_timely_research_strategy(
+backend/app/services/intelligence_timely_strategy.py:311:4d0c682bd11d:SELECT * FROM project_modules WHERE client_id = ? ORDER BY updated_at DESC LIMIT 10", (client_id,), ) ] if _table_exists(db, "project_modules") else [] ) flow_rows = ( [ _row_dict(
+backend/app/services/intelligence_timely_strategy.py:349:62ff022758fc:SELECT title, source_type, content_domain, metadata_json, updated_at FROM data_center_ingest_events
+backend/app/services/intelligence_timely_strategy.py:362:62ff022758fc:SELECT title, source_type, content_domain, metadata_json, updated_at FROM data_center_ingest_events
+backend/app/services/knowledge_v2.py:3209:bcdc67766998:SELECT DISTINCT e.id, e.normalized_name, e.display_name FROM entity_mentions em JOIN entities e ON e.id = em.entity_id JOIN v2_chunks c ON c.id = em.v2_chunk_id WHERE c.v2_document
+backend/app/services/knowledge_v2.py:3854:2e2273cd66ce:SELECT * FROM tasks
+backend/app/services/knowledge_v2.py:4997:aa207b667c3e:SELECT dpo2.id FROM document_path_optimizations dpo2 WHERE dpo2.knowledge_document_id = kd.id ORDER BY dpo2.updated_at DESC LIMIT 1 ) WHERE vd.client_id = ? AND vd.material_layer I
+backend/app/services/knowledge_v2.py:5024:e38253a10372:SELECT 1 FROM tasks
+backend/app/services/knowledge_v2.py:5033:7751d9f2af39:SELECT 1 FROM weekly_review_task_entries entry WHERE entry.id = COALESCE(NULLIF(vd.source_entity_id, ''), vd.origin_id) AND LOWER(COALESCE(entry.content_domain, 'work')) NOT IN ('p
+backend/app/services/knowledge_v2.py:5052:68748ba00dee:SELECT 1 FROM event_lines
+backend/app/services/local_memory.py:325:7b1a0c627e16:SELECT author_display_name FROM exp_wall_quotes
+backend/app/services/local_memory.py:391:1b05e8faa3ce:SELECT id FROM exp_wall_quotes
+backend/app/services/meeting_context.py:86:0551ebdcb828:SELECT id, title, owner_name, due_date, confidence, publish_status, created_at FROM action_items WHERE meeting_id = ? ORDER BY created_at DESC", (meeting_id,), ) ) risks = _rows_to
+backend/app/services/meeting_minute_processor.py:175:994c4dd88429:SELECT name FROM clients
+backend/app/services/meeting_minute_processor.py:396:83651adb5252:SELECT id FROM event_lines
+backend/app/services/memory_foundation.py:1001:ae0b0402448a:SELECT title, status, updated_at FROM tasks
+backend/app/services/memory_foundation.py:1012:81c84fe95582:SELECT a.title, a.created_at FROM task_attachments a INNER JOIN tasks
+backend/app/services/memory_foundation.py:1024:baf41bd0d20c:SELECT title, summary, happened_at FROM event_line_activities WHERE event_line_id = ? ORDER BY happened_at DESC, created_at DESC LIMIT 8 """, (event_line_id,), ) review_signals: li
+backend/app/services/memory_foundation.py:1910:23ab759bdf54:SELECT entry.task_snapshot_json, entry.note FROM weekly_review_task_entries entry LEFT JOIN tasks
+backend/app/services/memory_foundation.py:1983:2e2273cd66ce:SELECT * FROM tasks
+backend/app/services/memory_foundation.py:1990:2e2273cd66ce:SELECT * FROM tasks
+backend/app/services/memory_foundation.py:2001:8799556dbae8:SELECT id FROM weekly_reviews
+backend/app/services/memory_foundation.py:2004:8799556dbae8:SELECT id FROM weekly_reviews
+backend/app/services/memory_foundation.py:2011:266e0f6b809b:SELECT a.* FROM task_attachments a INNER JOIN tasks
+backend/app/services/memory_foundation.py:2033:0c3a2e75ec89:SELECT entry.task_snapshot_json FROM weekly_review_task_entries entry LEFT JOIN tasks
+backend/app/services/memory_foundation.py:2059:0c3a2e75ec89:SELECT entry.task_snapshot_json FROM weekly_review_task_entries entry LEFT JOIN tasks
+backend/app/services/memory_foundation.py:285:61a46dbd019e:SELECT client_id FROM tasks
+backend/app/services/memory_foundation.py:294:7b6210c54c6b:SELECT primary_client_id FROM event_lines
+backend/app/services/memory_foundation.py:387:bb8e3a02f2ac:SELECT * FROM memory_facts
+backend/app/services/memory_foundation.py:550:51bb2632bf73:SELECT id, name FROM clients
+backend/app/services/memory_foundation.py:688:9a64198dbd3f:SELECT id, created_at FROM memory_facts
+backend/app/services/memory_foundation.py:702:3eb33ebc1fef:UPDATE SET fact_value = excluded.fact_value, confidence = excluded.confidence, freshness = excluded.freshness, evidence_refs_json = excluded.evidence_refs_json, valid_from = exclud
+backend/app/services/memory_foundation.py:734:f53678e3dd21:SELECT * FROM clients
+backend/app/services/memory_foundation.py:786:8e9f59177177:SELECT owner_name FROM goal_records WHERE client_id = ? ORDER BY updated_at DESC", (client_id,), ) ], *[ _coerce_text(row["owner_name"]) for row in db.fetchall( "SELECT owner_name
+backend/app/services/memory_foundation.py:875:c3b41824d760:SELECT COUNT(*) FROM knowledge_documents WHERE client_id = ?", (client_id,)) or 0) memory_fact_count = int(db.scalar("SELECT COUNT(*) FROM memory_facts
+backend/app/services/memory_foundation.py:955:3ced80c70826:SELECT * FROM organization_notebook_snapshots WHERE client_id = ?", (client_id,), ) assert row is not None snapshot = _build_organization_notebook_snapshot(row) _sync_reference_sco
+backend/app/services/memory_foundation.py:979:721023d44ef2:SELECT DISTINCT event_line_id FROM tasks
+backend/app/services/memory_foundation.py:995:ceb6c0a343d2:SELECT * FROM event_lines
+backend/app/services/narrative_collector.py:1082:f3b83e174fa6:SELECT id, name, kind, status, stage, summary, intent, current_blocker, recent_decision, next_step, evidence_count, owner_id, updated_at FROM event_lines
+backend/app/services/narrative_collector.py:1113:01acfe466af8:SELECT a.id, a.event_line_id, e.name AS event_line_name, a.source_type, a.source_id, a.happened_at, COALESCE(a.actor_name, '') AS actor_name, a.title, a.summary FROM event_line_act
+backend/app/services/narrative_collector.py:1148:994c4dd88429:SELECT name FROM clients
+backend/app/services/narrative_collector.py:1153:d1012923fc4d:SELECT t.id, t.title, t.description, t.priority, t.progress_status, t.deadline_at, COALESCE(t.owner_name, '') AS owner_name, t.next_action, t.current_blocker, t.recent_decision, t.
+backend/app/services/narrative_collector.py:1160:68748ba00dee:SELECT 1 FROM event_lines
+backend/app/services/narrative_collector.py:361:53aa07237ce8:SELECT id, name, alias FROM clients
+backend/app/services/narrative_collector.py:815:c77f40c1919c:SELECT title, description, owner_name, progress_status FROM tasks
+backend/app/services/narrative_collector.py:836:764f5199bb81:SELECT wrt.note, wrt.week_label, t.title AS task_title FROM weekly_review_task_entries wrt JOIN tasks
+backend/app/services/narrative_generator.py:1216:2974f55f6a11:SELECT title FROM tasks
+backend/app/services/organization_dna_v2.py:448:6af84c91ed59:SELECT id, title, description, status, progress_status, priority, owner_name, current_blocker, next_action, recent_decision, business_category, event_line_id, created_at, updated_a
+backend/app/services/organization_dna_v2.py:460:5ba2a69d9adb:SELECT t.id, t.title, t.description, t.status, t.progress_status, t.priority, t.owner_name, t.current_blocker, t.next_action, t.recent_decision, t.business_category, t.event_line_i
+backend/app/services/organization_dna_v2.py:486:3758409c1a8b:SELECT 1 FROM clients
+backend/app/services/organization_dna_v2.py:553:f15d01635991:SELECT id, week_label, work_progress, work_blocker, work_direction, next_week_focus, support_needed, summary, work_free_note, submitted_at, created_at, updated_at FROM weekly_revie
+backend/app/services/organization_dna_v2.py:612:4b012263ae11:SELECT id, name, kind, status, business_category, stage, summary, intent, current_blocker, recent_decision, next_step, primary_client_name, created_at, updated_at FROM event_lines
+backend/app/services/organization_dna_v2.py:679:048e1e81c274:SELECT v.id, v.document_id, v.client_id, v.file_name, v.kind, v.preview_text, v.visible_category, v.material_layer, v.section_count, v.chunk_count, v.parse_status, d.created_at AS
+backend/app/services/organization_dna_v2.py:775:96e3fa20902d:SELECT COUNT(1) AS count FROM tasks
+backend/app/services/organization_dna_v2.py:808:8d5397cb4e4b:SELECT COUNT(1) AS count FROM event_lines
+backend/app/services/organization_dna_v2.py:838:a05c2052aed9:SELECT COUNT(1) AS count FROM weekly_reviews
+backend/app/services/plan_executor.py:1275:f6df9bab3694:UPDATE documents SET excerpt = ? WHERE id = ?", (markdown[:8000], doc_id)) if hasattr(db, "conn") and hasattr(getattr(db, "conn"), "commit"): getattr(db, "conn").commit() # ── [B]
+backend/app/services/plan_executor.py:1466:545e9cc44292:SELECT full_name FROM org_members_v WHERE id = ?", (human_initiator_id,), ) if urow: human_name = (dict(urow).get("full_name") or "").strip() except Exception: pass if not human_na
+backend/app/services/plan_executor.py:485:8799556dbae8:SELECT id FROM weekly_reviews
+backend/app/services/plan_executor.py:969:994c4dd88429:SELECT name FROM clients
+backend/app/services/project_portrait_builder.py:212:994c4dd88429:SELECT name FROM clients
+backend/app/services/project_portrait_builder.py:240:4e9037ebde28:SELECT id, subject_text AS subject, attribute, value_text AS value, confidence FROM atomic_facts WHERE client_id=? AND status='active' AND confidence>=0.65 ORDER BY confidence DESC
+backend/app/services/project_portrait_builder.py:259:0f566b01a639:SELECT name, COALESCE(intent,'') AS intent, COALESCE(next_step,'') AS next_step FROM event_lines
+backend/app/services/project_portrait_builder.py:28:41208bef041c:SELECT id, term, aliases_json, category FROM client_glossary WHERE client_id = ?", (client_id,), ) # 构造 (匹配 phrase, term_id, category) 列表; 按 phrase 长度倒序避免短覆盖长 phrases: list[tuple[s
+backend/app/services/report_context_builder.py:316:f53678e3dd21:SELECT * FROM clients
+backend/app/services/report_context_builder.py:324:ceb6c0a343d2:SELECT * FROM event_lines
+backend/app/services/review_narrative.py:2014:ceb6c0a343d2:SELECT * FROM event_lines
+backend/app/services/review_narrative.py:389:358d7aec3695:SELECT id, cloud_id FROM tasks
+backend/app/services/review_narrative.py:416:ab9a3179ea9f:SELECT id, description FROM tasks
+backend/app/services/review_narrative.py:467:4d0b3c207b72:SELECT current_stage, current_work, recent_decision, next_step " "FROM event_line_memory_snapshots WHERE event_line_id = ?", (elid,), ) if snap is not None: story["stage"] = _weekl
+backend/app/services/self_heal.py:308:111028a00ea9:SELECT COUNT(*) as c FROM activity_logs WHERE created_at > ? AND action LIKE '%.error%'", (cutoff,), ) count = int(row["c"]) if row else 0 if count < 10: return ProbeResult(True, f
+backend/app/services/self_heal.py:322:a866e8ea5b57:SELECT DISTINCT signal_id FROM growth_evidence_records
+backend/app/services/self_heal.py:445:932ba0bc3d48:DELETE FROM settings WHERE key IN ('cloud_token', 'cloud_refresh_token')") return RemediationResult(True, "已清除云端 token，下次请求会触发重新认证") except Exception as exc: return RemediationResu
+backend/app/services/smart_file_import.py:644:c6ba1e0474b2:SELECT * FROM import_story_chunks WHERE id = ?", (chunk_id,) ) if not chunk_row: raise ValueError(f"chunk not found: {chunk_id}") session_row = db.fetchone( "SELECT * FROM import_s
+backend/app/services/smart_file_import.py:666:57610495dc3b:SELECT name FROM event_lines
+backend/app/services/story_card_generator.py:104:93d3918bda36:SELECT a.happened_at, a.actor_name, a.title FROM event_line_activities a JOIN event_lines
+backend/app/services/story_card_generator.py:208:3a5e8912e25c:SELECT title, signal_kind, severity, description FROM risk_signals WHERE client_id = ? AND status = 'active' ORDER BY severity DESC LIMIT 8""", (client_id,), ) if not rows: return
+backend/app/services/story_card_generator.py:307:760e667f2cc6:SELECT COUNT(*) AS c FROM fact_contradictions WHERE client_id=?", (client_id,), ) except Exception: pass cont_n = dict(cont_row)["c"] if cont_row else 0 return { "total_facts": af.
+backend/app/services/story_card_generator.py:39:833eb1313fd7:SELECT name, alias, intro, stage FROM clients
+backend/app/services/story_card_generator.py:53:52761f5e90cb:SELECT name, stage, status, current_blocker, next_step FROM event_lines
+backend/app/services/story_card_generator.py:59:d1c441f66db8:SELECT COUNT(*) c FROM tasks
+backend/app/services/task_context_brief_engine.py:254:405315040fd4:SELECT id, title, kind, source, document_id, created_at FROM task_attachments WHERE task_id = ? ORDER BY created_at DESC LIMIT 8 """, (task_id,), ) return [ { "id": str(row["id"]),
+backend/app/services/task_context_brief_engine.py:279:ceb6c0a343d2:SELECT * FROM event_lines
+backend/app/services/task_context_brief_engine.py:281:d0af765089c1:SELECT id, name, alias, intro, stage FROM clients
+backend/app/services/task_context_brief_engine.py:287:2e2273cd66ce:SELECT * FROM tasks
+backend/app/services/task_context_brief_engine.py:300:2e2273cd66ce:SELECT * FROM tasks
+backend/app/services/task_context_brief_engine.py:338:41a2609ae042:SELECT e.week_label, e.note, e.structured_note_json, e.reviewed_at, t.title AS task_title FROM weekly_review_task_entries e JOIN tasks
+backend/app/services/todo_aggregator.py:163:81e5adbd98ad:SELECT id, name, next_step, owner_name FROM event_lines
+backend/app/services/todo_aggregator.py:73:be195e66aefc:SELECT id, title, owner_name, due_date, source_type, event_line_id FROM tasks
+backend/app/services/topic_data_center.py:45:1875ef0543d4:SELECT c.*, r.title AS radar_title FROM topic_candidates c LEFT JOIN topic_radars
+backend/app/services/unified_workspace_migrator.py:268:029b426a5f8c:SELECT id, label FROM client_folders WHERE client_id = ? AND label != ?", (client_id, UNIFIED_FOLDER_LABEL), ) for row in folder_rows: report.folder_rows_removed += 1 if dry_run: c
+backend/app/services/weekly_review_material_pack.py:367:01a68c08915d:SELECT entry.*, vd.document_id, vd.file_name, vd.preview_text, vd.updated_at AS document_updated_at, d.title AS document_title, d.excerpt AS document_excerpt FROM v2_documents vd J
+backend/app/services/weekly_review_material_pack.py:401:d86dec08ed8e:SELECT entry.* FROM data_center_ingest_events
+backend/app/services/weekly_review_material_pack.py:409:e38253a10372:SELECT 1 FROM tasks
+backend/app/services/weekly_review_material_pack.py:426:fe429cd3427d:SELECT entry.* FROM weekly_review_task_entries entry WHERE entry.week_label = ? AND entry.task_id IN ({placeholders}) AND LOWER(COALESCE(entry.content_domain, 'work')) NOT IN ('per
+backend/app/services/weekly_review_material_pack.py:444:2b22309dc0d8:SELECT entry.* FROM weekly_review_task_entries entry WHERE entry.week_label = ? AND LOWER(COALESCE(entry.content_domain, 'work')) NOT IN ('personal', 'private') AND NOT EXISTS ( SE
+backend/app/services/weekly_review_material_pack.py:484:04e151602b29:SELECT t.*, c.name AS client_name, el.name AS event_line_name, el.primary_client_id AS event_client_id, el.primary_client_name AS event_client_name, el.primary_department_id AS eve
+backend/app/services/weekly_review_material_pack.py:508:04e151602b29:SELECT t.*, c.name AS client_name, el.name AS event_line_name, el.primary_client_id AS event_client_id, el.primary_client_name AS event_client_name, el.primary_department_id AS eve
+backend/app/services/weekly_review_material_pack.py:552:ceb6c0a343d2:SELECT * FROM event_lines
+backend/app/services/weekly_review_material_pack.py:582:f53678e3dd21:SELECT * FROM clients
+backend/app/services/weekly_review_material_pack.py:610:04e151602b29:SELECT t.*, c.name AS client_name, el.name AS event_line_name, el.primary_client_id AS event_client_id, el.primary_client_name AS event_client_name, el.primary_department_id AS eve
+backend/app/services/workspace_relation_docs.py:144:2e8b30c9f85a:SELECT t.*, pm.name AS project_module_name, pf.name AS project_flow_name, el.name AS event_line_name FROM tasks
+backend/app/services/workspace_relation_docs.py:214:6e82829f0e68:SELECT DISTINCT el.* FROM event_lines
+backend/app/services/workspace_relation_docs.py:233:49aec3f67c73:SELECT COUNT(*) FROM tasks
+backend/app/services/workspace_relation_docs.py:295:a1fb6471e8ea:SELECT name, description, scenario FROM project_flows WHERE client_id = ? AND module_id = ? ORDER BY updated_at DESC LIMIT 20", (client_id, module_id)) if flow_rows: lines.extend([
+backend/app/services/workspace_relation_docs.py:363:2e8b30c9f85a:SELECT t.*, pm.name AS project_module_name, pf.name AS project_flow_name, el.name AS event_line_name FROM tasks
+backend/app/services/workspace_relation_docs.py:463:80ab32e60551:SELECT COUNT(*) FROM weekly_review_task_entries e JOIN tasks
+backend/app/services/workspace_relation_docs.py:481:80ab32e60551:SELECT COUNT(*) FROM weekly_review_task_entries e JOIN tasks
+backend/app/services/workspace_relation_docs.py:544:ea685e7a9dab:SELECT e.note, e.content_domain, e.task_snapshot_json, t.title, t.client_id, t.status, t.due_date, t.ddl FROM weekly_review_task_entries e LEFT JOIN tasks
+backend/app/services/workspace_relation_docs.py:56:53aa07237ce8:SELECT id, name, alias FROM clients
+backend/app/services/workspace_relation_docs.py:575:f5d561277daf:SELECT name, alias FROM project_modules WHERE client_id = ?", (client_id,)) flow_rows = db.fetchall("SELECT name FROM project_flows WHERE client_id = ?", (client_id,)) event_line_r
+backend/app/services/workspace_relation_docs.py:583:820620d03a0f:SELECT event_line_id FROM tasks
+backend/app/services/workspace_relation_docs.py:596:dcddd7b0cf9b:SELECT * FROM weekly_reviews
+backend/app/services/workspace_relation_docs.py:656:2e8b30c9f85a:SELECT t.*, pm.name AS project_module_name, pf.name AS project_flow_name, el.name AS event_line_name FROM tasks
+backend/app/services/workspace_relation_docs.py:69:2e8b30c9f85a:SELECT t.*, pm.name AS project_module_name, pf.name AS project_flow_name, el.name AS event_line_name FROM tasks

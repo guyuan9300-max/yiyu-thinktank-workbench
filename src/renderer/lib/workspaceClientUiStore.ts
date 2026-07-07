@@ -133,6 +133,7 @@ export const initialWorkspaceClientUiState: WorkspaceClientUiState = {
 };
 
 export type WorkspaceClientUiAction =
+  | { type: 'resetAll' }
   | { type: 'setComposerDraft'; clientKey: string; value: string }
   | { type: 'setComposerFocusSnapshot'; clientId: string; snapshot: WorkspaceComposerFocusSnapshot | null }
   | { type: 'setSelectedThreadId'; clientId: string; threadId: string | null }
@@ -263,6 +264,9 @@ export function workspaceClientUiReducer(
   action: WorkspaceClientUiAction,
 ): WorkspaceClientUiState {
   switch (action.type) {
+    case 'resetAll':
+      return initialWorkspaceClientUiState;
+
     case 'setComposerDraft':
       if ((state.composerDraftByClient[action.clientKey] || '') === action.value) return state;
       return {

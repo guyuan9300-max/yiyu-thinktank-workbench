@@ -26,8 +26,8 @@ def test_local_mode_is_available_without_cloud_login(tmp_path: Path):
     assert payload["authenticated"] is False
     assert payload["sessionMode"] == "local"
     assert payload["user"] is None
-    assert payload["requiresLocalIdentitySetup"] is True
-    assert payload["localIdentityStatus"] == "needs_setup"
+    assert payload["requiresLocalIdentitySetup"] is False
+    assert payload["localIdentityStatus"] == "draft"
 
     overview = client.get("/api/v1/account/overview")
     assert overview.status_code == 200, overview.text

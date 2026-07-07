@@ -130,6 +130,15 @@ export interface AppSettings {
 
 export type SandboxKind = 'local' | 'organization';
 export type SandboxStatus = 'active' | 'archived';
+export type WorkspaceRuntimeStatus =
+  | 'local_draft'
+  | 'verifying'
+  | 'switching'
+  | 'ready'
+  | 'needs_login'
+  | 'identity_error'
+  | 'sync_degraded';
+export type WorkspaceIdentityState = 'unverified' | 'verified' | 'needs_login' | 'mismatch' | 'error';
 
 export interface SandboxWorkspaceRecord {
   id: string;
@@ -140,6 +149,14 @@ export interface SandboxWorkspaceRecord {
   cloudConnected: boolean;
   cloudConnectionStatus?: 'not_configured' | 'signed_out' | 'needs_login' | 'connected';
   cloudNeedsLogin?: boolean;
+  cloudInstanceId?: string;
+  identityState?: WorkspaceIdentityState;
+  identityVerifiedAt?: string | null;
+  identityError?: string;
+  runtimeStatus?: WorkspaceRuntimeStatus;
+  statusMessage?: string;
+  requiresLogin?: boolean;
+  sessionSnapshot?: Record<string, unknown>;
   cloudUserFullName?: string | null;
   cloudUserEmail?: string | null;
   organizationId?: string | null;
@@ -171,6 +188,36 @@ export interface SandboxWorkspacesResponse {
   activeSandboxId: string;
   workspaces: SandboxWorkspaceRecord[];
   localDraftSummary?: SandboxLocalDraftSummary | null;
+}
+
+export interface WorkspaceSessionDiagnosticsRecord {
+  sandboxId: string;
+  kind: SandboxKind;
+  name: string;
+  cloudApiUrl: string;
+  cloudInstanceId: string;
+  organizationId?: string | null;
+  organizationName?: string | null;
+  identityState: WorkspaceIdentityState;
+  identityVerifiedAt?: string | null;
+  identityError: string;
+  runtimeStatus: WorkspaceRuntimeStatus;
+  requiresLogin: boolean;
+  hasCloudApiUrl: boolean;
+  hasAccessToken: boolean;
+  hasRefreshToken: boolean;
+  hasSessionUser: boolean;
+  sessionOrganizationId: string;
+  sessionUserId: string;
+  sessionUserEmail: string;
+  sessionUserFullName: string;
+  lastActiveAt?: string | null;
+  updatedAt: string;
+}
+
+export interface WorkspaceSessionDiagnosticsResponse {
+  activeSandboxId: string;
+  workspaces: WorkspaceSessionDiagnosticsRecord[];
 }
 
 export interface SandboxWorkspaceCreatePayload {
