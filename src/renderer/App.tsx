@@ -2114,6 +2114,24 @@ type WorkspaceTransitionToken = {
   reason: string;
 };
 
+type EventLineWorkspaceStatus = 'idle' | 'loading' | 'loaded' | 'failed';
+
+type EventLineWorkspaceState = {
+  items: EventLine[];
+  status: EventLineWorkspaceStatus;
+  error: string | null;
+  requestId: number;
+  loadedAt: number | null;
+};
+
+const EMPTY_EVENT_LINE_WORKSPACE_STATE: EventLineWorkspaceState = {
+  items: [],
+  status: 'idle',
+  error: null,
+  requestId: 0,
+  loadedAt: null,
+};
+
 function resolveWorkspaceRuntimeFromRecord(
   workspace: SandboxWorkspaceRecord | null | undefined,
   auth: AuthState | null | undefined,
@@ -8074,6 +8092,7 @@ export default function App() {
   const workspaceRuntimeStatusRef = useRef<WorkspaceRuntimeStatus>('verifying');
   const workspaceTransitionRef = useRef<WorkspaceTransitionToken>({ id: 0, sandboxId: '', reason: 'initial' });
   const workspaceTransitionStartedAtRef = useRef(Date.now());
+  const loadEventLinesForWorkspaceRef = useRef<((options?: { resetFilter?: boolean; transition?: WorkspaceTransitionToken }) => Promise<void>) | null>(null);
   const currentSessionUser = authState.user || LOCAL_DRAFT_SESSION_USER;
   const hasRawAuthenticatedSession = Boolean(authState.authenticated && authState.user);
   const hasAuthenticatedSession = hasCompleteSessionIdentity(authState);
@@ -8156,6 +8175,14 @@ export default function App() {
   }, [tasks]);
   const isCloudSession = authState.sessionMode === 'cloud';
   const isLocalSession = authState.sessionMode === 'local';
+  const canLoadCurrentWorkspaceBusinessData = Boolean(
+    hasRawAuthenticatedSession
+    && isCloudSession
+    && !isLocalDraftSessionUser(authState.user)
+    && workspaceRuntimeStatus !== 'local_draft'
+    && workspaceRuntimeStatus !== 'needs_login'
+    && workspaceRuntimeStatus !== 'identity_error',
+  );
   const isActiveYiyuOfficialWorkspace = isYiyuOfficialWorkspaceRecord(activeWorkspaceRecord);
   const canShowMaintenanceSyncPanel = Boolean(canUseCollabSync && isActiveYiyuOfficialWorkspace);
   const canShowCollabSync = Boolean(canUseCollabSync && isActiveYiyuOfficialWorkspace && isMaintenanceModeActive);
@@ -8819,7 +8846,7 @@ export default function App() {
       loadFeishuMemberAuthorizationBlock({ transition: token }).catch(() => DEFAULT_FEISHU_MEMBER_AUTHORIZATION),
     ]);
     if (!shouldApplyWorkspaceLoad(token)) return;
-    markWorkspaceRuntime('switching', `正在加载 ${nextActiveWorkspace?.name || '目标'} 的客户、任务和设置…`);
+    markWorkspaceRuntime('switching', `正在加载 ${nextActiveWorkspace?.name || '目标'} 的客户、任务、事件线和设置…`);
     await Promise.all([
       loadClientWorkspaceSettingsBlock({ transition: token }).catch(() => undefined),
       loadTopicsSettingsBlock({ transition: token }).catch(() => undefined),
@@ -8828,6 +8855,17 @@ export default function App() {
       loadClientBlock(undefined, { transition: token }).catch(() => undefined),
       loadTaskSettingsBlock({ transition: token }).catch(() => undefined),
       loadTaskBlock({ transition: token }).catch(() => undefined),
+      (async () => {
+        const loader = loadEventLinesForWorkspaceRef.current;
+        if (!loader) {
+          console.warn('[event-lines] loader not ready during workspace refresh', {
+            sandboxId: token.sandboxId,
+            reason: token.reason,
+          });
+          throw new Error('事件线加载器尚未就绪');
+        }
+        await loader({ transition: token, resetFilter: true });
+      })().catch(() => undefined),
       loadTopicsBlock({ transition: token }).catch(() => undefined),
       loadHandbookBlock({ transition: token }).catch(() => undefined),
       loadReviewBlock(resolveSelectedReviewWeekLabel(), {
@@ -9125,6 +9163,133 @@ export default function App() {
     const currentSandboxId = currentActiveSandboxId();
     return !startedSandboxId || !currentSandboxId || startedSandboxId === currentSandboxId;
   };
+
+  const eventLineWorkspaceKey = workspacesState?.activeSandboxId || 'local';
+  const [eventLineStatesBySandbox, setEventLineStatesBySandbox] = useState<Record<string, EventLineWorkspaceState>>({});
+  const eventLineStatesBySandboxRef = useRef<Record<string, EventLineWorkspaceState>>({});
+  const eventLineAutoLoadDedupeRef = useRef<Record<string, number>>({});
+  const eventLineRequestSeqRef = useRef(0);
+  const currentEventLineState = eventLineStatesBySandbox[eventLineWorkspaceKey] || EMPTY_EVENT_LINE_WORKSPACE_STATE;
+  const eventLines = currentEventLineState.items;
+  const eventLinesLoadError = currentEventLineState.error;
+  const eventLinesLoading = currentEventLineState.status === 'loading';
+  const eventLineFilterStorageKey = `${EVENT_LINE_PROJECT_FILTER_STORAGE_KEY}:${eventLineWorkspaceKey}`;
+  const [eventLineProjectFilterId, setEventLineProjectFilterId] = useState<string>(() => {
+    if (typeof window === 'undefined') return '__all__';
+    return window.localStorage.getItem(eventLineFilterStorageKey) || '__all__';
+  });
+
+  const updateEventLineWorkspaceState = useCallback((
+    sandboxId: string,
+    updater: EventLineWorkspaceState | ((current: EventLineWorkspaceState) => EventLineWorkspaceState),
+  ) => {
+    const key = sandboxId || 'local';
+    setEventLineStatesBySandbox((prev) => {
+      const current = prev[key] || EMPTY_EVENT_LINE_WORKSPACE_STATE;
+      const next = typeof updater === 'function' ? updater(current) : updater;
+      if (next === current) return prev;
+      return { ...prev, [key]: next };
+    });
+  }, []);
+
+  useEffect(() => {
+    eventLineStatesBySandboxRef.current = eventLineStatesBySandbox;
+  }, [eventLineStatesBySandbox]);
+
+  const setEventLines = useCallback((next: React.SetStateAction<EventLine[]>) => {
+    const sandboxId = eventLineWorkspaceKey || currentActiveSandboxId() || 'local';
+    updateEventLineWorkspaceState(sandboxId, (current) => {
+      const items = typeof next === 'function'
+        ? (next as (prev: EventLine[]) => EventLine[])(current.items)
+        : next;
+      return {
+        ...current,
+        items,
+        status: 'loaded',
+        error: null,
+        loadedAt: Date.now(),
+      };
+    });
+  }, [eventLineWorkspaceKey, updateEventLineWorkspaceState]);
+
+  const loadEventLines = useCallback(async (options?: { resetFilter?: boolean; transition?: WorkspaceTransitionToken }) => {
+    const sandboxAtStart = options?.transition?.sandboxId || eventLineWorkspaceKey || currentActiveSandboxId() || 'local';
+    const requestId = eventLineRequestSeqRef.current + 1;
+    eventLineRequestSeqRef.current = requestId;
+    if (options?.resetFilter) setEventLineProjectFilterId('__all__');
+    updateEventLineWorkspaceState(sandboxAtStart, (current) => ({
+      ...current,
+      status: 'loading',
+      error: null,
+      requestId,
+    }));
+    console.info('[event-lines] load start', {
+      sandboxId: sandboxAtStart,
+      requestId,
+      reason: options?.transition?.reason || 'manual-or-effect',
+    });
+    try {
+      const records = await getEventLines();
+      updateEventLineWorkspaceState(sandboxAtStart, (current) => {
+        if (current.requestId !== requestId) {
+          console.info('[event-lines] load discarded', {
+            sandboxId: sandboxAtStart,
+            requestId,
+            currentRequestId: current.requestId,
+            reason: 'newer-request',
+          });
+          return current;
+        }
+        console.info('[event-lines] load applied', {
+          sandboxId: sandboxAtStart,
+          requestId,
+          count: records.length,
+        });
+        return {
+          items: records,
+          status: 'loaded',
+          error: null,
+          requestId,
+          loadedAt: Date.now(),
+        };
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : '事件线加载失败';
+      console.warn('[event-lines] load failed', { sandboxId: sandboxAtStart, requestId, error });
+      updateEventLineWorkspaceState(sandboxAtStart, (current) => {
+        if (current.requestId !== requestId) return current;
+        return {
+          ...current,
+          status: 'failed',
+          error: message,
+          requestId,
+        };
+      });
+    }
+  }, [eventLineWorkspaceKey, updateEventLineWorkspaceState]);
+  loadEventLinesForWorkspaceRef.current = loadEventLines;
+
+  const requestEventLinesForCurrentWorkspace = useCallback((
+    reason: string,
+    options?: { resetFilter?: boolean; forceEmptyRetry?: boolean },
+  ) => {
+    if (!canLoadCurrentWorkspaceBusinessData) return;
+    const sandboxId = eventLineWorkspaceKey || currentActiveSandboxId() || 'local';
+    const current = eventLineStatesBySandboxRef.current[sandboxId] || EMPTY_EVENT_LINE_WORKSPACE_STATE;
+    if (current.status === 'loading') return;
+    if (current.status === 'loaded' && current.items.length > 0) return;
+    if (!options?.forceEmptyRetry && current.status === 'loaded') return;
+    const dedupeKey = `${sandboxId}:${reason}:${current.status}:${current.items.length}`;
+    if (eventLineAutoLoadDedupeRef.current[dedupeKey]) return;
+    eventLineAutoLoadDedupeRef.current[dedupeKey] = Date.now();
+    console.info('[event-lines] auto load requested', {
+      sandboxId,
+      reason,
+      status: current.status,
+      count: current.items.length,
+    });
+    void loadEventLines({ resetFilter: options?.resetFilter ?? false });
+  }, [canLoadCurrentWorkspaceBusinessData, eventLineWorkspaceKey, loadEventLines]);
 
   const applyWorkspaceRuntime = (
     workspace: SandboxWorkspaceRecord | null | undefined,
@@ -10524,6 +10689,20 @@ export default function App() {
           { name: 'activity-logs', run: () => loadLogsBlock({ transition: transitionToken }) },
           { name: 'task-board', run: () => loadTaskBlock({ transition: transitionToken }) },
           {
+            name: 'event-lines',
+            run: async () => {
+              const loader = loadEventLinesForWorkspaceRef.current;
+              if (!loader) {
+                console.warn('[event-lines] loader not ready during startup load', {
+                  sandboxId: transitionToken.sandboxId,
+                  reason: transitionToken.reason,
+                });
+                throw new Error('事件线加载器尚未就绪');
+              }
+              await loader({ transition: transitionToken, resetFilter: true });
+            },
+          },
+          {
             name: 'agent-worklogs',
             run: () => (nextAuth.user?.primaryRole === 'admin' ? loadAgentWorklogBlock(taskCalendarMonthLabel, { transition: transitionToken }) : Promise.resolve()),
           },
@@ -10582,7 +10761,7 @@ export default function App() {
             run: () => loadSystemAdminSettingsBlock(nextAuth.sessionMode === 'cloud', { transition: transitionToken }),
           },
         ];
-        markWorkspaceRuntime('switching', `正在加载 ${loadedActiveWorkspace?.name || '当前组织'} 的客户、任务和设置…`);
+        markWorkspaceRuntime('switching', `正在加载 ${loadedActiveWorkspace?.name || '当前组织'} 的客户、任务、事件线和设置…`);
         let completedCount = 0;
         const totalCount = backgroundLoaders.length;
         const failedBackgroundBlocks = (
@@ -10740,7 +10919,7 @@ export default function App() {
         throw new Error('请填写组织云端地址。');
       }
       if (cloudAuthAction === 'login') {
-        const identifier = (cloudAuthForm.identifier || cloudAuthForm.email || cloudAuthForm.phone).trim();
+        const identifier = cloudAuthForm.identifier.trim();
         if (!identifier) {
           throw new Error('请填写手机号或邮箱。');
         }
@@ -10839,7 +11018,9 @@ export default function App() {
         setAuthState(response);
       }
       try {
-        const rememberedIdentifier = (cloudAuthForm.identifier || cloudAuthForm.email || cloudAuthForm.phone).trim();
+        const rememberedIdentifier = cloudAuthAction === 'login'
+          ? cloudAuthForm.identifier.trim()
+          : (cloudAuthForm.email || cloudAuthForm.phone).trim();
         const nextLocalInputMemory = await saveCloudAuthInputMemory({
           rememberInputs: cloudAuthForm.rememberInputs,
           email: cloudAuthForm.email,
@@ -11519,7 +11700,7 @@ export default function App() {
       && activeWorkspaceMatchesCloudUrl(cloudApiUrlFromHost(cloudAuthForm.cloudApiUrl));
     const loginValid =
       cloudApiUrlValid
-      && Boolean((cloudAuthForm.identifier || cloudAuthForm.email || cloudAuthForm.phone).trim())
+      && Boolean(cloudAuthForm.identifier.trim())
       && cloudAuthForm.password.length >= 8;
     const identityValid =
       Boolean(sanitizedCloudAuthFullName)
@@ -11633,7 +11814,7 @@ export default function App() {
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
               {rememberedAccounts.length > 0 && (
                 <select
-                  value={cloudAuthForm.identifier || cloudAuthForm.email}
+                  value={cloudAuthForm.identifier}
                   onChange={(event) => {
                     const selected = rememberedAccounts.find((account) => (account.identifier || account.email) === event.target.value);
                     setCloudAuthForm((prev) => ({
@@ -11678,7 +11859,7 @@ export default function App() {
                     <>
                       {labeledField('手机号或邮箱', (
                         <input
-                          value={cloudAuthForm.identifier || cloudAuthForm.email}
+                          value={cloudAuthForm.identifier}
                           onChange={(event) => setCloudAuthForm((prev) => ({
                             ...prev,
                             identifier: event.target.value,
@@ -11865,6 +12046,19 @@ export default function App() {
     evidenceClientId,
     evidenceMode,
     evidenceTaskId,
+    canLoadCurrentWorkspaceBusinessData,
+    currentEventLineState,
+    eventLineFilterStorageKey,
+    eventLineProjectFilterId,
+    eventLines,
+    eventLinesLoadError,
+    eventLinesLoading,
+    eventLineWorkspaceKey,
+    loadEventLines,
+    requestEventLinesForCurrentWorkspace,
+    setEventLineProjectFilterId,
+    setEventLines,
+    updateEventLineWorkspaceState,
     expandedTaskIds,
     feishuSyncPromptClass,
     feishuSyncPromptLabel,
@@ -11940,6 +12134,19 @@ export default function App() {
     evidenceClientId: typeof evidenceClientId;
     evidenceMode: typeof evidenceMode;
     evidenceTaskId: typeof evidenceTaskId;
+    canLoadCurrentWorkspaceBusinessData: typeof canLoadCurrentWorkspaceBusinessData;
+    currentEventLineState: typeof currentEventLineState;
+    eventLineFilterStorageKey: typeof eventLineFilterStorageKey;
+    eventLineProjectFilterId: typeof eventLineProjectFilterId;
+    eventLines: typeof eventLines;
+    eventLinesLoadError: typeof eventLinesLoadError;
+    eventLinesLoading: typeof eventLinesLoading;
+    eventLineWorkspaceKey: typeof eventLineWorkspaceKey;
+    loadEventLines: typeof loadEventLines;
+    requestEventLinesForCurrentWorkspace: typeof requestEventLinesForCurrentWorkspace;
+    setEventLineProjectFilterId: typeof setEventLineProjectFilterId;
+    setEventLines: typeof setEventLines;
+    updateEventLineWorkspaceState: typeof updateEventLineWorkspaceState;
     expandedTaskIds: typeof expandedTaskIds;
     feishuSyncPromptClass: typeof feishuSyncPromptClass;
     feishuSyncPromptLabel: typeof feishuSyncPromptLabel;
@@ -12016,6 +12223,19 @@ export default function App() {
       evidenceClientId,
       evidenceMode,
       evidenceTaskId,
+      canLoadCurrentWorkspaceBusinessData,
+      currentEventLineState,
+      eventLineFilterStorageKey,
+      eventLineProjectFilterId,
+      eventLines,
+      eventLinesLoadError,
+      eventLinesLoading,
+      eventLineWorkspaceKey,
+      loadEventLines,
+      requestEventLinesForCurrentWorkspace,
+      setEventLineProjectFilterId,
+      setEventLines,
+      updateEventLineWorkspaceState,
       expandedTaskIds,
       feishuSyncPromptClass,
       feishuSyncPromptLabel,
@@ -12180,17 +12400,8 @@ export default function App() {
     const collaboratorDropdownRef = useRef<HTMLDivElement | null>(null);
     const ownerDropdownRef = useRef<HTMLDivElement | null>(null);
     const [suggestedTaskTags, setSuggestedTaskTags] = useState<string[]>([]);
-    const [eventLines, setEventLines] = useState<EventLine[]>([]);
-    const [eventLinesLoadError, setEventLinesLoadError] = useState<string | null>(null);
-    const eventLinesLoadSeqRef = useRef(0);
-    const eventLineWorkspaceKey = workspacesState?.activeSandboxId || 'local';
-    const eventLineFilterStorageKey = `${EVENT_LINE_PROJECT_FILTER_STORAGE_KEY}:${eventLineWorkspaceKey}`;
     const projectStructureRequestsRef = useRef<Record<string, Promise<ProjectStructureResponse>>>({});
     const projectStructureFailedAtRef = useRef<Record<string, number>>({});
-    const [eventLineProjectFilterId, setEventLineProjectFilterId] = useState<string>(() => {
-      if (typeof window === 'undefined') return '__all__';
-      return window.localStorage.getItem(eventLineFilterStorageKey) || '__all__';
-    });
     const elProjectDropdownRef = useRef<HTMLDivElement | null>(null);
     const [elProjectDropdownOpen, setElProjectDropdownOpen] = useState(false);
     const [drillTaskViewOverride, setDrillTaskViewOverride] = useState<ReviewDashboardCardTarget | null>(null);
@@ -12238,6 +12449,7 @@ export default function App() {
     const [isPreviewingMerge, setIsPreviewingMerge] = useState(false);
     const [isMergingEventLine, setIsMergingEventLine] = useState(false);
     const [bulkDeleteProgress, setBulkDeleteProgress] = useState<{ done: number; total: number; failed: number } | null>(null);
+
     const [isCreatingTaskProjectModule, setIsCreatingTaskProjectModule] = useState(false);
     const [isCreatingTaskProjectFlow, setIsCreatingTaskProjectFlow] = useState(false);
     const [isTemplateEditorOpen, setIsTemplateEditorOpen] = useState(false);
@@ -12577,47 +12789,63 @@ export default function App() {
       };
     }, [currentClientId, editingTask.clientId, organizationClientId, isTaskModalOpen, loadProjectStructureForClient, projectStructureCache, taskClientDnaCache, workspace?.client.id]);
 
-    const loadEventLines = useCallback(async () => {
-      const seq = eventLinesLoadSeqRef.current + 1;
-      eventLinesLoadSeqRef.current = seq;
-      const sandboxAtStart = eventLineWorkspaceKey;
-      try {
-        const records = await getEventLines();
-        if (seq !== eventLinesLoadSeqRef.current || sandboxAtStart !== eventLineWorkspaceKey) return;
-        setEventLines(records);
-        setEventLinesLoadError(null);
-      } catch (error) {
-        if (seq !== eventLinesLoadSeqRef.current || sandboxAtStart !== eventLineWorkspaceKey) return;
-        console.warn('[event-lines] load failed', error);
-        setEventLinesLoadError(error instanceof Error ? error.message : '事件线加载失败');
-      }
-    }, [eventLineWorkspaceKey]);
-
     useEffect(() => {
-      eventLinesLoadSeqRef.current += 1;
-      setEventLines([]);
-      setEventLinesLoadError(null);
       setEventLineProjectFilterId('__all__');
       setActiveEventLine(null);
       setReportEventLineId(null);
+      Object.keys(eventLineAutoLoadDedupeRef.current).forEach((key) => {
+        if (key.startsWith(`${eventLineWorkspaceKey}:`)) {
+          delete eventLineAutoLoadDedupeRef.current[key];
+        }
+      });
     }, [eventLineWorkspaceKey]);
 
     useEffect(() => {
-      if (!hasAuthenticatedSession) return;
-      void loadEventLines();
-    }, [hasAuthenticatedSession, loadEventLines]);
+      requestEventLinesForCurrentWorkspace('workspace-ready', { resetFilter: true, forceEmptyRetry: true });
+    }, [
+      canLoadCurrentWorkspaceBusinessData,
+      currentEventLineState.items.length,
+      currentEventLineState.status,
+      eventLineWorkspaceKey,
+      requestEventLinesForCurrentWorkspace,
+    ]);
 
     useEffect(() => {
-      if (activeTab !== 'tasks' || taskViewMode !== 'event_lines' || !hasAuthenticatedSession) return;
-      void loadEventLines();
-    }, [activeTab, hasAuthenticatedSession, loadEventLines, taskViewMode]);
+      if (activeTab !== 'tasks' || taskViewMode !== 'event_lines') return;
+      requestEventLinesForCurrentWorkspace('event-line-tab', { resetFilter: false, forceEmptyRetry: true });
+    }, [
+      activeTab,
+      currentEventLineState.items.length,
+      currentEventLineState.status,
+      requestEventLinesForCurrentWorkspace,
+      taskViewMode,
+    ]);
 
     useEffect(() => {
-      if (hasAuthenticatedSession) return;
-      setEventLines([]);
-      setEventLinesLoadError(null);
+      if (!isTaskModalOpen) return;
+      requestEventLinesForCurrentWorkspace('task-modal', { resetFilter: false, forceEmptyRetry: true });
+    }, [
+      currentEventLineState.items.length,
+      currentEventLineState.status,
+      isTaskModalOpen,
+      requestEventLinesForCurrentWorkspace,
+    ]);
+
+    useEffect(() => {
+      const shouldClearEventLines = !hasRawAuthenticatedSession
+        || authState.sessionMode !== 'cloud'
+        || isLocalDraftSessionUser(authState.user);
+      if (!shouldClearEventLines) return;
+      console.info('[event-lines] clear current workspace cache', {
+        sandboxId: eventLineWorkspaceKey,
+        sessionMode: authState.sessionMode,
+        hasRawAuthenticatedSession,
+      });
+      updateEventLineWorkspaceState(eventLineWorkspaceKey, {
+        ...EMPTY_EVENT_LINE_WORKSPACE_STATE,
+      });
       setEventLineProjectFilterId('__all__');
-    }, [hasAuthenticatedSession]);
+    }, [authState.sessionMode, authState.user, eventLineWorkspaceKey, hasRawAuthenticatedSession, updateEventLineWorkspaceState]);
 
     // 自定义下拉菜单：点击外部关闭
     useEffect(() => {
@@ -13324,14 +13552,21 @@ export default function App() {
     );
     const taskEventLineOptions = useMemo(() => {
       const activeLines = sortedEventLines.filter((item) => item.status !== 'archived' && item.status !== 'done');
-      const base = !editingTask.clientId ? activeLines
+      const scoped = !editingTask.clientId ? activeLines
         : activeLines.filter((item) => (item.primaryClientId || '').trim() === editingTask.clientId);
+      const base = scoped.length > 0 || !editingTask.clientId ? scoped : activeLines;
       if (editingTask.eventLineId && !base.some((item) => item.id === editingTask.eventLineId)) {
         const selected = sortedEventLines.find((item) => item.id === editingTask.eventLineId);
         return selected ? [selected, ...base] : base;
       }
       return base;
     }, [editingTask.clientId, editingTask.eventLineId, sortedEventLines]);
+    const taskEventLineScopeFallback = useMemo(() => {
+      if (!editingTask.clientId) return false;
+      const activeLines = sortedEventLines.filter((item) => item.status !== 'archived' && item.status !== 'done');
+      if (activeLines.length === 0) return false;
+      return !activeLines.some((item) => (item.primaryClientId || '').trim() === editingTask.clientId);
+    }, [editingTask.clientId, sortedEventLines]);
     const batchEventLineOptions = useMemo(
       () => sortedEventLines.filter((item) => item.status !== 'archived' && item.status !== 'done'),
       [sortedEventLines],
@@ -17901,11 +18136,25 @@ export default function App() {
                 <div>
                   <h1 className="text-[26px] font-light tracking-tight text-gray-900">事件线</h1>
                   <p className="mt-1 text-[12px] text-gray-400">
-                    按项目聚合的事件线列表 · 共 <span className="text-gray-900 font-medium tabular-nums">{filteredEventLines.length}</span> 条
+                    {eventLinesLoading ? '正在同步当前工作空间事件线…' : (
+                      <>
+                        按项目聚合的事件线列表 · 共 <span className="text-gray-900 font-medium tabular-nums">{filteredEventLines.length}</span> 条
+                      </>
+                    )}
                   </p>
                 </div>
 
                 <div className="flex items-center gap-3">
+                  <button
+                    type="button"
+                    onClick={() => void loadEventLines({ resetFilter: true })}
+                    disabled={eventLinesLoading}
+                    className="inline-flex h-9 items-center gap-1.5 rounded-lg border border-gray-200 bg-white px-3 text-[12px] font-medium text-gray-600 transition-all hover:border-gray-300 hover:bg-gray-50 disabled:cursor-wait disabled:opacity-60"
+                    style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
+                  >
+                    <RefreshCw size={12} strokeWidth={2.2} className={eventLinesLoading ? 'animate-spin' : ''} />
+                    <span>{eventLinesLoading ? '刷新中' : '刷新'}</span>
+                  </button>
                   {/* 项目筛选 · button-like dropdown */}
                   <div className="relative" ref={elProjectDropdownRef} style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}>
                     <button
@@ -17980,16 +18229,39 @@ export default function App() {
               {filteredEventLines.length === 0 && (
                 <div className="py-24 text-center">
                   <div className="mx-auto mb-4 inline-flex h-10 w-10 items-center justify-center rounded-full border border-gray-200 text-gray-300">
-                    <GitMerge size={18} strokeWidth={1.5} />
+                    {eventLinesLoading ? <RefreshCw size={18} strokeWidth={1.8} className="animate-spin" /> : <GitMerge size={18} strokeWidth={1.5} />}
                   </div>
                   <p className="text-[14px] font-semibold text-gray-700">
-                    {eventLinesLoadError ? '加载失败' : '尚无事件线'}
+                    {eventLinesLoading ? '正在加载事件线' : eventLinesLoadError ? '加载失败' : '尚无事件线'}
                   </p>
                   <p className="mt-3 max-w-md mx-auto text-[12px] leading-relaxed text-gray-400">
-                    {eventLinesLoadError || (eventLineProjectFilterId === '__all__'
+                    {eventLinesLoading
+                      ? '正在从当前组织空间读取事件线，请稍候。'
+                      : eventLinesLoadError || (eventLineProjectFilterId === '__all__'
                       ? '在创建任务时关联事件线，或在任务编辑器中新建事件线，事件线会自动出现在这里。'
                       : '当前项目下还没有事件线。可先在任务编辑器里从任务新建事件线。')}
                   </p>
+                  {!eventLinesLoading && (
+                    <div className="mt-5 flex justify-center gap-2">
+                      {eventLineProjectFilterId !== '__all__' && sortedEventLines.length > 0 && (
+                        <button
+                          type="button"
+                          onClick={() => setEventLineProjectFilterId('__all__')}
+                          className="inline-flex h-9 items-center rounded-lg border border-gray-200 bg-white px-3 text-[12px] font-medium text-gray-600 transition hover:bg-gray-50"
+                        >
+                          显示全部事件线
+                        </button>
+                      )}
+                      <button
+                        type="button"
+                        onClick={() => void loadEventLines({ resetFilter: true })}
+                        className="inline-flex h-9 items-center gap-1.5 rounded-lg border border-[#5B7BFE]/25 bg-[#5B7BFE]/5 px-3 text-[12px] font-medium text-[#3652c9] transition hover:bg-[#5B7BFE]/10"
+                      >
+                        <RefreshCw size={12} strokeWidth={2.2} />
+                        刷新事件线
+                      </button>
+                    </div>
+                  )}
                 </div>
               )}
 
@@ -20617,15 +20889,31 @@ export default function App() {
                             className="w-full rounded border border-gray-200 bg-white px-2 py-1.5 text-sm text-gray-700 disabled:cursor-not-allowed disabled:bg-gray-100 disabled:text-gray-400"
                           >
                             <option value="">
-                              {isEditingTaskPersonal ? '个人日程不进入事件线' : '可选：加入事件线'}
+                              {isEditingTaskPersonal
+                                ? '个人日程不进入事件线'
+                                : eventLinesLoading
+                                  ? '事件线同步中…'
+                                  : eventLinesLoadError
+                                    ? '事件线暂未同步'
+                                    : taskEventLineOptions.length === 0
+                                      ? '当前空间暂无可用事件线'
+                                      : '可选：加入事件线'}
                             </option>
                             {taskEventLineOptions.map((line) => (
                               <option key={line.id} value={line.id}>
-                                {line.name}
+                                {taskEventLineScopeFallback && line.primaryClientName ? `${line.name} · ${line.primaryClientName}` : line.name}
                               </option>
                             ))}
                           </select>
                           <div className="flex items-center gap-1.5">
+                            <button
+                              type="button"
+                              onClick={() => void loadEventLines({ resetFilter: false })}
+                              disabled={isEditingTaskPersonal || eventLinesLoading}
+                              className="rounded border border-gray-200 px-1.5 py-0.5 text-[10px] font-medium text-gray-500 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-40"
+                            >
+                              {eventLinesLoading ? '刷新中' : '刷新事件线'}
+                            </button>
                             <button
                               type="button"
                               onClick={handleEditEventLineFromTask}
@@ -20651,6 +20939,17 @@ export default function App() {
                               新建
                             </button>
                           </div>
+                          {!isEditingTaskPersonal && (
+                            <p className="text-[10px] leading-relaxed text-gray-400">
+                              {eventLinesLoading
+                                ? '正在同步当前工作空间事件线，完成后即可选择。'
+                                : eventLinesLoadError
+                                  ? `事件线暂未同步：${eventLinesLoadError}`
+                                  : taskEventLineScopeFallback
+                                    ? '当前项目下没有事件线，已显示当前工作空间其他可用事件线。'
+                                    : ''}
+                            </p>
+                          )}
                         </div>
                       </TaskPropertyRow>
                     </div>
