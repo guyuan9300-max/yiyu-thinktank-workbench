@@ -18,6 +18,7 @@ PlanLevel = Literal["ceo", "director", "manager", "project"]
 ReviewScopeType = Literal["employee", "team", "org"]
 ContentDomain = Literal["work", "personal"]
 VisibilityScope = Literal["self", "team", "department", "org"]
+OrgVisibilityScope = Literal["organization", "department", "self"]
 OrgRoleLevel = Literal["employee", "supervisor", "department_lead", "organization_lead"]
 OrgReportingLineType = Literal["business", "administrative"]
 OrgTaskEditScope = Literal["self", "manager", "department", "organization"]
@@ -49,6 +50,9 @@ class SessionUser(BaseModel):
     departmentName: str | None = None
     avatarUrl: str | None = None
     isDepartmentLead: bool = False
+    visibilityScope: OrgVisibilityScope = "self"
+    managementTitleId: str | None = None
+    managementTitleName: str | None = None
 
 
 class OrganizationCandidate(BaseModel):
@@ -482,6 +486,9 @@ class EmployeeRecord(BaseModel):
     isBot: bool = False
     actorId: str | None = None
     handle: str | None = None
+    visibilityScope: OrgVisibilityScope = "self"
+    managementTitleId: str | None = None
+    managementTitleName: str | None = None
 
 
 class OrgBotReportingRecord(BaseModel):
@@ -574,6 +581,8 @@ class OrgInviteResolveResult(BaseModel):
     departmentName: str | None = None
     roleKey: str | None = None
     roleName: str | None = None
+    managementTitleId: str | None = None
+    managementTitleName: str | None = None
     message: str | None = None
 
 
@@ -648,6 +657,7 @@ class OrgRoleTemplateRecord(BaseModel):
     departmentId: str | None = None
     name: str
     level: OrgRoleLevel
+    visibilityScope: OrgVisibilityScope = "self"
     managerRoleId: str | None = None
     isManager: bool = False
     goal: str = ""
@@ -671,6 +681,7 @@ class OrgEmployeeBindingRecord(BaseModel):
     primaryRoleId: str | None = None
     managerUserId: str | None = None
     isManager: bool = False
+    visibilityScope: OrgVisibilityScope = "self"
     projectRoleLabels: list[str] = Field(default_factory=list)
     currentFocus: str = ""
     taskEditScope: OrgTaskEditScope = "self"

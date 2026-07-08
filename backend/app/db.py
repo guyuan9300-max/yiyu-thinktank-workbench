@@ -5454,6 +5454,9 @@ class Database:
             # 第一砖:organization 模块(4 张 cloud mirror 表 + readonly 触发器)
             from app.modules.organization import SCHEMA_SQL as ORGANIZATION_SCHEMA_SQL
             self.conn.executescript(ORGANIZATION_SCHEMA_SQL)
+            self._ensure_column("mirror_users", "visibility_scope", "TEXT NOT NULL DEFAULT 'self'")
+            self._ensure_column("mirror_users", "management_title_id", "TEXT")
+            self._ensure_column("mirror_users", "management_title_name", "TEXT")
 
             # 第二砖:llm_context 模块(prompt_log 表 · Karpathy 一等公民)
             from app.llm_context import SCHEMA_SQL as LLM_CONTEXT_SCHEMA_SQL

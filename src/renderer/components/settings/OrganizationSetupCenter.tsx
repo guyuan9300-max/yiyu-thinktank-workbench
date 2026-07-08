@@ -11,8 +11,10 @@ import type {
   OrgModelSettings,
   OrgQuarterKey,
   OrgRoleTemplateSettings,
+  OrgTaskEditScope,
+  OrgVisibilityScope,
 } from '../../../shared/types';
-import { buildDepartmentInviteCode, buildManagementInviteCode, managementInviteRoleLabel, type ManagementInviteRole } from '../../../shared/departmentInvite';
+import { buildDepartmentInviteCode, buildManagementTitleInviteCode } from '../../../shared/departmentInvite';
 // 顾源源 5/24: 机器人同事 — 直接复用弹窗组件, 不挂底部抽屉
 import { BotMemberFormDialog, BotRotateTokenDialog } from './BotMembersPanel';
 import { listBotMembers, type BotMemberRecord } from '../../lib/api';
@@ -78,11 +80,6 @@ type TreePositionNode = {
   departmentId: string | null;
 };
 
-type LineDefinition = {
-  id: string;
-  path: string;
-};
-
 type ManagementDisplayPerson = {
   id: string;
   name: string;
@@ -90,7 +87,7 @@ type ManagementDisplayPerson = {
 };
 
 type ManagementDisplayGroup = {
-  key: 'admin' | ManagementInviteRole;
+  key: string;
   label: string;
   color: string;
   people: ManagementDisplayPerson[];
@@ -119,6 +116,42 @@ function buildEmptyQuarterPlan(): OrgDepartmentSettings['quarterPlan'] {
   };
 }
 
+function isManagementTitleRole(role: OrgRoleTemplateSettings) {
+  if (role.active === false) return false;
+  if (role.departmentId) return false;
+  return role.visibilityScope === 'organization'
+    || role.taskEditScope === 'organization'
+    || role.level === 'organization_lead'
+    || role.isManager;
+}
+
+function visibilityScopeLabel(scope?: OrgVisibilityScope | null) {
+  if (scope === 'organization') return '组织级可见';
+  if (scope === 'department') return '部门级可见';
+  return '个人可见';
+}
+
+function systemRoleLabel(employee: Pick<EmployeeRecord, 'primaryRole'>) {
+  if (employee.primaryRole === 'admin') return '管理员';
+  if (employee.primaryRole === 'ai_agent') return '机器人同事';
+  return '成员';
+}
+
+function memberIdentityLabel(employee: EmployeeRecord, departmentName?: string | null, isLead = false) {
+  const name = (departmentName || employee.departmentName || '').trim();
+  const managementTitle = (employee.managementTitleName || '').trim();
+  const legacyManagementTitle = !name && employee.visibilityScope === 'organization' ? (employee.jobTitle || '').trim() : '';
+  if (employee.primaryRole === 'admin') {
+    return managementTitle || legacyManagementTitle ? `管理员 · ${managementTitle || legacyManagementTitle}` : '管理员';
+  }
+  if (!departmentName && (managementTitle || legacyManagementTitle)) {
+    return managementTitle || legacyManagementTitle;
+  }
+  if (isLead) return name ? `${name}负责人` : '部门负责人';
+  if (name) return `${name}成员`;
+  return '身份待同步';
+}
+
 function tint(hexColor: string, suffix = '12') {
   return `${hexColor}${suffix}`;
 }
@@ -142,11 +175,28 @@ function resolveInputDraftText(draftValue: string | undefined, fallbackValue: st
 }
 
 function employeeDisplayDetail(employee: EmployeeRecord) {
-  return employee.departmentName?.trim()
+  return memberIdentityLabel(employee)
+    || employee.departmentName?.trim()
     || employee.jobTitle?.trim()
     || employee.email?.trim()
     || employee.phone?.trim()
     || '组织成员';
+}
+
+function normalizeOrgLabel(value: string | null | undefined) {
+  return (value || '').trim().replace(/\s+/g, '').toLowerCase();
+}
+
+function employeeBelongsToDepartment(
+  employee: EmployeeRecord,
+  binding: OrgEmployeeBindingSettings | undefined,
+  department: Pick<OrgDepartmentSettings, 'id' | 'name'>,
+) {
+  if (employee.departmentId && employee.departmentId === department.id) return true;
+  if (binding?.departmentId && binding.departmentId === department.id) return true;
+  const departmentName = normalizeOrgLabel(department.name);
+  if (!departmentName) return false;
+  return normalizeOrgLabel(employee.departmentName) === departmentName;
 }
 
 function deriveTree(
@@ -193,10 +243,11 @@ function computeStats(
 ) {
   const activeDepartments = value.departments.filter((item) => item.active !== false);
   const activeRoles = value.roles.filter((item) => item.active !== false);
+  const managementTitleCount = activeRoles.filter(isManagementTitleRole).length;
   const activePlans = value.departmentPlans.filter((item) => item.status !== 'closed');
   const activeEmployees = employees.filter(isAssignableOrganizationEmployee);
   const activeEmployeeIds = new Set(activeEmployees.map((item) => item.id));
-  const boundMemberIds = new Set(value.bindings.filter((item) => item.primaryRoleId && activeEmployeeIds.has(item.userId)).map((item) => item.userId));
+  const boundMemberIds = new Set(value.bindings.filter((item) => item.departmentId && activeEmployeeIds.has(item.userId)).map((item) => item.userId));
   const manualDepartmentLeaderCount = activeDepartments.filter((department) => {
     const visibleLeaderName = visibleLeaderNameInput(department.leaderName);
     return Boolean(visibleLeaderName && !department.leaderUserId);
@@ -204,7 +255,6 @@ function computeStats(
   const memberCount = Math.max(boundMemberIds.size + manualDepartmentLeaderCount, activeEmployees.length);
 
   const completenessByDepartment = activeDepartments.map((department) => {
-    const roleCount = activeRoles.filter((role) => role.departmentId === department.id).length;
     const planCount = activePlans.filter((plan) => plan.departmentId === department.id).length;
     const memberBindings = value.bindings.filter((binding) => binding.departmentId === department.id && activeEmployeeIds.has(binding.userId));
     const visibleLeaderName = department.leaderName?.trim() && !isLegacyOrganizationPersonName(department.leaderName)
@@ -215,11 +265,10 @@ function computeStats(
     const missing = [
       !hasVisibleLeader,
       !department.mission.trim(),
-      roleCount === 0,
       memberCount === 0,
       planCount === 0,
     ].filter(Boolean).length;
-    return clampPercent(((5 - missing) / 5) * 100);
+    return clampPercent(((4 - missing) / 4) * 100);
   });
 
   const completeness = activeDepartments.length > 0
@@ -228,7 +277,7 @@ function computeStats(
 
   return [
     { label: '部门', value: `${activeDepartments.length}` },
-    { label: '岗位', value: `${activeRoles.length}` },
+    { label: '管理层头衔', value: `${managementTitleCount}` },
     { label: '成员', value: `${memberCount}` },
     { label: '计划数', value: `${activePlans.length}` },
     { label: '完整度', value: `${completeness}%` },
@@ -578,10 +627,8 @@ export function OrganizationSetupCenter({
   // 各种局部编辑控件（添加部门/岗位、删除 X、保存对勾、文本输入框）。
   const [isEditingMode, setIsEditingMode] = useState(false);
   const canModify = canEdit && isEditingMode;
-  const [lines, setLines] = useState<LineDefinition[]>([]);
   const toastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const bulkInviteTimerRef = useRef<number | null>(null);
-  const containerRef = useRef<HTMLDivElement | null>(null);
   const textCompositionRef = useRef(false);
 
   const tree = useMemo(
@@ -614,40 +661,44 @@ export function OrganizationSetupCenter({
   }, [approvedEmployeeIds, value.bindings]);
 
   const organizationName = organizationNameInput.trim() || value.organization.name.trim() || tree.name || '当前组织';
+  const managementTitleRoles = useMemo(
+    () => activeRoles.filter(isManagementTitleRole).sort((left, right) => left.sortOrder - right.sortOrder),
+    [activeRoles],
+  );
+  const bindingByUserId = useMemo(
+    () => new Map(value.bindings.map((binding) => [binding.userId, binding])),
+    [value.bindings],
+  );
   const managementInviteCards = useMemo(() => {
-    const roles: ManagementInviteRole[] = ['organization_lead', 'advisor'];
-    return roles.map((role) => {
-      const label = managementInviteRoleLabel(role);
-      const inviteCode = buildManagementInviteCode(value.organization.organizationId, role, organizationName);
-      const roleIds = new Set(
-        activeRoles
-          .filter((item) => !item.departmentId && item.name.trim() === label)
-          .map((item) => item.id),
-      );
+    return managementTitleRoles.map((role, index) => {
+      const label = role.name.trim() || '未命名管理层头衔';
+      const inviteCode = buildManagementTitleInviteCode(value.organization.organizationId, role.id, {
+        organizationName,
+        titleName: label,
+        order: index,
+      });
+      const roleIds = new Set([role.id]);
       const bindingUserIds = new Set(
         value.bindings
           .filter((binding) => binding.primaryRoleId && roleIds.has(binding.primaryRoleId))
           .map((binding) => binding.userId),
       );
-      if (role === 'organization_lead' && value.organization.leaderUserId) {
-        bindingUserIds.add(value.organization.leaderUserId);
-      }
-      const joinedCount = approvedEmployees.filter((employee) => (
-        bindingUserIds.has(employee.id)
-        || (employee.jobTitle || '').trim() === label
-      )).length;
+      const joinedCount = approvedEmployees.filter((employee) => {
+        if (bindingUserIds.has(employee.id)) return true;
+        if (bindingByUserId.has(employee.id)) return false;
+        return employee.managementTitleId === role.id
+          || (employee.managementTitleName || '').trim() === label;
+      }).length;
       return {
-        key: role,
+        key: role.id,
         label,
         inviteCode,
         joinedCount,
-        color: role === 'organization_lead' ? '#5B7BFE' : '#10B981',
-        helper: role === 'organization_lead'
-          ? '组织级管理身份，可查看并维护组织搭建'
-          : '顾问身份，不归入具体部门，可协助维护组织搭建',
+        color: DEPARTMENT_COLORS[index % DEPARTMENT_COLORS.length],
+        helper: '组织管理层头衔，可查看组织级汇总信息并维护组织搭建',
       };
     });
-  }, [activeRoles, approvedEmployees, organizationName, value.bindings, value.organization.leaderUserId, value.organization.organizationId]);
+  }, [approvedEmployees, bindingByUserId, managementTitleRoles, organizationName, value.bindings, value.organization.organizationId]);
   const managementGroups = useMemo<ManagementDisplayGroup[]>(() => {
     const employeeById = new Map(approvedEmployees.map((employee) => [employee.id, employee]));
     const peopleFromIds = (ids: Iterable<string>) => {
@@ -666,59 +717,59 @@ export function OrganizationSetupCenter({
       });
       return people;
     };
-    const rolePeople = (role: ManagementInviteRole) => {
-      const label = managementInviteRoleLabel(role);
-      const roleIds = new Set(
-        activeRoles
-          .filter((item) => !item.departmentId && (item.name.trim() === label || (role === 'organization_lead' && item.level === 'organization_lead')))
-          .map((item) => item.id),
-      );
+    const rolePeople = (role: OrgRoleTemplateSettings) => {
+      const roleIds = new Set([role.id]);
       const ids = new Set<string>();
       value.bindings.forEach((binding) => {
         if (binding.primaryRoleId && roleIds.has(binding.primaryRoleId)) {
           ids.add(binding.userId);
         }
       });
-      if (role === 'organization_lead' && value.organization.leaderUserId) {
-        ids.add(value.organization.leaderUserId);
-      }
       approvedEmployees.forEach((employee) => {
-        if ((employee.jobTitle || '').trim() === label) {
+        const localBinding = bindingByUserId.get(employee.id);
+        if (localBinding && localBinding.primaryRoleId !== role.id) {
+          return;
+        }
+        if (
+          employee.managementTitleId === role.id
+          || (employee.managementTitleName || '').trim() === role.name.trim()
+        ) {
           ids.add(employee.id);
         }
       });
       return peopleFromIds(ids);
     };
+    const adminGroup: ManagementDisplayGroup = {
+      key: 'admin',
+      label: '管理员',
+      color: '#6366F1',
+      people: approvedEmployees
+        .filter((employee) => employee.primaryRole === 'admin')
+        .map((employee) => ({
+          id: employee.id,
+          name: employee.fullName || employee.email || '未命名管理员',
+          detail: employeeDisplayDetail(employee),
+        })),
+      emptyText: '暂无管理员',
+    };
     return [
-      {
-        key: 'admin',
-        label: '管理员',
-        color: '#6366F1',
-        people: approvedEmployees
-          .filter((employee) => employee.primaryRole === 'admin')
-          .map((employee) => ({
-            id: employee.id,
-            name: employee.fullName || employee.email || '未命名管理员',
-            detail: employeeDisplayDetail(employee),
-          })),
-        emptyText: '暂无管理员',
-      },
-      {
-        key: 'organization_lead',
-        label: '组织负责人',
-        color: '#5B7BFE',
-        people: rolePeople('organization_lead'),
+      adminGroup,
+      ...managementTitleRoles.map((role, index) => ({
+        key: role.id,
+        label: role.name.trim() || '未命名管理层头衔',
+        color: DEPARTMENT_COLORS[index % DEPARTMENT_COLORS.length],
+        people: rolePeople(role),
         emptyText: '待填写或待加入',
-      },
-      {
-        key: 'advisor',
-        label: '顾问',
-        color: '#10B981',
-        people: rolePeople('advisor'),
-        emptyText: '待填写或待加入',
-      },
+      })),
     ];
-  }, [activeRoles, approvedEmployees, value.bindings, value.organization.leaderUserId]);
+  }, [approvedEmployees, bindingByUserId, managementTitleRoles, value.bindings]);
+  const managementGroupByKey = useMemo(() => {
+    return new Map(managementGroups.map((group) => [group.key, group]));
+  }, [managementGroups]);
+  const approvedEmployeeById = useMemo(
+    () => new Map(approvedEmployees.map((employee) => [employee.id, employee])),
+    [approvedEmployees],
+  );
   const bulkInviteText = useMemo(() => {
     const managementLines = managementInviteCards.map((item) => `${item.label}：${item.inviteCode}`);
     const linesOfText = tree.children.map((department, index) => {
@@ -732,7 +783,7 @@ export function OrganizationSetupCenter({
     });
     return [
       `${organizationName} 邀请码`,
-      '组织负责人、顾问和部门成员注册时填写对应邀请码即可直接入组。',
+      '管理层成员填写对应头衔邀请码；部门成员填写部门邀请码后进入该部门成员池。',
       ...managementLines,
       ...linesOfText,
     ].join('\n');
@@ -879,8 +930,8 @@ export function OrganizationSetupCenter({
   }, []);
 
   const handleCopyAllInvites = useCallback(async () => {
-    if (tree.children.length === 0) {
-      showToast('还没有部门邀请码可复制');
+    if (tree.children.length === 0 && managementInviteCards.length === 0) {
+      showToast('还没有邀请码可复制');
       return;
     }
     try {
@@ -902,8 +953,8 @@ export function OrganizationSetupCenter({
       clearTimeout(bulkInviteTimerRef.current);
     }
     bulkInviteTimerRef.current = window.setTimeout(() => setBulkInviteCopied(false), 1800);
-    showToast('已复制全部部门邀请码');
-  }, [bulkInviteText, showToast, tree.children.length]);
+    showToast('已复制全部邀请码');
+  }, [bulkInviteText, managementInviteCards.length, showToast, tree.children.length]);
 
   const updateDepartment = useCallback((departmentId: string, patch: Partial<OrgDepartmentSettings>) => {
     onChange({
@@ -1060,12 +1111,84 @@ export function OrganizationSetupCenter({
   // 通过下拉选择部门负责人：同时绑定 leaderUserId
   const handleSelectDepartmentLeader = useCallback((departmentId: string, employee: EmployeeRecord | null) => {
     if (!canEdit) return;
-    const nextValue = applyDepartmentLeaderUserIdDraft(
+    const currentDepartment = value.departments.find((department) => department.id === departmentId);
+    let nextValue = applyDepartmentLeaderUserIdDraft(
       value,
       departmentId,
       employee?.id ?? null,
       employee?.fullName ?? '',
     );
+    const timestamp = new Date().toISOString();
+    const targetUserId = employee?.id ?? null;
+    if (targetUserId) {
+      const targetBinding = nextValue.bindings.find((binding) => binding.userId === targetUserId);
+      nextValue = {
+        ...nextValue,
+        bindings: nextValue.bindings.map((binding) => {
+          if (binding.departmentId === departmentId && binding.userId !== targetUserId && binding.isManager) {
+            return {
+              ...binding,
+              isManager: false,
+              visibilityScope: binding.visibilityScope === 'department' ? 'self' : binding.visibilityScope,
+              taskEditScope: binding.taskEditScope === 'department' ? 'self' : binding.taskEditScope,
+              updatedAt: timestamp,
+            };
+          }
+          if (binding.userId === targetUserId) {
+            return {
+              ...binding,
+              departmentId,
+              isManager: true,
+              visibilityScope: binding.visibilityScope === 'organization' ? 'organization' : 'department',
+              taskEditScope: binding.taskEditScope === 'organization' ? 'organization' : 'department',
+              updatedAt: timestamp,
+            };
+          }
+          return binding;
+        }),
+        updatedAt: timestamp,
+      };
+      if (!targetBinding) {
+        nextValue = {
+          ...nextValue,
+          bindings: [
+            ...nextValue.bindings,
+            {
+              userId: targetUserId,
+              departmentId,
+              primaryRoleId: null,
+              managerUserId: null,
+              isManager: true,
+              visibilityScope: 'department',
+              projectRoleLabels: [],
+              currentFocus: '',
+              taskEditScope: 'department',
+              canApproveTasks: false,
+              canReassignTasks: false,
+              canChangeDeadline: false,
+              updatedAt: timestamp,
+            },
+          ],
+          updatedAt: timestamp,
+        };
+      }
+    } else if (currentDepartment?.leaderUserId) {
+      nextValue = {
+        ...nextValue,
+        bindings: nextValue.bindings.map((binding) => (
+          binding.userId === currentDepartment.leaderUserId && binding.departmentId === departmentId
+              ? {
+                ...binding,
+                isManager: false,
+                visibilityScope: binding.visibilityScope === 'department' ? 'self' : binding.visibilityScope,
+                taskEditScope: binding.taskEditScope === 'department' ? 'self' : binding.taskEditScope,
+                updatedAt: timestamp,
+              }
+              : binding
+        )),
+        updatedAt: timestamp,
+      };
+    }
     if (nextValue !== value) {
       onChange(nextValue);
     }
@@ -1220,16 +1343,121 @@ export function OrganizationSetupCenter({
     }, 10);
   }, [canEdit, onChange, startEditing, value]);
 
-  const handleAddManagementDepartment = useCallback(() => {
+  const handleAddManagementTitle = useCallback(() => {
     if (!canEdit) return;
-    const existing = activeDepartments.find((department) => department.name.trim() === '管理层');
-    if (existing) {
-      startEditing(existing.id, 'name', existing.name);
-      showToast('已有管理层节点，可继续设置负责人和成员');
-      return;
-    }
-    handleAddDepartment({ name: '管理层', parentDepartmentId: null });
-  }, [activeDepartments, canEdit, handleAddDepartment, showToast, startEditing]);
+    const timestamp = new Date().toISOString();
+    const nextRole: OrgRoleTemplateSettings = {
+      id: nextUiId('management_title'),
+      departmentId: null,
+      name: '新管理层头衔',
+      level: 'organization_lead',
+      visibilityScope: 'organization',
+      managerRoleId: null,
+      isManager: true,
+      goal: '',
+      responsibilities: [],
+      shouldAvoid: [],
+      collaborationRoleIds: [],
+      taskEditScope: 'organization',
+      canApproveTasks: true,
+      canReassignTasks: true,
+      canChangeDeadline: true,
+      sortOrder: value.roles.length,
+      active: true,
+      updatedAt: timestamp,
+    };
+
+    onChange({
+      ...value,
+      roles: [...value.roles, nextRole],
+      updatedAt: timestamp,
+    });
+
+    window.setTimeout(() => {
+      startEditing(nextRole.id, 'name', nextRole.name);
+    }, 10);
+  }, [canEdit, onChange, startEditing, value]);
+  const handleAddManagementDepartment = handleAddManagementTitle;
+
+  const handleAddManagementTitleMember = useCallback((role: OrgRoleTemplateSettings, employee: EmployeeRecord | null) => {
+    if (!canEdit || !employee) return;
+    const timestamp = new Date().toISOString();
+    const existingBinding = bindingByUserId.get(employee.id);
+    const nextBinding: OrgEmployeeBindingSettings = existingBinding
+      ? {
+        ...existingBinding,
+        departmentId: existingBinding.departmentId ?? employee.departmentId ?? null,
+        primaryRoleId: role.id,
+        visibilityScope: 'organization',
+        taskEditScope: existingBinding.taskEditScope === 'self' ? 'organization' : existingBinding.taskEditScope,
+        updatedAt: timestamp,
+      }
+      : {
+        userId: employee.id,
+        departmentId: employee.departmentId ?? null,
+        primaryRoleId: role.id,
+        managerUserId: null,
+        isManager: Boolean(employee.isDepartmentLead),
+        visibilityScope: 'organization',
+        projectRoleLabels: [],
+        currentFocus: employee.currentFocus || '',
+        taskEditScope: 'organization',
+        canApproveTasks: false,
+        canReassignTasks: false,
+        canChangeDeadline: false,
+        updatedAt: timestamp,
+      };
+    onChange({
+      ...value,
+      bindings: existingBinding
+        ? value.bindings.map((binding) => (binding.userId === employee.id ? nextBinding : binding))
+        : [...value.bindings, nextBinding],
+      updatedAt: timestamp,
+    });
+    showToast(`已将 ${employee.fullName || employee.email || '该成员'} 加入 ${role.name || '管理层头衔'}，记得保存修改`);
+  }, [bindingByUserId, canEdit, onChange, showToast, value]);
+
+  const handleRemoveManagementTitleMember = useCallback((role: OrgRoleTemplateSettings, employeeId: string) => {
+    if (!canEdit) return;
+    const timestamp = new Date().toISOString();
+    const employee = approvedEmployeeById.get(employeeId);
+    const existingBinding = bindingByUserId.get(employeeId);
+    const nextScope: OrgVisibilityScope = (existingBinding?.isManager || employee?.isDepartmentLead) ? 'department' : 'self';
+    const nextTaskEditScope: OrgTaskEditScope = nextScope === 'department' ? 'department' : 'self';
+    const nextBinding: OrgEmployeeBindingSettings = existingBinding
+      ? {
+        ...existingBinding,
+        primaryRoleId: existingBinding.primaryRoleId === role.id ? null : existingBinding.primaryRoleId,
+        visibilityScope: existingBinding.primaryRoleId === role.id ? nextScope : existingBinding.visibilityScope,
+        taskEditScope: existingBinding.primaryRoleId === role.id && existingBinding.taskEditScope === 'organization'
+          ? nextTaskEditScope
+          : existingBinding.taskEditScope,
+        updatedAt: timestamp,
+      }
+      : {
+        userId: employeeId,
+        departmentId: employee?.departmentId ?? null,
+        primaryRoleId: null,
+        managerUserId: null,
+        isManager: Boolean(employee?.isDepartmentLead),
+        visibilityScope: nextScope,
+        projectRoleLabels: [],
+        currentFocus: employee?.currentFocus || '',
+        taskEditScope: nextTaskEditScope,
+        canApproveTasks: false,
+        canReassignTasks: false,
+        canChangeDeadline: false,
+        updatedAt: timestamp,
+      };
+    onChange({
+      ...value,
+      bindings: existingBinding
+        ? value.bindings.map((binding) => (binding.userId === employeeId ? nextBinding : binding))
+        : [...value.bindings, nextBinding],
+      updatedAt: timestamp,
+    });
+    showToast(`已从 ${role.name || '管理层头衔'} 移除该成员，记得保存修改`);
+  }, [approvedEmployeeById, bindingByUserId, canEdit, onChange, showToast, value]);
 
   const handleUpdateDepartmentParent = useCallback((departmentId: string, parentDepartmentId: string | null) => {
     if (!canEdit) return;
@@ -1278,22 +1506,30 @@ export function OrganizationSetupCenter({
 
   const handleDeleteDepartment = useCallback((departmentId: string) => {
     if (!canEdit) return;
-    const hasRoles = value.roles.some((role) => role.active !== false && role.departmentId === departmentId);
-    if (hasRoles) {
-      showToast('请先删除该部门下的所有岗位');
-      return;
-    }
+    const timestamp = new Date().toISOString();
 
     onChange({
       ...value,
       departments: value.departments.map((department) => (
         department.id === departmentId
-          ? { ...department, active: false, updatedAt: department.updatedAt || new Date().toISOString() }
+          ? { ...department, active: false, updatedAt: timestamp }
           : department
+      )),
+      roles: value.roles.map((role) => (
+        role.departmentId === departmentId
+          ? { ...role, active: false, updatedAt: timestamp }
+          : role
       )),
       bindings: value.bindings.map((binding) => (
         binding.departmentId === departmentId
-          ? { ...binding, departmentId: null }
+          ? {
+            ...binding,
+            departmentId: null,
+            isManager: false,
+            visibilityScope: binding.visibilityScope === 'department' ? 'self' : binding.visibilityScope,
+            taskEditScope: binding.taskEditScope === 'department' ? 'self' : binding.taskEditScope,
+            updatedAt: timestamp,
+          }
           : binding
       )),
       departmentPlans: value.departmentPlans.map((plan) => (
@@ -1302,7 +1538,7 @@ export function OrganizationSetupCenter({
           : plan
       )),
     });
-  }, [canEdit, onChange, showToast, value]);
+  }, [canEdit, onChange, value]);
 
   const handleDeleteRole = useCallback((roleId: string) => {
     if (!canEdit) return;
@@ -1421,7 +1657,7 @@ export function OrganizationSetupCenter({
       finishEditing();
     }
     void onSave(nextValue);
-    showToast('岗位卡片已保存');
+    showToast('头衔已保存');
   }, [
     applyActiveEditingDraft,
     canEdit,
@@ -1496,73 +1732,6 @@ export function OrganizationSetupCenter({
     showToast('组织搭建已清空');
   }, [canEdit, clearInputDrafts, isSaving, onChange, onSave, resetConfirmText, showToast, value]);
 
-  const drawLines = useCallback(() => {
-    if (!containerRef.current || activeView !== 'tree') {
-      setLines([]);
-      return;
-    }
-
-    const container = containerRef.current;
-    const containerRect = container.getBoundingClientRect();
-    const nextLines: LineDefinition[] = [];
-
-    const buildPath = (startEl: Element | null, endEl: Element | null) => {
-      if (!startEl || !endEl) return null;
-      const startRect = startEl.getBoundingClientRect();
-      const endRect = endEl.getBoundingClientRect();
-      const startX = startRect.right - containerRect.left;
-      const startY = startRect.top + startRect.height / 2 - containerRect.top;
-      const endX = endRect.left - containerRect.left;
-      const endY = endRect.top + endRect.height / 2 - containerRect.top;
-      const midX = startX + (endX - startX) / 2;
-      return `M ${startX} ${startY} L ${midX} ${startY} L ${midX} ${endY} L ${endX} ${endY}`;
-    };
-
-    const orgEl = container.querySelector(`#node-${tree.id}`);
-    tree.children.forEach((department) => {
-      const departmentEl = container.querySelector(`#node-${department.id}`);
-      const departmentPath = buildPath(orgEl, departmentEl);
-      if (departmentPath) {
-        nextLines.push({ id: `${tree.id}-${department.id}`, path: departmentPath });
-      }
-
-      department.children.forEach((role) => {
-        const roleEl = container.querySelector(`#node-${role.id}`);
-        const rolePath = buildPath(departmentEl, roleEl);
-        if (rolePath) {
-          nextLines.push({ id: `${department.id}-${role.id}`, path: rolePath });
-        }
-      });
-
-      const addRoleEl = container.querySelector(`#add-btn-${department.id}`);
-      const addRolePath = buildPath(departmentEl, addRoleEl);
-      if (addRolePath) {
-        nextLines.push({ id: `${department.id}-add`, path: addRolePath });
-      }
-    });
-
-    const addDepartmentEl = container.querySelector(`#add-btn-${tree.id}`);
-    const addDepartmentPath = buildPath(orgEl, addDepartmentEl);
-    if (addDepartmentPath) {
-      nextLines.push({ id: `${tree.id}-add`, path: addDepartmentPath });
-    }
-
-    setLines(nextLines);
-  }, [activeView, tree]);
-
-  useLayoutEffect(() => {
-    drawLines();
-    const observer = new ResizeObserver(() => drawLines());
-    if (containerRef.current) {
-      observer.observe(containerRef.current);
-    }
-    window.addEventListener('resize', drawLines);
-    return () => {
-      observer.disconnect();
-      window.removeEventListener('resize', drawLines);
-    };
-  }, [drawLines, editingField, editingNodeId]);
-
   const organizationCardDirty = organizationNameInput.trim() !== value.organization.name
     || visibleLeaderNameInput(organizationLeaderNameInput) !== visibleLeaderNameInput(value.organization.leaderName)
     || introDocumentChanged(pendingOrganizationIntroDocument, value.organization.introDocument)
@@ -1586,7 +1755,7 @@ export function OrganizationSetupCenter({
                 </div>
                 <h3 className="mt-4 text-[18px] font-bold text-gray-900">删除当前组织搭建</h3>
                 <p className="mt-2 text-[13px] leading-6 text-gray-500">
-                  会清空部门、岗位、负责人、规则、计划和邀请码，保留组织身份与当前账号。
+                  会清空部门、管理层头衔、负责人、规则、计划和邀请码，保留组织身份与当前账号。
                 </p>
               </div>
               <button
@@ -1737,22 +1906,474 @@ export function OrganizationSetupCenter({
           </div>
         </div>
 
-        <div ref={containerRef} className="relative overflow-x-auto bg-[#F9FAFB]">
+        <div className="relative overflow-x-auto bg-[#F9FAFB]">
           {activeView === 'tree' ? (
-            <div className="relative min-w-max p-12">
-              <svg className="pointer-events-none absolute inset-0 h-full w-full">
-                {lines.map((line) => (
-                  <path
-                    key={line.id}
-                    d={line.path}
-                    fill="none"
-                    stroke="#E5E7EB"
-                    strokeWidth="1.5"
-                    strokeLinejoin="round"
-                  />
-                ))}
-              </svg>
+            <>
+              <div className="relative z-10 min-w-[980px] space-y-6 p-8">
+                <div className="relative max-w-[330px] rounded-[28px] border border-[#DCE4FF] bg-white p-6 shadow-sm">
+                  {canModify ? (
+                    <CardSaveButton
+                      active={organizationCardDirty}
+                      disabled={isSaving}
+                      label="保存当前组织卡片"
+                      onClick={handleSaveOrganizationCard}
+                    />
+                  ) : null}
+                  <div className="flex flex-col gap-4 pr-10">
+                    <div className="min-w-0">
+                      <div className="flex items-center gap-3">
+                        <Building2 className="text-[#5B7BFE]" size={20} />
+                        {canModify ? (
+                          <input
+                            value={organizationNameInput}
+                            onCompositionStart={handleTextCompositionStart}
+                            onCompositionEnd={handleTextCompositionEnd}
+                            onChange={(event) => setOrganizationNameDraft(event.target.value)}
+                            onBlur={commitOrganizationNameInput}
+                            onKeyDown={(event) => {
+                              if (isComposingKeyEvent(event, textCompositionRef)) return;
+                              if (event.key === 'Enter') {
+                                event.currentTarget.blur();
+                              }
+                              if (event.key === 'Escape') {
+                                setOrganizationNameInput(value.organization.name);
+                                clearOrganizationNameDraft();
+                                event.currentTarget.blur();
+                              }
+                            }}
+                            placeholder="请输入组织名称"
+                            className="w-full min-w-[220px] rounded-xl border border-[#DCE4FF] bg-white/90 px-3 py-2 text-[15px] font-bold text-gray-900 outline-none transition placeholder:text-gray-300 focus:border-[#5B7BFE] focus:bg-white"
+                          />
+                        ) : (
+                          <span className="text-[18px] font-bold text-gray-900">
+                            {value.organization.name.trim() || '未命名组织'}
+                          </span>
+                        )}
+                      </div>
+                      <p className="mt-2 pl-8 text-[12px] leading-5 text-gray-500">
+                        组织架构按信息可见范围分为三层：管理层看组织汇总，部门负责人看本部门汇总，成员看个人信息。
+                      </p>
+                    </div>
+                    <IntroDocumentAction
+                      canEdit={canModify}
+                      disabled={isSaving || !onUploadIntroDocument}
+                      document={value.organization.introDocument}
+                      label="组织介绍"
+                      onUpload={() => void handleUploadOrganizationIntroDocument()}
+                      pendingDocument={pendingOrganizationIntroDocument}
+                    />
+                  </div>
+                </div>
 
+                <section className="relative">
+                  <div className="mb-5 flex items-center justify-between gap-3">
+                    <div>
+                      <p className="text-[11px] font-bold uppercase tracking-[0.18em] text-[#5B7BFE]">Three-layer tree</p>
+                      <h3 className="mt-1 text-[17px] font-bold text-gray-900">三层信息权限结构</h3>
+                      <p className="mt-1 text-[12px] text-gray-500">管理层、部门负责人、部门成员池用连线对应；同一成员可同时拥有多个身份，信息权限取最高。</p>
+                    </div>
+                  </div>
+
+                  <div className="relative grid min-w-[1120px] grid-cols-[300px_300px_minmax(420px,1fr)] gap-12">
+                    <div id="org-tree-management-layer" className="relative z-10 flex flex-col items-stretch">
+                      {tree.children.length > 0 ? (
+                        <span className="pointer-events-none absolute right-[-48px] top-[194px] z-0 h-px w-12 bg-[#CBD5E1]" />
+                      ) : null}
+                      <div className="mb-4 text-center">
+                        <p className="text-[11px] font-bold uppercase tracking-[0.18em] text-[#5B7BFE]">第一层</p>
+                        <h4 className="mt-1 text-[15px] font-bold text-gray-900">组织管理层</h4>
+                        <span className="mt-2 inline-flex rounded-full bg-indigo-50 px-2.5 py-1 text-[10px] font-bold text-[#5B7BFE]">
+                          组织级
+                        </span>
+                      </div>
+                      <div className="space-y-3">
+                        {managementGroups.map((group, index) => {
+                          const titleRole = managementTitleRoles.find((role) => role.id === group.key) || null;
+                          const isEditingTitleName = Boolean(titleRole && editingNodeId === titleRole.id && editingField === 'name');
+                          const titleDirty = Boolean(
+                            isEditingTitleName
+                            && editingText.trim().length > 0
+                            && editingText.trim() !== titleRole?.name,
+                          );
+                          const inviteCard = titleRole ? managementInviteCards.find((item) => item.key === titleRole.id) : null;
+                          return (
+                            <div
+                              key={group.key}
+                              className="relative rounded-2xl border border-indigo-50 bg-white p-3 shadow-sm"
+                              style={{ boxShadow: `0 10px 24px ${tint(group.color, '12')}` }}
+                            >
+                              {canModify && titleRole ? (
+                                <CardSaveButton
+                                  active={titleDirty}
+                                  className="right-2 top-2 h-6 w-6"
+                                  disabled={isSaving}
+                                  iconSize={11}
+                                  label={`保存${titleRole.name}头衔`}
+                                  onClick={() => handleSaveRoleCard(titleRole.id)}
+                                />
+                              ) : null}
+                              {canModify && titleRole ? (
+                                <button
+                                  type="button"
+                                  onClick={() => handleDeleteRole(titleRole.id)}
+                                  className="absolute -right-1.5 -top-1.5 rounded-full border border-rose-200 bg-white p-0.5 text-rose-400 shadow-sm transition hover:border-rose-300 hover:bg-rose-50 hover:text-rose-500"
+                                  title="删除该管理层头衔"
+                                >
+                                  <X size={11} />
+                                </button>
+                              ) : null}
+                              <div className="flex items-start justify-between gap-3 pr-7">
+                                <div className="min-w-0">
+                                  <div className="flex min-w-0 items-center gap-1.5">
+                                    <span
+                                      className="h-2.5 w-2.5 shrink-0 rounded-full"
+                                      style={{ backgroundColor: group.color }}
+                                    />
+                                    {isEditingTitleName && titleRole ? (
+                                      <input
+                                        autoFocus
+                                        value={editingText}
+                                        onCompositionStart={handleTextCompositionStart}
+                                        onCompositionEnd={handleTextCompositionEnd}
+                                        onChange={(event) => setEditingTextDraft(event.target.value)}
+                                        onBlur={handleSaveEdit}
+                                        onKeyDown={handleKeyDown}
+                                        className="w-full border-b border-[#5B7BFE] bg-transparent text-[13px] font-bold text-gray-800 outline-none"
+                                      />
+                                    ) : (
+                                      <>
+                                        <span className="truncate text-[13px] font-bold text-gray-800">{group.label}</span>
+                                        {canModify && titleRole ? (
+                                          <button
+                                            type="button"
+                                            onClick={() => startEditing(titleRole.id, 'name', titleRole.name)}
+                                            className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-gray-300 transition hover:bg-indigo-50 hover:text-[#5B7BFE]"
+                                            title="修改头衔名称"
+                                          >
+                                            <Pencil size={12} />
+                                          </button>
+                                        ) : null}
+                                      </>
+                                    )}
+                                  </div>
+                                  <p className="mt-1 text-[11px] text-gray-400">
+                                    {group.key === 'admin' ? '系统权限 · 无邀请码' : '信息权限 · 组织级'}
+                                  </p>
+                                </div>
+                                <span className="rounded-full bg-gray-50 px-2 py-0.5 text-[10px] font-bold text-gray-500">
+                                  {index + 1}
+                                </span>
+                              </div>
+                              {inviteCard ? (
+                                <div className="mt-2 flex items-center gap-2 rounded-xl border border-indigo-50 bg-indigo-50/70 px-2.5 py-2">
+                                  <span className="text-[10px] font-bold text-indigo-400">邀请码</span>
+                                  <span className="min-w-0 truncate text-[11px] font-bold tracking-[0.08em] text-[#4A63CF]">{inviteCard.inviteCode}</span>
+                                </div>
+                              ) : null}
+                              <div className="mt-3 space-y-1.5">
+                                {group.people.length > 0 ? group.people.map((person) => (
+                                  <div key={`${group.key}-${person.id}`} className="flex items-center justify-between gap-2 rounded-xl border border-gray-100 bg-gray-50/80 px-2.5 py-2">
+                                    <div className="min-w-0">
+                                      <p className="truncate text-[11px] font-bold text-gray-800">{person.name}</p>
+                                      <p className="truncate text-[10px] text-gray-400">{person.detail}</p>
+                                    </div>
+                                    {canModify && titleRole ? (
+                                      <button
+                                        type="button"
+                                        onClick={() => handleRemoveManagementTitleMember(titleRole, person.id)}
+                                        className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-gray-300 transition hover:bg-rose-50 hover:text-rose-500"
+                                        title="从该管理层头衔移除"
+                                      >
+                                        <X size={12} />
+                                      </button>
+                                    ) : null}
+                                  </div>
+                                )) : (
+                                  <p className="rounded-xl border border-dashed border-gray-200 bg-white/70 px-3 py-2 text-[11px] text-gray-400">{group.emptyText}</p>
+                                )}
+                              </div>
+                              {canModify && titleRole ? (
+                                <div className="mt-3">
+                                  <LeaderPicker
+                                    value={{ userId: null, displayName: '' }}
+                                    employees={approvedEmployees}
+                                    onSelect={(employee) => handleAddManagementTitleMember(titleRole, employee)}
+                                    placeholder="添加已有成员"
+                                    compact
+                                  />
+                                </div>
+                              ) : null}
+                            </div>
+                          );
+                        })}
+                      </div>
+                      {canModify ? (
+                        <button
+                          type="button"
+                          onClick={handleAddManagementTitle}
+                          className="mt-4 inline-flex w-full items-center justify-center gap-1.5 rounded-2xl border border-dashed border-indigo-200 bg-white/80 px-4 py-3 text-[13px] font-bold text-indigo-500 transition hover:border-indigo-300 hover:bg-indigo-50"
+                        >
+                          <Plus size={14} />
+                          添加管理层头衔
+                        </button>
+                      ) : null}
+                    </div>
+
+                    <div id="org-tree-department-layer" className="relative z-10 flex flex-col items-stretch">
+                      <div className="mb-4 text-center">
+                        <p className="text-[11px] font-bold uppercase tracking-[0.18em] text-[#0EA5E9]">第二层</p>
+                        <h4 className="mt-1 text-[15px] font-bold text-gray-900">部门负责人</h4>
+                        <span className="mt-2 inline-flex rounded-full bg-sky-50 px-2.5 py-1 text-[10px] font-bold text-[#0EA5E9]">
+                          部门级
+                        </span>
+                      </div>
+                      {tree.children.length === 0 ? (
+                        <div className="rounded-2xl border border-dashed border-gray-200 bg-gray-50 px-5 py-8 text-center text-[13px] text-gray-400">
+                          暂无部门
+                        </div>
+                      ) : (
+                        <div className="space-y-3">
+                          {tree.children.map((department, index) => {
+                            const isEditingDepartmentName = editingNodeId === department.id && editingField === 'name';
+                            const departmentSettings = value.departments.find((item) => item.id === department.id);
+                            const departmentBindings = bindingsByDepartmentId.get(department.id) || [];
+                            const memberIdSet = new Set(departmentBindings.map((binding) => binding.userId));
+                            if (department.leaderUserId) {
+                              memberIdSet.add(department.leaderUserId);
+                            }
+                            const departmentMembers = approvedEmployees.filter((employee) => (
+                              employeeBelongsToDepartment(employee, bindingByUserId.get(employee.id), department)
+                              || memberIdSet.has(employee.id)
+                            ));
+                            const pendingDepartmentIntroDocument = pendingDepartmentIntroDocuments[department.id] || null;
+                            const departmentLeaderNameValue = departmentLeaderNameInputs[department.id] ?? department.leaderName ?? '';
+                            const hasDepartmentLeaderDraft = Object.prototype.hasOwnProperty.call(departmentLeaderNameInputs, department.id);
+                            const departmentCardDirty = (
+                              isEditingDepartmentName
+                              && editingText.trim().length > 0
+                              && editingText.trim() !== department.name
+                            ) || (
+                              hasDepartmentLeaderDraft
+                              && visibleLeaderNameInput(departmentLeaderNameValue) !== visibleLeaderNameInput(department.leaderName)
+                            ) || introDocumentChanged(pendingDepartmentIntroDocument, departmentSettings?.introDocument);
+                            return (
+                              <div
+                                id={`org-tree-department-${department.id}`}
+                                key={department.id}
+                                className="relative min-h-[162px] rounded-2xl border bg-gray-50/70 p-3 pr-9 shadow-sm"
+                                style={{ borderColor: tint(department.color, '38') }}
+                              >
+                                <span
+                                  className="pointer-events-none absolute right-[-48px] top-1/2 z-0 h-px w-12 -translate-y-1/2"
+                                  style={{ backgroundColor: tint(department.color, '55') }}
+                                />
+                                {canModify ? (
+                                  <CardSaveButton
+                                    active={departmentCardDirty}
+                                    className="right-2 top-2 h-6 w-6"
+                                    disabled={isSaving}
+                                    iconSize={11}
+                                    label={`保存${department.name}部门`}
+                                    onClick={() => handleSaveDepartmentCard(department.id)}
+                                  />
+                                ) : null}
+                                {canModify ? (
+                                  <button
+                                    type="button"
+                                    onClick={() => handleDeleteDepartment(department.id)}
+                                    className="absolute -right-1.5 -top-1.5 rounded-full border border-rose-200 bg-white p-0.5 text-rose-400 shadow-sm transition hover:border-rose-300 hover:bg-rose-50 hover:text-rose-500"
+                                    title="删除该部门"
+                                  >
+                                    <X size={11} />
+                                  </button>
+                                ) : null}
+                                <div className="flex items-start justify-between gap-2">
+                                  <div className="min-w-0">
+                                    <div className="flex min-w-0 items-center gap-1.5">
+                                      <span className="h-2.5 w-2.5 shrink-0 rounded-full" style={{ backgroundColor: department.color }} />
+                                      {isEditingDepartmentName ? (
+                                        <input
+                                          autoFocus
+                                          value={editingText}
+                                          onCompositionStart={handleTextCompositionStart}
+                                          onCompositionEnd={handleTextCompositionEnd}
+                                          onChange={(event) => setEditingTextDraft(event.target.value)}
+                                          onBlur={handleSaveEdit}
+                                          onKeyDown={handleKeyDown}
+                                          className="w-full border-b border-[#5B7BFE] bg-transparent text-[13px] font-bold text-gray-800 outline-none"
+                                        />
+                                      ) : (
+                                        <>
+                                          <span className="truncate text-[13px] font-bold text-gray-900">{department.name}</span>
+                                          {canModify ? (
+                                            <button
+                                              type="button"
+                                              onClick={() => startEditing(department.id, 'name', department.name)}
+                                              className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-gray-300 transition hover:bg-white hover:text-[#5B7BFE]"
+                                              title="修改部门名称"
+                                            >
+                                              <Pencil size={12} />
+                                            </button>
+                                          ) : null}
+                                        </>
+                                      )}
+                                    </div>
+                                    <p className="mt-1 text-[10px] text-gray-400">第 {index + 1} 个部门</p>
+                                  </div>
+                                  <IntroDocumentAction
+                                    canEdit={canModify}
+                                    compact
+                                    disabled={isSaving || !onUploadIntroDocument}
+                                    document={departmentSettings?.introDocument}
+                                    label="部门介绍"
+                                    onUpload={() => void handleUploadDepartmentIntroDocument(department)}
+                                    pendingDocument={pendingDepartmentIntroDocument}
+                                  />
+                                </div>
+                                <div className="mt-3 rounded-xl border border-white bg-white px-3 py-2">
+                                  <p className="mb-2 text-[10px] font-bold text-[#0EA5E9]">负责人</p>
+                                  {canModify ? (
+                                    <LeaderPicker
+                                      value={{
+                                        userId: department.leaderUserId ?? null,
+                                        displayName: visibleLeaderNameInput(department.leaderName),
+                                      }}
+                                      employees={departmentMembers.length > 0 ? departmentMembers : approvedEmployees}
+                                      onSelect={(employee) => handleSelectDepartmentLeader(department.id, employee)}
+                                      placeholder={departmentMembers.length > 0 ? '从成员池选负责人' : '成员池为空'}
+                                      compact
+                                    />
+                                  ) : (
+                                    <span className="inline-flex rounded-full border border-blue-100 bg-white px-3 py-1.5 text-[11px] font-bold text-gray-600">
+                                      {department.leadName || '待设置负责人'}
+                                    </span>
+                                  )}
+                                </div>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      )}
+                      {canModify ? (
+                        <button
+                          type="button"
+                          onClick={() => handleAddDepartment()}
+                          className="mt-4 inline-flex w-full items-center justify-center gap-1.5 rounded-2xl border border-dashed border-gray-300 bg-white/80 px-4 py-3 text-[13px] font-bold text-gray-500 transition hover:border-[#5B7BFE]/60 hover:bg-[#5B7BFE]/5"
+                        >
+                          <Plus size={14} />
+                          添加部门
+                        </button>
+                      ) : null}
+                    </div>
+
+                    <div className="relative z-10 flex flex-col items-stretch">
+                      <div className="mb-4 text-center">
+                        <p className="text-[11px] font-bold uppercase tracking-[0.18em] text-gray-400">第三层</p>
+                        <h4 className="mt-1 text-[15px] font-bold text-gray-900">部门成员池</h4>
+                        <span className="mt-2 inline-flex rounded-full bg-gray-100 px-2.5 py-1 text-[10px] font-bold text-gray-500">
+                          个人级
+                        </span>
+                      </div>
+                      {tree.children.length === 0 ? (
+                        <div className="rounded-2xl border border-dashed border-gray-200 bg-gray-50 px-5 py-8 text-center text-[13px] text-gray-400">
+                          新增部门后自动出现对应成员池
+                        </div>
+                      ) : (
+                        <div className="space-y-3">
+                          {tree.children.map((department, index) => {
+                            const departmentBindings = bindingsByDepartmentId.get(department.id) || [];
+                            const memberIdSet = new Set(departmentBindings.map((binding) => binding.userId));
+                            if (department.leaderUserId) {
+                              memberIdSet.add(department.leaderUserId);
+                            }
+                            const departmentMembers = approvedEmployees.filter((employee) => (
+                              employeeBelongsToDepartment(employee, bindingByUserId.get(employee.id), department)
+                              || memberIdSet.has(employee.id)
+                            ));
+                            const inviteCode = buildDepartmentInviteCode(department.id, {
+                              organizationId: value.organization.organizationId,
+                              organizationName,
+                              departmentName: department.name,
+                              order: index,
+                            });
+                            return (
+                              <div
+                                id={`org-tree-pool-${department.id}`}
+                                key={`${department.id}-pool`}
+                                className="min-h-[162px] rounded-2xl border bg-gray-50/70 p-3 shadow-sm"
+                                style={{ borderColor: tint(department.color, '32') }}
+                              >
+                                <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+                                  <div className="flex min-w-0 items-center gap-2">
+                                    <span className="h-2.5 w-2.5 shrink-0 rounded-full" style={{ backgroundColor: department.color }} />
+                                    <span className="truncate text-[12px] font-bold text-gray-800">{department.name}</span>
+                                  </div>
+                                  <span
+                                    className="rounded-full px-2.5 py-1 text-[10px] font-bold"
+                                    style={{ backgroundColor: tint(department.color), color: department.color }}
+                                  >
+                                    部门邀请码 {inviteCode}
+                                  </span>
+                                </div>
+                                {departmentMembers.length > 0 ? (
+                                  <div className="grid grid-cols-1 gap-2 md:grid-cols-2">
+                                    {departmentMembers.map((employee) => {
+                                      const isLead = employee.id === department.leaderUserId;
+                                      const isAdmin = employee.primaryRole === 'admin';
+                                      const hasManagementTitle = Boolean(
+                                        employee.managementTitleId
+                                        || managementTitleRoles.some((role) => bindingByUserId.get(employee.id)?.primaryRoleId === role.id),
+                                      );
+                                      return (
+                                        <div key={employee.id} className="rounded-xl border border-white bg-white px-3 py-2 shadow-sm">
+                                          <div className="flex items-center justify-between gap-2">
+                                            <span className="truncate text-[12px] font-bold text-gray-800">
+                                              {employee.fullName || employee.email || '未命名成员'}
+                                            </span>
+                                            {isLead ? (
+                                              <span className="shrink-0 rounded-full bg-blue-50 px-2 py-0.5 text-[9px] font-bold text-[#0EA5E9]">
+                                                负责人
+                                              </span>
+                                            ) : null}
+                                          </div>
+                                          <div className="mt-1 flex flex-wrap gap-1">
+                                            <span className="rounded-full bg-gray-100 px-2 py-0.5 text-[9px] font-bold text-gray-500">
+                                              {visibilityScopeLabel(
+                                                isAdmin || hasManagementTitle
+                                                  ? 'organization'
+                                                  : isLead
+                                                    ? 'department'
+                                                    : employee.visibilityScope || 'self',
+                                              )}
+                                            </span>
+                                            <span className="rounded-full bg-gray-100 px-2 py-0.5 text-[9px] font-bold text-gray-500">
+                                              {systemRoleLabel(employee)}
+                                            </span>
+                                            <span className="rounded-full bg-blue-50 px-2 py-0.5 text-[9px] font-bold text-[#4A63CF]">
+                                              {memberIdentityLabel(employee, department.name, isLead)}
+                                            </span>
+                                          </div>
+                                        </div>
+                                      );
+                                    })}
+                                  </div>
+                                ) : (
+                                  <p className="rounded-xl border border-dashed border-gray-200 bg-white px-3 py-3 text-[11px] text-gray-400">
+                                    暂无成员。成员填写该部门邀请码后会进入这里。
+                                  </p>
+                                )}
+                              </div>
+                            );
+                          })}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                </section>
+              </div>
+
+              {false ? (
+            <div className="relative min-w-max p-12">
               <div className="relative z-10 flex items-center gap-12">
                 <div
                   id={`node-${tree.id}`}
@@ -2179,6 +2800,8 @@ export function OrganizationSetupCenter({
                 </div>
               </div>
             </div>
+              ) : null}
+            </>
           ) : (
             <div className="p-8">
               <div className="mx-auto grid max-w-5xl grid-cols-1 gap-5 md:grid-cols-2">
@@ -2205,14 +2828,13 @@ export function OrganizationSetupCenter({
                   const joinedCount = departmentSettings
                     ? countDepartmentMembers(departmentSettings, departmentBindings)
                     : departmentBindings.length;
-                  const positions = department.children.map((item) => item.name).join('、') || '暂无岗位';
                   return (
                     <InviteCard
                       key={department.id}
                       departmentName={department.name}
                       leadName={department.leadName}
                       inviteCode={inviteCode}
-                      positions={positions}
+                      positions="部门成员池 · 默认个人可见范围；负责人由管理层或管理员在组织架构中指定"
                       joinedCount={joinedCount}
                       color={department.color}
                     />
@@ -2694,7 +3316,7 @@ function LeaderPicker({
                             </span>
                           ) : null}
                         </div>
-                        <div className="text-[10px] text-gray-400">{e.email}</div>
+                        <div className="text-[10px] text-gray-400">{memberIdentityLabel(e)} · {e.email}</div>
                       </button>
                     ))
                   )}

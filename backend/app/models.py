@@ -56,6 +56,7 @@ CollaboratorInboxStatus = Literal["pending", "accepted", "returned"]
 OrgRoleLevel = Literal["employee", "supervisor", "department_lead", "organization_lead"]
 OrgReportingLineType = Literal["business", "administrative"]
 OrgTaskEditScope = Literal["self", "manager", "department", "organization"]
+OrgVisibilityScope = Literal["organization", "department", "self"]
 OrgTaskControlLevel = Literal["normal", "leader_control", "department_control", "organization_control"]
 OrgRuleActorScope = Literal["assignee", "manager", "department_lead", "organization_lead", "creator"]
 OrgWorkflowTriggerType = Literal["weekly_followup", "task_created", "meeting_closed", "client_update", "manual"]
@@ -325,6 +326,9 @@ class SessionUserRecord(BaseModel):
     departmentId: str | None = None
     departmentName: str | None = None
     isDepartmentLead: bool = False
+    visibilityScope: OrgVisibilityScope = "self"
+    managementTitleId: str | None = None
+    managementTitleName: str | None = None
     pendingInviteCode: str | None = None
     jobTitle: str | None = None
     managerName: str | None = None
@@ -564,6 +568,9 @@ class EmployeeRecord(BaseModel):
     managerName: str | None = None
     currentFocus: str | None = None
     isDepartmentLead: bool = False
+    visibilityScope: OrgVisibilityScope = "self"
+    managementTitleId: str | None = None
+    managementTitleName: str | None = None
     approvedAt: str | None = None
     rejectedReason: str | None = None
     disabledAt: str | None = None
@@ -620,6 +627,8 @@ class OrgInviteResolveResultRecord(BaseModel):
     departmentName: str | None = None
     roleKey: str | None = None
     roleName: str | None = None
+    managementTitleId: str | None = None
+    managementTitleName: str | None = None
     message: str | None = None
 
 
@@ -701,6 +710,7 @@ class OrgRoleTemplateRecord(BaseModel):
     shouldAvoid: list[str] = Field(default_factory=list)
     collaborationRoleIds: list[str] = Field(default_factory=list)
     taskEditScope: OrgTaskEditScope = "self"
+    visibilityScope: OrgVisibilityScope = "self"
     canApproveTasks: bool = False
     canReassignTasks: bool = False
     canChangeDeadline: bool = False
@@ -720,6 +730,7 @@ class OrgEmployeeBindingRecord(BaseModel):
     projectRoleLabels: list[str] = Field(default_factory=list)
     currentFocus: str = ""
     taskEditScope: OrgTaskEditScope = "self"
+    visibilityScope: OrgVisibilityScope = "self"
     canApproveTasks: bool = False
     canReassignTasks: bool = False
     canChangeDeadline: bool = False

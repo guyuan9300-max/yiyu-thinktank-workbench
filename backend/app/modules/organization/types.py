@@ -39,6 +39,9 @@ class User:
     membership_status: str = ""
     is_department_lead: bool = False
     is_manager: bool = False
+    visibility_scope: str = "self"
+    management_title_id: str | None = None
+    management_title_name: str | None = None
     manager_user_id: str | None = None
     task_edit_scope: str = "self"  # self | department | organization
     can_approve_tasks: bool = False

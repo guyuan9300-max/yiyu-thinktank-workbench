@@ -561,6 +561,7 @@ class ResolvedDepartmentInvite:
 class ResolvedManagementInvite:
     organization_id: str
     organization_name: str
+    role_id: str | None
     role_key: str
     role_name: str
 
@@ -586,6 +587,10 @@ def _department_invite_checksum(organization_id: str, department_id: str) -> str
 
 def _management_invite_checksum(organization_id: str, role_key: str) -> str:
     return _base36_seed(f"{organization_id}:management:{role_key}", 36 ** 4).zfill(4)[:4]
+
+
+def _management_title_invite_checksum(organization_id: str, title_id: str) -> str:
+    return _base36_seed(f"{organization_id}:management:{title_id}", 36 ** 4).zfill(4)[:4]
 
 
 def _department_invite_code(
@@ -620,6 +625,24 @@ def _management_invite_code(
     order_value = int(meta["order"])
     checksum = _management_invite_checksum(organization_id, role_key)
     return f"{org_prefix}-{role_prefix}{str(order_value).zfill(2)}-{checksum}"
+
+
+def _management_title_invite_code(
+    organization_id: str,
+    title_id: str,
+    *,
+    organization_name: str = "",
+    title_name: str = "",
+    order: int | None = None,
+) -> str:
+    org_prefix = _normalize_invite_segment(organization_name, 4) or _base36_seed(organization_id, 36 ** 4).zfill(4)[:4] or "ORGX"
+    title_prefix = _normalize_invite_segment(title_name, 2) or _base36_seed(title_id, 36 ** 2).zfill(2)[:2] or "GL"
+    if isinstance(order, int):
+        order_value = max(1, order + 1)
+    else:
+        order_value = (int(_invite_seed(title_id)[-2:]) % 99) + 1
+    checksum = _management_title_invite_checksum(organization_id, title_id)
+    return f"{org_prefix}-{title_prefix}{str(order_value).zfill(2)}-{checksum}"
 
 
 def _department_invite_lookup_values(raw_code: str | None) -> list[str]:
@@ -677,13 +700,21 @@ def _resolved_invite_from_department_row(row) -> ResolvedDepartmentInvite:
     )
 
 
-def _resolved_invite_from_management_role(organization_id: str, organization_name: str, role_key: str) -> ResolvedManagementInvite:
+def _resolved_invite_from_management_role(
+    organization_id: str,
+    organization_name: str,
+    role_key: str,
+    *,
+    role_id: str | None = None,
+    role_name: str | None = None,
+) -> ResolvedManagementInvite:
     meta = MANAGEMENT_INVITE_ROLES.get(role_key) or MANAGEMENT_INVITE_ROLES["advisor"]
     return ResolvedManagementInvite(
         organization_id=organization_id,
         organization_name=organization_name,
+        role_id=role_id,
         role_key=role_key,
-        role_name=str(meta["name"]),
+        role_name=str(role_name or meta["name"]),
     )
 
 
@@ -840,6 +871,26 @@ def _resolve_department_from_invite(
     return None
 
 
+def _list_management_title_rows(state: AppState, organization_id: str):
+    return state.db.fetchall(
+        """
+        SELECT *
+        FROM org_role_templates
+        WHERE organization_id = ?
+          AND department_id IS NULL
+          AND COALESCE(active, 1) != 0
+          AND (
+            COALESCE(visibility_scope, '') = 'organization'
+            OR COALESCE(task_edit_scope, '') = 'organization'
+            OR COALESCE(is_manager, 0) != 0
+            OR COALESCE(level, '') = 'organization_lead'
+          )
+        ORDER BY sort_order ASC, updated_at DESC, name COLLATE NOCASE ASC
+        """,
+        (organization_id,),
+    )
+
+
 def _resolve_management_from_invite(
     state: AppState,
     raw_code: str | None,
@@ -865,6 +916,35 @@ def _resolve_management_from_invite(
         for row in rows:
             org_id = str(row["id"])
             org_name = str(row["name"] or "")
+            for index, title_row in enumerate(_list_management_title_rows(state, org_id)):
+                title_id = str(title_row["id"])
+                title_name = str(title_row["name"] or "")
+                checksum = _management_title_invite_checksum(org_id, title_id)
+                expected = _management_title_invite_code(
+                    org_id,
+                    title_id,
+                    organization_name=org_name,
+                    title_name=title_name,
+                    order=index,
+                )
+                if formatted_match:
+                    supplied_checksum = formatted_match.group(3)
+                    if supplied_checksum == checksum:
+                        return _resolved_invite_from_management_role(
+                            org_id,
+                            org_name,
+                            title_id,
+                            role_id=title_id,
+                            role_name=title_name,
+                        )
+                elif not strict and normalized in {expected, title_id.upper(), title_name.upper()}:
+                    return _resolved_invite_from_management_role(
+                        org_id,
+                        org_name,
+                        title_id,
+                        role_id=title_id,
+                        role_name=title_name,
+                    )
             for role_key, meta in MANAGEMENT_INVITE_ROLES.items():
                 checksum = _management_invite_checksum(org_id, role_key)
                 expected = _management_invite_code(org_id, role_key, organization_name=org_name)
@@ -927,14 +1007,15 @@ def _ensure_management_role_template(state: AppState, organization_id: str, role
     existing = state.db.fetchone("SELECT id FROM org_role_templates WHERE id = ?", (role_id,))
     if existing:
         role_id = new_id("role")
-    level = "organization_lead" if role_key == "organization_lead" else "supervisor"
+    level = "organization_lead"
     state.db.execute(
         """
         INSERT INTO org_role_templates(
             id, organization_id, department_id, name, level, manager_role_id, is_manager, goal,
             responsibilities_json, should_avoid_json, collaboration_role_ids_json, task_edit_scope,
-            can_approve_tasks, can_reassign_tasks, can_change_deadline, holder_bot_id, sort_order, active, updated_at
-        ) VALUES(?, ?, NULL, ?, ?, NULL, 1, '', '[]', '[]', '[]', 'organization', 1, 1, 1, NULL, ?, 1, ?)
+            can_approve_tasks, can_reassign_tasks, can_change_deadline, holder_bot_id, sort_order, active, updated_at,
+            visibility_scope
+        ) VALUES(?, ?, NULL, ?, ?, NULL, 1, '', '[]', '[]', '[]', 'organization', 1, 1, 1, NULL, ?, 1, ?, 'organization')
         """,
         (role_id, organization_id, role_name, level, int(meta["order"]), timestamp),
     )
@@ -947,17 +1028,35 @@ def _assign_management_role_to_employee(
     employee_id: str,
     role_key: str,
     timestamp: str,
+    role_id: str | None = None,
+    role_name: str | None = None,
 ) -> None:
-    role_id = _ensure_management_role_template(state, organization_id, role_key, timestamp)
+    role_id = role_id or _ensure_management_role_template(state, organization_id, role_key, timestamp)
+    if role_name is None:
+        role_row = _org_role_row(state, organization_id, role_id)
+        role_name = str(role_row["name"] or "") if role_row else ""
     state.db.execute(
         """
         INSERT OR REPLACE INTO org_employee_role_bindings(
             user_id, organization_id, department_id, primary_role_id, manager_user_id, is_manager,
             project_role_labels_json, current_focus, task_edit_scope, can_approve_tasks,
-            can_reassign_tasks, can_change_deadline, updated_at
-        ) VALUES(?, ?, NULL, ?, NULL, 1, '[]', '', 'organization', 1, 1, 1, ?)
+            can_reassign_tasks, can_change_deadline, updated_at, visibility_scope
+        ) VALUES(?, ?, NULL, ?, NULL, 1, '[]', '', 'organization', 1, 1, 1, ?, 'organization')
         """,
         (employee_id, organization_id, role_id, timestamp),
+    )
+    state.db.execute(
+        """
+        UPDATE employee_accounts
+           SET visibility_scope = 'organization',
+               management_title_id = ?,
+               management_title_name = ?,
+               job_title = COALESCE(NULLIF(?, ''), job_title),
+               is_department_lead = 0,
+               updated_at = ?
+         WHERE id = ? AND organization_id = ?
+        """,
+        (role_id, role_name or None, role_name or "", timestamp, employee_id, organization_id),
     )
 
 
@@ -1057,6 +1156,32 @@ def _organization_name(state: AppState, organization_id: str) -> str | None:
     return name or None
 
 
+def _member_visibility_scope_from_row(row) -> str:
+    if str(_row_get(row, "primary_role") or "") == "admin":
+        return "organization"
+    raw_scope = str(_row_get(row, "visibility_scope") or "").strip()
+    if raw_scope in {"organization", "department", "self"}:
+        return raw_scope
+    if bool(int(_row_get(row, "is_department_lead") or 0)):
+        return "department"
+    return "self"
+
+
+def _member_management_title_id_from_row(row) -> str | None:
+    value = str(_row_get(row, "management_title_id") or "").strip()
+    return value or None
+
+
+def _member_management_title_name_from_row(row) -> str | None:
+    value = str(_row_get(row, "management_title_name") or "").strip()
+    if value:
+        return value
+    if _member_visibility_scope_from_row(row) == "organization" and str(_row_get(row, "primary_role") or "") != "admin":
+        fallback = str(_row_get(row, "job_title") or "").strip()
+        return fallback or None
+    return None
+
+
 def _row_user(state: AppState, row) -> SessionUser:
     department_id = str(_row_get(row, "department_id") or "") or None
     department_name = str(_row_get(row, "department_name") or "") or None
@@ -1079,6 +1204,9 @@ def _row_user(state: AppState, row) -> SessionUser:
         departmentName=department_name,
         avatarUrl=avatar_url,
         isDepartmentLead=bool(int(row["is_department_lead"] or 0)) if "is_department_lead" in row.keys() else False,
+        visibilityScope=_member_visibility_scope_from_row(row),
+        managementTitleId=_member_management_title_id_from_row(row),
+        managementTitleName=_member_management_title_name_from_row(row),
     )
 
 
@@ -1101,6 +1229,9 @@ def _employee_record(row) -> EmployeeRecord:
         managerName=str(row["manager_name"]) if row["manager_name"] else None,
         currentFocus=str(row["current_focus"]) if row["current_focus"] else None,
         isDepartmentLead=bool(int(row["is_department_lead"] or 0)),
+        visibilityScope=_member_visibility_scope_from_row(row),
+        managementTitleId=_member_management_title_id_from_row(row),
+        managementTitleName=_member_management_title_name_from_row(row),
         approvedAt=row["approved_at"],
         rejectedReason=row["rejected_reason"],
         disabledAt=row["disabled_at"],
@@ -1545,6 +1676,7 @@ def _list_org_roles(state: AppState, organization_id: str) -> list[OrgRoleTempla
             departmentId=str(row["department_id"]) if row["department_id"] else None,
             name=str(row["name"]),
             level=str(row["level"]),
+            visibilityScope=str(_row_get(row, "visibility_scope") or ("organization" if str(row["task_edit_scope"] or "") == "organization" else "self")),
             managerRoleId=str(row["manager_role_id"]) if row["manager_role_id"] else None,
             isManager=_bool_value(row, "is_manager"),
             goal=str(row["goal"] or ""),
@@ -1581,6 +1713,7 @@ def _list_org_bindings(state: AppState, organization_id: str) -> list[OrgEmploye
             primaryRoleId=str(row["primary_role_id"]) if row["primary_role_id"] else None,
             managerUserId=str(row["manager_user_id"]) if row["manager_user_id"] else None,
             isManager=_bool_value(row, "is_manager"),
+            visibilityScope=str(_row_get(row, "visibility_scope") or ("organization" if str(row["task_edit_scope"] or "") == "organization" else "department" if _bool_value(row, "is_manager") else "self")),
             projectRoleLabels=[str(item) for item in from_json(row["project_role_labels_json"], []) if str(item).strip()],
             currentFocus=str(row["current_focus"] or ""),
             taskEditScope=str(row["task_edit_scope"] or "self"),
@@ -3478,8 +3611,10 @@ def _match_role_template_for_employee(state: AppState, organization_id: str, acc
     is_department_lead = bool(int(account_row["is_department_lead"] or 0))
     job_title = _normalize_loose_text(str(account_row["job_title"] or ""))
     if str(account_row["primary_role"] or "") == "admin":
-        manager_rows = [row for row in role_rows if _bool_value(row, "is_manager") or str(row["level"] or "") == "organization_lead"]
-        return manager_rows[0] if manager_rows else role_rows[0]
+        # 管理员是系统操作权限，不等于管理层头衔。管理层身份必须来自
+        # org_employee_role_bindings 的显式 primary_role_id，否则用户手动移除
+        # “CEO/顾问”等头衔后，会被旧 job_title 反向补回来。
+        return None
 
     if is_department_lead:
         manager_rows = [row for row in role_rows if _bool_value(row, "is_manager") or str(row["level"] or "") == "department_lead"]
@@ -3540,11 +3675,11 @@ def _sync_employee_org_binding_from_account(
 
     role_row = existing_role_row if fill_missing_only and existing_role_row else matched_role_row or existing_role_row
     is_manager = bool(int(account_row["is_department_lead"] or 0))
-    if binding_row and _bool_value(binding_row, "is_manager"):
+    if binding_row and _bool_value(binding_row, "is_manager") and not (
+        str(account_row["primary_role"] or "") == "admin" and not existing_role_row
+    ):
         is_manager = True
     if role_row and _bool_value(role_row, "is_manager"):
-        is_manager = True
-    if str(account_row["primary_role"] or "") == "admin":
         is_manager = True
 
     current_focus = str(account_row["current_focus"] or "").strip()
@@ -3552,7 +3687,7 @@ def _sync_employee_org_binding_from_account(
         current_focus = str(binding_row["current_focus"] or "").strip()
 
     project_role_labels = [str(item) for item in from_json(binding_row["project_role_labels_json"], []) if str(item).strip()] if binding_row else []
-    if not project_role_labels and account_row["job_title"]:
+    if not project_role_labels and account_row["job_title"] and str(account_row["primary_role"] or "") != "admin":
         project_role_labels = [str(account_row["job_title"]).strip()]
 
     task_edit_scope = str(binding_row["task_edit_scope"] or "self") if binding_row and fill_missing_only else ("department" if is_manager else "self")
@@ -3565,13 +3700,30 @@ def _sync_employee_org_binding_from_account(
         can_reassign_tasks = _bool_value(role_row, "can_reassign_tasks")
         can_change_deadline = _bool_value(role_row, "can_change_deadline")
 
+    if binding_row and fill_missing_only and str(_row_get(binding_row, "visibility_scope") or "") in {"organization", "department", "self"}:
+        visibility_scope = str(binding_row["visibility_scope"])
+    elif str(account_row["primary_role"] or "") == "admin":
+        visibility_scope = "organization"
+    elif role_row and str(_row_get(role_row, "visibility_scope") or "") in {"organization", "department", "self"}:
+        visibility_scope = str(role_row["visibility_scope"])
+    elif role_row and (str(role_row["task_edit_scope"] or "") == "organization" or (not role_row["department_id"] and _bool_value(role_row, "is_manager"))):
+        visibility_scope = "organization"
+    elif bool(int(account_row["is_department_lead"] or 0)) or (role_row and _bool_value(role_row, "is_manager") and role_row["department_id"]):
+        visibility_scope = "department"
+    else:
+        visibility_scope = "self"
+    if visibility_scope == "organization":
+        task_edit_scope = "organization"
+    elif visibility_scope == "department" and task_edit_scope == "self":
+        task_edit_scope = "department"
+
     state.db.execute(
         """
         INSERT OR REPLACE INTO org_employee_role_bindings(
             user_id, organization_id, department_id, primary_role_id, manager_user_id, is_manager,
             project_role_labels_json, current_focus, task_edit_scope, can_approve_tasks,
-            can_reassign_tasks, can_change_deadline, updated_at
-        ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            can_reassign_tasks, can_change_deadline, updated_at, visibility_scope
+        ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             employee_id,
@@ -3587,7 +3739,21 @@ def _sync_employee_org_binding_from_account(
             1 if can_reassign_tasks else 0,
             1 if can_change_deadline else 0,
             now_iso(),
+            visibility_scope,
         ),
+    )
+    management_title_id = str(role_row["id"]) if role_row and visibility_scope == "organization" and str(account_row["primary_role"] or "") != "admin" else None
+    management_title_name = str(role_row["name"]) if role_row and management_title_id else None
+    state.db.execute(
+        """
+        UPDATE employee_accounts
+           SET visibility_scope = ?,
+               management_title_id = ?,
+               management_title_name = ?,
+               updated_at = ?
+         WHERE id = ? AND organization_id = ?
+        """,
+        (visibility_scope, management_title_id, management_title_name, now_iso(), employee_id, organization_id),
     )
 
     if manager_user_id:
@@ -3733,9 +3899,17 @@ def _task_org_link_row(state: AppState, task_id: str):
 def _is_organization_lead(state: AppState, organization_id: str, user_id: str, primary_role: str) -> bool:
     if primary_role == "admin":
         return True
+    account_row = state.db.fetchone(
+        "SELECT primary_role, visibility_scope FROM employee_accounts WHERE id = ? AND organization_id = ?",
+        (user_id, organization_id),
+    )
+    if account_row and str(_row_get(account_row, "visibility_scope") or "") == "organization":
+        return True
     binding_row = _org_binding_row_for_user(state, organization_id, user_id)
+    if binding_row and str(_row_get(binding_row, "visibility_scope") or "") == "organization":
+        return True
     role_row = _org_role_row(state, organization_id, str(binding_row["primary_role_id"]) if binding_row and binding_row["primary_role_id"] else None)
-    return bool(role_row and str(role_row["level"]) == "organization_lead")
+    return bool(role_row and (str(role_row["level"]) == "organization_lead" or str(_row_get(role_row, "visibility_scope") or "") == "organization"))
 
 
 def _is_org_model_editor(state: AppState, user: SessionUser) -> bool:
@@ -3743,9 +3917,11 @@ def _is_org_model_editor(state: AppState, user: SessionUser) -> bool:
         return False
     if user.primaryRole == "admin":
         return True
-    if (user.jobTitle or "").strip() in {"组织负责人", "顾问"}:
+    if user.visibilityScope == "organization":
         return True
     binding_row = _org_binding_row_for_user(state, user.organizationId, user.id)
+    if binding_row and str(_row_get(binding_row, "visibility_scope") or "") == "organization":
+        return True
     role_row = _org_role_row(
         state,
         user.organizationId,
@@ -3755,7 +3931,7 @@ def _is_org_model_editor(state: AppState, user: SessionUser) -> bool:
         return False
     role_name = str(role_row["name"] or "").strip()
     role_level = str(role_row["level"] or "").strip()
-    return role_level == "organization_lead" or role_name in {"顾问"}
+    return role_level == "organization_lead" or str(_row_get(role_row, "visibility_scope") or "") == "organization" or role_name in {"顾问", "组织负责人"}
 
 
 def _is_task_manager(state: AppState, organization_id: str, actor_id: str, owner_id: str | None) -> bool:
@@ -3810,8 +3986,10 @@ def _matches_rule_actor_scope(state: AppState, actor: SessionUser, task_row, tas
             and actor_binding["department_id"]
             and task_link_row["department_id"]
             and str(actor_binding["department_id"]) == str(task_link_row["department_id"])
-            and actor_role
-            and str(actor_role["level"]) in {"department_lead", "organization_lead"}
+            and (
+                str(_row_get(actor_binding, "visibility_scope") or "") == "department"
+                or (actor_role and str(actor_role["level"]) in {"department_lead", "organization_lead"})
+            )
         )
     if scope == "organization_lead":
         return False
@@ -3881,10 +4059,12 @@ def _can_review_task(state: AppState, actor: SessionUser, task_row, task_link_ro
         actor_role = _org_role_row(state, organization_id, str(actor_binding["primary_role_id"]) if actor_binding and actor_binding["primary_role_id"] else None)
         if (
             actor_binding
-            and actor_role
             and actor_binding["department_id"]
             and str(actor_binding["department_id"]) == str(task_link_row["department_id"])
-            and str(actor_role["level"]) in {"department_lead", "organization_lead"}
+            and (
+                str(_row_get(actor_binding, "visibility_scope") or "") == "department"
+                or (actor_role and str(actor_role["level"]) in {"department_lead", "organization_lead"})
+            )
         ):
             return True
     return False
@@ -4295,8 +4475,9 @@ def _save_org_model_profile(state: AppState, current_user: SessionUser, payload:
             INSERT INTO org_role_templates(
                 id, organization_id, department_id, name, level, manager_role_id, is_manager, goal,
                 responsibilities_json, should_avoid_json, collaboration_role_ids_json, task_edit_scope,
-                can_approve_tasks, can_reassign_tasks, can_change_deadline, holder_bot_id, sort_order, active, updated_at
-            ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                can_approve_tasks, can_reassign_tasks, can_change_deadline, holder_bot_id, sort_order, active, updated_at,
+                visibility_scope
+            ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 role.id,
@@ -4318,6 +4499,7 @@ def _save_org_model_profile(state: AppState, current_user: SessionUser, payload:
                 role.sortOrder,
                 1 if role.active else 0,
                 timestamp,
+                role.visibilityScope or ("organization" if role.taskEditScope == "organization" or (not role.departmentId and role.isManager) else "department" if role.isManager else "self"),
             ),
         )
 
@@ -4335,8 +4517,8 @@ def _save_org_model_profile(state: AppState, current_user: SessionUser, payload:
             INSERT INTO org_employee_role_bindings(
                 user_id, organization_id, department_id, primary_role_id, manager_user_id, is_manager,
                 project_role_labels_json, current_focus, task_edit_scope, can_approve_tasks,
-                can_reassign_tasks, can_change_deadline, updated_at
-            ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                can_reassign_tasks, can_change_deadline, updated_at, visibility_scope
+            ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 binding.userId,
@@ -4352,20 +4534,40 @@ def _save_org_model_profile(state: AppState, current_user: SessionUser, payload:
                 1 if binding.canReassignTasks else 0,
                 1 if binding.canChangeDeadline else 0,
                 timestamp,
+                binding.visibilityScope or ("organization" if binding.taskEditScope == "organization" else "department" if binding.isManager else "self"),
             ),
         )
+        binding_visibility_scope = binding.visibilityScope or ("organization" if binding.taskEditScope == "organization" else "department" if binding.isManager else "self")
+        binding_role_row = next((role for role in payload.roles if role.id == binding_role_id), None)
+        management_title_id = binding_role_id if binding_visibility_scope == "organization" and binding_role_id else None
+        management_title_name = binding_role_row.name.strip() if management_title_id and binding_role_row else None
         state.db.execute(
             """
             UPDATE employee_accounts
-               SET department_id = ?, department_name = ?, job_title = COALESCE(?, job_title), is_department_lead = ?, updated_at = ?
+               SET department_id = ?,
+                   department_name = ?,
+                   job_title = CASE
+                       WHEN ? IS NOT NULL THEN ?
+                       WHEN ? = 'organization' THEN NULL
+                       WHEN COALESCE(management_title_id, '') <> '' OR COALESCE(management_title_name, '') <> '' THEN NULL
+                       ELSE job_title
+                   END,
+                   is_department_lead = ?,
+                   updated_at = ?
+                 , visibility_scope = ?, management_title_id = ?, management_title_name = ?
              WHERE id = ? AND organization_id = ?
             """,
             (
                 binding_department_id,
                 department_name_by_id.get(binding_department_id or "", None),
                 binding_role_name.strip() if binding_role_name and binding_role_name.strip() else None,
+                binding_role_name.strip() if binding_role_name and binding_role_name.strip() else None,
+                binding_visibility_scope,
                 1 if binding.isManager and binding_department_id else 0,
                 timestamp,
+                binding_visibility_scope,
+                management_title_id,
+                management_title_name,
                 binding.userId,
                 organization_id,
             ),
@@ -4382,7 +4584,11 @@ def _save_org_model_profile(state: AppState, current_user: SessionUser, payload:
         state.db.execute(
             """
             UPDATE employee_accounts
-               SET department_id = ?, department_name = ?, is_department_lead = 1, updated_at = ?
+               SET department_id = ?,
+                   department_name = ?,
+                   is_department_lead = 1,
+                   visibility_scope = CASE WHEN primary_role = 'admin' THEN 'organization' ELSE 'department' END,
+                   updated_at = ?
              WHERE id = ? AND organization_id = ?
             """,
             (
@@ -4667,7 +4873,7 @@ def _require_org_model_editor(app: FastAPI, authorization: str | None = Header(d
     user = _require_auth(app, authorization)
     state = _state(app)
     if not _is_org_model_editor(state, user):
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="需要管理员、组织负责人或顾问权限")
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="需要管理员或组织级管理权限")
     return user
 
 
@@ -15404,6 +15610,8 @@ def create_app() -> FastAPI:
                 targetType="management_role",
                 roleKey=management.role_key,
                 roleName=management.role_name,
+                managementTitleId=management.role_id,
+                managementTitleName=management.role_name,
                 message=f"已识别为{management.organization_name} · {management.role_name}",
             )
         return OrgInviteResolveResult(
@@ -15580,8 +15788,9 @@ def create_app() -> FastAPI:
                 id, identity_id, organization_id, email, phone_number, full_name, password_hash, primary_role, account_status,
                 membership_status, membership_submitted_at, membership_rejected_reason,
                 approved_at, approved_by, rejected_reason, disabled_at, recent_mentions_json, last_login_at,
-                department_id, department_name, job_title, manager_name, current_focus, is_department_lead, feishu_mobile, created_at, updated_at
-            ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, NULL, NULL, NULL, '[]', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                department_id, department_name, job_title, manager_name, current_focus, is_department_lead, feishu_mobile,
+                visibility_scope, management_title_id, management_title_name, created_at, updated_at
+            ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, NULL, NULL, NULL, '[]', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 user_id,
@@ -15604,6 +15813,9 @@ def create_app() -> FastAPI:
                 current_focus,
                 1 if payload.isDepartmentLead else 0,
                 default_feishu_mobile,
+                "organization" if primary_role == "admin" or invite_management else ("department" if payload.isDepartmentLead else "self"),
+                invite_management.role_id if invite_management else None,
+                invite_management.role_name if invite_management else None,
                 timestamp,
                 timestamp,
             ),
@@ -15614,7 +15826,15 @@ def create_app() -> FastAPI:
                 (new_id("role"), user_id, timestamp),
             )
         if invite_management:
-            _assign_management_role_to_employee(state, target_organization_id, user_id, invite_management.role_key, timestamp)
+            _assign_management_role_to_employee(
+                state,
+                target_organization_id,
+                user_id,
+                invite_management.role_key,
+                timestamp,
+                role_id=invite_management.role_id,
+                role_name=invite_management.role_name,
+            )
         _log_audit(
             state,
             "register",
@@ -15711,8 +15931,9 @@ def create_app() -> FastAPI:
                 id, identity_id, organization_id, email, phone_number, full_name, password_hash, primary_role,
                 account_status, membership_status, membership_submitted_at, membership_rejected_reason,
                 approved_at, approved_by, rejected_reason, disabled_at, recent_mentions_json, last_login_at,
-                department_id, department_name, job_title, manager_name, current_focus, is_department_lead, created_at, updated_at
-            ) VALUES(?, ?, ?, ?, ?, ?, ?, 'admin', 'approved', 'approved', NULL, NULL, ?, ?, NULL, NULL, '[]', NULL, NULL, NULL, NULL, NULL, '', 0, ?, ?)
+                department_id, department_name, job_title, manager_name, current_focus, is_department_lead,
+                visibility_scope, management_title_id, management_title_name, created_at, updated_at
+            ) VALUES(?, ?, ?, ?, ?, ?, ?, 'admin', 'approved', 'approved', NULL, NULL, ?, ?, NULL, NULL, '[]', NULL, NULL, NULL, NULL, NULL, '', 0, 'organization', NULL, NULL, ?, ?)
             """,
             (
                 user_id,
@@ -15770,8 +15991,9 @@ def create_app() -> FastAPI:
                 id, identity_id, organization_id, email, phone_number, full_name, password_hash, primary_role,
                 account_status, membership_status, membership_submitted_at, membership_rejected_reason,
                 approved_at, approved_by, rejected_reason, disabled_at, recent_mentions_json, last_login_at,
-                department_id, department_name, job_title, manager_name, current_focus, is_department_lead, created_at, updated_at
-            ) VALUES(?, ?, ?, ?, ?, ?, ?, 'employee', 'approved', 'approved', ?, NULL, ?, NULL, NULL, NULL, '[]', NULL, ?, ?, ?, ?, ?, 0, ?, ?)
+                department_id, department_name, job_title, manager_name, current_focus, is_department_lead,
+                visibility_scope, management_title_id, management_title_name, created_at, updated_at
+            ) VALUES(?, ?, ?, ?, ?, ?, ?, 'employee', 'approved', 'approved', ?, NULL, ?, NULL, NULL, NULL, '[]', NULL, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?)
             """,
             (
                 user_id,
@@ -15788,12 +16010,23 @@ def create_app() -> FastAPI:
                 job_title,
                 (payload.managerName or "").strip() or None,
                 (payload.currentFocus or "").strip(),
+                "organization" if invite_management else "self",
+                invite_management.role_id if invite_management else None,
+                invite_management.role_name if invite_management else None,
                 timestamp,
                 timestamp,
             ),
         )
         if invite_management:
-            _assign_management_role_to_employee(state, invite_target.organization_id, user_id, invite_management.role_key, timestamp)
+            _assign_management_role_to_employee(
+                state,
+                invite_target.organization_id,
+                user_id,
+                invite_management.role_key,
+                timestamp,
+                role_id=invite_management.role_id,
+                role_name=invite_management.role_name,
+            )
         _log_audit(
             state,
             "identity_join_organization",
@@ -16255,6 +16488,9 @@ def create_app() -> FastAPI:
                    approved_by = NULL,
                    rejected_reason = NULL,
                    disabled_at = NULL,
+                   visibility_scope = ?,
+                   management_title_id = ?,
+                   management_title_name = ?,
                    updated_at = ?
              WHERE id = ?
             """,
@@ -16269,12 +16505,23 @@ def create_app() -> FastAPI:
                 next_membership_status,
                 timestamp,
                 timestamp if has_verified_invite else None,
+                "organization" if invite_management else "self",
+                invite_management.role_id if invite_management else None,
+                invite_management.role_name if invite_management else None,
                 timestamp,
                 current_user.id,
             ),
         )
         if invite_management:
-            _assign_management_role_to_employee(state, target_organization_id, current_user.id, invite_management.role_key, timestamp)
+            _assign_management_role_to_employee(
+                state,
+                target_organization_id,
+                current_user.id,
+                invite_management.role_key,
+                timestamp,
+                role_id=invite_management.role_id,
+                role_name=invite_management.role_name,
+            )
         _log_audit(
             state,
             "org_membership_apply",

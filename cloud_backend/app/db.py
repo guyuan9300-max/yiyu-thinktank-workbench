@@ -938,12 +938,16 @@ class Database:
             self._migrate_task_tag_library_schema()
             # 岗位持有人=机器人同事时,记录 bot id,使"岗位归属"也随云端共享(退役桌面本地 sidecar).
             self._ensure_column("org_role_templates", "holder_bot_id", "TEXT")
+            self._ensure_column("org_role_templates", "visibility_scope", "TEXT NOT NULL DEFAULT 'self'")
             self._ensure_column("employee_accounts", "department_id", "TEXT")
             self._ensure_column("employee_accounts", "department_name", "TEXT")
             self._ensure_column("employee_accounts", "job_title", "TEXT")
             self._ensure_column("employee_accounts", "manager_name", "TEXT")
             self._ensure_column("employee_accounts", "current_focus", "TEXT NOT NULL DEFAULT ''")
             self._ensure_column("employee_accounts", "is_department_lead", "INTEGER NOT NULL DEFAULT 0")
+            self._ensure_column("employee_accounts", "visibility_scope", "TEXT NOT NULL DEFAULT 'self'")
+            self._ensure_column("employee_accounts", "management_title_id", "TEXT")
+            self._ensure_column("employee_accounts", "management_title_name", "TEXT")
             self._ensure_column("employee_accounts", "phone_number", "TEXT")
             self._ensure_column("employee_accounts", "phone_verified_at", "TEXT")
             self._ensure_column("employee_accounts", "membership_status", "TEXT NOT NULL DEFAULT 'approved'")
@@ -1009,6 +1013,56 @@ class Database:
             self._ensure_column("org_profiles", "leader_name", "TEXT NOT NULL DEFAULT ''")
             self._ensure_column("org_profiles", "intro_document_json", "TEXT NOT NULL DEFAULT '{}'")
             self._ensure_column("org_profiles", "management_user_ids_json", "TEXT NOT NULL DEFAULT '[]'")
+            self._ensure_column("org_employee_role_bindings", "visibility_scope", "TEXT NOT NULL DEFAULT 'self'")
+            self.conn.execute(
+                """
+                UPDATE org_role_templates
+                   SET visibility_scope = 'organization'
+                 WHERE department_id IS NULL
+                   AND active = 1
+                   AND (
+                     task_edit_scope = 'organization'
+                     OR is_manager != 0
+                     OR level = 'organization_lead'
+                     OR name IN ('组织负责人', '顾问')
+                   )
+                """
+            )
+            self.conn.execute(
+                """
+                UPDATE org_role_templates
+                   SET visibility_scope = 'department'
+                 WHERE department_id IS NOT NULL
+                   AND active = 1
+                   AND (is_manager != 0 OR level = 'department_lead')
+                   AND visibility_scope != 'organization'
+                """
+            )
+            self.conn.execute(
+                """
+                UPDATE org_employee_role_bindings
+                   SET visibility_scope = CASE
+                     WHEN task_edit_scope = 'organization' THEN 'organization'
+                     WHEN is_manager != 0 THEN 'department'
+                     ELSE 'self'
+                   END
+                """
+            )
+            self.conn.execute(
+                """
+                UPDATE employee_accounts
+                   SET visibility_scope = CASE
+                     WHEN primary_role = 'admin' THEN 'organization'
+                     WHEN job_title IN ('组织负责人', '顾问') THEN 'organization'
+                     WHEN is_department_lead != 0 THEN 'department'
+                     ELSE COALESCE(NULLIF(visibility_scope, ''), 'self')
+                   END,
+                   management_title_name = CASE
+                     WHEN job_title IN ('组织负责人', '顾问') THEN job_title
+                     ELSE management_title_name
+                   END
+                """
+            )
             self._ensure_column("org_departments", "leader_name", "TEXT NOT NULL DEFAULT ''")
             self._ensure_column("org_departments", "intro_document_json", "TEXT NOT NULL DEFAULT '{}'")
             self._ensure_column("org_departments", "business_context", "TEXT NOT NULL DEFAULT ''")

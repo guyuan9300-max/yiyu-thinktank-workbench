@@ -138,13 +138,13 @@ class OrganizationDirectory:
         return [_row_to_user(r) for r in rows]
 
     def list_department_leaders(self, organization_id: str | None = None) -> list[User]:
-        """所有"部门负责人"角色的人 + CEO(管理员级别). bot 不能当部门负责人, 用 mirror_users."""
+        """所有部门负责人。管理层头衔属于组织级可见范围, 不再混入部门负责人。"""
         if organization_id:
             rows = self._db.fetchall(
                 """
                 SELECT * FROM mirror_users
                 WHERE organization_id = ?
-                  AND (is_department_lead = 1 OR is_manager = 1)
+                  AND is_department_lead = 1
                   AND account_status = 'approved'
                 ORDER BY full_name
                 """,
@@ -154,7 +154,7 @@ class OrganizationDirectory:
             rows = self._db.fetchall(
                 """
                 SELECT * FROM mirror_users
-                WHERE (is_department_lead = 1 OR is_manager = 1)
+                WHERE is_department_lead = 1
                   AND account_status = 'approved'
                 ORDER BY full_name
                 """
@@ -250,6 +250,9 @@ def _row_to_user(row) -> User:
         membership_status=str(row["membership_status"] or ""),
         is_department_lead=bool(row["is_department_lead"]),
         is_manager=bool(row["is_manager"]),
+        visibility_scope=str(row["visibility_scope"] or "self"),
+        management_title_id=str(row["management_title_id"]) if row["management_title_id"] else None,
+        management_title_name=str(row["management_title_name"]) if row["management_title_name"] else None,
         manager_user_id=str(row["manager_user_id"]) if row["manager_user_id"] else None,
         task_edit_scope=str(row["task_edit_scope"] or "self"),
         can_approve_tasks=bool(row["can_approve_tasks"]),

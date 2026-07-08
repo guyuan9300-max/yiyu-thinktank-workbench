@@ -8196,29 +8196,44 @@ export default function App() {
     : null;
   const currentUserOrganizationIdentity = (
     hasAuthenticatedSession
-      ? (currentUserOrgRole?.name || currentSessionUser?.jobTitle || '')
+      ? (
+        currentSessionUser?.managementTitleName
+        || currentUserOrgRole?.name
+        || currentSessionUser?.jobTitle
+        || ''
+      )
       : ''
   ).trim();
+  const currentUserVisibilityScope = (
+    currentSessionUser?.visibilityScope
+    || currentUserOrgBinding?.visibilityScope
+    || currentUserOrgRole?.visibilityScope
+    || (currentSessionUser?.isDepartmentLead ? 'department' : 'self')
+  );
   const canEditOrganizationStructure = Boolean(
     hasAuthenticatedSession
       && (
         currentSessionUser?.primaryRole === 'admin'
+        || currentUserVisibilityScope === 'organization'
         || currentUserOrgRole?.level === 'organization_lead'
-        || currentUserOrganizationIdentity === '组织负责人'
-        || currentUserOrganizationIdentity === '顾问'
+        || currentUserOrgRole?.taskEditScope === 'organization'
       ),
   );
   const canAccessOrganizationSettings = Boolean(canEditOrganizationStructure || canClaimOrgAdmin);
-  const currentUserStructureLabel = hasAuthenticatedSession
-    ? (
-      currentUserOrganizationIdentity
-      || (currentSessionUser?.departmentName
-        ? `${currentSessionUser.departmentName}${currentSessionUser.isDepartmentLead ? ' · 部门负责人' : ''}`
-        : currentSessionUser?.primaryRole === 'admin'
-          ? '管理员'
-          : '未分配部门')
-    )
-    : '';
+  const currentUserIdentityParts = hasAuthenticatedSession
+    ? [
+      currentSessionUser?.primaryRole === 'admin' ? '管理员' : '',
+      currentUserOrganizationIdentity,
+      currentSessionUser?.departmentName
+        ? `${currentSessionUser.departmentName}${currentUserVisibilityScope === 'department' || currentSessionUser.isDepartmentLead ? '负责人' : '成员'}`
+        : '',
+    ].map((item) => item.trim()).filter((item, index, list) => item && list.indexOf(item) === index)
+    : [];
+  const currentUserStructureLabel = currentUserIdentityParts.length > 0
+    ? currentUserIdentityParts.join(' · ')
+    : hasAuthenticatedSession
+      ? '身份待同步'
+      : '';
   // 断网兜底态(degraded)不强制身份页:此时云端没法确认成员资格,沿用本地 last-known-good;admin claim 也豁免。
   const shouldShowIdentityGate = hasAuthenticatedSession && isCloudSession && currentMembershipStatus !== 'approved' && !canClaimOrgAdmin && authState.degraded !== true;
   const renderBranch = loading ? 'loading' : (shouldShowIdentityGate ? 'identity' : 'main');
@@ -31553,23 +31568,39 @@ export default function App() {
 
       const activeList = approvedEmployees.filter((e) => !e.isBot);
 
-      const renderEmployeeRow = (employee: typeof employeeReviews[number], actions: React.ReactNode) => (
+      const renderEmployeeRow = (employee: typeof employeeReviews[number], actions: React.ReactNode) => {
+        const departmentIdentity = employee.departmentName
+          ? `${employee.departmentName}${employee.isDepartmentLead ? '负责人' : '成员'}`
+          : employee.isDepartmentLead
+            ? '部门负责人'
+            : '';
+        return (
         <div key={employee.id} className="flex items-center justify-between gap-4 -mx-2 px-2 py-3 rounded-md hover:bg-gray-50/70 transition-colors">
           <div className="min-w-0">
-            <div className="flex min-w-0 items-center gap-2">
+            <div className="flex min-w-0 flex-wrap items-center gap-2">
               <p className="truncate text-[13px] font-medium text-gray-900">{employee.fullName}</p>
               {employee.primaryRole === 'admin' && (
                 <span className="shrink-0 rounded-full border border-blue-100 bg-blue-50 px-2 py-0.5 text-[10px] font-bold text-blue-600">管理员</span>
               )}
-              {employee.primaryRole !== 'admin' && employee.isDepartmentLead && (
-                <span className="shrink-0 rounded-full border border-emerald-100 bg-emerald-50 px-2 py-0.5 text-[10px] font-bold text-emerald-600">部门负责人</span>
+              {employee.managementTitleName && (
+                <span className="shrink-0 rounded-full border border-indigo-100 bg-indigo-50 px-2 py-0.5 text-[10px] font-bold text-indigo-600">{employee.managementTitleName}</span>
+              )}
+              {departmentIdentity && (
+                <span className="shrink-0 rounded-full border border-emerald-100 bg-emerald-50 px-2 py-0.5 text-[10px] font-bold text-emerald-600">{departmentIdentity}</span>
               )}
             </div>
-            <p className="text-[11px] text-gray-500 truncate mt-0.5">{employee.email}{employee.departmentName ? ` · ${employee.departmentName}` : ''}{employee.jobTitle ? ` · ${employee.jobTitle}` : ''}</p>
+            <p className="text-[11px] text-gray-500 truncate mt-0.5">
+              {employee.email}
+              {employee.departmentName ? ` · ${employee.departmentName}` : ''}
+              {employee.jobTitle ? ` · ${employee.jobTitle}` : ''}
+              {' · '}
+              {employee.visibilityScope === 'organization' ? '组织级可见' : employee.visibilityScope === 'department' ? '部门级可见' : '个人可见'}
+            </p>
           </div>
           <div className="flex items-center gap-1.5 flex-shrink-0">{actions}</div>
         </div>
-      );
+        );
+      };
 
       const renderGroup = (eyebrow: string, count: number, children: React.ReactNode) => (
         <div className="border-t border-gray-100 pt-4">
@@ -31605,7 +31636,7 @@ export default function App() {
           {canRenderTransferPanel && renderGroup('管理员转交', adminTransferCandidates.length,
             <div className="rounded-2xl border border-blue-100 bg-blue-50/60 px-4 py-4">
               <p className="text-[12px] leading-5 text-blue-900">
-                管理员权限用于配置组织、云端和成员；组织层级请在「组织搭建中心」用管理层、部门和岗位表达，二者相互独立。
+                管理员权限用于配置组织、云端和成员；信息可见层级请在「组织搭建中心」用管理层头衔、部门负责人和部门成员池表达，二者相互独立。
               </p>
               <div className="mt-3 grid grid-cols-1 gap-3 md:grid-cols-3">
                 <select
@@ -31679,7 +31710,17 @@ export default function App() {
                   </>
                 )
               ) : (
-                <span className="text-[11px] text-gray-400">{employee.primaryRole === 'admin' ? '管理员' : employee.isDepartmentLead ? '部门负责人' : '成员'}</span>
+                <span className="text-[11px] text-gray-400">
+                  {[
+                    employee.primaryRole === 'admin' ? '管理员' : '',
+                    employee.managementTitleName || '',
+                    employee.departmentName
+                      ? `${employee.departmentName}${employee.isDepartmentLead ? '负责人' : '成员'}`
+                      : employee.isDepartmentLead
+                        ? '部门负责人'
+                        : '',
+                  ].filter(Boolean).join(' · ') || '成员'}
+                </span>
               )
             )))
           )}
@@ -32447,7 +32488,7 @@ export default function App() {
     ? '未连接组织'
     : isLocalSession
     ? '本机草稿'
-    : (currentUserStructureLabel || orgMembershipState.departmentName || currentSessionUser.departmentName || (currentSessionUser.primaryRole === 'admin' ? '管理层' : '未分配部门'));
+    : (currentUserStructureLabel || orgMembershipState.departmentName || currentSessionUser.departmentName || (currentSessionUser.primaryRole === 'admin' ? '管理员' : '身份待同步'));
   const sidebarAccountLabel = hasSidebarSessionIdentity
     ? sidebarSessionAccountName
     : '本机草稿';

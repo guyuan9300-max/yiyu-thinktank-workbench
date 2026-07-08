@@ -25,6 +25,7 @@ export type MembershipStatus = 'none' | 'pending' | 'approved' | 'rejected';
 export type EmployeeRole = 'admin' | 'employee' | 'ai_agent';
 export type CollaboratorInboxStatus = 'pending' | 'accepted' | 'returned';
 export type OrgRoleLevel = 'employee' | 'supervisor' | 'department_lead' | 'organization_lead';
+export type OrgVisibilityScope = 'organization' | 'department' | 'self';
 export type OrgReportingLineType = 'business' | 'administrative';
 export type OrgTaskEditScope = 'self' | 'manager' | 'department' | 'organization';
 export type OrgTaskControlLevel = 'normal' | 'leader_control' | 'department_control' | 'organization_control';
@@ -245,6 +246,9 @@ export interface SessionUser {
   departmentId?: string | null;
   departmentName?: string | null;
   isDepartmentLead?: boolean;
+  visibilityScope?: OrgVisibilityScope;
+  managementTitleId?: string | null;
+  managementTitleName?: string | null;
   pendingInviteCode?: string | null;
   jobTitle?: string | null;
   managerName?: string | null;
@@ -332,6 +336,9 @@ export interface EmployeeRecord {
   currentFocus?: string | null;
   isBot?: boolean;
   isDepartmentLead?: boolean;
+  visibilityScope?: OrgVisibilityScope;
+  managementTitleId?: string | null;
+  managementTitleName?: string | null;
   approvedAt?: string | null;
   rejectedReason?: string | null;
   disabledAt?: string | null;
@@ -364,6 +371,8 @@ export interface OrgInviteResolveResult {
   departmentName?: string | null;
   roleKey?: string | null;
   roleName?: string | null;
+  managementTitleId?: string | null;
+  managementTitleName?: string | null;
   message?: string | null;
 }
 
@@ -440,6 +449,7 @@ export interface OrgRoleTemplateSettings {
   departmentId?: string | null;
   name: string;
   level: OrgRoleLevel;
+  visibilityScope?: OrgVisibilityScope;
   managerRoleId?: string | null;
   isManager: boolean;
   goal: string;
@@ -467,6 +477,7 @@ export interface OrgEmployeeBindingSettings {
   primaryRoleId?: string | null;
   managerUserId?: string | null;
   isManager: boolean;
+  visibilityScope?: OrgVisibilityScope;
   projectRoleLabels: string[];
   currentFocus: string;
   taskEditScope: OrgTaskEditScope;
