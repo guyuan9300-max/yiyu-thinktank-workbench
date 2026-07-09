@@ -2051,6 +2051,7 @@ class TaskUpdatePayload(BaseModel):
     title: str | None = None
     desc: str | None = None
     status: TaskStatus | None = None
+    progressStatus: TaskStatus | None = None
     priority: Priority | None = None
     listId: str | None = None
     startDate: str | None = None

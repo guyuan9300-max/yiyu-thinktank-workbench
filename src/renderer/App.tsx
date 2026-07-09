@@ -360,6 +360,7 @@ import {
   getReviews,
   getWeeklyOverviewRefreshStatus,
   getSettings,
+  getCurrentWorkspace,
   getWorkspaces,
   createWorkspace,
   updateWorkspace,
@@ -5600,6 +5601,15 @@ function getTaskStatusLabel(task: Task) {
   return '已拒绝';
 }
 
+function createTaskCompletionPatch(willBeDone: boolean, completedAt = new Date().toISOString()) {
+  const nextStatus: Task['status'] = willBeDone ? 'done' : 'doing';
+  return {
+    status: nextStatus,
+    progressStatus: nextStatus,
+    completedAt: willBeDone ? completedAt : null,
+  };
+}
+
 function getTaskDueState(task: Task) {
   const executionDate = getTaskExecutionDate(task);
   const executionLabel = task.ddl || (executionDate ? formatTaskDueLabel(formatDateOnlyValue(executionDate)) : '待确认');
@@ -8090,6 +8100,8 @@ export default function App() {
   const [workspaceRuntimeMessage, setWorkspaceRuntimeMessage] = useState('正在初始化工作空间…');
   const [workspaceTransitionSlow, setWorkspaceTransitionSlow] = useState(false);
   const workspaceRuntimeStatusRef = useRef<WorkspaceRuntimeStatus>('verifying');
+  const workspaceRuntimeLastMarkedAtRef = useRef(Date.now());
+  const workspaceRuntimeRecoveryInFlightRef = useRef(false);
   const workspaceTransitionRef = useRef<WorkspaceTransitionToken>({ id: 0, sandboxId: '', reason: 'initial' });
   const workspaceTransitionStartedAtRef = useRef(Date.now());
   const loadEventLinesForWorkspaceRef = useRef<((options?: { resetFilter?: boolean; transition?: WorkspaceTransitionToken }) => Promise<void>) | null>(null);
@@ -8134,10 +8146,11 @@ export default function App() {
     const target = tasks.find((x) => x.id === id);
     if (!target) return;
     const willDone = target.status !== 'done';
+    const completionPatch = createTaskCompletionPatch(willDone);
     // 乐观更新 + 复用现有 updateTask 路径(同一端点),失败下次 board 刷新自愈
-    setTasks((prev) => prev.map((x) => (x.id === id ? { ...x, status: (willDone ? 'done' : 'todo') as Task['status'], completedAt: willDone ? new Date().toISOString() : null } : x)));
+    setTasks((prev) => prev.map((x) => (x.id === id ? { ...x, ...completionPatch } : x)));
     try {
-      await updateTask(id, { status: willDone ? 'done' : 'todo' });
+      await updateTask(id, completionPatch);
     } catch {
       /* 忽略:board 下次刷新自愈 */
     }
@@ -9120,6 +9133,7 @@ export default function App() {
 
   const markWorkspaceRuntime = (status: WorkspaceRuntimeStatus, message: string) => {
     workspaceRuntimeStatusRef.current = status;
+    workspaceRuntimeLastMarkedAtRef.current = Date.now();
     setWorkspaceRuntimeStatus(status);
     setWorkspaceRuntimeMessage(message);
     if (WORKSPACE_BUSY_RUNTIME_STATUSES.has(status)) {
@@ -9314,6 +9328,60 @@ export default function App() {
     markWorkspaceRuntime(nextRuntime.status, nextRuntime.message);
     return nextRuntime;
   };
+
+  const refreshCurrentWorkspaceRuntime = async (
+    auth: AuthState | null | undefined,
+    transition?: WorkspaceTransitionToken | null,
+    reason = 'refresh-current-workspace-runtime',
+  ) => {
+    try {
+      const workspace = await getCurrentWorkspace();
+      if (!shouldApplyWorkspaceLoad(transition)) return null;
+      if (workspace?.id) {
+        activeSandboxIdRef.current = workspace.id;
+        if (transition) pinWorkspaceTransitionSandbox(transition, workspace.id);
+      }
+      const runtime = applyWorkspaceRuntime(workspace, auth);
+      console.info('[workspace-runtime] refreshed current workspace', {
+        reason,
+        sandboxId: workspace?.id,
+        runtimeStatus: runtime.status,
+      });
+      return workspace;
+    } catch (error) {
+      console.warn('[workspace-runtime] failed to refresh current workspace', { reason, error });
+      return null;
+    }
+  };
+
+  const reconcileStaleWorkspaceRuntime = useCallback((reason: string) => {
+    if (workspaceRuntimeRecoveryInFlightRef.current) return;
+    if (!workspaceRuntimeBlocksWrites(workspaceRuntimeStatusRef.current)) return;
+    workspaceRuntimeRecoveryInFlightRef.current = true;
+    void refreshCurrentWorkspaceRuntime(authState, workspaceTransitionRef.current, reason)
+      .catch((error) => {
+        console.warn('[workspace-runtime] stale runtime recovery failed', { reason, error });
+      })
+      .finally(() => {
+        workspaceRuntimeRecoveryInFlightRef.current = false;
+      });
+  }, [authState]);
+
+  useEffect(() => {
+    if (loading || !workspaceWritesBlocked) return undefined;
+    const timer = window.setTimeout(() => {
+      if (loading) return;
+      const currentStatus = workspaceRuntimeStatusRef.current;
+      if (!workspaceRuntimeBlocksWrites(currentStatus)) return;
+      const ageMs = Date.now() - workspaceRuntimeLastMarkedAtRef.current;
+      console.warn('[workspace-runtime] write-blocking state remained after loading finished; reconciling from backend', {
+        status: currentStatus,
+        ageMs,
+      });
+      reconcileStaleWorkspaceRuntime('write-blocking-state-after-loading-finished');
+    }, 600);
+    return () => window.clearTimeout(timer);
+  }, [loading, reconcileStaleWorkspaceRuntime, workspaceRuntimeStatus, workspaceWritesBlocked]);
 
   const isLocalServiceStartupError = (error: unknown) => {
     const detail = error instanceof Error ? error.message : String(error ?? '');
@@ -10603,6 +10671,7 @@ export default function App() {
     resetFeishuWorkspaceTransientState();
     resetBusinessWorkspaceTransientState();
     let keepLoadingForRetry = false;
+    let latestAuthForRuntime: AuthState | null = null;
     try {
       await waitForLocalBackendReady();
       if (!shouldApplyWorkspaceLoad(transitionToken)) return;
@@ -10610,6 +10679,7 @@ export default function App() {
       let nextAuth = await loadAuthBlock({ transition: transitionToken });
       if (!shouldApplyWorkspaceLoad(transitionToken)) return;
       nextAuth = await recoverIncompleteAuthBlock(nextAuth, { transition: transitionToken });
+      latestAuthForRuntime = nextAuth;
       if (!shouldApplyWorkspaceLoad(transitionToken)) return;
       let loadedWorkspaces: SandboxWorkspacesResponse | null = null;
       try {
@@ -10832,7 +10902,9 @@ export default function App() {
         } else {
           setEmployeeReviews([]);
         }
-        if (shouldApplyWorkspaceLoad(transitionToken)) applyWorkspaceRuntime(loadedActiveWorkspace, nextAuth);
+        if (shouldApplyWorkspaceLoad(transitionToken)) {
+          await refreshCurrentWorkspaceRuntime(nextAuth, transitionToken, 'load-all-org-complete');
+        }
       } else {
         markLoadingPhase('正在切换到登录态…');
         setClients([]);
@@ -10905,6 +10977,9 @@ export default function App() {
       }
     } finally {
       if (!keepLoadingForRetry && shouldApplyWorkspaceLoad(transitionToken)) {
+        if (WORKSPACE_BUSY_RUNTIME_STATUSES.has(workspaceRuntimeStatusRef.current)) {
+          await refreshCurrentWorkspaceRuntime(latestAuthForRuntime || authState, transitionToken, 'load-all-final-busy-state');
+        }
         setLoading(false);
       }
       loadAllInFlightRef.current = false;
@@ -12124,6 +12199,8 @@ export default function App() {
     taskViewMode,
     tasks,
     workspace,
+    workspaceRuntimeMessage,
+    workspaceWritesBlocked,
     workspaceSelectedMeetingId,
     pendingPlanItemAction,
     setPendingPlanItemAction,
@@ -12212,6 +12289,8 @@ export default function App() {
     taskViewMode: typeof taskViewMode;
     tasks: typeof tasks;
     workspace: typeof workspace;
+    workspaceRuntimeMessage: typeof workspaceRuntimeMessage;
+    workspaceWritesBlocked: typeof workspaceWritesBlocked;
     workspaceSelectedMeetingId: typeof workspaceSelectedMeetingId;
     pendingPlanItemAction: typeof pendingPlanItemAction;
     setPendingPlanItemAction: typeof setPendingPlanItemAction;
@@ -12301,6 +12380,8 @@ export default function App() {
       taskViewMode,
       tasks,
       workspace,
+      workspaceRuntimeMessage,
+      workspaceWritesBlocked,
       workspaceSelectedMeetingId,
       pendingPlanItemAction,
       setPendingPlanItemAction,
@@ -13034,31 +13115,43 @@ export default function App() {
     const teamReport = reviewDashboard?.teamReport || null;
     const orgReport = reviewDashboard?.orgReport || null;
     const executiveOrgReport = reviewDashboard?.executiveOrgReport || null;
-    const departmentReports = reviewDashboard?.departmentReports || [];
-    const agentDepartmentDigests = reviewDashboard?.agentDepartmentDigests || [];
-    const agentDepartmentPlans = reviewDashboard?.agentDepartmentPlans || [];
+    const departmentReports = useMemo(() => reviewDashboard?.departmentReports ?? [], [reviewDashboard?.departmentReports]);
+    const agentDepartmentDigests = useMemo(() => reviewDashboard?.agentDepartmentDigests ?? [], [reviewDashboard?.agentDepartmentDigests]);
+    const agentDepartmentPlans = useMemo(() => reviewDashboard?.agentDepartmentPlans ?? [], [reviewDashboard?.agentDepartmentPlans]);
     const simulationBundle = reviewDashboard?.simulationBundle || null;
     const selfReviewReport = reviewDashboard?.selfReport || null;
-    const fallbackReviewPerspectives: ReviewPerspectiveOption[] = currentSessionUser?.primaryRole === 'admin'
-      ? [
-        { key: 'organization' as const, label: '组织视角' },
-        { key: 'department' as const, label: '部门视角' },
-        { key: 'mine' as const, label: '我的视角' },
-      ]
-      : currentSessionUser?.isDepartmentLead
+    const fallbackReviewPerspectives: ReviewPerspectiveOption[] = useMemo(() => (
+      currentSessionUser?.primaryRole === 'admin'
         ? [
-          {
-            key: 'department' as const,
-            label: '部门视角',
-            departmentId: currentSessionUser.departmentId || null,
-            departmentName: currentSessionUser.departmentName || null,
-          },
+          { key: 'organization' as const, label: '组织视角' },
+          { key: 'department' as const, label: '部门视角' },
           { key: 'mine' as const, label: '我的视角' },
         ]
-      : [{ key: 'mine' as const, label: '我的视角' }];
-    const availableReviewPerspectives = reviewDashboard?.availablePerspectives?.length
-      ? reviewDashboard.availablePerspectives
-      : fallbackReviewPerspectives;
+        : currentSessionUser?.isDepartmentLead
+          ? [
+            {
+              key: 'department' as const,
+              label: '部门视角',
+              departmentId: currentSessionUser.departmentId || null,
+              departmentName: currentSessionUser.departmentName || null,
+            },
+            { key: 'mine' as const, label: '我的视角' },
+          ]
+          : [{ key: 'mine' as const, label: '我的视角' }]
+    ), [
+      currentSessionUser?.departmentId,
+      currentSessionUser?.departmentName,
+      currentSessionUser?.isDepartmentLead,
+      currentSessionUser?.primaryRole,
+    ]);
+    const availableReviewPerspectives = useMemo(
+      () => (
+        reviewDashboard?.availablePerspectives?.length
+          ? reviewDashboard.availablePerspectives
+          : fallbackReviewPerspectives
+      ),
+      [fallbackReviewPerspectives, reviewDashboard?.availablePerspectives],
+    );
     const shouldShowReviewPerspectiveSwitch = availableReviewPerspectives.length > 1;
     const reviewDepartmentOptions = (() => {
       const byId = new Map<string, { id: string; name: string }>();
@@ -13079,8 +13172,8 @@ export default function App() {
       && currentSessionUser?.primaryRole === 'admin'
       && reviewDepartmentOptions.length > 0;
     const reviewPerspectiveRequiresWorkScope = reviewPerspective === 'organization' || reviewPerspective === 'department';
-    const workReviewItems = reviewDashboard?.workItems || [];
-    const personalReviewItems = reviewDashboard?.personalItems || [];
+    const workReviewItems = useMemo(() => reviewDashboard?.workItems ?? [], [reviewDashboard?.workItems]);
+    const personalReviewItems = useMemo(() => reviewDashboard?.personalItems ?? [], [reviewDashboard?.personalItems]);
     const collectStageAnalysis = reviewScope === 'work' ? reviewDashboard?.workAnalysis || null : reviewDashboard?.personalAnalysis || null;
     const calendarMonthLabel = `${taskCalendarDate.getFullYear()}-${String(taskCalendarDate.getMonth() + 1).padStart(2, '0')}`;
     const selectedCalendarWeekLabel = weekLabelForDate(new Date(taskCalendarDate.getFullYear(), taskCalendarDate.getMonth(), taskSelectedDay));
@@ -15912,23 +16005,12 @@ export default function App() {
       setTaskSelectedDate(nextDate);
     };
 
-    const createTaskCompletionPatch = (willBeDone: boolean, completedAt = new Date().toISOString()) => {
-      const nextStatus: Task['status'] = willBeDone ? 'done' : 'doing';
-      return {
-        status: nextStatus,
-        completedAt: willBeDone ? completedAt : null,
-      };
-    };
-
     const completeTaskRecord = (task: Task, willBeDone: boolean, completedAt?: string) => {
       return updateTask(task.id, createTaskCompletionPatch(willBeDone, completedAt));
     };
 
     const toggleTaskStatus = async (id: string, nextDone?: boolean) => {
-      if (workspaceWritesBlocked) {
-        flash('info', workspaceRuntimeMessage || '工作空间正在切换或需要重新登录，暂时不能更新任务。');
-        return;
-      }
+      if (!guardWorkspaceWrite('更新任务')) return;
       const task = tasks.find((item) => item.id === id);
       if (!task) return;
       if (isLocalDraftTaskId(task.id)) {
@@ -22385,16 +22467,10 @@ export default function App() {
     const visibleActiveAnalysisRun = isWorkspaceAnalysisRunPending(activeAnalysisRun) ? activeAnalysisRun : null;
 
     const setClientActiveRun = (clientId: string, run: ClientAnalysisRun | null) => {
-      const previous = workspaceClientUiState.activeRunByClient[clientId];
-      if (run && previous?.id === run.id && previous?.updatedAt === run.updatedAt && previous?.status === run.status) return;
-      if (!run && !previous) return;
       dispatchWorkspaceClientUi({ type: 'setActiveRun', clientId, run });
     };
 
     const setClientPendingQuestion = (clientId: string, pending: WorkspacePendingQuestionState | null) => {
-      const previous = workspaceClientUiState.pendingQuestionByClient[clientId];
-      if (!pending && !previous) return;
-      if (pending && previous?.question === pending.question && previous?.startedAt === pending.startedAt) return;
       dispatchWorkspaceClientUi({ type: 'setPendingQuestion', clientId, pending });
     };
 
@@ -25893,7 +25969,9 @@ export default function App() {
                                       <p className="mt-1 font-medium opacity-90">{legacyFallbackNotice.detail}</p>
                                     </div>
                                   )}
-                                  {msg.answerMode === 'general_answer' && (
+                                  {msg.answerMode === 'general_answer' &&
+                                    msg.creativityMode !== 'creative' &&
+                                    msg.retrievalSummary?.materialAccessMode !== 'lightweight_direct' && (
                                     <p className="text-[11px] text-sky-600 leading-snug">
                                       ⓘ 当前没有命中足够的原始材料，以下来自通用背景判断，非客户资料的正式结论。
                                     </p>

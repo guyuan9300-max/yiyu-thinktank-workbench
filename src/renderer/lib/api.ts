@@ -341,7 +341,20 @@ export type {
 } from '../../shared/types';
 
 function createBrowserWorkbenchFallback(): Window['yiyuWorkbench'] {
-  const backendBaseUrl = 'http://127.0.0.1:47829';
+  const backendBaseUrl = (() => {
+    const defaultUrl = 'http://127.0.0.1:47829';
+    try {
+      const params = new URLSearchParams(window.location.search);
+      const override = (params.get('yiyuBackendBaseUrl') || window.localStorage.getItem('yiyuBackendBaseUrl') || '').trim();
+      if (/^https?:\/\/(127\.0\.0\.1|localhost)(:\d+)?$/i.test(override)) {
+        window.localStorage.setItem('yiyuBackendBaseUrl', override);
+        return override.replace(/\/+$/, '');
+      }
+    } catch {
+      // Browser preview only: ignore malformed overrides and keep the installed-app default.
+    }
+    return defaultUrl;
+  })();
   const notAvailable = async (action: string) => {
     throw new Error(`${action} 仅在桌面版可用，请在 Electron 应用中打开。`);
   };
@@ -5216,7 +5229,7 @@ export async function createTask(payload: TaskMutationPayload, options?: Workspa
   });
 }
 
-export async function updateTask(id: string, payload: Partial<TaskMutationPayload> & { status?: string }, options?: WorkspaceScopedMutationOptions) {
+export async function updateTask(id: string, payload: Partial<TaskMutationPayload> & { status?: string; progressStatus?: string }, options?: WorkspaceScopedMutationOptions) {
   return request<Task>(`/api/v1/tasks/${id}`, {
     method: 'PATCH',
     headers: workspaceScopedHeaders(options),

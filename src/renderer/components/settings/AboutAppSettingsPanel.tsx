@@ -1,8 +1,6 @@
 import React, { useEffect, useState } from 'react';
-import { RefreshCw, CheckCircle2, AlertCircle, RotateCcw, FileText, ShieldAlert, Bell, Download } from 'lucide-react';
+import { RefreshCw, CheckCircle2, AlertCircle, RotateCcw, Bell, Download } from 'lucide-react';
 import type { DesktopAppInfo, OfficialPushUpdatePayload, UpdateEventPayload } from '../../../shared/types';
-import { UpdateContentCard } from './UpdateContentCard';
-import { ForceUpdatePreviewModal } from './ForceUpdatePreviewModal';
 import { OFFICIAL_PUSH_STATE_EVENT, UPDATE_STATE_KEY } from '../UpdateNotifier';
 
 interface Props {
@@ -50,8 +48,6 @@ export function AboutAppSettingsPanel({ desktopAppInfo }: Props): React.ReactEle
   const [updateState, setUpdateState] = useState<UpdateUiState>(() => initialUpdateState());
   const [checkBusy, setCheckBusy] = useState(false);
   const [restartBusy, setRestartBusy] = useState(false);
-  const [showChangelog, setShowChangelog] = useState(false);
-  const [showForcePreview, setShowForcePreview] = useState(false);
 
   useEffect(() => {
     const subscribe = window.yiyuWorkbench?.onUpdateEvent;
@@ -349,14 +345,6 @@ export function AboutAppSettingsPanel({ desktopAppInfo }: Props): React.ReactEle
               </button>
             </>
           )}
-          <button
-            type="button"
-            onClick={() => setShowChangelog((v) => !v)}
-            className="inline-flex items-center gap-2 rounded-md border border-gray-200 bg-white px-4 py-2 text-[13px] font-medium text-gray-700 hover:bg-gray-50"
-          >
-            <FileText size={14} />
-            查看更新内容
-          </button>
           {updateState.kind === 'downloaded' && (
             <button
               type="button"
@@ -369,20 +357,7 @@ export function AboutAppSettingsPanel({ desktopAppInfo }: Props): React.ReactEle
             </button>
           )}
         </div>
-
-        {showChangelog && <UpdateContentCard />}
-
-        <button
-          type="button"
-          onClick={() => setShowForcePreview(true)}
-          className="mt-4 inline-flex items-center gap-1.5 text-[11px] text-gray-400 hover:text-gray-600"
-        >
-          <ShieldAlert size={12} />
-          预览「强制更新」弹窗(开发用)
-        </button>
       </div>
-
-      <ForceUpdatePreviewModal open={showForcePreview} onClose={() => setShowForcePreview(false)} />
     </div>
   );
 }

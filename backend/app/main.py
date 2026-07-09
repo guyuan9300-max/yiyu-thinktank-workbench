@@ -1282,7 +1282,7 @@ from app.services.version_manifest import (
 
 
 APP_NAME = "益语智库自用平台"
-APP_VERSION = "0.25.0"
+APP_VERSION_FALLBACK = "0.28.1"
 LOCAL_INPUT_MEMORY_SETTINGS_KEY = "settings.local_input_memory"
 REMEMBERED_CLOUD_AUTH_SERVICE = "com.yiyu.self-workbench.remembered-cloud-auth"
 REMEMBERED_AI_INPUT_SERVICE = "com.yiyu.self-workbench.remembered-ai-input"
@@ -1406,6 +1406,11 @@ def detect_runtime_mode() -> Literal["packaged", "dev"]:
 
 BACKEND_RUNTIME_MODE = detect_runtime_mode()
 VERSION_MANIFEST = load_version_manifest(PROJECT_ROOT)
+APP_VERSION = (
+    os.getenv("YIYU_APP_VERSION", "").strip()
+    or str((VERSION_MANIFEST or {}).get("appVersion") or "").strip()
+    or APP_VERSION_FALLBACK
+)
 BUNDLE_MANIFEST_ID = compute_manifest_id(VERSION_MANIFEST)
 APP_BUILD_VERSION = (
     os.getenv("YIYU_BUILD_VERSION", "").strip()
@@ -6003,7 +6008,11 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         if raw and _clear_mismatched_active_cloud_session(raw, reason="get_cached_session_user"):
             return None
         if not raw:
-            raw = _active_volatile_cloud_session().get("cloud_session_user", "") or state.volatile_cloud_session_user_json
+            raw = (
+                _active_volatile_cloud_session().get("cloud_session_user", "")
+                or state.volatile_cloud_session_user_json
+                or get_active_sandbox_setting(state.db, "cloud_session_user_snapshot", "")
+            )
         if raw and not _active_session_matches_workspace(raw):
             return None
         parsed = from_json(raw, {}) if raw else {}
@@ -9521,7 +9530,12 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         return response.content, {key: value for key, value in response.headers.items()}
 
     def _load_org_cloud_ai_status_for_ai_service() -> dict[str, object]:
-        payload = cloud_request("GET", "/api/v1/org-ai/status", timeout=3.0)
+        payload = cloud_request(
+            "GET",
+            "/api/v1/org-ai/status",
+            timeout=3.0,
+            bypass_circuit_breaker=True,
+        )
         return payload if isinstance(payload, dict) else {"available": False, "reason": "组织 AI 状态响应无效。"}
 
     def _invoke_org_cloud_ai_for_ai_service(payload: dict[str, object], timeout_seconds: float) -> dict[str, object]:
@@ -9530,6 +9544,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             "/api/v1/org-ai/chat/completions",
             json_body=payload,
             timeout=max(float(timeout_seconds or 60.0), 12.0),
+            bypass_circuit_breaker=True,
         )
         return response if isinstance(response, dict) else {}
 
@@ -10939,6 +10954,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         *,
         target_sandbox_id: str | None = None,
         cloud_get: Callable[[str], object] | None = None,
+        preserve_local_done_guard: bool = True,
     ) -> str | None:
         cloud_id = str(payload.get("id") or "").strip()
         if not cloud_id:
@@ -11000,7 +11016,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             local_done_cloud_not = (
                 local_progress == "done" and cloud_progress != "done"
             ) or (local_completed and not str(payload.get("completedAt") or "").strip())
-            if local_done_cloud_not and not local_has_unsynced_edits and not local_newer_than_cloud:
+            if preserve_local_done_guard and local_done_cloud_not and not local_has_unsynced_edits and not local_newer_than_cloud:
                 completed_at = local_completed or now_iso()
                 payload = dict(payload)
                 payload["progressStatus"] = "done"
@@ -11012,7 +11028,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                     "[CLOUD-UPSERT-PRESERVE-DONE] task=%s accepted cloud fields while keeping local completion",
                     local_task_id,
                 )
-            if local_has_unsynced_edits or local_newer_than_cloud or local_done_cloud_not:
+            if local_has_unsynced_edits or local_newer_than_cloud or (preserve_local_done_guard and local_done_cloud_not):
                 # 机制化自愈 (P0 fix): 当 SKIP 时, 如果本地和云端内容已经达成一致
                 # (progress 一致 + completed_at 都为空或都非空), 自动把 sync_status
                 # 推回 'synced' — 否则任务会永远卡在 'pending', 用户 30+ 天看不到
@@ -11142,7 +11158,12 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             # Keep the user's local update visible until the pending PATCH succeeds.
             # Otherwise an older cloud pull can flip a calendar-completed task back to todo.
             return local_task_id
-        if existing and progress_status != "done" and _latest_local_task_status_update(local_task_id, cloud_id) == "done":
+        if (
+            preserve_local_done_guard
+            and existing
+            and progress_status != "done"
+            and _latest_local_task_status_update(local_task_id, cloud_id) == "done"
+        ):
             completed_at = str(existing["completed_at"]) if existing and existing["completed_at"] else now_iso()
             state.db.execute(
                 """
@@ -32502,44 +32523,8 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 local_provider,
             )
             return
-        try:
-            session_user = session_user_override or get_cached_session_user()
-            is_org_admin = bool(session_user and session_user.primaryRole == "admin")
-            if not is_org_admin:
-                status_payload = cloud_request("GET", "/api/v1/org-ai/status")
-                if not isinstance(status_payload, dict):
-                    raise RuntimeError("云端组织 AI 状态响应非 JSON 对象")
-                available = bool(status_payload.get("available"))
-                state.ai.invalidate_org_cloud_proxy_cache()
-                _cloud_ai_sync_status.clear()
-                _cloud_ai_sync_status.update({
-                    "state": "proxy_available" if available else "skipped",
-                    "at": now_iso(),
-                    "reason": None if available else str(status_payload.get("reason") or "组织 AI 暂不可用。"),
-                    "provider": str(status_payload.get("aiProvider") or "") or None,
-                    "providerLabel": str(status_payload.get("aiProviderLabel") or "") or None,
-                    "model": str(status_payload.get("aiModel") or "") or None,
-                    "baseUrl": None,
-                    "hasApiKey": bool(status_payload.get("hasApiKey")),
-                    "proxyMode": "cloud_proxy",
-                })
-                logger.info(
-                    "[cloud-ai-sync] member proxy status: available=%s provider=%s model=%s",
-                    available,
-                    str(status_payload.get("aiProvider") or "<empty>"),
-                    str(status_payload.get("aiModel") or "<empty>"),
-                )
-                return
-            secret_payload = cloud_request("GET", "/api/v1/settings/org-ai-config/secret")
-            if not isinstance(secret_payload, dict):
-                _cloud_ai_sync_status.clear()
-                _cloud_ai_sync_status.update({
-                    "state": "failed",
-                    "at": now_iso(),
-                    "reason": "云端响应非 JSON 对象",
-                })
-                logger.warning("[cloud-ai-sync] pull failed: non-dict payload")
-                return
+
+        def _apply_secret_payload(secret_payload: dict[str, object], *, proxy_mode: str) -> bool:
             provider = str(secret_payload.get("aiProvider", "")).strip()
             provider_label = str(secret_payload.get("aiProviderLabel", "")).strip()
             base_url = str(secret_payload.get("aiBaseUrl", "")).strip()
@@ -32556,13 +32541,16 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                     "model": model or None,
                     "baseUrl": base_url or None,
                     "hasApiKey": bool(api_key),
+                    "proxyMode": proxy_mode,
                 })
                 logger.info(
                     "[cloud-ai-sync] skipped: provider=%s hasApiKey=%s",
                     provider or "<empty>",
                     bool(api_key),
                 )
-                return
+                return True
+            if not api_key:
+                return False
             if state.ai.advanced_ai_routing_enabled():
                 state.ai.configure_cloud_online_profile(
                     provider=provider,
@@ -32581,6 +32569,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                     base_url=base_url or None,
                 )
             applied_fingerprint = state.ai.get_health().fingerprint
+            state.ai.invalidate_org_cloud_proxy_cache()
             _cloud_ai_sync_status.clear()
             _cloud_ai_sync_status.update({
                 "state": "synced",
@@ -32590,17 +32579,87 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 "providerLabel": provider_label or None,
                 "model": model or None,
                 "baseUrl": base_url or None,
-                "hasApiKey": bool(api_key),
+                "hasApiKey": True,
                 "fingerprint": applied_fingerprint or None,
+                "proxyMode": proxy_mode,
             })
             logger.info(
-                "[cloud-ai-sync] synced: provider=%s model=%s baseUrl=%s hasApiKey=%s fingerprint=%s",
+                "[cloud-ai-sync] synced: provider=%s model=%s baseUrl=%s hasApiKey=%s fingerprint=%s mode=%s",
                 provider,
                 model or "<empty>",
                 base_url or "<empty>",
-                bool(api_key),
+                True,
                 applied_fingerprint or "<none>",
+                proxy_mode,
             )
+            return True
+
+        def _apply_proxy_status_from_cloud() -> None:
+            status_payload = cloud_request("GET", "/api/v1/org-ai/status", bypass_circuit_breaker=True)
+            if not isinstance(status_payload, dict):
+                raise RuntimeError("云端组织 AI 状态响应非 JSON 对象")
+            available = bool(status_payload.get("available"))
+            state.ai.invalidate_org_cloud_proxy_cache()
+            _cloud_ai_sync_status.clear()
+            _cloud_ai_sync_status.update({
+                "state": "proxy_available" if available else "skipped",
+                "at": now_iso(),
+                "reason": None if available else str(status_payload.get("reason") or "组织 AI 暂不可用。"),
+                "provider": str(status_payload.get("aiProvider") or "") or None,
+                "providerLabel": str(status_payload.get("aiProviderLabel") or "") or None,
+                "model": str(status_payload.get("aiModel") or "") or None,
+                "baseUrl": None,
+                "hasApiKey": bool(status_payload.get("hasApiKey")),
+                "proxyMode": "cloud_proxy",
+            })
+            logger.info(
+                "[cloud-ai-sync] member proxy status: available=%s provider=%s model=%s",
+                available,
+                str(status_payload.get("aiProvider") or "<empty>"),
+                str(status_payload.get("aiModel") or "<empty>"),
+            )
+
+        try:
+            session_user = session_user_override or get_cached_session_user()
+            is_org_admin = bool(session_user and session_user.primaryRole == "admin")
+            direct_endpoint = "/api/v1/settings/org-ai-config/runtime-secret"
+            try:
+                direct_payload = cloud_request("GET", direct_endpoint, bypass_circuit_breaker=True)
+                if isinstance(direct_payload, dict) and _apply_secret_payload(direct_payload, proxy_mode="local_direct"):
+                    return
+            except Exception as direct_exc:
+                logger.info("[cloud-ai-sync] runtime secret unavailable, will fallback: %s", str(direct_exc)[:160])
+            if not is_org_admin:
+                _apply_proxy_status_from_cloud()
+                return
+            secret_payload = cloud_request("GET", "/api/v1/settings/org-ai-config/secret", bypass_circuit_breaker=True)
+            if not isinstance(secret_payload, dict):
+                _cloud_ai_sync_status.clear()
+                _cloud_ai_sync_status.update({
+                    "state": "failed",
+                    "at": now_iso(),
+                    "reason": "云端响应非 JSON 对象",
+                })
+                logger.warning("[cloud-ai-sync] pull failed: non-dict payload")
+                return
+            if _apply_secret_payload(secret_payload, proxy_mode="local_direct"):
+                return
+            provider = str(secret_payload.get("aiProvider", "")).strip()
+            provider_label = str(secret_payload.get("aiProviderLabel", "")).strip()
+            model = str(secret_payload.get("aiModel", "")).strip()
+            base_url = str(secret_payload.get("aiBaseUrl", "")).strip()
+            if provider and provider != "mock":
+                _cloud_ai_sync_status.clear()
+                _cloud_ai_sync_status.update({
+                    "state": "failed",
+                    "at": now_iso(),
+                    "reason": "云端组织 AI API Key 为空，未覆盖本机",
+                    "provider": provider or None,
+                    "providerLabel": provider_label or None,
+                    "model": model or None,
+                    "baseUrl": base_url or None,
+                    "hasApiKey": False,
+                })
         except Exception as exc:
             _cloud_ai_sync_status.clear()
             _cloud_ai_sync_status.update({
@@ -32677,6 +32736,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                     "apiKey": api_key,
                     "clearApiKey": False,
                 },
+                bypass_circuit_breaker=True,
             )
             if not isinstance(response, dict):
                 raise RuntimeError("云端响应非 JSON 对象")
@@ -50562,6 +50622,101 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 workspace_workflow=workspace_workflow,
             )
 
+    def _workspace_chat_should_use_lightweight_direct(
+        prompt: str,
+        *,
+        search_id: str | None,
+        working_document_ids: list[str] | None,
+        deep_thinking_requested: bool,
+        active_skill_id: str | None,
+        creativity_mode: str | None,
+        thread_memory_applied: bool,
+    ) -> bool:
+        normalized = re.sub(r"\s+", "", str(prompt or "")).lower()
+        if not normalized:
+            return False
+        if search_id or working_document_ids or deep_thinking_requested or thread_memory_applied:
+            return False
+        if str(creativity_mode or "").strip().lower() == "creative":
+            return True
+        if active_skill_id:
+            return False
+        if len(normalized) > 120:
+            return False
+        # These prompts are explicit connectivity / short-answer checks. They still call the
+        # real model, but do not need the full evidence-reading workspace pipeline.
+        lightweight_tokens = (
+            "请只回复",
+            "只回复",
+            "回复：",
+            "回复:",
+            "测试",
+            "ai测试",
+            "模型测试",
+            "能用吗",
+            "通了吗",
+            "在吗",
+            "hello",
+            "hi",
+            "ping",
+            "ok",
+        )
+        if not any(token in normalized for token in lightweight_tokens):
+            return False
+        evidence_tokens = (
+            "客户",
+            "组织",
+            "项目",
+            "任务",
+            "报告",
+            "文章",
+            "资料",
+            "材料",
+            "文档",
+            "文件",
+            "附件",
+            "会议",
+            "复盘",
+            "战略",
+            "情报",
+            "事件线",
+            "成长",
+            "徽章",
+            "排行",
+            "成员名单",
+            "成员信息",
+            "同事名单",
+            "部门",
+            "数据",
+            "证据",
+            "引用",
+            "出处",
+            "来源",
+            "分析",
+            "总结",
+            "列出",
+            "提取",
+            "对比",
+            "根据",
+            "基于",
+        )
+        return not any(token in normalized for token in evidence_tokens)
+
+    def _lightweight_workspace_system_instruction(creativity_mode: str | None = None) -> str:
+        if str(creativity_mode or "").strip().lower() == "creative":
+            return (
+                "你是益语智库工作台内置 AI。"
+                "当前为「创意优先」模式：只基于用户本轮问题直接回答，不读取、不引用客户资料、任务、报告或组织数据。"
+                "请自然、简洁、有帮助地回答。"
+                "如果用户明确要求根据资料、任务、客户或战略证据回答，请提醒其切换到「兼顾资料」或「严格依据」模式。"
+            )
+        return (
+            "你是益语智库工作台内置 AI。"
+            "这一路径只处理连通性测试、问候或用户明确要求的短回答。"
+            "请直接、简洁回答，不要声称读取了客户资料、任务、报告或组织数据。"
+            "如果用户问题需要资料、任务、客户或战略证据，请简短说明需要切换到工作台资料分析路径。"
+        )
+
     def resolve_chat_answer_data_center_primary(
         client_id: str,
         thread_id: str | None,
@@ -50579,7 +50734,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         - assistant_id 为 None → inline AI 旁路,跳过所有 chat 状态写入,return GroundedAnswerResult
         - 中间召回 + LLM + grounding 完全复用同一套
         """
-        del search_id
+        requested_search_id = search_id
         if is_client_analysis_run_canceled(run_id):
             # chat 路径:被取消时返回当前 chat_messages 状态;inline 路径:返回空结果
             if assistant_id is not None:
@@ -50608,6 +50763,222 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         )
         thread_memory_applied = bool(thread_memory_resolved_references and thread_memory_context)
         prompt_for_context = build_contextual_prompt(prompt, thread_memory_context) if thread_memory_context else prompt
+        chat_options_row = (
+            state.db.fetchone(
+                "SELECT deep_thinking_requested, active_skill_id, creativity_mode FROM chat_messages WHERE id = ?",
+                (assistant_id,),
+            )
+            if assistant_id is not None
+            else None
+        )
+        early_deep_thinking_requested = bool(
+            chat_options_row and int(chat_options_row["deep_thinking_requested"] or 0)
+        )
+        early_active_skill_id = (
+            str(chat_options_row["active_skill_id"])
+            if chat_options_row and chat_options_row["active_skill_id"]
+            else None
+        )
+        early_creativity_mode = (
+            str(chat_options_row["creativity_mode"] or "balanced")
+            if chat_options_row
+            else "balanced"
+        )
+        if assistant_id is not None and _workspace_chat_should_use_lightweight_direct(
+            prompt_for_context,
+            search_id=requested_search_id,
+            working_document_ids=working_document_ids,
+            deep_thinking_requested=early_deep_thinking_requested,
+            active_skill_id=early_active_skill_id,
+            creativity_mode=early_creativity_mode,
+            thread_memory_applied=thread_memory_applied,
+        ):
+            lightweight_started = perf_counter()
+            creative_direct = early_creativity_mode == "creative"
+            state.ai.reset_last_model_snapshot()
+            snapshot = state.ai.resolved_model_snapshot(task_kind="fast_structured")
+            generation_provider = str(snapshot.get("provider") or state.ai.current_provider())
+            generation_model = str(snapshot.get("model") or state.ai.current_model())
+            generation_model_label = str(
+                snapshot.get("modelLabel") or state.ai.model_label(generation_provider, generation_model)
+            )
+            if assistant_id is not None:
+                update_loading_assistant_message(
+                    assistant_id,
+                    retrieval_summary={
+                        "phase": "generating",
+                        "stageLabel": (
+                            f"正在调用{generation_model_label}创意回答"
+                            if creative_direct
+                            else f"正在调用{generation_model_label}快速回答"
+                        ),
+                        "progress": 72.0,
+                        "materialAccessMode": "lightweight_direct",
+                        "lightweightDirect": True,
+                        "creativityMode": early_creativity_mode,
+                        "providerUsed": generation_provider,
+                        "modelUsed": generation_model,
+                        "modelLabel": generation_model_label,
+                    },
+                    timing={"retrievalMs": 0.0},
+                    content=(
+                        f"{generation_model_label}正在创意回答……"
+                        if creative_direct
+                        else f"{generation_model_label}正在快速确认……"
+                    ),
+                )
+            if run_id:
+                update_client_analysis_run(
+                    run_id,
+                    status="running",
+                    phase="generating_long_answer",
+                    progress=72.0,
+                    progress_floor=60.0,
+                    progress_ceiling=96.0,
+                    stage_label=(
+                        f"正在调用{generation_model_label}创意回答"
+                        if creative_direct
+                        else f"正在调用{generation_model_label}快速回答"
+                    ),
+                    elapsed_ms=0.0,
+                )
+            provider_used: str | None = generation_provider
+            failure_reason: str | None = None
+            generation_failure_detail: str | None = None
+            answer_mode = "general_answer"
+            try:
+                answer_text = state.ai.generate_lightweight_text_response(
+                    prompt_for_context,
+                    _lightweight_workspace_system_instruction(early_creativity_mode),
+                    timeout_seconds=(90.0 if creative_direct else 45.0),
+                    max_tokens=(1800 if creative_direct else 700),
+                )
+                if not answer_text:
+                    raise AiInvocationError(generation_provider, "模型返回内容为空")
+                structured = AiStructuredResponse(
+                    content=answer_text,
+                    judgment="",
+                    analysis="",
+                    actions="",
+                    timeline="",
+                )
+                run_status = "completed"
+                phase = "completed"
+                stage_label = "回答已生成"
+            except AiInvocationError as error:
+                provider_used = error.provider
+                failure_reason = "llm_generation_failed"
+                generation_failure_detail = str(error.detail or "").strip() or None
+                structured = AiStructuredResponse(
+                    content="这次模型没有成功完成回答。请稍后重试，或检查当前组织的大模型配置。",
+                    judgment="模型生成失败。",
+                    analysis=f"错误信息：{generation_failure_detail or error}",
+                    actions="请重试；如果连续失败，请检查组织 AI 配置或网络。",
+                    timeline="可立即重试。",
+                )
+                answer_mode = "system_failure"
+                run_status = "failed"
+                phase = "failed"
+                stage_label = "回答生成失败"
+            except Exception as error:  # noqa: BLE001
+                failure_reason = "llm_generation_failed"
+                generation_failure_detail = str(error)
+                structured = AiStructuredResponse(
+                    content="这次模型没有成功完成回答。请稍后重试，或检查当前组织的大模型配置。",
+                    judgment="模型生成失败。",
+                    analysis=f"错误信息：{generation_failure_detail}",
+                    actions="请重试；如果连续失败，请检查组织 AI 配置或网络。",
+                    timeline="可立即重试。",
+                )
+                answer_mode = "system_failure"
+                run_status = "failed"
+                phase = "failed"
+                stage_label = "回答生成失败"
+            actual_snapshot = state.ai.last_model_snapshot()
+            if actual_snapshot:
+                generation_provider = str(actual_snapshot.get("provider") or generation_provider)
+                generation_model = str(actual_snapshot.get("model") or generation_model)
+                generation_model_label = str(
+                    actual_snapshot.get("modelLabel")
+                    or state.ai.model_label(generation_provider, generation_model)
+                )
+                provider_used = generation_provider
+            total_elapsed_ms = round((perf_counter() - request_started) * 1000, 2)
+            llm_elapsed_ms = round((perf_counter() - lightweight_started) * 1000, 2)
+            timestamp = now_iso()
+            response_meta = {
+                "phase": phase,
+                "progress": 100.0,
+                "progressFloor": 100.0,
+                "progressCeiling": 100.0,
+                "stageLabel": stage_label,
+                "dataCenterPrimaryEnabled": True,
+                "lightweightDirect": True,
+                "creativityMode": early_creativity_mode,
+                "materialAccessMode": "lightweight_direct",
+                "retrievalStage": "skipped_lightweight_direct",
+                "answerMode": answer_mode,
+                "evidenceStatus": "none",
+                "failureReason": failure_reason,
+                "generationFailureDetail": generation_failure_detail,
+                "providerUsed": provider_used,
+                "modelUsed": generation_model,
+                "modelLabel": generation_model_label,
+                "totalElapsedMs": total_elapsed_ms,
+                "retrievalElapsedMs": 0.0,
+                "llmElapsedMs": llm_elapsed_ms,
+                "threadMemoryApplied": thread_memory_applied,
+                "threadMemoryVersion": thread_memory_pack.version,
+                "threadMemoryResolvedReferences": [
+                    item.model_dump(mode="json") for item in thread_memory_resolved_references
+                ],
+                "threadMemoryContextChars": len(thread_memory_context),
+            }
+            state.db.execute(
+                """
+                UPDATE chat_messages
+                SET content = ?, structured_data_json = ?, model_route = ?, llm_invoked = 1, provider_used = ?,
+                    answer_mode = ?, evidence_status = 'none', failure_reason = ?, timing_json = ?, retrieval_summary_json = ?,
+                    evidence_json = '[]', status = 'success', created_at = ?
+                WHERE id = ?
+                """,
+                (
+                    structured.content,
+                    to_json(structured.model_dump(mode="json")),
+                    f"AI · {generation_model_label}",
+                    provider_used,
+                    answer_mode,
+                    failure_reason,
+                    to_json({"totalMs": total_elapsed_ms, "retrievalMs": 0.0, "llmMs": llm_elapsed_ms}),
+                    to_json(response_meta),
+                    timestamp,
+                    assistant_id,
+                ),
+            )
+            if run_id:
+                update_client_analysis_run(
+                    run_id,
+                    status=run_status,
+                    phase=phase,
+                    progress=100.0,
+                    progress_floor=100.0,
+                    progress_ceiling=100.0,
+                    stage_label=stage_label,
+                    elapsed_ms=total_elapsed_ms,
+                    evidence_summary=ClientAnalysisEvidenceSummaryRecord(),
+                    long_answer=structured.content,
+                    structured_summary=structured,
+                    long_answer_status=("ready" if answer_mode != "system_failure" else "failed"),
+                    summary_status=("ready" if answer_mode != "system_failure" else "failed"),
+                    answer_mode=answer_mode,
+                    llm_invoked=True,
+                    provider_used=provider_used,
+                    failure_reason=failure_reason,
+                    timing={"totalMs": total_elapsed_ms, "retrievalMs": 0.0, "llmMs": llm_elapsed_ms},
+                )
+            if thread_id is not None:
+                state.db.execute("UPDATE chat_threads SET updated_at = ? WHERE id = ?", (timestamp, thread_id))
+            return fetch_chat_message_for_client(client_id, assistant_id)
         workspace_snapshot = workspace_for_client(client_id)
         page_intent = infer_page_intent(prompt_for_context, "workspace_chat")
         state_context_pack = build_state_answer_context_pack(workspace_snapshot, prompt_for_context)
@@ -52477,6 +52848,8 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             return "还没有配置真实大模型。请先到系统设置的 AI 与云端填写 Base URL、模型名和 API Key。"
         if not ai_health.ready:
             return ai_health.detail or "当前大模型配置未完成，暂时不能生成正式回答。"
+        if str(getattr(ai_health, "credential_source", "") or "") == "organization_cloud_proxy":
+            return None
         if not str(ai_health.fingerprint or "").strip():
             return f"{state.ai.model_label(ai_health.provider, ai_health.model)} API Key 未配置，暂时不能生成正式回答。"
         return None
@@ -56684,7 +57057,8 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 attachment_count=attachment_count,
             )
             update_timestamp = now_iso()
-            next_status = payload.status or row["status"]
+            next_status = payload.status or payload.progressStatus or row["status"]
+            next_progress_status = payload.progressStatus or payload.status or str(row["progress_status"] or next_status)
             temporal_fields = derive_task_temporal_fields(
                 start_date=payload.startDate if "startDate" in payload.model_fields_set else (str(row["start_date"]) if row["start_date"] else None),
                 due_date=(
@@ -56700,7 +57074,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 scheduled_end_at=payload.scheduledEndAt if "scheduledEndAt" in payload.model_fields_set else (str(row["scheduled_end_at"]) if row["scheduled_end_at"] else None),
                 completed_at=payload.completedAt if "completedAt" in payload.model_fields_set else (str(row["completed_at"]) if row["completed_at"] else None),
                 previous_completed_at=str(row["completed_at"]) if row["completed_at"] else None,
-                status=str(next_status),
+                status=str(next_progress_status),
                 timestamp=update_timestamp,
             )
             temporal_due_date = str(temporal_fields["due_date"]) if temporal_fields["due_date"] else None
@@ -56714,6 +57088,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 "title": payload.title or row["title"],
                 "description": payload.desc if payload.desc is not None else row["description"],
                 "status": next_status,
+                "progress_status": next_progress_status,
                 "priority": payload.priority or row["priority"],
                 "list_id": payload.listId or row["list_id"],
                 "scope_mode": next_scope_mode,
@@ -56747,13 +57122,14 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             state.db.execute(
                 """
                 UPDATE tasks
-                SET title = ?, description = ?, status = ?, priority = ?, list_id = ?, scope_mode = ?, client_id = ?, event_line_id = ?, project_module_id = ?, project_flow_id = ?, ddl = ?, deadline_at = ?, scheduled_start_at = ?, scheduled_end_at = ?, completed_at = ?, start_date = ?, due_date = ?, duration_minutes = ?, owner_id = ?, owner_name = ?, business_category = ?, current_blocker = ?, next_action = ?, recent_decision = ?, evidence_count = ?, tags_json = ?, tag_ids_json = ?, updated_at = ?
+                SET title = ?, description = ?, status = ?, progress_status = ?, priority = ?, list_id = ?, scope_mode = ?, client_id = ?, event_line_id = ?, project_module_id = ?, project_flow_id = ?, ddl = ?, deadline_at = ?, scheduled_start_at = ?, scheduled_end_at = ?, completed_at = ?, start_date = ?, due_date = ?, duration_minutes = ?, owner_id = ?, owner_name = ?, business_category = ?, current_blocker = ?, next_action = ?, recent_decision = ?, evidence_count = ?, tags_json = ?, tag_ids_json = ?, updated_at = ?
                 WHERE id = ?
                 """,
                 (
                     merged["title"],
                     merged["description"],
                     merged["status"],
+                    merged["progress_status"],
                     merged["priority"],
                     merged["list_id"],
                     merged["scope_mode"],
@@ -57030,11 +57406,16 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             cloud_update_payload["dueDate"] = payload.dueDate
         elif "ddl" in payload_fields:
             cloud_update_payload["dueDate"] = normalize_due_date_input(payload.ddl)
-        if "status" in payload_fields and payload.status:
-            cloud_update_payload["progressStatus"] = cloud_status_map.get(payload.status)
-            if payload.status == "done" and "completedAt" not in payload_fields:
+        requested_payload_progress = None
+        if "progressStatus" in payload_fields and payload.progressStatus:
+            requested_payload_progress = cloud_status_map.get(payload.progressStatus)
+        elif "status" in payload_fields and payload.status:
+            requested_payload_progress = cloud_status_map.get(payload.status)
+        if requested_payload_progress:
+            cloud_update_payload["progressStatus"] = requested_payload_progress
+            if requested_payload_progress == "done" and "completedAt" not in payload_fields:
                 cloud_update_payload["completedAt"] = now_iso()
-            elif payload.status != "done" and "completedAt" not in payload_fields:
+            elif requested_payload_progress != "done" and "completedAt" not in payload_fields:
                 cloud_update_payload["completedAt"] = None
         local_row_for_cloud = state.db.fetchone(
             """
@@ -57071,23 +57452,62 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 raise HTTPException(status_code=409, detail="云端返回任务组织与当前工作空间不一致")
             synced_cloud_id = str(response.get("id") or cloud_task_id)
             synced_at = now_iso()
+            requested_progress = (
+                str(cloud_update_payload.get("progressStatus") or "").strip()
+                if requested_payload_progress
+                else ""
+            )
+            response_progress = str(response.get("progressStatus") or "").strip()
+            response_status_mismatch = bool(requested_progress and response_progress != requested_progress)
+            response_for_upsert = dict(response)
+            if response_status_mismatch:
+                # Some cloud paths can echo the pre-update status for a short window.
+                # Keep the user's explicit local action visible and mark it pending
+                # instead of letting a stale echo flip "restore task" back to done.
+                response_for_upsert["progressStatus"] = requested_progress
+                response_for_upsert["completedAt"] = cloud_update_payload.get("completedAt")
+                response_for_upsert["updatedAt"] = synced_at
+                logger.warning(
+                    "[task-update] cloud echoed stale progress task=%s requested=%s got=%s; preserving local action",
+                    local_task_id,
+                    requested_progress,
+                    response_progress,
+                )
             state.db.execute(
                 """
                 UPDATE tasks
-                SET sync_status = 'synced',
+                SET sync_status = ?,
                     cloud_id = ?,
-                    cloud_payload_json = NULL,
+                    cloud_payload_json = ?,
                     last_synced_at = ?,
                     last_cloud_version = ?,
-                    pending_sync_action = '',
-                    last_sync_error = ''
+                    pending_sync_action = ?,
+                    last_sync_error = ?
                 WHERE (id = ? OR cloud_id = ?)
                   AND COALESCE(sandbox_id, '') = ?
                 """,
-                (synced_cloud_id, synced_at, str(response.get("updatedAt") or response.get("createdAt") or ""), local_task_id, synced_cloud_id, sync_context.sandbox_id),
+                (
+                    "pending" if response_status_mismatch else "synced",
+                    synced_cloud_id,
+                    to_json(cloud_update_payload) if response_status_mismatch else None,
+                    synced_at,
+                    str(response_for_upsert.get("updatedAt") or response_for_upsert.get("createdAt") or ""),
+                    "update" if response_status_mismatch else "",
+                    "云端返回了旧任务状态，已保留本地操作并等待回写。" if response_status_mismatch else "",
+                    local_task_id,
+                    synced_cloud_id,
+                    sync_context.sandbox_id,
+                ),
             )
             log_activity("task.update", "task", task_id, payload.model_dump(exclude_none=True))
-            upserted_task_id = _upsert_cloud_task_shadow_local(response, target_sandbox_id=sync_context.sandbox_id)
+            upserted_task_id = _upsert_cloud_task_shadow_local(
+                response_for_upsert,
+                target_sandbox_id=sync_context.sandbox_id,
+                preserve_local_done_guard=not (
+                    requested_payload_progress is not None
+                    and requested_payload_progress != "done"
+                ),
+            )
             if upserted_task_id:
                 updated_task = fetch_tasks("t.id = ?", (upserted_task_id,))[0]
             else:
@@ -57121,8 +57541,8 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                     fallback_ddl = task_due_label(fallback_due_date) if fallback_due_date else "待确认"
                 else:
                     fallback_ddl = None
-                fallback_progress_status = cloud_status_map.get(payload.status) if payload.status else None
-                fallback_status = payload.status if payload.status else str(local_row["status"] or "todo")
+                fallback_progress_status = requested_payload_progress
+                fallback_status = payload.status or payload.progressStatus or str(local_row["status"] or "todo")
                 fallback_temporal_fields = derive_task_temporal_fields(
                     start_date=payload.startDate if "startDate" in payload_fields else (str(local_row["start_date"]) if local_row["start_date"] else None),
                     due_date=(
@@ -57136,7 +57556,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                     scheduled_end_at=payload.scheduledEndAt if "scheduledEndAt" in payload_fields else (str(local_row["scheduled_end_at"]) if local_row["scheduled_end_at"] else None),
                     completed_at=payload.completedAt if "completedAt" in payload_fields else (str(local_row["completed_at"]) if local_row["completed_at"] else None),
                     previous_completed_at=str(local_row["completed_at"]) if local_row["completed_at"] else None,
-                    status=str(fallback_status),
+                    status=str(fallback_progress_status or fallback_status),
                     timestamp=now_iso(),
                 )
                 fallback_due_value = str(fallback_temporal_fields["due_date"]) if fallback_temporal_fields["due_date"] else None
@@ -57188,8 +57608,8 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                         payload.title,
                         1 if "desc" in payload_fields else 0,
                         payload.desc,
-                        1 if "status" in payload_fields and payload.status is not None else 0,
-                        payload.status,
+                        1 if ("status" in payload_fields and payload.status is not None) or ("progressStatus" in payload_fields and payload.progressStatus is not None) else 0,
+                        payload.status or payload.progressStatus,
                         1 if fallback_progress_status else 0,
                         fallback_progress_status,
                         1 if "priority" in payload_fields else 0,
@@ -57202,7 +57622,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                         fallback_temporal_fields["scheduled_start_at"],
                         1 if "scheduledEndAt" in payload_fields or fallback_due_date_was_set else 0,
                         fallback_temporal_fields["scheduled_end_at"],
-                        1 if "completedAt" in payload_fields or ("status" in payload_fields and payload.status is not None) else 0,
+                        1 if "completedAt" in payload_fields or ("status" in payload_fields and payload.status is not None) or ("progressStatus" in payload_fields and payload.progressStatus is not None) else 0,
                         fallback_temporal_fields["completed_at"],
                         1 if "startDate" in payload_fields or fallback_due_date_was_set else 0,
                         fallback_temporal_fields["start_date"],

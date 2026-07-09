@@ -17458,6 +17458,51 @@ def create_app() -> FastAPI:
             updatedAt=str(row["updated_at"]),
         )
 
+    @app.get("/api/v1/settings/org-ai-config/runtime-secret", response_model=OrgAiConfigSecretRecord)
+    def get_org_ai_config_runtime_secret(
+        current_user: SessionUser = Depends(lambda authorization=Header(default=None): _require_approved_member(app, authorization)),
+    ) -> OrgAiConfigSecretRecord:
+        """Return org AI runtime credentials to approved desktop clients.
+
+        The frontend must not display or copy this value. The desktop backend stores
+        it in the local secret store and uses it to call the provider directly,
+        avoiding the slower cloud proxy hop for ordinary members.
+        """
+        row = state.db.fetchone("SELECT * FROM org_ai_config WHERE org_id = ?", (current_user.organizationId,))
+        if not row or not row["api_key_encrypted"]:
+            return OrgAiConfigSecretRecord(
+                orgId=current_user.organizationId,
+                aiProvider="mock",
+                aiProviderLabel="本地 Mock",
+                aiBaseUrl="",
+                aiModel="",
+                apiKey="",
+                updatedAt=now_iso(),
+            )
+        try:
+            decrypted = _org_ai_decrypt(
+                str(row["api_key_encrypted"]),
+                str(row["encryption_nonce"]),
+                current_user.organizationId,
+            )
+        except Exception as exc:
+            logger.warning(
+                "[org-ai] runtime secret decrypt failed org=%s user=%s: %s",
+                current_user.organizationId,
+                current_user.id,
+                exc,
+            )
+            decrypted = ""
+        return OrgAiConfigSecretRecord(
+            orgId=str(row["org_id"]),
+            aiProvider=str(row["ai_provider"]),
+            aiProviderLabel=str(row["ai_provider_label"] or ""),
+            aiBaseUrl=str(row["ai_base_url"] or ""),
+            aiModel=str(row["ai_model"]),
+            apiKey=decrypted,
+            updatedAt=str(row["updated_at"]),
+        )
+
     def _org_ai_status_from_row(row) -> OrgAiStatusRecord:
         if not row:
             return OrgAiStatusRecord(reason="组织尚未配置 AI。")

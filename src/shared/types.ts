@@ -6743,6 +6743,7 @@ export interface ClientMutationPayload {
 export interface TaskMutationPayload {
   title: string;
   desc: string;
+  progressStatus?: TaskStatus;
   priority: Priority;
   listId: string;
   startDate?: string | null;

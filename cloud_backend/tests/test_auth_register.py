@@ -216,6 +216,10 @@ def test_valid_invite_registration_syncs_org_ai_config_and_space_profile(tmp_pat
 
     ai_secret = client.get("/api/v1/settings/org-ai-config/secret", headers=member_headers)
     assert ai_secret.status_code == 403
+    runtime_secret = client.get("/api/v1/settings/org-ai-config/runtime-secret", headers=member_headers)
+    assert runtime_secret.status_code == 200, runtime_secret.text
+    assert runtime_secret.json()["apiKey"] == "sk-shared-cloud"
+    assert runtime_secret.json()["aiModel"] == "yiyu-cloud-model"
 
     ai_status = client.get("/api/v1/org-ai/status", headers=member_headers)
     assert ai_status.status_code == 200, ai_status.text

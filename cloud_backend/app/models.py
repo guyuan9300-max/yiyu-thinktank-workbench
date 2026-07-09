@@ -1856,7 +1856,7 @@ class OrgAiConfigUpdatePayload(BaseModel):
 
 
 class OrgAiConfigSecretRecord(BaseModel):
-    """Only returned to org admins — contains decrypted key."""
+    """Runtime org AI config for trusted desktop backends; never expose in UI."""
     orgId: str
     aiProvider: str
     aiProviderLabel: str = ""

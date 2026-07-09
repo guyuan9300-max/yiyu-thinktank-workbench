@@ -177,8 +177,11 @@ export function shortAiModelLabel(
   const m = (model || '').toLowerCase().trim();
 
   if (p.includes('doubao') || p.includes('volc') || p.includes('ark') || m.includes('doubao')) {
+    if (m.includes('2-1') || m.includes('2.1')) return '豆包 Seed 2.1';
     if (m.includes('1-5') || m.includes('1.5')) return '豆包 1.5';
-    return '豆包 2.0';
+    if (m.includes('2-0') || m.includes('2.0')) return '豆包 Seed 2.0';
+    const fallback = (model || providerLabel || provider || '豆包').trim();
+    return fallback.length > 14 ? fallback.slice(0, 12) + '…' : fallback;
   }
   if (p.includes('qwen') || p.includes('tongyi') || m.includes('qwen')) {
     if (m.includes('vl')) return '通义 VL';

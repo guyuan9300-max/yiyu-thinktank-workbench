@@ -1425,6 +1425,35 @@ class AiService:
                     raise AiInvocationError(provider, detail) from retry_error
         return self._mock_generate(prompt, context_summary)
 
+    def generate_lightweight_text_response(
+        self,
+        prompt: str,
+        system_instruction: str,
+        *,
+        timeout_seconds: float = 45.0,
+        max_tokens: int = 700,
+    ) -> str:
+        """Generate a short real-model answer without workspace evidence retrieval."""
+        health = self._health_for_task("fast_structured")
+        if health.provider != "mock" and health.ready:
+            try:
+                text = self._qwen_generate(
+                    prompt=prompt,
+                    system_instruction=system_instruction,
+                    response_schema=None,
+                    timeout_seconds=timeout_seconds,
+                    max_tokens=max_tokens,
+                    temperature=0.2,
+                    top_p=0.85,
+                    enable_thinking=False,
+                    task_kind="fast_structured",
+                )
+                return str(text or "").strip()
+            except Exception as error:
+                detail = self._format_provider_error(error)
+                raise AiInvocationError(health.provider, detail) from error
+        return str(self._mock_generate(prompt, "").content or "").strip()
+
     def generate_raw_evidence_response(
         self,
         prompt: str,
