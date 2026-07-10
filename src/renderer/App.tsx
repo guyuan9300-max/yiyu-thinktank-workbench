@@ -8262,7 +8262,9 @@ export default function App() {
   }, [canAccessOrganizationSettings, settingsSection]);
   const currentOperatorName = hasAuthenticatedSession
     ? (getSessionDisplayIdentity(currentSessionUser) || operators.find((item) => item.isCurrent)?.name || '当前用户')
-    : '本机草稿';
+    : activeWorkspaceRecord?.kind === 'organization'
+      ? (String(activeWorkspaceRecord.sessionSnapshot?.fullName || activeWorkspaceRecord.sessionSnapshot?.email || '').trim() || '需重新登录')
+      : '本机草稿';
   const canManagePublicTaskTaxonomy = currentSessionUser?.primaryRole === 'admin';
   const [cloudAuthModalOpen, setCloudAuthModalOpen] = useState(false);
   const [cloudAuthAction, setCloudAuthAction] = useState<'login' | 'join' | 'create'>('join');
@@ -8833,10 +8835,12 @@ export default function App() {
     nextWorkspaces?: SandboxWorkspacesResponse,
     transitionToken?: WorkspaceTransitionToken,
   ) => {
+    const ownsTransition = !transitionToken;
     const token = transitionToken || beginWorkspaceTransition('switching', '正在刷新当前工作空间…', {
       sandboxId: nextWorkspaces?.activeSandboxId || activeSandboxIdRef.current || workspacesState?.activeSandboxId || '',
       reason: 'refresh-workspace-aware-state',
     });
+    try {
     if (nextWorkspaces && shouldApplyWorkspaceLoad(token)) {
       setWorkspacesState(nextWorkspaces);
       activeSandboxIdRef.current = nextWorkspaces.activeSandboxId || '';
@@ -8922,7 +8926,16 @@ export default function App() {
         ? loadEmployeeReviewBlock({ quiet: true, transition: token }).catch(() => undefined)
         : Promise.resolve(undefined),
     ]);
-    if (shouldApplyWorkspaceLoad(token)) applyWorkspaceRuntime(nextActiveWorkspace, nextAuth);
+      if (shouldApplyWorkspaceLoad(token)) applyWorkspaceRuntime(nextActiveWorkspace, nextAuth);
+    } finally {
+      if (ownsTransition && shouldApplyWorkspaceLoad(token)) {
+        await waitForWorkspaceTransitionMinimum();
+        markLoadingPhase('启动完成');
+        setLoading(false);
+        setLoadingSubProgress(0);
+        setWorkspaceTransitionSlow(false);
+      }
+    }
   };
 
   const handleActivateWorkspace = async (workspaceId: string) => {
@@ -9004,11 +9017,8 @@ export default function App() {
       });
       setAuthState(response);
       setOrganizationSelection(null);
-      setLoading(true);
-      markWorkspaceRuntime('verifying', '正在进入所选组织工作空间…');
-      resetFeishuWorkspaceTransientState();
-      resetBusinessWorkspaceTransientState();
-      await loadAll();
+      const authenticatedWorkspaces = await getWorkspaces();
+      await refreshWorkspaceAwareState(authenticatedWorkspaces);
       setCloudAuthModalOpen(false);
       flash('success', '已进入所选组织工作空间。');
     } catch (error) {
@@ -9238,7 +9248,7 @@ export default function App() {
   }, [eventLineStatesBySandbox]);
 
   const setEventLines = useCallback((next: React.SetStateAction<EventLine[]>) => {
-    const sandboxId = eventLineWorkspaceKey || currentActiveSandboxId() || 'local';
+    const sandboxId = currentActiveSandboxId() || eventLineWorkspaceKey || 'local';
     updateEventLineWorkspaceState(sandboxId, (current) => {
       const items = typeof next === 'function'
         ? (next as (prev: EventLine[]) => EventLine[])(current.items)
@@ -9254,7 +9264,7 @@ export default function App() {
   }, [eventLineWorkspaceKey, updateEventLineWorkspaceState]);
 
   const loadEventLines = useCallback(async (options?: { resetFilter?: boolean; transition?: WorkspaceTransitionToken }) => {
-    const sandboxAtStart = options?.transition?.sandboxId || eventLineWorkspaceKey || currentActiveSandboxId() || 'local';
+    const sandboxAtStart = options?.transition?.sandboxId || currentActiveSandboxId() || eventLineWorkspaceKey || 'local';
     const requestId = eventLineRequestSeqRef.current + 1;
     eventLineRequestSeqRef.current = requestId;
     if (options?.resetFilter) setEventLineProjectFilterId('__all__');
@@ -9315,7 +9325,7 @@ export default function App() {
     options?: { resetFilter?: boolean; forceEmptyRetry?: boolean },
   ) => {
     if (!canLoadCurrentWorkspaceBusinessData) return;
-    const sandboxId = eventLineWorkspaceKey || currentActiveSandboxId() || 'local';
+    const sandboxId = currentActiveSandboxId() || eventLineWorkspaceKey || 'local';
     const current = eventLineStatesBySandboxRef.current[sandboxId] || EMPTY_EVENT_LINE_WORKSPACE_STATE;
     if (current.status === 'loading') return;
     if (current.status === 'loaded' && current.items.length > 0) return;
@@ -11207,11 +11217,8 @@ export default function App() {
       } catch (memoryError) {
         console.warn('[cloud-auth] save local input memory failed', memoryError);
       }
-      setLoading(true);
-      markWorkspaceRuntime('verifying', cloudAuthAction === 'login' ? '正在恢复组织工作空间…' : '正在进入组织工作空间…');
-      resetFeishuWorkspaceTransientState();
-      resetBusinessWorkspaceTransientState();
-      await loadAll();
+      const authenticatedWorkspaces = await getWorkspaces();
+      await refreshWorkspaceAwareState(authenticatedWorkspaces);
       setCloudAuthForm({
         cloudApiUrl: '',
         organizationName: '',
@@ -32659,20 +32666,30 @@ export default function App() {
     : '未配置大模型';
   const sidebarVisibleClientCount = clients.length;
   const sidebarSessionAccountName = getSessionDisplayIdentity(currentSessionUser);
+  const hasActiveOrganizationWorkspace = activeWorkspaceRecord?.kind === 'organization';
   const hasSidebarSessionIdentity = Boolean(hasAuthenticatedSession && sidebarSessionAccountName);
+  const workspaceSnapshotIdentity = String(
+    activeWorkspaceRecord?.sessionSnapshot?.fullName
+    || activeWorkspaceRecord?.sessionSnapshot?.email
+    || '',
+  ).trim();
   const sidebarOrgUnitLabel = !hasSidebarSessionIdentity
-    ? '未连接组织'
+    ? (hasActiveOrganizationWorkspace ? '组织空间' : '未连接组织')
     : isLocalSession
     ? '本机草稿'
     : (currentUserStructureLabel || orgMembershipState.departmentName || currentSessionUser.departmentName || (currentSessionUser.primaryRole === 'admin' ? '管理员' : '身份待同步'));
   const sidebarAccountLabel = hasSidebarSessionIdentity
     ? sidebarSessionAccountName
-    : '本机草稿';
+    : hasActiveOrganizationWorkspace
+      ? (workspaceSnapshotIdentity || '需重新登录')
+      : '本机草稿';
   const sidebarConnectionLabel = hasSidebarSessionIdentity
     ? (isLocalSession
       ? `未连接组织 · ${sidebarAiStatusLabel} · ${sidebarVisibleClientCount} 客户`
       : `${sidebarAiStatusLabel} · ${sidebarVisibleClientCount} 客户`)
-    : `未连接组织 · ${sidebarVisibleClientCount} 客户`;
+    : hasActiveOrganizationWorkspace
+      ? `${activeWorkspaceRecord?.requiresLogin ? '需重新登录该组织' : '正在恢复登录信息'} · ${sidebarAiStatusLabel}`
+      : `未连接组织 · ${sidebarVisibleClientCount} 客户`;
 
   // 迷你面板早退渲染:在所有 hooks 之后(本 return 处),只决定渲染哪棵树,不跳过任何 hook。
   // hooks 声明在顶层 hooks 区(见 miniMode/miniData/handleMini* 定义),不放这里。
@@ -33047,9 +33064,9 @@ export default function App() {
                   type="button"
                   onClick={() => setWorkspaceManagerOpen(true)}
                   className="mb-1 block max-w-full truncate text-left text-[10.5px] font-semibold text-[#5B7BFE] hover:text-[#425fe8]"
-                  title={hasSidebarSessionIdentity ? (activeWorkspaceRecord?.name || '工作空间') : '连接组织'}
+                  title={hasActiveOrganizationWorkspace ? (activeWorkspaceRecord?.name || '工作空间') : '连接组织'}
                 >
-                  {hasSidebarSessionIdentity ? `工作空间：${activeWorkspaceDisplayName}` : '连接组织'}
+                  {hasActiveOrganizationWorkspace ? `工作空间：${activeWorkspaceDisplayName}` : '连接组织'}
                 </button>
 	                <p className="text-[12px] font-medium text-gray-900 truncate">
 	                  {sidebarAccountLabel}
@@ -33062,7 +33079,7 @@ export default function App() {
                     className="mt-1.5 text-[10.5px] text-gray-400 hover:text-[#5B7BFE] transition-colors"
                     onClick={() => openCloudAuthModal('login')}
                   >
-                    {hasSidebarSessionIdentity ? '连接组织 →' : '登录 / 加入组织 →'}
+                    {hasActiveOrganizationWorkspace ? '重新登录组织 →' : '登录 / 加入组织 →'}
                   </button>
                 ) : (
                   <button

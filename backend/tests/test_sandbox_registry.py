@@ -330,6 +330,72 @@ def test_organization_workspace_identity_prefers_cloud_instance_over_url(tmp_pat
     assert get_active_sandbox_setting(db, "cloud_access_token", "") == "token-a"
 
 
+def test_verified_identity_archives_sessionless_legacy_shell(tmp_path: Path) -> None:
+    db = Database(tmp_path / "app.db")
+    ensure_sandbox_registry(db)
+    stale = ensure_organization_sandbox_for_session(
+        db,
+        organization_id="org_target",
+        organization_name="目标组织",
+        cloud_api_url="https://wrong-cloud.example.test",
+    )
+    verified = ensure_organization_sandbox_for_session(
+        db,
+        organization_id="org_target",
+        organization_name="目标组织",
+        cloud_api_url="https://right-cloud.example.test",
+        cloud_instance_id="cloud-instance-target",
+    )
+    assert verified.id != stale.id
+    assert verified.cloudInstanceId == "cloud-instance-target"
+
+    visible_ids = {item.id for item in list_sandboxes(db)}
+    assert stale.id not in visible_ids
+    stale_row = db.fetchone("SELECT status, metadata_json FROM sandboxes WHERE id = ?", (stale.id,))
+    assert stale_row is not None
+    assert stale_row["status"] == "archived"
+    assert json.loads(stale_row["metadata_json"])["archivedReason"] == "superseded_unverified_org_shell"
+
+
+def test_verified_identity_archives_legacy_shell_using_another_cloud_endpoint(tmp_path: Path) -> None:
+    db = Database(tmp_path / "app.db")
+    ensure_sandbox_registry(db)
+    endpoint_owner = ensure_organization_sandbox_for_session(
+        db,
+        organization_id="org_endpoint_owner",
+        organization_name="云端所属组织",
+        cloud_api_url="https://first-cloud.example.test",
+        cloud_instance_id="cloud-instance-first",
+    )
+    stale = ensure_organization_sandbox_for_session(
+        db,
+        organization_id="org_target",
+        organization_name="目标组织",
+        cloud_api_url="https://first-cloud.example.test",
+    )
+    set_sandbox_setting(db, stale.id, "cloud_access_token", "stale-token")
+    set_sandbox_setting(db, stale.id, "cloud_refresh_token", "stale-refresh")
+    verified = ensure_organization_sandbox_for_session(
+        db,
+        organization_id="org_target",
+        organization_name="目标组织",
+        cloud_api_url="https://second-cloud.example.test",
+        cloud_instance_id="cloud-instance-second",
+    )
+
+    assert verified.id != stale.id
+    visible_ids = {item.id for item in list_sandboxes(db)}
+    assert endpoint_owner.id in visible_ids
+    assert verified.id in visible_ids
+    assert stale.id not in visible_ids
+    stale_row = db.fetchone("SELECT status, metadata_json FROM sandboxes WHERE id = ?", (stale.id,))
+    assert stale_row is not None
+    assert stale_row["status"] == "archived"
+    metadata = json.loads(stale_row["metadata_json"])
+    assert metadata["archivedReason"] == "superseded_conflicting_cloud_endpoint"
+    assert metadata["conflictingEndpointOwnerSandboxId"] == endpoint_owner.id
+
+
 def test_new_workspace_does_not_inherit_legacy_global_cloud_token(tmp_path: Path) -> None:
     db = Database(tmp_path / "app.db")
     db.set_setting("cloud_access_token", "legacy-token")

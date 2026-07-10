@@ -5775,14 +5775,11 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             _, active_org_id, _, _ = _active_organization_workspace_context()
             if active_org_id and active_org_id != user.organizationId:
                 logger.warning(
-                    "[workspace-session] auth response targets %s while active workspace is %s; activating target workspace before persisting session",
+                    "[workspace-session] discard stale auth response: responseOrg=%s activeOrg=%s",
                     user.organizationId,
                     active_org_id,
                 )
-                _activate_workspace_for_cloud_user(user)
-                _, active_org_id, _, _ = _active_organization_workspace_context()
-            if active_org_id and active_org_id != user.organizationId:
-                raise HTTPException(status_code=409, detail="云端会话与当前组织工作空间不匹配，请重新选择组织登录")
+                raise HTTPException(status_code=409, detail="工作空间已切换，已忽略上一组织的迟到登录响应")
         session_user_json = to_json(user.model_dump()) if user else ""
         volatile_session = _active_volatile_cloud_session()
         if persist:
@@ -9829,11 +9826,21 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         return response.json() if response.content else {}
 
     def require_session_user() -> SessionUserRecord:
-        payload = cloud_request("GET", "/api/v1/auth/me")
+        context = _capture_active_scoped_cloud_context()
+        if context is None:
+            raise HTTPException(status_code=401, detail="当前组织需要重新登录")
+        payload = scoped_cloud_request(context, "GET", "/api/v1/auth/me", timeout=6.0)
         if not isinstance(payload, dict):
             raise HTTPException(status_code=502, detail="Invalid auth response")
         user = SessionUserRecord(**payload)
-        set_cloud_session(get_cloud_token(), user)
+        if user.organizationId != context.organization_id:
+            _clear_scoped_cloud_session(context)
+            raise HTTPException(status_code=409, detail="云端账号与当前组织工作空间不匹配，请重新登录该组织")
+        session_user_json = to_json(user.model_dump())
+        set_sandbox_setting(state.db, context.sandbox_id, "cloud_access_token", context.access_token)
+        set_sandbox_setting(state.db, context.sandbox_id, "cloud_refresh_token", context.refresh_token)
+        set_sandbox_setting(state.db, context.sandbox_id, "cloud_session_user", session_user_json)
+        set_sandbox_setting(state.db, context.sandbox_id, "cloud_session_user_snapshot", session_user_json)
         return user
 
     def _parse_iso_moment(value: str | None) -> datetime | None:
@@ -33089,6 +33096,9 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         cached_user = get_cached_session_user()
         try:
             user = require_session_user()
+            active_context = _capture_active_scoped_cloud_context()
+            if active_context is None or active_context.organization_id != user.organizationId:
+                raise HTTPException(status_code=409, detail="工作空间已切换，请重试读取当前组织登录信息")
             _ensure_local_organization_workspace_from_cloud_membership()
         except HTTPException as exc:
             if exc.status_code in {401, 403}:
@@ -34002,11 +34012,11 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             return ""
         return str(payload.get("cloudInstanceId") or "").strip()
 
-    def _activate_workspace_for_cloud_user(user: SessionUserRecord, *, cloud_api_url: str | None = None) -> None:
+    def _activate_workspace_for_cloud_user(user: SessionUserRecord, *, cloud_api_url: str | None = None):
         current_cloud_api_url = (cloud_api_url or state.cloud_api_url).strip()
         organization_id = (user.organizationId or "").strip()
         if not organization_id or organization_id == "local-device":
-            return
+            return None
         cloud_instance_id = _fetch_cloud_instance_id(current_cloud_api_url)
         workspace = ensure_organization_sandbox_for_session(
             state.db,
@@ -34017,6 +34027,103 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         )
         migrate_local_draft_to_organization_if_possible(state.db, workspace.id)
         _refresh_active_workspace_runtime()
+        return workspace
+
+    def _persist_authenticated_workspace_session(
+        workspace_id: str,
+        *,
+        user: SessionUserRecord,
+        access_token: str,
+        refresh_token: str,
+        persist: bool,
+    ) -> None:
+        """Commit a cloud login to its target workspace before UI reloads.
+
+        Persisted sessions are written in one transaction so registry repair can
+        never observe a half-activated organization and clear the newly issued
+        token. Non-persistent sessions keep the existing volatile behavior.
+        """
+
+        if not persist:
+            set_cloud_session(access_token, user, persist=False)
+            set_cloud_refresh_token(refresh_token, persist=False)
+            _refresh_active_workspace_runtime()
+            return
+
+        timestamp = now_iso()
+        session_json = to_json(user.model_dump())
+
+        def _txn(conn) -> None:
+            workspace_row = conn.execute(
+                "SELECT organization_id, cloud_instance_id FROM sandboxes WHERE id = ? AND kind = 'organization' AND status = 'active'",
+                (workspace_id,),
+            ).fetchone()
+            if not workspace_row:
+                raise RuntimeError("组织工作空间记录不存在，登录信息未保存。")
+            workspace_org_id = str(workspace_row["organization_id"] or "").strip()
+            if workspace_org_id != (user.organizationId or "").strip():
+                raise RuntimeError("组织工作空间与登录账号不匹配，登录信息未保存。")
+            for key, value in (
+                ("cloud_access_token", access_token),
+                ("cloud_refresh_token", refresh_token),
+                ("cloud_session_user", session_json),
+                ("cloud_session_user_snapshot", session_json),
+            ):
+                conn.execute(
+                    """
+                    INSERT INTO sandbox_settings(sandbox_id, key, value, updated_at)
+                    VALUES(?, ?, ?, ?)
+                    ON CONFLICT(sandbox_id, key) DO UPDATE SET
+                        value = excluded.value,
+                        updated_at = excluded.updated_at
+                    """,
+                    (workspace_id, key, value or "", timestamp),
+                )
+            has_verified_identity = bool(str(workspace_row["cloud_instance_id"] or "").strip())
+            conn.execute(
+                """
+                UPDATE sandboxes
+                   SET identity_state = ?,
+                       identity_verified_at = CASE WHEN ? THEN ? ELSE identity_verified_at END,
+                       identity_error = '',
+                       updated_at = ?,
+                       last_active_at = ?
+                 WHERE id = ?
+                """,
+                (
+                    "verified" if has_verified_identity else "unverified",
+                    1 if has_verified_identity else 0,
+                    timestamp,
+                    timestamp,
+                    timestamp,
+                    workspace_id,
+                ),
+            )
+            conn.execute(
+                """
+                INSERT INTO settings(key, value)
+                VALUES('active_sandbox_id', ?)
+                ON CONFLICT(key) DO UPDATE SET value = excluded.value
+                """,
+                (workspace_id,),
+            )
+
+        state.db.run_in_transaction(_txn)
+        state.volatile_cloud_sessions.pop(workspace_id, None)
+        state.volatile_cloud_access_token = ""
+        state.volatile_cloud_refresh_token = ""
+        state.volatile_cloud_session_user_json = ""
+        state.cloud_session_persistent = True
+        _refresh_active_workspace_runtime()
+
+        persisted_user = get_sandbox_setting(state.db, workspace_id, "cloud_session_user", "")
+        if (
+            get_active_sandbox_id(state.db) != workspace_id
+            or not get_sandbox_setting(state.db, workspace_id, "cloud_access_token", "")
+            or not get_sandbox_setting(state.db, workspace_id, "cloud_refresh_token", "")
+            or _session_user_org_from_raw(persisted_user) != (user.organizationId or "").strip()
+        ):
+            raise RuntimeError("组织登录信息未能完整保存，请重试登录。")
 
     def _sync_organization_directory_after_auth() -> dict[str, object]:
         """Best-effort local mirror refresh after entering an organization workspace."""
@@ -34105,9 +34212,16 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             message = response.get("message") if isinstance(response, dict) else "云端认证成功，但未拿到有效会话。"
             raise HTTPException(status_code=502, detail=str(message))
         user = SessionUserRecord(**user_payload)
-        _activate_workspace_for_cloud_user(user, cloud_api_url=cloud_api_url)
-        set_cloud_session(token, user, persist=persist)
-        set_cloud_refresh_token(refresh_token, persist=persist)
+        workspace = _activate_workspace_for_cloud_user(user, cloud_api_url=cloud_api_url)
+        if workspace is None:
+            raise HTTPException(status_code=409, detail="云端未返回有效组织身份，无法建立工作空间。")
+        _persist_authenticated_workspace_session(
+            workspace.id,
+            user=user,
+            access_token=token,
+            refresh_token=refresh_token,
+            persist=persist,
+        )
         _bind_current_local_identity_to_cloud(user, local_identity_before_cloud)
         _ensure_local_organization_workspace_from_cloud_membership()
         _sync_organization_bootstrap_after_auth()

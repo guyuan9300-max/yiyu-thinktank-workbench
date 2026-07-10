@@ -484,6 +484,109 @@ def _archive_identity_mismatched_workspaces(conn: Any, now: str, *, active_id: s
             )
 
 
+def _archive_superseded_unverified_org_shells(
+    conn: Any,
+    now: str,
+    *,
+    keep_sandbox_id: str,
+    organization_id: str,
+    cloud_instance_id: str,
+) -> None:
+    """Hide legacy organization shells once a verified identity exists.
+
+    Old clients could create an organization-named shell before a cloud login
+    succeeded. Keeping those rows visible creates entries such as "Star + Yiyu
+    cloud URL". We archive an unverified sibling when it has no session, or when
+    its endpoint is already owned by another verified cloud identity. Local rows
+    and business data remain untouched for rollback instead of being guessed into
+    the verified workspace.
+    """
+
+    if not keep_sandbox_id or not organization_id or not cloud_instance_id:
+        return
+    candidates = conn.execute(
+        """
+        SELECT *
+          FROM sandboxes
+         WHERE kind = 'organization'
+           AND status = 'active'
+           AND organization_id = ?
+           AND id <> ?
+           AND COALESCE(cloud_instance_id, '') = ''
+        """,
+        (organization_id, keep_sandbox_id),
+    ).fetchall()
+    for row in candidates:
+        sandbox_id = str(row["id"])
+        setting_rows = conn.execute(
+            """
+            SELECT key, value
+              FROM sandbox_settings
+             WHERE sandbox_id = ?
+               AND key IN ('cloud_access_token', 'cloud_refresh_token', 'cloud_session_user')
+            """,
+            (sandbox_id,),
+        ).fetchall()
+        live_settings = {
+            str(item["key"]): str(item["value"] or "").strip()
+            for item in setting_rows
+        }
+        has_saved_session = any(
+            live_settings.get(key)
+            for key in ("cloud_access_token", "cloud_refresh_token", "cloud_session_user")
+        )
+        candidate_cloud_url = _normalize_cloud_api_url(str(row["cloud_api_url"] or ""))
+        verified_endpoint_owner = None
+        if candidate_cloud_url:
+            verified_endpoint_owner = conn.execute(
+                """
+                SELECT id, cloud_instance_id
+                  FROM sandboxes
+                 WHERE kind = 'organization'
+                   AND status = 'active'
+                   AND id NOT IN (?, ?)
+                   AND cloud_api_url = ?
+                   AND COALESCE(cloud_instance_id, '') != ''
+                   AND cloud_instance_id != ?
+                 LIMIT 1
+                """,
+                (sandbox_id, keep_sandbox_id, candidate_cloud_url, cloud_instance_id),
+            ).fetchone()
+        if has_saved_session and verified_endpoint_owner is None:
+            continue
+        archived_reason = (
+            "superseded_conflicting_cloud_endpoint"
+            if verified_endpoint_owner is not None
+            else "superseded_unverified_org_shell"
+        )
+        metadata_json = _merge_local_metadata(
+            str(row["metadata_json"] or "{}"),
+            {
+                "archivedReason": archived_reason,
+                "archivedAt": now,
+                "keptSandboxId": keep_sandbox_id,
+                "verifiedCloudInstanceId": cloud_instance_id,
+                "conflictingEndpointOwnerSandboxId": (
+                    str(verified_endpoint_owner["id"])
+                    if verified_endpoint_owner is not None
+                    else None
+                ),
+            },
+        )
+        conn.execute(
+            """
+            UPDATE sandboxes
+               SET status = 'archived',
+                   identity_state = 'mismatch',
+                   identity_error = ?,
+                   metadata_json = ?,
+                   updated_at = ?
+             WHERE id = ?
+            """,
+            ("已由完成身份验证的组织工作空间取代。", metadata_json, now, sandbox_id),
+        )
+
+
 def migrate_local_draft_to_organization_if_possible(db: Database, target_sandbox_id: str | None = None) -> dict[str, Any]:
     """Move visible draft data out of the old local workspace when an org exists.
 
@@ -1224,6 +1327,13 @@ def ensure_organization_sandbox_for_session(
             ON CONFLICT(key) DO UPDATE SET value = excluded.value
             """,
             (ACTIVE_SANDBOX_SETTING_KEY, sandbox_id),
+        )
+        _archive_superseded_unverified_org_shells(
+            conn,
+            now,
+            keep_sandbox_id=sandbox_id,
+            organization_id=normalized_org_id,
+            cloud_instance_id=normalized_cloud_instance_id,
         )
 
     db.run_in_transaction(_txn)
