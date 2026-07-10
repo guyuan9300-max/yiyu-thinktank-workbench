@@ -1304,6 +1304,20 @@ DEMO_MANIFEST_PREFIX = "demo_dataset_manifest:"
 DEMO_MANIFEST_VERSION = 1
 DEMO_MANIFEST_MAX_BYTES = 16_384
 DEMO_MANIFEST_KEY_RE = re.compile(r"^demo_dataset_manifest:([0-9a-f]{32})$")
+DEMO_LEGACY_MANIFEST_KEY = "demo_dataset_legacy_manifest:v0"
+DEMO_LEGACY_MANIFEST_VERSION = 0
+DEMO_LEGACY_FIXED_IDS: dict[str, tuple[str, ...]] = {
+    "clients": ("client_cffc", "client_star"),
+    "chatThreads": ("thread_cffc", "thread_star"),
+    "goals": ("goal_1", "goal_2", "goal_3"),
+    "dnaTerms": ("dna_1", "dna_2"),
+    "documents": ("doc_1", "doc_2", "doc_3"),
+    "tasks": ("task_seed_1", "task_seed_2"),
+    "topicRadars": ("radar_ai", "radar_fund"),
+    "topicCandidates": ("cand_1", "cand_2"),
+    "handbookEntries": ("hb_1",),
+    "chatMessages": ("msg_seed_1",),
+}
 DEMO_ID_GROUPS: tuple[tuple[str, str, int], ...] = (
     ("clients", "client", 2),
     ("chatThreads", "thread", 2),
@@ -2986,6 +3000,7 @@ class DemoDatasetManifest:
     created_at: str
     primary_client_id: str
     ids: dict[str, tuple[str, ...]]
+    legacy: bool = False
 
 
 def _expected_demo_ids(token: str) -> dict[str, tuple[str, ...]]:
@@ -3058,6 +3073,59 @@ def _parse_demo_manifest(sandbox_id: str, key: str, raw_value: str) -> DemoDatas
     )
 
 
+def _parse_legacy_demo_manifest(sandbox_id: str, key: str, raw_value: str) -> DemoDatasetManifest:
+    if key != DEMO_LEGACY_MANIFEST_KEY:
+        raise DemoManifestError("旧演示数据清单键格式异常")
+    if len(raw_value.encode("utf-8")) > DEMO_MANIFEST_MAX_BYTES:
+        raise DemoManifestError("旧演示数据清单过大")
+    try:
+        payload = json.loads(raw_value, object_pairs_hook=_strict_demo_json_object)
+    except (json.JSONDecodeError, DemoManifestError) as exc:
+        raise DemoManifestError("旧演示数据清单 JSON 损坏") from exc
+    if not isinstance(payload, dict) or set(payload) != {"version", "createdAt", "primaryClientId", "ids"}:
+        raise DemoManifestError("旧演示数据清单字段异常")
+    if type(payload["version"]) is not int or payload["version"] != DEMO_LEGACY_MANIFEST_VERSION:
+        raise DemoManifestError("旧演示数据清单版本不受支持")
+    created_at = payload["createdAt"]
+    if not isinstance(created_at, str) or not created_at or len(created_at) > 64:
+        raise DemoManifestError("旧演示数据清单时间异常")
+    try:
+        datetime.fromisoformat(created_at)
+    except ValueError as exc:
+        raise DemoManifestError("旧演示数据清单时间异常") from exc
+    raw_ids = payload["ids"]
+    expected_groups = {group for group, _, _ in DEMO_ID_GROUPS}
+    if not isinstance(raw_ids, dict) or set(raw_ids) != expected_groups:
+        raise DemoManifestError("旧演示数据清单实体分组异常")
+    parsed_ids: dict[str, tuple[str, ...]] = {}
+    seen_ids: set[str] = set()
+    for group in expected_groups:
+        value = raw_ids[group]
+        if not isinstance(value, list) or any(not isinstance(item, str) for item in value):
+            raise DemoManifestError(f"旧演示数据清单 {group} 类型异常")
+        parsed = tuple(value)
+        if group == "taskNotes":
+            if len(parsed) != 1 or not parsed[0] or len(parsed[0]) > 128:
+                raise DemoManifestError("旧演示任务备注 ID 异常")
+        elif parsed != DEMO_LEGACY_FIXED_IDS[group]:
+            raise DemoManifestError(f"旧演示数据清单 {group} ID 异常")
+        if seen_ids.intersection(parsed):
+            raise DemoManifestError("旧演示数据清单 ID 重复")
+        seen_ids.update(parsed)
+        parsed_ids[group] = parsed
+    if payload["primaryClientId"] != DEMO_LEGACY_FIXED_IDS["clients"][0]:
+        raise DemoManifestError("旧演示数据清单主客户异常")
+    return DemoDatasetManifest(
+        sandbox_id=sandbox_id,
+        key=key,
+        token="legacy-v0",
+        created_at=created_at,
+        primary_client_id=DEMO_LEGACY_FIXED_IDS["clients"][0],
+        ids=parsed_ids,
+        legacy=True,
+    )
+
+
 def _active_demo_sandbox_on_conn(conn: sqlite3.Connection) -> tuple[str, str]:
     active_row = conn.execute(
         "SELECT value FROM settings WHERE key = ?",
@@ -3084,15 +3152,23 @@ def _demo_manifests_on_conn(conn: sqlite3.Connection, sandbox_id: str) -> list[D
         SELECT sandbox_id, key, value
           FROM sandbox_settings
          WHERE sandbox_id = ?
-           AND substr(key, 1, ?) = ?
+           AND (substr(key, 1, ?) = ? OR key = ?)
          ORDER BY key ASC
         """,
-        (sandbox_id, len(DEMO_MANIFEST_PREFIX), DEMO_MANIFEST_PREFIX),
+        (sandbox_id, len(DEMO_MANIFEST_PREFIX), DEMO_MANIFEST_PREFIX, DEMO_LEGACY_MANIFEST_KEY),
     ).fetchall()
     manifests = [
-        _parse_demo_manifest(str(row["sandbox_id"]), str(row["key"]), str(row["value"]))
+        (
+            _parse_legacy_demo_manifest(str(row["sandbox_id"]), str(row["key"]), str(row["value"]))
+            if str(row["key"]) == DEMO_LEGACY_MANIFEST_KEY
+            else _parse_demo_manifest(str(row["sandbox_id"]), str(row["key"]), str(row["value"]))
+        )
         for row in rows
     ]
+    if not manifests:
+        legacy_manifest = _register_legacy_demo_manifest_on_conn(conn, sandbox_id)
+        if legacy_manifest:
+            manifests = [legacy_manifest]
     all_ids: set[str] = set()
     for manifest in manifests:
         manifest_ids = {item for values in manifest.ids.values() for item in values}
@@ -3175,7 +3251,15 @@ def _validate_demo_manifest_rows_on_conn(
             if row:
                 _require_demo_row(str(row[column] or "") == expected_value, f"演示数据关系异常: {group}.{column}")
     for document_id, row in rows["documents"].items():
-        _require_demo_row(manifest.token in str(row["path"] or ""), f"演示文档路径异常: {document_id}")
+        if manifest.legacy:
+            expected_paths = {
+                "doc_1": "/mock/client_cffc/项目启动纪要.md",
+                "doc_2": "/mock/client_cffc/捐赠人访谈摘要.txt",
+                "doc_3": "/mock/client_star/增长诊断报告.pdf",
+            }
+            _require_demo_row(str(row["path"] or "") == expected_paths[document_id], f"旧演示文档路径异常: {document_id}")
+        else:
+            _require_demo_row(manifest.token in str(row["path"] or ""), f"演示文档路径异常: {document_id}")
     for task_index, task_id in enumerate(ids["tasks"]):
         row = rows["tasks"].get(task_id)
         if not row:
@@ -3207,10 +3291,15 @@ def _validate_demo_manifest_rows_on_conn(
             raise DemoManifestError("演示消息证据损坏") from exc
         _require_demo_row(isinstance(evidence, list), "演示消息证据格式异常")
         for item in evidence:
+            _require_demo_row(isinstance(item, dict), "演示消息证据关系异常")
+            evidence_path_valid = (
+                str(item.get("path") or "") == "/mock/client_cffc/项目启动纪要.md"
+                if manifest.legacy
+                else manifest.token in str(item.get("path") or "")
+            )
             _require_demo_row(
-                isinstance(item, dict)
-                and str(item.get("documentId") or "") in ids["documents"]
-                and manifest.token in str(item.get("path") or ""),
+                str(item.get("documentId") or "") in ids["documents"]
+                and evidence_path_valid,
                 "演示消息证据关系异常",
             )
     return rows
@@ -3303,6 +3392,68 @@ def _assert_no_external_demo_references_on_conn(
                 if (table, row_id, column_name, value) in allowed:
                     continue
                 raise DemoManifestError(f"演示数据仍被外部记录引用: {table}.{column_name}")
+
+
+def _register_legacy_demo_manifest_on_conn(
+    conn: sqlite3.Connection,
+    sandbox_id: str,
+) -> DemoDatasetManifest | None:
+    loaded_row = conn.execute("SELECT value FROM settings WHERE key = 'demo_data_loaded'").fetchone()
+    if not loaded_row or str(loaded_row["value"] or "") != "1":
+        return None
+    note_rows = conn.execute(
+        "SELECT id, note FROM task_notes WHERE task_id = 'task_seed_2' ORDER BY id",
+    ).fetchall()
+    if len(note_rows) != 1 or str(note_rows[0]["note"] or "") != "用户反馈集中在试用转化与产品定位不清。":
+        logger.warning("[demo-legacy] fixed demo ids are ambiguous; preserving rows")
+        return None
+    ids = {group: list(values) for group, values in DEMO_LEGACY_FIXED_IDS.items()}
+    ids["taskNotes"] = [str(note_rows[0]["id"])]
+    timestamp = now_iso()
+    raw_value = json.dumps(
+        {
+            "version": DEMO_LEGACY_MANIFEST_VERSION,
+            "createdAt": timestamp,
+            "primaryClientId": DEMO_LEGACY_FIXED_IDS["clients"][0],
+            "ids": ids,
+        },
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    manifest = _parse_legacy_demo_manifest(sandbox_id, DEMO_LEGACY_MANIFEST_KEY, raw_value)
+    try:
+        rows = _validate_demo_manifest_rows_on_conn(conn, manifest)
+        for group, values in manifest.ids.items():
+            if set(rows[group]) != set(values):
+                raise DemoManifestError(f"旧演示数据不完整: {group}")
+        exact_values = (
+            ("clients", "client_cffc", "name", "[演示] 测试机构B"),
+            ("clients", "client_star", "name", "[演示] 星辰科技"),
+            ("tasks", "task_seed_1", "title", "准备周五跨部门复盘会"),
+            ("tasks", "task_seed_2", "title", "梳理客户反馈的 10 个核心痛点"),
+            ("topic_radars", "radar_ai", "title", "大模型应用"),
+            ("topic_radars", "radar_fund", "title", "筹资趋势"),
+            ("handbook_entries", "hb_1", "title", "会议不要只产纪要"),
+            ("chat_messages", "msg_seed_1", "content", "已为你载入测试机构B的内部上下文。"),
+        )
+        for table, entity_id, column, expected in exact_values:
+            row = conn.execute(
+                f"SELECT {_quote_demo_identifier(column)} AS value "
+                f"FROM {_quote_demo_identifier(table)} WHERE id = ?",
+                (entity_id,),
+            ).fetchone()
+            _require_demo_row(bool(row) and str(row["value"] or "") == expected, f"旧演示数据已被修改: {table}.{column}")
+        _assert_no_external_demo_references_on_conn(conn, [manifest])
+    except DemoManifestError as exc:
+        logger.warning("[demo-legacy] legacy rows are not safely manageable; preserving rows: %s", exc)
+        return None
+    conn.execute(
+        "INSERT INTO sandbox_settings(sandbox_id, key, value, updated_at) VALUES(?, ?, ?, ?)",
+        (sandbox_id, DEMO_LEGACY_MANIFEST_KEY, raw_value, timestamp),
+    )
+    conn.execute("UPDATE settings SET value = '0' WHERE key = 'demo_data_loaded'")
+    return manifest
 
 
 def _count_demo_rows_on_conn(conn: sqlite3.Connection, table: str, ids: tuple[str, ...]) -> int:
