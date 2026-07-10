@@ -114,3 +114,10 @@
 | S1A-T6 | PATCH 外组织 task plan-link（缺 link） | 404 前 `_task_org_link_row` 自动建 link | 404；无 link/activity。 |
 
 本批只做上述六个高风险、契约明确的边界；转写、协作者收件箱、完成/复核、task update 关系字段、event-line 输入关系与 public attachment 进入后续有界批次。
+
+## 9. 本批实施结果
+
+- RED（修复前）：`test_task_direct_id_org_scope.py` **6 failed**；分别实证越权更新、越权删除、越权附件落盘/入库、越权备注、活动内容泄漏，以及 404 前隐式创建 org-link。
+- GREEN（修复后）：同文件 **6 passed**；`test_task_create_org_scope.py` + 本批测试合计 **12 passed**。
+- 全量：**15 failed, 155 passed**；失败节点集合与第 2 节冻结基线完全相同，新增 6 个测试全部通过，无新增失败。
+- 已转为 G 的入口：task PATCH、DELETE、attachment upload、note、activity、plan-link PATCH。它们现在都在任何权限、link helper、数据库写入或文件 I/O 前，以 `_task_row_or_404(..., organization_id=current_user.organizationId)` 完成组织限定。
