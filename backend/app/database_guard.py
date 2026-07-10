@@ -5,6 +5,8 @@ import json
 import os
 import shutil
 import sqlite3
+import time
+from contextlib import closing, contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -15,6 +17,7 @@ from app.db import BACKEND_SCHEMA_VERSION, Database
 
 
 DEFAULT_MIGRATION_BACKUPS_TO_KEEP = 3
+DEFAULT_MIGRATION_LOCK_TIMEOUT_SECONDS = 20.0
 _ATTEMPT_FORMAT_VERSION = 1
 _PRIVATE_DIRECTORY_MODE = 0o700
 _PRIVATE_FILE_MODE = 0o600
@@ -59,6 +62,10 @@ def _backup_dir(data_dir: Path) -> Path:
 
 def _attempt_path(data_dir: Path, db_path: Path) -> Path:
     return _backup_dir(data_dir) / f".{db_path.name}-migration-attempt-{_path_identity(db_path)}.json"
+
+
+def _lock_path(data_dir: Path, db_path: Path) -> Path:
+    return _backup_dir(data_dir) / f".{db_path.name}-migration-{_path_identity(db_path)}.lock"
 
 
 def _ensure_private_directory(path: Path) -> None:
@@ -184,7 +191,7 @@ def inspect_database_migration_state(
     if not db_path.exists():
         return DatabaseMigrationInspection(exists=False, schema_version=0, reasons=())
     try:
-        with _connect_read_only(db_path) as conn:
+        with closing(_connect_read_only(db_path)) as conn:
             schema_version = int(conn.execute("PRAGMA user_version").fetchone()[0] or 0)
             reasons = _structural_migration_reasons(conn)
     except sqlite3.Error as exc:
@@ -226,13 +233,76 @@ def _sha256_file(path: Path) -> str:
 
 def _validate_sqlite_snapshot(path: Path) -> None:
     try:
-        with _connect_read_only(path) as conn:
-            result = conn.execute("PRAGMA quick_check").fetchone()
+        with closing(_connect_read_only(path)) as conn:
+            results = conn.execute("PRAGMA quick_check").fetchall()
     except sqlite3.Error as exc:
         raise DatabaseMigrationGuardError(f"迁移备份无法打开: {path}: {exc}") from exc
-    if not result or str(result[0]).lower() != "ok":
-        detail = str(result[0]) if result else "no result"
+    if len(results) != 1 or str(results[0][0]).lower() != "ok":
+        detail = "; ".join(str(row[0]) for row in results[:5]) if results else "no result"
         raise DatabaseMigrationGuardError(f"迁移备份 quick_check 失败: {path}: {detail}")
+
+
+@contextmanager
+def _exclusive_migration_lock(
+    data_dir: Path,
+    db_path: Path,
+    *,
+    timeout_seconds: float = DEFAULT_MIGRATION_LOCK_TIMEOUT_SECONDS,
+):
+    lock_path = _lock_path(data_dir, db_path)
+    _ensure_private_directory(lock_path.parent)
+    descriptor = os.open(lock_path, os.O_RDWR | os.O_CREAT, _PRIVATE_FILE_MODE)
+    acquired = False
+    deadline = time.monotonic() + max(0.0, timeout_seconds)
+    try:
+        if hasattr(os, "fchmod"):
+            os.fchmod(descriptor, _PRIVATE_FILE_MODE)
+        else:
+            lock_path.chmod(_PRIVATE_FILE_MODE)
+        if os.name == "nt":
+            import msvcrt
+
+            if os.fstat(descriptor).st_size == 0:
+                os.write(descriptor, b"0")
+            while True:
+                try:
+                    os.lseek(descriptor, 0, os.SEEK_SET)
+                    msvcrt.locking(descriptor, msvcrt.LK_NBLCK, 1)
+                    acquired = True
+                    break
+                except OSError:
+                    if time.monotonic() >= deadline:
+                        break
+                    time.sleep(0.1)
+        else:
+            import fcntl
+
+            while True:
+                try:
+                    fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    acquired = True
+                    break
+                except BlockingIOError:
+                    if time.monotonic() >= deadline:
+                        break
+                    time.sleep(0.1)
+        if not acquired:
+            raise DatabaseMigrationGuardError(
+                "数据库正在被另一个进程初始化或迁移，请稍候再试。"
+            )
+        yield
+    finally:
+        if acquired:
+            if os.name == "nt":
+                import msvcrt
+
+                os.lseek(descriptor, 0, os.SEEK_SET)
+                msvcrt.locking(descriptor, msvcrt.LK_UNLCK, 1)
+            else:
+                import fcntl
+
+                fcntl.flock(descriptor, fcntl.LOCK_UN)
+        os.close(descriptor)
 
 
 def _atomic_write_json(path: Path, payload: dict[str, Any]) -> None:
@@ -468,9 +538,14 @@ def _recover_interrupted_migration(data_dir: Path, db_path: Path) -> None:
     except DatabaseMigrationGuardError:
         current = DatabaseMigrationInspection(exists=True, schema_version=0, reasons=("inspection_failed",))
     if current.exists and current.schema_version >= target_schema_version and not current.reasons:
-        marker_path.unlink()
-        _fsync_directory(marker_path.parent)
-        return
+        try:
+            _validate_sqlite_snapshot(db_path)
+        except DatabaseMigrationGuardError:
+            pass
+        else:
+            marker_path.unlink()
+            _fsync_directory(marker_path.parent)
+            return
     rollback_database_from_backup(
         db_path,
         backup_path,
@@ -515,7 +590,7 @@ def _prune_migration_backups(
     _fsync_directory(backup_dir)
 
 
-def open_database_with_migration_guard(
+def _open_database_with_migration_guard_locked(
     db_path: Path,
     *,
     data_dir: Path | None = None,
@@ -567,6 +642,7 @@ def open_database_with_migration_guard(
     try:
         db = Database(db_path)
         _harden_existing_sqlite_files(db_path)
+        _validate_sqlite_snapshot(db_path)
         if backup_path is not None:
             post_migration = inspect_database_migration_state(
                 db_path,
@@ -610,6 +686,29 @@ def open_database_with_migration_guard(
     )
     assert db is not None
     return db, backup_path
+
+
+def open_database_with_migration_guard(
+    db_path: Path,
+    *,
+    data_dir: Path | None = None,
+    target_schema_version: int = BACKEND_SCHEMA_VERSION,
+    keep_backups: int = DEFAULT_MIGRATION_BACKUPS_TO_KEEP,
+    lock_timeout_seconds: float = DEFAULT_MIGRATION_LOCK_TIMEOUT_SECONDS,
+) -> tuple[Database, Path | None]:
+    db_path = Path(db_path)
+    resolved_data_dir = Path(data_dir) if data_dir is not None else db_path.parent
+    with _exclusive_migration_lock(
+        resolved_data_dir,
+        db_path,
+        timeout_seconds=lock_timeout_seconds,
+    ):
+        return _open_database_with_migration_guard_locked(
+            db_path,
+            data_dir=resolved_data_dir,
+            target_schema_version=target_schema_version,
+            keep_backups=keep_backups,
+        )
 
 
 def init_database_with_migration_guard(

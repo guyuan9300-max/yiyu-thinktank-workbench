@@ -4,7 +4,9 @@ import os
 import shutil
 import sqlite3
 import stat
+import subprocess
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -179,11 +181,12 @@ def test_recovery_merges_current_and_backup_with_valid_scope(tmp_path: Path) -> 
     assert [tuple(row) for row in db.conn.execute(
         """
         SELECT sandbox_id, operator_id, default_list_id, default_priority, updated_at
-        FROM task_settings ORDER BY operator_id
+        FROM task_settings ORDER BY operator_id, sandbox_id
         """
     )] == [
         ("sbx_list", "op_backup", "list-sbx-list", "urgent", "backup-supplement"),
         ("sbx_active", "op_current", None, "high", "current"),
+        ("sbx_list", "op_current", "list-sbx-list", "low", "backup-loses"),
     ]
     leftovers = {
         row[0]
@@ -272,7 +275,7 @@ def test_topic_seen_backfill_keeps_orphan_candidate_unseen(tmp_path: Path) -> No
 
 
 @pytest.mark.integration
-def test_topic_seen_backfill_does_not_hide_primary_key_collision(tmp_path: Path) -> None:
+def test_topic_seen_backfill_preserves_primary_key_collision_and_creates_new_seen_row(tmp_path: Path) -> None:
     db_path = tmp_path / "app.db"
     _create_current_database(db_path)
     conn = sqlite3.connect(db_path)
@@ -298,8 +301,53 @@ def test_topic_seen_backfill_does_not_hide_primary_key_collision(tmp_path: Path)
     conn.commit()
     conn.close()
 
-    with pytest.raises(sqlite3.IntegrityError, match="topic_candidate_seen.id"):
-        Database(db_path)
+    db = Database(db_path)
+    rows = db.conn.execute(
+        "SELECT id, source_url FROM topic_candidate_seen WHERE radar_id='radar-1' ORDER BY source_url"
+    ).fetchall()
+    assert len(rows) == 2
+    assert [str(row["source_url"]) for row in rows] == ["https://candidate", "https://other"]
+    assert len({str(row["id"]) for row in rows}) == 2
+    db.conn.close()
+
+
+@pytest.mark.integration
+def test_legacy_operator_preferences_without_list_are_copied_to_active_sandboxes(tmp_path: Path) -> None:
+    db_path = tmp_path / "app.db"
+    _create_current_database(db_path)
+    conn = sqlite3.connect(db_path)
+    conn.execute("PRAGMA foreign_keys=OFF")
+    _insert_scope_parents(conn)
+    conn.execute("UPDATE sandboxes SET status='archived' WHERE id='sbx_local_default'")
+    conn.execute("DROP TABLE task_settings")
+    conn.execute(
+        """
+        CREATE TABLE task_settings(
+            operator_id TEXT PRIMARY KEY,
+            default_list_id TEXT,
+            default_priority TEXT NOT NULL DEFAULT 'normal',
+            updated_at TEXT NOT NULL
+        )
+        """
+    )
+    conn.execute(
+        "INSERT INTO task_settings(operator_id, default_list_id, default_priority, updated_at) "
+        "VALUES('op_current', NULL, 'high', 'legacy')"
+    )
+    conn.execute("PRAGMA user_version=0")
+    conn.commit()
+    conn.close()
+
+    db = Database(db_path)
+    rows = db.conn.execute(
+        "SELECT sandbox_id, operator_id, default_list_id, default_priority FROM task_settings "
+        "WHERE operator_id='op_current' ORDER BY sandbox_id"
+    ).fetchall()
+    assert [tuple(row) for row in rows] == [
+        ("sbx_active", "op_current", None, "high"),
+        ("sbx_list", "op_current", None, "high"),
+    ]
+    db.conn.close()
 
 
 @pytest.mark.unit
@@ -527,4 +575,118 @@ def test_migration_guard_blocks_newer_database_without_backup(tmp_path: Path) ->
     with sqlite3.connect(db_path) as conn:
         assert conn.execute("PRAGMA user_version").fetchone() == (future_version,)
         assert conn.execute("PRAGMA quick_check").fetchone() == ("ok",)
-    assert not guard_module._backup_dir(tmp_path).exists()
+    assert not list(guard_module._backup_dir(tmp_path).glob("app-pre-migrate-*.db"))
+
+
+@pytest.mark.integration
+def test_post_migration_quick_check_failure_restores_verified_backup(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    db_path = tmp_path / "app.db"
+    _create_current_database(db_path)
+    with sqlite3.connect(db_path) as conn:
+        conn.execute("CREATE TABLE live_check_probe(value TEXT NOT NULL)")
+        conn.execute("INSERT INTO live_check_probe(value) VALUES('before')")
+        conn.execute("PRAGMA user_version=0")
+
+    real_validate = guard_module._validate_sqlite_snapshot
+    live_checks = 0
+
+    def fail_first_live_check(path: Path) -> None:
+        nonlocal live_checks
+        if Path(path) == db_path:
+            live_checks += 1
+            if live_checks == 1:
+                raise guard_module.DatabaseMigrationGuardError("injected live quick_check failure")
+        real_validate(Path(path))
+
+    monkeypatch.setattr(guard_module, "_validate_sqlite_snapshot", fail_first_live_check)
+    with pytest.raises(guard_module.DatabaseMigrationGuardError, match="injected live quick_check failure"):
+        guard_module.open_database_with_migration_guard(db_path, data_dir=tmp_path)
+
+    with sqlite3.connect(db_path) as conn:
+        assert conn.execute("SELECT value FROM live_check_probe").fetchone() == ("before",)
+        assert conn.execute("PRAGMA user_version").fetchone() == (0,)
+        assert conn.execute("PRAGMA quick_check").fetchone() == ("ok",)
+
+
+@pytest.mark.integration
+def test_interrupted_migration_does_not_accept_live_db_when_quick_check_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    db_path = tmp_path / "app.db"
+    _create_current_database(db_path)
+    with sqlite3.connect(db_path) as conn:
+        conn.execute("CREATE TABLE interrupted_probe(value TEXT NOT NULL)")
+        conn.execute("INSERT INTO interrupted_probe(value) VALUES('backup')")
+    inspection = guard_module.inspect_database_migration_state(db_path)
+    backup_path = guard_module.create_pre_migration_backup(
+        tmp_path,
+        db_path,
+        target_schema_version=db_module.BACKEND_SCHEMA_VERSION + 1,
+        inspection=guard_module.DatabaseMigrationInspection(
+            exists=True,
+            schema_version=inspection.schema_version,
+            reasons=("forced_test_migration",),
+        ),
+    )
+    assert backup_path is not None
+    marker_path = guard_module._attempt_path(tmp_path, db_path)
+    guard_module._write_attempt_marker(
+        marker_path,
+        db_path=db_path,
+        backup_path=backup_path,
+        source_schema_version=inspection.schema_version,
+        target_schema_version=db_module.BACKEND_SCHEMA_VERSION,
+    )
+    with sqlite3.connect(db_path) as conn:
+        conn.execute("UPDATE interrupted_probe SET value='damaged-live'")
+
+    real_validate = guard_module._validate_sqlite_snapshot
+    live_checks = 0
+
+    def fail_first_live_check(path: Path) -> None:
+        nonlocal live_checks
+        if Path(path) == db_path:
+            live_checks += 1
+            if live_checks == 1:
+                raise guard_module.DatabaseMigrationGuardError("injected interrupted quick_check failure")
+        real_validate(Path(path))
+
+    monkeypatch.setattr(guard_module, "_validate_sqlite_snapshot", fail_first_live_check)
+    guard_module._recover_interrupted_migration(tmp_path, db_path)
+    with sqlite3.connect(db_path) as conn:
+        assert conn.execute("SELECT value FROM interrupted_probe").fetchone() == ("backup",)
+    assert not marker_path.exists()
+
+
+@pytest.mark.integration
+def test_migration_lock_rejects_a_second_process(tmp_path: Path) -> None:
+    db_path = tmp_path / "app.db"
+    _create_current_database(db_path)
+    ready_path = tmp_path / "lock-ready"
+    code = (
+        "import sys,time; from pathlib import Path; "
+        f"sys.path.insert(0, {str(ROOT)!r}); "
+        "from app.database_guard import _exclusive_migration_lock; "
+        f"data=Path({str(tmp_path)!r}); db=Path({str(db_path)!r}); ready=Path({str(ready_path)!r}); "
+        "ctx=_exclusive_migration_lock(data, db, timeout_seconds=2); ctx.__enter__(); "
+        "ready.write_text('ready'); time.sleep(5); ctx.__exit__(None,None,None)"
+    )
+    process = subprocess.Popen([sys.executable, "-c", code])
+    try:
+        deadline = time.monotonic() + 3
+        while not ready_path.exists() and time.monotonic() < deadline:
+            time.sleep(0.05)
+        assert ready_path.exists()
+        with pytest.raises(guard_module.DatabaseMigrationGuardError, match="另一个进程"):
+            guard_module.open_database_with_migration_guard(
+                db_path,
+                data_dir=tmp_path,
+                lock_timeout_seconds=0.2,
+            )
+    finally:
+        process.terminate()
+        process.wait(timeout=5)

@@ -11,7 +11,7 @@ from pathlib import Path
 # 之前 20260518001 (200 亿) 远超上限, SQLite 静默 set 为 0, 每次启动都重做完整迁移
 # (这是 20260518 那次坏 db 的真正根因之一: 重做时遇上 reload race + backfill 无事务).
 # 改用 YYYYMMDD 格式 (8 位), 每次 schema 变化递增日期. 20260519 = 此次修复.
-BACKEND_SCHEMA_VERSION = 20260706  # 沙箱身份不变量 + 漏网业务数据归属
+BACKEND_SCHEMA_VERSION = 20260710  # 迁移守卫 + 沙箱任务设置恢复
 
 
 # R6：内置罗永浩写作风格的 distilled prompt（手工 distill，不依赖在线抓取，避免外部依赖）。
@@ -5435,7 +5435,14 @@ class Database:
                     id, radar_id, source_url_key, title_source_key, source_url, title, source, created_at, deleted_at
                 )
                 SELECT
-                    'seen_' || candidate.id,
+                    CASE
+                        WHEN EXISTS (
+                            SELECT 1 FROM topic_candidate_seen collision
+                            WHERE collision.id = 'seen_' || candidate.id
+                        )
+                        THEN 'seen_' || candidate.id || '_' || LOWER(HEX(RANDOMBLOB(8)))
+                        ELSE 'seen_' || candidate.id
+                    END,
                     candidate.radar_id,
                     LOWER(TRIM(COALESCE(candidate.source_url, ''))),
                     LOWER(TRIM(candidate.title)) || '||' || LOWER(TRIM(candidate.source)),
@@ -5760,7 +5767,7 @@ class Database:
 
         sandbox_rows = self.conn.execute(
             """
-            SELECT id FROM sandboxes
+            SELECT id, status FROM sandboxes
             ORDER BY is_legacy_default DESC,
                      COALESCE(last_active_at, '') DESC,
                      created_at ASC,
@@ -5769,12 +5776,11 @@ class Database:
         ).fetchall()
         sandbox_ids = {str(item["id"]) for item in sandbox_rows}
         deterministic_sandbox_id = str(sandbox_rows[0]["id"]) if sandbox_rows else "sbx_local_default"
-        active_row = self.conn.execute(
-            "SELECT value FROM settings WHERE key='active_sandbox_id'"
-        ).fetchone()
-        active_sandbox_id = str(active_row["value"] or "").strip() if active_row else ""
-        if active_sandbox_id not in sandbox_ids:
-            active_sandbox_id = ""
+        preference_sandbox_ids = tuple(
+            str(item["id"])
+            for item in sandbox_rows
+            if str(item["status"] or "") == "active"
+        ) or (deterministic_sandbox_id,)
         operator_ids = {
             str(item["id"])
             for item in self.conn.execute("SELECT id FROM operators").fetchall()
@@ -5801,7 +5807,6 @@ class Database:
             "show_completed_tasks", "default_review_scope", "auto_assign_self", "updated_at",
         ]
         merged: dict[tuple[str, str], tuple[object, ...]] = {}
-        current_operator_ids: set[str] = set()
         for source_table in (current_table, backup_table):
             if not self._migration_table_exists(source_table):
                 continue
@@ -5813,8 +5818,6 @@ class Database:
             for source in source_rows:
                 operator_id = str(source["operator_id"] or "").strip() if "operator_id" in source_columns else ""
                 if not operator_id or operator_id not in operator_ids:
-                    continue
-                if source_table == backup_table and operator_id in current_operator_ids:
                     continue
                 explicit_sandbox_id = (
                     str(source["sandbox_id"] or "").strip()
@@ -5831,24 +5834,24 @@ class Database:
                 list_sandbox_id = task_lists.get(requested_list_id, "")
                 if list_sandbox_id not in sandbox_ids:
                     list_sandbox_id = ""
-                sandbox_id = (
-                    explicit_sandbox_id
-                    or list_sandbox_id
-                    or active_sandbox_id
-                    or deterministic_sandbox_id
+                target_sandbox_ids = (
+                    (explicit_sandbox_id,)
+                    if explicit_sandbox_id
+                    else ((list_sandbox_id,) if list_sandbox_id else preference_sandbox_ids)
                 )
-                default_list_id = (
-                    requested_list_id
-                    if requested_list_id in task_lists and task_lists[requested_list_id] == sandbox_id
-                    else None
-                )
-                values: list[object] = [sandbox_id, operator_id, default_list_id]
-                for column in target_columns[3:]:
-                    value = source[column] if column in source_columns else defaults[column]
-                    values.append(defaults[column] if value is None else value)
-                merged.setdefault((sandbox_id, operator_id), tuple(values))
-                if source_table == current_table:
-                    current_operator_ids.add(operator_id)
+                for sandbox_id in target_sandbox_ids:
+                    default_list_id = (
+                        requested_list_id
+                        if requested_list_id in task_lists and task_lists[requested_list_id] == sandbox_id
+                        else None
+                    )
+                    values: list[object] = [sandbox_id, operator_id, default_list_id]
+                    for column in target_columns[3:]:
+                        value = source[column] if column in source_columns else defaults[column]
+                        values.append(defaults[column] if value is None else value)
+                    # Current rows win only for the same composite identity.
+                    # The same operator's settings in another sandbox survive.
+                    merged.setdefault((sandbox_id, operator_id), tuple(values))
 
         self.conn.execute(f"DROP TABLE IF EXISTS {stage_table}")
         self.conn.execute(
