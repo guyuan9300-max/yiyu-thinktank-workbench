@@ -19292,10 +19292,8 @@ def create_app() -> FastAPI:
         payload: TaskPlanLinkUpsertPayload,
         current_user: SessionUser = Depends(lambda authorization=Header(default=None): _require_auth(app, authorization)),
     ) -> TaskPlanLinkRecord | None:
-        task_row = _task_row_or_404(state, task_id)
+        task_row = _task_row_or_404(state, task_id, organization_id=current_user.organizationId)
         task_link_row = _task_org_link_row(state, task_id)
-        if str(task_row["organization_id"]) != current_user.organizationId:
-            raise HTTPException(status_code=404, detail="Task not found")
         # 用专用的 _can_edit_task_plan_link，不复用 _can_review_task —— 后者禁止 owner
         # 自己挂，是给"任务复核"场景设计的；plan-link 挂接是分类归属，owner 应当自己能做。
         if not _can_edit_task_plan_link(state, current_user, task_row, task_link_row):
@@ -22309,7 +22307,7 @@ def create_app() -> FastAPI:
         payload: TaskUpdatePayload,
         current_user: SessionUser = Depends(lambda authorization=Header(default=None): _require_auth(app, authorization)),
     ) -> TaskRecord:
-        row = _task_row_or_404(state, task_id)
+        row = _task_row_or_404(state, task_id, organization_id=current_user.organizationId)
         existing_collaborator_ids = _task_collaborator_ids(state, task_id)
         owner_field_touched = "ownerId" in payload.model_fields_set
         next_owner_id = (payload.ownerId or "").strip() if owner_field_touched and payload.ownerId else None
@@ -22572,7 +22570,7 @@ def create_app() -> FastAPI:
         task_id: str,
         current_user: SessionUser = Depends(lambda authorization=Header(default=None): _require_auth(app, authorization)),
     ) -> dict[str, bool]:
-        row = _task_row_or_404(state, task_id)
+        row = _task_row_or_404(state, task_id, organization_id=current_user.organizationId)
         content_changed = True
         due_date_changed = False
         owner_changed = False
@@ -22593,7 +22591,7 @@ def create_app() -> FastAPI:
         durationSeconds: int | None = Form(default=None),
         current_user: SessionUser = Depends(lambda authorization=Header(default=None): _require_auth(app, authorization)),
     ) -> TaskRecord:
-        task_row = _task_row_or_404(state, task_id)
+        task_row = _task_row_or_404(state, task_id, organization_id=current_user.organizationId)
         _assert_task_edit_permission(state, current_user, task_row, True, False, False)
 
         resolved_client_id = str(task_row["client_id"]) if task_row["client_id"] else clientId
@@ -22945,7 +22943,7 @@ def create_app() -> FastAPI:
         payload: TaskNotePayload,
         current_user: SessionUser = Depends(lambda authorization=Header(default=None): _require_auth(app, authorization)),
     ) -> TaskRecord:
-        task_row = _task_row_or_404(state, task_id)
+        task_row = _task_row_or_404(state, task_id, organization_id=current_user.organizationId)
         timestamp = now_iso()
         existing = state.db.fetchone("SELECT id FROM task_notes WHERE task_id = ?", (task_id,))
         if existing:
@@ -22963,7 +22961,7 @@ def create_app() -> FastAPI:
 
     @app.get("/api/v1/tasks/{task_id}/activity", response_model=list[TaskActivityRecord])
     def task_activity(task_id: str, current_user: SessionUser = Depends(lambda authorization=Header(default=None): _require_auth(app, authorization))) -> list[TaskActivityRecord]:
-        _task_row_or_404(state, task_id)
+        _task_row_or_404(state, task_id, organization_id=current_user.organizationId)
         rows = state.db.fetchall(
             """
             SELECT e.*, u.full_name
