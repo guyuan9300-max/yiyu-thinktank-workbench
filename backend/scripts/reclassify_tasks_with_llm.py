@@ -30,7 +30,7 @@ from pathlib import Path
 # 把项目根加进 path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from app.db import Database
+from app.database_guard import open_database_with_migration_guard
 from app.services import ai as ai_service
 
 
@@ -132,7 +132,7 @@ def main():
     print(f"Mode: {'APPLY (写回 db)' if args.apply else 'DRY-RUN (只打印建议)'}")
     print()
 
-    db = Database(db_path)
+    db, _ = open_database_with_migration_guard(Path(db_path))
 
     # 拉所有「未分类」或「专项推进」的 tasks
     query = """

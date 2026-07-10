@@ -20,7 +20,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from app.db import Database
+from app.database_guard import open_database_with_migration_guard
 from app.services.structured_table_parser import (
     StructuredParseError,
     parse_xlsx_structured,
@@ -48,8 +48,9 @@ def _resolve_file_path(managed_path: str, original_path: str) -> Path | None:
 
 
 def main() -> int:
-    db = Database(_default_db_path())
-    print(f"[INFO] DB: {_default_db_path()}")
+    db_path = _default_db_path()
+    db, _ = open_database_with_migration_guard(db_path)
+    print(f"[INFO] DB: {db_path}")
 
     rows = db.fetchall(
         """

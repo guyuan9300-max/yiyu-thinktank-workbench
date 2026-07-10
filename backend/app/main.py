@@ -217,6 +217,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, JSONResponse, Response
 from docx import Document as WordDocument
 
+from app import database_guard as database_guard_module
 from app.db import BACKEND_SCHEMA_VERSION, Database, from_json, to_json
 from app.local_request_guard import (
     ALLOWED_LOCAL_ORIGINS,
@@ -3768,53 +3769,6 @@ def load_demo_dataset(state: AppState) -> DemoDataResponse:
     return state.db.run_in_transaction(_txn)
 
 
-def create_pre_migration_backup(data_dir: Path, db_path: Path) -> Path | None:
-    if not db_path.exists():
-        return None
-    conn: sqlite3.Connection | None = None
-    try:
-        conn = sqlite3.connect(db_path)
-        schema_version = int(conn.execute("PRAGMA user_version").fetchone()[0] or 0)
-        tag_columns = {
-            str(row[1])
-            for row in conn.execute("PRAGMA table_info(task_tags)").fetchall()
-        }
-        needs_migration = schema_version < BACKEND_SCHEMA_VERSION or "operator_id" not in tag_columns
-        if not needs_migration:
-            return None
-    except Exception:
-        # 无法安全判定时，保守地先备份。
-        pass
-    finally:
-        if conn is not None:
-            conn.close()
-    backup_dir = data_dir / "backups" / "migrations"
-    backup_dir.mkdir(parents=True, exist_ok=True)
-    stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-    backup_path = backup_dir / f"app-pre-migrate-{stamp}.db"
-    shutil.copy2(db_path, backup_path)
-    for suffix in ("-wal", "-shm"):
-        shadow = db_path.with_name(f"{db_path.name}{suffix}")
-        if shadow.exists():
-            shutil.copy2(shadow, backup_dir / f"{backup_path.name}{suffix}")
-    return backup_path
-
-
-def rollback_database_from_backup(db_path: Path, backup_path: Path | None) -> None:
-    if not backup_path or not backup_path.exists():
-        return
-    for suffix in ("", "-wal", "-shm"):
-        target = db_path if not suffix else db_path.with_name(f"{db_path.name}{suffix}")
-        if target.exists():
-            target.unlink()
-    shutil.copy2(backup_path, db_path)
-    backup_dir = backup_path.parent
-    for suffix in ("-wal", "-shm"):
-        shadow_backup = backup_dir / f"{backup_path.name}{suffix}"
-        if shadow_backup.exists():
-            shutil.copy2(shadow_backup, db_path.with_name(f"{db_path.name}{suffix}"))
-
-
 def _heal_orphan_loading_chat_messages(db: Database) -> int:
     """启动时自愈：把卡在 loading 状态但已有内容且超过 5 分钟的 assistant 消息修复成 success。
 
@@ -3843,16 +3797,6 @@ def _heal_orphan_loading_chat_messages(db: Database) -> int:
     except Exception as exc:
         print(f"[startup] heal orphan loading messages failed: {exc}", file=sys.stderr)
         return 0
-
-
-def init_database_with_migration_guard(data_dir: Path) -> tuple[Database, Path | None]:
-    db_path = data_dir / "app.db"
-    backup_path = create_pre_migration_backup(data_dir, db_path)
-    try:
-        return Database(db_path), backup_path
-    except Exception:
-        rollback_database_from_backup(db_path, backup_path)
-        raise
 
 
 # V2.5 R2 fix · 模块级 Pydantic 类 (FastAPI 闭包内 ForwardRef 解析失败)
@@ -3903,7 +3847,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
     )
     resolved_data_dir.mkdir(parents=True, exist_ok=True)
     try:
-        db, migration_backup_path = init_database_with_migration_guard(resolved_data_dir)
+        db, migration_backup_path = database_guard_module.init_database_with_migration_guard(resolved_data_dir)
     except Exception as error:
         raise RuntimeError(f"数据库迁移失败，已回滚并阻断启动：{error}") from error
     ensure_sandbox_registry(db)

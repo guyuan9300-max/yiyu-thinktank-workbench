@@ -9,7 +9,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.append(str(ROOT))
 
-from app.db import Database
+from app.database_guard import open_database_with_migration_guard
 from app.services.knowledge_v2 import backfill_workspace_import
 
 
@@ -24,7 +24,10 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> int:
     args = parse_args()
-    db = Database(Path(args.db))
+    db, _ = open_database_with_migration_guard(
+        Path(args.db),
+        data_dir=Path(args.data_dir),
+    )
     summary = backfill_workspace_import(
         db,
         data_dir=Path(args.data_dir),

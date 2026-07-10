@@ -15,14 +15,14 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from app.db import Database  # noqa: E402
+from app.database_guard import open_database_with_migration_guard  # noqa: E402
 from app.services.ai import AiService  # noqa: E402
 
 
 def main() -> int:
     with tempfile.TemporaryDirectory() as workdir:
         db_path = Path(workdir) / "smoke.db"
-        db = Database(str(db_path))
+        db, _ = open_database_with_migration_guard(db_path, data_dir=Path(workdir))
         ai = AiService(db, secret_stores={})
 
         ai.configure(provider="openclaw", model=None, api_key=None, clear_api_key=False)
