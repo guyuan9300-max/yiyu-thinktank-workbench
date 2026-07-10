@@ -56,6 +56,7 @@ import type {
   ClientWorkspaceSettingsPayload,
   DepartmentOption,
   OrgInviteResolveResult,
+  OrgAiRuntimeStatus,
   OrgAdminClaimStatus,
   DeepDnaDraft,
   DeepDnaRecord,
@@ -1951,6 +1952,14 @@ export async function activateWorkspace(id: string) {
 
 export async function syncOrgAiConfigToCloud() {
   return request<LastCloudAiSyncStatus>('/api/v1/settings/org-ai-config/sync-to-cloud', { method: 'POST' });
+}
+
+export async function getOrgAiRuntimeStatus() {
+  return request<OrgAiRuntimeStatus>('/api/v1/settings/org-ai-runtime');
+}
+
+export async function syncOrgAiRuntime() {
+  return request<OrgAiRuntimeStatus>('/api/v1/settings/org-ai-runtime/sync', { method: 'POST' });
 }
 
 export async function getMaintenanceModeStatus() {

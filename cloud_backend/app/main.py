@@ -195,10 +195,8 @@ from app.models import (
     TaskListRecord,
     TaskNotePayload,
     OrgAiConfigRecord,
-    OrgAiChatCompletionPayload,
     OrgAiConfigUpdatePayload,
     OrgAiConfigSecretRecord,
-    OrgAiStatusRecord,
     OrgObjectStorageConfigRecord,
     OrgObjectStorageConfigSecretRecord,
     OrgObjectStorageConfigUpdatePayload,
@@ -17353,6 +17351,21 @@ def create_app() -> FastAPI:
             updatedAt=str(row["updated_at"] or ""),
         )
 
+    def _org_ai_config_version(row) -> str:
+        if not row:
+            return ""
+        material = "|".join(
+            [
+                str(row["org_id"] or ""),
+                str(row["ai_provider"] or ""),
+                str(row["ai_base_url"] or ""),
+                str(row["ai_model"] or ""),
+                str(row["api_key_encrypted"] or ""),
+                str(row["updated_at"] or ""),
+            ]
+        )
+        return hashlib.sha256(material.encode("utf-8")).hexdigest()[:16]
+
     @app.get("/api/v1/settings/org-ai-config", response_model=OrgAiConfigRecord)
     def get_org_ai_config(
         current_user: SessionUser = Depends(lambda authorization=Header(default=None): _require_auth(app, authorization)),
@@ -17367,6 +17380,7 @@ def create_app() -> FastAPI:
                 aiModel="",
                 hasApiKey=False,
                 updatedAt=now_iso(),
+                configVersion="",
             )
         return OrgAiConfigRecord(
             orgId=str(row["org_id"]),
@@ -17377,6 +17391,7 @@ def create_app() -> FastAPI:
             hasApiKey=bool(row["api_key_encrypted"]),
             configuredBy=str(row["configured_by"]) if row["configured_by"] else None,
             updatedAt=str(row["updated_at"]),
+            configVersion=_org_ai_config_version(row),
         )
 
     @app.post("/api/v1/settings/org-ai-config", response_model=OrgAiConfigRecord)
@@ -17433,12 +17448,14 @@ def create_app() -> FastAPI:
         if not row or not row["api_key_encrypted"]:
             return OrgAiConfigSecretRecord(
                 orgId=current_user.organizationId,
+                cloudInstanceId=get_cloud_instance()["cloudInstanceId"],
                 aiProvider="mock",
                 aiProviderLabel="本地 Mock",
                 aiBaseUrl="",
                 aiModel="",
                 apiKey="",
                 updatedAt=now_iso(),
+                configVersion="",
             )
         try:
             decrypted = _org_ai_decrypt(
@@ -17450,12 +17467,14 @@ def create_app() -> FastAPI:
             decrypted = ""
         return OrgAiConfigSecretRecord(
             orgId=str(row["org_id"]),
+            cloudInstanceId=get_cloud_instance()["cloudInstanceId"],
             aiProvider=str(row["ai_provider"]),
             aiProviderLabel=str(row["ai_provider_label"] or ""),
             aiBaseUrl=str(row["ai_base_url"] or ""),
             aiModel=str(row["ai_model"]),
             apiKey=decrypted,
             updatedAt=str(row["updated_at"]),
+            configVersion=_org_ai_config_version(row),
         )
 
     @app.get("/api/v1/settings/org-ai-config/runtime-secret", response_model=OrgAiConfigSecretRecord)
@@ -17465,19 +17484,20 @@ def create_app() -> FastAPI:
         """Return org AI runtime credentials to approved desktop clients.
 
         The frontend must not display or copy this value. The desktop backend stores
-        it in the local secret store and uses it to call the provider directly,
-        avoiding the slower cloud proxy hop for ordinary members.
+        it in the local system secret store and uses it to call the provider directly.
         """
         row = state.db.fetchone("SELECT * FROM org_ai_config WHERE org_id = ?", (current_user.organizationId,))
         if not row or not row["api_key_encrypted"]:
             return OrgAiConfigSecretRecord(
                 orgId=current_user.organizationId,
+                cloudInstanceId=get_cloud_instance()["cloudInstanceId"],
                 aiProvider="mock",
                 aiProviderLabel="本地 Mock",
                 aiBaseUrl="",
                 aiModel="",
                 apiKey="",
                 updatedAt=now_iso(),
+                configVersion="",
             )
         try:
             decrypted = _org_ai_decrypt(
@@ -17495,139 +17515,15 @@ def create_app() -> FastAPI:
             decrypted = ""
         return OrgAiConfigSecretRecord(
             orgId=str(row["org_id"]),
+            cloudInstanceId=get_cloud_instance()["cloudInstanceId"],
             aiProvider=str(row["ai_provider"]),
             aiProviderLabel=str(row["ai_provider_label"] or ""),
             aiBaseUrl=str(row["ai_base_url"] or ""),
             aiModel=str(row["ai_model"]),
             apiKey=decrypted,
             updatedAt=str(row["updated_at"]),
+            configVersion=_org_ai_config_version(row),
         )
-
-    def _org_ai_status_from_row(row) -> OrgAiStatusRecord:
-        if not row:
-            return OrgAiStatusRecord(reason="组织尚未配置 AI。")
-        provider = str(row["ai_provider"] or "").strip()
-        provider_label = str(row["ai_provider_label"] or "").strip()
-        model = str(row["ai_model"] or "").strip()
-        has_key = bool(row["api_key_encrypted"])
-        if not provider or provider == "mock":
-            return OrgAiStatusRecord(
-                reason="组织 AI 配置为空或仍为 Mock。",
-                aiProvider=provider or "mock",
-                aiProviderLabel=provider_label or "本地 Mock",
-                aiModel=model,
-                hasApiKey=has_key,
-            )
-        if not model:
-            return OrgAiStatusRecord(
-                reason="组织 AI 模型名未配置。",
-                aiProvider=provider,
-                aiProviderLabel=provider_label,
-                aiModel=model,
-                hasApiKey=has_key,
-            )
-        if not str(row["ai_base_url"] or "").strip():
-            return OrgAiStatusRecord(
-                reason="组织 AI 接口地址未配置。",
-                aiProvider=provider,
-                aiProviderLabel=provider_label,
-                aiModel=model,
-                hasApiKey=has_key,
-            )
-        if not has_key:
-            return OrgAiStatusRecord(
-                reason="组织 AI API Key 未配置。",
-                aiProvider=provider,
-                aiProviderLabel=provider_label,
-                aiModel=model,
-                hasApiKey=False,
-            )
-        return OrgAiStatusRecord(
-            available=True,
-            reason=None,
-            aiProvider=provider,
-            aiProviderLabel=provider_label,
-            aiModel=model,
-            hasApiKey=True,
-        )
-
-    @app.get("/api/v1/org-ai/status", response_model=OrgAiStatusRecord)
-    def get_org_ai_status(
-        current_user: SessionUser = Depends(lambda authorization=Header(default=None): _require_approved_member(app, authorization)),
-    ) -> OrgAiStatusRecord:
-        row = state.db.fetchone("SELECT * FROM org_ai_config WHERE org_id = ?", (current_user.organizationId,))
-        return _org_ai_status_from_row(row)
-
-    @app.post("/api/v1/org-ai/chat/completions")
-    def proxy_org_ai_chat_completions(
-        payload: OrgAiChatCompletionPayload,
-        current_user: SessionUser = Depends(lambda authorization=Header(default=None): _require_approved_member(app, authorization)),
-    ) -> JSONResponse:
-        if payload.stream:
-            raise HTTPException(status_code=400, detail="组织 AI 代理第一版暂不支持流式调用。")
-        if not payload.messages:
-            raise HTTPException(status_code=400, detail="messages 不能为空。")
-        row = state.db.fetchone("SELECT * FROM org_ai_config WHERE org_id = ?", (current_user.organizationId,))
-        status_record = _org_ai_status_from_row(row)
-        if not status_record.available or not row:
-            raise HTTPException(status_code=503, detail=status_record.reason or "组织 AI 暂不可用。")
-        try:
-            api_key = _org_ai_decrypt(
-                str(row["api_key_encrypted"]),
-                str(row["encryption_nonce"]),
-                current_user.organizationId,
-            )
-        except Exception as exc:
-            logger.warning("[org-ai] decrypt failed org=%s user=%s: %s", current_user.organizationId, current_user.id, exc)
-            raise HTTPException(status_code=503, detail="组织 AI 凭据暂不可用，请联系管理员。") from exc
-        if not api_key:
-            raise HTTPException(status_code=503, detail="组织 AI API Key 未配置。")
-        base_url = str(row["ai_base_url"] or "").strip().rstrip("/")
-        model = str(row["ai_model"] or "").strip()
-        upstream_payload: dict[str, object] = {
-            "model": model,
-            "messages": payload.messages,
-            "stream": False,
-        }
-        if payload.temperature is not None:
-            upstream_payload["temperature"] = payload.temperature
-        if payload.top_p is not None:
-            upstream_payload["top_p"] = payload.top_p
-        if payload.max_tokens is not None:
-            upstream_payload["max_tokens"] = payload.max_tokens
-        if payload.enable_thinking is not None:
-            upstream_payload["enable_thinking"] = payload.enable_thinking
-        try:
-            import httpx
-
-            timeout = httpx.Timeout(timeout=None, connect=8.0, read=180.0, write=30.0, pool=8.0)
-            with httpx.Client(timeout=timeout) as client:
-                response = client.post(
-                    f"{base_url}/chat/completions",
-                    headers={
-                        "Authorization": f"Bearer {api_key}",
-                        "Content-Type": "application/json",
-                    },
-                    json=upstream_payload,
-                )
-                response.raise_for_status()
-                try:
-                    upstream_json = response.json()
-                except Exception as exc:
-                    raise HTTPException(status_code=502, detail="组织 AI 上游返回了非 JSON 响应。") from exc
-        except HTTPException:
-            raise
-        except Exception as exc:
-            logger.warning(
-                "[org-ai] upstream call failed org=%s user=%s provider=%s model=%s: %s",
-                current_user.organizationId,
-                current_user.id,
-                str(row["ai_provider"] or ""),
-                model,
-                exc,
-            )
-            raise HTTPException(status_code=502, detail="组织 AI 调用失败，请稍后重试。") from exc
-        return JSONResponse(content=upstream_json)
 
     @app.get("/api/v1/settings/org-object-storage-config", response_model=OrgObjectStorageConfigRecord)
     def get_org_object_storage_config(

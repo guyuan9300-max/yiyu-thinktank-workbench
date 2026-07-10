@@ -1844,6 +1844,7 @@ class OrgAiConfigRecord(BaseModel):
     hasApiKey: bool
     configuredBy: str | None = None
     updatedAt: str
+    configVersion: str = ""
 
 
 class OrgAiConfigUpdatePayload(BaseModel):
@@ -1858,31 +1859,14 @@ class OrgAiConfigUpdatePayload(BaseModel):
 class OrgAiConfigSecretRecord(BaseModel):
     """Runtime org AI config for trusted desktop backends; never expose in UI."""
     orgId: str
+    cloudInstanceId: str
     aiProvider: str
     aiProviderLabel: str = ""
     aiBaseUrl: str = ""
     aiModel: str
     apiKey: str
     updatedAt: str
-
-
-class OrgAiStatusRecord(BaseModel):
-    available: bool = False
-    reason: str | None = None
-    aiProvider: str = ""
-    aiProviderLabel: str = ""
-    aiModel: str = ""
-    hasApiKey: bool = False
-    proxyMode: Literal["cloud_proxy"] = "cloud_proxy"
-
-
-class OrgAiChatCompletionPayload(BaseModel):
-    messages: list[dict[str, Any]] = Field(default_factory=list)
-    temperature: float | None = None
-    top_p: float | None = None
-    max_tokens: int | None = None
-    stream: bool = False
-    enable_thinking: bool | None = None
+    configVersion: str = ""
 
 
 ObjectStorageProvider = Literal["volcano_tos", "aliyun_oss", "aws_s3"]

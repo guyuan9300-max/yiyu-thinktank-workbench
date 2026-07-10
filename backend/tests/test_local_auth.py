@@ -34,6 +34,23 @@ def test_auth_me_enters_local_draft_when_device_is_empty(tmp_path: Path) -> None
     assert "本机草稿" in payload["message"]
 
 
+def test_system_health_is_local_and_lightweight(tmp_path: Path, monkeypatch) -> None:
+    client = make_client(tmp_path / "data")
+
+    def fail_cloud_request(*args, **kwargs):
+        raise AssertionError("system health must not perform cloud requests")
+
+    monkeypatch.setattr(app_main.httpx, "request", fail_cloud_request)
+    warmup = client.get("/api/v1/system/health")
+    assert warmup.status_code == 200, warmup.text
+    started = time.monotonic()
+    response = client.get("/api/v1/system/health")
+    elapsed = time.monotonic() - started
+
+    assert response.status_code == 200, response.text
+    assert elapsed < 0.3
+
+
 def test_local_register_creates_identity_without_calling_cloud(tmp_path: Path, monkeypatch) -> None:
     client = make_client(tmp_path / "data")
     db = client.app.state.app_state.db
@@ -349,6 +366,8 @@ def test_cloud_login_binds_current_local_identity(tmp_path: Path, monkeypatch) -
                     },
                 },
             )
+        if method == "GET" and url.endswith("/api/v1/cloud-instance"):
+            return FakeCloudResponse(200, {"cloudInstanceId": "cli-org-ai-sync", "service": "test", "version": "test"})
         if method == "GET" and url.endswith("/api/v1/me/org-membership"):
             return FakeCloudResponse(200, {"hasOrganization": False})
         raise AssertionError(f"unexpected cloud request: {method} {url}")
@@ -414,7 +433,7 @@ def test_cloud_login_reports_redirect_without_json_decode_leak(tmp_path: Path, m
     assert "JSONDecodeError" not in detail
 
 
-def test_cloud_login_uses_org_ai_proxy_over_local_mock_for_member(tmp_path: Path, monkeypatch) -> None:
+def test_cloud_login_syncs_org_ai_to_sandbox_direct_store_for_member(tmp_path: Path, monkeypatch) -> None:
     client = make_client(tmp_path / "data")
     state = client.app.state.app_state
     state.cloud_api_url = "http://cloud.example.test"
@@ -427,6 +446,12 @@ def test_cloud_login_uses_org_ai_proxy_over_local_mock_for_member(tmp_path: Path
         provider_label="本地 Mock",
         base_url="",
     )
+    runtime_secret_state = {
+        "cloudInstanceId": "cli-org-ai-sync",
+        "apiKey": "sk-org-shared",
+        "configVersion": "cfg-v1",
+        "aiModel": "shared-org-model",
+    }
 
     class FakeCloudResponse:
         def __init__(self, status_code: int, payload: dict):
@@ -457,6 +482,8 @@ def test_cloud_login_uses_org_ai_proxy_over_local_mock_for_member(tmp_path: Path
                     },
                 },
             )
+        if method == "GET" and url.endswith("/api/v1/cloud-instance"):
+            return FakeCloudResponse(200, {"cloudInstanceId": "cli-org-ai-sync", "service": "test", "version": "test"})
         if method == "GET" and url.endswith("/api/v1/me/org-membership"):
             return FakeCloudResponse(
                 200,
@@ -468,16 +495,18 @@ def test_cloud_login_uses_org_ai_proxy_over_local_mock_for_member(tmp_path: Path
                     "organizationWorkspaceClientId": "client-org-ai-sync",
                 },
             )
-        if method == "GET" and url.endswith("/api/v1/settings/org-ai-config/secret"):
+        if method == "GET" and url.endswith("/api/v1/settings/org-ai-config/runtime-secret"):
             return FakeCloudResponse(
                 200,
-                {
-                    "orgId": "org-ai-sync",
-                    "aiProvider": "openai_compatible",
-                    "aiProviderLabel": "组织统一大模型",
-                    "aiBaseUrl": "https://models.example.com/v1",
-                    "aiModel": "shared-org-model",
-                    "apiKey": "sk-org-shared",
+                    {
+                        "orgId": "org-ai-sync",
+                        "cloudInstanceId": runtime_secret_state["cloudInstanceId"],
+                        "aiProvider": "openai_compatible",
+                        "aiProviderLabel": "组织统一大模型",
+                        "aiBaseUrl": "https://models.example.com/v1",
+                        "aiModel": runtime_secret_state["aiModel"],
+                        "apiKey": runtime_secret_state["apiKey"],
+                        "configVersion": runtime_secret_state["configVersion"],
                     "updatedAt": "2026-06-05T10:00:00",
                 },
             )
@@ -496,17 +525,6 @@ def test_cloud_login_uses_org_ai_proxy_over_local_mock_for_member(tmp_path: Path
                     "updatedAt": "2026-06-05T10:00:00",
                 },
             )
-        if method == "GET" and url.endswith("/api/v1/org-ai/status"):
-            return FakeCloudResponse(
-                200,
-                    {
-                        "available": True,
-                        "aiProvider": "openai_compatible",
-                        "aiProviderLabel": "组织统一大模型",
-                        "aiModel": "shared-org-model",
-                        "hasApiKey": True,
-                    },
-                )
         raise AssertionError(f"unexpected cloud request: {method} {url}")
 
     monkeypatch.setattr(app_main.httpx, "request", fake_cloud_request)
@@ -522,23 +540,58 @@ def test_cloud_login_uses_org_ai_proxy_over_local_mock_for_member(tmp_path: Path
         settings = client.get("/api/v1/settings")
         assert settings.status_code == 200, settings.text
         last_payload = settings.json()
-        if last_payload["lastCloudAiSyncStatus"]["state"] in {"proxy_available", "synced"}:
+        if last_payload["lastCloudAiSyncStatus"]["state"] == "ready_direct":
             break
         time.sleep(0.05)
 
     assert last_payload is not None
-    assert last_payload["lastCloudAiSyncStatus"]["state"] == "proxy_available"
+    assert last_payload["lastCloudAiSyncStatus"]["state"] == "ready_direct"
     assert last_payload["lastCloudAiSyncStatus"]["provider"] == "openai_compatible"
     assert last_payload["lastCloudAiSyncStatus"]["providerLabel"] == "组织统一大模型"
     assert last_payload["lastCloudAiSyncStatus"]["model"] == "shared-org-model"
-    assert last_payload["lastCloudAiSyncStatus"]["proxyMode"] == "cloud_proxy"
     assert last_payload["settings"]["aiProvider"] == "openai_compatible"
-    assert last_payload["settings"]["aiCredentialSource"] == "organization_cloud_proxy"
-    assert last_payload["settings"]["aiFingerprint"] is None
+    assert last_payload["settings"]["aiCredentialSource"] == "memory:sandbox"
+    assert last_payload["settings"]["aiFingerprint"]
     assert last_payload["settings"]["aiConfigured"] is True
 
+    runtime = client.get("/api/v1/settings/org-ai-runtime")
+    assert runtime.status_code == 200, runtime.text
+    assert runtime.json()["state"] == "ready_direct"
+    assert runtime.json()["source"] == "organization_direct"
+    assert runtime.json()["configVersion"] == "cfg-v1"
+    assert "apiKey" not in runtime.text
 
-def test_admin_claim_proxy_refreshes_cloud_session_user(tmp_path: Path, monkeypatch) -> None:
+    health = client.get("/api/v1/system/health")
+    assert health.status_code == 200, health.text
+    assert health.json()["ai"]["ready"] is True
+    assert health.json()["ai"]["credentialSource"] == "organization_direct"
+    assert health.json()["ai"]["fingerprint"] == runtime.json()["fingerprint"]
+
+    first_fingerprint = runtime.json()["fingerprint"]
+    runtime_secret_state.update(
+        apiKey="sk-org-rotated",
+        configVersion="cfg-v2",
+        aiModel="shared-org-model-v2",
+    )
+    rotated = client.post("/api/v1/settings/org-ai-runtime/sync")
+    assert rotated.status_code == 200, rotated.text
+    assert rotated.json()["state"] == "ready_direct"
+    assert rotated.json()["configVersion"] == "cfg-v2"
+    assert rotated.json()["model"] == "shared-org-model-v2"
+    assert rotated.json()["fingerprint"] != first_fingerprint
+
+    runtime_secret_state["cloudInstanceId"] = "cli-another-cloud"
+    mismatch = client.post("/api/v1/settings/org-ai-runtime/sync")
+    assert mismatch.status_code == 200, mismatch.text
+    assert mismatch.json()["state"] == "error"
+    assert mismatch.json()["fingerprint"] is None
+    assert "云实例" in mismatch.json()["lastError"]
+    assert state.ai.get_health().provider == "mock"
+    assert state.ai.get_health().fingerprint is None
+    assert state.ai.export_current_api_key() == ""
+
+
+def test_admin_claim_refreshes_cloud_session_user(tmp_path: Path, monkeypatch) -> None:
     client = make_client(tmp_path / "data")
     state = client.app.state.app_state
     state.cloud_api_url = "http://cloud.example.test"

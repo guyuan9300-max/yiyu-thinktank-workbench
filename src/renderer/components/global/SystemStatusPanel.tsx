@@ -1,6 +1,6 @@
 import React, { useMemo } from 'react';
 
-import type { HealthResponse } from '../../../shared/types';
+import type { HealthResponse, OrgAiRuntimeStatus } from '../../../shared/types';
 
 /**
  * 全局系统状态 panel —— 嵌在 sidebar 底部、系统设置按钮上方。
@@ -26,9 +26,12 @@ export type SystemStatusRow = {
 
 export type SystemStatusPanelProps = {
   health: HealthResponse | null;
+  aiRuntimeStatus: OrgAiRuntimeStatus | null;
+  aiSyncing: boolean;
   backendOnline: boolean;
   collapsed: boolean;
   onSelectSection: (sectionKey: 'data_center' | 'ai') => void;
+  onRetryAi: () => void;
 };
 
 const TONE_DOT_CLASS: Record<SystemStatusRowTone, string> = {
@@ -47,9 +50,12 @@ const TONE_VALUE_CLASS: Record<SystemStatusRowTone, string> = {
 
 export function SystemStatusPanel({
   health,
+  aiRuntimeStatus,
+  aiSyncing,
   backendOnline,
   collapsed,
   onSelectSection,
+  onRetryAi,
 }: SystemStatusPanelProps) {
   const rows: SystemStatusRow[] = useMemo(() => {
     // 数据中心：基于 backendOnline 二元判定
@@ -71,7 +77,38 @@ export function SystemStatusPanel({
 
     // 大模型：基于 health.ai 三态判定
     let modelRow: SystemStatusRow;
-    if (!health?.ai?.provider) {
+    if (aiSyncing || aiRuntimeStatus?.state === 'syncing') {
+      modelRow = {
+        key: 'ai',
+        label: '大模型',
+        value: '同步中',
+        tone: 'pending',
+        tooltip: '正在把当前组织的 AI 配置同步到本机系统密钥库',
+      };
+    } else if (aiRuntimeStatus?.state === 'ready_direct') {
+      const shortName = shortAiModelLabel(
+        aiRuntimeStatus.provider,
+        aiRuntimeStatus.model,
+        aiRuntimeStatus.providerLabel,
+      );
+      modelRow = {
+        key: 'ai',
+        label: '大模型',
+        value: `${shortName} · 本机直连`,
+        tone: 'online',
+        tooltip: `${aiRuntimeStatus.providerLabel || aiRuntimeStatus.provider}${
+          aiRuntimeStatus.model ? ` · ${aiRuntimeStatus.model}` : ''
+        }${aiRuntimeStatus.usingCachedConfig ? '\n当前使用本机已验证配置' : ''}`,
+      };
+    } else if (aiRuntimeStatus?.state === 'not_ready' || aiRuntimeStatus?.state === 'error') {
+      modelRow = {
+        key: 'ai',
+        label: '大模型',
+        value: '未就绪 · 重新同步',
+        tone: 'warn',
+        tooltip: aiRuntimeStatus.lastError || '当前设备尚未同步组织 AI 配置，点击重新同步',
+      };
+    } else if (!health?.ai?.provider) {
       modelRow = {
         key: 'ai',
         label: '大模型',
@@ -114,7 +151,15 @@ export function SystemStatusPanel({
       }
     }
     return [dataCenter, modelRow];
-  }, [backendOnline, health]);
+  }, [aiRuntimeStatus, aiSyncing, backendOnline, health]);
+
+  const handleRowClick = (row: SystemStatusRow) => {
+    if (row.key === 'ai' && !aiSyncing && (aiRuntimeStatus?.state === 'not_ready' || aiRuntimeStatus?.state === 'error')) {
+      onRetryAi();
+      return;
+    }
+    onSelectSection(row.key as 'data_center' | 'ai');
+  };
 
   if (collapsed) {
     return (
@@ -123,7 +168,7 @@ export function SystemStatusPanel({
           <button
             key={row.key}
             type="button"
-            onClick={() => onSelectSection(row.key as 'data_center' | 'ai')}
+            onClick={() => handleRowClick(row)}
             title={`${row.label}：${row.value}${row.tooltip ? '\n' + row.tooltip : ''}`}
             aria-label={`${row.label} ${row.value}`}
             className="group relative flex h-4 w-4 items-center justify-center rounded hover:bg-gray-50 transition-colors"
@@ -147,7 +192,7 @@ export function SystemStatusPanel({
         <button
           key={row.key}
           type="button"
-          onClick={() => onSelectSection(row.key as 'data_center' | 'ai')}
+          onClick={() => handleRowClick(row)}
           title={row.tooltip || `${row.label}：${row.value}`}
           className="group w-full flex items-center gap-2 rounded-md px-3 py-1.5 hover:bg-gray-50/70 transition-colors"
         >
@@ -177,7 +222,7 @@ export function shortAiModelLabel(
   const m = (model || '').toLowerCase().trim();
 
   if (p.includes('doubao') || p.includes('volc') || p.includes('ark') || m.includes('doubao')) {
-    if (m.includes('2-1') || m.includes('2.1')) return '豆包 Seed 2.1';
+    if (m.includes('2-1') || m.includes('2.1')) return m.includes('pro') ? '豆包 Seed 2.1 Pro' : '豆包 Seed 2.1';
     if (m.includes('1-5') || m.includes('1.5')) return '豆包 1.5';
     if (m.includes('2-0') || m.includes('2.0')) return '豆包 Seed 2.0';
     const fallback = (model || providerLabel || provider || '豆包').trim();

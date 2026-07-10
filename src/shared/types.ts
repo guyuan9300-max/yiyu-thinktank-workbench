@@ -657,7 +657,7 @@ export interface HealthAiState {
 }
 
 export interface LastCloudAiSyncStatus {
-  state: 'never' | 'synced' | 'uploaded' | 'failed' | 'skipped' | 'proxy_available';
+  state: 'never' | 'syncing' | 'ready_direct' | 'uploaded' | 'failed' | 'skipped' | 'not_ready' | 'error';
   at?: string | null;
   reason?: string | null;
   provider?: string | null;
@@ -666,7 +666,21 @@ export interface LastCloudAiSyncStatus {
   baseUrl?: string | null;
   hasApiKey: boolean;
   fingerprint?: string | null;
-  proxyMode?: string | null;
+}
+
+export interface OrgAiRuntimeStatus {
+  state: 'syncing' | 'ready_direct' | 'not_ready' | 'error';
+  source: 'organization_direct';
+  sandboxId: string;
+  organizationId: string;
+  provider: string;
+  providerLabel: string;
+  model: string;
+  configVersion: string;
+  fingerprint?: string | null;
+  syncedAt?: string | null;
+  lastError?: string | null;
+  usingCachedConfig: boolean;
 }
 
 export interface HealthResponse {
@@ -689,7 +703,7 @@ export interface HealthResponse {
     analysisRuns: number;
   };
   ai: HealthAiState;
-  aiProfiles?: Partial<Record<AiModelProfileKey | 'unified' | 'org_cloud_proxy', HealthAiState>>;
+  aiProfiles?: Partial<Record<AiModelProfileKey | 'unified', HealthAiState>>;
   advancedAiRoutingEnabled?: boolean;
   aiModelMode?: AiModelMode;
   linkMaterialDiagnostics?: {

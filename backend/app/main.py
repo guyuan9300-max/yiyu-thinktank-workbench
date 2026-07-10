@@ -11,6 +11,7 @@ import re
 import shutil
 import sqlite3
 import sys
+import threading
 import time
 import traceback
 from concurrent.futures import ThreadPoolExecutor
@@ -532,6 +533,7 @@ from app.models import (
     RiskItem,
     RunComparison,
     LastCloudAiSyncStatusRecord,
+    OrgAiRuntimeStatusRecord,
     SessionUserRecord,
     SettingsResponse,
     SystemAdminSettingsPayload,
@@ -830,6 +832,7 @@ from app.models import (
 )
 from app.services.intelligence_search_intents import IntelligenceSearchScope
 from app.services.ai import (
+    AiHealth,
     AiInvocationError,
     AiService,
     DEFAULT_MODEL,
@@ -1251,7 +1254,12 @@ from app.services.learning_presets import (
     preset_card_to_generic_lesson,
     preset_card_to_support_material,
 )
-from app.services.secrets import MacOSKeychainSecretStore, MemorySecretStore
+from app.services.secrets import (
+    MacOSKeychainSecretStore,
+    MemorySecretStore,
+    UnavailableSecretStore,
+    WindowsCredentialManagerSecretStore,
+)
 from app.services.sandbox_registry import (
     ACTIVE_SANDBOX_SETTING_KEY,
     DEFAULT_LOCAL_SANDBOX_ID,
@@ -1401,6 +1409,9 @@ APP_STARTED_AT = now_iso()
 
 
 def detect_runtime_mode() -> Literal["packaged", "dev"]:
+    override = str(os.getenv("YIYU_BACKEND_RUNTIME_MODE") or "").strip().lower()
+    if override in {"packaged", "dev"}:
+        return cast(Literal["packaged", "dev"], override)
     source_path = str(Path(__file__).resolve())
     return "packaged" if ".app/Contents/Resources/" in source_path else "dev"
 
@@ -3290,11 +3301,29 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         print(f"[startup] healed {healed_chat_count} orphan loading chat messages", file=sys.stderr)
 
     def build_secret_store(service_name: str, account_name: str = "default"):
+        # Unit tests must never read or mutate the developer machine's real
+        # Keychain/Credential Manager. Real clean-install UI tests use an
+        # explicit YIYU_SECRET_STORE_NAMESPACE instead.
+        if os.getenv("PYTEST_CURRENT_TEST") and os.getenv("YIYU_USE_SYSTEM_SECRET_STORE_IN_TESTS") != "1":
+            return MemorySecretStore()
+        namespace = str(os.getenv("YIYU_SECRET_STORE_NAMESPACE") or "").strip()
+        scoped_service_name = f"{service_name}.{namespace}" if namespace else service_name
         try:
-            store = MacOSKeychainSecretStore(service_name=service_name, account_name=account_name)
+            if sys.platform == "darwin":
+                store = MacOSKeychainSecretStore(service_name=scoped_service_name, account_name=account_name)
+            elif sys.platform == "win32":
+                store = WindowsCredentialManagerSecretStore(service_name=scoped_service_name, account_name=account_name)
+            elif BACKEND_RUNTIME_MODE == "dev":
+                return MemorySecretStore()
+            else:
+                return UnavailableSecretStore("当前系统没有可用的安全凭据存储，组织 AI 未就绪。")
             store.get_api_key()
             return store
-        except Exception:
+        except Exception as exc:
+            if BACKEND_RUNTIME_MODE == "packaged":
+                return UnavailableSecretStore(
+                    f"系统凭据存储初始化失败：{str(exc)[:120] or exc.__class__.__name__}"
+                )
             return MemorySecretStore()
 
     openai_compatible_store = build_secret_store("com.yiyu.self-workbench.openai-compatible")
@@ -5545,9 +5574,24 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 )
             time.sleep(0.05)
 
-    def build_health() -> HealthResponse:
-        ai_health = state.ai.get_health()
-        ai_profile_health = state.ai.get_profile_health_map()
+    def build_health(*, lightweight: bool = False) -> HealthResponse:
+        runtime_status = _read_org_ai_runtime_status() if lightweight else {}
+        if lightweight and runtime_status.get("state") == "ready_direct":
+            ai_health = AiHealth(
+                provider=str(runtime_status.get("provider") or "openai_compatible"),
+                provider_label=str(runtime_status.get("providerLabel") or "组织 AI"),
+                base_url=state.ai.current_base_url(),
+                model=str(runtime_status.get("model") or ""),
+                ready=bool(runtime_status.get("fingerprint")),
+                detail="组织 AI 配置已同步，本机直连。",
+                credential_source="organization_direct",
+                fingerprint=str(runtime_status.get("fingerprint") or "") or None,
+                profile_key="unified",
+                mode=state.ai.current_ai_model_mode(),
+            )
+        else:
+            ai_health = state.ai.get_health()
+        ai_profile_health = {} if lightweight else state.ai.get_profile_health_map()
 
         def _health_ai_state(health: object) -> HealthAiState:
             return HealthAiState(
@@ -5596,7 +5640,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             aiProfiles={key: _health_ai_state(value) for key, value in ai_profile_health.items()},
             advancedAiRoutingEnabled=state.ai.advanced_ai_routing_enabled(),
             aiModelMode=state.ai.current_ai_model_mode(),  # type: ignore[arg-type]
-            linkMaterialDiagnostics=build_link_material_runtime_diagnostics(),
+            linkMaterialDiagnostics={} if lightweight else build_link_material_runtime_diagnostics(),
         )
 
     def build_settings_response() -> SettingsResponse:
@@ -5636,7 +5680,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             settings=settings,
             operators=operators,
             health=build_health(),
-            lastCloudAiSyncStatus=LastCloudAiSyncStatusRecord(**_cloud_ai_sync_status),
+            lastCloudAiSyncStatus=LastCloudAiSyncStatusRecord(**_last_cloud_ai_sync_status()),
         )
 
     def _has_persisted_cloud_session() -> bool:
@@ -5778,7 +5822,6 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         state.volatile_cloud_refresh_token = ""
         state.volatile_cloud_session_user_json = ""
         state.cloud_session_persistent = False
-        state.ai.invalidate_org_cloud_proxy_cache()
         with state.maintenance_mode_lock:
             state.maintenance_mode_active = False
             state.maintenance_mode_user_id = ""
@@ -5806,13 +5849,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             pass
         except Exception as error:
             logger.warning("[CLIENT-CANONICAL] workspace duplicate shell repair skipped: %s", error)
-        state.ai.invalidate_org_cloud_proxy_cache()
         state.ai.reset_last_model_snapshot()
-        try:
-            _cloud_ai_sync_status.clear()
-            _cloud_ai_sync_status.update({"state": "never"})
-        except NameError:
-            pass
         try:
             _cloud_object_storage_sync_status.clear()
             _cloud_object_storage_sync_status.update({"state": "never"})
@@ -9246,7 +9283,12 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         user = SessionUserRecord(**user_payload)
         set_cloud_session(token, user, persist=persist_session)
         set_cloud_refresh_token(next_refresh_token, persist=persist_session)
-        Thread(target=lambda: _sync_org_ai_config_from_cloud(user), daemon=True, name="cloud-ai-sync-refresh").start()
+        sync_context = _capture_active_scoped_cloud_context()
+        Thread(
+            target=lambda: _sync_org_ai_config_from_cloud(user, context=sync_context),
+            daemon=True,
+            name="cloud-ai-sync-refresh",
+        ).start()
         return user
 
     # Circuit breaker: if a cloud workspace was unreachable, skip retries for 60s.
@@ -9528,30 +9570,6 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             detail = _cloud_error_detail_from_response(response)
             raise HTTPException(status_code=response.status_code, detail=detail or f"HTTP {response.status_code}")
         return response.content, {key: value for key, value in response.headers.items()}
-
-    def _load_org_cloud_ai_status_for_ai_service() -> dict[str, object]:
-        payload = cloud_request(
-            "GET",
-            "/api/v1/org-ai/status",
-            timeout=3.0,
-            bypass_circuit_breaker=True,
-        )
-        return payload if isinstance(payload, dict) else {"available": False, "reason": "组织 AI 状态响应无效。"}
-
-    def _invoke_org_cloud_ai_for_ai_service(payload: dict[str, object], timeout_seconds: float) -> dict[str, object]:
-        response = cloud_request(
-            "POST",
-            "/api/v1/org-ai/chat/completions",
-            json_body=payload,
-            timeout=max(float(timeout_seconds or 60.0), 12.0),
-            bypass_circuit_breaker=True,
-        )
-        return response if isinstance(response, dict) else {}
-
-    state.ai.configure_org_cloud_proxy(
-        status_loader=_load_org_cloud_ai_status_for_ai_service,
-        chat_completion=_invoke_org_cloud_ai_for_ai_service,
-    )
 
     def _auto_sync_document_to_feishu_docx(
         *,
@@ -11144,6 +11162,8 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             if preserve_local_done_from_cloud_pull
             else ""
         )
+        # The enclosing cloud pull is already bound to target_sandbox_id (current sandbox);
+        # this guard only preserves a pending local state inside that fixed workspace.
         if (
             existing
             and str(existing["sync_status"] or "") in {"pending", "syncing"}
@@ -32325,9 +32345,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
 
     @app.get("/api/v1/system/health", response_model=HealthResponse)
     def get_health() -> HealthResponse:
-        # Opportunistically sync pending tasks on health check (non-blocking)
-        Thread(target=sync_pending_tasks_if_due, daemon=True).start()
-        return build_health()
+        return build_health(lightweight=True)
 
     # ── 自修复系统 ──────────────────────────────────────────
 
@@ -32492,72 +32510,246 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         engine = _get_heal_engine()
         return {"records": engine.get_heal_log(limit)}
 
-    _cloud_ai_sync_status: dict[str, object] = {"state": "never"}
+    ORG_AI_RUNTIME_STATUS_KEY = "runtime.org_ai.status"
+    ORG_AI_LAST_OPERATION_KEY = "runtime.org_ai.last_operation"
+    _org_ai_sync_locks: dict[str, Lock] = {}
+    _org_ai_sync_locks_guard = Lock()
 
-    def _sync_org_ai_config_from_cloud(session_user_override: SessionUserRecord | None = None) -> None:
-        """Pull org-level AI config from cloud and apply locally (background, non-blocking).
+    def _org_ai_sync_lock(sandbox_id: str) -> Lock:
+        with _org_ai_sync_locks_guard:
+            return _org_ai_sync_locks.setdefault(sandbox_id, Lock())
 
-        Writes non-sensitive diagnostics into _cloud_ai_sync_status so settings
-        response can surface why cloud sync did/didn't take effect. Never logs
-        or stores the raw API key — only hasApiKey + fingerprint (from state.ai).
-        """
-        local_provider = ""
+    def _read_org_ai_runtime_status(sandbox_id: str | None = None) -> dict[str, object]:
+        resolved_sandbox_id = sandbox_id or get_active_sandbox_id(state.db)
+        raw = get_sandbox_setting(state.db, resolved_sandbox_id, ORG_AI_RUNTIME_STATUS_KEY, "")
         try:
-            local_provider = (state.ai.current_provider() or "").strip()
+            parsed = json.loads(raw) if raw else {}
         except Exception:
-            local_provider = ""
-        if local_provider == "openclaw":
-            _cloud_ai_sync_status.clear()
-            _cloud_ai_sync_status.update({
-                "state": "skipped",
-                "at": now_iso(),
-                "reason": f"本机当前 provider={local_provider}（本机绑定模式），云端组织 AI 配置不覆盖。",
-                "provider": local_provider,
-                "providerLabel": None,
-                "model": None,
-                "baseUrl": None,
-                "hasApiKey": False,
-            })
-            logger.info(
-                "[cloud-ai-sync] skipped: local provider=%s (本机绑定模式，不被云端覆盖)",
-                local_provider,
-            )
-            return
+            parsed = {}
+        payload = parsed if isinstance(parsed, dict) else {}
+        return {
+            "state": str(payload.get("state") or "not_ready"),
+            "source": "organization_direct",
+            "sandboxId": resolved_sandbox_id,
+            "organizationId": str(payload.get("organizationId") or ""),
+            "provider": str(payload.get("provider") or ""),
+            "providerLabel": str(payload.get("providerLabel") or ""),
+            "model": str(payload.get("model") or ""),
+            "configVersion": str(payload.get("configVersion") or ""),
+            "fingerprint": str(payload.get("fingerprint") or "") or None,
+            "syncedAt": str(payload.get("syncedAt") or "") or None,
+            "lastError": str(payload.get("lastError") or "") or None,
+            "usingCachedConfig": bool(payload.get("usingCachedConfig")),
+        }
 
-        def _apply_secret_payload(secret_payload: dict[str, object], *, proxy_mode: str) -> bool:
-            provider = str(secret_payload.get("aiProvider", "")).strip()
-            provider_label = str(secret_payload.get("aiProviderLabel", "")).strip()
-            base_url = str(secret_payload.get("aiBaseUrl", "")).strip()
-            model = str(secret_payload.get("aiModel", "")).strip()
-            api_key = str(secret_payload.get("apiKey", "")).strip()
-            if not provider or provider == "mock":
-                _cloud_ai_sync_status.clear()
-                _cloud_ai_sync_status.update({
-                    "state": "skipped",
-                    "at": now_iso(),
-                    "reason": "云端组织 AI 配置为空或为 mock，未覆盖本机",
-                    "provider": provider or None,
-                    "providerLabel": provider_label or None,
-                    "model": model or None,
-                    "baseUrl": base_url or None,
-                    "hasApiKey": bool(api_key),
-                    "proxyMode": proxy_mode,
-                })
-                logger.info(
-                    "[cloud-ai-sync] skipped: provider=%s hasApiKey=%s",
-                    provider or "<empty>",
-                    bool(api_key),
+    def _write_org_ai_runtime_status(sandbox_id: str, **updates: object) -> dict[str, object]:
+        payload = _read_org_ai_runtime_status(sandbox_id)
+        payload.update(updates)
+        payload["source"] = "organization_direct"
+        payload["sandboxId"] = sandbox_id
+        set_sandbox_setting(
+            state.db,
+            sandbox_id,
+            ORG_AI_RUNTIME_STATUS_KEY,
+            json.dumps(payload, ensure_ascii=False),
+        )
+        return payload
+
+    def _last_cloud_ai_sync_status() -> dict[str, object]:
+        sandbox_id = get_active_sandbox_id(state.db)
+        raw_operation = get_sandbox_setting(state.db, sandbox_id, ORG_AI_LAST_OPERATION_KEY, "")
+        try:
+            operation = json.loads(raw_operation) if raw_operation else {}
+        except Exception:
+            operation = {}
+        if isinstance(operation, dict) and operation.get("state"):
+            return operation
+        runtime = _read_org_ai_runtime_status()
+        return {
+            "state": runtime["state"],
+            "at": runtime["syncedAt"],
+            "reason": runtime["lastError"],
+            "provider": runtime["provider"] or None,
+            "providerLabel": runtime["providerLabel"] or None,
+            "model": runtime["model"] or None,
+            "baseUrl": state.ai.current_base_url() or None,
+            "hasApiKey": bool(runtime["fingerprint"]),
+            "fingerprint": runtime["fingerprint"],
+        }
+
+    def _write_last_cloud_ai_sync_status(sandbox_id: str, payload: dict[str, object]) -> dict[str, object]:
+        normalized = {
+            "state": str(payload.get("state") or "never"),
+            "at": payload.get("at"),
+            "reason": payload.get("reason"),
+            "provider": payload.get("provider"),
+            "providerLabel": payload.get("providerLabel"),
+            "model": payload.get("model"),
+            "baseUrl": payload.get("baseUrl"),
+            "hasApiKey": bool(payload.get("hasApiKey")),
+            "fingerprint": payload.get("fingerprint"),
+        }
+        set_sandbox_setting(
+            state.db,
+            sandbox_id,
+            ORG_AI_LAST_OPERATION_KEY,
+            json.dumps(normalized, ensure_ascii=False),
+        )
+        return normalized
+
+    def _sync_org_ai_config_from_cloud(
+        session_user_override: SessionUserRecord | None = None,
+        *,
+        context: ScopedCloudContext | None = None,
+        wait_for_existing: bool = False,
+    ) -> dict[str, object]:
+        """Synchronize one organization AI config into its sandbox-scoped secret store."""
+        sync_context = context or _capture_active_scoped_cloud_context()
+        sandbox_id = sync_context.sandbox_id if sync_context else get_active_sandbox_id(state.db)
+        lock = _org_ai_sync_lock(sandbox_id)
+        if not lock.acquire(blocking=False):
+            if wait_for_existing:
+                deadline = time.monotonic() + 14.0
+                while time.monotonic() < deadline:
+                    current = _read_org_ai_runtime_status(sandbox_id)
+                    if current.get("state") != "syncing":
+                        return current
+                    time.sleep(0.1)
+            return _read_org_ai_runtime_status(sandbox_id)
+        previous = _read_org_ai_runtime_status(sandbox_id)
+        _write_org_ai_runtime_status(
+            sandbox_id,
+            state="syncing",
+            lastError=None,
+            usingCachedConfig=False,
+        )
+
+        try:
+            session_user = session_user_override or get_cached_session_user()
+            if sync_context is None:
+                return _write_org_ai_runtime_status(
+                    sandbox_id,
+                    state="not_ready",
+                    lastError="当前组织尚未建立有效登录会话。",
                 )
-                return True
-            if not api_key:
-                return False
+            if session_user and session_user.organizationId != sync_context.organization_id:
+                return _write_org_ai_runtime_status(
+                    sandbox_id,
+                    state="error",
+                    organizationId=sync_context.organization_id,
+                    lastError="登录账号与当前组织工作空间不匹配。",
+                )
+            secret_payload = scoped_cloud_request(
+                sync_context,
+                "GET",
+                "/api/v1/settings/org-ai-config/runtime-secret",
+                timeout=15.0,
+            )
+            if not isinstance(secret_payload, dict):
+                raise RuntimeError("组织 AI 配置响应无效。")
+            payload_org_id = str(secret_payload.get("orgId") or "").strip()
+            if not payload_org_id or payload_org_id != sync_context.organization_id:
+                if get_active_sandbox_id(state.db) == sandbox_id:
+                    state.ai.clear_organization_direct_credentials()
+                state.db.execute(
+                    "UPDATE sandboxes SET identity_state = 'mismatch', identity_error = ?, updated_at = ? WHERE id = ?",
+                    ("组织 AI 配置与工作空间组织不匹配", now_iso(), sandbox_id),
+                )
+                return _write_org_ai_runtime_status(
+                    sandbox_id,
+                    state="error",
+                    organizationId=sync_context.organization_id,
+                    fingerprint=None,
+                    lastError="组织 AI 配置与当前工作空间身份不匹配。",
+                    usingCachedConfig=False,
+                )
+            payload_cloud_instance_id = str(secret_payload.get("cloudInstanceId") or "").strip()
+            if not payload_cloud_instance_id:
+                identity_payload = scoped_cloud_request(
+                    sync_context,
+                    "GET",
+                    "/api/v1/cloud-instance",
+                    timeout=4.0,
+                )
+                if isinstance(identity_payload, dict):
+                    payload_cloud_instance_id = str(identity_payload.get("cloudInstanceId") or "").strip()
+            if not payload_cloud_instance_id:
+                if get_active_sandbox_id(state.db) == sandbox_id:
+                    state.ai.clear_organization_direct_credentials()
+                return _write_org_ai_runtime_status(
+                    sandbox_id,
+                    state="error",
+                    organizationId=sync_context.organization_id,
+                    fingerprint=None,
+                    lastError="组织云未返回稳定实例身份，已停止同步运行凭据。",
+                    usingCachedConfig=False,
+                )
+            if sync_context.cloud_instance_id and payload_cloud_instance_id != sync_context.cloud_instance_id:
+                if get_active_sandbox_id(state.db) == sandbox_id:
+                    state.ai.clear_organization_direct_credentials()
+                state.db.execute(
+                    """
+                    UPDATE sandboxes
+                       SET identity_state = 'mismatch', identity_error = ?, updated_at = ?
+                     WHERE id = ?
+                    """,
+                    ("组织 AI 配置来自另一个云实例", now_iso(), sandbox_id),
+                )
+                return _write_org_ai_runtime_status(
+                    sandbox_id,
+                    state="error",
+                    organizationId=sync_context.organization_id,
+                    fingerprint=None,
+                    lastError="组织云实例与当前工作空间不匹配，已停止同步运行凭据。",
+                    usingCachedConfig=False,
+                )
+            if not sync_context.cloud_instance_id:
+                state.db.execute(
+                    """
+                    UPDATE sandboxes
+                       SET cloud_instance_id = ?, identity_state = 'verified',
+                           identity_verified_at = ?, identity_error = '', updated_at = ?
+                     WHERE id = ? AND (cloud_instance_id = '' OR cloud_instance_id = ?)
+                    """,
+                    (payload_cloud_instance_id, now_iso(), now_iso(), sandbox_id, payload_cloud_instance_id),
+                )
+                sync_context.cloud_instance_id = payload_cloud_instance_id
+            provider = str(secret_payload.get("aiProvider") or "").strip()
+            provider_label = str(secret_payload.get("aiProviderLabel") or "").strip()
+            base_url = str(secret_payload.get("aiBaseUrl") or "").strip()
+            model = str(secret_payload.get("aiModel") or "").strip()
+            api_key = str(secret_payload.get("apiKey") or "").strip()
+            config_version = str(secret_payload.get("configVersion") or "").strip()
+            if not provider or provider == "mock" or not base_url or not model or not api_key:
+                if get_active_sandbox_id(state.db) == sandbox_id:
+                    state.ai.clear_organization_direct_credentials()
+                return _write_org_ai_runtime_status(
+                    sandbox_id,
+                    state="not_ready",
+                    organizationId=payload_org_id,
+                    provider=provider,
+                    providerLabel=provider_label,
+                    model=model,
+                    configVersion=config_version,
+                    fingerprint=None,
+                    syncedAt=now_iso(),
+                    lastError="组织尚未完整配置大模型，请联系管理员。",
+                    usingCachedConfig=False,
+                )
+            if get_active_sandbox_id(state.db) != sandbox_id:
+                return _write_org_ai_runtime_status(
+                    sandbox_id,
+                    state="error",
+                    organizationId=payload_org_id,
+                    lastError="工作空间已切换，本次组织 AI 同步结果已丢弃。",
+                )
             if state.ai.advanced_ai_routing_enabled():
                 state.ai.configure_cloud_online_profile(
                     provider=provider,
                     model=model,
                     api_key=api_key,
                     provider_label=provider_label or None,
-                    base_url=base_url or None,
+                    base_url=base_url,
                 )
             else:
                 state.ai.configure(
@@ -32566,123 +32758,76 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                     api_key,
                     False,
                     provider_label=provider_label or None,
-                    base_url=base_url or None,
+                    base_url=base_url,
                 )
-            applied_fingerprint = state.ai.get_health().fingerprint
-            state.ai.invalidate_org_cloud_proxy_cache()
-            _cloud_ai_sync_status.clear()
-            _cloud_ai_sync_status.update({
-                "state": "synced",
-                "at": now_iso(),
-                "reason": None,
-                "provider": provider,
-                "providerLabel": provider_label or None,
-                "model": model or None,
-                "baseUrl": base_url or None,
-                "hasApiKey": True,
-                "fingerprint": applied_fingerprint or None,
-                "proxyMode": proxy_mode,
-            })
+            health = state.ai.get_health()
+            applied_fingerprint = str(health.fingerprint or "").strip()
+            if not health.ready or not applied_fingerprint:
+                raise RuntimeError(health.detail or "系统凭据存储写入后未能重新读取。")
+            result = _write_org_ai_runtime_status(
+                sandbox_id,
+                state="ready_direct",
+                organizationId=payload_org_id,
+                provider=provider,
+                providerLabel=provider_label,
+                model=model,
+                configVersion=config_version,
+                fingerprint=applied_fingerprint,
+                syncedAt=now_iso(),
+                lastError=None,
+                usingCachedConfig=False,
+            )
             logger.info(
-                "[cloud-ai-sync] synced: provider=%s model=%s baseUrl=%s hasApiKey=%s fingerprint=%s mode=%s",
+                "[org-ai-runtime] ready sandbox=%s organization=%s provider=%s model=%s fingerprint=%s",
+                sandbox_id,
+                payload_org_id,
                 provider,
                 model or "<empty>",
-                base_url or "<empty>",
-                True,
-                applied_fingerprint or "<none>",
-                proxy_mode,
+                applied_fingerprint,
             )
-            return True
-
-        def _apply_proxy_status_from_cloud() -> None:
-            status_payload = cloud_request("GET", "/api/v1/org-ai/status", bypass_circuit_breaker=True)
-            if not isinstance(status_payload, dict):
-                raise RuntimeError("云端组织 AI 状态响应非 JSON 对象")
-            available = bool(status_payload.get("available"))
-            state.ai.invalidate_org_cloud_proxy_cache()
-            _cloud_ai_sync_status.clear()
-            _cloud_ai_sync_status.update({
-                "state": "proxy_available" if available else "skipped",
-                "at": now_iso(),
-                "reason": None if available else str(status_payload.get("reason") or "组织 AI 暂不可用。"),
-                "provider": str(status_payload.get("aiProvider") or "") or None,
-                "providerLabel": str(status_payload.get("aiProviderLabel") or "") or None,
-                "model": str(status_payload.get("aiModel") or "") or None,
-                "baseUrl": None,
-                "hasApiKey": bool(status_payload.get("hasApiKey")),
-                "proxyMode": "cloud_proxy",
-            })
-            logger.info(
-                "[cloud-ai-sync] member proxy status: available=%s provider=%s model=%s",
-                available,
-                str(status_payload.get("aiProvider") or "<empty>"),
-                str(status_payload.get("aiModel") or "<empty>"),
-            )
-
-        try:
-            session_user = session_user_override or get_cached_session_user()
-            is_org_admin = bool(session_user and session_user.primaryRole == "admin")
-            direct_endpoint = "/api/v1/settings/org-ai-config/runtime-secret"
-            try:
-                direct_payload = cloud_request("GET", direct_endpoint, bypass_circuit_breaker=True)
-                if isinstance(direct_payload, dict) and _apply_secret_payload(direct_payload, proxy_mode="local_direct"):
-                    return
-            except Exception as direct_exc:
-                logger.info("[cloud-ai-sync] runtime secret unavailable, will fallback: %s", str(direct_exc)[:160])
-            if not is_org_admin:
-                _apply_proxy_status_from_cloud()
-                return
-            secret_payload = cloud_request("GET", "/api/v1/settings/org-ai-config/secret", bypass_circuit_breaker=True)
-            if not isinstance(secret_payload, dict):
-                _cloud_ai_sync_status.clear()
-                _cloud_ai_sync_status.update({
-                    "state": "failed",
-                    "at": now_iso(),
-                    "reason": "云端响应非 JSON 对象",
-                })
-                logger.warning("[cloud-ai-sync] pull failed: non-dict payload")
-                return
-            if _apply_secret_payload(secret_payload, proxy_mode="local_direct"):
-                return
-            provider = str(secret_payload.get("aiProvider", "")).strip()
-            provider_label = str(secret_payload.get("aiProviderLabel", "")).strip()
-            model = str(secret_payload.get("aiModel", "")).strip()
-            base_url = str(secret_payload.get("aiBaseUrl", "")).strip()
-            if provider and provider != "mock":
-                _cloud_ai_sync_status.clear()
-                _cloud_ai_sync_status.update({
-                    "state": "failed",
-                    "at": now_iso(),
-                    "reason": "云端组织 AI API Key 为空，未覆盖本机",
-                    "provider": provider or None,
-                    "providerLabel": provider_label or None,
-                    "model": model or None,
-                    "baseUrl": base_url or None,
-                    "hasApiKey": False,
-                })
+            return result
         except Exception as exc:
-            _cloud_ai_sync_status.clear()
-            _cloud_ai_sync_status.update({
-                "state": "failed",
-                "at": now_iso(),
-                "reason": str(exc)[:200] or exc.__class__.__name__,
-            })
-            logger.warning("[cloud-ai-sync] pull failed: %s", exc)
+            health = state.ai.get_health()
+            cached_ready = (
+                previous.get("state") == "ready_direct"
+                and previous.get("organizationId") == (sync_context.organization_id if sync_context else "")
+                and health.ready
+                and bool(health.fingerprint)
+            )
+            error_message = str(getattr(exc, "detail", exc) or exc.__class__.__name__)[:200]
+            logger.warning("[org-ai-runtime] sync failed sandbox=%s: %s", sandbox_id, error_message)
+            if cached_ready:
+                cached_updates = dict(previous)
+                cached_updates.update(
+                    state="ready_direct",
+                    lastError=error_message,
+                    usingCachedConfig=True,
+                )
+                return _write_org_ai_runtime_status(sandbox_id, **cached_updates)
+            return _write_org_ai_runtime_status(
+                sandbox_id,
+                state="error",
+                organizationId=sync_context.organization_id if sync_context else "",
+                fingerprint=None,
+                lastError=error_message,
+                usingCachedConfig=False,
+            )
+        finally:
+            lock.release()
 
     def _push_current_ai_config_to_cloud() -> dict[str, object]:
-        """Push the locally-configured AI (incl. Keychain API key) to the cloud org config.
-
-        Returns a status dict describing the outcome. Updates _cloud_ai_sync_status
-        in the same shape used by the pull path so the settings response can surface
-        a uniform diagnostic regardless of sync direction. Never logs the raw key.
-        """
+        """Upload the active sandbox's direct AI config without exposing the key."""
+        sandbox_id = get_active_sandbox_id(state.db)
         provider = state.ai.current_provider()
         provider_label = state.ai.current_provider_label()
         base_url = state.ai.current_base_url()
         model = state.ai.current_model()
+
+        def finish(result: dict[str, object]) -> dict[str, object]:
+            return _write_last_cloud_ai_sync_status(sandbox_id, result)
+
         if state.ai._is_local_base_url(base_url):  # type: ignore[attr-defined]
-            _cloud_ai_sync_status.clear()
-            _cloud_ai_sync_status.update({
+            return finish({
                 "state": "skipped",
                 "at": now_iso(),
                 "reason": "当前为本机共享模型，不上传到云端组织 AI 配置",
@@ -32692,11 +32837,8 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 "baseUrl": base_url or None,
                 "hasApiKey": False,
             })
-            logger.info("[cloud-ai-sync] push skipped: local device model baseUrl=%s", base_url or "<empty>")
-            return dict(_cloud_ai_sync_status)
         if not provider or provider == "mock":
-            _cloud_ai_sync_status.clear()
-            _cloud_ai_sync_status.update({
+            return finish({
                 "state": "skipped",
                 "at": now_iso(),
                 "reason": "本机当前 provider 为空或为 mock，未上传",
@@ -32706,23 +32848,18 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 "baseUrl": base_url or None,
                 "hasApiKey": False,
             })
-            logger.info("[cloud-ai-sync] push skipped: provider=%s", provider or "<empty>")
-            return dict(_cloud_ai_sync_status)
         api_key = state.ai.export_current_api_key()
         if not api_key:
-            _cloud_ai_sync_status.clear()
-            _cloud_ai_sync_status.update({
+            return finish({
                 "state": "skipped",
                 "at": now_iso(),
-                "reason": "本机 Keychain 内未配置 API Key，未上传",
+                "reason": "当前设备的系统凭据存储中没有 API Key，未上传",
                 "provider": provider,
                 "providerLabel": provider_label or None,
                 "model": model or None,
                 "baseUrl": base_url or None,
                 "hasApiKey": False,
             })
-            logger.info("[cloud-ai-sync] push skipped: no api_key in keychain for provider=%s", provider)
-            return dict(_cloud_ai_sync_status)
         local_fingerprint = state.ai.get_health().fingerprint
         try:
             response = cloud_request(
@@ -32740,8 +32877,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             )
             if not isinstance(response, dict):
                 raise RuntimeError("云端响应非 JSON 对象")
-            _cloud_ai_sync_status.clear()
-            _cloud_ai_sync_status.update({
+            result = finish({
                 "state": "uploaded",
                 "at": now_iso(),
                 "reason": None,
@@ -32752,7 +32888,23 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 "hasApiKey": True,
                 "fingerprint": local_fingerprint or None,
             })
-            state.ai.invalidate_org_cloud_proxy_cache()
+            runtime = _read_org_ai_runtime_status(sandbox_id)
+            _write_org_ai_runtime_status(
+                sandbox_id,
+                **{
+                    **runtime,
+                    "state": "ready_direct",
+                    "organizationId": str(response.get("orgId") or runtime.get("organizationId") or ""),
+                    "provider": provider,
+                    "providerLabel": provider_label,
+                    "model": model,
+                    "configVersion": str(response.get("configVersion") or runtime.get("configVersion") or ""),
+                    "fingerprint": local_fingerprint or runtime.get("fingerprint"),
+                    "syncedAt": now_iso(),
+                    "lastError": None,
+                    "usingCachedConfig": False,
+                },
+            )
             logger.info(
                 "[cloud-ai-sync] pushed: provider=%s model=%s baseUrl=%s fingerprint=%s",
                 provider,
@@ -32760,9 +32912,9 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 base_url or "<empty>",
                 local_fingerprint or "<none>",
             )
+            return result
         except HTTPException as exc:
-            _cloud_ai_sync_status.clear()
-            _cloud_ai_sync_status.update({
+            return finish({
                 "state": "failed",
                 "at": now_iso(),
                 "reason": f"HTTP {exc.status_code}: {str(exc.detail)[:200]}",
@@ -32771,10 +32923,8 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 "hasApiKey": True,
                 "fingerprint": local_fingerprint or None,
             })
-            logger.warning("[cloud-ai-sync] push failed: HTTP %s: %s", exc.status_code, exc.detail)
         except Exception as exc:
-            _cloud_ai_sync_status.clear()
-            _cloud_ai_sync_status.update({
+            return finish({
                 "state": "failed",
                 "at": now_iso(),
                 "reason": str(exc)[:200] or exc.__class__.__name__,
@@ -32783,8 +32933,6 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 "hasApiKey": True,
                 "fingerprint": local_fingerprint or None,
             })
-            logger.warning("[cloud-ai-sync] push failed: %s", exc)
-        return dict(_cloud_ai_sync_status)
 
     _cloud_object_storage_sync_status: dict[str, object] = {"state": "never"}
 
@@ -32955,8 +33103,12 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                     degraded=True,
                 )
             raise
-        import threading
-        threading.Thread(target=_sync_org_ai_config_from_cloud, daemon=True).start()
+        sync_context = _capture_active_scoped_cloud_context()
+        Thread(
+            target=lambda: _sync_org_ai_config_from_cloud(user, context=sync_context),
+            daemon=True,
+            name="org-ai-runtime-auth-me",
+        ).start()
         threading.Thread(target=_sync_object_storage_config_from_cloud, daemon=True).start()
         return AuthStateResponse(authenticated=True, user=user, sessionMode="cloud")
 
@@ -33959,7 +34111,12 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         _bind_current_local_identity_to_cloud(user, local_identity_before_cloud)
         _ensure_local_organization_workspace_from_cloud_membership()
         _sync_organization_bootstrap_after_auth()
-        Thread(target=lambda: _sync_org_ai_config_from_cloud(user), daemon=True, name="cloud-ai-sync-auth").start()
+        sync_context = _capture_active_scoped_cloud_context()
+        Thread(
+            target=lambda: _sync_org_ai_config_from_cloud(user, context=sync_context),
+            daemon=True,
+            name="cloud-ai-sync-auth",
+        ).start()
         Thread(target=_sync_object_storage_config_from_cloud, daemon=True, name="cloud-object-storage-sync-auth").start()
         return AuthStateResponse(authenticated=True, user=user, sessionMode="cloud")
 
@@ -40314,8 +40471,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 key for key in safe_payload.get("clearAiModelProfileApiKeys", []) if str(key).strip()
             ]
         log_activity("settings.update", "settings", "app", safe_payload)
-        # admin 双写：若当前会话是组织管理员，把刚刚保存的本机 AI 配置 fire-and-forget 上传到云端组织 AI 配置。
-        # 失败不影响本机保存（异步执行）；状态写入 _cloud_ai_sync_status，前端通过 settings 响应感知。
+        # 组织管理员保存后同步上传；失败不影响本机保存，结果按当前 sandbox 记录。
         if current_session_is_admin():
             should_push = (
                 (payload.apiKey is not None and str(payload.apiKey).strip())
@@ -40340,6 +40496,18 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             raise HTTPException(status_code=403, detail="仅组织管理员可上传组织 AI 配置到云端。")
         result = _push_current_ai_config_to_cloud()
         return LastCloudAiSyncStatusRecord(**result)
+
+    @app.get("/api/v1/settings/org-ai-runtime", response_model=OrgAiRuntimeStatusRecord)
+    def get_org_ai_runtime_status() -> OrgAiRuntimeStatusRecord:
+        return OrgAiRuntimeStatusRecord(**_read_org_ai_runtime_status())
+
+    @app.post("/api/v1/settings/org-ai-runtime/sync", response_model=OrgAiRuntimeStatusRecord)
+    def sync_org_ai_runtime() -> OrgAiRuntimeStatusRecord:
+        result = _sync_org_ai_config_from_cloud(
+            context=_capture_active_scoped_cloud_context(),
+            wait_for_existing=True,
+        )
+        return OrgAiRuntimeStatusRecord(**result)
 
     @app.get("/api/v1/settings/tasks", response_model=TaskSettingsRecord)
     def get_task_settings() -> TaskSettingsRecord:
@@ -52843,15 +53011,31 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
     def _packaged_workspace_chat_ai_unavailable_detail() -> str | None:
         if BACKEND_RUNTIME_MODE != "packaged":
             return None
+        try:
+            workspace_context = load_active_workspace_context(state.db)
+        except Exception:
+            workspace_context = None
+        if workspace_context is not None and workspace_context.kind == "organization":
+            runtime = _read_org_ai_runtime_status(workspace_context.sandbox_id)
+            if runtime.get("state") != "ready_direct":
+                sync_context = _capture_active_scoped_cloud_context()
+                if sync_context is not None:
+                    _sync_org_ai_config_from_cloud(context=sync_context, wait_for_existing=True)
+                    runtime = _read_org_ai_runtime_status(workspace_context.sandbox_id)
+            if runtime.get("state") != "ready_direct":
+                return str(runtime.get("lastError") or "组织 AI 未就绪，请点击左下角“大模型”重新同步组织配置。")
         ai_health = state.ai.get_health()
+        if ai_health.provider == "mock" or not ai_health.ready or not str(ai_health.fingerprint or "").strip():
+            sync_context = _capture_active_scoped_cloud_context()
+            if sync_context is not None:
+                _sync_org_ai_config_from_cloud(context=sync_context)
+                ai_health = state.ai.get_health()
         if ai_health.provider == "mock":
-            return "还没有配置真实大模型。请先到系统设置的 AI 与云端填写 Base URL、模型名和 API Key。"
+            return "组织 AI 未就绪，请点击左下角“大模型”重新同步组织配置。"
         if not ai_health.ready:
             return ai_health.detail or "当前大模型配置未完成，暂时不能生成正式回答。"
-        if str(getattr(ai_health, "credential_source", "") or "") == "organization_cloud_proxy":
-            return None
         if not str(ai_health.fingerprint or "").strip():
-            return f"{state.ai.model_label(ai_health.provider, ai_health.model)} API Key 未配置，暂时不能生成正式回答。"
+            return f"{state.ai.model_label(ai_health.provider, ai_health.model)} 的组织运行凭据尚未同步。"
         return None
 
     @app.post("/api/v1/clients/{client_id}/workspace/chat/start", response_model=ChatStartResponse)

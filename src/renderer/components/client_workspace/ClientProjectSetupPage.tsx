@@ -1,5 +1,5 @@
 import React from 'react';
-import { FolderOpen, UploadCloud } from 'lucide-react';
+import { ArrowRight, FolderOpen, UploadCloud } from 'lucide-react';
 
 import type { ClientDnaModule, KnowledgeJob, KnowledgeStatus, ProjectFlow, ProjectFlowPayload, ProjectModule, ProjectModulePayload } from '../../../shared/types';
 
@@ -47,6 +47,7 @@ export function ClientProjectSetupPage({
   latestImportFeedback,
   onImportFiles,
   onImportFolder,
+  onContinueWorkspace,
 }: ClientProjectSetupPageProps) {
   const latestImportToneClasses = latestImportFeedback?.tone === 'error'
     ? 'border-rose-200 bg-rose-50 text-rose-700'
@@ -72,6 +73,17 @@ export function ClientProjectSetupPage({
         >
           <FolderOpen size={17} />
           导入文件夹
+        </button>
+      </div>
+
+      <div className="flex justify-end">
+        <button
+          type="button"
+          onClick={onContinueWorkspace}
+          className="inline-flex items-center gap-2 rounded-xl px-3 py-2 text-[13px] font-semibold text-[#4A63CF] transition-colors hover:bg-[#EEF3FF] hover:text-[#3652c9]"
+        >
+          暂不导入，直接提问
+          <ArrowRight size={15} />
         </button>
       </div>
 

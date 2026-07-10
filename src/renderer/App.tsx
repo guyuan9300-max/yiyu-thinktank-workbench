@@ -146,6 +146,7 @@ import type {
   MentionCandidate,
   Operator,
   OrgAdminClaimStatus,
+  OrgAiRuntimeStatus,
   OrgMembershipSummary,
   OfficialPushUpdatePayload,
   OrgWritingNorm,
@@ -463,6 +464,8 @@ import {
   updateProjectModule,
   updateSettings,
   syncOrgAiConfigToCloud,
+  getOrgAiRuntimeStatus,
+  syncOrgAiRuntime,
   updateClientDnaDocument,
   updateHandbookSettings,
   updateOrgModelProfile,
@@ -7666,6 +7669,8 @@ export default function App() {
   const [departmentOptions, setDepartmentOptions] = useState<DepartmentOption[]>([]);
   const [employeeReviews, setEmployeeReviews] = useState<EmployeeRecord[]>([]);
   const [settingsState, setSettingsState] = useState<AppSettings | null>(null);
+  const [orgAiRuntimeStatus, setOrgAiRuntimeStatus] = useState<OrgAiRuntimeStatus | null>(null);
+  const [orgAiRuntimeSyncing, setOrgAiRuntimeSyncing] = useState(false);
   const [taskSettingsState, setTaskSettingsState] = useState<TaskSettings | null>(null);
   const [orgModelState, setOrgModelState] = useState<OrgModelSettings>(EMPTY_ORG_MODEL_SETTINGS);
   const [agentWorklogs, setAgentWorklogs] = useState<AgentWorklog[]>([]);
@@ -8760,6 +8765,7 @@ export default function App() {
     setActiveWorkingDocuments([]);
     setClientWorkspaceSurfaceModeRequest(null);
     setTaskSettingsState(null);
+    setOrgAiRuntimeStatus(null);
     setReviewDashboard(null);
     setWeeklyOverviewRefreshStatus(null);
     setReviewHistory([]);
@@ -8865,6 +8871,12 @@ export default function App() {
     } else {
       markWorkspaceRuntime('switching', `正在加载 ${nextActiveWorkspace?.name || '目标'} 工作空间数据…`);
     }
+    markWorkspaceRuntime('switching', `正在同步 ${nextActiveWorkspace?.name || '目标'} 的组织 AI 配置…`);
+    const aiRuntime = await loadOrgAiRuntimeBlock({ sync: true, transition: token, timeoutMs: 15000 }).catch(() => null);
+    if (!aiRuntime && shouldApplyWorkspaceLoad(token)) {
+      await loadOrgAiRuntimeBlock({ transition: token }).catch(() => null);
+    }
+    if (!shouldApplyWorkspaceLoad(token)) return;
     markWorkspaceRuntime('switching', `正在同步 ${nextActiveWorkspace?.name || '目标'} 的成员、部门和清单…`);
     await Promise.all([
       loadOrgMembershipBlock({ transition: token }).catch(() => DEFAULT_ORG_MEMBERSHIP_SUMMARY),
@@ -9768,6 +9780,73 @@ export default function App() {
       );
     }
     return { settings: response.settings, workspaces };
+  }
+
+  async function loadOrgAiRuntimeBlock(options?: {
+    sync?: boolean;
+    transition?: WorkspaceTransitionToken;
+    timeoutMs?: number;
+  }) {
+    const startedSandboxId = options?.transition?.sandboxId || currentActiveSandboxId();
+    const request = options?.sync ? syncOrgAiRuntime() : getOrgAiRuntimeStatus();
+    let timer: number | null = null;
+    try {
+      const response = options?.timeoutMs
+        ? await Promise.race<OrgAiRuntimeStatus | null>([
+            request,
+            new Promise<null>((resolve) => {
+              timer = window.setTimeout(() => resolve(null), options.timeoutMs);
+            }),
+          ])
+        : await request;
+      if (response && shouldApplyWorkspaceLoad(options?.transition, startedSandboxId)) {
+        setOrgAiRuntimeStatus(response);
+      }
+      if (options?.sync && (!response || response.state === 'syncing')) {
+        void (async () => {
+          for (let attempt = 0; attempt < 8; attempt += 1) {
+            await new Promise((resolve) => window.setTimeout(resolve, 1000));
+            if (!shouldApplyWorkspaceLoad(options.transition, startedSandboxId)) return;
+            try {
+              const latest = await getOrgAiRuntimeStatus();
+              if (!shouldApplyWorkspaceLoad(options.transition, startedSandboxId)) return;
+              setOrgAiRuntimeStatus(latest);
+              if (latest.state !== 'syncing') {
+                await loadSettingsBlock({ applyRuntime: false, transition: options.transition });
+                return;
+              }
+            } catch {
+              // The manual retry entry remains available after the bounded poll.
+            }
+          }
+        })();
+      }
+      return response;
+    } finally {
+      if (timer !== null) window.clearTimeout(timer);
+    }
+  }
+
+  async function handleSyncOrgAiRuntime() {
+    if (orgAiRuntimeSyncing) return;
+    setOrgAiRuntimeSyncing(true);
+    setOrgAiRuntimeStatus((previous) => previous ? { ...previous, state: 'syncing', lastError: null } : previous);
+    try {
+      const result = await syncOrgAiRuntime();
+      setOrgAiRuntimeStatus(result);
+      await loadSettingsBlock({ applyRuntime: false });
+      if (result.state === 'ready_direct') {
+        flash('success', `${result.providerLabel || result.model || '组织 AI'} 已同步，可在本机直接使用`);
+      } else {
+        flash('error', result.lastError || '组织 AI 尚未就绪，请确认管理员已保存组织配置');
+      }
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : '组织 AI 配置同步失败';
+      setOrgAiRuntimeStatus((previous) => previous ? { ...previous, state: 'error', lastError: detail } : previous);
+      flash('error', detail);
+    } finally {
+      setOrgAiRuntimeSyncing(false);
+    }
   }
 
   async function loadLocalInputMemoryBlock(options?: { transition?: WorkspaceTransitionToken }) {
@@ -10768,6 +10847,12 @@ export default function App() {
         setWorkspacePersistedProposalDrafts([]);
         applyWorkspaceRuntime(loadedActiveWorkspace, nextAuth);
       } else if (hasCompleteSessionIdentity(nextAuth)) {
+        markWorkspaceRuntime('switching', `正在同步 ${loadedActiveWorkspace?.name || '当前组织'} 的组织 AI 配置…`);
+        const aiRuntime = await loadOrgAiRuntimeBlock({ sync: true, transition: transitionToken, timeoutMs: 15000 }).catch(() => null);
+        if (!aiRuntime && shouldApplyWorkspaceLoad(transitionToken)) {
+          await loadOrgAiRuntimeBlock({ transition: transitionToken }).catch(() => null);
+        }
+        if (!shouldApplyWorkspaceLoad(transitionToken)) return;
         markWorkspaceRuntime('switching', `正在同步 ${loadedActiveWorkspace?.name || '当前组织'} 的成员、部门和清单…`);
         const backgroundLoaders: Array<{ name: string; run: () => Promise<unknown> }> = [
           { name: 'task-settings', run: () => loadTaskSettingsBlock({ transition: transitionToken }) },
@@ -24690,18 +24775,6 @@ export default function App() {
         }
         return;
       }
-      let latestHealth = health;
-      try {
-        latestHealth = await probeLocalBackendHealth(1500);
-        setHealth(latestHealth);
-      } catch {
-        flash('error', '无法确认大模型配置状态，请稍后再试。');
-        return;
-      }
-      if (!isRealAiConfigured(latestHealth?.ai)) {
-        flash('error', getWorkspaceAiUnavailableReason(latestHealth?.ai));
-        return;
-      }
       const prompt = resolvedPrompt;
       const createdAt = new Date().toISOString();
       const draftThreadId = currentThreadId || CLIENT_CHAT_DRAFT_THREAD_ID;
@@ -24757,8 +24830,7 @@ export default function App() {
           creativityMode,
         );
         upsertAnalysisRun(started.analysisRun);
-        // 原子删队头：仅当本次是队列自动派发且发送已成功（analysisRun 已建）时，才把队头摘掉。
-        // 失败时（下方 catch）不删 → 队头保留，等本题答完 effect 重跑补发，避免"删了没发"丢题。
+        // 原子删队头：analysisRun 已创建，后续状态由该 run 自己收敛。
         if (options?.fromQueue && currentClientId) {
           const q = getWorkspaceQuestionQueue(currentClientId);
           if (q[0] === resolvedPrompt) setWorkspaceQuestionQueue(currentClientId, q.slice(1));
@@ -24783,6 +24855,12 @@ export default function App() {
       } catch (error) {
         clearAnalysisRunPollTimer();
         workspaceStartMessageAbortControllerRef.current = null;
+        // 自动派发一旦进入终态就必须移出活跃队列；失败记录已经显示在对话中，
+        // 不能把同一问题留在队头无限重试并阻塞下一条消息。
+        if (options?.fromQueue && currentClientId) {
+          const queue = getWorkspaceQuestionQueue(currentClientId);
+          if (queue[0] === resolvedPrompt) setWorkspaceQuestionQueue(currentClientId, queue.slice(1));
+        }
         if (error instanceof DOMException && error.name === 'AbortError') {
           setIsStartingMessage(false);
           setClientPendingQuestion(currentClientId, null);
@@ -24830,6 +24908,10 @@ export default function App() {
           },
         ]);
         flash('error', detail);
+        void Promise.all([
+          loadOrgAiRuntimeBlock(),
+          loadSettingsBlock({ applyRuntime: false }),
+        ]).catch(() => null);
       }
     };
 
@@ -24882,7 +24964,7 @@ export default function App() {
     // 队列自动派发：保持最新 sendMessage 在 ref，避免 useEffect 依赖 sendMessage 引起的 stale-closure。
     const sendMessageRef = useRef(sendMessage);
     sendMessageRef.current = sendMessage;
-    // 原子派发标志：正在派发队头时不重复派发（防 probe 窗口/依赖抖动导致双发）。
+    // 原子派发标志：正在派发队头时不重复派发。
     const dispatchingQueueRef = useRef(false);
     useEffect(() => {
       if (!currentClientId) return;
@@ -24891,10 +24973,7 @@ export default function App() {
       const queue = getWorkspaceQuestionQueue(currentClientId);
       if (queue.length === 0) return;
       const head = queue[0];
-      // 原子派发：不先删队头，发送成功（sendMessage 内 upsertAnalysisRun 处）才删队头；
-      // 失败/切页卸载则队头保留 → 题答完(hasPendingAnalysisRun 翻 false)时 effect 重跑补发，永不丢。
-      // 移除原 currentQueueLength 依赖：它本是为掩盖"删了没发"的自掐 bug 而加，根治后移除以消除自掐源
-      // （删队头→forceQueueRerender→currentQueueLength 变→cleanup 掐掉自己的发送）。
+      // sendMessage 会在成功或失败终态原子移除队头；失败记录留在对话中，下一题可继续派发。
       dispatchingQueueRef.current = true;
       void (async () => {
         try {
@@ -30234,6 +30313,7 @@ export default function App() {
         });
         setLocalInputMemoryState(nextLocalInputMemory);
         await Promise.all([loadSettingsBlock(), loadLogsBlock(), loadAuthBlock()]);
+        await loadOrgAiRuntimeBlock().catch(() => null);
         setDraft((prev) => ({
           ...prev,
           apiKey: nextLocalInputMemory.aiSettings.rememberApiKey ? nextLocalInputMemory.aiSettings.apiKey : '',
@@ -30304,7 +30384,7 @@ export default function App() {
     const handleSyncAiToCloud = async () => {
       try {
         const result = await syncOrgAiConfigToCloud();
-        await loadSettingsBlock();
+        await Promise.all([loadSettingsBlock(), loadOrgAiRuntimeBlock()]);
         if (result.state === 'uploaded') {
           flash('success', `本机 AI 配置已上传到云端组织${result.fingerprint ? `（指纹 ${result.fingerprint}）` : ''}`);
         } else if (result.state === 'skipped') {
@@ -30937,8 +31017,8 @@ export default function App() {
 
     const renderOverviewSection = () => {
       const cloudConfigured = Boolean(draft.cloudApiUrl.trim());
-      const orgCloudAiReady = health?.ai?.profileKey === 'org_cloud_proxy' && Boolean(health.ai.ready);
-      const textModelReady = orgCloudAiReady || (draft.aiProvider !== 'mock' && Boolean(draft.aiBaseUrl));
+      const organizationDirectReady = orgAiRuntimeStatus?.state === 'ready_direct';
+      const textModelReady = organizationDirectReady || (draft.aiProvider !== 'mock' && Boolean(draft.aiBaseUrl));
       const primaryReady = cloudConfigured && textModelReady;
       const ollamaReadyCount = AI_LOCAL_MODEL_PROFILE_ORDER.filter((k) => health?.aiProfiles?.[k]?.ready).length;
       const ollamaTotal = AI_LOCAL_MODEL_PROFILE_ORDER.length;
@@ -31001,13 +31081,13 @@ export default function App() {
               {renderStatusBlock({
                 label: '文字模型',
                 valueText: textModelReady
-                  ? (orgCloudAiReady
-                      ? (health?.ai.providerLabel || '组织云 AI')
+                  ? (organizationDirectReady
+                      ? (orgAiRuntimeStatus?.providerLabel || orgAiRuntimeStatus?.model || '组织 AI')
                       : (draft.aiProviderLabel || aiModelDisplayLabel(draft.aiProvider, draft.aiModel, draft.aiProviderLabel)))
                   : '未接入',
                 accent: textModelReady ? 'success' : 'warning',
-                helper: orgCloudAiReady
-                  ? '组织已配置，成员无需填写 Key'
+                helper: organizationDirectReady
+                  ? '组织配置已同步，本机直连'
                   : (textModelReady ? (draft.aiModel || '默认模型') : '问答 / 报告 / 洞察都依赖它'),
               })}
               {renderStatusBlock({
@@ -31131,7 +31211,7 @@ export default function App() {
                     />
                   </div>
 
-                  <div>
+                  {canManageSensitiveSettings && <div>
                     <p className="text-[11px] font-bold uppercase tracking-[0.12em] text-gray-500 mb-2">API Key（远程 AI 仅当前工作空间）</p>
                     <input
                       type="password"
@@ -31151,12 +31231,30 @@ export default function App() {
                       />
                       记住当前 API Key（仅当前工作空间）
                     </label>
-                  </div>
+                  </div>}
 
-                  {health?.ai?.profileKey === 'org_cloud_proxy' && (
-                    <p className="rounded-xl border border-emerald-100 bg-emerald-50 px-3 py-2 text-[11px] text-emerald-700">
-                      组织 AI 已启用：成员通过云端代调用管理员配置的大模型，不会下发或保存管理员 API Key。
-                    </p>
+                  {!isLocalSession && (
+                    <div className={`rounded-xl border px-3 py-2 text-[11px] ${organizationDirectReady ? 'border-emerald-100 bg-emerald-50 text-emerald-700' : 'border-amber-100 bg-amber-50 text-amber-700'}`}>
+                      <div className="flex flex-wrap items-center justify-between gap-2">
+                        <span>
+                          {orgAiRuntimeSyncing || orgAiRuntimeStatus?.state === 'syncing'
+                            ? '正在同步组织 AI 配置…'
+                            : organizationDirectReady
+                              ? `${orgAiRuntimeStatus?.providerLabel || orgAiRuntimeStatus?.model || '组织 AI'} · 本机直连`
+                              : `组织 AI 未就绪${orgAiRuntimeStatus?.lastError ? `：${orgAiRuntimeStatus.lastError}` : ''}`}
+                        </span>
+                        {!organizationDirectReady && (
+                          <button
+                            type="button"
+                            onClick={() => void handleSyncOrgAiRuntime()}
+                            disabled={orgAiRuntimeSyncing}
+                            className="font-semibold underline underline-offset-2 disabled:cursor-wait disabled:opacity-60"
+                          >
+                            重新同步
+                          </button>
+                        )}
+                      </div>
+                    </div>
                   )}
 
                   {isLocalSession && (
@@ -32837,8 +32935,11 @@ export default function App() {
           )}
           <SystemStatusPanel
             health={health}
+            aiRuntimeStatus={orgAiRuntimeStatus}
+            aiSyncing={orgAiRuntimeSyncing}
             backendOnline={!backendCompatibilityError && Boolean(health)}
             collapsed={isSidebarCollapsed}
+            onRetryAi={() => void handleSyncOrgAiRuntime()}
             onSelectSection={(section) => {
               setActiveTab('settings');
               setSettingsSection('overview');

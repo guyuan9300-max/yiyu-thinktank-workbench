@@ -107,8 +107,6 @@ AI_MODEL_PROFILE_CAPABILITIES = {
     "local_fast": "fast_structured",
 }
 AI_TASK_KINDS = {"default", "deep_analysis", "vision_ocr", "fast_structured"}
-ORG_CLOUD_PROXY_PROFILE_KEY = "org_cloud_proxy"
-ORG_CLOUD_PROXY_BASE_URL = "cloud://org-ai"
 
 
 def llm_display_label(provider: str | None, model: str | None = None, provider_label: str | None = None) -> str:
@@ -233,10 +231,6 @@ class AiService:
         self.secret_stores = secret_stores
         self._scoped_memory_secrets: dict[tuple[str, str], str] = {}
         self._last_model_snapshot: dict[str, str] = {}
-        self._org_cloud_proxy_status_loader: Callable[[], dict[str, object]] | None = None
-        self._org_cloud_proxy_chat_completion: Callable[[dict[str, object], float], dict[str, object]] | None = None
-        self._org_cloud_proxy_status_cache: dict[str, object] = {}
-        self._org_cloud_proxy_status_cache_expires_at = 0.0
         self._initialize_settings()
 
     def _initialize_settings(self) -> None:
@@ -584,86 +578,6 @@ class AiService:
             profile_api_keys={"online_primary": api_key} if api_key else None,
         )
 
-    def configure_org_cloud_proxy(
-        self,
-        *,
-        status_loader: Callable[[], dict[str, object]],
-        chat_completion: Callable[[dict[str, object], float], dict[str, object]],
-    ) -> None:
-        self._org_cloud_proxy_status_loader = status_loader
-        self._org_cloud_proxy_chat_completion = chat_completion
-        self.invalidate_org_cloud_proxy_cache()
-
-    def invalidate_org_cloud_proxy_cache(self) -> None:
-        self._org_cloud_proxy_status_cache = {}
-        self._org_cloud_proxy_status_cache_expires_at = 0.0
-
-    def _is_org_cloud_proxy_profile(self, profile: AiResolvedProfile) -> bool:
-        return profile.profile_key == ORG_CLOUD_PROXY_PROFILE_KEY
-
-    def _load_org_cloud_proxy_status(self) -> dict[str, object]:
-        loader = self._org_cloud_proxy_status_loader
-        if loader is None:
-            return {"available": False, "reason": "未连接组织云端。"}
-        now = perf_counter()
-        if self._org_cloud_proxy_status_cache and self._org_cloud_proxy_status_cache_expires_at > now:
-            return dict(self._org_cloud_proxy_status_cache)
-        try:
-            payload = loader()
-            status_payload = payload if isinstance(payload, dict) else {"available": False, "reason": "组织 AI 状态响应无效。"}
-        except Exception as exc:
-            status_payload = {"available": False, "reason": str(exc)[:200] or exc.__class__.__name__}
-        available = bool(status_payload.get("available"))
-        self._org_cloud_proxy_status_cache = dict(status_payload)
-        self._org_cloud_proxy_status_cache_expires_at = now + (45.0 if available else 12.0)
-        return dict(status_payload)
-
-    def _org_cloud_proxy_profile(self) -> AiResolvedProfile | None:
-        if self._org_cloud_proxy_chat_completion is None:
-            return None
-        status_payload = self._load_org_cloud_proxy_status()
-        if not bool(status_payload.get("available")):
-            return None
-        model = str(status_payload.get("aiModel") or "").strip()
-        if not model:
-            return None
-        provider_label = str(status_payload.get("aiProviderLabel") or "").strip() or "组织云 AI"
-        return AiResolvedProfile(
-            profile_key=ORG_CLOUD_PROXY_PROFILE_KEY,
-            provider=OPENAI_COMPATIBLE_PROVIDER,
-            provider_label=provider_label,
-            base_url=ORG_CLOUD_PROXY_BASE_URL,
-            model=model,
-            api_key="",
-            credential_source="organization_cloud_proxy",
-            fingerprint=None,
-            capability="online_primary",
-            is_local=False,
-        )
-
-    def _with_org_cloud_proxy_fallback(self, candidates: list[AiResolvedProfile], mode: str) -> list[AiResolvedProfile]:
-        if mode == "local_only":
-            return candidates
-        has_usable_personal_ai = any(
-            self._profile_is_usable(candidate)
-            and candidate.provider != MOCK_PROVIDER
-            and not self._is_org_cloud_proxy_profile(candidate)
-            for candidate in candidates
-        )
-        if has_usable_personal_ai:
-            return candidates
-        proxy_profile = self._org_cloud_proxy_profile()
-        if proxy_profile is None:
-            return candidates
-        insert_at = next((index for index, candidate in enumerate(candidates) if candidate.provider == MOCK_PROVIDER), len(candidates))
-        return [*candidates[:insert_at], proxy_profile, *candidates[insert_at:]]
-
-    def _invoke_org_cloud_proxy_chat_completion(self, payload: dict[str, object], timeout_seconds: float) -> dict[str, object]:
-        invoker = self._org_cloud_proxy_chat_completion
-        if invoker is None:
-            raise RuntimeError("组织云 AI 代理尚未初始化。")
-        return invoker(payload, timeout_seconds)
-
     def current_provider(self) -> str:
         provider = self._get_ai_setting("ai_provider", DEFAULT_PROVIDER)
         return provider if provider in DEFAULT_MODELS else DEFAULT_PROVIDER
@@ -700,6 +614,28 @@ class AiService:
         if not store:
             return ""
         return str(store.get_api_key() or "").strip()
+
+    def clear_organization_direct_credentials(self) -> None:
+        """Disable remote credentials for the active sandbox without touching device-local models."""
+        current_base_url = self.current_base_url()
+        if current_base_url and not self._is_local_base_url(current_base_url):
+            store = self._store_for(self.current_provider(), base_url=current_base_url)
+            if store:
+                store.delete_api_key()
+            self._set_ai_setting("ai_provider", MOCK_PROVIDER)
+            self._set_ai_setting("ai_provider_label", PROVIDER_LABELS[MOCK_PROVIDER])
+            self._set_ai_setting("ai_base_url", "")
+            self._set_ai_setting("ai_model", DEFAULT_MODELS[MOCK_PROVIDER])
+
+        profiles = self._read_profile_settings()
+        online_profile = profiles.get("online_primary")
+        if online_profile is not None:
+            profile_base_url = str(online_profile.get("baseUrl") or online_profile.get("base_url") or "")
+            profile_store = self._store_for(self._profile_store_key("online_primary"), base_url=profile_base_url)
+            if profile_store:
+                profile_store.delete_api_key()
+            profiles["online_primary"] = {**online_profile, "enabled": False}
+            self._set_ai_setting(AI_MODEL_PROFILES_SETTING, json.dumps(profiles, ensure_ascii=False))
 
     def model_label(self, provider: str | None = None, model: str | None = None) -> str:
         target_provider = provider or self.current_provider()
@@ -858,8 +794,6 @@ class AiService:
         )
 
     def _profile_is_usable(self, profile: AiResolvedProfile) -> bool:
-        if self._is_org_cloud_proxy_profile(profile):
-            return self._org_cloud_proxy_chat_completion is not None
         if profile.provider == MOCK_PROVIDER:
             return True
         if not profile.base_url or not profile.model:
@@ -870,21 +804,6 @@ class AiService:
 
     def _profile_to_health(self, profile: AiResolvedProfile) -> AiHealth:
         label = llm_display_label(profile.provider, profile.model, profile.provider_label)
-        if self._is_org_cloud_proxy_profile(profile):
-            status_payload = self._load_org_cloud_proxy_status()
-            ready = bool(status_payload.get("available")) and self._org_cloud_proxy_chat_completion is not None
-            return AiHealth(
-                provider=profile.provider,
-                provider_label=profile.provider_label or "组织云 AI",
-                base_url=profile.base_url,
-                model=profile.model,
-                ready=ready,
-                detail="组织 AI 已启用，成员通过云端代调用，不下发管理员 API Key。" if ready else str(status_payload.get("reason") or "组织 AI 暂不可用。"),
-                credential_source="organization_cloud_proxy",
-                fingerprint=None,
-                profile_key=profile.profile_key,
-                mode=self.current_ai_model_mode(),
-            )
         if profile.provider == MOCK_PROVIDER:
             return AiHealth(
                 provider=profile.provider,
@@ -987,7 +906,7 @@ class AiService:
             return [resolved]
         mode = self.current_ai_model_mode()
         if not self.advanced_ai_routing_enabled():
-            return self._with_org_cloud_proxy_fallback([self._unified_profile()], mode)
+            return [self._unified_profile()]
         settings = self.current_ai_model_profiles()
         candidates: list[AiResolvedProfile] = []
         seen: set[str] = set()
@@ -1004,7 +923,7 @@ class AiService:
         unified = self._unified_profile()
         if mode != "local_only" or unified.is_local or unified.provider == MOCK_PROVIDER:
             candidates.append(unified)
-        return self._with_org_cloud_proxy_fallback(candidates, mode)
+        return candidates
 
     def get_health(self, *, task_kind: str = "default") -> AiHealth:
         if self.current_provider() == OPENCLAW_PROVIDER:
@@ -1040,9 +959,6 @@ class AiService:
             profile = self._profile_from_config(key, value)
             if profile is not None:
                 profiles[key] = profile
-        org_cloud_proxy = self._org_cloud_proxy_profile()
-        if org_cloud_proxy is not None:
-            profiles[ORG_CLOUD_PROXY_PROFILE_KEY] = org_cloud_proxy
         return {key: self._profile_to_health(profile) for key, profile in profiles.items()}
 
     def resolved_model_snapshot(self, *, task_kind: str = "default") -> dict[str, str]:
@@ -1430,7 +1346,7 @@ class AiService:
         prompt: str,
         system_instruction: str,
         *,
-        timeout_seconds: float = 45.0,
+        timeout_seconds: float = 30.0,
         max_tokens: int = 700,
     ) -> str:
         """Generate a short real-model answer without workspace evidence retrieval."""
@@ -5007,6 +4923,8 @@ class AiService:
         base_store = self.secret_stores.get(provider)
         if base_store is None:
             return None
+        if getattr(base_store, "get_source_label", lambda: "")() == "unavailable":
+            return base_store
         account_name, scope_kind = self._secret_scope_account(base_url)
         if hasattr(base_store, "service_name"):
             try:
@@ -5387,23 +5305,6 @@ class AiService:
             if enable_thinking:
                 payload["enable_thinking"] = True
 
-            if self._is_org_cloud_proxy_profile(profile):
-                try:
-                    result = self._invoke_org_cloud_proxy_chat_completion(payload, timeout_seconds + HTTP_TIMEOUT_GRACE_SECONDS)
-                    text = (
-                        result.get("choices", [{}])[0]
-                        .get("message", {})
-                        .get("content", "")
-                    )
-                    self._record_resolved_profile(profile)
-                    if response_schema:
-                        return self._load_relaxed_json(text)
-                    return text
-                except Exception as error:
-                    detail = self._format_provider_error(error) if hasattr(self, "_format_provider_error") else str(error)
-                    errors.append(f"{display_label} 调用失败：{detail}")
-                    continue
-
             def _do_request() -> dict:
                 with httpx.Client(timeout=self._build_http_timeout(timeout_seconds)) as _client:
                     _resp = _client.post(
@@ -5414,15 +5315,20 @@ class AiService:
                     _resp.raise_for_status()
                     return _resp.json()
 
-            # Tier1 优化:同一候选最多尝试 3 次(初次 + 2 次重试),专治瞬时
-            # 429 / 5xx / 网络抖动。硬超时立即跳出换下一候选,不浪费时间重试。
+            # 同一候选允许瞬时失败重试，但所有尝试共享一个总预算，
+            # 避免一次短问答因连续重试被拖到九十秒以上。
             candidate_attempts = 3
             candidate_backoff = (1.0, 2.0)
+            candidate_deadline = time.monotonic() + hard_limit
             for attempt in range(1, candidate_attempts + 1):
+                remaining_budget = candidate_deadline - time.monotonic()
+                if remaining_budget <= 0:
+                    errors.append(f"{display_label} 总时限已到（{hard_limit:.0f}秒）")
+                    break
                 pool = ThreadPoolExecutor(max_workers=1)
                 future = pool.submit(_do_request)
                 try:
-                    result = future.result(timeout=hard_limit)
+                    result = future.result(timeout=max(0.1, remaining_budget))
                     text = (
                         result.get("choices", [{}])[0]
                         .get("message", {})
@@ -5440,6 +5346,9 @@ class AiService:
                     detail = self._format_provider_error(error) if hasattr(self, "_format_provider_error") else str(error)
                     if _is_transient_llm_error(detail) and attempt < candidate_attempts:
                         backoff = candidate_backoff[min(attempt - 1, len(candidate_backoff) - 1)]
+                        if time.monotonic() + backoff >= candidate_deadline:
+                            errors.append(f"{display_label} 总时限已到（{hard_limit:.0f}秒）")
+                            break
                         logger.warning(
                             "[%s] transient error attempt=%d/%d backoff=%.1fs detail=%s",
                             display_label,
@@ -5528,34 +5437,6 @@ class AiService:
             }
             if enable_thinking:
                 payload["enable_thinking"] = True
-
-            if self._is_org_cloud_proxy_profile(profile):
-                proxy_payload = dict(payload)
-                proxy_payload["stream"] = False
-                try:
-                    result = self._invoke_org_cloud_proxy_chat_completion(proxy_payload, timeout_seconds + HTTP_TIMEOUT_GRACE_SECONDS)
-                    text = (
-                        result.get("choices", [{}])[0]
-                        .get("message", {})
-                        .get("content", "")
-                    )
-                    result_text = text if isinstance(text, str) else str(text or "")
-                    self._record_resolved_profile(profile)
-                    if on_reasoning_heartbeat:
-                        try:
-                            on_reasoning_heartbeat()
-                        except Exception:
-                            pass
-                    if on_token and result_text:
-                        try:
-                            on_token(result_text)
-                        except Exception:
-                            pass
-                    return result_text
-                except Exception as error:
-                    detail = self._format_provider_error(error) if hasattr(self, "_format_provider_error") else str(error)
-                    errors.append(f"{display_label} 调用失败：{detail}")
-                    continue
 
             accumulated: list[str] = []
             try:

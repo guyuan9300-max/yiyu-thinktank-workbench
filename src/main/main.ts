@@ -1057,6 +1057,7 @@ function backendEnv(extraEnv: NodeJS.ProcessEnv = {}) {
   if (!env.YIYU_WORKBENCH_DATA_DIR) {
     env.YIYU_WORKBENCH_DATA_DIR = fixedUserDataPath;
   }
+  env.YIYU_BACKEND_RUNTIME_MODE = app.isPackaged ? 'packaged' : 'dev';
   env.PYTHONDONTWRITEBYTECODE = '1';
   env.PYTHONNOUSERSITE = '1';
   env.PYTHONPYCACHEPREFIX = path.join(fixedUserDataPath, 'runtime', 'pycache');

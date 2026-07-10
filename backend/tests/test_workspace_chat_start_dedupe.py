@@ -185,9 +185,9 @@ def test_chat_start_allows_different_clients_to_have_active_runs(tmp_path: Path)
     assert len(executor.submissions) == 2
 
 
-def test_packaged_chat_start_allows_org_cloud_proxy_without_local_fingerprint(tmp_path: Path, monkeypatch) -> None:
+def test_packaged_chat_start_allows_direct_org_config_with_local_fingerprint(tmp_path: Path, monkeypatch) -> None:
     client = make_client(tmp_path)
-    client_id = create_test_client_record(client, "组织云代理客户")
+    client_id = create_test_client_record(client, "组织直连客户")
     executor = RecordingExecutor()
     client.app.state.app_state.chat_answer_executor = executor
 
@@ -198,13 +198,13 @@ def test_packaged_chat_start_allows_org_cloud_proxy_without_local_fingerprint(tm
         lambda: AiHealth(
             provider="openai_compatible",
             provider_label="豆包火山方舟",
-            base_url="cloud://org-ai",
+            base_url="https://ark.cn-beijing.volces.com/api/v3",
             model="doubao-seed-2-1-pro-260628",
             ready=True,
-            detail="组织 AI 已启用，成员通过云端代调用，不下发管理员 API Key。",
-            credential_source="organization_cloud_proxy",
-            fingerprint=None,
-            profile_key="org_cloud_proxy",
+            detail="组织 AI 配置已同步，本机直连。",
+            credential_source="keychain",
+            fingerprint="abc123def456",
+            profile_key="unified",
             mode="cloud",
         ),
     )
@@ -242,7 +242,7 @@ def test_packaged_chat_start_still_blocks_direct_provider_without_fingerprint(tm
     response = client.post(f"/api/v1/clients/{client_id}/workspace/chat/start", json={"prompt": "介绍这个客户"})
 
     assert response.status_code == 409
-    assert "API Key 未配置" in response.json()["detail"]
+    assert "组织运行凭据尚未同步" in response.json()["detail"]
 
 
 def test_short_connectivity_prompt_uses_lightweight_direct_path(tmp_path: Path, monkeypatch) -> None:

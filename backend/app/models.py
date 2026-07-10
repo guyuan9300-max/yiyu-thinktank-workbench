@@ -293,7 +293,7 @@ class HealthResponse(BaseModel):
 
 
 class LastCloudAiSyncStatusRecord(BaseModel):
-    state: Literal["never", "synced", "uploaded", "failed", "skipped", "proxy_available"] = "never"
+    state: Literal["never", "syncing", "ready_direct", "uploaded", "failed", "skipped", "not_ready", "error"] = "never"
     at: str | None = None
     reason: str | None = None
     provider: str | None = None
@@ -302,7 +302,19 @@ class LastCloudAiSyncStatusRecord(BaseModel):
     baseUrl: str | None = None
     hasApiKey: bool = False
     fingerprint: str | None = None
-    proxyMode: str | None = None
+class OrgAiRuntimeStatusRecord(BaseModel):
+    state: Literal["syncing", "ready_direct", "not_ready", "error"] = "not_ready"
+    source: Literal["organization_direct"] = "organization_direct"
+    sandboxId: str
+    organizationId: str = ""
+    provider: str = ""
+    providerLabel: str = ""
+    model: str = ""
+    configVersion: str = ""
+    fingerprint: str | None = None
+    syncedAt: str | None = None
+    lastError: str | None = None
+    usingCachedConfig: bool = False
 
 
 class SettingsResponse(BaseModel):
