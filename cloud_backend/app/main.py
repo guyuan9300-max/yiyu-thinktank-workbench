@@ -22162,7 +22162,7 @@ def create_app() -> FastAPI:
             collaborator_ids = [owner_id, *[item for item in collaborator_ids if item != owner_id]]
         collaborator_ids = list(dict.fromkeys(collaborator_ids))
         for user_id in ([owner_id] if owner_id else []) + collaborator_ids:
-            _get_user_or_404(state, user_id)
+            _get_org_user_or_404(state, current_user.organizationId, user_id)
         scope_mode = payload.scopeMode or "COLLAB_SHARED"
         requested_client_id = None if scope_mode == "PERSONAL_ONLY" else payload.clientId
         requested_event_line_id = None if scope_mode == "PERSONAL_ONLY" else payload.eventLineId
@@ -22252,7 +22252,7 @@ def create_app() -> FastAPI:
                 requested_project_flow_id,
                 scope_mode,
                 payload.priority,
-                payload.listId,
+                str(list_row["id"]),
                 payload.sourceType,
                 payload.sourceId,
                 business_category,
