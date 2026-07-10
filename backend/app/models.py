@@ -927,6 +927,8 @@ class DemoDataResponse(BaseModel):
     tasks: int
     topics: int
     handbookEntries: int
+    sandboxId: str
+    primaryClientId: str | None = None
 
 
 class ActivityLogRecord(BaseModel):

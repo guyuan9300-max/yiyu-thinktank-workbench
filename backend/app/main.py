@@ -57,7 +57,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from threading import Event, Lock, Thread
 from time import perf_counter
-from typing import Callable, Literal, cast
+from typing import Any, Callable, Literal, cast
 from urllib.parse import quote, unquote, urlparse, urlunparse
 from uuid import uuid4
 
@@ -1300,16 +1300,23 @@ THREAD_SYNC_DOC_PATH = PROJECT_ROOT / "docs" / "thread-sync.md"
 INTELLIGENCE_DEMO_SYNC_PATH = PROJECT_ROOT / ".yiyu-sync" / "intelligence-demo.json"
 SUPPORTED_IMPORT_EXTENSIONS = {".pdf", ".docx", ".md", ".txt", ".pptx", ".xlsx"}
 LEGACY_IMPORT_EXTENSIONS = {".json", ".csv"}
-DEMO_CLIENT_IDS = ("client_cffc", "client_star")
-DEMO_THREAD_IDS = ("thread_cffc", "thread_star")
-DEMO_GOAL_IDS = ("goal_1", "goal_2", "goal_3")
-DEMO_DNA_IDS = ("dna_1", "dna_2")
-DEMO_DOCUMENT_IDS = ("doc_1", "doc_2", "doc_3")
-DEMO_TASK_IDS = ("task_seed_1", "task_seed_2")
-DEMO_RADAR_IDS = ("radar_ai", "radar_fund")
-DEMO_CANDIDATE_IDS = ("cand_1", "cand_2")
-DEMO_HANDBOOK_IDS = ("hb_1",)
-DEMO_CHAT_MESSAGE_IDS = ("msg_seed_1",)
+DEMO_MANIFEST_PREFIX = "demo_dataset_manifest:"
+DEMO_MANIFEST_VERSION = 1
+DEMO_MANIFEST_MAX_BYTES = 16_384
+DEMO_MANIFEST_KEY_RE = re.compile(r"^demo_dataset_manifest:([0-9a-f]{32})$")
+DEMO_ID_GROUPS: tuple[tuple[str, str, int], ...] = (
+    ("clients", "client", 2),
+    ("chatThreads", "thread", 2),
+    ("goals", "goal", 3),
+    ("dnaTerms", "dna", 2),
+    ("documents", "document", 3),
+    ("tasks", "task", 2),
+    ("taskNotes", "task_note", 1),
+    ("topicRadars", "radar", 2),
+    ("topicCandidates", "candidate", 2),
+    ("handbookEntries", "handbook", 1),
+    ("chatMessages", "message", 1),
+)
 BACKEND_FEATURE_FLAGS = [
     "knowledge.vectorize-answer",
     "knowledge.reclass-events",
@@ -2967,192 +2974,647 @@ def _sql_placeholders(values: tuple[str, ...] | list[str]) -> str:
     return ",".join("?" for _ in values)
 
 
-def demo_data_loaded(db: Database) -> bool:
-    if db.get_setting("demo_data_loaded", "0") != "1":
+class DemoManifestError(ValueError):
+    pass
+
+
+@dataclass(frozen=True)
+class DemoDatasetManifest:
+    sandbox_id: str
+    key: str
+    token: str
+    created_at: str
+    primary_client_id: str
+    ids: dict[str, tuple[str, ...]]
+
+
+def _expected_demo_ids(token: str) -> dict[str, tuple[str, ...]]:
+    return {
+        group: tuple(f"demo_{prefix}_{token}_{index}" for index in range(1, count + 1))
+        for group, prefix, count in DEMO_ID_GROUPS
+    }
+
+
+def _strict_demo_json_object(pairs: list[tuple[str, object]]) -> dict[str, object]:
+    result: dict[str, object] = {}
+    for key, value in pairs:
+        if key in result:
+            raise DemoManifestError(f"演示数据清单包含重复字段: {key}")
+        result[key] = value
+    return result
+
+
+def _parse_demo_manifest(sandbox_id: str, key: str, raw_value: str) -> DemoDatasetManifest:
+    match = DEMO_MANIFEST_KEY_RE.fullmatch(key)
+    if not match:
+        raise DemoManifestError("演示数据清单键格式异常")
+    if len(raw_value.encode("utf-8")) > DEMO_MANIFEST_MAX_BYTES:
+        raise DemoManifestError("演示数据清单过大")
+    try:
+        payload = json.loads(raw_value, object_pairs_hook=_strict_demo_json_object)
+    except (json.JSONDecodeError, DemoManifestError) as exc:
+        raise DemoManifestError("演示数据清单 JSON 损坏") from exc
+    if not isinstance(payload, dict) or set(payload) != {"version", "token", "createdAt", "primaryClientId", "ids"}:
+        raise DemoManifestError("演示数据清单字段异常")
+    token = match.group(1)
+    if type(payload["version"]) is not int or payload["version"] != DEMO_MANIFEST_VERSION:
+        raise DemoManifestError("演示数据清单版本不受支持")
+    if payload["token"] != token:
+        raise DemoManifestError("演示数据清单 token 不一致")
+    created_at = payload["createdAt"]
+    if not isinstance(created_at, str) or not created_at or len(created_at) > 64:
+        raise DemoManifestError("演示数据清单时间异常")
+    try:
+        datetime.fromisoformat(created_at)
+    except ValueError as exc:
+        raise DemoManifestError("演示数据清单时间异常") from exc
+    raw_ids = payload["ids"]
+    expected_ids = _expected_demo_ids(token)
+    if not isinstance(raw_ids, dict) or set(raw_ids) != set(expected_ids):
+        raise DemoManifestError("演示数据清单实体分组异常")
+    parsed_ids: dict[str, tuple[str, ...]] = {}
+    seen_ids: set[str] = set()
+    for group, expected in expected_ids.items():
+        value = raw_ids[group]
+        if not isinstance(value, list) or any(not isinstance(item, str) for item in value):
+            raise DemoManifestError(f"演示数据清单 {group} 类型异常")
+        parsed = tuple(value)
+        if parsed != expected or len(set(parsed)) != len(parsed):
+            raise DemoManifestError(f"演示数据清单 {group} ID 异常")
+        if seen_ids.intersection(parsed):
+            raise DemoManifestError("演示数据清单 ID 重复")
+        seen_ids.update(parsed)
+        parsed_ids[group] = parsed
+    primary_client_id = payload["primaryClientId"]
+    if not isinstance(primary_client_id, str) or primary_client_id != expected_ids["clients"][0]:
+        raise DemoManifestError("演示数据清单主客户异常")
+    return DemoDatasetManifest(
+        sandbox_id=sandbox_id,
+        key=key,
+        token=token,
+        created_at=created_at,
+        primary_client_id=primary_client_id,
+        ids=parsed_ids,
+    )
+
+
+def _active_demo_sandbox_on_conn(conn: sqlite3.Connection) -> tuple[str, str]:
+    active_row = conn.execute(
+        "SELECT value FROM settings WHERE key = ?",
+        (ACTIVE_SANDBOX_SETTING_KEY,),
+    ).fetchone()
+    sandbox_id = str(active_row["value"] if active_row else "").strip()
+    sandbox = conn.execute(
+        """
+        SELECT id, kind, status, COALESCE(organization_id, '') AS organization_id
+          FROM sandboxes
+         WHERE id = ?
+           AND ((kind = 'organization' AND status = 'active') OR id = ?)
+        """,
+        (sandbox_id, DEFAULT_LOCAL_SANDBOX_ID),
+    ).fetchone()
+    if not sandbox:
+        raise DemoManifestError("当前工作空间不可用")
+    return sandbox_id, str(sandbox["organization_id"] or "")
+
+
+def _demo_manifests_on_conn(conn: sqlite3.Connection, sandbox_id: str) -> list[DemoDatasetManifest]:
+    rows = conn.execute(
+        """
+        SELECT sandbox_id, key, value
+          FROM sandbox_settings
+         WHERE sandbox_id = ?
+           AND substr(key, 1, ?) = ?
+         ORDER BY key ASC
+        """,
+        (sandbox_id, len(DEMO_MANIFEST_PREFIX), DEMO_MANIFEST_PREFIX),
+    ).fetchall()
+    manifests = [
+        _parse_demo_manifest(str(row["sandbox_id"]), str(row["key"]), str(row["value"]))
+        for row in rows
+    ]
+    all_ids: set[str] = set()
+    for manifest in manifests:
+        manifest_ids = {item for values in manifest.ids.values() for item in values}
+        if all_ids.intersection(manifest_ids):
+            raise DemoManifestError("多个演示数据清单存在重复 ID")
+        all_ids.update(manifest_ids)
+    return manifests
+
+
+def _demo_rows_by_id(
+    conn: sqlite3.Connection,
+    table: str,
+    ids: tuple[str, ...],
+) -> dict[str, sqlite3.Row]:
+    if not ids:
+        return {}
+    rows = conn.execute(
+        f"SELECT * FROM {table} WHERE id IN ({_sql_placeholders(ids)})",
+        ids,
+    ).fetchall()
+    return {str(row["id"]): row for row in rows}
+
+
+def _require_demo_row(condition: bool, message: str) -> None:
+    if not condition:
+        raise DemoManifestError(message)
+
+
+def _demo_row_is_local_only(row: sqlite3.Row) -> bool:
+    keys = set(row.keys())
+    if "sync_status" in keys and str(row["sync_status"] or "local") != "local":
         return False
-    placeholders = _sql_placeholders(DEMO_CLIENT_IDS)
-    return bool(db.scalar(f"SELECT COUNT(1) AS count FROM clients WHERE id IN ({placeholders})", DEMO_CLIENT_IDS))
+    for key in ("cloud_id", "last_synced_at", "last_cloud_version", "pending_sync_action"):
+        if key in keys and str(row[key] or "").strip():
+            return False
+    return True
+
+
+def _validate_demo_manifest_rows_on_conn(
+    conn: sqlite3.Connection,
+    manifest: DemoDatasetManifest,
+) -> dict[str, dict[str, sqlite3.Row]]:
+    ids = manifest.ids
+    tables = {
+        "clients": "clients",
+        "chatThreads": "chat_threads",
+        "goals": "goal_records",
+        "dnaTerms": "dna_terms",
+        "documents": "documents",
+        "tasks": "tasks",
+        "taskNotes": "task_notes",
+        "topicRadars": "topic_radars",
+        "topicCandidates": "topic_candidates",
+        "handbookEntries": "handbook_entries",
+        "chatMessages": "chat_messages",
+    }
+    rows = {group: _demo_rows_by_id(conn, table, ids[group]) for group, table in tables.items()}
+    client_ids = ids["clients"]
+    expected_names = ("[演示] 测试机构B", "[演示] 星辰科技")
+    for index, client_id in enumerate(client_ids):
+        row = rows["clients"].get(client_id)
+        if not row:
+            continue
+        _require_demo_row(str(row["sandbox_id"] or "") == manifest.sandbox_id, "演示客户已跨工作空间")
+        _require_demo_row(str(row["name"] or "") == expected_names[index], "演示客户已被改名")
+        _require_demo_row(_demo_row_is_local_only(row), "演示客户已进入云同步状态")
+    relation_groups: tuple[tuple[str, str, tuple[str, ...]], ...] = (
+        ("chatThreads", "client_id", (client_ids[0], client_ids[1])),
+        ("goals", "client_id", (client_ids[0], client_ids[0], client_ids[1])),
+        ("dnaTerms", "client_id", (client_ids[0], client_ids[1])),
+        ("documents", "client_id", (client_ids[0], client_ids[0], client_ids[1])),
+        ("taskNotes", "task_id", (ids["tasks"][1],)),
+        ("topicCandidates", "radar_id", (ids["topicRadars"][0], ids["topicRadars"][1])),
+        ("handbookEntries", "client_id", (client_ids[0],)),
+        ("chatMessages", "thread_id", (ids["chatThreads"][0],)),
+    )
+    for group, column, expected_values in relation_groups:
+        for entity_id, expected_value in zip(ids[group], expected_values):
+            row = rows[group].get(entity_id)
+            if row:
+                _require_demo_row(str(row[column] or "") == expected_value, f"演示数据关系异常: {group}.{column}")
+    for document_id, row in rows["documents"].items():
+        _require_demo_row(manifest.token in str(row["path"] or ""), f"演示文档路径异常: {document_id}")
+    for task_index, task_id in enumerate(ids["tasks"]):
+        row = rows["tasks"].get(task_id)
+        if not row:
+            continue
+        expected_client_id = client_ids[task_index]
+        _require_demo_row(str(row["sandbox_id"] or "") == manifest.sandbox_id, "演示任务已跨工作空间")
+        _require_demo_row(str(row["client_id"] or "") == expected_client_id, "演示任务客户关系异常")
+        _require_demo_row(str(row["source_id"] or "") == expected_client_id, "演示任务来源关系异常")
+        _require_demo_row(_demo_row_is_local_only(row), "演示任务已进入云同步状态")
+        task_list = conn.execute(
+            "SELECT sandbox_id, archived_at FROM task_lists WHERE id = ?",
+            (str(row["list_id"] or ""),),
+        ).fetchone()
+        _require_demo_row(
+            bool(task_list)
+            and str(task_list["sandbox_id"] or "") == manifest.sandbox_id
+            and not task_list["archived_at"],
+            "演示任务列表不属于当前工作空间",
+        )
+    for row in rows["topicRadars"].values():
+        _require_demo_row(str(row["sandbox_id"] or "") == manifest.sandbox_id, "演示雷达已跨工作空间")
+    for row in rows["handbookEntries"].values():
+        _require_demo_row(str(row["sandbox_id"] or "") == manifest.sandbox_id, "演示经验已跨工作空间")
+        _require_demo_row(_demo_row_is_local_only(row), "演示经验已进入云同步状态")
+    for row in rows["chatMessages"].values():
+        try:
+            evidence = json.loads(str(row["evidence_json"] or "[]"))
+        except json.JSONDecodeError as exc:
+            raise DemoManifestError("演示消息证据损坏") from exc
+        _require_demo_row(isinstance(evidence, list), "演示消息证据格式异常")
+        for item in evidence:
+            _require_demo_row(
+                isinstance(item, dict)
+                and str(item.get("documentId") or "") in ids["documents"]
+                and manifest.token in str(item.get("path") or ""),
+                "演示消息证据关系异常",
+            )
+    return rows
+
+
+def _declared_demo_tables(manifests: list[DemoDatasetManifest]) -> dict[str, set[str]]:
+    mapping = {
+        "clients": "clients",
+        "chatThreads": "chat_threads",
+        "goals": "goal_records",
+        "dnaTerms": "dna_terms",
+        "documents": "documents",
+        "tasks": "tasks",
+        "taskNotes": "task_notes",
+        "topicRadars": "topic_radars",
+        "topicCandidates": "topic_candidates",
+        "handbookEntries": "handbook_entries",
+        "chatMessages": "chat_messages",
+    }
+    declared = {table: set() for table in mapping.values()}
+    for manifest in manifests:
+        for group, table in mapping.items():
+            declared[table].update(manifest.ids[group])
+    return declared
+
+
+def _allowed_demo_references(manifests: list[DemoDatasetManifest]) -> set[tuple[str, str, str, str]]:
+    allowed: set[tuple[str, str, str, str]] = set()
+    for manifest in manifests:
+        ids = manifest.ids
+        for entity_id, client_id in zip(ids["chatThreads"], ids["clients"]):
+            allowed.add(("chat_threads", entity_id, "client_id", client_id))
+        for entity_id, client_id in zip(ids["goals"], (ids["clients"][0], ids["clients"][0], ids["clients"][1])):
+            allowed.add(("goal_records", entity_id, "client_id", client_id))
+        for group in ("dnaTerms", "documents"):
+            client_values = (ids["clients"][0], ids["clients"][1]) if group == "dnaTerms" else (ids["clients"][0], ids["clients"][0], ids["clients"][1])
+            table = "dna_terms" if group == "dnaTerms" else "documents"
+            for entity_id, client_id in zip(ids[group], client_values):
+                allowed.add((table, entity_id, "client_id", client_id))
+        for index, entity_id in enumerate(ids["tasks"]):
+            client_id = ids["clients"][index]
+            allowed.add(("tasks", entity_id, "client_id", client_id))
+            allowed.add(("tasks", entity_id, "source_id", client_id))
+        allowed.add(("task_notes", ids["taskNotes"][0], "task_id", ids["tasks"][1]))
+        for entity_id, radar_id in zip(ids["topicCandidates"], ids["topicRadars"]):
+            allowed.add(("topic_candidates", entity_id, "radar_id", radar_id))
+        allowed.add(("handbook_entries", ids["handbookEntries"][0], "client_id", ids["clients"][0]))
+        allowed.add(("chat_messages", ids["chatMessages"][0], "thread_id", ids["chatThreads"][0]))
+    return allowed
+
+
+def _quote_demo_identifier(value: str) -> str:
+    if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", value):
+        raise DemoManifestError("数据库结构包含无法审计的标识符")
+    return f'"{value}"'
+
+
+def _assert_no_external_demo_references_on_conn(
+    conn: sqlite3.Connection,
+    manifests: list[DemoDatasetManifest],
+) -> None:
+    declared = _declared_demo_tables(manifests)
+    allowed = _allowed_demo_references(manifests)
+    all_ids = tuple(sorted({item for manifest in manifests for values in manifest.ids.values() for item in values}))
+    placeholders = _sql_placeholders(all_ids)
+    table_rows = conn.execute(
+        "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name"
+    ).fetchall()
+    for table_row in table_rows:
+        table = str(table_row["name"])
+        quoted_table = _quote_demo_identifier(table)
+        columns = conn.execute(f"PRAGMA table_info({quoted_table})").fetchall()
+        column_names = {str(column["name"]) for column in columns}
+        row_id_expr = '"id"' if "id" in column_names else "NULL"
+        for column in columns:
+            column_name = str(column["name"])
+            if column_name != "id" and not column_name.endswith("_id"):
+                continue
+            quoted_column = _quote_demo_identifier(column_name)
+            matches = conn.execute(
+                f"SELECT {row_id_expr} AS __row_id, {quoted_column} AS __value FROM {quoted_table} "
+                f"WHERE {quoted_column} IN ({placeholders})",
+                all_ids,
+            ).fetchall()
+            for match in matches:
+                row_id = str(match["__row_id"] or "")
+                value = str(match["__value"] or "")
+                if column_name == "id" and row_id in declared.get(table, set()):
+                    continue
+                if (table, row_id, column_name, value) in allowed:
+                    continue
+                raise DemoManifestError(f"演示数据仍被外部记录引用: {table}.{column_name}")
+
+
+def _count_demo_rows_on_conn(conn: sqlite3.Connection, table: str, ids: tuple[str, ...]) -> int:
+    if not ids:
+        return 0
+    row = conn.execute(
+        f"SELECT COUNT(1) AS count FROM {table} WHERE id IN ({_sql_placeholders(ids)})",
+        ids,
+    ).fetchone()
+    return int(row["count"] or 0) if row else 0
+
+
+def _build_demo_data_response_on_conn(
+    conn: sqlite3.Connection,
+    sandbox_id: str,
+    manifests: list[DemoDatasetManifest],
+) -> DemoDataResponse:
+    client_ids = tuple(item for manifest in manifests for item in manifest.ids["clients"])
+    document_ids = tuple(item for manifest in manifests for item in manifest.ids["documents"])
+    task_ids = tuple(item for manifest in manifests for item in manifest.ids["tasks"])
+    radar_ids = tuple(item for manifest in manifests for item in manifest.ids["topicRadars"])
+    handbook_ids = tuple(item for manifest in manifests for item in manifest.ids["handbookEntries"])
+    clients = _count_demo_rows_on_conn(conn, "clients", client_ids)
+    documents = _count_demo_rows_on_conn(conn, "documents", document_ids)
+    tasks = _count_demo_rows_on_conn(conn, "tasks", task_ids)
+    topics = _count_demo_rows_on_conn(conn, "topic_radars", radar_ids)
+    handbook_entries = _count_demo_rows_on_conn(conn, "handbook_entries", handbook_ids)
+    surviving_clients = set(_demo_rows_by_id(conn, "clients", client_ids))
+    primary_client_id = next(
+        (
+            candidate
+            for manifest in manifests
+            for candidate in (manifest.primary_client_id, *manifest.ids["clients"])
+            if candidate in surviving_clients
+        ),
+        None,
+    )
+    return DemoDataResponse(
+        loaded=bool(manifests) and any((clients, documents, tasks, topics, handbook_entries)),
+        clients=clients,
+        documents=documents,
+        tasks=tasks,
+        topics=topics,
+        handbookEntries=handbook_entries,
+        sandboxId=sandbox_id,
+        primaryClientId=primary_client_id,
+    )
 
 
 def build_demo_data_response(db: Database) -> DemoDataResponse:
-    client_placeholders = _sql_placeholders(DEMO_CLIENT_IDS)
-    task_placeholders = _sql_placeholders(DEMO_TASK_IDS)
-    radar_placeholders = _sql_placeholders(DEMO_RADAR_IDS)
-    handbook_placeholders = _sql_placeholders(DEMO_HANDBOOK_IDS)
-    return DemoDataResponse(
-        loaded=demo_data_loaded(db),
-        clients=int(db.scalar(f"SELECT COUNT(1) AS count FROM clients WHERE id IN ({client_placeholders})", DEMO_CLIENT_IDS)),
-        documents=int(db.scalar(f"SELECT COUNT(1) AS count FROM documents WHERE client_id IN ({client_placeholders})", DEMO_CLIENT_IDS)),
-        tasks=int(db.scalar(f"SELECT COUNT(1) AS count FROM tasks WHERE id IN ({task_placeholders})", DEMO_TASK_IDS)),
-        topics=int(db.scalar(f"SELECT COUNT(1) AS count FROM topic_radars WHERE id IN ({radar_placeholders})", DEMO_RADAR_IDS)),
-        handbookEntries=int(db.scalar(f"SELECT COUNT(1) AS count FROM handbook_entries WHERE id IN ({handbook_placeholders})", DEMO_HANDBOOK_IDS)),
+    ensure_sandbox_registry(db)
+
+    def _txn(conn: sqlite3.Connection) -> DemoDataResponse:
+        sandbox_id, _ = _active_demo_sandbox_on_conn(conn)
+        try:
+            manifests = _demo_manifests_on_conn(conn, sandbox_id)
+            for manifest in manifests:
+                _validate_demo_manifest_rows_on_conn(conn, manifest)
+        except DemoManifestError:
+            return DemoDataResponse(
+                loaded=False,
+                clients=0,
+                documents=0,
+                tasks=0,
+                topics=0,
+                handbookEntries=0,
+                sandboxId=sandbox_id,
+                primaryClientId=None,
+            )
+        return _build_demo_data_response_on_conn(conn, sandbox_id, manifests)
+
+    return db.run_in_transaction(_txn, mode="DEFERRED")
+
+
+def demo_data_loaded(db: Database) -> bool:
+    return bool(build_demo_data_response(db).loaded)
+
+
+def demo_client_is_managed(db: Database, client_id: str) -> bool:
+    ensure_sandbox_registry(db)
+
+    def _txn(conn: sqlite3.Connection) -> bool:
+        sandbox_id, _ = _active_demo_sandbox_on_conn(conn)
+        try:
+            manifests = _demo_manifests_on_conn(conn, sandbox_id)
+            for manifest in manifests:
+                _validate_demo_manifest_rows_on_conn(conn, manifest)
+        except DemoManifestError:
+            return False
+        return any(client_id in manifest.ids["clients"] for manifest in manifests)
+
+    return bool(db.run_in_transaction(_txn, mode="DEFERRED"))
+
+
+def _demo_conflict(exc: DemoManifestError) -> HTTPException:
+    return HTTPException(status_code=409, detail=f"演示数据安全校验失败: {exc}")
+
+
+def _resolve_demo_task_list_on_conn(
+    conn: sqlite3.Connection,
+    sandbox_id: str,
+    organization_id: str,
+) -> str:
+    row = conn.execute(
+        """
+        SELECT id FROM task_lists
+         WHERE sandbox_id = ?
+           AND (archived_at IS NULL OR archived_at = '')
+           AND scope = 'org'
+         ORDER BY is_default DESC,
+                  CASE WHEN name IN ('收集箱', '收件箱', '组织任务') THEN 0 ELSE 1 END,
+                  sort_order ASC, id ASC
+         LIMIT 1
+        """,
+        (sandbox_id,),
+    ).fetchone()
+    if row:
+        return str(row["id"])
+    list_id = f"list_inbox_{uuid4().hex}"
+    conn.execute(
+        """
+        INSERT INTO task_lists(
+            id, sandbox_id, organization_id, name, color, sort_order,
+            is_default, scope, archived_at, sync_status, pending_sync_action
+        ) VALUES(?, ?, ?, '收集箱', '#5B7BFE', 0, 1, 'org', NULL, 'local', '')
+        """,
+        (list_id, sandbox_id, organization_id),
     )
+    return list_id
 
 
 def clear_demo_dataset(state: AppState) -> DemoDataResponse:
-    meeting_rows = state.db.fetchall(
-        f"SELECT id FROM meetings WHERE client_id IN ({_sql_placeholders(DEMO_CLIENT_IDS)})",
-        DEMO_CLIENT_IDS,
-    )
-    meeting_ids = tuple(str(row["id"]) for row in meeting_rows)
-    source_ids = tuple([*DEMO_CLIENT_IDS, *DEMO_CANDIDATE_IDS, *meeting_ids])
+    ensure_sandbox_registry(state.db)
 
-    state.db.execute(
-        f"DELETE FROM tasks WHERE id IN ({_sql_placeholders(DEMO_TASK_IDS)})",
-        DEMO_TASK_IDS,
-    )
-    if source_ids:
-        state.db.execute(
-            f"DELETE FROM tasks WHERE source_id IN ({_sql_placeholders(source_ids)})",
-            source_ids,
+    def _txn(conn: sqlite3.Connection) -> DemoDataResponse:
+        sandbox_id, _ = _active_demo_sandbox_on_conn(conn)
+        try:
+            manifests = _demo_manifests_on_conn(conn, sandbox_id)
+            if not manifests:
+                return _build_demo_data_response_on_conn(conn, sandbox_id, [])
+            for manifest in manifests:
+                _validate_demo_manifest_rows_on_conn(conn, manifest)
+            _assert_no_external_demo_references_on_conn(conn, manifests)
+        except DemoManifestError as exc:
+            raise _demo_conflict(exc) from exc
+        delete_order = (
+            ("task_notes", "taskNotes"),
+            ("tasks", "tasks"),
+            ("topic_candidates", "topicCandidates"),
+            ("topic_radars", "topicRadars"),
+            ("handbook_entries", "handbookEntries"),
+            ("chat_messages", "chatMessages"),
+            ("chat_threads", "chatThreads"),
+            ("goal_records", "goals"),
+            ("dna_terms", "dnaTerms"),
+            ("documents", "documents"),
+            ("clients", "clients"),
         )
-    state.db.execute(
-        f"DELETE FROM topic_candidates WHERE id IN ({_sql_placeholders(DEMO_CANDIDATE_IDS)})",
-        DEMO_CANDIDATE_IDS,
-    )
-    state.db.execute(
-        f"DELETE FROM topic_radars WHERE id IN ({_sql_placeholders(DEMO_RADAR_IDS)})",
-        DEMO_RADAR_IDS,
-    )
-    state.db.execute(
-        f"DELETE FROM handbook_entries WHERE id IN ({_sql_placeholders(DEMO_HANDBOOK_IDS)})",
-        DEMO_HANDBOOK_IDS,
-    )
-    state.db.execute(
-        f"DELETE FROM chat_messages WHERE id IN ({_sql_placeholders(DEMO_CHAT_MESSAGE_IDS)})",
-        DEMO_CHAT_MESSAGE_IDS,
-    )
-    state.db.execute(
-        f"DELETE FROM chat_threads WHERE id IN ({_sql_placeholders(DEMO_THREAD_IDS)})",
-        DEMO_THREAD_IDS,
-    )
-    state.db.execute(
-        f"DELETE FROM goal_records WHERE id IN ({_sql_placeholders(DEMO_GOAL_IDS)})",
-        DEMO_GOAL_IDS,
-    )
-    state.db.execute(
-        f"DELETE FROM dna_terms WHERE id IN ({_sql_placeholders(DEMO_DNA_IDS)})",
-        DEMO_DNA_IDS,
-    )
-    state.db.execute(
-        f"DELETE FROM documents WHERE id IN ({_sql_placeholders(DEMO_DOCUMENT_IDS)})",
-        DEMO_DOCUMENT_IDS,
-    )
-    state.db.execute(
-        f"DELETE FROM clients WHERE id IN ({_sql_placeholders(DEMO_CLIENT_IDS)})",
-        DEMO_CLIENT_IDS,
-    )
-    state.db.set_setting("demo_data_loaded", "0")
-    return build_demo_data_response(state.db)
+        for table, group in delete_order:
+            ids = tuple(item for manifest in manifests for item in manifest.ids[group])
+            conn.execute(f"DELETE FROM {table} WHERE id IN ({_sql_placeholders(ids)})", ids)
+        for manifest in manifests:
+            conn.execute(
+                "DELETE FROM sandbox_settings WHERE sandbox_id = ? AND key = ?",
+                (sandbox_id, manifest.key),
+            )
+        return _build_demo_data_response_on_conn(conn, sandbox_id, [])
+
+    return state.db.run_in_transaction(_txn)
 
 
 def load_demo_dataset(state: AppState) -> DemoDataResponse:
-    clear_demo_dataset(state)
-    timestamp = now_iso()
-    # 演示客户必须用 [演示] 前缀,避免跟用户真实可能用的客户名撞车
-    # 历史教训:之前 demo 用名 "测试机构B" 跟用户真客户撞名,删除时数据丢失
-    clients = [
-        ("client_cffc", "[演示] 测试机构B", "测试机构B", "公益教育", "非营利项目", "聚焦山区儿童教育与志愿者体系建设(演示数据,可在系统设置→演示数据里一键清空)。", "战略陪伴中", "#5B7BFE"),
-        ("client_star", "[演示] 星辰科技", "星辰", "SaaS", "商业化 KA", "营销 SaaS 服务商,正在梳理增长打法(演示数据,可在系统设置→演示数据里一键清空)。", "方案梳理", "#10B981"),
-    ]
-    state.db.executemany(
-        "INSERT INTO clients(id, name, alias, domain, type, intro, stage, color, created_at, updated_at) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-        [(item[0], item[1], item[2], item[3], item[4], item[5], item[6], item[7], timestamp, timestamp) for item in clients],
-    )
-    state.db.executemany(
-        "INSERT INTO chat_threads(id, client_id, title, created_at, updated_at) VALUES(?, ?, ?, ?, ?)",
-        [
-            ("thread_cffc", "client_cffc", "默认研判线程", timestamp, timestamp),
-            ("thread_star", "client_star", "默认研判线程", timestamp, timestamp),
-        ],
-    )
-    state.db.executemany(
-        "INSERT INTO goal_records(id, client_id, title, quarter, progress, owner_name, created_at, updated_at) VALUES(?, ?, ?, ?, ?, ?, ?, ?)",
-        [
-            ("goal_1", "client_cffc", "提升项目传播清晰度", "2026 Q2", 62, "庆华", timestamp, timestamp),
-            ("goal_2", "client_cffc", "补齐捐赠人关系素材", "2026 Q2", 40, "嘉宁", timestamp, timestamp),
-            ("goal_3", "client_star", "验证销售线索质量", "2026 Q2", 55, "一朔", timestamp, timestamp),
-        ],
-    )
-    state.db.executemany(
-        "INSERT INTO dna_terms(id, client_id, category, canonical_name, aliases_json, description, created_at, updated_at) VALUES(?, ?, ?, ?, ?, ?, ?, ?)",
-        [
-            ("dna_1", "client_cffc", "组织习惯", "田野优先", to_json(["先下场", "先到一线"]), "所有策略判断优先结合一线反馈。", timestamp, timestamp),
-            ("dna_2", "client_star", "增长原则", "线索先验", to_json(["先验证线索"]), "任何市场动作都要先验证线索质量。", timestamp, timestamp),
-        ],
-    )
-    state.db.executemany(
-        "INSERT INTO documents(id, client_id, folder_id, title, path, kind, source, excerpt, tags_json, created_at) VALUES(?, ?, NULL, ?, ?, ?, ?, ?, ?, ?)",
-        [
-            ("doc_1", "client_cffc", "项目启动纪要.md", "/mock/client_cffc/项目启动纪要.md", "md", "file", "记录了项目目标、时间表与关键风险。", to_json(["会议", "启动"]), timestamp),
-            ("doc_2", "client_cffc", "捐赠人访谈摘要.txt", "/mock/client_cffc/捐赠人访谈摘要.txt", "txt", "file", "汇总了主要捐赠人的关切、信任点与反馈。", to_json(["访谈"]), timestamp),
-            ("doc_3", "client_star", "增长诊断报告.pdf", "/mock/client_star/增长诊断报告.pdf", "pdf", "file", "聚焦线索质量、转化链路和销售节奏。", to_json(["诊断"]), timestamp),
-        ],
-    )
-    state.db.executemany(
-        "INSERT INTO tasks(id, title, description, status, priority, list_id, owner_name, ddl, source_type, source_id, tags_json, created_at, updated_at) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-        [
-            ("task_seed_1", "准备周五跨部门复盘会", "梳理客户推进中的异常转化问题。", "inbox", "high", "list-0", "庆华", "周五", "manual", "client_cffc", to_json(["会议"]), timestamp, timestamp),
-            ("task_seed_2", "梳理客户反馈的 10 个核心痛点", "提炼成客户工作台的重点议题。", "doing", "normal", "list-1", "一朔", "今天", "manual", "client_star", to_json(["待跟进"]), timestamp, timestamp),
-        ],
-    )
-    state.db.execute(
-        "INSERT INTO task_notes(id, task_id, note, created_at, updated_at) VALUES(?, ?, ?, ?, ?)",
-        (new_id("tn"), "task_seed_2", "用户反馈集中在试用转化与产品定位不清。", timestamp, timestamp),
-    )
-    state.db.executemany(
-        "INSERT INTO topic_radars(id, title, prompt, time_range, created_at) VALUES(?, ?, ?, ?, ?)",
-        [
-            ("radar_ai", "大模型应用", "关注公益与咨询行业的大模型落地案例。", "3_days", timestamp),
-            ("radar_fund", "筹资趋势", "跟踪基金会筹资、品牌传播与捐赠人运营的最新打法。", "7_days", timestamp),
-        ],
-    )
-    state.db.executemany(
-        "INSERT INTO topic_candidates(id, radar_id, title, summary, source, status, created_at, updated_at) VALUES(?, ?, ?, ?, ?, ?, ?, ?)",
-        [
-            ("cand_1", "radar_ai", "公益组织开始搭建内部 AI 助理", "多个案例开始从内容检索走向流程型工作台。", "行业观察", "candidate", timestamp, timestamp),
-            ("cand_2", "radar_fund", "捐赠人分层运营成为主流", "筹资团队开始按关系深浅重新定义触达节奏。", "调研纪要", "tracking", timestamp, timestamp),
-        ],
-    )
-    state.db.executemany(
-        "INSERT INTO handbook_entries(id, title, summary, tags_json, source_type, client_id, created_at) VALUES(?, ?, ?, ?, ?, ?, ?)",
-        [
-            ("hb_1", "会议不要只产纪要", "所有会议结论必须落到负责人与时间点，否则无法闭环。", to_json(["协作规则", "会议"]), "meeting", "client_cffc", timestamp),
-        ],
-    )
-    state.db.execute(
-        "INSERT INTO chat_messages(id, thread_id, role, content, structured_data_json, model_route, evidence_json, status, created_at) VALUES(?, ?, 'assistant', ?, ?, ?, ?, 'success', ?)",
-        (
-            "msg_seed_1",
-            "thread_cffc",
-            "已为你载入测试机构B的内部上下文。",
-            to_json(
-                {
-                    "content": "已围绕当前客户整理出一版初始判断。",
-                    "judgment": "现阶段关键不在新增素材，而在把现有资料写成推进动作。",
-                    "analysis": "1. 项目目标已清楚。2. 捐赠人反馈有基础。3. 缺的是稳定的任务闭环。",
-                    "actions": "先从会议发布和任务收件箱打通。",
-                    "timeline": "建议本周内先跑通一次完整闭环。",
-                }
+    ensure_sandbox_registry(state.db)
+
+    def _txn(conn: sqlite3.Connection) -> DemoDataResponse:
+        sandbox_id, organization_id = _active_demo_sandbox_on_conn(conn)
+        try:
+            manifests = _demo_manifests_on_conn(conn, sandbox_id)
+            if manifests:
+                for manifest in manifests:
+                    _validate_demo_manifest_rows_on_conn(conn, manifest)
+                response = _build_demo_data_response_on_conn(conn, sandbox_id, manifests)
+                if not response.loaded:
+                    raise DemoManifestError("演示数据清单存在，但实体已全部缺失；请先安全清理")
+                return response
+        except DemoManifestError as exc:
+            raise _demo_conflict(exc) from exc
+
+        token = uuid4().hex
+        ids = _expected_demo_ids(token)
+        timestamp = now_iso()
+        list_id = _resolve_demo_task_list_on_conn(conn, sandbox_id, organization_id)
+        clients = ids["clients"]
+        conn.executemany(
+            """
+            INSERT INTO clients(
+                id, sandbox_id, name, alias, domain, type, intro, stage, color,
+                created_at, updated_at, sync_status, cloud_id, pending_sync_action,
+                last_synced_at, last_sync_error
+            ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'local', NULL, '', '', '')
+            """,
+            [
+                (clients[0], sandbox_id, "[演示] 测试机构B", "测试机构B", "公益教育", "非营利项目", "聚焦山区儿童教育与志愿者体系建设（演示数据）。", "战略陪伴中", "#5B7BFE", timestamp, timestamp),
+                (clients[1], sandbox_id, "[演示] 星辰科技", "星辰", "SaaS", "商业化 KA", "营销 SaaS 服务商，正在梳理增长打法（演示数据）。", "方案梳理", "#10B981", timestamp, timestamp),
+            ],
+        )
+        conn.executemany(
+            "INSERT INTO chat_threads(id, client_id, title, created_at, updated_at) VALUES(?, ?, ?, ?, ?)",
+            [(ids["chatThreads"][0], clients[0], "默认研判线程", timestamp, timestamp), (ids["chatThreads"][1], clients[1], "默认研判线程", timestamp, timestamp)],
+        )
+        conn.executemany(
+            "INSERT INTO goal_records(id, client_id, title, quarter, progress, owner_name, created_at, updated_at) VALUES(?, ?, ?, ?, ?, ?, ?, ?)",
+            [
+                (ids["goals"][0], clients[0], "提升项目传播清晰度", "2026 Q2", 62, "庆华", timestamp, timestamp),
+                (ids["goals"][1], clients[0], "补齐捐赠人关系素材", "2026 Q2", 40, "嘉宁", timestamp, timestamp),
+                (ids["goals"][2], clients[1], "验证销售线索质量", "2026 Q2", 55, "一朔", timestamp, timestamp),
+            ],
+        )
+        conn.executemany(
+            "INSERT INTO dna_terms(id, client_id, category, canonical_name, aliases_json, description, created_at, updated_at) VALUES(?, ?, ?, ?, ?, ?, ?, ?)",
+            [
+                (ids["dnaTerms"][0], clients[0], "组织习惯", "田野优先", to_json(["先下场", "先到一线"]), "所有策略判断优先结合一线反馈。", timestamp, timestamp),
+                (ids["dnaTerms"][1], clients[1], "增长原则", "线索先验", to_json(["先验证线索"]), "任何市场动作都要先验证线索质量。", timestamp, timestamp),
+            ],
+        )
+        demo_paths = (
+            f"/mock/demo/{token}/项目启动纪要.md",
+            f"/mock/demo/{token}/捐赠人访谈摘要.txt",
+            f"/mock/demo/{token}/增长诊断报告.pdf",
+        )
+        conn.executemany(
+            "INSERT INTO documents(id, client_id, folder_id, title, path, kind, source, excerpt, tags_json, created_at) VALUES(?, ?, NULL, ?, ?, ?, ?, ?, ?, ?)",
+            [
+                (ids["documents"][0], clients[0], "项目启动纪要.md", demo_paths[0], "md", "file", "记录了项目目标、时间表与关键风险。", to_json(["会议", "启动"]), timestamp),
+                (ids["documents"][1], clients[0], "捐赠人访谈摘要.txt", demo_paths[1], "txt", "file", "汇总了主要捐赠人的关切、信任点与反馈。", to_json(["访谈"]), timestamp),
+                (ids["documents"][2], clients[1], "增长诊断报告.pdf", demo_paths[2], "pdf", "file", "聚焦线索质量、转化链路和销售节奏。", to_json(["诊断"]), timestamp),
+            ],
+        )
+        conn.executemany(
+            """
+            INSERT INTO tasks(
+                id, sandbox_id, organization_id, client_id, title, description,
+                status, priority, list_id, owner_name, ddl, source_type, source_id,
+                tags_json, created_at, updated_at, sync_status, cloud_id,
+                pending_sync_action, last_synced_at, last_cloud_version, last_sync_error
+            ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'manual', ?, ?, ?, ?, 'local', NULL, '', '', '', '')
+            """,
+            [
+                (ids["tasks"][0], sandbox_id, organization_id, clients[0], "准备周五跨部门复盘会", "梳理客户推进中的异常转化问题。", "inbox", "high", list_id, "庆华", "周五", clients[0], to_json(["会议"]), timestamp, timestamp),
+                (ids["tasks"][1], sandbox_id, organization_id, clients[1], "梳理客户反馈的 10 个核心痛点", "提炼成客户工作台的重点议题。", "doing", "normal", list_id, "一朔", "今天", clients[1], to_json(["待跟进"]), timestamp, timestamp),
+            ],
+        )
+        conn.execute(
+            "INSERT INTO task_notes(id, task_id, note, created_at, updated_at) VALUES(?, ?, ?, ?, ?)",
+            (ids["taskNotes"][0], ids["tasks"][1], "用户反馈集中在试用转化与产品定位不清。", timestamp, timestamp),
+        )
+        conn.executemany(
+            "INSERT INTO topic_radars(id, sandbox_id, title, prompt, time_range, created_at) VALUES(?, ?, ?, ?, ?, ?)",
+            [
+                (ids["topicRadars"][0], sandbox_id, "大模型应用", "关注公益与咨询行业的大模型落地案例。", "3_days", timestamp),
+                (ids["topicRadars"][1], sandbox_id, "筹资趋势", "跟踪基金会筹资、品牌传播与捐赠人运营的最新打法。", "7_days", timestamp),
+            ],
+        )
+        conn.executemany(
+            "INSERT INTO topic_candidates(id, radar_id, title, summary, source, status, created_at, updated_at) VALUES(?, ?, ?, ?, ?, ?, ?, ?)",
+            [
+                (ids["topicCandidates"][0], ids["topicRadars"][0], "公益组织开始搭建内部 AI 助理", "多个案例开始从内容检索走向流程型工作台。", "行业观察", "candidate", timestamp, timestamp),
+                (ids["topicCandidates"][1], ids["topicRadars"][1], "捐赠人分层运营成为主流", "筹资团队开始按关系深浅重新定义触达节奏。", "调研纪要", "tracking", timestamp, timestamp),
+            ],
+        )
+        conn.execute(
+            """
+            INSERT INTO handbook_entries(
+                id, sandbox_id, title, summary, tags_json, source_type, client_id,
+                created_at, sync_status, last_synced_at, pending_sync_action
+            ) VALUES(?, ?, ?, ?, ?, 'meeting', ?, ?, 'local', '', '')
+            """,
+            (ids["handbookEntries"][0], sandbox_id, "会议不要只产纪要", "所有会议结论必须落到负责人与时间点，否则无法闭环。", to_json(["协作规则", "会议"]), clients[0], timestamp),
+        )
+        conn.execute(
+            "INSERT INTO chat_messages(id, thread_id, role, content, structured_data_json, model_route, evidence_json, status, created_at) VALUES(?, ?, 'assistant', ?, ?, ?, ?, 'success', ?)",
+            (
+                ids["chatMessages"][0],
+                ids["chatThreads"][0],
+                "已为你载入测试机构B的演示上下文。",
+                to_json({"content": "已围绕当前客户整理出一版初始判断。", "judgment": "现阶段关键不在新增素材，而在把现有资料写成推进动作。", "analysis": "1. 项目目标已清楚。2. 捐赠人反馈有基础。3. 缺的是稳定的任务闭环。", "actions": "先从会议发布和任务收件箱打通。", "timeline": "建议本周内先跑通一次完整闭环。"}),
+                "AI · mock",
+                to_json([{"id": f"demo_evidence_{token}_1", "title": "项目启动纪要.md", "excerpt": "记录了项目目标、时间表与关键风险。", "sourceType": "md", "documentId": ids["documents"][0], "path": demo_paths[0]}]),
+                timestamp,
             ),
-            "AI · mock",
-            to_json(
-                [
-                    {
-                        "id": "seed_ev",
-                        "title": "项目启动纪要.md",
-                        "excerpt": "记录了项目目标、时间表与关键风险。",
-                        "sourceType": "md",
-                        "documentId": "doc_1",
-                        "path": "/mock/client_cffc/项目启动纪要.md",
-                    }
-                ]
-            ),
-            timestamp,
-        ),
-    )
-    state.db.set_setting("demo_data_loaded", "1")
-    return build_demo_data_response(state.db)
+        )
+        manifest_key = f"{DEMO_MANIFEST_PREFIX}{token}"
+        manifest_value = json.dumps(
+            {
+                "version": DEMO_MANIFEST_VERSION,
+                "token": token,
+                "createdAt": timestamp,
+                "primaryClientId": clients[0],
+                "ids": {group: list(values) for group, values in ids.items()},
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        conn.execute(
+            "INSERT INTO sandbox_settings(sandbox_id, key, value, updated_at) VALUES(?, ?, ?, ?)",
+            (sandbox_id, manifest_key, manifest_value, timestamp),
+        )
+        manifest = _parse_demo_manifest(sandbox_id, manifest_key, manifest_value)
+        return _build_demo_data_response_on_conn(conn, sandbox_id, [manifest])
+
+    return state.db.run_in_transaction(_txn)
 
 
 def create_pre_migration_backup(data_dir: Path, db_path: Path) -> Path | None:
@@ -3574,8 +4036,8 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
     state.db.set_setting("runtime.backend_root", str(Path(__file__).resolve().parents[1]))
     state.db.set_setting("runtime.mode", BACKEND_RUNTIME_MODE)
     state.db.set_setting("runtime.data_dir", str(resolved_data_dir))
-    if state.db.get_setting("demo_data_loaded", "0") != "1":
-        clear_demo_dataset(state)
+    # 仅作旧版本降级保险丝：新版演示数据真相来自 sandbox manifest，永不再按固定 ID 启动清理。
+    state.db.set_setting("demo_data_loaded", "1")
     ensure_data_center_schema(state.db)
     purge_private_task_ingest_events(state.db)
 
@@ -43440,7 +43902,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         meeting_count = _count("SELECT COUNT(*) FROM meetings WHERE client_id = ?")
         event_line_count = _count("SELECT COUNT(*) FROM event_lines WHERE primary_client_id = ?")
         task_count = _count("SELECT COUNT(*) FROM tasks WHERE client_id = ?")
-        is_demo = client_id in DEMO_CLIENT_IDS
+        is_demo = demo_client_is_managed(state.db, client_id)
 
         return ClientDeletePreview(
             clientId=client_id,
@@ -65389,7 +65851,8 @@ def seed_defaults(state: AppState) -> None:
     state.db.set_setting("ai_model", state.db.get_setting("ai_model", DEFAULT_MODEL))
     # 顾源源 5/26: 真修历史 db 真"provider 真路由值 vs label 真分裂" 真启动 migration
     _repair_ai_config_consistency(state)
-    state.db.set_setting("demo_data_loaded", state.db.get_setting("demo_data_loaded", "0"))
+    # 旧版 0.28.0 会在该值为 0 时按固定 ID 删除客户；永久钉为 1，禁止重新武装旧删除路径。
+    state.db.set_setting("demo_data_loaded", "1")
     state.db.set_setting(
         "workspace_chat_data_center_primary",
         state.db.get_setting("workspace_chat_data_center_primary", "1"),
