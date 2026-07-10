@@ -59,8 +59,16 @@ class Database:
         # BEGIN in background threads and surface as "cannot start a transaction
         # within a transaction".
         self.conn = sqlite3.connect(self.db_path, check_same_thread=False, isolation_level=None)
-        self.conn.row_factory = sqlite3.Row
-        self._init_schema()
+        try:
+            self.conn.row_factory = sqlite3.Row
+            self._init_schema()
+        except Exception:
+            try:
+                if self.conn.in_transaction:
+                    self.conn.rollback()
+            finally:
+                self.conn.close()
+            raise
 
     def _init_schema(self) -> None:
         with self._lock:
@@ -4086,8 +4094,7 @@ class Database:
             self._ensure_column("clients", "sandbox_id", "TEXT NOT NULL DEFAULT ''")
             self._ensure_column("task_lists", "sandbox_id", "TEXT NOT NULL DEFAULT ''")
             self._ensure_column("task_tags", "sandbox_id", "TEXT NOT NULL DEFAULT ''")
-            self._rebuild_task_tags_without_global_name_unique()
-            self._rebuild_task_settings_with_sandbox_scope()
+            self._rebuild_task_scope_tables_atomically()
             self._ensure_column("tasks", "tag_ids_json", "TEXT NOT NULL DEFAULT '[]'")
             self._ensure_column("tasks", "sandbox_id", "TEXT NOT NULL DEFAULT ''")
             self._ensure_column("tasks", "organization_id", "TEXT NOT NULL DEFAULT ''")
@@ -5424,20 +5431,21 @@ class Database:
             )
             self.conn.execute(
                 """
-                INSERT OR IGNORE INTO topic_candidate_seen(
+                INSERT INTO topic_candidate_seen(
                     id, radar_id, source_url_key, title_source_key, source_url, title, source, created_at, deleted_at
                 )
                 SELECT
-                    'seen_' || id,
-                    radar_id,
-                    LOWER(TRIM(COALESCE(source_url, ''))),
-                    LOWER(TRIM(title)) || '||' || LOWER(TRIM(source)),
-                    source_url,
-                    title,
-                    source,
-                    created_at,
+                    'seen_' || candidate.id,
+                    candidate.radar_id,
+                    LOWER(TRIM(COALESCE(candidate.source_url, ''))),
+                    LOWER(TRIM(candidate.title)) || '||' || LOWER(TRIM(candidate.source)),
+                    candidate.source_url,
+                    candidate.title,
+                    candidate.source,
+                    candidate.created_at,
                     NULL
                 FROM topic_candidates candidate
+                JOIN topic_radars radar ON radar.id = candidate.radar_id
                 WHERE NOT EXISTS (
                     SELECT 1
                     FROM topic_candidate_seen seen
@@ -5554,20 +5562,58 @@ class Database:
                 f"UPDATE {table_name} SET {column_name} = {default_literal} WHERE {column_name} IS NULL"
             )
 
+    def _rebuild_task_scope_tables_atomically(self) -> None:
+        """Repair the two coupled task-scope schemas as one crash-safe unit."""
+
+        savepoint = "task_scope_schema_rebuild"
+        self.conn.execute(f"SAVEPOINT {savepoint}")
+        try:
+            self._rebuild_task_tags_without_global_name_unique()
+            self._rebuild_task_settings_with_sandbox_scope()
+        except Exception:
+            self.conn.execute(f"ROLLBACK TO {savepoint}")
+            self.conn.execute(f"RELEASE {savepoint}")
+            raise
+        self.conn.execute(f"RELEASE {savepoint}")
+
+    def _migration_table_exists(self, table_name: str) -> bool:
+        return self.conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",
+            (table_name,),
+        ).fetchone() is not None
+
+    def _migration_table_columns(self, table_name: str) -> set[str]:
+        return {
+            str(row["name"])
+            for row in self.conn.execute(f"PRAGMA table_info({table_name})").fetchall()
+        }
+
     def _rebuild_task_tags_without_global_name_unique(self) -> None:
-        row = self.conn.execute(
-            "SELECT sql FROM sqlite_master WHERE type='table' AND name='task_tags'"
-        ).fetchone()
-        raw_sql = str(row["sql"] if row and row["sql"] else "")
-        normalized_sql = re.sub(r"\s+", " ", raw_sql).lower()
-        if "name text not null unique" not in normalized_sql and "unique(name" not in normalized_sql:
-            return
+        current_table = "task_tags"
         backup_table = "task_tags__stage5_global_unique_backup"
-        self.conn.execute(f"DROP TABLE IF EXISTS {backup_table}")
-        self.conn.execute(f"ALTER TABLE task_tags RENAME TO {backup_table}")
-        self.conn.executescript(
-            """
-            CREATE TABLE task_tags (
+        stage_table = "task_tags__scope_rebuild_new"
+        current_exists = self._migration_table_exists(current_table)
+        backup_exists = self._migration_table_exists(backup_table)
+        row = self.conn.execute(
+            "SELECT sql FROM sqlite_master WHERE type='table' AND name=?",
+            (current_table,),
+        ).fetchone()
+        normalized_sql = re.sub(r"\s+", " ", str(row["sql"] if row and row["sql"] else "")).lower()
+        has_global_name_unique = (
+            "name text not null unique" in normalized_sql
+            or "unique(name" in normalized_sql
+            or "unique (name" in normalized_sql
+        )
+        if current_exists and not has_global_name_unique and not backup_exists:
+            self.conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_task_tags_operator_id ON task_tags(operator_id)"
+            )
+            return
+
+        self.conn.execute(f"DROP TABLE IF EXISTS {stage_table}")
+        self.conn.execute(
+            f"""
+            CREATE TABLE {stage_table} (
                 id TEXT PRIMARY KEY,
                 sandbox_id TEXT NOT NULL DEFAULT '',
                 organization_id TEXT NOT NULL DEFAULT '',
@@ -5587,78 +5633,123 @@ class Database:
                 last_cloud_version TEXT NOT NULL DEFAULT '',
                 pending_sync_action TEXT NOT NULL DEFAULT '',
                 last_sync_error TEXT NOT NULL DEFAULT ''
-            );
+            )
             """
         )
         target_columns = [
-            "id",
-            "sandbox_id",
-            "organization_id",
-            "name",
-            "scope",
-            "color",
-            "owner_operator_id",
-            "operator_id",
-            "created_by",
-            "created_at",
-            "updated_at",
-            "archived_at",
-            "sync_status",
-            "cloud_id",
-            "cloud_payload_json",
-            "last_synced_at",
-            "last_cloud_version",
-            "pending_sync_action",
-            "last_sync_error",
+            "id", "sandbox_id", "organization_id", "name", "scope", "color",
+            "owner_operator_id", "operator_id", "created_by", "created_at", "updated_at",
+            "archived_at", "sync_status", "cloud_id", "cloud_payload_json", "last_synced_at",
+            "last_cloud_version", "pending_sync_action", "last_sync_error",
         ]
-        existing_columns = {
-            str(info["name"])
-            for info in self.conn.execute(f"PRAGMA table_info({backup_table})").fetchall()
+        defaults = {
+            "sandbox_id": "''", "organization_id": "''", "scope": "'org'",
+            "color": "'#5B7BFE'", "owner_operator_id": "''", "operator_id": "''",
+            "created_by": "''", "created_at": "''", "updated_at": "''",
+            "archived_at": "NULL", "sync_status": "'local'", "cloud_id": "NULL",
+            "cloud_payload_json": "''", "last_synced_at": "''", "last_cloud_version": "''",
+            "pending_sync_action": "''", "last_sync_error": "''",
         }
-        default_expr = {
-            "sandbox_id": "''",
-            "organization_id": "''",
-            "scope": "'org'",
-            "color": "'#5B7BFE'",
-            "owner_operator_id": "''",
-            "operator_id": "''",
-            "created_by": "''",
-            "created_at": "''",
-            "updated_at": "''",
-            "archived_at": "NULL",
-            "sync_status": "'local'",
-            "cloud_id": "NULL",
-            "cloud_payload_json": "''",
-            "last_synced_at": "''",
-            "last_cloud_version": "''",
-            "pending_sync_action": "''",
-            "last_sync_error": "''",
-        }
-        select_exprs = [
-            column if column in existing_columns else default_expr.get(column, "''")
-            for column in target_columns
-        ]
+        expected_count = 0
+        for source_table in (current_table, backup_table):
+            if not self._migration_table_exists(source_table):
+                continue
+            source_columns = self._migration_table_columns(source_table)
+            select_exprs = [
+                column if column in source_columns else defaults.get(column, "''")
+                for column in target_columns
+            ]
+            missing_filter = ""
+            if source_table == backup_table and current_exists:
+                missing_filter = (
+                    f" WHERE NOT EXISTS (SELECT 1 FROM {stage_table} staged "
+                    f"WHERE staged.id = {source_table}.id)"
+                )
+                expected_count += int(
+                    self.conn.execute(
+                        f"""
+                        SELECT COUNT(*)
+                        FROM {backup_table} backup
+                        WHERE NOT EXISTS (
+                            SELECT 1 FROM {current_table} current
+                            WHERE current.id = backup.id
+                        )
+                        """
+                    ).fetchone()[0]
+                )
+            else:
+                expected_count += int(
+                    self.conn.execute(f"SELECT COUNT(*) FROM {source_table}").fetchone()[0]
+                )
+            self.conn.execute(
+                f"INSERT INTO {stage_table}({', '.join(target_columns)}) "
+                f"SELECT {', '.join(select_exprs)} FROM {source_table}{missing_filter}"
+            )
+        actual_count = int(self.conn.execute(f"SELECT COUNT(*) FROM {stage_table}").fetchone()[0])
+        if actual_count != expected_count:
+            raise RuntimeError("task_tags migration row-count validation failed")
+        if current_exists:
+            self.conn.execute(f"DROP TABLE {current_table}")
+        if backup_exists:
+            self.conn.execute(f"DROP TABLE {backup_table}")
+        self.conn.execute(f"ALTER TABLE {stage_table} RENAME TO {current_table}")
         self.conn.execute(
-            f"""
-            INSERT INTO task_tags({", ".join(target_columns)})
-            SELECT {", ".join(select_exprs)}
-            FROM {backup_table}
-            """
+            "CREATE INDEX IF NOT EXISTS idx_task_tags_operator_id ON task_tags(operator_id)"
         )
-        self.conn.execute(f"DROP TABLE IF EXISTS {backup_table}")
 
     def _rebuild_task_settings_with_sandbox_scope(self) -> None:
-        row = self.conn.execute(
-            "SELECT sql FROM sqlite_master WHERE type='table' AND name='task_settings'"
-        ).fetchone()
-        if not row:
+        current_table = "task_settings"
+        backup_table = "task_settings__sandbox_scope_backup"
+        stage_table = "task_settings__scope_rebuild_new"
+        current_exists = self._migration_table_exists(current_table)
+        backup_exists = self._migration_table_exists(backup_table)
+        if not current_exists and not backup_exists:
             return
-        raw_sql = str(row["sql"] or "")
-        normalized_sql = re.sub(r"\s+", " ", raw_sql).lower()
-        table_info = self.conn.execute("PRAGMA table_info(task_settings)").fetchall()
-        columns = {str(info["name"]) for info in table_info}
-        has_composite_pk = "primary key(sandbox_id, operator_id)" in normalized_sql or "primary key (sandbox_id, operator_id)" in normalized_sql
-        if "sandbox_id" in columns and has_composite_pk:
+
+        row = self.conn.execute(
+            "SELECT sql FROM sqlite_master WHERE type='table' AND name=?",
+            (current_table,),
+        ).fetchone()
+        normalized_sql = re.sub(r"\s+", " ", str(row["sql"] if row and row["sql"] else "")).lower()
+        current_columns = self._migration_table_columns(current_table) if current_exists else set()
+        has_composite_pk = (
+            "primary key(sandbox_id, operator_id)" in normalized_sql
+            or "primary key (sandbox_id, operator_id)" in normalized_sql
+        )
+        foreign_keys = {
+            (str(fk["from"]), str(fk["table"]), str(fk["on_delete"]).upper())
+            for fk in self.conn.execute("PRAGMA foreign_key_list(task_settings)").fetchall()
+        } if current_exists else set()
+        has_required_foreign_keys = {
+            ("operator_id", "operators", "CASCADE"),
+            ("default_list_id", "task_lists", "SET NULL"),
+        }.issubset(foreign_keys)
+        has_invalid_rows = False
+        if current_exists and "sandbox_id" in current_columns and "operator_id" in current_columns:
+            invalid_row = self.conn.execute(
+                """
+                SELECT 1
+                FROM task_settings setting
+                LEFT JOIN operators operator ON operator.id = setting.operator_id
+                LEFT JOIN sandboxes sandbox ON sandbox.id = setting.sandbox_id
+                LEFT JOIN task_lists list ON list.id = setting.default_list_id
+                WHERE operator.id IS NULL
+                   OR sandbox.id IS NULL
+                   OR (setting.default_list_id IS NOT NULL AND (
+                        list.id IS NULL OR list.sandbox_id != setting.sandbox_id
+                   ))
+                LIMIT 1
+                """
+            ).fetchone()
+            has_invalid_rows = invalid_row is not None
+        if (
+            current_exists
+            and "sandbox_id" in current_columns
+            and has_composite_pk
+            and has_required_foreign_keys
+            and not backup_exists
+            and not has_invalid_rows
+        ):
             self.conn.execute(
                 """
                 CREATE INDEX IF NOT EXISTS idx_task_settings_sandbox_operator
@@ -5667,12 +5758,102 @@ class Database:
             )
             return
 
-        backup_table = "task_settings__sandbox_scope_backup"
-        self.conn.execute(f"DROP TABLE IF EXISTS {backup_table}")
-        self.conn.execute(f"ALTER TABLE task_settings RENAME TO {backup_table}")
-        self.conn.executescript(
+        sandbox_rows = self.conn.execute(
             """
-            CREATE TABLE task_settings (
+            SELECT id FROM sandboxes
+            ORDER BY is_legacy_default DESC,
+                     COALESCE(last_active_at, '') DESC,
+                     created_at ASC,
+                     id ASC
+            """
+        ).fetchall()
+        sandbox_ids = {str(item["id"]) for item in sandbox_rows}
+        deterministic_sandbox_id = str(sandbox_rows[0]["id"]) if sandbox_rows else "sbx_local_default"
+        active_row = self.conn.execute(
+            "SELECT value FROM settings WHERE key='active_sandbox_id'"
+        ).fetchone()
+        active_sandbox_id = str(active_row["value"] or "").strip() if active_row else ""
+        if active_sandbox_id not in sandbox_ids:
+            active_sandbox_id = ""
+        operator_ids = {
+            str(item["id"])
+            for item in self.conn.execute("SELECT id FROM operators").fetchall()
+        }
+        task_lists = {
+            str(item["id"]): str(item["sandbox_id"] or "").strip()
+            for item in self.conn.execute("SELECT id, sandbox_id FROM task_lists").fetchall()
+        }
+
+        defaults: dict[str, object] = {
+            "default_list_id": None,
+            "default_priority": "normal",
+            "default_due_date_preset": "today",
+            "default_view_mode": "list",
+            "list_sort_mode": "manual",
+            "show_completed_tasks": 0,
+            "default_review_scope": "work",
+            "auto_assign_self": 1,
+            "updated_at": "",
+        }
+        target_columns = [
+            "sandbox_id", "operator_id", "default_list_id", "default_priority",
+            "default_due_date_preset", "default_view_mode", "list_sort_mode",
+            "show_completed_tasks", "default_review_scope", "auto_assign_self", "updated_at",
+        ]
+        merged: dict[tuple[str, str], tuple[object, ...]] = {}
+        current_operator_ids: set[str] = set()
+        for source_table in (current_table, backup_table):
+            if not self._migration_table_exists(source_table):
+                continue
+            source_columns = self._migration_table_columns(source_table)
+            order_by = "updated_at DESC, rowid DESC" if "updated_at" in source_columns else "rowid DESC"
+            source_rows = self.conn.execute(
+                f"SELECT rowid AS __migration_rowid, * FROM {source_table} ORDER BY {order_by}"
+            ).fetchall()
+            for source in source_rows:
+                operator_id = str(source["operator_id"] or "").strip() if "operator_id" in source_columns else ""
+                if not operator_id or operator_id not in operator_ids:
+                    continue
+                if source_table == backup_table and operator_id in current_operator_ids:
+                    continue
+                explicit_sandbox_id = (
+                    str(source["sandbox_id"] or "").strip()
+                    if "sandbox_id" in source_columns
+                    else ""
+                )
+                if explicit_sandbox_id not in sandbox_ids:
+                    explicit_sandbox_id = ""
+                requested_list_id = (
+                    str(source["default_list_id"] or "").strip()
+                    if "default_list_id" in source_columns and source["default_list_id"]
+                    else ""
+                )
+                list_sandbox_id = task_lists.get(requested_list_id, "")
+                if list_sandbox_id not in sandbox_ids:
+                    list_sandbox_id = ""
+                sandbox_id = (
+                    explicit_sandbox_id
+                    or list_sandbox_id
+                    or active_sandbox_id
+                    or deterministic_sandbox_id
+                )
+                default_list_id = (
+                    requested_list_id
+                    if requested_list_id in task_lists and task_lists[requested_list_id] == sandbox_id
+                    else None
+                )
+                values: list[object] = [sandbox_id, operator_id, default_list_id]
+                for column in target_columns[3:]:
+                    value = source[column] if column in source_columns else defaults[column]
+                    values.append(defaults[column] if value is None else value)
+                merged.setdefault((sandbox_id, operator_id), tuple(values))
+                if source_table == current_table:
+                    current_operator_ids.add(operator_id)
+
+        self.conn.execute(f"DROP TABLE IF EXISTS {stage_table}")
+        self.conn.execute(
+            f"""
+            CREATE TABLE {stage_table} (
                 sandbox_id TEXT NOT NULL DEFAULT '',
                 operator_id TEXT NOT NULL,
                 default_list_id TEXT,
@@ -5687,69 +5868,34 @@ class Database:
                 PRIMARY KEY(sandbox_id, operator_id),
                 FOREIGN KEY(operator_id) REFERENCES operators(id) ON DELETE CASCADE,
                 FOREIGN KEY(default_list_id) REFERENCES task_lists(id) ON DELETE SET NULL
-            );
-            CREATE INDEX IF NOT EXISTS idx_task_settings_sandbox_operator
-            ON task_settings(sandbox_id, operator_id);
-            """
-        )
-        legacy_columns = {
-            str(info["name"])
-            for info in self.conn.execute(f"PRAGMA table_info({backup_table})").fetchall()
-        }
-        sandbox_expr = (
-            "COALESCE(NULLIF(sandbox_id, ''), "
-            "(SELECT NULLIF(value, '') FROM settings WHERE key = 'active_sandbox_id'), "
-            "(SELECT id FROM sandboxes ORDER BY is_legacy_default DESC, last_active_at DESC, created_at ASC LIMIT 1), "
-            "'sbx_local_default')"
-            if "sandbox_id" in legacy_columns
-            else (
-                "COALESCE("
-                "(SELECT NULLIF(value, '') FROM settings WHERE key = 'active_sandbox_id'), "
-                "(SELECT id FROM sandboxes ORDER BY is_legacy_default DESC, last_active_at DESC, created_at ASC LIMIT 1), "
-                "'sbx_local_default')"
             )
-        )
-        target_columns = [
-            "sandbox_id",
-            "operator_id",
-            "default_list_id",
-            "default_priority",
-            "default_due_date_preset",
-            "default_view_mode",
-            "list_sort_mode",
-            "show_completed_tasks",
-            "default_review_scope",
-            "auto_assign_self",
-            "updated_at",
-        ]
-        defaults = {
-            "default_list_id": "NULL",
-            "default_priority": "'normal'",
-            "default_due_date_preset": "'today'",
-            "default_view_mode": "'list'",
-            "list_sort_mode": "'manual'",
-            "show_completed_tasks": "0",
-            "default_review_scope": "'work'",
-            "auto_assign_self": "1",
-            "updated_at": "''",
-        }
-        select_exprs = []
-        for column in target_columns:
-            if column == "sandbox_id":
-                select_exprs.append(sandbox_expr)
-            elif column in legacy_columns:
-                select_exprs.append(column)
-            else:
-                select_exprs.append(defaults.get(column, "''"))
-        self.conn.execute(
-            f"""
-            INSERT OR REPLACE INTO task_settings({", ".join(target_columns)})
-            SELECT {", ".join(select_exprs)}
-            FROM {backup_table}
-            WHERE COALESCE(operator_id, '') != ''
             """
         )
-        self.conn.execute(f"DROP TABLE IF EXISTS {backup_table}")
+        if merged:
+            placeholders = ", ".join(["?"] * len(target_columns))
+            self.conn.executemany(
+                f"INSERT INTO {stage_table}({', '.join(target_columns)}) VALUES({placeholders})",
+                list(merged.values()),
+            )
+        actual_count = int(self.conn.execute(f"SELECT COUNT(*) FROM {stage_table}").fetchone()[0])
+        if actual_count != len(merged):
+            raise RuntimeError("task_settings migration row-count validation failed")
+        foreign_key_errors = self.conn.execute(
+            f"PRAGMA foreign_key_check({stage_table})"
+        ).fetchall()
+        if foreign_key_errors:
+            raise RuntimeError("task_settings migration foreign-key validation failed")
+        if current_exists:
+            self.conn.execute(f"DROP TABLE {current_table}")
+        if backup_exists:
+            self.conn.execute(f"DROP TABLE {backup_table}")
+        self.conn.execute(f"ALTER TABLE {stage_table} RENAME TO {current_table}")
+        self.conn.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_task_settings_sandbox_operator
+            ON task_settings(sandbox_id, operator_id)
+            """
+        )
 
     def has_column(self, table_name: str, column_name: str) -> bool:
         with self._lock:

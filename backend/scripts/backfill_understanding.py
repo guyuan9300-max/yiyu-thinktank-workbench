@@ -23,6 +23,7 @@ from pathlib import Path
 # 允许脚本直接运行（python -m scripts.backfill_understanding）
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+from app.database_guard import open_database_with_migration_guard  # noqa: E402
 from app.db import Database  # noqa: E402
 from app.services.contradiction_detector import persist_chunk_facts  # noqa: E402
 from app.services.entity_extractor import extract_entities_from_chunk  # noqa: E402
@@ -169,7 +170,7 @@ def main() -> int:
         return 1
 
     print(f"[INFO] 数据库: {db_path}")
-    db = Database(db_path)
+    db, _ = open_database_with_migration_guard(db_path)
 
     chunks = find_unprocessed_chunks(db, client_id=args.client, limit=args.limit)
     print(f"[INFO] 待处理 chunk 数: {len(chunks)}")

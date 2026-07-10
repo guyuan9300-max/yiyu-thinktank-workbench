@@ -12,7 +12,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from app.db import Database
+from app.database_guard import open_database_with_migration_guard
 from app.services.contradiction_detector import persist_chunk_facts
 from app.services.fact_extractor import extract_facts_from_chunk
 
@@ -26,8 +26,9 @@ def _default_db_path() -> Path:
 
 
 def main() -> int:
-    db = Database(_default_db_path())
-    print(f"[INFO] DB: {_default_db_path()}")
+    db_path = _default_db_path()
+    db, _ = open_database_with_migration_guard(db_path)
+    print(f"[INFO] DB: {db_path}")
 
     rows = db.fetchall(
         """

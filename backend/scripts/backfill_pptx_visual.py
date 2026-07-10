@@ -26,7 +26,7 @@ from uuid import uuid4
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from app.db import Database
+from app.database_guard import open_database_with_migration_guard
 from app.services.local_model_optimizer import (
     TASK_TYPE_VISUAL_OCR,
     DEFAULT_PROFILE_ID,
@@ -203,7 +203,7 @@ def main() -> int:
         return 2
 
     db_path = args.db_path or _default_db_path()
-    db = Database(db_path)
+    db, _ = open_database_with_migration_guard(db_path)
     print(f"[INFO] DB: {db_path}")
 
     rows = db.fetchall(
