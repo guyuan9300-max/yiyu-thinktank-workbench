@@ -1715,8 +1715,12 @@ def normalize_configured_cloud_api_url(raw_url: str | None) -> str:
 
 
 def resolve_initial_cloud_api_url(db: Database) -> str:
+    # A persisted organization workspace is the source of truth on restart.
+    # The environment URL is only a bootstrap fallback (for example the local
+    # development cloud) and must never override an active workspace's cloud.
+    scoped_url = get_active_sandbox_setting(db, "cloud_api_url", "")
     raw_env_url = os.environ.get("YIYU_CLOUD_API_URL")
-    raw_url = raw_env_url if raw_env_url is not None else get_active_sandbox_setting(db, "cloud_api_url", "")
+    raw_url = scoped_url or (raw_env_url if raw_env_url is not None else "")
     try:
         return normalize_configured_cloud_api_url(raw_url)
     except ValueError as exc:
@@ -3402,6 +3406,16 @@ def _register_legacy_demo_manifest_on_conn(
     loaded_row = conn.execute("SELECT value FROM settings WHERE key = 'demo_data_loaded'").fetchone()
     if not loaded_row or str(loaded_row["value"] or "") != "1":
         return None
+    fixed_client_count = int(
+        conn.execute(
+            "SELECT COUNT(*) FROM clients WHERE id IN ('client_cffc', 'client_star')"
+        ).fetchone()[0]
+    )
+    if fixed_client_count == 0:
+        return None
+    if fixed_client_count != 2:
+        logger.warning("[demo-legacy] partial fixed demo ids found; preserving rows")
+        return None
     note_rows = conn.execute(
         "SELECT id, note FROM task_notes WHERE task_id = 'task_seed_2' ORDER BY id",
     ).fetchall()
@@ -4110,7 +4124,11 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             return lock
 
     def cloud_api_base_url() -> str:
-        base_url = (state.cloud_api_url or "").strip().rstrip("/")
+        # Read the active sandbox on every foreground request.  Keeping this
+        # scoped avoids a process-level bootstrap URL leaking into a restored
+        # organization session after restart.
+        scoped_url = get_active_sandbox_setting(state.db, "cloud_api_url", "")
+        base_url = (scoped_url or state.cloud_api_url or "").strip().rstrip("/")
         if not base_url:
             raise HTTPException(status_code=503, detail="尚未配置云端服务地址，请先在设置页填写云端服务地址。")
         return base_url
@@ -9894,6 +9912,20 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         normalized_method = method.upper()
         if COLLAB_PREVIEW_MODE and normalized_method not in {"GET", "HEAD", "OPTIONS"}:
             raise HTTPException(status_code=403, detail="协作预览模式不可写云端。")
+
+        # Authenticated foreground requests use an immutable workspace context.
+        # This prevents a late response or a process-level bootstrap URL from
+        # refreshing/clearing a different organization's session.
+        if not allow_unauthenticated and base_url_override is None:
+            scoped_context = _capture_active_scoped_cloud_context()
+            if scoped_context is not None:
+                return scoped_cloud_request(
+                    scoped_context,
+                    method,
+                    path,
+                    json_body=json_body,
+                    timeout=timeout,
+                )
         base_url = (base_url_override or "").strip().rstrip("/") or cloud_api_base_url()
 
         # Fast fail if cloud was down recently (circuit breaker)

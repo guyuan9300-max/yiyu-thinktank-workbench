@@ -41,8 +41,11 @@ const APP_BUNDLE_ID = COLLAB_PREVIEW_MODE ? 'com.yiyu.selfworkbench2.collabprevi
 const releasePlanPath = path.join(projectRoot, 'docs', 'mac-release-update-plan.md');
 const releaseArtifactsPath = path.join(projectRoot, 'dist');
 const USER_DATA_DIR_NAME = COLLAB_PREVIEW_MODE ? 'YiyuThinkTankWorkbench2_CollabPreview' : LAB_MODE ? 'YiyuThinkTankWorkbench2_V21Lab' : 'YiyuThinkTankWorkbench2';
-const fixedUserDataPath = COLLAB_PREVIEW_MODE && process.env.YIYU_WORKBENCH_DATA_DIR
+const explicitDevUserDataPath = !app.isPackaged && process.env.YIYU_WORKBENCH_DATA_DIR
   ? path.resolve(process.env.YIYU_WORKBENCH_DATA_DIR)
+  : '';
+const fixedUserDataPath = explicitDevUserDataPath
+  ? explicitDevUserDataPath
   : path.join(app.getPath('appData'), USER_DATA_DIR_NAME);
 const runtimeLogsDir = path.join(fixedUserDataPath, 'runtime', 'logs');
 const runtimeUiDir = path.join(fixedUserDataPath, 'runtime', 'ui');

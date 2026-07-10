@@ -86,6 +86,79 @@ def test_auth_me_refreshes_expired_cloud_session(tmp_path: Path, monkeypatch):
     assert get_active_sandbox_setting(db, "cloud_refresh_token", "") == "refresh-2"
 
 
+def test_restart_uses_active_workspace_cloud_instead_of_bootstrap_env(tmp_path: Path, monkeypatch) -> None:
+    data_dir = tmp_path / "data"
+    initial = TestClient(create_app(data_dir))
+    initial.__enter__()
+    db = initial.app.state.app_state.db
+    user_payload = {
+        "id": "user-restart",
+        "organizationId": "org-restart",
+        "organizationName": "重启测试组织",
+        "email": "restart@example.test",
+        "fullName": "重启测试成员",
+        "primaryRole": "employee",
+        "accountStatus": "approved",
+        "membershipStatus": "approved",
+    }
+    workspace = create_sandbox(
+        db,
+        kind="organization",
+        name="重启测试组织",
+        cloud_api_url="https://workspace-cloud.example.test",
+    )
+    db.execute(
+        "UPDATE sandboxes SET organization_id = ?, cloud_instance_id = ?, identity_state = 'verified' WHERE id = ?",
+        ("org-restart", "cloud-restart", workspace.id),
+    )
+    for key, value in (
+        ("cloud_access_token", "restart-access"),
+        ("cloud_refresh_token", "restart-refresh"),
+        ("cloud_session_user", json.dumps(user_payload, ensure_ascii=False)),
+        ("cloud_session_user_snapshot", json.dumps(user_payload, ensure_ascii=False)),
+    ):
+        set_sandbox_setting(db, workspace.id, key, value)
+    activate = initial.post(f"/api/v1/workspaces/{workspace.id}/activate")
+    assert activate.status_code == 200, activate.text
+    initial.__exit__(None, None, None)
+
+    monkeypatch.setenv("YIYU_CLOUD_API_URL", "http://127.0.0.1:49999")
+    requested_urls: list[str] = []
+
+    def fake_request(method: str, url: str, json=None, headers=None, timeout=None, trust_env=None):
+        requested_urls.append(url)
+        assert url.startswith("https://workspace-cloud.example.test/")
+        assert (headers or {}).get("Authorization") == "Bearer restart-access"
+        if url.endswith("/api/v1/auth/me"):
+            return httpx.Response(200, json=user_payload)
+        if url.endswith("/api/v1/me/org-membership"):
+            return httpx.Response(
+                200,
+                json={
+                    "hasOrganization": True,
+                    "membershipStatus": "approved",
+                    "organizationId": "org-restart",
+                    "organizationName": "重启测试组织",
+                },
+            )
+        if url.endswith("/api/v1/settings/org-ai-config/runtime-secret"):
+            return httpx.Response(404, json={"detail": "not configured"})
+        raise AssertionError(f"unexpected request: {method} {url}")
+
+    monkeypatch.setattr(app_main.httpx, "request", fake_request)
+    restarted = TestClient(create_app(data_dir))
+    restarted.__enter__()
+    response = restarted.get("/api/v1/auth/me")
+    assert response.status_code == 200, response.text
+    assert response.json()["authenticated"] is True
+    restarted_db = restarted.app.state.app_state.db
+    assert get_active_sandbox_setting(restarted_db, "cloud_access_token", "") == "restart-access"
+    assert get_active_sandbox_setting(restarted_db, "cloud_refresh_token", "") == "restart-refresh"
+    assert requested_urls
+    assert all("127.0.0.1:49999" not in url for url in requested_urls)
+    restarted.__exit__(None, None, None)
+
+
 def test_late_auth_me_response_cannot_replace_new_active_workspace(tmp_path: Path, monkeypatch) -> None:
     client = make_client(tmp_path)
     db = client.app.state.app_state.db
