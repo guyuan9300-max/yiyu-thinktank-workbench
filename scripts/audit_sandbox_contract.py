@@ -12,6 +12,7 @@ DB_SCHEMA = ROOT / "backend" / "app" / "db.py"
 # Tables that are directly visible as business roots or workspace-level state.
 # They must carry sandbox_id themselves.
 DIRECT_SANDBOX_TABLES = {
+    "analysis_jobs",
     "clients",
     "task_lists",
     "task_tags",
@@ -25,12 +26,14 @@ DIRECT_SANDBOX_TABLES = {
     "exp_wall_quotes",
     "exp_wall_reactions",
     "handbook_entries",
+    "knowledge_jobs",
     "growth_signal_events",
     "growth_evidence_records",
     "growth_validation_events",
     "xp_ledger",
     "badge_unlock_records",
     "learning_recommendations",
+    "workspace_context_refresh_events",
 }
 
 # Tables that intentionally inherit scope from a parent object. Adding a new

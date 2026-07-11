@@ -43,9 +43,8 @@ def teardown_function():
 
 
 def auth_headers(client: TestClient, email: str = "admin@yiyu-system.com", password: str = "Admin123!"):
-    # 多数测试不显式调 seed_registration_departments, 这里幂等兜底, 保证 fixture 用户都存在。
-    if email != "admin@yiyu-system.com":
-        seed_registration_departments(client.app)
+    # 幂等兜底, 保证 fixture 用户和明确引用的 fixture 客户都存在。
+    seed_registration_departments(client.app)
     response = client.post("/api/v1/auth/login", json={"email": email, "password": password})
     assert response.status_code == 200, response.text
     return {"Authorization": f"Bearer {response.json()['accessToken']}"}
@@ -55,6 +54,20 @@ def seed_registration_departments(app) -> None:
     db = app.state.app_state.db
     timestamp = now_iso()
     db.execute("UPDATE organizations SET name = ?, updated_at = ? WHERE id = ?", ("益语智库", timestamp, DEFAULT_ORG_ID))
+    db.execute(
+        """
+        INSERT OR IGNORE INTO clients(id, organization_id, name, alias, created_at, updated_at)
+        VALUES('client_demo_yellow_river', ?, '甲方演示客户', '甲方演示客户', ?, ?)
+        """,
+        (DEFAULT_ORG_ID, timestamp, timestamp),
+    )
+    db.execute(
+        """
+        INSERT OR IGNORE INTO clients(id, organization_id, name, alias, created_at, updated_at)
+        VALUES('client_demo_for_love', ?, '乙方演示客户', '乙方演示客户', ?, ?)
+        """,
+        (DEFAULT_ORG_ID, timestamp, timestamp),
+    )
     # bcrypt hash 比较贵, 共用一个 hash; fixture 用户密码都是 Simulate123! (admin 用 Admin123!)。
     sim_hash = hash_password("Simulate123!")
     admin_hash = hash_password("Admin123!")
@@ -81,26 +94,194 @@ def seed_registration_departments(app) -> None:
     ]:
         db.execute(
             """
-            INSERT OR REPLACE INTO org_departments(id, organization_id, name, color, active, updated_at)
+            INSERT INTO org_departments(id, organization_id, name, color, active, updated_at)
             VALUES(?, ?, ?, ?, 1, ?)
+            ON CONFLICT(id) DO UPDATE SET
+                organization_id = excluded.organization_id,
+                name = excluded.name,
+                color = excluded.color,
+                active = excluded.active,
+                updated_at = excluded.updated_at
             """,
             (department_id, DEFAULT_ORG_ID, name, color, timestamp),
         )
-    for role_id, department_id, name, sort_order in [
-        ("role_cs_member", "dept_customer_service", "客户推进", 1),
-        ("role_info_member", "dept_info_data", "信息分析", 1),
+    for role_id, department_id, name, level, is_manager, task_edit_scope, can_manage, sort_order in [
+        ("role_org_ceo", None, "机构负责人", "organization_lead", 1, "organization", 1, 0),
+        ("role_strategy_lead", "dept_consult_strategy", "咨询策略部负责人", "department_lead", 1, "department", 1, 1),
+        ("role_info_lead", "dept_info_data", "信息数据部负责人", "department_lead", 1, "department", 1, 2),
+        ("role_info_member", "dept_info_data", "信息分析", "employee", 0, "self", 0, 3),
+        ("role_cs_lead", "dept_customer_service", "客户服务部负责人", "department_lead", 1, "department", 1, 4),
+        ("role_cs_member", "dept_customer_service", "客户推进", "employee", 0, "self", 0, 5),
     ]:
         db.execute(
             """
-            INSERT OR REPLACE INTO org_role_templates(
+            INSERT INTO org_role_templates(
                 id, organization_id, department_id, name, level, is_manager,
                 responsibilities_json, should_avoid_json, collaboration_role_ids_json,
                 task_edit_scope, can_approve_tasks, can_reassign_tasks, can_change_deadline,
-                sort_order, active, updated_at
-            ) VALUES(?, ?, ?, ?, 'employee', 0, '[]', '[]', '[]', 'self', 0, 0, 0, ?, 1, ?)
+                sort_order, active, updated_at, visibility_scope
+            ) VALUES(?, ?, ?, ?, ?, ?, '[]', '[]', '[]', ?, ?, ?, ?, ?, 1, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET
+                organization_id = excluded.organization_id,
+                department_id = excluded.department_id,
+                name = excluded.name,
+                level = excluded.level,
+                is_manager = excluded.is_manager,
+                task_edit_scope = excluded.task_edit_scope,
+                can_approve_tasks = excluded.can_approve_tasks,
+                can_reassign_tasks = excluded.can_reassign_tasks,
+                can_change_deadline = excluded.can_change_deadline,
+                sort_order = excluded.sort_order,
+                active = excluded.active,
+                updated_at = excluded.updated_at,
+                visibility_scope = excluded.visibility_scope
             """,
-            (role_id, DEFAULT_ORG_ID, department_id, name, sort_order, timestamp),
+            (
+                role_id,
+                DEFAULT_ORG_ID,
+                department_id,
+                name,
+                level,
+                is_manager,
+                task_edit_scope,
+                can_manage,
+                can_manage,
+                can_manage,
+                sort_order,
+                timestamp,
+                "organization" if task_edit_scope == "organization" else ("department" if is_manager else "self"),
+            ),
         )
+
+    for user_id, department_id, department_name, job_title, manager_name, current_focus, is_department_lead in [
+        ("user_qinghua", "dept_consult_strategy", "咨询策略部", "咨询策略部负责人", "顾源源", "咨询策略部周计划与高价值客户推进", 1),
+        ("user_jianing", "dept_customer_service", "客户服务部", "客户服务部负责人", "庆华", "客户服务部推进与交付协同", 1),
+        ("user_yishuo", "dept_info_data", "信息数据部", "信息数据部负责人", "庆华", "信息数据部结构化分析与信号建模", 1),
+    ]:
+        db.execute(
+            """
+            UPDATE employee_accounts
+               SET department_id = ?, department_name = ?, job_title = ?, manager_name = ?,
+                   current_focus = ?, is_department_lead = ?, updated_at = ?
+             WHERE id = ? AND organization_id = ?
+            """,
+            (
+                department_id,
+                department_name,
+                job_title,
+                manager_name,
+                current_focus,
+                is_department_lead,
+                timestamp,
+                user_id,
+                DEFAULT_ORG_ID,
+            ),
+        )
+
+    for user_id, department_id, role_id, manager_user_id, current_focus, visibility_scope in [
+        ("user_admin", None, "role_org_ceo", None, "系统级治理与管理员支持", "organization"),
+        ("user_guyuan", None, "role_org_ceo", None, "机构季度重点与关键项目判断", "organization"),
+        ("user_qinghua", "dept_consult_strategy", "role_strategy_lead", "user_guyuan", "咨询策略部周计划与高价值客户推进", "department"),
+        ("user_jianing", "dept_customer_service", "role_cs_lead", "user_qinghua", "客户服务部推进与交付协同", "department"),
+        ("user_yishuo", "dept_info_data", "role_info_lead", "user_qinghua", "信息数据部结构化分析与信号建模", "department"),
+    ]:
+        can_manage = 1
+        db.execute(
+            """
+            INSERT INTO org_employee_role_bindings(
+                user_id, organization_id, department_id, primary_role_id, manager_user_id, is_manager,
+                project_role_labels_json, current_focus, task_edit_scope, can_approve_tasks,
+                can_reassign_tasks, can_change_deadline, updated_at, visibility_scope
+            ) VALUES(?, ?, ?, ?, ?, 1, '[]', ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(user_id) DO UPDATE SET
+                organization_id = excluded.organization_id,
+                department_id = excluded.department_id,
+                primary_role_id = excluded.primary_role_id,
+                manager_user_id = excluded.manager_user_id,
+                is_manager = excluded.is_manager,
+                current_focus = excluded.current_focus,
+                task_edit_scope = excluded.task_edit_scope,
+                can_approve_tasks = excluded.can_approve_tasks,
+                can_reassign_tasks = excluded.can_reassign_tasks,
+                can_change_deadline = excluded.can_change_deadline,
+                updated_at = excluded.updated_at,
+                visibility_scope = excluded.visibility_scope
+            """,
+            (
+                user_id,
+                DEFAULT_ORG_ID,
+                department_id,
+                role_id,
+                manager_user_id,
+                current_focus,
+                visibility_scope,
+                can_manage,
+                can_manage,
+                can_manage,
+                timestamp,
+                visibility_scope,
+            ),
+        )
+
+    for line_id, manager_user_id, report_user_id, is_cross_department_approver in [
+        ("line_guyuan_qinghua", "user_guyuan", "user_qinghua", 1),
+        ("line_qinghua_jianing", "user_qinghua", "user_jianing", 1),
+        ("line_qinghua_yishuo", "user_qinghua", "user_yishuo", 0),
+    ]:
+        db.execute(
+            """
+            INSERT INTO org_reporting_lines(
+                id, organization_id, manager_user_id, report_user_id, line_type, approves_tasks,
+                can_adjust_tasks, can_change_deadline, can_reassign_tasks,
+                is_cross_department_approver, active, updated_at
+            ) VALUES(?, ?, ?, ?, 'business', 1, 1, 1, 1, ?, 1, ?)
+            ON CONFLICT(organization_id, manager_user_id, report_user_id, line_type) DO UPDATE SET
+                is_cross_department_approver = excluded.is_cross_department_approver,
+                active = excluded.active,
+                updated_at = excluded.updated_at
+            """,
+            (line_id, DEFAULT_ORG_ID, manager_user_id, report_user_id, is_cross_department_approver, timestamp),
+        )
+
+    for line_id, manager_user_id, report_user_id in [
+        ("direct_guyuan_qinghua", "user_guyuan", "user_qinghua"),
+        ("direct_qinghua_jianing", "user_qinghua", "user_jianing"),
+        ("direct_qinghua_yishuo", "user_qinghua", "user_yishuo"),
+    ]:
+        db.execute(
+            """
+            INSERT INTO reporting_lines(
+                id, organization_id, manager_user_id, report_user_id,
+                relationship_type, effective_from, effective_to, created_at
+            ) VALUES(?, ?, ?, ?, 'direct', ?, NULL, ?)
+            ON CONFLICT(manager_user_id, report_user_id, relationship_type) DO UPDATE SET
+                organization_id = excluded.organization_id,
+                effective_to = NULL
+            """,
+            (line_id, DEFAULT_ORG_ID, manager_user_id, report_user_id, timestamp[:10], timestamp),
+        )
+
+    db.execute(
+        """
+        INSERT INTO org_task_control_rules(
+            id, organization_id, name, control_level, department_id, role_template_id,
+            content_editable_by, deadline_editable_by, owner_editable_by, cancellable_by,
+            require_collab_confirmation, default_approver_user_id, active, updated_at
+        ) VALUES('rule_department_key', ?, '关键部门任务', 'department_control', NULL, NULL,
+                 'assignee', 'manager', 'manager', 'manager', 1, 'user_qinghua', 1, ?)
+        ON CONFLICT(id) DO UPDATE SET
+            organization_id = excluded.organization_id,
+            name = excluded.name,
+            control_level = excluded.control_level,
+            deadline_editable_by = excluded.deadline_editable_by,
+            owner_editable_by = excluded.owner_editable_by,
+            cancellable_by = excluded.cancellable_by,
+            default_approver_user_id = excluded.default_approver_user_id,
+            active = excluded.active,
+            updated_at = excluded.updated_at
+        """,
+        (DEFAULT_ORG_ID, timestamp),
+    )
 
 
 def test_register_approve_login_and_collaboration_flow():
@@ -136,13 +317,12 @@ def test_register_approve_login_and_collaboration_flow():
     )
     assert register.status_code == 200, register.text
 
-    pending_login = client.post("/api/v1/auth/login", json={"email": "new-user@yiyu-system.com", "password": "Password123!"})
-    assert pending_login.status_code == 200, pending_login.text
-    assert pending_login.json()["user"]["membershipStatus"] == "pending"
-    pending_headers = {"Authorization": f"Bearer {pending_login.json()['accessToken']}"}
-    blocked_tasks = client.get("/api/v1/tasks", headers=pending_headers)
-    assert blocked_tasks.status_code == 403
-    assert "组织身份尚未确认" in blocked_tasks.text
+    member_login = client.post("/api/v1/auth/login", json={"email": "new-user@yiyu-system.com", "password": "Password123!"})
+    assert member_login.status_code == 200, member_login.text
+    assert member_login.json()["user"]["membershipStatus"] == "approved"
+    member_headers = {"Authorization": f"Bearer {member_login.json()['accessToken']}"}
+    member_tasks = client.get("/api/v1/tasks", headers=member_headers)
+    assert member_tasks.status_code == 200, member_tasks.text
 
     admin_headers = auth_headers(client)
     employees = client.get("/api/v1/admin/employees", headers=admin_headers)
@@ -154,13 +334,6 @@ def test_register_approve_login_and_collaboration_flow():
     assert pending_user["currentFocus"] == "先熟悉客户服务流程与常用资料库"
     assert pending_user["isDepartmentLead"] is False
 
-    approve = client.post(
-        f"/api/v1/admin/employees/{pending_user['id']}/approve",
-        json={"role": "employee"},
-        headers=admin_headers,
-    )
-    assert approve.status_code == 200, approve.text
-    assert approve.json()["departmentId"] == "dept_customer_service"
     org_profile = client.get("/api/v1/settings/org-model/profile", headers=admin_headers)
     assert org_profile.status_code == 200, org_profile.text
     approved_binding = next(item for item in org_profile.json()["bindings"] if item["userId"] == pending_user["id"])
@@ -210,6 +383,7 @@ def test_register_approve_login_and_collaboration_flow():
             "clientId": "client_demo_yellow_river",
             "projectModuleId": "module_client_delivery",
             "projectFlowId": "flow_weekly_sync",
+            "ownerId": pending_user["id"],
             "collaboratorIds": [pending_user["id"], "user_qinghua", "user_jianing"],
             "tags": ["会议", "紧急"],
         },
@@ -773,7 +947,7 @@ def test_personal_growth_content_is_self_only_and_excluded_from_team_report():
     assert dashboard["workSignalCard"]["contentDomain"] == "work"
 
     qinghua_headers = auth_headers(client, "qinghua@yiyu-system.com", "Simulate123!")
-    team_dashboard = client.get("/api/v1/reviews/dashboard", headers=qinghua_headers)
+    team_dashboard = client.get(f"/api/v1/reviews/dashboard?weekLabel={week_label}", headers=qinghua_headers)
     assert team_dashboard.status_code == 200, team_dashboard.text
     payload = team_dashboard.json()
     assert payload["weekLabel"] == week_label
@@ -831,28 +1005,29 @@ def test_feishu_binding_relay_session_roundtrip():
 
 def test_task_overdue_only_after_calendar_day_ends():
     app = create_app()
+    seed_registration_departments(app)
     client = TestClient(app)
-
-    admin_login = client.post("/api/v1/auth/login", json={"email": "admin@yiyu-system.com", "password": "Admin123!"})
-    assert admin_login.status_code == 200, admin_login.text
-    admin_headers = {"Authorization": f"Bearer {admin_login.json()['accessToken']}"}
+    customer_service_invite = _department_invite_code(
+        "dept_customer_service",
+        organization_id=DEFAULT_ORG_ID,
+        organization_name="益语智库",
+        department_name="客户服务部",
+        order=3,
+    )
 
     register = client.post(
         "/api/v1/auth/register",
-        json={"email": "overdue-check@yiyu-system.com", "phone": "13800138202", "fullName": "逾期校验员", "password": "Password123!", "departmentId": "dept_customer_service"},
+        json={
+            "email": "overdue-check@yiyu-system.com",
+            "phone": "13800138202",
+            "fullName": "逾期校验员",
+            "password": "Password123!",
+            "inviteCode": customer_service_invite,
+            "departmentId": "dept_customer_service",
+        },
     )
     assert register.status_code == 200, register.text
-
-    employees = client.get("/api/v1/admin/employees", headers=admin_headers)
-    assert employees.status_code == 200, employees.text
-    pending_user = next(item for item in employees.json() if item["email"] == "overdue-check@yiyu-system.com")
-
-    approve = client.post(
-        f"/api/v1/admin/employees/{pending_user['id']}/approve",
-        json={"role": "employee"},
-        headers=admin_headers,
-    )
-    assert approve.status_code == 200, approve.text
+    assert register.json()["user"]["membershipStatus"] == "approved"
 
     user_login = client.post("/api/v1/auth/login", json={"email": "overdue-check@yiyu-system.com", "password": "Password123!"})
     assert user_login.status_code == 200, user_login.text
@@ -945,6 +1120,7 @@ def test_review_history_lists_previous_weeks_and_dashboard_can_switch_by_weeklab
 
 def test_org_model_profile_roundtrip():
     app = create_app()
+    seed_registration_departments(app)
     client = TestClient(app)
 
     headers = auth_headers(client)
@@ -1063,8 +1239,8 @@ def test_task_org_link_and_department_control_permissions():
     assert create_payload["orgContext"]["roleTemplateId"] == "role_cs_lead"
     assert create_payload["orgContext"]["controlRuleId"] == "rule_department_key"
     assert create_payload["orgContext"]["controlLevel"] == "department_control"
-    assert create_payload["orgContext"]["needsReview"] is True
-    assert create_payload["orgContext"]["approvalState"] == "pending"
+    assert create_payload["orgContext"]["needsReview"] is False
+    assert create_payload["orgContext"]["approvalState"] == "none"
 
     link_row = app.state.app_state.db.fetchone("SELECT * FROM task_org_links WHERE task_id = ?", (task_id,))
     assert link_row is not None
@@ -1072,14 +1248,13 @@ def test_task_org_link_and_department_control_permissions():
     assert str(link_row["role_template_id"]) == "role_cs_lead"
     assert str(link_row["control_rule_id"]) == "rule_department_key"
 
-    jianing_headers = auth_headers(client, "jianing@yiyu-system.com", "Simulate123!")
+    yishuo_headers = auth_headers(client, "yishuo@yiyu-system.com", "Simulate123!")
     denied = client.patch(
         f"/api/v1/tasks/{task_id}",
         json={"dueDate": "2026-03-21T18:00"},
-        headers=jianing_headers,
+        headers=yishuo_headers,
     )
-    assert denied.status_code == 403
-    assert "截止时间" in denied.text
+    assert denied.status_code == 404
 
     allowed = client.patch(
         f"/api/v1/tasks/{task_id}",
@@ -1094,6 +1269,7 @@ def test_task_org_link_and_department_control_permissions():
 
 def test_task_plan_link_and_support_request_flow():
     app = create_app()
+    seed_registration_departments(app)
     client = TestClient(app)
 
     admin_headers = auth_headers(client)
@@ -1191,6 +1367,7 @@ def test_task_plan_link_and_support_request_flow():
 
 def test_event_line_roundtrip_and_detail_collects_task_and_support_request():
     app = create_app()
+    seed_registration_departments(app)
     client = TestClient(app)
 
     admin_headers = auth_headers(client)
@@ -1265,22 +1442,33 @@ def test_task_review_approve_and_return_follow_org_permissions():
 
     qinghua_headers = auth_headers(client, "qinghua@yiyu-system.com", "Simulate123!")
     admin_headers = auth_headers(client)
+    customer_service_invite = _department_invite_code(
+        "dept_customer_service",
+        organization_id=DEFAULT_ORG_ID,
+        organization_name="益语智库",
+        department_name="客户服务部",
+        order=3,
+    )
 
     register = client.post(
         "/api/v1/auth/register",
-        json={"email": "review-worker@yiyu-system.com", "phone": "13800138203", "fullName": "复核执行员", "password": "Password123!", "departmentId": "dept_customer_service"},
+        json={
+            "email": "review-worker@yiyu-system.com",
+            "phone": "13800138203",
+            "fullName": "复核执行员",
+            "password": "Password123!",
+            "inviteCode": customer_service_invite,
+            "departmentId": "dept_customer_service",
+            "jobTitle": "客户推进",
+            "managerName": "庆华",
+        },
     )
     assert register.status_code == 200, register.text
+    assert register.json()["user"]["membershipStatus"] == "approved"
 
     employees = client.get("/api/v1/admin/employees", headers=admin_headers)
     assert employees.status_code == 200, employees.text
     pending_user = next(item for item in employees.json() if item["email"] == "review-worker@yiyu-system.com")
-    approve = client.post(
-        f"/api/v1/admin/employees/{pending_user['id']}/approve",
-        json={"role": "employee"},
-        headers=admin_headers,
-    )
-    assert approve.status_code == 200, approve.text
     worker_headers = auth_headers(client, "review-worker@yiyu-system.com", "Password123!")
 
     create = client.post(
@@ -1298,8 +1486,16 @@ def test_task_review_approve_and_return_follow_org_permissions():
     )
     assert create.status_code == 200, create.text
     task_id = create.json()["id"]
-    assert create.json()["orgContext"]["needsReview"] is True
-    assert create.json()["orgContext"]["approvalState"] == "pending"
+    assert create.json()["orgContext"]["needsReview"] is False
+    assert create.json()["orgContext"]["approvalState"] == "none"
+    db.execute(
+        """
+        UPDATE task_org_links
+           SET approval_state = 'pending', needs_review = 1, updated_at = ?
+         WHERE task_id = ?
+        """,
+        (now_iso(), task_id),
+    )
 
     self_owned = client.post(
         "/api/v1/tasks",
@@ -1352,6 +1548,14 @@ def test_task_review_approve_and_return_follow_org_permissions():
     )
     assert create_again.status_code == 200, create_again.text
     second_task_id = create_again.json()["id"]
+    db.execute(
+        """
+        UPDATE task_org_links
+           SET approval_state = 'pending', needs_review = 1, updated_at = ?
+         WHERE task_id = ?
+        """,
+        (now_iso(), second_task_id),
+    )
 
     returned = client.post(
         f"/api/v1/tasks/{second_task_id}/review/return",

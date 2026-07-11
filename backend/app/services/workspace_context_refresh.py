@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import sqlite3
 from datetime import datetime, timedelta
 from typing import Literal
 
 from app.db import Database
 from app.models import WorkspaceContextRefreshEventRecord
+from app.services.async_job_scope import resolve_client_workspace_context
 from app.services.knowledge_v2 import new_id
 
 ACTIVE_REFRESH_STATUSES = ("queued", "running")
@@ -30,6 +32,7 @@ def ensure_workspace_context_refresh_schema(db: Database) -> None:
         CREATE TABLE IF NOT EXISTS workspace_context_refresh_events (
             id TEXT PRIMARY KEY,
             client_id TEXT NOT NULL,
+            sandbox_id TEXT,
             scope_type TEXT NOT NULL,
             scope_id TEXT NOT NULL,
             source_type TEXT NOT NULL,
@@ -45,6 +48,7 @@ def ensure_workspace_context_refresh_schema(db: Database) -> None:
         )
         """
     )
+    db.ensure_column("workspace_context_refresh_events", "sandbox_id", "TEXT")
     db.execute(
         """
         CREATE INDEX IF NOT EXISTS idx_workspace_context_refresh_client
@@ -58,12 +62,25 @@ def ensure_workspace_context_refresh_schema(db: Database) -> None:
         WHERE status IN ('queued', 'running')
         """
     )
+    db.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_workspace_context_refresh_sandbox_client
+        ON workspace_context_refresh_events(sandbox_id, client_id, updated_at DESC)
+        """
+    )
+    db.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_workspace_context_refresh_sandbox_status
+        ON workspace_context_refresh_events(sandbox_id, status, updated_at DESC)
+        """
+    )
 
 
 def _row_to_refresh_event(row) -> WorkspaceContextRefreshEventRecord:
     return WorkspaceContextRefreshEventRecord(
         id=str(row["id"]),
         clientId=str(row["client_id"]),
+        sandboxId=str(row["sandbox_id"]) if row["sandbox_id"] else None,
         scopeType=str(row["scope_type"]),
         scopeId=str(row["scope_id"]),
         sourceType=str(row["source_type"]),
@@ -99,45 +116,67 @@ def enqueue_workspace_context_refresh(
     normalized_source_type = str(source_type or "unknown").strip() or "unknown"
     normalized_reason = str(reason or normalized_source_type).strip() or normalized_source_type
     normalized_priority = priority if priority in {"low", "normal", "high"} else "normal"
-    dedupe_key = f"{normalized_client_id}:{normalized_scope_type}:{normalized_scope_id}:{normalized_reason}"
+    workspace_context = resolve_client_workspace_context(db, normalized_client_id)
+    sandbox_id = workspace_context.sandbox_id
+    dedupe_key = (
+        f"{sandbox_id}:{normalized_client_id}:{normalized_scope_type}:"
+        f"{normalized_scope_id}:{normalized_reason}"
+    )
 
     existing = db.fetchone(
         """
         SELECT *
         FROM workspace_context_refresh_events
-        WHERE dedupe_key = ? AND status IN ('queued', 'running')
+        WHERE sandbox_id = ? AND dedupe_key = ? AND status IN ('queued', 'running')
         ORDER BY updated_at DESC
         LIMIT 1
         """,
-        (dedupe_key,),
+        (sandbox_id, dedupe_key),
     )
     if existing:
         return _row_to_refresh_event(existing), True
 
     now = _now_iso()
     event_id = new_id("wcrf")
-    db.execute(
-        """
-        INSERT INTO workspace_context_refresh_events(
-            id, client_id, scope_type, scope_id, source_type, source_id,
-            reason, priority, status, job_id, dedupe_key, error, created_at, updated_at
+    try:
+        db.execute(
+            """
+            INSERT INTO workspace_context_refresh_events(
+                id, client_id, sandbox_id, scope_type, scope_id, source_type, source_id,
+                reason, priority, status, job_id, dedupe_key, error, created_at, updated_at
+            )
+            VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', NULL, ?, NULL, ?, ?)
+            """,
+            (
+                event_id,
+                normalized_client_id,
+                sandbox_id,
+                normalized_scope_type,
+                normalized_scope_id,
+                normalized_source_type,
+                str(source_id).strip() if source_id else None,
+                normalized_reason,
+                normalized_priority,
+                dedupe_key,
+                now,
+                now,
+            ),
         )
-        VALUES(?, ?, ?, ?, ?, ?, ?, ?, 'queued', NULL, ?, NULL, ?, ?)
-        """,
-        (
-            event_id,
-            normalized_client_id,
-            normalized_scope_type,
-            normalized_scope_id,
-            normalized_source_type,
-            str(source_id).strip() if source_id else None,
-            normalized_reason,
-            normalized_priority,
-            dedupe_key,
-            now,
-            now,
-        ),
-    )
+    except sqlite3.IntegrityError:
+        # 并发 enqueue 可能同时通过前置 SELECT；唯一索引是最终仲裁者。
+        existing = db.fetchone(
+            """
+            SELECT *
+            FROM workspace_context_refresh_events
+            WHERE sandbox_id = ? AND dedupe_key = ? AND status IN ('queued', 'running')
+            ORDER BY updated_at DESC
+            LIMIT 1
+            """,
+            (sandbox_id, dedupe_key),
+        )
+        if existing:
+            return _row_to_refresh_event(existing), True
+        raise
     row = db.fetchone("SELECT * FROM workspace_context_refresh_events WHERE id = ?", (event_id,))
     assert row is not None
     return _row_to_refresh_event(row), False
@@ -153,20 +192,34 @@ def mark_workspace_context_refresh_event_status(
 ) -> WorkspaceContextRefreshEventRecord:
     ensure_workspace_context_refresh_schema(db)
     now = _now_iso()
-    db.execute(
-        """
-        UPDATE workspace_context_refresh_events
-        SET status = ?,
-            job_id = ?,
-            error = ?,
-            updated_at = ?
-        WHERE id = ?
-        """,
-        (status, job_id, (error or "").strip() or None, now, event_id),
-    )
-    row = db.fetchone("SELECT * FROM workspace_context_refresh_events WHERE id = ?", (event_id,))
-    if not row:
-        raise KeyError("workspace_context_refresh_event_not_found")
+    def _mark(conn):
+        existing = conn.execute(
+            "SELECT id, sandbox_id FROM workspace_context_refresh_events WHERE id = ?",
+            (event_id,),
+        ).fetchone()
+        if not existing:
+            raise KeyError("workspace_context_refresh_event_not_found")
+        persisted_sandbox_id = str(existing["sandbox_id"] or "")
+        updated = conn.execute(
+            """
+            UPDATE workspace_context_refresh_events
+            SET status = ?,
+                job_id = ?,
+                error = ?,
+                updated_at = ?
+            WHERE id = ? AND COALESCE(sandbox_id, '') = ?
+            """,
+            (status, job_id, (error or "").strip() or None, now, event_id, persisted_sandbox_id),
+        )
+        if updated.rowcount != 1:
+            raise RuntimeError("workspace_context_refresh_event_scope_changed")
+        return conn.execute(
+            "SELECT * FROM workspace_context_refresh_events WHERE id = ? AND COALESCE(sandbox_id, '') = ?",
+            (event_id, persisted_sandbox_id),
+        ).fetchone()
+
+    row = db.run_in_transaction(_mark)
+    assert row is not None
     return _row_to_refresh_event(row)
 
 
@@ -178,8 +231,9 @@ def list_workspace_context_refresh_events(
     limit: int = 50,
 ) -> list[WorkspaceContextRefreshEventRecord]:
     ensure_workspace_context_refresh_schema(db)
-    where_sql = "client_id = ?"
-    params: list[object] = [client_id]
+    workspace_context = resolve_client_workspace_context(db, client_id)
+    where_sql = "sandbox_id = ? AND client_id = ?"
+    params: list[object] = [workspace_context.sandbox_id, client_id]
     if active_only:
         where_sql += " AND status IN ('queued', 'running')"
     params.append(int(max(1, min(limit, 300))))
@@ -242,17 +296,32 @@ def mark_workspace_context_refresh_event_failed(
     )
 
 
-def _lookup_job_status(db: Database, job_id: str) -> str | None:
+def _lookup_job_status(db: Database, job_id: str, sandbox_id: str) -> str | None:
     normalized = str(job_id or "").strip()
     if not normalized:
         return None
-    row = db.fetchone("SELECT status FROM knowledge_jobs WHERE id = ? LIMIT 1", (normalized,))
+    row = db.fetchone(
+        "SELECT status FROM knowledge_jobs WHERE id = ? AND sandbox_id = ? LIMIT 1",
+        (normalized, sandbox_id),
+    )
     if row and row["status"] is not None:
         return str(row["status"])
-    row = db.fetchone("SELECT status FROM analysis_jobs WHERE id = ? LIMIT 1", (normalized,))
+    row = db.fetchone(
+        "SELECT status FROM analysis_jobs WHERE id = ? AND sandbox_id = ? LIMIT 1",
+        (normalized, sandbox_id),
+    )
     if row and row["status"] is not None:
         return str(row["status"])
-    row = db.fetchone("SELECT status FROM execution_tickets WHERE id = ? LIMIT 1", (normalized,))
+    row = db.fetchone(
+        """
+        SELECT ticket.status
+        FROM execution_tickets ticket
+        JOIN clients client ON client.id = ticket.client_id
+        WHERE ticket.id = ? AND client.sandbox_id = ?
+        LIMIT 1
+        """,
+        (normalized, sandbox_id),
+    )
     if row and row["status"] is not None:
         return str(row["status"])
     return None
@@ -273,9 +342,34 @@ def recover_stale_workspace_context_refresh_events(
     recovered_failed = 0
     recovered_queued_failed = 0
 
+    invalid_active = db.fetchall(
+        """
+        SELECT event.id
+        FROM workspace_context_refresh_events event
+        LEFT JOIN clients client ON client.id = event.client_id
+        LEFT JOIN sandboxes sandbox ON sandbox.id = event.sandbox_id
+        WHERE event.status IN ('queued', 'running')
+          AND (
+              TRIM(COALESCE(event.sandbox_id, '')) = ''
+              OR client.id IS NULL
+              OR TRIM(COALESCE(client.sandbox_id, '')) = ''
+              OR client.sandbox_id <> event.sandbox_id
+              OR sandbox.id IS NULL
+              OR sandbox.status <> 'active'
+          )
+        """
+    )
+    for row in invalid_active:
+        mark_workspace_context_refresh_event_failed(
+            db,
+            event_id=str(row["id"]),
+            error="async_job_scope_invalid",
+        )
+        recovered_failed += 1
+
     stale_running = db.fetchall(
         """
-        SELECT id, job_id, updated_at
+        SELECT id, job_id, sandbox_id, updated_at
         FROM workspace_context_refresh_events
         WHERE status = 'running' AND updated_at <= ?
         ORDER BY updated_at ASC
@@ -287,7 +381,7 @@ def recover_stale_workspace_context_refresh_events(
         if not event_id:
             continue
         job_id = str(row["job_id"] or "").strip() or None
-        job_status = _lookup_job_status(db, job_id or "")
+        job_status = _lookup_job_status(db, job_id or "", str(row["sandbox_id"] or ""))
         normalized_job_status = str(job_status or "").strip().lower()
         if normalized_job_status in {"completed", "done", "executed", "success", "succeeded", "ready"}:
             mark_workspace_context_refresh_event_completed(db, event_id=event_id, job_id=job_id)
@@ -312,7 +406,7 @@ def recover_stale_workspace_context_refresh_events(
 
     stale_queued = db.fetchall(
         """
-        SELECT id
+        SELECT id, sandbox_id
         FROM workspace_context_refresh_events
         WHERE status = 'queued' AND created_at <= ?
         ORDER BY created_at ASC

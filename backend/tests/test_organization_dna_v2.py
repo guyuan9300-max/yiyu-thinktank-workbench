@@ -3,9 +3,21 @@ from __future__ import annotations
 from pathlib import Path
 
 import httpx
+from fastapi.testclient import TestClient
 
 import app.main as app_main
-from test_api_smoke import make_client, seed_cloud_token
+from app.main import create_app
+
+
+def make_client(tmp_path: Path) -> TestClient:
+    app = create_app(tmp_path / "data")
+    client = TestClient(app)
+    client.__enter__()
+    return client
+
+
+def seed_cloud_token(client: TestClient) -> None:
+    client.app.state.app_state.db.set_setting("cloud_access_token", "token_demo")
 
 
 def _stub_org_model(monkeypatch, payload: dict) -> None:

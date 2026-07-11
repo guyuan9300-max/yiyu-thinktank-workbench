@@ -9,6 +9,7 @@ from fastapi.testclient import TestClient
 import app.main as app_main
 
 from app.main import create_app
+from app.services.sandbox_registry import ensure_organization_sandbox_for_session, set_active_sandbox_setting
 
 
 def make_client(tmp_path: Path) -> TestClient:
@@ -29,12 +30,13 @@ class FakeResponse:
 
 
 def test_local_feedback_queues_without_cloud_and_redacts_logs(tmp_path: Path):
+    fake_openai_token = "sk-" + ("TESTONLY" * 3)
     client = make_client(tmp_path)
     client.post(
         "/api/v1/system/client-error",
         json={
             "level": "error",
-            "message": "login failed for 13800138000 api_key=abcdef1234567890 Bearer eyJabc.def.ghi sk-12345678901234567890 volc_12345678901234567890",
+            "message": f"login failed for 13800138000 api_key=abcdef1234567890 Bearer eyJabc.def.ghi {fake_openai_token} volc_12345678901234567890",
             "route": "#/settings",
         },
     )
@@ -65,7 +67,7 @@ def test_local_feedback_queues_without_cloud_and_redacts_logs(tmp_path: Path):
     log_excerpt = items[0]["logExcerpt"]
     assert "13800138000" not in log_excerpt
     assert "abcdef1234567890" not in log_excerpt
-    assert "sk-12345678901234567890" not in log_excerpt
+    assert fake_openai_token not in log_excerpt
     assert "volc_12345678901234567890" not in log_excerpt
     assert "<PHONE>" in log_excerpt
     assert "<TOKEN>" in log_excerpt
@@ -119,7 +121,14 @@ def test_local_feedback_reaches_central_without_org_cloud(tmp_path: Path, monkey
 
     monkeypatch.setattr(app_main.httpx, "post", fake_post)
     client = TestClient(create_app(tmp_path / "data-central"))
-    client.app.state.app_state.db.set_setting(
+    db = client.app.state.app_state.db
+    ensure_organization_sandbox_for_session(
+        db,
+        organization_id="org_demo",
+        organization_name="演示组织",
+    )
+    set_active_sandbox_setting(
+        db,
         "cloud_session_user",
         json.dumps(
             {

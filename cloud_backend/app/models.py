@@ -1869,6 +1869,25 @@ class OrgAiConfigSecretRecord(BaseModel):
     configVersion: str = ""
 
 
+class OrgAsrConfigRecord(BaseModel):
+    orgId: str
+    provider: str = "doubao_file"
+    hasAppId: bool = False
+    appIdMasked: str = ""
+    hasAccessToken: bool = False
+    accessTokenMasked: str = ""
+    configuredBy: str | None = None
+    updatedAt: str = ""
+
+
+class OrgAsrConfigUpdatePayload(BaseModel):
+    provider: Literal["doubao_file"] = "doubao_file"
+    appId: str | None = None
+    accessToken: str | None = None
+    clearAppId: bool = False
+    clearAccessToken: bool = False
+
+
 ObjectStorageProvider = Literal["volcano_tos", "aliyun_oss", "aws_s3"]
 
 

@@ -1,17 +1,20 @@
 from __future__ import annotations
 
 import importlib.util
+import ipaddress
 import json
 import logging
 import os
 import re
 import shlex
 import shutil
+import socket
 import subprocess
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Literal
+from urllib.parse import urljoin, urlsplit, urlunsplit
 
 logger = logging.getLogger(__name__)
 
@@ -77,10 +80,14 @@ class LinkMaterialPlatformAdapter:
         raise NotImplementedError
 
 
-_BILIBILI_URL_RE = re.compile(r"(bilibili\.com|b23\.tv)", re.I)
 _BILIBILI_BV_RE = re.compile(r"^BV[0-9A-Za-z]{8,}$", re.I)
-_XHS_URL_RE = re.compile(r"(xiaohongshu\.com|xhslink\.com|xhs\.cn)", re.I)
-_WECHAT_ARTICLE_URL_RE = re.compile(r"mp\.weixin\.qq\.com/s", re.I)
+_LINK_PLATFORM_HOST_SUFFIXES: dict[LinkMaterialPlatform, tuple[str, ...]] = {
+    "bilibili": ("bilibili.com", "b23.tv"),
+    "xiaohongshu": ("xiaohongshu.com", "xhslink.com", "xhs.cn"),
+    "wechat_article": ("mp.weixin.qq.com",),
+}
+_SAFE_REDIRECT_STATUS_CODES = {301, 302, 303, 307, 308}
+_MAX_SAFE_LINK_REDIRECTS = 5
 _AUDIO_EXTENSIONS = {".aac", ".aiff", ".alac", ".flac", ".m4a", ".mp3", ".oga", ".ogg", ".opus", ".wav", ".weba", ".wma"}
 # SenseVoice 用 soundfile(libsndfile)解码，它只认 wav/flac/ogg/aiff 等；m4a/aac/mp3/opus/wma
 # 这些要先用 ffmpeg 转成 wav 才能转写。这个集合是"可直接喂 soundfile"的安全格式。
@@ -129,6 +136,120 @@ def _extract_url_from_text(text: str) -> str | None:
     return match.group(0) if match else None
 
 
+def _hostname_matches_suffix(hostname: str, suffix: str) -> bool:
+    return hostname == suffix or hostname.endswith(f".{suffix}")
+
+
+def _validate_platform_url(
+    value: str,
+    *,
+    expected_platform: LinkMaterialPlatform | None = None,
+) -> LinkMaterialDetection:
+    """Validate a user-controlled source URL without making a network request."""
+    if any(ord(character) < 32 or ord(character) == 127 for character in value) or "\\" in value:
+        raise LinkMaterialImportError("链接格式无效。")
+    try:
+        parsed = urlsplit(value)
+        hostname = (parsed.hostname or "").lower()
+        port = parsed.port
+    except ValueError as exc:
+        raise LinkMaterialImportError("链接格式无效。") from exc
+    if parsed.scheme.lower() != "https":
+        raise LinkMaterialImportError("为保护本机与组织数据，链接导入仅支持 HTTPS 链接。")
+    if not hostname or parsed.username is not None or parsed.password is not None:
+        raise LinkMaterialImportError("链接格式无效。")
+    if hostname.endswith(".") or port not in (None, 443):
+        raise LinkMaterialImportError("链接格式无效。")
+
+    platform: LinkMaterialPlatform | None = None
+    for candidate, suffixes in _LINK_PLATFORM_HOST_SUFFIXES.items():
+        hostname_allowed = (
+            hostname in suffixes
+            if candidate == "wechat_article"
+            else any(_hostname_matches_suffix(hostname, suffix) for suffix in suffixes)
+        )
+        if hostname_allowed:
+            platform = candidate
+            break
+    if platform is None:
+        raise LinkMaterialImportError("暂不支持这个链接。当前仅支持 B 站链接、BV 号、小红书链接、微信公众号文章。")
+    if platform == "wechat_article" and not (parsed.path == "/s" or parsed.path.startswith("/s/")):
+        raise LinkMaterialImportError("暂不支持这个公众号链接，请使用公众号文章链接。")
+    if expected_platform is not None and platform != expected_platform:
+        raise LinkMaterialImportError("链接跳转到了不受支持的平台。")
+
+    # Fragments never reach the remote server. Dropping them also makes queueing
+    # and audit records deterministic while preserving signed query parameters.
+    normalized_url = urlunsplit(("https", hostname, parsed.path, parsed.query, ""))
+    display_names = {"bilibili": "B站", "xiaohongshu": "小红书", "wechat_article": "公众号"}
+    return LinkMaterialDetection(
+        platform=platform,
+        normalized_url=normalized_url,
+        display_name=display_names[platform],
+    )
+
+
+def _resolve_hostname_addresses(hostname: str) -> set[str]:
+    try:
+        results = socket.getaddrinfo(
+            hostname,
+            443,
+            family=socket.AF_UNSPEC,
+            type=socket.SOCK_STREAM,
+            proto=socket.IPPROTO_TCP,
+        )
+    except OSError as exc:
+        raise LinkMaterialImportError("链接域名暂时无法安全解析，请稍后重试。") from exc
+    return {str(result[4][0]).split("%", 1)[0] for result in results if result[4]}
+
+
+def _assert_public_link_target(
+    value: str,
+    *,
+    expected_platform: LinkMaterialPlatform,
+) -> str:
+    """Fail closed if an allowlisted hostname resolves to any non-public IP."""
+    detection = _validate_platform_url(value, expected_platform=expected_platform)
+    hostname = str(urlsplit(detection.normalized_url).hostname or "")
+    addresses = _resolve_hostname_addresses(hostname)
+    if not addresses:
+        raise LinkMaterialImportError("链接域名暂时无法安全解析，请稍后重试。")
+    try:
+        unsafe = any(not ipaddress.ip_address(address).is_global for address in addresses)
+    except ValueError as exc:
+        raise LinkMaterialImportError("链接域名返回了无效地址，已停止导入。") from exc
+    if unsafe:
+        raise LinkMaterialImportError("该链接指向本机或私有网络，已停止导入。")
+    return detection.normalized_url
+
+
+def _safe_get_with_redirects(
+    client: Any,
+    source_url: str,
+    *,
+    platform: LinkMaterialPlatform,
+) -> Any:
+    """GET a platform page while validating HTTPS/host/DNS before every hop."""
+    current_url = _validate_platform_url(source_url, expected_platform=platform).normalized_url
+    for redirect_count in range(_MAX_SAFE_LINK_REDIRECTS + 1):
+        current_url = _assert_public_link_target(current_url, expected_platform=platform)
+        response = client.get(current_url, follow_redirects=False)
+        if int(response.status_code) not in _SAFE_REDIRECT_STATUS_CODES:
+            return response
+        location = str(response.headers.get("location") or "").strip()
+        close = getattr(response, "close", None)
+        if callable(close):
+            close()
+        if not location:
+            raise LinkMaterialImportError("链接跳转响应缺少目标地址，已停止导入。")
+        if redirect_count >= _MAX_SAFE_LINK_REDIRECTS:
+            raise LinkMaterialImportError("链接跳转次数过多，已停止导入。")
+        next_url = urljoin(current_url, location)
+        # Validate before the next loop so a malicious Location is never requested.
+        current_url = _validate_platform_url(next_url, expected_platform=platform).normalized_url
+    raise LinkMaterialImportError("链接跳转次数过多，已停止导入。")
+
+
 def detect_link_material(value: str) -> LinkMaterialDetection:
     raw = str(value or "").strip()
     if not raw:
@@ -142,13 +263,7 @@ def detect_link_material(value: str) -> LinkMaterialDetection:
         )
     # 把真正的 URL 从分享文案里抠出来；抠不到再退回原文(兼容用户直接粘干净链接)。
     url = _extract_url_from_text(raw) or raw
-    if _WECHAT_ARTICLE_URL_RE.search(url):
-        return LinkMaterialDetection(platform="wechat_article", normalized_url=url, display_name="公众号")
-    if _BILIBILI_URL_RE.search(url):
-        return LinkMaterialDetection(platform="bilibili", normalized_url=url, display_name="B站")
-    if _XHS_URL_RE.search(url):
-        return LinkMaterialDetection(platform="xiaohongshu", normalized_url=url, display_name="小红书")
-    raise LinkMaterialImportError("暂不支持这个链接。当前仅支持 B 站链接、BV 号、小红书链接、微信公众号文章。")
+    return _validate_platform_url(url)
 
 
 def adapter_for_platform(platform: LinkMaterialPlatform) -> LinkMaterialPlatformAdapter:
@@ -175,6 +290,7 @@ def extract_link_material_source(
 class _YtDlpAdapter(LinkMaterialPlatformAdapter):
     def extract(self, source_url: str, temp_dir: Path, *, options: LinkMaterialImportOptions | None = None) -> LinkMaterialSource:
         options = options or LinkMaterialImportOptions()
+        source_url = _assert_public_link_target(source_url, expected_platform=self.platform)
         executable = _find_yt_dlp()
         if not executable:
             raise LinkMaterialImportError(
@@ -328,14 +444,18 @@ class WechatArticleAdapter(LinkMaterialPlatformAdapter):
                     "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
                     "Accept-Language": "zh-CN,zh;q=0.9",
                 },
-                follow_redirects=True,
+                follow_redirects=False,
+                trust_env=False,
                 timeout=30.0,
             ) as client:
-                resp = client.get(source_url)
+                resp = _safe_get_with_redirects(client, source_url, platform=self.platform)
                 resp.raise_for_status()
+        except LinkMaterialImportError:
+            raise
         except Exception as exc:
+            logger.warning("Wechat article fetch failed for a validated target", exc_info=True)
             raise LinkMaterialImportError(
-                f"无法获取公众号文章：{exc}。可能是链接已失效、文章被删除或需要登录。"
+                "无法获取公众号文章。可能是链接已失效、文章被删除或需要登录。"
             ) from exc
 
         html = resp.text

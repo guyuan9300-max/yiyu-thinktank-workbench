@@ -13,7 +13,6 @@
 from __future__ import annotations
 
 import json
-import os
 import re
 from dataclasses import asdict
 from typing import Any
@@ -29,7 +28,6 @@ from app.services.narrative_collector import (
     TaskFact,
     collect_client_context,
 )
-from app.smart_input import ARK_BASE_URL, DEFAULT_LLM_MODEL, _qwen_api_key
 
 
 DIMENSIONS = narrative_svc.DIMENSIONS  # ("essence", "people", ...)
@@ -292,12 +290,24 @@ def _strip_to_json(raw: str) -> str:
     return cleaned
 
 
-def call_llm(user_prompt: str, *, model: str | None = None) -> dict[str, Any]:
-    api_key = _qwen_api_key()
-    if not api_key:
-        raise RuntimeError("ARK_API_KEY / VOLCENGINE_API_KEY not set")
+def _chat_completions_endpoint(base_url: str) -> str:
+    normalized = str(base_url or "").strip().rstrip("/")
+    if not normalized:
+        raise RuntimeError("organization AI base URL is missing")
+    return normalized if normalized.endswith("/chat/completions") else f"{normalized}/chat/completions"
+
+
+def call_llm(
+    user_prompt: str,
+    *,
+    api_key: str,
+    base_url: str,
+    model: str,
+) -> dict[str, Any]:
+    if not api_key or not model:
+        raise RuntimeError("organization AI configuration is incomplete")
     payload = {
-        "model": model or os.getenv("YIYU_NARRATIVE_MODEL", DEFAULT_LLM_MODEL),
+        "model": model,
         "messages": [
             {"role": "system", "content": SYSTEM_PROMPT},
             {"role": "user", "content": user_prompt},
@@ -312,7 +322,7 @@ def call_llm(user_prompt: str, *, model: str | None = None) -> dict[str, Any]:
     timeout = httpx.Timeout(timeout=None, connect=10.0, read=180.0, write=20.0, pool=10.0)
     with httpx.Client(timeout=timeout) as client:
         response = client.post(
-            f"{ARK_BASE_URL}/chat/completions",
+            _chat_completions_endpoint(base_url),
             headers={
                 "Authorization": f"Bearer {api_key}",
                 "Content-Type": "application/json",
@@ -410,27 +420,35 @@ def regenerate_narrative(
     trigger: str = "manual",
     force: bool = False,
     use_llm: bool = True,
+    ai_api_key: str | None = None,
+    ai_base_url: str = "",
+    ai_model: str = "",
 ) -> int:
     """主入口: 收集 facts → 调 LLM → 解析 → 落新 rev. 返回新 rev 号."""
     ctx = collect_client_context(db, organization_id, client_id)
 
-    # 1. 真生成 (use_llm=True 且环境有 API key)
+    # 1. 真生成 (use_llm=True 且调用方传入当前组织的 AI 配置)
     parsed: dict[str, Any] | None = None
     model_name = ""
     generator_tag = "ai_doubao"
     error_reason = ""
-    if use_llm and _qwen_api_key():
+    if use_llm and ai_api_key and ai_base_url and ai_model:
         user_prompt = build_user_prompt(ctx)
         try:
-            parsed = call_llm(user_prompt)
-            model_name = os.getenv("YIYU_NARRATIVE_MODEL", DEFAULT_LLM_MODEL)
+            parsed = call_llm(
+                user_prompt,
+                api_key=ai_api_key,
+                base_url=ai_base_url,
+                model=ai_model,
+            )
+            model_name = ai_model
         except (httpx.HTTPError, json.JSONDecodeError, RuntimeError) as exc:
             parsed = None
             error_reason = f"{type(exc).__name__}: {exc}"
     elif not use_llm:
         error_reason = "use_llm=False (test or override)"
     else:
-        error_reason = "ARK_API_KEY 未配置"
+        error_reason = "当前组织 AI 配置未提供"
 
     # 2. 解析 + 校验; 失败维度降级到澄清拼接 or stub
     dims_payload: dict[str, dict[str, Any]] = {}

@@ -23,7 +23,7 @@ LOG_PATH="$HOME/Desktop/yiyu-build-$TS.log"
 DESKTOP_DIR="$HOME/Desktop"
 # package-local-mac-dmg.mjs 默认产物路径（注意：脚本本身不加 -local 后缀，
 # -local 是我们对外的命名约定，仅在 cp 到桌面时挂上去用来标识"本机构建非签名版"）
-DEFAULT_DMG="$REPO_ROOT/dist/${APP_NAME}-0.1.0-arm64.dmg"
+DEFAULT_DMG="$REPO_ROOT/dist/${APP_NAME}-0.28.1-arm64.dmg"
 FINAL_DMG="$DESKTOP_DIR/${APP_NAME}-$TS-arm64-local.dmg"
 TOTAL=8
 

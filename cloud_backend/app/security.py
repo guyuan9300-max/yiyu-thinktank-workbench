@@ -3,7 +3,8 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
-from jose import JWTError, jwt
+import jwt
+from jwt import PyJWTError
 from passlib.context import CryptContext
 
 ALGORITHM = "HS256"
@@ -34,6 +35,5 @@ def create_access_token(secret_key: str, subject: str, extra: dict[str, Any] | N
 def decode_access_token(secret_key: str, token: str) -> dict[str, Any]:
     try:
         return jwt.decode(token, secret_key, algorithms=[ALGORITHM])
-    except JWTError as exc:  # pragma: no cover
+    except PyJWTError as exc:  # pragma: no cover
         raise ValueError("invalid token") from exc
-

@@ -56,9 +56,18 @@ class WorkspaceContext:
 
     @property
     def session_matches_workspace(self) -> bool:
-        if not self.organization_id or not self.session_organization_id:
+        if self.kind != "organization":
             return True
-        return self.organization_id == self.session_organization_id
+        has_session_material = bool(
+            self.access_token
+            or self.refresh_token
+            or self.session_user
+        )
+        if not has_session_material:
+            return True
+        return bool(self.organization_id) and bool(self.session_organization_id) and (
+            self.organization_id == self.session_organization_id
+        )
 
     def immutable_cloud_tuple(self) -> tuple[str, str, str, str, str]:
         return (

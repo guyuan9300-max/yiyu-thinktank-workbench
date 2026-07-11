@@ -14,6 +14,7 @@ from app.services.sandbox_registry import (  # noqa: E402
     DEFAULT_LOCAL_SANDBOX_ID,
     activate_sandbox,
     create_sandbox,
+    ensure_organization_sandbox_for_session,
     get_sandbox_setting,
     set_sandbox_setting,
 )
@@ -182,8 +183,12 @@ def test_feishu_user_binding_is_scoped_by_workspace(tmp_path: Path) -> None:
 def test_legacy_feishu_user_binding_endpoint_maps_member_authorization(tmp_path: Path, monkeypatch) -> None:
     client = make_client(tmp_path)
     db = client.app.state.app_state.db
-    org = create_sandbox(db, kind="organization", name="组织授权", cloud_api_url="https://cloud-auth.example.test")
-    activate_sandbox(db, org.id)
+    org = ensure_organization_sandbox_for_session(
+        db,
+        organization_id="org-feishu",
+        organization_name="组织授权",
+        cloud_api_url="https://cloud-auth.example.test",
+    )
     set_sandbox_setting(db, org.id, "cloud_api_url", "https://cloud-auth.example.test")
     set_sandbox_setting(db, org.id, "cloud_access_token", "token-feishu-auth")
     set_sandbox_setting(

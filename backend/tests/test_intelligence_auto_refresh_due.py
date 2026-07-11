@@ -44,8 +44,7 @@ def test_auto_refresh_due_queues_only_expired_content_kind(tmp_path: Path, monke
                    '2026-05-18T08:00:00', '2026-05-18T08:00:00')
             """
         )
-        db.set_setting("intelligence_profile_completion_cycle_hours", "1")
-        db.set_setting("intelligence_timely_intelligence_cycle_hours", "72")
+        db.set_setting("intelligence_timely_intelligence_cycle_hours", "1")
         db.execute(
             """
             INSERT INTO intelligence_refresh_runs(
@@ -53,30 +52,27 @@ def test_auto_refresh_due_queues_only_expired_content_kind(tmp_path: Path, monke
                 status, stage, message, created_at, updated_at, started_at, finished_at
             )
             VALUES
-              ('old_profile_run', 'client', 'client_due', 'client_due', 'profile_completion', 'manual',
+              ('old_timely_run', 'client', 'client_due', 'client_due', 'timely_intelligence', 'manual',
                'completed', 'completed', 'old', '2020-01-01T00:00:00', '2020-01-01T00:00:00',
-               '2020-01-01T00:00:00', '2020-01-01T00:00:00'),
-              ('fresh_timely_run', 'client', 'client_due', 'client_due', 'timely_intelligence', 'manual',
-               'completed', 'completed', 'fresh', '2026-05-18T08:30:00', '2026-05-18T08:30:00',
-               '2026-05-18T08:30:00', '2099-01-01T00:00:00')
+               '2020-01-01T00:00:00', '2020-01-01T00:00:00')
             """
         )
 
         response = client.post(
             "/api/v1/intelligence/auto-refresh-due",
-            json={"contentKinds": ["profile_completion", "timely_intelligence"], "scopeType": "client", "scopeId": "client_due"},
+            json={"contentKinds": ["timely_intelligence"], "scopeType": "client", "scopeId": "client_due"},
         )
 
         assert response.status_code == 200, response.text
         payload = response.json()
         assert payload["queuedCount"] == 1
         queued = [item for item in payload["results"] if item["queued"]]
-        assert queued[0]["contentKind"] == "profile_completion"
+        assert queued[0]["contentKind"] == "timely_intelligence"
         row = db.fetchone(
             """
             SELECT trigger_source
             FROM intelligence_refresh_runs
-            WHERE client_id='client_due' AND content_kind='profile_completion'
+            WHERE client_id='client_due' AND content_kind='timely_intelligence'
             ORDER BY created_at DESC
             LIMIT 1
             """
@@ -101,14 +97,14 @@ def test_auto_refresh_due_skips_active_run(tmp_path: Path) -> None:
                 id, scope_type, scope_id, client_id, content_kind, trigger_source,
                 status, stage, message, created_at, updated_at
             )
-            VALUES('active_profile_run', 'client', 'client_active', 'client_active', 'profile_completion',
+            VALUES('active_timely_run', 'client', 'client_active', 'client_active', 'timely_intelligence',
                    'manual', 'running', 'researching_sources', 'running', '2026-05-18T08:00:00', '2026-05-18T08:05:00')
             """
         )
 
         response = client.post(
             "/api/v1/intelligence/auto-refresh-due",
-            json={"contentKinds": ["profile_completion"], "scopeType": "client", "scopeId": "client_active"},
+            json={"contentKinds": ["timely_intelligence"], "scopeType": "client", "scopeId": "client_active"},
         )
 
         assert response.status_code == 200, response.text

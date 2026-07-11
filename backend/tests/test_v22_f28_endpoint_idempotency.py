@@ -17,6 +17,7 @@
 from __future__ import annotations
 
 import sys
+import threading
 import uuid
 from pathlib import Path
 
@@ -41,6 +42,35 @@ def client(tmp_path: Path) -> TestClient:
 def _new_key() -> str:
     """生成唯一 Idempotency-Key"""
     return f"test-{uuid.uuid4().hex[:12]}"
+
+
+def _task_payload(title: str) -> dict[str, object]:
+    return {
+        "title": title,
+        "desc": "幂等端到端测试",
+        "priority": "normal",
+        "listId": "",
+        "clientId": None,
+        "sourceType": "manual",
+    }
+
+
+def _create_workspace(client: TestClient, name: str) -> str:
+    response = client.post(
+        "/api/v1/workspaces",
+        json={
+            "kind": "organization",
+            "name": name,
+            "cloudApiUrl": f"https://{name}.example.test",
+        },
+    )
+    assert response.status_code == 200, response.text
+    return str(response.json()["activeSandboxId"])
+
+
+def _activate_workspace(client: TestClient, sandbox_id: str) -> None:
+    response = client.post(f"/api/v1/workspaces/{sandbox_id}/activate")
+    assert response.status_code == 200, response.text
 
 
 # ── 场景 1: 向后兼容 ──────────────────────────────────────────
@@ -152,6 +182,26 @@ def test_clients_same_key_same_body_returns_cached(client: TestClient) -> None:
     assert len(matching) == 1
 
 
+def test_tasks_same_key_same_body_returns_cached(client: TestClient) -> None:
+    key = _new_key()
+    payload = _task_payload("幂等测试任务")
+
+    r1 = client.post(
+        "/api/v1/tasks",
+        json=payload,
+        headers={"Idempotency-Key": key},
+    )
+    assert r1.status_code == 200, r1.text
+
+    r2 = client.post(
+        "/api/v1/tasks",
+        json=payload,
+        headers={"Idempotency-Key": key},
+    )
+    assert r2.status_code == 200, r2.text
+    assert r2.json()["id"] == r1.json()["id"]
+
+
 # ── 场景 3: 同 key + 不同 body → 422 ──────────────────────
 
 
@@ -256,6 +306,202 @@ def test_ai_agent_actor_recorded_in_idempotency_table(
     assert row["status"] == "completed"
 
 
+def test_same_key_is_independent_for_different_authenticated_actors(
+    client: TestClient,
+) -> None:
+    key = _new_key()
+    payload = {"name": "两个 AI 各自创建的事件线"}
+
+    def post_as(actor_id: str):
+        return client.post(
+            "/api/v1/event-lines",
+            json=payload,
+            headers={
+                "Idempotency-Key": key,
+                "X-Actor-Type": "ai_agent",
+                "X-Actor-Id": actor_id,
+            },
+        )
+
+    first_a = post_as("agent_a")
+    first_b = post_as("agent_b")
+    retry_a = post_as("agent_a")
+    retry_b = post_as("agent_b")
+
+    assert first_a.status_code == first_b.status_code == 200
+    assert first_a.json()["id"] != first_b.json()["id"]
+    assert retry_a.json()["id"] == first_a.json()["id"]
+    assert retry_b.json()["id"] == first_b.json()["id"]
+
+
+def test_same_key_is_independent_across_sandboxes(client: TestClient) -> None:
+    key = _new_key()
+    payload = {"name": "跨沙箱同 key 事件线"}
+
+    sandbox_a = _create_workspace(client, "idem-sandbox-a")
+    first_a = client.post(
+        "/api/v1/event-lines",
+        json=payload,
+        headers={"Idempotency-Key": key},
+    )
+    assert first_a.status_code == 200, first_a.text
+
+    sandbox_b = _create_workspace(client, "idem-sandbox-b")
+    first_b = client.post(
+        "/api/v1/event-lines",
+        json=payload,
+        headers={"Idempotency-Key": key},
+    )
+    assert first_b.status_code == 200, first_b.text
+    assert first_b.json()["id"] != first_a.json()["id"]
+
+    _activate_workspace(client, sandbox_a)
+    retry_a = client.post(
+        "/api/v1/event-lines",
+        json=payload,
+        headers={"Idempotency-Key": key},
+    )
+    assert retry_a.status_code == 200, retry_a.text
+    assert retry_a.json()["id"] == first_a.json()["id"]
+
+    _activate_workspace(client, sandbox_b)
+    retry_b = client.post(
+        "/api/v1/event-lines",
+        json=payload,
+        headers={"Idempotency-Key": key},
+    )
+    assert retry_b.status_code == 200, retry_b.text
+    assert retry_b.json()["id"] == first_b.json()["id"]
+
+
+def test_concurrent_same_key_returns_409_then_replays_completed_result(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    key = _new_key()
+    payload = {"name": "并发幂等事件线"}
+    db = client.app.state.app_state.db
+    original_execute = db.execute
+    entered_business_write = threading.Event()
+    release_business_write = threading.Event()
+    blocked_once = False
+
+    def blocking_execute(query: str, params=()):
+        nonlocal blocked_once
+        if "INSERT INTO event_lines(" in query and not blocked_once:
+            blocked_once = True
+            entered_business_write.set()
+            if not release_business_write.wait(timeout=5):
+                raise AssertionError("timed out waiting to release business write")
+        return original_execute(query, params)
+
+    monkeypatch.setattr(db, "execute", blocking_execute)
+    first_result: dict[str, object] = {}
+
+    def first_request() -> None:
+        first_result["response"] = client.post(
+            "/api/v1/event-lines",
+            json=payload,
+            headers={"Idempotency-Key": key},
+        )
+
+    worker = threading.Thread(target=first_request, daemon=True)
+    worker.start()
+    assert entered_business_write.wait(timeout=5)
+    try:
+        concurrent = client.post(
+            "/api/v1/event-lines",
+            json=payload,
+            headers={"Idempotency-Key": key},
+        )
+        assert concurrent.status_code == 409, concurrent.text
+    finally:
+        release_business_write.set()
+        worker.join(timeout=5)
+
+    assert not worker.is_alive()
+    first = first_result["response"]
+    assert getattr(first, "status_code") == 200
+    replay = client.post(
+        "/api/v1/event-lines",
+        json=payload,
+        headers={"Idempotency-Key": key},
+    )
+    assert replay.status_code == 200, replay.text
+    assert replay.json()["id"] == first.json()["id"]
+
+
+@pytest.mark.parametrize(
+    ("path", "payload", "insert_marker"),
+    [
+        (
+            "/api/v1/event-lines",
+            {"name": "失败后重试事件线"},
+            "INSERT INTO event_lines(",
+        ),
+        (
+            "/api/v1/clients",
+            {
+                "name": "失败后重试客户",
+                "alias": "retry_after_failure",
+                "domain": "测试",
+                "type": "战略陪伴",
+                "intro": "",
+                "stage": "active",
+            },
+            "INSERT INTO clients(",
+        ),
+        (
+            "/api/v1/tasks",
+            _task_payload("失败后重试任务"),
+            "INSERT INTO tasks(",
+        ),
+    ],
+)
+def test_business_failure_releases_claim_for_immediate_retry(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+    path: str,
+    payload: dict[str, object],
+    insert_marker: str,
+) -> None:
+    key = _new_key()
+    db = client.app.state.app_state.db
+    original_execute = db.execute
+    failed_once = False
+
+    def fail_business_insert_once(query: str, params=()):
+        nonlocal failed_once
+        if insert_marker in query and not failed_once:
+            failed_once = True
+            raise RuntimeError("simulated business write failure")
+        return original_execute(query, params)
+
+    monkeypatch.setattr(db, "execute", fail_business_insert_once)
+    with pytest.raises(RuntimeError, match="simulated business write failure"):
+        client.post(
+            path,
+            json=payload,
+            headers={"Idempotency-Key": key},
+        )
+    assert failed_once
+
+    retry = client.post(
+        path,
+        json=payload,
+        headers={"Idempotency-Key": key},
+    )
+    assert retry.status_code == 200, retry.text
+
+    replay = client.post(
+        path,
+        json=payload,
+        headers={"Idempotency-Key": key},
+    )
+    assert replay.status_code == 200, replay.text
+    assert replay.json()["id"] == retry.json()["id"]
+
+
 # ── 场景 6: Stripe 风格完整 retry 流程 (端到端) ────────────
 
 
@@ -302,6 +548,10 @@ def test_stripe_style_full_retry_flow(client: TestClient) -> None:
     r3 = client.post(
         "/api/v1/clients",
         json=payload_v2,
-        headers={"Idempotency-Key": key},
+        headers={
+            "Idempotency-Key": key,
+            "X-Actor-Type": "ai_agent",
+            "X-Actor-Id": "agent_001",
+        },
     )
     assert r3.status_code == 422

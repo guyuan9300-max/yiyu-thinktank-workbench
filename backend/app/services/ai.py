@@ -6,6 +6,8 @@ import re
 import shutil
 import subprocess
 import time
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass
 from datetime import datetime
 from time import perf_counter
@@ -229,6 +231,10 @@ class AiService:
     def __init__(self, db: Database, secret_stores: dict[str, object]):
         self.db = db
         self.secret_stores = secret_stores
+        self._sandbox_override: ContextVar[str | None] = ContextVar(
+            f"ai_sandbox_override_{id(self)}",
+            default=None,
+        )
         self._scoped_memory_secrets: dict[tuple[str, str], str] = {}
         self._last_model_snapshot: dict[str, str] = {}
         self._initialize_settings()
@@ -255,8 +261,24 @@ class AiService:
             )
 
     def _active_sandbox_id(self) -> str:
+        override = str(self._sandbox_override.get() or "").strip()
+        if override:
+            return override
         active_id = self.db.get_setting(ACTIVE_SANDBOX_SETTING_KEY, "").strip()
         return active_id or get_active_sandbox_id(self.db)
+
+    @contextmanager
+    def use_sandbox(self, sandbox_id: str):
+        """Pin AI settings/secrets to one persisted workspace for this execution context."""
+
+        normalized = str(sandbox_id or "").strip()
+        if not normalized:
+            raise ValueError("missing_ai_sandbox_id")
+        token = self._sandbox_override.set(normalized)
+        try:
+            yield self
+        finally:
+            self._sandbox_override.reset(token)
 
     def _active_sandbox_is_legacy_default(self) -> bool:
         try:

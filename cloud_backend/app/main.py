@@ -11,6 +11,7 @@ import mimetypes
 import os
 import re
 import secrets
+import stat
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
@@ -21,7 +22,7 @@ from threading import Event, Lock, Thread
 # Module-level 单例, 跨所有 worker 线程串行 refresh.
 _REFRESH_TOKEN_ROTATION_LOCK = Lock()
 from typing import Literal, cast
-from urllib.parse import parse_qs, quote, unquote, urlparse
+from urllib.parse import parse_qs, quote, unquote, urlparse, urlsplit, urlunsplit
 from uuid import uuid4
 
 from fastapi import Body, Depends, FastAPI, File, Form, Header, HTTPException, Query, Request, UploadFile, status
@@ -197,6 +198,8 @@ from app.models import (
     OrgAiConfigRecord,
     OrgAiConfigUpdatePayload,
     OrgAiConfigSecretRecord,
+    OrgAsrConfigRecord,
+    OrgAsrConfigUpdatePayload,
     OrgObjectStorageConfigRecord,
     OrgObjectStorageConfigSecretRecord,
     OrgObjectStorageConfigUpdatePayload,
@@ -256,7 +259,7 @@ from app.services import event_line_narrative
 
 
 APP_NAME = "益语智库中心任务后端"
-APP_VERSION = "0.1.0"
+APP_VERSION = "0.28.1"
 DEFAULT_ORG_ID = "org_yiyu_default"
 DEFAULT_ADMIN_EMAIL = DEFAULT_BOOTSTRAP_ADMIN_EMAIL
 ALLOWED_APPROVER_ROLES: tuple[PrimaryRole, ...] = ("admin",)
@@ -392,6 +395,66 @@ def safe_filename(name: str) -> str:
     return sanitized[:120] or "attachment"
 
 
+TASK_ATTACHMENT_UPLOAD_LIMIT_BYTES = 25 * 1024 * 1024
+TASK_ATTACHMENT_UPLOAD_CHUNK_BYTES = 1024 * 1024
+SMART_INPUT_AUDIO_DEFAULT_TTL_SECONDS = 30 * 60
+SMART_INPUT_AUDIO_FILE_KEY_PATTERN = re.compile(r"[0-9a-f]{32}\.[0-9A-Za-z]{1,8}")
+
+
+async def _read_task_attachment_upload(file: UploadFile) -> bytes:
+    """Read an attachment with a hard cap before callers create files or DB rows."""
+    chunks: list[bytes] = []
+    total = 0
+    while True:
+        remaining = TASK_ATTACHMENT_UPLOAD_LIMIT_BYTES - total
+        chunk = await file.read(min(TASK_ATTACHMENT_UPLOAD_CHUNK_BYTES, remaining + 1))
+        if not chunk:
+            break
+        total += len(chunk)
+        if total > TASK_ATTACHMENT_UPLOAD_LIMIT_BYTES:
+            raise HTTPException(status_code=413, detail="附件超过 25MB 限制")
+        chunks.append(chunk)
+    return b"".join(chunks)
+
+
+_LINK_IMPORT_HOST_SUFFIXES = (
+    "bilibili.com",
+    "b23.tv",
+    "xiaohongshu.com",
+    "xhslink.com",
+    "xhs.cn",
+)
+
+
+def _normalize_link_import_request_url(value: str) -> str:
+    """Validate queued link imports before a desktop worker can fetch them."""
+    if any(ord(character) < 32 or ord(character) == 127 for character in value) or "\\" in value:
+        raise HTTPException(status_code=422, detail="链接格式无效")
+    try:
+        parsed = urlsplit(value)
+        hostname = (parsed.hostname or "").lower()
+        port = parsed.port
+    except ValueError:
+        raise HTTPException(status_code=422, detail="链接格式无效") from None
+    if parsed.scheme.lower() != "https":
+        raise HTTPException(status_code=422, detail="链接导入仅支持 HTTPS 链接")
+    if not hostname or parsed.username is not None or parsed.password is not None:
+        raise HTTPException(status_code=422, detail="链接格式无效")
+    if hostname.endswith(".") or port not in (None, 443):
+        raise HTTPException(status_code=422, detail="链接格式无效")
+
+    is_wechat_article = hostname == "mp.weixin.qq.com" and (
+        parsed.path == "/s" or parsed.path.startswith("/s/")
+    )
+    is_supported_media = any(
+        hostname == suffix or hostname.endswith(f".{suffix}")
+        for suffix in _LINK_IMPORT_HOST_SUFFIXES
+    )
+    if not is_wechat_article and not is_supported_media:
+        raise HTTPException(status_code=422, detail="仅支持 B 站、小红书和微信公众号文章链接")
+    return urlunsplit(("https", hostname, parsed.path, parsed.query, ""))
+
+
 def _is_public_hostname(hostname: str) -> bool:
     value = hostname.strip().lower()
     if not value or value == "localhost" or value.endswith(".local"):
@@ -435,6 +498,136 @@ class AppState:
     feishu_sync_thread: Thread | None = None
     feishu_task_inbound_stop: Event = field(default_factory=Event)
     feishu_task_inbound_thread: Thread | None = None
+    smart_input_audio_lock: Lock = field(default_factory=Lock)
+    smart_input_audio_active_paths: set[str] = field(default_factory=set)
+
+
+def _smart_input_audio_ttl_seconds() -> int:
+    raw_value = os.getenv("YIYU_SMART_INPUT_AUDIO_TTL_SECONDS", "").strip()
+    if not raw_value:
+        return SMART_INPUT_AUDIO_DEFAULT_TTL_SECONDS
+    try:
+        return max(1, int(raw_value))
+    except ValueError:
+        logger.warning(
+            "Invalid YIYU_SMART_INPUT_AUDIO_TTL_SECONDS=%r; using default=%s",
+            raw_value,
+            SMART_INPUT_AUDIO_DEFAULT_TTL_SECONDS,
+        )
+        return SMART_INPUT_AUDIO_DEFAULT_TTL_SECONDS
+
+
+def _smart_input_audio_dir(state: AppState, *, create: bool) -> Path:
+    data_root = state.data_dir.resolve()
+    candidate = state.data_dir / "smart-input-audio"
+    if candidate.is_symlink():
+        raise ValueError("smart-input-audio directory must not be a symlink")
+    if create:
+        candidate.mkdir(parents=True, exist_ok=True)
+    resolved = candidate.resolve(strict=False)
+    if resolved.parent != data_root:
+        raise ValueError("smart-input-audio directory escaped data root")
+    if candidate.exists() and not candidate.is_dir():
+        raise ValueError("smart-input-audio path is not a directory")
+    return resolved
+
+
+def _smart_input_audio_path(state: AppState, file_key: str, *, create_dir: bool) -> Path:
+    if not SMART_INPUT_AUDIO_FILE_KEY_PATTERN.fullmatch(file_key):
+        raise ValueError("invalid smart-input audio key")
+    audio_dir = _smart_input_audio_dir(state, create=create_dir)
+    candidate = audio_dir / file_key
+    if candidate.parent != audio_dir or candidate.is_symlink():
+        raise ValueError("unsafe smart-input audio path")
+    return candidate
+
+
+def _cleanup_expired_smart_input_audio(state: AppState, *, now_epoch: float | None = None) -> int:
+    """Lazily delete expired random ASR copies without following links or touching active files."""
+    try:
+        audio_dir = _smart_input_audio_dir(state, create=False)
+    except ValueError:
+        logger.warning("Refusing unsafe smart-input-audio cleanup path", exc_info=True)
+        return 0
+    if not audio_dir.exists():
+        return 0
+
+    cutoff = (time.time() if now_epoch is None else now_epoch) - _smart_input_audio_ttl_seconds()
+    removed = 0
+    with state.smart_input_audio_lock:
+        active_paths = set(state.smart_input_audio_active_paths)
+        try:
+            candidates = list(audio_dir.iterdir())
+        except OSError:
+            logger.warning("Failed to enumerate smart-input-audio directory", exc_info=True)
+            return 0
+        for candidate in candidates:
+            if candidate.parent != audio_dir or not SMART_INPUT_AUDIO_FILE_KEY_PATTERN.fullmatch(candidate.name):
+                continue
+            candidate_key = str(candidate)
+            if candidate_key in active_paths:
+                continue
+            try:
+                metadata = candidate.lstat()
+                if not stat.S_ISREG(metadata.st_mode) or metadata.st_mtime > cutoff:
+                    continue
+                candidate.unlink()
+                removed += 1
+            except FileNotFoundError:
+                continue
+            except OSError:
+                logger.warning("Failed to delete expired smart-input audio key=%s", candidate.name, exc_info=True)
+    return removed
+
+
+def _create_temporary_smart_input_audio(
+    state: AppState,
+    content: bytes,
+    *,
+    extension: str,
+) -> tuple[str, Path]:
+    _cleanup_expired_smart_input_audio(state)
+    normalized_extension = extension.lower()
+    if not re.fullmatch(r"\.[0-9a-z]{1,8}", normalized_extension):
+        normalized_extension = ".m4a"
+    for _ in range(3):
+        file_key = f"{uuid4().hex}{normalized_extension}"
+        try:
+            audio_path = _smart_input_audio_path(state, file_key, create_dir=True)
+        except ValueError as exc:
+            raise HTTPException(status_code=503, detail="临时音频存储不可用") from exc
+        with state.smart_input_audio_lock:
+            try:
+                with audio_path.open("xb") as output:
+                    output.write(content)
+                audio_path.chmod(0o600)
+            except FileExistsError:
+                continue
+            except OSError as exc:
+                audio_path.unlink(missing_ok=True)
+                raise HTTPException(status_code=503, detail="临时音频存储不可用") from exc
+            state.smart_input_audio_active_paths.add(str(audio_path))
+        return file_key, audio_path
+    raise HTTPException(status_code=503, detail="临时音频存储不可用")
+
+
+def _release_temporary_smart_input_audio(state: AppState, audio_path: Path | None) -> None:
+    if audio_path is None:
+        return
+    try:
+        audio_dir = _smart_input_audio_dir(state, create=False)
+    except ValueError:
+        logger.warning("Refusing unsafe smart-input-audio release path", exc_info=True)
+        return
+    if audio_path.parent != audio_dir or not SMART_INPUT_AUDIO_FILE_KEY_PATTERN.fullmatch(audio_path.name):
+        logger.warning("Refusing out-of-directory smart-input audio release path=%s", audio_path)
+        return
+    with state.smart_input_audio_lock:
+        state.smart_input_audio_active_paths.discard(str(audio_path))
+        try:
+            audio_path.unlink(missing_ok=True)
+        except OSError:
+            logger.warning("Failed to delete temporary ASR audio key=%s", audio_path.name, exc_info=True)
 
 
 def _state(app: FastAPI) -> AppState:
@@ -2269,6 +2462,88 @@ def _event_line_row_or_404(state: AppState, event_line_id: str, organization_id:
     return row
 
 
+def _event_line_participant_ids(row) -> list[str]:
+    values = from_json(row["participant_ids_json"], [])
+    if not isinstance(values, list):
+        return []
+    return list(dict.fromkeys(str(value).strip() for value in values if str(value).strip()))
+
+
+def _can_view_event_line(actor: SessionUser, row) -> bool:
+    """Keep private event lines inside their explicit member boundary.
+
+    ``project_public`` means visible to authenticated members of the same
+    organization; it never means internet-public or cross-organization.
+    """
+    if str(row["organization_id"]) != actor.organizationId:
+        return False
+    if actor.primaryRole == "admin":
+        return True
+    if str(row["visibility_scope"] or "project_public") == "project_public":
+        return True
+    owner_id = str(row["owner_id"] or "").strip()
+    return actor.id == owner_id or actor.id in _event_line_participant_ids(row)
+
+
+def _assert_event_line_visible_or_404(actor: SessionUser, row) -> None:
+    if not _can_view_event_line(actor, row):
+        raise HTTPException(status_code=404, detail="Event line not found")
+
+
+def _assert_event_line_editable_or_404(actor: SessionUser, row) -> None:
+    """Allow event-line members to edit, while hiding IDs from outsiders."""
+    if str(row["organization_id"]) != actor.organizationId:
+        raise HTTPException(status_code=404, detail="Event line not found")
+    owner_id = str(row["owner_id"] or "").strip()
+    if actor.primaryRole == "admin" or actor.id == owner_id or actor.id in _event_line_participant_ids(row):
+        return
+    raise HTTPException(status_code=404, detail="Event line not found")
+
+
+def _event_line_department_row_or_404(state: AppState, organization_id: str, department_id: str | None):
+    normalized = str(department_id or "").strip()
+    if not normalized:
+        return None
+    row = state.db.fetchone(
+        "SELECT * FROM org_departments WHERE id = ? AND organization_id = ?",
+        (normalized, organization_id),
+    )
+    if not row:
+        raise HTTPException(status_code=404, detail="Department not found")
+    return row
+
+
+def _event_line_client_row_or_404(state: AppState, organization_id: str, client_id: str | None):
+    normalized = str(client_id or "").strip()
+    if not normalized:
+        return None
+    # Desktop-first sync can legitimately send an opaque local client ID before
+    # that client has been mirrored into the cloud table.  Preserve that
+    # compatibility, but reject an ID that is already owned by another tenant.
+    row = _client_row_by_id(state, normalized)
+    if row and str(row["organization_id"]) != organization_id:
+        raise HTTPException(status_code=404, detail="Client not found")
+    return row
+
+
+def _validated_event_line_participant_ids(
+    state: AppState,
+    organization_id: str,
+    owner_id: str | None,
+    participant_ids: list[str] | None,
+) -> list[str]:
+    normalized_owner_id = str(owner_id or "").strip()
+    candidates = [normalized_owner_id, *(participant_ids or [])]
+    resolved: list[str] = []
+    for candidate in candidates:
+        user_id = str(candidate or "").strip()
+        if not user_id or user_id in resolved:
+            continue
+        _get_org_user_or_404(state, organization_id, user_id)
+        resolved.append(user_id)
+    return resolved
+
+
 def _event_line_primary_client_id(row) -> str | None:
     if not row or not row["primary_client_id"]:
         return None
@@ -3244,17 +3519,56 @@ def _upsert_cloud_mirror_item(
     )
 
 def _event_line_record(state: AppState, row) -> EventLineRecord:
+    organization_id = str(row["organization_id"])
     owner_name = None
+    owner_row = None
     if row["owner_id"]:
-        owner_row = state.db.fetchone("SELECT full_name FROM employee_accounts WHERE id = ?", (str(row["owner_id"]),))
+        owner_row = state.db.fetchone(
+            "SELECT id, full_name FROM employee_accounts WHERE id = ? AND organization_id = ?",
+            (str(row["owner_id"]), organization_id),
+        )
         owner_name = str(owner_row["full_name"]) if owner_row else None
     department_name = None
+    department_row = None
     if row["primary_department_id"]:
-        department_row = state.db.fetchone("SELECT name FROM org_departments WHERE id = ?", (str(row["primary_department_id"]),))
+        department_row = state.db.fetchone(
+            "SELECT id, name FROM org_departments WHERE id = ? AND organization_id = ?",
+            (str(row["primary_department_id"]), organization_id),
+        )
         department_name = str(department_row["name"]) if department_row else None
     activity_count = int(state.db.scalar("SELECT COUNT(1) FROM event_line_activities WHERE event_line_id = ?", (str(row["id"]),)) or 0)
-    client_row = _client_row_by_id(state, _event_line_primary_client_id(row), str(row["organization_id"]))
-    primary_client_name = _event_line_primary_client_name(row) or (str(client_row["name"]) if client_row and client_row["name"] else None)
+    stored_client_id = _event_line_primary_client_id(row)
+    client_row = _client_row_by_id(state, stored_client_id, organization_id)
+    global_client_row = _client_row_by_id(state, stored_client_id)
+    is_unmirrored_local_client = bool(stored_client_id and global_client_row is None)
+    primary_client_id = (
+        str(client_row["id"])
+        if client_row
+        else (stored_client_id if is_unmirrored_local_client else None)
+    )
+    primary_client_name = (
+        str(client_row["name"])
+        if client_row and client_row["name"]
+        else (
+            _event_line_primary_client_name(row)
+            if not stored_client_id or is_unmirrored_local_client
+            else None
+        )
+    )
+    participant_ids: list[str] = []
+    for participant_id in _event_line_participant_ids(row):
+        if state.db.fetchone(
+            "SELECT 1 FROM employee_accounts WHERE id = ? AND organization_id = ?",
+            (participant_id, organization_id),
+        ):
+            participant_ids.append(participant_id)
+    closed_by_user_id = None
+    if row["closed_by_user_id"]:
+        closed_by_row = state.db.fetchone(
+            "SELECT id FROM employee_accounts WHERE id = ? AND organization_id = ?",
+            (str(row["closed_by_user_id"]), organization_id),
+        )
+        closed_by_user_id = str(closed_by_row["id"]) if closed_by_row else None
     return EventLineRecord(
         id=str(row["id"]),
         name=str(row["name"]),
@@ -3269,15 +3583,15 @@ def _event_line_record(state: AppState, row) -> EventLineRecord:
         recentDecision=str(row["recent_decision"]) if row["recent_decision"] else None,
         nextStep=str(row["next_step"]) if row["next_step"] else None,
         evidenceCount=max(int(row["evidence_count"] or 0), activity_count),
-        ownerId=str(row["owner_id"]) if row["owner_id"] else None,
+        ownerId=str(owner_row["id"]) if row["owner_id"] and owner_row else None,
         ownerName=owner_name,
-        primaryClientId=_event_line_primary_client_id(row),
+        primaryClientId=primary_client_id,
         primaryClientName=primary_client_name,
-        primaryDepartmentId=str(row["primary_department_id"]) if row["primary_department_id"] else None,
+        primaryDepartmentId=str(department_row["id"]) if row["primary_department_id"] and department_row else None,
         primaryDepartmentName=department_name,
-        participantIds=[str(item) for item in from_json(row["participant_ids_json"], []) if str(item)],
+        participantIds=participant_ids,
         closedAt=str(row["closed_at"]) if row["closed_at"] else None,
-        closedByUserId=str(row["closed_by_user_id"]) if row["closed_by_user_id"] else None,
+        closedByUserId=closed_by_user_id,
         createdAt=str(row["created_at"]),
         updatedAt=str(row["updated_at"]),
     )
@@ -3285,9 +3599,20 @@ def _event_line_record(state: AppState, row) -> EventLineRecord:
 
 def _event_line_activity_record(state: AppState, row) -> EventLineActivityRecord:
     actor_name = None
+    actor_id = None
     if row["actor_id"]:
-        actor_row = state.db.fetchone("SELECT full_name FROM employee_accounts WHERE id = ?", (str(row["actor_id"]),))
-        actor_name = str(actor_row["full_name"]) if actor_row else None
+        actor_row = state.db.fetchone(
+            """
+            SELECT account.full_name
+            FROM employee_accounts account
+            JOIN event_lines line ON line.organization_id = account.organization_id
+            WHERE account.id = ? AND line.id = ?
+            """,
+            (str(row["actor_id"]), str(row["event_line_id"])),
+        )
+        if actor_row:
+            actor_id = str(row["actor_id"])
+            actor_name = str(actor_row["full_name"])
     metadata = from_json(row["metadata_json"], {})
     return EventLineActivityRecord(
         id=str(row["id"]),
@@ -3295,7 +3620,7 @@ def _event_line_activity_record(state: AppState, row) -> EventLineActivityRecord
         sourceType=str(row["source_type"]),
         sourceId=str(row["source_id"]),
         happenedAt=str(row["happened_at"]),
-        actorId=str(row["actor_id"]) if row["actor_id"] else None,
+        actorId=actor_id,
         actorName=actor_name,
         title=str(row["title"]),
         summary=str(row["summary"]),
@@ -3427,10 +3752,11 @@ def _event_line_detail_record(state: AppState, row, viewer_id: str | None = None
         FROM tasks t
         LEFT JOIN task_collaborators tc ON tc.task_id = t.id
         WHERE t.event_line_id = ?
+          AND t.organization_id = ?
           AND (t.creator_id = ? OR tc.user_id = ?)
         ORDER BY t.updated_at DESC
         """,
-        (event_line.id, viewer_id or "", viewer_id or ""),
+        (event_line.id, str(row["organization_id"]), viewer_id or "", viewer_id or ""),
     )
     activity_rows = state.db.fetchall(
         """
@@ -4220,6 +4546,17 @@ def _ensure_seed_data(state: AppState) -> None:
                     bound_user_id,
                 ),
             )
+            if password_hash_override:
+                db.execute(
+                    """
+                    UPDATE cloud_identities
+                    SET password_hash = ?, updated_at = ?
+                    WHERE id = (
+                        SELECT identity_id FROM employee_accounts WHERE id = ?
+                    )
+                    """,
+                    (password_hash_override, timestamp, bound_user_id),
+                )
         if not db.fetchone("SELECT id FROM employee_role_bindings WHERE user_id = ? AND role = ?", (bound_user_id, primary_role)):
             db.execute(
                 "INSERT INTO employee_role_bindings(id, user_id, role, created_at) VALUES(?, ?, ?, ?)",
@@ -9888,7 +10225,8 @@ class FeishuQueryIntent:
 class FeishuQueryModelConfig:
     api_key: str
     model: str
-    provider: str = "env"
+    base_url: str
+    provider: str = "configured"
 
 
 def _feishu_extract_text_content(content: str | None) -> str:
@@ -9945,34 +10283,185 @@ def _org_ai_decrypt_value(state: AppState, encrypted_b64: str, nonce_b64: str, o
     return cipher.decrypt(base64.b64decode(nonce_b64), base64.b64decode(encrypted_b64), None).decode("utf-8")
 
 
-def _load_feishu_query_model_config(state: AppState, organization_id: str) -> FeishuQueryModelConfig | None:
-    from app.smart_input import DEFAULT_LLM_MODEL, _qwen_api_key
+@dataclass(frozen=True)
+class OrgAiRuntimeConfig:
+    api_key: str
+    model: str
+    base_url: str
+    provider: str
 
-    configured = state.db.fetchone("SELECT * FROM org_ai_config WHERE org_id = ?", (organization_id,))
-    default_model = os.getenv("YIYU_FEISHU_QUERY_MODEL", os.getenv("YIYU_SMART_INPUT_MODEL", DEFAULT_LLM_MODEL))
-    if configured and configured["api_key_encrypted"]:
-        provider = str(configured["ai_provider"] or "").strip() or "configured"
-        if provider != "mock":
-            try:
-                api_key = _org_ai_decrypt_value(
-                    state,
-                    str(configured["api_key_encrypted"] or ""),
-                    str(configured["encryption_nonce"] or ""),
-                    organization_id,
-                )
-            except Exception as exc:
-                logger.warning("feishu.query.load_org_ai_config_failed: %s", exc)
-                api_key = ""
-            if api_key:
-                return FeishuQueryModelConfig(
-                    api_key=api_key,
-                    model=str(configured["ai_model"] or "").strip() or default_model,
-                    provider=provider,
-                )
-    fallback_key = _qwen_api_key()
-    if not fallback_key:
+
+def _org_ai_runtime_config_or_503(
+    state: AppState,
+    organization_id: str,
+) -> OrgAiRuntimeConfig:
+    """Load exactly one organization's AI runtime config; never use process env keys."""
+    configured = state.db.fetchone(
+        "SELECT * FROM org_ai_config WHERE org_id = ?",
+        (organization_id,),
+    )
+    if not configured or not str(configured["api_key_encrypted"] or "").strip():
+        raise HTTPException(status_code=503, detail="当前组织未配置 AI API Key")
+    provider = str(configured["ai_provider"] or "").strip() or "configured"
+    if provider.lower() == "mock":
+        raise HTTPException(status_code=503, detail="当前组织未配置可用的云 AI")
+    try:
+        api_key = _org_ai_decrypt_value(
+            state,
+            str(configured["api_key_encrypted"] or ""),
+            str(configured["encryption_nonce"] or ""),
+            organization_id,
+        ).strip()
+    except Exception:
+        logger.warning("org_ai_config.decrypt_failed org=%s", organization_id, exc_info=True)
+        api_key = ""
+    if not api_key:
+        raise HTTPException(status_code=503, detail="当前组织 AI API Key 无法使用")
+    model = str(configured["ai_model"] or "").strip()
+    if not model:
+        raise HTTPException(status_code=503, detail="当前组织未配置 AI 模型")
+    base_url = str(configured["ai_base_url"] or "").strip().rstrip("/")
+    provider_identity = " ".join(
+        (provider, str(configured["ai_provider_label"] or ""))
+    ).lower()
+    if not base_url and any(
+        marker in provider_identity
+        for marker in ("ark", "doubao", "volcengine", "方舟", "豆包", "火山")
+    ):
+        base_url = "https://ark.cn-beijing.volces.com/api/v3"
+    try:
+        parsed = urlsplit(base_url)
+        port = parsed.port
+    except ValueError:
+        parsed = urlsplit("")
+        port = None
+    if (
+        parsed.scheme.lower() != "https"
+        or not parsed.hostname
+        or parsed.username is not None
+        or parsed.password is not None
+        or port not in (None, 443)
+        or parsed.query
+        or parsed.fragment
+    ):
+        raise HTTPException(status_code=503, detail="当前组织 AI 服务地址无效")
+    try:
+        address = ipaddress.ip_address(parsed.hostname)
+    except ValueError:
+        address = None
+    if address is not None and not address.is_global:
+        raise HTTPException(status_code=503, detail="当前组织 AI 服务地址无效")
+    return OrgAiRuntimeConfig(
+        api_key=api_key,
+        model=model,
+        base_url=base_url,
+        provider=provider,
+    )
+
+
+def _org_asr_encrypt_value(
+    state: AppState,
+    plain_text: str,
+    organization_id: str,
+    purpose: Literal["app_id", "access_token"],
+) -> tuple[str, str]:
+    """Encrypt one ASR secret with a purpose-bound key and authenticated context."""
+    import base64
+    from hashlib import sha256
+
+    from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+
+    key = sha256(
+        f"{state.secret_key}:{organization_id}:asr_config:{purpose}".encode("utf-8")
+    ).digest()
+    nonce = os.urandom(12)
+    aad = f"{organization_id}:asr_config:{purpose}".encode("utf-8")
+    encrypted = AESGCM(key).encrypt(nonce, plain_text.encode("utf-8"), aad)
+    return base64.b64encode(encrypted).decode("ascii"), base64.b64encode(nonce).decode("ascii")
+
+
+def _org_asr_decrypt_value(
+    state: AppState,
+    encrypted_b64: str,
+    nonce_b64: str,
+    organization_id: str,
+    purpose: Literal["app_id", "access_token"],
+) -> str:
+    import base64
+    from hashlib import sha256
+
+    from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+
+    if not encrypted_b64 or not nonce_b64:
+        return ""
+    key = sha256(
+        f"{state.secret_key}:{organization_id}:asr_config:{purpose}".encode("utf-8")
+    ).digest()
+    aad = f"{organization_id}:asr_config:{purpose}".encode("utf-8")
+    decrypted = AESGCM(key).decrypt(
+        base64.b64decode(nonce_b64, validate=True),
+        base64.b64decode(encrypted_b64, validate=True),
+        aad,
+    )
+    return decrypted.decode("utf-8")
+
+
+@dataclass(frozen=True)
+class OrgAsrRuntimeConfig:
+    provider: Literal["doubao_file"]
+    app_id: str
+    access_token: str
+
+
+def _org_asr_runtime_config_or_503(
+    state: AppState,
+    organization_id: str,
+) -> OrgAsrRuntimeConfig:
+    """Load exactly one organization's ASR credentials; never consult process env."""
+    configured = state.db.fetchone(
+        "SELECT * FROM org_asr_config WHERE org_id = ?",
+        (organization_id,),
+    )
+    if not configured or str(configured["provider"] or "").strip() != "doubao_file":
+        raise HTTPException(status_code=503, detail="当前组织未配置可用的语音转写服务")
+    try:
+        app_id = _org_asr_decrypt_value(
+            state,
+            str(configured["app_id_encrypted"] or ""),
+            str(configured["app_id_nonce"] or ""),
+            organization_id,
+            "app_id",
+        ).strip()
+        access_token = _org_asr_decrypt_value(
+            state,
+            str(configured["access_token_encrypted"] or ""),
+            str(configured["access_token_nonce"] or ""),
+            organization_id,
+            "access_token",
+        ).strip()
+    except Exception:
+        logger.warning("org_asr_config.decrypt_failed org=%s", organization_id, exc_info=True)
+        raise HTTPException(status_code=503, detail="当前组织语音转写凭据无法使用") from None
+    if not app_id or not access_token:
+        raise HTTPException(status_code=503, detail="当前组织语音转写凭据不完整")
+    return OrgAsrRuntimeConfig(
+        provider="doubao_file",
+        app_id=app_id,
+        access_token=access_token,
+    )
+
+
+def _load_feishu_query_model_config(state: AppState, organization_id: str) -> FeishuQueryModelConfig | None:
+    try:
+        runtime = _org_ai_runtime_config_or_503(state, organization_id)
+    except HTTPException:
         return None
-    return FeishuQueryModelConfig(api_key=fallback_key, model=default_model, provider="env")
+    return FeishuQueryModelConfig(
+        api_key=runtime.api_key,
+        model=runtime.model,
+        base_url=runtime.base_url,
+        provider=runtime.provider,
+    )
 
 
 def _feishu_name_matches(candidate: str | None, target: str | None) -> bool:
@@ -10542,7 +11031,12 @@ class FeishuQueryService:
             import httpx
 
             timeout = httpx.Timeout(timeout=None, connect=5.0, read=12.0, write=8.0, pool=8.0)
-            raw = _sync_qwen_chat(config.api_key, payload, timeout)
+            raw = _sync_qwen_chat(
+                config.api_key,
+                payload,
+                timeout,
+                base_url=config.base_url,
+            )
             parsed = _feishu_extract_json_object(raw)
             if not parsed:
                 return None
@@ -13127,6 +13621,55 @@ def _task_row_or_404(state: AppState, task_id: str, *, organization_id: str | No
     return row
 
 
+def _assert_task_visible_or_404(state: AppState, actor: SessionUser, task_row) -> None:
+    """Apply the same member-level visibility boundary to every task detail surface.
+
+    Organization membership alone does not make a task visible.  Returning 404 for
+    non-members keeps detail, activity, and mutation endpoints from disagreeing and
+    avoids confirming that an otherwise hidden task ID exists.
+    """
+    if str(task_row["organization_id"]) != actor.organizationId:
+        raise HTTPException(status_code=404, detail="Task not found")
+    if actor.primaryRole == "admin":
+        return
+    visible_user_ids = {
+        str(task_row["creator_id"]),
+        *_task_collaborator_ids(state, str(task_row["id"])),
+    }
+    if task_row["owner_id"]:
+        visible_user_ids.add(str(task_row["owner_id"]))
+    if actor.id not in visible_user_ids:
+        raise HTTPException(status_code=404, detail="Task not found")
+
+
+def _task_collaboration_for_actor_or_404(
+    state: AppState,
+    *,
+    task_id: str,
+    user_id: str,
+    actor: SessionUser,
+):
+    """Resolve a collaboration inbox item only inside the actor's visible tenant scope."""
+    task_row = _task_row_or_404(state, task_id, organization_id=actor.organizationId)
+    _assert_task_visible_or_404(state, actor, task_row)
+    if user_id != actor.id:
+        raise HTTPException(status_code=403, detail="只能处理自己的协作收件箱")
+    collaboration_row = state.db.fetchone(
+        """
+        SELECT tc.*
+        FROM task_collaborators tc
+        JOIN tasks t ON t.id = tc.task_id
+        WHERE tc.task_id = ?
+          AND tc.user_id = ?
+          AND t.organization_id = ?
+        """,
+        (task_id, actor.id, actor.organizationId),
+    )
+    if collaboration_row is None:
+        raise HTTPException(status_code=404, detail="Collaboration item not found")
+    return task_row, collaboration_row
+
+
 def _normalize_task_tags(state: AppState, current_user: SessionUser, tag_ids: list[str] | None, legacy_names: list[str] | None) -> list[TaskTagRecord]:
     resolved: list[TaskTagRecord] = []
     seen_ids: set[str] = set()
@@ -15259,14 +15802,22 @@ def _backfill_task_org_links(
     )
 
 
-def _sync_qwen_chat(api_key: str, payload: dict, timeout: object) -> str:
+def _chat_completions_endpoint(base_url: str) -> str:
+    normalized = str(base_url or "").strip().rstrip("/")
+    if not normalized:
+        raise RuntimeError("organization AI base URL is missing")
+    if normalized.endswith("/chat/completions"):
+        return normalized
+    return f"{normalized}/chat/completions"
+
+
+def _sync_qwen_chat(api_key: str, payload: dict, timeout: object, *, base_url: str) -> str:
     """Synchronous LLM chat call (Volcengine Ark / OpenAI-compatible), run via asyncio.to_thread."""
     import httpx
-    from app.smart_input import ARK_BASE_URL
 
     with httpx.Client(timeout=timeout) as client:
         response = client.post(
-            f"{ARK_BASE_URL}/chat/completions",
+            _chat_completions_endpoint(base_url),
             headers={
                 "Authorization": f"Bearer {api_key}",
                 "Content-Type": "application/json",
@@ -15282,7 +15833,11 @@ def _sync_qwen_chat(api_key: str, payload: dict, timeout: object) -> str:
 
 
 def _classify_consultation_out_of_scope(
-    api_key: str, model_name: str, message: str, client_name: str
+    api_key: str,
+    model_name: str,
+    base_url: str,
+    message: str,
+    client_name: str,
 ) -> bool:
     """项目边界轻量判定：用户问题是否跑出当前客户/项目范围。
 
@@ -15314,7 +15869,7 @@ def _classify_consultation_out_of_scope(
     }
     timeout = httpx.Timeout(timeout=None, connect=6.0, read=12.0, write=6.0, pool=6.0)
     try:
-        verdict = _sync_qwen_chat(api_key, payload, timeout) or ""
+        verdict = _sync_qwen_chat(api_key, payload, timeout, base_url=base_url) or ""
         return verdict.strip().upper().startswith("OUT")
     except Exception:
         return False
@@ -15322,16 +15877,14 @@ def _classify_consultation_out_of_scope(
 
 def _generate_recording_summary(
     *,
+    ai_config: OrgAiRuntimeConfig,
     transcript: str,
     task_title: str,
     client_name: str | None = None,
     event_line_name: str | None = None,
 ) -> str:
     """Generate AI summary from recording transcript using Volcengine Ark."""
-    from app.smart_input import _qwen_api_key, ARK_BASE_URL, DEFAULT_LLM_MODEL
-
-    api_key = _qwen_api_key()
-    if not api_key or len(transcript.strip()) < 20:
+    if len(transcript.strip()) < 20:
         # Fallback: first 140 chars
         s = transcript[:140].strip()
         return f"{s}..." if len(transcript) > 140 else s
@@ -15361,9 +15914,8 @@ def _generate_recording_summary(
     if context:
         system_prompt += f"\n上下文：\n{context}"
 
-    model_name = os.getenv("YIYU_CONSULTATION_CHAT_MODEL", os.getenv("YIYU_SMART_INPUT_MODEL", DEFAULT_LLM_MODEL))
     payload = {
-        "model": model_name,
+        "model": ai_config.model,
         "messages": [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": f"录音转写文本：\n{truncated}"},
@@ -15375,9 +15927,13 @@ def _generate_recording_summary(
     }
     try:
         import httpx
-        read_timeout = 60.0 if (has_client_knowledge and intro_request) else 30.0
-        timeout = httpx.Timeout(timeout=None, connect=8.0, read=read_timeout, write=8.0, pool=8.0)
-        summary = _sync_qwen_chat(api_key, payload, timeout)
+        timeout = httpx.Timeout(timeout=None, connect=8.0, read=60.0, write=8.0, pool=8.0)
+        summary = _sync_qwen_chat(
+            ai_config.api_key,
+            payload,
+            timeout,
+            base_url=ai_config.base_url,
+        )
         return summary if summary else transcript[:140]
     except Exception as exc:
         logger.warning("AI summary generation failed, falling back: %s", exc)
@@ -15417,6 +15973,7 @@ def create_app() -> FastAPI:
     )
     state.feishu_notifications = FeishuNotificationService(state)
     app.state.app_state = state
+    _cleanup_expired_smart_input_audio(state)
     _ensure_seed_data(state)
     _backfill_task_tag_ids(state)
     for org_row in state.db.fetchall("SELECT id FROM organizations"):
@@ -15833,6 +16390,12 @@ def create_app() -> FastAPI:
                 role_id=invite_management.role_id,
                 role_name=invite_management.role_name,
             )
+        elif account_status == "approved":
+            # A verified department invite approves the member immediately, so
+            # materialize the matching org-role binding in the same registration flow.
+            # Otherwise task/review routing sees an approved member with no
+            # department or role context until an administrator edits the user.
+            _sync_employee_org_binding_from_account(state, target_organization_id, user_id)
         _log_audit(
             state,
             "register",
@@ -17437,6 +18000,131 @@ def create_app() -> FastAPI:
         )
         return get_org_ai_config(current_user)
 
+    # ── Org ASR Config (two separately encrypted secrets, admin-only) ──
+
+    def _masked_org_asr_secret(value: str) -> str:
+        # Do not reveal a short credential in full.  For normal-length values,
+        # the final four characters are enough for an administrator to identify it.
+        return f"••••{value[-4:]}" if len(value) > 8 else "••••"
+
+    def _org_asr_config_record(org_id: str) -> OrgAsrConfigRecord:
+        row = state.db.fetchone("SELECT * FROM org_asr_config WHERE org_id = ?", (org_id,))
+        if not row:
+            return OrgAsrConfigRecord(orgId=org_id, updatedAt=now_iso())
+        try:
+            app_id = _org_asr_decrypt_value(
+                state,
+                str(row["app_id_encrypted"] or ""),
+                str(row["app_id_nonce"] or ""),
+                org_id,
+                "app_id",
+            ).strip()
+        except Exception:
+            logger.warning("org_asr_config.app_id_mask_failed org=%s", org_id, exc_info=True)
+            app_id = ""
+        try:
+            access_token = _org_asr_decrypt_value(
+                state,
+                str(row["access_token_encrypted"] or ""),
+                str(row["access_token_nonce"] or ""),
+                org_id,
+                "access_token",
+            ).strip()
+        except Exception:
+            logger.warning("org_asr_config.token_mask_failed org=%s", org_id, exc_info=True)
+            access_token = ""
+        return OrgAsrConfigRecord(
+            orgId=org_id,
+            provider=str(row["provider"] or "doubao_file"),
+            hasAppId=bool(app_id),
+            appIdMasked=_masked_org_asr_secret(app_id) if app_id else "",
+            hasAccessToken=bool(access_token),
+            accessTokenMasked=_masked_org_asr_secret(access_token) if access_token else "",
+            configuredBy=str(row["configured_by"]) if row["configured_by"] else None,
+            updatedAt=str(row["updated_at"]),
+        )
+
+    @app.get("/api/v1/settings/org-asr-config", response_model=OrgAsrConfigRecord)
+    def get_org_asr_config(
+        current_user: SessionUser = Depends(lambda authorization=Header(default=None): _require_admin(app, authorization)),
+    ) -> OrgAsrConfigRecord:
+        return _org_asr_config_record(current_user.organizationId)
+
+    @app.put("/api/v1/settings/org-asr-config", response_model=OrgAsrConfigRecord)
+    @app.post("/api/v1/settings/org-asr-config", response_model=OrgAsrConfigRecord)
+    def update_org_asr_config(
+        payload: OrgAsrConfigUpdatePayload,
+        current_user: SessionUser = Depends(lambda authorization=Header(default=None): _require_admin(app, authorization)),
+    ) -> OrgAsrConfigRecord:
+        if payload.clearAppId and payload.appId is not None:
+            raise HTTPException(status_code=400, detail="清除 App ID 时不能同时提交新值")
+        if payload.clearAccessToken and payload.accessToken is not None:
+            raise HTTPException(status_code=400, detail="清除 Access Token 时不能同时提交新值")
+        if payload.appId is not None and not payload.appId.strip():
+            raise HTTPException(status_code=400, detail="App ID 不能为空；如需清除请使用 clearAppId")
+        if payload.accessToken is not None and not payload.accessToken.strip():
+            raise HTTPException(status_code=400, detail="Access Token 不能为空；如需清除请使用 clearAccessToken")
+
+        org_id = current_user.organizationId
+        existing = state.db.fetchone("SELECT * FROM org_asr_config WHERE org_id = ?", (org_id,))
+        app_id_encrypted = str(existing["app_id_encrypted"] or "") if existing else ""
+        app_id_nonce = str(existing["app_id_nonce"] or "") if existing else ""
+        token_encrypted = str(existing["access_token_encrypted"] or "") if existing else ""
+        token_nonce = str(existing["access_token_nonce"] or "") if existing else ""
+
+        if payload.clearAppId:
+            app_id_encrypted = ""
+            app_id_nonce = ""
+        elif payload.appId is not None:
+            app_id_encrypted, app_id_nonce = _org_asr_encrypt_value(
+                state, payload.appId.strip(), org_id, "app_id"
+            )
+        if payload.clearAccessToken:
+            token_encrypted = ""
+            token_nonce = ""
+        elif payload.accessToken is not None:
+            token_encrypted, token_nonce = _org_asr_encrypt_value(
+                state, payload.accessToken.strip(), org_id, "access_token"
+            )
+
+        state.db.execute(
+            """
+            INSERT INTO org_asr_config(
+                org_id, provider, app_id_encrypted, app_id_nonce,
+                access_token_encrypted, access_token_nonce, configured_by, updated_at
+            ) VALUES(?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(org_id) DO UPDATE SET
+                provider = excluded.provider,
+                app_id_encrypted = excluded.app_id_encrypted,
+                app_id_nonce = excluded.app_id_nonce,
+                access_token_encrypted = excluded.access_token_encrypted,
+                access_token_nonce = excluded.access_token_nonce,
+                configured_by = excluded.configured_by,
+                updated_at = excluded.updated_at
+            """,
+            (
+                org_id,
+                payload.provider,
+                app_id_encrypted,
+                app_id_nonce,
+                token_encrypted,
+                token_nonce,
+                current_user.id,
+                now_iso(),
+            ),
+        )
+        return _org_asr_config_record(org_id)
+
+    @app.delete("/api/v1/settings/org-asr-config", response_model=OrgAsrConfigRecord)
+    def delete_org_asr_config(
+        current_user: SessionUser = Depends(lambda authorization=Header(default=None): _require_admin(app, authorization)),
+    ) -> OrgAsrConfigRecord:
+        state.db.execute(
+            "DELETE FROM org_asr_config WHERE org_id = ?",
+            (current_user.organizationId,),
+        )
+        return OrgAsrConfigRecord(orgId=current_user.organizationId, updatedAt=now_iso())
+
     @app.get("/api/v1/settings/org-ai-config/secret", response_model=OrgAiConfigSecretRecord)
     def get_org_ai_config_secret(
         current_user: SessionUser = Depends(lambda authorization=Header(default=None): _require_admin(app, authorization)),
@@ -17651,7 +18339,7 @@ def create_app() -> FastAPI:
             """,
             (current_user.organizationId,),
         )
-        return [_event_line_record(state, row) for row in rows]
+        return [_event_line_record(state, row) for row in rows if _can_view_event_line(current_user, row)]
 
     @app.get("/api/v1/clients", response_model=list[ClientRecord])
     def list_clients(
@@ -17950,13 +18638,18 @@ def create_app() -> FastAPI:
         Day 3: 接 narrative_generator (云端豆包) 真生成。LLM 失败时
         自动降级到澄清拼接 stub (服从 user_judgment_pace, 不阻塞用户)."""
         _client_row_or_404(state, client_id, current_user.organizationId)
-        pending_count = narrative_service.count_pending_clarifications(state.db, client_id)
+        pending_count = narrative_service.count_pending_clarifications(
+            state.db,
+            current_user.organizationId,
+            client_id,
+        )
         if pending_count == 0 and not payload.force:
             existing = narrative_service.get_latest_narrative(
                 state.db, current_user.organizationId, client_id
             )
             if existing is not None:
                 return existing
+        ai_config = _org_ai_runtime_config_or_503(state, current_user.organizationId)
         narrative_generator.regenerate_narrative(
             state.db,
             current_user.organizationId,
@@ -17966,6 +18659,9 @@ def create_app() -> FastAPI:
             trigger=payload.trigger or "manual",
             force=payload.force,
             use_llm=True,
+            ai_api_key=ai_config.api_key,
+            ai_base_url=ai_config.base_url,
+            ai_model=ai_config.model,
         )
         result = narrative_service.get_latest_narrative(
             state.db, current_user.organizationId, client_id
@@ -17993,10 +18689,13 @@ def create_app() -> FastAPI:
         minimal client row, 让叙事能落库. 这是测试机构B/测试机构C这种本地有但云端没的客户
         准备的兜底 — narrative 是本地驱动的, 云端只是共享层, 不该卡在 client 不存在.
         """
-        existing_client = state.db.fetchone(
-            "SELECT id, name FROM clients WHERE id = ? AND organization_id = ?",
-            (client_id, current_user.organizationId),
+        client_owner = state.db.fetchone(
+            "SELECT id, organization_id, name FROM clients WHERE id = ?",
+            (client_id,),
         )
+        if client_owner and str(client_owner["organization_id"]) != current_user.organizationId:
+            raise HTTPException(status_code=404, detail="Client not found")
+        existing_client = client_owner
         if not existing_client:
             now = datetime.now(timezone.utc).isoformat()
             fallback_name = (payload.clientName or "").strip() or client_id
@@ -18342,20 +19041,32 @@ def create_app() -> FastAPI:
         payload: EventLineCreatePayload,
         current_user: SessionUser = Depends(lambda authorization=Header(default=None): _require_auth(app, authorization)),
     ) -> EventLineRecord:
-        if payload.ownerId:
-            _get_user_or_404(state, payload.ownerId)
+        # Resolve every relationship inside the current organization before the
+        # first write.  A rejected foreign ID must not leave an event line,
+        # activity, or partially propagated client relationship behind.
+        owner_id = str(payload.ownerId or current_user.id).strip()
+        participant_ids = _validated_event_line_participant_ids(
+            state,
+            current_user.organizationId,
+            owner_id,
+            payload.participantIds,
+        )
+        department_row = _event_line_department_row_or_404(
+            state,
+            current_user.organizationId,
+            payload.primaryDepartmentId,
+        )
+        client_row = _event_line_client_row_or_404(
+            state,
+            current_user.organizationId,
+            payload.primaryClientId,
+        )
+        department_id = str(department_row["id"]) if department_row else None
+        department_name = str(department_row["name"]) if department_row and department_row["name"] else None
+        client_id = str(client_row["id"]) if client_row else (str(payload.primaryClientId or "").strip() or None)
+        client_name = str(client_row["name"]) if client_row and client_row["name"] else None
         timestamp = now_iso()
         event_line_id = (payload.id or "").strip() or new_id("eline")
-        owner_id = payload.ownerId or current_user.id
-        participant_ids = list(dict.fromkeys([owner_id, *[item for item in payload.participantIds if item]]))
-        department_name = None
-        client_name = None
-        if payload.primaryDepartmentId:
-            department_row = state.db.fetchone("SELECT name FROM org_departments WHERE id = ?", (payload.primaryDepartmentId,))
-            department_name = str(department_row["name"]) if department_row else None
-        if payload.primaryClientId:
-            client_row = _client_row_by_id(state, payload.primaryClientId, current_user.organizationId)
-            client_name = str(client_row["name"]) if client_row and client_row["name"] else None
         state.db.execute(
             """
             INSERT INTO event_lines(
@@ -18379,9 +19090,9 @@ def create_app() -> FastAPI:
                 payload.nextStep,
                 int(payload.evidenceCount or 0),
                 owner_id,
-                payload.primaryClientId,
+                client_id,
                 client_name,
-                payload.primaryDepartmentId,
+                department_id,
                 to_json(participant_ids),
                 timestamp,
                 timestamp,
@@ -18610,6 +19321,7 @@ def create_app() -> FastAPI:
         current_user: SessionUser = Depends(lambda authorization=Header(default=None): _require_auth(app, authorization)),
     ) -> EventLineDetailRecord:
         row = _event_line_row_or_404(state, event_line_id, current_user.organizationId)
+        _assert_event_line_visible_or_404(current_user, row)
         return _event_line_detail_record(state, row, current_user.id)
 
     def _has_event_line_attachments_table() -> bool:
@@ -18618,12 +19330,112 @@ def create_app() -> FastAPI:
         )
         return row is not None
 
+    def _task_or_event_attachment_for_user_or_404(attachment_id: str, current_user: SessionUser):
+        """Resolve an attachment and enforce both tenant and member visibility.
+
+        Cross-tenant callers receive 403 as an explicit authorization failure.  For
+        same-tenant users, the existing task/event-line rules deliberately return
+        404 when a private object is outside the user's member boundary.
+        """
+        row = state.db.fetchone("SELECT * FROM task_attachments WHERE id = ?", (attachment_id,))
+        source_kind = "task"
+        if row is None and _has_event_line_attachments_table():
+            row = state.db.fetchone("SELECT * FROM event_line_attachments WHERE id = ?", (attachment_id,))
+            source_kind = "event_line"
+        if row is None:
+            raise HTTPException(status_code=404, detail="File not found")
+        if str(row["organization_id"]) != current_user.organizationId:
+            raise HTTPException(status_code=403, detail="Attachment access forbidden")
+        if source_kind == "task":
+            task_id = str(row["task_id"] or "").strip()
+            if not task_id:
+                raise HTTPException(status_code=404, detail="File not found")
+            task_row = _task_row_or_404(state, task_id, organization_id=current_user.organizationId)
+            _assert_task_visible_or_404(state, current_user, task_row)
+        else:
+            event_line_id = str(row["event_line_id"] or "").strip()
+            if not event_line_id:
+                raise HTTPException(status_code=404, detail="File not found")
+            event_line_row = _event_line_row_or_404(state, event_line_id, current_user.organizationId)
+            _assert_event_line_visible_or_404(current_user, event_line_row)
+        return row
+
+    def _attachment_file_path_or_404(row) -> Path:
+        data_root = state.data_dir.resolve()
+        attachment_path = (data_root / str(row["path"] or "")).resolve()
+        if attachment_path == data_root or data_root not in attachment_path.parents:
+            logger.warning("Rejected attachment path outside data dir: attachment=%s", row["id"])
+            raise HTTPException(status_code=404, detail="File not found")
+        if not attachment_path.exists() or not attachment_path.is_file():
+            raise HTTPException(status_code=404, detail="File not found")
+        return attachment_path
+
+    def _org_ocr_runtime_config_or_503(organization_id: str) -> tuple[str, str, str]:
+        """Load only this org's Ark credential; global keys are intentionally forbidden."""
+        config = state.db.fetchone("SELECT * FROM org_ai_config WHERE org_id = ?", (organization_id,))
+        if not config or not str(config["api_key_encrypted"] or "").strip():
+            raise HTTPException(status_code=503, detail="当前组织未配置方舟/豆包 OCR API Key")
+        try:
+            api_key = _org_ai_decrypt(
+                str(config["api_key_encrypted"]),
+                str(config["encryption_nonce"] or ""),
+                organization_id,
+            ).strip()
+        except Exception:
+            logger.warning("Failed to decrypt org OCR credential org=%s", organization_id, exc_info=True)
+            api_key = ""
+        if not api_key:
+            raise HTTPException(status_code=503, detail="当前组织的方舟/豆包 OCR API Key 无法使用")
+
+        provider_identity = " ".join(
+            [
+                str(config["ai_provider"] or ""),
+                str(config["ai_provider_label"] or ""),
+            ]
+        ).lower()
+        base_url = str(config["ai_base_url"] or "").strip().rstrip("/")
+        if not base_url and any(
+            marker in provider_identity
+            for marker in ("ark", "doubao", "volcengine", "volcano", "方舟", "豆包", "火山")
+        ):
+            base_url = "https://ark.cn-beijing.volces.com/api/v3"
+        try:
+            parsed_base = urlsplit(base_url)
+            base_port = parsed_base.port
+        except ValueError:
+            parsed_base = urlsplit("")
+            base_port = None
+        if (
+            parsed_base.scheme.lower() != "https"
+            or (parsed_base.hostname or "").lower() != "ark.cn-beijing.volces.com"
+            or parsed_base.username is not None
+            or parsed_base.password is not None
+            or base_port not in (None, 443)
+            or parsed_base.query
+            or parsed_base.fragment
+        ):
+            raise HTTPException(status_code=503, detail="当前组织 AI 配置不是可用的方舟/豆包 OCR 服务")
+        base_path = parsed_base.path.rstrip("/")
+        if base_path in ("", "/api/v3"):
+            endpoint_path = "/api/v3/chat/completions"
+        elif base_path == "/api/v3/chat/completions":
+            endpoint_path = base_path
+        else:
+            raise HTTPException(status_code=503, detail="当前组织方舟/豆包 OCR 服务地址无效")
+
+        model = str(config["ai_model"] or "").strip()
+        if not model:
+            raise HTTPException(status_code=503, detail="当前组织未配置方舟/豆包 OCR 模型")
+        endpoint = urlunsplit(("https", "ark.cn-beijing.volces.com", endpoint_path, "", ""))
+        return api_key, model, endpoint
+
     @app.get("/api/v1/event-lines/{event_line_id}/report-snapshot", response_model=EventLineReportSnapshotRecord)
     def get_event_line_report_snapshot(
         event_line_id: str,
         current_user: SessionUser = Depends(lambda authorization=Header(default=None): _require_auth(app, authorization)),
     ) -> EventLineReportSnapshotRecord:
         row = _event_line_row_or_404(state, event_line_id, current_user.organizationId)
+        _assert_event_line_visible_or_404(current_user, row)
         event_line = _event_line_record(state, row)
         activity_rows = state.db.fetchall(
             "SELECT * FROM event_line_activities WHERE event_line_id = ? ORDER BY happened_at ASC",
@@ -18702,7 +19514,10 @@ def create_app() -> FastAPI:
         participant_ids = [str(item) for item in from_json(row["participant_ids_json"], []) if str(item).strip()]
         participant_names = []
         for uid in participant_ids:
-            user_row = state.db.fetchone("SELECT full_name FROM employee_accounts WHERE id = ?", (uid,))
+            user_row = state.db.fetchone(
+                "SELECT full_name FROM employee_accounts WHERE id = ? AND organization_id = ?",
+                (uid, current_user.organizationId),
+            )
             if user_row:
                 participant_names.append(str(user_row["full_name"]))
         activity_records = [_event_line_activity_record(state, item) for item in activity_rows]
@@ -18711,7 +19526,10 @@ def create_app() -> FastAPI:
         for att in attachment_rows:
             actor_name = None
             if att["created_by_user_id"]:
-                actor_row = state.db.fetchone("SELECT full_name FROM employee_accounts WHERE id = ?", (str(att["created_by_user_id"]),))
+                actor_row = state.db.fetchone(
+                    "SELECT full_name FROM employee_accounts WHERE id = ? AND organization_id = ?",
+                    (str(att["created_by_user_id"]), current_user.organizationId),
+                )
                 actor_name = str(actor_row["full_name"]) if actor_row and actor_row["full_name"] else None
             title = str(att["title"] or "附件")
             document_id = str(att["document_id"]) if att["document_id"] else None
@@ -18781,6 +19599,8 @@ def create_app() -> FastAPI:
         event_line_id: str,
         current_user: SessionUser = Depends(lambda authorization=Header(default=None): _require_auth(app, authorization)),
     ) -> EventLineTimelineNarrativeRecord | None:
+        row = _event_line_row_or_404(state, event_line_id, current_user.organizationId)
+        _assert_event_line_visible_or_404(current_user, row)
         out = event_line_narrative.get_latest_narrative(
             state.db, current_user.organizationId, event_line_id
         )
@@ -18797,6 +19617,9 @@ def create_app() -> FastAPI:
         payload: EventLineTimelineNarrativeRegeneratePayload,
         current_user: SessionUser = Depends(lambda authorization=Header(default=None): _require_auth(app, authorization)),
     ) -> EventLineTimelineNarrativeRecord:
+        row = _event_line_row_or_404(state, event_line_id, current_user.organizationId)
+        _assert_event_line_editable_or_404(current_user, row)
+        ai_config = _org_ai_runtime_config_or_503(state, current_user.organizationId)
         out = event_line_narrative.regenerate_timeline_narrative(
             state.db,
             current_user.organizationId,
@@ -18804,6 +19627,9 @@ def create_app() -> FastAPI:
             triggered_by_user_id=current_user.id,
             triggered_by_display_name=current_user.fullName or "",
             trigger=(payload.trigger or "manual").strip() or "manual",
+            ai_api_key=ai_config.api_key,
+            ai_base_url=ai_config.base_url,
+            ai_model=ai_config.model,
         )
         return _narrative_to_record(out)
 
@@ -18814,8 +19640,9 @@ def create_app() -> FastAPI:
         title: str | None = Form(default=None),
         current_user: SessionUser = Depends(lambda authorization=Header(default=None): _require_auth(app, authorization)),
     ) -> dict:
-        _event_line_row_or_404(state, event_line_id, current_user.organizationId)
-        content = await file.read()
+        row = _event_line_row_or_404(state, event_line_id, current_user.organizationId)
+        _assert_event_line_editable_or_404(current_user, row)
+        content = await _read_task_attachment_upload(file)
         if not content:
             raise HTTPException(status_code=400, detail="上传内容为空")
         resolved_title = (title or file.filename or "事件线附件").strip()
@@ -18859,9 +19686,40 @@ def create_app() -> FastAPI:
         current_user: SessionUser = Depends(lambda authorization=Header(default=None): _require_auth(app, authorization)),
     ) -> EventLineRecord:
         row = _event_line_row_or_404(state, event_line_id, current_user.organizationId)
-        if payload.ownerId:
-            _get_user_or_404(state, payload.ownerId)
+        _assert_event_line_editable_or_404(current_user, row)
         previous_client_id = str(row["primary_client_id"]).strip() if row["primary_client_id"] else None
+        owner_id = payload.ownerId if "ownerId" in payload.model_fields_set else row["owner_id"]
+        raw_participant_ids = (
+            payload.participantIds
+            if payload.participantIds is not None
+            else _event_line_participant_ids(row)
+        )
+        participant_ids = _validated_event_line_participant_ids(
+            state,
+            current_user.organizationId,
+            owner_id,
+            raw_participant_ids,
+        )
+        primary_client_id = (
+            payload.primaryClientId
+            if "primaryClientId" in payload.model_fields_set
+            else row["primary_client_id"]
+        )
+        primary_department_id = (
+            payload.primaryDepartmentId
+            if "primaryDepartmentId" in payload.model_fields_set
+            else row["primary_department_id"]
+        )
+        client_row = _event_line_client_row_or_404(
+            state,
+            current_user.organizationId,
+            primary_client_id,
+        )
+        department_row = _event_line_department_row_or_404(
+            state,
+            current_user.organizationId,
+            primary_department_id,
+        )
         merged = {
             "name": payload.name.strip() if payload.name is not None else str(row["name"]),
             "kind": payload.kind or str(row["kind"] or "custom"),
@@ -18874,14 +19732,16 @@ def create_app() -> FastAPI:
             "recent_decision": payload.recentDecision if "recentDecision" in payload.model_fields_set else row["recent_decision"],
             "next_step": payload.nextStep if "nextStep" in payload.model_fields_set else row["next_step"],
             "evidence_count": payload.evidenceCount if "evidenceCount" in payload.model_fields_set and payload.evidenceCount is not None else int(row["evidence_count"] or 0),
-            "owner_id": payload.ownerId if "ownerId" in payload.model_fields_set else row["owner_id"],
-            "primary_client_id": payload.primaryClientId if "primaryClientId" in payload.model_fields_set else row["primary_client_id"],
-            "primary_client_name": None,
-            "primary_department_id": payload.primaryDepartmentId if "primaryDepartmentId" in payload.model_fields_set else row["primary_department_id"],
-            "participant_ids_json": to_json(payload.participantIds if payload.participantIds is not None else from_json(row["participant_ids_json"], [])),
+            "owner_id": str(owner_id).strip() if owner_id else None,
+            "primary_client_id": (
+                str(client_row["id"])
+                if client_row
+                else (str(primary_client_id or "").strip() or None)
+            ),
+            "primary_client_name": str(client_row["name"]) if client_row and client_row["name"] else None,
+            "primary_department_id": str(department_row["id"]) if department_row else None,
+            "participant_ids_json": to_json(participant_ids),
         }
-        client_row = _client_row_by_id(state, merged["primary_client_id"], current_user.organizationId)
-        merged["primary_client_name"] = str(client_row["name"]) if client_row and client_row["name"] else None
         should_sync_linked_task_client_ids = (
             bool(payload.syncLinkedTaskClientIds)
             and bool(merged["primary_client_id"])
@@ -18892,7 +19752,7 @@ def create_app() -> FastAPI:
             """
             UPDATE event_lines
             SET name = ?, kind = ?, status = ?, business_category = ?, stage = ?, summary = ?, intent = ?, current_blocker = ?, recent_decision = ?, next_step = ?, evidence_count = ?, owner_id = ?, primary_client_id = ?, primary_client_name = ?, primary_department_id = ?, participant_ids_json = ?, updated_at = ?
-            WHERE id = ?
+            WHERE id = ? AND organization_id = ?
             """,
             (
                 merged["name"],
@@ -18913,6 +19773,7 @@ def create_app() -> FastAPI:
                 merged["participant_ids_json"],
                 updated_at,
                 event_line_id,
+                current_user.organizationId,
             ),
         )
         if should_sync_linked_task_client_ids:
@@ -18965,8 +19826,8 @@ def create_app() -> FastAPI:
         # Check if current user is the manager of the creator
         if owner_id:
             is_manager = state.db.fetchone(
-                "SELECT 1 FROM reporting_lines WHERE manager_user_id = ? AND report_user_id = ? AND effective_to IS NULL",
-                (current_user.id, owner_id),
+                "SELECT 1 FROM reporting_lines WHERE manager_user_id = ? AND report_user_id = ? AND organization_id = ? AND effective_to IS NULL",
+                (current_user.id, owner_id, current_user.organizationId),
             )
             if is_manager:
                 return True
@@ -18978,10 +19839,11 @@ def create_app() -> FastAPI:
         current_user: SessionUser = Depends(lambda authorization=Header(default=None): _require_auth(app, authorization)),
     ) -> dict:
         row = _event_line_row_or_404(state, event_line_id, current_user.organizationId)
+        if not _can_manage_event_line(current_user, row):
+            _assert_event_line_visible_or_404(current_user, row)
+            raise HTTPException(status_code=403, detail="只有事件线创建者、其上级主管或管理员可以结束事件线。")
         if str(row["status"]) in ("done", "archived"):
             return {"status": str(row["status"])}
-        if not _can_manage_event_line(current_user, row):
-            raise HTTPException(status_code=403, detail="只有事件线创建者、其上级主管或管理员可以结束事件线。")
         timestamp = now_iso()
         state.db.execute(
             "UPDATE event_lines SET status = 'archived', closed_at = ?, closed_by_user_id = ?, updated_at = ? WHERE id = ? AND organization_id = ?",
@@ -18989,10 +19851,20 @@ def create_app() -> FastAPI:
         )
         _record_event_line_activity(state, event_line_id, "manual_note", event_line_id, current_user.id, "结束事件线", "事件线已归档")
         # Send notification to all participants
-        participant_ids = [str(item) for item in from_json(row["participant_ids_json"], []) if str(item)]
+        participant_ids = [
+            participant_id
+            for participant_id in _event_line_participant_ids(row)
+            if state.db.fetchone(
+                "SELECT 1 FROM employee_accounts WHERE id = ? AND organization_id = ?",
+                (participant_id, current_user.organizationId),
+            )
+        ]
         notify_user_ids = [uid for uid in participant_ids if uid != current_user.id]
         if notify_user_ids:
-            operator_row = state.db.fetchone("SELECT full_name FROM employee_accounts WHERE id = ?", (current_user.id,))
+            operator_row = state.db.fetchone(
+                "SELECT full_name FROM employee_accounts WHERE id = ? AND organization_id = ?",
+                (current_user.id, current_user.organizationId),
+            )
             operator_name = str(operator_row["full_name"]) if operator_row else current_user.id
             event_line_name = str(row["name"])
             notify_title = f"事件线已结束：{event_line_name}"
@@ -19026,6 +19898,7 @@ def create_app() -> FastAPI:
     ) -> dict:
         row = _event_line_row_or_404(state, event_line_id, current_user.organizationId)
         if not _can_manage_event_line(current_user, row):
+            _assert_event_line_visible_or_404(current_user, row)
             raise HTTPException(status_code=403, detail="只有事件线创建者、其上级主管或管理员可以重新打开事件线。")
         timestamp = now_iso()
         state.db.execute(
@@ -19046,6 +19919,12 @@ def create_app() -> FastAPI:
         "tasks",
         "consultation_answers",
     )
+    _CLOUD_EVENT_LINE_ORG_SCOPED_CHILD_TABLES = {
+        "event_line_attachments",
+        "task_attachments",
+        "tasks",
+        "consultation_answers",
+    }
     _CLOUD_EVENT_LINE_CACHE_TABLES = (
         "cloud_event_line_timeline_narratives",
         "cloud_context_bundle_cache",
@@ -19058,6 +19937,9 @@ def create_app() -> FastAPI:
         current_user: SessionUser = Depends(lambda authorization=Header(default=None): _require_auth(app, authorization)),
     ) -> EventLineMergePreviewRecord:
         target_row = _event_line_row_or_404(state, event_line_id, current_user.organizationId)
+        if not _can_manage_event_line(current_user, target_row):
+            _assert_event_line_visible_or_404(current_user, target_row)
+            raise HTTPException(status_code=403, detail="只有事件线创建者、其上级或管理员可以预览事件线合并。")
         target_id = str(target_row["id"])
         target_client_id = str(target_row["primary_client_id"] or "").strip()
         source_ids: list[str] = []
@@ -19072,7 +19954,7 @@ def create_app() -> FastAPI:
             raise HTTPException(status_code=400, detail="至少需要 1 条与目标不同的源事件线")
         placeholders = ",".join(["?"] * len(source_ids))
         source_rows = state.db.fetchall(
-            f"SELECT id, name, status, primary_client_id FROM event_lines WHERE id IN ({placeholders}) AND organization_id = ?",
+            f"SELECT * FROM event_lines WHERE id IN ({placeholders}) AND organization_id = ?",
             (*source_ids, current_user.organizationId),
         )
         found_ids = {str(r["id"]) for r in source_rows}
@@ -19080,15 +19962,24 @@ def create_app() -> FastAPI:
         if missing:
             raise HTTPException(status_code=404, detail=f"以下事件线不存在或不在你组织：{','.join(missing)}")
         for row in source_rows:
+            if not _can_manage_event_line(current_user, row):
+                _assert_event_line_visible_or_404(current_user, row)
+                raise HTTPException(status_code=403, detail=f"你无权预览合并事件线「{row['name']}」")
             if str(row["primary_client_id"] or "").strip() != target_client_id:
                 raise HTTPException(status_code=400, detail=f"事件线「{row['name']}」与目标客户不同")
         # 统计每张子表的影响行数
         impact: list[EventLineMergePreviewItemRecord] = []
         total = 0
         for table in _CLOUD_EVENT_LINE_CHILD_TABLES:
+            organization_clause = " AND organization_id = ?" if table in _CLOUD_EVENT_LINE_ORG_SCOPED_CHILD_TABLES else ""
+            count_params: tuple[str, ...] = (
+                (*source_ids, current_user.organizationId)
+                if organization_clause
+                else tuple(source_ids)
+            )
             n = int(state.db.scalar(
-                f"SELECT COUNT(1) FROM {table} WHERE event_line_id IN ({placeholders})",
-                tuple(source_ids),
+                f"SELECT COUNT(1) FROM {table} WHERE event_line_id IN ({placeholders}){organization_clause}",
+                count_params,
             ) or 0)
             if n > 0:
                 impact.append(EventLineMergePreviewItemRecord(table=table, rows=n))
@@ -19109,6 +20000,7 @@ def create_app() -> FastAPI:
     ) -> EventLineRecord:
         target_row = _event_line_row_or_404(state, event_line_id, current_user.organizationId)
         if not _can_manage_event_line(current_user, target_row):
+            _assert_event_line_visible_or_404(current_user, target_row)
             raise HTTPException(status_code=403, detail="只有事件线创建者、其上级或管理员可以合并事件线。")
         target_id = str(target_row["id"])
         target_client_id = str(target_row["primary_client_id"] or "").strip()
@@ -19132,10 +20024,11 @@ def create_app() -> FastAPI:
         if missing:
             raise HTTPException(status_code=404, detail=f"以下事件线不存在或不在你组织：{','.join(missing)}")
         for row in source_rows:
+            if not _can_manage_event_line(current_user, row):
+                _assert_event_line_visible_or_404(current_user, row)
+                raise HTTPException(status_code=403, detail=f"你无权合并事件线「{row['name']}」")
             if str(row["primary_client_id"] or "").strip() != target_client_id:
                 raise HTTPException(status_code=400, detail=f"事件线「{row['name']}」与目标客户不同")
-            if not _can_manage_event_line(current_user, row):
-                raise HTTPException(status_code=403, detail=f"你无权合并事件线「{row['name']}」")
 
         merged_names = [str(r["name"] or "未命名") for r in source_rows]
         timestamp = now_iso()
@@ -19144,15 +20037,21 @@ def create_app() -> FastAPI:
         def _do_merge(conn) -> None:
             # 1) 迁业务子表（task / activity / attachment / consultation）
             for table in _CLOUD_EVENT_LINE_CHILD_TABLES:
+                organization_clause = " AND organization_id = ?" if table in _CLOUD_EVENT_LINE_ORG_SCOPED_CHILD_TABLES else ""
+                update_params: tuple[str, ...] = (
+                    (target_id, *source_ids, org_id)
+                    if organization_clause
+                    else (target_id, *source_ids)
+                )
                 conn.execute(
-                    f"UPDATE {table} SET event_line_id = ? WHERE event_line_id IN ({placeholders})",
-                    (target_id, *source_ids),
+                    f"UPDATE {table} SET event_line_id = ? WHERE event_line_id IN ({placeholders}){organization_clause}",
+                    update_params,
                 )
             # 2) 清掉 target 的旧 narrative / context-bundle 缓存，让它下次重新生成
             for table in _CLOUD_EVENT_LINE_CACHE_TABLES:
                 conn.execute(
-                    f"DELETE FROM {table} WHERE event_line_id = ? OR event_line_id IN ({placeholders})",
-                    (target_id, *source_ids),
+                    f"DELETE FROM {table} WHERE organization_id = ? AND (event_line_id = ? OR event_line_id IN ({placeholders}))",
+                    (org_id, target_id, *source_ids),
                 )
             # 3) 重算 target.evidence_count = activity 数
             count_row = conn.execute(
@@ -19208,6 +20107,7 @@ def create_app() -> FastAPI:
         current_user: SessionUser = Depends(lambda authorization=Header(default=None): _require_auth(app, authorization)),
     ) -> dict:
         row = _event_line_row_or_404(state, event_line_id, current_user.organizationId)
+        _assert_event_line_visible_or_404(current_user, row)
         # Only admin can delete event lines
         if current_user.primaryRole != "admin":
             raise HTTPException(status_code=403, detail="只有管理员可以删除事件线。")
@@ -19292,10 +20192,8 @@ def create_app() -> FastAPI:
         payload: TaskPlanLinkUpsertPayload,
         current_user: SessionUser = Depends(lambda authorization=Header(default=None): _require_auth(app, authorization)),
     ) -> TaskPlanLinkRecord | None:
-        task_row = _task_row_or_404(state, task_id)
+        task_row = _task_row_or_404(state, task_id, organization_id=current_user.organizationId)
         task_link_row = _task_org_link_row(state, task_id)
-        if str(task_row["organization_id"]) != current_user.organizationId:
-            raise HTTPException(status_code=404, detail="Task not found")
         # 用专用的 _can_edit_task_plan_link，不复用 _can_review_task —— 后者禁止 owner
         # 自己挂，是给"任务复核"场景设计的；plan-link 挂接是分类归属，owner 应当自己能做。
         if not _can_edit_task_plan_link(state, current_user, task_row, task_link_row):
@@ -19641,9 +20539,16 @@ def create_app() -> FastAPI:
         payload: LinkImportRequestCreatePayload,
         current_user: SessionUser = Depends(lambda authorization=Header(default=None): _require_auth(app, authorization)),
     ) -> LinkImportRequestRecord:
-        url = payload.url.strip()
-        if not url.lower().startswith(("http://", "https://")):
-            raise HTTPException(status_code=422, detail="仅支持 http(s) 链接")
+        url = _normalize_link_import_request_url(payload.url.strip())
+        requested_client_id = (payload.clientId or "").strip() or None
+        requested_client_name = (payload.clientName or "").strip() or None
+        if requested_client_id:
+            client_row = _client_row_or_404(
+                state,
+                requested_client_id,
+                current_user.organizationId,
+            )
+            requested_client_name = str(client_row["name"] or "").strip() or None
         # 幂等: 同组织同链接已在排队/处理中 → 直接返回既有请求(防重复提交)。
         existing = state.db.fetchone(
             """
@@ -19671,8 +20576,8 @@ def create_app() -> FastAPI:
                 current_user.organizationId,
                 url,
                 (payload.sourceHint or "").strip() or None,
-                (payload.clientId or "").strip() or None,
-                (payload.clientName or "").strip() or None,
+                requested_client_id,
+                requested_client_name,
                 current_user.id,
                 timestamp,
                 timestamp,
@@ -19698,6 +20603,15 @@ def create_app() -> FastAPI:
         timestamp = now_iso()
         normalized_error = payload.errorMessage.strip() or None
         completed_at = timestamp if payload.status == "completed" else None
+        requested_client_id = (payload.clientId or "").strip() or None
+        requested_client_name = (payload.clientName or "").strip() or None
+        if requested_client_id:
+            client_row = _client_row_or_404(
+                state,
+                requested_client_id,
+                current_user.organizationId,
+            )
+            requested_client_name = str(client_row["name"] or "").strip() or None
         if payload.status == "processing":
             normalized_error = None
         state.db.execute(
@@ -19717,8 +20631,8 @@ def create_app() -> FastAPI:
                 payload.localRunId,
                 payload.localDocumentId,
                 payload.localDocumentPath,
-                (payload.clientId or "").strip() or None,
-                (payload.clientName or "").strip() or None,
+                requested_client_id,
+                requested_client_name,
                 completed_at,
                 timestamp,
                 request_id,
@@ -20040,11 +20954,8 @@ def create_app() -> FastAPI:
         payload: ConsultationChatPayload,
         current_user: SessionUser = Depends(lambda authorization=Header(default=None): _require_auth(app, authorization)),
     ) -> ConsultationChatResponse:
-        from app.smart_input import _qwen_api_key, DEFAULT_QWEN_MODEL
-
-        api_key = _qwen_api_key()
-        if not api_key:
-            raise HTTPException(status_code=503, detail="AI 服务暂不可用：未配置 API Key（请设置 ARK_API_KEY 环境变量）。")
+        ai_config = _org_ai_runtime_config_or_503(state, current_user.organizationId)
+        api_key = ai_config.api_key
 
         def _trim_context_block(value: str | None, limit: int = 1800) -> str:
             text = (value or "").strip()
@@ -20713,7 +21624,7 @@ def create_app() -> FastAPI:
         else:
             answer_mode = "grounded"
 
-        model_name = os.getenv("YIYU_CONSULTATION_CHAT_MODEL", os.getenv("YIYU_SMART_INPUT_MODEL", DEFAULT_QWEN_MODEL))
+        model_name = ai_config.model
 
         # 项目边界闸门(P0): 有客户上下文、但问题跑题(问别的客户/与项目无关闲聊)→ out_of_scope,
         # 直接拒答、不调主 LLM 编答案、不标 grounded/rich。分类调用 fail-open(异常→正常作答)。
@@ -20721,7 +21632,11 @@ def create_app() -> FastAPI:
         if answer_mode in ("grounded", "limited_context") and resolved_client_name:
             if await asyncio.to_thread(
                 _classify_consultation_out_of_scope,
-                api_key, model_name, normalized_message, resolved_client_name,
+                api_key,
+                model_name,
+                ai_config.base_url,
+                normalized_message,
+                resolved_client_name,
             ):
                 answer_mode = "out_of_scope"
                 out_of_scope_reply = (
@@ -20863,7 +21778,11 @@ def create_app() -> FastAPI:
             timeout = httpx.Timeout(timeout=None, connect=8.0, read=read_timeout, write=8.0, pool=8.0)
             try:
                 response = await asyncio.to_thread(
-                    _sync_qwen_chat, api_key, chat_payload, timeout
+                    _sync_qwen_chat,
+                    api_key,
+                    chat_payload,
+                    timeout,
+                    base_url=ai_config.base_url,
                 )
             except Exception as error:
                 # P1-9: 不把 LLM provider 错误 body 直接暴露给前端 (可能含 token / 内网 URL)
@@ -20963,37 +21882,56 @@ def create_app() -> FastAPI:
 
     @app.get("/api/public/smart-input-audio/{file_key}")
     def get_public_smart_input_audio(file_key: str) -> FileResponse:
-        if not re.fullmatch(r"[0-9a-f]{32}\.[0-9A-Za-z]{1,8}", file_key):
+        _cleanup_expired_smart_input_audio(state)
+        try:
+            audio_path = _smart_input_audio_path(state, file_key, create_dir=False)
+        except ValueError:
             raise HTTPException(status_code=404, detail="File not found")
-        audio_path = state.data_dir / "smart-input-audio" / file_key
-        if not audio_path.exists() or not audio_path.is_file():
+        try:
+            metadata = audio_path.lstat()
+        except FileNotFoundError:
+            raise HTTPException(status_code=404, detail="File not found")
+        if not stat.S_ISREG(metadata.st_mode):
             raise HTTPException(status_code=404, detail="File not found")
         media_type = mimetypes.guess_type(audio_path.name)[0] or "application/octet-stream"
-        return FileResponse(audio_path, media_type=media_type, filename=audio_path.name)
+        return FileResponse(
+            audio_path,
+            media_type=media_type,
+            filename=audio_path.name,
+            headers={"Cache-Control": "no-store"},
+        )
 
     @app.get("/api/public/task-attachments/{attachment_id}")
-    def get_public_task_attachment(attachment_id: str) -> FileResponse:
-        row = state.db.fetchone("SELECT * FROM task_attachments WHERE id = ?", (attachment_id,))
-        if row is None and _has_event_line_attachments_table():
-            row = state.db.fetchone("SELECT * FROM event_line_attachments WHERE id = ?", (attachment_id,))
-        if row is None:
-            raise HTTPException(status_code=404, detail="File not found")
-        attachment_path = state.data_dir / str(row["path"])
-        if not attachment_path.exists() or not attachment_path.is_file():
-            raise HTTPException(status_code=404, detail="File not found")
+    def get_public_task_attachment(
+        attachment_id: str,
+        current_user: SessionUser = Depends(lambda authorization=Header(default=None): _require_auth(app, authorization)),
+    ) -> FileResponse:
+        row = _task_or_event_attachment_for_user_or_404(attachment_id, current_user)
+        attachment_path = _attachment_file_path_or_404(row)
+        media_type = str(row["mime_type"] or mimetypes.guess_type(attachment_path.name)[0] or "application/octet-stream")
+        return FileResponse(attachment_path, media_type=media_type, filename=attachment_path.name)
+
+    @app.get("/api/v1/tasks/{task_id}/attachments/{attachment_id}/download")
+    def download_task_attachment(
+        task_id: str,
+        attachment_id: str,
+        current_user: SessionUser = Depends(lambda authorization=Header(default=None): _require_auth(app, authorization)),
+    ) -> FileResponse:
+        task_row = _task_row_or_404(state, task_id, organization_id=current_user.organizationId)
+        _assert_task_visible_or_404(state, current_user, task_row)
+        row = _task_attachment_row_or_404(state, attachment_id, task_id, current_user.organizationId)
+        attachment_path = _attachment_file_path_or_404(row)
         media_type = str(row["mime_type"] or mimetypes.guess_type(attachment_path.name)[0] or "application/octet-stream")
         return FileResponse(attachment_path, media_type=media_type, filename=attachment_path.name)
 
     @app.get("/api/public/task-attachments/{attachment_id}/thumbnail")
-    def get_attachment_thumbnail(attachment_id: str, max_width: int = 600) -> Response:
-        row = state.db.fetchone("SELECT * FROM task_attachments WHERE id = ?", (attachment_id,))
-        if row is None and _has_event_line_attachments_table():
-            row = state.db.fetchone("SELECT * FROM event_line_attachments WHERE id = ?", (attachment_id,))
-        if row is None:
-            raise HTTPException(status_code=404, detail="File not found")
-        attachment_path = state.data_dir / str(row["path"])
-        if not attachment_path.exists():
-            raise HTTPException(status_code=404, detail="File not found")
+    def get_attachment_thumbnail(
+        attachment_id: str,
+        max_width: int = Query(default=600, ge=32, le=1600),
+        current_user: SessionUser = Depends(lambda authorization=Header(default=None): _require_auth(app, authorization)),
+    ) -> Response:
+        row = _task_or_event_attachment_for_user_or_404(attachment_id, current_user)
+        attachment_path = _attachment_file_path_or_404(row)
         mime = str(row["mime_type"] or "").lower()
         if not mime.startswith("image/"):
             raise HTTPException(status_code=404, detail="Not an image")
@@ -21018,15 +21956,12 @@ def create_app() -> FastAPI:
             raise HTTPException(status_code=500, detail="缩略图生成失败,请稍后重试。") from None
 
     @app.get("/api/public/task-attachments/{attachment_id}/text-content")
-    def get_attachment_text_content(attachment_id: str) -> dict:
-        row = state.db.fetchone("SELECT * FROM task_attachments WHERE id = ?", (attachment_id,))
-        if row is None and _has_event_line_attachments_table():
-            row = state.db.fetchone("SELECT * FROM event_line_attachments WHERE id = ?", (attachment_id,))
-        if row is None:
-            raise HTTPException(status_code=404, detail="File not found")
-        attachment_path = state.data_dir / str(row["path"])
-        if not attachment_path.exists():
-            raise HTTPException(status_code=404, detail="File not found")
+    def get_attachment_text_content(
+        attachment_id: str,
+        current_user: SessionUser = Depends(lambda authorization=Header(default=None): _require_auth(app, authorization)),
+    ) -> dict:
+        row = _task_or_event_attachment_for_user_or_404(attachment_id, current_user)
+        attachment_path = _attachment_file_path_or_404(row)
         kind = str(row["kind"] or "").lower()
         mime = str(row["mime_type"] or "").lower()
         title = str(row["title"] or attachment_path.name)
@@ -21041,38 +21976,33 @@ def create_app() -> FastAPI:
                 return {"title": title, "kind": kind, "text": text, "paragraphCount": text.count("\n") + 1}
             else:
                 return {"title": title, "kind": kind, "text": "", "paragraphCount": 0, "unsupported": True}
-        except Exception as exc:
-            return {"title": title, "kind": kind, "text": f"内容提取失败: {exc}", "paragraphCount": 0}
+        except Exception:
+            logger.exception("[attachment-text] extraction failed attachment=%s", attachment_id)
+            raise HTTPException(status_code=422, detail="附件内容提取失败") from None
 
     @app.get("/api/public/task-attachments/{attachment_id}/ocr-summary")
-    def get_attachment_ocr_summary(attachment_id: str) -> dict:
-        row = state.db.fetchone("SELECT * FROM task_attachments WHERE id = ?", (attachment_id,))
-        if row is None and _has_event_line_attachments_table():
-            row = state.db.fetchone("SELECT * FROM event_line_attachments WHERE id = ?", (attachment_id,))
-        if row is None:
-            raise HTTPException(status_code=404, detail="File not found")
+    def get_attachment_ocr_summary(
+        attachment_id: str,
+        current_user: SessionUser = Depends(lambda authorization=Header(default=None): _require_auth(app, authorization)),
+    ) -> dict:
+        row = _task_or_event_attachment_for_user_or_404(attachment_id, current_user)
         mime = str(row["mime_type"] or "").lower()
         if not mime.startswith("image/"):
             return {"title": str(row["title"]), "summary": "", "unsupported": True}
-        attachment_path = state.data_dir / str(row["path"])
-        if not attachment_path.exists():
-            raise HTTPException(status_code=404, detail="File not found")
-        # Use Ark multimodal to OCR the image
+        attachment_path = _attachment_file_path_or_404(row)
+        # Use only the current organization's Ark credential and model.  Never
+        # fall back to process-wide keys: those would cross the sandbox boundary.
         import base64
-        ark_key = (
-            os.getenv("ARK_API_KEY", "").strip()
-            or os.getenv("VOLCENGINE_API_KEY", "").strip()
-        )
-        if not ark_key:
-            return {"title": str(row["title"]), "summary": "OCR 未配置 API Key", "unsupported": True}
+        import httpx
+        ark_key, ark_model, ark_endpoint = _org_ocr_runtime_config_or_503(current_user.organizationId)
         try:
             img_bytes = attachment_path.read_bytes()
             img_b64 = base64.b64encode(img_bytes).decode()
             resp = httpx.post(
-                "https://ark.cn-beijing.volces.com/api/v3/chat/completions",
+                ark_endpoint,
                 headers={"Authorization": f"Bearer {ark_key}", "Content-Type": "application/json"},
                 json={
-                    "model": os.getenv("YIYU_OCR_MODEL", "ep-m-20260326120641-m4lf6"),
+                    "model": ark_model,
                     "messages": [
                         {"role": "system", "content": "你是票据识别助手。请识别图片中的票据内容，用一行简要概括：类型、金额、日期、付款方/收款方（如果能识别的话）。只返回纯文本，不要 JSON。"},
                         {"role": "user", "content": [
@@ -21088,8 +22018,9 @@ def create_app() -> FastAPI:
                 summary = resp.json()["choices"][0]["message"]["content"].strip()
                 return {"title": str(row["title"]), "summary": summary}
             return {"title": str(row["title"]), "summary": f"OCR 识别失败 (HTTP {resp.status_code})"}
-        except Exception as exc:
-            return {"title": str(row["title"]), "summary": f"OCR 识别失败: {exc}"}
+        except Exception:
+            logger.exception("[attachment-ocr] failed attachment=%s", attachment_id)
+            raise HTTPException(status_code=502, detail="OCR 识别失败,请稍后重试") from None
 
     @app.post("/api/v1/event-lines/{event_line_id}/attachments/download-zip")
     def download_event_line_attachments_zip(
@@ -21097,31 +22028,39 @@ def create_app() -> FastAPI:
         payload: dict | None = None,
         current_user: SessionUser = Depends(lambda authorization=Header(default=None): _require_auth(app, authorization)),
     ) -> Response:
-        _event_line_row_or_404(state, event_line_id, current_user.organizationId)
+        row = _event_line_row_or_404(state, event_line_id, current_user.organizationId)
+        _assert_event_line_visible_or_404(current_user, row)
         attachment_ids = (payload or {}).get("attachmentIds")
         has_event_line_attachments = _has_event_line_attachments_table()
         if attachment_ids and isinstance(attachment_ids, list):
             placeholders = ",".join("?" for _ in attachment_ids)
             if has_event_line_attachments:
                 rows = state.db.fetchall(
-                    f"SELECT id, title, path, mime_type, size_bytes FROM task_attachments WHERE event_line_id = ? AND id IN ({placeholders}) UNION ALL SELECT id, title, path, mime_type, size_bytes FROM event_line_attachments WHERE event_line_id = ? AND id IN ({placeholders}) ORDER BY id",
-                    (event_line_id, *attachment_ids, event_line_id, *attachment_ids),
+                    f"SELECT id, title, path, mime_type, size_bytes FROM task_attachments WHERE event_line_id = ? AND organization_id = ? AND id IN ({placeholders}) UNION ALL SELECT id, title, path, mime_type, size_bytes FROM event_line_attachments WHERE event_line_id = ? AND organization_id = ? AND id IN ({placeholders}) ORDER BY id",
+                    (
+                        event_line_id,
+                        current_user.organizationId,
+                        *attachment_ids,
+                        event_line_id,
+                        current_user.organizationId,
+                        *attachment_ids,
+                    ),
                 )
             else:
                 rows = state.db.fetchall(
-                    f"SELECT id, title, path, mime_type, size_bytes FROM task_attachments WHERE event_line_id = ? AND id IN ({placeholders}) ORDER BY id",
-                    (event_line_id, *attachment_ids),
+                    f"SELECT id, title, path, mime_type, size_bytes FROM task_attachments WHERE event_line_id = ? AND organization_id = ? AND id IN ({placeholders}) ORDER BY id",
+                    (event_line_id, current_user.organizationId, *attachment_ids),
                 )
         else:
             if has_event_line_attachments:
                 rows = state.db.fetchall(
-                    "SELECT id, title, path, mime_type, size_bytes FROM task_attachments WHERE event_line_id = ? UNION ALL SELECT id, title, path, mime_type, size_bytes FROM event_line_attachments WHERE event_line_id = ? ORDER BY id",
-                    (event_line_id, event_line_id),
+                    "SELECT id, title, path, mime_type, size_bytes FROM task_attachments WHERE event_line_id = ? AND organization_id = ? UNION ALL SELECT id, title, path, mime_type, size_bytes FROM event_line_attachments WHERE event_line_id = ? AND organization_id = ? ORDER BY id",
+                    (event_line_id, current_user.organizationId, event_line_id, current_user.organizationId),
                 )
             else:
                 rows = state.db.fetchall(
-                    "SELECT id, title, path, mime_type, size_bytes FROM task_attachments WHERE event_line_id = ? ORDER BY id",
-                    (event_line_id,),
+                    "SELECT id, title, path, mime_type, size_bytes FROM task_attachments WHERE event_line_id = ? AND organization_id = ? ORDER BY id",
+                    (event_line_id, current_user.organizationId),
                 )
         if not rows:
             raise HTTPException(status_code=404, detail="没有可下载的附件")
@@ -21164,14 +22103,15 @@ def create_app() -> FastAPI:
         if not transcript:
             if audio is None:
                 raise HTTPException(status_code=400, detail="请先输入或转写自然语言内容。")
+            asr_config = _org_asr_runtime_config_or_503(state, current_user.organizationId)
             audio_bytes = await audio.read()
             file_name = safe_filename(audio.filename or f"smart-input-{uuid4().hex}.m4a")
             extension = Path(file_name).suffix.lower() or ".m4a"
-            file_key = f"{uuid4().hex}{extension}"
-            audio_dir = state.data_dir / "smart-input-audio"
-            audio_dir.mkdir(parents=True, exist_ok=True)
-            audio_path = audio_dir / file_key
-            audio_path.write_bytes(audio_bytes)
+            file_key, audio_path = _create_temporary_smart_input_audio(
+                state,
+                audio_bytes,
+                extension=extension,
+            )
             public_base_url = _resolve_public_base_url(request)
             public_url = (
                 f"{public_base_url}/api/public/smart-input-audio/{file_key}"
@@ -21187,6 +22127,8 @@ def create_app() -> FastAPI:
                         audio_bytes,
                         file_name=file_name,
                         mime_type=audio.content_type,
+                        app_id=asr_config.app_id,
+                        access_token=asr_config.access_token,
                         public_url=public_url,
                     )
                 ).strip()
@@ -21197,12 +22139,11 @@ def create_app() -> FastAPI:
                 logger.exception("[speech-transcribe] failed")
                 raise HTTPException(status_code=502, detail="语音转写失败,请稍后重试。") from None
             finally:
-                try:
-                    audio_path.unlink(missing_ok=True)
-                except Exception:
-                    pass
+                _release_temporary_smart_input_audio(state, audio_path)
             if not transcript:
                 raise HTTPException(status_code=400, detail="语音已上传，但未能识别出有效文本。")
+
+        ai_config = _org_ai_runtime_config_or_503(state, current_user.organizationId)
 
         reference = None
         if referenceDate:
@@ -21227,6 +22168,9 @@ def create_app() -> FastAPI:
             event_lines,
             reference_date=reference,
             current_event_line_id=currentEventLineId,
+            ai_api_key=ai_config.api_key,
+            ai_base_url=ai_config.base_url,
+            ai_model=ai_config.model,
         )
 
     @app.get("/api/v1/employees/directory", response_model=list[EmployeeRecord])
@@ -22110,15 +23054,8 @@ def create_app() -> FastAPI:
         task_id: str,
         current_user: SessionUser = Depends(lambda authorization=Header(default=None): _require_auth(app, authorization)),
     ) -> TaskRecord:
-        row = _task_row_or_404(state, task_id)
-        if str(row["organization_id"]) != current_user.organizationId:
-            raise HTTPException(status_code=404, detail="Task not found")
-        if current_user.primaryRole != "admin":
-            owner_id = str(row["owner_id"]) if row["owner_id"] else None
-            creator_id = str(row["creator_id"])
-            collaborator_ids = set(_task_collaborator_ids(state, task_id))
-            if current_user.id not in collaborator_ids and current_user.id != owner_id and current_user.id != creator_id:
-                raise HTTPException(status_code=404, detail="Task not found")
+        row = _task_row_or_404(state, task_id, organization_id=current_user.organizationId)
+        _assert_task_visible_or_404(state, current_user, row)
         return _task_record(state, row, current_user.id)
 
     @app.post("/api/v1/tasks", response_model=TaskRecord)
@@ -22132,9 +23069,13 @@ def create_app() -> FastAPI:
             collaborator_ids = [owner_id, *[item for item in collaborator_ids if item != owner_id]]
         collaborator_ids = list(dict.fromkeys(collaborator_ids))
         for user_id in ([owner_id] if owner_id else []) + collaborator_ids:
-            _get_user_or_404(state, user_id)
+            _get_org_user_or_404(state, current_user.organizationId, user_id)
         scope_mode = payload.scopeMode or "COLLAB_SHARED"
-        requested_client_id = None if scope_mode == "PERSONAL_ONLY" else payload.clientId
+        requested_client_id = (
+            None
+            if scope_mode == "PERSONAL_ONLY"
+            else ((payload.clientId or "").strip() or None)
+        )
         requested_event_line_id = None if scope_mode == "PERSONAL_ONLY" else payload.eventLineId
         requested_project_module_id = None if scope_mode == "PERSONAL_ONLY" else payload.projectModuleId
         requested_project_flow_id = None if scope_mode == "PERSONAL_ONLY" else payload.projectFlowId
@@ -22142,6 +23083,8 @@ def create_app() -> FastAPI:
         event_line_client_id = _event_line_primary_client_id(event_line_row)
         if event_line_client_id:
             requested_client_id = event_line_client_id
+        if requested_client_id:
+            _client_row_or_404(state, requested_client_id, current_user.organizationId)
         timestamp = now_iso()
         task_id = (payload.id or "").strip() or new_id("task")
 
@@ -22222,7 +23165,7 @@ def create_app() -> FastAPI:
                 requested_project_flow_id,
                 scope_mode,
                 payload.priority,
-                payload.listId,
+                str(list_row["id"]),
                 payload.sourceType,
                 payload.sourceId,
                 business_category,
@@ -22309,7 +23252,8 @@ def create_app() -> FastAPI:
         payload: TaskUpdatePayload,
         current_user: SessionUser = Depends(lambda authorization=Header(default=None): _require_auth(app, authorization)),
     ) -> TaskRecord:
-        row = _task_row_or_404(state, task_id)
+        row = _task_row_or_404(state, task_id, organization_id=current_user.organizationId)
+        _assert_task_visible_or_404(state, current_user, row)
         existing_collaborator_ids = _task_collaborator_ids(state, task_id)
         owner_field_touched = "ownerId" in payload.model_fields_set
         next_owner_id = (payload.ownerId or "").strip() if owner_field_touched and payload.ownerId else None
@@ -22342,9 +23286,13 @@ def create_app() -> FastAPI:
             or ("scheduledEndAt" in payload.model_fields_set and payload.scheduledEndAt != (str(row["scheduled_end_at"]) if row["scheduled_end_at"] else None))
         )
         owner_changed = owner_field_touched and next_owner_id != previous_owner_id
+        for user_id in ([next_owner_id] if next_owner_id else []) + next_collaborator_ids:
+            _get_org_user_or_404(state, current_user.organizationId, user_id)
         _assert_task_edit_permission(state, current_user, row, content_changed, due_date_changed, owner_changed, status_changed)
+        next_list_id = str(row["list_id"])
         if payload.listId:
             list_row = _resolve_task_list_or_org_default(state, current_user.organizationId, payload.listId)
+            next_list_id = str(list_row["id"])
         next_scope_mode = payload.scopeMode if payload.scopeMode is not None else str(row["scope_mode"] or "COLLAB_SHARED")
         if next_scope_mode == "PERSONAL_ONLY":
             next_client_id = None
@@ -22363,6 +23311,9 @@ def create_app() -> FastAPI:
                 next_client_id = event_line_client_id
         else:
             event_line_row = None
+        next_client_id = str(next_client_id or "").strip() or None
+        if next_client_id:
+            _client_row_or_404(state, next_client_id, current_user.organizationId)
         resolved_tags: list[TaskTagRecord] = []
         (
             business_category,
@@ -22381,8 +23332,6 @@ def create_app() -> FastAPI:
             evidence_count=payload.evidenceCount if "evidenceCount" in payload.model_fields_set else int(row["evidence_count"] or 0),
             event_line_row=event_line_row,
         )
-        for user_id in ([next_owner_id] if next_owner_id else []) + next_collaborator_ids:
-            _get_user_or_404(state, user_id)
         update_timestamp = now_iso()
         next_progress_status = payload.progressStatus or row["progress_status"]
         next_start_date = payload.startDate if "startDate" in payload.model_fields_set else (str(row["start_date"]) if row["start_date"] else None)
@@ -22419,7 +23368,7 @@ def create_app() -> FastAPI:
             "title": payload.title or row["title"],
             "description": payload.description if payload.description is not None else row["description"],
             "priority": payload.priority or row["priority"],
-            "list_id": payload.listId or row["list_id"],
+            "list_id": next_list_id,
             "deadline_at": temporal_fields["deadline_at"],
             "scheduled_start_at": temporal_fields["scheduled_start_at"],
             "scheduled_end_at": temporal_fields["scheduled_end_at"],
@@ -22572,7 +23521,7 @@ def create_app() -> FastAPI:
         task_id: str,
         current_user: SessionUser = Depends(lambda authorization=Header(default=None): _require_auth(app, authorization)),
     ) -> dict[str, bool]:
-        row = _task_row_or_404(state, task_id)
+        row = _task_row_or_404(state, task_id, organization_id=current_user.organizationId)
         content_changed = True
         due_date_changed = False
         owner_changed = False
@@ -22593,15 +23542,32 @@ def create_app() -> FastAPI:
         durationSeconds: int | None = Form(default=None),
         current_user: SessionUser = Depends(lambda authorization=Header(default=None): _require_auth(app, authorization)),
     ) -> TaskRecord:
-        task_row = _task_row_or_404(state, task_id)
+        task_row = _task_row_or_404(state, task_id, organization_id=current_user.organizationId)
         _assert_task_edit_permission(state, current_user, task_row, True, False, False)
 
-        resolved_client_id = str(task_row["client_id"]) if task_row["client_id"] else clientId
-        resolved_event_line_id = str(task_row["event_line_id"]) if task_row["event_line_id"] else eventLineId
+        resolved_client_id = (
+            str(task_row["client_id"] or "").strip()
+            or str(clientId or "").strip()
+            or None
+        )
+        resolved_event_line_id = (
+            str(task_row["event_line_id"] or "").strip()
+            or str(eventLineId or "").strip()
+            or None
+        )
         if resolved_event_line_id:
-            _event_line_row_or_404(state, resolved_event_line_id, current_user.organizationId)
+            event_line_row = _event_line_row_or_404(
+                state,
+                resolved_event_line_id,
+                current_user.organizationId,
+            )
+            event_line_client_id = _event_line_primary_client_id(event_line_row)
+            if event_line_client_id:
+                resolved_client_id = event_line_client_id
+        if resolved_client_id:
+            _client_row_or_404(state, resolved_client_id, current_user.organizationId)
 
-        content = await file.read()
+        content = await _read_task_attachment_upload(file)
         if not content:
             raise HTTPException(status_code=400, detail="上传失败：录音内容为空。")
 
@@ -22691,48 +23657,76 @@ def create_app() -> FastAPI:
         attachment_id: str,
         current_user: SessionUser = Depends(lambda authorization=Header(default=None): _require_auth(app, authorization)),
     ) -> TaskAttachmentTranscriptionResponse:
-        task_row = _task_row_or_404(state, task_id)
+        task_row = _task_row_or_404(state, task_id, organization_id=current_user.organizationId)
+        _assert_task_visible_or_404(state, current_user, task_row)
         _assert_task_edit_permission(state, current_user, task_row, True, False, False)
         attachment_row = _task_attachment_row_or_404(state, attachment_id, task_id, current_user.organizationId)
         mime_type = str(attachment_row["mime_type"] or "")
         if not mime_type.startswith("audio/"):
             raise HTTPException(status_code=400, detail="当前附件不是录音文件，无法转写。")
 
-        attachment_path = state.data_dir / str(attachment_row["path"])
-        if not attachment_path.exists() or not attachment_path.is_file():
-            raise HTTPException(status_code=404, detail="录音文件不存在，无法转写。")
+        # Resolve every referenced parent inside the authenticated organization
+        # before reading bytes, creating a public temporary copy, or invoking ASR.
+        # Legacy/corrupt rows can otherwise turn a 404 into cross-org disclosure
+        # and an externally billed provider call.
+        event_line_id = str(attachment_row["event_line_id"]) if attachment_row["event_line_id"] else (str(task_row["event_line_id"]) if task_row["event_line_id"] else None)
+        client_id = str(attachment_row["client_id"]) if attachment_row["client_id"] else (str(task_row["client_id"]) if task_row["client_id"] else None)
+        scoped_event_line_row = None
+        if event_line_id:
+            scoped_event_line_row = _event_line_row_or_404(
+                state,
+                event_line_id,
+                current_user.organizationId,
+            )
+        client_name: str | None = None
+        if client_id:
+            scoped_client_row = _client_row_or_404(
+                state,
+                client_id,
+                current_user.organizationId,
+            )
+            if scoped_client_row["name"]:
+                client_name = str(scoped_client_row["name"])
 
+        asr_config = _org_asr_runtime_config_or_503(state, current_user.organizationId)
+        ai_config = _org_ai_runtime_config_or_503(state, current_user.organizationId)
+
+        attachment_path = _attachment_file_path_or_404(attachment_row)
+        audio_bytes = attachment_path.read_bytes()
         public_base_url = os.getenv("YIYU_CLOUD_PUBLIC_BASE_URL", "").strip()
-        public_url = None
-        if public_base_url:
-            public_url = f"{public_base_url.rstrip('/')}/api/public/task-attachments/{attachment_id}"
-
+        temporary_audio_path: Path | None = None
         try:
+            public_url = None
+            if public_base_url:
+                extension = attachment_path.suffix.lower()
+                if not re.fullmatch(r"\.[0-9a-z]{1,8}", extension):
+                    extension = mimetypes.guess_extension(mime_type) or ".m4a"
+                file_key, temporary_audio_path = _create_temporary_smart_input_audio(
+                    state,
+                    audio_bytes,
+                    extension=extension,
+                )
+                public_url = f"{public_base_url.rstrip('/')}/api/public/smart-input-audio/{file_key}"
             transcript = transcribe_audio_with_doubao(
-                attachment_path.read_bytes(),
+                audio_bytes,
                 file_name=attachment_path.name,
                 mime_type=mime_type,
+                app_id=asr_config.app_id,
+                access_token=asr_config.access_token,
                 public_url=public_url,
             ).strip()
         except RuntimeError as error:
             raise HTTPException(status_code=400, detail=str(error)) from error
-        except Exception as error:
+        except Exception:
             # P1-9: 不暴露 attachment transcribe provider 错误细节
             logger.exception("[recording-transcribe-to-doc] failed")
             raise HTTPException(status_code=502, detail="录音转写失败,请稍后重试。") from None
+        finally:
+            _release_temporary_smart_input_audio(state, temporary_audio_path)
 
         if not transcript:
             raise HTTPException(status_code=400, detail="录音已上传，但未识别出有效文本。")
 
-        event_line_id = str(attachment_row["event_line_id"]) if attachment_row["event_line_id"] else (str(task_row["event_line_id"]) if task_row["event_line_id"] else None)
-        client_id = str(attachment_row["client_id"]) if attachment_row["client_id"] else (str(task_row["client_id"]) if task_row["client_id"] else None)
-        # client_name 不是 tasks 表字段(SELECT * FROM tasks 不含它), 直接 task_row["client_name"] 会抛
-        # sqlite3.Row 的 IndexError → 整个转写端点 500。改为按 client_id 从 clients 表安全解析。
-        client_name: str | None = None
-        if client_id:
-            _client_row = state.db.fetchone("SELECT name FROM clients WHERE id = ?", (client_id,))
-            if _client_row and _client_row["name"]:
-                client_name = str(_client_row["name"])
         document_request = _create_consultation_knowledge_request_internal(
             state,
             current_user=current_user,
@@ -22748,14 +23742,10 @@ def create_app() -> FastAPI:
         # AI-generated summary via Volcengine Ark (Doubao)
         # Resolve event line name for AI summary context
         _el_name_for_summary = ""
-        if event_line_id:
-            try:
-                _el_row = state.db.fetchone("SELECT name FROM event_lines WHERE id = ?", (event_line_id,))
-                if _el_row:
-                    _el_name_for_summary = str(_el_row["name"] or "")
-            except Exception:
-                pass
+        if scoped_event_line_row is not None:
+            _el_name_for_summary = str(scoped_event_line_row["name"] or "")
         summary = _generate_recording_summary(
+            ai_config=ai_config,
             transcript=transcript,
             task_title=str(task_row["title"]),
             client_name=client_name,
@@ -22802,29 +23792,52 @@ def create_app() -> FastAPI:
 
     @app.post("/api/v1/tasks/{task_id}/collaborators/{user_id}/accept", response_model=TaskRecord)
     def accept_task(task_id: str, user_id: str, current_user: SessionUser = Depends(lambda authorization=Header(default=None): _require_auth(app, authorization))) -> TaskRecord:
-        if user_id != current_user.id:
-            raise HTTPException(status_code=403, detail="只能处理自己的协作收件箱")
-        row = state.db.fetchone("SELECT * FROM task_collaborators WHERE task_id = ? AND user_id = ?", (task_id, user_id))
-        if not row:
-            raise HTTPException(status_code=404, detail="Collaboration item not found")
+        task_row, _ = _task_collaboration_for_actor_or_404(
+            state,
+            task_id=task_id,
+            user_id=user_id,
+            actor=current_user,
+        )
         timestamp = now_iso()
         state.db.execute(
-            "UPDATE task_collaborators SET inbox_status = 'accepted', return_reason = NULL, handled_at = ?, updated_at = ? WHERE task_id = ? AND user_id = ?",
-            (timestamp, timestamp, task_id, user_id),
+            """
+            UPDATE task_collaborators
+            SET inbox_status = 'accepted', return_reason = NULL, handled_at = ?, updated_at = ?
+            WHERE task_id = ?
+              AND user_id = ?
+              AND EXISTS (
+                    SELECT 1 FROM tasks t
+                    WHERE t.id = task_collaborators.task_id AND t.organization_id = ?
+                  )
+            """,
+            (timestamp, timestamp, task_id, current_user.id, current_user.organizationId),
         )
         # Notification tasks go straight to done after acknowledgement (don't enter calendar/task list)
-        task_row = _task_row_or_404(state, task_id)
         if str(task_row["source_type"]) == "event_line_notification":
             all_accepted = not state.db.fetchone(
-                "SELECT 1 FROM task_collaborators WHERE task_id = ? AND inbox_status = 'pending'", (task_id,),
+                """
+                SELECT 1
+                FROM task_collaborators tc
+                JOIN tasks t ON t.id = tc.task_id
+                WHERE tc.task_id = ? AND tc.inbox_status = 'pending' AND t.organization_id = ?
+                """,
+                (task_id, current_user.organizationId),
             )
             if all_accepted:
                 state.db.execute(
-                    "UPDATE tasks SET progress_status = 'done', completed_at = COALESCE(completed_at, ?), updated_at = ? WHERE id = ?",
-                    (timestamp, timestamp, task_id),
+                    """
+                    UPDATE tasks
+                    SET progress_status = 'done', completed_at = COALESCE(completed_at, ?), updated_at = ?
+                    WHERE id = ? AND organization_id = ?
+                    """,
+                    (timestamp, timestamp, task_id, current_user.organizationId),
                 )
         _record_activity(state, task_id, current_user.id, "accepted", {"userId": user_id})
-        return _task_record(state, _task_row_or_404(state, task_id), current_user.id)
+        return _task_record(
+            state,
+            _task_row_or_404(state, task_id, organization_id=current_user.organizationId),
+            current_user.id,
+        )
 
     @app.post("/api/v1/tasks/{task_id}/collaborators/{user_id}/return", response_model=TaskRecord)
     def return_task(
@@ -22833,18 +23846,39 @@ def create_app() -> FastAPI:
         payload: TaskReturnPayload,
         current_user: SessionUser = Depends(lambda authorization=Header(default=None): _require_auth(app, authorization)),
     ) -> TaskRecord:
-        if user_id != current_user.id:
-            raise HTTPException(status_code=403, detail="只能处理自己的协作收件箱")
-        row = state.db.fetchone("SELECT * FROM task_collaborators WHERE task_id = ? AND user_id = ?", (task_id, user_id))
-        if not row:
-            raise HTTPException(status_code=404, detail="Collaboration item not found")
+        _task_collaboration_for_actor_or_404(
+            state,
+            task_id=task_id,
+            user_id=user_id,
+            actor=current_user,
+        )
         timestamp = now_iso()
         state.db.execute(
-            "UPDATE task_collaborators SET inbox_status = 'returned', return_reason = ?, handled_at = ?, updated_at = ? WHERE task_id = ? AND user_id = ?",
-            (payload.reason.strip(), timestamp, timestamp, task_id, user_id),
+            """
+            UPDATE task_collaborators
+            SET inbox_status = 'returned', return_reason = ?, handled_at = ?, updated_at = ?
+            WHERE task_id = ?
+              AND user_id = ?
+              AND EXISTS (
+                    SELECT 1 FROM tasks t
+                    WHERE t.id = task_collaborators.task_id AND t.organization_id = ?
+                  )
+            """,
+            (
+                payload.reason.strip(),
+                timestamp,
+                timestamp,
+                task_id,
+                current_user.id,
+                current_user.organizationId,
+            ),
         )
         _record_activity(state, task_id, current_user.id, "returned", {"userId": user_id, "reason": payload.reason.strip()})
-        return _task_record(state, _task_row_or_404(state, task_id), current_user.id)
+        return _task_record(
+            state,
+            _task_row_or_404(state, task_id, organization_id=current_user.organizationId),
+            current_user.id,
+        )
 
     @app.post("/api/v1/tasks/{task_id}/complete-with-review", response_model=TaskRecord)
     def complete_task_with_review(
@@ -22852,7 +23886,8 @@ def create_app() -> FastAPI:
         payload: TaskCompletionReviewPayload,
         current_user: SessionUser = Depends(lambda authorization=Header(default=None): _require_auth(app, authorization)),
     ) -> TaskRecord:
-        task_row = _task_row_or_404(state, task_id)
+        task_row = _task_row_or_404(state, task_id, organization_id=current_user.organizationId)
+        _assert_task_visible_or_404(state, current_user, task_row)
         _assert_task_edit_permission(state, current_user, task_row, True, False, False)
         review_note = payload.reviewNote.strip()
         timestamp = now_iso()
@@ -22884,15 +23919,22 @@ def create_app() -> FastAPI:
             review_note[:120],
             activity_payload,
         )
-        return _task_record(state, _task_row_or_404(state, task_id), current_user.id)
+        return _task_record(
+            state,
+            _task_row_or_404(state, task_id, organization_id=current_user.organizationId),
+            current_user.id,
+        )
 
     @app.post("/api/v1/tasks/{task_id}/review/approve", response_model=TaskRecord)
     def approve_task_review(
         task_id: str,
         current_user: SessionUser = Depends(lambda authorization=Header(default=None): _require_auth(app, authorization)),
     ) -> TaskRecord:
-        task_row = _task_row_or_404(state, task_id)
+        task_row = _task_row_or_404(state, task_id, organization_id=current_user.organizationId)
+        _assert_task_visible_or_404(state, current_user, task_row)
         task_link_row = _task_org_link_row(state, task_id)
+        if str(task_link_row["organization_id"]) != current_user.organizationId:
+            raise HTTPException(status_code=404, detail="Task not found")
         if not task_link_row or not bool(int(task_link_row["needs_review"] or 0)):
             raise HTTPException(status_code=400, detail="该任务当前无需复核")
         if not _can_review_task(state, current_user, task_row, task_link_row):
@@ -22910,7 +23952,11 @@ def create_app() -> FastAPI:
             (timestamp, task_id),
         )
         _record_activity(state, task_id, current_user.id, "review_approved", {})
-        return _task_record(state, _task_row_or_404(state, task_id), current_user.id)
+        return _task_record(
+            state,
+            _task_row_or_404(state, task_id, organization_id=current_user.organizationId),
+            current_user.id,
+        )
 
     @app.post("/api/v1/tasks/{task_id}/review/return", response_model=TaskRecord)
     def return_task_review(
@@ -22918,8 +23964,11 @@ def create_app() -> FastAPI:
         payload: TaskReturnPayload,
         current_user: SessionUser = Depends(lambda authorization=Header(default=None): _require_auth(app, authorization)),
     ) -> TaskRecord:
-        task_row = _task_row_or_404(state, task_id)
+        task_row = _task_row_or_404(state, task_id, organization_id=current_user.organizationId)
+        _assert_task_visible_or_404(state, current_user, task_row)
         task_link_row = _task_org_link_row(state, task_id)
+        if str(task_link_row["organization_id"]) != current_user.organizationId:
+            raise HTTPException(status_code=404, detail="Task not found")
         if not task_link_row or not bool(int(task_link_row["needs_review"] or 0)):
             raise HTTPException(status_code=400, detail="该任务当前无需复核")
         if not _can_review_task(state, current_user, task_row, task_link_row):
@@ -22937,7 +23986,11 @@ def create_app() -> FastAPI:
             (payload.reason.strip() or "需要补充说明后再复核", timestamp, task_id),
         )
         _record_activity(state, task_id, current_user.id, "review_returned", {"reason": payload.reason.strip()})
-        return _task_record(state, _task_row_or_404(state, task_id), current_user.id)
+        return _task_record(
+            state,
+            _task_row_or_404(state, task_id, organization_id=current_user.organizationId),
+            current_user.id,
+        )
 
     @app.post("/api/v1/tasks/{task_id}/note", response_model=TaskRecord)
     def save_task_note(
@@ -22945,7 +23998,16 @@ def create_app() -> FastAPI:
         payload: TaskNotePayload,
         current_user: SessionUser = Depends(lambda authorization=Header(default=None): _require_auth(app, authorization)),
     ) -> TaskRecord:
-        task_row = _task_row_or_404(state, task_id)
+        task_row = _task_row_or_404(state, task_id, organization_id=current_user.organizationId)
+        _assert_task_visible_or_404(state, current_user, task_row)
+        _assert_task_edit_permission(
+            state,
+            current_user,
+            task_row,
+            content_changed=True,
+            due_date_changed=False,
+            owner_changed=False,
+        )
         timestamp = now_iso()
         existing = state.db.fetchone("SELECT id FROM task_notes WHERE task_id = ?", (task_id,))
         if existing:
@@ -22963,7 +24025,8 @@ def create_app() -> FastAPI:
 
     @app.get("/api/v1/tasks/{task_id}/activity", response_model=list[TaskActivityRecord])
     def task_activity(task_id: str, current_user: SessionUser = Depends(lambda authorization=Header(default=None): _require_auth(app, authorization))) -> list[TaskActivityRecord]:
-        _task_row_or_404(state, task_id)
+        task_row = _task_row_or_404(state, task_id, organization_id=current_user.organizationId)
+        _assert_task_visible_or_404(state, current_user, task_row)
         rows = state.db.fetchall(
             """
             SELECT e.*, u.full_name

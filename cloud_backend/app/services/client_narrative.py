@@ -131,7 +131,8 @@ def get_latest_narrative(
         """
         SELECT v.*, c.name AS client_name
         FROM client_narrative_versions v
-        LEFT JOIN clients c ON c.id = v.client_id
+        LEFT JOIN clients c
+          ON c.id = v.client_id AND c.organization_id = v.organization_id
         WHERE v.organization_id = ? AND v.client_id = ? AND v.is_latest = 1
         ORDER BY v.rev DESC LIMIT 1
         """,
@@ -156,7 +157,12 @@ def _row_to_narrative(db: Database, row) -> ClientNarrativeRecord:
     if isinstance(gaps_raw, list):
         gaps_list = [str(x) for x in gaps_raw]
 
-    contributors = _fetch_contributors(db, str(row["client_id"]), int(row["rev"]))
+    contributors = _fetch_contributors(
+        db,
+        str(row["organization_id"]),
+        str(row["client_id"]),
+        int(row["rev"]),
+    )
 
     return ClientNarrativeRecord(
         id=str(row["id"]),
@@ -177,6 +183,7 @@ def _row_to_narrative(db: Database, row) -> ClientNarrativeRecord:
 
 def _fetch_contributors(
     db: Database,
+    organization_id: str,
     client_id: str,
     based_on_rev_max: int,
 ) -> list[NarrativeContributor]:
@@ -184,11 +191,12 @@ def _fetch_contributors(
         """
         SELECT dimension, answered_by_user_id, answered_by_display_name, answered_at
         FROM client_narrative_clarifications
-        WHERE client_id = ? AND status = 'applied' AND answered_by_user_id IS NOT NULL
+        WHERE organization_id = ? AND client_id = ?
+          AND status = 'applied' AND answered_by_user_id IS NOT NULL
         ORDER BY answered_at DESC
         LIMIT 30
         """,
-        (client_id,),
+        (organization_id, client_id),
     )
     out: list[NarrativeContributor] = []
     for r in rows:
@@ -280,8 +288,12 @@ def add_clarification(
     based_on_rev = payload.basedOnRev
     if based_on_rev is None:
         latest = db.fetchone(
-            "SELECT rev FROM client_narrative_versions WHERE client_id = ? ORDER BY rev DESC LIMIT 1",
-            (client_id,),
+            """
+            SELECT rev FROM client_narrative_versions
+            WHERE organization_id = ? AND client_id = ?
+            ORDER BY rev DESC LIMIT 1
+            """,
+            (organization_id, client_id),
         )
         based_on_rev = int(latest["rev"]) if latest else 0
     clar_id = str(uuid.uuid4())
@@ -325,10 +337,13 @@ def add_clarification(
     )
 
 
-def count_pending_clarifications(db: Database, client_id: str) -> int:
+def count_pending_clarifications(db: Database, organization_id: str, client_id: str) -> int:
     row = db.fetchone(
-        "SELECT COUNT(*) AS c FROM client_narrative_clarifications WHERE client_id = ? AND status = 'pending'",
-        (client_id,),
+        """
+        SELECT COUNT(*) AS c FROM client_narrative_clarifications
+        WHERE organization_id = ? AND client_id = ? AND status = 'pending'
+        """,
+        (organization_id, client_id),
     )
     return int(row["c"]) if row else 0
 
@@ -352,16 +367,24 @@ def write_new_version(
     返回新 rev 号."""
     now = _now()
     last = db.fetchone(
-        "SELECT rev FROM client_narrative_versions WHERE client_id = ? ORDER BY rev DESC LIMIT 1",
-        (client_id,),
+        """
+        SELECT rev FROM client_narrative_versions
+        WHERE organization_id = ? AND client_id = ?
+        ORDER BY rev DESC LIMIT 1
+        """,
+        (organization_id, client_id),
     )
     new_rev = (int(last["rev"]) + 1) if last else 1
     new_id = str(uuid.uuid4())
 
     # 1. 翻旧版 is_latest=0
     db.execute(
-        "UPDATE client_narrative_versions SET is_latest = 0, updated_at = ? WHERE client_id = ? AND is_latest = 1",
-        (now, client_id),
+        """
+        UPDATE client_narrative_versions
+        SET is_latest = 0, updated_at = ?
+        WHERE organization_id = ? AND client_id = ? AND is_latest = 1
+        """,
+        (now, organization_id, client_id),
     )
 
     # 2. 落新版 — DIMENSIONS 顺序: essence/cooperation/business_intro/people/timeline/next_steps
@@ -371,7 +394,7 @@ def write_new_version(
     ]
     dim_columns = ", ".join(DIM_COLUMN[d] for d in DIMENSIONS)
     dim_placeholders = ", ".join("?" * len(DIMENSIONS))
-    open_count = count_pending_clarifications(db, client_id)
+    open_count = count_pending_clarifications(db, organization_id, client_id)
     db.execute(
         f"""
         INSERT INTO client_narrative_versions
@@ -421,9 +444,10 @@ def write_new_version(
         """
         UPDATE client_narrative_clarifications
         SET status = 'applied', resulted_in_rev = ?, updated_at = ?
-        WHERE client_id = ? AND status = 'pending' AND based_on_rev < ?
+        WHERE organization_id = ? AND client_id = ?
+          AND status = 'pending' AND based_on_rev < ?
         """,
-        (new_rev, now, client_id, new_rev),
+        (new_rev, now, organization_id, client_id, new_rev),
     )
 
     return new_rev

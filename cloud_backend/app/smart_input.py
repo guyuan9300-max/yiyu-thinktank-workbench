@@ -3,7 +3,6 @@ from __future__ import annotations
 import asyncio
 import gzip
 import json
-import os
 import re
 import struct
 import subprocess
@@ -526,57 +525,6 @@ def _load_relaxed_json(raw: str) -> dict[str, Any]:
     return json.loads(cleaned)
 
 
-def _qwen_api_key() -> str:
-    """Return the LLM API key. Checks Volcengine Ark keys first, then legacy Qwen keys."""
-    return (
-        os.getenv("ARK_API_KEY", "").strip()
-        or os.getenv("VOLCENGINE_API_KEY", "").strip()
-        or os.getenv("DASHSCOPE_API_KEY", "").strip()
-        or os.getenv("QWEN_API_KEY", "").strip()
-        or os.getenv("YIYU_QWEN_API_KEY", "").strip()
-    )
-
-
-def _doubao_file_asr_credentials() -> tuple[str, str]:
-    app_id = (
-        os.getenv("DOUBAO_FILE_ASR_APP_ID", "").strip()
-        or os.getenv("YIYU_DOUBAO_FILE_ASR_APP_ID", "").strip()
-        or os.getenv("VOLCENGINE_FILE_ASR_APP_ID", "").strip()
-        or os.getenv("DOUBAO_ASR_APP_ID", "").strip()
-        or os.getenv("YIYU_DOUBAO_ASR_APP_ID", "").strip()
-        or os.getenv("VOLCENGINE_ASR_APP_ID", "").strip()
-    )
-    access_token = (
-        os.getenv("DOUBAO_FILE_ASR_ACCESS_TOKEN", "").strip()
-        or os.getenv("YIYU_DOUBAO_FILE_ASR_ACCESS_TOKEN", "").strip()
-        or os.getenv("VOLCENGINE_FILE_ASR_ACCESS_TOKEN", "").strip()
-        or os.getenv("DOUBAO_ASR_ACCESS_TOKEN", "").strip()
-        or os.getenv("YIYU_DOUBAO_ASR_ACCESS_TOKEN", "").strip()
-        or os.getenv("VOLCENGINE_ASR_ACCESS_TOKEN", "").strip()
-    )
-    return app_id, access_token
-
-
-def _doubao_stream_asr_credentials() -> tuple[str, str]:
-    app_id = (
-        os.getenv("DOUBAO_STREAM_ASR_APP_ID", "").strip()
-        or os.getenv("YIYU_DOUBAO_STREAM_ASR_APP_ID", "").strip()
-        or os.getenv("VOLCENGINE_STREAM_ASR_APP_ID", "").strip()
-        or os.getenv("DOUBAO_ASR_APP_ID", "").strip()
-        or os.getenv("YIYU_DOUBAO_ASR_APP_ID", "").strip()
-        or os.getenv("VOLCENGINE_ASR_APP_ID", "").strip()
-    )
-    access_token = (
-        os.getenv("DOUBAO_STREAM_ASR_ACCESS_TOKEN", "").strip()
-        or os.getenv("YIYU_DOUBAO_STREAM_ASR_ACCESS_TOKEN", "").strip()
-        or os.getenv("VOLCENGINE_STREAM_ASR_ACCESS_TOKEN", "").strip()
-        or os.getenv("DOUBAO_ASR_ACCESS_TOKEN", "").strip()
-        or os.getenv("YIYU_DOUBAO_ASR_ACCESS_TOKEN", "").strip()
-        or os.getenv("VOLCENGINE_ASR_ACCESS_TOKEN", "").strip()
-    )
-    return app_id, access_token
-
-
 def _infer_extension(file_name: str | None, mime_type: str | None) -> str:
     suffix = Path(file_name or "").suffix.lower().lstrip(".")
     if suffix:
@@ -654,11 +602,12 @@ def transcribe_audio_with_doubao(
     *,
     file_name: str | None,
     mime_type: str | None,
+    app_id: str,
+    access_token: str,
     public_url: str | None = None,
 ) -> str:
-    app_id, access_token = _doubao_file_asr_credentials()
     if not app_id or not access_token:
-        raise RuntimeError("豆包 ASR 未配置 appid 或 access token。")
+        raise RuntimeError("组织豆包 ASR 凭据不完整。")
     extension = _infer_extension(file_name, mime_type)
     if not audio_bytes:
         raise RuntimeError("录音内容为空，无法转写。")
@@ -841,12 +790,13 @@ async def transcribe_audio_with_doubao_streaming_async(
     *,
     file_name: str | None = None,
     mime_type: str | None = None,
+    app_id: str,
+    access_token: str,
 ) -> str:
     """FastAPI 端点用这个:直接在 uvicorn 的事件循环上跑 WebSocket(不要在
     asyncio.to_thread 里再 asyncio.run —— uvloop 下会报错)。只把阻塞的 ffmpeg 转码丢线程。"""
-    app_id, access_token = _doubao_stream_asr_credentials()
     if not app_id or not access_token:
-        raise RuntimeError("豆包流式 ASR 未配置 appid 或 access token。")
+        raise RuntimeError("组织豆包流式 ASR 凭据不完整。")
     if not audio_bytes:
         raise RuntimeError("录音内容为空，无法转写。")
     extension = _infer_extension(file_name, mime_type)
@@ -866,16 +816,37 @@ def transcribe_audio_with_doubao_streaming(
     *,
     file_name: str | None = None,
     mime_type: str | None = None,
+    app_id: str,
+    access_token: str,
 ) -> str:
     """同步封装(独立脚本/无事件循环时用)。"""
     return asyncio.run(
-        transcribe_audio_with_doubao_streaming_async(audio_bytes, file_name=file_name, mime_type=mime_type)
+        transcribe_audio_with_doubao_streaming_async(
+            audio_bytes,
+            file_name=file_name,
+            mime_type=mime_type,
+            app_id=app_id,
+            access_token=access_token,
+        )
     )
 
 
-def _qwen_extract(transcript: str, reference_date: date) -> dict[str, Any] | None:
-    api_key = _qwen_api_key()
-    if not api_key:
+def _chat_completions_endpoint(base_url: str) -> str:
+    normalized = str(base_url or "").strip().rstrip("/")
+    if not normalized:
+        raise RuntimeError("organization AI base URL is missing")
+    return normalized if normalized.endswith("/chat/completions") else f"{normalized}/chat/completions"
+
+
+def _qwen_extract(
+    transcript: str,
+    reference_date: date,
+    *,
+    api_key: str | None,
+    base_url: str,
+    model: str,
+) -> dict[str, Any] | None:
+    if not api_key or not base_url or not model:
         return None
 
     schema = {
@@ -915,7 +886,7 @@ def _qwen_extract(transcript: str, reference_date: date) -> dict[str, Any] | Non
         f"口语内容：{transcript}"
     )
     payload = {
-        "model": os.getenv("YIYU_SMART_INPUT_MODEL", DEFAULT_QWEN_MODEL),
+        "model": model,
         "messages": [
             {"role": "system", "content": "你是移动端智能输入解析器。只返回 JSON。"},
             {
@@ -937,7 +908,7 @@ def _qwen_extract(transcript: str, reference_date: date) -> dict[str, Any] | Non
     timeout = httpx.Timeout(timeout=None, connect=8.0, read=12.0, write=12.0, pool=8.0)
     with httpx.Client(timeout=timeout) as client:
         response = client.post(
-            f"{ARK_BASE_URL}/chat/completions",
+            _chat_completions_endpoint(base_url),
             headers={
                 "Authorization": f"Bearer {api_key}",
                 "Content-Type": "application/json",
@@ -1020,6 +991,9 @@ def build_smart_task_draft(
     *,
     reference_date: date | None = None,
     current_event_line_id: str | None = None,
+    ai_api_key: str | None = None,
+    ai_base_url: str = "",
+    ai_model: str = "",
 ) -> SmartTaskDraftResponse:
     reference = reference_date or datetime.now().date()
     warnings: list[str] = []
@@ -1027,7 +1001,13 @@ def build_smart_task_draft(
     confidence = 0.42
 
     try:
-        parsed = _qwen_extract(transcript, reference)
+        parsed = _qwen_extract(
+            transcript,
+            reference,
+            api_key=ai_api_key,
+            base_url=ai_base_url,
+            model=ai_model,
+        )
         if parsed:
             confidence = 0.84
     except Exception:
