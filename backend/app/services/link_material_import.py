@@ -11,6 +11,7 @@ import shutil
 import socket
 import subprocess
 import sys
+import urllib.request
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Literal
@@ -88,6 +89,22 @@ _LINK_PLATFORM_HOST_SUFFIXES: dict[LinkMaterialPlatform, tuple[str, ...]] = {
 }
 _SAFE_REDIRECT_STATUS_CODES = {301, 302, 303, 307, 308}
 _MAX_SAFE_LINK_REDIRECTS = 5
+_PROXY_FAKE_IP_NETWORK = ipaddress.ip_network("198.18.0.0/15")
+# Clash/Mihomo fake-IP mode returns RFC 2544 benchmark addresses instead of the
+# origin address.  The narrow compatibility path below is intentionally limited
+# to the exact XHS hosts used by the share-link flow; suffix-matched or invented
+# subdomains must continue through the normal fail-closed SSRF guard.
+_XHS_PROXY_FAKE_IP_HOSTS = frozenset(
+    {
+        "xhslink.com",
+        "www.xhslink.com",
+        "xhs.cn",
+        "www.xhs.cn",
+        "xiaohongshu.com",
+        "www.xiaohongshu.com",
+    }
+)
+_LOCAL_PROXY_CONNECT_TIMEOUT_SECONDS = 0.25
 _AUDIO_EXTENSIONS = {".aac", ".aiff", ".alac", ".flac", ".m4a", ".mp3", ".oga", ".ogg", ".opus", ".wav", ".weba", ".wma"}
 # SenseVoice 用 soundfile(libsndfile)解码，它只认 wav/flac/ogg/aiff 等；m4a/aac/mp3/opus/wma
 # 这些要先用 ffmpeg 转成 wav 才能转写。这个集合是"可直接喂 soundfile"的安全格式。
@@ -203,6 +220,68 @@ def _resolve_hostname_addresses(hostname: str) -> set[str]:
     return {str(result[4][0]).split("%", 1)[0] for result in results if result[4]}
 
 
+def _reachable_loopback_system_proxy() -> bool:
+    """Return true only for an active HTTP(S) proxy bound on this machine.
+
+    A proxy entry alone is not sufficient: stale macOS proxy settings must not
+    turn the RFC 2544 range into an SSRF exception.  Requiring a live loopback
+    listener makes the fake-IP signal explicit while keeping remote/corporate
+    proxy configurations on the normal fail-closed path.
+    """
+    try:
+        proxies = urllib.request.getproxies()
+    except Exception:
+        return False
+    for proxy_kind in ("https", "http"):
+        raw_proxy = str(proxies.get(proxy_kind) or "").strip()
+        if not raw_proxy:
+            continue
+        parsed = urlsplit(raw_proxy if "://" in raw_proxy else f"http://{raw_proxy}")
+        hostname = str(parsed.hostname or "").strip().lower()
+        try:
+            port = parsed.port
+        except ValueError:
+            continue
+        if not hostname or port is None:
+            continue
+        try:
+            is_loopback = ipaddress.ip_address(hostname).is_loopback
+        except ValueError:
+            is_loopback = hostname == "localhost"
+        if not is_loopback:
+            continue
+        try:
+            connection = socket.create_connection(
+                (hostname, port),
+                timeout=_LOCAL_PROXY_CONNECT_TIMEOUT_SECONDS,
+            )
+        except OSError:
+            continue
+        try:
+            return True
+        finally:
+            connection.close()
+    return False
+
+
+def _can_use_xhs_proxy_fake_ip(
+    *,
+    platform: LinkMaterialPlatform,
+    hostname: str,
+    addresses: set[str],
+) -> bool:
+    if platform != "xiaohongshu" or hostname not in _XHS_PROXY_FAKE_IP_HOSTS:
+        return False
+    try:
+        # Mixed public/fake or fake/private answers are ambiguous and therefore
+        # remain blocked.  Clash fake-IP mode returns only benchmark addresses.
+        if not addresses or not all(ipaddress.ip_address(address) in _PROXY_FAKE_IP_NETWORK for address in addresses):
+            return False
+    except ValueError:
+        return False
+    return _reachable_loopback_system_proxy()
+
+
 def _assert_public_link_target(
     value: str,
     *,
@@ -218,7 +297,11 @@ def _assert_public_link_target(
         unsafe = any(not ipaddress.ip_address(address).is_global for address in addresses)
     except ValueError as exc:
         raise LinkMaterialImportError("链接域名返回了无效地址，已停止导入。") from exc
-    if unsafe:
+    if unsafe and not _can_use_xhs_proxy_fake_ip(
+        platform=expected_platform,
+        hostname=hostname,
+        addresses=addresses,
+    ):
         raise LinkMaterialImportError("该链接指向本机或私有网络，已停止导入。")
     return detection.normalized_url
 

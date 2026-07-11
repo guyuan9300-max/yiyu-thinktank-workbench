@@ -85,6 +85,202 @@ def test_fetch_guard_rejects_allowlisted_hostname_resolving_private(
         )
 
 
+class _FakeProxyConnection:
+    def __init__(self) -> None:
+        self.closed = False
+
+    def close(self) -> None:
+        self.closed = True
+
+
+def test_xhs_fake_ip_is_allowed_only_with_reachable_loopback_system_proxy(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    connection = _FakeProxyConnection()
+    connect_calls: list[tuple[tuple[str, int], float]] = []
+    monkeypatch.setattr(
+        link_material_import,
+        "_resolve_hostname_addresses",
+        lambda _hostname: {"198.18.0.252"},
+    )
+    monkeypatch.setattr(
+        link_material_import.urllib.request,
+        "getproxies",
+        lambda: {"https": "http://127.0.0.1:7897"},
+    )
+
+    def connect(endpoint: tuple[str, int], *, timeout: float) -> _FakeProxyConnection:
+        connect_calls.append((endpoint, timeout))
+        return connection
+
+    monkeypatch.setattr(link_material_import.socket, "create_connection", connect)
+
+    normalized = link_material_import._assert_public_link_target(
+        "https://xhslink.com/o/example",
+        expected_platform="xiaohongshu",
+    )
+
+    assert normalized == "https://xhslink.com/o/example"
+    assert connect_calls == [
+        (("127.0.0.1", 7897), link_material_import._LOCAL_PROXY_CONNECT_TIMEOUT_SECONDS)
+    ]
+    assert connection.closed is True
+
+
+def test_xhs_fake_ip_is_rejected_without_system_proxy(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        link_material_import,
+        "_resolve_hostname_addresses",
+        lambda _hostname: {"198.18.0.252"},
+    )
+    monkeypatch.setattr(link_material_import.urllib.request, "getproxies", lambda: {})
+    monkeypatch.setattr(
+        link_material_import.socket,
+        "create_connection",
+        lambda *_args, **_kwargs: pytest.fail("no proxy connection should be attempted"),
+    )
+
+    with pytest.raises(LinkMaterialImportError, match="私有网络"):
+        link_material_import._assert_public_link_target(
+            "https://xhslink.com/o/example",
+            expected_platform="xiaohongshu",
+        )
+
+
+def test_xhs_mixed_fake_and_public_dns_is_rejected_with_reachable_loopback_proxy(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        link_material_import,
+        "_resolve_hostname_addresses",
+        lambda _hostname: {"198.18.0.252", "93.184.216.34"},
+    )
+    monkeypatch.setattr(
+        link_material_import.urllib.request,
+        "getproxies",
+        lambda: {"https": "http://127.0.0.1:7897"},
+    )
+    monkeypatch.setattr(
+        link_material_import.socket,
+        "create_connection",
+        lambda *_args, **_kwargs: pytest.fail("ambiguous DNS must be rejected before proxy probing"),
+    )
+
+    with pytest.raises(LinkMaterialImportError, match="私有网络"):
+        link_material_import._assert_public_link_target(
+            "https://xhslink.com/o/example",
+            expected_platform="xiaohongshu",
+        )
+
+
+def test_xhs_fake_ip_is_rejected_with_remote_proxy_without_connecting(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        link_material_import,
+        "_resolve_hostname_addresses",
+        lambda _hostname: {"198.18.0.252"},
+    )
+    monkeypatch.setattr(
+        link_material_import.urllib.request,
+        "getproxies",
+        lambda: {"https": "http://192.0.2.20:7897"},
+    )
+    monkeypatch.setattr(
+        link_material_import.socket,
+        "create_connection",
+        lambda *_args, **_kwargs: pytest.fail("non-loopback proxy must never be contacted"),
+    )
+
+    with pytest.raises(LinkMaterialImportError, match="私有网络"):
+        link_material_import._assert_public_link_target(
+            "https://xhslink.com/o/example",
+            expected_platform="xiaohongshu",
+        )
+
+
+@pytest.mark.parametrize("address", ["127.0.0.1", "10.0.0.8", "192.168.1.8", "198.18.0.1"])
+def test_xhs_private_or_fake_ip_is_rejected_when_proxy_is_not_reachable(
+    monkeypatch: pytest.MonkeyPatch,
+    address: str,
+) -> None:
+    monkeypatch.setattr(
+        link_material_import,
+        "_resolve_hostname_addresses",
+        lambda _hostname: {address},
+    )
+    monkeypatch.setattr(
+        link_material_import.urllib.request,
+        "getproxies",
+        lambda: {"https": "http://127.0.0.1:7897"},
+    )
+    monkeypatch.setattr(
+        link_material_import.socket,
+        "create_connection",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(ConnectionRefusedError()),
+    )
+
+    with pytest.raises(LinkMaterialImportError, match="私有网络"):
+        link_material_import._assert_public_link_target(
+            "https://www.xiaohongshu.com/explore/example",
+            expected_platform="xiaohongshu",
+        )
+
+
+def test_xhs_private_ip_stays_blocked_with_reachable_proxy(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        link_material_import,
+        "_resolve_hostname_addresses",
+        lambda _hostname: {"10.0.0.8"},
+    )
+    monkeypatch.setattr(
+        link_material_import.urllib.request,
+        "getproxies",
+        lambda: {"https": "http://127.0.0.1:7897"},
+    )
+    monkeypatch.setattr(
+        link_material_import.socket,
+        "create_connection",
+        lambda *_args, **_kwargs: _FakeProxyConnection(),
+    )
+
+    with pytest.raises(LinkMaterialImportError, match="私有网络"):
+        link_material_import._assert_public_link_target(
+            "https://www.xiaohongshu.com/explore/example",
+            expected_platform="xiaohongshu",
+        )
+
+
+def test_forged_xhs_subdomain_fake_ip_stays_blocked_with_reachable_proxy(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        link_material_import,
+        "_resolve_hostname_addresses",
+        lambda _hostname: {"198.18.0.252"},
+    )
+    monkeypatch.setattr(
+        link_material_import.urllib.request,
+        "getproxies",
+        lambda: {"https": "http://127.0.0.1:7897"},
+    )
+    monkeypatch.setattr(
+        link_material_import.socket,
+        "create_connection",
+        lambda *_args, **_kwargs: _FakeProxyConnection(),
+    )
+
+    with pytest.raises(LinkMaterialImportError, match="私有网络"):
+        link_material_import._assert_public_link_target(
+            "https://attacker-controlled.xiaohongshu.com/explore/example",
+            expected_platform="xiaohongshu",
+        )
+
+
 class _FakeRedirectResponse:
     def __init__(self, status_code: int, *, location: str | None = None) -> None:
         self.status_code = status_code
@@ -166,6 +362,41 @@ def test_safe_fetch_rechecks_private_dns_after_redirect(monkeypatch: pytest.Monk
         )
 
     assert client.urls == ["https://www.bilibili.com/video/original"]
+
+
+def test_xhs_fake_ip_redirect_to_forged_subdomain_is_never_requested(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        link_material_import,
+        "_resolve_hostname_addresses",
+        lambda _hostname: {"198.18.0.252"},
+    )
+    monkeypatch.setattr(
+        link_material_import.urllib.request,
+        "getproxies",
+        lambda: {"https": "http://127.0.0.1:7897"},
+    )
+    monkeypatch.setattr(
+        link_material_import.socket,
+        "create_connection",
+        lambda *_args, **_kwargs: _FakeProxyConnection(),
+    )
+    redirect_response = _FakeRedirectResponse(
+        302,
+        location="https://attacker-controlled.xiaohongshu.com/explore/private",
+    )
+    client = _FakeRedirectClient([redirect_response])
+
+    with pytest.raises(LinkMaterialImportError, match="私有网络"):
+        link_material_import._safe_get_with_redirects(
+            client,
+            "https://xhslink.com/o/original",
+            platform="xiaohongshu",
+        )
+
+    assert client.urls == ["https://xhslink.com/o/original"]
+    assert redirect_response.closed is True
 
 
 def test_clean_subtitle_text_removes_timestamps_and_dedupes() -> None:
