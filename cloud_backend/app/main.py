@@ -13127,6 +13127,27 @@ def _task_row_or_404(state: AppState, task_id: str, *, organization_id: str | No
     return row
 
 
+def _assert_task_visible_or_404(state: AppState, actor: SessionUser, task_row) -> None:
+    """Apply the same member-level visibility boundary to every task detail surface.
+
+    Organization membership alone does not make a task visible.  Returning 404 for
+    non-members keeps detail, activity, and mutation endpoints from disagreeing and
+    avoids confirming that an otherwise hidden task ID exists.
+    """
+    if str(task_row["organization_id"]) != actor.organizationId:
+        raise HTTPException(status_code=404, detail="Task not found")
+    if actor.primaryRole == "admin":
+        return
+    visible_user_ids = {
+        str(task_row["creator_id"]),
+        *_task_collaborator_ids(state, str(task_row["id"])),
+    }
+    if task_row["owner_id"]:
+        visible_user_ids.add(str(task_row["owner_id"]))
+    if actor.id not in visible_user_ids:
+        raise HTTPException(status_code=404, detail="Task not found")
+
+
 def _normalize_task_tags(state: AppState, current_user: SessionUser, tag_ids: list[str] | None, legacy_names: list[str] | None) -> list[TaskTagRecord]:
     resolved: list[TaskTagRecord] = []
     seen_ids: set[str] = set()
@@ -22108,15 +22129,8 @@ def create_app() -> FastAPI:
         task_id: str,
         current_user: SessionUser = Depends(lambda authorization=Header(default=None): _require_auth(app, authorization)),
     ) -> TaskRecord:
-        row = _task_row_or_404(state, task_id)
-        if str(row["organization_id"]) != current_user.organizationId:
-            raise HTTPException(status_code=404, detail="Task not found")
-        if current_user.primaryRole != "admin":
-            owner_id = str(row["owner_id"]) if row["owner_id"] else None
-            creator_id = str(row["creator_id"])
-            collaborator_ids = set(_task_collaborator_ids(state, task_id))
-            if current_user.id not in collaborator_ids and current_user.id != owner_id and current_user.id != creator_id:
-                raise HTTPException(status_code=404, detail="Task not found")
+        row = _task_row_or_404(state, task_id, organization_id=current_user.organizationId)
+        _assert_task_visible_or_404(state, current_user, row)
         return _task_record(state, row, current_user.id)
 
     @app.post("/api/v1/tasks", response_model=TaskRecord)
@@ -22944,6 +22958,15 @@ def create_app() -> FastAPI:
         current_user: SessionUser = Depends(lambda authorization=Header(default=None): _require_auth(app, authorization)),
     ) -> TaskRecord:
         task_row = _task_row_or_404(state, task_id, organization_id=current_user.organizationId)
+        _assert_task_visible_or_404(state, current_user, task_row)
+        _assert_task_edit_permission(
+            state,
+            current_user,
+            task_row,
+            content_changed=True,
+            due_date_changed=False,
+            owner_changed=False,
+        )
         timestamp = now_iso()
         existing = state.db.fetchone("SELECT id FROM task_notes WHERE task_id = ?", (task_id,))
         if existing:
@@ -22961,7 +22984,8 @@ def create_app() -> FastAPI:
 
     @app.get("/api/v1/tasks/{task_id}/activity", response_model=list[TaskActivityRecord])
     def task_activity(task_id: str, current_user: SessionUser = Depends(lambda authorization=Header(default=None): _require_auth(app, authorization))) -> list[TaskActivityRecord]:
-        _task_row_or_404(state, task_id, organization_id=current_user.organizationId)
+        task_row = _task_row_or_404(state, task_id, organization_id=current_user.organizationId)
+        _assert_task_visible_or_404(state, current_user, task_row)
         rows = state.db.fetchall(
             """
             SELECT e.*, u.full_name
