@@ -182,7 +182,12 @@ def install_transcription_spies(
 def task_sensitive_snapshot(client: TestClient, task_id: str) -> dict[str, object]:
     db = client.app.state.app_state.db
     task = db.fetchone(
-        "SELECT progress_status, completed_at, updated_at FROM tasks WHERE id = ?",
+        """
+        SELECT title, description, priority, list_id, progress_status, owner_id,
+               completion_note, completed_at, event_line_id, updated_at
+        FROM tasks
+        WHERE id = ?
+        """,
         (task_id,),
     )
     assert task is not None
@@ -192,6 +197,18 @@ def task_sensitive_snapshot(client: TestClient, task_id: str) -> dict[str, objec
             db.scalar("SELECT COUNT(*) FROM task_activity_events WHERE task_id = ?", (task_id,)) or 0
         ),
         "link_count": int(db.scalar("SELECT COUNT(*) FROM task_org_links WHERE task_id = ?", (task_id,)) or 0),
+        "links": [
+            tuple(row)
+            for row in db.fetchall(
+                """
+                SELECT organization_id, approval_state, blocked_at_step, needs_review, updated_at
+                FROM task_org_links
+                WHERE task_id = ?
+                ORDER BY organization_id
+                """,
+                (task_id,),
+            )
+        ],
         "collaborators": [
             tuple(row)
             for row in db.fetchall(
@@ -231,7 +248,32 @@ def task_sensitive_snapshot(client: TestClient, task_id: str) -> dict[str, objec
             )
             or 0
         ),
+        "mention_history": [
+            tuple(row)
+            for row in db.fetchall(
+                """
+                SELECT actor_id, mentioned_user_id, use_count, last_mentioned_at
+                FROM mention_history
+                WHERE actor_id IN (
+                    SELECT creator_id FROM tasks WHERE id = ?
+                )
+                ORDER BY actor_id, mentioned_user_id
+                """,
+                (task_id,),
+            )
+        ],
     }
+
+
+def seed_task_review_link(client: TestClient, task_id: str, organization_id: str) -> None:
+    client.app.state.app_state.db.execute(
+        """
+        INSERT OR REPLACE INTO task_org_links(
+            task_id, organization_id, approval_state, blocked_at_step, needs_review, updated_at
+        ) VALUES(?, ?, 'pending', NULL, 1, ?)
+        """,
+        (task_id, organization_id, now_iso()),
+    )
 
 
 def seed_foreign_task(client: TestClient) -> None:
@@ -338,6 +380,248 @@ def test_cross_org_task_update_returns_404_without_side_effects(
     assert response.status_code == 404, response.text
     assert response.json() == {"detail": "Task not found"}
     assert_foreign_task_unchanged(client, before)
+
+
+@pytest.mark.parametrize(
+    ("route_suffix", "payload"),
+    [
+        ("complete-with-review", {"reviewNote": "不得跨组织完成"}),
+        ("review/approve", None),
+        ("review/return", {"reason": "不得跨组织退回复核"}),
+    ],
+)
+def test_cross_org_task_terminal_route_is_404_and_has_zero_side_effects(
+    route_suffix: str,
+    payload: dict[str, str] | None,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = make_client(tmp_path, monkeypatch)
+    headers = auth_headers(client)
+    seed_foreign_task(client)
+    seed_task_review_link(client, FOREIGN_TASK_ID, FOREIGN_ORG_ID)
+    before = task_sensitive_snapshot(client, FOREIGN_TASK_ID)
+
+    response = client.post(
+        f"/api/v1/tasks/{FOREIGN_TASK_ID}/{route_suffix}",
+        headers=headers,
+        json=payload,
+    )
+
+    assert response.status_code == 404, response.text
+    assert response.json() == {"detail": "Task not found"}
+    assert task_sensitive_snapshot(client, FOREIGN_TASK_ID) == before
+
+
+@pytest.mark.parametrize(
+    ("route_suffix", "payload"),
+    [
+        ("complete-with-review", {"reviewNote": "outsider 不得完成"}),
+        ("review/approve", None),
+        ("review/return", {"reason": "outsider 不得退回复核"}),
+    ],
+)
+def test_same_org_outsider_task_terminal_route_is_404_and_has_zero_side_effects(
+    route_suffix: str,
+    payload: dict[str, str] | None,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = make_client(tmp_path, monkeypatch)
+    seed_same_org_task(client)
+    seed_task_review_link(client, SAME_ORG_TASK_ID, DEFAULT_ORG_ID)
+    headers = user_auth_headers(client, "outsider")
+    before = task_sensitive_snapshot(client, SAME_ORG_TASK_ID)
+
+    response = client.post(
+        f"/api/v1/tasks/{SAME_ORG_TASK_ID}/{route_suffix}",
+        headers=headers,
+        json=payload,
+    )
+
+    assert response.status_code == 404, response.text
+    assert response.json() == {"detail": "Task not found"}
+    assert task_sensitive_snapshot(client, SAME_ORG_TASK_ID) == before
+
+
+@pytest.mark.parametrize("role", ["creator", "owner", "collaborator", "admin"])
+def test_task_members_and_admin_can_complete_with_review(
+    role: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = make_client(tmp_path, monkeypatch)
+    seed_same_org_task(client)
+    headers = user_auth_headers(client, role)
+    before = task_sensitive_snapshot(client, SAME_ORG_TASK_ID)
+
+    response = client.post(
+        f"/api/v1/tasks/{SAME_ORG_TASK_ID}/complete-with-review",
+        headers=headers,
+        json={"reviewNote": f"{role} 合法完成复盘"},
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["progressStatus"] == "done"
+    assert response.json()["completionNote"] == f"{role} 合法完成复盘"
+    after = task_sensitive_snapshot(client, SAME_ORG_TASK_ID)
+    assert after["activity_count"] == int(before["activity_count"]) + 1
+
+
+@pytest.mark.parametrize(
+    ("route_suffix", "payload", "expected_state", "expected_needs_review", "expected_blocked"),
+    [
+        ("review/approve", None, "approved", 0, None),
+        ("review/return", {"reason": "合法退回复核"}, "rejected", 1, "合法退回复核"),
+    ],
+)
+def test_admin_can_approve_or_return_visible_task_review(
+    route_suffix: str,
+    payload: dict[str, str] | None,
+    expected_state: str,
+    expected_needs_review: int,
+    expected_blocked: str | None,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = make_client(tmp_path, monkeypatch)
+    seed_same_org_task(client)
+    seed_task_review_link(client, SAME_ORG_TASK_ID, DEFAULT_ORG_ID)
+    headers = auth_headers(client)
+    before = task_sensitive_snapshot(client, SAME_ORG_TASK_ID)
+
+    response = client.post(
+        f"/api/v1/tasks/{SAME_ORG_TASK_ID}/{route_suffix}",
+        headers=headers,
+        json=payload,
+    )
+
+    assert response.status_code == 200, response.text
+    link = client.app.state.app_state.db.fetchone(
+        "SELECT approval_state, needs_review, blocked_at_step FROM task_org_links WHERE task_id = ?",
+        (SAME_ORG_TASK_ID,),
+    )
+    assert link is not None
+    assert tuple(link) == (expected_state, expected_needs_review, expected_blocked)
+    after = task_sensitive_snapshot(client, SAME_ORG_TASK_ID)
+    assert after["activity_count"] == int(before["activity_count"]) + 1
+
+
+def test_same_org_outsider_task_update_is_404_and_has_zero_side_effects(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = make_client(tmp_path, monkeypatch)
+    seed_same_org_task(client)
+    headers = user_auth_headers(client, "outsider")
+    before = task_sensitive_snapshot(client, SAME_ORG_TASK_ID)
+
+    response = client.patch(
+        f"/api/v1/tasks/{SAME_ORG_TASK_ID}",
+        headers=headers,
+        json={"title": "outsider 越权更新"},
+    )
+
+    assert response.status_code == 404, response.text
+    assert response.json() == {"detail": "Task not found"}
+    assert task_sensitive_snapshot(client, SAME_ORG_TASK_ID) == before
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"ownerId": FOREIGN_USER_ID},
+        {"collaboratorIds": [FOREIGN_USER_ID]},
+    ],
+)
+def test_task_update_rejects_cross_org_user_relations_without_side_effects(
+    payload: dict[str, object],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = make_client(tmp_path, monkeypatch)
+    seed_same_org_task(client)
+    seed_foreign_task(client)
+    headers = user_auth_headers(client, "creator")
+    before = task_sensitive_snapshot(client, SAME_ORG_TASK_ID)
+
+    response = client.patch(
+        f"/api/v1/tasks/{SAME_ORG_TASK_ID}",
+        headers=headers,
+        json=payload,
+    )
+
+    assert response.status_code == 404, response.text
+    assert response.json() == {"detail": "User not found"}
+    assert task_sensitive_snapshot(client, SAME_ORG_TASK_ID) == before
+
+
+def test_task_creator_can_assign_same_org_owner_and_collaborators(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = make_client(tmp_path, monkeypatch)
+    seed_same_org_task(client)
+    headers = user_auth_headers(client, "creator")
+    next_owner_id = SAME_ORG_USERS["outsider"][0]
+    collaborator_id = SAME_ORG_USERS["collaborator"][0]
+
+    response = client.patch(
+        f"/api/v1/tasks/{SAME_ORG_TASK_ID}",
+        headers=headers,
+        json={"ownerId": next_owner_id, "collaboratorIds": [collaborator_id, next_owner_id]},
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["ownerId"] == next_owner_id
+    assert {item["userId"] for item in response.json()["collaborators"]} == {next_owner_id, collaborator_id}
+
+
+@pytest.mark.parametrize("requested_list_kind", ["foreign", "missing", "archived"])
+def test_task_update_writes_resolved_current_org_list(
+    requested_list_kind: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = make_client(tmp_path, monkeypatch)
+    seed_same_org_task(client)
+    seed_foreign_task(client)
+    db = client.app.state.app_state.db
+    default_row = db.fetchone(
+        """
+        SELECT id FROM task_lists
+        WHERE organization_id = ? AND archived_at IS NULL
+        ORDER BY is_default DESC, sort_order ASC
+        LIMIT 1
+        """,
+        (DEFAULT_ORG_ID,),
+    )
+    assert default_row is not None
+    if requested_list_kind == "foreign":
+        requested_list_id = FOREIGN_LIST_ID
+    elif requested_list_kind == "missing":
+        requested_list_id = "list_direct_id_missing"
+    else:
+        requested_list_id = "list_direct_id_archived"
+        db.execute(
+            """
+            INSERT INTO task_lists(id, organization_id, name, color, sort_order, is_default, scope, archived_at)
+            VALUES(?, ?, '已归档清单', '#999999', 99, 0, 'org', ?)
+            """,
+            (requested_list_id, DEFAULT_ORG_ID, now_iso()),
+        )
+
+    response = client.patch(
+        f"/api/v1/tasks/{SAME_ORG_TASK_ID}",
+        headers=user_auth_headers(client, "creator"),
+        json={"listId": requested_list_id},
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["listId"] == str(default_row["id"])
+    task_row = db.fetchone("SELECT list_id FROM tasks WHERE id = ?", (SAME_ORG_TASK_ID,))
+    assert task_row is not None
+    assert str(task_row["list_id"]) == str(default_row["id"])
 
 
 def test_cross_org_task_delete_returns_404_without_side_effects(
