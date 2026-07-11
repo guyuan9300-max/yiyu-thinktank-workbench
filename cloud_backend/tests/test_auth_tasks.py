@@ -1191,6 +1191,7 @@ def test_task_plan_link_and_support_request_flow():
 
 def test_event_line_roundtrip_and_detail_collects_task_and_support_request():
     app = create_app()
+    seed_registration_departments(app)
     client = TestClient(app)
 
     admin_headers = auth_headers(client)
