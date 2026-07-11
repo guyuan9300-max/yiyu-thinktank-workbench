@@ -1,7 +1,7 @@
 # Cloud Backend S1A：Direct-ID 组织隔离矩阵
 
 日期：2026-07-11
-基线：`origin/sync-0.28.1` + `d699a87`（create-task 组织隔离修复）
+基线：`origin/sync-0.28.1` + `d699a87`（create-task 组织隔离修复）；本批起点 `f7b79fc`。
 范围：`cloud_backend/app/main.py` 中 task、attachment、owner、collaborator、org-link、event-line 的 direct-ID 读写、上传与删除路径。
 
 ## 1. 判定标准
@@ -32,9 +32,11 @@
 |---|---|---:|---|
 | `_task_row_or_404(state, task_id, organization_id=...)` | 传入组织时 `id + organization_id`；省略时全局 ID | Y | 所有认证 direct-ID 路由必须显式传组织；禁止依赖可选参数默认值。 |
 | `_event_line_row_or_404(state, event_line_id, organization_id)` | 强制 `id + organization_id` | G | event-line direct-ID 路由应继续统一复用。 |
-| `_task_attachment_row_or_404(state, attachment_id, task_id, organization_id)` | 强制 attachment + task + org 三重限定 | G | 转写路径的附件本身已安全，但它之前的 task 读取仍未限定。 |
+| `_task_attachment_row_or_404(state, attachment_id, task_id, organization_id)` | 强制 attachment + task + org 三重限定 | G | 转写入口现已先限定 task 组织与成员权限，再进入附件查询。 |
 | `_task_org_link_row(state, task_id)` | 全局 task_id；缺 link 时调用 `_sync_task_org_link` | R | 这是读操作触发写入的 helper；调用前必须先限定 task 组织。 |
 | `_task_collaborator_ids(state, task_id)` | 仅 task_id | Y | 只能在已组织限定的 task 之后调用。 |
+| `_assert_task_visible_or_404(...)` | 当前组织内仅 admin / creator / owner / collaborator 可见；其余统一 404 | G | 必须位于权限 helper、派生写入和外部 I/O 之前。 |
+| `_task_collaboration_for_actor_or_404(...)` | scoped task + 成员可见性 + actor 自己 + task/org JOIN | G | accept/return 共用 fail-closed 边界；异常跨组织关系也不会先写协作状态。 |
 | `_task_record(...)` | creator/owner/list/collaborator/attachment/note/link 多处按全局 ID 聚合 | Y | 当前依赖“入口 task 已限定 + ID 全局唯一”；不得把它当组织授权边界。 |
 
 ## 4. Task / attachment / org-link 路由矩阵
@@ -42,22 +44,22 @@
 | 路由 | 操作 | 当前第一道约束 | 静态状态 | 动态验证/处置 |
 |---|---|---|---:|---|
 | `GET /api/v1/tasks` | 列表读 | SQL `tasks.organization_id = current org` | G | 现有组织列表契约；非本批重点。 |
-| `GET /api/v1/tasks/{task_id}` | 单项读 | 全局 task 后手工比 org/成员 | Y | 应改为 scoped helper；动态证明跨组织 404。 |
+| `GET /api/v1/tasks/{task_id}` | 单项读 | scoped task + 成员可见性 | G | 跨组织及同组织 outsider 均 404。 |
 | `POST /api/v1/tasks` | 新建 | list、owner、collaborator 均限定当前 org | G | `test_task_create_org_scope.py` 6 个用例已覆盖。 |
-| `PATCH /api/v1/tasks/{task_id}` | 更新 | 全局 task 后权限判断 | R | **本批首选**：跨组织 admin 现可修改；断言 404、task/collab/activity/link 均不变。 |
-| `DELETE /api/v1/tasks/{task_id}` | 删除 | 全局 task 后权限判断 | R | **本批首选**：断言 404、task/activity/link/附件文件均保留。 |
-| `POST /api/v1/tasks/{task_id}/attachments` | DB + 文件上传 | 全局 task 后权限判断 | R | **本批首选**：断言 404、无 attachment 行、无目录/文件、task evidence 不变。 |
-| `POST /api/v1/tasks/{task_id}/attachments/{attachment_id}/transcribe-to-document` | 外部 AI + 文档写入 | task 全局；attachment 三重限定 | R | 先 scoped task；后续补“AI 未调用、知识请求/活动零写入”动态桩。 |
-| `POST /api/v1/tasks/{task_id}/collaborators/{user_id}/accept` | 协作者状态写入 | 先查 task_id + user_id，再全局 task | R | 必须先 scoped task，再查协作者；异常跨组织关联也应 404/零写入。 |
-| `POST /api/v1/tasks/{task_id}/collaborators/{user_id}/return` | 协作者状态写入 | 先查 task_id + user_id，无 scoped task | R | 同上。 |
+| `PATCH /api/v1/tasks/{task_id}` | 更新 | scoped task 后权限判断 | G | 跨组织 admin 404；task/collab/activity/link 零变化。 |
+| `DELETE /api/v1/tasks/{task_id}` | 删除 | scoped task 后权限判断 | G | 跨组织 404；task/activity/link/附件文件均保留。 |
+| `POST /api/v1/tasks/{task_id}/attachments` | DB + 文件上传 | scoped task 后权限判断 | G | 跨组织 404；无 attachment 行、目录或文件副作用。 |
+| `POST /api/v1/tasks/{task_id}/attachments/{attachment_id}/transcribe-to-document` | 外部 AI + 文档写入 | scoped task + 成员可见性 + 编辑授权，再查附件/文件 | G | 异常跨组织附件及同组织 outsider 均 404；文件读取、ASR、文档沉淀、摘要和数据库活动均零调用/零写入。 |
+| `POST /api/v1/tasks/{task_id}/collaborators/{user_id}/accept` | 协作者状态写入 | scoped task + 成员可见性 + actor 自己 + org JOIN | G | 跨组织异常关系、同组织 outsider 均 404/零写入；合法 collaborator 自己保留 200。 |
+| `POST /api/v1/tasks/{task_id}/collaborators/{user_id}/return` | 协作者状态写入 | scoped task + 成员可见性 + actor 自己 + org JOIN | G | 同上；更新语句再次用 task organization `EXISTS` 防御。 |
 | `POST /api/v1/tasks/{task_id}/complete-with-review` | 完成/复盘写入 | 全局 task 后权限判断 | R | scoped task；断言 status/note/activity 不变。 |
 | `POST /api/v1/tasks/{task_id}/review/approve` | org-link 写入 | 全局 task 后调用可写 `_task_org_link_row` | R | scoped task 必须位于 link helper 之前。 |
 | `POST /api/v1/tasks/{task_id}/review/return` | org-link 写入 | 全局 task 后调用可写 `_task_org_link_row` | R | 同上。 |
-| `POST /api/v1/tasks/{task_id}/note` | note + activity 写入 | 全局 task；无 task 可见性/编辑校验 | R | **本批首选**：先保证跨组织 404/零写入；同组织“谁可写备注”另做产品契约测试。 |
-| `GET /api/v1/tasks/{task_id}/activity` | 活动明细读 | 全局 task；无 org/成员校验 | R | **本批首选**：跨组织活动内容不可泄漏，统一 404。 |
+| `POST /api/v1/tasks/{task_id}/note` | note + activity 写入 | scoped task + 成员可见性 + 编辑授权 | G | 跨组织和同组织 outsider 均 404/零写入；合法成员与 admin 保留语义。 |
+| `GET /api/v1/tasks/{task_id}/activity` | 活动明细读 | scoped task + 成员可见性 | G | 跨组织和同组织 outsider 均 404，不泄漏活动内容。 |
 | `GET /api/v1/tasks/{task_id}/plan-link` | org-link 读 | 全局 task 后手工比 org | Y | scoped helper 替换，动态证明 404。 |
 | `POST /api/v1/tasks/{task_id}/plan-link/recompute` | org-link + activity 写入 | 全局 task 后手工比 org | Y | 当前比 org 在 helper 前，但改 scoped helper 消除迟限定。 |
-| `PATCH /api/v1/tasks/{task_id}/plan-link` | org-link 写/删 | **先**调用可写 `_task_org_link_row`，后比 org | R | **本批首选**：跨组织现可能“返回 404 但生成 link”；断言 link/activity 零新增。 |
+| `PATCH /api/v1/tasks/{task_id}/plan-link` | org-link 写/删 | scoped task 位于可写 link helper 之前 | G | 跨组织 404 且 link/activity 零新增。 |
 | `GET /api/v1/org-model/plan-items/{item_id}/tasks` | 反向关联读 | link org + task org 双限定 | G | 保留。 |
 
 ## 5. Owner / collaborator / list 关系矩阵
@@ -112,12 +114,20 @@
 | S1A-T4 | 本组织用户写外组织 task note | 无组织/可见性校验 | 404；无 note/activity。 |
 | S1A-T5 | 本组织用户读外组织 task activity | 无组织/可见性校验 | 404；响应不含活动内容。 |
 | S1A-T6 | PATCH 外组织 task plan-link（缺 link） | 404 前 `_task_org_link_row` 自动建 link | 404；无 link/activity。 |
+| S1A-T7 | 当前组织附件行异常指向外组织 task 后请求转写 | 全局 task + admin 放行，读取文件并调用 ASR/文档/摘要 | 404；文件读取、三个外部/沉淀 helper 均 0 调用，task/attachment/activity/knowledge 零变化。 |
+| S1A-T8 | 同组织 outsider 请求成员 task 转写 | 编辑 helper 先建 link，随后 403 | 404；link、文件、AI、文档、活动均零副作用。 |
+| S1A-T9 | creator / owner / collaborator / admin 合法转写 | 收紧边界可能误伤合法成员 | 四种角色均 200；各调用一次文件读取、ASR、文档沉淀和摘要。 |
+| S1A-T10 | 当前组织 actor 的异常 collaborator 行指向外组织 task，accept/return | 先按 task + user 查关系并写状态，跨组织两条路径均 200 | 404；协作行、task 状态、activity、link 均不变。 |
+| S1A-T11 | 同组织 outsider 代操作合法 collaborator 的 accept/return | actor 自检早于 task 可见性，返回可区分的 403 | 404；协作状态和活动零变化。 |
+| S1A-T12 | 合法 collaborator 操作自己的 accept/return | 收紧边界可能破坏既有收件箱语义 | 两条路径均 200；仅自己的关系与对应活动按预期变化。 |
 
-本批只做上述六个高风险、契约明确的边界；转写、协作者收件箱、完成/复核、task update 关系字段、event-line 输入关系与 public attachment 进入后续有界批次。
+S1A-T1～T12 已实施。完成/复核、task update 关系字段、event-line 输入关系与 public attachment 仍进入后续有界批次。
 
-## 9. 本批实施结果
+## 9. 实施结果
 
-- RED（修复前）：`test_task_direct_id_org_scope.py` **6 failed**；分别实证越权更新、越权删除、越权附件落盘/入库、越权备注、活动内容泄漏，以及 404 前隐式创建 org-link。
-- GREEN（修复后）：同文件 **6 passed**；`test_task_create_org_scope.py` + 本批测试合计 **12 passed**。
-- 全量：**15 failed, 155 passed**；失败节点集合与第 2 节冻结基线完全相同，新增 6 个测试全部通过，无新增失败。
-- 已转为 G 的入口：task PATCH、DELETE、attachment upload、note、activity、plan-link PATCH。它们现在都在任何权限、link helper、数据库写入或文件 I/O 前，以 `_task_row_or_404(..., organization_id=current_user.organizationId)` 完成组织限定。
+- 第一批 direct-ID mutation：RED **6 failed**，GREEN **6 passed**；全量由冻结基线 **15 failed, 149 passed** 增至 **15 failed, 155 passed**，失败集合不变。
+- 第二批同组织成员可见性/备注：RED `test_task_direct_id_org_scope.py` **2 failed, 10 passed**，GREEN **12 passed**；全量 **15 failed, 161 passed**，失败集合不变。
+- 本批转写/协作者收件箱：RED 新增边界集 **6 failed, 6 passed**；跨组织转写实际返回 200 并完成文件读取、ASR、文档沉淀和摘要，跨组织 accept/return 实际返回 200 并改变协作状态，同组织 outsider 暴露为 403。
+- 本批 GREEN：新增边界集 **12 passed**；`test_task_direct_id_org_scope.py` + 原有 `test_task_attachment_transcribe.py` 合计 **26 passed**。
+- 当前全量：**15 failed, 173 passed**（188 tests，98.51s）；15 个失败节点与第 2 节冻结基线逐项完全相同，新增 12 个测试全部通过，无新增失败。
+- 当前已转为 G 的入口：task detail、PATCH、DELETE、attachment upload/transcribe、note、activity、collaborator accept/return、plan-link PATCH。所有这些入口均在权限判断、可写 link helper、数据库 mutation、文件读取或外部 AI/文档 helper 之前完成当前组织与成员边界校验。

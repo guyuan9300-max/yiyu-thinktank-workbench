@@ -5,6 +5,7 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
+from app import main as cloud_main
 from app.main import DEFAULT_ORG_ID, create_app, now_iso
 from app.security import hash_password
 
@@ -107,6 +108,129 @@ def same_org_task_snapshot(client: TestClient) -> dict[str, object]:
             db.scalar("SELECT COUNT(*) FROM task_activity_events WHERE task_id = ?", (SAME_ORG_TASK_ID,)) or 0
         ),
         "link_count": int(db.scalar("SELECT COUNT(*) FROM task_org_links WHERE task_id = ?", (SAME_ORG_TASK_ID,)) or 0),
+    }
+
+
+def seed_audio_attachment(
+    client: TestClient,
+    *,
+    task_id: str,
+    organization_id: str,
+    attachment_id: str,
+    created_by_user_id: str,
+) -> Path:
+    state = client.app.state.app_state
+    timestamp = now_iso()
+    relative_path = Path("task-attachments") / task_id / f"{attachment_id}.m4a"
+    attachment_path = state.data_dir / relative_path
+    attachment_path.parent.mkdir(parents=True, exist_ok=True)
+    attachment_path.write_bytes(b"fake-audio-for-direct-id-security-test")
+    state.db.execute(
+        """
+        INSERT INTO task_attachments(
+            id, organization_id, task_id, client_id, event_line_id, document_id,
+            title, summary, path, kind, source, mime_type, size_bytes, duration_seconds,
+            created_by_user_id, created_at
+        ) VALUES(?, ?, ?, NULL, NULL, NULL, '权限边界录音', NULL, ?, 'audio', 'mobile',
+                 'audio/mp4', ?, 0, ?, ?)
+        """,
+        (
+            attachment_id,
+            organization_id,
+            task_id,
+            relative_path.as_posix(),
+            attachment_path.stat().st_size,
+            created_by_user_id,
+            timestamp,
+        ),
+    )
+    return attachment_path
+
+
+def install_transcription_spies(
+    monkeypatch: pytest.MonkeyPatch,
+    watched_attachment_path: Path,
+) -> dict[str, int]:
+    calls = {"file_read": 0, "asr": 0, "document": 0, "summary": 0}
+    read_bytes = Path.read_bytes
+    create_document = cloud_main._create_consultation_knowledge_request_internal
+
+    def read_bytes_spy(path: Path) -> bytes:
+        if path == watched_attachment_path:
+            calls["file_read"] += 1
+        return read_bytes(path)
+
+    def transcribe(*args, **kwargs) -> str:
+        calls["asr"] += 1
+        return "权限边界测试转写文本"
+
+    def create_document_spy(*args, **kwargs):
+        calls["document"] += 1
+        return create_document(*args, **kwargs)
+
+    def summarize(*args, **kwargs) -> str:
+        calls["summary"] += 1
+        return "权限边界测试摘要"
+
+    monkeypatch.setattr(Path, "read_bytes", read_bytes_spy)
+    monkeypatch.setattr(cloud_main, "transcribe_audio_with_doubao", transcribe)
+    monkeypatch.setattr(cloud_main, "_create_consultation_knowledge_request_internal", create_document_spy)
+    monkeypatch.setattr(cloud_main, "_generate_recording_summary", summarize)
+    return calls
+
+
+def task_sensitive_snapshot(client: TestClient, task_id: str) -> dict[str, object]:
+    db = client.app.state.app_state.db
+    task = db.fetchone(
+        "SELECT progress_status, completed_at, updated_at FROM tasks WHERE id = ?",
+        (task_id,),
+    )
+    assert task is not None
+    return {
+        "task": tuple(task),
+        "activity_count": int(
+            db.scalar("SELECT COUNT(*) FROM task_activity_events WHERE task_id = ?", (task_id,)) or 0
+        ),
+        "link_count": int(db.scalar("SELECT COUNT(*) FROM task_org_links WHERE task_id = ?", (task_id,)) or 0),
+        "collaborators": [
+            tuple(row)
+            for row in db.fetchall(
+                """
+                SELECT user_id, inbox_status, return_reason, handled_at, updated_at
+                FROM task_collaborators
+                WHERE task_id = ?
+                ORDER BY user_id
+                """,
+                (task_id,),
+            )
+        ],
+        "attachments": [
+            tuple(row)
+            for row in db.fetchall(
+                """
+                SELECT id, organization_id, summary, path, size_bytes
+                FROM task_attachments
+                WHERE task_id = ?
+                ORDER BY id
+                """,
+                (task_id,),
+            )
+        ],
+        "consultation_answer_count": int(
+            db.scalar("SELECT COUNT(*) FROM consultation_answers WHERE task_id = ?", (task_id,)) or 0
+        ),
+        "knowledge_request_count": int(
+            db.scalar(
+                """
+                SELECT COUNT(*)
+                FROM consultation_knowledge_requests req
+                JOIN consultation_answers answer ON answer.id = req.answer_id
+                WHERE answer.task_id = ?
+                """,
+                (task_id,),
+            )
+            or 0
+        ),
     }
 
 
@@ -311,6 +435,217 @@ def test_cross_org_task_plan_link_patch_returns_404_without_implicit_link_creati
     assert response.status_code == 404, response.text
     assert response.json() == {"detail": "Task not found"}
     assert_foreign_task_unchanged(client, before)
+
+
+def test_cross_org_attachment_transcription_stops_before_file_ai_or_document_access(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = make_client(tmp_path, monkeypatch)
+    headers = auth_headers(client)
+    seed_foreign_task(client)
+    admin_row = client.app.state.app_state.db.fetchone(
+        "SELECT id FROM employee_accounts WHERE email = 'admin@yiyu-system.com'"
+    )
+    assert admin_row is not None
+    admin_id = str(admin_row["id"])
+    attachment_id = "attachment_direct_id_cross_org"
+    attachment_path = seed_audio_attachment(
+        client,
+        task_id=FOREIGN_TASK_ID,
+        # Deliberately malformed tenant edge: the attachment claims the actor's org
+        # while its task belongs to another org. Authorization must scope the task first.
+        organization_id=DEFAULT_ORG_ID,
+        attachment_id=attachment_id,
+        created_by_user_id=admin_id,
+    )
+    calls = install_transcription_spies(monkeypatch, attachment_path)
+    before = task_sensitive_snapshot(client, FOREIGN_TASK_ID)
+
+    response = client.post(
+        f"/api/v1/tasks/{FOREIGN_TASK_ID}/attachments/{attachment_id}/transcribe-to-document",
+        headers=headers,
+    )
+
+    assert response.status_code == 404, response.text
+    assert response.json() == {"detail": "Task not found"}
+    assert calls == {"file_read": 0, "asr": 0, "document": 0, "summary": 0}
+    assert task_sensitive_snapshot(client, FOREIGN_TASK_ID) == before
+
+
+def test_same_org_outsider_attachment_transcription_stops_before_any_side_effect(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = make_client(tmp_path, monkeypatch)
+    seed_same_org_task(client)
+    attachment_id = "attachment_direct_id_same_org_outsider"
+    attachment_path = seed_audio_attachment(
+        client,
+        task_id=SAME_ORG_TASK_ID,
+        organization_id=DEFAULT_ORG_ID,
+        attachment_id=attachment_id,
+        created_by_user_id=SAME_ORG_USERS["creator"][0],
+    )
+    calls = install_transcription_spies(monkeypatch, attachment_path)
+    headers = user_auth_headers(client, "outsider")
+    before = task_sensitive_snapshot(client, SAME_ORG_TASK_ID)
+
+    response = client.post(
+        f"/api/v1/tasks/{SAME_ORG_TASK_ID}/attachments/{attachment_id}/transcribe-to-document",
+        headers=headers,
+    )
+
+    assert response.status_code == 404, response.text
+    assert response.json() == {"detail": "Task not found"}
+    assert calls == {"file_read": 0, "asr": 0, "document": 0, "summary": 0}
+    assert task_sensitive_snapshot(client, SAME_ORG_TASK_ID) == before
+
+
+@pytest.mark.parametrize("role", ["creator", "owner", "collaborator", "admin"])
+def test_task_members_and_admin_can_transcribe_audio_attachment(
+    role: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = make_client(tmp_path, monkeypatch)
+    seed_same_org_task(client)
+    attachment_id = f"attachment_direct_id_legal_{role}"
+    attachment_path = seed_audio_attachment(
+        client,
+        task_id=SAME_ORG_TASK_ID,
+        organization_id=DEFAULT_ORG_ID,
+        attachment_id=attachment_id,
+        created_by_user_id=SAME_ORG_USERS["creator"][0],
+    )
+    calls = install_transcription_spies(monkeypatch, attachment_path)
+    headers = user_auth_headers(client, role)
+    before = task_sensitive_snapshot(client, SAME_ORG_TASK_ID)
+
+    response = client.post(
+        f"/api/v1/tasks/{SAME_ORG_TASK_ID}/attachments/{attachment_id}/transcribe-to-document",
+        headers=headers,
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["transcript"] == "权限边界测试转写文本"
+    assert calls == {"file_read": 1, "asr": 1, "document": 1, "summary": 1}
+    after = task_sensitive_snapshot(client, SAME_ORG_TASK_ID)
+    assert after["activity_count"] == int(before["activity_count"]) + 1
+    assert after["consultation_answer_count"] == int(before["consultation_answer_count"]) + 1
+    assert after["knowledge_request_count"] == int(before["knowledge_request_count"]) + 1
+    attachment = next(item for item in after["attachments"] if item[0] == attachment_id)
+    assert attachment[2] == "权限边界测试摘要"
+
+
+@pytest.mark.parametrize("action", ["accept", "return"])
+def test_cross_org_collaboration_action_is_404_and_has_zero_side_effects(
+    action: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = make_client(tmp_path, monkeypatch)
+    seed_same_org_task(client)
+    seed_foreign_task(client)
+    actor_id = SAME_ORG_USERS["outsider"][0]
+    timestamp = now_iso()
+    client.app.state.app_state.db.execute(
+        """
+        INSERT INTO task_collaborators(
+            task_id, user_id, order_index, is_owner, inbox_status, handled_at, created_at, updated_at
+        ) VALUES(?, ?, 0, 0, 'pending', NULL, ?, ?)
+        """,
+        (FOREIGN_TASK_ID, actor_id, timestamp, timestamp),
+    )
+    headers = user_auth_headers(client, "outsider")
+    before = task_sensitive_snapshot(client, FOREIGN_TASK_ID)
+    request_kwargs: dict[str, object] = {"headers": headers}
+    if action == "return":
+        request_kwargs["json"] = {"reason": "不得跨组织退回"}
+
+    response = client.post(
+        f"/api/v1/tasks/{FOREIGN_TASK_ID}/collaborators/{actor_id}/{action}",
+        **request_kwargs,
+    )
+
+    assert response.status_code == 404, response.text
+    assert response.json() == {"detail": "Task not found"}
+    assert task_sensitive_snapshot(client, FOREIGN_TASK_ID) == before
+
+
+@pytest.mark.parametrize("action", ["accept", "return"])
+def test_same_org_outsider_cannot_act_on_another_collaborator_item(
+    action: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = make_client(tmp_path, monkeypatch)
+    seed_same_org_task(client)
+    headers = user_auth_headers(client, "outsider")
+    collaborator_id = SAME_ORG_USERS["collaborator"][0]
+    before = task_sensitive_snapshot(client, SAME_ORG_TASK_ID)
+    request_kwargs: dict[str, object] = {"headers": headers}
+    if action == "return":
+        request_kwargs["json"] = {"reason": "越权退回"}
+
+    response = client.post(
+        f"/api/v1/tasks/{SAME_ORG_TASK_ID}/collaborators/{collaborator_id}/{action}",
+        **request_kwargs,
+    )
+
+    assert response.status_code == 404, response.text
+    assert response.json() == {"detail": "Task not found"}
+    assert task_sensitive_snapshot(client, SAME_ORG_TASK_ID) == before
+
+
+@pytest.mark.parametrize(
+    ("action", "expected_status", "expected_reason"),
+    [("accept", "accepted", None), ("return", "returned", "合法退回")],
+)
+def test_collaborator_can_accept_or_return_own_item(
+    action: str,
+    expected_status: str,
+    expected_reason: str | None,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = make_client(tmp_path, monkeypatch)
+    seed_same_org_task(client)
+    collaborator_id = SAME_ORG_USERS["collaborator"][0]
+    client.app.state.app_state.db.execute(
+        """
+        UPDATE task_collaborators
+        SET inbox_status = 'pending', return_reason = NULL, handled_at = NULL
+        WHERE task_id = ? AND user_id = ?
+        """,
+        (SAME_ORG_TASK_ID, collaborator_id),
+    )
+    headers = user_auth_headers(client, "collaborator")
+    before = task_sensitive_snapshot(client, SAME_ORG_TASK_ID)
+    request_kwargs: dict[str, object] = {"headers": headers}
+    if action == "return":
+        request_kwargs["json"] = {"reason": expected_reason}
+
+    response = client.post(
+        f"/api/v1/tasks/{SAME_ORG_TASK_ID}/collaborators/{collaborator_id}/{action}",
+        **request_kwargs,
+    )
+
+    assert response.status_code == 200, response.text
+    row = client.app.state.app_state.db.fetchone(
+        """
+        SELECT inbox_status, return_reason, handled_at
+        FROM task_collaborators
+        WHERE task_id = ? AND user_id = ?
+        """,
+        (SAME_ORG_TASK_ID, collaborator_id),
+    )
+    assert row is not None
+    assert str(row["inbox_status"]) == expected_status
+    assert row["return_reason"] == expected_reason
+    assert row["handled_at"] is not None
+    after = task_sensitive_snapshot(client, SAME_ORG_TASK_ID)
+    assert after["activity_count"] == int(before["activity_count"]) + 1
 
 
 def test_same_org_outsider_cannot_read_task_activity(
