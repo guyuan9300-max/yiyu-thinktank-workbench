@@ -13148,6 +13148,34 @@ def _assert_task_visible_or_404(state: AppState, actor: SessionUser, task_row) -
         raise HTTPException(status_code=404, detail="Task not found")
 
 
+def _task_collaboration_for_actor_or_404(
+    state: AppState,
+    *,
+    task_id: str,
+    user_id: str,
+    actor: SessionUser,
+):
+    """Resolve a collaboration inbox item only inside the actor's visible tenant scope."""
+    task_row = _task_row_or_404(state, task_id, organization_id=actor.organizationId)
+    _assert_task_visible_or_404(state, actor, task_row)
+    if user_id != actor.id:
+        raise HTTPException(status_code=403, detail="只能处理自己的协作收件箱")
+    collaboration_row = state.db.fetchone(
+        """
+        SELECT tc.*
+        FROM task_collaborators tc
+        JOIN tasks t ON t.id = tc.task_id
+        WHERE tc.task_id = ?
+          AND tc.user_id = ?
+          AND t.organization_id = ?
+        """,
+        (task_id, actor.id, actor.organizationId),
+    )
+    if collaboration_row is None:
+        raise HTTPException(status_code=404, detail="Collaboration item not found")
+    return task_row, collaboration_row
+
+
 def _normalize_task_tags(state: AppState, current_user: SessionUser, tag_ids: list[str] | None, legacy_names: list[str] | None) -> list[TaskTagRecord]:
     resolved: list[TaskTagRecord] = []
     seen_ids: set[str] = set()
@@ -22703,7 +22731,8 @@ def create_app() -> FastAPI:
         attachment_id: str,
         current_user: SessionUser = Depends(lambda authorization=Header(default=None): _require_auth(app, authorization)),
     ) -> TaskAttachmentTranscriptionResponse:
-        task_row = _task_row_or_404(state, task_id)
+        task_row = _task_row_or_404(state, task_id, organization_id=current_user.organizationId)
+        _assert_task_visible_or_404(state, current_user, task_row)
         _assert_task_edit_permission(state, current_user, task_row, True, False, False)
         attachment_row = _task_attachment_row_or_404(state, attachment_id, task_id, current_user.organizationId)
         mime_type = str(attachment_row["mime_type"] or "")
@@ -22814,29 +22843,52 @@ def create_app() -> FastAPI:
 
     @app.post("/api/v1/tasks/{task_id}/collaborators/{user_id}/accept", response_model=TaskRecord)
     def accept_task(task_id: str, user_id: str, current_user: SessionUser = Depends(lambda authorization=Header(default=None): _require_auth(app, authorization))) -> TaskRecord:
-        if user_id != current_user.id:
-            raise HTTPException(status_code=403, detail="只能处理自己的协作收件箱")
-        row = state.db.fetchone("SELECT * FROM task_collaborators WHERE task_id = ? AND user_id = ?", (task_id, user_id))
-        if not row:
-            raise HTTPException(status_code=404, detail="Collaboration item not found")
+        task_row, _ = _task_collaboration_for_actor_or_404(
+            state,
+            task_id=task_id,
+            user_id=user_id,
+            actor=current_user,
+        )
         timestamp = now_iso()
         state.db.execute(
-            "UPDATE task_collaborators SET inbox_status = 'accepted', return_reason = NULL, handled_at = ?, updated_at = ? WHERE task_id = ? AND user_id = ?",
-            (timestamp, timestamp, task_id, user_id),
+            """
+            UPDATE task_collaborators
+            SET inbox_status = 'accepted', return_reason = NULL, handled_at = ?, updated_at = ?
+            WHERE task_id = ?
+              AND user_id = ?
+              AND EXISTS (
+                    SELECT 1 FROM tasks t
+                    WHERE t.id = task_collaborators.task_id AND t.organization_id = ?
+                  )
+            """,
+            (timestamp, timestamp, task_id, current_user.id, current_user.organizationId),
         )
         # Notification tasks go straight to done after acknowledgement (don't enter calendar/task list)
-        task_row = _task_row_or_404(state, task_id)
         if str(task_row["source_type"]) == "event_line_notification":
             all_accepted = not state.db.fetchone(
-                "SELECT 1 FROM task_collaborators WHERE task_id = ? AND inbox_status = 'pending'", (task_id,),
+                """
+                SELECT 1
+                FROM task_collaborators tc
+                JOIN tasks t ON t.id = tc.task_id
+                WHERE tc.task_id = ? AND tc.inbox_status = 'pending' AND t.organization_id = ?
+                """,
+                (task_id, current_user.organizationId),
             )
             if all_accepted:
                 state.db.execute(
-                    "UPDATE tasks SET progress_status = 'done', completed_at = COALESCE(completed_at, ?), updated_at = ? WHERE id = ?",
-                    (timestamp, timestamp, task_id),
+                    """
+                    UPDATE tasks
+                    SET progress_status = 'done', completed_at = COALESCE(completed_at, ?), updated_at = ?
+                    WHERE id = ? AND organization_id = ?
+                    """,
+                    (timestamp, timestamp, task_id, current_user.organizationId),
                 )
         _record_activity(state, task_id, current_user.id, "accepted", {"userId": user_id})
-        return _task_record(state, _task_row_or_404(state, task_id), current_user.id)
+        return _task_record(
+            state,
+            _task_row_or_404(state, task_id, organization_id=current_user.organizationId),
+            current_user.id,
+        )
 
     @app.post("/api/v1/tasks/{task_id}/collaborators/{user_id}/return", response_model=TaskRecord)
     def return_task(
@@ -22845,18 +22897,39 @@ def create_app() -> FastAPI:
         payload: TaskReturnPayload,
         current_user: SessionUser = Depends(lambda authorization=Header(default=None): _require_auth(app, authorization)),
     ) -> TaskRecord:
-        if user_id != current_user.id:
-            raise HTTPException(status_code=403, detail="只能处理自己的协作收件箱")
-        row = state.db.fetchone("SELECT * FROM task_collaborators WHERE task_id = ? AND user_id = ?", (task_id, user_id))
-        if not row:
-            raise HTTPException(status_code=404, detail="Collaboration item not found")
+        _task_collaboration_for_actor_or_404(
+            state,
+            task_id=task_id,
+            user_id=user_id,
+            actor=current_user,
+        )
         timestamp = now_iso()
         state.db.execute(
-            "UPDATE task_collaborators SET inbox_status = 'returned', return_reason = ?, handled_at = ?, updated_at = ? WHERE task_id = ? AND user_id = ?",
-            (payload.reason.strip(), timestamp, timestamp, task_id, user_id),
+            """
+            UPDATE task_collaborators
+            SET inbox_status = 'returned', return_reason = ?, handled_at = ?, updated_at = ?
+            WHERE task_id = ?
+              AND user_id = ?
+              AND EXISTS (
+                    SELECT 1 FROM tasks t
+                    WHERE t.id = task_collaborators.task_id AND t.organization_id = ?
+                  )
+            """,
+            (
+                payload.reason.strip(),
+                timestamp,
+                timestamp,
+                task_id,
+                current_user.id,
+                current_user.organizationId,
+            ),
         )
         _record_activity(state, task_id, current_user.id, "returned", {"userId": user_id, "reason": payload.reason.strip()})
-        return _task_record(state, _task_row_or_404(state, task_id), current_user.id)
+        return _task_record(
+            state,
+            _task_row_or_404(state, task_id, organization_id=current_user.organizationId),
+            current_user.id,
+        )
 
     @app.post("/api/v1/tasks/{task_id}/complete-with-review", response_model=TaskRecord)
     def complete_task_with_review(
