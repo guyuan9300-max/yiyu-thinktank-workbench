@@ -87,6 +87,11 @@ _AUDIO_EXTENSIONS = {".aac", ".aiff", ".alac", ".flac", ".m4a", ".mp3", ".oga", 
 _SOUNDFILE_SAFE_AUDIO_EXTENSIONS = {".wav", ".flac", ".ogg", ".oga", ".aiff", ".aif"}
 _VIDEO_EXTENSIONS = {".avi", ".flv", ".m4v", ".mkv", ".mov", ".mp4", ".mpeg", ".mpg", ".webm", ".wmv"}
 _NON_MEDIA_EXTENSIONS = {".ass", ".description", ".info.json", ".json", ".part", ".srt", ".ssa", ".txt", ".vtt"}
+_FFMPEG_COMMON_PATHS = (
+    "~/.local/bin/ffmpeg",
+    "/opt/homebrew/bin/ffmpeg",
+    "/usr/local/bin/ffmpeg",
+)
 _SUPPORTED_COOKIE_BROWSERS = ["firefox", "chrome", "edge", "safari"]
 _BILIBILI_USER_AGENT = (
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
@@ -1393,8 +1398,32 @@ def _guess_media_kind(path: Path) -> Literal["audio", "video", "unknown"]:
     return "unknown"
 
 
+def _resolve_executable_file(raw_path: str | None) -> str | None:
+    if not raw_path or not raw_path.strip():
+        return None
+    try:
+        candidate = Path(raw_path.strip()).expanduser()
+        if not candidate.is_file() or not os.access(candidate, os.X_OK):
+            return None
+        return str(candidate.resolve(strict=True))
+    except (OSError, RuntimeError):
+        return None
+
+
 def find_ffmpeg() -> str | None:
-    return shutil.which("ffmpeg")
+    configured = _resolve_executable_file(os.getenv("YIYU_FFMPEG_PATH"))
+    if configured:
+        return configured
+
+    from_path = _resolve_executable_file(shutil.which("ffmpeg"))
+    if from_path:
+        return from_path
+
+    for common_path in _FFMPEG_COMMON_PATHS:
+        resolved = _resolve_executable_file(common_path)
+        if resolved:
+            return resolved
+    return None
 
 
 def extract_audio_from_media(media_path: Path, temp_dir: Path, *, ffmpeg: str) -> Path:
